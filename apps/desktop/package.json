@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@myself/agent-core": "workspace:*",
+    "@myself/file-tools": "workspace:*",
     "@myself/shared-types": "workspace:*",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

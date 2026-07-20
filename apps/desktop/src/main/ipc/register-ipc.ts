@@ -38,6 +38,37 @@ const clearLocalDataSchema = z.object({
   scope: z.enum(['conversation', 'audit', 'secret', 'all'])
 }).strict();
 
+const chatSubmitSchema = z.object({
+  text: z.string().trim().min(1).max(4_000)
+}).strict();
+
+const actionIdSchema = z.object({
+  actionId: z.string().min(1)
+}).strict();
+
+export interface AgentIpcService {
+  submit(text: string): Promise<void>;
+  cancelActive(): void;
+  confirm(actionId: string): Promise<void>;
+  cancelAction(actionId: string): void;
+}
+
+export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): void {
+  replaceHandler(ipcMain, ipcChannels.chatSubmit, async (_event, raw) => {
+    const { text } = chatSubmitSchema.parse(raw);
+    await service.submit(text);
+  });
+  replaceHandler(ipcMain, ipcChannels.chatCancel, () => service.cancelActive());
+  replaceHandler(ipcMain, ipcChannels.actionConfirm, async (_event, raw) => {
+    const { actionId } = actionIdSchema.parse(raw);
+    await service.confirm(actionId);
+  });
+  replaceHandler(ipcMain, ipcChannels.actionCancel, (_event, raw) => {
+    const { actionId } = actionIdSchema.parse(raw);
+    service.cancelAction(actionId);
+  });
+}
+
 export interface SettingsIpcStore {
   getPublic(): Promise<PublicSettings>;
   saveProviderMetadata(input: {
@@ -53,10 +84,15 @@ export interface SettingsIpcSecrets {
   clear(): Promise<void>;
 }
 
+export interface SettingsIpcLifecycle {
+  onProviderChanged(): void;
+}
+
 export function registerSettingsIpc(
   ipcMain: IpcMain,
   settings: SettingsIpcStore,
-  secrets: SettingsIpcSecrets
+  secrets: SettingsIpcSecrets,
+  lifecycle?: SettingsIpcLifecycle
 ): void {
   replaceHandler(ipcMain, ipcChannels.settingsGet, () => settings.getPublic());
   replaceHandler(ipcMain, ipcChannels.settingsSaveProvider, async (_event, raw) => {
@@ -68,11 +104,15 @@ export function registerSettingsIpc(
       baseUrl: input.baseUrl,
       model: input.model
     });
+    lifecycle?.onProviderChanged();
     return settings.getPublic();
   });
   replaceHandler(ipcMain, ipcChannels.settingsClearLocalData, async (_event, raw) => {
     const { scope } = clearLocalDataSchema.parse(raw);
-    if (scope === 'secret' || scope === 'all') await secrets.clear();
+    if (scope === 'secret' || scope === 'all') {
+      await secrets.clear();
+      lifecycle?.onProviderChanged();
+    }
     return settings.getPublic();
   });
 }

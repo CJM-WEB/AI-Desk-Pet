@@ -36,8 +36,12 @@ class ScriptedProvider implements ModelProvider {
 }
 
 async function collectEvents(context: RunContext): Promise<AgentEvent[]> {
+  return collect(new AgentLoop().run('请处理文件', context));
+}
+
+async function collect(stream: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
-  for await (const event of new AgentLoop().run('请处理文件', context)) events.push(event);
+  for await (const event of stream) events.push(event);
   return events;
 }
 
@@ -166,5 +170,102 @@ describe('AgentLoop', () => {
       { type: 'phase', phase: 'cancelled' }
     ]);
     expect(provider.requests).toHaveLength(0);
+  });
+
+  test('确认后单次消费继续令牌并把真实工具结果交回模型', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'write-1',
+          toolName: 'create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      },
+      { type: 'text', text: 'result.txt 已创建' }
+    ]);
+    const runContext = context(provider);
+    const loop = new AgentLoop();
+    const paused = await collect(loop.run('创建 result.txt', runContext));
+    const writeEvent = paused.find(event => event.type === 'write_request');
+    if (!writeEvent || writeEvent.type !== 'write_request') throw new Error('缺少写请求事件');
+
+    const resumed = await collect(loop.resume(
+      writeEvent.continuationToken,
+      { ok: true, toolName: 'create_file', targetRelativePath: 'result.txt' },
+      runContext
+    ));
+
+    expect(provider.requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'write-1',
+      content: '{"ok":true,"toolName":"create_file","targetRelativePath":"result.txt"}'
+    });
+    expect(resumed).toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'message', text: 'result.txt 已创建' },
+      { type: 'phase', phase: 'success' }
+    ]);
+    await expect(collect(loop.resume(
+      writeEvent.continuationToken,
+      { ok: true },
+      runContext
+    ))).rejects.toThrow('ACTION_EXPIRED');
+  });
+
+  test('丢弃继续令牌后不能恢复', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'write-1',
+        toolName: 'create_directory',
+        arguments: { relativePath: 'output' }
+      }
+    }]);
+    const runContext = context(provider);
+    const loop = new AgentLoop();
+    const paused = await collect(loop.run('创建 output', runContext));
+    const writeEvent = paused.find(event => event.type === 'write_request');
+    if (!writeEvent || writeEvent.type !== 'write_request') throw new Error('缺少写请求事件');
+
+    loop.discard(writeEvent.continuationToken);
+
+    await expect(collect(loop.resume(
+      writeEvent.continuationToken,
+      { ok: true },
+      runContext
+    ))).rejects.toThrow('ACTION_EXPIRED');
+  });
+
+  test('第四次响应才请求写操作时不发起第五次模型调用', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-1'),
+      readRequest('read-2'),
+      readRequest('read-3'),
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'write-4',
+          toolName: 'create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      },
+      { type: 'text', text: '不应被请求' }
+    ]);
+    const runContext = context(provider);
+    const loop = new AgentLoop();
+    const paused = await collect(loop.run('读取后创建文件', runContext));
+    const writeEvent = paused.find(event => event.type === 'write_request');
+    if (!writeEvent || writeEvent.type !== 'write_request') throw new Error('缺少写请求事件');
+
+    await expect(collect(loop.resume(
+      writeEvent.continuationToken,
+      { ok: true },
+      runContext
+    ))).resolves.toEqual([
+      { type: 'message', text: '本地文件操作已完成；已达到模型响应轮次上限。' },
+      { type: 'phase', phase: 'success' }
+    ]);
+    expect(provider.requests).toHaveLength(4);
   });
 });

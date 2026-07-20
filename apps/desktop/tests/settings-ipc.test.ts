@@ -41,7 +41,8 @@ describe('设置 IPC', () => {
       save: vi.fn(async () => undefined),
       clear: vi.fn(async () => undefined)
     };
-    registerSettingsIpc(ipcMain, settings, secrets);
+    const lifecycle = { onProviderChanged: vi.fn(() => undefined) };
+    registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
 
     const result = await handlers.get(ipcChannels.settingsSaveProvider)?.({}, {
       displayName: '示例服务',
@@ -58,6 +59,7 @@ describe('设置 IPC', () => {
       baseUrl: 'https://api.example.com/v1',
       model: 'example-model'
     });
+    expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
     expect(JSON.stringify(result)).not.toContain('sk-ipc-fixture');
   });
 
@@ -118,10 +120,12 @@ describe('设置 IPC', () => {
       save: vi.fn(async () => undefined),
       clear: vi.fn(async () => undefined)
     };
-    registerSettingsIpc(ipcMain, settings, secrets);
+    const lifecycle = { onProviderChanged: vi.fn(() => undefined) };
+    registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
 
     await handlers.get(ipcChannels.settingsClearLocalData)?.({}, { scope: 'secret' });
 
     expect(secrets.clear).toHaveBeenCalledOnce();
+    expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
   });
 });

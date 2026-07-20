@@ -98,4 +98,11 @@ describe('preload 白名单', () => {
     expect(main).toContain("'../preload/index.cjs'");
     expect(main).not.toContain("'../preload/index.mjs'");
   });
+
+  it('在 Main 注册 Agent IPC 并只通过固定任务事件通道推送状态', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(main).toContain('registerAgentIpc(ipcMain, agentService)');
+    expect(main).toContain('webContents.send(ipcChannels.taskEvent, event)');
+  });
 });

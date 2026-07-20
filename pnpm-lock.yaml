@@ -23,6 +23,9 @@ importers:
       '@myself/agent-core':
         specifier: workspace:*
         version: link:../../packages/agent-core
+      '@myself/file-tools':
+        specifier: workspace:*
+        version: link:../../packages/file-tools
       '@myself/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

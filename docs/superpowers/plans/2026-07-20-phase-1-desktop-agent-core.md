@@ -698,6 +698,7 @@ ipcMain.handle('settings:save-provider', async (_event, raw) => {
 **接口：**
 - 提供 `ModelProvider.respond(request, signal): Promise<ModelResponse>`。
 - 提供 `AgentLoop.run(userText, context): AsyncGenerator<AgentEvent>`。
+- 提供 `AgentLoop.resume(continuationToken, toolResult, context): AsyncGenerator<AgentEvent>` 和 `discard(continuationToken)`。
 - Provider 返回规范化文本或一个规范化 `ToolRequest`，绝不执行工具。
 
 - [x] **步骤 1： 定义与提供方无关的类型及失败循环测试**
@@ -706,20 +707,14 @@ ipcMain.handle('settings:save-provider', async (_event, raw) => {
 
 - [x] **步骤 2： 实现最小 Agent 循环**
 
-循环持有最大值为四的响应计数器，只传递固定工具 Schema，验证每次响应并产生任务事件。遇到写请求时暂停，并返回仅保存在 Main 中的继续令牌。只有本地 `ToolExecutor` 接口可以报告工具成功。
+循环持有最大值为四的响应计数器，只传递固定工具 Schema，验证每次响应并产生任务事件。遇到写请求时把消息历史和已使用轮数保存在 Main 内存中，并返回不可猜测的一次性继续令牌。`resume` 消费令牌、附加真实工具结果并使用原任务剩余轮数生成总结；没有剩余轮数时返回确定性的本地完成说明，绝不请求第五次模型响应。`discard` 用于取消、过期、根目录或 Provider 变化。只有本地 `ToolExecutor` 接口可以报告工具成功。
 
 ```ts
-export async function* runAgent(input: RunInput): AsyncGenerator<AgentEvent> {
-  const messages = [...input.messages, { role: 'user' as const, content: input.userText }];
-  for (let turn = 0; turn < 4; turn += 1) {
-    const response = await input.provider.respond({ messages, tools: input.tools }, input.signal);
-    if (response.type === 'text') { yield { type: 'message', text: response.text }; return; }
-    const request = toolRequestSchema.parse(response.request);
-    if (input.writeTools.has(request.toolName)) { yield { type: 'write_request', request, messages }; return; }
-    const result = await input.executor.executeRead(request);
-    messages.push({ role: 'tool', toolCallId: request.requestId, content: JSON.stringify(result) });
-  }
-  throw new Error('AGENT_MAX_TURNS');
+export class AgentLoop {
+  private readonly continuations = new Map<string, ContinuationState>();
+  run(userText: string, context: RunContext): AsyncGenerator<AgentEvent> { /* 最多四轮并在写请求时保存状态 */ }
+  resume(token: string, toolResult: unknown, context: RunContext): AsyncGenerator<AgentEvent> { /* 单次消费并使用剩余轮数 */ }
+  discard(token: string): void { this.continuations.delete(token); }
 }
 ```
 
@@ -766,53 +761,63 @@ export class OpenAICompatibleProvider implements ModelProvider {
 - 修改： `apps/desktop/src/main/ipc/register-ipc.ts`
 
 **接口：**
-- 提供 `PendingActionStore.issue(actionData)`、`consume(actionId)`、`cancel(actionId)` 和 `clear(reason)`。
+- 提供 `PendingActionStore.issue(actionData, pendingExecution)`、`consume(actionId)`、`cancel(actionId)` 和 `clear(reason)`；私有 `PendingExecution` 同时保存 `VerifiedWriteAction` 与 `continuationToken`。
 - 提供 `AgentService.submit(text)`、`cancelActive()`、`confirm(actionId)` 和 `cancelAction(actionId)`。
 
-- [ ] **步骤 1： 编写确认能力测试**
+- [x] **步骤 1： 编写确认能力测试**
 
 验证同时只有一个待确认动作、ID 不可猜测、过期时间生效、`consume` 只能调用一次、根目录或 Provider 改变会清除动作，并且 Renderer 提供的路径无法篡改已存动作数据。
 
-- [ ] **步骤 2： 在内存中实现 `PendingActionStore`**
+- [x] **步骤 2： 在内存中实现 `PendingActionStore`**
 
-使用密码学随机数生成动作 ID，默认设置较短有效期，并将公开 `PendingAction` 与私有已验证执行数据分开返回。动作绝不持久化到磁盘。
+使用密码学随机数生成动作 ID，默认设置较短有效期，并将公开 `PendingAction` 与私有 `PendingExecution` 分开返回。私有数据包含原始 `VerifiedWriteAction` 和一次性 `continuationToken`。替换、取消、过期或清除动作时必须同步调用 `AgentLoop.discard`；动作绝不持久化到磁盘。
 
 ```ts
+type PendingExecution = {
+  verifiedAction: VerifiedWriteAction;
+  continuationToken: string;
+};
+
 export class PendingActionStore {
-  private current: { public: PendingAction; privateAction: VerifiedWriteAction } | null = null;
-  issue(publicData: Omit<PendingAction, 'actionId' | 'createdAt' | 'expiresAt'>, privateAction: VerifiedWriteAction) {
+  private current: { public: PendingAction; privateExecution: PendingExecution } | null = null;
+  issue(publicData: Omit<PendingAction, 'actionId' | 'createdAt' | 'expiresAt'>, privateExecution: PendingExecution) {
     const now = Date.now();
     const actionId = randomBytes(24).toString('base64url');
-    this.current = { public: { ...publicData, actionId, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 120000).toISOString() }, privateAction };
+    this.current = { public: { ...publicData, actionId, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 120000).toISOString() }, privateExecution };
     return this.current.public;
   }
-  consume(actionId: string): VerifiedWriteAction {
+  consume(actionId: string): PendingExecution {
     const item = this.current; this.current = null;
     if (!item || item.public.actionId !== actionId || Date.parse(item.public.expiresAt) <= Date.now()) throw new Error('ACTION_EXPIRED');
-    return item.privateAction;
+    return item.privateExecution;
   }
   clear(): void { this.current = null; }
 }
 ```
 
-- [ ] **步骤 3： 编写 Agent 服务编排测试**
+- [x] **步骤 3： 编写 Agent 服务编排测试**
 
 使用伪 Provider、FileToolService、SettingsStore 和事件接收器，断言列出成功、新建等待确认、新建已确认、取消、Provider 失败、无效路径和目标冲突的准确阶段序列。
 
-- [ ] **步骤 4： 实现编排与 IPC 注册**
+- [x] **步骤 4： 实现编排与 IPC 注册**
 
-`chat:submit` 验证非空且限长的文本，并拒绝并发任务。`action:confirm` 只接受 `actionId`，消费私有动作数据，重新验证根目录和路径，只执行一次，然后恢复 Agent 总结。每条退出路径都必须发送终止阶段。
+`chat:submit` 验证非空且限长的文本，并拒绝并发任务。`action:confirm` 只接受 `actionId`，消费私有动作数据，重新验证根目录和路径，只执行一次，把真实结果交给 `AgentLoop.resume`，并在原四轮预算内恢复 Agent 总结。没有剩余轮数时发送确定性的本地完成说明；本地写入成功但总结失败时必须明确区分两种结果。每条退出路径都必须发送终止阶段。
 
 ```ts
 async confirm(actionId: string): Promise<void> {
-  const action = this.pending.consume(actionId);
+  const pendingExecution = this.pending.consume(actionId);
   this.emit({ type: 'phase', phase: 'acting' });
-  try { await this.fileTools.executeWrite(action); this.emit({ type: 'phase', phase: 'success' }); }
-  catch (error) { this.emit(toPublicErrorEvent(error)); this.emit({ type: 'phase', phase: 'error' }); }
+  try {
+    await this.fileTools.executeWrite(pendingExecution.verifiedAction);
+    await this.resumeSummary(pendingExecution.continuationToken);
+  } catch (error) {
+    this.emit(toPublicErrorEvent(error));
+    this.emit({ type: 'phase', phase: 'error' });
+  }
 }
 ```
 
-- [ ] **步骤 5： 运行服务测试与回归测试**
+- [x] **步骤 5： 运行服务测试与回归测试**
 
 运行： `pnpm --filter @myself/desktop test -- pending-action-store.test.ts agent-service.test.ts`
 

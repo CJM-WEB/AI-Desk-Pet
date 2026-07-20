@@ -1,26 +1,68 @@
 import { randomUUID } from 'node:crypto';
 import { toolRequestSchema, type ToolRequest } from '@myself/shared-types';
-import type { AgentEvent, RunContext } from './types';
+import type { AgentEvent, ModelMessage, RunContext } from './types';
+
+type ContinuationState = {
+  messages: ModelMessage[];
+  nextTurn: number;
+  requestId: string;
+};
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
 export class AgentLoop {
+  private readonly continuations = new Map<string, ContinuationState>();
+
   async *run(userText: string, context: RunContext): AsyncGenerator<AgentEvent> {
+    const messages = [
+      ...context.messages,
+      { role: 'user' as const, content: userText }
+    ];
+    yield* this.continueRun(messages, 0, context);
+  }
+
+  async *resume(
+    continuationToken: string,
+    toolResult: unknown,
+    context: RunContext
+  ): AsyncGenerator<AgentEvent> {
+    const continuation = this.continuations.get(continuationToken);
+    if (!continuation) throw new Error('ACTION_EXPIRED');
+    this.continuations.delete(continuationToken);
+
+    continuation.messages.push({
+      role: 'tool',
+      toolCallId: continuation.requestId,
+      content: JSON.stringify(toolResult)
+    });
+    if (continuation.nextTurn >= 4) {
+      yield { type: 'message', text: '本地文件操作已完成；已达到模型响应轮次上限。' };
+      yield { type: 'phase', phase: 'success' };
+      return;
+    }
+    yield* this.continueRun(continuation.messages, continuation.nextTurn, context);
+  }
+
+  discard(continuationToken: string): void {
+    this.continuations.delete(continuationToken);
+  }
+
+  private async *continueRun(
+    messages: ModelMessage[],
+    startTurn: number,
+    context: RunContext
+  ): AsyncGenerator<AgentEvent> {
     if (context.signal.aborted) {
       yield { type: 'phase', phase: 'cancelled' };
       return;
     }
 
-    const messages = [
-      ...context.messages,
-      { role: 'user' as const, content: userText }
-    ];
     let correctionUsed = false;
     yield { type: 'phase', phase: 'thinking' };
 
-    for (let turn = 0; turn < 4; turn += 1) {
+    for (let turn = startTurn; turn < 4; turn += 1) {
       if (context.signal.aborted) {
         yield { type: 'phase', phase: 'cancelled' };
         return;
@@ -57,11 +99,17 @@ export class AgentLoop {
       const request: ToolRequest = parsedRequest.data;
       messages.push({ role: 'assistant', content: '', toolRequest: request });
       if (context.writeTools.has(request.toolName)) {
+        const continuationToken = `continue_${randomUUID()}`;
+        this.continuations.set(continuationToken, {
+          messages: [...messages],
+          nextTurn: turn + 1,
+          requestId: request.requestId
+        });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
         yield {
           type: 'write_request',
           request,
-          continuationToken: `continue_${randomUUID()}`
+          continuationToken
         };
         return;
       }
