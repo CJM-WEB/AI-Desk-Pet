@@ -408,7 +408,7 @@ export class PathPolicy {
 - 输入： `PathPolicy` and tool-specific Zod arguments.
 - 输出： `FileToolService.preview(request)`, `executeRead(request)`, and `executeWrite(verifiedAction)`; no write method accepts arbitrary unvalidated arguments.
 
-- [ ] **步骤 1： 为列出、读取、新建、重命名及取消安全编写测试**
+- [x] **步骤 1： 为列出、读取、新建、重命名及取消安全编写测试**
 
 ```ts
 // packages/file-tools/tests/file-tool-service.test.ts
@@ -433,13 +433,13 @@ it('renames only within the same parent and never overwrites', async () => {
 });
 ```
 
-- [ ] **步骤 2： 运行测试并确认红灯状态**
+- [x] **步骤 2： 运行测试并确认红灯状态**
 
 运行： `pnpm exec vitest run packages/file-tools/tests/file-tool-service.test.ts`
 
 预期： FAIL because `FileToolService` does not exist.
 
-- [ ] **步骤 3： 实现精确工具 Schema**
+- [x] **步骤 3： 实现精确工具 Schema**
 
 ```ts
 // packages/file-tools/src/schemas.ts
@@ -455,7 +455,7 @@ export const toolArguments = {
 } as const;
 ```
 
-- [ ] **步骤 4： 实现预览与执行相分离的服务**
+- [x] **步骤 4： 实现预览与执行相分离的服务**
 
 `VerifiedWriteAction` 必须包含规范化相对路径以及私有、不可伪造的服务端标识符；`executeWrite` 在调用 `open(..., 'wx')`、`mkdir(..., { recursive: false })` 或 `rename(...)` 前立即重新解析路径。`rename_entry` 拒绝不同父目录，`list_directory` 最多返回 200 项，`read_text_file` 拒绝超过 1 MiB 或非有效 UTF-8 的文件。
 
@@ -500,7 +500,7 @@ export class FileToolService {
 }
 ```
 
-- [ ] **步骤 5： 先运行聚焦测试，再运行全部文件工具测试**
+- [x] **步骤 5： 先运行聚焦测试，再运行全部文件工具测试**
 
 运行： `pnpm exec vitest run packages/file-tools/tests`
 
