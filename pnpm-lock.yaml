@@ -20,6 +20,8 @@ importers:
 
   apps/desktop: {}
 
+  packages/file-tools: {}
+
   packages/shared-types:
     dependencies:
       zod:

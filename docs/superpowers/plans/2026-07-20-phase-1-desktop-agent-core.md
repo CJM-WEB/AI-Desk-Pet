@@ -256,7 +256,7 @@ export * from './contracts';
 - 输入： an absolute root selected by Main and model-supplied relative paths.
 - 输出： `PathPolicy.resolveExisting(relativePath)` and `PathPolicy.resolveTarget(relativePath)` returning verified absolute paths; throws stable `FileToolError` codes.
 
-- [ ] **步骤 1： 先编写路径边界测试**
+- [x] **步骤 1： 先编写路径边界测试**
 
 ```ts
 // packages/file-tools/tests/path-policy.test.ts
@@ -294,13 +294,13 @@ describe('PathPolicy', () => {
 });
 ```
 
-- [ ] **步骤 2： 运行聚焦测试并确认失败**
+- [x] **步骤 2： 运行聚焦测试并确认失败**
 
 运行： `pnpm exec vitest run packages/file-tools/tests/path-policy.test.ts`
 
 预期： FAIL because `PathPolicy` is not implemented.
 
-- [ ] **步骤 3： 实现稳定错误类型与路径检查**
+- [x] **步骤 3： 实现稳定错误类型与路径检查**
 
 ```ts
 // packages/file-tools/src/errors.ts
@@ -378,13 +378,13 @@ export class PathPolicy {
 }
 ```
 
-- [ ] **步骤 4： 运行聚焦测试与包级测试**
+- [x] **步骤 4： 运行聚焦测试与包级测试**
 
 运行： `pnpm exec vitest run packages/file-tools/tests/path-policy.test.ts`
 
 预期： all path-policy tests PASS.
 
-- [ ] **步骤 5： 增加 Windows Junction 与前缀碰撞安全用例**
+- [x] **步骤 5： 增加 Windows Junction 与前缀碰撞安全用例**
 
 在 Windows 允许时，测试创建一个指向第二个临时目录的 `root-link` 目录 Junction，并验证返回 `LINK_NOT_ALLOWED`；同时验证名为 `work` 的根目录绝不会授权同级的 `workspace-other`。
 
