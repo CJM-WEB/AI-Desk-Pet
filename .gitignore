@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+.pnpm-store/
+dist/
+out/
+coverage/
+.next/
+
+# 本地环境与日志
+.env
+.env.*
+*.log
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Superpowers 临时视觉文件
+.superpowers/

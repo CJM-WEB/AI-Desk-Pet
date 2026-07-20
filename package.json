@@ -1,0 +1,16 @@
+{
+  "name": "myself",
+  "private": true,
+  "version": "0.1.0-alpha.1",
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

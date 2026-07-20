@@ -1,0 +1,8 @@
+{
+  "name": "@myself/desktop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
