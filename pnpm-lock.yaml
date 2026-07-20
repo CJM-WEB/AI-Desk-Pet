@@ -20,6 +20,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@myself/agent-core':
+        specifier: workspace:*
+        version: link:../../packages/agent-core
       '@myself/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -45,6 +48,12 @@ importers:
       electron-vite:
         specifier: ^5.0.0
         version: 5.0.0(vite@7.3.6(@types/node@24.13.3))
+
+  packages/agent-core:
+    dependencies:
+      '@myself/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
 
   packages/file-tools:
     dependencies:

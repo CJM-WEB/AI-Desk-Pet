@@ -700,11 +700,11 @@ ipcMain.handle('settings:save-provider', async (_event, raw) => {
 - 提供 `AgentLoop.run(userText, context): AsyncGenerator<AgentEvent>`。
 - Provider 返回规范化文本或一个规范化 `ToolRequest`，绝不执行工具。
 
-- [ ] **步骤 1： 定义与提供方无关的类型及失败循环测试**
+- [x] **步骤 1： 定义与提供方无关的类型及失败循环测试**
 
 使用脚本化伪 Provider 测试：纯文本；读取工具后生成最终文本；写工具进入 `awaiting_confirmation`；无效工具只修正一次；阻止第五次模型响应；中止信号产生取消状态。
 
-- [ ] **步骤 2： 实现最小 Agent 循环**
+- [x] **步骤 2： 实现最小 Agent 循环**
 
 循环持有最大值为四的响应计数器，只传递固定工具 Schema，验证每次响应并产生任务事件。遇到写请求时暂停，并返回仅保存在 Main 中的继续令牌。只有本地 `ToolExecutor` 接口可以报告工具成功。
 
@@ -723,11 +723,11 @@ export async function* runAgent(input: RunInput): AsyncGenerator<AgentEvent> {
 }
 ```
 
-- [ ] **步骤 3： 编写 OpenAI 兼容适配器契约测试**
+- [x] **步骤 3： 编写 OpenAI 兼容适配器契约测试**
 
 模拟 HTTP，断言请求 URL 规范化、Bearer Header、模型、消息和五个工具定义。覆盖 401、404、429、5xx、超时、畸形 JSON、纯文本和工具调用。
 
-- [ ] **步骤 4： 实现适配器与错误映射**
+- [x] **步骤 4： 实现适配器与错误映射**
 
 使用注入的 HTTP 客户端或 `fetch`，绝不记录请求 Header。只有 Agent 服务判定调用安全时，429/5xx 才重试一次；适配器返回规范化的可重试信息，不得重复已经完成的工具。
 
@@ -746,9 +746,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
 }
 ```
 
-- [ ] **步骤 5： 验证循环与适配器测试套件**
+- [x] **步骤 5： 验证循环与适配器测试套件**
 
-运行： `pnpm exec vitest run packages/agent-core apps/desktop/tests/openai-provider.test.ts`
+运行： `pnpm --filter @myself/agent-core test`，然后运行 `pnpm --filter @myself/desktop test -- openai-provider.test.ts`。
 
 预期： all scripted flows PASS; the fake provider confirms no fifth response is requested.
 
