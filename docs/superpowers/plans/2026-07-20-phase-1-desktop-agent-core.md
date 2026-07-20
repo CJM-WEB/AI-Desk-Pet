@@ -527,7 +527,7 @@ export class FileToolService {
 - 输入： shared `PublicSettings` and `TaskEvent` contracts.
 - 输出： three managed windows and `window.myself` allowlisted preload API; later tasks register implementations behind it.
 
-- [ ] **步骤 1： 编写 BrowserWindow 安全配置测试**
+- [x] **步骤 1： 编写 BrowserWindow 安全配置测试**
 
 测试纯函数 `secureWebPreferences(preloadPath)`，断言 `nodeIntegration === false`、`contextIsolation === true`、`sandbox === true`，并验证预期 preload 路径。
 
@@ -535,7 +535,7 @@ export class FileToolService {
 
 预期： FAIL because the helper does not exist.
 
-- [ ] **步骤 2： 实现安全窗口工厂**
+- [x] **步骤 2： 实现安全窗口工厂**
 
 创建职责单一的 `createPetWindow`、`createChatWindow` 和 `createSettingsWindow`。桌宠窗口透明、无边框、置顶、不显示任务栏按钮并限制为小尺寸；聊天与设置使用独立窗口。所有窗口共用安全 webPreferences，并通过 `will-navigate` 与 `setWindowOpenHandler` 拒绝任意导航。
 
@@ -557,7 +557,7 @@ export function createPetWindow(preload: string): BrowserWindow {
 }
 ```
 
-- [ ] **步骤 3： 实现托盘与生命周期行为**
+- [x] **步骤 3： 实现托盘与生命周期行为**
 
 托盘菜单包含“打开聊天”“设置”“显示/隐藏桌宠”和“退出”。关闭聊天或设置窗口时只隐藏；明确选择“退出”才终止进程。恢复桌宠位置前必须把坐标限制在当前显示器工作区内。
 
@@ -572,7 +572,7 @@ tray.setContextMenu(menu);
 for (const win of [chat, settings]) win.on('close', event => { event.preventDefault(); win.hide(); });
 ```
 
-- [ ] **步骤 4： 暴露固定的预加载 API**
+- [x] **步骤 4： 暴露固定的预加载 API**
 
 ```ts
 // apps/desktop/src/preload/index.ts
@@ -599,7 +599,7 @@ contextBridge.exposeInMainWorld('myself', api);
 
 不得暴露 `ipcRenderer`、通道名参数、文件路径或通用 invoke 方法。
 
-- [ ] **步骤 5： 验证安全配置并执行启动冒烟测试**
+- [x] **步骤 5： 验证安全配置并执行启动冒烟测试**
 
 运行： `pnpm --filter @myself/desktop test && pnpm --filter @myself/desktop dev`
 

@@ -2,7 +2,23 @@
   "name": "@myself/desktop",
   "private": true,
   "type": "module",
+  "main": "./out/main/index.js",
   "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@myself/shared-types": "workspace:*",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "electron": "^43.1.1",
+    "electron-vite": "^5.0.0"
   }
 }
