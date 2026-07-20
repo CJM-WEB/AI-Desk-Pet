@@ -622,11 +622,11 @@ contextBridge.exposeInMainWorld('myself', api);
 - 输出： `SettingsStore.getPublic()`, `saveProviderMetadata()`, `saveAuthorizedRoot()`, `SecretStore.save()`, `readForProviderCall()`, and `clear()`.
 - Renderer 只能看到 `hasStoredSecret`。
 
-- [ ] **步骤 1： 为原子设置与密钥不泄露编写红灯测试**
+- [x] **步骤 1： 为原子设置与密钥不泄露编写红灯测试**
 
 测试使用临时用户数据目录和注入的伪加密适配器。断言序列化 JSON 包含 `version: 1`、绝不包含测试 API Key，并且 `getPublic()` 只返回 `hasStoredSecret: true`。
 
-- [ ] **步骤 2： 实现小型加密适配边界**
+- [x] **步骤 2： 实现小型加密适配边界**
 
 生产适配器委托 Electron `safeStorage.encryptString/decryptString`。加密能力不可用时，`save(..., persist: true)` 返回稳定的 `SECRET_STORAGE_UNAVAILABLE` 错误；仅会话存储保留在内存中，并在退出时清除。
 
@@ -647,7 +647,7 @@ export class SecretStore {
 }
 ```
 
-- [ ] **步骤 3： 实现 JSON 原子写入**
+- [x] **步骤 3： 实现 JSON 原子写入**
 
 写入 `settings.json.tmp`，刷新并关闭后再替换 `settings.json`。每次读取都使用 Zod 验证；无效或损坏的设置移到带时间戳的诊断文件名，然后加载安全默认值，日志中不得出现密钥。
 
@@ -661,7 +661,7 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
 }
 ```
 
-- [ ] **步骤 4： 注册带输入 Schema 的设置 IPC 处理器**
+- [x] **步骤 4： 注册带输入 Schema 的设置 IPC 处理器**
 
 `settings:save-provider` 接受 displayName、baseUrl、model 和一次性 secret。除明确的 localhost HTTP 外均要求 HTTPS；`settings:get` 永远不包含密钥材料。
 
@@ -675,7 +675,7 @@ ipcMain.handle('settings:save-provider', async (_event, raw) => {
 });
 ```
 
-- [ ] **步骤 5： 运行存储测试并扫描测试密钥泄露**
+- [x] **步骤 5： 运行存储测试并扫描测试密钥泄露**
 
 运行： `pnpm --filter @myself/desktop test -- settings-store.test.ts secret-store.test.ts`
 

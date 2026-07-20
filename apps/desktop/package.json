@@ -13,7 +13,8 @@
   "dependencies": {
     "@myself/shared-types": "workspace:*",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

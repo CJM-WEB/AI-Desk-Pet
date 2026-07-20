@@ -5,11 +5,14 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  safeStorage,
   screen,
   Tray,
   type Rectangle
 } from 'electron';
-import { registerWindowIpc } from './ipc/register-ipc';
+import { registerSettingsIpc, registerWindowIpc } from './ipc/register-ipc';
+import { SecretStore } from './storage/secret-store';
+import { SettingsStore } from './storage/settings-store';
 import {
   createChatWindow,
   createPetWindow,
@@ -136,6 +139,18 @@ async function createApplicationWindows(): Promise<void> {
     },
     quit: () => app.quit()
   });
+
+  const storageDirectory = app.getPath('userData');
+  const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
+    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+    encryptString: value => safeStorage.encryptStringAsync(value),
+    decryptString: async value => (await safeStorage.decryptStringAsync(value)).result
+  });
+  const settingsStore = new SettingsStore(
+    join(storageDirectory, 'settings.json'),
+    () => secrets.hasStoredSecret()
+  );
+  registerSettingsIpc(ipcMain, settingsStore, secrets);
 
   await Promise.all([
     loadRenderer(pet, 'pet'),
