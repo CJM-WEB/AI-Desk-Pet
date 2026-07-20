@@ -35,7 +35,8 @@ describe('设置 IPC', () => {
     const { handlers, ipcMain } = createIpcMain();
     const settings = {
       getPublic: vi.fn(async () => publicSettings(true)),
-      saveProviderMetadata: vi.fn(async () => undefined)
+      saveProviderMetadata: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const secrets = {
       save: vi.fn(async () => undefined),
@@ -71,7 +72,8 @@ describe('设置 IPC', () => {
     const { handlers, ipcMain } = createIpcMain();
     const settings = {
       getPublic: vi.fn(async () => publicSettings(false)),
-      saveProviderMetadata: vi.fn(async () => undefined)
+      saveProviderMetadata: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const secrets = {
       save: vi.fn(async () => undefined),
@@ -93,7 +95,8 @@ describe('设置 IPC', () => {
     const { handlers, ipcMain } = createIpcMain();
     const settings = {
       getPublic: vi.fn(async () => publicSettings(false)),
-      saveProviderMetadata: vi.fn(async () => undefined)
+      saveProviderMetadata: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const secrets = {
       save: vi.fn(async () => undefined),
@@ -114,7 +117,8 @@ describe('设置 IPC', () => {
     const { handlers, ipcMain } = createIpcMain();
     const settings = {
       getPublic: vi.fn(async () => publicSettings(false)),
-      saveProviderMetadata: vi.fn(async () => undefined)
+      saveProviderMetadata: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const secrets = {
       save: vi.fn(async () => undefined),
@@ -127,5 +131,82 @@ describe('设置 IPC', () => {
 
     expect(secrets.clear).toHaveBeenCalledOnce();
     expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
+  });
+
+  test('测试连接通过固定动作返回公开结果', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const settings = {
+      getPublic: vi.fn(async () => publicSettings(true)),
+      saveProviderMetadata: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
+    };
+    const secrets = {
+      save: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined)
+    };
+    const actions = {
+      testProvider: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
+      chooseAuthorizedRoot: vi.fn(async () => undefined)
+    };
+    registerSettingsIpc(ipcMain, settings, secrets, undefined, actions);
+
+    await expect(handlers.get(ipcChannels.settingsTestProvider)?.({})).resolves.toEqual({
+      ok: true,
+      message: '连接成功。'
+    });
+    expect(actions.testProvider).toHaveBeenCalledOnce();
+  });
+
+  test('选择授权目录后清除旧确认状态并返回公开设置', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const settings = {
+      getPublic: vi.fn(async () => publicSettings(true)),
+      saveProviderMetadata: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
+    };
+    const secrets = {
+      save: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined)
+    };
+    const lifecycle = {
+      onProviderChanged: vi.fn(() => undefined),
+      onAuthorizedRootChanged: vi.fn(() => undefined)
+    };
+    const actions = {
+      testProvider: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
+      chooseAuthorizedRoot: vi.fn(async () => undefined)
+    };
+    registerSettingsIpc(ipcMain, settings, secrets, lifecycle, actions);
+
+    await expect(handlers.get(ipcChannels.settingsChooseRoot)?.({})).resolves.toEqual(
+      publicSettings(true)
+    );
+    expect(actions.chooseAuthorizedRoot).toHaveBeenCalledOnce();
+    expect(lifecycle.onAuthorizedRootChanged).toHaveBeenCalledOnce();
+  });
+
+  test('清除 all 会同时清除设置、密钥和相关确认状态', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const settings = {
+      getPublic: vi.fn(async () => publicSettings(false)),
+      saveProviderMetadata: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
+    };
+    const secrets = {
+      save: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined)
+    };
+    const lifecycle = {
+      onProviderChanged: vi.fn(() => undefined),
+      onAuthorizedRootChanged: vi.fn(() => undefined)
+    };
+    registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
+
+    await handlers.get(ipcChannels.settingsClearLocalData)?.({}, { scope: 'all' });
+
+    expect(settings.clearAll).toHaveBeenCalledOnce();
+    expect(secrets.clear).toHaveBeenCalledOnce();
+    expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
+    expect(lifecycle.onAuthorizedRootChanged).toHaveBeenCalledOnce();
   });
 });

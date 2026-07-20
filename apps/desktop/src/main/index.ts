@@ -5,6 +5,7 @@ import type { TaskEvent } from '@myself/shared-types';
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -20,6 +21,7 @@ import { OpenAICompatibleProvider } from './providers/openai-provider';
 import { ipcChannels } from '../shared/ipc-channels';
 import { SecretStore } from './storage/secret-store';
 import { SettingsStore } from './storage/settings-store';
+import { createSettingsActions } from './settings/settings-actions';
 import {
   createChatWindow,
   createPetWindow,
@@ -257,9 +259,23 @@ async function createApplicationWindows(): Promise<void> {
   });
   activeAgentService = agentService;
   registerAgentIpc(ipcMain, agentService);
-  registerSettingsIpc(ipcMain, settingsStore, secrets, {
-    onProviderChanged: () => agentService.clearPending('provider_changed')
+  const settingsActions = createSettingsActions({
+    settings: settingsStore,
+    readSecret: () => secrets.readForProviderCall(),
+    createProvider: (profile, readSecret) => new OpenAICompatibleProvider(profile, readSecret),
+    selectDirectory: async () => {
+      const owner = await ensureSettingsWindow();
+      const result = await dialog.showOpenDialog(owner, {
+        title: '选择 Myself 可以访问的工作目录',
+        properties: ['openDirectory']
+      });
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    }
   });
+  registerSettingsIpc(ipcMain, settingsStore, secrets, {
+    onProviderChanged: () => agentService.clearPending('provider_changed'),
+    onAuthorizedRootChanged: () => agentService.clearPending('root_changed')
+  }, settingsActions);
 
   await Promise.all([
     loadRenderer(pet, 'pet'),

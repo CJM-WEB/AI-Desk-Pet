@@ -108,4 +108,8 @@ export class SettingsStore {
   async getAuthorizedRootPath(): Promise<string | null> {
     return (await this.load()).authorizedRoot?.absolutePath ?? null;
   }
+
+  async clearAll(): Promise<void> {
+    await atomicWrite(this.file, defaultSettings());
+  }
 }

@@ -4,6 +4,7 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
+    "postinstall": "install-electron",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
@@ -12,11 +13,13 @@
   },
   "dependencies": {
     "@myself/agent-core": "workspace:*",
+    "@myself/character-runtime": "workspace:*",
     "@myself/file-tools": "workspace:*",
     "@myself/shared-types": "workspace:*",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

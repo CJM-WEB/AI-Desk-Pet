@@ -831,28 +831,55 @@ async confirm(actionId: string): Promise<void> {
 
 **文件：**
 - 新建： `packages/character-runtime/package.json`
+- 新建： `packages/character-runtime/tsconfig.json`
+- 新建： `packages/character-runtime/vitest.config.ts`
+- 新建： `packages/character-runtime/src/index.ts`
 - 新建： `packages/character-runtime/src/state-machine.ts`
 - 新建： `packages/character-runtime/tests/state-machine.test.ts`
+- 新建： `apps/desktop/src/main/settings/settings-actions.ts`
+- 新建： `apps/desktop/tests/renderer-task-store.test.ts`
+- 新建： `apps/desktop/tests/renderer-components.test.tsx`
+- 新建： `apps/desktop/tests/settings-actions.test.ts`
+- 新建： `apps/desktop/tests/electron-vite-config.test.ts`
 - 新建： `apps/desktop/src/renderer/src/stores/task-store.ts`
 - 新建： `apps/desktop/src/renderer/src/pet/PetView.tsx`
 - 新建： `apps/desktop/src/renderer/src/chat/ChatPanel.tsx`
 - 新建： `apps/desktop/src/renderer/src/chat/ConfirmationCard.tsx`
 - 新建： `apps/desktop/src/renderer/src/settings/SettingsView.tsx`
 - 新建： `apps/desktop/src/renderer/src/character/state-map.ts`
-- 新建： `apps/desktop/src/renderer/src/styles.css`
+- 修改： `apps/desktop/src/renderer/src/styles.css`
 - 修改： `apps/desktop/src/renderer/src/App.tsx`
+- 修改： `apps/desktop/electron.vite.config.ts`
+- 修改： `apps/desktop/vitest.config.ts`
+- 修改： `apps/desktop/src/main/ipc/register-ipc.ts`
+- 修改： `apps/desktop/src/main/storage/settings-store.ts`
+- 修改： `apps/desktop/src/main/index.ts`
+- 修改： `apps/desktop/tests/settings-ipc.test.ts`
+- 修改： `apps/desktop/tests/settings-store.test.ts`
+- 修改： `apps/desktop/package.json`
+- 修改： `vitest.config.ts`
+- 修改： `pnpm-lock.yaml`
 
 **接口：**
-- 输入： preload API and `TaskEvent`.
-- 输出： accessible user controls and deterministic animation state; no business decision or file path resolution.
+- 输入：预加载白名单 API 与 `TaskEvent`。
+- 输出：可访问的用户控件和确定性角色动画状态；Renderer 不承担业务决策或文件路径解析。
 
-- [ ] **步骤 1： 编写状态机与状态存储测试**
+**已确认体验：**
+- 采用温暖陪伴型视觉和“角色旁独立气泡”布局；普通对话优先，工具能力只在需要时显现。
+- `success`/`error` 停留 1500 毫秒后回到 `idle`，但消息记录继续保留。
+- 默认角色使用可替换的轻量 2D/CSS 表现；减少动态效果时禁用位移动画并保留静态状态差异。
+
+- [x] **步骤 0： 补齐设置界面的 Main 前置能力**
+
+先编写失败测试，再实现 `settings:test-provider`、`settings:choose-root` 和完整的 `settings:clear-local-data`。连接测试使用当前已保存 Provider 与密钥执行最小纯文本请求；授权目录只能来自 Electron 系统目录选择器，变更后清除待确认动作；`all` 同时清除 Provider 元数据、授权目录和密钥。Renderer 不得接收绝对路径或密钥。
+
+- [x] **步骤 1： 编写状态机与状态存储测试**
 
 断言事件到视图状态的转换、成功/错误一次性动画回到 idle、取消行为，以及终止事件会清除待确认动作。
 
-- [ ] **步骤 2： 实现角色状态机**
+- [x] **步骤 2： 实现角色状态机**
 
-该包接受 `TaskPhase` 并返回 `idle | listening | thinking | acting | success | error`。`awaiting_confirmation` 映射为聆听/注意而不是执行，并暴露选择静态资源的减少动态效果标记。
+该包接受 `TaskPhase` 并返回 `idle | listening | thinking | acting | success | error`。`awaiting_confirmation` 映射为聆听/注意而不是执行，并暴露选择静态资源的减少动态效果标记；`success`/`error` 的一次性状态时长固定为 1500 毫秒。
 
 ```ts
 export function characterStateFor(phase: TaskPhase): CharacterState {
@@ -865,7 +892,7 @@ export function characterStateFor(phase: TaskPhase): CharacterState {
 }
 ```
 
-- [ ] **步骤 3： 实现 Zustand 任务视图状态库**
+- [x] **步骤 3： 实现 Zustand 任务视图状态库**
 
 只订阅一次 `onTaskEvent`，追加数量受限的消息，跟踪活动阶段和待确认动作，并在卸载时取消订阅。不得存储密钥或绝对路径。
 
@@ -876,15 +903,15 @@ export const useTaskStore = create<TaskViewState>(set => ({
 }));
 ```
 
-- [ ] **步骤 4： 构建三个界面层**
+- [x] **步骤 4： 构建三个界面层**
 
-`PetView` 渲染当前角色资源和拖动提示；`ChatPanel` 渲染消息、输入、停止、状态与 `ConfirmationCard`；`SettingsView` 实现 Provider 保存/测试、根目录选择、隐私说明和清除数据控件。所有按钮必须使用明确动作标签，确认卡片显示动作及相对来源/目标。
+`PetView` 使用奶油与琥珀色的温暖陪伴型角色表现并渲染当前状态；`ChatPanel` 作为角色旁独立气泡，渲染消息、输入、停止、状态与 `ConfirmationCard`；`SettingsView` 实现 Provider 保存/测试、根目录选择、隐私说明和清除数据控件。普通对话优先于工具信息；所有按钮必须使用明确动作标签，确认卡片只显示自然语言动作及相对来源/目标。
 
-- [ ] **步骤 5： 增加组件测试与人工视觉检查**
+- [x] **步骤 5： 增加组件测试与人工视觉检查**
 
 运行： `pnpm --filter @myself/desktop test`
 
-预期： component/state tests PASS. Manually verify idle/thinking/acting/success/error, reduced motion, chat panel edge flipping, keyboard focus, and error next-action links.
+预期：组件与状态测试全部通过。人工检查 idle/thinking/acting/success/error、减少动态效果、聊天面板贴边换侧、键盘焦点和错误下一步提示。
 
 - [ ] **用户验收交接点**
 

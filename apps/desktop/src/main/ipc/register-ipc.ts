@@ -77,6 +77,7 @@ export interface SettingsIpcStore {
     baseUrl: string;
     model: string;
   }): Promise<void>;
+  clearAll(): Promise<void>;
 }
 
 export interface SettingsIpcSecrets {
@@ -86,15 +87,32 @@ export interface SettingsIpcSecrets {
 
 export interface SettingsIpcLifecycle {
   onProviderChanged(): void;
+  onAuthorizedRootChanged?(): void;
+}
+
+export interface SettingsIpcActions {
+  testProvider(): Promise<{ ok: boolean; message: string }>;
+  chooseAuthorizedRoot(): Promise<void>;
 }
 
 export function registerSettingsIpc(
   ipcMain: IpcMain,
   settings: SettingsIpcStore,
   secrets: SettingsIpcSecrets,
-  lifecycle?: SettingsIpcLifecycle
+  lifecycle?: SettingsIpcLifecycle,
+  actions?: SettingsIpcActions
 ): void {
   replaceHandler(ipcMain, ipcChannels.settingsGet, () => settings.getPublic());
+  replaceHandler(ipcMain, ipcChannels.settingsTestProvider, async () => {
+    if (!actions) throw new Error('SETTINGS_ACTION_UNAVAILABLE');
+    return actions.testProvider();
+  });
+  replaceHandler(ipcMain, ipcChannels.settingsChooseRoot, async () => {
+    if (!actions) throw new Error('SETTINGS_ACTION_UNAVAILABLE');
+    await actions.chooseAuthorizedRoot();
+    lifecycle?.onAuthorizedRootChanged?.();
+    return settings.getPublic();
+  });
   replaceHandler(ipcMain, ipcChannels.settingsSaveProvider, async (_event, raw) => {
     const input = saveProviderSchema.parse(raw);
     await secrets.save(input.secret, input.persistSecret);
@@ -109,6 +127,10 @@ export function registerSettingsIpc(
   });
   replaceHandler(ipcMain, ipcChannels.settingsClearLocalData, async (_event, raw) => {
     const { scope } = clearLocalDataSchema.parse(raw);
+    if (scope === 'all') {
+      await settings.clearAll();
+      lifecycle?.onAuthorizedRootChanged?.();
+    }
     if (scope === 'secret' || scope === 'all') {
       await secrets.clear();
       lifecycle?.onProviderChanged();

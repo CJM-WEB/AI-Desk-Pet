@@ -93,4 +93,31 @@ describe('SettingsStore', () => {
     const files = await readdir(directory);
     expect(files.some(name => name.startsWith('settings.json.corrupt-'))).toBe(true);
   });
+
+  test('清除全部设置会移除 Provider、授权目录和窗口状态', async () => {
+    const { store } = await createStore(true);
+    await store.saveProviderMetadata({
+      id: 'default',
+      displayName: '示例服务',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'example-model'
+    });
+    await store.saveAuthorizedRoot({
+      id: 'root-1',
+      displayName: '工作目录',
+      pathHint: 'D:\\…\\project',
+      absolutePath: 'D:\\private\\project'
+    });
+
+    await store.clearAll();
+
+    await expect(store.getPublic()).resolves.toEqual({
+      version: 1,
+      provider: null,
+      authorizedRoot: null,
+      petPosition: null,
+      fileDisclosureAccepted: false
+    });
+    await expect(store.getAuthorizedRootPath()).resolves.toBeNull();
+  });
 });
