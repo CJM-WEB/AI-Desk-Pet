@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   characterStateFor,
   motionModeFor,
@@ -35,6 +35,20 @@ export function PetCharacter({ state, motionMode }: PetCharacterProps) {
   );
 }
 
+/** 桌宠按钮始终调用 preload 暴露的正式打开聊天命令。 */
+export function PetOpenChatButton({ children }: { children: ReactNode }) {
+  return (
+    <button
+      className="pet-open-chat no-drag"
+      type="button"
+      aria-label="打开与 Myself 的聊天"
+      onClick={() => void window.myself.openChat()}
+    >
+      {children}
+    </button>
+  );
+}
+
 function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
   useEffect(() => {
@@ -55,14 +69,9 @@ export function PetView() {
   return (
     <main className="pet-shell" aria-label="Myself 桌宠">
       <div className="pet-drag-hint" aria-hidden="true">拖动我</div>
-      <button
-        className="pet-open-chat no-drag"
-        type="button"
-        aria-label="打开与 Myself 的聊天"
-        onClick={() => void window.myself.openChat()}
-      >
+      <PetOpenChatButton>
         <PetCharacter state={characterState} motionMode={motionModeFor(reducedMotion)} />
-      </button>
+      </PetOpenChatButton>
     </main>
   );
 }

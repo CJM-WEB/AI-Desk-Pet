@@ -8,7 +8,6 @@ import {
 function publicData(targetRelativePath = 'result.txt') {
   return {
     conversationId: 'conversation-1',
-    requestId: 'request-1',
     risk: 'write' as const,
     summary: `创建 ${targetRelativePath}`,
     targetRelativePath

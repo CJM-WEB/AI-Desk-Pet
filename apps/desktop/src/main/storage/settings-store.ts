@@ -17,16 +17,22 @@ const authorizedRootSchema = z.object({
   absolutePath: z.string().min(1)
 });
 
+const petPositionSchema = z.object({
+  x: z.number(),
+  y: z.number()
+});
+
 const storedSettingsSchema = z.object({
   version: z.literal(1),
   provider: providerMetadataSchema.nullable(),
   authorizedRoot: authorizedRootSchema.nullable(),
-  petPosition: z.object({ x: z.number(), y: z.number() }).nullable(),
+  petPosition: petPositionSchema.nullable(),
   fileDisclosureAccepted: z.boolean()
 }).strict();
 
 type ProviderMetadataInput = z.input<typeof providerMetadataSchema> & Record<string, unknown>;
 type AuthorizedRootInput = z.input<typeof authorizedRootSchema>;
+type PetPositionInput = z.input<typeof petPositionSchema>;
 type StoredSettings = z.infer<typeof storedSettingsSchema>;
 
 function defaultSettings(): StoredSettings {
@@ -57,10 +63,18 @@ async function atomicWrite(file: string, value: StoredSettings): Promise<void> {
 }
 
 export class SettingsStore {
+  private writeQueue = Promise.resolve();
+
   constructor(
     private readonly file: string,
     private readonly hasStoredSecret: () => Promise<boolean>
   ) {}
+
+  private enqueueWrite(operation: () => Promise<void>): Promise<void> {
+    const transaction = this.writeQueue.then(operation);
+    this.writeQueue = transaction.catch(() => {});
+    return transaction;
+  }
 
   private async load(): Promise<StoredSettings> {
     try {
@@ -76,6 +90,7 @@ export class SettingsStore {
   }
 
   async getPublic(): Promise<PublicSettings> {
+    await this.writeQueue;
     const settings = await this.load();
     return {
       version: 1,
@@ -93,23 +108,36 @@ export class SettingsStore {
     };
   }
 
-  async saveProviderMetadata(input: ProviderMetadataInput): Promise<void> {
-    const settings = await this.load();
-    settings.provider = providerMetadataSchema.parse(input);
-    await atomicWrite(this.file, settings);
+  saveProviderMetadata(input: ProviderMetadataInput): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const settings = await this.load();
+      settings.provider = providerMetadataSchema.parse(input);
+      await atomicWrite(this.file, settings);
+    });
   }
 
-  async saveAuthorizedRoot(input: AuthorizedRootInput): Promise<void> {
-    const settings = await this.load();
-    settings.authorizedRoot = authorizedRootSchema.parse(input);
-    await atomicWrite(this.file, settings);
+  saveAuthorizedRoot(input: AuthorizedRootInput): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const settings = await this.load();
+      settings.authorizedRoot = authorizedRootSchema.parse(input);
+      await atomicWrite(this.file, settings);
+    });
+  }
+
+  savePetPosition(input: PetPositionInput): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const settings = await this.load();
+      settings.petPosition = petPositionSchema.parse(input);
+      await atomicWrite(this.file, settings);
+    });
   }
 
   async getAuthorizedRootPath(): Promise<string | null> {
+    await this.writeQueue;
     return (await this.load()).authorizedRoot?.absolutePath ?? null;
   }
 
-  async clearAll(): Promise<void> {
-    await atomicWrite(this.file, defaultSettings());
+  clearAll(): Promise<void> {
+    return this.enqueueWrite(() => atomicWrite(this.file, defaultSettings()));
   }
 }

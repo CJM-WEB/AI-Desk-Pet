@@ -18,6 +18,19 @@ function canStop(phase: TaskPhase): boolean {
   return phase === 'listening' || phase === 'thinking' || phase === 'acting';
 }
 
+/** 聊天关闭按钮始终调用 preload 暴露的正式窗口命令。 */
+export function ChatCloseButton() {
+  return (
+    <button
+      type="button"
+      aria-label="关闭聊天气泡"
+      onClick={() => void window.myself.hideChat()}
+    >
+      关闭
+    </button>
+  );
+}
+
 export function ChatPanel() {
   const phase = useTaskStore(state => state.phase);
   const messages = useTaskStore(state => state.messages);
@@ -75,7 +88,7 @@ export function ChatPanel() {
         <div className="header-actions">
           <span className={`phase-pill phase-${phase}`}>{phaseLabels[phase]}</span>
           <button type="button" onClick={() => void window.myself.openSettings()}>设置</button>
-          <button type="button" aria-label="关闭聊天气泡" onClick={() => void window.myself.hideChat()}>关闭</button>
+          <ChatCloseButton />
         </div>
       </header>
 

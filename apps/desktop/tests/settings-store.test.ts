@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -80,6 +80,127 @@ describe('SettingsStore', () => {
       }
     }));
     await expect(store.getAuthorizedRootPath()).resolves.toBe('D:\\private\\project');
+  });
+
+  test('保存桌宠位置时保留其他设置', async () => {
+    const { store } = await createStore(true);
+    await store.saveProviderMetadata({
+      id: 'default',
+      displayName: '示例服务',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'example-model'
+    });
+
+    await store.savePetPosition({ x: 320, y: 240 });
+
+    await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
+      provider: expect.objectContaining({ id: 'default' }),
+      petPosition: { x: 320, y: 240 }
+    }));
+  });
+
+  test('并发保存提供商与桌宠位置时不会丢失任一字段', async () => {
+    const { store } = await createStore(true);
+    await store.clearAll();
+
+    await Promise.all([
+      store.saveProviderMetadata({
+        id: 'default',
+        displayName: '示例服务',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'example-model'
+      }),
+      store.savePetPosition({ x: 640, y: 480 })
+    ]);
+
+    await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
+      provider: expect.objectContaining({ id: 'default' }),
+      petPosition: { x: 640, y: 480 }
+    }));
+  });
+
+  test('并发保存授权目录与桌宠位置时不会丢失任一字段', async () => {
+    const { store } = await createStore();
+    await store.clearAll();
+
+    await Promise.all([
+      store.saveAuthorizedRoot({
+        id: 'root-1',
+        displayName: '工作目录',
+        pathHint: 'D:\\…\\project',
+        absolutePath: 'D:\\private\\project'
+      }),
+      store.savePetPosition({ x: 720, y: 540 })
+    ]);
+
+    await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
+      authorizedRoot: expect.objectContaining({ id: 'root-1' }),
+      petPosition: { x: 720, y: 540 }
+    }));
+  });
+
+  test('保存后紧接清除不会复活已清除的数据', async () => {
+    const { store } = await createStore(true);
+
+    const save = store.saveProviderMetadata({
+      id: 'default',
+      displayName: '示例服务',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'example-model'
+    });
+    const clear = store.clearAll();
+    await Promise.all([save, clear]);
+
+    await expect(store.getPublic()).resolves.toEqual({
+      version: 1,
+      provider: null,
+      authorizedRoot: null,
+      petPosition: null,
+      fileDisclosureAccepted: false
+    });
+  });
+
+  test('一次写入失败后后续事务仍可执行', async () => {
+    const { file, store } = await createStore(true);
+    const temporaryFile = `${file}.tmp`;
+    await mkdir(temporaryFile, { recursive: true });
+
+    await expect(store.savePetPosition({ x: 10, y: 20 })).rejects.toBeDefined();
+    await rm(temporaryFile, { recursive: true, force: true });
+
+    await expect(store.saveProviderMetadata({
+      id: 'default',
+      displayName: '示例服务',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'example-model'
+    })).resolves.toBeUndefined();
+    await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
+      provider: expect.objectContaining({ id: 'default' }),
+      petPosition: null
+    }));
+  });
+
+  test('公开读取会等待此前写事务稳定', async () => {
+    const { store } = await createStore();
+    const save = store.saveAuthorizedRoot({
+      id: 'root-1',
+      displayName: '工作目录',
+      pathHint: 'D:\\…\\project',
+      absolutePath: 'D:\\private\\project'
+    });
+
+    const [publicSettings, authorizedRootPath] = await Promise.all([
+      store.getPublic(),
+      store.getAuthorizedRootPath()
+    ]);
+    await save;
+
+    expect(publicSettings.authorizedRoot).toEqual({
+      id: 'root-1',
+      displayName: '工作目录',
+      pathHint: 'D:\\…\\project'
+    });
+    expect(authorizedRootPath).toBe('D:\\private\\project');
   });
 
   test('损坏设置被隔离并回退到安全默认值', async () => {

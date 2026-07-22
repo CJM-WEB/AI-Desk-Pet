@@ -121,11 +121,11 @@ describe('AgentService', () => {
       type: 'pending_action',
       action: expect.objectContaining({
         conversationId: 'conversation-1',
-        requestId: 'write-1',
         risk: 'write',
         targetRelativePath: 'result.txt'
       })
     });
+    expect(events.at(-1)).not.toHaveProperty('action.requestId');
     expect(JSON.stringify(events)).not.toContain('continuationToken');
     expect(JSON.stringify(events)).not.toContain('verified-1');
   });

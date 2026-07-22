@@ -5,6 +5,30 @@ import { ConfirmationCard } from '../src/renderer/src/chat/ConfirmationCard';
 import { SettingsForm } from '../src/renderer/src/settings/SettingsView';
 import { mountTaskEventsIfAvailable } from '../src/renderer/src/App';
 
+type ClickableElement = {
+  props: {
+    onClick(): void;
+  };
+};
+
+async function loadRendererCommandButtons(): Promise<{
+  ChatCloseButton?: () => ClickableElement;
+  PetOpenChatButton?: (props: { children?: unknown }) => ClickableElement;
+}> {
+  const [chat, pet] = await Promise.all([
+    import('../src/renderer/src/chat/ChatPanel'),
+    import('../src/renderer/src/pet/PetView')
+  ]);
+  return {
+    ChatCloseButton: 'ChatCloseButton' in chat
+      ? chat.ChatCloseButton as () => ClickableElement
+      : undefined,
+    PetOpenChatButton: 'PetOpenChatButton' in pet
+      ? pet.PetOpenChatButton as (props: { children?: unknown }) => ClickableElement
+      : undefined
+  };
+}
+
 describe('Renderer 可见组件', () => {
   test('普通浏览器预览缺少预加载 API 时不会白屏', () => {
     expect(mountTaskEventsIfAvailable(undefined)).toBeUndefined();
@@ -21,13 +45,42 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('Myself');
   });
 
+  test('聊天关闭按钮调用正式 window.myself.hideChat', async () => {
+    const buttons = await loadRendererCommandButtons();
+    expect(typeof buttons.ChatCloseButton).toBe('function');
+    if (!buttons.ChatCloseButton) return;
+
+    const hideChat = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('window', { myself: { hideChat } });
+    try {
+      buttons.ChatCloseButton().props.onClick();
+      expect(hideChat).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('桌宠打开按钮调用正式 window.myself.openChat', async () => {
+    const buttons = await loadRendererCommandButtons();
+    expect(typeof buttons.PetOpenChatButton).toBe('function');
+    if (!buttons.PetOpenChatButton) return;
+
+    const openChat = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('window', { myself: { openChat } });
+    try {
+      buttons.PetOpenChatButton({ children: null }).props.onClick();
+      expect(openChat).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   test('重命名确认卡片只展示自然语言和相对路径', () => {
     const markup = renderToStaticMarkup(
       <ConfirmationCard
         action={{
           actionId: 'action-1',
           conversationId: 'conversation-1',
-          requestId: 'request-1',
           risk: 'write',
           summary: '将 notes.md 重命名为 ideas.md',
           sourceRelativePath: 'notes.md',

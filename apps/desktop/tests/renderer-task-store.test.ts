@@ -26,7 +26,6 @@ describe('Renderer 任务视图状态', () => {
     const action = {
       actionId: 'action-1',
       conversationId: 'conversation-1',
-      requestId: 'request-1',
       risk: 'write' as const,
       summary: '创建文件 notes.md',
       targetRelativePath: 'notes.md',

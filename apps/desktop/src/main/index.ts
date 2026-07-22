@@ -11,11 +11,11 @@ import {
   nativeImage,
   safeStorage,
   screen,
-  Tray,
-  type Rectangle
+  Tray
 } from 'electron';
 import { AgentService } from './agent/agent-service';
 import { PendingActionStore } from './agent/pending-action-store';
+import { resolveMainE2eBoundary } from './e2e-boundary';
 import { registerAgentIpc, registerSettingsIpc, registerWindowIpc } from './ipc/register-ipc';
 import { OpenAICompatibleProvider } from './providers/openai-provider';
 import { ipcChannels } from '../shared/ipc-channels';
@@ -23,15 +23,26 @@ import { SecretStore } from './storage/secret-store';
 import { SettingsStore } from './storage/settings-store';
 import { createSettingsActions } from './settings/settings-actions';
 import {
+  createPetPositionController,
+  createQuitAfterPositionFlush,
+  restorePetPosition
+} from './windows/pet-position';
+import {
   createChatWindow,
   createPetWindow,
-  createSettingsWindow,
-  defaultPetPosition
+  createSettingsWindow
 } from './windows/window-manager';
+import { createWindowCommandController } from './windows/window-commands';
 
 let tray: Tray | null = null;
 let isQuitting = false;
 let activeAgentService: AgentService | null = null;
+
+const e2eBoundary = resolveMainE2eBoundary({
+  appIsPackaged: app.isPackaged,
+  env: process.env
+});
+if (e2eBoundary) app.setPath('userData', e2eBoundary.userDataDirectory);
 
 const fileToolDefinitions: ToolDefinition[] = [
   {
@@ -144,9 +155,48 @@ async function createApplicationWindows(): Promise<void> {
   let chat = createChatWindow(BrowserWindow, preload);
   let settings = createSettingsWindow(BrowserWindow, preload);
 
-  const primaryWorkArea: Rectangle = screen.getPrimaryDisplay().workArea;
-  const petPosition = defaultPetPosition(primaryWorkArea);
+  const storageDirectory = app.getPath('userData');
+  const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
+    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+    encryptString: value => safeStorage.encryptStringAsync(value),
+    decryptString: async value => (await safeStorage.decryptStringAsync(value)).result
+  });
+  const settingsStore = new SettingsStore(
+    join(storageDirectory, 'settings.json'),
+    () => secrets.hasStoredSecret()
+  );
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const workAreas = [
+    primaryDisplay.workArea,
+    ...screen.getAllDisplays()
+      .filter(display => display.id !== primaryDisplay.id)
+      .map(display => display.workArea)
+  ];
+  const petBounds = pet.getBounds();
+  const petPosition = restorePetPosition(
+    (await settingsStore.getPublic()).petPosition,
+    { width: petBounds.width, height: petBounds.height },
+    workAreas
+  );
   pet.setPosition(petPosition.x, petPosition.y);
+  const reportPetPositionError = (error: unknown): void => {
+    console.error('保存桌宠位置失败。', error);
+  };
+  const petPositionController = createPetPositionController({
+    window: pet,
+    savePosition: position => settingsStore.savePetPosition(position),
+    onError: reportPetPositionError
+  });
+  const handleBeforeQuit = createQuitAfterPositionFlush({
+    flush: () => petPositionController.flush(),
+    quit: () => app.quit(),
+    onError: reportPetPositionError
+  });
+  app.on('before-quit', event => void handleBeforeQuit(event));
+  const quitApplication = async (): Promise<void> => {
+    await petPositionController.flush();
+    app.quit();
+  };
 
   const hideOnClose = (window: BrowserWindow): void => {
     window.on('close', event => {
@@ -173,12 +223,11 @@ async function createApplicationWindows(): Promise<void> {
     return settings;
   };
 
-  const showChat = async (): Promise<void> => {
-    const chatWindow = await ensureChatWindow();
-    positionChatNearPet(pet, chatWindow);
-    chatWindow.show();
-    chatWindow.focus();
-  };
+  const windowCommands = createWindowCommandController({
+    getChatWindow: () => chat,
+    ensureChatWindow,
+    positionChat: chatWindow => positionChatNearPet(pet, chatWindow)
+  });
   const showSettings = async (): Promise<void> => {
     const settingsWindow = await ensureSettingsWindow();
     settingsWindow.show();
@@ -186,41 +235,29 @@ async function createApplicationWindows(): Promise<void> {
   };
 
   const contextMenu = Menu.buildFromTemplate([
-    { label: '打开聊天', click: () => void showChat() },
+    { label: '打开聊天', click: () => void windowCommands.showChat() },
     { label: '设置', click: () => void showSettings() },
     {
       label: '显示/隐藏桌宠',
       click: () => pet.isVisible() ? pet.hide() : pet.show()
     },
     { type: 'separator' },
-    { label: '退出', click: () => app.quit() }
+    { label: '退出', click: () => void quitApplication() }
   ]);
 
   tray = new Tray(createTrayImage());
   tray.setToolTip('Myself AI 桌宠');
   tray.setContextMenu(contextMenu);
-  tray.on('double-click', () => void showChat());
+  tray.on('double-click', () => void windowCommands.showChat());
   pet.webContents.on('context-menu', () => tray?.popUpContextMenu(contextMenu));
 
   registerWindowIpc(ipcMain, app.getVersion(), {
-    openChat: showChat,
+    openChat: windowCommands.showChat,
     openSettings: showSettings,
-    hideChat: () => {
-      if (!chat.isDestroyed()) chat.hide();
-    },
-    quit: () => app.quit()
+    hideChat: windowCommands.hideChat,
+    quit: () => void quitApplication()
   });
 
-  const storageDirectory = app.getPath('userData');
-  const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
-    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-    encryptString: value => safeStorage.encryptStringAsync(value),
-    decryptString: async value => (await safeStorage.decryptStringAsync(value)).result
-  });
-  const settingsStore = new SettingsStore(
-    join(storageDirectory, 'settings.json'),
-    () => secrets.hasStoredSecret()
-  );
   const loop = new AgentLoop();
   const pendingActions = new PendingActionStore({
     onDiscard: execution => loop.discard(execution.continuationToken)
@@ -265,10 +302,13 @@ async function createApplicationWindows(): Promise<void> {
     createProvider: (profile, readSecret) => new OpenAICompatibleProvider(profile, readSecret),
     selectDirectory: async () => {
       const owner = await ensureSettingsWindow();
-      const result = await dialog.showOpenDialog(owner, {
-        title: '选择 Myself 可以访问的工作目录',
-        properties: ['openDirectory']
-      });
+      // E2E 仅替代 Main 内部目录选择的成功结果，Renderer 仍走正式白名单 API。
+      const result = e2eBoundary
+        ? { canceled: false, filePaths: [e2eBoundary.authorizedRootDirectory] }
+        : await dialog.showOpenDialog(owner, {
+          title: '选择 Myself 可以访问的工作目录',
+          properties: ['openDirectory']
+        });
       return result.canceled ? null : (result.filePaths[0] ?? null);
     }
   });

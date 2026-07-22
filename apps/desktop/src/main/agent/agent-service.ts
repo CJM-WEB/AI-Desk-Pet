@@ -268,7 +268,6 @@ export class AgentService {
         const verifiedAction = await session.fileTools.preview(event.request);
         const publicAction = this.pending.issue({
           conversationId: this.createConversationId(),
-          requestId: event.request.requestId,
           risk: 'write',
           summary: actionSummary(verifiedAction),
           ...(verifiedAction.toolName === 'rename_entry'

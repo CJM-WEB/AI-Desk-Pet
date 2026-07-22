@@ -921,44 +921,63 @@ export const useTaskStore = create<TaskViewState>(set => ({
 
 **文件：**
 - 新建： `tests/vitest.config.ts`
+- 新建： `tests/playwright.config.ts`
 - 新建： `tests/integration/desktop-agent.test.ts`
 - 新建： `tests/security/permission-boundary.test.ts`
 - 新建： `tests/e2e/desktop.spec.ts`
 - 新建： `tests/fixtures/provider-server.ts`
 - 新建： `tests/fixtures/authorized-root.ts`
-- 修改： root `package.json` scripts
+- 新建： `docs/operations/desktop-core-acceptance.md`
+- 新建： `apps/desktop/src/main/windows/pet-position.ts`
+- 新建： `apps/desktop/tests/pet-position.test.ts`
+- 修改： `apps/desktop/src/main/index.ts`
+- 修改： `apps/desktop/src/main/storage/settings-store.ts`
+- 修改： `apps/desktop/tests/settings-store.test.ts`
+- 修改： `package.json`
+- 修改： `vitest.config.ts`
+- 修改： `pnpm-lock.yaml`
 
 **接口：**
 - 输入： the complete desktop service composition.
 - 输出： repeatable proof for the Phase 1 desktop acceptance requirements.
 
-- [ ] **步骤 1： 编写服务集成流程测试**
+**已确认测试架构：**
+- 延续根 `vitest.config.ts` 的多项目配置；`tests/vitest.config.ts` 只承载集成与安全项目，不创建或引用已经废弃的 `vitest.workspace.ts`。
+- Playwright 不再使用 `_electron.launch()`。该启动器会强制注入 Main 调试参数，并在当前 Windows/Electron 43 环境触发 GPU 子进程加载 `version.dll` 失败及系统异常弹窗。测试改为由 Node `child_process.spawn()` 直接启动项目 Electron，再由 Playwright `chromium.connectOverCDP()` 连接 Renderer；只开放随机回环地址调试端口，不启用 Main Inspector。
+- 每次 E2E 使用独立临时用户数据目录和临时授权目录。仅在未打包应用、`MYSELF_E2E=1` 且两个目录都是系统临时目录下的绝对路径时，Main 才允许设置测试用户数据目录并替代 `dialog.showOpenDialog` 的返回值；该边界不新增 Renderer IPC、preload API 或任意路径生产后门。
+- 补齐桌宠位置保存、可见工作区夹取与重启恢复，因为该行为已经列入本任务端到端验收范围。CDP 通过 Renderer 标准 `window.moveTo()` 触发真实 `BrowserWindow` move 事件，再验证持久化与同一 userData 重启恢复；真实鼠标在 app-region 上的拖动保留 Windows 人工验收。
+- 聊天气泡关闭/重开的正式命令路径由 CDP 自动化覆盖：真实点击关闭按钮后确认同一 Renderer Page 与业务状态未丢失，再由桌宠触发重开并继续操作正式输入框。原生 `BrowserWindow.hide()`、`show()` 与 `focus()` 状态由既有 Main 层窗口命令测试和 Windows 人工验收覆盖。真实 Windows 系统托盘点击、显示、退出及鼠标拖动桌宠保留为人工演示项，并在验收记录中明确结果。
+- 本任务只完成桌面端与 Agent 核心门禁；官网与 NSIS 安装包仍分别执行独立计划，不在这里提前宣称整个第一阶段 MVP 完成。
+
+- [x] **步骤 1： 编写服务集成流程测试**
 
 使用临时授权根目录和脚本化 Provider，在一个确定性套件中执行列出、读取、新建预览/取消、新建确认、重命名确认、越界拒绝、重复目标拒绝和重启清除待确认动作。
 
-- [ ] **步骤 2： 编写聚焦的滥用安全用例**
+- [x] **步骤 2： 编写聚焦的滥用安全用例**
 
 覆盖路径穿越、盘符/UNC 输入、前缀碰撞、预览后替换 Junction、动作 ID 重放、Renderer 路径篡改、文件内容提示注入以及密钥/日志扫描。
 
-- [ ] **步骤 3： 编写 Playwright Electron 端到端测试**
+- [x] **步骤 3： 编写 Playwright CDP Electron 端到端测试**
 
-使用本地 Provider 测试夹具启动已打包的开发应用，完成首次配置、通过可注入测试边界选择根目录、列出、新建确认、重命名确认、取消、托盘隐藏/显示和重启位置恢复。
+使用本地 Provider 测试夹具直接启动构建后的开发应用，通过随机回环 CDP 端口连接 Renderer，完成首次配置、通过受限 Main 测试边界选择根目录、列出、新建确认、重命名确认、取消、聊天关闭/重开命令路径和重启位置恢复。聊天命令路径验证同一 Renderer Page 与业务状态未丢失，并在重开后继续操作正式输入框；位置恢复通过标准 `window.moveTo()` 触发 move 事件、等待持久化并使用同一 userData 重启验证。不把 DOM 可见性、焦点或 Win32 窗口枚举伪装成原生窗口状态证明，也不把 CDP mouse 伪装成 app-region 原生拖动证明。
 
-- [ ] **步骤 4： 增加根级验证脚本**
+这里的“受限 Main 测试边界”必须同时满足未打包应用、`MYSELF_E2E=1`、绝对路径以及路径位于系统临时目录之下，Renderer 仍只能调用正式的 `settings.chooseAuthorizedRoot()` 白名单 API。测试不得启用 Main Inspector；原生聊天窗口的 `hide/show/focus` 状态由既有 Main 层窗口命令测试与 Windows 人工验收验证，CDP 只验证 Renderer→preload→IPC 命令可调用以及关闭/重开期间页面和业务状态不丢失。托盘操作与真实鼠标 app-region 拖动仍由 Windows 人工演示验证。
+
+- [x] **步骤 4： 增加根级验证脚本**
 
 ```json
 {
   "scripts": {
-    "test:unit": "vitest run --workspace vitest.workspace.ts",
-    "test:security": "vitest run tests/security",
-    "test:integration": "vitest run tests/integration",
-    "test:e2e:desktop": "playwright test tests/e2e/desktop.spec.ts",
+    "test:unit": "vitest run --project shared-types --project file-tools --project agent-core --project character-runtime --project desktop",
+    "test:security": "vitest run --config tests/vitest.config.ts tests/security",
+    "test:integration": "vitest run --config tests/vitest.config.ts tests/integration",
+    "test:e2e:desktop": "pnpm --filter @myself/desktop build && playwright test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts",
     "verify:desktop": "pnpm typecheck && pnpm test:unit && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop"
   }
 }
 ```
 
-- [ ] **步骤 5： 运行完整桌面端门禁**
+- [x] **步骤 5： 运行完整桌面端门禁**
 
 运行： `pnpm verify:desktop`
 
@@ -966,7 +985,7 @@ export const useTaskStore = create<TaskViewState>(set => ({
 
 - [ ] **步骤 6： 执行已批准的人工演示脚本**
 
-在 Windows 上遵循 MVP 规格第 2 节和第 21 节，记录每个检查项、环境、应用版本和失败证据。任何功能门禁失败时都不得标记桌面端核心完成。
+在 Windows 上遵循 MVP 规格第 2 节中与桌面端核心相关的演示流程，并对第 21 节逐项记录“通过”“失败”或“由官网/Windows 打包计划验证”。记录环境、应用版本和失败证据；任何桌面端核心功能门禁失败时都不得标记桌面端核心完成。
 
 - [ ] **用户验收交接点**
 

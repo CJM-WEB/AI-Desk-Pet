@@ -1,0 +1,164 @@
+import { randomBytes } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { ModelMessage, ModelRequest, ModelResponse } from '@myself/agent-core';
+
+export interface ProviderStep {
+  response: ModelResponse;
+  inspect?: (request: ModelRequest) => void;
+}
+
+export type ProviderScript = ProviderStep[] | ((apiKey: string) => ProviderStep[]);
+
+export interface ProviderRequestLog {
+  method: string;
+  pathname: string;
+  authorizationPresent: boolean;
+  toolNames: string[];
+  messageRoles: string[];
+}
+
+export interface ProviderServerFixture {
+  baseUrl: string;
+  apiKey: string;
+  requests: ProviderRequestLog[];
+  inspectionErrors: string[];
+  remainingSteps(): number;
+  assertComplete(): void;
+  close(): Promise<void>;
+}
+
+export async function startProviderServer(
+  steps: ProviderScript
+): Promise<ProviderServerFixture> {
+  const requests: ProviderRequestLog[] = [];
+  const inspectionErrors: string[] = [];
+  const apiKey = `myself-e2e-${randomBytes(24).toString('hex')}`;
+  const script = [...(typeof steps === 'function' ? steps(apiKey) : steps)];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+
+    let parsed: ModelRequest;
+    try {
+      parsed = normalizeRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    } catch {
+      response.writeHead(400, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: '请求格式无效' } }));
+      return;
+    }
+
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    requests.push({
+      method: request.method ?? '',
+      pathname: url.pathname,
+      authorizationPresent: request.headers.authorization === `Bearer ${apiKey}`,
+      toolNames: parsed.tools.map(tool => tool.function.name),
+      messageRoles: parsed.messages.map(message => message.role)
+    });
+
+    const step = script.shift();
+    if (!step) {
+      response.writeHead(500, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: '测试脚本没有更多响应' } }));
+      return;
+    }
+    if (step.inspect) {
+      try {
+        step.inspect(parsed);
+      } catch {
+        inspectionErrors.push('脚本化 Provider 请求检查失败');
+      }
+    }
+
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(compatibleResponse(step.response)));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    apiKey,
+    requests,
+    inspectionErrors,
+    remainingSteps: () => script.length,
+    assertComplete() {
+      if (script.length > 0) {
+        throw new Error(`脚本化 Provider 仍有 ${script.length} 个响应未消费`);
+      }
+    },
+    async close() {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+    }
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function normalizeRequest(value: unknown): ModelRequest {
+  if (!isRecord(value) || !Array.isArray(value.messages) || !Array.isArray(value.tools)) {
+    throw new Error('请求格式无效');
+  }
+  const messages = value.messages.map((message): ModelMessage => {
+    if (!isRecord(message) || typeof message.role !== 'string') {
+      throw new Error('消息格式无效');
+    }
+    const role = message.role;
+    if (role === 'tool') {
+      if (typeof message.tool_call_id !== 'string' || typeof message.content !== 'string') {
+        throw new Error('工具消息格式无效');
+      }
+      return {
+        role: 'tool' as const,
+        toolCallId: message.tool_call_id,
+        content: message.content
+      };
+    }
+    if (role !== 'system' && role !== 'user' && role !== 'assistant') {
+      throw new Error('消息角色无效');
+    }
+    return {
+      role,
+      content: typeof message.content === 'string' ? message.content : ''
+    };
+  });
+  return { messages, tools: value.tools as ModelRequest['tools'] };
+}
+
+function compatibleResponse(response: ModelResponse): unknown {
+  if (response.type === 'text') {
+    return { choices: [{ message: { content: response.text } }] };
+  }
+  const request = response.request;
+  if (!isRecord(request)
+    || typeof request.requestId !== 'string'
+    || typeof request.toolName !== 'string'
+    || !isRecord(request.arguments)) {
+    throw new Error('脚本化工具请求无效');
+  }
+  return {
+    choices: [{
+      message: {
+        content: null,
+        tool_calls: [{
+          id: request.requestId,
+          type: 'function',
+          function: {
+            name: request.toolName,
+            arguments: JSON.stringify(request.arguments)
+          }
+        }]
+      }
+    }]
+  };
+}
