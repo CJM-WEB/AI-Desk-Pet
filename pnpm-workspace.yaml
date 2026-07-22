@@ -2,7 +2,12 @@ packages:
   - apps/*
   - packages/*
 
-onlyBuiltDependencies:
-  - esbuild
 allowBuilds:
-  esbuild: set this to true or false
+  electron: true
+  esbuild: true
+
+# 非交互环境重建依赖时不再询问确认。
+confirmModulesPurge: false
+
+# 依赖不同步时直接报错，禁止运行脚本时暗中触发安装。
+verifyDepsBeforeRun: error

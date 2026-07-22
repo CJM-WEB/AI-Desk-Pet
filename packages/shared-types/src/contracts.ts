@@ -31,7 +31,6 @@ export type ToolRequest = z.infer<typeof toolRequestSchema>;
 export const pendingActionSchema = z.object({
   actionId: z.string().min(1),
   conversationId: z.string().min(1),
-  requestId: z.string().min(1),
   risk: z.literal('write'),
   summary: z.string().min(1),
   sourceRelativePath: z.string().min(1).optional(),

@@ -23,7 +23,6 @@ describe('pendingActionSchema', () => {
     const result = pendingActionSchema.parse({
       actionId: 'act-1',
       conversationId: 'conv-1',
-      requestId: 'req-1',
       risk: 'write',
       summary: '新建 notes.md',
       targetRelativePath: 'notes.md',
@@ -32,5 +31,6 @@ describe('pendingActionSchema', () => {
     });
 
     expect(result.risk).toBe('write');
+    expect(result).not.toHaveProperty('requestId');
   });
 });

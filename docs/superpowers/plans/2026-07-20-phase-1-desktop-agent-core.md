@@ -256,7 +256,7 @@ export * from './contracts';
 - 输入： an absolute root selected by Main and model-supplied relative paths.
 - 输出： `PathPolicy.resolveExisting(relativePath)` and `PathPolicy.resolveTarget(relativePath)` returning verified absolute paths; throws stable `FileToolError` codes.
 
-- [ ] **步骤 1： 先编写路径边界测试**
+- [x] **步骤 1： 先编写路径边界测试**
 
 ```ts
 // packages/file-tools/tests/path-policy.test.ts
@@ -294,13 +294,13 @@ describe('PathPolicy', () => {
 });
 ```
 
-- [ ] **步骤 2： 运行聚焦测试并确认失败**
+- [x] **步骤 2： 运行聚焦测试并确认失败**
 
 运行： `pnpm exec vitest run packages/file-tools/tests/path-policy.test.ts`
 
 预期： FAIL because `PathPolicy` is not implemented.
 
-- [ ] **步骤 3： 实现稳定错误类型与路径检查**
+- [x] **步骤 3： 实现稳定错误类型与路径检查**
 
 ```ts
 // packages/file-tools/src/errors.ts
@@ -378,13 +378,13 @@ export class PathPolicy {
 }
 ```
 
-- [ ] **步骤 4： 运行聚焦测试与包级测试**
+- [x] **步骤 4： 运行聚焦测试与包级测试**
 
 运行： `pnpm exec vitest run packages/file-tools/tests/path-policy.test.ts`
 
 预期： all path-policy tests PASS.
 
-- [ ] **步骤 5： 增加 Windows Junction 与前缀碰撞安全用例**
+- [x] **步骤 5： 增加 Windows Junction 与前缀碰撞安全用例**
 
 在 Windows 允许时，测试创建一个指向第二个临时目录的 `root-link` 目录 Junction，并验证返回 `LINK_NOT_ALLOWED`；同时验证名为 `work` 的根目录绝不会授权同级的 `workspace-other`。
 
@@ -408,7 +408,7 @@ export class PathPolicy {
 - 输入： `PathPolicy` and tool-specific Zod arguments.
 - 输出： `FileToolService.preview(request)`, `executeRead(request)`, and `executeWrite(verifiedAction)`; no write method accepts arbitrary unvalidated arguments.
 
-- [ ] **步骤 1： 为列出、读取、新建、重命名及取消安全编写测试**
+- [x] **步骤 1： 为列出、读取、新建、重命名及取消安全编写测试**
 
 ```ts
 // packages/file-tools/tests/file-tool-service.test.ts
@@ -433,13 +433,13 @@ it('renames only within the same parent and never overwrites', async () => {
 });
 ```
 
-- [ ] **步骤 2： 运行测试并确认红灯状态**
+- [x] **步骤 2： 运行测试并确认红灯状态**
 
 运行： `pnpm exec vitest run packages/file-tools/tests/file-tool-service.test.ts`
 
 预期： FAIL because `FileToolService` does not exist.
 
-- [ ] **步骤 3： 实现精确工具 Schema**
+- [x] **步骤 3： 实现精确工具 Schema**
 
 ```ts
 // packages/file-tools/src/schemas.ts
@@ -455,7 +455,7 @@ export const toolArguments = {
 } as const;
 ```
 
-- [ ] **步骤 4： 实现预览与执行相分离的服务**
+- [x] **步骤 4： 实现预览与执行相分离的服务**
 
 `VerifiedWriteAction` 必须包含规范化相对路径以及私有、不可伪造的服务端标识符；`executeWrite` 在调用 `open(..., 'wx')`、`mkdir(..., { recursive: false })` 或 `rename(...)` 前立即重新解析路径。`rename_entry` 拒绝不同父目录，`list_directory` 最多返回 200 项，`read_text_file` 拒绝超过 1 MiB 或非有效 UTF-8 的文件。
 
@@ -500,7 +500,7 @@ export class FileToolService {
 }
 ```
 
-- [ ] **步骤 5： 先运行聚焦测试，再运行全部文件工具测试**
+- [x] **步骤 5： 先运行聚焦测试，再运行全部文件工具测试**
 
 运行： `pnpm exec vitest run packages/file-tools/tests`
 
@@ -527,7 +527,7 @@ export class FileToolService {
 - 输入： shared `PublicSettings` and `TaskEvent` contracts.
 - 输出： three managed windows and `window.myself` allowlisted preload API; later tasks register implementations behind it.
 
-- [ ] **步骤 1： 编写 BrowserWindow 安全配置测试**
+- [x] **步骤 1： 编写 BrowserWindow 安全配置测试**
 
 测试纯函数 `secureWebPreferences(preloadPath)`，断言 `nodeIntegration === false`、`contextIsolation === true`、`sandbox === true`，并验证预期 preload 路径。
 
@@ -535,7 +535,7 @@ export class FileToolService {
 
 预期： FAIL because the helper does not exist.
 
-- [ ] **步骤 2： 实现安全窗口工厂**
+- [x] **步骤 2： 实现安全窗口工厂**
 
 创建职责单一的 `createPetWindow`、`createChatWindow` 和 `createSettingsWindow`。桌宠窗口透明、无边框、置顶、不显示任务栏按钮并限制为小尺寸；聊天与设置使用独立窗口。所有窗口共用安全 webPreferences，并通过 `will-navigate` 与 `setWindowOpenHandler` 拒绝任意导航。
 
@@ -557,7 +557,7 @@ export function createPetWindow(preload: string): BrowserWindow {
 }
 ```
 
-- [ ] **步骤 3： 实现托盘与生命周期行为**
+- [x] **步骤 3： 实现托盘与生命周期行为**
 
 托盘菜单包含“打开聊天”“设置”“显示/隐藏桌宠”和“退出”。关闭聊天或设置窗口时只隐藏；明确选择“退出”才终止进程。恢复桌宠位置前必须把坐标限制在当前显示器工作区内。
 
@@ -572,7 +572,7 @@ tray.setContextMenu(menu);
 for (const win of [chat, settings]) win.on('close', event => { event.preventDefault(); win.hide(); });
 ```
 
-- [ ] **步骤 4： 暴露固定的预加载 API**
+- [x] **步骤 4： 暴露固定的预加载 API**
 
 ```ts
 // apps/desktop/src/preload/index.ts
@@ -599,7 +599,7 @@ contextBridge.exposeInMainWorld('myself', api);
 
 不得暴露 `ipcRenderer`、通道名参数、文件路径或通用 invoke 方法。
 
-- [ ] **步骤 5： 验证安全配置并执行启动冒烟测试**
+- [x] **步骤 5： 验证安全配置并执行启动冒烟测试**
 
 运行： `pnpm --filter @myself/desktop test && pnpm --filter @myself/desktop dev`
 
@@ -622,11 +622,11 @@ contextBridge.exposeInMainWorld('myself', api);
 - 输出： `SettingsStore.getPublic()`, `saveProviderMetadata()`, `saveAuthorizedRoot()`, `SecretStore.save()`, `readForProviderCall()`, and `clear()`.
 - Renderer 只能看到 `hasStoredSecret`。
 
-- [ ] **步骤 1： 为原子设置与密钥不泄露编写红灯测试**
+- [x] **步骤 1： 为原子设置与密钥不泄露编写红灯测试**
 
 测试使用临时用户数据目录和注入的伪加密适配器。断言序列化 JSON 包含 `version: 1`、绝不包含测试 API Key，并且 `getPublic()` 只返回 `hasStoredSecret: true`。
 
-- [ ] **步骤 2： 实现小型加密适配边界**
+- [x] **步骤 2： 实现小型加密适配边界**
 
 生产适配器委托 Electron `safeStorage.encryptString/decryptString`。加密能力不可用时，`save(..., persist: true)` 返回稳定的 `SECRET_STORAGE_UNAVAILABLE` 错误；仅会话存储保留在内存中，并在退出时清除。
 
@@ -647,7 +647,7 @@ export class SecretStore {
 }
 ```
 
-- [ ] **步骤 3： 实现 JSON 原子写入**
+- [x] **步骤 3： 实现 JSON 原子写入**
 
 写入 `settings.json.tmp`，刷新并关闭后再替换 `settings.json`。每次读取都使用 Zod 验证；无效或损坏的设置移到带时间戳的诊断文件名，然后加载安全默认值，日志中不得出现密钥。
 
@@ -661,7 +661,7 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
 }
 ```
 
-- [ ] **步骤 4： 注册带输入 Schema 的设置 IPC 处理器**
+- [x] **步骤 4： 注册带输入 Schema 的设置 IPC 处理器**
 
 `settings:save-provider` 接受 displayName、baseUrl、model 和一次性 secret。除明确的 localhost HTTP 外均要求 HTTPS；`settings:get` 永远不包含密钥材料。
 
@@ -675,7 +675,7 @@ ipcMain.handle('settings:save-provider', async (_event, raw) => {
 });
 ```
 
-- [ ] **步骤 5： 运行存储测试并扫描测试密钥泄露**
+- [x] **步骤 5： 运行存储测试并扫描测试密钥泄露**
 
 运行： `pnpm --filter @myself/desktop test -- settings-store.test.ts secret-store.test.ts`
 
@@ -698,36 +698,31 @@ ipcMain.handle('settings:save-provider', async (_event, raw) => {
 **接口：**
 - 提供 `ModelProvider.respond(request, signal): Promise<ModelResponse>`。
 - 提供 `AgentLoop.run(userText, context): AsyncGenerator<AgentEvent>`。
+- 提供 `AgentLoop.resume(continuationToken, toolResult, context): AsyncGenerator<AgentEvent>` 和 `discard(continuationToken)`。
 - Provider 返回规范化文本或一个规范化 `ToolRequest`，绝不执行工具。
 
-- [ ] **步骤 1： 定义与提供方无关的类型及失败循环测试**
+- [x] **步骤 1： 定义与提供方无关的类型及失败循环测试**
 
 使用脚本化伪 Provider 测试：纯文本；读取工具后生成最终文本；写工具进入 `awaiting_confirmation`；无效工具只修正一次；阻止第五次模型响应；中止信号产生取消状态。
 
-- [ ] **步骤 2： 实现最小 Agent 循环**
+- [x] **步骤 2： 实现最小 Agent 循环**
 
-循环持有最大值为四的响应计数器，只传递固定工具 Schema，验证每次响应并产生任务事件。遇到写请求时暂停，并返回仅保存在 Main 中的继续令牌。只有本地 `ToolExecutor` 接口可以报告工具成功。
+循环持有最大值为四的响应计数器，只传递固定工具 Schema，验证每次响应并产生任务事件。遇到写请求时把消息历史和已使用轮数保存在 Main 内存中，并返回不可猜测的一次性继续令牌。`resume` 消费令牌、附加真实工具结果并使用原任务剩余轮数生成总结；没有剩余轮数时返回确定性的本地完成说明，绝不请求第五次模型响应。`discard` 用于取消、过期、根目录或 Provider 变化。只有本地 `ToolExecutor` 接口可以报告工具成功。
 
 ```ts
-export async function* runAgent(input: RunInput): AsyncGenerator<AgentEvent> {
-  const messages = [...input.messages, { role: 'user' as const, content: input.userText }];
-  for (let turn = 0; turn < 4; turn += 1) {
-    const response = await input.provider.respond({ messages, tools: input.tools }, input.signal);
-    if (response.type === 'text') { yield { type: 'message', text: response.text }; return; }
-    const request = toolRequestSchema.parse(response.request);
-    if (input.writeTools.has(request.toolName)) { yield { type: 'write_request', request, messages }; return; }
-    const result = await input.executor.executeRead(request);
-    messages.push({ role: 'tool', toolCallId: request.requestId, content: JSON.stringify(result) });
-  }
-  throw new Error('AGENT_MAX_TURNS');
+export class AgentLoop {
+  private readonly continuations = new Map<string, ContinuationState>();
+  run(userText: string, context: RunContext): AsyncGenerator<AgentEvent> { /* 最多四轮并在写请求时保存状态 */ }
+  resume(token: string, toolResult: unknown, context: RunContext): AsyncGenerator<AgentEvent> { /* 单次消费并使用剩余轮数 */ }
+  discard(token: string): void { this.continuations.delete(token); }
 }
 ```
 
-- [ ] **步骤 3： 编写 OpenAI 兼容适配器契约测试**
+- [x] **步骤 3： 编写 OpenAI 兼容适配器契约测试**
 
 模拟 HTTP，断言请求 URL 规范化、Bearer Header、模型、消息和五个工具定义。覆盖 401、404、429、5xx、超时、畸形 JSON、纯文本和工具调用。
 
-- [ ] **步骤 4： 实现适配器与错误映射**
+- [x] **步骤 4： 实现适配器与错误映射**
 
 使用注入的 HTTP 客户端或 `fetch`，绝不记录请求 Header。只有 Agent 服务判定调用安全时，429/5xx 才重试一次；适配器返回规范化的可重试信息，不得重复已经完成的工具。
 
@@ -746,9 +741,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
 }
 ```
 
-- [ ] **步骤 5： 验证循环与适配器测试套件**
+- [x] **步骤 5： 验证循环与适配器测试套件**
 
-运行： `pnpm exec vitest run packages/agent-core apps/desktop/tests/openai-provider.test.ts`
+运行： `pnpm --filter @myself/agent-core test`，然后运行 `pnpm --filter @myself/desktop test -- openai-provider.test.ts`。
 
 预期： all scripted flows PASS; the fake provider confirms no fifth response is requested.
 
@@ -766,53 +761,63 @@ export class OpenAICompatibleProvider implements ModelProvider {
 - 修改： `apps/desktop/src/main/ipc/register-ipc.ts`
 
 **接口：**
-- 提供 `PendingActionStore.issue(actionData)`、`consume(actionId)`、`cancel(actionId)` 和 `clear(reason)`。
+- 提供 `PendingActionStore.issue(actionData, pendingExecution)`、`consume(actionId)`、`cancel(actionId)` 和 `clear(reason)`；私有 `PendingExecution` 同时保存 `VerifiedWriteAction` 与 `continuationToken`。
 - 提供 `AgentService.submit(text)`、`cancelActive()`、`confirm(actionId)` 和 `cancelAction(actionId)`。
 
-- [ ] **步骤 1： 编写确认能力测试**
+- [x] **步骤 1： 编写确认能力测试**
 
 验证同时只有一个待确认动作、ID 不可猜测、过期时间生效、`consume` 只能调用一次、根目录或 Provider 改变会清除动作，并且 Renderer 提供的路径无法篡改已存动作数据。
 
-- [ ] **步骤 2： 在内存中实现 `PendingActionStore`**
+- [x] **步骤 2： 在内存中实现 `PendingActionStore`**
 
-使用密码学随机数生成动作 ID，默认设置较短有效期，并将公开 `PendingAction` 与私有已验证执行数据分开返回。动作绝不持久化到磁盘。
+使用密码学随机数生成动作 ID，默认设置较短有效期，并将公开 `PendingAction` 与私有 `PendingExecution` 分开返回。私有数据包含原始 `VerifiedWriteAction` 和一次性 `continuationToken`。替换、取消、过期或清除动作时必须同步调用 `AgentLoop.discard`；动作绝不持久化到磁盘。
 
 ```ts
+type PendingExecution = {
+  verifiedAction: VerifiedWriteAction;
+  continuationToken: string;
+};
+
 export class PendingActionStore {
-  private current: { public: PendingAction; privateAction: VerifiedWriteAction } | null = null;
-  issue(publicData: Omit<PendingAction, 'actionId' | 'createdAt' | 'expiresAt'>, privateAction: VerifiedWriteAction) {
+  private current: { public: PendingAction; privateExecution: PendingExecution } | null = null;
+  issue(publicData: Omit<PendingAction, 'actionId' | 'createdAt' | 'expiresAt'>, privateExecution: PendingExecution) {
     const now = Date.now();
     const actionId = randomBytes(24).toString('base64url');
-    this.current = { public: { ...publicData, actionId, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 120000).toISOString() }, privateAction };
+    this.current = { public: { ...publicData, actionId, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 120000).toISOString() }, privateExecution };
     return this.current.public;
   }
-  consume(actionId: string): VerifiedWriteAction {
+  consume(actionId: string): PendingExecution {
     const item = this.current; this.current = null;
     if (!item || item.public.actionId !== actionId || Date.parse(item.public.expiresAt) <= Date.now()) throw new Error('ACTION_EXPIRED');
-    return item.privateAction;
+    return item.privateExecution;
   }
   clear(): void { this.current = null; }
 }
 ```
 
-- [ ] **步骤 3： 编写 Agent 服务编排测试**
+- [x] **步骤 3： 编写 Agent 服务编排测试**
 
 使用伪 Provider、FileToolService、SettingsStore 和事件接收器，断言列出成功、新建等待确认、新建已确认、取消、Provider 失败、无效路径和目标冲突的准确阶段序列。
 
-- [ ] **步骤 4： 实现编排与 IPC 注册**
+- [x] **步骤 4： 实现编排与 IPC 注册**
 
-`chat:submit` 验证非空且限长的文本，并拒绝并发任务。`action:confirm` 只接受 `actionId`，消费私有动作数据，重新验证根目录和路径，只执行一次，然后恢复 Agent 总结。每条退出路径都必须发送终止阶段。
+`chat:submit` 验证非空且限长的文本，并拒绝并发任务。`action:confirm` 只接受 `actionId`，消费私有动作数据，重新验证根目录和路径，只执行一次，把真实结果交给 `AgentLoop.resume`，并在原四轮预算内恢复 Agent 总结。没有剩余轮数时发送确定性的本地完成说明；本地写入成功但总结失败时必须明确区分两种结果。每条退出路径都必须发送终止阶段。
 
 ```ts
 async confirm(actionId: string): Promise<void> {
-  const action = this.pending.consume(actionId);
+  const pendingExecution = this.pending.consume(actionId);
   this.emit({ type: 'phase', phase: 'acting' });
-  try { await this.fileTools.executeWrite(action); this.emit({ type: 'phase', phase: 'success' }); }
-  catch (error) { this.emit(toPublicErrorEvent(error)); this.emit({ type: 'phase', phase: 'error' }); }
+  try {
+    await this.fileTools.executeWrite(pendingExecution.verifiedAction);
+    await this.resumeSummary(pendingExecution.continuationToken);
+  } catch (error) {
+    this.emit(toPublicErrorEvent(error));
+    this.emit({ type: 'phase', phase: 'error' });
+  }
 }
 ```
 
-- [ ] **步骤 5： 运行服务测试与回归测试**
+- [x] **步骤 5： 运行服务测试与回归测试**
 
 运行： `pnpm --filter @myself/desktop test -- pending-action-store.test.ts agent-service.test.ts`
 
@@ -826,28 +831,55 @@ async confirm(actionId: string): Promise<void> {
 
 **文件：**
 - 新建： `packages/character-runtime/package.json`
+- 新建： `packages/character-runtime/tsconfig.json`
+- 新建： `packages/character-runtime/vitest.config.ts`
+- 新建： `packages/character-runtime/src/index.ts`
 - 新建： `packages/character-runtime/src/state-machine.ts`
 - 新建： `packages/character-runtime/tests/state-machine.test.ts`
+- 新建： `apps/desktop/src/main/settings/settings-actions.ts`
+- 新建： `apps/desktop/tests/renderer-task-store.test.ts`
+- 新建： `apps/desktop/tests/renderer-components.test.tsx`
+- 新建： `apps/desktop/tests/settings-actions.test.ts`
+- 新建： `apps/desktop/tests/electron-vite-config.test.ts`
 - 新建： `apps/desktop/src/renderer/src/stores/task-store.ts`
 - 新建： `apps/desktop/src/renderer/src/pet/PetView.tsx`
 - 新建： `apps/desktop/src/renderer/src/chat/ChatPanel.tsx`
 - 新建： `apps/desktop/src/renderer/src/chat/ConfirmationCard.tsx`
 - 新建： `apps/desktop/src/renderer/src/settings/SettingsView.tsx`
 - 新建： `apps/desktop/src/renderer/src/character/state-map.ts`
-- 新建： `apps/desktop/src/renderer/src/styles.css`
+- 修改： `apps/desktop/src/renderer/src/styles.css`
 - 修改： `apps/desktop/src/renderer/src/App.tsx`
+- 修改： `apps/desktop/electron.vite.config.ts`
+- 修改： `apps/desktop/vitest.config.ts`
+- 修改： `apps/desktop/src/main/ipc/register-ipc.ts`
+- 修改： `apps/desktop/src/main/storage/settings-store.ts`
+- 修改： `apps/desktop/src/main/index.ts`
+- 修改： `apps/desktop/tests/settings-ipc.test.ts`
+- 修改： `apps/desktop/tests/settings-store.test.ts`
+- 修改： `apps/desktop/package.json`
+- 修改： `vitest.config.ts`
+- 修改： `pnpm-lock.yaml`
 
 **接口：**
-- 输入： preload API and `TaskEvent`.
-- 输出： accessible user controls and deterministic animation state; no business decision or file path resolution.
+- 输入：预加载白名单 API 与 `TaskEvent`。
+- 输出：可访问的用户控件和确定性角色动画状态；Renderer 不承担业务决策或文件路径解析。
 
-- [ ] **步骤 1： 编写状态机与状态存储测试**
+**已确认体验：**
+- 采用温暖陪伴型视觉和“角色旁独立气泡”布局；普通对话优先，工具能力只在需要时显现。
+- `success`/`error` 停留 1500 毫秒后回到 `idle`，但消息记录继续保留。
+- 默认角色使用可替换的轻量 2D/CSS 表现；减少动态效果时禁用位移动画并保留静态状态差异。
+
+- [x] **步骤 0： 补齐设置界面的 Main 前置能力**
+
+先编写失败测试，再实现 `settings:test-provider`、`settings:choose-root` 和完整的 `settings:clear-local-data`。连接测试使用当前已保存 Provider 与密钥执行最小纯文本请求；授权目录只能来自 Electron 系统目录选择器，变更后清除待确认动作；`all` 同时清除 Provider 元数据、授权目录和密钥。Renderer 不得接收绝对路径或密钥。
+
+- [x] **步骤 1： 编写状态机与状态存储测试**
 
 断言事件到视图状态的转换、成功/错误一次性动画回到 idle、取消行为，以及终止事件会清除待确认动作。
 
-- [ ] **步骤 2： 实现角色状态机**
+- [x] **步骤 2： 实现角色状态机**
 
-该包接受 `TaskPhase` 并返回 `idle | listening | thinking | acting | success | error`。`awaiting_confirmation` 映射为聆听/注意而不是执行，并暴露选择静态资源的减少动态效果标记。
+该包接受 `TaskPhase` 并返回 `idle | listening | thinking | acting | success | error`。`awaiting_confirmation` 映射为聆听/注意而不是执行，并暴露选择静态资源的减少动态效果标记；`success`/`error` 的一次性状态时长固定为 1500 毫秒。
 
 ```ts
 export function characterStateFor(phase: TaskPhase): CharacterState {
@@ -860,7 +892,7 @@ export function characterStateFor(phase: TaskPhase): CharacterState {
 }
 ```
 
-- [ ] **步骤 3： 实现 Zustand 任务视图状态库**
+- [x] **步骤 3： 实现 Zustand 任务视图状态库**
 
 只订阅一次 `onTaskEvent`，追加数量受限的消息，跟踪活动阶段和待确认动作，并在卸载时取消订阅。不得存储密钥或绝对路径。
 
@@ -871,15 +903,15 @@ export const useTaskStore = create<TaskViewState>(set => ({
 }));
 ```
 
-- [ ] **步骤 4： 构建三个界面层**
+- [x] **步骤 4： 构建三个界面层**
 
-`PetView` 渲染当前角色资源和拖动提示；`ChatPanel` 渲染消息、输入、停止、状态与 `ConfirmationCard`；`SettingsView` 实现 Provider 保存/测试、根目录选择、隐私说明和清除数据控件。所有按钮必须使用明确动作标签，确认卡片显示动作及相对来源/目标。
+`PetView` 使用奶油与琥珀色的温暖陪伴型角色表现并渲染当前状态；`ChatPanel` 作为角色旁独立气泡，渲染消息、输入、停止、状态与 `ConfirmationCard`；`SettingsView` 实现 Provider 保存/测试、根目录选择、隐私说明和清除数据控件。普通对话优先于工具信息；所有按钮必须使用明确动作标签，确认卡片只显示自然语言动作及相对来源/目标。
 
-- [ ] **步骤 5： 增加组件测试与人工视觉检查**
+- [x] **步骤 5： 增加组件测试与人工视觉检查**
 
 运行： `pnpm --filter @myself/desktop test`
 
-预期： component/state tests PASS. Manually verify idle/thinking/acting/success/error, reduced motion, chat panel edge flipping, keyboard focus, and error next-action links.
+预期：组件与状态测试全部通过。人工检查 idle/thinking/acting/success/error、减少动态效果、聊天面板贴边换侧、键盘焦点和错误下一步提示。
 
 - [ ] **用户验收交接点**
 
@@ -889,44 +921,63 @@ export const useTaskStore = create<TaskViewState>(set => ({
 
 **文件：**
 - 新建： `tests/vitest.config.ts`
+- 新建： `tests/playwright.config.ts`
 - 新建： `tests/integration/desktop-agent.test.ts`
 - 新建： `tests/security/permission-boundary.test.ts`
 - 新建： `tests/e2e/desktop.spec.ts`
 - 新建： `tests/fixtures/provider-server.ts`
 - 新建： `tests/fixtures/authorized-root.ts`
-- 修改： root `package.json` scripts
+- 新建： `docs/operations/desktop-core-acceptance.md`
+- 新建： `apps/desktop/src/main/windows/pet-position.ts`
+- 新建： `apps/desktop/tests/pet-position.test.ts`
+- 修改： `apps/desktop/src/main/index.ts`
+- 修改： `apps/desktop/src/main/storage/settings-store.ts`
+- 修改： `apps/desktop/tests/settings-store.test.ts`
+- 修改： `package.json`
+- 修改： `vitest.config.ts`
+- 修改： `pnpm-lock.yaml`
 
 **接口：**
 - 输入： the complete desktop service composition.
 - 输出： repeatable proof for the Phase 1 desktop acceptance requirements.
 
-- [ ] **步骤 1： 编写服务集成流程测试**
+**已确认测试架构：**
+- 延续根 `vitest.config.ts` 的多项目配置；`tests/vitest.config.ts` 只承载集成与安全项目，不创建或引用已经废弃的 `vitest.workspace.ts`。
+- Playwright 不再使用 `_electron.launch()`。该启动器会强制注入 Main 调试参数，并在当前 Windows/Electron 43 环境触发 GPU 子进程加载 `version.dll` 失败及系统异常弹窗。测试改为由 Node `child_process.spawn()` 直接启动项目 Electron，再由 Playwright `chromium.connectOverCDP()` 连接 Renderer；只开放随机回环地址调试端口，不启用 Main Inspector。
+- 每次 E2E 使用独立临时用户数据目录和临时授权目录。仅在未打包应用、`MYSELF_E2E=1` 且两个目录都是系统临时目录下的绝对路径时，Main 才允许设置测试用户数据目录并替代 `dialog.showOpenDialog` 的返回值；该边界不新增 Renderer IPC、preload API 或任意路径生产后门。
+- 补齐桌宠位置保存、可见工作区夹取与重启恢复，因为该行为已经列入本任务端到端验收范围。CDP 通过 Renderer 标准 `window.moveTo()` 触发真实 `BrowserWindow` move 事件，再验证持久化与同一 userData 重启恢复；真实鼠标在 app-region 上的拖动保留 Windows 人工验收。
+- 聊天气泡关闭/重开的正式命令路径由 CDP 自动化覆盖：真实点击关闭按钮后确认同一 Renderer Page 与业务状态未丢失，再由桌宠触发重开并继续操作正式输入框。原生 `BrowserWindow.hide()`、`show()` 与 `focus()` 状态由既有 Main 层窗口命令测试和 Windows 人工验收覆盖。真实 Windows 系统托盘点击、显示、退出及鼠标拖动桌宠保留为人工演示项，并在验收记录中明确结果。
+- 本任务只完成桌面端与 Agent 核心门禁；官网与 NSIS 安装包仍分别执行独立计划，不在这里提前宣称整个第一阶段 MVP 完成。
+
+- [x] **步骤 1： 编写服务集成流程测试**
 
 使用临时授权根目录和脚本化 Provider，在一个确定性套件中执行列出、读取、新建预览/取消、新建确认、重命名确认、越界拒绝、重复目标拒绝和重启清除待确认动作。
 
-- [ ] **步骤 2： 编写聚焦的滥用安全用例**
+- [x] **步骤 2： 编写聚焦的滥用安全用例**
 
 覆盖路径穿越、盘符/UNC 输入、前缀碰撞、预览后替换 Junction、动作 ID 重放、Renderer 路径篡改、文件内容提示注入以及密钥/日志扫描。
 
-- [ ] **步骤 3： 编写 Playwright Electron 端到端测试**
+- [x] **步骤 3： 编写 Playwright CDP Electron 端到端测试**
 
-使用本地 Provider 测试夹具启动已打包的开发应用，完成首次配置、通过可注入测试边界选择根目录、列出、新建确认、重命名确认、取消、托盘隐藏/显示和重启位置恢复。
+使用本地 Provider 测试夹具直接启动构建后的开发应用，通过随机回环 CDP 端口连接 Renderer，完成首次配置、通过受限 Main 测试边界选择根目录、列出、新建确认、重命名确认、取消、聊天关闭/重开命令路径和重启位置恢复。聊天命令路径验证同一 Renderer Page 与业务状态未丢失，并在重开后继续操作正式输入框；位置恢复通过标准 `window.moveTo()` 触发 move 事件、等待持久化并使用同一 userData 重启验证。不把 DOM 可见性、焦点或 Win32 窗口枚举伪装成原生窗口状态证明，也不把 CDP mouse 伪装成 app-region 原生拖动证明。
 
-- [ ] **步骤 4： 增加根级验证脚本**
+这里的“受限 Main 测试边界”必须同时满足未打包应用、`MYSELF_E2E=1`、绝对路径以及路径位于系统临时目录之下，Renderer 仍只能调用正式的 `settings.chooseAuthorizedRoot()` 白名单 API。测试不得启用 Main Inspector；原生聊天窗口的 `hide/show/focus` 状态由既有 Main 层窗口命令测试与 Windows 人工验收验证，CDP 只验证 Renderer→preload→IPC 命令可调用以及关闭/重开期间页面和业务状态不丢失。托盘操作与真实鼠标 app-region 拖动仍由 Windows 人工演示验证。
+
+- [x] **步骤 4： 增加根级验证脚本**
 
 ```json
 {
   "scripts": {
-    "test:unit": "vitest run --workspace vitest.workspace.ts",
-    "test:security": "vitest run tests/security",
-    "test:integration": "vitest run tests/integration",
-    "test:e2e:desktop": "playwright test tests/e2e/desktop.spec.ts",
+    "test:unit": "vitest run --project shared-types --project file-tools --project agent-core --project character-runtime --project desktop",
+    "test:security": "vitest run --config tests/vitest.config.ts tests/security",
+    "test:integration": "vitest run --config tests/vitest.config.ts tests/integration",
+    "test:e2e:desktop": "pnpm --filter @myself/desktop build && playwright test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts",
     "verify:desktop": "pnpm typecheck && pnpm test:unit && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop"
   }
 }
 ```
 
-- [ ] **步骤 5： 运行完整桌面端门禁**
+- [x] **步骤 5： 运行完整桌面端门禁**
 
 运行： `pnpm verify:desktop`
 
@@ -934,7 +985,7 @@ export const useTaskStore = create<TaskViewState>(set => ({
 
 - [ ] **步骤 6： 执行已批准的人工演示脚本**
 
-在 Windows 上遵循 MVP 规格第 2 节和第 21 节，记录每个检查项、环境、应用版本和失败证据。任何功能门禁失败时都不得标记桌面端核心完成。
+在 Windows 上遵循 MVP 规格第 2 节中与桌面端核心相关的演示流程，并对第 21 节逐项记录“通过”“失败”或“由官网/Windows 打包计划验证”。记录环境、应用版本和失败证据；任何桌面端核心功能门禁失败时都不得标记桌面端核心完成。
 
 - [ ] **用户验收交接点**
 
