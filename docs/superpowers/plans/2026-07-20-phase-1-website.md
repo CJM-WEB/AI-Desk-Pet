@@ -66,7 +66,7 @@ tests/e2e/website.spec.ts             responsive/static user checks
 - 输入： 第一阶段产品定位、静态发布清单占位数据和核心安全文案。
 - 输出： 可静态构建的页面外壳、稳定语义区块入口，以及后续视觉重做时仍可复用的内容和发布契约。
 
-- [ ] **步骤 1： 创建包配置与静态导出配置**
+- [x] **步骤 1： 创建包配置与静态导出配置**
 
 ```json
 // apps/website/package.json
@@ -107,7 +107,7 @@ const config: NextConfig = {
 export default config;
 ```
 
-- [ ] **步骤 2： 编写失败的页面外壳测试**
+- [x] **步骤 2： 编写失败的页面外壳测试**
 
 ```tsx
 // apps/website/tests/page.test.tsx
@@ -128,7 +128,7 @@ describe('homepage', () => {
 
 预期： FAIL because `app/page.tsx` does not exist.
 
-- [ ] **步骤 3： 实现布局与初始页面**
+- [x] **步骤 3： 实现布局与初始页面**
 
 ```tsx
 // apps/website/app/layout.tsx
@@ -162,7 +162,7 @@ export default function Page() {
 }
 ```
 
-- [ ] **步骤 4： 实现全局设计变量与减少动态效果基线**
+- [x] **步骤 4： 实现全局设计变量与减少动态效果基线**
 
 ```css
 /* apps/website/app/globals.css */
@@ -190,7 +190,7 @@ h1 { max-width: 760px; font-size: clamp(2.5rem, 7vw, 5.5rem); line-height: 1.04;
 }
 ```
 
-- [ ] **步骤 5： 验证测试、类型检查与静态构建**
+- [x] **步骤 5： 验证测试、类型检查与静态构建**
 
 运行： `pnpm --filter @myself/website test && pnpm --filter @myself/website typecheck && pnpm --filter @myself/website build`
 
