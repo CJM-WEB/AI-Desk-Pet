@@ -219,7 +219,7 @@ h1 { max-width: 760px; font-size: clamp(2.5rem, 7vw, 5.5rem); line-height: 1.04;
 **接口：**
 - 输出： stable `features`, `safety`, `download`, `install`, and `faq` anchors；`HeroPetDemo` 不持有业务规则，可以在后续视觉重做时删除或替换。
 
-- [ ] **步骤 1： 扩展失败测试以覆盖全部必需模块**
+- [x] **步骤 1： 扩展失败测试以覆盖全部必需模块**
 
 ```tsx
 it('renders every required trust and support section', () => {
@@ -234,7 +234,7 @@ it('renders every required trust and support section', () => {
 
 预期： FAIL until the section components are composed.
 
-- [ ] **步骤 2： 实现语义化页面模块**
+- [x] **步骤 2： 实现语义化页面模块**
 
 每个组件只导出一个函数并保持职责单一。第一阶段可以把页面文案放在组件附近，但发布清单、下载信息和不可丢失的安全责任必须通过稳定数据或 Schema 进入页面，不得散落为不可追踪的视觉文案。`FeatureGrid` 只使用三张卡片：桌宠交互、可替换模型、授权文件工具。`HowItWorks` 展示“配置、授权、确认”。`SafetySection` 明确模型不能运行 Shell，写操作必须确认。`InstallHelp` 解释 Windows 未签名警告，不引导用户全局关闭安全功能。`Faq` 覆盖支持的 Windows 版本、API Key 归属、文件访问边界、未签名状态和第一阶段限制。
 
@@ -255,7 +255,7 @@ export function SafetySection() {
 }
 ```
 
-- [ ] **步骤 3： 实现第一阶段 Hero 演示扩展边界**
+- [x] **步骤 3： 实现第一阶段 Hero 演示扩展边界**
 
 ```tsx
 // apps/website/components/HeroPetDemo.tsx
@@ -274,7 +274,7 @@ export function HeroPetDemo() {
 
 容器负责尺寸与降级视觉效果，但不承担长期视觉架构责任。后续可以只替换容器内部，也可以删除整套 Hero 视觉组件并重做页面，只要保留下载入口、安全说明和发布清单契约。
 
-- [ ] **步骤 4： 按批准顺序组合页面**
+- [x] **步骤 4： 按批准顺序组合页面**
 
 ```tsx
 // apps/website/app/page.tsx
@@ -292,7 +292,7 @@ export default function Page() {
 }
 ```
 
-- [ ] **步骤 5： 验证语义、响应式布局与减少动态效果**
+- [x] **步骤 5： 验证语义、响应式布局与减少动态效果**
 
 运行： `pnpm --filter @myself/website test && pnpm --filter @myself/website build`
 
