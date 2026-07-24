@@ -405,6 +405,8 @@ test('homepage presents trust information and a real download target', async ({ 
 
 预期： typecheck, unit tests, static export, and Playwright tests PASS; `out/index.html` contains the product heading and download metadata. Playwright 只验证用户路径、关键语义、下载契约和可访问性，不把第一阶段视觉布局作为长期兼容承诺。
 
-- [ ] **用户验收交接点**
+- [x] **用户验收交接点**
 
 交付静态输出位置、清单内容、测试输出和响应式截图，由用户在 Fork 中验收并决定提交。
+
+状态：官网清单已替换为真实 GitHub Release 下载地址，用户已提交该变更；`pnpm verify:website` 已通过。当前尚未执行公网部署，后续部署时需验证公开 URL 的下载按钮仍指向真实安装包。
