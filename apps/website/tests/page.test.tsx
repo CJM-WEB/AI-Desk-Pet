@@ -35,4 +35,14 @@ describe('官网首页', () => {
       expect(html).toContain(text);
     }
   });
+
+  it('从版本清单展示下载元数据', () => {
+    const html = renderToStaticMarkup(<Page />);
+
+    for (const text of ['0.1.0-alpha.1', 'Windows 10/11 x64', '70.0 MB', '1111111111111111111111111111111111111111111111111111111111111111']) {
+      expect(html).toContain(text);
+    }
+    expect(html).toContain('href="https://download.example.com/releases/Myself-0.1.0-alpha.1-windows-x64.exe"');
+    expect(html).not.toContain('下载卡片将在版本清单接入后显示');
+  });
 });

@@ -1,5 +1,6 @@
 import { Faq } from '../components/Faq';
 import { FeatureGrid } from '../components/FeatureGrid';
+import { DownloadCard } from '../components/DownloadCard';
 import { Hero } from '../components/Hero';
 import { HowItWorks } from '../components/HowItWorks';
 import { InstallHelp } from '../components/InstallHelp';
@@ -16,11 +17,7 @@ export default function Page() {
         <FeatureGrid />
         <HowItWorks />
         <SafetySection />
-        <section id="download" className="download" aria-label="Windows 下载">
-          <p className="section-kicker">版本信息</p>
-          <h2>Windows 测试版</h2>
-          <p>下载卡片将在版本清单接入后显示安装包大小、SHA-256 和正式下载链接。</p>
-        </section>
+        <DownloadCard />
         <InstallHelp />
         <Faq />
       </main>

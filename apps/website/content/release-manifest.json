@@ -1,0 +1,10 @@
+{
+  "version": "0.1.0-alpha.1",
+  "platform": "windows-x64",
+  "fileName": "Myself-0.1.0-alpha.1-windows-x64.exe",
+  "downloadUrl": "https://download.example.com/releases/Myself-0.1.0-alpha.1-windows-x64.exe",
+  "sizeBytes": 73400320,
+  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "publishedAt": "2026-07-20T00:00:00.000Z",
+  "signed": false
+}

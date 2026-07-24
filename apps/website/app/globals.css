@@ -452,9 +452,65 @@ h3 {
 
 .download {
   display: grid;
-  gap: 12px;
+  grid-template-columns: minmax(0, 0.82fr) minmax(340px, 1fr);
+  align-items: start;
+  gap: 28px;
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
+}
+
+.download-copy {
+  display: grid;
+  gap: 12px;
+}
+
+.warning {
+  color: var(--warm);
+  font-weight: 700;
+}
+
+.download-card {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.download-card dl,
+.download-card dd {
+  margin: 0;
+}
+
+.download-card dl {
+  display: grid;
+  gap: 14px;
+}
+
+.download-card div {
+  display: grid;
+  gap: 6px;
+}
+
+.download-card dt {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.download-card dd {
+  overflow-wrap: anywhere;
+}
+
+.download-card code {
+  color: var(--text);
+  font-family:
+    "Cascadia Code",
+    "SFMono-Regular",
+    Consolas,
+    monospace;
+  font-size: 0.86rem;
 }
 
 .faq-list {
@@ -493,7 +549,8 @@ h3 {
   }
 
   .hero,
-  .safety-section {
+  .safety-section,
+  .download {
     grid-template-columns: 1fr;
   }
 
