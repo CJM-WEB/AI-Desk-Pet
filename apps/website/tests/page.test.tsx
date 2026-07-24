@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import React from 'react';
 import { describe, expect, it } from 'vitest';
 import Page from '../app/page';
+import rawManifest from '../content/release-manifest.json';
+import { formatReleaseSize, releaseManifestSchema } from '../lib/release-manifest';
 
 describe('官网首页', () => {
   it('展示产品承诺与主要下载入口', () => {
@@ -38,11 +40,17 @@ describe('官网首页', () => {
 
   it('从版本清单展示下载元数据', () => {
     const html = renderToStaticMarkup(<Page />);
+    const release = releaseManifestSchema.parse(rawManifest);
 
-    for (const text of ['0.1.0-alpha.1', 'Windows 10/11 x64', '70.0 MB', '1111111111111111111111111111111111111111111111111111111111111111']) {
+    for (const text of [
+      release.version,
+      'Windows 10/11 x64',
+      formatReleaseSize(release.sizeBytes),
+      release.sha256
+    ]) {
       expect(html).toContain(text);
     }
-    expect(html).toContain('href="https://download.example.com/releases/Myself-0.1.0-alpha.1-windows-x64.exe"');
+    expect(html).toContain(`href="${release.downloadUrl}"`);
     expect(html).not.toContain('下载卡片将在版本清单接入后显示');
   });
 });
