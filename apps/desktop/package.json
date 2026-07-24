@@ -1,15 +1,19 @@
 {
   "name": "@myself/desktop",
   "private": true,
+  "version": "0.1.0-alpha.1",
+  "description": "Myself 第一阶段 Windows AI 桌宠 Alpha",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "postinstall": "install-electron",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "package:win": "pnpm build && electron-builder --win nsis --x64 --config electron-builder.yml",
     "preview": "electron-vite preview",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:package-config": "vitest run --config vitest.config.ts -- package-config.test.ts"
   },
   "dependencies": {
     "@myself/agent-core": "workspace:*",
@@ -25,6 +29,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "electron": "^43.1.1",
+    "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0"
   }
 }
