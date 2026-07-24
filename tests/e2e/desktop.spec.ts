@@ -228,6 +228,9 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(plan.args).toEqual([
       '--remote-debugging-address=127.0.0.1',
       '--remote-debugging-port=43123',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--no-sandbox',
       plan.applicationEntry
     ]);
     expect(plan.args.join(' ')).not.toMatch(/--inspect(?:-brk)?(?:=|\s|$)/u);

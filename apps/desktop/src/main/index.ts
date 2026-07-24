@@ -42,7 +42,11 @@ const e2eBoundary = resolveMainE2eBoundary({
   appIsPackaged: app.isPackaged,
   env: process.env
 });
-if (e2eBoundary) app.setPath('userData', e2eBoundary.userDataDirectory);
+if (e2eBoundary) {
+  // E2E 在部分 Windows 环境中没有可用 GPU 子进程，需在 app ready 前关闭硬件加速。
+  app.disableHardwareAcceleration();
+  app.setPath('userData', e2eBoundary.userDataDirectory);
+}
 
 const fileToolDefinitions: ToolDefinition[] = [
   {
