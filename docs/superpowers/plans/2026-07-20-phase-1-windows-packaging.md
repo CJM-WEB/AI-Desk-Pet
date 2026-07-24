@@ -47,7 +47,7 @@ apps/website/content/release-manifest.json     generated final release metadata
 - 输入： a passing `pnpm verify:desktop` and compiled desktop resources.
 - 输出： `dist/Myself-0.1.0-alpha.1-windows-x64.exe` plus an unpacked diagnostic directory.
 
-- [ ] **步骤 1： 编写失败的打包配置测试**
+- [x] **步骤 1： 编写失败的打包配置测试**
 
 ```ts
 // apps/desktop/tests/package-config.test.ts
@@ -71,7 +71,7 @@ describe('electron-builder configuration', () => {
 
 预期： FAIL because `electron-builder.yml` does not exist.
 
-- [ ] **步骤 2： 实现构建器配置**
+- [x] **步骤 2： 实现构建器配置**
 
 ```yaml
 # apps/desktop/electron-builder.yml
@@ -101,7 +101,7 @@ nsis:
   createStartMenuShortcut: true
 ```
 
-- [ ] **步骤 3： 增加明确的打包脚本**
+- [x] **步骤 3： 增加明确的打包脚本**
 
 ```json
 {
@@ -115,19 +115,21 @@ nsis:
 
 把这些键合并到现有桌面端脚本中，不得删除测试或开发命令。
 
-- [ ] **步骤 4： 编写未签名安装包帮助文档**
+- [x] **步骤 4： 编写未签名安装包帮助文档**
 
 文档必须说明：支持的 Windows 版本、SHA-256 验证命令、预期的未知发布者警告、继续安装前如何核对发布者与文件名、配置存储行为、卸载行为，以及绝不能全局关闭 SmartScreen 的警告。文档应明确该构建为邀请制 Alpha 软件。
 
-- [ ] **步骤 5： 验证配置、桌面端门禁与打包**
+- [x] **步骤 5： 验证配置、桌面端门禁与打包**
 
 运行： `pnpm --filter @myself/desktop verify:package-config && pnpm verify:desktop && pnpm --filter @myself/desktop package:win`
 
 预期： config and desktop gates PASS; `apps/desktop/dist/Myself-0.1.0-alpha.1-windows-x64.exe` exists and an unpacked app launches.
 
-- [ ] **用户验收交接点**
+- [x] **用户验收交接点**
 
 提供安装包路径与大小、配置测试输出、启动截图和未签名警告截图，由用户在 Fork 中验收并决定提交。
+
+状态：已产出 `apps/desktop/dist/Myself-0.1.0-alpha.1-windows-x64.exe`，用户已完成安装包测试与验收，并已提交相关变更。
 
 ### 任务 2：确定性版本清单生成器
 
@@ -142,7 +144,7 @@ nsis:
 - 输入： final `.exe`, public download base URL, version, and publication timestamp.
 - 输出： the website's strict release manifest with lowercase SHA-256.
 
-- [ ] **步骤 1： 编写确定性生成器测试**
+- [x] **步骤 1： 编写确定性生成器测试**
 
 ```ts
 // tools/release/tests/generate-manifest.test.ts
@@ -171,7 +173,7 @@ describe('generateReleaseManifest', () => {
 });
 ```
 
-- [ ] **步骤 2： 以纯函数和命令行实现生成器**
+- [x] **步骤 2： 以纯函数和命令行实现生成器**
 
 ```ts
 // tools/release/src/generate-manifest.ts
@@ -207,7 +209,7 @@ export async function writeManifest(input: Input, outputPath: string): Promise<v
 
 增加轻量命令行入口，强制要求 `--installer`、`--base-url`、`--published-at` 和 `--output`；缺少参数时以非零状态退出且不写文件。
 
-- [ ] **步骤 3： 联合验证生成器与官网契约**
+- [x] **步骤 3： 联合验证生成器与官网契约**
 
 运行： `pnpm --filter @myself/release-tools test`
 
@@ -215,9 +217,11 @@ export async function writeManifest(input: Input, outputPath: string): Promise<v
 
 预期： generator tests PASS; website manifest validation and static build PASS; the displayed SHA-256 matches PowerShell `Get-FileHash -Algorithm SHA256` after case normalization.
 
-- [ ] **用户验收交接点**
+- [x] **用户验收交接点**
 
 提供最终清单、独立 PowerShell 哈希、官网验证输出和产物路径，由用户验收并决定提交。
+
+状态：官网清单已替换为 GitHub Release 真实下载地址 `https://github.com/CJM-WEB/AI-Desk-Pet/releases/download/v0.1.0-alpha.1/Myself-0.1.0-alpha.1-windows-x64.exe`，并已通过 `pnpm verify:website`。
 
 ### 任务 3：干净 Windows 环境验收与发布交接
 
@@ -233,7 +237,9 @@ export async function writeManifest(input: Input, outputPath: string): Promise<v
 
 验收记录必须包含应用版本、安装包 SHA-256、Windows 版本与构建号、干净环境状态、模型测试夹具、授权测试目录、测试人员和日期；并为规格第 21 节的每个功能与质量门禁提供“通过/失败/证据”列。
 
-- [ ] **步骤 2： 安装并执行准确演示流程**
+状态：用户已明确要求跳过人工验收结果写入，因此本步骤保持未勾选，不再作为当前 MVP 推进阻塞项。
+
+- [x] **步骤 2： 安装并执行准确演示流程**
 
 验证安装、启动、桌宠拖动与位置、托盘、模型配置、根目录授权、列出、读取、新建确认、新建取消、重命名、越界拒绝、目标冲突、重启清除待确认动作、官网校验和，以及卸载后授权测试目录保持不变。
 
@@ -241,12 +247,14 @@ export async function writeManifest(input: Input, outputPath: string): Promise<v
 
 在应用日志和配置中搜索测试 API Key 与测试文件正文，预期匹配数为零。确认卸载绝不触碰授权目录；记录保留的应用配置，并确认其符合卸载时的用户选择。
 
-- [ ] **步骤 4： 从干净检出运行最终自动门禁**
+- [x] **步骤 4： 从干净检出运行最终自动门禁**
 
 运行： `pnpm install --frozen-lockfile && pnpm verify:desktop && pnpm verify:website && pnpm --filter @myself/desktop package:win`
 
 预期： every command exits 0 and the rebuilt installer hash is recorded. If reproducible byte-for-byte output is not guaranteed by packaging timestamps, the manifest must be regenerated from the accepted final artifact.
 
-- [ ] **用户验收交接点**
+- [x] **用户验收交接点**
 
 交付完整验收记录、安装包、清单、哈希、截图和全部验证输出。用户使用 Fork 与 GitHub 决定是否提交、打标签、上传或分发。
+
+状态：用户已完成安装包测试、验收、提交和 GitHub Release 发布。`pnpm verify:desktop` 已在修复 Windows Electron E2E GPU 启动崩溃后通过；后续如果要对外公开体验，下一步是部署官网静态产物并验证公网下载链路。
