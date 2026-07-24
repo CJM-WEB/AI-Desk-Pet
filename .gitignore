@@ -5,6 +5,7 @@ dist/
 out/
 coverage/
 .next/
+*.tsbuildinfo
 
 # 本地环境与日志
 .env

@@ -2,9 +2,9 @@
 
 > **面向执行代理：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐项执行本计划。所有步骤使用复选框（`- [ ]`）跟踪。
 
-**目标：** 构建可静态导出的产品首页，清楚说明桌宠、安全边界、安装预期，以及由版本清单驱动的 Windows 下载卡片。
+**目标：** 构建可静态导出的产品首页，清楚说明桌宠、安全边界、安装预期，以及由版本清单驱动的 Windows 下载卡片。第一阶段官网优先服务 MVP 发布与验收，不要求视觉层长期沿用；后续可以在不破坏发布清单、下载入口和内容责任的前提下彻底重做前端视觉。
 
-**架构：** Next.js App Router 使用职责单一的页面模块渲染静态单页。共享 CSS 变量为后续动态效果与 3D 升级保留边界；构建时从本地 JSON 清单验证版本信息，不使用后端、数据库、账号、分析脚本或服务端密钥。
+**架构：** Next.js App Router 使用职责单一的页面模块渲染静态单页。发布数据、下载元数据和关键安全文案通过稳定契约进入页面；视觉组件只消费这些契约，不拥有发布规则。构建时从本地 JSON 清单验证版本信息，不使用后端、数据库、账号、分析脚本或服务端密钥。后续切换为动态官网、CMS 或全新视觉时，优先保留契约、Schema、验证脚本和 E2E 用户行为门禁，允许替换页面组件和样式实现。
 
 **技术栈：** Next.js、React、TypeScript、Tailwind CSS、Zod、Vitest、Testing Library、Playwright。
 
@@ -14,7 +14,9 @@
 - 即使没有动画，核心文案和下载信息也必须完整可用。
 - 第一阶段官网不收集账号、API Key、文件或分析数据。
 - 下载卡片必须显示 `0.1.0-alpha.1`、Windows 10/11 x64、安装包大小、SHA-256 和未签名状态。
-- Hero 媒体区域必须是独立组件，以便后续替换为 Rive 或 Three.js。
+- `release-manifest`、下载入口、安全说明、安装说明和官网验证脚本属于稳定边界；视觉结构、布局、动效和组件拆分可以在后续版本彻底重做。
+- 测试应验证用户可见能力、语义入口、下载契约和响应式可用性，不得依赖脆弱的 CSS 类名、装饰性 DOM 层级或具体视觉布局。
+- Hero 媒体区域必须是独立组件，以便后续替换为 Rive、Three.js 或全新的视觉表达。
 - `prefers-reduced-motion` 必须禁用非必要动态效果。
 - Codex 不执行暂存、提交或推送；用户使用 Fork 验收和提交。
 - 面向人的文档、界面文案与代码注释统一使用中文。
@@ -32,8 +34,8 @@ apps/website/
   app/page.tsx                        ordered section composition
   app/globals.css                     tokens, responsive, reduced motion
   components/SiteHeader.tsx           navigation and primary download CTA
-  components/Hero.tsx                 product promise and media seam
-  components/HeroPetDemo.tsx          lightweight Phase 1 visual
+  components/Hero.tsx                 product promise and replaceable visual entry
+  components/HeroPetDemo.tsx          disposable Phase 1 visual implementation
   components/FeatureGrid.tsx          three product pillars
   components/HowItWorks.tsx           configure/authorize/confirm flow
   components/SafetySection.tsx        local boundary and privacy copy
@@ -61,10 +63,10 @@ tests/e2e/website.spec.ts             responsive/static user checks
 - 修改： `pnpm-workspace.yaml` only if `apps/*` is not already present.
 
 **接口：**
-- 输入： shared brand tokens if Desktop Task 1 created them; otherwise defines the initial CSS token contract here and Desktop imports it later.
-- 输出： a statically buildable page shell and stable section ids.
+- 输入： 第一阶段产品定位、静态发布清单占位数据和核心安全文案。
+- 输出： 可静态构建的页面外壳、稳定语义区块入口，以及后续视觉重做时仍可复用的内容和发布契约。
 
-- [ ] **步骤 1： 创建包配置与静态导出配置**
+- [x] **步骤 1： 创建包配置与静态导出配置**
 
 ```json
 // apps/website/package.json
@@ -105,7 +107,7 @@ const config: NextConfig = {
 export default config;
 ```
 
-- [ ] **步骤 2： 编写失败的页面外壳测试**
+- [x] **步骤 2： 编写失败的页面外壳测试**
 
 ```tsx
 // apps/website/tests/page.test.tsx
@@ -126,7 +128,7 @@ describe('homepage', () => {
 
 预期： FAIL because `app/page.tsx` does not exist.
 
-- [ ] **步骤 3： 实现布局与初始页面**
+- [x] **步骤 3： 实现布局与初始页面**
 
 ```tsx
 // apps/website/app/layout.tsx
@@ -160,7 +162,7 @@ export default function Page() {
 }
 ```
 
-- [ ] **步骤 4： 实现全局设计变量与减少动态效果基线**
+- [x] **步骤 4： 实现全局设计变量与减少动态效果基线**
 
 ```css
 /* apps/website/app/globals.css */
@@ -188,7 +190,7 @@ h1 { max-width: 760px; font-size: clamp(2.5rem, 7vw, 5.5rem); line-height: 1.04;
 }
 ```
 
-- [ ] **步骤 5： 验证测试、类型检查与静态构建**
+- [x] **步骤 5： 验证测试、类型检查与静态构建**
 
 运行： `pnpm --filter @myself/website test && pnpm --filter @myself/website typecheck && pnpm --filter @myself/website build`
 
@@ -215,9 +217,9 @@ h1 { max-width: 760px; font-size: clamp(2.5rem, 7vw, 5.5rem); line-height: 1.04;
 - 修改： `apps/website/tests/page.test.tsx`
 
 **接口：**
-- 输出： stable `features`, `safety`, `download`, `install`, and `faq` anchors; `HeroPetDemo` accepts no business data and can later be replaced.
+- 输出： stable `features`, `safety`, `download`, `install`, and `faq` anchors；`HeroPetDemo` 不持有业务规则，可以在后续视觉重做时删除或替换。
 
-- [ ] **步骤 1： 扩展失败测试以覆盖全部必需模块**
+- [x] **步骤 1： 扩展失败测试以覆盖全部必需模块**
 
 ```tsx
 it('renders every required trust and support section', () => {
@@ -232,9 +234,9 @@ it('renders every required trust and support section', () => {
 
 预期： FAIL until the section components are composed.
 
-- [ ] **步骤 2： 实现语义化页面模块**
+- [x] **步骤 2： 实现语义化页面模块**
 
-每个组件只导出一个函数并包含自己的文案。`FeatureGrid` 只使用三张卡片：桌宠交互、可替换模型、授权文件工具。`HowItWorks` 展示“配置、授权、确认”。`SafetySection` 明确模型不能运行 Shell，写操作必须确认。`InstallHelp` 解释 Windows 未签名警告，不引导用户全局关闭安全功能。`Faq` 覆盖支持的 Windows 版本、API Key 归属、文件访问边界、未签名状态和第一阶段限制。
+每个组件只导出一个函数并保持职责单一。第一阶段可以把页面文案放在组件附近，但发布清单、下载信息和不可丢失的安全责任必须通过稳定数据或 Schema 进入页面，不得散落为不可追踪的视觉文案。`FeatureGrid` 只使用三张卡片：桌宠交互、可替换模型、授权文件工具。`HowItWorks` 展示“配置、授权、确认”。`SafetySection` 明确模型不能运行 Shell，写操作必须确认。`InstallHelp` 解释 Windows 未签名警告，不引导用户全局关闭安全功能。`Faq` 覆盖支持的 Windows 版本、API Key 归属、文件访问边界、未签名状态和第一阶段限制。
 
 ```tsx
 export function FeatureGrid() {
@@ -253,7 +255,7 @@ export function SafetySection() {
 }
 ```
 
-- [ ] **步骤 3： 实现第一阶段 Hero 演示扩展边界**
+- [x] **步骤 3： 实现第一阶段 Hero 演示扩展边界**
 
 ```tsx
 // apps/website/components/HeroPetDemo.tsx
@@ -270,9 +272,9 @@ export function HeroPetDemo() {
 }
 ```
 
-容器负责尺寸与降级视觉效果，使后续 Rive 或 Three.js 组件只需替换容器内部。
+容器负责尺寸与降级视觉效果，但不承担长期视觉架构责任。后续可以只替换容器内部，也可以删除整套 Hero 视觉组件并重做页面，只要保留下载入口、安全说明和发布清单契约。
 
-- [ ] **步骤 4： 按批准顺序组合页面**
+- [x] **步骤 4： 按批准顺序组合页面**
 
 ```tsx
 // apps/website/app/page.tsx
@@ -290,11 +292,11 @@ export default function Page() {
 }
 ```
 
-- [ ] **步骤 5： 验证语义、响应式布局与减少动态效果**
+- [x] **步骤 5： 验证语义、响应式布局与减少动态效果**
 
 运行： `pnpm --filter @myself/website test && pnpm --filter @myself/website build`
 
-预期： all headings are found exactly once, static build succeeds, no horizontal overflow at 390px, and reduced-motion media query disables demo animation.
+预期： all required user-visible sections are reachable by role or text, static build succeeds, no horizontal overflow at 390px, and reduced-motion media query disables non-essential animation. 测试不得要求某个装饰性容器、CSS 类名或组件层级必须存在。
 
 - [ ] **用户验收交接点**
 
@@ -313,9 +315,9 @@ export default function Page() {
 
 **接口：**
 - 输入： a static release manifest later generated by the packaging plan.
-- 输出： a validated download URL and metadata UI; website build fails on an invalid manifest.
+- 输出： a validated download URL and metadata UI; website build fails on an invalid manifest. 该契约是官网长期稳定边界，后续动态官网或视觉重做必须继续满足等价 Schema 或显式迁移版本。
 
-- [ ] **步骤 1： 编写版本清单契约测试**
+- [x] **步骤 1： 编写版本清单契约测试**
 
 ```ts
 // apps/website/tests/release-manifest.test.ts
@@ -334,7 +336,7 @@ describe('release manifest', () => {
 });
 ```
 
-- [ ] **步骤 2： 增加 Schema 与本地开发清单**
+- [x] **步骤 2： 增加 Schema 与本地开发清单**
 
 ```ts
 // apps/website/lib/release-manifest.ts
@@ -355,7 +357,7 @@ export type ReleaseManifest = z.infer<typeof releaseManifestSchema>;
 
 纳入版本管理的开发清单使用有文档说明的本地或示例产物地址，以及确定性的测试校验和。只有生成真实安装包后，打包流程才能替换该清单。
 
-- [ ] **步骤 3： 使用已验证数据实现 `DownloadCard`**
+- [x] **步骤 3： 使用已验证数据实现 `DownloadCard`**
 
 The server component imports JSON, calls `releaseManifestSchema.parse`, and renders version, Windows 10/11 x64, formatted size, SHA-256 with copy affordance, unsigned warning, and a link whose accessible name is `下载 Myself 0.1.0-alpha.1`.
 
@@ -379,7 +381,7 @@ export function DownloadCard() {
 }
 ```
 
-- [ ] **步骤 4： 编写 Playwright 官网检查**
+- [x] **步骤 4： 编写 Playwright 官网检查**
 
 ```ts
 // tests/e2e/website.spec.ts
@@ -395,13 +397,13 @@ test('homepage presents trust information and a real download target', async ({ 
 });
 ```
 
-- [ ] **步骤 5： 增加并运行官网验证门禁**
+- [x] **步骤 5： 增加并运行官网验证门禁**
 
 根级脚本为：`verify:website = pnpm --filter @myself/website typecheck && pnpm --filter @myself/website test && pnpm --filter @myself/website build && playwright test tests/e2e/website.spec.ts`。
 
 运行： `pnpm verify:website`
 
-预期： typecheck, unit tests, static export, and Playwright tests PASS; `out/index.html` contains the product heading and download metadata.
+预期： typecheck, unit tests, static export, and Playwright tests PASS; `out/index.html` contains the product heading and download metadata. Playwright 只验证用户路径、关键语义、下载契约和可访问性，不把第一阶段视觉布局作为长期兼容承诺。
 
 - [ ] **用户验收交接点**
 

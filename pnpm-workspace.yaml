@@ -5,6 +5,7 @@ packages:
 allowBuilds:
   electron: true
   esbuild: true
+  sharp: true
 
 # 非交互环境重建依赖时不再询问确认。
 confirmModulesPurge: false

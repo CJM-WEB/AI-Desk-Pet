@@ -11,7 +11,9 @@
     "test:security": "vitest run --config tests/vitest.config.ts tests/security",
     "test:integration": "vitest run --config tests/vitest.config.ts tests/integration",
     "test:e2e:desktop": "pnpm --filter @myself/desktop build && playwright test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts",
-    "verify:desktop": "pnpm typecheck && pnpm test:unit && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop"
+    "test:e2e:website": "playwright test --config tests/playwright.config.ts tests/e2e/website.spec.ts",
+    "verify:desktop": "pnpm typecheck && pnpm test:unit && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop",
+    "verify:website": "pnpm --filter @myself/website typecheck && pnpm --filter @myself/website test && pnpm --filter @myself/website build && pnpm test:e2e:website"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
