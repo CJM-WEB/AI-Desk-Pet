@@ -144,13 +144,16 @@ describe('Main E2E 安全边界', () => {
     })).toBeNull();
   });
 
-  test('userData 在 whenReady 前生效且授权根只替代 Main 内部目录选择结果', async () => {
+  test('userData 与测试硬件加速策略在 whenReady 前生效且授权根只替代 Main 内部目录选择结果', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
     const setPathIndex = main.indexOf("app.setPath('userData'");
+    const disableHardwareAccelerationIndex = main.indexOf('app.disableHardwareAcceleration()');
     const whenReadyIndex = main.indexOf('app.whenReady()');
 
     expect(setPathIndex).toBeGreaterThanOrEqual(0);
     expect(setPathIndex).toBeLessThan(whenReadyIndex);
+    expect(disableHardwareAccelerationIndex).toBeGreaterThanOrEqual(0);
+    expect(disableHardwareAccelerationIndex).toBeLessThan(whenReadyIndex);
     expect(main).toContain('e2eBoundary.authorizedRootDirectory');
     expect(main).toContain('dialog.showOpenDialog');
   });

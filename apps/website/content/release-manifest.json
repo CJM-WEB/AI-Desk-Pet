@@ -2,7 +2,7 @@
   "version": "0.1.0-alpha.1",
   "platform": "windows-x64",
   "fileName": "Myself-0.1.0-alpha.1-windows-x64.exe",
-  "downloadUrl": "https://download.example.com/releases/Myself-0.1.0-alpha.1-windows-x64.exe",
+  "downloadUrl": "https://github.com/CJM-WEB/AI-Desk-Pet/releases/download/v0.1.0-alpha.1/Myself-0.1.0-alpha.1-windows-x64.exe",
   "sizeBytes": 100543780,
   "sha256": "3c4d99c92461c7434fdacd044a3cc5b3ba9491390b6bb56a9a9cef6a044df69a",
   "publishedAt": "2026-07-25T00:00:00.000Z",

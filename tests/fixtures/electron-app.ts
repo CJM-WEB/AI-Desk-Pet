@@ -44,6 +44,10 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
     args: [
       '--remote-debugging-address=127.0.0.1',
       `--remote-debugging-port=${options.cdpPort}`,
+      // Windows E2E 环境中 GPU 沙盒子进程可能不可用，测试启动时阻止它反复崩溃。
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--no-sandbox',
       applicationEntry
     ],
     environment: {
