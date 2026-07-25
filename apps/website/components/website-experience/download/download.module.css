@@ -1,0 +1,609 @@
+.downloadChapter {
+  min-height: 100%;
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      90deg,
+      rgb(0, 255, 200) 0%,
+      rgb(235, 235, 235) 24%,
+      rgb(235, 235, 235) 76%,
+      rgb(0, 255, 200) 100%
+    );
+  color: rgb(28, 28, 28);
+}
+
+/* 两侧箭头负责临时预览与点击锁定，固定命中范围避免状态变化推动布局。 */
+.sideTrigger {
+  position: absolute;
+  top: 50%;
+  z-index: 30;
+  width: 52px;
+  min-width: 44px;
+  height: 72px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  color: rgb(28, 28, 28);
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.sideTrigger svg {
+  width: 26px;
+  height: 26px;
+  stroke-width: 2.25;
+}
+
+.sideTrigger:hover,
+.sideTrigger:focus-visible,
+.sideTrigger[aria-pressed='true'] {
+  background: rgb(28, 28, 28);
+  color: rgb(0, 255, 200);
+}
+
+.sideTrigger:focus-visible,
+.platformStack:focus-visible,
+.downloadAction:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 4px;
+}
+
+.cardSurface:focus-visible {
+  position: relative;
+  z-index: 2;
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: -5px;
+}
+
+.sideTrigger:disabled,
+.cardSurface:disabled {
+  cursor: default;
+}
+
+.faqTrigger {
+  left: 24px;
+}
+
+.noticeTrigger {
+  right: 24px;
+}
+
+/* 信息面板保持在文档中提供静态语义，仅通过可见状态开放交互。 */
+.sidePanel {
+  position: absolute;
+  top: 50%;
+  z-index: 18;
+  width: min(300px, 23vw);
+  max-height: min(72svh, 640px);
+  overflow: auto;
+  padding: 24px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  box-shadow: 0 20px 50px rgba(28, 28, 28, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 180ms ease,
+    transform 220ms ease,
+    visibility 220ms ease;
+}
+
+.faqPanel {
+  left: 92px;
+  transform: translate(-18px, -50%);
+}
+
+.noticePanel {
+  right: 92px;
+  transform: translate(18px, -50%);
+}
+
+.downloadChapter[data-visible-side='faq'] .faqPanel,
+.downloadChapter[data-visible-side='notice'] .noticePanel {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transform: translate(0, -50%);
+}
+
+.panelHeading {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 2px solid rgb(28, 28, 28);
+}
+
+.panelHeading > svg {
+  width: 32px;
+  height: 32px;
+}
+
+.panelHeading p,
+.panelHeading h2,
+.panelList h3,
+.panelList p {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.panelHeading p,
+.chapterHeading p {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.panelHeading h2 {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.panelList {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.panelList li {
+  min-height: 44px;
+  padding: 16px 0;
+  border-bottom: 1px solid rgb(174, 174, 174);
+}
+
+.panelList li:last-child {
+  border-bottom: 0;
+}
+
+.panelList h3 {
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.panelList p {
+  margin-top: 6px;
+  color: rgb(72, 72, 72);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.noticePanel .panelList li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.noticePanel .panelList svg {
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  color: rgb(0, 96, 255);
+}
+
+/* 中央堆叠独立消费平台输入，外层章节控制器仍只负责章节推拉。 */
+.platformStack {
+  position: relative;
+  z-index: 10;
+  width: min(560px, calc(100vw - 440px));
+  min-width: 360px;
+  height: min(720px, 86svh);
+  min-height: 560px;
+  outline: none;
+  transform: translateX(0);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.downloadChapter[data-visible-side='faq'] .platformStack {
+  transform: translateX(clamp(96px, 13vw, 188px));
+}
+
+.downloadChapter[data-visible-side='notice'] .platformStack {
+  transform: translateX(clamp(-188px, -13vw, -96px));
+}
+
+.chapterHeading {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 8;
+  display: grid;
+  gap: 4px;
+  text-align: center;
+}
+
+.chapterHeading p,
+.chapterHeading h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.chapterHeading p {
+  color: rgb(0, 96, 255);
+}
+
+.chapterHeading h2 {
+  font-size: clamp(30px, 4vw, 48px);
+  line-height: 1.12;
+}
+
+.cardDeck {
+  position: absolute;
+  inset: 92px 0 0;
+}
+
+.platformCard {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  min-height: 360px;
+  overflow: hidden;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  box-shadow: 0 24px 70px rgba(28, 28, 28, 0.2);
+  transform: translateY(calc(-50% + (var(--card-distance) * 92px))) scale(var(--card-scale));
+  transform-origin: center;
+  transition:
+    opacity 260ms ease,
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.platformCard[data-active='true'] {
+  box-shadow: 0 30px 80px rgba(0, 96, 255, 0.2);
+}
+
+.cardSurface {
+  width: 100%;
+  min-height: 138px;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 26px;
+  border: 0;
+  border-bottom: 1px solid rgb(174, 174, 174);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.platformIcon {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(0, 255, 200);
+}
+
+.platformIcon svg {
+  width: 28px;
+  height: 28px;
+}
+
+.platformCopy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.platformName {
+  font-size: 25px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.platformSummary,
+.platformVersion {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.platformSummary {
+  color: rgb(72, 72, 72);
+}
+
+.platformVersion {
+  min-width: 88px;
+  padding: 8px 10px;
+  border: 1px solid rgb(28, 28, 28);
+  border-radius: 6px;
+  text-align: center;
+}
+
+.cardDetails {
+  display: grid;
+  gap: 18px;
+  padding: 22px 26px 26px;
+}
+
+.cardDetails > p {
+  margin: 0;
+  color: rgb(72, 72, 72);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.releaseMeta {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+}
+
+.releaseMeta div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.releaseMeta dt,
+.releaseMeta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.releaseMeta dt {
+  color: rgb(72, 72, 72);
+}
+
+.releaseMeta dd {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.downloadAction {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 11px 18px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(0, 96, 255);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.downloadAction svg {
+  width: 20px;
+  height: 20px;
+}
+
+.downloadAction:disabled {
+  background: rgb(205, 205, 205);
+  color: rgb(72, 72, 72);
+  cursor: not-allowed;
+}
+
+/* 中等桌面缩窄侧栏占用，同时保留左右侧移关系。 */
+@media (max-width: 1080px) {
+  .sidePanel {
+    width: min(276px, 28vw);
+  }
+
+  .platformStack {
+    width: min(520px, calc(100vw - 320px));
+  }
+
+  .downloadChapter[data-visible-side='faq'] .platformStack {
+    transform: translateX(120px);
+  }
+
+  .downloadChapter[data-visible-side='notice'] .platformStack {
+    transform: translateX(-120px);
+  }
+}
+
+/* Task 9 会继续细化抽屉；当前移动布局先保证内容与命中目标不横向溢出。 */
+@media (max-width: 760px) {
+  .downloadChapter {
+    min-height: 100svh;
+    align-items: center;
+    padding: 72px 16px 16px;
+  }
+
+  .sideTrigger {
+    top: 16px;
+    width: 48px;
+    height: 44px;
+    transform: none;
+  }
+
+  .faqTrigger {
+    left: 16px;
+  }
+
+  .noticeTrigger {
+    right: 16px;
+  }
+
+  .sidePanel {
+    inset: 72px 16px 16px;
+    z-index: 40;
+    width: auto;
+    max-height: none;
+    padding: 20px;
+    transform: translateY(16px);
+  }
+
+  .downloadChapter[data-visible-side='faq'] .faqPanel,
+  .downloadChapter[data-visible-side='notice'] .noticePanel {
+    transform: translateY(0);
+  }
+
+  .platformStack {
+    width: min(100%, 520px);
+    min-width: 0;
+    height: min(660px, calc(100svh - 104px));
+    min-height: 500px;
+  }
+
+  .downloadChapter[data-visible-side='faq'] .platformStack,
+  .downloadChapter[data-visible-side='notice'] .platformStack {
+    transform: none;
+  }
+
+  .chapterHeading h2 {
+    font-size: 32px;
+  }
+
+  .cardDeck {
+    top: 82px;
+  }
+
+  .platformCard {
+    min-height: 336px;
+  }
+
+  .cardSurface {
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 12px;
+    min-height: 126px;
+    padding: 20px;
+  }
+
+  .platformIcon {
+    width: 48px;
+    height: 48px;
+  }
+
+  .platformVersion {
+    grid-column: 1 / -1;
+    width: max-content;
+    min-width: 0;
+  }
+
+  .cardDetails {
+    padding: 18px 20px 20px;
+  }
+}
+
+@media (max-width: 420px) {
+  .platformName {
+    font-size: 22px;
+  }
+
+  .platformCard {
+    min-height: 350px;
+  }
+
+  .releaseMeta div {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+/* 低高度横屏压缩卡片内容，并露出非当前平台的完整选择头部。 */
+@media (max-height: 520px) and (orientation: landscape) {
+  .downloadChapter {
+    min-height: 100svh;
+    padding: 8px 80px;
+  }
+
+  .platformStack {
+    width: min(520px, calc(100vw - 180px));
+    min-width: 0;
+    height: 100svh;
+    min-height: 0;
+  }
+
+  .chapterHeading {
+    gap: 0;
+  }
+
+  .chapterHeading h2 {
+    font-size: 30px;
+  }
+
+  .cardDeck {
+    inset: 62px 0 8px;
+    transform: translateY(28px);
+  }
+
+  .platformCard {
+    min-height: 0;
+    transform: translateY(calc(-50% + (var(--card-distance) * 148px))) scale(var(--card-scale));
+  }
+
+  .cardSurface {
+    min-height: 92px;
+    padding: 12px 18px;
+  }
+
+  .platformIcon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .platformIcon svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .platformName {
+    font-size: 22px;
+  }
+
+  .cardDetails {
+    gap: 8px;
+    padding: 10px 18px 14px;
+  }
+
+  .releaseMeta {
+    gap: 3px;
+  }
+
+  .downloadAction {
+    min-height: 44px;
+    padding: 8px 16px;
+  }
+
+  .downloadChapter[data-visible-side='faq'] .platformStack,
+  .downloadChapter[data-visible-side='notice'] .platformStack {
+    transform: none;
+  }
+
+  .sidePanel {
+    max-height: calc(100svh - 32px);
+  }
+}
+
+/* 降低动态偏好下保留状态结果，但取消所有过渡与侧栏错峰。 */
+@media (prefers-reduced-motion: reduce) {
+  .sideTrigger,
+  .sidePanel,
+  .platformStack,
+  .platformCard {
+    transition: none;
+  }
+
+  .panelHeading,
+  .panelList li {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

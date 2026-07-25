@@ -59,6 +59,7 @@ export function WebsiteExperience() {
       }
     >
       {CHAPTER_REGISTRY.map((chapter, index) => {
+        const RegisteredChapter = chapter.component;
         const visual = deriveChapterVisualState(
           index,
           controller.progress,
@@ -99,6 +100,9 @@ export function WebsiteExperience() {
             ) : null}
             {isExplicitPlaceholder(chapter.id) ? (
               <PlaceholderChapter title={chapter.label} />
+            ) : null}
+            {RegisteredChapter ? (
+              <RegisteredChapter interactive={visual.interactive} />
             ) : null}
           </section>
         );
