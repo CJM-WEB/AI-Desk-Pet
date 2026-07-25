@@ -5,8 +5,25 @@ import {
   deriveChapterVisualState,
   snapChapterProgress
 } from '../components/website-experience/chapter-model';
+import {
+  calculateSwipeDelta,
+  isLocalInputElement
+} from '../components/website-experience/use-website-controller';
 
 describe('官网章节进度模型', () => {
+  it('识别局部滚动输入并忽略短触屏移动', () => {
+    const local = {
+      closest: (selector: string) => selector === '[data-input-scope="local"]'
+        ? {}
+        : null
+    };
+
+    expect(isLocalInputElement(local)).toBe(true);
+    expect(calculateSwipeDelta(500, 470)).toBe(0);
+    expect(calculateSwipeDelta(500, 430)).toBe(1);
+    expect(calculateSwipeDelta(500, 570)).toBe(-1);
+  });
+
   it('限制进度并阻止一次输入跨越相邻章节', () => {
     expect(clampChapterProgress(-1, 5)).toBe(0);
     expect(clampChapterProgress(8, 5)).toBe(4);
