@@ -11,6 +11,7 @@ export type DownloadPlatform =
       systemRequirements: string;
       downloadUrl: string;
       fileName: string;
+      sizeBytes: number;
       sha256: string;
     }
   | {
@@ -45,6 +46,7 @@ export const DOWNLOAD_PLATFORMS: DownloadPlatform[] = [
     systemRequirements: 'Windows 10/11 x64',
     downloadUrl: windowsRelease.downloadUrl,
     fileName: windowsRelease.fileName,
+    sizeBytes: windowsRelease.sizeBytes,
     sha256: windowsRelease.sha256
   },
   {

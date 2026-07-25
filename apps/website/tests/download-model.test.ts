@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import rawManifest from '../content/release-manifest.json';
 import { DOWNLOAD_PLATFORMS } from '../components/website-experience/download/download-content';
+import { releaseManifestSchema } from '../lib/release-manifest';
 import {
   initialDownloadInteraction,
   reduceDownloadInteraction,
@@ -18,6 +20,19 @@ describe('下载模块数据与状态', () => {
       status: 'coming-soon'
     });
     expect('downloadUrl' in DOWNLOAD_PLATFORMS[1]!).toBe(false);
+    expect('sizeBytes' in DOWNLOAD_PLATFORMS[1]!).toBe(false);
+  });
+
+  it('Windows 平台完整保留真实发行清单字段', () => {
+    const release = releaseManifestSchema.parse(rawManifest);
+
+    expect(DOWNLOAD_PLATFORMS[0]).toMatchObject({
+      versionLabel: release.version,
+      sizeBytes: release.sizeBytes,
+      fileName: release.fileName,
+      sha256: release.sha256,
+      downloadUrl: release.downloadUrl
+    });
   });
 
   it('平台索引可循环且不依赖两个固定项目', () => {
