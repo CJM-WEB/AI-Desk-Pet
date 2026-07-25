@@ -1,4 +1,5 @@
-import type { PointerPoint } from './types';
+import { EXPERIENCE_CONFIG } from './config';
+import type { BrandTransformLimits, PointerPoint } from './types';
 
 interface ViewportSize {
   width: number;
@@ -30,16 +31,21 @@ function normalizeFromCenter(value: number, size: number): number {
  */
 export function computeBrandTransform(
   pointer: PointerPoint,
-  viewport: ViewportSize
+  viewport: ViewportSize,
+  limits: BrandTransformLimits = EXPERIENCE_CONFIG.brandTransform
 ): { rotateX: number; rotateY: number; x: number; y: number } {
+  if (!Number.isFinite(pointer.x) || !Number.isFinite(pointer.y)) {
+    return { rotateX: 0, rotateY: 0, x: 0, y: 0 };
+  }
+
   const normalizedX = normalizeFromCenter(pointer.x, viewport.width);
   const normalizedY = normalizeFromCenter(pointer.y, viewport.height);
 
   return {
-    rotateX: canonicalizeZero(normalizedY * -4),
-    rotateY: canonicalizeZero(normalizedX * 5),
-    x: canonicalizeZero(normalizedX * 6),
-    y: canonicalizeZero(normalizedY * 4)
+    rotateX: canonicalizeZero(normalizedY * -limits.maxRotateX),
+    rotateY: canonicalizeZero(normalizedX * limits.maxRotateY),
+    x: canonicalizeZero(normalizedX * limits.maxX),
+    y: canonicalizeZero(normalizedY * limits.maxY)
   };
 }
 

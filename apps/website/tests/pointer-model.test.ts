@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { BrandStage } from '../components/home-experience/BrandStage';
 import { computeCanvasBufferSize } from '../components/home-experience/CursorField';
 import { FilePreview } from '../components/home-experience/FilePreview';
+import { EXPERIENCE_CONFIG } from '../components/home-experience/config';
 import {
   computeBrandTransform,
   computePreviewPosition,
@@ -15,7 +16,45 @@ describe('品牌指针变换', () => {
     expect(computeBrandTransform(
       { x: 1440, y: 0 },
       { width: 1440, height: 900 }
-    )).toEqual({ rotateX: 4, rotateY: 5, x: 6, y: -4 });
+    )).toEqual({ rotateX: 8, rotateY: 10, x: 10, y: -8 });
+  });
+
+  it('将视口外指针限制在已配置的最大倾斜与位移', () => {
+    expect(computeBrandTransform(
+      { x: -500, y: 1400 },
+      { width: 1440, height: 900 }
+    )).toEqual({ rotateX: -8, rotateY: -10, x: -10, y: 8 });
+  });
+
+  it.each([
+    { input: 'x 为 NaN', pointer: { x: Number.NaN, y: 450 } },
+    { input: 'x 为正无穷', pointer: { x: Number.POSITIVE_INFINITY, y: 450 } },
+    { input: 'x 为负无穷', pointer: { x: Number.NEGATIVE_INFINITY, y: 450 } },
+    { input: 'y 为 NaN', pointer: { x: 720, y: Number.NaN } },
+    { input: 'y 为正无穷', pointer: { x: 720, y: Number.POSITIVE_INFINITY } },
+    { input: 'y 为负无穷', pointer: { x: 720, y: Number.NEGATIVE_INFINITY } }
+  ])('任一指针轴非有限时返回安全零变换：$input', ({ pointer }) => {
+    expect(computeBrandTransform(
+      pointer,
+      { width: 1440, height: 900 }
+    )).toEqual({ rotateX: 0, rotateY: 0, x: 0, y: 0 });
+  });
+
+  it('支持传入非对称边界配置', () => {
+    expect(computeBrandTransform(
+      { x: 1440, y: 900 },
+      { width: 1440, height: 900 },
+      { maxRotateX: 3, maxRotateY: 7, maxX: 11, maxY: 13 }
+    )).toEqual({ rotateX: -3, rotateY: 7, x: 11, y: 13 });
+  });
+
+  it('默认边界与显式传入的集中配置结果一致', () => {
+    const pointer = { x: 1200, y: 180 };
+    const viewport = { width: 1440, height: 900 };
+
+    expect(computeBrandTransform(pointer, viewport)).toEqual(
+      computeBrandTransform(pointer, viewport, EXPERIENCE_CONFIG.brandTransform)
+    );
   });
 
   it('在零尺寸视口中返回有限且归零的变换', () => {
@@ -29,14 +68,14 @@ describe('品牌指针变换', () => {
     expect(computeBrandTransform(
       { x: 1440, y: 450 },
       { width: 1440, height: 900 }
-    )).toEqual({ rotateX: 0, rotateY: 5, x: 6, y: 0 });
+    )).toEqual({ rotateX: 0, rotateY: 10, x: 10, y: 0 });
   });
 
   it('在垂直中心线上将水平变换规范为正零', () => {
     expect(computeBrandTransform(
       { x: 720, y: 0 },
       { width: 1440, height: 900 }
-    )).toEqual({ rotateX: 4, rotateY: 0, x: 0, y: -4 });
+    )).toEqual({ rotateX: 8, rotateY: 0, x: 0, y: -8 });
   });
 });
 

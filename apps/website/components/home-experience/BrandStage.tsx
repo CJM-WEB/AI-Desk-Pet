@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties, Ref } from 'react';
-import { APDrawMark } from './APDrawMark';
+import { MagneticAPMark } from './MagneticAPMark';
 import { computeBrandTransform } from './pointer-model';
 import type { PointerPoint } from './types';
 import styles from './home-experience.module.css';
@@ -11,9 +11,9 @@ interface BrandStageProps {
   interactive: boolean;
   isPaused: boolean;
   reducedMotion: boolean;
-  drawAssetFailed?: boolean;
+  magneticAssetFailed?: boolean;
   finalLogoFailed?: boolean;
-  onDrawAssetError?: () => void;
+  onMagneticAssetError?: () => void;
   onFinalLogoError?: () => void;
 }
 
@@ -23,9 +23,9 @@ export function BrandStage({
   interactive,
   isPaused,
   reducedMotion,
-  drawAssetFailed = false,
+  magneticAssetFailed = false,
   finalLogoFailed = false,
-  onDrawAssetError,
+  onMagneticAssetError,
   onFinalLogoError
 }: BrandStageProps) {
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
@@ -72,12 +72,15 @@ export function BrandStage({
             {!finalLogoFailed ? (
               <img
                 className={styles.brandLogo}
+                data-testid="brand-logo"
                 src="/AP.png"
                 alt=""
                 onError={onFinalLogoError}
               />
             ) : null}
-            {!drawAssetFailed ? <APDrawMark onImageError={onDrawAssetError} /> : null}
+            {!magneticAssetFailed ? (
+              <MagneticAPMark onImageError={onMagneticAssetError} />
+            ) : null}
           </div>
           <h1>AI Pet</h1>
         </div>

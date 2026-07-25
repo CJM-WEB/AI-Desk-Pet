@@ -16,26 +16,36 @@ import { useIntroTimeline } from './use-intro-timeline';
 export function HomeExperience() {
   const [initializationFailed, setInitializationFailed] = useState(false);
   const [introActive, setIntroActive] = useState(false);
-  const [drawAssetFailed, setDrawAssetFailed] = useState(false);
+  const [magneticAssetFailed, setMagneticAssetFailed] = useState(false);
   const [finalLogoFailed, setFinalLogoFailed] = useState(false);
   const [previewLayer, setPreviewLayer] = useState<HTMLDivElement | null>(null);
   const scopeRef = useRef<HTMLElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const brandRef = useRef<HTMLDivElement | null>(null);
   const wordmarkRef = useRef<HTMLHeadingElement | null>(null);
-  const drawPathsRef = useRef<SVGPathElement[]>([]);
+  const finalLogoRef = useRef<HTMLImageElement | null>(null);
+  const magneticPiecesRef = useRef<HTMLImageElement[]>([]);
   const introSkipRef = useRef<() => void>(() => undefined);
   const timelineActionsRef = useRef<ExperienceTimelineActions | null>(null);
   const requestIntroSkip = useCallback(() => introSkipRef.current(), []);
   const handleInitializationError = useCallback(() => {
     setInitializationFailed(true);
   }, []);
+  const handleMagneticAssetError = useCallback(() => {
+    setMagneticAssetFailed(true);
+    handleInitializationError();
+  }, [handleInitializationError]);
+  const handleFinalLogoError = useCallback(() => {
+    setFinalLogoFailed(true);
+    handleInitializationError();
+  }, [handleInitializationError]);
   const introRefs = useMemo(() => ({
     scope: scopeRef,
     overlay: overlayRef,
     brand: brandRef,
     wordmark: wordmarkRef,
-    drawPaths: drawPathsRef
+    finalLogo: finalLogoRef,
+    magneticPieces: magneticPiecesRef
   }), []);
   const handleDrawingDone = useCallback(
     () => timelineActionsRef.current?.drawingDone(),
@@ -69,7 +79,10 @@ export function HomeExperience() {
     }
 
     wordmarkRef.current = node.querySelector('h1');
-    drawPathsRef.current = Array.from(node.querySelectorAll('svg path'));
+    finalLogoRef.current = node.querySelector('[data-testid="brand-logo"]');
+    magneticPiecesRef.current = Array.from(
+      node.querySelectorAll<HTMLImageElement>('[data-testid="magnetic-logo-piece"]')
+    );
   }, []);
   const exitProgress = Math.max(0, (controller.progress - 0.62) / 0.38);
   const experienceStyle = {
@@ -81,9 +94,26 @@ export function HomeExperience() {
   } as CSSProperties;
 
   useLayoutEffect(() => {
+    const finalLogoFailedBeforeHydration = finalLogoRef.current?.complete
+      && finalLogoRef.current.naturalWidth === 0;
+    const magneticAssetFailedBeforeHydration = magneticPiecesRef.current.some(
+      (piece) => piece.complete && piece.naturalWidth === 0
+    );
+
+    if (finalLogoFailedBeforeHydration || magneticAssetFailedBeforeHydration) {
+      if (finalLogoFailedBeforeHydration) {
+        setFinalLogoFailed(true);
+      }
+      if (magneticAssetFailedBeforeHydration) {
+        setMagneticAssetFailed(true);
+      }
+      handleInitializationError();
+      return;
+    }
+
     // 服务端默认不显示遮罩；仅在 hydration 完成后启用开场视觉。
     setIntroActive(true);
-  }, []);
+  }, [handleInitializationError]);
   const overlayActive = introActive
     && !staticFallback
     && (controller.phase === 'loading' || isIntroPhase(controller.phase));
@@ -134,10 +164,10 @@ export function HomeExperience() {
         interactive={!staticFallback && (controller.phase === 'interactive' || controller.phase === 'exiting')}
         isPaused={controller.isPaused}
         reducedMotion={staticFallback || controller.prefersReducedMotion}
-        drawAssetFailed={drawAssetFailed}
+        magneticAssetFailed={magneticAssetFailed}
         finalLogoFailed={finalLogoFailed}
-        onDrawAssetError={() => setDrawAssetFailed(true)}
-        onFinalLogoError={() => setFinalLogoFailed(true)}
+        onMagneticAssetError={handleMagneticAssetError}
+        onFinalLogoError={handleFinalLogoError}
       />
       <div
         ref={setPreviewLayer}

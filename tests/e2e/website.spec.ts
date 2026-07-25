@@ -125,6 +125,60 @@ function collectRuntimeErrors(page: Page): string[] {
   return errors;
 }
 
+interface IntroCrossfadeSample {
+  captured: boolean;
+  logoOpacity: number;
+  visiblePieceCount: number;
+  visiblePieceFilters: string[];
+  pieceSources: Array<string | null>;
+}
+
+/**
+ * 逐帧采样开场图层，确保完整 Logo 与至少一个磁吸切片在 drawing 阶段同时可见。
+ */
+async function sampleIntroCrossfade(
+  page: Page,
+  timeoutMs = 2_800
+): Promise<IntroCrossfadeSample> {
+  return page.evaluate((timeout) => new Promise<IntroCrossfadeSample>((resolveSample) => {
+    const startedAt = performance.now();
+
+    const sampleFrame = () => {
+      const home = document.querySelector<HTMLElement>('[data-testid="home-experience"]');
+      const logo = document.querySelector<HTMLElement>('[data-testid="brand-logo"]');
+      const pieces = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="magnetic-logo-piece"]')
+      );
+      const logoOpacity = logo ? Number(getComputedStyle(logo).opacity) : 0;
+      const visiblePieces = pieces.filter(
+        (piece) => Number(getComputedStyle(piece).opacity) > 0
+      );
+      const captured = home?.getAttribute('data-phase') === 'drawing'
+        && logoOpacity > 0
+        && logoOpacity < 1
+        && visiblePieces.length > 0;
+      const result = {
+        captured,
+        logoOpacity,
+        visiblePieceCount: visiblePieces.length,
+        visiblePieceFilters: visiblePieces.map(
+          (piece) => getComputedStyle(piece).filter
+        ),
+        pieceSources: pieces.map((piece) => piece.getAttribute('src'))
+      };
+
+      if (captured || performance.now() - startedAt >= timeout) {
+        resolveSample(result);
+        return;
+      }
+
+      requestAnimationFrame(sampleFrame);
+    };
+
+    requestAnimationFrame(sampleFrame);
+  }), timeoutMs);
+}
+
 async function readProgress(page: Page): Promise<number> {
   return Number(await page.locator(HOME).getAttribute('data-progress'));
 }
@@ -172,6 +226,20 @@ test('matchMedia 初始化异常时进入静态回退且不出现黑屏', async 
   await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
   await expect(page.locator('[data-testid="cursor-field"]')).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
+});
+
+test('AP Logo 素材加载失败时进入静态回退并保留品牌标题', async ({ page }) => {
+  await page.route('**/AP.png', (route) => route.abort());
+
+  await page.goto('/');
+  const home = page.locator(HOME);
+  const overlay = page.locator('[data-layer="intro"]');
+
+  await expect(home).toHaveAttribute('data-initialization-failed', 'true');
+  await expect(home).toHaveAttribute('data-phase', 'interactive');
+  await expect(overlay).toHaveAttribute('data-active', 'false');
+  await expect(overlay).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
 });
 
 test('Canvas 尺寸观察器初始化异常时进入静态回退', async ({ page }) => {
@@ -591,11 +659,31 @@ test('暂停恢复不会让现有粒子瞬间过期', async ({ page }) => {
   expect(await iconHandle!.evaluate((element) => element.isConnected)).toBe(true);
 });
 
-test('自动开场在约三秒内完成并保持三条描边、最终 Logo 与 1440 安全布局', async ({ page }) => {
+test('开场暂停恢复会冻结 drawing 时间线并在 focus 后完成', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  const home = page.locator(HOME);
+
+  await page.goto('/?seed=42');
+  await expect(home).toHaveAttribute('data-phase', 'drawing');
+  const crossfadeSample = await sampleIntroCrossfade(page);
+  expect(crossfadeSample.captured).toBe(true);
+
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.waitForTimeout(1_200);
+  await expect(home).toHaveAttribute('data-phase', 'drawing');
+
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(home).toHaveAttribute('data-phase', 'interactive', { timeout: 3_000 });
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('自动开场在约三秒内完成磁吸归位并保持最终 Logo 与 1440 安全布局', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
+  // 在页面内记录阶段切换时刻，避免把 Playwright 轮询开销计入动画耗时。
   await page.addInitScript((homeSelector) => {
     Reflect.set(window, '__introStartedAt', null);
+    Reflect.set(window, '__introInteractiveAt', null);
     Reflect.set(window, '__introPhaseHistory', []);
     const recordPhase = () => {
       const phase = document.querySelector(homeSelector)?.getAttribute('data-phase');
@@ -605,6 +693,9 @@ test('自动开场在约三秒内完成并保持三条描边、最终 Logo 与 1
       }
       if (phase === 'drawing' && Reflect.get(window, '__introStartedAt') === null) {
         Reflect.set(window, '__introStartedAt', performance.now());
+      }
+      if (phase === 'interactive' && Reflect.get(window, '__introInteractiveAt') === null) {
+        Reflect.set(window, '__introInteractiveAt', performance.now());
       }
     };
     const observer = new MutationObserver(recordPhase);
@@ -619,48 +710,40 @@ test('自动开场在约三秒内完成并保持三条描边、最终 Logo 与 1
 
   await page.goto('/?seed=42');
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', /drawing|settling/);
-  const firstDrawPath = page.locator('[data-testid="ap-draw-mark"] path').first();
-  await expect.poll(async () => Number.parseFloat(
-    await firstDrawPath.evaluate((path) => getComputedStyle(path).strokeDashoffset)
-  )).toBeLessThan(0.82);
-  const drawingLayers = await page.evaluate(() => {
-    const brand = document.querySelector<HTMLElement>('[data-layer="brand"]');
-    const overlay = document.querySelector<HTMLElement>('[data-layer="intro"]');
-    const logo = document.querySelector<HTMLElement>('[data-testid="brand-stage"] img[src="/AP.png"]');
-    const drawMark = document.querySelector<HTMLElement>('[data-testid="ap-draw-mark"]');
-    const cursor = document.querySelector<HTMLElement>('[data-layer="cursor"]');
-    return {
-      brandZIndex: Number(getComputedStyle(brand!).zIndex),
-      overlayZIndex: Number(getComputedStyle(overlay!).zIndex),
-      overlayBackground: getComputedStyle(overlay!).backgroundColor,
-      overlayOpacity: getComputedStyle(overlay!).opacity,
-      logoOpacity: getComputedStyle(logo!).opacity,
-      drawOpacity: getComputedStyle(drawMark!).opacity,
-      cursorVisibility: getComputedStyle(cursor!).visibility
-    };
-  });
-  expect(drawingLayers.brandZIndex).toBeGreaterThan(drawingLayers.overlayZIndex);
-  expect(drawingLayers.overlayBackground).toBe('rgb(0, 0, 0)');
-  expect(drawingLayers.overlayOpacity).toBe('1');
-  expect(drawingLayers.logoOpacity).toBe('0');
-  expect(drawingLayers.drawOpacity).toBe('1');
-  expect(drawingLayers.cursorVisibility).toBe('hidden');
+  const pieces = page.locator('[data-testid="magnetic-logo-piece"]');
+  await expect(pieces).toHaveCount(6);
+  await expect(pieces.first()).toHaveAttribute('src', '/AP.png');
+  const magneticLayers = await sampleIntroCrossfade(page);
+  expect(magneticLayers.captured).toBe(true);
+  expect(magneticLayers.logoOpacity).toBeGreaterThan(0);
+  expect(magneticLayers.logoOpacity).toBeLessThan(1);
+  expect(magneticLayers.visiblePieceCount).toBeGreaterThan(0);
+  expect(
+    magneticLayers.visiblePieceFilters.every((filter) => filter.includes('invert(1)'))
+  ).toBe(true);
+  expect(new Set(magneticLayers.pieceSources)).toEqual(new Set(['/AP.png']));
   await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1440-drawing.png'),
+    path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1440-magnetic.png'),
     fullPage: true
   });
   await expect(page.locator(HOME)).toHaveAttribute(
     'data-phase',
     'interactive',
-    { timeout: 3_300 }
+    { timeout: 5_000 }
   );
 
-  const introEvidence = await page.evaluate(() => ({
-    startedAt: Reflect.get(window, '__introStartedAt'),
-    elapsedMs: performance.now() - Number(Reflect.get(window, '__introStartedAt')),
-    phases: Reflect.get(window, '__introPhaseHistory') as string[]
-  }));
+  const introEvidence = await page.evaluate(() => {
+    const startedAt = Reflect.get(window, '__introStartedAt');
+    const interactiveAt = Reflect.get(window, '__introInteractiveAt');
+    return {
+      startedAt,
+      interactiveAt,
+      elapsedMs: Number(interactiveAt) - Number(startedAt),
+      phases: Reflect.get(window, '__introPhaseHistory') as string[]
+    };
+  });
   expect(introEvidence.startedAt).toEqual(expect.any(Number));
+  expect(introEvidence.interactiveAt).toEqual(expect.any(Number));
   expect(introEvidence.elapsedMs).toBeLessThanOrEqual(3_300);
   expect(introEvidence.phases).toContain('drawing');
   expect(introEvidence.phases).toContain('settling');
@@ -669,10 +752,11 @@ test('自动开场在约三秒内完成并保持三条描边、最终 Logo 与 1
   await expect(page.locator('[data-layer="intro"]')).toBeHidden();
   await expect(page.getByRole('heading', { name: 'AI Pet' })).toHaveCSS('color', 'rgb(28, 28, 28)');
 
-  const drawMark = page.locator('[data-testid="ap-draw-mark"]');
-  await expect(drawMark.locator('path')).toHaveCount(3);
-  await expect(drawMark.locator('image')).toHaveAttribute('href', '/AP.png');
-  await expect(page.locator(`${BRAND} img[src="/AP.png"]`)).toBeVisible();
+  await expect(page.locator('[data-testid="brand-logo"]')).toBeVisible();
+  await expect(page.locator('[data-testid="brand-logo"]')).toHaveCSS('filter', 'none');
+  for (const piece of await pieces.all()) {
+    await expect(piece).toBeHidden();
+  }
 
   await expect.poll(() => page.locator(ICON).count(), { timeout: 6_000 }).toBeGreaterThanOrEqual(2);
   await page.mouse.move(720, 450);
@@ -749,6 +833,10 @@ for (const skipCase of introSkipCases) {
 
     await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
     await expect(page.locator(HOME)).toHaveAttribute('data-progress', '0.0000');
+    await expect(page.locator('[data-testid="brand-logo"]')).toBeVisible();
+    for (const piece of await page.locator('[data-testid="magnetic-logo-piece"]').all()) {
+      await expect(piece).toBeHidden();
+    }
     expect(runtimeErrors).toEqual([]);
   });
 }
@@ -865,20 +953,27 @@ test('减少动态效果直接进入稳定交互并保留品牌与文件语义',
 
   const reducedMotionEvidence = await page.locator(BRAND).evaluate((brand) => {
     const transformNode = brand.firstElementChild;
-    const drawMark = brand.querySelector('[data-testid="ap-draw-mark"]');
+    const magneticMark = brand.querySelector('[data-testid="magnetic-ap-mark"]');
+    const pieces = Array.from(
+      brand.querySelectorAll<HTMLElement>('[data-testid="magnetic-logo-piece"]')
+    );
     const logo = brand.querySelector('img[src="/AP.png"]');
     const fileIcon = document.querySelector('[data-testid="file-icon"] img');
     return {
       brandTransform: getComputedStyle(brand).transform,
       innerTransform: transformNode ? getComputedStyle(transformNode).transform : null,
-      drawDisplay: drawMark ? getComputedStyle(drawMark).display : null,
+      magneticDisplay: magneticMark ? getComputedStyle(magneticMark).display : null,
+      pieceTransitions: pieces.map((piece) => getComputedStyle(piece).transitionDuration),
       logoTransitionDuration: logo ? getComputedStyle(logo).transitionDuration : null,
       fileAnimation: fileIcon ? getComputedStyle(fileIcon).animationName : null
     };
   });
   expect(reducedMotionEvidence.brandTransform).toBe('none');
   expect(reducedMotionEvidence.innerTransform).toBe('none');
-  expect(reducedMotionEvidence.drawDisplay).toBe('none');
+  expect(reducedMotionEvidence.magneticDisplay).toBe('none');
+  expect(
+    reducedMotionEvidence.pieceTransitions.every((duration) => duration === '0s')
+  ).toBe(true);
   expect(reducedMotionEvidence.logoTransitionDuration).toBe('0s');
   expect(reducedMotionEvidence.fileAnimation).toBe('none');
   expect(runtimeErrors).toEqual([]);

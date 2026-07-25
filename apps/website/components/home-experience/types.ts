@@ -12,15 +12,53 @@ export interface PointerPoint {
   y: number;
 }
 
+export interface MagneticClipBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export interface MagneticPieceConfig {
+  id: string;
+  clip: MagneticClipBounds;
+  transformOrigin: string;
+  from: {
+    x: number;
+    y: number;
+    rotation: number;
+    scale: number;
+  };
+}
+
+export interface MagneticIntroConfig {
+  assetPath: string;
+  blackHoldSeconds: number;
+  firstPieceDelaySeconds: number;
+  pieceSeconds: number;
+  pieceStaggerSeconds: number;
+  lockSeconds: number;
+  ease: string;
+  pieces: readonly MagneticPieceConfig[];
+}
+
+export interface BrandTransformLimits {
+  maxRotateX: number;
+  maxRotateY: number;
+  maxX: number;
+  maxY: number;
+}
+
 export interface ExperienceConfig {
   colors: {
     background: string;
     pointerField: string;
   };
   intro: {
-    drawSeconds: number;
     settleSeconds: number;
+    magnetic: MagneticIntroConfig;
   };
+  brandTransform: BrandTransformLimits;
   progress: {
     wheelScale: number;
     keyboardStep: number;

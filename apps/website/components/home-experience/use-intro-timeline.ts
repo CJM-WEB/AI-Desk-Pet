@@ -4,6 +4,7 @@ import { gsap } from 'gsap';
 import { useCallback, useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import { EXPERIENCE_CONFIG } from './config';
+import { getMagneticLockAtSeconds } from './magnetic-intro-model';
 import type { ExperiencePhase } from './types';
 import { isIntroPhase } from './use-experience-controller';
 
@@ -12,7 +13,8 @@ interface IntroTimelineRefs {
   overlay: RefObject<HTMLDivElement | null>;
   brand: RefObject<HTMLDivElement | null>;
   wordmark: RefObject<HTMLHeadingElement | null>;
-  drawPaths: RefObject<SVGPathElement[]>;
+  finalLogo: RefObject<HTMLImageElement | null>;
+  magneticPieces: RefObject<HTMLImageElement[]>;
 }
 
 interface UseIntroTimelineInput {
@@ -59,6 +61,7 @@ export function useIntroTimeline({
     const overlay = refs.overlay.current;
     const brand = refs.brand.current;
     const wordmark = refs.wordmark.current;
+    const finalLogo = refs.finalLogo.current;
 
     if (overlay) {
       overlay.style.display = '';
@@ -71,9 +74,15 @@ export function useIntroTimeline({
       wordmark.style.opacity = '1';
       wordmark.style.letterSpacing = '0em';
     }
-    for (const path of refs.drawPaths.current) {
-      path.style.strokeDasharray = '1';
-      path.style.strokeDashoffset = '0';
+    if (finalLogo) {
+      finalLogo.style.filter = '';
+      finalLogo.style.opacity = '1';
+      finalLogo.style.visibility = 'visible';
+    }
+    for (const piece of refs.magneticPieces.current) {
+      piece.style.opacity = '0';
+      piece.style.visibility = 'hidden';
+      piece.style.transform = '';
     }
   }, [refs]);
 
@@ -120,9 +129,18 @@ export function useIntroTimeline({
     const overlay = refs.overlay.current;
     const brand = refs.brand.current;
     const wordmark = refs.wordmark.current;
-    const paths = refs.drawPaths.current;
+    const finalLogo = refs.finalLogo.current;
+    const pieces = refs.magneticPieces.current;
+    const magnetic = EXPERIENCE_CONFIG.intro.magnetic;
 
-    if (!scope || !overlay || !brand || !wordmark || paths.length === 0) {
+    if (
+      !scope
+      || !overlay
+      || !brand
+      || !wordmark
+      || !finalLogo
+      || pieces.length !== magnetic.pieces.length
+    ) {
       finishWithoutMotion();
       return;
     }
@@ -147,23 +165,67 @@ export function useIntroTimeline({
         timelineRef.current = timeline;
 
         timeline
-          .set(paths, { strokeDasharray: 1, strokeDashoffset: 1 })
+          .set(finalLogo, { autoAlpha: 0, filter: 'invert(1)' })
           .set(wordmark, { opacity: 0, letterSpacing: '0.28em' })
-          .to(paths, {
-            strokeDashoffset: 0,
-            duration: EXPERIENCE_CONFIG.intro.drawSeconds,
-            stagger: 0.12,
+
+        magnetic.pieces.forEach((pieceConfig, index) => {
+          const piece = pieces[index]!;
+          const startsAt = magnetic.blackHoldSeconds
+            + magnetic.firstPieceDelaySeconds
+            + (index * magnetic.pieceStaggerSeconds);
+
+          timeline.fromTo(
+            piece,
+            {
+              autoAlpha: 0,
+              x: pieceConfig.from.x,
+              y: pieceConfig.from.y,
+              rotation: pieceConfig.from.rotation,
+              scale: pieceConfig.from.scale
+            },
+            {
+              autoAlpha: 1,
+              x: 0,
+              y: 0,
+              rotation: 0,
+              scale: 1,
+              duration: magnetic.pieceSeconds,
+              ease: magnetic.ease
+            },
+            startsAt
+          );
+        });
+
+        const lockAt = getMagneticLockAtSeconds(magnetic);
+        timeline
+          .to(finalLogo, {
+            autoAlpha: 1,
+            duration: magnetic.lockSeconds,
+            ease: 'none'
+          }, lockAt)
+          .to(pieces, {
+            autoAlpha: 0,
+            duration: magnetic.lockSeconds,
+            ease: 'none',
             onComplete: () => {
               if (!suppressCallbacksRef.current) {
                 callbacksRef.current.onDrawingDone();
               }
             }
-          })
+          }, lockAt)
           .to(brand, { scale: 1.08, duration: 0.18 })
           .to(brand, { scale: 0.72, duration: 0.62, ease: 'back.out(1.8)' })
           .to(overlay, {
             backgroundColor: EXPERIENCE_CONFIG.colors.background,
             duration: EXPERIENCE_CONFIG.intro.settleSeconds
+          }, '<')
+          .to(finalLogo, {
+            filter: 'invert(0)',
+            duration: EXPERIENCE_CONFIG.intro.settleSeconds,
+            ease: 'none',
+            onComplete: () => {
+              finalLogo.style.filter = '';
+            }
           }, '<')
           .to(wordmark, {
             opacity: 1,
