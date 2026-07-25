@@ -22,6 +22,8 @@ describe('支付方式滚筒', () => {
     expect(paymentRelativeOffset(3, 0, 4)).toBe(-1);
     expect(paymentRelativeOffset(1, 0, 2)).toBe(1);
     expect(paymentRelativeOffset(5, 0, 6)).toBe(-1);
+    expect(paymentRelativeOffset(3, 0, 0)).toBe(0);
+    expect(paymentRelativeOffset(3, 0, -3)).toBe(0);
   });
 
   it('当前卡片最大且只有当前卡片可打开付款码', () => {

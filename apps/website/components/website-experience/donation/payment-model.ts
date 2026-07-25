@@ -4,6 +4,7 @@ export function wrapPaymentIndex(index: number, length: number): number {
 }
 
 export function paymentRelativeOffset(index: number, active: number, length: number): number {
+  if (length <= 0) return 0;
   const forward = wrapPaymentIndex(index - active, length);
   return forward > length / 2 ? forward - length : forward;
 }
