@@ -14,11 +14,10 @@ import {
   wrapPaymentIndex
 } from './payment-model';
 import { QrDialog } from './QrDialog';
+import type { ChapterRuntimeProps } from '../types';
 import styles from './donation.module.css';
 
-export interface DonationChapterProps {
-  interactive: boolean;
-}
+export type DonationChapterProps = ChapterRuntimeProps;
 
 type PaymentCardStyle = CSSProperties & {
   '--payment-opacity': number;
@@ -57,7 +56,11 @@ function getPaymentCardStyle(
 /**
  * 以配置驱动支付滚筒，并把付款码展示隔离到根级对话框。
  */
-export function DonationChapter({ interactive }: DonationChapterProps) {
+export function DonationChapter({
+  interactive,
+  reducedMotion = false,
+  staticFallback = false
+}: DonationChapterProps) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [openMethod, setOpenMethod] = useState<
     (typeof PAYMENT_METHODS)[number] | null
@@ -201,6 +204,8 @@ export function DonationChapter({ interactive }: DonationChapterProps) {
       className={styles.donationChapter}
       data-testid="donation-chapter"
       data-dialog-open={openMethod !== null}
+      data-reduced-motion={reducedMotion}
+      data-static-fallback={staticFallback}
     >
       <h2 className={styles.donationTitle}>{DONATION_TITLE}</h2>
 

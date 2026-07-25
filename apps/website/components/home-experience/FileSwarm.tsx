@@ -421,7 +421,7 @@ export function FileSwarm({
   ]);
 
   useEffect(() => {
-    if (!running || isPaused || exitComplete) {
+    if (!running || isPaused || exitComplete || reducedMotion) {
       clearFrame();
       if (exitComplete) {
         particlesRef.current = [];
@@ -464,7 +464,14 @@ export function FileSwarm({
       cancelled = true;
       clearFrame();
     };
-  }, [clearFrame, commitActivePreview, exitComplete, isPaused, running]);
+  }, [
+    clearFrame,
+    commitActivePreview,
+    exitComplete,
+    isPaused,
+    reducedMotion,
+    running
+  ]);
 
   useEffect(() => () => {
     clearFrame();

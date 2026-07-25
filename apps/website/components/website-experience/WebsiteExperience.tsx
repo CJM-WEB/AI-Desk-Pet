@@ -60,7 +60,7 @@ export function WebsiteExperience() {
       className={styles.experience}
       data-testid="website-experience"
       data-static-fallback={staticFallback ? 'active' : 'ready'}
-      data-reduced-motion={controller.prefersReducedMotion}
+      data-reduced-motion={reducedMotion}
       data-active-chapter={activeChapter.id}
       data-initialization-failed={staticFallback}
     >
@@ -110,7 +110,11 @@ export function WebsiteExperience() {
               <PlaceholderChapter title={chapter.label} />
             ) : null}
             {RegisteredChapter ? (
-              <RegisteredChapter interactive={visual.interactive} />
+              <RegisteredChapter
+                interactive={visual.interactive}
+                reducedMotion={reducedMotion}
+                staticFallback={staticFallback}
+              />
             ) : null}
           </section>
         );

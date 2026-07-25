@@ -35,11 +35,10 @@ import type {
   VisibleDownloadSide
 } from './download-model';
 import { formatReleaseSize } from '../../../lib/release-manifest';
+import type { ChapterRuntimeProps } from '../types';
 import styles from './download.module.css';
 
-export interface DownloadChapterProps {
-  interactive: boolean;
-}
+export type DownloadChapterProps = ChapterRuntimeProps;
 
 type DownloadCardStyle = CSSProperties & {
   '--card-distance': number;
@@ -83,7 +82,11 @@ function getCardStyle(distance: number, length: number): DownloadCardStyle {
   };
 }
 
-export function DownloadChapter({ interactive }: DownloadChapterProps) {
+export function DownloadChapter({
+  interactive,
+  reducedMotion = false,
+  staticFallback = false
+}: DownloadChapterProps) {
   const [state, dispatch] = useReducer(
     reduceDownloadInteraction,
     initialDownloadInteraction
@@ -147,10 +150,15 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
           phase: 'open'
         };
       });
-    }, PANEL_CLOSE_DURATION_MS);
+    }, reducedMotion || staticFallback ? 0 : PANEL_CLOSE_DURATION_MS);
 
     return () => window.clearTimeout(timeout);
-  }, [panelFlow.pendingSide, panelFlow.phase]);
+  }, [
+    panelFlow.pendingSide,
+    panelFlow.phase,
+    reducedMotion,
+    staticFallback
+  ]);
 
   // 每次可见侧栏变化都建立独立作用域，切换或卸载时完整回收动画状态。
   useEffect(() => {
@@ -160,7 +168,8 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
       || !visibleSide
       || panelFlow.phase !== 'open'
       || !interactive
-      || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      || reducedMotion
+      || staticFallback
     ) {
       return;
     }
@@ -188,7 +197,13 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     }, scope);
 
     return () => context.revert();
-  }, [interactive, panelFlow.phase, visibleSide]);
+  }, [
+    interactive,
+    panelFlow.phase,
+    reducedMotion,
+    staticFallback,
+    visibleSide
+  ]);
 
   // 平台堆叠消费自己的滚轮和方向键，避免触发外层章节切换。
   const selectRelativePlatform = (delta: number) => {
@@ -329,6 +344,8 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
       data-visible-side={visibleSide ?? 'none'}
       data-panel-phase={panelFlow.phase}
       data-pending-side={panelFlow.pendingSide ?? 'none'}
+      data-reduced-motion={reducedMotion}
+      data-static-fallback={staticFallback}
       onKeyDown={handleRootKeyDown}
     >
       <button

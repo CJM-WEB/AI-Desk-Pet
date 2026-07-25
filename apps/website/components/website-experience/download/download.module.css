@@ -474,7 +474,7 @@
   }
 
   .sidePanel {
-    inset: auto 16px 16px;
+    inset: auto 136px 16px 16px;
     z-index: 40;
     width: auto;
     max-height: min(42svh, 340px);

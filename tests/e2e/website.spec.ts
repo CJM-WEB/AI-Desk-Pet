@@ -319,6 +319,31 @@ test('减少动态效果时文件保持分离可聚焦且预览立即定位', as
     Math.abs(firstBox!.x - secondBox!.x) + Math.abs(firstBox!.y - secondBox!.y)
   ).toBeGreaterThan(8);
 
+  const initialPosition = await firstIcon.evaluate((icon) => {
+    const rect = icon.getBoundingClientRect();
+    const style = getComputedStyle(icon);
+    return {
+      left: rect.left,
+      top: rect.top,
+      transform: style.transform,
+      x: style.getPropertyValue('--file-x'),
+      y: style.getPropertyValue('--file-y')
+    };
+  });
+  await page.waitForTimeout(700);
+  const settledPosition = await firstIcon.evaluate((icon) => {
+    const rect = icon.getBoundingClientRect();
+    const style = getComputedStyle(icon);
+    return {
+      left: rect.left,
+      top: rect.top,
+      transform: style.transform,
+      x: style.getPropertyValue('--file-x'),
+      y: style.getPropertyValue('--file-y')
+    };
+  });
+  expect(settledPosition).toEqual(initialPosition);
+
   await firstIcon.focus();
   await expect(firstIcon).toBeFocused();
   await expect(page.locator(PREVIEW)).toBeVisible();
@@ -1045,6 +1070,98 @@ test('568x320 五章节主内容避让移动导航且保持完整可见', async 
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth))
     .toBeLessThanOrEqual(568);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const viewports = [
+    { width: 390, height: 844 },
+    { width: 375, height: 667 },
+    { width: 568, height: 320 }
+  ];
+  const sides = [
+    { id: 'faq', trigger: '显示常见问题' },
+    { id: 'notice', trigger: '显示安装前须知' }
+  ] as const;
+
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await page.goto('/?seed=42');
+
+    const experience = page.locator('[data-testid="website-experience"]');
+    const download = page.locator('[data-testid="download-chapter"]');
+    const next = page.getByRole('button', { name: '下一章节' });
+    await next.click();
+    await next.click();
+    await expect(experience).toHaveAttribute('data-active-chapter', 'download');
+
+    for (const side of sides) {
+      const trigger = page.getByRole('button', { name: side.trigger });
+      const triggerBounds = await trigger.boundingBox();
+      expect(triggerBounds).not.toBeNull();
+      expect(triggerBounds!.width).toBeGreaterThanOrEqual(44);
+      expect(triggerBounds!.height).toBeGreaterThanOrEqual(44);
+      await trigger.click();
+      await expect(download).toHaveAttribute('data-visible-side', side.id);
+
+      const panel = download.locator(`[data-side-panel="${side.id}"]`);
+      await expect(panel).toHaveAttribute('aria-hidden', 'false');
+      await expect(panel.locator('[data-panel-item]').first()).toBeVisible();
+
+      const overlappingTexts = await panel.evaluate((panelNode) => {
+        const navigation = document.querySelector(
+          'nav[aria-label="章节导航"]'
+        );
+        if (!navigation) return ['章节导航不存在'];
+
+        const panelRect = panelNode.getBoundingClientRect();
+        const navigationRect = navigation.getBoundingClientRect();
+        return Array.from(panelNode.querySelectorAll<HTMLElement>('h2, h3, p'))
+          .filter((textNode) => {
+            const style = getComputedStyle(textNode);
+            return style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && Number(style.opacity) > 0;
+          })
+          .filter((textNode) => {
+            const textRect = textNode.getBoundingClientRect();
+            const visibleRect = {
+              left: Math.max(0, panelRect.left, textRect.left),
+              right: Math.min(window.innerWidth, panelRect.right, textRect.right),
+              top: Math.max(0, panelRect.top, textRect.top),
+              bottom: Math.min(window.innerHeight, panelRect.bottom, textRect.bottom)
+            };
+            if (
+              visibleRect.right <= visibleRect.left
+              || visibleRect.bottom <= visibleRect.top
+            ) {
+              return false;
+            }
+
+            return visibleRect.left < navigationRect.right
+              && visibleRect.right > navigationRect.left
+              && visibleRect.top < navigationRect.bottom
+              && visibleRect.bottom > navigationRect.top;
+          })
+          .map((textNode) => textNode.textContent?.trim() ?? '');
+      });
+      expect(
+        overlappingTexts,
+        `${viewport.width}x${viewport.height} ${side.id} 可见文本不应与章节导航相交`
+      ).toEqual([]);
+    }
+
+    const widths = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+      viewport: window.innerWidth
+    }));
+    expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+    expect(widths.body).toBeLessThanOrEqual(widths.viewport);
+  }
+
   expect(runtimeErrors).toEqual([]);
 });
 

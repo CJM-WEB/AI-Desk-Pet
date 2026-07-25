@@ -1,16 +1,12 @@
 import type { ComponentType } from 'react';
 import { DonationChapter } from './donation/DonationChapter';
 import { DownloadChapter } from './download/DownloadChapter';
-import type { ChapterId } from './types';
-
-export interface RegisteredChapterProps {
-  interactive: boolean;
-}
+import type { ChapterId, ChapterRuntimeProps } from './types';
 
 interface ChapterDefinition {
   id: ChapterId;
   label: string;
-  component: ComponentType<RegisteredChapterProps> | null;
+  component: ComponentType<ChapterRuntimeProps> | null;
 }
 
 export const CHAPTER_REGISTRY = [

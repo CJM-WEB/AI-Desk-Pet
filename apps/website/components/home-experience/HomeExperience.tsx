@@ -77,7 +77,8 @@ export function HomeExperience({
     isPaused,
     refs: introRefs,
     onDrawingDone,
-    onSettled
+    onSettled,
+    onInitializationError: handleInitializationError
   });
 
   useEffect(() => {
@@ -132,7 +133,7 @@ export function HomeExperience({
       ref={setScope}
       className={styles.experience}
       data-testid="home-experience"
-      data-static-fallback="ready"
+      data-static-fallback={staticFallback}
       data-phase={staticFallback ? 'interactive' : phase}
       data-progress={exitProgress.toFixed(4)}
       data-initialization-failed={staticFallback}

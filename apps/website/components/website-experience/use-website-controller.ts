@@ -391,42 +391,69 @@ export function useWebsiteController(
     const clearTouchStart = () => {
       touchStartYRef.current = null;
     };
+    const listenerTeardowns: Array<() => void> = [];
+    let tornDown = false;
 
-    try {
-      isDocumentHiddenRef.current = document.visibilityState === 'hidden';
-      syncPausedState();
-      window.addEventListener('wheel', handleWheel, { passive: false });
-      window.addEventListener('keydown', handleKeyDown);
-      window.addEventListener('click', handleClick);
-      window.addEventListener('pointermove', handlePointerMove);
-      window.addEventListener('pointerdown', handlePointerDown);
-      window.addEventListener('pointerup', handlePointerUp);
-      window.addEventListener('pointercancel', clearTouchStart);
-      window.addEventListener('blur', pause);
-      window.addEventListener('focus', resume);
-      document.addEventListener('visibilitychange', handleVisibilityChange);
-    } catch {
-      notifyInitializationError();
-      return;
-    }
+    const registerWindowListener = <K extends keyof WindowEventMap>(
+      type: K,
+      listener: (this: Window, event: WindowEventMap[K]) => unknown,
+      options?: boolean | AddEventListenerOptions
+    ) => {
+      window.addEventListener(type, listener, options);
+      listenerTeardowns.push(() => {
+        window.removeEventListener(type, listener);
+      });
+    };
+    const registerDocumentListener = <K extends keyof DocumentEventMap>(
+      type: K,
+      listener: (this: Document, event: DocumentEventMap[K]) => unknown
+    ) => {
+      document.addEventListener(type, listener);
+      listenerTeardowns.push(() => {
+        document.removeEventListener(type, listener);
+      });
+    };
+    const teardown = () => {
+      if (tornDown) return;
+      tornDown = true;
 
-    return () => {
       cancelSnap();
+      touchStartYRef.current = null;
       if (pointerFrameRef.current !== null) {
         window.cancelAnimationFrame(pointerFrameRef.current);
         pointerFrameRef.current = null;
       }
-      window.removeEventListener('wheel', handleWheel);
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('click', handleClick);
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerdown', handlePointerDown);
-      window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener('pointercancel', clearTouchStart);
-      window.removeEventListener('blur', pause);
-      window.removeEventListener('focus', resume);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+
+      for (const removeListener of listenerTeardowns.reverse()) {
+        try {
+          removeListener();
+        } catch {
+          // 单个浏览器监听器清理失败时继续回收其余监听器。
+        }
+      }
+      listenerTeardowns.length = 0;
     };
+
+    try {
+      isDocumentHiddenRef.current = document.visibilityState === 'hidden';
+      syncPausedState();
+      registerWindowListener('wheel', handleWheel, { passive: false });
+      registerWindowListener('keydown', handleKeyDown);
+      registerWindowListener('click', handleClick);
+      registerWindowListener('pointermove', handlePointerMove);
+      registerWindowListener('pointerdown', handlePointerDown);
+      registerWindowListener('pointerup', handlePointerUp);
+      registerWindowListener('pointercancel', clearTouchStart);
+      registerWindowListener('blur', pause);
+      registerWindowListener('focus', resume);
+      registerDocumentListener('visibilitychange', handleVisibilityChange);
+    } catch {
+      teardown();
+      notifyInitializationError();
+      return;
+    }
+
+    return teardown;
   }, [
     cancelSnap,
     chapterCount,

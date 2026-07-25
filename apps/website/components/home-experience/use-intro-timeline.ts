@@ -24,6 +24,7 @@ interface UseIntroTimelineInput {
   refs: IntroTimelineRefs;
   onDrawingDone: () => void;
   onSettled: () => void;
+  onInitializationError: () => void;
 }
 
 /**
@@ -35,15 +36,24 @@ export function useIntroTimeline({
   isPaused,
   refs,
   onDrawingDone,
-  onSettled
+  onSettled,
+  onInitializationError
 }: UseIntroTimelineInput): { skip: () => void } {
   const contextRef = useRef<gsap.Context | null>(null);
   const timelineRef = useRef<gsap.core.Timeline | null>(null);
   const settledRef = useRef(false);
   const suppressCallbacksRef = useRef(false);
-  const callbacksRef = useRef({ onDrawingDone, onSettled });
+  const callbacksRef = useRef({
+    onDrawingDone,
+    onSettled,
+    onInitializationError
+  });
 
-  callbacksRef.current = { onDrawingDone, onSettled };
+  callbacksRef.current = {
+    onDrawingDone,
+    onSettled,
+    onInitializationError
+  };
 
   const killTimeline = useCallback(() => {
     timelineRef.current?.kill();
@@ -246,6 +256,7 @@ export function useIntroTimeline({
         applyStableVisualState();
         callbacksRef.current.onDrawingDone();
         notifySettled();
+        callbacksRef.current.onInitializationError();
       }
     }
   }, [
