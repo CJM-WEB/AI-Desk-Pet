@@ -37,6 +37,12 @@ function advancePanelTransition() {
   });
 }
 
+function pressEnter(element: HTMLElement) {
+  fireEvent.keyDown(element, { key: 'Enter' });
+  fireEvent.click(element, { detail: 0 });
+  fireEvent.keyUp(element, { key: 'Enter' });
+}
+
 describe('下载安装章节', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -134,6 +140,79 @@ describe('下载安装章节', () => {
     fireEvent.blur(trigger);
     advancePanelTransition();
     expect(root.dataset.visibleSide).toBe('none');
+  });
+
+  it('pointer 与 focus 仍持有时再次点击同侧会立即关闭锁定面板', () => {
+    render(<DownloadChapter interactive />);
+    const trigger = screen.getByRole('button', { name: '显示常见问题' });
+    const root = screen.getByTestId('download-chapter');
+
+    fireEvent.pointerEnter(trigger);
+    fireEvent.focus(trigger);
+    fireEvent.click(trigger);
+    fireEvent.click(trigger);
+
+    expect(root.dataset.visibleSide).toBe('faq');
+    expect(root.dataset.panelPhase).toBe('closing');
+    expect(root.dataset.pendingSide).toBe('none');
+
+    advancePanelTransition();
+    expect(root.dataset.visibleSide).toBe('none');
+  });
+
+  it('focus 持有时连续按 Enter 会锁定后立即解除并关闭面板', () => {
+    render(<DownloadChapter interactive />);
+    const trigger = screen.getByRole('button', { name: '显示常见问题' });
+    const root = screen.getByTestId('download-chapter');
+
+    fireEvent.focus(trigger);
+    pressEnter(trigger);
+    pressEnter(trigger);
+
+    expect(root.dataset.panelPhase).toBe('closing');
+    advancePanelTransition();
+    expect(root.dataset.visibleSide).toBe('none');
+  });
+
+  it('另一侧临时 focus 释放后恢复仍由 pointer 持有的面板', () => {
+    render(<DownloadChapter interactive />);
+    const faqTrigger = screen.getByRole('button', { name: '显示常见问题' });
+    const noticeTrigger = screen.getByRole('button', { name: '显示安装前须知' });
+    const root = screen.getByTestId('download-chapter');
+
+    fireEvent.pointerEnter(faqTrigger);
+    fireEvent.focus(noticeTrigger);
+    expect(root.dataset.visibleSide).toBe('faq');
+    expect(root.dataset.panelPhase).toBe('closing');
+    expect(root.dataset.pendingSide).toBe('notice');
+    advancePanelTransition();
+    expect(root.dataset.visibleSide).toBe('notice');
+
+    fireEvent.blur(noticeTrigger);
+    expect(root.dataset.visibleSide).toBe('notice');
+    expect(root.dataset.panelPhase).toBe('closing');
+    expect(root.dataset.pendingSide).toBe('faq');
+    advancePanelTransition();
+    expect(root.dataset.visibleSide).toBe('faq');
+  });
+
+  it('显式关闭期间释放 hold 后，新的 pointerEnter 可以再次预览', () => {
+    render(<DownloadChapter interactive />);
+    const trigger = screen.getByRole('button', { name: '显示常见问题' });
+    const root = screen.getByTestId('download-chapter');
+
+    fireEvent.pointerEnter(trigger);
+    fireEvent.focus(trigger);
+    fireEvent.click(trigger);
+    fireEvent.click(trigger);
+    fireEvent.pointerLeave(trigger);
+    fireEvent.blur(trigger);
+    advancePanelTransition();
+    expect(root.dataset.visibleSide).toBe('none');
+
+    fireEvent.pointerEnter(trigger);
+    expect(root.dataset.visibleSide).toBe('faq');
+    expect(root.dataset.panelPhase).toBe('open');
   });
 
   it('锁定面板从一侧切换时先关闭当前侧再展开目标侧', () => {
@@ -249,6 +328,45 @@ describe('下载安装章节', () => {
 
     expect(
       screen.getByRole('button', { name: '重置下载视图，当前为 Windows' })
+    ).toBeTruthy();
+  });
+
+  it('已有 pointer 拖动时忽略第二指针，第一指针仍可完成切换', () => {
+    render(<DownloadChapter interactive />);
+    const stack = screen.getByRole('group', { name: '选择下载平台' });
+
+    fireEvent.pointerDown(stack, {
+      clientY: 200,
+      pointerId: 21,
+      pointerType: 'touch'
+    });
+    fireEvent.pointerDown(stack, {
+      clientY: 100,
+      pointerId: 22,
+      pointerType: 'touch'
+    });
+    fireEvent.pointerMove(stack, {
+      clientY: 150,
+      pointerId: 21,
+      pointerType: 'touch'
+    });
+
+    expect(
+      screen.getByRole('button', { name: '重置下载视图，当前为 macOS' })
+    ).toBeTruthy();
+
+    fireEvent.pointerUp(stack, {
+      clientY: 150,
+      pointerId: 21,
+      pointerType: 'touch'
+    });
+    fireEvent.pointerMove(stack, {
+      clientY: 20,
+      pointerId: 22,
+      pointerType: 'touch'
+    });
+    expect(
+      screen.getByRole('button', { name: '重置下载视图，当前为 macOS' })
     ).toBeTruthy();
   });
 

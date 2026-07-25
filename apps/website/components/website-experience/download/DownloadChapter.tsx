@@ -29,7 +29,11 @@ import {
   rotatePlatformIndex,
   visibleDownloadSide
 } from './download-model';
-import type { DownloadSide } from './download-model';
+import type {
+  DownloadSide,
+  PreviewHoldSource,
+  VisibleDownloadSide
+} from './download-model';
 import { formatReleaseSize } from '../../../lib/release-manifest';
 import styles from './download.module.css';
 
@@ -41,10 +45,6 @@ type DownloadCardStyle = CSSProperties & {
   '--card-distance': number;
   '--card-scale': number;
 };
-
-type VisibleDownloadSide = Exclude<DownloadSide, null>;
-
-type PreviewHoldSource = 'pointer' | 'focus';
 
 type PanelFlowState = {
   visibleSide: DownloadSide;
@@ -94,13 +94,6 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     phase: 'open'
   });
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const previewHoldsRef = useRef<Record<
-    VisibleDownloadSide,
-    Record<PreviewHoldSource, boolean>
-  >>({
-    faq: { pointer: false, focus: false },
-    notice: { pointer: false, focus: false }
-  });
   const platformDragRef = useRef<PlatformPointerDrag | null>(null);
   const requestedSide = visibleDownloadSide(state);
   const visibleSide = panelFlow.visibleSide;
@@ -245,6 +238,8 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
 
     event.preventDefault();
     event.stopPropagation();
+    if (platformDragRef.current) return;
+
     platformDragRef.current = {
       pointerId: event.pointerId,
       startY: event.clientY,
@@ -262,10 +257,11 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     event: ReactPointerEvent<HTMLDivElement>
   ) => {
     const drag = platformDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag) return;
 
     event.preventDefault();
     event.stopPropagation();
+    if (drag.pointerId !== event.pointerId) return;
     if (drag.switched) return;
 
     const deltaY = event.clientY - drag.startY;
@@ -279,10 +275,11 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     event: ReactPointerEvent<HTMLDivElement>
   ) => {
     const drag = platformDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag) return;
 
     event.preventDefault();
     event.stopPropagation();
+    if (drag.pointerId !== event.pointerId) return;
     platformDragRef.current = null;
 
     try {
@@ -306,29 +303,22 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     side: VisibleDownloadSide,
     source: PreviewHoldSource
   ) => {
-    previewHoldsRef.current[side][source] = true;
-    if (interactive) dispatch({ type: 'PREVIEW_SIDE', side });
+    if (interactive) {
+      dispatch({ type: 'SET_PREVIEW_HOLD', side, source, held: true });
+    }
   };
 
   const releaseSidePreview = (
     side: VisibleDownloadSide,
     source: PreviewHoldSource
   ) => {
-    const holds = previewHoldsRef.current[side];
-    holds[source] = false;
-    if (!holds.pointer && !holds.focus) {
-      dispatch({ type: 'CLEAR_PREVIEW', side });
-    }
+    dispatch({ type: 'SET_PREVIEW_HOLD', side, source, held: false });
   };
 
   const toggleSideLock = (side: VisibleDownloadSide) => {
     if (!interactive) return;
 
     dispatch({ type: 'TOGGLE_LOCK', side });
-    const holds = previewHoldsRef.current[side];
-    if (holds.pointer || holds.focus) {
-      dispatch({ type: 'PREVIEW_SIDE', side });
-    }
   };
 
   return (
