@@ -47,6 +47,23 @@ export function calculateSwipeDelta(startY: number, currentY: number): -1 | 0 | 
 }
 
 /**
+ * 把原始滚轮输入适配为受相邻章节边界约束的进度。
+ */
+export function applyWheelChapterInput(input: {
+  progress: number;
+  deltaY: number;
+  settledIndex: number;
+  chapterCount: number;
+}): number {
+  return applyChapterDelta(
+    input.progress,
+    input.deltaY * EXPERIENCE_CONFIG.progress.wheelScale,
+    input.settledIndex,
+    input.chapterCount
+  );
+}
+
+/**
  * 统一管理官网章节输入、开场跳过和可恢复的章节吸附动画。
  */
 export function useWebsiteController(
@@ -258,12 +275,12 @@ export function useWebsiteController(
 
       event.preventDefault();
       cancelSnap();
-      const next = applyChapterDelta(
-        progressRef.current,
-        event.deltaY * EXPERIENCE_CONFIG.progress.wheelScale,
-        settledIndexRef.current,
+      const next = applyWheelChapterInput({
+        progress: progressRef.current,
+        deltaY: event.deltaY,
+        settledIndex: settledIndexRef.current,
         chapterCount
-      );
+      });
       commitProgress(next);
       startSnap(snapChapterProgress(next, chapterCount));
     };

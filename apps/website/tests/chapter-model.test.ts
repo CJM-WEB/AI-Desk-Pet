@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { EXPERIENCE_CONFIG } from '../components/home-experience/config';
 import {
   applyChapterDelta,
   clampChapterProgress,
@@ -10,6 +9,7 @@ import {
   snapChapterProgress
 } from '../components/website-experience/chapter-model';
 import {
+  applyWheelChapterInput,
   calculateSwipeDelta,
   isLocalInputElement
 } from '../components/website-experience/use-website-controller';
@@ -35,13 +35,25 @@ describe('官网章节进度模型', () => {
     expect(applyChapterDelta(2, -8, 2, 5)).toBe(1);
   });
 
-  it('滚轮增量按配置缩放且不依赖已移除的速度模型', () => {
-    expect(applyChapterDelta(
-      0.2,
-      100 * EXPERIENCE_CONFIG.progress.wheelScale,
-      0,
-      5
-    )).toBeCloseTo(0.265);
+  it('滚轮输入按配置缩放并限制在稳定章节的相邻范围', () => {
+    expect(applyWheelChapterInput({
+      progress: 0.2,
+      deltaY: 100,
+      settledIndex: 0,
+      chapterCount: 5
+    })).toBeCloseTo(0.265);
+    expect(applyWheelChapterInput({
+      progress: 2,
+      deltaY: 100_000,
+      settledIndex: 2,
+      chapterCount: 5
+    })).toBe(3);
+    expect(applyWheelChapterInput({
+      progress: 2,
+      deltaY: -100_000,
+      settledIndex: 2,
+      chapterCount: 5
+    })).toBe(1);
   });
 
   it('吸附到最近章节并保持硬边界', () => {
