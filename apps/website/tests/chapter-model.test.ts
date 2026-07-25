@@ -42,7 +42,8 @@ describe('官网章节进度模型', () => {
     expect(deriveChapterVisualState(1, 0.5, true)).toMatchObject({
       opacity: 0.5,
       scale: 1,
-      blurPx: 0
+      blurPx: 0,
+      contrast: 1
     });
   });
 });

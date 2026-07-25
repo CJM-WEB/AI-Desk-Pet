@@ -40,7 +40,9 @@ export function deriveChapterVisualState(
     opacity,
     scale,
     blurPx: reducedMotion ? 0 : Math.min(1, Math.abs(distance)) * 10,
-    contrast: 1 - Math.min(1, Math.abs(distance)) * 0.18,
+    contrast: reducedMotion
+      ? 1
+      : 1 - Math.min(1, Math.abs(distance)) * 0.18,
     zIndex: exiting ? 1 : 2,
     visible,
     interactive: Math.abs(distance) < 0.0001
