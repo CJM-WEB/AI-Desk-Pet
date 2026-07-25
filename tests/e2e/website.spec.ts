@@ -14,6 +14,7 @@ const PREVIEW = '[data-testid="file-preview"]';
 const SWARM = '[data-active-count]';
 const CANVAS = '[data-testid="cursor-field"]';
 const BRAND = '[data-testid="brand-stage"]';
+const DONATION = '[data-testid="donation-chapter"]';
 const SCREENSHOT_DIRECTORY = resolve(
   REPOSITORY_ROOT,
   'tests/.playwright-output/website/screenshots'
@@ -879,6 +880,71 @@ test('PageDown 以缩放和透明度推进非纵向滚动章节并在终点卸�
   await expect(page.locator(SWARM)).toHaveCount(0);
   await expect(page.locator(PREVIEW)).toHaveCount(0);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 568, height: 320 });
+  await enterInteractive(page);
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  });
+  await expect(page.locator('[data-chapter-id]')).toHaveCount(5);
+
+  const donationSection = page.locator('[data-chapter-id="donation"]');
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    if (await donationSection.getAttribute('data-interactive') === 'true') {
+      break;
+    }
+    await page.evaluate(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'PageDown',
+        bubbles: true,
+        cancelable: true
+      }));
+    });
+    await page.waitForTimeout(400);
+  }
+  await expect(donationSection).toHaveAttribute('data-interactive', 'true');
+
+  const donation = page.locator(DONATION);
+  const roller = donation.getByRole('group', { name: '选择付款方式' });
+  await expect(roller).toBeVisible();
+  await expectInsideViewport(page, roller);
+
+  const cardBounds = await donation.locator('[data-payment-id]').evaluateAll(
+    (cards) => cards.map((card) => {
+      const bounds = card.getBoundingClientRect();
+      return {
+        left: bounds.left,
+        right: bounds.right,
+        top: bounds.top,
+        bottom: bounds.bottom,
+        height: bounds.height
+      };
+    })
+  );
+  for (const bounds of cardBounds) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-1);
+    expect(bounds.right).toBeLessThanOrEqual(569);
+    expect(bounds.top).toBeGreaterThanOrEqual(-1);
+    expect(bounds.bottom).toBeLessThanOrEqual(321);
+    expect(bounds.height).toBeGreaterThanOrEqual(44);
+  }
+
+  const layoutState = await page.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth
+  }));
+  expect(layoutState.documentWidth).toBeLessThanOrEqual(layoutState.viewportWidth);
+  expect(layoutState.bodyWidth).toBeLessThanOrEqual(layoutState.viewportWidth);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'donation-568x320.png')
+  });
   expect(runtimeErrors).toEqual([]);
 });
 

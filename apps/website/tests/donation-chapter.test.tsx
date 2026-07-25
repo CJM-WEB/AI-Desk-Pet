@@ -93,6 +93,24 @@ describe('捐款章节', () => {
     expect(document.activeElement).not.toBe(roller);
   });
 
+  it('支付按钮聚焦后 Escape 退出局部输入且不冒泡到外层', () => {
+    const outerKeyDown = vi.fn();
+    render(
+      <div onKeyDown={outerKeyDown}>
+        <DonationChapter interactive />
+      </div>
+    );
+    const paymentButton = screen.getByRole('button', {
+      name: '打开微信付款码'
+    });
+    paymentButton.focus();
+
+    fireEvent.keyDown(paymentButton, { key: 'Escape' });
+
+    expect(document.activeElement).not.toBe(paymentButton);
+    expect(outerKeyDown).not.toHaveBeenCalled();
+  });
+
   it('触屏拖动超过阈值只响应首个 pointerId 并只切换一次', () => {
     render(<DonationChapter interactive />);
     const roller = screen.getByRole('group', { name: '选择付款方式' });

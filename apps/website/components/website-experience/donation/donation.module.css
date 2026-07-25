@@ -310,21 +310,24 @@
 
 @media (max-height: 560px) and (orientation: landscape) {
   .donationChapter {
-    grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.2fr);
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
     grid-template-rows: 1fr;
-    gap: 20px;
-    padding: 16px 56px;
+    gap: 16px;
+    padding: 12px 20px;
   }
 
   .donationTitle {
+    min-width: 0;
     align-self: center;
     font-size: 32px;
     text-align: left;
+    overflow-wrap: anywhere;
   }
 
   .paymentRoller {
+    min-width: 0;
     width: min(100%, 480px);
-    height: min(100svh - 32px, 360px);
+    height: min(100svh - 24px, 360px);
   }
 
   .qrPanel {
@@ -339,6 +342,32 @@
 
   .qrMedia {
     width: min(300px, 48svh);
+  }
+}
+
+@media (max-width: 640px) and (max-height: 560px) and (orientation: landscape) {
+  .donationChapter {
+    grid-template-columns: minmax(0, 0.76fr) minmax(0, 1.24fr);
+    gap: 12px;
+    padding-inline: 12px;
+  }
+
+  .donationTitle {
+    font-size: 28px;
+  }
+
+  .paymentRoller {
+    width: 100%;
+  }
+
+  .paymentCard {
+    min-width: 0;
+    height: 156px;
+    padding: 16px;
+  }
+
+  .paymentName {
+    font-size: 30px;
   }
 }
 

@@ -114,7 +114,18 @@ export function DonationChapter({ interactive }: DonationChapterProps) {
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      event.currentTarget.blur();
+      const focusedElement = event.currentTarget.ownerDocument.activeElement;
+      if (
+        focusedElement instanceof HTMLElement
+        && event.currentTarget.contains(focusedElement)
+      ) {
+        focusedElement.blur();
+        return;
+      }
+
+      if (event.target instanceof HTMLElement) {
+        event.target.blur();
+      }
     }
   };
 
