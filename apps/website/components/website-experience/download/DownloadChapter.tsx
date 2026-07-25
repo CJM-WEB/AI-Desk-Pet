@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
   WheelEvent as ReactWheelEvent
 } from 'react';
 import {
@@ -29,6 +30,7 @@ import {
   visibleDownloadSide
 } from './download-model';
 import type { DownloadSide } from './download-model';
+import { formatReleaseSize } from '../../../lib/release-manifest';
 import styles from './download.module.css';
 
 export interface DownloadChapterProps {
@@ -40,9 +42,24 @@ type DownloadCardStyle = CSSProperties & {
   '--card-scale': number;
 };
 
-function formatFileSize(sizeBytes: number): string {
-  return `${(sizeBytes / 1024 / 1024).toFixed(1)} MB`;
-}
+type VisibleDownloadSide = Exclude<DownloadSide, null>;
+
+type PreviewHoldSource = 'pointer' | 'focus';
+
+type PanelFlowState = {
+  visibleSide: DownloadSide;
+  pendingSide: DownloadSide;
+  phase: 'open' | 'closing';
+};
+
+type PlatformPointerDrag = {
+  pointerId: number;
+  startY: number;
+  switched: boolean;
+};
+
+const PANEL_CLOSE_DURATION_MS = 220;
+const PLATFORM_DRAG_THRESHOLD_PX = 40;
 
 // 计算最短循环距离，使平台数量增加后仍保持连续堆叠。
 function getCircularDistance(index: number, activeIndex: number, length: number): number {
@@ -71,8 +88,76 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     reduceDownloadInteraction,
     initialDownloadInteraction
   );
+  const [panelFlow, setPanelFlow] = useState<PanelFlowState>({
+    visibleSide: null,
+    pendingSide: null,
+    phase: 'open'
+  });
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const visibleSide = visibleDownloadSide(state);
+  const previewHoldsRef = useRef<Record<
+    VisibleDownloadSide,
+    Record<PreviewHoldSource, boolean>
+  >>({
+    faq: { pointer: false, focus: false },
+    notice: { pointer: false, focus: false }
+  });
+  const platformDragRef = useRef<PlatformPointerDrag | null>(null);
+  const requestedSide = visibleDownloadSide(state);
+  const visibleSide = panelFlow.visibleSide;
+
+  // 当前侧先进入 closing，结束后才把 pendingSide 提升为可见侧。
+  useEffect(() => {
+    setPanelFlow((current) => {
+      if (requestedSide === current.visibleSide) {
+        return current.phase === 'closing'
+          ? {
+              visibleSide: current.visibleSide,
+              pendingSide: null,
+              phase: 'open'
+            }
+          : current;
+      }
+
+      if (current.visibleSide === null) {
+        return {
+          visibleSide: requestedSide,
+          pendingSide: null,
+          phase: 'open'
+        };
+      }
+
+      if (
+        current.phase === 'closing'
+        && current.pendingSide === requestedSide
+      ) {
+        return current;
+      }
+
+      return {
+        visibleSide: current.visibleSide,
+        pendingSide: requestedSide,
+        phase: 'closing'
+      };
+    });
+  }, [requestedSide]);
+
+  useEffect(() => {
+    if (panelFlow.phase !== 'closing') return;
+
+    const timeout = window.setTimeout(() => {
+      setPanelFlow((current) => {
+        if (current.phase !== 'closing') return current;
+
+        return {
+          visibleSide: current.pendingSide,
+          pendingSide: null,
+          phase: 'open'
+        };
+      });
+    }, PANEL_CLOSE_DURATION_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [panelFlow.pendingSide, panelFlow.phase]);
 
   // 每次可见侧栏变化都建立独立作用域，切换或卸载时完整回收动画状态。
   useEffect(() => {
@@ -80,6 +165,7 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     if (
       !scope
       || !visibleSide
+      || panelFlow.phase !== 'open'
       || !interactive
       || window.matchMedia('(prefers-reduced-motion: reduce)').matches
     ) {
@@ -109,7 +195,7 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     }, scope);
 
     return () => context.revert();
-  }, [interactive, visibleSide]);
+  }, [interactive, panelFlow.phase, visibleSide]);
 
   // 平台堆叠消费自己的滚轮和方向键，避免触发外层章节切换。
   const selectRelativePlatform = (delta: number) => {
@@ -152,6 +238,62 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     }
   };
 
+  const handlePlatformPointerDown = (
+    event: ReactPointerEvent<HTMLDivElement>
+  ) => {
+    if (!interactive || event.pointerType === 'mouse') return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    platformDragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      switched: false
+    };
+
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // 某些浏览器在指针离开前不会开放捕获，局部状态仍可正常结束。
+    }
+  };
+
+  const handlePlatformPointerMove = (
+    event: ReactPointerEvent<HTMLDivElement>
+  ) => {
+    const drag = platformDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (drag.switched) return;
+
+    const deltaY = event.clientY - drag.startY;
+    if (Math.abs(deltaY) <= PLATFORM_DRAG_THRESHOLD_PX) return;
+
+    drag.switched = true;
+    selectRelativePlatform(deltaY < 0 ? 1 : -1);
+  };
+
+  const finishPlatformPointer = (
+    event: ReactPointerEvent<HTMLDivElement>
+  ) => {
+    const drag = platformDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    platformDragRef.current = null;
+
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+    } catch {
+      // 指针取消时浏览器可能已自动释放捕获，无需重复处理。
+    }
+  };
+
   const handleRootKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Escape') return;
 
@@ -160,16 +302,33 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
     dispatch({ type: 'RESET' });
   };
 
-  const previewSide = (side: Exclude<DownloadSide, null>) => {
+  const holdSidePreview = (
+    side: VisibleDownloadSide,
+    source: PreviewHoldSource
+  ) => {
+    previewHoldsRef.current[side][source] = true;
     if (interactive) dispatch({ type: 'PREVIEW_SIDE', side });
   };
 
-  const clearSidePreview = (side: Exclude<DownloadSide, null>) => {
-    dispatch({ type: 'CLEAR_PREVIEW', side });
+  const releaseSidePreview = (
+    side: VisibleDownloadSide,
+    source: PreviewHoldSource
+  ) => {
+    const holds = previewHoldsRef.current[side];
+    holds[source] = false;
+    if (!holds.pointer && !holds.focus) {
+      dispatch({ type: 'CLEAR_PREVIEW', side });
+    }
   };
 
-  const toggleSideLock = (side: Exclude<DownloadSide, null>) => {
-    if (interactive) dispatch({ type: 'TOGGLE_LOCK', side });
+  const toggleSideLock = (side: VisibleDownloadSide) => {
+    if (!interactive) return;
+
+    dispatch({ type: 'TOGGLE_LOCK', side });
+    const holds = previewHoldsRef.current[side];
+    if (holds.pointer || holds.focus) {
+      dispatch({ type: 'PREVIEW_SIDE', side });
+    }
   };
 
   return (
@@ -178,6 +337,8 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
       className={styles.downloadChapter}
       data-testid="download-chapter"
       data-visible-side={visibleSide ?? 'none'}
+      data-panel-phase={panelFlow.phase}
+      data-pending-side={panelFlow.pendingSide ?? 'none'}
       onKeyDown={handleRootKeyDown}
     >
       <button
@@ -186,10 +347,10 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
         aria-label="显示常见问题"
         aria-pressed={state.lockedSide === 'faq'}
         disabled={!interactive}
-        onPointerEnter={() => previewSide('faq')}
-        onPointerLeave={() => clearSidePreview('faq')}
-        onFocus={() => previewSide('faq')}
-        onBlur={() => clearSidePreview('faq')}
+        onPointerEnter={() => holdSidePreview('faq', 'pointer')}
+        onPointerLeave={() => releaseSidePreview('faq', 'pointer')}
+        onFocus={() => holdSidePreview('faq', 'focus')}
+        onBlur={() => releaseSidePreview('faq', 'focus')}
         onClick={() => toggleSideLock('faq')}
       >
         <ChevronRight aria-hidden="true" />
@@ -198,7 +359,7 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
       <aside
         className={`${styles.sidePanel} ${styles.faqPanel}`}
         aria-label="常见问题"
-        aria-hidden={visibleSide !== 'faq'}
+        aria-hidden={visibleSide !== 'faq' || panelFlow.phase === 'closing'}
         data-side-panel="faq"
       >
         <div className={styles.panelHeading} data-panel-heading>
@@ -226,6 +387,10 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
         aria-label="选择下载平台"
         onWheel={handlePlatformWheel}
         onKeyDown={handlePlatformKeyDown}
+        onPointerDown={handlePlatformPointerDown}
+        onPointerMove={handlePlatformPointerMove}
+        onPointerUp={finishPlatformPointer}
+        onPointerCancel={finishPlatformPointer}
       >
         <div className={styles.chapterHeading}>
           <p>AI PET DESKTOP</p>
@@ -289,7 +454,13 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
                           </div>
                           <div>
                             <dt>大小</dt>
-                            <dd>{formatFileSize(platform.sizeBytes)}</dd>
+                            <dd>{formatReleaseSize(platform.sizeBytes)}</dd>
+                          </div>
+                          <div>
+                            <dt>SHA-256</dt>
+                            <dd className={styles.releaseHash}>
+                              <code>{platform.sha256}</code>
+                            </dd>
                           </div>
                         </dl>
                         <a
@@ -298,7 +469,7 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
                           download={platform.fileName}
                         >
                           <Download aria-hidden="true" />
-                          下载 Windows
+                          下载 {platform.name}
                         </a>
                       </>
                     ) : (
@@ -322,7 +493,7 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
       <aside
         className={`${styles.sidePanel} ${styles.noticePanel}`}
         aria-label="安装前须知"
-        aria-hidden={visibleSide !== 'notice'}
+        aria-hidden={visibleSide !== 'notice' || panelFlow.phase === 'closing'}
         data-side-panel="notice"
       >
         <div className={styles.panelHeading} data-panel-heading>
@@ -351,10 +522,10 @@ export function DownloadChapter({ interactive }: DownloadChapterProps) {
         aria-label="显示安装前须知"
         aria-pressed={state.lockedSide === 'notice'}
         disabled={!interactive}
-        onPointerEnter={() => previewSide('notice')}
-        onPointerLeave={() => clearSidePreview('notice')}
-        onFocus={() => previewSide('notice')}
-        onBlur={() => clearSidePreview('notice')}
+        onPointerEnter={() => holdSidePreview('notice', 'pointer')}
+        onPointerLeave={() => releaseSidePreview('notice', 'pointer')}
+        onFocus={() => holdSidePreview('notice', 'focus')}
+        onBlur={() => releaseSidePreview('notice', 'focus')}
         onClick={() => toggleSideLock('notice')}
       >
         <ChevronLeft aria-hidden="true" />
