@@ -24,6 +24,11 @@
   pointer-events: auto;
 }
 
+/* 捐款内容覆盖共享文件层，但仅滚筒接管指针，外围文件仍可被命中。 */
+.chapter[data-chapter-id='donation'] {
+  pointer-events: none;
+}
+
 .placeholderContent {
   min-height: 100%;
   display: grid;

@@ -70,7 +70,8 @@ export function WebsiteExperience() {
           '--chapter-scale': visual.scale,
           '--chapter-blur': `${visual.blurPx}px`,
           '--chapter-contrast': visual.contrast,
-          zIndex: visual.zIndex
+          // 捐款内容位于共享文件层上方，透明区域仍通过 CSS 让文件保持可交互。
+          zIndex: chapter.id === 'donation' ? 3 : visual.zIndex
         } as CSSProperties;
 
         return (

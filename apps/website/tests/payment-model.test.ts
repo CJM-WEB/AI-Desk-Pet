@@ -9,8 +9,10 @@ import {
 describe('支付方式滚筒', () => {
   it('配置微信和支付宝且路径可替换', () => {
     expect(PAYMENT_METHODS.map((item) => item.id)).toEqual(['wechat', 'alipay']);
-    expect(PAYMENT_METHODS.every((item) => item.qrImagePath.startsWith('/payments/')))
-      .toBe(true);
+    expect(PAYMENT_METHODS.map((item) => item.qrImagePath)).toEqual([
+      '/WechatPay.jpg',
+      '/Alipay.jpg'
+    ]);
   });
 
   it('任意数量都能循环并计算最短相对距离', () => {

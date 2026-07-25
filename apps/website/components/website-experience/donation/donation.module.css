@@ -1,0 +1,377 @@
+.donationChapter {
+  position: relative;
+  z-index: 3;
+  min-height: 100%;
+  display: grid;
+  grid-template-rows:
+    minmax(124px, 0.72fr)
+    minmax(360px, 1.45fr)
+    minmax(48px, 0.38fr);
+  align-items: center;
+  overflow: hidden;
+  padding: 24px;
+  background: transparent;
+  color: rgb(28, 28, 28);
+}
+
+.donationTitle {
+  position: relative;
+  z-index: 3;
+  align-self: end;
+  justify-self: center;
+  max-width: 980px;
+  margin: 0;
+  color: rgb(90, 90, 90);
+  font-size: 52px;
+  font-weight: 650;
+  line-height: 1.16;
+  letter-spacing: 0;
+  text-align: center;
+  text-wrap: balance;
+}
+
+/* 滚筒只消费自己的输入，外层章节控制器继续负责模块推拉。 */
+.paymentRoller {
+  position: relative;
+  z-index: 5;
+  align-self: center;
+  justify-self: center;
+  width: min(520px, calc(100% - 48px));
+  height: 360px;
+  outline: none;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.paymentRoller:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 8px;
+}
+
+.paymentDeck {
+  position: absolute;
+  inset: 0;
+}
+
+.paymentCard {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 190px;
+  min-height: 44px;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  padding: 24px;
+  overflow: hidden;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  box-shadow: 0 20px 52px rgba(28, 28, 28, 0.14);
+  color: rgb(28, 28, 28);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  opacity: var(--payment-opacity);
+  transform:
+    translate3d(0, calc(-50% + var(--payment-translate-y)), 0)
+    scale(var(--payment-scale));
+  transform-origin: center;
+  transition:
+    box-shadow 220ms ease,
+    opacity 260ms ease,
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.paymentCard::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  background: rgb(255, 255, 0);
+  content: '';
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.paymentCard[data-active='true'] {
+  box-shadow: 0 30px 76px rgba(90, 90, 0, 0.2);
+}
+
+.paymentCard[data-active='true']::before {
+  opacity: 1;
+}
+
+.paymentCard:hover,
+.paymentCard:focus-visible {
+  box-shadow: 0 26px 70px rgba(28, 28, 28, 0.2);
+}
+
+.paymentCard:active:not(:disabled) {
+  background: rgb(226, 226, 226);
+}
+
+.paymentCard:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: -6px;
+}
+
+.paymentCard:disabled {
+  cursor: default;
+}
+
+.paymentName,
+.paymentMeta {
+  position: relative;
+  z-index: 1;
+  letter-spacing: 0;
+}
+
+.paymentName {
+  font-size: 42px;
+  font-weight: 720;
+  line-height: 1.1;
+}
+
+.paymentMeta {
+  color: rgb(90, 90, 90);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+/* 根级遮罩通过 backdrop-filter 模糊章节与共享黄色视觉层。 */
+.qrBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding:
+    max(24px, env(safe-area-inset-top))
+    max(24px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom))
+    max(24px, env(safe-area-inset-left));
+  overflow: auto;
+  background: rgba(28, 28, 28, 0.46);
+  -webkit-backdrop-filter: blur(14px) brightness(0.72);
+  backdrop-filter: blur(14px) brightness(0.72);
+  cursor: pointer;
+  animation: qr-backdrop-enter 180ms ease-out both;
+}
+
+.qrPanel {
+  position: relative;
+  width: min(440px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  padding: 28px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  box-shadow: 0 28px 90px rgba(28, 28, 28, 0.28);
+  cursor: pointer;
+  animation: qr-panel-enter 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.qrPanel h3 {
+  margin: 0;
+  padding: 0 48px;
+  color: rgb(28, 28, 28);
+  font-size: 28px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.qrMedia {
+  width: min(340px, 100%);
+  aspect-ratio: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgb(174, 174, 174);
+  border-radius: 6px;
+  background: rgb(255, 255, 255);
+}
+
+.qrMedia img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.qrFallback {
+  margin: 0;
+  padding: 24px;
+  color: rgb(90, 90, 90);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.5;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.qrClose {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  color: rgb(28, 28, 28);
+  cursor: pointer;
+}
+
+.qrClose svg {
+  width: 22px;
+  height: 22px;
+}
+
+.qrClose:hover,
+.qrClose:focus-visible {
+  background: rgb(28, 28, 28);
+  color: rgb(255, 255, 0);
+}
+
+.qrClose:active {
+  background: rgb(72, 72, 72);
+}
+
+.qrClose:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 3px;
+}
+
+/* Task 9 会统一加固响应式；此处先保证窄屏与低高度视口可操作。 */
+@media (max-width: 760px) {
+  .donationChapter {
+    grid-template-rows:
+      minmax(108px, 0.7fr)
+      minmax(320px, 1.5fr)
+      minmax(32px, 0.25fr);
+    padding: 16px;
+  }
+
+  .donationTitle {
+    max-width: 560px;
+    font-size: 36px;
+  }
+
+  .paymentRoller {
+    width: min(100%, 460px);
+    height: 320px;
+  }
+
+  .paymentCard {
+    height: 172px;
+    padding: 20px;
+  }
+
+  .paymentName {
+    font-size: 34px;
+  }
+
+  .qrBackdrop {
+    padding:
+      max(16px, env(safe-area-inset-top))
+      max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+  }
+
+  .qrPanel {
+    gap: 14px;
+    padding: 22px;
+  }
+
+  .qrPanel h3 {
+    padding: 0 44px;
+    font-size: 24px;
+  }
+
+  .qrMedia {
+    width: min(320px, 100%);
+  }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .donationChapter {
+    grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.2fr);
+    grid-template-rows: 1fr;
+    gap: 20px;
+    padding: 16px 56px;
+  }
+
+  .donationTitle {
+    align-self: center;
+    font-size: 32px;
+    text-align: left;
+  }
+
+  .paymentRoller {
+    width: min(100%, 480px);
+    height: min(100svh - 32px, 360px);
+  }
+
+  .qrPanel {
+    width: min(620px, 100%);
+    grid-template-columns: minmax(180px, 0.65fr) minmax(220px, 1fr);
+    align-items: center;
+  }
+
+  .qrPanel h3 {
+    padding: 48px 0;
+  }
+
+  .qrMedia {
+    width: min(300px, 48svh);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qrBackdrop,
+  .qrPanel {
+    animation: none;
+  }
+
+  .paymentCard,
+  .paymentCard::before {
+    transition: none;
+  }
+}
+
+@keyframes qr-backdrop-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes qr-panel-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

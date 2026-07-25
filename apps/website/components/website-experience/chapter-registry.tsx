@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react';
+import { DonationChapter } from './donation/DonationChapter';
 import { DownloadChapter } from './download/DownloadChapter';
 import type { ChapterId } from './types';
 
@@ -21,5 +22,5 @@ export const CHAPTER_REGISTRY = [
     component: DownloadChapter
   },
   { id: 'feedback', label: '用户反馈与建议箱', component: null },
-  { id: 'donation', label: '捐款', component: null }
+  { id: 'donation', label: '捐款', component: DonationChapter }
 ] as const satisfies readonly ChapterDefinition[];
