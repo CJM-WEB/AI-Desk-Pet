@@ -25,4 +25,5 @@ Thumbs.db
 
 # Superpowers 临时视觉文件
 .superpowers/
+.worktrees/
 tests/.playwright-output
