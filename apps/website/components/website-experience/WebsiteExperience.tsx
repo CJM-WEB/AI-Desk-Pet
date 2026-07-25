@@ -3,7 +3,10 @@
 import { useCallback, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { HomeExperience } from '../home-experience/HomeExperience';
-import { deriveChapterVisualState } from './chapter-model';
+import {
+  deriveChapterVisualState,
+  deriveHomeExperiencePhase
+} from './chapter-model';
 import { CHAPTER_REGISTRY } from './chapter-registry';
 import { PlaceholderChapter } from './PlaceholderChapter';
 import styles from './website-experience.module.css';
@@ -27,6 +30,10 @@ export function WebsiteExperience() {
     onInitializationError: handleInitializationError
   });
   const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
+  const homePhase = deriveHomeExperiencePhase(
+    controller.phase,
+    homeExitProgress
+  );
 
   return (
     <div
@@ -64,7 +71,7 @@ export function WebsiteExperience() {
           >
             {chapter.id === 'home' ? (
               <HomeExperience
-                phase={controller.phase}
+                phase={homePhase}
                 exitProgress={homeExitProgress}
                 pointer={controller.pointer}
                 isPaused={controller.isPaused}

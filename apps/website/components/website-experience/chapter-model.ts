@@ -1,6 +1,8 @@
 import type { ChapterVisualState } from './types';
 import type { ExperiencePhase } from '../home-experience/types';
 
+export type IntroPhaseEvent = 'drawing-done' | 'settled' | 'skip';
+
 export function clampChapterProgress(value: number, chapterCount: number): number {
   const maximum = Math.max(0, chapterCount - 1);
   if (!Number.isFinite(value)) return 0;
@@ -24,6 +26,26 @@ export function snapChapterProgress(progress: number, chapterCount: number): num
 
 export function isIntroPhase(phase: ExperiencePhase): boolean {
   return phase === 'drawing' || phase === 'settling';
+}
+
+export function reduceIntroPhase(
+  phase: ExperiencePhase,
+  event: IntroPhaseEvent
+): ExperiencePhase {
+  if (event === 'skip') {
+    return isIntroPhase(phase) ? 'interactive' : phase;
+  }
+  if (event === 'drawing-done') {
+    return phase === 'drawing' ? 'settling' : phase;
+  }
+  return phase === 'settling' ? 'interactive' : phase;
+}
+
+export function deriveHomeExperiencePhase(
+  phase: ExperiencePhase,
+  exitProgress: number
+): ExperiencePhase {
+  return phase === 'interactive' && exitProgress > 0 ? 'exiting' : phase;
 }
 
 export function interpolateChapterSnapProgress(

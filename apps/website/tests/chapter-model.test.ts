@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { EXPERIENCE_CONFIG } from '../components/home-experience/config';
 import {
   applyChapterDelta,
   clampChapterProgress,
   deriveChapterVisualState,
   interpolateChapterSnapProgress,
   isIntroPhase,
+  reduceIntroPhase,
   snapChapterProgress
 } from '../components/website-experience/chapter-model';
 import {
@@ -33,6 +35,15 @@ describe('官网章节进度模型', () => {
     expect(applyChapterDelta(2, -8, 2, 5)).toBe(1);
   });
 
+  it('滚轮增量按配置缩放且不依赖已移除的速度模型', () => {
+    expect(applyChapterDelta(
+      0.2,
+      100 * EXPERIENCE_CONFIG.progress.wheelScale,
+      0,
+      5
+    )).toBeCloseTo(0.265);
+  });
+
   it('吸附到最近章节并保持硬边界', () => {
     expect(snapChapterProgress(1.49, 5)).toBe(1);
     expect(snapChapterProgress(1.51, 5)).toBe(2);
@@ -44,6 +55,17 @@ describe('官网章节进度模型', () => {
     expect(isIntroPhase('drawing')).toBe(true);
     expect(isIntroPhase('settling')).toBe(true);
     expect(isIntroPhase('interactive')).toBe(false);
+  });
+
+  it('开场跳过从绘制阶段直接进入交互态', () => {
+    expect(reduceIntroPhase('drawing', 'skip')).toBe('interactive');
+    expect(reduceIntroPhase('settling', 'skip')).toBe('interactive');
+  });
+
+  it('正常开场只按绘制、稳定、交互顺序推进', () => {
+    const settling = reduceIntroPhase('drawing', 'drawing-done');
+    expect(settling).toBe('settling');
+    expect(reduceIntroPhase(settling, 'settled')).toBe('interactive');
   });
 
   it('章节吸附通过中间帧靠近目标而不是瞬跳', () => {

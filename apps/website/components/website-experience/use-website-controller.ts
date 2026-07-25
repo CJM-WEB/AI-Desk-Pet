@@ -8,6 +8,7 @@ import {
   clampChapterProgress,
   interpolateChapterSnapProgress,
   isIntroPhase,
+  reduceIntroPhase,
   snapChapterProgress
 } from './chapter-model';
 
@@ -142,14 +143,16 @@ export function useWebsiteController(
   }, [commitProgress, commitSettledIndex, stopSnapFrame]);
 
   const drawingDone = useCallback(() => {
-    if (phaseRef.current === 'drawing') {
-      commitPhase('settling');
+    const next = reduceIntroPhase(phaseRef.current, 'drawing-done');
+    if (next !== phaseRef.current) {
+      commitPhase(next);
     }
   }, [commitPhase]);
 
   const settled = useCallback(() => {
-    if (phaseRef.current === 'settling') {
-      commitPhase('interactive');
+    const next = reduceIntroPhase(phaseRef.current, 'settled');
+    if (next !== phaseRef.current) {
+      commitPhase(next);
     }
   }, [commitPhase]);
 
@@ -159,9 +162,10 @@ export function useWebsiteController(
 
   const requestIntroSkip = useCallback(() => {
     if (isIntroPhase(phaseRef.current)) {
+      commitPhase(reduceIntroPhase(phaseRef.current, 'skip'));
       introSkipRef.current?.();
     }
-  }, []);
+  }, [commitPhase]);
 
   const goToAdjacent = useCallback((direction: -1 | 1) => {
     if (phaseRef.current !== 'interactive' || isPausedRef.current) {
