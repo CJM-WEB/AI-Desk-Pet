@@ -6,7 +6,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
 const WEBSITE_URL = 'http://127.0.0.1:4173';
-const REPOSITORY_ROOT = resolve(process.cwd());
+const REPOSITORY_ROOT = resolve(__dirname, '..', '..');
 const STATIC_SERVER_SCRIPT = resolve(REPOSITORY_ROOT, 'tests/serve-website-export.mjs');
 const HOME = '[data-testid="home-experience"]';
 const ICON = '[data-testid="file-icon"]';
@@ -354,6 +354,53 @@ test('390 宽度无横向溢出且隐藏 Canvas 并最多显示四个图标', as
   await page.screenshot({
     path: resolve(SCREENSHOT_DIRECTORY, 'narrow-390-fallback.png')
   });
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('760/761 断点提供移动章节导航且五章节不横向溢出', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 760, height: 900 });
+  await page.goto('/?seed=42');
+
+  const experience = page.locator('[data-testid="website-experience"]');
+  const chapterNavigation = page.getByRole('navigation', { name: '章节导航' });
+  const previous = page.getByRole('button', { name: '上一章节' });
+  const next = page.getByRole('button', { name: '下一章节' });
+
+  await expect(experience).toHaveAttribute('data-reduced-motion', 'true');
+  await expect(chapterNavigation).toBeVisible();
+  await expect(previous).toBeDisabled();
+
+  for (const control of [previous, next]) {
+    const bounds = await control.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.width).toBeGreaterThanOrEqual(44);
+    expect(bounds!.height).toBeGreaterThanOrEqual(44);
+  }
+
+  for (const chapterId of ['home', 'about', 'download', 'feedback', 'donation']) {
+    await expect(experience).toHaveAttribute('data-active-chapter', chapterId);
+    const activeSection = page.locator(`[data-chapter-id="${chapterId}"]`);
+    await expect(activeSection).toHaveAttribute('data-interactive', 'true');
+
+    const widths = await activeSection.evaluate((section) => ({
+      client: section.clientWidth,
+      scroll: section.scrollWidth
+    }));
+    expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+
+    if (chapterId !== 'donation') {
+      await next.click();
+    }
+  }
+
+  await expect(next).toBeDisabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth))
+    .toBeLessThanOrEqual(760);
+
+  await page.setViewportSize({ width: 761, height: 900 });
+  await expect(chapterNavigation).toBeHidden();
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -945,6 +992,59 @@ test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', 
   await page.screenshot({
     path: resolve(SCREENSHOT_DIRECTORY, 'donation-568x320.png')
   });
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('568x320 五章节主内容避让移动导航且保持完整可见', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 568, height: 320 });
+  await page.goto('/?seed=42');
+
+  const experience = page.locator('[data-testid="website-experience"]');
+  const navigation = page.getByRole('navigation', { name: '章节导航' });
+  const next = page.getByRole('button', { name: '下一章节' });
+  const primaryByChapter = new Map([
+    ['home', page.getByRole('heading', { name: 'AI Pet', exact: true }).locator('..')],
+    ['about', page.locator('[data-chapter-id="about"] h2')],
+    ['download', page.getByRole('group', { name: '选择下载平台' })],
+    ['feedback', page.locator('[data-chapter-id="feedback"] h2')],
+    ['donation', page.getByRole('group', { name: '选择付款方式' })]
+  ]);
+
+  await expect(navigation).toBeVisible();
+  const navigationBounds = await navigation.boundingBox();
+  expect(navigationBounds).not.toBeNull();
+
+  for (const chapterId of primaryByChapter.keys()) {
+    await expect(experience).toHaveAttribute('data-active-chapter', chapterId);
+    const primary = primaryByChapter.get(chapterId)!;
+    await expect(primary).toBeVisible();
+
+    const primaryBounds = await primary.boundingBox();
+    expect(primaryBounds).not.toBeNull();
+    expect(primaryBounds!.x, `${chapterId} 左边界`).toBeGreaterThanOrEqual(-1);
+    expect(primaryBounds!.y, `${chapterId} 上边界`).toBeGreaterThanOrEqual(-1);
+    expect(primaryBounds!.x + primaryBounds!.width, `${chapterId} 右边界`)
+      .toBeLessThanOrEqual(569);
+    expect(primaryBounds!.y + primaryBounds!.height, `${chapterId} 下边界`)
+      .toBeLessThanOrEqual(321);
+    const overlapsNavigation = !(
+      primaryBounds!.x + primaryBounds!.width <= navigationBounds!.x
+      || navigationBounds!.x + navigationBounds!.width <= primaryBounds!.x
+      || primaryBounds!.y + primaryBounds!.height <= navigationBounds!.y
+      || navigationBounds!.y + navigationBounds!.height <= primaryBounds!.y
+    );
+    expect(overlapsNavigation, `${chapterId} 主内容不应被章节导航遮挡`)
+      .toBe(false);
+
+    if (chapterId !== 'donation') {
+      await next.click();
+    }
+  }
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth))
+    .toBeLessThanOrEqual(568);
   expect(runtimeErrors).toEqual([]);
 });
 

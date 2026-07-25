@@ -389,6 +389,33 @@
   }
 }
 
+@media (max-height: 520px) and (orientation: landscape) {
+  .brandStage {
+    min-height: 100svh;
+    padding: 12px 136px 12px 24px;
+  }
+
+  .brandIntroMotion {
+    width: min(100%, 520px);
+  }
+
+  .brandTransform {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 18px;
+  }
+
+  .brandMark {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .brandTransform h1 {
+    font-size: 28px;
+    white-space: nowrap;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .cursorLayer,
   .cursorField,

@@ -21,6 +21,7 @@ export interface HomeExperienceProps {
   pointer: PointerPoint;
   isPaused: boolean;
   reducedMotion: boolean;
+  staticFallback: boolean;
   registerIntroSkip: (skip: (() => void) | null) => void;
   onDrawingDone: () => void;
   onSettled: () => void;
@@ -33,6 +34,7 @@ export function HomeExperience({
   pointer,
   isPaused,
   reducedMotion,
+  staticFallback: externalStaticFallback,
   registerIntroSkip,
   onDrawingDone,
   onSettled,
@@ -68,7 +70,7 @@ export function HomeExperience({
     finalLogo: finalLogoRef,
     magneticPieces: magneticPiecesRef
   }), []);
-  const staticFallback = initializationFailed;
+  const staticFallback = externalStaticFallback || initializationFailed;
   const intro = useIntroTimeline({
     phase,
     reducedMotion: staticFallback || reducedMotion,

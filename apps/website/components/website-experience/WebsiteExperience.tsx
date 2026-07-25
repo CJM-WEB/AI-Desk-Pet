@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { HomeExperience } from '../home-experience/HomeExperience';
 import {
   deriveChapterVisualState,
@@ -32,8 +33,12 @@ export function WebsiteExperience() {
   }, []);
   const controller = useWebsiteController({
     chapterCount: CHAPTER_REGISTRY.length,
+    staticFallback: initializationFailed,
     onInitializationError: handleInitializationError
   });
+  const staticFallback = initializationFailed || controller.initializationFailed;
+  const reducedMotion = staticFallback || controller.prefersReducedMotion;
+  const activeChapter = CHAPTER_REGISTRY[controller.settledIndex] ?? CHAPTER_REGISTRY[0];
   const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
   const homePhase = deriveHomeExperiencePhase(
     controller.phase,
@@ -54,16 +59,17 @@ export function WebsiteExperience() {
     <div
       className={styles.experience}
       data-testid="website-experience"
-      data-initialization-failed={
-        initializationFailed || controller.initializationFailed
-      }
+      data-static-fallback={staticFallback ? 'active' : 'ready'}
+      data-reduced-motion={controller.prefersReducedMotion}
+      data-active-chapter={activeChapter.id}
+      data-initialization-failed={staticFallback}
     >
       {CHAPTER_REGISTRY.map((chapter, index) => {
         const RegisteredChapter = chapter.component;
         const visual = deriveChapterVisualState(
           index,
           controller.progress,
-          controller.prefersReducedMotion
+          reducedMotion
         );
         const style = {
           '--chapter-opacity': visual.opacity,
@@ -92,7 +98,8 @@ export function WebsiteExperience() {
                 exitProgress={homeExitProgress}
                 pointer={controller.pointer}
                 isPaused={controller.isPaused}
-                reducedMotion={controller.prefersReducedMotion}
+                reducedMotion={reducedMotion}
+                staticFallback={staticFallback}
                 registerIntroSkip={controller.registerIntroSkip}
                 onDrawingDone={controller.drawingDone}
                 onSettled={controller.settled}
@@ -108,7 +115,29 @@ export function WebsiteExperience() {
           </section>
         );
       })}
-      {mountedVisualProfile ? (
+      <nav
+        className={styles.chapterControls}
+        data-input-scope="local"
+        aria-label="章节导航"
+      >
+        <button
+          type="button"
+          aria-label="上一章节"
+          disabled={controller.settledIndex === 0}
+          onClick={() => controller.goToAdjacent(-1)}
+        >
+          <ChevronUp aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          aria-label="下一章节"
+          disabled={controller.settledIndex === CHAPTER_REGISTRY.length - 1}
+          onClick={() => controller.goToAdjacent(1)}
+        >
+          <ChevronDown aria-hidden="true" />
+        </button>
+      </nav>
+      {mountedVisualProfile && !staticFallback ? (
         <SharedVisualLayers
           profile={mountedVisualProfile}
           running={sharedVisualProfile !== null}

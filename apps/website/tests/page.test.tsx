@@ -41,6 +41,18 @@ describe('AI Pet 官网首页', () => {
     expect(html).toMatch(/<canvas[^>]*><\/canvas>/);
   });
 
+  it('静态 HTML 保留章节导航和真实下载回退', () => {
+    const html = renderToStaticMarkup(<Page />);
+
+    expect(html).toContain('data-static-fallback="ready"');
+    expect(html).toContain('data-reduced-motion="false"');
+    expect(html).toContain('data-active-chapter="home"');
+    expect(html).toContain('aria-label="上一章节"');
+    expect(html).toContain('aria-label="下一章节"');
+    expect(html).toContain('Myself-0.1.0-alpha.1-windows-x64.exe');
+    expect(html).toContain('即将支持');
+  });
+
   it('不再渲染旧的传统纵向首页入口', () => {
     const html = renderToStaticMarkup(<Page />);
 

@@ -14,6 +14,7 @@ import {
 
 export interface WebsiteControllerOptions {
   chapterCount: number;
+  staticFallback?: boolean;
   onInitializationError?: () => void;
 }
 
@@ -79,6 +80,8 @@ export function useWebsiteController(
   const phaseRef = useRef<ExperiencePhase>('loading');
   const progressRef = useRef(0);
   const settledIndexRef = useRef(0);
+  const prefersReducedMotionRef = useRef(false);
+  const staticFallbackRef = useRef(Boolean(options.staticFallback));
   const isPausedRef = useRef(false);
   const isDocumentHiddenRef = useRef(false);
   const isWindowBlurredRef = useRef(false);
@@ -95,6 +98,7 @@ export function useWebsiteController(
   const chapterCount = Math.max(1, options.chapterCount);
 
   const notifyInitializationError = useCallback(() => {
+    staticFallbackRef.current = true;
     setInitializationFailed(true);
     onInitializationErrorRef.current?.();
   }, []);
@@ -132,6 +136,14 @@ export function useWebsiteController(
   const startSnap = useCallback((target: number) => {
     stopSnapFrame();
     snapTargetRef.current = target;
+
+    if (staticFallbackRef.current || prefersReducedMotionRef.current) {
+      commitProgress(target);
+      commitSettledIndex(target);
+      snapTargetRef.current = null;
+      return;
+    }
+
     const from = progressRef.current;
     let startedAt: number | null = null;
 
@@ -202,8 +214,26 @@ export function useWebsiteController(
   }, [commitPhase]);
 
   useEffect(() => {
+    if (!options.staticFallback) {
+      return;
+    }
+
+    staticFallbackRef.current = true;
+    cancelSnap();
+    commitProgress(settledIndexRef.current);
+    commitPhase('interactive');
+  }, [cancelSnap, commitPhase, commitProgress, options.staticFallback]);
+
+  useEffect(() => {
+    if (options.staticFallback) {
+      return;
+    }
+
     let mediaQuery: MediaQueryList;
-    const syncReducedMotion = () => setPrefersReducedMotion(mediaQuery.matches);
+    const syncReducedMotion = () => {
+      prefersReducedMotionRef.current = mediaQuery.matches;
+      setPrefersReducedMotion(mediaQuery.matches);
+    };
 
     try {
       mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -217,9 +247,13 @@ export function useWebsiteController(
     return () => {
       mediaQuery.removeEventListener('change', syncReducedMotion);
     };
-  }, [notifyInitializationError]);
+  }, [notifyInitializationError, options.staticFallback]);
 
   useEffect(() => {
+    if (staticFallbackRef.current || options.staticFallback) {
+      return;
+    }
+
     // 失焦和隐藏共享暂停状态，恢复后继续向原目标章节吸附。
     const syncPausedState = () => {
       const nextPaused = isDocumentHiddenRef.current || isWindowBlurredRef.current;
@@ -401,7 +435,8 @@ export function useWebsiteController(
     notifyInitializationError,
     requestIntroSkip,
     startSnap,
-    stopSnapFrame
+    stopSnapFrame,
+    options.staticFallback
   ]);
 
   return {
