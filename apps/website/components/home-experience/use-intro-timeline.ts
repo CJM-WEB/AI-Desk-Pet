@@ -3,10 +3,10 @@
 import { gsap } from 'gsap';
 import { useCallback, useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
+import { isIntroPhase } from '../website-experience/chapter-model';
 import { EXPERIENCE_CONFIG } from './config';
 import { getMagneticLockAtSeconds } from './magnetic-intro-model';
 import type { ExperiencePhase } from './types';
-import { isIntroPhase } from './use-experience-controller';
 
 interface IntroTimelineRefs {
   scope: RefObject<HTMLElement | null>;

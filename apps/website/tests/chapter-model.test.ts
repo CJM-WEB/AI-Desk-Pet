@@ -3,6 +3,8 @@ import {
   applyChapterDelta,
   clampChapterProgress,
   deriveChapterVisualState,
+  interpolateChapterSnapProgress,
+  isIntroPhase,
   snapChapterProgress
 } from '../components/website-experience/chapter-model';
 import {
@@ -35,6 +37,18 @@ describe('官网章节进度模型', () => {
     expect(snapChapterProgress(1.49, 5)).toBe(1);
     expect(snapChapterProgress(1.51, 5)).toBe(2);
     expect(snapChapterProgress(4.8, 5)).toBe(4);
+  });
+
+  it('仅把绘制和稳定阶段识别为可跳过的开场', () => {
+    expect(isIntroPhase('loading')).toBe(false);
+    expect(isIntroPhase('drawing')).toBe(true);
+    expect(isIntroPhase('settling')).toBe(true);
+    expect(isIntroPhase('interactive')).toBe(false);
+  });
+
+  it('章节吸附通过中间帧靠近目标而不是瞬跳', () => {
+    expect(interpolateChapterSnapProgress(0.96, 1, 0.5)).toBeCloseTo(0.995);
+    expect(interpolateChapterSnapProgress(0.96, 1, 1)).toBe(1);
   });
 
   it('以同一模型生成对称的退出和进入视觉', () => {

@@ -1,4 +1,5 @@
 import type { ChapterVisualState } from './types';
+import type { ExperiencePhase } from '../home-experience/types';
 
 export function clampChapterProgress(value: number, chapterCount: number): number {
   const maximum = Math.max(0, chapterCount - 1);
@@ -19,6 +20,20 @@ export function applyChapterDelta(
 
 export function snapChapterProgress(progress: number, chapterCount: number): number {
   return clampChapterProgress(Math.round(progress), chapterCount);
+}
+
+export function isIntroPhase(phase: ExperiencePhase): boolean {
+  return phase === 'drawing' || phase === 'settling';
+}
+
+export function interpolateChapterSnapProgress(
+  from: number,
+  to: number,
+  ratio: number
+): number {
+  const clampedRatio = Math.min(1, Math.max(0, ratio));
+  const easedRatio = 1 - ((1 - clampedRatio) ** 3);
+  return from + ((to - from) * easedRatio);
 }
 
 export function deriveChapterVisualState(

@@ -1,0 +1,69 @@
+.experience {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: rgb(235, 235, 235);
+  color: rgb(28, 28, 28);
+  isolation: isolate;
+}
+
+/* 每个章节共享同一视口，由纯视觉状态决定交接位置和交互权。 */
+.chapter {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: var(--chapter-opacity);
+  transform: scale(var(--chapter-scale));
+  transform-origin: center;
+  filter: blur(var(--chapter-blur)) contrast(var(--chapter-contrast));
+  pointer-events: none;
+  will-change: opacity, transform, filter;
+}
+
+.chapter[data-interactive='true'] {
+  pointer-events: auto;
+}
+
+.placeholderContent {
+  min-height: 100%;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+}
+
+.placeholderContent h2,
+.placeholderContent p {
+  margin: 0;
+}
+
+.placeholderContent h2 {
+  font-size: 56px;
+  line-height: 1.08;
+  letter-spacing: 0;
+}
+
+.placeholderContent p {
+  color: rgb(96, 96, 96);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .placeholderContent {
+    padding: 24px;
+  }
+
+  .placeholderContent h2 {
+    font-size: 36px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chapter {
+    filter: none;
+    transform: none;
+    will-change: opacity;
+  }
+}

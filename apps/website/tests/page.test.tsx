@@ -4,6 +4,21 @@ import { describe, expect, it } from 'vitest';
 import Page from '../app/page';
 
 describe('AI Pet 官网首页', () => {
+  it('静态 HTML 注册五章节和两个明确占位状态', () => {
+    const html = renderToStaticMarkup(<Page />);
+
+    expect(html).toContain('data-testid="website-experience"');
+    expect(html.match(/data-chapter-id=/g) ?? []).toHaveLength(5);
+    expect(html).toContain('data-chapter-id="home"');
+    expect(html).toContain('data-chapter-id="about"');
+    expect(html).toContain('data-chapter-id="download"');
+    expect(html).toContain('data-chapter-id="feedback"');
+    expect(html).toContain('data-chapter-id="donation"');
+    expect(html).toContain('AI Pet 介绍');
+    expect(html).toContain('用户反馈与建议箱');
+    expect(html.match(/内容准备中/g) ?? []).toHaveLength(2);
+  });
+
   it('在静态 HTML 中保留品牌和基础语义', () => {
     const html = renderToStaticMarkup(<Page />);
 
@@ -19,7 +34,6 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('data-piece-id="bottom-right"');
     expect(html).not.toContain('data-testid="ap-draw-mark"');
     expect(html).toContain('data-layer="file"');
-    expect(html).toContain('data-layer="chapter-placeholder"');
     expect(html).toContain('data-layer="intro"');
     expect(html).toContain('data-active="false"');
     expect(html).toMatch(/<canvas[^>]*><\/canvas>/);
@@ -28,7 +42,6 @@ describe('AI Pet 官网首页', () => {
   it('不再渲染旧的传统纵向首页入口', () => {
     const html = renderToStaticMarkup(<Page />);
 
-    expect(html).not.toContain('id="features"');
-    expect(html).not.toContain('id="download"');
+    expect(html).not.toMatch(/(?:^|\s)id="(?:features|download)"/);
   });
 });

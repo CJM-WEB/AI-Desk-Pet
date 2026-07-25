@@ -1,5 +1,5 @@
-import { HomeExperience } from '../components/home-experience/HomeExperience';
+import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
 
 export default function Page() {
-  return <HomeExperience />;
+  return <WebsiteExperience />;
 }

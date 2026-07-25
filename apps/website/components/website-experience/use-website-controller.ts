@@ -6,6 +6,8 @@ import type { ExperiencePhase, PointerPoint } from '../home-experience/types';
 import {
   applyChapterDelta,
   clampChapterProgress,
+  interpolateChapterSnapProgress,
+  isIntroPhase,
   snapChapterProgress
 } from './chapter-model';
 
@@ -41,14 +43,6 @@ export function calculateSwipeDelta(startY: number, currentY: number): -1 | 0 | 
   const distance = startY - currentY;
   if (Math.abs(distance) < 48) return 0;
   return distance > 0 ? 1 : -1;
-}
-
-function isIntroPhase(phase: ExperiencePhase): boolean {
-  return phase === 'drawing' || phase === 'settling';
-}
-
-function easeOutCubic(ratio: number): number {
-  return 1 - ((1 - ratio) ** 3);
 }
 
 /**
@@ -131,7 +125,7 @@ export function useWebsiteController(
 
       startedAt ??= frameAt;
       const ratio = Math.min(1, (frameAt - startedAt) / SNAP_DURATION_MS);
-      commitProgress(from + ((target - from) * easeOutCubic(ratio)));
+      commitProgress(interpolateChapterSnapProgress(from, target, ratio));
 
       if (ratio < 1) {
         snapFrameRef.current = window.requestAnimationFrame(advance);

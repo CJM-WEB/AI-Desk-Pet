@@ -1,5 +1,5 @@
 .experience {
-  position: fixed;
+  position: absolute;
   inset: 0;
   overflow: hidden;
   background: rgb(235, 235, 235);
@@ -10,16 +10,11 @@
 .introOverlay,
 .fileLayer,
 .cursorLayer,
-.chapterPlaceholder,
 .previewLayer,
 .brandStage {
   position: absolute;
   inset: 0;
   pointer-events: none;
-}
-
-.chapterPlaceholder {
-  z-index: 0;
 }
 
 .cursorLayer {
@@ -350,9 +345,9 @@
 
 @media (max-width: 760px) {
   .experience {
-    position: relative;
-    min-height: 100svh;
-    overflow: auto;
+    position: absolute;
+    min-height: 100%;
+    overflow: hidden;
   }
 
   .brandStage {
