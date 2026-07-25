@@ -11,8 +11,6 @@ import {
 import type { CSSProperties } from 'react';
 import { isIntroPhase } from '../website-experience/chapter-model';
 import { BrandStage } from './BrandStage';
-import { CursorField } from './CursorField';
-import { FileSwarm } from './FileSwarm';
 import styles from './home-experience.module.css';
 import type { ExperiencePhase, PointerPoint } from './types';
 import { useIntroTimeline } from './use-intro-timeline';
@@ -44,7 +42,6 @@ export function HomeExperience({
   const [introActive, setIntroActive] = useState(false);
   const [magneticAssetFailed, setMagneticAssetFailed] = useState(false);
   const [finalLogoFailed, setFinalLogoFailed] = useState(false);
-  const [previewLayer, setPreviewLayer] = useState<HTMLDivElement | null>(null);
   const scopeRef = useRef<HTMLElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const brandRef = useRef<HTMLDivElement | null>(null);
@@ -100,9 +97,7 @@ export function HomeExperience({
   }, []);
   const experienceStyle = {
     '--experience-brand-scale': 1 - exitProgress * 0.42,
-    '--experience-brand-opacity': 1 - exitProgress,
-    '--experience-files-scale': 1 - exitProgress * 0.28,
-    '--experience-field-opacity': 1 - exitProgress
+    '--experience-brand-opacity': 1 - exitProgress
   } as CSSProperties;
 
   useLayoutEffect(() => {
@@ -141,30 +136,6 @@ export function HomeExperience({
       data-initialization-failed={staticFallback}
       style={experienceStyle}
     >
-      {!staticFallback ? (
-        <section className={styles.cursorLayer} data-layer="cursor" aria-hidden="true">
-          <CursorField
-            pointer={pointer}
-            isPaused={isPaused}
-            progress={exitProgress}
-            reducedMotion={reducedMotion}
-            onInitializationError={handleInitializationError}
-          />
-        </section>
-      ) : null}
-      {!staticFallback && exitProgress < 1 ? (
-        <section className={styles.fileLayer} data-layer="file" aria-label="文件预览队列">
-          <FileSwarm
-            phase={phase}
-            pointer={pointer}
-            isPaused={isPaused}
-            progress={exitProgress}
-            reducedMotion={reducedMotion}
-            previewContainer={previewLayer}
-            onInitializationError={handleInitializationError}
-          />
-        </section>
-      ) : null}
       <BrandStage
         stageRef={brandRef}
         pointer={pointer}
@@ -175,11 +146,6 @@ export function HomeExperience({
         finalLogoFailed={finalLogoFailed}
         onMagneticAssetError={handleMagneticAssetError}
         onFinalLogoError={handleFinalLogoError}
-      />
-      <div
-        ref={setPreviewLayer}
-        className={styles.previewLayer}
-        data-layer="preview"
       />
       <div
         ref={overlayRef}

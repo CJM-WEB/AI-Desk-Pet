@@ -1,15 +1,17 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
+import type { RgbColor } from '../website-experience/shared-visual-model';
 import { trailAlpha } from './pointer-model';
 import type { PointerPoint } from './types';
 import styles from './home-experience.module.css';
 
 interface CursorFieldProps {
+  active: boolean;
   pointer: PointerPoint;
   isPaused: boolean;
-  progress: number;
   reducedMotion: boolean;
+  color: RgbColor;
   onInitializationError?: () => void;
 }
 
@@ -45,7 +47,8 @@ export function computeCanvasBufferSize(input: {
 function drawField(
   context: CanvasRenderingContext2D,
   point: PointerPoint,
-  opacity: number
+  opacity: number,
+  color: RgbColor
 ): void {
   const gradient = context.createRadialGradient(
     point.x,
@@ -56,9 +59,9 @@ function drawField(
     FIELD_RADIUS_PX
   );
 
-  gradient.addColorStop(0, `rgba(180,180,180,${0.72 * opacity})`);
-  gradient.addColorStop(0.55, `rgba(180,180,180,${0.34 * opacity})`);
-  gradient.addColorStop(1, 'rgba(180,180,180,0)');
+  gradient.addColorStop(0, toRgba(color, 0.72 * opacity));
+  gradient.addColorStop(0.55, toRgba(color, 0.34 * opacity));
+  gradient.addColorStop(1, toRgba(color, 0));
   context.fillStyle = gradient;
   context.fillRect(
     point.x - FIELD_RADIUS_PX,
@@ -68,11 +71,16 @@ function drawField(
   );
 }
 
+function toRgba(color: RgbColor, alpha: number): string {
+  return `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+}
+
 export function CursorField({
+  active,
   pointer,
   isPaused,
-  progress,
   reducedMotion,
+  color,
   onInitializationError
 }: CursorFieldProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -164,13 +172,18 @@ export function CursorField({
     );
     clearCanvas();
     samplesRef.current.forEach((sample) => {
-      drawField(context, sample, trailAlpha(frameAt - sample.sampledAt, TRAIL_LIFETIME_MS));
+      drawField(
+        context,
+        sample,
+        trailAlpha(frameAt - sample.sampledAt, TRAIL_LIFETIME_MS),
+        color
+      );
     });
-    drawField(context, pointerRef.current, 1);
+    drawField(context, pointerRef.current, 1, color);
     frameRef.current = window.requestAnimationFrame(drawFrame);
-  }, [clearCanvas, syncCanvasSize]);
+  }, [clearCanvas, color, syncCanvasSize]);
 
-  const isActive = !isPaused && !reducedMotion && progress < 1;
+  const isActive = active && !isPaused && !reducedMotion;
 
   useEffect(() => {
     const canvas = canvasRef.current;

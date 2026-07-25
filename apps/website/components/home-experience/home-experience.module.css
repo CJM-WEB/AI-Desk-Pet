@@ -2,11 +2,11 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: rgb(235, 235, 235);
+  background: transparent;
   color: rgb(28, 28, 28);
 }
 
-/* 页面只使用六个固定视觉层，避免局部元素越级覆盖。 */
+/* 首页品牌与根级共享视觉复用固定层级，避免局部元素越级覆盖。 */
 .introOverlay,
 .fileLayer,
 .cursorLayer,

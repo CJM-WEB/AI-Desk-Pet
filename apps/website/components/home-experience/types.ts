@@ -52,7 +52,6 @@ export interface BrandTransformLimits {
 export interface ExperienceConfig {
   colors: {
     background: string;
-    pointerField: string;
   };
   intro: {
     settleSeconds: number;
@@ -65,8 +64,6 @@ export interface ExperienceConfig {
     snapThreshold: number;
   };
   swarm: {
-    maxActive: number;
-    safeZoneRatio: number;
     spawnIntervalMs: readonly [number, number];
     lifetimeMs: readonly [number, number];
   };

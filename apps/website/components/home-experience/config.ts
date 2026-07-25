@@ -2,8 +2,7 @@ import type { ExperienceConfig } from './types';
 
 export const EXPERIENCE_CONFIG = {
   colors: {
-    background: 'rgb(235, 235, 235)',
-    pointerField: 'rgb(180, 180, 180)'
+    background: 'rgb(235, 235, 235)'
   },
   intro: {
     settleSeconds: 0.8,
@@ -67,8 +66,6 @@ export const EXPERIENCE_CONFIG = {
     snapThreshold: 0.06
   },
   swarm: {
-    maxActive: 10,
-    safeZoneRatio: 0.3,
     spawnIntervalMs: [480, 920],
     lifetimeMs: [6500, 10500]
   },

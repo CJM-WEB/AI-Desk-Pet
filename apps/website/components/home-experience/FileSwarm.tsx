@@ -10,7 +10,7 @@ import {
   spawnParticle
 } from './swarm-model';
 import type { FileParticle } from './swarm-model';
-import type { ExperiencePhase, FileKind, PointerPoint } from './types';
+import type { FileKind, PointerPoint } from './types';
 import {
   FilePreview,
   type PreviewAnchorRect,
@@ -38,11 +38,14 @@ export const FILE_ASSETS: Record<FileKind, string> = {
   folder: '/Noempty.png'
 };
 
-interface FileSwarmProps {
-  phase: ExperiencePhase;
+export interface FileSwarmProps {
+  running: boolean;
+  generating: boolean;
+  exitProgress: number;
   pointer: PointerPoint;
   isPaused: boolean;
-  progress: number;
+  maxActive: number;
+  safeZoneRatio: number;
   reducedMotion?: boolean;
   previewContainer?: HTMLElement | null;
   onInitializationError?: () => void;
@@ -78,14 +81,15 @@ export function resolveSwarmSeed(
 }
 
 export function canGenerateParticle(input: {
-  phase: ExperiencePhase;
+  generating: boolean;
   isPaused: boolean;
   activeCount: number;
   disabledKindCount: number;
+  maxActive: number;
 }): boolean {
-  return input.phase === 'interactive'
+  return input.generating
     && !input.isPaused
-    && input.activeCount < EXPERIENCE_CONFIG.swarm.maxActive
+    && input.activeCount < input.maxActive
     && input.disabledKindCount < FILE_KINDS.length;
 }
 
@@ -180,10 +184,13 @@ function toAnchorRect(rect: DOMRect): PreviewAnchorRect {
  * 管理文件粒子的单一 RAF、生成计时器、保持状态与失败类型隔离。
  */
 export function FileSwarm({
-  phase,
+  running,
+  generating,
+  exitProgress,
   pointer,
   isPaused,
-  progress,
+  maxActive,
+  safeZoneRatio,
   reducedMotion = false,
   previewContainer = null,
   onInitializationError
@@ -191,7 +198,7 @@ export function FileSwarm({
   const [particles, setParticles] = useState<FileParticle[]>([]);
   const [activePreview, setActivePreview] = useState<ActivePreview | null>(null);
   const [previewTweenState, setPreviewTweenState] = useState<'active' | 'inactive'>('inactive');
-  const exitComplete = phase === 'exiting' && progress >= 1;
+  const exitComplete = exitProgress >= 1;
   const particlesRef = useRef<FileParticle[]>([]);
   const activePreviewRef = useRef<ActivePreview | null>(null);
   const disabledKindsRef = useRef(new Set<FileKind>());
@@ -324,7 +331,7 @@ export function FileSwarm({
   }, [clearSpawnTimer, commitActivePreview, commitParticles]);
 
   useEffect(() => {
-    if (phase !== 'interactive' || isPaused) {
+    if (!generating || isPaused) {
       clearSpawnTimer();
       return;
     }
@@ -357,10 +364,11 @@ export function FileSwarm({
 
         commitParticles((current) => {
           if (!canGenerateParticle({
-            phase,
+            generating,
             isPaused,
             activeCount: current.length,
-            disabledKindCount: disabledKindsRef.current.size
+            disabledKindCount: disabledKindsRef.current.size,
+            maxActive
           })) {
             return current;
           }
@@ -385,7 +393,7 @@ export function FileSwarm({
             viewport: {
               width: window.innerWidth,
               height: window.innerHeight,
-              safeZoneRatio: EXPERIENCE_CONFIG.swarm.safeZoneRatio
+              safeZoneRatio
             },
             existing: current,
             random: particleRandom
@@ -402,10 +410,17 @@ export function FileSwarm({
       cancelled = true;
       clearSpawnTimer();
     };
-  }, [clearSpawnTimer, commitParticles, isPaused, onInitializationError, phase]);
+  }, [
+    clearSpawnTimer,
+    commitParticles,
+    generating,
+    isPaused,
+    maxActive,
+    onInitializationError,
+    safeZoneRatio
+  ]);
 
   useEffect(() => {
-    const running = phase === 'interactive' || phase === 'exiting';
     if (!running || isPaused || exitComplete) {
       clearFrame();
       if (exitComplete) {
@@ -449,7 +464,7 @@ export function FileSwarm({
       cancelled = true;
       clearFrame();
     };
-  }, [clearFrame, commitActivePreview, exitComplete, isPaused, phase]);
+  }, [clearFrame, commitActivePreview, exitComplete, isPaused, running]);
 
   useEffect(() => () => {
     clearFrame();

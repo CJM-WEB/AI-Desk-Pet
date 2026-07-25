@@ -9,6 +9,11 @@ import {
 } from './chapter-model';
 import { CHAPTER_REGISTRY } from './chapter-registry';
 import { PlaceholderChapter } from './PlaceholderChapter';
+import { SharedVisualLayers } from './SharedVisualLayers';
+import {
+  resolveSharedVisualProfile,
+  VISUAL_PROFILES
+} from './shared-visual-model';
 import styles from './website-experience.module.css';
 import { useWebsiteController } from './use-website-controller';
 import type { ChapterId } from './types';
@@ -34,6 +39,16 @@ export function WebsiteExperience() {
     controller.phase,
     homeExitProgress
   );
+  const sharedVisualProfile = resolveSharedVisualProfile(
+    controller.progress,
+    controller.phase
+  );
+  const mountedVisualProfile = sharedVisualProfile
+    ?? (controller.progress < 1 ? VISUAL_PROFILES.home : null);
+  const sharedVisualChapterIndex = sharedVisualProfile?.id === 'donation' ? 4 : 0;
+  const sharedVisualGenerating = sharedVisualProfile !== null
+    && controller.phase === 'interactive'
+    && Math.abs(controller.progress - sharedVisualChapterIndex) < 0.0001;
 
   return (
     <div
@@ -88,6 +103,20 @@ export function WebsiteExperience() {
           </section>
         );
       })}
+      {mountedVisualProfile ? (
+        <SharedVisualLayers
+          profile={mountedVisualProfile}
+          running={sharedVisualProfile !== null}
+          generating={sharedVisualGenerating}
+          exitProgress={
+            mountedVisualProfile.id === 'home' ? homeExitProgress : 0
+          }
+          pointer={controller.pointer}
+          isPaused={controller.isPaused}
+          reducedMotion={controller.prefersReducedMotion}
+          onInitializationError={handleInitializationError}
+        />
+      ) : null}
     </div>
   );
 }

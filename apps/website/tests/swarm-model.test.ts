@@ -12,6 +12,7 @@ import {
 } from '../components/home-experience/FileSwarm';
 import { EXPERIENCE_CONFIG } from '../components/home-experience/config';
 import { CONTENT_POOL } from '../components/home-experience/content-pool';
+import { VISUAL_PROFILES } from '../components/website-experience/shared-visual-model';
 import {
   advanceParticle,
   createSeededRandom,
@@ -23,7 +24,7 @@ import type { FileParticle, Rect, SpawnViewport } from '../components/home-exper
 const viewport: SpawnViewport = {
   width: 1440,
   height: 900,
-  safeZoneRatio: EXPERIENCE_CONFIG.swarm.safeZoneRatio
+  safeZoneRatio: VISUAL_PROFILES.home.safeZoneRatio
 };
 
 function createParticle(overrides: Partial<FileParticle> = {}): FileParticle {
@@ -74,30 +75,34 @@ describe('文件队列调度策略', () => {
     expect(fallbackCalls).toBe(1);
   });
 
-  it('仅在未暂停的 interactive 阶段且低于上限时允许生成', () => {
+  it('仅在允许生成、未暂停且低于显式上限时允许生成', () => {
     expect(canGenerateParticle({
-      phase: 'interactive',
+      generating: true,
       isPaused: false,
       activeCount: 9,
-      disabledKindCount: 0
+      disabledKindCount: 0,
+      maxActive: 10
     })).toBe(true);
     expect(canGenerateParticle({
-      phase: 'exiting',
+      generating: false,
       isPaused: false,
       activeCount: 9,
-      disabledKindCount: 0
+      disabledKindCount: 0,
+      maxActive: 10
     })).toBe(false);
     expect(canGenerateParticle({
-      phase: 'interactive',
+      generating: true,
       isPaused: true,
       activeCount: 9,
-      disabledKindCount: 0
+      disabledKindCount: 0,
+      maxActive: 10
     })).toBe(false);
     expect(canGenerateParticle({
-      phase: 'interactive',
+      generating: true,
       isPaused: false,
       activeCount: 10,
-      disabledKindCount: 0
+      disabledKindCount: 0,
+      maxActive: 10
     })).toBe(false);
   });
 
@@ -276,10 +281,13 @@ describe('粒子生命周期', () => {
 describe('文件队列根层', () => {
   it('服务端初始渲染暴露零活动粒子计数', () => {
     const markup = renderToStaticMarkup(createElement(FileSwarm, {
-      phase: 'interactive',
+      running: true,
+      generating: true,
+      exitProgress: 0,
       pointer: { x: 0, y: 0 },
       isPaused: false,
-      progress: 0
+      maxActive: 10,
+      safeZoneRatio: 0.3
     }));
 
     expect(markup).toContain('data-active-count="0"');
