@@ -294,6 +294,15 @@ export function DownloadChapter({
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
+      const focusedElement = event.currentTarget.ownerDocument.activeElement;
+      if (
+        focusedElement instanceof HTMLElement
+        && event.currentTarget.contains(focusedElement)
+      ) {
+        focusedElement.blur();
+      } else if (event.target instanceof HTMLElement) {
+        event.target.blur();
+      }
       dispatch({ type: 'RESET' });
     }
   };

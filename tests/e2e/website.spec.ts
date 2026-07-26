@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { PassThrough, type Readable } from 'node:stream';
 import { expect, test as baseTest } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
@@ -49,60 +50,94 @@ interface WebsiteServerReadyPayload extends WebsiteServerInfo {
   port: number;
 }
 
-function waitForWebsiteServerReady(
-  server: ChildProcess,
-  expectedRunId: string
-): Promise<WebsiteServerInfo> {
-  return new Promise((resolveReady, rejectReady) => {
-    if (!server.stdout) {
-      rejectReady(new Error('静态网站服务器缺少标准输出管道'));
-      return;
+interface WebsiteServerReadyWait {
+  promise: Promise<WebsiteServerInfo>;
+  cancel: (error?: Error) => void;
+}
+
+function createWebsiteServerReadyWait(
+  stdout: Readable,
+  expectedRunId: string,
+  timeoutMs = 10_000
+): WebsiteServerReadyWait {
+  let output = '';
+  let settled = false;
+  let timeout: NodeJS.Timeout | null = null;
+  let resolveReady!: (serverInfo: WebsiteServerInfo) => void;
+  let rejectReady!: (error: Error) => void;
+
+  const cleanup = () => {
+    if (timeout !== null) {
+      clearTimeout(timeout);
+      timeout = null;
     }
+    stdout.off('data', handleData);
+  };
 
-    let output = '';
-    const timeout = setTimeout(() => {
-      rejectReady(new Error(
-        `静态网站服务器未在 10 秒内报告隔离端口，当前输出：${output}`
-      ));
-    }, 10_000);
+  const settleResolved = (serverInfo: WebsiteServerInfo) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolveReady(serverInfo);
+  };
 
-    const handleData = (chunk: Buffer) => {
-      output += chunk.toString('utf8');
-      const readyLine = output
-        .split(/\r?\n/u)
-        .find((line) => line.startsWith(SERVER_READY_PREFIX));
-      if (!readyLine) return;
+  const settleRejected = (error: Error) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    rejectReady(error);
+  };
 
-      try {
-        const payload = JSON.parse(
-          readyLine.slice(SERVER_READY_PREFIX.length)
-        ) as WebsiteServerReadyPayload;
-        if (
-          payload.runId !== expectedRunId
-          || !Number.isInteger(payload.port)
-          || payload.port <= 0
-          || !payload.url
-          || !payload.buildMarker
-        ) {
-          throw new Error(`服务器就绪信息不完整：${readyLine}`);
-        }
+  const handleData = (chunk: Buffer) => {
+    output += chunk.toString('utf8');
+    const readyLine = output
+      .split(/\r?\n/u)
+      .find((line) => line.startsWith(SERVER_READY_PREFIX));
+    if (!readyLine) return;
 
-        clearTimeout(timeout);
-        server.stdout?.off('data', handleData);
-        resolveReady({
-          url: payload.url,
-          runId: payload.runId,
-          buildMarker: payload.buildMarker
-        });
-      } catch (error) {
-        clearTimeout(timeout);
-        server.stdout?.off('data', handleData);
-        rejectReady(error);
+    try {
+      const payload = JSON.parse(
+        readyLine.slice(SERVER_READY_PREFIX.length)
+      ) as WebsiteServerReadyPayload;
+      if (
+        payload.runId !== expectedRunId
+        || !Number.isInteger(payload.port)
+        || payload.port <= 0
+        || !payload.url
+        || !payload.buildMarker
+      ) {
+        throw new Error(`服务器就绪信息不完整：${readyLine}`);
       }
-    };
 
-    server.stdout.on('data', handleData);
+      settleResolved({
+        url: payload.url,
+        runId: payload.runId,
+        buildMarker: payload.buildMarker
+      });
+    } catch (error) {
+      settleRejected(
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
+  };
+
+  const promise = new Promise<WebsiteServerInfo>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+    stdout.on('data', handleData);
+    timeout = setTimeout(() => {
+      settleRejected(new Error(
+        `静态网站服务器未在 ${timeoutMs} 毫秒内报告隔离端口，当前输出：${output}`
+      ));
+    }, timeoutMs);
   });
+
+  return {
+    promise,
+    cancel: (error = new Error('静态网站服务器就绪等待已取消')) => {
+      settleRejected(error);
+    }
+  };
 }
 
 async function verifyWebsiteServerSource(
@@ -172,24 +207,44 @@ const test = baseTest.extend<{}, { websiteServerInfo: WebsiteServerInfo }>({
     });
     let stopping = false;
     let stderr = '';
-    server.stderr?.on('data', (chunk: Buffer) => {
+    const handleStderr = (chunk: Buffer) => {
       stderr += chunk.toString('utf8');
-    });
+    };
+    server.stderr?.on('data', handleStderr);
+    const readyWait = server.stdout
+      ? createWebsiteServerReadyWait(server.stdout, runId)
+      : null;
+    let serverFailureSettled = false;
+    let rejectServerFailure!: (error: Error) => void;
     const serverFailure = new Promise<never>((_, rejectFailure) => {
-      server.once('error', (error) => {
-        rejectFailure(new Error(`静态网站服务器启动失败：${error.message}`));
-      });
-      server.once('exit', (code, signal) => {
-        if (stopping) return;
-        rejectFailure(new Error(
-          `静态网站服务器意外退出：code=${code}, signal=${signal}, stderr=${stderr}`
-        ));
-      });
+      rejectServerFailure = rejectFailure;
     });
+    const failServer = (error: Error) => {
+      if (stopping || serverFailureSettled) return;
+      serverFailureSettled = true;
+      readyWait?.cancel(error);
+      rejectServerFailure(error);
+    };
+    const handleServerError = (error: Error) => {
+      failServer(new Error(`静态网站服务器启动失败：${error.message}`));
+    };
+    const handleServerExit = (
+      code: number | null,
+      signal: NodeJS.Signals | null
+    ) => {
+      failServer(new Error(
+        `静态网站服务器意外退出：code=${code}, signal=${signal}, stderr=${stderr}`
+      ));
+    };
+    server.once('error', handleServerError);
+    server.once('exit', handleServerExit);
 
     try {
+      if (!readyWait) {
+        throw new Error('静态网站服务器缺少标准输出管道');
+      }
       const serverInfo = await Promise.race([
-        waitForWebsiteServerReady(server, runId),
+        readyWait.promise,
         serverFailure
       ]);
       await Promise.race([
@@ -202,12 +257,64 @@ const test = baseTest.extend<{}, { websiteServerInfo: WebsiteServerInfo }>({
       ]);
     } finally {
       stopping = true;
+      readyWait?.cancel();
+      server.off('error', handleServerError);
+      server.off('exit', handleServerExit);
+      server.stderr?.off('data', handleStderr);
       await stopWebsiteServer(server);
     }
   }, { scope: 'worker' }],
   baseURL: async ({ websiteServerInfo }, use) => {
     await use(websiteServerInfo.url);
   }
+});
+
+test('服务器就绪等待在成功、超时和取消路径统一清理资源', async () => {
+  const successOutput = new PassThrough();
+  const successWait = createWebsiteServerReadyWait(
+    successOutput,
+    'success-run',
+    1_000
+  );
+  successOutput.write(`${SERVER_READY_PREFIX}${JSON.stringify({
+    url: 'http://127.0.0.1:43125',
+    port: 43125,
+    runId: 'success-run',
+    buildMarker: 'success-build'
+  })}\n`);
+  await expect(successWait.promise).resolves.toEqual({
+    url: 'http://127.0.0.1:43125',
+    runId: 'success-run',
+    buildMarker: 'success-build'
+  });
+  expect(successOutput.listenerCount('data')).toBe(0);
+  successWait.cancel(new Error('成功后重复取消'));
+  await expect(successWait.promise).resolves.toMatchObject({
+    runId: 'success-run'
+  });
+
+  const timeoutOutput = new PassThrough();
+  const timeoutWait = createWebsiteServerReadyWait(
+    timeoutOutput,
+    'timeout-run',
+    10
+  );
+  await expect(timeoutWait.promise).rejects.toThrow('10 毫秒');
+  expect(timeoutOutput.listenerCount('data')).toBe(0);
+
+  const cancelledOutput = new PassThrough();
+  const cancelledWait = createWebsiteServerReadyWait(
+    cancelledOutput,
+    'cancelled-run',
+    10_000
+  );
+  expect(cancelledOutput.listenerCount('data')).toBe(1);
+  const cancelledAt = Date.now();
+  cancelledWait.cancel(new Error('模拟服务器提前退出'));
+  cancelledWait.cancel(new Error('重复取消不应再次 settle'));
+  await expect(cancelledWait.promise).rejects.toThrow('模拟服务器提前退出');
+  expect(cancelledOutput.listenerCount('data')).toBe(0);
+  expect(Date.now() - cancelledAt).toBeLessThan(500);
 });
 
 async function enterInteractive(page: Page): Promise<void> {
@@ -806,6 +913,32 @@ test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节',
     'data-active-chapter',
     'download'
   );
+
+  await stack.focus();
+  await expect(stack).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(stack).toHaveAttribute('data-active-platform', 'macos');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'download'
+  );
+  await page.keyboard.press('ArrowUp');
+  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'download'
+  );
+  await page.keyboard.press('Escape');
+  await expect.poll(
+    () => stack.evaluate((element) => (
+      !element.contains(element.ownerDocument.activeElement)
+    )),
+    { message: 'Escape 后焦点应退出下载平台局部控件' }
+  ).toBe(true);
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'download'
+  );
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -935,7 +1068,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   ).toBeFocused();
 
   await roller.hover();
-  await page.mouse.wheel(0, 160);
+  await page.mouse.wheel(0, -160);
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'donation'
@@ -945,7 +1078,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await roller.dispatchEvent('pointerdown', {
     bubbles: true,
     cancelable: true,
-    clientY: 520,
+    clientY: 450,
     isPrimary: true,
     pointerId: 61,
     pointerType: 'touch'
@@ -953,7 +1086,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await roller.dispatchEvent('pointermove', {
     bubbles: true,
     cancelable: true,
-    clientY: 450,
+    clientY: 520,
     isPrimary: true,
     pointerId: 61,
     pointerType: 'touch'
@@ -961,12 +1094,42 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await roller.dispatchEvent('pointerup', {
     bubbles: true,
     cancelable: true,
-    clientY: 450,
+    clientY: 520,
     isPrimary: true,
     pointerId: 61,
     pointerType: 'touch'
   });
   await expect(roller).toHaveAttribute('data-active-payment', 'wechat');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
+
+  await roller.focus();
+  await expect(roller).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
+  await page.keyboard.press('ArrowUp');
+  await expect(roller).toHaveAttribute('data-active-payment', 'wechat');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
+  await page.keyboard.press('Escape');
+  await expect.poll(
+    () => roller.evaluate((element) => (
+      !element.contains(element.ownerDocument.activeElement)
+    )),
+    { message: 'Escape 后焦点应退出支付方式局部控件' }
+  ).toBe(true);
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
 
   const chooseAlipay = page.getByRole('button', {
     name: '选择支付宝付款方式'
@@ -1135,7 +1298,10 @@ test('目标视口五章节无溢出遮挡且减少动态效果保持完整导�
 
     if (viewport.width === 1920) {
       await page.screenshot({
-        path: resolve(SCREENSHOT_DIRECTORY, 'website-1920.png')
+        path: resolve(
+          SCREENSHOT_DIRECTORY,
+          'website-reduced-motion-1920.png'
+        )
       });
     }
 
