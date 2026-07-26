@@ -1,6 +1,11 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState
+} from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { HomeExperience } from '../home-experience/HomeExperience';
@@ -23,13 +28,35 @@ function isExplicitPlaceholder(chapterId: ChapterId): boolean {
   return chapterId === 'about' || chapterId === 'feedback';
 }
 
+export interface WebsiteExperienceProps {
+  onRuntimeError?: () => void;
+}
+
 /**
  * 组合五个章节，并把全局输入状态下发给受控首页。
  */
-export function WebsiteExperience() {
+export function WebsiteExperience({
+  onRuntimeError
+}: WebsiteExperienceProps = {}) {
   const [initializationFailed, setInitializationFailed] = useState(false);
+  const mountedRef = useRef(true);
+  const onRuntimeErrorRef = useRef(onRuntimeError);
+  onRuntimeErrorRef.current = onRuntimeError;
+
+  // 父级 layout cleanup 早于子级 passive cleanup，用于屏蔽最终卸载中的错误上报。
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const handleInitializationError = useCallback(() => {
+    if (!mountedRef.current) return;
+
     setInitializationFailed(true);
+    onRuntimeErrorRef.current?.();
   }, []);
   const controller = useWebsiteController({
     chapterCount: CHAPTER_REGISTRY.length,

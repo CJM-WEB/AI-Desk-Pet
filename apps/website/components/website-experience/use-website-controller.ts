@@ -97,11 +97,19 @@ export function useWebsiteController(
 
   const chapterCount = Math.max(1, options.chapterCount);
 
+  const normalizePausedState = useCallback(() => {
+    isDocumentHiddenRef.current = false;
+    isWindowBlurredRef.current = false;
+    isPausedRef.current = false;
+    setIsPaused(false);
+  }, []);
+
   const notifyInitializationError = useCallback(() => {
     staticFallbackRef.current = true;
+    normalizePausedState();
     setInitializationFailed(true);
     onInitializationErrorRef.current?.();
-  }, []);
+  }, [normalizePausedState]);
 
   const commitPhase = useCallback((next: ExperiencePhase) => {
     phaseRef.current = next;
@@ -219,10 +227,17 @@ export function useWebsiteController(
     }
 
     staticFallbackRef.current = true;
+    normalizePausedState();
     cancelSnap();
     commitProgress(settledIndexRef.current);
     commitPhase('interactive');
-  }, [cancelSnap, commitPhase, commitProgress, options.staticFallback]);
+  }, [
+    cancelSnap,
+    commitPhase,
+    commitProgress,
+    normalizePausedState,
+    options.staticFallback
+  ]);
 
   useEffect(() => {
     if (options.staticFallback) {

@@ -645,6 +645,7 @@
 .downloadChapter[data-motion-disabled='true'] .panelHeading,
 .downloadChapter[data-motion-disabled='true'] .panelList li {
   opacity: 1 !important;
+  visibility: visible !important;
   transform: none !important;
 }
 
@@ -663,6 +664,7 @@
   .panelHeading,
   .panelList li {
     opacity: 1 !important;
+    visibility: visible !important;
     transform: none !important;
   }
 }

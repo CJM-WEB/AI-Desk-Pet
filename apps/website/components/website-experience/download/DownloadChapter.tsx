@@ -60,6 +60,18 @@ type PlatformPointerDrag = {
 const PANEL_CLOSE_DURATION_MS = 220;
 const PLATFORM_DRAG_THRESHOLD_PX = 40;
 
+function clearPanelMotionResidue(scope: HTMLElement) {
+  const animatedElements = scope.querySelectorAll<HTMLElement>(
+    '[data-panel-heading], [data-panel-item]'
+  );
+
+  for (const element of animatedElements) {
+    element.style.removeProperty('opacity');
+    element.style.removeProperty('visibility');
+    element.style.removeProperty('transform');
+  }
+}
+
 // 计算最短循环距离，使平台数量增加后仍保持连续堆叠。
 function getCircularDistance(index: number, activeIndex: number, length: number): number {
   if (length <= 1) return 0;
@@ -226,6 +238,13 @@ export function DownloadChapter({
     motionDisabled,
     visibleSide
   ]);
+
+  // 静态模式主动清除 GSAP 部分回滚失败后可能留下的内联运动属性。
+  useEffect(() => {
+    if (!motionDisabled || !rootRef.current) return;
+
+    clearPanelMotionResidue(rootRef.current);
+  }, [motionDisabled, panelFlow.phase, visibleSide]);
 
   // 平台堆叠消费自己的滚轮和方向键，避免触发外层章节切换。
   const selectRelativePlatform = (delta: number) => {
