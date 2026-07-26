@@ -34,6 +34,11 @@ export interface WebsiteControllerResult {
 
 const SNAP_DURATION_MS = 300;
 
+type ChapterTouchGesture = {
+  pointerId: number;
+  startY: number;
+};
+
 export function isLocalInputElement(
   target: { closest: (selector: string) => unknown } | null
 ): boolean {
@@ -89,7 +94,7 @@ export function useWebsiteController(
   const pointerFrameRef = useRef<number | null>(null);
   const snapFrameRef = useRef<number | null>(null);
   const snapTargetRef = useRef<number | null>(null);
-  const touchStartYRef = useRef<number | null>(null);
+  const touchGestureRef = useRef<ChapterTouchGesture | null>(null);
   const introSkipRef = useRef<(() => void) | null>(null);
   const onInitializationErrorRef = useRef(options.onInitializationError);
 
@@ -380,31 +385,43 @@ export function useWebsiteController(
       });
     };
     const handlePointerDown = (event: PointerEvent) => {
-      if (isLocalInput(event.target) || event.pointerType !== 'touch') {
-        return;
-      }
-
-      touchStartYRef.current = event.clientY;
-    };
-    const handlePointerUp = (event: PointerEvent) => {
-      const startY = touchStartYRef.current;
-      touchStartYRef.current = null;
       if (
         isLocalInput(event.target)
         || event.pointerType !== 'touch'
-        || startY === null
-        || isPausedRef.current
+        || touchGestureRef.current
       ) {
         return;
       }
 
-      const direction = calculateSwipeDelta(startY, event.clientY);
+      touchGestureRef.current = {
+        pointerId: event.pointerId,
+        startY: event.clientY
+      };
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      const gesture = touchGestureRef.current;
+      if (
+        event.pointerType !== 'touch'
+        || !gesture
+        || gesture.pointerId !== event.pointerId
+      ) {
+        return;
+      }
+
+      touchGestureRef.current = null;
+      if (isLocalInput(event.target) || isPausedRef.current) {
+        return;
+      }
+
+      const direction = calculateSwipeDelta(gesture.startY, event.clientY);
       if (direction !== 0) {
         goToAdjacent(direction);
       }
     };
-    const clearTouchStart = () => {
-      touchStartYRef.current = null;
+    const clearTouchStart = (event: PointerEvent) => {
+      if (touchGestureRef.current?.pointerId === event.pointerId) {
+        touchGestureRef.current = null;
+      }
     };
     const listenerTeardowns: Array<() => void> = [];
     let tornDown = false;
@@ -433,7 +450,7 @@ export function useWebsiteController(
       tornDown = true;
 
       cancelSnap();
-      touchStartYRef.current = null;
+      touchGestureRef.current = null;
       if (pointerFrameRef.current !== null) {
         window.cancelAnimationFrame(pointerFrameRef.current);
         pointerFrameRef.current = null;

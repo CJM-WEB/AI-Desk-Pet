@@ -4,8 +4,7 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
-  PointerEvent as ReactPointerEvent,
-  WheelEvent as ReactWheelEvent
+  PointerEvent as ReactPointerEvent
 } from 'react';
 import {
   ChevronLeft,
@@ -110,6 +109,7 @@ export function DownloadChapter({
     phase: 'open'
   });
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const platformStackRef = useRef<HTMLDivElement | null>(null);
   const platformDragRef = useRef<PlatformPointerDrag | null>(null);
   const requestedSide = visibleDownloadSide(state);
   const visibleSide = panelFlow.visibleSide;
@@ -258,13 +258,24 @@ export function DownloadChapter({
     });
   };
 
-  const handlePlatformWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
+  useEffect(() => {
+    const stack = platformStackRef.current;
+    if (!stack) return;
 
-    if (!interactive || event.deltaY === 0) return;
-    selectRelativePlatform(event.deltaY > 0 ? 1 : -1);
-  };
+    // React 合成 wheel 监听可能为 passive，局部滚筒使用原生监听确保能阻止页面输入。
+    const handlePlatformWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (!interactive || event.deltaY === 0) return;
+      selectRelativePlatform(event.deltaY > 0 ? 1 : -1);
+    };
+
+    stack.addEventListener('wheel', handlePlatformWheel, { passive: false });
+    return () => {
+      stack.removeEventListener('wheel', handlePlatformWheel);
+    };
+  }, [interactive, state.activePlatformIndex]);
 
   const handlePlatformKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const direction = event.key === 'ArrowDown' || event.key === 'ArrowRight'
@@ -429,12 +440,16 @@ export function DownloadChapter({
       </aside>
 
       <div
+        ref={platformStackRef}
         className={styles.platformStack}
+        data-testid="download-platform-stack"
+        data-active-platform={
+          DOWNLOAD_PLATFORMS[state.activePlatformIndex]?.id ?? ''
+        }
         data-input-scope="local"
         tabIndex={interactive ? 0 : -1}
         role="group"
         aria-label="选择下载平台"
-        onWheel={handlePlatformWheel}
         onKeyDown={handlePlatformKeyDown}
         onPointerDown={handlePlatformPointerDown}
         onPointerMove={handlePlatformPointerMove}
@@ -461,6 +476,7 @@ export function DownloadChapter({
                 className={styles.platformCard}
                 data-active={isActive}
                 data-platform-id={platform.id}
+                data-platform-status={platform.status}
                 style={getCardStyle(distance, DOWNLOAD_PLATFORMS.length)}
               >
                 <button

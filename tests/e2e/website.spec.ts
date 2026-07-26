@@ -2,12 +2,13 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
+import { expect, test as baseTest } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
-const WEBSITE_URL = 'http://127.0.0.1:4173';
 const REPOSITORY_ROOT = resolve(__dirname, '..', '..');
 const STATIC_SERVER_SCRIPT = resolve(REPOSITORY_ROOT, 'tests/serve-website-export.mjs');
+const SERVER_READY_PREFIX = 'WEBSITE_SERVER_READY ';
+const WEBSITE = '[data-testid="website-experience"]';
 const HOME = '[data-testid="home-experience"]';
 const ICON = '[data-testid="file-icon"]';
 const PREVIEW = '[data-testid="file-preview"]';
@@ -28,23 +29,103 @@ const FILE_ASSET_PATHS = new Set([
   '/empty.png',
   '/Noempty.png'
 ]);
-let websiteServer: ChildProcess | null = null;
+const CHAPTER_IDS = [
+  'home',
+  'about',
+  'download',
+  'feedback',
+  'donation'
+] as const;
 
-async function waitForWebsite(): Promise<void> {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(WEBSITE_URL);
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // 静态服务器尚未开始监听时继续等待。
+type ChapterId = (typeof CHAPTER_IDS)[number];
+
+interface WebsiteServerInfo {
+  url: string;
+  runId: string;
+  buildMarker: string;
+}
+
+interface WebsiteServerReadyPayload extends WebsiteServerInfo {
+  port: number;
+}
+
+function waitForWebsiteServerReady(
+  server: ChildProcess,
+  expectedRunId: string
+): Promise<WebsiteServerInfo> {
+  return new Promise((resolveReady, rejectReady) => {
+    if (!server.stdout) {
+      rejectReady(new Error('静态网站服务器缺少标准输出管道'));
+      return;
     }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
-  }
 
-  throw new Error('静态网站未在 30 秒内启动');
+    let output = '';
+    const timeout = setTimeout(() => {
+      rejectReady(new Error(
+        `静态网站服务器未在 10 秒内报告隔离端口，当前输出：${output}`
+      ));
+    }, 10_000);
+
+    const handleData = (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+      const readyLine = output
+        .split(/\r?\n/u)
+        .find((line) => line.startsWith(SERVER_READY_PREFIX));
+      if (!readyLine) return;
+
+      try {
+        const payload = JSON.parse(
+          readyLine.slice(SERVER_READY_PREFIX.length)
+        ) as WebsiteServerReadyPayload;
+        if (
+          payload.runId !== expectedRunId
+          || !Number.isInteger(payload.port)
+          || payload.port <= 0
+          || !payload.url
+          || !payload.buildMarker
+        ) {
+          throw new Error(`服务器就绪信息不完整：${readyLine}`);
+        }
+
+        clearTimeout(timeout);
+        server.stdout?.off('data', handleData);
+        resolveReady({
+          url: payload.url,
+          runId: payload.runId,
+          buildMarker: payload.buildMarker
+        });
+      } catch (error) {
+        clearTimeout(timeout);
+        server.stdout?.off('data', handleData);
+        rejectReady(error);
+      }
+    };
+
+    server.stdout.on('data', handleData);
+  });
+}
+
+async function verifyWebsiteServerSource(
+  serverInfo: WebsiteServerInfo
+): Promise<void> {
+  const response = await fetch(serverInfo.url);
+  const html = await response.text();
+  const expectedChapterIds = ['home', 'about', 'download', 'feedback', 'donation'];
+  const missingChapterIds = expectedChapterIds.filter(
+    (chapterId) => !html.includes(`data-chapter-id="${chapterId}"`)
+  );
+
+  if (
+    !response.ok
+    || response.headers.get('x-website-test-run-id') !== serverInfo.runId
+    || response.headers.get('x-website-build-marker') !== serverInfo.buildMarker
+    || !html.includes('data-testid="website-experience"')
+    || missingChapterIds.length > 0
+  ) {
+    throw new Error(
+      `静态网站来源校验失败，缺少章节：${missingChapterIds.join(', ') || '无'}`
+    );
+  }
 }
 
 async function stopWebsiteServer(server: ChildProcess): Promise<void> {
@@ -72,19 +153,60 @@ async function stopWebsiteServer(server: ChildProcess): Promise<void> {
   });
 }
 
-test.beforeAll(async () => {
-  await mkdir(SCREENSHOT_DIRECTORY, { recursive: true });
-  websiteServer = spawn(process.execPath, [STATIC_SERVER_SCRIPT], {
-    cwd: REPOSITORY_ROOT,
-    stdio: 'ignore'
-  });
-  await waitForWebsite();
-});
+const test = baseTest.extend<{}, { websiteServerInfo: WebsiteServerInfo }>({
+  websiteServerInfo: [async ({}, use, workerInfo) => {
+    await mkdir(SCREENSHOT_DIRECTORY, { recursive: true });
+    const runId = [
+      process.pid,
+      workerInfo.workerIndex,
+      Date.now()
+    ].join('-');
+    const server = spawn(process.execPath, [STATIC_SERVER_SCRIPT], {
+      cwd: REPOSITORY_ROOT,
+      env: {
+        ...process.env,
+        PORT: '0',
+        WEBSITE_TEST_RUN_ID: runId
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stopping = false;
+    let stderr = '';
+    server.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    const serverFailure = new Promise<never>((_, rejectFailure) => {
+      server.once('error', (error) => {
+        rejectFailure(new Error(`静态网站服务器启动失败：${error.message}`));
+      });
+      server.once('exit', (code, signal) => {
+        if (stopping) return;
+        rejectFailure(new Error(
+          `静态网站服务器意外退出：code=${code}, signal=${signal}, stderr=${stderr}`
+        ));
+      });
+    });
 
-test.afterAll(async () => {
-  if (websiteServer) {
-    await stopWebsiteServer(websiteServer);
-    websiteServer = null;
+    try {
+      const serverInfo = await Promise.race([
+        waitForWebsiteServerReady(server, runId),
+        serverFailure
+      ]);
+      await Promise.race([
+        verifyWebsiteServerSource(serverInfo),
+        serverFailure
+      ]);
+      await Promise.race([
+        use(serverInfo),
+        serverFailure
+      ]);
+    } finally {
+      stopping = true;
+      await stopWebsiteServer(server);
+    }
+  }, { scope: 'worker' }],
+  baseURL: async ({ websiteServerInfo }, use) => {
+    await use(websiteServerInfo.url);
   }
 });
 
@@ -95,12 +217,58 @@ async function enterInteractive(page: Page): Promise<void> {
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
 }
 
+async function enterChapter(page: Page, chapterId: ChapterId): Promise<void> {
+  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  });
+
+  const targetIndex = CHAPTER_IDS.indexOf(chapterId);
+  for (let attempt = 0; attempt < CHAPTER_IDS.length; attempt += 1) {
+    const currentId = await page.locator(WEBSITE).getAttribute(
+      'data-active-chapter'
+    ) as ChapterId | null;
+    if (currentId === chapterId) return;
+
+    const currentIndex = currentId ? CHAPTER_IDS.indexOf(currentId) : -1;
+    if (currentIndex < 0) {
+      throw new Error(`无法识别当前章节：${currentId ?? 'null'}`);
+    }
+
+    const direction = targetIndex > currentIndex ? 1 : -1;
+    const adjacentId = CHAPTER_IDS[currentIndex + direction];
+    if (!adjacentId) {
+      throw new Error(`章节 ${currentId} 已到达边界`);
+    }
+
+    await page.keyboard.press(direction > 0 ? 'PageDown' : 'PageUp');
+    await expect(page.locator(WEBSITE)).toHaveAttribute(
+      'data-active-chapter',
+      adjacentId
+    );
+  }
+
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    chapterId
+  );
+}
+
 async function waitForFile(page: Page): Promise<Locator> {
   await expect.poll(
     () => page.locator(ICON).count(),
     { timeout: 6_000, message: '开场跳过后应生成至少一个文件粒子' }
   ).toBeGreaterThan(0);
   return page.locator(ICON).first();
+}
+
+function getBrandHeading(page: Page): Locator {
+  return page.locator(BRAND).getByRole('heading', {
+    name: 'AI Pet',
+    exact: true
+  });
 }
 
 async function expectInsideViewport(page: Page, locator: Locator): Promise<void> {
@@ -113,6 +281,165 @@ async function expectInsideViewport(page: Page, locator: Locator): Promise<void>
   expect(box!.y).toBeGreaterThanOrEqual(-1);
   expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width + 1);
   expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height + 1);
+}
+
+async function expectNoOverlap(
+  first: Locator,
+  second: Locator,
+  message: string
+): Promise<void> {
+  const firstBox = await first.boundingBox();
+  const secondBox = await second.boundingBox();
+  expect(firstBox).not.toBeNull();
+  expect(secondBox).not.toBeNull();
+
+  const overlapWidth = Math.max(
+    0,
+    Math.min(firstBox!.x + firstBox!.width, secondBox!.x + secondBox!.width)
+    - Math.max(firstBox!.x, secondBox!.x)
+  );
+  const overlapHeight = Math.max(
+    0,
+    Math.min(firstBox!.y + firstBox!.height, secondBox!.y + secondBox!.height)
+    - Math.max(firstBox!.y, secondBox!.y)
+  );
+  expect(
+    overlapWidth * overlapHeight,
+    `${message}；第一项=${JSON.stringify(firstBox)}；第二项=${JSON.stringify(secondBox)}`
+  ).toBe(0);
+}
+
+async function expectActiveChapterLayout(
+  page: Page,
+  chapterId: ChapterId
+): Promise<void> {
+  const evidence = await page.locator(
+    `[data-chapter-id="${chapterId}"]`
+  ).evaluate((section) => {
+    const navigation = document.querySelector<HTMLElement>(
+      'nav[aria-label="章节导航"]'
+    );
+    const navigationRect = navigation?.checkVisibility({
+      checkOpacity: true,
+      checkVisibilityCSS: true
+    })
+      ? navigation.getBoundingClientRect()
+      : null;
+    const candidates = Array.from(section.querySelectorAll<HTMLElement>(
+      [
+        'h1',
+        'h2',
+        'h3',
+        'p',
+        'button',
+        'a',
+        'code',
+        '[data-platform-id]',
+        '[data-payment-id]'
+      ].join(',')
+    ));
+    const outsideViewport: string[] = [];
+    const overflowingText: string[] = [];
+    const navigationOverlaps: string[] = [];
+
+    for (const element of candidates) {
+      if (
+        element.closest('[aria-hidden="true"], [inert]')
+        || !element.checkVisibility({
+          checkOpacity: true,
+          checkVisibilityCSS: true
+        })
+      ) {
+        continue;
+      }
+
+      const bounds = element.getBoundingClientRect();
+      const label = [
+        element.tagName.toLowerCase(),
+        element.getAttribute('data-platform-id'),
+        element.getAttribute('data-payment-id'),
+        element.getAttribute('aria-label'),
+        element.textContent?.trim().slice(0, 32)
+      ].filter(Boolean).join(':');
+      if (
+        bounds.left < -1
+        || bounds.top < -1
+        || bounds.right > window.innerWidth + 1
+        || bounds.bottom > window.innerHeight + 1
+      ) {
+        outsideViewport.push(
+          `${label}:${Math.round(bounds.left)},${Math.round(bounds.top)}`
+          + `-${Math.round(bounds.right)},${Math.round(bounds.bottom)}`
+          + `/${window.innerWidth}x${window.innerHeight}`
+        );
+      }
+
+      const style = getComputedStyle(element);
+      const clipsVertically = !['visible', 'unset'].includes(style.overflowY);
+      if (
+        ['H1', 'H2', 'H3', 'P', 'A', 'CODE'].includes(element.tagName)
+        && (
+          element.scrollWidth > element.clientWidth + 1
+          || (
+            clipsVertically
+            && element.scrollHeight > element.clientHeight + 1
+          )
+        )
+      ) {
+        overflowingText.push(
+          `${label}:${element.clientWidth}x${element.clientHeight}`
+          + `/${element.scrollWidth}x${element.scrollHeight}`
+        );
+      }
+
+      if (
+        navigationRect
+        && navigation
+        && !navigation.contains(element)
+        && bounds.left < navigationRect.right
+        && bounds.right > navigationRect.left
+        && bounds.top < navigationRect.bottom
+        && bounds.bottom > navigationRect.top
+      ) {
+        navigationOverlaps.push(label);
+      }
+    }
+
+    return {
+      bodyWidth: document.body.scrollWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      navigationOverlaps,
+      outsideViewport,
+      overflowingText,
+      sectionWidth: section.scrollWidth,
+      viewportWidth: window.innerWidth
+    };
+  });
+
+  expect(
+    evidence.documentWidth,
+    `${chapterId} 文档不应横向溢出`
+  ).toBeLessThanOrEqual(evidence.viewportWidth);
+  expect(
+    evidence.bodyWidth,
+    `${chapterId} 页面主体不应横向溢出`
+  ).toBeLessThanOrEqual(evidence.viewportWidth);
+  expect(
+    evidence.sectionWidth,
+    `${chapterId} 章节不应横向溢出`
+  ).toBeLessThanOrEqual(evidence.viewportWidth);
+  expect(
+    evidence.outsideViewport,
+    `${chapterId} 可见内容应完整位于视口内`
+  ).toEqual([]);
+  expect(
+    evidence.overflowingText,
+    `${chapterId} 可见文本不应被自身容器裁切`
+  ).toEqual([]);
+  expect(
+    evidence.navigationOverlaps,
+    `${chapterId} 可见内容不应被章节导航遮挡`
+  ).toEqual([]);
 }
 
 function collectRuntimeErrors(page: Page): string[] {
@@ -194,6 +521,9 @@ async function countCanvasAlphaPixels(canvas: Locator): Promise<number> {
     if (!context) {
       throw new Error('无法读取 Canvas 2D 像素');
     }
+    if (element.width === 0 || element.height === 0) {
+      return 0;
+    }
 
     const pixels = context.getImageData(0, 0, element.width, element.height).data;
     let alphaPixelCount = 0;
@@ -206,6 +536,660 @@ async function countCanvasAlphaPixels(canvas: Locator): Promise<number> {
   });
 }
 
+interface CanvasColorEvidence {
+  alphaPixels: number;
+  balancedPixels: number;
+  yellowPixels: number;
+}
+
+async function readCanvasColorEvidence(
+  canvas: Locator
+): Promise<CanvasColorEvidence> {
+  return canvas.evaluate((element) => {
+    if (!(element instanceof HTMLCanvasElement)) {
+      throw new Error('光标场不是 Canvas 元素');
+    }
+
+    const context = element.getContext('2d', { willReadFrequently: true });
+    if (!context) {
+      throw new Error('无法读取 Canvas 2D 像素');
+    }
+    if (element.width === 0 || element.height === 0) {
+      return { alphaPixels: 0, balancedPixels: 0, yellowPixels: 0 };
+    }
+
+    const pixels = context.getImageData(0, 0, element.width, element.height).data;
+    let alphaPixels = 0;
+    let balancedPixels = 0;
+    let yellowPixels = 0;
+    for (let offset = 0; offset < pixels.length; offset += 16) {
+      const red = pixels[offset] ?? 0;
+      const green = pixels[offset + 1] ?? 0;
+      const blue = pixels[offset + 2] ?? 0;
+      const alpha = pixels[offset + 3] ?? 0;
+      if (alpha === 0) continue;
+
+      alphaPixels += 1;
+      if (Math.max(red, green, blue) - Math.min(red, green, blue) <= 8) {
+        balancedPixels += 1;
+      }
+      if (red > blue + 40 && green > blue + 40) {
+        yellowPixels += 1;
+      }
+    }
+
+    return { alphaPixels, balancedPixels, yellowPixels };
+  });
+}
+
+test('五章节按确认顺序注册且两个占位章节具有明确状态', async ({ page }) => {
+  await page.goto('/?seed=42');
+  const sections = page.locator('[data-chapter-id]');
+
+  await expect(sections).toHaveCount(5);
+  expect(await sections.evaluateAll((nodes) => nodes.map(
+    (node) => node.getAttribute('data-chapter-id')
+  ))).toEqual(CHAPTER_IDS);
+  await expect(page.locator('[data-chapter-id="home"]')).toHaveAttribute(
+    'aria-hidden',
+    'false'
+  );
+
+  for (const chapterId of CHAPTER_IDS.slice(1)) {
+    const chapter = page.locator(`[data-chapter-id="${chapterId}"]`);
+    await expect(chapter).toHaveAttribute('inert', '');
+    await expect(chapter).toHaveAttribute('data-interactive', 'false');
+  }
+
+  await expect(
+    page.locator('[data-chapter-id="about"]').getByRole('heading', {
+      name: 'AI Pet 介绍',
+      exact: true
+    })
+  ).toBeAttached();
+  await expect(
+    page.locator('[data-chapter-id="feedback"] h2')
+  ).toHaveText('用户反馈与建议箱');
+  await expect(
+    page.locator('[data-chapter-id="about"]').getByText('内容准备中')
+  ).toBeAttached();
+  await expect(
+    page.locator('[data-chapter-id="feedback"]').getByText('内容准备中')
+  ).toBeAttached();
+});
+
+test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+
+  await page.mouse.wheel(0, 700);
+  await expect.poll(async () => page.locator(WEBSITE).evaluate((experience) => {
+    const home = experience.querySelector<HTMLElement>(
+      '[data-chapter-id="home"]'
+    );
+    const about = experience.querySelector<HTMLElement>(
+      '[data-chapter-id="about"]'
+    );
+    if (!home || !about) return false;
+
+    const homeStyle = getComputedStyle(home);
+    const aboutStyle = getComputedStyle(about);
+    const homeOpacity = Number(homeStyle.opacity);
+    const aboutOpacity = Number(aboutStyle.opacity);
+    return homeOpacity > 0
+      && homeOpacity < 1
+      && aboutOpacity > 0
+      && aboutOpacity < 1
+      && homeStyle.transform !== 'none'
+      && aboutStyle.transform !== 'none';
+  }), {
+    message: '首页与介绍章节应出现缩放渐隐交接帧'
+  }).toBe(true);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'chapter-transition-1440.png')
+  });
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'home'
+  );
+
+  await page.mouse.wheel(0, 5_000);
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'about'
+  );
+
+  for (let index = 0; index < 6; index += 1) {
+    await page.keyboard.press('PageDown');
+  }
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'download'
+  );
+  await page.keyboard.press('PageUp');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'about'
+  );
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('多指触屏不会覆盖首个章节拖动手势', async ({ page }) => {
+  await enterInteractive(page);
+
+  await page.evaluate(() => {
+    const dispatchPointer = (
+      type: 'pointerdown' | 'pointerup',
+      pointerId: number,
+      clientY: number,
+      isPrimary: boolean
+    ) => {
+      document.body.dispatchEvent(new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientY,
+        isPrimary,
+        pointerId,
+        pointerType: 'touch'
+      }));
+    };
+
+    dispatchPointer('pointerdown', 41, 650, true);
+    dispatchPointer('pointerdown', 42, 500, false);
+    dispatchPointer('pointerup', 42, 500, false);
+    dispatchPointer('pointerup', 41, 100, true);
+  });
+
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'about'
+  );
+});
+
+test('暂停期间结束的触屏不会锁死后续章节手势', async ({ page }) => {
+  await enterInteractive(page);
+
+  await page.evaluate(() => {
+    document.body.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      clientY: 640,
+      isPrimary: true,
+      pointerId: 43,
+      pointerType: 'touch'
+    }));
+    window.dispatchEvent(new Event('blur'));
+    document.body.dispatchEvent(new PointerEvent('pointerup', {
+      bubbles: true,
+      cancelable: true,
+      clientY: 120,
+      isPrimary: true,
+      pointerId: 43,
+      pointerType: 'touch'
+    }));
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect(page.locator(SWARM)).toHaveAttribute('data-paused', 'false');
+
+  await page.evaluate(() => {
+    document.body.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      clientY: 640,
+      isPrimary: true,
+      pointerId: 44,
+      pointerType: 'touch'
+    }));
+    document.body.dispatchEvent(new PointerEvent('pointerup', {
+      bubbles: true,
+      cancelable: true,
+      clientY: 120,
+      isPrimary: true,
+      pointerId: 44,
+      pointerType: 'touch'
+    }));
+  });
+
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'about'
+  );
+});
+
+test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await enterInteractive(page);
+  await enterChapter(page, 'download');
+
+  const stack = page.locator('[data-testid="download-platform-stack"]');
+  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
+  await stack.hover();
+  await page.mouse.wheel(0, 160);
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'download'
+  );
+  await expect(stack).toHaveAttribute('data-active-platform', 'macos');
+  await expect(page.getByRole('button', { name: '即将支持' })).toBeDisabled();
+  await expect(
+    page.locator('[data-platform-id="macos"] a')
+  ).toHaveCount(0);
+
+  await stack.dispatchEvent('pointerdown', {
+    bubbles: true,
+    cancelable: true,
+    clientY: 520,
+    isPrimary: true,
+    pointerId: 51,
+    pointerType: 'touch'
+  });
+  await stack.dispatchEvent('pointermove', {
+    bubbles: true,
+    cancelable: true,
+    clientY: 450,
+    isPrimary: true,
+    pointerId: 51,
+    pointerType: 'touch'
+  });
+  await stack.dispatchEvent('pointerup', {
+    bubbles: true,
+    cancelable: true,
+    clientY: 450,
+    isPrimary: true,
+    pointerId: 51,
+    pointerType: 'touch'
+  });
+  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'download'
+  );
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('下载侧栏支持临时预览、顺序锁定切换、复位和真实 Windows 链接', async ({
+  page
+}) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  await enterChapter(page, 'download');
+
+  const download = page.locator('[data-testid="download-chapter"]');
+  const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
+  const noticeTrigger = page.getByRole('button', { name: '显示安装前须知' });
+  const faqPanel = page.getByRole('complementary', { name: '常见问题' });
+  const noticePanel = page.getByRole('complementary', { name: '安装前须知' });
+  const activeCard = page.locator(
+    '[data-platform-id="windows-x64"][data-active="true"]'
+  );
+  const backgroundImage = await download.evaluate(
+    (element) => getComputedStyle(element).backgroundImage
+  );
+  expect(backgroundImage).toContain('rgb(0, 255, 200)');
+  expect(backgroundImage).toContain('rgb(235, 235, 235)');
+  for (const trigger of [faqTrigger, noticeTrigger]) {
+    const bounds = await trigger.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.width).toBeGreaterThanOrEqual(44);
+    expect(bounds!.height).toBeGreaterThanOrEqual(44);
+    expect(await trigger.locator('svg').evaluate(
+      (icon) => getComputedStyle(icon).animationName
+    )).not.toBe('none');
+  }
+
+  await faqTrigger.hover();
+  await expect(download).toHaveAttribute('data-visible-side', 'faq');
+  await expect(faqPanel).toBeVisible();
+  await page.mouse.move(720, 450);
+  await expect(download).toHaveAttribute('data-visible-side', 'none');
+
+  await faqTrigger.focus();
+  await expect(download).toHaveAttribute('data-visible-side', 'faq');
+  await faqTrigger.blur();
+  await expect(download).toHaveAttribute('data-visible-side', 'none');
+
+  await faqTrigger.click();
+  await page.mouse.move(720, 450);
+  await expect(faqTrigger).toHaveAttribute('aria-pressed', 'true');
+  await expect(faqPanel).toBeVisible();
+  await expect.poll(() => faqPanel.locator('[data-panel-item]').evaluateAll(
+    (items) => items.every(
+      (item) => Number(getComputedStyle(item).opacity) >= 0.99
+    )
+  ), {
+    message: 'FAQ 错峰内容应完成淡入'
+  }).toBe(true);
+  await expectInsideViewport(page, faqPanel);
+  await expectNoOverlap(
+    faqPanel,
+    activeCard,
+    'FAQ 面板不应遮挡当前下载卡片'
+  );
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'download-faq-1440.png')
+  });
+
+  await noticeTrigger.click();
+  await expect(download).toHaveAttribute('data-panel-phase', 'closing');
+  await expect(download).toHaveAttribute('data-visible-side', 'faq');
+  await expect(download).toHaveAttribute('data-pending-side', 'notice');
+  await expect(download).toHaveAttribute('data-panel-phase', 'open');
+  await expect(download).toHaveAttribute('data-visible-side', 'notice');
+  await expect(noticePanel).toBeVisible();
+  await expect.poll(() => noticePanel.locator('[data-panel-item]').evaluateAll(
+    (items) => items.every(
+      (item) => Number(getComputedStyle(item).opacity) >= 0.99
+    )
+  ), {
+    message: '安装须知错峰内容应完成淡入'
+  }).toBe(true);
+  await expectInsideViewport(page, noticePanel);
+  await expectNoOverlap(
+    noticePanel,
+    activeCard,
+    '安装须知面板不应遮挡当前下载卡片'
+  );
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'download-notice-1440.png')
+  });
+
+  await page.keyboard.press('Escape');
+  await expect(download).toHaveAttribute('data-visible-side', 'none');
+  const windowsLink = page.getByRole('link', { name: '下载 Windows' });
+  await expect(windowsLink).toHaveAttribute('href', /\.exe$/u);
+  await expect(windowsLink).toHaveAttribute(
+    'download',
+    /Myself-.*-windows-x64\.exe$/u
+  );
+  await expect(
+    page.locator('[data-platform-id="windows-x64"] code')
+  ).toHaveText(/^[a-f0-9]{64}$/u);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('支付滚筒消费局部输入并显示映射正确的真实付款码', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await enterInteractive(page);
+  await enterChapter(page, 'donation');
+
+  const roller = page.locator('[data-testid="payment-roller"]');
+  await expect(roller).toHaveAttribute('data-active-payment', 'wechat');
+  await page.getByRole('button', { name: '打开微信付款码' }).click();
+  const wechatDialog = page.getByRole('dialog', { name: '微信付款码' });
+  await expect(wechatDialog).toBeVisible();
+  const wechatImage = wechatDialog.getByRole('img', { name: '微信付款码' });
+  await expect(wechatImage).toHaveAttribute('src', '/WechatPay.jpg');
+  await expect.poll(
+    () => wechatImage.evaluate((image) => (
+      image instanceof HTMLImageElement ? image.naturalWidth : 0
+    )),
+    { message: '微信付款码应成功解码' }
+  ).toBeGreaterThan(0);
+  await wechatImage.click();
+  await expect(wechatDialog).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: '打开微信付款码' })
+  ).toBeFocused();
+
+  await roller.hover();
+  await page.mouse.wheel(0, 160);
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
+  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
+
+  await roller.dispatchEvent('pointerdown', {
+    bubbles: true,
+    cancelable: true,
+    clientY: 520,
+    isPrimary: true,
+    pointerId: 61,
+    pointerType: 'touch'
+  });
+  await roller.dispatchEvent('pointermove', {
+    bubbles: true,
+    cancelable: true,
+    clientY: 450,
+    isPrimary: true,
+    pointerId: 61,
+    pointerType: 'touch'
+  });
+  await roller.dispatchEvent('pointerup', {
+    bubbles: true,
+    cancelable: true,
+    clientY: 450,
+    isPrimary: true,
+    pointerId: 61,
+    pointerType: 'touch'
+  });
+  await expect(roller).toHaveAttribute('data-active-payment', 'wechat');
+
+  const chooseAlipay = page.getByRole('button', {
+    name: '选择支付宝付款方式'
+  });
+  await chooseAlipay.click();
+  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const alipayButton = page.getByRole('button', { name: '打开支付宝付款码' });
+  await alipayButton.click();
+  const alipayDialog = page.getByRole('dialog', { name: '支付宝付款码' });
+  const alipayImage = alipayDialog.getByRole('img', { name: '支付宝付款码' });
+  await expect(alipayImage).toHaveAttribute('src', '/Alipay.jpg');
+  await expect.poll(
+    () => alipayImage.evaluate((image) => (
+      image instanceof HTMLImageElement ? image.naturalWidth : 0
+    )),
+    { message: '支付宝付款码应成功解码' }
+  ).toBeGreaterThan(0);
+  await expect(alipayImage).toHaveCSS('object-fit', 'contain');
+  await page.keyboard.press('Escape');
+  await expect(alipayDialog).toHaveCount(0);
+  await expect(alipayButton).toBeFocused();
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('付款码资源加载失败时显示稳定回退并保持关闭行为', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.route('**/WechatPay.jpg', (route) => route.abort());
+  await enterInteractive(page);
+  await enterChapter(page, 'donation');
+
+  const paymentButton = page.getByRole('button', { name: '打开微信付款码' });
+  await paymentButton.click();
+  const dialog = page.getByRole('dialog', { name: '微信付款码' });
+  await expect(dialog.getByRole('status')).toHaveText('付款码暂未配置');
+  await page.getByRole('button', { name: '关闭付款码' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(paymentButton).toBeFocused();
+  expect(runtimeErrors).toHaveLength(1);
+  expect(runtimeErrors[0]).toContain('Failed to load resource');
+});
+
+test('捐款章节显示黄色 Canvas 光场并保留共享文件预览', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  await enterChapter(page, 'donation');
+
+  const canvas = page.locator(CANVAS);
+  await expect(canvas).toBeVisible();
+  await expect(canvas.locator('..')).toHaveAttribute(
+    'data-profile-id',
+    'donation'
+  );
+  for (const [x, y] of [
+    [90, 120],
+    [170, 260],
+    [1200, 180],
+    [1320, 680]
+  ] as const) {
+    await page.mouse.move(x, y);
+  }
+
+  await expect.poll(
+    async () => (await readCanvasColorEvidence(canvas)).yellowPixels,
+    { message: '捐款光场应产生黄色通道占优的非空像素' }
+  ).toBeGreaterThan(100);
+  const colorEvidence = await readCanvasColorEvidence(canvas);
+  expect(colorEvidence.alphaPixels).toBeGreaterThan(100);
+  expect(colorEvidence.yellowPixels / colorEvidence.alphaPixels)
+    .toBeGreaterThan(0.9);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'donation-yellow-field-1440.png')
+  });
+
+  const icon = await waitForFile(page);
+  await icon.hover();
+  await expect(page.locator(PREVIEW)).toBeVisible();
+  await expectInsideViewport(page, page.locator(PREVIEW));
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('390 付款码弹层保持安全边距并完整显示真实图片', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await enterInteractive(page);
+  await enterChapter(page, 'donation');
+
+  await page.getByRole('button', { name: '打开微信付款码' }).click();
+  const dialog = page.getByRole('dialog', { name: '微信付款码' });
+  const panel = page.locator('[data-testid="qr-panel"]');
+  const image = dialog.getByRole('img', { name: '微信付款码' });
+  await expect(dialog).toBeVisible();
+  await expect(image).toHaveAttribute('src', '/WechatPay.jpg');
+  await expect.poll(
+    () => image.evaluate((node) => (
+      node instanceof HTMLImageElement ? node.naturalWidth : 0
+    )),
+    { message: '移动端付款码应成功解码' }
+  ).toBeGreaterThan(0);
+  await expect(image).toHaveCSS('object-fit', 'contain');
+  await expectInsideViewport(page, panel);
+  await expectInsideViewport(page, image);
+
+  const imageEvidence = await image.evaluate((node) => {
+    if (!(node instanceof HTMLImageElement) || !node.parentElement) {
+      throw new Error('付款码图片结构不完整');
+    }
+    const imageBounds = node.getBoundingClientRect();
+    const mediaBounds = node.parentElement.getBoundingClientRect();
+    return {
+      imageBottom: imageBounds.bottom,
+      imageLeft: imageBounds.left,
+      imageRight: imageBounds.right,
+      imageTop: imageBounds.top,
+      mediaBottom: mediaBounds.bottom,
+      mediaLeft: mediaBounds.left,
+      mediaRight: mediaBounds.right,
+      mediaTop: mediaBounds.top,
+      naturalHeight: node.naturalHeight,
+      naturalWidth: node.naturalWidth
+    };
+  });
+  expect(imageEvidence.naturalWidth).toBeGreaterThan(0);
+  expect(imageEvidence.naturalHeight).toBeGreaterThan(0);
+  expect(imageEvidence.imageLeft).toBeGreaterThanOrEqual(imageEvidence.mediaLeft);
+  expect(imageEvidence.imageTop).toBeGreaterThanOrEqual(imageEvidence.mediaTop);
+  expect(imageEvidence.imageRight).toBeLessThanOrEqual(imageEvidence.mediaRight);
+  expect(imageEvidence.imageBottom).toBeLessThanOrEqual(imageEvidence.mediaBottom);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth))
+    .toBeLessThanOrEqual(390);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'donation-dialog-390.png')
+  });
+
+  await page.getByRole('button', { name: '关闭付款码' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('目标视口五章节无溢出遮挡且减少动态效果保持完整导航', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const viewports = [
+    { width: 390, height: 844 },
+    { width: 568, height: 320 },
+    { width: 768, height: 900 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 }
+  ];
+
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await page.goto('/?seed=42');
+
+    const experience = page.locator(WEBSITE);
+    const canvas = page.locator(CANVAS);
+    const next = page.getByRole('button', { name: '下一章节' });
+    await expect(experience).toHaveAttribute('data-reduced-motion', 'true');
+    await expect(page.locator(HOME)).toHaveAttribute(
+      'data-phase',
+      'interactive'
+    );
+    await expect(canvas).toBeHidden();
+    expect(await countCanvasAlphaPixels(canvas)).toBe(0);
+
+    if (viewport.width === 1920) {
+      await page.screenshot({
+        path: resolve(SCREENSHOT_DIRECTORY, 'website-1920.png')
+      });
+    }
+
+    for (const [index, chapterId] of CHAPTER_IDS.entries()) {
+      await expect(experience).toHaveAttribute(
+        'data-active-chapter',
+        chapterId
+      );
+      const section = page.locator(`[data-chapter-id="${chapterId}"]`);
+      await expect.poll(
+        () => section.evaluate((element) => Number(
+          getComputedStyle(element).opacity
+        )),
+        { message: `${viewport.width}x${viewport.height} ${chapterId} 应完成交叉渐隐` }
+      ).toBeGreaterThanOrEqual(0.99);
+      await expect(section).toHaveCSS('transform', 'none');
+      await expectActiveChapterLayout(page, chapterId);
+      if (
+        viewport.width === 568
+        && viewport.height === 320
+        && chapterId === 'download'
+      ) {
+        const heading = section.getByRole('heading', {
+          name: '选择你的平台',
+          exact: true
+        });
+        for (const card of await section.locator('[data-platform-id]').all()) {
+          await expectNoOverlap(
+            heading,
+            card,
+            '低高度横屏的平台卡不应遮挡章节标题'
+          );
+        }
+        await page.screenshot({
+          path: resolve(SCREENSHOT_DIRECTORY, 'download-568x320.png')
+        });
+      }
+
+      if (index === CHAPTER_IDS.length - 1) continue;
+      if (viewport.width <= 760) {
+        await next.click();
+      } else {
+        await page.keyboard.press('PageDown');
+      }
+      await expect(experience).toHaveAttribute(
+        'data-active-chapter',
+        CHAPTER_IDS[index + 1]!
+      );
+    }
+  }
+
+  expect(runtimeErrors).toEqual([]);
+});
+
 test('matchMedia 初始化异常时进入静态回退且不出现黑屏', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, 'matchMedia', {
@@ -217,14 +1201,15 @@ test('matchMedia 初始化异常时进入静态回退且不出现黑屏', async 
   });
 
   await page.goto('/');
+  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
   const overlay = page.locator('[data-layer="intro"]');
 
   await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(home).toHaveAttribute('data-initialization-failed', 'true');
+  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(overlay).toHaveAttribute('data-active', 'false');
   await expect(overlay).toBeHidden();
-  await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
+  await expect(getBrandHeading(page)).toBeVisible();
   await expect(page.locator('[data-testid="cursor-field"]')).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
 });
@@ -233,14 +1218,15 @@ test('AP Logo 素材加载失败时进入静态回退并保留品牌标题', asy
   await page.route('**/AP.png', (route) => route.abort());
 
   await page.goto('/');
+  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
   const overlay = page.locator('[data-layer="intro"]');
 
-  await expect(home).toHaveAttribute('data-initialization-failed', 'true');
+  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(home).toHaveAttribute('data-phase', 'interactive');
   await expect(overlay).toHaveAttribute('data-active', 'false');
   await expect(overlay).toBeHidden();
-  await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
+  await expect(getBrandHeading(page)).toBeVisible();
 });
 
 test('Canvas 尺寸观察器初始化异常时进入静态回退', async ({ page }) => {
@@ -257,10 +1243,11 @@ test('Canvas 尺寸观察器初始化异常时进入静态回退', async ({ page
   });
 
   await page.goto('/');
+  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  await expect(home).toHaveAttribute('data-initialization-failed', 'true');
+  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
+  await expect(getBrandHeading(page)).toBeVisible();
   await expect(page.locator(CANVAS)).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);
@@ -273,10 +1260,11 @@ test('Canvas 2D 上下文不可用时进入静态回退', async ({ page }) => {
   });
 
   await page.goto('/');
+  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  await expect(home).toHaveAttribute('data-initialization-failed', 'true');
+  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
+  await expect(getBrandHeading(page)).toBeVisible();
   await expect(page.locator(CANVAS)).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);
@@ -295,10 +1283,11 @@ test('随机源初始化异常时进入静态回退', async ({ page }) => {
 
   await page.goto('/');
   await page.mouse.click(12, 12);
+  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  await expect(home).toHaveAttribute('data-initialization-failed', 'true');
+  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
+  await expect(getBrandHeading(page)).toBeVisible();
   await expect(page.locator(CANVAS)).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);
@@ -449,7 +1438,7 @@ test('390 宽度无横向溢出且隐藏 Canvas 并最多显示四个图标', as
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await enterInteractive(page);
-  await page.waitForTimeout(4_000);
+  await waitForFile(page);
 
   const viewportWidths = await page.locator(HOME).evaluate((home) => ({
     client: home.clientWidth,
@@ -458,16 +1447,25 @@ test('390 宽度无横向溢出且隐藏 Canvas 并最多显示四个图标', as
   expect(viewportWidths.scroll).toBeLessThanOrEqual(viewportWidths.client);
   await expect(page.locator(CANVAS)).toBeHidden();
   expect(await page.locator(`${ICON}:visible`).count()).toBeLessThanOrEqual(4);
-  await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
+  await expect(getBrandHeading(page)).toBeVisible();
 
-  const scrollEvidence = await page.locator(HOME).evaluate((home) => ({
-    homeOverflowY: getComputedStyle(home).overflowY,
-    bodyOverflowY: getComputedStyle(document.body).overflowY,
-    position: getComputedStyle(home).position
-  }));
-  expect(scrollEvidence.homeOverflowY).not.toBe('hidden');
-  expect(scrollEvidence.bodyOverflowY).not.toBe('hidden');
-  expect(scrollEvidence.position).toBe('relative');
+  const scrollEvidence = await page.locator(WEBSITE).evaluate((experience) => {
+    const home = experience.querySelector<HTMLElement>(
+      '[data-testid="home-experience"]'
+    );
+    if (!home) throw new Error('缺少首页章节');
+
+    return {
+      experienceOverflowY: getComputedStyle(experience).overflowY,
+      homeOverflowY: getComputedStyle(home).overflowY,
+      position: getComputedStyle(experience).position,
+      scrollY: window.scrollY
+    };
+  });
+  expect(scrollEvidence.experienceOverflowY).toBe('hidden');
+  expect(scrollEvidence.homeOverflowY).toBe('hidden');
+  expect(scrollEvidence.position).toBe('fixed');
+  expect(scrollEvidence.scrollY).toBe(0);
 
   await page.screenshot({
     path: resolve(SCREENSHOT_DIRECTORY, 'narrow-390-fallback.png')
@@ -663,7 +1661,6 @@ test('预览保持单例并在键鼠模式间转移后正确关闭', async ({ pa
     'data-preview-tween-state',
     'active'
   );
-  await page.waitForTimeout(260);
   const firstPreviewBox = await page.locator(PREVIEW).boundingBox();
   expect(firstPreviewBox).not.toBeNull();
 
@@ -671,8 +1668,15 @@ test('预览保持单例并在键鼠模式间转移后正确关闭', async ({ pa
     iconBox!.x + (iconBox!.width * 0.65),
     iconBox!.y + (iconBox!.height * 0.65)
   );
-  await page.waitForTimeout(260);
-  const followedPreviewBox = await page.locator(PREVIEW).boundingBox();
+  let followedPreviewBox = await page.locator(PREVIEW).boundingBox();
+  await expect.poll(async () => {
+    followedPreviewBox = await page.locator(PREVIEW).boundingBox();
+    if (!followedPreviewBox) return 0;
+    return Math.abs(followedPreviewBox.x - firstPreviewBox!.x)
+      + Math.abs(followedPreviewBox.y - firstPreviewBox!.y);
+  }, {
+    message: '指针移动后预览应跟随到新位置'
+  }).toBeGreaterThan(2);
   expect(followedPreviewBox).not.toBeNull();
   expect(Math.abs(followedPreviewBox!.x - firstPreviewBox!.x)
     + Math.abs(followedPreviewBox!.y - firstPreviewBox!.y)).toBeGreaterThan(2);
@@ -681,31 +1685,36 @@ test('预览保持单例并在键鼠模式间转移后正确关闭', async ({ pa
   await page.mouse.up();
   await expect(icon).toBeFocused();
   await page.mouse.move(4, 4);
-  await page.waitForTimeout(260);
 
   const focusedIconBox = await icon.boundingBox();
-  const keyboardPreviewBox = await page.locator(PREVIEW).boundingBox();
+  let keyboardPreviewBox = await page.locator(PREVIEW).boundingBox();
   expect(focusedIconBox).not.toBeNull();
-  expect(keyboardPreviewBox).not.toBeNull();
   const keyboardTargetX = focusedIconBox!.x + focusedIconBox!.width;
   const keyboardTargetY = focusedIconBox!.y + (focusedIconBox!.height / 2);
-  const horizontalGap = Math.min(
-    Math.abs(keyboardPreviewBox!.x - keyboardTargetX),
-    Math.abs(
-      keyboardPreviewBox!.x
-      + keyboardPreviewBox!.width
-      - keyboardTargetX
-    )
-  );
-  const verticalGap = Math.min(
-    Math.abs(keyboardPreviewBox!.y - keyboardTargetY),
-    Math.abs(
-      keyboardPreviewBox!.y
-      + keyboardPreviewBox!.height
-      - keyboardTargetY
-    )
-  );
-  expect(Math.min(horizontalGap, verticalGap)).toBeLessThanOrEqual(20);
+  await expect.poll(async () => {
+    keyboardPreviewBox = await page.locator(PREVIEW).boundingBox();
+    if (!keyboardPreviewBox) return Number.POSITIVE_INFINITY;
+    const horizontalGap = Math.min(
+      Math.abs(keyboardPreviewBox.x - keyboardTargetX),
+      Math.abs(
+        keyboardPreviewBox.x
+        + keyboardPreviewBox.width
+        - keyboardTargetX
+      )
+    );
+    const verticalGap = Math.min(
+      Math.abs(keyboardPreviewBox.y - keyboardTargetY),
+      Math.abs(
+        keyboardPreviewBox.y
+        + keyboardPreviewBox.height
+        - keyboardTargetY
+      )
+    );
+    return Math.min(horizontalGap, verticalGap);
+  }, {
+    message: '键盘聚焦后预览应贴近文件图标'
+  }).toBeLessThanOrEqual(20);
+  expect(keyboardPreviewBox).not.toBeNull();
   await expectInsideViewport(page, page.locator(PREVIEW));
 
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -742,14 +1751,14 @@ test('完整退场卸载预览前会清理 quickTo 动画', async ({ page }) => 
     'data-motion-state',
     'active'
   );
-  await page.locator(HOME).evaluate((home, previewSelector) => {
-    const preview = home.querySelector(previewSelector);
+  await page.locator(WEBSITE).evaluate((experience, previewSelector) => {
+    const preview = experience.querySelector(previewSelector);
     if (!preview) {
       throw new Error('缺少活动文件预览');
     }
 
     const history = [preview.getAttribute('data-motion-state') ?? 'missing'];
-    Reflect.set(home, '__previewMotionHistory', history);
+    Reflect.set(experience, '__previewMotionHistory', history);
     const observer = new MutationObserver((records) => {
       for (const record of records) {
         if (record.type === 'attributes' && record.target === preview) {
@@ -770,13 +1779,13 @@ test('完整退场卸载预览前会清理 quickTo 动画', async ({ page }) => 
         }
       }
     });
-    observer.observe(home, {
+    observer.observe(experience, {
       attributes: true,
       attributeFilter: ['data-motion-state'],
       childList: true,
       subtree: true
     });
-    Reflect.set(home, '__previewMotionObserver', observer);
+    Reflect.set(experience, '__previewMotionObserver', observer);
   }, PREVIEW);
 
   for (let index = 0; index < 9; index += 1) {
@@ -787,8 +1796,11 @@ test('完整退场卸载预览前会清理 quickTo 动画', async ({ page }) => 
   await expect(page.locator(PREVIEW)).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
   await expect.poll(
-    () => page.locator(HOME).evaluate(
-      (home) => Reflect.get(home, '__previewMotionHistory') as string[]
+    () => page.locator(WEBSITE).evaluate(
+      (experience) => Reflect.get(
+        experience,
+        '__previewMotionHistory'
+      ) as string[]
     )
   ).toEqual(['active', 'inactive', 'removed']);
 });
@@ -916,7 +1928,7 @@ test('自动开场在约三秒内完成磁吸归位并保持最终 Logo 与 1440
   expect(introEvidence.phases.at(-1)).toBe('interactive');
   await expect(page.locator('[data-layer="intro"]')).toHaveAttribute('data-active', 'false');
   await expect(page.locator('[data-layer="intro"]')).toBeHidden();
-  await expect(page.getByRole('heading', { name: 'AI Pet' })).toHaveCSS('color', 'rgb(28, 28, 28)');
+  await expect(getBrandHeading(page)).toHaveCSS('color', 'rgb(28, 28, 28)');
 
   await expect(page.locator('[data-testid="brand-logo"]')).toBeVisible();
   await expect(page.locator('[data-testid="brand-logo"]')).toHaveCSS('filter', 'none');
@@ -926,13 +1938,20 @@ test('自动开场在约三秒内完成磁吸归位并保持最终 Logo 与 1440
 
   await expect.poll(() => page.locator(ICON).count(), { timeout: 6_000 }).toBeGreaterThanOrEqual(2);
   await page.mouse.move(720, 450);
-  await page.waitForTimeout(180);
 
-  const brandTransform = page.getByRole('heading', { name: 'AI Pet' }).locator('..');
-  const brandBox = await brandTransform.boundingBox();
+  const brandTransform = getBrandHeading(page).locator('..');
+  let brandBox = await brandTransform.boundingBox();
+  await expect.poll(async () => {
+    brandBox = await brandTransform.boundingBox();
+    if (!brandBox) return Number.POSITIVE_INFINITY;
+    return Math.max(
+      Math.abs(brandBox.x + brandBox.width / 2 - 720),
+      Math.abs(brandBox.y + brandBox.height / 2 - 450)
+    );
+  }, {
+    message: '品牌层应跟随指针稳定到中心附近'
+  }).toBeLessThanOrEqual(28);
   expect(brandBox).not.toBeNull();
-  expect(Math.abs(brandBox!.x + brandBox!.width / 2 - 720)).toBeLessThanOrEqual(28);
-  expect(Math.abs(brandBox!.y + brandBox!.height / 2 - 450)).toBeLessThanOrEqual(28);
 
   const fileBoxes = await page.locator(`${ICON}:visible`).evaluateAll((icons) => (
     icons.map((icon) => {
@@ -1052,27 +2071,10 @@ test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', 
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 568, height: 320 });
   await enterInteractive(page);
-  await page.evaluate(() => {
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-  });
   await expect(page.locator('[data-chapter-id]')).toHaveCount(5);
+  await enterChapter(page, 'donation');
 
   const donationSection = page.locator('[data-chapter-id="donation"]');
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    if (await donationSection.getAttribute('data-interactive') === 'true') {
-      break;
-    }
-    await page.evaluate(() => {
-      window.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'PageDown',
-        bubbles: true,
-        cancelable: true
-      }));
-    });
-    await page.waitForTimeout(400);
-  }
   await expect(donationSection).toHaveAttribute('data-interactive', 'true');
 
   const donation = page.locator(DONATION);
@@ -1202,6 +2204,7 @@ test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => 
       const panel = download.locator(`[data-side-panel="${side.id}"]`);
       await expect(panel).toHaveAttribute('aria-hidden', 'false');
       await expect(panel.locator('[data-panel-item]').first()).toBeVisible();
+      await expectInsideViewport(page, panel);
 
       const overlappingTexts = await panel.evaluate((panelNode) => {
         const navigation = document.querySelector(
@@ -1258,9 +2261,14 @@ test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限为 1.75', async ({ browser }) => {
+test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限为 1.75', async ({
+  browser,
+  baseURL
+}) => {
+  if (!baseURL) throw new Error('缺少隔离网站地址');
+
   const context = await browser.newContext({
-    baseURL: WEBSITE_URL,
+    baseURL,
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 2
   });
@@ -1305,6 +2313,12 @@ test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限�
 
     const trailPixelCount = await countCanvasAlphaPixels(canvas);
     expect(trailPixelCount).toBeGreaterThan(0);
+    const homeColorEvidence = await readCanvasColorEvidence(canvas);
+    expect(homeColorEvidence.alphaPixels).toBeGreaterThan(0);
+    expect(
+      homeColorEvidence.balancedPixels / homeColorEvidence.alphaPixels
+    ).toBeGreaterThan(0.9);
+    expect(homeColorEvidence.yellowPixels).toBe(0);
     await page.waitForTimeout(1_350);
     const decayedPixelCount = await countCanvasAlphaPixels(canvas);
     expect(decayedPixelCount).toBeGreaterThan(0);
@@ -1323,7 +2337,7 @@ test('减少动态效果直接进入稳定交互并保留品牌与文件语义',
 
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
   await expect(page.locator(CANVAS)).toBeHidden();
-  await expect(page.getByRole('heading', { name: 'AI Pet' })).toBeVisible();
+  await expect(getBrandHeading(page)).toBeVisible();
   const icon = await waitForFile(page);
   await expect(icon).toHaveAccessibleName(/^预览 /);
 
@@ -1360,6 +2374,14 @@ test('1920 预览保持在视口内且所有文本不溢出', async ({ page }) =
   await page.setViewportSize({ width: 1920, height: 1080 });
   await enterInteractive(page);
   const icon = await waitForFile(page);
+  await page.mouse.move(1660, 220);
+  await expect.poll(
+    () => countCanvasAlphaPixels(page.locator(CANVAS)),
+    { message: '1920 首页截图前灰色光场应产生非空像素' }
+  ).toBeGreaterThan(0);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'website-1920.png')
+  });
   await icon.hover();
 
   const preview = page.locator(PREVIEW);

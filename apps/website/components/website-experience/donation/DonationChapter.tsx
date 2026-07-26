@@ -4,8 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
-  PointerEvent as ReactPointerEvent,
-  WheelEvent as ReactWheelEvent
+  PointerEvent as ReactPointerEvent
 } from 'react';
 import { PAYMENT_METHODS } from './donation-content';
 import {
@@ -65,6 +64,7 @@ export function DonationChapter({
   const [openMethod, setOpenMethod] = useState<
     (typeof PAYMENT_METHODS)[number] | null
   >(null);
+  const paymentRollerRef = useRef<HTMLDivElement | null>(null);
   const pointerDragRef = useRef<PaymentPointerDrag | null>(null);
   const suppressClickRef = useRef(false);
   const suppressClickTimeoutRef = useRef<number | null>(null);
@@ -93,13 +93,24 @@ export function DonationChapter({
     ));
   };
 
-  const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
+  useEffect(() => {
+    const roller = paymentRollerRef.current;
+    if (!roller) return;
 
-    if (!interactive || event.deltaY === 0) return;
-    selectRelativePayment(event.deltaY > 0 ? 1 : -1);
-  };
+    // 原生非 passive 监听保证滚筒输入不会继续交给外层章节控制器。
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (!interactive || event.deltaY === 0) return;
+      selectRelativePayment(event.deltaY > 0 ? 1 : -1);
+    };
+
+    roller.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      roller.removeEventListener('wheel', handleWheel);
+    };
+  }, [interactive]);
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const direction = event.key === 'ArrowDown' || event.key === 'ArrowRight'
@@ -212,12 +223,14 @@ export function DonationChapter({
       <h2 className={styles.donationTitle}>{DONATION_TITLE}</h2>
 
       <div
+        ref={paymentRollerRef}
         className={styles.paymentRoller}
+        data-testid="payment-roller"
+        data-active-payment={PAYMENT_METHODS[activeIndex]?.id ?? ''}
         data-input-scope="local"
         tabIndex={interactive ? 0 : -1}
         role="group"
         aria-label="选择付款方式"
-        onWheel={handleWheel}
         onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
