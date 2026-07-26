@@ -1,0 +1,345 @@
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { gsap } from 'gsap';
+import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
+
+function createMediaQueryList(matches: boolean): MediaQueryList {
+  return {
+    matches,
+    media: '(prefers-reduced-motion: reduce)',
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn()
+  };
+}
+
+describe('官网章节降级模式', () => {
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      clearRect: vi.fn(),
+      setTransform: vi.fn()
+    } as unknown as CanvasRenderingContext2D);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('介绍章节依赖更新时 cleanup 异常会报告统一运行时错误并进入静态回退', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    const onRuntimeError = vi.fn();
+    render(<WebsiteExperience onRuntimeError={onRuntimeError} />);
+
+    const experience = screen.getByTestId('website-experience');
+    fireEvent.click(document.body);
+    await waitFor(() => {
+      expect(screen.getByTestId('home-experience').dataset.phase)
+        .toBe('interactive');
+    });
+
+    let frameAt = 0;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((
+      callback: FrameRequestCallback
+    ) => window.setTimeout(() => {
+      frameAt += 400;
+      callback(frameAt);
+    }, 0)));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn((frame: number) => {
+      window.clearTimeout(frame);
+    }));
+    const next = experience
+      .querySelector('nav')!
+      .querySelectorAll<HTMLButtonElement>('button')[1]!;
+    const revert = vi.fn(() => {
+      throw new Error('介绍 GSAP 依赖更新清理失败');
+    });
+    const context = vi.spyOn(gsap, 'context').mockReturnValue({
+      revert
+    } as unknown as gsap.Context);
+
+    fireEvent.click(next);
+    await waitFor(() => {
+      expect(experience.dataset.activeChapter).toBe('about');
+    });
+    expect(context).toHaveBeenCalledOnce();
+
+    fireEvent.click(next);
+    await waitFor(() => {
+      expect(experience.dataset.staticFallback).toBe('active');
+    });
+
+    expect(revert).toHaveBeenCalledOnce();
+    expect(onRuntimeError).toHaveBeenCalledOnce();
+  });
+
+  it('WebsiteExperience 最终 unmount 时介绍 cleanup 异常不会再报告父级运行时错误', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    const onRuntimeError = vi.fn();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { unmount } = render(
+      <WebsiteExperience onRuntimeError={onRuntimeError} />
+    );
+
+    const experience = screen.getByTestId('website-experience');
+    fireEvent.click(document.body);
+    await waitFor(() => {
+      expect(screen.getByTestId('home-experience').dataset.phase)
+        .toBe('interactive');
+    });
+
+    let frameAt = 0;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((
+      callback: FrameRequestCallback
+    ) => window.setTimeout(() => {
+      frameAt += 400;
+      callback(frameAt);
+    }, 0)));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn((frame: number) => {
+      window.clearTimeout(frame);
+    }));
+    const next = experience
+      .querySelector('nav')!
+      .querySelectorAll<HTMLButtonElement>('button')[1]!;
+    const revert = vi.fn(() => {
+      throw new Error('介绍 GSAP 最终卸载清理失败');
+    });
+    const context = vi.spyOn(gsap, 'context').mockReturnValue({
+      revert
+    } as unknown as gsap.Context);
+
+    fireEvent.click(next);
+    await waitFor(() => {
+      expect(experience.dataset.activeChapter).toBe('about');
+    });
+    expect(context).toHaveBeenCalledOnce();
+
+    unmount();
+    gsap.ticker.sleep();
+
+    const stateWarnings = consoleError.mock.calls
+      .flat()
+      .map(String)
+      .filter((message) => /unmount|state update/i.test(message));
+    expect(revert).toHaveBeenCalledOnce();
+    expect(onRuntimeError).not.toHaveBeenCalled();
+    expect(stateWarnings).toEqual([]);
+  });
+
+  it('减少动态效果时章节导航直接落位且保留内容对比度', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    render(<WebsiteExperience />);
+
+    const experience = screen.getByTestId('website-experience');
+    await waitFor(() => {
+      expect(experience.dataset.reducedMotion).toBe('true');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+
+    expect(experience.dataset.activeChapter).toBe('about');
+    const about = document.querySelector<HTMLElement>(
+      '[data-chapter-id="about"]'
+    );
+    expect(about?.dataset.interactive).toBe('true');
+    expect(about?.style.getPropertyValue('--chapter-scale')).toBe('1');
+    expect(about?.style.getPropertyValue('--chapter-blur')).toBe('0px');
+    expect(about?.style.getPropertyValue('--chapter-contrast')).toBe('1');
+  });
+
+  it('matchMedia 失败后下载侧栏不再调用浏览器媒体 API', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => {
+      throw new Error('matchMedia 初始化失败');
+    }));
+    render(<WebsiteExperience />);
+
+    const experience = screen.getByTestId('website-experience');
+    await waitFor(() => {
+      expect(experience.dataset.initializationFailed).toBe('true');
+    });
+
+    expect(experience.dataset.staticFallback).toBe('active');
+    expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
+    expect(document.querySelector('[data-layer="file"]')).toBeNull();
+    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(5);
+    expect(screen.getByText('微信')).toBeTruthy();
+    expect(screen.getByText('支付宝')).toBeTruthy();
+
+    const next = screen.getByRole('button', { name: '下一章节' });
+    fireEvent.click(next);
+    fireEvent.click(next);
+
+    expect(experience.dataset.activeChapter).toBe('download');
+    const downloadSection = document.querySelector<HTMLElement>(
+      '[data-chapter-id="download"]'
+    );
+    expect(downloadSection?.dataset.interactive).toBe('true');
+    expect(
+      screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')
+    ).toContain('Myself-0.1.0-alpha.1-windows-x64.exe');
+
+    expect(() => {
+      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
+    }).not.toThrow();
+    await waitFor(() => {
+      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
+        .toBe('faq');
+    });
+    expect(screen.getByTestId('download-chapter').dataset.staticFallback)
+      .toBe('true');
+    expect(screen.getByTestId('donation-chapter').dataset.staticFallback)
+      .toBe('true');
+  });
+
+  it('监听器半注册失败会回滚已注册输入并阻止残留导航', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    const originalAddEventListener = window.addEventListener.bind(window);
+    const originalRemoveEventListener = window.removeEventListener.bind(window);
+    vi.spyOn(window, 'addEventListener').mockImplementation((
+      type,
+      listener,
+      options
+    ) => {
+      if (type === 'pointermove') {
+        throw new Error('监听器注册失败');
+      }
+      originalAddEventListener(type, listener, options);
+    });
+    const removeEventListener = vi.spyOn(window, 'removeEventListener')
+      .mockImplementation((type, listener, options) => {
+        originalRemoveEventListener(type, listener, options);
+      });
+
+    render(<WebsiteExperience />);
+
+    const experience = screen.getByTestId('website-experience');
+    await waitFor(() => {
+      expect(experience.dataset.staticFallback).toBe('active');
+    });
+
+    expect(removeEventListener).toHaveBeenCalledWith(
+      'wheel',
+      expect.any(Function)
+    );
+    expect(removeEventListener).toHaveBeenCalledWith(
+      'keydown',
+      expect.any(Function)
+    );
+    expect(removeEventListener).toHaveBeenCalledWith(
+      'click',
+      expect.any(Function)
+    );
+
+    window.dispatchEvent(new WheelEvent('wheel', {
+      cancelable: true,
+      deltaY: 640
+    }));
+    expect(experience.dataset.activeChapter).toBe('home');
+  });
+
+  it('首页完成后下载 GSAP 初始化失败会进入统一静态回退', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    render(<WebsiteExperience />);
+
+    const experience = screen.getByTestId('website-experience');
+    fireEvent.click(document.body);
+    await waitFor(() => {
+      expect(screen.getByTestId('home-experience').dataset.phase)
+        .toBe('interactive');
+    });
+
+    const context = vi.spyOn(gsap, 'context').mockImplementation(() => {
+      throw new Error('下载 GSAP 初始化失败');
+    });
+    let frameAt = 0;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((
+      callback: FrameRequestCallback
+    ) => window.setTimeout(() => {
+      frameAt += 400;
+      callback(frameAt);
+    }, 0)));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn((frame: number) => {
+      window.clearTimeout(frame);
+    }));
+    const next = screen.getByRole('button', { name: '下一章节' });
+    fireEvent.click(next);
+    await waitFor(() => {
+      expect(experience.dataset.activeChapter).toBe('about');
+    });
+    fireEvent.click(next);
+    await waitFor(() => {
+      expect(experience.dataset.activeChapter).toBe('download');
+    });
+
+    expect(() => {
+      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
+    }).not.toThrow();
+    await waitFor(() => {
+      expect(experience.dataset.staticFallback).toBe('active');
+    });
+
+    expect(context).toHaveBeenCalledOnce();
+    expect(screen.getByTestId('download-chapter').dataset.visibleSide)
+      .toBe('faq');
+    expect(screen.getByRole('link', { name: '下载 Windows' })).toBeTruthy();
+
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(experience.dataset.activeChapter).toBe('donation');
+    const payment = screen.getByRole('button', { name: '打开微信付款码' });
+    expect((payment as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(payment);
+    expect(screen.getByRole('dialog', { name: '微信付款码' })).toBeTruthy();
+  });
+
+  it('GSAP 初始化失败会进入统一静态回退并保留章节内容', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    vi.spyOn(gsap, 'context').mockImplementation(() => {
+      throw new Error('GSAP 初始化失败');
+    });
+
+    render(<WebsiteExperience />);
+
+    const experience = screen.getByTestId('website-experience');
+    await waitFor(() => {
+      expect(experience.dataset.staticFallback).toBe('active');
+    });
+
+    expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
+    expect(document.querySelector('[data-layer="file"]')).toBeNull();
+    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(5);
+
+    const next = screen.getByRole('button', { name: '下一章节' });
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(screen.getByTestId('website-experience').dataset.activeChapter)
+      .toBe('download');
+    expect(screen.getByRole('link', { name: '下载 Windows' })).toBeTruthy();
+    expect(() => {
+      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示安装前须知' }));
+    }).not.toThrow();
+    await waitFor(() => {
+      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
+        .toBe('notice');
+    });
+
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(screen.getByTestId('website-experience').dataset.activeChapter)
+      .toBe('donation');
+    expect(screen.getByText('微信')).toBeTruthy();
+    expect(screen.getByText('支付宝')).toBeTruthy();
+  });
+});

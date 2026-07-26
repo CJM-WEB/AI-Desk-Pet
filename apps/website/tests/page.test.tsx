@@ -2,55 +2,62 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import React from 'react';
 import { describe, expect, it } from 'vitest';
 import Page from '../app/page';
-import rawManifest from '../content/release-manifest.json';
-import { formatReleaseSize, releaseManifestSchema } from '../lib/release-manifest';
 
-describe('官网首页', () => {
-  it('展示产品承诺与主要下载入口', () => {
+describe('AI Pet 官网首页', () => {
+  it('静态 HTML 注册五章节和两个明确占位状态', () => {
     const html = renderToStaticMarkup(<Page />);
 
-    expect(html).toContain('住在桌面上的 AI 文件小助手');
-    expect(html).toContain('下载 Windows 测试版');
+    expect(html).toContain('data-testid="website-experience"');
+    expect(html.match(/data-chapter-id=/g) ?? []).toHaveLength(5);
+    expect(html).toContain('data-chapter-id="home"');
+    expect(html).toContain('data-chapter-id="about"');
+    expect(html).toContain('data-chapter-id="download"');
+    expect(html).toContain('data-chapter-id="feedback"');
+    expect(html).toContain('data-chapter-id="donation"');
+    expect(html).toContain('data-testid="download-chapter"');
+    expect(html).toContain('data-testid="donation-chapter"');
+    expect(html).toContain('data-testid="about-chapter"');
+    expect(html).toContain('data-testid="feedback-chapter"');
+    expect(html).toContain('AI Pet 介绍');
+    expect(html).toContain('用户反馈与建议箱');
+    expect(html.match(/内容准备中/g) ?? []).toHaveLength(0);
   });
 
-  it('展示完整的信任、能力和支持区块', () => {
+  it('在静态 HTML 中保留品牌和基础语义', () => {
     const html = renderToStaticMarkup(<Page />);
 
-    for (const text of ['它能做什么', '三步开始使用', '文件安全由本地控制', '安装帮助', '常见问题']) {
-      expect(html).toContain(text);
-    }
+    expect(html).toContain('<h1');
+    expect(html).toContain('AI Pet');
+    expect(html).toContain('data-testid="home-experience"');
+    expect(html).toContain('data-static-fallback="ready"');
+    expect(html).toContain('src="/AP.png"');
+    expect(html).toContain('data-testid="brand-logo"');
+    expect(html.match(/data-testid="magnetic-logo-piece"/g) ?? []).toHaveLength(6);
+    expect(html).toContain('data-final-image-failed="false"');
+    expect(html).toContain('data-piece-id="top-left"');
+    expect(html).toContain('data-piece-id="bottom-right"');
+    expect(html).not.toContain('data-testid="ap-draw-mark"');
+    expect(html).toContain('data-layer="file"');
+    expect(html).toContain('data-layer="intro"');
+    expect(html).toContain('data-active="false"');
+    expect(html).toMatch(/<canvas[^>]*><\/canvas>/);
   });
 
-  it('保留稳定锚点和可替换的 Hero 演示入口', () => {
+  it('静态 HTML 保留章节导航和真实下载回退', () => {
     const html = renderToStaticMarkup(<Page />);
 
-    for (const anchor of ['href="#features"', 'href="#safety"', 'href="#download"', 'href="#install"', 'href="#faq"']) {
-      expect(html).toContain(anchor);
-    }
-    expect(html).toContain('aria-label="桌宠确认文件操作演示"');
+    expect(html).toContain('data-static-fallback="ready"');
+    expect(html).toContain('data-reduced-motion="false"');
+    expect(html).toContain('data-active-chapter="home"');
+    expect(html).toContain('aria-label="上一章节"');
+    expect(html).toContain('aria-label="下一章节"');
+    expect(html).toContain('Myself-0.1.0-alpha.1-windows-x64.exe');
+    expect(html).toContain('即将支持');
   });
 
-  it('明确展示本地安全边界和第一阶段限制', () => {
+  it('不再渲染旧的传统纵向首页入口', () => {
     const html = renderToStaticMarkup(<Page />);
 
-    for (const text of ['模型不能运行 Shell', '写操作必须确认', '不会越过授权目录', '未签名测试版']) {
-      expect(html).toContain(text);
-    }
-  });
-
-  it('从版本清单展示下载元数据', () => {
-    const html = renderToStaticMarkup(<Page />);
-    const release = releaseManifestSchema.parse(rawManifest);
-
-    for (const text of [
-      release.version,
-      'Windows 10/11 x64',
-      formatReleaseSize(release.sizeBytes),
-      release.sha256
-    ]) {
-      expect(html).toContain(text);
-    }
-    expect(html).toContain(`href="${release.downloadUrl}"`);
-    expect(html).not.toContain('下载卡片将在版本清单接入后显示');
+    expect(html).not.toMatch(/(?:^|\s)id="(?:features|download)"/);
   });
 });

@@ -1,0 +1,269 @@
+.downloadChapter {
+  min-height: 100%;
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: rgb(28, 28, 28);
+}
+
+/* 侧边感应区保留焦点语义，但以短线与文字提示替代传统箭头按钮。 */
+.sideSensor {
+  position: absolute;
+  top: 50%;
+  z-index: var(--chapter-layer-focal);
+  width: 92px;
+  min-width: 44px;
+  min-height: 48px;
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid rgb(90, 90, 90);
+  border-bottom: 1px solid rgb(90, 90, 90);
+  background: transparent;
+  color: rgb(50, 50, 50);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  opacity: 0.72;
+  transform: translateY(-50%);
+  transition: opacity 180ms ease, border-color 180ms ease;
+}
+
+.sideSensor:hover:not(:disabled),
+.sideSensor:focus-visible {
+  border-color: rgb(0, 96, 255);
+  color: rgb(0, 96, 255);
+  opacity: 1;
+  outline: none;
+}
+
+.sideSensor:focus-visible,
+.platformStack:focus-visible,
+.downloadAction:focus-visible,
+.cardSurface:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 4px;
+}
+
+.sideSensor:disabled,
+.cardSurface:disabled {
+  cursor: default;
+}
+
+.faqSensor { left: 24px; text-align: left; }
+.noticeSensor { right: 24px; text-align: right; }
+
+.sidePanel {
+  position: absolute;
+  top: 50%;
+  z-index: var(--chapter-layer-focal);
+  width: min(300px, 22vw);
+  max-height: min(72svh, 640px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid rgb(90, 90, 90);
+  border-radius: 8px;
+  background: rgba(225, 225, 225, 0.92);
+  box-shadow: 0 20px 50px rgba(28, 28, 28, 0.12);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 180ms ease, transform 220ms ease, visibility 220ms ease;
+}
+
+.faqPanel { left: 92px; transform: translate(-18px, -50%); }
+.noticePanel { right: 92px; transform: translate(18px, -50%); }
+
+.downloadChapter[data-visible-side='faq'] .faqPanel,
+.downloadChapter[data-visible-side='notice'] .noticePanel {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transform: translate(0, -50%);
+}
+
+.panelHeading {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgb(90, 90, 90);
+}
+
+.panelHeading > svg { width: 30px; height: 30px; }
+.panelHeading p,
+.panelHeading h2,
+.panelList h3,
+.panelList p { margin: 0; letter-spacing: 0; }
+.panelHeading p,
+.chapterHeading p { font-size: 12px; font-weight: 700; line-height: 1.4; }
+.panelHeading h2 { font-size: 24px; line-height: 1.2; }
+
+.panelList { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.panelList li { min-height: 44px; padding: 16px 0; border-bottom: 1px solid rgb(174, 174, 174); }
+.panelList li:last-child { border-bottom: 0; }
+.panelList h3 { font-size: 15px; line-height: 1.4; }
+.panelList p { margin-top: 6px; color: rgb(72, 72, 72); font-size: 13px; line-height: 1.55; }
+.noticePanel .panelList li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+.noticePanel .panelList svg { width: 22px; height: 22px; margin-top: 1px; color: rgb(0, 96, 255); }
+
+/* 中央堆叠位于焦点层，侧栏出现时只横移主体而不引入独立背景。 */
+.platformStack {
+  position: relative;
+  z-index: var(--chapter-layer-focal);
+  width: min(560px, calc(100vw - 440px));
+  min-width: 360px;
+  height: min(720px, 86svh);
+  min-height: 560px;
+  outline: none;
+  touch-action: none;
+  transform: translateX(0);
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.downloadChapter[data-visible-side='faq'] .platformStack { transform: translateX(clamp(96px, 13vw, 188px)); }
+.downloadChapter[data-visible-side='notice'] .platformStack { transform: translateX(clamp(-188px, -13vw, -96px)); }
+
+.chapterHeading { position: absolute; inset: 0 0 auto; z-index: 8; display: grid; gap: 4px; text-align: center; }
+.chapterHeading p,
+.chapterHeading h2 { margin: 0; letter-spacing: 0; }
+.chapterHeading p { color: rgb(0, 96, 255); }
+.chapterHeading h2 { font-size: 48px; line-height: 1.12; }
+
+.cardDeck { position: absolute; inset: 92px 0 0; }
+.platformCard {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid rgb(50, 50, 50);
+  border-radius: 8px;
+  background: rgba(225, 225, 225, 0.9);
+  box-shadow: 0 24px 70px rgba(28, 28, 28, 0.16);
+  transform: translateY(calc(-50% + (var(--card-distance) * 92px))) scale(var(--card-scale));
+  transform-origin: center;
+  transition: opacity 260ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.platformCard[data-active='true'] { box-shadow: 0 30px 80px rgba(0, 96, 255, 0.18); }
+.cardSurface {
+  width: 100%;
+  min-height: 138px;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 26px;
+  border: 0;
+  border-bottom: 1px solid rgb(174, 174, 174);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.platformIcon { width: 52px; height: 52px; display: grid; place-items: center; border: 1px solid rgb(28, 28, 28); border-radius: 8px; background: rgb(0, 255, 200); }
+.platformIcon svg { width: 28px; height: 28px; }
+.platformCopy { min-width: 0; display: grid; gap: 5px; }
+.platformName { font-size: 25px; font-weight: 750; line-height: 1.2; }
+.platformSummary,
+.platformVersion { font-size: 14px; line-height: 1.45; }
+.platformSummary { color: rgb(72, 72, 72); }
+.platformVersion { min-width: 88px; padding: 8px 10px; border: 1px solid rgb(90, 90, 90); border-radius: 6px; text-align: center; }
+.cardDetails { display: grid; gap: 18px; padding: 22px 26px 26px; }
+.cardDetails > p { margin: 0; color: rgb(72, 72, 72); font-size: 14px; line-height: 1.5; }
+.releaseMeta { display: grid; gap: 9px; margin: 0; }
+.releaseMeta div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; }
+.releaseMeta dt,
+.releaseMeta dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
+.releaseMeta dt { color: rgb(72, 72, 72); }
+.releaseMeta dd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.releaseHash,
+.releaseHash code { min-width: 0; overflow-wrap: anywhere; word-break: break-all; }
+.releaseHash code { font: inherit; }
+.downloadAction { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 11px 18px; border: 1px solid rgb(28, 28, 28); border-radius: 8px; background: rgb(0, 96, 255); color: #fff; font: inherit; font-weight: 700; line-height: 1.2; text-decoration: none; cursor: pointer; }
+.downloadAction svg { width: 20px; height: 20px; }
+.downloadAction:disabled { background: rgb(205, 205, 205); color: rgb(72, 72, 72); cursor: not-allowed; }
+
+@media (max-width: 1080px) {
+  .sidePanel { width: min(276px, 28vw); }
+  .platformStack { width: min(520px, calc(100vw - 320px)); }
+  .chapterHeading h2 { font-size: 42px; }
+  .downloadChapter[data-visible-side='faq'] .platformStack { transform: translateX(120px); }
+  .downloadChapter[data-visible-side='notice'] .platformStack { transform: translateX(-120px); }
+}
+
+/* 移动端保留轻触入口，将信息收束为底部抽屉并由空白区域关闭。 */
+@media (max-width: 760px) {
+  .downloadChapter { min-height: 100svh; align-items: center; padding: 72px 16px 16px; }
+  .sideSensor { top: 16px; width: 92px; min-height: 44px; transform: none; }
+  .faqSensor { left: 16px; }
+  .noticeSensor { right: 16px; }
+  .sidePanel {
+    inset: auto 136px max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    z-index: calc(var(--chapter-layer-focal) + 1);
+    width: auto;
+    max-height: min(42svh, 340px);
+    padding: 20px;
+    transform: translateY(24px);
+  }
+  .downloadChapter[data-visible-side='faq'] .faqPanel,
+  .downloadChapter[data-visible-side='notice'] .noticePanel { transform: translateY(0); }
+  .platformStack { width: min(100%, 520px); min-width: 0; height: min(660px, calc(100svh - 104px)); min-height: 500px; }
+  .downloadChapter[data-visible-side='faq'] .platformStack,
+  .downloadChapter[data-visible-side='notice'] .platformStack { transform: translateY(-16%); }
+  .chapterHeading h2 { font-size: 32px; }
+  .cardDeck { top: 82px; }
+  .platformCard { min-height: 336px; }
+  .cardSurface { grid-template-columns: 48px minmax(0, 1fr); gap: 12px; min-height: 126px; padding: 20px; }
+  .platformIcon { width: 48px; height: 48px; }
+  .platformVersion { grid-column: 1 / -1; width: max-content; min-width: 0; }
+  .cardDetails { padding: 18px 20px 20px; }
+}
+
+@media (max-width: 420px) {
+  .platformName { font-size: 22px; }
+  .platformCard { min-height: 350px; }
+  .releaseMeta div { grid-template-columns: 1fr; gap: 2px; }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .downloadChapter { min-height: 100svh; padding: 8px 80px; }
+  .platformStack { width: min(520px, calc(100vw - 180px)); min-width: 0; height: calc(100svh - 16px); min-height: 0; }
+  .chapterHeading { gap: 0; transform: translateY(-6px); }
+  .chapterHeading p { display: none; }
+  .chapterHeading h2 { font-size: 22px; line-height: 1.1; }
+  .cardDeck { inset: 62px 0 8px; }
+  .platformCard { min-height: 0; transform: translateY(calc(-50% + (var(--card-distance) * 100px))) scale(var(--card-scale)); }
+  .platformCard[data-active='true'][data-platform-status='available'] { height: min(226px, calc(100svh - 86px)); display: grid; grid-template-columns: minmax(136px, 0.8fr) minmax(0, 1.2fr); }
+  .platformCard[data-active='true'][data-platform-status='available'] .cardSurface { min-height: 0; height: 100%; grid-template-areas: 'icon copy' 'version version'; grid-template-columns: 44px minmax(0, 1fr); align-content: center; gap: 8px; padding: 10px; border-right: 1px solid rgb(174, 174, 174); border-bottom: 0; }
+  .platformCard[data-active='true'][data-platform-status='available'] .platformIcon { grid-area: icon; }
+  .platformCard[data-active='true'][data-platform-status='available'] .platformCopy { grid-area: copy; }
+  .platformCard[data-active='true'][data-platform-status='available'] .platformVersion { grid-area: version; min-width: 0; padding: 5px 7px; }
+  .cardSurface { min-height: 92px; padding: 12px 18px; }
+  .platformIcon { width: 44px; height: 44px; }
+  .platformIcon svg { width: 24px; height: 24px; }
+  .platformName { font-size: 22px; }
+  .cardDetails { min-width: 0; align-content: center; gap: 6px; padding: 9px 11px; }
+  .releaseMeta { gap: 3px; }
+  .releaseMeta div { grid-template-columns: 50px minmax(0, 1fr); gap: 6px; }
+  .releaseMeta dt,
+  .releaseMeta dd { font-size: 11px; line-height: 1.25; }
+  .releaseHash code { font-size: 10px; line-height: 1.15; }
+  .downloadAction { min-height: 44px; padding: 8px 16px; }
+}
+
+.downloadChapter[data-motion-disabled='true'] .sideSensor,
+.downloadChapter[data-motion-disabled='true'] .sidePanel,
+.downloadChapter[data-motion-disabled='true'] .platformStack,
+.downloadChapter[data-motion-disabled='true'] .platformCard { transition: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sideSensor,
+  .sidePanel,
+  .platformStack,
+  .platformCard { transition: none; }
+}

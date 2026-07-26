@@ -1,0 +1,85 @@
+.backdrop {
+  --backdrop-center-x: 50%;
+  --backdrop-center-y: 50%;
+  --backdrop-rotation: 0deg;
+  --backdrop-origin: 50% 50%;
+  position: absolute;
+  inset: 0;
+  z-index: var(--chapter-layer-backdrop, 0);
+  overflow: hidden;
+  pointer-events: none;
+  isolation: isolate;
+}
+
+.backdrop span {
+  position: absolute;
+  inset: -12%;
+  display: block;
+  background: var(--backdrop-tone);
+  transform: rotate(var(--backdrop-rotation));
+  transform-origin: var(--backdrop-origin);
+}
+
+.backdrop span:nth-child(1) {
+  clip-path: polygon(var(--backdrop-center-x) var(--backdrop-center-y), 0 0, 50% 0);
+}
+
+.backdrop span:nth-child(2) {
+  clip-path: polygon(var(--backdrop-center-x) var(--backdrop-center-y), 50% 0, 100% 0, 100% 50%);
+}
+
+.backdrop span:nth-child(3) {
+  clip-path: polygon(var(--backdrop-center-x) var(--backdrop-center-y), 100% 50%, 100% 100%);
+}
+
+.backdrop span:nth-child(4) {
+  clip-path: polygon(var(--backdrop-center-x) var(--backdrop-center-y), 100% 100%, 50% 100%);
+}
+
+.backdrop span:nth-child(5) {
+  clip-path: polygon(var(--backdrop-center-x) var(--backdrop-center-y), 50% 100%, 0 100%);
+}
+
+.backdrop span:nth-child(6) {
+  clip-path: polygon(var(--backdrop-center-x) var(--backdrop-center-y), 0 100%, 0 0);
+}
+
+.backdrop[data-chapter-id='home'],
+.backdrop[data-backdrop-chapter-id='home'] {
+  --backdrop-center-x: 44%;
+  --backdrop-center-y: 46%;
+  --backdrop-rotation: -7deg;
+  --backdrop-origin: 44% 46%;
+}
+
+.backdrop[data-chapter-id='about'],
+.backdrop[data-backdrop-chapter-id='about'] {
+  --backdrop-center-x: 57%;
+  --backdrop-center-y: 42%;
+  --backdrop-rotation: 5deg;
+  --backdrop-origin: 57% 42%;
+}
+
+.backdrop[data-chapter-id='download'],
+.backdrop[data-backdrop-chapter-id='download'] {
+  --backdrop-center-x: 39%;
+  --backdrop-center-y: 58%;
+  --backdrop-rotation: -11deg;
+  --backdrop-origin: 39% 58%;
+}
+
+.backdrop[data-chapter-id='feedback'],
+.backdrop[data-backdrop-chapter-id='feedback'] {
+  --backdrop-center-x: 61%;
+  --backdrop-center-y: 54%;
+  --backdrop-rotation: 9deg;
+  --backdrop-origin: 61% 54%;
+}
+
+.backdrop[data-chapter-id='donation'],
+.backdrop[data-backdrop-chapter-id='donation'] {
+  --backdrop-center-x: 48%;
+  --backdrop-center-y: 63%;
+  --backdrop-rotation: -4deg;
+  --backdrop-origin: 48% 63%;
+}

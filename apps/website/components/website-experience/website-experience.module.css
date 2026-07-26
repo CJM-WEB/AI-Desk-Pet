@@ -1,0 +1,229 @@
+.experience {
+  --chapter-layer-backdrop: 0;
+  --chapter-layer-field: 10;
+  --chapter-layer-files: 20;
+  --chapter-layer-feature: 40;
+  --chapter-layer-focal: 60;
+  --chapter-layer-preview: 80;
+  --chapter-layer-modal: 100;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: rgb(235, 235, 235);
+  color: rgb(28, 28, 28);
+  isolation: isolate;
+}
+
+.pointerTiltText {
+  position: relative;
+  z-index: var(--chapter-layer-focal);
+  display: inline-block;
+  transform: perspective(900px) rotateX(var(--pointer-tilt-rotate-x)) rotateY(var(--pointer-tilt-rotate-y));
+  transform-style: preserve-3d;
+}
+
+/* 背景独立于章节内容的堆叠上下文，始终位于根级光场和文件层之下。 */
+.backdropLayer {
+  position: absolute;
+  inset: 0;
+  z-index: var(--chapter-layer-backdrop);
+  overflow: hidden;
+  pointer-events: none;
+  isolation: isolate;
+}
+
+.chapterBackdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: var(--chapter-opacity);
+  transform: scale(var(--chapter-scale));
+  transform-origin: center;
+  filter: blur(var(--chapter-blur)) contrast(var(--chapter-contrast));
+  will-change: opacity, transform, filter;
+}
+
+/* 每个章节共享同一视口，由纯视觉状态决定交接位置和交互权。 */
+.chapter {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: var(--chapter-opacity);
+  transform: scale(var(--chapter-scale));
+  transform-origin: center;
+  filter: blur(var(--chapter-blur)) contrast(var(--chapter-contrast));
+  pointer-events: none;
+  will-change: opacity, transform, filter;
+}
+
+.chapter[data-interactive='true'] {
+  pointer-events: auto;
+}
+
+/* 首页根层只承载视觉层级，品牌中心区域单独恢复命中，外围文件仍可交互。 */
+.chapter[data-chapter-id='home'] {
+  pointer-events: none;
+}
+
+.chapterControls {
+  position: fixed;
+  right: 12px;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  z-index: 120;
+  display: none;
+  gap: 8px;
+  padding: 6px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgba(235, 235, 235, 0.94);
+  box-shadow: 0 12px 36px rgba(28, 28, 28, 0.16);
+}
+
+.chapterControls button {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 6px;
+  background: rgb(235, 235, 235);
+  color: rgb(28, 28, 28);
+  cursor: pointer;
+}
+
+.chapterControls button:hover:not(:disabled),
+.chapterControls button:focus-visible {
+  background: rgb(28, 28, 28);
+  color: rgb(0, 255, 200);
+}
+
+.chapterControls button:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 3px;
+}
+
+.chapterControls button:disabled {
+  color: rgb(128, 128, 128);
+  cursor: default;
+  opacity: 0.52;
+}
+
+.chapterControls svg {
+  width: 24px;
+  height: 24px;
+}
+
+.experience[data-initialization-failed='true'] .chapterControls {
+  display: flex;
+}
+
+.experience[data-initialization-failed='true'] .chapter {
+  filter: none !important;
+  transform: none !important;
+  transition: none;
+  will-change: auto;
+}
+
+.experience[data-initialization-failed='true'] .chapterBackdrop {
+  filter: none !important;
+  transform: none !important;
+  transition: none;
+  will-change: auto;
+}
+
+/* 捐款内容覆盖共享文件层，但仅滚筒接管指针，外围文件仍可被命中。 */
+.chapter[data-chapter-id='donation'] {
+  pointer-events: none;
+}
+
+.placeholderContent {
+  min-height: 100%;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+}
+
+.placeholderContent h2,
+.placeholderContent p {
+  margin: 0;
+}
+
+.placeholderContent h2 {
+  font-size: 56px;
+  line-height: 1.08;
+  letter-spacing: 0;
+}
+
+.placeholderContent p {
+  color: rgb(96, 96, 96);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .chapter {
+    filter: none;
+  }
+
+  .chapterBackdrop {
+    filter: none;
+  }
+
+  .chapterControls {
+    display: flex;
+  }
+
+  .placeholderContent {
+    padding: 24px;
+  }
+
+  .placeholderContent h2 {
+    font-size: 36px;
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .chapterControls {
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px;
+  }
+
+  .chapterControls button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .placeholderContent {
+    padding: 16px 136px 16px 24px;
+  }
+
+  .placeholderContent h2 {
+    font-size: 30px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chapter {
+    filter: none !important;
+    transform: none !important;
+    transition: opacity 200ms linear;
+    will-change: opacity;
+  }
+
+  .chapterBackdrop {
+    filter: none !important;
+    transform: none !important;
+    transition: opacity 200ms linear;
+    will-change: opacity;
+  }
+
+  .chapterControls button {
+    transition: none;
+  }
+}

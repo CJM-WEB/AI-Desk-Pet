@@ -1,0 +1,613 @@
+.aboutChapter {
+  position: relative;
+  width: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  color: rgb(28, 28, 28);
+  container-type: size;
+}
+
+.featurePlane {
+  position: absolute;
+  inset: clamp(18px, 3.5vh, 42px) clamp(18px, 3.5vw, 58px);
+}
+
+.featurePanel {
+  position: absolute;
+  z-index: var(--chapter-layer-feature, 40);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+  padding: clamp(14px, 1.6vw, 24px);
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgba(225, 225, 225, 0.94);
+  box-shadow: 0 18px 44px rgba(28, 28, 28, 0.14);
+  color: inherit;
+  text-align: left;
+  cursor: default;
+  transition:
+    opacity 220ms ease,
+    filter 220ms ease,
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms ease;
+  will-change: opacity, filter, transform;
+}
+
+.featurePanel:disabled {
+  color: inherit;
+}
+
+.featurePanel:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 3px;
+}
+
+.featurePanel[data-about-feature='security'] {
+  top: 0;
+  right: 1%;
+  z-index: 41;
+  width: min(34%, 500px);
+  height: 40%;
+}
+
+.featurePanel[data-about-feature='file-management'] {
+  top: 4%;
+  left: 0;
+  z-index: 42;
+  width: min(33%, 480px);
+  height: 34%;
+}
+
+.featurePanel[data-about-feature='text-editor'] {
+  bottom: 0;
+  left: 3%;
+  z-index: 43;
+  width: min(39%, 560px);
+  height: 43%;
+}
+
+.featurePanel[data-about-feature='companion-chat'] {
+  top: 14%;
+  left: 25%;
+  z-index: 44;
+  width: min(51%, 760px);
+  height: 62%;
+  padding: clamp(16px, 2vw, 28px);
+}
+
+.featurePanel[data-about-feature='desktop-organizer'] {
+  right: 3%;
+  bottom: 1%;
+  z-index: 45;
+  width: min(38%, 560px);
+  height: 35%;
+}
+
+.aboutChapter:not([data-active-feature='none']) .featurePanel:not([data-active='true']) {
+  pointer-events: none;
+  opacity: 0.42;
+  filter: blur(4px) grayscale(0.2);
+  transform: scale(0.985);
+}
+
+.featurePanel[data-active='true'] {
+  z-index: 58;
+  transform: translateY(-5px) scale(1.015);
+  box-shadow: 0 28px 74px rgba(28, 28, 28, 0.24);
+}
+
+.panelChrome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.panelIcon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(28, 28, 28);
+  border-radius: 6px;
+  background: rgb(215, 215, 215);
+}
+
+.panelIcon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.panelEyebrow {
+  overflow: hidden;
+  color: rgb(72, 72, 72);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panelText {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.panelText strong {
+  font-size: clamp(17px, 1.5vw, 24px);
+  line-height: 1.15;
+}
+
+.panelText > span {
+  color: rgb(72, 72, 72);
+  font-size: clamp(11px, 0.85vw, 14px);
+  line-height: 1.45;
+}
+
+.panelIllustration {
+  min-height: 0;
+  display: block;
+  overflow: hidden;
+  border: 1px solid rgb(128, 128, 128);
+  border-radius: 6px;
+  background: rgb(205, 205, 205);
+}
+
+.titleSafeZone {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: var(--chapter-layer-focal, 60);
+  width: clamp(220px, 29vw, 440px);
+  height: clamp(150px, 27vh, 270px);
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+}
+
+.titleSafeZone h2 {
+  margin: 0;
+  font-size: clamp(60px, 8vw, 132px);
+  font-weight: 760;
+  line-height: 0.95;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.securityMockup,
+.fileManagerMockup,
+.textEditorMockup,
+.companionMockup,
+.desktopMockup {
+  width: 100%;
+  height: 100%;
+}
+
+.securityMockup {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+}
+
+.securityRail {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: 12px;
+  padding: 13px 8px;
+  border-right: 1px solid rgb(128, 128, 128);
+  background: rgb(28, 28, 28);
+  color: rgb(225, 225, 225);
+}
+
+.securityRail svg {
+  width: 18px;
+  height: 18px;
+}
+
+.securityContent {
+  display: grid;
+  align-content: center;
+  gap: 10px;
+  padding: 16px;
+}
+
+.securityStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.securityStatus svg {
+  width: 22px;
+  color: rgb(0, 132, 88);
+}
+
+.securityStatus span,
+.mockupLineWide,
+.mockupLineMedium,
+.mockupLineShort {
+  display: block;
+  height: 7px;
+  border-radius: 2px;
+  background: rgb(90, 90, 90);
+}
+
+.mockupLineWide { width: 88%; }
+.mockupLineMedium { width: 66%; }
+.mockupLineShort { width: 42%; }
+.securityStatus span { width: 52%; }
+
+.fileManagerMockup {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr);
+}
+
+.fileManagerTopbar,
+.editorTopbar,
+.companionTopbar,
+.desktopTopbar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-bottom: 1px solid rgb(128, 128, 128);
+  background: rgb(28, 28, 28);
+  color: rgb(225, 225, 225);
+}
+
+.fileManagerTopbar svg,
+.editorTopbar svg,
+.companionTopbar svg,
+.desktopTopbar svg {
+  width: 17px;
+  height: 17px;
+}
+
+.fileManagerTopbar span,
+.companionTopbar span,
+.desktopTopbar span {
+  height: 6px;
+  flex: 1;
+  background: rgb(90, 90, 90);
+}
+
+.fileManagerBody {
+  display: grid;
+  grid-template-columns: 30% minmax(0, 1fr);
+}
+
+.fileManagerRail {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 12px 9px;
+  border-right: 1px solid rgb(128, 128, 128);
+}
+
+.fileManagerRail span {
+  height: 6px;
+  background: rgb(128, 128, 128);
+}
+
+.fileManagerRows {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 11px;
+}
+
+.fileManagerRows div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 27px;
+  padding: 4px 7px;
+  border: 1px solid rgb(174, 174, 174);
+}
+
+.fileManagerRows svg {
+  width: 15px;
+}
+
+.fileManagerRows span {
+  width: 58%;
+  height: 5px;
+  background: rgb(90, 90, 90);
+}
+
+.textEditorMockup {
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr) 24px;
+}
+
+.editorTopbar span {
+  width: 13px;
+  height: 13px;
+  border: 1px solid rgb(225, 225, 225);
+}
+
+.editorPage {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 18px;
+}
+
+.editorStatus {
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-top: 1px solid rgb(128, 128, 128);
+}
+
+.editorStatus span {
+  width: 25%;
+  height: 5px;
+  background: rgb(128, 128, 128);
+}
+
+.companionMockup {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr) 36px;
+}
+
+.chatMessages {
+  display: grid;
+  align-content: center;
+  gap: 9px;
+  padding: 14px;
+}
+
+.chatBubbleLeft,
+.chatBubbleRight {
+  width: 58%;
+  height: 24px;
+  border: 1px solid rgb(128, 128, 128);
+  border-radius: 6px;
+  background: rgb(215, 215, 215);
+}
+
+.chatBubbleRight {
+  justify-self: end;
+  width: 43%;
+  background: rgb(200, 200, 200);
+}
+
+.chatComposer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 10px;
+  padding: 7px 10px;
+  border: 1px solid rgb(128, 128, 128);
+  border-radius: 6px;
+}
+
+.chatComposer span:first-child {
+  height: 5px;
+  flex: 1;
+  background: rgb(128, 128, 128);
+}
+
+.chatComposer span:last-child {
+  width: 16px;
+  height: 16px;
+  border: 1px solid rgb(28, 28, 28);
+}
+
+.desktopMockup {
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr);
+}
+
+.desktopGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-content: center;
+  gap: 8px;
+  padding: 12px;
+}
+
+.desktopGrid span {
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(128, 128, 128);
+  background: rgb(215, 215, 215);
+}
+
+.desktopGrid svg {
+  width: 17px;
+}
+
+.featurePreview {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--chapter-layer-preview, 80);
+  width: min(340px, calc(100vw - 24px));
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgba(28, 28, 28, 0.96);
+  box-shadow: 0 22px 60px rgba(28, 28, 28, 0.3);
+  color: rgb(235, 235, 235);
+  pointer-events: none;
+  transform: translate3d(var(--about-preview-x), var(--about-preview-y), 0);
+}
+
+.featurePreview header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.featurePreview header svg {
+  width: 24px;
+  height: 24px;
+}
+
+.featurePreview h3,
+.featurePreview p,
+.featurePreview ul {
+  margin: 0;
+}
+
+.featurePreview header p {
+  color: rgb(174, 174, 174);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.featurePreview h3 {
+  font-size: 19px;
+}
+
+.featurePreview > p,
+.featurePreview li {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.featurePreview ul {
+  display: grid;
+  gap: 5px;
+  padding-left: 18px;
+}
+
+@media (max-width: 760px) {
+  .featurePlane {
+    inset: 58px 72px 18px 12px;
+  }
+
+  .featurePanel {
+    left: 0 !important;
+    right: auto !important;
+    width: 72% !important;
+    height: 24% !important;
+    padding: 11px;
+  }
+
+  .featurePanel[data-about-feature='security'] { top: 0; }
+  .featurePanel[data-about-feature='file-management'] { top: 17%; left: 26% !important; }
+  .featurePanel[data-about-feature='text-editor'] { top: 35%; bottom: auto; }
+  .featurePanel[data-about-feature='companion-chat'] { top: 53%; left: 24% !important; }
+  .featurePanel[data-about-feature='desktop-organizer'] { top: 71%; bottom: auto; }
+
+  .panelText > span {
+    display: none;
+  }
+
+  .panelText strong {
+    font-size: 15px;
+  }
+
+  .panelIllustration {
+    min-height: 46px;
+  }
+
+  .titleSafeZone {
+    width: 190px;
+    height: 120px;
+  }
+
+  .titleSafeZone h2 {
+    font-size: 50px;
+  }
+
+  .featurePreview {
+    width: min(290px, calc(100vw - 88px));
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .featurePlane {
+    inset: 8px 56px 8px 8px;
+  }
+
+  .featurePanel {
+    width: 32% !important;
+    height: 31% !important;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 4px;
+    padding: 7px;
+  }
+
+  .featurePanel[data-about-feature='security'] {
+    top: 0;
+    right: 0 !important;
+    left: auto !important;
+  }
+
+  .featurePanel[data-about-feature='file-management'] {
+    top: 0;
+    left: 0 !important;
+  }
+
+  .featurePanel[data-about-feature='companion-chat'] {
+    top: 0;
+    left: 34% !important;
+  }
+
+  .featurePanel[data-about-feature='text-editor'] {
+    top: auto;
+    bottom: 0;
+    left: 8% !important;
+  }
+
+  .featurePanel[data-about-feature='desktop-organizer'] {
+    top: auto;
+    right: 8% !important;
+    bottom: 0;
+    left: auto !important;
+  }
+
+  .panelIllustration {
+    display: none;
+  }
+
+  .panelEyebrow {
+    font-size: 8px;
+  }
+
+  .panelText strong {
+    font-size: 14px;
+  }
+
+  .panelText > span {
+    display: block;
+    overflow: hidden;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+
+  .titleSafeZone {
+    width: 150px;
+    height: 64px;
+  }
+
+  .titleSafeZone h2 {
+    font-size: 32px;
+  }
+}
+
+.aboutChapter[data-motion-disabled='true'] .featurePanel,
+.aboutChapter[data-motion-disabled='true'] .titleSafeZone,
+.featurePreview[data-reduced-motion='true'] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .featurePanel,
+  .titleSafeZone,
+  .featurePreview {
+    transition: none;
+  }
+}
