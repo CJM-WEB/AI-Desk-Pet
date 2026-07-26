@@ -248,6 +248,10 @@ export function useWebsiteController(
     clearWheelSnapTimeout();
     const target = clampChapterProgress(settledIndexRef.current + direction, chapterCount);
     if (target === settledIndexRef.current) {
+      // 边界键若打断滚轮防抖，只恢复当前章节吸附，不推进越界目标。
+      if (progressRef.current !== settledIndexRef.current) {
+        startSnap(settledIndexRef.current);
+      }
       return;
     }
 

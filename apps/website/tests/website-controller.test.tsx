@@ -24,6 +24,17 @@ function createMediaQueryList(matches = false): MediaQueryList {
   };
 }
 
+function installAnimationFrameTimers() {
+  const requestFrame = vi.spyOn(window, 'requestAnimationFrame')
+    .mockImplementation((callback) => window.setTimeout(
+      () => callback(performance.now()),
+      16
+    ));
+  vi.spyOn(window, 'cancelAnimationFrame')
+    .mockImplementation((frameId) => window.clearTimeout(frameId));
+  return requestFrame;
+}
+
 function ControllerHarness({
   staticFallback
 }: {
@@ -118,6 +129,76 @@ describe('官网章节控制器', () => {
 
     expect(state.dataset.index).toBe('1');
     expect(state.dataset.progress).toBe('1.0000');
+  });
+
+  it('首页边界键打断向下滚轮后恢复吸附且稳定边界不启动动画', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    const requestFrame = installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
+    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
+    requestFrame.mockClear();
+
+    fireEvent.keyDown(window, { key: 'ArrowUp' });
+    expect(requestFrame).not.toHaveBeenCalled();
+
+    fireEvent.wheel(window, { deltaY: 120 });
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(Number(state.dataset.progress)).toBeGreaterThan(0);
+
+    fireEvent.keyDown(window, { key: 'PageUp' });
+    expect(requestFrame).toHaveBeenCalledOnce();
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+
+    expect(state.dataset.phase).toBe('interactive');
+    expect(state.dataset.index).toBe('0');
+    expect(state.dataset.progress).toBe('0.0000');
+  });
+
+  it('末章边界键打断向上滚轮后恢复吸附且稳定边界不启动动画', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    const requestFrame = installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
+    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+    }
+    expect(state.dataset.index).toBe('4');
+    expect(state.dataset.progress).toBe('4.0000');
+    requestFrame.mockClear();
+
+    fireEvent.keyDown(window, { key: 'PageDown' });
+    expect(requestFrame).not.toHaveBeenCalled();
+
+    fireEvent.wheel(window, { deltaY: -120 });
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(Number(state.dataset.progress)).toBeLessThan(4);
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    expect(requestFrame).toHaveBeenCalledOnce();
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+
+    expect(state.dataset.phase).toBe('interactive');
+    expect(state.dataset.index).toBe('4');
+    expect(state.dataset.progress).toBe('4.0000');
   });
 
   it('drawing 阶段点击下一章节会跳过开场并完成一次相邻推进', () => {
