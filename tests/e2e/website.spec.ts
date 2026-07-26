@@ -560,6 +560,92 @@ function collectRuntimeErrors(page: Page): string[] {
   return errors;
 }
 
+const WINDOW_BUBBLE_EVENT_TYPES = [
+  'wheel',
+  'pointerdown',
+  'pointermove',
+  'pointerup',
+  'keydown'
+] as const;
+
+type WindowBubbleEventType = (typeof WINDOW_BUBBLE_EVENT_TYPES)[number];
+type WindowBubbleCounts = Record<WindowBubbleEventType, number>;
+
+async function installWindowBubbleProbe(page: Page): Promise<void> {
+  await page.evaluate((eventTypes) => {
+    type ProbeEventType = (typeof eventTypes)[number];
+    type ProbeWindow = typeof window & {
+      __task10WindowBubbleProbe?: {
+        counts: Record<ProbeEventType, number>;
+        reset: () => void;
+      };
+    };
+
+    const probeWindow = window as ProbeWindow;
+    if (probeWindow.__task10WindowBubbleProbe) {
+      throw new Error('Task 10 window 冒泡探针不能重复安装');
+    }
+
+    const counts = Object.fromEntries(
+      eventTypes.map((eventType) => [eventType, 0])
+    ) as Record<ProbeEventType, number>;
+    const reset = () => {
+      for (const eventType of eventTypes) {
+        counts[eventType] = 0;
+      }
+    };
+
+    probeWindow.__task10WindowBubbleProbe = { counts, reset };
+    // 不传 capture 参数，只统计未被局部控件阻止的冒泡事件。
+    for (const eventType of eventTypes) {
+      window.addEventListener(eventType, () => {
+        counts[eventType] += 1;
+      });
+    }
+  }, WINDOW_BUBBLE_EVENT_TYPES);
+}
+
+async function resetWindowBubbleProbe(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const probeWindow = window as typeof window & {
+      __task10WindowBubbleProbe?: {
+        reset: () => void;
+      };
+    };
+    const probe = probeWindow.__task10WindowBubbleProbe;
+    if (!probe) {
+      throw new Error('Task 10 window 冒泡探针尚未安装');
+    }
+    probe.reset();
+  });
+}
+
+async function expectNoWindowBubble(
+  page: Page,
+  eventTypes: readonly WindowBubbleEventType[],
+  actionLabel: string
+): Promise<void> {
+  const counts = await page.evaluate(() => {
+    const probeWindow = window as typeof window & {
+      __task10WindowBubbleProbe?: {
+        counts: WindowBubbleCounts;
+      };
+    };
+    const probe = probeWindow.__task10WindowBubbleProbe;
+    if (!probe) {
+      throw new Error('Task 10 window 冒泡探针尚未安装');
+    }
+    return { ...probe.counts };
+  });
+
+  for (const eventType of eventTypes) {
+    expect.soft(
+      counts[eventType],
+      `${actionLabel} 的 ${eventType} 不应冒泡到 window`
+    ).toBe(0);
+  }
+}
+
 interface IntroCrossfadeSample {
   captured: boolean;
   logoOpacity: number;
@@ -871,8 +957,10 @@ test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节',
   await enterChapter(page, 'download');
 
   const stack = page.locator('[data-testid="download-platform-stack"]');
+  await installWindowBubbleProbe(page);
   await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
   await stack.hover();
+  await resetWindowBubbleProbe(page);
   await page.mouse.wheel(0, 160);
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
@@ -883,7 +971,9 @@ test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节',
   await expect(
     page.locator('[data-platform-id="macos"] a')
   ).toHaveCount(0);
+  await expectNoWindowBubble(page, ['wheel'], '下载平台滚轮');
 
+  await resetWindowBubbleProbe(page);
   await stack.dispatchEvent('pointerdown', {
     bubbles: true,
     cancelable: true,
@@ -913,21 +1003,31 @@ test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节',
     'data-active-chapter',
     'download'
   );
+  await expectNoWindowBubble(
+    page,
+    ['pointerdown', 'pointermove', 'pointerup'],
+    '下载平台触屏手势'
+  );
 
   await stack.focus();
   await expect(stack).toBeFocused();
+  await resetWindowBubbleProbe(page);
   await page.keyboard.press('ArrowDown');
   await expect(stack).toHaveAttribute('data-active-platform', 'macos');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'download'
   );
+  await expectNoWindowBubble(page, ['keydown'], '下载平台 ArrowDown');
+  await resetWindowBubbleProbe(page);
   await page.keyboard.press('ArrowUp');
   await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'download'
   );
+  await expectNoWindowBubble(page, ['keydown'], '下载平台 ArrowUp');
+  await resetWindowBubbleProbe(page);
   await page.keyboard.press('Escape');
   await expect.poll(
     () => stack.evaluate((element) => (
@@ -939,6 +1039,7 @@ test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节',
     'data-active-chapter',
     'download'
   );
+  await expectNoWindowBubble(page, ['keydown'], '下载平台 Escape');
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1049,6 +1150,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await enterChapter(page, 'donation');
 
   const roller = page.locator('[data-testid="payment-roller"]');
+  await installWindowBubbleProbe(page);
   await expect(roller).toHaveAttribute('data-active-payment', 'wechat');
   await page.getByRole('button', { name: '打开微信付款码' }).click();
   const wechatDialog = page.getByRole('dialog', { name: '微信付款码' });
@@ -1068,13 +1170,16 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   ).toBeFocused();
 
   await roller.hover();
+  await resetWindowBubbleProbe(page);
   await page.mouse.wheel(0, -160);
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'donation'
   );
   await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
+  await expectNoWindowBubble(page, ['wheel'], '支付方式滚轮');
 
+  await resetWindowBubbleProbe(page);
   await roller.dispatchEvent('pointerdown', {
     bubbles: true,
     cancelable: true,
@@ -1104,21 +1209,31 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
     'data-active-chapter',
     'donation'
   );
+  await expectNoWindowBubble(
+    page,
+    ['pointerdown', 'pointermove', 'pointerup'],
+    '支付方式触屏手势'
+  );
 
   await roller.focus();
   await expect(roller).toBeFocused();
+  await resetWindowBubbleProbe(page);
   await page.keyboard.press('ArrowDown');
   await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'donation'
   );
+  await expectNoWindowBubble(page, ['keydown'], '支付方式 ArrowDown');
+  await resetWindowBubbleProbe(page);
   await page.keyboard.press('ArrowUp');
   await expect(roller).toHaveAttribute('data-active-payment', 'wechat');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'donation'
   );
+  await expectNoWindowBubble(page, ['keydown'], '支付方式 ArrowUp');
+  await resetWindowBubbleProbe(page);
   await page.keyboard.press('Escape');
   await expect.poll(
     () => roller.evaluate((element) => (
@@ -1130,6 +1245,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
     'data-active-chapter',
     'donation'
   );
+  await expectNoWindowBubble(page, ['keydown'], '支付方式 Escape');
 
   const chooseAlipay = page.getByRole('button', {
     name: '选择支付宝付款方式'
