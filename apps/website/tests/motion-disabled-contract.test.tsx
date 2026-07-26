@@ -136,4 +136,52 @@ describe('章节静态回退禁用内部动效', () => {
       /\.qrBackdrop\[data-motion-disabled='true'\],\s*\.qrBackdrop\[data-motion-disabled='true'\] \.qrPanel\s*\{[^}]*animation:\s*none;/s
     );
   });
+
+  it('窗口暂停会下发到下载与捐款章节并关闭 CSS 动画和过渡', () => {
+    const { rerender } = render(
+      <DownloadChapter interactive isPaused />
+    );
+    const download = screen.getByTestId('download-chapter');
+
+    expect(download.dataset.paused).toBe('true');
+    expect(download.dataset.motionDisabled).toBe('true');
+    expect(downloadCss).toMatch(
+      /\.downloadChapter\[data-paused='true'\] \.sideTrigger:not\(:disabled\) svg\s*\{[^}]*animation-play-state:\s*paused;/s
+    );
+    expect(downloadCss).toMatch(
+      /\.downloadChapter\[data-paused='true'\] \.sideTrigger,\s*\.downloadChapter\[data-paused='true'\] \.sidePanel,\s*\.downloadChapter\[data-paused='true'\] \.platformStack,\s*\.downloadChapter\[data-paused='true'\] \.platformCard\s*\{[^}]*transition:\s*none;/s
+    );
+
+    rerender(<DonationChapter interactive isPaused />);
+    const donation = screen.getByTestId('donation-chapter');
+    expect(donation.dataset.paused).toBe('true');
+    expect(donation.dataset.motionDisabled).toBe('true');
+    expect(donationCss).toMatch(
+      /\.donationChapter\[data-paused='true'\] \.paymentCard,\s*\.donationChapter\[data-paused='true'\] \.paymentCard::before\s*\{[^}]*transition:\s*none;/s
+    );
+    expect(donationCss).toMatch(
+      /\.qrBackdrop\[data-paused='true'\],\s*\.qrBackdrop\[data-paused='true'\] \.qrPanel\s*\{[^}]*animation-play-state:\s*paused;/s
+    );
+  });
+
+  it('下载章节暂停时不创建 GSAP 上下文且恢复后重新启用', async () => {
+    const revert = vi.fn();
+    const context = { revert } as unknown as gsap.Context;
+    const contextSpy = vi.spyOn(gsap, 'context').mockReturnValue(context);
+    const { rerender } = render(
+      <DownloadChapter interactive isPaused />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '显示常见问题' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
+        .toBe('faq');
+    });
+    expect(contextSpy).not.toHaveBeenCalled();
+
+    rerender(<DownloadChapter interactive isPaused={false} />);
+    await waitFor(() => {
+      expect(contextSpy).toHaveBeenCalledOnce();
+    });
+  });
 });

@@ -8,6 +8,7 @@ import styles from './donation.module.css';
 
 export interface QrDialogProps {
   method: PaymentMethod;
+  isPaused?: boolean;
   motionDisabled?: boolean;
   onClose: () => void;
 }
@@ -26,6 +27,7 @@ const FOCUSABLE_SELECTOR = [
  */
 export function QrDialog({
   method,
+  isPaused = false,
   motionDisabled = false,
   onClose
 }: QrDialogProps) {
@@ -50,7 +52,21 @@ export function QrDialog({
         return;
       }
 
+      if ([
+        'PageUp',
+        'PageDown',
+        'ArrowUp',
+        'ArrowDown',
+        'ArrowLeft',
+        'ArrowRight'
+      ].includes(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       if (event.key !== 'Tab') return;
+      event.stopPropagation();
 
       const focusableElements = Array.from(
         dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
@@ -84,6 +100,20 @@ export function QrDialog({
     };
   }, [onClose]);
 
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+
+    // 原生非 passive 监听确保弹层滚轮不会传给章节控制器。
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    dialog.addEventListener('wheel', handleWheel, { passive: false });
+    return () => dialog.removeEventListener('wheel', handleWheel);
+  }, []);
+
   if (typeof document === 'undefined') return null;
 
   return createPortal(
@@ -93,8 +123,14 @@ export function QrDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
+      data-input-scope="local"
+      data-paused={isPaused}
       data-motion-disabled={motionDisabled}
       onClick={onClose}
+      onPointerDown={(event) => event.stopPropagation()}
+      onPointerMove={(event) => event.stopPropagation()}
+      onPointerUp={(event) => event.stopPropagation()}
+      onPointerCancel={(event) => event.stopPropagation()}
     >
       <div className={styles.qrPanel} data-testid="qr-panel">
         <h3 id={titleId}>{method.name}付款码</h3>

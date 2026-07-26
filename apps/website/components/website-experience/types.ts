@@ -3,6 +3,7 @@ export type ChapterDirection = -1 | 0 | 1;
 
 export interface ChapterRuntimeProps {
   interactive: boolean;
+  isPaused?: boolean;
   reducedMotion?: boolean;
   staticFallback?: boolean;
   onInitializationError?: () => void;

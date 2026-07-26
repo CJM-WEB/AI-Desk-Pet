@@ -57,6 +57,7 @@ function getPaymentCardStyle(
  */
 export function DonationChapter({
   interactive,
+  isPaused = false,
   reducedMotion = false,
   staticFallback = false
 }: DonationChapterProps) {
@@ -69,7 +70,7 @@ export function DonationChapter({
   const suppressClickRef = useRef(false);
   const suppressClickTimeoutRef = useRef<number | null>(null);
   const closeDialog = useCallback(() => setOpenMethod(null), []);
-  const motionDisabled = reducedMotion || staticFallback;
+  const motionDisabled = reducedMotion || staticFallback || isPaused;
 
   useEffect(() => {
     if (!interactive) {
@@ -216,6 +217,7 @@ export function DonationChapter({
       className={styles.donationChapter}
       data-testid="donation-chapter"
       data-dialog-open={openMethod !== null}
+      data-paused={isPaused}
       data-reduced-motion={reducedMotion}
       data-static-fallback={staticFallback}
       data-motion-disabled={motionDisabled}
@@ -290,6 +292,7 @@ export function DonationChapter({
       {openMethod ? (
         <QrDialog
           method={openMethod}
+          isPaused={isPaused}
           motionDisabled={motionDisabled}
           onClose={closeDialog}
         />

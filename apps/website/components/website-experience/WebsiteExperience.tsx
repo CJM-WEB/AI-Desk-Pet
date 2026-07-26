@@ -139,6 +139,7 @@ export function WebsiteExperience({
             {RegisteredChapter ? (
               <RegisteredChapter
                 interactive={visual.interactive}
+                isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
                 staticFallback={staticFallback}
                 onInitializationError={handleInitializationError}

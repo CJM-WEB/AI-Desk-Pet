@@ -869,6 +869,22 @@ test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) 
   expect(runtimeErrors).toEqual([]);
 });
 
+test('普通鼠标滚轮按真实刻度突发累积并在结束后进入介绍章', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await enterInteractive(page);
+
+  for (let index = 0; index < 8; index += 1) {
+    await page.mouse.wheel(0, 120);
+    await page.waitForTimeout(90);
+  }
+
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'about'
+  );
+  expect(runtimeErrors).toEqual([]);
+});
+
 test('多指触屏不会覆盖首个章节拖动手势', async ({ page }) => {
   await enterInteractive(page);
 
@@ -1271,6 +1287,54 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   expect(runtimeErrors).toEqual([]);
 });
 
+test('付款码弹层隔离翻页、滚轮与触屏章节输入并由 Escape 关闭', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await enterInteractive(page);
+  await enterChapter(page, 'donation');
+
+  await page.getByRole('button', { name: '打开微信付款码' }).click();
+  const dialog = page.getByRole('dialog', { name: '微信付款码' });
+  await expect(dialog).toHaveAttribute('data-input-scope', 'local');
+
+  await page.keyboard.press('PageUp');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
+
+  await dialog.hover();
+  await page.mouse.wheel(0, -800);
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
+
+  await dialog.dispatchEvent('pointerdown', {
+    bubbles: true,
+    cancelable: true,
+    clientY: 620,
+    isPrimary: true,
+    pointerId: 71,
+    pointerType: 'touch'
+  });
+  await dialog.dispatchEvent('pointerup', {
+    bubbles: true,
+    cancelable: true,
+    clientY: 120,
+    isPrimary: true,
+    pointerId: 71,
+    pointerType: 'touch'
+  });
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  expect(runtimeErrors).toEqual([]);
+});
+
 test('付款码资源加载失败时显示稳定回退并保持关闭行为', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.route('**/WechatPay.jpg', (route) => route.abort());
@@ -1384,6 +1448,54 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
   await page.getByRole('button', { name: '关闭付款码' }).click();
   await expect(dialog).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);
+});
+
+test('390 首屏 drawing 阶段点击下一章节一次即可进入介绍章', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?seed=42');
+
+  await expect(page.locator(HOME)).toHaveAttribute(
+    'data-phase',
+    /drawing|settling/
+  );
+  await page.getByRole('button', { name: '下一章节' }).click();
+
+  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'about'
+  );
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('窗口 blur 和 focus 会同步下载与捐款章节暂停状态', async ({ page }) => {
+  await enterInteractive(page);
+  await enterChapter(page, 'download');
+  const download = page.locator('[data-testid="download-chapter"]');
+
+  await expect(download).toHaveAttribute('data-paused', 'false');
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await expect(download).toHaveAttribute('data-paused', 'true');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(download).toHaveAttribute('data-paused', 'false');
+
+  await page.keyboard.press('PageDown');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'feedback'
+  );
+  await page.keyboard.press('PageDown');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'donation'
+  );
+  const donation = page.locator(DONATION);
+  await expect(donation).toHaveAttribute('data-paused', 'false');
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await expect(donation).toHaveAttribute('data-paused', 'true');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(donation).toHaveAttribute('data-paused', 'false');
 });
 
 test('目标视口五章节无溢出遮挡且减少动态效果保持完整导航', async ({ page }) => {

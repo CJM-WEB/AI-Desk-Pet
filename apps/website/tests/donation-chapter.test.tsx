@@ -240,6 +240,55 @@ describe('捐款章节', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it('弹层根节点隔离章节滚轮、翻页键、方向键与触屏手势', () => {
+    const windowWheel = vi.fn();
+    const windowKeyDown = vi.fn();
+    const windowPointerDown = vi.fn();
+    window.addEventListener('wheel', windowWheel);
+    window.addEventListener('keydown', windowKeyDown);
+    window.addEventListener('pointerdown', windowPointerDown);
+
+    render(<DonationChapter interactive />);
+    openWechatDialog();
+    const dialog = screen.getByRole('dialog', { name: '微信付款码' });
+    const wheel = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: 120
+    });
+    const preventDefault = vi.spyOn(wheel, 'preventDefault');
+    const stopPropagation = vi.spyOn(wheel, 'stopPropagation');
+
+    expect(dialog.dataset.inputScope).toBe('local');
+    fireEvent(dialog, wheel);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(windowWheel).not.toHaveBeenCalled();
+
+    for (const key of [
+      'PageUp',
+      'PageDown',
+      'ArrowUp',
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight'
+    ]) {
+      fireEvent.keyDown(dialog, { key });
+    }
+    expect(windowKeyDown).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(dialog, {
+      clientY: 500,
+      pointerId: 31,
+      pointerType: 'touch'
+    });
+    expect(windowPointerDown).not.toHaveBeenCalled();
+
+    window.removeEventListener('wheel', windowWheel);
+    window.removeEventListener('keydown', windowKeyDown);
+    window.removeEventListener('pointerdown', windowPointerDown);
+  });
+
   it('弹层任意区域点击均关闭，付款码加载失败显示稳定回退', () => {
     const { rerender } = render(<DonationChapter interactive />);
     openWechatDialog();

@@ -386,6 +386,16 @@
   animation: none;
 }
 
+.donationChapter[data-paused='true'] .paymentCard,
+.donationChapter[data-paused='true'] .paymentCard::before {
+  transition: none;
+}
+
+.qrBackdrop[data-paused='true'],
+.qrBackdrop[data-paused='true'] .qrPanel {
+  animation-play-state: paused;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .qrBackdrop,
   .qrPanel {

@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useWebsiteController } from '../components/website-experience/use-website-controller';
 
-function createMediaQueryList(): MediaQueryList {
+function createMediaQueryList(matches = false): MediaQueryList {
   return {
-    matches: false,
+    matches,
     media: '(prefers-reduced-motion: reduce)',
     onchange: null,
     addListener: vi.fn(),
@@ -33,6 +40,7 @@ function ControllerHarness({
       data-phase={controller.phase}
       data-paused={controller.isPaused}
       data-index={controller.settledIndex}
+      data-progress={controller.progress.toFixed(4)}
     >
       <button type="button" onClick={controller.drawingDone}>
         完成绘制
@@ -47,11 +55,82 @@ function ControllerHarness({
   );
 }
 
-describe('官网章节控制器静态回退', () => {
+describe('官网章节控制器', () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it('普通鼠标滚轮突发结束后统一吸附并进入相邻章节', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
+    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
+
+    for (let index = 0; index < 8; index += 1) {
+      fireEvent.wheel(window, { deltaY: 120 });
+      act(() => {
+        vi.advanceTimersByTime(90);
+      });
+    }
+
+    expect(state.dataset.index).toBe('0');
+    expect(Number(state.dataset.progress)).toBeGreaterThan(0.5);
+
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(state.dataset.index).toBe('1');
+    expect(state.dataset.progress).toBe('1.0000');
+  });
+
+  it('单个微小滚轮最终返回原章且快速巨大输入只前进相邻一章', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
+    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
+    fireEvent.wheel(window, { deltaY: 120 });
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(state.dataset.index).toBe('0');
+    expect(state.dataset.progress).toBe('0.0000');
+
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.wheel(window, { deltaY: 50_000 });
+      act(() => {
+        vi.advanceTimersByTime(20);
+      });
+    }
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(state.dataset.index).toBe('1');
+    expect(state.dataset.progress).toBe('1.0000');
+  });
+
+  it('drawing 阶段点击下一章节会跳过开场并完成一次相邻推进', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    expect(state.dataset.phase).toBe('drawing');
+    fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+
+    expect(state.dataset.phase).toBe('interactive');
+    expect(state.dataset.index).toBe('1');
+    expect(state.dataset.progress).toBe('1.0000');
   });
 
   it('隐藏暂停后进入静态回退会恢复导航并完整清理监听器', async () => {

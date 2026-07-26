@@ -26,16 +26,22 @@ export interface PreviewAnchorRect {
 
 export type PreviewInputMode = 'pointer' | 'keyboard';
 
-interface FilePreviewProps {
+export interface FilePreviewProps {
   particle: FileParticle | null;
   pointer: PointerPoint;
   anchorRect: PreviewAnchorRect | null;
   inputMode: PreviewInputMode;
   reducedMotion?: boolean;
+  onInitializationError?: (() => void) | undefined;
   onQuickToStateChange?: (state: 'active' | 'inactive') => void;
 }
 
 type QuickTo = ReturnType<typeof gsap.quickTo>;
+
+interface QuickToCleanupOptions {
+  notifyParent?: boolean;
+  reportFailure?: boolean;
+}
 
 function splitDataLine(line: string): { label: string; value: string } {
   const separator = line.lastIndexOf(' ');
@@ -59,6 +65,7 @@ export function FilePreview({
   anchorRect,
   inputMode,
   reducedMotion = false,
+  onInitializationError,
   onQuickToStateChange
 }: FilePreviewProps) {
   const [displayedParticle, setDisplayedParticle] = useState<FileParticle | null>(particle);
@@ -66,8 +73,12 @@ export function FilePreview({
   const quickXRef = useRef<QuickTo | null>(null);
   const quickYRef = useRef<QuickTo | null>(null);
   const quickToStateRef = useRef<'active' | 'inactive'>('inactive');
+  const mountedRef = useRef(true);
+  const initializationErrorReportedRef = useRef(false);
+  const onInitializationErrorRef = useRef(onInitializationError);
   const onQuickToStateChangeRef = useRef(onQuickToStateChange);
 
+  onInitializationErrorRef.current = onInitializationError;
   onQuickToStateChangeRef.current = onQuickToStateChange;
 
   const reportQuickToState = useCallback((state: 'active' | 'inactive') => {
@@ -76,17 +87,86 @@ export function FilePreview({
     }
 
     quickToStateRef.current = state;
-    onQuickToStateChangeRef.current?.(state);
+    if (mountedRef.current) {
+      onQuickToStateChangeRef.current?.(state);
+    }
   }, []);
 
-  const cleanupQuickTo = useCallback(() => {
-    quickXRef.current?.tween.kill();
-    quickYRef.current?.tween.kill();
+  const reportInitializationError = useCallback(() => {
+    if (
+      !mountedRef.current
+      || initializationErrorReportedRef.current
+    ) {
+      return;
+    }
+
+    initializationErrorReportedRef.current = true;
+    onInitializationErrorRef.current?.();
+  }, []);
+
+  const cleanupQuickTo = useCallback((
+    options: QuickToCleanupOptions = {}
+  ): boolean => {
+    const {
+      notifyParent = true,
+      reportFailure = true
+    } = options;
+    const quickX = quickXRef.current;
+    const quickY = quickYRef.current;
     quickXRef.current = null;
     quickYRef.current = null;
-    previewRef.current?.setAttribute('data-motion-state', 'inactive');
-    reportQuickToState('inactive');
-  }, [reportQuickToState]);
+    let cleanupFailed = false;
+
+    for (const quickTo of [quickX, quickY]) {
+      try {
+        quickTo?.tween.kill();
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+
+    try {
+      previewRef.current?.setAttribute('data-motion-state', 'inactive');
+    } catch {
+      cleanupFailed = true;
+    }
+
+    if (notifyParent) {
+      reportQuickToState('inactive');
+    } else {
+      quickToStateRef.current = 'inactive';
+    }
+
+    if (cleanupFailed && reportFailure) {
+      reportInitializationError();
+    }
+    return !cleanupFailed;
+  }, [reportInitializationError, reportQuickToState]);
+
+  const applyMotionFallback = useCallback((
+    node: HTMLElement | null,
+    position?: { x: number; y: number }
+  ) => {
+    cleanupQuickTo({ reportFailure: false });
+    if (node) {
+      try {
+        gsap.killTweensOf(node);
+      } catch {
+        // 统一回退不让二次清理异常逃逸。
+      }
+
+      try {
+        node.setAttribute('data-motion-state', 'inactive');
+        if (position) {
+          node.style.transform = `translate3d(${position.x}px, ${position.y}px, 0)`;
+        }
+        node.style.opacity = '1';
+      } catch {
+        // DOM 已被移除时仅保留错误上报，不再触碰父级状态。
+      }
+    }
+    reportInitializationError();
+  }, [cleanupQuickTo, reportInitializationError]);
 
   useEffect(() => {
     if (particle) {
@@ -110,22 +190,42 @@ export function FilePreview({
     }
 
     const leavingId = displayedParticle.id;
-    const fadeTween = gsap.to(node, {
-      opacity: 0,
-      duration: 0.1,
-      ease: 'power1.out',
-      overwrite: true,
-      onComplete: () => {
-        setDisplayedParticle((current) => (
-          current?.id === leavingId ? null : current
-        ));
+    let fadeTween: gsap.core.Tween;
+    try {
+      fadeTween = gsap.to(node, {
+        opacity: 0,
+        duration: 0.1,
+        ease: 'power1.out',
+        overwrite: true,
+        onComplete: () => {
+          if (!mountedRef.current) return;
+          setDisplayedParticle((current) => (
+            current?.id === leavingId ? null : current
+          ));
+        }
+      });
+    } catch {
+      applyMotionFallback(node);
+      if (mountedRef.current) {
+        setDisplayedParticle(null);
       }
-    });
+      return;
+    }
 
     return () => {
-      fadeTween.kill();
+      try {
+        fadeTween.kill();
+      } catch {
+        applyMotionFallback(node);
+      }
     };
-  }, [cleanupQuickTo, displayedParticle, particle, reducedMotion]);
+  }, [
+    applyMotionFallback,
+    cleanupQuickTo,
+    displayedParticle,
+    particle,
+    reducedMotion
+  ]);
 
   useEffect(() => {
     const node = previewRef.current;
@@ -147,35 +247,40 @@ export function FilePreview({
       gap: PREVIEW_GAP_PX
     });
 
-    if (reducedMotion) {
-      cleanupQuickTo();
-      node.style.transform = `translate3d(${position.x}px, ${position.y}px, 0)`;
-      node.style.opacity = '1';
-      return;
-    }
+    try {
+      if (reducedMotion) {
+        cleanupQuickTo();
+        node.style.transform = `translate3d(${position.x}px, ${position.y}px, 0)`;
+        node.style.opacity = '1';
+        return;
+      }
 
-    if (!quickXRef.current || !quickYRef.current) {
-      quickXRef.current = gsap.quickTo(node, 'x', {
-        duration: 0.18,
-        ease: 'power2.out'
-      });
-      quickYRef.current = gsap.quickTo(node, 'y', {
-        duration: 0.18,
-        ease: 'power2.out'
-      });
-      node.setAttribute('data-motion-state', 'active');
-      reportQuickToState('active');
-    }
+      if (!quickXRef.current || !quickYRef.current) {
+        quickXRef.current = gsap.quickTo(node, 'x', {
+          duration: 0.18,
+          ease: 'power2.out'
+        });
+        quickYRef.current = gsap.quickTo(node, 'y', {
+          duration: 0.18,
+          ease: 'power2.out'
+        });
+        node.setAttribute('data-motion-state', 'active');
+        reportQuickToState('active');
+      }
 
-    quickXRef.current(position.x);
-    quickYRef.current(position.y);
-    gsap.to(node, {
-      opacity: 1,
-      duration: 0.1,
-      ease: 'power1.out',
-      overwrite: 'auto'
-    });
+      quickXRef.current(position.x);
+      quickYRef.current(position.y);
+      gsap.to(node, {
+        opacity: 1,
+        duration: 0.1,
+        ease: 'power1.out',
+        overwrite: 'auto'
+      });
+    } catch {
+      applyMotionFallback(node, position);
+    }
   }, [
+    applyMotionFallback,
     anchorRect,
     displayedParticle,
     inputMode,
@@ -187,11 +292,24 @@ export function FilePreview({
     reportQuickToState
   ]);
 
-  useLayoutEffect(() => () => {
-    cleanupQuickTo();
-    if (previewRef.current) {
-      gsap.killTweensOf(previewRef.current);
-    }
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      // 最终卸载先关闭父级通知，再尽力回收本地动画资源。
+      mountedRef.current = false;
+      cleanupQuickTo({
+        notifyParent: false,
+        reportFailure: false
+      });
+      if (previewRef.current) {
+        try {
+          gsap.killTweensOf(previewRef.current);
+        } catch {
+          // 最终卸载不再向父级上报，避免触发已卸载树的状态更新。
+        }
+      }
+    };
   }, [cleanupQuickTo]);
 
   if (!displayedParticle) {

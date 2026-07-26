@@ -33,6 +33,7 @@ export interface WebsiteControllerResult {
 }
 
 const SNAP_DURATION_MS = 300;
+const WHEEL_SNAP_DEBOUNCE_MS = 140;
 
 type ChapterTouchGesture = {
   pointerId: number;
@@ -94,6 +95,7 @@ export function useWebsiteController(
   const pointerFrameRef = useRef<number | null>(null);
   const snapFrameRef = useRef<number | null>(null);
   const snapTargetRef = useRef<number | null>(null);
+  const wheelSnapTimeoutRef = useRef<number | null>(null);
   const touchGestureRef = useRef<ChapterTouchGesture | null>(null);
   const introSkipRef = useRef<(() => void) | null>(null);
   const onInitializationErrorRef = useRef(options.onInitializationError);
@@ -146,6 +148,13 @@ export function useWebsiteController(
     snapTargetRef.current = null;
   }, [stopSnapFrame]);
 
+  const clearWheelSnapTimeout = useCallback(() => {
+    if (wheelSnapTimeoutRef.current !== null) {
+      window.clearTimeout(wheelSnapTimeoutRef.current);
+      wheelSnapTimeoutRef.current = null;
+    }
+  }, []);
+
   const startSnap = useCallback((target: number) => {
     stopSnapFrame();
     snapTargetRef.current = target;
@@ -184,6 +193,22 @@ export function useWebsiteController(
     snapFrameRef.current = window.requestAnimationFrame(advance);
   }, [commitProgress, commitSettledIndex, stopSnapFrame]);
 
+  const scheduleWheelSnap = useCallback(() => {
+    clearWheelSnapTimeout();
+    wheelSnapTimeoutRef.current = window.setTimeout(() => {
+      wheelSnapTimeoutRef.current = null;
+      if (phaseRef.current !== 'interactive') return;
+
+      const target = snapChapterProgress(progressRef.current, chapterCount);
+      if (isPausedRef.current) {
+        snapTargetRef.current = target;
+        return;
+      }
+
+      startSnap(target);
+    }, WHEEL_SNAP_DEBOUNCE_MS);
+  }, [chapterCount, clearWheelSnapTimeout, startSnap]);
+
   const drawingDone = useCallback(() => {
     const next = reduceIntroPhase(phaseRef.current, 'drawing-done');
     if (next !== phaseRef.current) {
@@ -210,17 +235,29 @@ export function useWebsiteController(
   }, [commitPhase]);
 
   const goToAdjacent = useCallback((direction: -1 | 1) => {
-    if (phaseRef.current !== 'interactive' || isPausedRef.current) {
+    if (isPausedRef.current) {
       return;
     }
 
+    // 首屏导航先同步跳过开场，再复用相邻章节推进，保证一次点击完成意图。
+    if (direction === 1 && isIntroPhase(phaseRef.current)) {
+      requestIntroSkip();
+    }
+    if (phaseRef.current !== 'interactive') return;
+
+    clearWheelSnapTimeout();
     const target = clampChapterProgress(settledIndexRef.current + direction, chapterCount);
     if (target === settledIndexRef.current) {
       return;
     }
 
     startSnap(target);
-  }, [chapterCount, startSnap]);
+  }, [
+    chapterCount,
+    clearWheelSnapTimeout,
+    requestIntroSkip,
+    startSnap
+  ]);
 
   useEffect(() => {
     commitPhase('drawing');
@@ -233,11 +270,13 @@ export function useWebsiteController(
 
     staticFallbackRef.current = true;
     normalizePausedState();
+    clearWheelSnapTimeout();
     cancelSnap();
     commitProgress(settledIndexRef.current);
     commitPhase('interactive');
   }, [
     cancelSnap,
+    clearWheelSnapTimeout,
     commitPhase,
     commitProgress,
     normalizePausedState,
@@ -336,7 +375,7 @@ export function useWebsiteController(
         chapterCount
       });
       commitProgress(next);
-      startSnap(snapChapterProgress(next, chapterCount));
+      scheduleWheelSnap();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isLocalInput(event.target) || isPausedRef.current) {
@@ -450,6 +489,7 @@ export function useWebsiteController(
       tornDown = true;
 
       cancelSnap();
+      clearWheelSnapTimeout();
       touchGestureRef.current = null;
       if (pointerFrameRef.current !== null) {
         window.cancelAnimationFrame(pointerFrameRef.current);
@@ -489,10 +529,12 @@ export function useWebsiteController(
   }, [
     cancelSnap,
     chapterCount,
+    clearWheelSnapTimeout,
     commitProgress,
     goToAdjacent,
     notifyInitializationError,
     requestIntroSkip,
+    scheduleWheelSnap,
     startSnap,
     stopSnapFrame,
     options.staticFallback

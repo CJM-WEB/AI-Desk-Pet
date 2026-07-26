@@ -95,6 +95,7 @@ function getCardStyle(distance: number, length: number): DownloadCardStyle {
 
 export function DownloadChapter({
   interactive,
+  isPaused = false,
   reducedMotion = false,
   staticFallback = false,
   onInitializationError
@@ -113,7 +114,7 @@ export function DownloadChapter({
   const platformDragRef = useRef<PlatformPointerDrag | null>(null);
   const requestedSide = visibleDownloadSide(state);
   const visibleSide = panelFlow.visibleSide;
-  const motionDisabled = reducedMotion || staticFallback;
+  const motionDisabled = reducedMotion || staticFallback || isPaused;
 
   // 当前侧先进入 closing，结束后才把 pendingSide 提升为可见侧。
   useEffect(() => {
@@ -405,6 +406,7 @@ export function DownloadChapter({
       data-visible-side={visibleSide ?? 'none'}
       data-panel-phase={panelFlow.phase}
       data-pending-side={panelFlow.pendingSide ?? 'none'}
+      data-paused={isPaused}
       data-reduced-motion={reducedMotion}
       data-static-fallback={staticFallback}
       data-motion-disabled={motionDisabled}

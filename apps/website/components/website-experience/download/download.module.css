@@ -707,6 +707,17 @@
   transform: none !important;
 }
 
+.downloadChapter[data-paused='true'] .sideTrigger:not(:disabled) svg {
+  animation-play-state: paused;
+}
+
+.downloadChapter[data-paused='true'] .sideTrigger,
+.downloadChapter[data-paused='true'] .sidePanel,
+.downloadChapter[data-paused='true'] .platformStack,
+.downloadChapter[data-paused='true'] .platformCard {
+  transition: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sideTrigger:not(:disabled) svg {
     animation: none;

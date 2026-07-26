@@ -562,6 +562,7 @@ export function FileSwarm({
           anchorRect={activePreview?.anchorRect ?? null}
           inputMode={activePreview?.inputMode ?? 'pointer'}
           reducedMotion={reducedMotion}
+          onInitializationError={onInitializationError}
           onQuickToStateChange={setPreviewTweenState}
         />,
         previewContainer
