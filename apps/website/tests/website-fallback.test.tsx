@@ -149,6 +149,61 @@ describe('官网章节降级模式', () => {
     expect(experience.dataset.activeChapter).toBe('home');
   });
 
+  it('首页完成后下载 GSAP 初始化失败会进入统一静态回退', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    render(<WebsiteExperience />);
+
+    const experience = screen.getByTestId('website-experience');
+    fireEvent.click(document.body);
+    await waitFor(() => {
+      expect(screen.getByTestId('home-experience').dataset.phase)
+        .toBe('interactive');
+    });
+
+    const context = vi.spyOn(gsap, 'context').mockImplementation(() => {
+      throw new Error('下载 GSAP 初始化失败');
+    });
+    let frameAt = 0;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((
+      callback: FrameRequestCallback
+    ) => window.setTimeout(() => {
+      frameAt += 400;
+      callback(frameAt);
+    }, 0)));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn((frame: number) => {
+      window.clearTimeout(frame);
+    }));
+    const next = screen.getByRole('button', { name: '下一章节' });
+    fireEvent.click(next);
+    await waitFor(() => {
+      expect(experience.dataset.activeChapter).toBe('about');
+    });
+    fireEvent.click(next);
+    await waitFor(() => {
+      expect(experience.dataset.activeChapter).toBe('download');
+    });
+
+    expect(() => {
+      fireEvent.click(screen.getByRole('button', { name: '显示常见问题' }));
+    }).not.toThrow();
+    await waitFor(() => {
+      expect(experience.dataset.staticFallback).toBe('active');
+    });
+
+    expect(context).toHaveBeenCalledOnce();
+    expect(screen.getByTestId('download-chapter').dataset.visibleSide)
+      .toBe('faq');
+    expect(screen.getByRole('link', { name: '下载 Windows' })).toBeTruthy();
+
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(experience.dataset.activeChapter).toBe('donation');
+    const payment = screen.getByRole('button', { name: '打开微信付款码' });
+    expect((payment as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(payment);
+    expect(screen.getByRole('dialog', { name: '微信付款码' })).toBeTruthy();
+  });
+
   it('GSAP 初始化失败会进入统一静态回退并保留章节内容', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
     vi.spyOn(gsap, 'context').mockImplementation(() => {

@@ -114,6 +114,7 @@ export function WebsiteExperience() {
                 interactive={visual.interactive}
                 reducedMotion={reducedMotion}
                 staticFallback={staticFallback}
+                onInitializationError={handleInitializationError}
               />
             ) : null}
           </section>

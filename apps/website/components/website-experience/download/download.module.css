@@ -631,6 +631,23 @@
 }
 
 /* 降低动态偏好下保留状态结果，但取消所有过渡与侧栏错峰。 */
+.downloadChapter[data-motion-disabled='true'] .sideTrigger:not(:disabled) svg {
+  animation: none;
+}
+
+.downloadChapter[data-motion-disabled='true'] .sideTrigger,
+.downloadChapter[data-motion-disabled='true'] .sidePanel,
+.downloadChapter[data-motion-disabled='true'] .platformStack,
+.downloadChapter[data-motion-disabled='true'] .platformCard {
+  transition: none;
+}
+
+.downloadChapter[data-motion-disabled='true'] .panelHeading,
+.downloadChapter[data-motion-disabled='true'] .panelList li {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sideTrigger:not(:disabled) svg {
     animation: none;

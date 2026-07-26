@@ -85,7 +85,8 @@ function getCardStyle(distance: number, length: number): DownloadCardStyle {
 export function DownloadChapter({
   interactive,
   reducedMotion = false,
-  staticFallback = false
+  staticFallback = false,
+  onInitializationError
 }: DownloadChapterProps) {
   const [state, dispatch] = useReducer(
     reduceDownloadInteraction,
@@ -100,6 +101,7 @@ export function DownloadChapter({
   const platformDragRef = useRef<PlatformPointerDrag | null>(null);
   const requestedSide = visibleDownloadSide(state);
   const visibleSide = panelFlow.visibleSide;
+  const motionDisabled = reducedMotion || staticFallback;
 
   // 当前侧先进入 closing，结束后才把 pendingSide 提升为可见侧。
   useEffect(() => {
@@ -150,14 +152,13 @@ export function DownloadChapter({
           phase: 'open'
         };
       });
-    }, reducedMotion || staticFallback ? 0 : PANEL_CLOSE_DURATION_MS);
+    }, motionDisabled ? 0 : PANEL_CLOSE_DURATION_MS);
 
     return () => window.clearTimeout(timeout);
   }, [
     panelFlow.pendingSide,
     panelFlow.phase,
-    reducedMotion,
-    staticFallback
+    motionDisabled
   ]);
 
   // 每次可见侧栏变化都建立独立作用域，切换或卸载时完整回收动画状态。
@@ -168,40 +169,61 @@ export function DownloadChapter({
       || !visibleSide
       || panelFlow.phase !== 'open'
       || !interactive
-      || reducedMotion
-      || staticFallback
+      || motionDisabled
     ) {
       return;
     }
 
     const direction = visibleSide === 'faq' ? -1 : 1;
-    const context = gsap.context(() => {
-      const panelSelector = `[data-side-panel="${visibleSide}"]`;
-      const timeline = gsap.timeline({
-        defaults: {
-          duration: 0.32,
-          ease: 'power2.out'
+    const partialContextRef: { current: gsap.Context | null } = {
+      current: null
+    };
+
+    try {
+      const context = gsap.context((createdContext) => {
+        partialContextRef.current = createdContext;
+        const panelSelector = `[data-side-panel="${visibleSide}"]`;
+        const timeline = gsap.timeline({
+          defaults: {
+            duration: 0.32,
+            ease: 'power2.out'
+          }
+        });
+
+        timeline
+          .from(`${panelSelector} [data-panel-heading]`, {
+            autoAlpha: 0,
+            x: direction * 14
+          }, 0)
+          .from(`${panelSelector} [data-panel-item]`, {
+            autoAlpha: 0,
+            x: direction * 12,
+            stagger: 0.035
+          }, '<0.06');
+      }, scope);
+
+      partialContextRef.current = context;
+      return () => {
+        try {
+          context.revert();
+        } catch {
+          onInitializationError?.();
         }
-      });
-
-      timeline
-        .from(`${panelSelector} [data-panel-heading]`, {
-          autoAlpha: 0,
-          x: direction * 14
-        }, 0)
-        .from(`${panelSelector} [data-panel-item]`, {
-          autoAlpha: 0,
-          x: direction * 12,
-          stagger: 0.035
-        }, '<0.06');
-    }, scope);
-
-    return () => context.revert();
+      };
+    } catch {
+      try {
+        partialContextRef.current?.revert();
+      } catch {
+        // 部分创建的动画上下文清理失败时仍进入统一静态回退。
+      } finally {
+        onInitializationError?.();
+      }
+    }
   }, [
     interactive,
+    onInitializationError,
     panelFlow.phase,
-    reducedMotion,
-    staticFallback,
+    motionDisabled,
     visibleSide
   ]);
 
@@ -346,6 +368,7 @@ export function DownloadChapter({
       data-pending-side={panelFlow.pendingSide ?? 'none'}
       data-reduced-motion={reducedMotion}
       data-static-fallback={staticFallback}
+      data-motion-disabled={motionDisabled}
       onKeyDown={handleRootKeyDown}
     >
       <button

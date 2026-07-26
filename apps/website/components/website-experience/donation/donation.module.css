@@ -376,6 +376,16 @@
   }
 }
 
+.donationChapter[data-motion-disabled='true'] .paymentCard,
+.donationChapter[data-motion-disabled='true'] .paymentCard::before {
+  transition: none;
+}
+
+.qrBackdrop[data-motion-disabled='true'],
+.qrBackdrop[data-motion-disabled='true'] .qrPanel {
+  animation: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .qrBackdrop,
   .qrPanel {

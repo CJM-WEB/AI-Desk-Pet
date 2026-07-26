@@ -5,6 +5,7 @@ export interface ChapterRuntimeProps {
   interactive: boolean;
   reducedMotion?: boolean;
   staticFallback?: boolean;
+  onInitializationError?: () => void;
 }
 
 export interface ChapterVisualState {

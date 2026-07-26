@@ -8,6 +8,7 @@ import styles from './donation.module.css';
 
 export interface QrDialogProps {
   method: PaymentMethod;
+  motionDisabled?: boolean;
   onClose: () => void;
 }
 
@@ -23,7 +24,11 @@ const FOCUSABLE_SELECTOR = [
 /**
  * 将付款码挂到文档根层，并在生命周期内约束和恢复键盘焦点。
  */
-export function QrDialog({ method, onClose }: QrDialogProps) {
+export function QrDialog({
+  method,
+  motionDisabled = false,
+  onClose
+}: QrDialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -88,6 +93,7 @@ export function QrDialog({ method, onClose }: QrDialogProps) {
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
+      data-motion-disabled={motionDisabled}
       onClick={onClose}
     >
       <div className={styles.qrPanel} data-testid="qr-panel">

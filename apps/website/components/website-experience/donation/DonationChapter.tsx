@@ -69,6 +69,7 @@ export function DonationChapter({
   const suppressClickRef = useRef(false);
   const suppressClickTimeoutRef = useRef<number | null>(null);
   const closeDialog = useCallback(() => setOpenMethod(null), []);
+  const motionDisabled = reducedMotion || staticFallback;
 
   useEffect(() => {
     if (!interactive) {
@@ -206,6 +207,7 @@ export function DonationChapter({
       data-dialog-open={openMethod !== null}
       data-reduced-motion={reducedMotion}
       data-static-fallback={staticFallback}
+      data-motion-disabled={motionDisabled}
     >
       <h2 className={styles.donationTitle}>{DONATION_TITLE}</h2>
 
@@ -273,7 +275,11 @@ export function DonationChapter({
       </div>
 
       {openMethod ? (
-        <QrDialog method={openMethod} onClose={closeDialog} />
+        <QrDialog
+          method={openMethod}
+          motionDisabled={motionDisabled}
+          onClose={closeDialog}
+        />
       ) : null}
     </section>
   );

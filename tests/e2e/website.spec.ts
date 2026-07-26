@@ -304,6 +304,82 @@ test('随机源初始化异常时进入静态回退', async ({ page }) => {
   expect(runtimeErrors).toEqual([]);
 });
 
+test('静态回退通过运行时属性关闭章节与付款码动效', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: () => {
+        throw new Error('测试 matchMedia 初始化失败');
+      }
+    });
+  });
+  await page.goto('/?seed=42');
+
+  const experience = page.locator('[data-testid="website-experience"]');
+  const next = page.getByRole('button', { name: '下一章节' });
+  await expect(experience).toHaveAttribute('data-static-fallback', 'active');
+  await next.click();
+  await next.click();
+  await expect(experience).toHaveAttribute('data-active-chapter', 'download');
+
+  const download = page.locator('[data-testid="download-chapter"]');
+  const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
+  await expect(download).toHaveAttribute('data-motion-disabled', 'true');
+  await faqTrigger.click();
+  await expect(download).toHaveAttribute('data-visible-side', 'faq');
+  const downloadMotion = await download.evaluate((root) => {
+    const trigger = root.querySelector('button[aria-label="显示常见问题"]');
+    const arrow = trigger?.querySelector('svg');
+    const panel = root.querySelector('[data-side-panel="faq"]');
+    const card = root.querySelector('[data-platform-id]');
+    return {
+      arrowAnimation: arrow ? getComputedStyle(arrow).animationName : null,
+      triggerTransition: trigger
+        ? getComputedStyle(trigger).transitionDuration
+        : null,
+      panelTransition: panel ? getComputedStyle(panel).transitionDuration : null,
+      cardTransition: card ? getComputedStyle(card).transitionDuration : null
+    };
+  });
+  expect(downloadMotion).toEqual({
+    arrowAnimation: 'none',
+    triggerTransition: '0s',
+    panelTransition: '0s',
+    cardTransition: '0s'
+  });
+  expect(
+    await page.getByRole('link', { name: '下载 Windows' }).getAttribute('href')
+  ).toContain('.exe');
+
+  await next.click();
+  await next.click();
+  await expect(experience).toHaveAttribute('data-active-chapter', 'donation');
+  const donation = page.locator(DONATION);
+  await expect(donation).toHaveAttribute('data-motion-disabled', 'true');
+  const payment = page.getByRole('button', { name: '打开微信付款码' });
+  await expect(payment).toBeEnabled();
+  expect(await payment.evaluate((button) => (
+    getComputedStyle(button).transitionDuration
+  ))).toBe('0s');
+  await payment.click();
+
+  const dialog = page.getByRole('dialog', { name: '微信付款码' });
+  await expect(dialog).toHaveAttribute('data-motion-disabled', 'true');
+  const dialogMotion = await dialog.evaluate((backdrop) => {
+    const panel = backdrop.querySelector('[data-testid="qr-panel"]');
+    return {
+      backdropAnimation: getComputedStyle(backdrop).animationName,
+      panelAnimation: panel ? getComputedStyle(panel).animationName : null
+    };
+  });
+  expect(dialogMotion).toEqual({
+    backdropAnimation: 'none',
+    panelAnimation: 'none'
+  });
+  expect(runtimeErrors).toEqual([]);
+});
+
 test('减少动态效果时文件保持分离可聚焦且预览立即定位', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await enterInteractive(page);
@@ -311,6 +387,18 @@ test('减少动态效果时文件保持分离可聚焦且预览立即定位', as
 
   const firstIcon = page.locator(ICON).nth(0);
   const secondIcon = page.locator(ICON).nth(1);
+  await expect(firstIcon).toHaveAttribute('data-phase', 'floating');
+  const visibleState = await firstIcon.locator('span').evaluate((motion) => {
+    const style = getComputedStyle(motion);
+    return {
+      opacity: style.opacity,
+      visibility: style.visibility
+    };
+  });
+  expect(visibleState).toEqual({
+    opacity: '1',
+    visibility: 'visible'
+  });
   const firstBox = await firstIcon.boundingBox();
   const secondBox = await secondIcon.boundingBox();
   expect(firstBox).not.toBeNull();
@@ -344,7 +432,12 @@ test('减少动态效果时文件保持分离可聚焦且预览立即定位', as
   });
   expect(settledPosition).toEqual(initialPosition);
 
-  await firstIcon.focus();
+  await firstIcon.hover();
+  await expect(page.locator(PREVIEW)).toBeVisible();
+  await page.mouse.move(720, 450);
+  await expect(page.locator(PREVIEW)).toHaveCount(0);
+
+  await page.keyboard.press('Tab');
   await expect(firstIcon).toBeFocused();
   await expect(page.locator(PREVIEW)).toBeVisible();
   await expect(page.locator(PREVIEW)).toHaveAttribute('data-motion-state', 'inactive');

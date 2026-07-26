@@ -399,7 +399,16 @@ export function FileSwarm({
             random: particleRandom
           });
 
-          return particle ? [...current, particle] : current;
+          if (!particle) {
+            return current;
+          }
+
+          return [
+            ...current,
+            reducedMotion && particle.phase === 'entering'
+              ? { ...particle, phase: 'floating' }
+              : particle
+          ];
         });
         scheduleNextSpawn();
       }, delay);
@@ -417,6 +426,7 @@ export function FileSwarm({
     isPaused,
     maxActive,
     onInitializationError,
+    reducedMotion,
     safeZoneRatio
   ]);
 
@@ -429,6 +439,18 @@ export function FileSwarm({
         holdStatesRef.current.clear();
         focusAnchorsRef.current.clear();
         commitActivePreview(null);
+      } else if (reducedMotion) {
+        commitParticles((items) => {
+          if (!items.some((item) => item.phase === 'entering')) {
+            return items;
+          }
+
+          return items.map((item) => (
+            item.phase === 'entering'
+              ? { ...item, phase: 'floating' }
+              : item
+          ));
+        });
       }
       return;
     }
@@ -467,6 +489,7 @@ export function FileSwarm({
   }, [
     clearFrame,
     commitActivePreview,
+    commitParticles,
     exitComplete,
     isPaused,
     reducedMotion,

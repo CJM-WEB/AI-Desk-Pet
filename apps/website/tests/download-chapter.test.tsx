@@ -16,6 +16,7 @@ import {
   it,
   vi
 } from 'vitest';
+import { gsap } from 'gsap';
 import rawManifest from '../content/release-manifest.json';
 import { DownloadChapter } from '../components/website-experience/download/DownloadChapter';
 import { DOWNLOAD_PLATFORMS } from '../components/website-experience/download/download-content';
@@ -69,6 +70,7 @@ describe('下载安装章节', () => {
     cleanup();
     vi.clearAllTimers();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('渲染配置平台、真实下载和两侧信息', () => {
@@ -396,5 +398,34 @@ describe('下载安装章节', () => {
     } finally {
       DOWNLOAD_PLATFORMS[0] = originalPlatform;
     }
+  });
+
+  it('GSAP 清理失败会上报统一错误入口且不向 effect 外抛出', () => {
+    const onInitializationError = vi.fn();
+    const revert = vi.fn(() => {
+      throw new Error('下载 GSAP 清理失败');
+    });
+    vi.spyOn(gsap, 'context').mockReturnValue({
+      revert
+    } as unknown as gsap.Context);
+    const { rerender } = render(
+      <DownloadChapter
+        interactive
+        onInitializationError={onInitializationError}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '显示常见问题' }));
+    expect(() => {
+      rerender(
+        <DownloadChapter
+          interactive={false}
+          onInitializationError={onInitializationError}
+        />
+      );
+    }).not.toThrow();
+
+    expect(revert).toHaveBeenCalledOnce();
+    expect(onInitializationError).toHaveBeenCalledOnce();
   });
 });
