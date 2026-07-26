@@ -41,7 +41,7 @@ describe('官网章节进度模型', () => {
       deltaY: 100,
       settledIndex: 0,
       chapterCount: 5
-    })).toBeCloseTo(0.265);
+    })).toBeCloseTo(0.31);
     expect(applyWheelChapterInput({
       progress: 2,
       deltaY: 100_000,

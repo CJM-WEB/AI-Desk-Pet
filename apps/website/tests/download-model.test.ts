@@ -5,8 +5,8 @@ import { releaseManifestSchema } from '../lib/release-manifest';
 import {
   initialDownloadInteraction,
   reduceDownloadInteraction,
-  rotatePlatformIndex,
-  visibleDownloadSide
+  resolveDownloadSideMode,
+  rotatePlatformIndex
 } from '../components/website-experience/download/download-model';
 
 describe('下载模块数据与状态', () => {
@@ -20,7 +20,6 @@ describe('下载模块数据与状态', () => {
       status: 'coming-soon'
     });
     expect('downloadUrl' in DOWNLOAD_PLATFORMS[1]!).toBe(false);
-    expect('sizeBytes' in DOWNLOAD_PLATFORMS[1]!).toBe(false);
   });
 
   it('Windows 平台完整保留真实发行清单字段', () => {
@@ -40,78 +39,46 @@ describe('下载模块数据与状态', () => {
     expect(rotatePlatformIndex(2, 1, 3)).toBe(0);
   });
 
-  it('临时面板、锁定面板和复位互斥', () => {
-    const hovered = reduceDownloadInteraction(initialDownloadInteraction, {
-      type: 'SET_PREVIEW_HOLD',
+  it('桌面侧栏只在 pointer 或 focus 持有期间临时显示', () => {
+    const held = reduceDownloadInteraction(initialDownloadInteraction, {
+      type: 'SET_DESKTOP_PREVIEW_HOLD',
       side: 'faq',
       source: 'pointer',
       held: true
     });
-    expect(visibleDownloadSide(hovered)).toBe('faq');
+    expect(resolveDownloadSideMode(held, false)).toEqual({
+      kind: 'desktop-preview',
+      side: 'faq'
+    });
 
-    const locked = reduceDownloadInteraction(hovered, {
-      type: 'TOGGLE_LOCK',
+    const released = reduceDownloadInteraction(held, {
+      type: 'SET_DESKTOP_PREVIEW_HOLD',
+      side: 'faq',
+      source: 'pointer',
+      held: false
+    });
+    expect(resolveDownloadSideMode(released, false)).toEqual({
+      kind: 'desktop-preview',
+      side: null
+    });
+  });
+
+  it('移动端仅由轻触打开并可由空白复位', () => {
+    const opened = reduceDownloadInteraction(initialDownloadInteraction, {
+      type: 'OPEN_MOBILE_SIDE',
       side: 'notice'
     });
-    expect(visibleDownloadSide(locked)).toBe('notice');
-
-    expect(reduceDownloadInteraction(locked, { type: 'RESET' }))
-      .toEqual(initialDownloadInteraction);
-  });
-
-  it('最近激活的临时来源释放后恢复仍持有的另一侧', () => {
-    const faqHeld = reduceDownloadInteraction(initialDownloadInteraction, {
-      type: 'SET_PREVIEW_HOLD',
-      side: 'faq',
-      source: 'pointer',
-      held: true
-    });
-    const noticeHeld = reduceDownloadInteraction(faqHeld, {
-      type: 'SET_PREVIEW_HOLD',
-      side: 'notice',
-      source: 'focus',
-      held: true
-    });
-    const noticeReleased = reduceDownloadInteraction(noticeHeld, {
-      type: 'SET_PREVIEW_HOLD',
-      side: 'notice',
-      source: 'focus',
-      held: false
+    expect(resolveDownloadSideMode(opened, true)).toEqual({
+      kind: 'mobile-open',
+      side: 'notice'
     });
 
-    expect(visibleDownloadSide(noticeHeld)).toBe('notice');
-    expect(visibleDownloadSide(noticeReleased)).toBe('faq');
-  });
-
-  it('解除锁定会抑制现有 hold，全部释放后新 hold 可再次预览', () => {
-    const held = reduceDownloadInteraction(initialDownloadInteraction, {
-      type: 'SET_PREVIEW_HOLD',
-      side: 'faq',
-      source: 'focus',
-      held: true
+    const closed = reduceDownloadInteraction(opened, {
+      type: 'CLOSE_MOBILE_SIDE'
     });
-    const locked = reduceDownloadInteraction(held, {
-      type: 'TOGGLE_LOCK',
-      side: 'faq'
+    expect(resolveDownloadSideMode(closed, true)).toEqual({
+      kind: 'mobile-open',
+      side: null
     });
-    const explicitlyClosed = reduceDownloadInteraction(locked, {
-      type: 'TOGGLE_LOCK',
-      side: 'faq'
-    });
-    const released = reduceDownloadInteraction(explicitlyClosed, {
-      type: 'SET_PREVIEW_HOLD',
-      side: 'faq',
-      source: 'focus',
-      held: false
-    });
-    const heldAgain = reduceDownloadInteraction(released, {
-      type: 'SET_PREVIEW_HOLD',
-      side: 'faq',
-      source: 'pointer',
-      held: true
-    });
-
-    expect(visibleDownloadSide(explicitlyClosed)).toBeNull();
-    expect(visibleDownloadSide(heldAgain)).toBe('faq');
   });
 });

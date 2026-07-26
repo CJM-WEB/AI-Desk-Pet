@@ -11,6 +11,7 @@ import {
 } from './swarm-model';
 import type { FileParticle } from './swarm-model';
 import type { FileKind, PointerPoint } from './types';
+import type { FilePreviewContentSource } from '../website-experience/shared-visual-model';
 import {
   FilePreview,
   type PreviewAnchorRect,
@@ -47,8 +48,15 @@ export interface FileSwarmProps {
   maxActive: number;
   safeZoneRatio: number;
   reducedMotion?: boolean;
+  previewSource?: FilePreviewContentSource;
   previewContainer?: HTMLElement | null;
   onInitializationError?: () => void;
+}
+
+interface SpawnBoundFilePreviewContentSource extends FilePreviewContentSource {
+  bindToSpawn(particleId: string): readonly string[];
+  read(particleId: string): readonly string[] | null;
+  release(particleId: string): void;
 }
 
 interface ActivePreview {
@@ -180,6 +188,15 @@ function toAnchorRect(rect: DOMRect): PreviewAnchorRect {
   };
 }
 
+function isSpawnBoundPreviewSource(
+  source: FilePreviewContentSource | undefined
+): source is SpawnBoundFilePreviewContentSource {
+  const candidate = source as Partial<SpawnBoundFilePreviewContentSource> | undefined;
+  return typeof candidate?.bindToSpawn === 'function'
+    && typeof candidate.read === 'function'
+    && typeof candidate.release === 'function';
+}
+
 /**
  * 管理文件粒子的单一 RAF、生成计时器、保持状态与失败类型隔离。
  */
@@ -192,6 +209,7 @@ export function FileSwarm({
   maxActive,
   safeZoneRatio,
   reducedMotion = false,
+  previewSource,
   previewContainer = null,
   onInitializationError
 }: FileSwarmProps) {
@@ -204,6 +222,7 @@ export function FileSwarm({
   const disabledKindsRef = useRef(new Set<FileKind>());
   const holdStatesRef = useRef(new Map<string, PreviewHoldState>());
   const focusAnchorsRef = useRef(new Map<string, PreviewAnchorRect>());
+  const previewSourceRef = useRef(previewSource);
   const randomRef = useRef<(() => number) | null>(null);
   const frameRef = useRef<number | null>(null);
   const spawnTimerRef = useRef<number | null>(null);
@@ -237,6 +256,40 @@ export function FileSwarm({
       spawnTimerRef.current = null;
     }
   }, []);
+
+  const bindPreviewToSpawn = useCallback((particleId: string) => {
+    const source = previewSourceRef.current;
+    if (isSpawnBoundPreviewSource(source)) {
+      source.bindToSpawn(particleId);
+    }
+  }, []);
+
+  const releasePreviewBindings = useCallback((particleIds: readonly string[]) => {
+    const source = previewSourceRef.current;
+    if (!isSpawnBoundPreviewSource(source)) {
+      return;
+    }
+
+    new Set(particleIds).forEach((particleId) => {
+      source.release(particleId);
+    });
+  }, []);
+
+  useEffect(() => {
+    const previousSource = previewSourceRef.current;
+    if (previousSource === previewSource) {
+      return;
+    }
+
+    const particleIds = particlesRef.current.map((particle) => particle.id);
+    if (isSpawnBoundPreviewSource(previousSource)) {
+      particleIds.forEach((particleId) => previousSource.release(particleId));
+    }
+    previewSourceRef.current = previewSource;
+    if (isSpawnBoundPreviewSource(previewSource)) {
+      particleIds.forEach((particleId) => previewSource.bindToSpawn(particleId));
+    }
+  }, [previewSource]);
 
   const applyHoldEvent = useCallback((
     particleId: string,
@@ -403,6 +456,8 @@ export function FileSwarm({
             return current;
           }
 
+          bindPreviewToSpawn(particle.id);
+
           return [
             ...current,
             reducedMotion && particle.phase === 'entering'
@@ -420,6 +475,7 @@ export function FileSwarm({
       clearSpawnTimer();
     };
   }, [
+    bindPreviewToSpawn,
     clearSpawnTimer,
     commitParticles,
     generating,
@@ -434,6 +490,7 @@ export function FileSwarm({
     if (!running || isPaused || exitComplete || reducedMotion) {
       clearFrame();
       if (exitComplete) {
+        releasePreviewBindings(particlesRef.current.map((particle) => particle.id));
         particlesRef.current = [];
         setParticles([]);
         holdStatesRef.current.clear();
@@ -467,6 +524,12 @@ export function FileSwarm({
       const current = particlesRef.current;
       const next = advanceSwarmFrame(current, frameStep.deltaMs);
       if (next !== current) {
+        const nextIds = new Set(next.map((particle) => particle.id));
+        releasePreviewBindings(
+          current
+            .filter((particle) => !nextIds.has(particle.id))
+            .map((particle) => particle.id)
+        );
         particlesRef.current = next;
         setParticles(next);
 
@@ -493,13 +556,15 @@ export function FileSwarm({
     exitComplete,
     isPaused,
     reducedMotion,
+    releasePreviewBindings,
     running
   ]);
 
   useEffect(() => () => {
     clearFrame();
     clearSpawnTimer();
-  }, [clearFrame, clearSpawnTimer]);
+    releasePreviewBindings(particlesRef.current.map((particle) => particle.id));
+  }, [clearFrame, clearSpawnTimer, releasePreviewBindings]);
 
   const activeParticle = activePreview
     ? particles.find((particle) => particle.id === activePreview.particleId) ?? null
@@ -562,6 +627,7 @@ export function FileSwarm({
           anchorRect={activePreview?.anchorRect ?? null}
           inputMode={activePreview?.inputMode ?? 'pointer'}
           reducedMotion={reducedMotion}
+          previewSource={previewSource}
           onInitializationError={onInitializationError}
           onQuickToStateChange={setPreviewTweenState}
         />,

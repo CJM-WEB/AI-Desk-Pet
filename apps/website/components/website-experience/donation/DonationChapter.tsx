@@ -14,6 +14,7 @@ import {
 } from './payment-model';
 import { QrDialog } from './QrDialog';
 import type { ChapterRuntimeProps } from '../types';
+import { PointerTiltText } from '../visual/PointerTiltText';
 import styles from './donation.module.css';
 
 export type DonationChapterProps = ChapterRuntimeProps;
@@ -32,6 +33,16 @@ type PaymentPointerDrag = {
 
 const PAYMENT_DRAG_THRESHOLD_PX = 40;
 const DONATION_TITLE = '助力开发，你便也是我不可或缺的参与者';
+
+type DonationPointer = {
+  x: number;
+  y: number;
+};
+
+type DonationViewport = {
+  width: number;
+  height: number;
+};
 
 function getPaymentCardStyle(
   index: number,
@@ -65,12 +76,56 @@ export function DonationChapter({
   const [openMethod, setOpenMethod] = useState<
     (typeof PAYMENT_METHODS)[number] | null
   >(null);
+  const [pointer, setPointer] = useState<DonationPointer>({ x: 0, y: 0 });
+  const [viewport, setViewport] = useState<DonationViewport>({
+    width: 0,
+    height: 0
+  });
   const paymentRollerRef = useRef<HTMLDivElement | null>(null);
   const pointerDragRef = useRef<PaymentPointerDrag | null>(null);
   const suppressClickRef = useRef(false);
   const suppressClickTimeoutRef = useRef<number | null>(null);
   const closeDialog = useCallback(() => setOpenMethod(null), []);
   const motionDisabled = reducedMotion || staticFallback || isPaused;
+
+  useEffect(() => {
+    if (!interactive || motionDisabled) return;
+
+    const syncViewport = () => {
+      setViewport({ width: window.innerWidth, height: window.innerHeight });
+    };
+    const handlePointerMove = (event: PointerEvent) => {
+      setPointer({ x: event.clientX, y: event.clientY });
+    };
+
+    let resizeRegistered = false;
+    let pointerRegistered = false;
+
+    try {
+      syncViewport();
+      window.addEventListener('resize', syncViewport);
+      resizeRegistered = true;
+      window.addEventListener('pointermove', handlePointerMove, { passive: true });
+      pointerRegistered = true;
+
+      return () => {
+        if (resizeRegistered) {
+          window.removeEventListener('resize', syncViewport);
+        }
+        if (pointerRegistered) {
+          window.removeEventListener('pointermove', handlePointerMove);
+        }
+      };
+    } catch {
+      // 任一监听注册失败都立即回滚，交由父级控制器完成统一降级。
+      if (resizeRegistered) {
+        window.removeEventListener('resize', syncViewport);
+      }
+      if (pointerRegistered) {
+        window.removeEventListener('pointermove', handlePointerMove);
+      }
+    }
+  }, [interactive, motionDisabled]);
 
   useEffect(() => {
     if (!interactive) {
@@ -222,7 +277,15 @@ export function DonationChapter({
       data-static-fallback={staticFallback}
       data-motion-disabled={motionDisabled}
     >
-      <h2 className={styles.donationTitle}>{DONATION_TITLE}</h2>
+      <h2 className={styles.donationTitle}>
+        <PointerTiltText
+          pointer={pointer}
+          viewport={viewport}
+          disabled={motionDisabled || viewport.width <= 760}
+        >
+          {DONATION_TITLE}
+        </PointerTiltText>
+      </h2>
 
       <div
         ref={paymentRollerRef}

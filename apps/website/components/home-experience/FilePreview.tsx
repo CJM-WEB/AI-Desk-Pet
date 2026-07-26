@@ -11,6 +11,10 @@ import {
 import { computePreviewPosition } from './pointer-model';
 import type { FileParticle } from './swarm-model';
 import type { PointerPoint } from './types';
+import {
+  DEFAULT_FILE_PREVIEW_CONTENT_SOURCE,
+  type FilePreviewContentSource
+} from '../website-experience/shared-visual-model';
 import styles from './home-experience.module.css';
 
 const PREVIEW_GAP_PX = 18;
@@ -32,6 +36,7 @@ export interface FilePreviewProps {
   anchorRect: PreviewAnchorRect | null;
   inputMode: PreviewInputMode;
   reducedMotion?: boolean;
+  previewSource?: FilePreviewContentSource | undefined;
   onInitializationError?: (() => void) | undefined;
   onQuickToStateChange?: (state: 'active' | 'inactive') => void;
 }
@@ -65,6 +70,7 @@ export function FilePreview({
   anchorRect,
   inputMode,
   reducedMotion = false,
+  previewSource = DEFAULT_FILE_PREVIEW_CONTENT_SOURCE,
   onInitializationError,
   onQuickToStateChange
 }: FilePreviewProps) {
@@ -317,6 +323,7 @@ export function FilePreview({
   }
 
   const { kind, preview } = displayedParticle;
+  const previewLines = previewSource.getPreview(displayedParticle);
 
   return (
     <article
@@ -336,7 +343,7 @@ export function FilePreview({
 
       {kind === 'xls' ? (
         <dl className={styles.previewDataGrid}>
-          {preview.lines.map((line) => {
+          {previewLines.map((line) => {
             const data = splitDataLine(line);
             return (
               <div key={line}>
@@ -348,13 +355,13 @@ export function FilePreview({
         </dl>
       ) : kind === 'folder' ? (
         <ul className={styles.previewFolderList}>
-          {preview.lines.map((line) => <li key={line}>{line}</li>)}
+          {previewLines.map((line) => <li key={line}>{line}</li>)}
         </ul>
       ) : kind === 'empty' ? (
-        <p className={styles.previewEmpty}>{preview.lines.join(' · ')}</p>
+        <p className={styles.previewEmpty}>{previewLines.join(' · ')}</p>
       ) : (
         <ul className={styles.previewLines}>
-          {preview.lines.map((line) => <li key={line}>{line}</li>)}
+          {previewLines.map((line) => <li key={line}>{line}</li>)}
         </ul>
       )}
     </article>

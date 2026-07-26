@@ -4,116 +4,77 @@
   display: grid;
   place-items: center;
   overflow: hidden;
-  background:
-    linear-gradient(
-      90deg,
-      rgb(0, 255, 200) 0%,
-      rgb(235, 235, 235) 24%,
-      rgb(235, 235, 235) 76%,
-      rgb(0, 255, 200) 100%
-    );
   color: rgb(28, 28, 28);
 }
 
-/* 两侧箭头负责临时预览与点击锁定，固定命中范围避免状态变化推动布局。 */
-.sideTrigger {
+/* 侧边感应区保留焦点语义，但以短线与文字提示替代传统箭头按钮。 */
+.sideSensor {
   position: absolute;
   top: 50%;
-  z-index: 30;
-  width: 52px;
+  z-index: var(--chapter-layer-focal);
+  width: 92px;
   min-width: 44px;
-  height: 72px;
-  min-height: 44px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 2px solid rgb(28, 28, 28);
-  border-radius: 8px;
-  background: rgb(235, 235, 235);
-  color: rgb(28, 28, 28);
+  min-height: 48px;
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid rgb(90, 90, 90);
+  border-bottom: 1px solid rgb(90, 90, 90);
+  background: transparent;
+  color: rgb(50, 50, 50);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
   cursor: pointer;
+  opacity: 0.72;
   transform: translateY(-50%);
-  transition:
-    background-color 180ms ease,
-    color 180ms ease,
-    transform 180ms ease;
+  transition: opacity 180ms ease, border-color 180ms ease;
 }
 
-.sideTrigger svg {
-  width: 26px;
-  height: 26px;
-  stroke-width: 2.25;
+.sideSensor:hover:not(:disabled),
+.sideSensor:focus-visible {
+  border-color: rgb(0, 96, 255);
+  color: rgb(0, 96, 255);
+  opacity: 1;
+  outline: none;
 }
 
-.sideTrigger:not(:disabled) svg {
-  animation: side-arrow-oscillation 3.2s ease-in-out infinite;
-}
-
-.sideTrigger:hover,
-.sideTrigger:focus-visible,
-.sideTrigger[aria-pressed='true'] {
-  background: rgb(28, 28, 28);
-  color: rgb(0, 255, 200);
-}
-
-.sideTrigger:focus-visible,
+.sideSensor:focus-visible,
 .platformStack:focus-visible,
-.downloadAction:focus-visible {
+.downloadAction:focus-visible,
+.cardSurface:focus-visible {
   outline: 3px solid rgb(0, 96, 255);
   outline-offset: 4px;
 }
 
-.cardSurface:focus-visible {
-  position: relative;
-  z-index: 2;
-  outline: 3px solid rgb(0, 96, 255);
-  outline-offset: -5px;
-}
-
-.sideTrigger:disabled,
+.sideSensor:disabled,
 .cardSurface:disabled {
   cursor: default;
 }
 
-.faqTrigger {
-  left: 24px;
-}
+.faqSensor { left: 24px; text-align: left; }
+.noticeSensor { right: 24px; text-align: right; }
 
-.noticeTrigger {
-  right: 24px;
-}
-
-/* 信息面板保持在文档中提供静态语义，仅通过可见状态开放交互。 */
 .sidePanel {
   position: absolute;
   top: 50%;
-  z-index: 18;
-  width: min(300px, 23vw);
+  z-index: var(--chapter-layer-focal);
+  width: min(300px, 22vw);
   max-height: min(72svh, 640px);
   overflow: auto;
   padding: 24px;
-  border: 2px solid rgb(28, 28, 28);
+  border: 1px solid rgb(90, 90, 90);
   border-radius: 8px;
-  background: rgb(235, 235, 235);
-  box-shadow: 0 20px 50px rgba(28, 28, 28, 0.18);
+  background: rgba(225, 225, 225, 0.92);
+  box-shadow: 0 20px 50px rgba(28, 28, 28, 0.12);
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
-  transition:
-    opacity 180ms ease,
-    transform 220ms ease,
-    visibility 220ms ease;
+  transition: opacity 180ms ease, transform 220ms ease, visibility 220ms ease;
 }
 
-.faqPanel {
-  left: 92px;
-  transform: translate(-18px, -50%);
-}
-
-.noticePanel {
-  right: 92px;
-  transform: translate(18px, -50%);
-}
+.faqPanel { left: 92px; transform: translate(-18px, -50%); }
+.noticePanel { right: 92px; transform: translate(18px, -50%); }
 
 .downloadChapter[data-visible-side='faq'] .faqPanel,
 .downloadChapter[data-visible-side='notice'] .noticePanel {
@@ -123,99 +84,36 @@
   transform: translate(0, -50%);
 }
 
-.downloadChapter[data-panel-phase='closing'][data-visible-side='faq'] .faqPanel {
-  opacity: 0;
-  pointer-events: none;
-  transform: translate(-18px, -50%);
-}
-
-.downloadChapter[data-panel-phase='closing'][data-visible-side='notice'] .noticePanel {
-  opacity: 0;
-  pointer-events: none;
-  transform: translate(18px, -50%);
-}
-
 .panelHeading {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-columns: 40px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   padding-bottom: 16px;
-  border-bottom: 2px solid rgb(28, 28, 28);
+  border-bottom: 1px solid rgb(90, 90, 90);
 }
 
-.panelHeading > svg {
-  width: 32px;
-  height: 32px;
-}
-
+.panelHeading > svg { width: 30px; height: 30px; }
 .panelHeading p,
 .panelHeading h2,
 .panelList h3,
-.panelList p {
-  margin: 0;
-  letter-spacing: 0;
-}
-
+.panelList p { margin: 0; letter-spacing: 0; }
 .panelHeading p,
-.chapterHeading p {
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.4;
-}
+.chapterHeading p { font-size: 12px; font-weight: 700; line-height: 1.4; }
+.panelHeading h2 { font-size: 24px; line-height: 1.2; }
 
-.panelHeading h2 {
-  font-size: 24px;
-  line-height: 1.2;
-}
+.panelList { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.panelList li { min-height: 44px; padding: 16px 0; border-bottom: 1px solid rgb(174, 174, 174); }
+.panelList li:last-child { border-bottom: 0; }
+.panelList h3 { font-size: 15px; line-height: 1.4; }
+.panelList p { margin-top: 6px; color: rgb(72, 72, 72); font-size: 13px; line-height: 1.55; }
+.noticePanel .panelList li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+.noticePanel .panelList svg { width: 22px; height: 22px; margin-top: 1px; color: rgb(0, 96, 255); }
 
-.panelList {
-  display: grid;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.panelList li {
-  min-height: 44px;
-  padding: 16px 0;
-  border-bottom: 1px solid rgb(174, 174, 174);
-}
-
-.panelList li:last-child {
-  border-bottom: 0;
-}
-
-.panelList h3 {
-  font-size: 15px;
-  line-height: 1.4;
-}
-
-.panelList p {
-  margin-top: 6px;
-  color: rgb(72, 72, 72);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.noticePanel .panelList li {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 10px;
-}
-
-.noticePanel .panelList svg {
-  width: 22px;
-  height: 22px;
-  margin-top: 1px;
-  color: rgb(0, 96, 255);
-}
-
-/* 中央堆叠独立消费平台输入，外层章节控制器仍只负责章节推拉。 */
+/* 中央堆叠位于焦点层，侧栏出现时只横移主体而不引入独立背景。 */
 .platformStack {
   position: relative;
-  z-index: 10;
+  z-index: var(--chapter-layer-focal);
   width: min(560px, calc(100vw - 440px));
   min-width: 360px;
   height: min(720px, 86svh);
@@ -226,43 +124,16 @@
   transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.downloadChapter[data-visible-side='faq'] .platformStack {
-  transform: translateX(clamp(96px, 13vw, 188px));
-}
+.downloadChapter[data-visible-side='faq'] .platformStack { transform: translateX(clamp(96px, 13vw, 188px)); }
+.downloadChapter[data-visible-side='notice'] .platformStack { transform: translateX(clamp(-188px, -13vw, -96px)); }
 
-.downloadChapter[data-visible-side='notice'] .platformStack {
-  transform: translateX(clamp(-188px, -13vw, -96px));
-}
-
-.chapterHeading {
-  position: absolute;
-  inset: 0 0 auto;
-  z-index: 8;
-  display: grid;
-  gap: 4px;
-  text-align: center;
-}
-
+.chapterHeading { position: absolute; inset: 0 0 auto; z-index: 8; display: grid; gap: 4px; text-align: center; }
 .chapterHeading p,
-.chapterHeading h2 {
-  margin: 0;
-  letter-spacing: 0;
-}
+.chapterHeading h2 { margin: 0; letter-spacing: 0; }
+.chapterHeading p { color: rgb(0, 96, 255); }
+.chapterHeading h2 { font-size: 48px; line-height: 1.12; }
 
-.chapterHeading p {
-  color: rgb(0, 96, 255);
-}
-
-.chapterHeading h2 {
-  font-size: 48px;
-  line-height: 1.12;
-}
-
-.cardDeck {
-  position: absolute;
-  inset: 92px 0 0;
-}
-
+.cardDeck { position: absolute; inset: 92px 0 0; }
 .platformCard {
   position: absolute;
   top: 50%;
@@ -270,21 +141,15 @@
   width: 100%;
   min-height: 360px;
   overflow: hidden;
-  border: 2px solid rgb(28, 28, 28);
+  border: 1px solid rgb(50, 50, 50);
   border-radius: 8px;
-  background: rgb(235, 235, 235);
-  box-shadow: 0 24px 70px rgba(28, 28, 28, 0.2);
+  background: rgba(225, 225, 225, 0.9);
+  box-shadow: 0 24px 70px rgba(28, 28, 28, 0.16);
   transform: translateY(calc(-50% + (var(--card-distance) * 92px))) scale(var(--card-scale));
   transform-origin: center;
-  transition:
-    opacity 260ms ease,
-    transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 260ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-
-.platformCard[data-active='true'] {
-  box-shadow: 0 30px 80px rgba(0, 96, 255, 0.2);
-}
-
+.platformCard[data-active='true'] { box-shadow: 0 30px 80px rgba(0, 96, 255, 0.18); }
 .cardSurface {
   width: 100%;
   min-height: 138px;
@@ -300,451 +165,105 @@
   text-align: left;
   cursor: pointer;
 }
-
-.platformIcon {
-  width: 52px;
-  height: 52px;
-  display: grid;
-  place-items: center;
-  border: 2px solid rgb(28, 28, 28);
-  border-radius: 8px;
-  background: rgb(0, 255, 200);
-}
-
-.platformIcon svg {
-  width: 28px;
-  height: 28px;
-}
-
-.platformCopy {
-  min-width: 0;
-  display: grid;
-  gap: 5px;
-}
-
-.platformName {
-  font-size: 25px;
-  font-weight: 750;
-  line-height: 1.2;
-}
-
+.platformIcon { width: 52px; height: 52px; display: grid; place-items: center; border: 1px solid rgb(28, 28, 28); border-radius: 8px; background: rgb(0, 255, 200); }
+.platformIcon svg { width: 28px; height: 28px; }
+.platformCopy { min-width: 0; display: grid; gap: 5px; }
+.platformName { font-size: 25px; font-weight: 750; line-height: 1.2; }
 .platformSummary,
-.platformVersion {
-  font-size: 14px;
-  line-height: 1.45;
-}
-
-.platformSummary {
-  color: rgb(72, 72, 72);
-}
-
-.platformVersion {
-  min-width: 88px;
-  padding: 8px 10px;
-  border: 1px solid rgb(28, 28, 28);
-  border-radius: 6px;
-  text-align: center;
-}
-
-.cardDetails {
-  display: grid;
-  gap: 18px;
-  padding: 22px 26px 26px;
-}
-
-.cardDetails > p {
-  margin: 0;
-  color: rgb(72, 72, 72);
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.releaseMeta {
-  display: grid;
-  gap: 9px;
-  margin: 0;
-}
-
-.releaseMeta div {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 12px;
-}
-
+.platformVersion { font-size: 14px; line-height: 1.45; }
+.platformSummary { color: rgb(72, 72, 72); }
+.platformVersion { min-width: 88px; padding: 8px 10px; border: 1px solid rgb(90, 90, 90); border-radius: 6px; text-align: center; }
+.cardDetails { display: grid; gap: 18px; padding: 22px 26px 26px; }
+.cardDetails > p { margin: 0; color: rgb(72, 72, 72); font-size: 14px; line-height: 1.5; }
+.releaseMeta { display: grid; gap: 9px; margin: 0; }
+.releaseMeta div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; }
 .releaseMeta dt,
-.releaseMeta dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.releaseMeta dt {
-  color: rgb(72, 72, 72);
-}
-
-.releaseMeta dd {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-
+.releaseMeta dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
+.releaseMeta dt { color: rgb(72, 72, 72); }
+.releaseMeta dd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .releaseHash,
-.releaseHash code {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-all;
-}
+.releaseHash code { min-width: 0; overflow-wrap: anywhere; word-break: break-all; }
+.releaseHash code { font: inherit; }
+.downloadAction { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 11px 18px; border: 1px solid rgb(28, 28, 28); border-radius: 8px; background: rgb(0, 96, 255); color: #fff; font: inherit; font-weight: 700; line-height: 1.2; text-decoration: none; cursor: pointer; }
+.downloadAction svg { width: 20px; height: 20px; }
+.downloadAction:disabled { background: rgb(205, 205, 205); color: rgb(72, 72, 72); cursor: not-allowed; }
 
-.releaseHash code {
-  font: inherit;
-}
-
-.downloadAction {
-  min-height: 48px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  padding: 11px 18px;
-  border: 2px solid rgb(28, 28, 28);
-  border-radius: 8px;
-  background: rgb(0, 96, 255);
-  color: #fff;
-  font: inherit;
-  font-weight: 700;
-  line-height: 1.2;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.downloadAction svg {
-  width: 20px;
-  height: 20px;
-}
-
-.downloadAction:disabled {
-  background: rgb(205, 205, 205);
-  color: rgb(72, 72, 72);
-  cursor: not-allowed;
-}
-
-/* 中等桌面缩窄侧栏占用，同时保留左右侧移关系。 */
 @media (max-width: 1080px) {
-  .sidePanel {
-    width: min(276px, 28vw);
-  }
-
-  .platformStack {
-    width: min(520px, calc(100vw - 320px));
-  }
-
-  .chapterHeading h2 {
-    font-size: 42px;
-  }
-
-  .downloadChapter[data-visible-side='faq'] .platformStack {
-    transform: translateX(120px);
-  }
-
-  .downloadChapter[data-visible-side='notice'] .platformStack {
-    transform: translateX(-120px);
-  }
+  .sidePanel { width: min(276px, 28vw); }
+  .platformStack { width: min(520px, calc(100vw - 320px)); }
+  .chapterHeading h2 { font-size: 42px; }
+  .downloadChapter[data-visible-side='faq'] .platformStack { transform: translateX(120px); }
+  .downloadChapter[data-visible-side='notice'] .platformStack { transform: translateX(-120px); }
 }
 
-/* 移动端把两侧内容收束为底部抽屉，避免与平台卡片横向争抢空间。 */
+/* 移动端保留轻触入口，将信息收束为底部抽屉并由空白区域关闭。 */
 @media (max-width: 760px) {
-  .downloadChapter {
-    min-height: 100svh;
-    align-items: center;
-    padding: 72px 16px 16px;
-  }
-
-  .sideTrigger {
-    top: 16px;
-    width: 48px;
-    height: 44px;
-    transform: none;
-  }
-
-  .faqTrigger {
-    left: 16px;
-  }
-
-  .noticeTrigger {
-    right: 16px;
-  }
-
+  .downloadChapter { min-height: 100svh; align-items: center; padding: 72px 16px 16px; }
+  .sideSensor { top: 16px; width: 92px; min-height: 44px; transform: none; }
+  .faqSensor { left: 16px; }
+  .noticeSensor { right: 16px; }
   .sidePanel {
-    inset: auto 136px 16px 16px;
-    z-index: 40;
+    inset: auto 136px max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    z-index: calc(var(--chapter-layer-focal) + 1);
     width: auto;
     max-height: min(42svh, 340px);
     padding: 20px;
     transform: translateY(24px);
   }
-
   .downloadChapter[data-visible-side='faq'] .faqPanel,
-  .downloadChapter[data-visible-side='notice'] .noticePanel {
-    transform: translateY(0);
-  }
-
-  .downloadChapter[data-panel-phase='closing'][data-visible-side='faq'] .faqPanel,
-  .downloadChapter[data-panel-phase='closing'][data-visible-side='notice'] .noticePanel {
-    transform: translateY(24px);
-  }
-
-  .platformStack {
-    width: min(100%, 520px);
-    min-width: 0;
-    height: min(660px, calc(100svh - 104px));
-    min-height: 500px;
-  }
-
+  .downloadChapter[data-visible-side='notice'] .noticePanel { transform: translateY(0); }
+  .platformStack { width: min(100%, 520px); min-width: 0; height: min(660px, calc(100svh - 104px)); min-height: 500px; }
   .downloadChapter[data-visible-side='faq'] .platformStack,
-  .downloadChapter[data-visible-side='notice'] .platformStack {
-    transform: translateY(-16%);
-  }
-
-  .chapterHeading h2 {
-    font-size: 32px;
-  }
-
-  .cardDeck {
-    top: 82px;
-  }
-
-  .platformCard {
-    min-height: 336px;
-  }
-
-  .cardSurface {
-    grid-template-columns: 48px minmax(0, 1fr);
-    gap: 12px;
-    min-height: 126px;
-    padding: 20px;
-  }
-
-  .platformIcon {
-    width: 48px;
-    height: 48px;
-  }
-
-  .platformVersion {
-    grid-column: 1 / -1;
-    width: max-content;
-    min-width: 0;
-  }
-
-  .cardDetails {
-    padding: 18px 20px 20px;
-  }
+  .downloadChapter[data-visible-side='notice'] .platformStack { transform: translateY(-16%); }
+  .chapterHeading h2 { font-size: 32px; }
+  .cardDeck { top: 82px; }
+  .platformCard { min-height: 336px; }
+  .cardSurface { grid-template-columns: 48px minmax(0, 1fr); gap: 12px; min-height: 126px; padding: 20px; }
+  .platformIcon { width: 48px; height: 48px; }
+  .platformVersion { grid-column: 1 / -1; width: max-content; min-width: 0; }
+  .cardDetails { padding: 18px 20px 20px; }
 }
 
 @media (max-width: 420px) {
-  .platformName {
-    font-size: 22px;
-  }
-
-  .platformCard {
-    min-height: 350px;
-  }
-
-  .releaseMeta div {
-    grid-template-columns: 1fr;
-    gap: 2px;
-  }
+  .platformName { font-size: 22px; }
+  .platformCard { min-height: 350px; }
+  .releaseMeta div { grid-template-columns: 1fr; gap: 2px; }
 }
 
-/* 低高度横屏压缩卡片内容，并露出非当前平台的完整选择头部。 */
 @media (max-height: 520px) and (orientation: landscape) {
-  .downloadChapter {
-    min-height: 100svh;
-    padding: 8px 80px;
-  }
-
-  .platformStack {
-    width: min(520px, calc(100vw - 180px));
-    min-width: 0;
-    height: calc(100svh - 16px);
-    min-height: 0;
-  }
-
-  .chapterHeading {
-    gap: 0;
-    transform: translateY(-6px);
-  }
-
-  .chapterHeading p {
-    display: none;
-  }
-
-  .chapterHeading h2 {
-    font-size: 22px;
-    line-height: 1.1;
-  }
-
-  .cardDeck {
-    inset: 62px 0 8px;
-    transform: none;
-  }
-
-  .platformCard {
-    min-height: 0;
-    transform: translateY(calc(-50% + (var(--card-distance) * 100px))) scale(var(--card-scale));
-  }
-
-  .platformCard[data-active='true'][data-platform-status='available'] {
-    height: min(226px, calc(100svh - 86px));
-    display: grid;
-    grid-template-columns: minmax(136px, 0.8fr) minmax(0, 1.2fr);
-  }
-
-  .platformCard[data-active='true'][data-platform-status='available'] .cardSurface {
-    min-height: 0;
-    height: 100%;
-    grid-template-areas:
-      'icon copy'
-      'version version';
-    grid-template-columns: 44px minmax(0, 1fr);
-    align-content: center;
-    gap: 8px;
-    padding: 10px;
-    border-right: 1px solid rgb(174, 174, 174);
-    border-bottom: 0;
-  }
-
-  .platformCard[data-active='true'][data-platform-status='available'] .platformIcon {
-    grid-area: icon;
-  }
-
-  .platformCard[data-active='true'][data-platform-status='available'] .platformCopy {
-    grid-area: copy;
-  }
-
-  .platformCard[data-active='true'][data-platform-status='available'] .platformVersion {
-    grid-area: version;
-    min-width: 0;
-    padding: 5px 7px;
-  }
-
-  .cardSurface {
-    min-height: 92px;
-    padding: 12px 18px;
-  }
-
-  .platformIcon {
-    width: 44px;
-    height: 44px;
-  }
-
-  .platformIcon svg {
-    width: 24px;
-    height: 24px;
-  }
-
-  .platformName {
-    font-size: 22px;
-  }
-
-  .cardDetails {
-    min-width: 0;
-    align-content: center;
-    gap: 6px;
-    padding: 9px 11px;
-  }
-
-  .releaseMeta {
-    gap: 3px;
-  }
-
-  .releaseMeta div {
-    grid-template-columns: 50px minmax(0, 1fr);
-    gap: 6px;
-  }
-
+  .downloadChapter { min-height: 100svh; padding: 8px 80px; }
+  .platformStack { width: min(520px, calc(100vw - 180px)); min-width: 0; height: calc(100svh - 16px); min-height: 0; }
+  .chapterHeading { gap: 0; transform: translateY(-6px); }
+  .chapterHeading p { display: none; }
+  .chapterHeading h2 { font-size: 22px; line-height: 1.1; }
+  .cardDeck { inset: 62px 0 8px; }
+  .platformCard { min-height: 0; transform: translateY(calc(-50% + (var(--card-distance) * 100px))) scale(var(--card-scale)); }
+  .platformCard[data-active='true'][data-platform-status='available'] { height: min(226px, calc(100svh - 86px)); display: grid; grid-template-columns: minmax(136px, 0.8fr) minmax(0, 1.2fr); }
+  .platformCard[data-active='true'][data-platform-status='available'] .cardSurface { min-height: 0; height: 100%; grid-template-areas: 'icon copy' 'version version'; grid-template-columns: 44px minmax(0, 1fr); align-content: center; gap: 8px; padding: 10px; border-right: 1px solid rgb(174, 174, 174); border-bottom: 0; }
+  .platformCard[data-active='true'][data-platform-status='available'] .platformIcon { grid-area: icon; }
+  .platformCard[data-active='true'][data-platform-status='available'] .platformCopy { grid-area: copy; }
+  .platformCard[data-active='true'][data-platform-status='available'] .platformVersion { grid-area: version; min-width: 0; padding: 5px 7px; }
+  .cardSurface { min-height: 92px; padding: 12px 18px; }
+  .platformIcon { width: 44px; height: 44px; }
+  .platformIcon svg { width: 24px; height: 24px; }
+  .platformName { font-size: 22px; }
+  .cardDetails { min-width: 0; align-content: center; gap: 6px; padding: 9px 11px; }
+  .releaseMeta { gap: 3px; }
+  .releaseMeta div { grid-template-columns: 50px minmax(0, 1fr); gap: 6px; }
   .releaseMeta dt,
-  .releaseMeta dd {
-    font-size: 11px;
-    line-height: 1.25;
-  }
-
-  .releaseHash code {
-    font-size: 10px;
-    line-height: 1.15;
-  }
-
-  .downloadAction {
-    min-height: 44px;
-    padding: 8px 16px;
-  }
-
-  .downloadChapter[data-visible-side='faq'] .platformStack,
-  .downloadChapter[data-visible-side='notice'] .platformStack {
-    transform: none;
-  }
-
-  .sidePanel {
-    inset: 16px 72px 16px;
-    max-height: calc(100svh - 32px);
-  }
+  .releaseMeta dd { font-size: 11px; line-height: 1.25; }
+  .releaseHash code { font-size: 10px; line-height: 1.15; }
+  .downloadAction { min-height: 44px; padding: 8px 16px; }
 }
 
-/* 降低动态偏好下保留状态结果，但取消所有过渡与侧栏错峰。 */
-.downloadChapter[data-motion-disabled='true'] .sideTrigger:not(:disabled) svg {
-  animation: none;
-}
-
-.downloadChapter[data-motion-disabled='true'] .sideTrigger,
+.downloadChapter[data-motion-disabled='true'] .sideSensor,
 .downloadChapter[data-motion-disabled='true'] .sidePanel,
 .downloadChapter[data-motion-disabled='true'] .platformStack,
-.downloadChapter[data-motion-disabled='true'] .platformCard {
-  transition: none;
-}
-
-.downloadChapter[data-motion-disabled='true'] .panelHeading,
-.downloadChapter[data-motion-disabled='true'] .panelList li {
-  opacity: 1 !important;
-  visibility: visible !important;
-  transform: none !important;
-}
-
-.downloadChapter[data-paused='true'] .sideTrigger:not(:disabled) svg {
-  animation-play-state: paused;
-}
-
-.downloadChapter[data-paused='true'] .sideTrigger,
-.downloadChapter[data-paused='true'] .sidePanel,
-.downloadChapter[data-paused='true'] .platformStack,
-.downloadChapter[data-paused='true'] .platformCard {
-  transition: none;
-}
+.downloadChapter[data-motion-disabled='true'] .platformCard { transition: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .sideTrigger:not(:disabled) svg {
-    animation: none;
-  }
-
-  .sideTrigger,
+  .sideSensor,
   .sidePanel,
   .platformStack,
-  .platformCard {
-    transition: none;
-  }
-
-  .panelHeading,
-  .panelList li {
-    opacity: 1 !important;
-    visibility: visible !important;
-    transform: none !important;
-  }
-}
-
-@keyframes side-arrow-oscillation {
-  0%,
-  100% {
-    transform: translateX(-2px);
-  }
-
-  50% {
-    transform: translateX(2px);
-  }
+  .platformCard { transition: none; }
 }

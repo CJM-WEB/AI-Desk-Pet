@@ -1,10 +1,46 @@
 .experience {
+  --chapter-layer-backdrop: 0;
+  --chapter-layer-field: 10;
+  --chapter-layer-files: 20;
+  --chapter-layer-feature: 40;
+  --chapter-layer-focal: 60;
+  --chapter-layer-preview: 80;
+  --chapter-layer-modal: 100;
   position: fixed;
   inset: 0;
   overflow: hidden;
   background: rgb(235, 235, 235);
   color: rgb(28, 28, 28);
   isolation: isolate;
+}
+
+.pointerTiltText {
+  position: relative;
+  z-index: var(--chapter-layer-focal);
+  display: inline-block;
+  transform: perspective(900px) rotateX(var(--pointer-tilt-rotate-x)) rotateY(var(--pointer-tilt-rotate-y));
+  transform-style: preserve-3d;
+}
+
+/* 背景独立于章节内容的堆叠上下文，始终位于根级光场和文件层之下。 */
+.backdropLayer {
+  position: absolute;
+  inset: 0;
+  z-index: var(--chapter-layer-backdrop);
+  overflow: hidden;
+  pointer-events: none;
+  isolation: isolate;
+}
+
+.chapterBackdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: var(--chapter-opacity);
+  transform: scale(var(--chapter-scale));
+  transform-origin: center;
+  filter: blur(var(--chapter-blur)) contrast(var(--chapter-contrast));
+  will-change: opacity, transform, filter;
 }
 
 /* 每个章节共享同一视口，由纯视觉状态决定交接位置和交互权。 */
@@ -22,6 +58,11 @@
 
 .chapter[data-interactive='true'] {
   pointer-events: auto;
+}
+
+/* 首页根层只承载视觉层级，品牌中心区域单独恢复命中，外围文件仍可交互。 */
+.chapter[data-chapter-id='home'] {
+  pointer-events: none;
 }
 
 .chapterControls {
@@ -84,6 +125,13 @@
   will-change: auto;
 }
 
+.experience[data-initialization-failed='true'] .chapterBackdrop {
+  filter: none !important;
+  transform: none !important;
+  transition: none;
+  will-change: auto;
+}
+
 /* 捐款内容覆盖共享文件层，但仅滚筒接管指针，外围文件仍可被命中。 */
 .chapter[data-chapter-id='donation'] {
   pointer-events: none;
@@ -117,6 +165,10 @@
 
 @media (max-width: 760px) {
   .chapter {
+    filter: none;
+  }
+
+  .chapterBackdrop {
     filter: none;
   }
 
@@ -158,6 +210,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chapter {
+    filter: none !important;
+    transform: none !important;
+    transition: opacity 200ms linear;
+    will-change: opacity;
+  }
+
+  .chapterBackdrop {
     filter: none !important;
     transform: none !important;
     transition: opacity 200ms linear;

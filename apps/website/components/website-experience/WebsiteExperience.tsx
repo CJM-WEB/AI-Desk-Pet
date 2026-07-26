@@ -14,22 +14,33 @@ import {
   deriveHomeExperiencePhase
 } from './chapter-model';
 import { CHAPTER_REGISTRY } from './chapter-registry';
-import { PlaceholderChapter } from './PlaceholderChapter';
 import { SharedVisualLayers } from './SharedVisualLayers';
+import { ChapterBackdrop } from './visual/ChapterBackdrop';
+import { CHAPTER_LAYERS } from './layer-contract';
+import { createFeedbackVisualProfile } from './feedback/feedback-preview-source';
+import { LocalStorageFeedbackRepository } from './feedback/local-storage-feedback-repository';
 import {
   resolveSharedVisualProfile,
   VISUAL_PROFILES
 } from './shared-visual-model';
 import styles from './website-experience.module.css';
 import { useWebsiteController } from './use-website-controller';
-import type { ChapterId } from './types';
-
-function isExplicitPlaceholder(chapterId: ChapterId): boolean {
-  return chapterId === 'about' || chapterId === 'feedback';
-}
 
 export interface WebsiteExperienceProps {
   onRuntimeError?: () => void;
+}
+
+function createChapterVisualStyle(
+  visual: ReturnType<typeof deriveChapterVisualState>,
+  zIndex = visual.zIndex
+): CSSProperties {
+  return {
+    '--chapter-opacity': visual.opacity,
+    '--chapter-scale': visual.scale,
+    '--chapter-blur': `${visual.blurPx}px`,
+    '--chapter-contrast': visual.contrast,
+    zIndex
+  } as CSSProperties;
 }
 
 /**
@@ -71,16 +82,40 @@ export function WebsiteExperience({
     controller.phase,
     homeExitProgress
   );
-  const sharedVisualProfile = resolveSharedVisualProfile(
-    controller.progress,
-    controller.phase
-  );
+  const feedbackVisualProfileRef = useRef<ReturnType<
+    typeof createFeedbackVisualProfile
+  > | null>(null);
+  if (feedbackVisualProfileRef.current === null) {
+    feedbackVisualProfileRef.current = createFeedbackVisualProfile(
+      new LocalStorageFeedbackRepository(),
+      Math.random
+    );
+  }
+  const sharedVisualProfile = controller.phase === 'interactive'
+    && Math.abs(controller.progress - 3) < 0.0001
+    ? feedbackVisualProfileRef.current
+    : resolveSharedVisualProfile(controller.progress, controller.phase);
   const mountedVisualProfile = sharedVisualProfile
     ?? (controller.progress < 1 ? VISUAL_PROFILES.home : null);
-  const sharedVisualChapterIndex = sharedVisualProfile?.id === 'donation' ? 4 : 0;
+  const sharedVisualChapterIndex = sharedVisualProfile
+    ? {
+        home: 0,
+        download: 2,
+        feedback: 3,
+        donation: 4
+      }[sharedVisualProfile.id]
+    : 0;
   const sharedVisualGenerating = sharedVisualProfile !== null
     && controller.phase === 'interactive'
     && Math.abs(controller.progress - sharedVisualChapterIndex) < 0.0001;
+  const chapters = CHAPTER_REGISTRY.map((chapter, index) => ({
+    chapter,
+    visual: deriveChapterVisualState(
+      index,
+      controller.progress,
+      reducedMotion
+    )
+  }));
 
   return (
     <div
@@ -91,21 +126,32 @@ export function WebsiteExperience({
       data-active-chapter={activeChapter.id}
       data-initialization-failed={staticFallback}
     >
-      {CHAPTER_REGISTRY.map((chapter, index) => {
+      <div
+        className={styles.backdropLayer}
+        data-layer="backdrop"
+        aria-hidden="true"
+        style={{ zIndex: CHAPTER_LAYERS.backdrop }}
+      >
+        {chapters.map(({ chapter, visual }) => (
+          <div
+            key={chapter.id}
+            className={styles.chapterBackdrop}
+            data-backdrop-for={chapter.id}
+            style={createChapterVisualStyle(visual)}
+          >
+            <ChapterBackdrop
+              chapterId={chapter.id}
+              useBackdropDataAttribute
+            />
+          </div>
+        ))}
+      </div>
+      {chapters.map(({ chapter, visual }) => {
         const RegisteredChapter = chapter.component;
-        const visual = deriveChapterVisualState(
-          index,
-          controller.progress,
-          reducedMotion
+        const style = createChapterVisualStyle(
+          visual,
+          CHAPTER_LAYERS.focal
         );
-        const style = {
-          '--chapter-opacity': visual.opacity,
-          '--chapter-scale': visual.scale,
-          '--chapter-blur': `${visual.blurPx}px`,
-          '--chapter-contrast': visual.contrast,
-          // 捐款内容位于共享文件层上方，透明区域仍通过 CSS 让文件保持可交互。
-          zIndex: chapter.id === 'donation' ? 3 : visual.zIndex
-        } as CSSProperties;
 
         return (
           <section
@@ -114,6 +160,7 @@ export function WebsiteExperience({
             data-chapter-id={chapter.id}
             data-visible={visual.visible}
             data-interactive={visual.interactive}
+            data-layer="focal"
             aria-label={chapter.label}
             aria-hidden={!visual.visible}
             inert={!visual.interactive ? true : undefined}
@@ -132,9 +179,6 @@ export function WebsiteExperience({
                 onSettled={controller.settled}
                 onInitializationError={handleInitializationError}
               />
-            ) : null}
-            {isExplicitPlaceholder(chapter.id) ? (
-              <PlaceholderChapter title={chapter.label} />
             ) : null}
             {RegisteredChapter ? (
               <RegisteredChapter

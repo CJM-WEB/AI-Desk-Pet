@@ -1,6 +1,6 @@
 .donationChapter {
   position: relative;
-  z-index: 3;
+  z-index: 60;
   min-height: 100%;
   display: grid;
   grid-template-rows:
@@ -16,7 +16,7 @@
 
 .donationTitle {
   position: relative;
-  z-index: 3;
+  z-index: 60;
   align-self: end;
   justify-self: center;
   max-width: 980px;
@@ -33,7 +33,7 @@
 /* 滚筒只消费自己的输入，外层章节控制器继续负责模块推拉。 */
 .paymentRoller {
   position: relative;
-  z-index: 5;
+  z-index: 60;
   align-self: center;
   justify-self: center;
   width: min(520px, calc(100% - 48px));
@@ -86,22 +86,8 @@
   will-change: opacity, transform;
 }
 
-.paymentCard::before {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 6px;
-  background: rgb(255, 255, 0);
-  content: '';
-  opacity: 0;
-  transition: opacity 180ms ease;
-}
-
 .paymentCard[data-active='true'] {
-  box-shadow: 0 30px 76px rgba(90, 90, 0, 0.2);
-}
-
-.paymentCard[data-active='true']::before {
-  opacity: 1;
+  box-shadow: 0 30px 76px rgba(28, 28, 28, 0.24);
 }
 
 .paymentCard:hover,
@@ -246,7 +232,7 @@
 .qrClose:hover,
 .qrClose:focus-visible {
   background: rgb(28, 28, 28);
-  color: rgb(255, 255, 0);
+  color: rgb(255, 255, 255);
 }
 
 .qrClose:active {
@@ -376,8 +362,7 @@
   }
 }
 
-.donationChapter[data-motion-disabled='true'] .paymentCard,
-.donationChapter[data-motion-disabled='true'] .paymentCard::before {
+.donationChapter[data-motion-disabled='true'] .paymentCard {
   transition: none;
 }
 
@@ -386,8 +371,7 @@
   animation: none;
 }
 
-.donationChapter[data-paused='true'] .paymentCard,
-.donationChapter[data-paused='true'] .paymentCard::before {
+.donationChapter[data-paused='true'] .paymentCard {
   transition: none;
 }
 
@@ -402,8 +386,7 @@
     animation: none;
   }
 
-  .paymentCard,
-  .paymentCard::before {
+  .paymentCard {
     transition: none;
   }
 }

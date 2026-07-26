@@ -7,9 +7,14 @@ import { FileSwarm } from '../home-experience/FileSwarm';
 import homeStyles from '../home-experience/home-experience.module.css';
 import type { PointerPoint } from '../home-experience/types';
 import type { SharedVisualProfile } from './shared-visual-model';
+import { CHAPTER_LAYERS } from './layer-contract';
+
+export interface SharedVisualLayerProfile extends Omit<SharedVisualProfile, 'id'> {
+  id: SharedVisualProfile['id'] | 'feedback';
+}
 
 export interface SharedVisualLayersProps {
-  profile: SharedVisualProfile;
+  profile: SharedVisualLayerProfile;
   running: boolean;
   generating: boolean;
   exitProgress: number;
@@ -43,6 +48,20 @@ export function SharedVisualLayers({
     '--experience-files-scale': 1 - exitProgress * 0.28,
     '--experience-field-opacity': 1 - exitProgress
   } as CSSProperties;
+  const fieldStyle = {
+    ...exitStyle,
+    zIndex: CHAPTER_LAYERS.field,
+    pointerEvents: 'none'
+  } as CSSProperties;
+  const fileStyle = {
+    ...exitStyle,
+    zIndex: CHAPTER_LAYERS.files,
+    pointerEvents: 'none'
+  } as CSSProperties;
+  const previewStyle = {
+    zIndex: CHAPTER_LAYERS.preview,
+    pointerEvents: 'none'
+  } as CSSProperties;
 
   if (initializationFailed) {
     return null;
@@ -50,28 +69,30 @@ export function SharedVisualLayers({
 
   return (
     <>
-      <section
-        className={homeStyles.cursorLayer}
-        data-layer="cursor"
-        data-profile-id={profile.id}
-        aria-hidden="true"
-        style={exitStyle}
-      >
-        <CursorField
-          active={layersRunning}
-          pointer={pointer}
-          isPaused={isPaused}
-          reducedMotion={reducedMotion}
-          color={profile.fieldColor}
-          onInitializationError={handleInitializationError}
-        />
-      </section>
+      {profile.fieldEnabled ? (
+        <section
+          className={homeStyles.cursorLayer}
+          data-layer="cursor"
+          data-profile-id={profile.id}
+          aria-hidden="true"
+          style={fieldStyle}
+        >
+          <CursorField
+            active={layersRunning}
+            pointer={pointer}
+            isPaused={isPaused}
+            reducedMotion={reducedMotion}
+            color={profile.fieldColor}
+            onInitializationError={handleInitializationError}
+          />
+        </section>
+      ) : null}
       <section
         className={homeStyles.fileLayer}
         data-layer="file"
         data-profile-id={profile.id}
         aria-label="文件预览队列"
-        style={exitStyle}
+        style={fileStyle}
       >
         <FileSwarm
           key={profile.id}
@@ -83,6 +104,7 @@ export function SharedVisualLayers({
           reducedMotion={reducedMotion}
           maxActive={profile.maxActive}
           safeZoneRatio={profile.safeZoneRatio}
+          previewSource={profile.previewSource}
           previewContainer={previewLayer}
           onInitializationError={handleInitializationError}
         />
@@ -91,6 +113,7 @@ export function SharedVisualLayers({
         ref={setPreviewLayer}
         className={homeStyles.previewLayer}
         data-layer="preview"
+        style={previewStyle}
       />
     </>
   );

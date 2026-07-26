@@ -61,7 +61,7 @@ export const EXPERIENCE_CONFIG = {
     maxY: 8
   },
   progress: {
-    wheelScale: 0.00065,
+    wheelScale: 0.0011,
     keyboardStep: 0.12,
     snapThreshold: 0.06
   },

@@ -132,7 +132,11 @@ export function QrDialog({
       onPointerUp={(event) => event.stopPropagation()}
       onPointerCancel={(event) => event.stopPropagation()}
     >
-      <div className={styles.qrPanel} data-testid="qr-panel">
+      <div
+        className={styles.qrPanel}
+        data-testid="qr-panel"
+        onClick={(event) => event.stopPropagation()}
+      >
         <h3 id={titleId}>{method.name}付款码</h3>
         <div className={styles.qrMedia}>
           {imageFailed ? (
@@ -144,6 +148,7 @@ export function QrDialog({
               src={method.qrImagePath}
               alt={method.imageAlt}
               draggable={false}
+              onClick={(event) => event.stopPropagation()}
               onError={() => setImageFailed(true)}
             />
           )}

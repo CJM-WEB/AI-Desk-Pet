@@ -3,6 +3,7 @@ import type { CSSProperties, Ref } from 'react';
 import { MagneticAPMark } from './MagneticAPMark';
 import { computeBrandTransform } from './pointer-model';
 import type { PointerPoint } from './types';
+import { CHAPTER_LAYERS } from '../website-experience/layer-contract';
 import styles from './home-experience.module.css';
 
 interface BrandStageProps {
@@ -50,18 +51,25 @@ export function BrandStage({
     '--brand-rotate-x': `${transform.rotateX}deg`,
     '--brand-rotate-y': `${transform.rotateY}deg`
   } as CSSProperties;
+  const stageStyle = {
+    zIndex: CHAPTER_LAYERS.focal,
+    pointerEvents: 'none'
+  } as CSSProperties;
 
   return (
     <div
       className={styles.brandStage}
       data-testid="brand-stage"
-      data-layer="brand"
+      data-layer="focal"
       data-interactive={interactive}
       data-final-image-failed={finalLogoFailed}
+      style={stageStyle}
     >
       <div
         ref={stageRef}
         className={styles.brandIntroMotion}
+        data-testid="brand-focal"
+        style={{ pointerEvents: 'none' }}
       >
         <div
           className={styles.brandTransform}

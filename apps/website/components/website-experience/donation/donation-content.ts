@@ -17,5 +17,11 @@ export const PAYMENT_METHODS = [
     name: '支付宝',
     qrImagePath: '/Alipay.jpg',
     imageAlt: '支付宝付款码'
+  },
+  {
+    id: 'paypal',
+    name: 'PayPal',
+    qrImagePath: '/Paypal.jpg',
+    imageAlt: 'PayPal付款码'
   }
 ] as const satisfies readonly PaymentMethod[];

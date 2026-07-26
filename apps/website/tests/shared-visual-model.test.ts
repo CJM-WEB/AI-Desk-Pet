@@ -5,14 +5,21 @@ import {
 } from '../components/website-experience/shared-visual-model';
 
 describe('共享视觉主题', () => {
-  it('首页使用灰色光场且捐款使用黄色光场', () => {
+  it('首页使用灰色光场，下载与捐款关闭光场并复用默认预览源', () => {
     expect(VISUAL_PROFILES.home.fieldColor).toEqual([180, 180, 180]);
+    expect(VISUAL_PROFILES.download.fieldEnabled).toBe(false);
+    expect(VISUAL_PROFILES.download.previewSource)
+      .toBe(VISUAL_PROFILES.home.previewSource);
     expect(VISUAL_PROFILES.donation.fieldColor).toEqual([255, 255, 0]);
   });
 
-  it('只在首页和捐款附近启用共享视觉层', () => {
+  it('在首页、下载活动及其过渡、捐款入场区间解析对应共享视觉层', () => {
     expect(resolveSharedVisualProfile(0, 'interactive')?.id).toBe('home');
-    expect(resolveSharedVisualProfile(2, 'interactive')).toBeNull();
+    expect(resolveSharedVisualProfile(1, 'interactive')).toBeNull();
+    expect(resolveSharedVisualProfile(1.25, 'interactive')?.id).toBe('download');
+    expect(resolveSharedVisualProfile(2, 'interactive')?.id).toBe('download');
+    expect(resolveSharedVisualProfile(2.75, 'interactive')?.id).toBe('download');
+    expect(resolveSharedVisualProfile(3, 'interactive')).toBeNull();
     expect(resolveSharedVisualProfile(4, 'interactive')?.id).toBe('donation');
   });
 });

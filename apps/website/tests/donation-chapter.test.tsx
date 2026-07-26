@@ -47,14 +47,56 @@ describe('捐款章节', () => {
     cleanup();
   });
 
-  it('静态渲染标题、配置支付方式和局部输入区域', () => {
+  it('静态渲染倾斜标题、三项支付方式和局部输入区域', () => {
     const html = renderToStaticMarkup(<DonationChapter interactive />);
 
     expect(html).toContain('data-testid="donation-chapter"');
     expect(html).toContain('助力开发，你便也是我不可或缺的参与者');
+    expect(html).toContain('data-testid="pointer-tilt-text"');
     expect(html).toContain('微信');
     expect(html).toContain('支付宝');
+    expect(html).toContain('PayPal');
     expect(html).toContain('data-input-scope="local"');
+  });
+
+  it('仅在章节可交互且动效启用时监听全局指针', () => {
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const removeEventListener = vi.spyOn(window, 'removeEventListener');
+    const { rerender } = render(<DonationChapter interactive={false} />);
+
+    expect(addEventListener).not.toHaveBeenCalledWith(
+      'pointermove',
+      expect.any(Function),
+      expect.anything()
+    );
+
+    rerender(<DonationChapter interactive />);
+    expect(addEventListener).toHaveBeenCalledWith(
+      'pointermove',
+      expect.any(Function),
+      { passive: true }
+    );
+
+    rerender(<DonationChapter interactive reducedMotion />);
+    expect(removeEventListener).toHaveBeenCalledWith(
+      'pointermove',
+      expect.any(Function)
+    );
+  });
+
+  it('滚筒按配置循环到 PayPal，当前项可打开对应付款码', () => {
+    render(<DonationChapter interactive />);
+    const roller = screen.getByRole('group', { name: '选择付款方式' });
+
+    fireEvent.wheel(roller, { deltaY: 120 });
+    fireEvent.wheel(roller, { deltaY: 120 });
+    const trigger = screen.getByRole('button', { name: '打开PayPal付款码' });
+    expect(trigger).toBeTruthy();
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole('dialog', { name: 'PayPal付款码' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'PayPal付款码' }).getAttribute('src'))
+      .toBe('/Paypal.jpg');
   });
 
   it('滚轮阻止默认与冒泡并按方向循环付款方式', () => {
@@ -289,18 +331,20 @@ describe('捐款章节', () => {
     window.removeEventListener('pointerdown', windowPointerDown);
   });
 
-  it('弹层任意区域点击均关闭，付款码加载失败显示稳定回退', () => {
+  it('点击付款码保持弹层，点击任意非付款码区域关闭并保留加载失败回退', () => {
     const { rerender } = render(<DonationChapter interactive />);
     openWechatDialog();
 
-    fireEvent.error(screen.getByRole('img', { name: '微信付款码' }));
-    expect(screen.getByRole('status').textContent).toBe('付款码暂未配置');
+    fireEvent.click(screen.getByRole('img', { name: '微信付款码' }));
+    expect(screen.getByRole('dialog', { name: '微信付款码' })).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('qr-panel'));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('dialog')).toBeTruthy();
 
     rerender(<DonationChapter interactive />);
     openWechatDialog();
+    fireEvent.error(screen.getByRole('img', { name: '微信付款码' }));
+    expect(screen.getByRole('status').textContent).toBe('付款码暂未配置');
     fireEvent.click(screen.getByRole('dialog', { name: '微信付款码' }));
     expect(screen.queryByRole('dialog')).toBeNull();
   });

@@ -18,16 +18,16 @@
 }
 
 .cursorLayer {
-  z-index: 1;
+  z-index: var(--chapter-layer-field, 10);
   opacity: var(--experience-field-opacity, 1);
 }
 
 .fileLayer {
-  z-index: 2;
+  z-index: var(--chapter-layer-files, 20);
 }
 
 .brandStage {
-  z-index: 3;
+  z-index: var(--chapter-layer-focal, 60);
   min-height: 86svh;
   display: grid;
   place-items: center;
@@ -39,7 +39,7 @@
 }
 
 .previewLayer {
-  z-index: 4;
+  z-index: var(--chapter-layer-preview, 80);
 }
 
 .introOverlay {

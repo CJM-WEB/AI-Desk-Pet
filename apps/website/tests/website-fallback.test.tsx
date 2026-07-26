@@ -38,7 +38,7 @@ describe('官网章节降级模式', () => {
     vi.unstubAllGlobals();
   });
 
-  it('下载章节依赖更新时 cleanup 异常会报告统一运行时错误并进入静态回退', async () => {
+  it('介绍章节依赖更新时 cleanup 异常会报告统一运行时错误并进入静态回退', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
     const onRuntimeError = vi.fn();
     render(<WebsiteExperience onRuntimeError={onRuntimeError} />);
@@ -63,31 +63,20 @@ describe('官网章节降级模式', () => {
     const next = experience
       .querySelector('nav')!
       .querySelectorAll<HTMLButtonElement>('button')[1]!;
+    const revert = vi.fn(() => {
+      throw new Error('介绍 GSAP 依赖更新清理失败');
+    });
+    const context = vi.spyOn(gsap, 'context').mockReturnValue({
+      revert
+    } as unknown as gsap.Context);
+
     fireEvent.click(next);
     await waitFor(() => {
       expect(experience.dataset.activeChapter).toBe('about');
     });
+    expect(context).toHaveBeenCalledOnce();
+
     fireEvent.click(next);
-    await waitFor(() => {
-      expect(experience.dataset.activeChapter).toBe('download');
-    });
-
-    const revert = vi.fn(() => {
-      throw new Error('下载 GSAP 依赖更新清理失败');
-    });
-    vi.spyOn(gsap, 'context').mockReturnValue({
-      revert
-    } as unknown as gsap.Context);
-    const sideTriggers = screen
-      .getByTestId('download-chapter')
-      .querySelectorAll<HTMLButtonElement>(':scope > button');
-    fireEvent.click(sideTriggers[0]!);
-    await waitFor(() => {
-      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-        .toBe('faq');
-    });
-
-    fireEvent.click(sideTriggers[1]!);
     await waitFor(() => {
       expect(experience.dataset.staticFallback).toBe('active');
     });
@@ -96,7 +85,7 @@ describe('官网章节降级模式', () => {
     expect(onRuntimeError).toHaveBeenCalledOnce();
   });
 
-  it('WebsiteExperience 最终 unmount 时下载 cleanup 异常不会再报告父级运行时错误', async () => {
+  it('WebsiteExperience 最终 unmount 时介绍 cleanup 异常不会再报告父级运行时错误', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
     const onRuntimeError = vi.fn();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -124,29 +113,18 @@ describe('官网章节降级模式', () => {
     const next = experience
       .querySelector('nav')!
       .querySelectorAll<HTMLButtonElement>('button')[1]!;
+    const revert = vi.fn(() => {
+      throw new Error('介绍 GSAP 最终卸载清理失败');
+    });
+    const context = vi.spyOn(gsap, 'context').mockReturnValue({
+      revert
+    } as unknown as gsap.Context);
+
     fireEvent.click(next);
     await waitFor(() => {
       expect(experience.dataset.activeChapter).toBe('about');
     });
-    fireEvent.click(next);
-    await waitFor(() => {
-      expect(experience.dataset.activeChapter).toBe('download');
-    });
-
-    const revert = vi.fn(() => {
-      throw new Error('下载 GSAP 最终卸载清理失败');
-    });
-    vi.spyOn(gsap, 'context').mockReturnValue({
-      revert
-    } as unknown as gsap.Context);
-    const sideTriggers = screen
-      .getByTestId('download-chapter')
-      .querySelectorAll<HTMLButtonElement>(':scope > button');
-    fireEvent.click(sideTriggers[0]!);
-    await waitFor(() => {
-      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-        .toBe('faq');
-    });
+    expect(context).toHaveBeenCalledOnce();
 
     unmount();
     gsap.ticker.sleep();
@@ -213,7 +191,7 @@ describe('官网章节降级模式', () => {
     ).toContain('Myself-0.1.0-alpha.1-windows-x64.exe');
 
     expect(() => {
-      fireEvent.click(screen.getByRole('button', { name: '显示常见问题' }));
+      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
     }).not.toThrow();
     await waitFor(() => {
       expect(screen.getByTestId('download-chapter').dataset.visibleSide)
@@ -306,7 +284,7 @@ describe('官网章节降级模式', () => {
     });
 
     expect(() => {
-      fireEvent.click(screen.getByRole('button', { name: '显示常见问题' }));
+      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
     }).not.toThrow();
     await waitFor(() => {
       expect(experience.dataset.staticFallback).toBe('active');
@@ -350,7 +328,7 @@ describe('官网章节降级模式', () => {
       .toBe('download');
     expect(screen.getByRole('link', { name: '下载 Windows' })).toBeTruthy();
     expect(() => {
-      fireEvent.click(screen.getByRole('button', { name: '显示安装前须知' }));
+      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示安装前须知' }));
     }).not.toThrow();
     await waitFor(() => {
       expect(screen.getByTestId('download-chapter').dataset.visibleSide)

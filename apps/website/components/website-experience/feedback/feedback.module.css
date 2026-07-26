@@ -1,0 +1,594 @@
+.feedbackChapter {
+  position: relative;
+  z-index: 60;
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: minmax(120px, 0.72fr) minmax(360px, 1.45fr) minmax(48px, 0.38fr);
+  align-items: center;
+  overflow: hidden;
+  padding: 24px;
+  color: rgb(28, 28, 28);
+}
+
+.feedbackTitle {
+  position: relative;
+  z-index: 60;
+  align-self: end;
+  justify-self: center;
+  max-width: 980px;
+  margin: 0;
+  color: rgb(76, 76, 76);
+  font-size: 52px;
+  font-weight: 650;
+  line-height: 1.16;
+  letter-spacing: 0;
+  text-align: center;
+  text-wrap: balance;
+}
+
+/* 滚筒只消费反馈章节内部输入。 */
+.feedbackRoller {
+  position: relative;
+  z-index: 60;
+  align-self: center;
+  justify-self: center;
+  width: min(560px, calc(100% - 48px));
+  height: 360px;
+  outline: none;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.feedbackRoller:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 8px;
+}
+
+.feedbackDeck {
+  position: absolute;
+  inset: 0;
+}
+
+.feedbackCard {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 184px;
+  min-height: 44px;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  padding: 24px;
+  overflow: hidden;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgba(241, 241, 241, 0.94);
+  box-shadow: 0 20px 52px rgba(28, 28, 28, 0.14);
+  color: rgb(28, 28, 28);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  opacity: var(--feedback-opacity);
+  transform: translate3d(0, calc(-50% + var(--feedback-translate-y)), 0) scale(var(--feedback-scale));
+  transform-origin: center;
+  transition: box-shadow 220ms ease, opacity 260ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.feedbackCard[data-active='true'] {
+  background: rgb(255, 255, 255);
+  box-shadow: 0 30px 76px rgba(28, 28, 28, 0.22);
+}
+
+.feedbackCard:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: -6px;
+}
+
+.feedbackActionName {
+  font-size: 40px;
+  font-weight: 720;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.feedbackActionMeta {
+  color: rgb(92, 92, 92);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+.createNotice {
+  position: relative;
+  z-index: 60;
+  align-self: start;
+  justify-self: center;
+  margin: 0;
+  color: rgb(76, 76, 76);
+  font-size: 14px;
+}
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+  overflow: hidden;
+  background: rgba(24, 24, 24, 0.48);
+  -webkit-backdrop-filter: blur(14px) brightness(0.74);
+  backdrop-filter: blur(14px) brightness(0.74);
+}
+
+.composerBackdrop,
+.discardBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1010;
+  display: grid;
+  place-items: center;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  overflow: auto;
+  background: rgb(12 12 12 / 0.42);
+  backdrop-filter: blur(22px) brightness(0.64);
+}
+
+.discardBackdrop {
+  z-index: 1020;
+  background: rgb(12 12 12 / 0.5);
+  backdrop-filter: blur(26px) brightness(0.56);
+}
+
+.composerPanel,
+.discardPanel {
+  width: min(640px, 100%);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  border: 1px solid #1c1c1c;
+  border-radius: 8px;
+  background: #f7f7f5;
+  color: #1c1c1c;
+  box-shadow: 0 20px 70px rgb(0 0 0 / 0.26);
+}
+
+.composerPanel {
+  display: grid;
+  gap: 24px;
+  padding: 22px;
+}
+
+.composerHeader,
+.composerContentLabel,
+.composerFooter,
+.discardActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.composerHeader h3,
+.discardPanel h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.composerFields {
+  display: grid;
+  gap: 18px;
+}
+
+.composerField,
+.composerKindField {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.composerField label,
+.composerKindField legend {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.composerContentLabel span {
+  font-size: 13px;
+  color: #555;
+}
+
+.composerField input,
+.composerField textarea {
+  width: 100%;
+  border: 1px solid #1c1c1c;
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: #fff;
+  color: #1c1c1c;
+  font: inherit;
+  letter-spacing: 0;
+}
+
+.composerField textarea {
+  min-height: 168px;
+  resize: vertical;
+}
+
+.composerSegmentedControl {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid #1c1c1c;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.composerSegmentedControl button,
+.composerFooter button,
+.discardActions button,
+.dialogCloseButton {
+  min-height: 44px;
+  border: 1px solid #1c1c1c;
+  border-radius: 4px;
+  background: #f7f7f5;
+  color: #1c1c1c;
+  font: inherit;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.composerSegmentedControl button {
+  min-width: 112px;
+  border-width: 0 1px 0 0;
+  padding: 0 14px;
+}
+
+.composerSegmentedControl button:last-child {
+  border-right-width: 0;
+}
+
+.composerSegmentedControl button[aria-checked='true'],
+.composerFooter button:last-child,
+.discardActions button:last-child {
+  background: #1c1c1c;
+  color: #fff;
+}
+
+.composerFooter {
+  justify-content: flex-end;
+}
+
+.composerFooter button,
+.discardActions button {
+  padding: 0 16px;
+}
+
+.dialogCloseButton {
+  display: inline-grid;
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
+  place-items: center;
+}
+
+.dialogCloseButton svg {
+  width: 18px;
+  height: 18px;
+}
+
+.composerPanel button:focus-visible,
+.discardPanel button:focus-visible,
+.composerPanel input:focus-visible,
+.composerPanel textarea:focus-visible {
+  outline: 3px solid #1c1c1c;
+  outline-offset: 2px;
+}
+
+.composerPanel button:disabled,
+.composerPanel input:disabled,
+.composerPanel textarea:disabled {
+  cursor: wait;
+  opacity: 0.56;
+}
+
+.composerError {
+  margin: 0;
+  color: #a60000;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.discardPanel {
+  display: grid;
+  gap: 24px;
+  padding: 24px;
+}
+
+.dialogPanel {
+  width: min(980px, 100%);
+  max-height: min(760px, calc(100dvh - 40px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  border-radius: 8px;
+  background: rgba(248, 248, 248, 0.96);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.28);
+  color: rgb(28, 28, 28);
+}
+
+.dialogHeader {
+  min-height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 22px;
+  border-bottom: 1px solid rgb(208, 208, 208);
+}
+
+.dialogHeader h3,
+.dialogEyebrow {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.dialogHeader h3 {
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.dialogEyebrow {
+  margin-bottom: 5px;
+  color: rgb(100, 100, 100);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dialogClose,
+.likeButton {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(174, 174, 174);
+  border-radius: 6px;
+  background: rgb(255, 255, 255);
+  color: rgb(28, 28, 28);
+  cursor: pointer;
+}
+
+.dialogClose svg,
+.likeButton svg {
+  width: 20px;
+  height: 20px;
+}
+
+.dialogClose:focus-visible,
+.likeButton:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 2px;
+}
+
+.statusNotice {
+  margin: 0;
+  padding: 9px 22px;
+  border-bottom: 1px solid rgb(220, 220, 220);
+  background: rgb(236, 243, 255);
+  color: rgb(48, 64, 88);
+  font-size: 13px;
+}
+
+.feedbackList {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px 22px 24px;
+}
+
+.feedbackRow {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.24fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 22px;
+  min-height: 110px;
+  padding: 18px 8px;
+  border-bottom: 1px solid rgb(196, 196, 196);
+}
+
+.feedbackRow[data-row-side='right'] {
+  margin-left: 44px;
+}
+
+.feedbackRow[data-row-side='left'] {
+  margin-right: 44px;
+}
+
+.feedbackMeta {
+  display: grid;
+  gap: 7px;
+}
+
+.feedbackMeta strong,
+.feedbackMeta time {
+  overflow-wrap: anywhere;
+}
+
+.feedbackMeta strong {
+  font-size: 15px;
+}
+
+.feedbackMeta time {
+  color: rgb(104, 104, 104);
+  font-size: 12px;
+}
+
+.feedbackContent {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.likeButton {
+  gap: 7px;
+  min-width: 72px;
+  padding: 8px 12px;
+  font: inherit;
+}
+
+.likeButton[aria-pressed='true'] {
+  border-color: rgb(0, 96, 255);
+  background: rgb(230, 239, 255);
+  color: rgb(0, 76, 204);
+}
+
+@media (max-width: 760px) {
+  .feedbackChapter {
+    grid-template-rows: minmax(92px, 0.62fr) minmax(300px, 1.55fr) minmax(44px, 0.35fr);
+    padding: 16px 72px 16px 16px;
+  }
+
+  .feedbackTitle {
+    max-width: 620px;
+    font-size: 34px;
+  }
+
+  .feedbackRoller {
+    width: min(440px, 100%);
+    height: 310px;
+  }
+
+  .feedbackCard {
+    height: 150px;
+    padding: 18px;
+  }
+
+  .feedbackActionName {
+    font-size: 30px;
+  }
+
+  .dialogBackdrop {
+    padding: 12px 64px 12px 12px;
+  }
+
+  .dialogPanel {
+    max-height: calc(100dvh - 24px);
+  }
+
+  .feedbackList {
+    padding: 6px 14px 18px;
+  }
+
+  .feedbackRow,
+  .feedbackRow[data-row-side='left'],
+  .feedbackRow[data-row-side='right'] {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 14px;
+    margin: 0;
+    padding: 15px 2px;
+  }
+
+  .feedbackMeta {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .feedbackContent {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    font-size: 15px;
+  }
+
+  .likeButton {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}
+
+@media (max-height: 520px) {
+  .composerPanel {
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .composerFields {
+    gap: 12px;
+  }
+
+  .composerField,
+  .composerKindField {
+    gap: 6px;
+  }
+
+  .composerField textarea {
+    min-height: 120px;
+  }
+
+  .composerSegmentedControl {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .composerSegmentedControl button {
+    min-width: 0;
+    flex: 1 1 0;
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .feedbackChapter {
+    grid-template-rows: 72px minmax(220px, 1fr) 32px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .feedbackTitle {
+    font-size: 26px;
+  }
+
+  .feedbackRoller {
+    height: 220px;
+  }
+
+  .feedbackCard {
+    height: 112px;
+  }
+
+  .feedbackActionName {
+    font-size: 25px;
+  }
+
+  .feedbackActionMeta {
+    display: none;
+  }
+
+  .dialogHeader {
+    min-height: 60px;
+    padding: 8px 16px;
+  }
+
+  .dialogHeader h3 {
+    font-size: 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feedbackCard {
+    transition: none;
+  }
+}
+
+.feedbackChapter[data-motion-disabled='true'] .feedbackCard {
+  transition: none;
+}

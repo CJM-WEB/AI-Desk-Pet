@@ -9,7 +9,10 @@ import {
   waitFor
 } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useWebsiteController } from '../components/website-experience/use-website-controller';
+import {
+  useWebsiteController,
+  WHEEL_SNAP_DEBOUNCE_MS
+} from '../components/website-experience/use-website-controller';
 
 function createMediaQueryList(matches = false): MediaQueryList {
   return {
@@ -83,10 +86,10 @@ describe('官网章节控制器', () => {
     fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
     fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
 
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 4; index += 1) {
       fireEvent.wheel(window, { deltaY: 120 });
       act(() => {
-        vi.advanceTimersByTime(90);
+        vi.advanceTimersByTime(70);
       });
     }
 
@@ -94,7 +97,7 @@ describe('官网章节控制器', () => {
     expect(Number(state.dataset.progress)).toBeGreaterThan(0.5);
 
     act(() => {
-      vi.advanceTimersByTime(200);
+      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
     });
 
     expect(state.dataset.index).toBe('1');
@@ -109,9 +112,9 @@ describe('官网章节控制器', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
     fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
-    fireEvent.wheel(window, { deltaY: 120 });
+    fireEvent.wheel(window, { deltaY: 24 });
     act(() => {
-      vi.advanceTimersByTime(200);
+      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
     });
 
     expect(state.dataset.index).toBe('0');
@@ -124,7 +127,7 @@ describe('官网章节控制器', () => {
       });
     }
     act(() => {
-      vi.advanceTimersByTime(200);
+      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
     });
 
     expect(state.dataset.index).toBe('1');

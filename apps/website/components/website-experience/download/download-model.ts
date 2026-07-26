@@ -9,72 +9,73 @@ type PreviewHolds = Record<
   Record<PreviewHoldSource, boolean>
 >;
 
-type PreviewSuppressions = Record<VisibleDownloadSide, boolean>;
+export type DownloadSideMode =
+  | { kind: 'desktop-preview'; side: DownloadSide }
+  | { kind: 'mobile-open'; side: DownloadSide };
 
 export type DownloadInteractionState = {
   activePlatformIndex: number;
-  previewHolds: PreviewHolds;
-  previewOrder: VisibleDownloadSide[];
-  suppressedPreviews: PreviewSuppressions;
-  lockedSide: VisibleDownloadSide | null;
+  desktopPreviewHolds: PreviewHolds;
+  desktopPreviewOrder: VisibleDownloadSide[];
+  mobileOpenSide: DownloadSide;
 };
 
 export type DownloadInteractionEvent =
   | { type: 'SELECT_PLATFORM'; index: number }
   | {
-      type: 'SET_PREVIEW_HOLD';
+      type: 'SET_DESKTOP_PREVIEW_HOLD';
       side: VisibleDownloadSide;
       source: PreviewHoldSource;
       held: boolean;
     }
-  | { type: 'TOGGLE_LOCK'; side: VisibleDownloadSide }
+  | { type: 'OPEN_MOBILE_SIDE'; side: VisibleDownloadSide }
+  | { type: 'CLOSE_MOBILE_SIDE' }
   | { type: 'RESET' };
 
-// 初始状态不持有任何临时或锁定面板。
 export const initialDownloadInteraction: DownloadInteractionState = {
   activePlatformIndex: 0,
-  previewHolds: {
+  desktopPreviewHolds: {
     faq: { pointer: false, focus: false },
     notice: { pointer: false, focus: false }
   },
-  previewOrder: [],
-  suppressedPreviews: {
-    faq: false,
-    notice: false
-  },
-  lockedSide: null
+  desktopPreviewOrder: [],
+  mobileOpenSide: null
 };
 
-// 使用数学取模处理前后边界，使平台数量不被状态模型写死。
+// 使用数学取模处理前后边界，使平台数量增加后仍保持连续堆叠。
 export function rotatePlatformIndex(index: number, delta: number, length: number): number {
   if (length <= 0) return 0;
   return ((index + delta) % length + length) % length;
 }
 
-function isSideHeld(
+function isDesktopSideHeld(
   holds: PreviewHolds,
   side: VisibleDownloadSide
 ): boolean {
   return holds[side].pointer || holds[side].focus;
 }
 
-export function visibleDownloadSide(state: DownloadInteractionState): DownloadSide {
-  if (state.lockedSide) return state.lockedSide;
-
-  for (let index = state.previewOrder.length - 1; index >= 0; index -= 1) {
-    const side = state.previewOrder[index]!;
-    if (
-      isSideHeld(state.previewHolds, side)
-      && !state.suppressedPreviews[side]
-    ) {
-      return side;
-    }
+function resolveDesktopPreviewSide(
+  state: DownloadInteractionState
+): DownloadSide {
+  for (let index = state.desktopPreviewOrder.length - 1; index >= 0; index -= 1) {
+    const side = state.desktopPreviewOrder[index]!;
+    if (isDesktopSideHeld(state.desktopPreviewHolds, side)) return side;
   }
 
   return null;
 }
 
-// hold、锁定和显式关闭抑制统一归约，组件只负责上报输入来源。
+// 通过单一派生模式隔离桌面临时预览与移动端轻触打开，禁止桌面锁定状态回流。
+export function resolveDownloadSideMode(
+  state: DownloadInteractionState,
+  isMobile: boolean
+): DownloadSideMode {
+  return isMobile
+    ? { kind: 'mobile-open', side: state.mobileOpenSide }
+    : { kind: 'desktop-preview', side: resolveDesktopPreviewSide(state) };
+}
+
 export function reduceDownloadInteraction(
   state: DownloadInteractionState,
   event: DownloadInteractionEvent
@@ -83,58 +84,45 @@ export function reduceDownloadInteraction(
     case 'SELECT_PLATFORM':
       return { ...state, activePlatformIndex: event.index };
 
-    case 'SET_PREVIEW_HOLD': {
-      if (state.previewHolds[event.side][event.source] === event.held) {
+    case 'SET_DESKTOP_PREVIEW_HOLD': {
+      if (
+        state.desktopPreviewHolds[event.side][event.source] === event.held
+      ) {
         return state;
       }
 
       const sideHolds = {
-        ...state.previewHolds[event.side],
+        ...state.desktopPreviewHolds[event.side],
         [event.source]: event.held
       };
-      const previewHolds = {
-        ...state.previewHolds,
+      const desktopPreviewHolds = {
+        ...state.desktopPreviewHolds,
         [event.side]: sideHolds
       };
       const sideStillHeld = sideHolds.pointer || sideHolds.focus;
-      const previewOrder = event.held
+      const desktopPreviewOrder = event.held
         ? [
-            ...state.previewOrder.filter((side) => side !== event.side),
+            ...state.desktopPreviewOrder.filter((side) => side !== event.side),
             event.side
           ]
         : sideStillHeld
-          ? state.previewOrder
-          : state.previewOrder.filter((side) => side !== event.side);
-      const suppressedPreviews = !sideStillHeld
-        && state.suppressedPreviews[event.side]
-        ? {
-            ...state.suppressedPreviews,
-            [event.side]: false
-          }
-        : state.suppressedPreviews;
+          ? state.desktopPreviewOrder
+          : state.desktopPreviewOrder.filter((side) => side !== event.side);
 
       return {
         ...state,
-        previewHolds,
-        previewOrder,
-        suppressedPreviews
+        desktopPreviewHolds,
+        desktopPreviewOrder
       };
     }
 
-    case 'TOGGLE_LOCK': {
-      const unlocking = state.lockedSide === event.side;
-      const shouldSuppress = unlocking
-        && isSideHeld(state.previewHolds, event.side);
+    case 'OPEN_MOBILE_SIDE':
+      return { ...state, mobileOpenSide: event.side };
 
-      return {
-        ...state,
-        lockedSide: unlocking ? null : event.side,
-        suppressedPreviews: {
-          ...state.suppressedPreviews,
-          [event.side]: shouldSuppress
-        }
-      };
-    }
+    case 'CLOSE_MOBILE_SIDE':
+      return state.mobileOpenSide === null
+        ? state
+        : { ...state, mobileOpenSide: null };
 
     case 'RESET':
       return initialDownloadInteraction;

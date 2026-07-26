@@ -7,11 +7,16 @@ import {
 } from '../components/website-experience/donation/payment-model';
 
 describe('支付方式滚筒', () => {
-  it('配置微信和支付宝且路径可替换', () => {
-    expect(PAYMENT_METHODS.map((item) => item.id)).toEqual(['wechat', 'alipay']);
+  it('配置微信、支付宝和 PayPal 且路径可替换', () => {
+    expect(PAYMENT_METHODS.map((item) => item.id)).toEqual([
+      'wechat',
+      'alipay',
+      'paypal'
+    ]);
     expect(PAYMENT_METHODS.map((item) => item.qrImagePath)).toEqual([
       '/WechatPay.jpg',
-      '/Alipay.jpg'
+      '/Alipay.jpg',
+      '/Paypal.jpg'
     ]);
   });
 

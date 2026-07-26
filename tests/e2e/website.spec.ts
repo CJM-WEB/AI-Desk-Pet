@@ -796,19 +796,258 @@ test('五章节按确认顺序注册且两个占位章节具有明确状态', as
 
   await expect(
     page.locator('[data-chapter-id="about"]').getByRole('heading', {
-      name: 'AI Pet 介绍',
+      name: 'AI Pet',
       exact: true
     })
   ).toBeAttached();
   await expect(
     page.locator('[data-chapter-id="feedback"] h2')
-  ).toHaveText('用户反馈与建议箱');
-  await expect(
-    page.locator('[data-chapter-id="about"]').getByText('内容准备中')
-  ).toBeAttached();
-  await expect(
-    page.locator('[data-chapter-id="feedback"]').getByText('内容准备中')
-  ).toBeAttached();
+  ).toHaveText('倾听你的声音，打造属于你的 Pet');
+  await expect(page.locator('[data-testid="about-chapter"]')).toBeAttached();
+  await expect(page.locator('[data-testid="feedback-chapter"]')).toBeAttached();
+});
+
+test('介绍章节桌面悬停与键盘预览不被鼠标点击锁定', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  await enterChapter(page, 'about');
+
+  const about = page.locator('[data-testid="about-chapter"]');
+  const security = page.locator('[data-about-feature="security"]');
+  const safeZone = page.locator('[data-about-safe-zone]');
+  const title = page.locator('[data-about-title] [data-testid="pointer-tilt-text"]');
+
+  await expect(about.locator('[data-about-feature]')).toHaveCount(5);
+  await security.hover();
+  await expect(about).toHaveAttribute('data-active-feature', 'security');
+  await expect(page.getByRole('tooltip')).toBeVisible();
+
+  await security.click();
+  const safeBounds = await safeZone.boundingBox();
+  expect(safeBounds).not.toBeNull();
+  await page.mouse.move(
+    safeBounds!.x + safeBounds!.width / 2,
+    safeBounds!.y + safeBounds!.height / 2
+  );
+  await expect(about).toHaveAttribute('data-active-feature', 'none');
+
+  const initialTilt = await title.evaluate((element) => (
+    getComputedStyle(element).getPropertyValue('--pointer-tilt-rotate-y')
+  ));
+  await page.mouse.move(safeBounds!.x + safeBounds!.width * 0.78, safeBounds!.y + 20);
+  await expect.poll(() => title.evaluate((element) => (
+    getComputedStyle(element).getPropertyValue('--pointer-tilt-rotate-y')
+  ))).not.toBe(initialTilt);
+
+  await security.focus();
+  await expect(about).toHaveAttribute('data-active-feature', 'security');
+  await expect(security).toHaveAttribute(
+    'aria-describedby',
+    'about-feature-preview-security'
+  );
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('568x320 介绍章节紧凑布局可读且移动空白点击解除锁定', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 568, height: 320 });
+  await enterInteractive(page);
+  await enterChapter(page, 'about');
+
+  const about = page.locator('[data-testid="about-chapter"]');
+  const panels = about.locator('[data-about-feature]');
+  await expect(about).toHaveAttribute('data-layout', 'compact-landscape');
+  await expect(about).toHaveAttribute('data-entrance-state', 'visible');
+  await expect(panels).toHaveCount(5);
+  expect(await panels.evaluateAll((nodes) => nodes.every((node) => {
+    const element = node as HTMLElement;
+    const bounds = element.getBoundingClientRect();
+    return bounds.left >= 0
+      && bounds.top >= 0
+      && bounds.right <= window.innerWidth
+      && bounds.bottom <= window.innerHeight
+      && element.scrollWidth <= element.clientWidth + 1
+      && element.scrollHeight <= element.clientHeight + 1;
+  }))).toBe(true);
+
+  await page.locator('[data-about-feature="text-editor"]').click();
+  await expect(about).toHaveAttribute('data-active-feature', 'text-editor');
+  await page.locator('[data-about-safe-zone]').click();
+  await expect(about).toHaveAttribute('data-active-feature', 'none');
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('反馈章节展示排序列表并支持点赞、取消与建议滚筒', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  await enterChapter(page, 'feedback');
+
+  const roller = page.getByRole('group', { name: '选择反馈操作' });
+  await expect(roller).toHaveAttribute('data-active-action', 'feedback');
+  await page.getByRole('button', { name: '查看用户反馈' }).click();
+
+  const feedbackDialog = page.getByRole('dialog', { name: '用户反馈' });
+  await expect(feedbackDialog).toBeVisible();
+  const rows = feedbackDialog.locator('[data-testid="feedback-row"]');
+  await expect(rows).toHaveCount(6);
+  await expect(rows.first()).toContainText('林间用户');
+
+  const like = feedbackDialog.getByRole('button', {
+    name: '点赞林间用户的反馈'
+  });
+  await expect(like).toHaveAttribute('aria-pressed', 'false');
+  await expect(like).toContainText('28');
+  await like.click();
+  await expect(like).toHaveAttribute('aria-pressed', 'true');
+  await expect(like).toContainText('29');
+  await like.click();
+  await expect(like).toHaveAttribute('aria-pressed', 'false');
+  await expect(like).toContainText('28');
+
+  await page.getByRole('button', { name: '关闭用户反馈' }).click();
+  await expect(feedbackDialog).toHaveCount(0);
+  await roller.hover();
+  await page.mouse.wheel(0, 160);
+  await expect(roller).toHaveAttribute('data-active-action', 'suggestion');
+  await page.getByRole('button', { name: '查看更新建议' }).click();
+  const suggestionDialog = page.getByRole('dialog', { name: '更新建议' });
+  await expect(suggestionDialog).toBeVisible();
+  await expect(suggestionDialog.locator('[data-testid="feedback-row"]').first())
+    .toContainText('柏舟');
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('反馈投稿可持久化，放弃草稿需确认并恢复入口焦点', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.goto('/?seed=42');
+  await page.evaluate(() => window.localStorage.clear());
+  await page.reload();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  await enterChapter(page, 'feedback');
+
+  const roller = page.getByRole('group', { name: '选择反馈操作' });
+  await page.getByRole('button', { name: '选择新建投稿' }).click();
+  const create = page.getByRole('button', { name: '新建投稿' });
+  await create.click();
+  await page.getByLabel('昵称（可选）').fill('持久化用户');
+  await page.getByLabel('正文').fill('这是一条需要在刷新后继续显示的投稿内容。');
+  await page.getByRole('button', { name: '发布投稿' }).click();
+  const feedbackDialog = page.getByRole('dialog', { name: '用户反馈' });
+  await expect(feedbackDialog).toContainText('持久化用户');
+
+  await page.reload();
+  await enterInteractive(page);
+  await enterChapter(page, 'feedback');
+  await page.getByRole('button', { name: '查看用户反馈' }).click();
+  await expect(page.getByRole('dialog', { name: '用户反馈' })).toContainText('持久化用户');
+  await page.getByRole('button', { name: '关闭用户反馈' }).click();
+
+  await roller.hover();
+  await page.mouse.wheel(0, 160);
+  await expect(roller).toHaveAttribute('data-active-action', 'suggestion');
+  await page.getByRole('button', { name: '选择新建投稿' }).click();
+  await expect(roller).toHaveAttribute('data-active-action', 'create');
+  await create.click();
+  await page.getByLabel('正文').fill('这是一条应该由放弃确认保护的草稿内容。');
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  const discardDialog = page.getByRole('dialog', { name: '放弃未发布内容？' });
+  await expect(discardDialog).toBeVisible();
+  await page.getByTestId('discard-draft-backdrop').click({ position: { x: 4, y: 4 } });
+  await expect(discardDialog).toBeVisible();
+  await page.getByRole('button', { name: '继续编辑' }).click();
+  await expect(page.getByRole('dialog', { name: '新建投稿' })).toBeVisible();
+  await expect(page.getByLabel('正文')).toHaveValue(
+    '这是一条应该由放弃确认保护的草稿内容。'
+  );
+  await expect(page.getByLabel('正文')).toBeFocused();
+  await page.getByRole('button', { name: '取消投稿' }).click();
+  await expect(discardDialog).toBeVisible();
+  await page.getByRole('button', { name: '确认放弃' }).click();
+  await expect(discardDialog).toHaveCount(0);
+  await expect(create).toBeFocused();
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('568x320 投稿编辑器可滚动到底部且所有操作按钮满足触控尺寸', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 568, height: 320 });
+  await enterInteractive(page);
+  await enterChapter(page, 'feedback');
+
+  await page.getByRole('button', { name: '选择新建投稿' }).click();
+  await page.getByRole('button', { name: '新建投稿' }).click();
+
+  const composer = page.getByRole('dialog', { name: '新建投稿' });
+  const composerPanel = page.getByTestId('feedback-composer-panel');
+  await expect(composer).toBeVisible();
+  const panelBounds = await composerPanel.boundingBox();
+  expect(panelBounds).not.toBeNull();
+  expect(panelBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(panelBounds!.y).toBeGreaterThanOrEqual(0);
+  expect(panelBounds!.x + panelBounds!.width).toBeLessThanOrEqual(568);
+  expect(panelBounds!.y + panelBounds!.height).toBeLessThanOrEqual(320);
+
+  const overflowState = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+    viewportWidth: window.innerWidth
+  }));
+  expect(overflowState.documentWidth).toBeLessThanOrEqual(overflowState.viewportWidth);
+  expect(overflowState.bodyWidth).toBeLessThanOrEqual(overflowState.viewportWidth);
+
+  const scrollState = await composerPanel.evaluate((panel) => ({
+    clientHeight: panel.clientHeight,
+    scrollHeight: panel.scrollHeight,
+    scrollTop: panel.scrollTop
+  }));
+  expect(scrollState.scrollHeight).toBeGreaterThan(scrollState.clientHeight);
+
+  const composerButtonSizes = await composer.locator('button').evaluateAll((buttons) => (
+    buttons.map((button) => {
+      const bounds = button.getBoundingClientRect();
+      return { width: bounds.width, height: bounds.height };
+    })
+  ));
+  expect(composerButtonSizes.length).toBeGreaterThan(0);
+  for (const size of composerButtonSizes) {
+    expect(size.width).toBeGreaterThanOrEqual(44);
+    expect(size.height).toBeGreaterThanOrEqual(44);
+  }
+
+  await composerPanel.hover();
+  await page.mouse.wheel(0, 900);
+  await expect.poll(() => composerPanel.evaluate((panel) => panel.scrollTop))
+    .toBeGreaterThan(0);
+  const publish = composer.getByRole('button', { name: '发布投稿' });
+  await publish.scrollIntoViewIfNeeded();
+  const publishBounds = await publish.boundingBox();
+  expect(publishBounds).not.toBeNull();
+  expect(publishBounds!.y + publishBounds!.height).toBeLessThanOrEqual(320);
+
+  await composer.getByLabel('正文').fill('这是一条用于验证短屏滚动的投稿内容。');
+  await composer.getByRole('button', { name: '取消', exact: true }).click();
+  const discardDialog = page.getByRole('dialog', { name: '放弃未发布内容？' });
+  await expect(discardDialog).toBeVisible();
+  const discardPanel = page.getByTestId('discard-draft-backdrop').locator('[role="dialog"]');
+  const discardButtonSizes = await discardDialog.locator('button').evaluateAll((buttons) => (
+    buttons.map((button) => {
+      const bounds = button.getBoundingClientRect();
+      return { width: bounds.width, height: bounds.height };
+    })
+  ));
+  expect(discardButtonSizes).toHaveLength(2);
+  for (const size of discardButtonSizes) {
+    expect(size.width).toBeGreaterThanOrEqual(44);
+    expect(size.height).toBeGreaterThanOrEqual(44);
+  }
+  const discardBounds = await discardPanel.boundingBox();
+  expect(discardBounds).not.toBeNull();
+  expect(discardBounds!.y).toBeGreaterThanOrEqual(0);
+  expect(discardBounds!.y + discardBounds!.height).toBeLessThanOrEqual(320);
+  expect(runtimeErrors).toEqual([]);
 });
 
 test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) => {
@@ -816,7 +1055,7 @@ test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) 
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
 
-  await page.mouse.wheel(0, 700);
+  await page.mouse.wheel(0, 360);
   await expect.poll(async () => page.locator(WEBSITE).evaluate((experience) => {
     const home = experience.querySelector<HTMLElement>(
       '[data-chapter-id="home"]'
@@ -872,10 +1111,11 @@ test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) 
 test('普通鼠标滚轮按真实刻度突发累积并在结束后进入介绍章', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
+  await page.mouse.move(720, 450);
 
-  for (let index = 0; index < 8; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     await page.mouse.wheel(0, 120);
-    await page.waitForTimeout(90);
+    await page.waitForTimeout(70);
   }
 
   await expect(page.locator(WEBSITE)).toHaveAttribute(
@@ -1059,7 +1299,7 @@ test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节',
   expect(runtimeErrors).toEqual([]);
 });
 
-test('下载侧栏支持临时预览、顺序锁定切换、复位和真实 Windows 链接', async ({
+test('下载侧栏仅在桌面悬停或焦点期间展开，并保留真实 Windows 链接', async ({
   page
 }) => {
   const runtimeErrors = collectRuntimeErrors(page);
@@ -1069,26 +1309,13 @@ test('下载侧栏支持临时预览、顺序锁定切换、复位和真实 Wind
 
   const download = page.locator('[data-testid="download-chapter"]');
   const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
-  const noticeTrigger = page.getByRole('button', { name: '显示安装前须知' });
   const faqPanel = page.getByRole('complementary', { name: '常见问题' });
-  const noticePanel = page.getByRole('complementary', { name: '安装前须知' });
-  const activeCard = page.locator(
-    '[data-platform-id="windows-x64"][data-active="true"]'
-  );
-  const backgroundImage = await download.evaluate(
-    (element) => getComputedStyle(element).backgroundImage
-  );
-  expect(backgroundImage).toContain('rgb(0, 255, 200)');
-  expect(backgroundImage).toContain('rgb(235, 235, 235)');
-  for (const trigger of [faqTrigger, noticeTrigger]) {
-    const bounds = await trigger.boundingBox();
-    expect(bounds).not.toBeNull();
-    expect(bounds!.width).toBeGreaterThanOrEqual(44);
-    expect(bounds!.height).toBeGreaterThanOrEqual(44);
-    expect(await trigger.locator('svg').evaluate(
-      (icon) => getComputedStyle(icon).animationName
-    )).not.toBe('none');
-  }
+  const windowsLink = page.getByRole('link', { name: '下载 Windows' });
+
+  expect(await download.evaluate((element) => getComputedStyle(element).backgroundImage))
+    .toBe('none');
+  await expect(faqTrigger).not.toHaveAttribute('aria-pressed');
+  await expect(faqTrigger.locator('svg')).toHaveCount(0);
 
   await faqTrigger.hover();
   await expect(download).toHaveAttribute('data-visible-side', 'faq');
@@ -1098,65 +1325,15 @@ test('下载侧栏支持临时预览、顺序锁定切换、复位和真实 Wind
 
   await faqTrigger.focus();
   await expect(download).toHaveAttribute('data-visible-side', 'faq');
-  await faqTrigger.blur();
-  await expect(download).toHaveAttribute('data-visible-side', 'none');
-
   await faqTrigger.click();
+  await faqTrigger.blur();
   await page.mouse.move(720, 450);
-  await expect(faqTrigger).toHaveAttribute('aria-pressed', 'true');
-  await expect(faqPanel).toBeVisible();
-  await expect.poll(() => faqPanel.locator('[data-panel-item]').evaluateAll(
-    (items) => items.every(
-      (item) => Number(getComputedStyle(item).opacity) >= 0.99
-    )
-  ), {
-    message: 'FAQ 错峰内容应完成淡入'
-  }).toBe(true);
-  await expectInsideViewport(page, faqPanel);
-  await expectNoOverlap(
-    faqPanel,
-    activeCard,
-    'FAQ 面板不应遮挡当前下载卡片'
-  );
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'download-faq-1440.png')
-  });
-
-  await noticeTrigger.click();
-  await expect(download).toHaveAttribute('data-panel-phase', 'closing');
-  await expect(download).toHaveAttribute('data-visible-side', 'faq');
-  await expect(download).toHaveAttribute('data-pending-side', 'notice');
-  await expect(download).toHaveAttribute('data-panel-phase', 'open');
-  await expect(download).toHaveAttribute('data-visible-side', 'notice');
-  await expect(noticePanel).toBeVisible();
-  await expect.poll(() => noticePanel.locator('[data-panel-item]').evaluateAll(
-    (items) => items.every(
-      (item) => Number(getComputedStyle(item).opacity) >= 0.99
-    )
-  ), {
-    message: '安装须知错峰内容应完成淡入'
-  }).toBe(true);
-  await expectInsideViewport(page, noticePanel);
-  await expectNoOverlap(
-    noticePanel,
-    activeCard,
-    '安装须知面板不应遮挡当前下载卡片'
-  );
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'download-notice-1440.png')
-  });
-
-  await page.keyboard.press('Escape');
   await expect(download).toHaveAttribute('data-visible-side', 'none');
-  const windowsLink = page.getByRole('link', { name: '下载 Windows' });
+
   await expect(windowsLink).toHaveAttribute('href', /\.exe$/u);
-  await expect(windowsLink).toHaveAttribute(
-    'download',
-    /Myself-.*-windows-x64\.exe$/u
-  );
-  await expect(
-    page.locator('[data-platform-id="windows-x64"] code')
-  ).toHaveText(/^[a-f0-9]{64}$/u);
+  await expect(windowsLink).not.toHaveAttribute('download');
+  await expect(page.locator('[data-platform-id="windows-x64"] code'))
+    .toHaveText(/^[a-f0-9]{64}$/u);
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1180,6 +1357,8 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
     { message: '微信付款码应成功解码' }
   ).toBeGreaterThan(0);
   await wechatImage.click();
+  await expect(wechatDialog).toBeVisible();
+  await wechatDialog.click({ position: { x: 8, y: 8 } });
   await expect(wechatDialog).toHaveCount(0);
   await expect(
     page.getByRole('button', { name: '打开微信付款码' })
@@ -1192,7 +1371,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
     'data-active-chapter',
     'donation'
   );
-  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
+  await expect(roller).toHaveAttribute('data-active-payment', 'paypal');
   await expectNoWindowBubble(page, ['wheel'], '支付方式滚轮');
 
   await resetWindowBubbleProbe(page);
@@ -1220,7 +1399,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
     pointerId: 61,
     pointerType: 'touch'
   });
-  await expect(roller).toHaveAttribute('data-active-payment', 'wechat');
+  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'donation'
@@ -1235,7 +1414,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await expect(roller).toBeFocused();
   await resetWindowBubbleProbe(page);
   await page.keyboard.press('ArrowDown');
-  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
+  await expect(roller).toHaveAttribute('data-active-payment', 'paypal');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'donation'
@@ -1243,7 +1422,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await expectNoWindowBubble(page, ['keydown'], '支付方式 ArrowDown');
   await resetWindowBubbleProbe(page);
   await page.keyboard.press('ArrowUp');
-  await expect(roller).toHaveAttribute('data-active-payment', 'wechat');
+  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'donation'
@@ -1263,10 +1442,6 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   );
   await expectNoWindowBubble(page, ['keydown'], '支付方式 Escape');
 
-  const chooseAlipay = page.getByRole('button', {
-    name: '选择支付宝付款方式'
-  });
-  await chooseAlipay.click();
   await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const alipayButton = page.getByRole('button', { name: '打开支付宝付款码' });
@@ -1284,6 +1459,25 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await page.keyboard.press('Escape');
   await expect(alipayDialog).toHaveCount(0);
   await expect(alipayButton).toBeFocused();
+
+  await roller.hover();
+  await page.mouse.wheel(0, 160);
+  await expect(roller).toHaveAttribute('data-active-payment', 'paypal');
+  const paypalButton = page.getByRole('button', { name: '打开PayPal付款码' });
+  await paypalButton.click();
+  const paypalDialog = page.getByRole('dialog', { name: 'PayPal付款码' });
+  const paypalImage = paypalDialog.getByRole('img', { name: 'PayPal付款码' });
+  await expect(paypalImage).toHaveAttribute('src', '/Paypal.jpg');
+  await expect.poll(
+    () => paypalImage.evaluate((image) => (
+      image instanceof HTMLImageElement ? image.naturalWidth : 0
+    )),
+    { message: 'PayPal 付款码应成功解码' }
+  ).toBeGreaterThan(0);
+  await expect(paypalImage).toHaveCSS('object-fit', 'contain');
+  await page.keyboard.press('Escape');
+  await expect(paypalDialog).toHaveCount(0);
+  await expect(paypalButton).toBeFocused();
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1352,38 +1546,18 @@ test('付款码资源加载失败时显示稳定回退并保持关闭行为', as
   expect(runtimeErrors[0]).toContain('Failed to load resource');
 });
 
-test('捐款章节显示黄色 Canvas 光场并保留共享文件预览', async ({ page }) => {
+test('捐款章节不显示黄色 Canvas 光场并保留共享文件预览', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
   await enterChapter(page, 'donation');
 
   const canvas = page.locator(CANVAS);
-  await expect(canvas).toBeVisible();
-  await expect(canvas.locator('..')).toHaveAttribute(
+  await expect(canvas).toHaveCount(0);
+  await expect(page.locator('[data-layer="file"]')).toHaveAttribute(
     'data-profile-id',
     'donation'
   );
-  for (const [x, y] of [
-    [90, 120],
-    [170, 260],
-    [1200, 180],
-    [1320, 680]
-  ] as const) {
-    await page.mouse.move(x, y);
-  }
-
-  await expect.poll(
-    async () => (await readCanvasColorEvidence(canvas)).yellowPixels,
-    { message: '捐款光场应产生黄色通道占优的非空像素' }
-  ).toBeGreaterThan(100);
-  const colorEvidence = await readCanvasColorEvidence(canvas);
-  expect(colorEvidence.alphaPixels).toBeGreaterThan(100);
-  expect(colorEvidence.yellowPixels / colorEvidence.alphaPixels)
-    .toBeGreaterThan(0.9);
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'donation-yellow-field-1440.png')
-  });
 
   const icon = await waitForFile(page);
   await icon.hover();
@@ -1461,11 +1635,11 @@ test('390 首屏 drawing 阶段点击下一章节一次即可进入介绍章', a
   );
   await page.getByRole('button', { name: '下一章节' }).click();
 
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'about'
   );
+  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'exiting');
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1709,15 +1883,13 @@ test('静态回退通过运行时属性关闭章节与付款码动效', async ({
   const download = page.locator('[data-testid="download-chapter"]');
   const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
   await expect(download).toHaveAttribute('data-motion-disabled', 'true');
-  await faqTrigger.click();
+  await faqTrigger.hover();
   await expect(download).toHaveAttribute('data-visible-side', 'faq');
   const downloadMotion = await download.evaluate((root) => {
     const trigger = root.querySelector('button[aria-label="显示常见问题"]');
-    const arrow = trigger?.querySelector('svg');
     const panel = root.querySelector('[data-side-panel="faq"]');
     const card = root.querySelector('[data-platform-id]');
     return {
-      arrowAnimation: arrow ? getComputedStyle(arrow).animationName : null,
       triggerTransition: trigger
         ? getComputedStyle(trigger).transitionDuration
         : null,
@@ -1726,7 +1898,6 @@ test('静态回退通过运行时属性关闭章节与付款码动效', async ({
     };
   });
   expect(downloadMotion).toEqual({
-    arrowAnimation: 'none',
     triggerTransition: '0s',
     panelTransition: '0s',
     cardTransition: '0s'
@@ -2519,7 +2690,12 @@ test('568x320 五章节主内容避让移动导航且保持完整可见', async 
   const navigation = page.getByRole('navigation', { name: '章节导航' });
   const next = page.getByRole('button', { name: '下一章节' });
   const primaryByChapter = new Map([
-    ['home', page.getByRole('heading', { name: 'AI Pet', exact: true }).locator('..')],
+    [
+      'home',
+      page.locator('[data-chapter-id="home"]')
+        .getByRole('heading', { name: 'AI Pet', exact: true })
+        .locator('..')
+    ],
     ['about', page.locator('[data-chapter-id="about"] h2')],
     ['download', page.getByRole('group', { name: '选择下载平台' })],
     ['feedback', page.locator('[data-chapter-id="feedback"] h2')],

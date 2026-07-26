@@ -33,7 +33,7 @@ export interface WebsiteControllerResult {
 }
 
 const SNAP_DURATION_MS = 300;
-const WHEEL_SNAP_DEBOUNCE_MS = 140;
+export const WHEEL_SNAP_DEBOUNCE_MS = 420;
 
 type ChapterTouchGesture = {
   pointerId: number;

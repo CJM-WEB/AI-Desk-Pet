@@ -2,16 +2,13 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { useState } from 'react';
 import {
   cleanup,
   fireEvent,
   render,
-  screen,
-  waitFor
+  screen
 } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { gsap } from 'gsap';
 import { DonationChapter } from '../components/website-experience/donation/DonationChapter';
 import { DownloadChapter } from '../components/website-experience/download/DownloadChapter';
 
@@ -36,81 +33,26 @@ describe('章节静态回退禁用内部动效', () => {
     vi.restoreAllMocks();
   });
 
-  it('GSAP autoAlpha 残留 visibility hidden 后静态回退仍强制显示侧栏文本', async () => {
-    const revert = vi.fn(() => {
-      throw new Error('下载 GSAP 部分清理失败');
-    });
-    const context = { revert } as unknown as gsap.Context;
-    const timeline = {
-      from: vi.fn((selector: string, vars: { autoAlpha?: number }) => {
-        if (vars.autoAlpha === 0) {
-          gsap.set(selector, { autoAlpha: 0 });
-        }
-        return timeline;
-      })
-    };
-    vi.spyOn(gsap, 'timeline').mockReturnValue(
-      timeline as unknown as gsap.core.Timeline
-    );
-    vi.spyOn(gsap, 'context').mockImplementation((callback) => {
-      callback?.(context);
-      return context;
-    });
-
-    function DownloadFallbackHarness({
-      interactive
-    }: {
-      interactive: boolean;
-    }) {
-      const [staticFallback, setStaticFallback] = useState(false);
-
-      return (
-        <DownloadChapter
-          interactive={interactive}
-          staticFallback={staticFallback}
-          onInitializationError={() => setStaticFallback(true)}
-        />
-      );
-    }
-
-    const { rerender } = render(
-      <DownloadFallbackHarness interactive />
-    );
+  it('下载静态回退保留侧栏标题与列表项的可见语义节点', () => {
+    render(<DownloadChapter interactive staticFallback />);
     const root = screen.getByTestId('download-chapter');
-    const faqTrigger = root
-      .querySelectorAll<HTMLButtonElement>(':scope > button')[0]!;
-    fireEvent.click(faqTrigger);
-
     const heading = root.querySelector<HTMLElement>('[data-panel-heading]')!;
     const item = root.querySelector<HTMLElement>('[data-panel-item]')!;
-    await waitFor(() => {
-      expect(heading.style.visibility).toBe('hidden');
-      expect(item.style.visibility).toBe('hidden');
-    });
 
-    rerender(<DownloadFallbackHarness interactive={false} />);
-    await waitFor(() => {
-      expect(root.dataset.staticFallback).toBe('true');
-    });
-
-    expect(revert).toHaveBeenCalledOnce();
     expect(root.dataset.motionDisabled).toBe('true');
+    expect(heading).toBeTruthy();
+    expect(item).toBeTruthy();
     expect(heading.style.visibility).toBe('');
     expect(item.style.visibility).toBe('');
-    expect(getComputedStyle(heading).visibility).toBe('visible');
-    expect(getComputedStyle(item).visibility).toBe('visible');
   });
 
-  it('下载静态回退关闭箭头动画与侧栏卡片过渡且保留下载链接', () => {
+  it('下载静态回退关闭感应区与侧栏卡片过渡且保留下载链接', () => {
     render(<DownloadChapter interactive staticFallback />);
 
     const root = screen.getByTestId('download-chapter');
     expect(root.dataset.motionDisabled).toBe('true');
     expect(downloadCss).toMatch(
-      /\.downloadChapter\[data-motion-disabled='true'\] \.sideTrigger:not\(:disabled\) svg\s*\{[^}]*animation:\s*none;/s
-    );
-    expect(downloadCss).toMatch(
-      /\.downloadChapter\[data-motion-disabled='true'\] \.sideTrigger,\s*\.downloadChapter\[data-motion-disabled='true'\] \.sidePanel,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformStack,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformCard\s*\{[^}]*transition:\s*none;/s
+      /\.downloadChapter\[data-motion-disabled='true'\] \.sideSensor,\s*\.downloadChapter\[data-motion-disabled='true'\] \.sidePanel,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformStack,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformCard\s*\{[^}]*transition:\s*none;/s
     );
     expect(
       screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')
@@ -123,7 +65,7 @@ describe('章节静态回退禁用内部动效', () => {
     const root = screen.getByTestId('donation-chapter');
     expect(root.dataset.motionDisabled).toBe('true');
     expect(donationCss).toMatch(
-      /\.donationChapter\[data-motion-disabled='true'\] \.paymentCard,\s*\.donationChapter\[data-motion-disabled='true'\] \.paymentCard::before\s*\{[^}]*transition:\s*none;/s
+      /\.donationChapter\[data-motion-disabled='true'\] \.paymentCard\s*\{[^}]*transition:\s*none;/s
     );
 
     const payment = screen.getByRole('button', { name: '打开微信付款码' });
@@ -146,10 +88,7 @@ describe('章节静态回退禁用内部动效', () => {
     expect(download.dataset.paused).toBe('true');
     expect(download.dataset.motionDisabled).toBe('true');
     expect(downloadCss).toMatch(
-      /\.downloadChapter\[data-paused='true'\] \.sideTrigger:not\(:disabled\) svg\s*\{[^}]*animation-play-state:\s*paused;/s
-    );
-    expect(downloadCss).toMatch(
-      /\.downloadChapter\[data-paused='true'\] \.sideTrigger,\s*\.downloadChapter\[data-paused='true'\] \.sidePanel,\s*\.downloadChapter\[data-paused='true'\] \.platformStack,\s*\.downloadChapter\[data-paused='true'\] \.platformCard\s*\{[^}]*transition:\s*none;/s
+      /\.downloadChapter\[data-motion-disabled='true'\] \.sideSensor,\s*\.downloadChapter\[data-motion-disabled='true'\] \.sidePanel,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformStack,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformCard\s*\{[^}]*transition:\s*none;/s
     );
 
     rerender(<DonationChapter interactive isPaused />);
@@ -157,31 +96,25 @@ describe('章节静态回退禁用内部动效', () => {
     expect(donation.dataset.paused).toBe('true');
     expect(donation.dataset.motionDisabled).toBe('true');
     expect(donationCss).toMatch(
-      /\.donationChapter\[data-paused='true'\] \.paymentCard,\s*\.donationChapter\[data-paused='true'\] \.paymentCard::before\s*\{[^}]*transition:\s*none;/s
+      /\.donationChapter\[data-paused='true'\] \.paymentCard\s*\{[^}]*transition:\s*none;/s
     );
     expect(donationCss).toMatch(
       /\.qrBackdrop\[data-paused='true'\],\s*\.qrBackdrop\[data-paused='true'\] \.qrPanel\s*\{[^}]*animation-play-state:\s*paused;/s
     );
   });
 
-  it('下载章节暂停时不创建 GSAP 上下文且恢复后重新启用', async () => {
-    const revert = vi.fn();
-    const context = { revert } as unknown as gsap.Context;
-    const contextSpy = vi.spyOn(gsap, 'context').mockReturnValue(context);
+  it('下载章节暂停时关闭标题倾斜且恢复后重新启用', () => {
     const { rerender } = render(
       <DownloadChapter interactive isPaused />
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '显示常见问题' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-        .toBe('faq');
-    });
-    expect(contextSpy).not.toHaveBeenCalled();
+    expect(screen.getAllByTestId('pointer-tilt-text').every(
+      (element) => element.dataset.motionEnabled === 'false'
+    )).toBe(true);
 
     rerender(<DownloadChapter interactive isPaused={false} />);
-    await waitFor(() => {
-      expect(contextSpy).toHaveBeenCalledOnce();
-    });
+    expect(screen.getAllByTestId('pointer-tilt-text').every(
+      (element) => element.dataset.motionEnabled === 'true'
+    )).toBe(true);
   });
 });
