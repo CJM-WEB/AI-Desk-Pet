@@ -542,7 +542,6 @@ export function DownloadChapter({
                         <a
                           className={styles.downloadAction}
                           href={platform.downloadUrl}
-                          download={platform.fileName}
                         >
                           <Download aria-hidden="true" />
                           下载 {platform.name}

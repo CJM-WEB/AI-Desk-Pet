@@ -81,6 +81,7 @@ describe('下载安装章节', () => {
     expect(html).toContain('macOS');
     expect(html).toContain('即将支持');
     expect(html).toContain('.exe');
+    expect(html).not.toContain(' download=');
     expect(html).toContain('常见问题');
     expect(html).toContain('安装前须知');
     expect(html).toContain('data-input-scope="local"');
