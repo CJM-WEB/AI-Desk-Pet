@@ -1,10 +1,14 @@
 import { lstat, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { AgentLoop, type ModelResponse, type ToolDefinition } from '@myself/agent-core';
+import { AgentLoop, type ModelResponse } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
+import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
 import { PendingActionStore } from '../../apps/desktop/src/main/agent/pending-action-store';
+import {
+  createBuiltinFileToolRegistry
+} from '../../apps/desktop/src/main/agent/tool-registry';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import {
   createAuthorizedRoot,
@@ -17,17 +21,12 @@ import {
 } from '../fixtures/provider-server';
 
 const toolNames = [
-  'list_directory',
-  'read_text_file',
-  'create_file',
-  'create_directory',
-  'rename_entry'
+  'builtin.files.list_directory',
+  'builtin.files.read_text',
+  'builtin.files.create_file',
+  'builtin.files.create_directory',
+  'builtin.files.rename_entry'
 ] as const;
-
-const tools: ToolDefinition[] = toolNames.map(name => ({
-  type: 'function',
-  function: { name, description: `${name} 工具`, parameters: { type: 'object' } }
-}));
 
 const roots: AuthorizedRootFixture[] = [];
 const servers: ProviderServerFixture[] = [];
@@ -124,13 +123,19 @@ async function harness(steps: ProviderStep[]) {
     model: 'task-9a-model',
     hasStoredSecret: true
   }, async () => providerServer.apiKey);
+  const registry = createBuiltinFileToolRegistry();
+  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
   const service = new AgentService({
     loop,
     pending,
     createSession: async () => ({
       provider,
       fileTools: authorized.fileTools,
-      tools,
+      tools: registry.definitions(),
+      toolRuntime: {
+        prepare: raw => registry.prepare(raw, permissionPolicy),
+        executeRead: request => authorized.fileTools.executeRead(request)
+      },
       messages: []
     }),
     emit: event => events.push(event),
@@ -149,7 +154,7 @@ describe('桌面 Agent 真实服务集成', () => {
   test('只通过五个允许工具列出授权目录', async () => {
     const fixture = await harness([
       {
-        response: toolCall('list-1', 'list_directory', { relativePath: '.' }),
+        response: toolCall('list-1', 'builtin.files.list_directory', { relativePath: '.' }),
         inspect: request => expect(request.tools.map(tool => tool.function.name)).toEqual(toolNames)
       },
       {
@@ -191,7 +196,13 @@ describe('桌面 Agent 真实服务集成', () => {
   test('读取受限 UTF-8 文本并作为不可信数据交回模型', async () => {
     const content = '你好，任务九。';
     const fixture = await harness([
-      { response: toolCall('read-1', 'read_text_file', { relativePath: 'docs/note.txt' }) },
+      {
+        response: toolCall(
+          'read-1',
+          'builtin.files.read_text',
+          { relativePath: 'docs/note.txt' }
+        )
+      },
       {
         response: { type: 'text', text: '文本已读取' },
         inspect: request => {
@@ -220,7 +231,13 @@ describe('桌面 Agent 真实服务集成', () => {
 
   test('新建预览后取消时文件系统保持不变', async () => {
     const fixture = await harness([
-      { response: toolCall('create-cancel', 'create_file', { relativePath: 'cancelled.txt' }) }
+      {
+        response: toolCall(
+          'create-cancel',
+          'builtin.files.create_file',
+          { relativePath: 'cancelled.txt' }
+        )
+      }
     ]);
     await fixture.service.submit('新建 cancelled.txt');
     const action = pendingAction(fixture.events);
@@ -234,7 +251,13 @@ describe('桌面 Agent 真实服务集成', () => {
 
   test('新建预览后确认会真实创建空文件', async () => {
     const fixture = await harness([
-      { response: toolCall('create-confirm', 'create_file', { relativePath: 'created.txt' }) },
+      {
+        response: toolCall(
+          'create-confirm',
+          'builtin.files.create_file',
+          { relativePath: 'created.txt' }
+        )
+      },
       { response: { type: 'text', text: '空文件已创建' } }
     ]);
     await fixture.service.submit('新建 created.txt');
@@ -251,7 +274,7 @@ describe('桌面 Agent 真实服务集成', () => {
   test('重命名预览后确认会移动源条目且不复制', async () => {
     const fixture = await harness([
       {
-        response: toolCall('rename-confirm', 'rename_entry', {
+        response: toolCall('rename-confirm', 'builtin.files.rename_entry', {
           sourceRelativePath: 'docs/before.txt',
           targetRelativePath: 'docs/after.txt'
         })
@@ -275,7 +298,13 @@ describe('桌面 Agent 真实服务集成', () => {
 
   test('越界路径在预览阶段被拒绝', async () => {
     const fixture = await harness([
-      { response: toolCall('outside-1', 'create_file', { relativePath: '../outside.txt' }) }
+      {
+        response: toolCall(
+          'outside-1',
+          'builtin.files.create_file',
+          { relativePath: '../outside.txt' }
+        )
+      }
     ]);
 
     await expect(fixture.service.submit('新建越界文件')).rejects.toMatchObject({
@@ -288,7 +317,13 @@ describe('桌面 Agent 真实服务集成', () => {
 
   test('重复目标被拒绝且不覆盖原内容', async () => {
     const fixture = await harness([
-      { response: toolCall('duplicate-1', 'create_file', { relativePath: 'existing.txt' }) }
+      {
+        response: toolCall(
+          'duplicate-1',
+          'builtin.files.create_file',
+          { relativePath: 'existing.txt' }
+        )
+      }
     ]);
     const target = join(fixture.authorized.root, 'existing.txt');
     await writeFile(target, '必须保留', 'utf8');
@@ -302,7 +337,13 @@ describe('桌面 Agent 真实服务集成', () => {
 
   test('模拟应用重启后旧待确认动作失效且不会执行', async () => {
     const fixture = await harness([
-      { response: toolCall('restart-1', 'create_file', { relativePath: 'stale.txt' }) }
+      {
+        response: toolCall(
+          'restart-1',
+          'builtin.files.create_file',
+          { relativePath: 'stale.txt' }
+        )
+      }
     ]);
     await fixture.service.submit('新建 stale.txt');
     const staleActionId = pendingAction(fixture.events).actionId;

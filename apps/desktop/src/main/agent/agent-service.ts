@@ -5,7 +5,8 @@ import type {
   ModelMessage,
   ModelProvider,
   RunContext,
-  ToolDefinition
+  ToolDefinition,
+  ToolRuntime
 } from '@myself/agent-core';
 import type { ToolRequest, TaskEvent } from '@myself/shared-types';
 import type { VerifiedWriteAction } from '@myself/file-tools';
@@ -14,7 +15,6 @@ import type {
   PendingActionStore
 } from './pending-action-store';
 
-const WRITE_TOOLS = new Set(['create_file', 'create_directory', 'rename_entry'] as const);
 const MAX_USER_TEXT_LENGTH = 4_000;
 
 export interface AgentFileTools {
@@ -27,6 +27,7 @@ export interface AgentSession {
   provider: ModelProvider;
   fileTools: AgentFileTools;
   tools: ToolDefinition[];
+  toolRuntime: ToolRuntime;
   messages: ModelMessage[];
 }
 
@@ -62,7 +63,8 @@ function publicErrorEvent(error: unknown): Extract<TaskEvent, { type: 'error' }>
     PROVIDER_TIMEOUT: '模型请求超时。',
     SETTINGS_INCOMPLETE: '请先完成模型服务和授权目录设置。',
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
-    INPUT_INVALID: '消息不能为空且不能超过 4000 个字符。'
+    INPUT_INVALID: '消息不能为空且不能超过 4000 个字符。',
+    TOOL_PERMISSION_DENIED: '该工具操作未获本地权限策略允许。'
   };
   return {
     type: 'error',
@@ -248,8 +250,7 @@ export class AgentService {
       messages: session.messages,
       provider: providerWithOneRetry(session.provider),
       tools: session.tools,
-      writeTools: WRITE_TOOLS,
-      executor: session.fileTools,
+      toolRuntime: session.toolRuntime,
       signal
     };
   }
@@ -265,7 +266,7 @@ export class AgentService {
         continue;
       }
       try {
-        const verifiedAction = await session.fileTools.preview(event.request);
+        const verifiedAction = await session.fileTools.preview(event.executionRequest);
         const publicAction = this.pending.issue({
           conversationId: this.createConversationId(),
           risk: 'write',

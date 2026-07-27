@@ -526,7 +526,7 @@ describe('协议请求映射', () => {
             parts: [{
               functionCall: {
                 id: 'call-history',
-                name: 'read_text_file',
+                name: 'builtin.files.read_text',
                 args: { relativePath: 'notes.txt' }
               },
               thoughtSignature: 'private-thought-signature'
@@ -548,7 +548,7 @@ describe('协议请求映射', () => {
       type: 'tool_request',
       request: {
         requestId: 'call-history',
-        toolName: 'read_text_file',
+        toolName: 'builtin.files.read_text',
         arguments: { relativePath: 'notes.txt' }
       }
     });
@@ -581,7 +581,7 @@ describe('协议请求映射', () => {
         parts: [{
           functionCall: {
             id: 'call-history',
-            name: 'read_text_file',
+            name: 'builtin.files.read_text',
             args: { relativePath: 'notes.txt' }
           },
           thoughtSignature: 'private-thought-signature'
@@ -592,7 +592,7 @@ describe('协议请求映射', () => {
         parts: [{
           functionResponse: {
             id: 'call-history',
-            name: 'read_text_file',
+            name: 'builtin.files.read_text',
             response: { content: '示例' }
           }
         }]
@@ -609,7 +609,7 @@ describe('协议请求映射', () => {
         content: {
           parts: [{
             functionCall: {
-              name: 'read_text_file',
+              name: 'builtin.files.read_text',
               args: { relativePath }
             },
             thoughtSignature
@@ -657,8 +657,12 @@ describe('协议请求映射', () => {
       ]
     }, new AbortController().signal);
 
-    expect(firstToolRequest.requestId).toMatch(/^gemini-call-read_text_file-[1-9]\d*$/);
-    expect(secondToolRequest.requestId).toMatch(/^gemini-call-read_text_file-[1-9]\d*$/);
+    expect(firstToolRequest.requestId).toMatch(
+      /^gemini-call-builtin\.files\.read_text-[1-9]\d*$/
+    );
+    expect(secondToolRequest.requestId).toMatch(
+      /^gemini-call-builtin\.files\.read_text-[1-9]\d*$/
+    );
     expect(secondToolRequest.requestId).not.toBe(firstToolRequest.requestId);
     const thirdBody = JSON.parse(String(fetchClient.mock.calls[2]?.[1]?.body));
     expect(thirdBody.contents.slice(-4)).toEqual([
@@ -667,7 +671,7 @@ describe('协议请求映射', () => {
         parts: [{
           functionCall: {
             id: firstToolRequest.requestId,
-            name: 'read_text_file',
+            name: 'builtin.files.read_text',
             args: { relativePath: 'notes-1.txt' }
           },
           thoughtSignature: 'signature-1'
@@ -678,7 +682,7 @@ describe('协议请求映射', () => {
         parts: [{
           functionResponse: {
             id: firstToolRequest.requestId,
-            name: 'read_text_file',
+            name: 'builtin.files.read_text',
             response: { content: '第一份' }
           }
         }]
@@ -688,7 +692,7 @@ describe('协议请求映射', () => {
         parts: [{
           functionCall: {
             id: secondToolRequest.requestId,
-            name: 'read_text_file',
+            name: 'builtin.files.read_text',
             args: { relativePath: 'notes-2.txt' }
           },
           thoughtSignature: 'signature-2'
@@ -699,7 +703,7 @@ describe('协议请求映射', () => {
         parts: [{
           functionResponse: {
             id: secondToolRequest.requestId,
-            name: 'read_text_file',
+            name: 'builtin.files.read_text',
             response: { content: '第二份' }
           }
         }]

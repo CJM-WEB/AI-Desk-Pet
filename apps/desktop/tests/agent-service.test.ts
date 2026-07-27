@@ -3,8 +3,7 @@ import { AgentLoop } from '@myself/agent-core';
 import type {
   ModelProvider,
   ModelRequest,
-  ModelResponse,
-  ToolDefinition
+  ModelResponse
 } from '@myself/agent-core';
 import { FileToolError, type VerifiedWriteAction } from '@myself/file-tools';
 import type { TaskEvent } from '@myself/shared-types';
@@ -13,20 +12,9 @@ import {
   type AgentFileTools,
   type AgentSession
 } from '../src/main/agent/agent-service';
+import { PermissionPolicy } from '../src/main/agent/permission-policy';
 import { PendingActionStore } from '../src/main/agent/pending-action-store';
-
-const toolNames = [
-  'list_directory',
-  'read_text_file',
-  'create_file',
-  'create_directory',
-  'rename_entry'
-] as const;
-
-const tools: ToolDefinition[] = toolNames.map(name => ({
-  type: 'function',
-  function: { name, description: `${name} 工具`, parameters: { type: 'object' } }
-}));
+import { createBuiltinFileToolRegistry } from '../src/main/agent/tool-registry';
 
 class ScriptedProvider implements ModelProvider {
   readonly requests: ModelRequest[] = [];
@@ -42,13 +30,18 @@ class ScriptedProvider implements ModelProvider {
   }
 }
 
-function writeResponse(toolName: 'create_file' | 'create_directory' = 'create_file'): ModelResponse {
+function writeResponse(
+  toolName: 'builtin.files.create_file' | 'builtin.files.create_directory'
+    = 'builtin.files.create_file'
+): ModelResponse {
   return {
     type: 'tool_request',
     request: {
       requestId: 'write-1',
       toolName,
-      arguments: { relativePath: toolName === 'create_file' ? 'result.txt' : 'output' }
+      arguments: {
+        relativePath: toolName === 'builtin.files.create_file' ? 'result.txt' : 'output'
+      }
     }
   };
 }
@@ -70,7 +63,18 @@ function createHarness(provider: ModelProvider, fileOverrides: Partial<AgentFile
     executeWrite: vi.fn(async () => undefined),
     ...fileOverrides
   };
-  const session: AgentSession = { provider, fileTools, tools, messages: [] };
+  const registry = createBuiltinFileToolRegistry();
+  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
+  const session: AgentSession = {
+    provider,
+    fileTools,
+    tools: registry.definitions(),
+    toolRuntime: {
+      prepare: raw => registry.prepare(raw, permissionPolicy),
+      executeRead: request => fileTools.executeRead(request)
+    },
+    messages: []
+  };
   const pending = new PendingActionStore({
     onDiscard: execution => loop.discard(execution.continuationToken)
   });
@@ -95,7 +99,7 @@ describe('AgentService', () => {
         type: 'tool_request',
         request: {
           requestId: 'read-1',
-          toolName: 'list_directory',
+          toolName: 'builtin.files.list_directory',
           arguments: { relativePath: '.' }
         }
       },
@@ -112,7 +116,9 @@ describe('AgentService', () => {
   });
 
   test('写请求只发布公开预览并进入等待确认', async () => {
-    const { events, service } = createHarness(new ScriptedProvider([writeResponse()]));
+    const { events, fileTools, service } = createHarness(
+      new ScriptedProvider([writeResponse()])
+    );
 
     await service.submit('创建 result.txt');
 
@@ -127,7 +133,13 @@ describe('AgentService', () => {
     });
     expect(events.at(-1)).not.toHaveProperty('action.requestId');
     expect(JSON.stringify(events)).not.toContain('continuationToken');
+    expect(JSON.stringify(events)).not.toContain('executionRequest');
     expect(JSON.stringify(events)).not.toContain('verified-1');
+    expect(fileTools.preview).toHaveBeenCalledExactlyOnceWith({
+      requestId: 'write-1',
+      toolName: 'create_file',
+      arguments: { relativePath: 'result.txt' }
+    });
   });
 
   test('确认后只写一次并恢复模型总结', async () => {

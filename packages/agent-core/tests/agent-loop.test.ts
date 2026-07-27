@@ -1,20 +1,23 @@
 import { describe, expect, test, vi } from 'vitest';
+import { toolRequestSchema } from '@myself/shared-types';
 import { AgentLoop } from '../src/agent-loop';
 import type {
   AgentEvent,
   ModelProvider,
   ModelRequest,
   ModelResponse,
+  PreparedToolRequest,
   RunContext,
-  ToolDefinition
+  ToolDefinition,
+  ToolRuntime
 } from '../src/types';
 
 const toolNames = [
-  'list_directory',
-  'read_text_file',
-  'create_file',
-  'create_directory',
-  'rename_entry'
+  'builtin.files.list_directory',
+  'builtin.files.read_text',
+  'builtin.files.create_file',
+  'builtin.files.create_directory',
+  'builtin.files.rename_entry'
 ] as const;
 
 const tools: ToolDefinition[] = toolNames.map(name => ({
@@ -50,9 +53,40 @@ function readRequest(requestId: string): ModelResponse {
     type: 'tool_request',
     request: {
       requestId,
-      toolName: 'read_text_file',
+      toolName: 'builtin.files.read_text',
       arguments: { relativePath: 'notes.txt' }
     }
+  };
+}
+
+function createToolRuntime(): ToolRuntime {
+  const executionNames: Record<string, string> = {
+    'builtin.files.list_directory': 'list_directory',
+    'builtin.files.read_text': 'read_text_file',
+    'builtin.files.create_file': 'create_file',
+    'builtin.files.create_directory': 'create_directory',
+    'builtin.files.rename_entry': 'rename_entry'
+  };
+  const recoverable = new Set([
+    'builtin.files.create_file',
+    'builtin.files.create_directory',
+    'builtin.files.rename_entry'
+  ]);
+  return {
+    prepare(raw): PreparedToolRequest {
+      const request = toolRequestSchema.parse(raw);
+      const executionToolName = executionNames[request.toolName];
+      if (!executionToolName) throw new Error('TOOL_UNKNOWN');
+      const requiresConfirmation = recoverable.has(request.toolName);
+      return {
+        request,
+        executionRequest: { ...request, toolName: executionToolName },
+        risk: requiresConfirmation ? 'recoverable' : 'read',
+        decision: requiresConfirmation ? 'confirm' : 'allow',
+        auditSummary: `测试操作 ${String(request.arguments['relativePath'] ?? '')}`
+      };
+    },
+    executeRead: vi.fn(async () => ({ content: '文件内容' }))
   };
 }
 
@@ -61,13 +95,142 @@ function context(provider: ModelProvider, signal = new AbortController().signal)
     messages: [],
     provider,
     tools,
-    writeTools: new Set(['create_file', 'create_directory', 'rename_entry']),
-    executor: { executeRead: vi.fn(async () => ({ content: '文件内容' })) },
+    toolRuntime: createToolRuntime(),
     signal
   };
 }
 
 describe('AgentLoop', () => {
+  test('只执行 ToolRuntime 准备后允许的内部读取请求', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'read-runtime-1',
+          toolName: 'builtin.files.read_text',
+          arguments: { relativePath: 'notes.txt' }
+        }
+      },
+      { type: 'text', text: '读取完成' }
+    ]);
+    const executeRead = vi.fn(async () => ({ content: '文件内容' }));
+    const prepared: PreparedToolRequest = {
+      request: {
+        requestId: 'read-runtime-1',
+        toolName: 'builtin.files.read_text',
+        arguments: { relativePath: 'notes.txt' }
+      },
+      executionRequest: {
+        requestId: 'read-runtime-1',
+        toolName: 'read_text_file',
+        arguments: { relativePath: 'notes.txt' }
+      },
+      risk: 'read',
+      decision: 'allow',
+      auditSummary: '读取文本 notes.txt'
+    };
+    const prepare = vi.fn(() => prepared);
+    const runContext = {
+      messages: [],
+      provider,
+      tools: [],
+      toolRuntime: { prepare, executeRead },
+      signal: new AbortController().signal
+    } as unknown as RunContext;
+
+    const events = await collectEvents(runContext);
+
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(executeRead).toHaveBeenCalledExactlyOnceWith(prepared.executionRequest);
+    expect(events).toContainEqual({ type: 'message', text: '读取完成' });
+  });
+
+  test('可恢复请求确认前不执行并携带 Main 私有执行信息', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'write-runtime-1',
+        toolName: 'builtin.files.create_file',
+        arguments: { relativePath: 'result.txt' }
+      }
+    }]);
+    const prepared: PreparedToolRequest = {
+      request: {
+        requestId: 'write-runtime-1',
+        toolName: 'builtin.files.create_file',
+        arguments: { relativePath: 'result.txt' }
+      },
+      executionRequest: {
+        requestId: 'write-runtime-1',
+        toolName: 'create_file',
+        arguments: { relativePath: 'result.txt' }
+      },
+      risk: 'recoverable',
+      decision: 'confirm',
+      auditSummary: '创建文件 result.txt'
+    };
+    const executeRead = vi.fn();
+    const runContext = {
+      messages: [],
+      provider,
+      tools: [],
+      toolRuntime: { prepare: vi.fn(() => prepared), executeRead },
+      signal: new AbortController().signal
+    } as unknown as RunContext;
+
+    const events = await collectEvents(runContext);
+
+    expect(executeRead).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual(expect.objectContaining({
+      type: 'write_request',
+      request: prepared.request,
+      executionRequest: prepared.executionRequest,
+      risk: 'recoverable',
+      auditSummary: '创建文件 result.txt',
+      continuationToken: expect.stringMatching(/^continue_/u)
+    }));
+  });
+
+  test('明确拒绝的工具不执行也不要求模型纠错', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'denied-1',
+        toolName: 'mcp.system.delete',
+        arguments: {}
+      }
+    }]);
+    const executeRead = vi.fn();
+    const runContext = {
+      messages: [],
+      provider,
+      tools: [],
+      toolRuntime: {
+        prepare: vi.fn(() => ({
+          request: {
+            requestId: 'denied-1',
+            toolName: 'mcp.system.delete',
+            arguments: {}
+          },
+          executionRequest: {
+            requestId: 'denied-1',
+            toolName: 'delete',
+            arguments: {}
+          },
+          risk: 'high',
+          decision: 'deny',
+          auditSummary: '删除条目'
+        })),
+        executeRead
+      },
+      signal: new AbortController().signal
+    } as unknown as RunContext;
+
+    await expect(collectEvents(runContext)).rejects.toThrow('TOOL_PERMISSION_DENIED');
+    expect(provider.requests).toHaveLength(1);
+    expect(executeRead).not.toHaveBeenCalled();
+  });
+
   test('纯文本响应直接生成助手消息', async () => {
     const provider = new ScriptedProvider([{ type: 'text', text: '处理完成' }]);
 
@@ -89,7 +252,7 @@ describe('AgentLoop', () => {
 
     const events = await collectEvents(runContext);
 
-    expect(runContext.executor.executeRead).toHaveBeenCalledOnce();
+    expect(runContext.toolRuntime.executeRead).toHaveBeenCalledOnce();
     expect(provider.requests[1]?.messages.at(-1)).toEqual({
       role: 'tool',
       toolCallId: 'read-1',
@@ -103,7 +266,7 @@ describe('AgentLoop', () => {
       type: 'tool_request',
       request: {
         requestId: 'write-1',
-        toolName: 'create_file',
+        toolName: 'builtin.files.create_file',
         arguments: { relativePath: 'result.txt' }
       }
     }]);
@@ -111,7 +274,7 @@ describe('AgentLoop', () => {
 
     const events = await collectEvents(runContext);
 
-    expect(runContext.executor.executeRead).not.toHaveBeenCalled();
+    expect(runContext.toolRuntime.executeRead).not.toHaveBeenCalled();
     expect(events.at(-1)).toEqual(expect.objectContaining({
       type: 'write_request',
       request: expect.objectContaining({ requestId: 'write-1' }),
@@ -178,7 +341,7 @@ describe('AgentLoop', () => {
         type: 'tool_request',
         request: {
           requestId: 'write-1',
-          toolName: 'create_file',
+          toolName: 'builtin.files.create_file',
           arguments: { relativePath: 'result.txt' }
         }
       },
@@ -218,7 +381,7 @@ describe('AgentLoop', () => {
       type: 'tool_request',
       request: {
         requestId: 'write-1',
-        toolName: 'create_directory',
+        toolName: 'builtin.files.create_directory',
         arguments: { relativePath: 'output' }
       }
     }]);
@@ -246,7 +409,7 @@ describe('AgentLoop', () => {
         type: 'tool_request',
         request: {
           requestId: 'write-4',
-          toolName: 'create_file',
+          toolName: 'builtin.files.create_file',
           arguments: { relativePath: 'result.txt' }
         }
       },

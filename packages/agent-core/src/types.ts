@@ -45,7 +45,19 @@ export interface ModelProvider {
   respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse>;
 }
 
-export interface ToolExecutor {
+export type ToolRisk = 'read' | 'recoverable' | 'high';
+export type ToolDecision = 'allow' | 'confirm' | 'deny';
+
+export interface PreparedToolRequest {
+  request: ToolRequest;
+  executionRequest: ToolRequest;
+  risk: ToolRisk;
+  decision: ToolDecision;
+  auditSummary: string;
+}
+
+export interface ToolRuntime {
+  prepare(raw: unknown): PreparedToolRequest;
   executeRead(request: ToolRequest): Promise<unknown>;
 }
 
@@ -53,12 +65,18 @@ export interface RunContext {
   messages: ModelMessage[];
   provider: ModelProvider;
   tools: ToolDefinition[];
-  writeTools: ReadonlySet<ToolName>;
-  executor: ToolExecutor;
+  toolRuntime: ToolRuntime;
   signal: AbortSignal;
 }
 
 export type AgentEvent =
   | { type: 'phase'; phase: 'thinking' | 'acting' | 'awaiting_confirmation' | 'success' | 'cancelled' }
   | { type: 'message'; text: string }
-  | { type: 'write_request'; request: ToolRequest; continuationToken: string };
+  | {
+      type: 'write_request';
+      request: ToolRequest;
+      executionRequest: ToolRequest;
+      risk: ToolRisk;
+      auditSummary: string;
+      continuationToken: string;
+    };

@@ -1,19 +1,42 @@
 import { describe, expect, it } from 'vitest';
-import { pendingActionSchema, toolRequestSchema } from '../src/contracts';
+import {
+  pendingActionSchema,
+  toolNameSchema,
+  toolRequestSchema
+} from '../src/contracts';
 
 describe('toolRequestSchema', () => {
-  it('接受已知工具并拒绝未知工具', () => {
+  it('接受合法命名空间工具名称', () => {
     const result = toolRequestSchema.parse({
       requestId: 'req-1',
-      toolName: 'create_file',
+      toolName: 'builtin.files.create_file',
       arguments: { relativePath: 'notes.md' }
     });
 
-    expect(result.toolName).toBe('create_file');
+    expect(result.toolName).toBe('builtin.files.create_file');
+  });
+
+  it.each([
+    'create_file',
+    'builtin.files',
+    'builtin.Files.create_file',
+    'builtin.files.-create',
+    'builtin.files..create_file',
+    'other.files.create_file'
+  ])('拒绝旧短名称或非法命名空间：%s', toolName => {
+    expect(() => toolNameSchema.parse(toolName)).toThrow();
+  });
+
+  it('拒绝超过 128 个字符的工具名称', () => {
+    expect(() => toolNameSchema.parse(`builtin.files.${'a'.repeat(116)}`)).toThrow();
+  });
+
+  it('拒绝模型附加本地权限元数据', () => {
     expect(() => toolRequestSchema.parse({
       requestId: 'req-2',
-      toolName: 'run_shell',
-      arguments: { command: 'whoami' }
+      toolName: 'builtin.files.create_file',
+      arguments: { relativePath: 'notes.md' },
+      risk: 'read'
     })).toThrow();
   });
 });

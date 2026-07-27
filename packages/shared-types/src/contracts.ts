@@ -1,13 +1,10 @@
 import { z } from 'zod';
 import { providerProtocolSchema } from './provider-catalog';
 
-export const toolNameSchema = z.enum([
-  'list_directory',
-  'read_text_file',
-  'create_file',
-  'create_directory',
-  'rename_entry'
-]);
+export const toolNameSchema = z.string()
+  .min(3)
+  .max(128)
+  .regex(/^(builtin|mcp)\.[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$/u);
 export type ToolName = z.infer<typeof toolNameSchema>;
 
 export const taskPhaseSchema = z.enum([

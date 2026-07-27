@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { toolRequestSchema, type ToolRequest } from '@myself/shared-types';
-import type { AgentEvent, ModelMessage, RunContext } from './types';
+import type { AgentEvent, ModelMessage, PreparedToolRequest, RunContext } from './types';
 
 type ContinuationState = {
   messages: ModelMessage[];
@@ -85,8 +84,10 @@ export class AgentLoop {
         return;
       }
 
-      const parsedRequest = toolRequestSchema.safeParse(response.request);
-      if (!parsedRequest.success) {
+      let prepared: PreparedToolRequest;
+      try {
+        prepared = context.toolRuntime.prepare(response.request);
+      } catch {
         if (correctionUsed) throw new Error('AGENT_INVALID_TOOL_REQUEST');
         correctionUsed = true;
         messages.push({
@@ -96,29 +97,37 @@ export class AgentLoop {
         continue;
       }
 
-      const request: ToolRequest = parsedRequest.data;
-      messages.push({ role: 'assistant', content: '', toolRequest: request });
-      if (context.writeTools.has(request.toolName)) {
+      messages.push({ role: 'assistant', content: '', toolRequest: prepared.request });
+      if (prepared.decision === 'deny') {
+        throw Object.assign(
+          new Error('TOOL_PERMISSION_DENIED'),
+          { code: 'TOOL_PERMISSION_DENIED' }
+        );
+      }
+      if (prepared.decision === 'confirm') {
         const continuationToken = `continue_${randomUUID()}`;
         this.continuations.set(continuationToken, {
           messages: [...messages],
           nextTurn: turn + 1,
-          requestId: request.requestId
+          requestId: prepared.request.requestId
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
         yield {
           type: 'write_request',
-          request,
+          request: prepared.request,
+          executionRequest: prepared.executionRequest,
+          risk: prepared.risk,
+          auditSummary: prepared.auditSummary,
           continuationToken
         };
         return;
       }
 
       yield { type: 'phase', phase: 'acting' };
-      const result = await context.executor.executeRead(request);
+      const result = await context.toolRuntime.executeRead(prepared.executionRequest);
       messages.push({
         role: 'tool',
-        toolCallId: request.requestId,
+        toolCallId: prepared.request.requestId,
         content: JSON.stringify(result)
       });
     }
