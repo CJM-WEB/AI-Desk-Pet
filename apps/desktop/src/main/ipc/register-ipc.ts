@@ -27,6 +27,7 @@ const providerUrlSchema = z.string().url().refine(value => {
 }, 'PROVIDER_URL_REQUIRES_HTTPS');
 
 const saveProviderSchema = z.object({
+  profileId: z.string().optional(),
   displayName: z.string().trim().min(1),
   baseUrl: providerUrlSchema,
   model: z.string().trim().min(1),
@@ -35,7 +36,8 @@ const saveProviderSchema = z.object({
 }).strict();
 
 const clearLocalDataSchema = z.object({
-  scope: z.enum(['conversation', 'audit', 'secret', 'all'])
+  scope: z.enum(['conversation', 'audit', 'secret', 'all']),
+  profileId: z.string().optional()
 }).strict();
 
 const chatSubmitSchema = z.object({
@@ -81,8 +83,9 @@ export interface SettingsIpcStore {
 }
 
 export interface SettingsIpcSecrets {
-  save(secret: string, persist: boolean): Promise<void>;
-  clear(): Promise<void>;
+  save(profileId: string, secret: string, persist: boolean): Promise<void>;
+  clear(profileId: string): Promise<void>;
+  clearAll(): Promise<void>;
 }
 
 export interface SettingsIpcLifecycle {
@@ -115,9 +118,10 @@ export function registerSettingsIpc(
   });
   replaceHandler(ipcMain, ipcChannels.settingsSaveProvider, async (_event, raw) => {
     const input = saveProviderSchema.parse(raw);
-    await secrets.save(input.secret, input.persistSecret);
+    const profileId = input.profileId ?? 'default';
+    await secrets.save(profileId, input.secret, input.persistSecret);
     await settings.saveProviderMetadata({
-      id: 'default',
+      id: profileId,
       displayName: input.displayName,
       baseUrl: input.baseUrl,
       model: input.model
@@ -126,13 +130,17 @@ export function registerSettingsIpc(
     return settings.getPublic();
   });
   replaceHandler(ipcMain, ipcChannels.settingsClearLocalData, async (_event, raw) => {
-    const { scope } = clearLocalDataSchema.parse(raw);
+    const { scope, profileId } = clearLocalDataSchema.parse(raw);
     if (scope === 'all') {
       await settings.clearAll();
       lifecycle?.onAuthorizedRootChanged?.();
     }
-    if (scope === 'secret' || scope === 'all') {
-      await secrets.clear();
+    if (scope === 'secret') {
+      await secrets.clear(profileId ?? 'default');
+      lifecycle?.onProviderChanged();
+    }
+    if (scope === 'all') {
+      await secrets.clearAll();
       lifecycle?.onProviderChanged();
     }
     return settings.getPublic();
