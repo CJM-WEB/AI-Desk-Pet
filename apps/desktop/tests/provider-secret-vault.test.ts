@@ -147,6 +147,25 @@ describe('按档案隔离的密钥库', () => {
     await expect(store.save('beta', 'sk-after-failure', true)).resolves.toBeUndefined();
     await expect(store.readForProviderCall('beta')).resolves.toBe('sk-after-failure');
   });
+
+  test('重叠入队的跨档案保存和清除不会留下临时文件或互相覆盖', async () => {
+    const { file, store } = await 创建密钥库();
+
+    await Promise.all([
+      store.save('alpha', 'sk-alpha-old', true),
+      store.save('beta', 'sk-beta', true),
+      store.clear('alpha'),
+      store.save('alpha', 'sk-alpha-final', true)
+    ]);
+
+    await expect(store.readForProviderCall('alpha')).resolves.toBe('sk-alpha-final');
+    await expect(store.readForProviderCall('beta')).resolves.toBe('sk-beta');
+    expect(await readdir(`${file}.profiles`)).toEqual(expect.arrayContaining([
+      `${createHash('sha256').update('alpha').digest('hex')}.bin`,
+      `${createHash('sha256').update('beta').digest('hex')}.bin`
+    ]));
+    expect(await readdir(`${file}.profiles`)).not.toContain(expect.stringMatching(/\.tmp$/u));
+  });
 });
 
 describe('密钥 IPC 边界', () => {

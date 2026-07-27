@@ -13,8 +13,11 @@ const api: MyselfApi = {
   chooseAuthorizedRoot: (): Promise<PublicSettings> => (
     ipcRenderer.invoke(ipcChannels.settingsChooseRoot)
   ),
-  clearLocalData: (scope: LocalDataScope): Promise<PublicSettings> => (
-    ipcRenderer.invoke(ipcChannels.settingsClearLocalData, { scope })
+  clearLocalData: (scope: LocalDataScope, profileId?: string): Promise<PublicSettings> => (
+    ipcRenderer.invoke(
+      ipcChannels.settingsClearLocalData,
+      profileId === undefined ? { scope } : { scope, profileId }
+    )
   ),
   submitMessage: (text: string): Promise<void> => (
     ipcRenderer.invoke(ipcChannels.chatSubmit, { text })
