@@ -47,7 +47,9 @@
 
 ### 3.3 自带密钥，自由换模型
 
-用户提供自己的 API Key、Base URL 和模型名。桌宠不在第一阶段提供统一模型额度，也不建设计费后端。客户端以 OpenAI 风格聊天与工具调用协议作为首个兼容目标，模型差异由 Provider Adapter 隔离。
+普通用户只需选择预置的模型提供商和模型，并填写自己的 API Key；Base URL、协议类型和能力标签由内置模型目录管理。预置范围覆盖 OpenAI、Anthropic、Gemini、DeepSeek、Kimi、通义千问、智谱、豆包、腾讯混元、MiniMax 等国内外主流服务。
+
+高级设置保留自定义 Provider，可填写 Base URL、模型 ID、协议类型和受限额外参数。客户端通过 Provider Adapter 隔离 OpenAI 兼容、Anthropic 和 Gemini 等协议差异，不建设统一模型额度或计费后端。
 
 ### 3.4 轻首版、可扩展边界
 
@@ -99,8 +101,10 @@ Electron Renderer
   ▼
 Electron Main（可信本地核心）
   ├─ Agent Orchestrator
-  ├─ Provider Registry
+  ├─ Provider Registry / Model Router
+  ├─ Tool Registry / MCP Client
   ├─ Permission Policy
+  ├─ Context Disclosure / Local Memory
   ├─ File Tool Service
   ├─ Secret / Settings Store
   └─ Audit Writer
@@ -119,8 +123,11 @@ Electron Main（可信本地核心）
 ### 6.1 计划逐步支持
 
 - 可替换的 2D 角色包与更多动画状态。
-- 多个兼容模型配置档案和快速切换。
+- 国内外预置模型目录、多个配置档案、高级自定义 Provider 和按能力路由。
+- 内置 MCP 与用户添加的 `stdio`、HTTP MCP 服务。
+- 被动、辅助和自主三级 Agent 主动性，默认辅助模式。
 - 授权目录内的查看、搜索、新建、复制、移动、重命名和回收站删除。
+- 桌宠进入文件夹、绑定资源管理器内容区、托盘呼唤和召回桌面。
 - 任务预览、确认、取消、结果反馈和有限审计。
 - 更完善的安装、版本发布、自动更新和代码签名。
 - 高级动效官网、角色展示和后续社区能力。
@@ -160,9 +167,11 @@ Electron Main（可信本地核心）
 在阶段 1 的安全模型上增加：
 
 - 多模型配置档案与切换。
+- 普通模式的提供商、模型和 API Key 选择，以及高级自定义 Provider。
+- 对话、Agent、视觉和备用模型路由；跨提供商故障转移必须预先授权。
 - 搜索、复制、移动和回收站删除。
 - 更完善的任务历史、错误恢复和设置管理。
-- 对不同兼容模型服务的契约测试。
+- 对 OpenAI 兼容、Anthropic、Gemini 及中国主流模型服务的契约测试。
 - 角色资源包加载与至少一个可替换角色示例。
 
 阶段 2 不增加 Shell、静默覆盖和后台自主执行。
@@ -193,7 +202,12 @@ Electron Main（可信本地核心）
 - 角色或工具商店。
 - 订阅、模型额度和支付。
 - 团队管理能力。
-- 第三方工具插件协议。
+- 内置与用户添加的 MCP 服务管理、逐项权限和审计。
+
+资源管理器文件夹空间属于独立 Windows 能力，在基础角色运行时和权限系统稳定后实施。详细设计见：
+
+- [多模型、Agent 与 MCP 系统设计](./2026-07-27-multi-provider-agent-mcp-design.md)
+- [文件夹空间与资源管理器图层设计](./2026-07-27-explorer-pet-space-design.md)
 
 ## 8. 文件操作的长期安全模型
 
