@@ -164,7 +164,8 @@ describe('按档案隔离的密钥库', () => {
       `${createHash('sha256').update('alpha').digest('hex')}.bin`,
       `${createHash('sha256').update('beta').digest('hex')}.bin`
     ]));
-    expect(await readdir(`${file}.profiles`)).not.toContain(expect.stringMatching(/\.tmp$/u));
+    const entries = await readdir(`${file}.profiles`);
+    expect(entries.some(name => name.endsWith('.tmp'))).toBe(false);
   });
 });
 
