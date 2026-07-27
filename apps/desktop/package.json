@@ -16,6 +16,7 @@
     "verify:package-config": "vitest run --config vitest.config.ts -- package-config.test.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@myself/agent-core": "workspace:*",
     "@myself/character-runtime": "workspace:*",
     "@myself/file-tools": "workspace:*",
