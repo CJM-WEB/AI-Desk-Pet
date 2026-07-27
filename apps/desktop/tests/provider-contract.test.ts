@@ -14,6 +14,7 @@ import { GeminiProvider } from '../src/main/providers/gemini-provider';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
 import {
   providerCatalog,
+  toolRequestSchema,
   type ProviderProfileV2
 } from '@myself/shared-types';
 
@@ -24,6 +25,7 @@ interface ProviderContractCase {
   createProvider: (fetchClient: FetchLike) => ModelProvider;
   textResponse: unknown;
   toolResponse: unknown;
+  mixedTextAndToolResponse: unknown;
   multipleToolsResponse: unknown;
   missingFieldsResponse: unknown;
 }
@@ -73,6 +75,21 @@ function captureError(promise: Promise<ModelResponse>): Promise<unknown> {
   return promise.catch(error => error);
 }
 
+function expectObservableErrorTextHidden(
+  error: unknown,
+  sensitiveValues: string[]
+): void {
+  expect(error).toBeInstanceOf(Error);
+  const observableError = error as Error & { cause?: unknown };
+
+  for (const sensitiveValue of sensitiveValues) {
+    expect(String(error)).not.toContain(sensitiveValue);
+    expect(observableError.message).not.toContain(sensitiveValue);
+    expect(observableError.stack ?? '').not.toContain(sensitiveValue);
+    expect(String(observableError.cause ?? '')).not.toContain(sensitiveValue);
+  }
+}
+
 // 共享契约只验证 Agent Core 可观察到的统一行为，各协议请求形状另行验证。
 function verifyProviderContract(contract: ProviderContractCase): void {
   describe(`${contract.name} 共享契约`, () => {
@@ -114,7 +131,9 @@ function verifyProviderContract(contract: ProviderContractCase): void {
 
     test('已取消 signal 也不会透传非 AbortError 的敏感详情', async () => {
       const fetchClient = vi.fn<FetchLike>(async () => {
-        throw new TypeError('contract-secret 不得泄漏');
+        throw new TypeError('contract-secret 与私密响应正文不得泄漏', {
+          cause: new Error('底层 cause 含 contract-secret')
+        });
       });
       const provider = contract.createProvider(fetchClient);
       const controller = new AbortController();
@@ -126,7 +145,7 @@ function verifyProviderContract(contract: ProviderContractCase): void {
         code: 'PROVIDER_NETWORK_ERROR',
         retryable: true
       });
-      expect(JSON.stringify(error)).not.toContain('contract-secret');
+      expectObservableErrorTextHidden(error, ['contract-secret', '私密响应正文']);
     });
 
     test.each([
@@ -135,19 +154,23 @@ function verifyProviderContract(contract: ProviderContractCase): void {
       [503, 'PROVIDER_SERVER_ERROR', true]
     ])('把 HTTP %i 映射为统一错误', async (status, code, retryable) => {
       const provider = contract.createProvider(vi.fn(async () => (
-        jsonResponse({ error: '供应商响应正文不得泄漏' }, status)
+        jsonResponse({
+          error: 'contract-secret 与供应商私密响应正文不得泄漏'
+        }, status)
       )));
 
       const error = await captureError(provider.respond(request, new AbortController().signal));
 
       expect(error).toBeInstanceOf(ProviderError);
       expect(error).toMatchObject({ code, retryable, status });
-      expect(JSON.stringify(error)).not.toContain('供应商响应正文不得泄漏');
+      expectObservableErrorTextHidden(error, ['contract-secret', '供应商私密响应正文']);
     });
 
     test('把普通 fetch 异常映射为可重试网络错误', async () => {
       const fetchClient = vi.fn<FetchLike>(async () => {
-        throw new TypeError('socket details must not leak');
+        throw new TypeError('socket 含 contract-secret 与私密响应正文', {
+          cause: new Error('cause 含 contract-secret 与私密响应正文')
+        });
       });
       const provider = contract.createProvider(fetchClient);
 
@@ -157,7 +180,20 @@ function verifyProviderContract(contract: ProviderContractCase): void {
         code: 'PROVIDER_NETWORK_ERROR',
         retryable: true
       });
-      expect(JSON.stringify(error)).not.toContain('socket details must not leak');
+      expectObservableErrorTextHidden(error, ['contract-secret', '私密响应正文']);
+    });
+
+    test('拒绝文本与单个工具调用混合响应', async () => {
+      const provider = contract.createProvider(vi.fn(async () => (
+        jsonResponse(contract.mixedTextAndToolResponse)
+      )));
+
+      await expect(
+        provider.respond(request, new AbortController().signal)
+      ).rejects.toMatchObject({
+        code: 'PROVIDER_MALFORMED_RESPONSE',
+        retryable: false
+      });
     });
 
     test.each([
@@ -197,6 +233,21 @@ verifyProviderContract({
     choices: [{
       message: {
         content: null,
+        tool_calls: [{
+          id: 'call-contract',
+          type: 'function',
+          function: {
+            name: 'read_text_file',
+            arguments: '{"relativePath":"notes.txt"}'
+          }
+        }]
+      }
+    }]
+  },
+  mixedTextAndToolResponse: {
+    choices: [{
+      message: {
+        content: '不得静默丢弃',
         tool_calls: [{
           id: 'call-contract',
           type: 'function',
@@ -251,6 +302,17 @@ verifyProviderContract({
       input: { relativePath: 'notes.txt' }
     }]
   },
+  mixedTextAndToolResponse: {
+    content: [
+      { type: 'text', text: '不得静默丢弃' },
+      {
+        type: 'tool_use',
+        id: 'call-contract',
+        name: 'read_text_file',
+        input: { relativePath: 'notes.txt' }
+      }
+    ]
+  },
   multipleToolsResponse: {
     content: [
       {
@@ -299,6 +361,22 @@ verifyProviderContract({
             args: { relativePath: 'notes.txt' }
           }
         }]
+      }
+    }]
+  },
+  mixedTextAndToolResponse: {
+    candidates: [{
+      content: {
+        parts: [
+          { text: '不得静默丢弃' },
+          {
+            functionCall: {
+              id: 'call-contract',
+              name: 'read_text_file',
+              args: { relativePath: 'notes.txt' }
+            }
+          }
+        ]
       }
     }]
   },
@@ -440,27 +518,53 @@ describe('协议请求映射', () => {
     });
   });
 
-  test('Gemini 映射助手工具请求和工具结果历史', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
-      candidates: [{ content: { parts: [{ text: '完成' }] } }]
-    }));
+  test('Gemini 在真实两轮历史中回传 thoughtSignature 和调用 ID', async () => {
+    const fetchClient = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(jsonResponse({
+        candidates: [{
+          content: {
+            parts: [{
+              functionCall: {
+                id: 'call-history',
+                name: 'read_text_file',
+                args: { relativePath: 'notes.txt' }
+              },
+              thoughtSignature: 'private-thought-signature'
+            }]
+          }
+        }]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        candidates: [{ content: { parts: [{ text: '完成' }] } }]
+      }));
     const provider = new GeminiProvider(
       adapterProfile,
       async () => 'secret',
       fetchClient
     );
 
+    const firstResponse = await provider.respond(request, new AbortController().signal);
+    expect(firstResponse).toEqual({
+      type: 'tool_request',
+      request: {
+        requestId: 'call-history',
+        toolName: 'read_text_file',
+        arguments: { relativePath: 'notes.txt' }
+      }
+    });
+    expect(String(firstResponse)).not.toContain('private-thought-signature');
+    const toolRequest = toolRequestSchema.parse(
+      firstResponse.type === 'tool_request' ? firstResponse.request : undefined
+    );
+
     await provider.respond({
       tools,
       messages: [
+        ...request.messages,
         {
           role: 'assistant',
           content: '',
-          toolRequest: {
-            requestId: 'call-history',
-            toolName: 'read_text_file',
-            arguments: { relativePath: 'notes.txt' }
-          }
+          toolRequest
         },
         {
           role: 'tool',
@@ -470,7 +574,8 @@ describe('协议请求映射', () => {
       ]
     }, new AbortController().signal);
 
-    expect(JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body)).contents).toEqual([
+    const secondBody = JSON.parse(String(fetchClient.mock.calls[1]?.[1]?.body));
+    expect(secondBody.contents.slice(-2)).toEqual([
       {
         role: 'model',
         parts: [{
@@ -478,13 +583,15 @@ describe('协议请求映射', () => {
             id: 'call-history',
             name: 'read_text_file',
             args: { relativePath: 'notes.txt' }
-          }
+          },
+          thoughtSignature: 'private-thought-signature'
         }]
       },
       {
         role: 'user',
         parts: [{
           functionResponse: {
+            id: 'call-history',
             name: 'read_text_file',
             response: { content: '示例' }
           }
@@ -549,18 +656,33 @@ describe('ProviderRegistry', () => {
     expect(provider).toBeInstanceOf(ProviderClass);
   });
 
-  test.each(['deepseek', 'kimi', 'qwen'] as const)(
+  test.each([
+    [
+      'deepseek',
+      'https://api.deepseek.com/chat/completions',
+      'deepseek-v4-flash'
+    ],
+    [
+      'kimi',
+      'https://api.moonshot.cn/v1/chat/completions',
+      'kimi-k2.5'
+    ],
+    [
+      'qwen',
+      'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+      'qwen-plus'
+    ]
+  ] as const)(
     '%s 复用 OpenAI Compatible 类及目录 URL/模型',
-    async providerId => {
+    async (providerId, expectedUrl, expectedModelId) => {
       const entry = providerCatalog.find(item => item.providerId === providerId);
       if (!entry) throw new Error(`测试目录缺少 ${providerId}`);
-      const modelId = entry.models[0]?.modelId ?? '';
       const profile: ProviderProfileV2 = {
         id: `${providerId}-profile`,
         displayName: entry.displayName,
         mode: 'preset',
         providerId,
-        modelId,
+        modelId: expectedModelId,
         hasStoredSecret: true
       };
       const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
@@ -573,8 +695,8 @@ describe('ProviderRegistry', () => {
 
       expect(provider).toBeInstanceOf(OpenAICompatibleProvider);
       const [url, init] = fetchClient.mock.calls[0] ?? [];
-      expect(String(url)).toBe(`${entry.baseUrl.replace(/\/$/, '')}/chat/completions`);
-      expect(JSON.parse(String(init?.body)).model).toBe(modelId);
+      expect(String(url)).toBe(expectedUrl);
+      expect(JSON.parse(String(init?.body)).model).toBe(expectedModelId);
     }
   );
 

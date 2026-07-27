@@ -23,7 +23,8 @@ const geminiPartSchema = z.union([
       id: z.string().min(1).optional(),
       name: z.string().min(1),
       args: z.record(z.unknown())
-    }).strict()
+    }).strict(),
+    thoughtSignature: z.string().optional()
   }).strict()
 ]);
 
@@ -51,7 +52,10 @@ function parseToolResult(content: string): Record<string, unknown> {
   }
 }
 
-function serializeMessages(messages: ModelMessage[]): Array<Record<string, unknown>> {
+function serializeMessages(
+  messages: ModelMessage[],
+  thoughtSignatures: ReadonlyMap<string, string>
+): Array<Record<string, unknown>> {
   const toolNames = new Map<string, string>();
 
   return messages
@@ -62,15 +66,20 @@ function serializeMessages(messages: ModelMessage[]): Array<Record<string, unkno
       }
       if (message.role === 'assistant' && message.toolRequest) {
         toolNames.set(message.toolRequest.requestId, message.toolRequest.toolName);
+        const functionCallPart: Record<string, unknown> = {
+          functionCall: {
+            id: message.toolRequest.requestId,
+            name: message.toolRequest.toolName,
+            args: message.toolRequest.arguments
+          }
+        };
+        const thoughtSignature = thoughtSignatures.get(message.toolRequest.requestId);
+        if (thoughtSignature !== undefined) {
+          functionCallPart.thoughtSignature = thoughtSignature;
+        }
         return {
           role: 'model',
-          parts: [{
-            functionCall: {
-              id: message.toolRequest.requestId,
-              name: message.toolRequest.toolName,
-              args: message.toolRequest.arguments
-            }
-          }]
+          parts: [functionCallPart]
         };
       }
       if (message.role === 'tool') {
@@ -82,6 +91,7 @@ function serializeMessages(messages: ModelMessage[]): Array<Record<string, unkno
           role: 'user',
           parts: [{
             functionResponse: {
+              id: message.toolCallId,
               name: toolName,
               response: parseToolResult(message.content)
             }
@@ -103,7 +113,15 @@ function serializeTool(tool: ToolDefinition): Record<string, unknown> {
   };
 }
 
-function normalizeResponse(raw: unknown): ModelResponse {
+interface NormalizedGeminiResponse {
+  response: ModelResponse;
+  thoughtSignature?: {
+    requestId: string;
+    value: string;
+  };
+}
+
+function normalizeResponse(raw: unknown): NormalizedGeminiResponse {
   const parsed = geminiResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
 
@@ -114,19 +132,31 @@ function normalizeResponse(raw: unknown): ModelResponse {
 
   if (textParts.length === parts.length) {
     return {
-      type: 'text',
-      text: textParts.map(part => part.text).join('')
+      response: {
+        type: 'text',
+        text: textParts.map(part => part.text).join('')
+      }
     };
   }
   if (functionParts.length === 1 && parts.length === 1) {
-    const call = functionParts[0]?.functionCall;
+    const functionPart = functionParts[0];
+    const call = functionPart?.functionCall;
     if (!call) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-    return {
+    const requestId = call.id ?? `gemini-call-${call.name}`;
+    const response: ModelResponse = {
       type: 'tool_request',
       request: {
-        requestId: call.id ?? `gemini-call-${call.name}`,
+        requestId,
         toolName: call.name,
         arguments: call.args
+      }
+    };
+    if (functionPart.thoughtSignature === undefined) return { response };
+    return {
+      response,
+      thoughtSignature: {
+        requestId,
+        value: functionPart.thoughtSignature
       }
     };
   }
@@ -134,6 +164,8 @@ function normalizeResponse(raw: unknown): ModelResponse {
 }
 
 export class GeminiProvider implements ModelProvider {
+  private readonly thoughtSignatures = new Map<string, string>();
+
   constructor(
     private readonly config: ProviderAdapterConfig,
     private readonly getSecret: () => Promise<string>,
@@ -146,7 +178,7 @@ export class GeminiProvider implements ModelProvider {
       .map(message => ({ text: message.content }));
     const body: Record<string, unknown> = {
       ...this.config.additionalParameters,
-      contents: serializeMessages(request.messages),
+      contents: serializeMessages(request.messages, this.thoughtSignatures),
       tools: [{
         functionDeclarations: request.tools.map(serializeTool)
       }]
@@ -173,6 +205,13 @@ export class GeminiProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
-    return normalizeResponse(await readProviderJson(response));
+    const normalized = normalizeResponse(await readProviderJson(response));
+    if (normalized.thoughtSignature) {
+      this.thoughtSignatures.set(
+        normalized.thoughtSignature.requestId,
+        normalized.thoughtSignature.value
+      );
+    }
+    return normalized.response;
   }
 }

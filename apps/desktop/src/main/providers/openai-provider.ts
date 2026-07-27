@@ -128,6 +128,13 @@ function normalizeResponse(raw: unknown): ModelResponse {
   if (!message) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   const toolCalls = message.tool_calls ?? [];
   if (toolCalls.length > 1) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (
+    toolCalls.length === 1
+    && typeof message.content === 'string'
+    && message.content.length > 0
+  ) {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
 
   const toolCall = toolCalls[0];
   if (toolCall) {
