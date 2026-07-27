@@ -49,7 +49,7 @@ describe('SettingsStore', () => {
     });
 
     const serialized = await readFile(file, 'utf8');
-    expect(serialized).toContain('"version": 1');
+    expect(serialized).toContain('"version": 2');
     expect(serialized).not.toContain(fixtureSecret);
     await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
       provider: {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { providerProtocolSchema } from './provider-catalog';
 
 export const toolNameSchema = z.enum([
   'list_directory',
@@ -48,6 +49,55 @@ export const providerProfileSchema = z.object({
   hasStoredSecret: z.boolean()
 }).strict();
 export type ProviderProfile = z.infer<typeof providerProfileSchema>;
+
+const providerProfileV2BaseSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  modelId: z.string().min(1),
+  hasStoredSecret: z.boolean()
+}).strict();
+
+const storedProviderProfileV2BaseSchema = providerProfileV2BaseSchema.omit({
+  hasStoredSecret: true
+}).strict();
+
+export const providerProfileV2Schema = z.discriminatedUnion('mode', [
+  providerProfileV2BaseSchema.extend({
+    mode: z.literal('preset'),
+    providerId: z.string().min(1)
+  }).strict(),
+  providerProfileV2BaseSchema.extend({
+    mode: z.literal('custom'),
+    protocol: providerProtocolSchema,
+    baseUrl: z.string().url(),
+    additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()]))
+  }).strict()
+]);
+export type ProviderProfileV2 = z.infer<typeof providerProfileV2Schema>;
+
+export const storedProviderProfileV2Schema = z.discriminatedUnion('mode', [
+  storedProviderProfileV2BaseSchema.extend({
+    mode: z.literal('preset'),
+    providerId: z.string().min(1)
+  }).strict(),
+  storedProviderProfileV2BaseSchema.extend({
+    mode: z.literal('custom'),
+    protocol: providerProtocolSchema,
+    baseUrl: z.string().url(),
+    additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()]))
+  }).strict()
+]);
+export type StoredProviderProfileV2 = z.infer<typeof storedProviderProfileV2Schema>;
+
+export const modelRouteConfigSchema = z.object({
+  primaryProfileId: z.string().min(1).nullable(),
+  chatProfileId: z.string().min(1).nullable(),
+  agentProfileId: z.string().min(1).nullable(),
+  visionProfileId: z.string().min(1).nullable(),
+  fallbackProfileIds: z.array(z.string().min(1)),
+  allowCrossProviderFallback: z.boolean()
+}).strict();
+export type ModelRouteConfig = z.infer<typeof modelRouteConfigSchema>;
 
 export const publicSettingsSchema = z.object({
   version: z.literal(1),
