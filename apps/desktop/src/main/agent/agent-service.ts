@@ -25,7 +25,9 @@ export interface AgentFileTools {
 
 export interface AgentSession {
   provider: ModelProvider;
+  fallbackProviders?: ModelProvider[];
   fileTools: AgentFileTools;
+  fileDisclosureAllowed: boolean;
   tools: ToolDefinition[];
   toolRuntime: ToolRuntime;
   messages: ModelMessage[];
@@ -34,7 +36,7 @@ export interface AgentSession {
 export interface AgentServiceOptions {
   loop: AgentLoop;
   pending: PendingActionStore;
-  createSession(): Promise<AgentSession>;
+  createSession(signal?: AbortSignal): Promise<AgentSession>;
   emit(event: TaskEvent): void;
   createConversationId?: () => string;
 }
@@ -49,6 +51,13 @@ function errorCode(error: unknown): string {
 
 function publicErrorEvent(error: unknown): Extract<TaskEvent, { type: 'error' }> {
   const code = errorCode(error);
+  if (code === 'FILE_DISCLOSURE_DENIED') {
+    return {
+      type: 'error',
+      code,
+      message: '文件数据类别未授权。'
+    };
+  }
   const messages: Record<string, string> = {
     ACTION_EXPIRED: '待确认操作已失效，请重新发起任务。',
     PATH_INVALID: '文件路径无效。',
@@ -90,6 +99,30 @@ function providerWithOneRetry(provider: ModelProvider): ModelProvider {
   };
 }
 
+function providerWithFallback(
+  primary: ModelProvider,
+  fallbackProviders: readonly ModelProvider[]
+): ModelProvider {
+  const providers = [primary, ...fallbackProviders].map(providerWithOneRetry);
+  let activeProviderIndex = 0;
+  return {
+    async respond(request, signal) {
+      for (let index = activeProviderIndex; index < providers.length; index += 1) {
+        try {
+          const response = await providers[index]!.respond(request, signal);
+          activeProviderIndex = index;
+          return response;
+        } catch (error) {
+          if (!isRetryable(error) || signal.aborted || index === providers.length - 1) {
+            throw error;
+          }
+        }
+      }
+      throw new Error('PROVIDER_FALLBACK_EXHAUSTED');
+    }
+  };
+}
+
 function writeResult(action: VerifiedWriteAction): Record<string, unknown> {
   if (action.toolName === 'rename_entry') {
     return {
@@ -117,7 +150,7 @@ function actionSummary(action: VerifiedWriteAction): string {
 export class AgentService {
   private readonly loop: AgentLoop;
   private readonly pending: PendingActionStore;
-  private readonly createSession: () => Promise<AgentSession>;
+  private readonly createSession: (signal?: AbortSignal) => Promise<AgentSession>;
   private readonly emit: (event: TaskEvent) => void;
   private readonly createConversationId: () => string;
   private activeController: AbortController | null = null;
@@ -145,7 +178,7 @@ export class AgentService {
     this.activeController = controller;
     this.emit({ type: 'message', role: 'user', text: normalized });
     try {
-      const session = await this.createSession();
+      const session = await this.createSession(controller.signal);
       await this.forward(
         this.loop.run(normalized, this.runContext(session, controller.signal)),
         session
@@ -193,6 +226,7 @@ export class AgentService {
     let writeCompleted = false;
     this.emit({ type: 'phase', phase: 'acting' });
     try {
+      this.assertFileDisclosureAllowed(session);
       await session.fileTools.executeWrite(execution.verifiedAction);
       writeCompleted = true;
       await this.forward(
@@ -248,7 +282,7 @@ export class AgentService {
   private runContext(session: AgentSession, signal: AbortSignal): RunContext {
     return {
       messages: session.messages,
-      provider: providerWithOneRetry(session.provider),
+      provider: providerWithFallback(session.provider, session.fallbackProviders ?? []),
       tools: session.tools,
       toolRuntime: session.toolRuntime,
       signal
@@ -266,6 +300,7 @@ export class AgentService {
         continue;
       }
       try {
+        this.assertFileDisclosureAllowed(session);
         const verifiedAction = await session.fileTools.preview(event.executionRequest);
         const publicAction = this.pending.issue({
           conversationId: this.createConversationId(),
@@ -291,5 +326,12 @@ export class AgentService {
   private emitFailure(error: unknown): void {
     this.emit(publicErrorEvent(error));
     this.emit({ type: 'phase', phase: 'error' });
+  }
+
+  private assertFileDisclosureAllowed(session: AgentSession): void {
+    if (session.fileDisclosureAllowed) return;
+    throw Object.assign(new Error('FILE_DISCLOSURE_DENIED'), {
+      code: 'FILE_DISCLOSURE_DENIED'
+    });
   }
 }

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { ToolRisk } from '@myself/agent-core';
 import { toolNameSchema } from '@myself/shared-types';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
@@ -19,6 +20,25 @@ interface McpToolDescriptor {
     destructiveHint?: boolean | undefined;
     [key: string]: unknown;
   } | undefined;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * 本地授权绑定完整工具定义；远端声明只能改变指纹并使授权失效，不能自行获得授权。
+ */
+export function mcpToolDefinitionFingerprint(tool: McpToolDescriptor): string {
+  return createHash('sha256').update(canonicalJson(tool)).digest('hex');
 }
 
 export interface AdaptMcpToolOptions {

@@ -1,7 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { PublicSettings, TaskEvent } from '@myself/shared-types';
 import { ipcChannels } from '../shared/ipc-channels';
-import type { LocalDataScope, MyselfApi } from '../shared/myself-api';
+import type {
+  LocalDataScope,
+  McpServerInput,
+  MyselfApi,
+  PrivacySettingsDto,
+  SaveProviderProfileInput
+} from '../shared/myself-api';
+import type { ModelRouteConfig } from '@myself/shared-types';
 
 const api: MyselfApi = {
   getStatus: () => ipcRenderer.invoke(ipcChannels.appGetStatus),
@@ -19,6 +26,50 @@ const api: MyselfApi = {
       profileId === undefined ? { scope } : { scope, profileId }
     )
   ),
+  getSettingsDashboard: () => ipcRenderer.invoke(ipcChannels.settingsDashboardGet),
+  saveProviderProfile: (input: SaveProviderProfileInput) => (
+    ipcRenderer.invoke(ipcChannels.settingsProfileSave, input)
+  ),
+  deleteProviderProfile: (profileId: string) => (
+    ipcRenderer.invoke(ipcChannels.settingsProfileDelete, { profileId })
+  ),
+  testProviderProfile: (profileId: string) => (
+    ipcRenderer.invoke(ipcChannels.settingsProfileTest, { profileId })
+  ),
+  saveModelRoute: (route: ModelRouteConfig) => (
+    ipcRenderer.invoke(ipcChannels.settingsRouteSave, { route })
+  ),
+  upsertMcpServer: (input: McpServerInput) => (
+    ipcRenderer.invoke(ipcChannels.settingsMcpUpsert, input)
+  ),
+  confirmMcpLaunch: (serverId: string, fingerprint: string) => (
+    ipcRenderer.invoke(ipcChannels.settingsMcpConfirmLaunch, { serverId, fingerprint })
+  ),
+  testMcpServer: (serverId: string) => (
+    ipcRenderer.invoke(ipcChannels.settingsMcpTest, { serverId })
+  ),
+  setMcpServerEnabled: (serverId: string, enabled: boolean) => (
+    ipcRenderer.invoke(ipcChannels.settingsMcpServerToggle, { serverId, enabled })
+  ),
+  setMcpToolEnabled: (serverId: string, toolName: string, enabled: boolean) => (
+    ipcRenderer.invoke(ipcChannels.settingsMcpToolToggle, { serverId, toolName, enabled })
+  ),
+  authorizeMcpToolReadOnly: (serverId: string, toolName: string) => (
+    ipcRenderer.invoke(ipcChannels.settingsMcpToolAuthorizeRead, { serverId, toolName })
+  ),
+  revokeMcpToolReadOnly: (serverId: string, toolName: string) => (
+    ipcRenderer.invoke(ipcChannels.settingsMcpToolRevokeRead, { serverId, toolName })
+  ),
+  deleteMcpServer: (serverId: string) => (
+    ipcRenderer.invoke(ipcChannels.settingsMcpDelete, { serverId })
+  ),
+  savePrivacySettings: (input: PrivacySettingsDto) => (
+    ipcRenderer.invoke(ipcChannels.settingsPrivacySave, input)
+  ),
+  setIncognitoSession: (incognito: boolean) => (
+    ipcRenderer.invoke(ipcChannels.settingsIncognitoSet, { incognito })
+  ),
+  revokeAuthorizedRoot: () => ipcRenderer.invoke(ipcChannels.settingsRootRevoke),
   submitMessage: (text: string): Promise<void> => (
     ipcRenderer.invoke(ipcChannels.chatSubmit, { text })
   ),

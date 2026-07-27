@@ -38,6 +38,9 @@ importers:
       '@myself/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
+      lucide-react:
+        specifier: 1.26.0
+        version: 1.26.0(react@19.2.7)
       react:
         specifier: ^19.2.7
         version: 19.2.7

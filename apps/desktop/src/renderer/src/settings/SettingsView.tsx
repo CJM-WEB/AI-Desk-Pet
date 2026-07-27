@@ -1,174 +1,314 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import type { PublicSettings } from '@myself/shared-types';
-import type { LocalDataScope, MyselfApi } from '../../../shared/myself-api';
+import { useEffect, useState } from 'react';
+import { Bot, Database, ShieldCheck, Wrench, X } from 'lucide-react';
+import type {
+  McpServerInput,
+  MyselfApi,
+  PrivacySettingsDto,
+  SaveProviderProfileInput,
+  SettingsDashboardDto
+} from '../../../shared/myself-api';
+import type { LocalDataScope } from '../../../shared/myself-api';
+import type { ModelRouteConfig } from '@myself/shared-types';
+import { ProviderSettings } from './ProviderSettings';
+import {
+  McpSettings,
+  type McpLaunchConfirmation
+} from './McpSettings';
+import { PrivacySettings } from './PrivacySettings';
 
-export type SettingsFields = {
-  displayName: string;
-  baseUrl: string;
-  model: string;
-  secret: string;
-  persistSecret: boolean;
+export type SettingsTab = 'models' | 'tools' | 'privacy' | 'local';
+type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
+
+const emptyDashboard: SettingsDashboardDto = {
+  catalog: [],
+  profiles: [],
+  route: {
+    primaryProfileId: null,
+    chatProfileId: null,
+    agentProfileId: null,
+    visionProfileId: null,
+    fallbackProfileIds: [],
+    allowCrossProviderFallback: false
+  },
+  mcpServers: [],
+  privacy: {
+    dataCategories: {
+      file: false,
+      screenshot: false,
+      clipboard: false,
+      memory: false
+    },
+    longTermMemory: false,
+    proactivityMode: 'assistive'
+  },
+  privacyRuntimeSupport: {
+    dataCategories: {
+      file: true,
+      screenshot: false,
+      clipboard: false,
+      memory: false
+    },
+    longTermMemory: false,
+    proactivity: false
+  },
+  authorizedRoot: null
 };
 
-type BusyAction = 'save' | 'test' | 'root' | 'clear' | null;
-
-export interface SettingsFormProps {
-  settings: PublicSettings;
-  fields: SettingsFields;
-  busyAction: BusyAction;
-  notice: { tone: 'success' | 'error' | 'info'; text: string } | null;
-  onFieldChange(name: keyof SettingsFields, value: string | boolean): void;
-  onSave(event: FormEvent): void;
-  onTest(): void;
-  onChooseRoot(): void;
-  onClear(scope: LocalDataScope): void;
+export interface SettingsWorkspaceProps {
+  dashboard: SettingsDashboardDto;
+  activeTab: SettingsTab;
+  busy: boolean;
+  notice: Notice;
+  onTabChange(tab: SettingsTab): void;
   onClose(): void;
+  providerActions: {
+    onSave(input: SaveProviderProfileInput): void;
+    onTest(profileId: string): void;
+    onRouteSave(route: ModelRouteConfig): void;
+    onDelete(profileId: string): void;
+  };
+  mcpActions: {
+    launchSummary: McpLaunchConfirmation | null;
+    onCancelLaunch(): void;
+    onUpsert(input: McpServerInput): void;
+    onConfirmLaunch(serverId: string, fingerprint: string): void;
+    onTest(serverId: string): void;
+    onToggleServer(serverId: string, enabled: boolean): void;
+    onToggleTool(serverId: string, toolName: string, enabled: boolean): void;
+    onAuthorizeReadOnly(serverId: string, toolName: string): void;
+    onRevokeReadOnly(serverId: string, toolName: string): void;
+    onDelete(serverId: string): void;
+  };
+  privacyActions: {
+    incognito: boolean;
+    onSave(input: PrivacySettingsDto): void;
+    onIncognitoChange(value: boolean): void;
+    onChooseRoot(): void;
+    onRevokeRoot(): void;
+  };
+  onClear(scope: LocalDataScope): void;
 }
 
-export function SettingsForm(props: SettingsFormProps) {
-  const busy = props.busyAction !== null;
+const tabs = [
+  ['models', '模型', Bot],
+  ['tools', '工具', Wrench],
+  ['privacy', '隐私', ShieldCheck],
+  ['local', '本地数据', Database]
+] as const;
+
+export function SettingsWorkspace(props: SettingsWorkspaceProps) {
   return (
     <main className="settings-shell">
       <header className="settings-header">
-        <div><span className="companion-kicker">MYSELF</span><h1>陪伴设置</h1></div>
-        <button type="button" onClick={props.onClose}>关闭设置</button>
+        <div><span className="companion-kicker">MYSELF</span><h1>设置</h1></div>
+        <button type="button" aria-label="关闭设置" title="关闭设置" onClick={props.onClose}>
+          <X size={18} />
+        </button>
       </header>
-
-      {props.notice ? <div className={`settings-notice notice-${props.notice.tone}`} role="status">{props.notice.text}</div> : null}
-
-      <form className="settings-section" onSubmit={props.onSave}>
-        <div className="section-heading"><div><span>01</span><h2>模型伙伴</h2></div><p>连接你信任的兼容模型服务</p></div>
-        <div className="field-grid">
-          <label>显示名称<input value={props.fields.displayName} required onChange={event => props.onFieldChange('displayName', event.target.value)} /></label>
-          <label>模型名称<input value={props.fields.model} required onChange={event => props.onFieldChange('model', event.target.value)} /></label>
-          <label className="wide-field">Base URL<input type="url" value={props.fields.baseUrl} required placeholder="https://api.example.com/v1" onChange={event => props.onFieldChange('baseUrl', event.target.value)} /></label>
-          <label className="wide-field">API Key<input type="password" autoComplete="new-password" value={props.fields.secret} required placeholder={props.settings.provider?.hasStoredSecret ? '已安全保存；修改配置时请重新输入' : '只会发送给你选择的模型服务'} onChange={event => props.onFieldChange('secret', event.target.value)} /></label>
-        </div>
-        <label className="check-row"><input type="checkbox" checked={props.fields.persistSecret} onChange={event => props.onFieldChange('persistSecret', event.target.checked)} />使用 Windows 安全存储保存 API Key</label>
-        <div className="section-actions">
-          <button className="primary-button" type="submit" disabled={busy}>{props.busyAction === 'save' ? '正在保存…' : '保存模型配置'}</button>
-          <button className="quiet-button" type="button" disabled={busy} onClick={props.onTest}>{props.busyAction === 'test' ? '正在测试…' : '测试连接'}</button>
-        </div>
-      </form>
-
-      <section className="settings-section">
-        <div className="section-heading"><div><span>02</span><h2>工作目录</h2></div><p>Myself 只会访问你主动授权的位置</p></div>
-        <div className="root-card">
-          <div><strong>{props.settings.authorizedRoot?.displayName ?? '尚未选择目录'}</strong><span>{props.settings.authorizedRoot?.pathHint ?? '选择后只会显示经过隐私处理的路径摘要'}</span></div>
-          <button className="primary-button" type="button" disabled={busy} onClick={props.onChooseRoot}>{props.busyAction === 'root' ? '正在选择…' : '选择工作目录'}</button>
-        </div>
-        <p className="privacy-note">文件内容可能会发送给你配置的模型服务；Myself 不会访问授权目录之外的位置，所有写操作都需要你确认。</p>
-      </section>
-
-      <section className="settings-section danger-section">
-        <div className="section-heading"><div><span>03</span><h2>本地数据</h2></div><p>按范围清理保存在这台电脑上的信息</p></div>
-        <div className="clear-actions">
-          <button type="button" disabled={busy} onClick={() => props.onClear('conversation')}>清除对话摘要</button>
-          <button type="button" disabled={busy} onClick={() => props.onClear('audit')}>清除操作摘要</button>
-          <button type="button" disabled={busy} onClick={() => props.onClear('secret')}>清除已保存密钥</button>
-          <button className="danger-button" type="button" disabled={busy} onClick={() => props.onClear('all')}>清除全部本地数据</button>
-        </div>
-      </section>
+      <nav className="settings-tabs" aria-label="设置分类">
+        {tabs.map(([id, label, Icon]) => (
+          <button
+            key={id}
+            type="button"
+            aria-current={props.activeTab === id ? 'page' : undefined}
+            onClick={() => props.onTabChange(id)}
+          >
+            <Icon size={17} />{label}
+          </button>
+        ))}
+      </nav>
+      {props.notice
+        ? <div className={`settings-notice notice-${props.notice.tone}`} role="status">
+            {props.notice.text}
+          </div>
+        : null}
+      {props.activeTab === 'models' ? (
+        <ProviderSettings
+          dashboard={props.dashboard}
+          busy={props.busy}
+          {...props.providerActions}
+        />
+      ) : null}
+      {props.activeTab === 'tools' ? (
+        <McpSettings
+          servers={props.dashboard.mcpServers}
+          busy={props.busy}
+          {...props.mcpActions}
+        />
+      ) : null}
+      {props.activeTab === 'privacy' ? (
+        <PrivacySettings
+          privacy={props.dashboard.privacy}
+          runtimeSupport={props.dashboard.privacyRuntimeSupport}
+          authorizedRoot={props.dashboard.authorizedRoot}
+          busy={props.busy}
+          {...props.privacyActions}
+        />
+      ) : null}
+      {props.activeTab === 'local' ? (
+        <section className="settings-band local-data-pane" aria-labelledby="local-heading">
+          <div className="pane-heading">
+            <div><h2 id="local-heading">本地数据</h2><p>按范围清理，不会删除授权目录中的文件。</p></div>
+          </div>
+          <div className="local-data-actions">
+            <button type="button" disabled={props.busy} onClick={() => props.onClear('conversation')}>清除对话摘要</button>
+            <button type="button" disabled={props.busy} onClick={() => props.onClear('audit')}>清除操作摘要</button>
+            <button type="button" disabled={props.busy} onClick={() => props.onClear('secret')}>清除当前密钥</button>
+            <button className="danger-button" type="button" disabled={props.busy} onClick={() => props.onClear('all')}>清除全部本地数据</button>
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }
 
-const emptySettings: PublicSettings = {
-  version: 1,
-  provider: null,
-  authorizedRoot: null,
-  petPosition: null,
-  fileDisclosureAccepted: false
-};
-
-function fieldsFor(settings: PublicSettings): SettingsFields {
-  return {
-    displayName: settings.provider?.displayName ?? '',
-    baseUrl: settings.provider?.baseUrl ?? '',
-    model: settings.provider?.model ?? '',
-    secret: '',
-    persistSecret: true
-  };
-}
-
 export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
-  const [settings, setSettings] = useState<PublicSettings>(emptySettings);
-  const [fields, setFields] = useState<SettingsFields>(() => fieldsFor(emptySettings));
-  const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const [notice, setNotice] = useState<SettingsFormProps['notice']>({ tone: 'info', text: '正在读取本地设置…' });
+  const [dashboard, setDashboard] = useState(emptyDashboard);
+  const [activeTab, setActiveTab] = useState<SettingsTab>('models');
+  const [busy, setBusy] = useState(false);
+  const [incognito, setIncognito] = useState(false);
+  const [launchSummary, setLaunchSummary] = useState<McpLaunchConfirmation | null>(null);
+  const [notice, setNotice] = useState<Notice>({
+    tone: 'info',
+    text: '正在读取本地设置…'
+  });
 
   useEffect(() => {
     let active = true;
-    void api.getSettings().then(value => {
+    void api.getSettingsDashboard().then(value => {
       if (!active) return;
-      setSettings(value);
-      setFields(fieldsFor(value));
+      setDashboard(value);
       setNotice(null);
     }).catch(() => {
-      if (active) setNotice({ tone: 'error', text: '无法读取本地设置，请重新打开设置窗口。' });
+      if (active) setNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
     });
     return () => { active = false; };
   }, [api]);
 
-  const run = async (action: Exclude<BusyAction, null>, operation: () => Promise<void>): Promise<void> => {
-    if (busyAction) return;
-    setBusyAction(action);
+  const run = async (
+    operation: () => Promise<
+      SettingsDashboardDto
+      | { dashboard?: SettingsDashboardDto; notice?: Exclude<Notice, null> }
+      | void
+    >,
+    success: string
+  ): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
     try {
-      await operation();
+      const result = await operation();
+      if (result && 'catalog' in result) {
+        setDashboard(result);
+        setNotice({ tone: 'success', text: success });
+      } else {
+        if (result?.dashboard) setDashboard(result.dashboard);
+        setNotice(result?.notice ?? { tone: 'success', text: success });
+      }
     } catch {
-      setNotice({ tone: 'error', text: '操作没有完成，请检查输入后重试。' });
+      setNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
     } finally {
-      setBusyAction(null);
+      setBusy(false);
     }
   };
 
-  const save = (event: FormEvent): void => {
-    event.preventDefault();
-    void run('save', async () => {
-      const updated = await api.saveProvider(fields);
-      setSettings(updated);
-      setFields(current => ({ ...current, secret: '' }));
-      setNotice({ tone: 'success', text: '模型配置已安全保存。' });
-    });
-  };
-
-  const testConnection = (): void => {
-    void run('test', async () => {
-      const result = await api.testProvider();
-      setNotice({ tone: result.ok ? 'success' : 'error', text: result.message });
-    });
-  };
-
-  const chooseRoot = (): void => {
-    void run('root', async () => {
-      const updated = await api.chooseAuthorizedRoot();
-      setSettings(updated);
-      setNotice({ tone: 'success', text: updated.authorizedRoot ? '工作目录已更新。' : '没有更改工作目录。' });
-    });
-  };
-
-  const clearData = (scope: LocalDataScope): void => {
-    if (scope === 'all' && !window.confirm('确定清除全部本地设置和已保存密钥吗？此操作不会删除工作目录中的文件。')) return;
-    void run('clear', async () => {
-      const updated = await api.clearLocalData(scope);
-      setSettings(updated);
-      if (scope === 'all') setFields(fieldsFor(updated));
-      setNotice({ tone: 'success', text: '所选本地数据已清除。' });
-    });
-  };
-
   return (
-    <SettingsForm
-      settings={settings}
-      fields={fields}
-      busyAction={busyAction}
+    <SettingsWorkspace
+      dashboard={dashboard}
+      activeTab={activeTab}
+      busy={busy}
       notice={notice}
-      onFieldChange={(name, value) => setFields(current => ({ ...current, [name]: value }))}
-      onSave={save}
-      onTest={testConnection}
-      onChooseRoot={chooseRoot}
-      onClear={clearData}
+      onTabChange={setActiveTab}
       onClose={() => window.close()}
+      providerActions={{
+        onSave: input => void run(() => api.saveProviderProfile(input), '模型档案已保存。'),
+        onTest: profileId => void run(async () => {
+          const result = await api.testProviderProfile(profileId);
+          return {
+            notice: { tone: result.ok ? 'success' : 'error', text: result.message }
+          };
+        }, '连接测试完成。'),
+        onRouteSave: route => void run(() => api.saveModelRoute(route), '模型路由已保存。'),
+        onDelete: profileId => void run(
+          () => api.deleteProviderProfile(profileId),
+          '模型档案已删除。'
+        )
+      }}
+      mcpActions={{
+        launchSummary,
+        onCancelLaunch: () => {
+          setLaunchSummary(null);
+          setNotice({ tone: 'info', text: '已取消启动 MCP 服务。' });
+        },
+        onUpsert: input => void run(async () => {
+          const result = await api.upsertMcpServer(input);
+          if (result.kind === 'confirmation_required') {
+            setLaunchSummary({ serverId: input.id, ...result.summary });
+            return {
+              notice: {
+                tone: 'info' as const,
+                text: '请核对启动摘要；确认前服务不会启动。'
+              }
+            };
+          }
+          setLaunchSummary(null);
+          return result.dashboard;
+        }, 'MCP 配置已保存。'),
+        onConfirmLaunch: (serverId, fingerprint) => void run(async () => {
+          const result = await api.confirmMcpLaunch(serverId, fingerprint);
+          setLaunchSummary(null);
+          return result;
+        }, '启动边界已确认。'),
+        onTest: serverId => void run(async () => {
+          const result = await api.testMcpServer(serverId);
+          return {
+            dashboard: await api.getSettingsDashboard(),
+            notice: { tone: result.ok ? 'success' : 'error', text: result.message }
+          };
+        }, 'MCP 连接测试完成。'),
+        onToggleServer: (serverId, enabled) => void run(
+          () => api.setMcpServerEnabled(serverId, enabled),
+          '服务状态已更新。'
+        ),
+        onToggleTool: (serverId, toolName, enabled) => void run(
+          () => api.setMcpToolEnabled(serverId, toolName, enabled),
+          '工具状态已更新。'
+        ),
+        onAuthorizeReadOnly: (serverId, toolName) => void run(
+          () => api.authorizeMcpToolReadOnly(serverId, toolName),
+          '本地只读授权已保存，工具已启用。'
+        ),
+        onRevokeReadOnly: (serverId, toolName) => void run(
+          () => api.revokeMcpToolReadOnly(serverId, toolName),
+          '本地只读授权已撤销，工具已禁用。'
+        ),
+        onDelete: serverId => void run(
+          () => api.deleteMcpServer(serverId),
+          'MCP 服务已删除。'
+        )
+      }}
+      privacyActions={{
+        incognito,
+        onSave: input => void run(() => api.savePrivacySettings(input), '隐私设置已保存。'),
+        onIncognitoChange: value => void run(async () => {
+          await api.setIncognitoSession(value);
+          setIncognito(value);
+        }, value ? '已进入无痕会话。' : '已退出无痕会话。'),
+        onChooseRoot: () => void run(async () => {
+          await api.chooseAuthorizedRoot();
+          return api.getSettingsDashboard();
+        }, '授权目录已更新。'),
+        onRevokeRoot: () => void run(() => api.revokeAuthorizedRoot(), '目录权限已撤销。')
+      }}
+      onClear={scope => {
+        if (
+          scope === 'all'
+          && !window.confirm('确定清除全部本地设置和已保存密钥吗？')
+        ) return;
+        void run(async () => {
+          await api.clearLocalData(scope);
+          return api.getSettingsDashboard();
+        }, '所选本地数据已清除。');
+      }}
     />
   );
 }

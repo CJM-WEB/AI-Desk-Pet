@@ -1,7 +1,7 @@
 import { join } from 'node:path';
-import { AgentLoop } from '@myself/agent-core';
+import { AgentLoop, ModelRouter } from '@myself/agent-core';
 import { FileToolService, PathPolicy } from '@myself/file-tools';
-import type { TaskEvent } from '@myself/shared-types';
+import { providerCatalog, type TaskEvent } from '@myself/shared-types';
 import {
   app,
   BrowserWindow,
@@ -16,14 +16,27 @@ import {
 import { AgentService } from './agent/agent-service';
 import { PermissionPolicy } from './agent/permission-policy';
 import { PendingActionStore } from './agent/pending-action-store';
-import { createBuiltinFileToolRegistry } from './agent/tool-registry';
+import { createSessionToolRegistry } from './agent/tool-registry';
+import { PrivacySessionRegistry } from './agent/disclosure-policy';
 import { resolveMainE2eBoundary } from './e2e-boundary';
-import { registerAgentIpc, registerSettingsIpc, registerWindowIpc } from './ipc/register-ipc';
+import {
+  registerAdvancedSettingsIpc,
+  registerAgentIpc,
+  registerSettingsIpc,
+  registerWindowIpc
+} from './ipc/register-ipc';
+import { McpManager } from './mcp/mcp-manager';
+import { McpServerStore } from './mcp/mcp-server-store';
 import { OpenAICompatibleProvider } from './providers/openai-provider';
+import { ProviderRegistry } from './providers/provider-registry';
 import { ipcChannels } from '../shared/ipc-channels';
 import { SecretStore } from './storage/secret-store';
 import { SettingsStore } from './storage/settings-store';
 import { createSettingsActions } from './settings/settings-actions';
+import {
+  createTrustedMcpRiskResolver,
+  DesktopSettingsService,
+} from './settings/desktop-settings-service';
 import {
   createPetPositionController,
   createQuitAfterPositionFlush,
@@ -39,6 +52,7 @@ import { createWindowCommandController } from './windows/window-commands';
 let tray: Tray | null = null;
 let isQuitting = false;
 let activeAgentService: AgentService | null = null;
+let activeDesktopSettingsService: DesktopSettingsService | null = null;
 
 const e2eBoundary = resolveMainE2eBoundary({
   appIsPackaged: app.isPackaged,
@@ -112,8 +126,28 @@ async function createApplicationWindows(): Promise<void> {
   });
   const settingsStore = new SettingsStore(
     join(storageDirectory, 'settings.json'),
-    () => secrets.hasStoredSecret()
+    profileId => secrets.hasStoredSecret(profileId)
   );
+  const providerRegistry = new ProviderRegistry(providerCatalog);
+  const mcpStore = new McpServerStore();
+  const mcpManager = new McpManager({
+    store: mcpStore,
+    riskResolver: createTrustedMcpRiskResolver((serverId, toolName) => (
+      mcpStore.get(serverId)?.capabilities.tools[toolName]?.trustedReadFingerprint
+    ))
+  });
+  const privacySessions = new PrivacySessionRegistry();
+  const desktopSettingsService = new DesktopSettingsService({
+    settings: settingsStore,
+    secrets,
+    providers: providerRegistry,
+    mcpStore,
+    mcpManager,
+    privacySessions,
+    sessionId: 'desktop-session'
+  });
+  await desktopSettingsService.initialize();
+  activeDesktopSettingsService = desktopSettingsService;
   const primaryDisplay = screen.getPrimaryDisplay();
   const workAreas = [
     primaryDisplay.workArea,
@@ -137,7 +171,10 @@ async function createApplicationWindows(): Promise<void> {
     onError: reportPetPositionError
   });
   const handleBeforeQuit = createQuitAfterPositionFlush({
-    flush: () => petPositionController.flush(),
+    flush: async () => {
+      await petPositionController.flush();
+      await activeDesktopSettingsService?.close();
+    },
     quit: () => app.quit(),
     onError: reportPetPositionError
   });
@@ -171,7 +208,6 @@ async function createApplicationWindows(): Promise<void> {
     await loadRenderer(settings, 'settings');
     return settings;
   };
-
   const windowCommands = createWindowCommandController({
     getChatWindow: () => chat,
     ensureChatWindow,
@@ -214,28 +250,61 @@ async function createApplicationWindows(): Promise<void> {
   const agentService = new AgentService({
     loop,
     pending: pendingActions,
-    createSession: async () => {
-      const [publicSettings, authorizedRootPath] = await Promise.all([
-        settingsStore.getPublic(),
-        settingsStore.getAuthorizedRootPath()
+    createSession: async signal => {
+      const [providerSettings, authorizedRootPath, privacySettings] = await Promise.all([
+        settingsStore.getProviderSettings(),
+        settingsStore.getAuthorizedRootPath(),
+        settingsStore.getPrivacySettings()
       ]);
-      if (!publicSettings.provider || !publicSettings.provider.hasStoredSecret || !authorizedRootPath) {
+      const router = new ModelRouter({
+        profiles: providerSettings.profiles,
+        route: providerSettings.route,
+        catalog: providerCatalog
+      });
+      const selection = router.select('agent', {
+        allowedCrossProviderProfileIds: providerSettings.route.allowCrossProviderFallback
+          ? new Set(providerSettings.route.fallbackProfileIds)
+          : new Set()
+      });
+      const profile = selection.profile;
+      if (!profile || !profile.hasStoredSecret || !authorizedRootPath) {
         throw settingsIncompleteError();
       }
       const policy = await PathPolicy.create(authorizedRootPath);
       const fileTools = new FileToolService(policy);
-      const registry = createBuiltinFileToolRegistry();
+      const fileDisclosureAllowed = privacySettings.dataCategories.file;
+      const registry = createSessionToolRegistry(fileDisclosureAllowed);
+      for (const registration of await desktopSettingsService.enabledReadToolRegistrations()) {
+        registry.register(registration);
+      }
       const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
       return {
-        provider: new OpenAICompatibleProvider(
-          publicSettings.provider,
-          () => secrets.readForProviderCall()
+        provider: providerRegistry.create(
+          profile,
+          () => secrets.readForProviderCall(profile.id)
         ),
+        fallbackProviders: selection.fallbackProfiles
+          .filter(fallback => fallback.hasStoredSecret)
+          .map(fallback => providerRegistry.create(
+            fallback,
+            () => secrets.readForProviderCall(fallback.id)
+          )),
         fileTools,
+        fileDisclosureAllowed,
         tools: registry.definitions(),
         toolRuntime: {
           prepare: raw => registry.prepare(raw, permissionPolicy),
-          executeRead: request => fileTools.executeRead(request)
+          executeRead: request => request.toolName.startsWith('mcp-internal.')
+            ? desktopSettingsService.executeMcpRead(
+                request.toolName,
+                request.arguments,
+                signal
+              )
+            : fileDisclosureAllowed
+              ? fileTools.executeRead(request)
+              : Promise.reject(Object.assign(new Error('FILE_DISCLOSURE_DENIED'), {
+                  code: 'FILE_DISCLOSURE_DENIED'
+                }))
         },
         messages: [{
           role: 'system',
@@ -271,6 +340,9 @@ async function createApplicationWindows(): Promise<void> {
     onProviderChanged: () => agentService.clearPending('provider_changed'),
     onAuthorizedRootChanged: () => agentService.clearPending('root_changed')
   }, settingsActions);
+  registerAdvancedSettingsIpc(ipcMain, desktopSettingsService, {
+    onConfigurationChanged: () => agentService.clearPending('provider_changed')
+  });
 
   await Promise.all([
     loadRenderer(pet, 'pet'),

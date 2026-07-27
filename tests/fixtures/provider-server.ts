@@ -6,6 +6,7 @@ import type { ModelMessage, ModelRequest, ModelResponse } from '@myself/agent-co
 export interface ProviderStep {
   response: ModelResponse;
   inspect?: (request: ModelRequest) => void;
+  delayMs?: number;
 }
 
 export type ProviderScript = ProviderStep[] | ((apiKey: string) => ProviderStep[]);
@@ -68,9 +69,13 @@ export async function startProviderServer(
     if (step.inspect) {
       try {
         step.inspect(parsed);
-      } catch {
-        inspectionErrors.push('脚本化 Provider 请求检查失败');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '未知错误';
+        inspectionErrors.push(`脚本化 Provider 请求检查失败：${message}`);
       }
+    }
+    if (step.delayMs) {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, step.delayMs));
     }
 
     response.writeHead(200, { 'content-type': 'application/json' });

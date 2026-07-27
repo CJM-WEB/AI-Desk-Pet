@@ -14,6 +14,7 @@ export interface ElectronLaunchPlanOptions {
   userDataDirectory: string;
   authorizedRootDirectory: string;
   parentEnvironment?: NodeJS.ProcessEnv;
+  enableSoftwareRasterizer?: boolean;
 }
 
 export interface ElectronLaunchPlan {
@@ -46,7 +47,7 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
       `--remote-debugging-port=${options.cdpPort}`,
       // Windows E2E 环境中 GPU 沙盒子进程可能不可用，测试启动时阻止它反复崩溃。
       '--disable-gpu',
-      '--disable-software-rasterizer',
+      ...(options.enableSoftwareRasterizer ? [] : ['--disable-software-rasterizer']),
       '--no-sandbox',
       applicationEntry
     ],
@@ -163,6 +164,7 @@ export interface CreateElectronAppFixtureOptions {
   apiKey: string;
   launchTimeoutMs?: number;
   operationTimeoutMs?: number;
+  enableSoftwareRasterizer?: boolean;
   dependencies?: ElectronAppDependencies;
 }
 
@@ -723,7 +725,8 @@ export async function createElectronAppFixture(
       cdpPort,
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
-      parentEnvironment: globalThis.process.env
+      parentEnvironment: globalThis.process.env,
+      enableSoftwareRasterizer: options.enableSoftwareRasterizer
     });
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;

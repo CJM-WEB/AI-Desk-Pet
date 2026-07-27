@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PetCharacter } from '../src/renderer/src/pet/PetView';
 import { ConfirmationCard } from '../src/renderer/src/chat/ConfirmationCard';
-import { SettingsForm } from '../src/renderer/src/settings/SettingsView';
+import { SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
 import { mountTaskEventsIfAvailable } from '../src/renderer/src/App';
 
 type ClickableElement = {
@@ -103,32 +103,80 @@ describe('Renderer 可见组件', () => {
     expect(markup).not.toContain('rename_entry');
   });
 
-  test('设置表单提供模型、目录、隐私和本地数据操作', () => {
+  test('设置工作区提供模型、工具、隐私和本地数据导航', () => {
     const markup = renderToStaticMarkup(
-      <SettingsForm
-        settings={{
-          version: 1,
-          provider: null,
-          authorizedRoot: null,
-          petPosition: null,
-          fileDisclosureAccepted: false
+      <SettingsWorkspace
+        dashboard={{
+          catalog: [],
+          profiles: [],
+          route: {
+            primaryProfileId: null,
+            chatProfileId: null,
+            agentProfileId: null,
+            visionProfileId: null,
+            fallbackProfileIds: [],
+            allowCrossProviderFallback: false
+          },
+          mcpServers: [],
+          privacy: {
+            dataCategories: {
+              file: false,
+              screenshot: false,
+              clipboard: false,
+              memory: false
+            },
+            longTermMemory: false,
+            proactivityMode: 'assistive'
+          },
+          privacyRuntimeSupport: {
+            dataCategories: {
+              file: true,
+              screenshot: false,
+              clipboard: false,
+              memory: false
+            },
+            longTermMemory: false,
+            proactivity: false
+          },
+          authorizedRoot: null
         }}
-        fields={{ displayName: '', baseUrl: '', model: '', secret: '', persistSecret: true }}
-        busyAction={null}
+        activeTab="local"
+        busy={false}
         notice={null}
-        onFieldChange={vi.fn()}
-        onSave={vi.fn()}
-        onTest={vi.fn()}
-        onChooseRoot={vi.fn()}
-        onClear={vi.fn()}
+        onTabChange={vi.fn()}
         onClose={vi.fn()}
+        providerActions={{
+          onSave: vi.fn(),
+          onTest: vi.fn(),
+          onRouteSave: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        mcpActions={{
+          launchSummary: null,
+          onCancelLaunch: vi.fn(),
+          onUpsert: vi.fn(),
+          onConfirmLaunch: vi.fn(),
+          onTest: vi.fn(),
+          onToggleServer: vi.fn(),
+          onToggleTool: vi.fn(),
+          onAuthorizeReadOnly: vi.fn(),
+          onRevokeReadOnly: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
       />
     );
 
-    expect(markup).toContain('模型伙伴');
-    expect(markup).toContain('测试连接');
-    expect(markup).toContain('选择工作目录');
-    expect(markup).toContain('文件内容可能会发送给你配置的模型服务');
+    expect(markup).toContain('模型');
+    expect(markup).toContain('工具');
+    expect(markup).toContain('隐私');
     expect(markup).toContain('清除全部本地数据');
   });
 });

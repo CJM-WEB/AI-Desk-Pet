@@ -21,6 +21,7 @@
     "@myself/character-runtime": "workspace:*",
     "@myself/file-tools": "workspace:*",
     "@myself/shared-types": "workspace:*",
+    "lucide-react": "1.26.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "zod": "^3.25.76",

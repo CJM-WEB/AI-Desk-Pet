@@ -126,7 +126,7 @@ export class ModelRouter {
     if (profile.mode === 'custom') {
       return {
         profile,
-        capabilities: new Set(['chat', 'streaming']),
+        capabilities: new Set(profile.capabilities ?? ['chat', 'streaming']),
         disclosureTarget: {
           profileId: profile.id,
           providerIdentity: `custom:${profile.protocol}:${profile.baseUrl.replace(/\/+$/u, '')}`

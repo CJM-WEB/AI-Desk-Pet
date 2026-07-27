@@ -35,4 +35,42 @@ describe('preload 清除本地数据转发', () => {
 
     expect(invoke).toHaveBeenCalledWith(ipcChannels.settingsClearLocalData, { scope: 'secret' });
   });
+
+  test('高级设置只通过固定白名单通道转发', async () => {
+    await exposedApi?.getSettingsDashboard();
+    await exposedApi?.saveModelRoute({
+      primaryProfileId: null,
+      chatProfileId: null,
+      agentProfileId: null,
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    });
+    await exposedApi?.setIncognitoSession(true);
+    await exposedApi?.authorizeMcpToolReadOnly('local-tools', 'echo');
+    await exposedApi?.revokeMcpToolReadOnly('local-tools', 'echo');
+
+    expect(invoke).toHaveBeenNthCalledWith(1, ipcChannels.settingsDashboardGet);
+    expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.settingsRouteSave, {
+      route: {
+        primaryProfileId: null,
+        chatProfileId: null,
+        agentProfileId: null,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      }
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.settingsIncognitoSet, {
+      incognito: true
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.settingsMcpToolAuthorizeRead, {
+      serverId: 'local-tools',
+      toolName: 'echo'
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.settingsMcpToolRevokeRead, {
+      serverId: 'local-tools',
+      toolName: 'echo'
+    });
+  });
 });

@@ -199,3 +199,10 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
 
   return registry;
 }
+
+/**
+ * 按当前会话的数据授权构建工具表，避免把未授权能力暴露给模型。
+ */
+export function createSessionToolRegistry(fileDisclosureAllowed: boolean): ToolRegistry {
+  return fileDisclosureAllowed ? createBuiltinFileToolRegistry() : new ToolRegistry();
+}

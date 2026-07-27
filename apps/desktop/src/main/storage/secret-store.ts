@@ -8,6 +8,12 @@ export interface SecretEncryptionAdapter {
   decryptString(value: Buffer): Promise<string>;
 }
 
+export type SecretSnapshot =
+  | { kind: 'missing' }
+  | { kind: 'session'; value: string }
+  | { kind: 'persisted'; encrypted: Buffer }
+  | { kind: 'legacy'; encrypted: Buffer };
+
 async function atomicWrite(file: string, value: Buffer): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
   const temporaryFile = `${file}.tmp`;
@@ -102,6 +108,52 @@ export class SecretStore {
       this.sessionSecrets.clear();
       await rm(this.profilesDirectory, { recursive: true, force: true });
       await this.removeLegacyFile();
+    });
+  }
+
+  async snapshot(profileId: string): Promise<SecretSnapshot> {
+    validateProfileId(profileId);
+    return this.enqueue(async () => {
+      const sessionSecret = this.sessionSecrets.get(profileId);
+      if (sessionSecret !== undefined) {
+        return { kind: 'session', value: sessionSecret };
+      }
+      try {
+        return {
+          kind: 'persisted',
+          encrypted: Buffer.from(await readFile(this.slotFile(profileId)))
+        };
+      } catch (error) {
+        if (!isMissingFile(error)) throw error;
+      }
+      if (profileId === 'default') {
+        try {
+          return {
+            kind: 'legacy',
+            encrypted: Buffer.from(await readFile(this.file))
+          };
+        } catch (error) {
+          if (!isMissingFile(error)) throw error;
+        }
+      }
+      return { kind: 'missing' };
+    });
+  }
+
+  async restore(profileId: string, snapshot: SecretSnapshot): Promise<void> {
+    validateProfileId(profileId);
+    await this.enqueue(async () => {
+      this.sessionSecrets.delete(profileId);
+      await this.removeSlot(profileId);
+      if (profileId === 'default') await this.removeLegacyFile();
+
+      if (snapshot.kind === 'session') {
+        this.sessionSecrets.set(profileId, snapshot.value);
+      } else if (snapshot.kind === 'persisted') {
+        await atomicWrite(this.slotFile(profileId), Buffer.from(snapshot.encrypted));
+      } else if (snapshot.kind === 'legacy') {
+        await atomicWrite(this.file, Buffer.from(snapshot.encrypted));
+      }
     });
   }
 

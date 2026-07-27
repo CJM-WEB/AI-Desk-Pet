@@ -54,7 +54,12 @@ function verifiedAction(): VerifiedWriteAction {
   });
 }
 
-function createHarness(provider: ModelProvider, fileOverrides: Partial<AgentFileTools> = {}) {
+function createHarness(
+  provider: ModelProvider,
+  fileOverrides: Partial<AgentFileTools> = {},
+  fileDisclosureAllowed = true,
+  fallbackProviders: ModelProvider[] = []
+) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
   const fileTools: AgentFileTools = {
@@ -67,7 +72,9 @@ function createHarness(provider: ModelProvider, fileOverrides: Partial<AgentFile
   const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
   const session: AgentSession = {
     provider,
+    fallbackProviders,
     fileTools,
+    fileDisclosureAllowed,
     tools: registry.definitions(),
     toolRuntime: {
       prepare: raw => registry.prepare(raw, permissionPolicy),
@@ -93,6 +100,42 @@ function phases(events: TaskEvent[]) {
 }
 
 describe('AgentService', () => {
+  test('主模型可重试失败耗尽后改用备用模型完成当前 Agent 请求', async () => {
+    const firstError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
+    const secondError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
+    const primary = new ScriptedProvider([firstError, secondError]);
+    const fallback = new ScriptedProvider([{ type: 'text', text: '备用模型已响应' }]);
+    const { events, service } = createHarness(primary, {}, true, [fallback]);
+
+    await service.submit('继续任务');
+
+    expect(primary.requests).toHaveLength(2);
+    expect(fallback.requests).toHaveLength(1);
+    expect(events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '备用模型已响应'
+    });
+  });
+
+  test('文件分类未授权时拒绝历史写请求进入预览和执行', async () => {
+    const { events, fileTools, service } = createHarness(
+      new ScriptedProvider([writeResponse()]),
+      {},
+      false
+    );
+
+    await expect(service.submit('创建 result.txt')).rejects.toThrow(
+      'FILE_DISCLOSURE_DENIED'
+    );
+    expect(fileTools.preview).not.toHaveBeenCalled();
+    expect(fileTools.executeWrite).not.toHaveBeenCalled();
+    expect(events.at(-2)).toEqual(expect.objectContaining({
+      type: 'error',
+      code: 'FILE_DISCLOSURE_DENIED'
+    }));
+  });
+
   test('列目录成功后生成最终助手消息和 success', async () => {
     const provider = new ScriptedProvider([
       {

@@ -18,6 +18,7 @@ type ElectronFixtureModule = {
     userDataDirectory: string;
     authorizedRootDirectory: string;
     parentEnvironment?: NodeJS.ProcessEnv;
+    enableSoftwareRasterizer?: boolean;
   }): {
     executablePath: string;
     applicationEntry: string;
@@ -239,6 +240,16 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
       MYSELF_E2E_USER_DATA: userDataDirectory,
       MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory
     });
+
+    const visualPlan = fixture.createElectronLaunchPlan({
+      workspaceRoot,
+      cdpPort: 43124,
+      userDataDirectory,
+      authorizedRootDirectory,
+      parentEnvironment: { PATH: process.env['PATH'] },
+      enableSoftwareRasterizer: true
+    });
+    expect(visualPlan.args).not.toContain('--disable-software-rasterizer');
   });
 
   test('拒绝非回环 CDP 端点且等待使用有界超时', async () => {
@@ -1527,12 +1538,19 @@ test.describe('真实 Provider 业务闭环', () => {
     const providerSteps: ProviderStep[] = [
       { response: { type: 'text', text: '本地连接正常' } },
       {
-        response: toolResponse('list-root', 'list_directory', { relativePath: '.' }),
+        response: toolResponse(
+          'list-root',
+          'builtin.files.list_directory',
+          { relativePath: '.' }
+        ),
         inspect: request => {
           const names = request.tools.map(
             (tool: { function: { name: string } }) => tool.function.name
           );
-          if (!names.includes('list_directory') || !names.includes('create_file')) {
+          if (
+            !names.includes('builtin.files.list_directory')
+            || !names.includes('builtin.files.create_file')
+          ) {
             throw new Error('Provider 未收到正式文件工具白名单');
           }
         }
@@ -1551,7 +1569,11 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: toolResponse('create-file', 'create_file', { relativePath: 'created.txt' })
+        response: toolResponse(
+          'create-file',
+          'builtin.files.create_file',
+          { relativePath: 'created.txt' }
+        )
       },
       {
         response: { type: 'text', text: '空文件已创建。' },
@@ -1563,7 +1585,7 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: toolResponse('rename-file', 'rename_entry', {
+        response: toolResponse('rename-file', 'builtin.files.rename_entry', {
           sourceRelativePath: 'created.txt',
           targetRelativePath: 'renamed.txt'
         })
@@ -1584,7 +1606,11 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: toolResponse('cancel-file', 'create_file', { relativePath: 'cancelled.txt' })
+        response: toolResponse(
+          'cancel-file',
+          'builtin.files.create_file',
+          { relativePath: 'cancelled.txt' }
+        )
       }
     ];
 
@@ -1658,18 +1684,27 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await chatPage.getByRole('button', { name: '设置' }).click();
       await expect.poll(() => settingsPage.evaluate(() => document.visibilityState)).toBe('visible');
-      await settingsPage.getByLabel('显示名称').fill('任务九本地服务');
-      await settingsPage.getByLabel('模型名称').fill('task-9b2-model');
+      await settingsPage.getByLabel('自定义').check();
+      await settingsPage.getByText('高级设置', { exact: true }).click();
+      await settingsPage.getByLabel('档案名称').fill('任务九本地服务');
       await settingsPage.getByLabel('Base URL').fill(provider.baseUrl);
+      await settingsPage.getByLabel('Model ID').fill('task-9b2-model');
       await settingsPage.getByLabel('API Key', { exact: true }).fill(provider.apiKey);
-      await settingsPage.getByRole('button', { name: '保存模型配置' }).click();
-      await expect(settingsPage.getByText('模型配置已安全保存。')).toBeVisible();
+      await settingsPage.getByRole('button', { name: '保存档案' }).click();
+      await expect(settingsPage.getByText('模型档案已保存。')).toBeVisible();
 
-      await settingsPage.getByRole('button', { name: '测试连接' }).click();
-      await expect(settingsPage.getByText('连接成功。')).toBeVisible();
+      await settingsPage.getByRole('button', { name: '测试 任务九本地服务 连接' }).click();
+      await expect(settingsPage.getByText('连接测试完成。')).toBeVisible();
+      await settingsPage.getByRole('combobox', { name: '主模型', exact: true })
+        .selectOption({ label: '任务九本地服务' });
+      await settingsPage.getByRole('combobox', { name: 'Agent 模型', exact: true })
+        .selectOption({ label: '任务九本地服务' });
+      await settingsPage.getByRole('button', { name: '保存路由' }).click();
+      await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
 
-      await settingsPage.getByRole('button', { name: '选择工作目录' }).click();
-      await expect(settingsPage.getByText('工作目录已更新。')).toBeVisible();
+      await settingsPage.getByRole('button', { name: '隐私' }).click();
+      await settingsPage.getByRole('button', { name: '选择目录' }).click();
+      await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
       await expect(settingsPage.getByText('authorized-root', { exact: true })).toBeVisible();
       await settingsPage.getByRole('button', { name: '关闭设置' }).click();
 

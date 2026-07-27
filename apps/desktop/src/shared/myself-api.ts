@@ -1,4 +1,11 @@
-import type { PublicSettings, TaskEvent } from '@myself/shared-types';
+import type {
+  ModelRouteConfig,
+  ProviderCatalogEntry,
+  ProviderProfileV2,
+  PublicSettings,
+  StoredProviderProfileV2,
+  TaskEvent
+} from '@myself/shared-types';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 
@@ -11,6 +18,91 @@ export interface SaveProviderInput {
   persistSecret: boolean;
 }
 
+export interface PrivacySettingsDto {
+  dataCategories: {
+    file: boolean;
+    screenshot: boolean;
+    clipboard: boolean;
+    memory: boolean;
+  };
+  longTermMemory: boolean;
+  proactivityMode: 'passive' | 'assistive' | 'autonomous';
+}
+
+export interface PrivacyRuntimeSupportDto {
+  dataCategories: {
+    file: boolean;
+    screenshot: boolean;
+    clipboard: boolean;
+    memory: boolean;
+  };
+  longTermMemory: boolean;
+  proactivity: boolean;
+}
+
+export interface McpToolDto {
+  name: string;
+  description: string;
+  enabled: boolean;
+  readOnly: boolean;
+}
+
+export interface McpServerDto {
+  id: string;
+  enabled: boolean;
+  status: 'disconnected' | 'connected' | 'error';
+  transport: {
+    type: 'stdio' | 'http';
+    summary: string;
+    secretNames: string[];
+  };
+  tools: McpToolDto[];
+}
+
+export interface SettingsDashboardDto {
+  catalog: ProviderCatalogEntry[];
+  profiles: ProviderProfileV2[];
+  route: ModelRouteConfig;
+  mcpServers: McpServerDto[];
+  privacy: PrivacySettingsDto;
+  privacyRuntimeSupport: PrivacyRuntimeSupportDto;
+  authorizedRoot: PublicSettings['authorizedRoot'];
+}
+
+export interface SaveProviderProfileInput {
+  profile: StoredProviderProfileV2;
+  secret?: string;
+  persistSecret: boolean;
+}
+
+export type McpServerInput = {
+  id: string;
+  enabled: boolean;
+  transport:
+    | {
+      type: 'stdio';
+      command: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      inheritEnv?: string[];
+    }
+    | {
+      type: 'http';
+      url: string;
+      headers?: Record<string, string>;
+    };
+};
+
+export interface McpLaunchSummaryDto {
+  command: string;
+  args: string[];
+  cwd: string;
+  explicitEnvNames: string[];
+  inheritedEnvNames: string[];
+  fingerprint: string;
+}
+
 export interface MyselfApi {
   getStatus(): Promise<{ version: string; ready: boolean }>;
   getSettings(): Promise<PublicSettings>;
@@ -18,6 +110,35 @@ export interface MyselfApi {
   testProvider(): Promise<{ ok: boolean; message: string }>;
   chooseAuthorizedRoot(): Promise<PublicSettings>;
   clearLocalData(scope: LocalDataScope, profileId?: string): Promise<PublicSettings>;
+  getSettingsDashboard(): Promise<SettingsDashboardDto>;
+  saveProviderProfile(input: SaveProviderProfileInput): Promise<SettingsDashboardDto>;
+  deleteProviderProfile(profileId: string): Promise<SettingsDashboardDto>;
+  testProviderProfile(profileId: string): Promise<{ ok: boolean; message: string }>;
+  saveModelRoute(route: ModelRouteConfig): Promise<SettingsDashboardDto>;
+  upsertMcpServer(input: McpServerInput): Promise<
+    | { kind: 'saved'; dashboard: SettingsDashboardDto }
+    | { kind: 'confirmation_required'; summary: McpLaunchSummaryDto }
+  >;
+  confirmMcpLaunch(serverId: string, fingerprint: string): Promise<SettingsDashboardDto>;
+  testMcpServer(serverId: string): Promise<{ ok: boolean; message: string }>;
+  setMcpServerEnabled(serverId: string, enabled: boolean): Promise<SettingsDashboardDto>;
+  setMcpToolEnabled(
+    serverId: string,
+    toolName: string,
+    enabled: boolean
+  ): Promise<SettingsDashboardDto>;
+  authorizeMcpToolReadOnly(
+    serverId: string,
+    toolName: string
+  ): Promise<SettingsDashboardDto>;
+  revokeMcpToolReadOnly(
+    serverId: string,
+    toolName: string
+  ): Promise<SettingsDashboardDto>;
+  deleteMcpServer(serverId: string): Promise<SettingsDashboardDto>;
+  savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto>;
+  setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }>;
+  revokeAuthorizedRoot(): Promise<SettingsDashboardDto>;
   submitMessage(text: string): Promise<void>;
   cancelTask(): Promise<void>;
   confirmAction(actionId: string): Promise<void>;

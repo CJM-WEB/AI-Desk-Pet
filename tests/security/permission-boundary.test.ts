@@ -90,6 +90,7 @@ async function harness(steps: ProviderScript) {
     createSession: async () => ({
       provider,
       fileTools: authorized.fileTools,
+      fileDisclosureAllowed: true,
       tools: registry.definitions(),
       toolRuntime: {
         prepare: raw => registry.prepare(raw, permissionPolicy),

@@ -11,7 +11,9 @@ export interface McpCapabilityCollectionState extends McpCapabilityState {
   items?: Record<string, McpCapabilityState>;
 }
 
-export type McpToolState = McpCapabilityState;
+export interface McpToolState extends McpCapabilityState {
+  trustedReadFingerprint?: string;
+}
 
 export interface McpServerCapabilitiesConfig {
   tools: Record<string, McpToolState>;
@@ -54,6 +56,10 @@ const capabilityStateSchema = z.object({
   enabled: z.boolean()
 }).strict();
 
+const toolStateSchema = capabilityStateSchema.extend({
+  trustedReadFingerprint: z.string().regex(/^[a-f0-9]{64}$/u).optional()
+}).strict();
+
 const capabilityCollectionSchema = z.object({
   enabled: z.boolean(),
   items: z.record(z.string(), capabilityStateSchema).optional()
@@ -82,7 +88,7 @@ const serverConfigSchema = z.object({
     httpTransportSchema
   ]),
   capabilities: z.object({
-    tools: z.record(z.string(), capabilityStateSchema),
+    tools: z.record(z.string(), toolStateSchema),
     resources: capabilityCollectionSchema,
     prompts: capabilityCollectionSchema
   }).strict()
@@ -168,6 +174,11 @@ export class McpServerStore {
 
   list(): McpServerConfig[] {
     return [...this.servers.values()].map(config => structuredClone(config));
+  }
+
+  remove(serverId: string): boolean {
+    this.confirmedLaunches.delete(serverId);
+    return this.servers.delete(serverId);
   }
 
   getStdioLaunchSummary(serverId: string): McpStdioLaunchSummary {

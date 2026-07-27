@@ -4,7 +4,8 @@ import type { ToolDefinition, ToolRisk } from '@myself/agent-core';
 import { PermissionPolicy } from '../src/main/agent/permission-policy';
 import {
   ToolRegistry,
-  createBuiltinFileToolRegistry
+  createBuiltinFileToolRegistry,
+  createSessionToolRegistry
 } from '../src/main/agent/tool-registry';
 
 function definition(name: string): ToolDefinition {
@@ -194,6 +195,13 @@ describe('ToolRegistry', () => {
 });
 
 describe('内置文件工具注册', () => {
+  test('文件分类未授权时会话不注册任何 builtin 文件工具', () => {
+    expect(createSessionToolRegistry(false).definitions()).toEqual([]);
+    expect(createSessionToolRegistry(true).definitions().map(
+      definition => definition.function.name
+    )).toContain('builtin.files.list_directory');
+  });
+
   test('五个公开工具映射到旧内部动作和本地风险', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });

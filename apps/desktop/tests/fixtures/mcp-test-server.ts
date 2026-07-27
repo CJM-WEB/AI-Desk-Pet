@@ -1,6 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { writeFileSync } from 'node:fs';
 import { z } from 'zod';
+
+const pidFile = process.env['MCP_PID_FILE'];
+if (pidFile) writeFileSync(pidFile, String(process.pid), 'utf8');
 
 const stderrBytes = Number(process.env['MCP_STDERR_BYTES'] ?? 0);
 if (stderrBytes > 0) process.stderr.write('e'.repeat(stderrBytes));

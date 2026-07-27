@@ -58,6 +58,14 @@ const storedProviderProfileV2BaseSchema = providerProfileV2BaseSchema.omit({
   hasStoredSecret: true
 }).strict();
 
+const providerBaseUrlSchema = z.string().url().refine(value => {
+  const url = new URL(value);
+  if (url.username || url.password) return false;
+  if (url.protocol === 'https:') return true;
+  return url.protocol === 'http:'
+    && new Set(['localhost', '127.0.0.1', '[::1]']).has(url.hostname);
+}, 'PROVIDER_URL_UNSAFE');
+
 export const providerProfileV2Schema = z.discriminatedUnion('mode', [
   providerProfileV2BaseSchema.extend({
     mode: z.literal('preset'),
@@ -66,8 +74,15 @@ export const providerProfileV2Schema = z.discriminatedUnion('mode', [
   providerProfileV2BaseSchema.extend({
     mode: z.literal('custom'),
     protocol: providerProtocolSchema,
-    baseUrl: z.string().url(),
-    additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()]))
+    baseUrl: providerBaseUrlSchema,
+    additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()])),
+    capabilities: z.array(z.enum([
+      'chat',
+      'tools',
+      'vision',
+      'streaming',
+      'longContext'
+    ])).min(1).optional()
   }).strict()
 ]);
 export type ProviderProfileV2 = z.infer<typeof providerProfileV2Schema>;
@@ -80,8 +95,15 @@ export const storedProviderProfileV2Schema = z.discriminatedUnion('mode', [
   storedProviderProfileV2BaseSchema.extend({
     mode: z.literal('custom'),
     protocol: providerProtocolSchema,
-    baseUrl: z.string().url(),
-    additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()]))
+    baseUrl: providerBaseUrlSchema,
+    additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()])),
+    capabilities: z.array(z.enum([
+      'chat',
+      'tools',
+      'vision',
+      'streaming',
+      'longContext'
+    ])).min(1).optional()
   }).strict()
 ]);
 export type StoredProviderProfileV2 = z.infer<typeof storedProviderProfileV2Schema>;

@@ -123,6 +123,34 @@ function 创建路由器(
 const 空披露 = { allowedCrossProviderProfileIds: new Set<string>() };
 
 describe('ModelRouter', () => {
+  test('自定义档案声明 tools 能力后可参与 Agent 主路由与备用路由', () => {
+    const customAgent: ProviderProfileV2 = {
+      id: 'custom-agent',
+      displayName: 'Custom Agent',
+      mode: 'custom',
+      protocol: 'openai-compatible',
+      baseUrl: 'https://custom-agent.example/v1',
+      modelId: 'custom-agent',
+      additionalParameters: {},
+      capabilities: ['chat', 'tools'],
+      hasStoredSecret: true
+    };
+    const selection = new ModelRouter({
+      profiles: [customAgent],
+      route: {
+        primaryProfileId: 'custom-agent',
+        chatProfileId: null,
+        agentProfileId: 'custom-agent',
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      },
+      catalog: []
+    }).select('agent', { allowedCrossProviderProfileIds: new Set() });
+
+    expect(selection.profile).toEqual(customAgent);
+  });
+
   test('默认单模型用于聊天，并提供预置档案披露目标', () => {
     const selection = 创建路由器(路由()).select('chat', 空披露);
 
