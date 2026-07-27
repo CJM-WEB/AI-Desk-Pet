@@ -105,6 +105,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function normalizeAssistantToolRequest(message: Record<string, unknown>) {
+  if (!Array.isArray(message.tool_calls) || message.tool_calls.length !== 1) {
+    throw new Error('助手工具调用格式无效');
+  }
+  const call = message.tool_calls[0];
+  if (!isRecord(call) || typeof call.id !== 'string' || !isRecord(call.function)) {
+    throw new Error('助手工具调用格式无效');
+  }
+  const functionCall = call.function;
+  if (
+    typeof functionCall.name !== 'string'
+    || typeof functionCall.arguments !== 'string'
+  ) {
+    throw new Error('助手工具调用格式无效');
+  }
+  const arguments_ = JSON.parse(functionCall.arguments) as unknown;
+  if (!isRecord(arguments_)) throw new Error('助手工具调用参数无效');
+  return {
+    requestId: call.id,
+    toolName: functionCall.name,
+    arguments: arguments_
+  };
+}
+
 function normalizeRequest(value: unknown): ModelRequest {
   if (!isRecord(value) || !Array.isArray(value.messages) || !Array.isArray(value.tools)) {
     throw new Error('请求格式无效');
@@ -126,6 +150,13 @@ function normalizeRequest(value: unknown): ModelRequest {
     }
     if (role !== 'system' && role !== 'user' && role !== 'assistant') {
       throw new Error('消息角色无效');
+    }
+    if (role === 'assistant' && message.tool_calls !== undefined) {
+      return {
+        role,
+        content: typeof message.content === 'string' ? message.content : '',
+        toolRequest: normalizeAssistantToolRequest(message)
+      };
     }
     return {
       role,

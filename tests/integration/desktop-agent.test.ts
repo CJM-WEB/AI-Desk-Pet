@@ -27,6 +27,13 @@ const toolNames = [
   'builtin.files.create_directory',
   'builtin.files.rename_entry'
 ] as const;
+const internalToolNames = [
+  'list_directory',
+  'read_text_file',
+  'create_file',
+  'create_directory',
+  'rename_entry'
+] as const;
 
 const roots: AuthorizedRootFixture[] = [];
 const servers: ProviderServerFixture[] = [];
@@ -160,6 +167,22 @@ describe('桌面 Agent 真实服务集成', () => {
       {
         response: { type: 'text', text: '目录已列出' },
         inspect: request => {
+          const assistantCall = request.messages.at(-2);
+          if (
+            !assistantCall
+            || assistantCall.role !== 'assistant'
+            || !assistantCall.toolRequest
+          ) {
+            throw new Error('缺少助手工具调用历史');
+          }
+          expect(assistantCall.toolRequest).toEqual({
+            requestId: 'list-1',
+            toolName: 'builtin.files.list_directory',
+            arguments: { relativePath: '.' }
+          });
+          expect(assistantCall.toolRequest.toolName).toMatch(/^builtin\.files\./u);
+          expect(internalToolNames).not.toContain(assistantCall.toolRequest.toolName);
+
           const last = request.messages.at(-1);
           if (!last || last.role !== 'tool') throw new Error('缺少列目录结果');
           const result = JSON.parse(last.content) as {

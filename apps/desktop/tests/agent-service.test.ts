@@ -278,6 +278,7 @@ describe('AgentService', () => {
     await expect(service.confirm(pendingEvent.action.actionId)).rejects.toThrow('provider failed');
 
     expect(fileTools.executeWrite).toHaveBeenCalledOnce();
+    expect(provider.requests).toHaveLength(2);
     expect(events.at(-2)).toEqual({
       type: 'error',
       code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
@@ -285,5 +286,9 @@ describe('AgentService', () => {
       nextAction: '可以查看文件结果，或稍后重新请求总结。'
     });
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+
+    await expect(service.confirm(pendingEvent.action.actionId)).rejects.toThrow('ACTION_EXPIRED');
+    expect(fileTools.executeWrite).toHaveBeenCalledOnce();
+    expect(provider.requests).toHaveLength(2);
   });
 });

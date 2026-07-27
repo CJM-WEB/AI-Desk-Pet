@@ -52,6 +52,22 @@ describe('PermissionPolicy', () => {
 });
 
 describe('ToolRegistry', () => {
+  test.each([
+    'create_file',
+    'builtin.files'
+  ])('注册阶段拒绝非法或旧短名称：%s', name => {
+    const registry = new ToolRegistry();
+
+    expect(() => registry.register({
+      definition: definition(name),
+      argumentsSchema: z.object({ relativePath: z.string() }).strict(),
+      executionToolName: 'internal_action',
+      risk: 'read',
+      enabled: true,
+      auditSummary: () => '测试动作'
+    })).toThrowError(expect.objectContaining({ code: 'TOOL_NAME_INVALID' }));
+  });
+
   test('拒绝重复注册', () => {
     const registry = new ToolRegistry();
     registerTestTool(registry);
@@ -128,6 +144,32 @@ describe('ToolRegistry', () => {
       },
       auditSummary: '测试动作 notes.txt'
     });
+  });
+
+  test('审计摘要生成成功后才调用权限策略', () => {
+    const registry = new ToolRegistry();
+    const auditSummary = vi.fn(() => {
+      throw new Error('AUDIT_SUMMARY_FAILED');
+    });
+    registry.register({
+      definition: definition('builtin.test.audit'),
+      argumentsSchema: z.object({ relativePath: z.string().min(1) }).strict(),
+      executionToolName: 'internal_audit',
+      risk: 'high',
+      enabled: true,
+      auditSummary
+    });
+    const policy = new PermissionPolicy({ highRiskEnabled: true });
+    const decide = vi.spyOn(policy, 'decide');
+
+    expect(() => registry.prepare({
+      requestId: 'audit-order-1',
+      toolName: 'builtin.test.audit',
+      arguments: { relativePath: 'notes.txt' }
+    }, policy)).toThrow('AUDIT_SUMMARY_FAILED');
+
+    expect(auditSummary).toHaveBeenCalledOnce();
+    expect(decide).not.toHaveBeenCalled();
   });
 
   test('定义只包含启用工具且返回副本不能污染注册表', () => {

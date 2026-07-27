@@ -5,7 +5,11 @@ import type {
   ToolRisk
 } from '@myself/agent-core';
 import { toolArguments } from '@myself/file-tools';
-import { toolRequestSchema, type ToolRequest } from '@myself/shared-types';
+import {
+  toolNameSchema,
+  toolRequestSchema,
+  type ToolRequest
+} from '@myself/shared-types';
 import type { z } from 'zod';
 import type { PermissionPolicy } from './permission-policy';
 
@@ -48,6 +52,7 @@ export class ToolRegistry {
 
   register(registration: ToolRegistration): void {
     const name = registration.definition.function.name;
+    if (!toolNameSchema.safeParse(name).success) throw registryError('TOOL_NAME_INVALID');
     if (this.registrations.has(name)) throw registryError('TOOL_ALREADY_REGISTERED');
     this.registrations.set(name, {
       ...registration,
@@ -82,12 +87,14 @@ export class ToolRegistry {
       ...request,
       toolName: registration.executionToolName
     };
+    const auditSummary = registration.auditSummary(argumentsResult.data);
+    const decision = permissionPolicy.decide(registration.risk);
     return {
       request,
       executionRequest,
       risk: registration.risk,
-      decision: permissionPolicy.decide(registration.risk),
-      auditSummary: registration.auditSummary(argumentsResult.data)
+      decision,
+      auditSummary
     };
   }
 }
