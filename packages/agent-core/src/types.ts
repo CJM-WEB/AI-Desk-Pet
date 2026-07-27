@@ -1,4 +1,22 @@
 import type { ToolName, ToolRequest } from '@myself/shared-types';
+import type { ProviderProfileV2 } from '@myself/shared-types';
+
+export type ModelRequestKind = 'chat' | 'agent' | 'vision';
+
+export interface RouteDisclosure {
+  allowedCrossProviderProfileIds: ReadonlySet<string>;
+}
+
+export interface ModelDisclosureTarget {
+  profileId: string;
+  providerIdentity: string;
+}
+
+export interface ModelSelection {
+  profile: ProviderProfileV2;
+  disclosureTarget: ModelDisclosureTarget;
+  fallbackProfiles: ProviderProfileV2[];
+}
 
 export type ModelMessage =
   | { role: 'system' | 'user'; content: string }
