@@ -121,7 +121,10 @@ interface NormalizedGeminiResponse {
   };
 }
 
-function normalizeResponse(raw: unknown): NormalizedGeminiResponse {
+function normalizeResponse(
+  raw: unknown,
+  createFallbackRequestId: (toolName: string) => string
+): NormalizedGeminiResponse {
   const parsed = geminiResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
 
@@ -142,7 +145,7 @@ function normalizeResponse(raw: unknown): NormalizedGeminiResponse {
     const functionPart = functionParts[0];
     const call = functionPart?.functionCall;
     if (!call) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-    const requestId = call.id ?? `gemini-call-${call.name}`;
+    const requestId = call.id ?? createFallbackRequestId(call.name);
     const response: ModelResponse = {
       type: 'tool_request',
       request: {
@@ -165,6 +168,7 @@ function normalizeResponse(raw: unknown): NormalizedGeminiResponse {
 
 export class GeminiProvider implements ModelProvider {
   private readonly thoughtSignatures = new Map<string, string>();
+  private nextFallbackRequestId = 1;
 
   constructor(
     private readonly config: ProviderAdapterConfig,
@@ -205,7 +209,10 @@ export class GeminiProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
-    const normalized = normalizeResponse(await readProviderJson(response));
+    const normalized = normalizeResponse(
+      await readProviderJson(response),
+      toolName => `gemini-call-${toolName}-${this.nextFallbackRequestId++}`
+    );
     if (normalized.thoughtSignature) {
       this.thoughtSignatures.set(
         normalized.thoughtSignature.requestId,

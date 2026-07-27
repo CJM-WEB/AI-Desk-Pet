@@ -600,6 +600,113 @@ describe('协议请求映射', () => {
     ]);
   });
 
+  test('Gemini 为连续同名无 ID 调用分配唯一回退 ID 并恢复各自签名', async () => {
+    const functionCallResponse = (
+      relativePath: string,
+      thoughtSignature: string
+    ): Response => jsonResponse({
+      candidates: [{
+        content: {
+          parts: [{
+            functionCall: {
+              name: 'read_text_file',
+              args: { relativePath }
+            },
+            thoughtSignature
+          }]
+        }
+      }]
+    });
+    const fetchClient = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(functionCallResponse('notes-1.txt', 'signature-1'))
+      .mockResolvedValueOnce(functionCallResponse('notes-2.txt', 'signature-2'))
+      .mockResolvedValueOnce(jsonResponse({
+        candidates: [{ content: { parts: [{ text: '完成' }] } }]
+      }));
+    const provider = new GeminiProvider(
+      adapterProfile,
+      async () => 'secret',
+      fetchClient
+    );
+
+    const firstResponse = await provider.respond(request, new AbortController().signal);
+    const firstToolRequest = toolRequestSchema.parse(
+      firstResponse.type === 'tool_request' ? firstResponse.request : undefined
+    );
+    const secondResponse = await provider.respond(request, new AbortController().signal);
+    const secondToolRequest = toolRequestSchema.parse(
+      secondResponse.type === 'tool_request' ? secondResponse.request : undefined
+    );
+
+    await provider.respond({
+      tools,
+      messages: [
+        ...request.messages,
+        { role: 'assistant', content: '', toolRequest: firstToolRequest },
+        {
+          role: 'tool',
+          toolCallId: firstToolRequest.requestId,
+          content: '{"content":"第一份"}'
+        },
+        { role: 'assistant', content: '', toolRequest: secondToolRequest },
+        {
+          role: 'tool',
+          toolCallId: secondToolRequest.requestId,
+          content: '{"content":"第二份"}'
+        }
+      ]
+    }, new AbortController().signal);
+
+    expect(firstToolRequest.requestId).toMatch(/^gemini-call-read_text_file-[1-9]\d*$/);
+    expect(secondToolRequest.requestId).toMatch(/^gemini-call-read_text_file-[1-9]\d*$/);
+    expect(secondToolRequest.requestId).not.toBe(firstToolRequest.requestId);
+    const thirdBody = JSON.parse(String(fetchClient.mock.calls[2]?.[1]?.body));
+    expect(thirdBody.contents.slice(-4)).toEqual([
+      {
+        role: 'model',
+        parts: [{
+          functionCall: {
+            id: firstToolRequest.requestId,
+            name: 'read_text_file',
+            args: { relativePath: 'notes-1.txt' }
+          },
+          thoughtSignature: 'signature-1'
+        }]
+      },
+      {
+        role: 'user',
+        parts: [{
+          functionResponse: {
+            id: firstToolRequest.requestId,
+            name: 'read_text_file',
+            response: { content: '第一份' }
+          }
+        }]
+      },
+      {
+        role: 'model',
+        parts: [{
+          functionCall: {
+            id: secondToolRequest.requestId,
+            name: 'read_text_file',
+            args: { relativePath: 'notes-2.txt' }
+          },
+          thoughtSignature: 'signature-2'
+        }]
+      },
+      {
+        role: 'user',
+        parts: [{
+          functionResponse: {
+            id: secondToolRequest.requestId,
+            name: 'read_text_file',
+            response: { content: '第二份' }
+          }
+        }]
+      }
+    ]);
+  });
+
   test('Gemini 拒绝同一 part 混合文本与函数调用', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       candidates: [{
