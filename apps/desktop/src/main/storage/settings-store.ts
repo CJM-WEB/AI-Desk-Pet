@@ -131,10 +131,14 @@ export class SettingsStore {
     private readonly hasStoredSecret: () => Promise<boolean>
   ) {}
 
-  private enqueueWrite(operation: () => Promise<void>): Promise<void> {
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const transaction = this.writeQueue.then(operation);
-    this.writeQueue = transaction.catch(() => {});
+    this.writeQueue = transaction.then(() => undefined, () => undefined);
     return transaction;
+  }
+
+  private enqueueWrite(operation: () => Promise<void>): Promise<void> {
+    return this.enqueue(operation);
   }
 
   private async quarantineCorruptFile(): Promise<StoredSettings> {
@@ -184,19 +188,20 @@ export class SettingsStore {
   }
 
   async getPublic(): Promise<PublicSettings> {
-    await this.writeQueue;
-    const settings = await this.load();
-    return {
-      version: 1,
-      provider: await this.publicProvider(settings),
-      authorizedRoot: settings.authorizedRoot === null ? null : {
-        id: settings.authorizedRoot.id,
-        displayName: settings.authorizedRoot.displayName,
-        pathHint: settings.authorizedRoot.pathHint
-      },
-      petPosition: settings.petPosition,
-      fileDisclosureAccepted: settings.fileDisclosureAccepted
-    };
+    return this.enqueue(async () => {
+      const settings = await this.load();
+      return {
+        version: 1,
+        provider: await this.publicProvider(settings),
+        authorizedRoot: settings.authorizedRoot === null ? null : {
+          id: settings.authorizedRoot.id,
+          displayName: settings.authorizedRoot.displayName,
+          pathHint: settings.authorizedRoot.pathHint
+        },
+        petPosition: settings.petPosition,
+        fileDisclosureAccepted: settings.fileDisclosureAccepted
+      };
+    });
   }
 
   saveProviderMetadata(input: ProviderMetadataInput): Promise<void> {
@@ -243,8 +248,7 @@ export class SettingsStore {
   }
 
   async getAuthorizedRootPath(): Promise<string | null> {
-    await this.writeQueue;
-    return (await this.load()).authorizedRoot?.absolutePath ?? null;
+    return this.enqueue(async () => (await this.load()).authorizedRoot?.absolutePath ?? null);
   }
 
   clearAll(): Promise<void> {

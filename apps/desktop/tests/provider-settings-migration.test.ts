@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 describe('模型目录与设置迁移', () => {
-  test('内置目录包含稳定的十个提供商并只声明保守模型能力', () => {
+  test('内置目录包含稳定的十个提供商和精确模型能力顺序', () => {
     expect(providerCatalog.map(entry => entry.providerId)).toEqual([
       'openai',
       'anthropic',
@@ -43,11 +43,24 @@ describe('模型目录与设置迁移', () => {
       'minimax'
     ]);
 
+    const expectedCapabilities: Record<string, string[]> = {
+      openai: ['chat', 'tools', 'vision', 'streaming', 'longContext'],
+      anthropic: ['chat', 'tools', 'vision', 'streaming', 'longContext'],
+      gemini: ['chat', 'tools', 'vision', 'streaming', 'longContext'],
+      deepseek: ['chat', 'tools', 'streaming', 'longContext'],
+      kimi: ['chat', 'tools', 'vision', 'streaming', 'longContext'],
+      qwen: ['chat', 'tools', 'streaming', 'longContext'],
+      zhipu: ['chat', 'tools', 'streaming', 'longContext'],
+      doubao: ['chat', 'tools', 'vision', 'streaming', 'longContext'],
+      hunyuan: ['chat', 'tools', 'streaming', 'longContext'],
+      minimax: ['chat', 'tools', 'streaming', 'longContext']
+    };
+
     for (const entry of providerCatalog) {
       expect(providerCatalogEntrySchema.safeParse(entry).success).toBe(true);
       expect(entry.catalogVersion).toBe(1);
       expect(entry.models).toHaveLength(1);
-      expect(entry.models[0]?.capabilities).toEqual(expect.arrayContaining(['chat', 'streaming']));
+      expect(entry.models[0]?.capabilities).toEqual(expectedCapabilities[entry.providerId]);
     }
   });
 
@@ -147,6 +160,28 @@ describe('模型目录与设置迁移', () => {
       modelId: 'legacy-model',
       additionalParameters: {}
     }]);
+  });
+
+  test('并发首次读取同一 v1 设置时只完成一次安全迁移', async () => {
+    const { file, store } = await createStore();
+    await writeFile(file, JSON.stringify({
+      version: 1,
+      provider: {
+        id: 'legacy-provider',
+        displayName: '旧服务',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'legacy-model'
+      },
+      authorizedRoot: null,
+      petPosition: null,
+      fileDisclosureAccepted: false
+    }), 'utf8');
+
+    const [first, second] = await Promise.all([store.getPublic(), store.getPublic()]);
+
+    expect(first.provider).toEqual(expect.objectContaining({ id: 'legacy-provider' }));
+    expect(second.provider).toEqual(expect.objectContaining({ id: 'legacy-provider' }));
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 2');
   });
 
   test('迁移写入失败时保留原 v1 文件', async () => {

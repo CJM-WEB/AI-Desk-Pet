@@ -37,7 +37,19 @@ export const providerCatalogEntrySchema = z.object({
 }).strict();
 export type ProviderCatalogEntry = z.infer<typeof providerCatalogEntrySchema>;
 
-const conservativeCapabilities: ModelCapability[] = ['chat', 'streaming'];
+const multimodalCapabilities: ModelCapability[] = [
+  'chat',
+  'tools',
+  'vision',
+  'streaming',
+  'longContext'
+];
+const toolCapabilities: ModelCapability[] = [
+  'chat',
+  'tools',
+  'streaming',
+  'longContext'
+];
 
 function seedProvider(
   providerId: string,
@@ -45,7 +57,8 @@ function seedProvider(
   protocol: ProviderProtocol,
   baseUrl: string,
   modelId: string,
-  apiKeyHelpUrl: string
+  apiKeyHelpUrl: string,
+  capabilities: ModelCapability[]
 ): ProviderCatalogEntry {
   return {
     catalogVersion: 1,
@@ -57,7 +70,7 @@ function seedProvider(
     models: [{
       modelId,
       displayName: modelId,
-      capabilities: [...conservativeCapabilities]
+      capabilities: [...capabilities]
     }],
     apiKeyHelpUrl,
     requestLimits: {},
@@ -66,14 +79,14 @@ function seedProvider(
 }
 
 export const providerCatalog: ProviderCatalogEntry[] = [
-  seedProvider('openai', 'OpenAI', 'openai-compatible', 'https://api.openai.com/v1', 'gpt-5-mini', 'https://platform.openai.com/api-keys'),
-  seedProvider('anthropic', 'Anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'claude-sonnet-4-5', 'https://console.anthropic.com/settings/keys'),
-  seedProvider('gemini', 'Gemini', 'gemini', 'https://generativelanguage.googleapis.com/v1beta', 'gemini-3.6-flash', 'https://aistudio.google.com/apikey'),
-  seedProvider('deepseek', 'DeepSeek', 'openai-compatible', 'https://api.deepseek.com', 'deepseek-v4-flash', 'https://platform.deepseek.com/api_keys'),
-  seedProvider('kimi', 'Kimi', 'openai-compatible', 'https://api.moonshot.cn/v1', 'kimi-k2.5', 'https://platform.moonshot.cn/console/api-keys'),
-  seedProvider('qwen', '通义千问', 'openai-compatible', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus', 'https://bailian.console.aliyun.com/?apiKey=1'),
-  seedProvider('zhipu', '智谱', 'openai-compatible', 'https://open.bigmodel.cn/api/paas/v4', 'glm-4.5', 'https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys'),
-  seedProvider('doubao', '豆包', 'openai-compatible', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-1-6', 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey'),
-  seedProvider('hunyuan', '腾讯混元', 'openai-compatible', 'https://api.hunyuan.cloud.tencent.com/v1', 'hunyuan-turbos-latest', 'https://console.cloud.tencent.com/cam/capi'),
-  seedProvider('minimax', 'MiniMax', 'openai-compatible', 'https://api.minimax.io/v1', 'MiniMax-M2.1', 'https://platform.minimaxi.com/user-center/basic-information/interface-key')
+  seedProvider('openai', 'OpenAI', 'openai-compatible', 'https://api.openai.com/v1', 'gpt-5-mini', 'https://platform.openai.com/api-keys', multimodalCapabilities),
+  seedProvider('anthropic', 'Anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'claude-sonnet-4-5', 'https://console.anthropic.com/settings/keys', multimodalCapabilities),
+  seedProvider('gemini', 'Gemini', 'gemini', 'https://generativelanguage.googleapis.com/v1beta', 'gemini-3.6-flash', 'https://aistudio.google.com/apikey', multimodalCapabilities),
+  seedProvider('deepseek', 'DeepSeek', 'openai-compatible', 'https://api.deepseek.com', 'deepseek-v4-flash', 'https://platform.deepseek.com/api_keys', toolCapabilities),
+  seedProvider('kimi', 'Kimi', 'openai-compatible', 'https://api.moonshot.cn/v1', 'kimi-k2.5', 'https://platform.moonshot.cn/console/api-keys', multimodalCapabilities),
+  seedProvider('qwen', '通义千问', 'openai-compatible', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus', 'https://bailian.console.aliyun.com/?apiKey=1', toolCapabilities),
+  seedProvider('zhipu', '智谱', 'openai-compatible', 'https://open.bigmodel.cn/api/paas/v4', 'glm-4.5', 'https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys', toolCapabilities),
+  seedProvider('doubao', '豆包', 'openai-compatible', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-1-6', 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey', multimodalCapabilities),
+  seedProvider('hunyuan', '腾讯混元', 'openai-compatible', 'https://api.hunyuan.cloud.tencent.com/v1', 'hunyuan-turbos-latest', 'https://console.cloud.tencent.com/cam/capi', toolCapabilities),
+  seedProvider('minimax', 'MiniMax', 'openai-compatible', 'https://api.minimax.io/v1', 'MiniMax-M2.1', 'https://platform.minimaxi.com/user-center/basic-information/interface-key', toolCapabilities)
 ];
