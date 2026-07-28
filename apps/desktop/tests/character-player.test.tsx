@@ -352,6 +352,264 @@ describe('PixiJS 角色播放器端口', () => {
 });
 
 describe('角色播放器组件', () => {
+  test('运动快照方向变化会按运行时方向重新选择动作并回报运动状态', async () => {
+    const currentManifest = manifest('character-a');
+    currentManifest.states[0]!.actions = [
+      { ...currentManifest.states[0]!.actions[0]!, id: 'idle-right', direction: 'right' },
+      { ...currentManifest.states[0]!.actions[0]!, id: 'idle-left', direction: 'left' }
+    ];
+    let motionListener: ((event: {
+      type: 'snapshot';
+      snapshot: {
+        revision: number;
+        timestampMs: number;
+        position: { x: number; y: number };
+        target: { x: number; y: number };
+        direction: 'left' | 'right';
+        moving: boolean;
+        carrying: boolean;
+      };
+    }) => void) | undefined;
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(() => vi.fn()),
+      getCharacterMotionSnapshot: vi.fn(async () => ({
+        revision: 1,
+        timestampMs: 0,
+        position: { x: 0, y: 0 },
+        target: { x: 0, y: 0 },
+        direction: 'right',
+        moving: false,
+        carrying: false
+      })),
+      subscribeCharacterMotion: vi.fn(listener => {
+        motionListener = listener;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    const player = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      getFrameBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 32, height: 32 }),
+      destroy: vi.fn()
+    };
+    const onMotionChange = vi.fn();
+    const rendered = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async () => player}
+        loadBundle={async () => bundle('character-a')}
+        onMotionChange={onMotionChange}
+      />
+    );
+    await waitFor(() => expect(player.play).toHaveBeenCalled());
+    expect(player.play.mock.calls.at(-1)?.[0].action.id).toBe('idle-right');
+
+    act(() => motionListener?.({
+      type: 'snapshot',
+      snapshot: {
+        revision: 2,
+        timestampMs: 50,
+        position: { x: -8, y: 0 },
+        target: { x: -100, y: 0 },
+        direction: 'left',
+        moving: true,
+        carrying: false
+      }
+    }));
+
+    await waitFor(() => {
+      expect(player.play.mock.calls.at(-1)?.[0].action.id).toBe('idle-left');
+    });
+    expect(onMotionChange).toHaveBeenLastCalledWith({
+      position: { x: -8, y: 0 },
+      moving: true,
+      carrying: false,
+      direction: 'left'
+    });
+    rendered.unmount();
+  });
+
+  test('RAF 在快照之间持续推进视觉残差并在卸载时清理', async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const cancel = vi.fn();
+    vi.stubGlobal('requestAnimationFrame', vi.fn(callback => {
+      callbacks.push(callback);
+      return callbacks.length;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', cancel);
+    const currentManifest = manifest('character-a');
+    let listener: ((event: {
+      type: 'snapshot';
+      snapshot: {
+        revision: number; timestampMs: number;
+        position: { x: number; y: number }; target: { x: number; y: number };
+        direction: 'left' | 'right'; moving: boolean;
+      };
+    }) => void) | undefined;
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: 'character-a',
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(() => vi.fn()),
+      getCharacterMotionSnapshot: vi.fn(async () => ({
+        revision: 1, timestampMs: 0,
+        position: { x: 100, y: 100 }, target: { x: 100, y: 100 },
+        direction: 'right', moving: false
+      })),
+      subscribeCharacterMotion: vi.fn(next => {
+        listener = next;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    const onDesktopAnchors = vi.fn();
+    const player = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn((name: string) => (
+        name === 'carry' ? { x: 0.75, y: 0.5 } : null
+      )),
+      getFrameBounds: vi.fn().mockReturnValue({ x: 10, y: 20, width: 80, height: 100 }),
+      destroy: vi.fn()
+    };
+    const rendered = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="static"
+        api={api}
+        createPlayer={vi.fn(async () => player)}
+        loadBundle={vi.fn(async () => bundle('character-a'))}
+        onDesktopAnchors={onDesktopAnchors}
+      />
+    );
+    const host = rendered.container.querySelector<HTMLElement>('.character-player-host')!;
+    vi.spyOn(host, 'getBoundingClientRect').mockImplementation(() => {
+      const residual = Number.parseFloat(
+        host.style.transform.match(/translate\(([-\d.]+)px/u)?.[1] ?? '0'
+      );
+      return {
+        x: 5 + residual, y: 7, left: 5 + residual, top: 7,
+        right: 125 + residual, bottom: 167, width: 120, height: 160,
+        toJSON: () => ({})
+      };
+    });
+    await waitFor(() => expect(callbacks.length).toBeGreaterThan(0));
+    act(() => callbacks.shift()?.(0));
+    act(() => listener?.({
+      type: 'snapshot',
+      snapshot: {
+        revision: 2, timestampMs: 100,
+        position: { x: 120, y: 100 }, target: { x: 200, y: 100 },
+        direction: 'right', moving: true
+      }
+    }));
+    act(() => callbacks.shift()?.(50));
+    expect(rendered.container.querySelector<HTMLElement>('.character-player-host')?.style.transform)
+      .toBe('translate(-8px, 0px)');
+    expect(onDesktopAnchors).toHaveBeenLastCalledWith({
+      carry: { x: 187, y: 177 },
+      seat: null,
+      focus: null
+    });
+    rendered.unmount();
+    expect(cancel).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  test('当前帧 carry、seat、focus 锚点转换为 Main 快照对应的桌面坐标', async () => {
+    const currentManifest = manifest('character-a');
+    let motionListener: ((event: {
+      type: 'snapshot';
+      snapshot: {
+        revision: number;
+        timestampMs: number;
+        position: { x: number; y: number };
+        target: { x: number; y: number };
+        direction: 'left' | 'right';
+        moving: boolean;
+      };
+    }) => void) | undefined;
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(() => vi.fn()),
+      getCharacterMotionSnapshot: vi.fn(async () => ({
+        revision: 1,
+        timestampMs: 0,
+        position: { x: 100, y: 200 },
+        target: { x: 100, y: 200 },
+        direction: 'right',
+        moving: false
+      })),
+      subscribeCharacterMotion: vi.fn(listener => {
+        motionListener = listener;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    const player = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn((name: string) => (
+        name === 'carry' ? { x: 0.75, y: 0.5 } : null
+      )),
+      getFrameBounds: vi.fn(() => ({
+        x: 10,
+        y: 20,
+        width: 80,
+        height: 100
+      })),
+      destroy: vi.fn()
+    };
+    const onDesktopAnchors = vi.fn();
+    const { container } = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="static"
+        api={api}
+        createPlayer={vi.fn(async () => player)}
+        loadBundle={vi.fn(async () => bundle('character-a'))}
+        onDesktopAnchors={onDesktopAnchors}
+      />
+    );
+    const host = container.querySelector('.character-player-host') as HTMLElement;
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
+      x: 5, y: 7, left: 5, top: 7, right: 125, bottom: 167,
+      width: 120, height: 160, toJSON: () => ({})
+    });
+
+    await waitFor(() => expect(player.play).toHaveBeenCalled());
+    act(() => {
+      motionListener?.({
+        type: 'snapshot',
+        snapshot: {
+          revision: 2,
+          timestampMs: 16,
+          position: { x: 100, y: 200 },
+          target: { x: 100, y: 200 },
+          direction: 'right',
+          moving: false
+        }
+      });
+    });
+    await waitFor(() => expect(onDesktopAnchors).toHaveBeenCalledWith({
+      carry: { x: 175, y: 277 },
+      seat: null,
+      focus: null
+    }));
+  });
+
   test('当前角色成功编译事件会强制重载同一角色，其他角色编译不会刷新', async () => {
     const currentManifest = manifest('character-a');
     let listener: ((event:

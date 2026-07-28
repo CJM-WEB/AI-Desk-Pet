@@ -234,16 +234,21 @@ export class AgentService {
     this.emit({ type: 'phase', phase: 'acting' });
     try {
       this.assertFileDisclosureAllowed(session);
-      await session.fileTools.executeWrite(execution.verifiedAction);
-      writeCompleted = true;
-      await this.forward(
-        this.loop.resume(
-          execution.continuationToken,
-          writeResult(execution.verifiedAction),
-          this.runContext(session, controller.signal)
-        ),
-        session
-      );
+      this.emit({ type: 'character_carrying', carrying: true });
+      try {
+        await session.fileTools.executeWrite(execution.verifiedAction);
+        writeCompleted = true;
+        await this.forward(
+          this.loop.resume(
+            execution.continuationToken,
+            writeResult(execution.verifiedAction),
+            this.runContext(session, controller.signal)
+          ),
+          session
+        );
+      } finally {
+        this.emit({ type: 'character_carrying', carrying: false });
+      }
     } catch (error) {
       if (!writeCompleted) this.loop.discard(execution.continuationToken);
       if (writeCompleted) {
@@ -304,6 +309,10 @@ export class AgentService {
       }
       if (event.type === 'message') {
         this.emit({ type: 'message', role: 'assistant', text: event.text });
+        continue;
+      }
+      if (event.type === 'emotion') {
+        this.emit({ type: 'character_emotion', label: event.label });
         continue;
       }
       try {

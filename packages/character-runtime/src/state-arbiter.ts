@@ -77,6 +77,19 @@ export function reduceCharacterState(
   }
 
   if (request.type === 'movement') {
+    if (
+      !request.carrying
+      && snapshot.source === 'system'
+      && new Set<CoreCharacterState>([
+        'listening',
+        'thinking',
+        'acting',
+        'success',
+        'error'
+      ]).has(snapshot.stateId)
+    ) {
+      return snapshot;
+    }
     return systemSnapshot(request.carrying ? 'carrying' : 'moving');
   }
 

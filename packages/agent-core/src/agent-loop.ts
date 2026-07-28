@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { characterEmotionLabelSchema } from '@myself/shared-types';
 import type { AgentEvent, ModelMessage, PreparedToolRequest, RunContext } from './types';
 
 type ContinuationState = {
@@ -79,6 +80,11 @@ export class AgentLoop {
       }
 
       if (response.type === 'text') {
+        if (response.emotion !== undefined) {
+          const emotion = characterEmotionLabelSchema.safeParse(response.emotion);
+          if (!emotion.success) throw new Error('AGENT_INVALID_EMOTION');
+          yield { type: 'emotion', label: emotion.data };
+        }
         yield { type: 'message', text: response.text };
         yield { type: 'phase', phase: 'success' };
         return;

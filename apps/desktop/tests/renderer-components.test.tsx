@@ -2,7 +2,11 @@ import { describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { PetCharacter, PetView } from '../src/renderer/src/pet/PetView';
+import {
+  PetCharacter,
+  PetOpenChatButton,
+  PetView
+} from '../src/renderer/src/pet/PetView';
 import { ConfirmationCard } from '../src/renderer/src/chat/ConfirmationCard';
 import { SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
 import { mountTaskEventsIfAvailable } from '../src/renderer/src/App';
@@ -62,19 +66,12 @@ describe('Renderer 可见组件', () => {
     }
   });
 
-  test('桌宠打开按钮调用正式 window.myself.openChat', async () => {
-    const buttons = await loadRendererCommandButtons();
-    expect(typeof buttons.PetOpenChatButton).toBe('function');
-    if (!buttons.PetOpenChatButton) return;
-
-    const openChat = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('window', { myself: { openChat } });
-    try {
-      buttons.PetOpenChatButton({ children: null }).props.onClick();
-      expect(openChat).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+  test('桌宠打开按钮保留正式聊天入口', () => {
+    const markup = renderToStaticMarkup(
+      <PetOpenChatButton>角色</PetOpenChatButton>
+    );
+    expect(markup).toContain('pet-open-chat');
+    expect(markup).toContain('打开与 AI Pet 的聊天');
   });
 
   test('重命名确认卡片只展示自然语言和相对路径', () => {

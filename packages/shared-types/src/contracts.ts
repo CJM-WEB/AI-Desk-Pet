@@ -19,6 +19,15 @@ export const taskPhaseSchema = z.enum([
 ]);
 export type TaskPhase = z.infer<typeof taskPhaseSchema>;
 
+export const characterEmotionLabelSchema = z.enum([
+  'happy',
+  'sad',
+  'angry',
+  'surprised',
+  'calm'
+]);
+export type CharacterEmotionLabel = z.infer<typeof characterEmotionLabelSchema>;
+
 export const toolRequestSchema = z.object({
   requestId: z.string().min(1),
   toolName: toolNameSchema,
@@ -153,6 +162,14 @@ export const taskEventSchema = z.discriminatedUnion('type', [
     code: z.string().min(1),
     message: z.string().min(1),
     nextAction: z.string().min(1).optional()
+  }).strict(),
+  z.object({
+    type: z.literal('character_emotion'),
+    label: characterEmotionLabelSchema
+  }).strict(),
+  z.object({
+    type: z.literal('character_carrying'),
+    carrying: z.boolean()
   }).strict()
 ]);
 export type TaskEvent = z.infer<typeof taskEventSchema>;

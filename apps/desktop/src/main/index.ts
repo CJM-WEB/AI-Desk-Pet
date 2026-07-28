@@ -24,6 +24,7 @@ import {
   registerAdvancedSettingsIpc,
   registerAgentIpc,
   registerCharacterIpc,
+  registerCharacterMotionIpc,
   registerSettingsIpc,
   registerWindowIpc
 } from './ipc/register-ipc';
@@ -31,6 +32,12 @@ import { CharacterActions } from './characters/character-actions';
 import { CharacterAssetService } from './characters/character-asset-service';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
+import {
+  applyIdleMotionIntent,
+  bindCharacterMotionWindow,
+  CharacterMotionService,
+  startCharacterMotionTimers
+} from './characters/character-motion-service';
 import { McpManager } from './mcp/mcp-manager';
 import { McpServerStore } from './mcp/mcp-server-store';
 import { OpenAICompatibleProvider } from './providers/openai-provider';
@@ -188,6 +195,82 @@ async function createApplicationWindows(): Promise<void> {
     workAreas
   );
   pet.setPosition(petPosition.x, petPosition.y);
+  const characterMotion = new CharacterMotionService({
+    window: pet,
+    getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea)
+  });
+  const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion);
+  registerCharacterMotionIpc(ipcMain, {
+    getSnapshot: () => characterMotion.getSnapshot(),
+    reportPlayedAction: async (playbackToken, actionId) => {
+      const runtime = await characterActions.getCharacterRuntimeSnapshot();
+      if (!runtime) throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
+      characterMotion.confirmIdlePlayback({
+        playbackToken,
+        actionId,
+        characterId: runtime.activeCharacterId
+      });
+    }
+  }, pet.webContents);
+  const releaseMotionEvents = characterMotion.subscribe(snapshot => {
+    if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
+      pet.webContents.send(ipcChannels.characterMotionEvent, {
+        type: 'snapshot',
+        snapshot
+      });
+    }
+  });
+  let idlePollRunning = false;
+  const pollIdle = (): void => {
+    if (idlePollRunning) return;
+    idlePollRunning = true;
+    void characterActions.getCharacterRuntimeSnapshot()
+      .then(runtime => {
+        if (!runtime || pet.isDestroyed() || pet.webContents.isDestroyed()) return;
+        const selection = characterMotion.pollIdle(
+          runtime.manifest,
+          characterMotion.getSnapshot().direction,
+          Math.random
+        );
+        if (!selection) return;
+        applyIdleMotionIntent(characterMotion);
+        const playbackToken = characterMotion.issueIdlePlayback({
+          actionId: selection.action.id,
+          characterId: runtime.activeCharacterId,
+          revision: characterMotion.getSnapshot().revision
+        });
+        pet.webContents.send(ipcChannels.characterMotionEvent, {
+          type: 'idle-action',
+          revision: characterMotion.getSnapshot().revision,
+          actionId: selection.action.id,
+          playbackToken
+        });
+      })
+      .catch(reportCharacterMotionError)
+      .finally(() => {
+        idlePollRunning = false;
+      });
+  };
+  const motionRuntime = startCharacterMotionTimers({
+    tick: () => characterMotion.tick(),
+    poll: pollIdle,
+    isDestroyed: () => pet.isDestroyed(),
+    tickIntervalMs: 50,
+    idleIntervalMs: 500
+  });
+  function reportCharacterMotionError(error: unknown): void {
+    console.error('更新角色运动失败。', error);
+  }
+  app.once('before-quit', () => {
+    motionRuntime.destroy();
+    releaseMotionEvents();
+    releaseMotionWindowEvents();
+  });
+  pet.once('closed', () => {
+    motionRuntime.destroy();
+    releaseMotionEvents();
+    releaseMotionWindowEvents();
+  });
   const reportPetPositionError = (error: unknown): void => {
     console.error('保存桌宠位置失败。', error);
   };
@@ -430,6 +513,7 @@ async function createApplicationWindows(): Promise<void> {
       };
     },
     emit: (event: TaskEvent) => {
+      characterMotion.applyTaskEvent(event);
       for (const window of [
         pet,
         chat,

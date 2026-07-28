@@ -101,6 +101,31 @@ function context(provider: ModelProvider, signal = new AbortController().signal)
 }
 
 describe('AgentLoop', () => {
+  test('结构化情绪标签在助手消息前产生明确 emotion 事件', async () => {
+    const events = await collectEvents(context(new ScriptedProvider([{
+      type: 'text',
+      text: '处理完成',
+      emotion: 'happy'
+    }])));
+    expect(events).toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'emotion', label: 'happy' },
+      { type: 'message', text: '处理完成' },
+      { type: 'phase', phase: 'success' }
+    ]);
+  });
+
+  test('未知结构化情绪标签被拒绝而不是转为自由状态', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'text',
+      text: '处理完成',
+      emotion: 'unknown-emotion'
+    } as unknown as ModelResponse]);
+    await expect(collectEvents(context(provider))).rejects.toThrow(
+      'AGENT_INVALID_EMOTION'
+    );
+  });
+
   test('只执行 ToolRuntime 准备后允许的内部读取请求', async () => {
     const provider = new ScriptedProvider([
       {

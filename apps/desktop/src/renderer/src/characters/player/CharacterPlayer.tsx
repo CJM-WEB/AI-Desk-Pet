@@ -23,6 +23,14 @@ import {
   PixiCharacterPlayer,
   type CharacterPlayerPort
 } from './pixi-character-player';
+import {
+  CharacterMotionController,
+  resolveDesktopAnchor
+} from './character-motion-controller';
+import {
+  extensionDefinitionsFromManifest,
+  type ExtensionTriggerDefinition
+} from './extension-trigger-controller';
 
 export type CharacterPlayerPortFactory = (
   container: HTMLElement
@@ -37,7 +45,26 @@ export interface CharacterPlayerProps {
   createPlayer?: CharacterPlayerPortFactory;
   loadBundle?: CharacterAssetLoader;
   random?: () => number;
+  onDesktopAnchors?: (anchors: CharacterDesktopAnchors) => void;
+  onExtensionDefinitionsChange?: (
+    definitions: readonly ExtensionTriggerDefinition[]
+  ) => void;
+  onIdleTrigger?: () => void;
+  onMotionChange?: (motion: CharacterMotionPresentation) => void;
 }
+
+export type CharacterDesktopAnchors = {
+  carry: { x: number; y: number } | null;
+  seat: { x: number; y: number } | null;
+  focus: { x: number; y: number } | null;
+};
+
+export type CharacterMotionPresentation = {
+  position: { x: number; y: number };
+  direction: 'left' | 'right';
+  moving: boolean;
+  carrying: boolean;
+};
 
 const MAX_RUNTIME_LOAD_ATTEMPTS = 2;
 const createDefaultPlayer: CharacterPlayerPortFactory = container => (
@@ -55,15 +82,25 @@ export function CharacterPlayer({
   api = window.myself,
   createPlayer = createDefaultPlayer,
   loadBundle,
-  random = Math.random
+  random = Math.random,
+  onDesktopAnchors,
+  onExtensionDefinitionsChange,
+  onIdleTrigger,
+  onMotionChange
 }: CharacterPlayerProps) {
   const hostRef = useRef<HTMLSpanElement>(null);
   const activePlayerRef = useRef<CharacterPlayerPort | null>(null);
   const activeSnapshotRef = useRef<CharacterRuntimeSnapshot | null>(null);
   const playbackRef = useRef({ stateId, motionMode, direction, random });
+  const [runtimeDirection, setRuntimeDirection] = useState(direction);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
 
-  playbackRef.current = { stateId, motionMode, direction, random };
+  playbackRef.current = {
+    stateId,
+    motionMode,
+    direction: runtimeDirection,
+    random
+  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -141,17 +178,21 @@ export function CharacterPlayer({
 
         const playback = playbackRef.current;
         candidate.setDirection(playback.direction);
-        candidate.play(selectCharacterAction({
+        const selection = selectCharacterAction({
           manifest: snapshot.manifest,
           stateId: playback.stateId,
           direction: playback.direction,
           recentActionIds: [],
           random: playback.random
-        }), playback.motionMode);
+        });
+        candidate.play(selection, playback.motionMode);
 
         const previous = activePlayerRef.current;
         activePlayerRef.current = candidate;
         activeSnapshotRef.current = snapshot;
+        onExtensionDefinitionsChange?.(
+          extensionDefinitionsFromManifest(snapshot.manifest)
+        );
         candidates.delete(candidate);
         staging.classList.add('is-active');
         for (const child of [...host.children]) {
@@ -205,22 +246,137 @@ export function CharacterPlayer({
       activeSnapshotRef.current = null;
       host.replaceChildren();
     };
-  }, [api, createPlayer, loadBundle]);
+  }, [api, createPlayer, loadBundle, onExtensionDefinitionsChange]);
 
   useEffect(() => {
     const player = activePlayerRef.current;
     const snapshot = activeSnapshotRef.current;
     if (!player || !snapshot) return;
 
-    player.setDirection(direction);
-    player.play(selectCharacterAction({
+    player.setDirection(runtimeDirection);
+    const selection = selectCharacterAction({
       manifest: snapshot.manifest,
       stateId,
-      direction,
+      direction: runtimeDirection,
       recentActionIds: [],
       random
-    }), motionMode);
-  }, [direction, motionMode, random, stateId]);
+    });
+    player.play(selection, motionMode);
+  }, [motionMode, random, runtimeDirection, stateId]);
+
+  useEffect(() => {
+    if (
+      typeof api.subscribeCharacterMotion !== 'function'
+      || typeof api.getCharacterMotionSnapshot !== 'function'
+    ) {
+      return;
+    }
+    let disposed = false;
+    let controller: CharacterMotionController | null = null;
+    let latestMotionSnapshot: Awaited<
+      ReturnType<MyselfApi['getCharacterMotionSnapshot']>
+    > | null = null;
+    let animationFrame: number | null = null;
+
+    const acceptSnapshot = (
+      snapshot: Awaited<ReturnType<MyselfApi['getCharacterMotionSnapshot']>>
+    ): void => {
+      if (disposed) return;
+      if (!controller) {
+        controller = new CharacterMotionController({
+          position: snapshot.position
+        });
+      }
+      if (controller.accept(snapshot)) {
+        latestMotionSnapshot = snapshot;
+        setRuntimeDirection(snapshot.direction);
+        onMotionChange?.({
+          position: { ...snapshot.position },
+          direction: snapshot.direction,
+          moving: snapshot.moving,
+          carrying: snapshot.carrying
+        });
+      }
+    };
+
+    const renderMotion = (timestampMs: number): void => {
+      if (disposed) return;
+      const snapshot = latestMotionSnapshot;
+      const visual = controller?.advance(timestampMs);
+      const player = activePlayerRef.current;
+      const host = hostRef.current;
+      if (!snapshot || !visual || !player || !host) {
+        animationFrame = scheduleAnimationFrame(renderMotion);
+        return;
+      }
+      player.setDirection(visual.direction);
+      const frameBounds = player.getFrameBounds?.();
+      const residualX = visual.position.x - snapshot.position.x;
+      const residualY = visual.position.y - snapshot.position.y;
+      host.style.transform = `translate(${residualX}px, ${residualY}px)`;
+      const hostBounds = host.getBoundingClientRect();
+      const frame = {
+        // getBoundingClientRect 已包含 host transform，只再加 Main 窗口原点。
+        x: snapshot.position.x + hostBounds.left + (frameBounds?.x ?? 0),
+        y: snapshot.position.y + hostBounds.top + (frameBounds?.y ?? 0),
+        width: frameBounds?.width ?? 0,
+        height: frameBounds?.height ?? 0
+      };
+      const coordinate = (name: 'carry' | 'seat' | 'focus') => {
+        const anchor = player.getAnchor(name);
+        return anchor
+          ? resolveDesktopAnchor(anchor, frame, visual.direction)
+          : null;
+      };
+      onDesktopAnchors?.({
+        carry: coordinate('carry'),
+        seat: coordinate('seat'),
+        focus: coordinate('focus')
+      });
+      animationFrame = scheduleAnimationFrame(renderMotion);
+    };
+
+    let idleRevision = -1;
+    const unsubscribe = api.subscribeCharacterMotion(event => {
+      if (event.type === 'snapshot') {
+        acceptSnapshot(event.snapshot);
+        return;
+      }
+      if (event.revision <= idleRevision) return;
+      idleRevision = event.revision;
+      const player = activePlayerRef.current;
+      const snapshot = activeSnapshotRef.current;
+      const playback = playbackRef.current;
+      if (!player || !snapshot || playback.stateId !== 'idle') return;
+      const action = snapshot.manifest.states
+        .find(state => state.id === 'idle')
+        ?.actions.find(candidate => candidate.id === event.actionId);
+      if (!action) return;
+      player.play({
+        stateId: 'idle',
+        action,
+        reason: 'matched'
+      }, playback.motionMode);
+      reportPlayedAction(api, event.playbackToken, action.id);
+      onIdleTrigger?.();
+    });
+    void api.getCharacterMotionSnapshot()
+      .then(snapshot => {
+        acceptSnapshot(snapshot);
+        if (animationFrame === null) {
+          animationFrame = scheduleAnimationFrame(renderMotion);
+        }
+      })
+      .catch(() => {
+        // 运动快照不可用不影响角色画面和聊天入口。
+      });
+    return () => {
+      disposed = true;
+      if (animationFrame !== null) cancelScheduledAnimationFrame(animationFrame);
+      if (hostRef.current) hostRef.current.style.transform = '';
+      unsubscribe();
+    };
+  }, [api, onDesktopAnchors, onIdleTrigger, onMotionChange]);
 
   return (
     <span
@@ -232,6 +388,32 @@ export function CharacterPlayer({
       {status === 'error' ? fallback : null}
     </span>
   );
+}
+
+function reportPlayedAction(
+  api: MyselfApi,
+  playbackToken: string,
+  actionId: string
+): void {
+  if (typeof api.reportCharacterActionPlayed !== 'function') return;
+  void api.reportCharacterActionPlayed(playbackToken, actionId).catch(() => {
+    // 播放回报失败不影响当前画面，Main 会拒绝未知动作标识。
+  });
+}
+
+function scheduleAnimationFrame(callback: FrameRequestCallback): number {
+  if (typeof globalThis.requestAnimationFrame === 'function') {
+    return globalThis.requestAnimationFrame(callback);
+  }
+  return globalThis.setTimeout(() => callback(performance.now()), 16) as unknown as number;
+}
+
+function cancelScheduledAnimationFrame(handle: number): void {
+  if (typeof globalThis.cancelAnimationFrame === 'function') {
+    globalThis.cancelAnimationFrame(handle);
+    return;
+  }
+  clearTimeout(handle);
 }
 
 export function createRuntimeAssetLoader(api: MyselfApi): CharacterAssetLoader {

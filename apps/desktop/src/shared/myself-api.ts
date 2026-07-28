@@ -17,6 +17,10 @@ import type {
   CharacterSourceChoiceResult,
   CharacterSummaryDto
 } from './character-ipc';
+import type {
+  CharacterMotionEvent,
+  CharacterMotionSnapshot
+} from './character-motion-ipc';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 
@@ -173,6 +177,9 @@ export interface MyselfApi {
   getCharacterRuntimeSnapshot(): Promise<CharacterRuntimeSnapshot | null>;
   readCharacterRuntimeAsset(assetId: string): Promise<Uint8Array>;
   subscribeCharacterEvents(listener: (event: CharacterEvent) => void): () => void;
+  getCharacterMotionSnapshot(): Promise<CharacterMotionSnapshot>;
+  subscribeCharacterMotion(listener: (event: CharacterMotionEvent) => void): () => void;
+  reportCharacterActionPlayed(playbackToken: string, actionId: string): Promise<void>;
   openChat(): Promise<void>;
   openSettings(): Promise<void>;
   openCharacterWorkshop(): Promise<void>;

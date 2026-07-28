@@ -14,7 +14,9 @@ import {
 } from '../src/main/agent/agent-service';
 import { PermissionPolicy } from '../src/main/agent/permission-policy';
 import { PendingActionStore } from '../src/main/agent/pending-action-store';
+import { OpenAICompatibleProvider } from '../src/main/providers/openai-provider';
 import { createBuiltinFileToolRegistry } from '../src/main/agent/tool-registry';
+import { createTaskStore } from '../src/renderer/src/stores/task-store';
 
 class ScriptedProvider implements ModelProvider {
   readonly requests: ModelRequest[] = [];
@@ -58,7 +60,8 @@ function createHarness(
   provider: ModelProvider,
   fileOverrides: Partial<AgentFileTools> = {},
   fileDisclosureAllowed = true,
-  fallbackProviders: ModelProvider[] = []
+  fallbackProviders: ModelProvider[] = [],
+  onEmit?: (event: TaskEvent) => void
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -89,7 +92,10 @@ function createHarness(
     loop,
     pending,
     createSession: vi.fn(async () => session),
-    emit: event => events.push(event),
+    emit: event => {
+      events.push(event);
+      onEmit?.(event);
+    },
     createConversationId: () => 'conversation-1'
   });
   return { events, fileTools, loop, pending, provider, service };
@@ -100,6 +106,65 @@ function phases(events: TaskEvent[]) {
 }
 
 describe('AgentService', () => {
+  test('OpenAI metadata 情绪按真实事件顺序延迟到 success 展示结束后重放', async () => {
+    vi.useFakeTimers();
+    const store = createTaskStore();
+    store.getState().configureCharacterExtensions([{
+      stateId: 'custom:wave',
+      triggers: [],
+      keywords: [],
+      emotions: ['happy']
+    }]);
+    const provider = new OpenAICompatibleProvider(
+      { baseUrl: 'https://provider.example/v1', modelId: 'test-model' },
+      async () => 'secret',
+      vi.fn(async () => new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: '处理完成',
+            metadata: { emotion: 'happy' }
+          }
+        }]
+      }), { status: 200 }))
+    );
+    const harness = createHarness(
+      provider,
+      {},
+      true,
+      [],
+      event => store.getState().apply(event)
+    );
+    const apply = vi.spyOn(store.getState(), 'apply');
+
+    await harness.service.submit('处理任务');
+
+    expect(harness.events).toEqual([
+      { type: 'message', role: 'user', text: '处理任务' },
+      { type: 'phase', phase: 'thinking' },
+      { type: 'character_emotion', label: 'happy' },
+      { type: 'message', role: 'assistant', text: '处理完成' },
+      { type: 'phase', phase: 'success' }
+    ]);
+    expect(apply.mock.calls.map(([event]) => event)).toEqual(harness.events);
+    expect(store.getState().characterState.stateId).toBe('success');
+    vi.advanceTimersByTime(1_500);
+    expect(store.getState().characterState.stateId).toBe('custom:wave');
+    vi.useRealTimers();
+  });
+
+  test('AgentLoop 情绪事件转换为无自由文本推测的 character_emotion 任务事件', async () => {
+    const { events, service } = createHarness(new ScriptedProvider([{
+      type: 'text',
+      text: '完成',
+      emotion: 'happy'
+    }]));
+    await service.submit('处理任务');
+    expect(events).toContainEqual({
+      type: 'character_emotion',
+      label: 'happy'
+    });
+  });
+
   test('主模型可重试失败耗尽后改用备用模型完成当前 Agent 请求', async () => {
     const firstError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
     const secondError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
@@ -198,6 +263,13 @@ describe('AgentService', () => {
     await service.confirm(pendingEvent.action.actionId);
 
     expect(fileTools.executeWrite).toHaveBeenCalledOnce();
+    expect(events).toContainEqual({ type: 'character_carrying', carrying: true });
+    expect(events).toContainEqual({ type: 'character_carrying', carrying: false });
+    expect(events.findIndex(event => (
+      event.type === 'character_carrying' && event.carrying
+    ))).toBeLessThan(events.findIndex(event => (
+      event.type === 'character_carrying' && !event.carrying
+    )));
     expect(phases(events)).toEqual([
       'thinking',
       'awaiting_confirmation',

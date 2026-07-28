@@ -281,6 +281,44 @@ verifyProviderContract({
   missingFieldsResponse: { choices: [{}] }
 });
 
+describe('OpenAI Compatible 结构化情绪元数据', () => {
+  test('白名单标签进入 ModelResponse，未知标签被拒绝', async () => {
+    const valid = new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'contract-secret',
+      vi.fn(async () => jsonResponse({
+        choices: [{
+          message: {
+            content: '完成',
+            metadata: { emotion: 'happy' }
+          }
+        }]
+      }))
+    );
+    await expect(valid.respond(request, new AbortController().signal)).resolves.toEqual({
+      type: 'text',
+      text: '完成',
+      emotion: 'happy'
+    });
+
+    const invalid = new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'contract-secret',
+      vi.fn(async () => jsonResponse({
+        choices: [{
+          message: {
+            content: '完成',
+            metadata: { emotion: 'arbitrary-state' }
+          }
+        }]
+      }))
+    );
+    await expect(invalid.respond(request, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE'
+    });
+  });
+});
+
 verifyProviderContract({
   name: 'Anthropic',
   createProvider: fetchClient => new AnthropicProvider(

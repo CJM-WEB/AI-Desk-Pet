@@ -102,6 +102,17 @@ const interactionRegionSchema = z.object({
   }
 });
 
+const extensionTriggerConfigSchema = z.object({
+  events: z.array(z.enum([
+    'idle',
+    'single_click',
+    'double_click',
+    'context_menu'
+  ])).max(4).default([]),
+  keywords: z.array(z.string().trim().min(1).max(80)).max(32).default([]),
+  emotions: z.array(safeIdentifierSchema).max(32).default([])
+}).strict();
+
 const actionFrameSchema = z.object({
   id: safeIdentifierSchema.optional(),
   assetId: safeIdentifierSchema,
@@ -172,6 +183,7 @@ const coreCharacterStateDefinitionSchema = z.object({
 const extensionCharacterStateDefinitionSchema = z.object({
   id: normalizedExtensionStateIdSchema,
   kind: z.literal('extension'),
+  triggers: extensionTriggerConfigSchema.optional(),
   actions: z.array(actionClipSchema)
 }).strict();
 
@@ -189,6 +201,7 @@ const coreDraftStateDefinitionSchema = z.object({
 const extensionDraftStateDefinitionSchema = z.object({
   id: normalizedExtensionStateIdSchema,
   kind: z.literal('extension'),
+  triggers: extensionTriggerConfigSchema.optional(),
   actions: z.array(draftActionClipSchema)
 }).strict();
 

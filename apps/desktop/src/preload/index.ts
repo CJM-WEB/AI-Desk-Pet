@@ -11,6 +11,12 @@ import type {
   CharacterSourceChoiceResult,
   CharacterSummaryDto
 } from '../shared/character-ipc';
+import {
+  characterMotionEventSchema,
+  characterMotionSnapshotResultSchema,
+  type CharacterMotionEvent,
+  type CharacterMotionSnapshot
+} from '../shared/character-motion-ipc';
 import type {
   LocalDataScope,
   McpServerInput,
@@ -156,6 +162,23 @@ const api: MyselfApi = {
     );
     ipcRenderer.on(ipcChannels.characterEvent, handler);
     return () => ipcRenderer.removeListener(ipcChannels.characterEvent, handler);
+  },
+  getCharacterMotionSnapshot: async (): Promise<CharacterMotionSnapshot> => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterMotionSnapshotGet, {});
+    return characterMotionSnapshotResultSchema.parse(result).snapshot;
+  },
+  subscribeCharacterMotion: (
+    listener: (event: CharacterMotionEvent) => void
+  ): (() => void) => {
+    const handler = (_event: unknown, payload: unknown): void => {
+      const parsed = characterMotionEventSchema.safeParse(payload);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(ipcChannels.characterMotionEvent, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.characterMotionEvent, handler);
+  },
+  reportCharacterActionPlayed: async (playbackToken, actionId) => {
+    await ipcRenderer.invoke(ipcChannels.characterActionPlayed, { playbackToken, actionId });
   },
   openChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenChat),
   openSettings: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenSettings),

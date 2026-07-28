@@ -12,6 +12,7 @@ export interface CharacterPlayerPort {
   play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void;
   setDirection(direction: 'left' | 'right'): void;
   getAnchor(name: keyof AnchorSet): AnchorPoint | null;
+  getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
   destroy(): void;
 }
 
@@ -23,6 +24,7 @@ export interface PixiCharacterScene {
   show(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void;
   setDirection(direction: 'left' | 'right'): void;
   getAnchor(name: keyof AnchorSet): AnchorPoint | null;
+  getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
   stop(): void;
   destroy(): void;
   isTickerRunning(): boolean;
@@ -54,6 +56,10 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
 
   getAnchor(name: keyof AnchorSet): AnchorPoint | null {
     return this.scene.getAnchor(name);
+  }
+
+  getFrameBounds() {
+    return this.scene.getFrameBounds?.() ?? null;
   }
 
   isTickerRunning(): boolean {
@@ -250,6 +256,17 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     const frameAnchor = this.selection.action.frames[frameIndex]?.anchors?.[name];
     const anchor = frameAnchor ?? this.selection.action.anchors[name] ?? null;
     return anchor ? resolveDirectionalAnchor(anchor, this.direction) : null;
+  }
+
+  getFrameBounds(): { x: number; y: number; width: number; height: number } | null {
+    if (!this.sprite) return null;
+    const bounds = this.sprite.getBounds();
+    return {
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height
+    };
   }
 
   stop(): void {

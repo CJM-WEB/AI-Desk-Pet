@@ -52,6 +52,27 @@ describe('角色状态仲裁器', () => {
     )).toEqual({ stateId: 'carrying', source: 'system' });
   });
 
+  test('普通移动不能覆盖任务核心状态，但可信搬运可以进入搬运状态', () => {
+    for (const stateId of [
+      'listening',
+      'thinking',
+      'acting',
+      'success',
+      'error'
+    ] as const) {
+      const current: CharacterStateSnapshot = { stateId, source: 'system' };
+      expect(reduceCharacterState(
+        current,
+        { type: 'movement', carrying: false }
+      )).toBe(current);
+    }
+
+    expect(reduceCharacterState(
+      { stateId: 'thinking', source: 'system' },
+      { type: 'movement', carrying: true }
+    )).toEqual({ stateId: 'carrying', source: 'system' });
+  });
+
   test('受保护的核心状态拒绝扩展状态覆盖', () => {
     const protectedStateIds = [
       'listening',

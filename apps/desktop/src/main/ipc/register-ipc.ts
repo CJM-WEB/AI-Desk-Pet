@@ -1,4 +1,4 @@
-import type { IpcMain, IpcMainInvokeEvent } from 'electron';
+import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron';
 import {
   modelRouteConfigSchema,
   storedProviderProfileV2Schema,
@@ -30,6 +30,12 @@ import {
   type CharacterSummaryDto
 } from '../../shared/character-ipc';
 import type { CharacterDraftV1 } from '@myself/character-runtime';
+import {
+  characterMotionEmptyInputSchema,
+  characterActionPlayedInputSchema,
+  characterMotionSnapshotResultSchema,
+  type CharacterMotionSnapshot
+} from '../../shared/character-motion-ipc';
 
 export type WindowIpcActions = {
   openChat(): unknown;
@@ -372,6 +378,11 @@ export interface CharacterIpcDialogs {
   }>;
 }
 
+export interface CharacterMotionIpcService {
+  getSnapshot(): CharacterMotionSnapshot;
+  reportPlayedAction(playbackToken: string, actionId: string): Promise<void>;
+}
+
 function characterInputError(): Error & { code: string } {
   return Object.assign(new Error('CHARACTER_INPUT_INVALID'), {
     code: 'CHARACTER_INPUT_INVALID'
@@ -543,6 +554,39 @@ export function registerCharacterIpc(
       return characterOperation(characterBytesResultSchema, async () => ({
         bytes: await service.readCharacterRuntimeAsset(assetId)
       }));
+    }
+  );
+}
+
+/** Renderer 只能读取 Main 权威快照，不能提交坐标或目标位置。 */
+export function registerCharacterMotionIpc(
+  ipcMain: IpcMain,
+  service: CharacterMotionIpcService,
+  petWebContents: WebContents
+): void {
+  replaceHandler(
+    ipcMain,
+    ipcChannels.characterMotionSnapshotGet,
+    async (_event, raw) => {
+      parseCharacterInput(characterMotionEmptyInputSchema, raw);
+      return characterOperation(characterMotionSnapshotResultSchema, async () => ({
+        snapshot: service.getSnapshot()
+      }));
+    }
+  );
+  replaceHandler(
+    ipcMain,
+    ipcChannels.characterActionPlayed,
+    async (event, raw) => {
+      if (event.sender !== petWebContents) {
+        throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
+      }
+      const { playbackToken, actionId } = parseCharacterInput(
+        characterActionPlayedInputSchema,
+        raw
+      );
+      await service.reportPlayedAction(playbackToken, actionId);
+      return { ok: true };
     }
   );
 }
