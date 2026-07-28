@@ -161,7 +161,7 @@ describe('角色工作室 SSR 外壳', () => {
     ]) {
       expect(markup).toContain(text);
     }
-    expect(markup).toContain('时间轴将在下一阶段提供');
+    expect(markup).toContain('当前没有可编辑动作');
     expect(markup).not.toContain('window.myself');
   });
 
@@ -176,7 +176,7 @@ describe('角色工作室 SSR 外壳', () => {
     expect(markup).toContain('思考');
     expect(markup).toContain('轻呼吸');
     expect(markup).toContain('12');
-    expect(markup).toContain('预览将在动作素材编译后显示');
+    expect(markup).toContain('播放控制只使用当前草稿的内存快照');
     expect(markup).not.toContain('批量删除');
   });
 
@@ -304,6 +304,29 @@ describe('角色工作室 SSR 外壳', () => {
     );
     expect(css).toMatch(
       /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-columns\s*\{[^}]*overflow-y:\s*auto;/su
+    );
+  });
+
+  test('两列窄窗口使用稳定首行且只在 columns 内纵向滚动', async () => {
+    const css = await workshopCss();
+
+    expect(css).toMatch(
+      /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-columns\s*\{[^}]*grid-template-rows:\s*minmax\(500px,\s*auto\)\s+minmax\(280px,\s*auto\);[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/su
+    );
+    expect(css).toMatch(
+      /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-sidebar\s*\{[^}]*min-height:\s*500px;[^}]*height:\s*100%;/su
+    );
+    expect(css).toMatch(
+      /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-stage\s*\{[^}]*min-height:\s*500px;/su
+    );
+    expect(css).toMatch(
+      /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-inspector\s*\{[^}]*grid-row:\s*2;[^}]*grid-column:\s*1\s*\/\s*-1;/su
+    );
+    expect(css).toMatch(
+      /@media \(max-width:\s*680px\)[\s\S]*?\.workshop-columns\s*\{[^}]*display:\s*block;[^}]*overflow:\s*visible;/su
+    );
+    expect(css).toMatch(
+      /@media \(max-width:\s*680px\)[\s\S]*?\.character-workshop-shell\s*\{[^}]*height:\s*100vh;[^}]*min-height:\s*0;[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/su
     );
   });
 

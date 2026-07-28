@@ -163,7 +163,10 @@ export interface MyselfApi {
   chooseCharacterSources(characterId: string): Promise<CharacterSourceChoiceResult>;
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
-  activateCharacter(characterId: string): Promise<void>;
+  activateCharacter(
+    characterId: string,
+    options?: { confirmIncomplete?: boolean }
+  ): Promise<void>;
   deleteCharacter(characterId: string): Promise<void>;
   importCharacterPackage(): Promise<CharacterImportResult>;
   exportCharacterPackage(characterId: string): Promise<CharacterExportResult>;

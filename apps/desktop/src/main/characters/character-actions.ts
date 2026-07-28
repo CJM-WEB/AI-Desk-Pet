@@ -150,8 +150,15 @@ export class CharacterActions {
     }
   }
 
-  async activateCharacter(characterId: string): Promise<void> {
-    await this.dependencies.store.setActive(characterId);
+  async activateCharacter(
+    characterId: string,
+    confirmIncomplete = false
+  ): Promise<void> {
+    if (confirmIncomplete) {
+      await this.dependencies.store.setActive(characterId, true);
+    } else {
+      await this.dependencies.store.setActive(characterId);
+    }
     this.emit({ type: 'active-character-changed', characterId });
     this.emit({ type: 'index-changed' });
   }

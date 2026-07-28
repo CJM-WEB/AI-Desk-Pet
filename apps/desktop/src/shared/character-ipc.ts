@@ -18,6 +18,10 @@ export const characterEmptyInputSchema = z.object({}).strict();
 export const characterIdInputSchema = z.object({
   characterId: characterIdSchema
 }).strict();
+export const characterActivateInputSchema = z.object({
+  characterId: characterIdSchema,
+  confirmIncomplete: z.boolean().optional()
+}).strict();
 export const characterCreateInputSchema = z.object({
   name: z.string().trim().min(1).max(120)
 }).strict();
@@ -47,7 +51,8 @@ export const characterSummarySchema = z.object({
   thumbnailAssetId: characterAssetIdSchema.nullable(),
   active: z.boolean(),
   completeness: z.enum(['complete', 'incomplete', 'broken']),
-  missingCoreStates: z.array(z.enum(CORE_CHARACTER_STATES))
+  missingCoreStates: z.array(z.enum(CORE_CHARACTER_STATES)),
+  activationConfirmationRequired: z.boolean().optional()
 }).strict();
 export const characterSourceSchema = z.object({
   assetId: characterSourceAssetIdSchema,

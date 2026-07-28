@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { ipcChannels } from '../../shared/ipc-channels';
 import {
   characterBytesResultSchema,
+  characterActivateInputSchema,
   characterCreateInputSchema,
   characterDraftResultSchema,
   characterDraftSaveInputSchema,
@@ -348,7 +349,7 @@ export interface CharacterIpcService {
   ): Promise<unknown[]>;
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
-  activateCharacter(characterId: string): Promise<void>;
+  activateCharacter(characterId: string, confirmIncomplete?: boolean): Promise<void>;
   deleteCharacter(characterId: string): Promise<void>;
   importCharacterPackage(packagePath: string): Promise<string>;
   exportCharacterPackage(characterId: string, destination: string): Promise<void>;
@@ -479,9 +480,16 @@ export function registerCharacterIpc(
     });
   });
   replaceHandler(ipcMain, ipcChannels.characterActivate, async (_event, raw) => {
-    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    const { characterId, confirmIncomplete } = parseCharacterInput(
+      characterActivateInputSchema,
+      raw
+    );
     return characterOperation(characterMutationResultSchema, async () => {
-      await service.activateCharacter(characterId);
+      if (confirmIncomplete) {
+        await service.activateCharacter(characterId, true);
+      } else {
+        await service.activateCharacter(characterId);
+      }
       return { ok: true };
     });
   });

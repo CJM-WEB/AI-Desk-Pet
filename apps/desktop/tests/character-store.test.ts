@@ -479,7 +479,7 @@ describe('CharacterStore', () => {
     await firstStore.create({ id: 'demo', name: '演示角色' });
     await firstStore.saveDraft('demo', createDraft());
     await firstStore.publishCompiled('demo', runtime.manifest, runtime.assets);
-    await firstStore.setActive('demo');
+    await firstStore.setActive('demo', true);
 
     const restartedStore = new CharacterStore(charactersDirectory);
 
@@ -505,10 +505,10 @@ describe('CharacterStore', () => {
     await store.publishCompiled('first', first.manifest, first.assets);
     await store.publishCompiled('second', second.manifest, second.assets);
 
-    await store.setActive('first');
+    await store.setActive('first', true);
     await expect(store.readActiveRuntimeAsset('atlas'))
       .resolves.toEqual(new Uint8Array([1, 1, 1]));
-    await store.setActive('second');
+    await store.setActive('second', true);
     await expect(store.readActiveRuntimeAsset('atlas'))
       .resolves.toEqual(new Uint8Array([2, 2, 2]));
 
@@ -538,7 +538,7 @@ describe('CharacterStore', () => {
     const runtime = createRuntime();
     await store.create({ id: 'demo', name: '演示角色' });
     await store.publishCompiled('demo', runtime.manifest, runtime.assets);
-    await store.setActive('demo');
+    await store.setActive('demo', true);
     armed = true;
 
     const error = await store.readActiveRuntimeAsset('atlas').catch((caught) => caught);
@@ -567,7 +567,7 @@ describe('CharacterStore', () => {
     const runtime = createRuntime();
     await store.create({ id: 'demo', name: '演示角色' });
     await store.publishCompiled('demo', runtime.manifest, runtime.assets);
-    await store.setActive('demo');
+    await store.setActive('demo', true);
     armed = true;
 
     const error = await store.readActiveRuntimeAsset('atlas').catch((caught) => caught);
@@ -757,7 +757,7 @@ describe('CharacterStore', () => {
     const runtime = createRuntime();
     await store.create({ id: 'demo', name: '演示角色' });
     await store.publishCompiled('demo', runtime.manifest, runtime.assets);
-    await store.setActive('demo');
+    await store.setActive('demo', true);
     await unlink(join(charactersDirectory, 'demo', 'compiled', 'atlas.png'));
 
     await expect(store.getActive()).rejects.toThrow('CHARACTER_RUNTIME_UNAVAILABLE');
@@ -787,6 +787,97 @@ describe('CharacterStore', () => {
     await expect(store.setActive('demo')).rejects.toThrow('CHARACTER_RUNTIME_UNAVAILABLE');
   });
 
+  test('不完整角色确认指纹由 Main 持久化且发布变化后必须再次确认', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime();
+    const incompleteManifest = {
+      ...runtime.manifest,
+      states: runtime.manifest.states.filter(state => state.id === 'idle')
+    };
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', incompleteManifest, runtime.assets);
+
+    await expect(store.setActive('demo'))
+      .rejects.toThrow('CHARACTER_INCOMPLETE_CONFIRMATION_REQUIRED');
+    await expect(store.setActive('demo', true)).resolves.toBeUndefined();
+    await expect(store.list()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'demo',
+        activationConfirmationRequired: false
+      })
+    ]);
+
+    const restartedStore = new CharacterStore(charactersDirectory);
+    await expect(restartedStore.setActive('demo')).resolves.toBeUndefined();
+
+    const changedManifest = {
+      ...incompleteManifest,
+      compilerVersion: 'confirmation-change'
+    };
+    await restartedStore.publishCompiled('demo', changedManifest, runtime.assets);
+    await expect(restartedStore.list()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'demo',
+        activationConfirmationRequired: true
+      })
+    ]);
+    await expect(restartedStore.setActive('demo'))
+      .rejects.toThrow('CHARACTER_INCOMPLETE_CONFIRMATION_REQUIRED');
+  });
+
+  test('完整角色保持旧单参数启用调用兼容且不创建确认要求', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createCompleteRuntime('complete', '完整角色');
+    await store.create({ id: 'complete', name: '完整角色' });
+    await store.publishCompiled('complete', runtime.manifest, runtime.assets);
+
+    await expect(store.setActive('complete')).resolves.toBeUndefined();
+    await expect(store.list()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'complete',
+        active: true,
+        completeness: 'complete',
+        activationConfirmationRequired: false
+      })
+    ]);
+  });
+
+  test('发布成功会失效旧确认且完整版本之后再次发布同一不完整版本仍需确认', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const incomplete = createRuntime();
+    const complete = createCompleteRuntime('demo', '演示角色');
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', incomplete.manifest, incomplete.assets);
+    await store.setActive('demo', true);
+
+    await store.publishCompiled('demo', complete.manifest, complete.assets);
+    await store.publishCompiled('demo', incomplete.manifest, incomplete.assets);
+
+    await expect(store.setActive('demo'))
+      .rejects.toThrow('CHARACTER_INCOMPLETE_CONFIRMATION_REQUIRED');
+  });
+
+  test('发布回滚会保留原运行版本的不完整确认', async () => {
+    const writer = failingIndexWriter();
+    const store = new CharacterStore(charactersDirectory, {
+      writeText: writer.writeText
+    });
+    const incomplete = createRuntime();
+    const complete = createCompleteRuntime('demo', '演示角色');
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', incomplete.manifest, incomplete.assets);
+    await store.setActive('demo', true);
+    writer.arm();
+
+    await expect(store.publishCompiled('demo', complete.manifest, complete.assets))
+      .rejects.toThrow('TEST_INDEX_WRITE_FAILED');
+
+    const restartedStore = new CharacterStore(charactersDirectory);
+    await expect(restartedStore.setActive('demo')).resolves.toBeUndefined();
+    await expect(restartedStore.getRuntimeManifest('demo'))
+      .resolves.toEqual(incomplete.manifest);
+  });
+
   test('官方默认角色始终不可删除', async () => {
     const store = new CharacterStore(charactersDirectory);
 
@@ -799,7 +890,7 @@ describe('CharacterStore', () => {
     const activeRuntime = createRuntime('active', '活动角色');
     await store.create({ id: 'active', name: '活动角色' });
     await store.publishCompiled('active', activeRuntime.manifest, activeRuntime.assets);
-    await store.setActive('active');
+    await store.setActive('active', true);
     await store.create({ id: 'removable', name: '可删除角色' });
 
     await expect(store.delete('active')).rejects.toThrow('CHARACTER_ACTIVE_DELETE_REJECTED');

@@ -103,6 +103,7 @@ const interactionRegionSchema = z.object({
 });
 
 const actionFrameSchema = z.object({
+  id: safeIdentifierSchema.optional(),
   assetId: safeIdentifierSchema,
   x: finiteNumberSchema.int().nonnegative(),
   y: finiteNumberSchema.int().nonnegative(),
@@ -111,6 +112,30 @@ const actionFrameSchema = z.object({
   durationMs: finiteNumberSchema.int().positive().optional(),
   anchors: anchorSetSchema.partial().strict().optional()
 }).strict();
+
+function requireUniqueFrameIds(
+  frames: readonly z.output<typeof actionFrameSchema>[],
+  context: z.RefinementCtx
+): void {
+  const ids = new Set<string>();
+  frames.forEach((frame, frameIndex) => {
+    if (!frame.id) return;
+    if (ids.has(frame.id)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '动作内的帧标识必须唯一。',
+        path: [frameIndex, 'id']
+      });
+    }
+    ids.add(frame.id);
+  });
+}
+
+const draftActionFramesSchema = z.array(actionFrameSchema)
+  .superRefine(requireUniqueFrameIds);
+const publishedActionFramesSchema = z.array(actionFrameSchema)
+  .min(1)
+  .superRefine(requireUniqueFrameIds);
 
 const actionClipFields = {
   id: safeIdentifierSchema,
@@ -129,12 +154,12 @@ const actionClipFields = {
 
 const draftActionClipSchema = z.object({
   ...actionClipFields,
-  frames: z.array(actionFrameSchema)
+  frames: draftActionFramesSchema
 }).strict();
 
 const actionClipSchema = z.object({
   ...actionClipFields,
-  frames: z.array(actionFrameSchema).min(1)
+  frames: publishedActionFramesSchema
 }).strict();
 
 // 发布状态与草稿状态分别绑定其可用动作结构。

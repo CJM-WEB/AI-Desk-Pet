@@ -43,11 +43,6 @@ export type CharacterWorkshopApi = Pick<
   | 'subscribeCharacterEvents'
 >;
 
-type EditableActionFields = Pick<
-  DraftActionClip,
-  'name' | 'fps' | 'loop' | 'weight' | 'direction'
->;
-
 export interface CharacterWorkshopState {
   characters: CharacterSummaryDto[];
   selectedCharacterId: string | null;
@@ -67,12 +62,12 @@ export interface CharacterWorkshopState {
   createCharacter(name: string): Promise<void>;
   duplicateCharacter(characterId: string): Promise<void>;
   deleteCharacter(characterId: string): Promise<void>;
-  activateCharacter(characterId: string): Promise<void>;
+  activateCharacter(characterId: string, confirmIncomplete?: boolean): Promise<void>;
   importCharacterPackage(): Promise<void>;
   exportCharacterPackage(): Promise<void>;
   importSources(): Promise<void>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
-  updateCurrentAction(patch: Partial<EditableActionFields>): void;
+  updateCurrentAction(patch: Partial<DraftActionClip>): void;
   flushDraft(): Promise<void>;
   clearNotice(): void;
   dispose(): void;
@@ -419,9 +414,13 @@ export function createCharacterWorkshopStore(
         });
       },
 
-      async activateCharacter(characterId) {
+      async activateCharacter(characterId, confirmIncomplete = false) {
         await reportFailure('activating', async () => {
-          await api.activateCharacter(characterId);
+          if (confirmIncomplete) {
+            await api.activateCharacter(characterId, { confirmIncomplete: true });
+          } else {
+            await api.activateCharacter(characterId);
+          }
           set({
             characters: get().characters.map(character => ({
               ...character,

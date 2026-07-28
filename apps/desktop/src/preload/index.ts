@@ -127,8 +127,11 @@ const api: MyselfApi = {
   publishCharacter: async (input: CharacterPublishInput) => {
     await ipcRenderer.invoke(ipcChannels.characterPublish, input);
   },
-  activateCharacter: async characterId => {
-    await ipcRenderer.invoke(ipcChannels.characterActivate, { characterId });
+  activateCharacter: async (characterId, options) => {
+    await ipcRenderer.invoke(ipcChannels.characterActivate, {
+      characterId,
+      ...(options?.confirmIncomplete ? { confirmIncomplete: true } : {})
+    });
   },
   deleteCharacter: async characterId => {
     await ipcRenderer.invoke(ipcChannels.characterDelete, { characterId });

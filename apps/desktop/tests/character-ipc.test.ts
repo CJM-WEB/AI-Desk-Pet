@@ -113,6 +113,24 @@ beforeEach(() => {
 });
 
 describe('角色白名单 IPC', () => {
+  test('不完整确认只通过固定布尔字段贯穿 preload 与 Main', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = characterServiceDouble();
+    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+
+    await expect(handlers.get(channel('characterActivate'))?.({}, {
+      characterId: 'demo',
+      confirmIncomplete: true
+    })).resolves.toEqual({ ok: true });
+    expect(service.activateCharacter).toHaveBeenCalledWith('demo', true);
+
+    await exposedApi?.activateCharacter('demo', { confirmIncomplete: true });
+    expect(invoke).toHaveBeenCalledWith(
+      ipcChannels.characterActivate,
+      { characterId: 'demo', confirmIncomplete: true }
+    );
+  });
+
   test('拒绝路径型角色标识和多余字段，且不会进入应用服务', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
@@ -137,7 +155,11 @@ describe('角色白名单 IPC', () => {
       assetId: 'idle-atlas',
       extra: true
     }],
-    ['characterActivate', { characterId: 'demo', extra: true }],
+    ['characterActivate', {
+      characterId: 'demo',
+      confirmIncomplete: true,
+      extra: true
+    }],
     ['characterDelete', { characterId: 'demo', extra: true }],
     ['characterPackageImport', { extra: true }],
     ['characterPackageExport', { characterId: 'demo', extra: true }],

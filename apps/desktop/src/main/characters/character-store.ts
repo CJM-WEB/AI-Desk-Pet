@@ -32,6 +32,7 @@ import { migrateCharacterDocument } from './character-migrations';
 
 const DEFAULT_CHARACTER_ID = 'builtin-default';
 const SAFE_CHARACTER_ID = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
+const SHA_256 = /^[a-f0-9]{64}$/u;
 const PUBLISH_MARKER = 'publish-transaction.json';
 const COMPILED_NEXT = 'compiled.next';
 const COMPILED_BACKUP = 'compiled.backup';
@@ -49,7 +50,11 @@ const indexEntrySchema = z.object({
 const characterIndexSchema = z.object({
   version: z.literal(1),
   activeCharacterId: z.string().regex(SAFE_CHARACTER_ID).nullable(),
-  characters: z.array(indexEntrySchema)
+  characters: z.array(indexEntrySchema),
+  incompleteActivationConfirmations: z.record(
+    z.string().regex(SAFE_CHARACTER_ID),
+    z.string().regex(SHA_256)
+  ).default({})
 }).strict().superRefine((index, context) => {
   const ids = new Set<string>();
   index.characters.forEach((entry, entryIndex) => {
@@ -98,6 +103,7 @@ export type CharacterSummary = {
   active: boolean;
   completeness: 'complete' | 'incomplete' | 'broken';
   missingCoreStates: CoreCharacterState[];
+  activationConfirmationRequired: boolean;
 };
 
 export type CharacterStoreDependencies = {
@@ -124,7 +130,8 @@ function emptyIndex(): CharacterIndex {
   return {
     version: 1,
     activeCharacterId: null,
-    characters: []
+    characters: [],
+    incompleteActivationConfirmations: {}
   };
 }
 
@@ -144,6 +151,11 @@ function json(value: unknown): string {
 
 function sha256(bytes: Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function activationFingerprint(manifest: CharacterManifestV1): string {
+  // 指纹绑定当前发布清单；重新发布后必须重新确认不完整状态。
+  return sha256(JSON.stringify(manifest));
 }
 
 function cloneIndex(index: CharacterIndex): CharacterIndex {
@@ -242,7 +254,11 @@ export class CharacterStore {
       const loaded = await this.loadIndex();
       if (!loaded.writable) return [];
       const summaries = await Promise.all(loaded.index.characters.map(async entry => (
-        this.summary(entry, loaded.index.activeCharacterId)
+        this.summary(
+          entry,
+          loaded.index.activeCharacterId,
+          loaded.index.incompleteActivationConfirmations
+        )
       )));
       return summaries.sort((left, right) => left.id.localeCompare(right.id, 'en'));
     });
@@ -409,6 +425,7 @@ export class CharacterStore {
         await this.writePublishMarker(characterId, transaction);
 
         this.replaceEntry(index, nextEntry);
+        delete index.incompleteActivationConfirmations[characterId];
         await this.writeIndex(index);
       } catch (error) {
         await this.rollbackPublishTransaction(characterId, originalIndex).catch(() => undefined);
@@ -427,11 +444,22 @@ export class CharacterStore {
     });
   }
 
-  setActive(characterId: string): Promise<void> {
+  setActive(characterId: string, confirmIncomplete = false): Promise<void> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       const index = await this.requireCharacter(characterId);
-      await this.readRuntime(characterId);
+      const manifest = await this.readRuntime(characterId);
+      const missing = missingCoreStates(manifest);
+      const fingerprint = activationFingerprint(manifest);
+      const confirmed = index.incompleteActivationConfirmations[characterId];
+      if (missing.length > 0 && confirmed !== fingerprint && !confirmIncomplete) {
+        throw characterError('CHARACTER_INCOMPLETE_CONFIRMATION_REQUIRED');
+      }
+      if (missing.length > 0) {
+        index.incompleteActivationConfirmations[characterId] = fingerprint;
+      } else {
+        delete index.incompleteActivationConfirmations[characterId];
+      }
       index.activeCharacterId = characterId;
       await this.writeIndex(index);
     });
@@ -493,6 +521,7 @@ export class CharacterStore {
         await this.removePath(tombstone, { recursive: true, force: true });
         await this.renamePath(characterDirectory, tombstone);
         index.characters = index.characters.filter(character => character.id !== characterId);
+        delete index.incompleteActivationConfirmations[characterId];
         await this.writeIndex(index);
       } catch (error) {
         if (await exists(tombstone)) {
@@ -754,6 +783,7 @@ export class CharacterStore {
             manifest.name,
             manifest.thumbnailAssetId
           ));
+          delete index.incompleteActivationConfirmations[characterId];
           await this.writeIndex(index);
         } catch {
           this.replaceEntry(index, previousEntry);
@@ -780,6 +810,7 @@ export class CharacterStore {
       }
       if (currentIsValid) {
         this.replaceEntry(index, transaction.nextEntry);
+        delete index.incompleteActivationConfirmations[characterId];
         await this.writeIndex(index);
         await this.cleanupPublishTransaction(characterId);
         return;
@@ -1102,7 +1133,8 @@ export class CharacterStore {
 
   private async summary(
     entry: CharacterIndexEntry,
-    activeCharacterId: string | null
+    activeCharacterId: string | null,
+    confirmations: Readonly<Record<string, string>>
   ): Promise<CharacterSummary> {
     const compiledManifest = join(this.compiledDirectory(entry.id), 'manifest.json');
     if (await exists(compiledManifest)) {
@@ -1113,14 +1145,19 @@ export class CharacterStore {
           ...entry,
           active: activeCharacterId === entry.id,
           completeness: missing.length === 0 ? 'complete' : 'incomplete',
-          missingCoreStates: missing
+          missingCoreStates: missing,
+          activationConfirmationRequired: (
+            missing.length > 0
+            && confirmations[entry.id] !== activationFingerprint(manifest)
+          )
         };
       } catch {
         return {
           ...entry,
           active: activeCharacterId === entry.id,
           completeness: 'broken',
-          missingCoreStates: []
+          missingCoreStates: [],
+          activationConfirmationRequired: false
         };
       }
     }
@@ -1131,14 +1168,16 @@ export class CharacterStore {
         ...entry,
         active: activeCharacterId === entry.id,
         completeness: 'incomplete',
-        missingCoreStates: missingCoreStates(draft)
+        missingCoreStates: missingCoreStates(draft),
+        activationConfirmationRequired: true
       };
     } catch {
       return {
         ...entry,
         active: activeCharacterId === entry.id,
         completeness: 'broken',
-        missingCoreStates: []
+        missingCoreStates: [],
+        activationConfirmationRequired: false
       };
     }
   }

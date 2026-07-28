@@ -115,6 +115,35 @@ describe('角色清单协议', () => {
     expect(draft.states[0]?.actions[0]?.frames).toEqual([]);
   });
 
+  test('动作帧稳定标识向后兼容且仍受安全标识规则约束', () => {
+    const legacy = characterManifestV1Schema.parse(createValidManifest());
+    expect(legacy.states[0]?.actions[0]?.frames[0]?.id).toBeUndefined();
+
+    const identified = createValidManifest();
+    (getIdleFrame(identified) as Record<string, unknown>).id = 'frame-idle-01';
+    expect(characterManifestV1Schema.parse(identified)
+      .states[0]?.actions[0]?.frames[0]?.id).toBe('frame-idle-01');
+
+    const unsafe = createValidManifest();
+    (getIdleFrame(unsafe) as Record<string, unknown>).id = '../frame';
+    expect(() => characterManifestV1Schema.parse(unsafe)).toThrow();
+  });
+
+  test('同一动作中的显式帧标识必须唯一', () => {
+    const manifest = createValidManifest();
+    const first = getIdleFrame(manifest);
+    (first as Record<string, unknown>).id = 'frame-duplicate';
+    getIdleAction(manifest).frames.push({
+      ...first,
+      x: first.x + first.width,
+      id: 'frame-duplicate'
+    } as typeof first);
+
+    expect(() => characterManifestV1Schema.parse(manifest)).toThrow(
+      '动作内的帧标识必须唯一'
+    );
+  });
+
   test.each([
     ['缺少编译器版本', (manifest: Record<string, unknown>) => delete manifest.compilerVersion],
     ['编译器版本仅含空白', (manifest: Record<string, unknown>) => { manifest.compilerVersion = '   '; }],

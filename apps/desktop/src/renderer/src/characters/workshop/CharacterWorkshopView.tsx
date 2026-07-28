@@ -26,6 +26,14 @@ import {
 } from '../store/character-workshop-store';
 import { CharacterList } from './CharacterList';
 import { StateList } from './StateList';
+import { ActionInspector } from './ActionInspector';
+import {
+  ActionTimeline,
+  ensureStableFrameIds
+} from './ActionTimeline';
+import { AnchorEditor } from './AnchorEditor';
+import { IncompleteCharacterDialog } from './IncompleteCharacterDialog';
+import { PreviewControls } from './PreviewControls';
 import './character-workshop.css';
 
 export interface CharacterWorkshopViewProps {
@@ -81,6 +89,9 @@ export function CharacterWorkshopWorkspace(
   const [createOpen, setCreateOpen] = useState(false);
   const [characterName, setCharacterName] = useState('');
   const [internalPendingDelete, setInternalPendingDelete] = useState<string | null>(null);
+  const [pendingActivation, setPendingActivation] = useState<string | null>(null);
+  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  const [perFrameAnchors, setPerFrameAnchors] = useState(false);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const createDialogRef = useRef<HTMLDialogElement>(null);
   const pendingDelete = props.pendingDeleteCharacterId === undefined
@@ -93,8 +104,18 @@ export function CharacterWorkshopWorkspace(
     character => character.id === pendingDelete
   );
   const action = currentAction(state);
+  const activationCharacter = state.characters.find(
+    character => character.id === pendingActivation
+  );
   const busy = state.busyAction !== null;
   const activity = activityLabel(state);
+
+  useEffect(() => {
+    const frames = action ? ensureStableFrameIds(action.frames) : [];
+    if (!frames.some(frame => frame.id === selectedFrameId)) {
+      setSelectedFrameId(frames[0]?.id ?? null);
+    }
+  }, [action, selectedFrameId]);
 
   useEffect(() => {
     if (pendingDelete && !deleteDialogRef.current?.open) {
@@ -201,8 +222,17 @@ export function CharacterWorkshopWorkspace(
           className="primary-command"
           type="button"
           disabled={busy || !selectedCharacter || selectedCharacter.active}
-          onClick={() => selectedCharacter
-            && void state.activateCharacter(selectedCharacter.id)}
+          onClick={() => {
+            if (!selectedCharacter) return;
+            if (
+              selectedCharacter.completeness === 'incomplete'
+              && selectedCharacter.activationConfirmationRequired !== false
+            ) {
+              setPendingActivation(selectedCharacter.id);
+              return;
+            }
+            void state.activateCharacter(selectedCharacter.id);
+          }}
         >
           <CheckCircle2 size={16} />启用角色
         </button>
@@ -278,23 +308,30 @@ export function CharacterWorkshopWorkspace(
             </div>
             <small>{selectedCharacter?.name ?? '未选择角色'}</small>
           </div>
-          <div className="preview-placeholder">
+          <div className="preview-workspace">
             <Upload size={28} aria-hidden="true" />
-            <strong>预览将在动作素材编译后显示</strong>
-            <span>当前阶段提供稳定画布占位，不模拟未实现的播放能力。</span>
+            <strong>{action ? action.name : '请选择动作'}</strong>
+            <span>
+              {action
+                ? '播放控制只使用当前草稿的内存快照。'
+                : '选择动作后可编辑时间轴与锚点。'}
+            </span>
+            <PreviewControls
+              frameCount={action?.frames.length ?? 0}
+              disabled={busy}
+            />
           </div>
-          <div className="timeline-placeholder" aria-label="时间轴预留区域">
-            <div>
-              <strong>时间轴</strong>
-              <span>时间轴将在下一阶段提供</span>
-            </div>
-            <div className="timeline-track" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-              <span />
-            </div>
-          </div>
+          {action ? (
+            <ActionTimeline
+              frames={action.frames}
+              selectedFrameId={selectedFrameId}
+              disabled={busy}
+              onSelect={setSelectedFrameId}
+              onChange={frames => state.updateCurrentAction({ frames })}
+            />
+          ) : (
+            <div className="timeline-empty">当前没有可编辑动作</div>
+          )}
         </section>
 
         <aside className="workshop-inspector" aria-labelledby="properties-heading">
@@ -302,86 +339,21 @@ export function CharacterWorkshopWorkspace(
             <h2 id="properties-heading">动作属性</h2>
           </div>
           {action ? (
-            <form className="action-properties">
-              <label>
-                动作名称
-                <input
-                  value={action.name}
-                  disabled={busy}
-                  onChange={event => state.updateCurrentAction({
-                    name: event.currentTarget.value
-                  })}
-                />
-              </label>
-              <div className="property-grid">
-                <label>
-                  帧率
-                  <input
-                    type="number"
-                    min="1"
-                    max="60"
-                    value={action.fps}
-                    disabled={busy}
-                    onChange={event => {
-                      const value = Number(event.currentTarget.value);
-                      if (value >= 1 && value <= 60) {
-                        state.updateCurrentAction({ fps: value });
-                      }
-                    }}
-                  />
-                </label>
-                <label>
-                  权重
-                  <input
-                    type="number"
-                    min="0.01"
-                    max="100"
-                    step="0.01"
-                    value={action.weight}
-                    disabled={busy}
-                    onChange={event => {
-                      const value = Number(event.currentTarget.value);
-                      if (value > 0 && value <= 100) {
-                        state.updateCurrentAction({ weight: value });
-                      }
-                    }}
-                  />
-                </label>
-              </div>
-              <label>
-                朝向
-                <select
-                  value={action.direction ?? 'any'}
-                  disabled={busy}
-                  onChange={event => state.updateCurrentAction({
-                    direction: event.currentTarget.value as 'left' | 'right' | 'any'
-                  })}
-                >
-                  <option value="any">任意</option>
-                  <option value="left">向左</option>
-                  <option value="right">向右</option>
-                </select>
-              </label>
-              <label className="toggle-row">
-                <span>
-                  <strong>循环播放</strong>
-                  <small>动作结束后从头继续</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={action.loop}
-                  disabled={busy}
-                  onChange={event => state.updateCurrentAction({
-                    loop: event.currentTarget.checked
-                  })}
-                />
-              </label>
-              <dl className="action-summary">
-                <div><dt>动作标识</dt><dd>{action.id}</dd></div>
-                <div><dt>帧数</dt><dd>{action.frames.length}</dd></div>
-                <div><dt>编译状态</dt><dd>{state.compileStatus}</dd></div>
-              </dl>
-            </form>
+            <>
+              <ActionInspector
+                action={action}
+                disabled={busy}
+                onChange={state.updateCurrentAction}
+              />
+              <AnchorEditor
+                action={action}
+                frameId={selectedFrameId}
+                perFrame={perFrameAnchors}
+                disabled={busy}
+                onPerFrameChange={setPerFrameAnchors}
+                onChange={next => state.updateCurrentAction(next)}
+              />
+            </>
           ) : (
             <p className="workshop-empty inspector-empty">请选择角色后编辑动作</p>
           )}
@@ -458,6 +430,18 @@ export function CharacterWorkshopWorkspace(
             </div>
           </div>
         </dialog>
+      ) : null}
+
+      {activationCharacter ? (
+        <IncompleteCharacterDialog
+          characterName={activationCharacter.name}
+          missingStates={activationCharacter.missingCoreStates}
+          onCancel={() => setPendingActivation(null)}
+          onConfirm={() => {
+            setPendingActivation(null);
+            void state.activateCharacter(activationCharacter.id, true);
+          }}
+        />
       ) : null}
     </main>
   );
