@@ -122,6 +122,12 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
 
+  packages/character-assets:
+    dependencies:
+      '@myself/character-runtime':
+        specifier: workspace:*
+        version: link:../character-runtime
+
   packages/character-runtime:
     dependencies:
       '@myself/shared-types':

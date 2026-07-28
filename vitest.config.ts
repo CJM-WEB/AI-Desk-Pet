@@ -7,6 +7,7 @@ export default defineConfig({
       'packages/file-tools/vitest.config.ts',
       'packages/agent-core/vitest.config.ts',
       'packages/character-runtime/vitest.config.ts',
+      'packages/character-assets/vitest.config.ts',
       'apps/desktop/vitest.config.ts',
       { extends: 'tests/vitest.config.ts' }
     ]
