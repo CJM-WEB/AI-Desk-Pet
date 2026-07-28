@@ -67,6 +67,21 @@ export function settingsWindowOptions(preload: string): BrowserWindowConstructor
   };
 }
 
+export function characterWorkshopWindowOptions(
+  preload: string
+): BrowserWindowConstructorOptions {
+  return {
+    width: 1120,
+    height: 760,
+    minWidth: 900,
+    minHeight: 620,
+    show: false,
+    autoHideMenuBar: true,
+    backgroundColor: '#fffaf2',
+    webPreferences: secureWebPreferences(preload)
+  };
+}
+
 export function lockNavigation(window: BrowserWindow): void {
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -95,6 +110,15 @@ export function createSettingsWindow(
   preload: string
 ): BrowserWindow {
   const window = new BrowserWindowClass(settingsWindowOptions(preload));
+  lockNavigation(window);
+  return window;
+}
+
+export function createCharacterWorkshopWindow(
+  BrowserWindowClass: BrowserWindowConstructor,
+  preload: string
+): BrowserWindow {
+  const window = new BrowserWindowClass(characterWorkshopWindowOptions(preload));
   lockNavigation(window);
   return window;
 }

@@ -107,6 +107,17 @@ export type CharacterStoreDependencies = {
     path: string,
     options?: { recursive?: boolean; force?: boolean }
   ) => Promise<void>;
+  onRuntimeReadCheckpoint?: (
+    checkpoint: 'runtime:manifest-after-open' | 'runtime:resource-after-open',
+    targetPath: string
+  ) => Promise<void>;
+};
+
+type RuntimePathIdentity = {
+  device: number;
+  inode: number;
+  physicalPath: string;
+  kind: 'directory' | 'file';
 };
 
 function emptyIndex(): CharacterIndex {
@@ -211,6 +222,9 @@ export class CharacterStore {
     path: string,
     options?: { recursive?: boolean; force?: boolean }
   ) => Promise<void>;
+  private readonly onRuntimeReadCheckpoint: NonNullable<
+    CharacterStoreDependencies['onRuntimeReadCheckpoint']
+  >;
 
   constructor(
     private readonly directory: string,
@@ -219,6 +233,8 @@ export class CharacterStore {
     this.writeText = dependencies.writeText ?? atomicWriteText;
     this.renamePath = dependencies.renamePath ?? rename;
     this.removePath = dependencies.removePath ?? rm;
+    this.onRuntimeReadCheckpoint = dependencies.onRuntimeReadCheckpoint
+      ?? (async () => undefined);
   }
 
   list(): Promise<CharacterSummary[]> {
@@ -428,6 +444,31 @@ export class CharacterStore {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
       return this.readRuntime(loaded.activeCharacterId);
+    });
+  }
+
+  readActiveRuntimeAsset(assetId: string): Promise<Uint8Array> {
+    return this.enqueue(async () => {
+      assertCharacterId(assetId);
+      const index = await this.requireWritableIndex();
+      if (index.activeCharacterId === null) {
+        throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
+      }
+      try {
+        return await this.readRuntimeAssetFrom(
+          this.compiledDirectory(index.activeCharacterId),
+          index.activeCharacterId,
+          assetId
+        );
+      } catch (error) {
+        if (
+          error instanceof Error
+          && /^CHARACTER_[A-Z0-9_]+$/u.test(error.message)
+        ) {
+          throw error;
+        }
+        throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
+      }
     });
   }
 
@@ -926,20 +967,137 @@ export class CharacterStore {
     characterId: string
   ): Promise<CharacterManifestV1> {
     await this.assertSafePath(directory);
+    const directoryIdentity = await this.captureRuntimeIdentity(directory, 'directory');
     const manifestFile = join(directory, 'manifest.json');
-    await this.assertSafePath(manifestFile);
-    const manifest = this.parseManifest(JSON.parse(await readFile(manifestFile, 'utf8')));
+    const manifestBytes = await this.readStableRuntimeFile(
+      manifestFile,
+      directory,
+      directoryIdentity,
+      'runtime:manifest-after-open'
+    );
+    const manifest = this.parseManifest(JSON.parse(manifestBytes.toString('utf8')));
     if (manifest.id !== characterId) {
       throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
     }
     const assets: Record<string, Uint8Array> = {};
     for (const resource of manifest.resources) {
       const resourceFile = join(directory, resource.fileName);
-      await this.assertSafePath(resourceFile);
-      assets[resource.fileName] = new Uint8Array(await readFile(resourceFile));
+      assets[resource.fileName] = new Uint8Array(await this.readStableRuntimeFile(
+        resourceFile,
+        directory,
+        directoryIdentity,
+        'runtime:resource-after-open'
+      ));
     }
     this.validateAssets(manifest, assets);
     return manifest;
+  }
+
+  private async readRuntimeAssetFrom(
+    directory: string,
+    characterId: string,
+    assetId: string
+  ): Promise<Uint8Array> {
+    await this.assertSafePath(directory);
+    const directoryIdentity = await this.captureRuntimeIdentity(directory, 'directory');
+    const manifestFile = join(directory, 'manifest.json');
+    const manifestBytes = await this.readStableRuntimeFile(
+      manifestFile,
+      directory,
+      directoryIdentity,
+      'runtime:manifest-after-open'
+    );
+    const manifest = this.parseManifest(JSON.parse(manifestBytes.toString('utf8')));
+    if (manifest.id !== characterId) {
+      throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
+    }
+    const resource = manifest.resources.find(candidate => candidate.assetId === assetId);
+    if (!resource) throw characterError('CHARACTER_RESOURCE_NOT_FOUND');
+
+    const resourceFile = join(directory, resource.fileName);
+    const bytes = new Uint8Array(await this.readStableRuntimeFile(
+      resourceFile,
+      directory,
+      directoryIdentity,
+      'runtime:resource-after-open'
+    ));
+    if (
+      bytes.byteLength !== resource.byteLength
+      || sha256(bytes) !== resource.sha256
+    ) {
+      throw characterError('CHARACTER_RESOURCE_INTEGRITY_FAILED');
+    }
+    return bytes;
+  }
+
+  /**
+   * 运行时文件只通过已核验句柄读取，并在读取前后确认文件与 compiled 目录未换位。
+   */
+  private async readStableRuntimeFile(
+    file: string,
+    directory: string,
+    directoryIdentity: RuntimePathIdentity,
+    checkpoint: 'runtime:manifest-after-open' | 'runtime:resource-after-open'
+  ): Promise<Buffer> {
+    try {
+      await this.assertRuntimeIdentity(directory, directoryIdentity);
+      const pathIdentity = await this.captureRuntimeIdentity(file, 'file');
+      const handle = await open(file, 'r');
+      try {
+        const handleInfo = await handle.stat();
+        if (
+          !handleInfo.isFile()
+          || Number(handleInfo.dev) !== pathIdentity.device
+          || Number(handleInfo.ino) !== pathIdentity.inode
+        ) {
+          throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
+        }
+
+        await this.assertRuntimeIdentity(directory, directoryIdentity);
+        await this.onRuntimeReadCheckpoint(checkpoint, file);
+        const bytes = await handle.readFile();
+        await this.assertRuntimeIdentity(file, pathIdentity);
+        await this.assertRuntimeIdentity(directory, directoryIdentity);
+        return bytes;
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
+    }
+  }
+
+  private async captureRuntimeIdentity(
+    target: string,
+    kind: RuntimePathIdentity['kind']
+  ): Promise<RuntimePathIdentity> {
+    const info = await lstat(target);
+    if (
+      info.isSymbolicLink()
+      || (kind === 'file' ? !info.isFile() : !info.isDirectory())
+    ) {
+      throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
+    }
+    return {
+      device: Number(info.dev),
+      inode: Number(info.ino),
+      physicalPath: await realpath(target),
+      kind
+    };
+  }
+
+  private async assertRuntimeIdentity(
+    target: string,
+    expected: RuntimePathIdentity
+  ): Promise<void> {
+    const actual = await this.captureRuntimeIdentity(target, expected.kind);
+    if (
+      actual.device !== expected.device
+      || actual.inode !== expected.inode
+      || actual.physicalPath !== expected.physicalPath
+    ) {
+      throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
+    }
   }
 
   private async summary(

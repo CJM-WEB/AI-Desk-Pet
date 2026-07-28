@@ -2,6 +2,16 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { PublicSettings, TaskEvent } from '@myself/shared-types';
 import { ipcChannels } from '../shared/ipc-channels';
 import type {
+  CharacterCreateInput,
+  CharacterEvent,
+  CharacterExportResult,
+  CharacterImportResult,
+  CharacterPublishInput,
+  CharacterRuntimeSnapshot,
+  CharacterSourceChoiceResult,
+  CharacterSummaryDto
+} from '../shared/character-ipc';
+import type {
   LocalDataScope,
   McpServerInput,
   MyselfApi,
@@ -85,8 +95,70 @@ const api: MyselfApi = {
     ipcRenderer.on(ipcChannels.taskEvent, handler);
     return () => ipcRenderer.removeListener(ipcChannels.taskEvent, handler);
   },
+  listCharacters: async (): Promise<CharacterSummaryDto[]> => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterList, {});
+    return result.characters;
+  },
+  createCharacter: async (input: CharacterCreateInput) => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterCreate, input);
+    return result.draft;
+  },
+  duplicateCharacter: async characterId => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterDuplicate, { characterId });
+    return result.draft;
+  },
+  getCharacterDraft: async characterId => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterDraftGet, { characterId });
+    return result.draft;
+  },
+  saveCharacterDraft: async (characterId, draft) => {
+    await ipcRenderer.invoke(ipcChannels.characterDraftSave, { characterId, draft });
+  },
+  chooseCharacterSources: (characterId): Promise<CharacterSourceChoiceResult> => (
+    ipcRenderer.invoke(ipcChannels.characterSourcesChoose, { characterId })
+  ),
+  readCharacterSource: async (characterId, assetId) => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterSourceRead, {
+      characterId,
+      assetId
+    });
+    return result.bytes;
+  },
+  publishCharacter: async (input: CharacterPublishInput) => {
+    await ipcRenderer.invoke(ipcChannels.characterPublish, input);
+  },
+  activateCharacter: async characterId => {
+    await ipcRenderer.invoke(ipcChannels.characterActivate, { characterId });
+  },
+  deleteCharacter: async characterId => {
+    await ipcRenderer.invoke(ipcChannels.characterDelete, { characterId });
+  },
+  importCharacterPackage: (): Promise<CharacterImportResult> => (
+    ipcRenderer.invoke(ipcChannels.characterPackageImport, {})
+  ),
+  exportCharacterPackage: (characterId): Promise<CharacterExportResult> => (
+    ipcRenderer.invoke(ipcChannels.characterPackageExport, { characterId })
+  ),
+  getCharacterRuntimeSnapshot: async (): Promise<CharacterRuntimeSnapshot | null> => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterRuntimeSnapshotGet, {});
+    return result.snapshot;
+  },
+  readCharacterRuntimeAsset: async assetId => {
+    const result = await ipcRenderer.invoke(ipcChannels.characterRuntimeAssetRead, { assetId });
+    return result.bytes;
+  },
+  subscribeCharacterEvents: (listener: (event: CharacterEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: CharacterEvent) => (
+      listener(payload)
+    );
+    ipcRenderer.on(ipcChannels.characterEvent, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.characterEvent, handler);
+  },
   openChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenChat),
   openSettings: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenSettings),
+  openCharacterWorkshop: (): Promise<void> => (
+    ipcRenderer.invoke(ipcChannels.windowOpenCharacterWorkshop, {})
+  ),
   hideChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowHideChat),
   quit: (): Promise<void> => ipcRenderer.invoke(ipcChannels.appQuit)
 };

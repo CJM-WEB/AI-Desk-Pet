@@ -11,7 +11,8 @@ import {
   nativeImage,
   safeStorage,
   screen,
-  Tray
+  Tray,
+  type MenuItemConstructorOptions
 } from 'electron';
 import { AgentService } from './agent/agent-service';
 import { PermissionPolicy } from './agent/permission-policy';
@@ -22,9 +23,14 @@ import { resolveMainE2eBoundary } from './e2e-boundary';
 import {
   registerAdvancedSettingsIpc,
   registerAgentIpc,
+  registerCharacterIpc,
   registerSettingsIpc,
   registerWindowIpc
 } from './ipc/register-ipc';
+import { CharacterActions } from './characters/character-actions';
+import { CharacterAssetService } from './characters/character-asset-service';
+import { CharacterPackageService } from './characters/character-package-service';
+import { CharacterStore } from './characters/character-store';
 import { McpManager } from './mcp/mcp-manager';
 import { McpServerStore } from './mcp/mcp-server-store';
 import { OpenAICompatibleProvider } from './providers/openai-provider';
@@ -47,11 +53,17 @@ import {
   restorePetPosition
 } from './windows/pet-position';
 import {
+  createCharacterWorkshopWindow,
   createChatWindow,
   createPetWindow,
   createSettingsWindow
 } from './windows/window-manager';
-import { createWindowCommandController } from './windows/window-commands';
+import {
+  broadcastCharacterEvent,
+  createCharacterQuickSwitchCommand,
+  createLoadBeforePublishWindow,
+  createWindowCommandController
+} from './windows/window-commands';
 
 let tray: Tray | null = null;
 let isQuitting = false;
@@ -68,7 +80,9 @@ if (e2eBoundary) {
   app.setPath('userData', e2eBoundary.userDataDirectory);
 }
 
-function rendererUrl(view: 'pet' | 'chat' | 'settings'): string | null {
+type RendererView = 'pet' | 'chat' | 'settings' | 'characters';
+
+function rendererUrl(view: RendererView): string | null {
   const developmentUrl = process.env['ELECTRON_RENDERER_URL'];
   if (!developmentUrl) return null;
   const url = new URL(developmentUrl);
@@ -78,7 +92,7 @@ function rendererUrl(view: 'pet' | 'chat' | 'settings'): string | null {
 
 async function loadRenderer(
   window: BrowserWindow,
-  view: 'pet' | 'chat' | 'settings'
+  view: RendererView
 ): Promise<void> {
   const url = rendererUrl(view);
   if (url) {
@@ -119,6 +133,18 @@ async function createApplicationWindows(): Promise<void> {
   let settings = createSettingsWindow(BrowserWindow, preload);
 
   const storageDirectory = app.getPath('userData');
+  const charactersDirectory = join(storageDirectory, 'characters');
+  const characterStore = new CharacterStore(charactersDirectory);
+  const characterAssetService = new CharacterAssetService(charactersDirectory);
+  const characterPackageService = new CharacterPackageService(charactersDirectory, {
+    store: characterStore,
+    assetService: characterAssetService
+  });
+  const characterActions = new CharacterActions({
+    store: characterStore,
+    assets: characterAssetService,
+    packages: characterPackageService
+  });
   const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
     encryptString: value => safeStorage.encryptStringAsync(value),
@@ -194,6 +220,12 @@ async function createApplicationWindows(): Promise<void> {
   hideOnClose(chat);
   hideOnClose(settings);
 
+  const characterWorkshopWindows = createLoadBeforePublishWindow({
+    create: () => createCharacterWorkshopWindow(BrowserWindow, preload),
+    prepare: hideOnClose,
+    load: window => loadRenderer(window, 'characters')
+  });
+
   const ensureChatWindow = async (): Promise<BrowserWindow> => {
     if (!chat.isDestroyed()) return chat;
     chat = createChatWindow(BrowserWindow, preload);
@@ -208,39 +240,116 @@ async function createApplicationWindows(): Promise<void> {
     await loadRenderer(settings, 'settings');
     return settings;
   };
+  const ensureCharacterWorkshopWindow = characterWorkshopWindows.ensure;
   const windowCommands = createWindowCommandController({
     getChatWindow: () => chat,
     ensureChatWindow,
-    positionChat: chatWindow => positionChatNearPet(pet, chatWindow)
+    positionChat: chatWindow => positionChatNearPet(pet, chatWindow),
+    ensureCharacterWorkshopWindow
   });
   const showSettings = async (): Promise<void> => {
     const settingsWindow = await ensureSettingsWindow();
     settingsWindow.show();
     settingsWindow.focus();
   };
+  const reportCharacterUiError = (error: unknown): void => {
+    console.error('更新角色界面失败。', error);
+  };
 
-  const contextMenu = Menu.buildFromTemplate([
-    { label: '打开聊天', click: () => void windowCommands.showChat() },
-    { label: '设置', click: () => void showSettings() },
-    {
-      label: '显示/隐藏桌宠',
-      click: () => pet.isVisible() ? pet.hide() : pet.show()
-    },
-    { type: 'separator' },
-    { label: '退出', click: () => void quitApplication() }
-  ]);
+  const buildContextMenu = async (): Promise<Menu> => {
+    const installedCharacters = await characterActions.listCharacters().catch(() => []);
+    const quickSwitchItems: MenuItemConstructorOptions[] = installedCharacters.map(
+      character => ({
+        label: character.name,
+        type: 'radio',
+        checked: character.active,
+        click: createCharacterQuickSwitchCommand(
+          character.id,
+          id => characterActions.activateCharacter(id),
+          reportCharacterUiError
+        )
+      })
+    );
+    return Menu.buildFromTemplate([
+      { label: '打开聊天', click: () => void windowCommands.showChat() },
+      {
+        label: '角色工作室',
+        click: () => void windowCommands.showCharacterWorkshop()
+      },
+      {
+        label: '切换角色',
+        enabled: quickSwitchItems.length > 0,
+        submenu: quickSwitchItems
+      },
+      { label: '设置', click: () => void showSettings() },
+      {
+        label: '显示/隐藏桌宠',
+        click: () => pet.isVisible() ? pet.hide() : pet.show()
+      },
+      { type: 'separator' },
+      { label: '退出', click: () => void quitApplication() }
+    ]);
+  };
+  let contextMenu = await buildContextMenu();
 
   tray = new Tray(createTrayImage());
   tray.setToolTip('AI Pet 桌宠');
   tray.setContextMenu(contextMenu);
   tray.on('double-click', () => void windowCommands.showChat());
   pet.webContents.on('context-menu', () => tray?.popUpContextMenu(contextMenu));
+  characterActions.subscribeCharacterEvents(event => {
+    broadcastCharacterEvent(
+      [pet, chat, settings, characterWorkshopWindows.getCurrent()],
+      ipcChannels.characterEvent,
+      event
+    );
+    void buildContextMenu().then(menu => {
+      contextMenu = menu;
+      tray?.setContextMenu(menu);
+    }).catch(reportCharacterUiError);
+  });
 
   registerWindowIpc(ipcMain, app.getVersion(), {
     openChat: windowCommands.showChat,
     openSettings: showSettings,
+    openCharacterWorkshop: windowCommands.showCharacterWorkshop,
     hideChat: windowCommands.hideChat,
     quit: () => void quitApplication()
+  });
+  registerCharacterIpc(ipcMain, characterActions, {
+    chooseCharacterSources: async () => {
+      const owner = await ensureCharacterWorkshopWindow();
+      return dialog.showOpenDialog(owner, {
+        title: '选择角色源图片',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{
+          name: '角色图片',
+          extensions: ['png', 'webp']
+        }]
+      });
+    },
+    chooseCharacterPackage: async () => {
+      const owner = await ensureCharacterWorkshopWindow();
+      return dialog.showOpenDialog(owner, {
+        title: '导入角色包',
+        properties: ['openFile'],
+        filters: [{
+          name: 'AI Pet 角色包',
+          extensions: ['zip']
+        }]
+      });
+    },
+    chooseCharacterExportDestination: async characterId => {
+      const owner = await ensureCharacterWorkshopWindow();
+      return dialog.showSaveDialog(owner, {
+        title: '导出角色包',
+        defaultPath: `${characterId}.zip`,
+        filters: [{
+          name: 'AI Pet 角色包',
+          extensions: ['zip']
+        }]
+      });
+    }
   });
 
   const loop = new AgentLoop();
@@ -321,8 +430,15 @@ async function createApplicationWindows(): Promise<void> {
       };
     },
     emit: (event: TaskEvent) => {
-      for (const window of [pet, chat, settings]) {
-        if (!window.isDestroyed()) window.webContents.send(ipcChannels.taskEvent, event);
+      for (const window of [
+        pet,
+        chat,
+        settings,
+        characterWorkshopWindows.getCurrent()
+      ]) {
+        if (window && !window.isDestroyed()) {
+          window.webContents.send(ipcChannels.taskEvent, event);
+        }
       }
     }
   });
@@ -355,7 +471,8 @@ async function createApplicationWindows(): Promise<void> {
   await Promise.all([
     loadRenderer(pet, 'pet'),
     loadRenderer(chat, 'chat'),
-    loadRenderer(settings, 'settings')
+    loadRenderer(settings, 'settings'),
+    ensureCharacterWorkshopWindow()
   ]);
   pet.show();
 }

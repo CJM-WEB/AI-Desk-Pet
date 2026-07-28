@@ -7,6 +7,7 @@ import {
   secureWebPreferences,
   settingsWindowOptions
 } from '../src/main/windows/window-manager';
+import * as windowManager from '../src/main/windows/window-manager';
 
 describe('secureWebPreferences', () => {
   it('禁用 Node 集成并启用上下文隔离和沙盒', () => {
@@ -52,6 +53,28 @@ describe('窗口安全配置', () => {
       secureWebPreferences('preload.js')
     );
     expect(settingsWindowOptions('preload.js').webPreferences).toEqual(
+      secureWebPreferences('preload.js')
+    );
+  });
+
+  it('角色工作室使用独立安全窗口', () => {
+    const optionsFactory = (
+      windowManager as unknown as {
+        characterWorkshopWindowOptions?: typeof settingsWindowOptions;
+      }
+    ).characterWorkshopWindowOptions;
+    expect(optionsFactory, '应提供角色工作室窗口配置').toBeTypeOf('function');
+    if (!optionsFactory) return;
+
+    expect(optionsFactory('preload.js')).toMatchObject({
+      width: 1120,
+      height: 760,
+      minWidth: 900,
+      minHeight: 620,
+      show: false,
+      autoHideMenuBar: true
+    });
+    expect(optionsFactory('preload.js').webPreferences).toEqual(
       secureWebPreferences('preload.js')
     );
   });

@@ -6,6 +6,17 @@ import type {
   StoredProviderProfileV2,
   TaskEvent
 } from '@myself/shared-types';
+import type { CharacterDraftV1 } from '@myself/character-runtime';
+import type {
+  CharacterCreateInput,
+  CharacterEvent,
+  CharacterExportResult,
+  CharacterImportResult,
+  CharacterPublishInput,
+  CharacterRuntimeSnapshot,
+  CharacterSourceChoiceResult,
+  CharacterSummaryDto
+} from './character-ipc';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 
@@ -144,8 +155,24 @@ export interface MyselfApi {
   confirmAction(actionId: string): Promise<void>;
   cancelAction(actionId: string): Promise<void>;
   onTaskEvent(listener: (event: TaskEvent) => void): () => void;
+  listCharacters(): Promise<CharacterSummaryDto[]>;
+  createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV1>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV1>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV1>;
+  saveCharacterDraft(characterId: string, draft: CharacterDraftV1): Promise<void>;
+  chooseCharacterSources(characterId: string): Promise<CharacterSourceChoiceResult>;
+  readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;
+  publishCharacter(input: CharacterPublishInput): Promise<void>;
+  activateCharacter(characterId: string): Promise<void>;
+  deleteCharacter(characterId: string): Promise<void>;
+  importCharacterPackage(): Promise<CharacterImportResult>;
+  exportCharacterPackage(characterId: string): Promise<CharacterExportResult>;
+  getCharacterRuntimeSnapshot(): Promise<CharacterRuntimeSnapshot | null>;
+  readCharacterRuntimeAsset(assetId: string): Promise<Uint8Array>;
+  subscribeCharacterEvents(listener: (event: CharacterEvent) => void): () => void;
   openChat(): Promise<void>;
   openSettings(): Promise<void>;
+  openCharacterWorkshop(): Promise<void>;
   hideChat(): Promise<void>;
   quit(): Promise<void>;
 }

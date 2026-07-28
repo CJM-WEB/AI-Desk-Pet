@@ -488,6 +488,94 @@ describe('CharacterStore', () => {
     await expect(restartedStore.getActive()).resolves.toEqual(runtime.manifest);
   });
 
+  test('运行时资源只按当前活动角色 manifest 的资源标识读取', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const first = createRuntime(
+      'first',
+      '第一个角色',
+      new Uint8Array([1, 1, 1])
+    );
+    const second = createRuntime(
+      'second',
+      '第二个角色',
+      new Uint8Array([2, 2, 2])
+    );
+    await store.create({ id: 'first', name: '第一个角色' });
+    await store.create({ id: 'second', name: '第二个角色' });
+    await store.publishCompiled('first', first.manifest, first.assets);
+    await store.publishCompiled('second', second.manifest, second.assets);
+
+    await store.setActive('first');
+    await expect(store.readActiveRuntimeAsset('atlas'))
+      .resolves.toEqual(new Uint8Array([1, 1, 1]));
+    await store.setActive('second');
+    await expect(store.readActiveRuntimeAsset('atlas'))
+      .resolves.toEqual(new Uint8Array([2, 2, 2]));
+
+    await expect(store.readActiveRuntimeAsset('atlas.png'))
+      .rejects.toThrow('CHARACTER_INVALID_ID');
+    await expect(store.readActiveRuntimeAsset('not-declared'))
+      .rejects.toThrow('CHARACTER_RESOURCE_NOT_FOUND');
+  });
+
+  test('运行时 manifest 路径在句柄打开后被替换时拒绝继续读取', async () => {
+    let armed = false;
+    const store = new CharacterStore(charactersDirectory, {
+      onRuntimeReadCheckpoint: async (
+        checkpoint: string,
+        targetPath: string
+      ): Promise<void> => {
+        if (!armed || checkpoint !== 'runtime:manifest-after-open') {
+          return;
+        }
+
+        armed = false;
+        const original = await readFile(targetPath);
+        await rename(targetPath, `${targetPath}.replaced`);
+        await writeFile(targetPath, original);
+      }
+    });
+    const runtime = createRuntime();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.setActive('demo');
+    armed = true;
+
+    const error = await store.readActiveRuntimeAsset('atlas').catch((caught) => caught);
+
+    expect(error).toMatchObject({ message: 'CHARACTER_RUNTIME_UNAVAILABLE' });
+    expect(String(error)).not.toContain(charactersDirectory);
+  });
+
+  test('运行时资源路径在句柄打开后被替换时拒绝提交读取结果', async () => {
+    let armed = false;
+    const store = new CharacterStore(charactersDirectory, {
+      onRuntimeReadCheckpoint: async (
+        checkpoint: string,
+        targetPath: string
+      ): Promise<void> => {
+        if (!armed || checkpoint !== 'runtime:resource-after-open') {
+          return;
+        }
+
+        armed = false;
+        const original = await readFile(targetPath);
+        await rename(targetPath, `${targetPath}.replaced`);
+        await writeFile(targetPath, original);
+      }
+    });
+    const runtime = createRuntime();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.setActive('demo');
+    armed = true;
+
+    const error = await store.readActiveRuntimeAsset('atlas').catch((caught) => caught);
+
+    expect(error).toMatchObject({ message: 'CHARACTER_RUNTIME_UNAVAILABLE' });
+    expect(String(error)).not.toContain(charactersDirectory);
+  });
+
   test('启动时恢复 compiled 重命名中断并清理固定事务文件', async () => {
     const store = new CharacterStore(charactersDirectory);
     const oldRuntime = createRuntime('demo', '旧版本');

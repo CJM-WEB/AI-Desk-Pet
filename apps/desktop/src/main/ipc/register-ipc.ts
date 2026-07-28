@@ -7,10 +7,33 @@ import {
 import { privacySettingsSchema } from '../storage/settings-store';
 import { z } from 'zod';
 import { ipcChannels } from '../../shared/ipc-channels';
+import {
+  characterBytesResultSchema,
+  characterCreateInputSchema,
+  characterDraftResultSchema,
+  characterDraftSaveInputSchema,
+  characterEmptyInputSchema,
+  characterExportResultSchema,
+  characterIdInputSchema,
+  characterImportResultSchema,
+  characterListResultSchema,
+  characterMutationResultSchema,
+  characterPublishInputSchema,
+  characterRuntimeAssetReadInputSchema,
+  characterRuntimeSnapshotResultSchema,
+  characterSourceChoiceResultSchema,
+  characterSourceReadInputSchema,
+  characterSourceSchema,
+  type CharacterPublishInput,
+  type CharacterRuntimeSnapshot,
+  type CharacterSummaryDto
+} from '../../shared/character-ipc';
+import type { CharacterDraftV1 } from '@myself/character-runtime';
 
 export type WindowIpcActions = {
   openChat(): unknown;
   openSettings(): unknown;
+  openCharacterWorkshop(): unknown;
   hideChat(): unknown;
   quit(): unknown;
 };
@@ -313,6 +336,209 @@ export function registerAdvancedSettingsIpc(
   ));
 }
 
+export interface CharacterIpcService {
+  listCharacters(): Promise<CharacterSummaryDto[]>;
+  createCharacter(input: { name: string }): Promise<CharacterDraftV1>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV1>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV1>;
+  saveCharacterDraft(characterId: string, draft: CharacterDraftV1): Promise<void>;
+  chooseCharacterSources(
+    characterId: string,
+    selectedPaths: readonly string[]
+  ): Promise<unknown[]>;
+  readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;
+  publishCharacter(input: CharacterPublishInput): Promise<void>;
+  activateCharacter(characterId: string): Promise<void>;
+  deleteCharacter(characterId: string): Promise<void>;
+  importCharacterPackage(packagePath: string): Promise<string>;
+  exportCharacterPackage(characterId: string, destination: string): Promise<void>;
+  getCharacterRuntimeSnapshot(): Promise<CharacterRuntimeSnapshot | null>;
+  readCharacterRuntimeAsset(assetId: string): Promise<Uint8Array>;
+}
+
+export interface CharacterIpcDialogs {
+  chooseCharacterSources(): Promise<{
+    canceled: boolean;
+    filePaths: string[];
+  }>;
+  chooseCharacterPackage(): Promise<{
+    canceled: boolean;
+    filePaths: string[];
+  }>;
+  chooseCharacterExportDestination(characterId: string): Promise<{
+    canceled: boolean;
+    filePath?: string;
+  }>;
+}
+
+function characterInputError(): Error & { code: string } {
+  return Object.assign(new Error('CHARACTER_INPUT_INVALID'), {
+    code: 'CHARACTER_INPUT_INVALID'
+  });
+}
+
+function characterPublicError(error: unknown): Error & { code: string } {
+  const code = (
+    error instanceof Error
+    && /^CHARACTER_[A-Z0-9_]+$/u.test(error.message)
+  )
+    ? error.message
+    : 'CHARACTER_OPERATION_FAILED';
+  return Object.assign(new Error(code), { code });
+}
+
+function parseCharacterInput<S extends z.ZodTypeAny>(
+  schema: S,
+  raw: unknown
+): z.output<S> {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw characterInputError();
+  return parsed.data as z.output<S>;
+}
+
+async function characterOperation<S extends z.ZodTypeAny>(
+  schema: S,
+  operation: () => Promise<unknown>
+): Promise<z.output<S>> {
+  try {
+    return schema.parse(await operation()) as z.output<S>;
+  } catch (error) {
+    throw characterPublicError(error);
+  }
+}
+
+/** 角色 IPC 只注册固定命令，并在 Main 内完成 dialog 路径选择。 */
+export function registerCharacterIpc(
+  ipcMain: IpcMain,
+  service: CharacterIpcService,
+  dialogs: CharacterIpcDialogs
+): void {
+  replaceHandler(ipcMain, ipcChannels.characterList, async (_event, raw) => {
+    parseCharacterInput(characterEmptyInputSchema, raw);
+    return characterOperation(characterListResultSchema, async () => ({
+      characters: await service.listCharacters()
+    }));
+  });
+  replaceHandler(ipcMain, ipcChannels.characterCreate, async (_event, raw) => {
+    const input = parseCharacterInput(characterCreateInputSchema, raw);
+    return characterOperation(characterDraftResultSchema, async () => ({
+      draft: await service.createCharacter(input)
+    }));
+  });
+  replaceHandler(ipcMain, ipcChannels.characterDuplicate, async (_event, raw) => {
+    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    return characterOperation(characterDraftResultSchema, async () => ({
+      draft: await service.duplicateCharacter(characterId)
+    }));
+  });
+  replaceHandler(ipcMain, ipcChannels.characterDraftGet, async (_event, raw) => {
+    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    return characterOperation(characterDraftResultSchema, async () => ({
+      draft: await service.getCharacterDraft(characterId)
+    }));
+  });
+  replaceHandler(ipcMain, ipcChannels.characterDraftSave, async (_event, raw) => {
+    const { characterId, draft } = parseCharacterInput(
+      characterDraftSaveInputSchema,
+      raw
+    );
+    return characterOperation(characterMutationResultSchema, async () => {
+      await service.saveCharacterDraft(characterId, draft);
+      return { ok: true };
+    });
+  });
+  replaceHandler(ipcMain, ipcChannels.characterSourcesChoose, async (_event, raw) => {
+    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    return characterOperation(characterSourceChoiceResultSchema, async () => {
+      const selected = await dialogs.chooseCharacterSources();
+      if (selected.canceled) return { kind: 'cancelled' };
+      const sources = await service.chooseCharacterSources(
+        characterId,
+        selected.filePaths
+      );
+      return {
+        kind: 'selected',
+        sources: z.array(characterSourceSchema).parse(sources)
+      };
+    });
+  });
+  replaceHandler(ipcMain, ipcChannels.characterSourceRead, async (_event, raw) => {
+    const { characterId, assetId } = parseCharacterInput(
+      characterSourceReadInputSchema,
+      raw
+    );
+    return characterOperation(characterBytesResultSchema, async () => ({
+      bytes: await service.readCharacterSource(characterId, assetId)
+    }));
+  });
+  replaceHandler(ipcMain, ipcChannels.characterPublish, async (_event, raw) => {
+    const input = parseCharacterInput(characterPublishInputSchema, raw);
+    return characterOperation(characterMutationResultSchema, async () => {
+      await service.publishCharacter(input);
+      return { ok: true };
+    });
+  });
+  replaceHandler(ipcMain, ipcChannels.characterActivate, async (_event, raw) => {
+    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    return characterOperation(characterMutationResultSchema, async () => {
+      await service.activateCharacter(characterId);
+      return { ok: true };
+    });
+  });
+  replaceHandler(ipcMain, ipcChannels.characterDelete, async (_event, raw) => {
+    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    return characterOperation(characterMutationResultSchema, async () => {
+      await service.deleteCharacter(characterId);
+      return { ok: true };
+    });
+  });
+  replaceHandler(ipcMain, ipcChannels.characterPackageImport, async (_event, raw) => {
+    parseCharacterInput(characterEmptyInputSchema, raw);
+    return characterOperation(characterImportResultSchema, async () => {
+      const selected = await dialogs.chooseCharacterPackage();
+      if (selected.canceled) return { kind: 'cancelled' };
+      const packagePath = selected.filePaths[0];
+      if (!packagePath) throw new Error('CHARACTER_PACKAGE_SELECTION_INVALID');
+      return {
+        kind: 'imported',
+        characterId: await service.importCharacterPackage(packagePath)
+      };
+    });
+  });
+  replaceHandler(ipcMain, ipcChannels.characterPackageExport, async (_event, raw) => {
+    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    return characterOperation(characterExportResultSchema, async () => {
+      const selected = await dialogs.chooseCharacterExportDestination(characterId);
+      if (selected.canceled) return { kind: 'cancelled' };
+      if (!selected.filePath) {
+        throw new Error('CHARACTER_PACKAGE_SELECTION_INVALID');
+      }
+      await service.exportCharacterPackage(characterId, selected.filePath);
+      return { kind: 'exported' };
+    });
+  });
+  replaceHandler(
+    ipcMain,
+    ipcChannels.characterRuntimeSnapshotGet,
+    async (_event, raw) => {
+      parseCharacterInput(characterEmptyInputSchema, raw);
+      return characterOperation(characterRuntimeSnapshotResultSchema, async () => ({
+        snapshot: await service.getCharacterRuntimeSnapshot()
+      }));
+    }
+  );
+  replaceHandler(
+    ipcMain,
+    ipcChannels.characterRuntimeAssetRead,
+    async (_event, raw) => {
+      const { assetId } = parseCharacterInput(characterRuntimeAssetReadInputSchema, raw);
+      return characterOperation(characterBytesResultSchema, async () => ({
+        bytes: await service.readCharacterRuntimeAsset(assetId)
+      }));
+    }
+  );
+}
+
 export function registerWindowIpc(
   ipcMain: IpcMain,
   version: string,
@@ -321,6 +547,14 @@ export function registerWindowIpc(
   replaceHandler(ipcMain, ipcChannels.appGetStatus, () => ({ version, ready: true }));
   replaceHandler(ipcMain, ipcChannels.windowOpenChat, () => actions.openChat());
   replaceHandler(ipcMain, ipcChannels.windowOpenSettings, () => actions.openSettings());
+  replaceHandler(
+    ipcMain,
+    ipcChannels.windowOpenCharacterWorkshop,
+    async (_event, raw) => {
+      parseCharacterInput(characterEmptyInputSchema, raw);
+      return actions.openCharacterWorkshop();
+    }
+  );
   replaceHandler(ipcMain, ipcChannels.windowHideChat, () => actions.hideChat());
   replaceHandler(ipcMain, ipcChannels.appQuit, () => actions.quit());
 }
