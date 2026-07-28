@@ -27,6 +27,9 @@ export function CharacterList(props: CharacterListProps) {
         <li
           key={character.id}
           className={character.id === props.selectedCharacterId ? 'is-selected' : undefined}
+          data-character-id={character.id}
+          data-character-active={character.active ? 'true' : 'false'}
+          data-character-completeness={character.completeness}
         >
           <button
             className="character-select"

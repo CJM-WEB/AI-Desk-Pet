@@ -128,6 +128,7 @@ function apiDouble(overrides: Partial<CharacterWorkshopApi> = {}) {
         sha256: 'a'.repeat(64)
       }]
     })),
+    readCharacterSource: vi.fn(async () => new Uint8Array([1, 2, 3])),
     publishCharacter: vi.fn(async () => undefined),
     activateCharacter: vi.fn(async () => undefined),
     deleteCharacter: vi.fn(async () => undefined),
@@ -159,6 +160,259 @@ afterEach(() => {
 });
 
 describe('角色工作室 Zustand 状态层', () => {
+  test('工作室关闭后不扫描或读取素材目录', async () => {
+    vi.useFakeTimers();
+    const chooseCharacterSources = vi.fn(async () => ({
+      kind: 'selected' as const,
+      sources: [{
+        assetId: '123e4567-e89b-42d3-a456-426614174000',
+        displayName: 'idle.png',
+        mimeType: 'image/png' as const,
+        byteLength: 4,
+        sha256: 'a'.repeat(64)
+      }]
+    }));
+    const readCharacterSource = vi.fn(async () => new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47
+    ]));
+    const { api, unsubscribe } = apiDouble({
+      chooseCharacterSources,
+      readCharacterSource
+    });
+    const store = createCharacterWorkshopStore(api, {
+      inspectImage: async () => ({ width: 2, height: 2 })
+    });
+
+    const dispose = store.getState().mount();
+    await vi.waitFor(() => expect(store.getState().loadStatus).toBe('ready'));
+    await store.getState().importSources();
+    await store.getState().applySpriteSheet({
+      sourceAssetId: '123e4567-e89b-42d3-a456-426614174000',
+      rows: 1,
+      columns: 1,
+      frameCount: 1
+    });
+    const readsAtClose = readCharacterSource.mock.calls.length;
+    dispose();
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(readsAtClose).toBeGreaterThan(0);
+    expect(readCharacterSource).toHaveBeenCalledTimes(readsAtClose);
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  test('可在选中状态创建动作并把导入精灵图按 2x2 写入四帧', async () => {
+    const { api } = apiDouble();
+    const store = createCharacterWorkshopStore(api, {
+      inspectImage: async () => ({ width: 1024, height: 1024 })
+    });
+    await store.getState().load();
+
+    store.getState().addAction();
+    await store.getState().importSources();
+    await store.getState().applySpriteSheet({
+      sourceAssetId: '123e4567-e89b-42d3-a456-426614174000',
+      rows: 2,
+      columns: 2,
+      frameCount: 4
+    });
+
+    const action = store.getState().draft!.states[0]!.actions.at(-1)!;
+    expect(action.frames).toHaveLength(4);
+    expect(action.frames.map(frame => [frame.x, frame.y, frame.width, frame.height]))
+      .toEqual([
+        [0, 0, 512, 512],
+        [512, 0, 512, 512],
+        [0, 512, 512, 512],
+        [512, 512, 512, 512]
+      ]);
+  });
+
+  test('发布命令编译草稿动作、保存草稿并调用正式发布 API', async () => {
+    const publishCharacter = vi.fn(async () => undefined);
+    const { api } = apiDouble({
+      publishCharacter,
+      readCharacterSource: vi.fn(async () => new Uint8Array([
+        0x89, 0x50, 0x4e, 0x47
+      ]))
+    });
+    const store = createCharacterWorkshopStore(api, {
+      compileAction: async input => ({
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: 'b'.repeat(64),
+        bytes: new Uint8Array([9]),
+        frames: input.frames.map((frame, index) => ({
+          assetId: input.atlasAssetId,
+          x: index,
+          y: 0,
+          width: 1,
+          height: 1
+        }))
+      })
+    });
+    await store.getState().load();
+    const state = store.getState();
+    state.updateCurrentAction({
+      frames: [{
+        assetId: '123e4567-e89b-42d3-a456-426614174000',
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1
+      }]
+    });
+
+    await store.getState().compileAndPublish();
+
+    expect(api.saveCharacterDraft).toHaveBeenCalled();
+    expect(publishCharacter).toHaveBeenCalledWith(expect.objectContaining({
+      characterId: 'default',
+      manifest: expect.objectContaining({
+        compilerVersion: 'character-atlas-compiler-v1'
+      })
+    }));
+  });
+
+  test('草稿保存失败时中止编译发布', async () => {
+    const publishCharacter = vi.fn(async () => undefined);
+    const { api } = apiDouble({
+      saveCharacterDraft: vi.fn(async () => {
+        throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
+      }),
+      publishCharacter
+    });
+    const compileAction = vi.fn();
+    const store = createCharacterWorkshopStore(api, { compileAction });
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '未保存修改' });
+
+    await store.getState().compileAndPublish();
+
+    expect(compileAction).not.toHaveBeenCalled();
+    expect(publishCharacter).not.toHaveBeenCalled();
+    expect(store.getState().draftStatus).toBe('error');
+  });
+
+  test('保存期间再次编辑时只发布最后一次成功持久化的稳定修订', async () => {
+    const firstSave = deferred<void>();
+    const publishCharacter = vi.fn(async () => undefined);
+    const saveCharacterDraft = vi.fn()
+      .mockImplementationOnce(() => firstSave.promise)
+      .mockResolvedValueOnce(undefined);
+    const { api } = apiDouble({
+      saveCharacterDraft,
+      publishCharacter,
+      readCharacterSource: vi.fn(async () => new Uint8Array([
+        0x89, 0x50, 0x4e, 0x47
+      ]))
+    });
+    const store = createCharacterWorkshopStore(api, {
+      compileAction: async input => ({
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: 'b'.repeat(64),
+        bytes: new Uint8Array([9]),
+        frames: input.frames.map(frame => ({
+          assetId: input.atlasAssetId,
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1
+        }))
+      })
+    });
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '第一次修改' });
+    store.getState().updateCurrentAction({
+      frames: [{
+        assetId: '123e4567-e89b-42d3-a456-426614174000',
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1
+      }]
+    });
+    const publishing = store.getState().compileAndPublish();
+    await settle();
+    store.getState().updateCurrentAction({ name: '最终修改' });
+    firstSave.resolve();
+    await publishing;
+
+    expect(saveCharacterDraft).toHaveBeenCalledTimes(2);
+    expect(publishCharacter).toHaveBeenCalledWith(expect.objectContaining({
+      manifest: expect.objectContaining({
+        states: expect.arrayContaining([
+          expect.objectContaining({
+            actions: expect.arrayContaining([
+              expect.objectContaining({ name: '最终修改' })
+            ])
+          })
+        ])
+      })
+    }));
+  });
+
+  test('同一素材被多帧和多动作引用时编译阶段只读取一次源文件', async () => {
+    const sourceAssetId = '123e4567-e89b-42d3-a456-426614174000';
+    const readCharacterSource = vi.fn(async () => new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47
+    ]));
+    const { api } = apiDouble({ readCharacterSource });
+    const store = createCharacterWorkshopStore(api, {
+      compileAction: async input => ({
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: 'b'.repeat(64),
+        bytes: new Uint8Array([9]),
+        frames: input.frames.map(frame => ({
+          assetId: input.atlasAssetId,
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1
+        }))
+      })
+    });
+    await store.getState().load();
+    store.getState().updateCurrentAction({
+      frames: [0, 1, 2, 3].map(index => ({
+        assetId: sourceAssetId,
+        x: index,
+        y: 0,
+        width: 1,
+        height: 1
+      }))
+    });
+    store.getState().addAction();
+    store.getState().updateCurrentAction({
+      frames: [{
+        assetId: sourceAssetId,
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1
+      }]
+    });
+
+    await store.getState().compileAndPublish();
+
+    expect(readCharacterSource).toHaveBeenCalledTimes(1);
+  });
+
+  test('可创建带单击触发器的扩展状态', async () => {
+    const { api } = apiDouble();
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().addExtensionState('wave', 'single_click');
+
+    expect(store.getState().draft!.states.at(-1)).toMatchObject({
+      id: 'custom:wave',
+      kind: 'extension',
+      triggers: { events: ['single_click'] }
+    });
+  });
   test('加载后选择启用角色、idle 状态和默认动作', async () => {
     const { api } = apiDouble();
     const store = createCharacterWorkshopStore(api);
@@ -308,7 +562,7 @@ describe('角色工作室 Zustand 状态层', () => {
       draftStatus: 'error',
       notice: {
         tone: 'error',
-        text: 'CHARACTER_DRAFT_SAVE_FAILED'
+        text: '角色草稿保存失败，请检查角色素材后重试。'
       }
     });
   });
@@ -448,7 +702,7 @@ describe('角色工作室 Zustand 状态层', () => {
       busyAction: null,
       notice: {
         tone: 'error',
-        text: expect.stringContaining('CHARACTER_INCOMPLETE')
+        text: '该角色动作不完整，需要确认后才能启用。'
       }
     });
   });

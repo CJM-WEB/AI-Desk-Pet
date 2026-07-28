@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { lstat, mkdir, readFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
@@ -10,6 +11,7 @@ import {
   startProviderServer,
   type ProviderStep
 } from '../fixtures/provider-server';
+import { snapshotCharacterPersistence } from '../fixtures/character-storage-snapshot';
 
 type ElectronFixtureModule = {
   createElectronLaunchPlan(options: {
@@ -28,7 +30,15 @@ type ElectronFixtureModule = {
   };
   redactElectronLog(
     text: string,
-    secrets: { apiKey: string; authorizedRootDirectory: string }
+    secrets: {
+      apiKey: string;
+      authorizedRootDirectory: string;
+      userDataDirectory?: string;
+      characterAssetsDirectory?: string;
+      safeCharacterPackage?: string;
+      maliciousCharacterPackage?: string;
+      characterExportDestination?: string;
+    }
   ): string;
   waitForCdpReady(options: {
     endpoint: string;
@@ -74,6 +84,19 @@ type ElectronFixtureModule = {
     apiKey: string;
     launchTimeoutMs?: number;
     operationTimeoutMs?: number;
+    prepareUserData?(directories: {
+      baseDirectory: string;
+      userDataDirectory: string;
+      authorizedRootDirectory: string;
+      characterAssetsDirectory?: string;
+      packagesDirectory?: string;
+      exportsDirectory?: string;
+    }): Promise<void>;
+    beforeRestart?(directories: {
+      baseDirectory: string;
+      userDataDirectory: string;
+      authorizedRootDirectory: string;
+    }): Promise<void>;
     dependencies?: {
       allocateLoopbackPort(): Promise<number>;
       createTemporaryDirectories(): Promise<{
@@ -96,6 +119,9 @@ type ElectronFixtureModule = {
     executablePath: string;
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    safeCharacterPackage?: string;
+    maliciousCharacterPackage?: string;
+    characterExportDestination?: string;
     logs: readonly string[];
     restart(): Promise<void>;
     dispose(): Promise<void>;
@@ -280,13 +306,40 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
     const apiKey = runtimeDiagnosticKey();
     const authorizedRootDirectory = 'C:\\Temp\\myself-authorized-root';
+    const userDataDirectory = 'C:\\Temp\\ai-pet-user-data';
+    const characterAssetsDirectory = 'C:\\Temp\\ai-pet-assets';
+    const safeCharacterPackage = 'C:\\Temp\\safe-character.zip';
+    const maliciousCharacterPackage = 'C:\\Temp\\malicious-character.zip';
+    const characterExportDestination = 'C:\\Temp\\exported-character.zip';
     const sanitized = fixture.redactElectronLog(
-      `Authorization: Bearer ${apiKey}\nroot=${authorizedRootDirectory}\nkey=${apiKey}`,
-      { apiKey, authorizedRootDirectory }
+      [
+        `Authorization: Bearer ${apiKey}`,
+        `root=${authorizedRootDirectory}`,
+        `key=${apiKey}`,
+        userDataDirectory,
+        characterAssetsDirectory,
+        safeCharacterPackage,
+        maliciousCharacterPackage,
+        characterExportDestination
+      ].join('\n'),
+      {
+        apiKey,
+        authorizedRootDirectory,
+        userDataDirectory,
+        characterAssetsDirectory,
+        safeCharacterPackage,
+        maliciousCharacterPackage,
+        characterExportDestination
+      }
     );
 
     expect(sanitized).not.toContain(apiKey);
     expect(sanitized).not.toContain(authorizedRootDirectory);
+    expect(sanitized).not.toContain(userDataDirectory);
+    expect(sanitized).not.toContain(characterAssetsDirectory);
+    expect(sanitized).not.toContain(safeCharacterPackage);
+    expect(sanitized).not.toContain(maliciousCharacterPackage);
+    expect(sanitized).not.toContain(characterExportDestination);
     expect(sanitized).not.toMatch(/Authorization\s*:/iu);
     expect(sanitized).toContain('[已脱敏]');
   });
@@ -738,6 +791,44 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(killCalls).toBe(0);
   });
 
+  test('OS 进程探针：退出期间路径短暂不可用时有限重试且不误杀', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.terminateElectronProcess).toBe('function');
+    if (!fixture?.terminateElectronProcess) return;
+
+    const executablePath = resolve('C:\\project\\electron.exe');
+    const child = fakeElectronProcess(6118, executablePath);
+    let probeCalls = 0;
+    let spawnCalls = 0;
+    let killCalls = 0;
+    child.kill = () => {
+      killCalls += 1;
+      return true;
+    };
+
+    await fixture.terminateElectronProcess(child, executablePath, {
+      platform: 'win32',
+      gracefulExitTimeoutMs: 1,
+      probeIntervalMs: 1,
+      probeTimeoutMs: 20,
+      processProbe: async () => {
+        probeCalls += 1;
+        if (probeCalls < 3) {
+          throw new Error('WINDOWS_PROCESS_PATH_TEMPORARILY_UNAVAILABLE');
+        }
+        return { status: 'absent' };
+      },
+      spawnCommand: () => {
+        spawnCalls += 1;
+        throw new Error('不应启动 taskkill');
+      }
+    });
+
+    expect(probeCalls).toBe(3);
+    expect(spawnCalls).toBe(0);
+    expect(killCalls).toBe(0);
+  });
+
   test('默认 OS 进程探针：命令失败诊断保留退出码并截断脱敏 stderr', async () => {
     const fixture = await loadElectronFixtureModule();
     expect(typeof fixture?.probeWindowsProcess).toBe('function');
@@ -773,6 +864,20 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(message).not.toContain(authorizedRootDirectory);
     expect(message).not.toMatch(/Authorization\s*:/iu);
     expect(message.length).toBeLessThan(1_200);
+  });
+
+  test('默认 OS 进程探针：退出期间空路径映射为可重试过渡态', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.probeWindowsProcess).toBe('function');
+    if (!fixture?.probeWindowsProcess) return;
+
+    await expect(fixture.probeWindowsProcess(6119, {
+      runCommand: async () => ({
+        exitCode: 4,
+        stdout: '',
+        stderr: ''
+      })
+    })).rejects.toThrow('WINDOWS_PROCESS_PATH_TEMPORARILY_UNAVAILABLE');
   });
 
   test('默认 OS 进程探针：AbortSignal 传给 runner 并等待取消回调 settle', async () => {
@@ -1562,6 +1667,328 @@ test.describe('真实 Electron CDP smoke', () => {
       }
     } finally {
       await fixture.dispose();
+    }
+  });
+});
+
+test.describe('真实角色工作室闭环', () => {
+  test('通过正式 Renderer 控件完成创建、编译、启用、导出、安全导入与重启恢复', async () => {
+    test.setTimeout(300_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+
+    const workspaceRoot = resolve(process.cwd());
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+    type AppFixture = Awaited<
+      ReturnType<ElectronFixtureModule['createElectronAppFixture']>
+    >;
+    const diagnostics: string[] = [];
+    const observedPages = new WeakSet<Page>();
+    const observeFixturePages = (appFixture: AppFixture, phase: string): Page[] => {
+      const currentPages = appFixture.browser.contexts()
+        .flatMap(context => context.pages());
+      for (const page of currentPages) {
+        if (observedPages.has(page)) continue;
+        observedPages.add(page);
+        page.setDefaultTimeout(15_000);
+        page.on('console', message => {
+          diagnostics.push(`[${phase}:${page.url()}] console ${message.type()}: ${message.text()}`);
+        });
+        page.on('pageerror', error => {
+          diagnostics.push(`[${phase}:${page.url()}] pageerror: ${error.message}`);
+        });
+      }
+      return currentPages;
+    };
+    const pageFor = (
+      appFixture: AppFixture,
+      view: string,
+      phase: string
+    ): Page | undefined => observeFixturePages(appFixture, phase).find(page => {
+      try {
+        return new URL(page.url()).searchParams.get('view') === view;
+      } catch {
+        return false;
+      }
+    });
+    const waitForPage = async (
+      appFixture: AppFixture,
+      view: string,
+      step: string
+    ): Promise<Page> => {
+      try {
+        await expect.poll(async () => {
+          const page = pageFor(appFixture, view, step);
+          return page ? page.locator('main').count() : 0;
+        }, {
+          timeout: 15_000,
+          message: `E2E 步骤“${step}”未等到 ${view} Renderer 的 main`
+        }).toBeGreaterThan(0);
+        return pageFor(appFixture, view, step)!;
+      } catch (error) {
+        throw new Error(
+          `${String(error)}\nE2E 诊断：${diagnostics.join(' | ')}`
+        );
+      }
+    };
+    const waitForVisibleView = async (page: Page, step: string): Promise<void> => {
+      await expect.poll(
+        () => page.evaluate(() => document.visibilityState),
+        {
+          timeout: 15_000,
+          message: `E2E 步骤“${step}”的窗口未进入可见状态`
+        }
+      ).toBe('visible');
+      await expect(page.locator('main'), `E2E 步骤“${step}”的 main 不可见`)
+        .toBeVisible({ timeout: 15_000 });
+    };
+    const clickReadyButton = async (
+      page: Page,
+      name: string,
+      step: string
+    ): Promise<void> => {
+      const button = page.getByRole('button', { name });
+      await expect(button, `E2E 步骤“${step}”的按钮不可见`)
+        .toBeVisible({ timeout: 15_000 });
+      await expect(button, `E2E 步骤“${step}”的按钮不可操作`)
+        .toBeEnabled({ timeout: 15_000 });
+      await button.click({ timeout: 15_000 });
+    };
+    const openWorkshop = async (
+      appFixture: AppFixture,
+      phase: string
+    ): Promise<Page> => {
+      const pet = await waitForPage(appFixture, 'pet', `${phase}：等待桌宠`);
+      await waitForVisibleView(pet, `${phase}：桌宠就绪`);
+      await clickReadyButton(pet, '打开与 AI Pet 的聊天', `${phase}：打开聊天`);
+      const chat = await waitForPage(appFixture, 'chat', `${phase}：等待聊天`);
+      await waitForVisibleView(chat, `${phase}：聊天就绪`);
+      await clickReadyButton(chat, '设置', `${phase}：打开设置`);
+      const settings = await waitForPage(appFixture, 'settings', `${phase}：等待设置`);
+      await waitForVisibleView(settings, `${phase}：设置就绪`);
+      await clickReadyButton(settings, '角色工作室', `${phase}：打开工作室`);
+      const workshop = await waitForPage(
+        appFixture,
+        'characters',
+        `${phase}：等待角色工作室`
+      );
+      await waitForVisibleView(workshop, `${phase}：角色工作室就绪`);
+      return workshop;
+    };
+    observeFixturePages(fixture, '初始启动');
+
+    let exportedPackage = '';
+    let exportedBytes: Uint8Array | null = null;
+    let recoverySnapshot = '';
+    try {
+      const workshop = await openWorkshop(fixture, '初始启动');
+      const petDiagnostics: string[] = [];
+      const diagnosticPet = await waitForPage(fixture, 'pet', '初始启动：读取桌宠诊断');
+      diagnosticPet.on('console', message => petDiagnostics.push(message.text()));
+      diagnosticPet.on('pageerror', error => petDiagnostics.push(error.message));
+      await workshop.getByRole('button', { name: '新建角色' }).click();
+      await workshop.getByLabel('角色名称').fill('E2E 工作室角色');
+      await workshop.getByRole('button', { name: '创建角色' }).click();
+      await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
+        .toBeVisible();
+
+      await workshop.getByRole('button', { name: '添加动作' }).click();
+      await workshop.getByRole('button', { name: '导入素材' }).click();
+      await workshop.getByLabel('已导入素材').selectOption({ label: 'idle.png' });
+      await workshop.getByLabel('行数').fill('2');
+      await workshop.getByLabel('列数').fill('2');
+      await workshop.getByLabel('有效帧数').fill('4');
+      await workshop.getByRole('button', { name: '应用到当前动作' }).click();
+      await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
+      await workshop.getByLabel('帧率').fill('7');
+      await workshop.getByLabel('ground X').fill('0.45');
+      await workshop.getByLabel('ground Y').fill('0.95');
+      await workshop.getByRole('button', { name: '编译并发布' }).click();
+      await expect(workshop.getByText('运行版本已编译并发布。')).toBeVisible();
+
+      await workshop.getByRole('button', { name: '启用角色' }).click();
+      await expect(workshop.getByRole('heading', { name: '部分动作尚未配置' })).toBeVisible();
+      await workshop.getByRole('button', { name: '仍然使用' }).click();
+      await expect(workshop.getByText('角色已启用。')).toBeVisible();
+
+      const pet = await waitForPage(fixture, 'pet', '初始启动：验证角色播放器');
+      try {
+        await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready');
+      } catch (error) {
+        throw new Error(`${String(error)}\n角色播放器诊断：${petDiagnostics.join(' | ')}`);
+      }
+      await pet.getByRole('button', { name: '打开与 AI Pet 的聊天' }).click();
+      const chat = await waitForPage(fixture, 'chat', '初始启动：验证聊天降级');
+      await submitChatMessage(chat, 'thinking 降级期间继续验证 Agent');
+      await expect(chat.getByText('请先完成模型服务和授权目录设置。')).toBeVisible();
+
+      await workshop.getByRole('button', { name: /搬运/ }).click();
+      await workshop.getByRole('button', { name: '添加动作' }).click();
+      await workshop.getByRole('button', { name: '导入素材' }).click();
+      await workshop.getByLabel('已导入素材').selectOption({ label: 'carrying.png' });
+      await workshop.getByLabel('行数').fill('2');
+      await workshop.getByLabel('列数').fill('2');
+      await workshop.getByLabel('有效帧数').fill('4');
+      await workshop.getByRole('button', { name: '应用到当前动作' }).click();
+      await workshop.getByLabel('carry X').fill('0.7');
+      await workshop.getByLabel('carry Y').fill('0.4');
+
+      await workshop.getByRole('button', { name: '扩展状态' }).click();
+      await workshop.getByLabel('状态名称').fill('wave');
+      await workshop.getByLabel('扩展状态触发方式').selectOption('double_click');
+      await workshop.getByRole('button', { name: '创建扩展状态' }).click();
+      await workshop.getByRole('button', { name: '添加动作' }).click();
+      await workshop.getByRole('button', { name: '导入素材' }).click();
+      await workshop.getByLabel('已导入素材').selectOption({ label: 'acting.png' });
+      await workshop.getByLabel('行数').fill('2');
+      await workshop.getByLabel('列数').fill('2');
+      await workshop.getByLabel('有效帧数').fill('4');
+      await workshop.getByRole('button', { name: '应用到当前动作' }).click();
+      await workshop.getByRole('button', { name: '编译并发布' }).click();
+      await expect(workshop.getByText('运行版本已编译并发布。')).toBeVisible();
+
+      const extensionStates = await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.manifest.states
+          .filter(state => state.kind === 'extension')
+          .map(state => ({ id: state.id, events: state.triggers?.events }))
+      ));
+      expect(extensionStates).toEqual([{
+        id: 'custom:wave',
+        events: ['double_click']
+      }]);
+      await expect(pet.getByRole('main', { name: 'AI Pet 桌宠' }))
+        .toHaveAttribute('data-extension-states', 'custom:wave');
+      await expect.poll(() => pet.getByRole('main', { name: 'AI Pet 桌宠' })
+        .getAttribute('data-character-state'), { timeout: 20_000 }).toBe('idle');
+      await pet.getByRole('button', { name: '打开与 AI Pet 的聊天' })
+        .dispatchEvent('dblclick');
+      await expect(pet.getByRole('main', { name: 'AI Pet 桌宠' }))
+        .toHaveAttribute('data-character-state', 'custom:wave');
+
+      await workshop.getByRole('button', { name: '导出角色包' }).click();
+      await expect(workshop.getByText('角色包已导出。')).toBeVisible();
+      exportedPackage = fixture.characterExportDestination!;
+      exportedBytes = await readFile(exportedPackage);
+      expect(exportedBytes.byteLength).toBeGreaterThan(0);
+
+      await workshop.getByLabel('帧率').fill('9');
+      await workshop.getByRole('button', { name: '保存草稿' }).click();
+      await expect(workshop.getByText('草稿已保存', { exact: true })).toBeVisible();
+      recoverySnapshot = await mkdtemp(join(tmpdir(), 'ai-pet-character-recovery-'));
+      await cp(
+        join(fixture.userDataDirectory, 'characters'),
+        join(recoverySnapshot, 'characters'),
+        { recursive: true }
+      );
+    } finally {
+      await fixture.dispose();
+    }
+
+    const recovered = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true,
+      prepareUserData: async directories => {
+        await cp(
+          join(recoverySnapshot, 'characters'),
+          join(directories.userDataDirectory, 'characters'),
+          {
+            recursive: true,
+            force: true
+          }
+        );
+      }
+    });
+    observeFixturePages(recovered, '重启恢复');
+    try {
+      const workshop = await openWorkshop(recovered, '重启恢复');
+      const pet = await waitForPage(recovered, 'pet', '重启恢复：读取活动角色');
+      await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
+        .toBeVisible({ timeout: 15_000 });
+      await workshop.getByRole('button', { name: /wave/ }).click();
+      await expect(workshop.getByLabel('帧率')).toHaveValue('9', { timeout: 15_000 });
+      const active = await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
+      ));
+      expect(active).not.toBe('builtin-default');
+    } finally {
+      await recovered.dispose();
+      await rm(recoverySnapshot, { recursive: true, force: true });
+    }
+
+    const isolated = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true,
+      prepareUserData: async directories => {
+        if (!directories.packagesDirectory) {
+          throw new Error('缺少隔离角色包目录');
+        }
+        if (!exportedBytes) throw new Error('缺少已导出的角色包');
+        await writeFile(
+          join(directories.packagesDirectory, 'safe-character.zip'),
+          exportedBytes
+        );
+      }
+    });
+    observeFixturePages(isolated, '隔离导入');
+    try {
+      const workshop = await openWorkshop(isolated, '隔离导入');
+      const pet = await waitForPage(isolated, 'pet', '隔离导入：读取桌宠状态');
+
+      await clickReadyButton(workshop, '导入角色包', '隔离导入：导入安全角色包');
+      await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
+        .toBeVisible({ timeout: 15_000 });
+      const characterList = workshop.getByRole('list', { name: '角色列表' });
+      const summariesBefore = await characterList.getByRole('listitem').evaluateAll(items => (
+        items.map(item => ({
+          id: (item as HTMLElement).dataset.characterId,
+          active: (item as HTMLElement).dataset.characterActive,
+          completeness: (item as HTMLElement).dataset.characterCompleteness,
+          text: item.textContent
+        }))
+      ));
+      const runtimeBefore = await pet.evaluate(async () => ({
+        activeCharacterId: (
+          await window.myself.getCharacterRuntimeSnapshot()
+        )?.activeCharacterId ?? null,
+        state: document.querySelector('main[data-character-state]')
+          ?.getAttribute('data-character-state') ?? null
+      }));
+      const persistenceBefore = await snapshotCharacterPersistence(
+        join(isolated.userDataDirectory, 'characters')
+      );
+      await clickReadyButton(workshop, '导入角色包', '隔离导入：拒绝恶意角色包');
+      await expect(workshop.getByRole('alert'))
+        .toContainText('角色包包含不安全路径，已拒绝导入。', { timeout: 15_000 });
+      expect(await characterList.getByRole('listitem').evaluateAll(items => (
+        items.map(item => ({
+          id: (item as HTMLElement).dataset.characterId,
+          active: (item as HTMLElement).dataset.characterActive,
+          completeness: (item as HTMLElement).dataset.characterCompleteness,
+          text: item.textContent
+        }))
+      ))).toEqual(summariesBefore);
+      expect(await pet.evaluate(async () => ({
+        activeCharacterId: (
+          await window.myself.getCharacterRuntimeSnapshot()
+        )?.activeCharacterId ?? null,
+        state: document.querySelector('main[data-character-state]')
+          ?.getAttribute('data-character-state') ?? null
+      }))).toEqual(runtimeBefore);
+      expect(await snapshotCharacterPersistence(
+        join(isolated.userDataDirectory, 'characters')
+      )).toEqual(persistenceBefore);
+    } finally {
+      await isolated.dispose();
     }
   });
 });

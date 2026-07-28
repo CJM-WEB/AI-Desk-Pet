@@ -17,4 +17,18 @@ describe('Electron Vite workspace 打包', () => {
       ]
     });
   });
+
+  test('沙箱 preload 会内联运行时 Schema 的全部普通依赖', () => {
+    if (typeof config === 'function' || config instanceof Promise) {
+      throw new Error('测试要求 electron-vite 配置为静态对象');
+    }
+
+    expect(config.preload?.build?.externalizeDeps).toEqual({
+      exclude: [
+        'zod',
+        '@myself/character-runtime',
+        '@myself/shared-types'
+      ]
+    });
+  });
 });

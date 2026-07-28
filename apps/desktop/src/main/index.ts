@@ -32,6 +32,9 @@ import { CharacterActions } from './characters/character-actions';
 import { CharacterAssetService } from './characters/character-asset-service';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
+import { prepareCharacterStartup } from './characters/character-startup';
+import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
+import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
 import {
   applyIdleMotionIntent,
   bindCharacterMotionWindow,
@@ -71,11 +74,13 @@ import {
   createLoadBeforePublishWindow,
   createWindowCommandController
 } from './windows/window-commands';
+import { configureSingleInstance } from './single-instance';
 
 let tray: Tray | null = null;
 let isQuitting = false;
 let activeAgentService: AgentService | null = null;
 let activeDesktopSettingsService: DesktopSettingsService | null = null;
+let primaryPetWindow: BrowserWindow | null = null;
 
 const e2eBoundary = resolveMainE2eBoundary({
   appIsPackaged: app.isPackaged,
@@ -86,6 +91,7 @@ if (e2eBoundary) {
   app.disableHardwareAcceleration();
   app.setPath('userData', e2eBoundary.userDataDirectory);
 }
+const isPrimaryInstance = configureSingleInstance(app, () => primaryPetWindow);
 
 type RendererView = 'pet' | 'chat' | 'settings' | 'characters';
 
@@ -136,6 +142,10 @@ async function createApplicationWindows(): Promise<void> {
   Menu.setApplicationMenu(null);
   const preload = join(__dirname, '../preload/index.cjs');
   const pet = createPetWindow(BrowserWindow, preload);
+  primaryPetWindow = pet;
+  pet.once('closed', () => {
+    if (primaryPetWindow === pet) primaryPetWindow = null;
+  });
   let chat = createChatWindow(BrowserWindow, preload);
   let settings = createSettingsWindow(BrowserWindow, preload);
 
@@ -152,6 +162,33 @@ async function createApplicationWindows(): Promise<void> {
     assets: characterAssetService,
     packages: characterPackageService
   });
+  const recoveredCorruptCharacterIndex = await characterStore.recoverCorruptIndex();
+  for (const warning of recoveredCorruptCharacterIndex.warnings) {
+    console.warn(`角色索引恢复警告：${warning}`);
+  }
+  let startupRecoveryErrorCode: string | null = null;
+  const characterStartup = await prepareCharacterStartup({
+    loadIndex: () => characterStore.list(),
+    validateActiveRuntime: async () => {
+      const snapshot = await characterActions.getCharacterRuntimeSnapshot();
+      return snapshot
+        ? { activeCharacterId: snapshot.activeCharacterId }
+        : null;
+    }
+  });
+  if (characterStartup.kind === 'fallback') {
+    const defaultResources = app.isPackaged
+      ? join(process.resourcesPath, 'characters', 'default')
+      : join(__dirname, '../../resources/characters/default');
+    await ensureOfficialDefaultCharacter(characterStore, defaultResources);
+    const recoveryErrorCode = recoveredCorruptCharacterIndex.recovered
+      ? 'CHARACTER_INDEX_UNAVAILABLE'
+      : characterStartup.errorCode;
+    startupRecoveryErrorCode = recoveryErrorCode;
+    if (recoveryErrorCode) {
+      console.error(`角色启动恢复：${recoveryErrorCode}`);
+    }
+  }
   const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
     encryptString: value => safeStorage.encryptStringAsync(value),
@@ -308,6 +345,9 @@ async function createApplicationWindows(): Promise<void> {
     prepare: hideOnClose,
     load: window => loadRenderer(window, 'characters')
   });
+  const e2eCharacterDialogs = e2eBoundary
+    ? createE2eCharacterDialogAdapter(e2eBoundary)
+    : null;
 
   const ensureChatWindow = async (): Promise<BrowserWindow> => {
     if (!chat.isDestroyed()) return chat;
@@ -402,7 +442,9 @@ async function createApplicationWindows(): Promise<void> {
   registerCharacterIpc(ipcMain, characterActions, {
     chooseCharacterSources: async () => {
       const owner = await ensureCharacterWorkshopWindow();
-      return dialog.showOpenDialog(owner, {
+      return e2eCharacterDialogs
+        ? e2eCharacterDialogs.chooseSources()
+        : dialog.showOpenDialog(owner, {
         title: '选择角色源图片',
         properties: ['openFile', 'multiSelections'],
         filters: [{
@@ -413,7 +455,9 @@ async function createApplicationWindows(): Promise<void> {
     },
     chooseCharacterPackage: async () => {
       const owner = await ensureCharacterWorkshopWindow();
-      return dialog.showOpenDialog(owner, {
+      return e2eCharacterDialogs
+        ? e2eCharacterDialogs.choosePackage()
+        : dialog.showOpenDialog(owner, {
         title: '导入角色包',
         properties: ['openFile'],
         filters: [{
@@ -424,7 +468,9 @@ async function createApplicationWindows(): Promise<void> {
     },
     chooseCharacterExportDestination: async characterId => {
       const owner = await ensureCharacterWorkshopWindow();
-      return dialog.showSaveDialog(owner, {
+      return e2eCharacterDialogs
+        ? e2eCharacterDialogs.chooseExportDestination()
+        : dialog.showSaveDialog(owner, {
         title: '导出角色包',
         defaultPath: `${characterId}.zip`,
         filters: [{
@@ -433,7 +479,7 @@ async function createApplicationWindows(): Promise<void> {
         }]
       });
     }
-  });
+  }, () => startupRecoveryErrorCode);
 
   const loop = new AgentLoop();
   const pendingActions = new PendingActionStore({
@@ -569,6 +615,8 @@ app.on('before-quit', () => {
 
 app.on('window-all-closed', () => {});
 
-void app.whenReady().then(async () => {
-  await createApplicationWindows();
-});
+if (isPrimaryInstance) {
+  void app.whenReady().then(async () => {
+    await createApplicationWindows();
+  });
+}

@@ -956,6 +956,140 @@ describe('角色播放器组件', () => {
     await waitFor(() => expect(result.getByText('备用角色')).toBeTruthy());
   });
 
+  test('运行角色加载失败时上报稳定错误码供修复入口展示', async () => {
+    const onRuntimeError = vi.fn();
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => {
+        throw new Error('CHARACTER_RESOURCE_INTEGRITY_FAILED');
+      }),
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+
+    render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={vi.fn()}
+        onRuntimeError={onRuntimeError}
+      />
+    );
+
+    await waitFor(() => expect(onRuntimeError)
+      .toHaveBeenCalledWith('CHARACTER_RESOURCE_INTEGRITY_FAILED'));
+  });
+
+  test('从 Electron 包装错误中提取共享稳定错误码', async () => {
+    const onRuntimeError = vi.fn();
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => {
+        throw new Error(
+          "Error invoking remote method 'character:runtime-snapshot-get': "
+          + 'Error: CHARACTER_RESOURCE_INTEGRITY_FAILED'
+        );
+      }),
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+
+    render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={vi.fn()}
+        onRuntimeError={onRuntimeError}
+      />
+    );
+
+    await waitFor(() => expect(onRuntimeError)
+      .toHaveBeenCalledWith('CHARACTER_RESOURCE_INTEGRITY_FAILED'));
+  });
+
+  test('运行版本失败后刷新成功会清除旧错误', async () => {
+    const onRuntimeError = vi.fn();
+    const currentManifest = manifest('character-a');
+    let listener: ((event: {
+      type: 'active-character-changed';
+      characterId: string;
+    }) => void) | undefined;
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn()
+        .mockRejectedValueOnce(new Error('CHARACTER_RESOURCE_INTEGRITY_FAILED'))
+        .mockResolvedValueOnce({
+          activeCharacterId: currentManifest.id,
+          manifest: currentManifest
+        }),
+      subscribeCharacterEvents: vi.fn(callback => {
+        listener = callback;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+
+    render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async () => ({
+          load: vi.fn(async () => undefined),
+          play: vi.fn(),
+          setDirection: vi.fn(),
+          getAnchor: vi.fn(() => null),
+          destroy: vi.fn()
+        })}
+        loadBundle={async characterId => bundle(characterId)}
+        onRuntimeError={onRuntimeError}
+      />
+    );
+
+    await waitFor(() => expect(onRuntimeError)
+      .toHaveBeenCalledWith('CHARACTER_RESOURCE_INTEGRITY_FAILED'));
+    await act(async () => {
+      listener?.({
+        type: 'active-character-changed',
+        characterId: currentManifest.id
+      });
+    });
+    await waitFor(() => expect(onRuntimeError).toHaveBeenCalledWith(null));
+  });
+
+  test('窗口隐藏时切换静态模式停止 ticker，恢复可见后继续动画', async () => {
+    const currentManifest = manifest('character-a');
+    const player = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async () => player}
+        loadBundle={async () => bundle('character-a')}
+      />
+    );
+    await waitFor(() => expect(player.play).toHaveBeenCalled());
+
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await waitFor(() => expect(player.play.mock.calls.at(-1)?.[1]).toBe('static'));
+
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await waitFor(() => expect(player.play.mock.calls.at(-1)?.[1]).toBe('animated'));
+  });
+
   test('候选播放器加载失败时立即释放并清空旧画面', async () => {
     const currentManifest = manifest('character-a');
     const candidate = {

@@ -8,7 +8,7 @@
   "scripts": {
     "postinstall": "install-electron",
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node scripts/verify-preload-bundle.mjs",
     "package:win": "pnpm build && electron-builder --win nsis --x64 --config electron-builder.yml",
     "preview": "electron-vite preview",
     "test": "vitest run --config vitest.config.ts",

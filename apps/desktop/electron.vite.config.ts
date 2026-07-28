@@ -16,6 +16,14 @@ export default defineConfig({
   },
   preload: {
     build: {
+      externalizeDeps: {
+        // 沙箱 preload 不能在运行时 require 普通 Node 依赖，白名单 Schema 必须随入口打包。
+        exclude: [
+          'zod',
+          '@myself/character-runtime',
+          '@myself/shared-types'
+        ]
+      },
       rollupOptions: {
         output: {
           format: 'cjs'

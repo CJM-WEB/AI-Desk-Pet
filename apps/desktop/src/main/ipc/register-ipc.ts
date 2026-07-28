@@ -20,6 +20,7 @@ import {
   characterListResultSchema,
   characterMutationResultSchema,
   characterPublishInputSchema,
+  characterRecoverySnapshotResultSchema,
   characterRuntimeAssetReadInputSchema,
   characterRuntimeSnapshotResultSchema,
   characterSourceChoiceResultSchema,
@@ -423,7 +424,8 @@ async function characterOperation<S extends z.ZodTypeAny>(
 export function registerCharacterIpc(
   ipcMain: IpcMain,
   service: CharacterIpcService,
-  dialogs: CharacterIpcDialogs
+  dialogs: CharacterIpcDialogs,
+  recoveryErrorCode: () => string | null = () => null
 ): void {
   replaceHandler(ipcMain, ipcChannels.characterList, async (_event, raw) => {
     parseCharacterInput(characterEmptyInputSchema, raw);
@@ -543,6 +545,16 @@ export function registerCharacterIpc(
       parseCharacterInput(characterEmptyInputSchema, raw);
       return characterOperation(characterRuntimeSnapshotResultSchema, async () => ({
         snapshot: await service.getCharacterRuntimeSnapshot()
+      }));
+    }
+  );
+  replaceHandler(
+    ipcMain,
+    ipcChannels.characterRecoverySnapshotGet,
+    async (_event, raw) => {
+      parseCharacterInput(characterEmptyInputSchema, raw);
+      return characterOperation(characterRecoverySnapshotResultSchema, async () => ({
+        errorCode: recoveryErrorCode()
       }));
     }
   );

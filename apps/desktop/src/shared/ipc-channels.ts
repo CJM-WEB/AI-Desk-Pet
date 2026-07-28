@@ -40,6 +40,7 @@ export const ipcChannels = {
   characterPackageImport: 'character:package-import',
   characterPackageExport: 'character:package-export',
   characterRuntimeSnapshotGet: 'character:runtime-snapshot-get',
+  characterRecoverySnapshotGet: 'character:recovery-snapshot-get',
   characterRuntimeAssetRead: 'character:runtime-asset-read',
   characterEvent: 'character:event',
   characterMotionSnapshotGet: 'character-motion:snapshot-get',

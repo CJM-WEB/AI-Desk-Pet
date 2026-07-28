@@ -16,8 +16,28 @@ import type {
   CharacterDesktopAnchors,
   CharacterMotionPresentation
 } from '../characters/player/CharacterPlayer';
+import type { ExtensionTriggerDefinition } from '../characters/player/extension-trigger-controller';
 import { presentationFor } from '../character/state-map';
 import { useTaskStore } from '../stores/task-store';
+import {
+  characterErrorCode,
+  characterRecoveryMessage
+} from '../../../shared/character-recovery';
+import type { MyselfApi } from '../../../shared/myself-api';
+
+/** Renderer 挂载后主动读取恢复快照，避免一次性启动事件早于订阅而丢失。 */
+export async function loadCharacterStartupRecovery(
+  api: Pick<MyselfApi, 'getCharacterRecoverySnapshot'>,
+  apply: (errorCode: string) => void
+): Promise<void> {
+  try {
+    const snapshot = await api.getCharacterRecoverySnapshot();
+    if (snapshot.errorCode) apply(snapshot.errorCode);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    apply(characterErrorCode(message));
+  }
+}
 
 export interface PetCharacterProps {
   state: CharacterState;
@@ -128,6 +148,25 @@ export function PetView() {
     moving: false,
     carrying: false
   });
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [extensionDefinitions, setExtensionDefinitions] = useState<
+    readonly ExtensionTriggerDefinition[]
+  >([]);
+  useEffect(() => {
+    let disposed = false;
+    void loadCharacterStartupRecovery(window.myself, errorCode => {
+      if (!disposed) setRuntimeError(errorCode);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+  const handleExtensionDefinitions = useCallback((
+    definitions: readonly ExtensionTriggerDefinition[]
+  ): void => {
+    setExtensionDefinitions(definitions);
+    configureExtensions(definitions);
+  }, [configureExtensions]);
   const handleMotionChange = useCallback((next: CharacterMotionPresentation): void => {
     setMotion(next);
     applyCharacterMotion({
@@ -143,6 +182,8 @@ export function PetView() {
       data-carry-anchor={serializeAnchor(desktopAnchors.carry)}
       data-seat-anchor={serializeAnchor(desktopAnchors.seat)}
       data-focus-anchor={serializeAnchor(desktopAnchors.focus)}
+      data-character-state={characterState}
+      data-extension-states={extensionDefinitions.map(item => item.stateId).join(',')}
     >
       <div className="pet-drag-hint" aria-hidden="true">拖动我</div>
       <PetOpenChatButton
@@ -153,15 +194,27 @@ export function PetView() {
         <CharacterPlayer
           stateId={characterState}
           motionMode={motionMode}
-          onExtensionDefinitionsChange={configureExtensions}
+          onExtensionDefinitionsChange={handleExtensionDefinitions}
           onIdleTrigger={triggerIdle}
           onDesktopAnchors={setDesktopAnchors}
           onMotionChange={handleMotionChange}
+          onRuntimeError={setRuntimeError}
           fallback={(
             <PetCharacter state={fallbackState} motionMode={motionMode} />
           )}
         />
       </PetOpenChatButton>
+      {runtimeError ? (
+        <span className="pet-runtime-recovery" role="alert">
+          <span>{characterRecoveryMessage(runtimeError).text}</span>
+          <button
+            type="button"
+            onClick={() => void window.myself.openCharacterWorkshop()}
+          >
+            {characterRecoveryMessage(runtimeError).actionLabel}
+          </button>
+        </span>
+      ) : null}
       <PetAnchorOverlays
         anchors={desktopAnchors}
         carrying={motion.carrying}

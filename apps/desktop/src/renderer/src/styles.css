@@ -95,6 +95,31 @@ textarea {
   opacity: 1;
 }
 
+.pet-runtime-recovery {
+  -webkit-app-region: no-drag;
+  position: absolute;
+  z-index: 5;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid rgba(139, 55, 43, 0.35);
+  background: rgba(255, 250, 246, 0.96);
+  color: #71372f;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.pet-runtime-recovery button {
+  border: 0;
+  padding: 3px 5px;
+  color: #fff;
+  background: #8b372b;
+  font-size: 10px;
+}
+
   .pet-open-chat {
   align-self: stretch;
   justify-self: stretch;

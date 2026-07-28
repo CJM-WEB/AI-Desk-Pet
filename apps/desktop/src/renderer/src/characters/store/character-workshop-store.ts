@@ -1,4 +1,5 @@
 import type {
+  ActionFrame,
   CharacterDraftV1,
   CharacterStateId,
   DraftActionClip
@@ -10,6 +11,11 @@ import type {
   CharacterSummaryDto
 } from '../../../../shared/character-ipc';
 import type { MyselfApi } from '../../../../shared/myself-api';
+import {
+  compileAtlas,
+  type AtlasSourceFrame
+} from '../import/atlas-compiler';
+import { characterOperationMessage } from '../../../../shared/character-recovery';
 
 export type WorkshopBusyAction =
   | 'loading'
@@ -41,7 +47,31 @@ export type CharacterWorkshopApi = Pick<
   | 'importCharacterPackage'
   | 'exportCharacterPackage'
   | 'subscribeCharacterEvents'
+  | 'readCharacterSource'
 >;
+
+export type ImportedWorkshopSource = {
+  assetId: string;
+  displayName: string;
+  mimeType: 'image/png' | 'image/webp';
+};
+
+export interface CharacterWorkshopDependencies {
+  inspectImage?(bytes: Uint8Array, mimeType: string): Promise<{
+    width: number;
+    height: number;
+  }>;
+  compileAction?(input: {
+    atlasAssetId: string;
+    frames: AtlasSourceFrame[];
+  }): Promise<{
+    assetId: string;
+    fileName: string;
+    sha256: string;
+    bytes: Uint8Array;
+    frames: ActionFrame[];
+  }>;
+}
 
 export interface CharacterWorkshopState {
   characters: CharacterSummaryDto[];
@@ -54,6 +84,7 @@ export interface CharacterWorkshopState {
   loadStatus: 'idle' | 'loading' | 'ready' | 'error';
   busyAction: WorkshopBusyAction;
   notice: WorkshopNotice;
+  availableSources: ImportedWorkshopSource[];
   load(): Promise<void>;
   mount(): () => void;
   selectCharacter(characterId: string): Promise<void>;
@@ -66,6 +97,15 @@ export interface CharacterWorkshopState {
   importCharacterPackage(): Promise<void>;
   exportCharacterPackage(): Promise<void>;
   importSources(): Promise<void>;
+  addAction(): void;
+  addExtensionState(name: string, event: 'single_click' | 'double_click' | 'context_menu'): void;
+  applySpriteSheet(input: {
+    sourceAssetId: string;
+    rows: number;
+    columns: number;
+    frameCount: number;
+  }): Promise<void>;
+  compileAndPublish(): Promise<void>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
   updateCurrentAction(patch: Partial<DraftActionClip>): void;
   flushDraft(): Promise<void>;
@@ -76,8 +116,8 @@ export interface CharacterWorkshopState {
 type WorkshopStore = StoreApi<CharacterWorkshopState>;
 
 function errorText(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return 'CHARACTER_OPERATION_FAILED';
+  const code = error instanceof Error ? error.message : 'CHARACTER_OPERATION_FAILED';
+  return characterOperationMessage(code);
 }
 
 function initialSelection(draft: CharacterDraftV1): {
@@ -96,16 +136,83 @@ function cloneDraft(draft: CharacterDraftV1): CharacterDraftV1 {
   return structuredClone(draft);
 }
 
+async function inspectBrowserImage(
+  bytes: Uint8Array,
+  mimeType: string
+): Promise<{ width: number; height: number }> {
+  const bitmap = await createImageBitmap(new Blob([
+    Uint8Array.from(bytes).buffer
+  ], { type: mimeType }));
+  try {
+    return { width: bitmap.width, height: bitmap.height };
+  } finally {
+    bitmap.close();
+  }
+}
+
+function imageMimeType(bytes: Uint8Array): 'image/png' | 'image/webp' {
+  const png = [0x89, 0x50, 0x4e, 0x47].every((value, index) => bytes[index] === value);
+  if (png) return 'image/png';
+  const webp = bytes[0] === 0x52
+    && bytes[1] === 0x49
+    && bytes[2] === 0x46
+    && bytes[3] === 0x46
+    && bytes[8] === 0x57
+    && bytes[9] === 0x45
+    && bytes[10] === 0x42
+    && bytes[11] === 0x50;
+  if (webp) return 'image/webp';
+  throw new Error('CHARACTER_IMAGE_MIME_UNSUPPORTED');
+}
+
+async function compileBrowserAction(input: {
+  atlasAssetId: string;
+  frames: AtlasSourceFrame[];
+}): Promise<{
+  assetId: string;
+  fileName: string;
+  sha256: string;
+  bytes: Uint8Array;
+  frames: ActionFrame[];
+}> {
+  const compiled = await compileAtlas({
+    atlasAssetId: input.atlasAssetId,
+    mimeType: 'image/png',
+    frames: input.frames
+  }, (width, height) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    return canvas;
+  });
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    Uint8Array.from(compiled.bytes).buffer
+  );
+  const sha256 = [...new Uint8Array(digest)]
+    .map(value => value.toString(16).padStart(2, '0'))
+    .join('');
+  return {
+    assetId: input.atlasAssetId,
+    fileName: `${input.atlasAssetId}.png`,
+    sha256,
+    bytes: compiled.bytes,
+    frames: compiled.frames
+  };
+}
+
 /**
  * 工作室状态只依赖白名单 API；定时器、订阅和异步版本均封装在 store 实例内。
  */
 export function createCharacterWorkshopStore(
-  api: CharacterWorkshopApi
+  api: CharacterWorkshopApi,
+  dependencies: CharacterWorkshopDependencies = {}
 ): WorkshopStore {
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let saveInFlight: Promise<void> | null = null;
   let saveRequested = false;
   let draftRevision = 0;
+  let savedRevision = 0;
   let selectionRevision = 0;
   let listRevision = 0;
   let eventRefreshRevision = 0;
@@ -116,6 +223,7 @@ export function createCharacterWorkshopStore(
     function setDraft(draft: CharacterDraftV1): void {
       const selection = initialSelection(draft);
       draftRevision += 1;
+      savedRevision = draftRevision;
       set({
         selectedCharacterId: draft.id,
         draft: cloneDraft(draft),
@@ -171,8 +279,12 @@ export function createCharacterWorkshopStore(
     }
 
     async function flushBeforeSelectionChange(): Promise<boolean> {
-      await get().flushDraft();
-      return get().draftStatus !== 'error';
+      try {
+        await get().flushDraft();
+        return get().draftStatus !== 'error';
+      } catch {
+        return false;
+      }
     }
 
     async function refreshFromEvent(event: CharacterEvent): Promise<void> {
@@ -250,6 +362,7 @@ export function createCharacterWorkshopStore(
       loadStatus: 'idle',
       busyAction: null,
       notice: null,
+      availableSources: [],
 
       async load() {
         const requestRevision = ++selectionRevision;
@@ -471,8 +584,224 @@ export function createCharacterWorkshopStore(
               : {
                   tone: 'success',
                   text: `已导入 ${result.sources.length} 个素材。`
+                },
+            ...(result.kind === 'selected'
+              ? {
+                  availableSources: result.sources.map(source => ({
+                    assetId: source.assetId,
+                    displayName: source.displayName,
+                    mimeType: source.mimeType
+                  }))
                 }
+              : {})
           });
+        });
+      },
+
+      addAction() {
+        const current = get();
+        if (!current.draft || !current.selectedStateId) return;
+        const nextDraft = cloneDraft(current.draft);
+        const state = nextDraft.states.find(candidate => (
+          candidate.id === current.selectedStateId
+        ));
+        if (!state) return;
+        const base = `${String(state.id).replace(/[^a-z0-9]+/gu, '-')}-action`;
+        let index = state.actions.length + 1;
+        let id = `${base}-${index}`;
+        while (state.actions.some(action => action.id === id)) {
+          id = `${base}-${++index}`;
+        }
+        state.actions.push({
+          id,
+          name: `动作 ${index}`,
+          fps: 8,
+          loop: true,
+          weight: 1,
+          direction: 'any',
+          anchors: { ground: { x: 0.5, y: 1 } },
+          frames: []
+        });
+        draftRevision += 1;
+        set({
+          draft: nextDraft,
+          selectedActionId: id,
+          draftStatus: 'dirty',
+          notice: null
+        });
+        scheduleSave();
+      },
+
+      addExtensionState(name, event) {
+        const normalized = name.trim().toLocaleLowerCase('en-US')
+          .replace(/[^a-z0-9_-]+/gu, '-')
+          .replace(/^-+|-+$/gu, '');
+        if (!normalized) {
+          set({ notice: { tone: 'error', text: '扩展状态名称不能为空。' } });
+          return;
+        }
+        const current = get();
+        if (!current.draft) return;
+        const id = `custom:${normalized}` as `custom:${string}`;
+        if (current.draft.states.some(state => state.id === id)) {
+          set({ notice: { tone: 'error', text: '扩展状态已存在。' } });
+          return;
+        }
+        const nextDraft = cloneDraft(current.draft);
+        nextDraft.states.push({
+          id,
+          kind: 'extension',
+          triggers: { events: [event], keywords: [], emotions: [] },
+          actions: []
+        });
+        draftRevision += 1;
+        set({
+          draft: nextDraft,
+          selectedStateId: id,
+          selectedActionId: null,
+          draftStatus: 'dirty',
+          notice: null
+        });
+        scheduleSave();
+      },
+
+      async applySpriteSheet(input) {
+        const current = get();
+        const source = current.availableSources.find(candidate => (
+          candidate.assetId === input.sourceAssetId
+        ));
+        if (!source || !current.draft || !current.selectedStateId || !current.selectedActionId) {
+          set({ notice: { tone: 'error', text: '请先选择动作和已导入素材。' } });
+          return;
+        }
+        if (
+          !Number.isSafeInteger(input.rows)
+          || !Number.isSafeInteger(input.columns)
+          || !Number.isSafeInteger(input.frameCount)
+          || input.rows < 1
+          || input.columns < 1
+          || input.frameCount < 1
+          || input.frameCount > input.rows * input.columns
+        ) {
+          set({ notice: { tone: 'error', text: '精灵图网格参数无效。' } });
+          return;
+        }
+        const bytes = await api.readCharacterSource(
+          current.selectedCharacterId!,
+          source.assetId
+        );
+        const dimensions = await (dependencies.inspectImage ?? inspectBrowserImage)(
+          bytes,
+          source.mimeType
+        );
+        if (
+          dimensions.width % input.columns !== 0
+          || dimensions.height % input.rows !== 0
+        ) {
+          set({ notice: { tone: 'error', text: '图片尺寸不能被网格整除。' } });
+          return;
+        }
+        const width = dimensions.width / input.columns;
+        const height = dimensions.height / input.rows;
+        const frames = Array.from({ length: input.frameCount }, (_, index) => ({
+          id: `frame-${index + 1}`,
+          assetId: source.assetId,
+          x: (index % input.columns) * width,
+          y: Math.floor(index / input.columns) * height,
+          width,
+          height
+        }));
+        get().updateCurrentAction({ frames });
+        set({ notice: { tone: 'success', text: '精灵图网格已应用到当前动作。' } });
+      },
+
+      async compileAndPublish() {
+        const current = get();
+        if (!current.draft || !current.selectedCharacterId) return;
+        await reportFailure('compiling', async () => {
+          await get().flushDraft();
+          if (draftRevision !== savedRevision || get().draftStatus !== 'saved') {
+            throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
+          }
+          const latest = cloneDraft(get().draft!);
+          const sourceCache = new Map<string, Promise<Uint8Array>>();
+          const readSource = (assetId: string): Promise<Uint8Array> => {
+            let pending = sourceCache.get(assetId);
+            if (!pending) {
+              pending = api.readCharacterSource(latest.id, assetId);
+              sourceCache.set(assetId, pending);
+            }
+            return pending;
+          };
+          const resources: CharacterPublishInput['resources'] = [];
+          const manifestResources: CharacterPublishInput['manifest']['resources'] = [];
+          const states = [];
+          for (const [stateIndex, state] of latest.states.entries()) {
+            const actions = [];
+            for (const [actionIndex, action] of state.actions.entries()) {
+              if (action.frames.length === 0) continue;
+              const atlasAssetId = `atlas-${stateIndex + 1}-${actionIndex + 1}`;
+              const sourceFrames: AtlasSourceFrame[] = [];
+              for (const [frameIndex, frame] of action.frames.entries()) {
+                const bytes = await readSource(frame.assetId);
+                sourceFrames.push({
+                  frameId: frame.id ?? `frame-${frameIndex + 1}`,
+                  sourceAssetId: frame.assetId,
+                  bytes,
+                  mimeType: imageMimeType(bytes),
+                  sourceRect: {
+                    x: frame.x,
+                    y: frame.y,
+                    width: frame.width,
+                    height: frame.height
+                  },
+                  ...(frame.durationMs === undefined
+                    ? {}
+                    : { durationMs: frame.durationMs }),
+                  ...(frame.anchors === undefined
+                    ? {}
+                    : { anchors: frame.anchors })
+                });
+              }
+              const compiled = await (dependencies.compileAction ?? compileBrowserAction)({
+                atlasAssetId,
+                frames: sourceFrames
+              });
+              resources.push({
+                assetId: compiled.assetId,
+                bytes: Uint8Array.from(compiled.bytes)
+              });
+              manifestResources.push({
+                assetId: compiled.assetId,
+                fileName: compiled.fileName,
+                sha256: compiled.sha256,
+                byteLength: compiled.bytes.byteLength
+              });
+              actions.push({ ...action, frames: compiled.frames });
+            }
+            states.push({ ...state, actions });
+          }
+          if (resources.length === 0) {
+            throw new Error('CHARACTER_IDLE_UNAVAILABLE');
+          }
+          await api.publishCharacter({
+            characterId: latest.id,
+            manifest: {
+              version: 1,
+              id: latest.id,
+              name: latest.name,
+              thumbnailAssetId: resources[0]!.assetId,
+              compilerVersion: 'character-atlas-compiler-v1',
+              resources: manifestResources,
+              states
+            },
+            resources
+          });
+          set({
+            compileStatus: 'success',
+            notice: { tone: 'success', text: '运行版本已编译并发布。' }
+          });
+          await refreshCharacters();
         });
       },
 
@@ -537,6 +866,7 @@ export function createCharacterWorkshopStore(
             set({ draftStatus: 'saving' });
             try {
               await api.saveCharacterDraft(characterId, pendingDraft);
+              savedRevision = revision;
               if (
                 get().selectedCharacterId === characterId
                 && draftRevision === revision
@@ -545,6 +875,11 @@ export function createCharacterWorkshopStore(
                   draftStatus: 'saved',
                   notice: { tone: 'success', text: '草稿已保存。' }
                 });
+              } else if (
+                get().selectedCharacterId === characterId
+                && draftRevision !== revision
+              ) {
+                saveRequested = true;
               }
             } catch (error) {
               if (
@@ -555,7 +890,9 @@ export function createCharacterWorkshopStore(
                   draftStatus: 'error',
                   notice: { tone: 'error', text: errorText(error) }
                 });
+                throw error;
               }
+              saveRequested = true;
             }
           }
         };

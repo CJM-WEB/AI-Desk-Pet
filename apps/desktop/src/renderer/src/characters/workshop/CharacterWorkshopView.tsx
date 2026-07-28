@@ -12,7 +12,9 @@ import {
   ImagePlus,
   LoaderCircle,
   PackageOpen,
+  Play,
   Plus,
+  Save,
   Upload,
   X
 } from 'lucide-react';
@@ -34,6 +36,7 @@ import {
 import { AnchorEditor } from './AnchorEditor';
 import { IncompleteCharacterDialog } from './IncompleteCharacterDialog';
 import { PreviewControls } from './PreviewControls';
+import { AtlasImportPanel } from './AtlasImportPanel';
 import './character-workshop.css';
 
 export interface CharacterWorkshopViewProps {
@@ -92,6 +95,11 @@ export function CharacterWorkshopWorkspace(
   const [pendingActivation, setPendingActivation] = useState<string | null>(null);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [perFrameAnchors, setPerFrameAnchors] = useState(false);
+  const [extensionOpen, setExtensionOpen] = useState(false);
+  const [extensionName, setExtensionName] = useState('');
+  const [extensionEvent, setExtensionEvent] = useState<
+    'single_click' | 'double_click' | 'context_menu'
+  >('single_click');
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const createDialogRef = useRef<HTMLDialogElement>(null);
   const pendingDelete = props.pendingDeleteCharacterId === undefined
@@ -213,10 +221,39 @@ export function CharacterWorkshopWorkspace(
         </button>
         <button
           type="button"
+          disabled={busy || !state.selectedStateId}
+          onClick={state.addAction}
+        >
+          <Plus size={16} />添加动作
+        </button>
+        <button
+          type="button"
+          disabled={busy || !state.draft || state.draftStatus === 'saved'}
+          onClick={() => void state.flushDraft()}
+        >
+          <Save size={16} />保存草稿
+        </button>
+        <button
+          type="button"
+          disabled={busy || !state.draft}
+          onClick={() => setExtensionOpen(true)}
+        >
+          <Plus size={16} />扩展状态
+        </button>
+        <button
+          type="button"
           disabled={busy || !state.selectedCharacterId}
           onClick={() => void state.exportCharacterPackage()}
         >
           <Download size={16} />导出角色包
+        </button>
+        <button
+          className="primary-command"
+          type="button"
+          disabled={busy || !state.draft}
+          onClick={() => void state.compileAndPublish()}
+        >
+          <Play size={16} />编译并发布
         </button>
         <button
           className="primary-command"
@@ -340,6 +377,11 @@ export function CharacterWorkshopWorkspace(
           </div>
           {action ? (
             <>
+              <AtlasImportPanel
+                sources={state.availableSources}
+                disabled={busy}
+                onApply={state.applySpriteSheet}
+              />
               <ActionInspector
                 action={action}
                 disabled={busy}
@@ -442,6 +484,56 @@ export function CharacterWorkshopWorkspace(
             void state.activateCharacter(activationCharacter.id, true);
           }}
         />
+      ) : null}
+
+      {extensionOpen ? (
+        <dialog open aria-modal="true" aria-labelledby="extension-state-title">
+          <form
+            className="workshop-dialog"
+            onSubmit={event => {
+              event.preventDefault();
+              state.addExtensionState(extensionName, extensionEvent);
+              setExtensionOpen(false);
+              setExtensionName('');
+            }}
+          >
+            <h2 id="extension-state-title">新建扩展状态</h2>
+            <label>
+              状态名称
+              <input
+                autoFocus
+                value={extensionName}
+                onChange={event => setExtensionName(event.currentTarget.value)}
+              />
+            </label>
+            <label>
+              触发方式
+              <select
+                aria-label="扩展状态触发方式"
+                value={extensionEvent}
+                onChange={event => setExtensionEvent(
+                  event.currentTarget.value as typeof extensionEvent
+                )}
+              >
+                <option value="single_click">单击</option>
+                <option value="double_click">双击</option>
+                <option value="context_menu">右键</option>
+              </select>
+            </label>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setExtensionOpen(false)}>
+                取消
+              </button>
+              <button
+                className="primary-command"
+                type="submit"
+                disabled={!extensionName.trim()}
+              >
+                创建扩展状态
+              </button>
+            </div>
+          </form>
+        </dialog>
       ) : null}
     </main>
   );

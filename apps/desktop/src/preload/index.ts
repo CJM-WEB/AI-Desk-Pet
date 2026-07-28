@@ -11,6 +11,7 @@ import type {
   CharacterSourceChoiceResult,
   CharacterSummaryDto
 } from '../shared/character-ipc';
+import { characterRecoverySnapshotResultSchema } from '../shared/character-ipc';
 import {
   characterMotionEventSchema,
   characterMotionSnapshotResultSchema,
@@ -152,6 +153,11 @@ const api: MyselfApi = {
     const result = await ipcRenderer.invoke(ipcChannels.characterRuntimeSnapshotGet, {});
     return result.snapshot;
   },
+  getCharacterRecoverySnapshot: async () => (
+    characterRecoverySnapshotResultSchema.parse(
+      await ipcRenderer.invoke(ipcChannels.characterRecoverySnapshotGet, {})
+    )
+  ),
   readCharacterRuntimeAsset: async assetId => {
     const result = await ipcRenderer.invoke(ipcChannels.characterRuntimeAssetRead, { assetId });
     return result.bytes;

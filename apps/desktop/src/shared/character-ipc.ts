@@ -81,6 +81,9 @@ export const characterBytesResultSchema = z.object({
 export const characterRuntimeSnapshotResultSchema = z.object({
   snapshot: characterRuntimeSnapshotSchema.nullable()
 }).strict();
+export const characterRecoverySnapshotResultSchema = z.object({
+  errorCode: z.string().regex(STABLE_ERROR_CODE).nullable()
+}).strict();
 export const characterSourceChoiceResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cancelled') }).strict(),
   z.object({

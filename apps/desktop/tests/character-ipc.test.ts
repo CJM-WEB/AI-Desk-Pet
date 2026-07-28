@@ -8,7 +8,8 @@ type Handler = (event: unknown, input?: unknown) => unknown;
 type CharacterRegistration = (
   ipcMain: IpcMain,
   service: ReturnType<typeof characterServiceDouble>,
-  dialogs: ReturnType<typeof dialogDouble>
+  dialogs: ReturnType<typeof dialogDouble>,
+  recoveryErrorCode?: () => string | null
 ) => void;
 
 const invoke = vi.fn(async () => undefined);
@@ -163,7 +164,8 @@ describe('角色白名单 IPC', () => {
     ['characterDelete', { characterId: 'demo', extra: true }],
     ['characterPackageImport', { extra: true }],
     ['characterPackageExport', { characterId: 'demo', extra: true }],
-    ['characterRuntimeSnapshotGet', { extra: true }]
+    ['characterRuntimeSnapshotGet', { extra: true }],
+    ['characterRecoverySnapshotGet', { extra: true }]
   ] as const)('%s 拒绝多余 payload 字段', async (channelName, payload) => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
@@ -176,6 +178,25 @@ describe('角色白名单 IPC', () => {
       });
     expect(Object.values(service).every(method => method.mock.calls.length === 0))
       .toBe(true);
+  });
+
+  test('启动恢复快照只接受空输入并返回固定稳定错误码', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = characterServiceDouble();
+    requireCharacterRegistration()(
+      ipcMain,
+      service,
+      dialogDouble(),
+      () => 'CHARACTER_INDEX_UNAVAILABLE'
+    );
+    const handler = handlers.get(channel('characterRecoverySnapshotGet'));
+
+    await expect(handler?.({}, {})).resolves.toEqual({
+      errorCode: 'CHARACTER_INDEX_UNAVAILABLE'
+    });
+    await expect(handler?.({}, { path: 'C:\\private' })).rejects.toMatchObject({
+      code: 'CHARACTER_INPUT_INVALID'
+    });
   });
 
   test('运行时资源只接受当前角色的资源标识，不接受 characterId 或文件名', async () => {

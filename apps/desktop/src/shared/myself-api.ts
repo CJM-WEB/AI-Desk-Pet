@@ -175,6 +175,7 @@ export interface MyselfApi {
   importCharacterPackage(): Promise<CharacterImportResult>;
   exportCharacterPackage(characterId: string): Promise<CharacterExportResult>;
   getCharacterRuntimeSnapshot(): Promise<CharacterRuntimeSnapshot | null>;
+  getCharacterRecoverySnapshot(): Promise<{ errorCode: string | null }>;
   readCharacterRuntimeAsset(assetId: string): Promise<Uint8Array>;
   subscribeCharacterEvents(listener: (event: CharacterEvent) => void): () => void;
   getCharacterMotionSnapshot(): Promise<CharacterMotionSnapshot>;

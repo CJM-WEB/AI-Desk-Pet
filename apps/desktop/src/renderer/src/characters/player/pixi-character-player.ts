@@ -328,7 +328,11 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
 
 export async function createBrowserPixiCharacterScene(
   container: HTMLElement,
-  loadPixi: PixiModuleLoader = () => import('pixi.js')
+  loadPixi: PixiModuleLoader = async () => {
+    // Electron 的严格 CSP 禁止 unsafe-eval；Pixi 官方适配模块改用解释执行着色器程序。
+    await import('pixi.js/unsafe-eval');
+    return import('pixi.js');
+  }
 ): Promise<PixiCharacterScene> {
   const pixi = await loadPixi();
   const application = new pixi.Application();

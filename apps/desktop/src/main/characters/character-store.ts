@@ -117,6 +117,20 @@ export type CharacterStoreDependencies = {
     checkpoint: 'runtime:manifest-after-open' | 'runtime:resource-after-open',
     targetPath: string
   ) => Promise<void>;
+  onRecoveryDirectoryCandidate?: (
+    characterId: string,
+    directory: string
+  ) => Promise<void>;
+};
+
+export type CharacterIndexRecoveryResult = {
+  recovered: boolean;
+  recoveredCharacterIds: string[];
+  skipped: Array<{
+    characterId: string;
+    reason: 'CHARACTER_RECOVERY_DIRECTORY_SKIPPED';
+  }>;
+  warnings: Array<'CHARACTER_RECOVERY_RECORD_WRITE_FAILED'>;
 };
 
 type RuntimePathIdentity = {
@@ -237,6 +251,9 @@ export class CharacterStore {
   private readonly onRuntimeReadCheckpoint: NonNullable<
     CharacterStoreDependencies['onRuntimeReadCheckpoint']
   >;
+  private readonly onRecoveryDirectoryCandidate: NonNullable<
+    CharacterStoreDependencies['onRecoveryDirectoryCandidate']
+  >;
 
   constructor(
     private readonly directory: string,
@@ -246,6 +263,8 @@ export class CharacterStore {
     this.renamePath = dependencies.renamePath ?? rename;
     this.removePath = dependencies.removePath ?? rm;
     this.onRuntimeReadCheckpoint = dependencies.onRuntimeReadCheckpoint
+      ?? (async () => undefined);
+    this.onRecoveryDirectoryCandidate = dependencies.onRecoveryDirectoryCandidate
       ?? (async () => undefined);
   }
 
@@ -261,6 +280,90 @@ export class CharacterStore {
         )
       )));
       return summaries.sort((left, right) => left.id.localeCompare(right.id, 'en'));
+    });
+  }
+
+  /**
+   * 索引损坏时只重建目录清单，不删除或改写任何角色目录。
+   * 每个可验证的草稿或运行版本都会重新进入索引，原索引由 loadIndex 保留证据副本。
+   */
+  recoverCorruptIndex(): Promise<CharacterIndexRecoveryResult> {
+    return this.enqueue(async () => {
+      const loaded = await this.loadIndex();
+      if (loaded.writable) {
+        return {
+          recovered: false,
+          recoveredCharacterIds: [],
+          skipped: [],
+          warnings: []
+        };
+      }
+
+      const recovered = emptyIndex();
+      const skipped: CharacterIndexRecoveryResult['skipped'] = [];
+      const warnings: CharacterIndexRecoveryResult['warnings'] = [];
+      const entries = await readdir(this.directory, { withFileTypes: true });
+      for (const directoryEntry of entries) {
+        if (!SAFE_CHARACTER_ID.test(directoryEntry.name)) continue;
+        const characterId = directoryEntry.name;
+        try {
+          if (!directoryEntry.isDirectory() || directoryEntry.isSymbolicLink()) {
+            throw characterError('CHARACTER_PATH_UNSAFE');
+          }
+          const candidateDirectory = this.characterDirectory(characterId);
+          await this.onRecoveryDirectoryCandidate(characterId, candidateDirectory);
+          await this.assertSafeCharacterPath(characterId);
+
+          let recoveredEntry: CharacterIndexEntry | null = null;
+          try {
+            const draft = await this.readDraftFrom(this.draftFile(characterId), characterId);
+            recoveredEntry = indexEntry(
+              characterId,
+              draft.name,
+              draft.thumbnailAssetId ?? null
+            );
+          } catch {
+            // 草稿不可解析时继续尝试只读运行版本；原目录和坏文件保持不动。
+          }
+          if (!recoveredEntry) {
+            const manifest = await this.readRuntimeFrom(
+              this.compiledDirectory(characterId),
+              characterId
+            );
+            recoveredEntry = indexEntry(characterId, manifest.name, manifest.thumbnailAssetId);
+          }
+          recovered.characters.push(recoveredEntry);
+        } catch {
+          skipped.push({
+            characterId,
+            reason: 'CHARACTER_RECOVERY_DIRECTORY_SKIPPED'
+          });
+        }
+      }
+
+      recovered.characters.sort((left, right) => left.id.localeCompare(right.id, 'en'));
+      const recoveryRecord = {
+        version: 1,
+        reason: 'CHARACTER_INDEX_UNAVAILABLE',
+        recoveredCharacterIds: recovered.characters.map(character => character.id),
+        skipped
+      };
+      const recordHash = sha256(JSON.stringify(recoveryRecord)).slice(0, 16);
+      try {
+        await this.safeWriteText(
+          join(this.directory, `index-recovery-${recordHash}.json`),
+          json(recoveryRecord)
+        );
+      } catch {
+        warnings.push('CHARACTER_RECOVERY_RECORD_WRITE_FAILED');
+      }
+      await this.writeIndex(recovered);
+      return {
+        recovered: true,
+        recoveredCharacterIds: recoveryRecord.recoveredCharacterIds,
+        skipped,
+        warnings
+      };
     });
   }
 

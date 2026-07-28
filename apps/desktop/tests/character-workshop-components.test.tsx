@@ -83,6 +83,7 @@ function state(
     loadStatus: 'ready',
     busyAction: null,
     notice: null,
+    availableSources: [],
     load: vi.fn(),
     mount: vi.fn(() => vi.fn()),
     selectCharacter: vi.fn(),
@@ -95,6 +96,10 @@ function state(
     importCharacterPackage: vi.fn(),
     exportCharacterPackage: vi.fn(),
     importSources: vi.fn(),
+    addAction: vi.fn(),
+    addExtensionState: vi.fn(),
+    applySpriteSheet: vi.fn(),
+    compileAndPublish: vi.fn(),
     publishCharacter: vi.fn(),
     updateCurrentAction: vi.fn(),
     flushDraft: vi.fn(),
@@ -178,6 +183,14 @@ describe('角色工作室 SSR 外壳', () => {
     expect(markup).toContain('12');
     expect(markup).toContain('播放控制只使用当前草稿的内存快照');
     expect(markup).not.toContain('批量删除');
+  });
+
+  test('工具栏提供显式保存草稿命令', () => {
+    const markup = renderToStaticMarkup(
+      <CharacterWorkshopWorkspace state={state({ draftStatus: 'dirty' })} />
+    );
+
+    expect(markup).toContain('保存草稿');
   });
 
   test('官方默认角色不呈现删除命令，自定义角色提供带标签的单项命令', () => {

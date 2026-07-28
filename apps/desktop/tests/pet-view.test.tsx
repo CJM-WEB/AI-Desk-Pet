@@ -5,14 +5,42 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+  loadCharacterStartupRecovery,
   PetAnchorOverlays,
   PetOpenChatButton
 } from '../src/renderer/src/pet/PetView';
+import type { MyselfApi } from '../src/shared/myself-api';
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+test('Renderer 就绪后读取启动恢复快照并保留稳定错误码', async () => {
+  const apply = vi.fn();
+  const api = {
+    getCharacterRecoverySnapshot: vi.fn(async () => ({
+      errorCode: 'CHARACTER_INDEX_UNAVAILABLE'
+    }))
+  } as unknown as MyselfApi;
+
+  await loadCharacterStartupRecovery(api, apply);
+
+  expect(apply).toHaveBeenCalledWith('CHARACTER_INDEX_UNAVAILABLE');
+});
+
+test('启动恢复快照读取失败时映射为通用恢复状态且不抛出未处理异常', async () => {
+  const apply = vi.fn();
+  const api = {
+    getCharacterRecoverySnapshot: vi.fn(async () => {
+      throw new Error('Error invoking remote method: PRIVATE_PATH');
+    })
+  } as unknown as MyselfApi;
+
+  await expect(loadCharacterStartupRecovery(api, apply)).resolves.toBeUndefined();
+
+  expect(apply).toHaveBeenCalledWith('CHARACTER_OPERATION_FAILED');
 });
 
 describe('桌宠锚点视觉消费者', () => {

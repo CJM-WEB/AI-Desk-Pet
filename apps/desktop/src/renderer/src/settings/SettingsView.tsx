@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bot, Database, ShieldCheck, Wrench, X } from 'lucide-react';
+import { Bot, Box, Database, ShieldCheck, Wrench, X } from 'lucide-react';
 import type {
   McpServerInput,
   MyselfApi,
@@ -87,6 +87,7 @@ export interface SettingsWorkspaceProps {
     onRevokeRoot(): void;
   };
   onClear(scope: LocalDataScope): void;
+  onOpenCharacterWorkshop(): void;
 }
 
 const tabs = [
@@ -101,9 +102,14 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
     <main className="settings-shell">
       <header className="settings-header">
         <div><span className="companion-kicker">AI PET</span><h1>设置</h1></div>
-        <button type="button" aria-label="关闭设置" title="关闭设置" onClick={props.onClose}>
-          <X size={18} />
-        </button>
+        <div className="settings-header-actions">
+          <button type="button" onClick={props.onOpenCharacterWorkshop}>
+            <Box size={17} />角色工作室
+          </button>
+          <button type="button" aria-label="关闭设置" title="关闭设置" onClick={props.onClose}>
+            <X size={18} />
+          </button>
+        </div>
       </header>
       <nav className="settings-tabs" aria-label="设置分类">
         {tabs.map(([id, label, Icon]) => (
@@ -311,6 +317,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
           return api.getSettingsDashboard();
         }, '所选本地数据已清除。');
       }}
+      onOpenCharacterWorkshop={() => void api.openCharacterWorkshop()}
     />
   );
 }

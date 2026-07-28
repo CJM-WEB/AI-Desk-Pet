@@ -1,4 +1,5 @@
 import { lstat, readFile, writeFile } from 'node:fs/promises';
+import { fork, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { AgentLoop, type ModelResponse } from '@myself/agent-core';
@@ -37,6 +38,7 @@ const internalToolNames = [
 
 const roots: AuthorizedRootFixture[] = [];
 const servers: ProviderServerFixture[] = [];
+const compileProcesses: ChildProcess[] = [];
 const rendererEventStreams: Array<{
   events: TaskEvent[];
   authorizedRoot: string;
@@ -52,10 +54,46 @@ afterEach(async () => {
     try {
       await Promise.all(servers.splice(0).map(server => server.close()));
     } finally {
+      for (const child of compileProcesses.splice(0)) {
+        if (child.exitCode === null) child.kill();
+      }
       await Promise.all(roots.splice(0).map(root => root.cleanup()));
     }
   }
 });
+
+function waitForCompileMessage(
+  child: ChildProcess,
+  expectedType: string
+): Promise<Record<string, unknown>> {
+  return new Promise((resolveMessage, rejectMessage) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      rejectMessage(new Error(`等待编译子进程消息超时：${expectedType}`));
+    }, 5_000);
+    const onMessage = (message: unknown) => {
+      if (
+        typeof message !== 'object'
+        || message === null
+        || !('type' in message)
+        || message.type !== expectedType
+      ) return;
+      cleanup();
+      resolveMessage(message as Record<string, unknown>);
+    };
+    const onExit = (code: number | null) => {
+      cleanup();
+      rejectMessage(new Error(`编译子进程提前退出：${String(code)}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.off('message', onMessage);
+      child.off('exit', onExit);
+    };
+    child.on('message', onMessage);
+    child.on('exit', onExit);
+  });
+}
 
 function collectNestedStrings(value: unknown, collected: string[] = []): string[] {
   if (typeof value === 'string') {
@@ -159,6 +197,54 @@ function pendingAction(events: TaskEvent[]) {
 }
 
 describe('桌面 Agent 真实服务集成', () => {
+  test('Renderer 真实图集编译挂起时 Main Agent 请求仍先完成', async () => {
+    const fixture = await harness([{
+      response: { type: 'text', text: 'Agent 在编译期间正常响应' }
+    }]);
+    const child = fork(
+      join(process.cwd(), 'tests', 'fixtures', 'character-compile-process.mjs'),
+      [],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          AI_PET_WORKSPACE_ROOT: process.cwd()
+        },
+        execArgv: ['--experimental-strip-types'],
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc']
+      }
+    );
+    compileProcesses.push(child);
+
+    await waitForCompileMessage(child, 'ready');
+    child.send({ type: 'start_compile' });
+    await waitForCompileMessage(child, 'decode_started');
+
+    let compileCompleted = false;
+    const compileResult = waitForCompileMessage(child, 'compile_completed')
+      .then(result => {
+        compileCompleted = true;
+        return result;
+      });
+
+    await fixture.service.submit('编译角色时继续响应');
+
+    expect(compileCompleted).toBe(false);
+    expect(fixture.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: 'Agent 在编译期间正常响应'
+    });
+    expectProviderExchange(fixture.providerServer, 1);
+
+    child.send({ type: 'release_decode' });
+    await expect(compileResult).resolves.toMatchObject({
+      width: 2,
+      height: 2,
+      frameCount: 1
+    });
+  });
+
   test('只通过五个允许工具列出授权目录', async () => {
     const fixture = await harness([
       {

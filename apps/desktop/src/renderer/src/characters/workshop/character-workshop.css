@@ -1086,3 +1086,27 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+.atlas-import-panel {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--workshop-border);
+}
+
+.atlas-import-panel form {
+  display: grid;
+  gap: 10px;
+}
+
+.atlas-import-panel label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.atlas-import-panel input,
+.atlas-import-panel select {
+  width: 100%;
+  min-width: 0;
+}

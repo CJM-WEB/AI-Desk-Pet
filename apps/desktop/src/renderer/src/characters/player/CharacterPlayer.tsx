@@ -12,6 +12,7 @@ import {
 import type {
   CharacterRuntimeSnapshot
 } from '../../../../shared/character-ipc';
+import { characterErrorCode } from '../../../../shared/character-recovery';
 import type { MyselfApi } from '../../../../shared/myself-api';
 import {
   CharacterResourceCache,
@@ -51,6 +52,7 @@ export interface CharacterPlayerProps {
   ) => void;
   onIdleTrigger?: () => void;
   onMotionChange?: (motion: CharacterMotionPresentation) => void;
+  onRuntimeError?: (errorCode: string | null) => void;
 }
 
 export type CharacterDesktopAnchors = {
@@ -86,7 +88,8 @@ export function CharacterPlayer({
   onDesktopAnchors,
   onExtensionDefinitionsChange,
   onIdleTrigger,
-  onMotionChange
+  onMotionChange,
+  onRuntimeError
 }: CharacterPlayerProps) {
   const hostRef = useRef<HTMLSpanElement>(null);
   const activePlayerRef = useRef<CharacterPlayerPort | null>(null);
@@ -94,13 +97,25 @@ export function CharacterPlayer({
   const playbackRef = useRef({ stateId, motionMode, direction, random });
   const [runtimeDirection, setRuntimeDirection] = useState(direction);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === 'undefined' || !document.hidden
+  );
+  const effectiveMotionMode: CharacterMotionMode = pageVisible
+    ? motionMode
+    : 'static';
 
   playbackRef.current = {
     stateId,
-    motionMode,
+    motionMode: effectiveMotionMode,
     direction: runtimeDirection,
     random
   };
+
+  useEffect(() => {
+    const updateVisibility = (): void => setPageVisible(!document.hidden);
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -200,7 +215,8 @@ export function CharacterPlayer({
         }
         if (previous) destroyPlayerOnce(previous);
         setStatus('ready');
-      } catch {
+        if (forceReload) onRuntimeError?.(null);
+      } catch (error) {
         // 候选资源属于本次局部事务，即使修订已过期也必须立即释放。
         if (candidate) {
           destroyPlayerOnce(candidate);
@@ -214,6 +230,12 @@ export function CharacterPlayer({
           } else {
             activeSnapshotRef.current = null;
             setStatus('error');
+            const errorCode = stableRuntimeErrorCode(error);
+            console.error(
+              '角色运行版本加载失败。',
+              errorCode
+            );
+            onRuntimeError?.(errorCode);
           }
         }
       }
@@ -246,7 +268,13 @@ export function CharacterPlayer({
       activeSnapshotRef.current = null;
       host.replaceChildren();
     };
-  }, [api, createPlayer, loadBundle, onExtensionDefinitionsChange]);
+  }, [
+    api,
+    createPlayer,
+    loadBundle,
+    onExtensionDefinitionsChange,
+    onRuntimeError
+  ]);
 
   useEffect(() => {
     const player = activePlayerRef.current;
@@ -261,8 +289,8 @@ export function CharacterPlayer({
       recentActionIds: [],
       random
     });
-    player.play(selection, motionMode);
-  }, [motionMode, random, runtimeDirection, stateId]);
+    player.play(selection, effectiveMotionMode);
+  }, [effectiveMotionMode, random, runtimeDirection, stateId]);
 
   useEffect(() => {
     if (
@@ -505,4 +533,9 @@ function isRuntimeChangedError(error: unknown): boolean {
     error.message === 'CHARACTER_RUNTIME_CHANGED'
     || error.message === 'CHARACTER_RUNTIME_ASSET_HASH_MISMATCH'
   );
+}
+
+function stableRuntimeErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  return characterErrorCode(message);
 }
