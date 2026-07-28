@@ -1,6 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { PetCharacter } from '../src/renderer/src/pet/PetView';
+import { PetCharacter, PetView } from '../src/renderer/src/pet/PetView';
 import { ConfirmationCard } from '../src/renderer/src/chat/ConfirmationCard';
 import { SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
 import { mountTaskEventsIfAvailable } from '../src/renderer/src/App';
@@ -178,5 +180,40 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('工具');
     expect(markup).toContain('隐私');
     expect(markup).toContain('清除全部本地数据');
+  });
+});
+
+describe('桌宠播放器接入', () => {
+  test('保留拖动区域和聊天入口并以正式角色播放器作为视觉主体', () => {
+    vi.stubGlobal('window', {
+      myself: {},
+      matchMedia: vi.fn()
+    });
+    try {
+      const markup = renderToStaticMarkup(<PetView />);
+      expect(markup).toContain('pet-drag-hint');
+      expect(markup).toContain('pet-open-chat');
+      expect(markup).toContain('character-player');
+      expect(markup).not.toContain('pet-character');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('180x220 桌宠窗口具有不塌缩的完整高度链', () => {
+    const styles = readFileSync(
+      resolve(process.cwd(), 'src/renderer/src/styles.css'),
+      'utf8'
+    );
+
+    expect(styles).toMatch(
+      /\.pet-shell\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/s
+    );
+    expect(styles).toMatch(
+      /\.pet-open-chat\s*\{[^}]*align-self:\s*stretch/s
+    );
+    expect(styles).toMatch(
+      /\.pet-open-chat\s*\{[^}]*justify-self:\s*stretch/s
+    );
   });
 });

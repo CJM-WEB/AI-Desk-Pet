@@ -1522,6 +1522,44 @@ test.describe('真实 Electron CDP smoke', () => {
       ));
       expect(petPage).toBeDefined();
       await expect(petPage!.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
+      const layout = await petPage!.evaluate(() => {
+        const measure = (selector: string): { width: number; height: number } => {
+          const element = document.querySelector<HTMLElement>(selector);
+          if (!element) throw new Error(`缺少布局元素：${selector}`);
+          const rect = element.getBoundingClientRect();
+          return { width: rect.width, height: rect.height };
+        };
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          '.character-player-host canvas'
+        );
+        return {
+          shell: measure('.pet-shell'),
+          button: measure('.pet-open-chat'),
+          player: measure('.character-player'),
+          host: measure('.character-player-host'),
+          stage: measure('.character-player-stage'),
+          canvas: canvas
+            ? {
+                box: measure('.character-player-host canvas'),
+                width: canvas.width,
+                height: canvas.height
+              }
+            : null
+        };
+      });
+
+      expect(layout.shell).toEqual({ width: 180, height: 220 });
+      expect(layout.button).toEqual({ width: 156, height: 192 });
+      expect(layout.player).toEqual(layout.button);
+      expect(layout.host).toEqual(layout.button);
+      expect(layout.stage).toEqual(layout.button);
+      if (layout.canvas) {
+        expect(layout.canvas.box).toEqual(layout.button);
+        expect({
+          width: layout.canvas.width,
+          height: layout.canvas.height
+        }).toEqual(layout.button);
+      }
     } finally {
       await fixture.dispose();
     }

@@ -1,0 +1,934 @@
+// @vitest-environment jsdom
+
+import { act, render, waitFor } from '@testing-library/react';
+import type {
+  ActionSelectionResult,
+  CharacterManifestV1
+} from '@myself/character-runtime';
+import { describe, expect, test, vi } from 'vitest';
+import {
+  CharacterResourceCache,
+  type CharacterAssetBundle
+} from '../src/renderer/src/characters/player/character-resource-cache';
+import {
+  createBrowserPixiCharacterScene,
+  fitCharacterFrames,
+  PixiCharacterPlayer,
+  resolveDirectionalAnchor,
+  type PixiCharacterScene
+} from '../src/renderer/src/characters/player/pixi-character-player';
+import {
+  CharacterPlayer,
+  createRuntimeAssetLoader,
+  type CharacterPlayerPortFactory
+} from '../src/renderer/src/characters/player/CharacterPlayer';
+import type { MyselfApi } from '../src/shared/myself-api';
+
+function manifest(characterId: string): CharacterManifestV1 {
+  return {
+    version: 1,
+    id: characterId,
+    name: characterId,
+    thumbnailAssetId: 'atlas',
+    compilerVersion: 'test',
+    resources: [{
+      assetId: 'atlas',
+      fileName: 'atlas.png',
+      sha256: 'a'.repeat(64),
+      byteLength: 4
+    }],
+    states: [{
+      id: 'idle',
+      kind: 'core',
+      actions: [{
+        id: 'idle',
+        name: '待机',
+        fps: 12,
+        loop: true,
+        weight: 1,
+        frames: [{
+          assetId: 'atlas',
+          x: 0,
+          y: 0,
+          width: 32,
+          height: 32,
+          anchors: { carry: { x: 0.75, y: 0.4 } }
+        }],
+        anchors: {
+          ground: { x: 0.5, y: 1 },
+          carry: { x: 0.7, y: 0.5 }
+        }
+      }]
+    }]
+  };
+}
+
+function bundle(characterId: string): CharacterAssetBundle {
+  return {
+    characterId,
+    atlasUrls: new Map([['atlas', `blob:${characterId}`]])
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, reject, resolve };
+}
+
+describe('角色资源缓存', () => {
+  test('同角色强制重载成功前保留旧 bundle，提交后才销毁旧 bundle', async () => {
+    const replacement = deferred<CharacterAssetBundle>();
+    const destroyer = vi.fn();
+    const loader = vi.fn()
+      .mockResolvedValueOnce(bundle('character-a'))
+      .mockImplementationOnce(() => replacement.promise);
+    const cache = new CharacterResourceCache(loader, destroyer);
+
+    const previous = await cache.activate('character-a');
+    const reload = cache.activate('character-a', { forceReload: true });
+    await Promise.resolve();
+
+    expect(cache.current).toBe(previous);
+    expect(destroyer).not.toHaveBeenCalled();
+    const next = {
+      characterId: 'character-a',
+      atlasUrls: new Map([['atlas', 'blob:character-a-v2']])
+    };
+    replacement.resolve(next);
+    await expect(reload).resolves.toBe(next);
+    expect(cache.current).toBe(next);
+    expect(destroyer).toHaveBeenCalledWith(previous);
+  });
+
+  test('运行资源加载器只读取动作帧引用的白名单纹理', async () => {
+    const currentManifest = manifest('character-a');
+    const bytes = new Uint8Array([1]);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    currentManifest.resources[0]!.sha256 = [...new Uint8Array(digest)]
+      .map(value => value.toString(16).padStart(2, '0'))
+      .join('');
+    currentManifest.resources.push({
+      assetId: 'metadata',
+      fileName: 'metadata.json',
+      sha256: 'b'.repeat(64),
+      byteLength: 4
+    });
+    const readCharacterRuntimeAsset = vi.fn(async () => bytes);
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      readCharacterRuntimeAsset
+    } as unknown as MyselfApi;
+    const createObjectURL = vi.fn(() => 'blob:atlas');
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() });
+    try {
+      const loaded = await createRuntimeAssetLoader(api)(
+        currentManifest.id,
+        new AbortController().signal,
+        {
+          snapshot: {
+            activeCharacterId: currentManifest.id,
+            manifest: currentManifest
+          }
+        }
+      );
+
+      expect([...loaded.atlasUrls.keys()]).toEqual(['atlas']);
+      expect(readCharacterRuntimeAsset).toHaveBeenCalledOnce();
+      expect(readCharacterRuntimeAsset).toHaveBeenCalledWith('atlas');
+      expect(api.getCharacterRuntimeSnapshot).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('切换角色时释放旧资源并只保留当前角色', async () => {
+    const destroyer = vi.fn();
+    const cache = new CharacterResourceCache(
+      async characterId => bundle(characterId),
+      destroyer
+    );
+
+    await cache.activate('character-a');
+    await cache.activate('character-b');
+
+    expect(destroyer).toHaveBeenCalledWith(bundle('character-a'));
+    expect(cache.activeCharacterId).toBe('character-b');
+  });
+
+  test('较旧的异步加载后返回时会被销毁且不能覆盖当前角色', async () => {
+    const oldLoad = deferred<CharacterAssetBundle>();
+    const destroyer = vi.fn();
+    const cache = new CharacterResourceCache(
+      characterId => characterId === 'character-a'
+        ? oldLoad.promise
+        : Promise.resolve(bundle(characterId)),
+      destroyer
+    );
+
+    const staleActivation = cache.activate('character-a');
+    await cache.activate('character-b');
+    oldLoad.resolve(bundle('character-a'));
+    await staleActivation;
+
+    expect(cache.activeCharacterId).toBe('character-b');
+    expect(destroyer).toHaveBeenCalledWith(bundle('character-a'));
+  });
+});
+
+describe('PixiJS 适配器边界', () => {
+  test('256 像素帧等比缩放到 156×192 内容区且不裁切', () => {
+    const fit = fitCharacterFrames(
+      [{ width: 256, height: 256 }],
+      { width: 156, height: 192 },
+      { x: 0.5, y: 1 }
+    );
+
+    expect(fit.scale).toBeCloseTo(156 / 256);
+    expect(fit.x - 256 * fit.scale * 0.5).toBeGreaterThanOrEqual(0);
+    expect(fit.x + 256 * fit.scale * 0.5).toBeLessThanOrEqual(156);
+    expect(fit.y - 256 * fit.scale).toBeGreaterThanOrEqual(0);
+    expect(fit.y).toBeLessThanOrEqual(192);
+  });
+
+  test('左向时返回镜像后的纹理归一化锚点', () => {
+    expect(resolveDirectionalAnchor({ x: 0.75, y: 0.4 }, 'left')).toEqual({
+      x: 0.25,
+      y: 0.4
+    });
+    expect(resolveDirectionalAnchor({ x: 0.75, y: 0.4 }, 'right')).toEqual({
+      x: 0.75,
+      y: 0.4
+    });
+  });
+
+  test('Application.init 失败时最佳努力停止并销毁应用及移除画布', async () => {
+    const canvas = document.createElement('canvas');
+    const stop = vi.fn(() => {
+      throw new Error('ticker 尚未就绪');
+    });
+    const destroy = vi.fn();
+    class FailingApplication {
+      canvas = canvas;
+      ticker = { stop };
+      init = vi.fn().mockRejectedValue(new Error('初始化失败'));
+      destroy = destroy;
+    }
+    const container = document.createElement('div');
+    container.appendChild(canvas);
+
+    await expect(createBrowserPixiCharacterScene(
+      container,
+      async () => ({ Application: FailingApplication }) as never
+    )).rejects.toThrow('初始化失败');
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(canvas.parentElement).toBeNull();
+  });
+
+  test('可注入 Pixi Application 使用 host 的 156×192 实际尺寸初始化 canvas', async () => {
+    const canvas = document.createElement('canvas');
+    const init = vi.fn(async (options: { width: number; height: number }) => {
+      canvas.width = options.width;
+      canvas.height = options.height;
+    });
+    const destroy = vi.fn();
+    class MeasuringApplication {
+      canvas = canvas;
+      ticker = { stop: vi.fn(), started: false };
+      stage = {};
+      init = init;
+      destroy = destroy;
+    }
+    const container = document.createElement('span');
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 156,
+      bottom: 192,
+      left: 0,
+      width: 156,
+      height: 192,
+      toJSON: () => ({})
+    });
+
+    const scene = await createBrowserPixiCharacterScene(
+      container,
+      async () => ({ Application: MeasuringApplication }) as never
+    );
+
+    expect(init).toHaveBeenCalledWith(expect.objectContaining({
+      width: 156,
+      height: 192
+    }));
+    expect({ width: canvas.width, height: canvas.height }).toEqual({
+      width: 156,
+      height: 192
+    });
+    scene.destroy();
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+});
+
+describe('PixiJS 角色播放器端口', () => {
+  test('静态模式委托场景显示代表帧且不启动 ticker', async () => {
+    const scene: PixiCharacterScene = {
+      load: vi.fn().mockResolvedValue(undefined),
+      show: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue({ x: 0.75, y: 0.4 }),
+      stop: vi.fn(),
+      destroy: vi.fn(),
+      isTickerRunning: vi.fn().mockReturnValue(false)
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const currentManifest = manifest('character-a');
+    const selection: ActionSelectionResult = {
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    };
+
+    await player.load(currentManifest, bundle('character-a'));
+    player.setDirection('left');
+    player.play(selection, 'static');
+
+    expect(scene.show).toHaveBeenCalledWith(selection, 'static');
+    expect(scene.setDirection).toHaveBeenCalledWith('left');
+    expect(player.getAnchor('carry')).toEqual({ x: 0.75, y: 0.4 });
+    expect(player.isTickerRunning()).toBe(false);
+  });
+
+  test('销毁播放器时停止动画、ticker、纹理和应用资源', () => {
+    const scene: PixiCharacterScene = {
+      load: vi.fn().mockResolvedValue(undefined),
+      show: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      stop: vi.fn(),
+      destroy: vi.fn(),
+      isTickerRunning: vi.fn().mockReturnValue(true)
+    };
+
+    new PixiCharacterPlayer(scene).destroy();
+
+    expect(scene.stop).toHaveBeenCalledTimes(1);
+    expect(scene.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test('重复销毁播放器只停止并释放场景一次', () => {
+    let destroyed = false;
+    const scene: PixiCharacterScene = {
+      load: vi.fn().mockResolvedValue(undefined),
+      show: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      stop: vi.fn(() => {
+        if (destroyed) throw new Error('不应访问已销毁场景');
+      }),
+      destroy: vi.fn(() => {
+        destroyed = true;
+      }),
+      isTickerRunning: vi.fn().mockReturnValue(false)
+    };
+    const player = new PixiCharacterPlayer(scene);
+
+    expect(() => {
+      player.destroy();
+      player.destroy();
+    }).not.toThrow();
+    expect(scene.stop).toHaveBeenCalledOnce();
+    expect(scene.destroy).toHaveBeenCalledOnce();
+  });
+});
+
+describe('角色播放器组件', () => {
+  test('当前角色成功编译事件会强制重载同一角色，其他角色编译不会刷新', async () => {
+    const currentManifest = manifest('character-a');
+    let listener: ((event:
+      | { type: 'compile-result'; characterId: string; ok: true }
+      | { type: 'active-character-changed'; characterId: string }
+    ) => void) | undefined;
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(callback => {
+        listener = callback;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    const loader = vi.fn(async characterId => bundle(characterId));
+    const createPlayer = vi.fn(async () => ({
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    }));
+    render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={createPlayer}
+        loadBundle={loader}
+      />
+    );
+
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      listener?.({ type: 'compile-result', characterId: 'character-b', ok: true });
+    });
+    expect(loader).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      listener?.({ type: 'compile-result', characterId: 'character-a', ok: true });
+    });
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
+  });
+
+  test('默认加载器使用期望快照并拒绝读取期间发生的同 ID 发布变化', async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const expected = manifest('character-a');
+    expected.resources[0]!.sha256 = [...new Uint8Array(digest)]
+      .map(value => value.toString(16).padStart(2, '0'))
+      .join('');
+    const changed = structuredClone(expected);
+    changed.compilerVersion = 'changed';
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: changed.id,
+        manifest: changed
+      })),
+      readCharacterRuntimeAsset: vi.fn(async () => bytes)
+    } as unknown as MyselfApi;
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:atlas'),
+      revokeObjectURL: vi.fn()
+    });
+    try {
+      await expect(createRuntimeAssetLoader(api)(
+        expected.id,
+        new AbortController().signal,
+        { snapshot: { activeCharacterId: expected.id, manifest: expected } }
+      )).rejects.toThrow('CHARACTER_RUNTIME_CHANGED');
+      expect(api.readCharacterRuntimeAsset).toHaveBeenCalledWith('atlas');
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:atlas');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('默认加载器拒绝与清单 SHA-256 不一致的资源字节', async () => {
+    const expected = manifest('character-a');
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: expected.id,
+        manifest: expected
+      })),
+      readCharacterRuntimeAsset: vi.fn(async () => new Uint8Array([9, 9, 9]))
+    } as unknown as MyselfApi;
+    const createObjectURL = vi.fn();
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() });
+    try {
+      await expect(createRuntimeAssetLoader(api)(
+        expected.id,
+        new AbortController().signal,
+        { snapshot: { activeCharacterId: expected.id, manifest: expected } }
+      )).rejects.toThrow('CHARACTER_RUNTIME_ASSET_HASH_MISMATCH');
+      expect(createObjectURL).not.toHaveBeenCalled();
+      expect(api.getCharacterRuntimeSnapshot).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('同修订校验变化时至多重试一次并使用新快照上下文', async () => {
+    const first = manifest('character-a');
+    const second = structuredClone(first);
+    second.compilerVersion = 'second';
+    const snapshots = [first, second];
+    const loader = vi.fn()
+      .mockRejectedValueOnce(new Error('CHARACTER_RUNTIME_CHANGED'))
+      .mockImplementationOnce(async characterId => bundle(characterId));
+    const player = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => {
+        const next = snapshots.shift()!;
+        return { activeCharacterId: next.id, manifest: next };
+      }),
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+    render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async () => player}
+        loadBundle={loader}
+      />
+    );
+
+    await waitFor(() => expect(player.play).toHaveBeenCalledTimes(1));
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(loader.mock.calls[0]?.[2]?.snapshot.manifest.compilerVersion).toBe('test');
+    expect(loader.mock.calls[1]?.[2]?.snapshot.manifest.compilerVersion).toBe('second');
+    expect(api.getCharacterRuntimeSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  test('默认 loader 遇到 A 清单与 B 字节哈希冲突后重试 B 并提交一致 bundle', async () => {
+    const commonBytes = new Uint8Array([1]);
+    const oldBytes = new Uint8Array([2]);
+    const newBytes = new Uint8Array([3]);
+    const hash = async (bytes: Uint8Array): Promise<string> => {
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      return [...new Uint8Array(digest)]
+        .map(value => value.toString(16).padStart(2, '0'))
+        .join('');
+    };
+    const manifestA = manifest('character-a');
+    manifestA.resources[0]!.sha256 = await hash(commonBytes);
+    manifestA.resources.push({
+      assetId: 'atlas-extra',
+      fileName: 'atlas-extra.png',
+      sha256: await hash(oldBytes),
+      byteLength: oldBytes.byteLength
+    });
+    manifestA.states[0]!.actions[0]!.frames.push({
+      assetId: 'atlas-extra',
+      x: 0,
+      y: 0,
+      width: 32,
+      height: 32
+    });
+    const manifestB = structuredClone(manifestA);
+    manifestB.compilerVersion = 'revision-b';
+    manifestB.resources[1]!.sha256 = await hash(newBytes);
+    const snapshots = [manifestA, manifestB, manifestB];
+    const readCharacterRuntimeAsset = vi.fn()
+      .mockResolvedValueOnce(commonBytes)
+      .mockResolvedValueOnce(newBytes)
+      .mockResolvedValueOnce(commonBytes)
+      .mockResolvedValueOnce(newBytes);
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => {
+        const next = snapshots.shift()!;
+        return { activeCharacterId: next.id, manifest: next };
+      }),
+      readCharacterRuntimeAsset,
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+    const createdUrls = ['blob:first-rollback', 'blob:b-common', 'blob:b-extra'];
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => createdUrls.shift()!),
+      revokeObjectURL: vi.fn()
+    });
+    const candidate = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    try {
+      render(
+        <CharacterPlayer
+          stateId="idle"
+          motionMode="animated"
+          api={api}
+          createPlayer={async () => candidate}
+        />
+      );
+
+      await waitFor(() => expect(candidate.play).toHaveBeenCalledOnce());
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first-rollback');
+      expect(api.getCharacterRuntimeSnapshot).toHaveBeenCalledTimes(3);
+      expect(readCharacterRuntimeAsset).toHaveBeenCalledTimes(4);
+      expect(candidate.load).toHaveBeenCalledWith(
+        manifestB,
+        expect.objectContaining({
+          characterId: 'character-a',
+          atlasUrls: new Map([
+            ['atlas', 'blob:b-common'],
+            ['atlas-extra', 'blob:b-extra']
+          ])
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('候选播放器在 host 内按真实布局初始化且成功前不替换旧画面', async () => {
+    const secondLoad = deferred<void>();
+    const snapshots = [manifest('character-a'), manifest('character-b')];
+    let listener: ((event: { type: 'active-character-changed'; characterId: string }) => void)
+      | undefined;
+    const containers: HTMLElement[] = [];
+    const players = [undefined, secondLoad.promise].map(loadPromise => ({
+      load: vi.fn(() => loadPromise ?? Promise.resolve()),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    }));
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => {
+        const next = snapshots.shift()!;
+        return { activeCharacterId: next.id, manifest: next };
+      }),
+      subscribeCharacterEvents: vi.fn(callback => {
+        listener = callback;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async container => {
+          containers.push(container);
+          return players[containers.length - 1]!;
+        }}
+        loadBundle={async characterId => bundle(characterId)}
+      />
+    );
+
+    await waitFor(() => expect(players[0]!.play).toHaveBeenCalledTimes(1));
+    const host = result.container.querySelector('.character-player-host')!;
+    const oldStage = host.firstElementChild;
+    await act(async () => {
+      listener?.({ type: 'active-character-changed', characterId: 'character-b' });
+    });
+    await waitFor(() => expect(containers).toHaveLength(2));
+    expect(containers[1]!.parentElement).toBe(host);
+    expect(host.firstElementChild).toBe(oldStage);
+    expect(containers[1]!.classList.contains('is-active')).toBe(false);
+    secondLoad.resolve();
+    await act(async () => {
+      await secondLoad.promise;
+    });
+    expect(host.firstElementChild).toBe(containers[1]);
+    expect(containers[1]!.classList.contains('is-active')).toBe(true);
+  });
+
+  test('活动角色事件会刷新快照，加载中不闪烁备用角色', async () => {
+    const snapshots = [manifest('character-a'), manifest('character-b')];
+    let listener: ((event: { type: 'active-character-changed'; characterId: string }) => void)
+      | undefined;
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => {
+        const next = snapshots.shift();
+        return next ? { activeCharacterId: next.id, manifest: next } : null;
+      }),
+      readCharacterRuntimeAsset: vi.fn(async () => new Uint8Array([1, 2, 3])),
+      subscribeCharacterEvents: vi.fn(callback => {
+        listener = callback;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    const player = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const createPlayer = vi.fn(async () => player) as CharacterPlayerPortFactory;
+
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={createPlayer}
+        loadBundle={async characterId => bundle(characterId)}
+        fallback={<span>备用角色</span>}
+      />
+    );
+
+    expect(result.queryByText('备用角色')).toBeNull();
+    await waitFor(() => expect(player.load).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      listener?.({ type: 'active-character-changed', characterId: 'character-b' });
+    });
+    await waitFor(() => expect(player.load).toHaveBeenCalledTimes(2));
+  });
+
+  test('运行角色加载失败后才显示备用角色', async () => {
+    const snapshotLoad = deferred<never>();
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(() => snapshotLoad.promise),
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={vi.fn()}
+        loadBundle={async characterId => bundle(characterId)}
+        fallback={<span>备用角色</span>}
+      />
+    );
+
+    expect(result.queryByText('备用角色')).toBeNull();
+    await act(async () => {
+      snapshotLoad.reject(new Error('读取失败'));
+    });
+    await waitFor(() => expect(result.getByText('备用角色')).toBeTruthy());
+  });
+
+  test('候选播放器加载失败时立即释放并清空旧画面', async () => {
+    const currentManifest = manifest('character-a');
+    const candidate = {
+      load: vi.fn().mockRejectedValue(new Error('纹理解码失败')),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async () => candidate}
+        loadBundle={async characterId => bundle(characterId)}
+        fallback={<span>备用角色</span>}
+      />
+    );
+
+    await waitFor(() => expect(result.getByText('备用角色')).toBeTruthy());
+    expect(candidate.destroy).toHaveBeenCalledTimes(1);
+    expect(result.container.querySelector('.character-player-host')?.children).toHaveLength(1);
+    expect(
+      result.container.querySelector('.character-player-host')
+        ?.firstElementChild?.classList.contains('character-player-stage')
+    ).toBe(true);
+  });
+
+  test('角色切换时较旧候选后完成也不能覆盖新播放器', async () => {
+    const oldLoad = deferred<void>();
+    const snapshots = [manifest('character-a'), manifest('character-b')];
+    let listener: ((event: { type: 'active-character-changed'; characterId: string }) => void)
+      | undefined;
+    const oldPlayer = {
+      load: vi.fn(() => oldLoad.promise),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const newPlayer = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const createPlayer = vi.fn()
+      .mockResolvedValueOnce(oldPlayer)
+      .mockResolvedValueOnce(newPlayer);
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => {
+        const next = snapshots.shift();
+        return next ? { activeCharacterId: next.id, manifest: next } : null;
+      }),
+      subscribeCharacterEvents: vi.fn(callback => {
+        listener = callback;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={createPlayer}
+        loadBundle={async characterId => bundle(characterId)}
+      />
+    );
+
+    await waitFor(() => expect(oldPlayer.load).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      listener?.({ type: 'active-character-changed', characterId: 'character-b' });
+    });
+    await waitFor(() => expect(newPlayer.play).toHaveBeenCalledTimes(1));
+    oldLoad.resolve();
+    await act(async () => {
+      await oldLoad.promise;
+    });
+
+    expect(oldPlayer.destroy).toHaveBeenCalledTimes(1);
+    expect(newPlayer.destroy).not.toHaveBeenCalled();
+  });
+
+  test('过期候选加载随后拒绝时仍立即销毁且不改变新播放器状态', async () => {
+    const oldLoad = deferred<void>();
+    const snapshots = [manifest('character-a'), manifest('character-b')];
+    let listener: ((event: { type: 'active-character-changed'; characterId: string }) => void)
+      | undefined;
+    const oldPlayer = {
+      load: vi.fn(() => oldLoad.promise),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const newPlayer = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => {
+        const next = snapshots.shift()!;
+        return { activeCharacterId: next.id, manifest: next };
+      }),
+      subscribeCharacterEvents: vi.fn(callback => {
+        listener = callback;
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={vi.fn()
+          .mockResolvedValueOnce(oldPlayer)
+          .mockResolvedValueOnce(newPlayer)}
+        loadBundle={async characterId => bundle(characterId)}
+      />
+    );
+
+    await waitFor(() => expect(oldPlayer.load).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      listener?.({ type: 'active-character-changed', characterId: 'character-b' });
+    });
+    await waitFor(() => expect(newPlayer.play).toHaveBeenCalledTimes(1));
+    oldLoad.reject(new Error('过期加载失败'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(oldPlayer.destroy).toHaveBeenCalledTimes(1);
+    expect(newPlayer.destroy).not.toHaveBeenCalled();
+    expect(result.container.querySelector('.character-player')?.getAttribute('data-status'))
+      .toBe('ready');
+  });
+
+  test('卸载期间完成的加载不会挂载且会释放候选播放器', async () => {
+    const pendingPlayer = deferred<Awaited<ReturnType<CharacterPlayerPortFactory>>>();
+    const candidate = {
+      load: vi.fn(),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const currentManifest = manifest('character-a');
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      readCharacterRuntimeAsset: vi.fn(async () => new Uint8Array([1])),
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+    const createPlayer = vi.fn(() => pendingPlayer.promise);
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={createPlayer}
+        loadBundle={async characterId => bundle(characterId)}
+      />
+    );
+
+    await waitFor(() => expect(createPlayer).toHaveBeenCalledTimes(1));
+    result.unmount();
+    pendingPlayer.resolve(candidate);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(candidate.destroy).toHaveBeenCalledTimes(1);
+    expect(candidate.load).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['resolve', (pending: ReturnType<typeof deferred<void>>) => pending.resolve()],
+    ['reject', (pending: ReturnType<typeof deferred<void>>) => pending.reject(
+      new Error('卸载后的加载拒绝')
+    )]
+  ] as const)('candidate.load pending 后卸载再 %s 只销毁一次', async (_name, settle) => {
+    const pending = deferred<void>();
+    const candidate = {
+      load: vi.fn(() => pending.promise),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      destroy: vi.fn()
+    };
+    const currentManifest = manifest('character-a');
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(() => vi.fn())
+    } as unknown as MyselfApi;
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async () => candidate}
+        loadBundle={async characterId => bundle(characterId)}
+      />
+    );
+
+    await waitFor(() => expect(candidate.load).toHaveBeenCalledOnce());
+    result.unmount();
+    settle(pending);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(candidate.destroy).toHaveBeenCalledOnce();
+    expect(candidate.play).not.toHaveBeenCalled();
+  });
+});
