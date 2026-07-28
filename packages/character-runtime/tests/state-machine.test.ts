@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import type { TaskPhase } from '@myself/shared-types';
 import {
   CHARACTER_TRANSIENT_DURATION_MS,
+  type CharacterState,
   characterStateFor,
   motionModeFor,
   transientDurationFor
@@ -31,5 +32,13 @@ describe('角色状态机', () => {
   test('减少动态效果使用静态模式', () => {
     expect(motionModeFor(true)).toBe('static');
     expect(motionModeFor(false)).toBe('animated');
+  });
+
+  test('角色状态类型兼容全部核心状态', () => {
+    const moving: CharacterState = 'moving';
+    const carrying: CharacterState = 'carrying';
+
+    expect(transientDurationFor(moving)).toBeNull();
+    expect(transientDurationFor(carrying)).toBeNull();
   });
 });
