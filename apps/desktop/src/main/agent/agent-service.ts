@@ -155,6 +155,13 @@ export class AgentService {
   private readonly createConversationId: () => string;
   private activeController: AbortController | null = null;
   private pendingSession: AgentSession | null = null;
+  private readonly reportedFailures = new WeakSet<object>();
+
+  hasReportedFailure(error: unknown): boolean {
+    return typeof error === 'object'
+      && error !== null
+      && this.reportedFailures.has(error);
+  }
 
   constructor(options: AgentServiceOptions) {
     this.loop = options.loop;
@@ -324,6 +331,9 @@ export class AgentService {
   }
 
   private emitFailure(error: unknown): void {
+    if (typeof error === 'object' && error !== null) {
+      this.reportedFailures.add(error);
+    }
     this.emit(publicErrorEvent(error));
     this.emit({ type: 'phase', phase: 'error' });
   }

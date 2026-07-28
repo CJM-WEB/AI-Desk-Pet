@@ -11,7 +11,7 @@
 ## 全局约束
 
 - 产物必须明确标注为未签名，并仅面向邀请测试者。
-- 安装包文件名必须包含 `Myself`、`0.1.0-alpha.1`、`windows` 和 `x64`。
+- 安装包文件名必须包含 `AI-Pet`、`0.1.0-alpha.1`、`windows` 和 `x64`。
 - 卸载绝不能删除用户授权目录中的文件。
 - 应用默认不启用登录时自动启动。
 - 只有构建成功并完成人工验收的安装包才能更新官网版本清单。
@@ -45,7 +45,7 @@ apps/website/content/release-manifest.json     generated final release metadata
 
 **接口：**
 - 输入： a passing `pnpm verify:desktop` and compiled desktop resources.
-- 输出： `dist/Myself-0.1.0-alpha.1-windows-x64.exe` plus an unpacked diagnostic directory.
+- 输出：`dist/AI-Pet-0.1.0-alpha.1-windows-x64.exe` 及解包诊断目录。
 
 - [x] **步骤 1： 编写失败的打包配置测试**
 
@@ -62,7 +62,7 @@ describe('electron-builder configuration', () => {
     expect(config.win.signAndEditExecutable).toBe(false);
     expect(config.nsis.perMachine).toBe(false);
     expect(config.nsis.deleteAppDataOnUninstall).toBe(false);
-    expect(config.artifactName).toBe('Myself-${version}-windows-${arch}.${ext}');
+    expect(config.artifactName).toBe('AI-Pet-${version}-windows-${arch}.${ext}');
   });
 });
 ```
@@ -76,8 +76,8 @@ describe('electron-builder configuration', () => {
 ```yaml
 # apps/desktop/electron-builder.yml
 appId: com.myself.desktop
-productName: Myself
-artifactName: Myself-${version}-windows-${arch}.${ext}
+productName: AI Pet
+artifactName: AI-Pet-${version}-windows-${arch}.${ext}
 directories:
   output: dist
   buildResources: resources
@@ -123,13 +123,13 @@ nsis:
 
 运行： `pnpm --filter @myself/desktop verify:package-config && pnpm verify:desktop && pnpm --filter @myself/desktop package:win`
 
-预期： config and desktop gates PASS; `apps/desktop/dist/Myself-0.1.0-alpha.1-windows-x64.exe` exists and an unpacked app launches.
+预期：配置和桌面门禁通过；`apps/desktop/dist/AI-Pet-0.1.0-alpha.1-windows-x64.exe` 存在且解包应用可启动。
 
 - [x] **用户验收交接点**
 
 提供安装包路径与大小、配置测试输出、启动截图和未签名警告截图，由用户在 Fork 中验收并决定提交。
 
-状态：已产出 `apps/desktop/dist/Myself-0.1.0-alpha.1-windows-x64.exe`，用户已完成安装包测试与验收，并已提交相关变更。
+状态：待完成。`apps/desktop/dist/AI-Pet-0.1.0-alpha.1-windows-x64.exe` 是未来目标产物，真实构建和上传完成前不得宣称可下载。
 
 ### 任务 2：确定性版本清单生成器
 
@@ -157,15 +157,15 @@ import { generateReleaseManifest } from '../src/generate-manifest';
 describe('generateReleaseManifest', () => {
   it('derives size, URL, and lowercase sha256 from final bytes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'myself-release-'));
-    const installer = join(dir, 'Myself-0.1.0-alpha.1-windows-x64.exe');
+    const installer = join(dir, 'AI-Pet-0.1.0-alpha.1-windows-x64.exe');
     await writeFile(installer, Buffer.from('fixture-installer'));
     const manifest = await generateReleaseManifest({
       installerPath: installer,
       downloadBaseUrl: 'https://download.example.com/releases/',
       publishedAt: '2026-07-20T00:00:00.000Z'
     });
-    expect(manifest.fileName).toBe('Myself-0.1.0-alpha.1-windows-x64.exe');
-    expect(manifest.downloadUrl).toBe('https://download.example.com/releases/Myself-0.1.0-alpha.1-windows-x64.exe');
+    expect(manifest.fileName).toBe('AI-Pet-0.1.0-alpha.1-windows-x64.exe');
+    expect(manifest.downloadUrl).toBe('https://download.example.com/releases/AI-Pet-0.1.0-alpha.1-windows-x64.exe');
     expect(manifest.sizeBytes).toBe(17);
     expect(manifest.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(manifest.signed).toBe(false);
@@ -185,7 +185,7 @@ type Input = { installerPath: string; downloadBaseUrl: string; publishedAt: stri
 
 export async function generateReleaseManifest(input: Input) {
   const fileName = basename(input.installerPath);
-  const match = /^Myself-(\d+\.\d+\.\d+-alpha\.\d+)-windows-x64\.exe$/.exec(fileName);
+  const match = /^AI-Pet-(\d+\.\d+\.\d+-alpha\.\d+)-windows-x64\.exe$/.exec(fileName);
   if (!match?.[1]) throw new Error('Installer filename does not match the Phase 1 release contract');
   const bytes = await readFile(input.installerPath);
   const info = await stat(input.installerPath);
@@ -221,7 +221,7 @@ export async function writeManifest(input: Input, outputPath: string): Promise<v
 
 提供最终清单、独立 PowerShell 哈希、官网验证输出和产物路径，由用户验收并决定提交。
 
-状态：官网清单已替换为 GitHub Release 真实下载地址 `https://github.com/CJM-WEB/AI-Desk-Pet/releases/download/v0.1.0-alpha.1/Myself-0.1.0-alpha.1-windows-x64.exe`，并已通过 `pnpm verify:website`。
+状态：待发布。`AI-Pet-0.1.0-alpha.1-windows-x64.exe` 是未来 GitHub Release 目标资产；上传、哈希校验和官网验证完成前，发行清单必须使用 `unpublished`，不得写入或展示下载 URL。
 
 ### 任务 3：干净 Windows 环境验收与发布交接
 

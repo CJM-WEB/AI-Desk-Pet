@@ -56,6 +56,7 @@ const actionIdSchema = z.object({
 
 export interface AgentIpcService {
   submit(text: string): Promise<void>;
+  hasReportedFailure(error: unknown): boolean;
   cancelActive(): void;
   confirm(actionId: string): Promise<void>;
   cancelAction(actionId: string): void;
@@ -64,7 +65,12 @@ export interface AgentIpcService {
 export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): void {
   replaceHandler(ipcMain, ipcChannels.chatSubmit, async (_event, raw) => {
     const { text } = chatSubmitSchema.parse(raw);
-    await service.submit(text);
+    try {
+      await service.submit(text);
+    } catch (error) {
+      // 仅吞掉已发布任务事件的错误，其他 IPC 故障继续交给 Renderer 兜底。
+      if (!service.hasReportedFailure(error)) throw error;
+    }
   });
   replaceHandler(ipcMain, ipcChannels.chatCancel, () => service.cancelActive());
   replaceHandler(ipcMain, ipcChannels.actionConfirm, async (_event, raw) => {

@@ -4,7 +4,7 @@
 
 **目标：** 在现有 Windows Electron 桌宠中交付可立即使用的无骨骼序列帧角色系统、独立角色工作室、安全角色存储、交互锚点和可选角色包分享能力。
 
-**架构：** `@myself/character-runtime` 负责角色协议、状态仲裁、动作选择和降级；新增 `@myself/character-assets` 负责纯数据切帧、纹理图集规划和角色包校验；Electron Main 负责角色存储、导入导出、安全 IPC 和窗口；Renderer 负责工作室、图像解码、纹理图集生成以及 PixiJS 播放。真实桌面位移与文件任务结果继续由可信业务层决定，序列帧只负责视觉表现。
+**架构：** `@myself/character-runtime` 负责角色协议、状态仲裁、动作选择和降级；新增 `@myself/character-assets` 负责纯数据切帧、纹理图集规划和角色包校验；Electron Main 负责角色存储、导入导出、安全 IPC、窗口和运动服务；Renderer 负责工作室、图像解码、纹理图集生成以及 PixiJS 播放。真实桌面位移与文件任务结果继续由可信业务层决定，序列帧只负责视觉表现。
 
 **技术栈：** TypeScript 5.9、Electron 43、React 19、Zod 3、Zustand 5、Vitest 3、Playwright 1.61、PixiJS 8、Canvas、`createImageBitmap`、pnpm workspace。
 
@@ -22,6 +22,9 @@
 - 系统核心状态固定不可删除，用户扩展状态可创建、编辑和删除。
 - 角色包导出仅用于分享、备份和迁移，不是使用角色的前置条件。
 - Renderer 不获得任意路径读写能力，所有持久化和角色包处理由 Main 完成。
+- Renderer 只可通过受限 IPC 获取运行时快照、读取已授权角色资产并订阅角色事件；不得获得目录路径、任意资产读取或运动控制能力。
+- `CharacterManifestV1` 必须包含每项资源的 SHA-256 和 `compilerVersion`，缺失字段时不得发布或启用。
+- 官方默认角色素材由开发流程生成 8 张四帧透明火柴人测试 PNG，仅用于功能验收，不代表最终美术；应用本身不提供图片生成能力。
 - 编译失败必须保留草稿和上一个可运行版本。
 - 角色包和图片均视为不可信输入，拒绝路径穿越、符号链接、脚本和超限资源。
 - 实施期间只允许 Git 只读命令，不执行暂存、提交、分支、合并或推送。
@@ -75,6 +78,7 @@ apps/desktop/src/main/characters/
 ├─ character-asset-service.ts
 ├─ character-package-service.ts
 ├─ character-actions.ts
+├─ character-motion-service.ts
 └─ character-errors.ts
 ```
 
@@ -82,6 +86,7 @@ apps/desktop/src/main/characters/
 - `character-asset-service.ts`：系统文件选择、源素材接收、资源读取和编译产物保存。
 - `character-package-service.ts`：角色包导入导出、隔离解包和安全校验。
 - `character-actions.ts`：供 IPC 调用的应用服务。
+- `character-motion-service.ts`：在 Main 内仲裁窗口位置、移动目标与窗口位移，不向 Renderer 下放窗口控制权。
 - `character-errors.ts`：稳定错误码和用户可见错误映射。
 
 ### Renderer 角色工作室与播放器
@@ -283,6 +288,7 @@ Zod 规则必须包含：
 - 帧矩形使用非负整数，宽高至少为 1。
 - `characterDraftV1Schema` 允许新角色暂时没有动作。
 - `characterManifestV1Schema` 必须包含 `idle`，且 `idle` 至少有一个动作。
+- `characterManifestV1Schema` 必须要求每项资源声明 SHA-256，且顶层必须包含 `compilerVersion`。
 - 所有对象使用 `.strict()`。
 - 扩展状态标识由 `custom:` 前缀和规范化名称组成。
 
@@ -324,6 +330,8 @@ git diff -- packages/character-runtime
 - 消费：`CharacterManifestV1`、`CharacterStateId`、`ActionClip`
 - 产出：`selectCharacterAction(input: ActionSelectionInput): ActionSelectionResult`
 - 产出：`ActionSelectionReason = 'matched' | 'idle_fallback'`
+
+连续重复冷却的历史由调用方维护：调用方截取最近 N 个已播放动作 ID 后传入 `recentActionIds`。任务 2 的选择器保持纯函数，不保存跨调用状态，也不负责最短待机间隔。
 
 - [ ] **步骤 1：写动作选择失败测试**
 
@@ -989,6 +997,7 @@ pnpm test:security
 - 产出 API：`listCharacters()`、`createCharacter()`、`duplicateCharacter()`、`getCharacterDraft()`、`saveCharacterDraft()`
 - 产出 API：`chooseCharacterSources()`、`readCharacterSource()`、`publishCharacter()`
 - 产出 API：`activateCharacter()`、`deleteCharacter()`、`importCharacterPackage()`、`exportCharacterPackage()`
+- 产出 API：`getCharacterRuntimeSnapshot()`、`readCharacterRuntimeAsset()`、`subscribeCharacterEvents()`
 
 - [ ] **步骤 1：写窗口和 IPC 失败测试**
 
@@ -1024,7 +1033,7 @@ pnpm --filter @myself/desktop test -- character-ipc.test.ts window-security.test
 
 - [ ] **步骤 3：扩展强类型 API**
 
-所有 IPC 输入使用 Zod `.strict()`。Renderer 只能传递角色标识、状态标识、动作草稿和资源标识；文件选择由 Main 调用 `dialog.showOpenDialog`，导出目标由 Main 调用 `dialog.showSaveDialog`。
+所有 IPC 输入使用 Zod `.strict()`。运行时 IPC 只允许读取不含本地路径的角色快照、按已验证资源标识读取当前角色编译产物，以及订阅固定 `character:event` 事件；Renderer 不能枚举资产目录、读取任意资源或调用窗口移动。文件选择由 Main 调用 `dialog.showOpenDialog`，导出目标由 Main 调用 `dialog.showSaveDialog`。
 
 - [ ] **步骤 4：创建和管理角色工作室窗口**
 
@@ -1265,7 +1274,7 @@ export type CharacterAssetBundle = {
 
 **内容前置条件：**
 
-在执行本任务前，产品负责人需要提供官方默认角色的八张透明精灵图，文件名固定为：
+在执行本任务前，由开发流程生成官方默认角色的八张四帧透明火柴人测试精灵图，文件名固定为：
 
 ```text
 apps/desktop/resources/characters/default/idle.png
@@ -1352,6 +1361,12 @@ pnpm --filter @myself/desktop typecheck
 
 - 新建：`apps/desktop/src/renderer/src/characters/player/character-motion-controller.ts`
 - 新建：`apps/desktop/src/renderer/src/characters/player/extension-trigger-controller.ts`
+- 新建：`apps/desktop/src/main/characters/character-motion-service.ts`
+- 修改：`apps/desktop/src/main/windows/window-manager.ts`
+- 修改：`apps/desktop/src/shared/ipc-channels.ts`
+- 修改：`apps/desktop/src/shared/myself-api.ts`
+- 修改：`apps/desktop/src/preload/index.ts`
+- 修改：`apps/desktop/src/main/ipc/register-ipc.ts`
 - 修改：`apps/desktop/src/renderer/src/characters/player/CharacterPlayer.tsx`
 - 修改：`apps/desktop/src/renderer/src/stores/task-store.ts`
 - 新建测试：`apps/desktop/tests/character-motion-controller.test.ts`
@@ -1359,7 +1374,9 @@ pnpm --filter @myself/desktop typecheck
 
 **接口：**
 
-- 消费：任务事件、移动命令、用户点击、关键词和 LLM 情绪标签。
+- Main 消费：任务事件、受信移动命令和窗口边界，产出窗口位置与不含路径的运行时快照。
+- Renderer 消费：运行时快照、受限资产读取结果和角色事件；不得自行移动窗口或推导可信任务结果。
+- 消费：用户点击、关键词和 LLM 情绪标签。
 - 产出：统一 `CharacterStateRequest`。
 - 产出：当前帧 `carry`、`seat`、`focus` 锚点的桌面坐标。
 
@@ -1397,20 +1414,28 @@ pnpm --filter @myself/desktop test -- character-motion-controller.test.ts extens
 
 预期：失败，提示控制器不存在。
 
-- [ ] **步骤 4：实现运动和锚点坐标转换**
+- [ ] **步骤 4：实现 Main 窗口运动服务和窄化 IPC**
 
-运动控制器使用单调时间差推进位置，限制最大 `deltaMs`，避免系统唤醒后角色瞬移。方向变化驱动精灵镜像和锚点镜像。
+`CharacterMotionService` 在 Main 使用单调时间差推进窗口位置、限制最大 `deltaMs` 并执行屏幕边界约束。它只接受可信任务层或受控用户交互产生的移动请求；`register-ipc.ts` 只向 Renderer 暴露运行时快照、已验证资产读取和事件订阅，禁止通用窗口移动、目录枚举和任意资源路径传入。
 
-- [ ] **步骤 5：实现扩展触发适配**
+`CharacterMotionService` 同时维护待机调度时钟：在调用动作选择器之前强制最短待机间隔，间隔未到时不得发起新的 `idle` 动作选择；它截取最近 N 个已播放动作 ID 作为 `recentActionIds` 传入任务 2 的纯选择器。
+
+- [ ] **步骤 5：实现 Renderer 运动表现和锚点坐标转换**
+
+Renderer 运动控制器只根据 Main 快照插值视觉位置，避免系统唤醒后角色瞬移。方向变化驱动精灵镜像和锚点镜像；窗口真实位置始终以 Main 运动服务为准。
+
+- [ ] **步骤 6：实现扩展触发适配**
 
 触发器只产生请求，不直接播放动画。关键词在本地匹配；LLM 只能返回已存在扩展状态的标识，未知状态被拒绝。核心任务状态始终由 `state-arbiter` 最终裁决。
 
-- [ ] **步骤 6：运行验证**
+- [ ] **步骤 7：运行验证**
 
 ```powershell
 pnpm --filter @myself/desktop test -- character-motion-controller.test.ts extension-trigger-controller.test.ts
 pnpm --filter @myself/desktop typecheck
 ```
+
+验收测试必须覆盖最短待机间隔：间隔未到时不调用动作选择器，达到间隔后只触发一次待机选择，并将最近 N 个动作 ID 传入 `recentActionIds`。
 
 预期：全部通过。
 
@@ -1435,12 +1460,11 @@ pnpm --filter @myself/desktop typecheck
 
 测试启动边界只允许在临时 `userData` 下创建：
 
-- 一张 2×2 透明测试精灵图。
-- 三张独立测试帧。
+- 由开发流程生成的 8 张四帧透明火柴人测试 PNG，作为官方默认验收素材。
 - 一个安全角色包。
 - 一个包含路径穿越条目的恶意角色包。
 
-测试素材不能引用用户真实图片目录。
+测试素材不能引用用户真实图片目录，只用于导入、编译、播放、状态切换与降级验收，不代表最终美术；应用本身不提供图片生成能力。
 
 - [ ] **步骤 2：写端到端失败场景**
 

@@ -41,7 +41,7 @@ async function waitForPage(
 
 async function submitChat(page: Page, text: string): Promise<void> {
   await page.getByLabel('和我说点什么').fill(text);
-  await page.getByRole('button', { name: '发送给 Myself' }).click();
+  await page.getByRole('button', { name: '发送给 AI Pet' }).click();
 }
 
 async function assertNoHorizontalOverflow(page: Page): Promise<void> {
@@ -259,7 +259,7 @@ test.describe('多 Provider 与 MCP 真实 Electron 流程', () => {
       await expect(settingsPage.getByText('模型档案已保存。')).toBeVisible();
 
       await settingsPage.getByRole('button', { name: '测试 本地 Provider 连接' }).click();
-      await expect(settingsPage.getByText('连接成功。')).toBeVisible();
+      await expect(settingsPage.getByText('连接测试完成。')).toBeVisible();
       await settingsPage.getByRole('combobox', { name: '主模型', exact: true })
         .selectOption({ label: '本地 Provider' });
       await settingsPage.getByRole('combobox', { name: 'Agent 模型', exact: true })

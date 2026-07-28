@@ -238,6 +238,7 @@ describe('AgentService', () => {
     const { events, service } = createHarness(new ScriptedProvider([providerError]));
 
     await expect(service.submit('调用模型')).rejects.toThrow('private details');
+    expect(service.hasReportedFailure(providerError)).toBe(true);
 
     expect(events.at(-2)).toEqual(expect.objectContaining({
       type: 'error',

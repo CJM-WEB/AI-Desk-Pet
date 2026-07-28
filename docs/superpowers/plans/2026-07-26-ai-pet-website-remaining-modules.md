@@ -1253,7 +1253,7 @@ it('静态 HTML 保留章节导航和真实下载回退', () => {
   expect(html).toContain('data-static-fallback="ready"');
   expect(html).toContain('aria-label="上一章节"');
   expect(html).toContain('aria-label="下一章节"');
-  expect(html).toContain('Myself-0.1.0-alpha.1-windows-x64.exe');
+  expect(html).toContain('AI-Pet-0.1.0-alpha.1-windows-x64.exe');
   expect(html).toContain('即将支持');
 });
 ```
@@ -1414,8 +1414,8 @@ test('下载侧栏支持锁定、切换、复位和真实 Windows 链接', async
   await page.getByRole('button', { name: '显示安装前须知' }).click();
   await expect(page.getByRole('complementary', { name: '安装前须知' })).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('link', { name: /下载 Myself/ }))
-    .toHaveAttribute('href', /\.exe$/);
+  await expect(page.getByRole('button', { name: '尚未发布' }))
+    .toBeDisabled();
 });
 
 test('支付滚筒消费局部滚轮并提供付款码缺图回退', async ({ page }) => {

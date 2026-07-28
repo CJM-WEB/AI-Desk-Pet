@@ -38,6 +38,10 @@ import {
   DesktopSettingsService,
 } from './settings/desktop-settings-service';
 import {
+  normalizeModelRoutePreflightError,
+  settingsIncompleteError
+} from './settings/session-preflight';
+import {
   createPetPositionController,
   createQuitAfterPositionFlush,
   restorePetPosition
@@ -62,10 +66,6 @@ if (e2eBoundary) {
   // E2E 在部分 Windows 环境中没有可用 GPU 子进程，需在 app ready 前关闭硬件加速。
   app.disableHardwareAcceleration();
   app.setPath('userData', e2eBoundary.userDataDirectory);
-}
-
-function settingsIncompleteError(): Error {
-  return Object.assign(new Error('SETTINGS_INCOMPLETE'), { code: 'SETTINGS_INCOMPLETE' });
 }
 
 function rendererUrl(view: 'pet' | 'chat' | 'settings'): string | null {
@@ -231,7 +231,7 @@ async function createApplicationWindows(): Promise<void> {
   ]);
 
   tray = new Tray(createTrayImage());
-  tray.setToolTip('Myself AI 桌宠');
+  tray.setToolTip('AI Pet 桌宠');
   tray.setContextMenu(contextMenu);
   tray.on('double-click', () => void windowCommands.showChat());
   pet.webContents.on('context-menu', () => tray?.popUpContextMenu(contextMenu));
@@ -256,18 +256,26 @@ async function createApplicationWindows(): Promise<void> {
         settingsStore.getAuthorizedRootPath(),
         settingsStore.getPrivacySettings()
       ]);
-      const router = new ModelRouter({
-        profiles: providerSettings.profiles,
-        route: providerSettings.route,
-        catalog: providerCatalog
-      });
-      const selection = router.select('agent', {
-        allowedCrossProviderProfileIds: providerSettings.route.allowCrossProviderFallback
-          ? new Set(providerSettings.route.fallbackProfileIds)
-          : new Set()
-      });
+      if (!authorizedRootPath) {
+        throw settingsIncompleteError();
+      }
+      let selection;
+      try {
+        const router = new ModelRouter({
+          profiles: providerSettings.profiles,
+          route: providerSettings.route,
+          catalog: providerCatalog
+        });
+        selection = router.select('agent', {
+          allowedCrossProviderProfileIds: providerSettings.route.allowCrossProviderFallback
+            ? new Set(providerSettings.route.fallbackProfileIds)
+            : new Set()
+        });
+      } catch (error) {
+        throw normalizeModelRoutePreflightError(error);
+      }
       const profile = selection.profile;
-      if (!profile || !profile.hasStoredSecret || !authorizedRootPath) {
+      if (!profile || !profile.hasStoredSecret) {
         throw settingsIncompleteError();
       }
       const policy = await PathPolicy.create(authorizedRootPath);
@@ -330,7 +338,7 @@ async function createApplicationWindows(): Promise<void> {
       const result = e2eBoundary
         ? { canceled: false, filePaths: [e2eBoundary.authorizedRootDirectory] }
         : await dialog.showOpenDialog(owner, {
-          title: '选择 Myself 可以访问的工作目录',
+          title: '选择 AI Pet 可以访问的工作目录',
           properties: ['openDirectory']
         });
       return result.canceled ? null : (result.filePaths[0] ?? null);

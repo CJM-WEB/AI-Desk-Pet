@@ -136,7 +136,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Myself — AI 桌宠文件助手',
+  title: 'AI Pet — AI 桌宠文件助手',
   description: '在授权目录中安全完成基础文件任务的 Windows AI 桌宠。'
 };
 
@@ -359,7 +359,7 @@ export type ReleaseManifest = z.infer<typeof releaseManifestSchema>;
 
 - [x] **步骤 3： 使用已验证数据实现 `DownloadCard`**
 
-The server component imports JSON, calls `releaseManifestSchema.parse`, and renders version, Windows 10/11 x64, formatted size, SHA-256 with copy affordance, unsigned warning, and a link whose accessible name is `下载 Myself 0.1.0-alpha.1`.
+服务端组件导入 JSON 并调用 `releaseManifestSchema.parse`。已发布状态渲染版本、Windows 10/11 x64、格式化大小、SHA-256、未签名警告和“下载 AI Pet 0.1.0-alpha.1”链接；未发布状态只显示目标文件名和“尚未发布”，不渲染链接。
 
 ```tsx
 // apps/website/components/DownloadCard.tsx
@@ -375,7 +375,7 @@ export function DownloadCard() {
       <p>{release.version} · Windows 10/11 x64 · {size}</p>
       <p className="warning">未签名测试版；安装前请核对文件名和 SHA-256。</p>
       <code>{release.sha256}</code>
-      <a className="primary" href={release.downloadUrl}>下载 Myself {release.version}</a>
+      <a className="primary" href={release.downloadUrl}>下载 AI Pet {release.version}</a>
     </section>
   );
 }
@@ -391,7 +391,7 @@ test('homepage presents trust information and a real download target', async ({ 
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '住在桌面上的 AI 文件小助手' })).toBeVisible();
   await expect(page.getByText('文件安全由本地控制')).toBeVisible();
-  const download = page.getByRole('link', { name: '下载 Myself 0.1.0-alpha.1' });
+  const download = page.getByRole('link', { name: '下载 AI Pet 0.1.0-alpha.1' });
   await expect(download).toHaveAttribute('href', /\.exe$/);
   await expect(page.getByText(/未签名测试版/)).toBeVisible();
 });

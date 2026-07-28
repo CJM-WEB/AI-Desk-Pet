@@ -2,7 +2,7 @@
   "name": "@myself/desktop",
   "private": true,
   "version": "0.1.0-alpha.1",
-  "description": "Myself 第一阶段 Windows AI 桌宠 Alpha",
+  "description": "AI Pet 第一阶段 Windows AI 桌宠 Alpha",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {

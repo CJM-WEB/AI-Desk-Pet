@@ -20,14 +20,14 @@ export function PetCharacter({ state, motionMode }: PetCharacterProps) {
       className="pet-character"
       data-state={state}
       data-motion={motionMode}
-      aria-label={`Myself：${presentation.label}`}
+      aria-label={`AI Pet：${presentation.label}`}
     >
       <span className="pet-ear pet-ear-left" aria-hidden="true" />
       <span className="pet-ear pet-ear-right" aria-hidden="true" />
       <div className="pet-body">
         <span className="pet-glow" aria-hidden="true" />
         <span className="pet-face" aria-hidden="true">{presentation.face}</span>
-        <strong>Myself</strong>
+        <strong>AI Pet</strong>
         <span className="pet-state-label">{presentation.label}</span>
         <span className="pet-state-detail">{presentation.detail}</span>
       </div>
@@ -41,7 +41,7 @@ export function PetOpenChatButton({ children }: { children: ReactNode }) {
     <button
       className="pet-open-chat no-drag"
       type="button"
-      aria-label="打开与 Myself 的聊天"
+      aria-label="打开与 AI Pet 的聊天"
       onClick={() => void window.myself.openChat()}
     >
       {children}
@@ -67,7 +67,7 @@ export function PetView() {
   const characterState = characterStateFor(phase);
 
   return (
-    <main className="pet-shell" aria-label="Myself 桌宠">
+    <main className="pet-shell" aria-label="AI Pet 桌宠">
       <div className="pet-drag-hint" aria-hidden="true">拖动我</div>
       <PetOpenChatButton>
         <PetCharacter state={characterState} motionMode={motionModeFor(reducedMotion)} />

@@ -24,15 +24,15 @@ function readSection(text: string, key: string): string {
 describe('electron-builder 配置', () => {
   test('桌面端包声明安装包所需版本和描述', () => {
     expect(packageJson.version).toBe('0.1.0-alpha.1');
-    expect(packageJson.description).toBe('Myself 第一阶段 Windows AI 桌宠 Alpha');
+    expect(packageJson.description).toBe('AI Pet 第一阶段 Windows AI 桌宠 Alpha');
   });
 
   test('生成未签名的用户级 Windows x64 NSIS 安装包', async () => {
     const configText = await readFile(new URL('../electron-builder.yml', import.meta.url), 'utf8');
 
     expect(readScalarBlock(configText, 'appId')).toBe('com.myself.desktop');
-    expect(readScalarBlock(configText, 'productName')).toBe('Myself');
-    expect(readScalarBlock(configText, 'artifactName')).toBe('Myself-${version}-windows-${arch}.${ext}');
+    expect(readScalarBlock(configText, 'productName')).toBe('AI Pet');
+    expect(readScalarBlock(configText, 'artifactName')).toBe('AI-Pet-${version}-windows-${arch}.${ext}');
 
     const windowsConfig = readSection(configText, 'win');
     expect(windowsConfig).toContain('target: nsis');
@@ -45,6 +45,11 @@ describe('electron-builder 配置', () => {
     expect(nsisConfig).toContain('oneClick: false');
     expect(nsisConfig).toContain('perMachine: false');
     expect(nsisConfig).toContain('deleteAppDataOnUninstall: false');
+
+    const extraResources = readSection(configText, 'extraResources');
+    expect(extraResources).toContain('- from: resources/characters/default');
+    expect(extraResources).toContain('to: characters/default');
+    expect(extraResources).toContain("- '**/*'");
   });
 
   test('Windows 图标包含 256 像素资源', async () => {

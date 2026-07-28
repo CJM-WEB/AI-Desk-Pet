@@ -1,7 +1,7 @@
 # AI 桌宠多模型、Agent 与 MCP 系统设计
 
 > 文档状态：已确认设计  
-> 产品代号：`Myself`  
+> 产品名称：`AI Pet`
 > 目标平台：Windows 10/11  
 > 基准日期：2026-07-27  
 > 上层约束：[AI 桌宠产品全局设计与演进计划](./2026-07-20-ai-desktop-pet-master-design.md)

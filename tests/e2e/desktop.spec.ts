@@ -190,7 +190,7 @@ function sanitizeCapturedDiagnostic(
 
 async function submitChatMessage(page: Page, text: string): Promise<void> {
   await page.getByLabel('和我说点什么').fill(text);
-  await page.getByRole('button', { name: '发送给 Myself' }).click();
+  await page.getByRole('button', { name: '发送给 AI Pet' }).click();
 }
 
 async function loadElectronFixtureModule(): Promise<ElectronFixtureModule | null> {
@@ -1521,7 +1521,7 @@ test.describe('真实 Electron CDP smoke', () => {
         new URL(page.url()).searchParams.get('view') === 'pet'
       ));
       expect(petPage).toBeDefined();
-      await expect(petPage!.getByRole('main', { name: 'Myself 桌宠' })).toBeVisible();
+      await expect(petPage!.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
     } finally {
       await fixture.dispose();
     }
@@ -1675,8 +1675,8 @@ test.describe('真实 Provider 业务闭环', () => {
       const settingsPage = await waitForPage('settings');
       captureRendererDiagnostics(rendererPages());
 
-      await expect(petPage.getByRole('main', { name: 'Myself 桌宠' })).toBeVisible();
-      await petPage.getByRole('button', { name: '打开与 Myself 的聊天' }).click();
+      await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
+      await petPage.getByRole('button', { name: '打开与 AI Pet 的聊天' }).click();
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
 
       await submitChatMessage(chatPage, '请列出工作目录');
@@ -1703,6 +1703,9 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
 
       await settingsPage.getByRole('button', { name: '隐私' }).click();
+      await settingsPage.getByRole('checkbox', { name: '文件数据授权' }).check();
+      await settingsPage.getByRole('button', { name: '保存隐私设置' }).click();
+      await expect(settingsPage.getByText('隐私设置已保存。')).toBeVisible();
       await settingsPage.getByRole('button', { name: '选择目录' }).click();
       await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
       await expect(settingsPage.getByText('authorized-root', { exact: true })).toBeVisible();
@@ -1739,7 +1742,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await chatPage.getByRole('button', { name: '关闭聊天气泡' }).click();
       expect(chatPage.isClosed()).toBe(false);
       await expect(chatPage.getByText('重命名已完成。')).toBeVisible();
-      await petPage.getByRole('button', { name: '打开与 Myself 的聊天' }).click();
+      await petPage.getByRole('button', { name: '打开与 AI Pet 的聊天' }).click();
       expect(chatPage.isClosed()).toBe(false);
       await expect(chatPage.getByText('重命名已完成。')).toBeVisible();
       const reopenedComposer = chatPage.getByLabel('和我说点什么');

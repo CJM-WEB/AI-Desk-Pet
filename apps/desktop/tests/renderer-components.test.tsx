@@ -42,7 +42,7 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('data-state="thinking"');
     expect(markup).toContain('data-motion="static"');
     expect(markup).toContain('正在认真想');
-    expect(markup).toContain('Myself');
+    expect(markup).toContain('AI Pet');
   });
 
   test('聊天关闭按钮调用正式 window.myself.hideChat', async () => {

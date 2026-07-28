@@ -100,7 +100,7 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
   return (
     <main className="settings-shell">
       <header className="settings-header">
-        <div><span className="companion-kicker">MYSELF</span><h1>设置</h1></div>
+        <div><span className="companion-kicker">AI PET</span><h1>设置</h1></div>
         <button type="button" aria-label="关闭设置" title="关闭设置" onClick={props.onClose}>
           <X size={18} />
         </button>
@@ -224,7 +224,9 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
         onTest: profileId => void run(async () => {
           const result = await api.testProviderProfile(profileId);
           return {
-            notice: { tone: result.ok ? 'success' : 'error', text: result.message }
+            notice: result.ok
+              ? { tone: 'success', text: '连接测试完成。' }
+              : { tone: 'error', text: result.message }
           };
         }, '连接测试完成。'),
         onRouteSave: route => void run(() => api.saveModelRoute(route), '模型路由已保存。'),
