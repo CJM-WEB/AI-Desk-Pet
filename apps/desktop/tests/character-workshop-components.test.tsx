@@ -65,7 +65,8 @@ function apiDouble(): CharacterWorkshopApi {
     deleteCharacter: vi.fn(),
     importCharacterPackage: vi.fn(),
     exportCharacterPackage: vi.fn(),
-    subscribeCharacterEvents: vi.fn(() => vi.fn())
+    subscribeCharacterEvents: vi.fn(() => vi.fn()),
+    onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn())
   };
 }
 

@@ -49,6 +49,7 @@ const SHA_256_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_CREATE_ATTEMPTS = 32;
 const ROLLBACK_MARKER_PATTERN =
   /^\.package-import-rollback-([a-z0-9][a-z0-9_-]{0,119})\.json$/u;
+const packageImportQueues = new Map<string, Promise<void>>();
 
 const sourceCatalogSchema = z.object({
   version: z.literal(1),
@@ -887,6 +888,42 @@ export class CharacterPackageService {
     );
   }
 
+  initialize(): Promise<void> {
+    return this.enqueueImport(() => this.recoverPendingRollbacks());
+  }
+
+  private enqueueImport<T>(operation: () => Promise<T>): Promise<T> {
+    const absoluteRoot = resolve(this.charactersDirectory);
+    const queueKey = process.platform === 'win32'
+      ? absoluteRoot.toLocaleLowerCase('en-US')
+      : absoluteRoot;
+    const previous = packageImportQueues.get(queueKey) ?? Promise.resolve();
+    const transaction = previous.then(operation);
+    const tail = transaction.then(() => undefined, () => undefined);
+    packageImportQueues.set(queueKey, tail);
+    void tail.then(() => {
+      if (packageImportQueues.get(queueKey) === tail) {
+        packageImportQueues.delete(queueKey);
+      }
+    });
+    return transaction;
+  }
+
+  private async writePendingImport(
+    characterId: string,
+    importTransactionId: string
+  ): Promise<void> {
+    await writeFile(
+      this.rollbackMarker(characterId),
+      jsonBytes({
+        version: 3,
+        characterId,
+        importTransactionId
+      }),
+      { flag: 'wx', mode: 0o600 }
+    );
+  }
+
   private async recoverPendingRollbacks(): Promise<void> {
     let entries;
     try {
@@ -908,6 +945,24 @@ export class CharacterPackageService {
         const characterId = match[1]!;
         const marker = this.rollbackMarker(characterId);
         const document = JSON.parse(await readFile(marker, 'utf8')) as unknown;
+        if (
+          typeof document === 'object'
+          && document !== null
+          && 'version' in document
+          && document.version === 3
+          && 'characterId' in document
+          && document.characterId === characterId
+          && 'importTransactionId' in document
+          && typeof document.importTransactionId === 'string'
+          && UUID_PATTERN.test(document.importTransactionId)
+        ) {
+          await this.store.rollbackImportedCharacter(
+            characterId,
+            document.importTransactionId
+          );
+          await rm(marker, { force: true });
+          continue;
+        }
         if (
           typeof document === 'object'
           && document !== null
@@ -1146,7 +1201,11 @@ export class CharacterPackageService {
     }
   }
 
-  async importCharacter(packagePath: string): Promise<string> {
+  importCharacter(packagePath: string): Promise<string> {
+    return this.enqueueImport(() => this.importCharacterUnlocked(packagePath));
+  }
+
+  private async importCharacterUnlocked(packagePath: string): Promise<string> {
     await this.recoverPendingRollbacks();
     await mkdir(this.temporaryDirectory, { recursive: true });
     const stagingDirectory = await mkdtemp(
@@ -1162,6 +1221,7 @@ export class CharacterPackageService {
       stagingIdentity
     );
     let createdId: string | undefined;
+    let importTransactionId: string | undefined;
     let ownsCreatedRole = false;
     let ownership: CharacterOwnership | undefined;
     try {
@@ -1185,8 +1245,21 @@ export class CharacterPackageService {
       const existing = new Set((await this.store.list()).map(character => character.id));
       for (let attempt = 0; attempt < MAX_CREATE_ATTEMPTS; attempt += 1) {
         createdId = importedId(prepared.originalId, existing, this.createId);
+        importTransactionId = randomUUID();
         try {
-          await this.store.create({ id: createdId, name: prepared.draft.name });
+          await this.writePendingImport(createdId, importTransactionId);
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+            existing.add(createdId);
+            continue;
+          }
+          throw error;
+        }
+        try {
+          await this.store.create(
+            { id: createdId, name: prepared.draft.name },
+            { importTransactionId }
+          );
           ownsCreatedRole = true;
           ownership = await captureCharacterOwnership(
             this.charactersDirectory,
@@ -1194,11 +1267,16 @@ export class CharacterPackageService {
           );
           break;
         } catch (error) {
+          await rm(this.rollbackMarker(createdId), { force: true });
           if (!isCharacterAlreadyExists(error)) throw error;
           existing.add(createdId);
         }
       }
-      if (!ownsCreatedRole || createdId === undefined) {
+      if (
+        !ownsCreatedRole
+        || createdId === undefined
+        || importTransactionId === undefined
+      ) {
         throw packageError('CHARACTER_PACKAGE_ID_GENERATION_FAILED');
       }
 
@@ -1241,11 +1319,19 @@ export class CharacterPackageService {
         { ...prepared.manifest, id: createdId },
         prepared.runtimeAssets
       );
+      if (!await this.store.completeImportedCharacter(
+        createdId,
+        importTransactionId
+      )) {
+        throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+      }
+      await rm(this.rollbackMarker(createdId), { force: true });
       return createdId;
     } catch (error) {
       if (ownsCreatedRole && createdId !== undefined) {
         try {
           await this.store.delete(createdId);
+          await rm(this.rollbackMarker(createdId), { force: true });
         } catch {
           const rollbackOwnership = ownership
             ?? await captureCharacterOwnership(

@@ -74,6 +74,9 @@ import {
   createLoadBeforePublishWindow,
   createWindowCommandController
 } from './windows/window-commands';
+import {
+  createCharacterWorkshopCloseHandshake
+} from './windows/character-workshop-close';
 import { configureSingleInstance } from './single-instance';
 
 let tray: Tray | null = null;
@@ -166,6 +169,7 @@ async function createApplicationWindows(): Promise<void> {
   for (const warning of recoveredCorruptCharacterIndex.warnings) {
     console.warn(`角色索引恢复警告：${warning}`);
   }
+  await characterPackageService.initialize();
   let startupRecoveryErrorCode: string | null = null;
   const characterStartup = await prepareCharacterStartup({
     loadIndex: () => characterStore.list(),
@@ -316,8 +320,33 @@ async function createApplicationWindows(): Promise<void> {
     savePosition: position => settingsStore.savePetPosition(position),
     onError: reportPetPositionError
   });
+  const hideOnClose = (window: BrowserWindow): void => {
+    window.on('close', event => {
+      if (isQuitting) return;
+      event.preventDefault();
+      window.hide();
+    });
+  };
+  hideOnClose(chat);
+  hideOnClose(settings);
+
+  const reportCharacterWorkshopFlushError = (error: unknown): void => {
+    console.error('角色工作室关闭前保存失败。', error);
+  };
+  const workshopCloseHandshake = createCharacterWorkshopCloseHandshake({
+    ipcMain,
+    requestChannel: ipcChannels.characterWorkshopFlushRequest,
+    acknowledgementChannel: ipcChannels.characterWorkshopFlushAcknowledgement,
+    reportError: reportCharacterWorkshopFlushError
+  });
+  const characterWorkshopWindows = createLoadBeforePublishWindow({
+    create: () => createCharacterWorkshopWindow(BrowserWindow, preload),
+    prepare: window => workshopCloseHandshake.bindWindow(window, () => isQuitting),
+    load: window => loadRenderer(window, 'characters')
+  });
   const handleBeforeQuit = createQuitAfterPositionFlush({
     flush: async () => {
+      await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent());
       await petPositionController.flush();
       await activeDesktopSettingsService?.close();
     },
@@ -329,22 +358,6 @@ async function createApplicationWindows(): Promise<void> {
     await petPositionController.flush();
     app.quit();
   };
-
-  const hideOnClose = (window: BrowserWindow): void => {
-    window.on('close', event => {
-      if (isQuitting) return;
-      event.preventDefault();
-      window.hide();
-    });
-  };
-  hideOnClose(chat);
-  hideOnClose(settings);
-
-  const characterWorkshopWindows = createLoadBeforePublishWindow({
-    create: () => createCharacterWorkshopWindow(BrowserWindow, preload),
-    prepare: hideOnClose,
-    load: window => loadRenderer(window, 'characters')
-  });
   const e2eCharacterDialogs = e2eBoundary
     ? createE2eCharacterDialogAdapter(e2eBoundary)
     : null;

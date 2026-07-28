@@ -270,6 +270,47 @@ describe('CharacterStore', () => {
     await expect(access(join(charactersDirectory, 'demo', 'compiled'))).resolves.toBeUndefined();
   });
 
+  test('角色包导入所有权令牌允许重启后只回滚本次创建的角色', async () => {
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    const store = new CharacterStore(charactersDirectory);
+    await store.create(
+      { id: 'demo', name: '导入中的角色' },
+      { importTransactionId: transactionId }
+    );
+
+    await expect(new CharacterStore(charactersDirectory)
+      .rollbackImportedCharacter('demo', '22222222-2222-4222-8222-222222222222'))
+      .resolves.toBe(false);
+    await expect(new CharacterStore(charactersDirectory)
+      .rollbackImportedCharacter('demo', transactionId))
+      .resolves.toBe(true);
+    await expect(store.list()).resolves.toEqual([]);
+    await expect(access(join(charactersDirectory, 'demo'))).rejects.toThrow();
+  });
+
+  test('角色包回滚读取令牌后同 ID 目录被替换时保留替代角色', async () => {
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    const replacementStore = new CharacterStore(charactersDirectory);
+    const rollbackStore = new CharacterStore(charactersDirectory, {
+      async onImportRollbackCheckpoint(checkpoint) {
+        if (checkpoint !== 'before-rename') return;
+        await replacementStore.delete('demo');
+        await replacementStore.create({ id: 'demo', name: '替代角色' });
+      }
+    });
+    await replacementStore.create(
+      { id: 'demo', name: '导入中的角色' },
+      { importTransactionId: transactionId }
+    );
+
+    await expect(rollbackStore.rollbackImportedCharacter('demo', transactionId))
+      .resolves.toBe(false);
+    await expect(replacementStore.getDraft('demo')).resolves.toMatchObject({
+      id: 'demo',
+      name: '替代角色'
+    });
+  });
+
   test('拒绝路径穿越标识和草稿角色不一致', async () => {
     const store = new CharacterStore(charactersDirectory);
     await expect(store.create({ id: '../escape', name: '越界角色' }))
@@ -611,6 +652,47 @@ describe('CharacterStore', () => {
       join(charactersDirectory, 'index.json'),
       'utf8'
     )).characters[0].name).toBe('旧版本');
+    await expect(access(join(characterDirectory, 'compiled.next'))).rejects.toThrow();
+    await expect(access(join(characterDirectory, 'compiled.backup'))).rejects.toThrow();
+    await expect(access(join(characterDirectory, 'publish-transaction.json'))).rejects.toThrow();
+  });
+
+  test('首次发布移动空 compiled 后中断时回滚为空运行目录且保留草稿可用', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime('demo', '首次发布');
+    await store.create({ id: 'demo', name: '首次发布' });
+
+    const characterDirectory = join(charactersDirectory, 'demo');
+    await writeRuntimeDirectory(join(characterDirectory, 'compiled.next'), runtime);
+    await writeFile(
+      join(characterDirectory, 'publish-transaction.json'),
+      JSON.stringify({
+        version: 2,
+        phase: 'prepared',
+        hadPreviousRuntime: false,
+        previousEntry: { id: 'demo', name: '首次发布', thumbnailAssetId: null },
+        nextEntry: { id: 'demo', name: '首次发布', thumbnailAssetId: 'thumb' }
+      }),
+      'utf8'
+    );
+    await rename(
+      join(characterDirectory, 'compiled'),
+      join(characterDirectory, 'compiled.backup')
+    );
+
+    const restartedStore = new CharacterStore(charactersDirectory);
+    await expect(restartedStore.list()).resolves.toMatchObject([{
+      id: 'demo',
+      name: '首次发布',
+      completeness: 'incomplete'
+    }]);
+    await expect(restartedStore.getDraft('demo')).resolves.toMatchObject({
+      id: 'demo',
+      name: '首次发布'
+    });
+    await expect(restartedStore.getRuntimeManifest('demo'))
+      .rejects.toThrow('CHARACTER_RUNTIME_UNAVAILABLE');
+    await expect(access(join(characterDirectory, 'compiled'))).resolves.toBeUndefined();
     await expect(access(join(characterDirectory, 'compiled.next'))).rejects.toThrow();
     await expect(access(join(characterDirectory, 'compiled.backup'))).rejects.toThrow();
     await expect(access(join(characterDirectory, 'publish-transaction.json'))).rejects.toThrow();

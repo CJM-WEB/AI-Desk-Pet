@@ -40,6 +40,8 @@ const DRAFT_MARKER = 'draft-transaction.json';
 const DRAFT_NEXT = 'draft.next.json';
 const DRAFT_BACKUP = 'draft.backup.json';
 const DELETE_TOMBSTONE_SUFFIX = '.delete-tombstone';
+const PACKAGE_IMPORT_OWNER = '.package-import-owner.json';
+const IMPORT_TRANSACTION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 const indexEntrySchema = z.object({
   id: z.string().regex(SAFE_CHARACTER_ID),
@@ -78,11 +80,25 @@ const characterIndexSchema = z.object({
 
 const transactionEntrySchema = indexEntrySchema;
 const publishTransactionSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   phase: z.enum(['prepared', 'old-moved', 'installed', 'rolling-back']),
+  hadPreviousRuntime: z.boolean().optional(),
   previousEntry: transactionEntrySchema,
   nextEntry: transactionEntrySchema
-}).strict();
+}).strict().superRefine((transaction, context) => {
+  if (transaction.version === 2 && transaction.hadPreviousRuntime === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '第二版发布事务必须记录上一运行版本状态。',
+      path: ['hadPreviousRuntime']
+    });
+  }
+}).transform(transaction => ({
+  ...transaction,
+  hadPreviousRuntime: transaction.version === 1
+    ? true
+    : transaction.hadPreviousRuntime!
+}));
 const draftTransactionSchema = z.object({
   version: z.literal(1),
   phase: z.enum(['prepared', 'installed', 'rolling-back']),
@@ -95,6 +111,10 @@ type CharacterIndexEntry = z.output<typeof indexEntrySchema>;
 type PublishTransaction = z.output<typeof publishTransactionSchema>;
 type DraftTransaction = z.output<typeof draftTransactionSchema>;
 type LoadedIndex = { index: CharacterIndex; writable: boolean };
+
+export type CharacterCreateOptions = {
+  importTransactionId?: string;
+};
 
 export type CharacterSummary = {
   id: string;
@@ -120,6 +140,10 @@ export type CharacterStoreDependencies = {
   onRecoveryDirectoryCandidate?: (
     characterId: string,
     directory: string
+  ) => Promise<void>;
+  onImportRollbackCheckpoint?: (
+    checkpoint: 'before-rename',
+    characterId: string
   ) => Promise<void>;
 };
 
@@ -227,6 +251,16 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+function sameFileIdentity(
+  left: { directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number },
+  right: { directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number }
+): boolean {
+  return left.directoryDev === right.directoryDev
+    && left.directoryIno === right.directoryIno
+    && left.ownerDev === right.ownerDev
+    && left.ownerIno === right.ownerIno;
+}
+
 async function durableWrite(file: string, bytes: Uint8Array): Promise<void> {
   const handle = await open(file, 'wx');
   try {
@@ -254,6 +288,9 @@ export class CharacterStore {
   private readonly onRecoveryDirectoryCandidate: NonNullable<
     CharacterStoreDependencies['onRecoveryDirectoryCandidate']
   >;
+  private readonly onImportRollbackCheckpoint: NonNullable<
+    CharacterStoreDependencies['onImportRollbackCheckpoint']
+  >;
 
   constructor(
     private readonly directory: string,
@@ -265,6 +302,8 @@ export class CharacterStore {
     this.onRuntimeReadCheckpoint = dependencies.onRuntimeReadCheckpoint
       ?? (async () => undefined);
     this.onRecoveryDirectoryCandidate = dependencies.onRecoveryDirectoryCandidate
+      ?? (async () => undefined);
+    this.onImportRollbackCheckpoint = dependencies.onImportRollbackCheckpoint
       ?? (async () => undefined);
   }
 
@@ -367,10 +406,16 @@ export class CharacterStore {
     });
   }
 
-  create(input: { id: string; name: string }): Promise<void> {
+  create(
+    input: { id: string; name: string },
+    options: CharacterCreateOptions = {}
+  ): Promise<void> {
     return this.enqueue(async () => {
       assertCharacterId(input.id);
       const name = z.string().trim().min(1).max(120).parse(input.name);
+      const importTransactionId = options.importTransactionId === undefined
+        ? undefined
+        : z.string().regex(IMPORT_TRANSACTION_ID).parse(options.importTransactionId);
       const loaded = await this.requireWritableIndex();
       if (loaded.characters.some(character => character.id === input.id)) {
         throw characterError('CHARACTER_ALREADY_EXISTS');
@@ -395,6 +440,12 @@ export class CharacterStore {
           mkdir(join(characterDirectory, 'draft'), { recursive: true }),
           mkdir(join(characterDirectory, 'compiled'), { recursive: true })
         ]);
+        if (importTransactionId) {
+          await this.safeWriteText(
+            this.packageImportOwnerFile(input.id),
+            json({ version: 1, characterId: input.id, importTransactionId })
+          );
+        }
         await this.safeWriteText(this.draftFile(input.id), json(draft));
         loaded.characters.push(indexEntry(input.id, name, null));
         await this.writeIndex(loaded);
@@ -405,6 +456,150 @@ export class CharacterStore {
         }).catch(() => undefined);
         throw error;
       }
+    });
+  }
+
+  rollbackImportedCharacter(
+    characterId: string,
+    importTransactionId: string
+  ): Promise<boolean> {
+    return this.enqueue(async () => {
+      assertCharacterId(characterId);
+      z.string().regex(IMPORT_TRANSACTION_ID).parse(importTransactionId);
+      const ownerFile = this.packageImportOwnerFile(characterId);
+      const characterDirectory = this.characterDirectory(characterId);
+      const originalIdentity = await this.readImportOwnershipIdentity(
+        characterDirectory,
+        ownerFile,
+        characterId,
+        importTransactionId
+      );
+      if (!originalIdentity) return false;
+
+      const index = await this.requireWritableIndex();
+      if (index.activeCharacterId === characterId) return false;
+      const originalIndex = cloneIndex(index);
+      const tombstone = this.deleteTombstone(characterId);
+      await this.assertSafePath(characterDirectory);
+      await this.assertSafePath(tombstone);
+      await this.onImportRollbackCheckpoint('before-rename', characterId);
+      const currentIdentity = await this.readImportOwnershipIdentity(
+        characterDirectory,
+        ownerFile,
+        characterId,
+        importTransactionId
+      );
+      if (!currentIdentity || !sameFileIdentity(originalIdentity, currentIdentity)) {
+        return false;
+      }
+      try {
+        await this.removePath(tombstone, { recursive: true, force: true });
+        await this.renamePath(characterDirectory, tombstone);
+        const movedIdentity = await this.readImportOwnershipIdentity(
+          tombstone,
+          join(tombstone, PACKAGE_IMPORT_OWNER),
+          characterId,
+          importTransactionId
+        );
+        if (!movedIdentity || !sameFileIdentity(originalIdentity, movedIdentity)) {
+          if (!(await exists(characterDirectory))) {
+            await this.renamePath(tombstone, characterDirectory);
+          }
+          return false;
+        }
+        index.characters = index.characters.filter(entry => entry.id !== characterId);
+        delete index.incompleteActivationConfirmations[characterId];
+        await this.writeIndex(index);
+      } catch (error) {
+        if (await exists(tombstone)) {
+          await this.renamePath(tombstone, characterDirectory).catch(() => undefined);
+        }
+        await this.writeIndex(originalIndex).catch(() => undefined);
+        throw error;
+      }
+      await this.removePath(tombstone, { recursive: true, force: true })
+        .catch(() => undefined);
+      return true;
+    });
+  }
+
+  private async readImportOwnershipIdentity(
+    characterDirectory: string,
+    ownerFile: string,
+    characterId: string,
+    importTransactionId: string
+  ): Promise<{ directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number } | null> {
+    await this.assertSafePath(characterDirectory);
+    await this.assertSafePath(ownerFile);
+    try {
+      const [directoryStats, ownerStats, ownerText] = await Promise.all([
+        lstat(characterDirectory),
+        lstat(ownerFile),
+        readFile(ownerFile, 'utf8')
+      ]);
+      if (
+        !directoryStats.isDirectory()
+        || directoryStats.isSymbolicLink()
+        || !ownerStats.isFile()
+        || ownerStats.isSymbolicLink()
+      ) {
+        return null;
+      }
+      const owner = JSON.parse(ownerText) as unknown;
+      if (
+        typeof owner !== 'object'
+        || owner === null
+        || !('version' in owner)
+        || owner.version !== 1
+        || !('characterId' in owner)
+        || owner.characterId !== characterId
+        || !('importTransactionId' in owner)
+        || owner.importTransactionId !== importTransactionId
+      ) {
+        return null;
+      }
+      return {
+        directoryDev: directoryStats.dev,
+        directoryIno: directoryStats.ino,
+        ownerDev: ownerStats.dev,
+        ownerIno: ownerStats.ino
+      };
+    } catch (error) {
+      if (isMissingFile(error)) return null;
+      throw error;
+    }
+  }
+
+  completeImportedCharacter(
+    characterId: string,
+    importTransactionId: string
+  ): Promise<boolean> {
+    return this.enqueue(async () => {
+      assertCharacterId(characterId);
+      z.string().regex(IMPORT_TRANSACTION_ID).parse(importTransactionId);
+      const ownerFile = this.packageImportOwnerFile(characterId);
+      await this.assertSafePath(ownerFile);
+      let owner: unknown;
+      try {
+        owner = JSON.parse(await readFile(ownerFile, 'utf8'));
+      } catch (error) {
+        if (isMissingFile(error)) return false;
+        throw error;
+      }
+      if (
+        typeof owner !== 'object'
+        || owner === null
+        || !('version' in owner)
+        || owner.version !== 1
+        || !('characterId' in owner)
+        || owner.characterId !== characterId
+        || !('importTransactionId' in owner)
+        || owner.importTransactionId !== importTransactionId
+      ) {
+        return false;
+      }
+      await this.removePath(ownerFile, { force: true });
+      return true;
     });
   }
 
@@ -475,6 +670,8 @@ export class CharacterStore {
       }
       this.validateAssets(parsedManifest, assets);
 
+      await this.assertSafeCharacterPath(characterId);
+      await this.recoverPublishTransaction(characterId, index);
       const originalIndex = cloneIndex(index);
       const previousEntry = structuredClone(this.entry(index, characterId));
       const nextEntry = indexEntry(
@@ -483,14 +680,15 @@ export class CharacterStore {
         parsedManifest.thumbnailAssetId
       );
       const transaction: PublishTransaction = {
-        version: 1,
+        version: 2,
         phase: 'prepared',
+        hadPreviousRuntime: await exists(
+          join(this.compiledDirectory(characterId), 'manifest.json')
+        ),
         previousEntry,
         nextEntry
       };
 
-      await this.assertSafeCharacterPath(characterId);
-      await this.recoverPublishTransaction(characterId, index);
       try {
         await this.removePath(this.compiledNextDirectory(characterId), {
           recursive: true,
@@ -923,6 +1121,8 @@ export class CharacterStore {
 
     if (await exists(backup)) {
       await this.restoreCompiledBackup(characterId, transaction);
+    } else if (!transaction.hadPreviousRuntime) {
+      await mkdir(compiled, { recursive: true });
     } else {
       const manifest = await this.readRuntimeFrom(compiled, characterId);
       if (!entryMatchesManifest(transaction.previousEntry, manifest)) {
@@ -945,6 +1145,8 @@ export class CharacterStore {
       );
       if (await exists(this.compiledBackupDirectory(characterId))) {
         await this.restoreCompiledBackup(characterId, transaction);
+      } else if (!transaction.hadPreviousRuntime) {
+        await mkdir(this.compiledDirectory(characterId), { recursive: true });
       } else {
         const manifest = await this.readRuntimeFrom(
           this.compiledDirectory(characterId),
@@ -964,9 +1166,11 @@ export class CharacterStore {
     transaction: PublishTransaction
   ): Promise<void> {
     const backup = this.compiledBackupDirectory(characterId);
-    const manifest = await this.readRuntimeFrom(backup, characterId);
-    if (!entryMatchesManifest(transaction.previousEntry, manifest)) {
-      throw characterError('CHARACTER_TRANSACTION_INVALID');
+    if (transaction.hadPreviousRuntime) {
+      const manifest = await this.readRuntimeFrom(backup, characterId);
+      if (!entryMatchesManifest(transaction.previousEntry, manifest)) {
+        throw characterError('CHARACTER_TRANSACTION_INVALID');
+      }
     }
     transaction.phase = 'rolling-back';
     await this.writePublishMarker(characterId, transaction);
@@ -999,10 +1203,10 @@ export class CharacterStore {
     );
   }
 
-  private async readTransaction<T>(
+  private async readTransaction<TSchema extends z.ZodTypeAny>(
     file: string,
-    schema: z.ZodType<T>
-  ): Promise<T> {
+    schema: TSchema
+  ): Promise<z.output<TSchema>> {
     try {
       return schema.parse(JSON.parse(await readFile(file, 'utf8')));
     } catch {
@@ -1389,6 +1593,10 @@ export class CharacterStore {
 
   private publishMarkerFile(characterId: string): string {
     return join(this.characterDirectory(characterId), PUBLISH_MARKER);
+  }
+
+  private packageImportOwnerFile(characterId: string): string {
+    return join(this.characterDirectory(characterId), PACKAGE_IMPORT_OWNER);
   }
 
   private deleteTombstone(characterId: string): string {

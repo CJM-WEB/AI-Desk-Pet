@@ -438,6 +438,13 @@ describe('角色包 Main 服务', () => {
       id: importedId,
       name: '演示角色'
     });
+    await expect(access(join(
+      charactersDirectory,
+      importedId,
+      '.package-import-owner.json'
+    ))).rejects.toThrow();
+    expect((await readdir(charactersDirectory))
+      .some(name => name.startsWith('.package-import-rollback-'))).toBe(false);
   });
 
   test('创建 ID 发生一次并发冲突时换用新 ID 且保留竞争实例', async () => {
@@ -449,13 +456,16 @@ describe('角色包 Main 服务', () => {
     const competitor = new CharacterStore(importedCharacters);
     let raced = false;
     class RacingStore extends CharacterStore {
-      override async create(input: { id: string; name: string }): Promise<void> {
+      override async create(
+        ...args: Parameters<CharacterStore['create']>
+      ): Promise<void> {
+        const [input] = args;
         if (!raced) {
           raced = true;
           await competitor.create(input);
           throw new Error('CHARACTER_ALREADY_EXISTS');
         }
-        await super.create(input);
+        await super.create(...args);
       }
     }
     const racingStore = new RacingStore(importedCharacters);
@@ -570,6 +580,80 @@ describe('角色包 Main 服务', () => {
       .importCharacter(packagePath);
     expect(importedId).toBe('demo');
     await expect(access(marker)).rejects.toThrow();
+  });
+
+  test('应用重启初始化会按所有权令牌回滚创建后中断的半安装角色', async () => {
+    const importedCharacters = join(testDirectory, 'crashed-import-characters');
+    const transactionId = '33333333-3333-4333-8333-333333333333';
+    const store = new CharacterStore(importedCharacters);
+    await mkdir(importedCharacters, { recursive: true });
+    await writeFile(
+      join(importedCharacters, '.package-import-rollback-demo.json'),
+      JSON.stringify({
+        version: 3,
+        characterId: 'demo',
+        importTransactionId: transactionId
+      }),
+      'utf8'
+    );
+    await store.create(
+      { id: 'demo', name: '半安装角色' },
+      { importTransactionId: transactionId }
+    );
+
+    await new CharacterPackageService(importedCharacters, { store }).initialize();
+
+    await expect(store.list()).resolves.toEqual([]);
+    await expect(access(join(importedCharacters, 'demo'))).rejects.toThrow();
+    await expect(access(join(
+      importedCharacters,
+      '.package-import-rollback-demo.json'
+    ))).rejects.toThrow();
+  });
+
+  test('同一存储根目录的并发导入严格串行且不会回滚活跃事务', async () => {
+    await createPublishedCharacter();
+    const packagePath = join(testDirectory, 'demo.zip');
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', packagePath);
+    const importedCharacters = join(testDirectory, 'concurrent-import-characters');
+    let releaseFirstCreate = (): void => {};
+    const firstCreatePending = new Promise<void>(resolve => {
+      releaseFirstCreate = resolve;
+    });
+    let markFirstCreated = (): void => {};
+    const firstCreated = new Promise<void>(resolve => {
+      markFirstCreated = resolve;
+    });
+    let createCalls = 0;
+    class BlockingStore extends CharacterStore {
+      override async create(
+        ...args: Parameters<CharacterStore['create']>
+      ): Promise<void> {
+        await super.create(...args);
+        createCalls += 1;
+        if (createCalls === 1) {
+          markFirstCreated();
+          await firstCreatePending;
+        }
+      }
+    }
+    const store = new BlockingStore(importedCharacters);
+    const service = new CharacterPackageService(importedCharacters, {
+      store,
+      assetService: new CharacterAssetService(importedCharacters),
+      createId: () => 'parallel-safe-id'
+    });
+
+    const firstImport = service.importCharacter(packagePath);
+    await firstCreated;
+    const secondImport = service.importCharacter(packagePath);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(createCalls).toBe(1);
+    releaseFirstCreate();
+
+    await expect(Promise.all([firstImport, secondImport])).resolves.toHaveLength(2);
+    await expect(store.list()).resolves.toHaveLength(2);
   });
 
   test('rollback marker 不得删除复用同一 ID 的新角色', async () => {

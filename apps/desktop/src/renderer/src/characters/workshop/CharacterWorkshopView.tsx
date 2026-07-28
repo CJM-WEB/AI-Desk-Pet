@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useStore } from 'zustand';
 import type { DraftActionClip } from '@myself/character-runtime';
+import type { MyselfApi } from '../../../../shared/myself-api';
 import {
   createCharacterWorkshopStore,
   type CharacterWorkshopApi,
@@ -40,7 +41,10 @@ import { AtlasImportPanel } from './AtlasImportPanel';
 import './character-workshop.css';
 
 export interface CharacterWorkshopViewProps {
-  api: CharacterWorkshopApi;
+  api: CharacterWorkshopApi & Pick<
+    MyselfApi,
+    'onCharacterWorkshopFlushRequested'
+  >;
 }
 
 export interface CharacterWorkshopWorkspaceProps {
@@ -545,16 +549,14 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
 
   useEffect(() => {
     const dispose = store.getState().mount();
-    const flush = () => {
-      void store.getState().flushDraft();
-    };
-    window.addEventListener('beforeunload', flush);
+    const unsubscribeFlush = props.api.onCharacterWorkshopFlushRequested(
+      () => store.getState().flushDraft()
+    );
     return () => {
-      window.removeEventListener('beforeunload', flush);
-      flush();
+      unsubscribeFlush();
       dispose();
     };
-  }, [store]);
+  }, [props.api, store]);
 
   return <CharacterWorkshopWorkspace state={state} />;
 }

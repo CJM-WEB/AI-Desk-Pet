@@ -191,6 +191,34 @@ const api: MyselfApi = {
   openCharacterWorkshop: (): Promise<void> => (
     ipcRenderer.invoke(ipcChannels.windowOpenCharacterWorkshop, {})
   ),
+  onCharacterWorkshopFlushRequested: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      if (!payload || typeof payload !== 'object') return;
+      const token = (payload as Record<string, unknown>)['token'];
+      if (typeof token !== 'string' || token.length === 0) return;
+
+      void (async () => {
+        let ok = true;
+        try {
+          await listener();
+        } catch {
+          ok = false;
+        }
+        try {
+          ipcRenderer.send(
+            ipcChannels.characterWorkshopFlushAcknowledgement,
+            { token, ok }
+          );
+        } catch {
+          // Renderer 已进入销毁阶段时，Main 的固定超时会继续放行退出。
+        }
+      })();
+    };
+    ipcRenderer.on(ipcChannels.characterWorkshopFlushRequest, handler);
+    return () => (
+      ipcRenderer.removeListener(ipcChannels.characterWorkshopFlushRequest, handler)
+    );
+  },
   hideChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowHideChat),
   quit: (): Promise<void> => ipcRenderer.invoke(ipcChannels.appQuit)
 };

@@ -49,5 +49,8 @@ export const ipcChannels = {
   windowOpenChat: 'window:open-chat',
   windowOpenSettings: 'window:open-settings',
   windowOpenCharacterWorkshop: 'window:open-character-workshop',
+  characterWorkshopFlushRequest: 'character-workshop:flush-request',
+  characterWorkshopFlushAcknowledgement:
+    'character-workshop:flush-acknowledgement',
   windowHideChat: 'window:hide-chat'
 } as const;

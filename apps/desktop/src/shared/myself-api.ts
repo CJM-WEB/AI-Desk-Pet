@@ -184,6 +184,9 @@ export interface MyselfApi {
   openChat(): Promise<void>;
   openSettings(): Promise<void>;
   openCharacterWorkshop(): Promise<void>;
+  onCharacterWorkshopFlushRequested(
+    listener: () => Promise<void>
+  ): () => void;
   hideChat(): Promise<void>;
   quit(): Promise<void>;
 }
