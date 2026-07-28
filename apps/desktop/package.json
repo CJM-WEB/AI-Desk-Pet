@@ -18,6 +18,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "@myself/agent-core": "workspace:*",
+    "@myself/character-assets": "workspace:*",
     "@myself/character-runtime": "workspace:*",
     "@myself/file-tools": "workspace:*",
     "@myself/shared-types": "workspace:*",

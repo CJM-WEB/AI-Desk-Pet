@@ -6,6 +6,7 @@ export default defineConfig({
       externalizeDeps: {
         exclude: [
           '@myself/agent-core',
+          '@myself/character-assets',
           '@myself/character-runtime',
           '@myself/file-tools',
           '@myself/shared-types'

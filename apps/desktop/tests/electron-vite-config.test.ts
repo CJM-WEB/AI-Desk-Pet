@@ -10,6 +10,7 @@ describe('Electron Vite workspace 打包', () => {
     expect(config.main?.build?.externalizeDeps).toEqual({
       exclude: [
         '@myself/agent-core',
+        '@myself/character-assets',
         '@myself/character-runtime',
         '@myself/file-tools',
         '@myself/shared-types'

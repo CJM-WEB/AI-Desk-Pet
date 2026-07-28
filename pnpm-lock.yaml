@@ -29,6 +29,9 @@ importers:
       '@myself/agent-core':
         specifier: workspace:*
         version: link:../../packages/agent-core
+      '@myself/character-assets':
+        specifier: workspace:*
+        version: link:../../packages/character-assets
       '@myself/character-runtime':
         specifier: workspace:*
         version: link:../../packages/character-runtime
