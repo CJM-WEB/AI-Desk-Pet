@@ -1467,7 +1467,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await paypalButton.click();
   const paypalDialog = page.getByRole('dialog', { name: 'PayPal付款码' });
   const paypalImage = paypalDialog.getByRole('img', { name: 'PayPal付款码' });
-  await expect(paypalImage).toHaveAttribute('src', '/Paypal.jpg');
+  await expect(paypalImage).toHaveAttribute('src', '/Paypal.png');
   await expect.poll(
     () => paypalImage.evaluate((image) => (
       image instanceof HTMLImageElement ? image.naturalWidth : 0

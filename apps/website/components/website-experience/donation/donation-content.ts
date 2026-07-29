@@ -21,7 +21,7 @@ export const PAYMENT_METHODS = [
   {
     id: 'paypal',
     name: 'PayPal',
-    qrImagePath: '/Paypal.jpg',
+    qrImagePath: '/Paypal.png',
     imageAlt: 'PayPal付款码'
   }
 ] as const satisfies readonly PaymentMethod[];

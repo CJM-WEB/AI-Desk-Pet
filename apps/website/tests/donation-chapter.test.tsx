@@ -96,7 +96,7 @@ describe('捐款章节', () => {
     fireEvent.click(trigger);
     expect(screen.getByRole('dialog', { name: 'PayPal付款码' })).toBeTruthy();
     expect(screen.getByRole('img', { name: 'PayPal付款码' }).getAttribute('src'))
-      .toBe('/Paypal.jpg');
+      .toBe('/Paypal.png');
   });
 
   it('滚轮阻止默认与冒泡并按方向循环付款方式', () => {
