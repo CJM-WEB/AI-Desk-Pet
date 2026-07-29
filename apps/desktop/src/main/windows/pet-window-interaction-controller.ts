@@ -91,10 +91,7 @@ export class PetWindowInteractionController {
 
   endDrag(reason: PetDragEndReason): void {
     const session = this.dragSession;
-    if (!session) {
-      if (reason === 'disposed') this.restoreSafePassthrough();
-      return;
-    }
+    if (!session) return;
     this.dragSession = undefined;
     if (session.interval) clearInterval(session.interval);
     if (session.timeout) clearTimeout(session.timeout);

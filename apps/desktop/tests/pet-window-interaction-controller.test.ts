@@ -134,6 +134,26 @@ describe('Main 桌宠窗口交互控制器', () => {
     }
   );
 
+  test.each(['released', 'cancelled', 'timeout', 'disposed'] as const)(
+    '无活动会话时 %s 直接返回且没有窗口、motion 或 timer 副作用',
+    reason => {
+      vi.useFakeTimers();
+      const fixture = createControllerFixture();
+      fixture.setIgnoreMouseEvents.mockClear();
+      fixture.setPosition.mockClear();
+      fixture.motion.beginUserMove.mockClear();
+      fixture.motion.endUserMove.mockClear();
+
+      fixture.controller.endDrag(reason);
+
+      expect(fixture.setIgnoreMouseEvents).not.toHaveBeenCalled();
+      expect(fixture.setPosition).not.toHaveBeenCalled();
+      expect(fixture.motion.beginUserMove).not.toHaveBeenCalled();
+      expect(fixture.motion.endUserMove).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
   test('30 秒兜底自动结束，窗口销毁后的更新不抛出', () => {
     vi.useFakeTimers();
     const timedOut = createControllerFixture();
