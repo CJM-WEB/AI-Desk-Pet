@@ -16,7 +16,7 @@ import {
   deriveChapterVisualState,
   deriveHomeExperiencePhase
 } from './chapter-model';
-import { CHAPTER_REGISTRY } from './chapter-registry';
+import { CHAPTER_REGISTRY, getChapterIndex } from './chapter-registry';
 import { SharedVisualLayers } from './SharedVisualLayers';
 import { ChapterBackdrop } from './visual/ChapterBackdrop';
 import { CHAPTER_LAYERS } from './layer-contract';
@@ -105,18 +105,13 @@ export function WebsiteExperience({
     feedbackVisualProfileRef.current.setTranslate(t);
   }
   const sharedVisualProfile = controller.phase === 'interactive'
-    && Math.abs(controller.progress - 3) < 0.0001
+    && Math.abs(controller.progress - getChapterIndex('feedback')) < 0.0001
     ? feedbackVisualProfileRef.current
     : resolveSharedVisualProfile(controller.progress, controller.phase);
   const mountedVisualProfile = sharedVisualProfile
     ?? (controller.progress < 1 ? VISUAL_PROFILES.home : null);
   const sharedVisualChapterIndex = sharedVisualProfile
-    ? {
-        home: 0,
-        download: 2,
-        feedback: 3,
-        donation: 4
-      }[sharedVisualProfile.id]
+    ? getChapterIndex(sharedVisualProfile.id)
     : 0;
   const sharedVisualGenerating = sharedVisualProfile !== null
     && controller.phase === 'interactive'

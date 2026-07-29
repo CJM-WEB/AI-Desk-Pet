@@ -44,7 +44,7 @@ function ControllerHarness({
   staticFallback: boolean;
 }) {
   const controller = useWebsiteController({
-    chapterCount: 5,
+    chapterCount: 6,
     staticFallback
   });
 
@@ -86,7 +86,7 @@ describe('官网章节控制器', () => {
     fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
     fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
 
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       fireEvent.wheel(window, { deltaY: 120 });
       act(() => {
         vi.advanceTimersByTime(70);
@@ -174,14 +174,14 @@ describe('官网章节控制器', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
     fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
       act(() => {
         vi.advanceTimersByTime(400);
       });
     }
-    expect(state.dataset.index).toBe('4');
-    expect(state.dataset.progress).toBe('4.0000');
+    expect(state.dataset.index).toBe('5');
+    expect(state.dataset.progress).toBe('5.0000');
     requestFrame.mockClear();
 
     fireEvent.keyDown(window, { key: 'PageDown' });
@@ -191,7 +191,7 @@ describe('官网章节控制器', () => {
     act(() => {
       vi.advanceTimersByTime(100);
     });
-    expect(Number(state.dataset.progress)).toBeLessThan(4);
+    expect(Number(state.dataset.progress)).toBeLessThan(5);
 
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     expect(requestFrame).toHaveBeenCalledOnce();
@@ -200,8 +200,8 @@ describe('官网章节控制器', () => {
     });
 
     expect(state.dataset.phase).toBe('interactive');
-    expect(state.dataset.index).toBe('4');
-    expect(state.dataset.progress).toBe('4.0000');
+    expect(state.dataset.index).toBe('5');
+    expect(state.dataset.progress).toBe('5.0000');
   });
 
   it('drawing 阶段点击下一章节会跳过开场并完成一次相邻推进', () => {

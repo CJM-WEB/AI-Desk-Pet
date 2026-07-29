@@ -177,7 +177,7 @@ describe('官网章节降级模式', () => {
     expect(experience.dataset.staticFallback).toBe('active');
     expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
     expect(document.querySelector('[data-layer="file"]')).toBeNull();
-    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(5);
+    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(6);
     expect(screen.getByText('微信')).toBeTruthy();
     expect(screen.getByText('支付宝')).toBeTruthy();
 
@@ -301,6 +301,7 @@ describe('官网章节降级模式', () => {
 
     fireEvent.click(next);
     fireEvent.click(next);
+    fireEvent.click(next);
     expect(experience.dataset.activeChapter).toBe('donation');
     const payment = screen.getByRole('button', { name: '打开微信付款码' });
     expect((payment as HTMLButtonElement).disabled).toBe(false);
@@ -323,7 +324,7 @@ describe('官网章节降级模式', () => {
 
     expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
     expect(document.querySelector('[data-layer="file"]')).toBeNull();
-    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(5);
+    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(6);
 
     const next = screen.getByRole('button', { name: '下一章节' });
     fireEvent.click(next);
@@ -339,6 +340,7 @@ describe('官网章节降级模式', () => {
         .toBe('notice');
     });
 
+    fireEvent.click(next);
     fireEvent.click(next);
     fireEvent.click(next);
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
@@ -386,6 +388,8 @@ describe('官网章节降级模式', () => {
       .toBe('About AI Pet');
     expect(document.querySelector('[data-chapter-id="download"]')?.getAttribute('aria-label'))
       .toBe('Download AI Pet');
+    expect(document.querySelector('[data-chapter-id="community"]')?.getAttribute('aria-label'))
+      .toBe('Shared repository');
     expect(document.querySelector('[data-chapter-id="feedback"]')?.getAttribute('aria-label'))
       .toBe('Feedback and Suggestions');
     expect(document.querySelector('[data-chapter-id="donation"]')?.getAttribute('aria-label'))

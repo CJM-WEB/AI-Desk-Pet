@@ -170,7 +170,9 @@ describe('共享视觉图层契约', () => {
     expect(fileLayer?.style.zIndex).toBe(String(CHAPTER_LAYERS.files));
     expect(backdropLayer?.contains(homeBackdrop)).toBe(true);
     expect(chapters.find((chapter) => chapter.dataset.chapterId === 'home')?.contains(homeBackdrop)).toBe(false);
-    expect(chapters).toHaveLength(5);
+    expect(chapters).toHaveLength(6);
+    expect(chapters.some((chapter) => chapter.dataset.chapterId === 'community'))
+      .toBe(true);
     for (const chapter of chapters) {
       expect(chapter.dataset.layer).toBe('focal');
       expect(Number(chapter.style.zIndex)).toBeGreaterThan(CHAPTER_LAYERS.files);
