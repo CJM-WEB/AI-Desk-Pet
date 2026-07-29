@@ -21,8 +21,10 @@ afterEach(() => {
 });
 
 describe('官网国际化核心', () => {
-  it('中英文资源拥有完全相同的键', () => {
+  it('中英文资源键集一致且所有文本均非空', () => {
     expect(Object.keys(en).sort()).toEqual(Object.keys(zhCN).sort());
+    expect(Object.values(en).every((value) => value.trim().length > 0)).toBe(true);
+    expect(Object.values(zhCN).every((value) => value.trim().length > 0)).toBe(true);
   });
 
   it('只替换已提供变量并保留缺失变量标记', () => {

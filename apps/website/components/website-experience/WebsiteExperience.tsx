@@ -47,7 +47,7 @@ function createChapterVisualStyle(
 }
 
 /**
- * 组合五个章节，并把全局输入状态下发给受控首页。
+ * 组合首页、介绍、下载、社区、反馈和捐款六个章节，并把全局输入状态下发给受控首页。
  */
 export function WebsiteExperience({
   onRuntimeError

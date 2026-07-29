@@ -68,6 +68,14 @@
   --backdrop-origin: 39% 58%;
 }
 
+.backdrop[data-chapter-id='community'],
+.backdrop[data-backdrop-chapter-id='community'] {
+  --backdrop-center-x: 52%;
+  --backdrop-center-y: 37%;
+  --backdrop-rotation: 3deg;
+  --backdrop-origin: 52% 37%;
+}
+
 .backdrop[data-chapter-id='feedback'],
 .backdrop[data-backdrop-chapter-id='feedback'] {
   --backdrop-center-x: 61%;

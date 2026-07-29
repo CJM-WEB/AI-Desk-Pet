@@ -9,7 +9,7 @@ import {
 } from '../components/website-experience/visual/pointer-tilt-model';
 import { PointerTiltText } from '../components/website-experience/visual/PointerTiltText';
 
-const CHAPTER_IDS = ['home', 'about', 'download', 'feedback', 'donation'] as const;
+const CHAPTER_IDS = ['home', 'about', 'download', 'community', 'feedback', 'donation'] as const;
 const BACKDROP_TONES = [
   'rgb(200, 200, 200)',
   'rgb(205, 205, 205)',
@@ -83,7 +83,7 @@ describe('章节视觉原语', () => {
     }
   });
 
-  it('为五个章节提供独立的 CSS 放射变体', () => {
+  it('为六个章节提供独立的 CSS 放射变体', () => {
     const css = readFileSync(
       new URL(
         '../components/website-experience/visual/chapter-backdrop.module.css',

@@ -10,7 +10,7 @@ export interface FilePreviewContentSource {
 }
 
 /**
- * 保持既有粒子快照中的预览行，供首页、下载和捐款共享。
+ * 保持六章节既有粒子快照中的预览行，供首页、下载、社区和捐款共享。
  */
 export const DEFAULT_FILE_PREVIEW_CONTENT_SOURCE: FilePreviewContentSource = {
   getPreview: (particle) => particle.preview.lines

@@ -349,7 +349,7 @@ describe('官网章节降级模式', () => {
     expect(screen.getByText('支付宝')).toBeTruthy();
   });
 
-  it('语言入口仅在首页显示，返回首页后恢复且保留语言选择', () => {
+  it('首页切换英文后导航至共享仓库会隐藏语言入口，返回首页后恢复英文选择', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
     render(
       <I18nProvider initialLocale="zh-CN">
@@ -359,13 +359,20 @@ describe('官网章节降级模式', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'language' }));
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'English' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Next chapter' }));
+    const next = screen.getByRole('button', { name: 'Next chapter' });
+    fireEvent.click(next);
+    fireEvent.click(next);
+    fireEvent.click(next);
 
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
-      .toBe('about');
+      .toBe('community');
     expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Shared repository' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Previous chapter' }));
+    const previous = screen.getByRole('button', { name: 'Previous chapter' });
+    fireEvent.click(previous);
+    fireEvent.click(previous);
+    fireEvent.click(previous);
 
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
       .toBe('home');

@@ -16,6 +16,8 @@ describe('共享视觉主题', () => {
   it('共享仓库拥有独立的灰色共享视觉主题', () => {
     expect(resolveSharedVisualProfile(3, 'interactive')?.id).toBe('community');
     expect(VISUAL_PROFILES.community.fieldColor).toEqual([180, 180, 180]);
+    expect(VISUAL_PROFILES.community.safeZoneRatio)
+      .toBe(VISUAL_PROFILES.download.safeZoneRatio);
     expect(VISUAL_PROFILES.community.previewSource)
       .toBe(VISUAL_PROFILES.home.previewSource);
   });
@@ -27,7 +29,9 @@ describe('共享视觉主题', () => {
     expect(resolveSharedVisualProfile(2, 'interactive')?.id).toBe('download');
     expect(resolveSharedVisualProfile(2.75, 'interactive')?.id).toBe('download');
     expect(resolveSharedVisualProfile(3, 'interactive')?.id).toBe('community');
+    expect(resolveSharedVisualProfile(3.5, 'interactive')?.id).toBe('community');
     expect(resolveSharedVisualProfile(4, 'interactive')).toBeNull();
+    expect(resolveSharedVisualProfile(4.5, 'interactive')?.id).toBe('donation');
     expect(resolveSharedVisualProfile(5, 'interactive')?.id).toBe('donation');
   });
 });
