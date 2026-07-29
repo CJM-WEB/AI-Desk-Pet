@@ -1,0 +1,284 @@
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  overflow: auto;
+  background: rgba(28, 28, 28, 0.46);
+  -webkit-backdrop-filter: blur(14px) brightness(0.72);
+  backdrop-filter: blur(14px) brightness(0.72);
+}
+
+.dialogPanel {
+  width: min(680px, 100%);
+  max-height: calc(100dvh - 40px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: auto;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  box-shadow: 0 28px 90px rgba(28, 28, 28, 0.28);
+  color: rgb(28, 28, 28);
+  overscroll-behavior: contain;
+}
+
+.dialogHeader,
+.dialogFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.dialogHeader {
+  border-bottom: 1px solid rgb(174, 174, 174);
+}
+
+.dialogHeader h3 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.dialogContent {
+  min-height: 0;
+  padding: 20px;
+}
+
+.dialogFooter {
+  justify-content: flex-end;
+  border-top: 1px solid rgb(174, 174, 174);
+}
+
+.dialogFooter button,
+.iconButton {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(255, 255, 255);
+  color: rgb(28, 28, 28);
+  font: inherit;
+  cursor: pointer;
+}
+
+.dialogFooter button:last-child {
+  background: rgb(28, 28, 28);
+  color: rgb(255, 255, 255);
+}
+
+.iconButton {
+  padding: 0 10px;
+}
+
+.iconButton svg {
+  width: 20px;
+  height: 20px;
+}
+
+.dialogFooter button:focus-visible,
+.iconButton:focus-visible,
+.card:focus-visible,
+.field input:focus-visible,
+.field textarea:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 3px;
+}
+
+.dialogFooter button:disabled,
+.iconButton:disabled,
+.field input:disabled,
+.field textarea:disabled {
+  cursor: wait;
+  opacity: 0.56;
+}
+
+.composerFields {
+  display: grid;
+  gap: 16px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field label {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgb(150, 150, 150);
+  border-radius: 6px;
+  background: rgb(255, 255, 255);
+  color: rgb(28, 28, 28);
+  font: inherit;
+}
+
+.field input:not([type='file']) {
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.field input[type='file'] {
+  min-height: 44px;
+  padding: 8px;
+}
+
+.field textarea {
+  min-height: 128px;
+  padding: 12px;
+  resize: vertical;
+}
+
+.error {
+  margin: 0;
+  color: rgb(166, 0, 0);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.detailContent {
+  display: grid;
+  gap: 18px;
+}
+
+.detailCover {
+  width: min(100%, 420px);
+  max-height: 300px;
+  justify-self: center;
+  object-fit: contain;
+  border: 1px solid rgb(174, 174, 174);
+  border-radius: 6px;
+  background: rgb(255, 255, 255);
+}
+
+.detailDescription {
+  margin: 0;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.detailMetadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  border: 1px solid rgb(174, 174, 174);
+  background: rgb(174, 174, 174);
+}
+
+.detailMetadata div {
+  min-width: 0;
+  padding: 12px;
+  background: rgb(255, 255, 255);
+}
+
+.detailMetadata dt {
+  color: rgb(90, 90, 90);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detailMetadata dd {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  color: rgb(28, 28, 28);
+  cursor: pointer;
+}
+
+.card:hover {
+  background: rgb(226, 226, 226);
+}
+
+.cardCover {
+  width: 88px;
+  height: 88px;
+  object-fit: cover;
+  border: 1px solid rgb(174, 174, 174);
+  border-radius: 6px;
+  background: rgb(255, 255, 255);
+}
+
+.cardBody {
+  min-width: 0;
+}
+
+.cardBody h3,
+.cardBody p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cardBody h3 {
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.cardBody p {
+  margin-top: 6px;
+  color: rgb(90, 90, 90);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.cardActions {
+  display: grid;
+  gap: 8px;
+}
+
+@media (max-width: 560px) {
+  .dialogBackdrop {
+    padding: 16px;
+  }
+
+  .dialogHeader,
+  .dialogFooter,
+  .dialogContent {
+    padding: 16px;
+  }
+
+  .detailMetadata {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .cardCover {
+    width: 72px;
+    height: 72px;
+  }
+
+  .cardActions {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
