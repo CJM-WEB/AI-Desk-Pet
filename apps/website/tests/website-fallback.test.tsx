@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
 import { I18nProvider } from '../components/i18n/I18nProvider';
 import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
+import { WHEEL_SNAP_DEBOUNCE_MS } from '../components/website-experience/use-website-controller';
 
 function createMediaQueryList(matches: boolean): MediaQueryList {
   return {
@@ -406,6 +407,52 @@ describe('官网章节降级模式', () => {
 
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
       .toBe('home');
+    expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();
+  });
+
+  it('滚轮返回首页的吸附期间不显示语言入口，稳定落位后才恢复', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    render(<WebsiteExperience />);
+
+    fireEvent.click(document.body);
+    await waitFor(() => {
+      expect(screen.getByTestId('home-experience').dataset.phase)
+        .toBe('interactive');
+    });
+
+    vi.useFakeTimers();
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    const runNextSnapFrame = (frameAt: number) => {
+      const frameIndex = frames.findIndex((callback) => callback.name === 'advance');
+      const callback = frameIndex < 0 ? undefined : frames.splice(frameIndex, 1)[0];
+      if (!callback) throw new Error('缺少章节吸附动画帧');
+      act(() => callback(frameAt));
+    };
+    const experience = screen.getByTestId('website-experience');
+
+    fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+    runNextSnapFrame(0);
+    runNextSnapFrame(300);
+    expect(experience.dataset.activeChapter).toBe('about');
+
+    fireEvent.wheel(window, { deltaY: -50_000 });
+
+    expect(experience.dataset.activeChapter).toBe('about');
+    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS);
+    });
+    runNextSnapFrame(400);
+    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+
+    runNextSnapFrame(700);
+
+    expect(experience.dataset.activeChapter).toBe('home');
     expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();
   });
 

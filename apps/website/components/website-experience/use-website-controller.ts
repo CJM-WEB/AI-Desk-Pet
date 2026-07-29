@@ -145,10 +145,12 @@ export function useWebsiteController(
     }
   }, []);
 
-  const cancelSnap = useCallback(() => {
+  const cancelSnap = useCallback((preserveTransition = false) => {
     stopSnapFrame();
     snapTargetRef.current = null;
-    setIsChapterTransitioning(false);
+    if (!preserveTransition) {
+      setIsChapterTransitioning(false);
+    }
   }, [stopSnapFrame]);
 
   const clearWheelSnapTimeout = useCallback(() => {
@@ -161,7 +163,7 @@ export function useWebsiteController(
   const startSnap = useCallback((target: number) => {
     stopSnapFrame();
     snapTargetRef.current = target;
-    setIsChapterTransitioning(progressRef.current !== target);
+    setIsChapterTransitioning(target !== settledIndexRef.current);
 
     if (staticFallbackRef.current || prefersReducedMotionRef.current) {
       commitProgress(target);
@@ -377,13 +379,16 @@ export function useWebsiteController(
       }
 
       event.preventDefault();
-      cancelSnap();
+      cancelSnap(true);
       const next = applyWheelChapterInput({
         progress: progressRef.current,
         deltaY: event.deltaY,
         settledIndex: settledIndexRef.current,
         chapterCount
       });
+      setIsChapterTransitioning(
+        snapChapterProgress(next, chapterCount) !== settledIndexRef.current
+      );
       commitProgress(next);
       scheduleWheelSnap();
     };
