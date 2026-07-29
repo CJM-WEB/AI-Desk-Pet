@@ -1,3 +1,192 @@
+.sharedPetChapter {
+  position: relative;
+  z-index: 60;
+  min-height: 100%;
+  overflow: hidden;
+  padding: 24px;
+  color: rgb(28, 28, 28);
+}
+
+.sharedPetFocus {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 62;
+  width: min(420px, calc(100% - 48px));
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.sharedPetTitle {
+  margin: 0;
+  color: rgb(52, 52, 52);
+  font-size: 42px;
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
+
+.sharedPetUpload,
+.sharedPetPagination button {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(255, 255, 255);
+  color: rgb(28, 28, 28);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sharedPetUpload {
+  gap: 8px;
+  padding: 0 16px;
+  background: rgb(28, 28, 28);
+  color: rgb(255, 255, 255);
+  font-weight: 700;
+}
+
+.sharedPetUpload svg,
+.sharedPetPagination svg {
+  width: 20px;
+  height: 20px;
+}
+
+.sharedPetPagination {
+  display: grid;
+  grid-template-columns: 44px minmax(64px, auto) 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.sharedPetPagination output {
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+}
+
+.sharedPetUpload:focus-visible,
+.sharedPetPagination button:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 3px;
+}
+
+.sharedPetUpload:disabled,
+.sharedPetPagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.sharedPetStatus {
+  max-width: 360px;
+  margin: 0;
+  color: rgb(92, 92, 92);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.sharedPetStatus[role='alert'] {
+  color: rgb(166, 0, 0);
+}
+
+/* 桌面端固定为四列两行，并为中央标题和分页控件保留稳定间距。 */
+.sharedPetGrid {
+  width: min(1440px, 100%);
+  min-height: 680px;
+  margin: 0 auto;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(180px, 1fr));
+  column-gap: 18px;
+  row-gap: min(24vh, 220px);
+  align-content: center;
+  border: 0;
+}
+
+.sharedPetCardSlot {
+  min-width: 0;
+  transform: rotate(var(--shared-pet-rotate, 0deg));
+  transform-origin: center;
+}
+
+.sharedPetCardSlot:nth-child(8n + 1),
+.sharedPetCardSlot:nth-child(8n + 6) {
+  --shared-pet-rotate: -1.5deg;
+}
+
+.sharedPetCardSlot:nth-child(8n + 2),
+.sharedPetCardSlot:nth-child(8n + 7) {
+  --shared-pet-rotate: 1deg;
+}
+
+.sharedPetCardSlot:nth-child(8n + 3),
+.sharedPetCardSlot:nth-child(8n + 8) {
+  --shared-pet-rotate: -0.75deg;
+}
+
+.sharedPetCardSlot:nth-child(8n + 4),
+.sharedPetCardSlot:nth-child(8n + 5) {
+  --shared-pet-rotate: 1.4deg;
+}
+
+.sharedPetCardSlot .card {
+  height: 100%;
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+}
+
+.sharedPetCardSlot .cardActions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sharedPetChapter[data-transition='leaving'] .sharedPetCardSlot {
+  animation: shared-pet-leave 280ms cubic-bezier(0.55, 0, 1, 0.45) both;
+  animation-delay: calc(var(--shared-pet-order) * 45ms);
+}
+
+.sharedPetChapter[data-transition='entering'] .sharedPetCardSlot {
+  animation: shared-pet-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--shared-pet-order) * 45ms);
+}
+
+.sharedPetChapter[data-motion-disabled='true'] .sharedPetCardSlot {
+  animation: none;
+  transition: none;
+}
+
+@keyframes shared-pet-leave {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(var(--shared-pet-rotate, 0deg));
+  }
+
+  to {
+    opacity: 0;
+    transform: translate3d(-110vw, 0, 0) rotate(var(--shared-pet-rotate, 0deg));
+  }
+}
+
+@keyframes shared-pet-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(110vw, 0, 0) rotate(var(--shared-pet-rotate, 0deg));
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(var(--shared-pet-rotate, 0deg));
+  }
+}
+
 .dialogBackdrop {
   position: fixed;
   inset: 0;
@@ -269,6 +458,36 @@
 }
 
 @media (max-width: 560px) {
+  .sharedPetChapter {
+    min-height: 100%;
+    overflow: auto;
+    padding: 20px 16px 32px;
+  }
+
+  .sharedPetFocus {
+    position: relative;
+    top: auto;
+    left: auto;
+    width: 100%;
+    margin-bottom: 24px;
+    transform: none;
+  }
+
+  .sharedPetTitle {
+    font-size: 34px;
+  }
+
+  .sharedPetGrid {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    gap: 16px;
+  }
+
+  .sharedPetCardSlot {
+    transform: none;
+  }
+
   .dialogBackdrop {
     padding: 16px;
   }
@@ -298,5 +517,28 @@
 
   .cardActions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) and (min-width: 561px) {
+  .sharedPetChapter {
+    overflow: auto;
+    padding-bottom: 40px;
+  }
+
+  .sharedPetFocus {
+    position: relative;
+    top: auto;
+    left: auto;
+    width: 100%;
+    margin-bottom: 28px;
+    transform: none;
+  }
+
+  .sharedPetGrid {
+    min-height: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: none;
+    gap: 20px;
   }
 }

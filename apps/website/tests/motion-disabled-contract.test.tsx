@@ -9,6 +9,12 @@ import {
   screen
 } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '../components/i18n/I18nProvider';
+import { SharedPetChapter } from '../components/website-experience/community/SharedPetChapter';
+import type {
+  SharedPetPage,
+  SharedPetRepository
+} from '../components/website-experience/community/shared-pet-types';
 import { DonationChapter } from '../components/website-experience/donation/DonationChapter';
 import { DownloadChapter } from '../components/website-experience/download/DownloadChapter';
 
@@ -26,6 +32,34 @@ const donationCss = readFileSync(
   ),
   'utf8'
 );
+const communityCss = readFileSync(
+  resolve(
+    process.cwd(),
+    'components/website-experience/community/community.module.css'
+  ),
+  'utf8'
+);
+
+function emptySharedPetRepository(): SharedPetRepository {
+  const page: SharedPetPage = {
+    items: [],
+    page: 1,
+    pageSize: 8,
+    total: 0,
+    totalPages: 0,
+    hasPrevious: false,
+    hasNext: false
+  };
+  return {
+    listPage: vi.fn(async () => page),
+    create: vi.fn(),
+    getById: vi.fn(),
+    toggleLike: vi.fn(),
+    getDownload: vi.fn(),
+    recordDownload: vi.fn(),
+    subscribe: vi.fn(() => () => undefined)
+  };
+}
 
 describe('章节静态回退禁用内部动效', () => {
   afterEach(() => {
@@ -116,5 +150,24 @@ describe('章节静态回退禁用内部动效', () => {
     expect(screen.getAllByTestId('pointer-tilt-text').every(
       (element) => element.dataset.motionEnabled === 'true'
     )).toBe(true);
+  });
+
+  it('共享仓库减少动态效果时关闭顺序动画和标题倾斜', async () => {
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetChapter
+          interactive
+          reducedMotion
+          repository={emptySharedPetRepository()}
+        />
+      </I18nProvider>
+    );
+
+    const root = await screen.findByTestId('shared-pet-chapter');
+    expect(root.dataset.motionDisabled).toBe('true');
+    expect(screen.getByTestId('pointer-tilt-text').dataset.motionEnabled).toBe('false');
+    expect(communityCss).toMatch(
+      /\.sharedPetChapter\[data-motion-disabled='true'\] \.sharedPetCardSlot\s*\{[^}]*animation:\s*none/s
+    );
   });
 });
