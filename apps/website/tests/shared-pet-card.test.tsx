@@ -83,7 +83,7 @@ describe('共享包卡片', () => {
       .getAttribute('title')).toBe('下载 My Pet');
   });
 
-  it('详情入口为独立按钮，键盘操作不会触发相邻图标动作', () => {
+  it('详情入口为独立按钮，重复 keydown 不调用业务回调', () => {
     const onOpen = vi.fn();
     const onLike = vi.fn();
     const onDownload = vi.fn();
@@ -105,9 +105,19 @@ describe('共享包卡片', () => {
     expect(open.contains(like)).toBe(false);
     expect(open.contains(download)).toBe(false);
 
-    fireEvent.keyDown(open, { key: 'Enter' });
-    fireEvent.keyDown(like, { key: ' ' });
-    fireEvent.keyDown(download, { key: 'Enter' });
+    fireEvent.keyDown(open, { key: ' ', repeat: true });
+    fireEvent.keyDown(open, { key: ' ', repeat: true });
+    fireEvent.keyDown(like, { key: ' ', repeat: true });
+    fireEvent.keyDown(like, { key: ' ', repeat: true });
+    fireEvent.keyDown(download, { key: 'Enter', repeat: true });
+    fireEvent.keyDown(download, { key: 'Enter', repeat: true });
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onLike).not.toHaveBeenCalled();
+    expect(onDownload).not.toHaveBeenCalled();
+
+    fireEvent.click(open);
+    fireEvent.click(like);
+    fireEvent.click(download);
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onLike).toHaveBeenCalledTimes(1);
     expect(onDownload).toHaveBeenCalledTimes(1);
