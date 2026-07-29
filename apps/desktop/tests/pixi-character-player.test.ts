@@ -13,7 +13,10 @@ import {
   PixiCharacterPlayer,
   type PixiCharacterScene
 } from '../src/renderer/src/characters/player/pixi-character-player';
-import type { CharacterHitSnapshot } from '../src/renderer/src/characters/player/character-alpha-hit-tester';
+import {
+  hitTestCharacterAlpha,
+  type CharacterHitSnapshot
+} from '../src/renderer/src/characters/player/character-alpha-hit-tester';
 
 const action: DraftActionClip = {
   id: 'idle',
@@ -428,7 +431,11 @@ describe('共享 Pixi 角色动作场景', () => {
 
   test('图片解码时仅采样一次 Alpha，命中快照读取不再访问 Canvas', async () => {
     const drawImage = vi.fn();
-    const getImageData = vi.fn(() => ({ data: new Uint8ClampedArray(32 * 32 * 4).fill(255) }));
+    const getImageData = vi.fn(() => {
+      const rgba = new Uint8ClampedArray(72 * 32 * 4);
+      rgba[71 * 4 + 3] = 255;
+      return { data: rgba };
+    });
     const textures: TestTexture[] = [];
     const sprites: TestAnimatedSprite[] = [];
     const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
@@ -478,7 +485,7 @@ describe('共享 Pixi 角色动作场景', () => {
     }
     class TestImage {
       src = '';
-      naturalWidth = 32;
+      naturalWidth = 72;
       naturalHeight = 32;
       decode = vi.fn(async () => undefined);
     }
@@ -494,7 +501,8 @@ describe('共享 Pixi 角色动作场景', () => {
       scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
 
       const hitScene = scene as PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
-      expect(hitScene.getHitSnapshot()?.mask.bytes[0]).toBe(255);
+      expect(hitScene.getHitSnapshot()?.mask).toMatchObject({ width: 72, height: 32 });
+      expect(hitScene.getHitSnapshot()?.mask.bytes[0]).toBe(0);
       expect(hitScene.getHitSnapshot()?.sourceRect).toEqual({ x: 0, y: 0, width: 32, height: 32 });
       expect(hitScene.getHitSnapshot()?.frameBounds).toEqual({ x: 10, y: 20, width: 80, height: 80 });
       scene.showAction(action, {
@@ -505,6 +513,8 @@ describe('共享 Pixi 角色动作场景', () => {
         frameBounds: { x: 0, y: 40, width: 100, height: 60 },
         direction: 'left'
       });
+      expect(hitTestCharacterAlpha(hitScene.getHitSnapshot(), { x: 0, y: 40 })).toBe(true);
+      expect(hitTestCharacterAlpha(hitScene.getHitSnapshot(), { x: 99.999, y: 40 })).toBe(false);
       expect(drawImage).toHaveBeenCalledTimes(1);
       expect(getImageData).toHaveBeenCalledTimes(1);
       getContext.mockReturnValueOnce(null);
