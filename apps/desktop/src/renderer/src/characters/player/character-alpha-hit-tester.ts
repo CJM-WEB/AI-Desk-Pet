@@ -26,8 +26,8 @@ export function hitTestCharacterAlpha(
 
     const { frameBounds, sourceRect } = snapshot;
     if (
-      point.x <= frameBounds.x || point.x >= frameBounds.x + frameBounds.width ||
-      point.y <= frameBounds.y || point.y >= frameBounds.y + frameBounds.height
+      point.x < frameBounds.x || point.x >= frameBounds.x + frameBounds.width ||
+      point.y < frameBounds.y || point.y >= frameBounds.y + frameBounds.height
     ) {
       return false;
     }

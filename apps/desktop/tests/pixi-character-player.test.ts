@@ -50,6 +50,7 @@ function manifest(): CharacterManifestV1 {
 describe('共享 Pixi 角色动作场景', () => {
   test('播放器使用正式场景快照命中，并将帧变更通知给可取消订阅者', () => {
     let frameListener: (() => void) | undefined;
+    const unsubscribeFrame = vi.fn();
     const currentSnapshot: CharacterHitSnapshot = {
       mask: { width: 1, height: 1, bytes: new Uint8Array([255]) },
       sourceRect: { x: 0, y: 0, width: 1, height: 1 },
@@ -63,7 +64,7 @@ describe('共享 Pixi 角色动作场景', () => {
       getHitSnapshot: vi.fn(() => currentSnapshot),
       subscribeFrame: vi.fn(listener => {
         frameListener = listener;
-        return vi.fn();
+        return unsubscribeFrame;
       }),
       destroy: vi.fn()
     } satisfies PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
@@ -79,8 +80,36 @@ describe('共享 Pixi 角色动作场景', () => {
     frameListener?.();
     expect(notify).toHaveBeenCalledTimes(1);
     player.destroy();
+    expect(unsubscribeFrame).toHaveBeenCalledTimes(1);
     frameListener?.();
     expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  test('加载、播放、方向变化和切帧分别通知命中区域', async () => {
+    let frameListener: (() => void) | undefined;
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn().mockReturnValue(null),
+      subscribeFrame: vi.fn(listener => { frameListener = listener; return vi.fn(); }),
+      destroy: vi.fn()
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const notify = vi.fn();
+    player.subscribeHitRegion(notify);
+    const currentManifest = manifest();
+    const selection: ActionSelectionResult = {
+      stateId: 'idle', action: currentManifest.states[0]!.actions[0]!, reason: 'matched'
+    };
+
+    await player.load(currentManifest, { characterId: 'character-a', atlasUrls: new Map([['atlas', 'blob:atlas']]) });
+    expect(notify).toHaveBeenCalledTimes(1);
+    player.play(selection, 'static');
+    expect(notify).toHaveBeenCalledTimes(2);
+    player.setDirection('left');
+    expect(notify).toHaveBeenCalledTimes(3);
+    frameListener?.();
+    expect(notify).toHaveBeenCalledTimes(4);
   });
 
   test('播放器只将动作帧白名单 Blob URL 映射给共享场景并展示动作', async () => {
@@ -400,6 +429,8 @@ describe('共享 Pixi 角色动作场景', () => {
   test('图片解码时仅采样一次 Alpha，命中快照读取不再访问 Canvas', async () => {
     const drawImage = vi.fn();
     const getImageData = vi.fn(() => ({ data: new Uint8ClampedArray(32 * 32 * 4).fill(255) }));
+    const textures: TestTexture[] = [];
+    const sprites: TestAnimatedSprite[] = [];
     const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
       drawImage,
       getImageData
@@ -410,6 +441,7 @@ describe('共享 Pixi 角色动作场景', () => {
       constructor(options: { source: unknown; frame: { x: number; y: number; width: number; height: number } }) {
         this.source = options.source;
         this.frame = options.frame;
+        textures.push(this);
       }
       static from(image: unknown) { return new TestTexture({ source: image, frame: { x: 0, y: 0, width: 1, height: 1 } }); }
       destroy = vi.fn();
@@ -417,16 +449,23 @@ describe('共享 Pixi 角色动作场景', () => {
     class TestAnimatedSprite {
       currentFrame = 0;
       loop = false;
-      anchor = { set: vi.fn() };
-      scale = { set: vi.fn() };
-      position = { set: vi.fn() };
-      gotoAndStop = vi.fn();
+      anchor = { x: 0, y: 0, set: vi.fn((x: number, y: number) => { this.anchor.x = x; this.anchor.y = y; }) };
+      scale = { x: 1, y: 1, set: vi.fn((x: number, y: number) => { this.scale.x = x; this.scale.y = y; }) };
+      position = { x: 0, y: 0, set: vi.fn((x: number, y: number) => { this.position.x = x; this.position.y = y; }) };
+      gotoAndStop(index: number) { this.currentFrame = index; }
       play = vi.fn();
       stop = vi.fn();
       update = vi.fn();
       destroy = vi.fn();
-      getBounds = () => ({ x: 0, y: 0, width: 32, height: 32 });
-      constructor(readonly frames: Array<{ texture: TestTexture; time: number }>) {}
+      getBounds = () => {
+        const frame = this.frames[this.currentFrame]!.texture.frame;
+        const left = this.position.x - this.anchor.x * frame.width * this.scale.x;
+        const right = this.position.x + (1 - this.anchor.x) * frame.width * this.scale.x;
+        const top = this.position.y - this.anchor.y * frame.height * this.scale.y;
+        const bottom = this.position.y + (1 - this.anchor.y) * frame.height * this.scale.y;
+        return { x: Math.min(left, right), y: Math.min(top, bottom), width: Math.abs(right - left), height: Math.abs(bottom - top) };
+      };
+      constructor(readonly frames: Array<{ texture: TestTexture; time: number }>) { sprites.push(this); }
     }
     class TestApplication {
       canvas = document.createElement('canvas');
@@ -457,8 +496,31 @@ describe('共享 Pixi 角色动作场景', () => {
       const hitScene = scene as PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
       expect(hitScene.getHitSnapshot()?.mask.bytes[0]).toBe(255);
       expect(hitScene.getHitSnapshot()?.sourceRect).toEqual({ x: 0, y: 0, width: 32, height: 32 });
+      expect(hitScene.getHitSnapshot()?.frameBounds).toEqual({ x: 10, y: 20, width: 80, height: 80 });
+      scene.showAction(action, {
+        direction: 'left', motionMode: 'static', frameIndex: 1, speed: 1, loop: false
+      });
+      expect(hitScene.getHitSnapshot()).toMatchObject({
+        sourceRect: { x: 32, y: 0, width: 40, height: 24 },
+        frameBounds: { x: 0, y: 40, width: 100, height: 60 },
+        direction: 'left'
+      });
       expect(drawImage).toHaveBeenCalledTimes(1);
       expect(getImageData).toHaveBeenCalledTimes(1);
+      getContext.mockReturnValueOnce(null);
+      await scene.loadAssets(new Map([['atlas', 'blob:no-context']]));
+      scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
+      expect(hitScene.getHitSnapshot()).toBeNull();
+      expect(sprites[0]?.destroy).toHaveBeenCalled();
+      expect(textures[0]?.destroy).toHaveBeenCalledWith(true);
+
+      getContext.mockReturnValueOnce({
+        drawImage: vi.fn(),
+        getImageData: vi.fn(() => { throw new Error('CANVAS_READ_FAILED'); })
+      } as never);
+      await scene.loadAssets(new Map([['atlas', 'blob:read-error']]));
+      scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
+      expect(hitScene.getHitSnapshot()).toBeNull();
       scene.destroy();
     } finally {
       getContext.mockRestore();
@@ -469,6 +531,7 @@ describe('共享 Pixi 角色动作场景', () => {
   test('过期资源加载提取的 Alpha 不覆盖较新资源快照', async () => {
     let resolveOldDecode: (() => void) | undefined;
     let sampledUrl = '';
+    const textures: TestTexture[] = [];
     const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
       drawImage: vi.fn((image: { src: string }) => { sampledUrl = image.src; }),
       getImageData: vi.fn(() => ({
@@ -478,7 +541,7 @@ describe('共享 Pixi 角色动作场景', () => {
     class TestTexture {
       source: unknown;
       frame: { x: number; y: number; width: number; height: number };
-      constructor(options: { source: unknown; frame: { x: number; y: number; width: number; height: number } }) { this.source = options.source; this.frame = options.frame; }
+      constructor(options: { source: unknown; frame: { x: number; y: number; width: number; height: number } }) { this.source = options.source; this.frame = options.frame; textures.push(this); }
       static from(image: unknown) { return new TestTexture({ source: image, frame: { x: 0, y: 0, width: 1, height: 1 } }); }
       destroy = vi.fn();
     }
@@ -518,6 +581,8 @@ describe('共享 Pixi 角色动作场景', () => {
 
       const hitScene = scene as PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
       expect(hitScene.getHitSnapshot()?.mask.bytes[0]).toBe(255);
+      expect(textures.find(texture => (texture.source as TestImage).src === 'blob:old')?.destroy)
+        .toHaveBeenCalledWith(true);
       scene.destroy();
     } finally {
       getContext.mockRestore();

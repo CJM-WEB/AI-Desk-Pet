@@ -33,14 +33,29 @@ describe('角色逐帧 Alpha 命中', () => {
     expect(hitTestCharacterAlpha(current, { x: 45, y: 25 })).toBe(false);
   });
 
-  test('透明空洞、负坐标和四边越界均不命中', () => {
+  test('透明空洞、负坐标、右边界和下边界均不命中', () => {
     const current = snapshot([255, 0, 255, 255]);
 
     expect(hitTestCharacterAlpha(current, { x: 25, y: 25 })).toBe(false);
     expect(hitTestCharacterAlpha(current, { x: -1, y: 25 })).toBe(false);
-    expect(hitTestCharacterAlpha(current, { x: 10, y: 20 })).toBe(false);
     expect(hitTestCharacterAlpha(current, { x: 50, y: 25 })).toBe(false);
     expect(hitTestCharacterAlpha(current, { x: 15, y: 30 })).toBe(false);
+  });
+
+  test('右向的左边界映射到源帧首列', () => {
+    expect(hitTestCharacterAlpha(snapshot([255, 0, 0, 0]), { x: 10, y: 25 })).toBe(true);
+  });
+
+  test('上边界映射到源帧首行', () => {
+    expect(hitTestCharacterAlpha(snapshot([255, 0, 0, 0]), { x: 15, y: 20 })).toBe(true);
+  });
+
+  test('左上角属于半开帧矩形', () => {
+    expect(hitTestCharacterAlpha(snapshot([255, 0, 0, 0]), { x: 10, y: 20 })).toBe(true);
+  });
+
+  test('左向的左边界映射到源帧末列', () => {
+    expect(hitTestCharacterAlpha(snapshot([0, 0, 0, 255], 'left'), { x: 10, y: 25 })).toBe(true);
   });
 
   test('无效快照和异常数据均 fail-open，不抛出异常', () => {
