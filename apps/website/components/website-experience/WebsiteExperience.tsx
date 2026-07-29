@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState
@@ -100,10 +101,11 @@ export function WebsiteExperience({
       Math.random,
       t
     );
-  } else {
-    // 只更新后续生成粒子的翻译快照，已绑定粒子保持生成时的内容。
-    feedbackVisualProfileRef.current.setTranslate(t);
   }
+  useEffect(() => {
+    // 只更新后续生成粒子的翻译快照，已绑定粒子保持生成时的内容。
+    feedbackVisualProfileRef.current?.setTranslate(t);
+  }, [t]);
   const sharedVisualProfile = controller.phase === 'interactive'
     && Math.abs(controller.progress - getChapterIndex('feedback')) < 0.0001
     ? feedbackVisualProfileRef.current

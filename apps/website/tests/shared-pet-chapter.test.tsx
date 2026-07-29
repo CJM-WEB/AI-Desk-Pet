@@ -423,6 +423,12 @@ describe('共享仓库章节', () => {
     expect(communityCss).toMatch(
       /@media\s*\(min-width:\s*901px\)\s*and\s*\(max-height:\s*760px\)[\s\S]*?\.sharedPetLayout\s*\{[^}]*min-height:\s*560px/s
     );
+    expect(communityCss).toMatch(
+      /\.dialogBackdrop\s*\{[^}]*padding:\s*max\(20px,\s*env\(safe-area-inset-top\)\)\s+max\(20px,\s*env\(safe-area-inset-right\)\)\s+max\(20px,\s*env\(safe-area-inset-bottom\)\)\s+max\(20px,\s*env\(safe-area-inset-left\)\)/s
+    );
+    expect(communityCss).toMatch(
+      /@media\s*\(max-width:\s*560px\)[\s\S]*?\.dialogBackdrop\s*\{[^}]*padding:\s*max\(16px,\s*env\(safe-area-inset-top\)\)\s+max\(16px,\s*env\(safe-area-inset-right\)\)\s+max\(16px,\s*env\(safe-area-inset-bottom\)\)\s+max\(16px,\s*env\(safe-area-inset-left\)\)/s
+    );
   });
 
   it('投稿成功后关闭弹窗并刷新第一页', async () => {
@@ -430,7 +436,7 @@ describe('共享仓库章节', () => {
     renderChapter(harness.repository);
     await screen.findByText('Pet 1');
 
-    fireEvent.click(screen.getByRole('button', { name: '上传 AI Pet' }));
+    fireEvent.click(screen.getByRole('button', { name: '分享您的 AI Pet' }));
     expect(await screen.findByRole('dialog', { name: '分享投稿' })).toBeTruthy();
     const packageFile = new File(['zip'], 'new-pet.zip', { type: 'application/zip' });
     const coverFile = new File(['image'], 'new-cover.png', { type: 'image/png' });
@@ -455,7 +461,7 @@ describe('共享仓库章节', () => {
     harness.create.mockRejectedValueOnce(new Error('failed'));
     renderChapter(harness.repository);
 
-    fireEvent.click(screen.getByRole('button', { name: '上传 AI Pet' }));
+    fireEvent.click(screen.getByRole('button', { name: '分享您的 AI Pet' }));
     fireEvent.change(screen.getByLabelText('AI Pet ZIP 文件'), {
       target: {
         files: [new File(['zip'], 'new-pet.zip', { type: 'application/zip' })]
@@ -481,7 +487,7 @@ describe('共享仓库章节', () => {
     const view = renderChapter(harness.repository);
     await screen.findByText('0/0');
 
-    fireEvent.click(screen.getByRole('button', { name: '上传 AI Pet' }));
+    fireEvent.click(screen.getByRole('button', { name: '分享您的 AI Pet' }));
     fireEvent.change(screen.getByLabelText('AI Pet ZIP 文件'), {
       target: {
         files: [new File(['zip'], 'new-pet.zip', { type: 'application/zip' })]
@@ -622,6 +628,43 @@ describe('共享仓库章节', () => {
       await downloaded.promise;
     });
     await waitFor(() => expect((download as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('从详情下载时复用下载流程并同步刷新详情和当前页面计数', async () => {
+    const harness = createRepository(1);
+    const downloaded = deferred<SharedPetDownload>();
+    harness.getDownload.mockImplementationOnce(() => downloaded.promise);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 1');
+    const card = screen.getByTestId('shared-pet-card');
+
+    fireEvent.click(within(card).getByRole('button', { name: '打开 Pet 1 的详情' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Pet 1' });
+    const detailDownload = within(dialog).getByRole('button', { name: '下载 Pet 1' });
+    fireEvent.click(detailDownload);
+    fireEvent.click(detailDownload);
+
+    expect(harness.getDownload).toHaveBeenCalledTimes(1);
+    expect((detailDownload as HTMLButtonElement).disabled).toBe(true);
+    expect((within(card).getByRole('button', {
+      name: '下载 Pet 1'
+    }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      downloaded.resolve({
+        file: new Blob(['zip'], { type: 'application/zip' }),
+        fileName: 'pet.zip',
+        mimeType: 'application/zip'
+      });
+      await downloaded.promise;
+    });
+
+    await waitFor(() => {
+      expect(within(dialog).getByText('下载次数').nextElementSibling?.textContent)
+        .toBe('1');
+      expect(within(card).getByRole('button', { name: '下载 Pet 1' }).textContent)
+        .toContain('1');
+    });
   });
 
   it('旧点赞错误不覆盖后续详情操作的状态', async () => {

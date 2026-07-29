@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
-import { I18nProvider } from '../components/i18n/I18nProvider';
+import { I18nProvider, useI18n } from '../components/i18n/I18nProvider';
 import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
 import { WHEEL_SNAP_DEBOUNCE_MS } from '../components/website-experience/use-website-controller';
 
@@ -20,6 +20,16 @@ function createMediaQueryList(matches: boolean): MediaQueryList {
     removeEventListener: vi.fn(),
     dispatchEvent: vi.fn()
   };
+}
+
+function LocaleTestControls() {
+  const { setLocale } = useI18n();
+  return (
+    <>
+      <button type="button" onClick={() => setLocale('zh-CN')}>测试切换中文</button>
+      <button type="button" onClick={() => setLocale('en')}>测试切换英文</button>
+    </>
+  );
 }
 
 describe('官网章节降级模式', () => {
@@ -38,8 +48,10 @@ describe('官网章节降级模式', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    localStorage.clear();
   });
 
   it('介绍章节依赖更新时 cleanup 异常会报告统一运行时错误并进入静态回退', async () => {
@@ -367,7 +379,7 @@ describe('官网章节降级模式', () => {
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
       .toBe('community');
     expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Shared repository' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'AI Pet Community' })).toBeTruthy();
 
     const previous = screen.getByRole('button', { name: 'Previous chapter' });
     fireEvent.click(previous);
@@ -401,6 +413,36 @@ describe('官网章节降级模式', () => {
       .toBe('Feedback and Suggestions');
     expect(document.querySelector('[data-chapter-id="donation"]')?.getAttribute('aria-label'))
       .toBe('Support Development');
+  });
+
+  it('I18nProvider 切换语言后让 WebsiteExperience 的新反馈预览使用新语言', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <LocaleTestControls />
+        <WebsiteExperience />
+      </I18nProvider>
+    );
+    const next = screen.getByRole('button', { name: '下一章节' });
+    fireEvent.click(next);
+    fireEvent.click(next);
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(screen.getByTestId('website-experience').dataset.activeChapter).toBe('feedback');
+
+    act(() => vi.advanceTimersByTime(1_000));
+    const firstParticle = screen.getAllByTestId('file-icon')[0]!;
+    fireEvent.pointerEnter(firstParticle);
+    expect(screen.getByTestId('file-preview').textContent).toContain('类型');
+
+    fireEvent.click(screen.getByRole('button', { name: '测试切换英文' }));
+    act(() => vi.advanceTimersByTime(1_000));
+    const particles = screen.getAllByTestId('file-icon');
+    fireEvent.pointerEnter(particles.at(-1)!);
+
+    expect(screen.getByTestId('file-preview').textContent).toContain('Type');
   });
 
   it('正常动画的首帧离开首页时立即卸载语言入口，返回稳定首页后恢复', async () => {

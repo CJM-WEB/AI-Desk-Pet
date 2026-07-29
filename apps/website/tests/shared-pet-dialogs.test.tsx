@@ -231,6 +231,41 @@ describe('共享包弹窗', () => {
     expect(screen.getByLabelText('封面图片').getAttribute('aria-invalid')).toBeNull();
   });
 
+  it('ZIP、封面、名称和描述错误分别显示在对应字段附近且不重复', () => {
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetComposerDialog onSubmit={vi.fn()} onRequestClose={vi.fn()} />
+      </I18nProvider>
+    );
+    const submit = screen.getByRole('button', { name: '发布分享' });
+    const packageInput = screen.getByLabelText('AI Pet ZIP 文件');
+    const coverInput = screen.getByLabelText('封面图片');
+    const nameInput = screen.getByLabelText('名称');
+    const descriptionInput = screen.getByLabelText('描述');
+    const expectErrorBeside = (field: HTMLElement) => {
+      const alert = screen.getByRole('alert');
+      expect(field.parentElement?.contains(alert)).toBe(true);
+      expect(screen.getAllByRole('alert')).toHaveLength(1);
+      expect(field.getAttribute('aria-describedby')).toBe(alert.id);
+    };
+
+    fireEvent.click(submit);
+    expectErrorBeside(packageInput);
+    fireEvent.change(packageInput, {
+      target: { files: [new File(['zip'], 'pet.zip', { type: 'application/zip' })] }
+    });
+    fireEvent.click(submit);
+    expectErrorBeside(coverInput);
+    fireEvent.change(coverInput, {
+      target: { files: [new File(['image'], 'cover.png', { type: 'image/png' })] }
+    });
+    fireEvent.click(submit);
+    expectErrorBeside(nameInput);
+    fireEvent.change(nameInput, { target: { value: 'My Pet' } });
+    fireEvent.click(submit);
+    expectErrorBeside(descriptionInput);
+  });
+
   it('Portal 隔离滚轮并通过 Escape、焦点循环恢复入口焦点', () => {
     const trigger = document.createElement('button');
     document.body.append(trigger);
@@ -266,7 +301,12 @@ describe('共享包弹窗', () => {
   it('详情以当前语言显示文件、大小、日期和统计数据', () => {
     render(
       <I18nProvider initialLocale="zh-CN">
-        <SharedPetDetailDialog item={item} onRequestClose={vi.fn()} />
+        <SharedPetDetailDialog
+          item={item}
+          downloadDisabled={false}
+          onDownload={vi.fn()}
+          onRequestClose={vi.fn()}
+        />
       </I18nProvider>
     );
 
@@ -283,6 +323,8 @@ describe('共享包弹窗', () => {
       <I18nProvider initialLocale="zh-CN">
         <SharedPetDetailDialog
           item={{ ...item, packageSizeBytes: 1024 * 1024 }}
+          downloadDisabled={false}
+          onDownload={vi.fn()}
           onRequestClose={vi.fn()}
         />
       </I18nProvider>

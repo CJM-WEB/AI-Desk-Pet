@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback } from 'react';
+import { Download } from 'lucide-react';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
 import type { SharedPetPackageSummary } from './shared-pet-types';
 import { SharedPetDialogShell } from './SharedPetDialogShell';
@@ -9,6 +10,8 @@ import styles from './community.module.css';
 
 export interface SharedPetDetailDialogProps {
   item: SharedPetPackageSummary;
+  downloadDisabled: boolean;
+  onDownload: (item: SharedPetPackageSummary) => void;
   onRequestClose: () => void;
 }
 
@@ -27,6 +30,8 @@ function formatSize(bytes: number, locale: string): string {
 /** 展示列表摘要中的完整元数据，封面地址仅在弹窗存活期间保留。 */
 export function SharedPetDetailDialog({
   item,
+  downloadDisabled,
+  onDownload,
   onRequestClose
 }: SharedPetDetailDialogProps) {
   const { locale, t: rawTranslate } = useI18n();
@@ -34,6 +39,10 @@ export function SharedPetDetailDialog({
     interpolateMessage(rawTranslate(key))
   ), [rawTranslate]);
   const coverUrl = useObjectUrl(item.coverFile);
+  const downloadLabel = interpolateMessage(
+    rawTranslate('sharedPet.card.download'),
+    { name: item.name }
+  );
   const publishedAt = new Intl.DateTimeFormat(locale, {
     year: 'numeric',
     month: '2-digit',
@@ -45,6 +54,17 @@ export function SharedPetDetailDialog({
       title={item.name}
       closeLabel={t('sharedPet.detail.close')}
       onRequestClose={onRequestClose}
+      footer={(
+        <button
+          type="button"
+          title={downloadLabel}
+          disabled={downloadDisabled}
+          onClick={() => onDownload(item)}
+        >
+          <Download aria-hidden="true" />
+          <span>{downloadLabel}</span>
+        </button>
+      )}
     >
       <div className={styles.detailContent}>
         {coverUrl ? (

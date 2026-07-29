@@ -223,7 +223,11 @@
   z-index: 1000;
   display: grid;
   place-items: center;
-  padding: 20px;
+  padding:
+    max(20px, env(safe-area-inset-top))
+    max(20px, env(safe-area-inset-right))
+    max(20px, env(safe-area-inset-bottom))
+    max(20px, env(safe-area-inset-left));
   overflow: auto;
   background: rgba(28, 28, 28, 0.46);
   -webkit-backdrop-filter: blur(14px) brightness(0.72);
@@ -517,7 +521,11 @@
   }
 
   .dialogBackdrop {
-    padding: 16px;
+    padding:
+      max(16px, env(safe-area-inset-top))
+      max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
   }
 
   .dialogHeader,

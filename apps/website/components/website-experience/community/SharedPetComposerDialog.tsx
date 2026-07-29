@@ -126,6 +126,9 @@ export function SharedPetComposerDialog({
               }));
             }}
           />
+          {invalidField === 'packageFile' && error ? (
+            <p id={errorId} className={styles.error} role="alert">{error}</p>
+          ) : null}
         </div>
         <div className={styles.field}>
           <label htmlFor="shared-pet-cover">{t('sharedPet.composer.cover')}</label>
@@ -144,6 +147,9 @@ export function SharedPetComposerDialog({
               }));
             }}
           />
+          {invalidField === 'coverFile' && error ? (
+            <p id={errorId} className={styles.error} role="alert">{error}</p>
+          ) : null}
         </div>
         <div className={styles.field}>
           <label htmlFor="shared-pet-name">{t('sharedPet.composer.name')}</label>
@@ -159,6 +165,9 @@ export function SharedPetComposerDialog({
               setDraft((current) => ({ ...current, name: event.target.value }));
             }}
           />
+          {invalidField === 'name' && error ? (
+            <p id={errorId} className={styles.error} role="alert">{error}</p>
+          ) : null}
         </div>
         <div className={styles.field}>
           <label htmlFor="shared-pet-description">{t('sharedPet.composer.description')}</label>
@@ -174,8 +183,13 @@ export function SharedPetComposerDialog({
               setDraft((current) => ({ ...current, description: event.target.value }));
             }}
           />
-          {error ? <p id={errorId} className={styles.error} role="alert">{error}</p> : null}
+          {invalidField === 'description' && error ? (
+            <p id={errorId} className={styles.error} role="alert">{error}</p>
+          ) : null}
         </div>
+        {invalidField === null && error ? (
+          <p id={errorId} className={styles.error} role="alert">{error}</p>
+        ) : null}
       </div>
     </SharedPetDialogShell>
   );

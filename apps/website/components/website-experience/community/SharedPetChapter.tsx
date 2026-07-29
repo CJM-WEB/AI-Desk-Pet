@@ -257,6 +257,7 @@ export function SharedPetChapter({
 
   const replaceVisibleItem = useCallback((updated: SharedPetPackageSummary) => {
     if (!mountedRef.current) return;
+    setDetailItem((current) => current?.id === updated.id ? updated : current);
     const current = transitionRef.current;
     const visible = {
       ...current.visiblePage,
@@ -477,7 +478,7 @@ export function SharedPetChapter({
     }
   };
 
-  const download = async (item: SharedPetPackageSummary) => {
+  const handleDownload = async (item: SharedPetPackageSummary) => {
     if (
       !interactive
       || !beginItemLock(downloadLocksRef.current, setDownloadPending, item.id)
@@ -633,7 +634,7 @@ export function SharedPetChapter({
                 downloadDisabled={downloadPending.has(item.id)}
                 onOpen={(selected) => void openDetail(selected)}
                 onLike={(selected) => void toggleLike(selected)}
-                onDownload={(selected) => void download(selected)}
+                onDownload={(selected) => void handleDownload(selected)}
               />
             </div>
           ))}
@@ -649,6 +650,8 @@ export function SharedPetChapter({
       {detailItem ? (
         <SharedPetDetailDialog
           item={detailItem}
+          downloadDisabled={downloadPending.has(detailItem.id)}
+          onDownload={(selected) => void handleDownload(selected)}
           onRequestClose={() => setDetailItem(null)}
         />
       ) : null}
