@@ -123,6 +123,33 @@ export function createCharacterWorkshopWindow(
   return window;
 }
 
+type PetWindowInteractionLifecycleWindow = {
+  once(name: 'closed', listener: () => void): void;
+  removeListener(name: 'closed', listener: () => void): void;
+};
+
+type PetWindowInteractionLifecycleController = {
+  setPassthrough(ignore: boolean): void;
+  dispose(): void;
+};
+
+/** 将控制器严格绑定到单个桌宠窗口生命周期，并提供幂等主动清理。 */
+export function bindPetWindowInteractionLifecycle(
+  window: PetWindowInteractionLifecycleWindow,
+  controller: PetWindowInteractionLifecycleController
+): () => void {
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    window.removeListener('closed', release);
+    controller.dispose();
+  };
+  controller.setPassthrough(true);
+  window.once('closed', release);
+  return release;
+}
+
 function isFullyVisible(position: Point, size: WindowSize, workArea: Rectangle): boolean {
   return position.x >= workArea.x
     && position.y >= workArea.y

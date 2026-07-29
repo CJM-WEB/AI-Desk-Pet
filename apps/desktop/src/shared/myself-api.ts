@@ -21,6 +21,7 @@ import type {
   CharacterMotionEvent,
   CharacterMotionSnapshot
 } from './character-motion-ipc';
+import type { PetWindowInteractionApi } from './pet-window-interaction';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 
@@ -118,7 +119,7 @@ export interface McpLaunchSummaryDto {
   fingerprint: string;
 }
 
-export interface MyselfApi {
+export interface MyselfApi extends PetWindowInteractionApi {
   getStatus(): Promise<{ version: string; ready: boolean }>;
   getSettings(): Promise<PublicSettings>;
   saveProvider(input: SaveProviderInput): Promise<PublicSettings>;

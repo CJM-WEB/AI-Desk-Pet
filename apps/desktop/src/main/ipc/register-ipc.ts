@@ -31,6 +31,7 @@ import {
   type CharacterSummaryDto
 } from '../../shared/character-ipc';
 import type { CharacterDraftV1 } from '@myself/character-runtime';
+import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
 import {
   characterMotionEmptyInputSchema,
   characterActionPlayedInputSchema,
@@ -601,6 +602,67 @@ export function registerCharacterMotionIpc(
       return { ok: true };
     }
   );
+}
+
+type PetWindowInteractionControllerActions = {
+  setPassthrough(ignore: boolean): void;
+  beginDrag(): void;
+  endDrag(reason: 'released' | 'cancelled' | 'timeout' | 'disposed'): void;
+  dispose(): void;
+};
+
+function assertPetWindowSender(
+  event: IpcMainInvokeEvent,
+  petWebContents: WebContents
+): void {
+  if (event.sender !== petWebContents || petWebContents.isDestroyed()) {
+    throw new Error('PET_WINDOW_INTERACTION_SENDER_INVALID');
+  }
+}
+
+function assertNoPetInteractionInput(args: readonly unknown[]): void {
+  if (args.length !== 0) {
+    throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+  }
+}
+
+/** 桌宠窗口交互只接受固定命令，坐标与菜单实现全部留在 Main。 */
+export function registerPetWindowInteractionIpc(
+  ipcMain: IpcMain,
+  controller: PetWindowInteractionControllerActions,
+  petWebContents: WebContents,
+  openContextMenu: () => unknown
+): void {
+  replaceHandler(
+    ipcMain,
+    ipcChannels.petMousePassthroughSet,
+    async (event, ...args) => {
+      assertPetWindowSender(event, petWebContents);
+      if (args.length !== 1) {
+        throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+      }
+      const parsed = petMousePassthroughInputSchema.safeParse(args[0]);
+      if (!parsed.success) {
+        throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+      }
+      controller.setPassthrough(parsed.data.ignore);
+    }
+  );
+  replaceHandler(ipcMain, ipcChannels.petDragBegin, async (event, ...args) => {
+    assertPetWindowSender(event, petWebContents);
+    assertNoPetInteractionInput(args);
+    controller.beginDrag();
+  });
+  replaceHandler(ipcMain, ipcChannels.petDragEnd, async (event, ...args) => {
+    assertPetWindowSender(event, petWebContents);
+    assertNoPetInteractionInput(args);
+    controller.endDrag('released');
+  });
+  replaceHandler(ipcMain, ipcChannels.petContextMenuOpen, async (event, ...args) => {
+    assertPetWindowSender(event, petWebContents);
+    assertNoPetInteractionInput(args);
+    await openContextMenu();
+  });
 }
 
 export function registerWindowIpc(

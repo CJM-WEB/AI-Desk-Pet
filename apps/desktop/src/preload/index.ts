@@ -186,6 +186,18 @@ const api: MyselfApi = {
   reportCharacterActionPlayed: async (playbackToken, actionId) => {
     await ipcRenderer.invoke(ipcChannels.characterActionPlayed, { playbackToken, actionId });
   },
+  setPetMousePassthrough: async ignore => {
+    await ipcRenderer.invoke(ipcChannels.petMousePassthroughSet, { ignore });
+  },
+  beginPetDrag: async () => {
+    await ipcRenderer.invoke(ipcChannels.petDragBegin);
+  },
+  endPetDrag: async () => {
+    await ipcRenderer.invoke(ipcChannels.petDragEnd);
+  },
+  openPetContextMenu: async () => {
+    await ipcRenderer.invoke(ipcChannels.petContextMenuOpen);
+  },
   openChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenChat),
   openSettings: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenSettings),
   openCharacterWorkshop: (): Promise<void> => (

@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   chatWindowOptions,
+  bindPetWindowInteractionLifecycle,
   clampPositionToVisibleWorkArea,
   petWindowOptions,
   secureWebPreferences,
@@ -80,6 +81,26 @@ describe('窗口安全配置', () => {
   });
 });
 
+describe('桌宠交互控制器生命周期', () => {
+  it('窗口绑定时初始化穿透，关闭时幂等 dispose', () => {
+    const listeners = new Map<string, () => void>();
+    const window = {
+      once: vi.fn((event: string, listener: () => void) => listeners.set(event, listener)),
+      removeListener: vi.fn((event: string) => listeners.delete(event))
+    };
+    const controller = {
+      setPassthrough: vi.fn(),
+      dispose: vi.fn()
+    };
+
+    const release = bindPetWindowInteractionLifecycle(window, controller);
+    expect(controller.setPassthrough).toHaveBeenCalledWith(true);
+    listeners.get('closed')?.();
+    release();
+    expect(controller.dispose).toHaveBeenCalledOnce();
+  });
+});
+
 describe('桌宠位置恢复', () => {
   const workAreas = [
     { x: 0, y: 0, width: 1920, height: 1040 },
@@ -127,5 +148,16 @@ describe('preload 白名单', () => {
 
     expect(main).toContain('registerAgentIpc(ipcMain, agentService)');
     expect(main).toContain('webContents.send(ipcChannels.taskEvent, event)');
+  });
+
+  it('在 pet 生命周期内唯一创建交互控制器并复用现有菜单弹出回调', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(main.match(/new PetWindowInteractionController\(/gu)).toHaveLength(1);
+    expect(main).toMatch(
+      /bindPetWindowInteractionLifecycle\(\s*pet,\s*petWindowInteraction\s*\)/u
+    );
+    expect(main).toContain('registerPetWindowInteractionIpc(');
+    expect(main).toContain('const openPetContextMenu = () =>');
   });
 });

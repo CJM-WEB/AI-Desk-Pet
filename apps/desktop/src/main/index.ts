@@ -25,6 +25,7 @@ import {
   registerAgentIpc,
   registerCharacterIpc,
   registerCharacterMotionIpc,
+  registerPetWindowInteractionIpc,
   registerSettingsIpc,
   registerWindowIpc
 } from './ipc/register-ipc';
@@ -63,11 +64,14 @@ import {
   restorePetPosition
 } from './windows/pet-position';
 import {
+  bindPetWindowInteractionLifecycle,
   createCharacterWorkshopWindow,
   createChatWindow,
   createPetWindow,
   createSettingsWindow
 } from './windows/window-manager';
+import { PetWindowInteractionController } from
+  './windows/pet-window-interaction-controller';
 import {
   broadcastCharacterEvent,
   createCharacterQuickSwitchCommand,
@@ -240,6 +244,15 @@ async function createApplicationWindows(): Promise<void> {
     window: pet,
     getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea)
   });
+  const petWindowInteraction = new PetWindowInteractionController({
+    window: pet,
+    screen,
+    motion: characterMotion
+  });
+  const releasePetWindowInteraction = bindPetWindowInteractionLifecycle(
+    pet,
+    petWindowInteraction
+  );
   const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion);
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),
@@ -303,6 +316,7 @@ async function createApplicationWindows(): Promise<void> {
     console.error('更新角色运动失败。', error);
   }
   app.once('before-quit', () => {
+    releasePetWindowInteraction();
     motionRuntime.destroy();
     releaseMotionEvents();
     releaseMotionWindowEvents();
@@ -432,7 +446,14 @@ async function createApplicationWindows(): Promise<void> {
   tray.setToolTip('AI Pet 桌宠');
   tray.setContextMenu(contextMenu);
   tray.on('double-click', () => void windowCommands.showChat());
-  pet.webContents.on('context-menu', () => tray?.popUpContextMenu(contextMenu));
+  const openPetContextMenu = () => tray?.popUpContextMenu(contextMenu);
+  pet.webContents.on('context-menu', openPetContextMenu);
+  registerPetWindowInteractionIpc(
+    ipcMain,
+    petWindowInteraction,
+    pet.webContents,
+    openPetContextMenu
+  );
   characterActions.subscribeCharacterEvents(event => {
     broadcastCharacterEvent(
       [pet, chat, settings, characterWorkshopWindows.getCurrent()],
