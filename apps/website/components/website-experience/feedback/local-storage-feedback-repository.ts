@@ -257,8 +257,12 @@ export class LocalStorageFeedbackRepository implements FeedbackRepository {
         .filter((entry) => entry.source === 'local-user'),
       likedEntryIds: [...new Set(document.likedEntryIds)]
     };
+    // 缺少真实存储时禁止把写入误报为内存中的保存成功。
+    if (!this.storage) {
+      throw new FeedbackStorageError(null);
+    }
     try {
-      this.storage?.setItem(this.key, JSON.stringify(normalized));
+      this.storage.setItem(this.key, JSON.stringify(normalized));
     } catch (error) {
       throw new FeedbackStorageError(error);
     }

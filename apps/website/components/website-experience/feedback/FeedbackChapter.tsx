@@ -25,7 +25,10 @@ import {
 } from './FeedbackComposerDialog';
 import { DiscardDraftDialog } from './DiscardDraftDialog';
 import { validateDraft } from './feedback-model';
-import { LocalStorageFeedbackRepository } from './local-storage-feedback-repository';
+import {
+  FeedbackStorageError,
+  LocalStorageFeedbackRepository
+} from './local-storage-feedback-repository';
 import type {
   FeedbackKind,
   FeedbackRepository
@@ -181,11 +184,13 @@ export function FeedbackChapter({
       const entry = repository.create(validation.value);
       setOpenKind(entry.kind);
       setComposerState(null);
-    } catch {
+    } catch (error) {
       setComposerState({
         phase: 'editing',
         draft: composerState.draft,
-        error: '投稿暂时无法保存，请稍后重试。'
+        error: error instanceof FeedbackStorageError && error.cause === null
+          ? '浏览器本地存储不可用，投稿无法保存。'
+          : '投稿暂时无法保存，请稍后重试。'
       });
     }
   }, [composerState, repository]);

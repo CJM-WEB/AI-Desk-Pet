@@ -210,4 +210,17 @@ describe('本地反馈仓储', () => {
     expect(repository.list('feedback')).toHaveLength(6);
     expect(repository.getStatusNotice()).toMatchObject({ code: 'STORAGE_WRITE_FAILED' });
   });
+
+  it('本地存储不可用时仍读取官方示例，但拒绝创建和点赞写入', () => {
+    const repository = new LocalStorageFeedbackRepository({
+      storage: null,
+      createId: () => 'unavailable-browser'
+    });
+    const example = repository.list('feedback')[0]!;
+
+    expect(repository.list('feedback')).toHaveLength(6);
+    expect(() => repository.create(validInput)).toThrow(FeedbackStorageError);
+    expect(() => repository.toggleLike(example.id, 'unavailable-browser'))
+      .toThrow(FeedbackStorageError);
+  });
 });
