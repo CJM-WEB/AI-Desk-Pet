@@ -55,7 +55,7 @@ export type SharedPetDraftInput = {
 export interface SharedPetPage {
   items: readonly SharedPetPackageSummary[];
   page: number;
-  pageSize: number;
+  pageSize: typeof SHARED_PET_PAGE_SIZE;
   total: number;
   totalPages: number;
   hasPrevious: boolean;
@@ -69,7 +69,10 @@ export interface SharedPetDownload {
 }
 
 export interface SharedPetRepository {
-  listPage(page: number, pageSize?: number): Promise<SharedPetPage>;
+  listPage(
+    page: number,
+    pageSize?: typeof SHARED_PET_PAGE_SIZE
+  ): Promise<SharedPetPage>;
   create(input: CreateSharedPetInput): Promise<SharedPetPackageSummary>;
   getById(id: string): Promise<SharedPetPackageSummary | null>;
   toggleLike(id: string): Promise<SharedPetPackageSummary>;
@@ -80,12 +83,23 @@ export interface SharedPetRepository {
 
 export type SharedPetPageTransitionStatus = 'idle' | 'leaving' | 'entering';
 
-/** 离场阶段保留 visiblePage，下一页只能暂存于 pendingPage。 */
-export interface SharedPetPageTransition {
-  status: SharedPetPageTransitionStatus;
-  visiblePage: SharedPetPage;
-  pendingPage: SharedPetPage | null;
-}
+/** 离场阶段保留旧页面，进入和稳定阶段禁止携带待切换页面。 */
+export type SharedPetPageTransition =
+  | {
+    status: 'idle';
+    visiblePage: SharedPetPage;
+    pendingPage?: never;
+  }
+  | {
+    status: 'leaving';
+    visiblePage: SharedPetPage;
+    pendingPage: SharedPetPage;
+  }
+  | {
+    status: 'entering';
+    visiblePage: SharedPetPage;
+    pendingPage?: never;
+  };
 
 export type SharedPetValidationResult =
   | { valid: true; value: CreateSharedPetInput }

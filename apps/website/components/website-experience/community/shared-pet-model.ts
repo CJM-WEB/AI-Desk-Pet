@@ -2,6 +2,8 @@ import {
   SHARED_PET_PAGE_SIZE,
   type SharedPetDraftInput,
   type SharedPetErrorCode,
+  type SharedPetPage,
+  type SharedPetPageTransition,
   type SharedPetValidationResult
 } from './shared-pet-types';
 
@@ -53,6 +55,10 @@ function isFileLike(value: unknown): value is File {
     && typeof file.type === 'string';
 }
 
+function hasValidFileSize(size: number): boolean {
+  return Number.isFinite(size) && size >= 0;
+}
+
 function invalid(code: SharedPetErrorCode): SharedPetValidationResult {
   return { valid: false, code };
 }
@@ -76,7 +82,8 @@ export function validateSharedPetDraft(
   if (packageExtension !== 'zip' || !ZIP_MIME_TYPES.has(packageFile.type.toLowerCase())) {
     return invalid('PACKAGE_TYPE_INVALID');
   }
-  if (packageFile.size > MAX_SHARED_PET_PACKAGE_SIZE_BYTES) {
+  if (!hasValidFileSize(packageFile.size)
+    || packageFile.size > MAX_SHARED_PET_PACKAGE_SIZE_BYTES) {
     return invalid('PACKAGE_TOO_LARGE');
   }
 
@@ -89,7 +96,8 @@ export function validateSharedPetDraft(
   if (!expectedCoverMime || coverFile.type.toLowerCase() !== expectedCoverMime) {
     return invalid('COVER_TYPE_INVALID');
   }
-  if (coverFile.size > MAX_SHARED_PET_COVER_SIZE_BYTES) {
+  if (!hasValidFileSize(coverFile.size)
+    || coverFile.size > MAX_SHARED_PET_COVER_SIZE_BYTES) {
     return invalid('COVER_TOO_LARGE');
   }
 
@@ -114,6 +122,38 @@ export function validateSharedPetDraft(
       packageFile,
       coverFile
     }
+  };
+}
+
+/** 开始切页时只记录目标页，当前可见页必须继续保留到离场结束。 */
+export function beginPageTransition(
+  visiblePage: SharedPetPage,
+  pendingPage: SharedPetPage
+): Extract<SharedPetPageTransition, { status: 'leaving' }> {
+  return {
+    status: 'leaving',
+    visiblePage,
+    pendingPage
+  };
+}
+
+/** 离场完成后才允许把待切换页提升为可见页。 */
+export function completePageLeaving(
+  transition: Extract<SharedPetPageTransition, { status: 'leaving' }>
+): Extract<SharedPetPageTransition, { status: 'entering' }> {
+  return {
+    status: 'entering',
+    visiblePage: transition.pendingPage
+  };
+}
+
+/** 进入动画完成后清除过渡状态，但继续保留当前可见页。 */
+export function completePageEntering(
+  transition: Extract<SharedPetPageTransition, { status: 'entering' }>
+): Extract<SharedPetPageTransition, { status: 'idle' }> {
+  return {
+    status: 'idle',
+    visiblePage: transition.visiblePage
   };
 }
 

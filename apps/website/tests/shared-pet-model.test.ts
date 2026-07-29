@@ -1,9 +1,47 @@
 import { describe, expect, it } from 'vitest';
 import {
+  beginPageTransition,
   buildPageTransitionOrder,
+  completePageEntering,
+  completePageLeaving,
   SHARED_PET_PAGE_SIZE,
   validateSharedPetDraft
 } from '../components/website-experience/community/shared-pet-model';
+import type {
+  SharedPetPage,
+  SharedPetPageTransition,
+  SharedPetRepository
+} from '../components/website-experience/community/shared-pet-types';
+
+type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+type Expect<Value extends true> = Value;
+type RepositoryPageSizeIsFixed = Expect<Equal<
+  NonNullable<Parameters<SharedPetRepository['listPage']>[1]>,
+  typeof SHARED_PET_PAGE_SIZE
+>>;
+type PagePageSizeIsFixed = Expect<Equal<
+  SharedPetPage['pageSize'],
+  typeof SHARED_PET_PAGE_SIZE
+>>;
+type LeavingRequiresPendingPage = Expect<Equal<
+  Extract<SharedPetPageTransition, { status: 'leaving' }>['pendingPage'],
+  SharedPetPage
+>>;
+type IdleForbidsPendingPage = Expect<Equal<
+  Exclude<Extract<SharedPetPageTransition, { status: 'idle' }>['pendingPage'], undefined>,
+  never
+>>;
+type EnteringForbidsPendingPage = Expect<Equal<
+  Exclude<Extract<SharedPetPageTransition, { status: 'entering' }>['pendingPage'], undefined>,
+  never
+>>;
+
+void (undefined as unknown as RepositoryPageSizeIsFixed);
+void (undefined as unknown as PagePageSizeIsFixed);
+void (undefined as unknown as LeavingRequiresPendingPage);
+void (undefined as unknown as IdleForbidsPendingPage);
+void (undefined as unknown as EnteringForbidsPendingPage);
 
 const zip = new File(['zip'], 'pet.zip', { type: 'application/zip' });
 const cover = new File(['image'], 'cover.webp', { type: 'image/webp' });
@@ -142,6 +180,45 @@ describe('共享仓库领域模型', () => {
       packageFile: zip,
       coverFile: oversizedCover
     })).toMatchObject({ valid: false, code: 'COVER_TOO_LARGE' });
+  });
+
+  it('拒绝非有限或负数的文件大小', () => {
+    for (const size of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      expect(validateSharedPetDraft({
+        name: 'valid',
+        description: 'valid',
+        packageFile: fileWithSize('pet.zip', 'application/zip', size),
+        coverFile: cover
+      })).toMatchObject({ valid: false });
+      expect(validateSharedPetDraft({
+        name: 'valid',
+        description: 'valid',
+        packageFile: zip,
+        coverFile: fileWithSize('cover.webp', 'image/webp', size)
+      })).toMatchObject({ valid: false });
+    }
+  });
+
+  it('离场完成前保持旧页面，完成离场后才替换可见页面', () => {
+    const firstPage = { page: 1 } as SharedPetPage;
+    const secondPage = { page: 2 } as SharedPetPage;
+
+    const leaving = beginPageTransition(firstPage, secondPage);
+    expect(leaving).toEqual({
+      status: 'leaving',
+      visiblePage: firstPage,
+      pendingPage: secondPage
+    });
+
+    const entering = completePageLeaving(leaving);
+    expect(entering).toEqual({
+      status: 'entering',
+      visiblePage: secondPage
+    });
+    expect(completePageEntering(entering)).toEqual({
+      status: 'idle',
+      visiblePage: secondPage
+    });
   });
 
   it('按固定状态模型生成分页动画顺序', () => {
