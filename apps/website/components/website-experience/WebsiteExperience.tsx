@@ -8,6 +8,8 @@ import {
 } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
+import { LanguageMenu } from '../i18n/LanguageMenu';
+import { useI18n } from '../i18n/I18nProvider';
 import { HomeExperience } from '../home-experience/HomeExperience';
 import {
   deriveChapterVisualState,
@@ -49,6 +51,7 @@ function createChapterVisualStyle(
 export function WebsiteExperience({
   onRuntimeError
 }: WebsiteExperienceProps = {}) {
+  const { t } = useI18n();
   const [initializationFailed, setInitializationFailed] = useState(false);
   const mountedRef = useRef(true);
   const onRuntimeErrorRef = useRef(onRuntimeError);
@@ -195,11 +198,11 @@ export function WebsiteExperience({
       <nav
         className={styles.chapterControls}
         data-input-scope="local"
-        aria-label="章节导航"
+        aria-label={t('navigation.label')}
       >
         <button
           type="button"
-          aria-label="上一章节"
+          aria-label={t('navigation.previousChapter')}
           disabled={controller.settledIndex === 0}
           onClick={() => controller.goToAdjacent(-1)}
         >
@@ -207,13 +210,16 @@ export function WebsiteExperience({
         </button>
         <button
           type="button"
-          aria-label="下一章节"
+          aria-label={t('navigation.nextChapter')}
           disabled={controller.settledIndex === CHAPTER_REGISTRY.length - 1}
           onClick={() => controller.goToAdjacent(1)}
         >
           <ChevronDown aria-hidden="true" />
         </button>
       </nav>
+      <div data-layer="fixed-controls">
+        <LanguageMenu />
+      </div>
       {mountedVisualProfile && !staticFallback ? (
         <SharedVisualLayers
           profile={mountedVisualProfile}

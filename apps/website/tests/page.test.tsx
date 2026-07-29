@@ -55,6 +55,14 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('即将支持');
   });
 
+  it('在固定控制层挂载独立的语言菜单', () => {
+    const html = renderToStaticMarkup(<Page />);
+
+    expect(html).toContain('data-layer="fixed-controls"');
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain('language');
+  });
+
   it('不再渲染旧的传统纵向首页入口', () => {
     const html = renderToStaticMarkup(<Page />);
 
