@@ -82,6 +82,28 @@ describe('共享 Pixi 角色动作场景', () => {
     });
   });
 
+  test('加载阶段缺失动作帧资源时保持原有失败语义', async () => {
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn().mockReturnValue(null),
+      subscribeFrame: vi.fn(() => vi.fn()),
+      destroy: vi.fn()
+    };
+    const currentManifest = manifest();
+    currentManifest.states[0]!.actions[0]!.frames = [
+      ...currentManifest.states[0]!.actions[0]!.frames,
+      { assetId: 'missing', x: 0, y: 0, width: 16, height: 16 }
+    ];
+    const player = new PixiCharacterPlayer(scene);
+
+    await expect(player.load(currentManifest, {
+      characterId: 'character-a',
+      atlasUrls: new Map([['atlas', 'blob:atlas']])
+    })).rejects.toThrow('CHARACTER_RUNTIME_ASSET_MISSING');
+    expect(scene.loadAssets).not.toHaveBeenCalled();
+  });
+
   test('运行时方向变更时以新方向重新展示当前动作', () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
@@ -107,6 +129,47 @@ describe('共享 Pixi 角色动作场景', () => {
       speed: 1,
       loop: true
     });
+  });
+
+  test('运行时方向变更时保持非零当前帧', () => {
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn().mockReturnValue({
+        action,
+        frameIndex: 1,
+        bounds: { x: 9, y: 10, width: 40, height: 24 }
+      }),
+      subscribeFrame: vi.fn(() => vi.fn()),
+      destroy: vi.fn()
+    };
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(scene);
+
+    player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+    player.setDirection('left');
+
+    expect(scene.showAction).toHaveBeenLastCalledWith(
+      currentManifest.states[0]!.actions[0]!,
+      expect.objectContaining({ direction: 'left', frameIndex: 1 })
+    );
+  });
+
+  test('内部 ticker 状态能力会继续反映共享场景的动画状态', () => {
+    const scene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn().mockReturnValue(null),
+      subscribeFrame: vi.fn(() => vi.fn()),
+      isTickerRunning: vi.fn().mockReturnValue(true),
+      destroy: vi.fn()
+    } satisfies PixiCharacterScene & { isTickerRunning(): boolean };
+
+    expect(new PixiCharacterPlayer(scene).isTickerRunning()).toBe(true);
   });
 
   test('切帧后更新当前帧并且取消订阅后不再通知', async () => {
@@ -135,7 +198,7 @@ describe('共享 Pixi 角色动作场景', () => {
       anchor = { set: vi.fn() };
       scale = { set: vi.fn() };
       position = { set: vi.fn() };
-      private readonly listeners = new Set<() => void>();
+      onFrameChange?: (currentFrame: number) => void;
 
       constructor(readonly frames: Array<{ texture: TestTexture; time: number }>) {
         latestSprites.push(this);
@@ -145,8 +208,6 @@ describe('共享 Pixi 角色动作场景', () => {
       stop = vi.fn();
       update = vi.fn();
       destroy = vi.fn();
-      on = vi.fn((_event: string, listener: () => void) => this.listeners.add(listener));
-      off = vi.fn((_event: string, listener: () => void) => this.listeners.delete(listener));
       gotoAndStop(index: number) { this.currentFrame = index; }
       getBounds() {
         return this.currentFrame === 0
@@ -155,7 +216,7 @@ describe('共享 Pixi 角色动作场景', () => {
       }
       advanceTo(index: number) {
         this.currentFrame = index;
-        for (const listener of this.listeners) listener();
+        this.onFrameChange?.(index);
       }
     }
     class TestApplication {
@@ -222,6 +283,78 @@ describe('共享 Pixi 角色动作场景', () => {
       unsubscribe();
       latestSprites[0]!.advanceTo(0);
       expect(notify).toHaveBeenCalledTimes(1);
+      scene.destroy();
+      expect(latestSprites[0]!.onFrameChange).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('动作构建第二帧缺失资源时释放已创建的子纹理', async () => {
+    const textures: TestTexture[] = [];
+    class TestTexture {
+      source: unknown;
+      frame: { x: number; y: number; width: number; height: number };
+      destroy = vi.fn();
+
+      constructor(options: { source: unknown; frame: { x: number; y: number; width: number; height: number } }) {
+        this.source = options.source;
+        this.frame = options.frame;
+        textures.push(this);
+      }
+
+      static from(image: unknown) {
+        return new TestTexture({
+          source: image,
+          frame: { x: 0, y: 0, width: 1, height: 1 }
+        });
+      }
+    }
+    class TestApplication {
+      canvas = document.createElement('canvas');
+      screen = { width: 100, height: 100 };
+      stage = { addChild: vi.fn(), removeChild: vi.fn() };
+      ticker = { add: vi.fn(), remove: vi.fn(), start: vi.fn(), stop: vi.fn(), started: false };
+      init = vi.fn(async () => undefined);
+      render = vi.fn();
+      destroy = vi.fn();
+    }
+    class TestImage {
+      src = '';
+      decode = vi.fn(async () => undefined);
+    }
+    vi.stubGlobal('Image', TestImage);
+    try {
+      const scene = await createBrowserPixiCharacterScene(
+        document.createElement('div'),
+        async () => ({
+          Application: TestApplication,
+          Texture: TestTexture,
+          AnimatedSprite: class {},
+          Rectangle: class {
+            constructor(
+              readonly x: number,
+              readonly y: number,
+              readonly width: number,
+              readonly height: number
+            ) {}
+          }
+        }) as never
+      );
+      await scene.loadAssets(new Map([['atlas', 'blob:atlas']]));
+
+      expect(() => scene.showAction({
+        ...action,
+        frames: [
+          action.frames[0]!,
+          { assetId: 'missing', x: 0, y: 0, width: 16, height: 16 }
+        ]
+      }, {
+        direction: 'right', motionMode: 'static', speed: 1, loop: false
+      })).toThrow('CHARACTER_RUNTIME_ASSET_MISSING');
+
+      expect(textures.find(texture => texture.frame.width === 32)?.destroy)
+        .toHaveBeenCalledWith(false);
       scene.destroy();
     } finally {
       vi.unstubAllGlobals();

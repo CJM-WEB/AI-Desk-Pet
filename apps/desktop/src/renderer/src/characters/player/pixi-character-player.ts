@@ -80,6 +80,11 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
         state.actions.flatMap(action => action.frames.map(frame => frame.assetId))
       ))
     );
+    for (const assetId of actionAssetIds) {
+      if (!assets.atlasUrls.has(assetId)) {
+        return Promise.reject(new Error('CHARACTER_RUNTIME_ASSET_MISSING'));
+      }
+    }
     const visualAssets = new Map<string, string>();
     for (const [assetId, url] of assets.atlasUrls) {
       if (actionAssetIds.has(assetId)) visualAssets.set(assetId, url);
@@ -138,7 +143,8 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   }
 
   isTickerRunning(): boolean {
-    return isLegacyScene(this.scene) && this.scene.isTickerRunning();
+    if (isLegacyScene(this.scene)) return this.scene.isTickerRunning();
+    return hasTickerState(this.scene) && this.scene.isTickerRunning();
   }
 
   destroy(): void {
@@ -190,6 +196,15 @@ function isLegacyScene(
 }
 
 /**
+ * 内部能力：不扩展共享公开接口，同时保留旧播放器的 ticker 状态查询。
+ */
+function hasTickerState(
+  scene: PixiCharacterScene
+): scene is PixiCharacterScene & { isTickerRunning(): boolean } {
+  return 'isTickerRunning' in scene && typeof scene.isTickerRunning === 'function';
+}
+
+/**
  * 使用动作最大帧包围盒求统一缩放，避免播放时尺寸变化或越出画布。
  */
 export function fitCharacterFrames(
@@ -227,7 +242,6 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
   private direction: 'left' | 'right' = 'right';
   private loadRevision = 0;
   private destroyed = false;
-  private frameChangeListener: (() => void) | null = null;
   private readonly frameListeners = new Set<() => void>();
 
   private constructor(
@@ -299,14 +313,22 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
       return;
     }
 
-    this.frameTextures = action.frames.map(frame => {
-      const baseTexture = this.baseTextures.get(frame.assetId);
-      if (!baseTexture) throw new Error('CHARACTER_RUNTIME_ASSET_MISSING');
-      return new this.pixi.Texture({
-        source: baseTexture.source,
-        frame: new this.pixi.Rectangle(frame.x, frame.y, frame.width, frame.height)
-      });
-    });
+    const frameTextures: PixiTexture[] = [];
+    try {
+      for (const frame of action.frames) {
+        const baseTexture = this.baseTextures.get(frame.assetId);
+        if (!baseTexture) throw new Error('CHARACTER_RUNTIME_ASSET_MISSING');
+        frameTextures.push(new this.pixi.Texture({
+          source: baseTexture.source,
+          frame: new this.pixi.Rectangle(frame.x, frame.y, frame.width, frame.height)
+        }));
+      }
+    } catch (error) {
+      for (const texture of frameTextures) texture.destroy(false);
+      this.action = null;
+      throw error;
+    }
+    this.frameTextures = frameTextures;
 
     const frames = this.frameTextures.map((texture, index) => ({
       texture,
@@ -320,8 +342,7 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
       action.anchors.ground.y
     );
     this.sprite = sprite;
-    this.frameChangeListener = () => this.notifyFrameListeners();
-    sprite.on('frameChange', this.frameChangeListener);
+    sprite.onFrameChange = () => this.notifyFrameListeners();
     this.application.stage.addChild(sprite);
     this.applyLayout();
     const frameIndex = clamp(
@@ -409,16 +430,13 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
   private releaseAnimation(): void {
     this.stop();
     if (this.sprite) {
-      if (this.frameChangeListener) {
-        this.sprite.off('frameChange', this.frameChangeListener);
-      }
+      delete this.sprite.onFrameChange;
       this.application.stage.removeChild(this.sprite);
       this.sprite.destroy();
       this.sprite = null;
     }
     for (const texture of this.frameTextures) texture.destroy(false);
     this.frameTextures = [];
-    this.frameChangeListener = null;
     this.action = null;
   }
 
