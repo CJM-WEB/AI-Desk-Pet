@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render } from '@testing-library/react';
-import { createElement } from 'react';
+import { createElement, Profiler } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileSwarm } from '../components/home-experience/FileSwarm';
 import { SharedVisualLayers } from '../components/website-experience/SharedVisualLayers';
@@ -156,6 +156,50 @@ describe('反馈文件预览内容源', () => {
 });
 
 describe('FileSwarm 预览内容源生命周期', () => {
+  it('普通 RAF 帧仅推进剩余时间时不提交文件粒子列表', () => {
+    vi.useFakeTimers();
+    let frameCallback: FrameRequestCallback | null = null;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frameCallback = callback;
+      return 1;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const onRender = vi.fn();
+    const { getByTestId } = render(createElement(
+      Profiler,
+      { id: 'file-swarm', onRender },
+      createElement(FileSwarm, {
+        running: true,
+        generating: true,
+        exitProgress: 0,
+        pointer: { x: 0, y: 0 },
+        isPaused: false,
+        maxActive: 1,
+        safeZoneRatio: 0,
+        reducedMotion: false
+      })
+    ));
+
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    act(() => {
+      const baselineFrame = frameCallback as FrameRequestCallback | null;
+      baselineFrame?.(0);
+      const enteringFrame = frameCallback as FrameRequestCallback | null;
+      enteringFrame?.(16);
+    });
+    expect(getByTestId('file-icon').getAttribute('data-phase')).toBe('floating');
+    const commitCountBeforeOrdinaryFrame = onRender.mock.calls.length;
+
+    act(() => {
+      const ordinaryFrame = frameCallback as FrameRequestCallback | null;
+      ordinaryFrame?.(32);
+    });
+
+    expect(onRender).toHaveBeenCalledTimes(commitCountBeforeOrdinaryFrame);
+  });
+
   it('在粒子生成、移除和卸载时绑定并释放内容快照', () => {
     vi.useFakeTimers();
     const bindToSpawn = vi.fn(() => ['类型 反馈', '昵称 小满', '正文 内容', '点赞 1']);

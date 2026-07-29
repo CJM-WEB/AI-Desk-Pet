@@ -231,11 +231,12 @@ export function FileSwarm({
   const commitParticles = useCallback((
     update: (current: FileParticle[]) => FileParticle[]
   ) => {
-    setParticles((current) => {
-      const next = update(current);
-      particlesRef.current = next;
-      return next;
-    });
+    const current = particlesRef.current;
+    const next = update(current);
+    particlesRef.current = next;
+    if (next !== current) {
+      setParticles(next);
+    }
   }, []);
 
   const commitActivePreview = useCallback((next: ActivePreview | null) => {
@@ -524,6 +525,12 @@ export function FileSwarm({
       const current = particlesRef.current;
       const next = advanceSwarmFrame(current, frameStep.deltaMs);
       if (next !== current) {
+        // RAF 始终推进 ref，仅将集合或阶段变化同步到 React。
+        const shouldCommit = next.length !== current.length
+          || next.some((particle, index) => {
+            const previous = current[index];
+            return previous?.id !== particle.id || previous.phase !== particle.phase;
+          });
         const nextIds = new Set(next.map((particle) => particle.id));
         releasePreviewBindings(
           current
@@ -531,7 +538,9 @@ export function FileSwarm({
             .map((particle) => particle.id)
         );
         particlesRef.current = next;
-        setParticles(next);
+        if (shouldCommit) {
+          setParticles(next);
+        }
 
         const activeId = activePreviewRef.current?.particleId;
         if (activeId && !next.some((particle) => particle.id === activeId)) {
