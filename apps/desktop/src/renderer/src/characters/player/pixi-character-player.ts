@@ -8,6 +8,11 @@ import type {
   DraftActionClip
 } from '@myself/character-runtime';
 import type { CharacterAssetBundle } from './character-resource-cache';
+import {
+  hitTestCharacterAlpha,
+  type AlphaMask,
+  type CharacterHitSnapshot
+} from './character-alpha-hit-tester';
 
 export interface CharacterPlayerPort {
   load(manifest: CharacterManifestV1, assets: CharacterAssetBundle): Promise<void>;
@@ -15,6 +20,8 @@ export interface CharacterPlayerPort {
   setDirection(direction: 'left' | 'right'): void;
   getAnchor(name: keyof AnchorSet): AnchorPoint | null;
   getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
+  hitTest(point: { x: number; y: number }, threshold?: number): boolean;
+  subscribeHitRegion(listener: () => void): () => void;
   destroy(): void;
 }
 
@@ -40,6 +47,7 @@ export interface PixiCharacterScene {
     frameIndex: number;
     bounds: { x: number; y: number; width: number; height: number };
   } | null;
+  getHitSnapshot?(): CharacterHitSnapshot | null;
   subscribeFrame(listener: () => void): () => void;
   destroy(): void;
 }
@@ -63,8 +71,14 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   private direction: 'left' | 'right' = 'right';
   private currentSelection: ActionSelectionResult | null = null;
   private currentMotionMode: CharacterMotionMode | null = null;
+  private readonly hitRegionListeners = new Set<() => void>();
+  private readonly unsubscribeSceneFrame: (() => void) | null;
 
-  constructor(private readonly scene: PixiCharacterScene | LegacyPixiCharacterScene) {}
+  constructor(private readonly scene: PixiCharacterScene | LegacyPixiCharacterScene) {
+    this.unsubscribeSceneFrame = isLegacyScene(scene)
+      ? null
+      : scene.subscribeFrame(() => this.notifyHitRegion());
+  }
 
   static async create(
     container: HTMLElement,
@@ -89,7 +103,7 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     for (const [assetId, url] of assets.atlasUrls) {
       if (actionAssetIds.has(assetId)) visualAssets.set(assetId, url);
     }
-    return this.scene.loadAssets(visualAssets);
+    return this.scene.loadAssets(visualAssets).then(() => this.notifyHitRegion());
   }
 
   play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void {
@@ -105,6 +119,7 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       speed: 1,
       loop: selection.action.loop
     });
+    this.notifyHitRegion();
   }
 
   setDirection(direction: 'left' | 'right'): void {
@@ -123,6 +138,7 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       speed: 1,
       loop: this.currentSelection.action.loop
     });
+    this.notifyHitRegion();
   }
 
   getAnchor(name: keyof AnchorSet): AnchorPoint | null {
@@ -142,6 +158,19 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     return this.scene.getCurrentFrame()?.bounds ?? null;
   }
 
+  /** 仅复用正式场景已生成的快照；旧场景或掩码不可用时默认穿透。 */
+  hitTest(point: { x: number; y: number }, threshold?: number): boolean {
+    if (this.destroyed || isLegacyScene(this.scene) || !this.scene.getHitSnapshot) return false;
+    return hitTestCharacterAlpha(this.scene.getHitSnapshot(), point, threshold);
+  }
+
+  /** 订阅动作、帧、方向及资源变化后的命中区域更新。 */
+  subscribeHitRegion(listener: () => void): () => void {
+    if (this.destroyed) return () => undefined;
+    this.hitRegionListeners.add(listener);
+    return () => this.hitRegionListeners.delete(listener);
+  }
+
   isTickerRunning(): boolean {
     if (isLegacyScene(this.scene)) return this.scene.isTickerRunning();
     return hasTickerState(this.scene) && this.scene.isTickerRunning();
@@ -150,6 +179,8 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.unsubscribeSceneFrame?.();
+    this.hitRegionListeners.clear();
     if (isLegacyScene(this.scene)) {
       try {
         this.scene.stop();
@@ -159,6 +190,11 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       return;
     }
     this.scene.destroy();
+  }
+
+  private notifyHitRegion(): void {
+    if (this.destroyed) return;
+    for (const listener of this.hitRegionListeners) listener();
   }
 }
 
@@ -236,6 +272,7 @@ export function fitCharacterFrames(
  */
 class BrowserPixiCharacterScene implements PixiCharacterScene {
   private readonly baseTextures = new Map<string, PixiTexture>();
+  private readonly alphaMasks = new Map<string, AlphaMask>();
   private frameTextures: PixiTexture[] = [];
   private sprite: PixiAnimatedSprite | null = null;
   private action: ActionClip | DraftActionClip | null = null;
@@ -270,27 +307,29 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
 
   async loadAssets(assets: CharacterVisualAssets): Promise<void> {
     const revision = ++this.loadRevision;
-    const entries: Array<readonly [string, PixiTexture]> = [];
+    const entries: Array<{ assetId: string; texture: PixiTexture; mask: AlphaMask | null }> = [];
     try {
       for (const [assetId, url] of assets) {
         const image = await loadImage(url);
         const texture = this.pixi.Texture.from(image, true);
-        entries.push([assetId, texture]);
+        entries.push({ assetId, texture, mask: extractAlphaMask(image) });
       }
     } catch (error) {
-      for (const [, texture] of entries) texture.destroy(true);
+      for (const { texture } of entries) texture.destroy(true);
       throw error;
     }
 
     if (this.destroyed || revision !== this.loadRevision) {
-      for (const [, texture] of entries) texture.destroy(true);
+      for (const { texture } of entries) texture.destroy(true);
       return;
     }
 
     this.releaseAnimation();
     this.releaseBaseTextures();
-    for (const [assetId, texture] of entries) {
+    this.alphaMasks.clear();
+    for (const { assetId, texture, mask } of entries) {
       this.baseTextures.set(assetId, texture);
+      if (mask) this.alphaMasks.set(assetId, mask);
     }
   }
 
@@ -382,6 +421,27 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     };
   }
 
+  /** 由 Pixi 实际布局边界、当前源帧和资源 Alpha 掩码组成命中快照。 */
+  getHitSnapshot(): CharacterHitSnapshot | null {
+    const currentFrame = this.getCurrentFrame();
+    if (!currentFrame) return null;
+    const sourceRect = currentFrame.action.frames[currentFrame.frameIndex];
+    if (!sourceRect) return null;
+    const mask = this.alphaMasks.get(sourceRect.assetId);
+    if (!mask) return null;
+    return {
+      mask,
+      sourceRect: {
+        x: sourceRect.x,
+        y: sourceRect.y,
+        width: sourceRect.width,
+        height: sourceRect.height
+      },
+      frameBounds: currentFrame.bounds,
+      direction: this.direction
+    };
+  }
+
   subscribeFrame(listener: () => void): () => void {
     this.frameListeners.add(listener);
     return () => this.frameListeners.delete(listener);
@@ -406,6 +466,7 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     this.stop();
     this.releaseAnimation();
     this.releaseBaseTextures();
+    this.alphaMasks.clear();
     this.frameListeners.clear();
     this.application.destroy({ removeView: true }, { children: true });
   }
@@ -512,4 +573,29 @@ async function loadImage(url: string): Promise<HTMLImageElement> {
     image.onerror = () => reject(new Error('CHARACTER_RUNTIME_ASSET_DECODE_FAILED'));
   });
   return image;
+}
+
+/** 在图片解码后采样一次 Alpha；Canvas 不可用时保留渲染并让命中默认穿透。 */
+function extractAlphaMask(image: HTMLImageElement): AlphaMask | null {
+  try {
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+      return null;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+    context.drawImage(image, 0, 0);
+    const rgba = context.getImageData(0, 0, width, height).data;
+    const bytes = new Uint8Array(width * height);
+    for (let pixel = 0; pixel < bytes.length; pixel += 1) {
+      bytes[pixel] = rgba[pixel * 4 + 3]!;
+    }
+    return { width, height, bytes };
+  } catch {
+    return null;
+  }
 }

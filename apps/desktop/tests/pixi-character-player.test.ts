@@ -13,6 +13,7 @@ import {
   PixiCharacterPlayer,
   type PixiCharacterScene
 } from '../src/renderer/src/characters/player/pixi-character-player';
+import type { CharacterHitSnapshot } from '../src/renderer/src/characters/player/character-alpha-hit-tester';
 
 const action: DraftActionClip = {
   id: 'idle',
@@ -47,6 +48,41 @@ function manifest(): CharacterManifestV1 {
 }
 
 describe('共享 Pixi 角色动作场景', () => {
+  test('播放器使用正式场景快照命中，并将帧变更通知给可取消订阅者', () => {
+    let frameListener: (() => void) | undefined;
+    const currentSnapshot: CharacterHitSnapshot = {
+      mask: { width: 1, height: 1, bytes: new Uint8Array([255]) },
+      sourceRect: { x: 0, y: 0, width: 1, height: 1 },
+      frameBounds: { x: 10, y: 20, width: 20, height: 20 },
+      direction: 'right'
+    };
+    const scene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn().mockReturnValue(null),
+      getHitSnapshot: vi.fn(() => currentSnapshot),
+      subscribeFrame: vi.fn(listener => {
+        frameListener = listener;
+        return vi.fn();
+      }),
+      destroy: vi.fn()
+    } satisfies PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
+    const player = new PixiCharacterPlayer(scene);
+    const notify = vi.fn();
+    const unsubscribe = player.subscribeHitRegion(notify);
+
+    expect(player.hitTest({ x: 20, y: 30 })).toBe(true);
+    frameListener?.();
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    frameListener?.();
+    expect(notify).toHaveBeenCalledTimes(1);
+    player.destroy();
+    frameListener?.();
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
   test('播放器只将动作帧白名单 Blob URL 映射给共享场景并展示动作', async () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
@@ -357,6 +393,134 @@ describe('共享 Pixi 角色动作场景', () => {
         .toHaveBeenCalledWith(false);
       scene.destroy();
     } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('图片解码时仅采样一次 Alpha，命中快照读取不再访问 Canvas', async () => {
+    const drawImage = vi.fn();
+    const getImageData = vi.fn(() => ({ data: new Uint8ClampedArray(32 * 32 * 4).fill(255) }));
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage,
+      getImageData
+    } as never);
+    class TestTexture {
+      source: unknown;
+      frame: { x: number; y: number; width: number; height: number };
+      constructor(options: { source: unknown; frame: { x: number; y: number; width: number; height: number } }) {
+        this.source = options.source;
+        this.frame = options.frame;
+      }
+      static from(image: unknown) { return new TestTexture({ source: image, frame: { x: 0, y: 0, width: 1, height: 1 } }); }
+      destroy = vi.fn();
+    }
+    class TestAnimatedSprite {
+      currentFrame = 0;
+      loop = false;
+      anchor = { set: vi.fn() };
+      scale = { set: vi.fn() };
+      position = { set: vi.fn() };
+      gotoAndStop = vi.fn();
+      play = vi.fn();
+      stop = vi.fn();
+      update = vi.fn();
+      destroy = vi.fn();
+      getBounds = () => ({ x: 0, y: 0, width: 32, height: 32 });
+      constructor(readonly frames: Array<{ texture: TestTexture; time: number }>) {}
+    }
+    class TestApplication {
+      canvas = document.createElement('canvas');
+      screen = { width: 100, height: 100 };
+      stage = { addChild: vi.fn(), removeChild: vi.fn() };
+      ticker = { add: vi.fn(), remove: vi.fn(), start: vi.fn(), stop: vi.fn(), started: false };
+      init = vi.fn(async () => undefined);
+      render = vi.fn();
+      destroy = vi.fn();
+    }
+    class TestImage {
+      src = '';
+      naturalWidth = 32;
+      naturalHeight = 32;
+      decode = vi.fn(async () => undefined);
+    }
+    vi.stubGlobal('Image', TestImage);
+    try {
+      const scene = await createBrowserPixiCharacterScene(document.createElement('div'), async () => ({
+        Application: TestApplication,
+        Texture: TestTexture,
+        AnimatedSprite: TestAnimatedSprite,
+        Rectangle: class { constructor(readonly x: number, readonly y: number, readonly width: number, readonly height: number) {} }
+      }) as never);
+      await scene.loadAssets(new Map([['atlas', 'blob:atlas']]));
+      scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
+
+      const hitScene = scene as PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
+      expect(hitScene.getHitSnapshot()?.mask.bytes[0]).toBe(255);
+      expect(hitScene.getHitSnapshot()?.sourceRect).toEqual({ x: 0, y: 0, width: 32, height: 32 });
+      expect(drawImage).toHaveBeenCalledTimes(1);
+      expect(getImageData).toHaveBeenCalledTimes(1);
+      scene.destroy();
+    } finally {
+      getContext.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('过期资源加载提取的 Alpha 不覆盖较新资源快照', async () => {
+    let resolveOldDecode: (() => void) | undefined;
+    let sampledUrl = '';
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: vi.fn((image: { src: string }) => { sampledUrl = image.src; }),
+      getImageData: vi.fn(() => ({
+        data: new Uint8ClampedArray(32 * 32 * 4).map((_, index) => index % 4 === 3 && sampledUrl === 'blob:new' ? 255 : 0)
+      }))
+    } as never);
+    class TestTexture {
+      source: unknown;
+      frame: { x: number; y: number; width: number; height: number };
+      constructor(options: { source: unknown; frame: { x: number; y: number; width: number; height: number } }) { this.source = options.source; this.frame = options.frame; }
+      static from(image: unknown) { return new TestTexture({ source: image, frame: { x: 0, y: 0, width: 1, height: 1 } }); }
+      destroy = vi.fn();
+    }
+    class TestAnimatedSprite {
+      currentFrame = 0;
+      loop = false;
+      anchor = { set: vi.fn() };
+      scale = { set: vi.fn() };
+      position = { set: vi.fn() };
+      gotoAndStop = vi.fn(); play = vi.fn(); stop = vi.fn(); update = vi.fn(); destroy = vi.fn();
+      getBounds = () => ({ x: 0, y: 0, width: 32, height: 32 });
+      constructor(readonly frames: Array<{ texture: TestTexture; time: number }>) {}
+    }
+    class TestApplication {
+      canvas = document.createElement('canvas'); screen = { width: 100, height: 100 };
+      stage = { addChild: vi.fn(), removeChild: vi.fn() };
+      ticker = { add: vi.fn(), remove: vi.fn(), start: vi.fn(), stop: vi.fn(), started: false };
+      init = vi.fn(async () => undefined); render = vi.fn(); destroy = vi.fn();
+    }
+    class TestImage {
+      src = ''; naturalWidth = 32; naturalHeight = 32;
+      decode = vi.fn(() => this.src === 'blob:old'
+        ? new Promise<void>(resolve => { resolveOldDecode = resolve; })
+        : Promise.resolve());
+    }
+    vi.stubGlobal('Image', TestImage);
+    try {
+      const scene = await createBrowserPixiCharacterScene(document.createElement('div'), async () => ({
+        Application: TestApplication, Texture: TestTexture, AnimatedSprite: TestAnimatedSprite,
+        Rectangle: class { constructor(readonly x: number, readonly y: number, readonly width: number, readonly height: number) {} }
+      }) as never);
+      const oldLoad = scene.loadAssets(new Map([['atlas', 'blob:old']]));
+      await scene.loadAssets(new Map([['atlas', 'blob:new']]));
+      resolveOldDecode?.();
+      await oldLoad;
+      scene.showAction(action, { direction: 'right', motionMode: 'static', speed: 1, loop: false });
+
+      const hitScene = scene as PixiCharacterScene & { getHitSnapshot(): CharacterHitSnapshot | null };
+      expect(hitScene.getHitSnapshot()?.mask.bytes[0]).toBe(255);
+      scene.destroy();
+    } finally {
+      getContext.mockRestore();
       vi.unstubAllGlobals();
     }
   });
