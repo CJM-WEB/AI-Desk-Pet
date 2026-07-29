@@ -13,8 +13,14 @@ export interface SharedPetDetailDialogProps {
 }
 
 function formatSize(bytes: number, locale: string): string {
-  const value = bytes < 1024 ? bytes : bytes / 1024;
-  const unit = bytes < 1024 ? 'B' : 'KB';
+  const units = ['B', 'KB', 'MB'] as const;
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const unit = units[unitIndex]!;
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value)} ${unit}`;
 }
 

@@ -9,6 +9,7 @@ import {
   type SharedPetDraft
 } from '../components/website-experience/community/SharedPetComposerDialog';
 import { SharedPetDetailDialog } from '../components/website-experience/community/SharedPetDetailDialog';
+import { SharedPetDialogShell } from '../components/website-experience/community/SharedPetDialogShell';
 import { useObjectUrl } from '../components/website-experience/community/use-object-url';
 import type { SharedPetPackageSummary } from '../components/website-experience/community/shared-pet-types';
 
@@ -148,6 +149,88 @@ describe('共享包弹窗', () => {
     await act(async () => resolveSubmit?.());
   });
 
+  it('提交状态变化不会把焦点恢复到弹窗外', () => {
+    const trigger = document.createElement('button');
+    document.body.append(trigger);
+    trigger.focus();
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetComposerDialog
+          onSubmit={() => new Promise<void>(() => undefined)}
+          onRequestClose={vi.fn()}
+        />
+      </I18nProvider>
+    );
+
+    fireEvent.change(screen.getByLabelText('AI Pet ZIP 文件'), {
+      target: { files: [new File(['zip'], 'pet.zip', { type: 'application/zip' })] }
+    });
+    fireEvent.change(screen.getByLabelText('封面图片'), {
+      target: { files: [new File(['image'], 'cover.png', { type: 'image/png' })] }
+    });
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'My Pet' } });
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: 'My package' } });
+    const submit = screen.getByRole('button', { name: '发布分享' });
+    submit.focus();
+    fireEvent.click(submit);
+
+    const dialog = screen.getByRole('dialog', { name: '分享投稿' });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    trigger.remove();
+  });
+
+  it('没有可聚焦控件时聚焦面板本身', () => {
+    render(
+      <SharedPetDialogShell
+        title="只读内容"
+        closeLabel="关闭"
+        dismissDisabled
+        onRequestClose={vi.fn()}
+      >
+        <p>内容</p>
+      </SharedPetDialogShell>
+    );
+
+    const panel = document.querySelector<HTMLElement>('[data-shared-pet-dialog-panel]');
+    expect(panel?.getAttribute('tabindex')).toBe('-1');
+    expect(document.activeElement).toBe(panel);
+  });
+
+  it('ZIP 和名称错误仅标记对应字段并关联错误说明', () => {
+    const { rerender } = render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetComposerDialog onSubmit={vi.fn()} onRequestClose={vi.fn()} />
+      </I18nProvider>
+    );
+
+    fireEvent.change(screen.getByLabelText('AI Pet ZIP 文件'), {
+      target: { files: [new File(['zip'], 'pet.txt', { type: 'text/plain' })] }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发布分享' }));
+    const packageInput = screen.getByLabelText('AI Pet ZIP 文件');
+    expect(packageInput.getAttribute('aria-invalid')).toBe('true');
+    expect(packageInput.getAttribute('aria-describedby')).toBe(screen.getByRole('alert').id);
+    expect(screen.getByLabelText('描述').getAttribute('aria-invalid')).toBeNull();
+
+    rerender(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetComposerDialog onSubmit={vi.fn()} onRequestClose={vi.fn()} />
+      </I18nProvider>
+    );
+    fireEvent.change(screen.getByLabelText('AI Pet ZIP 文件'), {
+      target: { files: [new File(['zip'], 'pet.zip', { type: 'application/zip' })] }
+    });
+    fireEvent.change(screen.getByLabelText('封面图片'), {
+      target: { files: [new File(['image'], 'cover.png', { type: 'image/png' })] }
+    });
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: '有效描述' } });
+    fireEvent.click(screen.getByRole('button', { name: '发布分享' }));
+    const nameInput = screen.getByLabelText('名称');
+    expect(nameInput.getAttribute('aria-invalid')).toBe('true');
+    expect(nameInput.getAttribute('aria-describedby')).toBe(screen.getByRole('alert').id);
+    expect(screen.getByLabelText('封面图片').getAttribute('aria-invalid')).toBeNull();
+  });
+
   it('Portal 隔离滚轮并通过 Escape、焦点循环恢复入口焦点', () => {
     const trigger = document.createElement('button');
     document.body.append(trigger);
@@ -193,6 +276,19 @@ describe('共享包弹窗', () => {
     expect(dialog.textContent).toContain('12');
     expect(dialog.textContent).toContain('34');
     expect(dialog.textContent).toContain('2026');
+  });
+
+  it('详情将 1 MiB 格式化为 MB', () => {
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetDetailDialog
+          item={{ ...item, packageSizeBytes: 1024 * 1024 }}
+          onRequestClose={vi.fn()}
+        />
+      </I18nProvider>
+    );
+
+    expect(screen.getByRole('dialog', { name: 'My Pet' }).textContent).toContain('1 MB');
   });
 
   it('对象 URL 在 Blob 变更和卸载时释放', () => {

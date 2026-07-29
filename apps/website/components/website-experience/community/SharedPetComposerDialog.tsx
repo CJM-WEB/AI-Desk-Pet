@@ -26,8 +26,32 @@ const EMPTY_DRAFT: SharedPetDraft = {
   coverFile: null
 };
 
-function draftErrorMessage(code: SharedPetErrorCode, t: ReturnType<typeof useI18n>['t']): string {
+type ComposerErrorCode = SharedPetErrorCode | 'PUBLISH_FAILED';
+type DraftField = keyof SharedPetDraft;
+
+function draftErrorMessage(code: ComposerErrorCode, t: ReturnType<typeof useI18n>['t']): string {
   return t(`sharedPet.error.${code}` as Parameters<typeof t>[0]);
+}
+
+function errorField(code: ComposerErrorCode | null): DraftField | null {
+  switch (code) {
+    case 'PACKAGE_REQUIRED':
+    case 'PACKAGE_TYPE_INVALID':
+    case 'PACKAGE_TOO_LARGE':
+      return 'packageFile';
+    case 'COVER_REQUIRED':
+    case 'COVER_TYPE_INVALID':
+    case 'COVER_TOO_LARGE':
+      return 'coverFile';
+    case 'NAME_REQUIRED':
+    case 'NAME_TOO_LONG':
+      return 'name';
+    case 'DESCRIPTION_REQUIRED':
+    case 'DESCRIPTION_TOO_LONG':
+      return 'description';
+    default:
+      return null;
+  }
 }
 
 /** 提供本地校验、文件保留和提交锁定的分享包投稿表单。 */
@@ -41,23 +65,25 @@ export function SharedPetComposerDialog({
   ), [rawTranslate]);
   const errorId = useId();
   const [draft, setDraft] = useState<SharedPetDraft>(EMPTY_DRAFT);
-  const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<ComposerErrorCode | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const invalidField = errorField(errorCode);
+  const error = errorCode ? draftErrorMessage(errorCode, rawTranslate) : null;
 
   const submit = async () => {
     if (submitting) return;
     const validation = validateSharedPetDraft(draft);
     if (!validation.valid) {
-      setError(draftErrorMessage(validation.code, rawTranslate));
+      setErrorCode(validation.code);
       return;
     }
 
-    setError(null);
+    setErrorCode(null);
     setSubmitting(true);
     try {
       await onSubmit(validation.value);
     } catch {
-      setError(t('sharedPet.error.PUBLISH_FAILED'));
+      setErrorCode('PUBLISH_FAILED');
     } finally {
       setSubmitting(false);
     }
@@ -89,9 +115,11 @@ export function SharedPetComposerDialog({
             id="shared-pet-package"
             type="file"
             accept=".zip,application/zip,application/x-zip-compressed"
+            aria-invalid={invalidField === 'packageFile' ? 'true' : undefined}
+            aria-describedby={invalidField === 'packageFile' ? errorId : undefined}
             disabled={submitting}
             onChange={(event) => {
-              setError(null);
+              setErrorCode(null);
               setDraft((current) => ({
                 ...current,
                 packageFile: event.target.files?.[0] ?? null
@@ -105,9 +133,11 @@ export function SharedPetComposerDialog({
             id="shared-pet-cover"
             type="file"
             accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+            aria-invalid={invalidField === 'coverFile' ? 'true' : undefined}
+            aria-describedby={invalidField === 'coverFile' ? errorId : undefined}
             disabled={submitting}
             onChange={(event) => {
-              setError(null);
+              setErrorCode(null);
               setDraft((current) => ({
                 ...current,
                 coverFile: event.target.files?.[0] ?? null
@@ -121,9 +151,11 @@ export function SharedPetComposerDialog({
             id="shared-pet-name"
             value={draft.name}
             maxLength={30}
+            aria-invalid={invalidField === 'name' ? 'true' : undefined}
+            aria-describedby={invalidField === 'name' ? errorId : undefined}
             disabled={submitting}
             onChange={(event) => {
-              setError(null);
+              setErrorCode(null);
               setDraft((current) => ({ ...current, name: event.target.value }));
             }}
           />
@@ -134,11 +166,11 @@ export function SharedPetComposerDialog({
             id="shared-pet-description"
             value={draft.description}
             maxLength={500}
-            aria-invalid={error ? 'true' : undefined}
-            aria-describedby={error ? errorId : undefined}
+            aria-invalid={invalidField === 'description' ? 'true' : undefined}
+            aria-describedby={invalidField === 'description' ? errorId : undefined}
             disabled={submitting}
             onChange={(event) => {
-              setError(null);
+              setErrorCode(null);
               setDraft((current) => ({ ...current, description: event.target.value }));
             }}
           />

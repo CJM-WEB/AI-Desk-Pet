@@ -88,7 +88,7 @@
 
 .dialogFooter button:focus-visible,
 .iconButton:focus-visible,
-.card:focus-visible,
+.cardOpenButton:focus-visible,
 .field input:focus-visible,
 .field textarea:focus-visible {
   outline: 3px solid rgb(0, 96, 255);
@@ -202,7 +202,7 @@
 .card {
   min-width: 0;
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
   padding: 12px;
@@ -215,6 +215,21 @@
 
 .card:hover {
   background: rgb(226, 226, 226);
+}
+
+.cardOpenButton {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .cardCover {
@@ -269,6 +284,10 @@
   }
 
   .card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cardOpenButton {
     grid-template-columns: 72px minmax(0, 1fr);
   }
 
@@ -278,7 +297,6 @@
   }
 
   .cardActions {
-    grid-column: 1 / -1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

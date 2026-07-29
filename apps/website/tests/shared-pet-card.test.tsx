@@ -82,4 +82,34 @@ describe('共享包卡片', () => {
     expect(screen.getByRole('button', { name: '下载 My Pet' })
       .getAttribute('title')).toBe('下载 My Pet');
   });
+
+  it('详情入口为独立按钮，键盘操作不会触发相邻图标动作', () => {
+    const onOpen = vi.fn();
+    const onLike = vi.fn();
+    const onDownload = vi.fn();
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetCard
+          item={item}
+          onOpen={onOpen}
+          onLike={onLike}
+          onDownload={onDownload}
+        />
+      </I18nProvider>
+    );
+
+    const open = screen.getByRole('button', { name: '打开 My Pet 的详情' });
+    const like = screen.getByRole('button', { name: '点赞 My Pet' });
+    const download = screen.getByRole('button', { name: '下载 My Pet' });
+    expect(open.tagName).toBe('BUTTON');
+    expect(open.contains(like)).toBe(false);
+    expect(open.contains(download)).toBe(false);
+
+    fireEvent.keyDown(open, { key: 'Enter' });
+    fireEvent.keyDown(like, { key: ' ' });
+    fireEvent.keyDown(download, { key: 'Enter' });
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onLike).toHaveBeenCalledTimes(1);
+    expect(onDownload).toHaveBeenCalledTimes(1);
+  });
 });

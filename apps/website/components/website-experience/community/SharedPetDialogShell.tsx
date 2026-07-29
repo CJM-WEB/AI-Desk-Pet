@@ -28,6 +28,10 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])'
 ].join(',');
 
+function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
+  return Array.from(container?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []);
+}
+
 /** 统一根级弹窗的焦点、键盘与章节输入隔离行为。 */
 export function SharedPetDialogShell({
   title,
@@ -40,7 +44,10 @@ export function SharedPetDialogShell({
   const titleId = useId();
   const backdropRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dismissDisabledRef = useRef(dismissDisabled);
+  const onRequestCloseRef = useRef(onRequestClose);
+  dismissDisabledRef.current = dismissDisabled;
+  onRequestCloseRef.current = onRequestClose;
 
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement
@@ -50,7 +57,7 @@ export function SharedPetDialogShell({
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        if (!dismissDisabled) onRequestClose();
+        if (!dismissDisabledRef.current) onRequestCloseRef.current();
         return;
       }
 
@@ -60,11 +67,10 @@ export function SharedPetDialogShell({
       }
 
       event.stopPropagation();
-      const focusable = Array.from(
-        panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? []
-      );
+      const focusable = getFocusableElements(panelRef.current);
       if (focusable.length === 0) {
         event.preventDefault();
+        panelRef.current?.focus();
         return;
       }
       const first = focusable[0]!;
@@ -80,13 +86,18 @@ export function SharedPetDialogShell({
       }
     };
 
-    closeButtonRef.current?.focus();
+    const focusable = getFocusableElements(panelRef.current);
+    (focusable[0] ?? panelRef.current)?.focus();
     document.addEventListener('keydown', handleKeyDown, true);
     return () => {
       document.removeEventListener('keydown', handleKeyDown, true);
       previousFocus?.focus();
     };
-  }, [dismissDisabled, onRequestClose]);
+  }, []);
+
+  const requestClose = () => {
+    if (!dismissDisabledRef.current) onRequestCloseRef.current();
+  };
 
   useEffect(() => {
     const backdrop = backdropRef.current;
@@ -114,9 +125,7 @@ export function SharedPetDialogShell({
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
-      onClick={() => {
-        if (!dismissDisabled) onRequestClose();
-      }}
+      onClick={requestClose}
       onPointerDown={(event) => event.stopPropagation()}
       onPointerMove={(event) => event.stopPropagation()}
       onPointerUp={(event) => event.stopPropagation()}
@@ -126,18 +135,18 @@ export function SharedPetDialogShell({
         ref={panelRef}
         className={styles.dialogPanel}
         data-shared-pet-dialog-panel
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.dialogHeader}>
           <h3 id={titleId}>{title}</h3>
           <button
-            ref={closeButtonRef}
             className={styles.iconButton}
             type="button"
             aria-label={closeLabel}
             title={closeLabel}
             disabled={dismissDisabled}
-            onClick={onRequestClose}
+            onClick={requestClose}
           >
             <X aria-hidden="true" />
           </button>
