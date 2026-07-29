@@ -406,9 +406,9 @@ export function FeedbackChapter({
                 }}
               >
                 <span className={styles.feedbackActionName}>{action.label}</span>
-                <span className={styles.feedbackActionMeta}>
-                  {action.kind ? '打开声音档案' : '编辑器预留入口'}
-                </span>
+                {!action.kind ? (
+                  <span className={styles.feedbackActionMeta}>编辑器预留入口</span>
+                ) : null}
               </button>
             );
           })}

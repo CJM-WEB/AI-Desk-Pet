@@ -174,6 +174,8 @@ describe('反馈章节', () => {
     expect(html).toContain('data-testid="pointer-tilt-text"');
     expect(html.indexOf('用户反馈')).toBeLessThan(html.indexOf('更新建议'));
     expect(html.indexOf('更新建议')).toBeLessThan(html.indexOf('新建投稿'));
+    expect(html).not.toContain('打开声音档案');
+    expect(html).toContain('编辑器预留入口');
     expect(html).toContain('data-input-scope="local"');
   });
 
