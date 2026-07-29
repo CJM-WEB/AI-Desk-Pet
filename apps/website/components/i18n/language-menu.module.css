@@ -8,9 +8,9 @@
 
 .trigger,
 .option {
-  border: 1px solid rgba(15, 23, 42, 0.16);
-  background: rgba(255, 255, 255, 0.9);
-  color: #172033;
+  border: 2px solid rgb(28, 28, 28);
+  background: rgba(235, 235, 235, 0.94);
+  color: rgb(28, 28, 28);
   font: inherit;
 }
 
@@ -33,8 +33,9 @@
 .trigger:focus-visible,
 .option:hover,
 .option:focus-visible {
-  border-color: #2563eb;
-  outline: none;
+  border-color: rgb(28, 28, 28);
+  outline: 3px solid rgb(128, 128, 128);
+  outline-offset: 2px;
 }
 
 .menu {
@@ -42,9 +43,9 @@
   min-width: 10rem;
   margin-top: 0.5rem;
   overflow: hidden;
-  border: 1px solid rgba(15, 23, 42, 0.16);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+  border: 2px solid rgb(28, 28, 28);
+  background: rgba(235, 235, 235, 0.96);
+  box-shadow: 0 8px 20px rgba(28, 28, 28, 0.16);
 }
 
 .option {

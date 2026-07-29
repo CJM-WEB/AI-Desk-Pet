@@ -1,7 +1,7 @@
 'use client';
 
 import { Check, Languages } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Locale } from './i18n-types';
 import { useI18n } from './I18nProvider';
 import styles from './language-menu.module.css';
@@ -10,7 +10,35 @@ const languageOptions: readonly Locale[] = ['zh-CN', 'en'];
 
 export function LanguageMenu() {
   const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const { locale, setLocale, t } = useI18n();
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+
+      setIsOpen(false);
+      triggerRef.current?.focus();
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && containerRef.current?.contains(event.target)) {
+        return;
+      }
+
+      setIsOpen(false);
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('pointerdown', handlePointerDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [isOpen]);
 
   const selectLocale = (nextLocale: Locale) => {
     setLocale(nextLocale);
@@ -18,8 +46,9 @@ export function LanguageMenu() {
   };
 
   return (
-    <div className={styles.controlLayer}>
+    <div ref={containerRef} className={styles.controlLayer}>
       <button
+        ref={triggerRef}
         type="button"
         className={styles.trigger}
         aria-haspopup="menu"

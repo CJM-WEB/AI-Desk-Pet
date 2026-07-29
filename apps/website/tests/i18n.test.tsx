@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   I18nProvider,
@@ -15,6 +15,7 @@ function Probe() {
 }
 
 afterEach(() => {
+  cleanup();
   localStorage.clear();
   document.documentElement.lang = '';
 });
@@ -49,5 +50,29 @@ describe('官网国际化核心', () => {
     await waitFor(() => expect(screen.getByText(/^zh-CN:/)).toBeTruthy());
     expect(localStorage.getItem('ai-pet-locale')).toBe('zh-CN');
     expect(document.documentElement.lang).toBe('zh-CN');
+  });
+
+  it('按 Escape 关闭菜单并将焦点返回语言触发器', () => {
+    render(<I18nProvider><LanguageMenu /></I18nProvider>);
+
+    const trigger = screen.getByRole('button', { name: 'language' });
+    fireEvent.click(trigger);
+    expect(screen.getByRole('menu')).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('在菜单容器外按下指针时关闭菜单', () => {
+    render(<I18nProvider><LanguageMenu /></I18nProvider>);
+
+    fireEvent.click(screen.getByRole('button', { name: 'language' }));
+    expect(screen.getByRole('menu')).toBeTruthy();
+
+    fireEvent.pointerDown(document.body);
+
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });
