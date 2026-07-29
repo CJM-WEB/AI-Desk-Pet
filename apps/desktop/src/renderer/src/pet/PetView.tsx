@@ -2,8 +2,7 @@ import {
   useCallback,
   useEffect,
   useRef,
-  useState,
-  type ReactNode
+  useState
 } from 'react';
 import { File as FileIcon } from 'lucide-react';
 import {
@@ -19,6 +18,11 @@ import type {
 import type { ExtensionTriggerDefinition } from '../characters/player/extension-trigger-controller';
 import { presentationFor } from '../character/state-map';
 import { useTaskStore } from '../stores/task-store';
+import {
+  PetInteractionController,
+  createElementBoundsHitTestPort,
+  type CharacterHitTestPort
+} from './pet-interaction-controller';
 import {
   characterErrorCode,
   characterRecoveryMessage
@@ -45,10 +49,17 @@ export interface PetCharacterProps {
 }
 
 /** 只有运行角色加载失败时才会显示此 CSS 备用角色。 */
-export function PetCharacter({ state, motionMode }: PetCharacterProps) {
+export function PetCharacter({
+  state,
+  motionMode,
+  elementRef
+}: PetCharacterProps & {
+  elementRef?: (element: HTMLSpanElement | null) => void;
+}) {
   const presentation = presentationFor(state);
   return (
     <span
+      ref={elementRef}
       className="pet-character"
       data-state={state}
       data-motion={motionMode}
@@ -64,53 +75,6 @@ export function PetCharacter({ state, motionMode }: PetCharacterProps) {
         <span className="pet-state-detail">{presentation.detail}</span>
       </span>
     </span>
-  );
-}
-
-/** 桌宠按钮始终调用 preload 暴露的正式聊天窗口命令。 */
-export function PetOpenChatButton({
-  children,
-  onSingleClick,
-  onDoubleClick,
-  onContextMenu
-}: {
-  children: ReactNode;
-  onSingleClick?: () => void;
-  onDoubleClick?: () => void;
-  onContextMenu?: () => void;
-}) {
-  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearClick = (): void => {
-    if (clickTimer.current !== null) clearTimeout(clickTimer.current);
-    clickTimer.current = null;
-  };
-  useEffect(() => clearClick, []);
-
-  return (
-    <button
-      className="pet-open-chat no-drag"
-      type="button"
-      aria-label="打开与 AI Pet 的聊天"
-      onClick={() => {
-        clearClick();
-        clickTimer.current = setTimeout(() => {
-          clickTimer.current = null;
-          void window.myself.openChat();
-          onSingleClick?.();
-        }, 250);
-      }}
-      onDoubleClick={() => {
-        clearClick();
-        void window.myself.openChat();
-        onDoubleClick?.();
-      }}
-      onContextMenu={() => {
-        clearClick();
-        onContextMenu?.();
-      }}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -134,9 +98,46 @@ export function PetView() {
   const reducedMotion = useReducedMotion();
   const motionMode = motionModeFor(reducedMotion);
   const configureExtensions = useTaskStore(state => state.configureCharacterExtensions);
-  const triggerPointer = useTaskStore(state => state.triggerCharacterPointer);
   const triggerIdle = useTaskStore(state => state.triggerCharacterIdle);
   const applyCharacterMotion = useTaskStore(state => state.applyCharacterMotion);
+  const shellRef = useRef<HTMLElement>(null);
+  const capturedPointerRef = useRef<{
+    pointerId: number;
+    element: HTMLElement;
+  } | null>(null);
+  const formalHitTestPortRef = useRef<CharacterHitTestPort | null>(null);
+  const fallbackElementRef = useRef<HTMLSpanElement | null>(null);
+  const interactionControllerRef = useRef<PetInteractionController | null>(null);
+  if (!interactionControllerRef.current) {
+    interactionControllerRef.current = new PetInteractionController(window.myself, {
+      onDragStart: pointerId => {
+        const shell = shellRef.current;
+        if (!shell || typeof shell.setPointerCapture !== 'function') return;
+        try {
+          shell.setPointerCapture(pointerId);
+          capturedPointerRef.current = { pointerId, element: shell };
+        } catch {
+          capturedPointerRef.current = null;
+        }
+      },
+      onDragEnd: () => {
+        const captured = capturedPointerRef.current;
+        capturedPointerRef.current = null;
+        if (
+          !captured
+          || typeof captured.element.releasePointerCapture !== 'function'
+        ) {
+          return;
+        }
+        try {
+          captured.element.releasePointerCapture(captured.pointerId);
+        } catch {
+          // capture 可能已由平台隐式释放，清理保持幂等。
+        }
+      }
+    });
+  }
+  const interactionController = interactionControllerRef.current;
   const [desktopAnchors, setDesktopAnchors] = useState<CharacterDesktopAnchors>({
     carry: null,
     seat: null,
@@ -174,9 +175,42 @@ export function PetView() {
       carrying: next.carrying
     });
   }, [applyCharacterMotion]);
+  const syncHitTestPort = useCallback((): void => {
+    const formalPort = formalHitTestPortRef.current;
+    const fallbackElement = fallbackElementRef.current;
+    interactionController.setHitTestPort(
+      formalPort
+      ?? (fallbackElement
+        ? createElementBoundsHitTestPort(fallbackElement)
+        : null)
+    );
+  }, [interactionController]);
+  const handleHitTestPortChange = useCallback((
+    port: CharacterHitTestPort | null
+  ): void => {
+    formalHitTestPortRef.current = port;
+    syncHitTestPort();
+  }, [syncHitTestPort]);
+  const handleFallbackElement = useCallback((
+    element: HTMLSpanElement | null
+  ): void => {
+    fallbackElementRef.current = element;
+    syncHitTestPort();
+  }, [syncHitTestPort]);
+
+  useEffect(() => {
+    const cancelDrag = (): void => interactionController.handlePointerCancel();
+    window.addEventListener('blur', cancelDrag);
+    return () => {
+      window.removeEventListener('blur', cancelDrag);
+      interactionController.dispose();
+      interactionControllerRef.current = null;
+    };
+  }, [interactionController]);
 
   return (
     <main
+      ref={shellRef}
       className="pet-shell"
       aria-label="AI Pet 桌宠"
       data-carry-anchor={serializeAnchor(desktopAnchors.carry)}
@@ -184,26 +218,60 @@ export function PetView() {
       data-focus-anchor={serializeAnchor(desktopAnchors.focus)}
       data-character-state={characterState}
       data-extension-states={extensionDefinitions.map(item => item.stateId).join(',')}
+      onPointerMove={event => {
+        interactionController.handlePointerMove({
+          x: event.clientX,
+          y: event.clientY
+        });
+      }}
+      onPointerDown={event => {
+        interactionController.handlePointerMove({
+          x: event.clientX,
+          y: event.clientY
+        });
+        interactionController.handlePointerDown({
+          button: event.button,
+          pointerId: event.pointerId
+        });
+      }}
+      onPointerUp={event => {
+        interactionController.handlePointerMove({
+          x: event.clientX,
+          y: event.clientY
+        });
+        interactionController.handlePointerUp();
+      }}
+      onPointerCancel={() => interactionController.handlePointerCancel()}
+      onLostPointerCapture={() => interactionController.handlePointerCancel()}
+      onContextMenu={event => {
+        event.preventDefault();
+        interactionController.handlePointerMove({
+          x: event.clientX,
+          y: event.clientY
+        });
+        interactionController.handleContextMenu();
+      }}
     >
       <div className="pet-drag-hint" aria-hidden="true">拖动我</div>
-      <PetOpenChatButton
-        onSingleClick={() => triggerPointer('single_click')}
-        onDoubleClick={() => triggerPointer('double_click')}
-        onContextMenu={() => triggerPointer('context_menu')}
-      >
+      <div className="pet-character-surface">
         <CharacterPlayer
           stateId={characterState}
           motionMode={motionMode}
           onExtensionDefinitionsChange={handleExtensionDefinitions}
           onIdleTrigger={triggerIdle}
+          onHitTestPortChange={handleHitTestPortChange}
           onDesktopAnchors={setDesktopAnchors}
           onMotionChange={handleMotionChange}
           onRuntimeError={setRuntimeError}
           fallback={(
-            <PetCharacter state={fallbackState} motionMode={motionMode} />
+            <PetCharacter
+              state={fallbackState}
+              motionMode={motionMode}
+              elementRef={handleFallbackElement}
+            />
           )}
         />
-      </PetOpenChatButton>
+      </div>
       {runtimeError ? (
         <span className="pet-runtime-recovery" role="alert">
           <span>{characterRecoveryMessage(runtimeError).text}</span>

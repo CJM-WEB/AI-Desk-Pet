@@ -11,6 +11,7 @@ import {
   startCharacterMotionTimers
 } from '../src/main/characters/character-motion-service';
 import type { CharacterManifestV1 } from '@myself/character-runtime';
+import { readFileSync } from 'node:fs';
 
 const manifest = {
   version: 1,
@@ -218,6 +219,19 @@ describe('Renderer 角色运动控制器', () => {
 });
 
 describe('Main 角色运动服务', () => {
+  test('桌宠右键菜单只保留受限 IPC 入口并复用同一弹出回调', () => {
+    const source = readFileSync(
+      new URL('../src/main/index.ts', import.meta.url),
+      'utf8'
+    );
+
+    expect(source).not.toContain("pet.webContents.on('context-menu'");
+    expect(source.match(/registerPetWindowInteractionIpc\(/gu)).toHaveLength(1);
+    expect(source).toContain(
+      'registerPetWindowInteractionIpc(\n    ipcMain,\n    petWindowInteraction,\n    pet.webContents,\n    openPetContextMenu'
+    );
+  });
+
   test('窗口真实位置由 Main 推进并受工作区边界约束', () => {
     let now = 0;
     let bounds = { x: 10, y: 10, width: 180, height: 220 };

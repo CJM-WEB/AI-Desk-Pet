@@ -1,20 +1,27 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { StrictMode } from 'react';
 import {
   loadCharacterStartupRecovery,
   PetAnchorOverlays,
-  PetOpenChatButton
+  PetView
 } from '../src/renderer/src/pet/PetView';
 import type { MyselfApi } from '../src/shared/myself-api';
+import { taskStore } from '../src/renderer/src/stores/task-store';
+
+const originalTaskStoreActions = {
+  triggerCharacterPointer: taskStore.getState().triggerCharacterPointer
+};
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  taskStore.setState(originalTaskStoreActions);
 });
 
 test('Renderer 就绪后读取启动恢复快照并保留稳定错误码', async () => {
@@ -111,45 +118,182 @@ describe('桌宠锚点视觉消费者', () => {
   });
 });
 
-describe('桌宠单一点击协调器', () => {
-  test('单击延迟确认后只打开一次聊天并触发单击语义', () => {
-    vi.useFakeTimers();
-    const openChat = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('window', { myself: { openChat } });
-    const onSingleClick = vi.fn();
-    const { getByRole } = render(
-      <PetOpenChatButton onSingleClick={onSingleClick}>角色</PetOpenChatButton>
+function createPetViewApi(): MyselfApi {
+  return {
+    getCharacterRecoverySnapshot: vi.fn(async () => ({ errorCode: null })),
+    getCharacterRuntimeSnapshot: vi.fn(async () => null),
+    subscribeCharacterEvents: vi.fn(() => vi.fn()),
+    setPetMousePassthrough: vi.fn().mockResolvedValue(undefined),
+    beginPetDrag: vi.fn().mockResolvedValue(undefined),
+    endPetDrag: vi.fn().mockResolvedValue(undefined),
+    openPetContextMenu: vi.fn().mockResolvedValue(undefined),
+    openChat: vi.fn().mockResolvedValue(undefined)
+  } as unknown as MyselfApi;
+}
+
+function installPetViewBrowserApi(api: MyselfApi): void {
+  Object.defineProperty(window, 'myself', {
+    configurable: true,
+    value: api
+  });
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    value: vi.fn(() => ({
+      matches: false,
+      media: '',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    }))
+  });
+}
+
+describe('桌宠像素交互接线', () => {
+  test('桌宠容器使用普通 DOM 且不再保留旧按钮与整窗拖拽区域', () => {
+    const css = readFileSync(
+      resolve(process.cwd(), 'src/renderer/src/styles.css'),
+      'utf8'
     );
 
-    fireEvent.click(getByRole('button'));
-    expect(openChat).not.toHaveBeenCalled();
-    act(() => vi.advanceTimersByTime(250));
-    expect(openChat).toHaveBeenCalledOnce();
-    expect(onSingleClick).toHaveBeenCalledOnce();
+    expect(css).not.toMatch(/\.pet-open-chat\b/u);
+    expect(css).not.toMatch(/\.pet-shell\s*\{[^}]*-webkit-app-region:\s*drag/su);
+    expect(css).toMatch(/\.pet-character-surface\s*\{[^}]*width:\s*100%;/su);
   });
 
-  test('双击取消单击语义且只调用一次 openChat', () => {
-    vi.useFakeTimers();
-    const openChat = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('window', { myself: { openChat } });
-    const onSingleClick = vi.fn();
-    const onDoubleClick = vi.fn();
-    const { getByRole } = render(
-      <PetOpenChatButton
-        onSingleClick={onSingleClick}
-        onDoubleClick={onDoubleClick}
-      >
-        角色
-      </PetOpenChatButton>
+  test('备用角色可见区域左键只拖拽，释放后清理 capture 且不聊天或触发扩展', async () => {
+    const api = createPetViewApi();
+    installPetViewBrowserApi(api);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const triggerCharacterPointer = vi.fn();
+    taskStore.setState({ triggerCharacterPointer });
+    const result = render(
+      <StrictMode>
+        <PetView />
+      </StrictMode>
     );
-    const button = getByRole('button');
-    fireEvent.click(button);
-    fireEvent.click(button);
-    fireEvent.doubleClick(button);
-    act(() => vi.advanceTimersByTime(300));
+    const fallback = await waitFor(() => {
+      const element = result.container.querySelector<HTMLElement>('.pet-character');
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    vi.spyOn(fallback, 'getBoundingClientRect').mockReturnValue({
+      x: 10,
+      y: 20,
+      left: 10,
+      top: 20,
+      right: 110,
+      bottom: 140,
+      width: 100,
+      height: 120,
+      toJSON: () => ({})
+    });
+    const shell = result.container.querySelector<HTMLElement>('.pet-shell')!;
+    const setPointerCapture = vi.fn();
+    const releasePointerCapture = vi.fn();
+    Object.assign(shell, { setPointerCapture, releasePointerCapture });
 
-    expect(openChat).toHaveBeenCalledOnce();
-    expect(onSingleClick).not.toHaveBeenCalled();
-    expect(onDoubleClick).toHaveBeenCalledOnce();
+    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 7 });
+    fireEvent.pointerDown(shell, {
+      clientX: 20,
+      clientY: 30,
+      pointerId: 7,
+      button: 0
+    });
+    fireEvent.click(fallback);
+    fireEvent.doubleClick(fallback);
+
+    expect(api.beginPetDrag).toHaveBeenCalledOnce();
+    expect(setPointerCapture).toHaveBeenCalledWith(7);
+    expect(api.openChat).not.toHaveBeenCalled();
+    expect(triggerCharacterPointer).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(shell, { pointerId: 7, button: 0 });
+    expect(api.endPetDrag).toHaveBeenCalledOnce();
+    expect(releasePointerCapture).toHaveBeenCalledWith(7);
+  });
+
+  test('右键先更新坐标，只在备用角色命中时阻止默认菜单并调用单一受限入口', async () => {
+    const api = createPetViewApi();
+    installPetViewBrowserApi(api);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const result = render(<PetView />);
+    const fallback = await waitFor(() => {
+      const element = result.container.querySelector<HTMLElement>('.pet-character');
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    vi.spyOn(fallback, 'getBoundingClientRect').mockReturnValue({
+      x: 10,
+      y: 20,
+      left: 10,
+      top: 20,
+      right: 110,
+      bottom: 140,
+      width: 100,
+      height: 120,
+      toJSON: () => ({})
+    });
+    const shell = result.container.querySelector<HTMLElement>('.pet-shell')!;
+
+    expect(fireEvent.contextMenu(shell, { clientX: 150, clientY: 180 })).toBe(false);
+    expect(api.openPetContextMenu).not.toHaveBeenCalled();
+    expect(fireEvent.contextMenu(shell, { clientX: 20, clientY: 30 })).toBe(false);
+    expect(api.openPetContextMenu).toHaveBeenCalledOnce();
+  });
+
+  test('blur 与卸载幂等结束拖拽并释放订阅后的事件副作用', async () => {
+    const api = createPetViewApi();
+    installPetViewBrowserApi(api);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const result = render(<PetView />);
+    const fallback = await waitFor(() => {
+      const element = result.container.querySelector<HTMLElement>('.pet-character');
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    vi.spyOn(fallback, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 100,
+      bottom: 100,
+      width: 100,
+      height: 100,
+      toJSON: () => ({})
+    });
+    const shell = result.container.querySelector<HTMLElement>('.pet-shell')!;
+    const setPointerCapture = vi.fn();
+    const releasePointerCapture = vi.fn();
+    Object.assign(shell, {
+      setPointerCapture,
+      releasePointerCapture
+    });
+    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 2 });
+    fireEvent.pointerDown(shell, {
+      clientX: 20,
+      clientY: 30,
+      pointerId: 2,
+      button: 0
+    });
+
+    fireEvent.blur(window);
+    expect(api.endPetDrag).toHaveBeenCalledOnce();
+    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 3 });
+    fireEvent.pointerDown(shell, {
+      clientX: 20,
+      clientY: 30,
+      pointerId: 3,
+      button: 0
+    });
+    result.unmount();
+
+    expect(api.endPetDrag).toHaveBeenCalledTimes(2);
+    expect(setPointerCapture).toHaveBeenCalledTimes(2);
+    expect(releasePointerCapture).toHaveBeenCalledTimes(2);
+    expect(api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
 });

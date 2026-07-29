@@ -447,7 +447,6 @@ async function createApplicationWindows(): Promise<void> {
   tray.setContextMenu(contextMenu);
   tray.on('double-click', () => void windowCommands.showChat());
   const openPetContextMenu = () => tray?.popUpContextMenu(contextMenu);
-  pet.webContents.on('context-menu', openPetContextMenu);
   registerPetWindowInteractionIpc(
     ipcMain,
     petWindowInteraction,

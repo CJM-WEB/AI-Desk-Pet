@@ -352,6 +352,89 @@ describe('PixiJS 角色播放器端口', () => {
 });
 
 describe('角色播放器组件', () => {
+  test('正式播放器发布局部坐标像素命中端口并在替换与卸载时撤销', async () => {
+    const currentManifest = manifest('character-a');
+    let characterListener: (() => void) | undefined;
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(listener => {
+        characterListener = () => listener({
+          type: 'active-character-changed',
+          characterId: currentManifest.id
+        });
+        return vi.fn();
+      })
+    } as unknown as MyselfApi;
+    const hitRegionListener = vi.fn();
+    const unsubscribeHitRegion = vi.fn();
+    const players = [0, 1].map(() => ({
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      hitTest: vi.fn().mockReturnValue(true),
+      subscribeHitRegion: vi.fn(listener => {
+        hitRegionListener.mockImplementation(listener);
+        return unsubscribeHitRegion;
+      }),
+      destroy: vi.fn()
+    }));
+    let createIndex = 0;
+    const onHitTestPortChange = vi.fn();
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async container => {
+          vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({
+            x: 10,
+            y: 20,
+            left: 10,
+            top: 20,
+            right: 110,
+            bottom: 140,
+            width: 100,
+            height: 120,
+            toJSON: () => ({})
+          });
+          return players[createIndex++]!;
+        }}
+        loadBundle={async () => bundle('character-a')}
+        onHitTestPortChange={onHitTestPortChange}
+      />
+    );
+
+    await waitFor(() => {
+      expect(onHitTestPortChange.mock.calls.some(([port]) => port !== null)).toBe(true);
+    });
+    const firstPort = onHitTestPortChange.mock.calls
+      .map(([port]) => port)
+      .find(port => port !== null);
+    expect(firstPort?.hitTest({ x: 15, y: 27 })).toBe(true);
+    expect(players[0]!.hitTest).toHaveBeenCalledWith({ x: 5, y: 7 });
+    const notify = vi.fn();
+    const unsubscribe = firstPort?.subscribe(notify);
+    hitRegionListener();
+    expect(notify).toHaveBeenCalledOnce();
+    unsubscribe?.();
+    expect(unsubscribeHitRegion).toHaveBeenCalledOnce();
+
+    onHitTestPortChange.mockClear();
+    await act(async () => characterListener?.());
+    expect(onHitTestPortChange).toHaveBeenNthCalledWith(1, null);
+    await waitFor(() => {
+      expect(onHitTestPortChange.mock.calls.some(([port]) => port !== null)).toBe(true);
+    });
+
+    onHitTestPortChange.mockClear();
+    result.unmount();
+    expect(onHitTestPortChange).toHaveBeenCalledWith(null);
+  });
+
   test('运动快照方向变化会按运行时方向重新选择动作并回报运动状态', async () => {
     const currentManifest = manifest('character-a');
     currentManifest.states[0]!.actions = [

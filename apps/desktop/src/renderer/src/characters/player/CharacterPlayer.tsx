@@ -32,6 +32,9 @@ import {
   extensionDefinitionsFromManifest,
   type ExtensionTriggerDefinition
 } from './extension-trigger-controller';
+import type {
+  CharacterHitTestPort
+} from '../../pet/pet-interaction-controller';
 
 export type CharacterPlayerPortFactory = (
   container: HTMLElement
@@ -51,6 +54,7 @@ export interface CharacterPlayerProps {
     definitions: readonly ExtensionTriggerDefinition[]
   ) => void;
   onIdleTrigger?: () => void;
+  onHitTestPortChange?: (port: CharacterHitTestPort | null) => void;
   onMotionChange?: (motion: CharacterMotionPresentation) => void;
   onRuntimeError?: (errorCode: string | null) => void;
 }
@@ -88,6 +92,7 @@ export function CharacterPlayer({
   onDesktopAnchors,
   onExtensionDefinitionsChange,
   onIdleTrigger,
+  onHitTestPortChange,
   onMotionChange,
   onRuntimeError
 }: CharacterPlayerProps) {
@@ -130,6 +135,7 @@ export function CharacterPlayer({
     const placeholder = document.createElement('span');
     placeholder.className = 'character-player-stage';
     host.appendChild(placeholder);
+    onHitTestPortChange?.(null);
 
     /** 异步完成路径与卸载路径共享同一所有权门，确保播放器只释放一次。 */
     const destroyPlayerOnce = (player: CharacterPlayerPort): void => {
@@ -143,6 +149,7 @@ export function CharacterPlayer({
       let candidate: CharacterPlayerPort | null = null;
       let staging: HTMLSpanElement | null = null;
       setStatus('loading');
+      onHitTestPortChange?.(null);
 
       try {
         let snapshot: CharacterRuntimeSnapshot | null = null;
@@ -214,6 +221,9 @@ export function CharacterPlayer({
           if (child !== staging) child.remove();
         }
         if (previous) destroyPlayerOnce(previous);
+        onHitTestPortChange?.(
+          createPlayerHitTestPort(candidate, staging)
+        );
         setStatus('ready');
         if (forceReload) onRuntimeError?.(null);
       } catch (error) {
@@ -259,6 +269,7 @@ export function CharacterPlayer({
     return () => {
       disposed = true;
       ++revision;
+      onHitTestPortChange?.(null);
       unsubscribe();
       cache.destroy();
       for (const candidate of candidates) destroyPlayerOnce(candidate);
@@ -273,6 +284,7 @@ export function CharacterPlayer({
     createPlayer,
     loadBundle,
     onExtensionDefinitionsChange,
+    onHitTestPortChange,
     onRuntimeError
   ]);
 
@@ -416,6 +428,36 @@ export function CharacterPlayer({
       {status === 'error' ? fallback : null}
     </span>
   );
+}
+
+/**
+ * 将浏览器客户区坐标转换为正式播放器容器局部坐标，并复用逐帧命中订阅。
+ */
+function createPlayerHitTestPort(
+  player: CharacterPlayerPort,
+  container: HTMLElement
+): CharacterHitTestPort {
+  return {
+    hitTest(point) {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
+      try {
+        const bounds = container.getBoundingClientRect();
+        return player.hitTest({
+          x: point.x - bounds.left,
+          y: point.y - bounds.top
+        });
+      } catch {
+        return false;
+      }
+    },
+    subscribe(listener) {
+      try {
+        return player.subscribeHitRegion(listener);
+      } catch {
+        return () => undefined;
+      }
+    }
+  };
 }
 
 function reportPlayedAction(
