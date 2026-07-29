@@ -157,6 +157,7 @@ async function settle(): Promise<void> {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('角色工作室 Zustand 状态层', () => {
@@ -207,6 +208,48 @@ describe('角色工作室 Zustand 状态层', () => {
     ]);
     failingStore.getState().dismissToast('unknown');
     expect(failingStore.getState().toastQueue).toHaveLength(1);
+  });
+
+  test('保存 timer 句柄为 0 时重调度、显式保存和卸载都会清理它', async () => {
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(() => (
+      0 as unknown as ReturnType<typeof setTimeout>
+    ));
+    const { api } = apiDouble();
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().updateCurrentAction({ name: '第一次调度' });
+    store.getState().updateCurrentAction({ name: '第二次调度' });
+    await store.getState().flushDraft();
+    store.getState().updateCurrentAction({ name: '卸载前调度' });
+    store.getState().dispose();
+
+    expect(clearTimeoutSpy).toHaveBeenCalledTimes(3);
+    expect(clearTimeoutSpy).toHaveBeenNthCalledWith(1, 0);
+    expect(clearTimeoutSpy).toHaveBeenNthCalledWith(2, 0);
+    expect(clearTimeoutSpy).toHaveBeenNthCalledWith(3, 0);
+  });
+
+  test('500ms 自动保存会消费失败的 Promise，但显式 flush 仍会拒绝', async () => {
+    vi.useFakeTimers();
+    const { api } = apiDouble({
+      saveCharacterDraft: vi.fn(async () => {
+        throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
+      })
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '定时失败' });
+    await vi.advanceTimersByTimeAsync(500);
+    await settle();
+
+    expect(store.getState()).toMatchObject({
+      draftStatus: 'error',
+      toastQueue: [expect.objectContaining({ tone: 'error' })]
+    });
+    store.getState().updateCurrentAction({ name: '显式失败' });
+    await expect(store.getState().flushDraft()).rejects.toThrow();
   });
 
   test('工作室关闭后不扫描或读取素材目录', async () => {
@@ -277,6 +320,46 @@ describe('角色工作室 Zustand 状态层', () => {
       ]);
   });
 
+  test('应用网格读取素材失败时转为错误提示而不向调用方拒绝', async () => {
+    const { api } = apiDouble({
+      readCharacterSource: vi.fn(async () => {
+        throw new Error('CHARACTER_SOURCE_READ_FAILED');
+      })
+    });
+    const store = createCharacterWorkshopStore(api, {
+      inspectImage: async () => ({ width: 1, height: 1 })
+    });
+    await store.getState().load();
+    await store.getState().importSources();
+
+    await expect(store.getState().applySpriteSheet({
+      sourceAssetId: '123e4567-e89b-42d3-a456-426614174000',
+      rows: 1,
+      columns: 1,
+      frameCount: 1
+    })).resolves.toBeUndefined();
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({ tone: 'error' });
+  });
+
+  test('应用网格检查图片失败时转为错误提示而不向调用方拒绝', async () => {
+    const { api } = apiDouble();
+    const store = createCharacterWorkshopStore(api, {
+      inspectImage: async () => {
+        throw new Error('CHARACTER_IMAGE_INSPECT_FAILED');
+      }
+    });
+    await store.getState().load();
+    await store.getState().importSources();
+
+    await expect(store.getState().applySpriteSheet({
+      sourceAssetId: '123e4567-e89b-42d3-a456-426614174000',
+      rows: 1,
+      columns: 1,
+      frameCount: 1
+    })).resolves.toBeUndefined();
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({ tone: 'error' });
+  });
+
   test('发布命令编译草稿动作、保存草稿并调用正式发布 API', async () => {
     const publishCharacter = vi.fn(async () => undefined);
     const { api } = apiDouble({
@@ -341,6 +424,41 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(compileAction).not.toHaveBeenCalled();
     expect(publishCharacter).not.toHaveBeenCalled();
     expect(store.getState().draftStatus).toBe('error');
+  });
+
+  test('发布失败只按本次结果设置编译错误，不受其他提示覆盖', async () => {
+    const publishing = deferred<void>();
+    const { api } = apiDouble({
+      publishCharacter: vi.fn(() => publishing.promise)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    let appendedOtherToast = false;
+    const unsubscribe = store.subscribe(state => {
+      if (appendedOtherToast || state.toastQueue.at(-1)?.tone !== 'error') return;
+      appendedOtherToast = true;
+      store.setState({
+        toastQueue: [...state.toastQueue, {
+          id: 'unrelated',
+          tone: 'info',
+          text: '其他操作已取消。'
+        }]
+      });
+    });
+
+    const operation = store.getState().publishCharacter(publishInput('default'));
+    publishing.reject(new Error('CHARACTER_PUBLISH_FAILED'));
+    await operation;
+    unsubscribe();
+
+    expect(store.getState()).toMatchObject({
+      busyAction: null,
+      compileStatus: 'error'
+    });
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({
+      id: 'unrelated',
+      tone: 'info'
+    });
   });
 
   test('保存期间再次编辑时只发布最后一次成功持久化的稳定修订', async () => {

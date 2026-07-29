@@ -264,22 +264,25 @@ export function createCharacterWorkshopStore(
     async function reportFailure(
       action: WorkshopBusyAction,
       operation: () => Promise<void>
-    ): Promise<void> {
+    ): Promise<boolean> {
       set({ busyAction: action });
       try {
         await operation();
+        return true;
       } catch (error) {
         enqueueToast({ tone: 'error', text: errorText(error) });
+        return false;
       } finally {
         if (get().busyAction === action) set({ busyAction: null });
       }
     }
 
     function scheduleSave(): void {
-      if (saveTimer) clearTimeout(saveTimer);
+      if (saveTimer !== undefined) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         saveTimer = undefined;
-        void get().flushDraft();
+        // 定时保存无人等待结果；失败状态已由 flushDraft 写入 store，此处只消费 rejection。
+        void get().flushDraft().catch(() => undefined);
       }, 500);
     }
 
@@ -677,14 +680,21 @@ export function createCharacterWorkshopStore(
           enqueueToast({ tone: 'error', text: '精灵图网格参数无效。' });
           return;
         }
-        const bytes = await api.readCharacterSource(
-          current.selectedCharacterId!,
-          source.assetId
-        );
-        const dimensions = await (dependencies.inspectImage ?? inspectBrowserImage)(
-          bytes,
-          source.mimeType
-        );
+        let bytes: Uint8Array;
+        let dimensions: { width: number; height: number };
+        try {
+          bytes = await api.readCharacterSource(
+            current.selectedCharacterId!,
+            source.assetId
+          );
+          dimensions = await (dependencies.inspectImage ?? inspectBrowserImage)(
+            bytes,
+            source.mimeType
+          );
+        } catch (error) {
+          enqueueToast({ tone: 'error', text: errorText(error) });
+          return;
+        }
         if (
           dimensions.width % input.columns !== 0
           || dimensions.height % input.rows !== 0
@@ -796,7 +806,7 @@ export function createCharacterWorkshopStore(
 
       async publishCharacter(input) {
         set({ compileStatus: 'compiling' });
-        await reportFailure('compiling', async () => {
+        const published = await reportFailure('compiling', async () => {
           await api.publishCharacter(input);
           if (input.characterId === get().selectedCharacterId) {
             set({ compileStatus: 'success' });
@@ -804,9 +814,7 @@ export function createCharacterWorkshopStore(
           enqueueToast({ tone: 'success', text: '运行版本已发布。' });
           await refreshCharacters();
         });
-        if (get().busyAction === null && get().toastQueue.at(-1)?.tone === 'error') {
-          set({ compileStatus: 'error' });
-        }
+        if (!published) set({ compileStatus: 'error' });
       },
 
       updateCurrentAction(patch) {
@@ -832,7 +840,7 @@ export function createCharacterWorkshopStore(
       },
 
       flushDraft() {
-        if (saveTimer) {
+        if (saveTimer !== undefined) {
           clearTimeout(saveTimer);
           saveTimer = undefined;
         }
@@ -892,7 +900,7 @@ export function createCharacterWorkshopStore(
       },
 
       dispose() {
-        if (saveTimer) {
+        if (saveTimer !== undefined) {
           clearTimeout(saveTimer);
           saveTimer = undefined;
         }

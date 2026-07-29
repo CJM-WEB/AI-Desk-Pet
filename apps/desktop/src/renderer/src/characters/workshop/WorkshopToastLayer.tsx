@@ -1,11 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
+import type { WorkshopToast } from '../store/character-workshop-store';
 
-export type WorkshopToast = {
-  id: string;
-  tone: 'success' | 'info' | 'warning' | 'error';
-  text: string;
-};
+export type { WorkshopToast } from '../store/character-workshop-store';
 
 export interface WorkshopToastLayerProps {
   queue: readonly WorkshopToast[];
@@ -29,7 +26,8 @@ export function WorkshopToastLayer({
   const remainingRef = useRef(0);
   const pausedRef = useRef({ focus: false, hover: false });
   const dismissedRef = useRef(false);
-  const toastIdRef = useRef<string | undefined>(undefined);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
 
   function clearTimer(): void {
     if (timerRef.current !== undefined) {
@@ -43,7 +41,7 @@ export function WorkshopToastLayer({
     if (!toast || dismissedRef.current) return;
     dismissedRef.current = true;
     try {
-      onDismiss(toast.id);
+      onDismissRef.current(toast.id);
     } catch {
       // 消费方回调失败时，本层仍应确保已停止计时，避免重复关闭。
     }
@@ -62,7 +60,7 @@ export function WorkshopToastLayer({
   function pause(reason: 'focus' | 'hover'): void {
     if (!toast || pausedRef.current[reason]) return;
     pausedRef.current[reason] = true;
-    if (!timerRef.current) return;
+    if (timerRef.current === undefined) return;
     remainingRef.current = Math.max(
       0,
       remainingRef.current - (performance.now() - startedAtRef.current)
@@ -77,9 +75,7 @@ export function WorkshopToastLayer({
   }
 
   useEffect(() => {
-    const id = toast?.id;
     clearTimer();
-    toastIdRef.current = id;
     dismissedRef.current = false;
     pausedRef.current = { focus: false, hover: false };
     remainingRef.current = toast ? toastDurationMs(toast.tone) : 0;
