@@ -38,6 +38,14 @@ describe('窗口安全配置', () => {
     });
   });
 
+  it('只在显式 E2E 模式向桌宠 preload 传入固定探针标记', () => {
+    expect(petWindowOptions('preload.js').webPreferences?.additionalArguments)
+      .toBeUndefined();
+    expect(petWindowOptions('preload.js', {
+      enableE2eProbe: true
+    }).webPreferences?.additionalArguments).toEqual(['--myself-e2e-probe']);
+  });
+
   it('聊天与设置使用互相独立的隐藏窗口', () => {
     expect(chatWindowOptions('preload.js')).toMatchObject({
       width: 420,

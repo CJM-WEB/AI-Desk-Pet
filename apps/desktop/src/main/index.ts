@@ -148,7 +148,9 @@ function positionChatNearPet(pet: BrowserWindow, chat: BrowserWindow): void {
 async function createApplicationWindows(): Promise<void> {
   Menu.setApplicationMenu(null);
   const preload = join(__dirname, '../preload/index.cjs');
-  const pet = createPetWindow(BrowserWindow, preload);
+  const pet = createPetWindow(BrowserWindow, preload, {
+    enableE2eProbe: Boolean(e2eBoundary)
+  });
   primaryPetWindow = pet;
   pet.once('closed', () => {
     if (primaryPetWindow === pet) primaryPetWindow = null;
@@ -451,7 +453,8 @@ async function createApplicationWindows(): Promise<void> {
     ipcMain,
     petWindowInteraction,
     pet.webContents,
-    openPetContextMenu
+    openPetContextMenu,
+    { enableE2eProbe: Boolean(e2eBoundary) }
   );
   characterActions.subscribeCharacterEvents(event => {
     broadcastCharacterEvent(

@@ -194,6 +194,7 @@ export interface ElectronAppFixture {
   readonly maliciousCharacterPackage?: string;
   readonly characterExportDestination?: string;
   readonly logs: readonly string[];
+  getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
   restart(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -933,6 +934,33 @@ export async function createElectronAppFixture(
       characterExportDestination: characterFixtures.characterExportDestination,
       get logs() {
         return sanitizedLogs();
+      },
+      async getPetInteractionProbe() {
+        if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
+          throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
+        }
+        const petPage = browser.contexts()
+          .flatMap(context => context.pages())
+          .find(page => {
+            try {
+              return new URL(page.url()).searchParams.get('view') === 'pet';
+            } catch {
+              return false;
+            }
+          });
+        if (!petPage) throw new Error('ELECTRON_E2E_PROBE_PET_PAGE_UNAVAILABLE');
+        const probe = await petPage.evaluate(async () => (
+          window.myself.getPetInteractionProbe?.()
+        ));
+        if (
+          !probe
+          || typeof probe.passthrough !== 'boolean'
+          || typeof probe.dragging !== 'boolean'
+          || Object.keys(probe).length !== 2
+        ) {
+          throw new Error('ELECTRON_E2E_PROBE_RESULT_INVALID');
+        }
+        return probe;
       },
       async restart() {
         if (disposed) throw new Error('ELECTRON_FIXTURE_DISPOSED');

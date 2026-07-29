@@ -75,6 +75,27 @@ afterEach(() => {
 });
 
 describe('Main 桌宠窗口交互控制器', () => {
+  test('只读探针仅返回穿透和拖拽两个布尔状态', () => {
+    vi.useFakeTimers();
+    const fixture = createControllerFixture();
+
+    expect(fixture.controller.getProbe()).toEqual({
+      passthrough: true,
+      dragging: false
+    });
+    fixture.controller.setPassthrough(false);
+    fixture.controller.beginDrag();
+    expect(fixture.controller.getProbe()).toEqual({
+      passthrough: false,
+      dragging: true
+    });
+    fixture.controller.endDrag('released');
+    expect(Object.keys(fixture.controller.getProbe()).sort()).toEqual([
+      'dragging',
+      'passthrough'
+    ]);
+  });
+
   test('默认开启穿透并保留 Windows mousemove 转发，关闭时不携带 forward', () => {
     const fixture = createControllerFixture();
 
@@ -276,6 +297,45 @@ describe('受限桌宠窗口交互 IPC', () => {
         'PET_WINDOW_INTERACTION_INPUT_INVALID'
       );
     }
+  });
+
+  test('E2E 探针仅在显式启用时注册，且拒绝输入和非桌宠 sender', async () => {
+    const enabled = createIpcMain();
+    const disabled = createIpcMain();
+    const petSender = { isDestroyed: () => false };
+    const controller = {
+      setPassthrough: vi.fn(),
+      beginDrag: vi.fn(),
+      endDrag: vi.fn(),
+      dispose: vi.fn(),
+      getProbe: vi.fn(() => ({ passthrough: true, dragging: false }))
+    };
+    registerPetWindowInteractionIpc(
+      enabled.ipcMain,
+      controller,
+      petSender as never,
+      vi.fn(),
+      { enableE2eProbe: true }
+    );
+    registerPetWindowInteractionIpc(
+      disabled.ipcMain,
+      controller,
+      petSender as never,
+      vi.fn()
+    );
+
+    const probe = enabled.handlers.get(ipcChannels.petInteractionProbeGet);
+    await expect(probe?.({ sender: petSender })).resolves.toEqual({
+      passthrough: true,
+      dragging: false
+    });
+    await expect(probe?.({ sender: petSender }, { x: 1 })).rejects.toThrow(
+      'PET_WINDOW_INTERACTION_INPUT_INVALID'
+    );
+    await expect(
+      probe?.({ sender: { isDestroyed: () => false } })
+    ).rejects.toThrow('PET_WINDOW_INTERACTION_SENDER_INVALID');
+    expect(disabled.handlers.has(ipcChannels.petInteractionProbeGet)).toBe(false);
   });
 
   test('失效 pet sender 会被所有 handler 拒绝', async () => {

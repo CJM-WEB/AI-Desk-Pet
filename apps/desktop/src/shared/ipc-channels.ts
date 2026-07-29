@@ -50,6 +50,7 @@ export const ipcChannels = {
   petDragBegin: 'pet-window:drag-begin',
   petDragEnd: 'pet-window:drag-end',
   petContextMenuOpen: 'pet-window:context-menu-open',
+  petInteractionProbeGet: 'pet-window:e2e-interaction-probe-get',
   windowOpenChat: 'window:open-chat',
   windowOpenSettings: 'window:open-settings',
   windowOpenCharacterWorkshop: 'window:open-character-workshop',

@@ -10,4 +10,11 @@ export interface PetWindowInteractionApi {
   beginPetDrag(): Promise<void>;
   endPetDrag(): Promise<void>;
   openPetContextMenu(): Promise<void>;
+  getPetInteractionProbe?(): Promise<PetInteractionProbe>;
 }
+
+/** E2E 只读探针不携带坐标、窗口对象或本地路径。 */
+export type PetInteractionProbe = {
+  passthrough: boolean;
+  dragging: boolean;
+};

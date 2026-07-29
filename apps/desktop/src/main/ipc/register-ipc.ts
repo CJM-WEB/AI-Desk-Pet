@@ -609,6 +609,7 @@ type PetWindowInteractionControllerActions = {
   beginDrag(): void;
   endDrag(reason: 'released' | 'cancelled' | 'timeout' | 'disposed'): void;
   dispose(): void;
+  getProbe?(): { passthrough: boolean; dragging: boolean };
 };
 
 function assertPetWindowSender(
@@ -631,7 +632,8 @@ export function registerPetWindowInteractionIpc(
   ipcMain: IpcMain,
   controller: PetWindowInteractionControllerActions,
   petWebContents: WebContents,
-  openContextMenu: () => unknown
+  openContextMenu: () => unknown,
+  options: { enableE2eProbe?: boolean } = {}
 ): void {
   replaceHandler(
     ipcMain,
@@ -663,6 +665,22 @@ export function registerPetWindowInteractionIpc(
     assertNoPetInteractionInput(args);
     await openContextMenu();
   });
+  if (options.enableE2eProbe) {
+    replaceHandler(
+      ipcMain,
+      ipcChannels.petInteractionProbeGet,
+      async (event, ...args) => {
+        assertPetWindowSender(event, petWebContents);
+        assertNoPetInteractionInput(args);
+        const probe = controller.getProbe?.();
+        if (!probe) throw new Error('PET_WINDOW_INTERACTION_PROBE_UNAVAILABLE');
+        return {
+          passthrough: Boolean(probe.passthrough),
+          dragging: Boolean(probe.dragging)
+        };
+      }
+    );
+  }
 }
 
 export function registerWindowIpc(

@@ -1,4 +1,5 @@
 import type { Rectangle } from 'electron';
+import type { PetInteractionProbe } from '../../shared/pet-window-interaction';
 import { clampPositionToVisibleWorkArea } from './window-manager';
 
 type PetInteractionWindow = {
@@ -122,6 +123,14 @@ export class PetWindowInteractionController {
     } else {
       this.restoreSafePassthrough();
     }
+  }
+
+  /** 仅供受限 E2E handler 查询，不暴露光标、窗口或路径信息。 */
+  getProbe(): PetInteractionProbe {
+    return {
+      passthrough: this.lastKnownPassthrough ?? true,
+      dragging: Boolean(this.dragSession)
+    };
   }
 
   private updateDrag(session: DragSession): void {

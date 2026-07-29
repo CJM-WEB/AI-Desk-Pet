@@ -14,6 +14,7 @@ vi.mock('electron', () => ({
   ipcRenderer: { invoke }
 }));
 
+process.argv.push('--myself-e2e-probe');
 await import('../src/preload/index');
 
 beforeEach(() => {
@@ -76,11 +77,12 @@ describe('preload 清除本地数据转发', () => {
 });
 
 describe('受限桌宠窗口交互 preload API', () => {
-  test('四个固定方法只映射到固定通道和固定负载', async () => {
+  test('固定命令与只读探针只映射到固定通道和固定负载', async () => {
     await exposedApi?.setPetMousePassthrough(true);
     await exposedApi?.beginPetDrag();
     await exposedApi?.endPetDrag();
     await exposedApi?.openPetContextMenu();
+    await exposedApi?.getPetInteractionProbe?.();
 
     expect(invoke).toHaveBeenNthCalledWith(
       1,
@@ -90,5 +92,6 @@ describe('受限桌宠窗口交互 preload API', () => {
     expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.petDragBegin);
     expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.petDragEnd);
     expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.petContextMenuOpen);
+    expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.petInteractionProbeGet);
   });
 });

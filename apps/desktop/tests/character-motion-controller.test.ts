@@ -4,6 +4,8 @@ import {
   advanceMotion,
   resolveDesktopAnchor
 } from '../src/renderer/src/characters/player/character-motion-controller';
+import { hitTestCharacterAlpha } from
+  '../src/renderer/src/characters/player/character-alpha-hit-tester';
 import { CharacterMotionService } from '../src/main/characters/character-motion-service';
 import {
   applyIdleMotionIntent,
@@ -52,6 +54,54 @@ const manifest = {
 } satisfies CharacterManifestV1;
 
 describe('Renderer 角色运动控制器', () => {
+  test('一万次 Alpha 命中只读取缓存掩码，不触发 Canvas 或 GPU 回读', () => {
+    class TestCanvasRenderingContext2D {
+      getImageData(): never {
+        throw new Error('不应回读 Canvas');
+      }
+    }
+    class TestWebGLRenderingContext {
+      readPixels(): never {
+        throw new Error('不应回读 GPU');
+      }
+    }
+    vi.stubGlobal('CanvasRenderingContext2D', TestCanvasRenderingContext2D);
+    vi.stubGlobal('WebGLRenderingContext', TestWebGLRenderingContext);
+    vi.stubGlobal('WebGL2RenderingContext', TestWebGLRenderingContext);
+    const canvasReadback = vi.spyOn(
+      TestCanvasRenderingContext2D.prototype,
+      'getImageData'
+    );
+    const webglReadback = vi.spyOn(
+      TestWebGLRenderingContext.prototype,
+      'readPixels'
+    );
+    const snapshot = {
+      mask: {
+        width: 100,
+        height: 80,
+        bytes: new Uint8Array(100 * 80).fill(255)
+      },
+      sourceRect: { x: 0, y: 0, width: 100, height: 80 },
+      frameBounds: { x: 0, y: 0, width: 100, height: 80 },
+      direction: 'right' as const
+    };
+
+    for (let index = 0; index < 10_000; index += 1) {
+      expect(hitTestCharacterAlpha(snapshot, {
+        x: index % 100,
+        y: index % 80
+      })).toBe(true);
+    }
+
+    expect(canvasReadback).not.toHaveBeenCalled();
+    expect(webglReadback).not.toHaveBeenCalled();
+    expect(hitTestCharacterAlpha.toString()).not.toMatch(
+      /getImageData|readPixels/u
+    );
+    vi.unstubAllGlobals();
+  });
+
   test('按速度单调推进且不会越过目标', () => {
     expect(advanceMotion({
       current: { x: 10, y: 20 },
@@ -230,6 +280,7 @@ describe('Main 角色运动服务', () => {
     expect(source).toContain(
       'registerPetWindowInteractionIpc(\n    ipcMain,\n    petWindowInteraction,\n    pet.webContents,\n    openPetContextMenu'
     );
+    expect(source).toContain("{ label: '打开聊天'");
   });
 
   test('窗口真实位置由 Main 推进并受工作区边界约束', () => {

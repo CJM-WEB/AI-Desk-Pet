@@ -25,7 +25,10 @@ export function secureWebPreferences(preload: string): WebPreferences {
   };
 }
 
-export function petWindowOptions(preload: string): BrowserWindowConstructorOptions {
+export function petWindowOptions(
+  preload: string,
+  options: { enableE2eProbe?: boolean } = {}
+): BrowserWindowConstructorOptions {
   return {
     width: PET_WIDTH,
     height: PET_HEIGHT,
@@ -36,7 +39,12 @@ export function petWindowOptions(preload: string): BrowserWindowConstructorOptio
     resizable: false,
     show: false,
     backgroundColor: '#00000000',
-    webPreferences: secureWebPreferences(preload)
+    webPreferences: {
+      ...secureWebPreferences(preload),
+      ...(options.enableE2eProbe
+        ? { additionalArguments: ['--myself-e2e-probe'] }
+        : {})
+    }
   };
 }
 
@@ -89,9 +97,10 @@ export function lockNavigation(window: BrowserWindow): void {
 
 export function createPetWindow(
   BrowserWindowClass: BrowserWindowConstructor,
-  preload: string
+  preload: string,
+  options: { enableE2eProbe?: boolean } = {}
 ): BrowserWindow {
-  const window = new BrowserWindowClass(petWindowOptions(preload));
+  const window = new BrowserWindowClass(petWindowOptions(preload, options));
   lockNavigation(window);
   return window;
 }

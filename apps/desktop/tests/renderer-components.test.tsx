@@ -4,7 +4,6 @@ import { resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   PetCharacter,
-  PetOpenChatButton,
   PetView
 } from '../src/renderer/src/pet/PetView';
 import { ConfirmationCard } from '../src/renderer/src/chat/ConfirmationCard';
@@ -19,18 +18,11 @@ type ClickableElement = {
 
 async function loadRendererCommandButtons(): Promise<{
   ChatCloseButton?: () => ClickableElement;
-  PetOpenChatButton?: (props: { children?: unknown }) => ClickableElement;
 }> {
-  const [chat, pet] = await Promise.all([
-    import('../src/renderer/src/chat/ChatPanel'),
-    import('../src/renderer/src/pet/PetView')
-  ]);
+  const chat = await import('../src/renderer/src/chat/ChatPanel');
   return {
     ChatCloseButton: 'ChatCloseButton' in chat
       ? chat.ChatCloseButton as () => ClickableElement
-      : undefined,
-    PetOpenChatButton: 'PetOpenChatButton' in pet
-      ? pet.PetOpenChatButton as (props: { children?: unknown }) => ClickableElement
       : undefined
   };
 }
@@ -64,14 +56,6 @@ describe('Renderer 可见组件', () => {
     } finally {
       vi.unstubAllGlobals();
     }
-  });
-
-  test('桌宠打开按钮保留正式聊天入口', () => {
-    const markup = renderToStaticMarkup(
-      <PetOpenChatButton>角色</PetOpenChatButton>
-    );
-    expect(markup).toContain('pet-open-chat');
-    expect(markup).toContain('打开与 AI Pet 的聊天');
   });
 
   test('重命名确认卡片只展示自然语言和相对路径', () => {
@@ -181,7 +165,7 @@ describe('Renderer 可见组件', () => {
 });
 
 describe('桌宠播放器接入', () => {
-  test('保留拖动区域和聊天入口并以正式角色播放器作为视觉主体', () => {
+  test('左键表面只保留拖动提示并以正式角色播放器作为视觉主体', () => {
     vi.stubGlobal('window', {
       myself: {},
       matchMedia: vi.fn()
@@ -189,9 +173,9 @@ describe('桌宠播放器接入', () => {
     try {
       const markup = renderToStaticMarkup(<PetView />);
       expect(markup).toContain('pet-drag-hint');
-      expect(markup).toContain('pet-open-chat');
       expect(markup).toContain('character-player');
-      expect(markup).not.toContain('pet-character');
+      expect(markup).not.toContain('class="pet-character"');
+      expect(markup).not.toContain('打开与 AI Pet 的聊天');
     } finally {
       vi.unstubAllGlobals();
     }
@@ -207,10 +191,10 @@ describe('桌宠播放器接入', () => {
       /\.pet-shell\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/s
     );
     expect(styles).toMatch(
-      /\.pet-open-chat\s*\{[^}]*align-self:\s*stretch/s
+      /\.pet-character-surface\s*\{[^}]*align-self:\s*stretch/s
     );
     expect(styles).toMatch(
-      /\.pet-open-chat\s*\{[^}]*justify-self:\s*stretch/s
+      /\.pet-character-surface\s*\{[^}]*justify-self:\s*stretch/s
     );
   });
 });

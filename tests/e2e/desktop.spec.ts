@@ -123,6 +123,7 @@ type ElectronFixtureModule = {
     maliciousCharacterPackage?: string;
     characterExportDestination?: string;
     logs: readonly string[];
+    getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
     restart(): Promise<void>;
     dispose(): Promise<void>;
   }>;
@@ -1639,7 +1640,7 @@ test.describe('真实 Electron CDP smoke', () => {
         );
         return {
           shell: measure('.pet-shell'),
-          button: measure('.pet-open-chat'),
+          surface: measure('.pet-character-surface'),
           player: measure('.character-player'),
           host: measure('.character-player-host'),
           stage: measure('.character-player-stage'),
@@ -1654,17 +1655,141 @@ test.describe('真实 Electron CDP smoke', () => {
       });
 
       expect(layout.shell).toEqual({ width: 180, height: 220 });
-      expect(layout.button).toEqual({ width: 156, height: 192 });
-      expect(layout.player).toEqual(layout.button);
-      expect(layout.host).toEqual(layout.button);
-      expect(layout.stage).toEqual(layout.button);
+      expect(layout.surface).toEqual({ width: 156, height: 192 });
+      expect(layout.player).toEqual(layout.surface);
+      expect(layout.host).toEqual(layout.surface);
+      expect(layout.stage).toEqual(layout.surface);
       if (layout.canvas) {
-        expect(layout.canvas.box).toEqual(layout.button);
+        expect(layout.canvas.box).toEqual(layout.surface);
         expect({
           width: layout.canvas.width,
           height: layout.canvas.height
-        }).toEqual(layout.button);
+        }).toEqual(layout.surface);
       }
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+test.describe('真实桌宠像素命中与左键拖拽', () => {
+  test('像素命中探针保持透明穿透、可见拖拽和左键无聊天副作用', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000
+    });
+    try {
+      const pages = (): Page[] => fixture.browser.contexts()
+        .flatMap(context => context.pages());
+      await expect.poll(() => pages().some(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === 'pet';
+        } catch {
+          return false;
+        }
+      })).toBe(true);
+      const pet = pages().find(page => (
+        new URL(page.url()).searchParams.get('view') === 'pet'
+      ))!;
+      await pet.emulateMedia({ reducedMotion: 'reduce' });
+      await expect(pet.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
+      await expect(pet.locator('.character-player')).toHaveAttribute(
+        'data-status',
+        'ready',
+        { timeout: 20_000 }
+      );
+      const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+      const dispatchPointer = async (
+        type: 'pointermove' | 'pointerdown' | 'pointerup' | 'contextmenu',
+        point: { x: number; y: number },
+        button = 0,
+        buttons = 0
+      ): Promise<void> => {
+        await shell.evaluate((element, input) => {
+          const EventConstructor = input.type === 'contextmenu'
+            ? MouseEvent
+            : PointerEvent;
+          element.dispatchEvent(new EventConstructor(input.type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: input.point.x,
+            clientY: input.point.y,
+            button: input.button,
+            buttons: input.buttons,
+            ...(input.type === 'contextmenu' ? {} : { pointerId: 41 })
+          }));
+        }, { type, point, button, buttons });
+      };
+
+      const transparent = { x: 1, y: 1 };
+      await dispatchPointer('pointermove', transparent);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+        passthrough: true,
+        dragging: false
+      });
+      await dispatchPointer('pointerdown', transparent, 0, 1);
+      await dispatchPointer('pointerup', transparent);
+      await dispatchPointer('pointerdown', transparent, 0, 1);
+      await dispatchPointer('pointerup', transparent);
+      await dispatchPointer('contextmenu', transparent, 2);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+        passthrough: true,
+        dragging: false
+      });
+
+      let visible: { x: number; y: number } | undefined;
+      for (let y = 6; y < 220 && !visible; y += 8) {
+        for (let x = 6; x < 180; x += 8) {
+          const candidate = { x, y };
+          await dispatchPointer('pointermove', candidate);
+          const probe = await fixture.getPetInteractionProbe();
+          if (!probe.passthrough) {
+            visible = candidate;
+            break;
+          }
+        }
+      }
+      expect(visible, '应在官方默认角色渲染区域中命中可见像素').toBeDefined();
+      if (!visible) return;
+
+      const initialState = await shell.getAttribute('data-character-state');
+      await expect(pet.getByRole('button', {
+        name: '打开与 AI Pet 的聊天'
+      })).toHaveCount(0);
+      await dispatchPointer('pointermove', visible);
+      await dispatchPointer('pointerdown', visible, 0, 1);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+        passthrough: false,
+        dragging: true
+      });
+      await dispatchPointer('pointermove', transparent, 0, 1);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+        passthrough: false,
+        dragging: true
+      });
+      await dispatchPointer('pointerup', transparent);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+        passthrough: true,
+        dragging: false
+      });
+
+      await dispatchPointer('pointermove', visible);
+      await dispatchPointer('pointerdown', visible, 0, 1);
+      await dispatchPointer('pointerup', visible);
+      await dispatchPointer('pointerdown', visible, 0, 1);
+      await dispatchPointer('pointerup', visible);
+      await expect(shell).toHaveAttribute(
+        'data-character-state',
+        initialState ?? 'idle'
+      );
+      await dispatchPointer('contextmenu', visible, 2);
+      await pet.keyboard.press('Escape');
     } finally {
       await fixture.dispose();
     }
@@ -1760,13 +1885,23 @@ test.describe('真实角色工作室闭环', () => {
         .toBeEnabled({ timeout: 15_000 });
       await button.click({ timeout: 15_000 });
     };
+    const closeWorkshopToast = async (
+      page: Page,
+      text: string
+    ): Promise<void> => {
+      const close = page.getByRole('button', {
+        name: `关闭提示：${text}`
+      });
+      await expect(close).toBeVisible({ timeout: 15_000 });
+      await close.click();
+    };
     const openWorkshop = async (
       appFixture: AppFixture,
       phase: string
     ): Promise<Page> => {
       const pet = await waitForPage(appFixture, 'pet', `${phase}：等待桌宠`);
       await waitForVisibleView(pet, `${phase}：桌宠就绪`);
-      await clickReadyButton(pet, '打开与 AI Pet 的聊天', `${phase}：打开聊天`);
+      await pet.evaluate(() => window.myself.openChat());
       const chat = await waitForPage(appFixture, 'chat', `${phase}：等待聊天`);
       await waitForVisibleView(chat, `${phase}：聊天就绪`);
       await clickReadyButton(chat, '设置', `${phase}：打开设置`);
@@ -1806,16 +1941,25 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByLabel('有效帧数').fill('4');
       await workshop.getByRole('button', { name: '应用到当前动作' }).click();
       await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
+      await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
+      const draftPreview = workshop.locator('[data-preview-status]');
+      await expect(draftPreview).toHaveAttribute('data-preview-status', 'ready');
+      await workshop.getByRole('button', { name: '切换左右方向' }).click();
+      await expect(draftPreview).toHaveAttribute('data-preview-direction', 'left');
+      await workshop.locator('.preview-controls input[type="range"]').fill('1.5');
+      await expect(draftPreview).toHaveAttribute('data-preview-speed', '1.5');
       await workshop.getByLabel('帧率').fill('7');
       await workshop.getByLabel('ground X').fill('0.45');
       await workshop.getByLabel('ground Y').fill('0.95');
       await workshop.getByRole('button', { name: '编译并发布' }).click();
       await expect(workshop.getByText('运行版本已编译并发布。')).toBeVisible();
+      await closeWorkshopToast(workshop, '运行版本已编译并发布。');
 
       await workshop.getByRole('button', { name: '启用角色' }).click();
       await expect(workshop.getByRole('heading', { name: '部分动作尚未配置' })).toBeVisible();
       await workshop.getByRole('button', { name: '仍然使用' }).click();
       await expect(workshop.getByText('角色已启用。')).toBeVisible();
+      await closeWorkshopToast(workshop, '角色已启用。');
 
       const pet = await waitForPage(fixture, 'pet', '初始启动：验证角色播放器');
       try {
@@ -1823,7 +1967,7 @@ test.describe('真实角色工作室闭环', () => {
       } catch (error) {
         throw new Error(`${String(error)}\n角色播放器诊断：${petDiagnostics.join(' | ')}`);
       }
-      await pet.getByRole('button', { name: '打开与 AI Pet 的聊天' }).click();
+      await pet.evaluate(() => window.myself.openChat());
       const chat = await waitForPage(fixture, 'chat', '初始启动：验证聊天降级');
       await submitChatMessage(chat, 'thinking 降级期间继续验证 Agent');
       await expect(chat.getByText('请先完成模型服务和授权目录设置。')).toBeVisible();
@@ -1836,13 +1980,14 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByLabel('列数').fill('2');
       await workshop.getByLabel('有效帧数').fill('4');
       await workshop.getByRole('button', { name: '应用到当前动作' }).click();
+      await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
       await workshop.getByLabel('carry X').fill('0.7');
       await workshop.getByLabel('carry Y').fill('0.4');
 
       await workshop.getByRole('button', { name: '扩展状态' }).click();
       await workshop.getByLabel('状态名称').fill('wave');
       await workshop.getByLabel('扩展状态触发方式').selectOption('double_click');
-      await workshop.getByRole('button', { name: '创建扩展状态' }).click();
+      await workshop.getByLabel('状态名称').press('Enter');
       await workshop.getByRole('button', { name: '添加动作' }).click();
       await workshop.getByRole('button', { name: '导入素材' }).click();
       await workshop.getByLabel('已导入素材').selectOption({ label: 'acting.png' });
@@ -1850,8 +1995,10 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByLabel('列数').fill('2');
       await workshop.getByLabel('有效帧数').fill('4');
       await workshop.getByRole('button', { name: '应用到当前动作' }).click();
+      await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
       await workshop.getByRole('button', { name: '编译并发布' }).click();
       await expect(workshop.getByText('运行版本已编译并发布。')).toBeVisible();
+      await closeWorkshopToast(workshop, '运行版本已编译并发布。');
 
       const extensionStates = await pet.evaluate(async () => (
         (await window.myself.getCharacterRuntimeSnapshot())?.manifest.states
@@ -1866,13 +2013,12 @@ test.describe('真实角色工作室闭环', () => {
         .toHaveAttribute('data-extension-states', 'custom:wave');
       await expect.poll(() => pet.getByRole('main', { name: 'AI Pet 桌宠' })
         .getAttribute('data-character-state'), { timeout: 20_000 }).toBe('idle');
-      await pet.getByRole('button', { name: '打开与 AI Pet 的聊天' })
-        .dispatchEvent('dblclick');
       await expect(pet.getByRole('main', { name: 'AI Pet 桌宠' }))
-        .toHaveAttribute('data-character-state', 'custom:wave');
+        .toHaveAttribute('data-character-state', 'idle');
 
       await workshop.getByRole('button', { name: '导出角色包' }).click();
       await expect(workshop.getByText('角色包已导出。')).toBeVisible();
+      await closeWorkshopToast(workshop, '角色包已导出。');
       exportedPackage = fixture.characterExportDestination!;
       exportedBytes = await readFile(exportedPackage);
       expect(exportedBytes.byteLength).toBeGreaterThan(0);
@@ -1880,6 +2026,9 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByLabel('帧率').fill('9');
       await workshop.getByRole('button', { name: '保存草稿' }).click();
       await expect(workshop.getByText('草稿已保存', { exact: true })).toBeVisible();
+      await expect(workshop.getByRole('button', {
+        name: '关闭提示：草稿已保存'
+      })).toHaveCount(0);
       recoverySnapshot = await mkdtemp(join(tmpdir(), 'ai-pet-character-recovery-'));
       await cp(
         join(fixture.userDataDirectory, 'characters'),
@@ -2141,7 +2290,7 @@ test.describe('真实 Provider 业务闭环', () => {
       captureRendererDiagnostics(rendererPages());
 
       await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
-      await petPage.getByRole('button', { name: '打开与 AI Pet 的聊天' }).click();
+      await petPage.evaluate(() => window.myself.openChat());
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
 
       await submitChatMessage(chatPage, '请列出工作目录');
@@ -2207,7 +2356,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await chatPage.getByRole('button', { name: '关闭聊天气泡' }).click();
       expect(chatPage.isClosed()).toBe(false);
       await expect(chatPage.getByText('重命名已完成。')).toBeVisible();
-      await petPage.getByRole('button', { name: '打开与 AI Pet 的聊天' }).click();
+      await petPage.evaluate(() => window.myself.openChat());
       expect(chatPage.isClosed()).toBe(false);
       await expect(chatPage.getByText('重命名已完成。')).toBeVisible();
       const reopenedComposer = chatPage.getByLabel('和我说点什么');

@@ -460,7 +460,13 @@ describe('预览与不完整角色确认', () => {
   });
 
   test('零帧预览输出明确空状态而不是伪称第一帧', () => {
-    const markup = renderToStaticMarkup(<PreviewControls frameCount={0} />);
+    const markup = renderToStaticMarkup(
+      <PreviewControls
+        state={createPreviewState(0)}
+        frameCount={0}
+        onChange={vi.fn()}
+      />
+    );
 
     expect(markup).toContain('无可用帧');
     expect(markup).not.toContain('第 1 帧');

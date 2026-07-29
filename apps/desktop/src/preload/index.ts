@@ -198,6 +198,13 @@ const api: MyselfApi = {
   openPetContextMenu: async () => {
     await ipcRenderer.invoke(ipcChannels.petContextMenuOpen);
   },
+  ...(process.argv.includes('--myself-e2e-probe')
+    ? {
+        getPetInteractionProbe: async () => (
+          ipcRenderer.invoke(ipcChannels.petInteractionProbeGet)
+        )
+      }
+    : {}),
   openChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenChat),
   openSettings: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenSettings),
   openCharacterWorkshop: (): Promise<void> => (
