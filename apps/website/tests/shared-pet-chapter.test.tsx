@@ -340,7 +340,68 @@ describe('共享仓库章节', () => {
       .toBe(false);
   });
 
+  it('离场请求等待期间切换减少动态效果后安全直切并解锁', async () => {
+    const harness = createRepository(9);
+    const targetPage = deferred<SharedPetPage>();
+    const view = renderChapter(harness.repository);
+    await screen.findByText('Pet 9');
+    harness.listPage.mockImplementationOnce(() => targetPage.promise);
+
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    fireEvent.animationEnd(screen.getAllByTestId('shared-pet-card')[7]!);
+    view.rerender(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetChapter
+          interactive
+          reducedMotion
+          repository={harness.repository}
+        />
+      </I18nProvider>
+    );
+    await act(async () => {
+      targetPage.resolve(createPage([createItem(1)], 2, 9));
+      await targetPage.promise;
+    });
+
+    expect(await screen.findByText('Pet 1')).toBeTruthy();
+    expect(screen.getByTestId('shared-pet-chapter').dataset.transition).toBe('idle');
+    expect(screen.getByTestId('shared-pet-chapter').dataset.pageLocked).toBe('false');
+  });
+
+  it('切换仓储时同步复位分页状态且旧请求不能写回', async () => {
+    const oldHarness = createRepository(9);
+    const newHarness = createRepository(1);
+    const oldTarget = deferred<SharedPetPage>();
+    newHarness.listPage.mockResolvedValue(createPage([
+      { ...createItem(50), name: '新仓储 Pet' }
+    ], 1, 1));
+    const view = renderChapter(oldHarness.repository);
+    await screen.findByText('Pet 9');
+    oldHarness.listPage.mockImplementationOnce(() => oldTarget.promise);
+
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    expect(screen.getByTestId('shared-pet-chapter').dataset.transition).toBe('leaving');
+    view.rerender(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetChapter interactive repository={newHarness.repository} />
+      </I18nProvider>
+    );
+
+    expect(screen.getByTestId('shared-pet-chapter').dataset.transition).toBe('idle');
+    expect(screen.getByTestId('shared-pet-chapter').dataset.pageLocked).toBe('false');
+    expect(await screen.findByText('新仓储 Pet')).toBeTruthy();
+    await act(async () => {
+      oldTarget.resolve(createPage([createItem(1)], 2, 9));
+      await oldTarget.promise;
+    });
+    expect(screen.getByText('新仓储 Pet')).toBeTruthy();
+    expect(screen.queryByText('Pet 1')).toBeNull();
+  });
+
   it('桌面四列两行并在窄屏切换为两列或一列', () => {
+    expect(communityCss).toMatch(
+      /\.sharedPetChapter\s*\{[^}]*height:\s*100%[^}]*max-height:\s*100%[^}]*min-height:\s*0[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/s
+    );
     expect(communityCss).toMatch(
       /\.sharedPetLayout\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)[^}]*grid-template-rows:\s*minmax\([^;]+\)\s+minmax\([^;]+\)\s+minmax\([^;]+\)/s
     );
@@ -490,6 +551,25 @@ describe('共享仓库章节', () => {
     expect(screen.queryByText('详情暂时无法打开，请稍后重试。')).toBeNull();
   });
 
+  it('详情等待期间点赞不会使当前详情请求失效', async () => {
+    const harness = createRepository(1);
+    const detail = deferred<SharedPetPackageSummary | null>();
+    harness.getById.mockImplementationOnce(() => detail.promise);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 1');
+
+    fireEvent.click(screen.getByRole('button', { name: '打开 Pet 1 的详情' }));
+    fireEvent.click(screen.getByRole('button', { name: '点赞 Pet 1' }));
+    await waitFor(() => expect(harness.toggleLike).toHaveBeenCalledWith('pet-1'));
+    await act(async () => {
+      detail.resolve({ ...createItem(1), description: '并发后详情' });
+      await detail.promise;
+    });
+
+    expect(await screen.findByRole('dialog', { name: 'Pet 1' })).toBeTruthy();
+    expect(screen.getByText('并发后详情')).toBeTruthy();
+  });
+
   it('点赞成功后只更新当前卡片', async () => {
     const harness = createRepository(2);
     renderChapter(harness.repository);
@@ -574,6 +654,40 @@ describe('共享仓库章节', () => {
     expect(await screen.findByText('详情暂时无法打开，请稍后重试。')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '点赞 Pet 1' }));
     expect(await screen.findByText('点赞暂时无法完成，请稍后重试。')).toBeTruthy();
+  });
+
+  it('加载失败后的成功订阅刷新会清除旧加载错误', async () => {
+    const harness = createRepository(1);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 1');
+    harness.listPage.mockRejectedValueOnce(new Error('load failed'));
+
+    harness.emit();
+    expect(await screen.findByText('共享内容暂时无法加载，请稍后重试。')).toBeTruthy();
+    harness.listPage.mockResolvedValueOnce(createPage([
+      { ...createItem(1), name: '刷新成功 Pet' }
+    ], 1, 1));
+    harness.emit();
+
+    expect(await screen.findByText('刷新成功 Pet')).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByText('共享内容暂时无法加载，请稍后重试。')).toBeNull();
+    });
+  });
+
+  it('成功订阅刷新不会清除并发操作错误', async () => {
+    const harness = createRepository(1);
+    harness.toggleLike.mockRejectedValueOnce(new Error('like failed'));
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 1');
+
+    fireEvent.click(screen.getByRole('button', { name: '点赞 Pet 1' }));
+    expect(await screen.findByText('点赞暂时无法完成，请稍后重试。')).toBeTruthy();
+    harness.listPage.mockResolvedValueOnce(createPage([createItem(1)], 1, 1));
+    harness.emit();
+    await waitFor(() => expect(harness.listPage).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText('点赞暂时无法完成，请稍后重试。')).toBeTruthy();
   });
 
   it('下载使用原文件名并在记录次数前释放临时地址', async () => {

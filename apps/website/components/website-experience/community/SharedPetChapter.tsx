@@ -110,7 +110,8 @@ export function SharedPetChapter({
   const [detailItem, setDetailItem] = useState<SharedPetPackageSummary | null>(
     null
   );
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [loadNotice, setLoadNotice] = useState<string | null>(null);
+  const [operationNotice, setOperationNotice] = useState<string | null>(null);
   const [detailPending, setDetailPending] = useState<ReadonlySet<string>>(
     new Set()
   );
@@ -131,6 +132,7 @@ export function SharedPetChapter({
   const requestEpochRef = useRef(0);
   const paginationTokenRef = useRef(0);
   const statusTokenRef = useRef(0);
+  const detailRequestTokenRef = useRef(0);
   const detailLocksRef = useRef(new Set<string>());
   const likeLocksRef = useRef(new Set<string>());
   const downloadLocksRef = useRef(new Set<string>());
@@ -138,8 +140,11 @@ export function SharedPetChapter({
     || isPaused
     || reducedMotion
     || staticFallback;
+  const motionDisabledRef = useRef(motionDisabled);
+  motionDisabledRef.current = motionDisabled;
   const visiblePage = transition.visiblePage;
   const transitionLocked = pageLocked || transition.status !== 'idle';
+  const statusMessage = operationNotice ?? loadNotice;
 
   const commitTransition = useCallback((next: SharedPetPageTransition) => {
     transitionRef.current = next;
@@ -148,7 +153,7 @@ export function SharedPetChapter({
 
   const beginStatusOperation = useCallback(() => {
     const token = ++statusTokenRef.current;
-    if (mountedRef.current) setStatusMessage(null);
+    if (mountedRef.current) setOperationNotice(null);
     return token;
   }, []);
 
@@ -191,7 +196,7 @@ export function SharedPetChapter({
 
     if (!result.ok) {
       if (statusToken === statusTokenRef.current) {
-        setStatusMessage(t('sharedPet.chapter.loadFailed'));
+        setLoadNotice(t('sharedPet.chapter.loadFailed'));
       }
       return;
     }
@@ -202,11 +207,18 @@ export function SharedPetChapter({
       subscriptionDirtyRef.current = true;
       return;
     }
+    setLoadNotice(null);
     commitTransition({ status: 'idle', visiblePage: result.page });
   }, [commitTransition, readPage, t]);
 
   useEffect(() => {
     mountedRef.current = true;
+    activePaginationRef.current = null;
+    pageLockedRef.current = false;
+    subscriptionDirtyRef.current = false;
+    commitTransition(INITIAL_TRANSITION);
+    setPageLocked(false);
+    setLoadNotice(null);
     void refreshPage(1);
     const unsubscribe = repository.subscribe(() => {
       const current = transitionRef.current;
@@ -221,15 +233,17 @@ export function SharedPetChapter({
       requestEpochRef.current += 1;
       paginationTokenRef.current += 1;
       statusTokenRef.current += 1;
+      detailRequestTokenRef.current += 1;
       activePaginationRef.current = null;
       pageLockedRef.current = false;
       subscriptionDirtyRef.current = false;
+      transitionRef.current = INITIAL_TRANSITION;
       detailLocksRef.current.clear();
       likeLocksRef.current.clear();
       downloadLocksRef.current.clear();
       unsubscribe();
     };
-  }, [refreshPage, repository]);
+  }, [commitTransition, refreshPage, repository]);
 
   useEffect(() => {
     if (motionDisabled || typeof window === 'undefined') return;
@@ -302,12 +316,13 @@ export function SharedPetChapter({
           result.ok
           && result.epoch === requestEpochRef.current
         ) {
+          setLoadNotice(null);
           commitTransition({ status: 'idle', visiblePage: result.page });
           unlockPagination(token, result.page.page);
           return;
         }
         if (active.statusToken === statusTokenRef.current) {
-          setStatusMessage(t('sharedPet.chapter.loadFailed'));
+          setLoadNotice(t('sharedPet.chapter.loadFailed'));
         }
         unlockPagination(token, current.visiblePage.page);
       });
@@ -345,7 +360,7 @@ export function SharedPetChapter({
     ) {
       commitTransition({ status: 'idle', visiblePage: current.visiblePage });
       if (active.statusToken === statusTokenRef.current) {
-        setStatusMessage(t('sharedPet.chapter.loadFailed'));
+        setLoadNotice(t('sharedPet.chapter.loadFailed'));
       }
       unlockPagination(active.token, current.visiblePage.page);
       return;
@@ -355,13 +370,14 @@ export function SharedPetChapter({
       current.visiblePage,
       result.page
     ));
-    if (motionDisabled || entering.visiblePage.items.length === 0) {
+    setLoadNotice(null);
+    if (motionDisabledRef.current || entering.visiblePage.items.length === 0) {
       commitTransition(completePageEntering(entering));
       unlockPagination(active.token, entering.visiblePage.page);
       return;
     }
     commitTransition(entering);
-  }, [commitTransition, motionDisabled, t, unlockPagination]);
+  }, [commitTransition, t, unlockPagination]);
 
   const finishEntering = useCallback(() => {
     const current = transitionRef.current;
@@ -380,7 +396,7 @@ export function SharedPetChapter({
     } else if (current.status === 'entering') {
       finishEntering();
     }
-  }, [finishEntering, finishLeaving, motionDisabled]);
+  }, [finishEntering, finishLeaving, interactive, motionDisabled]);
 
   useEffect(() => {
     const grid = gridRef.current;
@@ -406,22 +422,24 @@ export function SharedPetChapter({
       !interactive
       || !beginItemLock(detailLocksRef.current, setDetailPending, item.id)
     ) return;
-    const token = beginStatusOperation();
+    const detailToken = ++detailRequestTokenRef.current;
+    const statusToken = beginStatusOperation();
     try {
       const current = await repository.getById(item.id);
       if (!current) throw new Error('PACKAGE_NOT_FOUND');
       if (
         mountedRef.current
-        && token === statusTokenRef.current
+        && detailToken === detailRequestTokenRef.current
       ) {
         setDetailItem(current);
       }
     } catch {
       if (
         mountedRef.current
-        && token === statusTokenRef.current
+        && detailToken === detailRequestTokenRef.current
+        && statusToken === statusTokenRef.current
       ) {
-        setStatusMessage(t('sharedPet.chapter.detailFailed'));
+        setOperationNotice(t('sharedPet.chapter.detailFailed'));
       }
     } finally {
       endItemLock(
@@ -447,7 +465,7 @@ export function SharedPetChapter({
         mountedRef.current
         && token === statusTokenRef.current
       ) {
-        setStatusMessage(t('sharedPet.chapter.likeFailed'));
+        setOperationNotice(t('sharedPet.chapter.likeFailed'));
       }
     } finally {
       endItemLock(
@@ -494,7 +512,7 @@ export function SharedPetChapter({
         mountedRef.current
         && token === statusTokenRef.current
       ) {
-        setStatusMessage(t('sharedPet.error.DOWNLOAD_FAILED'));
+        setOperationNotice(t('sharedPet.error.DOWNLOAD_FAILED'));
       }
     } finally {
       try {
