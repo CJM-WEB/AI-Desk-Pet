@@ -99,7 +99,10 @@ export function CharacterPlayer({
   const hostRef = useRef<HTMLSpanElement>(null);
   const activePlayerRef = useRef<CharacterPlayerPort | null>(null);
   const activeSnapshotRef = useRef<CharacterRuntimeSnapshot | null>(null);
-  const onHitTestPortChangeRef = useRef(onHitTestPortChange);
+  const activeHitTestPortRef = useRef<CharacterHitTestPort | null>(null);
+  const hitTestPortOwnerRef = useRef<
+    CharacterPlayerProps['onHitTestPortChange']
+  >(undefined);
   const playbackRef = useRef({ stateId, motionMode, direction, random });
   const [runtimeDirection, setRuntimeDirection] = useState(direction);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -116,7 +119,21 @@ export function CharacterPlayer({
     direction: runtimeDirection,
     random
   };
-  onHitTestPortChangeRef.current = onHitTestPortChange;
+
+  useEffect(() => {
+    const previousOwner = hitTestPortOwnerRef.current;
+    if (previousOwner && previousOwner !== onHitTestPortChange) {
+      previousOwner(null);
+    }
+    hitTestPortOwnerRef.current = onHitTestPortChange;
+    onHitTestPortChange?.(activeHitTestPortRef.current);
+
+    return () => {
+      if (hitTestPortOwnerRef.current !== onHitTestPortChange) return;
+      onHitTestPortChange?.(null);
+      hitTestPortOwnerRef.current = undefined;
+    };
+  }, [onHitTestPortChange]);
 
   useEffect(() => {
     const updateVisibility = (): void => setPageVisible(!document.hidden);
@@ -137,7 +154,13 @@ export function CharacterPlayer({
     const placeholder = document.createElement('span');
     placeholder.className = 'character-player-stage';
     host.appendChild(placeholder);
-    onHitTestPortChangeRef.current?.(null);
+
+    /** 当前端口与提交后的回调所有者同步更新，避免旧接收者残留。 */
+    const publishHitTestPort = (port: CharacterHitTestPort | null): void => {
+      activeHitTestPortRef.current = port;
+      hitTestPortOwnerRef.current?.(port);
+    };
+    publishHitTestPort(null);
 
     /** 异步完成路径与卸载路径共享同一所有权门，确保播放器只释放一次。 */
     const destroyPlayerOnce = (player: CharacterPlayerPort): void => {
@@ -151,7 +174,7 @@ export function CharacterPlayer({
       let candidate: CharacterPlayerPort | null = null;
       let staging: HTMLSpanElement | null = null;
       setStatus('loading');
-      onHitTestPortChangeRef.current?.(null);
+      publishHitTestPort(null);
 
       try {
         let snapshot: CharacterRuntimeSnapshot | null = null;
@@ -223,7 +246,7 @@ export function CharacterPlayer({
           if (child !== staging) child.remove();
         }
         if (previous) destroyPlayerOnce(previous);
-        onHitTestPortChangeRef.current?.(
+        publishHitTestPort(
           createPlayerHitTestPort(candidate, staging)
         );
         setStatus('ready');
@@ -271,7 +294,7 @@ export function CharacterPlayer({
     return () => {
       disposed = true;
       ++revision;
-      onHitTestPortChangeRef.current?.(null);
+      publishHitTestPort(null);
       unsubscribe();
       cache.destroy();
       for (const candidate of candidates) destroyPlayerOnce(candidate);

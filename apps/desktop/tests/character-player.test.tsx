@@ -352,16 +352,9 @@ describe('PixiJS 角色播放器端口', () => {
 });
 
 describe('角色播放器组件', () => {
-  test('命中回调身份变化不重载播放器且后续发布使用最新回调', async () => {
+  test('命中回调身份变化时立即交接当前端口且卸载只撤销新所有者', async () => {
     const currentManifest = manifest('character-a');
-    let characterListener: (() => void) | undefined;
-    const subscribeCharacterEvents = vi.fn(listener => {
-      characterListener = () => listener({
-        type: 'active-character-changed',
-        characterId: currentManifest.id
-      });
-      return vi.fn();
-    });
+    const subscribeCharacterEvents = vi.fn(() => vi.fn());
     const api = {
       getCharacterRuntimeSnapshot: vi.fn(async () => ({
         activeCharacterId: currentManifest.id,
@@ -395,6 +388,9 @@ describe('角色播放器组件', () => {
     await waitFor(() => {
       expect(firstCallback.mock.calls.some(([port]) => port !== null)).toBe(true);
     });
+    const currentPort = firstCallback.mock.calls
+      .map(([port]) => port)
+      .find(port => port !== null);
     const firstCallCount = firstCallback.mock.calls.length;
 
     result.rerender(
@@ -407,16 +403,22 @@ describe('角色播放器组件', () => {
         onHitTestPortChange={secondCallback}
       />
     );
-    await Promise.resolve();
+
+    expect(firstCallback).toHaveBeenCalledTimes(firstCallCount + 1);
+    expect(firstCallback).toHaveBeenLastCalledWith(null);
+    expect(secondCallback).toHaveBeenCalledTimes(1);
+    expect(secondCallback).toHaveBeenCalledWith(currentPort);
     expect(createPlayer).toHaveBeenCalledOnce();
     expect(loadBundle).toHaveBeenCalledOnce();
     expect(subscribeCharacterEvents).toHaveBeenCalledOnce();
 
-    await act(async () => characterListener?.());
-    await waitFor(() => expect(createPlayer).toHaveBeenCalledTimes(2));
-    expect(firstCallback).toHaveBeenCalledTimes(firstCallCount);
+    firstCallback.mockClear();
+    secondCallback.mockClear();
+    result.unmount();
+
+    expect(firstCallback).not.toHaveBeenCalled();
+    expect(secondCallback).toHaveBeenCalledOnce();
     expect(secondCallback).toHaveBeenCalledWith(null);
-    expect(secondCallback.mock.calls.some(([port]) => port !== null)).toBe(true);
   });
 
   test('正式播放器发布局部坐标像素命中端口并在替换与卸载时撤销', async () => {

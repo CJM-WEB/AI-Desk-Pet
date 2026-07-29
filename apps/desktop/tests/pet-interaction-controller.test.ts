@@ -273,6 +273,77 @@ describe('Renderer 桌宠交互状态机', () => {
     expect(setPetMousePassthrough).toHaveBeenNthCalledWith(2, true);
   });
 
+  test('安全穿透连续失败后由新的命中重算重新发起并恢复', async () => {
+    const setPetMousePassthrough = vi.fn()
+      .mockRejectedValueOnce(new Error('IPC_FAILED'))
+      .mockRejectedValueOnce(new Error('IPC_FAILED'))
+      .mockResolvedValueOnce(undefined);
+    const api: PetWindowInteractionApi = {
+      setPetMousePassthrough,
+      beginPetDrag: vi.fn().mockResolvedValue(undefined),
+      endPetDrag: vi.fn().mockResolvedValue(undefined),
+      openPetContextMenu: vi.fn().mockResolvedValue(undefined)
+    };
+    const controller = new PetInteractionController(api);
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(2);
+
+    controller.handlePointerMove({ x: 4, y: 5 });
+    await flushPromises();
+
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(3);
+    expect(setPetMousePassthrough).toHaveBeenNthCalledWith(3, true);
+  });
+
+  test('安全穿透阻塞后 dispose 仍至少重新提交一次安全状态', async () => {
+    const setPetMousePassthrough = vi.fn()
+      .mockRejectedValueOnce(new Error('IPC_FAILED'))
+      .mockRejectedValueOnce(new Error('IPC_FAILED'))
+      .mockResolvedValueOnce(undefined);
+    const api: PetWindowInteractionApi = {
+      setPetMousePassthrough,
+      beginPetDrag: vi.fn().mockResolvedValue(undefined),
+      endPetDrag: vi.fn().mockResolvedValue(undefined),
+      openPetContextMenu: vi.fn().mockResolvedValue(undefined)
+    };
+    const controller = new PetInteractionController(api);
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(2);
+
+    controller.dispose();
+    await flushPromises();
+
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(3);
+    expect(setPetMousePassthrough).toHaveBeenNthCalledWith(3, true);
+  });
+
+  test('持续失败时每次外部安全重算只开启一次有界重试', async () => {
+    const setPetMousePassthrough = vi.fn().mockRejectedValue(
+      new Error('IPC_FAILED')
+    );
+    const api: PetWindowInteractionApi = {
+      setPetMousePassthrough,
+      beginPetDrag: vi.fn().mockResolvedValue(undefined),
+      endPetDrag: vi.fn().mockResolvedValue(undefined),
+      openPetContextMenu: vi.fn().mockResolvedValue(undefined)
+    };
+    const controller = new PetInteractionController(api);
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(2);
+
+    controller.handlePointerMove({ x: 6, y: 7 });
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(4);
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(4);
+
+    controller.handlePointerMove({ x: 8, y: 9 });
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(6);
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(6);
+  });
+
   test('dispose 取消订阅、结束拖拽并让后续事件无副作用', () => {
     const fixture = createFixture();
     fixture.setHit(true);

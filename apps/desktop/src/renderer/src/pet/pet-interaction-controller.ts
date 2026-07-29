@@ -256,6 +256,14 @@ export class PetInteractionController {
       this.desiredPassthrough = ignore;
       this.blockedPassthrough = undefined;
       if (ignore) this.safeRetryRemaining = 1;
+    } else if (
+      ignore
+      && (force || this.blockedPassthrough === true)
+    ) {
+      // 只有新的外部安全请求重开预算，pump 内部重试不会无限续期。
+      this.blockedPassthrough = undefined;
+      this.safeRetryRemaining = 1;
+      if (force) this.confirmedPassthrough = undefined;
     }
     this.pumpPassthrough();
   }
