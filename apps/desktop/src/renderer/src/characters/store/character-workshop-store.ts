@@ -15,6 +15,7 @@ import {
   compileAtlas,
   type AtlasSourceFrame
 } from '../import/atlas-compiler';
+import { imageMimeType } from '../import/image-decoder';
 import { characterOperationMessage } from '../../../../shared/character-recovery';
 
 export type WorkshopBusyAction =
@@ -151,21 +152,6 @@ async function inspectBrowserImage(
   } finally {
     bitmap.close();
   }
-}
-
-function imageMimeType(bytes: Uint8Array): 'image/png' | 'image/webp' {
-  const png = [0x89, 0x50, 0x4e, 0x47].every((value, index) => bytes[index] === value);
-  if (png) return 'image/png';
-  const webp = bytes[0] === 0x52
-    && bytes[1] === 0x49
-    && bytes[2] === 0x46
-    && bytes[3] === 0x46
-    && bytes[8] === 0x57
-    && bytes[9] === 0x45
-    && bytes[10] === 0x42
-    && bytes[11] === 0x50;
-  if (webp) return 'image/webp';
-  throw new Error('CHARACTER_IMAGE_MIME_UNSUPPORTED');
 }
 
 async function compileBrowserAction(input: {
