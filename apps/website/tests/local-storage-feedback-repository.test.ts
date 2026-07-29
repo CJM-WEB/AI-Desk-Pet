@@ -92,7 +92,7 @@ describe('本地反馈仓储', () => {
     expect(restored.list('feedback').find((entry) => entry.id === created.id)).toMatchObject(created);
   });
 
-  it('空昵称以稳定空值持久化，并将旧默认匿名值迁移为该状态', () => {
+  it('空昵称以稳定空值持久化，并保留旧记录的精确昵称', () => {
     const storage = new MemoryStorage();
     storage.setItem(feedbackStorageKey, JSON.stringify({
       version: 1,
@@ -130,11 +130,11 @@ describe('本地反馈仓储', () => {
     });
 
     expect(repository.list('feedback').find((entry) => entry.id === 'legacy-anonymous')?.authorName)
-      .toBe('');
+      .toBe('匿名用户');
     expect(repository.list('feedback').find((entry) => entry.id === 'explicit-name')?.authorName)
       .toBe('匿名用户二号');
     expect(JSON.parse(storage.getItem(feedbackStorageKey)!).entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'legacy-anonymous', authorName: '' }),
+      expect.objectContaining({ id: 'legacy-anonymous', authorName: '匿名用户' }),
       expect.objectContaining({ id: 'explicit-name', authorName: '匿名用户二号' })
     ]));
 
