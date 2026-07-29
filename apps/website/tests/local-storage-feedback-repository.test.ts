@@ -92,6 +92,63 @@ describe('本地反馈仓储', () => {
     expect(restored.list('feedback').find((entry) => entry.id === created.id)).toMatchObject(created);
   });
 
+  it('空昵称以稳定空值持久化，并将旧默认匿名值迁移为该状态', () => {
+    const storage = new MemoryStorage();
+    storage.setItem(feedbackStorageKey, JSON.stringify({
+      version: 1,
+      localUserId: 'legacy-browser',
+      entries: [
+        {
+          id: 'legacy-anonymous',
+          kind: 'feedback',
+          authorId: 'legacy-browser',
+          authorName: '匿名用户',
+          content: '这是一条至少十个字符的旧匿名反馈内容。',
+          likeCount: 0,
+          createdAt: '2026-07-26T12:00:00.000Z',
+          updatedAt: '2026-07-26T12:00:00.000Z',
+          source: 'local-user'
+        },
+        {
+          id: 'explicit-name',
+          kind: 'feedback',
+          authorId: 'legacy-browser',
+          authorName: '匿名用户二号',
+          content: '这是一条至少十个字符的明确昵称反馈内容。',
+          likeCount: 0,
+          createdAt: '2026-07-26T12:00:00.000Z',
+          updatedAt: '2026-07-26T12:00:00.000Z',
+          source: 'local-user'
+        }
+      ],
+      likedEntryIds: []
+    }));
+    const repository = new LocalStorageFeedbackRepository({
+      storage,
+      createId: () => 'unused-id',
+      now: () => '2026-07-26T12:00:00.000Z'
+    });
+
+    expect(repository.list('feedback').find((entry) => entry.id === 'legacy-anonymous')?.authorName)
+      .toBe('');
+    expect(repository.list('feedback').find((entry) => entry.id === 'explicit-name')?.authorName)
+      .toBe('匿名用户二号');
+    expect(JSON.parse(storage.getItem(feedbackStorageKey)!).entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'legacy-anonymous', authorName: '' }),
+      expect.objectContaining({ id: 'explicit-name', authorName: '匿名用户二号' })
+    ]));
+
+    const created = repository.create({
+      kind: 'suggestion',
+      authorName: '   ',
+      content: '这是一条至少十个字符的新匿名建议内容。'
+    });
+    expect(created.authorName).toBe('');
+    expect(JSON.parse(storage.getItem(feedbackStorageKey)!).entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: created.id, authorName: '' })
+    ]));
+  });
+
   it('能点赞、取消点赞并派生当前浏览器状态', () => {
     const { repository } = createRepository();
     const created = repository.create(validInput);

@@ -23,7 +23,7 @@ export function validateDraft(input: CreateFeedbackInput): DraftValidationResult
     valid: true,
     value: {
       kind: input.kind,
-      authorName: authorName || '匿名用户',
+      authorName,
       content
     }
   };

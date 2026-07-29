@@ -372,6 +372,26 @@ describe('官网章节降级模式', () => {
       .getAttribute('aria-checked')).toBe('true');
   });
 
+  it('英文环境使用国际化章节区域标签', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    render(
+      <I18nProvider initialLocale="en">
+        <WebsiteExperience />
+      </I18nProvider>
+    );
+
+    expect(document.querySelector('[data-chapter-id="home"]')?.getAttribute('aria-label'))
+      .toBe('Home');
+    expect(document.querySelector('[data-chapter-id="about"]')?.getAttribute('aria-label'))
+      .toBe('About AI Pet');
+    expect(document.querySelector('[data-chapter-id="download"]')?.getAttribute('aria-label'))
+      .toBe('Download AI Pet');
+    expect(document.querySelector('[data-chapter-id="feedback"]')?.getAttribute('aria-label'))
+      .toBe('Feedback and Suggestions');
+    expect(document.querySelector('[data-chapter-id="donation"]')?.getAttribute('aria-label'))
+      .toBe('Support Development');
+  });
+
   it('正常动画的首帧离开首页时立即卸载语言入口，返回稳定首页后恢复', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
     render(<WebsiteExperience />);

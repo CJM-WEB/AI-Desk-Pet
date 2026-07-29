@@ -9,6 +9,7 @@ import {
   createFeedbackPreviewSource,
   createFeedbackVisualProfile,
   FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH,
+  localizeFeedbackEntry,
   localizeOfficialFeedbackEntry
 } from '../components/website-experience/feedback/feedback-preview-source';
 import { en, zhCN } from '../components/i18n/messages';
@@ -66,6 +67,16 @@ describe('反馈文件预览内容源', () => {
     expect(official.content).toBe('Please make the pet quieter in Focus mode.');
     expect(local.authorName).toBe('本地作者');
     expect(local.content).toBe('这是用户原文');
+  });
+
+  it('将空本地昵称显示为当前语言的匿名名称', () => {
+    const anonymous = localizeFeedbackEntry(createEntry({
+      authorName: '',
+      content: '这是用户原文'
+    }), (key) => en[key]);
+
+    expect(anonymous.authorName).toBe('Anonymous');
+    expect(anonymous.content).toBe('这是用户原文');
   });
 
   it('语言切换后只让新生成粒子使用当前语言快照', () => {

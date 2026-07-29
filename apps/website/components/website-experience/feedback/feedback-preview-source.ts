@@ -57,6 +57,21 @@ export function localizeOfficialFeedbackEntry<T extends FeedbackRecord>(
   } as T;
 }
 
+/** 本地空昵称是稳定数据状态，仅在展示时替换为当前语言的匿名名称。 */
+export function localizeFeedbackEntry<T extends FeedbackRecord>(
+  entry: T,
+  t: Translate
+): T {
+  const localizedEntry = localizeOfficialFeedbackEntry(entry, t);
+  if (localizedEntry.source !== 'local-user' || localizedEntry.authorName) {
+    return localizedEntry;
+  }
+  return {
+    ...localizedEntry,
+    authorName: t('feedback.anonymous')
+  } as T;
+}
+
 function summarizeContent(content: string): string {
   if (content.length <= FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH) {
     return content;
@@ -66,7 +81,7 @@ function summarizeContent(content: string): string {
 }
 
 function formatPreviewLines(entry: FeedbackEntry, t: Translate): readonly string[] {
-  const localizedEntry = localizeOfficialFeedbackEntry(entry, t);
+  const localizedEntry = localizeFeedbackEntry(entry, t);
   return [
     t('feedback.preview.type', {
       kind: t(localizedEntry.kind === 'feedback'

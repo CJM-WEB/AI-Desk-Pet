@@ -11,6 +11,7 @@ import type {
 } from './feedback-types';
 
 export const feedbackStorageKey = 'ai-pet-feedback-v1';
+const LEGACY_ANONYMOUS_AUTHOR_NAME = '匿名用户';
 
 const feedbackRecordSchema = z.object({
   id: z.string().min(1),
@@ -282,7 +283,11 @@ export class LocalStorageFeedbackRepository implements FeedbackRepository {
     changed: boolean;
   } {
     const entries = trimFeedbackEntries(
-      document.entries.filter((entry) => entry.source === 'local-user'),
+      document.entries
+        .filter((entry) => entry.source === 'local-user')
+        .map((entry) => entry.authorName === LEGACY_ANONYMOUS_AUTHOR_NAME
+          ? { ...entry, authorName: '' }
+          : entry),
       MAX_USER_ENTRIES_PER_KIND
     ).filter((entry) => entry.source === 'local-user');
     const likedEntryIds = [...new Set(document.likedEntryIds)];

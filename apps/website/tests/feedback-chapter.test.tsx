@@ -71,7 +71,7 @@ class TestFeedbackRepository implements FeedbackRepository {
     const entry = createEntry({
       id: `local-${this.sequence}`,
       kind: input.kind,
-      authorName: input.authorName.trim() || '匿名用户',
+      authorName: input.authorName.trim(),
       content: input.content.trim(),
       likeCount: 0,
       source: 'local-user'
@@ -163,6 +163,24 @@ describe('反馈章节', () => {
 
     expect(screen.getByRole('heading', { name: 'Shape Your Pet with Your Voice' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'View Feedback' })).toBeTruthy();
+  });
+
+  it('英文列表将空昵称显示为匿名名称但保留正文原文', () => {
+    const repository = new TestFeedbackRepository([createEntry({
+      source: 'local-user',
+      authorName: '',
+      content: '这是用户原文'
+    })]);
+    render(
+      <I18nProvider initialLocale="en">
+        <FeedbackChapter interactive repository={repository} />
+      </I18nProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'View Feedback' }));
+    const dialog = screen.getByRole('dialog', { name: 'Feedback' });
+    expect(dialog.textContent).toContain('Anonymous');
+    expect(dialog.textContent).toContain('这是用户原文');
   });
 
   beforeEach(() => {

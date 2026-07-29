@@ -10,7 +10,7 @@ import type {
 } from './feedback-types';
 import type { Translate } from '../../i18n/i18n-types';
 import type { Locale } from '../../i18n/i18n-types';
-import { localizeOfficialFeedbackEntry } from './feedback-preview-source';
+import { localizeFeedbackEntry } from './feedback-preview-source';
 import styles from './feedback.module.css';
 
 export interface FeedbackListDialogProps {
@@ -90,7 +90,7 @@ export function FeedbackListDialog({
           likeCount: optimistic.count
         }
       : entry;
-    return localizeOfficialFeedbackEntry(visibleEntry, t);
+    return localizeFeedbackEntry(visibleEntry, t);
   });
   const repositoryNotice = (repository as RepositoryWithNotice)
     .getStatusNotice?.() ?? null;

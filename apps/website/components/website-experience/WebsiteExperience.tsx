@@ -174,7 +174,7 @@ export function WebsiteExperience({
             data-visible={visual.visible}
             data-interactive={visual.interactive}
             data-layer="focal"
-            aria-label={chapter.label}
+            aria-label={t(chapter.labelKey)}
             aria-hidden={!visual.visible}
             inert={!visual.interactive ? true : undefined}
             style={style}
