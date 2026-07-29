@@ -5,9 +5,12 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState
 } from 'react';
+import { useI18n } from '../i18n/I18nProvider';
+import { CONTENT_POOL, createContentPool } from './content-pool';
 import { computePreviewPosition } from './pointer-model';
 import type { FileParticle } from './swarm-model';
 import type { PointerPoint } from './types';
@@ -74,6 +77,8 @@ export function FilePreview({
   onInitializationError,
   onQuickToStateChange
 }: FilePreviewProps) {
+  const { t } = useI18n();
+  const localizedPool = useMemo(() => createContentPool(t), [t]);
   const [displayedParticle, setDisplayedParticle] = useState<FileParticle | null>(particle);
   const previewRef = useRef<HTMLElement | null>(null);
   const quickXRef = useRef<QuickTo | null>(null);
@@ -323,7 +328,13 @@ export function FilePreview({
   }
 
   const { kind, preview } = displayedParticle;
-  const previewLines = previewSource.getPreview(displayedParticle);
+  const previewIndex = CONTENT_POOL[kind].indexOf(preview);
+  const localizedPreview = previewIndex < 0
+    ? preview
+    : localizedPool[kind][previewIndex]!;
+  const previewLines = previewSource === DEFAULT_FILE_PREVIEW_CONTENT_SOURCE
+    ? localizedPreview.lines
+    : previewSource.getPreview(displayedParticle);
 
   return (
     <article
@@ -333,12 +344,13 @@ export function FilePreview({
       data-kind={kind}
       data-motion-state="inactive"
       role="status"
+      aria-label={t('shared.filePreview')}
       aria-live="polite"
       aria-atomic="true"
     >
       <header className={styles.previewHeader}>
-        <h2>{preview.title}</h2>
-        <p>{preview.meta}</p>
+        <h2>{localizedPreview.title}</h2>
+        <p>{localizedPreview.meta}</p>
       </header>
 
       {kind === 'xls' ? (

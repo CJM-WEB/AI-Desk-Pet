@@ -11,11 +11,12 @@ import {
 } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { PointerPoint } from '../../home-experience/types';
+import { useI18n } from '../../i18n/I18nProvider';
 import type { ChapterRuntimeProps } from '../types';
 import { PointerTiltText } from '../visual/PointerTiltText';
 import { AboutFeaturePanel } from './AboutFeaturePanel';
 import { AboutFeaturePreview } from './AboutFeaturePreview';
-import { ABOUT_FEATURES } from './about-content';
+import { createAboutFeatures } from './about-content';
 import {
   initialAboutInteraction,
   isInsideAboutSafeZone,
@@ -42,6 +43,7 @@ export function AboutChapter({
   staticFallback = false,
   onInitializationError
 }: ChapterRuntimeProps) {
+  const { t } = useI18n();
   const rootRef = useRef<HTMLElement | null>(null);
   const entranceConsumedRef = useRef(false);
   const [interaction, dispatch] = useReducer(reduceAboutInteraction, initialAboutInteraction);
@@ -50,6 +52,7 @@ export function AboutChapter({
   const [viewport, setViewport] = useState(INITIAL_VIEWPORT);
   const [entranceState, setEntranceState] = useState<'pending' | 'visible'>('visible');
   const motionDisabled = reducedMotion || staticFallback || isPaused;
+  const features = useMemo(() => createAboutFeatures(t), [t]);
   const layout = viewport.width <= 760
     && viewport.height <= 520
     && viewport.width > viewport.height
@@ -57,8 +60,8 @@ export function AboutChapter({
     : 'default';
   const activeFeatureId = visibleAboutFeatureId(interaction);
   const activeFeature = useMemo(
-    () => ABOUT_FEATURES.find((feature) => feature.id === activeFeatureId) ?? null,
-    [activeFeatureId]
+    () => features.find((feature) => feature.id === activeFeatureId) ?? null,
+    [activeFeatureId, features]
   );
 
   useEffect(() => {
@@ -194,8 +197,8 @@ export function AboutChapter({
         }
       }}
     >
-      <div className={styles.featurePlane} aria-label="AI Pet 功能区域">
-        {ABOUT_FEATURES.map((feature) => (
+      <div className={styles.featurePlane} aria-label={t('about.featurePlane')}>
+        {features.map((feature) => (
           <AboutFeaturePanel
             key={feature.id}
             feature={feature}

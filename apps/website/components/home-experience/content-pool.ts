@@ -1,3 +1,5 @@
+import { zhCN } from '../i18n/messages';
+import type { Translate } from '../i18n/i18n-types';
 import type { FileKind } from './types';
 
 export interface PreviewContent {
@@ -6,41 +8,52 @@ export interface PreviewContent {
   lines: readonly string[];
 }
 
-// 按文件类型提供稳定的本地预览内容，供首页交互直接复用。
-export const CONTENT_POOL: Record<FileKind, readonly PreviewContent[]> = {
-  txt: [
-    { title: '今日备忘', meta: 'TXT · 刚刚', lines: ['整理项目素材', '确认下一阶段计划'] },
-    { title: '灵感片段', meta: 'TXT · 2 KB', lines: ['让文件主动说明自己。'] }
-  ],
-  pdf: [
-    { title: '项目说明书', meta: 'PDF · 12 页', lines: ['目标、边界与验收标准'] },
-    { title: '研究摘要', meta: 'PDF · 8 页', lines: ['本地优先的文件协作方式'] }
-  ],
-  ppt: [
-    { title: '产品演示', meta: 'PPT · 16 页', lines: ['问题', '方案', '下一步'] },
-    { title: '周会汇报', meta: 'PPT · 9 页', lines: ['本周进度', '风险与安排'] }
-  ],
-  xls: [
-    { title: '任务统计', meta: 'XLS · 24 行', lines: ['已完成 18', '进行中 4'] },
-    { title: '文件清单', meta: 'XLS · 7 列', lines: ['文档 12', '图片 36'] }
-  ],
-  img: [
-    { title: '界面参考', meta: 'PNG · 1920×1080', lines: ['浅灰背景', '透明主体'] },
-    { title: '产品截图', meta: 'PNG · 1.8 MB', lines: ['桌面助手运行画面'] }
-  ],
-  empty: [
-    { title: '空文件夹', meta: '0 个项目', lines: ['这里暂时没有文件'] },
-    { title: '新建目录', meta: '刚刚创建', lines: ['等待添加内容'] }
-  ],
-  folder: [
-    { title: '项目资料', meta: '5 个项目', lines: ['需求说明.pdf', '视觉参考.png'] },
-    { title: '本周工作', meta: '3 个项目', lines: ['计划.txt', '进度.xlsx'] }
-  ]
-};
+/** 按当前翻译函数生成预览文案，保持文件种类与随机抽取结构稳定。 */
+export function createContentPool(
+  t: Translate
+): Record<FileKind, readonly PreviewContent[]> {
+  return {
+    txt: [
+      { title: t('home.preview.txt.0.title'), meta: t('home.preview.txt.0.meta'), lines: [t('home.preview.txt.0.line.0'), t('home.preview.txt.0.line.1')] },
+      { title: t('home.preview.txt.1.title'), meta: t('home.preview.txt.1.meta'), lines: [t('home.preview.txt.1.line.0')] }
+    ],
+    pdf: [
+      { title: t('home.preview.pdf.0.title'), meta: t('home.preview.pdf.0.meta'), lines: [t('home.preview.pdf.0.line.0')] },
+      { title: t('home.preview.pdf.1.title'), meta: t('home.preview.pdf.1.meta'), lines: [t('home.preview.pdf.1.line.0')] }
+    ],
+    ppt: [
+      { title: t('home.preview.ppt.0.title'), meta: t('home.preview.ppt.0.meta'), lines: [t('home.preview.ppt.0.line.0'), t('home.preview.ppt.0.line.1'), t('home.preview.ppt.0.line.2')] },
+      { title: t('home.preview.ppt.1.title'), meta: t('home.preview.ppt.1.meta'), lines: [t('home.preview.ppt.1.line.0'), t('home.preview.ppt.1.line.1')] }
+    ],
+    xls: [
+      { title: t('home.preview.xls.0.title'), meta: t('home.preview.xls.0.meta'), lines: [t('home.preview.xls.0.line.0'), t('home.preview.xls.0.line.1')] },
+      { title: t('home.preview.xls.1.title'), meta: t('home.preview.xls.1.meta'), lines: [t('home.preview.xls.1.line.0'), t('home.preview.xls.1.line.1')] }
+    ],
+    img: [
+      { title: t('home.preview.img.0.title'), meta: t('home.preview.img.0.meta'), lines: [t('home.preview.img.0.line.0'), t('home.preview.img.0.line.1')] },
+      { title: t('home.preview.img.1.title'), meta: t('home.preview.img.1.meta'), lines: [t('home.preview.img.1.line.0')] }
+    ],
+    empty: [
+      { title: t('home.preview.empty.0.title'), meta: t('home.preview.empty.0.meta'), lines: [t('home.preview.empty.0.line.0')] },
+      { title: t('home.preview.empty.1.title'), meta: t('home.preview.empty.1.meta'), lines: [t('home.preview.empty.1.line.0')] }
+    ],
+    folder: [
+      { title: t('home.preview.folder.0.title'), meta: t('home.preview.folder.0.meta'), lines: [t('home.preview.folder.0.line.0'), t('home.preview.folder.0.line.1')] },
+      { title: t('home.preview.folder.1.title'), meta: t('home.preview.folder.1.meta'), lines: [t('home.preview.folder.1.line.0'), t('home.preview.folder.1.line.1')] }
+    ]
+  };
+}
 
-// 将随机源映射到条目索引，并保证索引不会超过最后一项。
-export function pickPreview(kind: FileKind, random: () => number): PreviewContent {
-  const entries = CONTENT_POOL[kind];
+// 兼容现有粒子模型及其测试；渲染层会基于当前语言重取对应条目。
+export const CONTENT_POOL = createContentPool((key) => zhCN[key]);
+
+/** 将随机源映射到调用方提供的内容池，并保证索引不会超过最后一项。 */
+export function pickPreview(
+  kind: FileKind,
+  random: () => number,
+  pool: Record<FileKind, readonly PreviewContent[]> = CONTENT_POOL
+): PreviewContent {
+  const entries = pool[kind];
   const index = Math.min(entries.length - 1, Math.floor(random() * entries.length));
 
   return entries[index]!;

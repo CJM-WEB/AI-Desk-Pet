@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { CONTENT_POOL, pickPreview } from '../components/home-experience/content-pool';
+import { en } from '../components/i18n/messages';
+import {
+  CONTENT_POOL,
+  createContentPool,
+  pickPreview
+} from '../components/home-experience/content-pool';
 
 const FILE_KINDS = ['txt', 'pdf', 'ppt', 'xls', 'img', 'empty', 'folder'] as const;
 
@@ -12,6 +17,14 @@ describe('CONTENT_POOL', () => {
     for (const kind of FILE_KINDS) {
       expect(CONTENT_POOL[kind].length).toBeGreaterThan(1);
     }
+  });
+});
+
+describe('createContentPool', () => {
+  it('英文文件预览池不包含中文内建文案', () => {
+    const pool = createContentPool((key) => en[key]);
+
+    expect(JSON.stringify(pool)).not.toMatch(/\p{Script=Han}/u);
   });
 });
 
@@ -34,5 +47,11 @@ describe('pickPreview', () => {
 
     expect(pickPreview('ppt', () => 0.999)).toBe(entry);
     expect(entry).toEqual(snapshot);
+  });
+
+  it('从调用方提供的内容池中选择条目', () => {
+    const pool = createContentPool((key) => en[key]);
+
+    expect(pickPreview('txt', () => 0, pool)).toBe(pool.txt[0]);
   });
 });

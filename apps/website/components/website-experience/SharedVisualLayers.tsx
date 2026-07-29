@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { CursorField } from '../home-experience/CursorField';
 import { FileSwarm } from '../home-experience/FileSwarm';
+import { useI18n } from '../i18n/I18nProvider';
 import homeStyles from '../home-experience/home-experience.module.css';
 import type { PointerPoint } from '../home-experience/types';
 import type { SharedVisualProfile } from './shared-visual-model';
@@ -37,6 +38,7 @@ export function SharedVisualLayers({
   reducedMotion,
   onInitializationError
 }: SharedVisualLayersProps) {
+  const { t } = useI18n();
   const [initializationFailed, setInitializationFailed] = useState(false);
   const [previewLayer, setPreviewLayer] = useState<HTMLDivElement | null>(null);
   const handleInitializationError = useCallback(() => {
@@ -91,7 +93,7 @@ export function SharedVisualLayers({
         className={homeStyles.fileLayer}
         data-layer="file"
         data-profile-id={profile.id}
-        aria-label="文件预览队列"
+        aria-label={t('shared.filePreviewQueue')}
         style={fileStyle}
       >
         <FileSwarm

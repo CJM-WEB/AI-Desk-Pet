@@ -10,6 +10,7 @@ import type { FileParticle } from '../components/home-experience/swarm-model';
 import { CHAPTER_LAYERS } from '../components/website-experience/layer-contract';
 import { SharedVisualLayers } from '../components/website-experience/SharedVisualLayers';
 import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
+import { I18nProvider } from '../components/i18n/I18nProvider';
 import {
   DEFAULT_FILE_PREVIEW_CONTENT_SOURCE,
   type FilePreviewContentSource,
@@ -106,6 +107,25 @@ describe('共享文件预览内容源', () => {
 });
 
 describe('共享视觉图层契约', () => {
+  it('英文环境本地化文件预览队列标签', () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider initialLocale="en">
+        <SharedVisualLayers
+          profile={VISUAL_PROFILES.home}
+          running={false}
+          generating={false}
+          exitProgress={0}
+          pointer={{ x: 0, y: 0 }}
+          isPaused={false}
+          reducedMotion={false}
+          onInitializationError={() => {}}
+        />
+      </I18nProvider>
+    );
+
+    expect(markup).toContain('aria-label="File preview queue"');
+  });
+
   it('配置光场开关，并为首页与捐款复用默认预览内容源', () => {
     expect(VISUAL_PROFILES.home.fieldEnabled).toBe(true);
     expect(VISUAL_PROFILES.donation.fieldEnabled).toBe(false);
