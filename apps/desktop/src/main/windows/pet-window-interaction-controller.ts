@@ -1,6 +1,9 @@
 import type { Rectangle } from 'electron';
-import type { PetInteractionProbe } from '../../shared/pet-window-interaction';
-import { clampPositionToVisibleWorkArea } from './window-manager';
+import {
+  PET_DRAG_TIMEOUT_MS,
+  type PetInteractionProbe
+} from '../../shared/pet-window-interaction';
+import { clampPositionToWorkArea } from './window-manager';
 
 type PetInteractionWindow = {
   getBounds(): Rectangle;
@@ -11,7 +14,9 @@ type PetInteractionWindow = {
 
 type PetInteractionScreen = {
   getCursorScreenPoint(): { x: number; y: number };
-  getAllDisplays(): readonly { workArea: Rectangle }[];
+  getDisplayNearestPoint(
+    point: { x: number; y: number }
+  ): { workArea: Rectangle };
 };
 
 type PetInteractionMotion = {
@@ -72,7 +77,10 @@ export class PetWindowInteractionController {
       };
       this.dragSession = session;
       session.interval = setInterval(() => this.updateDrag(session), 16);
-      session.timeout = setTimeout(() => this.endDrag('timeout'), 30_000);
+      session.timeout = setTimeout(
+        () => this.endDrag('timeout'),
+        PET_DRAG_TIMEOUT_MS
+      );
     } catch {
       const failedSession = this.dragSession;
       this.dragSession = undefined;
@@ -102,7 +110,7 @@ export class PetWindowInteractionController {
       this.lastKnownPassthrough = undefined;
     }
 
-    if (reason === 'disposed') {
+    if (reason !== 'released') {
       this.restoreSafePassthrough();
       return;
     }
@@ -141,7 +149,7 @@ export class PetWindowInteractionController {
     }
     try {
       const cursor = this.options.screen.getCursorScreenPoint();
-      const next = clampPositionToVisibleWorkArea(
+      const next = clampPositionToWorkArea(
         {
           x: session.initialBounds.x + cursor.x - session.initialCursor.x,
           y: session.initialBounds.y + cursor.y - session.initialCursor.y
@@ -150,7 +158,7 @@ export class PetWindowInteractionController {
           width: session.initialBounds.width,
           height: session.initialBounds.height
         },
-        this.options.screen.getAllDisplays().map(display => display.workArea)
+        this.options.screen.getDisplayNearestPoint(cursor).workArea
       );
       this.options.window.setPosition(next.x, next.y);
     } catch {
@@ -177,6 +185,7 @@ export class PetWindowInteractionController {
   }
 
   private restoreSafePassthrough(): void {
+    this.lastKnownPassthrough = true;
     if (!this.windowAvailable()) return;
     try {
       this.options.window.setIgnoreMouseEvents(true, { forward: true });

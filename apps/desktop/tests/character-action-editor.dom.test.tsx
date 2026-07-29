@@ -79,6 +79,7 @@ describe('预览组件帧数同步', () => {
     const nextAction: DraftActionClip = {
       ...action,
       id: 'acting-main',
+      loop: false,
       frames: [{
         ...action.frames[0]!,
         id: 'acting-a'
@@ -97,7 +98,8 @@ describe('预览组件帧数同步', () => {
       preview: {
         ...current,
         frameIndex: 0,
-        playing: false
+        playing: false,
+        loop: false
       },
       selectedFrameId: 'acting-a'
     });

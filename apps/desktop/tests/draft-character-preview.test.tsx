@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 
-import { useLayoutEffect } from 'react';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { useLayoutEffect, useState } from 'react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type {
   CharacterDraftV1,
@@ -9,7 +16,8 @@ import type {
   DraftActionClip
 } from '@myself/character-runtime';
 import type {
-  CharacterWorkshopApi
+  CharacterWorkshopApi,
+  CharacterWorkshopState
 } from '../src/renderer/src/characters/store/character-workshop-store';
 import {
   DraftPreviewResourceCache
@@ -21,6 +29,9 @@ import {
 import {
   DraftCharacterPreview
 } from '../src/renderer/src/characters/workshop/DraftCharacterPreview';
+import {
+  CharacterWorkshopWorkspace
+} from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import type {
   PixiCharacterScene
 } from '../src/renderer/src/characters/player/pixi-character-player';
@@ -542,6 +553,104 @@ describe('真实草稿预览', () => {
     expect(current.scene.destroy).toHaveBeenCalledOnce();
   });
 
+  test('Inspector 修改 loop 驱动真实场景，临时覆盖不被其他动作编辑重置', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const api = apiWithReader(vi.fn(async () => PNG_BYTES));
+
+    function WorkspaceHarness() {
+      const [draft, setDraft] = useState(() => draftWith());
+      const workspaceState: CharacterWorkshopState = {
+        characters: [{
+          id: 'nova',
+          name: 'Nova',
+          thumbnailAssetId: null,
+          active: true,
+          completeness: 'complete',
+          missingCoreStates: []
+        }],
+        selectedCharacterId: 'nova',
+        draft,
+        selectedStateId: 'idle',
+        selectedActionId: 'idle-main',
+        draftStatus: 'saved',
+        compileStatus: 'idle',
+        loadStatus: 'ready',
+        busyAction: null,
+        toastQueue: [],
+        availableSources: [],
+        load: vi.fn(async () => undefined),
+        mount: vi.fn(() => () => undefined),
+        selectCharacter: vi.fn(async () => undefined),
+        selectState: vi.fn(),
+        selectAction: vi.fn(),
+        createCharacter: vi.fn(async () => undefined),
+        duplicateCharacter: vi.fn(async () => undefined),
+        deleteCharacter: vi.fn(async () => undefined),
+        activateCharacter: vi.fn(async () => undefined),
+        importCharacterPackage: vi.fn(async () => undefined),
+        exportCharacterPackage: vi.fn(async () => undefined),
+        importSources: vi.fn(async () => undefined),
+        addAction: vi.fn(),
+        addExtensionState: vi.fn(),
+        applySpriteSheet: vi.fn(async () => undefined),
+        compileAndPublish: vi.fn(async () => undefined),
+        publishCharacter: vi.fn(async () => undefined),
+        updateCurrentAction: patch => {
+          setDraft(previous => ({
+            ...previous,
+            states: previous.states.map(state => state.id !== 'idle'
+              ? state
+              : {
+                  ...state,
+                  actions: state.actions.map(action => action.id !== 'idle-main'
+                    ? action
+                    : { ...action, ...patch })
+                })
+          }));
+        },
+        flushDraft: vi.fn(async () => undefined),
+        dismissToast: vi.fn(),
+        dispose: vi.fn()
+      };
+      return (
+        <CharacterWorkshopWorkspace
+          state={workspaceState}
+          api={api}
+        />
+      );
+    }
+
+    render(<WorkspaceHarness />);
+    await screen.findByText('预览已就绪');
+    fireEvent.click(screen.getByRole('checkbox', { name: /循环播放/u }));
+
+    await waitFor(() => {
+      expect(current.scene.showAction).toHaveBeenLastCalledWith(
+        expect.objectContaining({ loop: false }),
+        expect.objectContaining({ loop: false })
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '切换循环' }));
+    await waitFor(() => {
+      expect(current.scene.showAction).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ loop: true })
+      );
+    });
+    fireEvent.change(screen.getByLabelText('动作名称'), {
+      target: { value: '编辑后仍用临时循环' }
+    });
+
+    await waitFor(() => {
+      expect(current.scene.showAction).toHaveBeenLastCalledWith(
+        expect.objectContaining({ name: '编辑后仍用临时循环' }),
+        expect.objectContaining({ loop: true })
+      );
+    });
+  });
+
   test('容器尺寸变化通过 ResizeObserver 同步共享场景', async () => {
     const current = sceneDouble();
     current.scene.resize = vi.fn();
@@ -791,6 +900,39 @@ describe('真实草稿预览', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:draft-2');
     expect(current.unsubscribe).toHaveBeenCalledOnce();
     expect(current.scene.destroy).toHaveBeenCalledOnce();
+  });
+
+  test('成功动作切到 showAction 失败动作时按旧、新顺序各释放一次', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps();
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.showAction).mockImplementationOnce(() => {
+      throw new Error('SHOW_FAILED');
+    });
+
+    view.rerender(<DraftCharacterPreview
+      {...props}
+      stateId="acting"
+      actionId="acting-main"
+      selectedFrameId="acting-a"
+    />);
+    await screen.findByText('预览渲染失败');
+
+    expect(revokeObjectURL.mock.calls).toEqual([
+      ['blob:draft-1'],
+      ['blob:draft-2']
+    ]);
+
+    view.rerender(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    view.unmount();
+    expect(revokeObjectURL.mock.calls).toEqual([
+      ['blob:draft-1'],
+      ['blob:draft-2'],
+      ['blob:draft-3']
+    ]);
   });
 
   test('当前帧覆盖锚点按镜像边界绘制，并仅在 carry 显示模拟文件', async () => {

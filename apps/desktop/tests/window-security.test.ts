@@ -92,12 +92,19 @@ describe('窗口安全配置', () => {
 describe('桌宠交互控制器生命周期', () => {
   it('窗口绑定时初始化穿透，关闭时幂等 dispose', () => {
     const listeners = new Map<string, () => void>();
+    const webContents = {
+      on: vi.fn(),
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
     const window = {
+      webContents,
       once: vi.fn((event: string, listener: () => void) => listeners.set(event, listener)),
       removeListener: vi.fn((event: string) => listeners.delete(event))
     };
     const controller = {
       setPassthrough: vi.fn(),
+      endDrag: vi.fn(),
       dispose: vi.fn()
     };
 
@@ -106,6 +113,93 @@ describe('桌宠交互控制器生命周期', () => {
     listeners.get('closed')?.();
     release();
     expect(controller.dispose).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    'render-process-gone',
+    'will-navigate'
+  ] as const)('webContents %s 时只结束拖拽并失败开放，仍允许后续 Renderer', event => {
+    const windowListeners = new Map<string, () => void>();
+    const webContentsListeners = new Map<string, () => void>();
+    const webContents = {
+      on: vi.fn((name: string, listener: () => void) => {
+        webContentsListeners.set(name, listener);
+      }),
+      once: vi.fn((name: string, listener: () => void) => {
+        webContentsListeners.set(name, listener);
+      }),
+      removeListener: vi.fn((name: string) => {
+        webContentsListeners.delete(name);
+      })
+    };
+    const window = {
+      webContents,
+      once: vi.fn((name: string, listener: () => void) => {
+        windowListeners.set(name, listener);
+      }),
+      removeListener: vi.fn((name: string) => {
+        windowListeners.delete(name);
+      })
+    };
+    const controller = {
+      setPassthrough: vi.fn(),
+      endDrag: vi.fn(),
+      dispose: vi.fn()
+    };
+
+    const release = bindPetWindowInteractionLifecycle(window, controller);
+    webContentsListeners.get(event)?.();
+
+    expect(controller.endDrag).toHaveBeenCalledWith('cancelled');
+    expect(controller.setPassthrough).toHaveBeenLastCalledWith(true);
+    expect(controller.dispose).not.toHaveBeenCalled();
+
+    release();
+    expect(controller.dispose).toHaveBeenCalledOnce();
+    expect(window.removeListener).toHaveBeenCalledWith(
+      'closed',
+      expect.any(Function)
+    );
+    for (const lifecycleEvent of [
+      'render-process-gone',
+      'destroyed',
+      'will-navigate'
+    ]) {
+      expect(webContents.removeListener).toHaveBeenCalledWith(
+        lifecycleEvent,
+        expect.any(Function)
+      );
+    }
+  });
+
+  it('webContents destroyed 时最终 dispose，主动释放保持幂等', () => {
+    const listeners = new Map<string, () => void>();
+    const webContents = {
+      on: vi.fn((name: string, listener: () => void) => {
+        listeners.set(name, listener);
+      }),
+      once: vi.fn((name: string, listener: () => void) => {
+        listeners.set(name, listener);
+      }),
+      removeListener: vi.fn()
+    };
+    const window = {
+      webContents,
+      once: vi.fn(),
+      removeListener: vi.fn()
+    };
+    const controller = {
+      setPassthrough: vi.fn(),
+      endDrag: vi.fn(),
+      dispose: vi.fn()
+    };
+
+    const release = bindPetWindowInteractionLifecycle(window, controller);
+    listeners.get('destroyed')?.();
+    release();
+
+    expect(controller.dispose).toHaveBeenCalledOnce();
+    expect(controller.endDrag).not.toHaveBeenCalled();
   });
 });
 

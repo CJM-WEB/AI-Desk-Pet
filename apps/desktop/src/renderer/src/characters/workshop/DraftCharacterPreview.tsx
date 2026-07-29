@@ -395,6 +395,9 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
           false
         );
       } catch {
+        const previousBundle = activeBundleRef.current;
+        activeBundleRef.current = null;
+        previousBundle?.release();
         bundle.release();
         appliedRef.current = null;
         setAppliedPreview(null);

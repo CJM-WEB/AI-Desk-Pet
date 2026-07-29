@@ -674,6 +674,40 @@ describe('角色工作室 Zustand 状态层', () => {
     });
   });
 
+  test('角色切换期间保留已有错误与后续排队提示的到达顺序', async () => {
+    const novaDraft = deferred<CharacterDraftV1>();
+    const exportCharacterPackage = vi.fn()
+      .mockRejectedValueOnce(new Error('CHARACTER_PACKAGE_EXPORT_FAILED'))
+      .mockResolvedValueOnce({ kind: 'cancelled' as const });
+    const getCharacterDraft = vi.fn()
+      .mockResolvedValueOnce(draft('default', 'AI Pet 默认角色'))
+      .mockImplementationOnce(() => novaDraft.promise);
+    const { api } = apiDouble({
+      exportCharacterPackage,
+      getCharacterDraft
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    await store.getState().exportCharacterPackage();
+
+    const selection = store.getState().selectCharacter('nova');
+    await settle();
+    await store.getState().exportCharacterPackage();
+    novaDraft.resolve(draft('nova', 'Nova'));
+    await selection;
+
+    expect(store.getState().toastQueue.map(toast => ({
+      tone: toast.tone,
+      text: toast.text
+    }))).toEqual([{
+      tone: 'error',
+      text: '角色包格式、路径或容量不符合要求，导入导出已停止。'
+    }, {
+      tone: 'info',
+      text: '已取消导出角色包。'
+    }]);
+  });
+
   test('旧保存失败不能覆盖同角色的新修订，新修订仍会串行提交', async () => {
     vi.useFakeTimers();
     const oldSave = deferred<void>();

@@ -79,7 +79,8 @@ export function previewAtActionStart(
     preview: {
       ...normalizePreviewState(preview, frames.length),
       playing: false,
-      frameIndex: frames.length > 0 ? 0 : -1
+      frameIndex: frames.length > 0 ? 0 : -1,
+      loop: action?.loop ?? preview.loop
     },
     selectedFrameId: frames[0]?.id ?? null
   };
@@ -182,6 +183,17 @@ export function CharacterWorkshopWorkspace(
       playing: pausePlayback ? false : current.playing
     }));
     setSelectedFrameId(frame.id);
+  };
+
+  /** Inspector 显式修改循环语义时同步真实预览，其他字段保留临时预览覆盖。 */
+  const updateActionFromInspector = (patch: Partial<DraftActionClip>): void => {
+    const loop = patch.loop;
+    if (loop !== undefined) {
+      setPreview(current => current.loop === loop
+        ? current
+        : { ...current, loop });
+    }
+    state.updateCurrentAction(patch);
   };
 
   useEffect(() => {
@@ -494,7 +506,7 @@ export function CharacterWorkshopWorkspace(
               <ActionInspector
                 action={action}
                 disabled={busy}
-                onChange={state.updateCurrentAction}
+                onChange={updateActionFromInspector}
               />
               <AnchorEditor
                 action={action}

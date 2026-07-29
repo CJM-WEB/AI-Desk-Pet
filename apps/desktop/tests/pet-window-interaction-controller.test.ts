@@ -22,6 +22,9 @@ function createControllerFixture() {
   let destroyed = false;
   let cursor = { x: 100, y: 100 };
   let bounds = { x: 20, y: 30, width: 180, height: 220 };
+  let workAreas = [
+    { x: 0, y: 0, width: 400, height: 400 }
+  ];
   const setIgnoreMouseEvents = vi.fn();
   const setPosition = vi.fn((x: number, y: number) => {
     bounds = { ...bounds, x, y };
@@ -39,23 +42,14 @@ function createControllerFixture() {
     },
     screen: {
       getCursorScreenPoint: () => cursor,
-      getAllDisplays: () => [{
-        id: 1,
-        bounds: { x: 0, y: 0, width: 400, height: 400 },
-        workArea: { x: 0, y: 0, width: 400, height: 400 },
-        scaleFactor: 1,
-        rotation: 0,
-        touchSupport: 'unknown',
-        monochrome: false,
-        colorDepth: 24,
-        colorSpace: 'srgb',
-        depthPerComponent: 8,
-        displayFrequency: 60,
-        detected: true,
-        internal: false,
-        nativeOrigin: { x: 0, y: 0 },
-        maximumCursorSize: { width: 64, height: 64 }
-      }]
+      getDisplayNearestPoint: (point: { x: number; y: number }) => ({
+        workArea: workAreas.find(candidate => (
+          point.x >= candidate.x
+          && point.x < candidate.x + candidate.width
+          && point.y >= candidate.y
+          && point.y < candidate.y + candidate.height
+        )) ?? workAreas[0]!
+      })
     },
     motion
   });
@@ -65,6 +59,7 @@ function createControllerFixture() {
     setIgnoreMouseEvents,
     setPosition,
     setCursor: (next: { x: number; y: number }) => { cursor = next; },
+    setWorkAreas: (next: typeof workAreas) => { workAreas = next; },
     destroyWindow: () => { destroyed = true; }
   };
 }
@@ -108,20 +103,46 @@ describe('Main 桌宠窗口交互控制器', () => {
     expect(fixture.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
   });
 
-  test('拖拽只读取系统光标差值，复用工作区钳制且重复 begin 幂等', () => {
+  test('拖拽只读取系统光标差值，横向越界时只钳制 x 轴且重复 begin 幂等', () => {
     vi.useFakeTimers();
     const fixture = createControllerFixture();
 
     fixture.controller.beginDrag();
     fixture.controller.beginDrag();
-    fixture.setCursor({ x: 500, y: 500 });
+    fixture.setCursor({ x: 500, y: 120 });
     vi.advanceTimersByTime(16);
 
     expect(fixture.motion.beginUserMove).toHaveBeenCalledOnce();
     expect(fixture.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
-    expect(fixture.setPosition).toHaveBeenCalledWith(204, 164);
+    expect(fixture.setPosition).toHaveBeenCalledWith(220, 50);
     fixture.controller.endDrag('released');
     expect(fixture.motion.endUserMove).toHaveBeenCalledOnce();
+  });
+
+  test('纵向越界时只钳制 y 轴，不把窗口跳到右下角', () => {
+    vi.useFakeTimers();
+    const fixture = createControllerFixture();
+    fixture.controller.beginDrag();
+    fixture.setCursor({ x: 120, y: 500 });
+
+    vi.advanceTimersByTime(16);
+
+    expect(fixture.setPosition).toHaveBeenCalledWith(40, 180);
+  });
+
+  test('跨到负坐标显示器时按光标最近工作区逐轴钳制', () => {
+    vi.useFakeTimers();
+    const fixture = createControllerFixture();
+    fixture.setWorkAreas([
+      { x: 0, y: 0, width: 400, height: 400 },
+      { x: -500, y: -100, width: 500, height: 500 }
+    ]);
+    fixture.controller.beginDrag();
+    fixture.setCursor({ x: -450, y: 50 });
+
+    vi.advanceTimersByTime(16);
+
+    expect(fixture.setPosition).toHaveBeenCalledWith(-500, -20);
   });
 
   test('拖拽结束恢复最后已知命中状态，期间命中更新不会打断拖拽', () => {
@@ -178,9 +199,18 @@ describe('Main 桌宠窗口交互控制器', () => {
   test('30 秒兜底自动结束，窗口销毁后的更新不抛出', () => {
     vi.useFakeTimers();
     const timedOut = createControllerFixture();
+    timedOut.controller.setPassthrough(false);
     timedOut.controller.beginDrag();
     vi.advanceTimersByTime(30_000);
     expect(timedOut.motion.endUserMove).toHaveBeenCalledOnce();
+    expect(timedOut.controller.getProbe()).toEqual({
+      passthrough: true,
+      dragging: false
+    });
+    expect(timedOut.setIgnoreMouseEvents).toHaveBeenLastCalledWith(
+      true,
+      { forward: true }
+    );
 
     const destroyed = createControllerFixture();
     destroyed.controller.beginDrag();
@@ -188,6 +218,24 @@ describe('Main 桌宠窗口交互控制器', () => {
     expect(() => vi.advanceTimersByTime(16)).not.toThrow();
     expect(destroyed.motion.endUserMove).toHaveBeenCalledOnce();
     expect(destroyed.setPosition).not.toHaveBeenCalled();
+  });
+
+  test('非正常取消不恢复拖拽前的非穿透状态', () => {
+    vi.useFakeTimers();
+    const fixture = createControllerFixture();
+    fixture.controller.setPassthrough(false);
+    fixture.controller.beginDrag();
+
+    fixture.controller.endDrag('cancelled');
+
+    expect(fixture.controller.getProbe()).toEqual({
+      passthrough: true,
+      dragging: false
+    });
+    expect(fixture.setIgnoreMouseEvents).toHaveBeenLastCalledWith(
+      true,
+      { forward: true }
+    );
   });
 
   test('计时器创建中途失败时清理已启动会话并允许重新拖拽', () => {

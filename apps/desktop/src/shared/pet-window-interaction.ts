@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Main 与 Renderer 共用同一拖拽兜底时限，避免任一侧永久持有会话。 */
+export const PET_DRAG_TIMEOUT_MS = 30_000;
+
 /** Renderer 只能声明当前区域是否需要鼠标穿透。 */
 export const petMousePassthroughInputSchema = z.object({
   ignore: z.boolean()

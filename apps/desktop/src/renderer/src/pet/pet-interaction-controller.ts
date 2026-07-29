@@ -1,4 +1,7 @@
-import type { PetWindowInteractionApi } from '../../../shared/pet-window-interaction';
+import {
+  PET_DRAG_TIMEOUT_MS,
+  type PetWindowInteractionApi
+} from '../../../shared/pet-window-interaction';
 
 export type CharacterHitTestPort = {
   hitTest(point: { x: number; y: number }): boolean;
@@ -140,6 +143,7 @@ export class PetInteractionController {
   private unsubscribeHitRegion: (() => void) | null = null;
   private latestPoint: { x: number; y: number } | null = null;
   private activePointerId: number | null = null;
+  private dragTimeout: ReturnType<typeof setTimeout> | null = null;
   private desiredPassthrough = true;
   private confirmedPassthrough: boolean | undefined;
   private passthroughInFlight = false;
@@ -188,9 +192,14 @@ export class PetInteractionController {
     this.activePointerId = event.pointerId;
     this.options.onDragStart?.(event.pointerId);
     this.requestPassthrough(false);
+    this.dragTimeout = setTimeout(
+      () => this.finishDrag(true),
+      PET_DRAG_TIMEOUT_MS
+    );
     void this.api.beginPetDrag().catch(() => {
       if (this.disposed || this.activePointerId !== event.pointerId) return;
       this.activePointerId = null;
+      this.clearDragTimeout();
       this.options.onDragEnd?.();
       this.requestPassthrough(true);
     });
@@ -216,6 +225,7 @@ export class PetInteractionController {
     const hadActiveDrag = this.activePointerId !== null;
     this.disposed = true;
     this.activePointerId = null;
+    this.clearDragTimeout();
     this.unsubscribeHitRegion?.();
     this.unsubscribeHitRegion = null;
     this.hitTestPort = null;
@@ -226,14 +236,25 @@ export class PetInteractionController {
     this.requestPassthrough(true, true);
   }
 
-  private finishDrag(): void {
+  private finishDrag(forceSafePassthrough = false): void {
     if (this.disposed || this.activePointerId === null) return;
     this.activePointerId = null;
+    this.clearDragTimeout();
     this.options.onDragEnd?.();
     void this.api.endPetDrag().catch(() => {
       this.requestPassthrough(true);
     });
-    this.refreshPassthrough();
+    if (forceSafePassthrough) {
+      this.requestPassthrough(true);
+    } else {
+      this.refreshPassthrough();
+    }
+  }
+
+  private clearDragTimeout(): void {
+    if (this.dragTimeout === null) return;
+    clearTimeout(this.dragTimeout);
+    this.dragTimeout = null;
   }
 
   private refreshPassthrough(): void {

@@ -417,8 +417,7 @@ export function createCharacterWorkshopStore(
           selectedActionId: null,
           draftStatus: 'idle',
           compileStatus: 'idle',
-          busyAction: 'loading',
-          toastQueue: []
+          busyAction: 'loading'
         });
         try {
           await loadSelectedDraft(characterId, requestRevision);

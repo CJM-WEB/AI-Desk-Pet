@@ -27,6 +27,7 @@ async function flushPromises(): Promise<void> {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 function createFixture() {
@@ -218,6 +219,24 @@ describe('Renderer 桌宠交互状态机', () => {
     fixture.controller.handlePointerCancel();
     expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
+  });
+
+  test('30 秒未收到释放事件时本地结束拖拽并失败开放', async () => {
+    vi.useFakeTimers();
+    const fixture = createFixture();
+    fixture.setHit(true);
+    fixture.controller.setHitTestPort(fixture.port);
+    fixture.controller.handlePointerMove({ x: 8, y: 9 });
+    await flushPromises();
+
+    fixture.controller.handlePointerDown({ button: 0, pointerId: 2 });
+    vi.advanceTimersByTime(30_000);
+    await flushPromises();
+
+    expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
+    expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
+    fixture.controller.handlePointerUp();
+    expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
   });
 
   test('右键只在可见像素命中时调用一次受限菜单入口', () => {
