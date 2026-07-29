@@ -508,21 +508,100 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: stretch;
   gap: 7px;
-  padding: 24px;
+  padding: 12px;
   color: #536460;
   text-align: center;
 }
 
-.preview-workspace > svg {
-  color: var(--workshop-teal);
+/* 真实预览画布与正式 Pixi 场景共享坐标系，DOM 覆盖层只负责语义标记。 */
+.draft-character-preview {
+  position: relative;
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border: 1px solid #c9d3d1;
+  border-radius: 6px;
+  background-color: #f8faf9;
+  background-image:
+    linear-gradient(45deg, #edf1f0 25%, transparent 25%),
+    linear-gradient(-45deg, #edf1f0 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #edf1f0 75%),
+    linear-gradient(-45deg, transparent 75%, #edf1f0 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
 }
 
-.preview-workspace > span {
-  max-width: 360px;
-  color: var(--workshop-muted);
-  font-size: 12px;
+.draft-character-preview--dark {
+  border-color: #52615e;
+  background-color: #202a28;
+  background-image:
+    linear-gradient(45deg, #293532 25%, transparent 25%),
+    linear-gradient(-45deg, #293532 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #293532 75%),
+    linear-gradient(-45deg, transparent 75%, #293532 75%);
+}
+
+.draft-character-preview > canvas {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.draft-preview-status {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  left: 50%;
+  max-width: calc(100% - 24px);
+  margin: 0;
+  padding: 3px 8px;
+  transform: translateX(-50%);
+  overflow: hidden;
+  border-radius: 10px;
+  color: #445451;
+  background: rgba(255, 255, 255, 0.84);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.draft-character-preview--dark .draft-preview-status {
+  color: #e8efed;
+  background: rgba(20, 27, 25, 0.84);
+}
+
+.draft-preview-anchor,
+.draft-preview-mounted-file {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.draft-preview-anchor {
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: var(--workshop-orange);
+  box-shadow: 0 0 0 1px rgba(36, 48, 45, 0.72);
+}
+
+.draft-preview-anchor--ground {
+  border-radius: 2px;
+  background: var(--workshop-teal);
+}
+
+.draft-preview-mounted-file {
+  transform: translate(-50%, -100%);
+  font-size: 23px;
+  filter: drop-shadow(0 2px 2px rgba(31, 42, 39, 0.28));
 }
 
 .action-timeline,

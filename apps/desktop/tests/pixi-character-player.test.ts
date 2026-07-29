@@ -240,8 +240,9 @@ describe('共享 Pixi 角色动作场景', () => {
     expect(new PixiCharacterPlayer(scene).isTickerRunning()).toBe(true);
   });
 
-  test('切帧后更新当前帧并且取消订阅后不再通知', async () => {
+  test('动作重建复用帧订阅，静态逐帧不启动 ticker 且取消后不再通知', async () => {
     const latestSprites: TestAnimatedSprite[] = [];
+    const applications: TestApplication[] = [];
     class TestTexture {
       source: unknown;
       frame: { x: number; y: number; width: number; height: number };
@@ -290,6 +291,11 @@ describe('共享 Pixi 角色动作场景', () => {
     class TestApplication {
       canvas = document.createElement('canvas');
       screen = { width: 100, height: 100 };
+      renderer = {
+        resize: vi.fn((width: number, height: number) => {
+          this.screen = { width, height };
+        })
+      };
       stage = { addChild: vi.fn(), removeChild: vi.fn() };
       ticker = {
         started: false,
@@ -301,6 +307,10 @@ describe('共享 Pixi 角色动作场景', () => {
       init = vi.fn(async () => undefined);
       render = vi.fn();
       destroy = vi.fn();
+
+      constructor() {
+        applications.push(this);
+      }
     }
     class TestImage {
       src = '';
@@ -348,11 +358,32 @@ describe('共享 Pixi 角色动作场景', () => {
       });
       expect(notify).toHaveBeenCalledTimes(1);
 
-      unsubscribe();
+      scene.showAction(action, {
+        direction: 'left',
+        motionMode: 'static',
+        frameIndex: 1,
+        speed: 1,
+        loop: false
+      });
+      expect(latestSprites).toHaveLength(2);
+      expect(latestSprites[0]!.onFrameChange).toBeUndefined();
+      expect(applications[0]!.ticker.start).toHaveBeenCalledOnce();
       latestSprites[0]!.advanceTo(0);
       expect(notify).toHaveBeenCalledTimes(1);
+      latestSprites[1]!.advanceTo(0);
+      expect(notify).toHaveBeenCalledTimes(2);
+      (scene as PixiCharacterScene & {
+        resize(width: number, height: number): void;
+      }).resize(200, 120);
+      expect(applications[0]!.renderer.resize).toHaveBeenCalledWith(200, 120);
+      expect(applications[0]!.render).toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledTimes(3);
+
+      unsubscribe();
+      latestSprites[1]!.advanceTo(1);
+      expect(notify).toHaveBeenCalledTimes(3);
       scene.destroy();
-      expect(latestSprites[0]!.onFrameChange).toBeUndefined();
+      expect(latestSprites[1]!.onFrameChange).toBeUndefined();
     } finally {
       vi.unstubAllGlobals();
     }

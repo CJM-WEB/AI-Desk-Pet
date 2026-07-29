@@ -14,8 +14,7 @@ import {
   PackageOpen,
   Play,
   Plus,
-  Save,
-  Upload
+  Save
 } from 'lucide-react';
 import { useStore } from 'zustand';
 import type { DraftActionClip } from '@myself/character-runtime';
@@ -35,9 +34,15 @@ import {
 } from './ActionTimeline';
 import { AnchorEditor } from './AnchorEditor';
 import { IncompleteCharacterDialog } from './IncompleteCharacterDialog';
-import { PreviewControls } from './PreviewControls';
+import {
+  createPreviewState,
+  normalizePreviewState,
+  PreviewControls,
+  type PreviewState
+} from './PreviewControls';
 import { AtlasImportPanel } from './AtlasImportPanel';
 import { WorkshopToastLayer } from './WorkshopToastLayer';
+import { DraftCharacterPreview } from './DraftCharacterPreview';
 import './character-workshop.css';
 
 export interface CharacterWorkshopViewProps {
@@ -49,6 +54,7 @@ export interface CharacterWorkshopViewProps {
 
 export interface CharacterWorkshopWorkspaceProps {
   state: CharacterWorkshopState;
+  api: Pick<MyselfApi, 'readCharacterSource'>;
   pendingDeleteCharacterId?: string | null;
 }
 
@@ -59,6 +65,33 @@ function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
   return selectedState?.actions.find(
     candidate => candidate.id === state.selectedActionId
   ) ?? null;
+}
+
+/**
+ * 动作身份切换边界：即使新旧帧数相同，也从新动作首帧重新对齐预览与时间轴。
+ */
+export function previewAtActionStart(
+  preview: PreviewState,
+  action: DraftActionClip | null
+): { preview: PreviewState; selectedFrameId: string | null } {
+  const frames = action ? ensureStableFrameIds(action.frames) : [];
+  return {
+    preview: {
+      ...normalizePreviewState(preview, frames.length),
+      playing: false,
+      frameIndex: frames.length > 0 ? 0 : -1
+    },
+    selectedFrameId: frames[0]?.id ?? null
+  };
+}
+
+export function previewActionIdentity(
+  characterId: string | null,
+  draftId: string | null,
+  stateId: string | null,
+  actionId: string | null
+): string {
+  return JSON.stringify([characterId, draftId, stateId, actionId]);
 }
 
 function draftStatusLabel(state: CharacterWorkshopState): string {
@@ -98,12 +131,17 @@ export function CharacterWorkshopWorkspace(
   const [internalPendingDelete, setInternalPendingDelete] = useState<string | null>(null);
   const [pendingActivation, setPendingActivation] = useState<string | null>(null);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewState>(() => (
+    createPreviewState(currentAction(state)?.frames.length ?? 0)
+  ));
   const [perFrameAnchors, setPerFrameAnchors] = useState(false);
   const [extensionOpen, setExtensionOpen] = useState(false);
   const [extensionName, setExtensionName] = useState('');
   const [extensionEvent, setExtensionEvent] = useState<
     'single_click' | 'double_click' | 'context_menu'
   >('single_click');
+  const previousActionIdentityRef = useRef<string | null>(null);
+  const sceneFrameIndexRef = useRef<number | null>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const createDialogRef = useRef<HTMLDialogElement>(null);
   const pendingDelete = props.pendingDeleteCharacterId === undefined
@@ -121,13 +159,70 @@ export function CharacterWorkshopWorkspace(
   );
   const busy = state.busyAction !== null;
   const activity = activityLabel(state);
+  const frameCount = action?.frames.length ?? 0;
+  const actionIdentity = action
+    ? previewActionIdentity(
+      state.selectedCharacterId,
+      state.draft?.id ?? null,
+      state.selectedStateId,
+      action.id
+    )
+    : null;
+
+  /** 统一同步预览帧与时间轴选中项；只有用户主动选帧时才暂停播放。 */
+  const syncPreviewFrame = (frameIndex: number, pausePlayback: boolean) => {
+    const frame = action
+      ? ensureStableFrameIds(action.frames)[frameIndex]
+      : null;
+    if (!frame?.id) return;
+    sceneFrameIndexRef.current = pausePlayback ? null : frameIndex;
+    setPreview(current => ({
+      ...normalizePreviewState(current, frameCount),
+      frameIndex,
+      playing: pausePlayback ? false : current.playing
+    }));
+    setSelectedFrameId(frame.id);
+  };
 
   useEffect(() => {
     const frames = action ? ensureStableFrameIds(action.frames) : [];
-    if (!frames.some(frame => frame.id === selectedFrameId)) {
+    const actionChanged = previousActionIdentityRef.current
+      !== actionIdentity;
+    previousActionIdentityRef.current = actionIdentity;
+    if (actionChanged) {
       setSelectedFrameId(frames[0]?.id ?? null);
+      setPreview(current => previewAtActionStart(current, action).preview);
+      return;
     }
-  }, [action, selectedFrameId]);
+    const selectedFrameIndex = frames.findIndex(
+      frame => frame.id === selectedFrameId
+    );
+    if (selectedFrameIndex < 0) {
+      setSelectedFrameId(frames[0]?.id ?? null);
+      setPreview(current => previewAtActionStart(current, action).preview);
+      return;
+    }
+    setPreview(current => current.frameIndex === selectedFrameIndex
+      ? current
+      : {
+        ...normalizePreviewState(current, frames.length),
+        frameIndex: selectedFrameIndex,
+        playing: sceneFrameIndexRef.current === selectedFrameIndex
+          ? current.playing
+          : false
+      });
+    sceneFrameIndexRef.current = null;
+  }, [action, actionIdentity, selectedFrameId]);
+
+  useEffect(() => {
+    setPreview(current => {
+      const next = normalizePreviewState(current, frameCount);
+      return next.frameIndex === current.frameIndex
+        && next.playing === current.playing
+        ? current
+        : next;
+    });
+  }, [frameCount]);
 
   useEffect(() => {
     if (pendingDelete && !deleteDialogRef.current?.open) {
@@ -338,16 +433,32 @@ export function CharacterWorkshopWorkspace(
             <small>{selectedCharacter?.name ?? '未选择角色'}</small>
           </div>
           <div className="preview-workspace">
-            <Upload size={28} aria-hidden="true" />
-            <strong>{action ? action.name : '请选择动作'}</strong>
-            <span>
-              {action
-                ? '播放控制只使用当前草稿的内存快照。'
-                : '选择动作后可编辑时间轴与锚点。'}
-            </span>
+            <DraftCharacterPreview
+              characterId={state.selectedCharacterId}
+              draft={state.draft}
+              stateId={state.selectedStateId}
+              actionId={state.selectedActionId}
+              selectedFrameId={selectedFrameId}
+              preview={preview}
+              api={props.api}
+              onFrameChange={frameIndex => syncPreviewFrame(frameIndex, false)}
+              onPlayingChange={playing => {
+                setPreview(current => current.playing === playing
+                  ? current
+                  : { ...current, playing });
+              }}
+            />
             <PreviewControls
-              frameCount={action?.frames.length ?? 0}
+              state={preview}
+              frameCount={frameCount}
               disabled={busy}
+              onChange={next => {
+                setPreview(next);
+                const nextFrame = action
+                  ? ensureStableFrameIds(action.frames)[next.frameIndex]
+                  : null;
+                if (nextFrame?.id) setSelectedFrameId(nextFrame.id);
+              }}
             />
           </div>
           {action ? (
@@ -355,7 +466,13 @@ export function CharacterWorkshopWorkspace(
               frames={action.frames}
               selectedFrameId={selectedFrameId}
               disabled={busy}
-              onSelect={setSelectedFrameId}
+              onSelect={frameId => {
+                const frameIndex = ensureStableFrameIds(
+                  action.frames
+                ).findIndex(frame => frame.id === frameId);
+                if (frameIndex < 0) return;
+                syncPreviewFrame(frameIndex, true);
+              }}
               onChange={frames => state.updateCurrentAction({ frames })}
             />
           ) : (
@@ -546,5 +663,5 @@ export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
     };
   }, [props.api, store]);
 
-  return <CharacterWorkshopWorkspace state={state} />;
+  return <CharacterWorkshopWorkspace state={state} api={props.api} />;
 }

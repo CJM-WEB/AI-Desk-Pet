@@ -5,7 +5,7 @@ import type { CharacterDraftV1 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import {
-  CharacterWorkshopWorkspace
+  CharacterWorkshopWorkspace as CharacterWorkshopWorkspaceComponent
 } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import type {
   CharacterWorkshopApi,
@@ -60,6 +60,7 @@ function apiDouble(): CharacterWorkshopApi {
     getCharacterDraft: vi.fn(),
     saveCharacterDraft: vi.fn(),
     chooseCharacterSources: vi.fn(),
+    readCharacterSource: vi.fn(),
     publishCharacter: vi.fn(),
     activateCharacter: vi.fn(),
     deleteCharacter: vi.fn(),
@@ -68,6 +69,18 @@ function apiDouble(): CharacterWorkshopApi {
     subscribeCharacterEvents: vi.fn(() => vi.fn()),
     onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn())
   };
+}
+
+function CharacterWorkshopWorkspace(props: {
+  state: CharacterWorkshopState;
+  pendingDeleteCharacterId?: string | null;
+}) {
+  return (
+    <CharacterWorkshopWorkspaceComponent
+      {...props}
+      api={apiDouble()}
+    />
+  );
 }
 
 function state(
@@ -171,7 +184,7 @@ describe('角色工作室 SSR 外壳', () => {
     expect(markup).not.toContain('window.myself');
   });
 
-  test('已加载工作区显示角色与状态列表、动作属性和稳定预留面板', () => {
+  test('已加载工作区显示角色、动作属性与真实草稿预览语义', () => {
     const markup = renderToStaticMarkup(
       <CharacterWorkshopWorkspace state={state()} />
     );
@@ -182,7 +195,11 @@ describe('角色工作室 SSR 外壳', () => {
     expect(markup).toContain('思考');
     expect(markup).toContain('轻呼吸');
     expect(markup).toContain('12');
-    expect(markup).toContain('播放控制只使用当前草稿的内存快照');
+    expect(markup).toContain('class="draft-character-preview');
+    expect(markup).toContain('data-preview-status="empty"');
+    expect(markup).toContain('data-preview-direction="right"');
+    expect(markup).toContain('data-preview-speed="1"');
+    expect(markup).not.toContain('播放控制只使用当前草稿的内存快照');
     expect(markup).not.toContain('批量删除');
   });
 

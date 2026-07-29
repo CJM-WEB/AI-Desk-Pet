@@ -9,7 +9,7 @@ import {
   SkipBack,
   SkipForward
 } from 'lucide-react';
-import { useEffect, useReducer } from 'react';
+import { useEffect, useMemo } from 'react';
 
 export type PreviewState = {
   playing: boolean;
@@ -112,26 +112,41 @@ export function reducePreviewState(
 }
 
 export interface PreviewControlsProps {
+  state: PreviewState;
   frameCount: number;
   disabled?: boolean;
+  onChange(next: PreviewState): void;
 }
 
 /**
- * 控制器只驱动本地 reducer，实际 PixiJS 播放器由下一阶段消费这些状态。
+ * 受控边界：控件只提交下一份状态，由工作区保存唯一预览真值。
  */
 export function PreviewControls(props: PreviewControlsProps) {
-  const [state, dispatchBase] = useReducer(
-    (current: PreviewState, action: PreviewAction) => (
-      reducePreviewState(current, action, props.frameCount)
-    ),
-    props.frameCount,
-    createPreviewState
+  const renderedState = useMemo(
+    () => normalizePreviewState(props.state, props.frameCount),
+    [props.frameCount, props.state]
   );
-  const dispatch = (action: PreviewAction) => dispatchBase(action);
-  const renderedState = normalizePreviewState(state, props.frameCount);
+  const dispatch = (action: PreviewAction) => {
+    props.onChange(reducePreviewState(
+      renderedState,
+      action,
+      props.frameCount
+    ));
+  };
+
   useEffect(() => {
-    dispatchBase({ type: 'sync-frame-count' });
-  }, [props.frameCount]);
+    if (
+      renderedState.frameIndex !== props.state.frameIndex
+      || renderedState.playing !== props.state.playing
+    ) {
+      props.onChange(renderedState);
+    }
+  }, [
+    props.onChange,
+    props.state.frameIndex,
+    props.state.playing,
+    renderedState
+  ]);
 
   return (
     <div className="preview-controls" aria-label="预览控制">

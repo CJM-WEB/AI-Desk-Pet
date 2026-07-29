@@ -8,8 +8,14 @@ import {
   AnchorEditor
 } from '../src/renderer/src/characters/workshop/AnchorEditor';
 import {
-  PreviewControls
+  createPreviewState,
+  PreviewControls,
+  type PreviewState
 } from '../src/renderer/src/characters/workshop/PreviewControls';
+import {
+  previewActionIdentity,
+  previewAtActionStart
+} from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 
 const action: DraftActionClip = {
   id: 'idle-main',
@@ -64,14 +70,102 @@ function pointerEvent(
 }
 
 describe('预览组件帧数同步', () => {
-  test('rerender 从大帧数缩减到小帧数和零帧时首个提交即合法', () => {
-    const commits: string[] = [];
+  test('跨角色复用相同状态动作标识时仍形成新的预览身份', () => {
+    expect(previewActionIdentity('nova', 'nova', 'idle', 'idle-main'))
+      .not.toBe(previewActionIdentity('luna', 'luna', 'idle', 'idle-main'));
+  });
+
+  test('切换到帧数相同的新动作时预览与时间轴都回到首帧', () => {
+    const nextAction: DraftActionClip = {
+      ...action,
+      id: 'acting-main',
+      frames: [{
+        ...action.frames[0]!,
+        id: 'acting-a'
+      }, {
+        ...action.frames[0]!,
+        id: 'acting-b'
+      }]
+    };
+    const current = {
+      ...createPreviewState(2),
+      frameIndex: 1,
+      playing: true
+    };
+
+    expect(previewAtActionStart(current, nextAction)).toEqual({
+      preview: {
+        ...current,
+        frameIndex: 0,
+        playing: false
+      },
+      selectedFrameId: 'acting-a'
+    });
+  });
+
+  function ControlledPreviewControls(props: {
+    frameCount: number;
+    initial?: PreviewState;
+    onCommit?(state: PreviewState): void;
+  }) {
+    const [current, setCurrent] = useState(
+      props.initial ?? createPreviewState(props.frameCount)
+    );
+    useLayoutEffect(() => {
+      props.onCommit?.(current);
+    }, [current, props]);
+    return (
+      <>
+        <PreviewControls
+          state={current}
+          frameCount={props.frameCount}
+          onChange={setCurrent}
+        />
+        <div data-testid="preview-state">{JSON.stringify(current)}</div>
+      </>
+    );
+  }
+
+  test('控制器把播放、逐帧、镜像、速度和全部开关提交给父组件', () => {
+    render(<ControlledPreviewControls frameCount={4} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '播放' }));
+    fireEvent.click(screen.getByRole('button', { name: '下一帧' }));
+    fireEvent.click(screen.getByRole('button', { name: '切换循环' }));
+    fireEvent.click(screen.getByRole('button', { name: '切换背景明暗' }));
+    fireEvent.click(screen.getByRole('button', { name: '切换左右方向' }));
+    fireEvent.change(screen.getByLabelText(/速度/u), {
+      target: { value: '1.5' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '显示或隐藏锚点' }));
+    fireEvent.click(screen.getByRole('button', { name: '模拟文件挂载' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '全状态巡览' }));
+
+    expect(JSON.parse(
+      screen.getByTestId('preview-state').textContent ?? '{}'
+    )).toEqual({
+      playing: false,
+      frameIndex: 1,
+      loop: false,
+      darkBackground: true,
+      direction: 'left',
+      speed: 1.5,
+      showAnchors: false,
+      mountedFile: true,
+      tourAllStates: true
+    });
+  });
+
+  test('rerender 从大帧数缩减到小帧数和零帧时提交合法状态', () => {
+    const commits: PreviewState[] = [];
 
     function CommitProbe(props: { frameCount: number }) {
-      useLayoutEffect(() => {
-        commits.push(screen.getByRole('status').textContent ?? '');
-      }, [props.frameCount]);
-      return <PreviewControls frameCount={props.frameCount} />;
+      return (
+        <ControlledPreviewControls
+          frameCount={props.frameCount}
+          onCommit={next => commits.push(next)}
+        />
+      );
     }
 
     const view = render(<CommitProbe frameCount={5} />);
@@ -83,11 +177,14 @@ describe('预览组件帧数同步', () => {
     expect(screen.getByRole('status').textContent).toContain('第 5 帧');
 
     view.rerender(<CommitProbe frameCount={2} />);
-    expect(commits.at(-1)).toBe('第 2 帧');
+    expect(commits.at(-1)?.frameIndex).toBe(1);
     expect(screen.getByRole('status').textContent).toContain('第 2 帧');
 
     view.rerender(<CommitProbe frameCount={0} />);
-    expect(commits.at(-1)).toBe('无可用帧');
+    expect(commits.at(-1)).toMatchObject({
+      playing: false,
+      frameIndex: -1
+    });
     expect(screen.getByRole('status').textContent).toContain('无可用帧');
   });
 });

@@ -49,6 +49,7 @@ export interface PixiCharacterScene {
   } | null;
   getHitSnapshot?(): CharacterHitSnapshot | null;
   subscribeFrame(listener: () => void): () => void;
+  resize?(width: number, height: number): void;
   destroy(): void;
 }
 
@@ -445,6 +446,21 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
   subscribeFrame(listener: () => void): () => void {
     this.frameListeners.add(listener);
     return () => this.frameListeners.delete(listener);
+  }
+
+  /** 同步渲染器内部像素尺寸，并重新应用正式布局。 */
+  resize(width: number, height: number): void {
+    if (this.destroyed) return;
+    const nextWidth = Math.max(1, Math.round(width));
+    const nextHeight = Math.max(1, Math.round(height));
+    if (
+      this.application.screen.width === nextWidth
+      && this.application.screen.height === nextHeight
+    ) return;
+    this.application.renderer.resize(nextWidth, nextHeight);
+    this.applyLayout();
+    this.application.render();
+    this.notifyFrameListeners();
   }
 
   stop(): void {
