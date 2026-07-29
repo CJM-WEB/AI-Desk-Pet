@@ -836,15 +836,28 @@ async function navigateByNextButton(target: ChapterId) {
   expect(root.dataset.activeChapter).toBe(target);
 }
 
-it('切换语言时保持当前章节且不重播首页开场', async () => {
+it('首页切换语言后导航到共享仓库时保持选择并在返回首页恢复入口', async () => {
   installReducedMotionForNavigationTest();
   render(<WebsiteExperience />);
-  await navigateByNextButton('community');
   fireEvent.click(screen.getByRole('button', { name: 'language' }));
   fireEvent.click(screen.getByRole('menuitemradio', { name: 'English' }));
+  const next = screen.getByRole('button', { name: 'Next chapter' });
+  for (let index = 0; index < 3; index += 1) {
+    fireEvent.click(next);
+    await flushControllerFrames();
+  }
   expect(screen.getByTestId('website-experience').dataset.activeChapter)
     .toBe('community');
   expect(screen.getByRole('heading', { name: 'AI Pet Community' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+  const previous = screen.getByRole('button', { name: 'Previous chapter' });
+  for (let index = 0; index < 3; index += 1) {
+    fireEvent.click(previous);
+    await flushControllerFrames();
+  }
+  expect(screen.getByTestId('website-experience').dataset.activeChapter)
+    .toBe('home');
+  expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();
 });
 
 it('两个语言资源没有空字符串且键集合一致', () => {

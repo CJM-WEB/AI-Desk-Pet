@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
 import { I18nProvider } from '../components/i18n/I18nProvider';
@@ -369,6 +369,44 @@ describe('官网章节降级模式', () => {
     fireEvent.click(screen.getByRole('button', { name: 'language' }));
     expect(screen.getByRole('menuitemradio', { name: 'English' })
       .getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('正常动画的首帧离开首页时立即卸载语言入口，返回稳定首页后恢复', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
+    render(<WebsiteExperience />);
+
+    fireEvent.click(document.body);
+    await waitFor(() => {
+      expect(screen.getByTestId('home-experience').dataset.phase)
+        .toBe('interactive');
+    });
+
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    const runNextFrame = (frameAt: number) => {
+      const callback = frames.shift();
+      if (!callback) throw new Error('缺少章节吸附动画帧');
+      act(() => callback(frameAt));
+    };
+
+    fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+    runNextFrame(0);
+
+    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+
+    runNextFrame(300);
+    fireEvent.click(screen.getByRole('button', { name: '上一章节' }));
+    runNextFrame(400);
+    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+
+    runNextFrame(700);
+
+    expect(screen.getByTestId('website-experience').dataset.activeChapter)
+      .toBe('home');
+    expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();
   });
 
   it('语言菜单使用首页右上角定位', () => {

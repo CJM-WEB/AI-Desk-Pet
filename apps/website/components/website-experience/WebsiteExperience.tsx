@@ -81,7 +81,8 @@ export function WebsiteExperience({
   const reducedMotion = staticFallback || controller.prefersReducedMotion;
   const activeChapter = CHAPTER_REGISTRY[controller.settledIndex] ?? CHAPTER_REGISTRY[0];
   const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
-  const showLanguageMenu = controller.progress === 0;
+  const showLanguageMenu = controller.progress === 0
+    && !controller.isChapterTransitioning;
   const homePhase = deriveHomeExperiencePhase(
     controller.phase,
     homeExitProgress

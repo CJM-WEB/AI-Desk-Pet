@@ -22,6 +22,7 @@ export interface WebsiteControllerResult {
   phase: ExperiencePhase;
   progress: number;
   settledIndex: number;
+  isChapterTransitioning: boolean;
   pointer: PointerPoint;
   isPaused: boolean;
   prefersReducedMotion: boolean;
@@ -79,6 +80,7 @@ export function useWebsiteController(
   const [phase, setPhase] = useState<ExperiencePhase>('loading');
   const [progress, setProgress] = useState(0);
   const [settledIndex, setSettledIndex] = useState(0);
+  const [isChapterTransitioning, setIsChapterTransitioning] = useState(false);
   const [pointer, setPointer] = useState<PointerPoint>({ x: 0, y: 0 });
   const [isPaused, setIsPaused] = useState(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
@@ -146,6 +148,7 @@ export function useWebsiteController(
   const cancelSnap = useCallback(() => {
     stopSnapFrame();
     snapTargetRef.current = null;
+    setIsChapterTransitioning(false);
   }, [stopSnapFrame]);
 
   const clearWheelSnapTimeout = useCallback(() => {
@@ -158,11 +161,13 @@ export function useWebsiteController(
   const startSnap = useCallback((target: number) => {
     stopSnapFrame();
     snapTargetRef.current = target;
+    setIsChapterTransitioning(progressRef.current !== target);
 
     if (staticFallbackRef.current || prefersReducedMotionRef.current) {
       commitProgress(target);
       commitSettledIndex(target);
       snapTargetRef.current = null;
+      setIsChapterTransitioning(false);
       return;
     }
 
@@ -188,6 +193,7 @@ export function useWebsiteController(
       commitSettledIndex(target);
       snapTargetRef.current = null;
       snapFrameRef.current = null;
+      setIsChapterTransitioning(false);
     };
 
     snapFrameRef.current = window.requestAnimationFrame(advance);
@@ -548,6 +554,7 @@ export function useWebsiteController(
     phase,
     progress,
     settledIndex,
+    isChapterTransitioning,
     pointer,
     isPaused,
     prefersReducedMotion,
