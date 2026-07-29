@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, FocusEvent, PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { EXPERIENCE_CONFIG } from './config';
+import { createContentPool } from './content-pool';
 import {
   advanceParticle,
   createSeededRandom,
@@ -11,6 +12,7 @@ import {
 } from './swarm-model';
 import type { FileParticle } from './swarm-model';
 import type { FileKind, PointerPoint } from './types';
+import { useI18n } from '../i18n/I18nProvider';
 import type { FilePreviewContentSource } from '../website-experience/shared-visual-model';
 import {
   FilePreview,
@@ -213,6 +215,8 @@ export function FileSwarm({
   previewContainer = null,
   onInitializationError
 }: FileSwarmProps) {
+  const { t } = useI18n();
+  const contentPool = useMemo(() => createContentPool(t), [t]);
   const [particles, setParticles] = useState<FileParticle[]>([]);
   const [activePreview, setActivePreview] = useState<ActivePreview | null>(null);
   const [previewTweenState, setPreviewTweenState] = useState<'active' | 'inactive'>('inactive');
@@ -223,10 +227,13 @@ export function FileSwarm({
   const holdStatesRef = useRef(new Map<string, PreviewHoldState>());
   const focusAnchorsRef = useRef(new Map<string, PreviewAnchorRect>());
   const previewSourceRef = useRef(previewSource);
+  const contentPoolRef = useRef(contentPool);
   const randomRef = useRef<(() => number) | null>(null);
   const frameRef = useRef<number | null>(null);
   const spawnTimerRef = useRef<number | null>(null);
   const particleSequenceRef = useRef(0);
+
+  contentPoolRef.current = contentPool;
 
   const commitParticles = useCallback((
     update: (current: FileParticle[]) => FileParticle[]
@@ -450,7 +457,8 @@ export function FileSwarm({
               safeZoneRatio
             },
             existing: current,
-            random: particleRandom
+            random: particleRandom,
+            pool: contentPoolRef.current
           });
 
           if (!particle) {
@@ -590,6 +598,9 @@ export function FileSwarm({
       >
         <div className={styles.fileSwarmIcons}>
         {particles.map((particle, index) => {
+          const preview = particle.previewIndex === undefined
+            ? particle.preview
+            : contentPool[particle.kind][particle.previewIndex] ?? particle.preview;
           const particleStyle = {
             '--file-x': `${particle.x}px`,
             '--file-y': `${particle.y}px`,
@@ -607,7 +618,7 @@ export function FileSwarm({
               data-testid="file-icon"
               data-phase={particle.phase}
               data-held={particle.isHeld}
-              aria-label={`预览 ${particle.preview.title}`}
+              aria-label={t('shared.filePreviewButton', { title: preview.title })}
               style={particleStyle}
               onPointerEnter={(event) => handlePointerEnter(particle.id, event)}
               onPointerLeave={() => handlePointerLeave(particle.id)}

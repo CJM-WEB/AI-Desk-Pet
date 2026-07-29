@@ -10,7 +10,7 @@ import {
   useState
 } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
-import { CONTENT_POOL, createContentPool } from './content-pool';
+import { createContentPool } from './content-pool';
 import { computePreviewPosition } from './pointer-model';
 import type { FileParticle } from './swarm-model';
 import type { PointerPoint } from './types';
@@ -328,11 +328,12 @@ export function FilePreview({
   }
 
   const { kind, preview } = displayedParticle;
-  const previewIndex = CONTENT_POOL[kind].indexOf(preview);
-  const localizedPreview = previewIndex < 0
+  const previewIndex = displayedParticle.previewIndex;
+  const localizedPreview = previewIndex === undefined
     ? preview
-    : localizedPool[kind][previewIndex]!;
+    : localizedPool[kind][previewIndex] ?? preview;
   const previewLines = previewSource === DEFAULT_FILE_PREVIEW_CONTENT_SOURCE
+    && previewIndex !== undefined
     ? localizedPreview.lines
     : previewSource.getPreview(displayedParticle);
 

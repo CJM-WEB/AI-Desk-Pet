@@ -47,6 +47,17 @@ export function createContentPool(
 // 兼容现有粒子模型及其测试；渲染层会基于当前语言重取对应条目。
 export const CONTENT_POOL = createContentPool((key) => zhCN[key]);
 
+/** 复用预览抽取算法，为内建条目提供可跨语言识别的稳定索引。 */
+export function pickPreviewIndex(
+  kind: FileKind,
+  random: () => number,
+  pool: Record<FileKind, readonly PreviewContent[]> = CONTENT_POOL
+): number {
+  const entries = pool[kind];
+
+  return Math.min(entries.length - 1, Math.floor(random() * entries.length));
+}
+
 /** 将随机源映射到调用方提供的内容池，并保证索引不会超过最后一项。 */
 export function pickPreview(
   kind: FileKind,
@@ -54,7 +65,7 @@ export function pickPreview(
   pool: Record<FileKind, readonly PreviewContent[]> = CONTENT_POOL
 ): PreviewContent {
   const entries = pool[kind];
-  const index = Math.min(entries.length - 1, Math.floor(random() * entries.length));
+  const index = pickPreviewIndex(kind, random, pool);
 
   return entries[index]!;
 }
