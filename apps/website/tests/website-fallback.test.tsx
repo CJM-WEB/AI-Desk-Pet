@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
+import { I18nProvider } from '../components/i18n/I18nProvider';
 import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
 
 function createMediaQueryList(matches: boolean): MediaQueryList {
@@ -341,5 +344,41 @@ describe('官网章节降级模式', () => {
       .toBe('donation');
     expect(screen.getByText('微信')).toBeTruthy();
     expect(screen.getByText('支付宝')).toBeTruthy();
+  });
+
+  it('语言入口仅在首页显示，返回首页后恢复且保留语言选择', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <WebsiteExperience />
+      </I18nProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'language' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'English' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next chapter' }));
+
+    expect(screen.getByTestId('website-experience').dataset.activeChapter)
+      .toBe('about');
+    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous chapter' }));
+
+    expect(screen.getByTestId('website-experience').dataset.activeChapter)
+      .toBe('home');
+    fireEvent.click(screen.getByRole('button', { name: 'language' }));
+    expect(screen.getByRole('menuitemradio', { name: 'English' })
+      .getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('语言菜单使用首页右上角定位', () => {
+    const css = readFileSync(
+      resolve(process.cwd(), 'components/i18n/language-menu.module.css'),
+      'utf8'
+    );
+
+    expect(css).not.toContain('left: 50%');
+    expect(css).not.toContain('translateX(-50%)');
+    expect(css).toMatch(/right:\s*[^;]+;/);
   });
 });

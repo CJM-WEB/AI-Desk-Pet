@@ -81,6 +81,7 @@ export function WebsiteExperience({
   const reducedMotion = staticFallback || controller.prefersReducedMotion;
   const activeChapter = CHAPTER_REGISTRY[controller.settledIndex] ?? CHAPTER_REGISTRY[0];
   const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
+  const showLanguageMenu = controller.progress === 0;
   const homePhase = deriveHomeExperiencePhase(
     controller.phase,
     homeExitProgress
@@ -217,9 +218,11 @@ export function WebsiteExperience({
           <ChevronDown aria-hidden="true" />
         </button>
       </nav>
-      <div data-layer="fixed-controls">
-        <LanguageMenu />
-      </div>
+      {showLanguageMenu ? (
+        <div data-layer="fixed-controls">
+          <LanguageMenu />
+        </div>
+      ) : null}
       {mountedVisualProfile && !staticFallback ? (
         <SharedVisualLayers
           profile={mountedVisualProfile}

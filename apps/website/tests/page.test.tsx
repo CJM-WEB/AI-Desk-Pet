@@ -55,7 +55,7 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('即将支持');
   });
 
-  it('在固定控制层挂载独立的语言菜单', () => {
+  it('首页静态回退保留独立的语言入口', () => {
     const html = renderToStaticMarkup(<Page />);
 
     expect(html).toContain('data-layer="fixed-controls"');

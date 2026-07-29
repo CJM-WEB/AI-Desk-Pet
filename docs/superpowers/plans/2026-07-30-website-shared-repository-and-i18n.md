@@ -1,4 +1,4 @@
-# AI Pet 共享仓库与全站中英文切换 Implementation Plan
+# AI Pet 共享仓库与中英文支持 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -135,9 +135,9 @@ export function resolveInitialLocale(
 
 Provider 服务端与 hydration 初值使用 `zh-CN`，挂载后读取偏好和浏览器语言；切换时写入 `localStorage` 并更新 `document.documentElement.lang`。本地存储不可用时仍更新当前会话状态。
 
-- [ ] **Step 5: 实现顶部正中央语言菜单并接入页面**
+- [ ] **Step 5: 实现首页右上角语言菜单并接入页面**
 
-`LanguageMenu` 使用 `Languages` 和 `Check` 图标，触发器文本固定为 `language`，菜单项使用 `role="menuitemradio"` 和 `aria-checked`。组件挂在 `WebsiteExperience` 的固定控制层，与章节上下导航分离，切换语言不得调用章节控制器。
+`LanguageMenu` 使用 `Languages` 和 `Check` 图标，触发器文本固定为 `language`，菜单项使用 `role="menuitemradio"` 和 `aria-checked`。组件仅在 `WebsiteExperience` 的首页进度稳定为 0 时挂在右上角固定控制层；一旦离开首页即卸载，返回首页后按已有语言选择恢复。菜单的 Escape 关闭、外部点击关闭和焦点恢复行为保持不变。
 
 - [ ] **Step 6: 运行国际化和页面测试**
 
@@ -763,7 +763,7 @@ Expected: FAIL，章节注册仍缺少 `community`。
 
 - [ ] **Step 5: 调整语言菜单和章节导航层级**
 
-语言菜单保持顶部正中央且高于焦点内容，不遮挡章节上下按钮。控制层只使用现有灰阶变量和边框样式，不新增独立配色。
+语言菜单仅在首页进度稳定为 0 时显示在右上角，并高于首页焦点内容；离开首页后不渲染入口。控制层只使用现有灰阶变量和边框样式，不新增独立配色。
 
 - [ ] **Step 6: 运行章节集成测试**
 
