@@ -188,7 +188,7 @@ export function FeedbackChapter({
       setComposerState({
         phase: 'editing',
         draft: composerState.draft,
-        error: error instanceof FeedbackStorageError && error.cause === null
+        error: error instanceof FeedbackStorageError && error.code === 'STORAGE_UNAVAILABLE'
           ? '浏览器本地存储不可用，投稿无法保存。'
           : '投稿暂时无法保存，请稍后重试。'
       });

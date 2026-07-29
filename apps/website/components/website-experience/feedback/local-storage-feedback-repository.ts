@@ -41,11 +41,17 @@ export class FeedbackValidationError extends Error {
   }
 }
 
+export type FeedbackStorageErrorCode =
+  | 'STORAGE_UNAVAILABLE'
+  | 'WRITE_FAILED';
+
 export class FeedbackStorageError extends Error {
   readonly name = 'FeedbackStorageError';
+  readonly code: FeedbackStorageErrorCode;
 
-  constructor(cause: unknown) {
+  constructor(code: FeedbackStorageErrorCode, cause?: unknown) {
     super('反馈数据无法写入本地存储，请稍后重试。');
+    this.code = code;
     this.cause = cause;
   }
 }
@@ -260,12 +266,12 @@ export class LocalStorageFeedbackRepository implements FeedbackRepository {
     };
     // 缺少真实存储时禁止把写入误报为内存中的保存成功。
     if (!this.storage) {
-      throw new FeedbackStorageError(null);
+      throw new FeedbackStorageError('STORAGE_UNAVAILABLE');
     }
     try {
       this.storage.setItem(this.key, JSON.stringify(normalized));
     } catch (error) {
-      throw new FeedbackStorageError(error);
+      throw new FeedbackStorageError('WRITE_FAILED', error);
     }
     this.memoryDocument = normalized;
   }

@@ -156,7 +156,7 @@ describe('反馈文件预览内容源', () => {
 });
 
 describe('FileSwarm 预览内容源生命周期', () => {
-  it('普通 RAF 帧仅推进剩余时间时不提交文件粒子列表', () => {
+  it('普通 RAF 帧不提交，进入离场与自然移除各提交一次并更新 DOM', () => {
     vi.useFakeTimers();
     let frameCallback: FrameRequestCallback | null = null;
     vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
@@ -198,6 +198,26 @@ describe('FileSwarm 预览内容源生命周期', () => {
     });
 
     expect(onRender).toHaveBeenCalledTimes(commitCountBeforeOrdinaryFrame);
+
+    let frameAt = 32;
+    while (getByTestId('file-icon').getAttribute('data-phase') !== 'leaving') {
+      frameAt += 250;
+      act(() => {
+        const leavingFrame = frameCallback as FrameRequestCallback | null;
+        leavingFrame?.(frameAt);
+      });
+    }
+
+    expect(onRender).toHaveBeenCalledTimes(commitCountBeforeOrdinaryFrame + 1);
+    expect(getByTestId('file-icon').getAttribute('data-phase')).toBe('leaving');
+
+    act(() => {
+      const removalFrame = frameCallback as FrameRequestCallback | null;
+      removalFrame?.(frameAt + 500);
+    });
+
+    expect(onRender).toHaveBeenCalledTimes(commitCountBeforeOrdinaryFrame + 2);
+    expect(document.querySelector('[data-testid="file-icon"]')).toBeNull();
   });
 
   it('在粒子生成、移除和卸载时绑定并释放内容快照', () => {

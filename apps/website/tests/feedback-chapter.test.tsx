@@ -520,7 +520,7 @@ describe('反馈章节', () => {
   it('写入失败时保留草稿、类型与 Portal 并在正文旁显示错误', () => {
     const repository: FeedbackRepository = Object.assign(createRepository(), {
       create: () => {
-        throw new Error('存储不可用');
+        throw new FeedbackStorageError('WRITE_FAILED');
       }
     });
     openComposer(repository);
@@ -541,7 +541,7 @@ describe('反馈章节', () => {
   it('本地存储不可用时保留草稿并显示不可保存提示', () => {
     const repository: FeedbackRepository = Object.assign(createRepository(), {
       create: () => {
-        throw new FeedbackStorageError(null);
+        throw new FeedbackStorageError('STORAGE_UNAVAILABLE');
       }
     });
     openComposer(repository);

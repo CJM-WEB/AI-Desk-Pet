@@ -182,8 +182,16 @@ describe('本地反馈仓储', () => {
       createId: () => 'browser-id',
       now: () => '2026-07-26T12:00:00.000Z'
     });
+    let thrown: unknown;
 
-    expect(() => repository.create(validInput)).toThrow(FeedbackStorageError);
+    try {
+      repository.create(validInput);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(FeedbackStorageError);
+    expect(thrown).toMatchObject({ code: 'WRITE_FAILED' });
   });
 
   it('storage 事件通知订阅者，且取消订阅可重复调用', () => {
@@ -216,10 +224,19 @@ describe('本地反馈仓储', () => {
       storage: null,
       createId: () => 'unavailable-browser'
     });
+    const entriesBeforeFailedWrite = repository.list('feedback');
     const example = repository.list('feedback')[0]!;
+    let createError: unknown;
 
     expect(repository.list('feedback')).toHaveLength(6);
-    expect(() => repository.create(validInput)).toThrow(FeedbackStorageError);
+    try {
+      repository.create(validInput);
+    } catch (error) {
+      createError = error;
+    }
+    expect(createError).toBeInstanceOf(FeedbackStorageError);
+    expect(createError).toMatchObject({ code: 'STORAGE_UNAVAILABLE' });
+    expect(repository.list('feedback')).toEqual(entriesBeforeFailedWrite);
     expect(() => repository.toggleLike(example.id, 'unavailable-browser'))
       .toThrow(FeedbackStorageError);
   });
