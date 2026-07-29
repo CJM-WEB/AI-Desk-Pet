@@ -2,21 +2,32 @@
   position: relative;
   z-index: 60;
   min-height: 100%;
-  overflow: hidden;
+  overflow: auto;
   padding: 24px;
   color: rgb(28, 28, 28);
 }
 
+.sharedPetLayout {
+  width: min(1440px, 100%);
+  min-height: 680px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: minmax(180px, 1fr) minmax(156px, auto) minmax(180px, 1fr);
+  gap: 18px;
+  align-content: center;
+}
+
 .sharedPetFocus {
-  position: absolute;
-  top: 50%;
-  left: 50%;
+  position: relative;
   z-index: 62;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  place-self: center;
   width: min(420px, calc(100% - 48px));
   display: grid;
   justify-items: center;
   gap: 14px;
-  transform: translate(-50%, -50%);
   text-align: center;
 }
 
@@ -96,18 +107,9 @@
   color: rgb(166, 0, 0);
 }
 
-/* 桌面端固定为四列两行，并为中央标题和分页控件保留稳定间距。 */
+/* fieldset 保留禁用语义，卡片通过 display: contents 参与外层三轨网格。 */
 .sharedPetGrid {
-  width: min(1440px, 100%);
-  min-height: 680px;
-  margin: 0 auto;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-template-rows: repeat(2, minmax(180px, 1fr));
-  column-gap: 18px;
-  row-gap: min(24vh, 220px);
-  align-content: center;
+  display: contents;
   border: 0;
 }
 
@@ -115,6 +117,30 @@
   min-width: 0;
   transform: rotate(var(--shared-pet-rotate, 0deg));
   transform-origin: center;
+}
+
+.sharedPetCardSlot:nth-child(-n + 4) {
+  grid-row: 1;
+}
+
+.sharedPetCardSlot:nth-child(n + 5) {
+  grid-row: 3;
+}
+
+.sharedPetCardSlot:nth-child(4n + 1) {
+  grid-column: 1;
+}
+
+.sharedPetCardSlot:nth-child(4n + 2) {
+  grid-column: 2;
+}
+
+.sharedPetCardSlot:nth-child(4n + 3) {
+  grid-column: 3;
+}
+
+.sharedPetCardSlot:nth-child(4n + 4) {
+  grid-column: 4;
 }
 
 .sharedPetCardSlot:nth-child(8n + 1),
@@ -464,27 +490,27 @@
     padding: 20px 16px 32px;
   }
 
+  .sharedPetLayout {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    gap: 16px;
+  }
+
   .sharedPetFocus {
-    position: relative;
-    top: auto;
-    left: auto;
+    grid-column: 1;
+    grid-row: auto;
     width: 100%;
     margin-bottom: 24px;
-    transform: none;
   }
 
   .sharedPetTitle {
     font-size: 34px;
   }
 
-  .sharedPetGrid {
-    min-height: 0;
-    grid-template-columns: 1fr;
-    grid-template-rows: none;
-    gap: 16px;
-  }
-
-  .sharedPetCardSlot {
+  .sharedPetCardSlot:nth-child(n) {
+    grid-column: auto;
+    grid-row: auto;
     transform: none;
   }
 
@@ -526,19 +552,44 @@
     padding-bottom: 40px;
   }
 
-  .sharedPetFocus {
-    position: relative;
-    top: auto;
-    left: auto;
-    width: 100%;
-    margin-bottom: 28px;
-    transform: none;
-  }
-
-  .sharedPetGrid {
+  .sharedPetLayout {
     min-height: 0;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: none;
+    grid-template-rows: auto;
     gap: 20px;
+  }
+
+  .sharedPetFocus {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    width: 100%;
+    margin-bottom: 28px;
+  }
+
+  .sharedPetCardSlot:nth-child(n) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+@media (min-width: 901px) and (max-height: 760px) {
+  .sharedPetLayout {
+    min-height: 560px;
+    grid-template-rows: minmax(140px, 1fr) minmax(120px, auto) minmax(140px, 1fr);
+    gap: 12px 18px;
+  }
+
+  .sharedPetCardSlot .card {
+    padding: 10px;
+  }
+
+  .sharedPetCardSlot .cardOpenButton {
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .sharedPetCardSlot .cardCover {
+    width: 64px;
+    height: 64px;
   }
 }

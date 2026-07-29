@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -30,6 +31,16 @@ const communityCss = readFileSync(
   'utf8'
 );
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function createItem(index: number): SharedPetPackageSummary {
   return {
     id: `pet-${index}`,
@@ -46,6 +57,23 @@ function createItem(index: number): SharedPetPackageSummary {
     createdAt: `2026-07-${String(index).padStart(2, '0')}T00:00:00.000Z`,
     updatedAt: `2026-07-${String(index).padStart(2, '0')}T00:00:00.000Z`,
     likedByCurrentUser: false
+  };
+}
+
+function createPage(
+  items: readonly SharedPetPackageSummary[],
+  page: number,
+  total: number
+): SharedPetPage {
+  const totalPages = Math.ceil(total / SHARED_PET_PAGE_SIZE);
+  return {
+    items,
+    page,
+    pageSize: SHARED_PET_PAGE_SIZE,
+    total,
+    totalPages,
+    hasPrevious: page > 1 && totalPages > 0,
+    hasNext: page < totalPages
   };
 }
 
@@ -140,7 +168,8 @@ function createRepository(itemCount: number) {
     getById,
     toggleLike,
     getDownload,
-    recordDownload
+    recordDownload,
+    emit
   };
 }
 
@@ -224,15 +253,114 @@ describe('共享仓库章节', () => {
     expect(screen.getByTestId('shared-pet-chapter').dataset.transition).toBe('idle');
   });
 
+  it('分页使旧刷新失效并在进入结束后补刷新订阅脏页', async () => {
+    const harness = createRepository(9);
+    const staleRefresh = deferred<SharedPetPage>();
+    const targetPage = deferred<SharedPetPage>();
+    const dirtyRefresh = deferred<SharedPetPage>();
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 9');
+
+    harness.listPage.mockImplementationOnce(() => staleRefresh.promise);
+    harness.emit();
+    await waitFor(() => expect(harness.listPage).toHaveBeenCalledTimes(2));
+    harness.listPage.mockImplementationOnce(() => targetPage.promise);
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+
+    await act(async () => {
+      staleRefresh.resolve(createPage([
+        { ...createItem(9), name: '过期刷新' }
+      ], 1, 9));
+      await staleRefresh.promise;
+    });
+    expect(screen.queryByText('过期刷新')).toBeNull();
+    expect(screen.getByTestId('shared-pet-chapter').dataset.transition).toBe('leaving');
+
+    harness.emit();
+    expect(harness.listPage).toHaveBeenCalledTimes(3);
+    fireEvent.animationEnd(screen.getAllByTestId('shared-pet-card')[7]!);
+    await act(async () => {
+      targetPage.resolve(createPage([createItem(1)], 2, 9));
+      await targetPage.promise;
+    });
+    expect(await screen.findByText('Pet 1')).toBeTruthy();
+
+    harness.listPage.mockImplementationOnce(() => dirtyRefresh.promise);
+    fireEvent.animationEnd(screen.getByTestId('shared-pet-card'));
+    await waitFor(() => {
+      expect(harness.listPage).toHaveBeenLastCalledWith(2, SHARED_PET_PAGE_SIZE);
+    });
+    await act(async () => {
+      dirtyRefresh.resolve(createPage([
+        { ...createItem(1), name: 'Pet 1 已刷新' }
+      ], 2, 9));
+      await dirtyRefresh.promise;
+    });
+    expect(await screen.findByText('Pet 1 已刷新')).toBeTruthy();
+  });
+
+  it('直切分页立即锁定按钮并只提交当前请求', async () => {
+    const harness = createRepository(9);
+    const targetPage = deferred<SharedPetPage>();
+    renderChapter(harness.repository, { reducedMotion: true });
+    await screen.findByText('Pet 9');
+    harness.listPage.mockImplementationOnce(() => targetPage.promise);
+
+    const next = screen.getByRole('button', { name: '下一页' });
+    fireEvent.click(next);
+    expect((next as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '上一页' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    fireEvent.click(next);
+    expect(harness.listPage).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      targetPage.resolve(createPage([createItem(1)], 2, 9));
+      await targetPage.promise;
+    });
+    expect(await screen.findByText('Pet 1')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '上一页' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+  });
+
+  it('动画分页快速拒绝会被立即收敛并在离场结束后解锁', async () => {
+    const harness = createRepository(9);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 9');
+    harness.listPage.mockRejectedValueOnce(new Error('快速拒绝'));
+
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    await act(async () => Promise.resolve());
+    expect(screen.queryByText('共享内容暂时无法加载，请稍后重试。')).toBeNull();
+
+    fireEvent.animationEnd(screen.getAllByTestId('shared-pet-card')[7]!);
+    expect(await screen.findByText('共享内容暂时无法加载，请稍后重试。'))
+      .toBeTruthy();
+    expect((screen.getByRole('button', { name: '下一页' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+  });
+
   it('桌面四列两行并在窄屏切换为两列或一列', () => {
     expect(communityCss).toMatch(
-      /\.sharedPetGrid\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/s
+      /\.sharedPetLayout\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)[^}]*grid-template-rows:\s*minmax\([^;]+\)\s+minmax\([^;]+\)\s+minmax\([^;]+\)/s
     );
     expect(communityCss).toMatch(
-      /@media\s*\(max-width:\s*900px\)[\s\S]*?\.sharedPetGrid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s
+      /\.sharedPetFocus\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2/s
     );
     expect(communityCss).toMatch(
-      /@media\s*\(max-width:\s*560px\)[\s\S]*?\.sharedPetGrid\s*\{[^}]*grid-template-columns:\s*1fr/s
+      /\.sharedPetCardSlot:nth-child\(-n\s*\+\s*4\)\s*\{[^}]*grid-row:\s*1/s
+    );
+    expect(communityCss).toMatch(
+      /\.sharedPetCardSlot:nth-child\(n\s*\+\s*5\)\s*\{[^}]*grid-row:\s*3/s
+    );
+    expect(communityCss).toMatch(
+      /@media\s*\(max-width:\s*900px\)[\s\S]*?\.sharedPetLayout\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s
+    );
+    expect(communityCss).toMatch(
+      /@media\s*\(max-width:\s*560px\)[\s\S]*?\.sharedPetLayout\s*\{[^}]*grid-template-columns:\s*1fr/s
+    );
+    expect(communityCss).toMatch(
+      /@media\s*\(min-width:\s*901px\)\s*and\s*\(max-height:\s*760px\)[\s\S]*?\.sharedPetLayout\s*\{[^}]*min-height:\s*560px/s
     );
   });
 
@@ -285,6 +413,37 @@ describe('共享仓库章节', () => {
     expect(screen.getByRole('dialog', { name: '分享投稿' })).toBeTruthy();
   });
 
+  it('投稿完成时若章节已卸载则不再刷新或写状态', async () => {
+    const harness = createRepository(0);
+    const created = deferred<SharedPetPackageSummary>();
+    harness.create.mockImplementationOnce(() => created.promise);
+    const view = renderChapter(harness.repository);
+    await screen.findByText('0/0');
+
+    fireEvent.click(screen.getByRole('button', { name: '上传 AI Pet' }));
+    fireEvent.change(screen.getByLabelText('AI Pet ZIP 文件'), {
+      target: {
+        files: [new File(['zip'], 'new-pet.zip', { type: 'application/zip' })]
+      }
+    });
+    fireEvent.change(screen.getByLabelText('封面图片'), {
+      target: {
+        files: [new File(['image'], 'new-cover.png', { type: 'image/png' })]
+      }
+    });
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '新 Pet' } });
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: '新的共享包' } });
+    fireEvent.click(screen.getByRole('button', { name: '发布分享' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(1));
+    view.unmount();
+
+    await act(async () => {
+      created.resolve(createItem(1));
+      await created.promise;
+    });
+    expect(harness.listPage).toHaveBeenCalledTimes(1);
+  });
+
   it('详情读取仓储中的最新数据', async () => {
     const harness = createRepository(1);
     harness.getById.mockResolvedValueOnce({
@@ -299,6 +458,36 @@ describe('共享仓库章节', () => {
     expect(await screen.findByRole('dialog', { name: 'Pet 1' })).toBeTruthy();
     expect(screen.getByText('详情最新数据')).toBeTruthy();
     expect(harness.getById).toHaveBeenCalledWith('pet-1');
+  });
+
+  it('详情乱序完成时只允许最新请求打开弹窗和写错误状态', async () => {
+    const harness = createRepository(2);
+    const first = deferred<SharedPetPackageSummary | null>();
+    const second = deferred<SharedPetPackageSummary | null>();
+    harness.getById
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 2');
+
+    const pet2 = screen.getByRole('button', { name: '打开 Pet 2 的详情' });
+    const pet1 = screen.getByRole('button', { name: '打开 Pet 1 的详情' });
+    fireEvent.click(pet2);
+    fireEvent.click(pet1);
+    expect((pet2 as HTMLButtonElement).disabled).toBe(true);
+    expect((pet1 as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      second.resolve({ ...createItem(1), description: '最新详情' });
+      await second.promise;
+    });
+    expect(await screen.findByRole('dialog', { name: 'Pet 1' })).toBeTruthy();
+    await act(async () => {
+      first.reject(new Error('过期详情失败'));
+      await first.promise.catch(() => undefined);
+    });
+    expect(screen.getByRole('dialog', { name: 'Pet 1' })).toBeTruthy();
+    expect(screen.queryByText('详情暂时无法打开，请稍后重试。')).toBeNull();
   });
 
   it('点赞成功后只更新当前卡片', async () => {
@@ -316,6 +505,62 @@ describe('共享仓库章节', () => {
     expect(harness.toggleLike).toHaveBeenCalledWith('pet-2');
     expect(within(screen.getAllByTestId('shared-pet-card')[1]!)
       .getByRole('button', { name: '点赞 Pet 1' }).textContent).toContain('0');
+  });
+
+  it('同一条目的点赞与下载在完成前各自只执行一次', async () => {
+    const harness = createRepository(1);
+    const liked = deferred<SharedPetPackageSummary>();
+    const downloaded = deferred<SharedPetDownload>();
+    harness.toggleLike.mockImplementationOnce(() => liked.promise);
+    harness.getDownload.mockImplementationOnce(() => downloaded.promise);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 1');
+
+    const like = screen.getByRole('button', { name: '点赞 Pet 1' });
+    fireEvent.click(like);
+    fireEvent.click(like);
+    expect(harness.toggleLike).toHaveBeenCalledTimes(1);
+    expect((like as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      liked.resolve({ ...createItem(1), likeCount: 1, likedByCurrentUser: true });
+      await liked.promise;
+    });
+    await waitFor(() => expect((like as HTMLButtonElement).disabled).toBe(false));
+
+    const download = screen.getByRole('button', { name: '下载 Pet 1' });
+    fireEvent.click(download);
+    fireEvent.click(download);
+    expect(harness.getDownload).toHaveBeenCalledTimes(1);
+    expect((download as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      downloaded.resolve({
+        file: new Blob(['zip'], { type: 'application/zip' }),
+        fileName: 'pet.zip',
+        mimeType: 'application/zip'
+      });
+      await downloaded.promise;
+    });
+    await waitFor(() => expect((download as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('旧点赞错误不覆盖后续详情操作的状态', async () => {
+    const harness = createRepository(2);
+    const oldLike = deferred<SharedPetPackageSummary>();
+    harness.toggleLike.mockImplementationOnce(() => oldLike.promise);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 2');
+
+    fireEvent.click(screen.getByRole('button', { name: '点赞 Pet 2' }));
+    fireEvent.click(screen.getByRole('button', { name: '打开 Pet 1 的详情' }));
+    expect(await screen.findByRole('dialog', { name: 'Pet 1' })).toBeTruthy();
+    await act(async () => {
+      oldLike.reject(new Error('过期点赞失败'));
+      await oldLike.promise.catch(() => undefined);
+    });
+
+    expect(screen.getByRole('dialog', { name: 'Pet 1' })).toBeTruthy();
+    expect(screen.queryByText('点赞暂时无法完成，请稍后重试。')).toBeNull();
   });
 
   it('详情和点赞失败时显示各自的本地化状态', async () => {
@@ -370,6 +615,20 @@ describe('共享仓库章节', () => {
 
     expect(await screen.findByText('下载暂时无法完成，请稍后重试。')).toBeTruthy();
     expect(harness.recordDownload).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '下载 Pet 1' }).textContent).toContain('0');
+  });
+
+  it('记录下载次数失败时仍释放临时地址且不虚增次数', async () => {
+    const harness = createRepository(1);
+    harness.recordDownload.mockRejectedValueOnce(new Error('record failed'));
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderChapter(harness.repository);
+    await screen.findByText('Pet 1');
+
+    fireEvent.click(screen.getByRole('button', { name: '下载 Pet 1' }));
+
+    expect(await screen.findByText('下载暂时无法完成，请稍后重试。')).toBeTruthy();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:download');
     expect(screen.getByRole('button', { name: '下载 Pet 1' }).textContent).toContain('0');
   });
 });

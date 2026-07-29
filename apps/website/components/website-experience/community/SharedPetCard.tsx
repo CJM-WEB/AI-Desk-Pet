@@ -8,6 +8,9 @@ import styles from './community.module.css';
 
 export interface SharedPetCardProps {
   item: SharedPetPackageSummary;
+  detailDisabled?: boolean;
+  likeDisabled?: boolean;
+  downloadDisabled?: boolean;
   onOpen: (item: SharedPetPackageSummary) => void;
   onLike: (item: SharedPetPackageSummary) => void;
   onDownload: (item: SharedPetPackageSummary) => void;
@@ -16,6 +19,9 @@ export interface SharedPetCardProps {
 /** 提供可点击详情入口，并隔离点赞与下载操作事件。 */
 export function SharedPetCard({
   item,
+  detailDisabled = false,
+  likeDisabled = false,
+  downloadDisabled = false,
   onOpen,
   onLike,
   onDownload
@@ -32,6 +38,7 @@ export function SharedPetCard({
         className={styles.cardOpenButton}
         type="button"
         aria-label={openLabel}
+        disabled={detailDisabled}
         onClick={() => onOpen(item)}
       >
         {coverUrl ? <img className={styles.cardCover} src={coverUrl} alt="" /> : null}
@@ -47,6 +54,7 @@ export function SharedPetCard({
           aria-label={likeLabel}
           aria-pressed={item.likedByCurrentUser}
           title={likeLabel}
+          disabled={likeDisabled}
           onClick={() => onLike(item)}
         >
           <ThumbsUp aria-hidden="true" />
@@ -57,6 +65,7 @@ export function SharedPetCard({
           type="button"
           aria-label={downloadLabel}
           title={downloadLabel}
+          disabled={downloadDisabled}
           onClick={() => onDownload(item)}
         >
           <Download aria-hidden="true" />
