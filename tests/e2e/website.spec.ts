@@ -2656,7 +2656,10 @@ test('下载与反馈章节的外围文件图标可悬浮预览且主要控件�
   await feedbackIcon.hover();
   const feedbackPreview = page.locator(PREVIEW);
   await expect(feedbackPreview).toBeVisible();
-  await expect(feedbackPreview).toContainText(/类型 (反馈|建议)/u);
+  await expect(feedbackPreview).toContainText(/类型 (?:反馈(?!建议)|建议)/u);
+  await expect(feedbackPreview).not.toContainText('昵称 AI Pet');
+  await expect(feedbackPreview).not.toContainText('暂无可展示内容');
+  await expect(feedbackPreview).not.toContainText('内容暂时不可读取');
   await expect(page.getByRole('group', { name: '选择反馈操作' })).toBeVisible();
 
   expect(runtimeErrors).toEqual([]);
