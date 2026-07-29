@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { StrictMode } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   loadCharacterStartupRecovery,
   PetAnchorOverlays,
@@ -12,6 +13,7 @@ import {
 } from '../src/renderer/src/pet/PetView';
 import type { MyselfApi } from '../src/shared/myself-api';
 import { taskStore } from '../src/renderer/src/stores/task-store';
+import type { PetInteractionController } from '../src/renderer/src/pet/pet-interaction-controller';
 
 const originalTaskStoreActions = {
   triggerCharacterPointer: taskStore.getState().triggerCharacterPointer
@@ -152,6 +154,47 @@ function installPetViewBrowserApi(api: MyselfApi): void {
 }
 
 describe('桌宠像素交互接线', () => {
+  test('服务端渲染阶段不构造控制器或发送穿透 IPC', () => {
+    const api = createPetViewApi();
+    installPetViewBrowserApi(api);
+
+    renderToStaticMarkup(<PetView />);
+
+    expect(api.setPetMousePassthrough).not.toHaveBeenCalled();
+  });
+
+  test('StrictMode 中每个已提交控制器实例都有配对 dispose', () => {
+    const api = createPetViewApi();
+    installPetViewBrowserApi(api);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const instances: Array<{ dispose: ReturnType<typeof vi.fn> }> = [];
+    const createInteractionController = vi.fn(() => {
+      const instance = {
+        setHitTestPort: vi.fn(),
+        handlePointerMove: vi.fn(),
+        handlePointerDown: vi.fn(),
+        handlePointerUp: vi.fn(),
+        handlePointerCancel: vi.fn(),
+        handleContextMenu: vi.fn(),
+        dispose: vi.fn()
+      };
+      instances.push(instance);
+      return instance as unknown as PetInteractionController;
+    });
+
+    const result = render(
+      <StrictMode>
+        <PetView createInteractionController={createInteractionController} />
+      </StrictMode>
+    );
+
+    expect(createInteractionController).toHaveBeenCalledTimes(2);
+    expect(instances[0]?.dispose).toHaveBeenCalledOnce();
+    expect(instances[1]?.dispose).not.toHaveBeenCalled();
+    result.unmount();
+    expect(instances[1]?.dispose).toHaveBeenCalledOnce();
+  });
+
   test('桌宠容器使用普通 DOM 且不再保留旧按钮与整窗拖拽区域', () => {
     const css = readFileSync(
       resolve(process.cwd(), 'src/renderer/src/styles.css'),
@@ -213,6 +256,28 @@ describe('桌宠像素交互接线', () => {
     fireEvent.pointerUp(shell, { pointerId: 7, button: 0 });
     expect(api.endPetDrag).toHaveBeenCalledOnce();
     expect(releasePointerCapture).toHaveBeenCalledWith(7);
+
+    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 8 });
+    fireEvent.pointerDown(shell, {
+      clientX: 20,
+      clientY: 30,
+      pointerId: 8,
+      button: 0
+    });
+    fireEvent.pointerCancel(shell, { pointerId: 8 });
+    expect(api.endPetDrag).toHaveBeenCalledTimes(2);
+    expect(releasePointerCapture).toHaveBeenCalledWith(8);
+
+    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 9 });
+    fireEvent.pointerDown(shell, {
+      clientX: 20,
+      clientY: 30,
+      pointerId: 9,
+      button: 0
+    });
+    fireEvent.lostPointerCapture(shell, { pointerId: 9 });
+    expect(api.endPetDrag).toHaveBeenCalledTimes(3);
+    expect(releasePointerCapture).toHaveBeenCalledWith(9);
   });
 
   test('右键先更新坐标，只在备用角色命中时阻止默认菜单并调用单一受限入口', async () => {
@@ -294,6 +359,8 @@ describe('桌宠像素交互接线', () => {
     expect(api.endPetDrag).toHaveBeenCalledTimes(2);
     expect(setPointerCapture).toHaveBeenCalledTimes(2);
     expect(releasePointerCapture).toHaveBeenCalledTimes(2);
-    expect(api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
+    await waitFor(() => {
+      expect(api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
+    });
   });
 });

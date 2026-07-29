@@ -352,6 +352,73 @@ describe('PixiJS 角色播放器端口', () => {
 });
 
 describe('角色播放器组件', () => {
+  test('命中回调身份变化不重载播放器且后续发布使用最新回调', async () => {
+    const currentManifest = manifest('character-a');
+    let characterListener: (() => void) | undefined;
+    const subscribeCharacterEvents = vi.fn(listener => {
+      characterListener = () => listener({
+        type: 'active-character-changed',
+        characterId: currentManifest.id
+      });
+      return vi.fn();
+    });
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents
+    } as unknown as MyselfApi;
+    const createPlayer = vi.fn(async () => ({
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn(),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      hitTest: vi.fn().mockReturnValue(true),
+      subscribeHitRegion: vi.fn(() => vi.fn()),
+      destroy: vi.fn()
+    }));
+    const loadBundle = vi.fn(async () => bundle('character-a'));
+    const firstCallback = vi.fn();
+    const secondCallback = vi.fn();
+    const result = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={createPlayer}
+        loadBundle={loadBundle}
+        onHitTestPortChange={firstCallback}
+      />
+    );
+    await waitFor(() => expect(createPlayer).toHaveBeenCalledOnce());
+    await waitFor(() => {
+      expect(firstCallback.mock.calls.some(([port]) => port !== null)).toBe(true);
+    });
+    const firstCallCount = firstCallback.mock.calls.length;
+
+    result.rerender(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={createPlayer}
+        loadBundle={loadBundle}
+        onHitTestPortChange={secondCallback}
+      />
+    );
+    await Promise.resolve();
+    expect(createPlayer).toHaveBeenCalledOnce();
+    expect(loadBundle).toHaveBeenCalledOnce();
+    expect(subscribeCharacterEvents).toHaveBeenCalledOnce();
+
+    await act(async () => characterListener?.());
+    await waitFor(() => expect(createPlayer).toHaveBeenCalledTimes(2));
+    expect(firstCallback).toHaveBeenCalledTimes(firstCallCount);
+    expect(secondCallback).toHaveBeenCalledWith(null);
+    expect(secondCallback.mock.calls.some(([port]) => port !== null)).toBe(true);
+  });
+
   test('正式播放器发布局部坐标像素命中端口并在替换与卸载时撤销', async () => {
     const currentManifest = manifest('character-a');
     let characterListener: (() => void) | undefined;

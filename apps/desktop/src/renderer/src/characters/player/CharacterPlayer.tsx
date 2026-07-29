@@ -99,6 +99,7 @@ export function CharacterPlayer({
   const hostRef = useRef<HTMLSpanElement>(null);
   const activePlayerRef = useRef<CharacterPlayerPort | null>(null);
   const activeSnapshotRef = useRef<CharacterRuntimeSnapshot | null>(null);
+  const onHitTestPortChangeRef = useRef(onHitTestPortChange);
   const playbackRef = useRef({ stateId, motionMode, direction, random });
   const [runtimeDirection, setRuntimeDirection] = useState(direction);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -115,6 +116,7 @@ export function CharacterPlayer({
     direction: runtimeDirection,
     random
   };
+  onHitTestPortChangeRef.current = onHitTestPortChange;
 
   useEffect(() => {
     const updateVisibility = (): void => setPageVisible(!document.hidden);
@@ -135,7 +137,7 @@ export function CharacterPlayer({
     const placeholder = document.createElement('span');
     placeholder.className = 'character-player-stage';
     host.appendChild(placeholder);
-    onHitTestPortChange?.(null);
+    onHitTestPortChangeRef.current?.(null);
 
     /** 异步完成路径与卸载路径共享同一所有权门，确保播放器只释放一次。 */
     const destroyPlayerOnce = (player: CharacterPlayerPort): void => {
@@ -149,7 +151,7 @@ export function CharacterPlayer({
       let candidate: CharacterPlayerPort | null = null;
       let staging: HTMLSpanElement | null = null;
       setStatus('loading');
-      onHitTestPortChange?.(null);
+      onHitTestPortChangeRef.current?.(null);
 
       try {
         let snapshot: CharacterRuntimeSnapshot | null = null;
@@ -221,7 +223,7 @@ export function CharacterPlayer({
           if (child !== staging) child.remove();
         }
         if (previous) destroyPlayerOnce(previous);
-        onHitTestPortChange?.(
+        onHitTestPortChangeRef.current?.(
           createPlayerHitTestPort(candidate, staging)
         );
         setStatus('ready');
@@ -269,7 +271,7 @@ export function CharacterPlayer({
     return () => {
       disposed = true;
       ++revision;
-      onHitTestPortChange?.(null);
+      onHitTestPortChangeRef.current?.(null);
       unsubscribe();
       cache.destroy();
       for (const candidate of candidates) destroyPlayerOnce(candidate);
@@ -284,7 +286,6 @@ export function CharacterPlayer({
     createPlayer,
     loadBundle,
     onExtensionDefinitionsChange,
-    onHitTestPortChange,
     onRuntimeError
   ]);
 

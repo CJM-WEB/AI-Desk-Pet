@@ -8,6 +8,22 @@ import {
 } from '../src/renderer/src/pet/pet-interaction-controller';
 import type { PetWindowInteractionApi } from '../src/shared/pet-window-interaction';
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, reject, resolve };
+}
+
+async function flushPromises(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -43,7 +59,94 @@ function createFixture() {
 }
 
 describe('Renderer 桌宠交互状态机', () => {
-  test('默认穿透并按最新坐标与动画帧切换可见像素命中', () => {
+  test('旧 true 待确认时串行等待并在完成后发送最新 false', async () => {
+    const initial = deferred<void>();
+    const visible = deferred<void>();
+    const setPetMousePassthrough = vi.fn()
+      .mockImplementationOnce(() => initial.promise)
+      .mockImplementationOnce(() => visible.promise);
+    const api = {
+      setPetMousePassthrough,
+      beginPetDrag: vi.fn().mockResolvedValue(undefined),
+      endPetDrag: vi.fn().mockResolvedValue(undefined),
+      openPetContextMenu: vi.fn().mockResolvedValue(undefined)
+    } satisfies PetWindowInteractionApi;
+    const controller = new PetInteractionController(api);
+    controller.setHitTestPort({
+      hitTest: () => true,
+      subscribe: () => () => undefined
+    });
+    controller.handlePointerMove({ x: 1, y: 1 });
+
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(1);
+    expect(setPetMousePassthrough).toHaveBeenNthCalledWith(1, true);
+    initial.resolve();
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenNthCalledWith(2, false);
+    visible.resolve();
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(2);
+  });
+
+  test('旧 true 晚失败不得覆盖等待中的最新 false', async () => {
+    const initial = deferred<void>();
+    const visible = deferred<void>();
+    const setPetMousePassthrough = vi.fn()
+      .mockImplementationOnce(() => initial.promise)
+      .mockImplementationOnce(() => visible.promise);
+    const api = {
+      setPetMousePassthrough,
+      beginPetDrag: vi.fn().mockResolvedValue(undefined),
+      endPetDrag: vi.fn().mockResolvedValue(undefined),
+      openPetContextMenu: vi.fn().mockResolvedValue(undefined)
+    } satisfies PetWindowInteractionApi;
+    const controller = new PetInteractionController(api);
+    controller.setHitTestPort({
+      hitTest: () => true,
+      subscribe: () => () => undefined
+    });
+    controller.handlePointerMove({ x: 2, y: 2 });
+
+    initial.reject(new Error('LATE_FAILURE'));
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(2);
+    expect(setPetMousePassthrough).toHaveBeenNthCalledWith(2, false);
+    visible.resolve();
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(2);
+  });
+
+  test('快速 true 到 false 再回 true 时跳过已过时的中间状态', async () => {
+    const initial = deferred<void>();
+    const setPetMousePassthrough = vi.fn(() => initial.promise);
+    let hit = true;
+    let notify: () => void = () => undefined;
+    const api = {
+      setPetMousePassthrough,
+      beginPetDrag: vi.fn().mockResolvedValue(undefined),
+      endPetDrag: vi.fn().mockResolvedValue(undefined),
+      openPetContextMenu: vi.fn().mockResolvedValue(undefined)
+    } satisfies PetWindowInteractionApi;
+    const controller = new PetInteractionController(api);
+    controller.setHitTestPort({
+      hitTest: () => hit,
+      subscribe: listener => {
+        notify = listener;
+        return () => undefined;
+      }
+    });
+    controller.handlePointerMove({ x: 3, y: 3 });
+    hit = false;
+    notify();
+
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(1);
+    initial.resolve();
+    await flushPromises();
+    expect(setPetMousePassthrough).toHaveBeenCalledTimes(1);
+    expect(setPetMousePassthrough).toHaveBeenCalledWith(true);
+  });
+
+  test('默认穿透并按最新坐标与动画帧切换可见像素命中', async () => {
     const fixture = createFixture();
     expect(fixture.api.setPetMousePassthrough).toHaveBeenNthCalledWith(1, true);
     fixture.controller.setHitTestPort(fixture.port);
@@ -52,10 +155,12 @@ describe('Renderer 桌宠交互状态机', () => {
     fixture.setHit(true);
     fixture.notifyFrame();
     expect(fixture.port.hitTest).toHaveBeenLastCalledWith({ x: 12, y: 18 });
+    await flushPromises();
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(false);
 
     fixture.setHit(false);
     fixture.notifyFrame();
+    await flushPromises();
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
 
@@ -74,11 +179,12 @@ describe('Renderer 桌宠交互状态机', () => {
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
 
-  test('仅当前可见像素上的左键开始拖拽并锁定到释放', () => {
+  test('仅当前可见像素上的左键开始拖拽并锁定到释放', async () => {
     const fixture = createFixture();
     fixture.setHit(true);
     fixture.controller.setHitTestPort(fixture.port);
     fixture.controller.handlePointerMove({ x: 20, y: 30 });
+    await flushPromises();
     fixture.controller.handlePointerDown({ button: 1, pointerId: 4 });
     fixture.controller.handlePointerDown({ button: 0, pointerId: 5 });
     fixture.controller.handlePointerDown({ button: 0, pointerId: 5 });
@@ -92,6 +198,7 @@ describe('Renderer 桌宠交互状态机', () => {
 
     fixture.controller.handlePointerUp();
     fixture.controller.handlePointerUp();
+    await flushPromises();
     expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
@@ -143,8 +250,7 @@ describe('Renderer 桌宠交互状态机', () => {
     });
     controller.handlePointerMove({ x: 1, y: 1 });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
 
@@ -160,8 +266,7 @@ describe('Renderer 桌宠交互状态机', () => {
     };
 
     new PetInteractionController(api);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
 
     expect(setPetMousePassthrough).toHaveBeenCalledTimes(2);
     expect(setPetMousePassthrough).toHaveBeenNthCalledWith(1, true);
@@ -231,14 +336,72 @@ describe('CSS 备用角色几何命中端口', () => {
     vi.stubGlobal('ResizeObserver', ResizeObserverFake);
     const element = document.createElement('span');
     document.body.appendChild(element);
+    let width = 20;
+    vi.spyOn(element, 'getBoundingClientRect').mockImplementation(() => ({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: 20,
+      width,
+      height: 20,
+      toJSON: () => ({})
+    }));
     const listener = vi.fn();
     const unsubscribe = createElementBoundsHitTestPort(element).subscribe(listener);
 
+    width = 24;
     resizeCallback();
     expect(listener).toHaveBeenCalledOnce();
     unsubscribe();
     resizeCallback();
     expect(disconnect).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
+  test('RAF 只在宽高不变但位置矩形变化时通知且取消后停止', () => {
+    const frames: FrameRequestCallback[] = [];
+    const cancelAnimationFrame = vi.fn();
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', cancelAnimationFrame);
+    vi.stubGlobal('ResizeObserver', class {
+      observe = vi.fn();
+      disconnect = vi.fn();
+    });
+    let left = 10;
+    let top = 20;
+    const element = document.createElement('span');
+    document.body.appendChild(element);
+    vi.spyOn(element, 'getBoundingClientRect').mockImplementation(() => ({
+      x: left,
+      y: top,
+      left,
+      top,
+      right: left + 30,
+      bottom: top + 40,
+      width: 30,
+      height: 40,
+      toJSON: () => ({})
+    }));
+    const listener = vi.fn();
+    const unsubscribe = createElementBoundsHitTestPort(element).subscribe(listener);
+
+    frames.shift()?.(0);
+    expect(listener).not.toHaveBeenCalled();
+    left = 14;
+    top = 23;
+    frames.shift()?.(16);
+    expect(listener).toHaveBeenCalledOnce();
+    frames.shift()?.(32);
+    expect(listener).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    frames.shift()?.(48);
+    expect(cancelAnimationFrame).toHaveBeenCalledOnce();
     expect(listener).toHaveBeenCalledOnce();
   });
 });

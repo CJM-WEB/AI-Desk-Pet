@@ -5,7 +5,7 @@ export type CharacterHitTestPort = {
   subscribe(listener: () => void): () => void;
 };
 
-type PetInteractionControllerOptions = {
+export type PetInteractionControllerOptions = {
   onDragStart?: (pointerId: number) => void;
   onDragEnd?: () => void;
 };
@@ -49,24 +49,86 @@ export function createElementBoundsHitTestPort(
       }
     },
     subscribe(listener) {
-      if (typeof ResizeObserver === 'undefined') return () => undefined;
       let active = true;
-      let observer: ResizeObserver;
-      try {
-        observer = new ResizeObserver(() => {
-          if (active) listener();
-        });
-        observer.observe(element);
-      } catch {
-        return () => undefined;
+      let observer: ResizeObserver | null = null;
+      let animationFrame: number | null = null;
+      let previousBounds = readElementBounds(element);
+      const checkBounds = (): void => {
+        if (!active) return;
+        const nextBounds = readElementBounds(element);
+        if (!sameElementBounds(previousBounds, nextBounds)) {
+          previousBounds = nextBounds;
+          listener();
+        }
+      };
+      const checkAnimationFrame = (): void => {
+        checkBounds();
+        if (active && typeof requestAnimationFrame === 'function') {
+          animationFrame = requestAnimationFrame(checkAnimationFrame);
+        }
+      };
+      if (typeof ResizeObserver !== 'undefined') {
+        try {
+          observer = new ResizeObserver(checkBounds);
+          observer.observe(element);
+        } catch {
+          observer = null;
+        }
+      }
+      if (typeof requestAnimationFrame === 'function') {
+        animationFrame = requestAnimationFrame(checkAnimationFrame);
       }
       return () => {
         if (!active) return;
         active = false;
-        observer.disconnect();
+        observer?.disconnect();
+        if (
+          animationFrame !== null
+          && typeof cancelAnimationFrame === 'function'
+        ) {
+          cancelAnimationFrame(animationFrame);
+        }
       };
     }
   };
+}
+
+type ElementBoundsSnapshot = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+} | null;
+
+function readElementBounds(element: HTMLElement): ElementBoundsSnapshot {
+  try {
+    const bounds = element.getBoundingClientRect();
+    return {
+      left: bounds.left,
+      top: bounds.top,
+      right: bounds.right,
+      bottom: bounds.bottom,
+      width: bounds.width,
+      height: bounds.height
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameElementBounds(
+  left: ElementBoundsSnapshot,
+  right: ElementBoundsSnapshot
+): boolean {
+  if (!left || !right) return left === right;
+  return left.left === right.left
+    && left.top === right.top
+    && left.right === right.right
+    && left.bottom === right.bottom
+    && left.width === right.width
+    && left.height === right.height;
 }
 
 /**
@@ -78,7 +140,11 @@ export class PetInteractionController {
   private unsubscribeHitRegion: (() => void) | null = null;
   private latestPoint: { x: number; y: number } | null = null;
   private activePointerId: number | null = null;
-  private requestedPassthrough: boolean | undefined;
+  private desiredPassthrough = true;
+  private confirmedPassthrough: boolean | undefined;
+  private passthroughInFlight = false;
+  private blockedPassthrough: boolean | undefined;
+  private safeRetryRemaining = 1;
 
   constructor(
     private readonly api: PetWindowInteractionApi,
@@ -184,20 +250,55 @@ export class PetInteractionController {
     }
   }
 
-  private requestPassthrough(
-    ignore: boolean,
-    force = false,
-    retrySafe = true
-  ): void {
-    if ((this.disposed && !force) || this.requestedPassthrough === ignore) return;
-    this.requestedPassthrough = ignore;
-    void this.api.setPetMousePassthrough(ignore).catch(() => {
-      if (this.requestedPassthrough === ignore) {
-        this.requestedPassthrough = undefined;
+  private requestPassthrough(ignore: boolean, force = false): void {
+    if (this.disposed && !force) return;
+    if (this.desiredPassthrough !== ignore) {
+      this.desiredPassthrough = ignore;
+      this.blockedPassthrough = undefined;
+      if (ignore) this.safeRetryRemaining = 1;
+    }
+    this.pumpPassthrough();
+  }
+
+  /**
+   * 穿透 IPC 单通道串行提交；每次完成后重新读取最新意图，跳过过时中间态。
+   */
+  private pumpPassthrough(): void {
+    if (
+      this.passthroughInFlight
+      || this.confirmedPassthrough === this.desiredPassthrough
+      || this.blockedPassthrough === this.desiredPassthrough
+    ) {
+      return;
+    }
+    const requested = this.desiredPassthrough;
+    this.passthroughInFlight = true;
+    let operation: Promise<void>;
+    try {
+      operation = this.api.setPetMousePassthrough(requested);
+    } catch {
+      operation = Promise.reject(new Error('PET_PASSTHROUGH_REQUEST_FAILED'));
+    }
+    void operation.then(() => {
+      this.confirmedPassthrough = requested;
+      this.blockedPassthrough = undefined;
+    }).catch(() => {
+      if (this.desiredPassthrough !== requested) return;
+      this.confirmedPassthrough = undefined;
+      if (!requested) {
+        this.desiredPassthrough = true;
+        this.blockedPassthrough = undefined;
+        this.safeRetryRemaining = 1;
+        return;
       }
-      if (!ignore || retrySafe) {
-        this.requestPassthrough(true, this.disposed, !ignore);
+      if (this.safeRetryRemaining > 0) {
+        this.safeRetryRemaining -= 1;
+        return;
       }
+      this.blockedPassthrough = true;
+    }).finally(() => {
+      this.passthroughInFlight = false;
+      this.pumpPassthrough();
     });
   }
 }
