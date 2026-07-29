@@ -28,10 +28,11 @@ export type WorkshopBusyAction =
   | 'deleting'
   | null;
 
-export type WorkshopNotice = {
-  tone: 'success' | 'error' | 'info';
+export type WorkshopToast = {
+  id: string;
+  tone: 'success' | 'info' | 'warning' | 'error';
   text: string;
-} | null;
+};
 
 export type CharacterWorkshopApi = Pick<
   MyselfApi,
@@ -57,6 +58,8 @@ export type ImportedWorkshopSource = {
 };
 
 export interface CharacterWorkshopDependencies {
+  /** 测试可注入稳定 ID；生产默认使用加密安全的 UUID。 */
+  createToastId?(): string;
   inspectImage?(bytes: Uint8Array, mimeType: string): Promise<{
     width: number;
     height: number;
@@ -83,7 +86,7 @@ export interface CharacterWorkshopState {
   compileStatus: 'idle' | 'compiling' | 'success' | 'error';
   loadStatus: 'idle' | 'loading' | 'ready' | 'error';
   busyAction: WorkshopBusyAction;
-  notice: WorkshopNotice;
+  toastQueue: WorkshopToast[];
   availableSources: ImportedWorkshopSource[];
   load(): Promise<void>;
   mount(): () => void;
@@ -109,7 +112,7 @@ export interface CharacterWorkshopState {
   publishCharacter(input: CharacterPublishInput): Promise<void>;
   updateCurrentAction(patch: Partial<DraftActionClip>): void;
   flushDraft(): Promise<void>;
-  clearNotice(): void;
+  dismissToast(id: string): void;
   dispose(): void;
 }
 
@@ -218,8 +221,16 @@ export function createCharacterWorkshopStore(
   let eventRefreshRevision = 0;
   let eventLoading = false;
   let unsubscribe: (() => void) | undefined;
+  const createToastId = dependencies.createToastId ?? (() => crypto.randomUUID());
 
   const store = createStore<CharacterWorkshopState>((set, get) => {
+    /** 只追加提示，确保多个异步操作的到达顺序不会互相覆盖。 */
+    function enqueueToast(toast: Omit<WorkshopToast, 'id'>): void {
+      set(current => ({
+        toastQueue: [...current.toastQueue, { id: createToastId(), ...toast }]
+      }));
+    }
+
     function setDraft(draft: CharacterDraftV1): void {
       const selection = initialSelection(draft);
       draftRevision += 1;
@@ -254,13 +265,11 @@ export function createCharacterWorkshopStore(
       action: WorkshopBusyAction,
       operation: () => Promise<void>
     ): Promise<void> {
-      set({ busyAction: action, notice: null });
+      set({ busyAction: action });
       try {
         await operation();
       } catch (error) {
-        set({
-          notice: { tone: 'error', text: errorText(error) }
-        });
+        enqueueToast({ tone: 'error', text: errorText(error) });
       } finally {
         if (get().busyAction === action) set({ busyAction: null });
       }
@@ -290,17 +299,8 @@ export function createCharacterWorkshopStore(
     async function refreshFromEvent(event: CharacterEvent): Promise<void> {
       const requestRevision = ++eventRefreshRevision;
       if (event.type === 'compile-result' && event.characterId === get().selectedCharacterId) {
-        set({
-          compileStatus: event.ok ? 'success' : 'error',
-          ...(event.ok
-            ? {}
-            : {
-                notice: {
-                  tone: 'error' as const,
-                  text: event.errorCode
-                }
-              })
-        });
+        set({ compileStatus: event.ok ? 'success' : 'error' });
+        if (!event.ok) enqueueToast({ tone: 'error', text: event.errorCode });
       }
       if (event.type === 'active-character-changed') {
         set({
@@ -342,7 +342,7 @@ export function createCharacterWorkshopStore(
           }
         }
       } catch (error) {
-        set({ notice: { tone: 'error', text: errorText(error) } });
+        enqueueToast({ tone: 'error', text: errorText(error) });
       } finally {
         if (requestRevision === eventRefreshRevision && eventLoading) {
           if (get().busyAction === 'loading') set({ busyAction: null });
@@ -361,7 +361,7 @@ export function createCharacterWorkshopStore(
       compileStatus: 'idle',
       loadStatus: 'idle',
       busyAction: null,
-      notice: null,
+      toastQueue: [],
       availableSources: [],
 
       async load() {
@@ -369,7 +369,7 @@ export function createCharacterWorkshopStore(
         set({
           loadStatus: 'loading',
           busyAction: 'loading',
-          notice: null
+          toastQueue: []
         });
         try {
           const characters = await refreshCharacters();
@@ -394,10 +394,8 @@ export function createCharacterWorkshopStore(
           if (requestRevision === selectionRevision) set({ loadStatus: 'ready' });
         } catch (error) {
           if (requestRevision === selectionRevision) {
-            set({
-              loadStatus: 'error',
-              notice: { tone: 'error', text: errorText(error) }
-            });
+            set({ loadStatus: 'error' });
+            enqueueToast({ tone: 'error', text: errorText(error) });
           }
         } finally {
           if (
@@ -431,13 +429,13 @@ export function createCharacterWorkshopStore(
           draftStatus: 'idle',
           compileStatus: 'idle',
           busyAction: 'loading',
-          notice: null
+          toastQueue: []
         });
         try {
           await loadSelectedDraft(characterId, requestRevision);
         } catch (error) {
           if (requestRevision === selectionRevision) {
-            set({ notice: { tone: 'error', text: errorText(error) } });
+            enqueueToast({ tone: 'error', text: errorText(error) });
           }
         } finally {
           if (
@@ -470,7 +468,7 @@ export function createCharacterWorkshopStore(
       async createCharacter(name) {
         const normalizedName = name.trim();
         if (!normalizedName) {
-          set({ notice: { tone: 'error', text: '角色名称不能为空。' } });
+          enqueueToast({ tone: 'error', text: '角色名称不能为空。' });
           return;
         }
         if (hasPendingDraft() && !await flushBeforeSelectionChange()) return;
@@ -479,7 +477,7 @@ export function createCharacterWorkshopStore(
           await refreshCharacters();
           selectionRevision += 1;
           setDraft(created);
-          set({ notice: { tone: 'success', text: '角色已创建。' } });
+          enqueueToast({ tone: 'success', text: '角色已创建。' });
         });
       },
 
@@ -490,7 +488,7 @@ export function createCharacterWorkshopStore(
           await refreshCharacters();
           selectionRevision += 1;
           setDraft(duplicate);
-          set({ notice: { tone: 'success', text: '角色副本已创建。' } });
+          enqueueToast({ tone: 'success', text: '角色副本已创建。' });
         });
       },
 
@@ -523,7 +521,7 @@ export function createCharacterWorkshopStore(
               });
             }
           }
-          set({ notice: { tone: 'success', text: '角色已删除。' } });
+          enqueueToast({ tone: 'success', text: '角色已删除。' });
         });
       },
 
@@ -538,9 +536,9 @@ export function createCharacterWorkshopStore(
             characters: get().characters.map(character => ({
               ...character,
               active: character.id === characterId
-            })),
-            notice: { tone: 'success', text: '角色已启用。' }
+            }))
           });
+          enqueueToast({ tone: 'success', text: '角色已启用。' });
           await refreshCharacters();
         });
       },
@@ -550,13 +548,13 @@ export function createCharacterWorkshopStore(
         await reportFailure('importing', async () => {
           const result = await api.importCharacterPackage();
           if (result.kind === 'cancelled') {
-            set({ notice: { tone: 'info', text: '已取消导入角色包。' } });
+            enqueueToast({ tone: 'info', text: '已取消导入角色包。' });
             return;
           }
           await refreshCharacters();
           const requestRevision = ++selectionRevision;
           await loadSelectedDraft(result.characterId, requestRevision);
-          set({ notice: { tone: 'success', text: '角色包已导入。' } });
+          enqueueToast({ tone: 'success', text: '角色包已导入。' });
         });
       },
 
@@ -565,11 +563,9 @@ export function createCharacterWorkshopStore(
         if (!characterId) return;
         await reportFailure('exporting', async () => {
           const result = await api.exportCharacterPackage(characterId);
-          set({
-            notice: result.kind === 'cancelled'
-              ? { tone: 'info', text: '已取消导出角色包。' }
-              : { tone: 'success', text: '角色包已导出。' }
-          });
+          enqueueToast(result.kind === 'cancelled'
+            ? { tone: 'info', text: '已取消导出角色包。' }
+            : { tone: 'success', text: '角色包已导出。' });
         });
       },
 
@@ -579,12 +575,6 @@ export function createCharacterWorkshopStore(
         await reportFailure('importing', async () => {
           const result = await api.chooseCharacterSources(characterId);
           set({
-            notice: result.kind === 'cancelled'
-              ? { tone: 'info', text: '已取消导入素材。' }
-              : {
-                  tone: 'success',
-                  text: `已导入 ${result.sources.length} 个素材。`
-                },
             ...(result.kind === 'selected'
               ? {
                   availableSources: result.sources.map(source => ({
@@ -595,6 +585,9 @@ export function createCharacterWorkshopStore(
                 }
               : {})
           });
+          enqueueToast(result.kind === 'cancelled'
+            ? { tone: 'info', text: '已取消导入素材。' }
+            : { tone: 'success', text: `已导入 ${result.sources.length} 个素材。` });
         });
       },
 
@@ -626,8 +619,7 @@ export function createCharacterWorkshopStore(
         set({
           draft: nextDraft,
           selectedActionId: id,
-          draftStatus: 'dirty',
-          notice: null
+          draftStatus: 'dirty'
         });
         scheduleSave();
       },
@@ -637,14 +629,14 @@ export function createCharacterWorkshopStore(
           .replace(/[^a-z0-9_-]+/gu, '-')
           .replace(/^-+|-+$/gu, '');
         if (!normalized) {
-          set({ notice: { tone: 'error', text: '扩展状态名称不能为空。' } });
+          enqueueToast({ tone: 'error', text: '扩展状态名称不能为空。' });
           return;
         }
         const current = get();
         if (!current.draft) return;
         const id = `custom:${normalized}` as `custom:${string}`;
         if (current.draft.states.some(state => state.id === id)) {
-          set({ notice: { tone: 'error', text: '扩展状态已存在。' } });
+          enqueueToast({ tone: 'error', text: '扩展状态已存在。' });
           return;
         }
         const nextDraft = cloneDraft(current.draft);
@@ -659,8 +651,7 @@ export function createCharacterWorkshopStore(
           draft: nextDraft,
           selectedStateId: id,
           selectedActionId: null,
-          draftStatus: 'dirty',
-          notice: null
+          draftStatus: 'dirty'
         });
         scheduleSave();
       },
@@ -671,7 +662,7 @@ export function createCharacterWorkshopStore(
           candidate.assetId === input.sourceAssetId
         ));
         if (!source || !current.draft || !current.selectedStateId || !current.selectedActionId) {
-          set({ notice: { tone: 'error', text: '请先选择动作和已导入素材。' } });
+          enqueueToast({ tone: 'error', text: '请先选择动作和已导入素材。' });
           return;
         }
         if (
@@ -683,7 +674,7 @@ export function createCharacterWorkshopStore(
           || input.frameCount < 1
           || input.frameCount > input.rows * input.columns
         ) {
-          set({ notice: { tone: 'error', text: '精灵图网格参数无效。' } });
+          enqueueToast({ tone: 'error', text: '精灵图网格参数无效。' });
           return;
         }
         const bytes = await api.readCharacterSource(
@@ -698,7 +689,7 @@ export function createCharacterWorkshopStore(
           dimensions.width % input.columns !== 0
           || dimensions.height % input.rows !== 0
         ) {
-          set({ notice: { tone: 'error', text: '图片尺寸不能被网格整除。' } });
+          enqueueToast({ tone: 'error', text: '图片尺寸不能被网格整除。' });
           return;
         }
         const width = dimensions.width / input.columns;
@@ -712,7 +703,7 @@ export function createCharacterWorkshopStore(
           height
         }));
         get().updateCurrentAction({ frames });
-        set({ notice: { tone: 'success', text: '精灵图网格已应用到当前动作。' } });
+        enqueueToast({ tone: 'success', text: '精灵图网格已应用到当前动作。' });
       },
 
       async compileAndPublish() {
@@ -797,10 +788,8 @@ export function createCharacterWorkshopStore(
             },
             resources
           });
-          set({
-            compileStatus: 'success',
-            notice: { tone: 'success', text: '运行版本已编译并发布。' }
-          });
+          set({ compileStatus: 'success' });
+          enqueueToast({ tone: 'success', text: '运行版本已编译并发布。' });
           await refreshCharacters();
         });
       },
@@ -812,10 +801,10 @@ export function createCharacterWorkshopStore(
           if (input.characterId === get().selectedCharacterId) {
             set({ compileStatus: 'success' });
           }
-          set({ notice: { tone: 'success', text: '运行版本已发布。' } });
+          enqueueToast({ tone: 'success', text: '运行版本已发布。' });
           await refreshCharacters();
         });
-        if (get().busyAction === null && get().notice?.tone === 'error') {
+        if (get().busyAction === null && get().toastQueue.at(-1)?.tone === 'error') {
           set({ compileStatus: 'error' });
         }
       },
@@ -837,8 +826,7 @@ export function createCharacterWorkshopStore(
         draftRevision += 1;
         set({
           draft: nextDraft,
-          draftStatus: 'dirty',
-          notice: null
+          draftStatus: 'dirty'
         });
         scheduleSave();
       },
@@ -871,10 +859,7 @@ export function createCharacterWorkshopStore(
                 get().selectedCharacterId === characterId
                 && draftRevision === revision
               ) {
-                set({
-                  draftStatus: 'saved',
-                  notice: { tone: 'success', text: '草稿已保存。' }
-                });
+                set({ draftStatus: 'saved' });
               } else if (
                 get().selectedCharacterId === characterId
                 && draftRevision !== revision
@@ -886,10 +871,8 @@ export function createCharacterWorkshopStore(
                 get().selectedCharacterId === characterId
                 && draftRevision === revision
               ) {
-                set({
-                  draftStatus: 'error',
-                  notice: { tone: 'error', text: errorText(error) }
-                });
+                set({ draftStatus: 'error' });
+                enqueueToast({ tone: 'error', text: errorText(error) });
                 throw error;
               }
               saveRequested = true;
@@ -902,8 +885,10 @@ export function createCharacterWorkshopStore(
         return saveInFlight;
       },
 
-      clearNotice() {
-        set({ notice: null });
+      dismissToast(id) {
+        set(current => ({
+          toastQueue: current.toastQueue.filter(toast => toast.id !== id)
+        }));
       },
 
       dispose() {

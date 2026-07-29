@@ -160,6 +160,55 @@ afterEach(() => {
 });
 
 describe('角色工作室 Zustand 状态层', () => {
+  test('自动保存成功只更新保存状态，失败入队且按 ID 关闭不影响后续提示', async () => {
+    const firstIds = ['toast-1', 'toast-2'];
+    const { api } = apiDouble();
+    const savedStore = createCharacterWorkshopStore(api, {
+      createToastId: () => firstIds.shift()!
+    });
+    await savedStore.getState().load();
+    savedStore.getState().updateCurrentAction({ name: '自动保存成功' });
+    await savedStore.getState().flushDraft();
+
+    expect(savedStore.getState()).toMatchObject({
+      draftStatus: 'saved',
+      toastQueue: []
+    });
+
+    const { api: failingApi } = apiDouble({
+      saveCharacterDraft: vi.fn(async () => {
+        throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
+      })
+    });
+    const failingStore = createCharacterWorkshopStore(failingApi, {
+      createToastId: () => firstIds.shift()!
+    });
+    await failingStore.getState().load();
+    failingStore.getState().updateCurrentAction({ name: '自动保存失败' });
+    await expect(failingStore.getState().flushDraft()).rejects.toThrow();
+
+    expect(failingStore.getState()).toMatchObject({
+      draftStatus: 'error',
+      toastQueue: [{
+        id: 'toast-1',
+        tone: 'error',
+        text: '角色草稿保存失败，请检查角色素材后重试。'
+      }]
+    });
+    failingStore.setState({
+      toastQueue: [
+        ...failingStore.getState().toastQueue,
+        { id: 'toast-2', tone: 'info', text: '后续提示。' }
+      ]
+    });
+    failingStore.getState().dismissToast('toast-1');
+    expect(failingStore.getState().toastQueue).toEqual([
+      { id: 'toast-2', tone: 'info', text: '后续提示。' }
+    ]);
+    failingStore.getState().dismissToast('unknown');
+    expect(failingStore.getState().toastQueue).toHaveLength(1);
+  });
+
   test('工作室关闭后不扫描或读取素材目录', async () => {
     vi.useFakeTimers();
     const chooseCharacterSources = vi.fn(async () => ({
@@ -540,8 +589,7 @@ describe('角色工作室 Zustand 状态层', () => {
     );
     expect(store.getState()).toMatchObject({
       draftStatus: 'saved',
-      busyAction: null,
-      notice: { tone: 'success' }
+      busyAction: null
     });
   });
 
@@ -560,10 +608,10 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState()).toMatchObject({
       selectedCharacterId: 'default',
       draftStatus: 'error',
-      notice: {
+      toastQueue: [expect.objectContaining({
         tone: 'error',
         text: '角色草稿保存失败，请检查角色素材后重试。'
-      }
+      })]
     });
   });
 
@@ -637,42 +685,42 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState()).toMatchObject({
       selectedCharacterId: 'created',
       busyAction: null,
-      notice: { tone: 'success' }
+      toastQueue: [expect.objectContaining({ tone: 'success' })]
     });
 
     await store.getState().duplicateCharacter('nova');
     expect(store.getState()).toMatchObject({
       selectedCharacterId: 'copy',
-      notice: { tone: 'success' }
+      toastQueue: expect.arrayContaining([expect.objectContaining({ tone: 'success' })])
     });
 
     await store.getState().activateCharacter('copy');
     expect(api.activateCharacter).toHaveBeenCalledWith('copy');
     expect(store.getState()).toMatchObject({
       busyAction: null,
-      notice: { tone: 'success' }
+      toastQueue: expect.arrayContaining([expect.objectContaining({ tone: 'success' })])
     });
 
     await store.getState().importSources();
     expect(api.chooseCharacterSources).toHaveBeenCalledWith('copy');
-    expect(store.getState().notice).toMatchObject({ tone: 'success' });
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({ tone: 'success' });
 
     await store.getState().exportCharacterPackage();
     expect(api.exportCharacterPackage).toHaveBeenCalledWith('copy');
-    expect(store.getState().notice).toMatchObject({ tone: 'success' });
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({ tone: 'success' });
 
     await store.getState().importCharacterPackage();
     expect(store.getState()).toMatchObject({
       selectedCharacterId: 'imported',
       busyAction: null,
-      notice: { tone: 'success' }
+      toastQueue: expect.arrayContaining([expect.objectContaining({ tone: 'success' })])
     });
 
     await store.getState().deleteCharacter('imported');
     expect(api.deleteCharacter).toHaveBeenCalledWith('imported');
     expect(store.getState()).toMatchObject({
       busyAction: null,
-      notice: { tone: 'success' }
+      toastQueue: expect.arrayContaining([expect.objectContaining({ tone: 'success' })])
     });
   });
 
@@ -688,22 +736,22 @@ describe('角色工作室 Zustand 状态层', () => {
     await store.getState().load();
 
     await store.getState().importCharacterPackage();
-    expect(store.getState().notice).toEqual({
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({
       tone: 'info',
       text: expect.stringContaining('取消')
     });
     await store.getState().exportCharacterPackage();
-    expect(store.getState().notice).toEqual({
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({
       tone: 'info',
       text: expect.stringContaining('取消')
     });
     await store.getState().activateCharacter('nova');
     expect(store.getState()).toMatchObject({
       busyAction: null,
-      notice: {
+      toastQueue: expect.arrayContaining([expect.objectContaining({
         tone: 'error',
         text: '该角色动作不完整，需要确认后才能启用。'
-      }
+      })])
     });
   });
 

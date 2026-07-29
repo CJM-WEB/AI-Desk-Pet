@@ -83,7 +83,7 @@ function state(
     compileStatus: 'idle',
     loadStatus: 'ready',
     busyAction: null,
-    notice: null,
+    toastQueue: [],
     availableSources: [],
     load: vi.fn(),
     mount: vi.fn(() => vi.fn()),
@@ -104,7 +104,7 @@ function state(
     publishCharacter: vi.fn(),
     updateCurrentAction: vi.fn(),
     flushDraft: vi.fn(),
-    clearNotice: vi.fn(),
+    dismissToast: vi.fn(),
     dispose: vi.fn(),
     ...overrides
   };
@@ -258,12 +258,36 @@ describe('角色工作室 SSR 外壳', () => {
       <CharacterWorkshopWorkspace
         state={state({
           loadStatus: 'error',
-          notice: { tone: 'error', text: 'CHARACTER_LIST_FAILED' }
+          toastQueue: [{
+            id: 'load-error',
+            tone: 'error',
+            text: 'CHARACTER_LIST_FAILED'
+          }]
         })}
       />
     );
     expect(errorMarkup).toContain('role="alert"');
     expect(errorMarkup).toContain('CHARACTER_LIST_FAILED');
+  });
+
+  test('保存状态保持在右上角，临时提示为 fixed 队首覆盖层且不渲染旧横幅', () => {
+    const markup = renderToStaticMarkup(
+      <CharacterWorkshopWorkspace
+        state={state({
+          draftStatus: 'saved',
+          toastQueue: [
+            { id: 'first', tone: 'info', text: '第一条。' },
+            { id: 'second', tone: 'error', text: '第二条。' }
+          ]
+        })}
+      />
+    );
+
+    expect(markup).toContain('草稿已保存');
+    expect(markup).toContain('workshop-toast-layer');
+    expect(markup).toContain('第一条。');
+    expect(markup).not.toContain('第二条。');
+    expect(markup).not.toContain('workshop-notice');
   });
 
   test.each([
@@ -307,14 +331,20 @@ describe('角色工作室 SSR 外壳', () => {
     expect(markup).toContain('正在保存…');
   });
 
-  test('CSS 固定工作区为第四轨道且窄窗口可滚动访问 Inspector', async () => {
+  test('Toast 固定覆盖层不占工作区轨道，窄窗口仍可滚动访问 Inspector', async () => {
     const css = await workshopCss();
 
     expect(css).toMatch(
-      /\.character-workshop-shell\s*\{[^}]*grid-template-rows:\s*56px 45px auto minmax\(0,\s*1fr\);/su
+      /\.character-workshop-shell\s*\{[^}]*grid-template-rows:\s*56px 45px minmax\(0,\s*1fr\);/su
     );
     expect(css).toMatch(
-      /\.workshop-columns\s*\{[^}]*grid-row:\s*4;/su
+      /\.workshop-columns\s*\{[^}]*grid-row:\s*3;/su
+    );
+    expect(css).toMatch(
+      /\.workshop-toast-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*50;[^}]*top:\s*68px;[^}]*right:\s*16px;[^}]*pointer-events:\s*none;/su
+    );
+    expect(css).toMatch(
+      /\.workshop-toast\s*\{[^}]*pointer-events:\s*auto;/su
     );
     expect(css).toMatch(
       /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-columns\s*\{[^}]*overflow-y:\s*auto;/su

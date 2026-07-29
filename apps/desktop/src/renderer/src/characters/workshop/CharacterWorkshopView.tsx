@@ -15,8 +15,7 @@ import {
   Play,
   Plus,
   Save,
-  Upload,
-  X
+  Upload
 } from 'lucide-react';
 import { useStore } from 'zustand';
 import type { DraftActionClip } from '@myself/character-runtime';
@@ -38,6 +37,7 @@ import { AnchorEditor } from './AnchorEditor';
 import { IncompleteCharacterDialog } from './IncompleteCharacterDialog';
 import { PreviewControls } from './PreviewControls';
 import { AtlasImportPanel } from './AtlasImportPanel';
+import { WorkshopToastLayer } from './WorkshopToastLayer';
 import './character-workshop.css';
 
 export interface CharacterWorkshopViewProps {
@@ -279,22 +279,10 @@ export function CharacterWorkshopWorkspace(
         </button>
       </nav>
 
-      {state.notice ? (
-        <div
-          className={`workshop-notice notice-${state.notice.tone}`}
-          role={state.notice.tone === 'error' ? 'alert' : 'status'}
-        >
-          <span>{state.notice.text}</span>
-          <button
-            type="button"
-            aria-label="关闭通知"
-            title="关闭通知"
-            onClick={state.clearNotice}
-          >
-            <X size={15} />
-          </button>
-        </div>
-      ) : null}
+      <WorkshopToastLayer
+        queue={state.toastQueue}
+        onDismiss={state.dismissToast}
+      />
 
       <div className="workshop-columns">
         <aside className="workshop-sidebar" aria-label="角色与状态">
