@@ -1,9 +1,11 @@
 import type {
+  ActionClip,
   ActionSelectionResult,
   AnchorPoint,
   AnchorSet,
   CharacterManifestV1,
-  CharacterMotionMode
+  CharacterMotionMode,
+  DraftActionClip
 } from '@myself/character-runtime';
 import type { CharacterAssetBundle } from './character-resource-cache';
 
@@ -16,10 +18,36 @@ export interface CharacterPlayerPort {
   destroy(): void;
 }
 
+export type CharacterVisualAssets = ReadonlyMap<string, string>;
+
 /**
- * Pixi 场景端口隔离 GPU、纹理与 ticker，单元测试无需创建真实画布。
+ * 共享边界：工作台与运行时均通过此接口复用同一条 Pixi 渲染链路。
  */
 export interface PixiCharacterScene {
+  loadAssets(assets: CharacterVisualAssets): Promise<void>;
+  showAction(
+    action: ActionClip | DraftActionClip,
+    options: {
+      direction: 'left' | 'right';
+      motionMode: CharacterMotionMode;
+      frameIndex?: number;
+      speed: number;
+      loop: boolean;
+    }
+  ): void;
+  getCurrentFrame(): {
+    action: ActionClip | DraftActionClip;
+    frameIndex: number;
+    bounds: { x: number; y: number; width: number; height: number };
+  } | null;
+  subscribeFrame(listener: () => void): () => void;
+  destroy(): void;
+}
+
+/**
+ * 兼容边界：旧播放器端口的场景替身与运行时实现仍可被适配器接收。
+ */
+type LegacyPixiCharacterScene = {
   load(manifest: CharacterManifestV1, assets: CharacterAssetBundle): Promise<void>;
   show(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void;
   setDirection(direction: 'left' | 'right'): void;
@@ -28,12 +56,15 @@ export interface PixiCharacterScene {
   stop(): void;
   destroy(): void;
   isTickerRunning(): boolean;
-}
+};
 
 export class PixiCharacterPlayer implements CharacterPlayerPort {
   private destroyed = false;
+  private direction: 'left' | 'right' = 'right';
+  private currentSelection: ActionSelectionResult | null = null;
+  private currentMotionMode: CharacterMotionMode | null = null;
 
-  constructor(private readonly scene: PixiCharacterScene) {}
+  constructor(private readonly scene: PixiCharacterScene | LegacyPixiCharacterScene) {}
 
   static async create(
     container: HTMLElement,
@@ -43,37 +74,85 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   }
 
   load(manifest: CharacterManifestV1, assets: CharacterAssetBundle): Promise<void> {
-    return this.scene.load(manifest, assets);
+    if (isLegacyScene(this.scene)) return this.scene.load(manifest, assets);
+    const actionAssetIds = new Set(
+      manifest.states.flatMap(state => (
+        state.actions.flatMap(action => action.frames.map(frame => frame.assetId))
+      ))
+    );
+    const visualAssets = new Map<string, string>();
+    for (const [assetId, url] of assets.atlasUrls) {
+      if (actionAssetIds.has(assetId)) visualAssets.set(assetId, url);
+    }
+    return this.scene.loadAssets(visualAssets);
   }
 
   play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void {
-    this.scene.show(selection, motionMode);
+    this.currentSelection = selection;
+    this.currentMotionMode = motionMode;
+    if (isLegacyScene(this.scene)) {
+      this.scene.show(selection, motionMode);
+      return;
+    }
+    this.scene.showAction(selection.action, {
+      direction: this.direction,
+      motionMode,
+      speed: 1,
+      loop: selection.action.loop
+    });
   }
 
   setDirection(direction: 'left' | 'right'): void {
-    this.scene.setDirection(direction);
+    const changed = this.direction !== direction;
+    this.direction = direction;
+    if (isLegacyScene(this.scene)) {
+      this.scene.setDirection(direction);
+      return;
+    }
+    if (!changed || !this.currentSelection || !this.currentMotionMode) return;
+    const frameIndex = this.scene.getCurrentFrame()?.frameIndex;
+    this.scene.showAction(this.currentSelection.action, {
+      direction,
+      motionMode: this.currentMotionMode,
+      ...(frameIndex === undefined ? {} : { frameIndex }),
+      speed: 1,
+      loop: this.currentSelection.action.loop
+    });
   }
 
   getAnchor(name: keyof AnchorSet): AnchorPoint | null {
-    return this.scene.getAnchor(name);
+    if (isLegacyScene(this.scene)) return this.scene.getAnchor(name);
+    const currentFrame = this.scene.getCurrentFrame();
+    const action = currentFrame?.action ?? this.currentSelection?.action;
+    if (!action) return null;
+    const frameAnchor = currentFrame
+      ? action.frames[currentFrame.frameIndex]?.anchors?.[name]
+      : undefined;
+    const anchor = frameAnchor ?? action.anchors[name] ?? null;
+    return anchor ? resolveDirectionalAnchor(anchor, this.direction) : null;
   }
 
   getFrameBounds() {
-    return this.scene.getFrameBounds?.() ?? null;
+    if (isLegacyScene(this.scene)) return this.scene.getFrameBounds?.() ?? null;
+    return this.scene.getCurrentFrame()?.bounds ?? null;
   }
 
   isTickerRunning(): boolean {
-    return this.scene.isTickerRunning();
+    return isLegacyScene(this.scene) && this.scene.isTickerRunning();
   }
 
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
-    try {
-      this.scene.stop();
-    } finally {
-      this.scene.destroy();
+    if (isLegacyScene(this.scene)) {
+      try {
+        this.scene.stop();
+      } finally {
+        this.scene.destroy();
+      }
+      return;
     }
+    this.scene.destroy();
   }
 }
 
@@ -81,9 +160,7 @@ type PixiModule = typeof import('pixi.js');
 type PixiApplication = InstanceType<PixiModule['Application']>;
 type PixiTexture = InstanceType<PixiModule['Texture']>;
 type PixiAnimatedSprite = InstanceType<PixiModule['AnimatedSprite']>;
-export type PixiCharacterSceneFactory = (
-  container: HTMLElement
-) => Promise<PixiCharacterScene>;
+export type PixiCharacterSceneFactory = (container: HTMLElement) => Promise<PixiCharacterScene>;
 export type PixiModuleLoader = () => Promise<PixiModule>;
 
 export type CharacterFrameFit = {
@@ -101,6 +178,15 @@ export function resolveDirectionalAnchor(
   return direction === 'left'
     ? { x: 1 - anchor.x, y: anchor.y }
     : anchor;
+}
+
+/**
+ * 适配判定：运行时旧端口以 load 方法为特征，避免要求既有调用方同步迁移。
+ */
+function isLegacyScene(
+  scene: PixiCharacterScene | LegacyPixiCharacterScene
+): scene is LegacyPixiCharacterScene {
+  return 'load' in scene;
 }
 
 /**
@@ -137,10 +223,12 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
   private readonly baseTextures = new Map<string, PixiTexture>();
   private frameTextures: PixiTexture[] = [];
   private sprite: PixiAnimatedSprite | null = null;
-  private selection: ActionSelectionResult | null = null;
+  private action: ActionClip | DraftActionClip | null = null;
   private direction: 'left' | 'right' = 'right';
   private loadRevision = 0;
   private destroyed = false;
+  private frameChangeListener: (() => void) | null = null;
+  private readonly frameListeners = new Set<() => void>();
 
   private constructor(
     private readonly pixi: PixiModule,
@@ -166,27 +254,14 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     return new BrowserPixiCharacterScene(pixi, application);
   }
 
-  async load(
-    manifest: CharacterManifestV1,
-    assets: CharacterAssetBundle
-  ): Promise<void> {
+  async loadAssets(assets: CharacterVisualAssets): Promise<void> {
     const revision = ++this.loadRevision;
     const entries: Array<readonly [string, PixiTexture]> = [];
-    const atlasAssetIds = new Set(
-      manifest.states.flatMap(state => (
-        state.actions.flatMap(action => action.frames.map(frame => frame.assetId))
-      ))
-    );
     try {
-      for (const resource of manifest.resources) {
-        if (!atlasAssetIds.has(resource.assetId)) continue;
-        const url = assets.atlasUrls.get(resource.assetId);
-        if (!url) {
-          throw new Error('CHARACTER_RUNTIME_ASSET_MISSING');
-        }
+      for (const [assetId, url] of assets) {
         const image = await loadImage(url);
         const texture = this.pixi.Texture.from(image, true);
-        entries.push([resource.assetId, texture]);
+        entries.push([assetId, texture]);
       }
     } catch (error) {
       for (const [, texture] of entries) texture.destroy(true);
@@ -205,12 +280,26 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     }
   }
 
-  show(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void {
+  showAction(
+    action: ActionClip | DraftActionClip,
+    options: {
+      direction: 'left' | 'right';
+      motionMode: CharacterMotionMode;
+      frameIndex?: number;
+      speed: number;
+      loop: boolean;
+    }
+  ): void {
     if (this.destroyed) return;
     this.releaseAnimation();
-    this.selection = selection;
+    this.action = action;
+    this.direction = options.direction;
+    if (action.frames.length === 0) {
+      this.application.render();
+      return;
+    }
 
-    this.frameTextures = selection.action.frames.map(frame => {
+    this.frameTextures = action.frames.map(frame => {
       const baseTexture = this.baseTextures.get(frame.assetId);
       if (!baseTexture) throw new Error('CHARACTER_RUNTIME_ASSET_MISSING');
       return new this.pixi.Texture({
@@ -221,52 +310,60 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
 
     const frames = this.frameTextures.map((texture, index) => ({
       texture,
-      time: selection.action.frames[index]?.durationMs
-        ?? 1_000 / selection.action.fps
+      time: action.frames[index]?.durationMs ?? 1_000 / action.fps
     }));
     const sprite = new this.pixi.AnimatedSprite(frames, false);
-    sprite.loop = selection.action.loop;
+    sprite.loop = options.loop;
+    sprite.animationSpeed = options.speed;
     sprite.anchor.set(
-      selection.action.anchors.ground.x,
-      selection.action.anchors.ground.y
+      action.anchors.ground.x,
+      action.anchors.ground.y
     );
     this.sprite = sprite;
+    this.frameChangeListener = () => this.notifyFrameListeners();
+    sprite.on('frameChange', this.frameChangeListener);
     this.application.stage.addChild(sprite);
     this.applyLayout();
+    const frameIndex = clamp(
+      options.frameIndex ?? 0,
+      0,
+      Math.max(0, frames.length - 1)
+    );
 
-    if (motionMode === 'animated' && frames.length > 1) {
+    if (options.motionMode === 'animated' && frames.length > 1) {
+      sprite.gotoAndStop(frameIndex);
       sprite.play();
       this.application.ticker.add(sprite.update, sprite);
       this.application.ticker.start();
     } else {
-      sprite.gotoAndStop(0);
+      sprite.gotoAndStop(frameIndex);
       this.application.ticker.stop();
     }
     this.application.render();
   }
 
-  setDirection(direction: 'left' | 'right'): void {
-    this.direction = direction;
-    this.applyLayout();
-  }
-
-  getAnchor(name: keyof AnchorSet): AnchorPoint | null {
-    if (!this.selection) return null;
-    const frameIndex = this.sprite?.currentFrame ?? 0;
-    const frameAnchor = this.selection.action.frames[frameIndex]?.anchors?.[name];
-    const anchor = frameAnchor ?? this.selection.action.anchors[name] ?? null;
-    return anchor ? resolveDirectionalAnchor(anchor, this.direction) : null;
-  }
-
-  getFrameBounds(): { x: number; y: number; width: number; height: number } | null {
-    if (!this.sprite) return null;
+  getCurrentFrame(): {
+    action: ActionClip | DraftActionClip;
+    frameIndex: number;
+    bounds: { x: number; y: number; width: number; height: number };
+  } | null {
+    if (!this.action || !this.sprite) return null;
     const bounds = this.sprite.getBounds();
     return {
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: bounds.height
+      action: this.action,
+      frameIndex: this.sprite.currentFrame,
+      bounds: {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height
+      }
     };
+  }
+
+  subscribeFrame(listener: () => void): () => void {
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
   }
 
   stop(): void {
@@ -288,16 +385,17 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     this.stop();
     this.releaseAnimation();
     this.releaseBaseTextures();
+    this.frameListeners.clear();
     this.application.destroy({ removeView: true }, { children: true });
   }
 
   private applyLayout(): void {
-    if (!this.sprite || !this.selection) return;
+    if (!this.sprite || !this.action) return;
     const fit = fitCharacterFrames(
-      this.selection.action.frames,
+      this.action.frames,
       this.application.screen,
       resolveDirectionalAnchor(
-        this.selection.action.anchors.ground,
+        this.action.anchors.ground,
         this.direction
       )
     );
@@ -311,18 +409,26 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
   private releaseAnimation(): void {
     this.stop();
     if (this.sprite) {
+      if (this.frameChangeListener) {
+        this.sprite.off('frameChange', this.frameChangeListener);
+      }
       this.application.stage.removeChild(this.sprite);
       this.sprite.destroy();
       this.sprite = null;
     }
     for (const texture of this.frameTextures) texture.destroy(false);
     this.frameTextures = [];
-    this.selection = null;
+    this.frameChangeListener = null;
+    this.action = null;
   }
 
   private releaseBaseTextures(): void {
     for (const texture of this.baseTextures.values()) texture.destroy(true);
     this.baseTextures.clear();
+  }
+
+  private notifyFrameListeners(): void {
+    for (const listener of this.frameListeners) listener();
   }
 }
 
