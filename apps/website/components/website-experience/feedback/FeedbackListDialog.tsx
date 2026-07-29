@@ -8,21 +8,21 @@ import type {
   FeedbackRepository,
   FeedbackStatusNotice
 } from './feedback-types';
+import type { Translate } from '../../i18n/i18n-types';
+import type { Locale } from '../../i18n/i18n-types';
+import { localizeOfficialFeedbackEntry } from './feedback-preview-source';
 import styles from './feedback.module.css';
 
 export interface FeedbackListDialogProps {
   kind: FeedbackKind;
   repository: FeedbackRepository;
   onClose: () => void;
+  t: Translate;
+  locale: Locale;
 }
 
 type RepositoryWithNotice = FeedbackRepository & {
   getStatusNotice?: () => FeedbackStatusNotice | null;
-};
-
-const KIND_LABELS: Record<FeedbackKind, string> = {
-  feedback: '用户反馈',
-  suggestion: '更新建议'
 };
 
 const BLOCKED_KEYS = new Set([
@@ -43,21 +43,34 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])'
 ].join(',');
 
-function formatPublishedAt(value: string): string {
+function formatPublishedAt(value: string, locale: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(locale, {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit'
   }).format(date);
 }
 
+function localizeStatusNotice(code: FeedbackStatusNotice['code'], t: Translate): string {
+  switch (code) {
+    case 'STORAGE_DATA_RECOVERED':
+      return t('feedback.status.STORAGE_DATA_RECOVERED');
+    case 'STORAGE_READ_FAILED':
+      return t('feedback.status.STORAGE_READ_FAILED');
+    case 'STORAGE_WRITE_FAILED':
+      return t('feedback.status.STORAGE_WRITE_FAILED');
+  }
+}
+
 /** 在根级 Portal 中展示仓储排序结果，并约束章节级输入与焦点。 */
 export function FeedbackListDialog({
   kind,
   repository,
-  onClose
+  onClose,
+  t,
+  locale
 }: FeedbackListDialogProps) {
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -70,17 +83,20 @@ export function FeedbackListDialog({
   >());
   const entries = repository.list(kind).map((entry) => {
     const optimistic = optimisticLikes.get(entry.id);
-    return optimistic
+    const visibleEntry = optimistic
       ? {
           ...entry,
           likedByCurrentBrowser: optimistic.liked,
           likeCount: optimistic.count
         }
       : entry;
+    return localizeOfficialFeedbackEntry(visibleEntry, t);
   });
   const repositoryNotice = (repository as RepositoryWithNotice)
     .getStatusNotice?.() ?? null;
-  const label = KIND_LABELS[kind];
+  const label = t(kind === 'feedback'
+    ? 'feedback.action.feedback'
+    : 'feedback.action.suggestion');
 
   useEffect(() => repository.subscribe(() => {
     setOptimisticLikes(new Map());
@@ -181,9 +197,9 @@ export function FeedbackListDialog({
       });
       setInteractionNotice('');
     } catch {
-      setInteractionNotice('点赞状态暂时无法保存，请稍后重试。');
+      setInteractionNotice(t('feedback.dialog.likeFailed'));
     }
-  }, [repository]);
+  }, [repository, t]);
 
   if (typeof document === 'undefined') return null;
 
@@ -209,14 +225,14 @@ export function FeedbackListDialog({
       >
         <header className={styles.dialogHeader}>
           <div>
-            <p className={styles.dialogEyebrow}>VOICE ARCHIVE</p>
+            <p className={styles.dialogEyebrow}>{t('feedback.dialog.archive')}</p>
             <h3 id={titleId}>{label}</h3>
           </div>
           <button
             ref={closeButtonRef}
             className={styles.dialogClose}
             type="button"
-            aria-label={`关闭${label}`}
+            aria-label={t('feedback.dialog.close', { label })}
             onClick={onClose}
           >
             <X aria-hidden="true" />
@@ -225,7 +241,11 @@ export function FeedbackListDialog({
 
         {repositoryNotice || interactionNotice ? (
           <p className={styles.statusNotice} role="status">
-            {interactionNotice || repositoryNotice?.message}
+            {interactionNotice || (repositoryNotice
+              ? locale === 'zh-CN'
+                ? repositoryNotice.message
+                : localizeStatusNotice(repositoryNotice.code, t)
+              : '')}
           </p>
         ) : null}
 
@@ -234,7 +254,7 @@ export function FeedbackListDialog({
           data-feedback-scroll
           data-input-scope="local"
           role="list"
-          aria-label={`${label}列表`}
+          aria-label={t('feedback.dialog.list', { label })}
         >
           {entries.map((entry, index) => (
             <article
@@ -247,14 +267,19 @@ export function FeedbackListDialog({
               <div className={styles.feedbackMeta}>
                 <strong>{entry.authorName}</strong>
                 <time dateTime={entry.createdAt}>
-                  {formatPublishedAt(entry.createdAt)}
+                  {formatPublishedAt(entry.createdAt, locale)}
                 </time>
               </div>
               <p className={styles.feedbackContent}>{entry.content}</p>
               <button
                 className={styles.likeButton}
                 type="button"
-                aria-label={`点赞${entry.authorName}的${kind === 'feedback' ? '反馈' : '建议'}`}
+                aria-label={t('feedback.dialog.like', {
+                  author: entry.authorName,
+                  kind: t(kind === 'feedback'
+                    ? 'feedback.kind.feedback'
+                    : 'feedback.kind.suggestion')
+                })}
                 aria-pressed={entry.likedByCurrentBrowser}
                 onClick={() => toggleLike(
                   entry.id,

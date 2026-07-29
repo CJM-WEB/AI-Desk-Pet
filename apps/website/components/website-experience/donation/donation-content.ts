@@ -1,3 +1,6 @@
+import { zhCN } from '../../i18n/messages';
+import type { Translate } from '../../i18n/i18n-types';
+
 export interface PaymentMethod {
   id: string;
   name: string;
@@ -5,23 +8,24 @@ export interface PaymentMethod {
   imageAlt: string;
 }
 
-export const PAYMENT_METHODS = [
-  {
-    id: 'wechat',
-    name: '微信',
-    qrImagePath: '/WechatPay.jpg',
-    imageAlt: '微信付款码'
-  },
-  {
-    id: 'alipay',
-    name: '支付宝',
-    qrImagePath: '/Alipay.jpg',
-    imageAlt: '支付宝付款码'
-  },
-  {
-    id: 'paypal',
-    name: 'PayPal',
-    qrImagePath: '/Paypal.png',
-    imageAlt: 'PayPal付款码'
-  }
-] as const satisfies readonly PaymentMethod[];
+/** 仅本地化支付显示名称与替代文本，付款资源路径保持稳定。 */
+export function createPaymentMethods(t: Translate): readonly PaymentMethod[] {
+  const methods = [
+    { id: 'wechat', name: t('donation.wechat'), qrImagePath: '/WechatPay.jpg' },
+    { id: 'alipay', name: t('donation.alipay'), qrImagePath: '/Alipay.jpg' },
+    { id: 'paypal', name: t('donation.paypal'), qrImagePath: '/Paypal.png' }
+  ] as const;
+
+  return methods.map((method) => ({
+    ...method,
+    imageAlt: t('donation.qrCode', { method: method.name })
+  }));
+}
+
+// 兼容现有支付模型测试；界面渲染使用 createPaymentMethods(t)。
+export const PAYMENT_METHODS = createPaymentMethods((key, values) => {
+  const message = zhCN[key];
+  return values
+    ? message.replace(/\{([^{}]+)\}/g, (_, name: string) => String(values[name] ?? `{${name}}`))
+    : message;
+});

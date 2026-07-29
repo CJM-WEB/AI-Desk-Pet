@@ -18,6 +18,7 @@ import {
   vi
 } from 'vitest';
 import { FeedbackChapter } from '../components/website-experience/feedback/FeedbackChapter';
+import { I18nProvider } from '../components/i18n/I18nProvider';
 import { FeedbackStorageError } from '../components/website-experience/feedback/local-storage-feedback-repository';
 import type {
   FeedbackEntry,
@@ -153,6 +154,17 @@ function openComposer(repository: FeedbackRepository) {
 }
 
 describe('反馈章节', () => {
+  it('英文环境使用反馈操作文案', () => {
+    render(
+      <I18nProvider initialLocale="en">
+        <FeedbackChapter interactive staticFallback />
+      </I18nProvider>
+    );
+
+    expect(screen.getByRole('heading', { name: 'Shape Your Pet with Your Voice' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'View Feedback' })).toBeTruthy();
+  });
+
   beforeEach(() => {
     Object.defineProperty(window, 'PointerEvent', {
       configurable: true,

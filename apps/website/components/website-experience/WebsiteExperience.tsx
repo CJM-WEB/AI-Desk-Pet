@@ -9,7 +9,8 @@ import {
 import type { CSSProperties } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { LanguageMenu } from '../i18n/LanguageMenu';
-import { useI18n } from '../i18n/I18nProvider';
+import { interpolateMessage, useI18n } from '../i18n/I18nProvider';
+import type { Translate } from '../i18n/i18n-types';
 import { HomeExperience } from '../home-experience/HomeExperience';
 import {
   deriveChapterVisualState,
@@ -51,7 +52,10 @@ function createChapterVisualStyle(
 export function WebsiteExperience({
   onRuntimeError
 }: WebsiteExperienceProps = {}) {
-  const { t } = useI18n();
+  const { t: rawTranslate } = useI18n();
+  const t = useCallback<Translate>((key, values) => (
+    interpolateMessage(rawTranslate(key), values)
+  ), [rawTranslate]);
   const [initializationFailed, setInitializationFailed] = useState(false);
   const mountedRef = useRef(true);
   const onRuntimeErrorRef = useRef(onRuntimeError);
@@ -93,8 +97,12 @@ export function WebsiteExperience({
   if (feedbackVisualProfileRef.current === null) {
     feedbackVisualProfileRef.current = createFeedbackVisualProfile(
       new LocalStorageFeedbackRepository(),
-      Math.random
+      Math.random,
+      t
     );
+  } else {
+    // 只更新后续生成粒子的翻译快照，已绑定粒子保持生成时的内容。
+    feedbackVisualProfileRef.current.setTranslate(t);
   }
   const sharedVisualProfile = controller.phase === 'interactive'
     && Math.abs(controller.progress - 3) < 0.0001

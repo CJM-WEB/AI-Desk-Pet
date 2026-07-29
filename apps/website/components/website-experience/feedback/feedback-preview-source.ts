@@ -1,6 +1,9 @@
 import type { FilePreviewContentSource } from '../shared-visual-model';
 import type { SharedVisualLayerProfile } from '../SharedVisualLayers';
-import type { FeedbackEntry, FeedbackRepository } from './feedback-types';
+import type { FeedbackEntry, FeedbackRecord, FeedbackRepository } from './feedback-types';
+import type { Translate } from '../../i18n/i18n-types';
+import { zhCN } from '../../i18n/messages';
+import { interpolateMessage } from '../../i18n/I18nProvider';
 
 export const FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH = 72;
 
@@ -10,19 +13,49 @@ export interface SpawnBoundFilePreviewContentSource extends FilePreviewContentSo
   release(particleId: string): void;
 }
 
-const EMPTY_PREVIEW_LINES = [
-  '类型 反馈建议',
-  '昵称 AI Pet',
-  '正文 暂无可展示内容',
-  '点赞 0'
-] as const;
+const OFFICIAL_MESSAGE_KEYS = {
+  'official-feedback-01': ['feedback.official.official-feedback-01.author', 'feedback.official.official-feedback-01.content'],
+  'official-feedback-02': ['feedback.official.official-feedback-02.author', 'feedback.official.official-feedback-02.content'],
+  'official-feedback-03': ['feedback.official.official-feedback-03.author', 'feedback.official.official-feedback-03.content'],
+  'official-feedback-04': ['feedback.official.official-feedback-04.author', 'feedback.official.official-feedback-04.content'],
+  'official-feedback-05': ['feedback.official.official-feedback-05.author', 'feedback.official.official-feedback-05.content'],
+  'official-feedback-06': ['feedback.official.official-feedback-06.author', 'feedback.official.official-feedback-06.content'],
+  'official-suggestion-01': ['feedback.official.official-suggestion-01.author', 'feedback.official.official-suggestion-01.content'],
+  'official-suggestion-02': ['feedback.official.official-suggestion-02.author', 'feedback.official.official-suggestion-02.content'],
+  'official-suggestion-03': ['feedback.official.official-suggestion-03.author', 'feedback.official.official-suggestion-03.content'],
+  'official-suggestion-04': ['feedback.official.official-suggestion-04.author', 'feedback.official.official-suggestion-04.content'],
+  'official-suggestion-05': ['feedback.official.official-suggestion-05.author', 'feedback.official.official-suggestion-05.content'],
+  'official-suggestion-06': ['feedback.official.official-suggestion-06.author', 'feedback.official.official-suggestion-06.content']
+} as const;
 
-const UNAVAILABLE_PREVIEW_LINES = [
-  '类型 反馈建议',
-  '昵称 AI Pet',
-  '正文 内容暂时不可读取',
-  '点赞 0'
-] as const;
+const defaultTranslate: Translate = (key, values) => (
+  interpolateMessage(zhCN[key], values)
+);
+
+function createFallbackPreviewLines(t: Translate, contentKey: 'feedback.preview.emptyContent' | 'feedback.preview.unavailableContent') {
+  return [
+    t('feedback.preview.type', { kind: t('feedback.preview.defaultKind') }),
+    t('feedback.preview.author', { author: t('feedback.preview.defaultAuthor') }),
+    t('feedback.preview.content', { content: t(contentKey) }),
+    t('feedback.preview.likes', { count: 0 })
+  ] as const;
+}
+
+/** 仅对稳定官方示例 ID 替换文案；本地用户记录始终保留原作者和正文。 */
+export function localizeOfficialFeedbackEntry<T extends FeedbackRecord>(
+  entry: T,
+  t: Translate
+): T {
+  if (entry.source === 'local-user') return entry;
+  const messageKeys = OFFICIAL_MESSAGE_KEYS[entry.id as keyof typeof OFFICIAL_MESSAGE_KEYS];
+  if (!messageKeys) return entry;
+  const [authorKey, contentKey] = messageKeys;
+  return {
+    ...entry,
+    authorName: t(authorKey),
+    content: t(contentKey)
+  } as T;
+}
 
 function summarizeContent(content: string): string {
   if (content.length <= FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH) {
@@ -32,18 +65,24 @@ function summarizeContent(content: string): string {
   return `${content.slice(0, FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH - 1)}…`;
 }
 
-function formatPreviewLines(entry: FeedbackEntry): readonly string[] {
+function formatPreviewLines(entry: FeedbackEntry, t: Translate): readonly string[] {
+  const localizedEntry = localizeOfficialFeedbackEntry(entry, t);
   return [
-    `类型 ${entry.kind === 'feedback' ? '反馈' : '建议'}`,
-    `昵称 ${entry.authorName}`,
-    `正文 ${summarizeContent(entry.content)}`,
-    `点赞 ${entry.likeCount}`
+    t('feedback.preview.type', {
+      kind: t(localizedEntry.kind === 'feedback'
+        ? 'feedback.kind.feedback'
+        : 'feedback.kind.suggestion')
+    }),
+    t('feedback.preview.author', { author: localizedEntry.authorName }),
+    t('feedback.preview.content', { content: summarizeContent(localizedEntry.content) }),
+    t('feedback.preview.likes', { count: localizedEntry.likeCount })
   ];
 }
 
 function selectEntry(
   repository: FeedbackRepository,
-  random: () => number
+  random: () => number,
+  t: Translate
 ): readonly string[] {
   try {
     const entries = [
@@ -51,23 +90,24 @@ function selectEntry(
       ...repository.list('suggestion')
     ];
     if (entries.length === 0) {
-      return EMPTY_PREVIEW_LINES;
+      return createFallbackPreviewLines(t, 'feedback.preview.emptyContent');
     }
 
     const index = Math.min(
       entries.length - 1,
       Math.max(0, Math.floor(random() * entries.length))
     );
-    return formatPreviewLines(entries[index]!);
+    return formatPreviewLines(entries[index]!, t);
   } catch {
-    return UNAVAILABLE_PREVIEW_LINES;
+    return createFallbackPreviewLines(t, 'feedback.preview.unavailableContent');
   }
 }
 
 /** 将仓储条目固定为粒子生成时的快照，避免存活期间受列表变化影响。 */
 export function createFeedbackPreviewSource(
   repository: FeedbackRepository,
-  random: () => number
+  random: () => number,
+  t: Translate = defaultTranslate
 ): SpawnBoundFilePreviewContentSource {
   const bindings = new Map<string, readonly string[]>();
 
@@ -77,7 +117,7 @@ export function createFeedbackPreviewSource(
       return existing;
     }
 
-    const preview = selectEntry(repository, random);
+    const preview = selectEntry(repository, random, t);
     bindings.set(particleId, preview);
     return preview;
   };
@@ -93,16 +133,27 @@ export function createFeedbackPreviewSource(
 }
 
 /** 反馈章节通过独立配置传入共享视觉层，不让粒子组件感知章节语义。 */
+export interface LocalizedFeedbackVisualProfile extends SharedVisualLayerProfile {
+  setTranslate(t: Translate): void;
+}
+
 export function createFeedbackVisualProfile(
   repository: FeedbackRepository,
-  random: () => number
-): SharedVisualLayerProfile {
+  random: () => number,
+  initialTranslate: Translate = defaultTranslate
+): LocalizedFeedbackVisualProfile {
+  let translate = initialTranslate;
+  const previewSource = createFeedbackPreviewSource(repository, random, (key, values) => translate(key, values));
+
   return {
     id: 'feedback',
     fieldColor: [180, 180, 180],
     maxActive: 8,
     safeZoneRatio: 0.34,
     fieldEnabled: false,
-    previewSource: createFeedbackPreviewSource(repository, random)
+    previewSource,
+    setTranslate: (nextTranslate) => {
+      translate = nextTranslate;
+    }
   };
 }

@@ -2,6 +2,7 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '../components/i18n/I18nProvider';
 import { DownloadChapter } from '../components/website-experience/download/DownloadChapter';
 import { isLocalInputElement } from '../components/website-experience/use-website-controller';
 
@@ -38,6 +39,17 @@ describe('下载安装章节', () => {
     expect(screen.queryByRole('link', { name: /macOS/u })).toBeNull();
     expect((screen.getByRole('button', { name: '即将支持' }) as HTMLButtonElement)
       .disabled).toBe(true);
+  });
+
+  it('英文环境使用精简下载文案', () => {
+    render(
+      <I18nProvider initialLocale="en">
+        <DownloadChapter interactive staticFallback />
+      </I18nProvider>
+    );
+
+    expect(screen.getByRole('heading', { name: 'Choose Your Platform' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Download Windows' })).toBeTruthy();
   });
 
   it('桌面端 hover 和 focus 临时展开，点击不锁定', () => {

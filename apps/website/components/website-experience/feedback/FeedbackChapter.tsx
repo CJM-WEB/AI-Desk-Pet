@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from 'react';
@@ -17,6 +18,8 @@ import {
   wrapPaymentIndex
 } from '../donation/payment-model';
 import type { ChapterRuntimeProps } from '../types';
+import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
+import type { Translate } from '../../i18n/i18n-types';
 import { PointerTiltText } from '../visual/PointerTiltText';
 import { FeedbackListDialog } from './FeedbackListDialog';
 import {
@@ -63,12 +66,6 @@ type PointerDrag = {
   switched: boolean;
 };
 
-const FEEDBACK_TITLE = '倾听你的声音，打造属于你的 Pet';
-const FEEDBACK_ACTIONS: readonly FeedbackAction[] = [
-  { id: 'feedback', label: '用户反馈', kind: 'feedback' },
-  { id: 'suggestion', label: '更新建议', kind: 'suggestion' },
-  { id: 'create', label: '新建投稿' }
-];
 const DRAG_THRESHOLD_PX = 40;
 const EMPTY_DRAFT: FeedbackDraft = {
   kind: 'feedback',
@@ -76,24 +73,28 @@ const EMPTY_DRAFT: FeedbackDraft = {
   content: ''
 };
 
-function draftErrorMessage(code: string): string {
+function draftErrorMessage(code: string, t: ReturnType<typeof useI18n>['t']): string {
   switch (code) {
     case 'AUTHOR_NAME_TOO_LONG':
-      return '昵称不能超过 24 个字符。';
+      return t('feedback.error.authorTooLong');
     case 'CONTENT_TOO_SHORT':
-      return '正文至少需要 10 个字符。';
+      return t('feedback.error.contentTooShort');
     case 'CONTENT_TOO_LONG':
-      return '正文不能超过 1000 个字符。';
+      return t('feedback.error.contentTooLong');
     default:
-      return '投稿内容无效，请检查后重试。';
+      return t('feedback.error.invalid');
   }
 }
 
-function getCardStyle(index: number, activeIndex: number): FeedbackCardStyle {
+function getCardStyle(
+  index: number,
+  activeIndex: number,
+  actionCount: number
+): FeedbackCardStyle {
   const offset = paymentRelativeOffset(
     index,
     activeIndex,
-    FEEDBACK_ACTIONS.length
+    actionCount
   );
   const visual = paymentCardVisual(offset);
   return {
@@ -113,6 +114,15 @@ export function FeedbackChapter({
   repository: injectedRepository,
   onCreateRequested
 }: FeedbackChapterProps) {
+  const { locale, t: rawTranslate } = useI18n();
+  const t = useCallback<Translate>((key, values) => (
+    interpolateMessage(rawTranslate(key), values)
+  ), [rawTranslate]);
+  const feedbackActions = useMemo<readonly FeedbackAction[]>(() => [
+    { id: 'feedback', label: t('feedback.action.feedback'), kind: 'feedback' },
+    { id: 'suggestion', label: t('feedback.action.suggestion'), kind: 'suggestion' },
+    { id: 'create', label: t('feedback.action.create') }
+  ], [t]);
   const repositoryRef = useRef<FeedbackRepository | null>(null);
   if (repositoryRef.current === null) {
     repositoryRef.current = injectedRepository
@@ -158,13 +168,13 @@ export function FeedbackChapter({
       setComposerState({
         phase: 'editing',
         draft: composerState.draft,
-        error: draftErrorMessage(validation.code)
+        error: draftErrorMessage(validation.code, t)
       });
       return;
     }
     submittedDraftRef.current = null;
     setComposerState({ phase: 'submitting', draft: composerState.draft });
-  }, [composerState]);
+  }, [composerState, t]);
 
   useEffect(() => {
     if (!composerState || composerState.phase !== 'submitting') return;
@@ -176,7 +186,7 @@ export function FeedbackChapter({
       setComposerState({
         phase: 'editing',
         draft: composerState.draft,
-        error: draftErrorMessage(validation.code)
+        error: draftErrorMessage(validation.code, t)
       });
       return;
     }
@@ -189,11 +199,11 @@ export function FeedbackChapter({
         phase: 'editing',
         draft: composerState.draft,
         error: error instanceof FeedbackStorageError && error.code === 'STORAGE_UNAVAILABLE'
-          ? '浏览器本地存储不可用，投稿无法保存。'
-          : '投稿暂时无法保存，请稍后重试。'
+          ? t('feedback.error.storageUnavailable')
+          : t('feedback.error.saveFailed')
       });
     }
-  }, [composerState, repository]);
+  }, [composerState, repository, t]);
 
   const confirmDiscard = useCallback(() => {
     restoreCreateFocusRef.current = true;
@@ -242,9 +252,9 @@ export function FeedbackChapter({
   const selectRelativeAction = useCallback((delta: number) => {
     setActiveIndex((current) => wrapPaymentIndex(
       current + delta,
-      FEEDBACK_ACTIONS.length
+      feedbackActions.length
     ));
-  }, []);
+  }, [feedbackActions.length]);
 
   useEffect(() => {
     const roller = rollerRef.current;
@@ -342,7 +352,7 @@ export function FeedbackChapter({
           viewport={viewport}
           disabled={motionDisabled || viewport.width <= 760}
         >
-          {FEEDBACK_TITLE}
+          {t('feedback.title')}
         </PointerTiltText>
       </h2>
 
@@ -350,9 +360,9 @@ export function FeedbackChapter({
         ref={rollerRef}
         className={styles.feedbackRoller}
         data-input-scope="local"
-        data-active-action={FEEDBACK_ACTIONS[activeIndex]?.id}
+        data-active-action={feedbackActions[activeIndex]?.id}
         role="group"
-        aria-label="选择反馈操作"
+        aria-label={t('feedback.group')}
         tabIndex={interactive ? 0 : -1}
         onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
@@ -361,24 +371,26 @@ export function FeedbackChapter({
         onPointerCancel={finishPointerDrag}
       >
         <div className={styles.feedbackDeck}>
-          {FEEDBACK_ACTIONS.map((action, index) => {
+          {feedbackActions.map((action, index) => {
             const isActive = index === activeIndex;
             const activeLabel = action.id === 'create'
-              ? '新建投稿'
-              : `查看${action.label}`;
+              ? t('feedback.action.create')
+              : t('feedback.action.view', { label: action.label });
             return (
               <button
                 key={action.id}
                 ref={action.id === 'create' ? createTriggerRef : undefined}
                 className={styles.feedbackCard}
                 type="button"
-                aria-label={isActive ? activeLabel : `选择${action.label}`}
+                aria-label={isActive
+                  ? activeLabel
+                  : t('feedback.action.select', { label: action.label })}
                 aria-pressed={isActive}
                 data-action-id={action.id}
                 data-active={isActive}
                 disabled={!interactive}
                 tabIndex={interactive ? 0 : -1}
-                style={getCardStyle(index, activeIndex)}
+                style={getCardStyle(index, activeIndex, feedbackActions.length)}
                 onClick={() => {
                   if (!interactive) return;
                   if (suppressClickRef.current) {
@@ -407,7 +419,7 @@ export function FeedbackChapter({
               >
                 <span className={styles.feedbackActionName}>{action.label}</span>
                 {!action.kind ? (
-                  <span className={styles.feedbackActionMeta}>编辑器预留入口</span>
+                  <span className={styles.feedbackActionMeta}>{t('feedback.action.createMeta')}</span>
                 ) : null}
               </button>
             );
@@ -419,6 +431,8 @@ export function FeedbackChapter({
         <FeedbackListDialog
           kind={openKind}
           repository={repository}
+          t={t}
+          locale={locale}
           onClose={closeDialog}
         />
       ) : null}
@@ -428,6 +442,7 @@ export function FeedbackChapter({
           draft={composerState.draft}
           error={composerState.phase === 'editing' ? composerState.error : null}
           submitting={composerState.phase === 'submitting'}
+          t={t}
           onDraftChange={updateDraft}
           onSubmit={submitDraft}
           onRequestClose={requestComposerClose}
@@ -441,6 +456,7 @@ export function FeedbackChapter({
             draft: composerState.draft,
             error: null
           })}
+          t={t}
           onDiscard={confirmDiscard}
         />
       ) : null}

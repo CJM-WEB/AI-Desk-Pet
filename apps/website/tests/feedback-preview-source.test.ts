@@ -8,8 +8,12 @@ import { SharedVisualLayers } from '../components/website-experience/SharedVisua
 import {
   createFeedbackPreviewSource,
   createFeedbackVisualProfile,
-  FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH
+  FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH,
+  localizeOfficialFeedbackEntry
 } from '../components/website-experience/feedback/feedback-preview-source';
+import { en, zhCN } from '../components/i18n/messages';
+import { interpolateMessage } from '../components/i18n/I18nProvider';
+import { OFFICIAL_EXAMPLE_ENTRIES } from '../components/website-experience/feedback/feedback-content';
 import type {
   FeedbackEntry,
   FeedbackKind,
@@ -49,6 +53,36 @@ afterEach(() => {
 });
 
 describe('反馈文件预览内容源', () => {
+  it('英文环境翻译官方示例但保留本地投稿原文', () => {
+    const official = localizeOfficialFeedbackEntry(
+      OFFICIAL_EXAMPLE_ENTRIES[0]!,
+      (key) => en[key]
+    );
+    const local = localizeOfficialFeedbackEntry(createEntry({
+      authorName: '本地作者',
+      content: '这是用户原文'
+    }), (key) => en[key]);
+
+    expect(official.content).toBe('Please make the pet quieter in Focus mode.');
+    expect(local.authorName).toBe('本地作者');
+    expect(local.content).toBe('这是用户原文');
+  });
+
+  it('语言切换后只让新生成粒子使用当前语言快照', () => {
+    const profile = createFeedbackVisualProfile(createRepository({
+      feedback: [createEntry({ content: '本地原文' })]
+    }), () => 0, (key, values) => interpolateMessage(zhCN[key], values));
+    const source = profile.previewSource as ReturnType<typeof createFeedbackPreviewSource>;
+    const firstSnapshot = source.bindToSpawn('particle-zh');
+
+    profile.setTranslate((key, values) => interpolateMessage(en[key], values));
+    const secondSnapshot = source.bindToSpawn('particle-en');
+
+    expect(firstSnapshot[0]).toBe('类型 反馈');
+    expect(source.read('particle-zh')).toEqual(firstSnapshot);
+    expect(secondSnapshot[0]).toBe('Type feedback');
+  });
+
   it('为同一粒子绑定稳定快照，且不会受到仓储后续变化影响', () => {
     const feedback = createEntry({ authorName: '反馈用户', likeCount: 8 });
     const suggestion = createEntry({
