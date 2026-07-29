@@ -223,4 +223,24 @@ describe('本地反馈仓储', () => {
     expect(() => repository.toggleLike(example.id, 'unavailable-browser'))
       .toThrow(FeedbackStorageError);
   });
+
+  it('浏览器本地存储可用时，显式 null 仍禁用反馈存储', () => {
+    const browserStorage = new MemoryStorage();
+    vi.stubGlobal('window', { localStorage: browserStorage });
+    try {
+      const repository = new LocalStorageFeedbackRepository({
+        storage: null,
+        createId: () => 'explicitly-unavailable-browser'
+      });
+      const example = repository.list('feedback')[0]!;
+
+      expect(browserStorage.getItem(feedbackStorageKey)).toBeNull();
+      expect(() => repository.create(validInput)).toThrow(FeedbackStorageError);
+      expect(() => repository.toggleLike(example.id, 'explicitly-unavailable-browser'))
+        .toThrow(FeedbackStorageError);
+      expect(browserStorage.getItem(feedbackStorageKey)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

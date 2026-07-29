@@ -79,7 +79,8 @@ export class LocalStorageFeedbackRepository implements FeedbackRepository {
   private statusNotice: FeedbackStatusNotice | null = null;
 
   constructor(options: LocalStorageFeedbackRepositoryOptions = {}) {
-    this.storage = options.storage ?? this.resolveStorage();
+    // 仅省略 storage 时自动解析浏览器实现；显式 null 表示禁用本地存储。
+    this.storage = options.storage === undefined ? this.resolveStorage() : options.storage;
     this.eventTarget = options.eventTarget ?? this.resolveEventTarget();
     this.key = options.key ?? feedbackStorageKey;
     this.createId = options.createId ?? (() => crypto.randomUUID());
