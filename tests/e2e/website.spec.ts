@@ -2632,6 +2632,36 @@ test('PageDown 以缩放和透明度推进非纵向滚动章节并在终点卸�
   expect(runtimeErrors).toEqual([]);
 });
 
+test('下载与反馈章节的外围文件图标可悬浮预览且主要控件保持可操作', async ({
+  page
+}) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+
+  await enterChapter(page, 'download');
+  const downloadIcon = page.locator(ICON).first();
+  await expect(downloadIcon).toBeVisible();
+  await downloadIcon.hover();
+  await expect(page.locator(PREVIEW)).toBeVisible();
+  await expect(page.getByRole('group', { name: '选择下载平台' })).toBeVisible();
+
+  await page.keyboard.press('PageDown');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'feedback'
+  );
+  const feedbackIcon = page.locator(ICON).first();
+  await expect(feedbackIcon).toBeVisible();
+  await feedbackIcon.hover();
+  const feedbackPreview = page.locator(PREVIEW);
+  await expect(feedbackPreview).toBeVisible();
+  await expect(feedbackPreview).toContainText(/类型 (反馈|建议)/u);
+  await expect(page.getByRole('group', { name: '选择反馈操作' })).toBeVisible();
+
+  expect(runtimeErrors).toEqual([]);
+});
+
 test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 568, height: 320 });
