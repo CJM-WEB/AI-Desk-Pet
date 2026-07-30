@@ -12,6 +12,7 @@ import type {
   SaveProviderProfileInput,
   SettingsDashboardDto
 } from '../../shared/myself-api';
+import { desktopRuntimeCapabilities } from '../../shared/desktop-runtime-capabilities';
 import type { PrivacySessionRegistry } from '../agent/disclosure-policy';
 import type { ToolRegistration } from '../agent/tool-registry';
 import type { McpServerSnapshot } from '../mcp/mcp-manager';
@@ -169,6 +170,13 @@ function parseMcpSecrets(raw: string): {
   }
 }
 
+/** 集中约束已关闭的 MCP 运行时入口。 */
+function assertMcpEnabled(): void {
+  if (!desktopRuntimeCapabilities.mcp) {
+    throw new Error('MCP_MODULE_DISABLED');
+  }
+}
+
 export class DesktopSettingsService {
   private readonly statuses = new Map<string, McpServerDto['status']>();
   private readonly discoveredTools = new Map<string, DiscoveredTool[]>();
@@ -176,6 +184,7 @@ export class DesktopSettingsService {
   constructor(private readonly options: DesktopSettingsServiceOptions) {}
 
   async initialize(): Promise<void> {
+    if (!desktopRuntimeCapabilities.mcp) return;
     for (const stored of await this.options.settings.getMcpServerSettings()) {
       const secrets: ReturnType<typeof parseMcpSecrets> = await this.options.secrets
         .readForProviderCall(`mcp:${stored.id}`)
@@ -238,13 +247,15 @@ export class DesktopSettingsService {
       catalog: structuredClone(providerCatalog),
       profiles: providerSettings.profiles,
       route: providerSettings.route,
-      mcpServers: this.options.mcpStore.list().map(config => (
-        publicMcpServer(
-          config,
-          this.statuses.get(config.id) ?? 'disconnected',
-          this.discoveredTools.get(config.id) ?? []
-        )
-      )),
+      mcpServers: desktopRuntimeCapabilities.mcp
+        ? this.options.mcpStore.list().map(config => (
+          publicMcpServer(
+            config,
+            this.statuses.get(config.id) ?? 'disconnected',
+            this.discoveredTools.get(config.id) ?? []
+          )
+        ))
+        : [],
       privacy,
       privacyRuntimeSupport: {
         dataCategories: {
@@ -371,6 +382,7 @@ export class DesktopSettingsService {
       summary: ReturnType<McpServerStore['getStdioLaunchSummary']>;
     }
   > {
+    assertMcpEnabled();
     const previousConfig = this.options.mcpStore.get(input.id);
     const previousStatus = this.statuses.get(input.id);
     const previousTools = structuredClone(this.discoveredTools.get(input.id));
@@ -444,11 +456,13 @@ export class DesktopSettingsService {
     serverId: string,
     fingerprint: string
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     this.options.mcpStore.confirmStdioLaunch(serverId, fingerprint);
     return this.getDashboard();
   }
 
   async testMcpServer(serverId: string): Promise<{ ok: boolean; message: string }> {
+    assertMcpEnabled();
     const previousConfig = this.options.mcpStore.get(serverId);
     const previousTools = structuredClone(this.discoveredTools.get(serverId));
     let connected = false;
@@ -507,6 +521,7 @@ export class DesktopSettingsService {
     serverId: string,
     enabled: boolean
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const previousConfig = this.options.mcpStore.get(serverId);
     const previousStatus = this.statuses.get(serverId);
     if (!enabled) {
@@ -532,6 +547,7 @@ export class DesktopSettingsService {
     toolName: string,
     enabled: boolean
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const tool = this.discoveredTools.get(serverId)?.find(item => item.name === toolName);
     if (!tool?.readOnly && enabled) throw new Error('MCP_WRITE_TOOL_DISABLED');
     const previousConfig = this.options.mcpStore.get(serverId);
@@ -551,6 +567,7 @@ export class DesktopSettingsService {
     serverId: string,
     toolName: string
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const tool = this.discoveredTools.get(serverId)?.find(item => item.name === toolName);
     if (!tool || !tool.definitionFingerprint) throw new Error('MCP_TOOL_NOT_DISCOVERED');
     const previousConfig = this.options.mcpStore.get(serverId);
@@ -581,6 +598,7 @@ export class DesktopSettingsService {
     serverId: string,
     toolName: string
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const tool = this.discoveredTools.get(serverId)?.find(item => item.name === toolName);
     const previousConfig = this.options.mcpStore.get(serverId);
     if (!tool || !previousConfig?.capabilities.tools[toolName]) {
@@ -604,6 +622,7 @@ export class DesktopSettingsService {
   }
 
   async deleteMcpServer(serverId: string): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const config = this.options.mcpStore.get(serverId);
     const secretId = `mcp:${serverId}`;
     const secretSnapshot = await this.options.secrets.snapshot(secretId);
@@ -660,6 +679,7 @@ export class DesktopSettingsService {
   async enabledReadToolRegistrations(): Promise<
     ToolRegistration[]
   > {
+    if (!desktopRuntimeCapabilities.mcp) return [];
     const registrations: ToolRegistration[] = [];
     for (const server of this.options.mcpStore.list().filter(config => config.enabled)) {
       try {
@@ -678,11 +698,12 @@ export class DesktopSettingsService {
     return registrations;
   }
 
-  executeMcpRead(
+  async executeMcpRead(
     executionToolName: string,
     arguments_: Record<string, unknown>,
     signal?: AbortSignal
   ): Promise<unknown> {
+    assertMcpEnabled();
     return this.options.mcpManager.executeTool(
       executionToolName,
       arguments_,

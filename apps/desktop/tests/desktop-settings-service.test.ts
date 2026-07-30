@@ -3,11 +3,13 @@ import { providerCatalog } from '@myself/shared-types';
 import { describe, expect, test, vi } from 'vitest';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import { McpServerStore } from '../src/main/mcp/mcp-server-store';
+import type { McpServerSettings } from '../src/main/storage/settings-store';
 import {
   createTrustedMcpRiskResolver,
   DesktopSettingsService
 } from '../src/main/settings/desktop-settings-service';
 import { mcpToolDefinitionFingerprint } from '../src/main/mcp/mcp-tool-adapter';
+import { desktopRuntimeCapabilities } from '../src/shared/desktop-runtime-capabilities';
 
 function providerSnapshot() {
   return {
@@ -56,7 +58,7 @@ function createFixture() {
     })),
     revokeAuthorizedRoot: vi.fn(async () => undefined)
     ,
-    getMcpServerSettings: vi.fn(async () => []),
+    getMcpServerSettings: vi.fn(async (): Promise<McpServerSettings[]> => []),
     saveMcpServerSettings: vi.fn(async () => undefined),
     deleteMcpServerSettings: vi.fn(async () => undefined)
   };
@@ -77,6 +79,15 @@ function createFixture() {
     ) => provider)
   };
   const mcpStore = new McpServerStore();
+  const mcpStoreMethods = {
+    get: vi.spyOn(mcpStore, 'get'),
+    list: vi.spyOn(mcpStore, 'list'),
+    upsert: vi.spyOn(mcpStore, 'upsert'),
+    remove: vi.spyOn(mcpStore, 'remove'),
+    confirmStdioLaunch: vi.spyOn(mcpStore, 'confirmStdioLaunch'),
+    setServerEnabled: vi.spyOn(mcpStore, 'setServerEnabled'),
+    setToolEnabled: vi.spyOn(mcpStore, 'setToolEnabled')
+  };
   const mcpManager = {
     connect: vi.fn(async (serverId: string) => ({
       serverId,
@@ -118,6 +129,7 @@ function createFixture() {
     secrets,
     providers,
     mcpStore,
+    mcpStoreMethods,
     mcpManager,
     privacySessions
   };
@@ -294,6 +306,10 @@ describe('DesktopSettingsService', () => {
     await expect(readSecret?.()).resolves.toBe('sk-private-service-value');
     expect(fixture.secrets.readForProviderCall).toHaveBeenCalledWith('openai-main');
   });
+
+  describe.skipIf(!desktopRuntimeCapabilities.mcp)(
+    'MCP 运行时能力关闭前的历史服务行为',
+    () => {
 
   test('stdio 保存只返回实际启动摘要，确认前不连接', async () => {
     const fixture = createFixture();
@@ -647,6 +663,8 @@ describe('DesktopSettingsService', () => {
     expect(fixture.mcpManager.disconnect).toHaveBeenCalledWith('remote');
     expect((await fixture.service.getDashboard()).mcpServers[0]?.tools).toEqual([]);
   });
+    }
+  );
 
   test('无痕切换是 Main 会话动作而非持久设置', async () => {
     const fixture = createFixture();
@@ -657,6 +675,10 @@ describe('DesktopSettingsService', () => {
     expect(fixture.privacySessions.isLongTermMemoryAllowed('desktop-session')).toBe(false);
     expect(fixture.settings.savePrivacySettings).not.toHaveBeenCalled();
   });
+
+  describe.skipIf(!desktopRuntimeCapabilities.mcp)(
+    'MCP 运行时能力关闭前的 Dashboard 行为',
+    () => {
 
   test('Dashboard 使用内置目录并只公开 MCP 认证字段名', async () => {
     const fixture = createFixture();
@@ -683,5 +705,115 @@ describe('DesktopSettingsService', () => {
       })
     ]);
     expect(JSON.stringify(dashboard)).not.toContain('Bearer private-header');
+  });
+    }
+  );
+});
+
+describe('MCP 运行时能力边界', () => {
+  test('MCP 禁用时初始化、Dashboard 和工具注册不恢复数据', async () => {
+    const fixture = createFixture();
+    fixture.settings.getMcpServerSettings.mockResolvedValueOnce([{
+      id: 'server-1',
+      enabled: true,
+      transport: {
+        type: 'http',
+        url: 'https://mcp.example.com',
+        secretNames: ['Authorization']
+      },
+      tools: {
+        'read-note': {
+          enabled: true,
+          readOnly: true,
+          description: '读取笔记',
+          definitionFingerprint: 'fingerprint'
+        }
+      }
+    }]);
+
+    await fixture.service.initialize();
+
+    expect(fixture.settings.getMcpServerSettings).not.toHaveBeenCalled();
+    expect(fixture.secrets.readForProviderCall).not.toHaveBeenCalled();
+    expect(fixture.mcpStore.list()).toEqual([]);
+    expect((await fixture.service.getDashboard()).mcpServers).toEqual([]);
+    expect(await fixture.service.enabledReadToolRegistrations()).toEqual([]);
+    expect(fixture.mcpManager.connect).not.toHaveBeenCalled();
+    expect(fixture.settings.saveMcpServerSettings).not.toHaveBeenCalled();
+    expect(fixture.settings.deleteMcpServerSettings).not.toHaveBeenCalled();
+    expect(fixture.secrets.save).not.toHaveBeenCalled();
+    expect(fixture.secrets.clear).not.toHaveBeenCalled();
+
+    const populatedFixture = createFixture();
+    populatedFixture.mcpStore.upsert({
+      id: 'server-1',
+      enabled: true,
+      transport: { type: 'http', url: 'https://mcp.example.com' },
+      capabilities: {
+        tools: {},
+        resources: { enabled: false },
+        prompts: { enabled: false }
+      }
+    });
+    populatedFixture.mcpStoreMethods.list.mockClear();
+
+    expect((await populatedFixture.service.getDashboard()).mcpServers).toEqual([]);
+    expect(await populatedFixture.service.enabledReadToolRegistrations()).toEqual([]);
+    expect(populatedFixture.mcpStoreMethods.list).not.toHaveBeenCalled();
+    expect(populatedFixture.mcpManager.connect).not.toHaveBeenCalled();
+  });
+
+  test('MCP 禁用时所有操作统一拒绝且不产生副作用', async () => {
+    const fixture = createFixture();
+    const input = {
+      id: 'server-1',
+      enabled: true,
+      transport: {
+        type: 'http' as const,
+        url: 'https://mcp.example.com',
+        headers: { Authorization: 'private-token' }
+      }
+    };
+    const operations = [
+      () => fixture.service.upsertMcpServer(input),
+      () => fixture.service.confirmMcpLaunch('server-1', 'fingerprint'),
+      () => fixture.service.testMcpServer('server-1'),
+      () => fixture.service.setMcpServerEnabled('server-1', true),
+      () => fixture.service.setMcpToolEnabled('server-1', 'read-note', true),
+      () => fixture.service.authorizeMcpToolReadOnly('server-1', 'read-note'),
+      () => fixture.service.revokeMcpToolReadOnly('server-1', 'read-note'),
+      () => fixture.service.deleteMcpServer('server-1'),
+      () => fixture.service.executeMcpRead('mcp.server-1.read-note', {})
+    ];
+
+    for (const operation of operations) {
+      await expect(operation()).rejects.toThrow('MCP_MODULE_DISABLED');
+    }
+
+    expect(fixture.settings.getMcpServerSettings).not.toHaveBeenCalled();
+    expect(fixture.settings.saveMcpServerSettings).not.toHaveBeenCalled();
+    expect(fixture.settings.deleteMcpServerSettings).not.toHaveBeenCalled();
+    expect(fixture.secrets.readForProviderCall).not.toHaveBeenCalled();
+    expect(fixture.secrets.snapshot).not.toHaveBeenCalled();
+    expect(fixture.secrets.save).not.toHaveBeenCalled();
+    expect(fixture.secrets.clear).not.toHaveBeenCalled();
+    expect(fixture.secrets.restore).not.toHaveBeenCalled();
+    expect(fixture.mcpStoreMethods.get).not.toHaveBeenCalled();
+    expect(fixture.mcpStoreMethods.list).not.toHaveBeenCalled();
+    expect(fixture.mcpStoreMethods.upsert).not.toHaveBeenCalled();
+    expect(fixture.mcpStoreMethods.remove).not.toHaveBeenCalled();
+    expect(fixture.mcpStoreMethods.confirmStdioLaunch).not.toHaveBeenCalled();
+    expect(fixture.mcpStoreMethods.setServerEnabled).not.toHaveBeenCalled();
+    expect(fixture.mcpStoreMethods.setToolEnabled).not.toHaveBeenCalled();
+    expect(fixture.mcpManager.connect).not.toHaveBeenCalled();
+    expect(fixture.mcpManager.disconnect).not.toHaveBeenCalled();
+    expect(fixture.mcpManager.executeTool).not.toHaveBeenCalled();
+
+    await fixture.service.setIncognitoSession(true);
+    expect(fixture.privacySessions.isRegistered('desktop-session')).toBe(true);
+
+    await fixture.service.close();
+    expect(fixture.mcpManager.close).toHaveBeenCalledOnce();
+    expect(fixture.privacySessions.isRegistered('desktop-session')).toBe(false);
   });
 });
