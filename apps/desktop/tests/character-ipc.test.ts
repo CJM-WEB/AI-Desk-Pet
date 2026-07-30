@@ -2,6 +2,7 @@ import type { IpcMain } from 'electron';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import * as ipcRegistration from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
+import type { CharacterWorkshopSourceDto } from '../src/shared/character-ipc';
 import type { MyselfApi } from '../src/shared/myself-api';
 
 type Handler = (event: unknown, input?: unknown) => unknown;
@@ -12,7 +13,7 @@ type CharacterRegistration = (
   recoveryErrorCode?: () => string | null
 ) => void;
 
-const invoke = vi.fn(async () => undefined);
+const invoke = vi.fn(async (): Promise<unknown> => undefined);
 const on = vi.fn();
 const removeListener = vi.fn();
 let exposedApi: MyselfApi | undefined;
@@ -60,6 +61,9 @@ function characterServiceDouble() {
     })),
     saveCharacterDraft: vi.fn(async () => undefined),
     chooseCharacterSources: vi.fn(async () => []),
+    listCharacterSources: vi.fn(
+      async (): Promise<CharacterWorkshopSourceDto[]> => []
+    ),
     readCharacterSource: vi.fn(async () => new Uint8Array([1, 2, 3])),
     publishCharacter: vi.fn(async () => undefined),
     activateCharacter: vi.fn(async () => undefined),
@@ -114,6 +118,35 @@ beforeEach(() => {
 });
 
 describe('角色白名单 IPC', () => {
+  test('素材目录查询只接受角色标识并通过固定通道返回公开元数据', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = characterServiceDouble();
+    const sources = [{
+      assetId: '00000000-0000-4000-8000-000000000001',
+      displayName: 'idle.png',
+      mimeType: 'image/png' as const
+    }];
+    service.listCharacterSources.mockResolvedValue(sources);
+    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+
+    await expect(handlers.get(channel('characterSourcesList'))?.({}, {
+      characterId: 'demo'
+    })).resolves.toEqual({ sources });
+    await expect(handlers.get(channel('characterSourcesList'))?.({}, {
+      characterId: '../outside'
+    })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
+
+    const api = exposedApi as MyselfApi;
+    expect(api.listCharacterSources, 'preload 应暴露素材目录查询').toBeTypeOf('function');
+    if (!api.listCharacterSources) return;
+    invoke.mockResolvedValueOnce({ sources });
+    await api.listCharacterSources('demo');
+    expect(invoke).toHaveBeenCalledWith(
+      ipcChannels.characterSourcesList,
+      { characterId: 'demo' }
+    );
+  });
+
   test('不完整确认只通过固定布尔字段贯穿 preload 与 Main', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
@@ -372,6 +405,37 @@ describe('角色事件 preload 边界', () => {
 });
 
 describe('CharacterActions 应用服务', () => {
+  test('列出角色素材直接复用素材服务且不改变角色索引', async () => {
+    const sources = [{
+      assetId: '00000000-0000-4000-8000-000000000001',
+      displayName: 'idle.png',
+      mimeType: 'image/png' as const
+    }];
+    const storedSources = [{
+      ...sources[0]!,
+      byteLength: 4,
+      sha256: '0'.repeat(64)
+    }];
+    const assets = {
+      listSources: vi.fn(async () => storedSources)
+    };
+    const store = {
+      list: vi.fn(async () => [])
+    };
+    const { CharacterActions } = await import(
+      '../src/main/characters/character-actions'
+    );
+    const actions = new CharacterActions({
+      store: store as never,
+      assets: assets as never,
+      packages: {} as never
+    });
+
+    await expect(actions.listCharacterSources('demo')).resolves.toEqual(sources);
+    expect(assets.listSources).toHaveBeenCalledWith('demo');
+    expect(store.list).not.toHaveBeenCalled();
+  });
+
   test('只编排现有服务，并按 manifest 资源标识发布编译产物', async () => {
     const module = await import(
       '../src/main/characters/character-actions'

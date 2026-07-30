@@ -61,6 +61,11 @@ export const characterSourceSchema = z.object({
   byteLength: z.number().int().safe().nonnegative(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/u)
 }).strict();
+export const characterWorkshopSourceSchema = characterSourceSchema.pick({
+  assetId: true,
+  displayName: true,
+  mimeType: true
+});
 export const characterRuntimeSnapshotSchema = z.object({
   activeCharacterId: characterIdSchema,
   manifest: characterManifestV1Schema
@@ -91,6 +96,9 @@ export const characterSourceChoiceResultSchema = z.discriminatedUnion('kind', [
     sources: z.array(characterSourceSchema)
   }).strict()
 ]);
+export const characterSourcesResultSchema = z.object({
+  sources: z.array(characterWorkshopSourceSchema)
+}).strict();
 export const characterImportResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cancelled') }).strict(),
   z.object({
@@ -127,6 +135,9 @@ export type CharacterCreateInput = z.output<typeof characterCreateInputSchema>;
 export type CharacterPublishInput = z.output<typeof characterPublishInputSchema>;
 export type CharacterSummaryDto = z.output<typeof characterSummarySchema>;
 export type CharacterSourceDto = z.output<typeof characterSourceSchema>;
+export type CharacterWorkshopSourceDto = z.output<
+  typeof characterWorkshopSourceSchema
+>;
 export type CharacterRuntimeSnapshot = z.output<typeof characterRuntimeSnapshotSchema>;
 export type CharacterSourceChoiceResult = z.output<typeof characterSourceChoiceResultSchema>;
 export type CharacterImportResult = z.output<typeof characterImportResultSchema>;

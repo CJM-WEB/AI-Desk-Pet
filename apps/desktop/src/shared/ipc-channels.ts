@@ -33,6 +33,7 @@ export const ipcChannels = {
   characterDraftGet: 'character:draft-get',
   characterDraftSave: 'character:draft-save',
   characterSourcesChoose: 'character:sources-choose',
+  characterSourcesList: 'character:sources-list',
   characterSourceRead: 'character:source-read',
   characterPublish: 'character:publish',
   characterActivate: 'character:activate',

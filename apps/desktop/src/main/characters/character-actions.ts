@@ -9,7 +9,8 @@ import type {
 import type {
   CharacterEvent,
   CharacterPublishInput,
-  CharacterRuntimeSnapshot
+  CharacterRuntimeSnapshot,
+  CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
 import type {
   CharacterAssetService,
@@ -32,7 +33,7 @@ type CharacterStorePort = Pick<
 >;
 type CharacterAssetPort = Pick<
   CharacterAssetService,
-  'importSources' | 'readSource'
+  'importSources' | 'listSources' | 'readSource'
 >;
 type CharacterPackagePort = Pick<
   CharacterPackageService,
@@ -108,6 +109,14 @@ export class CharacterActions {
     selectedPaths: readonly string[]
   ): Promise<ImportedSource[]> {
     return this.dependencies.assets.importSources(characterId, selectedPaths);
+  }
+
+  async listCharacterSources(
+    characterId: string
+  ): Promise<CharacterWorkshopSourceDto[]> {
+    return (await this.dependencies.assets.listSources(characterId)).map(
+      ({ assetId, displayName, mimeType }) => ({ assetId, displayName, mimeType })
+    );
   }
 
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array> {

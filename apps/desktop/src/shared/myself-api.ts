@@ -15,7 +15,8 @@ import type {
   CharacterPublishInput,
   CharacterRuntimeSnapshot,
   CharacterSourceChoiceResult,
-  CharacterSummaryDto
+  CharacterSummaryDto,
+  CharacterWorkshopSourceDto
 } from './character-ipc';
 import type {
   CharacterMotionEvent,
@@ -166,6 +167,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   getCharacterDraft(characterId: string): Promise<CharacterDraftV1>;
   saveCharacterDraft(characterId: string, draft: CharacterDraftV1): Promise<void>;
   chooseCharacterSources(characterId: string): Promise<CharacterSourceChoiceResult>;
+  listCharacterSources(characterId: string): Promise<CharacterWorkshopSourceDto[]>;
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
   activateCharacter(

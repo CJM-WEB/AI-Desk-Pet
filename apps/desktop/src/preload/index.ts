@@ -9,7 +9,8 @@ import type {
   CharacterPublishInput,
   CharacterRuntimeSnapshot,
   CharacterSourceChoiceResult,
-  CharacterSummaryDto
+  CharacterSummaryDto,
+  CharacterWorkshopSourceDto
 } from '../shared/character-ipc';
 import { characterRecoverySnapshotResultSchema } from '../shared/character-ipc';
 import {
@@ -124,6 +125,15 @@ const api: MyselfApi = {
   chooseCharacterSources: (characterId): Promise<CharacterSourceChoiceResult> => (
     ipcRenderer.invoke(ipcChannels.characterSourcesChoose, { characterId })
   ),
+  listCharacterSources: async (
+    characterId
+  ): Promise<CharacterWorkshopSourceDto[]> => {
+    const result = await ipcRenderer.invoke(
+      ipcChannels.characterSourcesList,
+      { characterId }
+    );
+    return result.sources;
+  },
   readCharacterSource: async (characterId, assetId) => {
     const result = await ipcRenderer.invoke(ipcChannels.characterSourceRead, {
       characterId,

@@ -26,9 +26,11 @@ import {
   characterSourceChoiceResultSchema,
   characterSourceReadInputSchema,
   characterSourceSchema,
+  characterSourcesResultSchema,
   type CharacterPublishInput,
   type CharacterRuntimeSnapshot,
-  type CharacterSummaryDto
+  type CharacterSummaryDto,
+  type CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
 import type { CharacterDraftV1 } from '@myself/character-runtime';
 import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
@@ -355,6 +357,7 @@ export interface CharacterIpcService {
     characterId: string,
     selectedPaths: readonly string[]
   ): Promise<unknown[]>;
+  listCharacterSources(characterId: string): Promise<CharacterWorkshopSourceDto[]>;
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
   activateCharacter(characterId: string, confirmIncomplete?: boolean): Promise<void>;
@@ -476,6 +479,12 @@ export function registerCharacterIpc(
         sources: z.array(characterSourceSchema).parse(sources)
       };
     });
+  });
+  replaceHandler(ipcMain, ipcChannels.characterSourcesList, async (_event, raw) => {
+    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    return characterOperation(characterSourcesResultSchema, async () => ({
+      sources: await service.listCharacterSources(characterId)
+    }));
   });
   replaceHandler(ipcMain, ipcChannels.characterSourceRead, async (_event, raw) => {
     const { characterId, assetId } = parseCharacterInput(
