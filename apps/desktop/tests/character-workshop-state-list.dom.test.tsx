@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { CharacterDraftV1 } from '@myself/character-runtime';
 import {
   CharacterWorkshopWorkspace
@@ -15,7 +15,27 @@ vi.mock(
   () => ({ DraftCharacterPreview: () => <div aria-label="预览占位" /> })
 );
 
-afterEach(cleanup);
+const showModal = vi.fn(function (this: HTMLDialogElement): void {
+  this.open = true;
+});
+const closeDialog = vi.fn(function (this: HTMLDialogElement): void {
+  this.open = false;
+});
+
+beforeEach(() => {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value: showModal },
+    close: { configurable: true, value: closeDialog }
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  showModal.mockClear();
+  closeDialog.mockClear();
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'close');
+});
 
 const configuredDraft: CharacterDraftV1 = {
   version: 1,
@@ -114,6 +134,22 @@ function renderWorkspace(state: CharacterWorkshopState): void {
 }
 
 describe('状态与动作行级删除', () => {
+  test('非空配置以模态打开且 Escape 关闭时不删除', () => {
+    const state = stateDouble();
+    renderWorkspace(state);
+
+    fireEvent.click(screen.getByRole('button', {
+      name: '删除动作“轻呼吸”'
+    }));
+    const dialog = screen.getByRole('dialog');
+    expect(showModal).toHaveBeenCalledOnce();
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(closeDialog).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(state.removeAction).not.toHaveBeenCalled();
+  });
+
   test('空动作直接删除而有帧动作必须确认', () => {
     const state = stateDouble();
     renderWorkspace(state);

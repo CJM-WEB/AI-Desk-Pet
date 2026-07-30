@@ -163,6 +163,7 @@ export function CharacterWorkshopWorkspace(
   const sceneFrameIndexRef = useRef<number | null>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const createDialogRef = useRef<HTMLDialogElement>(null);
+  const configurationDeleteDialogRef = useRef<HTMLDialogElement>(null);
   const pendingDelete = props.pendingDeleteCharacterId === undefined
     ? internalPendingDelete
     : props.pendingDeleteCharacterId;
@@ -266,6 +267,15 @@ export function CharacterWorkshopWorkspace(
     }
   }, [createOpen]);
 
+  useEffect(() => {
+    const dialog = configurationDeleteDialogRef.current;
+    if (!pendingConfigurationDelete || !dialog || dialog.open) return;
+    dialog.showModal();
+    return () => {
+      if (dialog.open) dialog.close();
+    };
+  }, [pendingConfigurationDelete]);
+
   function closeDeleteDialog(): void {
     deleteDialogRef.current?.close();
     setInternalPendingDelete(null);
@@ -321,6 +331,13 @@ export function CharacterWorkshopWorkspace(
     setPendingConfigurationDelete({ kind: 'state', state: stateDefinition });
   }
 
+  function closeConfigurationDeleteDialog(): void {
+    if (configurationDeleteDialogRef.current?.open) {
+      configurationDeleteDialogRef.current.close();
+    }
+    setPendingConfigurationDelete(null);
+  }
+
   function confirmConfigurationDelete(): void {
     if (!pendingConfigurationDelete) return;
     if (pendingConfigurationDelete.kind === 'action') {
@@ -331,7 +348,7 @@ export function CharacterWorkshopWorkspace(
     } else {
       state.removeExtensionState(pendingConfigurationDelete.state.id);
     }
-    setPendingConfigurationDelete(null);
+    closeConfigurationDeleteDialog();
   }
 
   return (
@@ -666,16 +683,16 @@ export function CharacterWorkshopWorkspace(
 
       {pendingConfigurationDelete ? (
         <dialog
-          open
+          ref={configurationDeleteDialogRef}
           aria-modal="true"
           aria-labelledby="delete-configuration-title"
           onCancel={event => {
             event.preventDefault();
-            setPendingConfigurationDelete(null);
+            closeConfigurationDeleteDialog();
           }}
           onKeyDown={event => cancelOnEscape(
             event,
-            () => setPendingConfigurationDelete(null)
+            closeConfigurationDeleteDialog
           )}
         >
           <div className="workshop-dialog">
@@ -693,7 +710,7 @@ export function CharacterWorkshopWorkspace(
               <button
                 type="button"
                 autoFocus
-                onClick={() => setPendingConfigurationDelete(null)}
+                onClick={closeConfigurationDeleteDialog}
               >
                 取消
               </button>
