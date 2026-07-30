@@ -1,9 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import type cloudbase from '@cloudbase/node-sdk';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import { CloudBasePostgresStore } from '../src/adapters/cloudbase-postgres.js';
+import {
+  CloudBasePostgresRpcClient,
+  CloudBasePostgresStore
+} from '../src/adapters/cloudbase-postgres.js';
+import type {
+  CloudBaseRdbClient
+} from '../src/adapters/cloudbase-postgres.js';
 
 const migrationPath = fileURLToPath(
   new URL('../migrations/001_moderation.sql', import.meta.url)
@@ -142,8 +149,10 @@ class MemoryRdb {
   readonly submissions: MemorySubmission[] = [];
   readonly moderationResults: Array<Record<string, unknown>> = [];
   readonly audits = new Map<string, MemoryAudit>();
+  readonly fromCalls: string[] = [];
 
   from(table: string): MemoryQuery {
+    this.fromCalls.push(table);
     return new MemoryQuery(this, table);
   }
 
@@ -417,9 +426,83 @@ function createStore(database = new MemoryRdb()): {
 } {
   return {
     database,
-    store: new CloudBasePostgresStore({ rdb: () => database })
+    store: new CloudBasePostgresStore(database, database)
   };
 }
+
+describe('CloudBase PostgreSQL RPC 客户端', () => {
+  it('真实 Node SDK 的 rdb 返回值可作为仅表查询客户端', () => {
+    type InstalledApp = ReturnType<typeof cloudbase.init>;
+    type InstalledTableClient = ReturnType<InstalledApp['rdb']>;
+
+    expectTypeOf<InstalledTableClient>().toMatchTypeOf<CloudBaseRdbClient>();
+    expectTypeOf<CloudBaseRdbClient>().not.toHaveProperty('rpc');
+  });
+
+  it('使用 service_role API Key 调用指定环境的 RPC 端点', async () => {
+    const fetcher = vi.fn(async () => new Response(
+      JSON.stringify([{ id: 'submission-1' }]),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      }
+    ));
+    const client = new CloudBasePostgresRpcClient(
+      'env-test',
+      'service-role-key',
+      fetcher
+    );
+
+    await expect(client.rpc('claim_moderation_jobs', {
+      p_limit: 1,
+      p_lease_until: '2026-07-31T01:00:00.000Z'
+    })).resolves.toEqual({
+      data: [{ id: 'submission-1' }],
+      error: null
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://env-test.api.tcloudbasegateway.com/v1/rdb/rest/rpc/claim_moderation_jobs',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer service-role-key',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          p_limit: 1,
+          p_lease_until: '2026-07-31T01:00:00.000Z'
+        })
+      }
+    );
+  });
+
+  it('归一化 PostgREST RPC 错误而不抛出响应正文', async () => {
+    const fetcher = vi.fn(async () => new Response(
+      JSON.stringify({
+        code: '40001',
+        message: 'submission version conflict'
+      }),
+      {
+        status: 409,
+        headers: { 'content-type': 'application/json' }
+      }
+    ));
+    const client = new CloudBasePostgresRpcClient(
+      'env-test',
+      'service-role-key',
+      fetcher
+    );
+
+    await expect(client.rpc('apply_admin_action', {})).resolves.toEqual({
+      data: null,
+      error: {
+        code: '40001',
+        message: 'submission version conflict'
+      }
+    });
+  });
+});
 
 describe('CloudBase PostgreSQL 仓储', () => {
   it('创建投稿后只能用令牌哈希查询裁剪状态', async () => {
@@ -467,6 +550,46 @@ describe('CloudBase PostgreSQL 仓储', () => {
     ]);
     expect(database.submissions.find((row) => row.id === 'expired'))
       .toMatchObject({ moderation_lease_until: '2026-07-31T00:10:00.000Z' });
+  });
+
+  it('审核任务和管理员动作只使用独立 RPC 客户端', async () => {
+    const tableDatabase = new MemoryRdb();
+    const rpcDatabase = new MemoryRdb();
+    rpcDatabase.submissions.push(
+      makeSubmission({
+        id: 'rpc-submission',
+        status: 'system_reviewing',
+        moderation_lease_until: '2026-07-30T23:59:00.000Z'
+      }),
+      makeSubmission({
+        id: 'rpc-admin-submission',
+        status: 'manual_review_pending',
+        status_version: 0
+      })
+    );
+    const store = new CloudBasePostgresStore(tableDatabase, rpcDatabase);
+
+    await expect(
+      store.claimModerationJobs(1, '2026-07-31T00:10:00.000Z')
+    ).resolves.toEqual([
+      expect.objectContaining({ id: 'rpc-submission' })
+    ]);
+    await expect(store.applyAdminAction({
+      submissionId: 'rpc-admin-submission',
+      adminId: 'admin-1',
+      action: 'approve',
+      nextStatus: 'published',
+      expectedVersion: 0,
+      idempotencyKey: 'rpc-admin-action-1',
+      reason: '审核通过'
+    })).resolves.toMatchObject({
+      submission: {
+        id: 'rpc-admin-submission',
+        status: 'published',
+        statusVersion: 1
+      }
+    });
+    expect(tableDatabase.submissions).toEqual([]);
   });
 
   it('审核结果写入独立结果表', async () => {
@@ -577,6 +700,7 @@ describe('CloudBase PostgreSQL 仓储', () => {
     const { store } = createStore(database);
 
     const firstPage = await store.listPublished({ limit: 2 });
+    expect(database.fromCalls).toEqual(['submissions']);
     expect(firstPage).toEqual({
       items: [
         {

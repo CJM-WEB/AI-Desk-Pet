@@ -1,6 +1,7 @@
 /** CloudBase 审核 API 的运行时配置。 */
 export interface CloudConfig {
   envId: string;
+  cloudbaseApiKey: string;
   privateBucketId: string;
   adminEmail: string;
   captchaAppId: number;
@@ -33,6 +34,7 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
 
   return {
     envId,
+    cloudbaseApiKey: readRequired(env, 'CLOUDBASE_API_KEY'),
     privateBucketId,
     adminEmail,
     captchaAppId,

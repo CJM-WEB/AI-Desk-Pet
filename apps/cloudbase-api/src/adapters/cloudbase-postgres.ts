@@ -15,12 +15,12 @@ import type {
   SubmissionStore
 } from '../ports.js';
 
-interface RdbError {
+export interface RdbError {
   code?: string;
   message: string;
 }
 
-interface RdbResult {
+export interface RdbResult {
   data: unknown;
   error: RdbError | null;
 }
@@ -44,23 +44,84 @@ export interface CloudBaseRdbQuery extends PromiseLike<RdbResult> {
 /** 通过结构类型兼容 CloudBase SDK，并便于测试注入内存替身。 */
 export interface CloudBaseRdbClient {
   from(table: string): CloudBaseRdbQuery;
-  rpc(name: string, params: Record<string, unknown>): PromiseLike<RdbResult>;
 }
 
-export interface CloudBaseRdbApp {
-  rdb(): CloudBaseRdbClient;
+/** 补齐 3.18.3 运行时已有但公开声明遗漏的 rdb 表客户端。 */
+declare module '@cloudbase/node-sdk' {
+  interface CloudBase {
+    rdb(options?: {
+      instance?: string;
+      database?: string;
+    }): CloudBaseRdbClient;
+  }
+}
+
+export interface CloudBasePostgresRpc {
+  rpc(name: string, params: Record<string, unknown>): Promise<RdbResult>;
+}
+
+type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
+
+/** 使用独立 service_role API Key 调用数据库函数，不依赖表查询 SDK 的能力。 */
+export class CloudBasePostgresRpcClient implements CloudBasePostgresRpc {
+  constructor(
+    private readonly envId: string,
+    private readonly apiKey: string,
+    private readonly fetcher: FetchLike = fetch
+  ) {}
+
+  async rpc(name: string, params: Record<string, unknown>): Promise<RdbResult> {
+    const url = `https://${this.envId}.api.tcloudbasegateway.com`
+      + `/v1/rdb/rest/rpc/${encodeURIComponent(name)}`;
+
+    let response: Response;
+    try {
+      response = await this.fetcher(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(params)
+      });
+    } catch {
+      return {
+        data: null,
+        error: { message: 'RPC 请求失败' }
+      };
+    }
+
+    const payload = await readJsonResponse(response);
+    if (response.ok) {
+      if (payload.parseFailed) {
+        return {
+          data: null,
+          error: { message: 'RPC 响应格式错误' }
+        };
+      }
+      return { data: payload.value, error: null };
+    }
+
+    const error = asRpcError(payload.value);
+    return {
+      data: null,
+      error: {
+        ...(error.code ? { code: error.code } : {}),
+        message: error.message ?? `RPC 请求失败（HTTP ${response.status}）`
+      }
+    };
+  }
 }
 
 /**
- * 使用服务端 app.rdb() 访问 PostgreSQL。
+ * 使用服务端 app.rdb() 的表客户端访问 PostgreSQL。
  * 并发租约和管理员写操作固定下推到数据库函数，避免客户端读改写竞争。
  */
 export class CloudBasePostgresStore implements SubmissionStore {
-  private readonly database: CloudBaseRdbClient;
-
-  constructor(app: CloudBaseRdbApp) {
-    this.database = app.rdb();
-  }
+  constructor(
+    private readonly database: CloudBaseRdbClient,
+    private readonly rpcClient: CloudBasePostgresRpc
+  ) {}
 
   async createSubmission(input: NewSubmission): Promise<SubmissionRow> {
     requireHash(input.statusTokenHash);
@@ -111,7 +172,7 @@ export class CloudBasePostgresStore implements SubmissionStore {
     leaseUntil: string
   ): Promise<SubmissionRow[]> {
     requireLimit(limit);
-    const result = await this.database.rpc('claim_moderation_jobs', {
+    const result = await this.rpcClient.rpc('claim_moderation_jobs', {
       p_limit: limit,
       p_lease_until: leaseUntil
     });
@@ -139,7 +200,7 @@ export class CloudBasePostgresStore implements SubmissionStore {
   }
 
   async applyAdminAction(input: AdminActionInput): Promise<AdminActionResult> {
-    const result = await this.database.rpc('apply_admin_action', {
+    const result = await this.rpcClient.rpc('apply_admin_action', {
       p_submission_id: input.submissionId,
       p_admin_id: input.adminId,
       p_action: input.action,
@@ -311,4 +372,33 @@ function requireLimit(value: number): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > 100) {
     throw new ApiError('INVALID_LIMIT', 400);
   }
+}
+
+async function readJsonResponse(response: Response): Promise<{
+  parseFailed: boolean;
+  value: unknown;
+}> {
+  const text = await response.text();
+  if (!text) return { parseFailed: false, value: null };
+
+  try {
+    return { parseFailed: false, value: JSON.parse(text) as unknown };
+  } catch {
+    return { parseFailed: true, value: null };
+  }
+}
+
+function asRpcError(value: unknown): {
+  code?: string;
+  message?: string;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.code === 'string' ? { code: record.code } : {}),
+    ...(typeof record.message === 'string' ? { message: record.message } : {})
+  };
 }
