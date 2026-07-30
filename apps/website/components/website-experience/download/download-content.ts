@@ -48,12 +48,14 @@ export type InstallNoticeItem = {
 // 发行清单是 Windows 下载数据的唯一来源，避免页面配置与实际构建产物分叉。
 const windowsRelease = releaseManifestSchema.parse(rawManifest);
 
-const windowsPlatform: DownloadPlatform = windowsRelease.status === 'published'
+/** 根据发行清单生成 Windows 平台，未发布版本不会暴露下载地址。 */
+function createWindowsPlatform(t: Translate): DownloadPlatform {
+  return windowsRelease.status === 'published'
   ? {
       id: 'windows-x64',
       name: 'Windows',
       status: 'available',
-      summary: 'Windows 10/11 x64 测试版',
+      summary: t('download.windows.summary'),
       versionLabel: windowsRelease.version,
       systemRequirements: 'Windows 10/11 x64',
       downloadUrl: windowsRelease.downloadUrl,
@@ -65,24 +67,13 @@ const windowsPlatform: DownloadPlatform = windowsRelease.status === 'published'
       id: 'windows-x64',
       name: 'Windows',
       status: 'unpublished',
-      summary: 'Windows 10/11 x64 测试版尚未发布',
+      summary: t('download.windows.unpublishedSummary'),
       versionLabel: windowsRelease.version,
       systemRequirements: 'Windows 10/11 x64',
       fileName: windowsRelease.fileName,
       plannedReleaseTag: windowsRelease.plannedReleaseTag
     };
-
-export const DOWNLOAD_PLATFORMS: DownloadPlatform[] = [
-  windowsPlatform,
-  {
-    id: 'macos',
-    name: 'macOS',
-    status: 'coming-soon',
-    summary: 'macOS 版本正在准备中',
-    versionLabel: '即将支持',
-    systemRequirements: 'macOS 版本尚未发布'
-  }
-];
+}
 export interface DownloadContent {
   platforms: readonly DownloadPlatform[];
   faqItems: readonly FaqItem[];
@@ -92,18 +83,7 @@ export interface DownloadContent {
 export function createDownloadContent(t: Translate): DownloadContent {
   return {
     platforms: [
-      {
-        id: 'windows-x64',
-        name: 'Windows',
-        status: 'available',
-        summary: t('download.windows.summary'),
-        versionLabel: windowsRelease.version,
-        systemRequirements: 'Windows 10/11 x64',
-        downloadUrl: windowsRelease.downloadUrl,
-        fileName: windowsRelease.fileName,
-        sizeBytes: windowsRelease.sizeBytes,
-        sha256: windowsRelease.sha256
-      },
+      createWindowsPlatform(t),
       {
         id: 'macos',
         name: 'macOS',

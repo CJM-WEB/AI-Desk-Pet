@@ -50,7 +50,9 @@ describe('下载安装章节', () => {
     );
 
     expect(screen.getByRole('heading', { name: 'Choose Your Platform' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Download Windows' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Download Windows' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Not yet published' }) as HTMLButtonElement)
+      .disabled).toBe(true);
   });
 
   it('桌面端 hover 和 focus 临时展开，点击不锁定', () => {
