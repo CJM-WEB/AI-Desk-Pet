@@ -1,17 +1,27 @@
 import { z } from 'zod';
 
-export const releaseManifestSchema = z
-  .object({
-    version: z.string().regex(/^\d+\.\d+\.\d+-alpha\.\d+$/),
-    platform: z.literal('windows-x64'),
-    fileName: z.string().regex(/^Myself-\d+\.\d+\.\d+-alpha\.\d+-windows-x64\.exe$/),
+const releaseIdentitySchema = {
+  version: z.string().regex(/^\d+\.\d+\.\d+-alpha\.\d+$/),
+  platform: z.literal('windows-x64'),
+  fileName: z.string().regex(/^AI-Pet-\d+\.\d+\.\d+-alpha\.\d+-windows-x64\.exe$/)
+};
+
+export const releaseManifestSchema = z.discriminatedUnion('status', [
+  z.object({
+    ...releaseIdentitySchema,
+    status: z.literal('published'),
     downloadUrl: z.string().url().regex(/\.exe$/),
     sizeBytes: z.number().int().positive(),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     publishedAt: z.string().datetime(),
     signed: z.literal(false)
-  })
-  .strict();
+  }).strict(),
+  z.object({
+    ...releaseIdentitySchema,
+    status: z.literal('unpublished'),
+    plannedReleaseTag: z.string().regex(/^v\d+\.\d+\.\d+-alpha\.\d+$/)
+  }).strict()
+]);
 
 export type ReleaseManifest = z.infer<typeof releaseManifestSchema>;
 

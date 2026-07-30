@@ -27,6 +27,13 @@ async function createStore(available = true) {
   };
 }
 
+function 默认槽文件(file: string): string {
+  return join(
+    `${file}.profiles`,
+    `${createHash('sha256').update('default').digest('hex')}.bin`
+  );
+}
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(directory => (
     rm(directory, { recursive: true, force: true })
@@ -38,9 +45,9 @@ describe('SecretStore', () => {
     const fixtureSecret = 'sk-persistent-fixture';
     const { file, store } = await createStore();
 
-    await store.save(fixtureSecret, true);
+    await store.save('default', fixtureSecret, true);
 
-    expect((await readFile(file)).toString('utf8')).toBe(`encrypted:${fixtureSecret}`);
+    expect((await readFile(默认槽文件(file))).toString('utf8')).toBe(`encrypted:${fixtureSecret}`);
     await expect(store.readForProviderCall()).resolves.toBe(fixtureSecret);
     await expect(store.hasStoredSecret()).resolves.toBe(true);
   });
@@ -48,7 +55,7 @@ describe('SecretStore', () => {
   test('仅会话密钥不写入磁盘', async () => {
     const { file, store } = await createStore(false);
 
-    await store.save('sk-session-fixture', false);
+    await store.save('default', 'sk-session-fixture', false);
 
     await expect(store.readForProviderCall()).resolves.toBe('sk-session-fixture');
     await expect(store.hasStoredSecret()).resolves.toBe(true);
@@ -57,9 +64,9 @@ describe('SecretStore', () => {
 
   test('改为仅会话存储时删除以前持久化的密文', async () => {
     const { file, store } = await createStore();
-    await store.save('sk-old-persistent', true);
+    await store.save('default', 'sk-old-persistent', true);
 
-    await store.save('sk-current-session', false);
+    await store.save('default', 'sk-current-session', false);
 
     await expect(store.readForProviderCall()).resolves.toBe('sk-current-session');
     await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -68,15 +75,15 @@ describe('SecretStore', () => {
   test('系统加密不可用时拒绝持久化并返回稳定错误', async () => {
     const { store } = await createStore(false);
 
-    await expect(store.save('sk-rejected-fixture', true)).rejects.toThrow(
+    await expect(store.save('default', 'sk-rejected-fixture', true)).rejects.toThrow(
       'SECRET_STORAGE_UNAVAILABLE'
     );
   });
 
   test('清除后内存和磁盘密钥都不可读取', async () => {
     const { store } = await createStore();
-    await store.save('sk-clear-fixture', true);
-    await store.save('sk-session-fixture', false);
+    await store.save('default', 'sk-clear-fixture', true);
+    await store.save('default', 'sk-session-fixture', false);
 
     await store.clear();
 
@@ -84,3 +91,4 @@ describe('SecretStore', () => {
     await expect(store.readForProviderCall()).rejects.toThrow('SECRET_NOT_FOUND');
   });
 });
+import { createHash } from 'node:crypto';

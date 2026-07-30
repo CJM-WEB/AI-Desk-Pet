@@ -27,14 +27,15 @@ describe('下载安装章节', () => {
     vi.restoreAllMocks();
   });
 
-  it('渲染数据驱动平台、倾斜标题与真实 Windows 导航链接', () => {
+  it('未发布 Windows 版本不渲染死链，并显示不可用状态', () => {
     render(<DownloadChapter interactive />);
 
     expect(screen.getAllByTestId('pointer-tilt-text')).toHaveLength(2);
     expect(screen.getByText('Windows')).toBeTruthy();
     expect(screen.getByText('macOS')).toBeTruthy();
-    expect(screen.getByRole('link', { name: '下载 Windows' })
-      .hasAttribute('download')).toBe(false);
+    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
+    expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
+      .disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
     expect(screen.queryByRole('link', { name: /macOS/u })).toBeNull();
     expect((screen.getByRole('button', { name: '即将支持' }) as HTMLButtonElement)

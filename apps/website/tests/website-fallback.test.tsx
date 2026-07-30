@@ -202,9 +202,9 @@ describe('官网章节降级模式', () => {
       '[data-chapter-id="download"]'
     );
     expect(downloadSection?.dataset.interactive).toBe('true');
-    expect(
-      screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')
-    ).toContain('Myself-0.1.0-alpha.1-windows-x64.exe');
+    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
+    expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
+      .disabled).toBe(true);
 
     expect(() => {
       fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
@@ -309,7 +309,8 @@ describe('官网章节降级模式', () => {
     expect(context).toHaveBeenCalledOnce();
     expect(screen.getByTestId('download-chapter').dataset.visibleSide)
       .toBe('faq');
-    expect(screen.getByRole('link', { name: '下载 Windows' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
+    expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
 
     fireEvent.click(next);
     fireEvent.click(next);
@@ -343,7 +344,8 @@ describe('官网章节降级模式', () => {
     fireEvent.click(next);
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
       .toBe('download');
-    expect(screen.getByRole('link', { name: '下载 Windows' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
+    expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
     expect(() => {
       fireEvent.pointerEnter(screen.getByRole('button', { name: '显示安装前须知' }));
     }).not.toThrow();

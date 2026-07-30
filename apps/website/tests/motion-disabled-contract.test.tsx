@@ -80,7 +80,7 @@ describe('章节静态回退禁用内部动效', () => {
     expect(item.style.visibility).toBe('');
   });
 
-  it('下载静态回退关闭感应区与侧栏卡片过渡且保留下载链接', () => {
+  it('下载静态回退关闭感应区与侧栏卡片过渡且保留未发布状态', () => {
     render(<DownloadChapter interactive staticFallback />);
 
     const root = screen.getByTestId('download-chapter');
@@ -88,9 +88,9 @@ describe('章节静态回退禁用内部动效', () => {
     expect(downloadCss).toMatch(
       /\.downloadChapter\[data-motion-disabled='true'\] \.sideSensor,\s*\.downloadChapter\[data-motion-disabled='true'\] \.sidePanel,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformStack,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformCard\s*\{[^}]*transition:\s*none;/s
     );
-    expect(
-      screen.getByRole('link', { name: '下载 Windows' }).getAttribute('href')
-    ).toBeTruthy();
+    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
+    expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
+      .disabled).toBe(true);
   });
 
   it('捐款静态回退关闭滚筒与付款码进入动效且保留支付按钮', () => {

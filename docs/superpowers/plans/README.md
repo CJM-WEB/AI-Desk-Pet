@@ -19,9 +19,9 @@
 
 - 桌面端 Agent、设置、授权目录、文件工具、安全确认、本地持久化和关键 E2E 已完成。
 - 官网静态页、发布清单契约、下载卡片和官网验证门禁已完成。
-- Windows 10/11 x64 未签名 NSIS 安装包已产出，文件名为 `Myself-0.1.0-alpha.1-windows-x64.exe`。
-- 真实安装包已发布到 GitHub Release：`https://github.com/CJM-WEB/AI-Desk-Pet/releases/download/v0.1.0-alpha.1/Myself-0.1.0-alpha.1-windows-x64.exe`。
-- 官网 `release-manifest` 已替换为真实下载地址，并已通过 `pnpm verify:website`。
+- Windows 10/11 x64 未签名 NSIS 安装包的未来目标文件名为 `AI-Pet-0.1.0-alpha.1-windows-x64.exe`。
+- 该 AI-Pet 安装包尚未上传到 GitHub Release；上传并完成验证前，官网 `release-manifest` 必须保持 `unpublished`，不提供下载链接。
+- 发布后才写入真实下载地址、大小、SHA-256 和发布时间，并重新运行官网验证门禁。
 - Windows Electron E2E 的 GPU 启动崩溃已修复，`pnpm verify:desktop` 已通过。
 - 用户已完成安装包测试与验收；人工验收结果写入步骤按用户要求跳过，不作为当前仓库证据文件维护。
 - 若继续推进 MVP 对外体验，下一步是把官网静态产物部署到公开服务器并验证下载链路。

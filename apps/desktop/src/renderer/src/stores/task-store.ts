@@ -1,7 +1,17 @@
-import { CHARACTER_TRANSIENT_DURATION_MS } from '@myself/character-runtime';
+import {
+  CHARACTER_TRANSIENT_DURATION_MS,
+  reduceCharacterState,
+  type CharacterStateRequest,
+  type CharacterStateSnapshot
+} from '@myself/character-runtime';
 import type { PendingAction, TaskEvent, TaskPhase } from '@myself/shared-types';
 import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
+import {
+  ExtensionTriggerController,
+  type ExtensionPointerTrigger,
+  type ExtensionTriggerDefinition
+} from '../characters/player/extension-trigger-controller';
 
 const MAX_MESSAGES = 100;
 
@@ -16,8 +26,14 @@ export interface TaskViewState {
   phase: TaskPhase;
   messages: TaskViewMessage[];
   pendingAction: PendingAction | null;
+  characterState: CharacterStateSnapshot;
   apply(event: TaskEvent): void;
   beginListening(): void;
+  requestCharacterState(request: CharacterStateRequest): void;
+  configureCharacterExtensions(definitions: readonly ExtensionTriggerDefinition[]): void;
+  triggerCharacterPointer(trigger: ExtensionPointerTrigger): void;
+  triggerCharacterIdle(): void;
+  applyCharacterMotion(input: { moving: boolean; carrying: boolean }): void;
 }
 
 function terminalPhase(phase: TaskPhase): boolean {
@@ -27,6 +43,8 @@ function terminalPhase(phase: TaskPhase): boolean {
 export function createTaskStore(): StoreApi<TaskViewState> {
   let nextMessageId = 0;
   let transientTimer: ReturnType<typeof setTimeout> | null = null;
+  let extensionController = new ExtensionTriggerController([]);
+  let pendingEmotionRequest: CharacterStateRequest | null = null;
 
   const clearTransientTimer = (): void => {
     if (transientTimer !== null) clearTimeout(transientTimer);
@@ -37,6 +55,37 @@ export function createTaskStore(): StoreApi<TaskViewState> {
     phase: 'idle',
     messages: [],
     pendingAction: null,
+    characterState: { stateId: 'idle', source: 'system' },
+    requestCharacterState: request => {
+      set(state => ({
+        characterState: reduceCharacterState(state.characterState, request)
+      }));
+    },
+    configureCharacterExtensions: definitions => {
+      extensionController = new ExtensionTriggerController(definitions);
+      pendingEmotionRequest = null;
+    },
+    triggerCharacterPointer: trigger => {
+      const request = extensionController.pointer(trigger);
+      if (request) get().requestCharacterState(request);
+    },
+    triggerCharacterIdle: () => {
+      const request = extensionController.idle();
+      if (request) get().requestCharacterState(request);
+    },
+    applyCharacterMotion: input => {
+      if (input.moving || input.carrying) {
+        get().requestCharacterState({
+          type: 'movement',
+          carrying: input.carrying
+        });
+        return;
+      }
+      get().requestCharacterState({
+        type: 'task',
+        phase: get().phase
+      });
+    },
     apply: event => {
       if (event.type === 'message') {
         const message: TaskViewMessage = {
@@ -45,8 +94,24 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           text: event.text
         };
         set(state => ({ messages: [...state.messages, message].slice(-MAX_MESSAGES) }));
+        if (event.role === 'user') {
+          pendingEmotionRequest = null;
+          const request = extensionController.keyword(event.text);
+          if (request) get().requestCharacterState(request);
+        }
         return;
       }
+      if (event.type === 'character_emotion') {
+        const request = extensionController.emotion(event.label);
+        if (!request) return;
+        if (get().phase === 'idle') {
+          get().requestCharacterState(request);
+        } else {
+          pendingEmotionRequest = request;
+        }
+        return;
+      }
+      if (event.type === 'character_carrying') return;
       if (event.type === 'error') {
         const message: TaskViewMessage = {
           id: `message-${++nextMessageId}`,
@@ -59,26 +124,64 @@ export function createTaskStore(): StoreApi<TaskViewState> {
       }
       if (event.type === 'pending_action') {
         clearTransientTimer();
-        set({ phase: 'awaiting_confirmation', pendingAction: event.action });
+        set(state => ({
+          phase: 'awaiting_confirmation',
+          pendingAction: event.action,
+          characterState: reduceCharacterState(state.characterState, {
+            type: 'task',
+            phase: 'awaiting_confirmation'
+          })
+        }));
         return;
       }
 
       clearTransientTimer();
       const phase = event.phase;
+      if (phase === 'thinking') pendingEmotionRequest = null;
       set({
         phase,
+        characterState: reduceCharacterState(get().characterState, {
+          type: 'task',
+          phase
+        }),
         ...(terminalPhase(phase) ? { pendingAction: null } : {})
       });
+      if (phase === 'idle' && pendingEmotionRequest) {
+        const request = pendingEmotionRequest;
+        pendingEmotionRequest = null;
+        get().requestCharacterState(request);
+      }
       if (phase === 'success' || phase === 'error') {
         transientTimer = setTimeout(() => {
-          if (get().phase === phase) set({ phase: 'idle' });
+          if (get().phase === phase) {
+            set(state => ({
+              phase: 'idle',
+              characterState: reduceCharacterState(state.characterState, {
+                type: 'task',
+                phase: 'idle'
+              })
+            }));
+            if (pendingEmotionRequest) {
+              const request = pendingEmotionRequest;
+              pendingEmotionRequest = null;
+              get().requestCharacterState(request);
+            }
+          }
           transientTimer = null;
         }, CHARACTER_TRANSIENT_DURATION_MS);
       }
     },
     beginListening: () => {
       clearTransientTimer();
-      set({ phase: 'listening', pendingAction: null });
+      pendingEmotionRequest = null;
+      set(state => ({
+        phase: 'listening',
+        pendingAction: null,
+        characterState: reduceCharacterState(state.characterState, {
+          type: 'task',
+          phase: 'listening'
+        })
+      }));
     }
   }));
 

@@ -54,7 +54,7 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('data-active-chapter="home"');
     expect(html).toContain('aria-label="上一章节"');
     expect(html).toContain('aria-label="下一章节"');
-    expect(html).toContain('Myself-0.1.0-alpha.1-windows-x64.exe');
+    expect(html).toContain('AI-Pet-0.1.0-alpha.1-windows-x64.exe');
     expect(html).toContain('即将支持');
   });
 

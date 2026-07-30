@@ -8,10 +8,14 @@ import {
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { AgentLoop, type ModelResponse, type ToolDefinition } from '@myself/agent-core';
+import { AgentLoop, type ModelResponse } from '@myself/agent-core';
 import { taskEventSchema, type TaskEvent, type ToolRequest } from '@myself/shared-types';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
+import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
 import { PendingActionStore } from '../../apps/desktop/src/main/agent/pending-action-store';
+import {
+  createBuiltinFileToolRegistry
+} from '../../apps/desktop/src/main/agent/tool-registry';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import {
   createAuthorizedRoot,
@@ -24,17 +28,12 @@ import {
 } from '../fixtures/provider-server';
 
 const toolNames = [
-  'list_directory',
-  'read_text_file',
-  'create_file',
-  'create_directory',
-  'rename_entry'
+  'builtin.files.list_directory',
+  'builtin.files.read_text',
+  'builtin.files.create_file',
+  'builtin.files.create_directory',
+  'builtin.files.rename_entry'
 ] as const;
-
-const tools: ToolDefinition[] = toolNames.map(name => ({
-  type: 'function',
-  function: { name, description: `${name} 工具`, parameters: { type: 'object' } }
-}));
 
 const roots: AuthorizedRootFixture[] = [];
 const servers: ProviderServerFixture[] = [];
@@ -83,13 +82,20 @@ async function harness(steps: ProviderScript) {
     model: 'task-9a-security-model',
     hasStoredSecret: true
   }, async () => providerServer.apiKey);
+  const registry = createBuiltinFileToolRegistry();
+  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
   const service = new AgentService({
     loop,
     pending,
     createSession: async () => ({
       provider,
       fileTools: authorized.fileTools,
-      tools,
+      fileDisclosureAllowed: true,
+      tools: registry.definitions(),
+      toolRuntime: {
+        prepare: raw => registry.prepare(raw, permissionPolicy),
+        executeRead: request => authorized.fileTools.executeRead(request)
+      },
       messages: []
     }),
     emit: event => events.push(event),
@@ -145,7 +151,7 @@ describe('权限边界安全回归', () => {
     const fixture = await harness(apiKey => [{
       response: toolCall(
         `Authorization: Bearer ${apiKey}`,
-        'create_file',
+        'builtin.files.create_file',
         { relativePath: 'safe.txt' }
       )
     }]);
@@ -165,7 +171,11 @@ describe('权限边界安全回归', () => {
 
   test('上级目录穿越在预览阶段被拒绝且公开错误不泄露绝对路径', async () => {
     const fixture = await harness([{
-      response: toolCall('traversal-1', 'create_file', { relativePath: '../escaped.txt' })
+      response: toolCall(
+        'traversal-1',
+        'builtin.files.create_file',
+        { relativePath: '../escaped.txt' }
+      )
     }]);
 
     await expect(fixture.service.submit('创建越界文件')).rejects.toMatchObject({
@@ -249,7 +259,11 @@ describe('权限边界安全回归', () => {
   test('动作 ID 确认成功后重放会被拒绝且不会再次执行', async () => {
     const fixture = await harness([
       {
-        response: toolCall('replay-write-1', 'create_file', { relativePath: 'replay.txt' })
+        response: toolCall(
+          'replay-write-1',
+          'builtin.files.create_file',
+          { relativePath: 'replay.txt' }
+        )
       },
       { response: { type: 'text', text: '安全文件已创建' } }
     ]);
@@ -267,7 +281,11 @@ describe('权限边界安全回归', () => {
   test('Renderer 篡改相对路径不能改变已封存的执行动作', async () => {
     const fixture = await harness([
       {
-        response: toolCall('sealed-write-1', 'create_file', { relativePath: 'safe.txt' })
+        response: toolCall(
+          'sealed-write-1',
+          'builtin.files.create_file',
+          { relativePath: 'safe.txt' }
+        )
       },
       { response: { type: 'text', text: '安全文件已创建' } }
     ]);
@@ -290,12 +308,12 @@ describe('权限边界安全回归', () => {
     ].join('\n');
     const fixture = await harness([
       {
-        response: toolCall('prompt-injection-read-1', 'read_text_file', {
+        response: toolCall('prompt-injection-read-1', 'builtin.files.read_text', {
           relativePath: 'docs/untrusted.txt'
         })
       },
       {
-        response: toolCall('prompt-injection-write-2', 'create_file', {
+        response: toolCall('prompt-injection-write-2', 'builtin.files.create_file', {
           relativePath: 'injection-owned.txt'
         }),
         inspect: request => {

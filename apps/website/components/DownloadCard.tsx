@@ -3,7 +3,6 @@ import { formatReleaseSize, releaseManifestSchema } from '../lib/release-manifes
 
 export function DownloadCard() {
   const release = releaseManifestSchema.parse(rawManifest);
-  const size = formatReleaseSize(release.sizeBytes);
 
   return (
     <section id="download" className="download" aria-label="Windows 下载">
@@ -11,9 +10,13 @@ export function DownloadCard() {
         <p className="section-kicker">版本信息</p>
         <h2>Windows 测试版</h2>
         <p>
-          {release.version} · Windows 10/11 x64 · {size}
+          {release.version} · Windows 10/11 x64
         </p>
-        <p className="warning">未签名测试版；安装前请核对文件名和 SHA-256。</p>
+        <p className="warning">
+          {release.status === 'published'
+            ? '未签名测试版；安装前请核对文件名和 SHA-256。'
+            : '当前版本尚未发布；计划资产生成并上传后才会提供下载。'}
+        </p>
       </div>
       <div className="download-card">
         <dl>
@@ -21,16 +24,28 @@ export function DownloadCard() {
             <dt>文件名</dt>
             <dd>{release.fileName}</dd>
           </div>
-          <div>
-            <dt>SHA-256</dt>
-            <dd>
-              <code>{release.sha256}</code>
-            </dd>
-          </div>
+          {release.status === 'published' ? (
+            <>
+              <div>
+                <dt>大小</dt>
+                <dd>{formatReleaseSize(release.sizeBytes)}</dd>
+              </div>
+              <div>
+                <dt>SHA-256</dt>
+                <dd>
+                  <code>{release.sha256}</code>
+                </dd>
+              </div>
+            </>
+          ) : null}
         </dl>
-        <a className="primary" href={release.downloadUrl}>
-          下载 Myself {release.version}
-        </a>
+        {release.status === 'published' ? (
+          <a className="primary" href={release.downloadUrl}>
+            下载 AI Pet {release.version}
+          </a>
+        ) : (
+          <span role="status">AI Pet {release.version} 尚未发布</span>
+        )}
       </div>
     </section>
   );

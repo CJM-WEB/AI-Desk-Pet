@@ -10,11 +10,12 @@ import {
 } from '../components/website-experience/download/download-model';
 
 describe('下载模块数据与状态', () => {
-  it('Windows 可下载而 macOS 只显示即将支持', () => {
+  it('未发布 Windows 版本和 macOS 都不提供下载链接', () => {
     expect(DOWNLOAD_PLATFORMS[0]).toMatchObject({
       id: 'windows-x64',
-      status: 'available'
+      status: 'unpublished'
     });
+    expect('downloadUrl' in DOWNLOAD_PLATFORMS[0]!).toBe(false);
     expect(DOWNLOAD_PLATFORMS[1]).toMatchObject({
       id: 'macos',
       status: 'coming-soon'
@@ -22,15 +23,13 @@ describe('下载模块数据与状态', () => {
     expect('downloadUrl' in DOWNLOAD_PLATFORMS[1]!).toBe(false);
   });
 
-  it('Windows 平台完整保留真实发行清单字段', () => {
+  it('未发布 Windows 平台仅保留未来目标资产名称', () => {
     const release = releaseManifestSchema.parse(rawManifest);
 
     expect(DOWNLOAD_PLATFORMS[0]).toMatchObject({
       versionLabel: release.version,
-      sizeBytes: release.sizeBytes,
       fileName: release.fileName,
-      sha256: release.sha256,
-      downloadUrl: release.downloadUrl
+      status: 'unpublished'
     });
   });
 

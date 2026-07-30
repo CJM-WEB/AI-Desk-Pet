@@ -1,6 +1,7 @@
 import type { TaskPhase } from '@myself/shared-types';
+import type { CoreCharacterState } from './character-schema';
 
-export type CharacterState = 'idle' | 'listening' | 'thinking' | 'acting' | 'success' | 'error';
+export type CharacterState = CoreCharacterState;
 export type CharacterMotionMode = 'animated' | 'static';
 
 export const CHARACTER_TRANSIENT_DURATION_MS = 1_500;

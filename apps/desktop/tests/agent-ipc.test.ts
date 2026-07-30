@@ -17,6 +17,7 @@ function createIpcMain() {
 function createService() {
   return {
     submit: vi.fn(async () => undefined),
+    hasReportedFailure: vi.fn(() => false),
     cancelActive: vi.fn(() => undefined),
     confirm: vi.fn(async () => undefined),
     cancelAction: vi.fn(() => undefined)
@@ -32,6 +33,30 @@ describe('Agent IPC', () => {
     await handlers.get(ipcChannels.chatSubmit)?.({}, { text: '  列出目录  ' });
 
     expect(service.submit).toHaveBeenCalledWith('列出目录');
+  });
+
+  test('Agent 已发布失败事件时聊天提交仍确认 IPC，避免 Renderer 覆盖为通用错误', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = createService();
+    service.submit.mockRejectedValue(Object.assign(new Error('SETTINGS_INCOMPLETE'), {
+      code: 'SETTINGS_INCOMPLETE'
+    }));
+    service.hasReportedFailure.mockReturnValue(true);
+    registerAgentIpc(ipcMain, service);
+
+    await expect(handlers.get(ipcChannels.chatSubmit)?.({}, { text: '列出目录' }))
+      .resolves.toBeUndefined();
+    expect(service.submit).toHaveBeenCalledWith('列出目录');
+  });
+
+  test('未发布任务失败事件的异常继续返回 Renderer', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = createService();
+    service.submit.mockRejectedValue(new Error('UNEXPECTED_FAILURE'));
+    registerAgentIpc(ipcMain, service);
+
+    await expect(handlers.get(ipcChannels.chatSubmit)?.({}, { text: '列出目录' }))
+      .rejects.toThrow('UNEXPECTED_FAILURE');
   });
 
   test.each(['', ' '.repeat(10), 'x'.repeat(4_001)])('拒绝无效聊天输入', async text => {
