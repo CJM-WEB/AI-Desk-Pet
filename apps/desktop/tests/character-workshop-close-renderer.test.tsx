@@ -54,6 +54,7 @@ describe('角色工作室 Renderer 关闭刷新', () => {
       createCharacter: vi.fn(),
       duplicateCharacter: vi.fn(),
       getCharacterDraft: vi.fn(async () => draft),
+      listCharacterSources: vi.fn(async () => []),
       saveCharacterDraft,
       chooseCharacterSources: vi.fn(),
       readCharacterSource: vi.fn(),
@@ -73,6 +74,7 @@ describe('角色工作室 Renderer 关闭刷新', () => {
       | 'createCharacter'
       | 'duplicateCharacter'
       | 'getCharacterDraft'
+      | 'listCharacterSources'
       | 'saveCharacterDraft'
       | 'chooseCharacterSources'
       | 'readCharacterSource'

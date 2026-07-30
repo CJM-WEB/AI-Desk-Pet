@@ -8,7 +8,8 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 import type {
   CharacterEvent,
   CharacterPublishInput,
-  CharacterSummaryDto
+  CharacterSummaryDto,
+  CharacterWorkshopSourceDto
 } from '../../../../shared/character-ipc';
 import type { MyselfApi } from '../../../../shared/myself-api';
 import {
@@ -41,6 +42,7 @@ export type CharacterWorkshopApi = Pick<
   | 'createCharacter'
   | 'duplicateCharacter'
   | 'getCharacterDraft'
+  | 'listCharacterSources'
   | 'saveCharacterDraft'
   | 'chooseCharacterSources'
   | 'publishCharacter'
@@ -217,7 +219,10 @@ export function createCharacterWorkshopStore(
       }));
     }
 
-    function setDraft(draft: CharacterDraftV1): void {
+    function setDraft(
+      draft: CharacterDraftV1,
+      sources: readonly CharacterWorkshopSourceDto[] = []
+    ): void {
       const selection = initialSelection(draft);
       draftRevision += 1;
       savedRevision = draftRevision;
@@ -226,6 +231,11 @@ export function createCharacterWorkshopStore(
         draft: cloneDraft(draft),
         selectedStateId: selection.stateId,
         selectedActionId: selection.actionId,
+        availableSources: sources.map(({ assetId, displayName, mimeType }) => ({
+          assetId,
+          displayName,
+          mimeType
+        })),
         draftStatus: 'idle',
         compileStatus: 'idle'
       });
@@ -242,9 +252,12 @@ export function createCharacterWorkshopStore(
       characterId: string,
       requestRevision: number
     ): Promise<void> {
-      const loadedDraft = await api.getCharacterDraft(characterId);
+      const [loadedDraft, sources] = await Promise.all([
+        api.getCharacterDraft(characterId),
+        api.listCharacterSources(characterId)
+      ]);
       if (requestRevision !== selectionRevision) return;
-      setDraft(loadedDraft);
+      setDraft(loadedDraft, sources);
     }
 
     async function reportFailure(
@@ -410,15 +423,7 @@ export function createCharacterWorkshopStore(
         if (characterId === get().selectedCharacterId && get().draft) return;
         if (hasPendingDraft() && !await flushBeforeSelectionChange()) return;
         const requestRevision = ++selectionRevision;
-        set({
-          selectedCharacterId: characterId,
-          draft: null,
-          selectedStateId: null,
-          selectedActionId: null,
-          draftStatus: 'idle',
-          compileStatus: 'idle',
-          busyAction: 'loading'
-        });
+        set({ busyAction: 'loading' });
         try {
           await loadSelectedDraft(characterId, requestRevision);
         } catch (error) {
@@ -474,8 +479,8 @@ export function createCharacterWorkshopStore(
         await reportFailure('creating', async () => {
           const duplicate = await api.duplicateCharacter(characterId);
           await refreshCharacters();
-          selectionRevision += 1;
-          setDraft(duplicate);
+          const requestRevision = ++selectionRevision;
+          await loadSelectedDraft(duplicate.id, requestRevision);
           enqueueToast({ tone: 'success', text: '角色副本已创建。' });
         });
       },
@@ -562,17 +567,16 @@ export function createCharacterWorkshopStore(
         if (!characterId) return;
         await reportFailure('importing', async () => {
           const result = await api.chooseCharacterSources(characterId);
-          set({
-            ...(result.kind === 'selected'
-              ? {
-                  availableSources: result.sources.map(source => ({
-                    assetId: source.assetId,
-                    displayName: source.displayName,
-                    mimeType: source.mimeType
-                  }))
-                }
-              : {})
-          });
+          if (result.kind === 'selected') {
+            const sources = await api.listCharacterSources(characterId);
+            set({
+              availableSources: sources.map(({ assetId, displayName, mimeType }) => ({
+                assetId,
+                displayName,
+                mimeType
+              }))
+            });
+          }
           enqueueToast(result.kind === 'cancelled'
             ? { tone: 'info', text: '已取消导入素材。' }
             : { tone: 'success', text: `已导入 ${result.sources.length} 个素材。` });

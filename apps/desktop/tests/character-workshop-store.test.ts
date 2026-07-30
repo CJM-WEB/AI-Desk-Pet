@@ -3,7 +3,8 @@ import type { CharacterDraftV1 } from '@myself/character-runtime';
 import type {
   CharacterEvent,
   CharacterPublishInput,
-  CharacterSummaryDto
+  CharacterSummaryDto,
+  CharacterWorkshopSourceDto
 } from '../src/shared/character-ipc';
 import {
   createCharacterWorkshopStore,
@@ -96,6 +97,17 @@ function publishInput(characterId: string): CharacterPublishInput {
   };
 }
 
+function sourceDto(
+  assetId: string,
+  displayName: string
+): CharacterWorkshopSourceDto {
+  return {
+    assetId,
+    displayName,
+    mimeType: 'image/png'
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -118,6 +130,7 @@ function apiDouble(overrides: Partial<CharacterWorkshopApi> = {}) {
     duplicateCharacter: vi.fn(async () => draft('copy', 'Nova 副本')),
     getCharacterDraft: vi.fn(async id => draft(id, id === 'default' ? 'AI Pet 默认角色' : 'Nova')),
     saveCharacterDraft: vi.fn(async () => undefined),
+    listCharacterSources: vi.fn(async () => []),
     chooseCharacterSources: vi.fn(async () => ({
       kind: 'selected' as const,
       sources: [{
@@ -269,7 +282,10 @@ describe('角色工作室 Zustand 状态层', () => {
     ]));
     const { api, unsubscribe } = apiDouble({
       chooseCharacterSources,
-      readCharacterSource
+      readCharacterSource,
+      listCharacterSources: vi.fn(async () => [
+        sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png')
+      ])
     });
     const store = createCharacterWorkshopStore(api, {
       inspectImage: async () => ({ width: 2, height: 2 })
@@ -294,7 +310,11 @@ describe('角色工作室 Zustand 状态层', () => {
   });
 
   test('可在选中状态创建动作并把导入精灵图按 2x2 写入四帧', async () => {
-    const { api } = apiDouble();
+    const { api } = apiDouble({
+      listCharacterSources: vi.fn(async () => [
+        sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png')
+      ])
+    });
     const store = createCharacterWorkshopStore(api, {
       inspectImage: async () => ({ width: 1024, height: 1024 })
     });
@@ -1036,7 +1056,9 @@ describe('角色工作室 Zustand 状态层', () => {
     const { api, emit, unsubscribe } = apiDouble();
     const store = createCharacterWorkshopStore(api);
     const dispose = store.getState().mount();
-    await settle();
+    await vi.waitFor(() => {
+      expect(store.getState().loadStatus).toBe('ready');
+    });
     expect(api.listCharacters).toHaveBeenCalledTimes(1);
 
     emit({ type: 'compile-result', characterId: 'default', ok: true });
@@ -1151,6 +1173,137 @@ describe('角色工作室 Zustand 状态层', () => {
       selectedCharacterId: 'orbit',
       draft: expect.objectContaining({ id: 'orbit' }),
       characters: [summary('orbit', 'Orbit', true)]
+    });
+  });
+
+  test('启动时原子恢复活动角色草稿与完整素材目录', async () => {
+    const sources = [
+      sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png'),
+      sourceDto('123e4567-e89b-42d3-a456-426614174001', 'moving.png')
+    ];
+    const { api } = apiDouble({
+      listCharacterSources: vi.fn(async () => sources)
+    });
+    const store = createCharacterWorkshopStore(api);
+
+    await store.getState().load();
+
+    expect(api.getCharacterDraft).toHaveBeenCalledWith('default');
+    expect(api.listCharacterSources).toHaveBeenCalledWith('default');
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'default',
+      availableSources: sources
+    });
+  });
+
+  test('导入新批次后重新读取完整素材目录而不覆盖旧素材', async () => {
+    const complete = [
+      sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png'),
+      sourceDto('123e4567-e89b-42d3-a456-426614174001', 'moving.png')
+    ];
+    const { api } = apiDouble({
+      chooseCharacterSources: vi.fn(async () => ({
+        kind: 'selected' as const,
+        sources: [{
+          ...complete[1]!,
+          byteLength: 128,
+          sha256: 'a'.repeat(64)
+        }]
+      })),
+      listCharacterSources: vi.fn()
+        .mockResolvedValueOnce([complete[0]!])
+        .mockResolvedValueOnce(complete)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    await store.getState().importSources();
+
+    expect(store.getState().availableSources).toHaveLength(2);
+  });
+
+  test('草稿先返回而素材仍在加载时保持稳定工作区', async () => {
+    const sources = deferred<CharacterWorkshopSourceDto[]>();
+    const previousSources = [
+      sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png')
+    ];
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async id => draft(id, id === 'nova' ? 'Nova' : '默认角色')),
+      listCharacterSources: vi.fn(id => (
+        id === 'nova' ? sources.promise : Promise.resolve(previousSources)
+      ))
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    const selection = store.getState().selectCharacter('nova');
+    await settle();
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'default',
+      draft: expect.objectContaining({ id: 'default' }),
+      availableSources: previousSources
+    });
+    sources.resolve([sourceDto('123e4567-e89b-42d3-a456-426614174001', 'moving.png')]);
+    await selection;
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'nova',
+      draft: expect.objectContaining({ id: 'nova' })
+    });
+  });
+
+  test('旧角色素材请求晚到时不能覆盖较新的角色选择', async () => {
+    const novaSources = deferred<CharacterWorkshopSourceDto[]>();
+    const { api } = apiDouble({
+      listCharacters: vi.fn(async () => [
+        summary('default', '默认角色', true),
+        summary('nova', 'Nova'),
+        summary('orbit', 'Orbit')
+      ]),
+      getCharacterDraft: vi.fn(async id => draft(id, id === 'orbit' ? 'Orbit' : id)),
+      listCharacterSources: vi.fn(id => (
+        id === 'nova'
+          ? novaSources.promise
+          : Promise.resolve([sourceDto('123e4567-e89b-42d3-a456-426614174000', `${id}.png`)])
+      ))
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    const firstSelection = store.getState().selectCharacter('nova');
+    const secondSelection = store.getState().selectCharacter('orbit');
+    await secondSelection;
+    novaSources.resolve([sourceDto('123e4567-e89b-42d3-a456-426614174001', 'nova.png')]);
+    await firstSelection;
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'orbit',
+      draft: expect.objectContaining({ id: 'orbit' }),
+      availableSources: [sourceDto('123e4567-e89b-42d3-a456-426614174000', 'orbit.png')]
+    });
+  });
+
+  test('素材目录读取失败时保留稳定角色草稿与素材列表', async () => {
+    const previousSources = [
+      sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png')
+    ];
+    const { api } = apiDouble({
+      listCharacterSources: vi.fn(id => (
+        id === 'nova'
+          ? Promise.reject(new Error('CHARACTER_SOURCE_LIST_FAILED'))
+          : Promise.resolve(previousSources)
+      ))
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    await store.getState().selectCharacter('nova');
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'default',
+      draft: expect.objectContaining({ id: 'default' }),
+      availableSources: previousSources
     });
   });
 });
