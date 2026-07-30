@@ -165,7 +165,7 @@ export class CloudBasePostgresStore implements SubmissionStore {
     await requireSuccess(
       this.database
         .from('submissions')
-        .update({ status: 'system_reviewing' })
+        .update({ status: 'system_reviewing', purge_after: null })
         .eq('id', input.submissionId)
         .eq('status', 'uploading'),
       '完成上传失败'

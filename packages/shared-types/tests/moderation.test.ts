@@ -35,13 +35,34 @@ describe('投稿审核契约', () => {
       submissionId: 'submission-1',
       statusToken,
       statusPath: '/submission-status/',
-      status: 'system_reviewing'
+      status: 'uploading'
     }).statusToken).toBe(statusToken);
     expect(() => submissionReceiptSchema.parse({
       submissionId: 'submission-1',
       statusToken: 'a'.repeat(42),
       statusPath: '/submission-status/',
       status: 'system_reviewing'
+    })).toThrow();
+  });
+
+  it('投稿回执只接受上传中或系统审核中状态', () => {
+    const receipt = {
+      submissionId: 'submission-1',
+      statusToken: 'a'.repeat(43),
+      statusPath: '/submission-status/'
+    };
+
+    expect(submissionReceiptSchema.parse({
+      ...receipt,
+      status: 'uploading'
+    }).status).toBe('uploading');
+    expect(submissionReceiptSchema.parse({
+      ...receipt,
+      status: 'system_reviewing'
+    }).status).toBe('system_reviewing');
+    expect(() => submissionReceiptSchema.parse({
+      ...receipt,
+      status: 'published'
     })).toThrow();
   });
 

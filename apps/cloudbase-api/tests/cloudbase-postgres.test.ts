@@ -8,6 +8,7 @@ import {
   CloudBasePostgresRpcClient,
   CloudBasePostgresStore
 } from '../src/adapters/cloudbase-postgres.js';
+import { SubmissionService } from '../src/services/submission-service.js';
 import type {
   CloudBaseRdbClient
 } from '../src/adapters/cloudbase-postgres.js';
@@ -33,6 +34,10 @@ describe('CloudBase PostgreSQL 迁移', () => {
     expect(sql).toContain('status_version');
     expect(sql).toContain('purge_after');
     expect(sql).toContain('FOR UPDATE SKIP LOCKED');
+    expect(sql).toContain(
+      'declared_size bigint NOT NULL CHECK (declared_size > 0)'
+    );
+    expect(sql).toContain("now() + interval '3 days'");
   });
 
   it('状态约束精确包含八种共享状态', () => {
@@ -184,7 +189,8 @@ class MemoryRdb {
         kind: submission.kind as string,
         title: submission.title as string,
         body: submission.body as string,
-        status_token_hash: submission.status_token_hash as string
+        status_token_hash: submission.status_token_hash as string,
+        purge_after: '2026-08-03T00:00:00.000Z'
       });
       const assetRows = assets.map((asset) => ({
         submission_id: row.id,
@@ -636,11 +642,22 @@ describe('CloudBase PostgreSQL 仓储', () => {
   });
 
   it('完成上传只把 uploading 投稿推进到系统审核', async () => {
-    const { store } = createStore();
+    const { database, store } = createStore();
     await store.createSubmission(newSubmission('submission-1'));
+    await expect(store.findById('submission-1')).resolves.toMatchObject({
+      purgeAfter: '2026-08-03T00:00:00.000Z'
+    });
 
     await expect(store.completeUpload({ submissionId: 'submission-1' }))
-      .resolves.toMatchObject({ id: 'submission-1', status: 'system_reviewing' });
+      .resolves.toMatchObject({
+        id: 'submission-1',
+        status: 'system_reviewing',
+        purgeAfter: null
+      });
+    expect(database.submissions[0]).toMatchObject({
+      status: 'system_reviewing',
+      purge_after: null
+    });
   });
 
   it('创建共享包时持久化两项资产声明并可按 ID 回读', async () => {
@@ -706,6 +723,70 @@ describe('CloudBase PostgreSQL 仓储', () => {
       .rejects.toMatchObject({ code: 'DATABASE_ERROR' });
     expect(database.submissions).toEqual([]);
     expect(database.assets).toEqual([]);
+  });
+
+  it('未完成上传的投稿到期后进入清理候选', async () => {
+    const { store } = createStore();
+    await store.createSubmission(newSubmission('abandoned-upload'));
+
+    await expect(
+      store.listPurgeCandidates('2026-08-03T00:00:00.000Z', 10)
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: 'abandoned-upload',
+        status: 'uploading',
+        purgeAfter: '2026-08-03T00:00:00.000Z'
+      })
+    ]);
+  });
+
+  it('上传签名失败的隐藏投稿仍可按期限清理', async () => {
+    const { store } = createStore();
+    const service = new SubmissionService(
+      store,
+      {
+        async createSignedUploadUrl(): Promise<never> {
+          throw Object.assign(new Error('签名失败'), { code: 'STORAGE_ERROR' });
+        },
+        async info(): Promise<never> {
+          throw new Error('本测试不会读取对象信息');
+        },
+        async createSignedUrl(): Promise<never> {
+          throw new Error('本测试不会签发下载地址');
+        },
+        async delete(): Promise<void> {}
+      },
+      { async verify(): Promise<void> {} },
+      () => 'failed-signature'
+    );
+
+    await expect(service.prepare({
+      kind: 'shared_package',
+      title: '待清理投稿',
+      body: '签名失败后保持隐藏。',
+      captcha: { ticket: 'ticket-1', randstr: 'rand-1' },
+      packageFile: {
+        fileName: 'pet.zip',
+        sizeBytes: 1024,
+        contentType: 'application/zip'
+      },
+      coverFile: {
+        fileName: 'cover.webp',
+        sizeBytes: 512,
+        contentType: 'image/webp'
+      }
+    }, { ip: '203.0.113.8' })).rejects.toMatchObject({
+      code: 'STORAGE_ERROR'
+    });
+    await expect(
+      store.listPurgeCandidates('2026-08-03T00:00:00.000Z', 10)
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: 'failed-signature',
+        status: 'uploading',
+        purgeAfter: '2026-08-03T00:00:00.000Z'
+      })
+    ]);
   });
 
   it('审核任务领取跳过有效租约并写入新租约', async () => {

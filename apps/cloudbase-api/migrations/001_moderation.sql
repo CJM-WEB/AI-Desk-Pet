@@ -38,7 +38,7 @@ CREATE TABLE assets (
   submission_id text NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
   object_key text NOT NULL UNIQUE,
   original_name text NOT NULL,
-  declared_size bigint NOT NULL CHECK (declared_size >= 0),
+  declared_size bigint NOT NULL CHECK (declared_size > 0),
   actual_size bigint CHECK (actual_size >= 0),
   sha256 char(64),
   mime_type text,
@@ -133,13 +133,21 @@ BEGIN
     RAISE EXCEPTION 'invalid submission payload' USING ERRCODE = '22023';
   END IF;
 
-  INSERT INTO submissions (id, kind, title, body, status_token_hash)
+  INSERT INTO submissions (
+    id,
+    kind,
+    title,
+    body,
+    status_token_hash,
+    purge_after
+  )
   VALUES (
     p_submission ->> 'id',
     p_submission ->> 'kind',
     p_submission ->> 'title',
     p_submission ->> 'body',
-    p_submission ->> 'status_token_hash'
+    p_submission ->> 'status_token_hash',
+    now() + interval '3 days'
   )
   RETURNING * INTO v_submission;
 

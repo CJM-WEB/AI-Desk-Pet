@@ -25,7 +25,7 @@ export const submissionReceiptSchema = z.object({
   submissionId: z.string().min(1).max(128),
   statusToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   statusPath: z.literal('/submission-status/'),
-  status: z.literal('system_reviewing')
+  status: z.enum(['uploading', 'system_reviewing'])
 }).strict();
 export type SubmissionReceipt = z.infer<typeof submissionReceiptSchema>;
 

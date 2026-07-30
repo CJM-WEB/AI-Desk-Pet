@@ -191,7 +191,7 @@ export interface SubmissionReceipt {
   submissionId: string;
   statusToken: string;
   statusPath: '/submission-status/';
-  status: 'system_reviewing';
+  status: 'uploading' | 'system_reviewing';
 }
 ```
 
@@ -551,7 +551,7 @@ git commit -m "feat: 增加审核数据库结构与仓储"
 ```ts
 it('prepare 验票后只返回私有单次上传目标和一次性状态令牌', async () => {
   const receipt = await service.prepare(validSharedPackageInput, requestContext);
-  expect(receipt.status).toBe('system_reviewing');
+  expect(receipt.status).toBe('uploading');
   expect(receipt.statusToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(receipt.packageUpload.url).toMatch(/^https:/);
   expect(store.created.statusTokenHash).not.toBe(receipt.statusToken);

@@ -150,7 +150,7 @@ describe('投稿服务', () => {
     );
     expect(receipt).toMatchObject({
       submissionId: 'submission-1',
-      status: 'system_reviewing',
+      status: 'uploading',
       statusPath: '/submission-status/',
       coverUpload: {
         path: 'submissions/submission-1/cover.webp',
@@ -194,6 +194,23 @@ describe('投稿服务', () => {
       { ip: '203.0.113.8' }
     )).rejects.toMatchObject({ code: 'INVALID_UPLOAD' });
     expect(verifier.verify).not.toHaveBeenCalled();
+    expect(store.created).toBeNull();
+  });
+
+  it.each([
+    ['共享包', {
+      packageFile: { ...validInput.packageFile, sizeBytes: 0 }
+    }],
+    ['封面', {
+      coverFile: { ...validInput.coverFile, sizeBytes: 0 }
+    }]
+  ])('%s 声明为零字节时拒绝准备上传', async (_name, change) => {
+    const { service, store } = createFixture();
+
+    await expect(service.prepare(
+      { ...validInput, ...change } as PrepareSubmissionInput,
+      { ip: '203.0.113.8' }
+    )).rejects.toMatchObject({ code: 'INVALID_UPLOAD' });
     expect(store.created).toBeNull();
   });
 
@@ -261,7 +278,7 @@ describe('投稿服务', () => {
     await service.prepare(validInput, { ip: '203.0.113.8' });
     storage.infoByPath.set('submissions/submission-1/cover.webp', {
       path: 'submissions/submission-1/cover.webp',
-      size: 5 * MiB - 1,
+      size: 5 * MiB,
       contentType: 'image/webp'
     });
     storage.infoByPath.set('submissions/submission-1/package.zip', {
@@ -286,6 +303,11 @@ describe('投稿服务', () => {
       size: 100 * MiB + 1,
       contentType: 'application/zip'
     }],
+    ['大小短于声明', {
+      path: 'submissions/submission-1/package.zip',
+      size: 100 * MiB - 1,
+      contentType: 'application/zip'
+    }],
     ['MIME 不符', {
       path: 'submissions/submission-1/package.zip',
       size: 100 * MiB,
@@ -296,7 +318,7 @@ describe('投稿服务', () => {
     await service.prepare(validInput, { ip: '203.0.113.8' });
     storage.infoByPath.set('submissions/submission-1/cover.webp', {
       path: 'submissions/submission-1/cover.webp',
-      size: 5 * MiB - 1,
+      size: 5 * MiB,
       contentType: 'image/webp'
     });
     if (packageInfo) {

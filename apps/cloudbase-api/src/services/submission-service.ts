@@ -119,7 +119,7 @@ export class SubmissionService {
       submissionId,
       statusToken,
       statusPath: '/submission-status/',
-      status: 'system_reviewing',
+      status: 'uploading',
       coverUpload: { path: coverPath, ...coverUpload },
       packageUpload: { path: packagePath, ...packageUpload }
     };
@@ -163,7 +163,7 @@ export class SubmissionService {
     const object = await this.storage.info(asset.storageKey);
     if (
       !object
-      || object.size > asset.declaredBytes
+      || object.size !== asset.declaredBytes
       || object.size > absoluteMaximum
       || normalizeContentType(object.contentType)
         !== normalizeContentType(asset.contentType)
@@ -216,7 +216,7 @@ function validatePrepareInput(
 function validFileSize(value: unknown, maximum: number): value is number {
   return typeof value === 'number'
     && Number.isSafeInteger(value)
-    && value >= 0
+    && value > 0
     && value <= maximum;
 }
 
