@@ -1,13 +1,23 @@
 /** API 可安全返回给调用方的受控错误。 */
 export class ApiError extends Error {
+  readonly publicMessage: string;
+
   constructor(
     public readonly code: string,
     public readonly statusCode: number,
-    message = code
+    internalReason = code
   ) {
-    super(message);
+    super(internalReason);
     this.name = 'ApiError';
+    this.publicMessage = publicMessageFor(code);
   }
+}
+
+/** 将稳定错误码映射为不包含内部实现细节的公开文案。 */
+function publicMessageFor(code: string): string {
+  if (code === 'NOT_FOUND') return '接口不存在';
+  if (code === 'INTERNAL_ERROR') return '服务暂时不可用';
+  return '请求失败';
 }
 
 export interface CloudBaseHttpResponse {
@@ -30,8 +40,8 @@ export function jsonResponse(
       'cache-control': 'no-store'
     },
     body: JSON.stringify({
-      data,
-      error: error ? { code: error.code, message: error.message } : null,
+      data: data ?? null,
+      error: error ? { code: error.code, message: error.publicMessage } : null,
       requestId
     })
   };
