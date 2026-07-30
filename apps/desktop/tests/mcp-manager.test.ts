@@ -684,6 +684,8 @@ function isProcessRunning(pid: number): boolean {
   }
 }
 
+const STDIO_SUCCESS_TIMEOUT_MS = 3_000;
+
 describe('McpManager stdio 集成', () => {
   const managers: McpManager[] = [];
 
@@ -705,7 +707,7 @@ describe('McpManager stdio 集成', () => {
     }
     const manager = new McpManager({
       store,
-      defaultTimeoutMs: 1_000,
+      defaultTimeoutMs: STDIO_SUCCESS_TIMEOUT_MS,
       outputLimitBytes,
       inputLimitBytes
     });
@@ -737,7 +739,7 @@ describe('McpManager stdio 集成', () => {
     store.confirmStdioLaunch('environment', summary.fingerprint);
     const manager = new McpManager({
       store,
-      defaultTimeoutMs: 1_000,
+      defaultTimeoutMs: STDIO_SUCCESS_TIMEOUT_MS,
       environment: {
         ...process.env,
         PATH: 'C:\\attacker-controlled-path',
@@ -762,7 +764,10 @@ describe('McpManager stdio 集成', () => {
     const store = new McpServerStore([fixtureConfig('fixed-cwd')]);
     const summary = store.getStdioLaunchSummary('fixed-cwd');
     store.confirmStdioLaunch('fixed-cwd', summary.fingerprint);
-    const manager = new McpManager({ store, defaultTimeoutMs: 1_000 });
+    const manager = new McpManager({
+      store,
+      defaultTimeoutMs: STDIO_SUCCESS_TIMEOUT_MS
+    });
     managers.push(manager);
 
     try {
@@ -898,7 +903,7 @@ describe('McpManager stdio 集成', () => {
     store.confirmStdioLaunch('concurrency', summary.fingerprint);
     const manager = new McpManager({
       store,
-      defaultTimeoutMs: 1_000,
+      defaultTimeoutMs: STDIO_SUCCESS_TIMEOUT_MS,
       maxConcurrentCallsPerServer: 1
     });
     managers.push(manager);

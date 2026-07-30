@@ -277,8 +277,8 @@ describe('Main 角色运动服务', () => {
 
     expect(source).not.toContain("pet.webContents.on('context-menu'");
     expect(source.match(/registerPetWindowInteractionIpc\(/gu)).toHaveLength(1);
-    expect(source).toContain(
-      'registerPetWindowInteractionIpc(\n    ipcMain,\n    petWindowInteraction,\n    pet.webContents,\n    openPetContextMenu'
+    expect(source).toMatch(
+      /registerPetWindowInteractionIpc\(\s*ipcMain,\s*petWindowInteraction,\s*pet\.webContents,\s*openPetContextMenu/u
     );
     expect(source).toContain("{ label: '打开聊天'");
   });

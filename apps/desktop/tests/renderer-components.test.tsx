@@ -183,7 +183,7 @@ describe('桌宠播放器接入', () => {
 
   test('180x220 桌宠窗口具有不塌缩的完整高度链', () => {
     const styles = readFileSync(
-      resolve(process.cwd(), 'src/renderer/src/styles.css'),
+      resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
       'utf8'
     );
 

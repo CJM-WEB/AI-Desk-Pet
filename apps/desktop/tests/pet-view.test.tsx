@@ -55,7 +55,7 @@ test('启动恢复快照读取失败时映射为通用恢复状态且不抛出�
 describe('桌宠锚点视觉消费者', () => {
   test('锚点视觉对象的定位与尺寸在默认动画偏好下仍然生效', () => {
     const css = readFileSync(
-      resolve(process.cwd(), 'src/renderer/src/styles.css'),
+      resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
       'utf8'
     );
     const baseCss = css.split('@media (prefers-reduced-motion: reduce)')[0] ?? '';
@@ -197,7 +197,7 @@ describe('桌宠像素交互接线', () => {
 
   test('桌宠容器使用普通 DOM 且不再保留旧按钮与整窗拖拽区域', () => {
     const css = readFileSync(
-      resolve(process.cwd(), 'src/renderer/src/styles.css'),
+      resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
       'utf8'
     );
 
