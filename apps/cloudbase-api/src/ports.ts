@@ -1,4 +1,5 @@
 import type {
+  AdminAction,
   CaptchaProof,
   SubmissionStatus,
   SubmissionStatusView
@@ -16,6 +17,71 @@ export interface NewSubmission {
 export interface SubmissionRow {
   id: string;
   status: SubmissionStatus;
+  statusVersion?: number;
+  kind?: string;
+  title?: string | null;
+  body?: string | null;
+  moderationLeaseUntil?: string | null;
+  purgeAfter?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** 上传完成后推进审核状态所需字段。 */
+export interface CompleteUploadInput {
+  submissionId: string;
+}
+
+/** 单次系统审核结果的持久化记录。 */
+export interface ModerationRecord {
+  submissionId: string;
+  kind: string;
+  provider: string;
+  ruleVersion: string;
+  suggestion: ModerationSignal['suggestion'];
+  label: string;
+  score: number | null;
+  evidence: Record<string, unknown>;
+  requestedAt: string;
+  completedAt: string | null;
+  errorMessage: string | null;
+}
+
+/** 数据库原子管理员动作的完整输入。 */
+export interface AdminActionInput {
+  submissionId: string;
+  adminId: string;
+  action: AdminAction['action'];
+  nextStatus: SubmissionStatus;
+  expectedVersion: number;
+  idempotencyKey: string;
+  reason: string;
+}
+
+/** 管理员动作结果会标识是否为幂等重放。 */
+export interface AdminActionResult {
+  submission: SubmissionRow;
+  replayed: boolean;
+}
+
+/** 公开列表允许返回的裁剪字段。 */
+export interface PublicSubmission {
+  id: string;
+  title: string | null;
+  body: string | null;
+  publishedAt: string;
+}
+
+/** 公开列表使用零基偏移游标，限制由仓储统一执行。 */
+export interface PublicListQuery {
+  limit: number;
+  cursor?: number | null;
+}
+
+/** 公开投稿分页结果。 */
+export interface PublicSubmissionPage {
+  items: PublicSubmission[];
+  nextCursor: number | null;
 }
 
 /** 私有对象上传签名的写入策略。 */
@@ -89,7 +155,13 @@ export interface AdminIdentity {
 /** 投稿存储边界。 */
 export interface SubmissionStore {
   createSubmission(input: NewSubmission): Promise<SubmissionRow>;
+  completeUpload(input: CompleteUploadInput): Promise<SubmissionRow>;
   findByStatusTokenHash(hash: string): Promise<SubmissionStatusView | null>;
+  claimModerationJobs(limit: number, leaseUntil: string): Promise<SubmissionRow[]>;
+  recordModerationResult(result: ModerationRecord): Promise<void>;
+  applyAdminAction(input: AdminActionInput): Promise<AdminActionResult>;
+  listPublished(input: PublicListQuery): Promise<PublicSubmissionPage>;
+  listPurgeCandidates(now: string, limit: number): Promise<SubmissionRow[]>;
 }
 
 /** 私有对象存储边界。 */

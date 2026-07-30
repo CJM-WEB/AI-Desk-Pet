@@ -17,6 +17,7 @@
     "verify:website": "pnpm --filter @myself/website typecheck && pnpm --filter @myself/website test && pnpm --filter @myself/website build && pnpm test:e2e:website"
   },
   "devDependencies": {
+    "@cloudbase/manager-node": "^5.6.5",
     "@playwright/test": "^1.61.1",
     "@types/node": "^24.13.3",
     "typescript": "^5.9.3",

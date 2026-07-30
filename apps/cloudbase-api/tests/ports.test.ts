@@ -29,6 +29,8 @@ import type {
 
 describe('审核 API 端口', () => {
   it('声明各基础设施边界的最小操作', () => {
+    expectTypeOf<{ id: string; status: SubmissionRow['status'] }>()
+      .toMatchTypeOf<SubmissionRow>();
     expectTypeOf<SubmissionStore['createSubmission']>()
       .toEqualTypeOf<(input: NewSubmission) => Promise<SubmissionRow>>();
     expectTypeOf<SubmissionStore['findByStatusTokenHash']>()
