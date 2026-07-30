@@ -104,6 +104,9 @@ export interface CharacterWorkshopState {
   exportCharacterPackage(): Promise<void>;
   importSources(): Promise<void>;
   addAction(): void;
+  addAction(stateId: CharacterStateId): void;
+  removeAction(stateId: CharacterStateId, actionId: string): void;
+  removeExtensionState(stateId: CharacterStateId): void;
   addExtensionState(name: string, event: 'single_click' | 'double_click' | 'context_menu'): void;
   applySpriteSheet(input: {
     sourceAssetId: string;
@@ -589,12 +592,14 @@ export function createCharacterWorkshopStore(
         });
       },
 
-      addAction() {
+      addAction(stateId?: CharacterStateId) {
         const current = get();
-        if (!current.draft || !current.selectedStateId) return;
+        if (!current.draft) return;
+        const targetStateId = stateId ?? current.selectedStateId;
+        if (!targetStateId) return;
         const nextDraft = cloneDraft(current.draft);
         const state = nextDraft.states.find(candidate => (
-          candidate.id === current.selectedStateId
+          candidate.id === targetStateId
         ));
         if (!state) return;
         const base = `${String(state.id).replace(/[^a-z0-9]+/gu, '-')}-action`;
@@ -616,7 +621,55 @@ export function createCharacterWorkshopStore(
         draftRevision += 1;
         set({
           draft: nextDraft,
+          selectedStateId: targetStateId,
           selectedActionId: id,
+          draftStatus: 'dirty'
+        });
+        scheduleSave();
+      },
+
+      /** 删除动作后仅回退当前删除目标的选择，避免影响其他状态的编辑上下文。 */
+      removeAction(stateId, actionId) {
+        const current = get();
+        if (!current.draft) return;
+        const nextDraft = cloneDraft(current.draft);
+        const state = nextDraft.states.find(candidate => candidate.id === stateId);
+        const index = state?.actions.findIndex(action => action.id === actionId) ?? -1;
+        if (!state || index < 0) return;
+        state.actions.splice(index, 1);
+        const deletingCurrent = current.selectedStateId === stateId
+          && current.selectedActionId === actionId;
+        const fallback = state.actions[index] ?? state.actions[index - 1] ?? null;
+        draftRevision += 1;
+        set({
+          draft: nextDraft,
+          selectedActionId: deletingCurrent
+            ? fallback?.id ?? null
+            : current.selectedActionId,
+          draftStatus: 'dirty'
+        });
+        scheduleSave();
+      },
+
+      /** 核心状态属于角色运行契约，只有扩展状态允许从草稿中移除。 */
+      removeExtensionState(stateId) {
+        const current = get();
+        if (!current.draft) return;
+        const target = current.draft.states.find(state => state.id === stateId);
+        if (!target || target.kind !== 'extension') return;
+        const nextDraft = cloneDraft(current.draft);
+        nextDraft.states = nextDraft.states.filter(state => state.id !== stateId);
+        const fallback = nextDraft.states.find(state => state.kind === 'core') ?? null;
+        const deletingCurrent = current.selectedStateId === stateId;
+        draftRevision += 1;
+        set({
+          draft: nextDraft,
+          selectedStateId: deletingCurrent
+            ? fallback?.id ?? null
+            : current.selectedStateId,
+          selectedActionId: deletingCurrent
+            ? fallback?.actions[0]?.id ?? null
+            : current.selectedActionId,
           draftStatus: 'dirty'
         });
         scheduleSave();

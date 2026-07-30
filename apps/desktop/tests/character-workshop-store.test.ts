@@ -1346,4 +1346,177 @@ describe('角色工作室 Zustand 状态层', () => {
       availableSources: previousSources
     });
   });
+
+  test('可直接向指定状态添加动作并选中新动作', async () => {
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.states.push({ id: 'moving', kind: 'core', actions: [] });
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().addAction('moving');
+
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'moving',
+      selectedActionId: 'moving-action-1',
+      draftStatus: 'dirty'
+    });
+  });
+
+  test('删除当前动作后优先选中原索引处的下一个动作', async () => {
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.states[0]!.actions.push({
+      ...structuredClone(loadedDraft.states[0]!.actions[0]!),
+      id: 'idle-next'
+    });
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().removeAction('idle', 'idle-main');
+
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'idle',
+      selectedActionId: 'idle-next',
+      draftStatus: 'dirty'
+    });
+  });
+
+  test('删除当前最后一个动作后选中前一个动作', async () => {
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.states[0]!.actions.push({
+      ...structuredClone(loadedDraft.states[0]!.actions[0]!),
+      id: 'idle-next'
+    });
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().selectAction('idle-next');
+
+    store.getState().removeAction('idle', 'idle-next');
+
+    expect(store.getState().selectedActionId).toBe('idle-main');
+  });
+
+  test('删除唯一动作进入自动保存但保留源素材', async () => {
+    vi.useFakeTimers();
+    const { api } = apiDouble({
+      listCharacterSources: vi.fn(async () => [
+        sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png')
+      ])
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().removeAction('idle', 'idle-main');
+
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'idle',
+      selectedActionId: null,
+      draftStatus: 'dirty',
+      availableSources: expect.arrayContaining([
+        expect.objectContaining({ displayName: 'idle.png' })
+      ])
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(api.saveCharacterDraft).toHaveBeenCalled();
+  });
+
+  test('删除非当前动作时保留当前有效动作选择', async () => {
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.states.push({
+      id: 'moving',
+      kind: 'core',
+      actions: [{
+        ...structuredClone(loadedDraft.states[0]!.actions[0]!),
+        id: 'moving-main'
+      }]
+    });
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().removeAction('moving', 'moving-main');
+
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'idle',
+      selectedActionId: 'idle-main'
+    });
+  });
+
+  test('核心状态不能被删除', async () => {
+    const { api } = apiDouble();
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    const before = structuredClone(store.getState().draft);
+
+    store.getState().removeExtensionState('idle');
+
+    expect(store.getState()).toMatchObject({
+      draft: before,
+      selectedStateId: 'idle',
+      selectedActionId: 'idle-main',
+      draftStatus: 'idle'
+    });
+  });
+
+  test('删除当前扩展状态后回退到第一个核心状态及其首个动作', async () => {
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.states.push({
+      id: 'custom:wave',
+      kind: 'extension',
+      triggers: { events: ['single_click'], keywords: [], emotions: [] },
+      actions: [{
+        ...structuredClone(loadedDraft.states[0]!.actions[0]!),
+        id: 'wave-main'
+      }]
+    });
+    const sources = [sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png')];
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft),
+      listCharacterSources: vi.fn(async () => sources)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().selectState('custom:wave');
+
+    store.getState().removeExtensionState('custom:wave');
+
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'idle',
+      selectedActionId: 'idle-main',
+      draftStatus: 'dirty',
+      availableSources: sources
+    });
+  });
+
+  test('删除非当前扩展状态时保留当前有效选择', async () => {
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.states.push({
+      id: 'custom:wave',
+      kind: 'extension',
+      triggers: { events: ['single_click'], keywords: [], emotions: [] },
+      actions: []
+    });
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().removeExtensionState('custom:wave');
+
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'idle',
+      selectedActionId: 'idle-main'
+    });
+  });
 });
