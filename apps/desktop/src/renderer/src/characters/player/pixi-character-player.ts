@@ -32,6 +32,7 @@ export type CharacterVisualAssets = ReadonlyMap<string, string>;
  */
 export interface PixiCharacterScene {
   loadAssets(assets: CharacterVisualAssets): Promise<void>;
+  clear(): void;
   showAction(
     action: ActionClip | DraftActionClip,
     options: {
@@ -332,6 +333,14 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
       this.baseTextures.set(assetId, texture);
       if (mask) this.alphaMasks.set(assetId, mask);
     }
+  }
+
+  /** 清除当前动作，保留应用和已加载的基础纹理供下一次预览复用。 */
+  clear(): void {
+    if (this.destroyed) return;
+    this.releaseAnimation();
+    this.application.render();
+    this.notifyFrameListeners();
   }
 
   showAction(

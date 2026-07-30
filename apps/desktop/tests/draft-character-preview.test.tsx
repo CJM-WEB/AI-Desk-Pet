@@ -437,6 +437,7 @@ function sceneDouble() {
   const unsubscribe = vi.fn();
   const scene: PixiCharacterScene = {
     loadAssets: vi.fn(async () => undefined),
+    clear: vi.fn(() => { currentFrame = null; }),
     showAction: vi.fn((action, options) => {
       currentFrame = {
         action,
@@ -521,6 +522,129 @@ describe('真实草稿预览', () => {
         speed: 1
       })
     );
+  });
+
+  test('切换到无帧动作时立即清空旧场景且不再显示旧 bundle', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps();
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+    vi.mocked(current.scene.showAction).mockClear();
+    const emptyAction: DraftActionClip = {
+      ...idleAction,
+      id: 'idle-empty',
+      name: '空动作',
+      frames: []
+    };
+
+    view.rerender(<DraftCharacterPreview
+      {...props}
+      actionId="idle-empty"
+      draft={draftWith(emptyAction)}
+    />);
+
+    expect(current.scene.clear).toHaveBeenCalledOnce();
+    expect(screen.getByText('当前动作没有可预览帧')).not.toBeNull();
+    expect(current.scene.showAction).not.toHaveBeenCalled();
+  });
+
+  test('角色身份变化时在新素材完成前清空旧场景', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const nextSource = deferred<Uint8Array>();
+    const readCharacterSource = vi.fn((characterId: string) => (
+      characterId === 'nova' ? Promise.resolve(PNG_BYTES) : nextSource.promise
+    ));
+    const props = previewProps(draftWith(), {
+      api: apiWithReader(readCharacterSource)
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+
+    view.rerender(<DraftCharacterPreview {...props} characterId="luna" />);
+
+    await waitFor(() => expect(current.scene.clear).toHaveBeenCalledOnce());
+    expect(screen.getByTestId('draft-character-preview').getAttribute(
+      'data-preview-status'
+    )).toBe('loading');
+  });
+
+  test('旧角色素材晚返回时不会重新展示旧动作', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const oldSource = deferred<Uint8Array>();
+    const readCharacterSource = vi.fn((characterId: string) => (
+      characterId === 'nova' ? oldSource.promise : Promise.resolve(PNG_BYTES)
+    ));
+    const props = previewProps(draftWith(), {
+      api: apiWithReader(readCharacterSource)
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await waitFor(() => expect(readCharacterSource).toHaveBeenCalledOnce());
+
+    view.rerender(<DraftCharacterPreview {...props} characterId="luna" />);
+    await waitFor(() => expect(current.scene.showAction).toHaveBeenCalledOnce());
+    oldSource.resolve(PNG_BYTES);
+    await act(async () => settle());
+
+    expect(current.scene.showAction).toHaveBeenCalledOnce();
+  });
+
+  test('新角色素材读取失败后保持场景为空', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const readCharacterSource = vi.fn((characterId: string) => {
+      if (characterId === 'luna') {
+        return Promise.reject(new Error('CHARACTER_SOURCE_READ_FAILED'));
+      }
+      return Promise.resolve(PNG_BYTES);
+    });
+    const props = previewProps(draftWith(), {
+      api: apiWithReader(readCharacterSource)
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+
+    view.rerender(<DraftCharacterPreview {...props} characterId="luna" />);
+
+    await screen.findByText('预览素材读取失败');
+    expect(current.scene.clear).toHaveBeenCalled();
+    expect(current.scene.getCurrentFrame()).toBeNull();
+  });
+
+  test('同一动作仅修改循环或锚点时不重复清空整个场景', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps();
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+
+    view.rerender(<DraftCharacterPreview {...props} preview={previewState({
+      loop: false
+    })} />);
+    await waitFor(() => expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      idleAction,
+      expect.objectContaining({ loop: false })
+    ));
+    const revisedAction: DraftActionClip = {
+      ...idleAction,
+      anchors: {
+        ...idleAction.anchors,
+        carry: { x: 0.4, y: 0.2 }
+      }
+    };
+
+    view.rerender(<DraftCharacterPreview {...props} draft={draftWith(revisedAction)} />);
+    await waitFor(() => expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      revisedAction,
+      expect.anything()
+    ));
+    expect(current.scene.clear).not.toHaveBeenCalled();
   });
 
   test('控制重建动作时复用单个帧订阅，暂停逐帧不会请求连续播放', async () => {
@@ -792,6 +916,7 @@ describe('真实草稿预览', () => {
     const current = sceneDouble();
     pixiFactory.mockResolvedValue(current.scene);
     const committedStatuses: Array<string | null> = [];
+    const committedClearCalls: number[] = [];
     const props = previewProps();
 
     function StatusCommitProbe(probeProps: {
@@ -805,6 +930,7 @@ describe('真实草稿预览', () => {
             'data-preview-status'
           )
         );
+        committedClearCalls.push(vi.mocked(current.scene.clear).mock.calls.length);
       }, [probeProps.actionId]);
       return (
         <DraftCharacterPreview
@@ -821,6 +947,8 @@ describe('真实草稿预览', () => {
     />);
     await screen.findByText('预览已就绪');
     committedStatuses.length = 0;
+    committedClearCalls.length = 0;
+    vi.mocked(current.scene.clear).mockClear();
 
     view.rerender(<StatusCommitProbe
       stateId="acting"
@@ -829,6 +957,7 @@ describe('真实草稿预览', () => {
     />);
 
     expect(committedStatuses[0]).toBe('loading');
+    expect(committedClearCalls[0]).toBe(1);
   });
 
   test('API 切换即使新场景初始化挂起也立即取消旧资源等待', async () => {
@@ -1094,6 +1223,26 @@ describe('真实草稿预览', () => {
     const preview = screen.getByTestId('draft-character-preview');
     expect(preview.getAttribute('data-preview-status')).toBe('error');
     expect(preview.getAttribute('data-preview-speed')).not.toBe('3');
+  });
+
+  test('同一资源的控制更新渲染失败时清空场景', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps(draftWith());
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+    vi.mocked(current.scene.showAction).mockImplementationOnce(() => {
+      throw new Error('SHOW_FAILED');
+    });
+
+    view.rerender(<DraftCharacterPreview {...props} preview={previewState({
+      loop: false
+    })} />);
+
+    await screen.findByText('预览渲染失败');
+    expect(current.scene.clear).toHaveBeenCalledOnce();
+    expect(current.scene.getCurrentFrame()).toBeNull();
   });
 
   test.each([
