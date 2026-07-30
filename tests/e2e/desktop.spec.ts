@@ -1933,7 +1933,9 @@ test.describe('真实角色工作室闭环', () => {
       await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
         .toBeVisible();
 
-      await workshop.getByRole('button', { name: '添加动作' }).click();
+      await workshop.getByRole('button', {
+        name: '向“待机”添加动作'
+      }).click();
       await workshop.getByRole('button', { name: '导入素材' }).click();
       await workshop.getByLabel('已导入素材').selectOption({ label: 'idle.png' });
       await workshop.getByLabel('行数').fill('2');
@@ -1942,6 +1944,26 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByRole('button', { name: '应用到当前动作' }).click();
       await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
       await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
+      const idleActionDelete = workshop.getByRole('button', {
+        name: '删除动作“动作 1”'
+      });
+      await workshop.getByRole('button', {
+        name: '向“待机”添加动作'
+      }).click();
+      const emptyActionDelete = workshop.getByRole('button', {
+        name: '删除动作“动作 2”'
+      });
+      await expect(emptyActionDelete).toBeVisible();
+      await emptyActionDelete.click();
+      await expect(emptyActionDelete).toHaveCount(0);
+      await idleActionDelete.click();
+      const configuredActionDeleteDialog = workshop.getByRole('dialog', {
+        name: '删除动作“动作 1”'
+      });
+      await expect(configuredActionDeleteDialog).toContainText('该动作包含 4 帧');
+      await configuredActionDeleteDialog.getByRole('button', { name: '取消' }).click();
+      await expect(configuredActionDeleteDialog).toHaveCount(0);
+      await expect(idleActionDelete).toBeVisible();
       const draftPreview = workshop.locator('[data-preview-status]');
       await expect(draftPreview).toHaveAttribute('data-preview-status', 'ready');
       await workshop.getByRole('button', { name: '切换左右方向' }).click();
@@ -1972,8 +1994,10 @@ test.describe('真实角色工作室闭环', () => {
       await submitChatMessage(chat, 'thinking 降级期间继续验证 Agent');
       await expect(chat.getByText('请先完成模型服务和授权目录设置。')).toBeVisible();
 
-      await workshop.getByRole('button', { name: /搬运/ }).click();
-      await workshop.getByRole('button', { name: '添加动作' }).click();
+      await workshop.getByRole('button', { name: /^搬运/ }).click();
+      await workshop.getByRole('button', {
+        name: '向“搬运”添加动作'
+      }).click();
       await workshop.getByRole('button', { name: '导入素材' }).click();
       await workshop.getByLabel('已导入素材').selectOption({ label: 'carrying.png' });
       await workshop.getByLabel('行数').fill('2');
@@ -1984,11 +2008,13 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByLabel('carry X').fill('0.7');
       await workshop.getByLabel('carry Y').fill('0.4');
 
-      await workshop.getByRole('button', { name: '扩展状态' }).click();
+      await workshop.getByRole('button', { name: '添加扩展状态' }).click();
       await workshop.getByLabel('状态名称').fill('wave');
       await workshop.getByLabel('扩展状态触发方式').selectOption('double_click');
       await workshop.getByLabel('状态名称').press('Enter');
-      await workshop.getByRole('button', { name: '添加动作' }).click();
+      await workshop.getByRole('button', {
+        name: '向“wave”添加动作'
+      }).click();
       await workshop.getByRole('button', { name: '导入素材' }).click();
       await workshop.getByLabel('已导入素材').selectOption({ label: 'acting.png' });
       await workshop.getByLabel('行数').fill('2');
@@ -2059,10 +2085,32 @@ test.describe('真实角色工作室闭环', () => {
     try {
       const workshop = await openWorkshop(recovered, '重启恢复');
       const pet = await waitForPage(recovered, 'pet', '重启恢复：读取活动角色');
-      await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
-        .toBeVisible({ timeout: 15_000 });
-      await workshop.getByRole('button', { name: /wave/ }).click();
+      const recoveredCharacter = workshop.getByRole('button', {
+        name: /^E2E 工作室角色/
+      });
+      await expect(recoveredCharacter).toBeVisible({ timeout: 15_000 });
+      await recoveredCharacter.click();
+      await expect(workshop.getByLabel('已导入素材')).toContainText('idle.png');
+      await expect(workshop.getByLabel('已导入素材')).toContainText('carrying.png');
+      await expect(workshop.getByLabel('已导入素材')).toContainText('acting.png');
+      await workshop.getByRole('button', { name: /^wave/ }).click();
       await expect(workshop.getByLabel('帧率')).toHaveValue('9', { timeout: 15_000 });
+      const recoveredPreview = workshop.locator('[data-preview-status]');
+      await expect(recoveredPreview).toHaveAttribute('data-preview-status', 'ready');
+      await expect(workshop.getByRole('button', {
+        name: '向“wave”添加动作'
+      })).toBeVisible();
+      await expect(workshop.getByRole('button', {
+        name: '删除动作“动作 1”'
+      })).toBeVisible();
+      await expect(
+        workshop.getByRole('region', { name: '序列帧时间轴' })
+          .locator('li')
+          .first()
+          .getByRole('button')
+      ).toHaveAttribute('aria-pressed', 'true');
+      await workshop.getByRole('button', { name: /^倾听/ }).click();
+      await expect(recoveredPreview).toHaveAttribute('data-preview-status', 'empty');
       const active = await pet.evaluate(async () => (
         (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
       ));
@@ -2112,8 +2160,19 @@ test.describe('真实角色工作室闭环', () => {
         state: document.querySelector('main[data-character-state]')
           ?.getAttribute('data-character-state') ?? null
       }));
+      const isolatedCharactersDirectory = join(
+        isolated.userDataDirectory,
+        'characters'
+      );
+      await expect.poll(async () => (
+        await snapshotCharacterPersistence(isolatedCharactersDirectory)
+      ).tree.some(entry => (
+        entry.type === 'file' && entry.path.startsWith('.locks/')
+      )), {
+        message: '安全角色包导入锁应在持久化快照前释放'
+      }).toBe(false);
       const persistenceBefore = await snapshotCharacterPersistence(
-        join(isolated.userDataDirectory, 'characters')
+        isolatedCharactersDirectory
       );
       await clickReadyButton(workshop, '导入角色包', '隔离导入：拒绝恶意角色包');
       await expect(workshop.getByRole('alert'))
@@ -2134,7 +2193,7 @@ test.describe('真实角色工作室闭环', () => {
           ?.getAttribute('data-character-state') ?? null
       }))).toEqual(runtimeBefore);
       expect(await snapshotCharacterPersistence(
-        join(isolated.userDataDirectory, 'characters')
+        isolatedCharactersDirectory
       )).toEqual(persistenceBefore);
     } finally {
       await isolated.dispose();
