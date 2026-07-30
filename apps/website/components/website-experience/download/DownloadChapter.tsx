@@ -391,7 +391,7 @@ export function DownloadChapter({
                         </dl>
                         <button className={styles.downloadAction} type="button" disabled>
                           <Clock3 aria-hidden="true" />
-                          尚未发布
+                          {t('download.unpublished')}
                         </button>
                       </>
                     ) : (
