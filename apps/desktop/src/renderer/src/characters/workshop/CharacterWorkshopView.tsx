@@ -17,7 +17,11 @@ import {
   Save
 } from 'lucide-react';
 import { useStore } from 'zustand';
-import type { DraftActionClip } from '@myself/character-runtime';
+import type {
+  CharacterDraftStateDefinition,
+  CharacterStateId,
+  DraftActionClip
+} from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
 import {
   createCharacterWorkshopStore,
@@ -66,6 +70,17 @@ function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
     candidate => candidate.id === state.selectedActionId
   ) ?? null;
 }
+
+type PendingConfigurationDelete =
+  | {
+      kind: 'action';
+      stateId: CharacterStateId;
+      action: DraftActionClip;
+    }
+  | {
+      kind: 'state';
+      state: CharacterDraftStateDefinition;
+    };
 
 /**
  * 动作身份切换边界：即使新旧帧数相同，也从新动作首帧重新对齐预览与时间轴。
@@ -138,6 +153,9 @@ export function CharacterWorkshopWorkspace(
   const [perFrameAnchors, setPerFrameAnchors] = useState(false);
   const [extensionOpen, setExtensionOpen] = useState(false);
   const [extensionName, setExtensionName] = useState('');
+  const [pendingConfigurationDelete, setPendingConfigurationDelete] = useState<
+    PendingConfigurationDelete | null
+  >(null);
   const [extensionEvent, setExtensionEvent] = useState<
     'single_click' | 'double_click' | 'context_menu'
   >('single_click');
@@ -276,6 +294,46 @@ export function CharacterWorkshopWorkspace(
     }
   }
 
+  /** 空配置可直接移除；含素材帧的动作需明确确认。 */
+  function requestDeleteAction(
+    stateId: CharacterStateId,
+    actionToDelete: DraftActionClip
+  ): void {
+    if (actionToDelete.frames.length === 0) {
+      state.removeAction(stateId, actionToDelete.id);
+      return;
+    }
+    setPendingConfigurationDelete({
+      kind: 'action',
+      stateId,
+      action: actionToDelete
+    });
+  }
+
+  /** 空扩展状态可直接移除；有动作时需明确确认。 */
+  function requestDeleteState(
+    stateDefinition: CharacterDraftStateDefinition
+  ): void {
+    if (stateDefinition.actions.length === 0) {
+      state.removeExtensionState(stateDefinition.id);
+      return;
+    }
+    setPendingConfigurationDelete({ kind: 'state', state: stateDefinition });
+  }
+
+  function confirmConfigurationDelete(): void {
+    if (!pendingConfigurationDelete) return;
+    if (pendingConfigurationDelete.kind === 'action') {
+      state.removeAction(
+        pendingConfigurationDelete.stateId,
+        pendingConfigurationDelete.action.id
+      );
+    } else {
+      state.removeExtensionState(pendingConfigurationDelete.state.id);
+    }
+    setPendingConfigurationDelete(null);
+  }
+
   return (
     <main
       className="character-workshop-shell"
@@ -332,24 +390,10 @@ export function CharacterWorkshopWorkspace(
         </button>
         <button
           type="button"
-          disabled={busy || !state.selectedStateId}
-          onClick={state.addAction}
-        >
-          <Plus size={16} />添加动作
-        </button>
-        <button
-          type="button"
           disabled={busy || !state.draft || state.draftStatus === 'saved'}
           onClick={() => void state.flushDraft()}
         >
           <Save size={16} />保存草稿
-        </button>
-        <button
-          type="button"
-          disabled={busy || !state.draft}
-          onClick={() => setExtensionOpen(true)}
-        >
-          <Plus size={16} />扩展状态
         </button>
         <button
           type="button"
@@ -424,6 +468,16 @@ export function CharacterWorkshopWorkspace(
           <section className="workshop-section state-section">
             <div className="section-heading">
               <h2>状态与动作</h2>
+              <button
+                className="section-heading-command"
+                type="button"
+                aria-label="添加扩展状态"
+                title="添加扩展状态"
+                disabled={busy || !state.draft}
+                onClick={() => setExtensionOpen(true)}
+              >
+                <Plus size={16} aria-hidden="true" />
+              </button>
             </div>
             <StateList
               states={state.draft?.states ?? []}
@@ -432,6 +486,9 @@ export function CharacterWorkshopWorkspace(
               disabled={busy}
               onSelectState={state.selectState}
               onSelectAction={state.selectAction}
+              onAddAction={state.addAction}
+              onRequestDeleteState={requestDeleteState}
+              onRequestDeleteAction={requestDeleteAction}
             />
           </section>
         </aside>
@@ -605,6 +662,51 @@ export function CharacterWorkshopWorkspace(
             void state.activateCharacter(activationCharacter.id, true);
           }}
         />
+      ) : null}
+
+      {pendingConfigurationDelete ? (
+        <dialog
+          open
+          aria-modal="true"
+          aria-labelledby="delete-configuration-title"
+          onCancel={event => {
+            event.preventDefault();
+            setPendingConfigurationDelete(null);
+          }}
+          onKeyDown={event => cancelOnEscape(
+            event,
+            () => setPendingConfigurationDelete(null)
+          )}
+        >
+          <div className="workshop-dialog">
+            <h2 id="delete-configuration-title">
+              {pendingConfigurationDelete.kind === 'action'
+                ? `删除动作“${pendingConfigurationDelete.action.name}”`
+                : `删除扩展状态“${pendingConfigurationDelete.state.id.replace(/^custom:/u, '')}”`}
+            </h2>
+            <p>
+              {pendingConfigurationDelete.kind === 'action'
+                ? `该动作包含 ${pendingConfigurationDelete.action.frames.length} 帧，删除后无法恢复。`
+                : `该状态包含 ${pendingConfigurationDelete.state.actions.length} 个动作，删除后无法恢复。`}
+            </p>
+            <div className="dialog-actions">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setPendingConfigurationDelete(null)}
+              >
+                取消
+              </button>
+              <button
+                className="danger-command"
+                type="button"
+                onClick={confirmConfigurationDelete}
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </dialog>
       ) : null}
 
       {extensionOpen ? (

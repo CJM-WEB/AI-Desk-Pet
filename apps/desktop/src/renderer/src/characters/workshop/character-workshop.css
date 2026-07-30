@@ -422,9 +422,39 @@
   border-bottom: 1px solid #edf0f0;
 }
 
+.section-heading-command,
+.state-row-commands button,
+.action-row-commands button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+}
+
+.section-heading-command {
+  margin-left: auto;
+}
+
+.state-row,
+.action-row {
+  display: flex;
+  align-items: center;
+}
+
+.state-row-commands,
+.action-row-commands {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding-right: 7px;
+}
+
 .state-select,
-.action-list button {
+.action-select {
   width: 100%;
+  min-width: 0;
   min-height: 36px;
   display: flex;
   align-items: center;
@@ -452,16 +482,22 @@
   padding: 2px 7px 7px 20px;
 }
 
-.action-list button {
+.action-select {
+  width: 100%;
   min-height: 31px;
   border-radius: 4px;
   color: var(--workshop-muted);
   font-size: 12px;
 }
 
-.action-list button[aria-pressed="true"] {
+.action-select[aria-pressed="true"] {
   color: var(--workshop-text);
   background: var(--workshop-teal-soft);
+}
+
+.state-row-commands .danger-icon:hover:not(:disabled),
+.action-row-commands .danger-icon:hover:not(:disabled) {
+  color: var(--workshop-danger);
 }
 
 .workshop-loading,

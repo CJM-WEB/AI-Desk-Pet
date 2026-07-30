@@ -111,7 +111,9 @@ function state(
     exportCharacterPackage: vi.fn(),
     importSources: vi.fn(),
     addAction: vi.fn(),
+    removeAction: vi.fn(),
     addExtensionState: vi.fn(),
+    removeExtensionState: vi.fn(),
     applySpriteSheet: vi.fn(),
     compileAndPublish: vi.fn(),
     publishCharacter: vi.fn(),
@@ -209,6 +211,43 @@ describe('角色工作室 SSR 外壳', () => {
     );
 
     expect(markup).toContain('保存草稿');
+  });
+
+  test('新增入口位于状态与动作层级且顶部旧按钮已移除', () => {
+    const markup = renderToStaticMarkup(
+      <CharacterWorkshopWorkspace state={state()} />
+    );
+    const toolbar = markup.match(
+      /<nav class="workshop-toolbar"[\s\S]*?<\/nav>/u
+    )?.[0] ?? '';
+
+    expect(toolbar).not.toContain('添加动作');
+    expect(toolbar).not.toContain('扩展状态');
+    expect(markup).toContain('aria-label="添加扩展状态"');
+    expect(markup).toContain('aria-label="向“待机”添加动作"');
+    expect(markup).toContain('aria-label="删除动作“轻呼吸”"');
+  });
+
+  test('核心状态没有状态减号而扩展状态具有加号和减号', () => {
+    const extensionDraft: CharacterDraftV1 = {
+      ...currentDraft,
+      states: [
+        ...currentDraft.states,
+        {
+          id: 'custom:wave',
+          kind: 'extension',
+          triggers: { events: [], keywords: [], emotions: [] },
+          actions: []
+        }
+      ]
+    };
+    const markup = renderToStaticMarkup(
+      <CharacterWorkshopWorkspace state={state({ draft: extensionDraft })} />
+    );
+
+    expect(markup).not.toContain('aria-label="删除核心状态“待机”"');
+    expect(markup).toContain('aria-label="向“wave”添加动作"');
+    expect(markup).toContain('aria-label="删除扩展状态“wave”"');
   });
 
   test('官方默认角色不呈现删除命令，自定义角色提供带标签的单项命令', () => {
