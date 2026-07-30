@@ -10,7 +10,30 @@ export type { CaptchaProof, SubmissionStatusView } from '@myself/shared-types';
 /** 创建投稿记录所需的最小字段。 */
 export interface NewSubmission {
   id: string;
+  kind: 'shared_package';
+  title: string;
+  body: string;
   statusTokenHash: string;
+  assets: readonly NewSubmissionAsset[];
+}
+
+/** 创建投稿时一并持久化的私有资产声明。 */
+export interface NewSubmissionAsset {
+  role: 'cover' | 'package';
+  storageKey: string;
+  fileName: string;
+  declaredBytes: number;
+  contentType: string;
+}
+
+/** 数据库回读同时兼容后续扫描流程产生的派生资产。 */
+export interface SubmissionAsset {
+  role: 'cover' | 'package' | 'derived';
+  storageKey: string;
+  fileName: string;
+  declaredBytes: number;
+  contentType: string;
+  actualBytes: number | null;
 }
 
 /** 数据库存储的投稿基础视图。 */
@@ -25,6 +48,11 @@ export interface SubmissionRow {
   purgeAfter?: string | null;
   createdAt?: string;
   updatedAt?: string;
+}
+
+/** 投稿生命周期读取必须同时返回数据库中的资产声明。 */
+export interface SubmissionWithAssets extends SubmissionRow {
+  assets: SubmissionAsset[];
 }
 
 /** 上传完成后推进审核状态所需字段。 */
@@ -155,6 +183,7 @@ export interface AdminIdentity {
 /** 投稿存储边界。 */
 export interface SubmissionStore {
   createSubmission(input: NewSubmission): Promise<SubmissionRow>;
+  findById(id: string): Promise<SubmissionWithAssets | null>;
   completeUpload(input: CompleteUploadInput): Promise<SubmissionRow>;
   findByStatusTokenHash(hash: string): Promise<SubmissionStatusView | null>;
   claimModerationJobs(limit: number, leaseUntil: string): Promise<SubmissionRow[]>;

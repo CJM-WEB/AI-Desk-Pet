@@ -107,6 +107,69 @@ CREATE INDEX submissions_purge_queue_idx
 CREATE INDEX moderation_results_submission_idx
   ON moderation_results (submission_id, created_at);
 
+-- 投稿主记录和两项资产声明必须在同一事务中创建，禁止留下无令牌残记录。
+CREATE FUNCTION create_submission(
+  p_submission jsonb,
+  p_assets jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_submission submissions%ROWTYPE;
+BEGIN
+  IF COALESCE(
+    current_setting('request.jwt.claims', true)::jsonb ->> 'role',
+    ''
+  ) <> 'service_role' THEN
+    RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
+  END IF;
+
+  IF jsonb_typeof(p_submission) <> 'object'
+    OR jsonb_typeof(p_assets) <> 'array'
+    OR jsonb_array_length(p_assets) <> 2 THEN
+    RAISE EXCEPTION 'invalid submission payload' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO submissions (id, kind, title, body, status_token_hash)
+  VALUES (
+    p_submission ->> 'id',
+    p_submission ->> 'kind',
+    p_submission ->> 'title',
+    p_submission ->> 'body',
+    p_submission ->> 'status_token_hash'
+  )
+  RETURNING * INTO v_submission;
+
+  INSERT INTO assets (
+    submission_id,
+    object_key,
+    original_name,
+    declared_size,
+    mime_type,
+    role
+  )
+  SELECT
+    v_submission.id,
+    asset.storage_key,
+    asset.file_name,
+    asset.declared_bytes,
+    asset.content_type,
+    asset.role
+  FROM jsonb_to_recordset(p_assets) AS asset(
+    role text,
+    storage_key text,
+    file_name text,
+    declared_bytes bigint,
+    content_type text
+  );
+
+  RETURN to_jsonb(v_submission);
+END;
+$$;
+
 -- 领取审核任务必须在数据库事务内完成锁定和租约写入。
 CREATE FUNCTION claim_moderation_jobs(
   p_limit integer,
@@ -297,6 +360,8 @@ GRANT ALL ON SEQUENCE moderation_results_id_seq TO service_role;
 REVOKE ALL ON SEQUENCE admin_audit_logs_id_seq FROM anon, authenticated;
 GRANT ALL ON SEQUENCE admin_audit_logs_id_seq TO service_role;
 
+REVOKE ALL ON FUNCTION create_submission(jsonb, jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION create_submission(jsonb, jsonb) TO service_role;
 REVOKE ALL ON FUNCTION claim_moderation_jobs(integer, timestamptz) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION claim_moderation_jobs(integer, timestamptz) TO service_role;
 REVOKE ALL ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) FROM PUBLIC, anon, authenticated;

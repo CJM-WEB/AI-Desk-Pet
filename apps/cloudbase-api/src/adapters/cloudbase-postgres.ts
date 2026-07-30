@@ -10,9 +10,11 @@ import type {
   PublicListQuery,
   PublicSubmission,
   PublicSubmissionPage,
+  SubmissionAsset,
   SubmissionRow,
   SubmissionStatusView,
-  SubmissionStore
+  SubmissionStore,
+  SubmissionWithAssets
 } from '../ports.js';
 
 export interface RdbError {
@@ -125,14 +127,38 @@ export class CloudBasePostgresStore implements SubmissionStore {
 
   async createSubmission(input: NewSubmission): Promise<SubmissionRow> {
     requireHash(input.statusTokenHash);
-    await requireSuccess(
-      this.database.from('submissions').insert({
+    const result = await this.rpcClient.rpc('create_submission', {
+      p_submission: {
         id: input.id,
+        kind: input.kind,
+        title: input.title,
+        body: input.body,
         status_token_hash: input.statusTokenHash
-      }),
-      '创建投稿失败'
-    );
-    return this.findSubmission(input.id);
+      },
+      p_assets: input.assets.map((asset) => ({
+        role: asset.role,
+        storage_key: asset.storageKey,
+        file_name: asset.fileName,
+        declared_bytes: asset.declaredBytes,
+        content_type: asset.contentType
+      }))
+    });
+    return mapSubmission(requireData(result, '创建投稿失败'));
+  }
+
+  async findById(id: string): Promise<SubmissionWithAssets | null> {
+    const submission = await this.findSubmissionOrNull(id);
+    if (!submission) return null;
+
+    const result = await this.database
+      .from('assets')
+      .select('object_key,original_name,declared_size,actual_size,mime_type,role')
+      .eq('submission_id', id);
+    const assets = requireRows(
+      requireData(result, '查询投稿资产失败'),
+      '投稿资产'
+    ).map(mapAsset);
+    return { ...submission, assets };
   }
 
   async completeUpload(input: CompleteUploadInput): Promise<SubmissionRow> {
@@ -268,14 +294,19 @@ export class CloudBasePostgresStore implements SubmissionStore {
   }
 
   private async findSubmission(id: string): Promise<SubmissionRow> {
+    const submission = await this.findSubmissionOrNull(id);
+    if (!submission) throw new ApiError('SUBMISSION_NOT_FOUND', 404);
+    return submission;
+  }
+
+  private async findSubmissionOrNull(id: string): Promise<SubmissionRow | null> {
     const result = await this.database
       .from('submissions')
       .select('*')
       .eq('id', id)
       .maybeSingle();
     const data = requireData(result, '查询投稿失败');
-    if (data === null) throw new ApiError('SUBMISSION_NOT_FOUND', 404);
-    return mapSubmission(data);
+    return data === null ? null : mapSubmission(data);
   }
 }
 
@@ -305,6 +336,22 @@ function mapPublicSubmission(value: unknown): PublicSubmission {
     title: optionalString(row.title, 'title'),
     body: optionalString(row.body, 'body'),
     publishedAt: requireString(row.published_at, 'published_at')
+  };
+}
+
+function mapAsset(value: unknown): SubmissionAsset {
+  const row = requireRecord(value, '投稿资产');
+  const role = requireString(row.role, 'role');
+  if (role !== 'cover' && role !== 'package' && role !== 'derived') {
+    throw new ApiError('DATABASE_ERROR', 500, 'role字段格式错误');
+  }
+  return {
+    role,
+    storageKey: requireString(row.object_key, 'object_key'),
+    fileName: requireString(row.original_name, 'original_name'),
+    declaredBytes: requireInteger(row.declared_size, 'declared_size'),
+    actualBytes: optionalInteger(row.actual_size, 'actual_size'),
+    contentType: requireString(row.mime_type, 'mime_type')
   };
 }
 
@@ -353,6 +400,11 @@ function requireInteger(value: unknown, field: string): number {
     throw new ApiError('DATABASE_ERROR', 500, `${field}字段格式错误`);
   }
   return value;
+}
+
+function optionalInteger(value: unknown, field: string): number | null {
+  if (value === null) return null;
+  return requireInteger(value, field);
 }
 
 function requireBoolean(value: unknown, field: string): boolean {

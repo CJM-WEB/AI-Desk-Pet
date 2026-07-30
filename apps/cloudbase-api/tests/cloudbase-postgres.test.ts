@@ -78,9 +78,12 @@ describe('CloudBase PostgreSQL 迁移', () => {
   it('特权数据库函数显式校验 service_role 并收回公开执行权', () => {
     const sql = readFileSync(migrationPath, 'utf8');
 
-    expect(sql.match(/SECURITY DEFINER/g)).toHaveLength(2);
-    expect(sql.match(/request\.jwt\.claims/g)).toHaveLength(2);
-    expect(sql.match(/<> 'service_role'/g)).toHaveLength(2);
+    expect(sql.match(/SECURITY DEFINER/g)).toHaveLength(3);
+    expect(sql.match(/request\.jwt\.claims/g)).toHaveLength(3);
+    expect(sql.match(/<> 'service_role'/g)).toHaveLength(3);
+    expect(sql).toContain(
+      'REVOKE ALL ON FUNCTION create_submission(jsonb, jsonb) FROM PUBLIC, anon, authenticated'
+    );
     expect(sql).toContain(
       'REVOKE ALL ON FUNCTION claim_moderation_jobs(integer, timestamptz) FROM PUBLIC, anon, authenticated'
     );
@@ -134,6 +137,16 @@ interface MemorySubmission {
   updated_at: string;
 }
 
+interface MemoryAsset {
+  submission_id: string;
+  object_key: string;
+  original_name: string;
+  declared_size: number;
+  actual_size: number | null;
+  mime_type: string;
+  role: string;
+}
+
 interface MemoryAudit {
   request: Record<string, unknown>;
   result: Record<string, unknown>;
@@ -147,6 +160,8 @@ interface QueryResult {
 /** 只模拟仓储使用到的 PostgREST 查询语义，并保存可观察的数据库状态。 */
 class MemoryRdb {
   readonly submissions: MemorySubmission[] = [];
+  readonly assets: MemoryAsset[] = [];
+  rejectAssetCreation = false;
   readonly moderationResults: Array<Record<string, unknown>> = [];
   readonly audits = new Map<string, MemoryAudit>();
   readonly fromCalls: string[] = [];
@@ -157,6 +172,34 @@ class MemoryRdb {
   }
 
   async rpc(name: string, params: Record<string, unknown>): Promise<QueryResult> {
+    if (name === 'create_submission') {
+      if (this.rejectAssetCreation) {
+        return { data: null, error: { message: '资产写入失败' } };
+      }
+
+      const submission = params.p_submission as Record<string, unknown>;
+      const assets = params.p_assets as Array<Record<string, unknown>>;
+      const row = makeSubmission({
+        id: submission.id as string,
+        kind: submission.kind as string,
+        title: submission.title as string,
+        body: submission.body as string,
+        status_token_hash: submission.status_token_hash as string
+      });
+      const assetRows = assets.map((asset) => ({
+        submission_id: row.id,
+        object_key: asset.storage_key as string,
+        original_name: asset.file_name as string,
+        declared_size: asset.declared_bytes as number,
+        actual_size: null,
+        mime_type: asset.content_type as string,
+        role: asset.role as string
+      }));
+      this.submissions.push(row);
+      this.assets.push(...assetRows);
+      return { data: structuredClone(row), error: null };
+    }
+
     if (name === 'claim_moderation_jobs') {
       const limit = params.p_limit as number;
       const leaseUntil = params.p_lease_until as string;
@@ -321,6 +364,37 @@ class MemoryQuery implements PromiseLike<QueryResult> {
       return { data: null, error: null };
     }
 
+    if (this.table === 'assets') {
+      if (this.operation === 'insert') {
+        const values = Array.isArray(this.values) ? this.values : [this.values ?? {}];
+        this.database.assets.push(...values.map((value) => ({
+          ...structuredClone(value),
+          actual_size: null
+        })) as unknown as MemoryAsset[]);
+        return { data: null, error: null };
+      }
+
+      const rows = this.database.assets.filter((row) =>
+        this.filters.every((filter) => {
+          const value = row[filter.column as keyof MemoryAsset];
+          if (filter.operator === 'eq') return value === filter.value;
+          if (filter.operator === 'not-eq') return value !== filter.value;
+          return String(value) <= String(filter.value);
+        })
+      );
+      return {
+        data: rows.map((row) => Object.fromEntries(
+          this.selectedColumns === '*'
+            ? Object.entries(structuredClone(row))
+            : this.selectedColumns.split(',').map((column) => {
+              const normalized = column.trim();
+              return [normalized, row[normalized as keyof MemoryAsset]];
+            })
+        )),
+        error: null
+      };
+    }
+
     if (this.table !== 'submissions') {
       return { data: null, error: { message: `未知数据表：${this.table}` } };
     }
@@ -330,7 +404,10 @@ class MemoryQuery implements PromiseLike<QueryResult> {
       if (!value) return { data: null, error: { message: '缺少插入数据' } };
       const row = makeSubmission({
         id: value.id as string,
-        status_token_hash: value.status_token_hash as string
+        status_token_hash: value.status_token_hash as string,
+        kind: value.kind as string,
+        title: value.title as string,
+        body: value.body as string
       });
       this.database.submissions.push(row);
     } else if (this.operation === 'update') {
@@ -430,6 +507,45 @@ function createStore(database = new MemoryRdb()): {
   };
 }
 
+function newSubmission(id: string): {
+  id: string;
+  kind: 'shared_package';
+  title: string;
+  body: string;
+  statusTokenHash: string;
+  assets: Array<{
+    role: 'cover' | 'package';
+    storageKey: string;
+    fileName: string;
+    declaredBytes: number;
+    contentType: string;
+  }>;
+} {
+  return {
+    id,
+    kind: 'shared_package',
+    title: '测试投稿',
+    body: '测试正文',
+    statusTokenHash: 'b'.repeat(64),
+    assets: [
+      {
+        role: 'cover',
+        storageKey: `submissions/${id}/cover.webp`,
+        fileName: 'cover.webp',
+        declaredBytes: 512,
+        contentType: 'image/webp'
+      },
+      {
+        role: 'package',
+        storageKey: `submissions/${id}/package.zip`,
+        fileName: 'pet.zip',
+        declaredBytes: 1024,
+        contentType: 'application/zip'
+      }
+    ]
+  };
+}
+
 describe('CloudBase PostgreSQL RPC 客户端', () => {
   it('真实 Node SDK 的 rdb 返回值可作为仅表查询客户端', () => {
     type InstalledApp = ReturnType<typeof cloudbase.init>;
@@ -507,7 +623,7 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
 describe('CloudBase PostgreSQL 仓储', () => {
   it('创建投稿后只能用令牌哈希查询裁剪状态', async () => {
     const { store } = createStore();
-    await store.createSubmission({ id: 'submission-1', statusTokenHash: 'b'.repeat(64) });
+    await store.createSubmission(newSubmission('submission-1'));
 
     await expect(store.findByStatusTokenHash('b'.repeat(64))).resolves.toEqual({
       submissionId: 'submission-1',
@@ -521,10 +637,75 @@ describe('CloudBase PostgreSQL 仓储', () => {
 
   it('完成上传只把 uploading 投稿推进到系统审核', async () => {
     const { store } = createStore();
-    await store.createSubmission({ id: 'submission-1', statusTokenHash: 'b'.repeat(64) });
+    await store.createSubmission(newSubmission('submission-1'));
 
     await expect(store.completeUpload({ submissionId: 'submission-1' }))
       .resolves.toMatchObject({ id: 'submission-1', status: 'system_reviewing' });
+  });
+
+  it('创建共享包时持久化两项资产声明并可按 ID 回读', async () => {
+    const { database, store } = createStore();
+    const input = newSubmission('submission-assets');
+
+    await store.createSubmission(input);
+
+    expect(database.submissions).toContainEqual(
+      expect.objectContaining({
+        id: 'submission-assets',
+        kind: 'shared_package',
+        title: '测试投稿',
+        body: '测试正文'
+      })
+    );
+    expect(database.assets).toEqual([
+      expect.objectContaining({
+        submission_id: 'submission-assets',
+        object_key: 'submissions/submission-assets/cover.webp',
+        original_name: 'cover.webp',
+        declared_size: 512,
+        mime_type: 'image/webp',
+        role: 'cover'
+      }),
+      expect.objectContaining({
+        submission_id: 'submission-assets',
+        object_key: 'submissions/submission-assets/package.zip',
+        original_name: 'pet.zip',
+        declared_size: 1024,
+        mime_type: 'application/zip',
+        role: 'package'
+      })
+    ]);
+    await expect(store.findById('submission-assets')).resolves.toMatchObject({
+      id: 'submission-assets',
+      status: 'uploading',
+      assets: [
+        {
+          role: 'cover',
+          storageKey: 'submissions/submission-assets/cover.webp',
+          fileName: 'cover.webp',
+          declaredBytes: 512,
+          contentType: 'image/webp'
+        },
+        {
+          role: 'package',
+          storageKey: 'submissions/submission-assets/package.zip',
+          fileName: 'pet.zip',
+          declaredBytes: 1024,
+          contentType: 'application/zip'
+        }
+      ]
+    });
+  });
+
+  it('资产写入失败时创建投稿整体回滚', async () => {
+    const database = new MemoryRdb();
+    database.rejectAssetCreation = true;
+    const { store } = createStore(database);
+
+    await expect(store.createSubmission(newSubmission('rollback-submission')))
+      .rejects.toMatchObject({ code: 'DATABASE_ERROR' });
+    expect(database.submissions).toEqual([]);
+    expect(database.assets).toEqual([]);
   });
 
   it('审核任务领取跳过有效租约并写入新租约', async () => {

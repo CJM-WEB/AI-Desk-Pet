@@ -24,7 +24,8 @@ import type {
   StoredObjectInfo,
   SubmissionRow,
   SubmissionStatusView,
-  SubmissionStore
+  SubmissionStore,
+  SubmissionWithAssets
 } from '../src/ports.js';
 
 describe('审核 API 端口', () => {
@@ -35,6 +36,8 @@ describe('审核 API 端口', () => {
       .toEqualTypeOf<(input: NewSubmission) => Promise<SubmissionRow>>();
     expectTypeOf<SubmissionStore['findByStatusTokenHash']>()
       .toEqualTypeOf<(hash: string) => Promise<SubmissionStatusView | null>>();
+    expectTypeOf<SubmissionStore['findById']>()
+      .toEqualTypeOf<(id: string) => Promise<SubmissionWithAssets | null>>();
     expectTypeOf<ObjectStorage['createSignedUploadUrl']>()
       .toEqualTypeOf<(path: string, options: SignedUploadOptions) => Promise<SignedUpload>>();
     expectTypeOf<ObjectStorage['info']>()
