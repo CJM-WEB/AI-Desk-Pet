@@ -565,17 +565,23 @@ export function createCharacterWorkshopStore(
       async importSources() {
         const characterId = get().selectedCharacterId;
         if (!characterId) return;
+        const requestRevision = selectionRevision;
         await reportFailure('importing', async () => {
           const result = await api.chooseCharacterSources(characterId);
           if (result.kind === 'selected') {
             const sources = await api.listCharacterSources(characterId);
-            set({
-              availableSources: sources.map(({ assetId, displayName, mimeType }) => ({
-                assetId,
-                displayName,
-                mimeType
-              }))
-            });
+            if (
+              requestRevision === selectionRevision
+              && get().selectedCharacterId === characterId
+            ) {
+              set({
+                availableSources: sources.map(({ assetId, displayName, mimeType }) => ({
+                  assetId,
+                  displayName,
+                  mimeType
+                }))
+              });
+            }
           }
           enqueueToast(result.kind === 'cancelled'
             ? { tone: 'info', text: '已取消导入素材。' }

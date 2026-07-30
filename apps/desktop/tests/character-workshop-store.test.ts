@@ -1222,6 +1222,46 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState().availableSources).toHaveLength(2);
   });
 
+  test('旧角色导入的迟到素材目录不会覆盖新角色工作区', async () => {
+    const oldDirectory = deferred<CharacterWorkshopSourceDto[]>();
+    const defaultSources = [
+      sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png')
+    ];
+    const novaSources = [
+      sourceDto('123e4567-e89b-42d3-a456-426614174001', 'nova.png')
+    ];
+    const listCharacterSources = vi.fn()
+      .mockResolvedValueOnce(defaultSources)
+      .mockImplementationOnce(() => oldDirectory.promise)
+      .mockResolvedValueOnce(novaSources);
+    const { api } = apiDouble({
+      chooseCharacterSources: vi.fn(async () => ({
+        kind: 'selected' as const,
+        sources: [{
+          ...defaultSources[0]!,
+          byteLength: 128,
+          sha256: 'a'.repeat(64)
+        }]
+      })),
+      listCharacterSources
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    const importing = store.getState().importSources();
+    await settle();
+    const selection = store.getState().selectCharacter('nova');
+    await selection;
+    oldDirectory.resolve(defaultSources);
+    await importing;
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'nova',
+      draft: expect.objectContaining({ id: 'nova' }),
+      availableSources: novaSources
+    });
+  });
+
   test('草稿先返回而素材仍在加载时保持稳定工作区', async () => {
     const sources = deferred<CharacterWorkshopSourceDto[]>();
     const previousSources = [
