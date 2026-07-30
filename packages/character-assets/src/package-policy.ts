@@ -15,6 +15,15 @@ export const CHARACTER_PACKAGE_LIMITS: CharacterPackageLimits = Object.freeze({
   maxResourceBytes: 32 * 1024 * 1024,
   maxExpansionRatio: 100
 });
+
+export const WEBSITE_SHARED_PACKAGE_LIMITS: CharacterPackageLimits = Object.freeze({
+  ...CHARACTER_PACKAGE_LIMITS,
+  maxEntries: 500,
+  maxFiles: 500,
+  maxTotalUncompressedBytes: 300 * 1024 * 1024,
+  maxResourceBytes: 10 * 1024 * 1024
+});
+
 const ALLOWED_FILE_EXTENSIONS = new Set(['.json', '.png', '.webp']);
 const WINDOWS_RESERVED_NAME =
   /^(con|prn|aux|nul|com(?:[1-9]|[¹²³])|lpt(?:[1-9]|[¹²³]))(?:\.|$)/iu;
@@ -104,15 +113,16 @@ function validateFileType(path: string): void {
 }
 
 export function validatePackageEntries(
-  entries: readonly PackageEntryDescriptor[]
+  entries: readonly PackageEntryDescriptor[],
+  limits: CharacterPackageLimits = CHARACTER_PACKAGE_LIMITS
 ): PackageValidationResult {
   if (
     entries.filter(entry => entry.kind === 'file').length
-      > CHARACTER_PACKAGE_LIMITS.maxFiles
+      > limits.maxFiles
   ) {
     throw packageError('CHARACTER_PACKAGE_FILE_COUNT_EXCEEDED');
   }
-  if (entries.length > CHARACTER_PACKAGE_LIMITS.maxEntries) {
+  if (entries.length > limits.maxEntries) {
     throw packageError('CHARACTER_PACKAGE_ENTRY_COUNT_EXCEEDED');
   }
   const normalizedPaths: string[] = [];
@@ -159,32 +169,32 @@ export function validatePackageEntries(
     if (entry.kind === 'directory') continue;
     validateFileType(normalizedPath);
     fileCount += 1;
-    if (fileCount > CHARACTER_PACKAGE_LIMITS.maxFiles) {
+    if (fileCount > limits.maxFiles) {
       throw packageError('CHARACTER_PACKAGE_FILE_COUNT_EXCEEDED');
     }
     if (
       normalizedPath.endsWith('.json')
-      && entry.uncompressedBytes > CHARACTER_PACKAGE_LIMITS.maxJsonBytes
+      && entry.uncompressedBytes > limits.maxJsonBytes
     ) {
       throw packageError('CHARACTER_PACKAGE_JSON_TOO_LARGE');
     }
     if (
       !normalizedPath.endsWith('.json')
-      && entry.uncompressedBytes > CHARACTER_PACKAGE_LIMITS.maxResourceBytes
+      && entry.uncompressedBytes > limits.maxResourceBytes
     ) {
       throw packageError('CHARACTER_PACKAGE_RESOURCE_TOO_LARGE');
     }
     if (
       (entry.compressedBytes === 0 && entry.uncompressedBytes > 0)
       || entry.uncompressedBytes
-        > entry.compressedBytes * CHARACTER_PACKAGE_LIMITS.maxExpansionRatio
+        > entry.compressedBytes * limits.maxExpansionRatio
     ) {
       throw packageError('CHARACTER_PACKAGE_EXPANSION_LIMIT');
     }
     totalUncompressedBytes += entry.uncompressedBytes;
     if (
       totalUncompressedBytes
-        > CHARACTER_PACKAGE_LIMITS.maxTotalUncompressedBytes
+        > limits.maxTotalUncompressedBytes
     ) {
       throw packageError('CHARACTER_PACKAGE_TOTAL_BYTES_EXCEEDED');
     }
