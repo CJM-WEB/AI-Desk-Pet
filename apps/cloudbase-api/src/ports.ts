@@ -46,6 +46,7 @@ export interface SubmissionRow {
   body?: string | null;
   moderationLeaseUntil?: string | null;
   purgeAfter?: string | null;
+  publishedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -109,6 +110,91 @@ export interface PublicListQuery {
 /** 公开投稿分页结果。 */
 export interface PublicSubmissionPage {
   items: PublicSubmission[];
+  nextCursor: number | null;
+}
+
+export type TextSubmissionKind = 'feedback' | 'suggestion';
+
+/** 创建纯文本投稿所需的最小持久化字段。 */
+export interface NewTextSubmission {
+  id: string;
+  kind: TextSubmissionKind;
+  title: string;
+  body: string;
+  statusTokenHash: string;
+}
+
+/** 数据库原子限流的输入。 */
+export interface AbuseLimitInput {
+  scope: string;
+  fingerprintHash: string;
+  maximum: number;
+  windowSeconds: number;
+}
+
+/** 数据库原子限流的裁剪结果。 */
+export interface AbuseLimitResult {
+  allowed: boolean;
+  retryAfterSeconds: number;
+}
+
+/** CAPTCHA 票据哈希的原子消费输入。 */
+export interface CaptchaTicketInput {
+  ticketHash: string;
+  expiresAt: string;
+}
+
+/** 公开互动写入的设备哈希输入。 */
+export interface PublicLikeInput {
+  submissionId: string;
+  fingerprintHash: string;
+}
+
+export interface PublicLikeResult {
+  liked: boolean;
+  likeCount: number;
+}
+
+export interface PublicDownloadResult {
+  downloadCount: number;
+}
+
+/** 公开读取层使用的资产元数据，不包含审核或私有凭据。 */
+export interface PublicAsset {
+  role: 'cover' | 'package';
+  storageKey: string;
+  fileName: string;
+  sizeBytes: number;
+  contentType: string;
+}
+
+/** 数据库存储返回的已发布社区记录。 */
+export interface PublishedCommunityRecord {
+  id: string;
+  title: string;
+  body: string;
+  assets: PublicAsset[];
+  likeCount: number;
+  downloadCount: number;
+  publishedAt: string;
+}
+
+export interface PublishedFeedbackRecord {
+  id: string;
+  kind: TextSubmissionKind;
+  title: string;
+  body: string;
+  likeCount: number;
+  createdAt: string;
+}
+
+export interface PublishedCommunityPage {
+  items: PublishedCommunityRecord[];
+  nextCursor: number | null;
+}
+
+export interface PublishedFeedbackPage {
+  items: PublishedFeedbackRecord[];
   nextCursor: number | null;
 }
 
@@ -191,6 +277,25 @@ export interface SubmissionStore {
   applyAdminAction(input: AdminActionInput): Promise<AdminActionResult>;
   listPublished(input: PublicListQuery): Promise<PublicSubmissionPage>;
   listPurgeCandidates(now: string, limit: number): Promise<SubmissionRow[]>;
+}
+
+/** 多实例共享的 CAPTCHA 防重放与限流存储。 */
+export interface SecurityStore {
+  consumeCaptchaTicket(input: CaptchaTicketInput): Promise<boolean>;
+  consumeAbuseLimit(input: AbuseLimitInput): Promise<AbuseLimitResult>;
+}
+
+/** 文本投稿和公开互动的持久化边界。 */
+export interface PublicInteractionStore {
+  createTextSubmission(input: NewTextSubmission): Promise<SubmissionRow>;
+  listPublicCommunity(input: PublicListQuery): Promise<PublishedCommunityPage>;
+  findPublicCommunity(id: string): Promise<PublishedCommunityRecord | null>;
+  listPublicFeedback(
+    kind: TextSubmissionKind,
+    input: PublicListQuery
+  ): Promise<PublishedFeedbackPage>;
+  togglePublicLike(input: PublicLikeInput): Promise<PublicLikeResult>;
+  recordPublicDownload(submissionId: string): Promise<PublicDownloadResult>;
 }
 
 /** 私有对象存储边界。 */

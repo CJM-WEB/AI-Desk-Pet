@@ -5,7 +5,8 @@ export class ApiError extends Error {
   constructor(
     public readonly code: string,
     public readonly statusCode: number,
-    internalReason = code
+    internalReason = code,
+    public readonly retryAfterSeconds?: number
   ) {
     super(internalReason);
     this.name = 'ApiError';
@@ -41,7 +42,13 @@ export function jsonResponse(
     },
     body: JSON.stringify({
       data: data ?? null,
-      error: error ? { code: error.code, message: error.publicMessage } : null,
+      error: error ? {
+        code: error.code,
+        message: error.publicMessage,
+        ...(error.retryAfterSeconds === undefined
+          ? {}
+          : { retryAfterSeconds: error.retryAfterSeconds })
+      } : null,
       requestId
     })
   };

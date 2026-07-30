@@ -88,6 +88,28 @@ CREATE TABLE public_engagement (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- 安全状态只保存不可逆哈希，避免持久化原始票据、IP 或 User-Agent。
+CREATE TABLE captcha_replays (
+  ticket_hash char(64) PRIMARY KEY,
+  expires_at timestamptz NOT NULL
+);
+
+CREATE TABLE abuse_counters (
+  scope text NOT NULL,
+  fingerprint_hash char(64) NOT NULL,
+  window_start timestamptz NOT NULL,
+  count integer NOT NULL CHECK (count > 0),
+  expires_at timestamptz NOT NULL,
+  PRIMARY KEY (scope, fingerprint_hash, window_start)
+);
+
+CREATE TABLE engagement_votes (
+  submission_id text NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+  fingerprint_hash char(64) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (submission_id, fingerprint_hash)
+);
+
 -- 私有桶不配置 anon/authenticated 策略，仅由 service_role 访问。
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('ai-pet-private', 'ai-pet-private', false)
@@ -303,6 +325,12 @@ BEGIN
     RAISE EXCEPTION 'submission version conflict' USING ERRCODE = '40001';
   END IF;
 
+  IF p_next_status = 'published' THEN
+    INSERT INTO public_engagement (submission_id)
+    VALUES (p_submission_id)
+    ON CONFLICT (submission_id) DO NOTHING;
+  END IF;
+
   v_result := jsonb_build_object(
     'submission', to_jsonb(v_submission),
     'replayed', false
@@ -335,6 +363,268 @@ BEGIN
 END;
 $$;
 
+-- 腾讯验票成功后再原子登记票据哈希，数据库冲突即为本应用内重放。
+CREATE FUNCTION consume_captcha_ticket(
+  p_ticket_hash char(64),
+  p_expires_at timestamptz
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_inserted integer;
+BEGIN
+  IF COALESCE(
+    current_setting('request.jwt.claims', true)::jsonb ->> 'role',
+    ''
+  ) <> 'service_role' THEN
+    RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
+  END IF;
+
+  IF p_ticket_hash !~ '^[a-f0-9]{64}$' OR p_expires_at <= now() THEN
+    RAISE EXCEPTION 'invalid captcha replay input' USING ERRCODE = '22023';
+  END IF;
+
+  DELETE FROM captcha_replays WHERE expires_at <= now();
+  INSERT INTO captcha_replays (ticket_hash, expires_at)
+  VALUES (p_ticket_hash, p_expires_at)
+  ON CONFLICT (ticket_hash) DO NOTHING;
+  GET DIAGNOSTICS v_inserted = ROW_COUNT;
+  RETURN jsonb_build_object('consumed', v_inserted = 1);
+END;
+$$;
+
+-- 固定窗口计数完全在数据库内原子递增，并返回当前窗口剩余秒数。
+CREATE FUNCTION consume_abuse_limit(
+  p_scope text,
+  p_fingerprint_hash char(64),
+  p_maximum integer,
+  p_window_seconds integer
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_now timestamptz := clock_timestamp();
+  v_window_start timestamptz;
+  v_expires_at timestamptz;
+  v_count integer;
+  v_retry integer;
+BEGIN
+  IF COALESCE(
+    current_setting('request.jwt.claims', true)::jsonb ->> 'role',
+    ''
+  ) <> 'service_role' THEN
+    RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
+  END IF;
+
+  IF p_fingerprint_hash !~ '^[a-f0-9]{64}$'
+    OR NOT (
+      (p_scope = 'submission_prepare' AND p_maximum = 5 AND p_window_seconds = 600)
+      OR (p_scope = 'status_query' AND p_maximum = 30 AND p_window_seconds = 60)
+      OR (
+        p_scope ~ '^(like|download):[A-Za-z0-9_-]{1,128}$'
+        AND p_maximum = 10
+        AND p_window_seconds = 60
+      )
+    ) THEN
+    RAISE EXCEPTION 'invalid abuse limit input' USING ERRCODE = '22023';
+  END IF;
+
+  v_window_start := to_timestamp(
+    floor(extract(epoch FROM v_now) / p_window_seconds) * p_window_seconds
+  );
+  v_expires_at := v_window_start + make_interval(secs => p_window_seconds);
+  DELETE FROM abuse_counters WHERE expires_at <= v_now;
+
+  INSERT INTO abuse_counters (
+    scope,
+    fingerprint_hash,
+    window_start,
+    count,
+    expires_at
+  )
+  VALUES (
+    p_scope,
+    p_fingerprint_hash,
+    v_window_start,
+    1,
+    v_expires_at
+  )
+  ON CONFLICT (scope, fingerprint_hash, window_start)
+  DO UPDATE SET count = abuse_counters.count + 1
+  WHERE abuse_counters.count < p_maximum
+  RETURNING count INTO v_count;
+
+  IF v_count IS NOT NULL THEN
+    RETURN jsonb_build_object(
+      'allowed', true,
+      'retry_after_seconds', 0
+    );
+  END IF;
+
+  v_retry := GREATEST(
+    1,
+    CEIL(extract(epoch FROM (v_expires_at - v_now)))::integer
+  );
+  RETURN jsonb_build_object(
+    'allowed', false,
+    'retry_after_seconds', v_retry
+  );
+END;
+$$;
+
+-- 反馈与建议没有资产，创建时直接进入系统审核队列。
+CREATE FUNCTION create_text_submission(p_submission jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_submission submissions%ROWTYPE;
+BEGIN
+  IF COALESCE(
+    current_setting('request.jwt.claims', true)::jsonb ->> 'role',
+    ''
+  ) <> 'service_role' THEN
+    RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
+  END IF;
+
+  IF jsonb_typeof(p_submission) <> 'object'
+    OR p_submission ->> 'kind' NOT IN ('feedback', 'suggestion') THEN
+    RAISE EXCEPTION 'invalid text submission payload' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO submissions (
+    id,
+    kind,
+    title,
+    body,
+    status,
+    status_token_hash
+  )
+  VALUES (
+    p_submission ->> 'id',
+    p_submission ->> 'kind',
+    p_submission ->> 'title',
+    p_submission ->> 'body',
+    'system_reviewing',
+    p_submission ->> 'status_token_hash'
+  )
+  RETURNING * INTO v_submission;
+
+  INSERT INTO public_engagement (submission_id)
+  VALUES (v_submission.id);
+  RETURN to_jsonb(v_submission);
+END;
+$$;
+
+-- 点赞切换串行锁定汇总行，投票去重和计数更新位于同一事务。
+CREATE FUNCTION toggle_public_like(
+  p_submission_id text,
+  p_fingerprint_hash char(64)
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_deleted integer;
+  v_like_count bigint;
+  v_status text;
+  v_kind text;
+BEGIN
+  IF COALESCE(
+    current_setting('request.jwt.claims', true)::jsonb ->> 'role',
+    ''
+  ) <> 'service_role' THEN
+    RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
+  END IF;
+  IF p_fingerprint_hash !~ '^[a-f0-9]{64}$' THEN
+    RAISE EXCEPTION 'invalid public like input' USING ERRCODE = '22023';
+  END IF;
+
+  SELECT status, kind INTO v_status, v_kind
+  FROM submissions
+  WHERE id = p_submission_id;
+  IF v_status IS DISTINCT FROM 'published' OR v_kind <> 'shared_package' THEN
+    RAISE EXCEPTION 'published submission not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  INSERT INTO public_engagement (submission_id)
+  VALUES (p_submission_id)
+  ON CONFLICT (submission_id) DO NOTHING;
+  PERFORM 1 FROM public_engagement
+  WHERE submission_id = p_submission_id
+  FOR UPDATE;
+
+  DELETE FROM engagement_votes
+  WHERE submission_id = p_submission_id
+    AND fingerprint_hash = p_fingerprint_hash;
+  GET DIAGNOSTICS v_deleted = ROW_COUNT;
+
+  IF v_deleted = 1 THEN
+    UPDATE public_engagement
+    SET like_count = GREATEST(0, like_count - 1),
+        updated_at = now()
+    WHERE submission_id = p_submission_id
+    RETURNING like_count INTO v_like_count;
+    RETURN jsonb_build_object('liked', false, 'like_count', v_like_count);
+  END IF;
+
+  INSERT INTO engagement_votes (submission_id, fingerprint_hash)
+  VALUES (p_submission_id, p_fingerprint_hash);
+  UPDATE public_engagement
+  SET like_count = like_count + 1,
+      updated_at = now()
+  WHERE submission_id = p_submission_id
+  RETURNING like_count INTO v_like_count;
+  RETURN jsonb_build_object('liked', true, 'like_count', v_like_count);
+END;
+$$;
+
+-- 下载计数只允许已发布共享包，计数成功后应用层才能签发私有地址。
+CREATE FUNCTION record_public_download(p_submission_id text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_download_count bigint;
+BEGIN
+  IF COALESCE(
+    current_setting('request.jwt.claims', true)::jsonb ->> 'role',
+    ''
+  ) <> 'service_role' THEN
+    RAISE EXCEPTION 'service_role required' USING ERRCODE = '42501';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM submissions
+    WHERE id = p_submission_id
+      AND status = 'published'
+      AND kind = 'shared_package'
+  ) THEN
+    RAISE EXCEPTION 'published submission not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  INSERT INTO public_engagement (submission_id, download_count)
+  VALUES (p_submission_id, 1)
+  ON CONFLICT (submission_id)
+  DO UPDATE SET download_count = public_engagement.download_count + 1,
+                updated_at = now()
+  RETURNING download_count INTO v_download_count;
+  RETURN jsonb_build_object('download_count', v_download_count);
+END;
+$$;
+
 -- 默认拒绝所有非服务端角色；公开内容必须经云函数裁剪。
 ALTER TABLE submissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE submissions FORCE ROW LEVEL SECURITY;
@@ -361,6 +651,21 @@ ALTER TABLE public_engagement FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public_engagement FROM anon, authenticated;
 GRANT ALL ON TABLE public_engagement TO service_role;
 
+ALTER TABLE captcha_replays ENABLE ROW LEVEL SECURITY;
+ALTER TABLE captcha_replays FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE captcha_replays FROM anon, authenticated;
+GRANT ALL ON TABLE captcha_replays TO service_role;
+
+ALTER TABLE abuse_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE abuse_counters FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE abuse_counters FROM anon, authenticated;
+GRANT ALL ON TABLE abuse_counters TO service_role;
+
+ALTER TABLE engagement_votes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE engagement_votes FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE engagement_votes FROM anon, authenticated;
+GRANT ALL ON TABLE engagement_votes TO service_role;
+
 REVOKE ALL ON SEQUENCE assets_id_seq FROM anon, authenticated;
 GRANT ALL ON SEQUENCE assets_id_seq TO service_role;
 REVOKE ALL ON SEQUENCE moderation_results_id_seq FROM anon, authenticated;
@@ -374,5 +679,15 @@ REVOKE ALL ON FUNCTION claim_moderation_jobs(integer, timestamptz) FROM PUBLIC, 
 GRANT EXECUTE ON FUNCTION claim_moderation_jobs(integer, timestamptz) TO service_role;
 REVOKE ALL ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) TO service_role;
+REVOKE ALL ON FUNCTION consume_captcha_ticket(char, timestamptz) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION consume_captcha_ticket(char, timestamptz) TO service_role;
+REVOKE ALL ON FUNCTION consume_abuse_limit(text, char, integer, integer) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION consume_abuse_limit(text, char, integer, integer) TO service_role;
+REVOKE ALL ON FUNCTION create_text_submission(jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION create_text_submission(jsonb) TO service_role;
+REVOKE ALL ON FUNCTION toggle_public_like(text, char) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION toggle_public_like(text, char) TO service_role;
+REVOKE ALL ON FUNCTION record_public_download(text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION record_public_download(text) TO service_role;
 
 COMMIT;

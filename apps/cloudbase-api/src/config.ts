@@ -6,6 +6,7 @@ export interface CloudConfig {
   adminEmail: string;
   captchaAppId: number;
   captchaSecretKey: string;
+  abuseHmacSecret: string;
   moderationRegion: string;
   tmsBizType: string;
   imsBizType: string;
@@ -39,6 +40,7 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
     adminEmail,
     captchaAppId,
     captchaSecretKey: readRequired(env, 'CAPTCHA_SECRET_KEY'),
+    abuseHmacSecret: readRequired(env, 'ABUSE_HMAC_SECRET'),
     moderationRegion: readRequired(env, 'MODERATION_REGION'),
     tmsBizType: readRequired(env, 'TMS_BIZ_TYPE'),
     imsBizType: readRequired(env, 'IMS_BIZ_TYPE'),

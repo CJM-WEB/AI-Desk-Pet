@@ -26,7 +26,10 @@ describe('CloudBase PostgreSQL 迁移', () => {
       'assets',
       'moderation_results',
       'admin_audit_logs',
-      'public_engagement'
+      'public_engagement',
+      'captcha_replays',
+      'abuse_counters',
+      'engagement_votes'
     ]) {
       expect(sql).toContain(`CREATE TABLE ${table}`);
     }
@@ -71,7 +74,10 @@ describe('CloudBase PostgreSQL 迁移', () => {
       'assets',
       'moderation_results',
       'admin_audit_logs',
-      'public_engagement'
+      'public_engagement',
+      'captcha_replays',
+      'abuse_counters',
+      'engagement_votes'
     ]) {
       expect(sql).toContain(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
       expect(sql).toContain(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`);
@@ -83,9 +89,9 @@ describe('CloudBase PostgreSQL 迁移', () => {
   it('特权数据库函数显式校验 service_role 并收回公开执行权', () => {
     const sql = readFileSync(migrationPath, 'utf8');
 
-    expect(sql.match(/SECURITY DEFINER/g)).toHaveLength(3);
-    expect(sql.match(/request\.jwt\.claims/g)).toHaveLength(3);
-    expect(sql.match(/<> 'service_role'/g)).toHaveLength(3);
+    expect(sql.match(/SECURITY DEFINER/g)).toHaveLength(8);
+    expect(sql.match(/request\.jwt\.claims/g)).toHaveLength(8);
+    expect(sql.match(/<> 'service_role'/g)).toHaveLength(8);
     expect(sql).toContain(
       'REVOKE ALL ON FUNCTION create_submission(jsonb, jsonb) FROM PUBLIC, anon, authenticated'
     );
@@ -95,6 +101,27 @@ describe('CloudBase PostgreSQL 迁移', () => {
     expect(sql).toContain(
       'REVOKE ALL ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) FROM PUBLIC, anon, authenticated'
     );
+    for (const name of [
+      'consume_captcha_ticket',
+      'consume_abuse_limit',
+      'create_text_submission',
+      'toggle_public_like',
+      'record_public_download'
+    ]) {
+      expect(sql).toContain(`REVOKE ALL ON FUNCTION ${name}`);
+    }
+  });
+
+  it('安全状态只保存哈希并由数据库原子消费', () => {
+    const sql = readFileSync(migrationPath, 'utf8');
+
+    expect(sql).toContain('ticket_hash char(64) PRIMARY KEY');
+    expect(sql).toContain('fingerprint_hash char(64)');
+    expect(sql).toContain('PRIMARY KEY (scope, fingerprint_hash, window_start)');
+    expect(sql).toContain('PRIMARY KEY (submission_id, fingerprint_hash)');
+    expect(sql).toContain('ON CONFLICT (ticket_hash) DO NOTHING');
+    expect(sql).toContain('ON CONFLICT (scope, fingerprint_hash, window_start)');
+    expect(sql).not.toMatch(/\buser_ip\b|\buser_agent\b/);
   });
 
   it('管理员动作同时具备版本条件更新和幂等请求保护', () => {
@@ -113,6 +140,9 @@ describe('CloudBase PostgreSQL 迁移', () => {
       "WHEN p_next_status = 'published' THEN COALESCE(published_at, now())"
     );
     expect(sql).toContain('IF p_lease_until <= now() THEN');
+    expect(sql).toMatch(
+      /IF p_next_status = 'published' THEN\s+INSERT INTO public_engagement \(submission_id\)/u
+    );
   });
 
   it('创建仅服务端可访问的私有对象存储桶', () => {
@@ -622,6 +652,170 @@ describe('CloudBase PostgreSQL RPC 客户端', () => {
         code: '40001',
         message: 'submission version conflict'
       }
+    });
+  });
+});
+
+describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
+  it('通过具名 RPC 原子消费验证码和限流计数', async () => {
+    const rpc = {
+      rpc: vi.fn()
+        .mockResolvedValueOnce({
+          data: { consumed: true },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: { allowed: false, retry_after_seconds: 37 },
+          error: null
+        })
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.consumeCaptchaTicket({
+      ticketHash: 'a'.repeat(64),
+      expiresAt: '2026-07-31T00:05:00.000Z'
+    })).resolves.toBe(true);
+    await expect(store.consumeAbuseLimit({
+      scope: 'status_query',
+      fingerprintHash: 'b'.repeat(64),
+      maximum: 30,
+      windowSeconds: 60
+    })).resolves.toEqual({
+      allowed: false,
+      retryAfterSeconds: 37
+    });
+    expect(rpc.rpc).toHaveBeenNthCalledWith(1, 'consume_captcha_ticket', {
+      p_ticket_hash: 'a'.repeat(64),
+      p_expires_at: '2026-07-31T00:05:00.000Z'
+    });
+    expect(rpc.rpc).toHaveBeenNthCalledWith(2, 'consume_abuse_limit', {
+      p_scope: 'status_query',
+      p_fingerprint_hash: 'b'.repeat(64),
+      p_maximum: 30,
+      p_window_seconds: 60
+    });
+  });
+
+  it('文本投稿、点赞和下载只调用数据库原子函数', async () => {
+    const rpc = {
+      rpc: vi.fn()
+        .mockResolvedValueOnce({
+          data: {
+            id: 'feedback-1',
+            status: 'system_reviewing',
+            status_version: 0,
+            kind: 'feedback',
+            title: '匿名用户',
+            body: '建议正文',
+            moderation_lease_until: null,
+            purge_after: null,
+            published_at: null,
+            created_at: '2026-07-31T00:00:00.000Z',
+            updated_at: '2026-07-31T00:00:00.000Z'
+          },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: { liked: true, like_count: 2 },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: { download_count: 4 },
+          error: null
+        })
+    };
+    const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
+
+    await expect(store.createTextSubmission({
+      id: 'feedback-1',
+      kind: 'feedback',
+      title: '匿名用户',
+      body: '建议正文',
+      statusTokenHash: 'c'.repeat(64)
+    })).resolves.toMatchObject({
+      id: 'feedback-1',
+      status: 'system_reviewing'
+    });
+    await expect(store.togglePublicLike({
+      submissionId: 'community-1',
+      fingerprintHash: 'd'.repeat(64)
+    })).resolves.toEqual({ liked: true, likeCount: 2 });
+    await expect(store.recordPublicDownload('community-1'))
+      .resolves.toEqual({ downloadCount: 4 });
+    expect(rpc.rpc.mock.calls.map(([name]) => name)).toEqual([
+      'create_text_submission',
+      'toggle_public_like',
+      'record_public_download'
+    ]);
+  });
+
+  it('公开社区关系结果映射为不含内部字段的具名记录', async () => {
+    const result = {
+      data: [{
+        id: 'community-1',
+        title: '共享名称',
+        body: '共享说明',
+        published_at: '2026-07-31T00:00:00.000Z',
+        assets: [
+          {
+            object_key: 'submissions/community-1/cover.webp',
+            original_name: 'cover.webp',
+            actual_size: 512,
+            mime_type: 'image/webp',
+            role: 'cover'
+          },
+          {
+            object_key: 'submissions/community-1/package.zip',
+            original_name: 'pet.zip',
+            actual_size: 1024,
+            mime_type: 'application/zip',
+            role: 'package'
+          }
+        ],
+        public_engagement: {
+          like_count: 2,
+          download_count: 3
+        },
+        status_token_hash: '不得返回'
+      }],
+      error: null
+    };
+    const query: Record<string, ReturnType<typeof vi.fn>> = {};
+    for (const method of ['select', 'eq', 'order']) {
+      query[method] = vi.fn(() => query);
+    }
+    query.range = vi.fn(async () => result);
+    const store = new CloudBasePostgresStore(
+      { from: vi.fn(() => query) } as never,
+      { rpc: vi.fn() }
+    );
+
+    await expect(store.listPublicCommunity({ limit: 20 })).resolves.toEqual({
+      items: [{
+        id: 'community-1',
+        title: '共享名称',
+        body: '共享说明',
+        assets: [
+          {
+            role: 'cover',
+            storageKey: 'submissions/community-1/cover.webp',
+            fileName: 'cover.webp',
+            sizeBytes: 512,
+            contentType: 'image/webp'
+          },
+          {
+            role: 'package',
+            storageKey: 'submissions/community-1/package.zip',
+            fileName: 'pet.zip',
+            sizeBytes: 1024,
+            contentType: 'application/zip'
+          }
+        ],
+        likeCount: 2,
+        downloadCount: 3,
+        publishedAt: '2026-07-31T00:00:00.000Z'
+      }],
+      nextCursor: null
     });
   });
 });

@@ -1,0 +1,388 @@
+import { createHmac } from 'node:crypto';
+
+import { describe, expect, it, vi } from 'vitest';
+
+import { createApi } from '../src/functions/api.js';
+import { AbuseControl } from '../src/services/abuse-control.js';
+
+const sourceIp = '203.0.113.8';
+const fingerprintSecret = '仅用于测试的指纹配置值';
+
+function createDependencies() {
+  return {
+    submissions: {
+      prepare: vi.fn(async () => ({
+        submissionId: 'submission-1',
+        statusToken: 'a'.repeat(43),
+        statusPath: '/submission-status/',
+        status: 'uploading',
+        coverUpload: {
+          path: 'submissions/submission-1/cover.webp',
+          url: 'https://storage.example/cover',
+          expiresAt: '2026-07-31T01:00:00.000Z'
+        },
+        packageUpload: {
+          path: 'submissions/submission-1/package.zip',
+          url: 'https://storage.example/package',
+          expiresAt: '2026-07-31T01:00:00.000Z'
+        }
+      })),
+      finalize: vi.fn(async () => ({ status: 'system_reviewing' })),
+      getStatus: vi.fn(async () => ({
+        submissionId: 'submission-1',
+        status: 'system_reviewing',
+        publicReason: null,
+        createdAt: '2026-07-31T00:00:00.000Z',
+        updatedAt: '2026-07-31T00:01:00.000Z',
+        moderationEvidence: null as string | null
+      }))
+    },
+    textSubmissions: {
+      submit: vi.fn(async () => ({
+        submissionId: 'feedback-1',
+        statusToken: 'b'.repeat(43),
+        statusPath: '/submission-status/',
+        status: 'system_reviewing'
+      }))
+    },
+    publicContent: {
+      listCommunity: vi.fn(async () => ({
+        items: [{
+          id: 'community-1',
+          name: '公开名称',
+          description: '公开说明',
+          cover: {
+            url: 'https://storage.example/cover',
+            expiresAt: '2026-07-31T00:05:00.000Z'
+          },
+          packageFileName: 'pet.zip',
+          packageSizeBytes: 1024,
+          likeCount: 2,
+          downloadCount: 3,
+          publishedAt: '2026-07-31T00:00:00.000Z',
+          storageKey: '不得公开'
+        }],
+        nextCursor: null
+      })),
+      getCommunity: vi.fn(async () => ({
+        id: 'community-1',
+        name: '公开名称',
+        description: '公开说明',
+        cover: {
+          url: 'https://storage.example/cover',
+          expiresAt: '2026-07-31T00:05:00.000Z'
+        },
+        packageFileName: 'pet.zip',
+        packageSizeBytes: 1024,
+        likeCount: 2,
+        downloadCount: 3,
+        publishedAt: '2026-07-31T00:00:00.000Z',
+        internalEvidence: '不得公开'
+      })),
+      listFeedback: vi.fn(async () => ({
+        items: [{
+          id: 'feedback-1',
+          kind: 'feedback' as const,
+          authorName: '匿名用户',
+          content: '公开反馈',
+          likeCount: 1,
+          createdAt: '2026-07-31T00:00:00.000Z',
+          statusTokenHash: '不得公开'
+        }],
+        nextCursor: null
+      })),
+      toggleLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
+      getDownload: vi.fn(async () => ({
+        url: 'https://storage.example/download',
+        expiresAt: '2026-07-31T00:05:00.000Z'
+      }))
+    },
+    abuseControl: {
+      consume: vi.fn(async () => undefined)
+    },
+    fingerprintSecret
+  };
+}
+
+function event(
+  method: string,
+  path: string,
+  body?: unknown,
+  userAgent = 'test-agent'
+): {
+  httpMethod: string;
+  path: string;
+  headers: Record<string, string | undefined>;
+  body?: string;
+} {
+  return {
+    httpMethod: method,
+    path,
+    headers: { 'user-agent': userAgent },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  };
+}
+
+const context = {
+  requestId: 'request-1',
+  sourceIp
+};
+
+describe('公开 HTTP API', () => {
+  it('匿名 prepare 缺少 CAPTCHA 返回 400', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/submissions/prepare', {}),
+      context
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error.code).toBe('INVALID_REQUEST');
+    expect(dependencies.submissions.prepare).not.toHaveBeenCalled();
+  });
+
+  it('只从受信 context 读取来源 IP 并忽略代理头', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+    const request = event('POST', '/api/v1/submissions/prepare', {
+      kind: 'shared_package',
+      title: '名称',
+      body: '说明',
+      captcha: { ticket: 'ticket', randstr: 'randstr' },
+      packageFile: {
+        fileName: 'pet.zip',
+        sizeBytes: 1024,
+        contentType: 'application/zip'
+      },
+      coverFile: {
+        fileName: 'cover.webp',
+        sizeBytes: 512,
+        contentType: 'image/webp'
+      }
+    });
+    request.headers['x-forwarded-for'] = '198.51.100.99';
+
+    const response = await main(request, context);
+
+    expect(response.statusCode).toBe(200);
+    expect(dependencies.submissions.prepare).toHaveBeenCalledWith(
+      expect.any(Object),
+      { ip: sourceIp }
+    );
+    expect(JSON.stringify(dependencies.abuseControl.consume.mock.calls))
+      .not.toContain(sourceIp);
+    expect(JSON.stringify(dependencies.abuseControl.consume.mock.calls))
+      .not.toContain('198.51.100.99');
+  });
+
+  it('缺少受信来源 IP 时失败关闭', async () => {
+    const main = createApi(createDependencies());
+
+    const response = await main(
+      event('POST', '/api/v1/submission-status', {
+        statusToken: 'a'.repeat(43)
+      }),
+      { requestId: 'request-no-ip' }
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error.code).toBe('INVALID_REQUEST');
+  });
+
+  it('动态投稿 ID 只接受单个安全路径段', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const valid = await main(
+      event('POST', '/api/v1/submissions/submission-1/finalize', {}),
+      context
+    );
+    const encodedSlash = await main(
+      event('POST', '/api/v1/submissions/submission%2Fprivate/finalize', {}),
+      context
+    );
+
+    expect(valid.statusCode).toBe(200);
+    expect(dependencies.submissions.finalize).toHaveBeenCalledWith({
+      submissionId: 'submission-1'
+    });
+    expect(encodedSlash.statusCode).toBe(400);
+    expect(dependencies.submissions.finalize).toHaveBeenCalledOnce();
+  });
+
+  it('状态查询限流并只返回公开状态 DTO', async () => {
+    const dependencies = createDependencies();
+    dependencies.submissions.getStatus.mockResolvedValueOnce({
+      submissionId: 'submission-1',
+      status: 'system_reviewing',
+      publicReason: null,
+      createdAt: '2026-07-31T00:00:00.000Z',
+      updatedAt: '2026-07-31T00:01:00.000Z',
+      moderationEvidence: '不得公开'
+    });
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/submission-status', {
+        statusToken: 'a'.repeat(43)
+      }),
+      context
+    );
+    const payload = JSON.parse(response.body);
+
+    expect(response.statusCode).toBe(200);
+    expect(dependencies.abuseControl.consume).toHaveBeenCalledWith(
+      'status_query',
+      expect.stringMatching(/^[a-f0-9]{64}$/u)
+    );
+    expect(payload.data).toEqual({
+      submissionId: 'submission-1',
+      status: 'system_reviewing',
+      publicReason: null,
+      createdAt: '2026-07-31T00:00:00.000Z',
+      updatedAt: '2026-07-31T00:01:00.000Z'
+    });
+    expect(response.body).not.toContain('moderationEvidence');
+  });
+
+  it('公开列表、详情和反馈裁剪内部字段', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const responses = await Promise.all([
+      main(event('GET', '/api/v1/community'), context),
+      main(event('GET', '/api/v1/community/community-1'), context),
+      main({
+        ...event('GET', '/api/v1/feedback'),
+        queryStringParameters: { kind: 'feedback' }
+      }, context)
+    ]);
+
+    for (const response of responses) {
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toMatch(
+        /storageKey|internalEvidence|statusTokenHash/u
+      );
+    }
+  });
+
+  it('点赞和下载分别按设备哈希与资源 ID 限流', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    await main(
+      event('POST', '/api/v1/community/community-1/like', {}),
+      context
+    );
+    await main(
+      event('POST', '/api/v1/community/community-1/download', {}),
+      context
+    );
+
+    const deviceHash = createHmac('sha256', fingerprintSecret)
+      .update(`${sourceIp}\ntest-agent`)
+      .digest('hex');
+    expect(dependencies.abuseControl.consume.mock.calls).toContainEqual([
+      'like:community-1',
+      deviceHash
+    ]);
+    expect(dependencies.abuseControl.consume.mock.calls).toContainEqual([
+      'download:community-1',
+      deviceHash
+    ]);
+    expect(dependencies.publicContent.toggleLike)
+      .toHaveBeenCalledWith('community-1', deviceHash);
+    expect(dependencies.publicContent.getDownload)
+      .toHaveBeenCalledWith('community-1');
+  });
+
+  it('429 响应在稳定错误信封中包含重试秒数', async () => {
+    const dependencies = createDependencies();
+    dependencies.abuseControl.consume.mockRejectedValueOnce(
+      Object.assign(new Error('内部计数信息'), {
+        code: 'RATE_LIMITED',
+        statusCode: 429,
+        retryAfterSeconds: 18,
+        publicMessage: '请求失败'
+      })
+    );
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/submission-status', {
+        statusToken: 'a'.repeat(43)
+      }),
+      context
+    );
+
+    expect(response.statusCode).toBe(429);
+    expect(JSON.parse(response.body)).toMatchObject({
+      data: null,
+      error: {
+        code: 'RATE_LIMITED',
+        retryAfterSeconds: 18
+      },
+      requestId: 'request-1'
+    });
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.body).not.toContain('内部计数信息');
+  });
+
+  it('未知路由返回稳定 404', async () => {
+    const response = await createApi(createDependencies())(
+      event('GET', '/api/v1/missing'),
+      context
+    );
+
+    expect(response.statusCode).toBe(404);
+    expect(JSON.parse(response.body)).toMatchObject({
+      data: null,
+      error: { code: 'NOT_FOUND' },
+      requestId: 'request-1'
+    });
+  });
+});
+
+describe('持久化滥用控制', () => {
+  it.each([
+    ['submission_prepare', 5, 600],
+    ['status_query', 30, 60],
+    ['like:community-1', 10, 60],
+    ['download:community-1', 10, 60]
+  ] as const)('%s 使用精确窗口策略', async (scope, maximum, windowSeconds) => {
+    const store = {
+      consumeAbuseLimit: vi.fn(async () => ({
+        allowed: true,
+        retryAfterSeconds: 0
+      }))
+    };
+    const control = new AbuseControl(store);
+
+    await control.consume(scope, 'a'.repeat(64));
+
+    expect(store.consumeAbuseLimit).toHaveBeenCalledWith({
+      scope,
+      fingerprintHash: 'a'.repeat(64),
+      maximum,
+      windowSeconds
+    });
+  });
+
+  it('数据库拒绝消费时抛出带重试秒数的 429', async () => {
+    const control = new AbuseControl({
+      consumeAbuseLimit: vi.fn(async () => ({
+        allowed: false,
+        retryAfterSeconds: 42
+      }))
+    });
+
+    await expect(control.consume('status_query', 'b'.repeat(64)))
+      .rejects.toMatchObject({
+        code: 'RATE_LIMITED',
+        statusCode: 429,
+        retryAfterSeconds: 42
+      });
+  });
+});
