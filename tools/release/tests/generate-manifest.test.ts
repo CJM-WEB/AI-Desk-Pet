@@ -14,7 +14,7 @@ const temporaryRoots: string[] = [];
 async function createFixtureInstaller(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'myself-release-'));
   temporaryRoots.push(directory);
-  const installerPath = join(directory, 'Myself-0.1.0-alpha.1-windows-x64.exe');
+  const installerPath = join(directory, 'AI-Pet-0.1.0-alpha.1-windows-x64.exe');
   await writeFile(installerPath, Buffer.from('fixture-installer'), 'utf8');
   return installerPath;
 }
@@ -38,8 +38,9 @@ describe('generateReleaseManifest', () => {
     expect(manifest).toEqual({
       version: '0.1.0-alpha.1',
       platform: 'windows-x64',
-      fileName: 'Myself-0.1.0-alpha.1-windows-x64.exe',
-      downloadUrl: 'https://download.example.com/releases/Myself-0.1.0-alpha.1-windows-x64.exe',
+      status: 'published',
+      fileName: 'AI-Pet-0.1.0-alpha.1-windows-x64.exe',
+      downloadUrl: 'https://download.example.com/releases/AI-Pet-0.1.0-alpha.1-windows-x64.exe',
       sizeBytes: 17,
       sha256: createHash('sha256').update(Buffer.from('fixture-installer')).digest('hex'),
       publishedAt: '2026-07-25T00:00:00.000Z',
@@ -50,7 +51,7 @@ describe('generateReleaseManifest', () => {
   test('拒绝不符合第一阶段命名契约的安装包', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'myself-release-invalid-'));
     temporaryRoots.push(directory);
-    const installerPath = join(directory, 'Myself-latest.exe');
+    const installerPath = join(directory, 'AI-Pet-latest.exe');
     await writeFile(installerPath, 'fixture', 'utf8');
 
     await expect(generateReleaseManifest({
@@ -86,7 +87,7 @@ describe('parseManifestCommandArgs', () => {
     expect(parseManifestCommandArgs([
       '--',
       '--installer',
-      'dist/Myself-0.1.0-alpha.1-windows-x64.exe',
+      'dist/AI-Pet-0.1.0-alpha.1-windows-x64.exe',
       '--base-url',
       'https://download.example.com/releases/',
       '--published-at',
@@ -94,7 +95,7 @@ describe('parseManifestCommandArgs', () => {
       '--output',
       'apps/website/content/release-manifest.json'
     ])).toEqual({
-      installerPath: 'dist/Myself-0.1.0-alpha.1-windows-x64.exe',
+      installerPath: 'dist/AI-Pet-0.1.0-alpha.1-windows-x64.exe',
       downloadBaseUrl: 'https://download.example.com/releases/',
       publishedAt: '2026-07-25T00:00:00.000Z',
       outputPath: 'apps/website/content/release-manifest.json'

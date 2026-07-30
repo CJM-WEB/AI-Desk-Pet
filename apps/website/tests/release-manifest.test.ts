@@ -3,15 +3,15 @@ import data from '../content/release-manifest.json';
 import { releaseManifestSchema } from '../lib/release-manifest';
 
 describe('官网版本清单', () => {
-  it('包含有效的未签名 Windows Alpha 版本信息', () => {
+  it('将尚未上传的 Windows Alpha 版本明确标记为未发布', () => {
     const release = releaseManifestSchema.parse(data);
 
     expect(release.version).toBe('0.1.0-alpha.1');
     expect(release.platform).toBe('windows-x64');
-    expect(release.fileName).toBe('Myself-0.1.0-alpha.1-windows-x64.exe');
-    expect(release.downloadUrl).toMatch(/\.exe$/);
-    expect(release.sizeBytes).toBeGreaterThan(0);
-    expect(release.sha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(release.signed).toBe(false);
+    expect(release.status).toBe('unpublished');
+    expect(release.fileName).toBe('AI-Pet-0.1.0-alpha.1-windows-x64.exe');
+    expect('downloadUrl' in release).toBe(false);
+    expect('sizeBytes' in release).toBe(false);
+    expect('sha256' in release).toBe(false);
   });
 });

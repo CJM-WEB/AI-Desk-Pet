@@ -21,6 +21,16 @@ export type DownloadPlatform =
       summary: string;
       versionLabel: string;
       systemRequirements: string;
+    }
+  | {
+      id: string;
+      name: string;
+      status: 'unpublished';
+      summary: string;
+      versionLabel: string;
+      systemRequirements: string;
+      fileName: string;
+      plannedReleaseTag: string;
     };
 
 export type FaqItem = {
@@ -36,19 +46,32 @@ export type InstallNoticeItem = {
 // 发行清单是 Windows 下载数据的唯一来源，避免页面配置与实际构建产物分叉。
 const windowsRelease = releaseManifestSchema.parse(rawManifest);
 
+const windowsPlatform: DownloadPlatform = windowsRelease.status === 'published'
+  ? {
+      id: 'windows-x64',
+      name: 'Windows',
+      status: 'available',
+      summary: 'Windows 10/11 x64 测试版',
+      versionLabel: windowsRelease.version,
+      systemRequirements: 'Windows 10/11 x64',
+      downloadUrl: windowsRelease.downloadUrl,
+      fileName: windowsRelease.fileName,
+      sizeBytes: windowsRelease.sizeBytes,
+      sha256: windowsRelease.sha256
+    }
+  : {
+      id: 'windows-x64',
+      name: 'Windows',
+      status: 'unpublished',
+      summary: 'Windows 10/11 x64 测试版尚未发布',
+      versionLabel: windowsRelease.version,
+      systemRequirements: 'Windows 10/11 x64',
+      fileName: windowsRelease.fileName,
+      plannedReleaseTag: windowsRelease.plannedReleaseTag
+    };
+
 export const DOWNLOAD_PLATFORMS: DownloadPlatform[] = [
-  {
-    id: 'windows-x64',
-    name: 'Windows',
-    status: 'available',
-    summary: 'Windows 10/11 x64 测试版',
-    versionLabel: windowsRelease.version,
-    systemRequirements: 'Windows 10/11 x64',
-    downloadUrl: windowsRelease.downloadUrl,
-    fileName: windowsRelease.fileName,
-    sizeBytes: windowsRelease.sizeBytes,
-    sha256: windowsRelease.sha256
-  },
+  windowsPlatform,
   {
     id: 'macos',
     name: 'macOS',

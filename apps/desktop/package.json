@@ -2,13 +2,13 @@
   "name": "@myself/desktop",
   "private": true,
   "version": "0.1.0-alpha.1",
-  "description": "Myself 第一阶段 Windows AI 桌宠 Alpha",
+  "description": "AI Pet 第一阶段 Windows AI 桌宠 Alpha",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "postinstall": "install-electron",
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node scripts/verify-preload-bundle.mjs",
     "package:win": "pnpm build && electron-builder --win nsis --x64 --config electron-builder.yml",
     "preview": "electron-vite preview",
     "test": "vitest run --config vitest.config.ts",
@@ -16,20 +16,30 @@
     "verify:package-config": "vitest run --config vitest.config.ts -- package-config.test.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@myself/agent-core": "workspace:*",
+    "@myself/character-assets": "workspace:*",
     "@myself/character-runtime": "workspace:*",
     "@myself/file-tools": "workspace:*",
     "@myself/shared-types": "workspace:*",
+    "lucide-react": "1.26.0",
+    "pixi.js": "^8.19.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "yauzl": "3.4.0",
+    "yazl": "3.3.1",
     "zod": "^3.25.76",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/yauzl": "2.10.3",
+    "@types/yazl": "2.4.5",
     "electron": "^43.1.1",
     "electron-builder": "^26.0.12",
-    "electron-vite": "^5.0.0"
+    "electron-vite": "^5.0.0",
+    "jsdom": "29.1.1"
   }
 }

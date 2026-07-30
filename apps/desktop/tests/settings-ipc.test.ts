@@ -40,7 +40,8 @@ describe('设置 IPC', () => {
     };
     const secrets = {
       save: vi.fn(async () => undefined),
-      clear: vi.fn(async () => undefined)
+      clear: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const lifecycle = { onProviderChanged: vi.fn(() => undefined) };
     registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
@@ -53,7 +54,7 @@ describe('设置 IPC', () => {
       persistSecret: true
     });
 
-    expect(secrets.save).toHaveBeenCalledWith('sk-ipc-fixture', true);
+    expect(secrets.save).toHaveBeenCalledWith('default', 'sk-ipc-fixture', true);
     expect(settings.saveProviderMetadata).toHaveBeenCalledWith({
       id: 'default',
       displayName: '示例服务',
@@ -77,7 +78,8 @@ describe('设置 IPC', () => {
     };
     const secrets = {
       save: vi.fn(async () => undefined),
-      clear: vi.fn(async () => undefined)
+      clear: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     registerSettingsIpc(ipcMain, settings, secrets);
 
@@ -100,7 +102,8 @@ describe('设置 IPC', () => {
     };
     const secrets = {
       save: vi.fn(async () => undefined),
-      clear: vi.fn(async () => undefined)
+      clear: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     registerSettingsIpc(ipcMain, settings, secrets);
 
@@ -122,14 +125,15 @@ describe('设置 IPC', () => {
     };
     const secrets = {
       save: vi.fn(async () => undefined),
-      clear: vi.fn(async () => undefined)
+      clear: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const lifecycle = { onProviderChanged: vi.fn(() => undefined) };
     registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
 
     await handlers.get(ipcChannels.settingsClearLocalData)?.({}, { scope: 'secret' });
 
-    expect(secrets.clear).toHaveBeenCalledOnce();
+    expect(secrets.clear).toHaveBeenCalledWith('default');
     expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
   });
 
@@ -142,7 +146,8 @@ describe('设置 IPC', () => {
     };
     const secrets = {
       save: vi.fn(async () => undefined),
-      clear: vi.fn(async () => undefined)
+      clear: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const actions = {
       testProvider: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
@@ -166,7 +171,8 @@ describe('设置 IPC', () => {
     };
     const secrets = {
       save: vi.fn(async () => undefined),
-      clear: vi.fn(async () => undefined)
+      clear: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const lifecycle = {
       onProviderChanged: vi.fn(() => undefined),
@@ -194,7 +200,8 @@ describe('设置 IPC', () => {
     };
     const secrets = {
       save: vi.fn(async () => undefined),
-      clear: vi.fn(async () => undefined)
+      clear: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
     };
     const lifecycle = {
       onProviderChanged: vi.fn(() => undefined),
@@ -205,7 +212,7 @@ describe('设置 IPC', () => {
     await handlers.get(ipcChannels.settingsClearLocalData)?.({}, { scope: 'all' });
 
     expect(settings.clearAll).toHaveBeenCalledOnce();
-    expect(secrets.clear).toHaveBeenCalledOnce();
+    expect(secrets.clearAll).toHaveBeenCalledOnce();
     expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
     expect(lifecycle.onAuthorizedRootChanged).toHaveBeenCalledOnce();
   });

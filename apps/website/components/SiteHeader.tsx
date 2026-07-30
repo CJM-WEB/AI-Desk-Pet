@@ -9,9 +9,9 @@ const links = [
 export function SiteHeader() {
   return (
     <header className="site-header">
-      <a className="brand" href="#hero" aria-label="Myself 首页">
+      <a className="brand" href="#hero" aria-label="AI Pet 首页">
         <span className="brand-mark" aria-hidden="true" />
-        <span>Myself</span>
+        <span>AI Pet</span>
       </a>
       <nav className="site-nav" aria-label="官网导航">
         {links.map(([href, label]) => (

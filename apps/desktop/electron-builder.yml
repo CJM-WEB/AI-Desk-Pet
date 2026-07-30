@@ -1,12 +1,17 @@
 appId: com.myself.desktop
-productName: Myself
-artifactName: Myself-${version}-windows-${arch}.${ext}
+productName: AI Pet
+artifactName: AI-Pet-${version}-windows-${arch}.${ext}
 directories:
   output: dist
   buildResources: resources
 files:
   - out/**
   - package.json
+extraResources:
+  - from: resources/characters/default
+    to: characters/default
+    filter:
+      - '**/*'
 asar: true
 win:
   target:

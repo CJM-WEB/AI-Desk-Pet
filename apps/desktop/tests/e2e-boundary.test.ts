@@ -33,6 +33,22 @@ function validEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv 
     MYSELF_E2E: '1',
     MYSELF_E2E_USER_DATA: userDataDirectory,
     MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory,
+    MYSELF_E2E_CHARACTER_ASSETS: join(temporaryDirectory, 'character-assets'),
+    MYSELF_E2E_SAFE_CHARACTER_PACKAGE: join(
+      temporaryDirectory,
+      'packages',
+      'safe-character.zip'
+    ),
+    MYSELF_E2E_MALICIOUS_CHARACTER_PACKAGE: join(
+      temporaryDirectory,
+      'packages',
+      'malicious-character.zip'
+    ),
+    MYSELF_E2E_CHARACTER_EXPORT: join(
+      temporaryDirectory,
+      'exports',
+      'exported-character.zip'
+    ),
     ...overrides
   };
 }
@@ -45,7 +61,20 @@ describe('Main E2E 安全边界', () => {
     authorizedRootDirectory = join(temporaryDirectory, 'authorized-root');
     await Promise.all([
       mkdir(userDataDirectory, { recursive: true }),
-      mkdir(authorizedRootDirectory, { recursive: true })
+      mkdir(authorizedRootDirectory, { recursive: true }),
+      mkdir(join(temporaryDirectory, 'character-assets'), { recursive: true }),
+      mkdir(join(temporaryDirectory, 'packages'), { recursive: true }),
+      mkdir(join(temporaryDirectory, 'exports'), { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(
+        join(temporaryDirectory, 'packages', 'safe-character.zip'),
+        'safe'
+      ),
+      writeFile(
+        join(temporaryDirectory, 'packages', 'malicious-character.zip'),
+        'malicious'
+      )
     ]);
   });
 
@@ -64,8 +93,43 @@ describe('Main E2E 安全边界', () => {
       temporaryDirectory
     })).toEqual({
       userDataDirectory: realpathSync.native(userDataDirectory),
-      authorizedRootDirectory: realpathSync.native(authorizedRootDirectory)
+      authorizedRootDirectory: realpathSync.native(authorizedRootDirectory),
+      characterAssetsDirectory: realpathSync.native(
+        join(temporaryDirectory, 'character-assets')
+      ),
+      safeCharacterPackage: realpathSync.native(
+        join(temporaryDirectory, 'packages', 'safe-character.zip')
+      ),
+      maliciousCharacterPackage: realpathSync.native(
+        join(temporaryDirectory, 'packages', 'malicious-character.zip')
+      ),
+      characterExportDestination: join(
+        realpathSync.native(join(temporaryDirectory, 'exports')),
+        'exported-character.zip'
+      )
     });
+  });
+
+  test('角色测试资产必须全部位于同一临时根，且导出目标必须尚不存在', async () => {
+    const boundary = await loadBoundaryModule();
+    expect(boundary).not.toBeNull();
+    if (!boundary) return;
+
+    const outsideFile = join(testBaseDirectory, 'outside.png');
+    await writeFile(outsideFile, 'outside');
+    expect(boundary.resolveMainE2eBoundary({
+      appIsPackaged: false,
+      env: validEnvironment({ MYSELF_E2E_SAFE_CHARACTER_PACKAGE: outsideFile }),
+      temporaryDirectory
+    })).toBeNull();
+
+    const exportTarget = join(temporaryDirectory, 'exports', 'exported-character.zip');
+    await writeFile(exportTarget, 'occupied');
+    expect(boundary.resolveMainE2eBoundary({
+      appIsPackaged: false,
+      env: validEnvironment(),
+      temporaryDirectory
+    })).toBeNull();
   });
 
   test.each([
@@ -148,12 +212,16 @@ describe('Main E2E 安全边界', () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
     const setPathIndex = main.indexOf("app.setPath('userData'");
     const disableHardwareAccelerationIndex = main.indexOf('app.disableHardwareAcceleration()');
+    const singleInstanceLockIndex = main.indexOf('configureSingleInstance(');
     const whenReadyIndex = main.indexOf('app.whenReady()');
 
     expect(setPathIndex).toBeGreaterThanOrEqual(0);
     expect(setPathIndex).toBeLessThan(whenReadyIndex);
     expect(disableHardwareAccelerationIndex).toBeGreaterThanOrEqual(0);
     expect(disableHardwareAccelerationIndex).toBeLessThan(whenReadyIndex);
+    expect(singleInstanceLockIndex).toBeGreaterThanOrEqual(0);
+    expect(singleInstanceLockIndex).toBeLessThan(whenReadyIndex);
+    expect(singleInstanceLockIndex).toBeLessThan(main.lastIndexOf('createApplicationWindows()'));
     expect(main).toContain('e2eBoundary.authorizedRootDirectory');
     expect(main).toContain('dialog.showOpenDialog');
   });

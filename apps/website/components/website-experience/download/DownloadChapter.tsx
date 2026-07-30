@@ -378,6 +378,17 @@ export function DownloadChapter({
                           下载 {platform.name}
                         </a>
                       </>
+                    ) : platform.status === 'unpublished' ? (
+                      <>
+                        <dl className={styles.releaseMeta}>
+                          <div><dt>计划安装包</dt><dd>{platform.fileName}</dd></div>
+                          <div><dt>计划发布标签</dt><dd>{platform.plannedReleaseTag}</dd></div>
+                        </dl>
+                        <button className={styles.downloadAction} type="button" disabled>
+                          <Clock3 aria-hidden="true" />
+                          尚未发布
+                        </button>
+                      </>
                     ) : (
                       <button className={styles.downloadAction} type="button" disabled>
                         <Clock3 aria-hidden="true" />

@@ -8,7 +8,8 @@ const releaseManifestSchema = z
   .object({
     version: z.string().regex(/^\d+\.\d+\.\d+-alpha\.\d+$/),
     platform: z.literal('windows-x64'),
-    fileName: z.string().regex(/^Myself-\d+\.\d+\.\d+-alpha\.\d+-windows-x64\.exe$/),
+    status: z.literal('published'),
+    fileName: z.string().regex(/^AI-Pet-\d+\.\d+\.\d+-alpha\.\d+-windows-x64\.exe$/),
     downloadUrl: z.string().url().regex(/\.exe$/),
     sizeBytes: z.number().int().positive(),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -30,7 +31,7 @@ export interface WriteReleaseManifestInput extends GenerateReleaseManifestInput 
 }
 
 function versionFromInstallerName(fileName: string): string {
-  const match = /^Myself-(\d+\.\d+\.\d+-alpha\.\d+)-windows-x64\.exe$/u.exec(fileName);
+  const match = /^AI-Pet-(\d+\.\d+\.\d+-alpha\.\d+)-windows-x64\.exe$/u.exec(fileName);
   if (!match?.[1]) throw new Error('安装包文件名不符合第一阶段发布契约');
   return match[1];
 }
@@ -44,6 +45,7 @@ export async function generateReleaseManifest(
   const manifest = {
     version: versionFromInstallerName(fileName),
     platform: 'windows-x64',
+    status: 'published',
     fileName,
     downloadUrl: new URL(fileName, input.downloadBaseUrl).toString(),
     sizeBytes: fileInfo.size,

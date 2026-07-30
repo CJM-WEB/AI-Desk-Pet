@@ -49,7 +49,7 @@ describe('SettingsStore', () => {
     });
 
     const serialized = await readFile(file, 'utf8');
-    expect(serialized).toContain('"version": 1');
+    expect(serialized).toContain('"version": 2');
     expect(serialized).not.toContain(fixtureSecret);
     await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
       provider: {
@@ -201,6 +201,40 @@ describe('SettingsStore', () => {
       pathHint: 'D:\\…\\project'
     });
     expect(authorizedRootPath).toBe('D:\\private\\project');
+  });
+
+  test('MCP 本地只读授权指纹可原子持久化并读取', async () => {
+    const { store } = await createStore();
+    const fingerprint = 'a'.repeat(64);
+
+    await store.saveMcpServerSettings({
+      id: 'local-tools',
+      enabled: true,
+      transport: {
+        type: 'http',
+        url: 'https://mcp.example.com',
+        secretNames: []
+      },
+      tools: {
+        echo: {
+          enabled: true,
+          readOnly: true,
+          description: '返回文本',
+          definitionFingerprint: fingerprint,
+          trustedReadFingerprint: fingerprint
+        }
+      }
+    });
+
+    await expect(store.getMcpServerSettings()).resolves.toEqual([
+      expect.objectContaining({
+        tools: {
+          echo: expect.objectContaining({
+            trustedReadFingerprint: fingerprint
+          })
+        }
+      })
+    ]);
   });
 
   test('损坏设置被隔离并回退到安全默认值', async () => {

@@ -82,7 +82,7 @@ export function ChatPanel() {
     <main className="chat-shell">
       <header className="chat-header">
         <div>
-          <span className="companion-kicker">MYSELF</span>
+          <span className="companion-kicker">AI PET</span>
           <strong>晚上好，我在这里</strong>
         </div>
         <div className="header-actions">
@@ -100,7 +100,7 @@ export function ChatPanel() {
           </div>
         ) : messages.map(message => (
           <article key={message.id} className={`message message-${message.role}`}>
-            <span>{message.role === 'user' ? '你' : message.role === 'error' ? '一起看看' : 'Myself'}</span>
+            <span>{message.role === 'user' ? '你' : message.role === 'error' ? '一起看看' : 'AI Pet'}</span>
             <p>{message.text}</p>
             {message.nextAction ? <small>下一步：{message.nextAction}</small> : null}
           </article>
@@ -133,7 +133,7 @@ export function ChatPanel() {
             </button>
           ) : (
             <button className="primary-button" type="submit" disabled={!text.trim() || Boolean(pendingAction)}>
-              发送给 Myself
+              发送给 AI Pet
             </button>
           )}
         </div>

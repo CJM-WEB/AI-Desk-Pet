@@ -7,13 +7,19 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { chromium, type Browser } from '@playwright/test';
+import { materializeCharacterWorkshopFixtures } from './character-workshop-assets';
 
 export interface ElectronLaunchPlanOptions {
   workspaceRoot: string;
   cdpPort: number;
   userDataDirectory: string;
   authorizedRootDirectory: string;
+  characterAssetsDirectory?: string;
+  safeCharacterPackage?: string;
+  maliciousCharacterPackage?: string;
+  characterExportDestination?: string;
   parentEnvironment?: NodeJS.ProcessEnv;
+  enableSoftwareRasterizer?: boolean;
 }
 
 export interface ElectronLaunchPlan {
@@ -46,7 +52,7 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
       `--remote-debugging-port=${options.cdpPort}`,
       // Windows E2E 环境中 GPU 沙盒子进程可能不可用，测试启动时阻止它反复崩溃。
       '--disable-gpu',
-      '--disable-software-rasterizer',
+      ...(options.enableSoftwareRasterizer ? [] : ['--disable-software-rasterizer']),
       '--no-sandbox',
       applicationEntry
     ],
@@ -54,7 +60,19 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
       ...environment,
       MYSELF_E2E: '1',
       MYSELF_E2E_USER_DATA: options.userDataDirectory,
-      MYSELF_E2E_AUTHORIZED_ROOT: options.authorizedRootDirectory
+      MYSELF_E2E_AUTHORIZED_ROOT: options.authorizedRootDirectory,
+      ...(options.characterAssetsDirectory
+        ? { MYSELF_E2E_CHARACTER_ASSETS: options.characterAssetsDirectory }
+        : {}),
+      ...(options.safeCharacterPackage
+        ? { MYSELF_E2E_SAFE_CHARACTER_PACKAGE: options.safeCharacterPackage }
+        : {}),
+      ...(options.maliciousCharacterPackage
+        ? { MYSELF_E2E_MALICIOUS_CHARACTER_PACKAGE: options.maliciousCharacterPackage }
+        : {}),
+      ...(options.characterExportDestination
+        ? { MYSELF_E2E_CHARACTER_EXPORT: options.characterExportDestination }
+        : {})
     }
   };
 }
@@ -66,10 +84,26 @@ function escapedPattern(value: string): RegExp {
 /** 捕获诊断日志时删除密钥、认证头和授权根绝对路径。 */
 export function redactElectronLog(
   text: string,
-  secrets: { apiKey: string; authorizedRootDirectory: string }
+  secrets: {
+    apiKey: string;
+    authorizedRootDirectory: string;
+    userDataDirectory?: string;
+    characterAssetsDirectory?: string;
+    safeCharacterPackage?: string;
+    maliciousCharacterPackage?: string;
+    characterExportDestination?: string;
+  }
 ): string {
   let sanitized = text.replace(/authorization\s*:[^\r\n]*/giu, '[已脱敏]');
-  for (const secret of [secrets.apiKey, secrets.authorizedRootDirectory]) {
+  for (const secret of [
+    secrets.apiKey,
+    secrets.authorizedRootDirectory,
+    secrets.userDataDirectory,
+    secrets.characterAssetsDirectory,
+    secrets.safeCharacterPackage,
+    secrets.maliciousCharacterPackage,
+    secrets.characterExportDestination
+  ]) {
     if (secret) sanitized = sanitized.replace(escapedPattern(secret), '[已脱敏]');
   }
   return sanitized;
@@ -125,6 +159,9 @@ export interface ElectronTemporaryDirectories {
   baseDirectory: string;
   userDataDirectory: string;
   authorizedRootDirectory: string;
+  characterAssetsDirectory?: string;
+  packagesDirectory?: string;
+  exportsDirectory?: string;
 }
 
 export interface SpawnedElectronProcess extends EventEmitter {
@@ -153,7 +190,11 @@ export interface ElectronAppFixture {
   readonly executablePath: string;
   readonly userDataDirectory: string;
   readonly authorizedRootDirectory: string;
+  readonly safeCharacterPackage?: string;
+  readonly maliciousCharacterPackage?: string;
+  readonly characterExportDestination?: string;
   readonly logs: readonly string[];
+  getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
   restart(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -163,6 +204,9 @@ export interface CreateElectronAppFixtureOptions {
   apiKey: string;
   launchTimeoutMs?: number;
   operationTimeoutMs?: number;
+  enableSoftwareRasterizer?: boolean;
+  prepareUserData?(directories: ElectronTemporaryDirectories): Promise<void>;
+  beforeRestart?(directories: ElectronTemporaryDirectories): Promise<void>;
   dependencies?: ElectronAppDependencies;
 }
 
@@ -183,11 +227,24 @@ async function createTemporaryDirectories(): Promise<ElectronTemporaryDirectorie
   const baseDirectory = await mkdtemp(join(tmpdir(), 'myself-e2e-'));
   const userDataDirectory = join(baseDirectory, 'user-data');
   const authorizedRootDirectory = join(baseDirectory, 'authorized-root');
+  const characterAssetsDirectory = join(baseDirectory, 'character-assets');
+  const packagesDirectory = join(baseDirectory, 'packages');
+  const exportsDirectory = join(baseDirectory, 'exports');
   await Promise.all([
     mkdir(userDataDirectory, { recursive: true }),
-    mkdir(authorizedRootDirectory, { recursive: true })
+    mkdir(authorizedRootDirectory, { recursive: true }),
+    mkdir(characterAssetsDirectory, { recursive: true }),
+    mkdir(packagesDirectory, { recursive: true }),
+    mkdir(exportsDirectory, { recursive: true })
   ]);
-  return { baseDirectory, userDataDirectory, authorizedRootDirectory };
+  return {
+    baseDirectory,
+    userDataDirectory,
+    authorizedRootDirectory,
+    characterAssetsDirectory,
+    packagesDirectory,
+    exportsDirectory
+  };
 }
 
 export interface SpawnedCommandProcess extends EventEmitter {
@@ -345,6 +402,14 @@ function sanitizeProcessProbeDiagnostic(text: string): string {
     .slice(0, 800);
 }
 
+const WINDOWS_PROCESS_PATH_TEMPORARILY_UNAVAILABLE =
+  'WINDOWS_PROCESS_PATH_TEMPORARILY_UNAVAILABLE';
+
+function isTemporarilyUnavailableProcessProbeError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes(WINDOWS_PROCESS_PATH_TEMPORARILY_UNAVAILABLE);
+}
+
 function taskkillFailureDiagnostic(error: unknown): string {
   const message = sanitizeProcessProbeDiagnostic(
     error instanceof Error ? error.message : String(error)
@@ -394,6 +459,9 @@ export async function probeWindowsProcess(
     ['-NoProfile', '-NonInteractive', '-Command', script],
     options.signal
   );
+  if (result.exitCode === 4) {
+    throw new Error(WINDOWS_PROCESS_PATH_TEMPORARILY_UNAVAILABLE);
+  }
   if (result.exitCode !== 0) {
     const diagnostic = sanitizeProcessProbeDiagnostic(result.stderr);
     throw new Error(
@@ -482,15 +550,30 @@ export async function terminateElectronProcess(
       }
     };
     const inspectOriginalProcess = async (): Promise<'exited' | 'owned'> => {
-      if (hasProcessExited(process)) return 'exited';
-      const result = await probe();
-      if (hasProcessExited(process)) return 'exited';
-      if (result.status === 'absent') return 'exited';
-      if (!sameExecutablePath(result.executablePath, executablePath, platform)) {
-        options.onDiagnostic?.(`ELECTRON_PROCESS_PID_REUSED:${String(processId)}`);
-        return 'exited';
+      const deadline = Date.now() + processExitTimeoutMs;
+      while (true) {
+        if (hasProcessExited(process)) return 'exited';
+        try {
+          const result = await probe();
+          if (hasProcessExited(process)) return 'exited';
+          if (result.status === 'absent') return 'exited';
+          if (!sameExecutablePath(result.executablePath, executablePath, platform)) {
+            options.onDiagnostic?.(`ELECTRON_PROCESS_PID_REUSED:${String(processId)}`);
+            return 'exited';
+          }
+          return 'owned';
+        } catch (error) {
+          if (!isTemporarilyUnavailableProcessProbeError(error)) throw error;
+          if (hasProcessExited(process)) return 'exited';
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) throw error;
+          // 退出中的 Windows 进程可能仍保留 PID，却暂时不再暴露可执行路径。
+          await new Promise<void>(resolveDelay => setTimeout(
+            resolveDelay,
+            Math.min(options.probeIntervalMs ?? 50, remainingMs)
+          ));
+        }
       }
-      return 'owned';
     };
 
     // 任一破坏性操作前先以 OS 级 PID 与完整路径确认仍属于原项目进程。
@@ -595,6 +678,27 @@ export async function createElectronAppFixture(
 ): Promise<ElectronAppFixture> {
   const dependencies = options.dependencies ?? defaultDependencies;
   const directories = await dependencies.createTemporaryDirectories();
+  const characterFixtures = options.dependencies
+    ? {
+        characterAssetsDirectory: directories.characterAssetsDirectory,
+        safeCharacterPackage: directories.packagesDirectory
+          ? join(directories.packagesDirectory, 'safe-character.zip')
+          : undefined,
+        maliciousCharacterPackage: directories.packagesDirectory
+          ? join(directories.packagesDirectory, 'malicious-character.zip')
+          : undefined,
+        characterExportDestination: directories.exportsDirectory
+          ? join(directories.exportsDirectory, 'exported-character.zip')
+          : undefined
+      }
+    : await materializeCharacterWorkshopFixtures(
+        options.workspaceRoot,
+        directories.baseDirectory,
+        directories.characterAssetsDirectory!,
+        directories.packagesDirectory!,
+        directories.exportsDirectory!
+      );
+  await options.prepareUserData?.(directories);
   const capturedChunks: string[] = [];
   let child: SpawnedElectronProcess | null = null;
   let browser: Pick<Browser, 'close'> | null = null;
@@ -611,7 +715,12 @@ export async function createElectronAppFixture(
   const sanitizedLogs = (): string[] => {
     const sanitized = redactElectronLog(capturedChunks.join(''), {
       apiKey: options.apiKey,
-      authorizedRootDirectory: directories.authorizedRootDirectory
+      authorizedRootDirectory: directories.authorizedRootDirectory,
+      userDataDirectory: directories.userDataDirectory,
+      characterAssetsDirectory: directories.characterAssetsDirectory,
+      safeCharacterPackage: characterFixtures.safeCharacterPackage,
+      maliciousCharacterPackage: characterFixtures.maliciousCharacterPackage,
+      characterExportDestination: characterFixtures.characterExportDestination
     });
     const segments: string[] = [];
     for (let offset = 0; offset < sanitized.length; offset += 4_000) {
@@ -628,7 +737,12 @@ export async function createElectronAppFixture(
     const rawCause = cause instanceof Error ? cause.message : String(cause ?? '');
     const sanitizedCause = redactElectronLog(rawCause, {
       apiKey: options.apiKey,
-      authorizedRootDirectory: directories.authorizedRootDirectory
+      authorizedRootDirectory: directories.authorizedRootDirectory,
+      userDataDirectory: directories.userDataDirectory,
+      characterAssetsDirectory: directories.characterAssetsDirectory,
+      safeCharacterPackage: characterFixtures.safeCharacterPackage,
+      maliciousCharacterPackage: characterFixtures.maliciousCharacterPackage,
+      characterExportDestination: characterFixtures.characterExportDestination
     });
     const diagnostics = sanitizedLogs().join('').slice(-4_000) || '无捕获日志';
     return new Error(
@@ -723,7 +837,9 @@ export async function createElectronAppFixture(
       cdpPort,
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
-      parentEnvironment: globalThis.process.env
+      ...characterFixtures,
+      parentEnvironment: globalThis.process.env,
+      enableSoftwareRasterizer: options.enableSoftwareRasterizer
     });
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;
@@ -813,12 +929,43 @@ export async function createElectronAppFixture(
       },
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
+      safeCharacterPackage: characterFixtures.safeCharacterPackage,
+      maliciousCharacterPackage: characterFixtures.maliciousCharacterPackage,
+      characterExportDestination: characterFixtures.characterExportDestination,
       get logs() {
         return sanitizedLogs();
+      },
+      async getPetInteractionProbe() {
+        if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
+          throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
+        }
+        const petPage = browser.contexts()
+          .flatMap(context => context.pages())
+          .find(page => {
+            try {
+              return new URL(page.url()).searchParams.get('view') === 'pet';
+            } catch {
+              return false;
+            }
+          });
+        if (!petPage) throw new Error('ELECTRON_E2E_PROBE_PET_PAGE_UNAVAILABLE');
+        const probe = await petPage.evaluate(async () => (
+          window.myself.getPetInteractionProbe?.()
+        ));
+        if (
+          !probe
+          || typeof probe.passthrough !== 'boolean'
+          || typeof probe.dragging !== 'boolean'
+          || Object.keys(probe).length !== 2
+        ) {
+          throw new Error('ELECTRON_E2E_PROBE_RESULT_INVALID');
+        }
+        return probe;
       },
       async restart() {
         if (disposed) throw new Error('ELECTRON_FIXTURE_DISPOSED');
         await cleanupCurrentProcess();
+        await options.beforeRestart?.(directories);
         try {
           await launch();
         } catch (primaryError) {

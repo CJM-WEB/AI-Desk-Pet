@@ -4,15 +4,34 @@ import type {
   ModelRequest,
   ModelResponse
 } from '@myself/agent-core';
-import type { ProviderProfile } from '@myself/shared-types';
+import {
+  characterEmotionLabelSchema,
+  type ProviderProfile
+} from '@myself/shared-types';
 import { z } from 'zod';
 
-type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit
+) => Promise<Response>;
+
+export type AdditionalParameterValue = string | number | boolean;
+
+export interface ProviderAdapterConfig {
+  baseUrl: string;
+  modelId: string;
+  additionalParameters?: Record<string, AdditionalParameterValue>;
+}
+
+type OpenAICompatibleConfig = ProviderAdapterConfig | ProviderProfile;
 
 const compatibleResponseSchema = z.object({
   choices: z.array(z.object({
     message: z.object({
       content: z.string().nullable().optional(),
+      metadata: z.object({
+        emotion: z.unknown().optional()
+      }).optional(),
       tool_calls: z.array(z.object({
         id: z.string().min(1),
         type: z.literal('function'),
@@ -44,7 +63,15 @@ function chatCompletionsUrl(baseUrl: string): URL {
   return new URL('chat/completions', normalizedBase);
 }
 
-function normalizeHttpError(status: number): ProviderError {
+function resolveOpenAIConfig(config: OpenAICompatibleConfig): ProviderAdapterConfig {
+  if ('modelId' in config) return config;
+  return {
+    baseUrl: config.baseUrl,
+    modelId: config.model
+  };
+}
+
+export function normalizeHttpError(status: number): ProviderError {
   if (status === 401 || status === 403) {
     return new ProviderError('PROVIDER_AUTHENTICATION_FAILED', false, status);
   }
@@ -52,6 +79,26 @@ function normalizeHttpError(status: number): ProviderError {
   if (status === 429) return new ProviderError('PROVIDER_RATE_LIMITED', true, status);
   if (status >= 500) return new ProviderError('PROVIDER_SERVER_ERROR', true, status);
   return new ProviderError('PROVIDER_REQUEST_FAILED', false, status);
+}
+
+export function normalizeFetchError(error: unknown, _signal: AbortSignal): never {
+  if (error instanceof Error && error.name === 'AbortError') {
+    throw error;
+  }
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    throw new ProviderError('PROVIDER_TIMEOUT', true);
+  }
+  throw new ProviderError('PROVIDER_NETWORK_ERROR', true);
+}
+
+export async function readProviderJson(response: Response): Promise<unknown> {
+  if (!response.ok) throw normalizeHttpError(response.status);
+
+  try {
+    return await response.json();
+  } catch {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
 }
 
 function serializeMessage(message: ModelMessage): Record<string, unknown> {
@@ -87,6 +134,13 @@ function normalizeResponse(raw: unknown): ModelResponse {
   if (!message) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   const toolCalls = message.tool_calls ?? [];
   if (toolCalls.length > 1) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  if (
+    toolCalls.length === 1
+    && typeof message.content === 'string'
+    && message.content.length > 0
+  ) {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
 
   const toolCall = toolCalls[0];
   if (toolCall) {
@@ -108,20 +162,31 @@ function normalizeResponse(raw: unknown): ModelResponse {
   if (typeof message.content !== 'string') {
     throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   }
+  if (message.metadata?.emotion !== undefined) {
+    const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
+    if (!emotion.success) {
+      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+    }
+    return { type: 'text', text: message.content, emotion: emotion.data };
+  }
   return { type: 'text', text: message.content };
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
   constructor(
-    private readonly profile: ProviderProfile,
+    config: OpenAICompatibleConfig,
     private readonly getSecret: () => Promise<string>,
     private readonly fetchClient: FetchLike = fetch
-  ) {}
+  ) {
+    this.config = resolveOpenAIConfig(config);
+  }
+
+  private readonly config: ProviderAdapterConfig;
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     let response: Response;
     try {
-      response = await this.fetchClient(chatCompletionsUrl(this.profile.baseUrl), {
+      response = await this.fetchClient(chatCompletionsUrl(this.config.baseUrl), {
         method: 'POST',
         signal,
         headers: {
@@ -129,27 +194,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
           authorization: `Bearer ${await this.getSecret()}`
         },
         body: JSON.stringify({
-          model: this.profile.model,
+          ...this.config.additionalParameters,
+          model: this.config.modelId,
           messages: request.messages.map(serializeMessage),
           tools: request.tools
         })
       });
     } catch (error) {
-      if (signal.aborted) throw error;
-      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
-        throw new ProviderError('PROVIDER_TIMEOUT', true);
-      }
-      throw new ProviderError('PROVIDER_NETWORK_ERROR', true);
+      normalizeFetchError(error, signal);
     }
 
-    if (!response.ok) throw normalizeHttpError(response.status);
-
-    let raw: unknown;
-    try {
-      raw = await response.json();
-    } catch {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-    }
-    return normalizeResponse(raw);
+    return normalizeResponse(await readProviderJson(response));
   }
 }

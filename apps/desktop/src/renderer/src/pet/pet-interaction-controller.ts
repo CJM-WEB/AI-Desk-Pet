@@ -1,0 +1,333 @@
+import {
+  PET_DRAG_TIMEOUT_MS,
+  type PetWindowInteractionApi
+} from '../../../shared/pet-window-interaction';
+
+export type CharacterHitTestPort = {
+  hitTest(point: { x: number; y: number }): boolean;
+  subscribe(listener: () => void): () => void;
+};
+
+export type PetInteractionControllerOptions = {
+  onDragStart?: (pointerId: number) => void;
+  onDragEnd?: () => void;
+};
+
+/**
+ * CSS 备用角色没有像素掩码，只允许其真实可见矩形接管鼠标。
+ */
+export function createElementBoundsHitTestPort(
+  element: HTMLElement
+): CharacterHitTestPort {
+  return {
+    hitTest(point) {
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
+      if (!element.isConnected || element.hidden) return false;
+      try {
+        const style = getComputedStyle(element);
+        if (
+          style.display === 'none'
+          || style.visibility === 'hidden'
+          || style.visibility === 'collapse'
+        ) {
+          return false;
+        }
+        const bounds = element.getBoundingClientRect();
+        if (
+          !Number.isFinite(bounds.left)
+          || !Number.isFinite(bounds.top)
+          || !Number.isFinite(bounds.right)
+          || !Number.isFinite(bounds.bottom)
+          || bounds.width <= 0
+          || bounds.height <= 0
+        ) {
+          return false;
+        }
+        return point.x >= bounds.left
+          && point.x < bounds.right
+          && point.y >= bounds.top
+          && point.y < bounds.bottom;
+      } catch {
+        return false;
+      }
+    },
+    subscribe(listener) {
+      let active = true;
+      let observer: ResizeObserver | null = null;
+      let animationFrame: number | null = null;
+      let previousBounds = readElementBounds(element);
+      const checkBounds = (): void => {
+        if (!active) return;
+        const nextBounds = readElementBounds(element);
+        if (!sameElementBounds(previousBounds, nextBounds)) {
+          previousBounds = nextBounds;
+          listener();
+        }
+      };
+      const checkAnimationFrame = (): void => {
+        checkBounds();
+        if (active && typeof requestAnimationFrame === 'function') {
+          animationFrame = requestAnimationFrame(checkAnimationFrame);
+        }
+      };
+      if (typeof ResizeObserver !== 'undefined') {
+        try {
+          observer = new ResizeObserver(checkBounds);
+          observer.observe(element);
+        } catch {
+          observer = null;
+        }
+      }
+      if (typeof requestAnimationFrame === 'function') {
+        animationFrame = requestAnimationFrame(checkAnimationFrame);
+      }
+      return () => {
+        if (!active) return;
+        active = false;
+        observer?.disconnect();
+        if (
+          animationFrame !== null
+          && typeof cancelAnimationFrame === 'function'
+        ) {
+          cancelAnimationFrame(animationFrame);
+        }
+      };
+    }
+  };
+}
+
+type ElementBoundsSnapshot = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+} | null;
+
+function readElementBounds(element: HTMLElement): ElementBoundsSnapshot {
+  try {
+    const bounds = element.getBoundingClientRect();
+    return {
+      left: bounds.left,
+      top: bounds.top,
+      right: bounds.right,
+      bottom: bounds.bottom,
+      width: bounds.width,
+      height: bounds.height
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sameElementBounds(
+  left: ElementBoundsSnapshot,
+  right: ElementBoundsSnapshot
+): boolean {
+  if (!left || !right) return left === right;
+  return left.left === right.left
+    && left.top === right.top
+    && left.right === right.right
+    && left.bottom === right.bottom
+    && left.width === right.width
+    && left.height === right.height;
+}
+
+/**
+ * Renderer 只维护命中与拖拽会话状态；系统窗口操作全部委托给受限 preload API。
+ */
+export class PetInteractionController {
+  private disposed = false;
+  private hitTestPort: CharacterHitTestPort | null = null;
+  private unsubscribeHitRegion: (() => void) | null = null;
+  private latestPoint: { x: number; y: number } | null = null;
+  private activePointerId: number | null = null;
+  private dragTimeout: ReturnType<typeof setTimeout> | null = null;
+  private desiredPassthrough = true;
+  private confirmedPassthrough: boolean | undefined;
+  private passthroughInFlight = false;
+  private blockedPassthrough: boolean | undefined;
+  private safeRetryRemaining = 1;
+
+  constructor(
+    private readonly api: PetWindowInteractionApi,
+    private readonly options: PetInteractionControllerOptions = {}
+  ) {
+    this.requestPassthrough(true);
+  }
+
+  setHitTestPort(port: CharacterHitTestPort | null): void {
+    if (this.disposed) return;
+    this.unsubscribeHitRegion?.();
+    this.unsubscribeHitRegion = null;
+    this.hitTestPort = port;
+    if (port) {
+      try {
+        this.unsubscribeHitRegion = port.subscribe(() => this.refreshPassthrough());
+      } catch {
+        this.hitTestPort = null;
+      }
+    }
+    this.refreshPassthrough();
+  }
+
+  handlePointerMove(point: { x: number; y: number }): void {
+    if (this.disposed) return;
+    this.latestPoint = { ...point };
+    this.refreshPassthrough();
+  }
+
+  handlePointerDown(
+    event: Pick<PointerEvent, 'button' | 'pointerId'>
+  ): void {
+    if (
+      this.disposed
+      || event.button !== 0
+      || this.activePointerId !== null
+      || !this.isCurrentPointHit()
+    ) {
+      return;
+    }
+    this.activePointerId = event.pointerId;
+    this.options.onDragStart?.(event.pointerId);
+    this.requestPassthrough(false);
+    this.dragTimeout = setTimeout(
+      () => this.finishDrag(true),
+      PET_DRAG_TIMEOUT_MS
+    );
+    void this.api.beginPetDrag().catch(() => {
+      if (this.disposed || this.activePointerId !== event.pointerId) return;
+      this.activePointerId = null;
+      this.clearDragTimeout();
+      this.options.onDragEnd?.();
+      this.requestPassthrough(true);
+    });
+  }
+
+  handlePointerUp(): void {
+    this.finishDrag();
+  }
+
+  handlePointerCancel(): void {
+    this.finishDrag();
+  }
+
+  handleContextMenu(): void {
+    if (this.disposed || !this.isCurrentPointHit()) return;
+    void this.api.openPetContextMenu().catch(() => {
+      this.requestPassthrough(true);
+    });
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    const hadActiveDrag = this.activePointerId !== null;
+    this.disposed = true;
+    this.activePointerId = null;
+    this.clearDragTimeout();
+    this.unsubscribeHitRegion?.();
+    this.unsubscribeHitRegion = null;
+    this.hitTestPort = null;
+    if (hadActiveDrag) {
+      this.options.onDragEnd?.();
+      void this.api.endPetDrag().catch(() => undefined);
+    }
+    this.requestPassthrough(true, true);
+  }
+
+  private finishDrag(forceSafePassthrough = false): void {
+    if (this.disposed || this.activePointerId === null) return;
+    this.activePointerId = null;
+    this.clearDragTimeout();
+    this.options.onDragEnd?.();
+    void this.api.endPetDrag().catch(() => {
+      this.requestPassthrough(true);
+    });
+    if (forceSafePassthrough) {
+      this.requestPassthrough(true);
+    } else {
+      this.refreshPassthrough();
+    }
+  }
+
+  private clearDragTimeout(): void {
+    if (this.dragTimeout === null) return;
+    clearTimeout(this.dragTimeout);
+    this.dragTimeout = null;
+  }
+
+  private refreshPassthrough(): void {
+    if (this.disposed || this.activePointerId !== null) return;
+    this.requestPassthrough(!this.isCurrentPointHit());
+  }
+
+  private isCurrentPointHit(): boolean {
+    if (!this.latestPoint || !this.hitTestPort) return false;
+    try {
+      return this.hitTestPort.hitTest(this.latestPoint);
+    } catch {
+      return false;
+    }
+  }
+
+  private requestPassthrough(ignore: boolean, force = false): void {
+    if (this.disposed && !force) return;
+    if (this.desiredPassthrough !== ignore) {
+      this.desiredPassthrough = ignore;
+      this.blockedPassthrough = undefined;
+      if (ignore) this.safeRetryRemaining = 1;
+    } else if (
+      ignore
+      && (force || this.blockedPassthrough === true)
+    ) {
+      // 只有新的外部安全请求重开预算，pump 内部重试不会无限续期。
+      this.blockedPassthrough = undefined;
+      this.safeRetryRemaining = 1;
+      if (force) this.confirmedPassthrough = undefined;
+    }
+    this.pumpPassthrough();
+  }
+
+  /**
+   * 穿透 IPC 单通道串行提交；每次完成后重新读取最新意图，跳过过时中间态。
+   */
+  private pumpPassthrough(): void {
+    if (
+      this.passthroughInFlight
+      || this.confirmedPassthrough === this.desiredPassthrough
+      || this.blockedPassthrough === this.desiredPassthrough
+    ) {
+      return;
+    }
+    const requested = this.desiredPassthrough;
+    this.passthroughInFlight = true;
+    let operation: Promise<void>;
+    try {
+      operation = this.api.setPetMousePassthrough(requested);
+    } catch {
+      operation = Promise.reject(new Error('PET_PASSTHROUGH_REQUEST_FAILED'));
+    }
+    void operation.then(() => {
+      this.confirmedPassthrough = requested;
+      this.blockedPassthrough = undefined;
+    }).catch(() => {
+      if (this.desiredPassthrough !== requested) return;
+      this.confirmedPassthrough = undefined;
+      if (!requested) {
+        this.desiredPassthrough = true;
+        this.blockedPassthrough = undefined;
+        this.safeRetryRemaining = 1;
+        return;
+      }
+      if (this.safeRetryRemaining > 0) {
+        this.safeRetryRemaining -= 1;
+        return;
+      }
+      this.blockedPassthrough = true;
+    }).finally(() => {
+      this.passthroughInFlight = false;
+      this.pumpPassthrough();
+    });
+  }
+}

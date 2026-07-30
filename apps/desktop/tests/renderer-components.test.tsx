@@ -1,8 +1,13 @@
 import { describe, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { PetCharacter } from '../src/renderer/src/pet/PetView';
+import {
+  PetCharacter,
+  PetView
+} from '../src/renderer/src/pet/PetView';
 import { ConfirmationCard } from '../src/renderer/src/chat/ConfirmationCard';
-import { SettingsForm } from '../src/renderer/src/settings/SettingsView';
+import { SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
 import { mountTaskEventsIfAvailable } from '../src/renderer/src/App';
 
 type ClickableElement = {
@@ -13,18 +18,11 @@ type ClickableElement = {
 
 async function loadRendererCommandButtons(): Promise<{
   ChatCloseButton?: () => ClickableElement;
-  PetOpenChatButton?: (props: { children?: unknown }) => ClickableElement;
 }> {
-  const [chat, pet] = await Promise.all([
-    import('../src/renderer/src/chat/ChatPanel'),
-    import('../src/renderer/src/pet/PetView')
-  ]);
+  const chat = await import('../src/renderer/src/chat/ChatPanel');
   return {
     ChatCloseButton: 'ChatCloseButton' in chat
       ? chat.ChatCloseButton as () => ClickableElement
-      : undefined,
-    PetOpenChatButton: 'PetOpenChatButton' in pet
-      ? pet.PetOpenChatButton as (props: { children?: unknown }) => ClickableElement
       : undefined
   };
 }
@@ -42,7 +40,7 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('data-state="thinking"');
     expect(markup).toContain('data-motion="static"');
     expect(markup).toContain('正在认真想');
-    expect(markup).toContain('Myself');
+    expect(markup).toContain('AI Pet');
   });
 
   test('聊天关闭按钮调用正式 window.myself.hideChat', async () => {
@@ -55,21 +53,6 @@ describe('Renderer 可见组件', () => {
     try {
       buttons.ChatCloseButton().props.onClick();
       expect(hideChat).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  test('桌宠打开按钮调用正式 window.myself.openChat', async () => {
-    const buttons = await loadRendererCommandButtons();
-    expect(typeof buttons.PetOpenChatButton).toBe('function');
-    if (!buttons.PetOpenChatButton) return;
-
-    const openChat = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('window', { myself: { openChat } });
-    try {
-      buttons.PetOpenChatButton({ children: null }).props.onClick();
-      expect(openChat).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -103,32 +86,115 @@ describe('Renderer 可见组件', () => {
     expect(markup).not.toContain('rename_entry');
   });
 
-  test('设置表单提供模型、目录、隐私和本地数据操作', () => {
+  test('设置工作区提供模型、工具、隐私和本地数据导航', () => {
     const markup = renderToStaticMarkup(
-      <SettingsForm
-        settings={{
-          version: 1,
-          provider: null,
-          authorizedRoot: null,
-          petPosition: null,
-          fileDisclosureAccepted: false
+      <SettingsWorkspace
+        dashboard={{
+          catalog: [],
+          profiles: [],
+          route: {
+            primaryProfileId: null,
+            chatProfileId: null,
+            agentProfileId: null,
+            visionProfileId: null,
+            fallbackProfileIds: [],
+            allowCrossProviderFallback: false
+          },
+          mcpServers: [],
+          privacy: {
+            dataCategories: {
+              file: false,
+              screenshot: false,
+              clipboard: false,
+              memory: false
+            },
+            longTermMemory: false,
+            proactivityMode: 'assistive'
+          },
+          privacyRuntimeSupport: {
+            dataCategories: {
+              file: true,
+              screenshot: false,
+              clipboard: false,
+              memory: false
+            },
+            longTermMemory: false,
+            proactivity: false
+          },
+          authorizedRoot: null
         }}
-        fields={{ displayName: '', baseUrl: '', model: '', secret: '', persistSecret: true }}
-        busyAction={null}
+        activeTab="local"
+        busy={false}
         notice={null}
-        onFieldChange={vi.fn()}
-        onSave={vi.fn()}
-        onTest={vi.fn()}
-        onChooseRoot={vi.fn()}
-        onClear={vi.fn()}
+        onTabChange={vi.fn()}
         onClose={vi.fn()}
+        providerActions={{
+          onSave: vi.fn(),
+          onTest: vi.fn(),
+          onRouteSave: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        mcpActions={{
+          launchSummary: null,
+          onCancelLaunch: vi.fn(),
+          onUpsert: vi.fn(),
+          onConfirmLaunch: vi.fn(),
+          onTest: vi.fn(),
+          onToggleServer: vi.fn(),
+          onToggleTool: vi.fn(),
+          onAuthorizeReadOnly: vi.fn(),
+          onRevokeReadOnly: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
       />
     );
 
-    expect(markup).toContain('模型伙伴');
-    expect(markup).toContain('测试连接');
-    expect(markup).toContain('选择工作目录');
-    expect(markup).toContain('文件内容可能会发送给你配置的模型服务');
+    expect(markup).toContain('模型');
+    expect(markup).toContain('工具');
+    expect(markup).toContain('隐私');
     expect(markup).toContain('清除全部本地数据');
+  });
+});
+
+describe('桌宠播放器接入', () => {
+  test('左键表面只保留拖动提示并以正式角色播放器作为视觉主体', () => {
+    vi.stubGlobal('window', {
+      myself: {},
+      matchMedia: vi.fn()
+    });
+    try {
+      const markup = renderToStaticMarkup(<PetView />);
+      expect(markup).toContain('pet-drag-hint');
+      expect(markup).toContain('character-player');
+      expect(markup).not.toContain('class="pet-character"');
+      expect(markup).not.toContain('打开与 AI Pet 的聊天');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('180x220 桌宠窗口具有不塌缩的完整高度链', () => {
+    const styles = readFileSync(
+      resolve(process.cwd(), 'src/renderer/src/styles.css'),
+      'utf8'
+    );
+
+    expect(styles).toMatch(
+      /\.pet-shell\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)/s
+    );
+    expect(styles).toMatch(
+      /\.pet-character-surface\s*\{[^}]*align-self:\s*stretch/s
+    );
+    expect(styles).toMatch(
+      /\.pet-character-surface\s*\{[^}]*justify-self:\s*stretch/s
+    );
   });
 });

@@ -12,7 +12,7 @@ export function SafetySection() {
         <p className="section-kicker">本地控制</p>
         <h2>文件安全由本地控制</h2>
         <p>
-          Myself 第一阶段只开放列目录、读取文本、新建文件、新建目录和同目录重命名。模型提出的动作必须先经过本地校验。
+          AI Pet 第一阶段只开放列目录、读取文本、新建文件、新建目录和同目录重命名。模型提出的动作必须先经过本地校验。
         </p>
       </div>
       <ul className="safety-list">
