@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -14,11 +14,7 @@ import {
   Monitor,
   ShieldCheck
 } from 'lucide-react';
-import {
-  DOWNLOAD_PLATFORMS,
-  FAQ_ITEMS,
-  INSTALL_NOTICE_ITEMS
-} from './download-content';
+import { createDownloadContent } from './download-content';
 import {
   initialDownloadInteraction,
   reduceDownloadInteraction,
@@ -33,6 +29,8 @@ import { formatReleaseSize } from '../../../lib/release-manifest';
 import type { PointerPoint } from '../../home-experience/types';
 import { PointerTiltText } from '../visual/PointerTiltText';
 import type { ChapterRuntimeProps } from '../types';
+import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
+import type { Translate } from '../../i18n/i18n-types';
 import styles from './download.module.css';
 
 export type DownloadChapterProps = ChapterRuntimeProps;
@@ -99,6 +97,11 @@ export function DownloadChapter({
   reducedMotion = false,
   staticFallback = false
 }: DownloadChapterProps) {
+  const { t: rawTranslate } = useI18n();
+  const t = useCallback<Translate>((key, values) => (
+    interpolateMessage(rawTranslate(key), values)
+  ), [rawTranslate]);
+  const content = useMemo(() => createDownloadContent(t), [t]);
   const [state, dispatch] = useReducer(
     reduceDownloadInteraction,
     initialDownloadInteraction
@@ -129,7 +132,7 @@ export function DownloadChapter({
       index: rotatePlatformIndex(
         state.activePlatformIndex,
         delta,
-        DOWNLOAD_PLATFORMS.length
+        content.platforms.length
       )
     });
   };
@@ -257,7 +260,7 @@ export function DownloadChapter({
       <button
         className={`${styles.sideSensor} ${styles.faqSensor}`}
         type="button"
-        aria-label="显示常见问题"
+        aria-label={t('download.faq.show')}
         disabled={!interactive}
         onPointerEnter={() => holdDesktopPreview('faq', 'pointer', true)}
         onPointerLeave={() => holdDesktopPreview('faq', 'pointer', false)}
@@ -265,12 +268,12 @@ export function DownloadChapter({
         onBlur={() => holdDesktopPreview('faq', 'focus', false)}
         onClick={(event) => handleSideClick(event, 'faq')}
       >
-        <span>常见问题</span>
+        <span>{t('download.faq.label')}</span>
       </button>
 
       <aside
         className={`${styles.sidePanel} ${styles.faqPanel}`}
-        aria-label="常见问题"
+        aria-label={t('download.faq.label')}
         aria-hidden={visibleSide !== 'faq'}
         data-side-panel="faq"
         data-input-scope="local"
@@ -278,12 +281,12 @@ export function DownloadChapter({
         <div className={styles.panelHeading} data-panel-heading>
           <CircleHelp aria-hidden="true" />
           <div>
-            <p>DOWNLOAD HELP</p>
-            <h2>常见问题</h2>
+            <p>{t('download.faq.eyebrow')}</p>
+            <h2>{t('download.faq.label')}</h2>
           </div>
         </div>
         <ul className={styles.panelList}>
-          {FAQ_ITEMS.map((item) => (
+          {content.faqItems.map((item) => (
             <li key={item.question} data-panel-item>
               <h3>{item.question}</h3>
               <p>{item.answer}</p>
@@ -297,12 +300,12 @@ export function DownloadChapter({
         className={styles.platformStack}
         data-testid="download-platform-stack"
         data-active-platform={
-          DOWNLOAD_PLATFORMS[state.activePlatformIndex]?.id ?? ''
+          content.platforms[state.activePlatformIndex]?.id ?? ''
         }
         data-input-scope="local"
         tabIndex={interactive ? 0 : -1}
         role="group"
-        aria-label="选择下载平台"
+        aria-label={t('download.platform.group')}
         onClick={(event) => event.stopPropagation()}
         onKeyDown={handlePlatformKeyDown}
         onPointerDown={handlePlatformPointerDown}
@@ -316,24 +319,24 @@ export function DownloadChapter({
             viewport={viewport}
             disabled={motionDisabled || isMobile}
           >
-            <p>AI PET DESKTOP</p>
+            <p>{t('download.eyebrow')}</p>
           </PointerTiltText>
           <PointerTiltText
             pointer={pointer}
             viewport={viewport}
             disabled={motionDisabled || isMobile}
           >
-            <h2>选择你的平台</h2>
+            <h2>{t('download.title')}</h2>
           </PointerTiltText>
         </div>
 
         <div className={styles.cardDeck}>
-          {DOWNLOAD_PLATFORMS.map((platform, index) => {
+          {content.platforms.map((platform, index) => {
             const isActive = index === state.activePlatformIndex;
             const distance = getCircularDistance(
               index,
               state.activePlatformIndex,
-              DOWNLOAD_PLATFORMS.length
+              content.platforms.length
             );
 
             return (
@@ -343,12 +346,14 @@ export function DownloadChapter({
                 data-active={isActive}
                 data-platform-id={platform.id}
                 data-platform-status={platform.status}
-                style={getCardStyle(distance, DOWNLOAD_PLATFORMS.length)}
+                style={getCardStyle(distance, content.platforms.length)}
               >
                 <button
                   className={styles.cardSurface}
                   type="button"
-                  aria-label={isActive ? `当前平台为 ${platform.name}` : `选择 ${platform.name}`}
+                  aria-label={isActive
+                    ? t('download.platform.current', { name: platform.name })
+                    : t('download.platform.select', { name: platform.name })}
                   aria-pressed={isActive}
                   disabled={!interactive}
                   onClick={() => dispatch({ type: 'SELECT_PLATFORM', index })}
@@ -369,13 +374,13 @@ export function DownloadChapter({
                     {platform.status === 'available' ? (
                       <>
                         <dl className={styles.releaseMeta}>
-                          <div><dt>安装包</dt><dd>{platform.fileName}</dd></div>
-                          <div><dt>大小</dt><dd>{formatReleaseSize(platform.sizeBytes)}</dd></div>
+                          <div><dt>{t('download.package')}</dt><dd>{platform.fileName}</dd></div>
+                          <div><dt>{t('download.size')}</dt><dd>{formatReleaseSize(platform.sizeBytes)}</dd></div>
                           <div><dt>SHA-256</dt><dd className={styles.releaseHash}><code>{platform.sha256}</code></dd></div>
                         </dl>
                         <a className={styles.downloadAction} href={platform.downloadUrl}>
                           <Download aria-hidden="true" />
-                          下载 {platform.name}
+                          {t('download.download', { name: platform.name })}
                         </a>
                       </>
                     ) : platform.status === 'unpublished' ? (
@@ -392,7 +397,7 @@ export function DownloadChapter({
                     ) : (
                       <button className={styles.downloadAction} type="button" disabled>
                         <Clock3 aria-hidden="true" />
-                        即将支持
+                        {t('download.comingSoon')}
                       </button>
                     )}
                   </div>
@@ -405,7 +410,7 @@ export function DownloadChapter({
 
       <aside
         className={`${styles.sidePanel} ${styles.noticePanel}`}
-        aria-label="安装前须知"
+        aria-label={t('download.notice.label')}
         aria-hidden={visibleSide !== 'notice'}
         data-side-panel="notice"
         data-input-scope="local"
@@ -413,12 +418,12 @@ export function DownloadChapter({
         <div className={styles.panelHeading} data-panel-heading>
           <ShieldCheck aria-hidden="true" />
           <div>
-            <p>BEFORE INSTALL</p>
-            <h2>安装前须知</h2>
+            <p>{t('download.notice.eyebrow')}</p>
+            <h2>{t('download.notice.label')}</h2>
           </div>
         </div>
         <ul className={styles.panelList}>
-          {INSTALL_NOTICE_ITEMS.map((item) => (
+          {content.installNoticeItems.map((item) => (
             <li key={item.title} data-panel-item>
               <FileCheck2 aria-hidden="true" />
               <div><h3>{item.title}</h3><p>{item.body}</p></div>
@@ -430,7 +435,7 @@ export function DownloadChapter({
       <button
         className={`${styles.sideSensor} ${styles.noticeSensor}`}
         type="button"
-        aria-label="显示安装前须知"
+        aria-label={t('download.notice.show')}
         disabled={!interactive}
         onPointerEnter={() => holdDesktopPreview('notice', 'pointer', true)}
         onPointerLeave={() => holdDesktopPreview('notice', 'pointer', false)}
@@ -438,7 +443,7 @@ export function DownloadChapter({
         onBlur={() => holdDesktopPreview('notice', 'focus', false)}
         onClick={(event) => handleSideClick(event, 'notice')}
       >
-        <span>安装前须知</span>
+        <span>{t('download.notice.label')}</span>
       </button>
     </div>
   );

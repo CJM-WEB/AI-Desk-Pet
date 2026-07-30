@@ -7,6 +7,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
+import type { Translate } from '../../i18n/i18n-types';
 import type { FeedbackKind } from './feedback-types';
 import styles from './feedback.module.css';
 
@@ -20,6 +21,7 @@ export interface FeedbackComposerDialogProps {
   draft: FeedbackDraft;
   error: string | null;
   submitting: boolean;
+  t: Translate;
   onDraftChange: (draft: FeedbackDraft) => void;
   onSubmit: () => void;
   onRequestClose: () => void;
@@ -60,6 +62,7 @@ export function FeedbackComposerDialog({
   draft,
   error,
   submitting,
+  t,
   onDraftChange,
   onSubmit,
   onRequestClose
@@ -135,11 +138,11 @@ export function FeedbackComposerDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.composerHeader}>
-          <h3 id={titleId}>新建投稿</h3>
+          <h3 id={titleId}>{t('feedback.dialog.create')}</h3>
           <button
             className={styles.dialogCloseButton}
             type="button"
-            aria-label="取消投稿"
+            aria-label={t('feedback.dialog.cancelCreate')}
             disabled={submitting}
             onClick={onRequestClose}
           >
@@ -149,11 +152,11 @@ export function FeedbackComposerDialog({
 
         <div className={styles.composerFields}>
           <fieldset className={styles.composerKindField}>
-            <legend>投稿类型</legend>
-            <div className={styles.composerSegmentedControl} role="radiogroup" aria-label="投稿类型">
+            <legend>{t('feedback.dialog.kind')}</legend>
+            <div className={styles.composerSegmentedControl} role="radiogroup" aria-label={t('feedback.dialog.kind')}>
               {([
-                ['feedback', '用户反馈'],
-                ['suggestion', '更新建议']
+                ['feedback', t('feedback.action.feedback')],
+                ['suggestion', t('feedback.action.suggestion')]
               ] as const).map(([kind, label]) => (
                 <button
                   key={kind}
@@ -170,7 +173,7 @@ export function FeedbackComposerDialog({
           </fieldset>
 
           <div className={styles.composerField}>
-            <label htmlFor="feedback-author-name">昵称（可选）</label>
+            <label htmlFor="feedback-author-name">{t('feedback.dialog.author')}</label>
             <input
               id="feedback-author-name"
               name="authorName"
@@ -186,7 +189,7 @@ export function FeedbackComposerDialog({
 
           <div className={styles.composerField}>
             <div className={styles.composerContentLabel}>
-              <label htmlFor="feedback-content">正文</label>
+              <label htmlFor="feedback-content">{t('feedback.dialog.content')}</label>
               <span aria-live="polite">{draft.content.length}/1000</span>
             </div>
             <textarea
@@ -209,9 +212,9 @@ export function FeedbackComposerDialog({
         </div>
 
         <footer className={styles.composerFooter}>
-          <button type="button" disabled={submitting} onClick={onRequestClose}>取消</button>
+          <button type="button" disabled={submitting} onClick={onRequestClose}>{t('feedback.dialog.cancel')}</button>
           <button type="button" disabled={submitting} onClick={onSubmit}>
-            {submitting ? '正在发布' : '发布投稿'}
+            {submitting ? t('feedback.dialog.publishing') : t('feedback.dialog.publish')}
           </button>
         </footer>
       </section>

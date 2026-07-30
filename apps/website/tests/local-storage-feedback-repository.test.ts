@@ -92,6 +92,63 @@ describe('本地反馈仓储', () => {
     expect(restored.list('feedback').find((entry) => entry.id === created.id)).toMatchObject(created);
   });
 
+  it('空昵称以稳定空值持久化，并保留旧记录的精确昵称', () => {
+    const storage = new MemoryStorage();
+    storage.setItem(feedbackStorageKey, JSON.stringify({
+      version: 1,
+      localUserId: 'legacy-browser',
+      entries: [
+        {
+          id: 'legacy-anonymous',
+          kind: 'feedback',
+          authorId: 'legacy-browser',
+          authorName: '匿名用户',
+          content: '这是一条至少十个字符的旧匿名反馈内容。',
+          likeCount: 0,
+          createdAt: '2026-07-26T12:00:00.000Z',
+          updatedAt: '2026-07-26T12:00:00.000Z',
+          source: 'local-user'
+        },
+        {
+          id: 'explicit-name',
+          kind: 'feedback',
+          authorId: 'legacy-browser',
+          authorName: '匿名用户二号',
+          content: '这是一条至少十个字符的明确昵称反馈内容。',
+          likeCount: 0,
+          createdAt: '2026-07-26T12:00:00.000Z',
+          updatedAt: '2026-07-26T12:00:00.000Z',
+          source: 'local-user'
+        }
+      ],
+      likedEntryIds: []
+    }));
+    const repository = new LocalStorageFeedbackRepository({
+      storage,
+      createId: () => 'unused-id',
+      now: () => '2026-07-26T12:00:00.000Z'
+    });
+
+    expect(repository.list('feedback').find((entry) => entry.id === 'legacy-anonymous')?.authorName)
+      .toBe('匿名用户');
+    expect(repository.list('feedback').find((entry) => entry.id === 'explicit-name')?.authorName)
+      .toBe('匿名用户二号');
+    expect(JSON.parse(storage.getItem(feedbackStorageKey)!).entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'legacy-anonymous', authorName: '匿名用户' }),
+      expect.objectContaining({ id: 'explicit-name', authorName: '匿名用户二号' })
+    ]));
+
+    const created = repository.create({
+      kind: 'suggestion',
+      authorName: '   ',
+      content: '这是一条至少十个字符的新匿名建议内容。'
+    });
+    expect(created.authorName).toBe('');
+    expect(JSON.parse(storage.getItem(feedbackStorageKey)!).entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: created.id, authorName: '' })
+    ]));
+  });
+
   it('能点赞、取消点赞并派生当前浏览器状态', () => {
     const { repository } = createRepository();
     const created = repository.create(validInput);
@@ -182,8 +239,16 @@ describe('本地反馈仓储', () => {
       createId: () => 'browser-id',
       now: () => '2026-07-26T12:00:00.000Z'
     });
+    let thrown: unknown;
 
-    expect(() => repository.create(validInput)).toThrow(FeedbackStorageError);
+    try {
+      repository.create(validInput);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(FeedbackStorageError);
+    expect(thrown).toMatchObject({ code: 'WRITE_FAILED' });
   });
 
   it('storage 事件通知订阅者，且取消订阅可重复调用', () => {
@@ -209,5 +274,47 @@ describe('本地反馈仓储', () => {
     expect(() => repository.list('feedback')).not.toThrow();
     expect(repository.list('feedback')).toHaveLength(6);
     expect(repository.getStatusNotice()).toMatchObject({ code: 'STORAGE_WRITE_FAILED' });
+  });
+
+  it('本地存储不可用时仍读取官方示例，但拒绝创建和点赞写入', () => {
+    const repository = new LocalStorageFeedbackRepository({
+      storage: null,
+      createId: () => 'unavailable-browser'
+    });
+    const entriesBeforeFailedWrite = repository.list('feedback');
+    const example = repository.list('feedback')[0]!;
+    let createError: unknown;
+
+    expect(repository.list('feedback')).toHaveLength(6);
+    try {
+      repository.create(validInput);
+    } catch (error) {
+      createError = error;
+    }
+    expect(createError).toBeInstanceOf(FeedbackStorageError);
+    expect(createError).toMatchObject({ code: 'STORAGE_UNAVAILABLE' });
+    expect(repository.list('feedback')).toEqual(entriesBeforeFailedWrite);
+    expect(() => repository.toggleLike(example.id, 'unavailable-browser'))
+      .toThrow(FeedbackStorageError);
+  });
+
+  it('浏览器本地存储可用时，显式 null 仍禁用反馈存储', () => {
+    const browserStorage = new MemoryStorage();
+    vi.stubGlobal('window', { localStorage: browserStorage });
+    try {
+      const repository = new LocalStorageFeedbackRepository({
+        storage: null,
+        createId: () => 'explicitly-unavailable-browser'
+      });
+      const example = repository.list('feedback')[0]!;
+
+      expect(browserStorage.getItem(feedbackStorageKey)).toBeNull();
+      expect(() => repository.create(validInput)).toThrow(FeedbackStorageError);
+      expect(() => repository.toggleLike(example.id, 'explicitly-unavailable-browser'))
+        .toThrow(FeedbackStorageError);
+      expect(browserStorage.getItem(feedbackStorageKey)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

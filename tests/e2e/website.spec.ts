@@ -1467,7 +1467,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await paypalButton.click();
   const paypalDialog = page.getByRole('dialog', { name: 'PayPal付款码' });
   const paypalImage = paypalDialog.getByRole('img', { name: 'PayPal付款码' });
-  await expect(paypalImage).toHaveAttribute('src', '/Paypal.jpg');
+  await expect(paypalImage).toHaveAttribute('src', '/Paypal.png');
   await expect.poll(
     () => paypalImage.evaluate((image) => (
       image instanceof HTMLImageElement ? image.naturalWidth : 0
@@ -2629,6 +2629,39 @@ test('PageDown 以缩放和透明度推进非纵向滚动章节并在终点卸�
   await expect(page.locator(SWARM)).toHaveCount(0);
   await expect(page.locator(PREVIEW)).toHaveCount(0);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('下载与反馈章节的外围文件图标可悬浮预览且主要控件保持可操作', async ({
+  page
+}) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+
+  await enterChapter(page, 'download');
+  const downloadIcon = page.locator(ICON).first();
+  await expect(downloadIcon).toBeVisible();
+  await downloadIcon.hover();
+  await expect(page.locator(PREVIEW)).toBeVisible();
+  await expect(page.getByRole('group', { name: '选择下载平台' })).toBeVisible();
+
+  await page.keyboard.press('PageDown');
+  await expect(page.locator(WEBSITE)).toHaveAttribute(
+    'data-active-chapter',
+    'feedback'
+  );
+  const feedbackIcon = page.locator(ICON).first();
+  await expect(feedbackIcon).toBeVisible();
+  await feedbackIcon.hover();
+  const feedbackPreview = page.locator(PREVIEW);
+  await expect(feedbackPreview).toBeVisible();
+  await expect(feedbackPreview).toContainText(/类型 (?:反馈(?!建议)|建议)/u);
+  await expect(feedbackPreview).not.toContainText('昵称 AI Pet');
+  await expect(feedbackPreview).not.toContainText('暂无可展示内容');
+  await expect(feedbackPreview).not.toContainText('内容暂时不可读取');
+  await expect(page.getByRole('group', { name: '选择反馈操作' })).toBeVisible();
+
   expect(runtimeErrors).toEqual([]);
 });
 

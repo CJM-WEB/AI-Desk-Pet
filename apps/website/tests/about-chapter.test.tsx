@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AboutChapter } from '../components/website-experience/about/AboutChapter';
 import { ABOUT_FEATURES } from '../components/website-experience/about/about-content';
+import { I18nProvider } from '../components/i18n/I18nProvider';
 
 const gsapMocks = vi.hoisted(() => {
   const state = {
@@ -90,6 +91,17 @@ describe('AI Pet 介绍章节', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it('英文环境渲染英文介绍内容', () => {
+    render(
+      <I18nProvider initialLocale="en">
+        <AboutChapter interactive />
+      </I18nProvider>
+    );
+
+    expect(screen.getByRole('button', { name: 'System Safety' })).toBeTruthy();
+    expect(screen.queryByText('保障系统安全')).toBeNull();
   });
 
   it('渲染五个可访问功能区、中央标题和错峰入场顺序', () => {

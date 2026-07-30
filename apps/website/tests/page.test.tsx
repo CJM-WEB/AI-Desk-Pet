@@ -4,22 +4,25 @@ import { describe, expect, it } from 'vitest';
 import Page from '../app/page';
 
 describe('AI Pet 官网首页', () => {
-  it('静态 HTML 注册五章节和两个明确占位状态', () => {
+  it('静态 HTML 注册六章节和对应内容状态', () => {
     const html = renderToStaticMarkup(<Page />);
 
     expect(html).toContain('data-testid="website-experience"');
-    expect(html.match(/data-chapter-id=/g) ?? []).toHaveLength(5);
+    expect(html.match(/data-chapter-id=/g) ?? []).toHaveLength(6);
     expect(html).toContain('data-chapter-id="home"');
     expect(html).toContain('data-chapter-id="about"');
     expect(html).toContain('data-chapter-id="download"');
+    expect(html).toContain('data-chapter-id="community"');
     expect(html).toContain('data-chapter-id="feedback"');
     expect(html).toContain('data-chapter-id="donation"');
     expect(html).toContain('data-testid="download-chapter"');
     expect(html).toContain('data-testid="donation-chapter"');
     expect(html).toContain('data-testid="about-chapter"');
     expect(html).toContain('data-testid="feedback-chapter"');
+    expect(html).toContain('data-testid="shared-pet-chapter"');
     expect(html).toContain('AI Pet 介绍');
     expect(html).toContain('用户反馈与建议箱');
+    expect(html).toContain('共享仓库');
     expect(html.match(/内容准备中/g) ?? []).toHaveLength(0);
   });
 
@@ -53,6 +56,14 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('aria-label="下一章节"');
     expect(html).toContain('AI-Pet-0.1.0-alpha.1-windows-x64.exe');
     expect(html).toContain('即将支持');
+  });
+
+  it('首页静态回退保留独立的语言入口', () => {
+    const html = renderToStaticMarkup(<Page />);
+
+    expect(html).toContain('data-layer="fixed-controls"');
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain('language');
   });
 
   it('不再渲染旧的传统纵向首页入口', () => {

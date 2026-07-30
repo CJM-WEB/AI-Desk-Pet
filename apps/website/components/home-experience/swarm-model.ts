@@ -1,5 +1,5 @@
 import { EXPERIENCE_CONFIG } from './config';
-import { pickPreview } from './content-pool';
+import { CONTENT_POOL, pickPreviewIndex } from './content-pool';
 import type { PreviewContent } from './content-pool';
 import type { FileKind } from './types';
 
@@ -26,6 +26,7 @@ export interface FileParticle extends Rect {
   id: string;
   kind: FileKind;
   preview: PreviewContent;
+  previewIndex?: number;
   rotation: number;
   scale: number;
   remainingMs: number;
@@ -60,10 +61,12 @@ export function spawnParticle(input: {
   viewport: SpawnViewport;
   existing: readonly Rect[];
   random: () => number;
+  pool?: Record<FileKind, readonly PreviewContent[]>;
 }): FileParticle | null {
-  const { random, viewport } = input;
+  const { random, viewport, pool = CONTENT_POOL } = input;
   const kind = FILE_KINDS[Math.floor(random() * FILE_KINDS.length)]!;
-  const preview = pickPreview(kind, random);
+  const previewIndex = pickPreviewIndex(kind, random, pool);
+  const preview = pool[kind][previewIndex]!;
   const size = 96 + random() * 48;
   const positionWidth = viewport.width - (VIEWPORT_MARGIN * 2) - size;
   const positionHeight = viewport.height - (VIEWPORT_MARGIN * 2) - size;
@@ -90,6 +93,7 @@ export function spawnParticle(input: {
         id: input.id,
         kind,
         preview,
+        previewIndex,
         ...candidate,
         rotation,
         scale,

@@ -31,6 +31,11 @@
   transition: opacity 180ms ease, border-color 180ms ease;
 }
 
+.sideSensor,
+.platformStack {
+  pointer-events: auto;
+}
+
 .sideSensor:hover:not(:disabled),
 .sideSensor:focus-visible {
   border-color: rgb(0, 96, 255);

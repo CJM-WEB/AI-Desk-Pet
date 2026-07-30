@@ -16,6 +16,7 @@ import {
   vi
 } from 'vitest';
 import { DonationChapter } from '../components/website-experience/donation/DonationChapter';
+import { I18nProvider } from '../components/i18n/I18nProvider';
 
 class TestPointerEvent extends MouseEvent {
   readonly pointerId: number;
@@ -45,6 +46,17 @@ describe('捐款章节', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('英文环境使用捐款与付款码文案', () => {
+    render(
+      <I18nProvider initialLocale="en">
+        <DonationChapter interactive staticFallback />
+      </I18nProvider>
+    );
+
+    expect(screen.getByRole('heading', { name: 'Support Development, Shape the Journey' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open WeChat Pay QR code' })).toBeTruthy();
   });
 
   it('静态渲染倾斜标题、三项支付方式和局部输入区域', () => {
@@ -96,7 +108,7 @@ describe('捐款章节', () => {
     fireEvent.click(trigger);
     expect(screen.getByRole('dialog', { name: 'PayPal付款码' })).toBeTruthy();
     expect(screen.getByRole('img', { name: 'PayPal付款码' }).getAttribute('src'))
-      .toBe('/Paypal.jpg');
+      .toBe('/Paypal.png');
   });
 
   it('滚轮阻止默认与冒泡并按方向循环付款方式', () => {

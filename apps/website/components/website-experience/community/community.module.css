@@ -1,0 +1,604 @@
+.sharedPetChapter {
+  position: relative;
+  z-index: 60;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 24px;
+  color: rgb(28, 28, 28);
+}
+
+.sharedPetLayout {
+  width: min(1440px, 100%);
+  min-height: 680px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: minmax(180px, 1fr) minmax(156px, auto) minmax(180px, 1fr);
+  gap: 18px;
+  align-content: center;
+}
+
+.sharedPetFocus {
+  position: relative;
+  z-index: 62;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  place-self: center;
+  width: min(420px, calc(100% - 48px));
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.sharedPetTitle {
+  margin: 0;
+  color: rgb(52, 52, 52);
+  font-size: 42px;
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
+
+.sharedPetUpload,
+.sharedPetPagination button {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(255, 255, 255);
+  color: rgb(28, 28, 28);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sharedPetUpload {
+  gap: 8px;
+  padding: 0 16px;
+  background: rgb(28, 28, 28);
+  color: rgb(255, 255, 255);
+  font-weight: 700;
+}
+
+.sharedPetUpload svg,
+.sharedPetPagination svg {
+  width: 20px;
+  height: 20px;
+}
+
+.sharedPetPagination {
+  display: grid;
+  grid-template-columns: 44px minmax(64px, auto) 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.sharedPetPagination output {
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+}
+
+.sharedPetUpload:focus-visible,
+.sharedPetPagination button:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 3px;
+}
+
+.sharedPetUpload:disabled,
+.sharedPetPagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.sharedPetStatus {
+  max-width: 360px;
+  margin: 0;
+  color: rgb(92, 92, 92);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.sharedPetStatus[role='alert'] {
+  color: rgb(166, 0, 0);
+}
+
+/* fieldset 保留禁用语义，卡片通过 display: contents 参与外层三轨网格。 */
+.sharedPetGrid {
+  display: contents;
+  border: 0;
+}
+
+.sharedPetCardSlot {
+  min-width: 0;
+  transform: rotate(var(--shared-pet-rotate, 0deg));
+  transform-origin: center;
+}
+
+.sharedPetCardSlot:nth-child(-n + 4) {
+  grid-row: 1;
+}
+
+.sharedPetCardSlot:nth-child(n + 5) {
+  grid-row: 3;
+}
+
+.sharedPetCardSlot:nth-child(4n + 1) {
+  grid-column: 1;
+}
+
+.sharedPetCardSlot:nth-child(4n + 2) {
+  grid-column: 2;
+}
+
+.sharedPetCardSlot:nth-child(4n + 3) {
+  grid-column: 3;
+}
+
+.sharedPetCardSlot:nth-child(4n + 4) {
+  grid-column: 4;
+}
+
+.sharedPetCardSlot:nth-child(8n + 1),
+.sharedPetCardSlot:nth-child(8n + 6) {
+  --shared-pet-rotate: -1.5deg;
+}
+
+.sharedPetCardSlot:nth-child(8n + 2),
+.sharedPetCardSlot:nth-child(8n + 7) {
+  --shared-pet-rotate: 1deg;
+}
+
+.sharedPetCardSlot:nth-child(8n + 3),
+.sharedPetCardSlot:nth-child(8n + 8) {
+  --shared-pet-rotate: -0.75deg;
+}
+
+.sharedPetCardSlot:nth-child(8n + 4),
+.sharedPetCardSlot:nth-child(8n + 5) {
+  --shared-pet-rotate: 1.4deg;
+}
+
+.sharedPetCardSlot .card {
+  height: 100%;
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+}
+
+.sharedPetCardSlot .cardActions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sharedPetChapter[data-transition='leaving'] .sharedPetCardSlot {
+  animation: shared-pet-leave 280ms cubic-bezier(0.55, 0, 1, 0.45) both;
+  animation-delay: calc(var(--shared-pet-order) * 45ms);
+}
+
+.sharedPetChapter[data-transition='entering'] .sharedPetCardSlot {
+  animation: shared-pet-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--shared-pet-order) * 45ms);
+}
+
+.sharedPetChapter[data-motion-disabled='true'] .sharedPetCardSlot {
+  animation: none;
+  transition: none;
+}
+
+@keyframes shared-pet-leave {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(var(--shared-pet-rotate, 0deg));
+  }
+
+  to {
+    opacity: 0;
+    transform: translate3d(-110vw, 0, 0) rotate(var(--shared-pet-rotate, 0deg));
+  }
+}
+
+@keyframes shared-pet-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(110vw, 0, 0) rotate(var(--shared-pet-rotate, 0deg));
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(var(--shared-pet-rotate, 0deg));
+  }
+}
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding:
+    max(20px, env(safe-area-inset-top))
+    max(20px, env(safe-area-inset-right))
+    max(20px, env(safe-area-inset-bottom))
+    max(20px, env(safe-area-inset-left));
+  overflow: auto;
+  background: rgba(28, 28, 28, 0.46);
+  -webkit-backdrop-filter: blur(14px) brightness(0.72);
+  backdrop-filter: blur(14px) brightness(0.72);
+}
+
+.dialogPanel {
+  width: min(680px, 100%);
+  max-height: calc(100dvh - 40px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: auto;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  box-shadow: 0 28px 90px rgba(28, 28, 28, 0.28);
+  color: rgb(28, 28, 28);
+  overscroll-behavior: contain;
+}
+
+.dialogHeader,
+.dialogFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.dialogHeader {
+  border-bottom: 1px solid rgb(174, 174, 174);
+}
+
+.dialogHeader h3 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.dialogContent {
+  min-height: 0;
+  padding: 20px;
+}
+
+.dialogFooter {
+  justify-content: flex-end;
+  border-top: 1px solid rgb(174, 174, 174);
+}
+
+.dialogFooter button,
+.iconButton {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(255, 255, 255);
+  color: rgb(28, 28, 28);
+  font: inherit;
+  cursor: pointer;
+}
+
+.dialogFooter button:last-child {
+  background: rgb(28, 28, 28);
+  color: rgb(255, 255, 255);
+}
+
+.iconButton {
+  padding: 0 10px;
+}
+
+.iconButton svg {
+  width: 20px;
+  height: 20px;
+}
+
+.dialogFooter button:focus-visible,
+.iconButton:focus-visible,
+.cardOpenButton:focus-visible,
+.field input:focus-visible,
+.field textarea:focus-visible {
+  outline: 3px solid rgb(0, 96, 255);
+  outline-offset: 3px;
+}
+
+.dialogFooter button:disabled,
+.iconButton:disabled,
+.field input:disabled,
+.field textarea:disabled {
+  cursor: wait;
+  opacity: 0.56;
+}
+
+.composerFields {
+  display: grid;
+  gap: 16px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field label {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgb(150, 150, 150);
+  border-radius: 6px;
+  background: rgb(255, 255, 255);
+  color: rgb(28, 28, 28);
+  font: inherit;
+}
+
+.field input:not([type='file']) {
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.field input[type='file'] {
+  min-height: 44px;
+  padding: 8px;
+}
+
+.field textarea {
+  min-height: 128px;
+  padding: 12px;
+  resize: vertical;
+}
+
+.error {
+  margin: 0;
+  color: rgb(166, 0, 0);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.detailContent {
+  display: grid;
+  gap: 18px;
+}
+
+.detailCover {
+  width: min(100%, 420px);
+  max-height: 300px;
+  justify-self: center;
+  object-fit: contain;
+  border: 1px solid rgb(174, 174, 174);
+  border-radius: 6px;
+  background: rgb(255, 255, 255);
+}
+
+.detailDescription {
+  margin: 0;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.detailMetadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  border: 1px solid rgb(174, 174, 174);
+  background: rgb(174, 174, 174);
+}
+
+.detailMetadata div {
+  min-width: 0;
+  padding: 12px;
+  background: rgb(255, 255, 255);
+}
+
+.detailMetadata dt {
+  color: rgb(90, 90, 90);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detailMetadata dd {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 2px solid rgb(28, 28, 28);
+  border-radius: 8px;
+  background: rgb(235, 235, 235);
+  color: rgb(28, 28, 28);
+  cursor: pointer;
+}
+
+.card:hover {
+  background: rgb(226, 226, 226);
+}
+
+.cardOpenButton {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cardCover {
+  width: 88px;
+  height: 88px;
+  object-fit: cover;
+  border: 1px solid rgb(174, 174, 174);
+  border-radius: 6px;
+  background: rgb(255, 255, 255);
+}
+
+.cardBody {
+  min-width: 0;
+}
+
+.cardBody h3,
+.cardBody p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cardBody h3 {
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.cardBody p {
+  margin-top: 6px;
+  color: rgb(90, 90, 90);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.cardActions {
+  display: grid;
+  gap: 8px;
+}
+
+@media (max-width: 560px) {
+  .sharedPetChapter {
+    padding: 20px 16px 32px;
+  }
+
+  .sharedPetLayout {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    gap: 16px;
+  }
+
+  .sharedPetFocus {
+    grid-column: 1;
+    grid-row: auto;
+    width: 100%;
+    margin-bottom: 24px;
+  }
+
+  .sharedPetTitle {
+    font-size: 34px;
+  }
+
+  .sharedPetCardSlot:nth-child(n) {
+    grid-column: auto;
+    grid-row: auto;
+    transform: none;
+  }
+
+  .dialogBackdrop {
+    padding:
+      max(16px, env(safe-area-inset-top))
+      max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+  }
+
+  .dialogHeader,
+  .dialogFooter,
+  .dialogContent {
+    padding: 16px;
+  }
+
+  .detailMetadata {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cardOpenButton {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .cardCover {
+    width: 72px;
+    height: 72px;
+  }
+
+  .cardActions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) and (min-width: 561px) {
+  .sharedPetChapter {
+    padding-bottom: 40px;
+  }
+
+  .sharedPetLayout {
+    min-height: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: auto;
+    gap: 20px;
+  }
+
+  .sharedPetFocus {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    width: 100%;
+    margin-bottom: 28px;
+  }
+
+  .sharedPetCardSlot:nth-child(n) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+@media (min-width: 901px) and (max-height: 760px) {
+  .sharedPetLayout {
+    min-height: 560px;
+    grid-template-rows: minmax(140px, 1fr) minmax(120px, auto) minmax(140px, 1fr);
+    gap: 12px 18px;
+  }
+
+  .sharedPetCardSlot .card {
+    padding: 10px;
+  }
+
+  .sharedPetCardSlot .cardOpenButton {
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .sharedPetCardSlot .cardCover {
+    width: 64px;
+    height: 64px;
+  }
+}

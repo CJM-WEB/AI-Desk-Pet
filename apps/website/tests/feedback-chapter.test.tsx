@@ -18,6 +18,8 @@ import {
   vi
 } from 'vitest';
 import { FeedbackChapter } from '../components/website-experience/feedback/FeedbackChapter';
+import { I18nProvider } from '../components/i18n/I18nProvider';
+import { FeedbackStorageError } from '../components/website-experience/feedback/local-storage-feedback-repository';
 import type {
   FeedbackEntry,
   FeedbackKind,
@@ -69,7 +71,7 @@ class TestFeedbackRepository implements FeedbackRepository {
     const entry = createEntry({
       id: `local-${this.sequence}`,
       kind: input.kind,
-      authorName: input.authorName.trim() || '匿名用户',
+      authorName: input.authorName.trim(),
       content: input.content.trim(),
       likeCount: 0,
       source: 'local-user'
@@ -152,6 +154,35 @@ function openComposer(repository: FeedbackRepository) {
 }
 
 describe('反馈章节', () => {
+  it('英文环境使用反馈操作文案', () => {
+    render(
+      <I18nProvider initialLocale="en">
+        <FeedbackChapter interactive staticFallback />
+      </I18nProvider>
+    );
+
+    expect(screen.getByRole('heading', { name: 'Shape Your Pet with Your Voice' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'View Feedback' })).toBeTruthy();
+  });
+
+  it('英文列表将空昵称显示为匿名名称但保留正文原文', () => {
+    const repository = new TestFeedbackRepository([createEntry({
+      source: 'local-user',
+      authorName: '',
+      content: '这是用户原文'
+    })]);
+    render(
+      <I18nProvider initialLocale="en">
+        <FeedbackChapter interactive repository={repository} />
+      </I18nProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'View Feedback' }));
+    const dialog = screen.getByRole('dialog', { name: 'Feedback' });
+    expect(dialog.textContent).toContain('Anonymous');
+    expect(dialog.textContent).toContain('这是用户原文');
+  });
+
   beforeEach(() => {
     Object.defineProperty(window, 'PointerEvent', {
       configurable: true,
@@ -173,6 +204,8 @@ describe('反馈章节', () => {
     expect(html).toContain('data-testid="pointer-tilt-text"');
     expect(html.indexOf('用户反馈')).toBeLessThan(html.indexOf('更新建议'));
     expect(html.indexOf('更新建议')).toBeLessThan(html.indexOf('新建投稿'));
+    expect(html).not.toContain('打开声音档案');
+    expect(html).toContain('编辑器预留入口');
     expect(html).toContain('data-input-scope="local"');
   });
 
@@ -519,7 +552,7 @@ describe('反馈章节', () => {
   it('写入失败时保留草稿、类型与 Portal 并在正文旁显示错误', () => {
     const repository: FeedbackRepository = Object.assign(createRepository(), {
       create: () => {
-        throw new Error('存储不可用');
+        throw new FeedbackStorageError('WRITE_FAILED');
       }
     });
     openComposer(repository);
@@ -533,7 +566,27 @@ describe('反馈章节', () => {
     expect(screen.getByRole('radio', { name: '更新建议' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByLabelText('昵称（可选）')).toHaveProperty('value', '保留昵称');
     expect(content).toHaveProperty('value', '这是一段用于验证保稿行为的正文内容。');
-    expect(screen.getByRole('alert').textContent).toContain('暂时无法保存');
+    expect(screen.getByRole('alert').textContent)
+      .toBe('投稿暂时无法保存，请稍后重试。');
+  });
+
+  it('本地存储不可用时保留草稿并显示不可保存提示', () => {
+    const repository: FeedbackRepository = Object.assign(createRepository(), {
+      create: () => {
+        throw new FeedbackStorageError('STORAGE_UNAVAILABLE');
+      }
+    });
+    openComposer(repository);
+    const content = screen.getByLabelText('正文');
+    fireEvent.change(screen.getByLabelText('昵称（可选）'), { target: { value: '保留昵称' } });
+    fireEvent.change(content, { target: { value: '这是一段用于验证本地存储不可用行为的正文内容。' } });
+    fireEvent.click(screen.getByRole('button', { name: '发布投稿' }));
+
+    expect(screen.getByRole('dialog', { name: '新建投稿' }).parentElement).toBe(document.body);
+    expect(screen.getByLabelText('昵称（可选）')).toHaveProperty('value', '保留昵称');
+    expect(content).toHaveProperty('value', '这是一段用于验证本地存储不可用行为的正文内容。');
+    expect(screen.getByRole('alert').textContent)
+      .toBe('浏览器本地存储不可用，投稿无法保存。');
   });
 
   it('草稿退出均经确认且继续编辑恢复焦点、确认放弃恢复入口焦点', async () => {

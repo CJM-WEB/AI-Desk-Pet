@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent
 } from 'react';
-import { PAYMENT_METHODS } from './donation-content';
+import { createPaymentMethods } from './donation-content';
+import type { PaymentMethod } from './donation-content';
 import {
   paymentCardVisual,
   paymentRelativeOffset,
@@ -15,6 +16,8 @@ import {
 import { QrDialog } from './QrDialog';
 import type { ChapterRuntimeProps } from '../types';
 import { PointerTiltText } from '../visual/PointerTiltText';
+import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
+import type { Translate } from '../../i18n/i18n-types';
 import styles from './donation.module.css';
 
 export type DonationChapterProps = ChapterRuntimeProps;
@@ -32,8 +35,6 @@ type PaymentPointerDrag = {
 };
 
 const PAYMENT_DRAG_THRESHOLD_PX = 40;
-const DONATION_TITLE = '助力开发，你便也是我不可或缺的参与者';
-
 type DonationPointer = {
   x: number;
   y: number;
@@ -46,12 +47,13 @@ type DonationViewport = {
 
 function getPaymentCardStyle(
   index: number,
-  activeIndex: number
+  activeIndex: number,
+  paymentCount: number
 ): PaymentCardStyle {
   const offset = paymentRelativeOffset(
     index,
     activeIndex,
-    PAYMENT_METHODS.length
+    paymentCount
   );
   const visual = paymentCardVisual(offset);
 
@@ -72,10 +74,13 @@ export function DonationChapter({
   reducedMotion = false,
   staticFallback = false
 }: DonationChapterProps) {
+  const { t: rawTranslate } = useI18n();
+  const t = useCallback<Translate>((key, values) => (
+    interpolateMessage(rawTranslate(key), values)
+  ), [rawTranslate]);
+  const paymentMethods = useMemo(() => createPaymentMethods(t), [t]);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [openMethod, setOpenMethod] = useState<
-    (typeof PAYMENT_METHODS)[number] | null
-  >(null);
+  const [openMethod, setOpenMethod] = useState<PaymentMethod | null>(null);
   const [pointer, setPointer] = useState<DonationPointer>({ x: 0, y: 0 });
   const [viewport, setViewport] = useState<DonationViewport>({
     width: 0,
@@ -145,7 +150,7 @@ export function DonationChapter({
   const selectRelativePayment = (delta: number) => {
     setActiveIndex((current) => wrapPaymentIndex(
       current + delta,
-      PAYMENT_METHODS.length
+      paymentMethods.length
     ));
   };
 
@@ -283,7 +288,7 @@ export function DonationChapter({
           viewport={viewport}
           disabled={motionDisabled || viewport.width <= 760}
         >
-          {DONATION_TITLE}
+          {t('donation.title')}
         </PointerTiltText>
       </h2>
 
@@ -291,11 +296,11 @@ export function DonationChapter({
         ref={paymentRollerRef}
         className={styles.paymentRoller}
         data-testid="payment-roller"
-        data-active-payment={PAYMENT_METHODS[activeIndex]?.id ?? ''}
+        data-active-payment={paymentMethods[activeIndex]?.id ?? ''}
         data-input-scope="local"
         tabIndex={interactive ? 0 : -1}
         role="group"
-        aria-label="选择付款方式"
+        aria-label={t('donation.group')}
         onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -303,11 +308,11 @@ export function DonationChapter({
         onPointerCancel={finishPointerDrag}
       >
         <div className={styles.paymentDeck}>
-          {PAYMENT_METHODS.map((method, index) => {
+          {paymentMethods.map((method, index) => {
             const offset = paymentRelativeOffset(
               index,
               activeIndex,
-              PAYMENT_METHODS.length
+              paymentMethods.length
             );
             const isActive = offset === 0;
 
@@ -318,15 +323,15 @@ export function DonationChapter({
                 type="button"
                 aria-label={
                   isActive
-                    ? `打开${method.name}付款码`
-                    : `选择${method.name}付款方式`
+                    ? t('donation.open', { method: method.name })
+                    : t('donation.select', { method: method.name })
                 }
                 aria-pressed={isActive}
                 disabled={!interactive}
                 tabIndex={interactive ? 0 : -1}
                 data-payment-id={method.id}
                 data-active={isActive}
-                style={getPaymentCardStyle(index, activeIndex)}
+                style={getPaymentCardStyle(index, activeIndex, paymentMethods.length)}
                 onClick={() => {
                   if (!interactive) return;
                   if (suppressClickRef.current) {
@@ -345,7 +350,7 @@ export function DonationChapter({
                 }}
               >
                 <span className={styles.paymentName}>{method.name}</span>
-                <span className={styles.paymentMeta}>付款方式</span>
+                <span className={styles.paymentMeta}>{t('donation.method')}</span>
               </button>
             );
           })}

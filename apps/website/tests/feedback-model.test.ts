@@ -54,7 +54,7 @@ describe('反馈领域模型', () => {
       kind: 'suggestion',
       authorName: '   ',
       content: '这是一条至少十个字符的有效建议内容。'
-    })).toMatchObject({ valid: true, value: { authorName: '匿名用户' } });
+    })).toMatchObject({ valid: true, value: { authorName: '' } });
     expect(validateDraft({
       kind: 'feedback',
       authorName: 'a'.repeat(25),
@@ -87,7 +87,7 @@ describe('反馈领域模型', () => {
       content: `\n${'b'.repeat(1000)}\t`
     })).toMatchObject({
       valid: true,
-      value: { authorName: '匿名用户', content: 'b'.repeat(1000) }
+      value: { authorName: '', content: 'b'.repeat(1000) }
     });
     expect(validateDraft({
       kind: 'feedback',

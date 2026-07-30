@@ -1,15 +1,20 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render } from '@testing-library/react';
-import { createElement } from 'react';
+import { createElement, Profiler } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileSwarm } from '../components/home-experience/FileSwarm';
 import { SharedVisualLayers } from '../components/website-experience/SharedVisualLayers';
 import {
   createFeedbackPreviewSource,
   createFeedbackVisualProfile,
-  FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH
+  FEEDBACK_PREVIEW_SUMMARY_MAX_LENGTH,
+  localizeFeedbackEntry,
+  localizeOfficialFeedbackEntry
 } from '../components/website-experience/feedback/feedback-preview-source';
+import { en, zhCN } from '../components/i18n/messages';
+import { interpolateMessage } from '../components/i18n/I18nProvider';
+import { OFFICIAL_EXAMPLE_ENTRIES } from '../components/website-experience/feedback/feedback-content';
 import type {
   FeedbackEntry,
   FeedbackKind,
@@ -49,6 +54,46 @@ afterEach(() => {
 });
 
 describe('反馈文件预览内容源', () => {
+  it('英文环境翻译官方示例但保留本地投稿原文', () => {
+    const official = localizeOfficialFeedbackEntry(
+      OFFICIAL_EXAMPLE_ENTRIES[0]!,
+      (key) => en[key]
+    );
+    const local = localizeOfficialFeedbackEntry(createEntry({
+      authorName: '本地作者',
+      content: '这是用户原文'
+    }), (key) => en[key]);
+
+    expect(official.content).toBe('Please make the pet quieter in Focus mode.');
+    expect(local.authorName).toBe('本地作者');
+    expect(local.content).toBe('这是用户原文');
+  });
+
+  it('将空本地昵称显示为当前语言的匿名名称', () => {
+    const anonymous = localizeFeedbackEntry(createEntry({
+      authorName: '',
+      content: '这是用户原文'
+    }), (key) => en[key]);
+
+    expect(anonymous.authorName).toBe('Anonymous');
+    expect(anonymous.content).toBe('这是用户原文');
+  });
+
+  it('语言切换后只让新生成粒子使用当前语言快照', () => {
+    const profile = createFeedbackVisualProfile(createRepository({
+      feedback: [createEntry({ content: '本地原文' })]
+    }), () => 0, (key, values) => interpolateMessage(zhCN[key], values));
+    const source = profile.previewSource as ReturnType<typeof createFeedbackPreviewSource>;
+    const firstSnapshot = source.bindToSpawn('particle-zh');
+
+    profile.setTranslate((key, values) => interpolateMessage(en[key], values));
+    const secondSnapshot = source.bindToSpawn('particle-en');
+
+    expect(firstSnapshot[0]).toBe('类型 反馈');
+    expect(source.read('particle-zh')).toEqual(firstSnapshot);
+    expect(secondSnapshot[0]).toBe('Type feedback');
+  });
+
   it('为同一粒子绑定稳定快照，且不会受到仓储后续变化影响', () => {
     const feedback = createEntry({ authorName: '反馈用户', likeCount: 8 });
     const suggestion = createEntry({
@@ -156,6 +201,70 @@ describe('反馈文件预览内容源', () => {
 });
 
 describe('FileSwarm 预览内容源生命周期', () => {
+  it('普通 RAF 帧不提交，进入离场与自然移除各提交一次并更新 DOM', () => {
+    vi.useFakeTimers();
+    let frameCallback: FrameRequestCallback | null = null;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frameCallback = callback;
+      return 1;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const onRender = vi.fn();
+    const { getByTestId } = render(createElement(
+      Profiler,
+      { id: 'file-swarm', onRender },
+      createElement(FileSwarm, {
+        running: true,
+        generating: true,
+        exitProgress: 0,
+        pointer: { x: 0, y: 0 },
+        isPaused: false,
+        maxActive: 1,
+        safeZoneRatio: 0,
+        reducedMotion: false
+      })
+    ));
+
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    act(() => {
+      const baselineFrame = frameCallback as FrameRequestCallback | null;
+      baselineFrame?.(0);
+      const enteringFrame = frameCallback as FrameRequestCallback | null;
+      enteringFrame?.(16);
+    });
+    expect(getByTestId('file-icon').getAttribute('data-phase')).toBe('floating');
+    const commitCountBeforeOrdinaryFrame = onRender.mock.calls.length;
+
+    act(() => {
+      const ordinaryFrame = frameCallback as FrameRequestCallback | null;
+      ordinaryFrame?.(32);
+    });
+
+    expect(onRender).toHaveBeenCalledTimes(commitCountBeforeOrdinaryFrame);
+
+    let frameAt = 32;
+    while (getByTestId('file-icon').getAttribute('data-phase') !== 'leaving') {
+      frameAt += 250;
+      act(() => {
+        const leavingFrame = frameCallback as FrameRequestCallback | null;
+        leavingFrame?.(frameAt);
+      });
+    }
+
+    expect(onRender).toHaveBeenCalledTimes(commitCountBeforeOrdinaryFrame + 1);
+    expect(getByTestId('file-icon').getAttribute('data-phase')).toBe('leaving');
+
+    act(() => {
+      const removalFrame = frameCallback as FrameRequestCallback | null;
+      removalFrame?.(frameAt + 500);
+    });
+
+    expect(onRender).toHaveBeenCalledTimes(commitCountBeforeOrdinaryFrame + 2);
+    expect(document.querySelector('[data-testid="file-icon"]')).toBeNull();
+  });
+
   it('在粒子生成、移除和卸载时绑定并释放内容快照', () => {
     vi.useFakeTimers();
     const bindToSpawn = vi.fn(() => ['类型 反馈', '昵称 小满', '正文 内容', '点赞 1']);

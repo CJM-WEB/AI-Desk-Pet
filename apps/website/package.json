@@ -21,6 +21,7 @@
     "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1",
     "sharp": "0.34.5",
     "typescript": "^5",

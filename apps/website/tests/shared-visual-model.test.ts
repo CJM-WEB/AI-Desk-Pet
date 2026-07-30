@@ -13,13 +13,25 @@ describe('共享视觉主题', () => {
     expect(VISUAL_PROFILES.donation.fieldColor).toEqual([255, 255, 0]);
   });
 
-  it('在首页、下载活动及其过渡、捐款入场区间解析对应共享视觉层', () => {
+  it('共享仓库拥有独立的灰色共享视觉主题', () => {
+    expect(resolveSharedVisualProfile(3, 'interactive')?.id).toBe('community');
+    expect(VISUAL_PROFILES.community.fieldColor).toEqual([180, 180, 180]);
+    expect(VISUAL_PROFILES.community.safeZoneRatio)
+      .toBe(VISUAL_PROFILES.download.safeZoneRatio);
+    expect(VISUAL_PROFILES.community.previewSource)
+      .toBe(VISUAL_PROFILES.home.previewSource);
+  });
+
+  it('在首页、下载、共享仓库和捐款区间解析对应共享视觉层', () => {
     expect(resolveSharedVisualProfile(0, 'interactive')?.id).toBe('home');
     expect(resolveSharedVisualProfile(1, 'interactive')).toBeNull();
     expect(resolveSharedVisualProfile(1.25, 'interactive')?.id).toBe('download');
     expect(resolveSharedVisualProfile(2, 'interactive')?.id).toBe('download');
     expect(resolveSharedVisualProfile(2.75, 'interactive')?.id).toBe('download');
-    expect(resolveSharedVisualProfile(3, 'interactive')).toBeNull();
-    expect(resolveSharedVisualProfile(4, 'interactive')?.id).toBe('donation');
+    expect(resolveSharedVisualProfile(3, 'interactive')?.id).toBe('community');
+    expect(resolveSharedVisualProfile(3.5, 'interactive')?.id).toBe('community');
+    expect(resolveSharedVisualProfile(4, 'interactive')).toBeNull();
+    expect(resolveSharedVisualProfile(4.5, 'interactive')?.id).toBe('donation');
+    expect(resolveSharedVisualProfile(5, 'interactive')?.id).toBe('donation');
   });
 });

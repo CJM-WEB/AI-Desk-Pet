@@ -2,18 +2,22 @@
 
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState
 } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
+import { LanguageMenu } from '../i18n/LanguageMenu';
+import { interpolateMessage, useI18n } from '../i18n/I18nProvider';
+import type { Translate } from '../i18n/i18n-types';
 import { HomeExperience } from '../home-experience/HomeExperience';
 import {
   deriveChapterVisualState,
   deriveHomeExperiencePhase
 } from './chapter-model';
-import { CHAPTER_REGISTRY } from './chapter-registry';
+import { CHAPTER_REGISTRY, getChapterIndex } from './chapter-registry';
 import { SharedVisualLayers } from './SharedVisualLayers';
 import { ChapterBackdrop } from './visual/ChapterBackdrop';
 import { CHAPTER_LAYERS } from './layer-contract';
@@ -44,11 +48,15 @@ function createChapterVisualStyle(
 }
 
 /**
- * 组合五个章节，并把全局输入状态下发给受控首页。
+ * 组合首页、介绍、下载、社区、反馈和捐款六个章节，并把全局输入状态下发给受控首页。
  */
 export function WebsiteExperience({
   onRuntimeError
 }: WebsiteExperienceProps = {}) {
+  const { t: rawTranslate } = useI18n();
+  const t = useCallback<Translate>((key, values) => (
+    interpolateMessage(rawTranslate(key), values)
+  ), [rawTranslate]);
   const [initializationFailed, setInitializationFailed] = useState(false);
   const mountedRef = useRef(true);
   const onRuntimeErrorRef = useRef(onRuntimeError);
@@ -78,6 +86,8 @@ export function WebsiteExperience({
   const reducedMotion = staticFallback || controller.prefersReducedMotion;
   const activeChapter = CHAPTER_REGISTRY[controller.settledIndex] ?? CHAPTER_REGISTRY[0];
   const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
+  const showLanguageMenu = controller.progress === 0
+    && !controller.isChapterTransitioning;
   const homePhase = deriveHomeExperiencePhase(
     controller.phase,
     homeExitProgress
@@ -88,22 +98,22 @@ export function WebsiteExperience({
   if (feedbackVisualProfileRef.current === null) {
     feedbackVisualProfileRef.current = createFeedbackVisualProfile(
       new LocalStorageFeedbackRepository(),
-      Math.random
+      Math.random,
+      t
     );
   }
+  useEffect(() => {
+    // 只更新后续生成粒子的翻译快照，已绑定粒子保持生成时的内容。
+    feedbackVisualProfileRef.current?.setTranslate(t);
+  }, [t]);
   const sharedVisualProfile = controller.phase === 'interactive'
-    && Math.abs(controller.progress - 3) < 0.0001
+    && Math.abs(controller.progress - getChapterIndex('feedback')) < 0.0001
     ? feedbackVisualProfileRef.current
     : resolveSharedVisualProfile(controller.progress, controller.phase);
   const mountedVisualProfile = sharedVisualProfile
     ?? (controller.progress < 1 ? VISUAL_PROFILES.home : null);
   const sharedVisualChapterIndex = sharedVisualProfile
-    ? {
-        home: 0,
-        download: 2,
-        feedback: 3,
-        donation: 4
-      }[sharedVisualProfile.id]
+    ? getChapterIndex(sharedVisualProfile.id)
     : 0;
   const sharedVisualGenerating = sharedVisualProfile !== null
     && controller.phase === 'interactive'
@@ -161,7 +171,7 @@ export function WebsiteExperience({
             data-visible={visual.visible}
             data-interactive={visual.interactive}
             data-layer="focal"
-            aria-label={chapter.label}
+            aria-label={t(chapter.labelKey)}
             aria-hidden={!visual.visible}
             inert={!visual.interactive ? true : undefined}
             style={style}
@@ -195,11 +205,11 @@ export function WebsiteExperience({
       <nav
         className={styles.chapterControls}
         data-input-scope="local"
-        aria-label="章节导航"
+        aria-label={t('navigation.label')}
       >
         <button
           type="button"
-          aria-label="上一章节"
+          aria-label={t('navigation.previousChapter')}
           disabled={controller.settledIndex === 0}
           onClick={() => controller.goToAdjacent(-1)}
         >
@@ -207,13 +217,18 @@ export function WebsiteExperience({
         </button>
         <button
           type="button"
-          aria-label="下一章节"
+          aria-label={t('navigation.nextChapter')}
           disabled={controller.settledIndex === CHAPTER_REGISTRY.length - 1}
           onClick={() => controller.goToAdjacent(1)}
         >
           <ChevronDown aria-hidden="true" />
         </button>
       </nav>
+      {showLanguageMenu ? (
+        <div data-layer="fixed-controls">
+          <LanguageMenu />
+        </div>
+      ) : null}
       {mountedVisualProfile && !staticFallback ? (
         <SharedVisualLayers
           profile={mountedVisualProfile}

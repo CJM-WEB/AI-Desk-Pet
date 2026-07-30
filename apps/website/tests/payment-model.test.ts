@@ -16,7 +16,7 @@ describe('支付方式滚筒', () => {
     expect(PAYMENT_METHODS.map((item) => item.qrImagePath)).toEqual([
       '/WechatPay.jpg',
       '/Alipay.jpg',
-      '/Paypal.jpg'
+      '/Paypal.png'
     ]);
   });
 

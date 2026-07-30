@@ -13,8 +13,25 @@ import {
   calculateSwipeDelta,
   isLocalInputElement
 } from '../components/website-experience/use-website-controller';
+import {
+  CHAPTER_REGISTRY,
+  getChapterIndex
+} from '../components/website-experience/chapter-registry';
 
 describe('官网章节进度模型', () => {
+  it('按确认顺序注册六个章节', () => {
+    expect(CHAPTER_REGISTRY.map((chapter) => chapter.id)).toEqual([
+      'home',
+      'about',
+      'download',
+      'community',
+      'feedback',
+      'donation'
+    ]);
+    expect(getChapterIndex('feedback')).toBe(4);
+    expect(getChapterIndex('donation')).toBe(5);
+  });
+
   it('识别局部滚动输入并忽略短触屏移动', () => {
     const local = {
       closest: (selector: string) => selector === '[data-input-scope="local"]'
