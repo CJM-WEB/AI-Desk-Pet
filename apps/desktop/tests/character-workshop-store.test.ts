@@ -1365,6 +1365,54 @@ describe('角色工作室 Zustand 状态层', () => {
     });
   });
 
+  test('指定状态已有同名动作 ID 时递增生成唯一 ID', async () => {
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.states.push({
+      id: 'moving',
+      kind: 'core',
+      actions: [{
+        ...structuredClone(loadedDraft.states[0]!.actions[0]!),
+        id: 'moving-action-1'
+      }]
+    });
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().addAction('moving');
+
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'moving',
+      selectedActionId: 'moving-action-2'
+    });
+    expect(store.getState().draft!.states.find(state => state.id === 'moving')!.actions)
+      .toHaveLength(2);
+  });
+
+  test('无效状态或动作 ID 不改变草稿、选择、修订状态或自动保存', async () => {
+    vi.useFakeTimers();
+    const { api } = apiDouble();
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    const before = store.getState();
+
+    store.getState().addAction('moving');
+    store.getState().removeAction('moving', 'missing-action');
+    store.getState().removeAction('idle', 'missing-action');
+    store.getState().removeExtensionState('custom:missing');
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(store.getState()).toBe(before);
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'idle',
+      selectedActionId: 'idle-main',
+      draftStatus: 'idle'
+    });
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+  });
+
   test('删除当前动作后优先选中原索引处的下一个动作', async () => {
     const loadedDraft = draft('default', 'AI Pet 默认角色');
     loadedDraft.states[0]!.actions.push({
@@ -1496,6 +1544,31 @@ describe('角色工作室 Zustand 状态层', () => {
       draftStatus: 'dirty',
       availableSources: sources
     });
+  });
+
+  test('删除扩展状态后自动保存删除结果', async () => {
+    vi.useFakeTimers();
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.states.push({
+      id: 'custom:wave',
+      kind: 'extension',
+      triggers: { events: ['single_click'], keywords: [], emotions: [] },
+      actions: []
+    });
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().removeExtensionState('custom:wave');
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(api.saveCharacterDraft).toHaveBeenCalledWith('default', expect.objectContaining({
+      states: expect.not.arrayContaining([
+        expect.objectContaining({ id: 'custom:wave' })
+      ])
+    }));
   });
 
   test('删除非当前扩展状态时保留当前有效选择', async () => {
