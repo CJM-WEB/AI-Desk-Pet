@@ -150,12 +150,14 @@ function eligibleCandidates(
 
   return referencedActions(input.manifest, state, stateIds).flatMap(({ actionId, stateId }) => {
     const action = actionsById.get(actionId);
-    if (!action || !matchesStateConstraints(action, state) || !matchesDirection(action, input.direction) || isCoolingDown(action, input)) {
+    if (!action || !matchesStateConstraints(action, state) || !matchesDirection(action, input.direction)) {
       return [];
     }
 
     const resolved = resolveCharacterPresentation(input.manifest, input.skinId, action.id);
-    return resolved ? [{ action, stateId, presentation: resolved.presentation }] : [];
+    if (!resolved || isCoolingDown(action, input)) return [];
+
+    return [{ action, stateId, presentation: resolved.presentation }];
   });
 }
 
