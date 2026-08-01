@@ -75,7 +75,7 @@ export interface CloudBaseRdbClient {
   from(table: string): CloudBaseRdbQuery;
 }
 
-/** 补齐 3.18.3 运行时已有但公开声明遗漏的 rdb 表客户端。 */
+/** 临时兼容未迁移的 Node SDK 入口；Task3 迁移后立即删除。 */
 declare module '@cloudbase/node-sdk' {
   interface CloudBase {
     rdb(options?: {
