@@ -64,6 +64,7 @@ describe('匿名投稿状态令牌', () => {
       method: 'POST',
       body: JSON.stringify({ statusToken: token })
     });
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it('StrictMode 重放 effect 后仍能完成 Fragment 自动查询', async () => {
@@ -85,6 +86,7 @@ describe('匿名投稿状态令牌', () => {
       method: 'POST',
       body: JSON.stringify({ statusToken: token })
     });
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it('无有效 Fragment 时也清除敏感 query，且绝不使用 query 令牌', async () => {
@@ -106,7 +108,7 @@ describe('匿名投稿状态令牌', () => {
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
   });
 
-  it('后续查询发生后忽略已过期的延迟响应', async () => {
+  it('API 实例变化不重发缓存令牌，且旧响应不能覆盖后续手动查询', async () => {
     const secondToken = 'b'.repeat(43);
     let resolveFirst: ((value: SubmissionStatusView) => void) | undefined;
     const firstRequest = vi.fn().mockReturnValue(new Promise<SubmissionStatusView>((resolve) => {
@@ -124,13 +126,19 @@ describe('匿名投稿状态令牌', () => {
     );
     await waitFor(() => expect(firstRequest).toHaveBeenCalledTimes(1));
 
-    window.history.replaceState({}, '', `/submission-status/#${secondToken}`);
     view.rerender(
       <I18nProvider initialLocale="zh-CN">
         <SubmissionStatusPage api={secondApi} />
       </I18nProvider>
     );
+    expect(secondRequest).not.toHaveBeenCalled();
+
+    fireEvent.change(await screen.findByLabelText('状态令牌'), {
+      target: { value: secondToken }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '查询状态' }));
     expect(await screen.findByText('已发布')).toBeTruthy();
+    expect(secondRequest).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       resolveFirst?.(status({ status: 'system_reviewing' }));

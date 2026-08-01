@@ -34,7 +34,8 @@ export function SubmissionStatusPage({ api }: SubmissionStatusPageProps) {
   const [result, setResult] = useState<SubmissionStatusView | null>(null);
   const mountedRef = useRef(false);
   const requestGenerationRef = useRef(0);
-  const fragmentTokenRef = useRef<string | null>(null);
+  const autoStartedRef = useRef(false);
+  const previousApiRef = useRef(api);
 
   const query = async (statusToken: string) => {
     const generation = ++requestGenerationRef.current;
@@ -53,10 +54,15 @@ export function SubmissionStatusPage({ api }: SubmissionStatusPageProps) {
   };
 
   useEffect(() => {
+    const apiChanged = previousApiRef.current !== api;
+    if (apiChanged) {
+      previousApiRef.current = api;
+      requestGenerationRef.current += 1;
+      setResult(null);
+      setPhase('idle');
+    }
     mountedRef.current = true;
-    const locationFragmentToken = readStatusToken(window.location.hash);
-    if (locationFragmentToken) fragmentTokenRef.current = locationFragmentToken;
-    const fragmentToken = locationFragmentToken ?? fragmentTokenRef.current;
+    const fragmentToken = readStatusToken(window.location.hash);
     const search = new URLSearchParams(window.location.search);
     const hasSensitiveQuery = search.has('statusToken');
     search.delete('statusToken');
@@ -70,10 +76,16 @@ export function SubmissionStatusPage({ api }: SubmissionStatusPageProps) {
         `${window.location.pathname}${remainingQuery ? `?${remainingQuery}` : ''}`
       );
     }
-    if (fragmentToken) void query(fragmentToken);
+    if (fragmentToken && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      void query(fragmentToken);
+    }
     return () => {
       mountedRef.current = false;
-      requestGenerationRef.current += 1;
+      // StrictMode 会同步再次 setup；只有真正保持卸载时才延后废弃请求。
+      queueMicrotask(() => {
+        if (!mountedRef.current) requestGenerationRef.current += 1;
+      });
     };
   }, [api]);
 
