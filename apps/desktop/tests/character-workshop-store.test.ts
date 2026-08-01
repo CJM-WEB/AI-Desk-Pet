@@ -500,6 +500,86 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(api.saveCharacterDraft).not.toHaveBeenCalled();
   });
 
+  test('精灵图读取期间目标 A 切到 B 再切回 A 时仍丢弃迟到成功结果', async () => {
+    const sourceAssetId = '123e4567-e89b-42d3-a456-426614174000';
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
+      id: 'wave',
+      name: '挥手'
+    });
+    loadedDraft.states[0]!.actionIds.push('wave');
+    const sourceRead = deferred<Uint8Array>();
+    const api = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft),
+      listCharacterSources: vi.fn(async () => [sourceDto(sourceAssetId, 'idle.png')]),
+      readCharacterSource: vi.fn(() => sourceRead.promise)
+    }).api;
+    const store = createCharacterWorkshopStore(api, {
+      inspectImage: async () => ({ width: 1, height: 1 })
+    });
+    await store.getState().load();
+
+    const applying = store.getState().applySpriteSheet({
+      sourceAssetId,
+      rows: 1,
+      columns: 1,
+      frameCount: 1
+    });
+    await settle();
+    store.getState().selectSkin('winter');
+    store.getState().selectAction('wave');
+    store.getState().selectSkin('default');
+    store.getState().selectAction('idle-main');
+    sourceRead.resolve(new Uint8Array([1]));
+    await applying;
+
+    expect(store.getState()).toMatchObject({
+      selectedSkinId: 'default',
+      selectedActionId: 'idle-main'
+    });
+    expect(store.getState().draft?.skins.flatMap(skin => skin.presentations)).toEqual([]);
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+    expect(store.getState().toastQueue).not.toContainEqual(expect.objectContaining({ tone: 'success' }));
+  });
+
+  test('精灵图读取期间目标 A 切到 B 再切回 A 时静默丢弃迟到异常', async () => {
+    const sourceAssetId = '123e4567-e89b-42d3-a456-426614174000';
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
+      id: 'wave',
+      name: '挥手'
+    });
+    loadedDraft.states[0]!.actionIds.push('wave');
+    const sourceRead = deferred<Uint8Array>();
+    const api = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft),
+      listCharacterSources: vi.fn(async () => [sourceDto(sourceAssetId, 'idle.png')]),
+      readCharacterSource: vi.fn(() => sourceRead.promise)
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    const applying = store.getState().applySpriteSheet({
+      sourceAssetId,
+      rows: 1,
+      columns: 1,
+      frameCount: 1
+    });
+    await settle();
+    store.getState().selectSkin('winter');
+    store.getState().selectAction('wave');
+    store.getState().selectSkin('default');
+    store.getState().selectAction('idle-main');
+    sourceRead.reject(new Error('CHARACTER_SOURCE_READ_FAILED'));
+    await applying;
+
+    expect(store.getState().draft?.skins.flatMap(skin => skin.presentations)).toEqual([]);
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+    expect(store.getState().toastQueue).not.toContainEqual(expect.objectContaining({ tone: 'error' }));
+  });
+
   test('外部嵌套 patch 在方法返回后继续突变不得绕过 revision 修改 Store', async () => {
     const api = apiDouble().api;
     const store = createCharacterWorkshopStore(api);

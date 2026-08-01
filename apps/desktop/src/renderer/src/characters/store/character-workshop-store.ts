@@ -193,6 +193,19 @@ function cloneDraft(draft: CharacterDraftV2): CharacterDraftV2 {
   return structuredClone(draft);
 }
 
+function sameSelectedEntity(
+  left: CharacterWorkshopSelectedEntity,
+  right: CharacterWorkshopSelectedEntity
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'identity' && right.kind === 'identity') return true;
+  if (left.kind === 'skin' && right.kind === 'skin') return left.skinId === right.skinId;
+  if (left.kind === 'state' && right.kind === 'state') return left.stateId === right.stateId;
+  return left.kind === 'action'
+    && right.kind === 'action'
+    && left.actionId === right.actionId;
+}
+
 /** 从可读名称生成有界、确定且碰撞安全的 V2 标识符。 */
 function createEntityId(
   name: string,
@@ -276,6 +289,7 @@ export function createCharacterWorkshopStore(
   let draftRevision = 0;
   let savedRevision = 0;
   let selectionRevision = 0;
+  let workspaceTargetRevision = 0;
   let listRevision = 0;
   let eventRefreshRevision = 0;
   let eventLoading = false;
@@ -290,6 +304,33 @@ export function createCharacterWorkshopStore(
       }));
     }
 
+    /** 只有工作区实际目标变化时才推进 ABA 屏障令牌。 */
+    function setWorkspaceTarget(
+      patch: Partial<Pick<CharacterWorkshopState,
+        'selectedEntity' | 'selectedSkinId' | 'selectedStateId' | 'selectedActionId'>>
+    ): void {
+      const current = get();
+      const nextEntity = patch.selectedEntity ?? current.selectedEntity;
+      const nextSkinId = patch.selectedSkinId === undefined
+        ? current.selectedSkinId
+        : patch.selectedSkinId;
+      const nextStateId = patch.selectedStateId === undefined
+        ? current.selectedStateId
+        : patch.selectedStateId;
+      const nextActionId = patch.selectedActionId === undefined
+        ? current.selectedActionId
+        : patch.selectedActionId;
+      if (
+        !sameSelectedEntity(current.selectedEntity, nextEntity)
+        || current.selectedSkinId !== nextSkinId
+        || current.selectedStateId !== nextStateId
+        || current.selectedActionId !== nextActionId
+      ) {
+        workspaceTargetRevision += 1;
+      }
+      set(patch);
+    }
+
     function setDraft(
       draft: CharacterDraftV2,
       sources: readonly CharacterWorkshopSourceDto[] = []
@@ -297,6 +338,7 @@ export function createCharacterWorkshopStore(
       const selection = initialSelection(draft);
       draftRevision += 1;
       savedRevision = draftRevision;
+      workspaceTargetRevision += 1;
       set({
         selectedCharacterId: draft.id,
         draft: cloneDraft(draft),
@@ -396,16 +438,25 @@ export function createCharacterWorkshopStore(
             : selectedSkin
               ? { kind: 'skin', skinId: selectedSkin.id }
               : { kind: 'identity' };
+      const resolvedActionId = selectedEntity.kind === 'action'
+        ? selectedEntity.actionId
+        : selectedActionId;
 
       draftRevision += 1;
+      if (
+        !sameSelectedEntity(current.selectedEntity, selectedEntity)
+        || current.selectedSkinId !== (selectedSkin?.id ?? null)
+        || current.selectedStateId !== (selectedState?.id ?? null)
+        || current.selectedActionId !== resolvedActionId
+      ) {
+        workspaceTargetRevision += 1;
+      }
       set({
         draft: next,
         selectedEntity,
         selectedSkinId: selectedSkin?.id ?? null,
         selectedStateId: selectedState?.id ?? null,
-        selectedActionId: selectedEntity.kind === 'action'
-          ? selectedEntity.actionId
-          : selectedActionId,
+        selectedActionId: resolvedActionId,
         draftStatus: 'dirty'
       });
       scheduleSave();
@@ -461,6 +512,7 @@ export function createCharacterWorkshopStore(
           if (next) {
             await loadSelectedDraft(next.id, requestRevision);
           } else {
+            workspaceTargetRevision += 1;
             set({
               selectedCharacterId: null,
               draft: null,
@@ -513,6 +565,7 @@ export function createCharacterWorkshopStore(
             ?? characters.find(character => character.active)
             ?? characters[0];
           if (!selected) {
+            if (get().draft) workspaceTargetRevision += 1;
             set({
               selectedCharacterId: null,
               draft: null,
@@ -580,7 +633,7 @@ export function createCharacterWorkshopStore(
         const actionId = state.actionIds.find(id => (
           get().draft?.actions.some(action => action.id === id)
         )) ?? null;
-        set({
+        setWorkspaceTarget({
           selectedEntity: { kind: 'state', stateId },
           selectedStateId: stateId,
           selectedActionId: actionId
@@ -588,12 +641,12 @@ export function createCharacterWorkshopStore(
       },
 
       selectIdentity() {
-        set({ selectedEntity: { kind: 'identity' } });
+        setWorkspaceTarget({ selectedEntity: { kind: 'identity' } });
       },
 
       selectSkin(skinId) {
         if (!get().draft?.skins.some(skin => skin.id === skinId)) return;
-        set({
+        setWorkspaceTarget({
           selectedSkinId: skinId,
           selectedEntity: { kind: 'skin', skinId }
         });
@@ -607,7 +660,7 @@ export function createCharacterWorkshopStore(
           state?.actionIds.includes(actionId)
           && get().draft?.actions.some(action => action.id === actionId)
         ) {
-          set({
+          setWorkspaceTarget({
             selectedEntity: { kind: 'action', actionId },
             selectedActionId: actionId
           });
@@ -660,6 +713,7 @@ export function createCharacterWorkshopStore(
               const requestRevision = selectionRevision;
               await loadSelectedDraft(next.id, requestRevision);
             } else {
+              workspaceTargetRevision += 1;
               set({
                 selectedCharacterId: null,
                 draft: null,
@@ -769,7 +823,7 @@ export function createCharacterWorkshopStore(
             semanticFallbacks: []
           });
         }, { kind: 'skin', skinId: id });
-        set({ selectedSkinId: id });
+        setWorkspaceTarget({ selectedSkinId: id });
       },
 
       duplicateSkin(skinId, name) {
@@ -785,7 +839,7 @@ export function createCharacterWorkshopStore(
         updateDraft(draft => {
           draft.skins.push({ ...structuredClone(source), id, name: normalizedName });
         }, { kind: 'skin', skinId: id });
-        set({ selectedSkinId: id });
+        setWorkspaceTarget({ selectedSkinId: id });
       },
 
       updateSkin(skinId, patch) {
@@ -801,7 +855,7 @@ export function createCharacterWorkshopStore(
         updateDraft(draft => {
           draft.defaultSkinId = skinId;
         }, { kind: 'skin', skinId });
-        set({ selectedSkinId: skinId });
+        setWorkspaceTarget({ selectedSkinId: skinId });
       },
 
       requestRemoveSkin(skinId, confirm = false) {
@@ -857,7 +911,7 @@ export function createCharacterWorkshopStore(
             actionIds: []
           });
         }, { kind: 'state', stateId: id });
-        set({ selectedStateId: id, selectedActionId: null });
+        setWorkspaceTarget({ selectedStateId: id, selectedActionId: null });
       },
 
       updateState(stateId, patch) {
@@ -955,7 +1009,7 @@ export function createCharacterWorkshopStore(
           });
           draft.states.find(candidate => candidate.id === targetStateId)!.actionIds.push(id);
         }, { kind: 'action', actionId: id });
-        set({
+        setWorkspaceTarget({
           selectedEntity: { kind: 'action', actionId: id },
           selectedStateId: targetStateId,
           selectedActionId: id
@@ -1031,7 +1085,7 @@ export function createCharacterWorkshopStore(
       async applySpriteSheet(input) {
         const current = get();
         const characterId = current.selectedCharacterId;
-        const requestRevision = selectionRevision;
+        const requestTargetRevision = workspaceTargetRevision;
         const skinId = current.selectedSkinId;
         const actionId = current.selectedActionId;
         const source = current.availableSources.find(candidate => (
@@ -1044,7 +1098,7 @@ export function createCharacterWorkshopStore(
         /** 异步读取期间任一工作区目标变化都使本次结果失效。 */
         const isStillCurrent = (): boolean => {
           const latest = get();
-          return selectionRevision === requestRevision
+          return workspaceTargetRevision === requestTargetRevision
             && latest.selectedCharacterId === characterId
             && latest.draft?.id === characterId
             && latest.selectedSkinId === skinId
