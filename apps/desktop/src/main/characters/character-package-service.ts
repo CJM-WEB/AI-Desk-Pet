@@ -22,7 +22,7 @@ import {
   relative,
   resolve
 } from 'node:path';
-import type { Readable } from 'node:stream';
+import { Transform, type Readable } from 'node:stream';
 import { finished, pipeline } from 'node:stream/promises';
 import {
   CHARACTER_PACKAGE_LIMITS,
@@ -83,6 +83,7 @@ export type CharacterPackageCheckpoint =
   | 'extract:before-file-open'
   | 'extract:after-file-open'
   | 'export:before-commit'
+  | 'export:before-link'
   | 'export:resource-validated'
   | 'import:validated';
 
@@ -168,6 +169,8 @@ type ArchiveIdentity = {
   byteLength: number;
   sha256: string;
 };
+
+type PathIdentity = Pick<ArchiveIdentity, 'dev' | 'ino'>;
 
 function packageError(code: string): Error {
   return new Error(code);
@@ -832,7 +835,7 @@ async function assertArchiveIdentity(
 /** 清理时只移除本次创建且身份未被替换的路径。 */
 async function removeIfSameIdentity(
   path: string,
-  expected: Pick<ArchiveIdentity, 'dev' | 'ino'>
+  expected: PathIdentity
 ): Promise<void> {
   let current;
   try {
@@ -844,6 +847,59 @@ async function removeIfSameIdentity(
   if (current.isFile() && sameIdentity(expected, current)) {
     await rm(path, { force: true });
   }
+}
+
+/** 捕获普通文件当前路径身份，用于只清理本次实际链接的 inode。 */
+async function capturePathIdentity(path: string): Promise<PathIdentity> {
+  let current;
+  try {
+    current = await lstat(path);
+  } catch {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+  if (current.isSymbolicLink() || !current.isFile()) {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+  return { dev: current.dev, ino: current.ino };
+}
+
+/** 校验真正送入 ZIP 的流字节，不缓存完整素材。 */
+function createVerifiedExportStream(file: ExportedDiskFile): Transform {
+  const hash = createHash('sha256');
+  let byteLength = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      byteLength += chunk.byteLength;
+      if (byteLength > file.byteLength) {
+        callback(packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED'));
+        return;
+      }
+      hash.update(chunk);
+      callback(undefined, chunk);
+    },
+    flush(callback) {
+      if (
+        byteLength !== file.byteLength
+        || hash.digest('hex') !== file.sha256
+      ) {
+        callback(packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED'));
+        return;
+      }
+      callback();
+    }
+  });
+}
+
+/** 适配 yazl 未完整声明的运行时 EventEmitter 与 Node Readable 能力。 */
+function forwardArchiveError(archive: ZipFile): void {
+  const output = archive.outputStream as unknown as Readable;
+  (archive as unknown as {
+    once(event: 'error', listener: (error: Error) => void): void;
+  }).once('error', error => output.destroy(error));
+}
+
+function destroyArchiveOutput(archive: ZipFile, error: Error): void {
+  (archive.outputStream as unknown as Readable).destroy(error);
 }
 
 async function captureCharacterOwnership(
@@ -1280,47 +1336,80 @@ export class CharacterPackageService {
   /** 将归档写入同目录临时文件，并在双重身份校验后原子建立目标。 */
   private async writeArchive(
     destination: string,
-    archive: ZipFile
+    archive: ZipFile,
+    startStreams?: () => void
   ): Promise<void> {
     const temporaryDestination = `${destination}.${this.createId()}.tmp`;
     let archiveIdentity: ArchiveIdentity | undefined;
+    const temporaryCleanupIdentities: PathIdentity[] = [];
+    const rememberCurrentTemporaryIdentity = async (): Promise<void> => {
+      try {
+        temporaryCleanupIdentities.push(
+          await capturePathIdentity(temporaryDestination)
+        );
+      } catch {
+        // 路径已消失或不再是普通文件时不做不安全清理。
+      }
+    };
     try {
       const output = createWriteStream(
         temporaryDestination,
         { flags: 'wx', mode: 0o600 }
       );
+      forwardArchiveError(archive);
       const transfer = pipeline(archive.outputStream, output);
+      startStreams?.();
       archive.end();
       await transfer;
       archiveIdentity = await captureArchiveIdentity(temporaryDestination);
+      temporaryCleanupIdentities.push(archiveIdentity);
 
-      await this.dependencies.onCheckpoint?.(
-        'export:before-commit',
-        dirname(destination),
-        destination
-      );
-      await assertArchiveIdentity(temporaryDestination, archiveIdentity);
+      try {
+        await this.dependencies.onCheckpoint?.(
+          'export:before-commit',
+          dirname(destination),
+          destination
+        );
+        await assertArchiveIdentity(temporaryDestination, archiveIdentity);
+        await this.dependencies.onCheckpoint?.(
+          'export:before-link',
+          dirname(destination),
+          destination
+        );
+      } catch (error) {
+        await rememberCurrentTemporaryIdentity();
+        throw error;
+      }
 
       try {
         await link(temporaryDestination, destination);
       } catch (error) {
+        await rememberCurrentTemporaryIdentity();
         if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
           throw packageError('CHARACTER_PACKAGE_DESTINATION_EXISTS');
         }
         throw error;
       }
 
+      await rememberCurrentTemporaryIdentity();
+      const linkedIdentity = await capturePathIdentity(destination);
+      if (!sameIdentity(archiveIdentity, linkedIdentity)) {
+        await removeIfSameIdentity(destination, linkedIdentity);
+        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+      }
       try {
         await assertArchiveIdentity(destination, archiveIdentity);
       } catch {
-        await removeIfSameIdentity(destination, archiveIdentity);
+        await removeIfSameIdentity(destination, linkedIdentity);
         throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
       }
     } finally {
       if (archiveIdentity === undefined) {
         await rm(temporaryDestination, { force: true });
       } else {
-        await removeIfSameIdentity(temporaryDestination, archiveIdentity);
+        for (const identity of temporaryCleanupIdentities) {
+          await removeIfSameIdentity(temporaryDestination, identity);
+        }
       }
     }
   }
@@ -1370,6 +1459,7 @@ export class CharacterPackageService {
 
     const diskFiles: ExportedDiskFile[] = [];
     const resourceStreams: Readable[] = [];
+    const startResourceStreams: Array<() => void> = [];
     const characterRoot = resolve(this.charactersDirectory, characterId);
     const sourceRoot = resolve(characterRoot, 'source');
     const compiledRoot = resolve(characterRoot, 'compiled');
@@ -1429,19 +1519,30 @@ export class CharacterPackageService {
       archive.addBuffer(sourceDocument, 'source/catalog.json');
       archive.addBuffer(manifestDocument, 'compiled/manifest.json');
       for (const file of diskFiles) {
-        const stream = file.handle.createReadStream({
+        const sourceStream = file.handle.createReadStream({
           start: 0,
           autoClose: true
         });
-        resourceStreams.push(stream);
+        const verifiedStream = createVerifiedExportStream(file);
+        sourceStream.on('error', error => verifiedStream.destroy(error));
+        verifiedStream.on(
+          'error',
+          error => destroyArchiveOutput(archive, error)
+        );
+        resourceStreams.push(sourceStream, verifiedStream);
         archive.addReadStream(
-          stream,
+          verifiedStream,
           file.archivePath,
           { size: file.byteLength }
         );
+        startResourceStreams.push(() => {
+          sourceStream.pipe(verifiedStream);
+        });
       }
 
-      await this.writeArchive(destination, archive);
+      await this.writeArchive(destination, archive, () => {
+        for (const startStream of startResourceStreams) startStream();
+      });
     } finally {
       for (const stream of resourceStreams) {
         if (!stream.destroyed) stream.destroy();

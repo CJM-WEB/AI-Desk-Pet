@@ -487,6 +487,34 @@ describe('角色包 Main 服务', () => {
     await expect(access(destination)).rejects.toThrow();
   });
 
+  test('临时 ZIP 复核后、硬链接前被替换时拒绝并清理错误目标', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'replaced-before-link.zip');
+    let replacedTemporaryPath: string | undefined;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint) {
+        if (checkpoint !== 'export:before-link' || replacedTemporaryPath) return;
+        const temporaryName = (await readdir(dirname(destination))).find(name => (
+          name.startsWith(`${basename(destination)}.`) && name.endsWith('.tmp')
+        ));
+        expect(temporaryName).toBeTypeOf('string');
+        if (!temporaryName) return;
+        replacedTemporaryPath = join(dirname(destination), temporaryName);
+        await rename(
+          replacedTemporaryPath,
+          `${replacedTemporaryPath}.original`
+        );
+        await writeFile(replacedTemporaryPath, 'ATTACKER_ARCHIVE');
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    expect(replacedTemporaryPath).toBeTypeOf('string');
+    await expect(access(destination)).rejects.toThrow();
+    await expect(access(replacedTemporaryPath!)).rejects.toThrow();
+  });
+
   test('导出只包含指定角色草稿、源素材和运行时必需文件', async () => {
     const { sourceAssetId } = await createPublishedCharacter();
     await Promise.all([
@@ -549,6 +577,31 @@ describe('角色包 Main 服务', () => {
       'compiled/atlas.png',
       `source/${sourceAssetId}.png`
     ]);
+  });
+
+  test('普通导出拒绝 checkpoint 后同 inode 等长改写的实际流字节', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'mutated-stream.zip');
+    const mutatedBytes = Buffer.from([9, 8, 7]);
+    let mutated = false;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint, _root, targetPath) {
+        if (
+          checkpoint !== 'export:resource-validated'
+          || !targetPath?.endsWith('atlas.png')
+          || mutated
+        ) {
+          return;
+        }
+        mutated = true;
+        await writeFile(targetPath, mutatedBytes);
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    expect(mutated).toBe(true);
+    await expect(access(destination)).rejects.toThrow();
   });
 
   test.each([
