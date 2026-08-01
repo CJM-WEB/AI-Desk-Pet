@@ -1379,6 +1379,155 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(publishCharacter).toHaveBeenCalledOnce();
   });
 
+  test('本地发布在途时编辑草稿会忽略旧编译结果事件', async () => {
+    const publishing = deferred<void>();
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(
+      () => publishing.promise
+    );
+    const { api, emit } = apiDouble({
+      getCharacterDraft: vi.fn(async () => playableDraft('default', '默认角色')),
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      publishCharacter
+    });
+    const store = createCharacterWorkshopStore(api, {
+      compileAction: async input => ({
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: '4'.repeat(64),
+        bytes: new Uint8Array([9]),
+        frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
+      })
+    });
+    const dispose = store.getState().mount();
+    await vi.waitFor(() => expect(store.getState().loadStatus).toBe('ready'));
+
+    const compiling = store.getState().compileAndPublish();
+    await vi.waitFor(() => expect(publishCharacter).toHaveBeenCalledOnce());
+    store.getState().updateIdentity({ description: '发布在途的新草稿' });
+    emit({ type: 'compile-result', characterId: 'default', ok: true });
+    await settle();
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'default',
+      draftStatus: 'dirty',
+      compileStatus: 'idle'
+    });
+    expect(store.getState().toastQueue).toEqual([]);
+
+    publishing.resolve();
+    await compiling;
+    expect(store.getState()).toMatchObject({ draftStatus: 'dirty', compileStatus: 'idle' });
+    expect(store.getState().toastQueue).toEqual([]);
+
+    emit({
+      type: 'compile-result',
+      characterId: 'default',
+      ok: false,
+      errorCode: 'CHARACTER_ATLAS_COMPILE_FAILED'
+    });
+    await settle();
+    expect(store.getState().compileStatus).toBe('error');
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({
+      tone: 'error',
+      text: 'CHARACTER_ATLAS_COMPILE_FAILED'
+    });
+    dispose();
+  });
+
+  test('本地发布后切离再切回同一角色仍忽略旧编译结果事件', async () => {
+    const publishing = deferred<void>();
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(
+      () => publishing.promise
+    );
+    const { api, emit } = apiDouble({
+      getCharacterDraft: vi.fn(async id => playableDraft(id, id)),
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      publishCharacter
+    });
+    const store = createCharacterWorkshopStore(api, {
+      compileAction: async input => ({
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: '5'.repeat(64),
+        bytes: new Uint8Array([9]),
+        frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
+      })
+    });
+    const dispose = store.getState().mount();
+    await vi.waitFor(() => expect(store.getState().loadStatus).toBe('ready'));
+
+    const compiling = store.getState().compileAndPublish();
+    await vi.waitFor(() => expect(publishCharacter).toHaveBeenCalledOnce());
+    await store.getState().selectCharacter('nova');
+    await store.getState().selectCharacter('default');
+    emit({ type: 'compile-result', characterId: 'default', ok: true });
+    await settle();
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'default',
+      compileStatus: 'idle'
+    });
+    expect(store.getState().toastQueue).toEqual([]);
+
+    publishing.resolve();
+    await compiling;
+    expect(store.getState().compileStatus).toBe('idle');
+    expect(store.getState().toastQueue).toEqual([]);
+    dispose();
+  });
+
+  test('旧本地结果在停留其他角色时到达也会消费屏障', async () => {
+    const publishing = deferred<void>();
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(
+      () => publishing.promise
+    );
+    const { api, emit } = apiDouble({
+      getCharacterDraft: vi.fn(async id => playableDraft(id, id)),
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      publishCharacter
+    });
+    const store = createCharacterWorkshopStore(api, {
+      compileAction: async input => ({
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: '6'.repeat(64),
+        bytes: new Uint8Array([9]),
+        frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
+      })
+    });
+    const dispose = store.getState().mount();
+    await vi.waitFor(() => expect(store.getState().loadStatus).toBe('ready'));
+
+    const compiling = store.getState().compileAndPublish();
+    await vi.waitFor(() => expect(publishCharacter).toHaveBeenCalledOnce());
+    await store.getState().selectCharacter('nova');
+    emit({ type: 'compile-result', characterId: 'default', ok: true });
+    await settle();
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'nova',
+      compileStatus: 'idle'
+    });
+    expect(store.getState().toastQueue).toEqual([]);
+
+    await store.getState().selectCharacter('default');
+    emit({
+      type: 'compile-result',
+      characterId: 'default',
+      ok: false,
+      errorCode: 'CHARACTER_ATLAS_COMPILE_FAILED'
+    });
+    await settle();
+    expect(store.getState().compileStatus).toBe('error');
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({
+      tone: 'error',
+      text: 'CHARACTER_ATLAS_COMPILE_FAILED'
+    });
+
+    publishing.resolve();
+    await compiling;
+    dispose();
+  });
+
   test('发布已成功但角色列表刷新失败时保留成功状态且不追加错误提示', async () => {
     const listCharacters = vi.fn()
       .mockResolvedValueOnce([summary('default', 'AI Pet 默认角色', true)])

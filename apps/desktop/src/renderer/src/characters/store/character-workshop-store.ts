@@ -291,6 +291,11 @@ export function createCharacterWorkshopStore(
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let saveInFlight: Promise<void> | null = null;
   let compileInFlight: Promise<void> | null = null;
+  let localCompileEventBarrier: {
+    characterId: string;
+    selectionRevision: number;
+    draftRevision: number;
+  } | null = null;
   let saveRequested = false;
   let draftRevision = 0;
   let savedRevision = 0;
@@ -488,9 +493,21 @@ export function createCharacterWorkshopStore(
 
     async function refreshFromEvent(event: CharacterEvent): Promise<void> {
       const requestRevision = ++eventRefreshRevision;
-      if (event.type === 'compile-result' && event.characterId === get().selectedCharacterId) {
-        set({ compileStatus: event.ok ? 'success' : 'error' });
-        if (!event.ok) enqueueToast({ tone: 'error', text: event.errorCode });
+      if (event.type === 'compile-result') {
+        const barrier = localCompileEventBarrier;
+        const belongsToLocalAttempt = barrier?.characterId === event.characterId;
+        const targetsSelectedCharacter = event.characterId === get().selectedCharacterId;
+        const localAttemptIsCurrent = belongsToLocalAttempt && (
+          barrier.selectionRevision === selectionRevision
+          && barrier.draftRevision === draftRevision
+          && get().draft?.id === barrier.characterId
+        );
+        // Main 每次发布只产生一个结果事件；消费后恢复后续外部事件的既有语义。
+        if (belongsToLocalAttempt) localCompileEventBarrier = null;
+        if (targetsSelectedCharacter && (!belongsToLocalAttempt || localAttemptIsCurrent)) {
+          set({ compileStatus: event.ok ? 'success' : 'error' });
+          if (!event.ok) enqueueToast({ tone: 'error', text: event.errorCode });
+        }
       }
       if (event.type === 'active-character-changed') {
         set({
@@ -1338,6 +1355,11 @@ export function createCharacterWorkshopStore(
             skins: compiledSkins
           });
           cancelUnless(isCompileCurrent());
+          localCompileEventBarrier = {
+            characterId: latest.id,
+            selectionRevision: compileSelectionRevision,
+            draftRevision: compileDraftRevision
+          };
           await awaitCurrent(api.publishCharacter({
             characterId: latest.id,
             manifest,
