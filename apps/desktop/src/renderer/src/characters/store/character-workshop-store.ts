@@ -1,7 +1,10 @@
 import type {
   ActionFrame,
-  CharacterDraftV1,
-  CharacterStateId,
+  CharacterActionDefinitionV2,
+  CharacterDraftV2,
+  CharacterIdentityV2,
+  CharacterSkinV2,
+  CharacterStateDefinitionV2,
   DraftActionClip
 } from '@myself/character-runtime';
 import { createStore, type StoreApi } from 'zustand/vanilla';
@@ -60,6 +63,19 @@ export type ImportedWorkshopSource = {
   mimeType: 'image/png' | 'image/webp';
 };
 
+export type CharacterWorkshopSelectedEntity =
+  | { kind: 'identity' }
+  | { kind: 'skin'; skinId: string }
+  | { kind: 'state'; stateId: string }
+  | { kind: 'action'; actionId: string };
+
+export type CharacterReferenceImpact = {
+  safeReferencePaths: string[];
+  blockingReferencePaths: string[];
+};
+
+type LegacyWorkshopActionPatch = Partial<DraftActionClip>;
+
 export interface CharacterWorkshopDependencies {
   /** 测试可注入稳定 ID；生产默认使用加密安全的 UUID。 */
   createToastId?(): string;
@@ -82,8 +98,10 @@ export interface CharacterWorkshopDependencies {
 export interface CharacterWorkshopState {
   characters: CharacterSummaryDto[];
   selectedCharacterId: string | null;
-  draft: CharacterDraftV1 | null;
-  selectedStateId: CharacterStateId | null;
+  draft: CharacterDraftV2 | null;
+  selectedEntity: CharacterWorkshopSelectedEntity;
+  selectedSkinId: string | null;
+  selectedStateId: string | null;
   selectedActionId: string | null;
   draftStatus: 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
   compileStatus: 'idle' | 'compiling' | 'success' | 'error';
@@ -94,7 +112,9 @@ export interface CharacterWorkshopState {
   load(): Promise<void>;
   mount(): () => void;
   selectCharacter(characterId: string): Promise<void>;
-  selectState(stateId: CharacterStateId): void;
+  selectIdentity(): void;
+  selectSkin(skinId: string): void;
+  selectState(stateId: string): void;
   selectAction(actionId: string): void;
   createCharacter(name: string): Promise<void>;
   duplicateCharacter(characterId: string): Promise<void>;
@@ -103,10 +123,24 @@ export interface CharacterWorkshopState {
   importCharacterPackage(): Promise<void>;
   exportCharacterPackage(): Promise<void>;
   importSources(): Promise<void>;
-  addAction(): void;
-  addAction(stateId: CharacterStateId): void;
-  removeAction(stateId: CharacterStateId, actionId: string): void;
-  removeExtensionState(stateId: CharacterStateId): void;
+  updateIdentity(patch: Partial<CharacterIdentityV2>): void;
+  addSkin(name: string): void;
+  duplicateSkin(skinId: string, name: string): void;
+  updateSkin(skinId: string, patch: Partial<CharacterSkinV2>): void;
+  setDefaultSkin(skinId: string): void;
+  requestRemoveSkin(skinId: string, confirm?: boolean): CharacterReferenceImpact;
+  addState(input: {
+    name: string;
+    kind: 'primary' | 'modifier';
+    semantic: CharacterStateDefinitionV2['semantic'];
+  }): void;
+  updateState(stateId: string, patch: Partial<CharacterStateDefinitionV2>): void;
+  requestRemoveState(stateId: string, confirm?: boolean): CharacterReferenceImpact;
+  addAction(stateId?: string, name?: string): void;
+  updateAction(actionId: string, patch: Partial<CharacterActionDefinitionV2>): void;
+  requestRemoveAction(actionId: string, confirm?: boolean): CharacterReferenceImpact;
+  removeAction(stateId: string, actionId: string): void;
+  removeExtensionState(stateId: string): void;
   addExtensionState(name: string, event: 'single_click' | 'double_click' | 'context_menu'): void;
   applySpriteSheet(input: {
     sourceAssetId: string;
@@ -116,7 +150,7 @@ export interface CharacterWorkshopState {
   }): Promise<void>;
   compileAndPublish(): Promise<void>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
-  updateCurrentAction(patch: Partial<DraftActionClip>): void;
+  updateCurrentAction(patch: LegacyWorkshopActionPatch): void;
   flushDraft(): Promise<void>;
   dismissToast(id: string): void;
   dispose(): void;
@@ -129,20 +163,54 @@ function errorText(error: unknown): string {
   return characterOperationMessage(code);
 }
 
-function initialSelection(draft: CharacterDraftV1): {
-  stateId: CharacterStateId | null;
+function initialSelection(draft: CharacterDraftV2): {
+  skinId: string | null;
+  stateId: string | null;
   actionId: string | null;
+  entity: CharacterWorkshopSelectedEntity;
 } {
-  const state = draft.states.find(candidate => candidate.id === 'idle')
+  const skin = draft.skins.find(candidate => candidate.id === draft.defaultSkinId)
+    ?? draft.skins[0];
+  const state = draft.states.find(candidate => candidate.id === draft.defaultStateId)
     ?? draft.states[0];
+  const actionId = state?.actionIds.find(id => draft.actions.some(action => action.id === id))
+    ?? null;
   return {
+    skinId: skin?.id ?? null,
     stateId: state?.id ?? null,
-    actionId: state?.actions[0]?.id ?? null
+    actionId,
+    entity: actionId
+      ? { kind: 'action', actionId }
+      : state
+        ? { kind: 'state', stateId: state.id }
+        : skin
+          ? { kind: 'skin', skinId: skin.id }
+          : { kind: 'identity' }
   };
 }
 
-function cloneDraft(draft: CharacterDraftV1): CharacterDraftV1 {
+function cloneDraft(draft: CharacterDraftV2): CharacterDraftV2 {
   return structuredClone(draft);
+}
+
+/** 从可读名称生成有界、确定且碰撞安全的 V2 标识符。 */
+function createEntityId(
+  name: string,
+  fallback: string,
+  usedIds: ReadonlySet<string>
+): string {
+  const normalized = name.trim().toLocaleLowerCase('en-US')
+    .replace(/[^a-z0-9_-]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 112);
+  const base = normalized || fallback;
+  let candidate = base.slice(0, 120);
+  let suffix = 2;
+  while (usedIds.has(candidate)) {
+    const postfix = `-${suffix++}`;
+    candidate = `${base.slice(0, 120 - postfix.length)}${postfix}`;
+  }
+  return candidate;
 }
 
 async function inspectBrowserImage(
@@ -223,7 +291,7 @@ export function createCharacterWorkshopStore(
     }
 
     function setDraft(
-      draft: CharacterDraftV1,
+      draft: CharacterDraftV2,
       sources: readonly CharacterWorkshopSourceDto[] = []
     ): void {
       const selection = initialSelection(draft);
@@ -232,6 +300,8 @@ export function createCharacterWorkshopStore(
       set({
         selectedCharacterId: draft.id,
         draft: cloneDraft(draft),
+        selectedEntity: selection.entity,
+        selectedSkinId: selection.skinId,
         selectedStateId: selection.stateId,
         selectedActionId: selection.actionId,
         availableSources: sources.map(({ assetId, displayName, mimeType }) => ({
@@ -288,8 +358,59 @@ export function createCharacterWorkshopStore(
       }, 500);
     }
 
+    /** 所有领域编辑统一经过深克隆，并在提交前收敛可能失效的选择。 */
+    function updateDraft(
+      mutate: (draft: CharacterDraftV2) => void,
+      requestedEntity?: CharacterWorkshopSelectedEntity
+    ): void {
+      const current = get();
+      if (!current.draft) return;
+      const next = cloneDraft(current.draft);
+      mutate(next);
+
+      const selectedSkin = next.skins.find(skin => skin.id === current.selectedSkinId)
+        ?? next.skins.find(skin => skin.id === next.defaultSkinId)
+        ?? next.skins[0];
+      const selectedState = next.states.find(state => state.id === current.selectedStateId)
+        ?? next.states.find(state => state.id === next.defaultStateId)
+        ?? next.states[0];
+      const selectedActionId = selectedState?.actionIds.find(actionId => (
+        next.actions.some(action => action.id === actionId)
+      )) ?? null;
+      const candidateEntity = requestedEntity ?? current.selectedEntity;
+      const selectedEntity: CharacterWorkshopSelectedEntity = (
+        candidateEntity.kind === 'identity'
+        || (candidateEntity.kind === 'skin' && next.skins.some(skin => skin.id === candidateEntity.skinId))
+        || (candidateEntity.kind === 'state' && next.states.some(state => state.id === candidateEntity.stateId))
+        || (candidateEntity.kind === 'action' && next.actions.some(action => action.id === candidateEntity.actionId))
+      )
+        ? candidateEntity
+        : selectedActionId
+          ? { kind: 'action', actionId: selectedActionId }
+          : selectedState
+            ? { kind: 'state', stateId: selectedState.id }
+            : selectedSkin
+              ? { kind: 'skin', skinId: selectedSkin.id }
+              : { kind: 'identity' };
+
+      draftRevision += 1;
+      set({
+        draft: next,
+        selectedEntity,
+        selectedSkinId: selectedSkin?.id ?? null,
+        selectedStateId: selectedState?.id ?? null,
+        selectedActionId: selectedEntity.kind === 'action'
+          ? selectedEntity.actionId
+          : selectedActionId,
+        draftStatus: 'dirty'
+      });
+      scheduleSave();
+    }
+
     function hasPendingDraft(): boolean {
-      return get().draftStatus === 'dirty' || get().draftStatus === 'saving';
+      return get().draftStatus === 'dirty'
+        || get().draftStatus === 'saving'
+        || get().draftStatus === 'error';
     }
 
     async function flushBeforeSelectionChange(): Promise<boolean> {
@@ -339,6 +460,8 @@ export function createCharacterWorkshopStore(
             set({
               selectedCharacterId: null,
               draft: null,
+              selectedEntity: { kind: 'identity' },
+              selectedSkinId: null,
               selectedStateId: null,
               selectedActionId: null,
               draftStatus: 'idle',
@@ -360,6 +483,8 @@ export function createCharacterWorkshopStore(
       characters: [],
       selectedCharacterId: null,
       draft: null,
+      selectedEntity: { kind: 'identity' },
+      selectedSkinId: null,
       selectedStateId: null,
       selectedActionId: null,
       draftStatus: 'idle',
@@ -387,6 +512,8 @@ export function createCharacterWorkshopStore(
             set({
               selectedCharacterId: null,
               draft: null,
+              selectedEntity: { kind: 'identity' },
+              selectedSkinId: null,
               selectedStateId: null,
               selectedActionId: null,
               draftStatus: 'idle',
@@ -446,9 +573,25 @@ export function createCharacterWorkshopStore(
       selectState(stateId) {
         const state = get().draft?.states.find(candidate => candidate.id === stateId);
         if (!state) return;
+        const actionId = state.actionIds.find(id => (
+          get().draft?.actions.some(action => action.id === id)
+        )) ?? null;
         set({
+          selectedEntity: { kind: 'state', stateId },
           selectedStateId: stateId,
-          selectedActionId: state.actions[0]?.id ?? null
+          selectedActionId: actionId
+        });
+      },
+
+      selectIdentity() {
+        set({ selectedEntity: { kind: 'identity' } });
+      },
+
+      selectSkin(skinId) {
+        if (!get().draft?.skins.some(skin => skin.id === skinId)) return;
+        set({
+          selectedSkinId: skinId,
+          selectedEntity: { kind: 'skin', skinId }
         });
       },
 
@@ -456,8 +599,14 @@ export function createCharacterWorkshopStore(
         const state = get().draft?.states.find(
           candidate => candidate.id === get().selectedStateId
         );
-        if (state?.actions.some(action => action.id === actionId)) {
-          set({ selectedActionId: actionId });
+        if (
+          state?.actionIds.includes(actionId)
+          && get().draft?.actions.some(action => action.id === actionId)
+        ) {
+          set({
+            selectedEntity: { kind: 'action', actionId },
+            selectedActionId: actionId
+          });
         }
       },
 
@@ -510,6 +659,8 @@ export function createCharacterWorkshopStore(
               set({
                 selectedCharacterId: null,
                 draft: null,
+                selectedEntity: { kind: 'identity' },
+                selectedSkinId: null,
                 selectedStateId: null,
                 selectedActionId: null,
                 draftStatus: 'idle',
@@ -592,119 +743,276 @@ export function createCharacterWorkshopStore(
         });
       },
 
-      addAction(stateId?: CharacterStateId) {
+      updateIdentity(patch) {
+        updateDraft(draft => Object.assign(draft.identity, patch));
+      },
+
+      addSkin(name) {
+        const normalizedName = name.trim();
         const current = get();
-        if (!current.draft) return;
+        if (!current.draft || !normalizedName) return;
+        const id = createEntityId(
+          normalizedName,
+          'skin',
+          new Set(current.draft.skins.map(skin => skin.id))
+        );
+        updateDraft(draft => {
+          draft.skins.push({
+            id,
+            name: normalizedName,
+            presentations: [],
+            semanticFallbacks: []
+          });
+        }, { kind: 'skin', skinId: id });
+        set({ selectedSkinId: id });
+      },
+
+      duplicateSkin(skinId, name) {
+        const normalizedName = name.trim();
+        const current = get();
+        const source = current.draft?.skins.find(skin => skin.id === skinId);
+        if (!current.draft || !source || !normalizedName) return;
+        const id = createEntityId(
+          normalizedName,
+          'skin',
+          new Set(current.draft.skins.map(skin => skin.id))
+        );
+        updateDraft(draft => {
+          draft.skins.push({ ...structuredClone(source), id, name: normalizedName });
+        }, { kind: 'skin', skinId: id });
+        set({ selectedSkinId: id });
+      },
+
+      updateSkin(skinId, patch) {
+        if (!get().draft?.skins.some(skin => skin.id === skinId)) return;
+        updateDraft(draft => {
+          Object.assign(draft.skins.find(skin => skin.id === skinId)!, patch);
+        });
+      },
+
+      setDefaultSkin(skinId) {
+        if (!get().draft?.skins.some(skin => skin.id === skinId)) return;
+        updateDraft(draft => {
+          draft.defaultSkinId = skinId;
+        }, { kind: 'skin', skinId });
+        set({ selectedSkinId: skinId });
+      },
+
+      requestRemoveSkin(skinId, confirm = false) {
+        const current = get();
+        const skinIndex = current.draft?.skins.findIndex(skin => skin.id === skinId) ?? -1;
+        if (!current.draft || skinIndex < 0) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const skin = current.draft.skins[skinIndex]!;
+        const impact: CharacterReferenceImpact = {
+          safeReferencePaths: [
+            ...(skin.presentations.length > 0 ? [`skins.${skinIndex}.presentations`] : []),
+            ...(skin.semanticFallbacks.length > 0 ? [`skins.${skinIndex}.semanticFallbacks`] : [])
+          ],
+          blockingReferencePaths: current.draft.defaultSkinId === skinId
+            ? ['defaultSkinId']
+            : []
+        };
+        if (
+          impact.blockingReferencePaths.length === 0
+          && (impact.safeReferencePaths.length === 0 || confirm)
+        ) {
+          updateDraft(draft => {
+            draft.skins = draft.skins.filter(candidate => candidate.id !== skinId);
+          });
+        }
+        return impact;
+      },
+
+      addState(input) {
+        const normalizedName = input.name.trim();
+        const current = get();
+        if (!current.draft || !normalizedName) return;
+        const id = createEntityId(
+          normalizedName,
+          'state',
+          new Set(current.draft.states.map(state => state.id))
+        );
+        updateDraft(draft => {
+          draft.states.push({
+            id,
+            name: normalizedName,
+            kind: input.kind,
+            semantic: input.semantic,
+            tags: [],
+            intensity: 50,
+            coexistWithStateIds: [],
+            forbiddenStateIds: [],
+            enterConditions: [],
+            exitConditions: [],
+            agentInferable: false,
+            actionIds: []
+          });
+        }, { kind: 'state', stateId: id });
+        set({ selectedStateId: id, selectedActionId: null });
+      },
+
+      updateState(stateId, patch) {
+        if (!get().draft?.states.some(state => state.id === stateId)) return;
+        updateDraft(draft => {
+          Object.assign(draft.states.find(state => state.id === stateId)!, patch);
+        });
+      },
+
+      requestRemoveState(stateId, confirm = false) {
+        const current = get();
+        const targetIndex = current.draft?.states.findIndex(state => state.id === stateId) ?? -1;
+        if (!current.draft || targetIndex < 0) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const safeReferencePaths: string[] = [];
+        current.draft.states.forEach((state, index) => {
+          if (state.coexistWithStateIds.includes(stateId)) safeReferencePaths.push(`states.${index}.coexistWithStateIds`);
+          if (state.forbiddenStateIds.includes(stateId)) safeReferencePaths.push(`states.${index}.forbiddenStateIds`);
+          if (state.enterConditions.some(condition => (
+            condition.clauses.some(clause => clause.kind === 'state' && clause.stateId === stateId)
+          ))) safeReferencePaths.push(`states.${index}.enterConditions`);
+          if (state.exitConditions.some(condition => (
+            condition.clauses.some(clause => clause.kind === 'state' && clause.stateId === stateId)
+          ))) safeReferencePaths.push(`states.${index}.exitConditions`);
+        });
+        current.draft.actions.forEach((action, index) => {
+          (['allowedPrimaryStateIds', 'forbiddenPrimaryStateIds', 'requiredModifierStateIds', 'forbiddenModifierStateIds'] as const)
+            .forEach(field => {
+              if (action[field].includes(stateId)) safeReferencePaths.push(`actions.${index}.${field}`);
+            });
+        });
+        const impact: CharacterReferenceImpact = {
+          safeReferencePaths,
+          blockingReferencePaths: current.draft.defaultStateId === stateId
+            ? ['defaultStateId']
+            : []
+        };
+        if (impact.blockingReferencePaths.length === 0 && (safeReferencePaths.length === 0 || confirm)) {
+          updateDraft(draft => {
+            draft.states = draft.states.filter(state => state.id !== stateId);
+            draft.states.forEach(state => {
+              state.coexistWithStateIds = state.coexistWithStateIds.filter(id => id !== stateId);
+              state.forbiddenStateIds = state.forbiddenStateIds.filter(id => id !== stateId);
+              const cleanConditions = (conditions: typeof state.enterConditions) => conditions
+                .map(condition => ({
+                  ...condition,
+                  clauses: condition.clauses.filter(
+                    clause => clause.kind !== 'state' || clause.stateId !== stateId
+                  )
+                }))
+                .filter(condition => condition.clauses.length > 0);
+              state.enterConditions = cleanConditions(state.enterConditions);
+              state.exitConditions = cleanConditions(state.exitConditions);
+            });
+            draft.actions.forEach(action => {
+              action.allowedPrimaryStateIds = action.allowedPrimaryStateIds.filter(id => id !== stateId);
+              action.forbiddenPrimaryStateIds = action.forbiddenPrimaryStateIds.filter(id => id !== stateId);
+              action.requiredModifierStateIds = action.requiredModifierStateIds.filter(id => id !== stateId);
+              action.forbiddenModifierStateIds = action.forbiddenModifierStateIds.filter(id => id !== stateId);
+            });
+          });
+        }
+        return impact;
+      },
+
+      addAction(stateId, name = '') {
+        const current = get();
         const targetStateId = stateId ?? current.selectedStateId;
-        if (!targetStateId) return;
-        const nextDraft = cloneDraft(current.draft);
-        const state = nextDraft.states.find(candidate => (
-          candidate.id === targetStateId
-        ));
-        if (!state) return;
-        const base = `${String(state.id).replace(/[^a-z0-9]+/gu, '-')}-action`;
-        let index = state.actions.length + 1;
-        let id = `${base}-${index}`;
-        while (state.actions.some(action => action.id === id)) {
-          id = `${base}-${++index}`;
-        }
-        state.actions.push({
-          id,
-          name: `动作 ${index}`,
-          fps: 8,
-          loop: true,
-          weight: 1,
-          direction: 'any',
-          anchors: { ground: { x: 0.5, y: 1 } },
-          frames: []
-        });
-        draftRevision += 1;
-        set({
-          draft: nextDraft,
-          selectedStateId: targetStateId,
-          selectedActionId: id,
-          draftStatus: 'dirty'
-        });
-        scheduleSave();
+        const state = current.draft?.states.find(candidate => candidate.id === targetStateId);
+        if (!current.draft || !state) return;
+        const normalizedName = name.trim() || `动作 ${state.actionIds.length + 1}`;
+        const id = createEntityId(
+          `${state.id}-action`,
+          'action',
+          new Set(current.draft.actions.map(action => action.id))
+        );
+        updateDraft(draft => {
+          draft.actions.push({
+            id,
+            name: normalizedName,
+            semantic: typeof state.semantic === 'string' ? state.semantic : 'idle',
+            tags: [],
+            preference: 1,
+            cooldownMs: 0,
+            repeatSuppressionMs: 0,
+            loopPolicy: 'presentation',
+            interrupt: 'normal',
+            allowedPrimaryStateIds: [],
+            forbiddenPrimaryStateIds: [],
+            requiredModifierStateIds: [],
+            forbiddenModifierStateIds: [],
+            direction: 'any'
+          });
+          draft.states.find(candidate => candidate.id === targetStateId)!.actionIds.push(id);
+        }, { kind: 'action', actionId: id });
+        set({ selectedStateId: targetStateId, selectedActionId: id });
       },
 
-      /** 删除动作后仅回退当前删除目标的选择，避免影响其他状态的编辑上下文。 */
-      removeAction(stateId, actionId) {
+      updateAction(actionId, patch) {
+        if (!get().draft?.actions.some(action => action.id === actionId)) return;
+        updateDraft(draft => {
+          Object.assign(draft.actions.find(action => action.id === actionId)!, patch);
+        });
+      },
+
+      requestRemoveAction(actionId, confirm = false) {
         const current = get();
-        if (!current.draft) return;
-        const nextDraft = cloneDraft(current.draft);
-        const state = nextDraft.states.find(candidate => candidate.id === stateId);
-        const index = state?.actions.findIndex(action => action.id === actionId) ?? -1;
-        if (!state || index < 0) return;
-        state.actions.splice(index, 1);
-        const deletingCurrent = current.selectedStateId === stateId
-          && current.selectedActionId === actionId;
-        const fallback = state.actions[index] ?? state.actions[index - 1] ?? null;
-        draftRevision += 1;
-        set({
-          draft: nextDraft,
-          selectedActionId: deletingCurrent
-            ? fallback?.id ?? null
-            : current.selectedActionId,
-          draftStatus: 'dirty'
+        if (!current.draft?.actions.some(action => action.id === actionId)) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const safeReferencePaths: string[] = [];
+        current.draft.states.forEach((state, index) => {
+          if (state.actionIds.includes(actionId)) safeReferencePaths.push(`states.${index}.actionIds`);
         });
-        scheduleSave();
+        current.draft.skins.forEach((skin, index) => {
+          if (skin.presentations.some(presentation => presentation.actionId === actionId)) {
+            safeReferencePaths.push(`skins.${index}.presentations`);
+          }
+          if (skin.semanticFallbacks.some(fallback => fallback.actionId === actionId)) {
+            safeReferencePaths.push(`skins.${index}.semanticFallbacks`);
+          }
+        });
+        const blockingReferencePaths = current.draft.actions.flatMap((action, index) => [
+          ...(action.failureFallbackActionId === actionId
+            ? [`actions.${index}.failureFallbackActionId`]
+            : []),
+          ...(action.interruptedFallbackActionId === actionId
+            ? [`actions.${index}.interruptedFallbackActionId`]
+            : [])
+        ]);
+        const impact = { safeReferencePaths, blockingReferencePaths };
+        if (blockingReferencePaths.length === 0 && (safeReferencePaths.length === 0 || confirm)) {
+          updateDraft(draft => {
+            draft.actions = draft.actions.filter(action => action.id !== actionId);
+            draft.states.forEach(state => {
+              state.actionIds = state.actionIds.filter(id => id !== actionId);
+            });
+            draft.skins.forEach(skin => {
+              skin.presentations = skin.presentations.filter(presentation => presentation.actionId !== actionId);
+              skin.semanticFallbacks = skin.semanticFallbacks.filter(fallback => fallback.actionId !== actionId);
+            });
+          });
+        }
+        return impact;
       },
 
-      /** 核心状态属于角色运行契约，只有扩展状态允许从草稿中移除。 */
+      /** 旧组件在 Task 8 改造前继续通过确认入口删除。 */
+      removeAction(_stateId, actionId) {
+        get().requestRemoveAction(actionId, true);
+      },
+
       removeExtensionState(stateId) {
-        const current = get();
-        if (!current.draft) return;
-        const target = current.draft.states.find(state => state.id === stateId);
-        if (!target || target.kind !== 'extension') return;
-        const nextDraft = cloneDraft(current.draft);
-        nextDraft.states = nextDraft.states.filter(state => state.id !== stateId);
-        const fallback = nextDraft.states.find(state => state.kind === 'core') ?? null;
-        const deletingCurrent = current.selectedStateId === stateId;
-        draftRevision += 1;
-        set({
-          draft: nextDraft,
-          selectedStateId: deletingCurrent
-            ? fallback?.id ?? null
-            : current.selectedStateId,
-          selectedActionId: deletingCurrent
-            ? fallback?.actions[0]?.id ?? null
-            : current.selectedActionId,
-          draftStatus: 'dirty'
-        });
-        scheduleSave();
+        get().requestRemoveState(stateId, true);
       },
 
-      addExtensionState(name, event) {
-        const normalized = name.trim().toLocaleLowerCase('en-US')
-          .replace(/[^a-z0-9_-]+/gu, '-')
-          .replace(/^-+|-+$/gu, '');
-        if (!normalized) {
-          enqueueToast({ tone: 'error', text: '扩展状态名称不能为空。' });
-          return;
-        }
-        const current = get();
-        if (!current.draft) return;
-        const id = `custom:${normalized}` as `custom:${string}`;
-        if (current.draft.states.some(state => state.id === id)) {
-          enqueueToast({ tone: 'error', text: '扩展状态已存在。' });
-          return;
-        }
-        const nextDraft = cloneDraft(current.draft);
-        nextDraft.states.push({
-          id,
-          kind: 'extension',
-          triggers: { events: [event], keywords: [], emotions: [] },
-          actions: []
+      addExtensionState(name, _event) {
+        get().addState({
+          name,
+          kind: 'modifier',
+          semantic: { kind: 'custom', value: createEntityId(name, 'state', new Set()) }
         });
-        draftRevision += 1;
-        set({
-          draft: nextDraft,
-          selectedStateId: id,
-          selectedActionId: null,
-          draftStatus: 'dirty'
-        });
-        scheduleSave();
       },
 
       async applySpriteSheet(input) {
@@ -760,7 +1068,26 @@ export function createCharacterWorkshopStore(
           width,
           height
         }));
-        get().updateCurrentAction({ frames });
+        const selectedSkinId = get().selectedSkinId;
+        const selectedActionId = get().selectedActionId;
+        if (!selectedSkinId || !selectedActionId) return;
+        updateDraft(draft => {
+          const skin = draft.skins.find(candidate => candidate.id === selectedSkinId);
+          if (!skin) return;
+          const existing = skin.presentations.find(
+            presentation => presentation.actionId === selectedActionId
+          );
+          if (existing) {
+            existing.frames = frames;
+          } else {
+            skin.presentations.push({
+              actionId: selectedActionId,
+              fps: 8,
+              anchors: { ground: { x: 0.5, y: 1 } },
+              frames
+            });
+          }
+        });
         enqueueToast({ tone: 'success', text: '精灵图网格已应用到当前动作。' });
       },
 
@@ -783,15 +1110,26 @@ export function createCharacterWorkshopStore(
             return pending;
           };
           const resources: CharacterPublishInput['resources'] = [];
-          const manifestResources: CharacterPublishInput['manifest']['resources'] = [];
+          const manifestResources: Array<{
+            assetId: string;
+            fileName: string;
+            sha256: string;
+            byteLength: number;
+          }> = [];
           const states = [];
+          const defaultSkin = latest.skins.find(skin => skin.id === latest.defaultSkinId)
+            ?? latest.skins[0];
           for (const [stateIndex, state] of latest.states.entries()) {
             const actions = [];
-            for (const [actionIndex, action] of state.actions.entries()) {
-              if (action.frames.length === 0) continue;
+            for (const [actionIndex, actionId] of state.actionIds.entries()) {
+              const action = latest.actions.find(candidate => candidate.id === actionId);
+              const presentation = defaultSkin?.presentations.find(
+                candidate => candidate.actionId === actionId
+              );
+              if (!action || !presentation || presentation.frames.length === 0) continue;
               const atlasAssetId = `atlas-${stateIndex + 1}-${actionIndex + 1}`;
               const sourceFrames: AtlasSourceFrame[] = [];
-              for (const [frameIndex, frame] of action.frames.entries()) {
+              for (const [frameIndex, frame] of presentation.frames.entries()) {
                 const bytes = await readSource(frame.assetId);
                 sourceFrames.push({
                   frameId: frame.id ?? `frame-${frameIndex + 1}`,
@@ -826,14 +1164,28 @@ export function createCharacterWorkshopStore(
                 sha256: compiled.sha256,
                 byteLength: compiled.bytes.byteLength
               });
-              actions.push({ ...action, frames: compiled.frames });
+              actions.push({
+                id: action.id,
+                name: action.name,
+                fps: presentation.fps,
+                loop: action.loopPolicy !== 'never',
+                weight: action.preference,
+                direction: action.direction,
+                anchors: presentation.anchors,
+                frames: compiled.frames
+              });
             }
-            states.push({ ...state, actions });
+            states.push({
+              id: state.id,
+              kind: state.id === 'idle' || state.id === 'thinking' ? 'core' : 'extension',
+              actions
+            });
           }
           if (resources.length === 0) {
             throw new Error('CHARACTER_IDLE_UNAVAILABLE');
           }
-          await api.publishCharacter({
+          // Task 7 会将这一旧播放器编译边界替换为严格 V2 发布。
+          await (api.publishCharacter as (input: unknown) => Promise<void>)({
             characterId: latest.id,
             manifest: {
               version: 1,
@@ -867,24 +1219,38 @@ export function createCharacterWorkshopStore(
 
       updateCurrentAction(patch) {
         const current = get();
-        if (!current.draft || !current.selectedStateId || !current.selectedActionId) {
+        if (!current.selectedActionId) return;
+        const { frames, fps, name, direction, loop, weight } = patch;
+        const actionPatch: Partial<CharacterActionDefinitionV2> = {
+          ...(name === undefined ? {} : { name }),
+          ...(direction === undefined ? {} : { direction }),
+          ...(loop === undefined ? {} : { loopPolicy: loop ? 'presentation' : 'never' }),
+          ...(weight === undefined ? {} : { preference: weight })
+        };
+        if (frames === undefined && fps === undefined) {
+          get().updateAction(current.selectedActionId, actionPatch);
           return;
         }
-        const nextDraft = cloneDraft(current.draft);
-        const state = nextDraft.states.find(
-          candidate => candidate.id === current.selectedStateId
-        );
-        const action = state?.actions.find(
-          candidate => candidate.id === current.selectedActionId
-        );
-        if (!action) return;
-        Object.assign(action, patch);
-        draftRevision += 1;
-        set({
-          draft: nextDraft,
-          draftStatus: 'dirty'
+        const actionId = current.selectedActionId;
+        const skinId = current.selectedSkinId;
+        updateDraft(draft => {
+          Object.assign(draft.actions.find(action => action.id === actionId)!, actionPatch);
+          const skin = draft.skins.find(candidate => candidate.id === skinId);
+          if (!skin) return;
+          let presentation = skin.presentations.find(candidate => candidate.actionId === actionId);
+          if (!presentation) {
+            presentation = {
+              actionId,
+              fps: fps ?? 8,
+              anchors: { ground: { x: 0.5, y: 1 } },
+              frames: frames ?? []
+            };
+            skin.presentations.push(presentation);
+          } else {
+            if (frames !== undefined) presentation.frames = frames;
+            if (fps !== undefined) presentation.fps = fps;
+          }
         });
-        scheduleSave();
       },
 
       flushDraft() {
@@ -902,7 +1268,7 @@ export function createCharacterWorkshopStore(
             if (
               !current.draft
               || !current.selectedCharacterId
-              || current.draftStatus !== 'dirty'
+              || (current.draftStatus !== 'dirty' && current.draftStatus !== 'error')
             ) continue;
             const characterId = current.selectedCharacterId;
             const revision = draftRevision;

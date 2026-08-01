@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import type { CharacterDraftV1 } from '@myself/character-runtime';
+import {
+  characterDraftV2Schema,
+  type CharacterDraftV2
+} from '@myself/character-runtime';
 import type {
   CharacterEvent,
   CharacterPublishInput,
@@ -15,27 +18,78 @@ function draft(
   id: string,
   name: string,
   actionName = '待机'
-): CharacterDraftV1 {
+): CharacterDraftV2 {
   return {
-    version: 1,
+    version: 2,
     id,
     name,
+    identity: {
+      description: '一只友好的桌面伙伴',
+      background: '居住在桌面上',
+      traits: ['friendly'],
+      languageStyle: '简洁温和',
+      formsOfAddress: ['伙伴'],
+      likes: ['整理桌面'],
+      dislikes: ['混乱'],
+      behavioralTendencies: ['主动陪伴'],
+      boundaries: ['不说出隐私'],
+      exampleLines: ['我在这里。']
+    },
+    defaultSkinId: 'default',
+    defaultStateId: 'idle',
+    skins: [{
+      id: 'default',
+      name: '默认皮肤',
+      presentations: [],
+      semanticFallbacks: []
+    }, {
+      id: 'winter',
+      name: '冬装',
+      presentations: [],
+      semanticFallbacks: []
+    }],
     states: [{
       id: 'idle',
-      kind: 'core',
-      actions: [{
-        id: 'idle-main',
-        name: actionName,
-        fps: 12,
-        loop: true,
-        weight: 1,
-        anchors: { ground: { x: 0.5, y: 1 } },
-        frames: []
-      }]
+      name: '待机',
+      kind: 'primary',
+      semantic: 'idle',
+      tags: [],
+      intensity: 20,
+      coexistWithStateIds: [],
+      forbiddenStateIds: [],
+      enterConditions: [],
+      exitConditions: [],
+      agentInferable: true,
+      actionIds: ['idle-main']
     }, {
       id: 'thinking',
-      kind: 'core',
-      actions: []
+      name: '思考',
+      kind: 'primary',
+      semantic: 'think',
+      tags: [],
+      intensity: 50,
+      coexistWithStateIds: [],
+      forbiddenStateIds: [],
+      enterConditions: [],
+      exitConditions: [],
+      agentInferable: true,
+      actionIds: []
+    }],
+    actions: [{
+        id: 'idle-main',
+        name: actionName,
+        semantic: 'idle',
+        tags: [],
+        preference: 1,
+        cooldownMs: 0,
+        repeatSuppressionMs: 0,
+        loopPolicy: 'presentation',
+        interrupt: 'normal',
+        allowedPrimaryStateIds: [],
+        forbiddenPrimaryStateIds: [],
+        requiredModifierStateIds: [],
+        forbiddenModifierStateIds: [],
+        direction: 'any'
     }]
   };
 }
@@ -51,7 +105,8 @@ function summary(
     thumbnailAssetId: null,
     active,
     completeness: 'incomplete',
-    missingCoreStates: ['listening']
+    missingRequirements: ['default-presentation-unplayable'],
+    migrationRecoveryAvailable: false
   };
 }
 
@@ -59,26 +114,22 @@ function publishInput(characterId: string): CharacterPublishInput {
   return {
     characterId,
     manifest: {
-      version: 1,
-      id: characterId,
-      name: '待发布角色',
+      ...draft(characterId, '待发布角色'),
       thumbnailAssetId: 'idle-atlas',
-      compilerVersion: 'test-compiler-v1',
+      compilerVersion: 'test-compiler-v2',
       resources: [{
         assetId: 'idle-atlas',
         fileName: 'idle-atlas.png',
         sha256: 'a'.repeat(64),
         byteLength: 1
       }],
-      states: [{
-        id: 'idle',
-        kind: 'core',
-        actions: [{
-          id: 'idle-main',
-          name: '待机',
+      skins: [{
+        id: 'default',
+        name: '默认皮肤',
+        semanticFallbacks: [],
+        presentations: [{
+          actionId: 'idle-main',
           fps: 12,
-          loop: true,
-          weight: 1,
           anchors: { ground: { x: 0.5, y: 1 } },
           frames: [{
             assetId: 'idle-atlas',
@@ -174,6 +225,209 @@ afterEach(() => {
 });
 
 describe('角色工作室 Zustand 状态层', () => {
+  test('加载 V2 草稿后按默认链选择，皮肤切换不发起跨角色读取', async () => {
+    const api = apiDouble({
+      getCharacterDraft: vi.fn(async () => draft('demo', '演示角色'))
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+
+    await store.getState().selectCharacter('demo');
+    expect(store.getState()).toMatchObject({
+      selectedSkinId: 'default',
+      selectedStateId: 'idle',
+      selectedActionId: 'idle-main',
+      selectedEntity: { kind: 'action', actionId: 'idle-main' }
+    });
+
+    store.getState().selectSkin('winter');
+    expect(store.getState()).toMatchObject({
+      selectedSkinId: 'winter',
+      selectedEntity: { kind: 'skin', skinId: 'winter' }
+    });
+    expect(api.getCharacterDraft).toHaveBeenCalledOnce();
+  });
+
+  test('身份编辑以不可变草稿替换并在 500ms 后保存 V2', async () => {
+    vi.useFakeTimers();
+    const loadedDraft = draft('demo', '演示角色');
+    const originalIdentity = loadedDraft.identity;
+    const api = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+    const before = store.getState().draft;
+
+    store.getState().updateIdentity({ description: '一只谨慎的桌面伙伴' });
+
+    expect(store.getState().draft).not.toBe(before);
+    expect(loadedDraft.identity).toBe(originalIdentity);
+    expect(loadedDraft.identity.description).toBe('一只友好的桌面伙伴');
+    expect(store.getState().draft?.identity.description).toBe('一只谨慎的桌面伙伴');
+    await vi.advanceTimersByTimeAsync(499);
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.saveCharacterDraft).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({ version: 2 })
+    );
+  });
+
+  test('皮肤、状态与动作的新增复制和编辑保持 V2 不可变结构', async () => {
+    const loadedDraft = draft('demo', '演示角色');
+    const originalSkins = loadedDraft.skins;
+    const api = apiDouble({ getCharacterDraft: vi.fn(async () => loadedDraft) }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+
+    store.getState().addSkin('旅行装');
+    store.getState().duplicateSkin('skin', '旅行装副本');
+    store.getState().updateSkin('skin-2', { description: '适合出行' });
+    store.getState().setDefaultSkin('skin-2');
+    store.getState().addState({ name: '好奇', kind: 'modifier', semantic: 'think' });
+    store.getState().updateState('state', { intensity: 80 });
+    store.getState().addAction('state', '观察');
+    store.getState().updateAction('state-action', { cooldownMs: 1_000 });
+
+    expect(loadedDraft.skins).toBe(originalSkins);
+    expect(loadedDraft.skins).toHaveLength(2);
+    expect(store.getState().draft).toMatchObject({
+      version: 2,
+      defaultSkinId: 'skin-2',
+      skins: expect.arrayContaining([
+        expect.objectContaining({ id: 'skin-2', description: '适合出行' })
+      ]),
+      states: expect.arrayContaining([
+        expect.objectContaining({ id: 'state', intensity: 80, actionIds: ['state-action'] })
+      ]),
+      actions: expect.arrayContaining([
+        expect.objectContaining({ id: 'state-action', cooldownMs: 1_000 })
+      ])
+    });
+    expect(() => characterDraftV2Schema.parse(store.getState().draft)).not.toThrow();
+  });
+
+  test('动作回退引用始终阻塞删除，确认安全引用后只清配置且保留素材', async () => {
+    const loadedDraft = draft('demo', '演示角色');
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
+      id: 'wave',
+      name: '挥手'
+    }, {
+      ...structuredClone(loadedDraft.actions[0]!),
+      id: 'nod',
+      name: '点头',
+      failureFallbackActionId: 'wave'
+    });
+    loadedDraft.states[0]!.actionIds.push('wave');
+    loadedDraft.skins[0]!.presentations.push({
+      actionId: 'wave',
+      fps: 12,
+      anchors: { ground: { x: 0.5, y: 1 } },
+      frames: []
+    });
+    const sources = [sourceDto('123e4567-e89b-42d3-a456-426614174000', 'wave.png')];
+    const api = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft),
+      listCharacterSources: vi.fn(async () => sources)
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+
+    expect(store.getState().requestRemoveAction('wave', true)).toEqual({
+      safeReferencePaths: ['states.0.actionIds', 'skins.0.presentations'],
+      blockingReferencePaths: ['actions.2.failureFallbackActionId']
+    });
+    expect(store.getState().draft?.actions).toHaveLength(3);
+
+    store.getState().updateAction('nod', { failureFallbackActionId: undefined });
+    expect(store.getState().requestRemoveAction('wave')).toMatchObject({
+      safeReferencePaths: ['states.0.actionIds', 'skins.0.presentations'],
+      blockingReferencePaths: []
+    });
+    expect(store.getState().draft?.actions).toHaveLength(3);
+    store.getState().requestRemoveAction('wave', true);
+
+    expect(store.getState().draft?.actions.map(action => action.id)).toEqual([
+      'idle-main', 'nod'
+    ]);
+    expect(store.getState().draft?.states[0]?.actionIds).toEqual(['idle-main']);
+    expect(store.getState().draft?.skins[0]?.presentations).toEqual([]);
+    expect(store.getState().availableSources).toEqual(sources);
+  });
+
+  test('确认删除状态时仅清理目标子句，保留同一条件中的可信信号', async () => {
+    const loadedDraft = draft('demo', '演示角色');
+    loadedDraft.states.push({
+      ...structuredClone(loadedDraft.states[1]!),
+      id: 'focus',
+      name: '专注',
+      kind: 'modifier',
+      semantic: { kind: 'custom', value: 'focus' }
+    });
+    loadedDraft.states[0]!.coexistWithStateIds = ['focus'];
+    loadedDraft.states[0]!.enterConditions = [{
+      mode: 'all',
+      clauses: [
+        { kind: 'state', stateId: 'focus' },
+        { kind: 'signal', signal: 'idle' }
+      ]
+    }];
+    loadedDraft.actions[0]!.allowedPrimaryStateIds = ['focus'];
+    const api = apiDouble({ getCharacterDraft: vi.fn(async () => loadedDraft) }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+
+    const impact = store.getState().requestRemoveState('focus');
+    expect(impact.safeReferencePaths).toEqual([
+      'states.0.coexistWithStateIds',
+      'states.0.enterConditions',
+      'actions.0.allowedPrimaryStateIds'
+    ]);
+    expect(store.getState().draft?.states).toHaveLength(3);
+    store.getState().requestRemoveState('focus', true);
+
+    expect(store.getState().draft?.states[0]?.enterConditions).toEqual([{
+      mode: 'all',
+      clauses: [{ kind: 'signal', signal: 'idle' }]
+    }]);
+    expect(store.getState().draft?.actions[0]?.allowedPrimaryStateIds).toEqual([]);
+  });
+
+  test('保存皮肤修改失败时保留本地编辑并进入 error', async () => {
+    const api = apiDouble({
+      getCharacterDraft: vi.fn(async () => draft('demo', '演示角色')),
+      saveCharacterDraft: vi.fn(async () => {
+        throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
+      })
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+
+    store.getState().updateSkin('winter', { name: '冬装新版' });
+    await expect(store.getState().flushDraft()).rejects.toThrow('CHARACTER_DRAFT_SAVE_FAILED');
+
+    expect(store.getState()).toMatchObject({ draftStatus: 'error' });
+    expect(store.getState().draft?.skins.find(skin => skin.id === 'winter')?.name)
+      .toBe('冬装新版');
+  });
+
+  test('保存失败后切换角色会重试持久化，不会丢弃 error 状态的本地编辑', async () => {
+    const saveCharacterDraft = vi.fn()
+      .mockRejectedValueOnce(new Error('CHARACTER_DRAFT_SAVE_FAILED'))
+      .mockResolvedValueOnce(undefined);
+    const api = apiDouble({ saveCharacterDraft }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateIdentity({ description: '本地未保存编辑' });
+    await expect(store.getState().flushDraft()).rejects.toThrow();
+
+    await store.getState().selectCharacter('nova');
+
+    expect(saveCharacterDraft).toHaveBeenCalledTimes(2);
+    expect(store.getState().selectedCharacterId).toBe('nova');
+  });
+
   test('自动保存成功只更新保存状态，失败入队且按 ID 关闭不影响后续提示', async () => {
     const firstIds = ['toast-1', 'toast-2'];
     const { api } = apiDouble();
@@ -329,9 +583,10 @@ describe('角色工作室 Zustand 状态层', () => {
       frameCount: 4
     });
 
-    const action = store.getState().draft!.states[0]!.actions.at(-1)!;
-    expect(action.frames).toHaveLength(4);
-    expect(action.frames.map(frame => [frame.x, frame.y, frame.width, frame.height]))
+    const presentation = store.getState().draft!.skins
+      .find(skin => skin.id === 'default')!.presentations.at(-1)!;
+    expect(presentation.frames).toHaveLength(4);
+    expect(presentation.frames.map(frame => [frame.x, frame.y, frame.width, frame.height]))
       .toEqual([
         [0, 0, 512, 512],
         [512, 0, 512, 512],
@@ -587,17 +842,22 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(readCharacterSource).toHaveBeenCalledTimes(1);
   });
 
-  test('可创建带单击触发器的扩展状态', async () => {
+  test('可创建自定义语义的修饰状态', async () => {
     const { api } = apiDouble();
     const store = createCharacterWorkshopStore(api);
     await store.getState().load();
 
-    store.getState().addExtensionState('wave', 'single_click');
+    store.getState().addState({
+      name: '挥手',
+      kind: 'modifier',
+      semantic: { kind: 'custom', value: 'wave' }
+    });
 
     expect(store.getState().draft!.states.at(-1)).toMatchObject({
-      id: 'custom:wave',
-      kind: 'extension',
-      triggers: { events: ['single_click'] }
+      id: 'state',
+      name: '挥手',
+      kind: 'modifier',
+      semantic: { kind: 'custom', value: 'wave' }
     });
   });
   test('加载后选择启用角色、idle 状态和默认动作', async () => {
@@ -649,12 +909,9 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(api.saveCharacterDraft).toHaveBeenCalledWith(
       'default',
       expect.objectContaining({
-        states: expect.arrayContaining([
-          expect.objectContaining({
-            actions: expect.arrayContaining([
-              expect.objectContaining({ name: '挥手' })
-            ])
-          })
+        version: 2,
+        actions: expect.arrayContaining([
+          expect.objectContaining({ name: '挥手' })
         ])
       })
     );
@@ -695,7 +952,7 @@ describe('角色工作室 Zustand 状态层', () => {
   });
 
   test('角色切换期间保留已有错误与后续排队提示的到达顺序', async () => {
-    const novaDraft = deferred<CharacterDraftV1>();
+    const novaDraft = deferred<CharacterDraftV2>();
     const exportCharacterPackage = vi.fn()
       .mockRejectedValueOnce(new Error('CHARACTER_PACKAGE_EXPORT_FAILED'))
       .mockResolvedValueOnce({ kind: 'cancelled' as const });
@@ -750,12 +1007,8 @@ describe('角色工作室 Zustand 状态层', () => {
       2,
       'default',
       expect.objectContaining({
-        states: expect.arrayContaining([
-          expect.objectContaining({
-            actions: expect.arrayContaining([
-              expect.objectContaining({ name: '新修订' })
-            ])
-          })
+        actions: expect.arrayContaining([
+          expect.objectContaining({ name: '新修订' })
         ])
       })
     );
@@ -808,7 +1061,7 @@ describe('角色工作室 Zustand 状态层', () => {
   });
 
   test('乱序角色草稿加载响应不能覆盖较新的角色选择', async () => {
-    const novaDraft = deferred<CharacterDraftV1>();
+    const novaDraft = deferred<CharacterDraftV2>();
     const { api } = apiDouble({
       listCharacters: vi.fn(async () => [
         summary('default', 'AI Pet 默认角色', true),
@@ -1349,7 +1602,13 @@ describe('角色工作室 Zustand 状态层', () => {
 
   test('可直接向指定状态添加动作并选中新动作', async () => {
     const loadedDraft = draft('default', 'AI Pet 默认角色');
-    loadedDraft.states.push({ id: 'moving', kind: 'core', actions: [] });
+    loadedDraft.states.push({
+      ...structuredClone(loadedDraft.states[1]!),
+      id: 'moving',
+      name: '移动',
+      semantic: 'move',
+      actionIds: []
+    });
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => loadedDraft)
     });
@@ -1360,20 +1619,24 @@ describe('角色工作室 Zustand 状态层', () => {
 
     expect(store.getState()).toMatchObject({
       selectedStateId: 'moving',
-      selectedActionId: 'moving-action-1',
+      selectedActionId: 'moving-action',
       draftStatus: 'dirty'
     });
   });
 
   test('指定状态已有同名动作 ID 时递增生成唯一 ID', async () => {
     const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
+      id: 'moving-action',
+      semantic: 'move'
+    });
     loadedDraft.states.push({
+      ...structuredClone(loadedDraft.states[1]!),
       id: 'moving',
-      kind: 'core',
-      actions: [{
-        ...structuredClone(loadedDraft.states[0]!.actions[0]!),
-        id: 'moving-action-1'
-      }]
+      name: '移动',
+      semantic: 'move',
+      actionIds: ['moving-action']
     });
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => loadedDraft)
@@ -1387,7 +1650,7 @@ describe('角色工作室 Zustand 状态层', () => {
       selectedStateId: 'moving',
       selectedActionId: 'moving-action-2'
     });
-    expect(store.getState().draft!.states.find(state => state.id === 'moving')!.actions)
+    expect(store.getState().draft!.states.find(state => state.id === 'moving')!.actionIds)
       .toHaveLength(2);
   });
 
@@ -1415,10 +1678,11 @@ describe('角色工作室 Zustand 状态层', () => {
 
   test('删除当前动作后优先选中原索引处的下一个动作', async () => {
     const loadedDraft = draft('default', 'AI Pet 默认角色');
-    loadedDraft.states[0]!.actions.push({
-      ...structuredClone(loadedDraft.states[0]!.actions[0]!),
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
       id: 'idle-next'
     });
+    loadedDraft.states[0]!.actionIds.push('idle-next');
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => loadedDraft)
     });
@@ -1436,10 +1700,11 @@ describe('角色工作室 Zustand 状态层', () => {
 
   test('删除当前最后一个动作后选中前一个动作', async () => {
     const loadedDraft = draft('default', 'AI Pet 默认角色');
-    loadedDraft.states[0]!.actions.push({
-      ...structuredClone(loadedDraft.states[0]!.actions[0]!),
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
       id: 'idle-next'
     });
+    loadedDraft.states[0]!.actionIds.push('idle-next');
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => loadedDraft)
     });
@@ -1478,13 +1743,17 @@ describe('角色工作室 Zustand 状态层', () => {
 
   test('删除非当前动作时保留当前有效动作选择', async () => {
     const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
+      id: 'moving-main',
+      semantic: 'move'
+    });
     loadedDraft.states.push({
+      ...structuredClone(loadedDraft.states[1]!),
       id: 'moving',
-      kind: 'core',
-      actions: [{
-        ...structuredClone(loadedDraft.states[0]!.actions[0]!),
-        id: 'moving-main'
-      }]
+      name: '移动',
+      semantic: 'move',
+      actionIds: ['moving-main']
     });
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => loadedDraft)
@@ -1500,13 +1769,16 @@ describe('角色工作室 Zustand 状态层', () => {
     });
   });
 
-  test('核心状态不能被删除', async () => {
+  test('默认状态引用阻止删除', async () => {
     const { api } = apiDouble();
     const store = createCharacterWorkshopStore(api);
     await store.getState().load();
     const before = structuredClone(store.getState().draft);
 
-    store.getState().removeExtensionState('idle');
+    expect(store.getState().requestRemoveState('idle', true)).toEqual({
+      safeReferencePaths: [],
+      blockingReferencePaths: ['defaultStateId']
+    });
 
     expect(store.getState()).toMatchObject({
       draft: before,
@@ -1516,16 +1788,19 @@ describe('角色工作室 Zustand 状态层', () => {
     });
   });
 
-  test('删除当前扩展状态后回退到第一个核心状态及其首个动作', async () => {
+  test('删除当前修饰状态后回退到默认状态及其首个动作', async () => {
     const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
+      id: 'wave-main'
+    });
     loadedDraft.states.push({
-      id: 'custom:wave',
-      kind: 'extension',
-      triggers: { events: ['single_click'], keywords: [], emotions: [] },
-      actions: [{
-        ...structuredClone(loadedDraft.states[0]!.actions[0]!),
-        id: 'wave-main'
-      }]
+      ...structuredClone(loadedDraft.states[1]!),
+      id: 'wave',
+      name: '挥手',
+      kind: 'modifier',
+      semantic: { kind: 'custom', value: 'wave' },
+      actionIds: ['wave-main']
     });
     const sources = [sourceDto('123e4567-e89b-42d3-a456-426614174000', 'idle.png')];
     const { api } = apiDouble({
@@ -1534,9 +1809,9 @@ describe('角色工作室 Zustand 状态层', () => {
     });
     const store = createCharacterWorkshopStore(api);
     await store.getState().load();
-    store.getState().selectState('custom:wave');
+    store.getState().selectState('wave');
 
-    store.getState().removeExtensionState('custom:wave');
+    store.getState().requestRemoveState('wave');
 
     expect(store.getState()).toMatchObject({
       selectedStateId: 'idle',
@@ -1546,14 +1821,16 @@ describe('角色工作室 Zustand 状态层', () => {
     });
   });
 
-  test('删除扩展状态后自动保存删除结果', async () => {
+  test('删除修饰状态后自动保存删除结果', async () => {
     vi.useFakeTimers();
     const loadedDraft = draft('default', 'AI Pet 默认角色');
     loadedDraft.states.push({
-      id: 'custom:wave',
-      kind: 'extension',
-      triggers: { events: ['single_click'], keywords: [], emotions: [] },
-      actions: []
+      ...structuredClone(loadedDraft.states[1]!),
+      id: 'wave',
+      name: '挥手',
+      kind: 'modifier',
+      semantic: { kind: 'custom', value: 'wave' },
+      actionIds: []
     });
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => loadedDraft)
@@ -1561,23 +1838,25 @@ describe('角色工作室 Zustand 状态层', () => {
     const store = createCharacterWorkshopStore(api);
     await store.getState().load();
 
-    store.getState().removeExtensionState('custom:wave');
+    store.getState().requestRemoveState('wave');
     await vi.advanceTimersByTimeAsync(500);
 
     expect(api.saveCharacterDraft).toHaveBeenCalledWith('default', expect.objectContaining({
       states: expect.not.arrayContaining([
-        expect.objectContaining({ id: 'custom:wave' })
+        expect.objectContaining({ id: 'wave' })
       ])
     }));
   });
 
-  test('删除非当前扩展状态时保留当前有效选择', async () => {
+  test('删除非当前修饰状态时保留当前有效选择', async () => {
     const loadedDraft = draft('default', 'AI Pet 默认角色');
     loadedDraft.states.push({
-      id: 'custom:wave',
-      kind: 'extension',
-      triggers: { events: ['single_click'], keywords: [], emotions: [] },
-      actions: []
+      ...structuredClone(loadedDraft.states[1]!),
+      id: 'wave',
+      name: '挥手',
+      kind: 'modifier',
+      semantic: { kind: 'custom', value: 'wave' },
+      actionIds: []
     });
     const { api } = apiDouble({
       getCharacterDraft: vi.fn(async () => loadedDraft)
@@ -1585,7 +1864,7 @@ describe('角色工作室 Zustand 状态层', () => {
     const store = createCharacterWorkshopStore(api);
     await store.getState().load();
 
-    store.getState().removeExtensionState('custom:wave');
+    store.getState().requestRemoveState('wave');
 
     expect(store.getState()).toMatchObject({
       selectedStateId: 'idle',
