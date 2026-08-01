@@ -1,7 +1,7 @@
 'use client';
 
 import type { FormEvent } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SubmissionStatus, SubmissionStatusView } from '@myself/shared-types';
 import { useI18n } from '../../components/i18n/I18nProvider';
 import type { MessageKey } from '../../components/i18n/i18n-types';
@@ -32,34 +32,49 @@ export function SubmissionStatusPage({ api }: SubmissionStatusPageProps) {
   const [manualToken, setManualToken] = useState('');
   const [phase, setPhase] = useState<QueryPhase>('idle');
   const [result, setResult] = useState<SubmissionStatusView | null>(null);
+  const mountedRef = useRef(false);
+  const requestGenerationRef = useRef(0);
+  const fragmentTokenRef = useRef<string | null>(null);
 
   const query = async (statusToken: string) => {
+    const generation = ++requestGenerationRef.current;
     setPhase('loading');
     setResult(null);
     try {
       const nextResult = await querySubmissionStatus(api, statusToken);
+      if (!mountedRef.current || generation !== requestGenerationRef.current) return;
       setResult(nextResult);
       setManualToken('');
       setPhase('success');
     } catch {
+      if (!mountedRef.current || generation !== requestGenerationRef.current) return;
       setPhase('error');
     }
   };
 
   useEffect(() => {
-    const fragmentToken = readStatusToken(window.location.hash);
-    if (!fragmentToken) return;
+    mountedRef.current = true;
+    const locationFragmentToken = readStatusToken(window.location.hash);
+    if (locationFragmentToken) fragmentTokenRef.current = locationFragmentToken;
+    const fragmentToken = locationFragmentToken ?? fragmentTokenRef.current;
+    const search = new URLSearchParams(window.location.search);
+    const hasSensitiveQuery = search.has('statusToken');
+    search.delete('statusToken');
 
-    // 必须先从地址栏移除令牌，再发起网络请求。
-
-    window.history.replaceState(
-      window.history.state,
-      '',
-      `${window.location.pathname}${window.location.search}`
-    );
-    void query(fragmentToken);
-    // API 客户端在页面生命周期内稳定，查询只在首次挂载时执行。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // 无论 Fragment 是否有效，都先清理地址栏中的敏感参数和 Fragment。
+    if (hasSensitiveQuery || window.location.hash) {
+      const remainingQuery = search.toString();
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${window.location.pathname}${remainingQuery ? `?${remainingQuery}` : ''}`
+      );
+    }
+    if (fragmentToken) void query(fragmentToken);
+    return () => {
+      mountedRef.current = false;
+      requestGenerationRef.current += 1;
+    };
   }, [api]);
 
   const submitManualToken = (event: FormEvent<HTMLFormElement>) => {

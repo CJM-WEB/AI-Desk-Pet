@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { SubmissionStatusView } from '@myself/shared-types';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../components/i18n/I18nProvider';
 import { readStatusToken } from '../lib/submission-status';
@@ -45,7 +46,11 @@ describe('匿名投稿状态令牌', () => {
   });
 
   it('先清除地址栏 Fragment，再只发送状态令牌查询', async () => {
-    window.history.replaceState({}, '', `/submission-status/?statusToken=query-secret#${token}`);
+    window.history.replaceState(
+      {},
+      '',
+      `/submission-status/?keep=visible&statusToken=query-secret&statusToken=query-secret-2#${token}`
+    );
     const request = vi.fn().mockImplementation(async () => {
       expect(window.location.hash).toBe('');
       return status();
@@ -54,24 +59,104 @@ describe('匿名投稿状态令牌', () => {
     renderPage(request);
 
     await screen.findByText('系统审核中');
-    expect(window.location.search).toBe('?statusToken=query-secret');
+    expect(window.location.search).toBe('?keep=visible');
     expect(request).toHaveBeenCalledWith('/submission-status', {
       method: 'POST',
       body: JSON.stringify({ statusToken: token })
     });
   });
 
-  it('忽略 query 中的同名令牌，并允许手动粘贴后重试', async () => {
-    window.history.replaceState({}, '', `/submission-status/?statusToken=${token}`);
+  it('StrictMode 重放 effect 后仍能完成 Fragment 自动查询', async () => {
+    window.history.replaceState({}, '', `/submission-status/#${token}`);
+    const request = vi.fn().mockResolvedValue(status({ status: 'published' }));
+    const api = { request } as unknown as ApiClient;
+
+    render(
+      <StrictMode>
+        <I18nProvider initialLocale="zh-CN">
+          <SubmissionStatusPage api={api} />
+        </I18nProvider>
+      </StrictMode>
+    );
+
+    expect(await screen.findByText('已发布')).toBeTruthy();
+    expect(window.location.hash).toBe('');
+    expect(request).toHaveBeenCalledWith('/submission-status', {
+      method: 'POST',
+      body: JSON.stringify({ statusToken: token })
+    });
+  });
+
+  it('无有效 Fragment 时也清除敏感 query，且绝不使用 query 令牌', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/submission-status/?keep=visible&statusToken=${token}#invalid-fragment`
+    );
     const request = renderPage();
 
     expect(await screen.findByLabelText('状态令牌')).toBeTruthy();
+    expect(window.location.search).toBe('?keep=visible');
+    expect(window.location.hash).toBe('');
     expect(request).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText('状态令牌'), { target: { value: token } });
     fireEvent.click(screen.getByRole('button', { name: '查询状态' }));
 
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+  });
+
+  it('后续查询发生后忽略已过期的延迟响应', async () => {
+    const secondToken = 'b'.repeat(43);
+    let resolveFirst: ((value: SubmissionStatusView) => void) | undefined;
+    const firstRequest = vi.fn().mockReturnValue(new Promise<SubmissionStatusView>((resolve) => {
+      resolveFirst = resolve;
+    }));
+    const secondRequest = vi.fn().mockResolvedValue(status({ status: 'published' }));
+    const firstApi = { request: firstRequest } as unknown as ApiClient;
+    const secondApi = { request: secondRequest } as unknown as ApiClient;
+    window.history.replaceState({}, '', `/submission-status/#${token}`);
+
+    const view = render(
+      <I18nProvider initialLocale="zh-CN">
+        <SubmissionStatusPage api={firstApi} />
+      </I18nProvider>
+    );
+    await waitFor(() => expect(firstRequest).toHaveBeenCalledTimes(1));
+
+    window.history.replaceState({}, '', `/submission-status/#${secondToken}`);
+    view.rerender(
+      <I18nProvider initialLocale="zh-CN">
+        <SubmissionStatusPage api={secondApi} />
+      </I18nProvider>
+    );
+    expect(await screen.findByText('已发布')).toBeTruthy();
+
+    await act(async () => {
+      resolveFirst?.(status({ status: 'system_reviewing' }));
+    });
+    expect(screen.queryByText('系统审核中')).toBeNull();
+  });
+
+  it('组件卸载后安全忽略尚未完成的响应', async () => {
+    let resolveRequest: ((value: SubmissionStatusView) => void) | undefined;
+    const request = vi.fn().mockReturnValue(new Promise<SubmissionStatusView>((resolve) => {
+      resolveRequest = resolve;
+    }));
+    window.history.replaceState({}, '', `/submission-status/#${token}`);
+    const view = render(
+      <I18nProvider initialLocale="zh-CN">
+        <SubmissionStatusPage api={{ request } as unknown as ApiClient} />
+      </I18nProvider>
+    );
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    await act(async () => {
+      resolveRequest?.(status({ status: 'published' }));
+    });
+
+    expect(screen.queryByText('已发布')).toBeNull();
   });
 
   it.each([

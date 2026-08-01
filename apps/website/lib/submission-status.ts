@@ -23,4 +23,3 @@ export async function querySubmissionStatus(
   });
   return submissionStatusViewSchema.parse(result);
 }
-
