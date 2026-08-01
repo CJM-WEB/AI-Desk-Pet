@@ -17,7 +17,7 @@ export const TRUSTED_BEHAVIOR_SIGNALS = [
 ] as const;
 
 const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,119}$/;
-const safeIdentifierSchema = z.string().regex(SAFE_IDENTIFIER_PATTERN);
+export const safeIdentifierSchema = z.string().regex(SAFE_IDENTIFIER_PATTERN);
 const finiteNumberSchema = z.number().finite();
 const boundedText = (maximum: number) => z.string().trim().min(1).max(maximum);
 const boundedTextList = (maximumItems: number, maximumTextLength: number) => z.array(

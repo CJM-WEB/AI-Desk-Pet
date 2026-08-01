@@ -6,3 +6,4 @@ export * from './character-v1-converter';
 export * from './character-presentation-resolver';
 export * from './legacy-runtime-projection';
 export * from './action-selector';
+export * from './behavior-contracts';
