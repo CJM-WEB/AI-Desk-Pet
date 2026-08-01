@@ -19,6 +19,7 @@ type ElectronFixtureModule = {
     cdpPort: number;
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    characterAssetsDirectory?: string;
     parentEnvironment?: NodeJS.ProcessEnv;
     enableSoftwareRasterizer?: boolean;
   }): {
@@ -206,13 +207,26 @@ async function readTextForAssertion(path: string): Promise<string> {
 
 function sanitizeCapturedDiagnostic(
   text: string,
-  apiKey: string,
-  authorizedRootDirectory: string
+  ...sensitiveValues: Array<string | undefined>
 ): string {
-  return text
-    .replace(/authorization\s*:[^\r\n]*/giu, '[已脱敏]')
-    .replaceAll(apiKey, '[已脱敏]')
-    .replaceAll(authorizedRootDirectory, '[已脱敏]');
+  return sensitiveValues
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => right.length - left.length)
+    .reduce(
+      (sanitized, value) => sanitized.replaceAll(value, '[已脱敏]'),
+      text.replace(/authorization\s*:[^\r\n]*/giu, '[已脱敏]')
+    );
+}
+
+/** 捕获边界只保留脱敏后的新错误，禁止原始 message、stack 或 cause 继续传播。 */
+function sanitizedCapturedError(
+  error: unknown,
+  sanitize: (text: string) => string
+): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  const sanitized = new Error(sanitize(message));
+  if (error instanceof Error) sanitized.name = error.name;
+  return sanitized;
 }
 
 async function submitChatMessage(page: Page, text: string): Promise<void> {
@@ -1797,16 +1811,17 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
 });
 
 test.describe('真实角色工作室闭环', () => {
-  test('通过正式 Renderer 控件完成创建、编译、启用、导出、安全导入与重启恢复', async () => {
+  test('V2 人设、皮肤和精确表现重启后保留且导出回导等价', async () => {
     test.setTimeout(300_000);
     const fixtureModule = await loadElectronFixtureModule();
     expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
     if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
+    const apiKey = runtimeDiagnosticKey();
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot,
-      apiKey: runtimeDiagnosticKey(),
+      apiKey,
       launchTimeoutMs: 15_000,
       enableSoftwareRasterizer: true
     });
@@ -1814,6 +1829,24 @@ test.describe('真实角色工作室闭环', () => {
       ReturnType<ElectronFixtureModule['createElectronAppFixture']>
     >;
     const diagnostics: string[] = [];
+    const sensitiveFixtures: AppFixture[] = [fixture];
+    let exportedPackage = '';
+    let exportedBytes: Uint8Array | null = null;
+    let recoverySnapshot = '';
+    const sanitizeDiagnostic = (text: string): string => sanitizeCapturedDiagnostic(
+      text,
+      apiKey,
+      recoverySnapshot,
+      exportedPackage,
+      ...sensitiveFixtures.flatMap(candidate => [
+        candidate.authorizedRootDirectory,
+        candidate.userDataDirectory,
+        candidate.characterAssetsDirectory,
+        candidate.safeCharacterPackage,
+        candidate.maliciousCharacterPackage,
+        candidate.characterExportDestination
+      ])
+    );
     const observedPages = new WeakSet<Page>();
     const observeFixturePages = (appFixture: AppFixture, phase: string): Page[] => {
       const currentPages = appFixture.browser.contexts()
@@ -1823,10 +1856,14 @@ test.describe('真实角色工作室闭环', () => {
         observedPages.add(page);
         page.setDefaultTimeout(15_000);
         page.on('console', message => {
-          diagnostics.push(`[${phase}:${page.url()}] console ${message.type()}: ${message.text()}`);
+          diagnostics.push(sanitizeDiagnostic(
+            `[${phase}:${page.url()}] console ${message.type()}: ${message.text()}`
+          ));
         });
         page.on('pageerror', error => {
-          diagnostics.push(`[${phase}:${page.url()}] pageerror: ${error.message}`);
+          diagnostics.push(sanitizeDiagnostic(
+            `[${phase}:${page.url()}] pageerror: ${error.message}`
+          ));
         });
       }
       return currentPages;
@@ -1858,7 +1895,7 @@ test.describe('真实角色工作室闭环', () => {
         return pageFor(appFixture, view, step)!;
       } catch (error) {
         throw new Error(
-          `${String(error)}\nE2E 诊断：${diagnostics.join(' | ')}`
+          sanitizeDiagnostic(`${String(error)}\nE2E 诊断：${diagnostics.join(' | ')}`)
         );
       }
     };
@@ -1895,6 +1932,12 @@ test.describe('真实角色工作室闭环', () => {
       await expect(close).toBeVisible({ timeout: 15_000 });
       await close.click();
     };
+    const expectExactIdlePresentation = async (page: Page): Promise<void> => {
+      await expect(page.getByRole('region', { name: '序列帧时间轴' }).locator('li'))
+        .toHaveCount(4);
+      await expect(page.getByLabel('ground X')).toHaveValue('0.45');
+      await expect(page.getByLabel('ground Y')).toHaveValue('0.95');
+    };
     const openWorkshop = async (
       appFixture: AppFixture,
       phase: string
@@ -1918,20 +1961,42 @@ test.describe('真实角色工作室闭环', () => {
     };
     observeFixturePages(fixture, '初始启动');
 
-    let exportedPackage = '';
-    let exportedBytes: Uint8Array | null = null;
-    let recoverySnapshot = '';
+    let primaryError: unknown = null;
+    let recoveryCleanupError: unknown = null;
+    try {
     try {
       const workshop = await openWorkshop(fixture, '初始启动');
       const petDiagnostics: string[] = [];
       const diagnosticPet = await waitForPage(fixture, 'pet', '初始启动：读取桌宠诊断');
-      diagnosticPet.on('console', message => petDiagnostics.push(message.text()));
-      diagnosticPet.on('pageerror', error => petDiagnostics.push(error.message));
+      diagnosticPet.on('console', message => petDiagnostics.push(
+        sanitizeDiagnostic(message.text())
+      ));
+      diagnosticPet.on('pageerror', error => petDiagnostics.push(
+        sanitizeDiagnostic(error.message)
+      ));
       await workshop.getByRole('button', { name: '新建角色' }).click();
       await workshop.getByLabel('角色名称').fill('E2E 工作室角色');
       await workshop.getByRole('button', { name: '创建角色' }).click();
       await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
         .toBeVisible();
+
+      // 人设与皮肤均通过正式受控表单写入，后续由同一闭环验证持久化与包等价。
+      await workshop.getByRole('button', { name: '编辑角色人设' }).click();
+      await workshop.getByLabel('角色描述').fill('喜欢整理桌面的伙伴');
+      await workshop.getByLabel('角色背景').fill('从冬日窗边来到桌面的伙伴');
+      await workshop.getByLabel('语言风格').fill('温和而简洁');
+      await workshop.getByRole('button', { name: '添加性格标签' }).click();
+      await workshop.getByRole('group', { name: '性格标签' })
+        .getByRole('textbox')
+        .fill('细心');
+      await workshop.getByRole('button', { name: '新增皮肤' }).click();
+      await workshop.getByLabel('皮肤名称').fill('冬装');
+      await workshop.getByLabel('皮肤说明').fill('适合冬日桌面的保暖外观');
+      const winterSkinItem = workshop.getByRole('list', { name: '皮肤列表' })
+        .getByRole('listitem')
+        .filter({ hasText: '冬装' });
+      await winterSkinItem.getByRole('button', { name: '设为默认' }).click();
+      await expect(winterSkinItem).toContainText('默认皮肤');
 
       await workshop.getByRole('button', {
         name: '向“待机”添加动作'
@@ -1955,31 +2020,59 @@ test.describe('真实角色工作室闭环', () => {
       });
       await expect(emptyActionDelete).toBeVisible();
       await emptyActionDelete.click();
+      const emptyActionDeleteDialog = workshop.getByRole('dialog', {
+        name: '删除动作“动作 2”'
+      });
+      await expect(emptyActionDeleteDialog).toContainText('states.0.actionIds');
+      await emptyActionDeleteDialog.getByRole('button', { name: '确认删除' }).click();
       await expect(emptyActionDelete).toHaveCount(0);
       await idleActionDelete.click();
       const configuredActionDeleteDialog = workshop.getByRole('dialog', {
         name: '删除动作“动作 1”'
       });
-      await expect(configuredActionDeleteDialog).toContainText('该动作包含 4 帧');
+      await expect(configuredActionDeleteDialog).toContainText('skins.1.presentations');
       await configuredActionDeleteDialog.getByRole('button', { name: '取消' }).click();
       await expect(configuredActionDeleteDialog).toHaveCount(0);
       await expect(idleActionDelete).toBeVisible();
       const draftPreview = workshop.locator('[data-preview-status]');
       await expect(draftPreview).toHaveAttribute('data-preview-status', 'ready');
+      await expect(workshop.getByText('当前使用：当前皮肤精确表现')).toBeVisible();
       await workshop.getByRole('button', { name: '切换左右方向' }).click();
       await expect(draftPreview).toHaveAttribute('data-preview-direction', 'left');
       await workshop.locator('.preview-controls input[type="range"]').fill('1.5');
       await expect(draftPreview).toHaveAttribute('data-preview-speed', '1.5');
-      await workshop.getByLabel('帧率').fill('7');
       await workshop.getByLabel('ground X').fill('0.45');
       await workshop.getByLabel('ground Y').fill('0.95');
+      await expectExactIdlePresentation(workshop);
+
+      // 保留旧闭环的非 idle 投影价值：通过正式 V2 UI 建立搬运状态及可播放动作。
+      await workshop.getByRole('button', { name: '添加扩展状态' }).click();
+      await workshop.getByLabel('状态名称').fill('搬运状态');
+      await workshop.getByLabel('状态类别').selectOption('modifier');
+      await workshop.getByLabel('标准语义').selectOption('carry');
+      await workshop.getByLabel('状态名称').press('Enter');
+      const carryingState = workshop.getByRole('list', { name: '状态与动作列表' })
+        .getByRole('listitem')
+        .filter({ has: workshop.getByRole('button', { name: /^搬运状态/ }) });
+      await carryingState.getByRole('button', { name: '向“搬运状态”添加动作' }).click();
+      await workshop.getByLabel('动作名称').fill('搬运行走');
+      await workshop.getByLabel('已导入素材').selectOption({ label: 'idle.png' });
+      await workshop.getByRole('button', { name: '应用到当前动作' }).click();
+      await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
+      await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
+      await workshop.getByRole('button', { name: /^待机/ }).click();
+      await workshop.getByRole('button', { name: /^动作 1/ }).click();
+      await expectExactIdlePresentation(workshop);
       await workshop.getByRole('button', { name: '编译并发布' }).click();
       await expect(workshop.getByText('运行版本已编译并发布。')).toBeVisible();
       await closeWorkshopToast(workshop, '运行版本已编译并发布。');
 
+      const createdCharacterItem = workshop.getByRole('list', { name: '角色列表' })
+        .getByRole('listitem')
+        .filter({ has: workshop.getByRole('button', { name: /^E2E 工作室角色/ }) });
+      await expect(createdCharacterItem)
+        .toHaveAttribute('data-character-completeness', 'complete');
       await workshop.getByRole('button', { name: '启用角色' }).click();
-      await expect(workshop.getByRole('heading', { name: '部分动作尚未配置' })).toBeVisible();
-      await workshop.getByRole('button', { name: '仍然使用' }).click();
       await expect(workshop.getByText('角色已启用。')).toBeVisible();
       await closeWorkshopToast(workshop, '角色已启用。');
 
@@ -1987,60 +2080,29 @@ test.describe('真实角色工作室闭环', () => {
       try {
         await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready');
       } catch (error) {
-        throw new Error(`${String(error)}\n角色播放器诊断：${petDiagnostics.join(' | ')}`);
+        throw new Error(sanitizeDiagnostic(
+          `${String(error)}\n角色播放器诊断：${petDiagnostics.join(' | ')}`
+        ));
       }
+      const legacyRuntime = await pet.evaluate(async () => {
+        const snapshot = await window.myself.getCharacterRuntimeSnapshot();
+        return snapshot ? {
+          version: snapshot.manifest.version,
+          idleActionCount: snapshot.manifest.states
+            .find(state => state.id === 'idle')?.actions.length ?? 0,
+          carryingActionCount: snapshot.manifest.states
+            .find(state => state.id === 'carrying')?.actions.length ?? 0
+        } : null;
+      });
+      expect(legacyRuntime).toEqual({
+        version: 1,
+        idleActionCount: 1,
+        carryingActionCount: 1
+      });
       await pet.evaluate(() => window.myself.openChat());
       const chat = await waitForPage(fixture, 'chat', '初始启动：验证聊天降级');
       await submitChatMessage(chat, 'thinking 降级期间继续验证 Agent');
       await expect(chat.getByText('请先完成模型服务和授权目录设置。')).toBeVisible();
-
-      await workshop.getByRole('button', { name: /^搬运/ }).click();
-      await workshop.getByRole('button', {
-        name: '向“搬运”添加动作'
-      }).click();
-      await workshop.getByRole('button', { name: '导入素材' }).click();
-      await workshop.getByLabel('已导入素材').selectOption({ label: 'carrying.png' });
-      await workshop.getByLabel('行数').fill('2');
-      await workshop.getByLabel('列数').fill('2');
-      await workshop.getByLabel('有效帧数').fill('4');
-      await workshop.getByRole('button', { name: '应用到当前动作' }).click();
-      await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
-      await workshop.getByLabel('carry X').fill('0.7');
-      await workshop.getByLabel('carry Y').fill('0.4');
-
-      await workshop.getByRole('button', { name: '添加扩展状态' }).click();
-      await workshop.getByLabel('状态名称').fill('wave');
-      await workshop.getByLabel('扩展状态触发方式').selectOption('double_click');
-      await workshop.getByLabel('状态名称').press('Enter');
-      await workshop.getByRole('button', {
-        name: '向“wave”添加动作'
-      }).click();
-      await workshop.getByRole('button', { name: '导入素材' }).click();
-      await workshop.getByLabel('已导入素材').selectOption({ label: 'acting.png' });
-      await workshop.getByLabel('行数').fill('2');
-      await workshop.getByLabel('列数').fill('2');
-      await workshop.getByLabel('有效帧数').fill('4');
-      await workshop.getByRole('button', { name: '应用到当前动作' }).click();
-      await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
-      await workshop.getByRole('button', { name: '编译并发布' }).click();
-      await expect(workshop.getByText('运行版本已编译并发布。')).toBeVisible();
-      await closeWorkshopToast(workshop, '运行版本已编译并发布。');
-
-      const extensionStates = await pet.evaluate(async () => (
-        (await window.myself.getCharacterRuntimeSnapshot())?.manifest.states
-          .filter(state => state.kind === 'extension')
-          .map(state => ({ id: state.id, events: state.triggers?.events }))
-      ));
-      expect(extensionStates).toEqual([{
-        id: 'custom:wave',
-        events: ['double_click']
-      }]);
-      await expect(pet.getByRole('main', { name: 'AI Pet 桌宠' }))
-        .toHaveAttribute('data-extension-states', 'custom:wave');
-      await expect.poll(() => pet.getByRole('main', { name: 'AI Pet 桌宠' })
-        .getAttribute('data-character-state'), { timeout: 20_000 }).toBe('idle');
-      await expect(pet.getByRole('main', { name: 'AI Pet 桌宠' }))
-        .toHaveAttribute('data-character-state', 'idle');
 
       await workshop.getByRole('button', { name: '导出角色包' }).click();
       await expect(workshop.getByText('角色包已导出。')).toBeVisible();
@@ -2049,7 +2111,7 @@ test.describe('真实角色工作室闭环', () => {
       exportedBytes = await readFile(exportedPackage);
       expect(exportedBytes.byteLength).toBeGreaterThan(0);
 
-      await workshop.getByLabel('帧率').fill('9');
+      await workshop.getByLabel('动作名称').fill('冬日待机');
       await workshop.getByRole('button', { name: '保存草稿' }).click();
       await expect(workshop.getByText('草稿已保存', { exact: true })).toBeVisible();
       await expect(workshop.getByRole('button', {
@@ -2067,7 +2129,7 @@ test.describe('真实角色工作室闭环', () => {
 
     const recovered = await fixtureModule.createElectronAppFixture({
       workspaceRoot,
-      apiKey: runtimeDiagnosticKey(),
+      apiKey,
       launchTimeoutMs: 15_000,
       enableSoftwareRasterizer: true,
       prepareUserData: async directories => {
@@ -2081,6 +2143,7 @@ test.describe('真实角色工作室闭环', () => {
         );
       }
     });
+    sensitiveFixtures.push(recovered);
     observeFixturePages(recovered, '重启恢复');
     try {
       const workshop = await openWorkshop(recovered, '重启恢复');
@@ -2090,18 +2153,35 @@ test.describe('真实角色工作室闭环', () => {
       });
       await expect(recoveredCharacter).toBeVisible({ timeout: 15_000 });
       await recoveredCharacter.click();
+      await workshop.getByRole('button', { name: '编辑角色人设' }).click();
+      await expect(workshop.getByLabel('角色描述'))
+        .toHaveValue('喜欢整理桌面的伙伴');
+      await expect(workshop.getByLabel('角色背景'))
+        .toHaveValue('从冬日窗边来到桌面的伙伴');
+      await expect(workshop.getByLabel('语言风格')).toHaveValue('温和而简洁');
+      await expect(workshop.getByRole('group', { name: '性格标签' })
+        .getByRole('textbox')).toHaveValue('细心');
+      const recoveredWinterSkin = workshop.getByRole('list', { name: '皮肤列表' })
+        .getByRole('listitem')
+        .filter({ hasText: '冬装' });
+      await expect(recoveredWinterSkin).toContainText('默认皮肤');
+      await recoveredWinterSkin.getByRole('button', { name: /冬装/ }).click();
+      await expect(workshop.getByLabel('皮肤说明'))
+        .toHaveValue('适合冬日桌面的保暖外观');
+      await workshop.getByRole('button', { name: /^待机/ }).click();
+      await workshop.getByRole('button', { name: /^冬日待机/ }).click();
       await expect(workshop.getByLabel('已导入素材')).toContainText('idle.png');
-      await expect(workshop.getByLabel('已导入素材')).toContainText('carrying.png');
-      await expect(workshop.getByLabel('已导入素材')).toContainText('acting.png');
-      await workshop.getByRole('button', { name: /^wave/ }).click();
-      await expect(workshop.getByLabel('帧率')).toHaveValue('9', { timeout: 15_000 });
+      await expect(workshop.getByLabel('动作名称'))
+        .toHaveValue('冬日待机', { timeout: 15_000 });
+      await expect(workshop.getByText('当前使用：当前皮肤精确表现')).toBeVisible();
       const recoveredPreview = workshop.locator('[data-preview-status]');
       await expect(recoveredPreview).toHaveAttribute('data-preview-status', 'ready');
+      await expectExactIdlePresentation(workshop);
       await expect(workshop.getByRole('button', {
-        name: '向“wave”添加动作'
+        name: '向“待机”添加动作'
       })).toBeVisible();
       await expect(workshop.getByRole('button', {
-        name: '删除动作“动作 1”'
+        name: '删除动作“冬日待机”'
       })).toBeVisible();
       await expect(
         workshop.getByRole('region', { name: '序列帧时间轴' })
@@ -2109,20 +2189,17 @@ test.describe('真实角色工作室闭环', () => {
           .first()
           .getByRole('button')
       ).toHaveAttribute('aria-pressed', 'true');
-      await workshop.getByRole('button', { name: /^倾听/ }).click();
-      await expect(recoveredPreview).toHaveAttribute('data-preview-status', 'empty');
       const active = await pet.evaluate(async () => (
         (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
       ));
       expect(active).not.toBe('builtin-default');
     } finally {
       await recovered.dispose();
-      await rm(recoverySnapshot, { recursive: true, force: true });
     }
 
     const isolated = await fixtureModule.createElectronAppFixture({
       workspaceRoot,
-      apiKey: runtimeDiagnosticKey(),
+      apiKey,
       launchTimeoutMs: 15_000,
       enableSoftwareRasterizer: true,
       prepareUserData: async directories => {
@@ -2136,14 +2213,35 @@ test.describe('真实角色工作室闭环', () => {
         );
       }
     });
+    sensitiveFixtures.push(isolated);
     observeFixturePages(isolated, '隔离导入');
     try {
       const workshop = await openWorkshop(isolated, '隔离导入');
       const pet = await waitForPage(isolated, 'pet', '隔离导入：读取桌宠状态');
 
       await clickReadyButton(workshop, '导入角色包', '隔离导入：导入安全角色包');
-      await expect(workshop.getByRole('button', { name: /^E2E 工作室角色/ }))
-        .toBeVisible({ timeout: 15_000 });
+      const importedCharacter = workshop.getByRole('button', { name: /^E2E 工作室角色/ });
+      await expect(importedCharacter).toBeVisible({ timeout: 15_000 });
+      await importedCharacter.click();
+      await workshop.getByRole('button', { name: '编辑角色人设' }).click();
+      await expect(workshop.getByLabel('角色描述'))
+        .toHaveValue('喜欢整理桌面的伙伴');
+      await expect(workshop.getByLabel('角色背景'))
+        .toHaveValue('从冬日窗边来到桌面的伙伴');
+      await expect(workshop.getByLabel('语言风格')).toHaveValue('温和而简洁');
+      await expect(workshop.getByRole('group', { name: '性格标签' })
+        .getByRole('textbox')).toHaveValue('细心');
+      const importedWinterSkin = workshop.getByRole('list', { name: '皮肤列表' })
+        .getByRole('listitem')
+        .filter({ hasText: '冬装' });
+      await expect(importedWinterSkin).toContainText('默认皮肤');
+      await importedWinterSkin.getByRole('button', { name: /冬装/ }).click();
+      await expect(workshop.getByLabel('皮肤说明'))
+        .toHaveValue('适合冬日桌面的保暖外观');
+      await workshop.getByRole('button', { name: /^待机/ }).click();
+      await workshop.getByRole('button', { name: /^动作 1/ }).click();
+      await expect(workshop.getByText('当前使用：当前皮肤精确表现')).toBeVisible();
+      await expectExactIdlePresentation(workshop);
       const characterList = workshop.getByRole('list', { name: '角色列表' });
       const summariesBefore = await characterList.getByRole('listitem').evaluateAll(items => (
         items.map(item => ({
@@ -2198,6 +2296,68 @@ test.describe('真实角色工作室闭环', () => {
     } finally {
       await isolated.dispose();
     }
+    } catch (error) {
+      primaryError = sanitizedCapturedError(error, sanitizeDiagnostic);
+    } finally {
+      if (recoverySnapshot) {
+        try {
+          await rm(recoverySnapshot, { recursive: true, force: true });
+        } catch (error) {
+          recoveryCleanupError = sanitizedCapturedError(error, sanitizeDiagnostic);
+        }
+      }
+    }
+
+    if (primaryError && recoveryCleanupError) {
+      throw new AggregateError(
+        [primaryError, recoveryCleanupError],
+        sanitizeDiagnostic(
+          `角色工作室闭环失败：${String(primaryError)}\n附加清理诊断：${String(recoveryCleanupError)}`
+        ),
+        { cause: primaryError }
+      );
+    }
+    if (primaryError) throw primaryError;
+    if (recoveryCleanupError) throw recoveryCleanupError;
+  });
+
+  test('工作室清理的单错误、聚合 errors 与 cause 均只保留脱敏错误', () => {
+    const userDataDirectory = 'C:\\Temp\\private-user-data';
+    const recoverySnapshot = 'C:\\Temp\\private-recovery';
+    const safePackage = 'C:\\Temp\\private-package.zip';
+    const sanitize = (text: string): string => sanitizeCapturedDiagnostic(
+      text,
+      userDataDirectory,
+      recoverySnapshot,
+      safePackage
+    );
+    const primary = sanitizedCapturedError(
+      new Error(`主失败 ${userDataDirectory}`),
+      sanitize
+    );
+    const cleanup = sanitizedCapturedError(
+      new Error(`清理失败 ${recoverySnapshot} ${safePackage}`),
+      sanitize
+    );
+    const aggregate = new AggregateError(
+      [primary, cleanup],
+      sanitize(`主失败 ${userDataDirectory}；清理失败 ${recoverySnapshot} ${safePackage}`),
+      { cause: primary }
+    );
+    const observable = [
+      primary.message,
+      primary.stack,
+      cleanup.message,
+      cleanup.stack,
+      aggregate.message,
+      ...aggregate.errors.map(error => error instanceof Error ? error.message : String(error)),
+      aggregate.cause instanceof Error ? aggregate.cause.message : String(aggregate.cause)
+    ].join('\n');
+
+    expect(observable).not.toContain(userDataDirectory);
+    expect(observable).not.toContain(recoverySnapshot);
+    expect(observable).not.toContain(safePackage);
+    expect(observable).toContain('[已脱敏]');
   });
 });
 

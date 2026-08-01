@@ -11,7 +11,13 @@ import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
-import type { CharacterManifestV1 } from '@myself/character-runtime';
+import type {
+  CharacterActionDefinitionV2,
+  CharacterActionPresentationV2,
+  CharacterDraftV2,
+  CharacterManifestV2,
+  CharacterStateDefinitionV2
+} from '@myself/character-runtime';
 import { CharacterAssetService } from '../../apps/desktop/src/main/characters/character-asset-service';
 import { CharacterPackageService } from '../../apps/desktop/src/main/characters/character-package-service';
 import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
@@ -103,14 +109,15 @@ export async function materializeCharacterWorkshopFixtures(
   ]);
   if (!source) throw new Error('E2E_CHARACTER_SOURCE_MISSING');
   const bytes = await readFile(join(characterAssetsDirectory, 'idle.png'));
-  const action = (id: string, name: string) => ({
-    id,
-    name,
+  const presentation = (
+    actionId: string,
+    assetId: string
+  ): CharacterActionPresentationV2 => ({
+    actionId,
     fps: 8,
-    loop: true,
-    weight: 1,
     frames: [0, 1, 2, 3].map(index => ({
-      assetId: 'atlas',
+      id: `frame-${index + 1}`,
+      assetId,
       x: index * 256,
       y: 0,
       width: 256,
@@ -121,37 +128,121 @@ export async function materializeCharacterWorkshopFixtures(
       carry: { x: 0.7, y: 0.45 }
     }
   });
-  const manifest: CharacterManifestV1 = {
-    version: 1,
+  const action = (
+    id: string,
+    name: string,
+    semantic: CharacterActionDefinitionV2['semantic']
+  ): CharacterActionDefinitionV2 => ({
+    id,
+    name,
+    semantic,
+    tags: [],
+    preference: 1,
+    cooldownMs: 0,
+    repeatSuppressionMs: 0,
+    loopPolicy: 'presentation',
+    interrupt: 'normal',
+    allowedPrimaryStateIds: [],
+    forbiddenPrimaryStateIds: [],
+    requiredModifierStateIds: [],
+    forbiddenModifierStateIds: [],
+    direction: 'any'
+  });
+  const state = (
+    id: string,
+    name: string,
+    semantic: CharacterStateDefinitionV2['semantic'],
+    actionId: string,
+    enterConditions: CharacterStateDefinitionV2['enterConditions'] = []
+  ): CharacterStateDefinitionV2 => ({
+    id,
+    name,
+    kind: typeof semantic === 'string' ? 'primary' : 'modifier',
+    semantic,
+    tags: [],
+    intensity: 50,
+    coexistWithStateIds: [],
+    forbiddenStateIds: [],
+    enterConditions,
+    exitConditions: [],
+    agentInferable: true,
+    actionIds: [actionId]
+  });
+  const identity = {
+    description: '用于验证安全导入的 E2E 角色。',
+    background: '由隔离测试夹具生成。',
+    traits: ['可靠'],
+    languageStyle: '简洁',
+    formsOfAddress: ['伙伴'],
+    likes: ['安全测试'],
+    dislikes: ['路径穿越'],
+    behavioralTendencies: ['保持待机'],
+    boundaries: ['不访问真实用户目录'],
+    exampleLines: ['测试已就绪。']
+  };
+  const states = [
+    state('idle', '待机', 'idle', 'idle-main'),
+    state('carrying', '搬运', 'carry', 'carrying-main'),
+    state('custom-wave', '挥手', { kind: 'custom', value: 'wave' }, 'wave-main', [{
+      mode: 'all' as const,
+      clauses: [{ kind: 'signal' as const, signal: 'user-interaction' }]
+    }])
+  ];
+  const actions = [
+    action('idle-main', '待机', 'idle'),
+    action('carrying-main', '搬运', 'carry'),
+    action('wave-main', '挥手', 'celebrate')
+  ];
+  const draft: CharacterDraftV2 = {
+    version: 2,
+    id: characterId,
+    name: 'E2E 安全角色',
+    thumbnailAssetId: source.assetId,
+    identity,
+    defaultSkinId: 'default',
+    defaultStateId: 'idle',
+    skins: [{
+      id: 'default',
+      name: '默认皮肤',
+      presentations: [
+        presentation('idle-main', source.assetId),
+        presentation('carrying-main', source.assetId),
+        presentation('wave-main', source.assetId)
+      ],
+      semanticFallbacks: []
+    }],
+    states,
+    actions
+  };
+  const manifest: CharacterManifestV2 = {
+    version: 2,
     id: characterId,
     name: 'E2E 安全角色',
     thumbnailAssetId: 'atlas',
+    identity,
+    defaultSkinId: 'default',
+    defaultStateId: 'idle',
+    skins: [{
+      id: 'default',
+      name: '默认皮肤',
+      presentations: [
+        presentation('idle-main', 'atlas'),
+        presentation('carrying-main', 'atlas'),
+        presentation('wave-main', 'atlas')
+      ],
+      semanticFallbacks: []
+    }],
+    states,
+    actions,
     compilerVersion: 'e2e-fixture-1',
     resources: [{
       assetId: 'atlas',
       fileName: 'atlas.png',
       sha256: sha256(bytes),
       byteLength: bytes.byteLength
-    }],
-    states: [{
-      id: 'idle',
-      kind: 'core',
-      actions: [action('idle-main', '待机')]
-    }, {
-      id: 'carrying',
-      kind: 'core',
-      actions: [action('carrying-main', '搬运')]
-    }, {
-      id: 'custom:wave',
-      kind: 'extension',
-      triggers: {
-        events: ['single_click'],
-        keywords: [],
-        emotions: []
-      },
-      actions: [action('wave-main', '挥手')]
     }]
   };
+  await store.saveDraft(characterId, draft);
   await store.publishCompiled(characterId, manifest, { 'atlas.png': bytes });
 
   const safeCharacterPackage = join(packagesDirectory, 'safe-character.zip');

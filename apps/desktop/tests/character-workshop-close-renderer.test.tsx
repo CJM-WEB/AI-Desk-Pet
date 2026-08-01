@@ -121,4 +121,74 @@ describe('角色工作室 Renderer 关闭刷新', () => {
     rendered.unmount();
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
+
+  test('已发布摘要不完整时不以当前草稿完整度绕过启用确认', async () => {
+    const completeDraft: CharacterDraftV2 = {
+      ...draft,
+      skins: [{
+        ...draft.skins[0]!,
+        presentations: [{
+          actionId: 'idle-main',
+          fps: 8,
+          frames: [{
+            id: 'frame-1',
+            assetId: 'idle-atlas',
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 256
+          }],
+          anchors: { ground: { x: 0.5, y: 1 } }
+        }]
+      }]
+    };
+    const staleCharacters: CharacterSummaryDto[] = [{
+      ...characters[0]!,
+      active: false,
+      completeness: 'incomplete',
+      missingRequirements: ['default-presentation-unplayable']
+    }];
+    const activateCharacter = vi.fn(async () => undefined);
+    const api = {
+      listCharacters: vi.fn(async () => staleCharacters),
+      createCharacter: vi.fn(),
+      duplicateCharacter: vi.fn(),
+      getCharacterDraft: vi.fn(async () => completeDraft),
+      listCharacterSources: vi.fn(async () => []),
+      saveCharacterDraft: vi.fn(),
+      chooseCharacterSources: vi.fn(),
+      readCharacterSource: vi.fn(),
+      publishCharacter: vi.fn(),
+      activateCharacter,
+      deleteCharacter: vi.fn(),
+      importCharacterPackage: vi.fn(),
+      exportCharacterPackage: vi.fn(),
+      subscribeCharacterEvents: vi.fn(() => vi.fn()),
+      onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn())
+    } satisfies Pick<
+      MyselfApi,
+      | 'listCharacters'
+      | 'createCharacter'
+      | 'duplicateCharacter'
+      | 'getCharacterDraft'
+      | 'listCharacterSources'
+      | 'saveCharacterDraft'
+      | 'chooseCharacterSources'
+      | 'readCharacterSource'
+      | 'publishCharacter'
+      | 'activateCharacter'
+      | 'deleteCharacter'
+      | 'importCharacterPackage'
+      | 'exportCharacterPackage'
+      | 'subscribeCharacterEvents'
+      | 'onCharacterWorkshopFlushRequested'
+    >;
+
+    render(<CharacterWorkshopView api={api} />);
+    fireEvent.click(await screen.findByRole('button', { name: '启用角色' }));
+
+    const dialog = await screen.findByRole('dialog', { name: '发布要求尚未满足' });
+    expect(dialog.textContent).toContain('默认表现不可播放');
+    expect(activateCharacter).not.toHaveBeenCalled();
+  });
 });

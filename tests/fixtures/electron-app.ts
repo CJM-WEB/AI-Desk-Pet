@@ -190,6 +190,7 @@ export interface ElectronAppFixture {
   readonly executablePath: string;
   readonly userDataDirectory: string;
   readonly authorizedRootDirectory: string;
+  readonly characterAssetsDirectory?: string;
   readonly safeCharacterPackage?: string;
   readonly maliciousCharacterPackage?: string;
   readonly characterExportDestination?: string;
@@ -929,6 +930,7 @@ export async function createElectronAppFixture(
       },
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
+      characterAssetsDirectory: directories.characterAssetsDirectory,
       safeCharacterPackage: characterFixtures.safeCharacterPackage,
       maliciousCharacterPackage: characterFixtures.maliciousCharacterPackage,
       characterExportDestination: characterFixtures.characterExportDestination,
