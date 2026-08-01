@@ -1,10 +1,19 @@
 import { describe, expect, test } from 'vitest';
 import {
+  type ActionFrame,
+  type AnchorSet,
+  type CharacterActionPresentationV2,
   type CharacterDraftV2,
   type CharacterManifestV2,
+  type CharacterResource,
+  type InteractionRegion,
+  actionFrameSchema,
+  anchorSetSchema,
   characterDraftV2Schema,
   characterManifestV2Schema,
-  characterV2Completeness
+  characterResourceSchema,
+  characterV2Completeness,
+  interactionRegionSchema
 } from '../src';
 
 const RESOURCE_SHA_256 = {
@@ -170,6 +179,28 @@ function withoutPlayableDefault<T extends CharacterDraftV2>(draft: T): T {
 }
 
 describe('角色包 V2 严格契约', () => {
+  test('V2 表现和资源契约消费 V1 共享 Schema', () => {
+    const frame: ActionFrame = actionFrameSchema.parse({
+      assetId: 'atlas-1', x: 0, y: 0, width: 256, height: 256
+    });
+    const anchors: AnchorSet = anchorSetSchema.parse({ ground: { x: 0.5, y: 1 } });
+    const region: InteractionRegion = interactionRegionSchema.parse({
+      x: 0, y: 0, width: 1, height: 1
+    });
+    const resource: CharacterResource = characterResourceSchema.parse({
+      assetId: 'atlas-1',
+      fileName: 'atlas.png',
+      sha256: RESOURCE_SHA_256.atlas,
+      byteLength: 4096
+    });
+    const presentation: CharacterActionPresentationV2 = {
+      actionId: 'idle-main', fps: 12, frames: [frame], anchors, regions: { click: region }
+    };
+
+    expect(presentation.frames[0]).toEqual(frame);
+    expect(resource.assetId).toBe('atlas-1');
+  });
+
   test('草稿接受合法的 V2 纯数据结构', () => {
     const draft = createCharacterDraftV2Fixture();
 

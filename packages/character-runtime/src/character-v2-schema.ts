@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  actionFrameSchema,
+  anchorSetSchema,
+  characterResourceSchema,
+  interactionRegionSchema
+} from './character-schema';
 
 export const STANDARD_CHARACTER_SEMANTICS = [
   'idle', 'listen', 'think', 'move', 'speak', 'carry', 'celebrate', 'fail'
@@ -11,64 +17,12 @@ export const TRUSTED_BEHAVIOR_SIGNALS = [
 ] as const;
 
 const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,119}$/;
-const SAFE_FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,119}\.(?:png|webp|json)$/;
-const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
-const MAX_RESOURCE_BYTE_LENGTH = 512 * 1024 * 1024;
-
 const safeIdentifierSchema = z.string().regex(SAFE_IDENTIFIER_PATTERN);
 const finiteNumberSchema = z.number().finite();
 const boundedText = (maximum: number) => z.string().trim().min(1).max(maximum);
 const boundedTextList = (maximumItems: number, maximumTextLength: number) => z.array(
   boundedText(maximumTextLength)
 ).max(maximumItems);
-
-/** 与既有角色包兼容的帧、锚点和交互区域纯数据定义。 */
-const anchorPointSchema = z.object({
-  x: finiteNumberSchema.min(0).max(1),
-  y: finiteNumberSchema.min(0).max(1)
-}).strict();
-
-const anchorSetSchema = z.object({
-  ground: anchorPointSchema,
-  focus: anchorPointSchema.optional(),
-  carry: anchorPointSchema.optional(),
-  mouth: anchorPointSchema.optional(),
-  seat: anchorPointSchema.optional()
-}).strict();
-
-const interactionRegionSchema = z.object({
-  x: finiteNumberSchema.min(0).max(1),
-  y: finiteNumberSchema.min(0).max(1),
-  width: finiteNumberSchema.min(0).max(1),
-  height: finiteNumberSchema.min(0).max(1)
-}).strict().superRefine((region, context) => {
-  if (region.x + region.width > 1) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: '交互区域不能超出逻辑画布的水平方向。',
-      path: ['width']
-    });
-  }
-
-  if (region.y + region.height > 1) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: '交互区域不能超出逻辑画布的垂直方向。',
-      path: ['height']
-    });
-  }
-});
-
-const actionFrameSchema = z.object({
-  id: safeIdentifierSchema.optional(),
-  assetId: safeIdentifierSchema,
-  x: finiteNumberSchema.int().nonnegative(),
-  y: finiteNumberSchema.int().nonnegative(),
-  width: finiteNumberSchema.int().positive(),
-  height: finiteNumberSchema.int().positive(),
-  durationMs: finiteNumberSchema.int().positive().optional(),
-  anchors: anchorSetSchema.partial().strict().optional()
-}).strict();
 
 const stateConditionClauseSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -173,13 +127,6 @@ const skinSchema = z.object({
   semanticFallbacks: z.array(semanticFallbackSchema).max(STANDARD_CHARACTER_SEMANTICS.length)
 }).strict();
 
-const resourceSchema = z.object({
-  assetId: safeIdentifierSchema,
-  fileName: z.string().regex(SAFE_FILE_NAME_PATTERN),
-  sha256: z.string().regex(SHA_256_PATTERN),
-  byteLength: finiteNumberSchema.int().safe().positive().max(MAX_RESOURCE_BYTE_LENGTH)
-}).strict();
-
 const draftDocumentSchema = z.object({
   version: z.literal(2),
   id: safeIdentifierSchema,
@@ -196,7 +143,7 @@ const draftDocumentSchema = z.object({
 const manifestDocumentSchema = draftDocumentSchema.extend({
   thumbnailAssetId: safeIdentifierSchema,
   compilerVersion: boundedText(64),
-  resources: z.array(resourceSchema).max(4_096)
+  resources: z.array(characterResourceSchema).max(4_096)
 }).strict();
 
 type V2Document = z.output<typeof draftDocumentSchema> | z.output<typeof manifestDocumentSchema>;
