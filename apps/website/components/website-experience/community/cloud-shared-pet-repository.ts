@@ -31,7 +31,12 @@ interface PreparedSubmission extends SubmissionReceipt {
   packageUpload: { url: string; expiresAt: string };
 }
 
-type UploadFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+export type SignedUpload = (
+  url: string,
+  file: File,
+  contentType: string,
+  onProgress: (loaded: number) => void
+) => Promise<void>;
 
 /** 公开共享仓库仅调用 HTTP API 与签名存储地址，绝不创建 CloudBase 用户身份。 */
 export class CloudSharedPetRepository implements SharedPetRepository {
@@ -40,7 +45,7 @@ export class CloudSharedPetRepository implements SharedPetRepository {
 
   constructor(
     private readonly api: ApiClient,
-    private readonly upload: UploadFetcher = fetch
+    private readonly upload: SignedUpload = uploadWithXhr
   ) {}
 
   async listPage(
@@ -54,22 +59,24 @@ export class CloudSharedPetRepository implements SharedPetRepository {
     );
     const items = result.items.map(item => this.remember(item));
     const hasNext = result.nextCursor !== null;
-    const total = cursor + items.length + (hasNext ? 1 : 0);
+    const total = cursor + items.length;
     return {
       items,
       page: selectedPage,
       pageSize,
       total,
-      totalPages: Math.ceil(total / pageSize),
+      totalPages: hasNext ? selectedPage : Math.ceil(total / pageSize),
       hasPrevious: selectedPage > 1,
-      hasNext
+      hasNext,
+      totalKnown: !hasNext
     };
   }
 
   /** 先取得服务端上传凭据，再按固定次序上传封面、ZIP 并确认完成。 */
   async submit(
     input: CreateSharedPetInput,
-    captcha: CaptchaProof
+    captcha: CaptchaProof,
+    onProgress?: (percent: number) => void
   ): Promise<SubmissionReceipt> {
     const prepared = await this.api.request<PreparedSubmission>('/submissions/prepare', {
       method: 'POST',
@@ -78,12 +85,46 @@ export class CloudSharedPetRepository implements SharedPetRepository {
         title: input.name,
         body: input.description,
         captcha,
-        coverFile: fileDescriptor(input.coverFile),
-        packageFile: fileDescriptor(input.packageFile)
+        coverFile: fileDescriptor(input.coverFile, input.coverFile.type),
+        packageFile: fileDescriptor(input.packageFile, 'application/zip')
       })
     });
-    await uploadFile(this.upload, prepared.coverUpload.url, input.coverFile);
-    await uploadFile(this.upload, prepared.packageUpload.url, input.packageFile);
+    const totalBytes = input.coverFile.size + input.packageFile.size;
+    let coverLoaded = 0;
+    let packageLoaded = 0;
+    let lastReportedPercent = -1;
+    const reportProgress = () => {
+      const percent = totalBytes > 0
+        ? Math.floor(((coverLoaded + packageLoaded) / totalBytes) * 100)
+        : 0;
+      if (percent > lastReportedPercent) {
+        lastReportedPercent = percent;
+        onProgress?.(percent);
+      }
+    };
+    reportProgress();
+    await this.upload(
+      prepared.coverUpload.url,
+      input.coverFile,
+      input.coverFile.type,
+      loaded => {
+        coverLoaded = Math.min(input.coverFile.size, loaded);
+        reportProgress();
+      }
+    );
+    coverLoaded = input.coverFile.size;
+    reportProgress();
+    await this.upload(
+      prepared.packageUpload.url,
+      input.packageFile,
+      'application/zip',
+      loaded => {
+        packageLoaded = Math.min(input.packageFile.size, loaded);
+        reportProgress();
+      }
+    );
+    packageLoaded = input.packageFile.size;
+    reportProgress();
     const finalized = await this.api.request<{ status: 'system_reviewing' }>(
       `/submissions/${encodeURIComponent(prepared.submissionId)}/finalize`,
       { method: 'POST', body: '{}' }
@@ -142,9 +183,6 @@ export class CloudSharedPetRepository implements SharedPetRepository {
       description: item.description,
       packageFileName: item.packageFileName,
       packageSizeBytes: item.packageSizeBytes,
-      coverFileName: item.cover.url.split('/').at(-1) || 'cover',
-      coverMimeType: '',
-      coverSizeBytes: 0,
       coverUrl: item.cover.url,
       likeCount: item.likeCount,
       downloadCount: item.downloadCount,
@@ -161,21 +199,35 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   }
 }
 
-function fileDescriptor(file: File): {
+function fileDescriptor(file: File, contentType: string): {
   fileName: string;
   sizeBytes: number;
   contentType: string;
 } {
-  return { fileName: file.name, sizeBytes: file.size, contentType: file.type };
+  return { fileName: file.name, sizeBytes: file.size, contentType };
 }
 
-async function uploadFile(upload: UploadFetcher, url: string, file: File): Promise<void> {
-  const response = await upload(url, {
-    method: 'PUT',
-    headers: { 'content-type': file.type },
-    body: file
+/** 使用 XMLHttpRequest 直接上传签名地址，浏览器据真实已发送字节报告进度。 */
+export function uploadWithXhr(
+  url: string,
+  file: File,
+  contentType: string,
+  onProgress: (loaded: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('PUT', url);
+    request.setRequestHeader('content-type', contentType);
+    request.upload.addEventListener('progress', event => {
+      if (event.lengthComputable) onProgress(event.loaded);
+    });
+    request.addEventListener('load', () => {
+      if (request.status >= 200 && request.status < 300) resolve();
+      else reject(new Error('UPLOAD_FAILED'));
+    });
+    request.addEventListener('error', () => reject(new Error('UPLOAD_FAILED')));
+    request.send(file);
   });
-  if (!response.ok) throw new Error('UPLOAD_FAILED');
 }
 
 function isNotFound(error: unknown): boolean {

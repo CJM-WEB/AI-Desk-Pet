@@ -180,6 +180,18 @@ describe('共享仓库领域模型', () => {
       packageFile: zip,
       coverFile: oversizedCover
     })).toMatchObject({ valid: false, code: 'COVER_TOO_LARGE' });
+    expect(validateSharedPetDraft({
+      name: 'valid',
+      description: 'valid',
+      packageFile: fileWithSize('pet.zip', 'application/zip', 0),
+      coverFile: cover
+    })).toMatchObject({ valid: false, code: 'PACKAGE_TOO_LARGE' });
+    expect(validateSharedPetDraft({
+      name: 'valid',
+      description: 'valid',
+      packageFile: zip,
+      coverFile: fileWithSize('cover.webp', 'image/webp', 0)
+    })).toMatchObject({ valid: false, code: 'COVER_TOO_LARGE' });
   });
 
   it('拒绝非有限或负数的文件大小', () => {

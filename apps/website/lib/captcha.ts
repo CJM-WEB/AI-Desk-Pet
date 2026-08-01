@@ -57,7 +57,10 @@ function loadTencentCaptcha(): Promise<void> {
     script.src = 'https://turing.captcha.qcloud.com/TCaptcha.js';
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error('CAPTCHA_LOAD_FAILED'));
+    script.onerror = () => {
+      loading = undefined;
+      reject(new Error('CAPTCHA_LOAD_FAILED'));
+    };
     document.head.append(script);
   });
   return loading;

@@ -28,9 +28,10 @@ export interface SharedPetPackageSummary {
   description: string;
   packageFileName: string;
   packageSizeBytes: number;
-  coverFileName: string;
-  coverMimeType: string;
-  coverSizeBytes: number;
+  /** 云端公开 DTO 不包含封面文件元数据，本地适配器才提供。 */
+  coverFileName?: string;
+  coverMimeType?: string;
+  coverSizeBytes?: number;
   /** 本地测试适配器提供 Blob，云端记录只提供短期封面地址。 */
   coverFile?: Blob;
   coverUrl?: string;
@@ -64,6 +65,8 @@ export interface SharedPetPage {
   totalPages: number;
   hasPrevious: boolean;
   hasNext: boolean;
+  /** 公开游标 API 未返回总数时，不把下界伪装为精确页数。 */
+  totalKnown?: boolean;
 }
 
 export interface SharedPetDownload {
@@ -82,7 +85,8 @@ export interface SharedPetRepository {
   ): Promise<SharedPetPage>;
   submit(
     input: CreateSharedPetInput,
-    captcha: CaptchaProof
+    captcha: CaptchaProof,
+    onProgress?: (percent: number) => void
   ): Promise<SubmissionReceipt>;
   /** 历史 IndexedDB 测试适配器保留的同步创建入口。 */
   create?(input: CreateSharedPetInput): Promise<SharedPetPackageSummary>;

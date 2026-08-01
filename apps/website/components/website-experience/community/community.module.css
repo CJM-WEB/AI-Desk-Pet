@@ -331,6 +331,16 @@
   gap: 16px;
 }
 
+/** 上传时仅展示聚合后的公开字节百分比，不暴露签名地址或投稿令牌。 */
+.uploadProgress {
+  display: grid;
+  gap: 6px;
+}
+
+.uploadProgress progress {
+  width: 100%;
+}
+
 .field {
   display: grid;
   gap: 8px;

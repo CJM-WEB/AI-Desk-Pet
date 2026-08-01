@@ -17,6 +17,7 @@ export interface SharedPetDraft {
 export interface SharedPetComposerDialogProps {
   onSubmit: (draft: SharedPetDraft) => void | Promise<void>;
   onRequestClose: () => void;
+  progress?: number | null;
 }
 
 const EMPTY_DRAFT: SharedPetDraft = {
@@ -57,11 +58,15 @@ function errorField(code: ComposerErrorCode | null): DraftField | null {
 /** 提供本地校验、文件保留和提交锁定的分享包投稿表单。 */
 export function SharedPetComposerDialog({
   onSubmit,
-  onRequestClose
+  onRequestClose,
+  progress = null
 }: SharedPetComposerDialogProps) {
   const { t: rawTranslate } = useI18n();
-  const t = useCallback((key: Parameters<typeof rawTranslate>[0]) => (
-    interpolateMessage(rawTranslate(key))
+  const t = useCallback((
+    key: Parameters<typeof rawTranslate>[0],
+    values?: Record<string, string | number>
+  ) => (
+    interpolateMessage(rawTranslate(key, values))
   ), [rawTranslate]);
   const errorId = useId();
   const [draft, setDraft] = useState<SharedPetDraft>(EMPTY_DRAFT);
@@ -189,6 +194,15 @@ export function SharedPetComposerDialog({
         </div>
         {invalidField === null && error ? (
           <p id={errorId} className={styles.error} role="alert">{error}</p>
+        ) : null}
+        {submitting && progress !== null ? (
+          <div className={styles.uploadProgress}>
+            <label htmlFor="shared-pet-upload-progress">{t('sharedPet.composer.progress')}</label>
+            <progress id="shared-pet-upload-progress" max={100} value={progress}>
+              {progress}%
+            </progress>
+            <output>{t('sharedPet.composer.progressValue', { percent: progress })}</output>
+          </div>
         ) : null}
       </div>
     </SharedPetDialogShell>

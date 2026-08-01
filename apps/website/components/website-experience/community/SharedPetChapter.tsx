@@ -117,6 +117,7 @@ export function SharedPetChapter({
   const [loadNotice, setLoadNotice] = useState<string | null>(null);
   const [operationNotice, setOperationNotice] = useState<string | null>(null);
   const [submissionReceipt, setSubmissionReceipt] = useState<SubmissionReceipt | null>(null);
+  const [submissionProgress, setSubmissionProgress] = useState<number | null>(null);
   const [detailPending, setDetailPending] = useState<ReadonlySet<string>>(
     new Set()
   );
@@ -297,7 +298,7 @@ export function SharedPetChapter({
       || pageLockedRef.current
       || current.status !== 'idle'
     ) return;
-    if (targetPage < 1 || targetPage > current.visiblePage.totalPages) return;
+    if (targetPage < 1 || (!current.visiblePage.hasNext && targetPage > current.visiblePage.page)) return;
 
     const statusToken = beginStatusOperation();
     const token = ++paginationTokenRef.current;
@@ -525,17 +526,23 @@ export function SharedPetChapter({
       throw new Error('共享包文件不完整');
     }
     const proof = await captcha.verify();
+    setSubmissionProgress(0);
     const receipt = await repository.submit({
       ...draft,
       packageFile: draft.packageFile,
       coverFile: draft.coverFile
-    }, proof);
+    }, proof, setSubmissionProgress);
     if (!mountedRef.current) return;
     setComposerOpen(false);
+    setLoadNotice(null);
+    setOperationNotice(null);
     setSubmissionReceipt(receipt);
+    setSubmissionProgress(null);
   };
 
-  const pageLabel = visiblePage.totalPages === 0
+  const pageLabel = visiblePage.totalKnown === false
+    ? `${visiblePage.page}/?`
+    : visiblePage.totalPages === 0
     ? '0/0'
     : `${visiblePage.page}/${visiblePage.totalPages}`;
 
@@ -570,6 +577,8 @@ export function SharedPetChapter({
             disabled={!interactive || transitionLocked}
             onClick={() => {
               beginStatusOperation();
+              setSubmissionReceipt(null);
+              setSubmissionProgress(null);
               setComposerOpen(true);
             }}
           >
@@ -597,9 +606,7 @@ export function SharedPetChapter({
               <ChevronRight aria-hidden="true" />
             </button>
           </div>
-          {statusMessage ? (
-            <p className={styles.sharedPetStatus} role="alert">{statusMessage}</p>
-          ) : submissionReceipt ? (
+          {submissionReceipt ? (
             <div className={styles.sharedPetStatus} role="status">
               <p>{t('sharedPet.submission.received')}</p>
               <a href={`${submissionReceipt.statusPath}#${submissionReceipt.statusToken}`}>
@@ -607,6 +614,8 @@ export function SharedPetChapter({
               </a>
               <p>{t('sharedPet.submission.saveLink')}</p>
             </div>
+          ) : statusMessage ? (
+            <p className={styles.sharedPetStatus} role="alert">{statusMessage}</p>
           ) : visiblePage.total === 0 ? (
             <p className={styles.sharedPetStatus}>{t('sharedPet.chapter.empty')}</p>
           ) : null}
@@ -643,6 +652,7 @@ export function SharedPetChapter({
       {composerOpen ? (
         <SharedPetComposerDialog
           onSubmit={submitSharedPet}
+          progress={submissionProgress}
           onRequestClose={() => setComposerOpen(false)}
         />
       ) : null}

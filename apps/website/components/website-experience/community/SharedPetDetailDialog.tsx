@@ -69,7 +69,11 @@ export function SharedPetDetailDialog({
     >
       <div className={styles.detailContent}>
         {coverUrl ? (
-          <img className={styles.detailCover} src={coverUrl} alt={item.coverFileName} />
+          <img
+            className={styles.detailCover}
+            src={coverUrl}
+            alt={item.coverFileName ?? t('sharedPet.detail.cover')}
+          />
         ) : null}
         <p className={styles.detailDescription}>{item.description}</p>
         <dl className={styles.detailMetadata}>
