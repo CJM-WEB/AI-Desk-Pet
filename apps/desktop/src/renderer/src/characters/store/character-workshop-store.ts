@@ -161,6 +161,7 @@ export interface CharacterWorkshopState {
 }
 
 type WorkshopStore = StoreApi<CharacterWorkshopState>;
+const COMPILE_CANCELLED = Symbol('CHARACTER_COMPILE_CANCELLED');
 
 function errorText(error: unknown): string {
   const code = error instanceof Error ? error.message : 'CHARACTER_OPERATION_FAILED';
@@ -289,6 +290,7 @@ export function createCharacterWorkshopStore(
 ): WorkshopStore {
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let saveInFlight: Promise<void> | null = null;
+  let compileInFlight: Promise<void> | null = null;
   let saveRequested = false;
   let draftRevision = 0;
   let savedRevision = 0;
@@ -388,7 +390,9 @@ export function createCharacterWorkshopStore(
         await operation();
         return true;
       } catch (error) {
-        enqueueToast({ tone: 'error', text: errorText(error) });
+        if (error !== COMPILE_CANCELLED) {
+          enqueueToast({ tone: 'error', text: errorText(error) });
+        }
         return false;
       } finally {
         if (get().busyAction === action) set({ busyAction: null });
@@ -461,7 +465,8 @@ export function createCharacterWorkshopStore(
         selectedSkinId: selectedSkin?.id ?? null,
         selectedStateId: selectedState?.id ?? null,
         selectedActionId: resolvedActionId,
-        draftStatus: 'dirty'
+        draftStatus: 'dirty',
+        compileStatus: 'idle'
       });
       scheduleSave();
     }
@@ -612,8 +617,10 @@ export function createCharacterWorkshopStore(
 
       async selectCharacter(characterId) {
         if (characterId === get().selectedCharacterId && get().draft) return;
-        if (hasPendingDraft() && !await flushBeforeSelectionChange()) return;
+        // 选择意图立即失效化旧异步任务，实际工作区仍等待当前草稿安全落盘。
         const requestRevision = ++selectionRevision;
+        if (hasPendingDraft() && !await flushBeforeSelectionChange()) return;
+        if (requestRevision !== selectionRevision) return;
         set({ busyAction: 'loading' });
         try {
           await loadSelectedDraft(characterId, requestRevision);
@@ -1179,12 +1186,34 @@ export function createCharacterWorkshopStore(
         enqueueToast({ tone: 'success', text: '精灵图网格已应用到当前动作。' });
       },
 
-      async compileAndPublish() {
+      compileAndPublish() {
+        if (compileInFlight) return compileInFlight;
         const current = get();
-        if (!current.draft || !current.selectedCharacterId) return;
+        if (!current.draft || !current.selectedCharacterId) return Promise.resolve();
+        const characterId = current.selectedCharacterId;
+        const compileSelectionRevision = selectionRevision;
+        let cancelled = false;
+
+        const isSelectionCurrent = (): boolean => (
+          selectionRevision === compileSelectionRevision
+          && get().selectedCharacterId === characterId
+          && get().draft?.id === characterId
+        );
+        const cancelUnless = (condition: boolean): void => {
+          if (condition) return;
+          cancelled = true;
+          throw COMPILE_CANCELLED;
+        };
+
         set({ compileStatus: 'compiling' });
-        const published = await reportFailure('compiling', async () => {
-          await get().flushDraft();
+        const publishedOperation = reportFailure('compiling', async () => {
+          try {
+            await get().flushDraft();
+          } catch (error) {
+            cancelUnless(isSelectionCurrent());
+            throw error;
+          }
+          cancelUnless(isSelectionCurrent());
           if (
             draftRevision !== savedRevision
             || !['idle', 'saved'].includes(get().draftStatus)
@@ -1192,6 +1221,20 @@ export function createCharacterWorkshopStore(
             throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
           }
           const latest = cloneDraft(get().draft!);
+          const compileDraftRevision = draftRevision;
+          const isCompileCurrent = (): boolean => (
+            isSelectionCurrent() && draftRevision === compileDraftRevision
+          );
+          const awaitCurrent = async <T>(pending: Promise<T>): Promise<T> => {
+            try {
+              const result = await pending;
+              cancelUnless(isCompileCurrent());
+              return result;
+            } catch (error) {
+              cancelUnless(isCompileCurrent());
+              throw error;
+            }
+          };
           const defaultState = latest.states.find(state => state.id === latest.defaultStateId);
           const hasPlayableDefault = defaultState?.actionIds.some(actionId => (
             resolveCharacterPresentation(latest, latest.defaultSkinId, actionId) !== null
@@ -1222,7 +1265,7 @@ export function createCharacterWorkshopStore(
               const atlasAssetId = `atlas-${skinIndex + 1}-${presentationIndex + 1}`;
               const sourceFrames: AtlasSourceFrame[] = [];
               for (const [frameIndex, frame] of presentation.frames.entries()) {
-                const bytes = await readSource(frame.assetId);
+                const bytes = await awaitCurrent(readSource(frame.assetId));
                 sourceFrames.push({
                   frameId: frame.id ?? `frame-${frameIndex + 1}`,
                   sourceAssetId: frame.assetId,
@@ -1252,7 +1295,7 @@ export function createCharacterWorkshopStore(
                 });
                 compilationByFrames.set(compilationKey, compilation);
               }
-              const compiled = await compilation;
+              const compiled = await awaitCurrent(compilation);
               const existingResource = resourceByHash.get(compiled.sha256);
               const resourceAssetId = existingResource?.assetId ?? compiled.assetId;
               if (!existingResource) {
@@ -1286,6 +1329,7 @@ export function createCharacterWorkshopStore(
               presentations
             });
           }
+          cancelUnless(isCompileCurrent());
           const manifest = characterManifestV2Schema.parse({
             ...latest,
             thumbnailAssetId: manifestResources[0]!.assetId,
@@ -1293,16 +1337,31 @@ export function createCharacterWorkshopStore(
             resources: manifestResources,
             skins: compiledSkins
           });
-          await api.publishCharacter({
+          cancelUnless(isCompileCurrent());
+          await awaitCurrent(api.publishCharacter({
             characterId: latest.id,
             manifest,
             resources
-          });
+          }));
           set({ compileStatus: 'success' });
           enqueueToast({ tone: 'success', text: '运行版本已编译并发布。' });
-          await refreshCharacters();
+          // 发布已经提交后，索引刷新失败不应把成功发布反转为失败。
+          try {
+            await refreshCharacters();
+          } catch {
+            // 后续索引事件仍会刷新视图；此处保留发布成功状态和单一成功提示。
+          }
         });
-        if (!published) set({ compileStatus: 'error' });
+        const operation = publishedOperation.then(published => {
+          if (!published && !cancelled && isSelectionCurrent()) {
+            set({ compileStatus: 'error' });
+          }
+        });
+        const tracked = operation.finally(() => {
+          if (compileInFlight === tracked) compileInFlight = null;
+        });
+        compileInFlight = tracked;
+        return tracked;
       },
 
       async publishCharacter(input) {

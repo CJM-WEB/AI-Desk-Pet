@@ -161,6 +161,23 @@ function sourceDto(
   };
 }
 
+function playableDraft(id: string, name: string): CharacterDraftV2 {
+  const result = draft(id, name);
+  result.skins[0]!.presentations = [{
+    actionId: 'idle-main',
+    fps: 8,
+    anchors: { ground: { x: 0.5, y: 1 } },
+    frames: [{
+      assetId: '123e4567-e89b-42d3-a456-426614174000',
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1
+    }]
+  }];
+  return result;
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -1228,6 +1245,193 @@ describe('角色工作室 Zustand 状态层', () => {
     await store.getState().compileAndPublish();
 
     expect(readCharacterSource).toHaveBeenCalledTimes(1);
+  });
+
+  test('编译等待草稿保存时切换角色会静默取消旧任务', async () => {
+    const saving = deferred<void>();
+    const compileAction = vi.fn<NonNullable<CharacterWorkshopDependencies['compileAction']>>(async input => ({
+      assetId: input.atlasAssetId,
+      fileName: `${input.atlasAssetId}.png`,
+      sha256: '3'.repeat(64),
+      bytes: new Uint8Array([9]),
+      frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
+    }));
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async id => playableDraft(id, id)),
+      saveCharacterDraft: vi.fn(() => saving.promise),
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      publishCharacter
+    });
+    const store = createCharacterWorkshopStore(api, { compileAction });
+    await store.getState().load();
+    store.getState().updateIdentity({ description: '等待保存的修改' });
+
+    const compiling = store.getState().compileAndPublish();
+    await settle();
+    const selecting = store.getState().selectCharacter('nova');
+    saving.resolve();
+    await Promise.all([compiling, selecting]);
+
+    expect(store.getState().selectedCharacterId).toBe('nova');
+    expect(compileAction).not.toHaveBeenCalled();
+    expect(publishCharacter).not.toHaveBeenCalled();
+    expect(store.getState().toastQueue).toEqual([]);
+  });
+
+  test('素材读取等待期间切换角色不会继续编译或回写新角色状态', async () => {
+    const source = deferred<Uint8Array>();
+    const compileAction = vi.fn<NonNullable<CharacterWorkshopDependencies['compileAction']>>();
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async id => playableDraft(id, id)),
+      readCharacterSource: vi.fn(() => source.promise),
+      publishCharacter
+    });
+    const store = createCharacterWorkshopStore(api, { compileAction });
+    await store.getState().load();
+
+    const compiling = store.getState().compileAndPublish();
+    await settle();
+    await store.getState().selectCharacter('nova');
+    source.resolve(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+    await compiling;
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'nova',
+      compileStatus: 'idle'
+    });
+    expect(compileAction).not.toHaveBeenCalled();
+    expect(publishCharacter).not.toHaveBeenCalled();
+    expect(store.getState().toastQueue).toEqual([]);
+  });
+
+  test('图集编译等待期间修改草稿会静默取消过期发布', async () => {
+    const compilation = deferred<{
+      assetId: string;
+      fileName: string;
+      sha256: string;
+      bytes: Uint8Array;
+      frames: CharacterDraftV2['skins'][number]['presentations'][number]['frames'];
+    }>();
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => playableDraft('default', '默认角色')),
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      publishCharacter
+    });
+    const compileAction = vi.fn(() => compilation.promise);
+    const store = createCharacterWorkshopStore(api, { compileAction });
+    await store.getState().load();
+
+    const compiling = store.getState().compileAndPublish();
+    await vi.waitFor(() => expect(compileAction).toHaveBeenCalledOnce());
+    store.getState().updateIdentity({ description: '编译期间的新修改' });
+    compilation.resolve({
+      assetId: 'atlas-1-1',
+      fileName: 'atlas-1-1.png',
+      sha256: 'e'.repeat(64),
+      bytes: new Uint8Array([9]),
+      frames: [{ assetId: 'atlas-1-1', x: 0, y: 0, width: 1, height: 1 }]
+    });
+    await compiling;
+
+    expect(publishCharacter).not.toHaveBeenCalled();
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: 'default',
+      compileStatus: 'idle',
+      draftStatus: 'dirty'
+    });
+    expect(store.getState().toastQueue).toEqual([]);
+  });
+
+  test('并发编译请求共享同一任务且只发布一次', async () => {
+    const compilation = deferred<{
+      assetId: string;
+      fileName: string;
+      sha256: string;
+      bytes: Uint8Array;
+      frames: CharacterDraftV2['skins'][number]['presentations'][number]['frames'];
+    }>();
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => playableDraft('default', '默认角色')),
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      publishCharacter
+    });
+    const compileAction = vi.fn(() => compilation.promise);
+    const store = createCharacterWorkshopStore(api, { compileAction });
+    await store.getState().load();
+
+    const first = store.getState().compileAndPublish();
+    const second = store.getState().compileAndPublish();
+    await settle();
+    compilation.resolve({
+      assetId: 'atlas-1-1',
+      fileName: 'atlas-1-1.png',
+      sha256: 'f'.repeat(64),
+      bytes: new Uint8Array([9]),
+      frames: [{ assetId: 'atlas-1-1', x: 0, y: 0, width: 1, height: 1 }]
+    });
+    await Promise.all([first, second]);
+
+    expect(compileAction).toHaveBeenCalledOnce();
+    expect(publishCharacter).toHaveBeenCalledOnce();
+  });
+
+  test('发布已成功但角色列表刷新失败时保留成功状态且不追加错误提示', async () => {
+    const listCharacters = vi.fn()
+      .mockResolvedValueOnce([summary('default', 'AI Pet 默认角色', true)])
+      .mockRejectedValueOnce(new Error('CHARACTER_INDEX_UNAVAILABLE'));
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
+    const { api } = apiDouble({
+      listCharacters,
+      getCharacterDraft: vi.fn(async () => playableDraft('default', '默认角色')),
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      publishCharacter
+    });
+    const store = createCharacterWorkshopStore(api, {
+      compileAction: async input => ({
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: '1'.repeat(64),
+        bytes: new Uint8Array([9]),
+        frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
+      })
+    });
+    await store.getState().load();
+
+    await store.getState().compileAndPublish();
+
+    expect(publishCharacter).toHaveBeenCalledOnce();
+    expect(store.getState().compileStatus).toBe('success');
+    expect(store.getState().toastQueue).toEqual([
+      expect.objectContaining({ tone: 'success', text: '运行版本已编译并发布。' })
+    ]);
+  });
+
+  test('两个皮肤使用相同源帧描述时只编译一次', async () => {
+    const loadedDraft = playableDraft('default', '默认角色');
+    loadedDraft.skins[1]!.presentations = structuredClone(
+      loadedDraft.skins[0]!.presentations
+    );
+    const compileAction = vi.fn<NonNullable<CharacterWorkshopDependencies['compileAction']>>(async input => ({
+      assetId: input.atlasAssetId,
+      fileName: `${input.atlasAssetId}.png`,
+      sha256: '2'.repeat(64),
+      bytes: new Uint8Array([9]),
+      frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
+    }));
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft),
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]))
+    });
+    const store = createCharacterWorkshopStore(api, { compileAction });
+    await store.getState().load();
+
+    await store.getState().compileAndPublish();
+
+    expect(compileAction).toHaveBeenCalledOnce();
   });
 
   test('可创建自定义语义的修饰状态', async () => {
