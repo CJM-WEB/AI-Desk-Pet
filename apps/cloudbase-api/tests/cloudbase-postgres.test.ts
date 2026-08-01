@@ -89,9 +89,9 @@ describe('CloudBase PostgreSQL 迁移', () => {
   it('特权数据库函数显式校验 service_role 并收回公开执行权', () => {
     const sql = readFileSync(migrationPath, 'utf8');
 
-    expect(sql.match(/SECURITY DEFINER/g)).toHaveLength(8);
-    expect(sql.match(/request\.jwt\.claims/g)).toHaveLength(8);
-    expect(sql.match(/<> 'service_role'/g)).toHaveLength(8);
+    expect(sql.match(/SECURITY DEFINER/g)).toHaveLength(13);
+    expect(sql.match(/request\.jwt\.claims/g)).toHaveLength(13);
+    expect(sql.match(/<> 'service_role'/g)).toHaveLength(13);
     expect(sql).toContain(
       'REVOKE ALL ON FUNCTION create_submission(jsonb, jsonb) FROM PUBLIC, anon, authenticated'
     );
@@ -99,7 +99,16 @@ describe('CloudBase PostgreSQL 迁移', () => {
       'REVOKE ALL ON FUNCTION claim_moderation_jobs(integer, timestamptz) FROM PUBLIC, anon, authenticated'
     );
     expect(sql).toContain(
+      'REVOKE ALL ON FUNCTION complete_submission_upload(text, jsonb) FROM PUBLIC, anon, authenticated'
+    );
+    expect(sql).toContain(
       'REVOKE ALL ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) FROM PUBLIC, anon, authenticated'
+    );
+    expect(sql).toContain(
+      'REVOKE ALL ON FUNCTION claim_cleanup_jobs(integer, timestamptz) FROM PUBLIC, anon, authenticated'
+    );
+    expect(sql).toContain(
+      'REVOKE ALL ON FUNCTION mark_submission_purged(text, bigint) FROM PUBLIC, anon, authenticated'
     );
     for (const name of [
       'consume_captcha_ticket',
@@ -110,6 +119,27 @@ describe('CloudBase PostgreSQL 迁移', () => {
     ]) {
       expect(sql).toContain(`REVOKE ALL ON FUNCTION ${name}`);
     }
+  });
+
+  it('系统审核使用数据库持久化重试和原子决策函数', () => {
+    const sql = readFileSync(migrationPath, 'utf8');
+
+    expect(sql).toContain('moderation_attempts integer NOT NULL DEFAULT 0');
+    expect(sql).toContain('moderation_next_retry_at timestamptz');
+    expect(sql).toContain('moderation_last_error varchar(200)');
+    expect(sql).toContain('moderation_alerted_at timestamptz');
+    expect(sql).toContain('CREATE FUNCTION apply_moderation_decision(');
+    expect(sql).toContain('CREATE FUNCTION record_moderation_failure(');
+    expect(sql).toContain('status_version = p_expected_version');
+    expect(sql).toContain('moderation_attempts >= 4');
+    expect(sql).toContain('moderation_attempts < 5');
+    expect(sql).toContain('p_limit < 1 OR p_limit > 3');
+    expect(sql).toContain("interval '10 minutes 5 seconds'");
+    expect(sql).toContain(
+      'status_version = submission.status_version + 1'
+    );
+    expect(sql.match(/jsonb_array_length\(p_results\) > 2500/g))
+      .toHaveLength(2);
   });
 
   it('安全状态只保存哈希并由数据库原子消费', () => {
@@ -131,6 +161,35 @@ describe('CloudBase PostgreSQL 迁移', () => {
     expect(sql).toContain('AND status_version = p_expected_version');
     expect(sql).toContain('status_version = status_version + 1');
     expect(sql).toContain("'replayed', true");
+    expect(sql).toContain("AND result.kind = 'package_scan'");
+    expect(sql).toContain("AND result.suggestion = 'Pass'");
+    expect(sql).toContain(
+      "result.evidence ->> 'packageStorageKey' = asset.object_key"
+    );
+    expect(sql).toContain(
+      "result.evidence ->> 'packageSizeBytes' = asset.actual_size::text"
+    );
+    expect(sql).toContain("USING ERRCODE = 'P1001'");
+    expect(sql).toContain("USING ERRCODE = 'P1002'");
+    expect(sql).toContain("USING ERRCODE = 'P1003'");
+  });
+
+  it('清理任务使用租约并覆盖三天隔离与一小时残缺上传', () => {
+    const sql = readFileSync(migrationPath, 'utf8');
+
+    expect(sql).toContain('CREATE FUNCTION claim_cleanup_jobs(');
+    expect(sql).toContain('cleanup_started_at timestamptz');
+    expect(sql).toContain('cleanup_started_at = COALESCE');
+    expect(sql).toContain("status = 'uploading'");
+    expect(sql).toContain("interval '1 hour'");
+    expect(sql).toContain('submission.updated_at <=');
+    expect(sql).not.toContain("submission.created_at <= now() - interval '1 hour'");
+    expect(sql).toContain('FOR UPDATE SKIP LOCKED');
+    expect(sql).toContain('CREATE FUNCTION mark_submission_purged(');
+    expect(sql).toContain('DELETE FROM assets WHERE submission_id');
+    expect(sql).toContain("status = 'purged'");
+    expect(sql).toContain("evidence = '{}'::jsonb");
+    expect(sql).toContain('v_cleanup_started_at IS NOT NULL');
   });
 
   it('发布动作写入发布时间且租约必须指向未来', () => {
@@ -139,7 +198,9 @@ describe('CloudBase PostgreSQL 迁移', () => {
     expect(sql).toContain(
       "WHEN p_next_status = 'published' THEN COALESCE(published_at, now())"
     );
-    expect(sql).toContain('IF p_lease_until <= now() THEN');
+    expect(sql).toMatch(
+      /IF p_lease_until <= now\(\)\s+OR p_lease_until > now\(\) \+ interval '10 minutes 5 seconds' THEN/u
+    );
     expect(sql).toMatch(
       /IF p_next_status = 'published' THEN\s+INSERT INTO public_engagement \(submission_id\)/u
     );
@@ -166,6 +227,8 @@ interface MemorySubmission {
   status_token_hash: string;
   public_reason: string | null;
   moderation_lease_until: string | null;
+  cleanup_lease_until: string | null;
+  cleanup_started_at: string | null;
   published_at: string | null;
   purge_after: string | null;
   created_at: string;
@@ -258,16 +321,55 @@ class MemoryRdb {
       return { data: structuredClone(claimed), error: null };
     }
 
+    if (name === 'complete_submission_upload') {
+      const row = this.submissions.find(
+        candidate => candidate.id === params.p_submission_id
+      );
+      if (
+        !row
+        || row.status !== 'uploading'
+        || row.cleanup_started_at !== null
+      ) {
+        return {
+          data: null,
+          error: { code: 'P1002', message: 'upload cannot be finalized' }
+        };
+      }
+      const completedAssets = params.p_assets as Array<Record<string, unknown>>;
+      for (const completed of completedAssets) {
+        const asset = this.assets.find(candidate =>
+          candidate.submission_id === row.id
+          && candidate.role === completed.role
+          && candidate.object_key === completed.storage_key
+        );
+        if (asset) asset.actual_size = completed.actual_bytes as number;
+      }
+      row.status = 'system_reviewing';
+      row.status_version += 1;
+      row.purge_after = null;
+      row.updated_at = '2026-07-31T00:00:00.000Z';
+      return { data: structuredClone(row), error: null };
+    }
+
     if (name === 'apply_admin_action') {
       const idempotencyKey = params.p_idempotency_key as string;
       const request = structuredClone(params);
       const previous = this.audits.get(idempotencyKey);
+      const fenced = this.submissions.find(
+        candidate => candidate.id === params.p_submission_id
+      );
+      if (fenced && fenced.cleanup_started_at !== null) {
+        return {
+          data: null,
+          error: { code: '40001', message: 'cleanup already started' }
+        };
+      }
 
       if (previous) {
         if (JSON.stringify(previous.request) !== JSON.stringify(request)) {
           return {
             data: null,
-            error: { code: '22023', message: 'idempotency key reused' }
+            error: { code: 'P1001', message: 'idempotency key reused' }
           };
         }
 
@@ -526,6 +628,8 @@ function makeSubmission(
     status_token_hash: input.status_token_hash ?? 'a'.repeat(64),
     public_reason: input.public_reason ?? null,
     moderation_lease_until: input.moderation_lease_until ?? null,
+    cleanup_lease_until: input.cleanup_lease_until ?? null,
+    cleanup_started_at: input.cleanup_started_at ?? null,
     published_at: input.published_at ?? null,
     purge_after: input.purge_after ?? null,
     created_at: input.created_at ?? '2026-07-30T00:00:00.000Z',
@@ -541,6 +645,23 @@ function createStore(database = new MemoryRdb()): {
     database,
     store: new CloudBasePostgresStore(database, database)
   };
+}
+
+function completedAssets(submissionId: string) {
+  return [
+    {
+      role: 'cover' as const,
+      storageKey: `submissions/${submissionId}/cover.webp`,
+      actualBytes: 512,
+      contentType: 'image/webp'
+    },
+    {
+      role: 'package' as const,
+      storageKey: `submissions/${submissionId}/package.zip`,
+      actualBytes: 1024,
+      contentType: 'application/zip'
+    }
+  ];
 }
 
 function newSubmission(id: string): {
@@ -842,7 +963,10 @@ describe('CloudBase PostgreSQL 仓储', () => {
       purgeAfter: '2026-08-03T00:00:00.000Z'
     });
 
-    await expect(store.completeUpload({ submissionId: 'submission-1' }))
+    await expect(store.completeUpload({
+      submissionId: 'submission-1',
+      assets: completedAssets('submission-1')
+    }))
       .resolves.toMatchObject({
         id: 'submission-1',
         status: 'system_reviewing',
@@ -852,6 +976,25 @@ describe('CloudBase PostgreSQL 仓储', () => {
       status: 'system_reviewing',
       purge_after: null
     });
+  });
+
+  it('清理栅栏建立后不能重新完成残缺上传', async () => {
+    const database = new MemoryRdb();
+    database.submissions.push(makeSubmission({
+      id: 'cleanup-started',
+      status: 'uploading',
+      cleanup_started_at: '2026-07-31T00:00:00.000Z'
+    }));
+    const { store } = createStore(database);
+
+    await expect(store.completeUpload({
+      submissionId: 'cleanup-started',
+      assets: completedAssets('cleanup-started')
+    }))
+      .rejects.toMatchObject({
+        code: 'UPLOAD_FINALIZE_CONFLICT',
+        statusCode: 409
+      });
   });
 
   it('创建共享包时持久化两项资产声明并可按 ID 回读', async () => {
@@ -1000,7 +1143,7 @@ describe('CloudBase PostgreSQL 仓储', () => {
     const { store } = createStore(database);
 
     await expect(
-      store.claimModerationJobs(10, '2026-07-31T00:10:00.000Z')
+      store.claimModerationJobs(3, '2026-07-31T00:10:00.000Z')
     ).resolves.toEqual([
       expect.objectContaining({ id: 'expired', status: 'system_reviewing' })
     ]);
@@ -1121,6 +1264,49 @@ describe('CloudBase PostgreSQL 仓储', () => {
       idempotencyKey: 'admin-action-0002',
       reason: '不符合发布要求'
     })).rejects.toMatchObject({ code: 'VERSION_CONFLICT', statusCode: 409 });
+  });
+
+  it('清理已开始后即使租约过期也拒绝恢复或发布', async () => {
+    const database = new MemoryRdb();
+    database.submissions.push(
+      makeSubmission({
+        id: 'cleanup-restore',
+        status: 'deleted_quarantined',
+        cleanup_started_at: '2026-07-31T00:00:00.000Z',
+        cleanup_lease_until: '2026-07-31T00:01:00.000Z'
+      }),
+      makeSubmission({
+        id: 'cleanup-publish',
+        status: 'manual_review_pending',
+        cleanup_started_at: '2026-07-31T00:00:00.000Z',
+        cleanup_lease_until: '2026-07-31T00:01:00.000Z'
+      })
+    );
+    const { store } = createStore(database);
+
+    for (const input of [
+      {
+        submissionId: 'cleanup-restore',
+        action: 'restore' as const,
+        nextStatus: 'published' as const
+      },
+      {
+        submissionId: 'cleanup-publish',
+        action: 'approve' as const,
+        nextStatus: 'published' as const
+      }
+    ]) {
+      await expect(store.applyAdminAction({
+        ...input,
+        adminId: 'admin-1',
+        expectedVersion: 0,
+        idempotencyKey: `fenced-${input.submissionId}`,
+        reason: '不得执行'
+      })).rejects.toMatchObject({
+        code: 'VERSION_CONFLICT',
+        statusCode: 409
+      });
+    }
   });
 
   it('公开列表按发布时间稳定分页且只返回公开字段', async () => {

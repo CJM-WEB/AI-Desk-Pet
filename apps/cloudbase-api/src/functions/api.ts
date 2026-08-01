@@ -3,10 +3,13 @@ import { createHmac, randomUUID } from 'node:crypto';
 import cloudbaseWeb from '@cloudbase/js-sdk';
 import cloudbaseNode from '@cloudbase/node-sdk';
 import {
+  adminActionSchema,
   captchaProofSchema,
+  submissionStatusSchema,
   submissionStatusViewSchema
 } from '@myself/shared-types';
 
+import { CloudBaseAdminIdentityProvider } from '../adapters/cloudbase-auth.js';
 import {
   CloudBasePostgresRpcClient,
   CloudBasePostgresStore
@@ -24,6 +27,7 @@ import {
 } from '../errors.js';
 import type { CloudBaseHttpEvent } from '../http/router.js';
 import { AbuseControl } from '../services/abuse-control.js';
+import { AdminService } from '../services/admin-service.js';
 import {
   PublicContentService,
   type PublicCommunityItem,
@@ -81,11 +85,31 @@ interface AbuseControlApi {
   consume(scope: string, fingerprint: string): Promise<void>;
 }
 
+interface AdminIdentityApi {
+  requireAdmin(): Promise<{ uid: string; email: string }>;
+}
+
+interface AdminApi {
+  listQueue(input: {
+    limit: number;
+    cursor?: number | null;
+    status?: ReturnType<typeof submissionStatusSchema.parse>;
+  }): Promise<unknown>;
+  getDetail(id: string): Promise<unknown>;
+  applyAction(
+    identity: { uid: string; email: string },
+    id: string,
+    action: ReturnType<typeof adminActionSchema.parse>
+  ): Promise<unknown>;
+}
+
 export interface ApiDependencies {
   submissions: SubmissionApi;
   textSubmissions: TextSubmissionApi;
   publicContent: PublicContentApi;
   abuseControl: AbuseControlApi;
+  adminIdentity: AdminIdentityApi;
+  admin: AdminApi;
   fingerprintSecret: string;
 }
 
@@ -119,6 +143,37 @@ async function dispatch(
 ): Promise<unknown> {
   const method = event.httpMethod;
   const path = event.path;
+
+  if (method === 'GET' && path === '/api/v1/admin/submissions') {
+    await dependencies.adminIdentity.requireAdmin();
+    return dependencies.admin.listQueue(adminListQuery(event));
+  }
+
+  const adminActionId = dynamicId(
+    method,
+    path,
+    'POST',
+    '/api/v1/admin/submissions/',
+    '/actions'
+  );
+  if (adminActionId !== null) {
+    const identity = await dependencies.adminIdentity.requireAdmin();
+    const action = adminActionSchema.safeParse(requestRecord(event));
+    if (!action.success) throw invalidRequest();
+    return dependencies.admin.applyAction(identity, adminActionId, action.data);
+  }
+
+  const adminDetailId = dynamicId(
+    method,
+    path,
+    'GET',
+    '/api/v1/admin/submissions/',
+    ''
+  );
+  if (adminDetailId !== null) {
+    await dependencies.adminIdentity.requireAdmin();
+    return dependencies.admin.getDetail(adminDetailId);
+  }
 
   if (method === 'POST' && path === '/api/v1/submissions/prepare') {
     const body = requestRecord(event);
@@ -292,6 +347,19 @@ function publicListQuery(event: ApiHttpEvent): {
     limit,
     ...(cursor === undefined ? {} : { cursor })
   };
+}
+
+function adminListQuery(event: ApiHttpEvent): {
+  limit: number;
+  cursor?: number | null;
+  status?: ReturnType<typeof submissionStatusSchema.parse>;
+} {
+  const page = publicListQuery(event);
+  const rawStatus = event.queryStringParameters?.status;
+  if (rawStatus === undefined) return page;
+  const status = submissionStatusSchema.safeParse(rawStatus);
+  if (!status.success) throw invalidRequest();
+  return { ...page, status: status.data };
 }
 
 function dynamicId(
@@ -474,7 +542,7 @@ function createProductionHandler(): ApiHandler {
   );
   const storage = new CloudBaseStorage(bucket);
   const captcha = new TencentCaptchaVerifier(
-    createTencentCaptchaClient(),
+    createTencentCaptchaClient(config),
     store,
     config
   );
@@ -483,6 +551,11 @@ function createProductionHandler(): ApiHandler {
     textSubmissions: new TextSubmissionService(store, captcha),
     publicContent: new PublicContentService(store, storage),
     abuseControl: new AbuseControl(store),
+    adminIdentity: new CloudBaseAdminIdentityProvider(
+      nodeApp.auth(),
+      config.adminEmail
+    ),
+    admin: new AdminService(store),
     fingerprintSecret: config.abuseHmacSecret
   });
 }

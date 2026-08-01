@@ -11,6 +11,7 @@ import { createStatusToken, hashStatusToken } from '../crypto/status-token.js';
 import type {
   CaptchaVerifier,
   ObjectStorage,
+  StoredObjectInfo,
   SubmissionAsset,
   SubmissionStore
 } from '../ports.js';
@@ -137,11 +138,28 @@ export class SubmissionService {
 
     const cover = requireAsset(submission.assets, 'cover');
     const packageAsset = requireAsset(submission.assets, 'package');
-    await this.verifyObject(cover, maximumCoverBytes);
-    await this.verifyObject(packageAsset, maximumPackageBytes);
+    const coverObject = await this.verifyObject(cover, maximumCoverBytes);
+    const packageObject = await this.verifyObject(
+      packageAsset,
+      maximumPackageBytes
+    );
 
     const completed = await this.store.completeUpload({
-      submissionId: submission.id
+      submissionId: submission.id,
+      assets: [
+        {
+          role: 'cover',
+          storageKey: cover.storageKey,
+          actualBytes: coverObject.size,
+          contentType: cover.contentType
+        },
+        {
+          role: 'package',
+          storageKey: packageAsset.storageKey,
+          actualBytes: packageObject.size,
+          contentType: packageAsset.contentType
+        }
+      ]
     });
     if (completed.status !== 'system_reviewing') {
       throw new ApiError('UPLOAD_STATE_CONFLICT', 409);
@@ -159,7 +177,7 @@ export class SubmissionService {
   private async verifyObject(
     asset: SubmissionAsset,
     absoluteMaximum: number
-  ): Promise<void> {
+  ): Promise<StoredObjectInfo> {
     const object = await this.storage.info(asset.storageKey);
     if (
       !object
@@ -170,6 +188,7 @@ export class SubmissionService {
     ) {
       throw new ApiError('UPLOAD_INCOMPLETE', 400);
     }
+    return object;
   }
 }
 

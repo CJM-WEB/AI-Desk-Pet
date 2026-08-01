@@ -168,18 +168,19 @@ export function validatePackageEntries(
 
     if (entry.kind === 'directory') continue;
     validateFileType(normalizedPath);
+    const lowerPath = normalizedPath.toLocaleLowerCase('en-US');
     fileCount += 1;
     if (fileCount > limits.maxFiles) {
       throw packageError('CHARACTER_PACKAGE_FILE_COUNT_EXCEEDED');
     }
     if (
-      normalizedPath.endsWith('.json')
+      lowerPath.endsWith('.json')
       && entry.uncompressedBytes > limits.maxJsonBytes
     ) {
       throw packageError('CHARACTER_PACKAGE_JSON_TOO_LARGE');
     }
     if (
-      !normalizedPath.endsWith('.json')
+      !lowerPath.endsWith('.json')
       && entry.uncompressedBytes > limits.maxResourceBytes
     ) {
       throw packageError('CHARACTER_PACKAGE_RESOURCE_TOO_LARGE');

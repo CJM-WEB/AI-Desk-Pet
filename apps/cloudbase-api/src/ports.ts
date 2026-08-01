@@ -45,7 +45,13 @@ export interface SubmissionRow {
   title?: string | null;
   body?: string | null;
   moderationLeaseUntil?: string | null;
+  moderationAttempts?: number;
+  moderationNextRetryAt?: string | null;
+  moderationLastError?: string | null;
+  moderationAlertedAt?: string | null;
   purgeAfter?: string | null;
+  preQuarantineStatus?: SubmissionStatus | null;
+  cleanupStartedAt?: string | null;
   publishedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -59,6 +65,12 @@ export interface SubmissionWithAssets extends SubmissionRow {
 /** 上传完成后推进审核状态所需字段。 */
 export interface CompleteUploadInput {
   submissionId: string;
+  assets: readonly {
+    role: 'cover' | 'package';
+    storageKey: string;
+    actualBytes: number;
+    contentType: string;
+  }[];
 }
 
 /** 单次系统审核结果的持久化记录。 */
@@ -74,6 +86,24 @@ export interface ModerationRecord {
   requestedAt: string;
   completedAt: string | null;
   errorMessage: string | null;
+}
+
+/** 系统审核决策和证据必须由同一数据库事务原子写入。 */
+export interface ApplyModerationDecisionInput {
+  submissionId: string;
+  expectedVersion: number;
+  nextStatus: 'manual_review_pending' | 'auto_rejected';
+  results: readonly ModerationRecord[];
+  riskSummary: Record<string, unknown>;
+  autoRejectionReason: string | null;
+}
+
+/** 依赖失败时保存有限证据并安排数据库持久化退避。 */
+export interface RecordModerationFailureInput {
+  submissionId: string;
+  expectedVersion: number;
+  errorSummary: string;
+  results: readonly ModerationRecord[];
 }
 
 /** 数据库原子管理员动作的完整输入。 */
@@ -250,20 +280,94 @@ export type RelevanceSuggestion = 'pass' | 'review' | 'reject';
 /** 隔离扫描服务输入。 */
 export interface ScanPackageInput {
   submissionId: string;
-  archivePath: string;
+  downloadUrl: string;
+  expiresAt: string;
 }
 
-/** 隔离扫描服务的最小安全结论。 */
+export interface PackageImageSignal {
+  path: string;
+  suggestion: ModerationSignal['suggestion'];
+  labels: readonly string[];
+  ocrText?: string;
+}
+
+/** 隔离扫描服务经过边界校验后的有限结构化结论。 */
 export interface PackageScanResult {
   complete: boolean;
   safe: boolean;
-  signals: readonly ModerationSignal[];
+  code: string;
+  summary: {
+    fileCount: number;
+    totalUncompressedBytes: number;
+  };
+  jsonTexts: readonly {
+    path: string;
+    text: string;
+  }[];
+  imageSignals: readonly PackageImageSignal[];
 }
 
 /** 管理员身份的最小声明。 */
 export interface AdminIdentity {
   uid: string;
   email: string;
+}
+
+/** 管理员队列的分页和状态筛选。 */
+export interface AdminQueueQuery {
+  limit: number;
+  cursor?: number | null;
+  status?: SubmissionStatus;
+}
+
+export interface AdminQueuePage {
+  items: SubmissionRow[];
+  nextCursor: number | null;
+}
+
+/** 管理员详情只保留审核所需字段，不向公开接口复用。 */
+export interface AdminModerationResult {
+  kind: string;
+  provider: string;
+  suggestion: ModerationSignal['suggestion'];
+  label: string;
+  score: number | null;
+  evidence: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AdminAuditLog {
+  action: AdminAction['action'];
+  beforeStatus: SubmissionStatus;
+  afterStatus: SubmissionStatus;
+  reason: string;
+  createdAt: string;
+}
+
+export interface AdminSubmissionDetail extends SubmissionWithAssets {
+  moderationResults: AdminModerationResult[];
+  auditLogs: AdminAuditLog[];
+}
+
+/** 管理员服务使用的原子读写边界。 */
+export interface AdminStore {
+  listAdminSubmissions(query: AdminQueueQuery): Promise<AdminQueuePage>;
+  findAdminSubmission(id: string): Promise<AdminSubmissionDetail | null>;
+  applyAdminAction(input: AdminActionInput): Promise<AdminActionResult>;
+}
+
+export interface MarkPurgedInput {
+  submissionId: string;
+  expectedVersion: number;
+}
+
+/** 清理任务使用租约领取，避免多实例重复删除同一对象。 */
+export interface CleanupStore {
+  claimCleanupJobs(
+    limit: number,
+    leaseUntil: string
+  ): Promise<SubmissionWithAssets[]>;
+  markPurged(input: MarkPurgedInput): Promise<boolean>;
 }
 
 /** 投稿存储边界。 */
@@ -277,6 +381,14 @@ export interface SubmissionStore {
   applyAdminAction(input: AdminActionInput): Promise<AdminActionResult>;
   listPublished(input: PublicListQuery): Promise<PublicSubmissionPage>;
   listPurgeCandidates(now: string, limit: number): Promise<SubmissionRow[]>;
+}
+
+/** 自动审核工作器所需的原子数据库操作。 */
+export interface ModerationJobStore {
+  claimModerationJobs(limit: number, leaseUntil: string): Promise<SubmissionRow[]>;
+  findById(id: string): Promise<SubmissionWithAssets | null>;
+  applyModerationDecision(input: ApplyModerationDecisionInput): Promise<boolean>;
+  recordModerationFailure(input: RecordModerationFailureInput): Promise<void>;
 }
 
 /** 多实例共享的 CAPTCHA 防重放与限流存储。 */

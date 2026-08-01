@@ -100,6 +100,27 @@ function createDependencies() {
     abuseControl: {
       consume: vi.fn(async () => undefined)
     },
+    adminIdentity: {
+      requireAdmin: vi.fn(async () => ({
+        uid: 'uid-admin',
+        email: 'admin@example.com'
+      }))
+    },
+    admin: {
+      listQueue: vi.fn(async () => ({ items: [], nextCursor: null })),
+      getDetail: vi.fn(async () => ({
+        id: 'submission-1',
+        status: 'manual_review_pending'
+      })),
+      applyAction: vi.fn(async () => ({
+        submission: {
+          id: 'submission-1',
+          status: 'published',
+          statusVersion: 4
+        },
+        replayed: false
+      }))
+    },
     fingerprintSecret
   };
 }
@@ -342,6 +363,65 @@ describe('公开 HTTP API', () => {
       error: { code: 'NOT_FOUND' },
       requestId: 'request-1'
     });
+  });
+
+  it('三个管理员路由都先验证唯一管理员身份', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    await main({
+      ...event('GET', '/api/v1/admin/submissions'),
+      queryStringParameters: { status: 'manual_review_pending' }
+    }, context);
+    await main(
+      event('GET', '/api/v1/admin/submissions/submission-1'),
+      context
+    );
+    await main(
+      event('POST', '/api/v1/admin/submissions/submission-1/actions', {
+        action: 'approve',
+        version: 3,
+        idempotencyKey: 'request-0001',
+        reason: '审核通过'
+      }),
+      context
+    );
+
+    expect(dependencies.adminIdentity.requireAdmin).toHaveBeenCalledTimes(3);
+    expect(dependencies.admin.listQueue).toHaveBeenCalledWith({
+      limit: 20,
+      status: 'manual_review_pending'
+    });
+    expect(dependencies.admin.applyAction).toHaveBeenCalledWith(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      'submission-1',
+      {
+        action: 'approve',
+        version: 3,
+        idempotencyKey: 'request-0001',
+        reason: '审核通过'
+      }
+    );
+  });
+
+  it('非白名单用户不能读取管理员队列', async () => {
+    const dependencies = createDependencies();
+    dependencies.adminIdentity.requireAdmin.mockRejectedValueOnce(
+      Object.assign(new Error('邮箱不在白名单'), {
+        code: 'FORBIDDEN',
+        statusCode: 403
+      })
+    );
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('GET', '/api/v1/admin/submissions'),
+      context
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(dependencies.admin.listQueue).not.toHaveBeenCalled();
+    expect(response.body).not.toContain('邮箱不在白名单');
   });
 });
 

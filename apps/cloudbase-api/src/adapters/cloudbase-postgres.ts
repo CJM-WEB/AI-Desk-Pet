@@ -1,11 +1,21 @@
-import { submissionStatusSchema } from '@myself/shared-types';
+import {
+  adminActionSchema,
+  submissionStatusSchema
+} from '@myself/shared-types';
 
 import { ApiError } from '../errors.js';
 import type {
   AdminActionInput,
   AdminActionResult,
+  AdminAuditLog,
+  AdminModerationResult,
+  AdminQueuePage,
+  AdminQueueQuery,
+  AdminStore,
+  AdminSubmissionDetail,
   AbuseLimitInput,
   AbuseLimitResult,
+  ApplyModerationDecisionInput,
   CaptchaTicketInput,
   CompleteUploadInput,
   ModerationRecord,
@@ -23,10 +33,14 @@ import type {
   SecurityStore,
   PublicSubmission,
   PublicSubmissionPage,
+  RecordModerationFailureInput,
   SubmissionAsset,
   SubmissionRow,
   SubmissionStatusView,
   SubmissionStore,
+  ModerationJobStore,
+  CleanupStore,
+  MarkPurgedInput,
   SubmissionWithAssets
 } from '../ports.js';
 
@@ -134,8 +148,11 @@ export class CloudBasePostgresRpcClient implements CloudBasePostgresRpc {
  */
 export class CloudBasePostgresStore implements
   SubmissionStore,
+  ModerationJobStore,
   SecurityStore,
-  PublicInteractionStore {
+  PublicInteractionStore,
+  AdminStore,
+  CleanupStore {
   constructor(
     private readonly database: CloudBaseRdbClient,
     private readonly rpcClient: CloudBasePostgresRpc
@@ -293,15 +310,19 @@ export class CloudBasePostgresStore implements
   }
 
   async completeUpload(input: CompleteUploadInput): Promise<SubmissionRow> {
-    await requireSuccess(
-      this.database
-        .from('submissions')
-        .update({ status: 'system_reviewing', purge_after: null })
-        .eq('id', input.submissionId)
-        .eq('status', 'uploading'),
-      '完成上传失败'
-    );
-    return this.findSubmission(input.submissionId);
+    const result = await this.rpcClient.rpc('complete_submission_upload', {
+      p_submission_id: input.submissionId,
+      p_assets: input.assets.map(asset => ({
+        role: asset.role,
+        storage_key: asset.storageKey,
+        actual_bytes: asset.actualBytes,
+        content_type: asset.contentType
+      }))
+    });
+    if (result.error?.code === 'P1002') {
+      throw new ApiError('UPLOAD_FINALIZE_CONFLICT', 409, result.error.message);
+    }
+    return mapSubmission(requireData(result, '完成上传失败'));
   }
 
   async findByStatusTokenHash(hash: string): Promise<SubmissionStatusView | null> {
@@ -328,7 +349,9 @@ export class CloudBasePostgresStore implements
     limit: number,
     leaseUntil: string
   ): Promise<SubmissionRow[]> {
-    requireLimit(limit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 3) {
+      throw new ApiError('INVALID_LIMIT', 400);
+    }
     const result = await this.rpcClient.rpc('claim_moderation_jobs', {
       p_limit: limit,
       p_lease_until: leaseUntil
@@ -356,6 +379,34 @@ export class CloudBasePostgresStore implements
     );
   }
 
+  async applyModerationDecision(
+    input: ApplyModerationDecisionInput
+  ): Promise<boolean> {
+    const row = requireRecord(
+      requireData(await this.rpcClient.rpc('apply_moderation_decision', {
+        p_submission_id: input.submissionId,
+        p_expected_version: input.expectedVersion,
+        p_next_status: input.nextStatus,
+        p_results: input.results.map(toModerationRpcRecord),
+        p_risk_summary: input.riskSummary,
+        p_auto_rejection_reason: input.autoRejectionReason
+      }), '应用系统审核决策失败'),
+      '系统审核决策结果'
+    );
+    return requireBoolean(row.applied, 'applied');
+  }
+
+  async recordModerationFailure(
+    input: RecordModerationFailureInput
+  ): Promise<void> {
+    requireData(await this.rpcClient.rpc('record_moderation_failure', {
+      p_submission_id: input.submissionId,
+      p_expected_version: input.expectedVersion,
+      p_error_summary: input.errorSummary.slice(0, 200),
+      p_results: input.results.map(toModerationRpcRecord)
+    }), '记录系统审核失败状态失败');
+  }
+
   async applyAdminAction(input: AdminActionInput): Promise<AdminActionResult> {
     const result = await this.rpcClient.rpc('apply_admin_action', {
       p_submission_id: input.submissionId,
@@ -369,8 +420,17 @@ export class CloudBasePostgresStore implements
     if (result.error?.code === '40001') {
       throw new ApiError('VERSION_CONFLICT', 409, result.error.message);
     }
-    if (result.error?.code === '22023') {
+    if (result.error?.code === 'P1001') {
       throw new ApiError('IDEMPOTENCY_CONFLICT', 409, result.error.message);
+    }
+    if (result.error?.code === 'P1002') {
+      throw new ApiError('INVALID_ADMIN_ACTION', 409, result.error.message);
+    }
+    if (result.error?.code === 'P1003') {
+      throw new ApiError('TECHNICAL_SCAN_REQUIRED', 409, result.error.message);
+    }
+    if (result.error?.code === 'P0002') {
+      throw new ApiError('SUBMISSION_NOT_FOUND', 404, result.error.message);
     }
 
     const row = requireRecord(
@@ -380,6 +440,60 @@ export class CloudBasePostgresStore implements
     return {
       submission: mapSubmission(row.submission),
       replayed: requireBoolean(row.replayed, 'replayed')
+    };
+  }
+
+  async listAdminSubmissions(
+    input: AdminQueueQuery
+  ): Promise<AdminQueuePage> {
+    requireLimit(input.limit);
+    const offset = input.cursor ?? 0;
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new ApiError('INVALID_CURSOR', 400);
+    }
+    let query = this.database
+      .from('submissions')
+      .select('*');
+    if (input.status) query = query.eq('status', input.status);
+    const result = await query
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(offset, offset + input.limit);
+    const rows = requireRows(
+      requireData(result, '查询管理员队列失败'),
+      '管理员队列'
+    );
+    return {
+      items: rows.slice(0, input.limit).map(mapSubmission),
+      nextCursor: rows.length > input.limit ? offset + input.limit : null
+    };
+  }
+
+  async findAdminSubmission(
+    id: string
+  ): Promise<AdminSubmissionDetail | null> {
+    const submission = await this.findById(id);
+    if (!submission) return null;
+    const moderation = await this.database
+      .from('moderation_results')
+      .select('kind,provider,suggestion,label,score,evidence,created_at')
+      .eq('submission_id', id)
+      .order('created_at', { ascending: true });
+    const audits = await this.database
+      .from('admin_audit_logs')
+      .select('action,before_status,after_status,reason,created_at')
+      .eq('submission_id', id)
+      .order('created_at', { ascending: true });
+    return {
+      ...submission,
+      moderationResults: requireRows(
+        requireData(moderation, '查询管理员审核证据失败'),
+        '管理员审核证据'
+      ).map(mapAdminModerationResult),
+      auditLogs: requireRows(
+        requireData(audits, '查询管理员审计记录失败'),
+        '管理员审计记录'
+      ).map(mapAdminAuditLog)
     };
   }
 
@@ -422,6 +536,32 @@ export class CloudBasePostgresStore implements
       requireData(result, '查询清理候选失败'),
       '清理候选'
     ).map(mapSubmission);
+  }
+
+  async claimCleanupJobs(
+    limit: number,
+    leaseUntil: string
+  ): Promise<SubmissionWithAssets[]> {
+    requireLimit(limit);
+    const result = await this.rpcClient.rpc('claim_cleanup_jobs', {
+      p_limit: limit,
+      p_lease_until: leaseUntil
+    });
+    return requireRows(
+      requireData(result, '领取清理任务失败'),
+      '清理任务'
+    ).map(mapCleanupSubmission);
+  }
+
+  async markPurged(input: MarkPurgedInput): Promise<boolean> {
+    const row = requireRecord(
+      requireData(await this.rpcClient.rpc('mark_submission_purged', {
+        p_submission_id: input.submissionId,
+        p_expected_version: input.expectedVersion
+      }), '标记永久清理失败'),
+      '永久清理结果'
+    );
+    return requireBoolean(row.applied, 'applied');
   }
 
   private async listPublicRows(
@@ -475,10 +615,76 @@ function mapSubmission(value: unknown): SubmissionRow {
       row.moderation_lease_until,
       'moderation_lease_until'
     ),
+    ...('moderation_attempts' in row ? {
+      moderationAttempts: requireNonnegativeInteger(
+        row.moderation_attempts,
+        'moderation_attempts'
+      )
+    } : {}),
+    ...('moderation_next_retry_at' in row ? {
+      moderationNextRetryAt: optionalString(
+        row.moderation_next_retry_at,
+        'moderation_next_retry_at'
+      )
+    } : {}),
+    ...('moderation_last_error' in row ? {
+      moderationLastError: optionalString(
+        row.moderation_last_error,
+        'moderation_last_error'
+      )
+    } : {}),
+    ...('moderation_alerted_at' in row ? {
+      moderationAlertedAt: optionalString(
+        row.moderation_alerted_at,
+        'moderation_alerted_at'
+      )
+    } : {}),
     purgeAfter: optionalString(row.purge_after, 'purge_after'),
+    preQuarantineStatus: row.pre_quarantine_status === null
+      || row.pre_quarantine_status === undefined
+      ? null
+      : submissionStatusSchema.parse(row.pre_quarantine_status),
+    ...('cleanup_started_at' in row ? {
+      cleanupStartedAt: optionalString(
+        row.cleanup_started_at,
+        'cleanup_started_at'
+      )
+    } : {}),
     publishedAt: optionalString(row.published_at, 'published_at'),
     createdAt: requireString(row.created_at, 'created_at'),
     updatedAt: requireString(row.updated_at, 'updated_at')
+  };
+}
+
+function mapCleanupSubmission(value: unknown): SubmissionWithAssets {
+  const row = requireRecord(value, '清理任务');
+  return {
+    ...mapSubmission(row),
+    assets: requireRows(row.assets, '清理任务资产').map(mapAsset)
+  };
+}
+
+function mapAdminModerationResult(value: unknown): AdminModerationResult {
+  const row = requireRecord(value, '管理员审核证据');
+  return {
+    kind: requireString(row.kind, 'kind'),
+    provider: requireString(row.provider, 'provider'),
+    suggestion: requireSuggestion(row.suggestion),
+    label: requireString(row.label, 'label'),
+    score: optionalNumber(row.score, 'score'),
+    evidence: requireRecord(row.evidence, 'evidence'),
+    createdAt: requireString(row.created_at, 'created_at')
+  };
+}
+
+function mapAdminAuditLog(value: unknown): AdminAuditLog {
+  const row = requireRecord(value, '管理员审计记录');
+  return {
+    action: requireAdminAction(row.action),
+    beforeStatus: submissionStatusSchema.parse(row.before_status),
+    afterStatus: submissionStatusSchema.parse(row.after_status),
+    reason: requireString(row.reason, 'reason'),
+    createdAt: requireString(row.created_at, 'created_at')
   };
 }
 
@@ -568,6 +774,21 @@ function requireRelationRecord(
   return requireRecord(value, context);
 }
 
+function toModerationRpcRecord(result: ModerationRecord): Record<string, unknown> {
+  return {
+    kind: result.kind,
+    provider: result.provider,
+    rule_version: result.ruleVersion,
+    suggestion: result.suggestion,
+    label: result.label,
+    score: result.score,
+    evidence: result.evidence,
+    requested_at: result.requestedAt,
+    completed_at: result.completedAt,
+    error_message: result.errorMessage
+  };
+}
+
 function mapPublicSubmission(value: unknown): PublicSubmission {
   const row = requireRecord(value, '公开投稿');
   return {
@@ -652,6 +873,29 @@ function requireNonnegativeInteger(value: unknown, field: string): number {
 function optionalInteger(value: unknown, field: string): number | null {
   if (value === null) return null;
   return requireInteger(value, field);
+}
+
+function optionalNumber(value: unknown, field: string): number | null {
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new ApiError('DATABASE_ERROR', 500, `${field}字段格式错误`);
+  }
+  return value;
+}
+
+function requireSuggestion(
+  value: unknown
+): AdminModerationResult['suggestion'] {
+  if (value === 'Pass' || value === 'Review' || value === 'Block') {
+    return value;
+  }
+  throw new ApiError('DATABASE_ERROR', 500, 'suggestion字段格式错误');
+}
+
+function requireAdminAction(value: unknown): AdminAuditLog['action'] {
+  const result = adminActionSchema.shape.action.safeParse(value);
+  if (result.success) return result.data;
+  throw new ApiError('DATABASE_ERROR', 500, 'action字段格式错误');
 }
 
 function requireBoolean(value: unknown, field: string): boolean {

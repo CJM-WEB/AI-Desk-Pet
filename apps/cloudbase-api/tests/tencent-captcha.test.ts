@@ -1,11 +1,40 @@
 import type { captcha } from 'tencentcloud-sdk-nodejs';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import { TencentCaptchaVerifier } from '../src/adapters/tencent-captcha.js';
+import {
+  createTencentCaptchaClient,
+  TencentCaptchaVerifier
+} from '../src/adapters/tencent-captcha.js';
 
 type CaptchaClient = InstanceType<typeof captcha.v20190722.Client>;
 
 describe('腾讯验证码适配器', () => {
+  it('创建 SDK 客户端时透传显式临时凭据', () => {
+    let received: unknown;
+    class TestClient {
+      constructor(options: unknown) {
+        received = options;
+      }
+      async DescribeCaptchaResult() {
+        return { CaptchaCode: 1 };
+      }
+    }
+
+    createTencentCaptchaClient({
+      tencentCloudSecretId: 'secret-id',
+      tencentCloudSecretKey: 'secret-key',
+      tencentCloudSessionToken: 'session-token'
+    }, TestClient as never);
+
+    expect(received).toMatchObject({
+      credential: {
+        secretId: 'secret-id',
+        secretKey: 'secret-key',
+        token: 'session-token'
+      }
+    });
+  });
+
   it('真实 SDK 的验票方法兼容适配器依赖', () => {
     type DescribeCaptchaResult = CaptchaClient['DescribeCaptchaResult'];
 

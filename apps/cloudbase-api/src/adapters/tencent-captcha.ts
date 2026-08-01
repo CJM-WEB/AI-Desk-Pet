@@ -75,9 +75,29 @@ export class TencentCaptchaVerifier implements CaptchaVerifier {
 }
 
 /** CAPTCHA 为非地域服务，SDK 客户端不需要额外地域或账号签名字段。 */
-export function createTencentCaptchaClient(): TencentCaptchaClient {
-  return new captcha.v20190722.Client({
-    credential: {},
+type TencentCredentialConfig = Pick<
+  CloudConfig,
+  'tencentCloudSecretId'
+  | 'tencentCloudSecretKey'
+  | 'tencentCloudSessionToken'
+>;
+
+type CaptchaClientConstructor = new (
+  options: ConstructorParameters<typeof captcha.v20190722.Client>[0]
+) => TencentCaptchaClient;
+
+export function createTencentCaptchaClient(
+  config: TencentCredentialConfig,
+  Client: CaptchaClientConstructor = captcha.v20190722.Client
+): TencentCaptchaClient {
+  return new Client({
+    credential: {
+      secretId: config.tencentCloudSecretId,
+      secretKey: config.tencentCloudSecretKey,
+      ...(config.tencentCloudSessionToken ? {
+        token: config.tencentCloudSessionToken
+      } : {})
+    },
     region: ''
   });
 }
