@@ -501,6 +501,26 @@ describe('共享仓库章节', () => {
     expect(screen.queryByText('共享内容暂时无法加载，请稍后重试。')).toBeNull();
   });
 
+  it('再次打开投稿时清除旧审核回执和状态链接', async () => {
+    const harness = createRepository(0);
+    renderChapter(harness.repository);
+    fireEvent.click(screen.getByRole('button', { name: '分享您的 AI Pet' }));
+    fireEvent.change(screen.getByLabelText('AI Pet ZIP 文件'), {
+      target: { files: [new File(['zip'], 'pet.zip', { type: 'application/zip' })] }
+    });
+    fireEvent.change(screen.getByLabelText('封面图片'), {
+      target: { files: [new File(['image'], 'cover.png', { type: 'image/png' })] }
+    });
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '新 Pet' } });
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: '共享包描述' } });
+    fireEvent.click(screen.getByRole('button', { name: '发布分享' }));
+    await screen.findByRole('link', { name: '打开一次性状态查询链接' });
+
+    fireEvent.click(screen.getByRole('button', { name: '分享您的 AI Pet' }));
+    expect(screen.queryByText('投稿已收到，正在系统审核。')).toBeNull();
+    expect(screen.queryByRole('link', { name: '打开一次性状态查询链接' })).toBeNull();
+  });
+
   it('投稿时将聚合上传进度传给对话框', async () => {
     const harness = createRepository(0);
     let complete!: (receipt: SubmissionReceipt) => void;

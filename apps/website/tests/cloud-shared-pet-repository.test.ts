@@ -113,25 +113,36 @@ describe('云端共享仓库', () => {
   });
 
   it('公开游标列表不伪造总页数或封面私有元数据', async () => {
-    const api = { request: vi.fn().mockResolvedValue({
+    const request = vi.fn().mockResolvedValue({
       items: [{
         id: 'pet-1', name: '宠物', description: '描述',
         cover: { url: 'https://storage.example/cover?signature=secret', expiresAt: '2026-08-01T00:00:00.000Z' },
         packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 1, downloadCount: 2,
         publishedAt: '2026-08-01T00:00:00.000Z'
       }], nextCursor: 8
-    }) } as unknown as ApiClient;
+    });
+    const api = { request } as unknown as ApiClient;
     const page = await new CloudSharedPetRepository(api).listPage(1);
     expect(page).toMatchObject({ page: 1, totalKnown: false, hasNext: true });
     expect(page.items[0]).toMatchObject({ coverUrl: 'https://storage.example/cover?signature=secret' });
     expect(page.items[0]?.coverFileName).toBeUndefined();
+    expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=0');
   });
 
-  it('游标到达终页时才公开精确总页数', async () => {
-    const api = { request: vi.fn().mockResolvedValue({ items: [], nextCursor: null }) } as unknown as ApiClient;
-    await expect(new CloudSharedPetRepository(api).listPage(1)).resolves.toMatchObject({
-      total: 0, totalPages: 0, totalKnown: true, hasNext: false
+  it('游标到达含条目的终页时公开精确总页数', async () => {
+    const request = vi.fn().mockResolvedValue({
+      items: [{
+        id: 'pet-9', name: '宠物', description: '描述',
+        cover: { url: 'https://storage.example/cover', expiresAt: '2026-08-01T00:00:00.000Z' },
+        packageFileName: 'pet.zip', packageSizeBytes: 7, likeCount: 0, downloadCount: 0,
+        publishedAt: '2026-08-01T00:00:00.000Z'
+      }], nextCursor: null
     });
+    const api = { request } as unknown as ApiClient;
+    await expect(new CloudSharedPetRepository(api).listPage(2)).resolves.toMatchObject({
+      total: 9, totalPages: 2, totalKnown: true, hasNext: false
+    });
+    expect(request).toHaveBeenCalledWith('/community?limit=8&cursor=8');
   });
 
   it('详情 404 返回 null，点赞和下载仅使用公开 API', async () => {
