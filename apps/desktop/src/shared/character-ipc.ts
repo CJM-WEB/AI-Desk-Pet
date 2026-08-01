@@ -1,8 +1,7 @@
 import {
   characterDraftV2Schema,
   characterManifestV1Schema,
-  characterManifestV2Schema,
-  CORE_CHARACTER_STATES
+  characterManifestV2Schema
 } from '@myself/character-runtime';
 import { z } from 'zod';
 
@@ -58,7 +57,6 @@ export const characterSummarySchema = z.object({
   ])),
   migrationErrorCode: z.literal('CHARACTER_MIGRATION_FAILED').optional(),
   migrationRecoveryAvailable: z.boolean(),
-  missingCoreStates: z.array(z.enum(CORE_CHARACTER_STATES)).default([]),
   activationConfirmationRequired: z.boolean().optional()
 }).strict();
 export const characterSourceSchema = z.object({

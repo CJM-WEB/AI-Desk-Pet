@@ -145,6 +145,30 @@ type ExportedDiskFile = {
   handle: FileHandle;
 };
 
+type FileIdentity = {
+  physicalPath: string;
+  dev: number;
+  ino: number;
+  byteLength: number;
+};
+
+type ExportedBufferFile = {
+  archivePath: string;
+  diskPath: string;
+  byteLength: number;
+  sha256: string;
+  bytes: Buffer;
+  directory: DirectoryIdentity;
+  identity: FileIdentity;
+};
+
+type ArchiveIdentity = {
+  dev: number;
+  ino: number;
+  byteLength: number;
+  sha256: string;
+};
+
 function packageError(code: string): Error {
   return new Error(code);
 }
@@ -625,30 +649,200 @@ async function openVerifiedRegularFile(
   }
 }
 
-/** 打开导出文件前后都校验其物理路径仍位于已确认的角色目录内。 */
-async function openVerifiedContainedFile(
-  root: DirectoryIdentity,
+/** 将受控目录内的文件读取为有界私有快照，并绑定目录与文件身份。 */
+async function readVerifiedContainedSnapshot(
+  directory: DirectoryIdentity,
+  owner: DirectoryIdentity,
   path: string,
   maxBytes: number
-): Promise<{ handle: FileHandle; byteLength: number; sha256: string }> {
+): Promise<{
+  bytes: Buffer;
+  byteLength: number;
+  sha256: string;
+  identity: FileIdentity;
+}> {
+  try {
+    await assertDirectoryIdentity(directory, owner);
+  } catch {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+
   let physicalPath: string;
+  let pathIdentity;
   try {
     physicalPath = await realpath(path);
+    pathIdentity = await lstat(path);
   } catch {
     throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
   }
-  if (!isContained(root.physicalPath, physicalPath)) {
-    throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
+  if (
+    !isContained(directory.physicalPath, physicalPath)
+    || pathIdentity.isSymbolicLink()
+    || !pathIdentity.isFile()
+    || pathIdentity.size > maxBytes
+  ) {
+    throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
   }
-  const verified = await openVerifiedRegularFile(path, maxBytes);
+
+  const handle = await open(path, 'r');
   try {
-    if (await realpath(path) !== physicalPath) {
+    const openedIdentity = await handle.stat();
+    if (
+      !openedIdentity.isFile()
+      || !sameIdentity(pathIdentity, openedIdentity)
+      || openedIdentity.size !== pathIdentity.size
+    ) {
       throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
     }
-    return verified;
+
+    const bytes = Buffer.allocUnsafe(openedIdentity.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const result = await handle.read(
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        offset
+      );
+      if (result.bytesRead === 0) {
+        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+      }
+      offset += result.bytesRead;
+    }
+
+    const completedHandleIdentity = await handle.stat();
+    let completedPathIdentity;
+    let completedPhysicalPath: string;
+    try {
+      completedPathIdentity = await lstat(path);
+      completedPhysicalPath = await realpath(path);
+      await assertDirectoryIdentity(directory, owner);
+    } catch {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
+    if (
+      !completedHandleIdentity.isFile()
+      || !completedPathIdentity.isFile()
+      || !sameIdentity(openedIdentity, completedHandleIdentity)
+      || !sameIdentity(openedIdentity, completedPathIdentity)
+      || completedHandleIdentity.size !== bytes.byteLength
+      || completedPathIdentity.size !== bytes.byteLength
+      || completedPhysicalPath !== physicalPath
+    ) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
+
+    return {
+      bytes,
+      byteLength: bytes.byteLength,
+      sha256: sha256(bytes),
+      identity: {
+        physicalPath,
+        dev: openedIdentity.dev,
+        ino: openedIdentity.ino,
+        byteLength: bytes.byteLength
+      }
+    };
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/** checkpoint 后只复核来源身份；归档内容始终使用已持有的私有快照。 */
+async function assertExportSnapshotIdentity(
+  file: ExportedBufferFile,
+  owner: DirectoryIdentity
+): Promise<void> {
+  try {
+    await assertDirectoryIdentity(file.directory, owner);
+    const current = await lstat(file.diskPath);
+    const physicalPath = await realpath(file.diskPath);
+    if (
+      current.isSymbolicLink()
+      || !current.isFile()
+      || !sameIdentity(file.identity, current)
+      || current.size !== file.identity.byteLength
+      || physicalPath !== file.identity.physicalPath
+    ) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
   } catch (error) {
+    if (
+      error instanceof Error
+      && error.message === 'CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED'
+    ) {
+      throw error;
+    }
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+}
+
+/** 记录归档路径所指向普通文件的身份与实际内容哈希。 */
+async function captureArchiveIdentity(path: string): Promise<ArchiveIdentity> {
+  let verified;
+  try {
+    verified = await openVerifiedRegularFile(path, Number.MAX_SAFE_INTEGER);
+  } catch {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+  try {
+    const opened = await verified.handle.stat();
+    const current = await lstat(path);
+    if (
+      !current.isFile()
+      || !sameIdentity(opened, current)
+      || current.size !== verified.byteLength
+    ) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
+    return {
+      dev: opened.dev,
+      ino: opened.ino,
+      byteLength: verified.byteLength,
+      sha256: verified.sha256
+    };
+  } catch (error) {
+    if (
+      error instanceof Error
+      && error.message === 'CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED'
+    ) {
+      throw error;
+    }
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  } finally {
     await verified.handle.close().catch(() => undefined);
+  }
+}
+
+/** 复核路径仍指向同一份归档内容，防止校验与提交之间发生替换。 */
+async function assertArchiveIdentity(
+  path: string,
+  expected: ArchiveIdentity
+): Promise<void> {
+  const current = await captureArchiveIdentity(path);
+  if (
+    !sameIdentity(expected, current)
+    || current.byteLength !== expected.byteLength
+    || current.sha256 !== expected.sha256
+  ) {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+}
+
+/** 清理时只移除本次创建且身份未被替换的路径。 */
+async function removeIfSameIdentity(
+  path: string,
+  expected: Pick<ArchiveIdentity, 'dev' | 'ino'>
+): Promise<void> {
+  let current;
+  try {
+    current = await lstat(path);
+  } catch (error) {
+    if (isMissing(error)) return;
     throw error;
+  }
+  if (current.isFile() && sameIdentity(expected, current)) {
+    await rm(path, { force: true });
   }
 }
 
@@ -1083,6 +1277,54 @@ export class CharacterPackageService {
     throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
   }
 
+  /** 将归档写入同目录临时文件，并在双重身份校验后原子建立目标。 */
+  private async writeArchive(
+    destination: string,
+    archive: ZipFile
+  ): Promise<void> {
+    const temporaryDestination = `${destination}.${this.createId()}.tmp`;
+    let archiveIdentity: ArchiveIdentity | undefined;
+    try {
+      const output = createWriteStream(
+        temporaryDestination,
+        { flags: 'wx', mode: 0o600 }
+      );
+      const transfer = pipeline(archive.outputStream, output);
+      archive.end();
+      await transfer;
+      archiveIdentity = await captureArchiveIdentity(temporaryDestination);
+
+      await this.dependencies.onCheckpoint?.(
+        'export:before-commit',
+        dirname(destination),
+        destination
+      );
+      await assertArchiveIdentity(temporaryDestination, archiveIdentity);
+
+      try {
+        await link(temporaryDestination, destination);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+          throw packageError('CHARACTER_PACKAGE_DESTINATION_EXISTS');
+        }
+        throw error;
+      }
+
+      try {
+        await assertArchiveIdentity(destination, archiveIdentity);
+      } catch {
+        await removeIfSameIdentity(destination, archiveIdentity);
+        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+      }
+    } finally {
+      if (archiveIdentity === undefined) {
+        await rm(temporaryDestination, { force: true });
+      } else {
+        await removeIfSameIdentity(temporaryDestination, archiveIdentity);
+      }
+    }
+  }
+
   async exportCharacter(characterId: string, destination: string): Promise<void> {
     const draft = await this.store.getDraft(characterId);
     const manifest = await this.store.getPublishedManifest(characterId);
@@ -1131,7 +1373,6 @@ export class CharacterPackageService {
     const characterRoot = resolve(this.charactersDirectory, characterId);
     const sourceRoot = resolve(characterRoot, 'source');
     const compiledRoot = resolve(characterRoot, 'compiled');
-    let temporaryDestination: string | undefined;
     try {
       for (const source of sources) {
         const archivePath = `source/${sourceFileName(source)}`;
@@ -1200,27 +1441,7 @@ export class CharacterPackageService {
         );
       }
 
-      temporaryDestination = `${destination}.${this.createId()}.tmp`;
-      const output = createWriteStream(
-        temporaryDestination,
-        { flags: 'wx', mode: 0o600 }
-      );
-      const transfer = pipeline(archive.outputStream, output);
-      archive.end();
-      await transfer;
-      await this.dependencies.onCheckpoint?.(
-        'export:before-commit',
-        dirname(destination),
-        destination
-      );
-      try {
-        await link(temporaryDestination, destination);
-      } catch (error) {
-        if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
-          throw packageError('CHARACTER_PACKAGE_DESTINATION_EXISTS');
-        }
-        throw error;
-      }
+      await this.writeArchive(destination, archive);
     } finally {
       for (const stream of resourceStreams) {
         if (!stream.destroyed) stream.destroy();
@@ -1231,9 +1452,6 @@ export class CharacterPackageService {
       await Promise.allSettled(
         diskFiles.map(file => file.handle.close())
       );
-      if (temporaryDestination !== undefined) {
-        await rm(temporaryDestination, { force: true });
-      }
     }
   }
 
@@ -1271,27 +1489,43 @@ export class CharacterPackageService {
     ) {
       throw packageError('CHARACTER_PACKAGE_FILE_COUNT_EXCEEDED');
     }
+    let totalBytes = sourceDocument.byteLength;
+    for (const source of sources) {
+      if (source.byteLength > this.packageLimits.maxResourceBytes) {
+        throw packageError('CHARACTER_PACKAGE_RESOURCE_TOO_LARGE');
+      }
+      totalBytes = addPackageBytes(
+        totalBytes,
+        source.byteLength,
+        this.packageLimits.maxTotalUncompressedBytes
+      );
+    }
 
-    const diskFiles: ExportedDiskFile[] = [];
-    const resourceStreams: Readable[] = [];
-    let temporaryDestination: string | undefined;
-    try {
+    const bufferFiles: ExportedBufferFile[] = [];
+    {
       const draftRootPath = resolve(characterRootPath, 'draft');
       const draftRoot = await captureDirectoryIdentity(
         draftRootPath,
         characterRoot
       );
       const draftPath = resolve(draftRootPath, 'draft.json');
-      const draft = await openVerifiedContainedFile(
+      const draft = await readVerifiedContainedSnapshot(
         draftRoot,
+        characterRoot,
         draftPath,
         this.packageLimits.maxJsonBytes
       );
-      diskFiles.push({
+      bufferFiles.push({
         archivePath: 'recovery/original-draft.json',
         diskPath: draftPath,
+        directory: draftRoot,
         ...draft
       });
+      totalBytes = addPackageBytes(
+        totalBytes,
+        draft.byteLength,
+        this.packageLimits.maxTotalUncompressedBytes
+      );
 
       const sourceRoot = resolve(characterRootPath, 'source');
       if (!isContained(characterRootPath, sourceRoot)) {
@@ -1308,13 +1542,19 @@ export class CharacterPackageService {
         if (!isContained(sourceRoot, diskPath)) {
           throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
         }
-        const verified = await openVerifiedContainedFile(
+        const verified = await readVerifiedContainedSnapshot(
           sourceRootIdentity,
+          characterRoot,
           diskPath,
           this.packageLimits.maxResourceBytes
         );
-        const file = { archivePath, diskPath, ...verified };
-        diskFiles.push(file);
+        const file = {
+          archivePath,
+          diskPath,
+          directory: sourceRootIdentity,
+          ...verified
+        };
+        bufferFiles.push(file);
         if (
           file.byteLength !== source.byteLength
           || file.sha256 !== source.sha256
@@ -1328,53 +1568,22 @@ export class CharacterPackageService {
         );
       }
 
-      let totalBytes = sourceDocument.byteLength;
-      for (const file of diskFiles) {
-        totalBytes = addPackageBytes(
-          totalBytes,
-          file.byteLength,
-          this.packageLimits.maxTotalUncompressedBytes
-        );
+      try {
+        await assertDirectoryIdentity(characterRoot, charactersRoot);
+      } catch {
+        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+      }
+      for (const file of bufferFiles) {
+        await assertExportSnapshotIdentity(file, characterRoot);
       }
 
       const archive = this.archiveFactory();
       archive.addBuffer(sourceDocument, 'source/catalog.json');
-      for (const file of diskFiles) {
-        const stream = file.handle.createReadStream({ start: 0, autoClose: true });
-        resourceStreams.push(stream);
-        archive.addReadStream(stream, file.archivePath, { size: file.byteLength });
+      for (const file of bufferFiles) {
+        archive.addBuffer(file.bytes, file.archivePath);
       }
 
-      temporaryDestination = `${destination}.${this.createId()}.tmp`;
-      const output = createWriteStream(
-        temporaryDestination,
-        { flags: 'wx', mode: 0o600 }
-      );
-      const transfer = pipeline(archive.outputStream, output);
-      archive.end();
-      await transfer;
-      await this.dependencies.onCheckpoint?.(
-        'export:before-commit',
-        dirname(destination),
-        destination
-      );
-      try {
-        await link(temporaryDestination, destination);
-      } catch (error) {
-        if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
-          throw packageError('CHARACTER_PACKAGE_DESTINATION_EXISTS');
-        }
-        throw error;
-      }
-    } finally {
-      for (const stream of resourceStreams) {
-        if (!stream.destroyed) stream.destroy();
-      }
-      await Promise.allSettled(resourceStreams.map(stream => finished(stream)));
-      await Promise.allSettled(diskFiles.map(file => file.handle.close()));
-      if (temporaryDestination !== undefined) {
-        await rm(temporaryDestination, { force: true });
-      }
+      await this.writeArchive(destination, archive);
     }
   }
 
