@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminApp } from '../components/admin/AdminApp';
+import { I18nProvider } from '../components/i18n/I18nProvider';
 import type { AdminAuthClient } from '../lib/admin-auth';
 import type {
   AdminApi,
@@ -188,7 +189,7 @@ describe('管理员审核工作台', () => {
 
   it('切换投稿会清空上一条的审核理由', async () => {
     const first = detail({ id: 'first', title: '第一条' });
-    const second = detail({ id: 'second', title: '第二条' });
+    const second = detail({ id: 'second', title: '第二条', body: '第二条新正文' });
     setup({
       listQueue: vi.fn().mockResolvedValue({
         items: [queuePage(first).items[0]!, queuePage(second).items[0]!],
@@ -202,7 +203,9 @@ describe('管理员审核工作台', () => {
     });
     fireEvent.click(screen.getByText('第二条'));
 
-    await waitFor(() => expect((screen.getByLabelText('审核理由') as HTMLTextAreaElement).value).toBe(''));
+    await screen.findByText('第二条新正文');
+    expect((screen.getByLabelText('审核理由') as HTMLTextAreaElement).value).toBe('');
+    expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('退出后同步擦除旧详情且旧请求不能回填下一会话', async () => {
@@ -241,7 +244,7 @@ describe('管理员审核工作台', () => {
       listQueue: vi.fn().mockResolvedValue(queuePage(blocked)),
       getDetail: vi.fn().mockResolvedValue(blocked)
     });
-    fireEvent.click(screen.getByRole('button', { name: '自动驳回' }));
+    fireEvent.click(await screen.findByRole('button', { name: '自动驳回' }));
     fireEvent.click(await screen.findByText('待复核共享包'));
     await screen.findByLabelText('审核理由');
     fireEvent.change(screen.getByLabelText('审核理由'), { target: { value: '人工复核' } });
@@ -254,7 +257,7 @@ describe('管理员审核工作台', () => {
       listQueue: vi.fn().mockResolvedValue(queuePage(quarantined)),
       getDetail: vi.fn().mockResolvedValue(quarantined)
     });
-    fireEvent.click(screen.getByRole('button', { name: '隔离区' }));
+    fireEvent.click(await screen.findByRole('button', { name: '隔离区' }));
     fireEvent.click(await screen.findByText('隔离内容'));
     expect(await screen.findByRole('button', { name: '恢复内容' })).toBeTruthy();
     void view;
@@ -271,7 +274,7 @@ describe('管理员审核工作台', () => {
       }]
     });
     setup({ getDetail: vi.fn().mockResolvedValue(row) });
-    fireEvent.click(screen.getByRole('button', { name: '审计记录' }));
+    fireEvent.click(await screen.findByRole('button', { name: '审计记录' }));
     fireEvent.click(await screen.findByText('改进建议'));
 
     expect(await screen.findByText('内容合规')).toBeTruthy();
@@ -290,5 +293,28 @@ describe('管理员审核工作台', () => {
       listQueue: vi.fn().mockRejectedValue(new ApiClientError('FORBIDDEN', 403))
     });
     expect(await screen.findByText('该邮箱没有管理员权限')).toBeTruthy();
+  });
+
+  it('英文环境提供可访问的核心管理员文案', async () => {
+    const row = detail({ title: 'English submission' });
+    const api = {
+      listQueue: vi.fn().mockResolvedValue(queuePage(row)),
+      getDetail: vi.fn().mockResolvedValue(row),
+      applyAction: vi.fn()
+    } satisfies AdminApi;
+    const auth = {
+      requestEmailOtp: vi.fn(),
+      getAccessToken: vi.fn().mockResolvedValue('token-en'),
+      signOut: vi.fn().mockResolvedValue(undefined)
+    } satisfies AdminAuthClient;
+    render(
+      <I18nProvider initialLocale="en">
+        <AdminApp auth={auth} api={api} />
+      </I18nProvider>
+    );
+
+    expect(await screen.findByRole('button', { name: 'Pending review' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
+    expect(screen.getByLabelText('Review queue')).toBeTruthy();
   });
 });

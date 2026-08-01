@@ -109,6 +109,46 @@ describe('管理员审核服务', () => {
     expect(storage.createSignedUrl).not.toHaveBeenCalled();
   });
 
+  it.each([null, 0])('封面实际字节为 %s 时不签发预览', async (actualBytes) => {
+    const row = submission('manual_review_pending', {
+      assets: [{
+        role: 'cover',
+        storageKey: 'private/cover.png',
+        fileName: 'cover.png',
+        declaredBytes: 10,
+        actualBytes,
+        contentType: 'image/png'
+      }]
+    });
+    const { service, storage } = createService(row);
+
+    await expect(service.getDetail(row.id)).resolves.toMatchObject({ coverPreview: null });
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('封面签名失败时仍返回正文和扫描详情并降级为空预览', async () => {
+    const row = submission('manual_review_pending', {
+      body: '必须保留的审核正文',
+      assets: [{
+        role: 'cover',
+        storageKey: 'private/cover.jpg',
+        fileName: 'cover.jpg',
+        declaredBytes: 10,
+        actualBytes: 10,
+        contentType: 'image/jpeg'
+      }],
+      moderationResults: [moderationResult('Review')]
+    });
+    const { service, storage } = createService(row);
+    storage.createSignedUrl.mockRejectedValueOnce(new Error('签名服务不可用'));
+
+    await expect(service.getDetail(row.id)).resolves.toMatchObject({
+      body: '必须保留的审核正文',
+      coverPreview: null,
+      moderationResults: [{ suggestion: 'Review' }]
+    });
+  });
+
   it('管理员动作读取内部详情时不额外签发封面预览', async () => {
     const row = submission('manual_review_pending', {
       kind: 'feedback',

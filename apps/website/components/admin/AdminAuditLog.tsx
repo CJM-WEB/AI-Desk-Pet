@@ -10,7 +10,7 @@ interface AdminAuditLogProps {
 
 /** 当前后端没有全局审计分页，本视图只展示所选投稿的只读日志。 */
 export function AdminAuditLog({ detail }: AdminAuditLogProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   return (
     <section className={styles.detailPanel} aria-labelledby="audit-title">
       <header className={styles.panelHeader}>
@@ -25,7 +25,7 @@ export function AdminAuditLog({ detail }: AdminAuditLogProps) {
             <span>{statusLabel(log.beforeStatus, t)} → {statusLabel(log.afterStatus, t)}</span>
             <strong>{actionLabel(log.action, t)}</strong>
             <p>{log.reason}</p>
-            <time dateTime={log.createdAt}>{new Date(log.createdAt).toLocaleString('zh-CN', { hour12: false })}</time>
+            <time dateTime={log.createdAt}>{new Date(log.createdAt).toLocaleString(locale, { hour12: false })}</time>
           </li>
         ))}
       </ol>

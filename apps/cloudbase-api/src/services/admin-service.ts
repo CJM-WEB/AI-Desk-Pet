@@ -29,12 +29,12 @@ export class AdminService {
     const cover = detail.assets.find(asset => (
       asset.role === 'cover'
       && ['image/jpeg', 'image/png', 'image/webp'].includes(asset.contentType)
+      && asset.actualBytes !== null
+      && asset.actualBytes > 0
     ));
     return {
       ...detail,
-      coverPreview: cover
-        ? await this.storage.createSignedUrl(cover.storageKey, 300)
-        : null
+      coverPreview: cover ? await safeCoverPreview(this.storage, cover.storageKey) : null
     };
   }
 
@@ -55,6 +55,19 @@ export class AdminService {
       idempotencyKey: action.idempotencyKey,
       reason: action.reason
     });
+  }
+}
+
+/** 预览属于辅助信息；签名失败不得阻断审核正文、证据和动作。 */
+async function safeCoverPreview(
+  storage: ObjectStorage,
+  storageKey: string
+): Promise<Awaited<ReturnType<ObjectStorage['createSignedUrl']>> | null> {
+  try {
+    return await storage.createSignedUrl(storageKey, 300);
+  } catch {
+    // 部署诊断由平台错误监控门禁补齐，此处不输出私有路径或签名错误。
+    return null;
   }
 }
 

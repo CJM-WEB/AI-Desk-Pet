@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { AdminAction } from '@myself/shared-types';
 
 import type { AdminSubmissionDetail } from '../../lib/admin-api-client';
@@ -18,9 +18,6 @@ interface AdminDetailProps {
 export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailProps) {
   const { t } = useI18n();
   const [reason, setReason] = useState('');
-  useEffect(() => {
-    setReason('');
-  }, [detail?.id, detail?.statusVersion]);
   if (loading) return <section className={styles.detailPanel}><p role="status">{t('admin.detail.loading')}</p></section>;
   if (!detail) return <section className={styles.detailPanel}><p className={styles.empty}>{t('admin.detail.empty')}</p></section>;
 
@@ -48,7 +45,7 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
           <img
             className={styles.coverPreview}
             src={detail.coverPreview.url}
-            alt={`${detail.title || '投稿'}封面`}
+            alt={t('admin.detail.coverAlt', { title: detail.title || t('admin.queue.noTitle') })}
             referrerPolicy="no-referrer"
           />
           <p className={styles.muted}>{t('admin.detail.coverExpiry')}</p>
@@ -87,7 +84,9 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
             {detail.moderationResults.map((result, index) => (
               <li key={`${result.kind}-${result.createdAt}-${index}`}>
                 <div><strong>{result.label || result.kind}</strong><span className={styles[`signal${result.suggestion}`]}>{result.suggestion}</span></div>
-                <p>{result.provider} · {result.score === null ? '无评分' : `评分 ${result.score}`}</p>
+                <p>{result.provider} · {result.score === null
+                  ? t('admin.detail.noScore')
+                  : t('admin.detail.score', { score: result.score })}</p>
                 <pre>{safeStructuredText(result.evidence)}</pre>
               </li>
             ))}
@@ -95,7 +94,7 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
         )}
       </section>
 
-      <section className={styles.actionSection} aria-label="审核动作">
+      <section className={styles.actionSection} aria-label={t('admin.detail.actionsLabel')}>
         <label className={styles.field}>
           <span>{t('admin.detail.reason')}</span>
           <textarea
@@ -108,7 +107,7 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
         </label>
         <div className={styles.actionGrid}>
           {detail.status === 'auto_rejected' ? (
-            <button type="button" className={styles.secondaryButton} disabled title="保持当前状态，不产生审计动作">
+            <button type="button" className={styles.secondaryButton} disabled title={t('admin.detail.keepRejectedTitle')}>
               {t('admin.detail.keepRejected')}
             </button>
           ) : null}

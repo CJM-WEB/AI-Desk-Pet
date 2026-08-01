@@ -26,7 +26,7 @@ export function AdminSidebar({ activeView, onSelect }: AdminSidebarProps) {
     <nav className={styles.sidebar} aria-label={t('admin.sidebar.label')}>
       <div className={styles.brand}>
         <span className={styles.brandMark} aria-hidden="true">AP</span>
-        <span><strong>AI Pet</strong><small>审核工作台</small></span>
+        <span><strong>AI Pet</strong><small>{t('admin.sidebar.brandSubtitle')}</small></span>
       </div>
       <div className={styles.navList}>
         {views.map(item => (

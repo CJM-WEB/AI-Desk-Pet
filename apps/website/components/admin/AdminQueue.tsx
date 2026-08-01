@@ -1,6 +1,6 @@
 import type { AdminSubmissionSummary } from '../../lib/admin-api-client';
 import { useI18n } from '../i18n/I18nProvider';
-import type { Translate } from '../i18n/i18n-types';
+import type { Locale, Translate } from '../i18n/i18n-types';
 import styles from './admin.module.css';
 
 interface AdminQueueProps {
@@ -21,9 +21,9 @@ export function AdminQueue({
   onSelect,
   onLoadMore
 }: AdminQueueProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   return (
-    <section className={styles.queuePanel} aria-label="审核队列" aria-busy={loading}>
+    <section className={styles.queuePanel} aria-label={t('admin.queue.label')} aria-busy={loading}>
       <header className={styles.panelHeader}>
         <div><p className={styles.eyebrow}>SUBMISSION QUEUE</p><h2>{t('admin.queue.title')}</h2></div>
         <span className={styles.countBadge}>{items.length}</span>
@@ -38,7 +38,7 @@ export function AdminQueue({
           >
             <span className={styles.queueTopline}>
               <span className={styles.kindBadge}>{kindLabel(item.kind, t)}</span>
-              <time dateTime={item.createdAt}>{formatDate(item.createdAt)}</time>
+              <time dateTime={item.createdAt}>{formatDate(item.createdAt, locale, t)}</time>
             </span>
             <strong>{item.title || t('admin.queue.noTitle')}</strong>
             <span className={styles.riskText}>{riskSummary(item.riskSummary, t)}</span>
@@ -75,9 +75,11 @@ export function statusLabel(status: string, t: Translate): string {
   } as Record<string, string>)[status] ?? status;
 }
 
-function formatDate(value: string): string {
+function formatDate(value: string, locale: Locale, t: Translate): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString('zh-CN', { hour12: false });
+  return Number.isNaN(date.getTime())
+    ? t('admin.queue.timeUnknown')
+    : date.toLocaleString(locale, { hour12: false });
 }
 
 function riskSummary(value: Record<string, unknown>, t: Translate): string {

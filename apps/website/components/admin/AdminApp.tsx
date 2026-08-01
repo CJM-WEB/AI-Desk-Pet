@@ -311,7 +311,13 @@ function AdminWorkspace({
             />
             {activeView === 'audit'
               ? <AdminAuditLog detail={detail} />
-              : <AdminDetail detail={detail} loading={detailLoading} acting={acting} onAction={(action, reason) => void applyAction(action, reason)} />}
+              : <AdminDetail
+                  key={`${detail?.id ?? 'none'}:${detail?.statusVersion ?? 0}`}
+                  detail={detail}
+                  loading={detailLoading}
+                  acting={acting}
+                  onAction={(action, reason) => void applyAction(action, reason)}
+                />}
         </div>
       </div>
     </main>
