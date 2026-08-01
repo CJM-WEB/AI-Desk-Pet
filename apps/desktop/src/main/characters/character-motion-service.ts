@@ -131,6 +131,22 @@ export class CharacterMotionService {
   tick(): CharacterMotionSnapshot {
     const now = Math.max(this.lastTickMs, this.now());
     const bounds = this.options.window.getBounds();
+    if (this.userMoving) {
+      const position = { x: bounds.x, y: bounds.y };
+      this.target = position;
+      this.lastTickMs = now;
+      this.latestSnapshot = {
+        revision: ++this.revision,
+        timestampMs: now,
+        position,
+        target: { ...position },
+        direction: this.direction,
+        moving: false,
+        carrying: this.carrying
+      };
+      for (const listener of [...this.listeners]) listener(this.latestSnapshot);
+      return structuredClone(this.latestSnapshot);
+    }
     const next = advanceMotion({
       current: { x: bounds.x, y: bounds.y },
       target: this.target,

@@ -383,6 +383,36 @@ describe('Main 角色运动服务', () => {
     expect(setPosition).not.toHaveBeenCalled();
   });
 
+  test('用户拖拽期间 tick 不写窗口且采用拖拽中的真实位置', () => {
+    let now = 0;
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const setPosition = vi.fn((x: number, y: number) => {
+      bounds = { ...bounds, x, y };
+    });
+    const service = new CharacterMotionService({
+      window: { getBounds: () => bounds, setPosition },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => now
+    });
+
+    service.moveTo({ x: 0, y: 0 }, 100);
+    service.beginUserMove();
+    bounds = { ...bounds, x: 48, y: 64 };
+    now = 16;
+    const dragging = service.tick();
+
+    expect(setPosition).not.toHaveBeenCalled();
+    expect(dragging.position).toEqual({ x: 48, y: 64 });
+    expect(dragging.target).toEqual({ x: 48, y: 64 });
+
+    bounds = { ...bounds, x: 96, y: 112 };
+    service.endUserMove();
+    now = 32;
+    const released = service.tick();
+    expect(setPosition).not.toHaveBeenCalled();
+    expect(released.position).toEqual({ x: 96, y: 112 });
+  });
+
   test('忽略自身 setPosition 产生的 moved 事件并继续原运动目标', () => {
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };
