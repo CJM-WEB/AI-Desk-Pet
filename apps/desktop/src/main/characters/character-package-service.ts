@@ -31,15 +31,17 @@ import {
   type PackageEntryDescriptor
 } from '@myself/character-assets';
 import {
-  characterManifestV1Schema,
-  type CharacterDraftV1,
-  type CharacterManifestV1
+  type CharacterDraftV2,
+  type CharacterManifestV2
 } from '@myself/character-runtime';
 import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
 import { z } from 'zod';
 import { CharacterAssetService } from './character-asset-service';
-import { migrateCharacterDocument } from './character-migrations';
+import {
+  migrateCharacterDocument,
+  migrateCharacterManifest
+} from './character-migrations';
 import { CharacterStore } from './character-store';
 
 const SAFE_CHARACTER_ID = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
@@ -113,10 +115,11 @@ type ExtractedFiles = ReadonlyMap<string, ExtractedFileDescriptor>;
 
 type PreparedPackage = {
   originalId: string;
-  draft: CharacterDraftV1;
-  manifest: CharacterManifestV1;
+  draft: CharacterDraftV2;
+  manifest: CharacterManifestV2;
   runtimeAssets: Readonly<Record<string, Uint8Array>>;
   sourceCatalog: SourceCatalog;
+  sourceVersion: 1 | 2;
 };
 
 type DirectoryIdentity = {
@@ -622,6 +625,33 @@ async function openVerifiedRegularFile(
   }
 }
 
+/** 打开导出文件前后都校验其物理路径仍位于已确认的角色目录内。 */
+async function openVerifiedContainedFile(
+  root: DirectoryIdentity,
+  path: string,
+  maxBytes: number
+): Promise<{ handle: FileHandle; byteLength: number; sha256: string }> {
+  let physicalPath: string;
+  try {
+    physicalPath = await realpath(path);
+  } catch {
+    throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
+  }
+  if (!isContained(root.physicalPath, physicalPath)) {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
+  }
+  const verified = await openVerifiedRegularFile(path, maxBytes);
+  try {
+    if (await realpath(path) !== physicalPath) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
+    return verified;
+  } catch (error) {
+    await verified.handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
 async function captureCharacterOwnership(
   charactersDirectory: string,
   characterId: string
@@ -723,24 +753,29 @@ async function preparePackage(
   entries: readonly ScannedEntry[],
   files: ExtractedFiles
 ): Promise<PreparedPackage> {
-  let draft: CharacterDraftV1;
+  let draftResult: ReturnType<typeof migrateCharacterDocument>;
+  let manifestResult: ReturnType<typeof migrateCharacterManifest>;
   try {
-    draft = migrateCharacterDocument(
+    draftResult = migrateCharacterDocument(
       await readJson(extractedPath(files, 'draft/draft.json'))
     );
+    manifestResult = migrateCharacterManifest(
+      await readJson(extractedPath(files, 'compiled/manifest.json'))
+    );
   } catch {
-    throw packageError('CHARACTER_PACKAGE_DOCUMENT_INVALID');
+    throw packageError('CHARACTER_PACKAGE_INVALID');
   }
-  const manifestResult = characterManifestV1Schema.safeParse(
-    await readJson(extractedPath(files, 'compiled/manifest.json'))
-  );
   const sourceResult = sourceCatalogSchema.safeParse(
     await readJson(extractedPath(files, 'source/catalog.json'))
   );
-  if (!manifestResult.success || !sourceResult.success) {
-    throw packageError('CHARACTER_PACKAGE_DOCUMENT_INVALID');
+  if (
+    !sourceResult.success
+    || draftResult.sourceVersion !== manifestResult.sourceVersion
+  ) {
+    throw packageError('CHARACTER_PACKAGE_INVALID');
   }
-  const manifest = manifestResult.data;
+  const draft = draftResult.document;
+  const manifest = manifestResult.document;
   const sourceCatalog = sourceResult.data;
   if (
     draft.id !== manifest.id
@@ -798,7 +833,8 @@ async function preparePackage(
     draft,
     manifest,
     runtimeAssets,
-    sourceCatalog
+    sourceCatalog,
+    sourceVersion: draftResult.sourceVersion
   };
 }
 
@@ -1049,7 +1085,7 @@ export class CharacterPackageService {
 
   async exportCharacter(characterId: string, destination: string): Promise<void> {
     const draft = await this.store.getDraft(characterId);
-    const manifest = await this.store.getRuntimeManifest(characterId);
+    const manifest = await this.store.getPublishedManifest(characterId);
     const sources = await this.assetService.listSources(characterId);
     const draftDocument = jsonBytes(draft);
     const sourceDocument = jsonBytes({ version: 1, characterId, sources });
@@ -1195,6 +1231,147 @@ export class CharacterPackageService {
       await Promise.allSettled(
         diskFiles.map(file => file.handle.close())
       );
+      if (temporaryDestination !== undefined) {
+        await rm(temporaryDestination, { force: true });
+      }
+    }
+  }
+
+  /**
+   * 迁移失败时只归档原始草稿和通过目录、大小及哈希校验的源素材。
+   * 恢复包不遍历角色目录，因此不会携带事务标记或未知文件。
+   */
+  async exportCharacterRecovery(
+    characterId: string,
+    destination: string
+  ): Promise<void> {
+    if (!SAFE_CHARACTER_ID.test(characterId)) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
+    }
+    const charactersRoot = await captureDirectoryIdentity(
+      resolve(this.charactersDirectory)
+    );
+    const characterRootPath = resolve(this.charactersDirectory, characterId);
+    if (!isContained(charactersRoot.logicalPath, characterRootPath)) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
+    }
+    const characterRoot = await captureDirectoryIdentity(
+      characterRootPath,
+      charactersRoot
+    );
+    const sources = await this.assetService.listSources(characterId);
+    const sourceDocument = jsonBytes({ version: 1, characterId, sources });
+    if (sourceDocument.byteLength > this.packageLimits.maxJsonBytes) {
+      throw packageError('CHARACTER_PACKAGE_JSON_TOO_LARGE');
+    }
+    const fileCount = 2 + sources.length;
+    if (
+      fileCount > this.packageLimits.maxFiles
+      || fileCount > this.packageLimits.maxEntries
+    ) {
+      throw packageError('CHARACTER_PACKAGE_FILE_COUNT_EXCEEDED');
+    }
+
+    const diskFiles: ExportedDiskFile[] = [];
+    const resourceStreams: Readable[] = [];
+    let temporaryDestination: string | undefined;
+    try {
+      const draftRootPath = resolve(characterRootPath, 'draft');
+      const draftRoot = await captureDirectoryIdentity(
+        draftRootPath,
+        characterRoot
+      );
+      const draftPath = resolve(draftRootPath, 'draft.json');
+      const draft = await openVerifiedContainedFile(
+        draftRoot,
+        draftPath,
+        this.packageLimits.maxJsonBytes
+      );
+      diskFiles.push({
+        archivePath: 'recovery/original-draft.json',
+        diskPath: draftPath,
+        ...draft
+      });
+
+      const sourceRoot = resolve(characterRootPath, 'source');
+      if (!isContained(characterRootPath, sourceRoot)) {
+        throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
+      }
+      const sourceRootIdentity = await captureDirectoryIdentity(
+        sourceRoot,
+        characterRoot
+      );
+      for (const source of sources) {
+        await assertDirectoryIdentity(sourceRootIdentity, characterRoot);
+        const archivePath = `source/${sourceFileName(source)}`;
+        const diskPath = resolve(sourceRoot, sourceFileName(source));
+        if (!isContained(sourceRoot, diskPath)) {
+          throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
+        }
+        const verified = await openVerifiedContainedFile(
+          sourceRootIdentity,
+          diskPath,
+          this.packageLimits.maxResourceBytes
+        );
+        const file = { archivePath, diskPath, ...verified };
+        diskFiles.push(file);
+        if (
+          file.byteLength !== source.byteLength
+          || file.sha256 !== source.sha256
+        ) {
+          throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
+        }
+        await runExportResourceCheckpoint(
+          this.dependencies.onCheckpoint,
+          characterRootPath,
+          diskPath
+        );
+      }
+
+      let totalBytes = sourceDocument.byteLength;
+      for (const file of diskFiles) {
+        totalBytes = addPackageBytes(
+          totalBytes,
+          file.byteLength,
+          this.packageLimits.maxTotalUncompressedBytes
+        );
+      }
+
+      const archive = this.archiveFactory();
+      archive.addBuffer(sourceDocument, 'source/catalog.json');
+      for (const file of diskFiles) {
+        const stream = file.handle.createReadStream({ start: 0, autoClose: true });
+        resourceStreams.push(stream);
+        archive.addReadStream(stream, file.archivePath, { size: file.byteLength });
+      }
+
+      temporaryDestination = `${destination}.${this.createId()}.tmp`;
+      const output = createWriteStream(
+        temporaryDestination,
+        { flags: 'wx', mode: 0o600 }
+      );
+      const transfer = pipeline(archive.outputStream, output);
+      archive.end();
+      await transfer;
+      await this.dependencies.onCheckpoint?.(
+        'export:before-commit',
+        dirname(destination),
+        destination
+      );
+      try {
+        await link(temporaryDestination, destination);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+          throw packageError('CHARACTER_PACKAGE_DESTINATION_EXISTS');
+        }
+        throw error;
+      }
+    } finally {
+      for (const stream of resourceStreams) {
+        if (!stream.destroyed) stream.destroy();
+      }
+      await Promise.allSettled(resourceStreams.map(stream => finished(stream)));
+      await Promise.allSettled(diskFiles.map(file => file.handle.close()));
       if (temporaryDestination !== undefined) {
         await rm(temporaryDestination, { force: true });
       }

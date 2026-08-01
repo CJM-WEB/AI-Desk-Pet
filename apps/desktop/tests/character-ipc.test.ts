@@ -1,8 +1,18 @@
 import type { IpcMain } from 'electron';
+import {
+  convertCharacterDraftV1ToV2,
+  convertCharacterManifestV1ToV2,
+  type CharacterDraftV1,
+  type CharacterManifestV1
+} from '@myself/character-runtime';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import * as ipcRegistration from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
-import type { CharacterWorkshopSourceDto } from '../src/shared/character-ipc';
+import {
+  characterRuntimeSnapshotSchema,
+  type CharacterSummaryDto,
+  type CharacterWorkshopSourceDto
+} from '../src/shared/character-ipc';
 import type { MyselfApi } from '../src/shared/myself-api';
 
 type Handler = (event: unknown, input?: unknown) => unknown;
@@ -17,6 +27,52 @@ const invoke = vi.fn(async (): Promise<unknown> => undefined);
 const on = vi.fn();
 const removeListener = vi.fn();
 let exposedApi: MyselfApi | undefined;
+
+function createDraftV1(): CharacterDraftV1 {
+  return {
+    version: 1,
+    id: 'demo',
+    name: '演示角色',
+    states: []
+  };
+}
+
+function createLegacyManifestV1(): CharacterManifestV1 {
+  return {
+    version: 1,
+    id: 'demo',
+    name: '演示角色',
+    thumbnailAssetId: 'atlas',
+    compilerVersion: 'test-v1',
+    resources: [{
+      assetId: 'atlas',
+      fileName: 'atlas.png',
+      sha256: '0'.repeat(64),
+      byteLength: 1
+    }],
+    states: [{
+      id: 'idle',
+      kind: 'core',
+      actions: [{
+        id: 'idle-main',
+        name: '待机',
+        fps: 8,
+        loop: true,
+        weight: 1,
+        frames: [{ assetId: 'atlas', x: 0, y: 0, width: 1, height: 1 }],
+        anchors: { ground: { x: 0.5, y: 1 } }
+      }]
+    }]
+  };
+}
+
+function createDraftV2() {
+  return convertCharacterDraftV1ToV2(createDraftV1()).document;
+}
+
+function createManifestV2() {
+  return convertCharacterManifestV1ToV2(createLegacyManifestV1()).document;
+}
 
 vi.mock('electron', () => ({
   contextBridge: {
@@ -40,7 +96,7 @@ function createIpcMain() {
 
 function characterServiceDouble() {
   return {
-    listCharacters: vi.fn(async () => []),
+    listCharacters: vi.fn(async (): Promise<CharacterSummaryDto[]> => []),
     createCharacter: vi.fn(async () => ({
       version: 1,
       id: 'new-character',
@@ -69,7 +125,9 @@ function characterServiceDouble() {
     activateCharacter: vi.fn(async () => undefined),
     deleteCharacter: vi.fn(async () => undefined),
     importCharacterPackage: vi.fn(async () => 'imported-character'),
-    exportCharacterPackage: vi.fn(async () => undefined),
+    exportCharacterPackage: vi.fn(
+      async (): Promise<'exported' | 'recovery-exported'> => 'exported'
+    ),
     getCharacterRuntimeSnapshot: vi.fn(async () => null),
     readCharacterRuntimeAsset: vi.fn(async () => new Uint8Array([4, 5, 6]))
   };
@@ -115,6 +173,109 @@ beforeEach(() => {
   invoke.mockClear();
   on.mockClear();
   removeListener.mockClear();
+});
+
+describe('V2 角色 IPC 边界', () => {
+  test('草稿保存与发布只接受 V2，运行快照继续接受 V1', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = characterServiceDouble();
+    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+
+    await expect(handlers.get(channel('characterDraftSave'))?.({}, {
+      characterId: 'demo',
+      draft: createDraftV2()
+    })).resolves.toEqual({ ok: true });
+    await expect(handlers.get(channel('characterDraftSave'))?.({}, {
+      characterId: 'demo',
+      draft: createDraftV1()
+    })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
+
+    const manifest = createManifestV2();
+    await expect(handlers.get(channel('characterPublish'))?.({}, {
+      characterId: 'demo',
+      manifest,
+      resources: [{ assetId: 'atlas', bytes: new Uint8Array([1]) }]
+    })).resolves.toEqual({ ok: true });
+    await expect(handlers.get(channel('characterPublish'))?.({}, {
+      characterId: 'demo',
+      manifest: createLegacyManifestV1(),
+      resources: [{ assetId: 'atlas', bytes: new Uint8Array([1]) }]
+    })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
+
+    expect(characterRuntimeSnapshotSchema.parse({
+      activeCharacterId: 'demo',
+      manifest: createLegacyManifestV1()
+    })).toBeTruthy();
+  });
+
+  test('角色列表严格返回迁移恢复摘要', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = characterServiceDouble();
+    service.listCharacters.mockResolvedValueOnce([{
+      id: 'demo',
+      name: '演示角色',
+      thumbnailAssetId: null,
+      active: false,
+      completeness: 'broken',
+      missingCoreStates: [],
+      missingRequirements: [],
+      migrationErrorCode: 'CHARACTER_MIGRATION_FAILED',
+      migrationRecoveryAvailable: true,
+      activationConfirmationRequired: false
+    }]);
+    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+
+    await expect(handlers.get(channel('characterList'))?.({}, {})).resolves.toEqual({
+      characters: [{
+        id: 'demo',
+        name: '演示角色',
+        thumbnailAssetId: null,
+        active: false,
+        completeness: 'broken',
+        missingCoreStates: [],
+        missingRequirements: [],
+        migrationErrorCode: 'CHARACTER_MIGRATION_FAILED',
+        migrationRecoveryAvailable: true,
+        activationConfirmationRequired: false
+      }]
+    });
+  });
+
+  test('恢复导出沿用角色导出通道并返回专用结果', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = characterServiceDouble();
+    service.exportCharacterPackage.mockResolvedValueOnce('recovery-exported');
+    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+
+    await expect(handlers.get(channel('characterPackageExport'))?.({}, {
+      characterId: 'demo'
+    })).resolves.toEqual({ kind: 'recovery-exported' });
+  });
+
+  test('应用服务仅在迁移失败时把普通导出切换为恢复导出', async () => {
+    const packages = {
+      importCharacter: vi.fn(async () => 'unused'),
+      exportCharacter: vi.fn(async () => {
+        throw new Error('CHARACTER_MIGRATION_FAILED');
+      }),
+      exportCharacterRecovery: vi.fn(async () => undefined)
+    };
+    const { CharacterActions } = await import(
+      '../src/main/characters/character-actions'
+    );
+    const actions = new CharacterActions({
+      store: {} as never,
+      assets: {} as never,
+      packages
+    });
+
+    await expect(actions.exportCharacterPackage('demo', 'C:\\selected\\demo.zip'))
+      .resolves.toBe('recovery-exported');
+    expect(packages.exportCharacterRecovery).toHaveBeenCalledWith(
+      'demo',
+      'C:\\selected\\demo.zip'
+    );
+  });
 });
 
 describe('角色白名单 IPC', () => {

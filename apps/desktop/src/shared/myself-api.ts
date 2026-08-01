@@ -6,7 +6,7 @@ import type {
   StoredProviderProfileV2,
   TaskEvent
 } from '@myself/shared-types';
-import type { CharacterDraftV1 } from '@myself/character-runtime';
+import type { CharacterDraftV2 } from '@myself/character-runtime';
 import type {
   CharacterCreateInput,
   CharacterEvent,
@@ -162,10 +162,10 @@ export interface MyselfApi extends PetWindowInteractionApi {
   cancelAction(actionId: string): Promise<void>;
   onTaskEvent(listener: (event: TaskEvent) => void): () => void;
   listCharacters(): Promise<CharacterSummaryDto[]>;
-  createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV1>;
-  duplicateCharacter(characterId: string): Promise<CharacterDraftV1>;
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV1>;
-  saveCharacterDraft(characterId: string, draft: CharacterDraftV1): Promise<void>;
+  createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV2>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
+  saveCharacterDraft(characterId: string, draft: CharacterDraftV2): Promise<void>;
   chooseCharacterSources(characterId: string): Promise<CharacterSourceChoiceResult>;
   listCharacterSources(characterId: string): Promise<CharacterWorkshopSourceDto[]>;
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;

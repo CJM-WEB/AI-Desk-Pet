@@ -1,6 +1,7 @@
 import {
-  characterDraftV1Schema,
+  characterDraftV2Schema,
   characterManifestV1Schema,
+  characterManifestV2Schema,
   CORE_CHARACTER_STATES
 } from '@myself/character-runtime';
 import { z } from 'zod';
@@ -27,7 +28,7 @@ export const characterCreateInputSchema = z.object({
 }).strict();
 export const characterDraftSaveInputSchema = z.object({
   characterId: characterIdSchema,
-  draft: characterDraftV1Schema
+  draft: characterDraftV2Schema
 }).strict();
 export const characterSourceReadInputSchema = z.object({
   characterId: characterIdSchema,
@@ -35,7 +36,7 @@ export const characterSourceReadInputSchema = z.object({
 }).strict();
 export const characterPublishInputSchema = z.object({
   characterId: characterIdSchema,
-  manifest: characterManifestV1Schema,
+  manifest: characterManifestV2Schema,
   resources: z.array(z.object({
     assetId: characterAssetIdSchema,
     bytes: z.instanceof(Uint8Array)
@@ -51,7 +52,13 @@ export const characterSummarySchema = z.object({
   thumbnailAssetId: characterAssetIdSchema.nullable(),
   active: z.boolean(),
   completeness: z.enum(['complete', 'incomplete', 'broken']),
-  missingCoreStates: z.array(z.enum(CORE_CHARACTER_STATES)),
+  missingRequirements: z.array(z.enum([
+    'default-state-action-missing',
+    'default-presentation-unplayable'
+  ])),
+  migrationErrorCode: z.literal('CHARACTER_MIGRATION_FAILED').optional(),
+  migrationRecoveryAvailable: z.boolean(),
+  missingCoreStates: z.array(z.enum(CORE_CHARACTER_STATES)).default([]),
   activationConfirmationRequired: z.boolean().optional()
 }).strict();
 export const characterSourceSchema = z.object({
@@ -75,7 +82,7 @@ export const characterListResultSchema = z.object({
   characters: z.array(characterSummarySchema)
 }).strict();
 export const characterDraftResultSchema = z.object({
-  draft: characterDraftV1Schema
+  draft: characterDraftV2Schema
 }).strict();
 export const characterMutationResultSchema = z.object({
   ok: z.literal(true)
@@ -108,7 +115,8 @@ export const characterImportResultSchema = z.discriminatedUnion('kind', [
 ]);
 export const characterExportResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cancelled') }).strict(),
-  z.object({ kind: z.literal('exported') }).strict()
+  z.object({ kind: z.literal('exported') }).strict(),
+  z.object({ kind: z.literal('recovery-exported') }).strict()
 ]);
 
 // 事件对象使用封闭联合，Renderer 不能指定订阅通道或接收 Main 内部路径。

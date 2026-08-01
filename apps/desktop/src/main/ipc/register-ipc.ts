@@ -26,13 +26,13 @@ import {
   characterSourceChoiceResultSchema,
   characterSourceReadInputSchema,
   characterSourceSchema,
+  characterSummarySchema,
   characterSourcesResultSchema,
   type CharacterPublishInput,
   type CharacterRuntimeSnapshot,
-  type CharacterSummaryDto,
   type CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
-import type { CharacterDraftV1 } from '@myself/character-runtime';
+import type { CharacterDraftV2 } from '@myself/character-runtime';
 import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
 import {
   characterMotionEmptyInputSchema,
@@ -348,11 +348,11 @@ export function registerAdvancedSettingsIpc(
 }
 
 export interface CharacterIpcService {
-  listCharacters(): Promise<CharacterSummaryDto[]>;
-  createCharacter(input: { name: string }): Promise<CharacterDraftV1>;
-  duplicateCharacter(characterId: string): Promise<CharacterDraftV1>;
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV1>;
-  saveCharacterDraft(characterId: string, draft: CharacterDraftV1): Promise<void>;
+  listCharacters(): Promise<Array<z.input<typeof characterSummarySchema>>>;
+  createCharacter(input: { name: string }): Promise<CharacterDraftV2>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
+  saveCharacterDraft(characterId: string, draft: CharacterDraftV2): Promise<void>;
   chooseCharacterSources(
     characterId: string,
     selectedPaths: readonly string[]
@@ -363,7 +363,10 @@ export interface CharacterIpcService {
   activateCharacter(characterId: string, confirmIncomplete?: boolean): Promise<void>;
   deleteCharacter(characterId: string): Promise<void>;
   importCharacterPackage(packagePath: string): Promise<string>;
-  exportCharacterPackage(characterId: string, destination: string): Promise<void>;
+  exportCharacterPackage(
+    characterId: string,
+    destination: string
+  ): Promise<'exported' | 'recovery-exported'>;
   getCharacterRuntimeSnapshot(): Promise<CharacterRuntimeSnapshot | null>;
   readCharacterRuntimeAsset(assetId: string): Promise<Uint8Array>;
 }
@@ -544,8 +547,11 @@ export function registerCharacterIpc(
       if (!selected.filePath) {
         throw new Error('CHARACTER_PACKAGE_SELECTION_INVALID');
       }
-      await service.exportCharacterPackage(characterId, selected.filePath);
-      return { kind: 'exported' };
+      const kind = await service.exportCharacterPackage(
+        characterId,
+        selected.filePath
+      );
+      return { kind };
     });
   });
   replaceHandler(

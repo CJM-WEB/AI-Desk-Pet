@@ -14,7 +14,11 @@ import { createWriteStream as openWriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { finished } from 'node:stream/promises';
-import type { CharacterManifestV1 } from '@myself/character-runtime';
+import {
+  convertCharacterManifestV1ToV2,
+  type CharacterManifestV1,
+  type CharacterManifestV2
+} from '@myself/character-runtime';
 import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -35,7 +39,7 @@ function checksum(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function runtime(characterId: string): {
+function legacyRuntime(characterId: string): {
   manifest: CharacterManifestV1;
   assets: Readonly<Record<string, Uint8Array>>;
 } {
@@ -74,6 +78,17 @@ function runtime(characterId: string): {
       }]
     },
     assets: { 'atlas.png': bytes }
+  };
+}
+
+function runtime(characterId: string): {
+  manifest: CharacterManifestV2;
+  assets: Readonly<Record<string, Uint8Array>>;
+} {
+  const legacy = legacyRuntime(characterId);
+  return {
+    manifest: convertCharacterManifestV1ToV2(legacy.manifest).document,
+    assets: legacy.assets
   };
 }
 
@@ -178,6 +193,163 @@ describe('角色包 Main 服务', () => {
     await store.publishCompiled(characterId, published.manifest, published.assets);
     return { store, sourceAssetId: imported!.assetId };
   }
+
+  test('V2 导出直接读取正式草稿与发布清单', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'v2-export.zip');
+
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', destination);
+
+    const files = await readZip(destination);
+    expect(JSON.parse(files.get('draft/draft.json')!.toString('utf8')))
+      .toMatchObject({ version: 2, id: 'demo' });
+    expect(JSON.parse(files.get('compiled/manifest.json')!.toString('utf8')))
+      .toMatchObject({
+        version: 2,
+        id: 'demo',
+        identity: { description: '演示角色' }
+      });
+  });
+
+  test('V1 角色包在 staging 内统一转换为 V2 后安装', async () => {
+    const packagePath = join(testDirectory, 'legacy-v1.zip');
+    const legacy = legacyRuntime('legacy');
+    await writeZip(packagePath, [
+      {
+        path: 'draft/draft.json',
+        bytes: JSON.stringify({
+          version: 1,
+          id: 'legacy',
+          name: '旧版角色',
+          states: legacy.manifest.states
+        })
+      },
+      {
+        path: 'compiled/manifest.json',
+        bytes: JSON.stringify({ ...legacy.manifest, name: '旧版角色' })
+      },
+      {
+        path: 'source/catalog.json',
+        bytes: JSON.stringify({ version: 1, characterId: 'legacy', sources: [] })
+      },
+      { path: 'compiled/atlas.png', bytes: legacy.assets['atlas.png']! }
+    ]);
+    const importedCharacters = join(testDirectory, 'legacy-imported');
+    const store = new CharacterStore(importedCharacters);
+
+    const importedId = await new CharacterPackageService(importedCharacters, {
+      store,
+      assetService: new CharacterAssetService(importedCharacters)
+    }).importCharacter(packagePath);
+
+    expect(importedId).toBe('legacy');
+    await expect(store.getDraft(importedId)).resolves.toMatchObject({ version: 2 });
+    await expect(store.getPublishedManifest(importedId))
+      .resolves.toMatchObject({ version: 2 });
+  });
+
+  test.each([
+    {
+      name: '未知 V2 字段',
+      slug: 'unknown-v2-field',
+      mutate(files: Map<string, Buffer>) {
+        const draft = JSON.parse(files.get('draft/draft.json')!.toString('utf8'));
+        draft.shell = 'powershell.exe';
+        files.set('draft/draft.json', Buffer.from(JSON.stringify(draft)));
+      }
+    },
+    {
+      name: 'capabilityRef',
+      slug: 'capability-ref',
+      mutate(files: Map<string, Buffer>) {
+        const manifest = convertCharacterManifestV1ToV2(
+          legacyRuntime('demo').manifest
+        ).document as unknown as {
+          actions: Array<Record<string, unknown>>;
+        };
+        manifest.actions[0]!.capabilityRef = 'agent:run-shell';
+        files.set('compiled/manifest.json', Buffer.from(JSON.stringify(manifest)));
+      }
+    },
+    {
+      name: '混合 V1/V2 来源版本',
+      slug: 'mixed-source-version',
+      mutate(files: Map<string, Buffer>) {
+        const legacy = legacyRuntime('demo');
+        files.set('compiled/manifest.json', Buffer.from(JSON.stringify(
+          convertCharacterManifestV1ToV2(legacy.manifest).document
+        )));
+        files.set('draft/draft.json', Buffer.from(JSON.stringify({
+          version: 1,
+          id: 'demo',
+          name: '演示角色',
+          states: legacy.manifest.states
+        })));
+      }
+    }
+  ])('拒绝$name且不创建角色', async ({ slug, mutate }) => {
+    await createPublishedCharacter();
+    const exported = join(testDirectory, `${slug}.source.zip`);
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', exported);
+    const files = await readZip(exported);
+    mutate(files);
+    const malicious = join(testDirectory, `${slug}.zip`);
+    await writeZip(malicious, [...files].map(([path, bytes]) => ({ path, bytes })));
+    const importedCharacters = join(testDirectory, `${slug}-characters`);
+    const store = new CharacterStore(importedCharacters);
+
+    await expect(new CharacterPackageService(importedCharacters, { store })
+      .importCharacter(malicious)).rejects.toThrow('CHARACTER_PACKAGE_INVALID');
+    await expect(store.list()).resolves.toEqual([]);
+  });
+
+  test('恢复包只包含原始草稿、已验证目录和源素材', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'demo', name: '待恢复角色' });
+    const selectedDirectory = join(testDirectory, 'recovery-selected');
+    await mkdir(selectedDirectory);
+    const sourcePath = join(selectedDirectory, 'idle.png');
+    await writeFile(sourcePath, PNG_BYTES);
+    const [source] = await new CharacterAssetService(charactersDirectory)
+      .importSources('demo', [sourcePath]);
+    const originalDraft = { version: 3, id: 'demo', name: '待恢复角色' };
+    await writeFile(
+      join(charactersDirectory, 'demo', 'draft', 'draft.json'),
+      JSON.stringify(originalDraft)
+    );
+    await writeFile(
+      join(charactersDirectory, 'demo', '.package-import-owner.json'),
+      JSON.stringify({ importTransactionId: '不得导出' })
+    );
+    await writeFile(
+      join(charactersDirectory, 'demo', 'private.txt'),
+      'C:\\private\\characters\\demo'
+    );
+    await expect(store.list()).resolves.toMatchObject([{
+      id: 'demo',
+      migrationErrorCode: 'CHARACTER_MIGRATION_FAILED',
+      migrationRecoveryAvailable: true
+    }]);
+    const destination = join(testDirectory, 'recovery.zip');
+
+    await new CharacterPackageService(charactersDirectory, { store })
+      .exportCharacterRecovery('demo', destination);
+
+    const files = await readZip(destination);
+    expect([...files.keys()].sort()).toEqual([
+      'recovery/original-draft.json',
+      'source/catalog.json',
+      `source/${source!.assetId}.png`
+    ].sort());
+    expect(JSON.parse(
+      files.get('recovery/original-draft.json')!.toString('utf8')
+    )).toEqual(originalDraft);
+    const serialized = Buffer.concat([...files.values()]).toString('utf8');
+    expect(serialized).not.toContain('importTransactionId');
+    expect(serialized).not.toContain('C:\\private');
+  });
 
   test('导出只包含指定角色草稿、源素材和运行时必需文件', async () => {
     const { sourceAssetId } = await createPublishedCharacter();
