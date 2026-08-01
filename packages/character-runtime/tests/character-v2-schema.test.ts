@@ -234,6 +234,21 @@ describe('角色包 V2 严格契约', () => {
     )).toThrow(/状态引用/u);
   });
 
+  test('草稿拒绝将修饰状态设为默认状态', () => {
+    const draft = createCharacterDraftV2Fixture();
+    draft.states.push({
+      ...draft.states[0]!,
+      id: 'default-modifier',
+      name: '默认修饰状态',
+      kind: 'modifier',
+      semantic: { kind: 'custom', value: 'default-modifier' },
+      actionIds: []
+    });
+    draft.defaultStateId = 'default-modifier';
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow(/默认状态必须是主状态/u);
+  });
+
   test('草稿拒绝动作回退循环', () => {
     expect(() => characterDraftV2Schema.parse(
       withActionCycle(createCharacterDraftV2Fixture(), 'wave', 'nod')

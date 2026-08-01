@@ -283,4 +283,169 @@ describe('V2 行为状态推断', () => {
     expect(conflicting.desiredActionSemantic).toBe('think');
     expect(illegal.primaryStateId).toBe('resting-core');
   });
+
+  test('Agent 语义意图只从可推断的主状态中按强度选择', () => {
+    const manifest = 创建清单([
+      创建状态({ id: 'resting-core', kind: 'primary', semantic: 'idle' }),
+      创建状态({ id: 'private-think', kind: 'primary', semantic: 'think', intensity: 100 }),
+      创建状态({ id: 'agent-think', kind: 'primary', semantic: 'think', intensity: 1, agentInferable: true })
+    ]);
+
+    const result = inferCharacterBehaviorState({
+      manifest,
+      previous: createInitialBehaviorState(manifest),
+      signal: { type: 'user-interaction', occurredAtMs: 1 },
+      agentIntent: {
+        stateIntent: { semantic: 'think' },
+        actionSemantic: null,
+        urgency: 1,
+        explanation: '请求可推断的思考状态。'
+      }
+    });
+
+    expect(result.primaryStateId).toBe('agent-think');
+  });
+
+  test('Agent 指定可推断修饰状态时保留唯一主状态并加入修饰状态', () => {
+    const manifest = 创建清单([
+      创建状态({ id: 'resting-core', kind: 'primary', semantic: 'idle' }),
+      创建状态({
+        id: 'automatic-overlay',
+        kind: 'modifier',
+        semantic: { kind: 'custom', value: 'automatic-overlay' },
+        coexistWithStateIds: ['resting-core'],
+        forbiddenStateIds: ['agent-overlay']
+      }),
+      创建状态({
+        id: 'agent-overlay',
+        kind: 'modifier',
+        semantic: { kind: 'custom', value: 'agent-overlay' },
+        agentInferable: true,
+        coexistWithStateIds: ['resting-core'],
+        forbiddenStateIds: ['automatic-overlay']
+      })
+    ]);
+
+    const result = inferCharacterBehaviorState({
+      manifest,
+      previous: createInitialBehaviorState(manifest),
+      signal: { type: 'user-interaction', occurredAtMs: 1 },
+      agentIntent: {
+        stateIntent: { stateId: 'agent-overlay' },
+        actionSemantic: 'speak',
+        urgency: 1,
+        explanation: '请求可推断的修饰状态。'
+      }
+    });
+
+    expect(result.primaryStateId).toBe('resting-core');
+    expect(result.modifierStateIds).toEqual(['agent-overlay']);
+  });
+
+  test('边沿信号进入的修饰状态在普通事件后保留，并在退出条件满足时移除', () => {
+    const manifest = 创建清单([
+      创建状态({ id: 'resting-core', kind: 'primary', semantic: 'idle' }),
+      创建状态({
+        id: 'interaction-overlay',
+        kind: 'modifier',
+        semantic: { kind: 'custom', value: 'interaction-overlay' },
+        coexistWithStateIds: ['resting-core'],
+        enterConditions: [{ mode: 'all', clauses: [{ kind: 'signal', signal: 'user-interaction' }] }],
+        exitConditions: [{ mode: 'all', clauses: [{ kind: 'signal', signal: 'idle' }] }]
+      })
+    ]);
+    const entered = 推断(manifest, { type: 'user-interaction', occurredAtMs: 1 });
+    const retained = 推断(manifest, { type: 'listening', active: false, occurredAtMs: 2 }, entered);
+    const exited = 推断(manifest, { type: 'idle-due', occurredAtMs: 3 }, retained);
+
+    expect(entered.modifierStateIds).toEqual(['interaction-overlay']);
+    expect(retained.modifierStateIds).toEqual(['interaction-overlay']);
+    expect(exited.modifierStateIds).toEqual([]);
+  });
+
+  test('本地请求没有匹配主状态时回退到默认主状态', () => {
+    const manifest = 创建清单([
+      创建状态({ id: 'resting-core', kind: 'primary', semantic: 'idle' }),
+      创建状态({ id: 'listening-core', kind: 'primary', semantic: 'listen' })
+    ]);
+    const listening = 推断(manifest, { type: 'conversation-start', occurredAtMs: 1 });
+
+    expect(推断(manifest, { type: 'thinking', active: true, occurredAtMs: 2 }, listening).primaryStateId)
+      .toBe('resting-core');
+  });
+
+  test('Agent 主状态进入条件不满足时回退默认状态', () => {
+    const manifest = 创建清单([
+      创建状态({ id: 'resting-core', kind: 'primary', semantic: 'idle' }),
+      创建状态({ id: 'listening-core', kind: 'primary', semantic: 'listen' }),
+      创建状态({
+        id: 'agent-think',
+        kind: 'primary',
+        semantic: 'think',
+        agentInferable: true,
+        enterConditions: [{ mode: 'all', clauses: [{ kind: 'signal', signal: 'task-start' }] }]
+      })
+    ]);
+    const listening = 推断(manifest, { type: 'conversation-start', occurredAtMs: 1 });
+
+    expect(inferCharacterBehaviorState({
+      manifest,
+      previous: listening,
+      signal: { type: 'user-interaction', occurredAtMs: 2 },
+      agentIntent: {
+        stateIntent: { semantic: 'think' },
+        actionSemantic: null,
+        urgency: 1,
+        explanation: '条件尚未满足。'
+      }
+    }).primaryStateId).toBe('resting-core');
+  });
+
+  test('非法 Agent 状态意图回退默认状态但保留合法动作语义', () => {
+    const manifest = 创建清单([
+      创建状态({ id: 'resting-core', kind: 'primary', semantic: 'idle' }),
+      创建状态({ id: 'listening-core', kind: 'primary', semantic: 'listen' })
+    ]);
+    const listening = 推断(manifest, { type: 'conversation-start', occurredAtMs: 1 });
+
+    const result = inferCharacterBehaviorState({
+      manifest,
+      previous: listening,
+      signal: { type: 'user-interaction', occurredAtMs: 2 },
+      agentIntent: {
+        stateIntent: { stateId: 'missing-state' },
+        actionSemantic: 'speak',
+        urgency: 1,
+        explanation: '状态意图无效但动作语义有效。'
+      }
+    });
+
+    expect(result.primaryStateId).toBe('resting-core');
+    expect(result.desiredActionSemantic).toBe('speak');
+  });
+
+  test('异常清单的默认修饰状态不会成为初始主状态', () => {
+    const manifest = 创建清单([
+      创建状态({ id: 'fallback-primary', kind: 'primary', semantic: 'idle' }),
+      创建状态({
+        id: 'invalid-default-modifier',
+        kind: 'modifier',
+        semantic: { kind: 'custom', value: 'invalid-default' }
+      })
+    ], 'invalid-default-modifier');
+
+    expect(createInitialBehaviorState(manifest).primaryStateId).toBe('fallback-primary');
+  });
+
+  test('异常清单不含主状态时抛出稳定错误', () => {
+    const manifest = 创建清单([
+      创建状态({
+        id: 'only-modifier',
+        kind: 'modifier',
+        semantic: { kind: 'custom', value: 'only-modifier' }
+      })
+    ], 'only-modifier');
+
+    expect(() => createInitialBehaviorState(manifest)).toThrow('CHARACTER_BEHAVIOR_PRIMARY_STATE_UNAVAILABLE');
+  });
 });

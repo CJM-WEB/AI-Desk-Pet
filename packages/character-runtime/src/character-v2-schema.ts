@@ -223,6 +223,8 @@ function validateDocumentReferences(document: V2Document, context: z.RefinementC
   }
   if (!stateIds.has(document.defaultStateId)) {
     addReferenceIssue(context, '默认状态必须引用已声明的状态。', ['defaultStateId']);
+  } else if (document.states.find((state) => state.id === document.defaultStateId)?.kind !== 'primary') {
+    addReferenceIssue(context, '默认状态必须是主状态。', ['defaultStateId']);
   }
 
   document.states.forEach((state, stateIndex) => {

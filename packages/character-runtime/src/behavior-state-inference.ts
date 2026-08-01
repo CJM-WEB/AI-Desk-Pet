@@ -117,10 +117,12 @@ function selectPrimaryState(
   states: readonly CharacterStateDefinitionV2[],
   signals: readonly TrustedBehaviorSignal[],
   semantic: CharacterStandardSemantic | null,
-  requiredStateId?: string
+  requiredStateId?: string,
+  requireAgentInferable = false
 ): CharacterStateDefinitionV2 | undefined {
   const candidates = eligibleStates(states.filter((state) => (
     state.kind === 'primary'
+    && (!requireAgentInferable || state.agentInferable)
     && (requiredStateId ? state.id === requiredStateId : standardSemantic(state) === semantic)
   )), signals, new Set());
 
@@ -143,21 +145,30 @@ function selectModifierStates(
   manifest: CharacterManifestV2,
   previous: CharacterBehaviorStateSnapshot,
   primary: CharacterStateDefinitionV2,
-  signals: readonly TrustedBehaviorSignal[]
+  signals: readonly TrustedBehaviorSignal[],
+  explicitModifierStateId?: string
 ): CharacterStateDefinitionV2[] {
   const previousModifierIds = new Set(previous.modifierStateIds);
   const selected = [primary];
+  const modifiers = manifest.states.filter((state) => state.kind === 'modifier');
+  const orderedModifiers = explicitModifierStateId
+    ? [
+      ...modifiers.filter((state) => state.id === explicitModifierStateId),
+      ...modifiers.filter((state) => state.id !== explicitModifierStateId)
+    ]
+    : modifiers;
 
-  manifest.states.filter((state) => state.kind === 'modifier').forEach((candidate) => {
+  orderedModifiers.forEach((candidate) => {
     const stateIds = new Set([...selected.map((state) => state.id), candidate.id]);
-    const exited = previousModifierIds.has(candidate.id) && candidate.exitConditions.some((condition) => conditionMatches(
+    const existing = previousModifierIds.has(candidate.id);
+    const exited = existing && candidate.exitConditions.some((condition) => conditionMatches(
       condition,
       signals,
       standardSemantic(candidate),
       stateIds
     ));
     if (!exited
-      && conditionsMatch(candidate.enterConditions, signals, standardSemantic(candidate), stateIds)
+      && (existing || conditionsMatch(candidate.enterConditions, signals, standardSemantic(candidate), stateIds))
       && isCompatibleModifier(candidate, selected)) {
       selected.push(candidate);
     }
@@ -167,7 +178,15 @@ function selectModifierStates(
 }
 
 function defaultPrimary(manifest: CharacterManifestV2): CharacterStateDefinitionV2 | undefined {
-  return manifest.states.find((state) => state.id === manifest.defaultStateId && state.kind === 'primary');
+  return manifest.states.find((state) => state.id === manifest.defaultStateId && state.kind === 'primary')
+    ?? manifest.states.find((state) => state.kind === 'primary');
+}
+
+/** 异常清单没有可用主状态时中断，避免将修饰状态伪装为主状态。 */
+function requirePrimary(manifest: CharacterManifestV2): CharacterStateDefinitionV2 {
+  const primary = defaultPrimary(manifest);
+  if (!primary) throw new Error('CHARACTER_BEHAVIOR_PRIMARY_STATE_UNAVAILABLE');
+  return primary;
 }
 
 function isProtectedPrimary(manifest: CharacterManifestV2, stateId: string): boolean {
@@ -176,38 +195,43 @@ function isProtectedPrimary(manifest: CharacterManifestV2, stateId: string): boo
   return Boolean(semantic && PROTECTED_PRIMARY_SEMANTICS.has(semantic));
 }
 
-type AgentSelection = { valid: true; semantic: CharacterStandardSemantic | null; stateId?: string }
-  | { valid: false; semantic: null };
+type AgentStateSelection =
+  | { kind: 'none' }
+  | { kind: 'invalid' }
+  | { kind: 'primary-semantic'; semantic: CharacterStandardSemantic }
+  | { kind: 'primary-state'; stateId: string }
+  | { kind: 'modifier-state'; stateId: string };
 
-function agentSelection(
+function agentStateSelection(
   manifest: CharacterManifestV2,
   intent: CharacterAgentBehaviorIntent | undefined
-): AgentSelection {
+): AgentStateSelection {
   const stateIntent = intent?.stateIntent;
-  if (!stateIntent) return { valid: true, semantic: null };
+  if (!stateIntent) return { kind: 'none' };
   if ('stateId' in stateIntent) {
     const state = manifest.states.find((candidate) => candidate.id === stateIntent.stateId);
-    return state?.agentInferable
-      ? { valid: true, semantic: standardSemantic(state), stateId: state.id }
-      : { valid: false, semantic: null };
+    if (!state?.agentInferable) return { kind: 'invalid' };
+    return state.kind === 'modifier'
+      ? { kind: 'modifier-state', stateId: state.id }
+      : { kind: 'primary-state', stateId: state.id };
   }
 
   const available = manifest.states.some((state) => (
-    state.agentInferable && standardSemantic(state) === stateIntent.semantic
+    state.kind === 'primary' && state.agentInferable && standardSemantic(state) === stateIntent.semantic
   ));
   return available
-    ? { valid: true, semantic: stateIntent.semantic }
-    : { valid: false, semantic: null };
+    ? { kind: 'primary-semantic', semantic: stateIntent.semantic }
+    : { kind: 'invalid' };
 }
 
 export function createInitialBehaviorState(manifest: CharacterManifestV2): CharacterBehaviorStateSnapshot {
-  const primary = defaultPrimary(manifest);
+  const primary = requirePrimary(manifest);
   return {
     revision: 0,
-    primaryStateId: primary?.id ?? manifest.defaultStateId,
+    primaryStateId: primary.id,
     modifierStateIds: [],
     activeSignals: [],
-    desiredActionSemantic: primary ? standardSemantic(primary) : null
+    desiredActionSemantic: standardSemantic(primary)
   };
 }
 
@@ -217,7 +241,8 @@ export function inferCharacterBehaviorState(
   const { manifest, previous, signal, agentIntent } = input;
   const signals = activeSignals(previous, signal);
   const localSemantic = signalSemantic(signal);
-  const agent = agentSelection(manifest, agentIntent);
+  const agentState = agentStateSelection(manifest, agentIntent);
+  const agentActionSemantic = agentIntent?.actionSemantic ?? null;
   const currentPrimary = manifest.states.find((state) => state.id === previous.primaryStateId && state.kind === 'primary');
   const previousExited = Boolean(currentPrimary?.exitConditions.some((condition) => conditionMatches(
     condition,
@@ -226,34 +251,40 @@ export function inferCharacterBehaviorState(
     new Set([currentPrimary.id])
   )));
 
-  const canUseAgent = !localSemantic && agent.valid && !isProtectedPrimary(manifest, previous.primaryStateId);
-  const requestedSemantic = localSemantic ?? (canUseAgent ? agent.semantic : null);
-  const requestedStateId = !localSemantic && canUseAgent ? agent.stateId : undefined;
-  const requestedPrimary = requestedSemantic || requestedStateId
-    ? selectPrimaryState(manifest.states, signals, requestedSemantic, requestedStateId)
+  const protectedFromAgent = !localSemantic && isProtectedPrimary(manifest, previous.primaryStateId);
+  const canUseAgent = !localSemantic && !protectedFromAgent && agentState.kind !== 'invalid';
+  const requestedSemantic = localSemantic ?? (agentState.kind === 'primary-semantic' && canUseAgent ? agentState.semantic : null);
+  const requestedStateId = agentState.kind === 'primary-state' && canUseAgent ? agentState.stateId : undefined;
+  const hasPrimaryRequest = Boolean(localSemantic)
+    || agentState.kind === 'invalid'
+    || (canUseAgent && (agentState.kind === 'primary-semantic' || agentState.kind === 'primary-state'));
+  const requestedPrimary = hasPrimaryRequest && (requestedSemantic || requestedStateId)
+    ? selectPrimaryState(
+      manifest.states,
+      signals,
+      requestedSemantic,
+      requestedStateId,
+      !localSemantic && agentState.kind === 'primary-semantic'
+    )
     : undefined;
   const primary = requestedPrimary
-    ?? (!localSemantic && !agent.valid ? undefined : !previousExited ? currentPrimary : undefined)
-    ?? defaultPrimary(manifest);
+    ?? (!hasPrimaryRequest && !previousExited ? currentPrimary : undefined)
+    ?? requirePrimary(manifest);
 
-  if (!primary) {
-    return {
-      revision: previous.revision + 1,
-      primaryStateId: manifest.defaultStateId,
-      modifierStateIds: [],
-      activeSignals: signals,
-      desiredActionSemantic: localSemantic ?? (canUseAgent ? agentIntent?.actionSemantic ?? null : null)
-    };
-  }
-
-  const modifiers = selectModifierStates(manifest, previous, primary, signals);
+  const modifiers = selectModifierStates(
+    manifest,
+    previous,
+    primary,
+    signals,
+    canUseAgent && agentState.kind === 'modifier-state' ? agentState.stateId : undefined
+  );
   return {
     revision: previous.revision + 1,
     primaryStateId: primary.id,
     modifierStateIds: modifiers.map((state) => state.id),
     activeSignals: signals,
     desiredActionSemantic: localSemantic
-      ?? (canUseAgent ? agentIntent?.actionSemantic ?? null : null)
+      ?? agentActionSemantic
       ?? standardSemantic(primary)
   };
 }
