@@ -218,7 +218,8 @@ describe('管理员审核服务', () => {
     const { service, store } = createService(submission('auto_rejected', {
       moderationResults: [moderationResult('Pass', {
         packageStorageKey: 'private/current-pet.zip',
-        packageSizeBytes: 20
+        packageSizeBytes: 20,
+        scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
       })]
     }));
 
@@ -264,7 +265,8 @@ describe('管理员审核服务', () => {
     const { service, store } = createService(submission('published', {
       moderationResults: [moderationResult('Pass', {
         packageStorageKey: 'private/current-pet.zip',
-        packageSizeBytes: 20
+        packageSizeBytes: 20,
+        scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
       })]
     }));
 
