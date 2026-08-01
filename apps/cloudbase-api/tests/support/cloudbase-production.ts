@@ -16,9 +16,7 @@ export function stubCloudConfig(): void {
     TMS_BIZ_TYPE: 'text-moderation',
     IMS_BIZ_TYPE: 'image-moderation',
     SCANNER_URL: 'https://scanner.example.com',
-    SCANNER_HMAC_SECRET: 'scanner-secret',
-    CLOUDBASE_AI_BASE_URL: 'https://ai.example.com/v1',
-    CLOUDBASE_AI_API_KEY: 'ai-secret'
+    SCANNER_HMAC_SECRET: 'scanner-secret'
   };
   for (const [name, value] of Object.entries(values)) {
     vi.stubEnv(name, value);

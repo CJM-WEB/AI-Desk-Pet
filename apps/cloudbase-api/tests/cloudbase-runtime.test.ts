@@ -25,10 +25,7 @@ const validConfig: CloudConfig = {
   tmsBizType: 'ai-pet-text',
   imsBizType: 'ai-pet-image',
   scannerUrl: 'https://scanner.example.com',
-  scannerHmacSecret: 'scanner-secret',
-  cloudbaseAiBaseUrl: 'https://ai.example.com/v1',
-  cloudbaseAiApiKey: 'ai-secret',
-  relevanceModel: 'deepseek-v4-flash'
+  scannerHmacSecret: 'scanner-secret'
 };
 
 describe('CloudBase V3 服务端运行时工厂', () => {

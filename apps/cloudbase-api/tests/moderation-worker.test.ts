@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 describe('自动审核定时工作器', () => {
-  it('使用有效 Bucket 创建共享运行时组合', () => {
+  it('无需 AI 环境变量即可创建生产工作器', () => {
     stubCloudConfig();
 
     const worker = createProductionWorker();

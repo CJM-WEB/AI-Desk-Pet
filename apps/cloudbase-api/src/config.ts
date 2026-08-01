@@ -17,9 +17,6 @@ export interface CloudConfig {
   imsBizType: string;
   scannerUrl: string;
   scannerHmacSecret: string;
-  cloudbaseAiBaseUrl: string;
-  cloudbaseAiApiKey: string;
-  relevanceModel: 'deepseek-v4-flash';
 }
 
 /** 读取必填环境变量，避免以空配置启动服务。 */
@@ -41,11 +38,6 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
   const captchaAppId = Number(readRequired(env, 'CAPTCHA_APP_ID'));
   if (!Number.isSafeInteger(captchaAppId) || captchaAppId <= 0) {
     throw new Error('CAPTCHA_APP_ID 必须是正整数');
-  }
-
-  const cloudbaseAiBaseUrl = readRequired(env, 'CLOUDBASE_AI_BASE_URL');
-  if (!cloudbaseAiBaseUrl.startsWith('https://')) {
-    throw new Error('CLOUDBASE_AI_BASE_URL 必须使用 HTTPS');
   }
 
   const scannerUrl = normalizeHttpsUrl(
@@ -72,10 +64,7 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
     tmsBizType: readRequired(env, 'TMS_BIZ_TYPE'),
     imsBizType: readRequired(env, 'IMS_BIZ_TYPE'),
     scannerUrl,
-    scannerHmacSecret: readRequired(env, 'SCANNER_HMAC_SECRET'),
-    cloudbaseAiBaseUrl,
-    cloudbaseAiApiKey: readRequired(env, 'CLOUDBASE_AI_API_KEY'),
-    relevanceModel: 'deepseek-v4-flash'
+    scannerHmacSecret: readRequired(env, 'SCANNER_HMAC_SECRET')
   };
 }
 

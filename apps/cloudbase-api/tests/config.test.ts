@@ -18,9 +18,7 @@ describe('loadCloudConfig', () => {
     TMS_BIZ_TYPE: 'ai-pet-text',
     IMS_BIZ_TYPE: 'ai-pet-image',
     SCANNER_URL: 'https://scanner.example.com',
-    SCANNER_HMAC_SECRET: 'scanner-secret',
-    CLOUDBASE_AI_BASE_URL: 'https://ai.example.com/v1',
-    CLOUDBASE_AI_API_KEY: 'ai-secret'
+    SCANNER_HMAC_SECRET: 'scanner-secret'
   };
 
   it('缺少管理员邮箱时拒绝启动', () => {
@@ -50,13 +48,13 @@ describe('loadCloudConfig', () => {
       tmsBizType: 'ai-pet-text',
       imsBizType: 'ai-pet-image',
       scannerUrl: 'https://scanner.example.com',
-      scannerHmacSecret: 'scanner-secret',
-      cloudbaseAiBaseUrl: 'https://ai.example.com/v1',
-      cloudbaseAiApiKey: 'ai-secret',
-      relevanceModel: 'deepseek-v4-flash'
+      scannerHmacSecret: 'scanner-secret'
     });
     expect(config.cloudbaseRegion).toBe('ap-singapore');
     expect(config.cloudbaseSdkTimeoutMs).toBe(15_000);
+    expect(config).not.toHaveProperty('cloudbaseAiBaseUrl');
+    expect(config).not.toHaveProperty('cloudbaseAiApiKey');
+    expect(config).not.toHaveProperty('relevanceModel');
   });
 
   it('拒绝与已购买环境不一致的地域', () => {
@@ -80,9 +78,7 @@ describe('loadCloudConfig', () => {
       TMS_BIZ_TYPE: 'ai-pet-text',
       IMS_BIZ_TYPE: 'ai-pet-image',
       SCANNER_URL: 'https://scanner.example.com',
-      SCANNER_HMAC_SECRET: 'scanner-secret',
-      CLOUDBASE_AI_BASE_URL: 'https://ai.example.com/v1',
-      CLOUDBASE_AI_API_KEY: 'ai-secret'
+      SCANNER_HMAC_SECRET: 'scanner-secret'
     })).toThrow('CLOUDBASE_API_KEY');
   });
 
@@ -96,7 +92,12 @@ describe('loadCloudConfig', () => {
       CAPTCHA_SECRET_KEY: 'captcha-secret',
       ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
       TENCENTCLOUD_SECRETID: ' ',
-      TENCENTCLOUD_SECRETKEY: 'secret-key'
+      TENCENTCLOUD_SECRETKEY: 'secret-key',
+      MODERATION_REGION: 'ap-shanghai',
+      TMS_BIZ_TYPE: 'ai-pet-text',
+      IMS_BIZ_TYPE: 'ai-pet-image',
+      SCANNER_URL: 'https://scanner.example.com',
+      SCANNER_HMAC_SECRET: 'scanner-secret'
     })).toThrow('TENCENTCLOUD_SECRETID');
   });
 
@@ -115,9 +116,7 @@ describe('loadCloudConfig', () => {
       TMS_BIZ_TYPE: 'ai-pet-text',
       IMS_BIZ_TYPE: 'ai-pet-image',
       SCANNER_URL: 'http://scanner.example.com',
-      SCANNER_HMAC_SECRET: 'scanner-secret',
-      CLOUDBASE_AI_BASE_URL: 'https://ai.example.com/v1',
-      CLOUDBASE_AI_API_KEY: 'ai-secret'
+      SCANNER_HMAC_SECRET: 'scanner-secret'
     })).toThrow('SCANNER_URL 必须使用 HTTPS');
   });
 });

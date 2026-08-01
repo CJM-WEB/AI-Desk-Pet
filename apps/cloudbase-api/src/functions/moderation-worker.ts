@@ -1,6 +1,5 @@
 import { CloudBasePostgresRpcClient, CloudBasePostgresStore } from '../adapters/cloudbase-postgres.js';
 import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
-import { CloudBaseRelevanceClassifier } from '../adapters/cloudbase-relevance.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
 import { ScannerClient } from '../adapters/scanner-client.js';
 import { createTencentContentModerator } from '../adapters/tencent-content-moderation.js';
@@ -9,6 +8,7 @@ import {
   ModerationService,
   type BatchResult
 } from '../services/moderation-service.js';
+import { KeywordRelevanceClassifier } from '../services/keyword-relevance.js';
 
 interface ModerationBatchProcessor {
   processNextBatch(limit: number): Promise<BatchResult>;
@@ -48,10 +48,7 @@ export function createProductionWorker(): () => Promise<BatchResult> {
     store,
     new CloudBaseStorage(runtime.bucket),
     createTencentContentModerator(config),
-    new CloudBaseRelevanceClassifier(
-      config.cloudbaseAiBaseUrl,
-      config.cloudbaseAiApiKey
-    ),
+    new KeywordRelevanceClassifier(),
     new ScannerClient(config.scannerUrl, config.scannerHmacSecret),
     { now: () => new Date() }
   );
