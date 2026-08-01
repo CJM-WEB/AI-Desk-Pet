@@ -58,6 +58,14 @@ describe('管理员 CloudBase 认证适配器', () => {
     });
   });
 
+  it('OTP 请求未返回挑战对象时返回稳定错误码', async () => {
+    const { client, signInWithOtp } = createClient();
+    signInWithOtp.mockResolvedValue({ data: null, error: null });
+    const auth = createAdminAuth(client);
+
+    await expect(auth.requestEmailOtp('admin@example.com')).rejects.toThrow('ADMIN_OTP_CHALLENGE_REQUIRED');
+  });
+
   it('只使用 SDK 返回挑战对象的 verifyOtp 验证已修剪的验证码', async () => {
     const { client, verifyOtp } = createClient();
     verifyOtp.mockResolvedValue({ data: { session: { access_token: 'access-token' } }, error: null });
@@ -67,6 +75,20 @@ describe('管理员 CloudBase 认证适配器', () => {
     await challenge.verify('  123456  ');
 
     expect(verifyOtp).toHaveBeenCalledWith({ token: '123456' });
+  });
+
+  it('OTP 验证失败时保留 SDK 原始错误并提供稳定错误码', async () => {
+    const { client, verifyOtp } = createClient();
+    const sdkError = new Error('CloudBase OTP verification failed');
+    verifyOtp.mockResolvedValue({ data: null, error: sdkError });
+    const auth = createAdminAuth(client);
+
+    const challenge = await auth.requestEmailOtp('admin@example.com');
+
+    await expect(challenge.verify('123456')).rejects.toMatchObject({
+      message: 'ADMIN_OTP_VERIFY_FAILED',
+      cause: sdkError
+    });
   });
 
   it('无有效会话时只刷新一次再读取 Access Token', async () => {
@@ -90,6 +112,7 @@ describe('管理员 CloudBase 认证适配器', () => {
 
     await expect(auth.getAccessToken()).rejects.toThrow('ADMIN_SESSION_REQUIRED');
     expect(refreshSession).toHaveBeenCalledTimes(1);
+    expect(getSession).toHaveBeenCalledTimes(2);
   });
 
   it('读取会话失败时保留 SDK 原始错误而不降级为会话缺失', async () => {
