@@ -1,9 +1,22 @@
 import { createHmac } from 'node:crypto';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createApi } from '../src/functions/api.js';
+import { createApi, main as productionMain } from '../src/functions/api.js';
 import { AbuseControl } from '../src/services/abuse-control.js';
+import { stubCloudConfig } from './support/cloudbase-production.js';
+
+const productionSdk = vi.hoisted(() => ({
+  createRuntime: vi.fn(() => ({ rdb: {}, bucket: {}, auth: {} })),
+  webInit: vi.fn(() => ({
+    storage: { from: vi.fn(() => ({})) }
+  }))
+}));
+
+vi.mock('../src/adapters/cloudbase-runtime.js', () => ({
+  createCloudBaseServerRuntime: productionSdk.createRuntime
+}));
+vi.mock('@cloudbase/js-sdk', () => ({ default: { init: productionSdk.webInit } }));
 
 const sourceIp = '203.0.113.8';
 const fingerprintSecret = '仅用于测试的指纹配置值';
@@ -148,6 +161,24 @@ const context = {
   requestId: 'request-1',
   sourceIp
 };
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.clearAllMocks();
+});
+
+describe('API 生产组合', () => {
+  it('只创建一次共享运行时', async () => {
+    stubCloudConfig();
+
+    await productionMain(event('GET', '/api/v1/missing'), context);
+
+    expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
+    expect(productionSdk.createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ envId: 'env-test' })
+    );
+  });
+});
 
 describe('公开 HTTP API', () => {
   it('匿名 prepare 缺少 CAPTCHA 返回 400', async () => {

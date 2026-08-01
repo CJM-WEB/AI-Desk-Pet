@@ -30,7 +30,6 @@ await build({
   format: 'cjs',
   sourcemap: false,
   minify: false,
-  emptyOutdir: true,
   banner: { js: '/* AI Pet CloudBase 云函数部署产物 */' }
 });
 

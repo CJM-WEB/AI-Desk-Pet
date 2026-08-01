@@ -75,16 +75,6 @@ export interface CloudBaseRdbClient {
   from(table: string): CloudBaseRdbQuery;
 }
 
-/** 临时兼容未迁移的 Node SDK 入口；Task3 迁移后立即删除。 */
-declare module '@cloudbase/node-sdk' {
-  interface CloudBase {
-    rdb(options?: {
-      instance?: string;
-      database?: string;
-    }): CloudBaseRdbClient;
-  }
-}
-
 export interface CloudBasePostgresRpc {
   rpc(name: string, params: Record<string, unknown>): Promise<RdbResult>;
 }

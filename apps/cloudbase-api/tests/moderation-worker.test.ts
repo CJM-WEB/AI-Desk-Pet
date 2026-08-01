@@ -1,8 +1,38 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createModerationWorker } from '../src/functions/moderation-worker.js';
+import {
+  createModerationWorker,
+  main as productionMain
+} from '../src/functions/moderation-worker.js';
+import { stubCloudConfig } from './support/cloudbase-production.js';
+
+const productionSdk = vi.hoisted(() => ({
+  createRuntime: vi.fn(() => ({ rdb: {}, bucket: {}, auth: {} })),
+  webInit: vi.fn(() => ({ storage: { from: vi.fn(() => ({})) } }))
+}));
+
+vi.mock('../src/adapters/cloudbase-runtime.js', () => ({
+  createCloudBaseServerRuntime: productionSdk.createRuntime
+}));
+vi.mock('@cloudbase/js-sdk', () => ({ default: { init: productionSdk.webInit } }));
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.clearAllMocks();
+});
 
 describe('自动审核定时工作器', () => {
+  it('只创建一次共享运行时', async () => {
+    stubCloudConfig();
+
+    await productionMain();
+
+    expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
+    expect(productionSdk.createRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ envId: 'env-test' })
+    );
+  });
+
   it('每次只请求处理三个任务并返回裁剪统计', async () => {
     const processNextBatch = vi.fn().mockResolvedValue({
       claimed: 3,

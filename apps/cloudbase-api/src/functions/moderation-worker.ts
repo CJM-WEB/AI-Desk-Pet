@@ -1,7 +1,5 @@
-import cloudbaseWeb from '@cloudbase/js-sdk';
-import cloudbaseNode from '@cloudbase/node-sdk';
-
 import { CloudBasePostgresRpcClient, CloudBasePostgresStore } from '../adapters/cloudbase-postgres.js';
+import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
 import { CloudBaseRelevanceClassifier } from '../adapters/cloudbase-relevance.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
 import { ScannerClient } from '../adapters/scanner-client.js';
@@ -40,15 +38,14 @@ export async function main(): Promise<BatchResult> {
 
 function createProductionWorker(): () => Promise<BatchResult> {
   const config = loadCloudConfig(process.env);
-  const nodeApp = cloudbaseNode.init({ env: config.envId });
-  const webApp = cloudbaseWeb.init({ env: config.envId });
+  const runtime = createCloudBaseServerRuntime(config);
   const store = new CloudBasePostgresStore(
-    nodeApp.rdb(),
+    runtime.rdb,
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)
   );
   const service = new ModerationService(
     store,
-    new CloudBaseStorage(webApp.storage.from(config.privateBucketId)),
+    new CloudBaseStorage(runtime.bucket),
     createTencentContentModerator(config),
     new CloudBaseRelevanceClassifier(
       config.cloudbaseAiBaseUrl,

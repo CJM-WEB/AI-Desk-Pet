@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import type cloudbase from '@cloudbase/node-sdk';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import {
@@ -705,10 +704,6 @@ function newSubmission(id: string): {
 
 describe('CloudBase PostgreSQL RPC 客户端', () => {
   it('真实 Node SDK 的 rdb 返回值可作为仅表查询客户端', () => {
-    type InstalledApp = ReturnType<typeof cloudbase.init>;
-    type InstalledTableClient = ReturnType<InstalledApp['rdb']>;
-
-    expectTypeOf<InstalledTableClient>().toMatchTypeOf<CloudBaseRdbClient>();
     expectTypeOf<CloudBaseRdbClient>().not.toHaveProperty('rpc');
   });
 

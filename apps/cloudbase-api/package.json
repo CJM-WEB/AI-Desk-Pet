@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@cloudbase/js-sdk": "^3.6.8",
-    "@cloudbase/node-sdk": "^3.18.3",
     "@cloudbase/signature-nodejs": "^2.0.0",
     "@myself/shared-types": "workspace:*",
     "tencentcloud-sdk-nodejs": "^4.1.281",

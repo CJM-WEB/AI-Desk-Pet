@@ -1,7 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
 
-import cloudbaseWeb from '@cloudbase/js-sdk';
-import cloudbaseNode from '@cloudbase/node-sdk';
 import {
   adminActionSchema,
   captchaProofSchema,
@@ -14,6 +12,7 @@ import {
   CloudBasePostgresRpcClient,
   CloudBasePostgresStore
 } from '../adapters/cloudbase-postgres.js';
+import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
 import {
   createTencentCaptchaClient,
@@ -533,14 +532,12 @@ export async function main(
 
 function createProductionHandler(): ApiHandler {
   const config = loadCloudConfig(process.env);
-  const nodeApp = cloudbaseNode.init({ env: config.envId });
-  const webApp = cloudbaseWeb.init({ env: config.envId });
-  const bucket = webApp.storage.from(config.privateBucketId);
+  const runtime = createCloudBaseServerRuntime(config);
   const store = new CloudBasePostgresStore(
-    nodeApp.rdb(),
+    runtime.rdb,
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)
   );
-  const storage = new CloudBaseStorage(bucket);
+  const storage = new CloudBaseStorage(runtime.bucket);
   const captcha = new TencentCaptchaVerifier(
     createTencentCaptchaClient(config),
     store,
@@ -552,7 +549,7 @@ function createProductionHandler(): ApiHandler {
     publicContent: new PublicContentService(store, storage),
     abuseControl: new AbuseControl(store),
     adminIdentity: new CloudBaseAdminIdentityProvider(
-      nodeApp.auth(),
+      runtime.auth,
       config.adminEmail
     ),
     admin: new AdminService(store),
