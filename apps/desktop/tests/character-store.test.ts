@@ -366,6 +366,25 @@ function partiallyFailingTombstoneRemover(): {
   };
 }
 
+function failingPersistentBackupRemover(backupName: string): {
+  removePath: typeof rm;
+  arm(): void;
+} {
+  let armed = false;
+  return {
+    arm() {
+      armed = true;
+    },
+    async removePath(path, options) {
+      if (armed && path.toString().endsWith(backupName)) {
+        armed = false;
+        throw new Error('TEST_PERSISTENT_BACKUP_REMOVE_FAILED');
+      }
+      await rm(path, options);
+    }
+  };
+}
+
 describe('CharacterStore', () => {
   let testDirectory: string;
   let charactersDirectory: string;
@@ -1432,6 +1451,104 @@ describe('CharacterStore', () => {
     expect(JSON.parse(await readFile(join(draftDirectory, 'draft.backup.json'), 'utf8')))
       .toMatchObject({ version: 1 });
     await expect(access(join(draftDirectory, 'draft-transaction.json'))).rejects.toThrow();
+  });
+
+  test('审查修复：草稿永久恢复点清理失败时不把旧版本一误作本次回滚备份', async () => {
+    const firstStore = new CharacterStore(charactersDirectory);
+    await firstStore.create({ id: 'demo', name: '演示角色' });
+    const draftDirectory = join(charactersDirectory, 'demo', 'draft');
+    await writeFile(
+      join(draftDirectory, 'draft.json'),
+      `${JSON.stringify({ ...createDraftV1(), thumbnailAssetId: undefined }, null, 2)}\n`,
+      'utf8'
+    );
+    const migrated = await firstStore.getDraft('demo');
+    const remover = failingPersistentBackupRemover('draft.backup.json');
+    const store = new CharacterStore(charactersDirectory, { removePath: remover.removePath });
+    const changed = structuredClone(migrated);
+    changed.identity.background = '不应提交的新背景';
+    remover.arm();
+
+    await expect(store.saveDraft('demo', changed))
+      .rejects.toThrow('TEST_PERSISTENT_BACKUP_REMOVE_FAILED');
+    expect(JSON.parse(await readFile(join(draftDirectory, 'draft.json'), 'utf8')))
+      .toMatchObject({ version: 2, identity: { background: migrated.identity.background } });
+    await expect(new CharacterStore(charactersDirectory).getDraft('demo'))
+      .resolves.toMatchObject({
+        version: 2,
+        identity: { background: migrated.identity.background }
+      });
+  });
+
+  test('审查修复：发布永久恢复点清理失败时不把旧版本一误作本次回滚备份', async () => {
+    const firstStore = new CharacterStore(charactersDirectory);
+    const legacyRuntime = createRuntimeV1();
+    await firstStore.create({ id: 'demo', name: '演示角色' });
+    await writeRuntimeDirectory(
+      join(charactersDirectory, 'demo', 'compiled'),
+      legacyRuntime
+    );
+    const migrated = await firstStore.getPublishedManifest('demo');
+    const remover = failingPersistentBackupRemover('compiled.backup');
+    const store = new CharacterStore(charactersDirectory, { removePath: remover.removePath });
+    const changed = { ...migrated, compilerVersion: '2.0.0' };
+    remover.arm();
+
+    await expect(store.publishCompiled('demo', changed, legacyRuntime.assets))
+      .rejects.toThrow('TEST_PERSISTENT_BACKUP_REMOVE_FAILED');
+    expect(JSON.parse(await readFile(
+      join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
+      'utf8'
+    ))).toMatchObject({ version: 2, compilerVersion: migrated.compilerVersion });
+    await expect(new CharacterStore(charactersDirectory).getPublishedManifest('demo'))
+      .resolves.toMatchObject({ version: 2, compilerVersion: migrated.compilerVersion });
+  });
+
+  test('审查修复：列表迁移索引失败后不以污染的内存索引二次写盘', async () => {
+    const writer = failingIndexWriter();
+    const store = new CharacterStore(charactersDirectory, { writeText: writer.writeText });
+    await store.create({ id: 'demo', name: '演示角色' });
+    const draftFile = join(charactersDirectory, 'demo', 'draft', 'draft.json');
+    await writeFile(
+      draftFile,
+      `${JSON.stringify({ ...createDraftV1(), thumbnailAssetId: undefined }, null, 2)}\n`,
+      'utf8'
+    );
+    const indexFile = join(charactersDirectory, 'index.json');
+    const originalIndex = JSON.parse(await readFile(indexFile, 'utf8'));
+    delete originalIndex.characters[0].draftVersion;
+    await writeFile(indexFile, `${JSON.stringify(originalIndex, null, 2)}\n`, 'utf8');
+    writer.arm();
+
+    await expect(store.list()).resolves.toHaveLength(1);
+    expect(JSON.parse(await readFile(draftFile, 'utf8'))).toMatchObject({ version: 1 });
+    expect(JSON.parse(await readFile(indexFile, 'utf8')).characters[0])
+      .not.toHaveProperty('draftVersion');
+  });
+
+  test('审查修复：当前草稿有效时损坏的可选永久恢复点不阻断读取', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'demo', name: '演示角色' });
+    const draftDirectory = join(charactersDirectory, 'demo', 'draft');
+    await writeFile(join(draftDirectory, 'draft.backup.json'), '{损坏恢复点', 'utf8');
+
+    await expect(new CharacterStore(charactersDirectory).getDraft('demo'))
+      .resolves.toMatchObject({ version: 2, id: 'demo' });
+    expect(JSON.parse(await readFile(join(draftDirectory, 'draft.json'), 'utf8')))
+      .toMatchObject({ version: 2, id: 'demo' });
+  });
+
+  test('审查修复：当前发布目录有效时损坏的可选永久恢复点不阻断读取', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    const backupDirectory = join(charactersDirectory, 'demo', 'compiled.backup');
+    await mkdir(backupDirectory);
+    await writeFile(join(backupDirectory, 'manifest.json'), '{损坏恢复点', 'utf8');
+
+    await expect(new CharacterStore(charactersDirectory).getPublishedManifest('demo'))
+      .resolves.toMatchObject({ version: 2, id: 'demo' });
   });
 
   test('损坏草稿保留原文件并创建隔离副本', async () => {

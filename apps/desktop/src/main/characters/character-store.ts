@@ -886,6 +886,17 @@ export class CharacterStore {
     index.characters[entryIndex] = structuredClone(replacement);
   }
 
+  /** 索引写盘成功后才替换共享内存，避免失败提交污染后续恢复流程。 */
+  private async commitIndexUpdate(
+    index: CharacterIndex,
+    update: (nextIndex: CharacterIndex) => void
+  ): Promise<void> {
+    const nextIndex = cloneIndex(index);
+    update(nextIndex);
+    await this.writeIndex(nextIndex);
+    Object.assign(index, cloneIndex(nextIndex));
+  }
+
   /** 复用草稿事务安装 V2；迁移时仅在提交成功后保留 V1 恢复点。 */
   private async installDraftTransaction(
     characterId: string,
@@ -911,14 +922,15 @@ export class CharacterStore {
 
     try {
       await this.safeWriteText(this.draftNextFile(characterId), json(draft));
-      await this.writeDraftMarker(characterId, transaction);
       await this.removePath(this.draftBackupFile(characterId), { force: true });
+      await this.writeDraftMarker(characterId, transaction);
       await this.renamePath(this.draftFile(characterId), this.draftBackupFile(characterId));
       await this.renamePath(this.draftNextFile(characterId), this.draftFile(characterId));
       transaction.phase = 'installed';
       await this.writeDraftMarker(characterId, transaction);
-      this.replaceEntry(index, nextEntry);
-      await this.writeIndex(index);
+      await this.commitIndexUpdate(index, nextIndex => {
+        this.replaceEntry(nextIndex, nextEntry);
+      });
     } catch (error) {
       await this.rollbackDraftTransaction(characterId, originalIndex).catch(() => undefined);
       throw error;
@@ -982,11 +994,11 @@ export class CharacterStore {
         json(manifest)
       );
       await this.readPublishedFrom(this.compiledNextDirectory(characterId), characterId);
-      await this.writePublishMarker(characterId, transaction);
       await this.removePath(this.compiledBackupDirectory(characterId), {
         recursive: true,
         force: true
       });
+      await this.writePublishMarker(characterId, transaction);
       await this.renamePath(
         this.compiledDirectory(characterId),
         this.compiledBackupDirectory(characterId)
@@ -999,9 +1011,10 @@ export class CharacterStore {
       );
       transaction.phase = 'installed';
       await this.writePublishMarker(characterId, transaction);
-      this.replaceEntry(index, nextEntry);
-      delete index.incompleteActivationConfirmations[characterId];
-      await this.writeIndex(index);
+      await this.commitIndexUpdate(index, nextIndex => {
+        this.replaceEntry(nextIndex, nextEntry);
+        delete nextIndex.incompleteActivationConfirmations[characterId];
+      });
     } catch (error) {
       await this.rollbackPublishTransaction(characterId, originalIndex).catch(() => undefined);
       throw error;
@@ -1076,12 +1089,14 @@ export class CharacterStore {
         if (!(await exists(currentFile))) {
           throw characterError('CHARACTER_TRANSACTION_INVALID');
         }
-        const [current, backup] = await Promise.all([
-          this.readDraftMigration(currentFile, characterId),
-          this.readDraftMigration(backupFile, characterId)
-        ]);
-        if (!(current.sourceVersion === 2 && backup.sourceVersion === 1)) {
-          await this.removePath(backupFile, { force: true });
+        const current = await this.readDraftMigration(currentFile, characterId);
+        try {
+          const backup = await this.readDraftMigration(backupFile, characterId);
+          if (!(current.sourceVersion === 2 && backup.sourceVersion === 1)) {
+            await this.removePath(backupFile, { force: true });
+          }
+        } catch {
+          // 无 marker 的 backup 只是可选恢复点，损坏时不得阻断有效 current。
         }
       }
       await this.removePath(nextFile, { force: true });
@@ -1098,8 +1113,9 @@ export class CharacterStore {
         currentIsValid = false;
       }
       if (currentIsValid) {
-        this.replaceEntry(index, transaction.nextEntry);
-        await this.writeIndex(index);
+        await this.commitIndexUpdate(index, nextIndex => {
+          this.replaceEntry(nextIndex, transaction.nextEntry);
+        });
         await this.cleanupDraftTransaction(characterId, transaction.keepBackup);
         return;
       }
@@ -1114,8 +1130,9 @@ export class CharacterStore {
         throw characterError('CHARACTER_TRANSACTION_INVALID');
       }
     }
-    this.replaceEntry(index, transaction.previousEntry);
-    await this.writeIndex(index);
+    await this.commitIndexUpdate(index, nextIndex => {
+      this.replaceEntry(nextIndex, transaction.previousEntry);
+    });
     await this.cleanupDraftTransaction(characterId);
   }
 
@@ -1123,7 +1140,8 @@ export class CharacterStore {
     characterId: string,
     originalIndex: CharacterIndex
   ): Promise<void> {
-    if (await exists(this.draftMarkerFile(characterId))) {
+    const hasMarker = await exists(this.draftMarkerFile(characterId));
+    if (hasMarker) {
       const transaction = await this.readTransaction(
         this.draftMarkerFile(characterId),
         draftTransactionSchema
@@ -1138,7 +1156,7 @@ export class CharacterStore {
       }
     }
     await this.writeIndex(originalIndex);
-    await this.cleanupDraftTransaction(characterId);
+    await this.cleanupDraftTransaction(characterId, !hasMarker);
   }
 
   private async restoreDraftBackup(
@@ -1194,39 +1212,46 @@ export class CharacterStore {
     if (!(await exists(markerFile))) {
       if (await exists(backup)) {
         const previousEntry = structuredClone(this.entry(index, characterId));
+        let current: Awaited<ReturnType<CharacterStore['readPublishedFrom']>>;
         try {
-          const current = await this.readPublishedFrom(compiled, characterId);
-          const backupManifest = await this.readPublishedFrom(backup, characterId);
-          const manifest = current.document;
-          if (
-            current.sourceVersion === 2
-            && backupManifest.sourceVersion === 1
-            && previousEntry.compiledVersion === 2
-            && entryMatchesManifest(previousEntry, manifest)
-          ) {
-            await this.removePath(next, { recursive: true, force: true });
-            return;
-          }
-          this.replaceEntry(index, indexEntry(
-            characterId,
-            manifest.name,
-            manifest.thumbnailAssetId,
-            { draftVersion: previousEntry.draftVersion ?? 2, compiledVersion: 2 }
-          ));
-          delete index.incompleteActivationConfirmations[characterId];
-          await this.writeIndex(index);
-          if (current.sourceVersion === 2 && backupManifest.sourceVersion === 1) {
-            await this.removePath(next, { recursive: true, force: true });
-            return;
-          }
+          current = await this.readPublishedFrom(compiled, characterId);
         } catch {
-          this.replaceEntry(index, previousEntry);
           throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
         }
+
+        let preserveBackup = false;
         try {
-          await this.removePath(backup, { recursive: true, force: true });
+          const backupManifest = await this.readPublishedFrom(backup, characterId);
+          preserveBackup = current.sourceVersion === 2 && backupManifest.sourceVersion === 1;
         } catch {
-          // 已提交版本保持生效，固定 backup 留待下次启动继续清理。
+          // 无 marker 的 backup 只是可选恢复点，损坏时不得阻断有效 current。
+          preserveBackup = true;
+        }
+
+        if (current.sourceVersion === 2) {
+          const manifest = current.document;
+          if (!(
+            previousEntry.compiledVersion === 2
+            && entryMatchesManifest(previousEntry, manifest)
+          )) {
+            await this.commitIndexUpdate(index, nextIndex => {
+              this.replaceEntry(nextIndex, indexEntry(
+                characterId,
+                manifest.name,
+                manifest.thumbnailAssetId,
+                { draftVersion: previousEntry.draftVersion ?? 2, compiledVersion: 2 }
+              ));
+              delete nextIndex.incompleteActivationConfirmations[characterId];
+            });
+          }
+        }
+
+        if (!preserveBackup) {
+          try {
+            await this.removePath(backup, { recursive: true, force: true });
+          } catch {
+            // 已提交版本保持生效，固定 backup 留待下次启动继续清理。
+          }
         }
       }
       await this.removePath(next, { recursive: true, force: true });
@@ -1243,9 +1268,10 @@ export class CharacterStore {
         currentIsValid = false;
       }
       if (currentIsValid) {
-        this.replaceEntry(index, transaction.nextEntry);
-        delete index.incompleteActivationConfirmations[characterId];
-        await this.writeIndex(index);
+        await this.commitIndexUpdate(index, nextIndex => {
+          this.replaceEntry(nextIndex, transaction.nextEntry);
+          delete nextIndex.incompleteActivationConfirmations[characterId];
+        });
         await this.cleanupPublishTransaction(characterId, transaction.keepBackup);
         return;
       }
@@ -1262,8 +1288,9 @@ export class CharacterStore {
         throw characterError('CHARACTER_TRANSACTION_INVALID');
       }
     }
-    this.replaceEntry(index, transaction.previousEntry);
-    await this.writeIndex(index);
+    await this.commitIndexUpdate(index, nextIndex => {
+      this.replaceEntry(nextIndex, transaction.previousEntry);
+    });
     await this.cleanupPublishTransaction(characterId);
   }
 
@@ -1271,7 +1298,8 @@ export class CharacterStore {
     characterId: string,
     originalIndex: CharacterIndex
   ): Promise<void> {
-    if (await exists(this.publishMarkerFile(characterId))) {
+    const hasMarker = await exists(this.publishMarkerFile(characterId));
+    if (hasMarker) {
       const transaction = await this.readTransaction(
         this.publishMarkerFile(characterId),
         publishTransactionSchema
@@ -1291,7 +1319,7 @@ export class CharacterStore {
       }
     }
     await this.writeIndex(originalIndex);
-    await this.cleanupPublishTransaction(characterId);
+    await this.cleanupPublishTransaction(characterId, !hasMarker);
   }
 
   private async restoreCompiledBackup(
