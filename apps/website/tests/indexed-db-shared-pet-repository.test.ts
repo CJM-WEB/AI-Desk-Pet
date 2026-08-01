@@ -75,7 +75,9 @@ describe('IndexedDB 共享仓库', () => {
     );
     database.close();
     expect((await repository.listPage(1, 8)).items[0]?.id).toBe('pet-1');
-    expect((await repository.getDownload('pet-1')).file.size).toBeGreaterThan(0);
+    const download = await repository.getDownload('pet-1');
+    expect(download.file).toBeInstanceOf(Blob);
+    expect(download.file?.size).toBeGreaterThan(0);
   });
 
   it('按创建时间倒序分页且列表项不包含 ZIP Blob', async () => {

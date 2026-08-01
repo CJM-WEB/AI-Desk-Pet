@@ -12,6 +12,7 @@ import {
   within
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
 import { I18nProvider } from '../components/i18n/I18nProvider';
 import { SharedPetChapter } from '../components/website-experience/community/SharedPetChapter';
 import {
@@ -119,6 +120,18 @@ function createRepository(itemCount: number) {
     emit();
     return item;
   });
+  const submit = vi.fn(async (
+    input: CreateSharedPetInput,
+    _captcha: CaptchaProof
+  ): Promise<SubmissionReceipt> => {
+    await create(input);
+    return {
+      submissionId: 'submission-test',
+      statusToken: 'a'.repeat(43),
+      statusPath: '/submission-status/',
+      status: 'system_reviewing'
+    };
+  });
   const getById = vi.fn(async (id: string) => (
     items.find((item) => item.id === id) ?? null
   ));
@@ -135,9 +148,9 @@ function createRepository(itemCount: number) {
     return updated;
   });
   const getDownload = vi.fn(async (): Promise<SharedPetDownload> => ({
-    file: new Blob(['zip'], { type: 'application/zip' }),
+    url: 'https://storage.example/pet.zip',
     fileName: 'original-pet.zip',
-    mimeType: 'application/zip'
+    expiresAt: '2026-08-01T00:00:00.000Z'
   }));
   const recordDownload = vi.fn(async (id: string) => {
     const current = items.find((item) => item.id === id);
@@ -153,6 +166,7 @@ function createRepository(itemCount: number) {
   });
   const repository: SharedPetRepository = {
     listPage,
+    submit,
     create,
     getById,
     toggleLike,
@@ -176,7 +190,12 @@ function createRepository(itemCount: number) {
 function renderChapter(repository: SharedPetRepository, props = {}) {
   return render(
     <I18nProvider initialLocale="zh-CN">
-      <SharedPetChapter interactive repository={repository} {...props} />
+      <SharedPetChapter
+        interactive
+        repository={repository}
+        captcha={{ verify: async () => ({ ticket: 'test-ticket', randstr: 'test-randstr' }) }}
+        {...props}
+      />
     </I18nProvider>
   );
 }
@@ -431,7 +450,7 @@ describe('共享仓库章节', () => {
     );
   });
 
-  it('投稿成功后关闭弹窗并刷新第一页', async () => {
+  it('投稿成功后关闭弹窗并显示一次性审核查询链接', async () => {
     const harness = createRepository(1);
     renderChapter(harness.repository);
     await screen.findByText('Pet 1');
@@ -451,9 +470,11 @@ describe('共享仓库章节', () => {
     fireEvent.click(screen.getByRole('button', { name: '发布分享' }));
 
     await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText('新 Pet')).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: '分享投稿' })).toBeNull();
-    expect(harness.listPage).toHaveBeenLastCalledWith(1, SHARED_PET_PAGE_SIZE);
+    expect(await screen.findByText('投稿已收到，正在系统审核。')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '打开一次性状态查询链接' })
+      .getAttribute('href')).toBe('/submission-status/#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(screen.getByText('请立即保存此链接，丢失后无法找回。')).toBeTruthy();
   });
 
   it('投稿失败时保留弹窗并显示本地化错误', async () => {
@@ -621,16 +642,16 @@ describe('共享仓库章节', () => {
     expect((download as HTMLButtonElement).disabled).toBe(true);
     await act(async () => {
       downloaded.resolve({
-        file: new Blob(['zip'], { type: 'application/zip' }),
+        url: 'https://storage.example/pet.zip',
         fileName: 'pet.zip',
-        mimeType: 'application/zip'
+        expiresAt: '2026-08-01T00:00:00.000Z'
       });
       await downloaded.promise;
     });
     await waitFor(() => expect((download as HTMLButtonElement).disabled).toBe(false));
   });
 
-  it('从详情下载时复用下载流程并同步刷新详情和当前页面计数', async () => {
+  it('从详情下载时复用短期下载流程且不在客户端更新计数', async () => {
     const harness = createRepository(1);
     const downloaded = deferred<SharedPetDownload>();
     harness.getDownload.mockImplementationOnce(() => downloaded.promise);
@@ -652,19 +673,15 @@ describe('共享仓库章节', () => {
     }) as HTMLButtonElement).disabled).toBe(true);
     await act(async () => {
       downloaded.resolve({
-        file: new Blob(['zip'], { type: 'application/zip' }),
+        url: 'https://storage.example/pet.zip',
         fileName: 'pet.zip',
-        mimeType: 'application/zip'
+        expiresAt: '2026-08-01T00:00:00.000Z'
       });
       await downloaded.promise;
     });
 
-    await waitFor(() => {
-      expect(within(dialog).getByText('下载次数').nextElementSibling?.textContent)
-        .toBe('1');
-      expect(within(card).getByRole('button', { name: '下载 Pet 1' }).textContent)
-        .toContain('1');
-    });
+    await waitFor(() => expect((detailDownload as HTMLButtonElement).disabled).toBe(false));
+    expect(harness.recordDownload).not.toHaveBeenCalled();
   });
 
   it('旧点赞错误不覆盖后续详情操作的状态', async () => {
@@ -733,17 +750,9 @@ describe('共享仓库章节', () => {
     expect(screen.getByText('点赞暂时无法完成，请稍后重试。')).toBeTruthy();
   });
 
-  it('下载使用原文件名并在记录次数前释放临时地址', async () => {
+  it('下载使用短期地址和原文件名触发隐藏链接', async () => {
     const harness = createRepository(1);
     const order: string[] = [];
-    const revokeObjectURL = vi.mocked(URL.revokeObjectURL);
-    revokeObjectURL.mockImplementation((url) => {
-      order.push(`revoke:${url}`);
-    });
-    harness.recordDownload.mockImplementationOnce(async () => {
-      order.push('record');
-      return { ...createItem(1), downloadCount: 1 };
-    });
     let clickedDownload = '';
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
       this: HTMLAnchorElement
@@ -756,10 +765,9 @@ describe('共享仓库章节', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '下载 Pet 1' }));
 
-    await waitFor(() => expect(harness.recordDownload).toHaveBeenCalledWith('pet-1'));
+    await waitFor(() => expect(order).toContain('click:https://storage.example/pet.zip'));
     expect(clickedDownload).toBe('original-pet.zip');
-    expect(order).toContain('revoke:blob:download');
-    expect(order.indexOf('revoke:blob:download')).toBeLessThan(order.indexOf('record'));
+    expect(harness.recordDownload).not.toHaveBeenCalled();
   });
 
   it('下载失败时不记录次数并显示本地化错误', async () => {
@@ -775,17 +783,16 @@ describe('共享仓库章节', () => {
     expect(screen.getByRole('button', { name: '下载 Pet 1' }).textContent).toContain('0');
   });
 
-  it('记录下载次数失败时仍释放临时地址且不虚增次数', async () => {
+  it('短期地址下载不再尝试客户端记录次数', async () => {
     const harness = createRepository(1);
-    harness.recordDownload.mockRejectedValueOnce(new Error('record failed'));
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     renderChapter(harness.repository);
     await screen.findByText('Pet 1');
 
     fireEvent.click(screen.getByRole('button', { name: '下载 Pet 1' }));
 
-    expect(await screen.findByText('下载暂时无法完成，请稍后重试。')).toBeTruthy();
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:download');
+    await waitFor(() => expect(harness.getDownload).toHaveBeenCalledWith('pet-1'));
+    expect(harness.recordDownload).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '下载 Pet 1' }).textContent).toContain('0');
   });
 });

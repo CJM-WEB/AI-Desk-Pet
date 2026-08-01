@@ -27,7 +27,8 @@ export function SharedPetCard({
   onDownload
 }: SharedPetCardProps) {
   const { t } = useI18n();
-  const coverUrl = useObjectUrl(item.coverFile);
+  const localCoverUrl = useObjectUrl(item.coverFile ?? null);
+  const coverUrl = item.coverUrl ?? localCoverUrl;
   const openLabel = t('sharedPet.card.open', { name: item.name });
   const likeLabel = t('sharedPet.card.like', { name: item.name });
   const downloadLabel = t('sharedPet.card.download', { name: item.name });

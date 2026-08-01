@@ -5,13 +5,19 @@ import { DonationChapter } from './donation/DonationChapter';
 import { DownloadChapter } from './download/DownloadChapter';
 import { FeedbackChapter } from './feedback/FeedbackChapter';
 import { SharedPetChapter } from './community/SharedPetChapter';
-import { IndexedDbSharedPetRepository } from './community/indexed-db-shared-pet-repository';
+import { CloudSharedPetRepository } from './community/cloud-shared-pet-repository';
+import { ApiClient } from '../../lib/api-client';
+import { CaptchaClient } from '../../lib/captcha';
 import type { ChapterId, ChapterRuntimeProps } from './types';
 
-const sharedPetRepository = new IndexedDbSharedPetRepository();
+/** 公开页面只使用 REST 仓库，验证码不承担且不创建用户身份。 */
+const sharedPetRepository = new CloudSharedPetRepository(
+  new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1')
+);
+const sharedPetCaptcha = new CaptchaClient();
 
 function CommunityChapter(props: ChapterRuntimeProps) {
-  return <SharedPetChapter {...props} repository={sharedPetRepository} />;
+  return <SharedPetChapter {...props} repository={sharedPetRepository} captcha={sharedPetCaptcha} />;
 }
 
 interface ChapterDefinition {

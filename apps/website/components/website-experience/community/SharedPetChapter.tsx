@@ -12,6 +12,8 @@ import type {
   Dispatch,
   SetStateAction
 } from 'react';
+import type { SubmissionReceipt } from '@myself/shared-types';
+import { CaptchaClient, type CaptchaVerifier } from '../../../lib/captcha';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ChapterRuntimeProps } from '../types';
 import { PointerTiltText } from '../visual/PointerTiltText';
@@ -37,6 +39,7 @@ import styles from './community.module.css';
 
 export interface SharedPetChapterProps extends ChapterRuntimeProps {
   repository: SharedPetRepository;
+  captcha?: CaptchaVerifier;
 }
 
 type SharedPetCardStyle = CSSProperties & {
@@ -99,7 +102,8 @@ export function SharedPetChapter({
   isPaused = false,
   reducedMotion = false,
   staticFallback = false,
-  repository
+  repository,
+  captcha = new CaptchaClient()
 }: SharedPetChapterProps) {
   const { t } = useI18n();
   const [transition, setTransition] = useState<SharedPetPageTransition>(
@@ -112,6 +116,7 @@ export function SharedPetChapter({
   );
   const [loadNotice, setLoadNotice] = useState<string | null>(null);
   const [operationNotice, setOperationNotice] = useState<string | null>(null);
+  const [submissionReceipt, setSubmissionReceipt] = useState<SubmissionReceipt | null>(null);
   const [detailPending, setDetailPending] = useState<ReadonlySet<string>>(
     new Set()
   );
@@ -484,19 +489,12 @@ export function SharedPetChapter({
       || !beginItemLock(downloadLocksRef.current, setDownloadPending, item.id)
     ) return;
     const token = beginStatusOperation();
-    let objectUrl: string | null = null;
-    const revokeObjectUrl = () => {
-      if (objectUrl === null) return;
-      URL.revokeObjectURL(objectUrl);
-      objectUrl = null;
-    };
-
     try {
       const payload = await repository.getDownload(item.id);
       if (!mountedRef.current) return;
-      objectUrl = URL.createObjectURL(payload.file);
+      if (!payload.url) throw new Error('DOWNLOAD_URL_MISSING');
       const anchor = document.createElement('a');
-      anchor.href = objectUrl;
+      anchor.href = payload.url;
       anchor.download = payload.fileName;
       anchor.hidden = true;
       try {
@@ -504,10 +502,7 @@ export function SharedPetChapter({
         anchor.click();
       } finally {
         anchor.remove();
-        revokeObjectUrl();
       }
-      const updated = await repository.recordDownload(item.id);
-      replaceVisibleItem(updated);
     } catch {
       if (
         mountedRef.current
@@ -516,11 +511,6 @@ export function SharedPetChapter({
         setOperationNotice(t('sharedPet.error.DOWNLOAD_FAILED'));
       }
     } finally {
-      try {
-        revokeObjectUrl();
-      } catch {
-        // 地址释放异常不允许逃逸，下载错误由当前操作统一展示。
-      }
       endItemLock(
         downloadLocksRef.current,
         setDownloadPending,
@@ -534,14 +524,15 @@ export function SharedPetChapter({
     if (!draft.packageFile || !draft.coverFile) {
       throw new Error('共享包文件不完整');
     }
-    await repository.create({
+    const proof = await captcha.verify();
+    const receipt = await repository.submit({
       ...draft,
       packageFile: draft.packageFile,
       coverFile: draft.coverFile
-    });
+    }, proof);
     if (!mountedRef.current) return;
     setComposerOpen(false);
-    await refreshPage(1);
+    setSubmissionReceipt(receipt);
   };
 
   const pageLabel = visiblePage.totalPages === 0
@@ -608,6 +599,14 @@ export function SharedPetChapter({
           </div>
           {statusMessage ? (
             <p className={styles.sharedPetStatus} role="alert">{statusMessage}</p>
+          ) : submissionReceipt ? (
+            <div className={styles.sharedPetStatus} role="status">
+              <p>{t('sharedPet.submission.received')}</p>
+              <a href={`${submissionReceipt.statusPath}#${submissionReceipt.statusToken}`}>
+                {t('sharedPet.submission.statusLink')}
+              </a>
+              <p>{t('sharedPet.submission.saveLink')}</p>
+            </div>
           ) : visiblePage.total === 0 ? (
             <p className={styles.sharedPetStatus}>{t('sharedPet.chapter.empty')}</p>
           ) : null}

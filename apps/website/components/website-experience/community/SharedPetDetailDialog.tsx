@@ -38,7 +38,8 @@ export function SharedPetDetailDialog({
   const t = useCallback((key: Parameters<typeof rawTranslate>[0]) => (
     interpolateMessage(rawTranslate(key))
   ), [rawTranslate]);
-  const coverUrl = useObjectUrl(item.coverFile);
+  const localCoverUrl = useObjectUrl(item.coverFile ?? null);
+  const coverUrl = item.coverUrl ?? localCoverUrl;
   const downloadLabel = interpolateMessage(
     rawTranslate('sharedPet.card.download'),
     { name: item.name }
