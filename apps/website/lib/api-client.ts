@@ -24,7 +24,7 @@ type Fetcher = typeof fetch;
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
-    private readonly fetcher: Fetcher = fetch
+    private readonly fetcher: Fetcher = (input, init) => fetch(input, init)
   ) {}
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {

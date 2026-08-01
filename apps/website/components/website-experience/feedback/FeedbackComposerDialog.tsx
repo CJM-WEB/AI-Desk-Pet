@@ -211,6 +211,13 @@ export function FeedbackComposerDialog({
           </div>
         </div>
 
+        <p className={styles.legalNotice}>
+          {t('legal.consentPrefix')}
+          <a href="/legal/terms.html">{t('legal.terms')}</a>{t('legal.separator')}
+          <a href="/legal/privacy.html">{t('legal.privacy')}</a>{t('legal.and')}
+          <a href="/legal/content-policy.html">{t('legal.contentPolicy')}</a>{t('legal.suffix')}
+        </p>
+
         <footer className={styles.composerFooter}>
           <button type="button" disabled={submitting} onClick={onRequestClose}>{t('feedback.dialog.cancel')}</button>
           <button type="button" disabled={submitting} onClick={onSubmit}>

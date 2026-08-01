@@ -457,7 +457,13 @@ describe('共享仓库章节', () => {
     await screen.findByText('Pet 1');
 
     fireEvent.click(screen.getByRole('button', { name: '分享您的 AI Pet' }));
-    expect(await screen.findByRole('dialog', { name: '分享投稿' })).toBeTruthy();
+    const composer = await screen.findByRole('dialog', { name: '分享投稿' });
+    expect(within(composer).getByRole('link', { name: '用户协议' }).getAttribute('href'))
+      .toBe('/legal/terms.html');
+    expect(within(composer).getByRole('link', { name: '隐私政策' }).getAttribute('href'))
+      .toBe('/legal/privacy.html');
+    expect(within(composer).getByRole('link', { name: '内容规则' }).getAttribute('href'))
+      .toBe('/legal/content-policy.html');
     const packageFile = new File(['zip'], 'new-pet.zip', { type: 'application/zip' });
     const coverFile = new File(['image'], 'new-cover.png', { type: 'image/png' });
     fireEvent.change(screen.getByLabelText('AI Pet ZIP 文件'), {

@@ -14,6 +14,7 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('data-chapter-id="download"');
     expect(html).toContain('data-chapter-id="community"');
     expect(html).toContain('data-chapter-id="feedback"');
+    expect(html).toContain('id="feedback"');
     expect(html).toContain('data-chapter-id="donation"');
     expect(html).toContain('data-testid="download-chapter"');
     expect(html).toContain('data-testid="donation-chapter"');

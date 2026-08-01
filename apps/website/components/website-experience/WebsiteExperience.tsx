@@ -170,6 +170,7 @@ export function WebsiteExperience({
         return (
           <section
             key={chapter.id}
+            id={chapter.id}
             className={styles.chapter}
             data-chapter-id={chapter.id}
             data-visible={visual.visible}

@@ -331,6 +331,19 @@
   gap: 16px;
 }
 
+.legalNotice {
+  margin: 0;
+  color: rgb(74, 74, 74);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.legalNotice a {
+  margin-inline: 3px;
+  color: rgb(0, 74, 184);
+  text-underline-offset: 2px;
+}
+
 /** 上传时仅展示聚合后的公开字节百分比，不暴露签名地址或投稿令牌。 */
 .uploadProgress {
   display: grid;

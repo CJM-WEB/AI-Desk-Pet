@@ -192,6 +192,12 @@ export function SharedPetComposerDialog({
             <p id={errorId} className={styles.error} role="alert">{error}</p>
           ) : null}
         </div>
+        <p className={styles.legalNotice}>
+          {t('legal.consentPrefix')}
+          <a href="/legal/terms.html">{t('legal.terms')}</a>{t('legal.separator')}
+          <a href="/legal/privacy.html">{t('legal.privacy')}</a>{t('legal.and')}
+          <a href="/legal/content-policy.html">{t('legal.contentPolicy')}</a>{t('legal.suffix')}
+        </p>
         {invalidField === null && error ? (
           <p id={errorId} className={styles.error} role="alert">{error}</p>
         ) : null}

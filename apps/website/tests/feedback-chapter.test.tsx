@@ -550,6 +550,12 @@ describe('反馈章节', () => {
     expect(onCreateRequested).toHaveBeenCalledOnce();
     const dialog = screen.getByRole('dialog', { name: '新建投稿' });
     expect(dialog.parentElement).toBe(document.body);
+    expect(within(dialog).getByRole('link', { name: '用户协议' }).getAttribute('href'))
+      .toBe('/legal/terms.html');
+    expect(within(dialog).getByRole('link', { name: '隐私政策' }).getAttribute('href'))
+      .toBe('/legal/privacy.html');
+    expect(within(dialog).getByRole('link', { name: '内容规则' }).getAttribute('href'))
+      .toBe('/legal/content-policy.html');
     expect(screen.getByRole('radio', { name: '用户反馈' })
       .getAttribute('aria-checked')).toBe('true');
     expect(document.activeElement).toBe(screen.getByLabelText('正文'));
