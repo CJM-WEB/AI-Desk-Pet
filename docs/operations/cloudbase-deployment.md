@@ -29,11 +29,12 @@
 4. 在 CloudBase 身份认证中启用邮箱 OTP，预先创建唯一管理员账号。服务端 `ADMIN_EMAIL` 只配置这一地址；关闭自动注册，普通投稿者不登录。
 5. 前端使用 `@cloudbase/js-sdk` v3，并配置 `NEXT_PUBLIC_CLOUDBASE_ENV_ID` 与 `NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY`。安全域名必须只包含实际 HTTPS 域名。
 
-## 4. AI 相关性审核
+## 4. 本地关键词相关性审核
 
-1. 开通 CloudBase AI Token 资源，启用 `deepseek-v4-flash`。
-2. 服务端配置 `CLOUDBASE_AI_BASE_URL` 与 `CLOUDBASE_AI_API_KEY`；API Key 不得出现在静态站点、浏览器变量或文档示例值中。
-3. 相关性模型只输出结构化风险建议，最终状态由审核服务按固定规则生成；模型失败时保持隐藏，不按通过处理。
+1. 相关性审核由后端内置的分组关键词规则执行，不需要开通 CloudBase AI、购买 AI Token 或配置第三方模型。
+2. 强产品词或有效跨组组合输出系统通过建议；零命中、单个弱词、组合不足和内部异常一律转人工。
+3. 关键词层不产生自动驳回。政治、脏话及其他明确风险仍由 TMS、IMS、OCR 和资源包技术扫描处理。
+4. 系统通过与转人工都进入管理员队列，只有管理员批准后才能公开。
 
 ## 5. 隔离扫描容器
 
@@ -64,8 +65,6 @@ TMS_BIZ_TYPE
 IMS_BIZ_TYPE
 SCANNER_URL
 SCANNER_HMAC_SECRET
-CLOUDBASE_AI_BASE_URL
-CLOUDBASE_AI_API_KEY
 ```
 
 ## 7. 构建并部署三个函数
@@ -112,7 +111,7 @@ pnpm.cmd exec cloudbase fn deploy --all
 
 ## 11. 开发环境冒烟门禁
 
-生产部署前在开发环境验证：匿名共享包和反馈投稿不直接公开；状态链接只在 Fragment 携带令牌；系统审核后进入管理员队列；批准后才公开；危险包不能批准；删除立即隐藏且三天内可恢复；错误或非管理员 Bearer 返回 401/403；下载只发短期签名地址。
+生产部署前在开发环境验证：匿名共享包和反馈投稿不直接公开；状态链接只在 Fragment 携带令牌；验证强产品词和有效组合进入管理员队列，零命中与弱命中也进入管理员队列且不会自动驳回；明确内容安全风险仍进入自动驳回；批准后才公开；危险包不能批准；删除立即隐藏且三天内可恢复；错误或非管理员 Bearer 返回 401/403；下载只发短期签名地址。
 
 执行仓库验证：
 
