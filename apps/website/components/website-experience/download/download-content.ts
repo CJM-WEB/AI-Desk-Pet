@@ -74,6 +74,7 @@ function createWindowsPlatform(t: Translate): DownloadPlatform {
       plannedReleaseTag: windowsRelease.plannedReleaseTag
     };
 }
+
 export interface DownloadContent {
   platforms: readonly DownloadPlatform[];
   faqItems: readonly FaqItem[];
