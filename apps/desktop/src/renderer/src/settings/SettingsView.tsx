@@ -9,6 +9,7 @@ import type {
 } from '../../../shared/myself-api';
 import type { LocalDataScope } from '../../../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
+import { desktopRuntimeCapabilities } from '../../../shared/desktop-runtime-capabilities';
 import { ProviderSettings } from './ProviderSettings';
 import {
   McpSettings,
@@ -97,7 +98,20 @@ const tabs = [
   ['local', '本地数据', Database]
 ] as const;
 
+export function availableSettingsTabs(): readonly SettingsTab[] {
+  return tabs
+    .filter(([id]) => id !== 'tools' || desktopRuntimeCapabilities.mcp)
+    .map(([id]) => id);
+}
+
+export function resolveSettingsTab(tab: SettingsTab): SettingsTab {
+  return tab === 'tools' && !desktopRuntimeCapabilities.mcp ? 'models' : tab;
+}
+
 export function SettingsWorkspace(props: SettingsWorkspaceProps) {
+  const activeTab = resolveSettingsTab(props.activeTab);
+  const visibleTabs = tabs.filter(([id]) => availableSettingsTabs().includes(id));
+
   return (
     <main className="settings-shell">
       <header className="settings-header">
@@ -112,11 +126,11 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
         </div>
       </header>
       <nav className="settings-tabs" aria-label="设置分类">
-        {tabs.map(([id, label, Icon]) => (
+        {visibleTabs.map(([id, label, Icon]) => (
           <button
             key={id}
             type="button"
-            aria-current={props.activeTab === id ? 'page' : undefined}
+            aria-current={activeTab === id ? 'page' : undefined}
             onClick={() => props.onTabChange(id)}
           >
             <Icon size={17} />{label}
@@ -128,21 +142,21 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
             {props.notice.text}
           </div>
         : null}
-      {props.activeTab === 'models' ? (
+      {activeTab === 'models' ? (
         <ProviderSettings
           dashboard={props.dashboard}
           busy={props.busy}
           {...props.providerActions}
         />
       ) : null}
-      {props.activeTab === 'tools' ? (
+      {activeTab === 'tools' && desktopRuntimeCapabilities.mcp ? (
         <McpSettings
           servers={props.dashboard.mcpServers}
           busy={props.busy}
           {...props.mcpActions}
         />
       ) : null}
-      {props.activeTab === 'privacy' ? (
+      {activeTab === 'privacy' ? (
         <PrivacySettings
           privacy={props.dashboard.privacy}
           runtimeSupport={props.dashboard.privacyRuntimeSupport}
@@ -151,7 +165,7 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
           {...props.privacyActions}
         />
       ) : null}
-      {props.activeTab === 'local' ? (
+      {activeTab === 'local' ? (
         <section className="settings-band local-data-pane" aria-labelledby="local-heading">
           <div className="pane-heading">
             <div><h2 id="local-heading">本地数据</h2><p>按范围清理，不会删除授权目录中的文件。</p></div>
@@ -223,7 +237,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       activeTab={activeTab}
       busy={busy}
       notice={notice}
-      onTabChange={setActiveTab}
+      onTabChange={tab => setActiveTab(resolveSettingsTab(tab))}
       onClose={() => window.close()}
       providerActions={{
         onSave: input => void run(() => api.saveProviderProfile(input), '模型档案已保存。'),

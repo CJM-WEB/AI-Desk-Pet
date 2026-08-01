@@ -7,7 +7,10 @@ import {
   PetView
 } from '../src/renderer/src/pet/PetView';
 import { ConfirmationCard } from '../src/renderer/src/chat/ConfirmationCard';
-import { SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
+import {
+  availableSettingsTabs,
+  SettingsWorkspace
+} from '../src/renderer/src/settings/SettingsView';
 import { mountTaskEventsIfAvailable } from '../src/renderer/src/App';
 
 type ClickableElement = {
@@ -86,7 +89,7 @@ describe('Renderer 可见组件', () => {
     expect(markup).not.toContain('rename_entry');
   });
 
-  test('设置工作区提供模型、工具、隐私和本地数据导航', () => {
+  test('设置工作区仅提供模型、隐私和本地数据导航', () => {
     const markup = renderToStaticMarkup(
       <SettingsWorkspace
         dashboard={{
@@ -154,13 +157,14 @@ describe('Renderer 可见组件', () => {
           onRevokeRoot: vi.fn()
         }}
         onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
       />
     );
 
     expect(markup).toContain('模型');
-    expect(markup).toContain('工具');
     expect(markup).toContain('隐私');
     expect(markup).toContain('清除全部本地数据');
+    expect(availableSettingsTabs()).not.toContain('tools');
   });
 });
 

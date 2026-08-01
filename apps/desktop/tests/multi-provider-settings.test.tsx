@@ -4,7 +4,11 @@ import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import { ProviderSettings } from '../src/renderer/src/settings/ProviderSettings';
 import { McpSettings } from '../src/renderer/src/settings/McpSettings';
 import { PrivacySettings } from '../src/renderer/src/settings/PrivacySettings';
-import { SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
+import {
+  availableSettingsTabs,
+  resolveSettingsTab,
+  SettingsWorkspace
+} from '../src/renderer/src/settings/SettingsView';
 
 const dashboard: SettingsDashboardDto = {
   catalog: [{
@@ -247,11 +251,14 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('无痕会话');
   });
 
-  test('设置工作区使用四个紧凑 tab 并提供关闭按钮', () => {
+  test('MCP 禁用时设置导航不公开工具页且旧 tools 状态回退到模型档案', () => {
+    expect(availableSettingsTabs()).toEqual(['models', 'privacy', 'local']);
+    expect(resolveSettingsTab('tools')).toBe('models');
+
     const markup = renderToStaticMarkup(
       <SettingsWorkspace
         dashboard={dashboard}
-        activeTab="models"
+        activeTab="tools"
         busy={false}
         notice={null}
         onTabChange={vi.fn()}
@@ -282,13 +289,11 @@ describe('多 Provider 设置组件', () => {
           onRevokeRoot: vi.fn()
         }}
         onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
       />
     );
 
-    expect(markup).toContain('模型');
-    expect(markup).toContain('工具');
-    expect(markup).toContain('隐私');
-    expect(markup).toContain('本地数据');
-    expect(markup).toContain('aria-label="关闭设置"');
+    expect(markup).toContain('模型档案');
+    expect(markup).not.toContain('MCP 服务');
   });
 });
