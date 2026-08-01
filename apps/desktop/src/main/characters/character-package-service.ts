@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  lstatSync,
+  readdirSync,
+  realpathSync,
+  rmSync
+} from 'node:fs';
+import {
+  chmod,
   copyFile,
   lstat,
   mkdir,
@@ -84,6 +91,7 @@ export type CharacterPackageCheckpoint =
   | 'export:after-temp-write'
   | 'export:before-commit'
   | 'export:before-link'
+  | 'export:cleanup-verified'
   | 'export:resource-validated'
   | 'import:validated';
 
@@ -782,23 +790,6 @@ async function assertExportSnapshotIdentity(
   }
 }
 
-/** 清理时只移除本次创建且身份未被替换的路径。 */
-async function removeIfSameIdentity(
-  path: string,
-  expected: PathIdentity
-): Promise<void> {
-  let current;
-  try {
-    current = await lstat(path);
-  } catch (error) {
-    if (isMissing(error)) return;
-    throw error;
-  }
-  if (current.isFile() && sameIdentity(expected, current)) {
-    await rm(path, { force: true });
-  }
-}
-
 /** 从已打开句柄捕获创建时身份，不重新信任可变路径。 */
 async function captureHandleIdentity(handle: FileHandle): Promise<PathIdentity> {
   try {
@@ -809,6 +800,50 @@ async function captureHandleIdentity(handle: FileHandle): Promise<PathIdentity> 
     return { dev: current.dev, ino: current.ino };
   } catch {
     throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+}
+
+/** 在关闭句柄前失效化本方 inode，避免移动后的归档或半成品残留。 */
+async function invalidateHandle(handle: FileHandle): Promise<void> {
+  await handle.truncate(0);
+  await handle.sync();
+}
+
+/**
+ * 仅同步清理身份未变且只含本方零字节临时文件的私有 staging。
+ * 同步检查到删除之间不运行 checkpoint，也不把观察到的陌生 inode 当作清理目标。
+ */
+function cleanupPrivateExportStaging(
+  staging: DirectoryIdentity,
+  temporaryPath: string,
+  temporaryIdentity: PathIdentity
+): void {
+  try {
+    const directory = lstatSync(staging.logicalPath);
+    const entries = readdirSync(staging.logicalPath, { withFileTypes: true });
+    if (
+      !directory.isDirectory()
+      || directory.isSymbolicLink()
+      || !sameIdentity(staging, directory)
+      || realpathSync.native(staging.logicalPath) !== staging.physicalPath
+      || entries.length !== 1
+      || entries[0]?.name !== 'archive.tmp'
+      || !entries[0].isFile()
+    ) {
+      return;
+    }
+    const temporary = lstatSync(temporaryPath);
+    if (
+      temporary.isSymbolicLink()
+      || !temporary.isFile()
+      || !sameIdentity(temporaryIdentity, temporary)
+      || temporary.size !== 0
+    ) {
+      return;
+    }
+    rmSync(staging.logicalPath, { recursive: true, force: true });
+  } catch {
+    // 身份、内容或清理状态不确定时保留隔离目录，避免误删陌生文件。
   }
 }
 
@@ -1443,7 +1478,12 @@ export class CharacterPackageService {
     archive: ZipFile,
     startStreams?: () => void
   ): Promise<void> {
-    const temporaryDestination = `${destination}.${this.createId()}.tmp`;
+    const stagingDirectory = await mkdtemp(
+      join(dirname(destination), '.character-export-')
+    );
+    await chmod(stagingDirectory, 0o700);
+    const stagingIdentity = await captureDirectoryIdentity(stagingDirectory);
+    const temporaryDestination = join(stagingDirectory, 'archive.tmp');
     let temporaryHandle: FileHandle | undefined;
     let temporaryIdentity: PathIdentity | undefined;
     let destinationHandle: FileHandle | undefined;
@@ -1472,21 +1512,21 @@ export class CharacterPackageService {
       await assertHandleArchiveIdentity(temporaryHandle, archiveIdentity);
       await this.dependencies.onCheckpoint?.(
         'export:after-temp-write',
-        dirname(destination),
+        stagingDirectory,
         destination
       );
       await assertHandleArchiveIdentity(temporaryHandle, archiveIdentity);
       await assertPathIdentity(temporaryDestination, temporaryIdentity);
       await this.dependencies.onCheckpoint?.(
         'export:before-commit',
-        dirname(destination),
+        stagingDirectory,
         destination
       );
       await assertHandleArchiveIdentity(temporaryHandle, archiveIdentity);
       await assertPathIdentity(temporaryDestination, temporaryIdentity);
       await this.dependencies.onCheckpoint?.(
         'export:before-link',
-        dirname(destination),
+        stagingDirectory,
         destination
       );
       await assertHandleArchiveIdentity(temporaryHandle, archiveIdentity);
@@ -1507,7 +1547,7 @@ export class CharacterPackageService {
       );
       await this.dependencies.onCheckpoint?.(
         'export:after-destination-write',
-        dirname(destination),
+        stagingDirectory,
         destination
       );
       await assertHandleArchiveIdentity(destinationHandle, {
@@ -1518,13 +1558,30 @@ export class CharacterPackageService {
       await assertPathIdentity(destination, destinationIdentity);
       committed = true;
     } finally {
-      await destinationHandle?.close().catch(() => undefined);
-      await temporaryHandle?.close().catch(() => undefined);
-      if (!committed && destinationIdentity !== undefined) {
-        await removeIfSameIdentity(destination, destinationIdentity);
-      }
-      if (temporaryIdentity !== undefined) {
-        await removeIfSameIdentity(temporaryDestination, temporaryIdentity);
+      try {
+        if (!committed && destinationHandle !== undefined) {
+          await invalidateHandle(destinationHandle);
+        }
+        if (temporaryHandle !== undefined) {
+          await invalidateHandle(temporaryHandle);
+        }
+        if (!committed && destinationHandle !== undefined) {
+          await this.dependencies.onCheckpoint?.(
+            'export:cleanup-verified',
+            stagingDirectory,
+            destination
+          );
+        }
+      } finally {
+        await destinationHandle?.close().catch(() => undefined);
+        await temporaryHandle?.close().catch(() => undefined);
+        if (temporaryIdentity !== undefined) {
+          cleanupPrivateExportStaging(
+            stagingIdentity,
+            temporaryDestination,
+            temporaryIdentity
+          );
+        }
       }
     }
   }

@@ -12,7 +12,7 @@ import {
 } from 'node:fs/promises';
 import { createWriteStream as openWriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { finished } from 'node:stream/promises';
 import {
   convertCharacterManifestV1ToV2,
@@ -210,6 +210,9 @@ describe('角色包 Main 服务', () => {
         id: 'demo',
         identity: { description: '演示角色' }
       });
+    expect((await readdir(testDirectory)).some(name => (
+      name.startsWith('.character-export-')
+    ))).toBe(false);
   });
 
   test('V1 角色包在 staging 内统一转换为 V2 后安装', async () => {
@@ -467,15 +470,10 @@ describe('角色包 Main 服务', () => {
     const destination = join(testDirectory, 'replaced-temporary.zip');
     let replaced = false;
     const service = new CharacterPackageService(charactersDirectory, {
-      async onCheckpoint(checkpoint) {
+      async onCheckpoint(checkpoint, stagingDirectory) {
         if (checkpoint !== 'export:before-commit' || replaced) return;
-        const temporaryName = (await readdir(dirname(destination))).find(name => (
-          name.startsWith(`${basename(destination)}.`) && name.endsWith('.tmp')
-        ));
-        expect(temporaryName).toBeTypeOf('string');
-        if (!temporaryName) return;
         replaced = true;
-        const temporaryPath = join(dirname(destination), temporaryName);
+        const temporaryPath = join(stagingDirectory, 'archive.tmp');
         await rename(temporaryPath, `${temporaryPath}.original`);
         await writeFile(temporaryPath, 'ATTACKER_ARCHIVE');
       }
@@ -492,14 +490,9 @@ describe('角色包 Main 服务', () => {
     const destination = join(testDirectory, 'replaced-before-link.zip');
     let replacedTemporaryPath: string | undefined;
     const service = new CharacterPackageService(charactersDirectory, {
-      async onCheckpoint(checkpoint) {
+      async onCheckpoint(checkpoint, stagingDirectory) {
         if (checkpoint !== 'export:before-link' || replacedTemporaryPath) return;
-        const temporaryName = (await readdir(dirname(destination))).find(name => (
-          name.startsWith(`${basename(destination)}.`) && name.endsWith('.tmp')
-        ));
-        expect(temporaryName).toBeTypeOf('string');
-        if (!temporaryName) return;
-        replacedTemporaryPath = join(dirname(destination), temporaryName);
+        replacedTemporaryPath = join(stagingDirectory, 'archive.tmp');
         await rename(
           replacedTemporaryPath,
           `${replacedTemporaryPath}.original`
@@ -522,14 +515,9 @@ describe('角色包 Main 服务', () => {
     const attacker = Buffer.from('ATTACKER_ARCHIVE');
     let replacedTemporaryPath: string | undefined;
     const service = new CharacterPackageService(charactersDirectory, {
-      async onCheckpoint(checkpoint) {
+      async onCheckpoint(checkpoint, stagingDirectory) {
         if (checkpoint !== 'export:after-temp-write') return;
-        const temporaryName = (await readdir(dirname(destination))).find(name => (
-          name.startsWith(`${basename(destination)}.`) && name.endsWith('.tmp')
-        ));
-        expect(temporaryName).toBeTypeOf('string');
-        if (!temporaryName) return;
-        replacedTemporaryPath = join(dirname(destination), temporaryName);
+        replacedTemporaryPath = join(stagingDirectory, 'archive.tmp');
         await rename(
           replacedTemporaryPath,
           `${replacedTemporaryPath}.original`
@@ -562,6 +550,38 @@ describe('角色包 Main 服务', () => {
       .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
     expect(replaced).toBe(true);
     await expect(readFile(destination)).resolves.toEqual(competitor);
+  });
+
+  test('清理校验后路径被替换时保留竞争方并失效化本方 inode', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'cleanup-race.zip');
+    const movedDestination = `${destination}.original`;
+    const competitor = Buffer.from('COMPETITOR');
+    let raced = false;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint, _root, targetPath) {
+        if (checkpoint === 'export:after-destination-write') {
+          throw new Error('FORCE_EXPORT_FAILURE');
+        }
+        if (
+          checkpoint !== 'export:cleanup-verified'
+          || targetPath !== destination
+          || raced
+        ) {
+          return;
+        }
+        raced = true;
+        await rename(destination, movedDestination);
+        await writeFile(destination, competitor, { flag: 'wx' });
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('FORCE_EXPORT_FAILURE');
+    expect(raced).toBe(true);
+    await expect(readFile(destination)).resolves.toEqual(competitor);
+    await expect(readFile(movedDestination))
+      .resolves.toHaveLength(0);
   });
 
   test('导出只包含指定角色草稿、源素材和运行时必需文件', async () => {
@@ -740,6 +760,9 @@ describe('角色包 Main 服务', () => {
     await expect(service.exportCharacter('demo', destination))
       .rejects.toThrow('ARCHIVE_STREAM_FAILED');
     await expect(access(destination)).rejects.toThrow();
+    expect((await readdir(testDirectory)).some(name => (
+      name.startsWith('.character-export-')
+    ))).toBe(false);
   });
 
   test('导入在隔离临时目录完成校验后才创建角色', async () => {
