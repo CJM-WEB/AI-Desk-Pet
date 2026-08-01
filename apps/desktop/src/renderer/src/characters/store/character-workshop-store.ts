@@ -7,6 +7,10 @@ import type {
   CharacterStateDefinitionV2,
   DraftActionClip
 } from '@myself/character-runtime';
+import {
+  characterManifestV2Schema,
+  resolveCharacterPresentation
+} from '@myself/character-runtime';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type {
   CharacterEvent,
@@ -1178,12 +1182,23 @@ export function createCharacterWorkshopStore(
       async compileAndPublish() {
         const current = get();
         if (!current.draft || !current.selectedCharacterId) return;
-        await reportFailure('compiling', async () => {
+        set({ compileStatus: 'compiling' });
+        const published = await reportFailure('compiling', async () => {
           await get().flushDraft();
-          if (draftRevision !== savedRevision || get().draftStatus !== 'saved') {
+          if (
+            draftRevision !== savedRevision
+            || !['idle', 'saved'].includes(get().draftStatus)
+          ) {
             throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
           }
           const latest = cloneDraft(get().draft!);
+          const defaultState = latest.states.find(state => state.id === latest.defaultStateId);
+          const hasPlayableDefault = defaultState?.actionIds.some(actionId => (
+            resolveCharacterPresentation(latest, latest.defaultSkinId, actionId) !== null
+          ));
+          if (!hasPlayableDefault) {
+            throw new Error('CHARACTER_DEFAULT_PRESENTATION_UNAVAILABLE');
+          }
           const sourceCache = new Map<string, Promise<Uint8Array>>();
           const readSource = (assetId: string): Promise<Uint8Array> => {
             let pending = sourceCache.get(assetId);
@@ -1194,24 +1209,17 @@ export function createCharacterWorkshopStore(
             return pending;
           };
           const resources: CharacterPublishInput['resources'] = [];
-          const manifestResources: Array<{
-            assetId: string;
-            fileName: string;
-            sha256: string;
-            byteLength: number;
-          }> = [];
-          const states = [];
-          const defaultSkin = latest.skins.find(skin => skin.id === latest.defaultSkinId)
-            ?? latest.skins[0];
-          for (const [stateIndex, state] of latest.states.entries()) {
-            const actions = [];
-            for (const [actionIndex, actionId] of state.actionIds.entries()) {
-              const action = latest.actions.find(candidate => candidate.id === actionId);
-              const presentation = defaultSkin?.presentations.find(
-                candidate => candidate.actionId === actionId
-              );
-              if (!action || !presentation || presentation.frames.length === 0) continue;
-              const atlasAssetId = `atlas-${stateIndex + 1}-${actionIndex + 1}`;
+          const manifestResources: CharacterPublishInput['manifest']['resources'] = [];
+          const resourceByHash = new Map<string, { assetId: string }>();
+          const compilationByFrames = new Map<string, Promise<Awaited<ReturnType<
+            NonNullable<CharacterWorkshopDependencies['compileAction']>
+          >>>>();
+          const compiledSkins = [];
+          for (const [skinIndex, skin] of latest.skins.entries()) {
+            const presentations = [];
+            for (const [presentationIndex, presentation] of skin.presentations.entries()) {
+              if (presentation.frames.length === 0) continue;
+              const atlasAssetId = `atlas-${skinIndex + 1}-${presentationIndex + 1}`;
               const sourceFrames: AtlasSourceFrame[] = [];
               for (const [frameIndex, frame] of presentation.frames.entries()) {
                 const bytes = await readSource(frame.assetId);
@@ -1234,58 +1242,67 @@ export function createCharacterWorkshopStore(
                     : { anchors: frame.anchors })
                 });
               }
-              const compiled = await (dependencies.compileAction ?? compileBrowserAction)({
-                atlasAssetId,
-                frames: sourceFrames
-              });
-              resources.push({
-                assetId: compiled.assetId,
-                bytes: Uint8Array.from(compiled.bytes)
-              });
-              manifestResources.push({
-                assetId: compiled.assetId,
-                fileName: compiled.fileName,
-                sha256: compiled.sha256,
-                byteLength: compiled.bytes.byteLength
-              });
-              actions.push({
-                id: action.id,
-                name: action.name,
+              // 相同帧输入共享一次编译；源素材读取同时由 sourceCache 跨表现去重。
+              const compilationKey = JSON.stringify(presentation.frames);
+              let compilation = compilationByFrames.get(compilationKey);
+              if (!compilation) {
+                compilation = (dependencies.compileAction ?? compileBrowserAction)({
+                  atlasAssetId,
+                  frames: sourceFrames
+                });
+                compilationByFrames.set(compilationKey, compilation);
+              }
+              const compiled = await compilation;
+              const existingResource = resourceByHash.get(compiled.sha256);
+              const resourceAssetId = existingResource?.assetId ?? compiled.assetId;
+              if (!existingResource) {
+                resourceByHash.set(compiled.sha256, { assetId: compiled.assetId });
+                resources.push({
+                  assetId: compiled.assetId,
+                  bytes: Uint8Array.from(compiled.bytes)
+                });
+                manifestResources.push({
+                  assetId: compiled.assetId,
+                  fileName: compiled.fileName,
+                  sha256: compiled.sha256,
+                  byteLength: compiled.bytes.byteLength
+                });
+              }
+              presentations.push({
+                actionId: presentation.actionId,
                 fps: presentation.fps,
-                loop: action.loopPolicy !== 'never',
-                weight: action.preference,
-                direction: action.direction,
                 anchors: presentation.anchors,
-                frames: compiled.frames
+                ...(presentation.regions === undefined
+                  ? {}
+                  : { regions: presentation.regions }),
+                frames: compiled.frames.map(frame => ({
+                  ...frame,
+                  assetId: resourceAssetId
+                }))
               });
             }
-            states.push({
-              id: state.id,
-              kind: state.id === 'idle' || state.id === 'thinking' ? 'core' : 'extension',
-              actions
+            compiledSkins.push({
+              ...skin,
+              presentations
             });
           }
-          if (resources.length === 0) {
-            throw new Error('CHARACTER_IDLE_UNAVAILABLE');
-          }
-          // Task 7 会将这一旧播放器编译边界替换为严格 V2 发布。
-          await (api.publishCharacter as (input: unknown) => Promise<void>)({
+          const manifest = characterManifestV2Schema.parse({
+            ...latest,
+            thumbnailAssetId: manifestResources[0]!.assetId,
+            compilerVersion: 'character-atlas-compiler-v2',
+            resources: manifestResources,
+            skins: compiledSkins
+          });
+          await api.publishCharacter({
             characterId: latest.id,
-            manifest: {
-              version: 1,
-              id: latest.id,
-              name: latest.name,
-              thumbnailAssetId: resources[0]!.assetId,
-              compilerVersion: 'character-atlas-compiler-v1',
-              resources: manifestResources,
-              states
-            },
+            manifest,
             resources
           });
           set({ compileStatus: 'success' });
           enqueueToast({ tone: 'success', text: '运行版本已编译并发布。' });
           await refreshCharacters();
         });
+        if (!published) set({ compileStatus: 'error' });
       },
 
       async publishCharacter(input) {
