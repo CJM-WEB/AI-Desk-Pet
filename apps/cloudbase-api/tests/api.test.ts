@@ -127,7 +127,11 @@ function createDependencies() {
       listQueue: vi.fn(async () => ({ items: [], nextCursor: null })),
       getDetail: vi.fn(async () => ({
         id: 'submission-1',
-        status: 'manual_review_pending'
+        status: 'manual_review_pending',
+        coverPreview: {
+          url: 'https://preview.example/cover.webp',
+          expiresAt: '2026-07-31T00:05:00.000Z'
+        }
       })),
       applyAction: vi.fn(async () => ({
         submission: {
@@ -486,6 +490,24 @@ describe('公开 HTTP API', () => {
         reason: '审核通过'
       }
     );
+  });
+
+  it('管理员详情在身份校验后返回短期封面预览', async () => {
+    const dependencies = createDependencies();
+    const response = await createApi(dependencies)(
+      event('GET', '/api/v1/admin/submissions/submission-1'),
+      context
+    );
+
+    expect(dependencies.adminIdentity.requireAdmin).toHaveBeenCalledOnce();
+    expect(JSON.parse(response.body)).toMatchObject({
+      data: {
+        coverPreview: {
+          url: 'https://preview.example/cover.webp',
+          expiresAt: '2026-07-31T00:05:00.000Z'
+        }
+      }
+    });
   });
 
   it('非白名单用户不能读取管理员队列', async () => {

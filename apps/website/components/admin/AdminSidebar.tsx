@@ -1,5 +1,7 @@
 import type { SubmissionStatus } from '@myself/shared-types';
 
+import { useI18n } from '../i18n/I18nProvider';
+import type { MessageKey } from '../i18n/i18n-types';
 import styles from './admin.module.css';
 
 export type AdminView = SubmissionStatus | 'audit';
@@ -9,18 +11,19 @@ interface AdminSidebarProps {
   onSelect(view: AdminView): void;
 }
 
-const views: ReadonlyArray<{ view: AdminView; label: string; hint: string }> = [
-  { view: 'manual_review_pending', label: '待我审核', hint: '系统通过或待确认' },
-  { view: 'auto_rejected', label: '自动驳回', hint: '复查机器判定' },
-  { view: 'published', label: '已发布', hint: '当前公开内容' },
-  { view: 'deleted_quarantined', label: '隔离区', hint: '三天内可恢复' },
-  { view: 'audit', label: '审计记录', hint: '当前投稿日志' }
+const views: ReadonlyArray<{ view: AdminView; label: MessageKey }> = [
+  { view: 'manual_review_pending', label: 'admin.sidebar.manual' },
+  { view: 'auto_rejected', label: 'admin.sidebar.autoRejected' },
+  { view: 'published', label: 'admin.sidebar.published' },
+  { view: 'deleted_quarantined', label: 'admin.sidebar.quarantine' },
+  { view: 'audit', label: 'admin.sidebar.audit' }
 ];
 
 /** 五个固定视图不会在公开网站导航中注册。 */
 export function AdminSidebar({ activeView, onSelect }: AdminSidebarProps) {
+  const { t } = useI18n();
   return (
-    <nav className={styles.sidebar} aria-label="管理员工作台导航">
+    <nav className={styles.sidebar} aria-label={t('admin.sidebar.label')}>
       <div className={styles.brand}>
         <span className={styles.brandMark} aria-hidden="true">AP</span>
         <span><strong>AI Pet</strong><small>审核工作台</small></span>
@@ -34,8 +37,7 @@ export function AdminSidebar({ activeView, onSelect }: AdminSidebarProps) {
             aria-pressed={activeView === item.view}
             onClick={() => onSelect(item.view)}
           >
-            <span>{item.label}</span>
-            <small>{item.hint}</small>
+            <span>{t(item.label)}</span>
           </button>
         ))}
       </div>

@@ -65,6 +65,10 @@ const auditLogSchema = z.object({
 }).strict();
 
 const adminSubmissionDetailSchema = adminSubmissionSummarySchema.extend({
+  coverPreview: z.object({
+    url: z.string().url(),
+    expiresAt: dateTime
+  }).strict().nullable(),
   assets: z.array(assetSchema),
   moderationResults: z.array(moderationResultSchema),
   auditLogs: z.array(auditLogSchema)

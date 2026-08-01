@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 
 import { AdminApp } from '../../components/admin/AdminApp';
+import { I18nProvider } from '../../components/i18n/I18nProvider';
 
 export const metadata: Metadata = {
   title: 'AI Pet 管理员模式',
@@ -8,5 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function AdminPage() {
-  return <AdminApp />;
+  return <I18nProvider><AdminApp /></I18nProvider>;
 }

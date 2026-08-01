@@ -1,4 +1,6 @@
 import type { AdminSubmissionSummary } from '../../lib/admin-api-client';
+import { useI18n } from '../i18n/I18nProvider';
+import type { Translate } from '../i18n/i18n-types';
 import styles from './admin.module.css';
 
 interface AdminQueueProps {
@@ -19,10 +21,11 @@ export function AdminQueue({
   onSelect,
   onLoadMore
 }: AdminQueueProps) {
+  const { t } = useI18n();
   return (
     <section className={styles.queuePanel} aria-label="审核队列" aria-busy={loading}>
       <header className={styles.panelHeader}>
-        <div><p className={styles.eyebrow}>SUBMISSION QUEUE</p><h2>投稿队列</h2></div>
+        <div><p className={styles.eyebrow}>SUBMISSION QUEUE</p><h2>{t('admin.queue.title')}</h2></div>
         <span className={styles.countBadge}>{items.length}</span>
       </header>
       <div className={styles.queueList}>
@@ -34,38 +37,41 @@ export function AdminQueue({
             onClick={() => onSelect(item.id)}
           >
             <span className={styles.queueTopline}>
-              <span className={styles.kindBadge}>{kindLabel(item.kind)}</span>
+              <span className={styles.kindBadge}>{kindLabel(item.kind, t)}</span>
               <time dateTime={item.createdAt}>{formatDate(item.createdAt)}</time>
             </span>
-            <strong>{item.title || '无标题投稿'}</strong>
-            <span className={styles.riskText}>{riskSummary(item.riskSummary)}</span>
-            <span className={styles.statusText}>{statusLabel(item.status)}</span>
+            <strong>{item.title || t('admin.queue.noTitle')}</strong>
+            <span className={styles.riskText}>{riskSummary(item.riskSummary, t)}</span>
+            <span className={styles.statusText}>{statusLabel(item.status, t)}</span>
           </button>
         ))}
-        {!loading && items.length === 0 ? <p className={styles.empty}>当前队列没有投稿。</p> : null}
-        {loading ? <p className={styles.muted} role="status">正在加载…</p> : null}
+        {!loading && items.length === 0 ? <p className={styles.empty}>{t('admin.queue.empty')}</p> : null}
+        {loading ? <p className={styles.muted} role="status">{t('admin.queue.loading')}</p> : null}
       </div>
       {hasMore ? (
         <button type="button" className={styles.secondaryButton} onClick={onLoadMore} disabled={loading}>
-          加载更多
+          {t('admin.queue.more')}
         </button>
       ) : null}
     </section>
   );
 }
 
-export function kindLabel(kind: string): string {
-  return ({ shared_package: '共享包', feedback: '反馈', suggestion: '建议' } as Record<string, string>)[kind]
-    ?? '其他';
+export function kindLabel(kind: string, t: Translate): string {
+  return ({
+    shared_package: t('admin.kind.sharedPackage'),
+    feedback: t('admin.kind.feedback'),
+    suggestion: t('admin.kind.suggestion')
+  } as Record<string, string>)[kind] ?? t('admin.kind.other');
 }
 
-export function statusLabel(status: string): string {
+export function statusLabel(status: string, t: Translate): string {
   return ({
-    manual_review_pending: '待管理员审核',
-    auto_rejected: '系统自动驳回',
-    published: '已发布',
-    deleted_quarantined: '隔离中',
-    admin_rejected: '管理员驳回'
+    manual_review_pending: t('admin.status.manual'),
+    auto_rejected: t('admin.status.autoRejected'),
+    published: t('admin.status.published'),
+    deleted_quarantined: t('admin.status.quarantined'),
+    admin_rejected: t('admin.status.adminRejected')
   } as Record<string, string>)[status] ?? status;
 }
 
@@ -74,10 +80,10 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString('zh-CN', { hour12: false });
 }
 
-function riskSummary(value: Record<string, unknown>): string {
+function riskSummary(value: Record<string, unknown>, t: Translate): string {
   const summary = value.summary;
   if (typeof summary === 'string' && summary.trim()) return summary.slice(0, 100);
   const labels = value.labels;
   if (Array.isArray(labels)) return labels.filter(label => typeof label === 'string').slice(0, 3).join(' · ');
-  return '暂无风险摘要';
+  return t('admin.queue.noRisk');
 }

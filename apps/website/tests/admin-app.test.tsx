@@ -30,6 +30,7 @@ function detail(overrides: Partial<AdminSubmissionDetail> = {}): AdminSubmission
     updatedAt: '2026-07-30T12:01:00.000Z',
     riskSummary: { labels: ['ai-pet'], summary: '与产品相关' },
     autoRejectionReason: null,
+    coverPreview: null,
     assets: [],
     moderationResults: [],
     auditLogs: [],
@@ -59,8 +60,8 @@ function setup(overrides: Partial<AdminApi> = {}, authOverrides: Partial<AdminAu
     signOut: vi.fn().mockResolvedValue(undefined),
     ...authOverrides
   } satisfies AdminAuthClient;
-  render(<AdminApp auth={auth} api={api} />);
-  return { api, auth, row };
+  const view = render(<AdminApp auth={auth} api={api} />);
+  return { api, auth, row, view };
 }
 
 describe('管理员审核工作台', () => {
@@ -141,6 +142,140 @@ describe('管理员审核工作台', () => {
     expect(applyAction).toHaveBeenCalledTimes(1);
     expect(getDetail).toHaveBeenCalledTimes(2);
     expect(api.listQueue).toHaveBeenCalledTimes(2);
+    expect((screen.getByLabelText('审核理由') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('分页失败可重试且成功后阻止服务端重复游标', async () => {
+    const first = detail({ id: 'first', title: '第一页' });
+    const second = detail({ id: 'second', title: '第二页' });
+    const listQueue = vi.fn()
+      .mockResolvedValueOnce({ items: [queuePage(first).items[0]!], nextCursor: 20 })
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValueOnce({ items: [queuePage(second).items[0]!], nextCursor: 20 });
+    setup({ listQueue });
+    await screen.findByText('第一页');
+
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+    await screen.findByText('审核队列暂时无法加载，请稍后重试。');
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+    expect(await screen.findByText('第二页')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+
+    expect(listQueue).toHaveBeenCalledTimes(3);
+  });
+
+  it('较旧的详情响应不能覆盖后来选择的投稿', async () => {
+    const first = detail({ id: 'first', title: '第一条', body: '第一条正文' });
+    const second = detail({ id: 'second', title: '第二条', body: '第二条正文' });
+    let resolveFirst: ((value: AdminSubmissionDetail) => void) | undefined;
+    const getDetail = vi.fn((_: string, id: string) => id === 'first'
+      ? new Promise<AdminSubmissionDetail>(resolve => { resolveFirst = resolve; })
+      : Promise.resolve(second));
+    setup({
+      listQueue: vi.fn().mockResolvedValue({
+        items: [queuePage(first).items[0]!, queuePage(second).items[0]!],
+        nextCursor: null
+      }),
+      getDetail
+    });
+
+    fireEvent.click(await screen.findByText('第一条'));
+    fireEvent.click(screen.getByText('第二条'));
+    expect(await screen.findByText('第二条正文')).toBeTruthy();
+    resolveFirst?.(first);
+    await waitFor(() => expect(screen.queryByText('第一条正文')).toBeNull());
+  });
+
+  it('切换投稿会清空上一条的审核理由', async () => {
+    const first = detail({ id: 'first', title: '第一条' });
+    const second = detail({ id: 'second', title: '第二条' });
+    setup({
+      listQueue: vi.fn().mockResolvedValue({
+        items: [queuePage(first).items[0]!, queuePage(second).items[0]!],
+        nextCursor: null
+      }),
+      getDetail: vi.fn((_: string, id: string) => Promise.resolve(id === 'first' ? first : second))
+    });
+    fireEvent.click(await screen.findByText('第一条'));
+    fireEvent.change(await screen.findByLabelText('审核理由'), {
+      target: { value: '仅属于第一条的理由' }
+    });
+    fireEvent.click(screen.getByText('第二条'));
+
+    await waitFor(() => expect((screen.getByLabelText('审核理由') as HTMLTextAreaElement).value).toBe(''));
+  });
+
+  it('退出后同步擦除旧详情且旧请求不能回填下一会话', async () => {
+    const oldRow = detail({ id: 'old', title: '旧会话内容', body: '旧敏感正文' });
+    const newRow = detail({ id: 'new', title: '新会话内容', body: '新会话正文' });
+    let resolveOldDetail: ((value: AdminSubmissionDetail) => void) | undefined;
+    const getDetail = vi.fn((token: string) => token === 'token-a'
+      ? new Promise<AdminSubmissionDetail>(resolve => { resolveOldDetail = resolve; })
+      : Promise.resolve(newRow));
+    const challenge = { verify: vi.fn().mockResolvedValue(undefined) };
+    const auth = {
+      getAccessToken: vi.fn().mockResolvedValueOnce('token-a').mockResolvedValueOnce('token-b'),
+      requestEmailOtp: vi.fn().mockResolvedValue(challenge),
+      signOut: vi.fn().mockResolvedValue(undefined)
+    } satisfies AdminAuthClient;
+    const listQueue = vi.fn((token: string) => Promise.resolve(
+      token === 'token-a' ? queuePage(oldRow) : queuePage(newRow)
+    ));
+    setup({ listQueue, getDetail }, auth);
+    fireEvent.click(await screen.findByText('旧会话内容'));
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    expect(screen.queryByText('旧会话内容')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('管理员邮箱'), { target: { value: 'b@example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }));
+    fireEvent.change(await screen.findByLabelText('邮箱验证码'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+    expect(await screen.findByText('新会话内容')).toBeTruthy();
+    resolveOldDetail?.(oldRow);
+    await waitFor(() => expect(screen.queryByText('旧敏感正文')).toBeNull());
+  });
+
+  it('自动驳回共享包执行技术扫描门禁，隔离内容提供恢复动作', async () => {
+    const blocked = detail({ id: 'blocked', kind: 'shared_package', status: 'auto_rejected', title: '待复核共享包' });
+    const { view } = setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(blocked)),
+      getDetail: vi.fn().mockResolvedValue(blocked)
+    });
+    fireEvent.click(screen.getByRole('button', { name: '自动驳回' }));
+    fireEvent.click(await screen.findByText('待复核共享包'));
+    await screen.findByLabelText('审核理由');
+    fireEvent.change(screen.getByLabelText('审核理由'), { target: { value: '人工复核' } });
+    expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '转人工审核' }) as HTMLButtonElement).disabled).toBe(false);
+
+    cleanup();
+    const quarantined = detail({ id: 'deleted', status: 'deleted_quarantined', title: '隔离内容', preQuarantineStatus: 'published' });
+    setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(quarantined)),
+      getDetail: vi.fn().mockResolvedValue(quarantined)
+    });
+    fireEvent.click(screen.getByRole('button', { name: '隔离区' }));
+    fireEvent.click(await screen.findByText('隔离内容'));
+    expect(await screen.findByRole('button', { name: '恢复内容' })).toBeTruthy();
+    void view;
+  });
+
+  it('审计记录入口保留可选队列且日志只读', async () => {
+    const row = detail({
+      auditLogs: [{
+        action: 'approve',
+        beforeStatus: 'manual_review_pending',
+        afterStatus: 'published',
+        reason: '内容合规',
+        createdAt: '2026-07-30T12:02:00.000Z'
+      }]
+    });
+    setup({ getDetail: vi.fn().mockResolvedValue(row) });
+    fireEvent.click(screen.getByRole('button', { name: '审计记录' }));
+    fireEvent.click(await screen.findByText('改进建议'));
+
+    expect(await screen.findByText('内容合规')).toBeTruthy();
+    expect(screen.queryByLabelText('审核理由')).toBeNull();
   });
 
   it('401 会登出并返回登录，403 显示明确无权限状态', async () => {

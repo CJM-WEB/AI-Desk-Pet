@@ -7,21 +7,35 @@ import type {
   AdminQueuePage,
   AdminQueueQuery,
   AdminStore,
-  AdminSubmissionDetail
+  AdminSubmissionDetail,
+  AdminSubmissionDetailView,
+  ObjectStorage
 } from '../ports.js';
 
 /** 管理员审核服务统一执行状态转换和技术扫描门禁。 */
 export class AdminService {
-  constructor(private readonly store: AdminStore) {}
+  constructor(
+    private readonly store: AdminStore,
+    private readonly storage: ObjectStorage
+  ) {}
 
   listQueue(query: AdminQueueQuery): Promise<AdminQueuePage> {
     return this.store.listAdminSubmissions(query);
   }
 
-  async getDetail(id: string): Promise<AdminSubmissionDetail> {
+  async getDetail(id: string): Promise<AdminSubmissionDetailView> {
     const detail = await this.store.findAdminSubmission(id);
     if (!detail) throw new ApiError('SUBMISSION_NOT_FOUND', 404);
-    return detail;
+    const cover = detail.assets.find(asset => (
+      asset.role === 'cover'
+      && ['image/jpeg', 'image/png', 'image/webp'].includes(asset.contentType)
+    ));
+    return {
+      ...detail,
+      coverPreview: cover
+        ? await this.storage.createSignedUrl(cover.storageKey, 300)
+        : null
+    };
   }
 
   async applyAction(
@@ -29,7 +43,8 @@ export class AdminService {
     id: string,
     action: AdminAction
   ): Promise<AdminActionResult> {
-    const submission = await this.getDetail(id);
+    const submission = await this.store.findAdminSubmission(id);
+    if (!submission) throw new ApiError('SUBMISSION_NOT_FOUND', 404);
     const nextStatus = nextStatusFor(submission, action.action);
     return this.store.applyAdminAction({
       submissionId: id,

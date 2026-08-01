@@ -357,6 +357,11 @@ export interface AdminSubmissionDetail extends SubmissionWithAssets {
   auditLogs: AdminAuditLog[];
 }
 
+/** 管理员详情视图可携带短期封面预览，不把私有路径变为公开字段。 */
+export interface AdminSubmissionDetailView extends AdminSubmissionDetail {
+  coverPreview: SignedDownload | null;
+}
+
 /** 管理员服务使用的原子读写边界。 */
 export interface AdminStore {
   listAdminSubmissions(query: AdminQueueQuery): Promise<AdminQueuePage>;

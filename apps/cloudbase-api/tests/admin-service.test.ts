@@ -4,7 +4,8 @@ import { AdminService } from '../src/services/admin-service.js';
 import type {
   AdminModerationResult,
   AdminStore,
-  AdminSubmissionDetail
+  AdminSubmissionDetail,
+  ObjectStorage
 } from '../src/ports.js';
 
 function submission(
@@ -52,13 +53,85 @@ function createService(row = submission('manual_review_pending')) {
       replayed: false
     }))
   } satisfies AdminStore;
+  const storage = {
+    createSignedUploadUrl: vi.fn(),
+    info: vi.fn(),
+    createSignedUrl: vi.fn(async () => ({
+      url: 'https://preview.example/cover.webp',
+      expiresAt: '2026-07-31T00:05:00.000Z'
+    })),
+    delete: vi.fn()
+  } satisfies ObjectStorage;
   return {
-    service: new AdminService(store),
-    store
+    service: new AdminService(store, storage),
+    store,
+    storage
   };
 }
 
 describe('管理员审核服务', () => {
+  it('详情只为允许的封面图片签发五分钟私有预览', async () => {
+    const row = submission('manual_review_pending', {
+      assets: [{
+        role: 'cover',
+        storageKey: 'private/cover.webp',
+        fileName: 'cover.webp',
+        declaredBytes: 10,
+        actualBytes: 10,
+        contentType: 'image/webp'
+      }]
+    });
+    const { service, storage } = createService(row);
+
+    await expect(service.getDetail(row.id)).resolves.toMatchObject({
+      coverPreview: {
+        url: 'https://preview.example/cover.webp',
+        expiresAt: '2026-07-31T00:05:00.000Z'
+      }
+    });
+    expect(storage.createSignedUrl).toHaveBeenCalledWith('private/cover.webp', 300);
+  });
+
+  it('非封面或非 JPG PNG WebP 资产不签发预览', async () => {
+    const row = submission('manual_review_pending', {
+      assets: [{
+        role: 'cover',
+        storageKey: 'private/cover.svg',
+        fileName: 'cover.svg',
+        declaredBytes: 10,
+        actualBytes: 10,
+        contentType: 'image/svg+xml'
+      }]
+    });
+    const { service, storage } = createService(row);
+
+    await expect(service.getDetail(row.id)).resolves.toMatchObject({ coverPreview: null });
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('管理员动作读取内部详情时不额外签发封面预览', async () => {
+    const row = submission('manual_review_pending', {
+      kind: 'feedback',
+      assets: [{
+        role: 'cover',
+        storageKey: 'private/cover.png',
+        fileName: 'cover.png',
+        declaredBytes: 10,
+        actualBytes: 10,
+        contentType: 'image/png'
+      }]
+    });
+    const { service, storage } = createService(row);
+
+    await service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      row.id,
+      { action: 'approve', version: 3, idempotencyKey: 'preview-action', reason: '通过' }
+    );
+
+    expect(storage.createSignedUrl).not.toHaveBeenCalled();
+  });
+
   it('管理员不能批准技术扫描未通过的自动驳回投稿', async () => {
     const { service, store } = createService(submission('auto_rejected', {
       moderationResults: [moderationResult('Block')]

@@ -3,6 +3,8 @@
 import { useState, type FormEvent } from 'react';
 
 import type { AdminAuthClient, AdminOtpChallenge } from '../../lib/admin-auth';
+import { useI18n } from '../i18n/I18nProvider';
+import type { Translate } from '../i18n/i18n-types';
 import styles from './admin.module.css';
 
 interface AdminLoginProps {
@@ -13,6 +15,7 @@ interface AdminLoginProps {
 
 /** 管理员登录只提供预注册邮箱 OTP，不提供注册或密码入口。 */
 export function AdminLogin({ auth, onAuthenticated, initialError }: AdminLoginProps) {
+  const { t } = useI18n();
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [challenge, setChallenge] = useState<AdminOtpChallenge | null>(null);
@@ -27,7 +30,7 @@ export function AdminLogin({ auth, onAuthenticated, initialError }: AdminLoginPr
     try {
       setChallenge(await auth.requestEmailOtp(email));
     } catch (requestError) {
-      setError(authErrorMessage(requestError));
+      setError(authErrorMessage(requestError, t));
     } finally {
       setBusy(false);
     }
@@ -42,7 +45,7 @@ export function AdminLogin({ auth, onAuthenticated, initialError }: AdminLoginPr
       await challenge.verify(code);
       onAuthenticated(await auth.getAccessToken());
     } catch (signInError) {
-      setError(authErrorMessage(signInError));
+      setError(authErrorMessage(signInError, t));
     } finally {
       setBusy(false);
     }
@@ -52,11 +55,11 @@ export function AdminLogin({ auth, onAuthenticated, initialError }: AdminLoginPr
     <main className={styles.loginPage}>
       <section className={styles.loginCard} aria-labelledby="admin-login-title">
         <p className={styles.eyebrow}>AI PET CONTROL ROOM</p>
-        <h1 id="admin-login-title">管理员模式</h1>
-        <p className={styles.muted}>仅限已预先配置的管理员邮箱。</p>
+        <h1 id="admin-login-title">{t('admin.login.title')}</h1>
+        <p className={styles.muted}>{t('admin.login.subtitle')}</p>
         <form onSubmit={challenge ? signIn : sendCode} className={styles.formStack}>
           <label className={styles.field}>
-            <span>管理员邮箱</span>
+            <span>{t('admin.login.email')}</span>
             <input
               type="email"
               autoComplete="email"
@@ -68,7 +71,7 @@ export function AdminLogin({ auth, onAuthenticated, initialError }: AdminLoginPr
           </label>
           {challenge ? (
             <label className={styles.field}>
-              <span>邮箱验证码</span>
+              <span>{t('admin.login.code')}</span>
               <input
                 inputMode="numeric"
                 autoComplete="one-time-code"
@@ -81,7 +84,9 @@ export function AdminLogin({ auth, onAuthenticated, initialError }: AdminLoginPr
           ) : null}
           {error ? <p role="alert" className={styles.error}>{error}</p> : null}
           <button className={styles.primaryButton} type="submit" disabled={busy}>
-            {challenge ? (busy ? '正在登录…' : '登录') : (busy ? '正在发送…' : '发送验证码')}
+            {challenge
+              ? (busy ? t('admin.login.signingIn') : t('admin.login.signIn'))
+              : (busy ? t('admin.login.sending') : t('admin.login.send'))}
           </button>
         </form>
       </section>
@@ -89,10 +94,10 @@ export function AdminLogin({ auth, onAuthenticated, initialError }: AdminLoginPr
   );
 }
 
-function authErrorMessage(error: unknown): string {
+function authErrorMessage(error: unknown, t: Translate): string {
   const code = error instanceof Error ? error.message : '';
-  if (code === 'ADMIN_EMAIL_INVALID') return '请输入有效的管理员邮箱。';
-  if (code.includes('OTP_REQUEST')) return '验证码暂时无法发送，请稍后重试。';
-  if (code.includes('OTP_VERIFY')) return '验证码无效或已过期，请重新获取。';
-  return '登录暂时无法完成，请稍后重试。';
+  if (code === 'ADMIN_EMAIL_INVALID') return t('admin.login.error.email');
+  if (code.includes('OTP_REQUEST')) return t('admin.login.error.request');
+  if (code.includes('OTP_VERIFY')) return t('admin.login.error.verify');
+  return t('admin.login.error.generic');
 }

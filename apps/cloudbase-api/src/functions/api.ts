@@ -572,7 +572,7 @@ export function createProductionHandler(): ApiHandler {
       runtime.auth,
       config.adminEmail
     ),
-    admin: new AdminService(store),
+    admin: new AdminService(store, storage),
     fingerprintSecret: config.abuseHmacSecret
   });
 }

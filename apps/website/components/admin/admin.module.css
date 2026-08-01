@@ -227,6 +227,16 @@
   overflow-wrap: anywhere;
 }
 
+.coverPreview {
+  display: block;
+  width: min(100%, 28rem);
+  max-height: 22rem;
+  object-fit: contain;
+  border: 1px solid #2b354d;
+  border-radius: 0.75rem;
+  background: #090d17;
+}
+
 .fileList,
 .scanList,
 .auditList {
