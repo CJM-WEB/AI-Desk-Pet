@@ -1,7 +1,6 @@
 import type {
   RelevanceClassifier,
-  RelevanceInput,
-  RelevanceSuggestion
+  RelevanceInput
 } from '../ports.js';
 
 export const keywordRelevanceRuleVersion =
@@ -40,9 +39,15 @@ function normalizeInput(input: RelevanceInput): string {
     .trim();
 }
 
+interface KeywordRelevanceLogger {
+  error(message: string): void;
+}
+
 /** 使用确定性的分组关键词给出相关性建议；任何不确定情况均转人工。 */
 export class KeywordRelevanceClassifier implements RelevanceClassifier {
-  async classify(input: RelevanceInput): Promise<RelevanceSuggestion> {
+  constructor(private readonly logger: KeywordRelevanceLogger = console) {}
+
+  async classify(input: RelevanceInput): Promise<'pass' | 'review'> {
     try {
       const text = normalizeInput(input);
       if (hasAny(text, strongProductPatterns)) return 'pass';
@@ -54,6 +59,10 @@ export class KeywordRelevanceClassifier implements RelevanceClassifier {
         ? 'pass'
         : 'review';
     } catch {
+      // 日志故障不得影响内容进入人工审核队列。
+      try {
+        this.logger.error('KEYWORD_RELEVANCE_RULE_ERROR');
+      } catch {}
       return 'review';
     }
   }

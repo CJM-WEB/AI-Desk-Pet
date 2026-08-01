@@ -24,9 +24,9 @@ describe('本地关键词相关性分类器', () => {
   });
 
   it.each([
-    ['PNG 贴图', '导入后显示异常'],
-    ['拖拽建议', '希望增加透明度'],
-    ['角色模型反馈', '显示异常']
+    ['PNG', '拖拽'],
+    ['PNG', '显示异常'],
+    ['拖拽', '显示异常']
   ])('有效跨组组合通过：%s', async (title, body) => {
     await expect(classifier.classify({ title, body }))
       .resolves.toBe('pass');
@@ -36,7 +36,8 @@ describe('本地关键词相关性分类器', () => {
     ['这个模型很好看', ''],
     ['希望支持这个功能', ''],
     ['今天天气不错', ''],
-    ['Petroleum update', 'unrelated news']
+    ['AI petroleum', 'unrelated news'],
+    ['mydesktop pet', 'unrelated news']
   ])('弱命中、零命中和英文子串转人工：%s', async (title, body) => {
     await expect(classifier.classify({ title, body }))
       .resolves.toBe('review');
@@ -49,5 +50,23 @@ describe('本地关键词相关性分类器', () => {
       classifier.classify({ title: '', body: '' })
     ]);
     expect(decisions).not.toContain('reject');
+  });
+
+  it('规则异常时记录稳定错误码并转人工', async () => {
+    const messages: string[] = [];
+    const logger = {
+      error: (message: string) => {
+        messages.push(message);
+        throw new Error('logger unavailable');
+      }
+    };
+    const failingClassifier = new KeywordRelevanceClassifier(logger);
+    const invalidInput = {
+      title: { toString: () => { throw new Error('secret content'); } },
+      body: ''
+    } as never;
+
+    await expect(failingClassifier.classify(invalidInput)).resolves.toBe('review');
+    expect(messages).toEqual(['KEYWORD_RELEVANCE_RULE_ERROR']);
   });
 });
