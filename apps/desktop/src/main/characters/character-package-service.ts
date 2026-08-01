@@ -54,6 +54,7 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_CREATE_ATTEMPTS = 32;
+const IMPORT_STAGING_PREFIX = 'ai-pet-character-package-';
 const ROLLBACK_MARKER_PATTERN =
   /^\.package-import-rollback-([a-z0-9][a-z0-9_-]{0,119})\.json$/u;
 const packageImportQueues = new Map<string, Promise<void>>();
@@ -1867,11 +1868,17 @@ export class CharacterPackageService {
   private async importCharacterUnlocked(packagePath: string): Promise<string> {
     await this.recoverPendingRollbacks();
     await mkdir(this.temporaryDirectory, { recursive: true });
-    const stagingDirectory = await mkdtemp(
-      join(this.temporaryDirectory, 'ai-pet-character-package-')
+    const temporaryRootIdentity = await captureDirectoryIdentity(
+      this.temporaryDirectory
     );
-    const stagingIdentity = await captureDirectoryIdentity(stagingDirectory);
-    await assertDirectoryIdentity(stagingIdentity, stagingIdentity);
+    const stagingDirectory = await mkdtemp(
+      join(this.temporaryDirectory, IMPORT_STAGING_PREFIX)
+    );
+    const stagingIdentity = await captureDirectoryIdentity(
+      stagingDirectory,
+      temporaryRootIdentity
+    );
+    await assertDirectoryIdentity(stagingIdentity, temporaryRootIdentity);
     const entriesPath = join(stagingDirectory, 'entries');
     await mkdir(entriesPath, { recursive: false });
     await assertDirectoryIdentity(stagingIdentity, stagingIdentity);
@@ -2001,8 +2008,6 @@ export class CharacterPackageService {
         }
       }
       throw error;
-    } finally {
-      await rm(stagingDirectory, { recursive: true, force: true });
     }
   }
 }

@@ -3,6 +3,7 @@ import {
   type CharacterActionDefinitionV2,
   type CharacterStateDefinitionV2
 } from '@myself/character-runtime';
+import { TagEditor } from './TagEditor';
 
 export interface ActionInspectorProps {
   action: CharacterActionDefinitionV2;
@@ -117,6 +118,13 @@ export function ActionInspector(props: ActionInspectorProps) {
           ))}
         </select>
       </label>
+      <TagEditor
+        ownerId={props.action.id}
+        ownerLabel="动作"
+        tags={props.action.tags}
+        disabled={props.disabled}
+        onChange={tags => props.onChange({ tags })}
+      />
       <div className="property-grid">
         <label>
           偏好权重
@@ -151,6 +159,31 @@ export function ActionInspector(props: ActionInspectorProps) {
           />
         </label>
       </div>
+      <label>
+        动作建议持续时间（毫秒）
+        <input
+          type="number"
+          min="1"
+          max="3600000"
+          step="1"
+          value={props.action.durationMs ?? ''}
+          disabled={props.disabled}
+          onChange={event => {
+            if (!event.currentTarget.value) {
+              props.onChange({ durationMs: undefined });
+              return;
+            }
+            const durationMs = Number(event.currentTarget.value);
+            if (
+              Number.isSafeInteger(durationMs)
+              && durationMs >= 1
+              && durationMs <= 3_600_000
+            ) {
+              props.onChange({ durationMs });
+            }
+          }}
+        />
+      </label>
       <label>
         重复抑制（毫秒）
         <input

@@ -165,7 +165,11 @@ export interface MyselfApi extends PetWindowInteractionApi {
   createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV2>;
   duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
   getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
-  saveCharacterDraft(characterId: string, draft: CharacterDraftV2): Promise<void>;
+  saveCharacterDraft(
+    characterId: string,
+    draft: CharacterDraftV2,
+    draftRevision: string
+  ): Promise<void>;
   chooseCharacterSources(characterId: string): Promise<CharacterSourceChoiceResult>;
   listCharacterSources(characterId: string): Promise<CharacterWorkshopSourceDto[]>;
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;

@@ -299,6 +299,7 @@ export function createCharacterWorkshopStore(
   let saveRequested = false;
   let draftRevision = 0;
   let savedRevision = 0;
+  let savedDraftRevisionToken: string | null = null;
   let selectionRevision = 0;
   let workspaceTargetRevision = 0;
   let listRevision = 0;
@@ -377,6 +378,7 @@ export function createCharacterWorkshopStore(
       const selection = initialSelection(draft);
       draftRevision += 1;
       savedRevision = draftRevision;
+      savedDraftRevisionToken = null;
       workspaceTargetRevision += 1;
       set({
         selectedCharacterId: draft.id,
@@ -501,7 +503,12 @@ export function createCharacterWorkshopStore(
         draftStatus: 'dirty',
         compileStatus: 'idle'
       });
-      scheduleSave();
+      if (compileInFlight) {
+        // 发布在途时立即把新修订送往 Main，使提交前的修订令牌复核可观察到编辑。
+        void get().flushDraft().catch(() => undefined);
+      } else {
+        scheduleSave();
+      }
     }
 
     function hasPendingDraft(): boolean {
@@ -832,7 +839,17 @@ export function createCharacterWorkshopStore(
       async exportCharacterPackage() {
         const characterId = get().selectedCharacterId;
         if (!characterId) return;
+        const exportSelectionRevision = selectionRevision;
+        const exportDraftRevision = draftRevision;
         await reportFailure('exporting', async () => {
+          if (hasPendingDraft() && !await flushBeforeSelectionChange()) return;
+          // 保存等待期间目标或草稿发生变化时，旧导出请求不得读取另一修订。
+          if (
+            selectionRevision !== exportSelectionRevision
+            || draftRevision !== exportDraftRevision
+            || get().selectedCharacterId !== characterId
+            || hasPendingDraft()
+          ) return;
           const result = await api.exportCharacterPackage(characterId);
           enqueueToast(result.kind === 'cancelled'
             ? { tone: 'info', text: '已取消导出角色包。' }
@@ -1086,7 +1103,15 @@ export function createCharacterWorkshopStore(
         if (!get().draft?.actions.some(action => action.id === actionId)) return;
         const { id: _ignoredId, ...safePatch } = structuredClone(patch);
         updateDraft(draft => {
-          Object.assign(draft.actions.find(action => action.id === actionId)!, safePatch);
+          const action = draft.actions.find(candidate => candidate.id === actionId)!;
+          Object.assign(action, safePatch);
+          if (safePatch.semantic === undefined) return;
+          // 动作换语义后，原皮肤回退已不再是同语义安全引用。
+          draft.skins.forEach(skin => {
+            skin.semanticFallbacks = skin.semanticFallbacks.filter(fallback => (
+              fallback.actionId !== actionId || fallback.semantic === action.semantic
+            ));
+          });
         });
       },
 
@@ -1262,6 +1287,9 @@ export function createCharacterWorkshopStore(
 
         set({ compileStatus: 'compiling' });
         const publishedOperation = reportFailure('compiling', async () => {
+          if (savedDraftRevisionToken === null) {
+            set({ draftStatus: 'dirty' });
+          }
           try {
             await get().flushDraft();
           } catch (error) {
@@ -1277,6 +1305,10 @@ export function createCharacterWorkshopStore(
           }
           const latest = cloneDraft(get().draft!);
           const compileDraftRevision = draftRevision;
+          const compileDraftRevisionToken = savedDraftRevisionToken;
+          if (compileDraftRevisionToken === null) {
+            throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
+          }
           const isCompileCurrent = (): boolean => (
             isSelectionCurrent() && draftRevision === compileDraftRevision
           );
@@ -1400,6 +1432,7 @@ export function createCharacterWorkshopStore(
           };
           await awaitCurrent(api.publishCharacter({
             characterId: latest.id,
+            draftRevision: compileDraftRevisionToken,
             manifest,
             resources
           }));
@@ -1516,10 +1549,18 @@ export function createCharacterWorkshopStore(
             const characterId = current.selectedCharacterId;
             const revision = draftRevision;
             const pendingDraft = cloneDraft(current.draft);
+            const persistenceRevision = crypto.randomUUID();
             set({ draftStatus: 'saving' });
             try {
-              await api.saveCharacterDraft(characterId, pendingDraft);
+              await api.saveCharacterDraft(
+                characterId,
+                pendingDraft,
+                persistenceRevision
+              );
               savedRevision = revision;
+              if (get().selectedCharacterId === characterId) {
+                savedDraftRevisionToken = persistenceRevision;
+              }
               if (
                 get().selectedCharacterId === characterId
                 && draftRevision === revision

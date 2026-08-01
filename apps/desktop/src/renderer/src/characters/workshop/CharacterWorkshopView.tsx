@@ -690,6 +690,7 @@ export function CharacterWorkshopWorkspace(
           ) : state.selectedEntity.kind === 'skin' && selectedSkin ? (
             <SkinInspector
               skin={selectedSkin}
+              actions={state.draft?.actions ?? []}
               selectedActionId={state.selectedActionId}
               presentationSource={selectedPresentationSource}
               disabled={busy}

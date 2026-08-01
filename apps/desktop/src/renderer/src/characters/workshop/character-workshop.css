@@ -1358,7 +1358,9 @@
 
 .inspector-form label,
 .string-list-editor,
-.condition-catalog {
+.condition-catalog,
+.tag-editor,
+.semantic-fallback-editor {
   display: grid;
   gap: 6px;
   color: #4a5b58;
@@ -1394,11 +1396,47 @@
 }
 
 .string-list-editor,
-.condition-catalog {
+.condition-catalog,
+.tag-editor,
+.semantic-fallback-editor {
   margin: 0;
   padding: 12px;
   border: 1px solid #dce3e2;
   border-radius: 6px;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.tag-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 10px;
+  border-radius: 5px;
+  background: var(--workshop-teal-soft);
+}
+
+.tag-list button {
+  min-width: 44px;
+}
+
+.tag-editor-command {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.semantic-fallback-editor {
+  display: grid;
+  gap: 10px;
 }
 
 /* 状态引用保持紧凑分组，同时为复选框整行提供足够的点击区域。 */

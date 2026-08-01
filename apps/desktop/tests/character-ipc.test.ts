@@ -183,21 +183,25 @@ describe('V2 角色 IPC 边界', () => {
 
     await expect(handlers.get(channel('characterDraftSave'))?.({}, {
       characterId: 'demo',
+      draftRevision: '11111111-1111-4111-8111-111111111111',
       draft: createDraftV2()
     })).resolves.toEqual({ ok: true });
     await expect(handlers.get(channel('characterDraftSave'))?.({}, {
       characterId: 'demo',
+      draftRevision: '11111111-1111-4111-8111-111111111111',
       draft: createDraftV1()
     })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
 
     const manifest = createManifestV2();
     await expect(handlers.get(channel('characterPublish'))?.({}, {
       characterId: 'demo',
+      draftRevision: '11111111-1111-4111-8111-111111111111',
       manifest,
       resources: [{ assetId: 'atlas', bytes: new Uint8Array([1]) }]
     })).resolves.toEqual({ ok: true });
     await expect(handlers.get(channel('characterPublish'))?.({}, {
       characterId: 'demo',
+      draftRevision: '11111111-1111-4111-8111-111111111111',
       manifest: createLegacyManifestV1(),
       resources: [{ assetId: 'atlas', bytes: new Uint8Array([1]) }]
     })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
@@ -602,6 +606,7 @@ describe('CharacterActions 应用服务', () => {
       CharacterActions: new (dependencies: Record<string, unknown>) => {
         publishCharacter(input: {
           characterId: string;
+          draftRevision: string;
           manifest: Record<string, unknown>;
           resources: Array<{ assetId: string; bytes: Uint8Array }>;
         }): Promise<void>;
@@ -638,12 +643,13 @@ describe('CharacterActions 应用服务', () => {
 
     await actions.publishCharacter({
       characterId: 'demo',
+      draftRevision: '11111111-1111-4111-8111-111111111111',
       manifest,
       resources: [{ assetId: 'idle-atlas', bytes }]
     });
     expect(store.publishCompiled).toHaveBeenCalledWith('demo', manifest, {
       'idle-atlas.png': bytes
-    });
+    }, '11111111-1111-4111-8111-111111111111');
 
     await expect(actions.readCharacterRuntimeAsset('idle-atlas'))
       .resolves.toEqual(new Uint8Array([9]));

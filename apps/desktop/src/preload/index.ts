@@ -119,8 +119,12 @@ const api: MyselfApi = {
     const result = await ipcRenderer.invoke(ipcChannels.characterDraftGet, { characterId });
     return result.draft;
   },
-  saveCharacterDraft: async (characterId, draft) => {
-    await ipcRenderer.invoke(ipcChannels.characterDraftSave, { characterId, draft });
+  saveCharacterDraft: async (characterId, draft, draftRevision) => {
+    await ipcRenderer.invoke(ipcChannels.characterDraftSave, {
+      characterId,
+      draft,
+      draftRevision
+    });
   },
   chooseCharacterSources: (characterId): Promise<CharacterSourceChoiceResult> => (
     ipcRenderer.invoke(ipcChannels.characterSourcesChoose, { characterId })

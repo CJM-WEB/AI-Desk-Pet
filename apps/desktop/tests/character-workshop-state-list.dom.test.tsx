@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { StateList } from '../src/renderer/src/characters/workshop/StateList';
 import { ActionInspector } from '../src/renderer/src/characters/workshop/ActionInspector';
 import { StateInspector } from '../src/renderer/src/characters/workshop/StateInspector';
+import { SkinInspector } from '../src/renderer/src/characters/workshop/SkinInspector';
 import { CharacterWorkshopWorkspace } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import type { CharacterWorkshopState } from '../src/renderer/src/characters/store/character-workshop-store';
 
@@ -175,6 +176,69 @@ describe('V2 状态与动作结构化交互', () => {
     expect(onChange).toHaveBeenCalledWith({ requiredModifierStateIds: ['happy'] });
   });
 
+  test('动作标签只提交安全标识且最多 32 项', () => {
+    const onChange = vi.fn();
+    const inspector = render(
+      <ActionInspector
+        action={{ ...actions[0]!, tags: ['calm'] }}
+        actions={actions}
+        states={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText('新增动作标签'), {
+      target: { value: 'quiet-focus' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '添加动作标签' }));
+    expect(onChange).toHaveBeenCalledWith({ tags: ['calm', 'quiet-focus'] });
+
+    fireEvent.change(screen.getByLabelText('新增动作标签'), {
+      target: { value: '非法 标签' }
+    });
+    expect((screen.getByRole('button', {
+      name: '添加动作标签'
+    }) as HTMLButtonElement).disabled).toBe(true);
+
+    inspector.rerender(
+      <ActionInspector
+        action={{
+          ...actions[0]!,
+          tags: Array.from({ length: 32 }, (_, index) => `tag-${index}`)
+        }}
+        actions={actions}
+        states={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+    expect((screen.getByLabelText('新增动作标签') as HTMLInputElement).disabled)
+      .toBe(true);
+  });
+
+  test('动作建议时长只提交有界整数并可清空', () => {
+    const onChange = vi.fn();
+    render(
+      <ActionInspector
+        action={{ ...actions[0]!, durationMs: 1_200 }}
+        actions={actions}
+        states={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText('动作建议持续时间（毫秒）'), {
+      target: { value: '3600000' }
+    });
+    expect(onChange).toHaveBeenCalledWith({ durationMs: 3_600_000 });
+    fireEvent.change(screen.getByLabelText('动作建议持续时间（毫秒）'), {
+      target: { value: '' }
+    });
+    expect(onChange).toHaveBeenCalledWith({ durationMs: undefined });
+  });
+
   test('回退候选排除会形成传递环路的动作', () => {
     const current = { ...actions[0]!, id: 'action-a', name: '动作 A' };
     const cyclicCandidate = {
@@ -244,6 +308,87 @@ describe('V2 状态与动作结构化交互', () => {
     expect(onChange).toHaveBeenCalledWith({
       forbiddenStateIds: ['happy'], coexistWithStateIds: []
     });
+  });
+
+  test('状态标签通过结构化编辑器添加与删除', () => {
+    const onChange = vi.fn();
+    render(
+      <StateInspector
+        state={{ ...states[0]!, tags: ['calm'] }}
+        allStates={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText('新增状态标签'), {
+      target: { value: 'quiet-focus' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '添加状态标签' }));
+    expect(onChange).toHaveBeenCalledWith({ tags: ['calm', 'quiet-focus'] });
+    fireEvent.click(screen.getByRole('button', { name: '删除状态标签“calm”' }));
+    expect(onChange).toHaveBeenCalledWith({ tags: [] });
+  });
+
+  test('皮肤语义回退只提供同语义动作且可清空', () => {
+    const onChange = vi.fn();
+    const idleAlternative = { ...actions[0]!, id: 'idle-soft', name: '轻柔待机' };
+    const speakAction = {
+      ...actions[0]!, id: 'speak-main', name: '说话', semantic: 'speak' as const
+    };
+    render(
+      <SkinInspector
+        skin={{
+          id: 'winter', name: '冬装', presentations: [],
+          semanticFallbacks: [{ semantic: 'idle', actionId: 'idle-main' }]
+        }}
+        actions={[actions[0]!, idleAlternative, speakAction]}
+        selectedActionId="idle-main"
+        presentationSource="skin-semantic"
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    const idleFallback = screen.getByLabelText('idle 语义回退') as HTMLSelectElement;
+    expect(idleFallback.querySelector('option[value="idle-soft"]')).not.toBeNull();
+    expect(idleFallback.querySelector('option[value="speak-main"]')).toBeNull();
+    fireEvent.change(idleFallback, { target: { value: 'idle-soft' } });
+    expect(onChange).toHaveBeenCalledWith({
+      semanticFallbacks: [{ semantic: 'idle', actionId: 'idle-soft' }]
+    });
+    fireEvent.change(idleFallback, { target: { value: '' } });
+    expect(onChange).toHaveBeenCalledWith({ semanticFallbacks: [] });
+    expect(screen.queryByLabelText(/自定义语义回退/u)).toBeNull();
+  });
+
+  test('正式 V2 字段编辑器继承工作室禁用态', () => {
+    render(
+      <>
+        <ActionInspector
+          action={actions[0]!}
+          actions={actions}
+          states={states}
+          disabled
+          onChange={vi.fn()}
+        />
+        <SkinInspector
+          skin={{ id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }}
+          actions={actions}
+          selectedActionId="idle-main"
+          presentationSource={null}
+          disabled
+          onChange={vi.fn()}
+        />
+      </>
+    );
+
+    expect((screen.getByLabelText('新增动作标签') as HTMLInputElement).disabled)
+      .toBe(true);
+    expect((screen.getByLabelText('动作建议持续时间（毫秒）') as HTMLInputElement).disabled)
+      .toBe(true);
+    expect((screen.getByLabelText('idle 语义回退') as HTMLSelectElement).disabled)
+      .toBe(true);
   });
 
   test('自定义状态语义保持真实值且遵循安全标识限制', () => {

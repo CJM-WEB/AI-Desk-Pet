@@ -48,11 +48,13 @@ const DRAFT_BACKUP = 'draft.backup.json';
 const DELETE_TOMBSTONE_SUFFIX = '.delete-tombstone';
 const PACKAGE_IMPORT_OWNER = '.package-import-owner.json';
 const IMPORT_TRANSACTION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const DRAFT_REVISION = IMPORT_TRANSACTION_ID;
 
 const indexEntrySchema = z.object({
   id: z.string().regex(SAFE_CHARACTER_ID),
   name: z.string().trim().min(1).max(120),
   thumbnailAssetId: z.string().regex(SAFE_CHARACTER_ID).nullable(),
+  draftRevision: z.string().regex(DRAFT_REVISION).optional(),
   draftVersion: z.literal(2).optional(),
   compiledVersion: z.literal(2).optional(),
   migrationErrorCode: z.literal('CHARACTER_MIGRATION_FAILED').optional()
@@ -283,6 +285,13 @@ async function durableWrite(file: string, bytes: Uint8Array): Promise<void> {
  */
 export class CharacterStore {
   private queue: Promise<void> = Promise.resolve();
+  /** 保存调用入队前即登记新修订，使在途发布可在提交前观察到后到编辑。 */
+  private readonly pendingDraftRevisions = new Map<
+    string,
+    { revision: string; reused: boolean }
+  >();
+  /** 调用方令牌在单次 Main 生命周期内只能预留一次，防止 R1→R2→R1 绕回。 */
+  private readonly seenDraftRevisions = new Map<string, Set<string>>();
   private readonly writeText: typeof atomicWriteText;
   private readonly renamePath: (source: string, destination: string) => Promise<void>;
   private readonly removePath: (
@@ -642,9 +651,31 @@ export class CharacterStore {
     });
   }
 
-  saveDraft(characterId: string, draft: CharacterDraftV2): Promise<void> {
+  saveDraft(
+    characterId: string,
+    draft: CharacterDraftV2,
+    draftRevision?: string
+  ): Promise<void> {
+    const parsedRevision = draftRevision === undefined
+      ? undefined
+      : z.string().regex(DRAFT_REVISION).safeParse(draftRevision);
+    const revisionReservation = parsedRevision?.success
+      ? {
+          revision: parsedRevision.data,
+          reused: this.rememberDraftRevision(characterId, parsedRevision.data)
+        }
+      : undefined;
+    if (revisionReservation) {
+      this.pendingDraftRevisions.set(characterId, revisionReservation);
+    }
     return this.enqueue(async () => {
       assertCharacterId(characterId);
+      if (parsedRevision && !parsedRevision.success) {
+        throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
+      }
+      if (revisionReservation?.reused) {
+        throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
+      }
       const parsed = characterDraftV2Schema.safeParse(draft);
       if (!parsed.success) throw characterError('CHARACTER_MIGRATION_FAILED');
       if (parsed.data.id !== characterId) {
@@ -652,9 +683,21 @@ export class CharacterStore {
       }
 
       const index = await this.requireCharacter(characterId);
+      if (
+        revisionReservation
+        && this.entry(index, characterId).draftRevision === revisionReservation.revision
+      ) {
+        revisionReservation.reused = true;
+        throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
+      }
       await this.assertSafeCharacterPath(characterId, join('draft'));
       await this.recoverDraftTransaction(characterId, index);
-      await this.installDraftTransaction(characterId, index, parsed.data);
+      await this.installDraftTransaction(
+        characterId,
+        index,
+        parsed.data,
+        parsedRevision?.success ? { draftRevision: parsedRevision.data } : {}
+      );
     });
   }
 
@@ -670,11 +713,22 @@ export class CharacterStore {
   publishCompiled(
     characterId: string,
     manifest: CharacterManifestV2,
-    assets: Readonly<Record<string, Uint8Array>>
+    assets: Readonly<Record<string, Uint8Array>>,
+    draftRevision?: string
   ): Promise<void> {
+    const parsedRevision = draftRevision === undefined
+      ? undefined
+      : z.string().regex(DRAFT_REVISION).safeParse(draftRevision);
+    if (parsedRevision?.success) {
+      this.rememberDraftRevision(characterId, parsedRevision.data);
+    }
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       const index = await this.requireCharacter(characterId);
+      if (draftRevision !== undefined) {
+        z.string().regex(DRAFT_REVISION).parse(draftRevision);
+        this.assertDraftRevision(characterId, index, draftRevision);
+      }
       const parsedManifest = this.parseManifest(manifest);
       if (parsedManifest.id !== characterId) {
         throw characterError('CHARACTER_ID_MISMATCH');
@@ -683,7 +737,13 @@ export class CharacterStore {
 
       await this.assertSafeCharacterPath(characterId);
       await this.recoverPublishTransaction(characterId, index);
-      await this.installPublishedTransaction(characterId, index, parsedManifest, assets);
+      await this.installPublishedTransaction(
+        characterId,
+        index,
+        parsedManifest,
+        assets,
+        draftRevision === undefined ? {} : { expectedDraftRevision: draftRevision }
+      );
     });
   }
 
@@ -886,6 +946,32 @@ export class CharacterStore {
     index.characters[entryIndex] = structuredClone(replacement);
   }
 
+  private rememberDraftRevision(characterId: string, revision: string): boolean {
+    const seen = this.seenDraftRevisions.get(characterId) ?? new Set<string>();
+    const reused = seen.has(revision);
+    seen.add(revision);
+    this.seenDraftRevisions.set(characterId, seen);
+    return reused;
+  }
+
+  private assertDraftRevision(
+    characterId: string,
+    index: CharacterIndex,
+    expectedRevision: string
+  ): void {
+    const entry = this.entry(index, characterId);
+    const pendingRevision = this.pendingDraftRevisions.get(characterId);
+    if (
+      entry.draftRevision !== expectedRevision
+      || (
+        pendingRevision !== undefined
+        && (pendingRevision.revision !== expectedRevision || pendingRevision.reused)
+      )
+    ) {
+      throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
+    }
+  }
+
   /** 索引写盘成功后才替换共享内存，避免失败提交污染后续恢复流程。 */
   private async commitIndexUpdate(
     index: CharacterIndex,
@@ -902,7 +988,7 @@ export class CharacterStore {
     characterId: string,
     index: CharacterIndex,
     draft: CharacterDraftV2,
-    options: { keepBackup?: boolean } = {}
+    options: { keepBackup?: boolean; draftRevision?: string } = {}
   ): Promise<void> {
     const originalIndex = cloneIndex(index);
     const previousEntry = this.entry(index, characterId);
@@ -912,6 +998,7 @@ export class CharacterStore {
       draft.thumbnailAssetId ?? null,
       { draftVersion: 2, compiledVersion: previousEntry.compiledVersion }
     );
+    nextEntry.draftRevision = options.draftRevision ?? previousEntry.draftRevision;
     const transaction: DraftTransaction = {
       version: 1,
       phase: 'prepared',
@@ -960,7 +1047,7 @@ export class CharacterStore {
     index: CharacterIndex,
     manifest: CharacterManifestV2,
     assets: Readonly<Record<string, Uint8Array>>,
-    options: { keepBackup?: boolean } = {}
+    options: { keepBackup?: boolean; expectedDraftRevision?: string } = {}
   ): Promise<void> {
     const originalIndex = cloneIndex(index);
     const previousEntry = structuredClone(this.entry(index, characterId));
@@ -968,6 +1055,7 @@ export class CharacterStore {
       draftVersion: previousEntry.draftVersion ?? 2,
       compiledVersion: 2
     });
+    nextEntry.draftRevision = previousEntry.draftRevision;
     const transaction: PublishTransaction = {
       version: 2,
       phase: 'prepared',
@@ -994,27 +1082,42 @@ export class CharacterStore {
         json(manifest)
       );
       await this.readPublishedFrom(this.compiledNextDirectory(characterId), characterId);
+      if (options.expectedDraftRevision !== undefined) {
+        this.assertDraftRevision(characterId, index, options.expectedDraftRevision);
+      }
       await this.removePath(this.compiledBackupDirectory(characterId), {
         recursive: true,
         force: true
       });
       await this.writePublishMarker(characterId, transaction);
+      if (options.expectedDraftRevision !== undefined) {
+        this.assertDraftRevision(characterId, index, options.expectedDraftRevision);
+      }
       await this.renamePath(
         this.compiledDirectory(characterId),
         this.compiledBackupDirectory(characterId)
       );
       transaction.phase = 'old-moved';
       await this.writePublishMarker(characterId, transaction);
+      if (options.expectedDraftRevision !== undefined) {
+        this.assertDraftRevision(characterId, index, options.expectedDraftRevision);
+      }
       await this.renamePath(
         this.compiledNextDirectory(characterId),
         this.compiledDirectory(characterId)
       );
       transaction.phase = 'installed';
       await this.writePublishMarker(characterId, transaction);
+      if (options.expectedDraftRevision !== undefined) {
+        this.assertDraftRevision(characterId, index, options.expectedDraftRevision);
+      }
       await this.commitIndexUpdate(index, nextIndex => {
         this.replaceEntry(nextIndex, nextEntry);
         delete nextIndex.incompleteActivationConfirmations[characterId];
       });
+      if (options.expectedDraftRevision !== undefined) {
+        this.assertDraftRevision(characterId, index, options.expectedDraftRevision);
+      }
     } catch (error) {
       await this.rollbackPublishTransaction(characterId, originalIndex).catch(() => undefined);
       throw error;

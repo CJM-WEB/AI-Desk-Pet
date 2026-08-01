@@ -613,6 +613,179 @@ describe('CharacterStore', () => {
     await expect(store.getDraft('demo')).resolves.toEqual(changedDraft);
   });
 
+  test('发布在途时新草稿修订会拒绝旧清单落盘', async () => {
+    let manifestWriteStarted!: () => void;
+    let releaseManifestWrite!: () => void;
+    const manifestWrite = new Promise<void>(resolve => {
+      manifestWriteStarted = resolve;
+    });
+    const releaseManifest = new Promise<void>(resolve => {
+      releaseManifestWrite = resolve;
+    });
+    let pausePublish = false;
+    const store = new CharacterStore(charactersDirectory, {
+      async writeText(file, content) {
+        if (
+          pausePublish
+          && file.includes('compiled.next')
+          && file.endsWith('manifest.json')
+        ) {
+          manifestWriteStarted();
+          await releaseManifest;
+        }
+        await atomicWriteText(file, content);
+      }
+    });
+    const original = createRuntime('demo', '原运行版本');
+    const stale = createRuntime('demo', '旧编译结果', new Uint8Array([7, 8, 9]));
+    const firstRevision = '11111111-1111-4111-8111-111111111111';
+    const secondRevision = '22222222-2222-4222-8222-222222222222';
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', original.manifest, original.assets);
+    await store.saveDraft('demo', createDraft('demo', '编译依据'), firstRevision);
+
+    pausePublish = true;
+    const publishing = store.publishCompiled(
+      'demo',
+      stale.manifest,
+      stale.assets,
+      firstRevision
+    );
+    await manifestWrite;
+    const saving = store.saveDraft(
+      'demo',
+      createDraft('demo', '发布在途的新草稿'),
+      secondRevision
+    );
+    releaseManifestWrite();
+
+    await expect(publishing).rejects.toThrow('CHARACTER_DRAFT_REVISION_CONFLICT');
+    await saving;
+    await expect(store.getRuntimeManifest('demo')).resolves.toEqual(
+      runtimeView(original.manifest)
+    );
+    await expect(store.getDraft('demo')).resolves.toMatchObject({
+      name: '发布在途的新草稿'
+    });
+  });
+
+  test('发布在途时拒绝用同一修订令牌保存不同草稿并回滚旧编译结果', async () => {
+    let manifestWriteStarted!: () => void;
+    let releaseManifestWrite!: () => void;
+    const manifestWrite = new Promise<void>(resolve => {
+      manifestWriteStarted = resolve;
+    });
+    const releaseManifest = new Promise<void>(resolve => {
+      releaseManifestWrite = resolve;
+    });
+    let pausePublish = false;
+    const store = new CharacterStore(charactersDirectory, {
+      async writeText(file, content) {
+        if (
+          pausePublish
+          && file.includes('compiled.next')
+          && file.endsWith('manifest.json')
+        ) {
+          manifestWriteStarted();
+          await releaseManifest;
+        }
+        await atomicWriteText(file, content);
+      }
+    });
+    const original = createRuntime('demo', '原运行版本');
+    const stale = createRuntime('demo', '旧编译结果', new Uint8Array([7, 8, 9]));
+    const reusedRevision = '11111111-1111-4111-8111-111111111111';
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', original.manifest, original.assets);
+    await store.saveDraft('demo', createDraft('demo', '编译依据'), reusedRevision);
+
+    pausePublish = true;
+    const publishing = store.publishCompiled(
+      'demo',
+      stale.manifest,
+      stale.assets,
+      reusedRevision
+    );
+    await manifestWrite;
+    const saving = store.saveDraft(
+      'demo',
+      createDraft('demo', '错误复用令牌的新草稿'),
+      reusedRevision
+    );
+    releaseManifestWrite();
+
+    await expect(publishing).rejects.toThrow('CHARACTER_DRAFT_REVISION_CONFLICT');
+    await expect(saving).rejects.toThrow('CHARACTER_DRAFT_REVISION_CONFLICT');
+    await expect(store.getRuntimeManifest('demo')).resolves.toEqual(
+      runtimeView(original.manifest)
+    );
+    await expect(store.getDraft('demo')).resolves.toMatchObject({
+      name: '编译依据'
+    });
+  });
+
+  test('发布在途时修订令牌经过其他保存后仍不可再次使用', async () => {
+    let manifestWriteStarted!: () => void;
+    let releaseManifestWrite!: () => void;
+    const manifestWrite = new Promise<void>(resolve => {
+      manifestWriteStarted = resolve;
+    });
+    const releaseManifest = new Promise<void>(resolve => {
+      releaseManifestWrite = resolve;
+    });
+    let pausePublish = false;
+    const store = new CharacterStore(charactersDirectory, {
+      async writeText(file, content) {
+        if (
+          pausePublish
+          && file.includes('compiled.next')
+          && file.endsWith('manifest.json')
+        ) {
+          manifestWriteStarted();
+          await releaseManifest;
+        }
+        await atomicWriteText(file, content);
+      }
+    });
+    const original = createRuntime('demo', '原运行版本');
+    const stale = createRuntime('demo', '旧编译结果', new Uint8Array([7, 8, 9]));
+    const firstRevision = '11111111-1111-4111-8111-111111111111';
+    const secondRevision = '22222222-2222-4222-8222-222222222222';
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', original.manifest, original.assets);
+    await store.saveDraft('demo', createDraft('demo', '编译依据'), firstRevision);
+
+    pausePublish = true;
+    const publishing = store.publishCompiled(
+      'demo',
+      stale.manifest,
+      stale.assets,
+      firstRevision
+    );
+    await manifestWrite;
+    const validSaving = store.saveDraft(
+      'demo',
+      createDraft('demo', '有效的新草稿'),
+      secondRevision
+    );
+    const reusedSaving = store.saveDraft(
+      'demo',
+      createDraft('demo', '绕回旧令牌的草稿'),
+      firstRevision
+    );
+    releaseManifestWrite();
+
+    await expect(publishing).rejects.toThrow('CHARACTER_DRAFT_REVISION_CONFLICT');
+    await validSaving;
+    await expect(reusedSaving).rejects.toThrow('CHARACTER_DRAFT_REVISION_CONFLICT');
+    await expect(store.getRuntimeManifest('demo')).resolves.toEqual(
+      runtimeView(original.manifest)
+    );
+    await expect(store.getDraft('demo')).resolves.toMatchObject({
+      name: '有效的新草稿'
+    });
+  });
+
   test('资源哈希或长度不匹配时回滚发布并保留旧运行版本', async () => {
     const store = new CharacterStore(charactersDirectory);
     const original = createRuntime();

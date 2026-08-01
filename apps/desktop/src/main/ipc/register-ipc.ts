@@ -352,7 +352,11 @@ export interface CharacterIpcService {
   createCharacter(input: { name: string }): Promise<CharacterDraftV2>;
   duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
   getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
-  saveCharacterDraft(characterId: string, draft: CharacterDraftV2): Promise<void>;
+  saveCharacterDraft(
+    characterId: string,
+    draft: CharacterDraftV2,
+    draftRevision: string
+  ): Promise<void>;
   chooseCharacterSources(
     characterId: string,
     selectedPaths: readonly string[]
@@ -459,12 +463,12 @@ export function registerCharacterIpc(
     }));
   });
   replaceHandler(ipcMain, ipcChannels.characterDraftSave, async (_event, raw) => {
-    const { characterId, draft } = parseCharacterInput(
+    const { characterId, draft, draftRevision } = parseCharacterInput(
       characterDraftSaveInputSchema,
       raw
     );
     return characterOperation(characterMutationResultSchema, async () => {
-      await service.saveCharacterDraft(characterId, draft);
+      await service.saveCharacterDraft(characterId, draft, draftRevision);
       return { ok: true };
     });
   });

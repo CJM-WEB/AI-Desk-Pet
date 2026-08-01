@@ -15,6 +15,7 @@ const RECOVERY_MESSAGES: Readonly<Record<string, string>> = {
 const OPERATION_MESSAGES: Readonly<Record<string, string>> = {
   ...RECOVERY_MESSAGES,
   CHARACTER_DRAFT_SAVE_FAILED: '角色草稿保存失败，请检查角色素材后重试。',
+  CHARACTER_DRAFT_REVISION_CONFLICT: '草稿已在发布期间更新，旧编译结果未发布。',
   CHARACTER_INCOMPLETE: '该角色动作不完整，需要确认后才能启用。',
   CHARACTER_INCOMPLETE_CONFIRMATION_REQUIRED: '该角色动作不完整，需要确认后才能启用。',
   CHARACTER_PACKAGE_PATH_REJECTED: '角色包包含不安全路径，已拒绝导入。',

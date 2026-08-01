@@ -4,6 +4,7 @@ import {
   TRUSTED_BEHAVIOR_SIGNALS,
   type CharacterStateDefinitionV2
 } from '@myself/character-runtime';
+import { TagEditor } from './TagEditor';
 
 export interface StateInspectorProps {
   state: CharacterStateDefinitionV2;
@@ -356,6 +357,13 @@ export function StateInspector(props: StateInspectorProps) {
           />
         </label>
       )}
+      <TagEditor
+        ownerId={props.state.id}
+        ownerLabel="状态"
+        tags={props.state.tags}
+        disabled={props.disabled}
+        onChange={tags => props.onChange({ tags })}
+      />
       <div className="property-grid">
         <label>
           强度

@@ -27,7 +27,8 @@ export const characterCreateInputSchema = z.object({
 }).strict();
 export const characterDraftSaveInputSchema = z.object({
   characterId: characterIdSchema,
-  draft: characterDraftV2Schema
+  draft: characterDraftV2Schema,
+  draftRevision: z.string().regex(UUID_PATTERN)
 }).strict();
 export const characterSourceReadInputSchema = z.object({
   characterId: characterIdSchema,
@@ -35,6 +36,7 @@ export const characterSourceReadInputSchema = z.object({
 }).strict();
 export const characterPublishInputSchema = z.object({
   characterId: characterIdSchema,
+  draftRevision: z.string().regex(UUID_PATTERN),
   manifest: characterManifestV2Schema,
   resources: z.array(z.object({
     assetId: characterAssetIdSchema,

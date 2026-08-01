@@ -765,7 +765,7 @@ describe('角色包 Main 服务', () => {
     ))).toBe(false);
   });
 
-  test('导入在隔离临时目录完成校验后才创建角色', async () => {
+  test('导入成功保留本方 staging 且不递归删除竞争目录', async () => {
     await createPublishedCharacter();
     const packagePath = join(testDirectory, 'demo.zip');
     await new CharacterPackageService(charactersDirectory)
@@ -774,6 +774,12 @@ describe('角色包 Main 服务', () => {
     const temporaryDirectory = join(testDirectory, 'isolated');
     await mkdir(temporaryDirectory);
     let observedIsolation = false;
+    let observedStaging = '';
+    const competitorFile = join(
+      temporaryDirectory,
+      'competitor-success',
+      'competitor.txt'
+    );
     const dependencies: CharacterPackageServiceDependencies = {
       temporaryDirectory,
       async onCheckpoint(checkpoint, stagingDirectory) {
@@ -791,6 +797,9 @@ describe('角色包 Main 服务', () => {
             .test(entry.name)
         ))).toBe(true);
         await expect(access(importedCharacters)).rejects.toThrow();
+        await mkdir(dirname(competitorFile));
+        await writeFile(competitorFile, 'COMPETITOR');
+        observedStaging = stagingDirectory;
         observedIsolation = true;
       }
     };
@@ -804,7 +813,85 @@ describe('角色包 Main 服务', () => {
     expect(importedId).toBe('demo');
     await expect(new CharacterStore(importedCharacters).getRuntimeManifest(importedId))
       .resolves.toMatchObject({ id: importedId, name: '演示角色' });
-    await expect(readdir(temporaryDirectory)).resolves.toEqual([]);
+    await expect(access(observedStaging)).resolves.toBeUndefined();
+    await expect(readFile(competitorFile, 'utf8')).resolves.toBe('COMPETITOR');
+  });
+
+  test('导入校验后 staging 被替换时不删除陌生替代目录', async () => {
+    await createPublishedCharacter();
+    const packagePath = join(testDirectory, 'demo.zip');
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', packagePath);
+    const importedCharacters = join(testDirectory, 'imported-staging-replaced');
+    const temporaryDirectory = join(testDirectory, 'import-staging-replaced');
+    await mkdir(temporaryDirectory);
+    let replacementFile = '';
+    const service = new CharacterPackageService(importedCharacters, {
+      temporaryDirectory,
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'import:validated') return;
+        await rename(stagingDirectory, `${stagingDirectory}-original`);
+        await mkdir(stagingDirectory);
+        replacementFile = join(stagingDirectory, 'competitor.txt');
+        await writeFile(replacementFile, 'COMPETITOR');
+      }
+    });
+
+    await expect(service.importCharacter(packagePath)).rejects.toThrow();
+
+    await expect(readFile(replacementFile, 'utf8')).resolves.toBe('COMPETITOR');
+  });
+
+  test('导入失败时保留被移动的本方 staging 与竞争目录', async () => {
+    await createPublishedCharacter();
+    const packagePath = join(testDirectory, 'demo.zip');
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', packagePath);
+    const importedCharacters = join(testDirectory, 'imported-staging-moved');
+    const temporaryDirectory = join(testDirectory, 'import-staging-moved');
+    await mkdir(temporaryDirectory);
+    let movedStaging = '';
+    let competitorFile = '';
+    const service = new CharacterPackageService(importedCharacters, {
+      temporaryDirectory,
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'import:validated') return;
+        movedStaging = `${stagingDirectory}-original`;
+        await rename(stagingDirectory, movedStaging);
+        await mkdir(stagingDirectory);
+        competitorFile = join(stagingDirectory, 'competitor.txt');
+        await writeFile(competitorFile, 'COMPETITOR');
+      }
+    });
+
+    await expect(service.importCharacter(packagePath)).rejects.toThrow();
+
+    await expect(access(movedStaging)).resolves.toBeUndefined();
+    await expect(readFile(competitorFile, 'utf8')).resolves.toBe('COMPETITOR');
+  });
+
+  test('导入失败不扫描或删除无关命名目录', async () => {
+    await createPublishedCharacter();
+    const packagePath = join(testDirectory, 'demo.zip');
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', packagePath);
+    const importedCharacters = join(testDirectory, 'imported-prefix-scope');
+    const temporaryDirectory = join(testDirectory, 'import-prefix-scope');
+    await mkdir(temporaryDirectory);
+    const unrelatedDirectory = join(temporaryDirectory, 'unrelated-directory');
+    const service = new CharacterPackageService(importedCharacters, {
+      temporaryDirectory,
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'import:validated') return;
+        await rename(stagingDirectory, unrelatedDirectory);
+        await mkdir(stagingDirectory);
+        await writeFile(join(stagingDirectory, 'competitor.txt'), 'COMPETITOR');
+      }
+    });
+
+    await expect(service.importCharacter(packagePath)).rejects.toThrow();
+
+    await expect(access(unrelatedDirectory)).resolves.toBeUndefined();
   });
 
   test.each([

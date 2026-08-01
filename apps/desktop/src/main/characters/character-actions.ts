@@ -98,9 +98,10 @@ export class CharacterActions {
 
   async saveCharacterDraft(
     characterId: string,
-    draft: CharacterDraftV2
+    draft: CharacterDraftV2,
+    draftRevision: string
   ): Promise<void> {
-    await this.dependencies.store.saveDraft(characterId, draft);
+    await this.dependencies.store.saveDraft(characterId, draft, draftRevision);
     this.emit({ type: 'index-changed' });
   }
 
@@ -140,7 +141,8 @@ export class CharacterActions {
       await this.dependencies.store.publishCompiled(
         input.characterId,
         input.manifest,
-        assets
+        assets,
+        input.draftRevision
       );
       this.emit({
         type: 'compile-result',

@@ -597,6 +597,7 @@ describe('V2 结构化 Inspector', () => {
           }],
           semanticFallbacks: []
         }}
+        actions={currentDraft.actions}
         selectedActionId="idle-main"
         presentationSource="skin-action"
         disabled={false}
@@ -606,7 +607,9 @@ describe('V2 结构化 Inspector', () => {
 
     expect(markup).toContain('皮肤名称');
     expect(markup).toContain('当前皮肤精确表现');
+    expect(markup).toContain('idle 语义回退');
     expect(markup).toContain('maxLength="120"');
+    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
   });
 
   test.each([
@@ -619,6 +622,7 @@ describe('V2 结构化 Inspector', () => {
     const markup = renderToStaticMarkup(
       <SkinInspector
         skin={{ id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }}
+        actions={currentDraft.actions}
         selectedActionId="idle-main"
         presentationSource={presentationSource}
         disabled={false}
@@ -662,7 +666,9 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).toContain('user-interaction');
     expect(markup).toContain('标准语义');
     expect(markup).toContain('当前状态引用');
+    expect(markup).toContain('状态标签');
     expect(markup).not.toMatch(/关键词|情绪文本/u);
+    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
   });
 
   test('动作属性从合法动作生成回退选项且不再编辑表现帧率', () => {
@@ -685,7 +691,10 @@ describe('V2 结构化 Inspector', () => {
 
     expect(markup).toContain('动作失败回退');
     expect(markup).toContain('value="idle-main"');
+    expect(markup).toContain('动作标签');
+    expect(markup).toContain('动作建议持续时间');
     expect(markup).not.toMatch(/帧率|表现帧/u);
+    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
   });
 
   test('V2 列表与表单保持 44px 目标和至少 8px 操作间距', async () => {

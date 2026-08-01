@@ -115,6 +115,7 @@ function summary(
 function publishInput(characterId: string): CharacterPublishInput {
   return {
     characterId,
+    draftRevision: '11111111-1111-4111-8111-111111111111',
     manifest: {
       ...draft(characterId, '待发布角色'),
       thumbnailAssetId: 'idle-atlas',
@@ -338,6 +339,123 @@ describe('角色工作室 Zustand 状态层', () => {
     ]);
   });
 
+  test('编辑后立即导出会先保存最新草稿再读取持久化角色包', async () => {
+    let persistedDraft = draft('default', 'AI Pet 默认角色');
+    let exportedActionName = '';
+    const saveCharacterDraft = vi.fn(async (_characterId, nextDraft: CharacterDraftV2) => {
+      persistedDraft = structuredClone(nextDraft);
+    });
+    const exportCharacterPackage = vi.fn(async () => {
+      exportedActionName = persistedDraft.actions[0]!.name;
+      return { kind: 'exported' as const };
+    });
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => structuredClone(persistedDraft)),
+      saveCharacterDraft,
+      exportCharacterPackage
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '立即导出的最新动作' });
+
+    await store.getState().exportCharacterPackage();
+
+    expect(saveCharacterDraft).toHaveBeenCalledOnce();
+    expect(exportedActionName).toBe('立即导出的最新动作');
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({
+      tone: 'success',
+      text: '角色包已导出。'
+    });
+  });
+
+  test('导出前保存失败会保留内存编辑且不调用导出或显示成功', async () => {
+    const exportCharacterPackage = vi.fn(async () => ({ kind: 'exported' as const }));
+    const { api } = apiDouble({
+      saveCharacterDraft: vi.fn(async () => {
+        throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
+      }),
+      exportCharacterPackage
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '保存失败仍保留的动作' });
+
+    await store.getState().exportCharacterPackage();
+
+    expect(exportCharacterPackage).not.toHaveBeenCalled();
+    expect(store.getState()).toMatchObject({
+      draftStatus: 'error',
+      draft: {
+        actions: [expect.objectContaining({ name: '保存失败仍保留的动作' })]
+      }
+    });
+    expect(store.getState().toastQueue).not.toContainEqual(expect.objectContaining({
+      tone: 'success',
+      text: '角色包已导出。'
+    }));
+  });
+
+  test('已有保存任务在途时导出会等待同一保存完成', async () => {
+    const saving = deferred<void>();
+    const saveCharacterDraft = vi.fn(() => saving.promise);
+    const exportCharacterPackage = vi.fn(async () => ({ kind: 'exported' as const }));
+    const { api } = apiDouble({ saveCharacterDraft, exportCharacterPackage });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '等待保存后导出' });
+    const savingOperation = store.getState().flushDraft();
+
+    const exportingOperation = store.getState().exportCharacterPackage();
+    await settle();
+    expect(exportCharacterPackage).not.toHaveBeenCalled();
+
+    saving.resolve();
+    await Promise.all([savingOperation, exportingOperation]);
+    expect(saveCharacterDraft).toHaveBeenCalledOnce();
+    expect(exportCharacterPackage).toHaveBeenCalledWith('default');
+  });
+
+  test('等待保存期间草稿修订变化会阻止旧导出请求', async () => {
+    const saving = deferred<void>();
+    const saveCharacterDraft = vi.fn(() => saving.promise);
+    const exportCharacterPackage = vi.fn(async () => ({ kind: 'exported' as const }));
+    const { api } = apiDouble({ saveCharacterDraft, exportCharacterPackage });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '导出请求原修订' });
+
+    const exportingOperation = store.getState().exportCharacterPackage();
+    await settle();
+    store.getState().updateCurrentAction({ name: '等待期间的新修订' });
+    saving.resolve();
+    await exportingOperation;
+
+    expect(exportCharacterPackage).not.toHaveBeenCalled();
+    expect(store.getState().draft?.actions[0]?.name).toBe('等待期间的新修订');
+  });
+
+  test('等待保存期间切换角色会阻止旧角色导出请求', async () => {
+    const saving = deferred<void>();
+    const exportCharacterPackage = vi.fn(async () => ({ kind: 'exported' as const }));
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async id => draft(id, id)),
+      saveCharacterDraft: vi.fn(() => saving.promise),
+      exportCharacterPackage
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().updateCurrentAction({ name: '切换前的旧角色动作' });
+
+    const exportingOperation = store.getState().exportCharacterPackage();
+    await settle();
+    const selectingOperation = store.getState().selectCharacter('nova');
+    saving.resolve();
+    await Promise.all([exportingOperation, selectingOperation]);
+
+    expect(exportCharacterPackage).not.toHaveBeenCalled();
+    expect(store.getState().selectedCharacterId).toBe('nova');
+  });
+
   test('普通角色读取失败仍保留先前稳定工作区', async () => {
     const api = apiDouble({
       getCharacterDraft: vi.fn(async id => {
@@ -399,7 +517,8 @@ describe('角色工作室 Zustand 状态层', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(api.saveCharacterDraft).toHaveBeenCalledWith(
       'demo',
-      expect.objectContaining({ version: 2 })
+      expect.objectContaining({ version: 2 }),
+      expect.stringMatching(/^[0-9a-f-]{36}$/u)
     );
   });
 
@@ -456,6 +575,10 @@ describe('角色工作室 Zustand 状态层', () => {
       anchors: { ground: { x: 0.5, y: 1 } },
       frames: []
     });
+    loadedDraft.skins[0]!.semanticFallbacks.push({
+      semantic: 'idle',
+      actionId: 'wave'
+    });
     const sources = [sourceDto('123e4567-e89b-42d3-a456-426614174000', 'wave.png')];
     const api = apiDouble({
       getCharacterDraft: vi.fn(async () => loadedDraft),
@@ -465,14 +588,22 @@ describe('角色工作室 Zustand 状态层', () => {
     await store.getState().selectCharacter('demo');
 
     expect(store.getState().requestRemoveAction('wave', true)).toEqual({
-      safeReferencePaths: ['states.0.actionIds', 'skins.0.presentations'],
+      safeReferencePaths: [
+        'states.0.actionIds',
+        'skins.0.presentations',
+        'skins.0.semanticFallbacks'
+      ],
       blockingReferencePaths: ['actions.2.failureFallbackActionId']
     });
     expect(store.getState().draft?.actions).toHaveLength(3);
 
     store.getState().updateAction('nod', { failureFallbackActionId: undefined });
     expect(store.getState().requestRemoveAction('wave')).toMatchObject({
-      safeReferencePaths: ['states.0.actionIds', 'skins.0.presentations'],
+      safeReferencePaths: [
+        'states.0.actionIds',
+        'skins.0.presentations',
+        'skins.0.semanticFallbacks'
+      ],
       blockingReferencePaths: []
     });
     expect(store.getState().draft?.actions).toHaveLength(3);
@@ -483,7 +614,24 @@ describe('角色工作室 Zustand 状态层', () => {
     ]);
     expect(store.getState().draft?.states[0]?.actionIds).toEqual(['idle-main']);
     expect(store.getState().draft?.skins[0]?.presentations).toEqual([]);
+    expect(store.getState().draft?.skins[0]?.semanticFallbacks).toEqual([]);
     expect(store.getState().availableSources).toEqual(sources);
+  });
+
+  test('动作语义变更时清理已不再同语义的皮肤回退', async () => {
+    const loadedDraft = draft('demo', '演示角色');
+    loadedDraft.skins[0]!.semanticFallbacks = [{
+      semantic: 'idle',
+      actionId: 'idle-main'
+    }];
+    const api = apiDouble({ getCharacterDraft: vi.fn(async () => loadedDraft) }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+
+    store.getState().updateAction('idle-main', { semantic: 'speak' });
+
+    expect(store.getState().draft?.skins[0]?.semanticFallbacks).toEqual([]);
+    expect(() => characterDraftV2Schema.parse(store.getState().draft)).not.toThrow();
   });
 
   test('确认删除状态时仅清理目标子句，保留同一条件中的可信信号', async () => {
@@ -1500,7 +1648,7 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState()).toMatchObject({
       selectedCharacterId: 'default',
       compileStatus: 'idle',
-      draftStatus: 'dirty'
+      draftStatus: 'saved'
     });
     expect(store.getState().toastQueue).toEqual([]);
   });
@@ -1544,10 +1692,14 @@ describe('角色工作室 Zustand 状态层', () => {
     const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(
       () => publishing.promise
     );
+    const saveCharacterDraft = vi.fn<CharacterWorkshopApi['saveCharacterDraft']>(
+      async () => undefined
+    );
     const { api, emit } = apiDouble({
       getCharacterDraft: vi.fn(async () => playableDraft('default', '默认角色')),
       readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
-      publishCharacter
+      publishCharacter,
+      saveCharacterDraft
     });
     const store = createCharacterWorkshopStore(api, {
       compileAction: async input => ({
@@ -1567,16 +1719,21 @@ describe('角色工作室 Zustand 状态层', () => {
     emit({ type: 'compile-result', characterId: 'default', ok: true });
     await settle();
 
+    const publishedRevision = publishCharacter.mock.calls[0]![0].draftRevision;
+    expect(saveCharacterDraft).toHaveBeenCalledTimes(2);
+    expect(saveCharacterDraft.mock.calls[0]![2]).toBe(publishedRevision);
+    expect(saveCharacterDraft.mock.calls[1]![2]).not.toBe(publishedRevision);
+
     expect(store.getState()).toMatchObject({
       selectedCharacterId: 'default',
-      draftStatus: 'dirty',
+      draftStatus: 'saved',
       compileStatus: 'idle'
     });
     expect(store.getState().toastQueue).toEqual([]);
 
     publishing.resolve();
     await compiling;
-    expect(store.getState()).toMatchObject({ draftStatus: 'dirty', compileStatus: 'idle' });
+    expect(store.getState()).toMatchObject({ draftStatus: 'saved', compileStatus: 'idle' });
     expect(store.getState().toastQueue).toEqual([]);
 
     emit({
@@ -1814,7 +1971,8 @@ describe('角色工作室 Zustand 状态层', () => {
         actions: expect.arrayContaining([
           expect.objectContaining({ name: '挥手' })
         ])
-      })
+      }),
+      expect.stringMatching(/^[0-9a-f-]{36}$/u)
     );
   });
 
@@ -1843,7 +2001,8 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(saveCharacterDraft).toHaveBeenNthCalledWith(
       2,
       'nova',
-      expect.objectContaining({ id: 'nova' })
+      expect.objectContaining({ id: 'nova' }),
+      expect.stringMatching(/^[0-9a-f-]{36}$/u)
     );
     expect(store.getState()).toMatchObject({
       selectedCharacterId: 'nova',
@@ -1911,7 +2070,8 @@ describe('角色工作室 Zustand 状态层', () => {
         actions: expect.arrayContaining([
           expect.objectContaining({ name: '新修订' })
         ])
-      })
+      }),
+      expect.stringMatching(/^[0-9a-f-]{36}$/u)
     );
     expect(store.getState()).toMatchObject({
       draftStatus: 'saved',
@@ -2746,7 +2906,7 @@ describe('角色工作室 Zustand 状态层', () => {
       states: expect.not.arrayContaining([
         expect.objectContaining({ id: 'wave' })
       ])
-    }));
+    }), expect.stringMatching(/^[0-9a-f-]{36}$/u));
   });
 
   test('删除非当前修饰状态时保留当前有效选择', async () => {
