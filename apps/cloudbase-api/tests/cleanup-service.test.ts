@@ -1,22 +1,27 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { main as productionMain } from '../src/functions/cleanup.js';
+import { createProductionWorker } from '../src/functions/cleanup.js';
 import { CleanupService } from '../src/services/cleanup-service.js';
 import type {
   CleanupStore,
   SubmissionWithAssets
 } from '../src/ports.js';
-import { stubCloudConfig } from './support/cloudbase-production.js';
+import {
+  createFakeRuntime,
+  stubCloudConfig
+} from './support/cloudbase-production.js';
 
 const productionSdk = vi.hoisted(() => ({
-  createRuntime: vi.fn(() => ({ rdb: {}, bucket: {}, auth: {} })),
-  webInit: vi.fn(() => ({ storage: { from: vi.fn(() => ({})) } }))
+  createRuntime: vi.fn()
 }));
 
 vi.mock('../src/adapters/cloudbase-runtime.js', () => ({
   createCloudBaseServerRuntime: productionSdk.createRuntime
 }));
-vi.mock('@cloudbase/js-sdk', () => ({ default: { init: productionSdk.webInit } }));
+
+beforeEach(() => {
+  productionSdk.createRuntime.mockReturnValue(createFakeRuntime());
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -24,15 +29,16 @@ afterEach(() => {
 });
 
 describe('三天隔离清理服务', () => {
-  it('只创建一次共享运行时', async () => {
+  it('使用有效 Bucket 创建共享运行时组合', () => {
     stubCloudConfig();
 
-    await productionMain();
+    const worker = createProductionWorker();
 
     expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
     expect(productionSdk.createRuntime).toHaveBeenCalledWith(
       expect.objectContaining({ envId: 'env-test' })
     );
+    expect(worker).toBeTypeOf('function');
   });
 
   it('只处理存储层领取的到期记录并先删对象后清正文', async () => {

@@ -36,7 +36,8 @@ export async function main(): Promise<BatchResult> {
   return productionWorker();
 }
 
-function createProductionWorker(): () => Promise<BatchResult> {
+/** 仅用于组合测试的生产依赖工厂，部署入口仍通过 main 保持惰性单例。 */
+export function createProductionWorker(): () => Promise<BatchResult> {
   const config = loadCloudConfig(process.env);
   const runtime = createCloudBaseServerRuntime(config);
   const store = new CloudBasePostgresStore(

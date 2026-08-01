@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,6 +18,22 @@ const functions = {
   ),
   cleanup: resolve(apiRoot, 'src', 'functions', 'cleanup.ts')
 };
+
+/** 仅清理严格位于 CloudBase API 根目录内的构建产物目录。 */
+function assertDistRootIsSafe() {
+  const relativeDistRoot = relative(apiRoot, distRoot);
+  if (
+    relativeDistRoot.length === 0
+    || relativeDistRoot === '..'
+    || relativeDistRoot.startsWith(`..${sep}`)
+    || isAbsolute(relativeDistRoot)
+  ) {
+    throw new Error('CloudBase 构建目录必须位于 API 根目录内');
+  }
+}
+
+assertDistRootIsSafe();
+await rm(distRoot, { recursive: true, force: true });
 
 await build({
   entryPoints: Object.fromEntries(

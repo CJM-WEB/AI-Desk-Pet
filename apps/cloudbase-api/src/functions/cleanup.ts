@@ -29,7 +29,8 @@ export async function main(): Promise<PurgeResult> {
   return productionWorker();
 }
 
-function createProductionWorker(): () => Promise<PurgeResult> {
+/** 仅用于组合测试的生产依赖工厂，部署入口仍通过 main 保持惰性单例。 */
+export function createProductionWorker(): () => Promise<PurgeResult> {
   const config = loadCloudConfig(process.env);
   const runtime = createCloudBaseServerRuntime(config);
   const store = new CloudBasePostgresStore(

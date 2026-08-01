@@ -1,22 +1,25 @@
 import { createHmac } from 'node:crypto';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createApi, main as productionMain } from '../src/functions/api.js';
+import {
+  createApi,
+  createProductionHandler,
+  main as productionMain
+} from '../src/functions/api.js';
 import { AbuseControl } from '../src/services/abuse-control.js';
-import { stubCloudConfig } from './support/cloudbase-production.js';
+import {
+  createFakeRuntime,
+  stubCloudConfig
+} from './support/cloudbase-production.js';
 
 const productionSdk = vi.hoisted(() => ({
-  createRuntime: vi.fn(() => ({ rdb: {}, bucket: {}, auth: {} })),
-  webInit: vi.fn(() => ({
-    storage: { from: vi.fn(() => ({})) }
-  }))
+  createRuntime: vi.fn()
 }));
 
 vi.mock('../src/adapters/cloudbase-runtime.js', () => ({
   createCloudBaseServerRuntime: productionSdk.createRuntime
 }));
-vi.mock('@cloudbase/js-sdk', () => ({ default: { init: productionSdk.webInit } }));
 
 const sourceIp = '203.0.113.8';
 const fingerprintSecret = '仅用于测试的指纹配置值';
@@ -162,21 +165,47 @@ const context = {
   sourceIp
 };
 
+let runtime: ReturnType<typeof createFakeRuntime>;
+
+beforeEach(() => {
+  runtime = createFakeRuntime();
+  productionSdk.createRuntime.mockReturnValue(runtime);
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
 
 describe('API 生产组合', () => {
-  it('只创建一次共享运行时', async () => {
+  it('使用有效 Bucket 和 Auth 创建共享运行时组合', () => {
     stubCloudConfig();
 
-    await productionMain(event('GET', '/api/v1/missing'), context);
+    const handler = createProductionHandler();
 
     expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
     expect(productionSdk.createRuntime).toHaveBeenCalledWith(
       expect.objectContaining({ envId: 'env-test' })
     );
+    expect(handler).toBeTypeOf('function');
+  });
+
+  it('主入口重复调用时复用同一个不触网的组合', async () => {
+    stubCloudConfig();
+
+    const admin = await productionMain(
+      event('GET', '/api/v1/admin/submissions'),
+      context
+    );
+    const first = await productionMain(event('GET', '/api/v1/missing'), context);
+    const second = await productionMain(event('GET', '/api/v1/missing'), context);
+
+    expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
+    expect(admin.statusCode).toBe(200);
+    expect(first.statusCode).toBe(404);
+    expect(second.statusCode).toBe(404);
+    expect(runtime.auth.getUserInfo).toHaveBeenCalledOnce();
+    expect(runtime.auth.getEndUserInfo).toHaveBeenCalledWith('admin-uid');
   });
 });
 
