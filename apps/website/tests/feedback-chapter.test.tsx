@@ -580,7 +580,7 @@ describe('反馈章节', () => {
 
     await waitFor(() => expect(screen.getByRole('status').textContent)
       .toContain('投稿已收到，正在系统审核。'));
-    expect(screen.getByRole('link', { name: '打开一次性状态查询链接' })
+    expect(screen.getByRole('link', { name: '打开专属状态查询链接' })
       .getAttribute('href')).toBe(`/submission-status/#${'a'.repeat(43)}`);
     expect(screen.queryByRole('dialog', { name: '新建投稿' })).toBeNull();
   });

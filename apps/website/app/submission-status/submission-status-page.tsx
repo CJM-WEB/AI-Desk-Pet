@@ -26,7 +26,7 @@ interface SubmissionStatusPageProps {
   api: ApiClient;
 }
 
-/** 匿名查询视图不创建账号，也不把一次性令牌写入任何持久化存储。 */
+/** 匿名查询视图不创建账号，也不把专属状态令牌写入任何持久化存储。 */
 export function SubmissionStatusPage({ api }: SubmissionStatusPageProps) {
   const { t } = useI18n();
   const [manualToken, setManualToken] = useState('');

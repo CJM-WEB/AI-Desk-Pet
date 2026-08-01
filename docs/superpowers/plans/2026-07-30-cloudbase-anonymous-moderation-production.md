@@ -1615,10 +1615,10 @@ git commit -m "docs: 补齐审核上线与部署验收"
 运行：
 
 ```powershell
-pnpm exec tcb -v
-pnpm exec tcb env list
-pnpm exec tcb fn deploy --help
-pnpm exec tcb hosting deploy --help
+pnpm.cmd exec cloudbase -v
+pnpm.cmd exec cloudbase env list --json
+pnpm.cmd exec cloudbase fn deploy --help
+pnpm.cmd exec cloudbase hosting deploy --help
 ```
 
 预期：CLI 已登录，能看到已购买的开发环境；命令帮助与计划一致。
@@ -1629,10 +1629,10 @@ pnpm exec tcb hosting deploy --help
 
 ```powershell
 node tools/apply-cloudbase-migrations.mjs
-pnpm build:cloudbase
-pnpm exec tcb fn deploy --all --yes
-pnpm --filter @myself/website build
-pnpm exec tcb hosting deploy apps/website/out -e $env:CLOUDBASE_ENV_ID
+pnpm.cmd build:cloudbase
+pnpm.cmd exec cloudbase fn deploy --all
+pnpm.cmd --filter @myself/website build
+pnpm.cmd exec cloudbase hosting deploy apps/website/out -e $env:CLOUDBASE_ENV_ID
 ```
 
 扫描器通过 CloudBase Run 控制台从 `apps/package-scanner/Dockerfile` 部署，先使用最小实例 0。

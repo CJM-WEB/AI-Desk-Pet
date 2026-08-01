@@ -479,7 +479,7 @@ describe('共享仓库章节', () => {
     await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('dialog', { name: '分享投稿' })).toBeNull();
     expect(await screen.findByText('投稿已收到，正在系统审核。')).toBeTruthy();
-    expect(screen.getByRole('link', { name: '打开一次性状态查询链接' })
+    expect(screen.getByRole('link', { name: '打开专属状态查询链接' })
       .getAttribute('href')).toBe('/submission-status/#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(screen.getByText('请立即保存此链接，丢失后无法找回。')).toBeTruthy();
   });
@@ -520,11 +520,11 @@ describe('共享仓库章节', () => {
     fireEvent.change(screen.getByLabelText('名称'), { target: { value: '新 Pet' } });
     fireEvent.change(screen.getByLabelText('描述'), { target: { value: '共享包描述' } });
     fireEvent.click(screen.getByRole('button', { name: '发布分享' }));
-    await screen.findByRole('link', { name: '打开一次性状态查询链接' });
+    await screen.findByRole('link', { name: '打开专属状态查询链接' });
 
     fireEvent.click(screen.getByRole('button', { name: '分享您的 AI Pet' }));
     expect(screen.queryByText('投稿已收到，正在系统审核。')).toBeNull();
-    expect(screen.queryByRole('link', { name: '打开一次性状态查询链接' })).toBeNull();
+    expect(screen.queryByRole('link', { name: '打开专属状态查询链接' })).toBeNull();
   });
 
   it('投稿时将聚合上传进度传给对话框', async () => {

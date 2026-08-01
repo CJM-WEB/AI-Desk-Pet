@@ -71,8 +71,8 @@ CLOUDBASE_AI_API_KEY
 ## 7. 构建并部署三个函数
 
 ```powershell
-pnpm build:cloudbase
-pnpm exec tcb fn deploy --all --yes
+pnpm.cmd build:cloudbase
+pnpm.cmd exec cloudbase fn deploy --all
 ```
 
 确认 `cloudbaserc.json` 中的三个入口均已部署：
@@ -95,8 +95,8 @@ pnpm exec tcb fn deploy --all --yes
 1. 配置 `NEXT_PUBLIC_API_BASE_URL`、`NEXT_PUBLIC_CAPTCHA_APP_ID`、`NEXT_PUBLIC_CLOUDBASE_ENV_ID`、`NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY` 后构建：
 
    ```powershell
-   pnpm --filter @myself/website build
-   pnpm exec tcb hosting deploy apps/website/out -e $env:CLOUDBASE_ENV_ID
+   pnpm.cmd --filter @myself/website build
+   pnpm.cmd exec cloudbase hosting deploy apps/website/out -e $env:CLOUDBASE_ENV_ID
    ```
 
 2. 绑定已备案的自定义域名并强制 HTTPS；将实际域名加入 CloudBase Web 安全域名与 CAPTCHA 域名配置。

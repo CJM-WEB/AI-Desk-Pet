@@ -921,11 +921,13 @@ test('法律页面公开披露匿名投稿边界并提供站内投诉入口', as
   ] as const) {
     await page.goto(path);
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: '返回首页' })).toHaveAttribute('href', '/');
+    const legalNavigation = page.getByRole('navigation', { name: '法律页面导航' });
     await expect(
-      page.getByRole('navigation', { name: '法律页面导航' })
-        .getByRole('link', { name: '反馈与建议' })
-    ).toHaveAttribute('href', '/#feedback');
+      legalNavigation.getByRole('link', { name: '返回首页' })
+    ).toHaveAttribute('href', '/');
+    await expect(
+      legalNavigation.getByRole('link', { name: '反馈与建议' })
+    ).toHaveAttribute('href', '/');
     await expect(page.locator('main')).not.toContainText(/ICP备\d+号|已经满足全部实名合规要求/u);
   }
 });
