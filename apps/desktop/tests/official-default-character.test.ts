@@ -40,6 +40,9 @@ describe('官方默认角色安装', () => {
     );
 
     const manifest = await store.getActive();
+    const publishedManifest = await store.getPublishedManifest('builtin-default');
+    expect(manifest.version).toBe(1);
+    expect(publishedManifest.version).toBe(2);
     expect(manifest.id).toBe('builtin-default');
     expect(manifest.states.map(state => state.id)).toEqual([
       'idle',
@@ -71,7 +74,7 @@ describe('官方默认角色安装', () => {
     await ensureOfficialDefaultCharacter(store, resourceDirectory);
 
     const defaultDraft = await store.getDraft('builtin-default');
-    const defaultManifest = await store.getRuntimeManifest('builtin-default');
+    const defaultManifest = await store.getPublishedManifest('builtin-default');
     await store.create({ id: 'user-pet', name: '用户角色' });
     await store.saveDraft('user-pet', {
       ...defaultDraft,
