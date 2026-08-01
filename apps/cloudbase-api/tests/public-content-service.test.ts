@@ -102,6 +102,45 @@ describe('公开内容服务', () => {
 });
 
 describe('公开列表与互动服务', () => {
+  it.each([
+    ['feedback', 'published', true],
+    ['suggestion', 'published', true],
+    ['shared_package', 'published', false],
+    ['feedback', 'system_reviewing', false]
+  ] as const)('反馈点赞仅接受已发布的反馈或建议：%s/%s', async (kind, status, allowed) => {
+    const store = {
+      findById: vi.fn(async () => ({ id: 'submission-1', kind, status })),
+      togglePublicLike: vi.fn(async () => ({ liked: true, likeCount: 2 }))
+    };
+    const service = new PublicContentService(store as never, {} as never);
+
+    const result = service.toggleFeedbackLike('submission-1', 'a'.repeat(64));
+
+    if (allowed) {
+      await expect(result).resolves.toEqual({ liked: true, likeCount: 2 });
+      expect(store.togglePublicLike).toHaveBeenCalledWith({
+        submissionId: 'submission-1', fingerprintHash: 'a'.repeat(64)
+      });
+    } else {
+      await expect(result).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      expect(store.togglePublicLike).not.toHaveBeenCalled();
+    }
+  });
+
+  it('社区点赞只接受已发布的共享包', async () => {
+    const store = {
+      findById: vi.fn(async () => ({
+        id: 'feedback-1', kind: 'feedback', status: 'published'
+      })),
+      togglePublicLike: vi.fn(async () => ({ liked: true, likeCount: 2 }))
+    };
+    const service = new PublicContentService(store as never, {} as never);
+
+    await expect(service.toggleCommunityLike('feedback-1', 'a'.repeat(64)))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(store.togglePublicLike).not.toHaveBeenCalled();
+  });
+
   it('社区列表只返回公开 DTO 并为封面签发五分钟地址', async () => {
     const store = {
       listPublicCommunity: vi.fn(async () => ({

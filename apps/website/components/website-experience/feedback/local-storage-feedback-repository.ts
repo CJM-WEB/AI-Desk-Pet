@@ -5,7 +5,6 @@ import type {
   CreateFeedbackInput,
   FeedbackEntry,
   FeedbackRecord,
-  FeedbackRepository,
   FeedbackStatusNotice,
   FeedbackStorageDocument
 } from './feedback-types';
@@ -74,7 +73,10 @@ export interface LocalStorageFeedbackRepositoryOptions {
   now?: () => string;
 }
 
-export class LocalStorageFeedbackRepository implements FeedbackRepository {
+/**
+ * 仅保留给既有测试的本地适配器；生产反馈章节改用 CloudFeedbackRepository。
+ */
+export class LocalStorageFeedbackRepository {
   private readonly storage: Storage | null;
   private readonly eventTarget: StorageEventTarget | null;
   private readonly key: string;

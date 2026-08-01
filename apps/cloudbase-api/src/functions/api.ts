@@ -76,7 +76,8 @@ interface PublicContentApi {
     kind: 'feedback' | 'suggestion',
     input: { limit: number; cursor?: number | null }
   ): Promise<{ items: PublicFeedbackItem[]; nextCursor: number | null }>;
-  toggleLike(id: string, fingerprint: string): Promise<unknown>;
+  toggleFeedbackLike(id: string, fingerprint: string): Promise<unknown>;
+  toggleCommunityLike(id: string, fingerprint: string): Promise<unknown>;
   getDownload(id: string): Promise<unknown>;
 }
 
@@ -252,6 +253,24 @@ async function dispatch(
     };
   }
 
+  const feedbackLikeId = dynamicId(
+    method,
+    path,
+    'POST',
+    '/api/v1/feedback/',
+    '/like'
+  );
+  if (feedbackLikeId !== null) {
+    requestRecord(event);
+    const deviceHash = deviceFingerprint(
+      requireSourceIp(context),
+      header(event.headers, 'user-agent'),
+      dependencies.fingerprintSecret
+    );
+    await dependencies.abuseControl.consume(`like:${feedbackLikeId}`, deviceHash);
+    return dependencies.publicContent.toggleFeedbackLike(feedbackLikeId, deviceHash);
+  }
+
   const likeId = dynamicId(
     method,
     path,
@@ -267,7 +286,7 @@ async function dispatch(
       dependencies.fingerprintSecret
     );
     await dependencies.abuseControl.consume(`like:${likeId}`, deviceHash);
-    return dependencies.publicContent.toggleLike(likeId, deviceHash);
+    return dependencies.publicContent.toggleCommunityLike(likeId, deviceHash);
   }
 
   const downloadId = dynamicId(

@@ -82,11 +82,14 @@ export class PublicContentService {
     };
   }
 
-  async toggleLike(id: string, fingerprint: string): Promise<PublicLikeResult> {
-    return this.store.togglePublicLike({
-      submissionId: id,
-      fingerprintHash: fingerprint
-    });
+  async toggleFeedbackLike(id: string, fingerprint: string): Promise<PublicLikeResult> {
+    await this.requirePublishedKind(id, ['feedback', 'suggestion']);
+    return this.togglePublishedLike(id, fingerprint);
+  }
+
+  async toggleCommunityLike(id: string, fingerprint: string): Promise<PublicLikeResult> {
+    await this.requirePublishedKind(id, ['shared_package']);
+    return this.togglePublishedLike(id, fingerprint);
   }
 
   async getDownload(
@@ -148,6 +151,32 @@ export class PublicContentService {
       downloadCount: item.downloadCount,
       publishedAt: item.publishedAt
     };
+  }
+
+  /** 点赞前在业务层再次约束公开状态和内容种类。 */
+  private async requirePublishedKind(
+    id: string,
+    kinds: readonly string[]
+  ): Promise<void> {
+    const submission = await this.store.findById(id);
+    if (
+      !submission
+      || submission.status !== 'published'
+      || !submission.kind
+      || !kinds.includes(submission.kind)
+    ) {
+      throw notFound();
+    }
+  }
+
+  private async togglePublishedLike(
+    id: string,
+    fingerprint: string
+  ): Promise<PublicLikeResult> {
+    return this.store.togglePublicLike({
+      submissionId: id,
+      fingerprintHash: fingerprint
+    });
   }
 }
 

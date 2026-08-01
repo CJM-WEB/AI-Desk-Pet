@@ -22,7 +22,7 @@ export interface FeedbackListDialogProps {
 }
 
 type RepositoryWithNotice = FeedbackRepository & {
-  getStatusNotice?: () => FeedbackStatusNotice | null;
+  getStatusNotice?: (kind: FeedbackKind) => FeedbackStatusNotice | null;
 };
 
 const BLOCKED_KEYS = new Set([
@@ -61,6 +61,8 @@ function localizeStatusNotice(code: FeedbackStatusNotice['code'], t: Translate):
       return t('feedback.status.STORAGE_READ_FAILED');
     case 'STORAGE_WRITE_FAILED':
       return t('feedback.status.STORAGE_WRITE_FAILED');
+    case 'CLOUD_READ_FAILED':
+      return t('feedback.status.CLOUD_READ_FAILED');
   }
 }
 
@@ -93,7 +95,7 @@ export function FeedbackListDialog({
     return localizeFeedbackEntry(visibleEntry, t);
   });
   const repositoryNotice = (repository as RepositoryWithNotice)
-    .getStatusNotice?.() ?? null;
+    .getStatusNotice?.(kind) ?? null;
   const label = t(kind === 'feedback'
     ? 'feedback.action.feedback'
     : 'feedback.action.suggestion');
@@ -177,13 +179,13 @@ export function FeedbackListDialog({
     return () => dialog.removeEventListener('wheel', handleWheel);
   }, []);
 
-  const toggleLike = useCallback((
+  const toggleLike = useCallback(async (
     id: string,
     wasLiked: boolean,
     visibleCount: number
   ) => {
     try {
-      const updated = repository.toggleLike(id, 'current-browser');
+      const updated = await repository.toggleLike(id);
       const expectedCount = Math.max(0, visibleCount + (wasLiked ? -1 : 1));
       setOptimisticLikes((current) => {
         const next = new Map(current);
@@ -281,7 +283,8 @@ export function FeedbackListDialog({
                     : 'feedback.kind.suggestion')
                 })}
                 aria-pressed={entry.likedByCurrentBrowser}
-                onClick={() => toggleLike(
+                disabled={entry.source === 'official-example'}
+                onClick={() => void toggleLike(
                   entry.id,
                   entry.likedByCurrentBrowser,
                   entry.likeCount

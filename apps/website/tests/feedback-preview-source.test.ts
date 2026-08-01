@@ -40,8 +40,14 @@ function createEntry(overrides: Partial<FeedbackEntry> = {}): FeedbackEntry {
 function createRepository(entries: Partial<Record<FeedbackKind, readonly FeedbackEntry[]>> = {}): FeedbackRepository {
   return {
     list: (kind) => entries[kind] ?? [],
-    create: () => createEntry(),
-    toggleLike: () => createEntry(),
+    refresh: async () => undefined,
+    create: async () => ({
+      submissionId: 'submission-1',
+      statusToken: 'a'.repeat(43),
+      statusPath: '/submission-status/',
+      status: 'system_reviewing'
+    }),
+    toggleLike: async () => createEntry(),
     subscribe: () => () => {}
   };
 }

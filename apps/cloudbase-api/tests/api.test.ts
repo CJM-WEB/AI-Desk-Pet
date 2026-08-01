@@ -107,7 +107,8 @@ function createDependencies() {
         }],
         nextCursor: null
       })),
-      toggleLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
+      toggleCommunityLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
+      toggleFeedbackLike: vi.fn(async () => ({ liked: true, likeCount: 3 })),
       getDownload: vi.fn(async () => ({
         url: 'https://storage.example/download',
         expiresAt: '2026-07-31T00:05:00.000Z'
@@ -373,10 +374,33 @@ describe('公开 HTTP API', () => {
       'download:community-1',
       deviceHash
     ]);
-    expect(dependencies.publicContent.toggleLike)
+    expect(dependencies.publicContent.toggleCommunityLike)
       .toHaveBeenCalledWith('community-1', deviceHash);
+    expect(dependencies.publicContent.toggleFeedbackLike).not.toHaveBeenCalled();
     expect(dependencies.publicContent.getDownload)
       .toHaveBeenCalledWith('community-1');
+  });
+
+  it('反馈点赞使用独立公开路由并复用设备限流', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/feedback/feedback-1/like', {}),
+      context
+    );
+
+    const deviceHash = createHmac('sha256', fingerprintSecret)
+      .update(`${sourceIp}\ntest-agent`)
+      .digest('hex');
+    expect(response.statusCode).toBe(200);
+    expect(dependencies.abuseControl.consume).toHaveBeenCalledWith(
+      'like:feedback-1',
+      deviceHash
+    );
+    expect(dependencies.publicContent.toggleFeedbackLike)
+      .toHaveBeenCalledWith('feedback-1', deviceHash);
+    expect(dependencies.publicContent.toggleCommunityLike).not.toHaveBeenCalled();
   });
 
   it('429 响应在稳定错误信封中包含重试秒数', async () => {

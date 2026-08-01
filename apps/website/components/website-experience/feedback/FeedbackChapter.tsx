@@ -28,18 +28,19 @@ import {
 } from './FeedbackComposerDialog';
 import { DiscardDraftDialog } from './DiscardDraftDialog';
 import { validateDraft } from './feedback-model';
-import {
-  FeedbackStorageError,
-  LocalStorageFeedbackRepository
-} from './local-storage-feedback-repository';
+import { ApiClient } from '../../../lib/api-client';
+import { CaptchaClient, type CaptchaVerifier } from '../../../lib/captcha';
+import { CloudFeedbackRepository } from './cloud-feedback-repository';
 import type {
   FeedbackKind,
   FeedbackRepository
 } from './feedback-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
 import styles from './feedback.module.css';
 
 export interface FeedbackChapterProps extends ChapterRuntimeProps {
   repository?: FeedbackRepository;
+  captcha?: CaptchaVerifier;
   onCreateRequested?: () => void;
 }
 
@@ -112,6 +113,7 @@ export function FeedbackChapter({
   reducedMotion = false,
   staticFallback = false,
   repository: injectedRepository,
+  captcha: injectedCaptcha,
   onCreateRequested
 }: FeedbackChapterProps) {
   const { locale, t: rawTranslate } = useI18n();
@@ -126,12 +128,18 @@ export function FeedbackChapter({
   const repositoryRef = useRef<FeedbackRepository | null>(null);
   if (repositoryRef.current === null) {
     repositoryRef.current = injectedRepository
-      ?? new LocalStorageFeedbackRepository();
+      ?? new CloudFeedbackRepository(new ApiClient(
+        process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1'
+      ));
   }
   const repository = repositoryRef.current;
+  const captchaRef = useRef<CaptchaVerifier | null>(null);
+  if (captchaRef.current === null) captchaRef.current = injectedCaptcha ?? new CaptchaClient();
+  const captcha = captchaRef.current;
   const [activeIndex, setActiveIndex] = useState(0);
   const [openKind, setOpenKind] = useState<FeedbackKind | null>(null);
   const [composerState, setComposerState] = useState<ComposerState | null>(null);
+  const [submissionReceipt, setSubmissionReceipt] = useState<SubmissionReceipt | null>(null);
   const [pointer, setPointer] = useState({ x: 0, y: 0 });
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const rollerRef = useRef<HTMLDivElement | null>(null);
@@ -143,6 +151,14 @@ export function FeedbackChapter({
   const suppressClickTimeoutRef = useRef<number | null>(null);
   const motionDisabled = reducedMotion || staticFallback || isPaused;
   const closeDialog = useCallback(() => setOpenKind(null), []);
+
+  useEffect(() => {
+    if (!interactive) return;
+    void Promise.all([
+      repository.refresh('feedback'),
+      repository.refresh('suggestion')
+    ]).catch(() => undefined);
+  }, [interactive, repository]);
 
   const requestComposerClose = useCallback(() => {
     setComposerState((current) => {
@@ -190,20 +206,23 @@ export function FeedbackChapter({
       });
       return;
     }
-    try {
-      const entry = repository.create(validation.value);
-      setOpenKind(entry.kind);
-      setComposerState(null);
-    } catch (error) {
-      setComposerState({
-        phase: 'editing',
-        draft: composerState.draft,
-        error: error instanceof FeedbackStorageError && error.code === 'STORAGE_UNAVAILABLE'
-          ? t('feedback.error.storageUnavailable')
-          : t('feedback.error.saveFailed')
-      });
-    }
-  }, [composerState, repository, t]);
+    void (async () => {
+      try {
+        const receipt = await repository.create(
+          validation.value,
+          await captcha.verify()
+        );
+        setSubmissionReceipt(receipt);
+        setComposerState(null);
+      } catch {
+        setComposerState({
+          phase: 'editing',
+          draft: composerState.draft,
+          error: t('feedback.error.saveFailed')
+        });
+      }
+    })();
+  }, [captcha, composerState, repository, t]);
 
   const confirmDiscard = useCallback(() => {
     restoreCreateFocusRef.current = true;
@@ -414,6 +433,7 @@ export function FeedbackChapter({
                     draft: { ...EMPTY_DRAFT },
                     error: null
                   });
+                  setSubmissionReceipt(null);
                   onCreateRequested?.();
                 }}
               >
@@ -459,6 +479,16 @@ export function FeedbackChapter({
           t={t}
           onDiscard={confirmDiscard}
         />
+      ) : null}
+
+      {submissionReceipt ? (
+        <div className={styles.statusNotice} role="status">
+          <p>{t('feedback.submission.received')}</p>
+          <a href={`${submissionReceipt.statusPath}#${submissionReceipt.statusToken}`}>
+            {t('feedback.submission.statusLink')}
+          </a>
+          <p>{t('feedback.submission.saveLink')}</p>
+        </div>
       ) : null}
     </section>
   );
