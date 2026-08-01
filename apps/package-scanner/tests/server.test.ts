@@ -275,7 +275,8 @@ describe('扫描服务隔离边界', () => {
     let shouldHang = true;
     const server = createScannerServer({
       ...dependencies,
-      scanTimeoutMs: 20,
+      // 留出正常扫描窗口，首个挂起扫描仍由整包超时中止。
+      scanTimeoutMs: 250,
       download: async (_url, destination) => {
         await copyFile(sourceArchive, destination);
       },

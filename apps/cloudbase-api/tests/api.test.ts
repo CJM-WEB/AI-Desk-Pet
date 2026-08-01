@@ -215,6 +215,16 @@ describe('API 生产组合', () => {
 });
 
 describe('公开 HTTP API', () => {
+  it('兼容 CloudBase HTTP 服务剥离 api 前缀后的路径', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const response = await main(event('GET', '/v1/community'), context);
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).error).toBeNull();
+  });
+
   it('匿名 prepare 缺少 CAPTCHA 返回 400', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);

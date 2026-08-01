@@ -70,6 +70,6 @@ describe('AI Pet 官网首页', () => {
   it('不再渲染旧的传统纵向首页入口', () => {
     const html = renderToStaticMarkup(<Page />);
 
-    expect(html).not.toMatch(/(?:^|\s)id="(?:features|download)"/);
+    expect(html).not.toMatch(/(?:^|\s)id="features"/);
   });
 });

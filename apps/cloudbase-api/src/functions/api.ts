@@ -142,7 +142,10 @@ async function dispatch(
   dependencies: ApiDependencies
 ): Promise<unknown> {
   const method = event.httpMethod;
-  const path = event.path;
+  // CloudBase HTTP 服务会剥离绑定的 `api` 前缀，本地直调仍保留完整路径。
+  const path = event.path.startsWith('/v1/')
+    ? `/api${event.path}`
+    : event.path;
 
   if (method === 'GET' && path === '/api/v1/admin/submissions') {
     await dependencies.adminIdentity.requireAdmin();

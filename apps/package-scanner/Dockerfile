@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS builder
+FROM node:22-bookworm-slim AS builder
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -19,7 +19,7 @@ COPY apps/package-scanner apps/package-scanner
 RUN pnpm --filter @myself/package-scanner build \
   && pnpm --filter @myself/package-scanner deploy --prod --legacy /deploy
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates clamav curl dumb-init \

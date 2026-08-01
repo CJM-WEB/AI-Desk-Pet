@@ -848,9 +848,30 @@ async function requireSuccess(
 
 function requireData(result: RdbResult, context: string): unknown {
   if (result.error) {
+    console.error('[cloudbase-rdb]', {
+      code: diagnosticCode(result.error.code),
+      message: diagnosticMessage(result.error.message)
+    });
     throw new ApiError('DATABASE_ERROR', 500, `${context}：${result.error.message}`);
   }
   return result.data;
+}
+
+/** 只保留排障所需字段，并遮蔽可能被上游错误信息带出的凭据。 */
+function diagnosticMessage(value: string): string {
+  return value
+    .replace(/Bearer\s+\S+/giu, 'Bearer [REDACTED]')
+    .replace(
+      /\b(secret|token|password|api[-_ ]?key)\b\s*[:=]\s*\S+/giu,
+      '$1=[REDACTED]'
+    )
+    .slice(0, 500);
+}
+
+function diagnosticCode(value: string | undefined): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,64}$/u.test(value)
+    ? value
+    : null;
 }
 
 function requireRows(value: unknown, context: string): unknown[] {

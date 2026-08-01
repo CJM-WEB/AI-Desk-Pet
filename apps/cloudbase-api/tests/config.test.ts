@@ -57,6 +57,26 @@ describe('loadCloudConfig', () => {
     expect(config).not.toHaveProperty('relevanceModel');
   });
 
+  it('从 SCF 允许配置的别名加载审核凭据', () => {
+    const {
+      TENCENTCLOUD_SECRETID: _secretId,
+      TENCENTCLOUD_SECRETKEY: _secretKey,
+      TENCENTCLOUD_SESSIONTOKEN: _sessionToken,
+      ...baseEnv
+    } = validEnv;
+
+    const config = loadCloudConfig({
+      ...baseEnv,
+      MODERATION_SECRET_ID: 'moderation-secret-id',
+      MODERATION_SECRET_KEY: 'moderation-secret-key',
+      MODERATION_SESSION_TOKEN: 'moderation-session-token'
+    });
+
+    expect(config.tencentCloudSecretId).toBe('moderation-secret-id');
+    expect(config.tencentCloudSecretKey).toBe('moderation-secret-key');
+    expect(config.tencentCloudSessionToken).toBe('moderation-session-token');
+  });
+
   it('拒绝与已购买环境不一致的地域', () => {
     expect(() => loadCloudConfig({
       ...validEnv,

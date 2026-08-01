@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import type { CloudBaseAuthClient } from '../src/adapters/cloudbase-auth.js';
 import type { CloudBaseRdbClient } from '../src/adapters/cloudbase-postgres.js';
@@ -29,19 +30,29 @@ const validConfig: CloudConfig = {
 };
 
 describe('CloudBase V3 服务端运行时工厂', () => {
-  it('使用当前环境、新加坡地域和有界超时只初始化一次', () => {
+  it('生产运行时使用 Node 后端 SDK 而不是浏览器 SDK', () => {
+    const source = readFileSync(
+      new URL('../src/adapters/cloudbase-runtime.ts', import.meta.url),
+      'utf8'
+    );
+
+    expect(source).toContain("from '@cloudbase/node-sdk'");
+    expect(source).not.toContain("from '@cloudbase/js-sdk'");
+  });
+
+  it('使用配置环境、新加坡地域和有界超时只初始化一次', () => {
     const { fakeApp, fakeAuth, fakeBucket, fakeRdb } = createFakeApp();
     const init = vi.fn(() => fakeApp);
     const runtime = createCloudBaseServerRuntime(validConfig, {
-      init,
-      currentEnv: Symbol('current-env')
+      init
     });
 
     expect(init).toHaveBeenCalledTimes(1);
     expect(init).toHaveBeenCalledWith({
-      env: expect.any(Symbol),
+      env: 'env-test',
       region: 'ap-singapore',
-      timeout: 15_000
+      timeout: 15_000,
+      accessKey: 'service-role-key'
     });
     expect(runtime).toEqual({
       rdb: fakeRdb,
@@ -50,17 +61,16 @@ describe('CloudBase V3 服务端运行时工厂', () => {
     });
   });
 
-  it('服务端初始化不接受 API Key 或 Publishable Key', () => {
+  it('服务端初始化使用 service_role API Key', () => {
     const { fakeApp } = createFakeApp();
     const fakeSdk: CloudBaseServerSdk = {
-      init: vi.fn(() => fakeApp),
-      currentEnv: Symbol('current-env')
+      init: vi.fn(() => fakeApp)
     };
 
     createCloudBaseServerRuntime(validConfig, fakeSdk);
 
-    expect(fakeSdk.init).not.toHaveBeenCalledWith(
-      expect.objectContaining({ accessKey: expect.anything() })
+    expect(fakeSdk.init).toHaveBeenCalledWith(
+      expect.objectContaining({ accessKey: 'service-role-key' })
     );
   });
 });

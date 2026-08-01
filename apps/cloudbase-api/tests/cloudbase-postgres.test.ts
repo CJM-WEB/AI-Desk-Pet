@@ -13,7 +13,7 @@ import type {
 } from '../src/adapters/cloudbase-postgres.js';
 
 const migrationPath = fileURLToPath(
-  new URL('../migrations/001_moderation.sql', import.meta.url)
+  new URL('../../../cloudbase/migrations/20260730000000_moderation.sql', import.meta.url)
 );
 
 describe('CloudBase PostgreSQL 迁移', () => {
@@ -1077,11 +1077,17 @@ describe('CloudBase PostgreSQL 仓储', () => {
     const database = new MemoryRdb();
     database.rejectAssetCreation = true;
     const { store } = createStore(database);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await expect(store.createSubmission(newSubmission('rollback-submission')))
       .rejects.toMatchObject({ code: 'DATABASE_ERROR' });
+    expect(errorLog).toHaveBeenCalledWith('[cloudbase-rdb]', {
+      code: null,
+      message: '资产写入失败'
+    });
     expect(database.submissions).toEqual([]);
     expect(database.assets).toEqual([]);
+    errorLog.mockRestore();
   });
 
   it('未完成上传的投稿到期后进入清理候选', async () => {

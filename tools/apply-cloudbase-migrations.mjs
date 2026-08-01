@@ -4,20 +4,21 @@ import { fileURLToPath } from 'node:url';
 import CloudBase from '@cloudbase/manager-node';
 
 const migrationPath = fileURLToPath(
-  new URL('../apps/cloudbase-api/migrations/001_moderation.sql', import.meta.url)
+  new URL('../cloudbase/migrations/20260730000000_moderation.sql', import.meta.url)
 );
 
 /** 读取固定的三项迁移凭据，缺失时不回显名称或值。 */
-function readMigrationCredentials(environment) {
+export function readMigrationCredentials(environment) {
   const secretId = environment.TENCENTCLOUD_SECRETID;
   const secretKey = environment.TENCENTCLOUD_SECRETKEY;
   const envId = environment.CLOUDBASE_ENV_ID;
+  const region = environment.CLOUDBASE_REGION;
 
-  if (!secretId || !secretKey || !envId) {
+  if (!secretId || !secretKey || !envId || !region) {
     throw new Error('迁移配置不完整');
   }
 
-  return { secretId, secretKey, envId };
+  return { secretId, secretKey, envId, region };
 }
 
 /** 使用管理端 SDK 一次性执行受版本控制的 PostgreSQL 迁移。 */

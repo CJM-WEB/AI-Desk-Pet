@@ -10,11 +10,11 @@ const dockerignorePath = fileURLToPath(
 );
 
 describe('扫描容器安全配置', () => {
-  it('构建与运行阶段统一使用 Node.js 20', async () => {
+  it('构建与运行阶段统一使用兼容 pnpm 11 的 Node.js 22', async () => {
     const dockerfile = await readFile(dockerfilePath, 'utf8');
 
-    expect(dockerfile.match(/^FROM node:20-bookworm-slim/gmu)).toHaveLength(2);
-    expect(dockerfile).not.toContain('node:22');
+    expect(dockerfile.match(/^FROM node:22-bookworm-slim/gmu)).toHaveLength(2);
+    expect(dockerfile).not.toContain('node:20');
   });
 
   it('运行阶段使用非 root 用户和唯一扫描工作区', async () => {

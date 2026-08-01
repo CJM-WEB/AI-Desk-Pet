@@ -1,4 +1,4 @@
-import cloudbase from '@cloudbase/js-sdk';
+import cloudbase from '@cloudbase/node-sdk';
 
 import type { CloudBaseAuthClient } from './cloudbase-auth.js';
 import type { CloudBaseRdbClient } from './cloudbase-postgres.js';
@@ -12,11 +12,11 @@ export interface CloudBaseServerRuntime {
 }
 
 export interface CloudBaseServerSdk {
-  currentEnv: symbol;
   init(options: {
-    env: symbol;
+    env: string;
     region: 'ap-singapore';
     timeout: number;
+    accessKey: string;
   }): {
     rdb(): CloudBaseRdbClient;
     storage: { from(bucketId: string): CloudBaseStorageBucket };
@@ -26,9 +26,6 @@ export interface CloudBaseServerSdk {
 
 /** 仅在已安装 SDK 边界收窄其缺失或宽泛的类型。 */
 const installedSdk: CloudBaseServerSdk = {
-  currentEnv: (cloudbase as typeof cloudbase & {
-    SYMBOL_CURRENT_ENV: symbol;
-  }).SYMBOL_CURRENT_ENV,
   init: options => cloudbase.init(
     options as unknown as Parameters<typeof cloudbase.init>[0]
   ) as unknown as ReturnType<CloudBaseServerSdk['init']>
@@ -39,9 +36,10 @@ export function createCloudBaseServerRuntime(
   sdk: CloudBaseServerSdk = installedSdk
 ): CloudBaseServerRuntime {
   const app = sdk.init({
-    env: sdk.currentEnv,
+    env: config.envId,
     region: config.cloudbaseRegion,
-    timeout: config.cloudbaseSdkTimeoutMs
+    timeout: config.cloudbaseSdkTimeoutMs,
+    accessKey: config.cloudbaseApiKey
   });
   return {
     rdb: app.rdb(),

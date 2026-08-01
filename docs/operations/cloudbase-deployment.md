@@ -39,7 +39,7 @@
 ## 5. 隔离扫描容器
 
 1. 使用 `apps/package-scanner/Dockerfile` 部署 CloudBase Run 服务。
-2. 运行参数：Node.js 20 容器、最小实例数 0、单实例并发 1、内存至少 1 GB、健康检查 `/healthz`。
+2. 运行参数：Node.js 22 容器、最小实例数 0、单实例并发 1、内存至少 1 GB、健康检查 `/healthz`。
 3. 配置 `SCANNER_INTERNAL_SECRET`、`SCANNER_DOWNLOAD_HOSTS`、`SCANNER_DOWNLOAD_SIGNATURE_PARAMETERS`、`TENCENT_CLOUD_REGION`、`TENCENT_IMS_BIZ_TYPE`、`TENCENTCLOUD_SECRETID`、`TENCENTCLOUD_SECRETKEY`；使用临时凭据时再配置 `TENCENTCLOUD_SESSIONTOKEN`。
 4. API 函数的 `SCANNER_URL` 指向容器 HTTPS 地址，`SCANNER_HMAC_SECRET` 必须与容器的 `SCANNER_INTERNAL_SECRET` 使用同一密钥值，但名称按各自进程保留。
 5. 用干净包、病毒命中、图片拦截、超时和并发请求验证失败关闭；禁止放宽为扫描异常即通过。

@@ -61,6 +61,7 @@ function AdminWorkspace({
   const [queueLoading, setQueueLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AdminSubmissionDetail | null>(null);
+  const [detailRevision, setDetailRevision] = useState(0);
   const [detailLoading, setDetailLoading] = useState(false);
   const [acting, setActing] = useState(false);
   const actingRef = useRef(false);
@@ -235,6 +236,7 @@ function AdminWorkspace({
     } catch (error) {
       if (epoch !== sessionEpoch.current) return;
       if (error instanceof ApiClientError && error.statusCode === 409) {
+        setDetailRevision(revision => revision + 1);
         setNotice(error.code === 'VERSION_CONFLICT'
           ? t('admin.notice.conflict')
           : stableActionError(error.code, t));
@@ -312,7 +314,7 @@ function AdminWorkspace({
             {activeView === 'audit'
               ? <AdminAuditLog detail={detail} />
               : <AdminDetail
-                  key={`${detail?.id ?? 'none'}:${detail?.statusVersion ?? 0}`}
+                  key={`${detail?.id ?? 'none'}:${detail?.statusVersion ?? 0}:${detailRevision}`}
                   detail={detail}
                   loading={detailLoading}
                   acting={acting}

@@ -41,7 +41,7 @@
 
 - `apps/cloudbase-api/package.json`：云函数依赖与构建脚本。
 - `apps/cloudbase-api/tsconfig.json`、`apps/cloudbase-api/vitest.config.ts`：后端 TypeScript 与测试配置。
-- `apps/cloudbase-api/migrations/001_moderation.sql`：业务表、索引、约束、RLS 和存储 Bucket 策略。
+- `cloudbase/migrations/20260730000000_moderation.sql`：业务表、索引、约束、RLS 和存储 Bucket 策略。
 - `apps/cloudbase-api/src/config.ts`：只从环境变量读取配置并启动时校验。
 - `apps/cloudbase-api/src/ports.ts`：数据库、存储、CAPTCHA、审核、扫描和时钟端口。
 - `apps/cloudbase-api/src/errors.ts`：稳定错误码与 HTTP 映射。
@@ -430,7 +430,7 @@ git commit -m "feat: 建立 CloudBase 审核 API 基础工程"
 
 **文件：**
 
-- 新建：`apps/cloudbase-api/migrations/001_moderation.sql`
+- 新建：`cloudbase/migrations/20260730000000_moderation.sql`
 - 新建：`apps/cloudbase-api/src/adapters/cloudbase-postgres.ts`
 - 新建：`apps/cloudbase-api/tests/cloudbase-postgres.test.ts`
 - 新建：`tools/apply-cloudbase-migrations.mjs`
