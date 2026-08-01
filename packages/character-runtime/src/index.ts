@@ -7,3 +7,4 @@ export * from './character-presentation-resolver';
 export * from './legacy-runtime-projection';
 export * from './action-selector';
 export * from './behavior-contracts';
+export * from './behavior-state-inference';
