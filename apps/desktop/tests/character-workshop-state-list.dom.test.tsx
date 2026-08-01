@@ -2,13 +2,11 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { CharacterDraftV1 } from '@myself/character-runtime';
-import {
-  CharacterWorkshopWorkspace
-} from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
-import type {
-  CharacterWorkshopState
-} from '../src/renderer/src/characters/store/character-workshop-store';
+import { StateList } from '../src/renderer/src/characters/workshop/StateList';
+import { ActionInspector } from '../src/renderer/src/characters/workshop/ActionInspector';
+import { StateInspector } from '../src/renderer/src/characters/workshop/StateInspector';
+import { CharacterWorkshopWorkspace } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
+import type { CharacterWorkshopState } from '../src/renderer/src/characters/store/character-workshop-store';
 
 vi.mock(
   '../src/renderer/src/characters/workshop/DraftCharacterPreview',
@@ -37,95 +35,75 @@ afterEach(() => {
   Reflect.deleteProperty(HTMLDialogElement.prototype, 'close');
 });
 
-const configuredDraft: CharacterDraftV1 = {
-  version: 1,
-  id: 'nova',
-  name: 'Nova',
-  states: [{
-    id: 'idle',
-    kind: 'core',
-    actions: [{
-      id: 'idle-main',
-      name: '轻呼吸',
-      fps: 8,
-      loop: true,
-      weight: 1,
-      direction: 'any',
-      anchors: { ground: { x: 0.5, y: 1 } },
-      frames: [{
-        id: 'frame-1',
-        assetId: '123e4567-e89b-42d3-a456-426614174000',
-        x: 0,
-        y: 0,
-        width: 32,
-        height: 32
-      }]
-    }, {
-      id: 'idle-empty',
-      name: '空动作',
-      fps: 8,
-      loop: true,
-      weight: 1,
-      direction: 'any',
-      anchors: { ground: { x: 0.5, y: 1 } },
-      frames: []
-    }]
-  }, {
-    id: 'custom:wave',
-    kind: 'extension',
-    triggers: { events: [], keywords: [], emotions: [] },
-    actions: []
-  }]
-};
+const actions = [{
+  id: 'idle-main', name: '轻呼吸', semantic: 'idle' as const, tags: [], preference: 1,
+  cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation' as const,
+  interrupt: 'normal' as const, allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [],
+  requiredModifierStateIds: [], forbiddenModifierStateIds: [], direction: 'any' as const
+}];
 
-function stateDouble(): CharacterWorkshopState {
+const states = [{
+  id: 'idle', name: '待机', kind: 'primary' as const, semantic: 'idle' as const, tags: [],
+  intensity: 20, coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+  exitConditions: [], agentInferable: false, actionIds: ['idle-main']
+}, {
+  id: 'focus', name: '专注', kind: 'primary' as const, semantic: 'think' as const, tags: [],
+  intensity: 60, coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+  exitConditions: [], agentInferable: true, actionIds: []
+}, {
+  id: 'happy', name: '开心', kind: 'modifier' as const, semantic: 'celebrate' as const, tags: [],
+  intensity: 80, coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+  exitConditions: [], agentInferable: true, actionIds: []
+}];
+
+function stateDouble(
+  overrides: Partial<CharacterWorkshopState> = {}
+): CharacterWorkshopState {
+  const draft = {
+    version: 2 as const,
+    id: 'nova',
+    name: 'Nova',
+    identity: {
+      description: '桌面伙伴', background: '来自桌面', traits: ['友好'],
+      languageStyle: '简洁', formsOfAddress: ['朋友'], likes: ['晴天'],
+      dislikes: ['噪声'], behavioralTendencies: ['问候'], boundaries: ['尊重隐私'],
+      exampleLines: ['你好。']
+    },
+    defaultSkinId: 'default', defaultStateId: 'idle',
+    skins: [{ id: 'default', name: '默认皮肤', presentations: [], semanticFallbacks: [] }],
+    states: [states[0]!], actions
+  };
   return {
     characters: [{
-      id: 'nova',
-      name: 'Nova',
-      thumbnailAssetId: null,
-      active: true,
-      completeness: 'complete',
-      missingCoreStates: []
+      id: 'nova', name: 'Nova', thumbnailAssetId: null, active: true,
+      completeness: 'complete', missingRequirements: [], migrationRecoveryAvailable: false
     }],
-    selectedCharacterId: 'nova',
-    draft: structuredClone(configuredDraft),
-    selectedStateId: 'idle',
-    selectedActionId: 'idle-main',
-    draftStatus: 'saved',
-    compileStatus: 'idle',
-    loadStatus: 'ready',
-    busyAction: null,
-    toastQueue: [],
-    availableSources: [],
-    load: vi.fn(async () => undefined),
-    mount: vi.fn(() => () => undefined),
-    selectCharacter: vi.fn(async () => undefined),
-    selectState: vi.fn(),
-    selectAction: vi.fn(),
-    createCharacter: vi.fn(async () => undefined),
-    duplicateCharacter: vi.fn(async () => undefined),
-    deleteCharacter: vi.fn(async () => undefined),
-    activateCharacter: vi.fn(async () => undefined),
-    importCharacterPackage: vi.fn(async () => undefined),
-    exportCharacterPackage: vi.fn(async () => undefined),
-    importSources: vi.fn(async () => undefined),
-    addAction: vi.fn(),
-    removeAction: vi.fn(),
-    addExtensionState: vi.fn(),
-    removeExtensionState: vi.fn(),
-    applySpriteSheet: vi.fn(async () => undefined),
-    compileAndPublish: vi.fn(async () => undefined),
-    publishCharacter: vi.fn(async () => undefined),
-    updateCurrentAction: vi.fn(),
-    flushDraft: vi.fn(async () => undefined),
-    dismissToast: vi.fn(),
-    dispose: vi.fn()
+    selectedCharacterId: 'nova', draft, selectedEntity: { kind: 'action', actionId: 'idle-main' },
+    selectedSkinId: 'default', selectedStateId: 'idle', selectedActionId: 'idle-main',
+    draftStatus: 'saved', compileStatus: 'idle', loadStatus: 'ready', busyAction: null,
+    toastQueue: [], availableSources: [], load: vi.fn(async () => undefined),
+    mount: vi.fn(() => () => undefined), selectCharacter: vi.fn(async () => undefined),
+    selectIdentity: vi.fn(), selectSkin: vi.fn(), selectState: vi.fn(), selectAction: vi.fn(),
+    createCharacter: vi.fn(async () => undefined), duplicateCharacter: vi.fn(async () => undefined),
+    deleteCharacter: vi.fn(async () => undefined), activateCharacter: vi.fn(async () => undefined),
+    importCharacterPackage: vi.fn(async () => undefined), exportCharacterPackage: vi.fn(async () => undefined),
+    importSources: vi.fn(async () => undefined), updateIdentity: vi.fn(), addSkin: vi.fn(),
+    duplicateSkin: vi.fn(), updateSkin: vi.fn(), setDefaultSkin: vi.fn(),
+    requestRemoveSkin: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    addState: vi.fn(), updateState: vi.fn(),
+    requestRemoveState: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    addAction: vi.fn(), updateAction: vi.fn(),
+    requestRemoveAction: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    removeAction: vi.fn(), removeExtensionState: vi.fn(), addExtensionState: vi.fn(),
+    applySpriteSheet: vi.fn(async () => undefined), compileAndPublish: vi.fn(async () => undefined),
+    publishCharacter: vi.fn(async () => undefined), updateCurrentAction: vi.fn(),
+    flushDraft: vi.fn(async () => undefined), dismissToast: vi.fn(), dispose: vi.fn(),
+    ...overrides
   };
 }
 
-function renderWorkspace(state: CharacterWorkshopState): void {
-  render(
+function renderWorkspace(state: CharacterWorkshopState): ReturnType<typeof render> {
+  return render(
     <CharacterWorkshopWorkspace
       state={state}
       api={{ readCharacterSource: vi.fn(async () => new Uint8Array()) }}
@@ -133,77 +111,407 @@ function renderWorkspace(state: CharacterWorkshopState): void {
   );
 }
 
-describe('状态与动作行级删除', () => {
-  test('非空配置以模态打开且 Escape 关闭时不删除', () => {
-    const state = stateDouble();
-    renderWorkspace(state);
-
-    fireEvent.click(screen.getByRole('button', {
-      name: '删除动作“轻呼吸”'
-    }));
-    const dialog = screen.getByRole('dialog');
-    expect(showModal).toHaveBeenCalledOnce();
-
-    fireEvent.keyDown(dialog, { key: 'Escape' });
-    expect(closeDialog).toHaveBeenCalledOnce();
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(state.removeAction).not.toHaveBeenCalled();
-  });
-
-  test('空动作直接删除而有帧动作必须确认', () => {
-    const state = stateDouble();
-    renderWorkspace(state);
-
-    fireEvent.click(screen.getByRole('button', {
-      name: '删除动作“空动作”'
-    }));
-    expect(state.removeAction).toHaveBeenCalledWith('idle', 'idle-empty');
-
-    fireEvent.click(screen.getByRole('button', {
-      name: '删除动作“轻呼吸”'
-    }));
-    expect(state.removeAction).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('dialog').textContent).toContain('1 帧');
-
-    fireEvent.click(screen.getByRole('button', { name: '取消' }));
-    expect(state.removeAction).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole('button', {
-      name: '删除动作“轻呼吸”'
-    }));
-    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
-    expect(state.removeAction).toHaveBeenLastCalledWith('idle', 'idle-main');
-  });
-
-  test('空扩展状态直接删除', () => {
-    const state = stateDouble();
-    renderWorkspace(state);
-
-    fireEvent.click(screen.getByRole('button', {
-      name: '删除扩展状态“wave”'
-    }));
-    expect(state.removeExtensionState).toHaveBeenCalledWith('custom:wave');
-  });
-
-  test('包含动作的扩展状态必须确认', () => {
-    const state = stateDouble();
-    const extension = state.draft?.states.find(
-      candidate => candidate.id === 'custom:wave'
+describe('V2 状态与动作结构化交互', () => {
+  test('所有非默认状态均可请求删除并显示主状态或修饰状态', () => {
+    const onRequestDeleteState = vi.fn();
+    render(
+      <StateList
+        states={states}
+        actions={actions}
+        defaultStateId="idle"
+        selectedStateId="idle"
+        selectedActionId="idle-main"
+        disabled={false}
+        onSelectState={vi.fn()}
+        onSelectAction={vi.fn()}
+        onAddAction={vi.fn()}
+        onRequestDeleteState={onRequestDeleteState}
+        onRequestDeleteAction={vi.fn()}
+      />
     );
-    const idleAction = state.draft?.states[0]?.actions[0];
-    if (!extension || !idleAction) throw new Error('测试草稿不完整');
-    extension.actions = [{ ...structuredClone(idleAction), id: 'wave-main' }];
-    renderWorkspace(state);
 
-    fireEvent.click(screen.getByRole('button', {
-      name: '删除扩展状态“wave”'
+    expect(screen.getAllByText('主状态')).toHaveLength(2);
+    expect(screen.getByText('修饰状态')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '删除状态“待机”' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '删除状态“专注”' }));
+    expect(onRequestDeleteState).toHaveBeenCalledWith('focus');
+  });
+
+  test('动作失败回退选择提交合法动作 ID', () => {
+    const onChange = vi.fn();
+    const action = { ...actions[0]!, id: 'wave', name: '挥手', semantic: 'speak' as const };
+    render(
+      <ActionInspector
+        action={action}
+        actions={[action, actions[0]!]}
+        states={[]}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText('动作失败回退'), {
+      target: { value: 'idle-main' }
+    });
+    expect(onChange).toHaveBeenCalledWith({ failureFallbackActionId: 'idle-main' });
+  });
+
+  test('动作通过复选框维护四组主状态与修饰状态引用', () => {
+    const onChange = vi.fn();
+    render(
+      <ActionInspector
+        action={actions[0]!}
+        actions={actions}
+        states={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText('允许主状态“待机”'));
+    expect(onChange).toHaveBeenCalledWith({ allowedPrimaryStateIds: ['idle'] });
+
+    fireEvent.click(screen.getByLabelText('要求修饰状态“开心”'));
+    expect(onChange).toHaveBeenCalledWith({ requiredModifierStateIds: ['happy'] });
+  });
+
+  test('回退候选排除会形成传递环路的动作', () => {
+    const current = { ...actions[0]!, id: 'action-a', name: '动作 A' };
+    const cyclicCandidate = {
+      ...actions[0]!, id: 'action-b', name: '动作 B', failureFallbackActionId: 'action-a'
+    };
+    render(
+      <ActionInspector
+        action={current}
+        actions={[current, cyclicCandidate]}
+        states={states}
+        disabled={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    const fallback = screen.getByLabelText('动作失败回退') as HTMLSelectElement;
+    expect(fallback.querySelector('option[value="action-b"]')).toBeNull();
+  });
+
+  test('状态条件通过受控选择提交可信 signal 子句', () => {
+    const onChange = vi.fn();
+    render(
+      <StateInspector
+        state={states[0]!}
+        allStates={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText('进入条件类型'), {
+      target: { value: 'signal' }
+    });
+    fireEvent.change(screen.getByLabelText('可信 signal'), {
+      target: { value: 'task-success' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '添加进入条件' }));
+    expect(onChange).toHaveBeenCalledWith({
+      enterConditions: [{
+        mode: 'all',
+        clauses: [{ kind: 'signal', signal: 'task-success' }]
+      }]
+    });
+  });
+
+  test('状态完整维护时长、共存与禁止引用', () => {
+    const onChange = vi.fn();
+    render(
+      <StateInspector
+        state={states[0]!}
+        allStates={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText('建议持续时间（毫秒）'), {
+      target: { value: '1200' }
+    });
+    expect(onChange).toHaveBeenCalledWith({ suggestedDurationMs: 1200 });
+
+    fireEvent.click(screen.getByLabelText('允许与状态“专注”共存'));
+    expect(onChange).toHaveBeenCalledWith({
+      coexistWithStateIds: ['focus'], forbiddenStateIds: []
+    });
+    fireEvent.click(screen.getByLabelText('禁止状态“开心”'));
+    expect(onChange).toHaveBeenCalledWith({
+      forbiddenStateIds: ['happy'], coexistWithStateIds: []
+    });
+  });
+
+  test('自定义状态语义保持真实值且遵循安全标识限制', () => {
+    const onChange = vi.fn();
+    render(
+      <StateInspector
+        state={{ ...states[0]!, semantic: { kind: 'custom', value: 'quiet-focus' } }}
+        allStates={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    expect((screen.getByLabelText('语义类型') as HTMLSelectElement).value).toBe('custom');
+    expect((screen.getByLabelText('自定义语义') as HTMLInputElement).value).toBe('quiet-focus');
+    fireEvent.change(screen.getByLabelText('自定义语义'), {
+      target: { value: 'deep-focus' }
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      semantic: { kind: 'custom', value: 'deep-focus' }
+    });
+    fireEvent.change(screen.getByLabelText('自定义语义'), {
+      target: { value: '非法 空格' }
+    });
+    expect(onChange).not.toHaveBeenCalledWith({
+      semantic: { kind: 'custom', value: '非法 空格' }
+    });
+  });
+
+  test('进入与退出条件均可新增、切换组合模式并删除已有组', () => {
+    const onChange = vi.fn();
+    const state = {
+      ...states[0]!,
+      enterConditions: [{
+        mode: 'all' as const,
+        clauses: [{ kind: 'signal' as const, signal: 'idle' as const }]
+      }]
+    };
+    render(
+      <StateInspector state={state} allStates={states} disabled={false} onChange={onChange} />
+    );
+
+    fireEvent.change(screen.getByLabelText('新增条件位置'), { target: { value: 'exit' } });
+    fireEvent.change(screen.getByLabelText('新增条件组合模式'), { target: { value: 'any' } });
+    fireEvent.click(screen.getByRole('button', { name: '添加退出条件' }));
+    expect(onChange).toHaveBeenCalledWith({
+      exitConditions: [{
+        mode: 'any', clauses: [{ kind: 'signal', signal: 'idle' }]
+      }]
+    });
+
+    fireEvent.change(screen.getByLabelText('进入条件 1 组合模式'), {
+      target: { value: 'any' }
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      enterConditions: [{ ...state.enterConditions[0]!, mode: 'any' }]
+    });
+    fireEvent.click(screen.getByRole('button', { name: '删除进入条件 1' }));
+    expect(onChange).toHaveBeenCalledWith({ enterConditions: [] });
+  });
+
+  test('已有条件组可新增、编辑和删除单个可信子句', () => {
+    const onChange = vi.fn();
+    const firstClause = { kind: 'signal' as const, signal: 'idle' as const };
+    const secondClause = { kind: 'semantic' as const, semantic: 'think' as const };
+    const baseState = {
+      ...states[0]!,
+      enterConditions: [{ mode: 'all' as const, clauses: [firstClause] }]
+    };
+    const inspector = render(
+      <StateInspector
+        state={baseState}
+        allStates={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText('进入条件类型'), {
+      target: { value: 'semantic' }
+    });
+    fireEvent.change(screen.getByLabelText('条件标准语义'), {
+      target: { value: 'think' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '向进入条件 1 添加当前子句' }));
+    expect(onChange).toHaveBeenCalledWith({
+      enterConditions: [{ mode: 'all', clauses: [firstClause, secondClause] }]
+    });
+
+    const twoClauseState = {
+      ...baseState,
+      enterConditions: [{ mode: 'all' as const, clauses: [firstClause, secondClause] }]
+    };
+    inspector.rerender(
+      <StateInspector
+        state={twoClauseState}
+        allStates={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+    fireEvent.change(screen.getByLabelText('进入条件 1 子句 1 可信 signal'), {
+      target: { value: 'task-success' }
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      enterConditions: [{
+        mode: 'all',
+        clauses: [{ kind: 'signal', signal: 'task-success' }, secondClause]
+      }]
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '删除进入条件 1 子句 1' }));
+    expect(onChange).toHaveBeenCalledWith({
+      enterConditions: [{ mode: 'all', clauses: [secondClause] }]
+    });
+  });
+
+  test('状态条件候选删除后回退有效 ID 且不写回悬空引用', () => {
+    const onChange = vi.fn();
+    const existingCondition = {
+      mode: 'all' as const,
+      clauses: [{ kind: 'signal' as const, signal: 'idle' as const }]
+    };
+    const inspectedState = {
+      ...states[0]!, enterConditions: [existingCondition]
+    };
+    const inspector = render(
+      <StateInspector
+        state={inspectedState}
+        allStates={states}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+    fireEvent.change(screen.getByLabelText('进入条件类型'), {
+      target: { value: 'state' }
+    });
+    fireEvent.change(screen.getByLabelText('当前状态引用'), {
+      target: { value: 'focus' }
+    });
+
+    inspector.rerender(
+      <StateInspector
+        state={inspectedState}
+        allStates={[states[0]!, states[2]!]}
+        disabled={false}
+        onChange={onChange}
+      />
+    );
+
+    expect((screen.getByLabelText('当前状态引用') as HTMLSelectElement).value).toBe('idle');
+    fireEvent.click(screen.getByRole('button', { name: '添加进入条件' }));
+    expect(onChange).toHaveBeenCalledWith({
+      enterConditions: [
+        existingCondition,
+        { mode: 'all', clauses: [{ kind: 'state', stateId: 'idle' }] }
+      ]
+    });
+    fireEvent.click(screen.getByRole('button', { name: '向进入条件 1 添加当前子句' }));
+    expect(onChange).toHaveBeenCalledWith({
+      enterConditions: [{
+        ...existingCondition,
+        clauses: [...existingCondition.clauses, { kind: 'state', stateId: 'idle' }]
+      }]
+    });
+    expect(JSON.stringify(onChange.mock.calls)).not.toContain('focus');
+  });
+});
+
+describe('V2 引用删除与迁移恢复', () => {
+  test('阻塞引用逐行说明并禁用确认，Escape 关闭且不强制删除', () => {
+    const requestRemoveAction = vi.fn(() => ({
+      safeReferencePaths: ['states.0.actionIds'],
+      blockingReferencePaths: ['actions.1.failureFallbackActionId']
     }));
-    expect(state.removeExtensionState).not.toHaveBeenCalled();
-    const dialogText = screen.getByRole('dialog').textContent;
-    expect(dialogText).toContain('删除扩展状态“wave”');
-    expect(dialogText).toContain('1 个动作');
+    renderWorkspace(stateDouble({ requestRemoveAction }));
 
+    fireEvent.click(screen.getByRole('button', { name: '删除动作“轻呼吸”' }));
+    expect(screen.getByText('states.0.actionIds')).toBeTruthy();
+    expect(screen.getByText('actions.1.failureFallbackActionId')).toBeTruthy();
+    expect(screen.getByText(/请先重选/u)).toBeTruthy();
+    expect((screen.getByRole('button', { name: '确认删除' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(requestRemoveAction).toHaveBeenCalledTimes(1);
+    expect(requestRemoveAction).not.toHaveBeenCalledWith('idle-main', true);
+  });
+
+  test('只有安全引用时确认统一传入 true', () => {
+    const requestRemoveAction = vi.fn(() => ({
+      safeReferencePaths: ['states.0.actionIds'], blockingReferencePaths: []
+    }));
+    renderWorkspace(stateDouble({ requestRemoveAction }));
+
+    fireEvent.click(screen.getByRole('button', { name: '删除动作“轻呼吸”' }));
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
-    expect(state.removeExtensionState).toHaveBeenCalledWith('custom:wave');
+    expect(requestRemoveAction).toHaveBeenLastCalledWith('idle-main', true);
+  });
+
+  test('迁移失败角色显示稳定恢复说明并提供重试与恢复导出', () => {
+    const selectCharacter = vi.fn(async () => undefined);
+    const exportCharacterPackage = vi.fn(async () => undefined);
+    renderWorkspace(stateDouble({
+      characters: [{
+        id: 'legacy', name: '旧版角色', thumbnailAssetId: null, active: false,
+        completeness: 'broken', missingRequirements: [],
+        migrationErrorCode: 'CHARACTER_MIGRATION_FAILED', migrationRecoveryAvailable: true
+      }],
+      selectedCharacterId: 'legacy', draft: null, selectedEntity: { kind: 'identity' },
+      selectedSkinId: null, selectedStateId: null, selectedActionId: null,
+      loadStatus: 'error', selectCharacter, exportCharacterPackage,
+      toastQueue: [{
+        id: 'migration-read', tone: 'error',
+        text: '旧版角色迁移读取失败，请重试或导出恢复包。'
+      }]
+    }));
+
+    expect(screen.getByText('旧版角色迁移失败，原始数据仍可恢复。')).toBeTruthy();
+    expect(screen.queryByText(/C:\\Users\\secret/u)).toBeNull();
+    expect(screen.getByText('旧版角色迁移读取失败，请重试或导出恢复包。')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '重试读取' }));
+    fireEvent.click(screen.getByRole('button', { name: '导出恢复包' }));
+    expect(selectCharacter).toHaveBeenCalledWith('legacy');
+    expect(exportCharacterPackage).toHaveBeenCalledOnce();
+  });
+
+  test('迁移恢复直接呈现 Store 稳定错误和后续操作反馈', () => {
+    const initial = stateDouble({
+      characters: [{
+        id: 'legacy', name: '旧版角色', thumbnailAssetId: null, active: false,
+        completeness: 'broken', missingRequirements: [],
+        migrationErrorCode: 'CHARACTER_MIGRATION_FAILED', migrationRecoveryAvailable: true
+      }],
+      selectedCharacterId: 'legacy', draft: null, selectedEntity: { kind: 'identity' },
+      selectedSkinId: null, selectedStateId: null, selectedActionId: null,
+      loadStatus: 'error',
+      toastQueue: [{
+        id: 'migration-read', tone: 'error',
+        text: '旧版角色迁移读取失败，请重试或导出恢复包。'
+      }]
+    });
+    const workspace = renderWorkspace(initial);
+    expect(screen.getByText('旧版角色迁移读取失败，请重试或导出恢复包。')).toBeTruthy();
+
+    workspace.rerender(
+      <CharacterWorkshopWorkspace
+        state={{
+          ...initial,
+          toastQueue: [
+            { id: 'retry-failed', tone: 'error', text: '重试读取失败，请稍后重试。' }
+          ]
+        }}
+        api={{ readCharacterSource: vi.fn(async () => new Uint8Array()) }}
+      />
+    );
+    expect(screen.getByText('重试读取失败，请稍后重试。')).toBeTruthy();
+
+    workspace.rerender(
+      <CharacterWorkshopWorkspace
+        state={{
+          ...initial,
+          toastQueue: [
+            { id: 'export-failed', tone: 'error', text: '恢复包导出失败，请检查目标位置。' }
+          ]
+        }}
+        api={{ readCharacterSource: vi.fn(async () => new Uint8Array()) }}
+      />
+    );
+    expect(screen.getByText('恢复包导出失败，请检查目标位置。')).toBeTruthy();
   });
 });

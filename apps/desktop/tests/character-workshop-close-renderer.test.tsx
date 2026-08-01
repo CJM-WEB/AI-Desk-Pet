@@ -2,28 +2,35 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import type { CharacterDraftV1 } from '@myself/character-runtime';
+import type { CharacterDraftV2 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
 import type { MyselfApi } from '../src/shared/myself-api';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 
-const draft: CharacterDraftV1 = {
-  version: 1,
+const draft: CharacterDraftV2 = {
+  version: 2,
   id: 'nova',
   name: 'Nova',
+  identity: {
+    description: '桌面伙伴', background: '来自桌面', traits: ['友好'],
+    languageStyle: '简洁', formsOfAddress: ['朋友'], likes: ['晴天'],
+    dislikes: ['噪声'], behavioralTendencies: ['问候'], boundaries: ['尊重隐私'],
+    exampleLines: ['你好。']
+  },
+  defaultSkinId: 'default',
+  defaultStateId: 'idle',
+  skins: [{ id: 'default', name: '默认皮肤', presentations: [], semanticFallbacks: [] }],
   states: [{
     id: 'idle',
-    kind: 'core',
-    actions: [{
-      id: 'idle-main',
-      name: '轻呼吸',
-      fps: 12,
-      loop: true,
-      weight: 1,
-      direction: 'any',
-      anchors: { ground: { x: 0.5, y: 1 } },
-      frames: []
-    }]
+    name: '待机', kind: 'primary', semantic: 'idle', tags: [], intensity: 20,
+    coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+    exitConditions: [], agentInferable: true, actionIds: ['idle-main']
+  }],
+  actions: [{
+    id: 'idle-main', name: '轻呼吸', semantic: 'idle', tags: [], preference: 1,
+    cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal',
+    allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [], requiredModifierStateIds: [],
+    forbiddenModifierStateIds: [], direction: 'any'
   }]
 };
 
@@ -33,7 +40,8 @@ const characters: CharacterSummaryDto[] = [{
   thumbnailAssetId: null,
   active: true,
   completeness: 'complete',
-  missingCoreStates: []
+  missingRequirements: [],
+  migrationRecoveryAvailable: false
 }];
 
 afterEach(() => {
@@ -88,8 +96,8 @@ describe('角色工作室 Renderer 关闭刷新', () => {
     >;
 
     const rendered = render(<CharacterWorkshopView api={api} />);
-    const fpsInput = await screen.findByDisplayValue('12');
-    fireEvent.change(fpsInput, { target: { value: '24' } });
+    const nameInput = await screen.findByLabelText('动作名称');
+    fireEvent.change(nameInput, { target: { value: '轻呼吸新版' } });
     await waitFor(() => expect(flushListener).not.toBeNull());
 
     let flushPromise: Promise<void> | null = null;

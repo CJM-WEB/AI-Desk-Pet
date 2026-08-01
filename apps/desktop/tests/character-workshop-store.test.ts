@@ -244,6 +244,117 @@ afterEach(() => {
 });
 
 describe('角色工作室 Zustand 状态层', () => {
+  test('迁移失败角色读取失败后保留恢复目标并清空旧工作区', async () => {
+    const failedSummary: CharacterSummaryDto = {
+      ...summary('legacy-broken', '旧版角色'),
+      completeness: 'broken',
+      migrationErrorCode: 'CHARACTER_MIGRATION_FAILED',
+      migrationRecoveryAvailable: true
+    };
+    const api = apiDouble({
+      listCharacters: vi.fn(async () => [summary('default', '默认角色', true), failedSummary]),
+      getCharacterDraft: vi.fn(async id => {
+        if (id === failedSummary.id) throw new Error('包含本机绝对路径的原始异常');
+        return draft(id, '默认角色');
+      })
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    await store.getState().selectCharacter(failedSummary.id);
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: failedSummary.id,
+      draft: null,
+      selectedEntity: { kind: 'identity' },
+      selectedSkinId: null,
+      selectedStateId: null,
+      selectedActionId: null,
+      availableSources: [],
+      loadStatus: 'error'
+    });
+    expect(store.getState().toastQueue.at(-1)).toMatchObject({
+      tone: 'error',
+      text: '旧版角色迁移读取失败，请重试或导出恢复包。'
+    });
+    expect(store.getState().toastQueue.some(toast => toast.text.includes('本机绝对路径')))
+      .toBe(false);
+  });
+
+  test('初始加载迁移失败角色使用稳定中文并建立恢复上下文', async () => {
+    const failedSummary: CharacterSummaryDto = {
+      ...summary('legacy-active', '旧版角色', true),
+      completeness: 'broken',
+      migrationErrorCode: 'CHARACTER_MIGRATION_FAILED',
+      migrationRecoveryAvailable: true
+    };
+    const api = apiDouble({
+      listCharacters: vi.fn(async () => [failedSummary]),
+      getCharacterDraft: vi.fn(async () => {
+        throw new Error('C:\\Users\\secret\\legacy.json\nstack trace');
+      })
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+
+    await store.getState().load();
+
+    expect(store.getState()).toMatchObject({
+      selectedCharacterId: failedSummary.id,
+      draft: null,
+      selectedEntity: { kind: 'identity' },
+      loadStatus: 'error'
+    });
+    expect(store.getState().toastQueue).toEqual([expect.objectContaining({
+      tone: 'error',
+      text: '旧版角色迁移读取失败，请重试或导出恢复包。'
+    })]);
+    expect(JSON.stringify(store.getState().toastQueue)).not.toContain('C:\\Users\\secret');
+  });
+
+  test('迁移恢复态导出失败仍按普通错误提示入队', async () => {
+    const failedSummary: CharacterSummaryDto = {
+      ...summary('legacy-broken', '旧版角色'),
+      completeness: 'broken',
+      migrationErrorCode: 'CHARACTER_MIGRATION_FAILED',
+      migrationRecoveryAvailable: true
+    };
+    const api = apiDouble({
+      listCharacters: vi.fn(async () => [failedSummary]),
+      getCharacterDraft: vi.fn(async () => {
+        throw new Error('C:\\Users\\secret\\legacy.json');
+      }),
+      exportCharacterPackage: vi.fn(async () => {
+        throw new Error('恢复包导出失败，请检查目标位置。');
+      })
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    await store.getState().exportCharacterPackage();
+
+    expect(store.getState().toastQueue.map(toast => toast.text)).toEqual([
+      '旧版角色迁移读取失败，请重试或导出恢复包。',
+      '角色操作失败，请在角色工作室检查素材和草稿。'
+    ]);
+  });
+
+  test('普通角色读取失败仍保留先前稳定工作区', async () => {
+    const api = apiDouble({
+      getCharacterDraft: vi.fn(async id => {
+        if (id === 'nova') throw new Error('CHARACTER_DRAFT_READ_FAILED');
+        return draft(id, '默认角色');
+      })
+    }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    const stableDraft = store.getState().draft;
+
+    await store.getState().selectCharacter('nova');
+
+    expect(store.getState().selectedCharacterId).toBe('default');
+    expect(store.getState().draft).toBe(stableDraft);
+  });
+
   test('加载 V2 草稿后按默认链选择，皮肤切换不发起跨角色读取', async () => {
     const api = apiDouble({
       getCharacterDraft: vi.fn(async () => draft('demo', '演示角色'))

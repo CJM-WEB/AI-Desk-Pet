@@ -1241,3 +1241,249 @@
   width: 100%;
   min-width: 0;
 }
+
+/* V2 左栏延续现有列表层级，并为破坏性命令保留清晰的操作间距。 */
+.identity-select-command {
+  min-height: 44px;
+  margin: 8px 12px;
+  border: 1px solid var(--workshop-border);
+  border-radius: 5px;
+  color: var(--workshop-text);
+  background: var(--workshop-panel);
+  font: inherit;
+  font-weight: 700;
+}
+
+.skin-list-section {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--workshop-border);
+}
+
+.skin-list-heading {
+  min-height: 36px;
+}
+
+.skin-list {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.skin-list > li {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #edf0f0;
+}
+
+.skin-select {
+  min-width: 0;
+  min-height: 44px;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  padding: 5px 12px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.skin-select[aria-pressed="true"] {
+  color: #075f59;
+  background: var(--workshop-teal-soft);
+  font-weight: 700;
+}
+
+.skin-select small {
+  color: var(--workshop-muted);
+  font-size: 11px;
+}
+
+.skin-row-commands {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px;
+}
+
+.skin-row-commands button,
+.inspector-form button,
+.recovery-actions button {
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid #b9c4c2;
+  border-radius: 5px;
+  color: var(--workshop-text);
+  background: var(--workshop-panel);
+  font: inherit;
+  cursor: pointer;
+}
+
+.skin-row-commands .danger-icon {
+  min-width: 44px;
+  padding: 0;
+  color: var(--workshop-danger);
+}
+
+/* 四类 Inspector 共享同一表单节奏，不为 V2 另起视觉系统。 */
+.inspector-form {
+  display: grid;
+  gap: 16px;
+  padding: 15px;
+}
+
+.inspector-form label,
+.string-list-editor,
+.condition-catalog {
+  display: grid;
+  gap: 6px;
+  color: #4a5b58;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inspector-form input:not([type="checkbox"]),
+.inspector-form select,
+.inspector-form textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 9px;
+  border: 1px solid #b8c4c2;
+  border-radius: 5px;
+  color: var(--workshop-text);
+  background: #ffffff;
+  font: inherit;
+}
+
+.inspector-form textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.field-help {
+  margin: 0;
+  color: var(--workshop-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.string-list-editor,
+.condition-catalog {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #dce3e2;
+  border-radius: 6px;
+}
+
+/* 状态引用保持紧凑分组，同时为复选框整行提供足够的点击区域。 */
+.state-reference-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.state-reference-editor {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #dce3e2;
+  border-radius: 6px;
+}
+
+.state-reference-editor legend {
+  padding: 0 4px;
+  color: #4a5b58;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.state-reference-editor label {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.state-reference-editor input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.string-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 8px;
+}
+
+.string-list-row label {
+  grid-column: 1 / -1;
+}
+
+.string-list-row button {
+  min-width: 44px;
+  padding: 0;
+}
+
+.condition-list,
+.reference-path-list {
+  margin: 0;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+
+.inspector-summary {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.inspector-summary div {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.inspector-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.migration-recovery {
+  display: grid;
+  gap: 12px;
+  padding: 18px 15px;
+}
+
+.migration-recovery h3,
+.migration-recovery p,
+.workshop-dialog h3 {
+  margin: 0;
+}
+
+.recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.blocking-reference-list,
+.migration-recovery [role="alert"] {
+  color: #7a271a;
+}
+
+.character-workshop-shell textarea:focus-visible {
+  outline: 3px solid rgba(8, 127, 118, 0.34);
+  outline-offset: 1px;
+  border-color: var(--workshop-teal);
+}

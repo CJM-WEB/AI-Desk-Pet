@@ -315,6 +315,34 @@ export function createCharacterWorkshopStore(
       }));
     }
 
+    const migrationReadFailureText = '旧版角色迁移读取失败，请重试或导出恢复包。';
+
+    function isMigrationRecoveryTarget(characterId: string): boolean {
+      return get().characters.some(character => (
+        character.id === characterId
+        && character.migrationErrorCode === 'CHARACTER_MIGRATION_FAILED'
+        && character.migrationRecoveryAvailable
+      ));
+    }
+
+    /** 初次加载与手动重试共用同一恢复上下文，避免原始路径或堆栈进入提示层。 */
+    function enterMigrationRecovery(characterId: string): void {
+      workspaceTargetRevision += 1;
+      set({
+        selectedCharacterId: characterId,
+        draft: null,
+        selectedEntity: { kind: 'identity' },
+        selectedSkinId: null,
+        selectedStateId: null,
+        selectedActionId: null,
+        availableSources: [],
+        draftStatus: 'idle',
+        compileStatus: 'idle',
+        loadStatus: 'error'
+      });
+      enqueueToast({ tone: 'error', text: migrationReadFailureText });
+    }
+
     /** 只有工作区实际目标变化时才推进 ABA 屏障令牌。 */
     function setWorkspaceTarget(
       patch: Partial<Pick<CharacterWorkshopState,
@@ -578,6 +606,7 @@ export function createCharacterWorkshopStore(
 
       async load() {
         const requestRevision = ++selectionRevision;
+        let attemptedCharacterId: string | null = null;
         set({
           loadStatus: 'loading',
           busyAction: 'loading',
@@ -605,12 +634,17 @@ export function createCharacterWorkshopStore(
             });
             return;
           }
+          attemptedCharacterId = selected.id;
           await loadSelectedDraft(selected.id, requestRevision);
           if (requestRevision === selectionRevision) set({ loadStatus: 'ready' });
         } catch (error) {
           if (requestRevision === selectionRevision) {
-            set({ loadStatus: 'error' });
-            enqueueToast({ tone: 'error', text: errorText(error) });
+            if (attemptedCharacterId && isMigrationRecoveryTarget(attemptedCharacterId)) {
+              enterMigrationRecovery(attemptedCharacterId);
+            } else {
+              set({ loadStatus: 'error' });
+              enqueueToast({ tone: 'error', text: errorText(error) });
+            }
           }
         } finally {
           if (
@@ -643,7 +677,11 @@ export function createCharacterWorkshopStore(
           await loadSelectedDraft(characterId, requestRevision);
         } catch (error) {
           if (requestRevision === selectionRevision) {
-            enqueueToast({ tone: 'error', text: errorText(error) });
+            if (isMigrationRecoveryTarget(characterId)) {
+              enterMigrationRecovery(characterId);
+            } else {
+              enqueueToast({ tone: 'error', text: errorText(error) });
+            }
           }
         } finally {
           if (

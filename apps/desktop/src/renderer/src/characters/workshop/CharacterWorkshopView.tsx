@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -17,10 +18,11 @@ import {
   Save
 } from 'lucide-react';
 import { useStore } from 'zustand';
-import type {
-  CharacterDraftStateDefinition,
-  CharacterStateId,
-  DraftActionClip
+import {
+  resolveCharacterPresentation,
+  STANDARD_CHARACTER_SEMANTICS,
+  type CharacterActionDefinitionV2,
+  type DraftActionClip
 } from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
 import {
@@ -30,6 +32,10 @@ import {
   type WorkshopBusyAction
 } from '../store/character-workshop-store';
 import { CharacterList } from './CharacterList';
+import { CharacterIdentityInspector } from './CharacterIdentityInspector';
+import { SkinList } from './SkinList';
+import { SkinInspector } from './SkinInspector';
+import { StateInspector } from './StateInspector';
 import { StateList } from './StateList';
 import { ActionInspector } from './ActionInspector';
 import {
@@ -37,7 +43,6 @@ import {
   ensureStableFrameIds
 } from './ActionTimeline';
 import { AnchorEditor } from './AnchorEditor';
-import { IncompleteCharacterDialog } from './IncompleteCharacterDialog';
 import {
   createPreviewState,
   normalizePreviewState,
@@ -63,23 +68,59 @@ export interface CharacterWorkshopWorkspaceProps {
 }
 
 function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
-  const selectedState = state.draft?.states.find(
-    candidate => candidate.id === state.selectedStateId
-  );
-  return selectedState?.actions.find(
+  const action = state.draft?.actions.find(
     candidate => candidate.id === state.selectedActionId
-  ) ?? null;
+  );
+  if (!action) return null;
+  const skin = state.draft?.skins.find(candidate => candidate.id === state.selectedSkinId);
+  const presentation = skin?.presentations.find(candidate => candidate.actionId === action.id);
+  return {
+    id: action.id,
+    name: action.name,
+    fps: presentation?.fps ?? 8,
+    loop: action.loopPolicy !== 'never',
+    weight: action.preference,
+    direction: action.direction,
+    anchors: presentation?.anchors ?? { ground: { x: 0.5, y: 1 } },
+    frames: presentation?.frames ?? []
+  };
+}
+
+/** Task 9 接管 V2 皮肤回退预览前，保持旧播放器只消费当前精确表现。 */
+function previewDraft(
+  state: CharacterWorkshopState,
+  action: DraftActionClip | null
+) {
+  if (!state.draft || !action) return null;
+  return {
+    version: 1 as const,
+    id: state.draft.id,
+    name: state.draft.name,
+    states: [{ id: 'idle' as const, kind: 'core' as const, actions: [action] }]
+  };
 }
 
 type PendingConfigurationDelete =
   | {
       kind: 'action';
-      stateId: CharacterStateId;
-      action: DraftActionClip;
+      id: string;
+      name: string;
+      safeReferencePaths: string[];
+      blockingReferencePaths: string[];
     }
   | {
       kind: 'state';
-      state: CharacterDraftStateDefinition;
+      id: string;
+      name: string;
+      safeReferencePaths: string[];
+      blockingReferencePaths: string[];
+    }
+  | {
+      kind: 'skin';
+      id: string;
+      name: string;
+      safeReferencePaths: string[];
+      blockingReferencePaths: string[];
     };
 
 /**
@@ -156,9 +197,10 @@ export function CharacterWorkshopWorkspace(
   const [pendingConfigurationDelete, setPendingConfigurationDelete] = useState<
     PendingConfigurationDelete | null
   >(null);
-  const [extensionEvent, setExtensionEvent] = useState<
-    'single_click' | 'double_click' | 'context_menu'
-  >('single_click');
+  const [newStateKind, setNewStateKind] = useState<'primary' | 'modifier'>('modifier');
+  const [newStateSemantic, setNewStateSemantic] = useState<
+    CharacterActionDefinitionV2['semantic']
+  >('idle');
   const previousActionIdentityRef = useRef<string | null>(null);
   const sceneFrameIndexRef = useRef<number | null>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
@@ -170,10 +212,40 @@ export function CharacterWorkshopWorkspace(
   const selectedCharacter = state.characters.find(
     character => character.id === state.selectedCharacterId
   );
+  const selectedSkin = state.draft?.skins.find(
+    skin => skin.id === state.selectedSkinId
+  ) ?? null;
+  const selectedState = state.draft?.states.find(
+    candidate => candidate.id === state.selectedStateId
+  ) ?? null;
+  const selectedActionDefinition = state.draft?.actions.find(
+    candidate => candidate.id === state.selectedActionId
+  ) ?? null;
+  const migrationRecovery = Boolean(
+    selectedCharacter?.migrationErrorCode === 'CHARACTER_MIGRATION_FAILED'
+    && selectedCharacter.migrationRecoveryAvailable
+    && !state.draft
+  );
   const deleteCharacter = state.characters.find(
     character => character.id === pendingDelete
   );
-  const action = currentAction(state);
+  const action = useMemo(() => currentAction(state), [
+    state.draft,
+    state.selectedSkinId,
+    state.selectedActionId
+  ]);
+  const selectedPresentationSource = useMemo(() => {
+    if (!state.draft || !state.selectedSkinId || !state.selectedActionId) return null;
+    return resolveCharacterPresentation(
+      state.draft,
+      state.selectedSkinId,
+      state.selectedActionId
+    )?.source ?? null;
+  }, [state.draft, state.selectedSkinId, state.selectedActionId]);
+  const legacyPreviewDraft = useMemo(() => previewDraft(state, action), [
+    action,
+    state.draft
+  ]);
   const activationCharacter = state.characters.find(
     character => character.id === pendingActivation
   );
@@ -202,17 +274,6 @@ export function CharacterWorkshopWorkspace(
       playing: pausePlayback ? false : current.playing
     }));
     setSelectedFrameId(frame.id);
-  };
-
-  /** Inspector 显式修改循环语义时同步真实预览，其他字段保留临时预览覆盖。 */
-  const updateActionFromInspector = (patch: Partial<DraftActionClip>): void => {
-    const loop = patch.loop;
-    if (loop !== undefined) {
-      setPreview(current => current.loop === loop
-        ? current
-        : { ...current, loop });
-    }
-    state.updateCurrentAction(patch);
   };
 
   useEffect(() => {
@@ -304,31 +365,35 @@ export function CharacterWorkshopWorkspace(
     }
   }
 
-  /** 空配置可直接移除；含素材帧的动作需明确确认。 */
-  function requestDeleteAction(
-    stateId: CharacterStateId,
-    actionToDelete: DraftActionClip
+  function openReferenceDelete(
+    kind: PendingConfigurationDelete['kind'],
+    id: string,
+    name: string,
+    impact: { safeReferencePaths: string[]; blockingReferencePaths: string[] }
   ): void {
-    if (actionToDelete.frames.length === 0) {
-      state.removeAction(stateId, actionToDelete.id);
+    // 无引用目标已由 Store 原子删除；有引用时交由对话框解释并确认。
+    if (impact.safeReferencePaths.length === 0 && impact.blockingReferencePaths.length === 0) {
       return;
     }
-    setPendingConfigurationDelete({
-      kind: 'action',
-      stateId,
-      action: actionToDelete
-    });
+    setPendingConfigurationDelete({ kind, id, name, ...impact });
   }
 
-  /** 空扩展状态可直接移除；有动作时需明确确认。 */
-  function requestDeleteState(
-    stateDefinition: CharacterDraftStateDefinition
-  ): void {
-    if (stateDefinition.actions.length === 0) {
-      state.removeExtensionState(stateDefinition.id);
-      return;
-    }
-    setPendingConfigurationDelete({ kind: 'state', state: stateDefinition });
+  function requestDeleteAction(actionId: string): void {
+    const definition = state.draft?.actions.find(candidate => candidate.id === actionId);
+    if (!definition) return;
+    openReferenceDelete('action', actionId, definition.name, state.requestRemoveAction(actionId));
+  }
+
+  function requestDeleteState(stateId: string): void {
+    const definition = state.draft?.states.find(candidate => candidate.id === stateId);
+    if (!definition) return;
+    openReferenceDelete('state', stateId, definition.name, state.requestRemoveState(stateId));
+  }
+
+  function requestDeleteSkin(skinId: string): void {
+    const definition = state.draft?.skins.find(candidate => candidate.id === skinId);
+    if (!definition) return;
+    openReferenceDelete('skin', skinId, definition.name, state.requestRemoveSkin(skinId));
   }
 
   function closeConfigurationDeleteDialog(): void {
@@ -340,14 +405,12 @@ export function CharacterWorkshopWorkspace(
 
   function confirmConfigurationDelete(): void {
     if (!pendingConfigurationDelete) return;
+    if (pendingConfigurationDelete.blockingReferencePaths.length > 0) return;
     if (pendingConfigurationDelete.kind === 'action') {
-      state.removeAction(
-        pendingConfigurationDelete.stateId,
-        pendingConfigurationDelete.action.id
-      );
-    } else {
-      state.removeExtensionState(pendingConfigurationDelete.state.id);
-    }
+      state.requestRemoveAction(pendingConfigurationDelete.id, true);
+    } else if (pendingConfigurationDelete.kind === 'state') {
+      state.requestRemoveState(pendingConfigurationDelete.id, true);
+    } else state.requestRemoveSkin(pendingConfigurationDelete.id, true);
     closeConfigurationDeleteDialog();
   }
 
@@ -456,7 +519,7 @@ export function CharacterWorkshopWorkspace(
         <aside className="workshop-sidebar" aria-label="角色与状态">
           <section className="workshop-section character-section">
             <div className="section-heading">
-              <h2>角色</h2>
+              <h2>角色与皮肤</h2>
               <small>{state.characters.length}</small>
             </div>
             {state.loadStatus === 'loading' ? (
@@ -471,7 +534,30 @@ export function CharacterWorkshopWorkspace(
                 onDelete={setInternalPendingDelete}
               />
             )}
-            {state.loadStatus === 'error' ? (
+            {state.draft ? (
+              <>
+                <button
+                  className="identity-select-command"
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={state.selectedEntity.kind === 'identity'}
+                  onClick={state.selectIdentity}
+                >
+                  编辑角色人设
+                </button>
+                <SkinList
+                  skins={state.draft.skins}
+                  defaultSkinId={state.draft.defaultSkinId}
+                  selectedSkinId={state.selectedSkinId}
+                  disabled={busy}
+                  onAdd={() => state.addSkin(`新皮肤 ${state.draft!.skins.length + 1}`)}
+                  onSelect={state.selectSkin}
+                  onSetDefault={state.setDefaultSkin}
+                  onRequestDelete={requestDeleteSkin}
+                />
+              </>
+            ) : null}
+            {state.loadStatus === 'error' && !migrationRecovery ? (
               <button
                 className="retry-button"
                 type="button"
@@ -498,6 +584,8 @@ export function CharacterWorkshopWorkspace(
             </div>
             <StateList
               states={state.draft?.states ?? []}
+              actions={state.draft?.actions ?? []}
+              defaultStateId={state.draft?.defaultStateId ?? ''}
               selectedStateId={state.selectedStateId}
               selectedActionId={state.selectedActionId}
               disabled={busy}
@@ -521,8 +609,8 @@ export function CharacterWorkshopWorkspace(
           <div className="preview-workspace">
             <DraftCharacterPreview
               characterId={state.selectedCharacterId}
-              draft={state.draft}
-              stateId={state.selectedStateId}
+              draft={legacyPreviewDraft}
+              stateId={action ? 'idle' : null}
               actionId={state.selectedActionId}
               selectedFrameId={selectedFrameId}
               preview={preview}
@@ -568,9 +656,62 @@ export function CharacterWorkshopWorkspace(
 
         <aside className="workshop-inspector" aria-labelledby="properties-heading">
           <div className="section-heading">
-            <h2 id="properties-heading">动作属性</h2>
+            <h2 id="properties-heading">
+              {migrationRecovery
+                ? '迁移恢复'
+                : state.selectedEntity.kind === 'identity'
+                  ? '角色人设'
+                  : state.selectedEntity.kind === 'skin'
+                    ? '皮肤属性'
+                    : state.selectedEntity.kind === 'state'
+                      ? '状态属性'
+                      : '动作属性'}
+            </h2>
           </div>
-          {action ? (
+          {migrationRecovery && selectedCharacter ? (
+            <section className="migration-recovery" aria-live="polite">
+              <h3>{selectedCharacter.name}</h3>
+              <p role="alert">旧版角色迁移失败，原始数据仍可恢复。</p>
+              <p>你可以重试读取；若问题持续，请先导出恢复包再处理原始数据。</p>
+              <div className="recovery-actions">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void state.selectCharacter(selectedCharacter.id)}
+                >
+                  重试读取
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || !selectedCharacter.migrationRecoveryAvailable}
+                  onClick={() => void state.exportCharacterPackage()}
+                >
+                  导出恢复包
+                </button>
+              </div>
+            </section>
+          ) : state.draft && state.selectedEntity.kind === 'identity' ? (
+            <CharacterIdentityInspector
+              identity={state.draft.identity}
+              disabled={busy}
+              onChange={state.updateIdentity}
+            />
+          ) : state.selectedEntity.kind === 'skin' && selectedSkin ? (
+            <SkinInspector
+              skin={selectedSkin}
+              selectedActionId={state.selectedActionId}
+              presentationSource={selectedPresentationSource}
+              disabled={busy}
+              onChange={patch => state.updateSkin(selectedSkin.id, patch)}
+            />
+          ) : state.selectedEntity.kind === 'state' && selectedState ? (
+            <StateInspector
+              state={selectedState}
+              allStates={state.draft?.states ?? []}
+              disabled={busy}
+              onChange={patch => state.updateState(selectedState.id, patch)}
+            />
+          ) : state.selectedEntity.kind === 'action' && selectedActionDefinition && action ? (
             <>
               <AtlasImportPanel
                 sources={state.availableSources}
@@ -578,9 +719,11 @@ export function CharacterWorkshopWorkspace(
                 onApply={state.applySpriteSheet}
               />
               <ActionInspector
-                action={action}
+                action={selectedActionDefinition}
+                actions={state.draft?.actions ?? []}
+                states={state.draft?.states ?? []}
                 disabled={busy}
-                onChange={updateActionFromInspector}
+                onChange={patch => state.updateAction(selectedActionDefinition.id, patch)}
               />
               <AnchorEditor
                 action={action}
@@ -670,15 +813,36 @@ export function CharacterWorkshopWorkspace(
       ) : null}
 
       {activationCharacter ? (
-        <IncompleteCharacterDialog
-          characterName={activationCharacter.name}
-          missingStates={activationCharacter.missingCoreStates}
-          onCancel={() => setPendingActivation(null)}
-          onConfirm={() => {
-            setPendingActivation(null);
-            void state.activateCharacter(activationCharacter.id, true);
-          }}
-        />
+        <dialog open aria-modal="true" aria-labelledby="incomplete-character-title">
+          <div className="workshop-dialog">
+            <h2 id="incomplete-character-title">发布要求尚未满足</h2>
+            <p>“{activationCharacter.name}”仍有以下发布要求未满足。</p>
+            <div className="missing-state-list">
+              {activationCharacter.missingRequirements.map(requirement => (
+                <span key={requirement}>
+                  {requirement === 'default-state-action-missing'
+                    ? '默认状态缺少动作'
+                    : '默认表现不可播放'}
+                </span>
+              ))}
+            </div>
+            <div className="dialog-actions">
+              <button type="button" autoFocus onClick={() => setPendingActivation(null)}>
+                返回完善
+              </button>
+              <button
+                className="primary-command"
+                type="button"
+                onClick={() => {
+                  setPendingActivation(null);
+                  void state.activateCharacter(activationCharacter.id, true);
+                }}
+              >
+                仍然使用
+              </button>
+            </div>
+          </div>
+        </dialog>
       ) : null}
 
       {pendingConfigurationDelete ? (
@@ -697,15 +861,34 @@ export function CharacterWorkshopWorkspace(
         >
           <div className="workshop-dialog">
             <h2 id="delete-configuration-title">
-              {pendingConfigurationDelete.kind === 'action'
-                ? `删除动作“${pendingConfigurationDelete.action.name}”`
-                : `删除扩展状态“${pendingConfigurationDelete.state.id.replace(/^custom:/u, '')}”`}
+              删除{pendingConfigurationDelete.kind === 'action'
+                ? '动作'
+                : pendingConfigurationDelete.kind === 'state'
+                  ? '状态'
+                  : '皮肤'}“{pendingConfigurationDelete.name}”
             </h2>
-            <p>
-              {pendingConfigurationDelete.kind === 'action'
-                ? `该动作包含 ${pendingConfigurationDelete.action.frames.length} 帧，删除后无法恢复。`
-                : `该状态包含 ${pendingConfigurationDelete.state.actions.length} 个动作，删除后无法恢复。`}
-            </p>
+            <p>删除会清理以下安全引用；阻塞引用必须先重选，系统不会自动猜测替代项。</p>
+            {pendingConfigurationDelete.safeReferencePaths.length > 0 ? (
+              <section aria-labelledby="safe-reference-title">
+                <h3 id="safe-reference-title">可安全清理的引用</h3>
+                <ul className="reference-path-list">
+                  {pendingConfigurationDelete.safeReferencePaths.map(path => (
+                    <li key={path}><code>{path}</code></li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+            {pendingConfigurationDelete.blockingReferencePaths.length > 0 ? (
+              <section aria-labelledby="blocking-reference-title">
+                <h3 id="blocking-reference-title">阻塞删除的引用</h3>
+                <ul className="reference-path-list blocking-reference-list">
+                  {pendingConfigurationDelete.blockingReferencePaths.map(path => (
+                    <li key={path}><code>{path}</code></li>
+                  ))}
+                </ul>
+                <p role="alert">请先重选这些引用，再重新请求删除。</p>
+              </section>
+            ) : null}
             <div className="dialog-actions">
               <button
                 type="button"
@@ -717,6 +900,7 @@ export function CharacterWorkshopWorkspace(
               <button
                 className="danger-command"
                 type="button"
+                disabled={pendingConfigurationDelete.blockingReferencePaths.length > 0}
                 onClick={confirmConfigurationDelete}
               >
                 确认删除
@@ -732,7 +916,11 @@ export function CharacterWorkshopWorkspace(
             className="workshop-dialog"
             onSubmit={event => {
               event.preventDefault();
-              state.addExtensionState(extensionName, extensionEvent);
+              state.addState({
+                name: extensionName,
+                kind: newStateKind,
+                semantic: newStateSemantic
+              });
               setExtensionOpen(false);
               setExtensionName('');
             }}
@@ -747,17 +935,28 @@ export function CharacterWorkshopWorkspace(
               />
             </label>
             <label>
-              触发方式
+              状态类别
               <select
-                aria-label="扩展状态触发方式"
-                value={extensionEvent}
-                onChange={event => setExtensionEvent(
-                  event.currentTarget.value as typeof extensionEvent
+                value={newStateKind}
+                onChange={event => setNewStateKind(
+                  event.currentTarget.value as typeof newStateKind
                 )}
               >
-                <option value="single_click">单击</option>
-                <option value="double_click">双击</option>
-                <option value="context_menu">右键</option>
+                <option value="primary">主状态</option>
+                <option value="modifier">修饰状态</option>
+              </select>
+            </label>
+            <label>
+              标准语义
+              <select
+                value={newStateSemantic}
+                onChange={event => setNewStateSemantic(
+                  event.currentTarget.value as typeof newStateSemantic
+                )}
+              >
+                {STANDARD_CHARACTER_SEMANTICS.map(semantic => (
+                  <option key={semantic} value={semantic}>{semantic}</option>
+                ))}
               </select>
             </label>
             <div className="dialog-actions">
