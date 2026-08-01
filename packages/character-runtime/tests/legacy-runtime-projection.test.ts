@@ -105,4 +105,57 @@ describe('旧播放器投影', () => {
     expect(manifest).toEqual(before);
     expect(characterManifestV1Schema.parse(projected)).toEqual(projected);
   });
+
+  test('为重复的最大长度回退动作 ID 预留冲突后缀长度', () => {
+    const fallbackId = 'a'.repeat(120);
+    const base = createManifest();
+    const manifest: CharacterManifestV2 = {
+      ...base,
+      skins: [{
+        ...base.skins[0]!,
+        semanticFallbacks: [{ semantic: 'listen', actionId: fallbackId }],
+        presentations: ['rest-action', fallbackId, 'rain-action'].map((actionId) => ({
+          actionId, fps: 12, frames: [{ assetId: 'atlas', x: 0, y: 0, width: 64, height: 64 }],
+          anchors: { ground: { x: 0.5, y: 1 } }
+        }))
+      }],
+      actions: [...base.actions, action(fallbackId, 'listen', 1, 'never')]
+    };
+
+    const projected = projectCharacterManifestV2ToLegacy(manifest);
+    const actionIds = projected.states.find((state) => state.id === 'listening')?.actions
+      .map((clip) => clip.id);
+
+    expect(actionIds).toEqual([fallbackId, `${'a'.repeat(118)}-2`]);
+    expect(actionIds?.every((id) => id.length <= 120)).toBe(true);
+    expect(characterManifestV1Schema.parse(projected)).toEqual(projected);
+  });
+
+  test('为截断后相同的最大长度自定义语义生成不同的合法旧状态 ID', () => {
+    const base = createManifest();
+    const firstValue = `${'a'.repeat(119)}b`;
+    const secondValue = `${'a'.repeat(119)}c`;
+    const sharedValue = 'x'.repeat(113);
+    const manifest: CharacterManifestV2 = {
+      ...base,
+      states: [
+        ...base.states,
+        state('custom-long-first', { kind: 'custom', value: firstValue }, []),
+        state('custom-long-second', { kind: 'custom', value: secondValue }, []),
+        state('custom-prefixed', { kind: 'custom', value: `custom-${sharedValue}` }, []),
+        state('custom-unprefixed', { kind: 'custom', value: sharedValue }, [])
+      ]
+    };
+
+    const projected = projectCharacterManifestV2ToLegacy(manifest);
+    const customIds = projected.states
+      .filter((state) => state.kind === 'extension')
+      .map((state) => state.id)
+      .filter((id) => id !== 'custom:rain');
+
+    expect(customIds).toHaveLength(4);
+    expect(new Set(customIds).size).toBe(4);
+    expect(customIds.every((id) => id.length <= 120)).toBe(true);
+    expect(characterManifestV1Schema.parse(projected)).toEqual(projected);
+  });
 });
