@@ -159,6 +159,14 @@ function openComposer(repository: FeedbackRepository) {
   return trigger;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 const testCaptcha: { verify(): Promise<CaptchaProof> } = {
   verify: async () => ({ ticket: 'test-ticket', randstr: 'test-randstr' })
 };
@@ -569,6 +577,33 @@ describe('反馈章节', () => {
     expect(screen.getByRole('link', { name: '打开一次性状态查询链接' })
       .getAttribute('href')).toBe(`/submission-status/#${'a'.repeat(43)}`);
     expect(screen.queryByRole('dialog', { name: '新建投稿' })).toBeNull();
+  });
+
+  it('同一点赞请求未完成时禁用按钮并阻止快速重复提交', async () => {
+    const entry = createEntry({ id: 'pending-like', source: 'local-user', likeCount: 8 });
+    const pending = deferred<FeedbackEntry>();
+    const toggleLike = vi.fn(() => pending.promise);
+    const repository: FeedbackRepository = {
+      list: () => [entry],
+      refresh: async () => undefined,
+      create: async () => ({
+        submissionId: 'submission-1', statusToken: 'a'.repeat(43),
+        statusPath: '/submission-status/', status: 'system_reviewing'
+      }),
+      toggleLike,
+      subscribe: () => () => undefined
+    };
+    openFeedbackDialog(repository);
+    const like = screen.getByRole('button', { name: '点赞小满的反馈' });
+
+    fireEvent.click(like);
+    fireEvent.click(like);
+    expect(like.getAttribute('disabled')).not.toBeNull();
+    expect(toggleLike).toHaveBeenCalledOnce();
+
+    pending.resolve({ ...entry, likedByCurrentBrowser: true, likeCount: 9 });
+    await waitFor(() => expect(like.getAttribute('disabled')).toBeNull());
+    expect(like.textContent).toContain('9');
   });
 
   it('发布时先进入禁用提交态，并且仅创建一次投稿', async () => {

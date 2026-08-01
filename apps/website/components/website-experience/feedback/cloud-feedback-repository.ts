@@ -38,6 +38,8 @@ export class CloudFeedbackRepository implements FeedbackRepository {
     ['suggestion', []]
   ]);
   private readonly statusNotices = new Map<FeedbackKind, FeedbackStatusNotice>();
+  private readonly refreshGenerations = new Map<FeedbackKind, number>();
+  private readonly likeQueues = new Map<string, Promise<void>>();
 
   constructor(private readonly api: ApiClient) {}
 
@@ -48,6 +50,8 @@ export class CloudFeedbackRepository implements FeedbackRepository {
   }
 
   async refresh(kind: FeedbackKind): Promise<void> {
+    const generation = (this.refreshGenerations.get(kind) ?? 0) + 1;
+    this.refreshGenerations.set(kind, generation);
     try {
       const records: FeedbackEntry[] = [];
       const seenCursors = new Set<number>();
@@ -61,6 +65,7 @@ export class CloudFeedbackRepository implements FeedbackRepository {
           .filter(item => item.kind === kind)
           .map(item => this.toEntry(item)));
         if (page.nextCursor === null) {
+          if (!this.isLatestRefresh(kind, generation)) return;
           this.entries.set(kind, records);
           this.statusNotices.delete(kind);
           this.notify();
@@ -74,6 +79,7 @@ export class CloudFeedbackRepository implements FeedbackRepository {
       }
       throw new Error('FEEDBACK_PAGE_LIMIT');
     } catch (error) {
+      if (!this.isLatestRefresh(kind, generation)) throw error;
       // 读取失败不得继续暴露过期网络内容，只留下稳定官方示例。
       this.entries.set(kind, []);
       this.statusNotices.set(kind, {
@@ -97,6 +103,20 @@ export class CloudFeedbackRepository implements FeedbackRepository {
   }
 
   async toggleLike(id: string): Promise<FeedbackEntry> {
+    const previous = this.likeQueues.get(id);
+    const operation = previous
+      ? previous.then(() => this.toggleLikeNow(id), () => this.toggleLikeNow(id))
+      : this.toggleLikeNow(id);
+    const tail = operation.then(() => undefined, () => undefined);
+    this.likeQueues.set(id, tail);
+    try {
+      return await operation;
+    } finally {
+      if (this.likeQueues.get(id) === tail) this.likeQueues.delete(id);
+    }
+  }
+
+  private async toggleLikeNow(id: string): Promise<FeedbackEntry> {
     const current = this.findPublishedEntry(id);
     const response = await this.api.request<unknown>(
       `/feedback/${encodeURIComponent(id)}/like`,
@@ -130,6 +150,10 @@ export class CloudFeedbackRepository implements FeedbackRepository {
       if (entry) return entry;
     }
     throw new Error('FEEDBACK_NOT_PUBLISHED');
+  }
+
+  private isLatestRefresh(kind: FeedbackKind, generation: number): boolean {
+    return this.refreshGenerations.get(kind) === generation;
   }
 
   private toEntry(item: z.infer<typeof publicFeedbackPageSchema>['items'][number]): FeedbackEntry {

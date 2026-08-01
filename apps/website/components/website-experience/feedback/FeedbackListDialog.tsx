@@ -83,6 +83,8 @@ export function FeedbackListDialog({
     string,
     { liked: boolean; count: number }
   >());
+  const [pendingLikeIds, setPendingLikeIds] = useState(() => new Set<string>());
+  const likeLocksRef = useRef(new Set<string>());
   const entries = repository.list(kind).map((entry) => {
     const optimistic = optimisticLikes.get(entry.id);
     const visibleEntry = optimistic
@@ -184,6 +186,9 @@ export function FeedbackListDialog({
     wasLiked: boolean,
     visibleCount: number
   ) => {
+    if (likeLocksRef.current.has(id)) return;
+    likeLocksRef.current.add(id);
+    setPendingLikeIds((current) => new Set(current).add(id));
     try {
       const updated = await repository.toggleLike(id);
       const expectedCount = Math.max(0, visibleCount + (wasLiked ? -1 : 1));
@@ -200,6 +205,13 @@ export function FeedbackListDialog({
       setInteractionNotice('');
     } catch {
       setInteractionNotice(t('feedback.dialog.likeFailed'));
+    } finally {
+      likeLocksRef.current.delete(id);
+      setPendingLikeIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
     }
   }, [repository, t]);
 
@@ -283,7 +295,7 @@ export function FeedbackListDialog({
                     : 'feedback.kind.suggestion')
                 })}
                 aria-pressed={entry.likedByCurrentBrowser}
-                disabled={entry.source === 'official-example'}
+                disabled={entry.source === 'official-example' || pendingLikeIds.has(entry.id)}
                 onClick={() => void toggleLike(
                   entry.id,
                   entry.likedByCurrentBrowser,

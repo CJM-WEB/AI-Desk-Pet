@@ -14,6 +14,16 @@ function createApi(...responses: unknown[]) {
   } as unknown as ApiClient;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('云端反馈仓库', () => {
   it('只把公开接口返回的已发布反馈装入同步快照', async () => {
     const api = createApi({
@@ -81,6 +91,52 @@ describe('云端反馈仓库', () => {
     });
   });
 
+  it('旧刷新晚于新失败完成时不覆盖该类型的失败状态', async () => {
+    const older = deferred<unknown>();
+    const newer = deferred<unknown>();
+    const api = {
+      request: vi.fn()
+        .mockReturnValueOnce(older.promise)
+        .mockReturnValueOnce(newer.promise)
+    } as unknown as ApiClient;
+    const repository = new CloudFeedbackRepository(api);
+    const oldRequest = repository.refresh('feedback');
+    const newRequest = repository.refresh('feedback');
+
+    newer.reject(new Error('NEW_REQUEST_FAILED'));
+    await expect(newRequest).rejects.toThrow('NEW_REQUEST_FAILED');
+    older.resolve({ items: [], nextCursor: null });
+    await oldRequest;
+
+    expect(repository.getStatusNotice('feedback')).toMatchObject({
+      code: 'CLOUD_READ_FAILED'
+    });
+  });
+
+  it('旧刷新晚于新成功失败时不覆盖该类型的公开快照', async () => {
+    const older = deferred<unknown>();
+    const api = {
+      request: vi.fn()
+        .mockReturnValueOnce(older.promise)
+        .mockResolvedValueOnce({
+          items: [{
+            id: 'newest-feedback', kind: 'feedback', authorName: '最新用户', content: '最新公开反馈。',
+            likeCount: 5, createdAt: '2026-08-03T00:00:00.000Z'
+          }], nextCursor: null
+        })
+    } as unknown as ApiClient;
+    const repository = new CloudFeedbackRepository(api);
+    const oldRequest = repository.refresh('feedback');
+    await repository.refresh('feedback');
+    older.reject(new Error('OLD_REQUEST_FAILED'));
+    await expect(oldRequest).rejects.toThrow('OLD_REQUEST_FAILED');
+
+    expect(repository.getStatusNotice('feedback')).toBeNull();
+    expect(repository.list('feedback')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'newest-feedback' })
+    ]));
+  });
+
   it('重复游标时清空网络快照并拒绝继续读取', async () => {
     const api = createApi({ items: [], nextCursor: 100 }, { items: [], nextCursor: 100 });
     const repository = new CloudFeedbackRepository(api);
@@ -134,6 +190,41 @@ describe('云端反馈仓库', () => {
       method: 'POST', body: '{}'
     });
     expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it('同一反馈的连续点赞按服务器响应顺序串行更新快照', async () => {
+    const firstLike = deferred<unknown>();
+    const secondLike = deferred<unknown>();
+    const api = {
+      request: vi.fn()
+        .mockResolvedValueOnce({
+          items: [{
+            id: 'published-1', kind: 'feedback', authorName: '公开用户', content: '已经审核发布的反馈。',
+            likeCount: 3, createdAt: '2026-08-01T00:00:00.000Z'
+          }], nextCursor: null
+        })
+        .mockReturnValueOnce(firstLike.promise)
+        .mockReturnValueOnce(secondLike.promise)
+    } as unknown as ApiClient;
+    const repository = new CloudFeedbackRepository(api);
+    await repository.refresh('feedback');
+
+    const first = repository.toggleLike('published-1');
+    const second = repository.toggleLike('published-1');
+    expect(vi.mocked(api.request)).toHaveBeenCalledTimes(2);
+
+    firstLike.resolve({ liked: true, likeCount: 4 });
+    await first;
+    await Promise.resolve();
+    expect(vi.mocked(api.request)).toHaveBeenCalledTimes(3);
+    secondLike.resolve({ liked: false, likeCount: 3 });
+    await second;
+
+    expect(repository.list('feedback')).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'published-1', likedByCurrentBrowser: false, likeCount: 3
+      })
+    ]));
   });
 
   it('公开读取失败时清空网络快照，仅保留官方示例', async () => {
