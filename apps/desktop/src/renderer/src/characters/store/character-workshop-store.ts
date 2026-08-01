@@ -382,7 +382,11 @@ export function createCharacterWorkshopStore(
         candidateEntity.kind === 'identity'
         || (candidateEntity.kind === 'skin' && next.skins.some(skin => skin.id === candidateEntity.skinId))
         || (candidateEntity.kind === 'state' && next.states.some(state => state.id === candidateEntity.stateId))
-        || (candidateEntity.kind === 'action' && next.actions.some(action => action.id === candidateEntity.actionId))
+        || (
+          candidateEntity.kind === 'action'
+          && selectedState?.actionIds.includes(candidateEntity.actionId)
+          && next.actions.some(action => action.id === candidateEntity.actionId)
+        )
       )
         ? candidateEntity
         : selectedActionId
@@ -744,7 +748,8 @@ export function createCharacterWorkshopStore(
       },
 
       updateIdentity(patch) {
-        updateDraft(draft => Object.assign(draft.identity, patch));
+        const safePatch = structuredClone(patch);
+        updateDraft(draft => Object.assign(draft.identity, safePatch));
       },
 
       addSkin(name) {
@@ -785,8 +790,9 @@ export function createCharacterWorkshopStore(
 
       updateSkin(skinId, patch) {
         if (!get().draft?.skins.some(skin => skin.id === skinId)) return;
+        const { id: _ignoredId, ...safePatch } = structuredClone(patch);
         updateDraft(draft => {
-          Object.assign(draft.skins.find(skin => skin.id === skinId)!, patch);
+          Object.assign(draft.skins.find(skin => skin.id === skinId)!, safePatch);
         });
       },
 
@@ -834,12 +840,13 @@ export function createCharacterWorkshopStore(
           'state',
           new Set(current.draft.states.map(state => state.id))
         );
+        const safeSemantic = structuredClone(input.semantic);
         updateDraft(draft => {
           draft.states.push({
             id,
             name: normalizedName,
             kind: input.kind,
-            semantic: input.semantic,
+            semantic: safeSemantic,
             tags: [],
             intensity: 50,
             coexistWithStateIds: [],
@@ -855,8 +862,9 @@ export function createCharacterWorkshopStore(
 
       updateState(stateId, patch) {
         if (!get().draft?.states.some(state => state.id === stateId)) return;
+        const { id: _ignoredId, ...safePatch } = structuredClone(patch);
         updateDraft(draft => {
-          Object.assign(draft.states.find(state => state.id === stateId)!, patch);
+          Object.assign(draft.states.find(state => state.id === stateId)!, safePatch);
         });
       },
 
@@ -947,13 +955,18 @@ export function createCharacterWorkshopStore(
           });
           draft.states.find(candidate => candidate.id === targetStateId)!.actionIds.push(id);
         }, { kind: 'action', actionId: id });
-        set({ selectedStateId: targetStateId, selectedActionId: id });
+        set({
+          selectedEntity: { kind: 'action', actionId: id },
+          selectedStateId: targetStateId,
+          selectedActionId: id
+        });
       },
 
       updateAction(actionId, patch) {
         if (!get().draft?.actions.some(action => action.id === actionId)) return;
+        const { id: _ignoredId, ...safePatch } = structuredClone(patch);
         updateDraft(draft => {
-          Object.assign(draft.actions.find(action => action.id === actionId)!, patch);
+          Object.assign(draft.actions.find(action => action.id === actionId)!, safePatch);
         });
       },
 
@@ -1017,13 +1030,29 @@ export function createCharacterWorkshopStore(
 
       async applySpriteSheet(input) {
         const current = get();
+        const characterId = current.selectedCharacterId;
+        const requestRevision = selectionRevision;
+        const skinId = current.selectedSkinId;
+        const actionId = current.selectedActionId;
         const source = current.availableSources.find(candidate => (
           candidate.assetId === input.sourceAssetId
         ));
-        if (!source || !current.draft || !current.selectedStateId || !current.selectedActionId) {
+        if (!source || !current.draft || !characterId || !skinId || !actionId) {
           enqueueToast({ tone: 'error', text: '请先选择动作和已导入素材。' });
           return;
         }
+        /** 异步读取期间任一工作区目标变化都使本次结果失效。 */
+        const isStillCurrent = (): boolean => {
+          const latest = get();
+          return selectionRevision === requestRevision
+            && latest.selectedCharacterId === characterId
+            && latest.draft?.id === characterId
+            && latest.selectedSkinId === skinId
+            && latest.selectedActionId === actionId
+            && latest.availableSources.some(candidate => candidate.assetId === source.assetId)
+            && latest.draft.skins.some(skin => skin.id === skinId)
+            && latest.draft.actions.some(action => action.id === actionId);
+        };
         if (
           !Number.isSafeInteger(input.rows)
           || !Number.isSafeInteger(input.columns)
@@ -1040,14 +1069,17 @@ export function createCharacterWorkshopStore(
         let dimensions: { width: number; height: number };
         try {
           bytes = await api.readCharacterSource(
-            current.selectedCharacterId!,
+            characterId,
             source.assetId
           );
+          if (!isStillCurrent()) return;
           dimensions = await (dependencies.inspectImage ?? inspectBrowserImage)(
             bytes,
             source.mimeType
           );
+          if (!isStillCurrent()) return;
         } catch (error) {
+          if (!isStillCurrent()) return;
           enqueueToast({ tone: 'error', text: errorText(error) });
           return;
         }
@@ -1068,20 +1100,18 @@ export function createCharacterWorkshopStore(
           width,
           height
         }));
-        const selectedSkinId = get().selectedSkinId;
-        const selectedActionId = get().selectedActionId;
-        if (!selectedSkinId || !selectedActionId) return;
+        if (!isStillCurrent()) return;
         updateDraft(draft => {
-          const skin = draft.skins.find(candidate => candidate.id === selectedSkinId);
+          const skin = draft.skins.find(candidate => candidate.id === skinId);
           if (!skin) return;
           const existing = skin.presentations.find(
-            presentation => presentation.actionId === selectedActionId
+            presentation => presentation.actionId === actionId
           );
           if (existing) {
             existing.frames = frames;
           } else {
             skin.presentations.push({
-              actionId: selectedActionId,
+              actionId,
               fps: 8,
               anchors: { ground: { x: 0.5, y: 1 } },
               frames
@@ -1220,7 +1250,8 @@ export function createCharacterWorkshopStore(
       updateCurrentAction(patch) {
         const current = get();
         if (!current.selectedActionId) return;
-        const { frames, fps, name, direction, loop, weight } = patch;
+        const safePatch = structuredClone(patch);
+        const { frames, fps, name, direction, loop, weight } = safePatch;
         const actionPatch: Partial<CharacterActionDefinitionV2> = {
           ...(name === undefined ? {} : { name }),
           ...(direction === undefined ? {} : { direction }),

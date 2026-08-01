@@ -428,6 +428,154 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(store.getState().selectedCharacterId).toBe('nova');
   });
 
+  test('精灵图读取期间切换角色时丢弃迟到结果且不产生保存或成功提示', async () => {
+    const sourceAssetId = '123e4567-e89b-42d3-a456-426614174000';
+    const sourceRead = deferred<Uint8Array>();
+    const api = apiDouble({
+      listCharacterSources: vi.fn(async () => [sourceDto(sourceAssetId, 'idle.png')]),
+      readCharacterSource: vi.fn(() => sourceRead.promise)
+    }).api;
+    const store = createCharacterWorkshopStore(api, {
+      inspectImage: async () => ({ width: 1, height: 1 })
+    });
+    await store.getState().load();
+
+    const applying = store.getState().applySpriteSheet({
+      sourceAssetId,
+      rows: 1,
+      columns: 1,
+      frameCount: 1
+    });
+    await settle();
+    await store.getState().selectCharacter('nova');
+    sourceRead.resolve(new Uint8Array([1]));
+    await applying;
+
+    expect(store.getState().selectedCharacterId).toBe('nova');
+    expect(store.getState().draft?.skins.flatMap(skin => skin.presentations)).toEqual([]);
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+    expect(store.getState().toastQueue).not.toContainEqual(expect.objectContaining({
+      tone: 'success',
+      text: '精灵图网格已应用到当前动作。'
+    }));
+  });
+
+  test('精灵图读取期间切换皮肤或动作时不污染新选择', async () => {
+    const sourceAssetId = '123e4567-e89b-42d3-a456-426614174000';
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.actions.push({
+      ...structuredClone(loadedDraft.actions[0]!),
+      id: 'wave',
+      name: '挥手'
+    });
+    loadedDraft.states[0]!.actionIds.push('wave');
+    const sourceRead = deferred<Uint8Array>();
+    const api = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft),
+      listCharacterSources: vi.fn(async () => [sourceDto(sourceAssetId, 'idle.png')]),
+      readCharacterSource: vi.fn(() => sourceRead.promise)
+    }).api;
+    const store = createCharacterWorkshopStore(api, {
+      inspectImage: async () => ({ width: 1, height: 1 })
+    });
+    await store.getState().load();
+
+    const applying = store.getState().applySpriteSheet({
+      sourceAssetId,
+      rows: 1,
+      columns: 1,
+      frameCount: 1
+    });
+    await settle();
+    store.getState().selectSkin('winter');
+    store.getState().selectAction('wave');
+    sourceRead.resolve(new Uint8Array([1]));
+    await applying;
+
+    expect(store.getState()).toMatchObject({
+      selectedSkinId: 'winter',
+      selectedActionId: 'wave'
+    });
+    expect(store.getState().draft?.skins.flatMap(skin => skin.presentations)).toEqual([]);
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+  });
+
+  test('外部嵌套 patch 在方法返回后继续突变不得绕过 revision 修改 Store', async () => {
+    const api = apiDouble().api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    const traits = ['careful'];
+    const presentations: CharacterDraftV2['skins'][number]['presentations'] = [];
+    const semantic: Extract<CharacterDraftV2['states'][number]['semantic'], { kind: 'custom' }> = {
+      kind: 'custom',
+      value: 'focus'
+    };
+    const enterConditions: CharacterDraftV2['states'][number]['enterConditions'] = [{
+      mode: 'all',
+      clauses: [{ kind: 'signal', signal: 'idle' }]
+    }];
+    const tags = ['calm'];
+    const frames = [{
+      assetId: '123e4567-e89b-42d3-a456-426614174000',
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1
+    }];
+
+    store.getState().updateIdentity({ traits });
+    store.getState().updateSkin('winter', { presentations });
+    store.getState().addState({ name: '专注', kind: 'modifier', semantic });
+    store.getState().updateState('thinking', { enterConditions });
+    store.getState().updateAction('idle-main', { tags });
+    store.getState().selectState('idle');
+    store.getState().selectAction('idle-main');
+    store.getState().updateCurrentAction({ frames });
+    traits.push('mutated');
+    presentations.push({
+      actionId: 'idle-main',
+      fps: 1,
+      anchors: { ground: { x: 0.5, y: 1 } },
+      frames: []
+    });
+    semantic.value = 'mutated';
+    enterConditions[0]!.clauses.push({ kind: 'signal', signal: 'task-start' });
+    tags.push('mutated');
+    frames[0]!.x = 99;
+
+    expect(store.getState().draft?.identity.traits).toEqual(['careful']);
+    expect(store.getState().draft?.skins.find(skin => skin.id === 'winter')?.presentations).toEqual([]);
+    expect(store.getState().draft?.states.find(state => state.id === 'state')?.semantic).toEqual({
+      kind: 'custom', value: 'focus'
+    });
+    expect(store.getState().draft?.states.find(state => state.id === 'thinking')?.enterConditions[0]?.clauses)
+      .toEqual([{ kind: 'signal', signal: 'idle' }]);
+    expect(store.getState().draft?.actions.find(action => action.id === 'idle-main')?.tags).toEqual(['calm']);
+    expect(store.getState().draft?.skins.find(skin => skin.id === 'default')?.presentations[0]?.frames[0]?.x)
+      .toBe(0);
+  });
+
+  test('更新方法忽略 patch.id，移除当前状态的 actionIds 后选择安全降级', async () => {
+    const api = apiDouble().api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+
+    store.getState().updateSkin('winter', { id: 'hacked-skin', name: '冬装新版' });
+    store.getState().updateState('thinking', { id: 'hacked-state', intensity: 70 });
+    store.getState().updateAction('idle-main', { id: 'hacked-action', cooldownMs: 50 });
+    store.getState().updateState('idle', { actionIds: [] });
+
+    expect(store.getState().draft?.skins.some(skin => skin.id === 'hacked-skin')).toBe(false);
+    expect(store.getState().draft?.states.some(state => state.id === 'hacked-state')).toBe(false);
+    expect(store.getState().draft?.actions.some(action => action.id === 'hacked-action')).toBe(false);
+    expect(store.getState()).toMatchObject({
+      selectedStateId: 'idle',
+      selectedActionId: null,
+      selectedEntity: { kind: 'state', stateId: 'idle' }
+    });
+    expect(() => characterDraftV2Schema.parse(store.getState().draft)).not.toThrow();
+  });
+
   test('自动保存成功只更新保存状态，失败入队且按 ID 关闭不影响后续提示', async () => {
     const firstIds = ['toast-1', 'toast-2'];
     const { api } = apiDouble();
