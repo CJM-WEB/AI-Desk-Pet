@@ -5,13 +5,29 @@ import { DonationChapter } from './donation/DonationChapter';
 import { DownloadChapter } from './download/DownloadChapter';
 import { FeedbackChapter } from './feedback/FeedbackChapter';
 import { SharedPetChapter } from './community/SharedPetChapter';
-import { IndexedDbSharedPetRepository } from './community/indexed-db-shared-pet-repository';
+import { CloudSharedPetRepository } from './community/cloud-shared-pet-repository';
+import { CloudFeedbackRepository } from './feedback/cloud-feedback-repository';
+import { ApiClient } from '../../lib/api-client';
+import { CaptchaClient } from '../../lib/captcha';
 import type { ChapterId, ChapterRuntimeProps } from './types';
 
-const sharedPetRepository = new IndexedDbSharedPetRepository();
+/** 公开页面只使用 REST 仓库，验证码不承担且不创建用户身份。 */
+const sharedPetRepository = new CloudSharedPetRepository(
+  new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1')
+);
+const sharedPetCaptcha = new CaptchaClient();
+/** 反馈章节与粒子预览共用此唯一快照仓库。 */
+export const feedbackRepository = new CloudFeedbackRepository(
+  new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1')
+);
+const feedbackCaptcha = new CaptchaClient();
 
 function CommunityChapter(props: ChapterRuntimeProps) {
-  return <SharedPetChapter {...props} repository={sharedPetRepository} />;
+  return <SharedPetChapter {...props} repository={sharedPetRepository} captcha={sharedPetCaptcha} />;
+}
+
+function FeedbackCloudChapter(props: ChapterRuntimeProps) {
+  return <FeedbackChapter {...props} repository={feedbackRepository} captcha={feedbackCaptcha} />;
 }
 
 interface ChapterDefinition {
@@ -33,7 +49,7 @@ export const CHAPTER_REGISTRY = [
     labelKey: 'chapter.community',
     component: CommunityChapter
   },
-  { id: 'feedback', labelKey: 'chapter.feedback', component: FeedbackChapter },
+  { id: 'feedback', labelKey: 'chapter.feedback', component: FeedbackCloudChapter },
   { id: 'donation', labelKey: 'chapter.donation', component: DonationChapter }
 ] as const satisfies readonly ChapterDefinition[];
 

@@ -1,3 +1,5 @@
+import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
+
 /** 共享仓库列表固定使用八个展示槽位。 */
 export const SHARED_PET_PAGE_SIZE = 8 as const;
 
@@ -26,10 +28,13 @@ export interface SharedPetPackageSummary {
   description: string;
   packageFileName: string;
   packageSizeBytes: number;
-  coverFileName: string;
-  coverMimeType: string;
-  coverSizeBytes: number;
-  coverFile: Blob;
+  /** 云端公开 DTO 不包含封面文件元数据，本地适配器才提供。 */
+  coverFileName?: string;
+  coverMimeType?: string;
+  coverSizeBytes?: number;
+  /** 本地测试适配器提供 Blob，云端记录只提供短期封面地址。 */
+  coverFile?: Blob;
+  coverUrl?: string;
   likeCount: number;
   downloadCount: number;
   createdAt: string;
@@ -60,12 +65,17 @@ export interface SharedPetPage {
   totalPages: number;
   hasPrevious: boolean;
   hasNext: boolean;
+  /** 公开游标 API 未返回总数时，不把下界伪装为精确页数。 */
+  totalKnown?: boolean;
 }
 
 export interface SharedPetDownload {
-  file: Blob;
+  /** 云端仓库使用签名 URL；本地历史适配器仅用于旧测试。 */
+  url?: string;
   fileName: string;
-  mimeType: string;
+  expiresAt?: string;
+  file?: Blob;
+  mimeType?: string;
 }
 
 export interface SharedPetRepository {
@@ -73,11 +83,18 @@ export interface SharedPetRepository {
     page: number,
     pageSize?: typeof SHARED_PET_PAGE_SIZE
   ): Promise<SharedPetPage>;
-  create(input: CreateSharedPetInput): Promise<SharedPetPackageSummary>;
+  submit(
+    input: CreateSharedPetInput,
+    captcha: CaptchaProof,
+    onProgress?: (percent: number) => void
+  ): Promise<SubmissionReceipt>;
+  /** 历史 IndexedDB 测试适配器保留的同步创建入口。 */
+  create?(input: CreateSharedPetInput): Promise<SharedPetPackageSummary>;
   getById(id: string): Promise<SharedPetPackageSummary | null>;
   toggleLike(id: string): Promise<SharedPetPackageSummary>;
   getDownload(id: string): Promise<SharedPetDownload>;
-  recordDownload(id: string): Promise<SharedPetPackageSummary>;
+  /** 历史 IndexedDB 测试适配器保留的下载计数入口。 */
+  recordDownload?(id: string): Promise<SharedPetPackageSummary>;
   subscribe(listener: () => void): () => void;
 }
 

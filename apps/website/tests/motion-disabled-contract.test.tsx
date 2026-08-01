@@ -52,6 +52,7 @@ function emptySharedPetRepository(): SharedPetRepository {
   };
   return {
     listPage: vi.fn(async () => page),
+    submit: vi.fn(),
     create: vi.fn(),
     getById: vi.fn(),
     toggleLike: vi.fn(),

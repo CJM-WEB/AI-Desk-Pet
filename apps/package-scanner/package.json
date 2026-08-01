@@ -1,0 +1,27 @@
+{
+  "name": "@myself/package-scanner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node dist/server.js",
+    "build": "tsc --noEmit -p tsconfig.build.json && vite build --config vite.build.config.ts --configLoader runner",
+    "test": "vitest run --config vitest.config.ts --configLoader runner",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@myself/character-assets": "workspace:*",
+    "@myself/character-runtime": "workspace:*",
+    "sharp": "0.34.5",
+    "tencentcloud-sdk-nodejs": "4.1.281",
+    "yauzl": "3.4.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/yauzl": "2.10.3",
+    "@types/yazl": "2.4.5",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7",
+    "yazl": "3.3.1"
+  }
+}

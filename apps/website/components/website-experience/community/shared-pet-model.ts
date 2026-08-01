@@ -56,7 +56,7 @@ function isFileLike(value: unknown): value is File {
 }
 
 function hasValidFileSize(size: number): boolean {
-  return Number.isFinite(size) && size >= 0;
+  return Number.isFinite(size) && size > 0;
 }
 
 function invalid(code: SharedPetErrorCode): SharedPetValidationResult {

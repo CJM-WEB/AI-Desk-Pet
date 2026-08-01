@@ -4,6 +4,7 @@ packages:
   - tools/*
 
 allowBuilds:
+  core-js-pure: false
   electron: true
   electron-winstaller: true
   esbuild: true
@@ -11,6 +12,10 @@ allowBuilds:
 
 # 非交互环境重建依赖时不再询问确认。
 confirmModulesPurge: false
+
+minimumReleaseAgeExclude:
+  - '@cloudbase/js-sdk@3.6.8'
+  - tencentcloud-sdk-nodejs@4.1.281
 
 # 依赖不同步时直接报错，禁止运行脚本时暗中触发安装。
 verifyDepsBeforeRun: error

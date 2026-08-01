@@ -17,12 +17,15 @@ import {
   deriveChapterVisualState,
   deriveHomeExperiencePhase
 } from './chapter-model';
-import { CHAPTER_REGISTRY, getChapterIndex } from './chapter-registry';
+import {
+  CHAPTER_REGISTRY,
+  feedbackRepository,
+  getChapterIndex
+} from './chapter-registry';
 import { SharedVisualLayers } from './SharedVisualLayers';
 import { ChapterBackdrop } from './visual/ChapterBackdrop';
 import { CHAPTER_LAYERS } from './layer-contract';
 import { createFeedbackVisualProfile } from './feedback/feedback-preview-source';
-import { LocalStorageFeedbackRepository } from './feedback/local-storage-feedback-repository';
 import {
   resolveSharedVisualProfile,
   VISUAL_PROFILES
@@ -32,6 +35,11 @@ import { useWebsiteController } from './use-website-controller';
 
 export interface WebsiteExperienceProps {
   onRuntimeError?: () => void;
+}
+
+/** 生产粒子预览只读取章节已注入的云端反馈快照。 */
+export function createProductionFeedbackVisualProfile(t: Translate) {
+  return createFeedbackVisualProfile(feedbackRepository, Math.random, t);
 }
 
 function createChapterVisualStyle(
@@ -96,11 +104,7 @@ export function WebsiteExperience({
     typeof createFeedbackVisualProfile
   > | null>(null);
   if (feedbackVisualProfileRef.current === null) {
-    feedbackVisualProfileRef.current = createFeedbackVisualProfile(
-      new LocalStorageFeedbackRepository(),
-      Math.random,
-      t
-    );
+    feedbackVisualProfileRef.current = createProductionFeedbackVisualProfile(t);
   }
   useEffect(() => {
     // 只更新后续生成粒子的翻译快照，已绑定粒子保持生成时的内容。
@@ -166,6 +170,7 @@ export function WebsiteExperience({
         return (
           <section
             key={chapter.id}
+            id={chapter.id}
             className={styles.chapter}
             data-chapter-id={chapter.id}
             data-visible={visual.visible}

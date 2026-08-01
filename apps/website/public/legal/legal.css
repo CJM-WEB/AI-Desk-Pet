@@ -1,0 +1,32 @@
+:root {
+  color-scheme: light;
+  font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  color: #202124;
+  background: #f6f7f9;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; }
+
+main {
+  width: min(860px, calc(100% - 32px));
+  margin: 32px auto;
+  padding: clamp(24px, 5vw, 52px);
+  border: 1px solid #d9dde5;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgb(25 35 55 / 8%);
+}
+
+h1 { margin-top: 0; font-size: clamp(28px, 6vw, 42px); }
+h2 { margin-top: 2em; font-size: clamp(20px, 4vw, 26px); }
+p, li { line-height: 1.85; }
+a { color: #075ab5; text-underline-offset: 3px; }
+.notice { padding: 16px; border-left: 4px solid #e28a00; background: #fff6e6; }
+.page-nav { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-bottom: 28px; }
+.meta { color: #626a76; font-size: 14px; }
+
+@media (max-width: 560px) {
+  main { width: 100%; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+}

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  CHARACTER_PACKAGE_LIMITS,
   validatePackageEntries,
   type PackageEntryDescriptor
 } from '../src/package-policy';
@@ -27,6 +28,23 @@ function directory(path: string): PackageEntryDescriptor {
 }
 
 describe('角色包纯安全策略', () => {
+  test('网站策略限制 500 个文件和 10 MiB 单图', () => {
+    const limits = {
+      ...CHARACTER_PACKAGE_LIMITS,
+      maxEntries: 500,
+      maxFiles: 500,
+      maxTotalUncompressedBytes: 300 * 1024 * 1024,
+      maxResourceBytes: 10 * 1024 * 1024
+    };
+
+    expect(() => validatePackageEntries([{
+      path: 'compiled/too-large.png',
+      kind: 'file',
+      compressedBytes: 1024 * 1024,
+      uncompressedBytes: 10 * 1024 * 1024 + 1
+    }], limits)).toThrow('CHARACTER_PACKAGE_RESOURCE_TOO_LARGE');
+  });
+
   test.each([
     '../outside.txt',
     'draft/../../outside.json',

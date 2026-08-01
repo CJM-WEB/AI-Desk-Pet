@@ -13,6 +13,7 @@ export default defineConfig({
   outputDir: '.playwright-output/website',
   use: {
     ...devices['Desktop Chrome'],
+    locale: 'zh-CN',
     viewport: { width: 1280, height: 720 },
     trace: 'retain-on-failure'
   }

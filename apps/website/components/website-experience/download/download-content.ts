@@ -51,7 +51,7 @@ const windowsRelease = releaseManifestSchema.parse(rawManifest);
 /** 根据发行清单生成 Windows 平台，未发布版本不会暴露下载地址。 */
 function createWindowsPlatform(t: Translate): DownloadPlatform {
   return windowsRelease.status === 'published'
-    ? {
+  ? {
       id: 'windows-x64',
       name: 'Windows',
       status: 'available',

@@ -38,7 +38,8 @@ export function SharedPetDetailDialog({
   const t = useCallback((key: Parameters<typeof rawTranslate>[0]) => (
     interpolateMessage(rawTranslate(key))
   ), [rawTranslate]);
-  const coverUrl = useObjectUrl(item.coverFile);
+  const localCoverUrl = useObjectUrl(item.coverFile ?? null);
+  const coverUrl = item.coverUrl ?? localCoverUrl;
   const downloadLabel = interpolateMessage(
     rawTranslate('sharedPet.card.download'),
     { name: item.name }
@@ -68,7 +69,11 @@ export function SharedPetDetailDialog({
     >
       <div className={styles.detailContent}>
         {coverUrl ? (
-          <img className={styles.detailCover} src={coverUrl} alt={item.coverFileName} />
+          <img
+            className={styles.detailCover}
+            src={coverUrl}
+            alt={item.coverFileName ?? t('sharedPet.detail.cover')}
+          />
         ) : null}
         <p className={styles.detailDescription}>{item.description}</p>
         <dl className={styles.detailMetadata}>

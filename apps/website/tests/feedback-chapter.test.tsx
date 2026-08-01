@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within
 } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -19,7 +20,7 @@ import {
 } from 'vitest';
 import { FeedbackChapter } from '../components/website-experience/feedback/FeedbackChapter';
 import { I18nProvider } from '../components/i18n/I18nProvider';
-import { FeedbackStorageError } from '../components/website-experience/feedback/local-storage-feedback-repository';
+import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
 import type {
   FeedbackEntry,
   FeedbackKind,
@@ -66,22 +67,24 @@ class TestFeedbackRepository implements FeedbackRepository {
     return this.entries.filter((entry) => entry.kind === kind);
   }
 
-  create(input: { kind: FeedbackKind; authorName: string; content: string }): FeedbackEntry {
+  async refresh(_kind: FeedbackKind): Promise<void> {}
+
+  async create(
+    input: { kind: FeedbackKind; authorName: string; content: string },
+    captcha: CaptchaProof
+  ): Promise<SubmissionReceipt> {
     this.sequence += 1;
-    const entry = createEntry({
-      id: `local-${this.sequence}`,
-      kind: input.kind,
-      authorName: input.authorName.trim(),
-      content: input.content.trim(),
-      likeCount: 0,
-      source: 'local-user'
-    });
-    this.entries = [entry, ...this.entries];
-    this.emit();
-    return entry;
+    void input;
+    void captcha;
+    return {
+      submissionId: `submission-${this.sequence}`,
+      statusToken: 'a'.repeat(43),
+      statusPath: '/submission-status/',
+      status: 'system_reviewing'
+    };
   }
 
-  toggleLike(id: string): FeedbackEntry {
+  async toggleLike(id: string): Promise<FeedbackEntry> {
     const target = this.entries.find((entry) => entry.id === id);
     if (!target) throw new Error(`未找到 ${id}`);
 
@@ -118,21 +121,24 @@ function createRepository() {
       id: 'popular',
       authorName: '高赞用户',
       content: '高赞反馈应该出现在第一行。',
-      likeCount: 21
+      likeCount: 21,
+      source: 'local-user'
     }),
     createEntry({
       id: 'recent',
       authorName: '新反馈用户',
       content: '较新的反馈排在同赞数记录之前。',
       likeCount: 8,
-      createdAt: '2026-07-21T08:00:00.000Z'
+      createdAt: '2026-07-21T08:00:00.000Z',
+      source: 'local-user'
     }),
     createEntry({
       id: 'suggestion-1',
       kind: 'suggestion',
       authorName: '建议用户',
       content: '建议提供更多主题选择。',
-      likeCount: 13
+      likeCount: 13,
+      source: 'local-user'
     })
   ]);
 }
@@ -146,12 +152,24 @@ function openFeedbackDialog(repository: FeedbackRepository) {
 }
 
 function openComposer(repository: FeedbackRepository) {
-  render(<FeedbackChapter interactive repository={repository} />);
+  render(<FeedbackChapter interactive repository={repository} captcha={testCaptcha} />);
   fireEvent.click(screen.getByRole('button', { name: '选择新建投稿' }));
   const trigger = screen.getByRole('button', { name: '新建投稿' });
   fireEvent.click(trigger);
   return trigger;
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
+const testCaptcha: { verify(): Promise<CaptchaProof> } = {
+  verify: async () => ({ ticket: 'test-ticket', randstr: 'test-randstr' })
+};
 
 describe('反馈章节', () => {
   it('英文环境使用反馈操作文案', () => {
@@ -163,6 +181,37 @@ describe('反馈章节', () => {
 
     expect(screen.getByRole('heading', { name: 'Shape Your Pet with Your Voice' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'View Feedback' })).toBeTruthy();
+  });
+
+  it('进入反馈章节时刷新两类公开快照', async () => {
+    const repository = createRepository();
+    const refresh = vi.spyOn(repository, 'refresh');
+
+    render(<FeedbackChapter interactive repository={repository} captcha={testCaptcha} />);
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith('feedback'));
+    expect(refresh).toHaveBeenCalledWith('suggestion');
+  });
+
+  it('提交时先取得 CAPTCHA 再创建审核中的投稿回执', async () => {
+    const repository = createRepository();
+    const captcha = { verify: vi.fn(async () => ({
+      ticket: 'captcha-ticket', randstr: 'captcha-randstr'
+    })) };
+    const create = vi.spyOn(repository, 'create');
+
+    render(<FeedbackChapter interactive repository={repository} captcha={captcha} />);
+    fireEvent.click(screen.getByRole('button', { name: '选择新建投稿' }));
+    fireEvent.click(screen.getByRole('button', { name: '新建投稿' }));
+    fireEvent.change(screen.getByLabelText('正文'), {
+      target: { value: '这是一段需要先完成验证码的投稿内容。' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发布投稿' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(captcha.verify).toHaveBeenCalledOnce();
+    expect(captcha.verify.mock.invocationCallOrder[0])
+      .toBeLessThan(create.mock.invocationCallOrder[0]!);
   });
 
   it('英文列表将空昵称显示为匿名名称但保留正文原文', () => {
@@ -273,7 +322,7 @@ describe('反馈章节', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('当前反馈项打开仓储排序列表，点赞可立即切换并取消', () => {
+  it('当前反馈项打开仓储排序列表，异步点赞可立即切换并取消', async () => {
     const repository = createRepository();
     openFeedbackDialog(repository);
 
@@ -289,22 +338,23 @@ describe('反馈章节', () => {
     expect(like.textContent).toContain('21');
 
     fireEvent.click(like);
-    expect(like.getAttribute('aria-pressed')).toBe('true');
+    await waitFor(() => expect(like.getAttribute('aria-pressed')).toBe('true'));
     expect(like.textContent).toContain('22');
 
     fireEvent.click(like);
-    expect(like.getAttribute('aria-pressed')).toBe('false');
+    await waitFor(() => expect(like.getAttribute('aria-pressed')).toBe('false'));
     expect(like.textContent).toContain('21');
   });
 
-  it('官方示例仓储只更新点赞标志时仍乐观更新可见计数', () => {
-    let entry = createEntry({ id: 'official', likeCount: 8 });
+  it('异步仓储只更新点赞标志时仍乐观更新可见计数', async () => {
+    let entry = createEntry({ id: 'published', likeCount: 8, source: 'local-user' });
     const repository: FeedbackRepository = {
       list: (kind) => kind === 'feedback' ? [entry] : [],
-      create: () => {
+      refresh: async () => undefined,
+      create: async () => {
         throw new Error('本测试不创建投稿');
       },
-      toggleLike: () => {
+      toggleLike: async () => {
         entry = {
           ...entry,
           likedByCurrentBrowser: !entry.likedByCurrentBrowser
@@ -317,11 +367,11 @@ describe('反馈章节', () => {
     const like = screen.getByRole('button', { name: '点赞小满的反馈' });
 
     fireEvent.click(like);
-    expect(like.getAttribute('aria-pressed')).toBe('true');
+    await waitFor(() => expect(like.getAttribute('aria-pressed')).toBe('true'));
     expect(like.textContent).toContain('9');
 
     fireEvent.click(like);
-    expect(like.getAttribute('aria-pressed')).toBe('false');
+    await waitFor(() => expect(like.getAttribute('aria-pressed')).toBe('false'));
     expect(like.textContent).toContain('8');
   });
 
@@ -500,12 +550,18 @@ describe('反馈章节', () => {
     expect(onCreateRequested).toHaveBeenCalledOnce();
     const dialog = screen.getByRole('dialog', { name: '新建投稿' });
     expect(dialog.parentElement).toBe(document.body);
+    expect(within(dialog).getByRole('link', { name: '用户协议' }).getAttribute('href'))
+      .toBe('/legal/terms.html');
+    expect(within(dialog).getByRole('link', { name: '隐私政策' }).getAttribute('href'))
+      .toBe('/legal/privacy.html');
+    expect(within(dialog).getByRole('link', { name: '内容规则' }).getAttribute('href'))
+      .toBe('/legal/content-policy.html');
     expect(screen.getByRole('radio', { name: '用户反馈' })
       .getAttribute('aria-checked')).toBe('true');
     expect(document.activeElement).toBe(screen.getByLabelText('正文'));
   });
 
-  it('编辑器校验正文边界并发布匿名建议后立即打开对应列表', () => {
+  it('编辑器校验正文边界并提交匿名建议后显示状态查询链接', async () => {
     const repository = createRepository();
     openComposer(repository);
     const content = screen.getByLabelText('正文');
@@ -522,21 +578,49 @@ describe('反馈章节', () => {
     expect(screen.getByText('1000/1000')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '发布投稿' }));
 
-    const dialog = screen.getByRole('dialog', { name: '更新建议' });
-    expect(dialog.textContent).toContain('匿名用户');
-    expect(dialog.textContent).toContain('a'.repeat(1000));
+    await waitFor(() => expect(screen.getByRole('status').textContent)
+      .toContain('投稿已收到，正在系统审核。'));
+    expect(screen.getByRole('link', { name: '打开专属状态查询链接' })
+      .getAttribute('href')).toBe(`/submission-status/#${'a'.repeat(43)}`);
     expect(screen.queryByRole('dialog', { name: '新建投稿' })).toBeNull();
   });
 
-  it('发布时先进入禁用提交态，并且仅创建一次投稿', () => {
+  it('同一点赞请求未完成时禁用按钮并阻止快速重复提交', async () => {
+    const entry = createEntry({ id: 'pending-like', source: 'local-user', likeCount: 8 });
+    const pending = deferred<FeedbackEntry>();
+    const toggleLike = vi.fn(() => pending.promise);
+    const repository: FeedbackRepository = {
+      list: () => [entry],
+      refresh: async () => undefined,
+      create: async () => ({
+        submissionId: 'submission-1', statusToken: 'a'.repeat(43),
+        statusPath: '/submission-status/', status: 'system_reviewing'
+      }),
+      toggleLike,
+      subscribe: () => () => undefined
+    };
+    openFeedbackDialog(repository);
+    const like = screen.getByRole('button', { name: '点赞小满的反馈' });
+
+    fireEvent.click(like);
+    fireEvent.click(like);
+    expect(like.getAttribute('disabled')).not.toBeNull();
+    expect(toggleLike).toHaveBeenCalledOnce();
+
+    pending.resolve({ ...entry, likedByCurrentBrowser: true, likeCount: 9 });
+    await waitFor(() => expect(like.getAttribute('disabled')).toBeNull());
+    expect(like.textContent).toContain('9');
+  });
+
+  it('发布时先进入禁用提交态，并且仅创建一次投稿', async () => {
     const repository = createRepository();
     const createEntryFromRepository = repository.create.bind(repository);
     let createObservedSubmitting = false;
-    repository.create = vi.fn((input) => {
+    repository.create = vi.fn(async (input, captcha) => {
       const publish = screen.getByRole('button', { name: '正在发布' });
       createObservedSubmitting = (publish as HTMLButtonElement).disabled
         && (screen.getByLabelText('正文') as HTMLTextAreaElement).disabled;
-      return createEntryFromRepository(input);
+      return createEntryFromRepository(input, captcha);
     });
 
     openComposer(repository);
@@ -545,14 +629,14 @@ describe('反馈章节', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: '发布投稿' }));
 
-    expect(createObservedSubmitting).toBe(true);
+    await waitFor(() => expect(createObservedSubmitting).toBe(true));
     expect(repository.create).toHaveBeenCalledOnce();
   });
 
-  it('写入失败时保留草稿、类型与 Portal 并在正文旁显示错误', () => {
+  it('提交失败时保留草稿、类型与 Portal 并在正文旁显示错误', async () => {
     const repository: FeedbackRepository = Object.assign(createRepository(), {
-      create: () => {
-        throw new FeedbackStorageError('WRITE_FAILED');
+      create: async () => {
+        throw new Error('WRITE_FAILED');
       }
     });
     openComposer(repository);
@@ -562,6 +646,8 @@ describe('反馈章节', () => {
     fireEvent.change(content, { target: { value: '这是一段用于验证保稿行为的正文内容。' } });
     fireEvent.click(screen.getByRole('button', { name: '发布投稿' }));
 
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toBe('投稿暂时无法保存，请稍后重试。'));
     expect(screen.getByRole('dialog', { name: '新建投稿' }).parentElement).toBe(document.body);
     expect(screen.getByRole('radio', { name: '更新建议' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByLabelText('昵称（可选）')).toHaveProperty('value', '保留昵称');
@@ -570,10 +656,10 @@ describe('反馈章节', () => {
       .toBe('投稿暂时无法保存，请稍后重试。');
   });
 
-  it('本地存储不可用时保留草稿并显示不可保存提示', () => {
+  it('验证码或网络失败时保留草稿并显示保存失败提示', async () => {
     const repository: FeedbackRepository = Object.assign(createRepository(), {
-      create: () => {
-        throw new FeedbackStorageError('STORAGE_UNAVAILABLE');
+      create: async () => {
+        throw new Error('NETWORK_FAILED');
       }
     });
     openComposer(repository);
@@ -582,11 +668,13 @@ describe('反馈章节', () => {
     fireEvent.change(content, { target: { value: '这是一段用于验证本地存储不可用行为的正文内容。' } });
     fireEvent.click(screen.getByRole('button', { name: '发布投稿' }));
 
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toBe('投稿暂时无法保存，请稍后重试。'));
     expect(screen.getByRole('dialog', { name: '新建投稿' }).parentElement).toBe(document.body);
     expect(screen.getByLabelText('昵称（可选）')).toHaveProperty('value', '保留昵称');
     expect(content).toHaveProperty('value', '这是一段用于验证本地存储不可用行为的正文内容。');
     expect(screen.getByRole('alert').textContent)
-      .toBe('浏览器本地存储不可用，投稿无法保存。');
+      .toBe('投稿暂时无法保存，请稍后重试。');
   });
 
   it('草稿退出均经确认且继续编辑恢复焦点、确认放弃恢复入口焦点', async () => {

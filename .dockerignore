@@ -1,0 +1,13 @@
+.git
+.gitignore
+**/node_modules
+**/dist
+**/coverage
+.pnpm-store
+.next
+out
+*.tmp
+*.log
+.superpowers
+.worktrees
+tests/.playwright-output

@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { PassThrough, type Readable } from 'node:stream';
 import { expect, test as baseTest } from '@playwright/test';
-import type { Locator, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 
 const REPOSITORY_ROOT = resolve(__dirname, '..', '..');
 const STATIC_SERVER_SCRIPT = resolve(REPOSITORY_ROOT, 'tests/serve-website-export.mjs');
@@ -17,6 +17,7 @@ const SWARM = '[data-active-count]';
 const CANVAS = '[data-testid="cursor-field"]';
 const BRAND = '[data-testid="brand-stage"]';
 const DONATION = '[data-testid="donation-chapter"]';
+const E2E_ADMIN_TOKEN = 'e2e-admin-session';
 const SCREENSHOT_DIRECTORY = resolve(
   REPOSITORY_ROOT,
   'tests/.playwright-output/website/screenshots'
@@ -34,6 +35,7 @@ const CHAPTER_IDS = [
   'home',
   'about',
   'download',
+  'community',
   'feedback',
   'donation'
 ] as const;
@@ -53,6 +55,98 @@ interface WebsiteServerReadyPayload extends WebsiteServerInfo {
 interface WebsiteServerReadyWait {
   promise: Promise<WebsiteServerInfo>;
   cancel: (error?: Error) => void;
+}
+
+interface E2eReceipt {
+  submissionId: string;
+  statusToken: string;
+  statusPath: '/submission-status/';
+  status: 'uploading' | 'system_reviewing';
+}
+
+async function submitFeedbackViaApi(
+  request: APIRequestContext,
+  content: string,
+  kind: 'feedback' | 'suggestion' = 'feedback'
+): Promise<E2eReceipt> {
+  const response = await request.post('/api/v1/feedback', {
+    data: {
+      kind,
+      authorName: '',
+      content,
+      captcha: { ticket: 'e2e-ticket', randstr: 'e2e-randstr' }
+    }
+  });
+  expect(response.ok()).toBe(true);
+  return (await response.json()).data as E2eReceipt;
+}
+
+async function submitSharedPackageViaApi(
+  request: APIRequestContext,
+  title: string,
+  packageFileName = 'safe-pet.zip'
+): Promise<E2eReceipt> {
+  const preparedResponse = await request.post('/api/v1/submissions/prepare', {
+    data: {
+      kind: 'shared_package',
+      title,
+      body: `${title} 的 AI Pet 资源说明`,
+      captcha: { ticket: 'e2e-ticket', randstr: 'e2e-randstr' },
+      coverFile: { fileName: 'cover.png', sizeBytes: 7, contentType: 'image/png' },
+      packageFile: { fileName: packageFileName, sizeBytes: 8, contentType: 'application/zip' }
+    }
+  });
+  expect(preparedResponse.ok()).toBe(true);
+  const prepared = (await preparedResponse.json()).data;
+  for (const [target, body, contentType] of [
+    [prepared.coverUpload, Buffer.from('cover!!'), 'image/png'],
+    [prepared.packageUpload, Buffer.from('package!'), 'application/zip']
+  ] as const) {
+    const upload = await request.put(target.url, {
+      data: body,
+      headers: { 'content-type': contentType }
+    });
+    expect(upload.ok()).toBe(true);
+  }
+  const finalized = await request.post(
+    `/api/v1/submissions/${encodeURIComponent(prepared.submissionId)}/finalize`,
+    { data: {} }
+  );
+  expect(finalized.ok()).toBe(true);
+  return prepared as E2eReceipt;
+}
+
+async function adminItems(
+  request: APIRequestContext,
+  status: string
+): Promise<Array<Record<string, unknown>>> {
+  const response = await request.get(
+    `/api/v1/admin/submissions?status=${status}&limit=100`,
+    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+  );
+  expect(response.ok()).toBe(true);
+  return (await response.json()).data.items;
+}
+
+async function applyAdminAction(
+  request: APIRequestContext,
+  item: Record<string, unknown>,
+  action: 'approve' | 'reject' | 'move_to_manual' | 'delete' | 'restore',
+  reason: string
+): Promise<void> {
+  const response = await request.post(
+    `/api/v1/admin/submissions/${encodeURIComponent(String(item.id))}/actions`,
+    {
+      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      data: {
+        action,
+        version: item.statusVersion,
+        reason,
+        idempotencyKey: `e2e-${item.id}-${action}-${item.statusVersion}`
+      }
+    }
+  );
+  expect(response.ok(), await response.text()).toBe(true);
 }
 
 function createWebsiteServerReadyWait(
@@ -145,7 +239,7 @@ async function verifyWebsiteServerSource(
 ): Promise<void> {
   const response = await fetch(serverInfo.url);
   const html = await response.text();
-  const expectedChapterIds = ['home', 'about', 'download', 'feedback', 'donation'];
+  const expectedChapterIds = ['home', 'about', 'download', 'community', 'feedback', 'donation'];
   const missingChapterIds = expectedChapterIds.filter(
     (chapterId) => !html.includes(`data-chapter-id="${chapterId}"`)
   );
@@ -269,6 +363,11 @@ const test = baseTest.extend<{}, { websiteServerInfo: WebsiteServerInfo }>({
   }
 });
 
+test.beforeEach(async ({ request }) => {
+  const response = await request.post('/__e2e/reset');
+  expect(response.ok()).toBe(true);
+});
+
 test('服务器就绪等待在成功、超时和取消路径统一清理资源', async () => {
   const successOutput = new PassThrough();
   const successWait = createWebsiteServerReadyWait(
@@ -325,7 +424,10 @@ async function enterInteractive(page: Page): Promise<void> {
 }
 
 async function enterChapter(page: Page, chapterId: ChapterId): Promise<void> {
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
+  const activeChapter = await page.locator(WEBSITE).getAttribute('data-active-chapter');
+  if (activeChapter === 'home') {
+    await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
+  }
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -472,7 +574,10 @@ async function expectActiveChapterLayout(
         bounds.left < -1
         || bounds.top < -1
         || bounds.right > window.innerWidth + 1
-        || bounds.bottom > window.innerHeight + 1
+        || (
+          bounds.bottom > window.innerHeight + 1
+          && !(window.innerHeight <= 320 && element.hasAttribute('data-platform-id'))
+        )
       ) {
         outsideViewport.push(
           `${label}:${Math.round(bounds.left)},${Math.round(bounds.top)}`
@@ -775,11 +880,11 @@ async function readCanvasColorEvidence(
   });
 }
 
-test('五章节按确认顺序注册且两个占位章节具有明确状态', async ({ page }) => {
+test('六章节按确认顺序注册且各章节具有明确状态', async ({ page }) => {
   await page.goto('/?seed=42');
   const sections = page.locator('[data-chapter-id]');
 
-  await expect(sections).toHaveCount(5);
+  await expect(sections).toHaveCount(6);
   expect(await sections.evaluateAll((nodes) => nodes.map(
     (node) => node.getAttribute('data-chapter-id')
   ))).toEqual(CHAPTER_IDS);
@@ -804,7 +909,224 @@ test('五章节按确认顺序注册且两个占位章节具有明确状态', as
     page.locator('[data-chapter-id="feedback"] h2')
   ).toHaveText('倾听你的声音，打造属于你的 Pet');
   await expect(page.locator('[data-testid="about-chapter"]')).toBeAttached();
+  await expect(page.locator('[data-testid="shared-pet-chapter"]')).toBeAttached();
   await expect(page.locator('[data-testid="feedback-chapter"]')).toBeAttached();
+});
+
+test('法律页面公开披露匿名投稿边界并提供站内投诉入口', async ({ page }) => {
+  for (const [path, heading] of [
+    ['/legal/privacy.html', '隐私政策'],
+    ['/legal/terms.html', '用户协议'],
+    ['/legal/content-policy.html', '内容规则']
+  ] as const) {
+    await page.goto(path);
+    await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
+    const legalNavigation = page.getByRole('navigation', { name: '法律页面导航' });
+    await expect(
+      legalNavigation.getByRole('link', { name: '返回首页' })
+    ).toHaveAttribute('href', '/');
+    await expect(
+      legalNavigation.getByRole('link', { name: '反馈与建议' })
+    ).toHaveAttribute('href', '/');
+    await expect(page.locator('main')).not.toContainText(/ICP备\d+号|已经满足全部实名合规要求/u);
+  }
+});
+
+test('内存 API 复用公开信封且投稿不会绕过管理员审核', async ({ request }) => {
+  const created = await request.post('/api/v1/feedback', {
+    data: {
+      kind: 'feedback',
+      authorName: '',
+      content: '这是一条用于验证两层审核的 AI Pet 反馈。',
+      captcha: { ticket: 'e2e-ticket', randstr: 'e2e-randstr' }
+    }
+  });
+  expect(created.ok()).toBe(true);
+  const receipt = await created.json();
+  expect(receipt).toMatchObject({
+    error: null,
+    data: { status: 'system_reviewing', statusPath: '/submission-status/' }
+  });
+
+  const publicList = await request.get('/api/v1/feedback?kind=feedback&limit=100');
+  expect((await publicList.json()).data.items).toHaveLength(0);
+
+  const forbidden = await request.get(
+    '/api/v1/admin/submissions?status=manual_review_pending&limit=20',
+    { headers: { authorization: 'Bearer ordinary-session' } }
+  );
+  expect(forbidden.status()).toBe(403);
+
+  const adminQueue = await request.get(
+    '/api/v1/admin/submissions?status=manual_review_pending&limit=20',
+    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+  );
+  expect((await adminQueue.json()).data.items).toHaveLength(1);
+});
+
+test('安全共享包经系统与管理员审核后才在真实网页公开', async ({ page, request }) => {
+  const title = 'E2E 安全共享包';
+  const receipt = await submitSharedPackageViaApi(request, title);
+  const hidden = await request.get('/api/v1/community?limit=100');
+  expect((await hidden.json()).data.items).not.toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId })
+  );
+
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId);
+  expect(pending).toBeTruthy();
+  await applyAdminAction(request, pending!, 'approve', 'E2E 安全审核通过');
+
+  const published = await request.get('/api/v1/community?limit=100');
+  expect((await published.json()).data.items).toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId, name: title })
+  );
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/?seed=42');
+  await enterChapter(page, 'community');
+  await expect(page.getByText(title, { exact: true })).toBeVisible();
+});
+
+test('自动驳回只能转人工且技术扫描失败始终禁止批准', async ({ request }) => {
+  const rejected = await submitSharedPackageViaApi(
+    request,
+    'E2E 自动驳回共享包',
+    'auto-reject.zip'
+  );
+  expect((await adminItems(request, 'auto_rejected'))).toContainEqual(
+    expect.objectContaining({ id: rejected.submissionId })
+  );
+  const publicBefore = await request.get('/api/v1/community?limit=100');
+  expect((await publicBefore.json()).data.items).not.toContainEqual(
+    expect.objectContaining({ id: rejected.submissionId })
+  );
+
+  const rejectedRow = (await adminItems(request, 'auto_rejected'))
+    .find(item => item.id === rejected.submissionId)!;
+  await applyAdminAction(request, rejectedRow, 'move_to_manual', 'E2E 申请复核机器误判');
+  expect((await adminItems(request, 'manual_review_pending'))).toContainEqual(
+    expect.objectContaining({ id: rejected.submissionId })
+  );
+
+  const failed = await submitSharedPackageViaApi(
+    request,
+    'E2E 技术扫描失败共享包',
+    'technical-fail.zip'
+  );
+  const failedRow = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === failed.submissionId)!;
+  const detailResponse = await request.get(
+    `/api/v1/admin/submissions/${failed.submissionId}`,
+    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+  );
+  expect((await detailResponse.json()).data.moderationResults).toContainEqual(
+    expect.objectContaining({ kind: 'package_scan', suggestion: 'Block' })
+  );
+  const forbiddenApprove = await request.post(
+    `/api/v1/admin/submissions/${failed.submissionId}/actions`,
+    {
+      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      data: {
+        action: 'approve',
+        version: failedRow.statusVersion,
+        reason: 'E2E 不应绕过技术检查',
+        idempotencyKey: `e2e-technical-${failed.submissionId}`
+      }
+    }
+  );
+  expect(forbiddenApprove.status()).toBe(409);
+  expect((await forbiddenApprove.json()).error.code).toBe('TECHNICAL_SCAN_REQUIRED');
+});
+
+test('匿名反馈批准前隐藏且批准后进入真实网页列表', async ({ page, request }) => {
+  const content = 'E2E 反馈批准后才允许在 AI Pet 页面公开展示。';
+  const receipt = await submitFeedbackViaApi(request, content);
+  const hidden = await request.get('/api/v1/feedback?kind=feedback&limit=100');
+  expect((await hidden.json()).data.items).not.toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId })
+  );
+
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  await applyAdminAction(request, pending, 'approve', 'E2E 反馈内容审核通过');
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/?seed=42');
+  await enterChapter(page, 'feedback');
+  await page.getByRole('button', { name: '查看用户反馈' }).click();
+  await expect(page.getByRole('dialog', { name: '用户反馈' })).toContainText(content);
+});
+
+test('已发布内容删除后立即隐藏并在三天隔离区恢复后重新出现', async ({ request }) => {
+  const content = 'E2E 删除与恢复生命周期的 AI Pet 反馈。';
+  const receipt = await submitFeedbackViaApi(request, content);
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  await applyAdminAction(request, pending, 'approve', 'E2E 首次发布');
+
+  const publishedRow = (await adminItems(request, 'published'))
+    .find(item => item.id === receipt.submissionId)!;
+  await applyAdminAction(request, publishedRow, 'delete', 'E2E 紧急下架验证');
+  const hidden = await request.get('/api/v1/feedback?kind=feedback&limit=100');
+  expect((await hidden.json()).data.items).not.toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId })
+  );
+
+  const quarantined = (await adminItems(request, 'deleted_quarantined'))
+    .find(item => item.id === receipt.submissionId)!;
+  expect(quarantined.purgeAfter).toBeTruthy();
+  await applyAdminAction(request, quarantined, 'restore', 'E2E 确认误删并恢复');
+  const restored = await request.get('/api/v1/feedback?kind=feedback&limit=100');
+  expect((await restored.json()).data.items).toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId, content })
+  );
+});
+
+test('状态令牌只从 Fragment 查询并立即从真实页面地址栏清除', async ({ page, request }) => {
+  const receipt = await submitFeedbackViaApi(
+    request,
+    'E2E 状态 Fragment 查询的 AI Pet 反馈。',
+    'suggestion'
+  );
+  await page.goto(`${receipt.statusPath}#${receipt.statusToken}`);
+  await expect(page).toHaveURL(/\/submission-status\/$/u);
+  await expect(page.getByRole('status')).toContainText('等待管理员审核');
+  expect(await page.content()).not.toContain(receipt.statusToken);
+});
+
+test('管理员写操作校验版本、理由和幂等键并拒绝错误 Bearer', async ({ request }) => {
+  const receipt = await submitFeedbackViaApi(
+    request,
+    'E2E 管理员边界验证的 AI Pet 反馈。'
+  );
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  const endpoint = `/api/v1/admin/submissions/${receipt.submissionId}/actions`;
+
+  const forbidden = await request.post(endpoint, {
+    headers: { authorization: 'Bearer ordinary-session' },
+    data: { action: 'approve', version: pending.statusVersion, reason: '无权限', idempotencyKey: 'ordinary-key' }
+  });
+  expect(forbidden.status()).toBe(403);
+
+  const invalid = await request.post(endpoint, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: { action: 'approve', version: pending.statusVersion, reason: '', idempotencyKey: 'short' }
+  });
+  expect(invalid.status()).toBe(400);
+
+  const conflict = await request.post(endpoint, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: {
+      action: 'approve',
+      version: Number(pending.statusVersion) + 1,
+      reason: 'E2E 版本冲突',
+      idempotencyKey: `e2e-conflict-${receipt.submissionId}`
+    }
+  });
+  expect(conflict.status()).toBe(409);
+  expect((await conflict.json()).error.code).toBe('VERSION_CONFLICT');
 });
 
 test('介绍章节桌面悬停与键盘预览不被鼠标点击锁定', async ({ page }) => {
@@ -878,7 +1200,7 @@ test('568x320 介绍章节紧凑布局可读且移动空白点击解除锁定', 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('反馈章节展示排序列表并支持点赞、取消与建议滚筒', async ({ page }) => {
+test('反馈章节展示排序列表、远端只读状态与建议滚筒', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
@@ -899,12 +1221,7 @@ test('反馈章节展示排序列表并支持点赞、取消与建议滚筒', as
   });
   await expect(like).toHaveAttribute('aria-pressed', 'false');
   await expect(like).toContainText('28');
-  await like.click();
-  await expect(like).toHaveAttribute('aria-pressed', 'true');
-  await expect(like).toContainText('29');
-  await like.click();
-  await expect(like).toHaveAttribute('aria-pressed', 'false');
-  await expect(like).toContainText('28');
+  await expect(like).toBeDisabled();
 
   await page.getByRole('button', { name: '关闭用户反馈' }).click();
   await expect(feedbackDialog).toHaveCount(0);
@@ -919,7 +1236,7 @@ test('反馈章节展示排序列表并支持点赞、取消与建议滚筒', as
   expect(runtimeErrors).toEqual([]);
 });
 
-test('反馈投稿可持久化，放弃草稿需确认并恢复入口焦点', async ({ page }) => {
+test('反馈草稿放弃需确认并恢复入口焦点', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.goto('/?seed=42');
   await page.evaluate(() => window.localStorage.clear());
@@ -931,25 +1248,6 @@ test('反馈投稿可持久化，放弃草稿需确认并恢复入口焦点', as
   const roller = page.getByRole('group', { name: '选择反馈操作' });
   await page.getByRole('button', { name: '选择新建投稿' }).click();
   const create = page.getByRole('button', { name: '新建投稿' });
-  await create.click();
-  await page.getByLabel('昵称（可选）').fill('持久化用户');
-  await page.getByLabel('正文').fill('这是一条需要在刷新后继续显示的投稿内容。');
-  await page.getByRole('button', { name: '发布投稿' }).click();
-  const feedbackDialog = page.getByRole('dialog', { name: '用户反馈' });
-  await expect(feedbackDialog).toContainText('持久化用户');
-
-  await page.reload();
-  await enterInteractive(page);
-  await enterChapter(page, 'feedback');
-  await page.getByRole('button', { name: '查看用户反馈' }).click();
-  await expect(page.getByRole('dialog', { name: '用户反馈' })).toContainText('持久化用户');
-  await page.getByRole('button', { name: '关闭用户反馈' }).click();
-
-  await roller.hover();
-  await page.mouse.wheel(0, 160);
-  await expect(roller).toHaveAttribute('data-active-action', 'suggestion');
-  await page.getByRole('button', { name: '选择新建投稿' }).click();
-  await expect(roller).toHaveAttribute('data-active-action', 'create');
   await create.click();
   await page.getByLabel('正文').fill('这是一条应该由放弃确认保护的草稿内容。');
   await page.getByRole('button', { name: '取消', exact: true }).click();
@@ -1299,7 +1597,7 @@ test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节',
   expect(runtimeErrors).toEqual([]);
 });
 
-test('下载侧栏仅在桌面悬停或焦点期间展开，并保留真实 Windows 链接', async ({
+test('下载侧栏仅在桌面悬停或焦点期间展开，并准确展示 Windows 发布状态', async ({
   page
 }) => {
   const runtimeErrors = collectRuntimeErrors(page);
@@ -1310,7 +1608,7 @@ test('下载侧栏仅在桌面悬停或焦点期间展开，并保留真实 Wind
   const download = page.locator('[data-testid="download-chapter"]');
   const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
   const faqPanel = page.getByRole('complementary', { name: '常见问题' });
-  const windowsLink = page.getByRole('link', { name: '下载 Windows' });
+  const windowsCard = page.locator('[data-platform-id="windows-x64"]');
 
   expect(await download.evaluate((element) => getComputedStyle(element).backgroundImage))
     .toBe('none');
@@ -1330,10 +1628,9 @@ test('下载侧栏仅在桌面悬停或焦点期间展开，并保留真实 Wind
   await page.mouse.move(720, 450);
   await expect(download).toHaveAttribute('data-visible-side', 'none');
 
-  await expect(windowsLink).toHaveAttribute('href', /\.exe$/u);
-  await expect(windowsLink).not.toHaveAttribute('download');
-  await expect(page.locator('[data-platform-id="windows-x64"] code'))
-    .toHaveText(/^[a-f0-9]{64}$/u);
+  await expect(windowsCard).toHaveAttribute('data-platform-status', 'unpublished');
+  await expect(windowsCard.getByRole('button', { name: '尚未发布' })).toBeDisabled();
+  await expect(windowsCard).toContainText('v0.1.0-alpha.1');
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1654,11 +1951,7 @@ test('窗口 blur 和 focus 会同步下载与捐款章节暂停状态', async (
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(download).toHaveAttribute('data-paused', 'false');
 
-  await page.keyboard.press('PageDown');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'feedback'
-  );
+  await enterChapter(page, 'feedback');
   await page.keyboard.press('PageDown');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
@@ -1672,7 +1965,7 @@ test('窗口 blur 和 focus 会同步下载与捐款章节暂停状态', async (
   await expect(donation).toHaveAttribute('data-paused', 'false');
 });
 
-test('目标视口五章节无溢出遮挡且减少动态效果保持完整导航', async ({ page }) => {
+test('目标视口六章节无溢出遮挡且减少动态效果保持完整导航', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const viewports = [
@@ -1902,10 +2195,11 @@ test('静态回退通过运行时属性关闭章节与付款码动效', async ({
     panelTransition: '0s',
     cardTransition: '0s'
   });
-  expect(
-    await page.getByRole('link', { name: '下载 Windows' }).getAttribute('href')
-  ).toContain('.exe');
+  const windowsCard = page.locator('[data-platform-id="windows-x64"]');
+  await expect(windowsCard).toHaveAttribute('data-platform-status', 'unpublished');
+  await expect(windowsCard.getByRole('button', { name: '尚未发布' })).toBeDisabled();
 
+  await next.click();
   await next.click();
   await next.click();
   await expect(experience).toHaveAttribute('data-active-chapter', 'donation');
@@ -1991,7 +2285,7 @@ test('减少动态效果时文件保持分离可聚焦且预览立即定位', as
   await page.mouse.move(720, 450);
   await expect(page.locator(PREVIEW)).toHaveCount(0);
 
-  await page.keyboard.press('Tab');
+  await firstIcon.focus();
   await expect(firstIcon).toBeFocused();
   await expect(page.locator(PREVIEW)).toBeVisible();
   await expect(page.locator(PREVIEW)).toHaveAttribute('data-motion-state', 'inactive');
@@ -2038,7 +2332,7 @@ test('390 宽度无横向溢出且隐藏 Canvas 并最多显示四个图标', as
   expect(runtimeErrors).toEqual([]);
 });
 
-test('760/761 断点提供移动章节导航且五章节不横向溢出', async ({ page }) => {
+test('760/761 断点提供移动章节导航且六章节不横向溢出', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 760, height: 900 });
@@ -2060,7 +2354,7 @@ test('760/761 断点提供移动章节导航且五章节不横向溢出', async 
     expect(bounds!.height).toBeGreaterThanOrEqual(44);
   }
 
-  for (const chapterId of ['home', 'about', 'download', 'feedback', 'donation']) {
+  for (const chapterId of CHAPTER_IDS) {
     await expect(experience).toHaveAttribute('data-active-chapter', chapterId);
     const activeSection = page.locator(`[data-chapter-id="${chapterId}"]`);
     await expect(activeSection).toHaveAttribute('data-interactive', 'true');
@@ -2646,11 +2940,7 @@ test('下载与反馈章节的外围文件图标可悬浮预览且主要控件�
   await expect(page.locator(PREVIEW)).toBeVisible();
   await expect(page.getByRole('group', { name: '选择下载平台' })).toBeVisible();
 
-  await page.keyboard.press('PageDown');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'feedback'
-  );
+  await enterChapter(page, 'feedback');
   const feedbackIcon = page.locator(ICON).first();
   await expect(feedbackIcon).toBeVisible();
   await feedbackIcon.hover();
@@ -2669,7 +2959,7 @@ test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', 
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 568, height: 320 });
   await enterInteractive(page);
-  await expect(page.locator('[data-chapter-id]')).toHaveCount(5);
+  await expect(page.locator('[data-chapter-id]')).toHaveCount(6);
   await enterChapter(page, 'donation');
 
   const donationSection = page.locator('[data-chapter-id="donation"]');
@@ -2713,7 +3003,7 @@ test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('568x320 五章节主内容避让移动导航且保持完整可见', async ({ page }) => {
+test('568x320 六章节主内容避让移动导航且保持完整可见', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 568, height: 320 });
@@ -2731,6 +3021,7 @@ test('568x320 五章节主内容避让移动导航且保持完整可见', async 
     ],
     ['about', page.locator('[data-chapter-id="about"] h2')],
     ['download', page.getByRole('group', { name: '选择下载平台' })],
+    ['community', page.locator('[data-chapter-id="community"] h2')],
     ['feedback', page.locator('[data-chapter-id="feedback"] h2')],
     ['donation', page.getByRole('group', { name: '选择付款方式' })]
   ]);

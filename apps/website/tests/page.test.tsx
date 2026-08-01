@@ -14,6 +14,7 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('data-chapter-id="download"');
     expect(html).toContain('data-chapter-id="community"');
     expect(html).toContain('data-chapter-id="feedback"');
+    expect(html).toContain('id="feedback"');
     expect(html).toContain('data-chapter-id="donation"');
     expect(html).toContain('data-testid="download-chapter"');
     expect(html).toContain('data-testid="donation-chapter"');
@@ -69,6 +70,6 @@ describe('AI Pet 官网首页', () => {
   it('不再渲染旧的传统纵向首页入口', () => {
     const html = renderToStaticMarkup(<Page />);
 
-    expect(html).not.toMatch(/(?:^|\s)id="(?:features|download)"/);
+    expect(html).not.toMatch(/(?:^|\s)id="features"/);
   });
 });

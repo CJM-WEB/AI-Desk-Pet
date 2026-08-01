@@ -333,6 +333,21 @@ describe('共享包弹窗', () => {
     expect(screen.getByRole('dialog', { name: 'My Pet' }).textContent).toContain('1 MB');
   });
 
+  it('云端封面缺少文件名时使用安全替代文本，不泄露签名查询参数', () => {
+    const { coverFile: _coverFile, coverFileName: _coverFileName, ...cloudItem } = item;
+    render(
+      <I18nProvider initialLocale="zh-CN">
+        <SharedPetDetailDialog
+          item={{ ...cloudItem, coverUrl: 'https://storage.example/cover?signature=secret' }}
+          downloadDisabled={false}
+          onDownload={vi.fn()}
+          onRequestClose={vi.fn()}
+        />
+      </I18nProvider>
+    );
+    expect(screen.getByRole('img').getAttribute('alt')).toBe('共享包封面');
+  });
+
   it('对象 URL 在 Blob 变更和卸载时释放', () => {
     const createObjectURL = vi.fn()
       .mockReturnValueOnce('blob:first')

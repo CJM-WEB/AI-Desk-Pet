@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@myself/character-runtime": "workspace:*"
+    "@myself/character-runtime": "workspace:*",
+    "zod": "3.25.76"
   }
 }

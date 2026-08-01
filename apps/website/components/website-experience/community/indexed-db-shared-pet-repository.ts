@@ -7,6 +7,7 @@ import {
   type SharedPetPage,
   type SharedPetRepository
 } from './shared-pet-types';
+import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
 
 export const SHARED_PET_DATABASE_NAME = 'ai-pet-community-v1';
 export const SHARED_PET_METADATA_STORE = 'sharedPetMetadata';
@@ -239,6 +240,20 @@ export class IndexedDbSharedPetRepository implements SharedPetRepository {
 
     this.notify();
     return metadata;
+  }
+
+  /** 仅保留为历史测试适配器；生产注册已切换至云端审核仓库。 */
+  async submit(
+    input: CreateSharedPetInput,
+    _captcha: CaptchaProof
+  ): Promise<SubmissionReceipt> {
+    const created = await this.create(input);
+    return {
+      submissionId: created.id,
+      statusToken: 'local-test-status-token-000000000000000000000',
+      statusPath: '/submission-status/',
+      status: 'system_reviewing'
+    };
   }
 
   async getById(id: string): Promise<SharedPetPackageSummary | null> {
