@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   type CharacterDraftV1,
   type CharacterManifestV1,
+  characterDraftV2Schema,
   characterManifestV2Schema,
   convertCharacterDraftV1ToV2,
   convertCharacterManifestV1ToV2
@@ -112,6 +113,19 @@ function createV1WithDuplicateStateIds(): CharacterDraftV1 {
   };
 }
 
+/** 创建包含 Unicode 扩展状态标识符的 V1 草稿。 */
+function createV1WithUnicodeExtensionState(): CharacterDraftV1 {
+  return {
+    version: 1,
+    id: 'character-demo',
+    name: '演示角色',
+    states: [
+      { id: 'idle', kind: 'core', actions: [] },
+      { id: 'custom:跳舞', kind: 'extension', actions: [] }
+    ]
+  };
+}
+
 describe('V1 角色数据转换器', () => {
   test('将发布清单的字段和素材引用映射到默认皮肤', () => {
     const result = convertCharacterManifestV1ToV2(createV1Manifest());
@@ -147,6 +161,63 @@ describe('V1 角色数据转换器', () => {
       mode: 'any',
       clauses: [{ kind: 'signal', signal: 'user-interaction' }]
     }]);
+  });
+
+  test('将 Unicode 扩展状态转换为可校验的 ASCII 标识符', () => {
+    const result = convertCharacterDraftV1ToV2(createV1WithUnicodeExtensionState());
+    const state = result.document.states.find((candidate) => candidate.id === 'custom-u8df3-u821e');
+
+    expect(result.map.stateIds['custom:跳舞']).toEqual(['custom-u8df3-u821e']);
+    expect(state?.semantic).toEqual({ kind: 'custom', value: 'custom-u8df3-u821e' });
+    expect(characterDraftV2Schema.parse(result.document)).toEqual(result.document);
+  });
+
+  test('为没有 idle 的草稿选择现有状态并为空草稿补建最小待机状态', () => {
+    const withoutIdle: CharacterDraftV1 = {
+      version: 1,
+      id: 'character-demo',
+      name: '演示角色',
+      states: [{ id: 'custom:rain', kind: 'extension', actions: [] }]
+    };
+    const empty: CharacterDraftV1 = {
+      version: 1,
+      id: 'character-empty',
+      name: '空角色',
+      states: []
+    };
+
+    const convertedWithoutIdle = convertCharacterDraftV1ToV2(withoutIdle);
+    const convertedEmpty = convertCharacterDraftV1ToV2(empty);
+
+    expect(convertedWithoutIdle.document.defaultStateId).toBe('custom-rain');
+    expect(characterDraftV2Schema.parse(convertedWithoutIdle.document))
+      .toEqual(convertedWithoutIdle.document);
+    expect(convertedEmpty.document.defaultStateId).toBe('idle');
+    expect(convertedEmpty.document.states).toMatchObject([{
+      id: 'idle', semantic: 'idle', actionIds: []
+    }]);
+    expect(characterDraftV2Schema.parse(convertedEmpty.document)).toEqual(convertedEmpty.document);
+  });
+
+  test('为超长 Unicode 重复状态分配长度受限的唯一 ASCII 标识符', () => {
+    const sourceStateId = `custom:${'跳'.repeat(58)}` as `custom:${string}`;
+    const draft: CharacterDraftV1 = {
+      version: 1,
+      id: 'character-demo',
+      name: '演示角色',
+      states: [
+        { id: sourceStateId, kind: 'extension', actions: [] },
+        { id: sourceStateId, kind: 'extension', actions: [] }
+      ]
+    };
+
+    const result = convertCharacterDraftV1ToV2(draft);
+    const convertedIds = result.map.stateIds[sourceStateId]!;
+
+    expect(convertedIds).toHaveLength(2);
+    expect(new Set(convertedIds).size).toBe(2);
+    expect(convertedIds.every((id) => /^[a-z0-9][a-z0-9_-]{0,119}$/u.test(id))).toBe(true);
+    expect(characterDraftV2Schema.parse(result.document)).toEqual(result.document);
   });
 
   test('按源顺序重命名重复状态标识符', () => {

@@ -42,20 +42,63 @@ const V1_EVENT_SIGNALS = {
   context_menu: 'user-interaction'
 } as const;
 
+const MAX_IDENTIFIER_LENGTH = 120;
+
 /** 按源数组顺序生成稳定且不覆盖已有对象的标识符。 */
 function uniqueId(base: string, used: Set<string>): string {
-  if (!used.has(base)) return base;
+  const limitedBase = base.slice(0, MAX_IDENTIFIER_LENGTH);
+  if (!used.has(limitedBase)) return limitedBase;
 
   let suffix = 2;
-  while (used.has(`${base}-${suffix}`)) suffix += 1;
-  return `${base}-${suffix}`;
+  while (true) {
+    const postfix = `-${suffix}`;
+    const candidate = `${limitedBase.slice(0, MAX_IDENTIFIER_LENGTH - postfix.length)}${postfix}`;
+    if (!used.has(candidate)) return candidate;
+    suffix += 1;
+  }
 }
 
-/** 将 V1 扩展状态规范化为符合 V2 安全标识符约束的形式。 */
+/** 为超长 Unicode 状态标识符生成稳定的短哈希后缀。 */
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (const character of value) {
+    hash ^= character.codePointAt(0)!;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/** 将扩展状态名称编码为安全标识符片段，同时保留 ASCII 名称的可读性。 */
+function encodeExtensionStateName(name: string): string {
+  const segments: string[] = [];
+  let asciiSegment = '';
+
+  for (const character of name) {
+    if (/^[a-z0-9_-]$/u.test(character)) {
+      asciiSegment += character;
+      continue;
+    }
+
+    if (asciiSegment) {
+      segments.push(asciiSegment);
+      asciiSegment = '';
+    }
+    segments.push(`u${character.codePointAt(0)!.toString(16)}`);
+  }
+
+  if (asciiSegment) segments.push(asciiSegment);
+  return segments.join('-');
+}
+
+/** 将 V1 扩展状态规范化为符合 V2 安全标识符约束的 ASCII 形式。 */
 function normalizeStateId(stateId: string): string {
-  return stateId.startsWith('custom:')
-    ? `custom-${stateId.slice('custom:'.length)}`
-    : stateId;
+  if (!stateId.startsWith('custom:')) return stateId;
+
+  const identifier = `custom-${encodeExtensionStateName(stateId.slice('custom:'.length))}`;
+  if (identifier.length <= MAX_IDENTIFIER_LENGTH) return identifier;
+
+  const postfix = `-${stableHash(stateId)}`;
+  return `${identifier.slice(0, MAX_IDENTIFIER_LENGTH - postfix.length)}${postfix}`;
 }
 
 /** 复制表现数据，避免调用方修改转换结果时回写 V1 输入。 */
@@ -119,8 +162,26 @@ function defaultIdentity(name: string): CharacterDraftV2['identity'] {
   };
 }
 
+/** 为 V1 空草稿补齐可编辑且无动作引用的最小待机状态。 */
+function emptyIdleState(): CharacterStateDefinitionV2 {
+  return {
+    id: 'idle',
+    name: '待机',
+    kind: 'primary',
+    semantic: 'idle',
+    tags: [],
+    intensity: 1,
+    coexistWithStateIds: [],
+    forbiddenStateIds: [],
+    enterConditions: [],
+    exitConditions: [],
+    agentInferable: false,
+    actionIds: []
+  };
+}
+
 function convertDocument(input: CharacterDraftV1 | CharacterManifestV1): CharacterV1ConversionResult<
-  CharacterDraftV2 | CharacterManifestV2
+  CharacterDraftV2
 > {
   const map: CharacterV1ConversionMap = { stateIds: {}, actionIds: {} };
   const usedStateIds = new Set<string>();
@@ -178,6 +239,9 @@ function convertDocument(input: CharacterDraftV1 | CharacterManifestV1): Charact
     });
   });
 
+  if (states.length === 0) states.push(emptyIdleState());
+  const defaultStateId = states.find((state) => state.id === 'idle')?.id ?? states[0]!.id;
+
   const draft: CharacterDraftV2 = {
     version: 2,
     id: input.id,
@@ -185,7 +249,7 @@ function convertDocument(input: CharacterDraftV1 | CharacterManifestV1): Charact
     thumbnailAssetId: input.thumbnailAssetId,
     identity: defaultIdentity(input.name),
     defaultSkinId: 'default',
-    defaultStateId: 'idle',
+    defaultStateId,
     skins: [{
       id: 'default',
       name: '默认皮肤',
@@ -196,29 +260,27 @@ function convertDocument(input: CharacterDraftV1 | CharacterManifestV1): Charact
     actions
   };
 
-  if (!('resources' in input)) return { document: draft, map };
-
-  return {
-    document: {
-      ...draft,
-      thumbnailAssetId: input.thumbnailAssetId,
-      compilerVersion: input.compilerVersion,
-      resources: input.resources.map((resource) => ({ ...resource }))
-    },
-    map
-  };
+  return { document: draft, map };
 }
 
 /** 将 V1 草稿转换为不会修改输入的确定性 V2 草稿。 */
 export function convertCharacterDraftV1ToV2(
   input: CharacterDraftV1
 ): CharacterV1ConversionResult<CharacterDraftV2> {
-  return convertDocument(input) as CharacterV1ConversionResult<CharacterDraftV2>;
+  return convertDocument(input);
 }
 
 /** 将 V1 发布清单转换为不会复制素材文件的确定性 V2 清单。 */
 export function convertCharacterManifestV1ToV2(
   input: CharacterManifestV1
 ): CharacterV1ConversionResult<CharacterManifestV2> {
-  return convertDocument(input) as CharacterV1ConversionResult<CharacterManifestV2>;
+  const result = convertDocument(input);
+  const document: CharacterManifestV2 = {
+    ...result.document,
+    thumbnailAssetId: input.thumbnailAssetId,
+    compilerVersion: input.compilerVersion,
+    resources: input.resources.map((resource) => ({ ...resource }))
+  };
+
+  return { document, map: result.map };
 }
