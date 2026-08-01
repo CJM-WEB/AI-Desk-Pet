@@ -1,6 +1,8 @@
 /** CloudBase 审核 API 的运行时配置。 */
 export interface CloudConfig {
   envId: string;
+  cloudbaseRegion: 'ap-singapore';
+  cloudbaseSdkTimeoutMs: 15000;
   cloudbaseApiKey: string;
   privateBucketId: string;
   adminEmail: string;
@@ -30,6 +32,10 @@ function readRequired(env: NodeJS.ProcessEnv, name: string): string {
 /** 从显式传入的环境变量构造运行配置。 */
 export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
   const envId = readRequired(env, 'CLOUDBASE_ENV_ID');
+  const cloudbaseRegion = env.CLOUDBASE_REGION?.trim() || 'ap-singapore';
+  if (cloudbaseRegion !== 'ap-singapore') {
+    throw new Error('CLOUDBASE_REGION 必须为 ap-singapore');
+  }
   const privateBucketId = readRequired(env, 'PRIVATE_BUCKET_ID');
   const adminEmail = readRequired(env, 'ADMIN_EMAIL');
   const captchaAppId = Number(readRequired(env, 'CAPTCHA_APP_ID'));
@@ -49,6 +55,8 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
 
   return {
     envId,
+    cloudbaseRegion,
+    cloudbaseSdkTimeoutMs: 15_000,
     cloudbaseApiKey: readRequired(env, 'CLOUDBASE_API_KEY'),
     privateBucketId,
     adminEmail,

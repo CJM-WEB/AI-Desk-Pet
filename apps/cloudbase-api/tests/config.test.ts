@@ -3,6 +3,26 @@ import { describe, expect, it } from 'vitest';
 import { loadCloudConfig } from '../src/config.js';
 
 describe('loadCloudConfig', () => {
+  const validEnv = {
+    CLOUDBASE_ENV_ID: 'env-test',
+    CLOUDBASE_API_KEY: 'service-role-key',
+    PRIVATE_BUCKET_ID: 'ai-pet-private',
+    ADMIN_EMAIL: 'admin@example.com',
+    CAPTCHA_APP_ID: '10001',
+    CAPTCHA_SECRET_KEY: 'captcha-secret',
+    ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
+    TENCENTCLOUD_SECRETID: 'secret-id',
+    TENCENTCLOUD_SECRETKEY: 'secret-key',
+    TENCENTCLOUD_SESSIONTOKEN: 'session-token',
+    MODERATION_REGION: 'ap-shanghai',
+    TMS_BIZ_TYPE: 'ai-pet-text',
+    IMS_BIZ_TYPE: 'ai-pet-image',
+    SCANNER_URL: 'https://scanner.example.com',
+    SCANNER_HMAC_SECRET: 'scanner-secret',
+    CLOUDBASE_AI_BASE_URL: 'https://ai.example.com/v1',
+    CLOUDBASE_AI_API_KEY: 'ai-secret'
+  };
+
   it('缺少管理员邮箱时拒绝启动', () => {
     expect(() => loadCloudConfig({
       CLOUDBASE_ENV_ID: 'env-test',
@@ -11,26 +31,12 @@ describe('loadCloudConfig', () => {
   });
 
   it('从传入环境变量加载完整运行配置', () => {
-    expect(loadCloudConfig({
-      CLOUDBASE_ENV_ID: 'env-test',
-      CLOUDBASE_API_KEY: 'service-role-key',
-      PRIVATE_BUCKET_ID: 'ai-pet-private',
-      ADMIN_EMAIL: 'admin@example.com',
-      CAPTCHA_APP_ID: '10001',
-      CAPTCHA_SECRET_KEY: 'captcha-secret',
-      ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
-      TENCENTCLOUD_SECRETID: 'secret-id',
-      TENCENTCLOUD_SECRETKEY: 'secret-key',
-      TENCENTCLOUD_SESSIONTOKEN: 'session-token',
-      MODERATION_REGION: 'ap-shanghai',
-      TMS_BIZ_TYPE: 'ai-pet-text',
-      IMS_BIZ_TYPE: 'ai-pet-image',
-      SCANNER_URL: 'https://scanner.example.com',
-      SCANNER_HMAC_SECRET: 'scanner-secret',
-      CLOUDBASE_AI_BASE_URL: 'https://ai.example.com/v1',
-      CLOUDBASE_AI_API_KEY: 'ai-secret'
-    })).toEqual({
+    const config = loadCloudConfig(validEnv);
+
+    expect(config).toEqual({
       envId: 'env-test',
+      cloudbaseRegion: 'ap-singapore',
+      cloudbaseSdkTimeoutMs: 15_000,
       cloudbaseApiKey: 'service-role-key',
       privateBucketId: 'ai-pet-private',
       adminEmail: 'admin@example.com',
@@ -49,6 +55,15 @@ describe('loadCloudConfig', () => {
       cloudbaseAiApiKey: 'ai-secret',
       relevanceModel: 'deepseek-v4-flash'
     });
+    expect(config.cloudbaseRegion).toBe('ap-singapore');
+    expect(config.cloudbaseSdkTimeoutMs).toBe(15_000);
+  });
+
+  it('拒绝与已购买环境不一致的地域', () => {
+    expect(() => loadCloudConfig({
+      ...validEnv,
+      CLOUDBASE_REGION: 'ap-shanghai'
+    })).toThrow('CLOUDBASE_REGION 必须为 ap-singapore');
   });
 
   it('缺少服务端数据库 API Key 时拒绝启动', () => {
