@@ -143,6 +143,34 @@ describe('自动审核编排', () => {
     );
   });
 
+  it.each([
+    ['pass' as const, 'Pass', 'AI_PET_PASS'],
+    ['review' as const, 'Review', 'AI_PET_REVIEW']
+  ])('记录本地关键词审核来源和版本：%s', async (
+    relevanceSuggestion,
+    signalSuggestion,
+    label
+  ) => {
+    const { service, store } = createService({
+      relevance: relevanceSuggestion
+    });
+
+    await service.process('submission-1');
+
+    const records = store.applyModerationDecision.mock.calls[0]![0].results;
+    expect(records.find(
+      (record: ModerationRecord) => record.kind === 'relevance'
+    )).toMatchObject({
+      provider: 'local-keyword',
+      ruleVersion: 'keyword-relevance-2026-08-01',
+      suggestion: signalSuggestion,
+      label
+    });
+    expect(store.applyModerationDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ nextStatus: 'manual_review_pending' })
+    );
+  });
+
   it('技术扫描明确不安全后直接原子驳回且不被后续依赖故障拖延', async () => {
     const { service, store, moderator, relevance } = createService({
       scan: {

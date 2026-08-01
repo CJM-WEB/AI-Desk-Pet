@@ -9,6 +9,7 @@ import type {
   RelevanceClassifier,
   SubmissionWithAssets
 } from '../ports.js';
+import { keywordRelevanceRuleVersion } from './keyword-relevance.js';
 
 export interface ModerationProcessResult {
   status: 'manual_review_pending' | 'auto_rejected';
@@ -273,14 +274,18 @@ export class ModerationService {
       }),
       results
     );
-    results.push(this.record(submission.id, 'relevance', 'cloudbase-ai', {
+    const record = this.record(submission.id, 'relevance', 'local-keyword', {
       suggestion: suggestion === 'pass'
         ? 'Pass'
         : suggestion === 'reject'
           ? 'Block'
           : 'Review',
       label: `AI_PET_${suggestion.toUpperCase()}`
-    }));
+    });
+    results.push({
+      ...record,
+      ruleVersion: keywordRelevanceRuleVersion
+    });
     return suggestion;
   }
 
