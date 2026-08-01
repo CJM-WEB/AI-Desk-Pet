@@ -868,23 +868,20 @@ describe('ProviderRegistry', () => {
     );
   });
 
-  test('拒绝不在预置目录中的模型', () => {
+  test('已知预置提供商可创建目录外模型适配器', () => {
     const profile: ProviderProfileV2 = {
       id: 'openai-profile',
       displayName: 'OpenAI',
       mode: 'preset',
       providerId: 'openai',
       modelId: 'not-in-catalog',
+      capabilities: ['chat'],
       hasStoredSecret: true
     };
     const registry = new ProviderRegistry(providerCatalog);
 
-    expect(() => registry.create(profile, async () => 'secret')).toThrowError(
-      expect.objectContaining({
-        code: 'PROVIDER_MODEL_NOT_FOUND',
-        retryable: false
-      })
-    );
+    expect(registry.create(profile, async () => 'secret'))
+      .toBeInstanceOf(OpenAICompatibleProvider);
   });
 
   test('把自定义档案的白名单标量参数合并到请求顶层', async () => {

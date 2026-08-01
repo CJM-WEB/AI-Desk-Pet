@@ -61,9 +61,6 @@ function resolveProfile(
   if (!entry) {
     throw new ProviderError('PROVIDER_CATALOG_ENTRY_NOT_FOUND', false);
   }
-  if (!entry.models.some(model => model.modelId === profile.modelId)) {
-    throw new ProviderError('PROVIDER_MODEL_NOT_FOUND', false);
-  }
   return {
     protocol: entry.protocol,
     config: {

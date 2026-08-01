@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   pendingActionSchema,
+  providerProfileV2Schema,
   toolNameSchema,
   toolRequestSchema
 } from '../src/contracts';
@@ -55,5 +56,22 @@ describe('pendingActionSchema', () => {
 
     expect(result.risk).toBe('write');
     expect(result).not.toHaveProperty('requestId');
+  });
+});
+
+describe('providerProfileV2Schema', () => {
+  it('允许预置档案为目录外模型声明保守能力', () => {
+    expect(providerProfileV2Schema.parse({
+      id: 'openai-new',
+      displayName: 'OpenAI 新模型',
+      mode: 'preset',
+      providerId: 'openai',
+      modelId: 'new-model-id',
+      capabilities: ['chat'],
+      hasStoredSecret: true
+    })).toMatchObject({
+      modelId: 'new-model-id',
+      capabilities: ['chat']
+    });
   });
 });

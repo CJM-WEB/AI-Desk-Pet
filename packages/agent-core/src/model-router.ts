@@ -137,10 +137,10 @@ export class ModelRouter {
     const provider = catalog.find(entry => entry.providerId === profile.providerId);
     if (!provider) throw new Error('MODEL_PROVIDER_NOT_FOUND');
     const model = provider.models.find(entry => entry.modelId === profile.modelId);
-    if (!model) throw new Error('MODEL_MODEL_NOT_FOUND');
+    const capabilities = model?.capabilities ?? profile.capabilities ?? ['chat'];
     return {
       profile,
-      capabilities: new Set(model.capabilities),
+      capabilities: new Set(capabilities),
       disclosureTarget: {
         profileId: profile.id,
         providerIdentity: `provider:${profile.providerId}`

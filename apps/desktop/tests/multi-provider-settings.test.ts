@@ -55,6 +55,57 @@ describe('多 Provider 设置持久化', () => {
     }
   });
 
+  test('目录外预置模型可按显式能力保存并用于 Agent 路由', async () => {
+    const store = await createStore();
+    await store.saveProviderProfile({
+      id: 'openai-new-agent',
+      displayName: 'OpenAI 新 Agent',
+      mode: 'preset',
+      providerId: 'openai',
+      modelId: 'provider-new-agent',
+      capabilities: ['chat', 'tools'],
+      hasStoredSecret: false
+    });
+
+    await expect(store.saveModelRoute({
+      primaryProfileId: 'openai-new-agent',
+      chatProfileId: null,
+      agentProfileId: 'openai-new-agent',
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    })).resolves.toBeUndefined();
+  });
+
+  test('目录外预置模型未声明能力时不从名称推断工具或视觉', async () => {
+    const store = await createStore();
+    await store.saveProviderProfile({
+      id: 'openai-vision-tools',
+      displayName: 'OpenAI Vision Tools',
+      mode: 'preset',
+      providerId: 'openai',
+      modelId: 'provider-vision-tools-model',
+      hasStoredSecret: false
+    });
+    const baseRoute: ModelRouteConfig = {
+      primaryProfileId: null,
+      chatProfileId: null,
+      agentProfileId: null,
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    };
+
+    await expect(store.saveModelRoute({
+      ...baseRoute,
+      agentProfileId: 'openai-vision-tools'
+    })).rejects.toMatchObject({ code: 'AGENT_MODEL_REQUIRES_TOOLS' });
+    await expect(store.saveModelRoute({
+      ...baseRoute,
+      visionProfileId: 'openai-vision-tools'
+    })).rejects.toMatchObject({ code: 'VISION_MODEL_REQUIRES_VISION' });
+  });
+
   test('Agent 路由拒绝不支持工具的自定义档案', async () => {
     const store = await createStore();
     await store.saveProviderProfile({

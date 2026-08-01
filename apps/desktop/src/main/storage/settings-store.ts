@@ -204,9 +204,9 @@ function storedProfile(profile: ProviderProfileV2): StoredProviderProfileV2 {
 function profileCapabilities(profile: StoredProviderProfileV2): readonly ModelCapability[] {
   if (profile.mode === 'custom') return profile.capabilities ?? ['chat'];
   const provider = providerCatalog.find(entry => entry.providerId === profile.providerId);
-  const model = provider?.models.find(entry => entry.modelId === profile.modelId);
-  if (!model) throw settingsError('PROVIDER_MODEL_NOT_FOUND');
-  return model.capabilities;
+  if (!provider) throw settingsError('PROVIDER_MODEL_NOT_FOUND');
+  const model = provider.models.find(entry => entry.modelId === profile.modelId);
+  return model?.capabilities ?? profile.capabilities ?? ['chat'];
 }
 
 function providerIdentity(profile: StoredProviderProfileV2): string {

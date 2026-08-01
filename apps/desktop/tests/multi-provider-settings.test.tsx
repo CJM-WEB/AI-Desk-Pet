@@ -1,5 +1,8 @@
+// @vitest-environment jsdom
+
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, test, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import { ProviderSettings } from '../src/renderer/src/settings/ProviderSettings';
 import { McpSettings } from '../src/renderer/src/settings/McpSettings';
@@ -120,6 +123,8 @@ const dashboard: SettingsDashboardDto = {
   }
 };
 
+afterEach(cleanup);
+
 describe('多 Provider 设置组件', () => {
   test('普通模式聚焦 Provider、Model 和 API Key，高级字段折叠', () => {
     const markup = renderToStaticMarkup(
@@ -140,6 +145,108 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('高级设置');
     expect(markup).toContain('Base URL');
     expect(markup).toContain('tools');
+  });
+
+  test('预置模型输入提示可直接填写服务商公布的模型 ID', () => {
+    render(
+      <ProviderSettings
+        dashboard={dashboard}
+        busy={false}
+        onSave={vi.fn()}
+        onTest={vi.fn()}
+        onRouteSave={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/可直接输入服务商公布的模型 ID/u)).toBeTruthy();
+  });
+
+  test('提交目录外预置模型时保存保守聊天能力', () => {
+    const onSave = vi.fn();
+    render(
+      <ProviderSettings
+        dashboard={dashboard}
+        busy={false}
+        onSave={onSave}
+        onTest={vi.fn()}
+        onRouteSave={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    const modelInput = screen.getByRole('combobox', { name: '模型' });
+    fireEvent.change(modelInput, { target: { value: 'provider-new-model' } });
+    fireEvent.click(screen.getByRole('button', { name: /保存档案/u }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      profile: expect.objectContaining({
+        mode: 'preset',
+        modelId: 'provider-new-model',
+        capabilities: ['chat']
+      })
+    }));
+  });
+
+  test('目录外预置档案按显式能力参与路由选项校验', () => {
+    const unknownProfileDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      profiles: [...dashboard.profiles, {
+        id: 'openai-new-chat',
+        displayName: 'OpenAI 新聊天模型',
+        mode: 'preset',
+        providerId: 'openai',
+        modelId: 'provider-new-chat',
+        capabilities: ['chat'],
+        hasStoredSecret: true
+      }]
+    };
+    render(
+      <ProviderSettings
+        dashboard={unknownProfileDashboard}
+        busy={false}
+        onSave={vi.fn()}
+        onTest={vi.fn()}
+        onRouteSave={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    const chatOption = screen.getByLabelText('对话模型')
+      .querySelector<HTMLOptionElement>('option[value="openai-new-chat"]');
+    const agentOption = screen.getByLabelText('Agent 模型')
+      .querySelector<HTMLOptionElement>('option[value="openai-new-chat"]');
+    expect(chatOption?.disabled).toBe(false);
+    expect(agentOption?.disabled).toBe(true);
+  });
+
+  test('未知预置提供商即使声明能力也不能参与 Agent 路由', () => {
+    const unknownProviderDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      profiles: [...dashboard.profiles, {
+        id: 'unknown-agent',
+        displayName: '未知 Agent',
+        mode: 'preset',
+        providerId: 'unknown',
+        modelId: 'unknown-agent-model',
+        capabilities: ['chat', 'tools'],
+        hasStoredSecret: true
+      }]
+    };
+    render(
+      <ProviderSettings
+        dashboard={unknownProviderDashboard}
+        busy={false}
+        onSave={vi.fn()}
+        onTest={vi.fn()}
+        onRouteSave={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    const agentOption = screen.getByLabelText('Agent 模型')
+      .querySelector<HTMLOptionElement>('option[value="unknown-agent"]');
+    expect(agentOption?.disabled).toBe(true);
   });
 
   test('无 tools 档案不能选择为 Agent 且显示跨提供商授权提示', () => {

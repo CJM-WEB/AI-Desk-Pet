@@ -75,23 +75,26 @@ const providerBaseUrlSchema = z.string().url().refine(value => {
     && new Set(['localhost', '127.0.0.1', '[::1]']).has(url.hostname);
 }, 'PROVIDER_URL_UNSAFE');
 
+const declaredModelCapabilitiesSchema = z.array(z.enum([
+  'chat',
+  'tools',
+  'vision',
+  'streaming',
+  'longContext'
+])).min(1).optional();
+
 export const providerProfileV2Schema = z.discriminatedUnion('mode', [
   providerProfileV2BaseSchema.extend({
     mode: z.literal('preset'),
-    providerId: z.string().min(1)
+    providerId: z.string().min(1),
+    capabilities: declaredModelCapabilitiesSchema
   }).strict(),
   providerProfileV2BaseSchema.extend({
     mode: z.literal('custom'),
     protocol: providerProtocolSchema,
     baseUrl: providerBaseUrlSchema,
     additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()])),
-    capabilities: z.array(z.enum([
-      'chat',
-      'tools',
-      'vision',
-      'streaming',
-      'longContext'
-    ])).min(1).optional()
+    capabilities: declaredModelCapabilitiesSchema
   }).strict()
 ]);
 export type ProviderProfileV2 = z.infer<typeof providerProfileV2Schema>;
@@ -99,20 +102,15 @@ export type ProviderProfileV2 = z.infer<typeof providerProfileV2Schema>;
 export const storedProviderProfileV2Schema = z.discriminatedUnion('mode', [
   storedProviderProfileV2BaseSchema.extend({
     mode: z.literal('preset'),
-    providerId: z.string().min(1)
+    providerId: z.string().min(1),
+    capabilities: declaredModelCapabilitiesSchema
   }).strict(),
   storedProviderProfileV2BaseSchema.extend({
     mode: z.literal('custom'),
     protocol: providerProtocolSchema,
     baseUrl: providerBaseUrlSchema,
     additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()])),
-    capabilities: z.array(z.enum([
-      'chat',
-      'tools',
-      'vision',
-      'streaming',
-      'longContext'
-    ])).min(1).optional()
+    capabilities: declaredModelCapabilitiesSchema
   }).strict()
 ]);
 export type StoredProviderProfileV2 = z.infer<typeof storedProviderProfileV2Schema>;
