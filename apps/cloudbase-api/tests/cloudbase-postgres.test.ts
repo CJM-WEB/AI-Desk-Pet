@@ -225,6 +225,8 @@ interface MemorySubmission {
   status_version: number;
   status_token_hash: string;
   public_reason: string | null;
+  risk_summary: Record<string, unknown>;
+  auto_rejection_reason: string | null;
   moderation_lease_until: string | null;
   cleanup_lease_until: string | null;
   cleanup_started_at: string | null;
@@ -626,6 +628,8 @@ function makeSubmission(
     status_version: input.status_version ?? 0,
     status_token_hash: input.status_token_hash ?? 'a'.repeat(64),
     public_reason: input.public_reason ?? null,
+    risk_summary: input.risk_summary ?? {},
+    auto_rejection_reason: input.auto_rejection_reason ?? null,
     moderation_lease_until: input.moderation_lease_until ?? null,
     cleanup_lease_until: input.cleanup_lease_until ?? null,
     cleanup_started_at: input.cleanup_started_at ?? null,
@@ -937,6 +941,29 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
 });
 
 describe('CloudBase PostgreSQL 仓储', () => {
+  it('管理员队列返回现有风险摘要且不混入公开映射', async () => {
+    const database = new MemoryRdb();
+    database.submissions.push(makeSubmission({
+      id: 'review-risk',
+      status: 'auto_rejected',
+      risk_summary: { labels: ['politics'], summary: '命中政治内容规则' },
+      auto_rejection_reason: '系统检测到禁止内容'
+    }));
+    const { store } = createStore(database);
+
+    const page = await store.listAdminSubmissions({
+      limit: 20,
+      status: 'auto_rejected'
+    });
+
+    expect(page.items[0]?.riskSummary).toEqual({
+      labels: ['politics'],
+      summary: '命中政治内容规则'
+    });
+    expect(page.items[0]?.autoRejectionReason).toBe('系统检测到禁止内容');
+    expect(page.nextCursor).toBeNull();
+  });
+
   it('创建投稿后只能用令牌哈希查询裁剪状态', async () => {
     const { store } = createStore();
     await store.createSubmission(newSubmission('submission-1'));

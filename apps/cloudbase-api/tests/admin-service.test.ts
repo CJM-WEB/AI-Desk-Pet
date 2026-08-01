@@ -18,6 +18,8 @@ function submission(
     statusVersion: 3,
     title: '桌宠资源',
     body: '资源说明',
+    riskSummary: {},
+    autoRejectionReason: null,
     assets: [{
       role: 'package',
       storageKey: 'private/current-pet.zip',

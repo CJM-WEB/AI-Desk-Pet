@@ -13,6 +13,7 @@ import type {
   AdminQueueQuery,
   AdminStore,
   AdminSubmissionDetail,
+  AdminSubmissionSummary,
   AbuseLimitInput,
   AbuseLimitResult,
   ApplyModerationDecisionInput,
@@ -454,7 +455,7 @@ export class CloudBasePostgresStore implements
       '管理员队列'
     );
     return {
-      items: rows.slice(0, input.limit).map(mapSubmission),
+      items: rows.slice(0, input.limit).map(mapAdminSubmission),
       nextCursor: rows.length > input.limit ? offset + input.limit : null
     };
   }
@@ -476,6 +477,17 @@ export class CloudBasePostgresStore implements
       .order('created_at', { ascending: true });
     return {
       ...submission,
+      ...mapAdminRiskFields(
+        requireRecord(
+          await this.database
+            .from('submissions')
+            .select('risk_summary,auto_rejection_reason')
+            .eq('id', id)
+            .maybeSingle()
+            .then(result => requireData(result, '查询管理员风险摘要失败')),
+          '管理员风险摘要'
+        )
+      ),
       moderationResults: requireRows(
         requireData(moderation, '查询管理员审核证据失败'),
         '管理员审核证据'
@@ -643,6 +655,28 @@ function mapSubmission(value: unknown): SubmissionRow {
     publishedAt: optionalString(row.published_at, 'published_at'),
     createdAt: requireString(row.created_at, 'created_at'),
     updatedAt: requireString(row.updated_at, 'updated_at')
+  };
+}
+
+function mapAdminSubmission(value: unknown): AdminSubmissionSummary {
+  const row = requireRecord(value, '管理员队列');
+  return {
+    ...mapSubmission(row),
+    ...mapAdminRiskFields(row)
+  };
+}
+
+/** 只映射管理员界面所需的现有风险字段，避免泄漏到公开响应。 */
+function mapAdminRiskFields(row: Record<string, unknown>): {
+  riskSummary: Record<string, unknown>;
+  autoRejectionReason: string | null;
+} {
+  return {
+    riskSummary: requireRecord(row.risk_summary, 'risk_summary'),
+    autoRejectionReason: optionalString(
+      row.auto_rejection_reason,
+      'auto_rejection_reason'
+    )
   };
 }
 

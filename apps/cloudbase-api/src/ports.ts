@@ -320,8 +320,14 @@ export interface AdminQueueQuery {
   status?: SubmissionStatus;
 }
 
+/** 管理员队列额外暴露已有的有限风险摘要，公开 DTO 不复用此类型。 */
+export interface AdminSubmissionSummary extends SubmissionRow {
+  riskSummary: Record<string, unknown>;
+  autoRejectionReason: string | null;
+}
+
 export interface AdminQueuePage {
-  items: SubmissionRow[];
+  items: AdminSubmissionSummary[];
   nextCursor: number | null;
 }
 
@@ -345,6 +351,8 @@ export interface AdminAuditLog {
 }
 
 export interface AdminSubmissionDetail extends SubmissionWithAssets {
+  riskSummary: Record<string, unknown>;
+  autoRejectionReason: string | null;
   moderationResults: AdminModerationResult[];
   auditLogs: AdminAuditLog[];
 }
