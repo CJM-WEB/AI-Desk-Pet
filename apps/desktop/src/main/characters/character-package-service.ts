@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
 import {
   copyFile,
-  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -22,7 +20,7 @@ import {
   relative,
   resolve
 } from 'node:path';
-import { Transform, type Readable } from 'node:stream';
+import { Transform, Writable, type Readable } from 'node:stream';
 import { finished, pipeline } from 'node:stream/promises';
 import {
   CHARACTER_PACKAGE_LIMITS,
@@ -82,6 +80,8 @@ type SourceCatalog = z.output<typeof sourceCatalogSchema>;
 export type CharacterPackageCheckpoint =
   | 'extract:before-file-open'
   | 'extract:after-file-open'
+  | 'export:after-destination-write'
+  | 'export:after-temp-write'
   | 'export:before-commit'
   | 'export:before-link'
   | 'export:resource-validated'
@@ -171,6 +171,8 @@ type ArchiveIdentity = {
 };
 
 type PathIdentity = Pick<ArchiveIdentity, 'dev' | 'ino'>;
+
+type ArchiveDigest = Pick<ArchiveIdentity, 'byteLength' | 'sha256'>;
 
 function packageError(code: string): Error {
   return new Error(code);
@@ -780,58 +782,6 @@ async function assertExportSnapshotIdentity(
   }
 }
 
-/** 记录归档路径所指向普通文件的身份与实际内容哈希。 */
-async function captureArchiveIdentity(path: string): Promise<ArchiveIdentity> {
-  let verified;
-  try {
-    verified = await openVerifiedRegularFile(path, Number.MAX_SAFE_INTEGER);
-  } catch {
-    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
-  }
-  try {
-    const opened = await verified.handle.stat();
-    const current = await lstat(path);
-    if (
-      !current.isFile()
-      || !sameIdentity(opened, current)
-      || current.size !== verified.byteLength
-    ) {
-      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
-    }
-    return {
-      dev: opened.dev,
-      ino: opened.ino,
-      byteLength: verified.byteLength,
-      sha256: verified.sha256
-    };
-  } catch (error) {
-    if (
-      error instanceof Error
-      && error.message === 'CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED'
-    ) {
-      throw error;
-    }
-    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
-  } finally {
-    await verified.handle.close().catch(() => undefined);
-  }
-}
-
-/** 复核路径仍指向同一份归档内容，防止校验与提交之间发生替换。 */
-async function assertArchiveIdentity(
-  path: string,
-  expected: ArchiveIdentity
-): Promise<void> {
-  const current = await captureArchiveIdentity(path);
-  if (
-    !sameIdentity(expected, current)
-    || current.byteLength !== expected.byteLength
-    || current.sha256 !== expected.sha256
-  ) {
-    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
-  }
-}
-
 /** 清理时只移除本次创建且身份未被替换的路径。 */
 async function removeIfSameIdentity(
   path: string,
@@ -849,18 +799,172 @@ async function removeIfSameIdentity(
   }
 }
 
-/** 捕获普通文件当前路径身份，用于只清理本次实际链接的 inode。 */
-async function capturePathIdentity(path: string): Promise<PathIdentity> {
+/** 从已打开句柄捕获创建时身份，不重新信任可变路径。 */
+async function captureHandleIdentity(handle: FileHandle): Promise<PathIdentity> {
+  try {
+    const current = await handle.stat();
+    if (!current.isFile()) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
+    return { dev: current.dev, ino: current.ino };
+  } catch {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+}
+
+/** 仅判断路径是否仍绑定到已知句柄身份，不返回陌生路径身份。 */
+async function assertPathIdentity(
+  path: string,
+  expected: PathIdentity
+): Promise<void> {
   let current;
   try {
     current = await lstat(path);
   } catch {
     throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
   }
-  if (current.isSymbolicLink() || !current.isFile()) {
+  if (
+    current.isSymbolicLink()
+    || !current.isFile()
+    || !sameIdentity(expected, current)
+  ) {
     throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
   }
-  return { dev: current.dev, ino: current.ino };
+}
+
+/** 将归档流直接写入可信句柄，并同步记录实际写入摘要。 */
+function createHandleArchiveWriter(handle: FileHandle): {
+  stream: Writable;
+  digest(): ArchiveDigest;
+} {
+  const hash = createHash('sha256');
+  let byteLength = 0;
+  let completed: ArchiveDigest | undefined;
+  const stream = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      const position = byteLength;
+      void (async () => {
+        let written = 0;
+        while (written < chunk.byteLength) {
+          const result = await handle.write(
+            chunk,
+            written,
+            chunk.byteLength - written,
+            position + written
+          );
+          if (result.bytesWritten === 0) {
+            throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+          }
+          written += result.bytesWritten;
+        }
+        byteLength += chunk.byteLength;
+        hash.update(chunk);
+      })().then(() => callback(), callback);
+    },
+    final(callback) {
+      completed = { byteLength, sha256: hash.digest('hex') };
+      callback();
+    }
+  });
+  return {
+    stream,
+    digest() {
+      if (completed === undefined) {
+        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+      }
+      return completed;
+    }
+  };
+}
+
+/** 从可信临时句柄复制到可信目标句柄，并校验实际复制字节。 */
+async function copyVerifiedArchive(
+  source: FileHandle,
+  destination: FileHandle,
+  expected: ArchiveDigest
+): Promise<void> {
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let offset = 0;
+  while (offset < expected.byteLength) {
+    const result = await source.read(
+      buffer,
+      0,
+      Math.min(buffer.byteLength, expected.byteLength - offset),
+      offset
+    );
+    if (result.bytesRead === 0) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
+    let written = 0;
+    while (written < result.bytesRead) {
+      const writeResult = await destination.write(
+        buffer,
+        written,
+        result.bytesRead - written,
+        offset + written
+      );
+      if (writeResult.bytesWritten === 0) {
+        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+      }
+      written += writeResult.bytesWritten;
+    }
+    hash.update(buffer.subarray(0, result.bytesRead));
+    offset += result.bytesRead;
+  }
+  if (hash.digest('hex') !== expected.sha256) {
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
+}
+
+/** 从可信句柄重读并复核身份、大小和哈希。 */
+async function assertHandleArchiveIdentity(
+  handle: FileHandle,
+  expected: ArchiveIdentity
+): Promise<void> {
+  try {
+    const before = await handle.stat();
+    if (
+      !before.isFile()
+      || !sameIdentity(expected, before)
+      || before.size !== expected.byteLength
+    ) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let offset = 0;
+    while (offset < expected.byteLength) {
+      const result = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.byteLength, expected.byteLength - offset),
+        offset
+      );
+      if (result.bytesRead === 0) {
+        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+      }
+      offset += result.bytesRead;
+      hash.update(buffer.subarray(0, result.bytesRead));
+    }
+    const after = await handle.stat();
+    if (
+      !after.isFile()
+      || !sameIdentity(expected, after)
+      || after.size !== expected.byteLength
+      || hash.digest('hex') !== expected.sha256
+    ) {
+      throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    }
+  } catch (error) {
+    if (
+      error instanceof Error
+      && error.message === 'CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED'
+    ) {
+      throw error;
+    }
+    throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+  }
 }
 
 /** 校验真正送入 ZIP 的流字节，不缓存完整素材。 */
@@ -1333,83 +1437,94 @@ export class CharacterPackageService {
     throw packageError('CHARACTER_PACKAGE_ROLLBACK_FAILED');
   }
 
-  /** 将归档写入同目录临时文件，并在双重身份校验后原子建立目标。 */
+  /** 以临时与目标 FileHandle 为信任根流式写入，拒绝信任路径替换。 */
   private async writeArchive(
     destination: string,
     archive: ZipFile,
     startStreams?: () => void
   ): Promise<void> {
     const temporaryDestination = `${destination}.${this.createId()}.tmp`;
-    let archiveIdentity: ArchiveIdentity | undefined;
-    const temporaryCleanupIdentities: PathIdentity[] = [];
-    const rememberCurrentTemporaryIdentity = async (): Promise<void> => {
-      try {
-        temporaryCleanupIdentities.push(
-          await capturePathIdentity(temporaryDestination)
-        );
-      } catch {
-        // 路径已消失或不再是普通文件时不做不安全清理。
-      }
-    };
+    let temporaryHandle: FileHandle | undefined;
+    let temporaryIdentity: PathIdentity | undefined;
+    let destinationHandle: FileHandle | undefined;
+    let destinationIdentity: PathIdentity | undefined;
+    let committed = false;
     try {
-      const output = createWriteStream(
+      temporaryHandle = await open(
         temporaryDestination,
-        { flags: 'wx', mode: 0o600 }
+        'wx+',
+        0o600
       );
+      temporaryIdentity = await captureHandleIdentity(temporaryHandle);
+      const archiveWriter = createHandleArchiveWriter(temporaryHandle);
       forwardArchiveError(archive);
-      const transfer = pipeline(archive.outputStream, output);
+      const transfer = pipeline(
+        archive.outputStream,
+        archiveWriter.stream
+      );
       startStreams?.();
       archive.end();
       await transfer;
-      archiveIdentity = await captureArchiveIdentity(temporaryDestination);
-      temporaryCleanupIdentities.push(archiveIdentity);
-
+      const archiveIdentity: ArchiveIdentity = {
+        ...temporaryIdentity,
+        ...archiveWriter.digest()
+      };
+      await assertHandleArchiveIdentity(temporaryHandle, archiveIdentity);
+      await this.dependencies.onCheckpoint?.(
+        'export:after-temp-write',
+        dirname(destination),
+        destination
+      );
+      await assertHandleArchiveIdentity(temporaryHandle, archiveIdentity);
+      await assertPathIdentity(temporaryDestination, temporaryIdentity);
+      await this.dependencies.onCheckpoint?.(
+        'export:before-commit',
+        dirname(destination),
+        destination
+      );
+      await assertHandleArchiveIdentity(temporaryHandle, archiveIdentity);
+      await assertPathIdentity(temporaryDestination, temporaryIdentity);
+      await this.dependencies.onCheckpoint?.(
+        'export:before-link',
+        dirname(destination),
+        destination
+      );
+      await assertHandleArchiveIdentity(temporaryHandle, archiveIdentity);
+      await assertPathIdentity(temporaryDestination, temporaryIdentity);
       try {
-        await this.dependencies.onCheckpoint?.(
-          'export:before-commit',
-          dirname(destination),
-          destination
-        );
-        await assertArchiveIdentity(temporaryDestination, archiveIdentity);
-        await this.dependencies.onCheckpoint?.(
-          'export:before-link',
-          dirname(destination),
-          destination
-        );
+        destinationHandle = await open(destination, 'wx+', 0o600);
       } catch (error) {
-        await rememberCurrentTemporaryIdentity();
-        throw error;
-      }
-
-      try {
-        await link(temporaryDestination, destination);
-      } catch (error) {
-        await rememberCurrentTemporaryIdentity();
         if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
           throw packageError('CHARACTER_PACKAGE_DESTINATION_EXISTS');
         }
         throw error;
       }
-
-      await rememberCurrentTemporaryIdentity();
-      const linkedIdentity = await capturePathIdentity(destination);
-      if (!sameIdentity(archiveIdentity, linkedIdentity)) {
-        await removeIfSameIdentity(destination, linkedIdentity);
-        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
-      }
-      try {
-        await assertArchiveIdentity(destination, archiveIdentity);
-      } catch {
-        await removeIfSameIdentity(destination, linkedIdentity);
-        throw packageError('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
-      }
+      destinationIdentity = await captureHandleIdentity(destinationHandle);
+      await copyVerifiedArchive(
+        temporaryHandle,
+        destinationHandle,
+        archiveIdentity
+      );
+      await this.dependencies.onCheckpoint?.(
+        'export:after-destination-write',
+        dirname(destination),
+        destination
+      );
+      await assertHandleArchiveIdentity(destinationHandle, {
+        ...destinationIdentity,
+        byteLength: archiveIdentity.byteLength,
+        sha256: archiveIdentity.sha256
+      });
+      await assertPathIdentity(destination, destinationIdentity);
+      committed = true;
     } finally {
-      if (archiveIdentity === undefined) {
-        await rm(temporaryDestination, { force: true });
-      } else {
-        for (const identity of temporaryCleanupIdentities) {
-          await removeIfSameIdentity(temporaryDestination, identity);
-        }
+      await destinationHandle?.close().catch(() => undefined);
+      await temporaryHandle?.close().catch(() => undefined);
+      if (!committed && destinationIdentity !== undefined) {
+        await removeIfSameIdentity(destination, destinationIdentity);
+      }
+      if (temporaryIdentity !== undefined) {
+        await removeIfSameIdentity(temporaryDestination, temporaryIdentity);
       }
     }
   }

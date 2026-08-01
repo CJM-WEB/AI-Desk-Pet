@@ -487,7 +487,7 @@ describe('角色包 Main 服务', () => {
     await expect(access(destination)).rejects.toThrow();
   });
 
-  test('临时 ZIP 复核后、硬链接前被替换时拒绝并清理错误目标', async () => {
+  test('临时 ZIP 复核后、目标创建前被替换时拒绝且不删除陌生文件', async () => {
     await createPublishedCharacter();
     const destination = join(testDirectory, 'replaced-before-link.zip');
     let replacedTemporaryPath: string | undefined;
@@ -512,7 +512,56 @@ describe('角色包 Main 服务', () => {
       .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
     expect(replacedTemporaryPath).toBeTypeOf('string');
     await expect(access(destination)).rejects.toThrow();
-    await expect(access(replacedTemporaryPath!)).rejects.toThrow();
+    await expect(readFile(replacedTemporaryPath!))
+      .resolves.toEqual(Buffer.from('ATTACKER_ARCHIVE'));
+  });
+
+  test('归档写完、可信基准捕获前替换临时路径时拒绝提交', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'replaced-before-baseline.zip');
+    const attacker = Buffer.from('ATTACKER_ARCHIVE');
+    let replacedTemporaryPath: string | undefined;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint) {
+        if (checkpoint !== 'export:after-temp-write') return;
+        const temporaryName = (await readdir(dirname(destination))).find(name => (
+          name.startsWith(`${basename(destination)}.`) && name.endsWith('.tmp')
+        ));
+        expect(temporaryName).toBeTypeOf('string');
+        if (!temporaryName) return;
+        replacedTemporaryPath = join(dirname(destination), temporaryName);
+        await rename(
+          replacedTemporaryPath,
+          `${replacedTemporaryPath}.original`
+        );
+        await writeFile(replacedTemporaryPath, attacker);
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    await expect(access(destination)).rejects.toThrow();
+    await expect(readFile(replacedTemporaryPath!)).resolves.toEqual(attacker);
+  });
+
+  test('目标写入后被并发替换时拒绝且不删除并发方文件', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'replaced-after-write.zip');
+    const competitor = Buffer.from('COMPETITOR');
+    let replaced = false;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint) {
+        if (checkpoint !== 'export:after-destination-write' || replaced) return;
+        replaced = true;
+        await rename(destination, `${destination}.original`);
+        await writeFile(destination, competitor, { flag: 'wx' });
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    expect(replaced).toBe(true);
+    await expect(readFile(destination)).resolves.toEqual(competitor);
   });
 
   test('导出只包含指定角色草稿、源素材和运行时必需文件', async () => {
