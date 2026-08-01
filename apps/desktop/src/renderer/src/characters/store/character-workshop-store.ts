@@ -1441,14 +1441,28 @@ export function createCharacterWorkshopStore(
         const current = get();
         if (!current.selectedActionId) return;
         const safePatch = structuredClone(patch);
-        const { frames, fps, name, direction, loop, weight } = safePatch;
+        const {
+          frames,
+          fps,
+          anchors,
+          regions,
+          name,
+          direction,
+          loop,
+          weight
+        } = safePatch;
         const actionPatch: Partial<CharacterActionDefinitionV2> = {
           ...(name === undefined ? {} : { name }),
           ...(direction === undefined ? {} : { direction }),
           ...(loop === undefined ? {} : { loopPolicy: loop ? 'presentation' : 'never' }),
           ...(weight === undefined ? {} : { preference: weight })
         };
-        if (frames === undefined && fps === undefined) {
+        if (
+          frames === undefined
+          && fps === undefined
+          && anchors === undefined
+          && regions === undefined
+        ) {
           get().updateAction(current.selectedActionId, actionPatch);
           return;
         }
@@ -1460,17 +1474,25 @@ export function createCharacterWorkshopStore(
           if (!skin) return;
           let presentation = skin.presentations.find(candidate => candidate.actionId === actionId);
           if (!presentation) {
+            // 回退表现首次被编辑时先克隆为当前皮肤的精确覆盖，避免改写来源。
+            const resolved = resolveCharacterPresentation(draft, skin.id, actionId);
             presentation = {
+              ...(resolved ? structuredClone(resolved.presentation) : {}),
               actionId,
-              fps: fps ?? 8,
-              anchors: { ground: { x: 0.5, y: 1 } },
-              frames: frames ?? []
+              fps: fps ?? resolved?.presentation.fps ?? 8,
+              anchors: anchors
+                ?? structuredClone(resolved?.presentation.anchors)
+                ?? { ground: { x: 0.5, y: 1 } },
+              frames: frames
+                ?? structuredClone(resolved?.presentation.frames)
+                ?? []
             };
             skin.presentations.push(presentation);
-          } else {
-            if (frames !== undefined) presentation.frames = frames;
-            if (fps !== undefined) presentation.fps = fps;
           }
+          if (frames !== undefined) presentation.frames = frames;
+          if (fps !== undefined) presentation.fps = fps;
+          if (anchors !== undefined) presentation.anchors = anchors;
+          if (regions !== undefined) presentation.regions = regions;
         });
       },
 

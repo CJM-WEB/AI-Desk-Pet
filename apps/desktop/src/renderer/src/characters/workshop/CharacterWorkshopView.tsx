@@ -51,7 +51,10 @@ import {
 } from './PreviewControls';
 import { AtlasImportPanel } from './AtlasImportPanel';
 import { WorkshopToastLayer } from './WorkshopToastLayer';
-import { DraftCharacterPreview } from './DraftCharacterPreview';
+import {
+  DraftCharacterPreview,
+  draftActionFromResolvedPresentation
+} from './DraftCharacterPreview';
 import './character-workshop.css';
 
 export interface CharacterWorkshopViewProps {
@@ -68,36 +71,27 @@ export interface CharacterWorkshopWorkspaceProps {
 }
 
 function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
-  const action = state.draft?.actions.find(
+  if (!state.draft || !state.selectedSkinId || !state.selectedActionId) {
+    return null;
+  }
+  const resolved = resolveCharacterPresentation(
+    state.draft,
+    state.selectedSkinId,
+    state.selectedActionId
+  );
+  if (!resolved) return null;
+  const requestedAction = state.draft.actions.find(
     candidate => candidate.id === state.selectedActionId
   );
-  if (!action) return null;
-  const skin = state.draft?.skins.find(candidate => candidate.id === state.selectedSkinId);
-  const presentation = skin?.presentations.find(candidate => candidate.actionId === action.id);
-  return {
-    id: action.id,
-    name: action.name,
-    fps: presentation?.fps ?? 8,
-    loop: action.loopPolicy !== 'never',
-    weight: action.preference,
-    direction: action.direction,
-    anchors: presentation?.anchors ?? { ground: { x: 0.5, y: 1 } },
-    frames: presentation?.frames ?? []
-  };
-}
-
-/** Task 9 接管 V2 皮肤回退预览前，保持旧播放器只消费当前精确表现。 */
-function previewDraft(
-  state: CharacterWorkshopState,
-  action: DraftActionClip | null
-) {
-  if (!state.draft || !action) return null;
-  return {
-    version: 1 as const,
-    id: state.draft.id,
-    name: state.draft.name,
-    states: [{ id: 'idle' as const, kind: 'core' as const, actions: [action] }]
-  };
+  const projected = draftActionFromResolvedPresentation(resolved);
+  return requestedAction ? {
+    ...projected,
+    id: requestedAction.id,
+    name: requestedAction.name,
+    loop: requestedAction.loopPolicy !== 'never',
+    weight: requestedAction.preference,
+    direction: requestedAction.direction
+  } : projected;
 }
 
 type PendingConfigurationDelete =
@@ -242,10 +236,6 @@ export function CharacterWorkshopWorkspace(
       state.selectedActionId
     )?.source ?? null;
   }, [state.draft, state.selectedSkinId, state.selectedActionId]);
-  const legacyPreviewDraft = useMemo(() => previewDraft(state, action), [
-    action,
-    state.draft
-  ]);
   const activationCharacter = state.characters.find(
     character => character.id === pendingActivation
   );
@@ -609,8 +599,9 @@ export function CharacterWorkshopWorkspace(
           <div className="preview-workspace">
             <DraftCharacterPreview
               characterId={state.selectedCharacterId}
-              draft={legacyPreviewDraft}
-              stateId={action ? 'idle' : null}
+              draft={state.draft}
+              selectedSkinId={state.selectedSkinId}
+              stateId={state.selectedStateId}
               actionId={state.selectedActionId}
               selectedFrameId={selectedFrameId}
               preview={preview}
@@ -711,7 +702,7 @@ export function CharacterWorkshopWorkspace(
               disabled={busy}
               onChange={patch => state.updateState(selectedState.id, patch)}
             />
-          ) : state.selectedEntity.kind === 'action' && selectedActionDefinition && action ? (
+          ) : state.selectedEntity.kind === 'action' && selectedActionDefinition ? (
             <>
               <AtlasImportPanel
                 sources={state.availableSources}
@@ -725,14 +716,16 @@ export function CharacterWorkshopWorkspace(
                 disabled={busy}
                 onChange={patch => state.updateAction(selectedActionDefinition.id, patch)}
               />
-              <AnchorEditor
-                action={action}
-                frameId={selectedFrameId}
-                perFrame={perFrameAnchors}
-                disabled={busy}
-                onPerFrameChange={setPerFrameAnchors}
-                onChange={next => state.updateCurrentAction(next)}
-              />
+              {action ? (
+                <AnchorEditor
+                  action={action}
+                  frameId={selectedFrameId}
+                  perFrame={perFrameAnchors}
+                  disabled={busy}
+                  onPerFrameChange={setPerFrameAnchors}
+                  onChange={next => state.updateCurrentAction(next)}
+                />
+              ) : null}
             </>
           ) : (
             <p className="workshop-empty inspector-empty">请选择角色后编辑动作</p>

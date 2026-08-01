@@ -765,6 +765,55 @@ describe('角色工作室 Zustand 状态层', () => {
       .toBe(0);
   });
 
+  test('回退表现首次编辑锚点时克隆到当前皮肤且不改写来源', async () => {
+    const loadedDraft = playableDraft('default', '默认角色');
+    const inherited = structuredClone(loadedDraft.skins[0]!.presentations[0]!);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().selectSkin('winter');
+    store.getState().selectAction('idle-main');
+
+    store.getState().updateCurrentAction({
+      anchors: { ground: { x: 0.4, y: 0.9 }, carry: { x: 0.7, y: 0.3 } },
+      regions: { click: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 } }
+    });
+
+    const next = store.getState().draft!;
+    expect(next.skins.find(skin => skin.id === 'winter')?.presentations)
+      .toEqual([{
+        ...inherited,
+        actionId: 'idle-main',
+        anchors: { ground: { x: 0.4, y: 0.9 }, carry: { x: 0.7, y: 0.3 } },
+        regions: { click: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 } }
+      }]);
+    expect(next.skins.find(skin => skin.id === 'default')?.presentations[0])
+      .toEqual(inherited);
+  });
+
+  test('回退表现首次编辑帧时只为当前皮肤创建精确覆盖', async () => {
+    const loadedDraft = playableDraft('default', '默认角色');
+    const inherited = structuredClone(loadedDraft.skins[0]!.presentations[0]!);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().selectSkin('winter');
+    store.getState().selectAction('idle-main');
+    const frames = inherited.frames.map(frame => ({ ...frame, x: 1 }));
+
+    store.getState().updateCurrentAction({ frames });
+
+    const next = store.getState().draft!;
+    expect(next.skins.find(skin => skin.id === 'winter')?.presentations[0])
+      .toEqual({ ...inherited, actionId: 'idle-main', frames });
+    expect(next.skins.find(skin => skin.id === 'default')?.presentations[0])
+      .toEqual(inherited);
+  });
+
   test('更新方法忽略 patch.id，移除当前状态的 actionIds 后选择安全降级', async () => {
     const api = apiDouble().api;
     const store = createCharacterWorkshopStore(api);
