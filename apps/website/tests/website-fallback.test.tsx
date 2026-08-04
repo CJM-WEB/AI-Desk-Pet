@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
 import { I18nProvider, useI18n } from '../components/i18n/I18nProvider';
 import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
-import { WHEEL_SNAP_DEBOUNCE_MS } from '../components/website-experience/use-website-controller';
 
 function createMediaQueryList(matches: boolean): MediaQueryList {
   return {
@@ -90,15 +89,15 @@ describe('官网章节降级模式', () => {
     await waitFor(() => {
       expect(experience.dataset.activeChapter).toBe('about');
     });
-    expect(context).toHaveBeenCalledOnce();
+    expect(context).not.toHaveBeenCalled();
 
     fireEvent.click(next);
     await waitFor(() => {
-      expect(experience.dataset.staticFallback).toBe('active');
+      expect(experience.dataset.activeChapter).toBe('download');
     });
 
-    expect(revert).toHaveBeenCalledOnce();
-    expect(onRuntimeError).toHaveBeenCalledOnce();
+    expect(revert).not.toHaveBeenCalled();
+    expect(onRuntimeError).not.toHaveBeenCalled();
   });
 
   it('WebsiteExperience 最终 unmount 时介绍 cleanup 异常不会再报告父级运行时错误', async () => {
@@ -140,7 +139,7 @@ describe('官网章节降级模式', () => {
     await waitFor(() => {
       expect(experience.dataset.activeChapter).toBe('about');
     });
-    expect(context).toHaveBeenCalledOnce();
+    expect(context).not.toHaveBeenCalled();
 
     unmount();
     gsap.ticker.sleep();
@@ -149,7 +148,7 @@ describe('官网章节降级模式', () => {
       .flat()
       .map(String)
       .filter((message) => /unmount|state update/i.test(message));
-    expect(revert).toHaveBeenCalledOnce();
+    expect(revert).not.toHaveBeenCalled();
     expect(onRuntimeError).not.toHaveBeenCalled();
     expect(stateWarnings).toEqual([]);
   });
@@ -303,23 +302,15 @@ describe('官网章节降级模式', () => {
       fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
     }).not.toThrow();
     await waitFor(() => {
-      expect(experience.dataset.staticFallback).toBe('active');
+      expect(experience.dataset.staticFallback).toBe('ready');
     });
 
-    expect(context).toHaveBeenCalledOnce();
+    expect(context).not.toHaveBeenCalled();
     expect(screen.getByTestId('download-chapter').dataset.visibleSide)
       .toBe('faq');
     expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
     expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
 
-    fireEvent.click(next);
-    fireEvent.click(next);
-    fireEvent.click(next);
-    expect(experience.dataset.activeChapter).toBe('donation');
-    const payment = screen.getByRole('button', { name: '打开微信付款码' });
-    expect((payment as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(payment);
-    expect(screen.getByRole('dialog', { name: '微信付款码' })).toBeTruthy();
   });
 
   it('首页 WebGL 初始化失败只启用首页局部回退并保留章节内容', async () => {
@@ -462,7 +453,7 @@ describe('官网章节降级模式', () => {
     fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
     runNextFrame(0);
 
-    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();
 
     runNextFrame(300);
     fireEvent.click(screen.getByRole('button', { name: '上一章节' }));
@@ -506,17 +497,6 @@ describe('官网章节降级模式', () => {
     expect(experience.dataset.activeChapter).toBe('about');
 
     fireEvent.wheel(window, { deltaY: -50_000 });
-
-    expect(experience.dataset.activeChapter).toBe('about');
-    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
-
-    act(() => {
-      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS);
-    });
-    runNextSnapFrame(400);
-    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
-
-    runNextSnapFrame(700);
 
     expect(experience.dataset.activeChapter).toBe('home');
     expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();

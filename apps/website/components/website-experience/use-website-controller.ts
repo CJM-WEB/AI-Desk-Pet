@@ -29,7 +29,6 @@ export interface WebsiteControllerResult {
 }
 
 const SNAP_DURATION_MS = 300;
-export const WHEEL_SNAP_DEBOUNCE_MS = 110;
 
 type ChapterTouchGesture = {
   pointerId: number;
@@ -67,7 +66,7 @@ export function applyWheelChapterInput(input: {
 }
 
 /**
- * 统一管理官网章节输入和可恢复的章节吸附动画。
+ * 统一管理官网章节输入：滚轮直接驱动连续进度，按钮与键盘保留可恢复的章节导航动画。
  */
 export function useWebsiteController(
   options: WebsiteControllerOptions
@@ -91,7 +90,6 @@ export function useWebsiteController(
   const pointerFrameRef = useRef<number | null>(null);
   const snapFrameRef = useRef<number | null>(null);
   const snapTargetRef = useRef<number | null>(null);
-  const wheelSnapTimeoutRef = useRef<number | null>(null);
   const touchGestureRef = useRef<ChapterTouchGesture | null>(null);
   const onInitializationErrorRef = useRef(options.onInitializationError);
 
@@ -141,13 +139,6 @@ export function useWebsiteController(
     }
   }, [stopSnapFrame]);
 
-  const clearWheelSnapTimeout = useCallback(() => {
-    if (wheelSnapTimeoutRef.current !== null) {
-      window.clearTimeout(wheelSnapTimeoutRef.current);
-      wheelSnapTimeoutRef.current = null;
-    }
-  }, []);
-
   const startSnap = useCallback((target: number) => {
     stopSnapFrame();
     snapTargetRef.current = target;
@@ -189,29 +180,14 @@ export function useWebsiteController(
     snapFrameRef.current = window.requestAnimationFrame(advance);
   }, [commitProgress, commitSettledIndex, stopSnapFrame]);
 
-  const scheduleWheelSnap = useCallback(() => {
-    clearWheelSnapTimeout();
-    wheelSnapTimeoutRef.current = window.setTimeout(() => {
-      wheelSnapTimeoutRef.current = null;
-      const target = snapChapterProgress(progressRef.current, chapterCount);
-      if (isPausedRef.current) {
-        snapTargetRef.current = target;
-        return;
-      }
-
-      startSnap(target);
-    }, WHEEL_SNAP_DEBOUNCE_MS);
-  }, [chapterCount, clearWheelSnapTimeout, startSnap]);
-
   const goToAdjacent = useCallback((direction: -1 | 1) => {
     if (isPausedRef.current) {
       return;
     }
 
-    clearWheelSnapTimeout();
     const target = clampChapterProgress(settledIndexRef.current + direction, chapterCount);
     if (target === settledIndexRef.current) {
-      // 边界键若打断滚轮防抖，只恢复当前章节吸附，不推进越界目标。
+      // 边界键若在连续进度中触发，只回到当前章节，不推进越界目标。
       if (progressRef.current !== settledIndexRef.current) {
         startSnap(settledIndexRef.current);
       }
@@ -221,7 +197,6 @@ export function useWebsiteController(
     startSnap(target);
   }, [
     chapterCount,
-    clearWheelSnapTimeout,
     startSnap
   ]);
 
@@ -232,12 +207,10 @@ export function useWebsiteController(
 
     staticFallbackRef.current = true;
     normalizePausedState();
-    clearWheelSnapTimeout();
     cancelSnap();
     commitProgress(settledIndexRef.current);
   }, [
     cancelSnap,
-    clearWheelSnapTimeout,
     commitProgress,
     normalizePausedState,
     options.staticFallback
@@ -325,11 +298,13 @@ export function useWebsiteController(
         settledIndex: settledIndexRef.current,
         chapterCount
       });
-      setIsChapterTransitioning(
-        snapChapterProgress(next, chapterCount) !== settledIndexRef.current
-      );
+      setIsChapterTransitioning(Math.abs(next - settledIndexRef.current) > 0.0001);
       commitProgress(next);
-      scheduleWheelSnap();
+      const reachedIndex = Math.round(next);
+      if (Math.abs(next - reachedIndex) < 0.0001) {
+        commitSettledIndex(reachedIndex);
+        setIsChapterTransitioning(false);
+      }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isLocalInput(event.target) || isPausedRef.current) {
@@ -429,7 +404,6 @@ export function useWebsiteController(
       tornDown = true;
 
       cancelSnap();
-      clearWheelSnapTimeout();
       touchGestureRef.current = null;
       if (pointerFrameRef.current !== null) {
         window.cancelAnimationFrame(pointerFrameRef.current);
@@ -468,11 +442,10 @@ export function useWebsiteController(
   }, [
     cancelSnap,
     chapterCount,
-    clearWheelSnapTimeout,
+    commitSettledIndex,
     commitProgress,
     goToAdjacent,
     notifyInitializationError,
-    scheduleWheelSnap,
     startSnap,
     stopSnapFrame,
     options.staticFallback

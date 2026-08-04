@@ -19,9 +19,16 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   uniform float u_radius;
   uniform float u_motion;
   uniform float u_transition;
+  uniform vec2 u_blobOffsets[3];
+  uniform float u_hoveredBlob;
+  uniform float u_hoverAmount;
+  uniform float u_dragging;
+  uniform float u_rippleActivity;
   uniform vec4 u_ripples[6];
   uniform sampler2D u_logoTexture;
   uniform sampler2D u_textTexture;
+  uniform sampler2D u_cornerTextTexture;
+  uniform sampler2D u_glassTextTexture;
 
   float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -109,6 +116,95 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
   }
 
+  float smoothUnion(float first, float second, float radius) {
+    float blend = clamp(0.5 + 0.5 * (second - first) / radius, 0.0, 1.0);
+    return mix(second, first, blend) - radius * blend * (1.0 - blend);
+  }
+
+  float capsuleSdf(vec2 position, vec2 start, vec2 end, float radius) {
+    vec2 segment = end - start;
+    float amount = clamp(dot(position - start, segment) / max(dot(segment, segment), 0.0001), 0.0, 1.0);
+    return length(position - start - segment * amount) - radius;
+  }
+
+  float selectedBlob(float index) {
+    return 1.0 - step(0.49, abs(u_hoveredBlob - index));
+  }
+
+  float disconnectionAmount() {
+    return max(u_hoverAmount, max(u_dragging, u_rippleActivity));
+  }
+
+  vec2 blobCenter(float index) {
+    float minimumSide = min(u_resolution.x, u_resolution.y);
+    float separation = minimumSide * 0.075 * disconnectionAmount();
+    if (index < 0.5) {
+      return u_resolution * vec2(0.24, 0.21) + u_blobOffsets[0] * u_resolution
+        + vec2(-separation * 0.65, -separation)
+        + vec2(0.0, sin(u_time * 0.55) * minimumSide * 0.020 * u_motion);
+    }
+    if (index < 1.5) {
+      return u_resolution * vec2(0.50, 0.52) + u_blobOffsets[1] * u_resolution
+        + vec2(0.0, sin(u_time * 0.47 + 2.1) * minimumSide * 0.026 * u_motion);
+    }
+    return u_resolution * vec2(0.76, 0.83) + u_blobOffsets[2] * u_resolution
+      + vec2(separation * 0.65, separation)
+      + vec2(0.0, sin(u_time * 0.51 + 4.0) * minimumSide * 0.020 * u_motion);
+  }
+
+  vec2 blobHalfSize(float index) {
+    if (index < 0.5) {
+      return u_resolution * vec2(0.20, 0.145) * (1.0 + selectedBlob(0.0) * u_hoverAmount * 0.22);
+    }
+    if (index < 1.5) {
+      return u_resolution * vec2(0.25, 0.19) * (1.0 + selectedBlob(1.0) * u_hoverAmount * 0.22);
+    }
+    return u_resolution * vec2(0.20, 0.145) * (1.0 + selectedBlob(2.0) * u_hoverAmount * 0.22);
+  }
+
+  float liquidGlassSdf(vec2 pixel) {
+    vec2 viewportCenter = u_resolution * 0.5;
+    vec2 homeHalfSize = viewportCenter - vec2(u_inset);
+    float home = roundedBoxSdf(pixel - viewportCenter, homeHalfSize, u_radius);
+
+    float minimumSide = min(u_resolution.x, u_resolution.y);
+    vec2 center0 = blobCenter(0.0);
+    vec2 center1 = blobCenter(1.0);
+    vec2 center2 = blobCenter(2.0);
+    vec2 half0 = blobHalfSize(0.0);
+    vec2 half1 = blobHalfSize(1.0);
+    vec2 half2 = blobHalfSize(2.0);
+    float cornerRadius = minimumSide * 0.055;
+    float blob0 = roundedBoxSdf(pixel - center0, half0, cornerRadius);
+    float blob1 = roundedBoxSdf(pixel - center1, half1, cornerRadius * 1.12);
+    float blob2 = roundedBoxSdf(pixel - center2, half2, cornerRadius);
+
+    float neckRadius = minimumSide * 0.056;
+    float neck01X = mix(center0.x + half0.x, center1.x - half1.x, 0.5);
+    float neck12X = mix(center1.x + half1.x, center2.x - half2.x, 0.5);
+    float neck01 = capsuleSdf(
+      pixel,
+      vec2(neck01X, center0.y + half0.y),
+      vec2(neck01X, center1.y - half1.y),
+      neckRadius
+    );
+    float neck12 = capsuleSdf(
+      pixel,
+      vec2(neck12X, center1.y + half1.y),
+      vec2(neck12X, center2.y - half2.y),
+      neckRadius
+    );
+    float disconnected = disconnectionAmount();
+    neck01 = mix(neck01, 100000.0, disconnected);
+    neck12 = mix(neck12, 100000.0, disconnected);
+
+    float about = smoothUnion(blob0, blob1, minimumSide * 0.018);
+    about = smoothUnion(about, blob2, minimumSide * 0.018);
+    about = smoothUnion(about, neck01, minimumSide * 0.024);
+    about = smoothUnion(about, neck12, minimumSide * 0.024);
+    return mix(home, about, u_transition);
+  }
+
   vec2 rippleDisplacement(vec2 uv, out float waveLight) {
     float aspect = u_resolution.x / u_resolution.y;
     vec2 displacement = vec2(0.0);
@@ -148,20 +244,16 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   void main() {
     vec2 uv = v_uv;
     vec2 pixel = uv * u_resolution;
+    float minimumSide = min(u_resolution.x, u_resolution.y);
     vec2 center = u_resolution * 0.5;
     vec2 halfSize = center - vec2(u_inset);
     vec2 localPosition = pixel - center;
-    float sdf = roundedBoxSdf(localPosition, halfSize, u_radius);
-    float glassMask = (1.0 - smoothstep(-26.0, 10.0, sdf))
-      * (1.0 - smoothstep(0.16, 0.88, u_transition));
-
-    vec2 edgeQuery = abs(localPosition) - halfSize + u_radius;
-    vec2 cornerVector = max(edgeQuery, 0.0);
-    vec2 sideNormal = edgeQuery.x > edgeQuery.y
-      ? vec2(sign(localPosition.x), 0.0)
-      : vec2(0.0, sign(localPosition.y));
-    vec2 cornerNormal = normalize(cornerVector + vec2(0.0001)) * sign(localPosition);
-    vec2 edgeNormal = mix(sideNormal, cornerNormal, step(0.0001, dot(cornerVector, cornerVector)));
+    float sdf = liquidGlassSdf(pixel);
+    float glassMask = 1.0 - smoothstep(-26.0, 10.0, sdf);
+    vec2 edgeNormal = normalize(vec2(
+      liquidGlassSdf(pixel + vec2(1.5, 0.0)) - liquidGlassSdf(pixel - vec2(1.5, 0.0)),
+      liquidGlassSdf(pixel + vec2(0.0, 1.5)) - liquidGlassSdf(pixel - vec2(0.0, 1.5))
+    ) + vec2(0.0001));
     float edgeLens = exp(-max(-sdf, 0.0) * 0.045) * glassMask;
     vec2 panelCoordinate = localPosition / max(halfSize, vec2(1.0));
     float curvature = clamp(dot(panelCoordinate, panelCoordinate), 0.0, 1.0);
@@ -186,19 +278,35 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     vec2 viewCenter = uv - 0.5;
     vec2 mouseTilt = (u_pointer - 0.5) * 2.0 * u_motion;
     vec2 sceneUv = uv + refraction * glassMask;
-    vec3 background = flowingBackground(sceneUv, u_time * u_motion, u_transition);
+    vec3 backgroundSharp = flowingBackground(sceneUv, u_time * u_motion, u_transition);
+    vec2 backgroundBlurStep = vec2(mix(7.0, 32.0, u_hoverAmount)) / u_resolution;
+    vec3 backgroundSoft = backgroundSharp * 0.20;
+    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv - vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv + vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv - vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv + backgroundBlurStep, u_time * u_motion, u_transition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv - backgroundBlurStep, u_time * u_motion, u_transition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, -backgroundBlurStep.y), u_time * u_motion, u_transition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv + vec2(-backgroundBlurStep.x, backgroundBlurStep.y), u_time * u_motion, u_transition) * 0.08;
+    vec3 background = mix(backgroundSharp, backgroundSoft, u_hoverAmount);
     float logoPerspective = clamp(1.0 + dot(viewCenter, mouseTilt) * 0.24, 0.76, 1.24);
     vec2 logoUv = viewCenter / logoPerspective + 0.5;
     logoUv += refraction * glassMask - mouseTilt * 0.009;
-    vec2 logoBlurRadius = vec2(6.0) / u_resolution;
+    vec2 logoBlurRadius = vec2(mix(6.0, 30.0, u_hoverAmount)) / u_resolution;
     vec4 logoSharp = texture2D(u_logoTexture, logoUv);
     vec4 logoSoft = logoSharp * 0.40;
     logoSoft += texture2D(u_logoTexture, logoUv + logoBlurRadius) * 0.15;
     logoSoft += texture2D(u_logoTexture, logoUv - logoBlurRadius) * 0.15;
     logoSoft += texture2D(u_logoTexture, logoUv + vec2(logoBlurRadius.x, -logoBlurRadius.y)) * 0.15;
     logoSoft += texture2D(u_logoTexture, logoUv + vec2(-logoBlurRadius.x, logoBlurRadius.y)) * 0.15;
-    vec4 logoLayer = mix(logoSharp, logoSoft, glassMask * 0.94);
+    vec4 logoLayer = mix(logoSharp, logoSoft, max(glassMask * 0.94, u_hoverAmount));
     vec3 scene = mix(background, logoLayer.rgb, logoLayer.a * 0.90 * (1.0 - u_transition));
+    float textPerspective = clamp(1.0 - dot(viewCenter, mouseTilt) * 0.07, 0.95, 1.05);
+    vec2 textUv = viewCenter / textPerspective + 0.5;
+    textUv += refraction * glassMask * 0.9 + mouseTilt * 0.002;
+    vec4 cornerText = texture2D(u_cornerTextTexture, textUv);
+    scene = mix(scene, cornerText.rgb, cornerText.a * 0.96);
 
     float innerEdge = exp(-abs(sdf) * 0.055) * glassMask;
     float razorEdge = exp(-abs(sdf) * 0.7);
@@ -208,9 +316,9 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     float refractiveShade = dot(edgeNormal, normalize(vec2(-0.66, 0.75))) * edgeLens;
 
     vec3 glass = scene * vec3(0.98, 1.0, 1.025);
-    glass = mix(glass, vec3(0.192, 0.204, 0.200), 0.12);
+    glass = mix(glass, vec3(0.192, 0.204, 0.200), mix(0.12, 0.19, u_transition));
     glass += vec3(0.204, 0.329, 0.282) * surface * 0.026;
-    glass += vec3(1.0, 1.0, 1.0) * (innerEdge * 0.020 + pointerGlow + caustic);
+    glass += vec3(1.0, 1.0, 1.0) * (innerEdge * mix(0.020, 0.052, u_transition) + pointerGlow + caustic);
     glass += vec3(0.38, 0.62, 1.0) * innerEdge * (1.0 - topLight) * 0.024;
     glass += vec3(1.0, 0.99, 0.96) * razorEdge * topLight * 0.075;
     glass += vec3(0.76, 0.94, 1.0) * max(refractiveShade, 0.0) * 0.018;
@@ -219,15 +327,33 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     glass -= vec3(0.12, 0.20, 0.32) * max(-waveLight, 0.0) * 0.055;
 
     float outerShadow = smoothstep(46.0, 1.0, sdf) * step(0.0, sdf);
-    vec3 color = scene * (1.0 - outerShadow * 0.030);
+    vec3 color = scene * (1.0 - outerShadow * mix(0.030, 0.085, u_transition));
     color = mix(color, glass, glassMask);
 
     color = 1.0 - exp(-color * 1.22);
     color = pow(color, vec3(0.94));
 
-    float textPerspective = clamp(1.0 - dot(viewCenter, mouseTilt) * 0.10, 0.90, 1.10);
-    vec2 textUv = viewCenter / textPerspective + 0.5;
-    textUv += refraction * glassMask * 0.9 + mouseTilt * 0.0035;
+    /* 文本使用玻璃中心的完整位移与缩放反解采样，保持拖拽、水波和悬浮同步。 */
+    vec2 featureUv = uv + refraction * glassMask * 1.35;
+    vec2 base0 = vec2(0.24, 0.21);
+    vec2 base1 = vec2(0.50, 0.52);
+    vec2 base2 = vec2(0.76, 0.83);
+    vec2 motion0 = blobCenter(0.0) / u_resolution - base0;
+    vec2 motion1 = blobCenter(1.0) / u_resolution - base1;
+    vec2 motion2 = blobCenter(2.0) / u_resolution - base2;
+    float scale0 = 1.0 + selectedBlob(0.0) * u_hoverAmount * 0.22;
+    float scale1 = 1.0 + selectedBlob(1.0) * u_hoverAmount * 0.22;
+    float scale2 = 1.0 + selectedBlob(2.0) * u_hoverAmount * 0.22;
+    vec4 feature0 = texture2D(u_glassTextTexture, base0 + (featureUv - motion0 - base0) / scale0);
+    vec4 feature1 = texture2D(u_glassTextTexture, base1 + (featureUv - motion1 - base1) / scale1);
+    vec4 feature2 = texture2D(u_glassTextTexture, base2 + (featureUv - motion2 - base2) / scale2);
+    float featureMask0 = 1.0 - smoothstep(-8.0, 14.0, roundedBoxSdf(pixel - blobCenter(0.0), blobHalfSize(0.0), minimumSide * 0.055));
+    float featureMask1 = 1.0 - smoothstep(-8.0, 14.0, roundedBoxSdf(pixel - blobCenter(1.0), blobHalfSize(1.0), minimumSide * 0.061));
+    float featureMask2 = 1.0 - smoothstep(-8.0, 14.0, roundedBoxSdf(pixel - blobCenter(2.0), blobHalfSize(2.0), minimumSide * 0.055));
+    color = mix(color, feature0.rgb, feature0.a * featureMask0);
+    color = mix(color, feature1.rgb, feature1.a * featureMask1);
+    color = mix(color, feature2.rgb, feature2.a * featureMask2);
+
     vec4 heroText = texture2D(u_textTexture, textUv);
     color = mix(color, heroText.rgb, heroText.a * 0.96);
 
