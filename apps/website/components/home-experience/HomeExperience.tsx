@@ -17,7 +17,7 @@ export function HomeExperience({
   isPaused,
   reducedMotion
 }: HomeExperienceProps) {
-  const active = exitProgress < 1;
+  const active = exitProgress <= 1;
 
   return (
     <main
@@ -31,6 +31,7 @@ export function HomeExperience({
         active={active}
         isPaused={isPaused}
         reducedMotion={reducedMotion}
+        transitionProgress={Math.min(1, Math.max(0, exitProgress))}
       />
     </main>
   );

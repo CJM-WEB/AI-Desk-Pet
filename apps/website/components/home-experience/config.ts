@@ -55,7 +55,7 @@ export const EXPERIENCE_CONFIG = {
     }
   },
   progress: {
-    wheelScale: 0.0011,
+    wheelScale: 0.0065,
     keyboardStep: 0.12,
     snapThreshold: 0.06
   },

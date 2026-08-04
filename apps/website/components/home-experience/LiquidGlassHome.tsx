@@ -14,6 +14,7 @@ interface LiquidGlassHomeProps {
   active: boolean;
   isPaused: boolean;
   reducedMotion: boolean;
+  transitionProgress?: number;
 }
 
 interface RippleEventDetail {
@@ -28,15 +29,21 @@ interface RippleEventDetail {
 export function LiquidGlassHome({
   active,
   isPaused,
-  reducedMotion
+  reducedMotion,
+  transitionProgress = 0
 }: LiquidGlassHomeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pausedRef = useRef(isPaused);
+  const transitionRef = useRef(transitionProgress);
   const [initializationFailed, setInitializationFailed] = useState(false);
 
   useEffect(() => {
     pausedRef.current = isPaused;
   }, [isPaused]);
+
+  useEffect(() => {
+    transitionRef.current = transitionProgress;
+  }, [transitionProgress]);
 
   useEffect(() => {
     if (!active) return;
@@ -141,6 +148,7 @@ export function LiquidGlassHome({
         inset: gl.getUniformLocation(program, 'u_inset'),
         radius: gl.getUniformLocation(program, 'u_radius'),
         motion: gl.getUniformLocation(program, 'u_motion'),
+        transition: gl.getUniformLocation(program, 'u_transition'),
         ripples: gl.getUniformLocation(program, 'u_ripples[0]'),
         logoTexture: gl.getUniformLocation(program, 'u_logoTexture'),
         textTexture: gl.getUniformLocation(program, 'u_textTexture')
@@ -158,6 +166,7 @@ export function LiquidGlassHome({
       const textTexture = createTexture();
       const logoImage = new Image();
       let logoReady = false;
+      let lastTextProgress = -1;
 
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, logoTexture);
@@ -186,7 +195,7 @@ export function LiquidGlassHome({
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.uniform1i(uniforms.textTexture, 0);
 
-      const updateTextTexture = (width: number, height: number) => {
+      const updateTextTexture = (width: number, height: number, transition: number) => {
         textCanvas.width = width;
         textCanvas.height = height;
         textContext.clearRect(0, 0, width, height);
@@ -200,30 +209,31 @@ export function LiquidGlassHome({
         gradient.addColorStop(1, '#F7DCC8');
 
         textContext.font = `900 ${fontSize}px "Arial Black", "Segoe UI", sans-serif`;
-        const measuredWidth = textContext.measureText('AI PET').width;
-        if (measuredWidth > width * 0.80) {
-          fontSize *= width * 0.80 / measuredWidth;
-          textContext.font = `900 ${fontSize}px "Arial Black", "Segoe UI", sans-serif`;
-        }
         textContext.textAlign = 'center';
         textContext.textBaseline = 'middle';
+        const mix = (from: number, to: number) => from + ((to - from) * transition);
+        const positions = [
+          { text: 'AI', x: mix(width * 0.36, width * 0.055), y: mix(height * 0.5, height * 0.08) },
+          { text: 'PET', x: mix(width * 0.63, width * 0.92), y: mix(height * 0.5, height * 0.94) }
+        ];
         textContext.fillStyle = 'rgba(4, 10, 11, 0.52)';
         textContext.shadowColor = 'rgba(2, 7, 8, 0.72)';
         textContext.shadowBlur = Math.max(16, fontSize * 0.10);
         textContext.shadowOffsetX = fontSize * 0.018;
         textContext.shadowOffsetY = fontSize * 0.055;
-        textContext.fillText('AI PET', width * 0.5, height * 0.5);
+        positions.forEach(({ text, x, y }) => textContext.fillText(text, x, y));
         textContext.fillStyle = gradient;
         textContext.shadowColor = 'transparent';
         textContext.shadowBlur = 0;
         textContext.shadowOffsetX = 0;
         textContext.shadowOffsetY = 0;
-        textContext.fillText('AI PET', width * 0.5, height * 0.5);
+        positions.forEach(({ text, x, y }) => textContext.fillText(text, x, y));
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, textTexture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+        lastTextProgress = transition;
       };
 
       updateLogoTexture = (width: number, height: number) => {
@@ -279,7 +289,7 @@ export function LiquidGlassHome({
         if (!initializedViewport || sizeChanged) {
           gl.viewport(0, 0, width, height);
           updateLogoTexture(width, height);
-          updateTextTexture(width, height);
+          updateTextTexture(width, height, transitionRef.current);
           renderedStaticFrame = false;
           initializedViewport = true;
         }
@@ -332,12 +342,17 @@ export function LiquidGlassHome({
       render = (time: number) => {
         if (disposed || pausedRef.current || (reducedMotion && renderedStaticFrame)) return;
         currentTime = reducedMotion ? 12 : time;
+        const transition = transitionRef.current;
+        if (Math.abs(transition - lastTextProgress) > 0.002) {
+          updateTextTexture(canvas.width, canvas.height, transition);
+        }
         gl.uniform2f(uniforms.resolution, canvas.width, canvas.height);
         gl.uniform2f(uniforms.pointer, pointer.x, pointer.y);
         gl.uniform1f(uniforms.time, currentTime);
         gl.uniform1f(uniforms.inset, inset);
         gl.uniform1f(uniforms.radius, radius);
         gl.uniform1f(uniforms.motion, reducedMotion ? 0 : 1);
+        gl.uniform1f(uniforms.transition, transition);
         gl.uniform4fv(uniforms.ripples, rippleData);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
         renderedStaticFrame = reducedMotion;

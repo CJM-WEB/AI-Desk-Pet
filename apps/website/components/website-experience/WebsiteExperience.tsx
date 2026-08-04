@@ -89,9 +89,9 @@ export function WebsiteExperience({
   const staticFallback = initializationFailed || controller.initializationFailed;
   const reducedMotion = staticFallback || controller.prefersReducedMotion;
   const activeChapter = CHAPTER_REGISTRY[controller.settledIndex] ?? CHAPTER_REGISTRY[0];
-  const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
-  const showLanguageMenu = controller.progress === 0
-    && !controller.isChapterTransitioning;
+  const homeExitProgress = controller.progress;
+  const homeAboutProgress = Math.min(1, Math.max(0, controller.progress));
+  const showLanguageMenu = controller.progress < 1;
   const feedbackVisualProfileRef = useRef<ReturnType<
     typeof createFeedbackVisualProfile
   > | null>(null);
@@ -113,14 +113,18 @@ export function WebsiteExperience({
   const sharedVisualGenerating = sharedVisualProfile !== null
     && controller.phase === 'interactive'
     && Math.abs(controller.progress - sharedVisualChapterIndex) < 0.0001;
-  const chapters = CHAPTER_REGISTRY.map((chapter, index) => ({
-    chapter,
-    visual: deriveChapterVisualState(
+  const chapters = CHAPTER_REGISTRY.map((chapter, index) => {
+    const derived = deriveChapterVisualState(
       index,
       controller.progress,
       reducedMotion
-    )
-  }));
+    );
+    // 首页 WebGL 在介绍模块完成前持续作为共同背景，保证玻璃分裂不跳帧。
+    const visual = chapter.id === 'home' && controller.progress <= 1
+      ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+      : derived;
+    return { chapter, visual };
+  });
 
   return (
     <div
@@ -182,6 +186,7 @@ export function WebsiteExperience({
             {RegisteredChapter ? (
               <RegisteredChapter
                 interactive={visual.interactive}
+                transitionProgress={homeAboutProgress}
                 isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
                 staticFallback={staticFallback}
@@ -215,7 +220,7 @@ export function WebsiteExperience({
       </nav>
       {showLanguageMenu ? (
         <div data-layer="fixed-controls">
-          <LanguageMenu />
+          <LanguageMenu transitionProgress={homeAboutProgress} />
         </div>
       ) : null}
       {mountedVisualProfile && !staticFallback ? (

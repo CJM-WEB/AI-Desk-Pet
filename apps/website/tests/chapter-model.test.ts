@@ -60,7 +60,7 @@ describe('官网章节进度模型', () => {
       deltaY: 100,
       settledIndex: 0,
       chapterCount: 5
-    })).toBeCloseTo(0.31);
+    })).toBeCloseTo(0.85);
     expect(applyWheelChapterInput({
       progress: 2,
       deltaY: 100_000,
@@ -107,12 +107,14 @@ describe('官网章节进度模型', () => {
   it('以同一模型生成对称的退出和进入视觉', () => {
     expect(deriveChapterVisualState(0, 0.5, false)).toMatchObject({
       opacity: 0.5,
-      scale: 0.79,
+      scale: 1,
+      blurPx: 0,
       interactive: false
     });
     expect(deriveChapterVisualState(1, 0.5, false)).toMatchObject({
       opacity: 0.5,
-      scale: 1.16,
+      scale: 1,
+      blurPx: 0,
       interactive: false
     });
     expect(deriveChapterVisualState(1, 1, false)).toMatchObject({

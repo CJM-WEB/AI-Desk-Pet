@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { MouseEvent } from 'react';
+import type { CSSProperties, MouseEvent } from 'react';
 import { LIQUID_GLASS_RIPPLE_EVENT } from '../home-experience/LiquidGlassHome';
 import type { Locale } from './i18n-types';
 import { useI18n } from './I18nProvider';
@@ -9,11 +9,19 @@ import styles from './language-menu.module.css';
 
 const languageOptions: readonly Locale[] = ['zh-CN', 'en'];
 
-export function LanguageMenu() {
+interface LanguageMenuProps {
+  transitionProgress?: number;
+}
+
+export function LanguageMenu({ transitionProgress = 0 }: LanguageMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const { locale, setLocale, t } = useI18n();
+  const progress = Math.min(1, Math.max(0, transitionProgress));
+  const exitY = progress < 0.14
+    ? (progress / 0.14) * 14
+    : 14 - (((progress - 0.14) / 0.86) * 190);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -94,7 +102,14 @@ export function LanguageMenu() {
   };
 
   return (
-    <div ref={containerRef} className={styles.controlLayer}>
+    <div
+      ref={containerRef}
+      className={styles.controlLayer}
+      style={{
+        '--language-exit-y': `${exitY}px`,
+        '--language-exit-opacity': Math.max(0, 1 - progress * 1.16)
+      } as CSSProperties}
+    >
       <button
         ref={triggerRef}
         type="button"

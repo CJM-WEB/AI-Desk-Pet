@@ -4,6 +4,9 @@
   right: max(32px, env(safe-area-inset-right));
   z-index: 90;
   font-family: "Segoe UI", Arial, sans-serif;
+  opacity: var(--language-exit-opacity, 1);
+  transform: translate3d(0, var(--language-exit-y, 0), 0);
+  will-change: transform, opacity;
 }
 
 .trigger,

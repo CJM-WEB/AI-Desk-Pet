@@ -18,6 +18,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   uniform float u_inset;
   uniform float u_radius;
   uniform float u_motion;
+  uniform float u_transition;
   uniform vec4 u_ripples[6];
   uniform sampler2D u_logoTexture;
   uniform sampler2D u_textTexture;
@@ -54,9 +55,13 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     return value;
   }
 
-  vec3 flowingBackground(vec2 uv, float time) {
+  vec3 flowingBackground(vec2 uv, float time, float transition) {
     float aspect = u_resolution.x / u_resolution.y;
     vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
+    p += vec2(
+      sin(transition * 2.7 + p.y * 1.8) * transition * 0.72,
+      cos(transition * 2.1 + p.x * 1.4) * transition * 0.46
+    );
     float t = time * 0.24;
 
     vec2 warp = vec2(
@@ -147,7 +152,8 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     vec2 halfSize = center - vec2(u_inset);
     vec2 localPosition = pixel - center;
     float sdf = roundedBoxSdf(localPosition, halfSize, u_radius);
-    float glassMask = 1.0 - smoothstep(-26.0, 10.0, sdf);
+    float glassMask = (1.0 - smoothstep(-26.0, 10.0, sdf))
+      * (1.0 - smoothstep(0.16, 0.88, u_transition));
 
     vec2 edgeQuery = abs(localPosition) - halfSize + u_radius;
     vec2 cornerVector = max(edgeQuery, 0.0);
@@ -180,7 +186,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     vec2 viewCenter = uv - 0.5;
     vec2 mouseTilt = (u_pointer - 0.5) * 2.0 * u_motion;
     vec2 sceneUv = uv + refraction * glassMask;
-    vec3 background = flowingBackground(sceneUv, u_time * u_motion);
+    vec3 background = flowingBackground(sceneUv, u_time * u_motion, u_transition);
     float logoPerspective = clamp(1.0 + dot(viewCenter, mouseTilt) * 0.24, 0.76, 1.24);
     vec2 logoUv = viewCenter / logoPerspective + 0.5;
     logoUv += refraction * glassMask - mouseTilt * 0.009;
@@ -192,7 +198,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     logoSoft += texture2D(u_logoTexture, logoUv + vec2(logoBlurRadius.x, -logoBlurRadius.y)) * 0.15;
     logoSoft += texture2D(u_logoTexture, logoUv + vec2(-logoBlurRadius.x, logoBlurRadius.y)) * 0.15;
     vec4 logoLayer = mix(logoSharp, logoSoft, glassMask * 0.94);
-    vec3 scene = mix(background, logoLayer.rgb, logoLayer.a * 0.90);
+    vec3 scene = mix(background, logoLayer.rgb, logoLayer.a * 0.90 * (1.0 - u_transition));
 
     float innerEdge = exp(-abs(sdf) * 0.055) * glassMask;
     float razorEdge = exp(-abs(sdf) * 0.7);
@@ -223,7 +229,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     vec2 textUv = viewCenter / textPerspective + 0.5;
     textUv += refraction * glassMask * 0.9 + mouseTilt * 0.0035;
     vec4 heroText = texture2D(u_textTexture, textUv);
-    color = mix(color, heroText.rgb, heroText.a * glassMask * 0.96);
+    color = mix(color, heroText.rgb, heroText.a * 0.96);
 
     gl_FragColor = vec4(color, 1.0);
   }
