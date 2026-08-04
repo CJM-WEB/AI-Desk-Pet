@@ -13,10 +13,7 @@ import { LanguageMenu } from '../i18n/LanguageMenu';
 import { interpolateMessage, useI18n } from '../i18n/I18nProvider';
 import type { Translate } from '../i18n/i18n-types';
 import { HomeExperience } from '../home-experience/HomeExperience';
-import {
-  deriveChapterVisualState,
-  deriveHomeExperiencePhase
-} from './chapter-model';
+import { deriveChapterVisualState } from './chapter-model';
 import {
   CHAPTER_REGISTRY,
   feedbackRepository,
@@ -27,8 +24,7 @@ import { ChapterBackdrop } from './visual/ChapterBackdrop';
 import { CHAPTER_LAYERS } from './layer-contract';
 import { createFeedbackVisualProfile } from './feedback/feedback-preview-source';
 import {
-  resolveSharedVisualProfile,
-  VISUAL_PROFILES
+  resolveSharedVisualProfile
 } from './shared-visual-model';
 import styles from './website-experience.module.css';
 import { useWebsiteController } from './use-website-controller';
@@ -96,10 +92,6 @@ export function WebsiteExperience({
   const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
   const showLanguageMenu = controller.progress === 0
     && !controller.isChapterTransitioning;
-  const homePhase = deriveHomeExperiencePhase(
-    controller.phase,
-    homeExitProgress
-  );
   const feedbackVisualProfileRef = useRef<ReturnType<
     typeof createFeedbackVisualProfile
   > | null>(null);
@@ -114,8 +106,7 @@ export function WebsiteExperience({
     && Math.abs(controller.progress - getChapterIndex('feedback')) < 0.0001
     ? feedbackVisualProfileRef.current
     : resolveSharedVisualProfile(controller.progress, controller.phase);
-  const mountedVisualProfile = sharedVisualProfile
-    ?? (controller.progress < 1 ? VISUAL_PROFILES.home : null);
+  const mountedVisualProfile = sharedVisualProfile;
   const sharedVisualChapterIndex = sharedVisualProfile
     ? getChapterIndex(sharedVisualProfile.id)
     : 0;
@@ -183,16 +174,9 @@ export function WebsiteExperience({
           >
             {chapter.id === 'home' ? (
               <HomeExperience
-                phase={homePhase}
                 exitProgress={homeExitProgress}
-                pointer={controller.pointer}
                 isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
-                staticFallback={staticFallback}
-                registerIntroSkip={controller.registerIntroSkip}
-                onDrawingDone={controller.drawingDone}
-                onSettled={controller.settled}
-                onInitializationError={handleInitializationError}
               />
             ) : null}
             {RegisteredChapter ? (
@@ -239,9 +223,7 @@ export function WebsiteExperience({
           profile={mountedVisualProfile}
           running={sharedVisualProfile !== null}
           generating={sharedVisualGenerating}
-          exitProgress={
-            mountedVisualProfile.id === 'home' ? homeExitProgress : 0
-          }
+          exitProgress={0}
           pointer={controller.pointer}
           isPaused={controller.isPaused}
           reducedMotion={controller.prefersReducedMotion}

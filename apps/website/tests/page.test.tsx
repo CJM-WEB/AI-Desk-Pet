@@ -27,23 +27,17 @@ describe('AI Pet 官网首页', () => {
     expect(html.match(/内容准备中/g) ?? []).toHaveLength(0);
   });
 
-  it('在静态 HTML 中保留品牌和基础语义', () => {
+  it('在静态 HTML 中只保留新版首页和基础语义', () => {
     const html = renderToStaticMarkup(<Page />);
 
-    expect(html).toContain('<h1');
-    expect(html).toContain('AI Pet');
     expect(html).toContain('data-testid="home-experience"');
     expect(html).toContain('data-static-fallback="ready"');
-    expect(html).toContain('src="/AP.png"');
-    expect(html).toContain('data-testid="brand-logo"');
-    expect(html.match(/data-testid="magnetic-logo-piece"/g) ?? []).toHaveLength(6);
-    expect(html).toContain('data-final-image-failed="false"');
-    expect(html).toContain('data-piece-id="top-left"');
-    expect(html).toContain('data-piece-id="bottom-right"');
-    expect(html).not.toContain('data-testid="ap-draw-mark"');
-    expect(html).toContain('data-layer="file"');
-    expect(html).toContain('data-layer="intro"');
-    expect(html).toContain('data-active="false"');
+    expect(html).toContain('data-testid="liquid-glass-home"');
+    expect(html).toContain('aria-label="AI PET 互动液态玻璃画布"');
+    expect(html).not.toContain('data-testid="brand-stage"');
+    expect(html).not.toContain('data-layer="intro"');
+    expect(html).not.toContain('data-layer="file"');
+    expect(html).toContain('data-active="true"');
     expect(html).toMatch(/<canvas[^>]*><\/canvas>/);
   });
 

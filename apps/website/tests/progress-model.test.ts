@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EXPERIENCE_CONFIG } from '../components/home-experience/config';
-import { deriveHomeExperiencePhase } from '../components/website-experience/chapter-model';
+import { deriveHomeExperiencePhase } from '../components/home-experience/intro-phase-model';
 
 describe('首页体验配置', () => {
   it('使用指定的页面背景色', () => {

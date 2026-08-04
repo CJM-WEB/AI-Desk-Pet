@@ -4,7 +4,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BrandStage } from '../components/home-experience/BrandStage';
 import { FilePreview } from '../components/home-experience/FilePreview';
 import type { FileParticle } from '../components/home-experience/swarm-model';
 import { CHAPTER_LAYERS } from '../components/website-experience/layer-contract';
@@ -59,14 +58,8 @@ function renderSharedLayers() {
   const markup = renderToStaticMarkup(createElement(
     'div',
     null,
-    createElement(BrandStage, {
-      pointer: { x: 0, y: 0 },
-      interactive: true,
-      isPaused: false,
-      reducedMotion: false
-    }),
     createElement(SharedVisualLayers, {
-      profile: VISUAL_PROFILES.home,
+      profile: VISUAL_PROFILES.download,
       running: false,
       generating: false,
       exitProgress: 0,
@@ -111,7 +104,7 @@ describe('共享视觉图层契约', () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">
         <SharedVisualLayers
-          profile={VISUAL_PROFILES.home}
+          profile={VISUAL_PROFILES.download}
           running={false}
           generating={false}
           exitProgress={0}
@@ -126,25 +119,20 @@ describe('共享视觉图层契约', () => {
     expect(markup).toContain('aria-label="File preview queue"');
   });
 
-  it('配置光场开关，并为首页与捐款复用默认预览内容源', () => {
-    expect(VISUAL_PROFILES.home.fieldEnabled).toBe(true);
+  it('后续章节关闭光场并复用默认预览内容源', () => {
+    expect(VISUAL_PROFILES.download.fieldEnabled).toBe(false);
     expect(VISUAL_PROFILES.donation.fieldEnabled).toBe(false);
-    expect(VISUAL_PROFILES.home.previewSource)
+    expect(VISUAL_PROFILES.download.previewSource)
       .toBe(DEFAULT_FILE_PREVIEW_CONTENT_SOURCE);
     expect(VISUAL_PROFILES.donation.previewSource)
       .toBe(DEFAULT_FILE_PREVIEW_CONTENT_SOURCE);
   });
 
-  it('让焦点内容位于文件层之上，且文件层不截获焦点区域的命中', () => {
+  it('文件层不截获焦点区域的命中，预览层保持最高层级', () => {
     const container = renderSharedLayers();
-    const brand = container.querySelector<HTMLElement>('[data-testid="brand-stage"]');
-    const focal = container.querySelector<HTMLElement>('[data-testid="brand-focal"]');
     const fileLayer = container.querySelector<HTMLElement>('[data-layer="file"]');
     const previewLayer = container.querySelector<HTMLElement>('[data-layer="preview"]');
 
-    expect(brand?.dataset.layer).toBe('focal');
-    expect(brand?.style.zIndex).toBe(String(CHAPTER_LAYERS.focal));
-    expect(focal?.style.pointerEvents).toBe('none');
     expect(fileLayer?.style.zIndex).toBe(String(CHAPTER_LAYERS.files));
     expect(fileLayer?.style.pointerEvents).toBe('none');
     expect(previewLayer?.style.zIndex).toBe(String(CHAPTER_LAYERS.preview));
@@ -152,7 +140,7 @@ describe('共享视觉图层契约', () => {
     expect(CHAPTER_LAYERS.preview).toBeGreaterThan(CHAPTER_LAYERS.focal);
   });
 
-  it('生产页面将章节背景放在根级文件层之下，而焦点章节保持独立层级', () => {
+  it('生产首页以独立液态玻璃画布替代旧文件层，章节背景仍保持根级', () => {
     const markup = renderToStaticMarkup(createElement(WebsiteExperience));
     const container = document.createElement('div');
     container.innerHTML = markup;
@@ -163,13 +151,19 @@ describe('共享视觉图层契约', () => {
     );
     const chapters = Array.from(container.querySelectorAll<HTMLElement>('[data-chapter-id]'));
     const fileLayer = container.querySelector<HTMLElement>('[data-layer="file"]');
+    const liquidHome = container.querySelector<HTMLElement>(
+      '[data-testid="liquid-glass-home"]'
+    );
+    const homeChapter = chapters.find(
+      (chapter) => chapter.dataset.chapterId === 'home'
+    );
 
     expect(backdropLayer?.parentElement).toBe(experience);
-    expect(fileLayer?.parentElement).toBe(experience);
+    expect(fileLayer).toBeNull();
+    expect(homeChapter?.contains(liquidHome ?? null)).toBe(true);
     expect(backdropLayer?.style.zIndex).toBe(String(CHAPTER_LAYERS.backdrop));
-    expect(fileLayer?.style.zIndex).toBe(String(CHAPTER_LAYERS.files));
     expect(backdropLayer?.contains(homeBackdrop)).toBe(true);
-    expect(chapters.find((chapter) => chapter.dataset.chapterId === 'home')?.contains(homeBackdrop)).toBe(false);
+    expect(homeChapter?.contains(homeBackdrop)).toBe(false);
     expect(chapters).toHaveLength(6);
     expect(chapters.some((chapter) => chapter.dataset.chapterId === 'community'))
       .toBe(true);

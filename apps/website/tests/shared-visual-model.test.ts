@@ -5,11 +5,10 @@ import {
 } from '../components/website-experience/shared-visual-model';
 
 describe('共享视觉主题', () => {
-  it('首页使用灰色光场，下载与捐款关闭光场并复用默认预览源', () => {
-    expect(VISUAL_PROFILES.home.fieldColor).toEqual([180, 180, 180]);
+  it('下载与捐款关闭光场并复用默认预览源', () => {
     expect(VISUAL_PROFILES.download.fieldEnabled).toBe(false);
     expect(VISUAL_PROFILES.download.previewSource)
-      .toBe(VISUAL_PROFILES.home.previewSource);
+      .toBe(VISUAL_PROFILES.donation.previewSource);
     expect(VISUAL_PROFILES.donation.fieldColor).toEqual([255, 255, 0]);
   });
 
@@ -19,11 +18,11 @@ describe('共享视觉主题', () => {
     expect(VISUAL_PROFILES.community.safeZoneRatio)
       .toBe(VISUAL_PROFILES.download.safeZoneRatio);
     expect(VISUAL_PROFILES.community.previewSource)
-      .toBe(VISUAL_PROFILES.home.previewSource);
+      .toBe(VISUAL_PROFILES.download.previewSource);
   });
 
-  it('在首页、下载、共享仓库和捐款区间解析对应共享视觉层', () => {
-    expect(resolveSharedVisualProfile(0, 'interactive')?.id).toBe('home');
+  it('首页不再启用旧共享视觉，并解析后续章节对应视觉层', () => {
+    expect(resolveSharedVisualProfile(0, 'interactive')).toBeNull();
     expect(resolveSharedVisualProfile(1, 'interactive')).toBeNull();
     expect(resolveSharedVisualProfile(1.25, 'interactive')?.id).toBe('download');
     expect(resolveSharedVisualProfile(2, 'interactive')?.id).toBe('download');

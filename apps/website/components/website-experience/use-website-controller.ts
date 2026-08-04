@@ -7,8 +7,6 @@ import {
   applyChapterDelta,
   clampChapterProgress,
   interpolateChapterSnapProgress,
-  isIntroPhase,
-  reduceIntroPhase,
   snapChapterProgress
 } from './chapter-model';
 
@@ -27,9 +25,6 @@ export interface WebsiteControllerResult {
   isPaused: boolean;
   prefersReducedMotion: boolean;
   initializationFailed: boolean;
-  drawingDone: () => void;
-  settled: () => void;
-  registerIntroSkip: (skip: (() => void) | null) => void;
   goToAdjacent: (direction: -1 | 1) => void;
 }
 
@@ -72,12 +67,12 @@ export function applyWheelChapterInput(input: {
 }
 
 /**
- * 统一管理官网章节输入、开场跳过和可恢复的章节吸附动画。
+ * 统一管理官网章节输入和可恢复的章节吸附动画。
  */
 export function useWebsiteController(
   options: WebsiteControllerOptions
 ): WebsiteControllerResult {
-  const [phase, setPhase] = useState<ExperiencePhase>('loading');
+  const phase: ExperiencePhase = 'interactive';
   const [progress, setProgress] = useState(0);
   const [settledIndex, setSettledIndex] = useState(0);
   const [isChapterTransitioning, setIsChapterTransitioning] = useState(false);
@@ -85,7 +80,6 @@ export function useWebsiteController(
   const [isPaused, setIsPaused] = useState(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [initializationFailed, setInitializationFailed] = useState(false);
-  const phaseRef = useRef<ExperiencePhase>('loading');
   const progressRef = useRef(0);
   const settledIndexRef = useRef(0);
   const prefersReducedMotionRef = useRef(false);
@@ -99,7 +93,6 @@ export function useWebsiteController(
   const snapTargetRef = useRef<number | null>(null);
   const wheelSnapTimeoutRef = useRef<number | null>(null);
   const touchGestureRef = useRef<ChapterTouchGesture | null>(null);
-  const introSkipRef = useRef<(() => void) | null>(null);
   const onInitializationErrorRef = useRef(options.onInitializationError);
 
   onInitializationErrorRef.current = options.onInitializationError;
@@ -119,11 +112,6 @@ export function useWebsiteController(
     setInitializationFailed(true);
     onInitializationErrorRef.current?.();
   }, [normalizePausedState]);
-
-  const commitPhase = useCallback((next: ExperiencePhase) => {
-    phaseRef.current = next;
-    setPhase(next);
-  }, []);
 
   const commitProgress = useCallback((next: number) => {
     const clamped = clampChapterProgress(next, chapterCount);
@@ -205,8 +193,6 @@ export function useWebsiteController(
     clearWheelSnapTimeout();
     wheelSnapTimeoutRef.current = window.setTimeout(() => {
       wheelSnapTimeoutRef.current = null;
-      if (phaseRef.current !== 'interactive') return;
-
       const target = snapChapterProgress(progressRef.current, chapterCount);
       if (isPausedRef.current) {
         snapTargetRef.current = target;
@@ -217,41 +203,10 @@ export function useWebsiteController(
     }, WHEEL_SNAP_DEBOUNCE_MS);
   }, [chapterCount, clearWheelSnapTimeout, startSnap]);
 
-  const drawingDone = useCallback(() => {
-    const next = reduceIntroPhase(phaseRef.current, 'drawing-done');
-    if (next !== phaseRef.current) {
-      commitPhase(next);
-    }
-  }, [commitPhase]);
-
-  const settled = useCallback(() => {
-    const next = reduceIntroPhase(phaseRef.current, 'settled');
-    if (next !== phaseRef.current) {
-      commitPhase(next);
-    }
-  }, [commitPhase]);
-
-  const registerIntroSkip = useCallback((skip: (() => void) | null) => {
-    introSkipRef.current = skip;
-  }, []);
-
-  const requestIntroSkip = useCallback(() => {
-    if (isIntroPhase(phaseRef.current)) {
-      commitPhase(reduceIntroPhase(phaseRef.current, 'skip'));
-      introSkipRef.current?.();
-    }
-  }, [commitPhase]);
-
   const goToAdjacent = useCallback((direction: -1 | 1) => {
     if (isPausedRef.current) {
       return;
     }
-
-    // 首屏导航先同步跳过开场，再复用相邻章节推进，保证一次点击完成意图。
-    if (direction === 1 && isIntroPhase(phaseRef.current)) {
-      requestIntroSkip();
-    }
-    if (phaseRef.current !== 'interactive') return;
 
     clearWheelSnapTimeout();
     const target = clampChapterProgress(settledIndexRef.current + direction, chapterCount);
@@ -267,13 +222,8 @@ export function useWebsiteController(
   }, [
     chapterCount,
     clearWheelSnapTimeout,
-    requestIntroSkip,
     startSnap
   ]);
-
-  useEffect(() => {
-    commitPhase('drawing');
-  }, [commitPhase]);
 
   useEffect(() => {
     if (!options.staticFallback) {
@@ -285,11 +235,9 @@ export function useWebsiteController(
     clearWheelSnapTimeout();
     cancelSnap();
     commitProgress(settledIndexRef.current);
-    commitPhase('interactive');
   }, [
     cancelSnap,
     clearWheelSnapTimeout,
-    commitPhase,
     commitProgress,
     normalizePausedState,
     options.staticFallback
@@ -369,15 +317,6 @@ export function useWebsiteController(
         return;
       }
 
-      if (isIntroPhase(phaseRef.current)) {
-        event.preventDefault();
-        requestIntroSkip();
-        return;
-      }
-      if (phaseRef.current !== 'interactive') {
-        return;
-      }
-
       event.preventDefault();
       cancelSnap(true);
       const next = applyWheelChapterInput({
@@ -406,22 +345,8 @@ export function useWebsiteController(
         return;
       }
 
-      if (isIntroPhase(phaseRef.current)) {
-        event.preventDefault();
-        requestIntroSkip();
-        return;
-      }
-      if (phaseRef.current !== 'interactive') {
-        return;
-      }
-
       event.preventDefault();
       goToAdjacent(direction);
-    };
-    const handleClick = (event: MouseEvent) => {
-      if (!isLocalInput(event.target) && !isPausedRef.current) {
-        requestIntroSkip();
-      }
     };
     const handlePointerMove = (event: PointerEvent) => {
       if (isLocalInput(event.target) || isPausedRef.current) {
@@ -526,7 +451,6 @@ export function useWebsiteController(
       syncPausedState();
       registerWindowListener('wheel', handleWheel, { passive: false });
       registerWindowListener('keydown', handleKeyDown);
-      registerWindowListener('click', handleClick);
       registerWindowListener('pointermove', handlePointerMove);
       registerWindowListener('pointerdown', handlePointerDown);
       registerWindowListener('pointerup', handlePointerUp);
@@ -548,7 +472,6 @@ export function useWebsiteController(
     commitProgress,
     goToAdjacent,
     notifyInitializationError,
-    requestIntroSkip,
     scheduleWheelSnap,
     startSnap,
     stopSnapFrame,
@@ -564,9 +487,6 @@ export function useWebsiteController(
     isPaused,
     prefersReducedMotion,
     initializationFailed,
-    drawingDone,
-    settled,
-    registerIntroSkip,
     goToAdjacent
   };
 }

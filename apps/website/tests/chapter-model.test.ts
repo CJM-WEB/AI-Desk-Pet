@@ -4,10 +4,12 @@ import {
   clampChapterProgress,
   deriveChapterVisualState,
   interpolateChapterSnapProgress,
-  isIntroPhase,
-  reduceIntroPhase,
   snapChapterProgress
 } from '../components/website-experience/chapter-model';
+import {
+  isIntroPhase,
+  reduceIntroPhase
+} from '../components/home-experience/intro-phase-model';
 import {
   applyWheelChapterInput,
   calculateSwipeDelta,

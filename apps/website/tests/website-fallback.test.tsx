@@ -253,7 +253,7 @@ describe('官网章节降级模式', () => {
       'keydown',
       expect.any(Function)
     );
-    expect(removeEventListener).toHaveBeenCalledWith(
+    expect(removeEventListener).not.toHaveBeenCalledWith(
       'click',
       expect.any(Function)
     );
@@ -322,18 +322,17 @@ describe('官网章节降级模式', () => {
     expect(screen.getByRole('dialog', { name: '微信付款码' })).toBeTruthy();
   });
 
-  it('GSAP 初始化失败会进入统一静态回退并保留章节内容', async () => {
-    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
-    vi.spyOn(gsap, 'context').mockImplementation(() => {
-      throw new Error('GSAP 初始化失败');
-    });
+  it('首页 WebGL 初始化失败只启用首页局部回退并保留章节内容', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
 
     render(<WebsiteExperience />);
 
     const experience = screen.getByTestId('website-experience');
     await waitFor(() => {
-      expect(experience.dataset.staticFallback).toBe('active');
+      expect(screen.getByTestId('liquid-glass-home').dataset.initializationFailed)
+        .toBe('true');
     });
+    expect(experience.dataset.staticFallback).toBe('ready');
 
     expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
     expect(document.querySelector('[data-layer="file"]')).toBeNull();
@@ -346,14 +345,6 @@ describe('官网章节降级模式', () => {
       .toBe('download');
     expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
     expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
-    expect(() => {
-      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示安装前须知' }));
-    }).not.toThrow();
-    await waitFor(() => {
-      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-        .toBe('notice');
-    });
-
     fireEvent.click(next);
     fireEvent.click(next);
     fireEvent.click(next);

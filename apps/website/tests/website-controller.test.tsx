@@ -56,12 +56,6 @@ function ControllerHarness({
       data-index={controller.settledIndex}
       data-progress={controller.progress.toFixed(4)}
     >
-      <button type="button" onClick={controller.drawingDone}>
-        完成绘制
-      </button>
-      <button type="button" onClick={controller.settled}>
-        完成落位
-      </button>
       <button type="button" onClick={() => controller.goToAdjacent(1)}>
         下一章节
       </button>
@@ -82,9 +76,6 @@ describe('官网章节控制器', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
-
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
 
     for (let index = 0; index < 5; index += 1) {
       fireEvent.wheel(window, { deltaY: 120 });
@@ -110,8 +101,6 @@ describe('官网章节控制器', () => {
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     fireEvent.wheel(window, { deltaY: 24 });
     act(() => {
       vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
@@ -141,8 +130,6 @@ describe('官网章节控制器', () => {
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     requestFrame.mockClear();
 
     fireEvent.keyDown(window, { key: 'ArrowUp' });
@@ -172,8 +159,6 @@ describe('官网章节控制器', () => {
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     for (let index = 0; index < 5; index += 1) {
       fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
       act(() => {
@@ -204,12 +189,12 @@ describe('官网章节控制器', () => {
     expect(state.dataset.progress).toBe('5.0000');
   });
 
-  it('drawing 阶段点击下一章节会跳过开场并完成一次相邻推进', () => {
+  it('初始即为交互态且下一章节只推进一次', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    expect(state.dataset.phase).toBe('drawing');
+    expect(state.dataset.phase).toBe('interactive');
     fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
 
     expect(state.dataset.phase).toBe('interactive');
@@ -229,8 +214,6 @@ describe('官网章节控制器', () => {
     );
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     expect(state.dataset.phase).toBe('interactive');
 
     visibilityState = 'hidden';

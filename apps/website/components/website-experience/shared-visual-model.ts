@@ -10,14 +10,14 @@ export interface FilePreviewContentSource {
 }
 
 /**
- * 保持六章节既有粒子快照中的预览行，供首页、下载、社区和捐款共享。
+ * 保持后续章节既有粒子快照中的预览行，供下载、社区和捐款共享。
  */
 export const DEFAULT_FILE_PREVIEW_CONTENT_SOURCE: FilePreviewContentSource = {
   getPreview: (particle) => particle.preview.lines
 };
 
 export interface SharedVisualProfile {
-  id: Extract<ChapterId, 'home' | 'download' | 'community' | 'donation'>;
+  id: Extract<ChapterId, 'download' | 'community' | 'donation'>;
   fieldColor: RgbColor;
   maxActive: number;
   safeZoneRatio: number;
@@ -26,14 +26,6 @@ export interface SharedVisualProfile {
 }
 
 export const VISUAL_PROFILES = {
-  home: {
-    id: 'home',
-    fieldColor: [180, 180, 180],
-    maxActive: 10,
-    safeZoneRatio: 0.3,
-    fieldEnabled: true,
-    previewSource: DEFAULT_FILE_PREVIEW_CONTENT_SOURCE
-  },
   download: {
     id: 'download',
     fieldColor: [180, 180, 180],
@@ -61,7 +53,8 @@ export const VISUAL_PROFILES = {
 } as const satisfies Record<string, SharedVisualProfile>;
 
 /**
- * 在需要文件粒子的章节及其相邻过渡区间提供共享视觉主题。
+ * 在需要文件粒子的后续章节及其相邻过渡区间提供共享视觉主题。
+ * 首页稳定态改由独立液态玻璃画布承载，不再启动旧文件粒子与光场。
  */
 export function resolveSharedVisualProfile(
   progress: number,
@@ -73,7 +66,7 @@ export function resolveSharedVisualProfile(
   const donationIndex = getChapterIndex('donation');
 
   if (phase !== 'interactive' && phase !== 'exiting') return null;
-  if (progress < 1) return VISUAL_PROFILES.home;
+  if (progress < 1) return null;
   if (progress > downloadIndex - 1 && progress < communityIndex) {
     return VISUAL_PROFILES.download;
   }

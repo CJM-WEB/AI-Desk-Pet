@@ -42,13 +42,6 @@ export interface MagneticIntroConfig {
   pieces: readonly MagneticPieceConfig[];
 }
 
-export interface BrandTransformLimits {
-  maxRotateX: number;
-  maxRotateY: number;
-  maxX: number;
-  maxY: number;
-}
-
 export interface ExperienceConfig {
   colors: {
     background: string;
@@ -57,7 +50,6 @@ export interface ExperienceConfig {
     settleSeconds: number;
     magnetic: MagneticIntroConfig;
   };
-  brandTransform: BrandTransformLimits;
   progress: {
     wheelScale: number;
     keyboardStep: number;
