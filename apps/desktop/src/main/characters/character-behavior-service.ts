@@ -178,11 +178,11 @@ export class CharacterBehaviorService {
       this.publish(this.engine.applyFeedback(feedback));
       return;
     }
-    if (feedback.status !== 'started') return;
     const pending = this.legacyTokens.get(feedback.playbackToken);
     if (!pending || pending.actionId !== feedback.actionId) {
       throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
     }
+    if (feedback.status !== 'started') return;
     this.options.motion.confirmIdlePlayback({
       playbackToken: feedback.playbackToken,
       actionId: feedback.actionId,

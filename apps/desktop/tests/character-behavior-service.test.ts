@@ -659,6 +659,31 @@ describe('Main 角色行为权威服务', () => {
     }]);
   });
 
+  test.each(['completed', 'interrupted', 'failed'] as const)(
+    'V1 兼容路径拒绝伪造令牌的 %s 反馈',
+    async status => {
+      const fixture = createFixture({
+        getV2: async () => { throw new Error('V2_UNAVAILABLE'); }
+      });
+      fixture.motion.pollIdle.mockReturnValue({
+        stateId: 'idle',
+        action: createLegacyManifest().states[0]!.actions[0]!,
+        reason: 'matched'
+      } as never);
+      const service = new Constructor(fixture.options);
+      await service.initialize();
+      fixture.setNow(1_000);
+      service.handleIdleDue();
+
+      expect(() => service.applyPlaybackFeedback({
+        playbackToken: 'forged-token',
+        actionId: 'legacy-idle',
+        status,
+        occurredAtMs: 1_001
+      })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    }
+  );
+
   test('切换读取失败不中断当前播放器', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
