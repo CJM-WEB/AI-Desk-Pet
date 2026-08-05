@@ -300,8 +300,9 @@ export class CharacterBehaviorService {
     this.publish(decision);
 
     const current = decision.snapshot.schedule.current;
+    const currentAction = this.manifest?.actions.find((action) => action.id === current?.actionId);
     const defaultWasBlocked = current
-      && current.stateId !== decision.snapshot.state.primaryStateId
+      && currentAction?.semantic !== decision.snapshot.state.desiredActionSemantic
       && !decision.effects.some((effect) => effect.type === 'play');
     if (!defaultWasBlocked) return;
 

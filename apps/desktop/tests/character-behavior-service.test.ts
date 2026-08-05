@@ -212,6 +212,20 @@ function createResultSignalSensitiveManifest(
   return manifest;
 }
 
+/** 默认主状态同时承载 idle 与 resistant think，用于识别同状态下的动作残留。 */
+function createSharedDefaultStateManifest(): CharacterManifestV2 {
+  const manifest = createManifest();
+  manifest.states = manifest.states.filter(state => state.id !== 'think-state');
+  manifest.states.find(state => state.id === manifest.defaultStateId)!.actionIds = [
+    'idle-action',
+    'think-action'
+  ];
+  const thinkingAction = manifest.actions.find(action => action.id === 'think-action')!;
+  thinkingAction.interrupt = 'resistant';
+  thinkingAction.loopPolicy = 'until-interrupted';
+  return manifest;
+}
+
 async function loadConstructor(): Promise<BehaviorServiceConstructor> {
   const module = await import('../src/main/characters/character-behavior-service').catch(() => null) as null | {
     CharacterBehaviorService?: BehaviorServiceConstructor;
@@ -323,13 +337,9 @@ describe('Main 角色行为权威服务', () => {
   );
 
   test.each(['idle', 'cancelled'] as const)(
-    '抗中断 thinking 动作在进入 %s 后仍可靠恢复默认播放',
+    '默认状态内的抗中断 thinking 动作在进入 %s 后仍恢复 idle 动作',
     async phase => {
-      const manifest = createManifest();
-      const thinkingAction = manifest.actions.find(action => action.id === 'think-action')!;
-      thinkingAction.interrupt = 'resistant';
-      thinkingAction.loopPolicy = 'until-interrupted';
-      const fixture = createFixture({ getV2: async () => manifest });
+      const fixture = createFixture({ getV2: async () => createSharedDefaultStateManifest() });
       const service = new Constructor(fixture.options);
       const events: BehaviorPlaybackEvent[] = [];
       service.subscribe(event => events.push(event));
@@ -357,6 +367,33 @@ describe('Main 角色行为权威服务', () => {
         actionId: events[0]!.actionId,
         status: 'started',
         occurredAtMs: 2
+      })).not.toThrow();
+    }
+  );
+
+  test.each([
+    ['success', 'celebrate-action'],
+    ['error', 'fail-action']
+  ] as const)(
+    '默认状态内的抗中断 thinking 动作在进入 %s 后切换为 %s',
+    async (phase, actionId) => {
+      const fixture = createFixture({ getV2: async () => createSharedDefaultStateManifest() });
+      const service = new Constructor(fixture.options);
+      const events: BehaviorPlaybackEvent[] = [];
+      service.subscribe(event => events.push(event));
+      await service.initialize();
+      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+      events.splice(0);
+
+      service.handleTaskEvent({ type: 'phase', phase });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ actionId });
+      expect(() => service.applyPlaybackFeedback({
+        playbackToken: events[0]!.playbackToken,
+        actionId: events[0]!.actionId,
+        status: 'started',
+        occurredAtMs: 1
       })).not.toThrow();
     }
   );
