@@ -322,6 +322,69 @@ describe('Main 角色行为权威服务', () => {
     }
   );
 
+  test.each(['idle', 'cancelled'] as const)(
+    '抗中断 thinking 动作在进入 %s 后仍可靠恢复默认播放',
+    async phase => {
+      const manifest = createManifest();
+      const thinkingAction = manifest.actions.find(action => action.id === 'think-action')!;
+      thinkingAction.interrupt = 'resistant';
+      thinkingAction.loopPolicy = 'until-interrupted';
+      const fixture = createFixture({ getV2: async () => manifest });
+      const service = new Constructor(fixture.options);
+      const events: BehaviorPlaybackEvent[] = [];
+      service.subscribe(event => events.push(event));
+      await service.initialize();
+
+      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+      const thinking = events.at(-1)!;
+      service.applyPlaybackFeedback({
+        playbackToken: thinking.playbackToken,
+        actionId: thinking.actionId,
+        status: 'started',
+        occurredAtMs: 1
+      });
+      events.splice(0);
+
+      service.handleTaskEvent({ type: 'phase', phase });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        stateId: 'idle-state',
+        actionId: 'idle-action'
+      });
+      expect(() => service.applyPlaybackFeedback({
+        playbackToken: events[0]!.playbackToken,
+        actionId: events[0]!.actionId,
+        status: 'started',
+        occurredAtMs: 2
+      })).not.toThrow();
+    }
+  );
+
+  test.each(['awaiting_confirmation', 'acting'] as const)(
+    'thinking→%s 发布停用调度的新令牌，保持播放器与引擎一致',
+    async phase => {
+      const fixture = createFixture();
+      const service = new Constructor(fixture.options);
+      const events: BehaviorPlaybackEvent[] = [];
+      service.subscribe(event => events.push(event));
+      await service.initialize();
+      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+      events.splice(0);
+
+      service.handleTaskEvent({ type: 'phase', phase });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ actionId: 'think-action' });
+      expect(() => service.applyPlaybackFeedback({
+        playbackToken: events[0]!.playbackToken,
+        actionId: events[0]!.actionId,
+        status: 'started',
+        occurredAtMs: 1
+      })).not.toThrow();
+    }
+  );
+
   test.each([
     ['success', 'celebrate-action'],
     ['error', 'fail-action']

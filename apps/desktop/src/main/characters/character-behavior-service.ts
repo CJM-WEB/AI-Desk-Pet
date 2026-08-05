@@ -106,7 +106,7 @@ export class CharacterBehaviorService {
       this.deactivateTaskSignal(now);
       this.idleBlocked = false;
       this.nextIdleAt = now + this.idleIntervalMs;
-      this.dispatch({ type: 'idle-due', occurredAtMs: now });
+      this.restoreDefaultPlayback(now);
       return;
     }
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
@@ -284,11 +284,32 @@ export class CharacterBehaviorService {
     this.activeTaskSignal = null;
     if (!activeTaskSignal || !this.engine || this.transitioning) return;
 
-    // 停用信号只更新引擎状态，阶段目标动作由紧随其后的本地信号统一发布。
-    this.engine.dispatch({
+    // 停用也可能重排动作，必须同步发布，避免内部令牌领先于播放器。
+    this.publish(this.engine.dispatch({
       signal: { type: activeTaskSignal, active: false, occurredAtMs },
       direction: this.direction
+    }));
+  }
+
+  private restoreDefaultPlayback(occurredAtMs: number): void {
+    if (!this.engine || this.transitioning) return;
+    const decision = this.engine.dispatch({
+      signal: { type: 'idle-due', occurredAtMs },
+      direction: this.direction
     });
+    this.publish(decision);
+
+    const current = decision.snapshot.schedule.current;
+    const defaultWasBlocked = current
+      && current.stateId !== decision.snapshot.state.primaryStateId
+      && !decision.effects.some((effect) => effect.type === 'play');
+    if (!defaultWasBlocked) return;
+
+    // user-interaction 是既有的中性强制边沿；此时主状态已是默认态，只负责替换抗中断动作。
+    this.publish(this.engine.dispatch({
+      signal: { type: 'user-interaction', occurredAtMs },
+      direction: this.direction
+    }));
   }
 
   private dispatch(
