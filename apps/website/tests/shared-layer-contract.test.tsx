@@ -59,7 +59,7 @@ function renderSharedLayers() {
     'div',
     null,
     createElement(SharedVisualLayers, {
-      profile: VISUAL_PROFILES.download,
+      profile: VISUAL_PROFILES.community,
       running: false,
       generating: false,
       exitProgress: 0,
@@ -104,7 +104,7 @@ describe('共享视觉图层契约', () => {
     const markup = renderToStaticMarkup(
       <I18nProvider initialLocale="en">
         <SharedVisualLayers
-          profile={VISUAL_PROFILES.download}
+          profile={VISUAL_PROFILES.community}
           running={false}
           generating={false}
           exitProgress={0}
@@ -120,9 +120,9 @@ describe('共享视觉图层契约', () => {
   });
 
   it('后续章节关闭光场并复用默认预览内容源', () => {
-    expect(VISUAL_PROFILES.download.fieldEnabled).toBe(false);
+    expect(VISUAL_PROFILES.community.fieldEnabled).toBe(false);
     expect(VISUAL_PROFILES.donation.fieldEnabled).toBe(false);
-    expect(VISUAL_PROFILES.download.previewSource)
+    expect(VISUAL_PROFILES.community.previewSource)
       .toBe(DEFAULT_FILE_PREVIEW_CONTENT_SOURCE);
     expect(VISUAL_PROFILES.donation.previewSource)
       .toBe(DEFAULT_FILE_PREVIEW_CONTENT_SOURCE);
@@ -173,7 +173,7 @@ describe('共享视觉图层契约', () => {
     }
   });
 
-  it('生产页面进入下载章节后挂载下载文件配置并开始生成粒子', async () => {
+  it('生产页面进入下载章节后不再挂载旧文件粒子与文本预览', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createReducedMotionQuery()));
     vi.stubGlobal(
       'ResizeObserver',
@@ -195,14 +195,7 @@ describe('共享视觉图层契约', () => {
     fireEvent.click(next);
 
     expect(experience.dataset.activeChapter).toBe('download');
-    let fileLayer: HTMLElement | null = null;
-    await waitFor(() => {
-      fileLayer = document.querySelector<HTMLElement>('[data-layer="file"]');
-      expect(fileLayer?.dataset.profileId).toBe('download');
-    });
-    await waitFor(() => {
-      expect(Number(fileLayer?.querySelector<HTMLElement>('[data-active-count]')
-        ?.dataset.activeCount ?? 0)).toBeGreaterThan(0);
-    }, { timeout: 1_500 });
+    expect(document.querySelector('[data-layer="file"]')).toBeNull();
+    expect(document.querySelector('[data-layer="preview"]')).toBeNull();
   });
 });

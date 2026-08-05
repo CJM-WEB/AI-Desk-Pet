@@ -68,27 +68,28 @@ describe('章节静态回退禁用内部动效', () => {
     vi.restoreAllMocks();
   });
 
-  it('下载静态回退保留侧栏标题与列表项的可见语义节点', () => {
+  it('下载静态回退保留标题与安装提示的可见语义节点', () => {
     render(<DownloadChapter interactive staticFallback />);
     const root = screen.getByTestId('download-chapter');
-    const heading = root.querySelector<HTMLElement>('[data-panel-heading]')!;
-    const item = root.querySelector<HTMLElement>('[data-panel-item]')!;
+    const heading = screen.getByRole('heading', { name: '选择你的平台' });
+    const notice = screen.getByRole('region', { name: '安装前须知 · 常见问题' });
 
     expect(root.dataset.motionDisabled).toBe('true');
     expect(heading).toBeTruthy();
-    expect(item).toBeTruthy();
+    expect(notice).toBeTruthy();
     expect(heading.style.visibility).toBe('');
-    expect(item.style.visibility).toBe('');
+    expect(notice.getAttribute('aria-hidden')).toBeNull();
   });
 
-  it('下载静态回退关闭感应区与侧栏卡片过渡且保留未发布状态', () => {
+  it('下载静态回退关闭标题、平台文字与内容切换过渡且保留未发布状态', () => {
     render(<DownloadChapter interactive staticFallback />);
 
     const root = screen.getByTestId('download-chapter');
     expect(root.dataset.motionDisabled).toBe('true');
     expect(downloadCss).toMatch(
-      /\.downloadChapter\[data-motion-disabled='true'\] \.sideSensor,\s*\.downloadChapter\[data-motion-disabled='true'\] \.sidePanel,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformStack,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformCard\s*\{[^}]*transition:\s*none;/s
+      /\.downloadChapter\[data-motion-disabled='true'\] \.platformHeader,[\s\S]*\.downloadChapter\[data-motion-disabled='true'\] \.platformCopy,[\s\S]*\.downloadChapter\[data-motion-disabled='true'\] \.downloadAction\s*\{[^}]*transition:\s*none;/s
     );
+    expect(downloadCss.match(/\.platformWord\s*\{([^}]*)\}/s)?.[1]).not.toContain('rotate(');
     expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
     expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
       .disabled).toBe(true);
@@ -123,7 +124,7 @@ describe('章节静态回退禁用内部动效', () => {
     expect(download.dataset.paused).toBe('true');
     expect(download.dataset.motionDisabled).toBe('true');
     expect(downloadCss).toMatch(
-      /\.downloadChapter\[data-motion-disabled='true'\] \.sideSensor,\s*\.downloadChapter\[data-motion-disabled='true'\] \.sidePanel,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformStack,\s*\.downloadChapter\[data-motion-disabled='true'\] \.platformCard\s*\{[^}]*transition:\s*none;/s
+      /\.downloadChapter\[data-motion-disabled='true'\] \.platformHeader,[\s\S]*\.downloadChapter\[data-motion-disabled='true'\] \.platformCopy,[\s\S]*\.downloadChapter\[data-motion-disabled='true'\] \.downloadAction\s*\{[^}]*transition:\s*none;/s
     );
 
     rerender(<DonationChapter interactive isPaused />);

@@ -19,6 +19,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   uniform float u_radius;
   uniform float u_motion;
   uniform float u_transition;
+  uniform float u_downloadTransition;
   uniform vec2 u_blobOffsets[3];
   uniform float u_hoveredBlob;
   uniform float u_hoverAmount;
@@ -29,6 +30,7 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   uniform sampler2D u_textTexture;
   uniform sampler2D u_cornerTextTexture;
   uniform sampler2D u_glassTextTexture;
+  uniform sampler2D u_downloadTextTexture;
 
   float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -62,12 +64,17 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     return value;
   }
 
-  vec3 flowingBackground(vec2 uv, float time, float transition) {
+  vec3 flowingBackground(vec2 uv, float time, float transition, float downloadTransition) {
     float aspect = u_resolution.x / u_resolution.y;
     vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
     p += vec2(
       sin(transition * 2.7 + p.y * 1.8) * transition * 0.72,
       cos(transition * 2.1 + p.x * 1.4) * transition * 0.46
+    );
+    /* 下载过渡只平移既有色带，不改变颜色与轮廓形状。 */
+    p += vec2(
+      sin(downloadTransition * 2.7) * downloadTransition * 1.18,
+      cos(downloadTransition * 2.2) * downloadTransition * 0.86
     );
     float t = time * 0.24;
 
@@ -162,6 +169,12 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     return u_resolution * vec2(0.20, 0.145) * (1.0 + selectedBlob(2.0) * u_hoverAmount * 0.22);
   }
 
+  vec2 downloadGlassCenter() {
+    float floating = sin(u_time * 0.62 + 0.8) * min(u_resolution.x, u_resolution.y) * 0.012;
+    return u_resolution * vec2(0.265, 0.50)
+      + vec2(0.0, floating * u_motion * u_downloadTransition);
+  }
+
   float liquidGlassSdf(vec2 pixel) {
     vec2 viewportCenter = u_resolution * 0.5;
     vec2 homeHalfSize = viewportCenter - vec2(u_inset);
@@ -202,7 +215,14 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     about = smoothUnion(about, blob2, minimumSide * 0.018);
     about = smoothUnion(about, neck01, minimumSide * 0.024);
     about = smoothUnion(about, neck12, minimumSide * 0.024);
-    return mix(home, about, u_transition);
+    vec2 downloadCenter = downloadGlassCenter();
+    vec2 downloadHalfSize = u_resolution * vec2(0.225, 0.44);
+    float downloadGlass = roundedBoxSdf(
+      pixel - downloadCenter,
+      downloadHalfSize,
+      minimumSide * 0.072
+    );
+    return mix(mix(home, about, u_transition), downloadGlass, u_downloadTransition);
   }
 
   vec2 rippleDisplacement(vec2 uv, out float waveLight) {
@@ -278,17 +298,17 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     vec2 viewCenter = uv - 0.5;
     vec2 mouseTilt = (u_pointer - 0.5) * 2.0 * u_motion;
     vec2 sceneUv = uv + refraction * glassMask;
-    vec3 backgroundSharp = flowingBackground(sceneUv, u_time * u_motion, u_transition);
+    vec3 backgroundSharp = flowingBackground(sceneUv, u_time * u_motion, u_transition, u_downloadTransition);
     vec2 backgroundBlurStep = vec2(mix(7.0, 32.0, u_hoverAmount)) / u_resolution;
     vec3 backgroundSoft = backgroundSharp * 0.20;
-    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition) * 0.12;
-    backgroundSoft += flowingBackground(sceneUv - vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition) * 0.12;
-    backgroundSoft += flowingBackground(sceneUv + vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition) * 0.12;
-    backgroundSoft += flowingBackground(sceneUv - vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition) * 0.12;
-    backgroundSoft += flowingBackground(sceneUv + backgroundBlurStep, u_time * u_motion, u_transition) * 0.08;
-    backgroundSoft += flowingBackground(sceneUv - backgroundBlurStep, u_time * u_motion, u_transition) * 0.08;
-    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, -backgroundBlurStep.y), u_time * u_motion, u_transition) * 0.08;
-    backgroundSoft += flowingBackground(sceneUv + vec2(-backgroundBlurStep.x, backgroundBlurStep.y), u_time * u_motion, u_transition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition, u_downloadTransition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv - vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition, u_downloadTransition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv + vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv - vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv + backgroundBlurStep, u_time * u_motion, u_transition, u_downloadTransition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv - backgroundBlurStep, u_time * u_motion, u_transition, u_downloadTransition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, -backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv + vec2(-backgroundBlurStep.x, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition) * 0.08;
     vec3 background = mix(backgroundSharp, backgroundSoft, u_hoverAmount);
     float logoPerspective = clamp(1.0 + dot(viewCenter, mouseTilt) * 0.24, 0.76, 1.24);
     vec2 logoUv = viewCenter / logoPerspective + 0.5;
@@ -350,10 +370,31 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     float featureMask0 = 1.0 - smoothstep(-8.0, 14.0, roundedBoxSdf(pixel - blobCenter(0.0), blobHalfSize(0.0), minimumSide * 0.055));
     float featureMask1 = 1.0 - smoothstep(-8.0, 14.0, roundedBoxSdf(pixel - blobCenter(1.0), blobHalfSize(1.0), minimumSide * 0.061));
     float featureMask2 = 1.0 - smoothstep(-8.0, 14.0, roundedBoxSdf(pixel - blobCenter(2.0), blobHalfSize(2.0), minimumSide * 0.055));
-    color = mix(color, feature0.rgb, feature0.a * featureMask0);
-    color = mix(color, feature1.rgb, feature1.a * featureMask1);
-    color = mix(color, feature2.rgb, feature2.a * featureMask2);
+    float aboutTextVisibility = 1.0 - u_downloadTransition;
+    color = mix(color, feature0.rgb, feature0.a * featureMask0 * aboutTextVisibility);
+    color = mix(color, feature1.rgb, feature1.a * featureMask1 * aboutTextVisibility);
+    color = mix(color, feature2.rgb, feature2.a * featureMask2 * aboutTextVisibility);
 
+    vec2 downloadCenter = downloadGlassCenter();
+    vec2 downloadMotion = downloadCenter / u_resolution - vec2(0.265, 0.50);
+    vec4 downloadFeature = texture2D(u_downloadTextTexture, featureUv - downloadMotion);
+    vec2 downloadHalfSize = u_resolution * vec2(0.225, 0.44);
+    float downloadFeatureMask = 1.0 - smoothstep(
+      -8.0,
+      14.0,
+      roundedBoxSdf(
+        pixel - downloadCenter,
+        downloadHalfSize,
+        minimumSide * 0.072
+      )
+    );
+    color = mix(
+      color,
+      downloadFeature.rgb,
+      downloadFeature.a * downloadFeatureMask * u_downloadTransition
+    );
+
+    /* 英雄字在色调映射后以折射坐标合成，保留原渐变并继续响应水波。 */
     vec4 heroText = texture2D(u_textTexture, textUv);
     color = mix(color, heroText.rgb, heroText.a * 0.96);
 

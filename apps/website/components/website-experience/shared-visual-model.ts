@@ -17,7 +17,7 @@ export const DEFAULT_FILE_PREVIEW_CONTENT_SOURCE: FilePreviewContentSource = {
 };
 
 export interface SharedVisualProfile {
-  id: Extract<ChapterId, 'download' | 'community' | 'donation'>;
+  id: Extract<ChapterId, 'community' | 'donation'>;
   fieldColor: RgbColor;
   maxActive: number;
   safeZoneRatio: number;
@@ -26,14 +26,6 @@ export interface SharedVisualProfile {
 }
 
 export const VISUAL_PROFILES = {
-  download: {
-    id: 'download',
-    fieldColor: [180, 180, 180],
-    maxActive: 8,
-    safeZoneRatio: 0.34,
-    fieldEnabled: false,
-    previewSource: DEFAULT_FILE_PREVIEW_CONTENT_SOURCE
-  },
   community: {
     id: 'community',
     fieldColor: [180, 180, 180],
@@ -60,16 +52,12 @@ export function resolveSharedVisualProfile(
   progress: number,
   phase: ExperiencePhase
 ): SharedVisualProfile | null {
-  const downloadIndex = getChapterIndex('download');
   const communityIndex = getChapterIndex('community');
   const feedbackIndex = getChapterIndex('feedback');
   const donationIndex = getChapterIndex('donation');
 
   if (phase !== 'interactive' && phase !== 'exiting') return null;
-  if (progress < 1) return null;
-  if (progress > downloadIndex - 1 && progress < communityIndex) {
-    return VISUAL_PROFILES.download;
-  }
+  if (progress < communityIndex) return null;
   if (progress >= communityIndex && progress < feedbackIndex) {
     return VISUAL_PROFILES.community;
   }

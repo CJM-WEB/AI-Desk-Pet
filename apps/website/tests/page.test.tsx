@@ -50,7 +50,8 @@ describe('AI Pet 官网首页', () => {
     expect(html).toContain('aria-label="上一章节"');
     expect(html).toContain('aria-label="下一章节"');
     expect(html).toContain('AI-Pet-0.1.0-alpha.1-windows-x64.exe');
-    expect(html).toContain('即将支持');
+    expect(html).toContain('aria-label="选择 macOS"');
+    expect(html).toContain('尚未发布');
   });
 
   it('首页静态回退保留独立的语言入口', () => {

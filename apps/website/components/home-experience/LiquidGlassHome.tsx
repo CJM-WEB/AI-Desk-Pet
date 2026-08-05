@@ -4,6 +4,7 @@ import { gsap } from 'gsap';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import { createAboutFeatures } from '../website-experience/about/about-content';
+import { createDownloadContent } from '../website-experience/download/download-content';
 import {
   LIQUID_GLASS_FRAGMENT_SHADER,
   LIQUID_GLASS_VERTEX_SHADER
@@ -50,6 +51,20 @@ export function LiquidGlassHome({
       featureMap.get('file-management')!
     ];
   }, [t]);
+  const downloadGlassCopy = useMemo(() => {
+    const content = createDownloadContent(t);
+    return {
+      faqBody: content.faqItems
+        .slice(0, 3)
+        .map((item) => `• ${item.question}\n  ${item.answer}`)
+        .join('\n\n'),
+      faqTitle: t('download.faq.label'),
+      noticeBody: content.installNoticeItems
+        .map((item) => `• ${item.title}\n  ${item.body}`)
+        .join('\n\n'),
+      noticeTitle: t('download.notice.label')
+    };
+  }, [t]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pausedRef = useRef(isPaused);
   const transitionRef = useRef(transitionProgress);
@@ -68,7 +83,7 @@ export function LiquidGlassHome({
 
     const canvas = canvasRef.current;
     const gl = canvas?.getContext('webgl', {
-      alpha: false,
+      alpha: true,
       antialias: false,
       depth: false,
       desynchronized: true,
@@ -86,6 +101,10 @@ export function LiquidGlassHome({
     let inset = 48;
     let radius = 62;
     let rippleIndex = 0;
+    let downloadTypingStartedAt = -1;
+    let lastTypedCharacters = -1;
+    const downloadTypingLength = Object.values(downloadGlassCopy)
+      .reduce((total, text) => total + Array.from(text).length, 0);
     const pointer = { x: 0.5, y: 0.5 };
     const glassInteraction = { hoverAmount: 0, hovered: -1, dragging: false };
     const blobOffsets = new Float32Array(6);
@@ -168,6 +187,7 @@ export function LiquidGlassHome({
         radius: gl.getUniformLocation(program, 'u_radius'),
         motion: gl.getUniformLocation(program, 'u_motion'),
         transition: gl.getUniformLocation(program, 'u_transition'),
+        downloadTransition: gl.getUniformLocation(program, 'u_downloadTransition'),
         blobOffsets: gl.getUniformLocation(program, 'u_blobOffsets[0]'),
         hoveredBlob: gl.getUniformLocation(program, 'u_hoveredBlob'),
         hoverAmount: gl.getUniformLocation(program, 'u_hoverAmount'),
@@ -177,7 +197,8 @@ export function LiquidGlassHome({
         logoTexture: gl.getUniformLocation(program, 'u_logoTexture'),
         textTexture: gl.getUniformLocation(program, 'u_textTexture'),
         cornerTextTexture: gl.getUniformLocation(program, 'u_cornerTextTexture'),
-        glassTextTexture: gl.getUniformLocation(program, 'u_glassTextTexture')
+        glassTextTexture: gl.getUniformLocation(program, 'u_glassTextTexture'),
+        downloadTextTexture: gl.getUniformLocation(program, 'u_downloadTextTexture')
       };
 
       const logoCanvas = document.createElement('canvas');
@@ -188,7 +209,15 @@ export function LiquidGlassHome({
       const cornerTextContext = cornerTextCanvas.getContext('2d');
       const glassTextCanvas = document.createElement('canvas');
       const glassTextContext = glassTextCanvas.getContext('2d');
-      if (!logoContext || !textContext || !cornerTextContext || !glassTextContext) {
+      const downloadTextCanvas = document.createElement('canvas');
+      const downloadTextContext = downloadTextCanvas.getContext('2d');
+      if (
+        !logoContext
+        || !textContext
+        || !cornerTextContext
+        || !glassTextContext
+        || !downloadTextContext
+      ) {
         throw new Error('无法创建首页纹理画布');
       }
 
@@ -196,6 +225,7 @@ export function LiquidGlassHome({
       const textTexture = createTexture();
       const cornerTextTexture = createTexture();
       const glassTextTexture = createTexture();
+      const downloadTextTexture = createTexture();
       const logoImage = new Image();
       let logoReady = false;
       let lastTextProgress = -1;
@@ -243,16 +273,40 @@ export function LiquidGlassHome({
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.uniform1i(uniforms.glassTextTexture, 3);
 
-      const updateTextTexture = (width: number, height: number, transition: number) => {
-        textCanvas.width = width;
-        textCanvas.height = height;
-        cornerTextCanvas.width = width;
-        cornerTextCanvas.height = height;
-        glassTextCanvas.width = width;
-        glassTextCanvas.height = height;
-        textContext.clearRect(0, 0, width, height);
-        cornerTextContext.clearRect(0, 0, width, height);
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, downloadTextTexture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.uniform1i(uniforms.downloadTextTexture, 4);
+
+      const updateTextTexture = (
+        width: number,
+        height: number,
+        transition: number,
+        downloadTransition: number,
+        typedCharacters: number,
+        staticLayersChanged: boolean
+      ) => {
+        if (staticLayersChanged) {
+          textCanvas.width = width;
+          textCanvas.height = height;
+          cornerTextCanvas.width = width;
+          cornerTextCanvas.height = height;
+          textContext.clearRect(0, 0, width, height);
+          cornerTextContext.clearRect(0, 0, width, height);
+        }
+        if (glassTextCanvas.width !== width || glassTextCanvas.height !== height) {
+          glassTextCanvas.width = width;
+          glassTextCanvas.height = height;
+        }
+        if (downloadTextCanvas.width !== width || downloadTextCanvas.height !== height) {
+          downloadTextCanvas.width = width;
+          downloadTextCanvas.height = height;
+        }
         glassTextContext.clearRect(0, 0, width, height);
+        downloadTextContext.clearRect(0, 0, width, height);
 
         let fontSize = Math.min(width * 0.235, height * 0.40);
         const gradient = textContext.createLinearGradient(width * 0.18, 0, width * 0.82, 0);
@@ -262,19 +316,24 @@ export function LiquidGlassHome({
         gradient.addColorStop(0.74, '#FFE6BD');
         gradient.addColorStop(1, '#F7DCC8');
 
-        textContext.font = `900 ${fontSize}px "Arial Black", "Segoe UI", sans-serif`;
+        const setHeroFont = (size: number) => {
+          textContext.font = `900 ${size}px "Arial Black", "Segoe UI", sans-serif`;
+        };
+        setHeroFont(fontSize);
         const measuredWidth = textContext.measureText('AI PET').width;
         if (measuredWidth > width * 0.80) {
           fontSize *= width * 0.80 / measuredWidth;
-          textContext.font = `900 ${fontSize}px "Arial Black", "Segoe UI", sans-serif`;
+          setHeroFont(fontSize);
         }
         textContext.textAlign = 'center';
         textContext.textBaseline = 'middle';
         const originalWidth = textContext.measureText('AI PET').width;
         const aiWidth = textContext.measureText('AI').width;
         const petWidth = textContext.measureText('PET').width;
-        const mix = (from: number, to: number) => from + ((to - from) * transition);
-        const positions = [
+        const mix = (from: number, to: number, amount = transition) => (
+          from + ((to - from) * amount)
+        );
+        const aboutPositions = [
           {
             text: 'AI',
             x: mix(
@@ -293,13 +352,33 @@ export function LiquidGlassHome({
           }
         ];
 
+        const downloadFontSize = Math.min(width * 0.082, height * 0.14);
+        setHeroFont(downloadFontSize);
+        const downloadAiWidth = textContext.measureText('AI').width;
+        const downloadPetWidth = textContext.measureText('PET').width;
+        const downloadGap = downloadFontSize * 0.20;
+        const downloadTotalWidth = downloadAiWidth + downloadGap + downloadPetWidth;
+        const downloadCenterX = width * 0.255;
+        const downloadY = height * 0.255;
+        const finalPositions = [
+          downloadCenterX - downloadTotalWidth * 0.5 + downloadAiWidth * 0.5,
+          downloadCenterX + downloadTotalWidth * 0.5 - downloadPetWidth * 0.5
+        ];
+        const currentFontSize = mix(fontSize, downloadFontSize, downloadTransition);
+        const positions = aboutPositions.map((position, index) => ({
+          ...position,
+          x: mix(position.x, finalPositions[index]!, downloadTransition),
+          y: mix(position.y, downloadY, downloadTransition)
+        }));
+
         const drawText = (text: string, x: number, y: number, alpha: number) => {
+          setHeroFont(currentFontSize);
           textContext.globalAlpha = alpha;
           textContext.fillStyle = 'rgba(4, 10, 11, 0.52)';
           textContext.shadowColor = 'rgba(2, 7, 8, 0.72)';
-          textContext.shadowBlur = Math.max(16, fontSize * 0.10);
-          textContext.shadowOffsetX = fontSize * 0.018;
-          textContext.shadowOffsetY = fontSize * 0.055;
+          textContext.shadowBlur = Math.max(10, currentFontSize * 0.10);
+          textContext.shadowOffsetX = currentFontSize * 0.018;
+          textContext.shadowOffsetY = currentFontSize * 0.055;
           textContext.fillText(text, x, y);
           textContext.fillStyle = gradient;
           textContext.shadowColor = 'transparent';
@@ -328,6 +407,16 @@ export function LiquidGlassHome({
         /** 四角新字只跟随滚轮横向滑入，不使用透明度渐变。 */
         const agentX = mix(width + agentWidth + width * 0.02, width * 0.94);
         const yourX = mix(-yourWidth - width * 0.02, width * 0.06);
+        const agentY = mix(
+          cornerFontSize * 0.52 + height * 0.05,
+          -cornerFontSize,
+          downloadTransition
+        );
+        const yourY = mix(
+          height - cornerFontSize * 0.52 - height * 0.05,
+          height + cornerFontSize,
+          downloadTransition
+        );
         const agentGradient = cornerTextContext.createLinearGradient(width * 0.5, 0, width * 0.94, 0);
         agentGradient.addColorStop(0, '#BDFCF5');
         agentGradient.addColorStop(0.55, '#CFF8D5');
@@ -346,13 +435,13 @@ export function LiquidGlassHome({
         cornerTextContext.fillText(
           'AGENT',
           agentX,
-          cornerFontSize * 0.52 + height * 0.05
+          agentY
         );
         cornerTextContext.textAlign = 'left';
         cornerTextContext.fillText(
           'YOUR',
           yourX,
-          height - cornerFontSize * 0.52 - height * 0.05
+          yourY
         );
         cornerTextContext.fillStyle = agentGradient;
         cornerTextContext.shadowColor = 'transparent';
@@ -361,14 +450,14 @@ export function LiquidGlassHome({
         cornerTextContext.fillText(
           'AGENT',
           agentX,
-          cornerFontSize * 0.52 + height * 0.05
+          agentY
         );
         cornerTextContext.textAlign = 'left';
         cornerTextContext.fillStyle = yourGradient;
         cornerTextContext.fillText(
           'YOUR',
           yourX,
-          height - cornerFontSize * 0.52 - height * 0.05
+          yourY
         );
         cornerTextContext.globalAlpha = 1;
 
@@ -411,18 +500,133 @@ export function LiquidGlassHome({
           glassTextContext.shadowBlur = 0;
           glassTextContext.shadowOffsetY = 0;
         };
-        glassTextContext.globalAlpha = Math.max(0, Math.min(1, (transition - 0.14) * 1.17));
+        glassTextContext.globalAlpha = Math.max(0, Math.min(
+          1,
+          (transition - 0.14) * 1.17
+        )) * (1 - downloadTransition);
         drawGlassFeature(glassFeatures[0]!, width * 0.065, height * 0.68, width * 0.33);
         drawGlassFeature(glassFeatures[1]!, width * 0.29, height * 0.405, width * 0.40);
         drawGlassFeature(glassFeatures[2]!, width * 0.60, height * 0.12, width * 0.33);
         glassTextContext.globalAlpha = 1;
 
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, textTexture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, cornerTextTexture);
+        /** 下载文案使用独立纹理，逐字出现并只由下载玻璃采样。 */
+        let remainingCharacters = typedCharacters;
+        const revealCharacters = (text: string) => {
+          const characters = Array.from(text);
+          const visible = characters.slice(0, Math.max(0, remainingCharacters)).join('');
+          remainingCharacters -= characters.length;
+          return visible;
+        };
+        const visibleNoticeTitle = revealCharacters(downloadGlassCopy.noticeTitle);
+        const visibleNoticeBody = revealCharacters(downloadGlassCopy.noticeBody);
+        const visibleFaqTitle = revealCharacters(downloadGlassCopy.faqTitle);
+        const visibleFaqBody = revealCharacters(downloadGlassCopy.faqBody);
+        const minimumSide = Math.min(width, height);
+
+        const drawWrappedText = (
+          text: string,
+          x: number,
+          y: number,
+          maxWidth: number,
+          lineHeight: number
+        ) => {
+          let line = '';
+          let cursorY = y;
+          for (const character of text) {
+            if (character === '\n') {
+              if (line) downloadTextContext.fillText(line, x, cursorY);
+              line = '';
+              cursorY += lineHeight * 1.45;
+              continue;
+            }
+            const candidate = line + character;
+            if (line && downloadTextContext.measureText(candidate).width > maxWidth) {
+              downloadTextContext.fillText(line, x, cursorY);
+              line = character;
+              cursorY += lineHeight;
+            } else {
+              line = candidate;
+            }
+          }
+          if (line) downloadTextContext.fillText(line, x, cursorY);
+        };
+
+        const drawDownloadColumn = (
+          title: string,
+          body: string,
+          x: number,
+          maxWidth: number
+        ) => {
+          const startY = height * 0.465;
+          downloadTextContext.textAlign = 'left';
+          downloadTextContext.textBaseline = 'top';
+          downloadTextContext.shadowColor = 'rgba(0, 0, 0, 0.92)';
+          downloadTextContext.shadowBlur = Math.max(5, minimumSide * 0.0065);
+          downloadTextContext.shadowOffsetY = Math.max(1, minimumSide * 0.002);
+          downloadTextContext.fillStyle = '#FFF6AC';
+          downloadTextContext.font = `780 ${Math.max(18, minimumSide * 0.028)}px "Segoe UI", Arial, sans-serif`;
+          downloadTextContext.fillText(title, x, startY);
+          downloadTextContext.fillStyle = '#FFFFFF';
+          downloadTextContext.font = `560 ${Math.max(11, minimumSide * 0.015)}px "Segoe UI", Arial, sans-serif`;
+          drawWrappedText(
+            body,
+            x,
+            startY + minimumSide * 0.058,
+            maxWidth,
+            Math.max(16, minimumSide * 0.023)
+          );
+          downloadTextContext.shadowColor = 'transparent';
+          downloadTextContext.shadowBlur = 0;
+          downloadTextContext.shadowOffsetY = 0;
+        };
+
+        downloadTextContext.globalAlpha = downloadTransition;
+        drawDownloadColumn(
+          visibleNoticeTitle,
+          visibleNoticeBody,
+          width * 0.065,
+          width * 0.185
+        );
+        drawDownloadColumn(
+          visibleFaqTitle,
+          visibleFaqBody,
+          width * 0.275,
+          width * 0.185
+        );
+        downloadTextContext.globalAlpha = 1;
+
+        if (staticLayersChanged) {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, textTexture);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, cornerTextTexture);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            cornerTextCanvas
+          );
+        }
+        if (staticLayersChanged) {
+          gl.activeTexture(gl.TEXTURE3);
+          gl.bindTexture(gl.TEXTURE_2D, glassTextTexture);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            glassTextCanvas
+          );
+        }
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, downloadTextTexture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         gl.texImage2D(
           gl.TEXTURE_2D,
@@ -430,20 +634,10 @@ export function LiquidGlassHome({
           gl.RGBA,
           gl.RGBA,
           gl.UNSIGNED_BYTE,
-          cornerTextCanvas
+          downloadTextCanvas
         );
-        gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, glassTextTexture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.RGBA,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          glassTextCanvas
-        );
-        lastTextProgress = transition;
+        lastTextProgress = transition + downloadTransition;
+        lastTypedCharacters = typedCharacters;
       };
 
       updateLogoTexture = (width: number, height: number) => {
@@ -499,7 +693,15 @@ export function LiquidGlassHome({
         if (!initializedViewport || sizeChanged) {
           gl.viewport(0, 0, width, height);
           updateLogoTexture(width, height);
-          updateTextTexture(width, height, transitionRef.current);
+          const rawTransition = transitionRef.current;
+          updateTextTexture(
+            width,
+            height,
+            Math.min(1, rawTransition),
+            Math.min(1, Math.max(0, rawTransition - 1)),
+            Math.max(0, lastTypedCharacters),
+            true
+          );
           renderedStaticFrame = false;
           initializedViewport = true;
         }
@@ -566,9 +768,31 @@ export function LiquidGlassHome({
       render = (time: number) => {
         if (disposed || pausedRef.current || (reducedMotion && renderedStaticFrame)) return;
         currentTime = reducedMotion ? 12 : time;
-        const transition = transitionRef.current;
-        if (Math.abs(transition - lastTextProgress) > 0.002) {
-          updateTextTexture(canvas.width, canvas.height, transition);
+        const rawTransition = transitionRef.current;
+        const transition = Math.min(1, rawTransition);
+        const downloadTransition = Math.min(1, Math.max(0, rawTransition - 1));
+        let typedCharacters = 0;
+        if (downloadTransition > 0.38) {
+          if (downloadTypingStartedAt < 0) downloadTypingStartedAt = currentTime;
+          typedCharacters = reducedMotion
+            ? downloadTypingLength
+            : Math.min(
+                downloadTypingLength,
+                Math.floor((currentTime - downloadTypingStartedAt) * 42)
+              );
+        } else {
+          downloadTypingStartedAt = -1;
+        }
+        const staticLayersChanged = Math.abs(rawTransition - lastTextProgress) > 0.002;
+        if (staticLayersChanged || typedCharacters !== lastTypedCharacters) {
+          updateTextTexture(
+            canvas.width,
+            canvas.height,
+            transition,
+            downloadTransition,
+            typedCharacters,
+            staticLayersChanged
+          );
         }
         gl.uniform2f(uniforms.resolution, canvas.width, canvas.height);
         gl.uniform2f(uniforms.pointer, pointer.x, pointer.y);
@@ -577,6 +801,7 @@ export function LiquidGlassHome({
         gl.uniform1f(uniforms.radius, radius);
         gl.uniform1f(uniforms.motion, reducedMotion ? 0 : 1);
         gl.uniform1f(uniforms.transition, transition);
+        gl.uniform1f(uniforms.downloadTransition, downloadTransition);
         gl.uniform2fv(uniforms.blobOffsets, blobOffsets);
         gl.uniform1f(uniforms.hoveredBlob, glassInteraction.hovered);
         gl.uniform1f(uniforms.hoverAmount, glassInteraction.hoverAmount);
@@ -654,7 +879,7 @@ export function LiquidGlassHome({
       if (program) gl.deleteProgram(program);
       setInitializationFailed(true);
     }
-  }, [active, glassFeatures, reducedMotion]);
+  }, [active, downloadGlassCopy, glassFeatures, reducedMotion]);
 
   return (
     <div
@@ -667,6 +892,7 @@ export function LiquidGlassHome({
       <canvas
         ref={canvasRef}
         className={styles.canvas}
+        data-liquid-glass-canvas
         aria-label="AI PET 互动液态玻璃画布"
       />
       <div className={styles.fallback} aria-hidden={!initializationFailed}>

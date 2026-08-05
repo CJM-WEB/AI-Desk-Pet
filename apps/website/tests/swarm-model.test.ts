@@ -28,7 +28,7 @@ import type { FileParticle, Rect, SpawnViewport } from '../components/home-exper
 const viewport: SpawnViewport = {
   width: 1440,
   height: 900,
-  safeZoneRatio: VISUAL_PROFILES.download.safeZoneRatio
+  safeZoneRatio: VISUAL_PROFILES.community.safeZoneRatio
 };
 
 function createParticle(overrides: Partial<FileParticle> = {}): FileParticle {

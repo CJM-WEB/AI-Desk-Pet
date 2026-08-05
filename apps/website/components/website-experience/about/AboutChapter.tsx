@@ -49,6 +49,7 @@ export function AboutChapter({
   const hoveredRef = useRef<-1 | GlassIndex>(-1);
   const [hovered, setHovered] = useState<-1 | GlassIndex>(-1);
   const progress = Math.min(1, Math.max(0, transitionProgress));
+  const exitProgress = Math.min(1, Math.max(0, transitionProgress - 1));
   const motionDisabled = reducedMotion || staticFallback;
 
   const publishInteraction = (nextHovered = hoveredRef.current) => {
@@ -171,7 +172,10 @@ export function AboutChapter({
       data-hovered={hovered}
       data-motion-disabled={motionDisabled}
       data-static-fallback={staticFallback}
-      style={{ '--about-progress': progress } as CSSProperties}
+      style={{
+        '--about-progress': progress,
+        '--about-exit': exitProgress
+      } as CSSProperties}
     >
       <div className={styles.glassField} aria-label={t('about.featurePlane')}>
         <aside className={`${styles.detachedFeature} ${styles.securityFeature}`}>

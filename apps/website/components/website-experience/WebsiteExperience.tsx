@@ -120,8 +120,12 @@ export function WebsiteExperience({
       reducedMotion
     );
     // 首页 WebGL 在介绍模块完成前持续作为共同背景，保证玻璃分裂不跳帧。
-    const visual = chapter.id === 'home' && controller.progress <= 1
+    const visual = chapter.id === 'home' && controller.progress <= 2
       ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+      : chapter.id === 'download'
+          && controller.progress > 1
+          && controller.progress <= 2
+        ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
       : derived;
     return { chapter, visual };
   });
@@ -157,6 +161,12 @@ export function WebsiteExperience({
       </div>
       {chapters.map(({ chapter, visual }) => {
         const RegisteredChapter = chapter.component;
+        // 连续滚动停在下载主体时立即恢复点击与拖拽，不等待离散章节吸附状态。
+        const chapterInteractive = visual.interactive || (
+          chapter.id === 'download'
+          && controller.progress >= 1.82
+          && controller.progress < 2.98
+        );
         const style = createChapterVisualStyle(
           visual,
           CHAPTER_LAYERS.focal
@@ -169,11 +179,11 @@ export function WebsiteExperience({
             className={styles.chapter}
             data-chapter-id={chapter.id}
             data-visible={visual.visible}
-            data-interactive={visual.interactive}
+            data-interactive={chapterInteractive}
             data-layer="focal"
             aria-label={t(chapter.labelKey)}
             aria-hidden={!visual.visible}
-            inert={!visual.interactive ? true : undefined}
+            inert={!chapterInteractive ? true : undefined}
             style={style}
           >
             {chapter.id === 'home' ? (
@@ -185,8 +195,8 @@ export function WebsiteExperience({
             ) : null}
             {RegisteredChapter ? (
               <RegisteredChapter
-                interactive={visual.interactive}
-                transitionProgress={homeAboutProgress}
+                interactive={chapterInteractive}
+                transitionProgress={controller.progress}
                 isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
                 staticFallback={staticFallback}

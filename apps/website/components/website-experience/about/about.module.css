@@ -110,14 +110,25 @@
   pointer-events: none;
   opacity: max(0, calc((var(--about-progress) - 0.2) * 1.25));
   transition: filter 320ms ease, opacity 320ms ease;
+  will-change: transform, filter, opacity;
 }
 
 .detachedFeature h3,
 .detachedFeature p { margin: 0; }
 .detachedFeature h3 { color: #ffe6bd; font-size: clamp(1rem, 1.35vw, 1.55rem); }
 .detachedFeature p { color: rgba(239, 255, 248, 0.8); font-size: clamp(0.72rem, 0.82vw, 0.9rem); line-height: 1.45; }
-.securityFeature { left: 3%; top: 43%; text-align: left; }
-.desktopFeature { right: 3%; top: 43%; text-align: right; }
+.securityFeature {
+  left: 3%;
+  top: 43%;
+  text-align: left;
+  transform: translateX(calc(var(--about-exit) * -120vw));
+}
+.desktopFeature {
+  right: 3%;
+  top: 43%;
+  text-align: right;
+  transform: translateX(calc(var(--about-exit) * 120vw));
+}
 
 @media (max-width: 760px) {
   .glassContent { padding: 13px; }

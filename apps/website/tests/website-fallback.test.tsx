@@ -174,7 +174,7 @@ describe('官网章节降级模式', () => {
     expect(about?.style.getPropertyValue('--chapter-contrast')).toBe('1');
   });
 
-  it('matchMedia 失败后下载侧栏不再调用浏览器媒体 API', async () => {
+  it('matchMedia 失败后下载平台文字切换不再调用浏览器媒体 API', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => {
       throw new Error('matchMedia 初始化失败');
     }));
@@ -205,13 +205,9 @@ describe('官网章节降级模式', () => {
     expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
       .disabled).toBe(true);
 
-    expect(() => {
-      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
-    }).not.toThrow();
-    await waitFor(() => {
-      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-        .toBe('faq');
-    });
+    fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
+    expect(screen.getByTestId('download-chapter').dataset.activePlatform)
+      .toBe('macos');
     expect(screen.getByTestId('download-chapter').dataset.staticFallback)
       .toBe('true');
     expect(screen.getByTestId('donation-chapter').dataset.staticFallback)
@@ -264,7 +260,7 @@ describe('官网章节降级模式', () => {
     expect(experience.dataset.activeChapter).toBe('home');
   });
 
-  it('首页完成后下载 GSAP 初始化失败会进入统一静态回退', async () => {
+  it('首页完成后下载平台切换不依赖 GSAP context 初始化', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
     render(<WebsiteExperience />);
 
@@ -298,18 +294,15 @@ describe('官网章节降级模式', () => {
       expect(experience.dataset.activeChapter).toBe('download');
     });
 
-    expect(() => {
-      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
-    }).not.toThrow();
-    await waitFor(() => {
-      expect(experience.dataset.staticFallback).toBe('ready');
-    });
+    fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
 
     expect(context).not.toHaveBeenCalled();
-    expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-      .toBe('faq');
-    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
-    expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId('download-chapter').dataset.activePlatform)
+        .toBe('macos');
+    });
+    expect(screen.queryByRole('link', { name: '下载 macOS' })).toBeNull();
+    expect(screen.getByRole('button', { name: '即将支持' })).toBeTruthy();
 
   });
 
