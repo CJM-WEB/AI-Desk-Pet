@@ -275,6 +275,7 @@ export function PetView({
         <CharacterPlayer
           stateId={characterState}
           motionMode={motionMode}
+          behaviorAuthorityMode="main-v2"
           onExtensionDefinitionsChange={handleExtensionDefinitions}
           onIdleTrigger={triggerIdle}
           onHitTestPortChange={handleHitTestPortChange}

@@ -333,7 +333,9 @@ describe('桌面 Agent 真实服务集成', () => {
       actionId: string;
       playbackToken: string;
     }> = [];
-    behavior.subscribe(event => behaviorEvents.push(event));
+    behavior.subscribe(event => {
+      if (event.type !== 'behavior-authority') behaviorEvents.push(event);
+    });
     motion.subscribe(snapshot => behavior.handleMovement(snapshot));
     await behavior.initialize();
 

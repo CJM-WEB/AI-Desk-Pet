@@ -121,6 +121,7 @@ function createInput(
     direction: 'right',
     nowMs: 1_000,
     history: [],
+    actionRecencyById: {},
     random: () => 0,
     ...overrides
   };
@@ -170,6 +171,40 @@ describe('V2 行为动作选择器', () => {
         { actionId: 'future-cooling', startedAtMs: 1_200, finishedAtMs: null, outcome: null }
       ]
     }))).toMatchObject({ actionId: 'any-direction', reason: 'semantic' });
+  });
+
+  test('六十五个无关动作挤出审计明细后，压缩索引仍保持长冷却', () => {
+    const cooling = createAction('long-cooling', 'speak', {
+      preference: 100,
+      cooldownMs: 10_000
+    });
+    const alternative = createAction('alternative', 'speak');
+    const manifest = createManifest({
+      actions: [cooling, alternative],
+      defaultStateId: 'active-state',
+      states: [createState('active-state', 'primary', [cooling.id, alternative.id])]
+    });
+    const history = Array.from({ length: 64 }, (_, index) => ({
+      actionId: `unrelated-${index + 1}`,
+      startedAtMs: 20 + index,
+      finishedAtMs: 21 + index,
+      outcome: 'completed' as const
+    }));
+
+    expect(selectCharacterBehaviorAction(createInput(manifest, {
+      state: {
+        revision: 1,
+        primaryStateId: 'active-state',
+        modifierStateIds: [],
+        activeSignals: [],
+        desiredActionSemantic: 'speak'
+      },
+      nowMs: 100,
+      history,
+      actionRecencyById: {
+        [cooling.id]: { latestStartedAtMs: 0, latestFinishedAtMs: 10 }
+      }
+    }))).toMatchObject({ actionId: alternative.id });
   });
 
   test('重复抑制优先选择其他候选，但没有其他候选时恢复最近动作', () => {

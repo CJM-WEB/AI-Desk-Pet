@@ -2559,7 +2559,7 @@ test.describe('自主行为最小闭环', () => {
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
         primaryStateId: 'success',
         actionId: 'safe-celebrate-action',
-        playbackStatus: expect.stringMatching(/^(started|completed|interrupted)$/u)
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
       const phases = await chat.evaluate(offset => (
         (globalThis as typeof globalThis & { __taskPhases?: string[] })
@@ -2601,7 +2601,7 @@ test.describe('自主行为最小闭环', () => {
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
         primaryStateId: 'moving',
         actionId: 'safe-move-action',
-        playbackStatus: expect.stringMatching(/^(started|completed|interrupted)$/u)
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
       await expect.poll(async () => {
         const current = await pet.evaluate(() => ({ x: window.screenX, y: window.screenY }));
@@ -2614,8 +2614,17 @@ test.describe('自主行为最小闭环', () => {
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
         primaryStateId: 'error',
         actionId: 'safe-fail-action',
-        playbackStatus: expect.stringMatching(/^(started|completed|interrupted)$/u)
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
+
+      // 角色切换断言使用静止前置条件，避免仍在进行的 wander 被合法继承为移动语义。
+      await pet.evaluate(async () => {
+        await window.myself.beginPetDrag();
+        await window.myself.endPetDrag();
+      });
+      await expect.poll(() => pet.evaluate(async () => (
+        await window.myself.getCharacterMotionSnapshot()
+      ).moving)).toBe(false);
 
       const characters = await pet.evaluate(() => window.myself.listCharacters());
       const builtin = characters.find(character => character.id === 'builtin-default');
@@ -2626,7 +2635,7 @@ test.describe('自主行为最小闭环', () => {
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
         primaryStateId: 'idle',
         actionId: 'idle-main',
-        playbackStatus: expect.stringMatching(/^(started|completed|interrupted)$/u)
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
       expect((await fixture.getCharacterBehaviorProbe()).actionId).not.toBe('safe-fail-action');
       expect(provider.inspectionErrors).toEqual([]);

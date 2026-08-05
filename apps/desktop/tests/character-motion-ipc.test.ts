@@ -55,7 +55,16 @@ beforeEach(() => {
 });
 
 describe('角色运动严格 IPC', () => {
-  test('行为动作与旧待机动作都只能携带严格白名单字段', () => {
+  test('行为权威、行为动作与旧待机动作都只能携带严格白名单字段', () => {
+    expect(characterMotionEventSchema.parse({
+      type: 'behavior-authority',
+      characterId: 'legacy-character',
+      mode: 'legacy-v1'
+    })).toEqual({
+      type: 'behavior-authority',
+      characterId: 'legacy-character',
+      mode: 'legacy-v1'
+    });
     expect(characterMotionEventSchema.parse({
       type: 'behavior-action',
       revision: 2,

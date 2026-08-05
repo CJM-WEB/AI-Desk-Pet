@@ -169,14 +169,20 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     }
     if (!changed || !this.currentSelection || !this.currentMotionMode) return;
     const frameIndex = this.scene.getCurrentFrame()?.frameIndex;
-    this.scene.showAction(this.currentSelection.action, {
-      direction,
-      motionMode: this.currentMotionMode,
-      ...(frameIndex === undefined ? {} : { frameIndex }),
-      speed: 1,
-      loop: this.currentSelection.action.loop
-    });
-    this.notifyHitRegion();
+    try {
+      this.scene.showAction(this.currentSelection.action, {
+        direction,
+        motionMode: this.currentMotionMode,
+        ...(frameIndex === undefined ? {} : { frameIndex }),
+        speed: 1,
+        loop: this.currentSelection.action.loop
+      });
+      this.notifyHitRegion();
+    } catch (error) {
+      // 方向重建失败即终结当前播放；播放器仍保留调用方提交的新方向。
+      this.finishActivePlayback('failed');
+      throw error;
+    }
   }
 
   getAnchor(name: keyof AnchorSet): AnchorPoint | null {

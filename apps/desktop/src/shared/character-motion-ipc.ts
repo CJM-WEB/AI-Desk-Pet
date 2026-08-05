@@ -29,6 +29,11 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
     snapshot: characterMotionSnapshotSchema
   }).strict(),
   z.object({
+    type: z.literal('behavior-authority'),
+    characterId: characterMotionIdentifierSchema,
+    mode: z.literal('legacy-v1')
+  }).strict(),
+  z.object({
     type: z.literal('idle-action'),
     revision: z.number().int().nonnegative(),
     actionId: characterMotionIdentifierSchema,

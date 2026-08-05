@@ -45,6 +45,7 @@ export type CharacterPlayerPortFactory = (
 export interface CharacterPlayerProps {
   stateId: CharacterStateId;
   motionMode: CharacterMotionMode;
+  behaviorAuthorityMode?: CharacterBehaviorAuthorityMode;
   direction?: 'left' | 'right';
   fallback?: ReactNode;
   api?: MyselfApi;
@@ -84,6 +85,10 @@ type ActiveBehaviorPlayback = {
 
 type BehaviorPlaybackTokenState = 'active' | 'terminal';
 type BehaviorActionEvent = Extract<CharacterMotionEvent, { type: 'behavior-action' }>;
+type PlaybackActionEvent = Extract<
+  CharacterMotionEvent,
+  { type: 'behavior-action' | 'idle-action' }
+>;
 type CharacterProjectionStatus = 'loading' | 'ready' | 'unavailable';
 
 const MAX_RUNTIME_LOAD_ATTEMPTS = 2;
@@ -98,6 +103,7 @@ const createDefaultPlayer: CharacterPlayerPortFactory = container => (
 export function CharacterPlayer({
   stateId,
   motionMode,
+  behaviorAuthorityMode = 'legacy-v1',
   direction = 'right',
   fallback,
   api = window.myself,
@@ -117,9 +123,13 @@ export function CharacterPlayer({
   const activeBehaviorPlaybackRef = useRef<ActiveBehaviorPlayback | null>(null);
   const behaviorPlaybackTokensRef = useRef(new Map<string, BehaviorPlaybackTokenState>());
   const projectionStatusRef = useRef<CharacterProjectionStatus>('loading');
-  const pendingBehaviorActionRef = useRef<BehaviorActionEvent | null>(null);
-  const behaviorActionConsumerRef = useRef<((event: BehaviorActionEvent) => void) | null>(null);
+  const pendingPlaybackActionRef = useRef<PlaybackActionEvent | null>(null);
+  const playbackActionConsumerRef = useRef<((event: PlaybackActionEvent) => void) | null>(null);
   const actionRevisionRef = useRef(-1);
+  const behaviorAuthorityModeRef = useRef<CharacterBehaviorAuthorityMode>(
+    behaviorAuthorityMode
+  );
+  const behaviorAuthorityCharacterIdRef = useRef<string | null>(null);
   const activeHitTestPortRef = useRef<CharacterHitTestPort | null>(null);
   const hitTestPortOwnerRef = useRef<
     CharacterPlayerProps['onHitTestPortChange']
@@ -272,23 +282,32 @@ export function CharacterPlayer({
 
         const playback = playbackRef.current;
         candidate.setDirection(playback.direction);
-        const selection = selectCharacterAction({
-          manifest: snapshot.manifest,
-          stateId: playback.stateId,
-          direction: playback.direction,
-          recentActionIds: [],
-          random: playback.random
-        });
-        candidate.play(selection, playback.motionMode);
+        if (
+          behaviorAuthorityModeRef.current === 'legacy-v1'
+          && (
+            behaviorAuthorityCharacterIdRef.current === null
+            || behaviorAuthorityCharacterIdRef.current === snapshot.activeCharacterId
+          )
+          && pendingPlaybackActionRef.current === null
+        ) {
+          const selection = selectCharacterAction({
+            manifest: snapshot.manifest,
+            stateId: playback.stateId,
+            direction: playback.direction,
+            recentActionIds: [],
+            random: playback.random
+          });
+          candidate.play(selection, playback.motionMode);
+        }
 
         const previous = activePlayerRef.current;
         activePlayerRef.current = candidate;
         activeSnapshotRef.current = snapshot;
         projectionStatusRef.current = 'ready';
-        flushPendingBehaviorAction(
+        flushPendingPlaybackAction(
           projectionStatusRef,
-          pendingBehaviorActionRef,
-          behaviorActionConsumerRef
+          pendingPlaybackActionRef,
+          playbackActionConsumerRef
         );
         onExtensionDefinitionsChange?.(
           extensionDefinitionsFromManifest(snapshot.manifest)
@@ -314,9 +333,9 @@ export function CharacterPlayer({
 
         if (!disposed && currentRevision === revision) {
           projectionStatusRef.current = 'unavailable';
-          settlePendingBehaviorAction(
+          settlePendingPlaybackAction(
             api,
-            pendingBehaviorActionRef,
+            pendingPlaybackActionRef,
             behaviorPlaybackTokensRef,
             'failed'
           );
@@ -338,9 +357,11 @@ export function CharacterPlayer({
 
     const unsubscribe = api.subscribeCharacterEvents(event => {
       if (event.type === 'active-character-changed') {
-        settlePendingBehaviorAction(
+        behaviorAuthorityModeRef.current = behaviorAuthorityMode;
+        behaviorAuthorityCharacterIdRef.current = null;
+        settlePendingPlaybackAction(
           api,
-          pendingBehaviorActionRef,
+          pendingPlaybackActionRef,
           behaviorPlaybackTokensRef,
           'interrupted'
         );
@@ -374,9 +395,9 @@ export function CharacterPlayer({
       disposed = true;
       ++revision;
       projectionStatusRef.current = 'unavailable';
-      settlePendingBehaviorAction(
+      settlePendingPlaybackAction(
         api,
-        pendingBehaviorActionRef,
+        pendingPlaybackActionRef,
         behaviorPlaybackTokensRef,
         'interrupted'
       );
@@ -398,6 +419,7 @@ export function CharacterPlayer({
     };
   }, [
     api,
+    behaviorAuthorityMode,
     createPlayer,
     loadBundle,
     onExtensionDefinitionsChange,
@@ -405,11 +427,18 @@ export function CharacterPlayer({
   ]);
 
   useEffect(() => {
+    if (projectionStatusRef.current !== 'ready') return;
     const player = activePlayerRef.current;
     const snapshot = activeSnapshotRef.current;
     if (!player || !snapshot) return;
 
-    player.setDirection(runtimeDirection);
+    try {
+      player.setDirection(runtimeDirection);
+    } catch {
+      // 方向重建失败已由播放器收敛生命周期，本轮属性同步不再抢播。
+      return;
+    }
+    if (behaviorAuthorityModeRef.current !== 'legacy-v1') return;
     const selection = selectCharacterAction({
       manifest: snapshot.manifest,
       stateId,
@@ -457,39 +486,41 @@ export function CharacterPlayer({
 
     const renderMotion = (timestampMs: number): void => {
       if (disposed) return;
-      const snapshot = latestMotionSnapshot;
-      const visual = controller?.advance(timestampMs);
-      const player = activePlayerRef.current;
-      const host = hostRef.current;
-      if (!snapshot || !visual || !player || !host) {
-        animationFrame = scheduleAnimationFrame(renderMotion);
-        return;
+      try {
+        const snapshot = latestMotionSnapshot;
+        const visual = controller?.advance(timestampMs);
+        const player = activePlayerRef.current;
+        const host = hostRef.current;
+        if (!snapshot || !visual || !player || !host) return;
+        player.setDirection(visual.direction);
+        const frameBounds = player.getFrameBounds?.();
+        const residualX = visual.position.x - snapshot.position.x;
+        const residualY = visual.position.y - snapshot.position.y;
+        host.style.transform = `translate(${residualX}px, ${residualY}px)`;
+        const hostBounds = host.getBoundingClientRect();
+        const frame = {
+          // getBoundingClientRect 已包含 host transform，只再加 Main 窗口原点。
+          x: snapshot.position.x + hostBounds.left + (frameBounds?.x ?? 0),
+          y: snapshot.position.y + hostBounds.top + (frameBounds?.y ?? 0),
+          width: frameBounds?.width ?? 0,
+          height: frameBounds?.height ?? 0
+        };
+        const coordinate = (name: 'carry' | 'seat' | 'focus') => {
+          const anchor = player.getAnchor(name);
+          return anchor
+            ? resolveDesktopAnchor(anchor, frame, visual.direction)
+            : null;
+        };
+        onDesktopAnchors?.({
+          carry: coordinate('carry'),
+          seat: coordinate('seat'),
+          focus: coordinate('focus')
+        });
+      } catch {
+        // 单帧表现异常不终止运动循环；下一帧仍可从最新快照恢复。
+      } finally {
+        if (!disposed) animationFrame = scheduleAnimationFrame(renderMotion);
       }
-      player.setDirection(visual.direction);
-      const frameBounds = player.getFrameBounds?.();
-      const residualX = visual.position.x - snapshot.position.x;
-      const residualY = visual.position.y - snapshot.position.y;
-      host.style.transform = `translate(${residualX}px, ${residualY}px)`;
-      const hostBounds = host.getBoundingClientRect();
-      const frame = {
-        // getBoundingClientRect 已包含 host transform，只再加 Main 窗口原点。
-        x: snapshot.position.x + hostBounds.left + (frameBounds?.x ?? 0),
-        y: snapshot.position.y + hostBounds.top + (frameBounds?.y ?? 0),
-        width: frameBounds?.width ?? 0,
-        height: frameBounds?.height ?? 0
-      };
-      const coordinate = (name: 'carry' | 'seat' | 'focus') => {
-        const anchor = player.getAnchor(name);
-        return anchor
-          ? resolveDesktopAnchor(anchor, frame, visual.direction)
-          : null;
-      };
-      onDesktopAnchors?.({
-        carry: coordinate('carry'),
-        seat: coordinate('seat'),
-        focus: coordinate('focus')
-      });
-      animationFrame = scheduleAnimationFrame(renderMotion);
     };
 
     /** 行为动作只在 player 与 snapshot 同步提交后消费，避免跨投影串播。 */
@@ -550,47 +581,10 @@ export function CharacterPlayer({
         );
       }
     };
-    behaviorActionConsumerRef.current = consumeBehaviorAction;
-    flushPendingBehaviorAction(
-      projectionStatusRef,
-      pendingBehaviorActionRef,
-      behaviorActionConsumerRef
-    );
-
-    const unsubscribe = api.subscribeCharacterMotion(event => {
-      if (event.type === 'snapshot') {
-        acceptSnapshot(event.snapshot);
-        return;
-      }
-      if (event.revision <= actionRevisionRef.current) return;
-      actionRevisionRef.current = event.revision;
-
-      if (event.type === 'behavior-action') {
-        if (!beginBehaviorPlaybackToken(behaviorPlaybackTokensRef, event.playbackToken)) return;
-        if (projectionStatusRef.current === 'unavailable') {
-          settleBehaviorPlaybackToken(api, behaviorPlaybackTokensRef, {
-            playbackToken: event.playbackToken,
-            actionId: event.actionId,
-            status: 'failed'
-          });
-          return;
-        }
-        if (projectionStatusRef.current === 'loading') {
-          const pending = pendingBehaviorActionRef.current;
-          if (pending) {
-            settleBehaviorPlaybackToken(api, behaviorPlaybackTokensRef, {
-              playbackToken: pending.playbackToken,
-              actionId: pending.actionId,
-              status: 'interrupted'
-            });
-          }
-          pendingBehaviorActionRef.current = event;
-          return;
-        }
-        consumeBehaviorAction(event);
-        return;
-      }
-
+    /** V1 待机事件只在兼容权威模式内消费，不得反向夺取 V2 权威。 */
+    const consumeLegacyIdleAction = (
+      event: Extract<PlaybackActionEvent, { type: 'idle-action' }>
+    ): void => {
       const player = activePlayerRef.current;
       const snapshot = activeSnapshotRef.current;
       const playback = playbackRef.current;
@@ -606,6 +600,83 @@ export function CharacterPlayer({
       }, playback.motionMode);
       reportPlayedAction(api, event.playbackToken, action.id);
       onIdleTrigger?.();
+    };
+    const consumePlaybackAction = (event: PlaybackActionEvent): void => {
+      if (event.type === 'behavior-action') {
+        consumeBehaviorAction(event);
+        return;
+      }
+      consumeLegacyIdleAction(event);
+    };
+    playbackActionConsumerRef.current = consumePlaybackAction;
+    flushPendingPlaybackAction(
+      projectionStatusRef,
+      pendingPlaybackActionRef,
+      playbackActionConsumerRef
+    );
+
+    const unsubscribe = api.subscribeCharacterMotion(event => {
+      if (event.type === 'behavior-authority') {
+        behaviorAuthorityModeRef.current = event.mode;
+        behaviorAuthorityCharacterIdRef.current = event.characterId;
+        const player = activePlayerRef.current;
+        const snapshot = activeSnapshotRef.current;
+        const playback = playbackRef.current;
+        if (
+          projectionStatusRef.current !== 'ready'
+          || snapshot?.activeCharacterId !== event.characterId
+          || !player
+        ) return;
+        const selection = selectCharacterAction({
+          manifest: snapshot.manifest,
+          stateId: playback.stateId,
+          direction: playback.direction,
+          recentActionIds: [],
+          random: playback.random
+        });
+        player.play(selection, playback.motionMode);
+        return;
+      }
+      if (event.type === 'snapshot') {
+        acceptSnapshot(event.snapshot);
+        return;
+      }
+      if (event.revision <= actionRevisionRef.current) return;
+      actionRevisionRef.current = event.revision;
+
+      behaviorAuthorityModeRef.current = event.type === 'behavior-action'
+        ? 'main-v2'
+        : 'legacy-v1';
+      if (event.type === 'behavior-action') {
+        behaviorAuthorityCharacterIdRef.current = null;
+      }
+      if (
+        event.type === 'behavior-action'
+        && !beginBehaviorPlaybackToken(behaviorPlaybackTokensRef, event.playbackToken)
+      ) return;
+      if (projectionStatusRef.current === 'unavailable') {
+        if (event.type === 'behavior-action') {
+          settleBehaviorPlaybackToken(api, behaviorPlaybackTokensRef, {
+            playbackToken: event.playbackToken,
+            actionId: event.actionId,
+            status: 'failed'
+          });
+        }
+        return;
+      }
+      if (projectionStatusRef.current === 'loading') {
+        const pending = pendingPlaybackActionRef.current;
+        if (pending?.type === 'behavior-action') {
+          settleBehaviorPlaybackToken(api, behaviorPlaybackTokensRef, {
+            playbackToken: pending.playbackToken,
+            actionId: pending.actionId,
+            status: 'interrupted'
+          });
+        }
+        pendingPlaybackActionRef.current = event;
+        return;
+      }
+      consumePlaybackAction(event);
     });
     void api.getCharacterMotionSnapshot()
       .then(snapshot => {
@@ -621,8 +692,8 @@ export function CharacterPlayer({
       disposed = true;
       if (animationFrame !== null) cancelScheduledAnimationFrame(animationFrame);
       if (hostRef.current) hostRef.current.style.transform = '';
-      if (behaviorActionConsumerRef.current === consumeBehaviorAction) {
-        behaviorActionConsumerRef.current = null;
+      if (playbackActionConsumerRef.current === consumePlaybackAction) {
+        playbackActionConsumerRef.current = null;
       }
       unsubscribe();
     };
@@ -681,6 +752,8 @@ function reportPlayedAction(
   });
 }
 
+export type CharacterBehaviorAuthorityMode = 'main-v2' | 'legacy-v1';
+
 function reportActionFeedback(
   api: MyselfApi,
   feedback: Parameters<MyselfApi['reportCharacterActionFeedback']>[0]
@@ -735,11 +808,11 @@ function settleBehaviorPlaybackToken(
   reportActionFeedback(api, feedback);
 }
 
-/** 投影与消费器均就绪后，仅提交切换窗口内保留的最新行为动作。 */
-function flushPendingBehaviorAction(
+/** 投影与消费器均就绪后，仅提交切换窗口内保留的最新播放动作。 */
+function flushPendingPlaybackAction(
   projectionStatusRef: { current: CharacterProjectionStatus },
-  pendingRef: { current: BehaviorActionEvent | null },
-  consumerRef: { current: ((event: BehaviorActionEvent) => void) | null }
+  pendingRef: { current: PlaybackActionEvent | null },
+  consumerRef: { current: ((event: PlaybackActionEvent) => void) | null }
 ): void {
   const pending = pendingRef.current;
   const consumer = consumerRef.current;
@@ -748,16 +821,17 @@ function flushPendingBehaviorAction(
   consumer(pending);
 }
 
-/** 投影结束当前装载阶段时，排队令牌通过统一终态路径结算。 */
-function settlePendingBehaviorAction(
+/** 投影结束当前装载阶段时，V2 排队令牌通过统一终态路径结算。 */
+function settlePendingPlaybackAction(
   api: MyselfApi,
-  pendingRef: { current: BehaviorActionEvent | null },
+  pendingRef: { current: PlaybackActionEvent | null },
   tokenStatesRef: { current: Map<string, BehaviorPlaybackTokenState> },
   status: CharacterPlaybackLifecycleEvent['status']
 ): void {
   const pending = pendingRef.current;
   if (!pending) return;
   pendingRef.current = null;
+  if (pending.type !== 'behavior-action') return;
   settleBehaviorPlaybackToken(api, tokenStatesRef, {
     playbackToken: pending.playbackToken,
     actionId: pending.actionId,

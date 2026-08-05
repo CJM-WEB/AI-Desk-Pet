@@ -10,6 +10,8 @@ export type CharacterScheduledAction = {
   stateId: string;
   playbackToken: string;
   durationMs: number | null;
+  scheduledAtMs: number;
+  startDeadlineAtMs: number | null;
   startedAtMs: number | null;
   expectedEndAtMs: number | null;
 };
@@ -26,6 +28,7 @@ export type CharacterScheduleCommand =
     selection: CharacterBehaviorActionSelection;
     playbackToken: string;
     nowMs: number;
+    startConfirmationTimeoutMs: number;
     durationMs: number | null;
     urgency: number;
     systemForced: boolean;
@@ -36,12 +39,12 @@ export type CharacterScheduleCommand =
 export type CharacterScheduleEffect =
   | { type: 'play'; action: CharacterScheduledAction }
   | { type: 'interrupt'; playbackToken: string; fallbackActionId: string | null }
-  | { type: 'fallback'; actionId: string }
   | { type: 'none' };
 
 type CharacterScheduleResult = {
   schedule: CharacterBehaviorSchedule;
   effects: CharacterScheduleEffect[];
+  fallbackActionId?: string;
 };
 
 const MAX_HISTORY_ENTRIES = 64;
@@ -118,6 +121,8 @@ function reduceScheduleCommand(
     stateId: command.selection.stateId,
     playbackToken: command.playbackToken,
     durationMs: selectedDefinition?.loopPolicy === 'until-interrupted' ? null : command.durationMs,
+    scheduledAtMs: command.nowMs,
+    startDeadlineAtMs: command.nowMs + command.startConfirmationTimeoutMs,
     startedAtMs: null,
     expectedEndAtMs: null
   };
@@ -150,6 +155,7 @@ function reduceFeedbackCommand(
   if (feedback.status === 'started') {
     const started: CharacterScheduledAction = {
       ...current,
+      startDeadlineAtMs: null,
       startedAtMs: feedback.occurredAtMs,
       expectedEndAtMs: current.durationMs === null
         ? null
@@ -171,9 +177,8 @@ function reduceFeedbackCommand(
 
   return {
     schedule: { revision: schedule.revision + 1, current: null, history },
-    effects: fallbackActionId
-      ? [{ type: 'fallback', actionId: fallbackActionId }]
-      : [NONE_EFFECT]
+    effects: [NONE_EFFECT],
+    ...(fallbackActionId ? { fallbackActionId } : {})
   };
 }
 
@@ -183,7 +188,11 @@ function reduceExpireCommand(
   nowMs: number
 ): CharacterScheduleResult {
   const current = schedule.current;
-  if (!current || current.expectedEndAtMs === null || nowMs < current.expectedEndAtMs) {
+  if (!current) return { schedule, effects: [NONE_EFFECT] };
+  const deadlineAtMs = current.startedAtMs === null
+    ? current.startDeadlineAtMs
+    : current.expectedEndAtMs;
+  if (deadlineAtMs === null || nowMs < deadlineAtMs) {
     return { schedule, effects: [NONE_EFFECT] };
   }
 
@@ -191,7 +200,7 @@ function reduceExpireCommand(
     schedule: {
       revision: schedule.revision + 1,
       current: null,
-      history: finishStartedAction(schedule, nowMs, 'completed')
+      history: finishStartedAction(schedule, deadlineAtMs, 'completed')
     },
     effects: [NONE_EFFECT]
   };

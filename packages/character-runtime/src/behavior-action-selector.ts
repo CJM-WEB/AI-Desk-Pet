@@ -13,6 +13,11 @@ export type CharacterActionHistoryEntry = {
   outcome: 'completed' | 'interrupted' | 'failed' | null;
 };
 
+export type CharacterActionRecency = {
+  latestStartedAtMs: number;
+  latestFinishedAtMs: number | null;
+};
+
 export type CharacterBehaviorActionSelectionInput = {
   manifest: CharacterManifestV2;
   skinId: string;
@@ -20,6 +25,7 @@ export type CharacterBehaviorActionSelectionInput = {
   direction: 'left' | 'right';
   nowMs: number;
   history: readonly CharacterActionHistoryEntry[];
+  actionRecencyById: Readonly<Record<string, CharacterActionRecency>>;
   random: () => number;
 };
 
@@ -29,6 +35,8 @@ export type CharacterBehaviorActionSelection = {
   presentation: CharacterActionPresentationV2;
   reason: 'semantic' | 'state-preference' | 'default-fallback';
 };
+
+const ACTION_UNAVAILABLE = 'CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE';
 
 type ActionCandidate = {
   action: CharacterActionDefinitionV2;
@@ -84,16 +92,28 @@ function matchesDirection(
 }
 
 /** 取得指定逻辑动作最近一次用于冷却的结束时间；未结束时使用开始时间。 */
-function latestCooldownAt(history: readonly CharacterActionHistoryEntry[], actionId: string): number | undefined {
-  const values = history
+function latestCooldownAt(
+  input: CharacterBehaviorActionSelectionInput,
+  actionId: string
+): number | undefined {
+  const indexed = input.actionRecencyById[actionId];
+  if (indexed) {
+    return Math.max(indexed.latestStartedAtMs, indexed.latestFinishedAtMs ?? -Infinity);
+  }
+  const values = input.history
     .filter((entry) => entry.actionId === actionId)
     .map((entry) => entry.finishedAtMs ?? entry.startedAtMs);
   return values.length ? Math.max(...values) : undefined;
 }
 
 /** 取得指定逻辑动作最近一次开始时间，用于重复抑制。 */
-function latestStartedAt(history: readonly CharacterActionHistoryEntry[], actionId: string): number | undefined {
-  const values = history
+function latestStartedAt(
+  input: CharacterBehaviorActionSelectionInput,
+  actionId: string
+): number | undefined {
+  const indexed = input.actionRecencyById[actionId];
+  if (indexed) return indexed.latestStartedAtMs;
+  const values = input.history
     .filter((entry) => entry.actionId === actionId)
     .map((entry) => entry.startedAtMs);
   return values.length ? Math.max(...values) : undefined;
@@ -104,7 +124,7 @@ function isCoolingDown(
   action: CharacterActionDefinitionV2,
   input: CharacterBehaviorActionSelectionInput
 ): boolean {
-  const lastAtMs = latestCooldownAt(input.history, action.id);
+  const lastAtMs = latestCooldownAt(input, action.id);
   return lastAtMs !== undefined && input.nowMs - lastAtMs < action.cooldownMs;
 }
 
@@ -113,7 +133,7 @@ function isRepeatSuppressed(
   action: CharacterActionDefinitionV2,
   input: CharacterBehaviorActionSelectionInput
 ): boolean {
-  const lastStartedAtMs = latestStartedAt(input.history, action.id);
+  const lastStartedAtMs = latestStartedAt(input, action.id);
   return lastStartedAtMs !== undefined && input.nowMs - lastStartedAtMs < action.repeatSuppressionMs;
 }
 
@@ -214,4 +234,31 @@ export function selectCharacterBehaviorAction(
   if (!fallback) throw new Error('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
 
   return { ...fallback, stateId: defaultState.id, reason: 'default-fallback' };
+}
+
+/** 按配置 ID 重新授权回退动作，并复用状态、方向、冷却与表现硬约束。 */
+export function authorizeCharacterBehaviorAction(
+  input: CharacterBehaviorActionSelectionInput,
+  actionId: string
+): CharacterBehaviorActionSelection {
+  const action = input.manifest.actions.find((candidate) => candidate.id === actionId);
+  const state = input.manifest.states.find((candidate) => candidate.actionIds.includes(actionId));
+  if (
+    !action
+    || !state
+    || !matchesStateConstraints(action, input.state)
+    || !matchesDirection(action, input.direction)
+    || isCoolingDown(action, input)
+  ) {
+    throw new Error(ACTION_UNAVAILABLE);
+  }
+
+  const resolved = resolveCharacterPresentation(input.manifest, input.skinId, action.id);
+  if (!resolved) throw new Error(ACTION_UNAVAILABLE);
+  return {
+    actionId: action.id,
+    stateId: state.id,
+    presentation: resolved.presentation,
+    reason: 'state-preference'
+  };
 }

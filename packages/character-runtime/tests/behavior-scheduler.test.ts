@@ -63,6 +63,7 @@ function scheduleAction(
     selection: createSelection(action.id),
     playbackToken,
     nowMs: 10,
+    startConfirmationTimeoutMs: 100,
     durationMs,
     urgency: 10,
     systemForced: false
@@ -92,6 +93,7 @@ describe('角色行为动作调度器', () => {
       selection: createSelection(action.id),
       playbackToken: 'token-1',
       nowMs: 10,
+      startConfirmationTimeoutMs: 100,
       durationMs: 120,
       urgency: 10,
       systemForced: false
@@ -105,6 +107,8 @@ describe('角色行为动作调度器', () => {
           stateId: 'idle-state',
           playbackToken: 'token-1',
           durationMs: 120,
+          scheduledAtMs: 10,
+          startDeadlineAtMs: 110,
           startedAtMs: null,
           expectedEndAtMs: null
         },
@@ -117,6 +121,8 @@ describe('角色行为动作调度器', () => {
           stateId: 'idle-state',
           playbackToken: 'token-1',
           durationMs: 120,
+          scheduledAtMs: 10,
+          startDeadlineAtMs: 110,
           startedAtMs: null,
           expectedEndAtMs: null
         }
@@ -135,6 +141,7 @@ describe('角色行为动作调度器', () => {
       selection: createSelection(newAction.id, 'active-state'),
       playbackToken: 'new-token',
       nowMs: 50,
+      startConfirmationTimeoutMs: 100,
       durationMs: 200,
       urgency: 20,
       systemForced: false
@@ -144,7 +151,8 @@ describe('角色行为动作调度器', () => {
       revision: 3,
       current: {
         actionId: 'new-action', stateId: 'active-state', playbackToken: 'new-token',
-        durationMs: 200, startedAtMs: null, expectedEndAtMs: null
+        durationMs: 200, scheduledAtMs: 50, startDeadlineAtMs: 150,
+        startedAtMs: null, expectedEndAtMs: null
       },
       history: [{ actionId: 'old-action', startedAtMs: 20, finishedAtMs: 50, outcome: 'interrupted' }]
     });
@@ -164,6 +172,7 @@ describe('角色行为动作调度器', () => {
       selection: createSelection(next.id),
       playbackToken: 'next-token',
       nowMs: 30,
+      startConfirmationTimeoutMs: 100,
       durationMs: 100,
       urgency: 99,
       systemForced: false
@@ -183,6 +192,7 @@ describe('角色行为动作调度器', () => {
       selection: createSelection(forced.id),
       playbackToken: 'forced-token',
       nowMs: 30,
+      startConfirmationTimeoutMs: 100,
       durationMs: 80,
       urgency: 100,
       systemForced: true
@@ -223,7 +233,8 @@ describe('角色行为动作调度器', () => {
       revision: 2,
       current: {
         actionId: 'timed-action', stateId: 'idle-state', playbackToken: 'timed-token',
-        durationMs: 250, startedAtMs: 1_000, expectedEndAtMs: 1_250
+        durationMs: 250, scheduledAtMs: 10, startDeadlineAtMs: null,
+        startedAtMs: 1_000, expectedEndAtMs: 1_250
       },
       history: []
     });
@@ -263,7 +274,8 @@ describe('角色行为动作调度器', () => {
       current: null,
       history: [{ actionId: 'failed-action', startedAtMs: 100, finishedAtMs: 100, outcome: 'failed' }]
     });
-    expect(result.effects).toEqual([{ type: 'fallback', actionId: 'failure-fallback' }]);
+    expect(result.effects).toEqual([{ type: 'none' }]);
+    expect(result.fallbackActionId).toBe('failure-fallback');
   });
 
   test('未开始的中断反馈使用中断回退但不写历史', () => {
@@ -277,7 +289,8 @@ describe('角色行为动作调度器', () => {
     }, [action]);
 
     expect(result.schedule).toEqual({ revision: 2, current: null, history: [] });
-    expect(result.effects).toEqual([{ type: 'fallback', actionId: 'interrupt-fallback' }]);
+    expect(result.effects).toEqual([{ type: 'none' }]);
+    expect(result.fallbackActionId).toBe('interrupt-fallback');
   });
 
   test('未配置回退的失败反馈返回无效果', () => {
@@ -337,6 +350,35 @@ describe('角色行为动作调度器', () => {
 
     expect(result.schedule).toBe(schedule);
     expect(result.effects).toEqual([{ type: 'none' }]);
+  });
+
+  test('未开始动作在启动确认截止前保持，截止点清除且拒绝迟到开始反馈', () => {
+    const action = createAction('scheduled-action');
+    const schedule = scheduleAction(createSchedule(), action, 'scheduled-token');
+
+    const before = reduceCharacterActionSchedule(
+      schedule,
+      { type: 'expire', nowMs: 109 },
+      [action]
+    );
+    const expired = reduceCharacterActionSchedule(
+      schedule,
+      { type: 'expire', nowMs: 110 },
+      [action]
+    );
+
+    expect(before.schedule).toBe(schedule);
+    expect(expired.schedule).toEqual({ revision: 2, current: null, history: [] });
+    expect(() => reduceCharacterActionSchedule(expired.schedule, {
+      type: 'feedback',
+      feedback: {
+        playbackToken: 'scheduled-token',
+        actionId: action.id,
+        status: 'started',
+        occurredAtMs: 111
+      },
+      nowMs: 111
+    }, [action])).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
   });
 
   test('到达自然结束时间的显式过期按完成归档并使旧反馈失效', () => {

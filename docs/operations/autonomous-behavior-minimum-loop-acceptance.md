@@ -12,7 +12,7 @@
 
 | 场景 | 实际动作与结果 | 证据边界 |
 | --- | --- | --- |
-| 待机 | `idle-action`（集成）与 `idle-main` / `safe-idle-action`（Electron） | Main 产生动作，Renderer 探针观察到已排程或播放终态 |
+| 待机 | `idle-action`（集成）与 `idle-main` / `safe-idle-action`（Electron） | Main 产生动作，Renderer 探针观察到 `started` 或 `completed` |
 | 倾听 | `listen-action` / `safe-listen-action` | 服务组合测试和 Electron 页面事件序列均观察 `listening` 先于 `thinking`；未虚构人工目视 |
 | 思考 | `think-action` / `safe-think-action` | Agent 提交后由可信阶段事件触发 |
 | 移动 | `move-action` / `safe-move-action` | Electron 同时观察到动作与窗口坐标变化，位移仍由运动服务完成 |
@@ -23,7 +23,7 @@
 
 - 用户交互中断：安全角色待机使用 `until-interrupted`，Electron 在拖拽前明确观察 `started`；交互后产生更高 revision 的新 `started` 待机动作，旧调度不再是当前动作。
 - 抗中断：运行时和 Main 单元门禁继续验证抗中断动作；本次集成没有降低中断优先级或令牌鉴权断言。
-- Renderer 反馈：Electron 关键断言要求动作离开 `scheduled`，到达 `started` 或合法终态；用户交互后必须是更高 revision 的新动作完成 Renderer 反馈。preload 单元测试另验证同动作旧令牌乱序返回不会污染新调度。
+- Renderer 反馈：Electron 关键断言要求动作离开 `scheduled`，且只接受 `started` 或自然结束的 `completed`；`interrupted` 与 `failed` 均不算播放成功。用户交互后必须是更高 revision 的新动作完成 Renderer 反馈。preload 单元测试另验证同动作旧令牌乱序返回不会污染新调度。
 - 合法 Agent 意图：可推断自定义状态在集成中选择 `focus-action`；Electron 中合法移动意图选择 `safe-move-action`。
 - 非法 Agent 意图：不存在的 `missing-state` 未进入探针，任务开始决策明确回退到本地思考状态，再进入成功流程。
 - 无 Agent 意图：Electron 仍完整观察思考与成功；服务组合测试验证六类本地状态不依赖模型行为意图。

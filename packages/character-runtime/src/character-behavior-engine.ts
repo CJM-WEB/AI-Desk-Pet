@@ -5,7 +5,9 @@ import type {
   CharacterPlaybackFeedback
 } from './behavior-contracts';
 import {
+  authorizeCharacterBehaviorAction,
   selectCharacterBehaviorAction,
+  type CharacterActionRecency,
   type CharacterBehaviorActionSelection
 } from './behavior-action-selector';
 import {
@@ -42,9 +44,11 @@ type CharacterBehaviorEngineOptions = {
   now: () => number;
   random: () => number;
   createPlaybackToken: () => string;
+  startConfirmationTimeoutMs?: number;
 };
 
 const NONE_EFFECT: CharacterScheduleEffect = { type: 'none' };
+const DEFAULT_START_CONFIRMATION_TIMEOUT_MS = 30_000;
 const EMPTY_SCHEDULE = (): CharacterBehaviorSchedule => ({ revision: 0, current: null, history: [] });
 
 /** 只将动作选择器的稳定“无表现”错误转换为公开诊断。 */
@@ -87,9 +91,11 @@ export class CharacterBehaviorEngine {
   private schedule: CharacterBehaviorSchedule = EMPTY_SCHEDULE();
   private lastDirection: 'left' | 'right' = 'right';
   private currentSelection: CharacterBehaviorActionSelection | null = null;
+  private actionRecencyById: Record<string, CharacterActionRecency> = {};
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly createPlaybackToken: () => string;
+  private readonly startConfirmationTimeoutMs: number;
 
   constructor(options: CharacterBehaviorEngineOptions) {
     this.manifest = options.manifest;
@@ -98,6 +104,8 @@ export class CharacterBehaviorEngine {
     this.now = options.now;
     this.random = options.random;
     this.createPlaybackToken = options.createPlaybackToken;
+    this.startConfirmationTimeoutMs = options.startConfirmationTimeoutMs
+      ?? DEFAULT_START_CONFIRMATION_TIMEOUT_MS;
   }
 
   /** 组合状态推断、动作选择和调度归约，类内不重述各阶段规则。 */
@@ -107,12 +115,7 @@ export class CharacterBehaviorEngine {
     direction: 'left' | 'right';
   }): CharacterBehaviorDecision {
     this.lastDirection = input.direction;
-    this.state = inferCharacterBehaviorState({
-      manifest: this.manifest,
-      previous: this.state,
-      signal: input.signal,
-      ...(input.agentIntent === undefined ? {} : { agentIntent: input.agentIntent })
-    });
+    this.applySignal(input.signal, input.agentIntent);
 
     const systemForced = isSystemForced(input.signal);
     return this.selectAndSchedule({
@@ -123,20 +126,110 @@ export class CharacterBehaviorEngine {
     });
   }
 
-  /** 将 Renderer 反馈原样交给调度器授权并归约。 */
+  /** 原子重放最新可信上下文，全部状态事实应用完成后才产生首个播放动作。 */
+  dispatchContext(input: {
+    signals: readonly CharacterBehaviorSignal[];
+    direction: 'left' | 'right';
+  }): CharacterBehaviorDecision {
+    this.lastDirection = input.direction;
+    for (const signal of input.signals) this.applySignal(signal);
+    const systemForced = input.signals.some(isSystemForced);
+    return this.selectAndSchedule({
+      direction: input.direction,
+      nowMs: this.now(),
+      urgency: systemForced ? 100 : 0,
+      systemForced
+    });
+  }
+
+  /** 只同步方向事实，不产生新动作或调度令牌。 */
+  updateDirection(direction: 'left' | 'right'): void {
+    this.lastDirection = direction;
+  }
+
+  /** 授权 Renderer 反馈；配置回退必须再次通过选择器硬约束并生成新令牌。 */
   applyFeedback(feedback: CharacterPlaybackFeedback): CharacterBehaviorDecision {
+    const nowMs = this.now();
+    const previous = this.schedule.current;
     const result = reduceCharacterActionSchedule(this.schedule, {
       type: 'feedback',
       feedback,
+      nowMs
+    }, this.manifest.actions);
+    this.schedule = result.schedule;
+    if (feedback.status === 'started') {
+      this.recordActionStarted(feedback.actionId, feedback.occurredAtMs);
+    } else if (previous?.startedAtMs !== null && previous?.startedAtMs !== undefined) {
+      this.recordActionFinished(
+        feedback.actionId,
+        Math.max(previous.startedAtMs, feedback.occurredAtMs)
+      );
+    }
+    if (!this.schedule.current) this.currentSelection = null;
+    if (result.fallbackActionId) {
+      let selection: CharacterBehaviorActionSelection;
+      try {
+        selection = authorizeCharacterBehaviorAction({
+          manifest: this.manifest,
+          skinId: this.skinId,
+          state: this.state,
+          direction: this.lastDirection,
+          nowMs,
+          history: this.schedule.history,
+          actionRecencyById: this.actionRecencyById,
+          random: this.random
+        }, result.fallbackActionId);
+      } catch (error) {
+        if (!isActionUnavailable(error)) throw error;
+        return this.decision(
+          [NONE_EFFECT],
+          ['CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']
+        );
+      }
+
+      const playbackToken = this.createPlaybackToken();
+      const fallback = reduceCharacterActionSchedule(this.schedule, {
+        type: 'schedule',
+        selection,
+        playbackToken,
+        nowMs,
+        startConfirmationTimeoutMs: this.startConfirmationTimeoutMs,
+        durationMs: selectionDuration(this.manifest, selection),
+        urgency: 100,
+        systemForced: true
+      }, this.manifest.actions);
+      this.schedule = fallback.schedule;
+      this.currentSelection = selection;
+      return this.decision(fallback.effects, []);
+    }
+    return this.decision(result.effects, []);
+  }
+
+  /** 由 Main 现有轮询推进启动确认与自然播放截止时间，不创建额外定时器。 */
+  advance(): CharacterBehaviorDecision {
+    const previous = this.schedule.current;
+    const result = reduceCharacterActionSchedule(this.schedule, {
+      type: 'expire',
       nowMs: this.now()
     }, this.manifest.actions);
     this.schedule = result.schedule;
+    if (previous?.startedAtMs !== null && previous && !this.schedule.current) {
+      this.recordActionFinished(
+        previous.actionId,
+        previous.expectedEndAtMs ?? this.now()
+      );
+    }
     if (!this.schedule.current) this.currentSelection = null;
     return this.decision(result.effects, []);
   }
 
   /** 中断旧角色当前动作，重建快照后尝试播放新角色默认动作。 */
-  replaceCharacter(manifest: CharacterManifestV2, skinId: string): CharacterBehaviorDecision {
+  replaceCharacter(
+    manifest: CharacterManifestV2,
+    skinId: string,
+    contextSignals: readonly CharacterBehaviorSignal[] = [],
+    direction: 'left' | 'right' = this.lastDirection
+  ): CharacterBehaviorDecision {
     const effects: CharacterScheduleEffect[] = [];
     const current = this.schedule.current;
     if (current && this.currentSelection) {
@@ -145,6 +238,7 @@ export class CharacterBehaviorEngine {
         selection: this.currentSelection,
         playbackToken: current.playbackToken,
         nowMs: this.now(),
+        startConfirmationTimeoutMs: this.startConfirmationTimeoutMs,
         durationMs: current.durationMs,
         urgency: 100,
         systemForced: true
@@ -155,20 +249,36 @@ export class CharacterBehaviorEngine {
 
     this.manifest = manifest;
     this.skinId = skinId;
+    this.lastDirection = direction;
     this.state = createInitialBehaviorState(manifest);
     this.schedule = EMPTY_SCHEDULE();
     this.currentSelection = null;
+    this.actionRecencyById = {};
+    for (const signal of contextSignals) this.applySignal(signal);
 
     const next = this.selectAndSchedule({
       direction: this.lastDirection,
       nowMs: this.now(),
-      urgency: 0,
-      systemForced: false
+      urgency: contextSignals.some(isSystemForced) ? 100 : 0,
+      systemForced: contextSignals.some(isSystemForced)
     }, ['CHARACTER_BEHAVIOR_CHARACTER_REPLACED']);
     return this.decision(
       [...effects, ...next.effects],
       next.diagnosticCodes
     );
+  }
+
+  /** 只推进状态推断，不在上下文重放中提前生成播放副作用。 */
+  private applySignal(
+    signal: CharacterBehaviorSignal,
+    agentIntent?: CharacterAgentBehaviorIntent
+  ): void {
+    this.state = inferCharacterBehaviorState({
+      manifest: this.manifest,
+      previous: this.state,
+      signal,
+      ...(agentIntent === undefined ? {} : { agentIntent })
+    });
   }
 
   /** 返回与内部对象断开引用的只含运行时状态的快照。 */
@@ -208,6 +318,7 @@ export class CharacterBehaviorEngine {
         direction: input.direction,
         nowMs: input.nowMs,
         history: this.schedule.history,
+        actionRecencyById: this.actionRecencyById,
         random: this.random
       });
     } catch (error) {
@@ -219,20 +330,49 @@ export class CharacterBehaviorEngine {
     }
 
     const playbackToken = this.createPlaybackToken();
+    const previous = this.schedule.current;
     const result = reduceCharacterActionSchedule(this.schedule, {
       type: 'schedule',
       selection,
       playbackToken,
       nowMs: input.nowMs,
+      startConfirmationTimeoutMs: this.startConfirmationTimeoutMs,
       durationMs: selectionDuration(this.manifest, selection),
       urgency: input.urgency,
       systemForced: input.systemForced
     }, this.manifest.actions);
     this.schedule = result.schedule;
+    if (
+      previous?.startedAtMs !== null
+      && previous?.startedAtMs !== undefined
+      && this.schedule.current?.playbackToken !== previous.playbackToken
+    ) {
+      this.recordActionFinished(previous.actionId, input.nowMs);
+    }
     if (this.schedule.current?.playbackToken === playbackToken) {
       this.currentSelection = selection;
     }
     return this.decision(result.effects, diagnosticCodes);
+  }
+
+  /** 压缩最近时间只接受当前清单动作，容量由动作定义数量天然限制。 */
+  private recordActionStarted(actionId: string, startedAtMs: number): void {
+    if (!this.manifest.actions.some((action) => action.id === actionId)) return;
+    const previous = this.actionRecencyById[actionId];
+    this.actionRecencyById[actionId] = {
+      latestStartedAtMs: Math.max(previous?.latestStartedAtMs ?? -Infinity, startedAtMs),
+      latestFinishedAtMs: previous?.latestFinishedAtMs ?? null
+    };
+  }
+
+  /** 合法终态或调度替换只更新已有开始记录，不从伪造事件扩张索引。 */
+  private recordActionFinished(actionId: string, finishedAtMs: number): void {
+    const previous = this.actionRecencyById[actionId];
+    if (!previous) return;
+    this.actionRecencyById[actionId] = {
+      latestStartedAtMs: previous.latestStartedAtMs,
+      latestFinishedAtMs: Math.max(previous.latestFinishedAtMs ?? -Infinity, finishedAtMs)
+    };
   }
 
   /** 统一创建不可反向修改内部状态的公开决策。 */

@@ -15,6 +15,11 @@ import type { CharacterStore } from './character-store';
 
 export type CharacterBehaviorPlaybackEvent =
   | {
+      type: 'behavior-authority';
+      characterId: string;
+      mode: 'legacy-v1';
+    }
+  | {
       type: 'behavior-action';
       revision: number;
       stateId: string;
@@ -51,6 +56,7 @@ export type CharacterBehaviorServiceOptions = {
   random?: () => number;
   createPlaybackToken?: () => string;
   idleIntervalMs?: number;
+  playbackStartTimeoutMs?: number;
   reportError?: (code: 'CHARACTER_BEHAVIOR_V2_UNAVAILABLE') => void;
 };
 
@@ -72,6 +78,7 @@ export class CharacterBehaviorService {
   private idleBlocked = false;
   private transitioning = false;
   private activeTaskSignal: 'listening' | 'thinking' | null = null;
+  private taskContextSignal: CharacterBehaviorSignal | null = null;
   private nextIdleAt: number;
   private closed = false;
   private loadRevision = 0;
@@ -95,15 +102,19 @@ export class CharacterBehaviorService {
   handleTaskEvent(event: TaskEvent): void {
     if (this.closed) return;
     this.options.motion.applyTaskEvent(event);
-    if (this.transitioning) return;
+    const now = this.now();
+    if (this.transitioning) {
+      this.captureTaskContext(event, now);
+      return;
+    }
     if (event.type === 'pending_action') {
       this.idleBlocked = true;
       return;
     }
     if (event.type !== 'phase') return;
 
-    const now = this.now();
     if (event.phase === 'idle' || event.phase === 'cancelled') {
+      this.taskContextSignal = null;
       this.deactivateTaskSignal(now);
       this.idleBlocked = false;
       this.nextIdleAt = now + this.idleIntervalMs;
@@ -111,6 +122,7 @@ export class CharacterBehaviorService {
       return;
     }
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
+      this.taskContextSignal = null;
       this.deactivateTaskSignal(now);
       this.idleBlocked = true;
       return;
@@ -121,16 +133,22 @@ export class CharacterBehaviorService {
     if (event.phase === 'listening' || event.phase === 'thinking') {
       this.deactivateTaskSignal(now);
       this.activeTaskSignal = event.phase;
+      this.taskContextSignal = {
+        type: event.phase,
+        active: true,
+        occurredAtMs: now
+      };
       this.dispatch({ type: event.phase, active: true, occurredAtMs: now });
       return;
     }
 
     this.deactivateTaskSignal(now);
-    this.dispatch({
+    this.taskContextSignal = {
       type: 'task',
       phase: event.phase === 'success' ? 'success' : 'failure',
       occurredAtMs: now
-    });
+    };
+    this.dispatch(this.taskContextSignal);
   }
 
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void {
@@ -138,16 +156,19 @@ export class CharacterBehaviorService {
     const now = this.now();
     // Agent 意图在思考结束后参与决策；先撤销本地思考事实，仍由引擎校验可推断状态。
     this.deactivateTaskSignal(now);
+    this.taskContextSignal = null;
     this.dispatch({ type: 'task', phase: 'start', occurredAtMs: now }, intent);
   }
 
   handleMovement(snapshot: CharacterMotionSnapshot): void {
     if (this.closed) return;
     this.direction = snapshot.direction;
+    if (!this.transitioning) this.engine?.updateDirection(snapshot.direction);
     if (snapshot.moving === this.moving) return;
     this.moving = snapshot.moving;
     const now = this.now();
     this.nextIdleAt = now + this.idleIntervalMs;
+    if (this.transitioning) return;
     this.dispatch({
       type: 'movement',
       active: snapshot.moving,
@@ -163,7 +184,9 @@ export class CharacterBehaviorService {
   }
 
   handleIdleDue(): void {
-    if (this.closed || this.transitioning || this.idleBlocked || this.moving) return;
+    if (this.closed) return;
+    if (!this.transitioning && this.engine) this.publish(this.engine.advance());
+    if (this.transitioning || this.idleBlocked || this.moving) return;
     const now = this.now();
     if (now < this.nextIdleAt) return;
     this.nextIdleAt = now + this.idleIntervalMs;
@@ -215,6 +238,7 @@ export class CharacterBehaviorService {
     this.legacyManifest = null;
     this.transitioning = false;
     this.activeTaskSignal = null;
+    this.taskContextSignal = null;
     this.legacyTokens.clear();
     this.listeners.clear();
   }
@@ -222,27 +246,39 @@ export class CharacterBehaviorService {
   /** 先完整读取候选清单，成功后才替换当前引擎和令牌。 */
   private async loadActiveCharacter(replacing: boolean): Promise<void> {
     const revision = ++this.loadRevision;
+    // 已结束任务的结果只属于旧角色；切换期间新到达的事件仍会由 captureTaskContext 接管。
+    if (replacing && this.taskContextSignal?.type === 'task') {
+      this.taskContextSignal = null;
+    }
     this.transitioning = true;
-    this.activeTaskSignal = null;
     try {
       const manifest = await this.options.store.getActiveManifestV2();
       if (this.closed || revision !== this.loadRevision) return;
       const previous = this.engine;
       let nextEngine: CharacterBehaviorEngine;
       let decision: CharacterBehaviorDecision;
+      const contextSignals = this.currentContextSignals();
       if (replacing && previous) {
         nextEngine = previous;
-        decision = previous.replaceCharacter(manifest, manifest.defaultSkinId);
+        decision = previous.replaceCharacter(
+          manifest,
+          manifest.defaultSkinId,
+          contextSignals,
+          this.direction
+        );
       } else {
         nextEngine = new CharacterBehaviorEngine({
           manifest,
           skinId: manifest.defaultSkinId,
           now: this.now,
           random: this.random,
-          createPlaybackToken: this.createPlaybackToken
+          createPlaybackToken: this.createPlaybackToken,
+          ...(this.options.playbackStartTimeoutMs === undefined
+            ? {}
+            : { startConfirmationTimeoutMs: this.options.playbackStartTimeoutMs })
         });
-        decision = nextEngine.dispatch({
-          signal: { type: 'idle-due', occurredAtMs: this.now() },
+        decision = nextEngine.dispatchContext({
+          signals: contextSignals,
           direction: this.direction
         });
       }
@@ -262,7 +298,7 @@ export class CharacterBehaviorService {
     }
   }
 
-  /** V2 不可用时仅恢复现有 V1 待机路径，不发出中断旧播放的事件。 */
+  /** V2 不可用时显式交接 V1 权威，但不由 Main 伪造具体待机动作。 */
   private async activateLegacyFallback(revision: number): Promise<void> {
     try {
       const legacyManifest = await this.options.store.getActive();
@@ -273,6 +309,11 @@ export class CharacterBehaviorService {
       this.legacyTokens.clear();
       this.transitioning = false;
       this.nextIdleAt = this.now() + this.idleIntervalMs;
+      this.emit({
+        type: 'behavior-authority',
+        characterId: legacyManifest.id,
+        mode: 'legacy-v1'
+      });
     } catch {
       // 保留播放画面，但撤销旧角色的 Main 决策权，避免切换后继续生成旧动作。
       this.engine = null;
@@ -281,6 +322,55 @@ export class CharacterBehaviorService {
       this.legacyTokens.clear();
       this.transitioning = false;
     }
+  }
+
+  /** 切换窗口内只记录最新可信任务事实，不允许旧引擎消费任何边沿。 */
+  private captureTaskContext(event: TaskEvent, occurredAtMs: number): void {
+    if (event.type === 'pending_action') {
+      this.idleBlocked = true;
+      return;
+    }
+    if (event.type !== 'phase') return;
+    if (event.phase === 'idle' || event.phase === 'cancelled') {
+      this.activeTaskSignal = null;
+      this.taskContextSignal = null;
+      this.idleBlocked = false;
+      this.nextIdleAt = occurredAtMs + this.idleIntervalMs;
+      return;
+    }
+    if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
+      this.activeTaskSignal = null;
+      this.taskContextSignal = null;
+      this.idleBlocked = true;
+      return;
+    }
+    this.idleBlocked = event.phase === 'listening' || event.phase === 'thinking';
+    this.nextIdleAt = occurredAtMs + this.idleIntervalMs;
+    if (event.phase === 'listening' || event.phase === 'thinking') {
+      this.activeTaskSignal = event.phase;
+      this.taskContextSignal = {
+        type: event.phase,
+        active: true,
+        occurredAtMs
+      };
+      return;
+    }
+    this.activeTaskSignal = null;
+    this.taskContextSignal = {
+      type: 'task',
+      phase: event.phase === 'success' ? 'success' : 'failure',
+      occurredAtMs
+    };
+  }
+
+  /** 新引擎一次性接收当前运动与任务上下文，之后才允许创建首个播放令牌。 */
+  private currentContextSignals(): CharacterBehaviorSignal[] {
+    const signals: CharacterBehaviorSignal[] = [];
+    if (this.moving) {
+      signals.push({ type: 'movement', active: true, occurredAtMs: this.now() });
+    }
+    if (this.taskContextSignal) signals.push({ ...this.taskContextSignal });
+    return signals;
   }
 
   private deactivateTaskSignal(occurredAtMs: number): void {

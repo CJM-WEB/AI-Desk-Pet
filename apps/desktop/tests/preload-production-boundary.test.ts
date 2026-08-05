@@ -28,5 +28,6 @@ describe('生产 preload 探针边界', () => {
   test('缺少 E2E 固定参数时不暴露桌宠交互探针', () => {
     expect(exposedApi).toBeDefined();
     expect(exposedApi).not.toHaveProperty('getPetInteractionProbe');
+    expect(exposedApi).not.toHaveProperty('getCharacterBehaviorProbe');
   });
 });

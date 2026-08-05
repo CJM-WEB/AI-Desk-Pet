@@ -183,6 +183,8 @@ describe('事件驱动角色行为引擎', () => {
       stateId: `${semantic}-state`,
       playbackToken: 'token-1',
       durationMs,
+      scheduledAtMs: 1_000,
+      startDeadlineAtMs: 31_000,
       startedAtMs: null,
       expectedEndAtMs: null
     });
@@ -337,6 +339,214 @@ describe('事件驱动角色行为引擎', () => {
       finishedAtMs: 340,
       outcome: 'completed'
     }]);
+  });
+
+  test('advance 在启动确认截止点清除未开始令牌，并拒绝迟到反馈', () => {
+    let now = 0;
+    const engine = 创建引擎(创建六语义清单(), {
+      now: () => now,
+      startConfirmationTimeoutMs: 100
+    });
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 0 }, direction: 'right' });
+
+    now = 99;
+    expect(engine.advance().snapshot.schedule.current?.playbackToken).toBe('token-1');
+    now = 100;
+    expect(engine.advance().snapshot.schedule.current).toBeNull();
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: 101
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  });
+
+  test('advance 在已开始动作没有终态反馈时按播放截止时间完成归档', () => {
+    let now = 0;
+    const engine = 创建引擎(创建六语义清单(), { now: () => now });
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 0 }, direction: 'right' });
+    engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: 10
+    });
+
+    now = 329;
+    expect(engine.advance().snapshot.schedule.current).not.toBeNull();
+    now = 330;
+    const expired = engine.advance();
+
+    expect(expired.snapshot.schedule.current).toBeNull();
+    expect(expired.snapshot.schedule.history.at(-1)).toEqual({
+      actionId: 'idle-action',
+      startedAtMs: 10,
+      finishedAtMs: 330,
+      outcome: 'completed'
+    });
+  });
+
+  test.each([
+    ['失败', 'failed', 'failureFallbackActionId'],
+    ['中断', 'interrupted', 'interruptedFallbackActionId']
+  ] as const)('%s 反馈把配置回退重新授权并用新令牌排程播放', (
+    _name,
+    status,
+    fallbackField
+  ) => {
+    const source = 创建动作('source-action', 'idle', {
+      [fallbackField]: 'fallback-action'
+    });
+    const fallback = 创建动作('fallback-action', 'fail');
+    const manifest = 创建清单({
+      actions: [source, fallback],
+      states: [创建状态('idle-state', 'idle', [source.id, fallback.id])]
+    });
+    const engine = 创建引擎(manifest);
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 1 }, direction: 'right' });
+
+    const fallbackDecision = engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: source.id,
+      status,
+      occurredAtMs: 20
+    });
+
+    expect(fallbackDecision.snapshot.schedule.current).toMatchObject({
+      actionId: fallback.id,
+      playbackToken: 'token-2',
+      startedAtMs: null
+    });
+    expect(fallbackDecision.effects).toEqual([{
+      type: 'play',
+      action: fallbackDecision.snapshot.schedule.current
+    }]);
+  });
+
+  test('不满足方向硬约束的失败回退不排程并公开动作不可用诊断', () => {
+    const source = 创建动作('source-action', 'idle', {
+      failureFallbackActionId: 'left-fallback'
+    });
+    const fallback = 创建动作('left-fallback', 'fail', { direction: 'left' });
+    const engine = 创建引擎(创建清单({
+      actions: [source, fallback],
+      states: [创建状态('idle-state', 'idle', [source.id, fallback.id])]
+    }));
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 1 }, direction: 'right' });
+
+    const decision = engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: source.id,
+      status: 'failed',
+      occurredAtMs: 20
+    });
+
+    expect(decision.snapshot.schedule.current).toBeNull();
+    expect(decision.effects).toEqual([{ type: 'none' }]);
+    expect(decision.diagnosticCodes).toEqual(['CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']);
+  });
+
+  test('六十五个无关动作挤出审计历史后，仍由反馈索引保持早期动作冷却', () => {
+    let now = 0;
+    const cooling = 创建动作('long-cooling', 'idle', { cooldownMs: 10_000 });
+    const unrelated = Array.from({ length: 65 }, (_, index) => (
+      创建动作(`unrelated-${index}`, 'idle')
+    ));
+    const actions = [cooling, ...unrelated];
+    const states = actions.map((action) => 创建状态(
+      `${action.id}-state`,
+      'idle',
+      [action.id]
+    ));
+    const engine = 创建引擎(创建清单({
+      actions,
+      states,
+      defaultStateId: 'long-cooling-state'
+    }), { now: () => now });
+    const playAndComplete = (action: CharacterActionDefinitionV2): void => {
+      const decision = engine.dispatch({
+        signal: { type: 'user-interaction', occurredAtMs: now },
+        agentIntent: {
+          stateIntent: { stateId: `${action.id}-state` },
+          actionSemantic: 'idle',
+          urgency: 100,
+          explanation: '依次填充有界审计历史'
+        },
+        direction: 'right'
+      });
+      const current = decision.snapshot.schedule.current!;
+      engine.applyFeedback({
+        playbackToken: current.playbackToken,
+        actionId: current.actionId,
+        status: 'started',
+        occurredAtMs: now
+      });
+      now += 1;
+      engine.applyFeedback({
+        playbackToken: current.playbackToken,
+        actionId: current.actionId,
+        status: 'completed',
+        occurredAtMs: now
+      });
+      now += 1;
+    };
+    playAndComplete(cooling);
+    for (const action of unrelated) playAndComplete(action);
+
+    expect(engine.snapshot().schedule.history).toHaveLength(64);
+    expect(engine.snapshot().schedule.history.some(entry => entry.actionId === cooling.id)).toBe(false);
+    const blocked = engine.dispatch({
+      signal: { type: 'user-interaction', occurredAtMs: now },
+      agentIntent: {
+        stateIntent: { stateId: 'long-cooling-state' },
+        actionSemantic: 'idle',
+        urgency: 100,
+        explanation: '验证长期冷却没有被审计裁剪解除'
+      },
+      direction: 'right'
+    });
+
+    expect(blocked.snapshot.schedule.current).toBeNull();
+    expect(blocked.diagnosticCodes).toEqual(['CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']);
+    expect(blocked.snapshot).not.toHaveProperty('actionRecencyById');
+  });
+
+  test('角色切换清空压缩索引，相同动作 ID 不继承旧角色冷却', () => {
+    const oldAction = 创建动作('shared-idle', 'idle', { cooldownMs: 10_000 });
+    const oldManifest = 创建清单({
+      id: 'old-character',
+      actions: [oldAction],
+      states: [创建状态('old-state', 'idle', [oldAction.id])],
+      defaultStateId: 'old-state'
+    });
+    const newAction = 创建动作('shared-idle', 'idle', { cooldownMs: 10_000 });
+    const newManifest = 创建清单({
+      id: 'new-character',
+      actions: [newAction],
+      states: [创建状态('new-state', 'idle', [newAction.id])],
+      defaultStateId: 'new-state'
+    });
+    const engine = 创建引擎(oldManifest);
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 0 }, direction: 'right' });
+    engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: oldAction.id,
+      status: 'started',
+      occurredAtMs: 10
+    });
+    engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: oldAction.id,
+      status: 'completed',
+      occurredAtMs: 20
+    });
+
+    const replaced = engine.replaceCharacter(newManifest, 'default-skin');
+
+    expect(replaced.snapshot.schedule.current).toMatchObject({
+      actionId: newAction.id,
+      playbackToken: 'token-2'
+    });
   });
 
   test('未授权播放反馈继续抛出调度器稳定错误', () => {

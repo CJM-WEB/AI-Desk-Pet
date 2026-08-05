@@ -363,6 +363,53 @@ describe('共享 Pixi 角色动作场景', () => {
     );
   });
 
+  test('方向重建异常只把当前播放结算一次为 failed，并保留新方向', () => {
+    const directionalAction: ActionClip = {
+      ...manifest().states[0]!.actions[0]!,
+      anchors: {
+        ...manifest().states[0]!.actions[0]!.anchors,
+        carry: { x: 0.2, y: 0.4 }
+      }
+    };
+    const showAction = vi.fn()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error('CHARACTER_DIRECTION_REBUILD_FAILED');
+      });
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
+      showAction,
+      getCurrentFrame: vi.fn(() => ({
+        action: directionalAction,
+        frameIndex: 0,
+        bounds: { x: 0, y: 0, width: 32, height: 32 }
+      })),
+      subscribeFrame: vi.fn(() => vi.fn()),
+      destroy: vi.fn()
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const lifecycle = vi.fn();
+    player.subscribePlaybackLifecycle(lifecycle);
+    const playbackId = player.play({
+      stateId: 'idle',
+      action: directionalAction,
+      reason: 'matched'
+    }, 'animated');
+
+    expect(() => player.setDirection('left'))
+      .toThrow('CHARACTER_DIRECTION_REBUILD_FAILED');
+    expect(lifecycle).toHaveBeenCalledExactlyOnceWith({
+      playbackId,
+      actionId: directionalAction.id,
+      status: 'failed'
+    });
+    expect(player.getAnchor('carry')).toEqual({ x: 0.8, y: 0.4 });
+
+    player.destroy();
+    expect(lifecycle).toHaveBeenCalledOnce();
+  });
+
   test('内部 ticker 状态能力会继续反映共享场景的动画状态', () => {
     const scene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),

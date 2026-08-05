@@ -22,7 +22,21 @@ type BehaviorPlaybackEvent =
       revision: number;
       actionId: string;
       playbackToken: string;
+    }
+  | {
+      type: 'behavior-authority';
+      characterId: string;
+      mode: 'legacy-v1';
     };
+
+function requireBehaviorAction(
+  event: BehaviorPlaybackEvent | undefined
+): Extract<BehaviorPlaybackEvent, { type: 'behavior-action' }> {
+  if (event?.type !== 'behavior-action') {
+    throw new Error('测试前置条件要求行为动作事件');
+  }
+  return event;
+}
 
 type BehaviorService = {
   initialize(): Promise<void>;
@@ -300,6 +314,73 @@ describe('Main 角色行为权威服务', () => {
   });
 
   test.each([
+    ['failed', 'failureFallbackActionId'],
+    ['interrupted', 'interruptedFallbackActionId']
+  ] as const)('%s 生命周期反馈由引擎重新授权回退，并只发布新的 play', async (
+    status,
+    fallbackField
+  ) => {
+    const manifest = createManifest();
+    Object.assign(
+      manifest.actions.find(action => action.id === 'idle-action')!,
+      { [fallbackField]: 'fail-action' }
+    );
+    const fixture = createFixture({ getV2: async () => manifest });
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+
+    service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-1',
+      actionId: 'idle-action',
+      status,
+      occurredAtMs: 20
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events.at(-1)).toEqual({
+      type: 'behavior-action',
+      revision: 3,
+      stateId: 'fail-state',
+      modifierStateIds: [],
+      actionId: 'fail-action',
+      playbackToken: 'behavior-token-2'
+    });
+  });
+
+  test('仅方向变化也会同步失败回退的授权上下文', async () => {
+    const manifest = createManifest();
+    Object.assign(
+      manifest.actions.find(action => action.id === 'idle-action')!,
+      { failureFallbackActionId: 'fail-action' }
+    );
+    Object.assign(
+      manifest.actions.find(action => action.id === 'fail-action')!,
+      { direction: 'left' }
+    );
+    const fixture = createFixture({ getV2: async () => manifest });
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+
+    service.handleMovement(snapshot(false, 'left'));
+    service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-1',
+      actionId: 'idle-action',
+      status: 'failed',
+      occurredAtMs: 20
+    });
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'behavior-action',
+      actionId: 'fail-action',
+      playbackToken: 'behavior-token-2'
+    });
+  });
+
+  test.each([
     [{ type: 'phase', phase: 'listening' }, 'listen-action'],
     [{ type: 'phase', phase: 'thinking' }, 'think-action'],
     [{ type: 'phase', phase: 'success' }, 'celebrate-action'],
@@ -348,7 +429,7 @@ describe('Main 角色行为权威服务', () => {
       await service.initialize();
 
       service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-      const thinking = events.at(-1)!;
+      const thinking = requireBehaviorAction(events.at(-1));
       service.applyPlaybackFeedback({
         playbackToken: thinking.playbackToken,
         actionId: thinking.actionId,
@@ -360,13 +441,14 @@ describe('Main 角色行为权威服务', () => {
       service.handleTaskEvent({ type: 'phase', phase });
 
       expect(events).toHaveLength(1);
-      expect(events[0]).toMatchObject({
+      const resumed = requireBehaviorAction(events[0]);
+      expect(resumed).toMatchObject({
         stateId: 'idle-state',
         actionId: 'idle-action'
       });
       expect(() => service.applyPlaybackFeedback({
-        playbackToken: events[0]!.playbackToken,
-        actionId: events[0]!.actionId,
+        playbackToken: resumed.playbackToken,
+        actionId: resumed.actionId,
         status: 'started',
         occurredAtMs: 2
       })).not.toThrow();
@@ -390,10 +472,11 @@ describe('Main 角色行为权威服务', () => {
       service.handleTaskEvent({ type: 'phase', phase });
 
       expect(events).toHaveLength(1);
-      expect(events[0]).toMatchObject({ actionId });
+      const result = requireBehaviorAction(events[0]);
+      expect(result).toMatchObject({ actionId });
       expect(() => service.applyPlaybackFeedback({
-        playbackToken: events[0]!.playbackToken,
-        actionId: events[0]!.actionId,
+        playbackToken: result.playbackToken,
+        actionId: result.actionId,
         status: 'started',
         occurredAtMs: 1
       })).not.toThrow();
@@ -414,10 +497,11 @@ describe('Main 角色行为权威服务', () => {
       service.handleTaskEvent({ type: 'phase', phase });
 
       expect(events).toHaveLength(1);
-      expect(events[0]).toMatchObject({ actionId: 'think-action' });
+      const thinking = requireBehaviorAction(events[0]);
+      expect(thinking).toMatchObject({ actionId: 'think-action' });
       expect(() => service.applyPlaybackFeedback({
-        playbackToken: events[0]!.playbackToken,
-        actionId: events[0]!.actionId,
+        playbackToken: thinking.playbackToken,
+        actionId: thinking.actionId,
         status: 'started',
         occurredAtMs: 1
       })).not.toThrow();
@@ -561,6 +645,71 @@ describe('Main 角色行为权威服务', () => {
       .toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
   });
 
+  test('现有轮询在任务阻塞期间仍清除超过启动确认截止的令牌', async () => {
+    const fixture = createFixture();
+    const service = new Constructor({
+      ...fixture.options,
+      playbackStartTimeoutMs: 100
+    });
+    await service.initialize();
+    service.handleTaskEvent({
+      type: 'pending_action',
+      action: {
+        actionId: 'action-timeout',
+        conversationId: 'conversation-timeout',
+        risk: 'write',
+        summary: '等待确认期间仍需推进播放令牌',
+        targetRelativePath: 'note.txt',
+        createdAt: '2026-08-06T00:00:00.000Z',
+        expiresAt: '2026-08-06T00:10:00.000Z'
+      }
+    });
+
+    fixture.setNow(100);
+    service.handleIdleDue();
+
+    expect(() => service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: 101
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  });
+
+  test('现有轮询在已开始动作缺少终态时按表现截止时间完成令牌', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    await service.initialize();
+    service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: 0
+    });
+    service.handleTaskEvent({
+      type: 'pending_action',
+      action: {
+        actionId: 'action-terminal-timeout',
+        conversationId: 'conversation-terminal-timeout',
+        risk: 'write',
+        summary: '等待确认期间仍需推进已开始动作',
+        targetRelativePath: 'note.txt',
+        createdAt: '2026-08-06T00:00:00.000Z',
+        expiresAt: '2026-08-06T00:10:00.000Z'
+      }
+    });
+
+    fixture.setNow(50);
+    service.handleIdleDue();
+
+    expect(() => service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-1',
+      actionId: 'idle-action',
+      status: 'completed',
+      occurredAtMs: 51
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  });
+
   test('活动角色切换撤销旧令牌并发出新角色默认动作', async () => {
     let active = createManifest('first');
     const fixture = createFixture({ getV2: async () => active });
@@ -588,6 +737,26 @@ describe('Main 角色行为权威服务', () => {
     })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
   });
 
+  test('角色切换不继承切换前已经结束的任务结果', async () => {
+    let active = createManifest('first');
+    const fixture = createFixture({ getV2: async () => active });
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    service.handleTaskEvent({ type: 'phase', phase: 'error' });
+    events.splice(0);
+    active = createManifest('second');
+
+    await service.handleActiveCharacterChanged();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      stateId: 'idle-state',
+      actionId: 'idle-action'
+    });
+  });
+
   test('活动角色异步读取期间立即隔离旧引擎和旧播放令牌', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
@@ -607,7 +776,7 @@ describe('Main 角色行为权威服务', () => {
       occurredAtMs: 10
     })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
     service.handleTaskEvent({ type: 'phase', phase: 'listening' });
-    service.handleMovement(snapshot(true));
+    service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
     service.handleAgentIntent({
       stateIntent: { semantic: 'celebrate' },
       actionSemantic: 'celebrate',
@@ -624,42 +793,57 @@ describe('Main 角色行为权威服务', () => {
     expect(events).toEqual([{
       type: 'behavior-action',
       revision: 1,
-      stateId: 'idle-state',
+      stateId: 'think-state',
       modifierStateIds: [],
-      actionId: 'idle-action',
+      actionId: 'think-action',
       playbackToken: 'behavior-token-2'
     }]);
+  });
+
+  test('活动角色异步读取期间保存 moving 边沿，并在新引擎首个动作前重放', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+    const pendingManifest = deferred<CharacterManifestV2>();
+    fixture.store.getActiveManifestV2.mockReturnValueOnce(pendingManifest.promise);
+
+    const switching = service.handleActiveCharacterChanged();
+    service.handleMovement(snapshot(true, 'left'));
+    expect(events).toEqual([]);
+
+    pendingManifest.resolve(createManifest('second'));
+    await switching;
+
+    expect(events).toEqual([{
+      type: 'behavior-action',
+      revision: 1,
+      stateId: 'move-state',
+      modifierStateIds: [],
+      actionId: 'move-action',
+      playbackToken: 'behavior-token-2'
+    }]);
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith('wander');
   });
 
   test('V2 读取失败时错误脱敏且仅使用 V1 待机兼容路径', async () => {
     const fixture = createFixture({
       getV2: async () => { throw new Error('ENOENT: C:\\private\\manifest.json'); }
     });
-    fixture.motion.pollIdle.mockReturnValue({
-      stateId: 'idle',
-      action: createLegacyManifest().states[0]!.actions[0]!,
-      reason: 'matched'
-    } as never);
     const service = new Constructor(fixture.options);
     const events: BehaviorPlaybackEvent[] = [];
     service.subscribe(event => events.push(event));
     await service.initialize();
-    fixture.setNow(1_000);
-
-    service.handleIdleDue();
 
     expect(fixture.reportError).toHaveBeenCalledWith('CHARACTER_BEHAVIOR_V2_UNAVAILABLE');
     expect(JSON.stringify(fixture.reportError.mock.calls)).not.toContain('private');
-    expect(fixture.motion.pollIdle).toHaveBeenCalledWith(
-      expect.objectContaining({ version: 1, id: 'legacy' }),
-      'right',
-      expect.any(Function)
-    );
+    expect(fixture.motion.pollIdle).not.toHaveBeenCalled();
     expect(events).toEqual([{
-      type: 'idle-action',
-      revision: 7,
-      actionId: 'legacy-idle',
-      playbackToken: 'legacy-token-1'
+      type: 'behavior-authority',
+      characterId: 'legacy',
+      mode: 'legacy-v1'
     }]);
   });
 
@@ -688,7 +872,7 @@ describe('Main 角色行为权威服务', () => {
     }
   );
 
-  test('切换读取失败不中断当前播放器', async () => {
+  test('切换 V2 读取失败只交接 V1 权威且不发布具体动作', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
     const events: BehaviorPlaybackEvent[] = [];
@@ -701,7 +885,11 @@ describe('Main 角色行为权威服务', () => {
 
     await expect(service.handleActiveCharacterChanged()).resolves.toBeUndefined();
 
-    expect(events).toEqual([]);
+    expect(events).toEqual([{
+      type: 'behavior-authority',
+      characterId: 'legacy',
+      mode: 'legacy-v1'
+    }]);
     expect(fixture.reportError).toHaveBeenCalledWith('CHARACTER_BEHAVIOR_V2_UNAVAILABLE');
   });
 
