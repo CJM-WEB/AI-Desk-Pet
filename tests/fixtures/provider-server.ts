@@ -6,7 +6,13 @@ import type { ModelMessage, ModelRequest, ModelResponse } from '@myself/agent-co
 export interface ProviderStep {
   response: ModelResponse;
   inspect?: (request: ModelRequest) => void;
-  delayMs?: number;
+  gate?: ProviderResponseGate;
+}
+
+export interface ProviderResponseGate {
+  isWaiting(): boolean;
+  release(): void;
+  waitForRelease(): Promise<void>;
 }
 
 export type ProviderScript = ProviderStep[] | ((apiKey: string) => ProviderStep[]);
@@ -27,6 +33,29 @@ export interface ProviderServerFixture {
   remainingSteps(): number;
   assertComplete(): void;
   close(): Promise<void>;
+}
+
+/** 由测试条件显式释放响应，避免通过墙钟休眠制造可观察窗口。 */
+export function createProviderResponseGate(): ProviderResponseGate {
+  let waiting = false;
+  let released = false;
+  let resolveRelease!: () => void;
+  const releasedPromise = new Promise<void>(resolve => {
+    resolveRelease = resolve;
+  });
+  return {
+    isWaiting: () => waiting,
+    release() {
+      if (released) return;
+      released = true;
+      resolveRelease();
+    },
+    async waitForRelease() {
+      waiting = true;
+      await releasedPromise;
+      waiting = false;
+    }
+  };
 }
 
 export async function startProviderServer(
@@ -74,9 +103,7 @@ export async function startProviderServer(
         inspectionErrors.push(`脚本化 Provider 请求检查失败：${message}`);
       }
     }
-    if (step.delayMs) {
-      await new Promise(resolveDelay => setTimeout(resolveDelay, step.delayMs));
-    }
+    if (step.gate) await step.gate.waitForRelease();
 
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify(compatibleResponse(step.response)));

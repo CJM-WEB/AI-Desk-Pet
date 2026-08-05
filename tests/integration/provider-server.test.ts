@@ -1,5 +1,8 @@
-import { describe, expect, test } from 'vitest';
-import { startProviderServer } from '../fixtures/provider-server';
+import { describe, expect, test, vi } from 'vitest';
+import {
+  createProviderResponseGate,
+  startProviderServer
+} from '../fixtures/provider-server';
 
 describe('脚本化 Provider 生命周期', () => {
   test('每个服务实例在运行时生成不同 API Key', async () => {
@@ -39,6 +42,40 @@ describe('脚本化 Provider 生命周期', () => {
       expect(receivedKey).toBe(provider.apiKey);
       expect(receivedKey).toMatch(/^myself-e2e-[a-f0-9]+$/u);
     } finally {
+      await provider.close();
+    }
+  });
+
+  test('Provider gate 在请求到达后阻塞响应直到显式释放', async () => {
+    const gate = createProviderResponseGate();
+    const provider = await startProviderServer([{
+      response: { type: 'text', text: '显式释放后返回' },
+      gate
+    }]);
+    let settled = false;
+    const pendingResponse = fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${provider.apiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: '验证门闩' }],
+        tools: []
+      })
+    }).then(response => {
+      settled = true;
+      return response;
+    });
+
+    try {
+      await vi.waitFor(() => expect(gate.isWaiting()).toBe(true));
+      expect(settled).toBe(false);
+      gate.release();
+      expect((await pendingResponse).status).toBe(200);
+    } finally {
+      gate.release();
+      await pendingResponse.catch(() => undefined);
       await provider.close();
     }
   });

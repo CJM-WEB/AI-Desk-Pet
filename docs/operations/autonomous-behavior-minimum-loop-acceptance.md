@@ -21,7 +21,7 @@
 
 ## 中断、反馈和降级
 
-- 用户交互中断：正常待机播放收到桌宠拖拽交互后产生更高 revision 的待机动作，旧调度不再是当前动作。
+- 用户交互中断：安全角色待机使用 `until-interrupted`，Electron 在拖拽前明确观察 `started`；交互后产生更高 revision 的新 `started` 待机动作，旧调度不再是当前动作。
 - 抗中断：运行时和 Main 单元门禁继续验证抗中断动作；本次集成没有降低中断优先级或令牌鉴权断言。
 - Renderer 反馈：Electron 关键断言要求动作离开 `scheduled`，到达 `started` 或合法终态；用户交互后必须是更高 revision 的新动作完成 Renderer 反馈。preload 单元测试另验证同动作旧令牌乱序返回不会污染新调度。
 - 合法 Agent 意图：可推断自定义状态在集成中选择 `focus-action`；Electron 中合法移动意图选择 `safe-move-action`。

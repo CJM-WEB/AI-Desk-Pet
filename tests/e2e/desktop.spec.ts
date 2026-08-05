@@ -8,6 +8,7 @@ import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import {
+  createProviderResponseGate,
   startProviderServer,
   type ProviderStep
 } from '../fixtures/provider-server';
@@ -2405,8 +2406,12 @@ test.describe('自主行为最小闭环', () => {
 
   test('聊天、移动、错误降级与角色切换保持 Main 到 Renderer 闭环', async () => {
     test.setTimeout(120_000);
+    const firstResponseGate = createProviderResponseGate();
     const provider = await startProviderServer([
-      { response: { type: 'text', text: '无意图本地降级完成' }, delayMs: 800 },
+      {
+        response: { type: 'text', text: '无意图本地降级完成' },
+        gate: firstResponseGate
+      },
       {
         response: {
           type: 'text',
@@ -2483,7 +2488,7 @@ test.describe('自主行为最小闭环', () => {
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
         primaryStateId: 'idle',
         actionId: 'safe-idle-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+        playbackStatus: 'started'
       });
 
       const idleProbe = await fixture.getCharacterBehaviorProbe();
@@ -2503,7 +2508,7 @@ test.describe('自主行为最小闭环', () => {
         revisionAdvanced: true,
         primaryStateId: 'idle',
         actionId: 'safe-idle-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+        playbackStatus: 'started'
       });
 
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
@@ -2542,12 +2547,14 @@ test.describe('自主行为最小闭环', () => {
           .__behaviorActions?.length ?? 0
       ));
       await submitChatMessage(chat, '验证模型无意图降级');
+      await expect.poll(() => firstResponseGate.isWaiting()).toBe(true);
       await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
         intervals: [10, 20, 50, 100]
       }).toMatchObject({
         primaryStateId: 'thinking',
         actionId: 'safe-think-action'
       });
+      firstResponseGate.release();
       await expect(chat.getByText('无意图本地降级完成')).toBeVisible();
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
         primaryStateId: 'success',
@@ -2624,6 +2631,7 @@ test.describe('自主行为最小闭环', () => {
       expect((await fixture.getCharacterBehaviorProbe()).actionId).not.toBe('safe-fail-action');
       expect(provider.inspectionErrors).toEqual([]);
     } finally {
+      firstResponseGate.release();
       await fixture.dispose();
       await provider.close();
     }

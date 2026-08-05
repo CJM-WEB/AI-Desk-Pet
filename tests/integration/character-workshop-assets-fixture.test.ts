@@ -72,6 +72,8 @@ describe('角色工作室 E2E 素材夹具', () => {
     }));
 
     const manifest = await store.getPublishedManifest(importedId);
+    expect(manifest?.actions.find(action => action.id === 'safe-idle-action')?.loopPolicy)
+      .toBe('until-interrupted');
     expect(manifest?.skins.flatMap(skin => skin.presentations)
       .flatMap(presentation => presentation.frames)
       .every(frame => frame.assetId === 'atlas')).toBe(true);

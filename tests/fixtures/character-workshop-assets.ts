@@ -131,7 +131,8 @@ export async function materializeCharacterWorkshopFixtures(
   const action = (
     id: string,
     name: string,
-    semantic: CharacterActionDefinitionV2['semantic']
+    semantic: CharacterActionDefinitionV2['semantic'],
+    loopPolicy: CharacterActionDefinitionV2['loopPolicy'] = 'presentation'
   ): CharacterActionDefinitionV2 => ({
     id,
     name,
@@ -140,7 +141,7 @@ export async function materializeCharacterWorkshopFixtures(
     preference: 1,
     cooldownMs: 0,
     repeatSuppressionMs: 0,
-    loopPolicy: 'presentation',
+    loopPolicy,
     interrupt: 'normal',
     allowedPrimaryStateIds: [],
     forbiddenPrimaryStateIds: [],
@@ -194,7 +195,7 @@ export async function materializeCharacterWorkshopFixtures(
     }])
   ];
   const actions = [
-    action('safe-idle-action', '待机', 'idle'),
+    action('safe-idle-action', '待机', 'idle', 'until-interrupted'),
     action('safe-listen-action', '倾听', 'listen'),
     action('safe-think-action', '思考', 'think'),
     action('safe-move-action', '移动', 'move'),

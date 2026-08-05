@@ -238,6 +238,10 @@ const api: MyselfApi = {
       && behaviorProbePlaybackToken === input.playbackToken
       && behaviorProbe.actionId === input.actionId
       && behaviorProbe.revision > 0
+      // 当前令牌一旦进入终态，乱序返回的 started 或其他终态不得改写结果。
+      && behaviorProbe.playbackStatus !== 'completed'
+      && behaviorProbe.playbackStatus !== 'interrupted'
+      && behaviorProbe.playbackStatus !== 'failed'
     ) {
       behaviorProbe = { ...behaviorProbe, playbackStatus: input.status };
     }

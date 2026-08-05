@@ -161,4 +161,39 @@ describe('受限桌宠窗口交互 preload API', () => {
       playbackStatus: 'scheduled'
     });
   });
+
+  test('当前令牌的终态不被延迟返回的 started 覆盖', async () => {
+    const behaviorListener = on.mock.calls.find(
+      ([channel]) => channel === ipcChannels.characterMotionEvent
+    )?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
+    behaviorListener?.({}, {
+      type: 'behavior-action',
+      revision: 3,
+      stateId: 'thinking',
+      modifierStateIds: [],
+      actionId: 'thinking-loop',
+      playbackToken: 'behavior-token-current'
+    });
+
+    let finishStarted: (() => void) | undefined;
+    invoke.mockImplementationOnce(() => new Promise<undefined>(resolve => {
+      finishStarted = () => resolve(undefined);
+    }));
+    const started = exposedApi!.reportCharacterActionFeedback({
+      playbackToken: 'behavior-token-current',
+      actionId: 'thinking-loop',
+      status: 'started'
+    });
+    await exposedApi!.reportCharacterActionFeedback({
+      playbackToken: 'behavior-token-current',
+      actionId: 'thinking-loop',
+      status: 'completed'
+    });
+    expect((await exposedApi?.getCharacterBehaviorProbe?.())?.playbackStatus).toBe('completed');
+
+    finishStarted?.();
+    await started;
+
+    expect((await exposedApi?.getCharacterBehaviorProbe?.())?.playbackStatus).toBe('completed');
+  });
 });
