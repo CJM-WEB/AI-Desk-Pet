@@ -38,6 +38,7 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
     type: z.literal('behavior-action'),
     revision: z.number().int().nonnegative(),
     stateId: characterMotionIdentifierSchema,
+    modifierStateIds: z.array(characterMotionIdentifierSchema).optional(),
     actionId: characterMotionIdentifierSchema,
     playbackToken: characterPlaybackTokenSchema
   }).strict()
@@ -60,3 +61,12 @@ export type CharacterMotionEvent = z.output<typeof characterMotionEventSchema>;
 export type CharacterActionFeedbackInput = z.output<
   typeof characterActionFeedbackInputSchema
 >;
+
+/** E2E 只读行为探针不包含播放令牌、素材标识或本地环境信息。 */
+export type CharacterBehaviorProbe = {
+  revision: number;
+  primaryStateId: string;
+  modifierStateIds: string[];
+  actionId: string | null;
+  playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
+};

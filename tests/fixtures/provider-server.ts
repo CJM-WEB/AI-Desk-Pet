@@ -173,7 +173,23 @@ function normalizeRequest(value: unknown): ModelRequest {
 
 function compatibleResponse(response: ModelResponse): unknown {
   if (response.type === 'text') {
-    return { choices: [{ message: { content: response.text } }] };
+    return {
+      choices: [{
+        message: {
+          content: response.text,
+          ...((response.emotion !== undefined || response.behaviorIntent !== undefined)
+            ? {
+                metadata: {
+                  ...(response.emotion === undefined ? {} : { emotion: response.emotion }),
+                  ...(response.behaviorIntent === undefined
+                    ? {}
+                    : { behaviorIntent: response.behaviorIntent })
+                }
+              }
+            : {})
+        }
+      }]
+    };
   }
   const request = response.request;
   if (!isRecord(request)

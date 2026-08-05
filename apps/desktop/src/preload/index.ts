@@ -16,6 +16,7 @@ import { characterRecoverySnapshotResultSchema } from '../shared/character-ipc';
 import {
   characterMotionEventSchema,
   characterMotionSnapshotResultSchema,
+  type CharacterBehaviorProbe,
   type CharacterMotionEvent,
   type CharacterMotionSnapshot
 } from '../shared/character-motion-ipc';
@@ -27,6 +28,32 @@ import type {
   SaveProviderProfileInput
 } from '../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
+
+const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
+let behaviorProbe: CharacterBehaviorProbe = {
+  revision: 0,
+  primaryStateId: '',
+  modifierStateIds: [],
+  actionId: null,
+  playbackStatus: null
+};
+let behaviorProbePlaybackToken: string | null = null;
+
+if (e2eProbeEnabled) {
+  // preload 在 Main 初始化行为服务前监听，因此不会遗漏首个待机动作。
+  ipcRenderer.on(ipcChannels.characterMotionEvent, (_event, payload: unknown) => {
+    const parsed = characterMotionEventSchema.safeParse(payload);
+    if (!parsed.success || parsed.data.type !== 'behavior-action') return;
+    behaviorProbePlaybackToken = parsed.data.playbackToken;
+    behaviorProbe = {
+      revision: parsed.data.revision,
+      primaryStateId: parsed.data.stateId,
+      modifierStateIds: [...(parsed.data.modifierStateIds ?? [])],
+      actionId: parsed.data.actionId,
+      playbackStatus: 'scheduled'
+    };
+  });
+}
 
 const api: MyselfApi = {
   getStatus: () => ipcRenderer.invoke(ipcChannels.appGetStatus),
@@ -206,6 +233,14 @@ const api: MyselfApi = {
       actionId: input.actionId,
       status: input.status
     });
+    if (
+      e2eProbeEnabled
+      && behaviorProbePlaybackToken === input.playbackToken
+      && behaviorProbe.actionId === input.actionId
+      && behaviorProbe.revision > 0
+    ) {
+      behaviorProbe = { ...behaviorProbe, playbackStatus: input.status };
+    }
   },
   setPetMousePassthrough: async ignore => {
     await ipcRenderer.invoke(ipcChannels.petMousePassthroughSet, { ignore });
@@ -219,11 +254,12 @@ const api: MyselfApi = {
   openPetContextMenu: async () => {
     await ipcRenderer.invoke(ipcChannels.petContextMenuOpen);
   },
-  ...(process.argv.includes('--myself-e2e-probe')
+  ...(e2eProbeEnabled
     ? {
         getPetInteractionProbe: async () => (
           ipcRenderer.invoke(ipcChannels.petInteractionProbeGet)
-        )
+        ),
+        getCharacterBehaviorProbe: async () => structuredClone(behaviorProbe)
       }
     : {}),
   openChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenChat),

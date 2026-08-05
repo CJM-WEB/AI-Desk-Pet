@@ -18,6 +18,7 @@ export type CharacterBehaviorPlaybackEvent =
       type: 'behavior-action';
       revision: number;
       stateId: string;
+      modifierStateIds: string[];
       actionId: string;
       playbackToken: string;
     }
@@ -134,7 +135,10 @@ export class CharacterBehaviorService {
 
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void {
     if (this.closed || this.transitioning || !this.engine) return;
-    this.dispatch({ type: 'task', phase: 'start', occurredAtMs: this.now() }, intent);
+    const now = this.now();
+    // Agent 意图在思考结束后参与决策；先撤销本地思考事实，仍由引擎校验可推断状态。
+    this.deactivateTaskSignal(now);
+    this.dispatch({ type: 'task', phase: 'start', occurredAtMs: now }, intent);
   }
 
   handleMovement(snapshot: CharacterMotionSnapshot): void {
@@ -333,6 +337,7 @@ export class CharacterBehaviorService {
         type: 'behavior-action',
         revision: decision.snapshot.schedule.revision,
         stateId: effect.action.stateId,
+        modifierStateIds: [...decision.snapshot.state.modifierStateIds],
         actionId: effect.action.actionId,
         playbackToken: effect.action.playbackToken
       };

@@ -43,9 +43,14 @@ describe('角色工作室 E2E 素材夹具', () => {
 
     expect(draft.version).toBe(2);
     expect(draft.defaultSkinId).toBe('default');
-    expect(draft.skins[0]?.presentations).toHaveLength(3);
+    expect(draft.skins[0]?.presentations).toHaveLength(8);
     expect(draft.states.map(state => state.id)).toEqual([
       'idle',
+      'listening',
+      'thinking',
+      'moving',
+      'success',
+      'error',
       'carrying',
       'custom-wave'
     ]);

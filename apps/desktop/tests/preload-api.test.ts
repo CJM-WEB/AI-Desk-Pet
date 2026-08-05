@@ -3,6 +3,7 @@ import { ipcChannels } from '../src/shared/ipc-channels';
 import type { MyselfApi } from '../src/shared/myself-api';
 
 const invoke = vi.fn(async () => undefined);
+const on = vi.fn();
 let exposedApi: MyselfApi | undefined;
 
 vi.mock('electron', () => ({
@@ -11,7 +12,7 @@ vi.mock('electron', () => ({
       exposedApi = api;
     }
   },
-  ipcRenderer: { invoke }
+  ipcRenderer: { invoke, on }
 }));
 
 process.argv.push('--myself-e2e-probe');
@@ -98,6 +99,7 @@ describe('受限桌宠窗口交互 preload API', () => {
     await exposedApi?.endPetDrag();
     await exposedApi?.openPetContextMenu();
     await exposedApi?.getPetInteractionProbe?.();
+    await exposedApi?.getCharacterBehaviorProbe?.();
 
     expect(invoke).toHaveBeenNthCalledWith(
       1,
@@ -108,5 +110,55 @@ describe('受限桌宠窗口交互 preload API', () => {
     expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.petDragEnd);
     expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.petContextMenuOpen);
     expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.petInteractionProbeGet);
+    expect(await exposedApi?.getCharacterBehaviorProbe?.()).toEqual({
+      revision: 0,
+      primaryStateId: '',
+      modifierStateIds: [],
+      actionId: null,
+      playbackStatus: null
+    });
+  });
+
+  test('行为探针保留修饰状态且不让旧令牌反馈污染新调度', async () => {
+    const behaviorListener = on.mock.calls.find(
+      ([channel]) => channel === ipcChannels.characterMotionEvent
+    )?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
+    expect(behaviorListener).toBeTypeOf('function');
+
+    behaviorListener?.({}, {
+      type: 'behavior-action',
+      revision: 1,
+      stateId: 'idle',
+      modifierStateIds: ['alert'],
+      actionId: 'idle-main',
+      playbackToken: 'behavior-token-old'
+    });
+    let finishFeedback: (() => void) | undefined;
+    invoke.mockImplementationOnce(() => new Promise<undefined>(resolve => {
+      finishFeedback = () => resolve(undefined);
+    }));
+    const oldFeedback = exposedApi!.reportCharacterActionFeedback({
+      playbackToken: 'behavior-token-old',
+      actionId: 'idle-main',
+      status: 'completed'
+    });
+    behaviorListener?.({}, {
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'idle',
+      modifierStateIds: ['focused'],
+      actionId: 'idle-main',
+      playbackToken: 'behavior-token-new'
+    });
+    finishFeedback?.();
+    await oldFeedback;
+
+    expect(await exposedApi?.getCharacterBehaviorProbe?.()).toEqual({
+      revision: 2,
+      primaryStateId: 'idle',
+      modifierStateIds: ['focused'],
+      actionId: 'idle-main',
+      playbackStatus: 'scheduled'
+    });
   });
 });

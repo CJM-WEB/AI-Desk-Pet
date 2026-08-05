@@ -174,6 +174,7 @@ describe('AgentService', () => {
 
     expect(harness.events).toEqual([
       { type: 'message', role: 'user', text: '处理任务' },
+      { type: 'phase', phase: 'listening' },
       { type: 'phase', phase: 'thinking' },
       { type: 'character_emotion', label: 'happy' },
       { type: 'message', role: 'assistant', text: '处理完成' },
@@ -252,7 +253,7 @@ describe('AgentService', () => {
     await service.submit('列出目录');
 
     expect(fileTools.executeRead).toHaveBeenCalledOnce();
-    expect(phases(events)).toEqual(['thinking', 'acting', 'success']);
+    expect(phases(events)).toEqual(['listening', 'thinking', 'acting', 'success']);
     expect(events).toContainEqual({ type: 'message', role: 'user', text: '列出目录' });
     expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '目录为空' });
   });
@@ -264,7 +265,7 @@ describe('AgentService', () => {
 
     await service.submit('创建 result.txt');
 
-    expect(phases(events)).toEqual(['thinking', 'awaiting_confirmation']);
+    expect(phases(events)).toEqual(['listening', 'thinking', 'awaiting_confirmation']);
     expect(events.at(-1)).toEqual({
       type: 'pending_action',
       action: expect.objectContaining({
@@ -305,6 +306,7 @@ describe('AgentService', () => {
       event.type === 'character_carrying' && !event.carrying
     )));
     expect(phases(events)).toEqual([
+      'listening',
       'thinking',
       'awaiting_confirmation',
       'acting',
@@ -333,7 +335,7 @@ describe('AgentService', () => {
     service.cancelActive();
     await submitting;
 
-    expect(phases(events)).toEqual(['thinking', 'cancelled']);
+    expect(phases(events)).toEqual(['listening', 'thinking', 'cancelled']);
   });
 
   test('Provider 失败会发送公开错误和 error 终止阶段', async () => {
@@ -369,7 +371,7 @@ describe('AgentService', () => {
 
     expect(provider.requests).toHaveLength(2);
     expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '重试成功' });
-    expect(phases(events)).toEqual(['thinking', 'success']);
+    expect(phases(events)).toEqual(['listening', 'thinking', 'success']);
   });
 
   test('无效输入返回明确的公开错误码', async () => {

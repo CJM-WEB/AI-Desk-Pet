@@ -13,6 +13,7 @@ type BehaviorPlaybackEvent =
       type: 'behavior-action';
       revision: number;
       stateId: string;
+      modifierStateIds: string[];
       actionId: string;
       playbackToken: string;
     }
@@ -292,6 +293,7 @@ describe('Main 角色行为权威服务', () => {
       type: 'behavior-action',
       revision: 1,
       stateId: 'idle-state',
+      modifierStateIds: [],
       actionId: 'idle-action',
       playbackToken: 'behavior-token-1'
     }]);
@@ -574,6 +576,7 @@ describe('Main 角色行为权威服务', () => {
       type: 'behavior-action',
       revision: 1,
       stateId: 'idle-state',
+      modifierStateIds: [],
       actionId: 'idle-action',
       playbackToken: 'behavior-token-2'
     });
@@ -622,6 +625,7 @@ describe('Main 角色行为权威服务', () => {
       type: 'behavior-action',
       revision: 1,
       stateId: 'idle-state',
+      modifierStateIds: [],
       actionId: 'idle-action',
       playbackToken: 'behavior-token-2'
     }]);

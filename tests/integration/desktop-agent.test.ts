@@ -2,7 +2,12 @@ import { lstat, readFile, writeFile } from 'node:fs/promises';
 import { fork, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { AgentLoop, type ModelResponse } from '@myself/agent-core';
+import {
+  AgentLoop,
+  type ModelProvider,
+  type ModelResponse
+} from '@myself/agent-core';
+import type { CharacterManifestV2 } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
 import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
@@ -11,6 +16,8 @@ import {
   createBuiltinFileToolRegistry
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
+import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
+import { CharacterMotionService } from '../../apps/desktop/src/main/characters/character-motion-service';
 import {
   createAuthorizedRoot,
   type AuthorizedRootFixture
@@ -196,7 +203,250 @@ function pendingAction(events: TaskEvent[]) {
   return event.action;
 }
 
+const behaviorSemantics = ['idle', 'listen', 'think', 'move', 'celebrate', 'fail'] as const;
+
+/** 固定 V2 角色让集成断言独立于生产默认角色的素材与命名。 */
+function createBehaviorManifest(): CharacterManifestV2 {
+  const states: CharacterManifestV2['states'] = behaviorSemantics.map(semantic => ({
+    id: `${semantic}-state`,
+    name: `${semantic} 状态`,
+    kind: 'primary',
+    semantic,
+    tags: [],
+    intensity: 10,
+    coexistWithStateIds: [],
+    forbiddenStateIds: [],
+    enterConditions: [],
+    exitConditions: [],
+    agentInferable: semantic === 'think',
+    actionIds: [`${semantic}-action`]
+  }));
+  states.push({
+    id: 'agent-focus',
+    name: 'Agent 专注',
+    kind: 'primary',
+    semantic: { kind: 'custom', value: 'focus' },
+    tags: [],
+    intensity: 80,
+    coexistWithStateIds: [],
+    forbiddenStateIds: [],
+    enterConditions: [],
+    exitConditions: [],
+    agentInferable: true,
+    actionIds: ['focus-action']
+  });
+  const actions: CharacterManifestV2['actions'] = behaviorSemantics.map(semantic => ({
+    id: `${semantic}-action`,
+    name: `${semantic} 动作`,
+    semantic,
+    tags: [],
+    preference: 1,
+    cooldownMs: 0,
+    repeatSuppressionMs: 0,
+    loopPolicy: 'never',
+    interrupt: 'normal',
+    allowedPrimaryStateIds: [],
+    forbiddenPrimaryStateIds: [],
+    requiredModifierStateIds: [],
+    forbiddenModifierStateIds: [],
+    direction: 'any'
+  }));
+  actions.push({
+    ...actions.find(action => action.semantic === 'think')!,
+    id: 'focus-action',
+    name: '专注动作'
+  });
+  return {
+    version: 2,
+    id: 'integration-behavior-v2',
+    name: '集成行为角色',
+    thumbnailAssetId: 'thumbnail',
+    compilerVersion: 'task-9',
+    identity: {
+      description: '自主行为闭环集成角色', background: '固定测试夹具', traits: [],
+      languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
+      behavioralTendencies: [], boundaries: [], exampleLines: []
+    },
+    defaultSkinId: 'default',
+    defaultStateId: 'idle-state',
+    states,
+    actions,
+    skins: [{
+      id: 'default',
+      name: '默认皮肤',
+      presentations: actions.map(action => ({
+        actionId: action.id,
+        fps: 8,
+        frames: [{ assetId: 'atlas', x: 0, y: 0, width: 1, height: 1 }],
+        anchors: { ground: { x: 0.5, y: 1 } }
+      })),
+      semanticFallbacks: []
+    }],
+    resources: [{
+      assetId: 'atlas', fileName: 'atlas.png', sha256: 'a'.repeat(64), byteLength: 1
+    }]
+  };
+}
+
+function scriptedProvider(responses: ModelResponse[]): ModelProvider {
+  return {
+    async respond() {
+      const response = responses.shift();
+      if (!response) throw new Error('集成模型脚本已耗尽');
+      return response;
+    }
+  };
+}
+
 describe('桌面 Agent 真实服务集成', () => {
+  test('自主行为最小闭环按可信事件组合 Agent、Main 行为与窗口运动', async () => {
+    let now = 0;
+    let bounds = { x: 10, y: 20, width: 256, height: 256 };
+    const positions: Array<{ x: number; y: number }> = [];
+    const motion = new CharacterMotionService({
+      window: {
+        getBounds: () => ({ ...bounds }),
+        setPosition: (x, y) => {
+          bounds = { ...bounds, x, y };
+          positions.push({ x, y });
+        }
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_024, height: 768 }],
+      now: () => now,
+      random: () => 0.75
+    });
+    let token = 0;
+    const behavior = new CharacterBehaviorService({
+      store: {
+        getActiveManifestV2: async () => createBehaviorManifest(),
+        getActive: async () => { throw new Error('不应读取 V1 回退'); }
+      },
+      motion,
+      now: () => now,
+      random: () => 0,
+      createPlaybackToken: () => `integration-token-${++token}`,
+      idleIntervalMs: 100
+    });
+    const behaviorEvents: Array<{
+      revision: number;
+      stateId?: string;
+      actionId: string;
+      playbackToken: string;
+    }> = [];
+    behavior.subscribe(event => behaviorEvents.push(event));
+    motion.subscribe(snapshot => behavior.handleMovement(snapshot));
+    await behavior.initialize();
+
+    const initialIdle = behaviorEvents.at(-1)!;
+    expect(initialIdle).toMatchObject({ stateId: 'idle-state', actionId: 'idle-action' });
+    behavior.applyPlaybackFeedback({
+      playbackToken: initialIdle.playbackToken,
+      actionId: initialIdle.actionId,
+      status: 'started',
+      occurredAtMs: now
+    });
+    behavior.handleUserInteraction();
+    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'idle-action' });
+    expect(behaviorEvents.at(-1)?.playbackToken).not.toBe(initialIdle.playbackToken);
+
+    const responses: ModelResponse[] = [{
+      type: 'text',
+      text: '进入专注状态',
+      behaviorIntent: {
+        stateIntent: { stateId: 'agent-focus' },
+        actionSemantic: 'think',
+        urgency: 70,
+        explanation: '需要专注回应'
+      }
+    }, {
+      type: 'text',
+      text: '非法意图已降级',
+      behaviorIntent: {
+        stateIntent: { stateId: 'missing-state' },
+        actionSemantic: 'think',
+        urgency: 70,
+        explanation: '不存在的状态'
+      }
+    }, {
+      type: 'text',
+      text: '无行为意图'
+    }];
+    const taskEvents: TaskEvent[] = [];
+    const agent = new AgentService({
+      loop: new AgentLoop(),
+      pending: new PendingActionStore(),
+      createSession: async () => ({
+        provider: scriptedProvider(responses),
+        fileTools: {} as never,
+        fileDisclosureAllowed: false,
+        tools: [],
+        toolRuntime: {
+          prepare: () => { throw new Error('不应准备工具'); },
+          executeRead: async () => { throw new Error('不应执行工具'); }
+        },
+        messages: []
+      }),
+      emit: event => {
+        taskEvents.push(event);
+        behavior.handleTaskEvent(event);
+      },
+      emitBehaviorIntent: intent => behavior.handleAgentIntent(intent)
+    });
+
+    await agent.submit('执行合法意图');
+    expect(taskEvents.filter(event => event.type === 'phase').slice(0, 2)).toEqual([
+      { type: 'phase', phase: 'listening' },
+      { type: 'phase', phase: 'thinking' }
+    ]);
+    expect(behaviorEvents).toContainEqual(expect.objectContaining({
+      stateId: 'agent-focus', actionId: 'focus-action'
+    }));
+    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'celebrate-action' });
+
+    const illegalStart = behaviorEvents.length;
+    await agent.submit('执行非法意图');
+    expect(behaviorEvents.slice(illegalStart).filter(event => (
+      event.stateId === 'think-state' && event.actionId === 'think-action'
+    ))).toHaveLength(3);
+    expect(behaviorEvents.slice(illegalStart)).not.toContainEqual(expect.objectContaining({
+      stateId: 'missing-state'
+    }));
+
+    const noIntentStart = behaviorEvents.length;
+    await agent.submit('执行无意图降级');
+    expect(behaviorEvents.slice(noIntentStart)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actionId: 'listen-action' }),
+      expect.objectContaining({ actionId: 'think-action' }),
+      expect.objectContaining({ actionId: 'celebrate-action' })
+    ]));
+
+    motion.requestIntent('wander');
+    now = 100;
+    motion.tick();
+    now = 200;
+    motion.tick();
+    expect(behaviorEvents).toContainEqual(expect.objectContaining({ actionId: 'move-action' }));
+    expect(positions.length).toBeGreaterThan(0);
+
+    behavior.handleTaskEvent({ type: 'phase', phase: 'error' });
+    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'fail-action' });
+    const failure = behaviorEvents.at(-1)!;
+    behavior.applyPlaybackFeedback({
+      playbackToken: failure.playbackToken,
+      actionId: failure.actionId,
+      status: 'started',
+      occurredAtMs: now
+    });
+    behavior.applyPlaybackFeedback({
+      playbackToken: failure.playbackToken,
+      actionId: failure.actionId,
+      status: 'completed',
+      occurredAtMs: now + 1
+    });
+    behavior.handleTaskEvent({ type: 'phase', phase: 'idle' });
+    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'idle-action' });
+  });
+
   test('Renderer 真实图集编译挂起时 Main Agent 请求仍先完成', async () => {
     const fixture = await harness([{
       response: { type: 'text', text: 'Agent 在编译期间正常响应' }

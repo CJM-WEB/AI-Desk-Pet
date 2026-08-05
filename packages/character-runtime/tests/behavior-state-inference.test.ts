@@ -424,6 +424,28 @@ describe('V2 行为状态推断', () => {
     expect(result.desiredActionSemantic).toBe('speak');
   });
 
+  test('任务开始时的非法 Agent 状态回退本地思考状态', () => {
+    const manifest = 创建清单([
+      创建状态({ id: 'resting-core', kind: 'primary', semantic: 'idle' }),
+      创建状态({ id: 'reasoning-core', kind: 'primary', semantic: 'think' })
+    ]);
+
+    const result = inferCharacterBehaviorState({
+      manifest,
+      previous: createInitialBehaviorState(manifest),
+      signal: { type: 'task', phase: 'start', occurredAtMs: 1 },
+      agentIntent: {
+        stateIntent: { stateId: 'missing-state' },
+        actionSemantic: 'think',
+        urgency: 1,
+        explanation: '非法状态由本地语义收敛。'
+      }
+    });
+
+    expect(result.primaryStateId).toBe('reasoning-core');
+    expect(result.desiredActionSemantic).toBe('think');
+  });
+
   test('异常清单的默认修饰状态不会成为初始主状态', () => {
     const manifest = 创建清单([
       创建状态({ id: 'fallback-primary', kind: 'primary', semantic: 'idle' }),

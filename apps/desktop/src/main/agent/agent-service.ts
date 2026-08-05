@@ -190,6 +190,8 @@ export class AgentService {
     const controller = new AbortController();
     this.activeController = controller;
     this.emit({ type: 'message', role: 'user', text: normalized });
+    // Main 先发布会话开始的倾听阶段，再由 AgentLoop 接管思考及后续结果阶段。
+    this.emit({ type: 'phase', phase: 'listening' });
     try {
       const session = await this.createSession(controller.signal);
       await this.forward(

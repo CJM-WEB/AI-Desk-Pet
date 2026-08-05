@@ -13,6 +13,7 @@
     "test:e2e:desktop": "pnpm --filter @myself/desktop build && playwright test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts",
     "test:e2e:website": "playwright test --config tests/playwright.website.config.ts",
     "verify:desktop": "pnpm typecheck && pnpm test:unit && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop",
+    "verify:behavior": "pnpm --filter @myself/character-runtime test && pnpm --filter @myself/agent-core test && pnpm --filter @myself/desktop typecheck && pnpm --filter @myself/desktop test && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop",
     "verify:characters": "pnpm --filter @myself/character-runtime test && pnpm --filter @myself/character-assets test && pnpm --filter @myself/desktop typecheck && pnpm --filter @myself/desktop test && pnpm test:security && pnpm test:integration && pnpm test:e2e:desktop",
     "verify:website": "pnpm --filter @myself/website typecheck && pnpm --filter @myself/website test && pnpm --filter @myself/website build && pnpm test:e2e:website"
   },

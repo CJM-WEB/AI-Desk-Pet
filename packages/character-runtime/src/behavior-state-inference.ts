@@ -189,10 +189,21 @@ function requirePrimary(manifest: CharacterManifestV2): CharacterStateDefinition
   return primary;
 }
 
-function isProtectedPrimary(manifest: CharacterManifestV2, stateId: string): boolean {
+function isProtectedPrimary(
+  manifest: CharacterManifestV2,
+  stateId: string,
+  signals: readonly TrustedBehaviorSignal[]
+): boolean {
   const state = manifest.states.find((candidate) => candidate.id === stateId);
   const semantic = state ? standardSemantic(state) : null;
-  return Boolean(semantic && PROTECTED_PRIMARY_SEMANTICS.has(semantic));
+  if (!semantic || !PROTECTED_PRIMARY_SEMANTICS.has(semantic)) return false;
+  return semantic === 'think'
+    ? signals.includes('thinking')
+    : semantic === 'move'
+      ? signals.includes('move-start')
+      : semantic === 'celebrate'
+        ? signals.includes('task-success')
+        : signals.includes('task-failure');
 }
 
 type AgentStateSelection =
@@ -251,9 +262,14 @@ export function inferCharacterBehaviorState(
     new Set([currentPrimary.id])
   )));
 
-  const protectedFromAgent = !localSemantic && isProtectedPrimary(manifest, previous.primaryStateId);
+  const protectedFromAgent = !localSemantic
+    && isProtectedPrimary(manifest, previous.primaryStateId, signals);
   const canUseAgent = !localSemantic && !protectedFromAgent && agentState.kind !== 'invalid';
-  const requestedSemantic = localSemantic ?? (agentState.kind === 'primary-semantic' && canUseAgent ? agentState.semantic : null);
+  // task-start 携带非法状态时仍由本地思考语义收敛，模型不能把主状态打回待机。
+  const requestedSemantic = localSemantic
+    ?? (agentState.kind === 'invalid' && signal.type === 'task' && signal.phase === 'start'
+      ? 'think'
+      : agentState.kind === 'primary-semantic' && canUseAgent ? agentState.semantic : null);
   const requestedStateId = agentState.kind === 'primary-state' && canUseAgent ? agentState.stateId : undefined;
   const hasPrimaryRequest = Boolean(localSemantic)
     || agentState.kind === 'invalid'

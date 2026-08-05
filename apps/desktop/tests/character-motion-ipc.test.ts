@@ -60,12 +60,14 @@ describe('角色运动严格 IPC', () => {
       type: 'behavior-action',
       revision: 2,
       stateId: 'thinking',
+      modifierStateIds: ['focused'],
       actionId: 'thinking-loop',
       playbackToken: 'behavior-token-2'
     })).toEqual({
       type: 'behavior-action',
       revision: 2,
       stateId: 'thinking',
+      modifierStateIds: ['focused'],
       actionId: 'thinking-loop',
       playbackToken: 'behavior-token-2'
     });

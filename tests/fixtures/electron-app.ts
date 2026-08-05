@@ -196,6 +196,13 @@ export interface ElectronAppFixture {
   readonly characterExportDestination?: string;
   readonly logs: readonly string[];
   getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
+  getCharacterBehaviorProbe(): Promise<{
+    revision: number;
+    primaryStateId: string;
+    modifierStateIds: string[];
+    actionId: string | null;
+    playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
+  }>;
   restart(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -961,6 +968,41 @@ export async function createElectronAppFixture(
           || Object.keys(probe).length !== 2
         ) {
           throw new Error('ELECTRON_E2E_PROBE_RESULT_INVALID');
+        }
+        return probe;
+      },
+      async getCharacterBehaviorProbe() {
+        if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
+          throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
+        }
+        const petPage = browser.contexts()
+          .flatMap(context => context.pages())
+          .find(page => {
+            try {
+              return new URL(page.url()).searchParams.get('view') === 'pet';
+            } catch {
+              return false;
+            }
+          });
+        if (!petPage) throw new Error('ELECTRON_E2E_PROBE_PET_PAGE_UNAVAILABLE');
+        const probe = await petPage.evaluate(async () => (
+          window.myself.getCharacterBehaviorProbe?.()
+        ));
+        const statuses = new Set([
+          null, 'scheduled', 'started', 'completed', 'interrupted', 'failed'
+        ]);
+        if (
+          !probe
+          || !Number.isInteger(probe.revision)
+          || probe.revision < 0
+          || typeof probe.primaryStateId !== 'string'
+          || !Array.isArray(probe.modifierStateIds)
+          || !probe.modifierStateIds.every(value => typeof value === 'string')
+          || (probe.actionId !== null && typeof probe.actionId !== 'string')
+          || !statuses.has(probe.playbackStatus)
+          || Object.keys(probe).length !== 5
+        ) {
+          throw new Error('ELECTRON_E2E_BEHAVIOR_PROBE_RESULT_INVALID');
         }
         return probe;
       },

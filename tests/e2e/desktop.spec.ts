@@ -13,6 +13,14 @@ import {
 } from '../fixtures/provider-server';
 import { snapshotCharacterPersistence } from '../fixtures/character-storage-snapshot';
 
+type CharacterBehaviorProbe = {
+  revision: number;
+  primaryStateId: string;
+  modifierStateIds: string[];
+  actionId: string | null;
+  playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
+};
+
 type ElectronFixtureModule = {
   createElectronLaunchPlan(options: {
     workspaceRoot: string;
@@ -125,6 +133,7 @@ type ElectronFixtureModule = {
     characterExportDestination?: string;
     logs: readonly string[];
     getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
+    getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
     restart(): Promise<void>;
     dispose(): Promise<void>;
   }>;
@@ -2358,6 +2367,266 @@ test.describe('真实角色工作室闭环', () => {
     expect(observable).not.toContain(recoverySnapshot);
     expect(observable).not.toContain(safePackage);
     expect(observable).toContain('[已脱敏]');
+  });
+});
+
+test.describe('自主行为最小闭环', () => {
+  test('E2E 只读探针观察默认角色待机播放', async () => {
+    test.setTimeout(60_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000
+    });
+
+    try {
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'idle',
+        actionId: 'idle-main',
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+      });
+      const probe = await fixture.getCharacterBehaviorProbe();
+      expect(probe.revision).toBeGreaterThan(0);
+      expect(probe.modifierStateIds).toEqual([]);
+      expect(Object.keys(probe).sort()).toEqual([
+        'actionId',
+        'modifierStateIds',
+        'playbackStatus',
+        'primaryStateId',
+        'revision'
+      ]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test('聊天、移动、错误降级与角色切换保持 Main 到 Renderer 闭环', async () => {
+    test.setTimeout(120_000);
+    const provider = await startProviderServer([
+      { response: { type: 'text', text: '无意图本地降级完成' }, delayMs: 800 },
+      {
+        response: {
+          type: 'text',
+          text: '非法意图已忽略',
+          behaviorIntent: {
+            stateIntent: { stateId: 'missing-state' },
+            actionSemantic: 'think',
+            urgency: 50,
+            explanation: '测试非法状态回退'
+          }
+        }
+      },
+      {
+        response: {
+          type: 'text',
+          text: '开始移动',
+          behaviorIntent: {
+            stateIntent: { semantic: 'move' },
+            actionSemantic: 'move',
+            urgency: 80,
+            explanation: '测试移动闭环'
+          }
+        }
+      }
+    ]);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) {
+      await provider.close();
+      return;
+    }
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+    const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
+      try {
+        return new URL(page.url()).searchParams.get('view') === view;
+      } catch {
+        return false;
+      }
+    });
+
+    try {
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
+      const pet = pageFor('pet')!;
+      const chat = pageFor('chat')!;
+      await pet.evaluate(() => {
+        const scope = globalThis as typeof globalThis & {
+          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
+        };
+        scope.__behaviorActions = [];
+        window.myself.subscribeCharacterMotion(event => {
+          if (event.type !== 'behavior-action') return;
+          scope.__behaviorActions?.push({ stateId: event.stateId, actionId: event.actionId });
+        });
+      });
+      await chat.evaluate(() => {
+        const scope = globalThis as typeof globalThis & { __taskPhases?: string[] };
+        scope.__taskPhases = [];
+        window.myself.onTaskEvent(event => {
+          if (event.type === 'phase') scope.__taskPhases?.push(event.phase);
+        });
+      });
+      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
+      expect(imported.kind).toBe('imported');
+      if (imported.kind !== 'imported') return;
+      await pet.evaluate(async characterId => {
+        await window.myself.activateCharacter(characterId);
+      }, imported.characterId);
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'idle',
+        actionId: 'safe-idle-action',
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+      });
+
+      const idleProbe = await fixture.getCharacterBehaviorProbe();
+      await pet.evaluate(async () => {
+        await window.myself.beginPetDrag();
+        await window.myself.endPetDrag();
+      });
+      await expect.poll(async () => {
+        const probe = await fixture.getCharacterBehaviorProbe();
+        return {
+          revisionAdvanced: probe.revision > idleProbe.revision,
+          primaryStateId: probe.primaryStateId,
+          actionId: probe.actionId,
+          playbackStatus: probe.playbackStatus
+        };
+      }).toEqual({
+        revisionAdvanced: true,
+        primaryStateId: 'idle',
+        actionId: 'safe-idle-action',
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+      });
+
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'behavior-e2e',
+            displayName: '自主行为 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'behavior-e2e-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'behavior-e2e',
+          chatProfileId: 'behavior-e2e',
+          agentProfileId: 'behavior-e2e',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.chooseAuthorizedRoot();
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+      await pet.evaluate(() => window.myself.openChat());
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      const phaseOffset = await chat.evaluate(() => (
+        (globalThis as typeof globalThis & { __taskPhases?: string[] }).__taskPhases?.length ?? 0
+      ));
+      const conversationActionOffset = await pet.evaluate(() => (
+        (globalThis as typeof globalThis & { __behaviorActions?: unknown[] })
+          .__behaviorActions?.length ?? 0
+      ));
+      await submitChatMessage(chat, '验证模型无意图降级');
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
+        intervals: [10, 20, 50, 100]
+      }).toMatchObject({
+        primaryStateId: 'thinking',
+        actionId: 'safe-think-action'
+      });
+      await expect(chat.getByText('无意图本地降级完成')).toBeVisible();
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'success',
+        actionId: 'safe-celebrate-action',
+        playbackStatus: expect.stringMatching(/^(started|completed|interrupted)$/u)
+      });
+      const phases = await chat.evaluate(offset => (
+        (globalThis as typeof globalThis & { __taskPhases?: string[] })
+          .__taskPhases?.slice(offset) ?? []
+      ), phaseOffset);
+      expect(phases.indexOf('listening')).toBeGreaterThanOrEqual(0);
+      expect(phases.indexOf('thinking')).toBeGreaterThan(phases.indexOf('listening'));
+      const conversationActions = await pet.evaluate(offset => (
+        (globalThis as typeof globalThis & {
+          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
+        }).__behaviorActions?.slice(offset) ?? []
+      ), conversationActionOffset);
+      expect(conversationActions).toEqual(expect.arrayContaining([
+        { stateId: 'listening', actionId: 'safe-listen-action' },
+        { stateId: 'thinking', actionId: 'safe-think-action' },
+        { stateId: 'success', actionId: 'safe-celebrate-action' }
+      ]));
+
+      const invalidActionOffset = await pet.evaluate(() => (
+        (globalThis as typeof globalThis & { __behaviorActions?: unknown[] })
+          .__behaviorActions?.length ?? 0
+      ));
+      await submitChatMessage(chat, '验证非法意图');
+      await expect(chat.getByText('非法意图已忽略')).toBeVisible();
+      const invalidActions = await pet.evaluate(offset => (
+        (globalThis as typeof globalThis & {
+          __behaviorActions?: Array<{ stateId: string; actionId: string }>;
+        }).__behaviorActions?.slice(offset) ?? []
+      ), invalidActionOffset);
+      expect(invalidActions.filter(action => action.stateId === 'thinking')).toHaveLength(3);
+      expect(invalidActions).not.toContainEqual(expect.objectContaining({ stateId: 'missing-state' }));
+      const invalidFallback = await fixture.getCharacterBehaviorProbe();
+      expect(invalidFallback.primaryStateId).not.toBe('missing-state');
+      expect(invalidFallback.actionId).toBe('safe-celebrate-action');
+
+      const positionBeforeMove = await pet.evaluate(() => ({ x: window.screenX, y: window.screenY }));
+      await submitChatMessage(chat, '验证移动');
+      await expect(chat.getByText('开始移动')).toBeVisible();
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'moving',
+        actionId: 'safe-move-action',
+        playbackStatus: expect.stringMatching(/^(started|completed|interrupted)$/u)
+      });
+      await expect.poll(async () => {
+        const current = await pet.evaluate(() => ({ x: window.screenX, y: window.screenY }));
+        return current.x !== positionBeforeMove.x || current.y !== positionBeforeMove.y;
+      }).toBe(true);
+
+      await expect(chat.getByLabel('和我说点什么')).toBeEnabled();
+      await submitChatMessage(chat, '验证模型不可用');
+      await expect(chat.getByText('模型服务发生错误，请稍后重试。')).toBeVisible();
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'error',
+        actionId: 'safe-fail-action',
+        playbackStatus: expect.stringMatching(/^(started|completed|interrupted)$/u)
+      });
+
+      const characters = await pet.evaluate(() => window.myself.listCharacters());
+      const builtin = characters.find(character => character.id === 'builtin-default');
+      expect(builtin).toBeDefined();
+      await pet.evaluate(async characterId => {
+        await window.myself.activateCharacter(characterId);
+      }, builtin!.id);
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'idle',
+        actionId: 'idle-main',
+        playbackStatus: expect.stringMatching(/^(started|completed|interrupted)$/u)
+      });
+      expect((await fixture.getCharacterBehaviorProbe()).actionId).not.toBe('safe-fail-action');
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
   });
 });
 

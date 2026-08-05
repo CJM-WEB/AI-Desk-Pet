@@ -181,17 +181,27 @@ export async function materializeCharacterWorkshopFixtures(
     exampleLines: ['测试已就绪。']
   };
   const states = [
-    state('idle', '待机', 'idle', 'idle-main'),
-    state('carrying', '搬运', 'carry', 'carrying-main'),
-    state('custom-wave', '挥手', { kind: 'custom', value: 'wave' }, 'wave-main', [{
+    state('idle', '待机', 'idle', 'safe-idle-action'),
+    state('listening', '倾听', 'listen', 'safe-listen-action'),
+    state('thinking', '思考', 'think', 'safe-think-action'),
+    state('moving', '移动', 'move', 'safe-move-action'),
+    state('success', '成功', 'celebrate', 'safe-celebrate-action'),
+    state('error', '失败', 'fail', 'safe-fail-action'),
+    state('carrying', '搬运', 'carry', 'safe-carry-action'),
+    state('custom-wave', '挥手', { kind: 'custom', value: 'wave' }, 'safe-wave-action', [{
       mode: 'all' as const,
       clauses: [{ kind: 'signal' as const, signal: 'user-interaction' }]
     }])
   ];
   const actions = [
-    action('idle-main', '待机', 'idle'),
-    action('carrying-main', '搬运', 'carry'),
-    action('wave-main', '挥手', 'celebrate')
+    action('safe-idle-action', '待机', 'idle'),
+    action('safe-listen-action', '倾听', 'listen'),
+    action('safe-think-action', '思考', 'think'),
+    action('safe-move-action', '移动', 'move'),
+    action('safe-celebrate-action', '庆祝', 'celebrate'),
+    action('safe-fail-action', '失败', 'fail'),
+    action('safe-carry-action', '搬运', 'carry'),
+    action('safe-wave-action', '挥手', 'celebrate')
   ];
   const draft: CharacterDraftV2 = {
     version: 2,
@@ -205,9 +215,7 @@ export async function materializeCharacterWorkshopFixtures(
       id: 'default',
       name: '默认皮肤',
       presentations: [
-        presentation('idle-main', source.assetId),
-        presentation('carrying-main', source.assetId),
-        presentation('wave-main', source.assetId)
+        ...actions.map(item => presentation(item.id, source.assetId))
       ],
       semanticFallbacks: []
     }],
@@ -226,9 +234,7 @@ export async function materializeCharacterWorkshopFixtures(
       id: 'default',
       name: '默认皮肤',
       presentations: [
-        presentation('idle-main', 'atlas'),
-        presentation('carrying-main', 'atlas'),
-        presentation('wave-main', 'atlas')
+        ...actions.map(item => presentation(item.id, 'atlas'))
       ],
       semanticFallbacks: []
     }],
