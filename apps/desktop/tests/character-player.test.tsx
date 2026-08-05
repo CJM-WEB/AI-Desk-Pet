@@ -481,7 +481,11 @@ describe('角色播放器组件', () => {
           activeCharacterId: oldManifest.id,
           manifest: oldManifest
         })
-        .mockImplementationOnce(() => nextSnapshot.promise),
+        .mockImplementationOnce(() => nextSnapshot.promise)
+        .mockResolvedValue({
+          activeCharacterId: newManifest.id,
+          manifest: newManifest
+        }),
       subscribeCharacterEvents: vi.fn(listener => {
         characterListener = listener;
         return vi.fn();
@@ -521,6 +525,7 @@ describe('角色播放器组件', () => {
         activeCharacterId: newManifest.id,
         manifest: newManifest
       }),
+      failNewProjection: () => nextSnapshot.reject(new Error('CHARACTER_RUNTIME_UNAVAILABLE')),
       motion: (event: CharacterMotionEvent) => motionListener?.(event),
       players,
       rendered,
@@ -572,6 +577,83 @@ describe('角色播放器组件', () => {
     expect(fixture.reportCharacterActionFeedback).not.toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed' })
     );
+    fixture.rendered.unmount();
+  });
+
+  test('刷新失败时把加载期排队令牌恰好一次结算为 failed', async () => {
+    const fixture = refreshRaceFixture('old-action', 'new-action');
+    await waitFor(() => expect(fixture.players[0]!.play).toHaveBeenCalledOnce());
+    act(() => fixture.characterEvent({
+      type: 'compile-result',
+      characterId: 'character-a',
+      ok: true
+    }));
+    await waitFor(() => expect(fixture.api.getCharacterRuntimeSnapshot).toHaveBeenCalledTimes(2));
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'thinking-state',
+      actionId: 'new-action',
+      playbackToken: 'behavior-token-pending'
+    }));
+
+    await act(async () => fixture.failNewProjection());
+
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-pending',
+      actionId: 'new-action',
+      status: 'failed'
+    }));
+    expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledOnce();
+    expect(fixture.players[0]!.play).toHaveBeenCalledOnce();
+    fixture.rendered.unmount();
+  });
+
+  test('刷新失败进入 unavailable，拒绝新令牌并在后续刷新成功后恢复播放', async () => {
+    const fixture = refreshRaceFixture('old-action', 'new-action');
+    await waitFor(() => expect(fixture.players[0]!.play).toHaveBeenCalledOnce());
+    act(() => fixture.characterEvent({
+      type: 'compile-result',
+      characterId: 'character-a',
+      ok: true
+    }));
+    await waitFor(() => expect(fixture.api.getCharacterRuntimeSnapshot).toHaveBeenCalledTimes(2));
+    await act(async () => fixture.failNewProjection());
+
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'thinking-state',
+      actionId: 'new-action',
+      playbackToken: 'behavior-token-unavailable'
+    }));
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-unavailable',
+      actionId: 'new-action',
+      status: 'failed'
+    }));
+    expect(fixture.players[0]!.play).toHaveBeenCalledOnce();
+
+    act(() => fixture.characterEvent({
+      type: 'compile-result',
+      characterId: 'character-a',
+      ok: true
+    }));
+    await waitFor(() => expect(fixture.players[1]!.play).toHaveBeenCalledOnce());
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 3,
+      stateId: 'thinking-state',
+      actionId: 'new-action',
+      playbackToken: 'behavior-token-recovered'
+    }));
+
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-recovered',
+      actionId: 'new-action',
+      status: 'started'
+    }));
+    expect(fixture.players[1]!.play).toHaveBeenCalledTimes(2);
     fixture.rendered.unmount();
   });
 

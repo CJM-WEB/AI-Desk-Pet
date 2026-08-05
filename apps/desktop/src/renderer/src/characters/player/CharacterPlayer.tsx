@@ -84,6 +84,7 @@ type ActiveBehaviorPlayback = {
 
 type BehaviorPlaybackTokenState = 'active' | 'terminal';
 type BehaviorActionEvent = Extract<CharacterMotionEvent, { type: 'behavior-action' }>;
+type CharacterProjectionStatus = 'loading' | 'ready' | 'unavailable';
 
 const MAX_RUNTIME_LOAD_ATTEMPTS = 2;
 const MAX_TRACKED_PLAYBACK_TOKENS = 128;
@@ -115,7 +116,7 @@ export function CharacterPlayer({
   const activeSnapshotRef = useRef<CharacterRuntimeSnapshot | null>(null);
   const activeBehaviorPlaybackRef = useRef<ActiveBehaviorPlayback | null>(null);
   const behaviorPlaybackTokensRef = useRef(new Map<string, BehaviorPlaybackTokenState>());
-  const projectionReadyRef = useRef(false);
+  const projectionStatusRef = useRef<CharacterProjectionStatus>('loading');
   const pendingBehaviorActionRef = useRef<BehaviorActionEvent | null>(null);
   const behaviorActionConsumerRef = useRef<((event: BehaviorActionEvent) => void) | null>(null);
   const actionRevisionRef = useRef(-1);
@@ -217,7 +218,7 @@ export function CharacterPlayer({
       const currentRevision = ++revision;
       let candidate: CharacterPlayerPort | null = null;
       let staging: HTMLSpanElement | null = null;
-      projectionReadyRef.current = false;
+      projectionStatusRef.current = 'loading';
       setStatus('loading');
       publishHitTestPort(null);
 
@@ -283,9 +284,9 @@ export function CharacterPlayer({
         const previous = activePlayerRef.current;
         activePlayerRef.current = candidate;
         activeSnapshotRef.current = snapshot;
-        projectionReadyRef.current = true;
+        projectionStatusRef.current = 'ready';
         flushPendingBehaviorAction(
-          projectionReadyRef,
+          projectionStatusRef,
           pendingBehaviorActionRef,
           behaviorActionConsumerRef
         );
@@ -312,6 +313,13 @@ export function CharacterPlayer({
         staging?.remove();
 
         if (!disposed && currentRevision === revision) {
+          projectionStatusRef.current = 'unavailable';
+          settlePendingBehaviorAction(
+            api,
+            pendingBehaviorActionRef,
+            behaviorPlaybackTokensRef,
+            'failed'
+          );
           if (activePlayerRef.current) {
             setStatus('ready');
           } else {
@@ -330,10 +338,11 @@ export function CharacterPlayer({
 
     const unsubscribe = api.subscribeCharacterEvents(event => {
       if (event.type === 'active-character-changed') {
-        interruptPendingBehaviorAction(
+        settlePendingBehaviorAction(
           api,
           pendingBehaviorActionRef,
-          behaviorPlaybackTokensRef
+          behaviorPlaybackTokensRef,
+          'interrupted'
         );
         finishBehaviorPlayback(
           api,
@@ -364,11 +373,12 @@ export function CharacterPlayer({
     return () => {
       disposed = true;
       ++revision;
-      projectionReadyRef.current = false;
-      interruptPendingBehaviorAction(
+      projectionStatusRef.current = 'unavailable';
+      settlePendingBehaviorAction(
         api,
         pendingBehaviorActionRef,
-        behaviorPlaybackTokensRef
+        behaviorPlaybackTokensRef,
+        'interrupted'
       );
       finishBehaviorPlayback(
         api,
@@ -542,7 +552,7 @@ export function CharacterPlayer({
     };
     behaviorActionConsumerRef.current = consumeBehaviorAction;
     flushPendingBehaviorAction(
-      projectionReadyRef,
+      projectionStatusRef,
       pendingBehaviorActionRef,
       behaviorActionConsumerRef
     );
@@ -557,7 +567,15 @@ export function CharacterPlayer({
 
       if (event.type === 'behavior-action') {
         if (!beginBehaviorPlaybackToken(behaviorPlaybackTokensRef, event.playbackToken)) return;
-        if (!projectionReadyRef.current) {
+        if (projectionStatusRef.current === 'unavailable') {
+          settleBehaviorPlaybackToken(api, behaviorPlaybackTokensRef, {
+            playbackToken: event.playbackToken,
+            actionId: event.actionId,
+            status: 'failed'
+          });
+          return;
+        }
+        if (projectionStatusRef.current === 'loading') {
           const pending = pendingBehaviorActionRef.current;
           if (pending) {
             settleBehaviorPlaybackToken(api, behaviorPlaybackTokensRef, {
@@ -719,22 +737,23 @@ function settleBehaviorPlaybackToken(
 
 /** 投影与消费器均就绪后，仅提交切换窗口内保留的最新行为动作。 */
 function flushPendingBehaviorAction(
-  projectionReadyRef: { current: boolean },
+  projectionStatusRef: { current: CharacterProjectionStatus },
   pendingRef: { current: BehaviorActionEvent | null },
   consumerRef: { current: ((event: BehaviorActionEvent) => void) | null }
 ): void {
   const pending = pendingRef.current;
   const consumer = consumerRef.current;
-  if (!projectionReadyRef.current || !pending || !consumer) return;
+  if (projectionStatusRef.current !== 'ready' || !pending || !consumer) return;
   pendingRef.current = null;
   consumer(pending);
 }
 
-/** 投影归属变化或组件卸载时，排队令牌按统一终态路径中断。 */
-function interruptPendingBehaviorAction(
+/** 投影结束当前装载阶段时，排队令牌通过统一终态路径结算。 */
+function settlePendingBehaviorAction(
   api: MyselfApi,
   pendingRef: { current: BehaviorActionEvent | null },
-  tokenStatesRef: { current: Map<string, BehaviorPlaybackTokenState> }
+  tokenStatesRef: { current: Map<string, BehaviorPlaybackTokenState> },
+  status: CharacterPlaybackLifecycleEvent['status']
 ): void {
   const pending = pendingRef.current;
   if (!pending) return;
@@ -742,7 +761,7 @@ function interruptPendingBehaviorAction(
   settleBehaviorPlaybackToken(api, tokenStatesRef, {
     playbackToken: pending.playbackToken,
     actionId: pending.actionId,
-    status: 'interrupted'
+    status
   });
 }
 
