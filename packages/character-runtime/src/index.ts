@@ -10,3 +10,4 @@ export * from './behavior-contracts';
 export * from './behavior-state-inference';
 export * from './behavior-action-selector';
 export * from './behavior-scheduler';
+export * from './character-behavior-engine';
