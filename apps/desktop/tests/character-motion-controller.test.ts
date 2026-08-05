@@ -8,7 +8,6 @@ import { hitTestCharacterAlpha } from
   '../src/renderer/src/characters/player/character-alpha-hit-tester';
 import { CharacterMotionService } from '../src/main/characters/character-motion-service';
 import {
-  applyIdleMotionIntent,
   bindCharacterMotionWindow,
   startCharacterMotionTimers
 } from '../src/main/characters/character-motion-service';
@@ -713,12 +712,6 @@ describe('Main 角色运动服务', () => {
     service.tick();
     now = 50;
     expect(service.tick().timestampMs).toBe(100);
-  });
-
-  test('idle 生产接线发起封闭 wander 意图', () => {
-    const requestIntent = vi.fn();
-    applyIdleMotionIntent({ requestIntent } as never);
-    expect(requestIntent).toHaveBeenCalledWith('wander');
   });
 
   test('任务活动期间不选择 idle 且不污染最近动作', () => {

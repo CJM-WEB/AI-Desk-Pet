@@ -846,6 +846,24 @@ describe('CharacterStore', () => {
     await expect(restartedStore.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
   });
 
+  test('活动 V2 清单保留发布原文而旧运行接口继续返回 V1 投影', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.setActive('demo', true);
+
+    const internalStore = store as CharacterStore & {
+      getActiveManifestV2?: () => Promise<CharacterManifestV2>;
+    };
+    expect(internalStore.getActiveManifestV2, 'Main 应能读取活动 V2 发布清单')
+      .toBeTypeOf('function');
+    if (!internalStore.getActiveManifestV2) return;
+
+    await expect(internalStore.getActiveManifestV2()).resolves.toEqual(runtime.manifest);
+    await expect(store.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
+  });
+
   test('运行时资源只按当前活动角色 manifest 的资源标识读取', async () => {
     const store = new CharacterStore(charactersDirectory);
     const first = createRuntime(

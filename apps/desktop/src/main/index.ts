@@ -31,13 +31,13 @@ import {
 } from './ipc/register-ipc';
 import { CharacterActions } from './characters/character-actions';
 import { CharacterAssetService } from './characters/character-asset-service';
+import { CharacterBehaviorService } from './characters/character-behavior-service';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
 import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
 import {
-  applyIdleMotionIntent,
   bindCharacterMotionWindow,
   CharacterMotionService,
   startCharacterMotionTimers
@@ -246,10 +246,26 @@ async function createApplicationWindows(): Promise<void> {
     window: pet,
     getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea)
   });
+  const reportCharacterBehaviorError = (
+    code: 'CHARACTER_BEHAVIOR_V2_UNAVAILABLE'
+  ): void => {
+    console.error('更新角色行为失败。', code);
+  };
+  const characterBehavior = new CharacterBehaviorService({
+    store: characterStore,
+    motion: characterMotion,
+    reportError: reportCharacterBehaviorError
+  });
   const petWindowInteraction = new PetWindowInteractionController({
     window: pet,
     screen,
-    motion: characterMotion
+    motion: {
+      beginUserMove: () => {
+        characterBehavior.handleUserInteraction();
+        characterMotion.beginUserMove();
+      },
+      endUserMove: () => characterMotion.endUserMove()
+    }
   });
   const releasePetWindowInteraction = bindPetWindowInteractionLifecycle(
     pet,
@@ -259,16 +275,16 @@ async function createApplicationWindows(): Promise<void> {
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),
     reportPlayedAction: async (playbackToken, actionId) => {
-      const runtime = await characterActions.getCharacterRuntimeSnapshot();
-      if (!runtime) throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
-      characterMotion.confirmIdlePlayback({
+      characterBehavior.applyPlaybackFeedback({
         playbackToken,
         actionId,
-        characterId: runtime.activeCharacterId
+        status: 'started',
+        occurredAtMs: performance.now()
       });
     }
   }, pet.webContents);
   const releaseMotionEvents = characterMotion.subscribe(snapshot => {
+    characterBehavior.handleMovement(snapshot);
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, {
         type: 'snapshot',
@@ -276,56 +292,31 @@ async function createApplicationWindows(): Promise<void> {
       });
     }
   });
-  let idlePollRunning = false;
-  const pollIdle = (): void => {
-    if (idlePollRunning) return;
-    idlePollRunning = true;
-    void characterActions.getCharacterRuntimeSnapshot()
-      .then(runtime => {
-        if (!runtime || pet.isDestroyed() || pet.webContents.isDestroyed()) return;
-        const selection = characterMotion.pollIdle(
-          runtime.manifest,
-          characterMotion.getSnapshot().direction,
-          Math.random
-        );
-        if (!selection) return;
-        applyIdleMotionIntent(characterMotion);
-        const playbackToken = characterMotion.issueIdlePlayback({
-          actionId: selection.action.id,
-          characterId: runtime.activeCharacterId,
-          revision: characterMotion.getSnapshot().revision
-        });
-        pet.webContents.send(ipcChannels.characterMotionEvent, {
-          type: 'idle-action',
-          revision: characterMotion.getSnapshot().revision,
-          actionId: selection.action.id,
-          playbackToken
-        });
-      })
-      .catch(reportCharacterMotionError)
-      .finally(() => {
-        idlePollRunning = false;
-      });
-  };
+  const releaseBehaviorEvents = characterBehavior.subscribe(event => {
+    if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
+      pet.webContents.send(ipcChannels.characterMotionEvent, event);
+    }
+  });
   const motionRuntime = startCharacterMotionTimers({
     tick: () => characterMotion.tick(),
-    poll: pollIdle,
+    poll: () => characterBehavior.handleIdleDue(),
     isDestroyed: () => pet.isDestroyed(),
     tickIntervalMs: 50,
     idleIntervalMs: 500
   });
-  function reportCharacterMotionError(error: unknown): void {
-    console.error('更新角色运动失败。', error);
-  }
   app.once('before-quit', () => {
     releasePetWindowInteraction();
     motionRuntime.destroy();
     releaseMotionEvents();
+    releaseBehaviorEvents();
+    characterBehavior.close();
     releaseMotionWindowEvents();
   });
   pet.once('closed', () => {
     motionRuntime.destroy();
     releaseMotionEvents();
+    releaseBehaviorEvents();
+    characterBehavior.close();
     releaseMotionWindowEvents();
   });
   const reportPetPositionError = (error: unknown): void => {
@@ -457,6 +448,9 @@ async function createApplicationWindows(): Promise<void> {
     { enableE2eProbe: Boolean(e2eBoundary) }
   );
   characterActions.subscribeCharacterEvents(event => {
+    if (event.type === 'active-character-changed') {
+      void characterBehavior.handleActiveCharacterChanged();
+    }
     broadcastCharacterEvent(
       [pet, chat, settings, characterWorkshopWindows.getCurrent()],
       ipcChannels.characterEvent,
@@ -595,7 +589,7 @@ async function createApplicationWindows(): Promise<void> {
       };
     },
     emit: (event: TaskEvent) => {
-      characterMotion.applyTaskEvent(event);
+      characterBehavior.handleTaskEvent(event);
       for (const window of [
         pet,
         chat,
@@ -606,7 +600,8 @@ async function createApplicationWindows(): Promise<void> {
           window.webContents.send(ipcChannels.taskEvent, event);
         }
       }
-    }
+    },
+    emitBehaviorIntent: intent => characterBehavior.handleAgentIntent(intent)
   });
   activeAgentService = agentService;
   registerAgentIpc(ipcMain, agentService);
@@ -640,6 +635,7 @@ async function createApplicationWindows(): Promise<void> {
     loadRenderer(settings, 'settings'),
     ensureCharacterWorkshopWindow()
   ]);
+  await characterBehavior.initialize();
   pet.show();
 }
 

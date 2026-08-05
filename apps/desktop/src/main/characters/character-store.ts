@@ -800,6 +800,17 @@ export class CharacterStore {
     });
   }
 
+  /** 仅供 Main 行为引擎读取发布后的 V2 清单，不经过 Renderer 边界。 */
+  getActiveManifestV2(): Promise<CharacterManifestV2> {
+    return this.enqueue(async () => {
+      const loaded = await this.requireWritableIndex();
+      if (loaded.activeCharacterId === null) {
+        throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
+      }
+      return this.ensurePublishedV2(loaded.activeCharacterId, loaded);
+    });
+  }
+
   readActiveRuntimeAsset(assetId: string): Promise<Uint8Array> {
     return this.enqueue(async () => {
       assertCharacterId(assetId);

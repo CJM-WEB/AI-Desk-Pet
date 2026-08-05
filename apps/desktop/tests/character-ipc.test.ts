@@ -176,6 +176,11 @@ beforeEach(() => {
 });
 
 describe('V2 角色 IPC 边界', () => {
+  test('活动 V2 清单读取只留在 Main 且不暴露给 Preload', () => {
+    expect((exposedApi as unknown as Record<string, unknown>)['getActiveManifestV2'])
+      .toBeUndefined();
+  });
+
   test('草稿保存与发布只接受 V2，运行快照继续接受 V1', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();

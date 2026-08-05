@@ -374,12 +374,6 @@ export function bindCharacterMotionWindow(
   };
 }
 
-export function applyIdleMotionIntent(
-  service: Pick<CharacterMotionService, 'requestIntent'>
-): void {
-  service.requestIntent('wander');
-}
-
 export function startCharacterMotionTimers(options: {
   tick(): void;
   poll(): void;

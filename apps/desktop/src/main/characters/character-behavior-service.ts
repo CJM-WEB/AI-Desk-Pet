@@ -1,0 +1,322 @@
+import { randomUUID } from 'node:crypto';
+import {
+  CharacterBehaviorEngine,
+  type CharacterAgentBehaviorIntent,
+  type CharacterBehaviorDecision,
+  type CharacterBehaviorSignal,
+  type CharacterManifestV1,
+  type CharacterManifestV2,
+  type CharacterPlaybackFeedback
+} from '@myself/character-runtime';
+import type { TaskEvent } from '@myself/shared-types';
+import type { CharacterMotionSnapshot } from '../../shared/character-motion-ipc';
+import type { CharacterMotionService } from './character-motion-service';
+import type { CharacterStore } from './character-store';
+
+export type CharacterBehaviorPlaybackEvent =
+  | {
+      type: 'behavior-action';
+      revision: number;
+      stateId: string;
+      actionId: string;
+      playbackToken: string;
+    }
+  | {
+      type: 'idle-action';
+      revision: number;
+      actionId: string;
+      playbackToken: string;
+    };
+
+type CharacterBehaviorStorePort = Pick<
+  CharacterStore,
+  'getActiveManifestV2' | 'getActive'
+>;
+
+type CharacterBehaviorMotionPort = Pick<
+  CharacterMotionService,
+  | 'getSnapshot'
+  | 'requestIntent'
+  | 'applyTaskEvent'
+  | 'pollIdle'
+  | 'issueIdlePlayback'
+  | 'confirmIdlePlayback'
+>;
+
+export type CharacterBehaviorServiceOptions = {
+  store: CharacterBehaviorStorePort;
+  motion: CharacterBehaviorMotionPort;
+  now?: () => number;
+  random?: () => number;
+  createPlaybackToken?: () => string;
+  idleIntervalMs?: number;
+  reportError?: (code: 'CHARACTER_BEHAVIOR_V2_UNAVAILABLE') => void;
+};
+
+const DEFAULT_IDLE_INTERVAL_MS = 10_000;
+
+/** Main 独占角色行为决策、调度令牌和运动意图的生产权。 */
+export class CharacterBehaviorService {
+  private readonly now: () => number;
+  private readonly random: () => number;
+  private readonly createPlaybackToken: () => string;
+  private readonly idleIntervalMs: number;
+  private readonly listeners = new Set<(event: CharacterBehaviorPlaybackEvent) => void>();
+  private readonly legacyTokens = new Map<string, { actionId: string; characterId: string }>();
+  private engine: CharacterBehaviorEngine | null = null;
+  private manifest: CharacterManifestV2 | null = null;
+  private legacyManifest: CharacterManifestV1 | null = null;
+  private direction: 'left' | 'right' = 'right';
+  private moving = false;
+  private idleBlocked = false;
+  private nextIdleAt: number;
+  private closed = false;
+  private loadRevision = 0;
+
+  constructor(private readonly options: CharacterBehaviorServiceOptions) {
+    this.now = options.now ?? performance.now.bind(performance);
+    this.random = options.random ?? Math.random;
+    this.createPlaybackToken = options.createPlaybackToken ?? randomUUID;
+    this.idleIntervalMs = options.idleIntervalMs ?? DEFAULT_IDLE_INTERVAL_MS;
+    this.nextIdleAt = this.now() + this.idleIntervalMs;
+  }
+
+  async initialize(): Promise<void> {
+    if (this.closed) return;
+    const snapshot = this.options.motion.getSnapshot();
+    this.direction = snapshot.direction;
+    this.moving = snapshot.moving;
+    await this.loadActiveCharacter(false);
+  }
+
+  handleTaskEvent(event: TaskEvent): void {
+    if (this.closed) return;
+    this.options.motion.applyTaskEvent(event);
+    if (event.type === 'pending_action') {
+      this.idleBlocked = true;
+      return;
+    }
+    if (event.type !== 'phase') return;
+
+    const now = this.now();
+    if (event.phase === 'idle' || event.phase === 'cancelled') {
+      this.idleBlocked = false;
+      this.nextIdleAt = now + this.idleIntervalMs;
+      return;
+    }
+    if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
+      this.idleBlocked = true;
+      return;
+    }
+
+    this.idleBlocked = event.phase === 'listening' || event.phase === 'thinking';
+    this.nextIdleAt = now + this.idleIntervalMs;
+    const signal = this.taskSignal(event.phase, now);
+    if (signal) this.dispatch(signal);
+  }
+
+  handleAgentIntent(intent: CharacterAgentBehaviorIntent): void {
+    if (this.closed || !this.engine) return;
+    this.dispatch({ type: 'task', phase: 'start', occurredAtMs: this.now() }, intent);
+  }
+
+  handleMovement(snapshot: CharacterMotionSnapshot): void {
+    if (this.closed) return;
+    this.direction = snapshot.direction;
+    if (snapshot.moving === this.moving) return;
+    this.moving = snapshot.moving;
+    const now = this.now();
+    this.nextIdleAt = now + this.idleIntervalMs;
+    this.dispatch({
+      type: 'movement',
+      active: snapshot.moving,
+      occurredAtMs: now
+    });
+  }
+
+  handleUserInteraction(): void {
+    if (this.closed) return;
+    const now = this.now();
+    this.nextIdleAt = now + this.idleIntervalMs;
+    this.dispatch({ type: 'user-interaction', occurredAtMs: now });
+  }
+
+  handleIdleDue(): void {
+    if (this.closed || this.idleBlocked || this.moving) return;
+    const now = this.now();
+    if (now < this.nextIdleAt) return;
+    this.nextIdleAt = now + this.idleIntervalMs;
+
+    if (this.engine) {
+      this.dispatch({ type: 'idle-due', occurredAtMs: now });
+      return;
+    }
+    this.pollLegacyIdle();
+  }
+
+  applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void {
+    if (this.closed) return;
+    if (this.engine) {
+      this.publish(this.engine.applyFeedback(feedback));
+      return;
+    }
+    if (feedback.status !== 'started') return;
+    const pending = this.legacyTokens.get(feedback.playbackToken);
+    if (!pending || pending.actionId !== feedback.actionId) {
+      throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    }
+    this.options.motion.confirmIdlePlayback({
+      playbackToken: feedback.playbackToken,
+      actionId: feedback.actionId,
+      characterId: pending.characterId
+    });
+    this.legacyTokens.delete(feedback.playbackToken);
+  }
+
+  handleActiveCharacterChanged(): Promise<void> {
+    return this.loadActiveCharacter(true);
+  }
+
+  subscribe(listener: (event: CharacterBehaviorPlaybackEvent) => void): () => void {
+    if (this.closed) return () => undefined;
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.loadRevision += 1;
+    this.engine = null;
+    this.manifest = null;
+    this.legacyManifest = null;
+    this.legacyTokens.clear();
+    this.listeners.clear();
+  }
+
+  /** 先完整读取候选清单，成功后才替换当前引擎和令牌。 */
+  private async loadActiveCharacter(replacing: boolean): Promise<void> {
+    const revision = ++this.loadRevision;
+    try {
+      const manifest = await this.options.store.getActiveManifestV2();
+      if (this.closed || revision !== this.loadRevision) return;
+      const previous = this.engine;
+      this.manifest = manifest;
+      this.legacyManifest = null;
+      this.legacyTokens.clear();
+      if (replacing && previous) {
+        this.publish(previous.replaceCharacter(manifest, manifest.defaultSkinId));
+        this.engine = previous;
+      } else {
+        this.engine = new CharacterBehaviorEngine({
+          manifest,
+          skinId: manifest.defaultSkinId,
+          now: this.now,
+          random: this.random,
+          createPlaybackToken: this.createPlaybackToken
+        });
+        this.dispatch({ type: 'idle-due', occurredAtMs: this.now() });
+      }
+      this.nextIdleAt = this.now() + this.idleIntervalMs;
+    } catch {
+      if (this.closed || revision !== this.loadRevision) return;
+      this.options.reportError?.('CHARACTER_BEHAVIOR_V2_UNAVAILABLE');
+      await this.activateLegacyFallback(revision);
+    }
+  }
+
+  /** V2 不可用时仅恢复现有 V1 待机路径，不发出中断旧播放的事件。 */
+  private async activateLegacyFallback(revision: number): Promise<void> {
+    try {
+      const legacyManifest = await this.options.store.getActive();
+      if (this.closed || revision !== this.loadRevision) return;
+      this.engine = null;
+      this.manifest = null;
+      this.legacyManifest = legacyManifest;
+      this.legacyTokens.clear();
+      this.nextIdleAt = this.now() + this.idleIntervalMs;
+    } catch {
+      // 保留播放画面，但撤销旧角色的 Main 决策权，避免切换后继续生成旧动作。
+      this.engine = null;
+      this.manifest = null;
+      this.legacyManifest = null;
+      this.legacyTokens.clear();
+    }
+  }
+
+  private taskSignal(
+    phase: Extract<TaskEvent, { type: 'phase' }>['phase'],
+    occurredAtMs: number
+  ): CharacterBehaviorSignal | null {
+    if (phase === 'listening') return { type: 'listening', active: true, occurredAtMs };
+    if (phase === 'thinking') return { type: 'thinking', active: true, occurredAtMs };
+    if (phase === 'success') return { type: 'task', phase: 'success', occurredAtMs };
+    if (phase === 'error') return { type: 'task', phase: 'failure', occurredAtMs };
+    return null;
+  }
+
+  private dispatch(
+    signal: CharacterBehaviorSignal,
+    agentIntent?: CharacterAgentBehaviorIntent
+  ): void {
+    if (!this.engine) return;
+    this.publish(this.engine.dispatch({
+      signal,
+      direction: this.direction,
+      ...(agentIntent === undefined ? {} : { agentIntent })
+    }));
+  }
+
+  /** 只把已通过调度器的 play effect 转为 Main 播放事件。 */
+  private publish(decision: CharacterBehaviorDecision): void {
+    for (const effect of decision.effects) {
+      if (effect.type !== 'play') continue;
+      const event: CharacterBehaviorPlaybackEvent = {
+        type: 'behavior-action',
+        revision: decision.snapshot.schedule.revision,
+        stateId: effect.action.stateId,
+        actionId: effect.action.actionId,
+        playbackToken: effect.action.playbackToken
+      };
+      const action = this.manifest?.actions.find(
+        candidate => candidate.id === effect.action.actionId
+      );
+      if (action?.semantic === 'move') this.options.motion.requestIntent('wander');
+      this.emit(event);
+    }
+  }
+
+  private pollLegacyIdle(): void {
+    const manifest = this.legacyManifest;
+    if (!manifest) return;
+    const selection = this.options.motion.pollIdle(manifest, this.direction, this.random);
+    if (!selection) return;
+    this.options.motion.requestIntent('wander');
+    const snapshot = this.options.motion.getSnapshot();
+    const playbackToken = this.options.motion.issueIdlePlayback({
+      actionId: selection.action.id,
+      characterId: manifest.id,
+      revision: snapshot.revision
+    });
+    this.legacyTokens.set(playbackToken, {
+      actionId: selection.action.id,
+      characterId: manifest.id
+    });
+    this.emit({
+      type: 'idle-action',
+      revision: snapshot.revision,
+      actionId: selection.action.id,
+      playbackToken
+    });
+  }
+
+  private emit(event: CharacterBehaviorPlaybackEvent): void {
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(event);
+      } catch {
+        // 单个播放观察者失败不得改变 Main 已提交的行为决策。
+      }
+    }
+  }
+}
