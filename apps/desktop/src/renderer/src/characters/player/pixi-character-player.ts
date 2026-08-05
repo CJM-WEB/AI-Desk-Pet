@@ -16,14 +16,23 @@ import {
 
 export interface CharacterPlayerPort {
   load(manifest: CharacterManifestV1, assets: CharacterAssetBundle): Promise<void>;
-  play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void;
+  play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): number | void;
   setDirection(direction: 'left' | 'right'): void;
   getAnchor(name: keyof AnchorSet): AnchorPoint | null;
   getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
   hitTest(point: { x: number; y: number }, threshold?: number): boolean;
   subscribeHitRegion(listener: () => void): () => void;
+  subscribePlaybackLifecycle?(
+    listener: (event: CharacterPlaybackLifecycleEvent) => void
+  ): () => void;
   destroy(): void;
 }
+
+export type CharacterPlaybackLifecycleEvent = {
+  playbackId: number;
+  actionId: string;
+  status: 'completed' | 'interrupted' | 'failed';
+};
 
 export type CharacterVisualAssets = ReadonlyMap<string, string>;
 
@@ -50,6 +59,7 @@ export interface PixiCharacterScene {
   } | null;
   getHitSnapshot?(): CharacterHitSnapshot | null;
   subscribeFrame(listener: () => void): () => void;
+  subscribeActionComplete?(listener: () => void): () => void;
   resize?(width: number, height: number): void;
   destroy(): void;
 }
@@ -73,13 +83,26 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   private direction: 'left' | 'right' = 'right';
   private currentSelection: ActionSelectionResult | null = null;
   private currentMotionMode: CharacterMotionMode | null = null;
+  private nextPlaybackId = 0;
+  private activePlayback: {
+    playbackId: number;
+    actionId: string;
+    loop: boolean;
+  } | null = null;
   private readonly hitRegionListeners = new Set<() => void>();
+  private readonly playbackLifecycleListeners = new Set<
+    (event: CharacterPlaybackLifecycleEvent) => void
+  >();
   private readonly unsubscribeSceneFrame: (() => void) | null;
+  private readonly unsubscribeSceneComplete: (() => void) | null;
 
   constructor(private readonly scene: PixiCharacterScene | LegacyPixiCharacterScene) {
     this.unsubscribeSceneFrame = isLegacyScene(scene)
       ? null
       : scene.subscribeFrame(() => this.notifyHitRegion());
+    this.unsubscribeSceneComplete = isLegacyScene(scene)
+      ? null
+      : scene.subscribeActionComplete?.(() => this.completeActivePlayback()) ?? null;
   }
 
   static async create(
@@ -108,20 +131,33 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     return this.scene.loadAssets(visualAssets).then(() => this.notifyHitRegion());
   }
 
-  play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): void {
+  play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): number {
+    this.finishActivePlayback('interrupted');
+    const playbackId = ++this.nextPlaybackId;
+    this.activePlayback = {
+      playbackId,
+      actionId: selection.action.id,
+      loop: selection.action.loop
+    };
     this.currentSelection = selection;
     this.currentMotionMode = motionMode;
-    if (isLegacyScene(this.scene)) {
-      this.scene.show(selection, motionMode);
-      return;
+    try {
+      if (isLegacyScene(this.scene)) {
+        this.scene.show(selection, motionMode);
+      } else {
+        this.scene.showAction(selection.action, {
+          direction: this.direction,
+          motionMode,
+          speed: 1,
+          loop: selection.action.loop
+        });
+        this.notifyHitRegion();
+      }
+    } catch (error) {
+      this.finishActivePlayback('failed');
+      throw error;
     }
-    this.scene.showAction(selection.action, {
-      direction: this.direction,
-      motionMode,
-      speed: 1,
-      loop: selection.action.loop
-    });
-    this.notifyHitRegion();
+    return playbackId;
   }
 
   setDirection(direction: 'left' | 'right'): void {
@@ -173,6 +209,15 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     return () => this.hitRegionListeners.delete(listener);
   }
 
+  /** 生命周期订阅只暴露播放编号、动作标识与收敛状态。 */
+  subscribePlaybackLifecycle(
+    listener: (event: CharacterPlaybackLifecycleEvent) => void
+  ): () => void {
+    if (this.destroyed) return () => undefined;
+    this.playbackLifecycleListeners.add(listener);
+    return () => this.playbackLifecycleListeners.delete(listener);
+  }
+
   isTickerRunning(): boolean {
     if (isLegacyScene(this.scene)) return this.scene.isTickerRunning();
     return hasTickerState(this.scene) && this.scene.isTickerRunning();
@@ -180,9 +225,12 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
 
   destroy(): void {
     if (this.destroyed) return;
+    this.finishActivePlayback('interrupted');
     this.destroyed = true;
     this.unsubscribeSceneFrame?.();
+    this.unsubscribeSceneComplete?.();
     this.hitRegionListeners.clear();
+    this.playbackLifecycleListeners.clear();
     if (isLegacyScene(this.scene)) {
       try {
         this.scene.stop();
@@ -197,6 +245,25 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   private notifyHitRegion(): void {
     if (this.destroyed) return;
     for (const listener of this.hitRegionListeners) listener();
+  }
+
+  private completeActivePlayback(): void {
+    if (this.activePlayback?.loop) return;
+    this.finishActivePlayback('completed');
+  }
+
+  private finishActivePlayback(
+    status: CharacterPlaybackLifecycleEvent['status']
+  ): void {
+    const playback = this.activePlayback;
+    if (!playback) return;
+    this.activePlayback = null;
+    const event: CharacterPlaybackLifecycleEvent = {
+      playbackId: playback.playbackId,
+      actionId: playback.actionId,
+      status
+    };
+    for (const listener of this.playbackLifecycleListeners) listener(event);
   }
 }
 
@@ -282,6 +349,7 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
   private loadRevision = 0;
   private destroyed = false;
   private readonly frameListeners = new Set<() => void>();
+  private readonly actionCompleteListeners = new Set<() => void>();
 
   private constructor(
     private readonly pixi: PixiModule,
@@ -392,6 +460,9 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     );
     this.sprite = sprite;
     sprite.onFrameChange = () => this.notifyFrameListeners();
+    if (!options.loop) {
+      sprite.onComplete = () => this.notifyActionCompleteListeners();
+    }
     this.application.stage.addChild(sprite);
     this.applyLayout();
     const frameIndex = clamp(
@@ -408,6 +479,13 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     } else {
       sprite.gotoAndStop(frameIndex);
       this.application.ticker.stop();
+      if (options.motionMode === 'animated' && !options.loop) {
+        queueMicrotask(() => {
+          if (!this.destroyed && this.sprite === sprite) {
+            this.notifyActionCompleteListeners();
+          }
+        });
+      }
     }
     this.application.render();
   }
@@ -457,6 +535,11 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     return () => this.frameListeners.delete(listener);
   }
 
+  subscribeActionComplete(listener: () => void): () => void {
+    this.actionCompleteListeners.add(listener);
+    return () => this.actionCompleteListeners.delete(listener);
+  }
+
   /** 同步渲染器内部像素尺寸，并重新应用正式布局。 */
   resize(width: number, height: number): void {
     if (this.destroyed) return;
@@ -493,6 +576,7 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     this.releaseBaseTextures();
     this.alphaMasks.clear();
     this.frameListeners.clear();
+    this.actionCompleteListeners.clear();
     this.application.destroy({ removeView: true }, { children: true });
   }
 
@@ -517,6 +601,7 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
     this.stop();
     if (this.sprite) {
       delete this.sprite.onFrameChange;
+      delete this.sprite.onComplete;
       this.application.stage.removeChild(this.sprite);
       this.sprite.destroy();
       this.sprite = null;
@@ -533,6 +618,10 @@ class BrowserPixiCharacterScene implements PixiCharacterScene {
 
   private notifyFrameListeners(): void {
     for (const listener of this.frameListeners) listener();
+  }
+
+  private notifyActionCompleteListeners(): void {
+    for (const listener of this.actionCompleteListeners) listener();
   }
 }
 

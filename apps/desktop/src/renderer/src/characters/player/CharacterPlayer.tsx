@@ -22,6 +22,7 @@ import {
 } from './character-resource-cache';
 import {
   PixiCharacterPlayer,
+  type CharacterPlaybackLifecycleEvent,
   type CharacterPlayerPort
 } from './pixi-character-player';
 import {
@@ -72,6 +73,14 @@ export type CharacterMotionPresentation = {
   carrying: boolean;
 };
 
+type ActiveBehaviorPlayback = {
+  playbackToken: string;
+  actionId: string;
+  player: CharacterPlayerPort;
+  playerPlaybackId: number | null;
+  terminal: boolean;
+};
+
 const MAX_RUNTIME_LOAD_ATTEMPTS = 2;
 const createDefaultPlayer: CharacterPlayerPortFactory = container => (
   PixiCharacterPlayer.create(container)
@@ -99,6 +108,8 @@ export function CharacterPlayer({
   const hostRef = useRef<HTMLSpanElement>(null);
   const activePlayerRef = useRef<CharacterPlayerPort | null>(null);
   const activeSnapshotRef = useRef<CharacterRuntimeSnapshot | null>(null);
+  const activeBehaviorPlaybackRef = useRef<ActiveBehaviorPlayback | null>(null);
+  const actionRevisionRef = useRef(-1);
   const activeHitTestPortRef = useRef<CharacterHitTestPort | null>(null);
   const hitTestPortOwnerRef = useRef<
     CharacterPlayerProps['onHitTestPortChange']
@@ -149,6 +160,7 @@ export function CharacterPlayer({
     let revision = 0;
     const candidates = new Set<CharacterPlayerPort>();
     const destroyedPlayers = new WeakSet<CharacterPlayerPort>();
+    const playbackSubscriptions = new WeakMap<CharacterPlayerPort, () => void>();
     const loader = loadBundle ?? createRuntimeAssetLoader(api);
     const cache = new CharacterResourceCache(loader, destroyCharacterAssetBundle);
     const placeholder = document.createElement('span');
@@ -166,7 +178,25 @@ export function CharacterPlayer({
     const destroyPlayerOnce = (player: CharacterPlayerPort): void => {
       if (destroyedPlayers.has(player)) return;
       destroyedPlayers.add(player);
-      player.destroy();
+      try {
+        player.destroy();
+      } finally {
+        playbackSubscriptions.get(player)?.();
+      }
+    };
+
+    /** 只接收播放器内部已归属到当前令牌的终态，忽略旧播放实例的迟到事件。 */
+    const subscribePlaybackLifecycle = (player: CharacterPlayerPort): void => {
+      if (typeof player.subscribePlaybackLifecycle !== 'function') return;
+      playbackSubscriptions.set(player, player.subscribePlaybackLifecycle(event => {
+        const playback = activeBehaviorPlaybackRef.current;
+        if (
+          !playback
+          || playback.player !== player
+          || playback.playerPlaybackId !== event.playbackId
+        ) return;
+        finishBehaviorPlayback(api, activeBehaviorPlaybackRef, event.status);
+      }));
     };
 
     const refresh = async (forceReload = false): Promise<void> => {
@@ -208,6 +238,7 @@ export function CharacterPlayer({
         host.appendChild(staging);
         candidate = await createPlayer(staging);
         candidates.add(candidate);
+        subscribePlaybackLifecycle(candidate);
         if (disposed || currentRevision !== revision) {
           destroyPlayerOnce(candidate);
           candidates.delete(candidate);
@@ -278,6 +309,8 @@ export function CharacterPlayer({
 
     const unsubscribe = api.subscribeCharacterEvents(event => {
       if (event.type === 'active-character-changed') {
+        finishBehaviorPlayback(api, activeBehaviorPlaybackRef, 'interrupted');
+        actionRevisionRef.current = -1;
         void refresh(true);
         return;
       }
@@ -286,6 +319,7 @@ export function CharacterPlayer({
         && event.ok
         && event.characterId === activeSnapshotRef.current?.activeCharacterId
       ) {
+        finishBehaviorPlayback(api, activeBehaviorPlaybackRef, 'interrupted');
         void refresh(true);
       }
     });
@@ -294,6 +328,7 @@ export function CharacterPlayer({
     return () => {
       disposed = true;
       ++revision;
+      finishBehaviorPlayback(api, activeBehaviorPlaybackRef, 'interrupted');
       publishHitTestPort(null);
       unsubscribe();
       cache.destroy();
@@ -400,17 +435,63 @@ export function CharacterPlayer({
       animationFrame = scheduleAnimationFrame(renderMotion);
     };
 
-    let idleRevision = -1;
     const unsubscribe = api.subscribeCharacterMotion(event => {
       if (event.type === 'snapshot') {
         acceptSnapshot(event.snapshot);
         return;
       }
-      if (event.revision <= idleRevision) return;
-      idleRevision = event.revision;
+      if (event.revision <= actionRevisionRef.current) return;
+      actionRevisionRef.current = event.revision;
       const player = activePlayerRef.current;
       const snapshot = activeSnapshotRef.current;
       const playback = playbackRef.current;
+
+      if (event.type === 'behavior-action') {
+        finishBehaviorPlayback(api, activeBehaviorPlaybackRef, 'interrupted');
+        // V2 状态 ID 可能在 V1 投影时按语义改名；始终以投影内 actionId 为播放权威。
+        const states = snapshot?.manifest.states ?? [];
+        const state = states.find(candidate => (
+          candidate.id === event.stateId
+          && candidate.actions.some(action => action.id === event.actionId)
+        )) ?? states.find(candidate => (
+          candidate.actions.some(action => action.id === event.actionId)
+        ));
+        const action = state?.actions.find(candidate => candidate.id === event.actionId);
+        if (!player || !snapshot || !state || !action) {
+          reportActionFeedback(api, {
+            playbackToken: event.playbackToken,
+            actionId: event.actionId,
+            status: 'failed'
+          });
+          return;
+        }
+
+        const current: ActiveBehaviorPlayback = {
+          playbackToken: event.playbackToken,
+          actionId: event.actionId,
+          player,
+          playerPlaybackId: null,
+          terminal: false
+        };
+        activeBehaviorPlaybackRef.current = current;
+        try {
+          const playbackId = player.play({
+            stateId: state.id,
+            action,
+            reason: 'matched'
+          }, playback.motionMode);
+          current.playerPlaybackId = typeof playbackId === 'number' ? playbackId : null;
+          reportActionFeedback(api, {
+            playbackToken: current.playbackToken,
+            actionId: current.actionId,
+            status: 'started'
+          });
+        } catch {
+          finishBehaviorPlayback(api, activeBehaviorPlaybackRef, 'failed');
+        }
+        return;
+      }
+
       if (!player || !snapshot || playback.stateId !== 'idle') return;
       const action = snapshot.manifest.states
         .find(state => state.id === 'idle')
@@ -492,6 +573,32 @@ function reportPlayedAction(
   if (typeof api.reportCharacterActionPlayed !== 'function') return;
   void api.reportCharacterActionPlayed(playbackToken, actionId).catch(() => {
     // 播放回报失败不影响当前画面，Main 会拒绝未知动作标识。
+  });
+}
+
+function reportActionFeedback(
+  api: MyselfApi,
+  feedback: Parameters<MyselfApi['reportCharacterActionFeedback']>[0]
+): void {
+  if (typeof api.reportCharacterActionFeedback !== 'function') return;
+  void api.reportCharacterActionFeedback(feedback).catch(() => {
+    // 生命周期回报失败不影响当前画面，Main 会继续按令牌超时规则收敛。
+  });
+}
+
+/** 每个令牌只允许一次终态，started 不会提前关闭后续自然完成回报。 */
+function finishBehaviorPlayback(
+  api: MyselfApi,
+  playbackRef: { current: ActiveBehaviorPlayback | null },
+  status: CharacterPlaybackLifecycleEvent['status']
+): void {
+  const playback = playbackRef.current;
+  if (!playback || playback.terminal) return;
+  playback.terminal = true;
+  reportActionFeedback(api, {
+    playbackToken: playback.playbackToken,
+    actionId: playback.actionId,
+    status
   });
 }
 

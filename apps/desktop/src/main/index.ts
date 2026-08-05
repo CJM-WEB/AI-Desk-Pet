@@ -274,11 +274,9 @@ async function createApplicationWindows(): Promise<void> {
   const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion);
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),
-    reportPlayedAction: async (playbackToken, actionId) => {
+    applyPlaybackFeedback: feedback => {
       characterBehavior.applyPlaybackFeedback({
-        playbackToken,
-        actionId,
-        status: 'started',
+        ...feedback,
         occurredAtMs: performance.now()
       });
     }

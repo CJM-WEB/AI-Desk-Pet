@@ -35,9 +35,11 @@ import {
 import type { CharacterDraftV2 } from '@myself/character-runtime';
 import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
 import {
+  characterActionFeedbackInputSchema,
   characterMotionEmptyInputSchema,
   characterActionPlayedInputSchema,
   characterMotionSnapshotResultSchema,
+  type CharacterActionFeedbackInput,
   type CharacterMotionSnapshot
 } from '../../shared/character-motion-ipc';
 
@@ -392,7 +394,7 @@ export interface CharacterIpcDialogs {
 
 export interface CharacterMotionIpcService {
   getSnapshot(): CharacterMotionSnapshot;
-  reportPlayedAction(playbackToken: string, actionId: string): Promise<void>;
+  applyPlaybackFeedback(feedback: CharacterActionFeedbackInput): void | Promise<void>;
 }
 
 function characterInputError(): Error & { code: string } {
@@ -613,11 +615,17 @@ export function registerCharacterMotionIpc(
       if (event.sender !== petWebContents) {
         throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
       }
-      const { playbackToken, actionId } = parseCharacterInput(
-        characterActionPlayedInputSchema,
+      const report = parseCharacterInput(
+        z.union([
+          characterActionFeedbackInputSchema,
+          characterActionPlayedInputSchema
+        ]),
         raw
       );
-      await service.reportPlayedAction(playbackToken, actionId);
+      await service.applyPlaybackFeedback({
+        ...report,
+        status: 'status' in report ? report.status : 'started'
+      });
       return { ok: true };
     }
   );

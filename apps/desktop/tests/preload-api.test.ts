@@ -77,6 +77,21 @@ describe('preload 清除本地数据转发', () => {
 });
 
 describe('受限桌宠窗口交互 preload API', () => {
+  test('播放反馈只映射固定令牌、动作和状态字段', async () => {
+    await exposedApi?.reportCharacterActionFeedback({
+      playbackToken: 'behavior-token-2',
+      actionId: 'thinking-loop',
+      status: 'completed',
+      path: 'C:\\private'
+    } as never);
+
+    expect(invoke).toHaveBeenCalledWith(ipcChannels.characterActionPlayed, {
+      playbackToken: 'behavior-token-2',
+      actionId: 'thinking-loop',
+      status: 'completed'
+    });
+  });
+
   test('固定命令与只读探针只映射到固定通道和固定负载', async () => {
     await exposedApi?.setPetMousePassthrough(true);
     await exposedApi?.beginPetDrag();

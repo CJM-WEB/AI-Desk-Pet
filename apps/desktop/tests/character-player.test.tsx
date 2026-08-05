@@ -15,6 +15,7 @@ import {
   fitCharacterFrames,
   PixiCharacterPlayer,
   resolveDirectionalAnchor,
+  type CharacterPlaybackLifecycleEvent,
   type PixiCharacterScene
 } from '../src/renderer/src/characters/player/pixi-character-player';
 import {
@@ -23,6 +24,7 @@ import {
   type CharacterPlayerPortFactory
 } from '../src/renderer/src/characters/player/CharacterPlayer';
 import type { MyselfApi } from '../src/shared/myself-api';
+import type { CharacterMotionEvent } from '../src/shared/character-motion-ipc';
 
 function manifest(characterId: string): CharacterManifestV1 {
   return {
@@ -352,6 +354,241 @@ describe('PixiJS 角色播放器端口', () => {
 });
 
 describe('角色播放器组件', () => {
+  function behaviorFixture(options?: { failActionId?: string }) {
+    const currentManifest = manifest('character-a');
+    currentManifest.states.push({
+      id: 'thinking',
+      kind: 'core',
+      actions: [{
+        ...currentManifest.states[0]!.actions[0]!,
+        id: 'thinking-once',
+        name: '思考一次',
+        loop: false
+      }]
+    });
+    let motionListener: ((event: CharacterMotionEvent) => void) | undefined;
+    let characterListener: ((event: {
+      type: 'active-character-changed';
+      characterId: string;
+    }) => void) | undefined;
+    let lifecycleListener: ((event: CharacterPlaybackLifecycleEvent) => void) | undefined;
+    let nextPlaybackId = 0;
+    const reportCharacterActionFeedback = vi.fn(async () => undefined);
+    const player = {
+      load: vi.fn().mockResolvedValue(undefined),
+      play: vi.fn((selection: ActionSelectionResult) => {
+        const playbackId = ++nextPlaybackId;
+        if (selection.action.id === options?.failActionId) {
+          throw new Error('CHARACTER_RUNTIME_ASSET_MISSING');
+        }
+        return playbackId;
+      }),
+      setDirection: vi.fn(),
+      getAnchor: vi.fn().mockReturnValue(null),
+      subscribePlaybackLifecycle: vi.fn(listener => {
+        lifecycleListener = listener;
+        return vi.fn();
+      }),
+      destroy: vi.fn()
+    };
+    const api = {
+      getCharacterRuntimeSnapshot: vi.fn(async () => ({
+        activeCharacterId: currentManifest.id,
+        manifest: currentManifest
+      })),
+      subscribeCharacterEvents: vi.fn(listener => {
+        characterListener = listener;
+        return vi.fn();
+      }),
+      getCharacterMotionSnapshot: vi.fn(async () => ({
+        revision: 1,
+        timestampMs: 0,
+        position: { x: 0, y: 0 },
+        target: { x: 0, y: 0 },
+        direction: 'right',
+        moving: false,
+        carrying: false
+      })),
+      subscribeCharacterMotion: vi.fn(listener => {
+        motionListener = listener;
+        return vi.fn();
+      }),
+      reportCharacterActionFeedback
+    } as unknown as MyselfApi;
+    const rendered = render(
+      <CharacterPlayer
+        stateId="idle"
+        motionMode="animated"
+        api={api}
+        createPlayer={async () => player}
+        loadBundle={async () => bundle('character-a')}
+      />
+    );
+    return {
+      api,
+      characterEvent: (event: Parameters<NonNullable<typeof characterListener>>[0]) => (
+        characterListener?.(event)
+      ),
+      lifecycle: (event: CharacterPlaybackLifecycleEvent) => lifecycleListener?.(event),
+      motion: (event: CharacterMotionEvent) => motionListener?.(event),
+      player,
+      rendered,
+      reportCharacterActionFeedback
+    };
+  }
+
+  test('行为动作播放成功后报告 started，自然结束只报告一次 completed', async () => {
+    const fixture = behaviorFixture();
+    await waitFor(() => expect(fixture.player.play).toHaveBeenCalled());
+
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'thinking-state',
+      actionId: 'thinking-once',
+      playbackToken: 'behavior-token-2'
+    }));
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-2',
+      actionId: 'thinking-once',
+      status: 'started'
+    }));
+    const playbackId = fixture.player.play.mock.results.at(-1)?.value as number;
+    act(() => {
+      fixture.lifecycle({ playbackId, actionId: 'thinking-once', status: 'completed' });
+      fixture.lifecycle({ playbackId, actionId: 'thinking-once', status: 'completed' });
+    });
+
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback.mock.calls).toEqual([
+      [{ playbackToken: 'behavior-token-2', actionId: 'thinking-once', status: 'started' }],
+      [{ playbackToken: 'behavior-token-2', actionId: 'thinking-once', status: 'completed' }]
+    ]));
+    fixture.rendered.unmount();
+  });
+
+  test('新令牌中断旧令牌，旧 revision 与重复事件不会再次播放', async () => {
+    const fixture = behaviorFixture();
+    await waitFor(() => expect(fixture.player.play).toHaveBeenCalled());
+    const first = {
+      type: 'behavior-action' as const,
+      revision: 3,
+      stateId: 'thinking',
+      actionId: 'thinking-once',
+      playbackToken: 'behavior-token-3'
+    };
+    act(() => {
+      fixture.motion(first);
+      fixture.motion(first);
+      fixture.motion({ ...first, revision: 2, playbackToken: 'behavior-token-old' });
+      fixture.motion({ ...first, revision: 4, playbackToken: 'behavior-token-4' });
+    });
+
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback.mock.calls).toEqual([
+      [{ playbackToken: 'behavior-token-3', actionId: 'thinking-once', status: 'started' }],
+      [{ playbackToken: 'behavior-token-3', actionId: 'thinking-once', status: 'interrupted' }],
+      [{ playbackToken: 'behavior-token-4', actionId: 'thinking-once', status: 'started' }]
+    ]));
+    expect(fixture.player.play).toHaveBeenCalledTimes(3);
+    fixture.rendered.unmount();
+  });
+
+  test('当前 V1 投影中未知动作直接报告 failed 且不调用播放器', async () => {
+    const fixture = behaviorFixture();
+    await waitFor(() => expect(fixture.player.play).toHaveBeenCalledOnce());
+
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'thinking',
+      actionId: 'unknown-action',
+      playbackToken: 'behavior-token-2'
+    }));
+
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-2',
+      actionId: 'unknown-action',
+      status: 'failed'
+    }));
+    expect(fixture.player.play).toHaveBeenCalledOnce();
+    fixture.rendered.unmount();
+  });
+
+  test('播放器异常只报告 failed，不跨 IPC 传递错误文本', async () => {
+    const fixture = behaviorFixture({ failActionId: 'thinking-once' });
+    await waitFor(() => expect(fixture.player.play).toHaveBeenCalledOnce());
+
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'thinking',
+      actionId: 'thinking-once',
+      playbackToken: 'behavior-token-2'
+    }));
+
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-2',
+      actionId: 'thinking-once',
+      status: 'failed'
+    }));
+    expect(fixture.reportCharacterActionFeedback.mock.calls[0]?.[0])
+      .not.toHaveProperty('error');
+    fixture.rendered.unmount();
+  });
+
+  test('活动角色切换会把当前令牌收敛为 interrupted', async () => {
+    const fixture = behaviorFixture();
+    await waitFor(() => expect(fixture.player.play).toHaveBeenCalled());
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'thinking',
+      actionId: 'thinking-once',
+      playbackToken: 'behavior-token-2'
+    }));
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-2',
+      actionId: 'thinking-once',
+      status: 'started'
+    }));
+
+    act(() => fixture.characterEvent({
+      type: 'active-character-changed',
+      characterId: 'character-b'
+    }));
+
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-2',
+      actionId: 'thinking-once',
+      status: 'interrupted'
+    }));
+    fixture.rendered.unmount();
+  });
+
+  test('组件卸载会把当前令牌收敛为 interrupted', async () => {
+    const fixture = behaviorFixture();
+    await waitFor(() => expect(fixture.player.play).toHaveBeenCalled());
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'thinking',
+      actionId: 'thinking-once',
+      playbackToken: 'behavior-token-2'
+    }));
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-2',
+      actionId: 'thinking-once',
+      status: 'started'
+    }));
+
+    fixture.rendered.unmount();
+
+    expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-2',
+      actionId: 'thinking-once',
+      status: 'interrupted'
+    });
+  });
+
   test('命中回调身份变化时立即交接当前端口且卸载只撤销新所有者', async () => {
     const currentManifest = manifest('character-a');
     const subscribeCharacterEvents = vi.fn(() => vi.fn());

@@ -51,6 +51,136 @@ function manifest(): CharacterManifestV1 {
 }
 
 describe('共享 Pixi 角色动作场景', () => {
+  function lifecycleScene(options?: { failPlay?: boolean }) {
+    let complete: (() => void) | undefined;
+    const unsubscribeComplete = vi.fn();
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
+      showAction: vi.fn(() => {
+        if (options?.failPlay) throw new Error('CHARACTER_RUNTIME_ASSET_MISSING');
+      }),
+      getCurrentFrame: vi.fn().mockReturnValue(null),
+      subscribeFrame: vi.fn(() => vi.fn()),
+      subscribeActionComplete: vi.fn(listener => {
+        complete = listener;
+        return unsubscribeComplete;
+      }),
+      destroy: vi.fn()
+    };
+    return { complete: () => complete?.(), scene, unsubscribeComplete };
+  }
+
+  test('非循环动作自然结束时只报告一次 completed', () => {
+    const fixture = lifecycleScene();
+    const currentManifest = manifest();
+    currentManifest.states[0]!.actions[0]!.loop = false;
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+
+    const playbackId = player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+    fixture.complete();
+    fixture.complete();
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({
+      playbackId,
+      actionId: 'idle',
+      status: 'completed'
+    });
+  });
+
+  test('循环动作不会把场景完成信号报告为自然完成', () => {
+    const fixture = lifecycleScene();
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+
+    player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+    fixture.complete();
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test('新动作替换当前播放时报告旧播放 interrupted', () => {
+    const fixture = lifecycleScene();
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+    const firstPlaybackId = player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+
+    player.play({
+      stateId: 'idle',
+      action: { ...currentManifest.states[0]!.actions[0]!, id: 'idle-next' },
+      reason: 'matched'
+    }, 'animated');
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({
+      playbackId: firstPlaybackId,
+      actionId: 'idle',
+      status: 'interrupted'
+    });
+  });
+
+  test('场景展示资源异常时报告 failed 且仍向调用方抛出稳定错误', () => {
+    const fixture = lifecycleScene({ failPlay: true });
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+
+    expect(() => player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated')).toThrow('CHARACTER_RUNTIME_ASSET_MISSING');
+    expect(listener).toHaveBeenCalledWith({
+      playbackId: 1,
+      actionId: 'idle',
+      status: 'failed'
+    });
+  });
+
+  test('销毁时中断当前播放并清理场景完成订阅', () => {
+    const fixture = lifecycleScene();
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+    const playbackId = player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+
+    player.destroy();
+    fixture.complete();
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({
+      playbackId,
+      actionId: 'idle',
+      status: 'interrupted'
+    });
+    expect(fixture.unsubscribeComplete).toHaveBeenCalledOnce();
+  });
+
   test('播放器使用正式场景快照命中，并将帧变更通知给可取消订阅者', () => {
     let frameListener: (() => void) | undefined;
     const unsubscribeFrame = vi.fn();

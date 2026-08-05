@@ -19,6 +19,7 @@ import type {
   CharacterWorkshopSourceDto
 } from './character-ipc';
 import type {
+  CharacterActionFeedbackInput,
   CharacterMotionEvent,
   CharacterMotionSnapshot
 } from './character-motion-ipc';
@@ -188,6 +189,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   getCharacterMotionSnapshot(): Promise<CharacterMotionSnapshot>;
   subscribeCharacterMotion(listener: (event: CharacterMotionEvent) => void): () => void;
   reportCharacterActionPlayed(playbackToken: string, actionId: string): Promise<void>;
+  reportCharacterActionFeedback(input: CharacterActionFeedbackInput): Promise<void>;
   openChat(): Promise<void>;
   openSettings(): Promise<void>;
   openCharacterWorkshop(): Promise<void>;

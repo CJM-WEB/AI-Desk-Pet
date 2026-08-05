@@ -200,6 +200,13 @@ const api: MyselfApi = {
   reportCharacterActionPlayed: async (playbackToken, actionId) => {
     await ipcRenderer.invoke(ipcChannels.characterActionPlayed, { playbackToken, actionId });
   },
+  reportCharacterActionFeedback: async input => {
+    await ipcRenderer.invoke(ipcChannels.characterActionPlayed, {
+      playbackToken: input.playbackToken,
+      actionId: input.actionId,
+      status: input.status
+    });
+  },
   setPetMousePassthrough: async ignore => {
     await ipcRenderer.invoke(ipcChannels.petMousePassthroughSet, { ignore });
   },
