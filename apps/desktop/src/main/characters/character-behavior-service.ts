@@ -69,6 +69,8 @@ export class CharacterBehaviorService {
   private direction: 'left' | 'right' = 'right';
   private moving = false;
   private idleBlocked = false;
+  private transitioning = false;
+  private activeTaskSignal: 'listening' | 'thinking' | null = null;
   private nextIdleAt: number;
   private closed = false;
   private loadRevision = 0;
@@ -92,6 +94,7 @@ export class CharacterBehaviorService {
   handleTaskEvent(event: TaskEvent): void {
     if (this.closed) return;
     this.options.motion.applyTaskEvent(event);
+    if (this.transitioning) return;
     if (event.type === 'pending_action') {
       this.idleBlocked = true;
       return;
@@ -100,23 +103,37 @@ export class CharacterBehaviorService {
 
     const now = this.now();
     if (event.phase === 'idle' || event.phase === 'cancelled') {
+      this.deactivateTaskSignal(now);
       this.idleBlocked = false;
       this.nextIdleAt = now + this.idleIntervalMs;
+      this.dispatch({ type: 'idle-due', occurredAtMs: now });
       return;
     }
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
+      this.deactivateTaskSignal(now);
       this.idleBlocked = true;
       return;
     }
 
     this.idleBlocked = event.phase === 'listening' || event.phase === 'thinking';
     this.nextIdleAt = now + this.idleIntervalMs;
-    const signal = this.taskSignal(event.phase, now);
-    if (signal) this.dispatch(signal);
+    if (event.phase === 'listening' || event.phase === 'thinking') {
+      this.deactivateTaskSignal(now);
+      this.activeTaskSignal = event.phase;
+      this.dispatch({ type: event.phase, active: true, occurredAtMs: now });
+      return;
+    }
+
+    this.deactivateTaskSignal(now);
+    this.dispatch({
+      type: 'task',
+      phase: event.phase === 'success' ? 'success' : 'failure',
+      occurredAtMs: now
+    });
   }
 
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void {
-    if (this.closed || !this.engine) return;
+    if (this.closed || this.transitioning || !this.engine) return;
     this.dispatch({ type: 'task', phase: 'start', occurredAtMs: this.now() }, intent);
   }
 
@@ -142,7 +159,7 @@ export class CharacterBehaviorService {
   }
 
   handleIdleDue(): void {
-    if (this.closed || this.idleBlocked || this.moving) return;
+    if (this.closed || this.transitioning || this.idleBlocked || this.moving) return;
     const now = this.now();
     if (now < this.nextIdleAt) return;
     this.nextIdleAt = now + this.idleIntervalMs;
@@ -156,6 +173,7 @@ export class CharacterBehaviorService {
 
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void {
     if (this.closed) return;
+    if (this.transitioning) throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
     if (this.engine) {
       this.publish(this.engine.applyFeedback(feedback));
       return;
@@ -174,6 +192,7 @@ export class CharacterBehaviorService {
   }
 
   handleActiveCharacterChanged(): Promise<void> {
+    if (this.closed) return Promise.resolve();
     return this.loadActiveCharacter(true);
   }
 
@@ -190,6 +209,8 @@ export class CharacterBehaviorService {
     this.engine = null;
     this.manifest = null;
     this.legacyManifest = null;
+    this.transitioning = false;
+    this.activeTaskSignal = null;
     this.legacyTokens.clear();
     this.listeners.clear();
   }
@@ -197,26 +218,38 @@ export class CharacterBehaviorService {
   /** 先完整读取候选清单，成功后才替换当前引擎和令牌。 */
   private async loadActiveCharacter(replacing: boolean): Promise<void> {
     const revision = ++this.loadRevision;
+    this.transitioning = true;
+    this.activeTaskSignal = null;
     try {
       const manifest = await this.options.store.getActiveManifestV2();
       if (this.closed || revision !== this.loadRevision) return;
       const previous = this.engine;
-      this.manifest = manifest;
-      this.legacyManifest = null;
-      this.legacyTokens.clear();
+      let nextEngine: CharacterBehaviorEngine;
+      let decision: CharacterBehaviorDecision;
       if (replacing && previous) {
-        this.publish(previous.replaceCharacter(manifest, manifest.defaultSkinId));
-        this.engine = previous;
+        nextEngine = previous;
+        decision = previous.replaceCharacter(manifest, manifest.defaultSkinId);
       } else {
-        this.engine = new CharacterBehaviorEngine({
+        nextEngine = new CharacterBehaviorEngine({
           manifest,
           skinId: manifest.defaultSkinId,
           now: this.now,
           random: this.random,
           createPlaybackToken: this.createPlaybackToken
         });
-        this.dispatch({ type: 'idle-due', occurredAtMs: this.now() });
+        decision = nextEngine.dispatch({
+          signal: { type: 'idle-due', occurredAtMs: this.now() },
+          direction: this.direction
+        });
       }
+
+      // 候选角色完整就绪后再一次性提交，切换窗口内旧引擎始终不可决策。
+      this.manifest = manifest;
+      this.legacyManifest = null;
+      this.legacyTokens.clear();
+      this.engine = nextEngine;
+      this.transitioning = false;
+      this.publish(decision);
       this.nextIdleAt = this.now() + this.idleIntervalMs;
     } catch {
       if (this.closed || revision !== this.loadRevision) return;
@@ -234,6 +267,7 @@ export class CharacterBehaviorService {
       this.manifest = null;
       this.legacyManifest = legacyManifest;
       this.legacyTokens.clear();
+      this.transitioning = false;
       this.nextIdleAt = this.now() + this.idleIntervalMs;
     } catch {
       // 保留播放画面，但撤销旧角色的 Main 决策权，避免切换后继续生成旧动作。
@@ -241,25 +275,27 @@ export class CharacterBehaviorService {
       this.manifest = null;
       this.legacyManifest = null;
       this.legacyTokens.clear();
+      this.transitioning = false;
     }
   }
 
-  private taskSignal(
-    phase: Extract<TaskEvent, { type: 'phase' }>['phase'],
-    occurredAtMs: number
-  ): CharacterBehaviorSignal | null {
-    if (phase === 'listening') return { type: 'listening', active: true, occurredAtMs };
-    if (phase === 'thinking') return { type: 'thinking', active: true, occurredAtMs };
-    if (phase === 'success') return { type: 'task', phase: 'success', occurredAtMs };
-    if (phase === 'error') return { type: 'task', phase: 'failure', occurredAtMs };
-    return null;
+  private deactivateTaskSignal(occurredAtMs: number): void {
+    const activeTaskSignal = this.activeTaskSignal;
+    this.activeTaskSignal = null;
+    if (!activeTaskSignal || !this.engine || this.transitioning) return;
+
+    // 停用信号只更新引擎状态，阶段目标动作由紧随其后的本地信号统一发布。
+    this.engine.dispatch({
+      signal: { type: activeTaskSignal, active: false, occurredAtMs },
+      direction: this.direction
+    });
   }
 
   private dispatch(
     signal: CharacterBehaviorSignal,
     agentIntent?: CharacterAgentBehaviorIntent
   ): void {
-    if (!this.engine) return;
+    if (!this.engine || this.transitioning) return;
     this.publish(this.engine.dispatch({
       signal,
       direction: this.direction,

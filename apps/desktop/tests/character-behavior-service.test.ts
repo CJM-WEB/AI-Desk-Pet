@@ -160,6 +160,58 @@ function tokenFactory(prefix = 'behavior-token'): () => string {
   return () => `${prefix}-${++index}`;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+/** 通过高强度状态把残留 thinking 信号转换为可观察的错误动作。 */
+function createResultSignalSensitiveManifest(
+  phase: 'success' | 'error'
+): CharacterManifestV2 {
+  const manifest = createManifest();
+  const semantic = phase === 'success' ? 'celebrate' : 'fail';
+  const actionId = `stale-${phase}-action`;
+  const stateId = `stale-${phase}-state`;
+  manifest.actions.push({
+    ...manifest.actions.find(action => action.semantic === semantic)!,
+    id: actionId,
+    name: `残留 ${phase} 动作`
+  });
+  manifest.states.push({
+    ...manifest.states.find(state => state.semantic === semantic)!,
+    id: stateId,
+    name: `残留 ${phase} 状态`,
+    intensity: 100,
+    actionIds: [actionId],
+    enterConditions: [{
+      mode: 'all',
+      clauses: [
+        { kind: 'signal', signal: 'thinking' },
+        { kind: 'signal', signal: phase === 'success' ? 'task-success' : 'task-failure' }
+      ]
+    }]
+  });
+  manifest.skins[0]!.presentations.push({
+    actionId,
+    fps: 20,
+    frames: [{ assetId: `${actionId}-asset`, x: 0, y: 0, width: 1, height: 1 }],
+    anchors: { ground: { x: 0.5, y: 1 } }
+  });
+  manifest.resources.push({
+    assetId: `${actionId}-asset`,
+    fileName: `${actionId}.png`,
+    sha256: 'a'.repeat(64),
+    byteLength: 1
+  });
+  return manifest;
+}
+
 async function loadConstructor(): Promise<BehaviorServiceConstructor> {
   const module = await import('../src/main/characters/character-behavior-service').catch(() => null) as null | {
     CharacterBehaviorService?: BehaviorServiceConstructor;
@@ -248,6 +300,49 @@ describe('Main 角色行为权威服务', () => {
     expect(events.at(-1)).toMatchObject({ type: 'behavior-action', actionId });
     expect(fixture.motion.applyTaskEvent).toHaveBeenCalledWith(event);
   });
+
+  test.each(['idle', 'cancelled'] as const)(
+    'listening→thinking→%s 显式停用任务信号并恢复默认动作',
+    async phase => {
+      const fixture = createFixture();
+      const service = new Constructor(fixture.options);
+      const events: BehaviorPlaybackEvent[] = [];
+      service.subscribe(event => events.push(event));
+      await service.initialize();
+      events.splice(0);
+
+      service.handleTaskEvent({ type: 'phase', phase: 'listening' });
+      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+      service.handleTaskEvent({ type: 'phase', phase });
+
+      expect(events.at(-1)).toMatchObject({
+        stateId: 'idle-state',
+        actionId: 'idle-action'
+      });
+    }
+  );
+
+  test.each([
+    ['success', 'celebrate-action'],
+    ['error', 'fail-action']
+  ] as const)(
+    'thinking→%s 先停用 thinking，不让旧信号选中高强度残留状态',
+    async (phase, actionId) => {
+      const fixture = createFixture({
+        getV2: async () => createResultSignalSensitiveManifest(phase)
+      });
+      const service = new Constructor(fixture.options);
+      const events: BehaviorPlaybackEvent[] = [];
+      service.subscribe(event => events.push(event));
+      await service.initialize();
+      events.splice(0);
+
+      service.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+      service.handleTaskEvent({ type: 'phase', phase });
+
+      expect(events.at(-1)).toMatchObject({ actionId });
+    }
+  );
 
   test('高层 Agent 意图参与引擎决策但不直接指定文件动作', async () => {
     const fixture = createFixture();
@@ -388,6 +483,48 @@ describe('Main 角色行为权威服务', () => {
       status: 'started',
       occurredAtMs: 10
     })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  });
+
+  test('活动角色异步读取期间立即隔离旧引擎和旧播放令牌', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+    fixture.motion.requestIntent.mockClear();
+    const pendingManifest = deferred<CharacterManifestV2>();
+    fixture.store.getActiveManifestV2.mockReturnValueOnce(pendingManifest.promise);
+
+    const switching = service.handleActiveCharacterChanged();
+    expect(() => service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: 10
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    service.handleTaskEvent({ type: 'phase', phase: 'listening' });
+    service.handleMovement(snapshot(true));
+    service.handleAgentIntent({
+      stateIntent: { semantic: 'celebrate' },
+      actionSemantic: 'celebrate',
+      urgency: 60,
+      explanation: '切换期间不应由旧角色执行'
+    });
+    service.handleUserInteraction();
+    expect(events).toEqual([]);
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+
+    pendingManifest.resolve(createManifest('second'));
+    await switching;
+
+    expect(events).toEqual([{
+      type: 'behavior-action',
+      revision: 1,
+      stateId: 'idle-state',
+      actionId: 'idle-action',
+      playbackToken: 'behavior-token-2'
+    }]);
   });
 
   test('V2 读取失败时错误脱敏且仅使用 V1 待机兼容路径', async () => {
