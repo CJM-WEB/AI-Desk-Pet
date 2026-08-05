@@ -142,6 +142,9 @@ importers:
 
   packages/agent-core:
     dependencies:
+      '@myself/character-runtime':
+        specifier: workspace:*
+        version: link:../character-runtime
       '@myself/shared-types':
         specifier: workspace:*
         version: link:../shared-types

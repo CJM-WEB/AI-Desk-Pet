@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { characterAgentBehaviorIntentSchema } from '@myself/character-runtime';
 import { characterEmotionLabelSchema } from '@myself/shared-types';
 import type { AgentEvent, ModelMessage, PreparedToolRequest, RunContext } from './types';
 
@@ -84,6 +85,15 @@ export class AgentLoop {
           const emotion = characterEmotionLabelSchema.safeParse(response.emotion);
           if (!emotion.success) throw new Error('AGENT_INVALID_EMOTION');
           yield { type: 'emotion', label: emotion.data };
+        }
+        // 角色意图是可选元数据，二次校验失败时不得影响正常对话结果。
+        if (response.behaviorIntent !== undefined) {
+          const behaviorIntent = characterAgentBehaviorIntentSchema.safeParse(
+            response.behaviorIntent
+          );
+          if (behaviorIntent.success) {
+            yield { type: 'behavior_intent', intent: behaviorIntent.data };
+          }
         }
         yield { type: 'message', text: response.text };
         yield { type: 'phase', phase: 'success' };

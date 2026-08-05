@@ -6,6 +6,7 @@ import type {
   ModelResponse
 } from '@myself/agent-core';
 import { FileToolError, type VerifiedWriteAction } from '@myself/file-tools';
+import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
 import {
   AgentService,
@@ -61,7 +62,8 @@ function createHarness(
   fileOverrides: Partial<AgentFileTools> = {},
   fileDisclosureAllowed = true,
   fallbackProviders: ModelProvider[] = [],
-  onEmit?: (event: TaskEvent) => void
+  onEmit?: (event: TaskEvent) => void,
+  emitBehaviorIntent?: (intent: CharacterAgentBehaviorIntent) => void
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -96,6 +98,7 @@ function createHarness(
       events.push(event);
       onEmit?.(event);
     },
+    ...(emitBehaviorIntent === undefined ? {} : { emitBehaviorIntent }),
     createConversationId: () => 'conversation-1'
   });
   return { events, fileTools, loop, pending, provider, service };
@@ -106,6 +109,37 @@ function phases(events: TaskEvent[]) {
 }
 
 describe('AgentService', () => {
+  test('行为意图只调用内部回调且不广播到 Renderer 任务事件', async () => {
+    const emitBehaviorIntent = vi.fn();
+    const { events, service } = createHarness(
+      new ScriptedProvider([{
+        type: 'text',
+        text: '处理完成',
+        behaviorIntent: {
+          stateIntent: { semantic: 'think' },
+          actionSemantic: 'think',
+          urgency: 50,
+          explanation: '正在整理回应。'
+        }
+      }]),
+      {},
+      true,
+      [],
+      undefined,
+      emitBehaviorIntent
+    );
+
+    await service.submit('处理任务');
+
+    expect(emitBehaviorIntent).toHaveBeenCalledExactlyOnceWith({
+      stateIntent: { semantic: 'think' },
+      actionSemantic: 'think',
+      urgency: 50,
+      explanation: '正在整理回应。'
+    });
+    expect(JSON.stringify(events)).not.toContain('正在整理回应。');
+  });
+
   test('OpenAI metadata 情绪按真实事件顺序延迟到 success 展示结束后重放', async () => {
     vi.useFakeTimers();
     const store = createTaskStore();

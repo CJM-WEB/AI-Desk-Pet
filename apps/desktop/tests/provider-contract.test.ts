@@ -25,6 +25,10 @@ interface ProviderContractCase {
   createProvider: (fetchClient: FetchLike) => ModelProvider;
   textResponse: unknown;
   toolResponse: unknown;
+  behaviorIntentResponse: unknown;
+  expectedBehaviorIntentResponse: ModelResponse;
+  invalidBehaviorIntentResponse: unknown;
+  toolResponseWithBehaviorIntent: unknown;
   mixedTextAndToolResponse: unknown;
   multipleToolsResponse: unknown;
   missingFieldsResponse: unknown;
@@ -104,6 +108,42 @@ function verifyProviderContract(contract: ProviderContractCase): void {
 
     test('把单个工具调用归一化为统一工具事件', async () => {
       const provider = contract.createProvider(vi.fn(async () => jsonResponse(contract.toolResponse)));
+
+      await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
+        type: 'tool_request',
+        request: {
+          requestId: 'call-contract',
+          toolName: 'read_text_file',
+          arguments: { relativePath: 'notes.txt' }
+        }
+      });
+    });
+
+    test('只规范化协议允许的合法行为意图元数据', async () => {
+      const provider = contract.createProvider(vi.fn(async () => (
+        jsonResponse(contract.behaviorIntentResponse)
+      )));
+
+      await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual(
+        contract.expectedBehaviorIntentResponse
+      );
+    });
+
+    test('忽略非法行为意图元数据并保留文本响应', async () => {
+      const provider = contract.createProvider(vi.fn(async () => (
+        jsonResponse(contract.invalidBehaviorIntentResponse)
+      )));
+
+      await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
+        type: 'text',
+        text: '契约文本'
+      });
+    });
+
+    test('工具请求不会夹带行为意图', async () => {
+      const provider = contract.createProvider(vi.fn(async () => (
+        jsonResponse(contract.toolResponseWithBehaviorIntent)
+      )));
 
       await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
         type: 'tool_request',
@@ -244,6 +284,69 @@ verifyProviderContract({
       }
     }]
   },
+  behaviorIntentResponse: {
+    choices: [{
+      message: {
+        content: '契约文本',
+        metadata: {
+          behaviorIntent: {
+            stateIntent: { semantic: 'think' },
+            actionSemantic: 'think',
+            urgency: 50,
+            explanation: '正在整理回应。'
+          }
+        }
+      }
+    }]
+  },
+  expectedBehaviorIntentResponse: {
+    type: 'text',
+    text: '契约文本',
+    behaviorIntent: {
+      stateIntent: { semantic: 'think' },
+      actionSemantic: 'think',
+      urgency: 50,
+      explanation: '正在整理回应。'
+    }
+  },
+  invalidBehaviorIntentResponse: {
+    choices: [{
+      message: {
+        content: '契约文本',
+        metadata: {
+          behaviorIntent: {
+            stateIntent: null,
+            actionSemantic: 'dance',
+            urgency: 50,
+            explanation: '不应采用。'
+          }
+        }
+      }
+    }]
+  },
+  toolResponseWithBehaviorIntent: {
+    choices: [{
+      message: {
+        content: null,
+        metadata: {
+          behaviorIntent: {
+            stateIntent: { semantic: 'think' },
+            actionSemantic: 'think',
+            urgency: 50,
+            explanation: '不应采用。'
+          }
+        },
+        tool_calls: [{
+          id: 'call-contract',
+          type: 'function',
+          function: {
+            name: 'read_text_file',
+            arguments: '{"relativePath":"notes.txt"}'
+          }
+        }]
+      }
+    }]
+  },
   mixedTextAndToolResponse: {
     choices: [{
       message: {
@@ -340,6 +443,45 @@ verifyProviderContract({
       input: { relativePath: 'notes.txt' }
     }]
   },
+  behaviorIntentResponse: {
+    metadata: {
+      behaviorIntent: {
+        stateIntent: { semantic: 'think' },
+        actionSemantic: 'think',
+        urgency: 50,
+        explanation: '协议未定义此扩展槽。'
+      }
+    },
+    content: [{ type: 'text', text: '契约文本' }]
+  },
+  expectedBehaviorIntentResponse: { type: 'text', text: '契约文本' },
+  invalidBehaviorIntentResponse: {
+    metadata: {
+      behaviorIntent: {
+        stateIntent: null,
+        actionSemantic: 'dance',
+        urgency: 50,
+        explanation: '协议未定义此扩展槽。'
+      }
+    },
+    content: [{ type: 'text', text: '契约文本' }]
+  },
+  toolResponseWithBehaviorIntent: {
+    metadata: {
+      behaviorIntent: {
+        stateIntent: { semantic: 'think' },
+        actionSemantic: 'think',
+        urgency: 50,
+        explanation: '协议未定义此扩展槽。'
+      }
+    },
+    content: [{
+      type: 'tool_use',
+      id: 'call-contract',
+      name: 'read_text_file',
+      input: { relativePath: 'notes.txt' }
+    }]
+  },
   mixedTextAndToolResponse: {
     content: [
       { type: 'text', text: '不得静默丢弃' },
@@ -391,6 +533,54 @@ verifyProviderContract({
   },
   toolResponse: {
     candidates: [{
+      content: {
+        parts: [{
+          functionCall: {
+            id: 'call-contract',
+            name: 'read_text_file',
+            args: { relativePath: 'notes.txt' }
+          }
+        }]
+      }
+    }]
+  },
+  behaviorIntentResponse: {
+    candidates: [{
+      metadata: {
+        behaviorIntent: {
+          stateIntent: { semantic: 'think' },
+          actionSemantic: 'think',
+          urgency: 50,
+          explanation: '协议未定义此扩展槽。'
+        }
+      },
+      content: { parts: [{ text: '契约文本' }] }
+    }]
+  },
+  expectedBehaviorIntentResponse: { type: 'text', text: '契约文本' },
+  invalidBehaviorIntentResponse: {
+    candidates: [{
+      metadata: {
+        behaviorIntent: {
+          stateIntent: null,
+          actionSemantic: 'dance',
+          urgency: 50,
+          explanation: '协议未定义此扩展槽。'
+        }
+      },
+      content: { parts: [{ text: '契约文本' }] }
+    }]
+  },
+  toolResponseWithBehaviorIntent: {
+    candidates: [{
+      metadata: {
+        behaviorIntent: {
+          stateIntent: { semantic: 'think' },
+          actionSemantic: 'think',
+          urgency: 50,
+          explanation: '协议未定义此扩展槽。'
+        }
+      },
       content: {
         parts: [{
           functionCall: {

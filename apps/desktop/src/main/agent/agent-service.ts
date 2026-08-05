@@ -8,6 +8,7 @@ import type {
   ToolDefinition,
   ToolRuntime
 } from '@myself/agent-core';
+import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import type { ToolRequest, TaskEvent } from '@myself/shared-types';
 import type { VerifiedWriteAction } from '@myself/file-tools';
 import type {
@@ -38,6 +39,7 @@ export interface AgentServiceOptions {
   pending: PendingActionStore;
   createSession(signal?: AbortSignal): Promise<AgentSession>;
   emit(event: TaskEvent): void;
+  emitBehaviorIntent?(intent: CharacterAgentBehaviorIntent): void;
   createConversationId?: () => string;
 }
 
@@ -152,6 +154,9 @@ export class AgentService {
   private readonly pending: PendingActionStore;
   private readonly createSession: (signal?: AbortSignal) => Promise<AgentSession>;
   private readonly emit: (event: TaskEvent) => void;
+  private readonly emitBehaviorIntent:
+    | ((intent: CharacterAgentBehaviorIntent) => void)
+    | undefined;
   private readonly createConversationId: () => string;
   private activeController: AbortController | null = null;
   private pendingSession: AgentSession | null = null;
@@ -168,6 +173,7 @@ export class AgentService {
     this.pending = options.pending;
     this.createSession = options.createSession;
     this.emit = options.emit;
+    this.emitBehaviorIntent = options.emitBehaviorIntent;
     this.createConversationId = options.createConversationId ?? randomUUID;
   }
 
@@ -313,6 +319,10 @@ export class AgentService {
       }
       if (event.type === 'emotion') {
         this.emit({ type: 'character_emotion', label: event.label });
+        continue;
+      }
+      if (event.type === 'behavior_intent') {
+        this.emitBehaviorIntent?.(event.intent);
         continue;
       }
       try {

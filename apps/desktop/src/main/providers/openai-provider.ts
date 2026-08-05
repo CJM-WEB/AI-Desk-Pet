@@ -8,6 +8,7 @@ import {
   characterEmotionLabelSchema,
   type ProviderProfile
 } from '@myself/shared-types';
+import { characterAgentBehaviorIntentSchema } from '@myself/character-runtime';
 import { z } from 'zod';
 
 export type FetchLike = (
@@ -30,7 +31,8 @@ const compatibleResponseSchema = z.object({
     message: z.object({
       content: z.string().nullable().optional(),
       metadata: z.object({
-        emotion: z.unknown().optional()
+        emotion: z.unknown().optional(),
+        behaviorIntent: z.unknown().optional()
       }).optional(),
       tool_calls: z.array(z.object({
         id: z.string().min(1),
@@ -162,14 +164,23 @@ function normalizeResponse(raw: unknown): ModelResponse {
   if (typeof message.content !== 'string') {
     throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   }
+  const response: Extract<ModelResponse, { type: 'text' }> = {
+    type: 'text',
+    text: message.content
+  };
   if (message.metadata?.emotion !== undefined) {
     const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
     if (!emotion.success) {
       throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
     }
-    return { type: 'text', text: message.content, emotion: emotion.data };
+    response.emotion = emotion.data;
   }
-  return { type: 'text', text: message.content };
+  // 仅使用 OpenAI-compatible message.metadata 这一既有结构化扩展边界。
+  const behaviorIntent = characterAgentBehaviorIntentSchema.safeParse(
+    message.metadata?.behaviorIntent
+  );
+  if (behaviorIntent.success) response.behaviorIntent = behaviorIntent.data;
+  return response;
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {

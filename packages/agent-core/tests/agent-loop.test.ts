@@ -101,6 +101,57 @@ function context(provider: ModelProvider, signal = new AbortController().signal)
 }
 
 describe('AgentLoop', () => {
+  test('合法行为意图在助手消息之前发出', async () => {
+    const intent = {
+      stateIntent: { semantic: 'think' },
+      actionSemantic: 'think',
+      urgency: 50,
+      explanation: '正在整理回应。'
+    } as const;
+    const events = await collectEvents(context(new ScriptedProvider([{
+      type: 'text',
+      text: '处理完成',
+      behaviorIntent: intent
+    }])));
+
+    expect(events).toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'behavior_intent', intent },
+      { type: 'message', text: '处理完成' },
+      { type: 'phase', phase: 'success' }
+    ]);
+  });
+
+  test('缺少行为意图时不发出行为事件', async () => {
+    const events = await collectEvents(context(new ScriptedProvider([{
+      type: 'text',
+      text: '处理完成'
+    }])));
+
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: 'behavior_intent'
+    }));
+  });
+
+  test('非法行为意图被丢弃但保留文本成功流程', async () => {
+    const events = await collectEvents(context(new ScriptedProvider([{
+      type: 'text',
+      text: '处理完成',
+      behaviorIntent: {
+        stateIntent: null,
+        actionSemantic: 'dance',
+        urgency: 50,
+        explanation: '不应采用。'
+      }
+    } as unknown as ModelResponse])));
+
+    expect(events).toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'message', text: '处理完成' },
+      { type: 'phase', phase: 'success' }
+    ]);
+  });
+
   test('结构化情绪标签在助手消息前产生明确 emotion 事件', async () => {
     const events = await collectEvents(context(new ScriptedProvider([{
       type: 'text',

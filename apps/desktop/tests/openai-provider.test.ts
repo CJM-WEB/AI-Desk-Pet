@@ -100,6 +100,96 @@ describe('OpenAICompatibleProvider', () => {
     });
   });
 
+  test('规范化合法的行为意图元数据', async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: '处理完成',
+          metadata: {
+            behaviorIntent: {
+              stateIntent: { semantic: 'think' },
+              actionSemantic: 'think',
+              urgency: 50,
+              explanation: '正在整理回应。'
+            }
+          }
+        }
+      }]
+    }));
+    const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
+
+    await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
+      type: 'text',
+      text: '处理完成',
+      behaviorIntent: {
+        stateIntent: { semantic: 'think' },
+        actionSemantic: 'think',
+        urgency: 50,
+        explanation: '正在整理回应。'
+      }
+    });
+  });
+
+  test('丢弃非法行为意图元数据并保留文本响应', async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: '处理完成',
+          metadata: {
+            behaviorIntent: {
+              stateIntent: null,
+              actionSemantic: 'dance',
+              urgency: 50,
+              explanation: '不应采用。'
+            }
+          }
+        }
+      }]
+    }));
+    const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
+
+    await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
+      type: 'text',
+      text: '处理完成'
+    });
+  });
+
+  test('工具请求不夹带行为意图', async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: null,
+          metadata: {
+            behaviorIntent: {
+              stateIntent: { semantic: 'think' },
+              actionSemantic: 'think',
+              urgency: 50,
+              explanation: '不应采用。'
+            }
+          },
+          tool_calls: [{
+            id: 'call-1',
+            type: 'function',
+            function: {
+              name: 'read_text_file',
+              arguments: '{"relativePath":"notes.txt"}'
+            }
+          }]
+        }
+      }]
+    }));
+    const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
+
+    await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
+      type: 'tool_request',
+      request: {
+        requestId: 'call-1',
+        toolName: 'read_text_file',
+        arguments: { relativePath: 'notes.txt' }
+      }
+    });
+  });
+
   test('正确序列化工具调用历史和工具结果', async () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{ message: { role: 'assistant', content: '完成' } }]

@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@myself/character-runtime": "workspace:*",
     "@myself/shared-types": "workspace:*"
   }
 }

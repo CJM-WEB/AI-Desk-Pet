@@ -3,6 +3,7 @@ import type {
   ToolName,
   ToolRequest
 } from '@myself/shared-types';
+import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import type { ProviderProfileV2 } from '@myself/shared-types';
 
 export type ModelRequestKind = 'chat' | 'agent' | 'vision';
@@ -42,7 +43,12 @@ export interface ModelRequest {
 }
 
 export type ModelResponse =
-  | { type: 'text'; text: string; emotion?: CharacterEmotionLabel }
+  | {
+      type: 'text';
+      text: string;
+      emotion?: CharacterEmotionLabel;
+      behaviorIntent?: CharacterAgentBehaviorIntent;
+    }
   | { type: 'tool_request'; request: unknown };
 
 export interface ModelProvider {
@@ -77,6 +83,7 @@ export type AgentEvent =
   | { type: 'phase'; phase: 'thinking' | 'acting' | 'awaiting_confirmation' | 'success' | 'cancelled' }
   | { type: 'message'; text: string }
   | { type: 'emotion'; label: CharacterEmotionLabel }
+  | { type: 'behavior_intent'; intent: CharacterAgentBehaviorIntent }
   | {
       type: 'write_request';
       request: ToolRequest;
