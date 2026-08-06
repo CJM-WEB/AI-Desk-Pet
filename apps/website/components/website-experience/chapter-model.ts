@@ -1,7 +1,4 @@
 import type { ChapterVisualState } from './types';
-import type { ExperiencePhase } from '../home-experience/types';
-
-export type IntroPhaseEvent = 'drawing-done' | 'settled' | 'skip';
 
 export function clampChapterProgress(value: number, chapterCount: number): number {
   const maximum = Math.max(0, chapterCount - 1);
@@ -24,30 +21,6 @@ export function snapChapterProgress(progress: number, chapterCount: number): num
   return clampChapterProgress(Math.round(progress), chapterCount);
 }
 
-export function isIntroPhase(phase: ExperiencePhase): boolean {
-  return phase === 'drawing' || phase === 'settling';
-}
-
-export function reduceIntroPhase(
-  phase: ExperiencePhase,
-  event: IntroPhaseEvent
-): ExperiencePhase {
-  if (event === 'skip') {
-    return isIntroPhase(phase) ? 'interactive' : phase;
-  }
-  if (event === 'drawing-done') {
-    return phase === 'drawing' ? 'settling' : phase;
-  }
-  return phase === 'settling' ? 'interactive' : phase;
-}
-
-export function deriveHomeExperiencePhase(
-  phase: ExperiencePhase,
-  exitProgress: number
-): ExperiencePhase {
-  return phase === 'interactive' && exitProgress > 0 ? 'exiting' : phase;
-}
-
 export function interpolateChapterSnapProgress(
   from: number,
   to: number,
@@ -61,25 +34,19 @@ export function interpolateChapterSnapProgress(
 export function deriveChapterVisualState(
   index: number,
   progress: number,
-  reducedMotion: boolean
+  _reducedMotion: boolean
 ): ChapterVisualState {
   const distance = index - progress;
   const visible = Math.abs(distance) <= 1;
   const opacity = visible ? 1 - Math.min(1, Math.abs(distance)) : 0;
   const exiting = distance < 0;
-  const scale = reducedMotion
-    ? 1
-    : exiting
-      ? 1 - Math.min(1, -distance) * 0.42
-      : 1 + Math.min(1, distance) * 0.32;
 
   return {
     opacity,
-    scale,
-    blurPx: reducedMotion ? 0 : Math.min(1, Math.abs(distance)) * 10,
-    contrast: reducedMotion
-      ? 1
-      : 1 - Math.min(1, Math.abs(distance)) * 0.18,
+    // 章节改为原位直接交接，不再使用前后推拉镜头。
+    scale: 1,
+    blurPx: 0,
+    contrast: 1,
     zIndex: exiting ? 1 : 2,
     visible,
     interactive: Math.abs(distance) < 0.0001

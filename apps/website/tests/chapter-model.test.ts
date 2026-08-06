@@ -4,10 +4,12 @@ import {
   clampChapterProgress,
   deriveChapterVisualState,
   interpolateChapterSnapProgress,
-  isIntroPhase,
-  reduceIntroPhase,
   snapChapterProgress
 } from '../components/website-experience/chapter-model';
+import {
+  isIntroPhase,
+  reduceIntroPhase
+} from '../components/home-experience/intro-phase-model';
 import {
   applyWheelChapterInput,
   calculateSwipeDelta,
@@ -25,11 +27,9 @@ describe('官网章节进度模型', () => {
       'about',
       'download',
       'community',
-      'feedback',
-      'donation'
+      'feedback'
     ]);
     expect(getChapterIndex('feedback')).toBe(4);
-    expect(getChapterIndex('donation')).toBe(5);
   });
 
   it('识别局部滚动输入并忽略短触屏移动', () => {
@@ -105,12 +105,14 @@ describe('官网章节进度模型', () => {
   it('以同一模型生成对称的退出和进入视觉', () => {
     expect(deriveChapterVisualState(0, 0.5, false)).toMatchObject({
       opacity: 0.5,
-      scale: 0.79,
+      scale: 1,
+      blurPx: 0,
       interactive: false
     });
     expect(deriveChapterVisualState(1, 0.5, false)).toMatchObject({
       opacity: 0.5,
-      scale: 1.16,
+      scale: 1,
+      blurPx: 0,
       interactive: false
     });
     expect(deriveChapterVisualState(1, 1, false)).toMatchObject({

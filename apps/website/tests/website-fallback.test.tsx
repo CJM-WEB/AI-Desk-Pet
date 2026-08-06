@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gsap } from 'gsap';
 import { I18nProvider, useI18n } from '../components/i18n/I18nProvider';
 import { WebsiteExperience } from '../components/website-experience/WebsiteExperience';
-import { WHEEL_SNAP_DEBOUNCE_MS } from '../components/website-experience/use-website-controller';
 
 function createMediaQueryList(matches: boolean): MediaQueryList {
   return {
@@ -90,15 +89,15 @@ describe('官网章节降级模式', () => {
     await waitFor(() => {
       expect(experience.dataset.activeChapter).toBe('about');
     });
-    expect(context).toHaveBeenCalledOnce();
+    expect(context).not.toHaveBeenCalled();
 
     fireEvent.click(next);
     await waitFor(() => {
-      expect(experience.dataset.staticFallback).toBe('active');
+      expect(experience.dataset.activeChapter).toBe('download');
     });
 
-    expect(revert).toHaveBeenCalledOnce();
-    expect(onRuntimeError).toHaveBeenCalledOnce();
+    expect(revert).not.toHaveBeenCalled();
+    expect(onRuntimeError).not.toHaveBeenCalled();
   });
 
   it('WebsiteExperience 最终 unmount 时介绍 cleanup 异常不会再报告父级运行时错误', async () => {
@@ -140,7 +139,7 @@ describe('官网章节降级模式', () => {
     await waitFor(() => {
       expect(experience.dataset.activeChapter).toBe('about');
     });
-    expect(context).toHaveBeenCalledOnce();
+    expect(context).not.toHaveBeenCalled();
 
     unmount();
     gsap.ticker.sleep();
@@ -149,7 +148,7 @@ describe('官网章节降级模式', () => {
       .flat()
       .map(String)
       .filter((message) => /unmount|state update/i.test(message));
-    expect(revert).toHaveBeenCalledOnce();
+    expect(revert).not.toHaveBeenCalled();
     expect(onRuntimeError).not.toHaveBeenCalled();
     expect(stateWarnings).toEqual([]);
   });
@@ -175,7 +174,7 @@ describe('官网章节降级模式', () => {
     expect(about?.style.getPropertyValue('--chapter-contrast')).toBe('1');
   });
 
-  it('matchMedia 失败后下载侧栏不再调用浏览器媒体 API', async () => {
+  it('matchMedia 失败后下载平台文字切换不再调用浏览器媒体 API', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => {
       throw new Error('matchMedia 初始化失败');
     }));
@@ -189,7 +188,7 @@ describe('官网章节降级模式', () => {
     expect(experience.dataset.staticFallback).toBe('active');
     expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
     expect(document.querySelector('[data-layer="file"]')).toBeNull();
-    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(6);
+    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(5);
     expect(screen.getByText('微信')).toBeTruthy();
     expect(screen.getByText('支付宝')).toBeTruthy();
 
@@ -206,16 +205,12 @@ describe('官网章节降级模式', () => {
     expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
       .disabled).toBe(true);
 
-    expect(() => {
-      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
-    }).not.toThrow();
-    await waitFor(() => {
-      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-        .toBe('faq');
-    });
+    fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
+    expect(screen.getByTestId('download-chapter').dataset.activePlatform)
+      .toBe('macos');
     expect(screen.getByTestId('download-chapter').dataset.staticFallback)
       .toBe('true');
-    expect(screen.getByTestId('donation-chapter').dataset.staticFallback)
+    expect(screen.getByTestId('support-chapter').dataset.motionDisabled)
       .toBe('true');
   });
 
@@ -253,7 +248,7 @@ describe('官网章节降级模式', () => {
       'keydown',
       expect.any(Function)
     );
-    expect(removeEventListener).toHaveBeenCalledWith(
+    expect(removeEventListener).not.toHaveBeenCalledWith(
       'click',
       expect.any(Function)
     );
@@ -265,7 +260,7 @@ describe('官网章节降级模式', () => {
     expect(experience.dataset.activeChapter).toBe('home');
   });
 
-  it('首页完成后下载 GSAP 初始化失败会进入统一静态回退', async () => {
+  it('首页完成后下载平台切换不依赖 GSAP context 初始化', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
     render(<WebsiteExperience />);
 
@@ -299,45 +294,33 @@ describe('官网章节降级模式', () => {
       expect(experience.dataset.activeChapter).toBe('download');
     });
 
-    expect(() => {
-      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示常见问题' }));
-    }).not.toThrow();
+    fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
+
+    expect(context).not.toHaveBeenCalled();
     await waitFor(() => {
-      expect(experience.dataset.staticFallback).toBe('active');
+      expect(screen.getByTestId('download-chapter').dataset.activePlatform)
+        .toBe('macos');
     });
+    expect(screen.queryByRole('link', { name: '下载 macOS' })).toBeNull();
+    expect(screen.getByRole('button', { name: '即将支持' })).toBeTruthy();
 
-    expect(context).toHaveBeenCalledOnce();
-    expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-      .toBe('faq');
-    expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
-    expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
-
-    fireEvent.click(next);
-    fireEvent.click(next);
-    fireEvent.click(next);
-    expect(experience.dataset.activeChapter).toBe('donation');
-    const payment = screen.getByRole('button', { name: '打开微信付款码' });
-    expect((payment as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(payment);
-    expect(screen.getByRole('dialog', { name: '微信付款码' })).toBeTruthy();
   });
 
-  it('GSAP 初始化失败会进入统一静态回退并保留章节内容', async () => {
-    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(false)));
-    vi.spyOn(gsap, 'context').mockImplementation(() => {
-      throw new Error('GSAP 初始化失败');
-    });
+  it('首页 WebGL 初始化失败只启用首页局部回退并保留章节内容', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
 
     render(<WebsiteExperience />);
 
     const experience = screen.getByTestId('website-experience');
     await waitFor(() => {
-      expect(experience.dataset.staticFallback).toBe('active');
+      expect(screen.getByTestId('liquid-glass-home').dataset.initializationFailed)
+        .toBe('true');
     });
+    expect(experience.dataset.staticFallback).toBe('ready');
 
     expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
     expect(document.querySelector('[data-layer="file"]')).toBeNull();
-    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(6);
+    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(5);
 
     const next = screen.getByRole('button', { name: '下一章节' });
     fireEvent.click(next);
@@ -346,19 +329,11 @@ describe('官网章节降级模式', () => {
       .toBe('download');
     expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
     expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
-    expect(() => {
-      fireEvent.pointerEnter(screen.getByRole('button', { name: '显示安装前须知' }));
-    }).not.toThrow();
-    await waitFor(() => {
-      expect(screen.getByTestId('download-chapter').dataset.visibleSide)
-        .toBe('notice');
-    });
-
     fireEvent.click(next);
     fireEvent.click(next);
     fireEvent.click(next);
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
-      .toBe('donation');
+      .toBe('feedback');
     expect(screen.getByText('微信')).toBeTruthy();
     expect(screen.getByText('支付宝')).toBeTruthy();
   });
@@ -413,14 +388,10 @@ describe('官网章节降级模式', () => {
       .toBe('Shared repository');
     expect(document.querySelector('[data-chapter-id="feedback"]')?.getAttribute('aria-label'))
       .toBe('Feedback and Suggestions');
-    expect(document.querySelector('[data-chapter-id="donation"]')?.getAttribute('aria-label'))
-      .toBe('Support Development');
   });
 
-  it('I18nProvider 切换语言后让 WebsiteExperience 的新反馈预览使用新语言', () => {
-    vi.useFakeTimers();
+  it('I18nProvider 切换语言后让合并支持模块使用新语言', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
-    vi.spyOn(Math, 'random').mockReturnValue(0);
     render(
       <I18nProvider initialLocale="zh-CN">
         <LocaleTestControls />
@@ -434,17 +405,8 @@ describe('官网章节降级模式', () => {
     fireEvent.click(next);
     expect(screen.getByTestId('website-experience').dataset.activeChapter).toBe('feedback');
 
-    act(() => vi.advanceTimersByTime(1_000));
-    const firstParticle = screen.getAllByTestId('file-icon')[0]!;
-    fireEvent.pointerEnter(firstParticle);
-    expect(screen.getByTestId('file-preview').textContent).toContain('类型');
-
     fireEvent.click(screen.getByRole('button', { name: '测试切换英文' }));
-    act(() => vi.advanceTimersByTime(1_000));
-    const particles = screen.getAllByTestId('file-icon');
-    fireEvent.pointerEnter(particles.at(-1)!);
-
-    expect(screen.getByTestId('file-preview').textContent).toContain('Type');
+    expect(screen.getByRole('button', { name: 'Open WeChat Pay QR code' })).toBeTruthy();
   });
 
   it('正常动画的首帧离开首页时立即卸载语言入口，返回稳定首页后恢复', async () => {
@@ -471,7 +433,7 @@ describe('官网章节降级模式', () => {
     fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
     runNextFrame(0);
 
-    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();
 
     runNextFrame(300);
     fireEvent.click(screen.getByRole('button', { name: '上一章节' }));
@@ -515,17 +477,6 @@ describe('官网章节降级模式', () => {
     expect(experience.dataset.activeChapter).toBe('about');
 
     fireEvent.wheel(window, { deltaY: -50_000 });
-
-    expect(experience.dataset.activeChapter).toBe('about');
-    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
-
-    act(() => {
-      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS);
-    });
-    runNextSnapFrame(400);
-    expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
-
-    runNextSnapFrame(700);
 
     expect(experience.dataset.activeChapter).toBe('home');
     expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();

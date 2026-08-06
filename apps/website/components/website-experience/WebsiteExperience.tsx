@@ -2,7 +2,6 @@
 
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState
@@ -13,23 +12,10 @@ import { LanguageMenu } from '../i18n/LanguageMenu';
 import { interpolateMessage, useI18n } from '../i18n/I18nProvider';
 import type { Translate } from '../i18n/i18n-types';
 import { HomeExperience } from '../home-experience/HomeExperience';
-import {
-  deriveChapterVisualState,
-  deriveHomeExperiencePhase
-} from './chapter-model';
-import {
-  CHAPTER_REGISTRY,
-  feedbackRepository,
-  getChapterIndex
-} from './chapter-registry';
-import { SharedVisualLayers } from './SharedVisualLayers';
+import { deriveChapterVisualState } from './chapter-model';
+import { CHAPTER_REGISTRY } from './chapter-registry';
 import { ChapterBackdrop } from './visual/ChapterBackdrop';
 import { CHAPTER_LAYERS } from './layer-contract';
-import { createFeedbackVisualProfile } from './feedback/feedback-preview-source';
-import {
-  resolveSharedVisualProfile,
-  VISUAL_PROFILES
-} from './shared-visual-model';
 import styles from './website-experience.module.css';
 import { useWebsiteController } from './use-website-controller';
 
@@ -38,10 +24,6 @@ export interface WebsiteExperienceProps {
 }
 
 /** 生产粒子预览只读取章节已注入的云端反馈快照。 */
-export function createProductionFeedbackVisualProfile(t: Translate) {
-  return createFeedbackVisualProfile(feedbackRepository, Math.random, t);
-}
-
 function createChapterVisualStyle(
   visual: ReturnType<typeof deriveChapterVisualState>,
   zIndex = visual.zIndex
@@ -93,43 +75,26 @@ export function WebsiteExperience({
   const staticFallback = initializationFailed || controller.initializationFailed;
   const reducedMotion = staticFallback || controller.prefersReducedMotion;
   const activeChapter = CHAPTER_REGISTRY[controller.settledIndex] ?? CHAPTER_REGISTRY[0];
-  const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
-  const showLanguageMenu = controller.progress === 0
-    && !controller.isChapterTransitioning;
-  const homePhase = deriveHomeExperiencePhase(
-    controller.phase,
-    homeExitProgress
-  );
-  const feedbackVisualProfileRef = useRef<ReturnType<
-    typeof createFeedbackVisualProfile
-  > | null>(null);
-  if (feedbackVisualProfileRef.current === null) {
-    feedbackVisualProfileRef.current = createProductionFeedbackVisualProfile(t);
-  }
-  useEffect(() => {
+  const homeExitProgress = controller.progress;
+  const homeAboutProgress = Math.min(1, Math.max(0, controller.progress));
+  const showLanguageMenu = controller.progress < 1;
     // 只更新后续生成粒子的翻译快照，已绑定粒子保持生成时的内容。
-    feedbackVisualProfileRef.current?.setTranslate(t);
-  }, [t]);
-  const sharedVisualProfile = controller.phase === 'interactive'
-    && Math.abs(controller.progress - getChapterIndex('feedback')) < 0.0001
-    ? feedbackVisualProfileRef.current
-    : resolveSharedVisualProfile(controller.progress, controller.phase);
-  const mountedVisualProfile = sharedVisualProfile
-    ?? (controller.progress < 1 ? VISUAL_PROFILES.home : null);
-  const sharedVisualChapterIndex = sharedVisualProfile
-    ? getChapterIndex(sharedVisualProfile.id)
-    : 0;
-  const sharedVisualGenerating = sharedVisualProfile !== null
-    && controller.phase === 'interactive'
-    && Math.abs(controller.progress - sharedVisualChapterIndex) < 0.0001;
-  const chapters = CHAPTER_REGISTRY.map((chapter, index) => ({
-    chapter,
-    visual: deriveChapterVisualState(
+  const chapters = CHAPTER_REGISTRY.map((chapter, index) => {
+    const derived = deriveChapterVisualState(
       index,
       controller.progress,
       reducedMotion
-    )
-  }));
+    );
+    // 首页 WebGL 在介绍模块完成前持续作为共同背景，保证玻璃分裂不跳帧。
+    const visual = chapter.id === 'home' && controller.progress <= 4
+      ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+      : chapter.id === 'download'
+          && controller.progress > 1
+          && controller.progress <= 2
+        ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+      : derived;
+    return { chapter, visual };
+  });
 
   return (
     <div
@@ -162,6 +127,12 @@ export function WebsiteExperience({
       </div>
       {chapters.map(({ chapter, visual }) => {
         const RegisteredChapter = chapter.component;
+        // 连续滚动停在下载主体时立即恢复点击与拖拽，不等待离散章节吸附状态。
+        const chapterInteractive = visual.interactive || (
+          chapter.id === 'download'
+          && controller.progress >= 1.82
+          && controller.progress < 2.98
+        );
         const style = createChapterVisualStyle(
           visual,
           CHAPTER_LAYERS.focal
@@ -174,30 +145,24 @@ export function WebsiteExperience({
             className={styles.chapter}
             data-chapter-id={chapter.id}
             data-visible={visual.visible}
-            data-interactive={visual.interactive}
+            data-interactive={chapterInteractive}
             data-layer="focal"
             aria-label={t(chapter.labelKey)}
             aria-hidden={!visual.visible}
-            inert={!visual.interactive ? true : undefined}
+            inert={!chapterInteractive ? true : undefined}
             style={style}
           >
             {chapter.id === 'home' ? (
               <HomeExperience
-                phase={homePhase}
                 exitProgress={homeExitProgress}
-                pointer={controller.pointer}
                 isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
-                staticFallback={staticFallback}
-                registerIntroSkip={controller.registerIntroSkip}
-                onDrawingDone={controller.drawingDone}
-                onSettled={controller.settled}
-                onInitializationError={handleInitializationError}
               />
             ) : null}
             {RegisteredChapter ? (
               <RegisteredChapter
-                interactive={visual.interactive}
+                interactive={chapterInteractive}
+                transitionProgress={controller.progress}
                 isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
                 staticFallback={staticFallback}
@@ -231,22 +196,8 @@ export function WebsiteExperience({
       </nav>
       {showLanguageMenu ? (
         <div data-layer="fixed-controls">
-          <LanguageMenu />
+          <LanguageMenu transitionProgress={homeAboutProgress} />
         </div>
-      ) : null}
-      {mountedVisualProfile && !staticFallback ? (
-        <SharedVisualLayers
-          profile={mountedVisualProfile}
-          running={sharedVisualProfile !== null}
-          generating={sharedVisualGenerating}
-          exitProgress={
-            mountedVisualProfile.id === 'home' ? homeExitProgress : 0
-          }
-          pointer={controller.pointer}
-          isPaused={controller.isPaused}
-          reducedMotion={controller.prefersReducedMotion}
-          onInitializationError={handleInitializationError}
-        />
       ) : null}
     </div>
   );

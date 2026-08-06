@@ -1,6 +1,7 @@
 'use client';
 
 import { Download, ThumbsUp } from 'lucide-react';
+import { LIQUID_GLASS_RIPPLE_EVENT } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { SharedPetPackageSummary } from './shared-pet-types';
 import { useObjectUrl } from './use-object-url';
@@ -16,7 +17,7 @@ export interface SharedPetCardProps {
   onDownload: (item: SharedPetPackageSummary) => void;
 }
 
-/** 提供可点击详情入口，并隔离点赞与下载操作事件。 */
+/** 卡片复用共享液态水波，同时隔离详情、点赞与下载操作。 */
 export function SharedPetCard({
   item,
   detailDisabled = false,
@@ -34,7 +35,18 @@ export function SharedPetCard({
   const downloadLabel = t('sharedPet.card.download', { name: item.name });
 
   return (
-    <article className={styles.card}>
+    <article
+      className={styles.card}
+      onPointerDown={(event) => {
+        window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
+          detail: {
+            clientX: event.clientX,
+            clientY: event.clientY,
+            strength: 1.35
+          }
+        }));
+      }}
+    >
       <button
         className={styles.cardOpenButton}
         type="button"
@@ -42,7 +54,15 @@ export function SharedPetCard({
         disabled={detailDisabled}
         onClick={() => onOpen(item)}
       >
-        {coverUrl ? <img className={styles.cardCover} src={coverUrl} alt="" /> : null}
+        {coverUrl ? (
+          <img
+            className={styles.cardCover}
+            src={coverUrl}
+            alt=""
+            loading="lazy"
+            decoding="async"
+          />
+        ) : <span className={styles.cardCoverFallback} aria-hidden="true">AI PET</span>}
         <div className={styles.cardBody}>
           <h3>{item.name}</h3>
           <p>{item.description}</p>
@@ -56,6 +76,7 @@ export function SharedPetCard({
           aria-pressed={item.likedByCurrentUser}
           title={likeLabel}
           disabled={likeDisabled}
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={() => onLike(item)}
         >
           <ThumbsUp aria-hidden="true" />
@@ -67,6 +88,7 @@ export function SharedPetCard({
           aria-label={downloadLabel}
           title={downloadLabel}
           disabled={downloadDisabled}
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={() => onDownload(item)}
         >
           <Download aria-hidden="true" />

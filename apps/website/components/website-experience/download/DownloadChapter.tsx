@@ -1,450 +1,357 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import type {
-  CSSProperties,
-  KeyboardEvent as ReactKeyboardEvent,
-  PointerEvent as ReactPointerEvent
-} from 'react';
-import {
-  CircleHelp,
-  Clock3,
-  Download,
-  FileCheck2,
-  Monitor,
-  ShieldCheck
-} from 'lucide-react';
-import { createDownloadContent } from './download-content';
-import {
-  initialDownloadInteraction,
-  reduceDownloadInteraction,
-  resolveDownloadSideMode,
-  rotatePlatformIndex
-} from './download-model';
-import type {
-  PreviewHoldSource,
-  VisibleDownloadSide
-} from './download-model';
+import dynamic from 'next/dynamic';
+import { gsap } from 'gsap';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Clock3, Download } from 'lucide-react';
 import { formatReleaseSize } from '../../../lib/release-manifest';
-import type { PointerPoint } from '../../home-experience/types';
-import { PointerTiltText } from '../visual/PointerTiltText';
-import type { ChapterRuntimeProps } from '../types';
+import { LIQUID_GLASS_RIPPLE_EVENT } from '../../home-experience/LiquidGlassHome';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
 import type { Translate } from '../../i18n/i18n-types';
+import type { PointerPoint } from '../../home-experience/types';
+import type { ChapterRuntimeProps } from '../types';
+import { PointerTiltText } from '../visual/PointerTiltText';
+import { createDownloadContent } from './download-content';
+import type { DownloadPlatform } from './download-content';
 import styles from './download.module.css';
+
+const DownloadModelViewer = dynamic(
+  () => import('./DownloadModelViewer').then((module) => module.DownloadModelViewer),
+  { ssr: false }
+);
 
 export type DownloadChapterProps = ChapterRuntimeProps;
 
-type DownloadCardStyle = CSSProperties & {
-  '--card-distance': number;
-  '--card-scale': number;
-};
-
-type PlatformPointerDrag = {
-  pointerId: number;
-  startY: number;
-  switched: boolean;
-};
-
-const MOBILE_QUERY = '(max-width: 760px)';
-const PLATFORM_DRAG_THRESHOLD_PX = 40;
 const INITIAL_POINTER: PointerPoint = { x: 0, y: 0 };
 
-// 计算最短循环距离，使平台数量增加后仍保持连续堆叠。
-function getCircularDistance(index: number, activeIndex: number, length: number): number {
-  if (length <= 1) return 0;
-
-  const forward = (index - activeIndex + length) % length;
-  const backward = forward - length;
-  return Math.abs(forward) < Math.abs(backward) ? forward : backward;
+function getModelUrl(platform: DownloadPlatform) {
+  return platform.id === 'macos' ? '/newMac.glb' : '/newWindows.glb';
 }
 
-function getCardStyle(distance: number, length: number): DownloadCardStyle {
-  const depth = Math.abs(distance);
-
-  return {
-    '--card-distance': distance,
-    '--card-scale': Math.max(0.78, 1 - depth * 0.08),
-    opacity: Math.max(0.28, 1 - depth * 0.34),
-    zIndex: length - depth
-  };
+interface TypewriterTextProps {
+  startIndex: number;
+  text: string;
 }
 
-function useMobileMode() {
-  const [isMobile, setIsMobile] = useState(false);
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-
-    try {
-      const mediaQuery = window.matchMedia(MOBILE_QUERY);
-      const sync = () => setIsMobile(mediaQuery.matches);
-      sync();
-      mediaQuery.addEventListener?.('change', sync);
-      return () => mediaQuery.removeEventListener?.('change', sync);
-    } catch {
-      // 父级控制器会进入统一静态降级，章节自身保持桌面基础布局。
-      setIsMobile(false);
-    }
-  }, []);
-
-  return isMobile;
+/** 使用逐字弹入的纯视觉层，原始文本节点仍完整保留语义。 */
+function TypewriterText({ startIndex, text }: TypewriterTextProps) {
+  return (
+    <>
+      <span className={styles.typingVisual} aria-hidden="true">
+        {Array.from(text).map((character, index) => (
+          <span
+            key={`${startIndex}-${index}-${character}`}
+            className={styles.typingChar}
+            style={{ '--typing-index': startIndex + index } as CSSProperties}
+          >
+            {character === ' ' ? '\u00a0' : character}
+          </span>
+        ))}
+      </span>
+      <span className={styles.typewriterAccessible}>{text}</span>
+    </>
+  );
 }
 
 export function DownloadChapter({
   interactive,
   isPaused = false,
   reducedMotion = false,
-  staticFallback = false
+  staticFallback = false,
+  transitionProgress = 2
 }: DownloadChapterProps) {
   const { t: rawTranslate } = useI18n();
   const t = useCallback<Translate>((key, values) => (
     interpolateMessage(rawTranslate(key), values)
   ), [rawTranslate]);
   const content = useMemo(() => createDownloadContent(t), [t]);
-  const [state, dispatch] = useReducer(
-    reduceDownloadInteraction,
-    initialDownloadInteraction
-  );
+  const [activePlatformIndex, setActivePlatformIndex] = useState(0);
   const [pointer, setPointer] = useState<PointerPoint>(INITIAL_POINTER);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const platformStackRef = useRef<HTMLDivElement | null>(null);
-  const platformDragRef = useRef<PlatformPointerDrag | null>(null);
-  const isMobile = useMobileMode();
+  const pointerFrameRef = useRef<number | null>(null);
+  const pointerTargetRef = useRef<PointerPoint>(INITIAL_POINTER);
+  const wordRef = useRef<HTMLDivElement | null>(null);
+  const copyRef = useRef<HTMLDivElement | null>(null);
+  const selectorRef = useRef<HTMLDivElement | null>(null);
+  const switchTimelineRef = useRef<gsap.core.Timeline | null>(null);
+  const [switching, setSwitching] = useState(false);
+  const [modelMountReady, setModelMountReady] = useState(false);
   const motionDisabled = reducedMotion || staticFallback || isPaused;
-  const sideMode = resolveDownloadSideMode(state, isMobile);
-  const visibleSide = sideMode.side;
+  const progress = Math.min(1, Math.max(0, transitionProgress - 1));
+  const finalProgress = Math.min(1, Math.max(0, (progress - 0.78) / 0.22));
+  const platformProgress = Math.min(1, Math.max(0, (progress - 0.92) / 0.08));
+  const modelEntryProgress = platformProgress;
+  const exitProgress = Math.min(1, Math.max(0, transitionProgress - 2));
+  const platformInteractive = interactive || progress >= 0.82;
+  const activePlatform = content.platforms[activePlatformIndex] ?? content.platforms[0]!;
+  const modelActive = progress >= 0.92 && transitionProgress < 2.98;
+
+  useEffect(() => {
+    if (!modelActive) {
+      setModelMountReady(false);
+      return;
+    }
+
+    // 稍后挂载大型模型，优先保证下载章节过渡首帧稳定。
+    const timer = window.setTimeout(() => setModelMountReady(true), 120);
+    return () => window.clearTimeout(timer);
+  }, [modelActive]);
 
   useEffect(() => {
     const syncViewport = () => {
       setViewport({ width: window.innerWidth, height: window.innerHeight });
     };
+    const syncPointer = (event: PointerEvent) => {
+      if (event.pointerType !== 'mouse') return;
+      pointerTargetRef.current = { x: event.clientX, y: event.clientY };
+      if (pointerFrameRef.current !== null) return;
+      pointerFrameRef.current = window.requestAnimationFrame(() => {
+        pointerFrameRef.current = null;
+        setPointer(pointerTargetRef.current);
+      });
+    };
     syncViewport();
-    window.addEventListener('resize', syncViewport);
-    return () => window.removeEventListener('resize', syncViewport);
+    let resizeRegistered = false;
+    let pointerRegistered = false;
+    try {
+      window.addEventListener('resize', syncViewport, { passive: true });
+      resizeRegistered = true;
+      window.addEventListener('pointermove', syncPointer, { passive: true });
+      pointerRegistered = true;
+    } catch {
+      // 标题倾斜属于渐进增强；监听失败时回滚局部监听，保留章节与全局滚轮导航。
+      if (resizeRegistered) window.removeEventListener('resize', syncViewport);
+    }
+    return () => {
+      if (resizeRegistered) window.removeEventListener('resize', syncViewport);
+      if (pointerRegistered) window.removeEventListener('pointermove', syncPointer);
+      if (pointerFrameRef.current !== null) {
+        window.cancelAnimationFrame(pointerFrameRef.current);
+        pointerFrameRef.current = null;
+      }
+    };
   }, []);
 
-  // 平台堆叠消费自己的滚轮，避免触发外层章节切换。
-  const selectRelativePlatform = (delta: number) => {
-    dispatch({
-      type: 'SELECT_PLATFORM',
-      index: rotatePlatformIndex(
-        state.activePlatformIndex,
-        delta,
-        content.platforms.length
-      )
-    });
-  };
+  useEffect(() => () => {
+    switchTimelineRef.current?.kill();
+  }, []);
 
-  useEffect(() => {
-    const stack = platformStackRef.current;
-    if (!stack) return;
-
-    const handlePlatformWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!interactive || event.deltaY === 0) return;
-      selectRelativePlatform(event.deltaY > 0 ? 1 : -1);
-    };
-
-    stack.addEventListener('wheel', handlePlatformWheel, { passive: false });
-    return () => stack.removeEventListener('wheel', handlePlatformWheel);
-  }, [interactive, state.activePlatformIndex]);
-
-  const handlePlatformKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const direction = event.key === 'ArrowDown' || event.key === 'ArrowRight'
-      ? 1
-      : event.key === 'ArrowUp' || event.key === 'ArrowLeft'
-        ? -1
-        : 0;
-
-    if (direction !== 0) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (interactive) selectRelativePlatform(direction);
+  const selectPlatform = (index: number) => {
+    if (!platformInteractive || switching || index === activePlatformIndex) return;
+    const word = wordRef.current;
+    const copy = copyRef.current;
+    setActivePlatformIndex(index);
+    if (!word || !copy || motionDisabled) {
       return;
     }
 
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      dispatch({ type: 'RESET' });
-      event.currentTarget.blur();
-    }
+    switchTimelineRef.current?.kill();
+    setSwitching(true);
+    switchTimelineRef.current = gsap.timeline({
+      defaults: { ease: 'power3.inOut' },
+      onComplete: () => {
+        // 清除 GSAP 行内位移，让平台大字稳定回到 CSS 最终位置。
+        gsap.set([word, copy], { clearProps: 'transform' });
+        setSwitching(false);
+      }
+    }).fromTo([word, copy], { x: '130vw' }, { x: 0, duration: 0.78 });
   };
 
-  const handlePlatformPointerDown = (
-    event: ReactPointerEvent<HTMLDivElement>
-  ) => {
-    if (!interactive || event.pointerType === 'mouse') return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    if (platformDragRef.current) return;
-    platformDragRef.current = {
-      pointerId: event.pointerId,
-      startY: event.clientY,
-      switched: false
+  useEffect(() => {
+    const selectFromPointer = (event: PointerEvent) => {
+      if (event.button !== 0 || !platformInteractive) return;
+      const buttons = selectorRef.current?.querySelectorAll('button');
+      if (!buttons) return;
+      buttons.forEach((button, index) => {
+        const bounds = button.getBoundingClientRect();
+        if (
+          event.clientX >= bounds.left
+          && event.clientX <= bounds.right
+          && event.clientY >= bounds.top
+          && event.clientY <= bounds.bottom
+        ) {
+          selectPlatform(index);
+        }
+      });
     };
-  };
+    window.addEventListener('pointerdown', selectFromPointer, true);
+    return () => window.removeEventListener('pointerdown', selectFromPointer, true);
+  });
 
-  const handlePlatformPointerMove = (
-    event: ReactPointerEvent<HTMLDivElement>
-  ) => {
-    const drag = platformDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId || drag.switched) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    const deltaY = event.clientY - drag.startY;
-    if (Math.abs(deltaY) <= PLATFORM_DRAG_THRESHOLD_PX) return;
-
-    drag.switched = true;
-    selectRelativePlatform(deltaY < 0 ? 1 : -1);
-  };
-
-  const finishPlatformPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (platformDragRef.current?.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    platformDragRef.current = null;
-  };
-
-  const holdDesktopPreview = (
-    side: VisibleDownloadSide,
-    source: PreviewHoldSource,
-    held: boolean
-  ) => {
-    if (!interactive || isMobile) return;
-    dispatch({ type: 'SET_DESKTOP_PREVIEW_HOLD', side, source, held });
-  };
-
-  const handleSideClick = (
-    event: ReactPointerEvent<HTMLButtonElement> | React.MouseEvent<HTMLButtonElement>,
-    side: VisibleDownloadSide
-  ) => {
-    event.stopPropagation();
-    if (interactive && isMobile) {
-      dispatch({ type: 'OPEN_MOBILE_SIDE', side });
+  const noticeAccessibilityText = [
+    t('download.notice.label'),
+    ...content.installNoticeItems.flatMap((item) => [item.title, item.body]),
+    t('download.faq.label'),
+    ...content.faqItems.slice(0, 3).flatMap((item) => [item.question, item.answer])
+  ].join(' ');
+  const packageRows: Array<[string, string]> = (() => {
+    if (activePlatform.status === 'available') {
+      return [
+        [t('download.package'), activePlatform.fileName],
+        [t('download.size'), formatReleaseSize(activePlatform.sizeBytes)],
+        ['SHA-256', activePlatform.sha256]
+      ];
     }
+    if (activePlatform.status === 'unpublished') {
+      return [
+        [t('download.package'), activePlatform.fileName],
+        ['Release', activePlatform.plannedReleaseTag]
+      ];
+    }
+    return [
+      [t('download.package'), activePlatform.versionLabel],
+      ['System', activePlatform.systemRequirements]
+    ];
+  })();
+  let packageTypingIndex = 0;
+  const createTypingRun = (text: string) => {
+    const run = { startIndex: packageTypingIndex, text };
+    packageTypingIndex += Array.from(text).length + 2;
+    return run;
   };
+  const summaryTyping = createTypingRun(activePlatform.summary);
+  const systemTyping = createTypingRun(activePlatform.systemRequirements);
+  const packageRowsTyping = packageRows.map(([label, value]) => ({
+    label: createTypingRun(label),
+    value: createTypingRun(value)
+  }));
 
   return (
     <div
-      ref={rootRef}
       className={styles.downloadChapter}
       data-testid="download-chapter"
-      data-visible-side={visibleSide ?? 'none'}
-      data-side-mode={sideMode.kind}
+      data-active-platform={activePlatform.id}
       data-paused={isPaused}
       data-reduced-motion={reducedMotion}
       data-static-fallback={staticFallback}
       data-motion-disabled={motionDisabled}
-      onPointerMove={(event) => {
-        if (event.pointerType === 'mouse') {
-          setPointer({ x: event.clientX, y: event.clientY });
-        }
-      }}
-      onClick={(event) => {
-        if (isMobile && event.target === event.currentTarget) {
-          dispatch({ type: 'CLOSE_MOBILE_SIDE' });
-        }
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && isMobile) {
-          dispatch({ type: 'CLOSE_MOBILE_SIDE' });
-        }
-      }}
+      style={{
+        '--download-progress': progress,
+        '--download-final-progress': finalProgress,
+        '--platform-progress': platformProgress,
+        '--download-header-y': `${(1 - progress) * -30}vh`,
+        '--download-title-exit-y': `${exitProgress * -130}vh`,
+        '--download-selector-exit-x': `${exitProgress * 120}vw`,
+        '--download-glass-x': `${(1 - progress) * -58 - exitProgress * 110}vw`,
+        '--platform-offset': `${platformProgress >= 0.999 ? 0 : (1 - platformProgress) * 130}vw`,
+        '--platform-exit-x': `${exitProgress * 120}vw`
+      } as CSSProperties}
     >
-      <button
-        className={`${styles.sideSensor} ${styles.faqSensor}`}
-        type="button"
-        aria-label={t('download.faq.show')}
-        disabled={!interactive}
-        onPointerEnter={() => holdDesktopPreview('faq', 'pointer', true)}
-        onPointerLeave={() => holdDesktopPreview('faq', 'pointer', false)}
-        onFocus={() => holdDesktopPreview('faq', 'focus', true)}
-        onBlur={() => holdDesktopPreview('faq', 'focus', false)}
-        onClick={(event) => handleSideClick(event, 'faq')}
-      >
-        <span>{t('download.faq.label')}</span>
-      </button>
-
-      <aside
-        className={`${styles.sidePanel} ${styles.faqPanel}`}
-        aria-label={t('download.faq.label')}
-        aria-hidden={visibleSide !== 'faq'}
-        data-side-panel="faq"
-        data-input-scope="local"
-      >
-        <div className={styles.panelHeading} data-panel-heading>
-          <CircleHelp aria-hidden="true" />
-          <div>
-            <p>{t('download.faq.eyebrow')}</p>
-            <h2>{t('download.faq.label')}</h2>
-          </div>
-        </div>
-        <ul className={styles.panelList}>
-          {content.faqItems.map((item) => (
-            <li key={item.question} data-panel-item>
-              <h3>{item.question}</h3>
-              <p>{item.answer}</p>
-            </li>
+      <header className={styles.platformHeader}>
+        <PointerTiltText
+          pointer={pointer}
+          viewport={viewport}
+          disabled={motionDisabled}
+          className={styles.platformTitleTilt!}
+        >
+          <h2>{t('download.title')}</h2>
+        </PointerTiltText>
+        <div
+          ref={selectorRef}
+          className={styles.platformSelector}
+          role="group"
+          aria-label={t('download.platform.group')}
+        >
+          {content.platforms.map((platform, index) => (
+            <button
+              key={platform.id}
+              type="button"
+              aria-label={index === activePlatformIndex
+                ? t('download.platform.current', { name: platform.name })
+                : t('download.platform.select', { name: platform.name })}
+              aria-pressed={index === activePlatformIndex}
+              data-active={index === activePlatformIndex}
+              disabled={!platformInteractive || switching}
+              onPointerDown={(event) => {
+                if (event.button !== 0) return;
+                event.stopPropagation();
+                selectPlatform(index);
+              }}
+              onClick={() => selectPlatform(index)}
+            >
+              {platform.name}
+            </button>
           ))}
-        </ul>
-      </aside>
+        </div>
+      </header>
 
-      <div
-        ref={platformStackRef}
-        className={styles.platformStack}
-        data-testid="download-platform-stack"
-        data-active-platform={
-          content.platforms[state.activePlatformIndex]?.id ?? ''
-        }
-        data-input-scope="local"
-        tabIndex={interactive ? 0 : -1}
-        role="group"
-        aria-label={t('download.platform.group')}
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={handlePlatformKeyDown}
-        onPointerDown={handlePlatformPointerDown}
-        onPointerMove={handlePlatformPointerMove}
-        onPointerUp={finishPlatformPointer}
-        onPointerCancel={finishPlatformPointer}
+      <section
+        className={styles.glassCopy}
+        aria-label={`${t('download.notice.label')} · ${t('download.faq.label')}`}
+        onPointerDown={(event) => {
+          if (motionDisabled || progress <= 0.12) return;
+          window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
+            detail: {
+              clientX: event.clientX,
+              clientY: event.clientY,
+              strength: 1.65
+            }
+          }));
+        }}
       >
-        <div className={styles.chapterHeading}>
+        <p className={styles.accessibleCopy} aria-live="polite">
+          {modelActive ? noticeAccessibilityText : ''}
+        </p>
+      </section>
+
+      <section className={styles.modelStage}>
+        <div ref={wordRef} className={styles.platformWordLayer}>
           <PointerTiltText
             pointer={pointer}
             viewport={viewport}
-            disabled={motionDisabled || isMobile}
+            disabled={motionDisabled}
+            className={styles.platformWordTilt!}
           >
-            <p>{t('download.eyebrow')}</p>
-          </PointerTiltText>
-          <PointerTiltText
-            pointer={pointer}
-            viewport={viewport}
-            disabled={motionDisabled || isMobile}
-          >
-            <h2>{t('download.title')}</h2>
+            <p className={styles.platformWord}>{activePlatform.name}</p>
           </PointerTiltText>
         </div>
-
-        <div className={styles.cardDeck}>
-          {content.platforms.map((platform, index) => {
-            const isActive = index === state.activePlatformIndex;
-            const distance = getCircularDistance(
-              index,
-              state.activePlatformIndex,
-              content.platforms.length
-            );
-
-            return (
-              <article
-                key={platform.id}
-                className={styles.platformCard}
-                data-active={isActive}
-                data-platform-id={platform.id}
-                data-platform-status={platform.status}
-                style={getCardStyle(distance, content.platforms.length)}
-              >
-                <button
-                  className={styles.cardSurface}
-                  type="button"
-                  aria-label={isActive
-                    ? t('download.platform.current', { name: platform.name })
-                    : t('download.platform.select', { name: platform.name })}
-                  aria-pressed={isActive}
-                  disabled={!interactive}
-                  onClick={() => dispatch({ type: 'SELECT_PLATFORM', index })}
-                >
-                  <span className={styles.platformIcon}>
-                    <Monitor aria-hidden="true" />
-                  </span>
-                  <span className={styles.platformCopy}>
-                    <span className={styles.platformName}>{platform.name}</span>
-                    <span className={styles.platformSummary}>{platform.summary}</span>
-                  </span>
-                  <span className={styles.platformVersion}>{platform.versionLabel}</span>
-                </button>
-
-                {isActive ? (
-                  <div className={styles.cardDetails}>
-                    <p>{platform.systemRequirements}</p>
-                    {platform.status === 'available' ? (
-                      <>
-                        <dl className={styles.releaseMeta}>
-                          <div><dt>{t('download.package')}</dt><dd>{platform.fileName}</dd></div>
-                          <div><dt>{t('download.size')}</dt><dd>{formatReleaseSize(platform.sizeBytes)}</dd></div>
-                          <div><dt>SHA-256</dt><dd className={styles.releaseHash}><code>{platform.sha256}</code></dd></div>
-                        </dl>
-                        <a className={styles.downloadAction} href={platform.downloadUrl}>
-                          <Download aria-hidden="true" />
-                          {t('download.download', { name: platform.name })}
-                        </a>
-                      </>
-                    ) : platform.status === 'unpublished' ? (
-                      <>
-                        <dl className={styles.releaseMeta}>
-                          <div><dt>计划安装包</dt><dd>{platform.fileName}</dd></div>
-                          <div><dt>计划发布标签</dt><dd>{platform.plannedReleaseTag}</dd></div>
-                        </dl>
-                        <button className={styles.downloadAction} type="button" disabled>
-                          <Clock3 aria-hidden="true" />
-                          {t('download.unpublished')}
-                        </button>
-                      </>
-                    ) : (
-                      <button className={styles.downloadAction} type="button" disabled>
-                        <Clock3 aria-hidden="true" />
-                        {t('download.comingSoon')}
-                      </button>
-                    )}
-                  </div>
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
-      </div>
-
-      <aside
-        className={`${styles.sidePanel} ${styles.noticePanel}`}
-        aria-label={t('download.notice.label')}
-        aria-hidden={visibleSide !== 'notice'}
-        data-side-panel="notice"
-        data-input-scope="local"
-      >
-        <div className={styles.panelHeading} data-panel-heading>
-          <ShieldCheck aria-hidden="true" />
-          <div>
-            <p>{t('download.notice.eyebrow')}</p>
-            <h2>{t('download.notice.label')}</h2>
+        {modelActive && modelMountReady ? (
+          <DownloadModelViewer
+            active={modelActive}
+            entryProgress={modelEntryProgress}
+            exitProgress={exitProgress}
+            modelUrl={getModelUrl(activePlatform)}
+            motionDisabled={motionDisabled}
+            paused={isPaused}
+            platformName={activePlatform.name}
+          />
+        ) : null}
+        <div ref={copyRef} className={styles.platformCopy}>
+          <div
+            key={`${activePlatform.id}-${modelActive ? 'active' : 'idle'}`}
+            className={styles.packageInfo}
+            data-typing-active={modelActive}
+          >
+            <p><TypewriterText {...summaryTyping} /></p>
+            <p><TypewriterText {...systemTyping} /></p>
+            <dl>
+              {packageRowsTyping.map(({ label, value }) => (
+                <div key={label.text}>
+                  <dt><TypewriterText {...label} /></dt>
+                  <dd><TypewriterText {...value} /></dd>
+                </div>
+              ))}
+            </dl>
           </div>
+          {activePlatform.status === 'available' ? (
+            <a
+              className={styles.downloadAction}
+              href={activePlatform.downloadUrl}
+            >
+              <Download aria-hidden="true" />
+              {t('download.download', { name: activePlatform.name })}
+            </a>
+          ) : (
+            <button className={styles.downloadAction} type="button" disabled>
+              <Clock3 aria-hidden="true" />
+              {activePlatform.status === 'unpublished'
+                ? t('download.unpublished')
+                : t('download.comingSoon')}
+            </button>
+          )}
         </div>
-        <ul className={styles.panelList}>
-          {content.installNoticeItems.map((item) => (
-            <li key={item.title} data-panel-item>
-              <FileCheck2 aria-hidden="true" />
-              <div><h3>{item.title}</h3><p>{item.body}</p></div>
-            </li>
-          ))}
-        </ul>
-      </aside>
-
-      <button
-        className={`${styles.sideSensor} ${styles.noticeSensor}`}
-        type="button"
-        aria-label={t('download.notice.show')}
-        disabled={!interactive}
-        onPointerEnter={() => holdDesktopPreview('notice', 'pointer', true)}
-        onPointerLeave={() => holdDesktopPreview('notice', 'pointer', false)}
-        onFocus={() => holdDesktopPreview('notice', 'focus', true)}
-        onBlur={() => holdDesktopPreview('notice', 'focus', false)}
-        onClick={(event) => handleSideClick(event, 'notice')}
-      >
-        <span>{t('download.notice.label')}</span>
-      </button>
+      </section>
     </div>
   );
 }

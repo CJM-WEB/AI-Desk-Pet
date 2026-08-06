@@ -9,10 +9,7 @@ import {
   waitFor
 } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  useWebsiteController,
-  WHEEL_SNAP_DEBOUNCE_MS
-} from '../components/website-experience/use-website-controller';
+import { useWebsiteController } from '../components/website-experience/use-website-controller';
 
 function createMediaQueryList(matches = false): MediaQueryList {
   return {
@@ -56,12 +53,6 @@ function ControllerHarness({
       data-index={controller.settledIndex}
       data-progress={controller.progress.toFixed(4)}
     >
-      <button type="button" onClick={controller.drawingDone}>
-        完成绘制
-      </button>
-      <button type="button" onClick={controller.settled}>
-        完成落位
-      </button>
       <button type="button" onClick={() => controller.goToAdjacent(1)}>
         下一章节
       </button>
@@ -77,14 +68,11 @@ describe('官网章节控制器', () => {
     vi.unstubAllGlobals();
   });
 
-  it('普通鼠标滚轮突发结束后统一吸附并进入相邻章节', () => {
+  it('普通鼠标滚轮按实际滚动量连续改变章节进度且不自动吸附', () => {
     vi.useFakeTimers();
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
-
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
 
     for (let index = 0; index < 5; index += 1) {
       fireEvent.wheel(window, { deltaY: 120 });
@@ -96,10 +84,11 @@ describe('官网章节控制器', () => {
     expect(state.dataset.index).toBe('0');
     expect(Number(state.dataset.progress)).toBeGreaterThan(0.5);
 
-    act(() => {
-      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
-    });
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(state.dataset.index).toBe('0');
+    expect(Number(state.dataset.progress)).toBeCloseTo(0.66, 2);
 
+    fireEvent.wheel(window, { deltaY: 400 });
     expect(state.dataset.index).toBe('1');
     expect(state.dataset.progress).toBe('1.0000');
   });
@@ -110,15 +99,9 @@ describe('官网章节控制器', () => {
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     fireEvent.wheel(window, { deltaY: 24 });
-    act(() => {
-      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
-    });
-
     expect(state.dataset.index).toBe('0');
-    expect(state.dataset.progress).toBe('0.0000');
+    expect(Number(state.dataset.progress)).toBeCloseTo(0.0264, 3);
 
     for (let index = 0; index < 3; index += 1) {
       fireEvent.wheel(window, { deltaY: 50_000 });
@@ -126,23 +109,17 @@ describe('官网章节控制器', () => {
         vi.advanceTimersByTime(20);
       });
     }
-    act(() => {
-      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
-    });
-
-    expect(state.dataset.index).toBe('1');
-    expect(state.dataset.progress).toBe('1.0000');
+    expect(state.dataset.index).toBe('3');
+    expect(state.dataset.progress).toBe('3.0000');
   });
 
-  it('首页边界键打断向下滚轮后恢复吸附且稳定边界不启动动画', () => {
+  it('首页边界键打断向下滚轮后回到当前章节且稳定边界不启动动画', () => {
     vi.useFakeTimers();
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
     const requestFrame = installAnimationFrameTimers();
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     requestFrame.mockClear();
 
     fireEvent.keyDown(window, { key: 'ArrowUp' });
@@ -165,15 +142,13 @@ describe('官网章节控制器', () => {
     expect(state.dataset.progress).toBe('0.0000');
   });
 
-  it('末章边界键打断向上滚轮后恢复吸附且稳定边界不启动动画', () => {
+  it('末章边界键打断向上滚轮后回到当前章节且稳定边界不启动动画', () => {
     vi.useFakeTimers();
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
     const requestFrame = installAnimationFrameTimers();
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     for (let index = 0; index < 5; index += 1) {
       fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
       act(() => {
@@ -204,12 +179,12 @@ describe('官网章节控制器', () => {
     expect(state.dataset.progress).toBe('5.0000');
   });
 
-  it('drawing 阶段点击下一章节会跳过开场并完成一次相邻推进', () => {
+  it('初始即为交互态且下一章节只推进一次', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    expect(state.dataset.phase).toBe('drawing');
+    expect(state.dataset.phase).toBe('interactive');
     fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
 
     expect(state.dataset.phase).toBe('interactive');
@@ -229,8 +204,6 @@ describe('官网章节控制器', () => {
     );
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     expect(state.dataset.phase).toBe('interactive');
 
     visibilityState = 'hidden';

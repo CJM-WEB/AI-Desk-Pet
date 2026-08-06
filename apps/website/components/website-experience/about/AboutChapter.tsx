@@ -1,229 +1,220 @@
 'use client';
 
 import { gsap } from 'gsap';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState
-} from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
-import type { PointerPoint } from '../../home-experience/types';
+  LIQUID_GLASS_INTERACTION_EVENT,
+  LIQUID_GLASS_RIPPLE_EVENT
+} from '../../home-experience/LiquidGlassHome';
+import type { LiquidGlassInteractionDetail } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ChapterRuntimeProps } from '../types';
-import { PointerTiltText } from '../visual/PointerTiltText';
-import { AboutFeaturePanel } from './AboutFeaturePanel';
-import { AboutFeaturePreview } from './AboutFeaturePreview';
 import { createAboutFeatures } from './about-content';
-import {
-  initialAboutInteraction,
-  isInsideAboutSafeZone,
-  reduceAboutInteraction,
-  visibleAboutFeatureId
-} from './about-model';
+import type { AboutFeatureId } from './about-content';
 import styles from './about.module.css';
 
-const MOBILE_QUERY = '(max-width: 760px)';
-const INITIAL_POINTER: PointerPoint = { x: 0, y: 0 };
-const INITIAL_VIEWPORT = { width: 0, height: 0 };
+type GlassIndex = 0 | 1 | 2;
 
-function syncViewport() {
-  return { width: window.innerWidth, height: window.innerHeight };
+interface DragState {
+  index: GlassIndex;
+  pointerId: number;
+  startX: number;
+  startY: number;
 }
 
-/**
- * 介绍章节使用模型驱动的临时悬停和移动端锁定，并把预览置于章节外的 Portal 层。
- */
+const GLASS_IDS = ['editor', 'companion', 'files'] as const;
+
+/** 第二模块只绘制文字命中层，玻璃本体由首页同一个 WebGL 着色器连续形变。 */
 export function AboutChapter({
   interactive,
-  isPaused = false,
   reducedMotion = false,
   staticFallback = false,
-  onInitializationError
+  transitionProgress = 1
 }: ChapterRuntimeProps) {
   const { t } = useI18n();
-  const rootRef = useRef<HTMLElement | null>(null);
-  const entranceConsumedRef = useRef(false);
-  const [interaction, dispatch] = useReducer(reduceAboutInteraction, initialAboutInteraction);
-  const [mobile, setMobile] = useState(false);
-  const [pointer, setPointer] = useState<PointerPoint>(INITIAL_POINTER);
-  const [viewport, setViewport] = useState(INITIAL_VIEWPORT);
-  const [entranceState, setEntranceState] = useState<'pending' | 'visible'>('visible');
-  const motionDisabled = reducedMotion || staticFallback || isPaused;
   const features = useMemo(() => createAboutFeatures(t), [t]);
-  const layout = viewport.width <= 760
-    && viewport.height <= 520
-    && viewport.width > viewport.height
-    ? 'compact-landscape'
-    : 'default';
-  const activeFeatureId = visibleAboutFeatureId(interaction);
-  const activeFeature = useMemo(
-    () => features.find((feature) => feature.id === activeFeatureId) ?? null,
-    [activeFeatureId, features]
+  const featureMap = useMemo(
+    () => new Map(features.map((feature) => [feature.id, feature])),
+    [features]
   );
+  const articleRefs = useRef<Array<HTMLElement | null>>([null, null, null]);
+  const offsetsRef = useRef([
+    { x: 0, y: 0 },
+    { x: 0, y: 0 },
+    { x: 0, y: 0 }
+  ]);
+  const dragRef = useRef<DragState | null>(null);
+  const returningRef = useRef(false);
+  const hoveredRef = useRef<-1 | GlassIndex>(-1);
+  const [hovered, setHovered] = useState<-1 | GlassIndex>(-1);
+  const progress = Math.min(1, Math.max(0, transitionProgress));
+  const exitProgress = Math.min(1, Math.max(0, transitionProgress - 1));
+  const motionDisabled = reducedMotion || staticFallback;
 
-  useEffect(() => {
-    if (
-      typeof window === 'undefined'
-      || typeof window.matchMedia !== 'function'
-    ) return;
-
-    const updateViewport = () => setViewport(syncViewport());
-    let media: MediaQueryList | null = null;
-    let mediaRegistered = false;
-    let resizeRegistered = false;
-
-    try {
-      media = window.matchMedia(MOBILE_QUERY);
-      const updateMedia = () => setMobile(media?.matches ?? false);
-      updateMedia();
-      updateViewport();
-      media.addEventListener?.('change', updateMedia);
-      mediaRegistered = true;
-      window.addEventListener('resize', updateViewport);
-      resizeRegistered = true;
-
-      return () => {
-        if (mediaRegistered) {
-          media?.removeEventListener?.('change', updateMedia);
+  const publishInteraction = (nextHovered = hoveredRef.current) => {
+    if (typeof window === 'undefined') return;
+    const [first, second, third] = offsetsRef.current;
+    const width = Math.max(window.innerWidth, 1);
+    const height = Math.max(window.innerHeight, 1);
+    const offsetY = (value: number) => value === 0 ? 0 : -value / height;
+    const offsets: LiquidGlassInteractionDetail['offsets'] = [
+      first!.x / width, offsetY(first!.y),
+      second!.x / width, offsetY(second!.y),
+      third!.x / width, offsetY(third!.y)
+    ];
+    window.dispatchEvent(new CustomEvent<LiquidGlassInteractionDetail>(
+      LIQUID_GLASS_INTERACTION_EVENT,
+      {
+        detail: {
+          hovered: nextHovered,
+          dragging: dragRef.current !== null || returningRef.current,
+          offsets
         }
-        if (resizeRegistered) {
-          window.removeEventListener('resize', updateViewport);
-        }
-      };
-    } catch {
-      // 父级控制器负责统一降级；此处只回滚局部监听，避免异常逃逸。
-      if (resizeRegistered) {
-        window.removeEventListener('resize', updateViewport);
       }
-      setMobile(false);
-      updateViewport();
-    }
+    ));
+  };
+
+  useEffect(() => () => {
+    offsetsRef.current.forEach(offset => gsap.killTweensOf(offset));
+    window.dispatchEvent(new CustomEvent<LiquidGlassInteractionDetail>(
+      LIQUID_GLASS_INTERACTION_EVENT,
+      { detail: { hovered: -1, dragging: false, offsets: [0, 0, 0, 0, 0, 0] } }
+    ));
   }, []);
 
-  useEffect(() => {
-    if (!interactive) dispatch({ type: 'RESET' });
-  }, [interactive]);
-
-  useLayoutEffect(() => {
-    const root = rootRef.current;
-    if (!root || !interactive) {
-      setEntranceState('visible');
-      return;
-    }
-
-    if (motionDisabled || entranceConsumedRef.current) {
-      entranceConsumedRef.current = true;
-      setEntranceState('visible');
-      return;
-    }
-
-    entranceConsumedRef.current = true;
-    setEntranceState('pending');
-    let context: gsap.Context | null = null;
-    try {
-      context = gsap.context(() => {
-        const panels = Array.from(root.querySelectorAll<HTMLElement>('[data-about-feature]'));
-        const title = root.querySelector<HTMLElement>('[data-about-title]');
-        const timeline = gsap.timeline({
-          defaults: { ease: 'power3.out' },
-          onComplete: () => setEntranceState('visible')
-        });
-        timeline.fromTo(
-          panels,
-          { autoAlpha: 0, scale: 1.16 },
-          { autoAlpha: 1, scale: 1, duration: 0.48, stagger: 0.09 }
-        );
-        if (title) {
-          timeline.fromTo(
-            title,
-            { autoAlpha: 0, scale: 1.08 },
-            { autoAlpha: 1, scale: 1, duration: 0.38 },
-            '>-0.04'
-          );
-        }
-      }, root);
-    } catch {
-      setEntranceState('visible');
-      onInitializationError?.();
-    }
-    return () => {
-      try {
-        context?.revert();
-      } catch {
-        // 章节切换仍挂载在页面中时上报；整页卸载时避免触发卸载后的父级更新。
-        queueMicrotask(() => {
-          if (root.isConnected) {
-            onInitializationError?.();
-          }
-        });
-      }
-    };
-  }, [interactive, motionDisabled, onInitializationError]);
-
-  const clearHoverForSafeZone = (event: ReactPointerEvent<HTMLElement>) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0) return;
-    const point = {
-      x: (event.clientX - bounds.left) / bounds.width,
-      y: (event.clientY - bounds.top) / bounds.height
-    };
-    if (isInsideAboutSafeZone(point)) {
-      dispatch({ type: 'SET_HOVER', id: null });
-    }
+  const setHover = (index: -1 | GlassIndex) => {
+    hoveredRef.current = index;
+    setHovered(index);
+    publishInteraction(index);
   };
+
+  const beginDrag = (index: GlassIndex, event: ReactPointerEvent<HTMLElement>) => {
+    if (!interactive || motionDisabled) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      index,
+      pointerId: event.pointerId,
+      startX: event.clientX - offsetsRef.current[index]!.x,
+      startY: event.clientY - offsetsRef.current[index]!.y
+    };
+    setHover(index);
+    window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
+      detail: { clientX: event.clientX, clientY: event.clientY, strength: 1.35 }
+    }));
+  };
+
+  const moveDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const offset = offsetsRef.current[drag.index]!;
+    offset.x = Math.max(-92, Math.min(92, event.clientX - drag.startX));
+    offset.y = Math.max(-72, Math.min(72, event.clientY - drag.startY));
+    const article = articleRefs.current[drag.index];
+    if (article) gsap.set(article, { x: offset.x, y: offset.y });
+    publishInteraction(drag.index);
+  };
+
+  const releaseDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    returningRef.current = true;
+    const offset = offsetsRef.current[drag.index]!;
+    const article = articleRefs.current[drag.index];
+    gsap.to(offset, {
+      x: 0,
+      y: 0,
+      duration: 1.15,
+      ease: 'elastic.out(1, 0.42)',
+      overwrite: true,
+      onUpdate: () => {
+        if (article) gsap.set(article, { x: offset.x, y: offset.y });
+        publishInteraction(hoveredRef.current);
+      },
+      onComplete: () => {
+        returningRef.current = false;
+        publishInteraction(hoveredRef.current);
+      }
+    });
+  };
+
+  const renderFeature = (id: AboutFeatureId) => {
+    const feature = featureMap.get(id);
+    if (!feature) return null;
+    return (
+      <>
+        <span className={styles.eyebrow}>{feature.eyebrow}</span>
+        <h3>{feature.title}</h3>
+        <p>{feature.summary}</p>
+      </>
+    );
+  };
+
+  const articleEvents = (index: GlassIndex) => ({
+    onPointerEnter: () => setHover(index),
+    onPointerLeave: () => {
+      if (!dragRef.current) setHover(-1);
+    },
+    onFocus: () => setHover(index),
+    onBlur: () => setHover(-1),
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => beginDrag(index, event),
+    onPointerMove: moveDrag,
+    onPointerUp: releaseDrag,
+    onPointerCancel: releaseDrag
+  });
 
   return (
     <section
-      ref={rootRef}
       className={styles.aboutChapter}
       data-testid="about-chapter"
-      data-active-feature={activeFeatureId ?? 'none'}
+      data-hovered={hovered}
       data-motion-disabled={motionDisabled}
-      data-entrance-state={entranceState}
-      data-layout={layout}
-      onPointerMove={(event) => {
-        setPointer({ x: event.clientX, y: event.clientY });
-        if (!mobile) clearHoverForSafeZone(event);
-      }}
-      onPointerLeave={() => {
-        if (!mobile) dispatch({ type: 'SET_HOVER', id: null });
-      }}
-      onClick={(event) => {
-        if (mobile) {
-          dispatch({ type: 'CLEAR_MOBILE_LOCK' });
-        }
-      }}
+      data-static-fallback={staticFallback}
+      style={{
+        '--about-progress': progress,
+        '--about-exit': exitProgress
+      } as CSSProperties}
     >
-      <div className={styles.featurePlane} aria-label={t('about.featurePlane')}>
-        {features.map((feature) => (
-          <AboutFeaturePanel
-            key={feature.id}
-            feature={feature}
-            active={activeFeatureId === feature.id}
-            interactive={interactive}
-            mobile={mobile}
-            onHoverChange={(id) => dispatch({ type: 'SET_HOVER', id })}
-            onFocusChange={(id) => dispatch({ type: 'SET_FOCUS', id })}
-            onMobileToggle={(id) => dispatch({ type: 'TOGGLE_MOBILE_LOCK', id })}
-          />
-        ))}
+      <div className={styles.glassField} aria-label={t('about.featurePlane')}>
+        <aside className={`${styles.detachedFeature} ${styles.securityFeature}`}>
+          {renderFeature('security')}
+        </aside>
+        <aside className={`${styles.detachedFeature} ${styles.desktopFeature}`}>
+          {renderFeature('desktop-organizer')}
+        </aside>
+
+        <article
+          ref={(node) => { articleRefs.current[0] = node; }}
+          className={`${styles.glassContent} ${styles.editorGlass}`}
+          data-glass-id={GLASS_IDS[0]}
+          tabIndex={interactive ? 0 : -1}
+          {...articleEvents(0)}
+        >
+          <div className={styles.glassTextFallback}>{renderFeature('text-editor')}</div>
+        </article>
+
+        <article
+          ref={(node) => { articleRefs.current[1] = node; }}
+          className={`${styles.glassContent} ${styles.companionGlass}`}
+          data-glass-id={GLASS_IDS[1]}
+          tabIndex={interactive ? 0 : -1}
+          {...articleEvents(1)}
+        >
+          <div className={styles.glassTextFallback}>{renderFeature('companion-chat')}</div>
+        </article>
+
+        <article
+          ref={(node) => { articleRefs.current[2] = node; }}
+          className={`${styles.glassContent} ${styles.filesGlass}`}
+          data-glass-id={GLASS_IDS[2]}
+          tabIndex={interactive ? 0 : -1}
+          {...articleEvents(2)}
+        >
+          <div className={styles.glassTextFallback}>{renderFeature('file-management')}</div>
+        </article>
       </div>
-      <div
-        className={styles.titleSafeZone}
-        data-about-title
-        data-about-safe-zone
-        onPointerEnter={() => dispatch({ type: 'SET_HOVER', id: null })}
-      >
-        <h2>
-          <PointerTiltText pointer={pointer} viewport={viewport} disabled={motionDisabled}>
-            AI Pet
-          </PointerTiltText>
-        </h2>
-      </div>
-      <AboutFeaturePreview feature={activeFeature} pointer={pointer} reducedMotion={motionDisabled} />
     </section>
   );
 }

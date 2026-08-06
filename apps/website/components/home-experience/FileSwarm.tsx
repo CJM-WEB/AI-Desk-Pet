@@ -13,7 +13,7 @@ import {
 import type { FileParticle } from './swarm-model';
 import type { FileKind, PointerPoint } from './types';
 import { useI18n } from '../i18n/I18nProvider';
-import type { FilePreviewContentSource } from '../website-experience/shared-visual-model';
+import type { FilePreviewContentSource } from './visual-types';
 import {
   FilePreview,
   type PreviewAnchorRect,

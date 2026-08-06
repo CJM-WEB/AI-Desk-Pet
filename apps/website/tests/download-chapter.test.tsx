@@ -1,48 +1,112 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../components/i18n/I18nProvider';
+import { LIQUID_GLASS_FRAGMENT_SHADER } from '../components/home-experience/liquid-glass-shaders';
 import { DownloadChapter } from '../components/website-experience/download/DownloadChapter';
 import { isLocalInputElement } from '../components/website-experience/use-website-controller';
 
-function setMobileViewport(matches: boolean) {
-  Object.defineProperty(window, 'matchMedia', {
-    configurable: true,
-    value: vi.fn().mockImplementation(() => ({
-      matches,
-      media: '(max-width: 760px)',
-      onchange: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
-    }))
-  });
-}
-
-describe('下载安装章节', () => {
-  beforeEach(() => setMobileViewport(false));
-
+describe('下载模块', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
   });
 
-  it('未发布 Windows 版本不渲染死链，并显示不可用状态', () => {
-    render(<DownloadChapter interactive />);
+  it('展示平台标题、文字选择器与未发布状态', () => {
+    const { container } = render(<DownloadChapter interactive staticFallback />);
 
+    expect(screen.getByRole('heading', { name: '选择你的平台' })).toBeTruthy();
     expect(screen.getAllByTestId('pointer-tilt-text')).toHaveLength(2);
-    expect(screen.getByText('Windows')).toBeTruthy();
-    expect(screen.getByText('macOS')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '当前平台为 Windows' })
+      .getAttribute('aria-pressed')).toBe('true');
     expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
     expect((screen.getByRole('button', { name: '尚未发布' }) as HTMLButtonElement)
       .disabled).toBe(true);
+    expect(container.querySelectorAll('[class*="typingChar"]').length).toBeGreaterThan(20);
+    expect(screen.queryByText('AI PET')).toBeNull();
+    expect(screen.getAllByTestId('pointer-tilt-text')[1]?.className)
+      .toContain('platformWordTilt');
+  });
+
+  it('点击文字选择器后切换 macOS 内容', () => {
+    render(<DownloadChapter interactive staticFallback />);
+
     fireEvent.click(screen.getByRole('button', { name: '选择 macOS' }));
+
+    expect(screen.getByTestId('download-chapter').dataset.activePlatform).toBe('macos');
+    expect(screen.getByRole('button', { name: '当前平台为 macOS' })
+      .getAttribute('aria-pressed')).toBe('true');
     expect(screen.queryByRole('link', { name: /macOS/u })).toBeNull();
     expect((screen.getByRole('button', { name: '即将支持' }) as HTMLButtonElement)
       .disabled).toBe(true);
   });
 
-  it('英文环境使用精简下载文案', () => {
+  it('滚轮不切换平台并继续交给全局章节控制', () => {
+    const globalChapterWheel = vi.fn();
+    const bubbledWheel = vi.fn((event: WheelEvent) => {
+      if (!isLocalInputElement(event.target as HTMLElement)) globalChapterWheel();
+    });
+    window.addEventListener('wheel', bubbledWheel);
+    render(<DownloadChapter interactive staticFallback />);
+
+    const selector = screen.getByRole('group', { name: '选择下载平台' });
+    fireEvent.wheel(selector, { deltaY: 120, bubbles: true });
+
+    expect(screen.getByTestId('download-chapter').dataset.activePlatform).toBe('windows-x64');
+    expect(bubbledWheel).toHaveBeenCalledOnce();
+    expect(globalChapterWheel).toHaveBeenCalledOnce();
+    window.removeEventListener('wheel', bubbledWheel);
+  });
+
+  it('安装提示与常见问题只保留语义层并由独立玻璃纹理显示', () => {
+    const { container } = render(
+      <DownloadChapter interactive staticFallback transitionProgress={2} />
+    );
+    const notice = screen.getByRole('region', { name: '安装前须知 · 常见问题' });
+    expect(notice.textContent).toContain('安装前须知');
+    expect(notice.textContent).toContain('常见问题');
+    expect(container.querySelector('[class*="glassCopyContent"]')).toBeNull();
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
+      'uniform sampler2D u_downloadTextTexture;'
+    );
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
+      'texture2D(u_downloadTextTexture, featureUv - downloadMotion)'
+    );
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain(
+      'texture2D(u_glassTextTexture, featureUv - downloadMotion)'
+    );
+  });
+
+  it('Windows 大字在下载过渡末段前保持在屏幕外', () => {
+    const { rerender } = render(
+      <DownloadChapter interactive staticFallback transitionProgress={1.286} />
+    );
+    const chapter = screen.getByTestId('download-chapter');
+    expect(chapter.style.getPropertyValue('--platform-offset')).toBe('130vw');
+
+    rerender(<DownloadChapter interactive staticFallback transitionProgress={2} />);
+    expect(chapter.style.getPropertyValue('--platform-offset')).toBe('0vw');
+  });
+
+  it('点击下载玻璃时交给共享液态玻璃启动真实水波', () => {
+    const ripple = vi.fn();
+    window.addEventListener('ai-pet-liquid-ripple', ripple);
+    const { container } = render(
+      <DownloadChapter interactive transitionProgress={1.7} />
+    );
+    fireEvent.pointerDown(screen.getByRole('region', { name: '安装前须知 · 常见问题' }), {
+      button: 0,
+      clientX: 120,
+      clientY: 240
+    });
+
+    expect(ripple).toHaveBeenCalledOnce();
+    expect(container.querySelector('feDisplacementMap')).toBeNull();
+    window.removeEventListener('ai-pet-liquid-ripple', ripple);
+  });
+
+  it('英文环境使用对应的平台与状态文案', () => {
     render(
       <I18nProvider initialLocale="en">
         <DownloadChapter interactive staticFallback />
@@ -50,104 +114,8 @@ describe('下载安装章节', () => {
     );
 
     expect(screen.getByRole('heading', { name: 'Choose Your Platform' })).toBeTruthy();
-    expect(screen.queryByRole('link', { name: 'Download Windows' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Current platform: Windows' })).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Not yet published' }) as HTMLButtonElement)
       .disabled).toBe(true);
-  });
-
-  it('桌面端 hover 和 focus 临时展开，点击不锁定', () => {
-    render(<DownloadChapter interactive />);
-    const root = screen.getByTestId('download-chapter');
-    const trigger = screen.getByRole('button', { name: '显示常见问题' });
-
-    expect(trigger.hasAttribute('aria-pressed')).toBe(false);
-    fireEvent.pointerEnter(trigger);
-    expect(root.dataset.visibleSide).toBe('faq');
-    fireEvent.pointerLeave(trigger);
-    expect(root.dataset.visibleSide).toBe('none');
-
-    fireEvent.focus(trigger);
-    expect(root.dataset.visibleSide).toBe('faq');
-    fireEvent.click(trigger);
-    fireEvent.blur(trigger);
-    expect(root.dataset.visibleSide).toBe('none');
-  });
-
-  it('移动端轻触打开侧栏并由章节空白处关闭', () => {
-    setMobileViewport(true);
-    render(<DownloadChapter interactive />);
-    const root = screen.getByTestId('download-chapter');
-    const trigger = screen.getByRole('button', { name: '显示安装前须知' });
-
-    fireEvent.click(trigger);
-    expect(root.dataset.visibleSide).toBe('notice');
-    fireEvent.click(root);
-    expect(root.dataset.visibleSide).toBe('none');
-  });
-
-  it('两个可滚动侧栏让滚轮正常冒泡但被全局章节控制器识别为局部输入', () => {
-    const globalChapterWheel = vi.fn();
-    const bubbledWheel = vi.fn((event: WheelEvent) => {
-      if (!isLocalInputElement(event.target as HTMLElement)) {
-        globalChapterWheel();
-      }
-    });
-    window.addEventListener('wheel', bubbledWheel);
-    render(<DownloadChapter interactive />);
-
-    const panels = document.querySelectorAll<HTMLElement>('[data-side-panel]');
-    expect(panels).toHaveLength(2);
-    for (const panel of panels) {
-      expect(panel.dataset.inputScope).toBe('local');
-      fireEvent.wheel(panel, { deltaY: 120, bubbles: true });
-    }
-
-    expect(bubbledWheel).toHaveBeenCalledTimes(2);
-    expect(globalChapterWheel).not.toHaveBeenCalled();
-    window.removeEventListener('wheel', bubbledWheel);
-  });
-
-  it('侧栏标题和每条内容保留稳定动画语义标记', () => {
-    render(<DownloadChapter interactive />);
-
-    expect(document.querySelectorAll('[data-panel-heading]')).toHaveLength(2);
-    expect(document.querySelectorAll('[data-panel-item]')).toHaveLength(6);
-  });
-
-  it('局部滚筒消费滚轮并切换数据配置的下一个平台', () => {
-    render(<DownloadChapter interactive />);
-    const stack = screen.getByRole('group', { name: '选择下载平台' });
-    const wheel = new WheelEvent('wheel', {
-      bubbles: true,
-      cancelable: true,
-      deltaY: 120
-    });
-    const preventDefault = vi.spyOn(wheel, 'preventDefault');
-
-    fireEvent(stack, wheel);
-
-    expect(preventDefault).toHaveBeenCalledOnce();
-    expect(stack.dataset.activePlatform).toBe('macos');
-  });
-
-  it('Escape 重置平台状态并让焦点退出局部滚筒', () => {
-    render(<DownloadChapter interactive />);
-    const stack = screen.getByRole('group', { name: '选择下载平台' });
-    const blur = vi.spyOn(stack, 'blur');
-    const event = new KeyboardEvent('keydown', {
-      bubbles: true,
-      cancelable: true,
-      key: 'Escape'
-    });
-    const preventDefault = vi.spyOn(event, 'preventDefault');
-    const stopPropagation = vi.spyOn(event, 'stopPropagation');
-
-    stack.focus();
-    fireEvent(stack, event);
-
-    expect(preventDefault).toHaveBeenCalledOnce();
-    expect(stopPropagation).toHaveBeenCalledOnce();
-    expect(blur).toHaveBeenCalledOnce();
-    expect(document.activeElement).not.toBe(stack);
   });
 });

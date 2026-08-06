@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
-import type { RgbColor } from '../website-experience/shared-visual-model';
+import type { RgbColor } from './visual-types';
 import { trailAlpha } from './pointer-model';
 import type { PointerPoint } from './types';
 import styles from './home-experience.module.css';

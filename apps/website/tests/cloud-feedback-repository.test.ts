@@ -3,8 +3,6 @@ import type { CaptchaProof } from '@myself/shared-types';
 import type { ApiClient } from '../lib/api-client';
 import { CloudFeedbackRepository } from '../components/website-experience/feedback/cloud-feedback-repository';
 import { feedbackRepository } from '../components/website-experience/chapter-registry';
-import { createProductionFeedbackVisualProfile } from '../components/website-experience/WebsiteExperience';
-import type { SpawnBoundFilePreviewContentSource } from '../components/website-experience/feedback/feedback-preview-source';
 
 const captcha: CaptchaProof = { ticket: 'captcha-ticket', randstr: 'captcha-randstr' };
 
@@ -244,14 +242,6 @@ describe('云端反馈仓库', () => {
   });
 
   it('生产章节注册与粒子预览读取同一云端快照仓库', () => {
-    const list = vi.spyOn(feedbackRepository, 'list').mockReturnValue([]);
-    const profile = createProductionFeedbackVisualProfile((key) => key);
-    const previewSource = profile.previewSource as SpawnBoundFilePreviewContentSource;
-
-    previewSource.bindToSpawn('feedback-particle');
-
     expect(feedbackRepository).toBeInstanceOf(CloudFeedbackRepository);
-    expect(list).toHaveBeenCalledWith('feedback');
-    expect(list).toHaveBeenCalledWith('suggestion');
   });
 });

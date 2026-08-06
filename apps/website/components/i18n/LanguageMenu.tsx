@@ -1,18 +1,27 @@
 'use client';
 
-import { Check, Languages } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties, MouseEvent } from 'react';
+import { LIQUID_GLASS_RIPPLE_EVENT } from '../home-experience/LiquidGlassHome';
 import type { Locale } from './i18n-types';
 import { useI18n } from './I18nProvider';
 import styles from './language-menu.module.css';
 
 const languageOptions: readonly Locale[] = ['zh-CN', 'en'];
 
-export function LanguageMenu() {
+interface LanguageMenuProps {
+  transitionProgress?: number;
+}
+
+export function LanguageMenu({ transitionProgress = 0 }: LanguageMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const { locale, setLocale, t } = useI18n();
+  const progress = Math.min(1, Math.max(0, transitionProgress));
+  const exitY = progress < 0.14
+    ? (progress / 0.14) * 14
+    : 14 - (((progress - 0.14) / 0.86) * 190);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -73,43 +82,78 @@ export function LanguageMenu() {
     triggerRef.current?.focus();
   };
 
+  /** 同步参考页的控件近场波纹，并通知首页画布生成同位置水波。 */
+  const triggerRipple = (event: MouseEvent<HTMLButtonElement>) => {
+    const target = event.currentTarget;
+    const bounds = target.getBoundingClientRect();
+    const ripple = document.createElement('span');
+    ripple.className = styles.ripple!;
+    ripple.style.left = `${event.clientX - bounds.left}px`;
+    ripple.style.top = `${event.clientY - bounds.top}px`;
+    ripple.addEventListener('animationend', () => ripple.remove(), { once: true });
+    target.append(ripple);
+    window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
+      detail: {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        strength: 1.35
+      }
+    }));
+  };
+
   return (
-    <div ref={containerRef} className={styles.controlLayer}>
+    <div
+      ref={containerRef}
+      className={styles.controlLayer}
+      style={{
+        '--language-exit-y': `${exitY}px`,
+        '--language-exit-opacity': Math.max(0, 1 - progress * 1.16)
+      } as CSSProperties}
+    >
       <button
         ref={triggerRef}
         type="button"
         className={styles.trigger}
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={(event) => {
+          triggerRipple(event);
+          setIsOpen((open) => !open);
+        }}
       >
-        <Languages aria-hidden="true" />
         <span>{t('language.button')}</span>
       </button>
-      {isOpen ? (
-        <div className={styles.menu} role="menu">
-          {languageOptions.map((option) => {
-            const label = option === 'zh-CN'
-              ? t('language.chinese')
-              : t('language.english');
-            const selected = locale === option;
+      <div
+        className={styles.menu}
+        data-open={isOpen}
+        role="menu"
+        aria-hidden={!isOpen}
+      >
+        {languageOptions.map((option) => {
+          const label = option === 'zh-CN'
+            ? t('language.chinese')
+            : t('language.english');
+          const selected = locale === option;
 
-            return (
-              <button
-                key={option}
-                type="button"
-                className={styles.option}
-                role="menuitemradio"
-                aria-checked={selected}
-                onClick={() => selectLocale(option)}
-              >
-                <span>{label}</span>
-                {selected ? <Check aria-hidden="true" /> : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+          return (
+            <button
+              key={option}
+              type="button"
+              className={styles.option}
+              data-selected={selected}
+              role="menuitemradio"
+              aria-checked={selected}
+              tabIndex={isOpen ? 0 : -1}
+              onClick={(event) => {
+                triggerRipple(event);
+                selectLocale(option);
+              }}
+            >
+              <span>{label}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

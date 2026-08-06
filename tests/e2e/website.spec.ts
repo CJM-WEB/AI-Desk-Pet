@@ -15,22 +15,13 @@ const ICON = '[data-testid="file-icon"]';
 const PREVIEW = '[data-testid="file-preview"]';
 const SWARM = '[data-active-count]';
 const CANVAS = '[data-testid="cursor-field"]';
-const BRAND = '[data-testid="brand-stage"]';
+const LIQUID_HOME = '[data-testid="liquid-glass-home"]';
 const DONATION = '[data-testid="donation-chapter"]';
 const E2E_ADMIN_TOKEN = 'e2e-admin-session';
 const SCREENSHOT_DIRECTORY = resolve(
   REPOSITORY_ROOT,
   'tests/.playwright-output/website/screenshots'
 );
-const FILE_ASSET_PATHS = new Set([
-  '/TxtIcon.png',
-  '/PDFIcon.png',
-  '/PPTIcon.png',
-  '/XLSIcon.png',
-  '/IMGIcon.png',
-  '/empty.png',
-  '/Noempty.png'
-]);
 const CHAPTER_IDS = [
   'home',
   'about',
@@ -418,8 +409,6 @@ test('服务器就绪等待在成功、超时和取消路径统一清理资源',
 
 async function enterInteractive(page: Page): Promise<void> {
   await page.goto('/?seed=42');
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', /drawing|settling|interactive/);
-  await page.mouse.click(12, 12);
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
 }
 
@@ -468,16 +457,9 @@ async function enterChapter(page: Page, chapterId: ChapterId): Promise<void> {
 async function waitForFile(page: Page): Promise<Locator> {
   await expect.poll(
     () => page.locator(ICON).count(),
-    { timeout: 6_000, message: '开场跳过后应生成至少一个文件粒子' }
+    { timeout: 6_000, message: '进入目标章节后应生成至少一个文件粒子' }
   ).toBeGreaterThan(0);
   return page.locator(ICON).first();
-}
-
-function getBrandHeading(page: Page): Locator {
-  return page.locator(BRAND).getByRole('heading', {
-    name: 'AI Pet',
-    exact: true
-  });
 }
 
 async function expectInsideViewport(page: Page, locator: Locator): Promise<void> {
@@ -751,62 +733,31 @@ async function expectNoWindowBubble(
   }
 }
 
-interface IntroCrossfadeSample {
-  captured: boolean;
-  logoOpacity: number;
-  visiblePieceCount: number;
-  visiblePieceFilters: string[];
-  pieceSources: Array<string | null>;
-}
-
-/**
- * 逐帧采样开场图层，确保完整 Logo 与至少一个磁吸切片在 drawing 阶段同时可见。
- */
-async function sampleIntroCrossfade(
-  page: Page,
-  timeoutMs = 2_800
-): Promise<IntroCrossfadeSample> {
-  return page.evaluate((timeout) => new Promise<IntroCrossfadeSample>((resolveSample) => {
-    const startedAt = performance.now();
-
-    const sampleFrame = () => {
-      const home = document.querySelector<HTMLElement>('[data-testid="home-experience"]');
-      const logo = document.querySelector<HTMLElement>('[data-testid="brand-logo"]');
-      const pieces = Array.from(
-        document.querySelectorAll<HTMLElement>('[data-testid="magnetic-logo-piece"]')
-      );
-      const logoOpacity = logo ? Number(getComputedStyle(logo).opacity) : 0;
-      const visiblePieces = pieces.filter(
-        (piece) => Number(getComputedStyle(piece).opacity) > 0
-      );
-      const captured = home?.getAttribute('data-phase') === 'drawing'
-        && logoOpacity > 0
-        && logoOpacity < 1
-        && visiblePieces.length > 0;
-      const result = {
-        captured,
-        logoOpacity,
-        visiblePieceCount: visiblePieces.length,
-        visiblePieceFilters: visiblePieces.map(
-          (piece) => getComputedStyle(piece).filter
-        ),
-        pieceSources: pieces.map((piece) => piece.getAttribute('src'))
-      };
-
-      if (captured || performance.now() - startedAt >= timeout) {
-        resolveSample(result);
-        return;
-      }
-
-      requestAnimationFrame(sampleFrame);
-    };
-
-    requestAnimationFrame(sampleFrame);
-  }), timeoutMs);
-}
-
 async function readProgress(page: Page): Promise<number> {
   return Number(await page.locator(HOME).getAttribute('data-progress'));
+}
+
+async function countWebglLitSamples(canvas: Locator): Promise<number> {
+  return canvas.evaluate((element) => {
+    if (!(element instanceof HTMLCanvasElement)) {
+      throw new Error('液态玻璃不是 Canvas 元素');
+    }
+
+    const context = element.getContext('webgl');
+    if (!context || element.width === 0 || element.height === 0) return 0;
+
+    const pixel = new Uint8Array(4);
+    const stepX = Math.max(1, Math.floor(element.width / 18));
+    const stepY = Math.max(1, Math.floor(element.height / 24));
+    let litSamples = 0;
+    for (let y = 0; y < element.height; y += stepY) {
+      for (let x = 0; x < element.width; x += stepX) {
+        context.readPixels(x, y, 1, 1, context.RGBA, context.UNSIGNED_BYTE, pixel);
+        if (pixel[0] + pixel[1] + pixel[2] > 36) litSamples += 1;
+      }
+    }
+    return litSamples;
+  });
 }
 
 async function countCanvasAlphaPixels(canvas: Locator): Promise<number> {
@@ -1478,8 +1429,6 @@ test('暂停期间结束的触屏不会锁死后续章节手势', async ({ page 
     }));
     window.dispatchEvent(new Event('focus'));
   });
-  await expect(page.locator(SWARM)).toHaveAttribute('data-paused', 'false');
-
   await page.evaluate(() => {
     document.body.dispatchEvent(new PointerEvent('pointerdown', {
       bubbles: true,
@@ -1921,15 +1870,12 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
   expect(runtimeErrors).toEqual([]);
 });
 
-test('390 首屏 drawing 阶段点击下一章节一次即可进入介绍章', async ({ page }) => {
+test('390 首屏直接交互且点击下一章节一次进入介绍章', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/?seed=42');
 
-  await expect(page.locator(HOME)).toHaveAttribute(
-    'data-phase',
-    /drawing|settling/
-  );
+  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
   await page.getByRole('button', { name: '下一章节' }).click();
 
   await expect(page.locator(WEBSITE)).toHaveAttribute(
@@ -1981,15 +1927,15 @@ test('目标视口六章节无溢出遮挡且减少动态效果保持完整导�
     await page.goto('/?seed=42');
 
     const experience = page.locator(WEBSITE);
-    const canvas = page.locator(CANVAS);
+    const liquidHome = page.locator(LIQUID_HOME);
     const next = page.getByRole('button', { name: '下一章节' });
     await expect(experience).toHaveAttribute('data-reduced-motion', 'true');
     await expect(page.locator(HOME)).toHaveAttribute(
       'data-phase',
       'interactive'
     );
-    await expect(canvas).toBeHidden();
-    expect(await countCanvasAlphaPixels(canvas)).toBe(0);
+    await expect(liquidHome).toHaveAttribute('data-active', 'true');
+    await expect(liquidHome.locator('canvas')).toBeVisible();
 
     if (viewport.width === 1920) {
       await page.screenshot({
@@ -2064,13 +2010,12 @@ test('matchMedia 初始化异常时进入静态回退且不出现黑屏', async 
   await page.goto('/');
   const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  const overlay = page.locator('[data-layer="intro"]');
 
   await expect(home).toHaveAttribute('data-phase', 'interactive');
   await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
-  await expect(overlay).toHaveAttribute('data-active', 'false');
-  await expect(overlay).toBeHidden();
-  await expect(getBrandHeading(page)).toBeVisible();
+  await expect(page.locator('[data-layer="intro"]')).toHaveCount(0);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeVisible();
   await expect(page.locator('[data-testid="cursor-field"]')).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
 });
@@ -2079,78 +2024,52 @@ test('AP Logo 素材加载失败时进入静态回退并保留品牌标题', asy
   await page.route('**/AP.png', (route) => route.abort());
 
   await page.goto('/');
-  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  const overlay = page.locator('[data-layer="intro"]');
 
-  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(overlay).toHaveAttribute('data-active', 'false');
-  await expect(overlay).toBeHidden();
-  await expect(getBrandHeading(page)).toBeVisible();
+  await expect(page.locator('[data-layer="intro"]')).toHaveCount(0);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute(
+    'data-initialization-failed',
+    'true'
+  );
+  await expect(page.locator(LIQUID_HOME).getByText('AI PET')).toBeVisible();
 });
 
-test('Canvas 尺寸观察器初始化异常时进入静态回退', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  await page.addInitScript(() => {
-    Object.defineProperty(window, 'ResizeObserver', {
-      configurable: true,
-      value: class {
-        constructor() {
-          throw new Error('ResizeObserver 初始化失败');
-        }
-      }
-    });
-  });
-
-  await page.goto('/');
-  const experience = page.locator(WEBSITE);
-  const home = page.locator(HOME);
-  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
-  await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(getBrandHeading(page)).toBeVisible();
-  await expect(page.locator(CANVAS)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveCount(0);
-  expect(runtimeErrors).toEqual([]);
-});
-
-test('Canvas 2D 上下文不可用时进入静态回退', async ({ page }) => {
+test('WebGL 上下文不可用时仅首页进入静态回退', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.addInitScript(() => {
     HTMLCanvasElement.prototype.getContext = () => null;
   });
 
   await page.goto('/');
-  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(getBrandHeading(page)).toBeVisible();
-  await expect(page.locator(CANVAS)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveCount(0);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute(
+    'data-initialization-failed',
+    'true'
+  );
+  await expect(page.locator(LIQUID_HOME).getByText('AI PET')).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });
 
-test('随机源初始化异常时进入静态回退', async ({ page }) => {
+test('390 离开再返回首页会重新上传 WebGL 纹理而不变黑', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
-  await page.addInitScript(() => {
-    Object.defineProperty(Crypto.prototype, 'getRandomValues', {
-      configurable: true,
-      value: () => {
-        throw new Error('随机源初始化失败');
-      }
-    });
-  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?seed=42');
 
-  await page.goto('/');
-  await page.mouse.click(12, 12);
-  const experience = page.locator(WEBSITE);
-  const home = page.locator(HOME);
-  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
-  await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(getBrandHeading(page)).toBeVisible();
-  await expect(page.locator(CANVAS)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveCount(0);
+  const canvas = page.locator(`${LIQUID_HOME} canvas`);
+  await expect(canvas).toBeVisible();
+  await expect.poll(() => countWebglLitSamples(canvas)).toBeGreaterThan(20);
+  const initialSamples = await countWebglLitSamples(canvas);
+
+  await page.getByRole('button', { name: '下一章节' }).click();
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'about');
+  await page.getByRole('button', { name: '上一章节' }).click();
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'home');
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect.poll(() => countWebglLitSamples(canvas)).toBeGreaterThan(
+    Math.floor(initialSamples * 0.3)
+  );
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -2228,85 +2147,19 @@ test('静态回退通过运行时属性关闭章节与付款码动效', async ({
   expect(runtimeErrors).toEqual([]);
 });
 
-test('减少动态效果时文件保持分离可聚焦且预览立即定位', async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await enterInteractive(page);
-  await expect.poll(() => page.locator(ICON).count(), { timeout: 6_000 }).toBeGreaterThanOrEqual(2);
-
-  const firstIcon = page.locator(ICON).nth(0);
-  const secondIcon = page.locator(ICON).nth(1);
-  await expect(firstIcon).toHaveAttribute('data-phase', 'floating');
-  const visibleState = await firstIcon.locator('span').evaluate((motion) => {
-    const style = getComputedStyle(motion);
-    return {
-      opacity: style.opacity,
-      visibility: style.visibility
-    };
-  });
-  expect(visibleState).toEqual({
-    opacity: '1',
-    visibility: 'visible'
-  });
-  const firstBox = await firstIcon.boundingBox();
-  const secondBox = await secondIcon.boundingBox();
-  expect(firstBox).not.toBeNull();
-  expect(secondBox).not.toBeNull();
-  expect(
-    Math.abs(firstBox!.x - secondBox!.x) + Math.abs(firstBox!.y - secondBox!.y)
-  ).toBeGreaterThan(8);
-
-  const initialPosition = await firstIcon.evaluate((icon) => {
-    const rect = icon.getBoundingClientRect();
-    const style = getComputedStyle(icon);
-    return {
-      left: rect.left,
-      top: rect.top,
-      transform: style.transform,
-      x: style.getPropertyValue('--file-x'),
-      y: style.getPropertyValue('--file-y')
-    };
-  });
-  await page.waitForTimeout(700);
-  const settledPosition = await firstIcon.evaluate((icon) => {
-    const rect = icon.getBoundingClientRect();
-    const style = getComputedStyle(icon);
-    return {
-      left: rect.left,
-      top: rect.top,
-      transform: style.transform,
-      x: style.getPropertyValue('--file-x'),
-      y: style.getPropertyValue('--file-y')
-    };
-  });
-  expect(settledPosition).toEqual(initialPosition);
-
-  await firstIcon.hover();
-  await expect(page.locator(PREVIEW)).toBeVisible();
-  await page.mouse.move(720, 450);
-  await expect(page.locator(PREVIEW)).toHaveCount(0);
-
-  await firstIcon.focus();
-  await expect(firstIcon).toBeFocused();
-  await expect(page.locator(PREVIEW)).toBeVisible();
-  await expect(page.locator(PREVIEW)).toHaveAttribute('data-motion-state', 'inactive');
-  await expect(page.locator(SWARM)).toHaveAttribute('data-preview-tween-state', 'inactive');
-  await expectInsideViewport(page, page.locator(PREVIEW));
-});
-
-test('390 宽度无横向溢出且隐藏 Canvas 并最多显示四个图标', async ({ page }) => {
+test('390 宽度液态玻璃首页无横向溢出', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await enterInteractive(page);
-  await waitForFile(page);
 
   const viewportWidths = await page.locator(HOME).evaluate((home) => ({
     client: home.clientWidth,
     scroll: home.scrollWidth
   }));
   expect(viewportWidths.scroll).toBeLessThanOrEqual(viewportWidths.client);
-  await expect(page.locator(CANVAS)).toBeHidden();
-  expect(await page.locator(`${ICON}:visible`).count()).toBeLessThanOrEqual(4);
-  await expect(getBrandHeading(page)).toBeVisible();
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeVisible();
+  await expect(page.locator(SWARM)).toHaveCount(0);
 
   const scrollEvidence = await page.locator(WEBSITE).evaluate((experience) => {
     const home = experience.querySelector<HTMLElement>(
@@ -2379,524 +2232,11 @@ test('760/761 断点提供移动章节导航且六章节不横向溢出', async 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('文件预览挂载在预览层并位于品牌层之上', async ({ page }) => {
-  await enterInteractive(page);
-  const icon = await waitForFile(page);
-  await icon.hover();
-
-  const preview = page.locator(PREVIEW);
-  await expect(preview).toBeVisible();
-  const layerEvidence = await preview.evaluate((node) => {
-    const previewLayer = node.parentElement;
-    const brandLayer = document.querySelector('[data-layer="brand"]');
-    return {
-      parentLayer: previewLayer?.getAttribute('data-layer'),
-      previewZ: Number(previewLayer ? getComputedStyle(previewLayer).zIndex : -1),
-      brandZ: Number(brandLayer ? getComputedStyle(brandLayer).zIndex : -1)
-    };
-  });
-
-  expect(layerEvidence.parentLayer).toBe('preview');
-  expect(layerEvidence.previewZ).toBeGreaterThan(layerEvidence.brandZ);
-});
-
-test('开场跳过后生成文件且活动数始终不超过 10', async ({ page }) => {
-  await enterInteractive(page);
-  await waitForFile(page);
-
-  await page.evaluate((selector) => {
-    const swarm = document.querySelector(selector);
-    if (!swarm) {
-      throw new Error('缺少文件队列根层');
-    }
-
-    const recordCount = () => {
-      const current = Number(swarm.getAttribute('data-active-count') ?? 0);
-      const previous = Number(Reflect.get(window, '__websiteMaxFileCount') ?? 0);
-      Reflect.set(window, '__websiteMaxFileCount', Math.max(previous, current));
-    };
-    recordCount();
-    const observer = new MutationObserver(recordCount);
-    observer.observe(swarm, {
-      attributes: true,
-      attributeFilter: ['data-active-count']
-    });
-    Reflect.set(window, '__websiteCountObserver', observer);
-  }, SWARM);
-
-  await page.waitForTimeout(12_000);
-  const maximumCount = await page.evaluate(
-    () => Number(Reflect.get(window, '__websiteMaxFileCount') ?? 0)
-  );
-
-  expect(maximumCount).toBeGreaterThan(0);
-  expect(maximumCount).toBeLessThanOrEqual(10);
-  await expect(page.locator(SWARM)).toHaveAttribute('data-active-count', /^\d+$/);
-});
-
-test('七类素材全部失败后逐步禁用并停止生成', async ({ page }) => {
-  await page.route('**/*', async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    if (FILE_ASSET_PATHS.has(pathname)) {
-      await route.abort();
-      return;
-    }
-    await route.continue();
-  });
-
-  await enterInteractive(page);
-  await expect(page.locator(SWARM)).toHaveAttribute('data-disabled-count', '0');
-  await page.evaluate((selectors) => {
-    const swarm = document.querySelector(selectors.swarm);
-    if (!swarm) {
-      throw new Error('缺少文件队列根层');
-    }
-
-    Reflect.set(window, '__disabledCountHistory', []);
-    Reflect.set(window, '__sawLeavingParticle', false);
-    const recordState = () => {
-      const history = Reflect.get(window, '__disabledCountHistory') as number[];
-      const count = Number(swarm.getAttribute('data-disabled-count') ?? 0);
-      if (history.at(-1) !== count) {
-        history.push(count);
-      }
-      if (swarm.querySelector(`${selectors.icon}[data-phase="leaving"]`)) {
-        Reflect.set(window, '__sawLeavingParticle', true);
-      }
-    };
-    recordState();
-    const observer = new MutationObserver(recordState);
-    observer.observe(swarm, {
-      attributes: true,
-      attributeFilter: ['data-disabled-count'],
-      childList: true,
-      subtree: true
-    });
-    Reflect.set(window, '__disabledCountObserver', observer);
-  }, { swarm: SWARM, icon: ICON });
-
-  await expect(page.locator(SWARM)).toHaveAttribute(
-    'data-disabled-count',
-    '7',
-    { timeout: 15_000 }
-  );
-  await expect(page.locator(SWARM)).toHaveAttribute('data-active-count', '0');
-  await expect(page.locator(ICON)).toHaveCount(0);
-
-  const failureEvidence = await page.evaluate(() => ({
-    disabledCounts: Reflect.get(window, '__disabledCountHistory') as number[],
-    sawLeavingParticle: Boolean(Reflect.get(window, '__sawLeavingParticle'))
-  }));
-  expect(failureEvidence.disabledCounts).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-  expect(failureEvidence.sawLeavingParticle).toBe(true);
-
-  await page.waitForTimeout(2_000);
-  await expect(page.locator(SWARM)).toHaveAttribute('data-active-count', '0');
-  await expect(page.locator(ICON)).toHaveCount(0);
-});
-
-test('预览保持单例并在键鼠模式间转移后正确关闭', async ({ page }) => {
-  const consoleErrors: string[] = [];
-  page.on('console', (message) => {
-    if (message.type() === 'error') {
-      consoleErrors.push(message.text());
-    }
-  });
-  page.on('pageerror', (error) => consoleErrors.push(error.message));
-
-  await enterInteractive(page);
-  await expect(page.locator(SWARM)).toHaveAttribute(
-    'data-preview-tween-state',
-    'inactive'
-  );
-  const icon = await waitForFile(page);
-  const iconBox = await icon.boundingBox();
-  expect(iconBox).not.toBeNull();
-
-  await icon.hover();
-  await expect(page.locator(PREVIEW)).toHaveCount(1);
-  await expect(page.locator(PREVIEW)).toBeVisible();
-  await expect(page.locator(SWARM)).toHaveAttribute(
-    'data-preview-tween-state',
-    'active'
-  );
-  const firstPreviewBox = await page.locator(PREVIEW).boundingBox();
-  expect(firstPreviewBox).not.toBeNull();
-
-  await page.mouse.move(
-    iconBox!.x + (iconBox!.width * 0.65),
-    iconBox!.y + (iconBox!.height * 0.65)
-  );
-  let followedPreviewBox = await page.locator(PREVIEW).boundingBox();
-  await expect.poll(async () => {
-    followedPreviewBox = await page.locator(PREVIEW).boundingBox();
-    if (!followedPreviewBox) return 0;
-    return Math.abs(followedPreviewBox.x - firstPreviewBox!.x)
-      + Math.abs(followedPreviewBox.y - firstPreviewBox!.y);
-  }, {
-    message: '指针移动后预览应跟随到新位置'
-  }).toBeGreaterThan(2);
-  expect(followedPreviewBox).not.toBeNull();
-  expect(Math.abs(followedPreviewBox!.x - firstPreviewBox!.x)
-    + Math.abs(followedPreviewBox!.y - firstPreviewBox!.y)).toBeGreaterThan(2);
-
-  await page.mouse.down();
-  await page.mouse.up();
-  await expect(icon).toBeFocused();
-  await page.mouse.move(4, 4);
-
-  const focusedIconBox = await icon.boundingBox();
-  let keyboardPreviewBox = await page.locator(PREVIEW).boundingBox();
-  expect(focusedIconBox).not.toBeNull();
-  const keyboardTargetX = focusedIconBox!.x + focusedIconBox!.width;
-  const keyboardTargetY = focusedIconBox!.y + (focusedIconBox!.height / 2);
-  await expect.poll(async () => {
-    keyboardPreviewBox = await page.locator(PREVIEW).boundingBox();
-    if (!keyboardPreviewBox) return Number.POSITIVE_INFINITY;
-    const horizontalGap = Math.min(
-      Math.abs(keyboardPreviewBox.x - keyboardTargetX),
-      Math.abs(
-        keyboardPreviewBox.x
-        + keyboardPreviewBox.width
-        - keyboardTargetX
-      )
-    );
-    const verticalGap = Math.min(
-      Math.abs(keyboardPreviewBox.y - keyboardTargetY),
-      Math.abs(
-        keyboardPreviewBox.y
-        + keyboardPreviewBox.height
-        - keyboardTargetY
-      )
-    );
-    return Math.min(horizontalGap, verticalGap);
-  }, {
-    message: '键盘聚焦后预览应贴近文件图标'
-  }).toBeLessThanOrEqual(20);
-  expect(keyboardPreviewBox).not.toBeNull();
-  await expectInsideViewport(page, page.locator(PREVIEW));
-
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await expect(page.locator(PREVIEW)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveAttribute(
-    'data-preview-tween-state',
-    'inactive'
-  );
-
-  for (let index = 0; index < 3; index += 1) {
-    await icon.hover();
-    await expect(page.locator(PREVIEW)).toHaveCount(1);
-    await expect(page.locator(SWARM)).toHaveAttribute(
-      'data-preview-tween-state',
-      'active'
-    );
-    await page.mouse.move(4, 4);
-    await expect(page.locator(PREVIEW)).toHaveCount(0);
-    await expect(page.locator(SWARM)).toHaveAttribute(
-      'data-preview-tween-state',
-      'inactive'
-    );
-  }
-
-  expect(consoleErrors).toEqual([]);
-});
-
-test('完整退场卸载预览前会清理 quickTo 动画', async ({ page }) => {
-  await enterInteractive(page);
-  const icon = await waitForFile(page);
-
-  await icon.hover();
-  await expect(page.locator(PREVIEW)).toHaveAttribute(
-    'data-motion-state',
-    'active'
-  );
-  await page.locator(WEBSITE).evaluate((experience, previewSelector) => {
-    const preview = experience.querySelector(previewSelector);
-    if (!preview) {
-      throw new Error('缺少活动文件预览');
-    }
-
-    const history = [preview.getAttribute('data-motion-state') ?? 'missing'];
-    Reflect.set(experience, '__previewMotionHistory', history);
-    const observer = new MutationObserver((records) => {
-      for (const record of records) {
-        if (record.type === 'attributes' && record.target === preview) {
-          const state = preview.getAttribute('data-motion-state') ?? 'missing';
-          if (history.at(-1) !== state) {
-            history.push(state);
-          }
-        }
-
-        if (record.type === 'childList') {
-          const previewWasRemoved = Array.from(record.removedNodes).some(
-            (node) => node === preview
-              || (node instanceof Element && node.contains(preview))
-          );
-          if (previewWasRemoved && history.at(-1) !== 'removed') {
-            history.push('removed');
-          }
-        }
-      }
-    });
-    observer.observe(experience, {
-      attributes: true,
-      attributeFilter: ['data-motion-state'],
-      childList: true,
-      subtree: true
-    });
-    Reflect.set(experience, '__previewMotionObserver', observer);
-  }, PREVIEW);
-
-  for (let index = 0; index < 9; index += 1) {
-    await page.keyboard.press('PageDown');
-  }
-
-  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '1.0000');
-  await expect(page.locator(PREVIEW)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveCount(0);
-  await expect.poll(
-    () => page.locator(WEBSITE).evaluate(
-      (experience) => Reflect.get(
-        experience,
-        '__previewMotionHistory'
-      ) as string[]
-    )
-  ).toEqual(['active', 'inactive', 'removed']);
-});
-
-test('进入 exiting 后不再增加粒子', async ({ page }) => {
-  await enterInteractive(page);
-  await waitForFile(page);
-  await expect.poll(() => page.locator(ICON).count(), { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
-
-  for (let index = 0; index < 7; index += 1) {
-    await page.keyboard.press('PageDown');
-  }
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'exiting');
-
-  const countAtExit = await page.locator(ICON).count();
-  await page.waitForTimeout(2_000);
-  expect(await page.locator(ICON).count()).toBeLessThanOrEqual(countAtExit);
-});
-
-test('暂停恢复不会让现有粒子瞬间过期', async ({ page }) => {
-  await enterInteractive(page);
-  const icon = await waitForFile(page);
-  const iconHandle = await icon.elementHandle();
-  expect(iconHandle).not.toBeNull();
-
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-  await expect(page.locator(SWARM)).toHaveAttribute('data-paused', 'true');
-  await page.waitForTimeout(7_000);
-  expect(await iconHandle!.evaluate((element) => element.isConnected)).toBe(true);
-
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(page.locator(SWARM)).toHaveAttribute('data-paused', 'false');
-  await page.waitForTimeout(150);
-  expect(await iconHandle!.evaluate((element) => element.isConnected)).toBe(true);
-});
-
-test('开场暂停恢复会冻结 drawing 时间线并在 focus 后完成', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  const home = page.locator(HOME);
-
-  await page.goto('/?seed=42');
-  await expect(home).toHaveAttribute('data-phase', 'drawing');
-  const crossfadeSample = await sampleIntroCrossfade(page);
-  expect(crossfadeSample.captured).toBe(true);
-
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-  await page.waitForTimeout(1_200);
-  await expect(home).toHaveAttribute('data-phase', 'drawing');
-
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(home).toHaveAttribute('data-phase', 'interactive', { timeout: 3_000 });
-  expect(runtimeErrors).toEqual([]);
-});
-
-test('自动开场在约三秒内完成磁吸归位并保持最终 Logo 与 1440 安全布局', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  await page.setViewportSize({ width: 1440, height: 900 });
-  // 在页面内记录阶段切换时刻，避免把 Playwright 轮询开销计入动画耗时。
-  await page.addInitScript((homeSelector) => {
-    Reflect.set(window, '__introStartedAt', null);
-    Reflect.set(window, '__introInteractiveAt', null);
-    Reflect.set(window, '__introPhaseHistory', []);
-    const recordPhase = () => {
-      const phase = document.querySelector(homeSelector)?.getAttribute('data-phase');
-      const history = Reflect.get(window, '__introPhaseHistory') as string[];
-      if (phase && history.at(-1) !== phase) {
-        history.push(phase);
-      }
-      if (phase === 'drawing' && Reflect.get(window, '__introStartedAt') === null) {
-        Reflect.set(window, '__introStartedAt', performance.now());
-      }
-      if (phase === 'interactive' && Reflect.get(window, '__introInteractiveAt') === null) {
-        Reflect.set(window, '__introInteractiveAt', performance.now());
-      }
-    };
-    const observer = new MutationObserver(recordPhase);
-    observer.observe(document, {
-      attributes: true,
-      attributeFilter: ['data-phase'],
-      childList: true,
-      subtree: true
-    });
-    Reflect.set(window, '__introPhaseObserver', observer);
-  }, HOME);
-
-  await page.goto('/?seed=42');
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', /drawing|settling/);
-  const pieces = page.locator('[data-testid="magnetic-logo-piece"]');
-  await expect(pieces).toHaveCount(6);
-  await expect(pieces.first()).toHaveAttribute('src', '/AP.png');
-  const magneticLayers = await sampleIntroCrossfade(page);
-  expect(magneticLayers.captured).toBe(true);
-  expect(magneticLayers.logoOpacity).toBeGreaterThan(0);
-  expect(magneticLayers.logoOpacity).toBeLessThan(1);
-  expect(magneticLayers.visiblePieceCount).toBeGreaterThan(0);
-  expect(
-    magneticLayers.visiblePieceFilters.every((filter) => filter.includes('invert(1)'))
-  ).toBe(true);
-  expect(new Set(magneticLayers.pieceSources)).toEqual(new Set(['/AP.png']));
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1440-magnetic.png'),
-    fullPage: true
-  });
-  await expect(page.locator(HOME)).toHaveAttribute(
-    'data-phase',
-    'interactive',
-    { timeout: 5_000 }
-  );
-
-  const introEvidence = await page.evaluate(() => {
-    const startedAt = Reflect.get(window, '__introStartedAt');
-    const interactiveAt = Reflect.get(window, '__introInteractiveAt');
-    return {
-      startedAt,
-      interactiveAt,
-      elapsedMs: Number(interactiveAt) - Number(startedAt),
-      phases: Reflect.get(window, '__introPhaseHistory') as string[]
-    };
-  });
-  expect(introEvidence.startedAt).toEqual(expect.any(Number));
-  expect(introEvidence.interactiveAt).toEqual(expect.any(Number));
-  expect(introEvidence.elapsedMs).toBeLessThanOrEqual(3_300);
-  expect(introEvidence.phases).toContain('drawing');
-  expect(introEvidence.phases).toContain('settling');
-  expect(introEvidence.phases.at(-1)).toBe('interactive');
-  await expect(page.locator('[data-layer="intro"]')).toHaveAttribute('data-active', 'false');
-  await expect(page.locator('[data-layer="intro"]')).toBeHidden();
-  await expect(getBrandHeading(page)).toHaveCSS('color', 'rgb(28, 28, 28)');
-
-  await expect(page.locator('[data-testid="brand-logo"]')).toBeVisible();
-  await expect(page.locator('[data-testid="brand-logo"]')).toHaveCSS('filter', 'none');
-  for (const piece of await pieces.all()) {
-    await expect(piece).toBeHidden();
-  }
-
-  await expect.poll(() => page.locator(ICON).count(), { timeout: 6_000 }).toBeGreaterThanOrEqual(2);
-  await page.mouse.move(720, 450);
-
-  const brandTransform = getBrandHeading(page).locator('..');
-  let brandBox = await brandTransform.boundingBox();
-  await expect.poll(async () => {
-    brandBox = await brandTransform.boundingBox();
-    if (!brandBox) return Number.POSITIVE_INFINITY;
-    return Math.max(
-      Math.abs(brandBox.x + brandBox.width / 2 - 720),
-      Math.abs(brandBox.y + brandBox.height / 2 - 450)
-    );
-  }, {
-    message: '品牌层应跟随指针稳定到中心附近'
-  }).toBeLessThanOrEqual(28);
-  expect(brandBox).not.toBeNull();
-
-  const fileBoxes = await page.locator(`${ICON}:visible`).evaluateAll((icons) => (
-    icons.map((icon) => {
-      const bounds = icon.getBoundingClientRect();
-      return {
-        left: bounds.left,
-        top: bounds.top,
-        right: bounds.right,
-        bottom: bounds.bottom
-      };
-    })
-  ));
-  const safeZone = {
-    left: 1440 * 0.35,
-    top: 900 * 0.35,
-    right: 1440 * 0.65,
-    bottom: 900 * 0.65
-  };
-  expect(fileBoxes.length).toBeGreaterThanOrEqual(2);
-  for (const box of fileBoxes) {
-    expect(box.left).toBeGreaterThanOrEqual(23);
-    expect(box.top).toBeGreaterThanOrEqual(23);
-    expect(box.right).toBeLessThanOrEqual(1417);
-    expect(box.bottom).toBeLessThanOrEqual(877);
-    expect(
-      box.right <= safeZone.left
-      || box.left >= safeZone.right
-      || box.bottom <= safeZone.top
-      || box.top >= safeZone.bottom
-    ).toBe(true);
-  }
-
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1440-home.png')
-  });
-  expect(runtimeErrors).toEqual([]);
-});
-
-const introSkipCases: ReadonlyArray<{
-  label: string;
-  skip: (page: Page) => Promise<void>;
-}> = [
-  {
-    label: '滚轮',
-    skip: async (page) => page.mouse.wheel(0, 160)
-  },
-  {
-    label: '点击',
-    skip: async (page) => page.mouse.click(12, 12)
-  },
-  {
-    label: '方向键',
-    skip: async (page) => page.keyboard.press('ArrowDown')
-  }
-];
-
-for (const skipCase of introSkipCases) {
-  test(`新页面首次${skipCase.label}输入跳过开场且不增加章节进度`, async ({ page }) => {
-    const runtimeErrors = collectRuntimeErrors(page);
-    await page.goto('/?seed=42');
-    await expect(page.locator(HOME)).toHaveAttribute('data-phase', /drawing|settling/);
-
-    await skipCase.skip(page);
-
-    await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
-    await expect(page.locator(HOME)).toHaveAttribute('data-progress', '0.0000');
-    await expect(page.locator('[data-testid="brand-logo"]')).toBeVisible();
-    for (const piece of await page.locator('[data-testid="magnetic-logo-piece"]').all()) {
-      await expect(piece).toBeHidden();
-    }
-    expect(runtimeErrors).toEqual([]);
-  });
-}
-
-test('PageDown 以缩放和透明度推进非纵向滚动章节并在终点卸载文件体验', async ({ page }) => {
+test('PageDown 推进非纵向滚动章节并在终点卸载液态首页', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
-  const icon = await waitForFile(page);
-  await icon.hover();
-  await expect(page.locator(PREVIEW)).toBeVisible();
-
-  const initialVisual = await page.locator(BRAND).evaluate((brand) => {
-    const style = getComputedStyle(brand);
-    return { opacity: style.opacity, transform: style.transform };
-  });
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
   await page.keyboard.press('PageDown');
   await expect.poll(() => readProgress(page)).toBeGreaterThan(0);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
@@ -2905,12 +2245,7 @@ test('PageDown 以缩放和透明度推进非纵向滚动章节并在终点卸�
     await page.keyboard.press('PageDown');
   }
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'exiting');
-  const exitingVisual = await page.locator(BRAND).evaluate((brand) => {
-    const style = getComputedStyle(brand);
-    return { opacity: style.opacity, transform: style.transform };
-  });
-  expect(exitingVisual.opacity).not.toBe(initialVisual.opacity);
-  expect(exitingVisual.transform).not.toBe(initialVisual.transform);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
 
   await page.screenshot({
@@ -2920,8 +2255,8 @@ test('PageDown 以缩放和透明度推进非纵向滚动章节并在终点卸�
   await page.keyboard.press('PageDown');
   await page.keyboard.press('PageDown');
   await expect(page.locator(HOME)).toHaveAttribute('data-progress', '1.0000');
-  await expect(page.locator(SWARM)).toHaveCount(0);
-  await expect(page.locator(PREVIEW)).toHaveCount(0);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'false');
+  await expect(page.locator(LIQUID_HOME)).toBeHidden();
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   expect(runtimeErrors).toEqual([]);
 });
@@ -3015,9 +2350,7 @@ test('568x320 六章节主内容避让移动导航且保持完整可见', async 
   const primaryByChapter = new Map([
     [
       'home',
-      page.locator('[data-chapter-id="home"]')
-        .getByRole('heading', { name: 'AI Pet', exact: true })
-        .locator('..')
+      page.locator(LIQUID_HOME)
     ],
     ['about', page.locator('[data-chapter-id="about"] h2')],
     ['download', page.getByRole('group', { name: '选择下载平台' })],
@@ -3043,14 +2376,16 @@ test('568x320 六章节主内容避让移动导航且保持完整可见', async 
       .toBeLessThanOrEqual(569);
     expect(primaryBounds!.y + primaryBounds!.height, `${chapterId} 下边界`)
       .toBeLessThanOrEqual(321);
-    const overlapsNavigation = !(
-      primaryBounds!.x + primaryBounds!.width <= navigationBounds!.x
-      || navigationBounds!.x + navigationBounds!.width <= primaryBounds!.x
-      || primaryBounds!.y + primaryBounds!.height <= navigationBounds!.y
-      || navigationBounds!.y + navigationBounds!.height <= primaryBounds!.y
-    );
-    expect(overlapsNavigation, `${chapterId} 主内容不应被章节导航遮挡`)
-      .toBe(false);
+    if (chapterId !== 'home') {
+      const overlapsNavigation = !(
+        primaryBounds!.x + primaryBounds!.width <= navigationBounds!.x
+        || navigationBounds!.x + navigationBounds!.width <= primaryBounds!.x
+        || primaryBounds!.y + primaryBounds!.height <= navigationBounds!.y
+        || navigationBounds!.y + navigationBounds!.height <= primaryBounds!.y
+      );
+      expect(overlapsNavigation, `${chapterId} 主内容不应被章节导航遮挡`)
+        .toBe(false);
+    }
 
     if (chapterId !== 'donation') {
       await next.click();
@@ -3155,7 +2490,7 @@ test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限为 1.75', async ({
+test('液态玻璃 WebGL 画布按性能比例建立缓冲区并响应指针', async ({
   browser,
   baseURL
 }) => {
@@ -3171,8 +2506,10 @@ test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限�
 
   try {
     await enterInteractive(page);
-    const canvas = page.locator(CANVAS);
-    await expect(canvas).toHaveAttribute('aria-hidden', 'true');
+    const liquidHome = page.locator(LIQUID_HOME);
+    const canvas = liquidHome.locator('canvas');
+    await expect(liquidHome).toHaveAttribute('data-active', 'true');
+    await expect(liquidHome).toHaveAttribute('data-initialization-failed', 'false');
     await expect(canvas).toBeVisible();
 
     const trailPoints = [
@@ -3186,11 +2523,13 @@ test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限�
       await page.mouse.move(x, y);
       await page.waitForTimeout(70);
     }
+    await page.mouse.down();
+    await page.mouse.up();
     await page.waitForTimeout(120);
 
     const canvasEvidence = await canvas.evaluate((element) => {
       if (!(element instanceof HTMLCanvasElement)) {
-        throw new Error('光标场不是 Canvas 元素');
+        throw new Error('液态玻璃不是 Canvas 元素');
       }
       const bounds = element.getBoundingClientRect();
       return {
@@ -3202,100 +2541,26 @@ test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限�
       };
     });
     expect(canvasEvidence.browserDpr).toBe(2);
-    expect(canvasEvidence.bufferWidth).toBe(Math.round(canvasEvidence.cssWidth * 1.75));
-    expect(canvasEvidence.bufferHeight).toBe(Math.round(canvasEvidence.cssHeight * 1.75));
-
-    const trailPixelCount = await countCanvasAlphaPixels(canvas);
-    expect(trailPixelCount).toBeGreaterThan(0);
-    const homeColorEvidence = await readCanvasColorEvidence(canvas);
-    expect(homeColorEvidence.alphaPixels).toBeGreaterThan(0);
-    expect(
-      homeColorEvidence.balancedPixels / homeColorEvidence.alphaPixels
-    ).toBeGreaterThan(0.9);
-    expect(homeColorEvidence.yellowPixels).toBe(0);
-    await page.waitForTimeout(1_350);
-    const decayedPixelCount = await countCanvasAlphaPixels(canvas);
-    expect(decayedPixelCount).toBeGreaterThan(0);
-    expect(decayedPixelCount).toBeLessThan(trailPixelCount);
+    expect(canvasEvidence.bufferWidth).toBe(Math.round(canvasEvidence.cssWidth * 0.9));
+    expect(canvasEvidence.bufferHeight).toBe(Math.round(canvasEvidence.cssHeight * 0.9));
+    expect(canvasEvidence.bufferWidth).toBeGreaterThan(0);
+    expect(canvasEvidence.bufferHeight).toBeGreaterThan(0);
     expect(runtimeErrors).toEqual([]);
   } finally {
     await context.close();
   }
 });
 
-test('减少动态效果直接进入稳定交互并保留品牌与文件语义', async ({ page }) => {
+test('减少动态效果直接进入稳定液态玻璃首页', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?seed=42');
 
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
-  await expect(page.locator(CANVAS)).toBeHidden();
-  await expect(getBrandHeading(page)).toBeVisible();
-  const icon = await waitForFile(page);
-  await expect(icon).toHaveAccessibleName(/^预览 /);
-
-  const reducedMotionEvidence = await page.locator(BRAND).evaluate((brand) => {
-    const transformNode = brand.firstElementChild;
-    const magneticMark = brand.querySelector('[data-testid="magnetic-ap-mark"]');
-    const pieces = Array.from(
-      brand.querySelectorAll<HTMLElement>('[data-testid="magnetic-logo-piece"]')
-    );
-    const logo = brand.querySelector('img[src="/AP.png"]');
-    const fileIcon = document.querySelector('[data-testid="file-icon"] img');
-    return {
-      brandTransform: getComputedStyle(brand).transform,
-      innerTransform: transformNode ? getComputedStyle(transformNode).transform : null,
-      magneticDisplay: magneticMark ? getComputedStyle(magneticMark).display : null,
-      pieceTransitions: pieces.map((piece) => getComputedStyle(piece).transitionDuration),
-      logoTransitionDuration: logo ? getComputedStyle(logo).transitionDuration : null,
-      fileAnimation: fileIcon ? getComputedStyle(fileIcon).animationName : null
-    };
-  });
-  expect(reducedMotionEvidence.brandTransform).toBe('none');
-  expect(reducedMotionEvidence.innerTransform).toBe('none');
-  expect(reducedMotionEvidence.magneticDisplay).toBe('none');
-  expect(
-    reducedMotionEvidence.pieceTransitions.every((duration) => duration === '0s')
-  ).toBe(true);
-  expect(reducedMotionEvidence.logoTransitionDuration).toBe('0s');
-  expect(reducedMotionEvidence.fileAnimation).toBe('none');
-  expect(runtimeErrors).toEqual([]);
-});
-
-test('1920 预览保持在视口内且所有文本不溢出', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  await page.setViewportSize({ width: 1920, height: 1080 });
-  await enterInteractive(page);
-  const icon = await waitForFile(page);
-  await page.mouse.move(1660, 220);
-  await expect.poll(
-    () => countCanvasAlphaPixels(page.locator(CANVAS)),
-    { message: '1920 首页截图前灰色光场应产生非空像素' }
-  ).toBeGreaterThan(0);
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'website-1920.png')
-  });
-  await icon.hover();
-
-  const preview = page.locator(PREVIEW);
-  await expect(preview).toBeVisible();
-  await expectInsideViewport(page, preview);
-  const overflowingText = await preview.locator('*').evaluateAll((nodes) => (
-    nodes
-      .filter((node) => (
-        (node.textContent?.trim().length ?? 0) > 0
-        && (
-          node.scrollWidth > node.clientWidth + 1
-          || node.scrollHeight > node.clientHeight + 1
-        )
-      ))
-      .map((node) => node.tagName)
-  ));
-  expect(overflowingText).toEqual([]);
-
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1920-preview.png')
-  });
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeVisible();
+  await expect(page.locator(SWARM)).toHaveCount(0);
+  await expect(page.locator('[data-testid="brand-stage"]')).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);
 });

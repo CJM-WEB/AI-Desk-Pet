@@ -16,7 +16,6 @@ import {
   createContentPool
 } from '../components/home-experience/content-pool';
 import { en } from '../components/i18n/messages';
-import { VISUAL_PROFILES } from '../components/website-experience/shared-visual-model';
 import {
   advanceParticle,
   createSeededRandom,
@@ -28,7 +27,7 @@ import type { FileParticle, Rect, SpawnViewport } from '../components/home-exper
 const viewport: SpawnViewport = {
   width: 1440,
   height: 900,
-  safeZoneRatio: VISUAL_PROFILES.home.safeZoneRatio
+  safeZoneRatio: 0.34
 };
 
 function createParticle(overrides: Partial<FileParticle> = {}): FileParticle {

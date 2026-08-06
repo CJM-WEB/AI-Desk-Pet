@@ -54,12 +54,6 @@ export const EXPERIENCE_CONFIG = {
       ]
     }
   },
-  brandTransform: {
-    maxRotateX: 8,
-    maxRotateY: 10,
-    maxX: 10,
-    maxY: 8
-  },
   progress: {
     wheelScale: 0.0011,
     keyboardStep: 0.12,

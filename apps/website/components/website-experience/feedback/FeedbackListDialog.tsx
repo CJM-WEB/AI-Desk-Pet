@@ -10,7 +10,7 @@ import type {
 } from './feedback-types';
 import type { Translate } from '../../i18n/i18n-types';
 import type { Locale } from '../../i18n/i18n-types';
-import { localizeFeedbackEntry } from './feedback-preview-source';
+import { localizeFeedbackEntry } from './feedback-localization';
 import styles from './feedback.module.css';
 
 export interface FeedbackListDialogProps {

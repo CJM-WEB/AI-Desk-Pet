@@ -74,7 +74,6 @@ function createWindowsPlatform(t: Translate): DownloadPlatform {
       plannedReleaseTag: windowsRelease.plannedReleaseTag
     };
 }
-
 export interface DownloadContent {
   platforms: readonly DownloadPlatform[];
   faqItems: readonly FaqItem[];
@@ -104,10 +103,3 @@ export function createDownloadContent(t: Translate): DownloadContent {
     }))
   };
 }
-
-// 兼容现有数据模型测试；界面渲染使用 createDownloadContent(t)。
-const zhTranslate: Translate = (key) => zhCN[key];
-const zhContent = createDownloadContent(zhTranslate);
-export const DOWNLOAD_PLATFORMS = zhContent.platforms;
-export const FAQ_ITEMS = zhContent.faqItems;
-export const INSTALL_NOTICE_ITEMS = zhContent.installNoticeItems;
