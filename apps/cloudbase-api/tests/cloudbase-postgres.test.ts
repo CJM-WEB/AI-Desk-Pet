@@ -781,20 +781,12 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
     const rpc = {
       rpc: vi.fn()
         .mockResolvedValueOnce({
-          data: { consumed: true },
-          error: null
-        })
-        .mockResolvedValueOnce({
           data: { allowed: false, retry_after_seconds: 37 },
           error: null
         })
     };
     const store = new CloudBasePostgresStore({ from: vi.fn() } as never, rpc);
 
-    await expect(store.consumeCaptchaTicket({
-      ticketHash: 'a'.repeat(64),
-      expiresAt: '2026-07-31T00:05:00.000Z'
-    })).resolves.toBe(true);
     await expect(store.consumeAbuseLimit({
       scope: 'status_query',
       fingerprintHash: 'b'.repeat(64),
@@ -804,11 +796,7 @@ describe('CloudBase PostgreSQL 安全与公开互动存储', () => {
       allowed: false,
       retryAfterSeconds: 37
     });
-    expect(rpc.rpc).toHaveBeenNthCalledWith(1, 'consume_captcha_ticket', {
-      p_ticket_hash: 'a'.repeat(64),
-      p_expires_at: '2026-07-31T00:05:00.000Z'
-    });
-    expect(rpc.rpc).toHaveBeenNthCalledWith(2, 'consume_abuse_limit', {
+    expect(rpc.rpc).toHaveBeenNthCalledWith(1, 'consume_abuse_limit', {
       p_scope: 'status_query',
       p_fingerprint_hash: 'b'.repeat(64),
       p_maximum: 30,
@@ -1121,7 +1109,6 @@ describe('CloudBase PostgreSQL 仓储', () => {
         },
         async delete(): Promise<void> {}
       },
-      { async verify(): Promise<void> {} },
       () => 'failed-signature'
     );
 
@@ -1129,7 +1116,6 @@ describe('CloudBase PostgreSQL 仓储', () => {
       kind: 'shared_package',
       title: '待清理投稿',
       body: '签名失败后保持隐藏。',
-      captcha: { ticket: 'ticket-1', randstr: 'rand-1' },
       packageFile: {
         fileName: 'pet.zip',
         sizeBytes: 1024,

@@ -17,7 +17,6 @@ import type {
   AbuseLimitInput,
   AbuseLimitResult,
   ApplyModerationDecisionInput,
-  CaptchaTicketInput,
   CompleteUploadInput,
   ModerationRecord,
   NewSubmission,
@@ -148,18 +147,6 @@ export class CloudBasePostgresStore implements
     private readonly database: CloudBaseRdbClient,
     private readonly rpcClient: CloudBasePostgresRpc
   ) {}
-
-  async consumeCaptchaTicket(input: CaptchaTicketInput): Promise<boolean> {
-    requireHash(input.ticketHash);
-    const row = requireRecord(
-      requireData(await this.rpcClient.rpc('consume_captcha_ticket', {
-        p_ticket_hash: input.ticketHash,
-        p_expires_at: input.expiresAt
-      }), '登记 CAPTCHA 票据失败'),
-      'CAPTCHA 票据结果'
-    );
-    return requireBoolean(row.consumed, 'consumed');
-  }
 
   async consumeAbuseLimit(input: AbuseLimitInput): Promise<AbuseLimitResult> {
     requireHash(input.fingerprintHash);

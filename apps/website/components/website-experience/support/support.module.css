@@ -150,3 +150,7 @@
 @media (prefers-reduced-motion: reduce) {
   .glassButton { transition: none; }
 }
+
+.supportChapter[data-motion-disabled='true'] .glassButton {
+  transition: none;
+}

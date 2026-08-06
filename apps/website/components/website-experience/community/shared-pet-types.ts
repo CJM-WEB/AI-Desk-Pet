@@ -1,4 +1,4 @@
-import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
 
 /** 共享仓库列表固定使用八个展示槽位。 */
 export const SHARED_PET_PAGE_SIZE = 8 as const;
@@ -85,7 +85,6 @@ export interface SharedPetRepository {
   ): Promise<SharedPetPage>;
   submit(
     input: CreateSharedPetInput,
-    captcha: CaptchaProof,
     onProgress?: (percent: number) => void
   ): Promise<SubmissionReceipt>;
   /** 历史 IndexedDB 测试适配器保留的同步创建入口。 */

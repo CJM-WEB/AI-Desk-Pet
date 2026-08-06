@@ -12,7 +12,6 @@ import type {
   SetStateAction
 } from 'react';
 import type { SubmissionReceipt } from '@myself/shared-types';
-import { CaptchaClient, type CaptchaVerifier } from '../../../lib/captcha';
 import { LIQUID_GLASS_COMMUNITY_CARDS_EVENT } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ChapterRuntimeProps } from '../types';
@@ -38,7 +37,6 @@ import styles from './community.module.css';
 
 export interface SharedPetChapterProps extends ChapterRuntimeProps {
   repository: SharedPetRepository;
-  captcha?: CaptchaVerifier;
 }
 
 type SharedPetCardStyle = CSSProperties & {
@@ -104,8 +102,7 @@ export function SharedPetChapter({
   reducedMotion = false,
   staticFallback = false,
   transitionProgress = 3,
-  repository,
-  captcha = new CaptchaClient()
+  repository
 }: SharedPetChapterProps) {
   const { t } = useI18n();
   const [transition, setTransition] = useState<SharedPetPageTransition>(
@@ -515,13 +512,12 @@ export function SharedPetChapter({
     if (!draft.packageFile || !draft.coverFile) {
       throw new Error('共享包文件不完整');
     }
-    const proof = await captcha.verify();
     setSubmissionProgress(0);
     const receipt = await repository.submit({
       ...draft,
       packageFile: draft.packageFile,
       coverFile: draft.coverFile
-    }, proof, setSubmissionProgress);
+    }, setSubmissionProgress);
     if (!mountedRef.current) return;
     setComposerOpen(false);
     setLoadNotice(null);
@@ -572,7 +568,9 @@ export function SharedPetChapter({
       style={chapterStyle}
     >
       <div className={styles.sharedPetLayout}>
-        <h2 className={styles.sharedPetTitle}>{t('sharedPet.chapter.title')}</h2>
+        <h2 className={styles.sharedPetTitle} data-layout-ignore>
+          {t('sharedPet.chapter.title')}
+        </h2>
 
         <div className={styles.sharedPetFocus}>
           <span className={styles.currentPageNumber} aria-hidden="true">
@@ -617,7 +615,7 @@ export function SharedPetChapter({
           <span className={styles.totalPageNumber} aria-hidden="true">
             {totalPageLabel}
           </span>
-          <output className={styles.accessiblePageLabel} aria-live="polite">
+          <output className={styles.accessiblePageLabel} data-layout-ignore aria-live="polite">
             {pageLabel}
           </output>
           {submissionReceipt ? (

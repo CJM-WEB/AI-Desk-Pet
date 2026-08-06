@@ -11,7 +11,6 @@ import {
 import type { KeyboardEvent as ReactKeyboardEvent, WheelEvent as ReactWheelEvent } from 'react';
 import type { CSSProperties } from 'react';
 import { ApiClient } from '../../../lib/api-client';
-import { CaptchaClient, type CaptchaVerifier } from '../../../lib/captcha';
 import { LIQUID_GLASS_SUPPORT_SELECTION_EVENT } from '../../home-experience/LiquidGlassHome';
 import type { PointerPoint } from '../../home-experience/types';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
@@ -35,7 +34,6 @@ import styles from './support.module.css';
 
 export interface SupportChapterProps extends ChapterRuntimeProps {
   repository?: FeedbackRepository;
-  captcha?: CaptchaVerifier;
 }
 
 type ComposerState =
@@ -79,8 +77,7 @@ export function SupportChapter({
   isPaused = false,
   reducedMotion = false,
   staticFallback = false,
-  repository: injectedRepository,
-  captcha: injectedCaptcha
+  repository: injectedRepository
 }: SupportChapterProps) {
   const { locale, t: rawTranslate } = useI18n();
   const t = useCallback<Translate>((key, values) => (
@@ -98,12 +95,7 @@ export function SupportChapter({
       new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1')
     );
   }
-  const captchaRef = useRef<CaptchaVerifier | null>(null);
-  if (captchaRef.current === null) {
-    captchaRef.current = injectedCaptcha ?? new CaptchaClient();
-  }
   const repository = repositoryRef.current;
-  const captcha = captchaRef.current;
   const [activeFeedbackIndex, setActiveFeedbackIndex] = useState(0);
   const [activePaymentIndex, setActivePaymentIndex] = useState(0);
   const [pointer, setPointer] = useState<PointerPoint>(INITIAL_POINTER);
@@ -226,7 +218,7 @@ export function SupportChapter({
     }
     void (async () => {
       try {
-        const receipt = await repository.create(validation.value, await captcha.verify());
+        const receipt = await repository.create(validation.value);
         setSubmissionReceipt(receipt);
         setComposerState(null);
       } catch {
@@ -237,7 +229,7 @@ export function SupportChapter({
         });
       }
     })();
-  }, [captcha, composerState, rawTranslate, repository, t]);
+  }, [composerState, rawTranslate, repository, t]);
 
   useEffect(() => {
     if (!composerState && restoreCreateFocusRef.current) {
@@ -304,7 +296,7 @@ export function SupportChapter({
     cycle: (delta: number) => void
   ) => {
     if (!interactive || event.deltaY === 0) return;
-    event.preventDefault();
+    // React 的 wheel 委托监听可能为 passive；仅阻止冒泡即可隔离章节级滚轮。
     event.stopPropagation();
     cycle(event.deltaY > 0 ? 1 : -1);
   };
@@ -318,7 +310,7 @@ export function SupportChapter({
       data-paused={isPaused}
       style={chapterStyle}
     >
-      <h2 className={styles.srOnly}>{t('feedback.title')}</h2>
+      <h2 className={styles.srOnly} data-layout-ignore>{t('feedback.title')}</h2>
       <PointerTiltText
         pointer={pointer}
         viewport={viewport}

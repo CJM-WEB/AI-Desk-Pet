@@ -2,7 +2,6 @@ import { createHmac, randomUUID } from 'node:crypto';
 
 import {
   adminActionSchema,
-  captchaProofSchema,
   submissionStatusSchema,
   submissionStatusViewSchema
 } from '@myself/shared-types';
@@ -14,10 +13,6 @@ import {
 } from '../adapters/cloudbase-postgres.js';
 import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
-import {
-  createTencentCaptchaClient,
-  TencentCaptchaVerifier
-} from '../adapters/tencent-captcha.js';
 import { loadCloudConfig } from '../config.js';
 import {
   ApiError,
@@ -43,6 +38,9 @@ import {
 
 export interface ApiHttpEvent extends CloudBaseHttpEvent {
   queryStringParameters?: Record<string, string | undefined>;
+  requestContext?: {
+    sourceIp?: string;
+  };
 }
 
 export interface ApiContext {
@@ -86,7 +84,7 @@ interface AbuseControlApi {
 }
 
 interface AdminIdentityApi {
-  requireAdmin(): Promise<{ uid: string; email: string }>;
+  requireAdmin(accessToken: string): Promise<{ uid: string; email: string }>;
 }
 
 interface AdminApi {
@@ -148,7 +146,7 @@ async function dispatch(
     : event.path;
 
   if (method === 'GET' && path === '/api/v1/admin/submissions') {
-    await dependencies.adminIdentity.requireAdmin();
+    await dependencies.adminIdentity.requireAdmin(requireBearerToken(event));
     return dependencies.admin.listQueue(adminListQuery(event));
   }
 
@@ -160,7 +158,9 @@ async function dispatch(
     '/actions'
   );
   if (adminActionId !== null) {
-    const identity = await dependencies.adminIdentity.requireAdmin();
+    const identity = await dependencies.adminIdentity.requireAdmin(
+      requireBearerToken(event)
+    );
     const action = adminActionSchema.safeParse(requestRecord(event));
     if (!action.success) throw invalidRequest();
     return dependencies.admin.applyAction(identity, adminActionId, action.data);
@@ -174,16 +174,13 @@ async function dispatch(
     ''
   );
   if (adminDetailId !== null) {
-    await dependencies.adminIdentity.requireAdmin();
+    await dependencies.adminIdentity.requireAdmin(requireBearerToken(event));
     return dependencies.admin.getDetail(adminDetailId);
   }
 
   if (method === 'POST' && path === '/api/v1/submissions/prepare') {
     const body = requestRecord(event);
-    if (!captchaProofSchema.safeParse(body.captcha).success) {
-      throw invalidRequest();
-    }
-    const ip = requireSourceIp(context);
+    const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'submission_prepare',
       ipFingerprint(ip, dependencies.fingerprintSecret)
@@ -208,10 +205,7 @@ async function dispatch(
 
   if (method === 'POST' && path === '/api/v1/feedback') {
     const body = requestRecord(event);
-    if (!captchaProofSchema.safeParse(body.captcha).success) {
-      throw invalidRequest();
-    }
-    const ip = requireSourceIp(context);
+    const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'submission_prepare',
       ipFingerprint(ip, dependencies.fingerprintSecret)
@@ -225,7 +219,7 @@ async function dispatch(
   if (method === 'POST' && path === '/api/v1/submission-status') {
     const body = requestRecord(event);
     if (typeof body.statusToken !== 'string') throw invalidRequest();
-    const ip = requireSourceIp(context);
+    const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'status_query',
       ipFingerprint(ip, dependencies.fingerprintSecret)
@@ -266,7 +260,7 @@ async function dispatch(
   if (feedbackLikeId !== null) {
     requestRecord(event);
     const deviceHash = deviceFingerprint(
-      requireSourceIp(context),
+      requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
@@ -284,7 +278,7 @@ async function dispatch(
   if (likeId !== null) {
     requestRecord(event);
     const deviceHash = deviceFingerprint(
-      requireSourceIp(context),
+      requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
@@ -302,7 +296,7 @@ async function dispatch(
   if (downloadId !== null) {
     requestRecord(event);
     const deviceHash = deviceFingerprint(
-      requireSourceIp(context),
+      requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
@@ -418,8 +412,11 @@ function dynamicId(
   return decoded;
 }
 
-function requireSourceIp(context: ApiContext): string {
-  const ip = context.sourceIp;
+/** 兼容函数直调与 API 网关，并只信任 CloudBase 强制覆盖的 Envoy 来源头。 */
+function requireSourceIp(event: ApiHttpEvent, context: ApiContext): string {
+  const ip = context.sourceIp
+    ?? event.requestContext?.sourceIp
+    ?? header(event.headers, 'x-envoy-external-address');
   if (
     typeof ip !== 'string'
     || ip.trim().length === 0
@@ -453,6 +450,25 @@ function header(
     .find(([key]) => key.toLowerCase() === name);
   const value = matching?.[1] ?? '';
   return value.slice(0, 512);
+}
+
+/** 管理接口只接受格式完整且长度受限的 Bearer 访问令牌。 */
+function requireBearerToken(event: ApiHttpEvent): string {
+  const authorization = Object.entries(event.headers)
+    .find(([key]) => key.toLowerCase() === 'authorization')?.[1];
+  if (
+    typeof authorization !== 'string'
+    || authorization.length > 16_384
+    || /[\r\n]/u.test(authorization)
+    || !authorization.startsWith('Bearer ')
+  ) {
+    throw new ApiError('UNAUTHORIZED', 401);
+  }
+  const token = authorization.slice('Bearer '.length);
+  if (token.length === 0 || /\s/u.test(token)) {
+    throw new ApiError('UNAUTHORIZED', 401);
+  }
+  return token;
 }
 
 function publicStatus(value: unknown): Record<string, unknown> {
@@ -561,19 +577,15 @@ export function createProductionHandler(): ApiHandler {
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)
   );
   const storage = new CloudBaseStorage(runtime.bucket);
-  const captcha = new TencentCaptchaVerifier(
-    createTencentCaptchaClient(config),
-    store,
-    config
-  );
   return createApi({
-    submissions: new SubmissionService(store, storage, captcha),
-    textSubmissions: new TextSubmissionService(store, captcha),
+    submissions: new SubmissionService(store, storage),
+    textSubmissions: new TextSubmissionService(store),
     publicContent: new PublicContentService(store, storage),
     abuseControl: new AbuseControl(store),
     adminIdentity: new CloudBaseAdminIdentityProvider(
-      runtime.auth,
-      config.adminEmail
+      config.envId,
+      config.adminEmail,
+      config.cloudbaseSdkTimeoutMs
     ),
     admin: new AdminService(store, storage),
     fingerprintSecret: config.abuseHmacSecret

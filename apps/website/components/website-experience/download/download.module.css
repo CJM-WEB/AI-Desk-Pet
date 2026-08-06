@@ -269,6 +269,11 @@
   .downloadAction { right: 5%; bottom: 5%; min-width: 132px; height: 46px; padding-inline: 18px; }
 }
 
+/* 移动端为右下角章节导航预留固定安全区，避免下载按钮被覆盖。 */
+@media (max-width: 760px) {
+  .downloadAction { right: 136px; }
+}
+
 @media (max-height: 520px) and (orientation: landscape) {
   .platformHeader { top: 14px; }
   .platformHeader h2 { font-size: 3.7rem; }

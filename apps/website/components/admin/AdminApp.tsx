@@ -30,16 +30,26 @@ export function AdminApp({ auth, api }: AdminAppProps) {
   const [runtime, setRuntime] = useState<{ auth: AdminAuthClient; api: AdminApi } | null>(
     auth && api ? { auth, api } : null
   );
+  const [initializationFailed, setInitializationFailed] = useState(false);
 
+  // 浏览器端配置异常时保留管理员页外壳，避免未捕获异常导致整页崩溃。
   useEffect(() => {
-    if (runtime) return;
-    setRuntime({
-      auth: auth ?? createAdminAuth(),
-      api: api ?? new AdminApiClient(new ApiClient(
-        process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1'
-      ))
-    });
-  }, [api, auth, runtime]);
+    if (runtime || initializationFailed) return;
+    try {
+      setRuntime({
+        auth: auth ?? createAdminAuth(),
+        api: api ?? new AdminApiClient(new ApiClient(
+          process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1'
+        ))
+      });
+    } catch {
+      setInitializationFailed(true);
+    }
+  }, [api, auth, initializationFailed, runtime]);
+
+  if (initializationFailed) {
+    return <main className={styles.centerPage}><p role="alert">{t('admin.error.config')}</p></main>;
+  }
 
   if (!runtime) {
     return <main className={styles.centerPage}><p role="status">{t('admin.initializing')}</p></main>;

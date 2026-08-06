@@ -61,7 +61,7 @@ export class CloudBaseStorage implements ObjectStorage {
     });
     const data = requireStorageData(result, '签发上传地址失败');
     return {
-      url: requireHttpsUrl(data.fullSignedURL),
+      url: withUploadToken(data.fullSignedURL, data.token),
       expiresAt: this.expiresAt(signedUploadLifetimeSeconds)
     };
   }
@@ -126,6 +126,21 @@ function requireHttpsUrl(value: string): string {
     if (url.protocol === 'https:') return url.toString();
   } catch {}
   throw storageError('签名地址格式错误');
+}
+
+/** 将 CloudBase 返回的一次性上传令牌附加到签名地址，供无登录态浏览器直传。 */
+function withUploadToken(value: string, token: string): string {
+  if (typeof token !== 'string' || token.length === 0) {
+    throw storageError('上传令牌为空');
+  }
+  const url = new URL(requireHttpsUrl(value));
+  // CloudBase 网关偶尔会把固定存储前缀重复拼接一次，需在下发前归一化。
+  url.pathname = url.pathname.replace(
+    /^\/v1\/storages\/v1\/storages\//u,
+    '/v1/storages/'
+  );
+  url.searchParams.set('token', token);
+  return url.toString();
 }
 
 function isNotFound(value: unknown): boolean {

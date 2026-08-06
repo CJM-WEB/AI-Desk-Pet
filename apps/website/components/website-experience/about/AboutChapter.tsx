@@ -192,7 +192,12 @@ export function AboutChapter({
           tabIndex={interactive ? 0 : -1}
           {...articleEvents(0)}
         >
-          <div className={styles.glassTextFallback}>{renderFeature('text-editor')}</div>
+          <div
+            className={styles.glassTextFallback}
+            data-layout-ignore={!staticFallback ? true : undefined}
+          >
+            {renderFeature('text-editor')}
+          </div>
         </article>
 
         <article
@@ -202,7 +207,12 @@ export function AboutChapter({
           tabIndex={interactive ? 0 : -1}
           {...articleEvents(1)}
         >
-          <div className={styles.glassTextFallback}>{renderFeature('companion-chat')}</div>
+          <div
+            className={styles.glassTextFallback}
+            data-layout-ignore={!staticFallback ? true : undefined}
+          >
+            {renderFeature('companion-chat')}
+          </div>
         </article>
 
         <article
@@ -212,7 +222,12 @@ export function AboutChapter({
           tabIndex={interactive ? 0 : -1}
           {...articleEvents(2)}
         >
-          <div className={styles.glassTextFallback}>{renderFeature('file-management')}</div>
+          <div
+            className={styles.glassTextFallback}
+            data-layout-ignore={!staticFallback ? true : undefined}
+          >
+            {renderFeature('file-management')}
+          </div>
         </article>
       </div>
     </section>

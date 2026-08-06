@@ -1,4 +1,4 @@
-import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
 import { ApiClient } from '../../../lib/api-client';
 import {
   SHARED_PET_PAGE_SIZE,
@@ -75,7 +75,6 @@ export class CloudSharedPetRepository implements SharedPetRepository {
   /** 先取得服务端上传凭据，再按固定次序上传封面、ZIP 并确认完成。 */
   async submit(
     input: CreateSharedPetInput,
-    captcha: CaptchaProof,
     onProgress?: (percent: number) => void
   ): Promise<SubmissionReceipt> {
     const prepared = await this.api.request<PreparedSubmission>('/submissions/prepare', {
@@ -84,7 +83,6 @@ export class CloudSharedPetRepository implements SharedPetRepository {
         kind: 'shared_package',
         title: input.name,
         body: input.description,
-        captcha,
         coverFile: fileDescriptor(input.coverFile, input.coverFile.type),
         packageFile: fileDescriptor(input.packageFile, 'application/zip')
       })

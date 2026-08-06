@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createApi,
   createProductionHandler,
-  main as productionMain
+  main as productionMain,
+  type ApiHttpEvent
 } from '../src/functions/api.js';
 import { AbuseControl } from '../src/services/abuse-control.js';
 import {
@@ -151,16 +152,14 @@ function event(
   path: string,
   body?: unknown,
   userAgent = 'test-agent'
-): {
-  httpMethod: string;
-  path: string;
-  headers: Record<string, string | undefined>;
-  body?: string;
-} {
+): ApiHttpEvent {
   return {
     httpMethod: method,
     path,
-    headers: { 'user-agent': userAgent },
+    headers: {
+      'user-agent': userAgent,
+      authorization: 'Bearer test-access-token'
+    },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   };
 }
@@ -198,19 +197,12 @@ describe('API 生产组合', () => {
   it('主入口重复调用时复用同一个不触网的组合', async () => {
     stubCloudConfig();
 
-    const admin = await productionMain(
-      event('GET', '/api/v1/admin/submissions'),
-      context
-    );
     const first = await productionMain(event('GET', '/api/v1/missing'), context);
     const second = await productionMain(event('GET', '/api/v1/missing'), context);
 
     expect(productionSdk.createRuntime).toHaveBeenCalledTimes(1);
-    expect(admin.statusCode).toBe(200);
     expect(first.statusCode).toBe(404);
     expect(second.statusCode).toBe(404);
-    expect(runtime.auth.getUserInfo).toHaveBeenCalledOnce();
-    expect(runtime.auth.getEndUserInfo).toHaveBeenCalledWith('admin-uid');
   });
 });
 
@@ -225,7 +217,7 @@ describe('公开 HTTP API', () => {
     expect(JSON.parse(response.body).error).toBeNull();
   });
 
-  it('匿名 prepare 缺少 CAPTCHA 返回 400', async () => {
+  it('匿名 prepare 无需 CAPTCHA 即可进入投稿服务', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
 
@@ -234,9 +226,8 @@ describe('公开 HTTP API', () => {
       context
     );
 
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body).error.code).toBe('INVALID_REQUEST');
-    expect(dependencies.submissions.prepare).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(200);
+    expect(dependencies.submissions.prepare).toHaveBeenCalledTimes(1);
   });
 
   it('只从受信 context 读取来源 IP 并忽略代理头', async () => {
@@ -246,7 +237,6 @@ describe('公开 HTTP API', () => {
       kind: 'shared_package',
       title: '名称',
       body: '说明',
-      captcha: { ticket: 'ticket', randstr: 'randstr' },
       packageFile: {
         fileName: 'pet.zip',
         sizeBytes: 1024,
@@ -285,6 +275,45 @@ describe('公开 HTTP API', () => {
 
     expect(response.statusCode).toBe(400);
     expect(JSON.parse(response.body).error.code).toBe('INVALID_REQUEST');
+  });
+
+  it('从 API 网关事件读取受信来源 IP', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+    const request = event('POST', '/api/v1/feedback', {
+      kind: 'feedback',
+      title: '反馈标题',
+      body: '反馈内容'
+    });
+    request.requestContext = { sourceIp: '198.51.100.23' };
+
+    const response = await main(request, { requestId: 'gateway-request' });
+
+    expect(response.statusCode).toBe(200);
+    expect(dependencies.textSubmissions.submit).toHaveBeenCalledWith(
+      expect.any(Object),
+      { ip: '198.51.100.23' }
+    );
+  });
+
+  it('从 CloudBase 强制覆盖的 Envoy 请求头读取来源 IP', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+    const request = event('POST', '/api/v1/feedback', {
+      kind: 'feedback',
+      authorName: '测试用户',
+      content: '一条反馈'
+    });
+    request.headers['x-envoy-external-address'] = '198.51.100.24';
+    request.headers['x-forwarded-for'] = '192.0.2.13';
+
+    const response = await main(request, { requestId: 'cloudbase-request' });
+
+    expect(response.statusCode).toBe(200);
+    expect(dependencies.textSubmissions.submit).toHaveBeenCalledWith(
+      expect.any(Object),
+      { ip: '198.51.100.24' }
+    );
   });
 
   it('动态投稿 ID 只接受单个安全路径段', async () => {
@@ -486,6 +515,8 @@ describe('公开 HTTP API', () => {
     );
 
     expect(dependencies.adminIdentity.requireAdmin).toHaveBeenCalledTimes(3);
+    expect(dependencies.adminIdentity.requireAdmin)
+      .toHaveBeenCalledWith('test-access-token');
     expect(dependencies.admin.listQueue).toHaveBeenCalledWith({
       limit: 20,
       status: 'manual_review_pending'

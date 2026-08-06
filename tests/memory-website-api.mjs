@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 
 const ADMIN_TOKEN = 'e2e-admin-session';
-const CAPTCHA = { ticket: 'e2e-ticket', randstr: 'e2e-randstr' };
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 /** 为单次 Playwright worker 创建完全隔离的确定性 API 状态。 */
@@ -46,7 +45,6 @@ export function createMemoryWebsiteApi({ runId }) {
     try {
       if (request.method === 'POST' && pathname === '/api/v1/submissions/prepare') {
         const body = await readJson(request);
-        requireCaptcha(body.captcha);
         if (body.kind !== 'shared_package' || !body.coverFile || !body.packageFile) {
           return sendError(response, 400, 'INVALID_REQUEST');
         }
@@ -123,7 +121,6 @@ export function createMemoryWebsiteApi({ runId }) {
 
       if (request.method === 'POST' && pathname === '/api/v1/feedback') {
         const body = await readJson(request);
-        requireCaptcha(body.captcha);
         if (!['feedback', 'suggestion'].includes(body.kind) || typeof body.content !== 'string') {
           return sendError(response, 400, 'INVALID_REQUEST');
         }
@@ -311,12 +308,6 @@ async function readJson(request) {
     return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
   } catch {
     throw new MemoryApiError('INVALID_REQUEST', 400);
-  }
-}
-
-function requireCaptcha(value) {
-  if (value?.ticket !== CAPTCHA.ticket || value?.randstr !== CAPTCHA.randstr) {
-    throw new MemoryApiError('CAPTCHA_INVALID', 400);
   }
 }
 

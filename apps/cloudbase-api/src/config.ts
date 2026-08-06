@@ -6,8 +6,6 @@ export interface CloudConfig {
   cloudbaseApiKey: string;
   privateBucketId: string;
   adminEmail: string;
-  captchaAppId: number;
-  captchaSecretKey: string;
   abuseHmacSecret: string;
   tencentCloudSecretId: string;
   tencentCloudSecretKey: string;
@@ -48,17 +46,17 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
   }
   const privateBucketId = readRequired(env, 'PRIVATE_BUCKET_ID');
   const adminEmail = readRequired(env, 'ADMIN_EMAIL');
-  const captchaAppId = Number(readRequired(env, 'CAPTCHA_APP_ID'));
-  if (!Number.isSafeInteger(captchaAppId) || captchaAppId <= 0) {
-    throw new Error('CAPTCHA_APP_ID 必须是正整数');
-  }
-
   const scannerUrl = normalizeHttpsUrl(
     readRequired(env, 'SCANNER_URL'),
     'SCANNER_URL'
   );
-  const moderationSessionToken = env.MODERATION_SESSION_TOKEN?.trim()
-    || env.TENCENTCLOUD_SESSIONTOKEN?.trim();
+  // 显式审核密钥不能搭配平台临时 Token，否则会因凭据不属于同一会话而验签失败。
+  const usesModerationAlias = Boolean(
+    env.MODERATION_SECRET_ID?.trim() || env.MODERATION_SECRET_KEY?.trim()
+  );
+  const moderationSessionToken = usesModerationAlias
+    ? env.MODERATION_SESSION_TOKEN?.trim()
+    : env.TENCENTCLOUD_SESSIONTOKEN?.trim();
 
   return {
     envId,
@@ -67,8 +65,6 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
     cloudbaseApiKey: readRequired(env, 'CLOUDBASE_API_KEY'),
     privateBucketId,
     adminEmail,
-    captchaAppId,
-    captchaSecretKey: readRequired(env, 'CAPTCHA_SECRET_KEY'),
     abuseHmacSecret: readRequired(env, 'ABUSE_HMAC_SECRET'),
     tencentCloudSecretId: readCredential(
       env,

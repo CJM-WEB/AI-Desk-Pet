@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CaptchaProof } from '@myself/shared-types';
 import type { ApiClient } from '../lib/api-client';
 import { CloudFeedbackRepository } from '../components/website-experience/feedback/cloud-feedback-repository';
 import { feedbackRepository } from '../components/website-experience/chapter-registry';
-
-const captcha: CaptchaProof = { ticket: 'captcha-ticket', randstr: 'captcha-randstr' };
 
 function createApi(...responses: unknown[]) {
   return {
@@ -154,14 +151,14 @@ describe('云端反馈仓库', () => {
 
     const receipt = await repository.create({
       kind: 'feedback', authorName: '匿名用户', content: '等待系统审核的反馈内容。'
-    }, captcha);
+    });
 
     expect(receipt.status).toBe('system_reviewing');
     expect(repository.list('feedback')).toEqual(before);
     expect(vi.mocked(api.request)).toHaveBeenCalledWith('/feedback', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
-        kind: 'feedback', authorName: '匿名用户', content: '等待系统审核的反馈内容。', captcha
+        kind: 'feedback', authorName: '匿名用户', content: '等待系统审核的反馈内容。'
       })
     }));
   });

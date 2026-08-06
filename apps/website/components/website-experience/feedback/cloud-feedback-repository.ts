@@ -91,13 +91,10 @@ export class CloudFeedbackRepository implements FeedbackRepository {
     }
   }
 
-  async create(
-    input: CreateFeedbackInput,
-    captcha: { ticket: string; randstr: string }
-  ): Promise<SubmissionReceipt> {
+  async create(input: CreateFeedbackInput): Promise<SubmissionReceipt> {
     const response = await this.api.request<unknown>('/feedback', {
       method: 'POST',
-      body: JSON.stringify({ ...input, captcha })
+      body: JSON.stringify(input)
     });
     return submissionReceiptSchema.parse(response);
   }

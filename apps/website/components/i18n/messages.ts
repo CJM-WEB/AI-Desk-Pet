@@ -363,6 +363,7 @@ export const zhCN = {
   'admin.error.queue': '审核队列暂时无法加载，请稍后重试。',
   'admin.error.detail': '投稿详情暂时无法加载，请稍后重试。',
   'admin.error.action': '审核操作暂时无法完成，请稍后重试。',
+  'admin.error.config': '管理员模式配置暂时不可用，请联系站点管理员。',
   'admin.error.invalidAction': '当前状态不允许执行该操作，已保留原状态。',
   'admin.notice.completed': '操作已完成，队列已刷新。',
   'admin.notice.conflict': '状态已变化，已刷新最新内容。'
@@ -731,6 +732,7 @@ export const en: Record<MessageKey, string> = {
   'admin.error.queue': 'The review queue cannot be loaded right now. Try again later.',
   'admin.error.detail': 'The submission details cannot be loaded right now. Try again later.',
   'admin.error.action': 'The review action cannot be completed right now. Try again later.',
+  'admin.error.config': 'Administrator mode is not configured. Contact the site administrator.',
   'admin.error.invalidAction': 'This action is not allowed in the current state. The state was preserved.',
   'admin.notice.completed': 'The action is complete and the queue has been refreshed.',
   'admin.notice.conflict': 'The status changed and the latest content has been loaded.'

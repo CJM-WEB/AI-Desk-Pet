@@ -290,7 +290,7 @@ export function DownloadChapter({
           }));
         }}
       >
-        <p className={styles.accessibleCopy} aria-live="polite">
+        <p className={styles.accessibleCopy} data-layout-ignore aria-live="polite">
           {modelActive ? noticeAccessibilityText : ''}
         </p>
       </section>

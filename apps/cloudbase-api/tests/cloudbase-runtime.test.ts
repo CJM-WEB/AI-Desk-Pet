@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 
-import type { CloudBaseAuthClient } from '../src/adapters/cloudbase-auth.js';
 import type { CloudBaseRdbClient } from '../src/adapters/cloudbase-postgres.js';
 import type { CloudBaseStorageBucket } from '../src/adapters/cloudbase-storage.js';
 import {
@@ -17,8 +16,6 @@ const validConfig: CloudConfig = {
   cloudbaseApiKey: 'service-role-key',
   privateBucketId: 'ai-pet-private',
   adminEmail: 'admin@example.com',
-  captchaAppId: 10001,
-  captchaSecretKey: 'captcha-secret',
   abuseHmacSecret: 'abuse-hmac-secret',
   tencentCloudSecretId: 'secret-id',
   tencentCloudSecretKey: 'secret-key',
@@ -41,7 +38,7 @@ describe('CloudBase V3 服务端运行时工厂', () => {
   });
 
   it('使用配置环境、新加坡地域和有界超时只初始化一次', () => {
-    const { fakeApp, fakeAuth, fakeBucket, fakeRdb } = createFakeApp();
+    const { fakeApp, fakeBucket, fakeRdb } = createFakeApp();
     const init = vi.fn(() => fakeApp);
     const runtime = createCloudBaseServerRuntime(validConfig, {
       init
@@ -56,8 +53,7 @@ describe('CloudBase V3 服务端运行时工厂', () => {
     });
     expect(runtime).toEqual({
       rdb: fakeRdb,
-      bucket: fakeBucket,
-      auth: fakeAuth
+      bucket: fakeBucket
     });
   });
 
@@ -77,21 +73,17 @@ describe('CloudBase V3 服务端运行时工厂', () => {
 
 function createFakeApp(): {
   fakeApp: ReturnType<CloudBaseServerSdk['init']>;
-  fakeAuth: CloudBaseAuthClient;
   fakeBucket: CloudBaseStorageBucket;
   fakeRdb: CloudBaseRdbClient;
 } {
   const fakeRdb = {} as CloudBaseRdbClient;
   const fakeBucket = {} as CloudBaseStorageBucket;
-  const fakeAuth = {} as CloudBaseAuthClient;
   return {
     fakeApp: {
       rdb: vi.fn(() => fakeRdb),
-      storage: { from: vi.fn(() => fakeBucket) },
-      auth: vi.fn(() => fakeAuth)
+      storage: { from: vi.fn(() => fakeBucket) }
     },
     fakeRdb,
-    fakeBucket,
-    fakeAuth
+    fakeBucket
   };
 }

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
-  CaptchaProof,
   SubmissionReceipt,
   SubmissionStatusView
 } from '@myself/shared-types';
@@ -9,7 +8,6 @@ import type {
 import { ApiError } from '../errors.js';
 import { createStatusToken, hashStatusToken } from '../crypto/status-token.js';
 import type {
-  CaptchaVerifier,
   ObjectStorage,
   StoredObjectInfo,
   SubmissionAsset,
@@ -26,7 +24,6 @@ export interface PrepareSharedPackageInput {
   kind: 'shared_package';
   title: string;
   body: string;
-  captcha: CaptchaProof;
   packageFile: {
     fileName: string;
     sizeBytes: number;
@@ -67,7 +64,6 @@ export class SubmissionService {
   constructor(
     private readonly store: SubmissionStore,
     private readonly storage: ObjectStorage,
-    private readonly captcha: CaptchaVerifier,
     private readonly createId: CreateId = randomUUID
   ) {}
 
@@ -76,7 +72,6 @@ export class SubmissionService {
     context: RequestContext
   ): Promise<SubmissionReceipt & UploadTargets> {
     const normalized = validatePrepareInput(input, context);
-    await this.captcha.verify(input.captcha, context.ip);
 
     const submissionId = this.createId();
     const statusToken = createStatusToken();

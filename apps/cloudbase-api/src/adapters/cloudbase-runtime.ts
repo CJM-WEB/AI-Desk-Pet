@@ -1,6 +1,5 @@
 import cloudbase from '@cloudbase/node-sdk';
 
-import type { CloudBaseAuthClient } from './cloudbase-auth.js';
 import type { CloudBaseRdbClient } from './cloudbase-postgres.js';
 import type { CloudBaseStorageBucket } from './cloudbase-storage.js';
 import type { CloudConfig } from '../config.js';
@@ -8,7 +7,6 @@ import type { CloudConfig } from '../config.js';
 export interface CloudBaseServerRuntime {
   rdb: CloudBaseRdbClient;
   bucket: CloudBaseStorageBucket;
-  auth: CloudBaseAuthClient;
 }
 
 export interface CloudBaseServerSdk {
@@ -20,7 +18,6 @@ export interface CloudBaseServerSdk {
   }): {
     rdb(): CloudBaseRdbClient;
     storage: { from(bucketId: string): CloudBaseStorageBucket };
-    auth(): CloudBaseAuthClient;
   };
 }
 
@@ -43,7 +40,6 @@ export function createCloudBaseServerRuntime(
   });
   return {
     rdb: app.rdb(),
-    bucket: app.storage.from(config.privateBucketId),
-    auth: app.auth()
+    bucket: app.storage.from(config.privateBucketId)
   };
 }

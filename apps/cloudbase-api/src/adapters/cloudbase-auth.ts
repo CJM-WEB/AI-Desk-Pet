@@ -4,55 +4,74 @@ import type {
   AdminIdentityProvider
 } from '../ports.js';
 
-interface CloudBaseAuthUserInfo {
-  uid?: unknown;
+interface CloudBaseUserProfile {
+  sub?: unknown;
+  email?: unknown;
+  status?: unknown;
 }
 
-interface CloudBaseEndUserInfo {
-  userInfo?: unknown;
-}
+type AuthFetch = typeof fetch;
 
-/** CloudBase 身份认证适配器的最小表面，便于隔离 SDK 的宽泛返回类型。 */
-export interface CloudBaseAuthClient {
-  getUserInfo(): CloudBaseAuthUserInfo;
-  getEndUserInfo(uid: string): Promise<CloudBaseEndUserInfo> | CloudBaseEndUserInfo;
-}
-
-/** 只允许当前登录邮箱与唯一管理员白名单完全匹配。 */
+/** 使用当前 HTTP 请求的访问令牌校验用户，避免复用云函数冷启动时的身份上下文。 */
 export class CloudBaseAdminIdentityProvider implements AdminIdentityProvider {
   private readonly normalizedAdminEmail: string;
+  private readonly userInfoUrl: string;
 
   constructor(
-    private readonly auth: CloudBaseAuthClient,
-    adminEmail: string
+    envId: string,
+    adminEmail: string,
+    private readonly timeoutMs: number,
+    private readonly authFetch: AuthFetch = fetch
   ) {
     this.normalizedAdminEmail = normalizeEmail(adminEmail);
+    this.userInfoUrl = `https://${envId}.api.tcloudbasegateway.com/auth/v1/user/me`;
   }
 
-  async requireAdmin(): Promise<AdminIdentity> {
-    const uid = this.auth.getUserInfo().uid;
-    if (typeof uid !== 'string' || uid.length === 0) {
+  async requireAdmin(accessToken: string): Promise<AdminIdentity> {
+    let response: Response;
+    try {
+      response = await this.authFetch(this.userInfoUrl, {
+        headers: { authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(this.timeoutMs)
+      });
+    } catch {
+      throw new ApiError('AUTH_SERVICE_UNAVAILABLE', 503);
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new ApiError('UNAUTHORIZED', 401);
+    }
+    if (!response.ok) {
+      throw new ApiError('AUTH_SERVICE_UNAVAILABLE', 503);
+    }
+
+    const profile = await readProfile(response);
+    if (
+      typeof profile.sub !== 'string'
+      || profile.sub.length === 0
+      || typeof profile.email !== 'string'
+    ) {
       throw new ApiError('UNAUTHORIZED', 401);
     }
 
-    const result = await this.auth.getEndUserInfo(uid);
-    const email = readEmail(result.userInfo);
-    if (typeof email !== 'string') {
-      throw new ApiError('FORBIDDEN', 403);
-    }
-    const normalizedEmail = normalizeEmail(email);
+    const normalizedEmail = normalizeEmail(profile.email);
     if (normalizedEmail !== this.normalizedAdminEmail) {
       throw new ApiError('FORBIDDEN', 403);
     }
-    return { uid, email: normalizedEmail };
+    return { uid: profile.sub, email: normalizedEmail };
   }
 }
 
-function readEmail(value: unknown): unknown {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return undefined;
+async function readProfile(response: Response): Promise<CloudBaseUserProfile> {
+  try {
+    const value: unknown = await response.json();
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error('用户信息响应不是对象');
+    }
+    return value as CloudBaseUserProfile;
+  } catch {
+    throw new ApiError('AUTH_SERVICE_UNAVAILABLE', 503);
   }
-  return (value as Record<string, unknown>).email;
 }
 
 function normalizeEmail(value: string): string {

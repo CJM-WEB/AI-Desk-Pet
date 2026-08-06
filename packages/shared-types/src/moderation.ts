@@ -15,12 +15,6 @@ export const submissionStatuses = [
 export const submissionStatusSchema = z.enum(submissionStatuses);
 export type SubmissionStatus = z.infer<typeof submissionStatusSchema>;
 
-export const captchaProofSchema = z.object({
-  ticket: z.string().min(1).max(4096),
-  randstr: z.string().min(1).max(256)
-}).strict();
-export type CaptchaProof = z.infer<typeof captchaProofSchema>;
-
 export const submissionReceiptSchema = z.object({
   submissionId: z.string().min(1).max(128),
   statusToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),

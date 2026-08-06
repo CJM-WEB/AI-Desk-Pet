@@ -66,6 +66,14 @@ function setup(overrides: Partial<AdminApi> = {}, authOverrides: Partial<AdminAu
 }
 
 describe('管理员审核工作台', () => {
+  it('浏览器配置缺失时显示受控错误而不是让页面崩溃', async () => {
+    render(<AdminApp api={{} as AdminApi} />);
+
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      '管理员模式配置暂时不可用，请联系站点管理员。'
+    );
+  });
+
   it('取得现有会话后加载队列并提供五个侧栏视图', async () => {
     const { api } = setup();
 

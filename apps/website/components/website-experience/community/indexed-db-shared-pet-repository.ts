@@ -7,7 +7,7 @@ import {
   type SharedPetPage,
   type SharedPetRepository
 } from './shared-pet-types';
-import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
 
 export const SHARED_PET_DATABASE_NAME = 'ai-pet-community-v1';
 export const SHARED_PET_METADATA_STORE = 'sharedPetMetadata';
@@ -244,8 +244,7 @@ export class IndexedDbSharedPetRepository implements SharedPetRepository {
 
   /** 仅保留为历史测试适配器；生产注册已切换至云端审核仓库。 */
   async submit(
-    input: CreateSharedPetInput,
-    _captcha: CaptchaProof
+    input: CreateSharedPetInput
   ): Promise<SubmissionReceipt> {
     const created = await this.create(input);
     return {

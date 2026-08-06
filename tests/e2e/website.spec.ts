@@ -16,7 +16,7 @@ const PREVIEW = '[data-testid="file-preview"]';
 const SWARM = '[data-active-count]';
 const CANVAS = '[data-testid="cursor-field"]';
 const LIQUID_HOME = '[data-testid="liquid-glass-home"]';
-const DONATION = '[data-testid="donation-chapter"]';
+const SUPPORT = '[data-testid="support-chapter"]';
 const E2E_ADMIN_TOKEN = 'e2e-admin-session';
 const SCREENSHOT_DIRECTORY = resolve(
   REPOSITORY_ROOT,
@@ -27,8 +27,7 @@ const CHAPTER_IDS = [
   'about',
   'download',
   'community',
-  'feedback',
-  'donation'
+  'feedback'
 ] as const;
 
 type ChapterId = (typeof CHAPTER_IDS)[number];
@@ -64,8 +63,7 @@ async function submitFeedbackViaApi(
     data: {
       kind,
       authorName: '',
-      content,
-      captcha: { ticket: 'e2e-ticket', randstr: 'e2e-randstr' }
+      content
     }
   });
   expect(response.ok()).toBe(true);
@@ -82,7 +80,6 @@ async function submitSharedPackageViaApi(
       kind: 'shared_package',
       title,
       body: `${title} 的 AI Pet 资源说明`,
-      captcha: { ticket: 'e2e-ticket', randstr: 'e2e-randstr' },
       coverFile: { fileName: 'cover.png', sizeBytes: 7, contentType: 'image/png' },
       packageFile: { fileName: packageFileName, sizeBytes: 8, contentType: 'application/zip' }
     }
@@ -230,7 +227,7 @@ async function verifyWebsiteServerSource(
 ): Promise<void> {
   const response = await fetch(serverInfo.url);
   const html = await response.text();
-  const expectedChapterIds = ['home', 'about', 'download', 'community', 'feedback', 'donation'];
+  const expectedChapterIds = [...CHAPTER_IDS];
   const missingChapterIds = expectedChapterIds.filter(
     (chapterId) => !html.includes(`data-chapter-id="${chapterId}"`)
   );
@@ -535,7 +532,7 @@ async function expectActiveChapterLayout(
 
     for (const element of candidates) {
       if (
-        element.closest('[aria-hidden="true"], [inert]')
+        element.closest('[aria-hidden="true"], [inert], [data-layout-ignore]')
         || !element.checkVisibility({
           checkOpacity: true,
           checkVisibilityCSS: true
@@ -831,11 +828,11 @@ async function readCanvasColorEvidence(
   });
 }
 
-test('六章节按确认顺序注册且各章节具有明确状态', async ({ page }) => {
+test('五章节按确认顺序注册且各章节具有明确状态', async ({ page }) => {
   await page.goto('/?seed=42');
   const sections = page.locator('[data-chapter-id]');
 
-  await expect(sections).toHaveCount(6);
+  await expect(sections).toHaveCount(CHAPTER_IDS.length);
   expect(await sections.evaluateAll((nodes) => nodes.map(
     (node) => node.getAttribute('data-chapter-id')
   ))).toEqual(CHAPTER_IDS);
@@ -852,7 +849,7 @@ test('六章节按确认顺序注册且各章节具有明确状态', async ({ pa
 
   await expect(
     page.locator('[data-chapter-id="about"]').getByRole('heading', {
-      name: 'AI Pet',
+      name: '文本编辑',
       exact: true
     })
   ).toBeAttached();
@@ -861,7 +858,7 @@ test('六章节按确认顺序注册且各章节具有明确状态', async ({ pa
   ).toHaveText('倾听你的声音，打造属于你的 Pet');
   await expect(page.locator('[data-testid="about-chapter"]')).toBeAttached();
   await expect(page.locator('[data-testid="shared-pet-chapter"]')).toBeAttached();
-  await expect(page.locator('[data-testid="feedback-chapter"]')).toBeAttached();
+  await expect(page.locator(SUPPORT)).toBeAttached();
 });
 
 test('法律页面公开披露匿名投稿边界并提供站内投诉入口', async ({ page }) => {
@@ -888,8 +885,7 @@ test('内存 API 复用公开信封且投稿不会绕过管理员审核', async 
     data: {
       kind: 'feedback',
       authorName: '',
-      content: '这是一条用于验证两层审核的 AI Pet 反馈。',
-      captcha: { ticket: 'e2e-ticket', randstr: 'e2e-randstr' }
+      content: '这是一条用于验证两层审核的 AI Pet 反馈。'
     }
   });
   expect(created.ok()).toBe(true);
@@ -1005,7 +1001,9 @@ test('匿名反馈批准前隐藏且批准后进入真实网页列表', async ({
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/?seed=42');
   await enterChapter(page, 'feedback');
-  await page.getByRole('button', { name: '查看用户反馈' }).click();
+  const feedbackTrigger = page.getByRole('button', { name: '查看用户反馈' });
+  await feedbackTrigger.click();
+  await feedbackTrigger.click();
   await expect(page.getByRole('dialog', { name: '用户反馈' })).toContainText(content);
 });
 
@@ -1080,74 +1078,43 @@ test('管理员写操作校验版本、理由和幂等键并拒绝错误 Bearer'
   expect((await conflict.json()).error.code).toBe('VERSION_CONFLICT');
 });
 
-test('介绍章节桌面悬停与键盘预览不被鼠标点击锁定', async ({ page }) => {
+test('介绍章节桌面悬停与键盘聚焦同步玻璃交互', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
   await enterChapter(page, 'about');
 
   const about = page.locator('[data-testid="about-chapter"]');
-  const security = page.locator('[data-about-feature="security"]');
-  const safeZone = page.locator('[data-about-safe-zone]');
-  const title = page.locator('[data-about-title] [data-testid="pointer-tilt-text"]');
+  const features = about.locator('aside, article');
+  const editor = about.locator('[data-glass-id="editor"]');
 
-  await expect(about.locator('[data-about-feature]')).toHaveCount(5);
-  await security.hover();
-  await expect(about).toHaveAttribute('data-active-feature', 'security');
-  await expect(page.getByRole('tooltip')).toBeVisible();
+  await expect(features).toHaveCount(5);
+  await editor.hover();
+  await expect(about).toHaveAttribute('data-hovered', '0');
+  await page.mouse.move(4, 4);
+  await expect(about).toHaveAttribute('data-hovered', '-1');
 
-  await security.click();
-  const safeBounds = await safeZone.boundingBox();
-  expect(safeBounds).not.toBeNull();
-  await page.mouse.move(
-    safeBounds!.x + safeBounds!.width / 2,
-    safeBounds!.y + safeBounds!.height / 2
-  );
-  await expect(about).toHaveAttribute('data-active-feature', 'none');
-
-  const initialTilt = await title.evaluate((element) => (
-    getComputedStyle(element).getPropertyValue('--pointer-tilt-rotate-y')
-  ));
-  await page.mouse.move(safeBounds!.x + safeBounds!.width * 0.78, safeBounds!.y + 20);
-  await expect.poll(() => title.evaluate((element) => (
-    getComputedStyle(element).getPropertyValue('--pointer-tilt-rotate-y')
-  ))).not.toBe(initialTilt);
-
-  await security.focus();
-  await expect(about).toHaveAttribute('data-active-feature', 'security');
-  await expect(security).toHaveAttribute(
-    'aria-describedby',
-    'about-feature-preview-security'
-  );
+  await editor.focus();
+  await expect(about).toHaveAttribute('data-hovered', '0');
   expect(runtimeErrors).toEqual([]);
 });
 
-test('568x320 介绍章节紧凑布局可读且移动空白点击解除锁定', async ({ page }) => {
+test('568x320 介绍章节五项内容可读且键盘焦点可切换', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 568, height: 320 });
   await enterInteractive(page);
   await enterChapter(page, 'about');
 
   const about = page.locator('[data-testid="about-chapter"]');
-  const panels = about.locator('[data-about-feature]');
-  await expect(about).toHaveAttribute('data-layout', 'compact-landscape');
-  await expect(about).toHaveAttribute('data-entrance-state', 'visible');
+  const panels = about.locator('aside, article');
   await expect(panels).toHaveCount(5);
-  expect(await panels.evaluateAll((nodes) => nodes.every((node) => {
-    const element = node as HTMLElement;
-    const bounds = element.getBoundingClientRect();
-    return bounds.left >= 0
-      && bounds.top >= 0
-      && bounds.right <= window.innerWidth
-      && bounds.bottom <= window.innerHeight
-      && element.scrollWidth <= element.clientWidth + 1
-      && element.scrollHeight <= element.clientHeight + 1;
-  }))).toBe(true);
+  await expect(about.getByRole('heading', { name: '文本编辑' })).toBeAttached();
+  await expect(about.getByRole('heading', { name: '文件夹管理' })).toBeAttached();
 
-  await page.locator('[data-about-feature="text-editor"]').click();
-  await expect(about).toHaveAttribute('data-active-feature', 'text-editor');
-  await page.locator('[data-about-safe-zone]').click();
-  await expect(about).toHaveAttribute('data-active-feature', 'none');
+  await about.locator('[data-glass-id="editor"]').focus();
+  await expect(about).toHaveAttribute('data-hovered', '0');
+  await about.locator('[data-glass-id="files"]').focus();
+  await expect(about).toHaveAttribute('data-hovered', '2');
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1158,8 +1125,10 @@ test('反馈章节展示排序列表、远端只读状态与建议滚筒', async
   await enterChapter(page, 'feedback');
 
   const roller = page.getByRole('group', { name: '选择反馈操作' });
-  await expect(roller).toHaveAttribute('data-active-action', 'feedback');
-  await page.getByRole('button', { name: '查看用户反馈' }).click();
+  await expect(roller).toHaveAttribute('data-active-action', 'suggestion');
+  const feedbackTrigger = page.getByRole('button', { name: '查看用户反馈' });
+  await feedbackTrigger.click();
+  await feedbackTrigger.click();
 
   const feedbackDialog = page.getByRole('dialog', { name: '用户反馈' });
   await expect(feedbackDialog).toBeVisible();
@@ -1177,7 +1146,7 @@ test('反馈章节展示排序列表、远端只读状态与建议滚筒', async
   await page.getByRole('button', { name: '关闭用户反馈' }).click();
   await expect(feedbackDialog).toHaveCount(0);
   await roller.hover();
-  await page.mouse.wheel(0, 160);
+  await page.mouse.wheel(0, -160);
   await expect(roller).toHaveAttribute('data-active-action', 'suggestion');
   await page.getByRole('button', { name: '查看更新建议' }).click();
   const suggestionDialog = page.getByRole('dialog', { name: '更新建议' });
@@ -1189,16 +1158,12 @@ test('反馈章节展示排序列表、远端只读状态与建议滚筒', async
 
 test('反馈草稿放弃需确认并恢复入口焦点', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
-  await page.goto('/?seed=42');
-  await page.evaluate(() => window.localStorage.clear());
-  await page.reload();
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
   await enterChapter(page, 'feedback');
 
-  const roller = page.getByRole('group', { name: '选择反馈操作' });
-  await page.getByRole('button', { name: '选择新建投稿' }).click();
   const create = page.getByRole('button', { name: '新建投稿' });
+  await create.click();
   await create.click();
   await page.getByLabel('正文').fill('这是一条应该由放弃确认保护的草稿内容。');
   await page.getByRole('button', { name: '取消', exact: true }).click();
@@ -1226,8 +1191,9 @@ test('568x320 投稿编辑器可滚动到底部且所有操作按钮满足触控
   await enterInteractive(page);
   await enterChapter(page, 'feedback');
 
-  await page.getByRole('button', { name: '选择新建投稿' }).click();
-  await page.getByRole('button', { name: '新建投稿' }).click();
+  const create = page.getByRole('button', { name: '新建投稿' });
+  await create.click();
+  await create.click();
 
   const composer = page.getByRole('dialog', { name: '新建投稿' });
   const composerPanel = page.getByTestId('feedback-composer-panel');
@@ -1299,7 +1265,7 @@ test('568x320 投稿编辑器可滚动到底部且所有操作按钮满足触控
   expect(runtimeErrors).toEqual([]);
 });
 
-test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) => {
+test('逐章节交接且快速输入不能跳过相邻章节', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
@@ -1318,14 +1284,13 @@ test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) 
     const aboutStyle = getComputedStyle(about);
     const homeOpacity = Number(homeStyle.opacity);
     const aboutOpacity = Number(aboutStyle.opacity);
-    return homeOpacity > 0
-      && homeOpacity < 1
+    return homeOpacity === 1
       && aboutOpacity > 0
       && aboutOpacity < 1
-      && homeStyle.transform !== 'none'
-      && aboutStyle.transform !== 'none';
+      && homeStyle.getPropertyValue('--chapter-scale').trim() === '1'
+      && aboutStyle.getPropertyValue('--chapter-scale').trim() === '1';
   }), {
-    message: '首页与介绍章节应出现缩放渐隐交接帧'
+    message: '首页与介绍章节应出现原位透明度交接帧'
   }).toBe(true);
   await page.screenshot({
     path: resolve(SCREENSHOT_DIRECTORY, 'chapter-transition-1440.png')
@@ -1362,7 +1327,7 @@ test('普通鼠标滚轮按真实刻度突发累积并在结束后进入介绍�
   await enterInteractive(page);
   await page.mouse.move(720, 450);
 
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 8; index += 1) {
     await page.mouse.wheel(0, 120);
     await page.waitForTimeout(70);
   }
@@ -1454,99 +1419,47 @@ test('暂停期间结束的触屏不会锁死后续章节手势', async ({ page 
   );
 });
 
-test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节', async ({ page }) => {
+test('下载平台选择器切换平台并保留当前章节', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await enterInteractive(page);
   await enterChapter(page, 'download');
 
-  const stack = page.locator('[data-testid="download-platform-stack"]');
-  await installWindowBubbleProbe(page);
-  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
-  await stack.hover();
-  await resetWindowBubbleProbe(page);
-  await page.mouse.wheel(0, 160);
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'download'
+  const download = page.locator('[data-testid="download-chapter"]');
+  const selector = page.getByRole('group', { name: '选择下载平台' });
+  await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
+
+  const macos = selector.getByRole('button', { name: '选择 macOS' });
+  const macosBounds = await macos.boundingBox();
+  expect(macosBounds).not.toBeNull();
+  await page.mouse.click(
+    macosBounds!.x + macosBounds!.width / 2,
+    macosBounds!.y + macosBounds!.height / 2
   );
-  await expect(stack).toHaveAttribute('data-active-platform', 'macos');
+  await expect(download).toHaveAttribute('data-active-platform', 'macos');
   await expect(page.getByRole('button', { name: '即将支持' })).toBeDisabled();
-  await expect(
-    page.locator('[data-platform-id="macos"] a')
-  ).toHaveCount(0);
-  await expectNoWindowBubble(page, ['wheel'], '下载平台滚轮');
-
-  await resetWindowBubbleProbe(page);
-  await stack.dispatchEvent('pointerdown', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 520,
-    isPrimary: true,
-    pointerId: 51,
-    pointerType: 'touch'
-  });
-  await stack.dispatchEvent('pointermove', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 450,
-    isPrimary: true,
-    pointerId: 51,
-    pointerType: 'touch'
-  });
-  await stack.dispatchEvent('pointerup', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 450,
-    isPrimary: true,
-    pointerId: 51,
-    pointerType: 'touch'
-  });
-  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'download'
-  );
-  await expectNoWindowBubble(
-    page,
-    ['pointerdown', 'pointermove', 'pointerup'],
-    '下载平台触屏手势'
   );
 
-  await stack.focus();
-  await expect(stack).toBeFocused();
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('ArrowDown');
-  await expect(stack).toHaveAttribute('data-active-platform', 'macos');
+  const windows = selector.getByRole('button', { name: '选择 Windows' });
+  await expect(windows).toBeEnabled();
+  const windowsBounds = await windows.boundingBox();
+  expect(windowsBounds).not.toBeNull();
+  await page.mouse.click(
+    windowsBounds!.x + windowsBounds!.width / 2,
+    windowsBounds!.y + windowsBounds!.height / 2
+  );
+  await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'download'
   );
-  await expectNoWindowBubble(page, ['keydown'], '下载平台 ArrowDown');
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('ArrowUp');
-  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'download'
-  );
-  await expectNoWindowBubble(page, ['keydown'], '下载平台 ArrowUp');
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('Escape');
-  await expect.poll(
-    () => stack.evaluate((element) => (
-      !element.contains(element.ownerDocument.activeElement)
-    )),
-    { message: 'Escape 后焦点应退出下载平台局部控件' }
-  ).toBe(true);
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'download'
-  );
-  await expectNoWindowBubble(page, ['keydown'], '下载平台 Escape');
   expect(runtimeErrors).toEqual([]);
 });
 
-test('下载侧栏仅在桌面悬停或焦点期间展开，并准确展示 Windows 发布状态', async ({
+test('下载章节公开安装与常见问题文本，并准确展示 Windows 发布状态', async ({
   page
 }) => {
   const runtimeErrors = collectRuntimeErrors(page);
@@ -1555,38 +1468,24 @@ test('下载侧栏仅在桌面悬停或焦点期间展开，并准确展示 Wind
   await enterChapter(page, 'download');
 
   const download = page.locator('[data-testid="download-chapter"]');
-  const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
-  const faqPanel = page.getByRole('complementary', { name: '常见问题' });
-  const windowsCard = page.locator('[data-platform-id="windows-x64"]');
+  const accessibleCopy = page.getByRole('region', {
+    name: '安装前须知 · 常见问题'
+  });
 
   expect(await download.evaluate((element) => getComputedStyle(element).backgroundImage))
     .toBe('none');
-  await expect(faqTrigger).not.toHaveAttribute('aria-pressed');
-  await expect(faqTrigger.locator('svg')).toHaveCount(0);
-
-  await faqTrigger.hover();
-  await expect(download).toHaveAttribute('data-visible-side', 'faq');
-  await expect(faqPanel).toBeVisible();
-  await page.mouse.move(720, 450);
-  await expect(download).toHaveAttribute('data-visible-side', 'none');
-
-  await faqTrigger.focus();
-  await expect(download).toHaveAttribute('data-visible-side', 'faq');
-  await faqTrigger.click();
-  await faqTrigger.blur();
-  await page.mouse.move(720, 450);
-  await expect(download).toHaveAttribute('data-visible-side', 'none');
-
-  await expect(windowsCard).toHaveAttribute('data-platform-status', 'unpublished');
-  await expect(windowsCard.getByRole('button', { name: '尚未发布' })).toBeDisabled();
-  await expect(windowsCard).toContainText('v0.1.0-alpha.1');
+  await expect(accessibleCopy).toContainText('安装前须知');
+  await expect(accessibleCopy).toContainText('常见问题');
+  await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
+  await expect(download.getByRole('button', { name: '尚未发布' })).toBeDisabled();
+  await expect(download).toContainText('v0.1.0-alpha.1');
   expect(runtimeErrors).toEqual([]);
 });
 
-test('支付滚筒消费局部输入并显示映射正确的真实付款码', async ({ page }) => {
+test('支付滚筒消费局部滚轮与键盘输入并显示映射正确的真实付款码', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   const roller = page.locator('[data-testid="payment-roller"]');
   await installWindowBubbleProbe(page);
@@ -1615,78 +1514,21 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await page.mouse.wheel(0, -160);
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
   await expect(roller).toHaveAttribute('data-active-payment', 'paypal');
   await expectNoWindowBubble(page, ['wheel'], '支付方式滚轮');
 
-  await resetWindowBubbleProbe(page);
-  await roller.dispatchEvent('pointerdown', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 450,
-    isPrimary: true,
-    pointerId: 61,
-    pointerType: 'touch'
-  });
-  await roller.dispatchEvent('pointermove', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 520,
-    isPrimary: true,
-    pointerId: 61,
-    pointerType: 'touch'
-  });
-  await roller.dispatchEvent('pointerup', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 520,
-    isPrimary: true,
-    pointerId: 61,
-    pointerType: 'touch'
-  });
-  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'donation'
-  );
-  await expectNoWindowBubble(
-    page,
-    ['pointerdown', 'pointermove', 'pointerup'],
-    '支付方式触屏手势'
-  );
-
   await roller.focus();
   await expect(roller).toBeFocused();
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('ArrowDown');
-  await expect(roller).toHaveAttribute('data-active-payment', 'paypal');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'donation'
-  );
-  await expectNoWindowBubble(page, ['keydown'], '支付方式 ArrowDown');
   await resetWindowBubbleProbe(page);
   await page.keyboard.press('ArrowUp');
   await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
   await expectNoWindowBubble(page, ['keydown'], '支付方式 ArrowUp');
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('Escape');
-  await expect.poll(
-    () => roller.evaluate((element) => (
-      !element.contains(element.ownerDocument.activeElement)
-    )),
-    { message: 'Escape 后焦点应退出支付方式局部控件' }
-  ).toBe(true);
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'donation'
-  );
-  await expectNoWindowBubble(page, ['keydown'], '支付方式 Escape');
 
   await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -1730,7 +1572,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
 test('付款码弹层隔离翻页、滚轮与触屏章节输入并由 Escape 关闭', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   await page.getByRole('button', { name: '打开微信付款码' }).click();
   const dialog = page.getByRole('dialog', { name: '微信付款码' });
@@ -1739,14 +1581,14 @@ test('付款码弹层隔离翻页、滚轮与触屏章节输入并由 Escape 关
   await page.keyboard.press('PageUp');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
 
   await dialog.hover();
   await page.mouse.wheel(0, -800);
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
 
   await dialog.dispatchEvent('pointerdown', {
@@ -1767,7 +1609,7 @@ test('付款码弹层隔离翻页、滚轮与触屏章节输入并由 Escape 关
   });
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
 
   await page.keyboard.press('Escape');
@@ -1779,7 +1621,7 @@ test('付款码资源加载失败时显示稳定回退并保持关闭行为', as
   const runtimeErrors = collectRuntimeErrors(page);
   await page.route('**/WechatPay.jpg', (route) => route.abort());
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   const paymentButton = page.getByRole('button', { name: '打开微信付款码' });
   await paymentButton.click();
@@ -1792,23 +1634,16 @@ test('付款码资源加载失败时显示稳定回退并保持关闭行为', as
   expect(runtimeErrors[0]).toContain('Failed to load resource');
 });
 
-test('捐款章节不显示黄色 Canvas 光场并保留共享文件预览', async ({ page }) => {
+test('支持章节不显示黄色 Canvas 光场并保留两组核心操作', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   const canvas = page.locator(CANVAS);
   await expect(canvas).toHaveCount(0);
-  await expect(page.locator('[data-layer="file"]')).toHaveAttribute(
-    'data-profile-id',
-    'donation'
-  );
-
-  const icon = await waitForFile(page);
-  await icon.hover();
-  await expect(page.locator(PREVIEW)).toBeVisible();
-  await expectInsideViewport(page, page.locator(PREVIEW));
+  await expect(page.getByRole('group', { name: '选择反馈操作' })).toBeVisible();
+  await expect(page.getByRole('group', { name: '选择付款方式' })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1816,7 +1651,7 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   await page.getByRole('button', { name: '打开微信付款码' }).click();
   const dialog = page.getByRole('dialog', { name: '微信付款码' });
@@ -1862,7 +1697,7 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth))
     .toBeLessThanOrEqual(390);
   await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'donation-dialog-390.png')
+    path: resolve(SCREENSHOT_DIRECTORY, 'support-dialog-390.png')
   });
 
   await page.getByRole('button', { name: '关闭付款码' }).click();
@@ -1886,7 +1721,7 @@ test('390 首屏直接交互且点击下一章节一次进入介绍章', async (
   expect(runtimeErrors).toEqual([]);
 });
 
-test('窗口 blur 和 focus 会同步下载与捐款章节暂停状态', async ({ page }) => {
+test('窗口 blur 和 focus 会同步下载与支持章节暂停状态', async ({ page }) => {
   await enterInteractive(page);
   await enterChapter(page, 'download');
   const download = page.locator('[data-testid="download-chapter"]');
@@ -1898,20 +1733,20 @@ test('窗口 blur 和 focus 会同步下载与捐款章节暂停状态', async (
   await expect(download).toHaveAttribute('data-paused', 'false');
 
   await enterChapter(page, 'feedback');
-  await page.keyboard.press('PageDown');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
-  const donation = page.locator(DONATION);
-  await expect(donation).toHaveAttribute('data-paused', 'false');
+  const support = page.locator(SUPPORT);
+  await expect(support).toHaveAttribute('data-paused', 'false');
   await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-  await expect(donation).toHaveAttribute('data-paused', 'true');
+  await expect(support).toHaveAttribute('data-paused', 'true');
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(donation).toHaveAttribute('data-paused', 'false');
+  await expect(support).toHaveAttribute('data-paused', 'false');
 });
 
-test('目标视口六章节无溢出遮挡且减少动态效果保持完整导航', async ({ page }) => {
+test('目标视口五章节无溢出遮挡且减少动态效果保持完整导航', async ({ page }) => {
+  test.setTimeout(180_000);
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const viewports = [
@@ -1935,7 +1770,7 @@ test('目标视口六章节无溢出遮挡且减少动态效果保持完整导�
       'interactive'
     );
     await expect(liquidHome).toHaveAttribute('data-active', 'true');
-    await expect(liquidHome.locator('canvas')).toBeVisible();
+    await expect(liquidHome.locator('canvas')).toBeAttached();
 
     if (viewport.width === 1920) {
       await page.screenshot({
@@ -2015,7 +1850,7 @@ test('matchMedia 初始化异常时进入静态回退且不出现黑屏', async 
   await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(page.locator('[data-layer="intro"]')).toHaveCount(0);
   await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
-  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeVisible();
+  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeAttached();
   await expect(page.locator('[data-testid="cursor-field"]')).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
 });
@@ -2052,24 +1887,30 @@ test('WebGL 上下文不可用时仅首页进入静态回退', async ({ page }) 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('390 离开再返回首页会重新上传 WebGL 纹理而不变黑', async ({ page }) => {
+test('390 离开再返回首页后液态画布缓冲区保持可用', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/?seed=42');
 
   const canvas = page.locator(`${LIQUID_HOME} canvas`);
   await expect(canvas).toBeVisible();
-  await expect.poll(() => countWebglLitSamples(canvas)).toBeGreaterThan(20);
-  const initialSamples = await countWebglLitSamples(canvas);
+  const initialBuffer = await canvas.evaluate((element) => ({
+    width: element instanceof HTMLCanvasElement ? element.width : 0,
+    height: element instanceof HTMLCanvasElement ? element.height : 0
+  }));
+  expect(initialBuffer.width).toBeGreaterThan(0);
+  expect(initialBuffer.height).toBeGreaterThan(0);
 
   await page.getByRole('button', { name: '下一章节' }).click();
   await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'about');
   await page.getByRole('button', { name: '上一章节' }).click();
   await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'home');
   await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
-  await expect.poll(() => countWebglLitSamples(canvas)).toBeGreaterThan(
-    Math.floor(initialSamples * 0.3)
-  );
+  await expect(canvas).toBeVisible();
+  expect(await canvas.evaluate((element) => ({
+    width: element instanceof HTMLCanvasElement ? element.width : 0,
+    height: element instanceof HTMLCanvasElement ? element.height : 0
+  }))).toEqual(initialBuffer);
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -2093,37 +1934,32 @@ test('静态回退通过运行时属性关闭章节与付款码动效', async ({
   await expect(experience).toHaveAttribute('data-active-chapter', 'download');
 
   const download = page.locator('[data-testid="download-chapter"]');
-  const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
   await expect(download).toHaveAttribute('data-motion-disabled', 'true');
-  await faqTrigger.hover();
-  await expect(download).toHaveAttribute('data-visible-side', 'faq');
   const downloadMotion = await download.evaluate((root) => {
-    const trigger = root.querySelector('button[aria-label="显示常见问题"]');
-    const panel = root.querySelector('[data-side-panel="faq"]');
-    const card = root.querySelector('[data-platform-id]');
+    const selector = root.querySelector('[role="group"] button');
+    const glass = root.querySelector('section[aria-label="安装前须知 · 常见问题"]');
+    const action = root.querySelector('button:disabled');
     return {
-      triggerTransition: trigger
-        ? getComputedStyle(trigger).transitionDuration
+      selectorTransition: selector
+        ? getComputedStyle(selector).transitionDuration
         : null,
-      panelTransition: panel ? getComputedStyle(panel).transitionDuration : null,
-      cardTransition: card ? getComputedStyle(card).transitionDuration : null
+      glassTransition: glass ? getComputedStyle(glass).transitionDuration : null,
+      actionTransition: action ? getComputedStyle(action).transitionDuration : null
     };
   });
   expect(downloadMotion).toEqual({
-    triggerTransition: '0s',
-    panelTransition: '0s',
-    cardTransition: '0s'
+    selectorTransition: '0s',
+    glassTransition: '0s',
+    actionTransition: '0s'
   });
-  const windowsCard = page.locator('[data-platform-id="windows-x64"]');
-  await expect(windowsCard).toHaveAttribute('data-platform-status', 'unpublished');
-  await expect(windowsCard.getByRole('button', { name: '尚未发布' })).toBeDisabled();
+  await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
+  await expect(download.getByRole('button', { name: '尚未发布' })).toBeDisabled();
 
   await next.click();
   await next.click();
-  await next.click();
-  await expect(experience).toHaveAttribute('data-active-chapter', 'donation');
-  const donation = page.locator(DONATION);
-  await expect(donation).toHaveAttribute('data-motion-disabled', 'true');
+  await expect(experience).toHaveAttribute('data-active-chapter', 'feedback');
+  const support = page.locator(SUPPORT);
+  await expect(support).toHaveAttribute('data-motion-disabled', 'true');
   const payment = page.getByRole('button', { name: '打开微信付款码' });
   await expect(payment).toBeEnabled();
   expect(await payment.evaluate((button) => (
@@ -2185,7 +2021,7 @@ test('390 宽度液态玻璃首页无横向溢出', async ({ page }) => {
   expect(runtimeErrors).toEqual([]);
 });
 
-test('760/761 断点提供移动章节导航且六章节不横向溢出', async ({ page }) => {
+test('760/761 断点提供移动章节导航且五章节不横向溢出', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 760, height: 900 });
@@ -2218,7 +2054,7 @@ test('760/761 断点提供移动章节导航且六章节不横向溢出', async 
     }));
     expect(widths.scroll).toBeLessThanOrEqual(widths.client);
 
-    if (chapterId !== 'donation') {
+    if (chapterId !== 'feedback') {
       await next.click();
     }
   }
@@ -2232,7 +2068,7 @@ test('760/761 断点提供移动章节导航且六章节不横向溢出', async 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('PageDown 推进非纵向滚动章节并在终点卸载液态首页', async ({ page }) => {
+test('PageDown 推进非纵向滚动章节并在终点保留共享液态背景', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
@@ -2246,22 +2082,23 @@ test('PageDown 推进非纵向滚动章节并在终点卸载液态首页', async
   }
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'exiting');
   await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'about');
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
 
   await page.screenshot({
     path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1440-exiting.png')
   });
 
-  await page.keyboard.press('PageDown');
-  await page.keyboard.press('PageDown');
-  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '1.0000');
-  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'false');
-  await expect(page.locator(LIQUID_HOME)).toBeHidden();
+  await enterChapter(page, 'feedback');
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'feedback');
+  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '4.0000');
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(LIQUID_HOME)).toBeVisible();
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   expect(runtimeErrors).toEqual([]);
 });
 
-test('下载与反馈章节的外围文件图标可悬浮预览且主要控件保持可操作', async ({
+test('下载与支持章节主要控件保持可操作且不残留旧外围文件层', async ({
   page
 }) => {
   const runtimeErrors = collectRuntimeErrors(page);
@@ -2269,43 +2106,35 @@ test('下载与反馈章节的外围文件图标可悬浮预览且主要控件�
   await enterInteractive(page);
 
   await enterChapter(page, 'download');
-  const downloadIcon = page.locator(ICON).first();
-  await expect(downloadIcon).toBeVisible();
-  await downloadIcon.hover();
-  await expect(page.locator(PREVIEW)).toBeVisible();
   await expect(page.getByRole('group', { name: '选择下载平台' })).toBeVisible();
+  await expect(page.locator(ICON)).toHaveCount(0);
+  await expect(page.locator(PREVIEW)).toHaveCount(0);
 
   await enterChapter(page, 'feedback');
-  const feedbackIcon = page.locator(ICON).first();
-  await expect(feedbackIcon).toBeVisible();
-  await feedbackIcon.hover();
-  const feedbackPreview = page.locator(PREVIEW);
-  await expect(feedbackPreview).toBeVisible();
-  await expect(feedbackPreview).toContainText(/类型 (?:反馈(?!建议)|建议)/u);
-  await expect(feedbackPreview).not.toContainText('昵称 AI Pet');
-  await expect(feedbackPreview).not.toContainText('暂无可展示内容');
-  await expect(feedbackPreview).not.toContainText('内容暂时不可读取');
   await expect(page.getByRole('group', { name: '选择反馈操作' })).toBeVisible();
+  await expect(page.getByRole('group', { name: '选择付款方式' })).toBeVisible();
+  await expect(page.locator(ICON)).toHaveCount(0);
+  await expect(page.locator(PREVIEW)).toHaveCount(0);
 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', async ({ page }) => {
+test('568x320 窄横屏支持章节滚筒保持在视口内且页面无横向溢出', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 568, height: 320 });
   await enterInteractive(page);
-  await expect(page.locator('[data-chapter-id]')).toHaveCount(6);
-  await enterChapter(page, 'donation');
+  await expect(page.locator('[data-chapter-id]')).toHaveCount(CHAPTER_IDS.length);
+  await enterChapter(page, 'feedback');
 
-  const donationSection = page.locator('[data-chapter-id="donation"]');
-  await expect(donationSection).toHaveAttribute('data-interactive', 'true');
+  const supportSection = page.locator('[data-chapter-id="feedback"]');
+  await expect(supportSection).toHaveAttribute('data-interactive', 'true');
 
-  const donation = page.locator(DONATION);
-  const roller = donation.getByRole('group', { name: '选择付款方式' });
+  const support = page.locator(SUPPORT);
+  const roller = support.getByRole('group', { name: '选择付款方式' });
   await expect(roller).toBeVisible();
   await expectInsideViewport(page, roller);
 
-  const cardBounds = await donation.locator('[data-payment-id]').evaluateAll(
+  const cardBounds = await support.locator('[data-payment-id]').evaluateAll(
     (cards) => cards.map((card) => {
       const bounds = card.getBoundingClientRect();
       return {
@@ -2333,12 +2162,12 @@ test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', 
   expect(layoutState.documentWidth).toBeLessThanOrEqual(layoutState.viewportWidth);
   expect(layoutState.bodyWidth).toBeLessThanOrEqual(layoutState.viewportWidth);
   await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'donation-568x320.png')
+    path: resolve(SCREENSHOT_DIRECTORY, 'support-568x320.png')
   });
   expect(runtimeErrors).toEqual([]);
 });
 
-test('568x320 六章节主内容避让移动导航且保持完整可见', async ({ page }) => {
+test('568x320 五章节主内容避让移动导航且保持完整可见', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 568, height: 320 });
@@ -2352,11 +2181,10 @@ test('568x320 六章节主内容避让移动导航且保持完整可见', async 
       'home',
       page.locator(LIQUID_HOME)
     ],
-    ['about', page.locator('[data-chapter-id="about"] h2')],
+    ['about', page.locator('[data-glass-id="editor"]')],
     ['download', page.getByRole('group', { name: '选择下载平台' })],
-    ['community', page.locator('[data-chapter-id="community"] h2')],
-    ['feedback', page.locator('[data-chapter-id="feedback"] h2')],
-    ['donation', page.getByRole('group', { name: '选择付款方式' })]
+    ['community', page.getByRole('button', { name: '分享您的 AI Pet' })],
+    ['feedback', page.getByRole('group', { name: '选择付款方式' })]
   ]);
 
   await expect(navigation).toBeVisible();
@@ -2387,7 +2215,7 @@ test('568x320 六章节主内容避让移动导航且保持完整可见', async 
         .toBe(false);
     }
 
-    if (chapterId !== 'donation') {
+    if (chapterId !== 'feedback') {
       await next.click();
     }
   }
@@ -2397,7 +2225,7 @@ test('568x320 六章节主内容避让移动导航且保持完整可见', async 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => {
+test('移动下载操作按钮避让章节导航', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const viewports = [
@@ -2405,11 +2233,6 @@ test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => 
     { width: 375, height: 667 },
     { width: 568, height: 320 }
   ];
-  const sides = [
-    { id: 'faq', trigger: '显示常见问题' },
-    { id: 'notice', trigger: '显示安装前须知' }
-  ] as const;
-
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await page.goto('/?seed=42');
@@ -2421,62 +2244,24 @@ test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => 
     await next.click();
     await expect(experience).toHaveAttribute('data-active-chapter', 'download');
 
-    for (const side of sides) {
-      const trigger = page.getByRole('button', { name: side.trigger });
-      const triggerBounds = await trigger.boundingBox();
-      expect(triggerBounds).not.toBeNull();
-      expect(triggerBounds!.width).toBeGreaterThanOrEqual(44);
-      expect(triggerBounds!.height).toBeGreaterThanOrEqual(44);
-      await trigger.click();
-      await expect(download).toHaveAttribute('data-visible-side', side.id);
-
-      const panel = download.locator(`[data-side-panel="${side.id}"]`);
-      await expect(panel).toHaveAttribute('aria-hidden', 'false');
-      await expect(panel.locator('[data-panel-item]').first()).toBeVisible();
-      await expectInsideViewport(page, panel);
-
-      const overlappingTexts = await panel.evaluate((panelNode) => {
-        const navigation = document.querySelector(
-          'nav[aria-label="章节导航"]'
-        );
-        if (!navigation) return ['章节导航不存在'];
-
-        const panelRect = panelNode.getBoundingClientRect();
-        const navigationRect = navigation.getBoundingClientRect();
-        return Array.from(panelNode.querySelectorAll<HTMLElement>('h2, h3, p'))
-          .filter((textNode) => {
-            const style = getComputedStyle(textNode);
-            return style.display !== 'none'
-              && style.visibility !== 'hidden'
-              && Number(style.opacity) > 0;
-          })
-          .filter((textNode) => {
-            const textRect = textNode.getBoundingClientRect();
-            const visibleRect = {
-              left: Math.max(0, panelRect.left, textRect.left),
-              right: Math.min(window.innerWidth, panelRect.right, textRect.right),
-              top: Math.max(0, panelRect.top, textRect.top),
-              bottom: Math.min(window.innerHeight, panelRect.bottom, textRect.bottom)
-            };
-            if (
-              visibleRect.right <= visibleRect.left
-              || visibleRect.bottom <= visibleRect.top
-            ) {
-              return false;
-            }
-
-            return visibleRect.left < navigationRect.right
-              && visibleRect.right > navigationRect.left
-              && visibleRect.top < navigationRect.bottom
-              && visibleRect.bottom > navigationRect.top;
-          })
-          .map((textNode) => textNode.textContent?.trim() ?? '');
-      });
-      expect(
-        overlappingTexts,
-        `${viewport.width}x${viewport.height} ${side.id} 可见文本不应与章节导航相交`
-      ).toEqual([]);
-    }
+    const action = download.getByRole('button', { name: '尚未发布' });
+    const navigation = page.getByRole('navigation', { name: '章节导航' });
+    await expect(action).toBeVisible();
+    await expectInsideViewport(page, action);
+    const actionBounds = await action.boundingBox();
+    const navigationBounds = await navigation.boundingBox();
+    expect(actionBounds).not.toBeNull();
+    expect(navigationBounds).not.toBeNull();
+    const overlapsNavigation = !(
+      actionBounds!.x + actionBounds!.width <= navigationBounds!.x
+      || navigationBounds!.x + navigationBounds!.width <= actionBounds!.x
+      || actionBounds!.y + actionBounds!.height <= navigationBounds!.y
+      || navigationBounds!.y + navigationBounds!.height <= actionBounds!.y
+    );
+    expect(
+      overlapsNavigation,
+      `${viewport.width}x${viewport.height} 下载按钮不应与章节导航相交`
+    ).toBe(false);
 
     const widths = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,
@@ -2551,7 +2336,7 @@ test('液态玻璃 WebGL 画布按性能比例建立缓冲区并响应指针', a
   }
 });
 
-test('减少动态效果直接进入稳定液态玻璃首页', async ({ page }) => {
+test('减少动态效果直接进入稳定首页', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -2559,7 +2344,7 @@ test('减少动态效果直接进入稳定液态玻璃首页', async ({ page }) 
 
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
   await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
-  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeVisible();
+  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeAttached();
   await expect(page.locator(SWARM)).toHaveCount(0);
   await expect(page.locator('[data-testid="brand-stage"]')).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);

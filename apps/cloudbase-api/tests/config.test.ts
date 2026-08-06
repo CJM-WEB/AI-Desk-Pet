@@ -8,8 +8,6 @@ describe('loadCloudConfig', () => {
     CLOUDBASE_API_KEY: 'service-role-key',
     PRIVATE_BUCKET_ID: 'ai-pet-private',
     ADMIN_EMAIL: 'admin@example.com',
-    CAPTCHA_APP_ID: '10001',
-    CAPTCHA_SECRET_KEY: 'captcha-secret',
     ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
     TENCENTCLOUD_SECRETID: 'secret-id',
     TENCENTCLOUD_SECRETKEY: 'secret-key',
@@ -38,8 +36,6 @@ describe('loadCloudConfig', () => {
       cloudbaseApiKey: 'service-role-key',
       privateBucketId: 'ai-pet-private',
       adminEmail: 'admin@example.com',
-      captchaAppId: 10001,
-      captchaSecretKey: 'captcha-secret',
       abuseHmacSecret: 'abuse-hmac-secret',
       tencentCloudSecretId: 'secret-id',
       tencentCloudSecretKey: 'secret-key',
@@ -77,6 +73,18 @@ describe('loadCloudConfig', () => {
     expect(config.tencentCloudSessionToken).toBe('moderation-session-token');
   });
 
+  it('显式审核密钥不会混用平台临时 Token', () => {
+    const config = loadCloudConfig({
+      ...validEnv,
+      MODERATION_SECRET_ID: 'moderation-secret-id',
+      MODERATION_SECRET_KEY: 'moderation-secret-key'
+    });
+
+    expect(config.tencentCloudSecretId).toBe('moderation-secret-id');
+    expect(config.tencentCloudSecretKey).toBe('moderation-secret-key');
+    expect(config.tencentCloudSessionToken).toBeUndefined();
+  });
+
   it('拒绝与已购买环境不一致的地域', () => {
     expect(() => loadCloudConfig({
       ...validEnv,
@@ -89,8 +97,6 @@ describe('loadCloudConfig', () => {
       CLOUDBASE_ENV_ID: 'env-test',
       PRIVATE_BUCKET_ID: 'ai-pet-private',
       ADMIN_EMAIL: 'admin@example.com',
-      CAPTCHA_APP_ID: '10001',
-      CAPTCHA_SECRET_KEY: 'captcha-secret',
       ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
       TENCENTCLOUD_SECRETID: 'secret-id',
       TENCENTCLOUD_SECRETKEY: 'secret-key',
@@ -108,8 +114,6 @@ describe('loadCloudConfig', () => {
       CLOUDBASE_API_KEY: 'service-role-key',
       PRIVATE_BUCKET_ID: 'ai-pet-private',
       ADMIN_EMAIL: 'admin@example.com',
-      CAPTCHA_APP_ID: '10001',
-      CAPTCHA_SECRET_KEY: 'captcha-secret',
       ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
       TENCENTCLOUD_SECRETID: ' ',
       TENCENTCLOUD_SECRETKEY: 'secret-key',
@@ -127,8 +131,6 @@ describe('loadCloudConfig', () => {
       CLOUDBASE_API_KEY: 'service-role-key',
       PRIVATE_BUCKET_ID: 'ai-pet-private',
       ADMIN_EMAIL: 'admin@example.com',
-      CAPTCHA_APP_ID: '10001',
-      CAPTCHA_SECRET_KEY: 'captcha-secret',
       ABUSE_HMAC_SECRET: 'abuse-hmac-secret',
       TENCENTCLOUD_SECRETID: 'secret-id',
       TENCENTCLOUD_SECRETKEY: 'secret-key',

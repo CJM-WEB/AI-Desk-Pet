@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   adminActionSchema,
-  captchaProofSchema,
   submissionReceiptSchema,
   submissionStatusSchema,
   submissionStatusViewSchema
@@ -11,12 +10,6 @@ describe('投稿审核契约', () => {
   it('只接受已定义状态', () => {
     expect(submissionStatusSchema.parse('system_reviewing')).toBe('system_reviewing');
     expect(() => submissionStatusSchema.parse('approved')).toThrow();
-  });
-
-  it('验证码票据必须同时包含 ticket 和 randstr', () => {
-    expect(captchaProofSchema.parse({ ticket: 'ticket-1', randstr: 'rand-1' }))
-      .toEqual({ ticket: 'ticket-1', randstr: 'rand-1' });
-    expect(() => captchaProofSchema.parse({ ticket: 'ticket-1' })).toThrow();
   });
 
   it('管理员批准必须携带版本和幂等键', () => {
