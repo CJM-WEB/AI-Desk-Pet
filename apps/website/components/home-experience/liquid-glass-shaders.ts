@@ -20,6 +20,11 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   uniform float u_motion;
   uniform float u_transition;
   uniform float u_downloadTransition;
+  uniform float u_communityTransition;
+  uniform float u_supportTransition;
+  uniform float u_supportFeedbackActive;
+  uniform float u_supportPaymentActive;
+  uniform float u_communityCardCount;
   uniform vec2 u_blobOffsets[3];
   uniform float u_hoveredBlob;
   uniform float u_hoverAmount;
@@ -31,6 +36,8 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
   uniform sampler2D u_cornerTextTexture;
   uniform sampler2D u_glassTextTexture;
   uniform sampler2D u_downloadTextTexture;
+  uniform sampler2D u_communityTextTexture;
+  uniform sampler2D u_supportTextTexture;
 
   float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -64,7 +71,14 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     return value;
   }
 
-  vec3 flowingBackground(vec2 uv, float time, float transition, float downloadTransition) {
+  vec3 flowingBackground(
+    vec2 uv,
+    float time,
+    float transition,
+    float downloadTransition,
+    float communityTransition,
+    float supportTransition
+  ) {
     float aspect = u_resolution.x / u_resolution.y;
     vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
     p += vec2(
@@ -113,6 +127,26 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     color = mix(color, olive, goldBand * 0.55);
     color = mix(color, gold, goldCore * 0.72);
     color = mix(color, ash, goldCore * smoothstep(0.58, 0.86, detail) * 0.16);
+
+    /* 第四模块只重排既有色带，将纵向流体过渡为缓慢横向波浪。 */
+    vec2 communityP = (uv - 0.5) * vec2(aspect, 1.0);
+    float waveCenter = sin(communityP.x * 3.0 - t * 0.18) * 0.17
+      + sin(communityP.x * 5.8 + t * 0.12) * 0.026;
+    float supportWaveCenter = sin((communityP.x + 0.58) * 3.0 - t * 0.18) * 0.17
+      + sin((communityP.x - 0.34) * 5.8 + t * 0.12) * 0.026
+      + 0.12;
+    waveCenter = mix(waveCenter, supportWaveCenter, supportTransition);
+    float horizontalWave = communityP.y - waveCenter;
+    float waveJade = exp(-pow(horizontalWave * 5.2, 2.0));
+    float waveGold = exp(-pow((horizontalWave - 0.10) * 7.2, 2.0));
+    float waveBlue = exp(-pow((horizontalWave + 0.14) * 6.6, 2.0));
+    vec3 communityColor = mix(black, graphite, smoothstep(0.42, 0.82, detail) * 0.24);
+    communityColor = mix(communityColor, navy, waveBlue * 0.94);
+    communityColor = mix(communityColor, forest, waveJade * 0.78);
+    communityColor = mix(communityColor, jade, waveJade * 0.42);
+    communityColor = mix(communityColor, olive, waveGold * 0.72);
+    communityColor = mix(communityColor, gold, waveGold * 0.62);
+    color = mix(color, communityColor, communityTransition);
 
     float vignette = smoothstep(1.18, 0.24, length((uv - 0.5) * vec2(1.05, 0.82)));
     return mix(black, color, 0.42 + vignette * 0.58);
@@ -175,6 +209,97 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
       + vec2(0.0, floating * u_motion * u_downloadTransition);
   }
 
+  vec2 communityGlassCenter() {
+    float floating = sin(u_time * 0.54 + 1.1) * min(u_resolution.x, u_resolution.y) * 0.018;
+    return u_resolution * vec2(0.50, 0.50)
+      + vec2(0.0, floating * u_motion * u_communityTransition);
+  }
+
+  vec2 rotatePoint(vec2 point, float angle) {
+    float sine = sin(angle);
+    float cosine = cos(angle);
+    return mat2(cosine, -sine, sine, cosine) * point;
+  }
+
+  /* 资源卡片与 DOM 网格共享位置、错峰入场和轻微浮动。 */
+  float communityCardsSdf(vec2 pixel) {
+    float result = 100000.0;
+    float minimumSide = min(u_resolution.x, u_resolution.y);
+
+    for (int index = 0; index < 8; index++) {
+      float order = float(index);
+      if (order >= u_communityCardCount) continue;
+      float row = floor(order / 4.0);
+      float column = mod(order, 4.0);
+      float entry = clamp(
+        (u_communityTransition - 0.10 - order * 0.045) / 0.54,
+        0.0,
+        1.0
+      );
+      vec2 center = u_resolution * vec2(0.14 + column * 0.24, mix(0.19, 0.81, row));
+      center.x += (1.0 - entry) * u_resolution.x * 1.18;
+      center.x -= u_supportTransition * u_resolution.x * 1.22;
+      center.y += sin(u_time * 0.61 + order * 1.37) * minimumSide * 0.008 * u_motion * entry;
+
+      float angle = 0.0;
+      if (index == 0 || index == 5) angle = -0.056;
+      if (index == 1 || index == 6) angle = 0.030;
+      if (index == 2 || index == 7) angle = -0.024;
+      if (index == 3 || index == 4) angle = 0.049;
+      vec2 local = rotatePoint(pixel - center, -angle);
+      float card = roundedBoxSdf(
+        local,
+        u_resolution * vec2(0.105, 0.145),
+        minimumSide * 0.038
+      );
+      result = min(result, card);
+    }
+    return result;
+  }
+
+  float supportButtonPhase(float index) {
+    float stackIndex = mod(index, 3.0);
+    float onLeft = 1.0 - step(2.5, index);
+    float activeIndex = mix(u_supportPaymentActive, u_supportFeedbackActive, onLeft);
+    return (stackIndex - activeIndex) * 2.0943951;
+  }
+
+  float supportButtonScale(float index) {
+    float frontAmount = clamp((cos(supportButtonPhase(index)) + 0.5) / 1.5, 0.0, 1.0);
+    return mix(0.84, 1.0, frontAmount);
+  }
+
+  vec2 supportButtonCenter(float index) {
+    float onLeft = 1.0 - step(2.5, index);
+    vec2 target = mix(vec2(0.77, 0.74), vec2(0.23, 0.28), onLeft);
+    target.y += sin(supportButtonPhase(index)) * 0.092;
+    target *= u_resolution;
+    float stagger = clamp((u_supportTransition - index * 0.028) / 0.82, 0.0, 1.0);
+    float eased = 1.0 - pow(1.0 - stagger, 3.0);
+    vec2 center = mix(communityGlassCenter(), target, eased);
+    center.y += sin(u_time * 0.68 + index * 1.23)
+      * min(u_resolution.x, u_resolution.y) * 0.014 * u_motion * eased;
+    return center;
+  }
+
+  /* 中央玻璃连续裂变为左右两组三层按钮，保持与前四模块一致的材质。 */
+  float supportButtonsSdf(vec2 pixel) {
+    float result = 100000.0;
+    float radius = min(u_resolution.x, u_resolution.y) * 0.060;
+    for (int index = 0; index < 6; index++) {
+      float scale = supportButtonScale(float(index));
+      result = min(
+        result,
+        roundedBoxSdf(
+          pixel - supportButtonCenter(float(index)),
+          u_resolution * vec2(0.145, 0.085) * scale,
+          radius * scale
+        )
+      );
+    }
+    return result;
+  }
+
   float liquidGlassSdf(vec2 pixel) {
     vec2 viewportCenter = u_resolution * 0.5;
     vec2 homeHalfSize = viewportCenter - vec2(u_inset);
@@ -222,7 +347,20 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
       downloadHalfSize,
       minimumSide * 0.072
     );
-    return mix(mix(home, about, u_transition), downloadGlass, u_downloadTransition);
+    vec2 communityCenter = communityGlassCenter();
+    vec2 communityHalfSize = u_resolution * vec2(0.22, 0.13);
+    float communityGlass = roundedBoxSdf(
+      pixel - communityCenter,
+      communityHalfSize,
+      minimumSide * 0.065
+    );
+    float stagedGlass = mix(mix(home, about, u_transition), downloadGlass, u_downloadTransition);
+    float communityCenterGlass = mix(downloadGlass, communityGlass, u_communityTransition);
+    float community = min(communityCenterGlass, communityCardsSdf(pixel));
+    float support = supportButtonsSdf(pixel);
+    float communityStage = mix(stagedGlass, community, smoothstep(0.0, 0.03, u_communityTransition));
+    /* 只在裂变起点短距离交接 SDF，避免远距离线性混合把整屏误判为玻璃。 */
+    return mix(communityStage, support, smoothstep(0.0, 0.08, u_supportTransition));
   }
 
   vec2 rippleDisplacement(vec2 uv, out float waveLight) {
@@ -298,17 +436,24 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     vec2 viewCenter = uv - 0.5;
     vec2 mouseTilt = (u_pointer - 0.5) * 2.0 * u_motion;
     vec2 sceneUv = uv + refraction * glassMask;
-    vec3 backgroundSharp = flowingBackground(sceneUv, u_time * u_motion, u_transition, u_downloadTransition);
+    vec3 backgroundSharp = flowingBackground(
+      sceneUv,
+      u_time * u_motion,
+      u_transition,
+      u_downloadTransition,
+      u_communityTransition,
+      u_supportTransition
+    );
     vec2 backgroundBlurStep = vec2(mix(7.0, 32.0, u_hoverAmount)) / u_resolution;
     vec3 backgroundSoft = backgroundSharp * 0.20;
-    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition, u_downloadTransition) * 0.12;
-    backgroundSoft += flowingBackground(sceneUv - vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition, u_downloadTransition) * 0.12;
-    backgroundSoft += flowingBackground(sceneUv + vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition) * 0.12;
-    backgroundSoft += flowingBackground(sceneUv - vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition) * 0.12;
-    backgroundSoft += flowingBackground(sceneUv + backgroundBlurStep, u_time * u_motion, u_transition, u_downloadTransition) * 0.08;
-    backgroundSoft += flowingBackground(sceneUv - backgroundBlurStep, u_time * u_motion, u_transition, u_downloadTransition) * 0.08;
-    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, -backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition) * 0.08;
-    backgroundSoft += flowingBackground(sceneUv + vec2(-backgroundBlurStep.x, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition, u_downloadTransition, u_communityTransition, u_supportTransition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv - vec2(backgroundBlurStep.x, 0.0), u_time * u_motion, u_transition, u_downloadTransition, u_communityTransition, u_supportTransition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv + vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition, u_communityTransition, u_supportTransition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv - vec2(0.0, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition, u_communityTransition, u_supportTransition) * 0.12;
+    backgroundSoft += flowingBackground(sceneUv + backgroundBlurStep, u_time * u_motion, u_transition, u_downloadTransition, u_communityTransition, u_supportTransition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv - backgroundBlurStep, u_time * u_motion, u_transition, u_downloadTransition, u_communityTransition, u_supportTransition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv + vec2(backgroundBlurStep.x, -backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition, u_communityTransition, u_supportTransition) * 0.08;
+    backgroundSoft += flowingBackground(sceneUv + vec2(-backgroundBlurStep.x, backgroundBlurStep.y), u_time * u_motion, u_transition, u_downloadTransition, u_communityTransition, u_supportTransition) * 0.08;
     vec3 background = mix(backgroundSharp, backgroundSoft, u_hoverAmount);
     float logoPerspective = clamp(1.0 + dot(viewCenter, mouseTilt) * 0.24, 0.76, 1.24);
     vec2 logoUv = viewCenter / logoPerspective + 0.5;
@@ -327,6 +472,8 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     textUv += refraction * glassMask * 0.9 + mouseTilt * 0.002;
     vec4 cornerText = texture2D(u_cornerTextTexture, textUv);
     scene = mix(scene, cornerText.rgb, cornerText.a * 0.96);
+    vec4 communityText = texture2D(u_communityTextTexture, textUv);
+    scene = mix(scene, communityText.rgb, communityText.a * u_communityTransition * 0.96);
 
     float innerEdge = exp(-abs(sdf) * 0.055) * glassMask;
     float razorEdge = exp(-abs(sdf) * 0.7);
@@ -391,8 +538,46 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     color = mix(
       color,
       downloadFeature.rgb,
-      downloadFeature.a * downloadFeatureMask * u_downloadTransition
+      downloadFeature.a * downloadFeatureMask * u_downloadTransition * (1.0 - u_communityTransition)
     );
+
+    /* 六组按钮文字按各自玻璃中心重新采样，浮动与水波折射始终同步。 */
+    for (int index = 0; index < 6; index++) {
+      float supportIndex = float(index);
+      float stackIndex = mod(supportIndex, 3.0);
+      float onLeft = 1.0 - step(2.5, supportIndex);
+      vec2 base = mix(
+        vec2(0.77, 0.84 - stackIndex * 0.105),
+        vec2(0.23, 0.36 - stackIndex * 0.105),
+        onLeft
+      );
+      vec2 motion = supportButtonCenter(supportIndex) / u_resolution - base;
+      vec2 supportSampleUv = featureUv - motion;
+      vec4 supportFeature = texture2D(u_supportTextTexture, supportSampleUv);
+      float supportSourceMask = 1.0 - smoothstep(
+        -4.0,
+        8.0,
+        roundedBoxSdf(
+          supportSampleUv * u_resolution - base * u_resolution,
+          u_resolution * vec2(0.135, 0.046),
+          minimumSide * 0.025
+        )
+      );
+      float supportMask = 1.0 - smoothstep(
+        -8.0,
+        14.0,
+        roundedBoxSdf(
+          pixel - supportButtonCenter(supportIndex),
+          u_resolution * vec2(0.145, 0.085) * supportButtonScale(supportIndex),
+          minimumSide * 0.060 * supportButtonScale(supportIndex)
+        )
+      );
+      color = mix(
+        color,
+        supportFeature.rgb,
+        supportFeature.a * supportSourceMask * supportMask * u_supportTransition
+      );
+    }
 
     /* 英雄字在色调映射后以折射坐标合成，保留原渐变并继续响应水波。 */
     vec4 heroText = texture2D(u_textTexture, textUv);

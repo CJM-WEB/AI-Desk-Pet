@@ -420,10 +420,10 @@ describe('共享仓库章节', () => {
 
   it('桌面四列两行并在窄屏切换为两列或一列', () => {
     expect(communityCss).toMatch(
-      /\.sharedPetChapter\s*\{[^}]*height:\s*100%[^}]*max-height:\s*100%[^}]*min-height:\s*0[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/s
+      /\.sharedPetChapter\s*\{[^}]*height:\s*100%[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s
     );
     expect(communityCss).toMatch(
-      /\.sharedPetLayout\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)[^}]*grid-template-rows:\s*minmax\([^;]+\)\s+minmax\([^;]+\)\s+minmax\([^;]+\)/s
+      /\.sharedPetLayout\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+clamp\([^;]+\)\s+minmax\(0,\s*1fr\)/s
     );
     expect(communityCss).toMatch(
       /\.sharedPetFocus\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2/s
@@ -441,10 +441,7 @@ describe('共享仓库章节', () => {
       /@media\s*\(max-width:\s*560px\)[\s\S]*?\.sharedPetLayout\s*\{[^}]*grid-template-columns:\s*1fr/s
     );
     expect(communityCss).toMatch(
-      /@media\s*\(min-width:\s*901px\)\s*and\s*\(max-height:\s*760px\)[\s\S]*?\.sharedPetLayout\s*\{[^}]*min-height:\s*560px/s
-    );
-    expect(communityCss).toMatch(
-      /\.dialogBackdrop\s*\{[^}]*padding:\s*max\(20px,\s*env\(safe-area-inset-top\)\)\s+max\(20px,\s*env\(safe-area-inset-right\)\)\s+max\(20px,\s*env\(safe-area-inset-bottom\)\)\s+max\(20px,\s*env\(safe-area-inset-left\)\)/s
+      /\.dialogBackdrop\s*\{[^}]*padding:\s*max\(20px,\s*env\(safe-area-inset-top\)\)\s+max\(20px,\s*env\(safe-area-inset-right\)\)\s+max\(20px,\s*env\(safe-area-inset-bottom\)\)\s+max\(20px,\s*env\(safe-area-inset-left\)\)[^}]*backdrop-filter:\s*blur\(34px\)\s+saturate\(72%\)\s+brightness\(0\.58\)/s
     );
     expect(communityCss).toMatch(
       /@media\s*\(max-width:\s*560px\)[\s\S]*?\.dialogBackdrop\s*\{[^}]*padding:\s*max\(16px,\s*env\(safe-area-inset-top\)\)\s+max\(16px,\s*env\(safe-area-inset-right\)\)\s+max\(16px,\s*env\(safe-area-inset-bottom\)\)\s+max\(16px,\s*env\(safe-area-inset-left\)\)/s

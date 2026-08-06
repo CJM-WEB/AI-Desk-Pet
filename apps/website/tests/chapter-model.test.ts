@@ -27,11 +27,9 @@ describe('官网章节进度模型', () => {
       'about',
       'download',
       'community',
-      'feedback',
-      'donation'
+      'feedback'
     ]);
     expect(getChapterIndex('feedback')).toBe(4);
-    expect(getChapterIndex('donation')).toBe(5);
   });
 
   it('识别局部滚动输入并忽略短触屏移动', () => {

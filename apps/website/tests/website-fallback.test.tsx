@@ -188,7 +188,7 @@ describe('官网章节降级模式', () => {
     expect(experience.dataset.staticFallback).toBe('active');
     expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
     expect(document.querySelector('[data-layer="file"]')).toBeNull();
-    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(6);
+    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(5);
     expect(screen.getByText('微信')).toBeTruthy();
     expect(screen.getByText('支付宝')).toBeTruthy();
 
@@ -210,7 +210,7 @@ describe('官网章节降级模式', () => {
       .toBe('macos');
     expect(screen.getByTestId('download-chapter').dataset.staticFallback)
       .toBe('true');
-    expect(screen.getByTestId('donation-chapter').dataset.staticFallback)
+    expect(screen.getByTestId('support-chapter').dataset.motionDisabled)
       .toBe('true');
   });
 
@@ -320,7 +320,7 @@ describe('官网章节降级模式', () => {
 
     expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
     expect(document.querySelector('[data-layer="file"]')).toBeNull();
-    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(6);
+    expect(document.querySelectorAll('[data-chapter-id]')).toHaveLength(5);
 
     const next = screen.getByRole('button', { name: '下一章节' });
     fireEvent.click(next);
@@ -333,7 +333,7 @@ describe('官网章节降级模式', () => {
     fireEvent.click(next);
     fireEvent.click(next);
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
-      .toBe('donation');
+      .toBe('feedback');
     expect(screen.getByText('微信')).toBeTruthy();
     expect(screen.getByText('支付宝')).toBeTruthy();
   });
@@ -388,14 +388,10 @@ describe('官网章节降级模式', () => {
       .toBe('Shared repository');
     expect(document.querySelector('[data-chapter-id="feedback"]')?.getAttribute('aria-label'))
       .toBe('Feedback and Suggestions');
-    expect(document.querySelector('[data-chapter-id="donation"]')?.getAttribute('aria-label'))
-      .toBe('Support Development');
   });
 
-  it('I18nProvider 切换语言后让 WebsiteExperience 的新反馈预览使用新语言', () => {
-    vi.useFakeTimers();
+  it('I18nProvider 切换语言后让合并支持模块使用新语言', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
-    vi.spyOn(Math, 'random').mockReturnValue(0);
     render(
       <I18nProvider initialLocale="zh-CN">
         <LocaleTestControls />
@@ -409,17 +405,8 @@ describe('官网章节降级模式', () => {
     fireEvent.click(next);
     expect(screen.getByTestId('website-experience').dataset.activeChapter).toBe('feedback');
 
-    act(() => vi.advanceTimersByTime(1_000));
-    const firstParticle = screen.getAllByTestId('file-icon')[0]!;
-    fireEvent.pointerEnter(firstParticle);
-    expect(screen.getByTestId('file-preview').textContent).toContain('类型');
-
     fireEvent.click(screen.getByRole('button', { name: '测试切换英文' }));
-    act(() => vi.advanceTimersByTime(1_000));
-    const particles = screen.getAllByTestId('file-icon');
-    fireEvent.pointerEnter(particles.at(-1)!);
-
-    expect(screen.getByTestId('file-preview').textContent).toContain('Type');
+    expect(screen.getByRole('button', { name: 'Open WeChat Pay QR code' })).toBeTruthy();
   });
 
   it('正常动画的首帧离开首页时立即卸载语言入口，返回稳定首页后恢复', async () => {

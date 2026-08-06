@@ -17,7 +17,7 @@ import type { PointerPoint } from './types';
 import {
   DEFAULT_FILE_PREVIEW_CONTENT_SOURCE,
   type FilePreviewContentSource
-} from '../website-experience/shared-visual-model';
+} from './visual-types';
 import styles from './home-experience.module.css';
 
 const PREVIEW_GAP_PX = 18;

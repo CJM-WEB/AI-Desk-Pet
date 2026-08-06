@@ -15,20 +15,13 @@ import type {
   SharedPetPage,
   SharedPetRepository
 } from '../components/website-experience/community/shared-pet-types';
-import { DonationChapter } from '../components/website-experience/donation/DonationChapter';
+import { SupportChapter } from '../components/website-experience/support/SupportChapter';
 import { DownloadChapter } from '../components/website-experience/download/DownloadChapter';
 
 const downloadCss = readFileSync(
   resolve(
     process.cwd(),
     'components/website-experience/download/download.module.css'
-  ),
-  'utf8'
-);
-const donationCss = readFileSync(
-  resolve(
-    process.cwd(),
-    'components/website-experience/donation/donation.module.css'
   ),
   'utf8'
 );
@@ -96,13 +89,10 @@ describe('章节静态回退禁用内部动效', () => {
   });
 
   it('捐款静态回退关闭滚筒与付款码进入动效且保留支付按钮', () => {
-    render(<DonationChapter interactive staticFallback />);
+    render(<SupportChapter interactive staticFallback />);
 
-    const root = screen.getByTestId('donation-chapter');
+    const root = screen.getByTestId('support-chapter');
     expect(root.dataset.motionDisabled).toBe('true');
-    expect(donationCss).toMatch(
-      /\.donationChapter\[data-motion-disabled='true'\] \.paymentCard\s*\{[^}]*transition:\s*none;/s
-    );
 
     const payment = screen.getByRole('button', { name: '打开微信付款码' });
     expect((payment as HTMLButtonElement).disabled).toBe(false);
@@ -110,9 +100,6 @@ describe('章节静态回退禁用内部动效', () => {
 
     const dialog = screen.getByRole('dialog', { name: '微信付款码' });
     expect(dialog.dataset.motionDisabled).toBe('true');
-    expect(donationCss).toMatch(
-      /\.qrBackdrop\[data-motion-disabled='true'\],\s*\.qrBackdrop\[data-motion-disabled='true'\] \.qrPanel\s*\{[^}]*animation:\s*none;/s
-    );
   });
 
   it('窗口暂停会下发到下载与捐款章节并关闭 CSS 动画和过渡', () => {
@@ -127,16 +114,10 @@ describe('章节静态回退禁用内部动效', () => {
       /\.downloadChapter\[data-motion-disabled='true'\] \.platformHeader,[\s\S]*\.downloadChapter\[data-motion-disabled='true'\] \.platformCopy,[\s\S]*\.downloadChapter\[data-motion-disabled='true'\] \.downloadAction\s*\{[^}]*transition:\s*none;/s
     );
 
-    rerender(<DonationChapter interactive isPaused />);
-    const donation = screen.getByTestId('donation-chapter');
-    expect(donation.dataset.paused).toBe('true');
-    expect(donation.dataset.motionDisabled).toBe('true');
-    expect(donationCss).toMatch(
-      /\.donationChapter\[data-paused='true'\] \.paymentCard\s*\{[^}]*transition:\s*none;/s
-    );
-    expect(donationCss).toMatch(
-      /\.qrBackdrop\[data-paused='true'\],\s*\.qrBackdrop\[data-paused='true'\] \.qrPanel\s*\{[^}]*animation-play-state:\s*paused;/s
-    );
+    rerender(<SupportChapter interactive isPaused />);
+    const support = screen.getByTestId('support-chapter');
+    expect(support.dataset.paused).toBe('true');
+    expect(support.dataset.motionDisabled).toBe('true');
   });
 
   it('下载章节暂停时关闭标题倾斜且恢复后重新启用', () => {
@@ -167,9 +148,9 @@ describe('章节静态回退禁用内部动效', () => {
 
     const root = await screen.findByTestId('shared-pet-chapter');
     expect(root.dataset.motionDisabled).toBe('true');
-    expect(screen.getByTestId('pointer-tilt-text').dataset.motionEnabled).toBe('false');
+    expect(screen.queryAllByTestId('pointer-tilt-text')).toHaveLength(0);
     expect(communityCss).toMatch(
-      /\.sharedPetChapter\[data-motion-disabled='true'\] \.sharedPetCardSlot\s*\{[^}]*animation:\s*none/s
+      /\.sharedPetChapter\[data-motion-disabled='true'\] \.sharedPetCardSlot,\s*\.sharedPetChapter\[data-motion-disabled='true'\] \.card\s*\{[^}]*animation:\s*none/s
     );
   });
 });

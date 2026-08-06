@@ -1,6 +1,5 @@
 'use client';
 
-import { ChevronLeft, ChevronRight, Upload } from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -14,9 +13,9 @@ import type {
 } from 'react';
 import type { SubmissionReceipt } from '@myself/shared-types';
 import { CaptchaClient, type CaptchaVerifier } from '../../../lib/captcha';
+import { LIQUID_GLASS_COMMUNITY_CARDS_EVENT } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ChapterRuntimeProps } from '../types';
-import { PointerTiltText } from '../visual/PointerTiltText';
 import {
   beginPageTransition,
   completePageEntering,
@@ -44,6 +43,8 @@ export interface SharedPetChapterProps extends ChapterRuntimeProps {
 
 type SharedPetCardStyle = CSSProperties & {
   '--shared-pet-order': number;
+  '--shared-pet-entry-x': string;
+  '--shared-pet-entry-opacity': number;
 };
 
 type PageReadResult =
@@ -102,6 +103,7 @@ export function SharedPetChapter({
   isPaused = false,
   reducedMotion = false,
   staticFallback = false,
+  transitionProgress = 3,
   repository,
   captcha = new CaptchaClient()
 }: SharedPetChapterProps) {
@@ -127,8 +129,6 @@ export function SharedPetChapter({
   const [downloadPending, setDownloadPending] = useState<ReadonlySet<string>>(
     new Set()
   );
-  const [pointer, setPointer] = useState({ x: 0, y: 0 });
-  const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const transitionRef = useRef<SharedPetPageTransition>(INITIAL_TRANSITION);
   const activePaginationRef = useRef<ActivePagination | null>(null);
   const gridRef = useRef<HTMLFieldSetElement | null>(null);
@@ -250,16 +250,6 @@ export function SharedPetChapter({
       unsubscribe();
     };
   }, [commitTransition, refreshPage, repository]);
-
-  useEffect(() => {
-    if (motionDisabled || typeof window === 'undefined') return;
-    const syncViewport = () => {
-      setViewport({ width: window.innerWidth, height: window.innerHeight });
-    };
-    syncViewport();
-    window.addEventListener('resize', syncViewport);
-    return () => window.removeEventListener('resize', syncViewport);
-  }, [motionDisabled]);
 
   const replaceVisibleItem = useCallback((updated: SharedPetPackageSummary) => {
     if (!mountedRef.current) return;
@@ -545,6 +535,31 @@ export function SharedPetChapter({
     : visiblePage.totalPages === 0
     ? '0/0'
     : `${visiblePage.page}/${visiblePage.totalPages}`;
+  const communityProgress = Math.min(1, Math.max(0, transitionProgress - 2));
+  const totalPageLabel = visiblePage.totalKnown === false
+    ? '?'
+    : String(visiblePage.totalPages);
+
+  /* 同步真实卡片数量和页码，让底层液态玻璃只绘制当前视觉内容。 */
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      window.dispatchEvent(new CustomEvent(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, {
+        detail: {
+          count: visiblePage.items.length,
+          currentPage: visiblePage.page,
+          totalPages: totalPageLabel
+        }
+      }));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [totalPageLabel, visiblePage.items.length, visiblePage.page]);
+  const chapterStyle = {
+    '--community-progress': communityProgress,
+    '--community-share-x': `${(1 - communityProgress) * -74}vw`,
+    '--community-repository-x': `${(1 - communityProgress) * 74}vw`,
+    '--community-current-y': `${(1 - communityProgress) * -70}vh`,
+    '--community-total-y': `${(1 - communityProgress) * 70}vh`
+  } as CSSProperties;
 
   return (
     <section
@@ -554,26 +569,30 @@ export function SharedPetChapter({
       data-paused={isPaused}
       data-transition={transition.status}
       data-page-locked={pageLocked}
-      onPointerMove={(event) => {
-        if (!motionDisabled) {
-          setPointer({ x: event.clientX, y: event.clientY });
-        }
-      }}
+      style={chapterStyle}
     >
       <div className={styles.sharedPetLayout}>
+        <h2 className={styles.sharedPetTitle}>{t('sharedPet.chapter.title')}</h2>
+
         <div className={styles.sharedPetFocus}>
-          <h2 className={styles.sharedPetTitle}>
-            <PointerTiltText
-              pointer={pointer}
-              viewport={viewport}
-              disabled={motionDisabled}
-            >
-              {t('sharedPet.chapter.title')}
-            </PointerTiltText>
-          </h2>
+          <span className={styles.currentPageNumber} aria-hidden="true">
+            {visiblePage.page}
+          </span>
+          <button
+            className={styles.sharedPetPrevious}
+            type="button"
+            aria-label={t('sharedPet.chapter.previous')}
+            title={t('sharedPet.chapter.previous')}
+            disabled={!interactive || transitionLocked || !visiblePage.hasPrevious}
+            onClick={() => startPageTransition(visiblePage.page - 1)}
+          >
+            <span>{t('sharedPet.chapter.shareWord')}</span>
+          </button>
+
           <button
             className={styles.sharedPetUpload}
             type="button"
+            aria-label={t('sharedPet.chapter.upload')}
             disabled={!interactive || transitionLocked}
             onClick={() => {
               beginStatusOperation();
@@ -582,30 +601,25 @@ export function SharedPetChapter({
               setComposerOpen(true);
             }}
           >
-            <Upload aria-hidden="true" />
-            <span>{t('sharedPet.chapter.upload')}</span>
+            <span aria-hidden="true">AI PET</span>
           </button>
-          <div className={styles.sharedPetPagination}>
-            <button
-              type="button"
-              aria-label={t('sharedPet.chapter.previous')}
-              title={t('sharedPet.chapter.previous')}
-              disabled={!interactive || transitionLocked || !visiblePage.hasPrevious}
-              onClick={() => startPageTransition(visiblePage.page - 1)}
-            >
-              <ChevronLeft aria-hidden="true" />
-            </button>
-            <output aria-live="polite">{pageLabel}</output>
-            <button
-              type="button"
-              aria-label={t('sharedPet.chapter.next')}
-              title={t('sharedPet.chapter.next')}
-              disabled={!interactive || transitionLocked || !visiblePage.hasNext}
-              onClick={() => startPageTransition(visiblePage.page + 1)}
-            >
-              <ChevronRight aria-hidden="true" />
-            </button>
-          </div>
+
+          <button
+            className={styles.sharedPetNext}
+            type="button"
+            aria-label={t('sharedPet.chapter.next')}
+            title={t('sharedPet.chapter.next')}
+            disabled={!interactive || transitionLocked || !visiblePage.hasNext}
+            onClick={() => startPageTransition(visiblePage.page + 1)}
+          >
+            <span>{t('sharedPet.chapter.repositoryWord')}</span>
+          </button>
+          <span className={styles.totalPageNumber} aria-hidden="true">
+            {totalPageLabel}
+          </span>
+          <output className={styles.accessiblePageLabel} aria-live="polite">
+            {pageLabel}
+          </output>
           {submissionReceipt ? (
             <div className={styles.sharedPetStatus} role="status">
               <p>{t('sharedPet.submission.received')}</p>
@@ -633,7 +647,17 @@ export function SharedPetChapter({
               className={styles.sharedPetCardSlot}
               data-testid="shared-pet-card"
               data-shared-pet-order={index}
-              style={{ '--shared-pet-order': index } as SharedPetCardStyle}
+              style={{
+                '--shared-pet-order': index,
+                '--shared-pet-entry-x': `${(1 - Math.min(
+                  1,
+                  Math.max(0, (communityProgress - 0.10 - index * 0.045) / 0.54)
+                )) * 118}vw`,
+                '--shared-pet-entry-opacity': Math.min(
+                  1,
+                  Math.max(0, (communityProgress - 0.10 - index * 0.045) / 0.32)
+                )
+              } as SharedPetCardStyle}
             >
               <SharedPetCard
                 item={item}

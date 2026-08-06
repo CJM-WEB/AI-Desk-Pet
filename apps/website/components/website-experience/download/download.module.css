@@ -3,8 +3,11 @@
   --download-final-progress: 0;
   --platform-progress: 0;
   --download-header-y: -30vh;
+  --download-title-exit-y: 0vh;
+  --download-selector-exit-x: 0vw;
   --download-glass-x: -58vw;
   --platform-offset: 130vw;
+  --platform-exit-x: 0vw;
   position: relative;
   min-height: 100%;
   overflow: hidden;
@@ -42,12 +45,18 @@
   font-size: clamp(3rem, 8.4vw, 9.2rem);
   line-height: 0.82;
   white-space: nowrap;
+  transform: translate3d(0, var(--download-title-exit-y), 0);
+  will-change: transform;
 }
+
+.platformTitleTilt { display: block; }
 
 .platformSelector {
   display: flex;
   gap: clamp(18px, 2.3vw, 40px);
   padding-top: clamp(8px, 1.5vh, 18px);
+  transform: translate3d(var(--download-selector-exit-x), 0, 0);
+  will-change: transform;
 }
 
 .platformSelector button {
@@ -131,7 +140,7 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  transform: translate3d(var(--platform-offset), 0, 0);
+  transform: translate3d(calc(var(--platform-offset) + var(--platform-exit-x)), 0, 0);
   will-change: transform;
 }
 

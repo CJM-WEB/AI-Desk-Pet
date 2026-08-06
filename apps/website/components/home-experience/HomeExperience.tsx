@@ -17,8 +17,8 @@ export function HomeExperience({
   isPaused,
   reducedMotion
 }: HomeExperienceProps) {
-  // 下载模块继续复用首页液态玻璃；离开下载模块后再释放该上下文。
-  const active = exitProgress < 2.08;
+  // 前五个模块连续复用首页液态玻璃；离开合并支持模块后再释放上下文。
+  const active = exitProgress < 4.08;
 
   return (
     <main
@@ -32,7 +32,7 @@ export function HomeExperience({
         active={active}
         isPaused={isPaused}
         reducedMotion={reducedMotion}
-        transitionProgress={Math.min(2, Math.max(0, exitProgress))}
+        transitionProgress={Math.min(4, Math.max(0, exitProgress))}
       />
     </main>
   );

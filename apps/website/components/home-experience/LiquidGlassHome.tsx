@@ -13,6 +13,8 @@ import styles from './liquid-glass-home.module.css';
 
 export const LIQUID_GLASS_RIPPLE_EVENT = 'ai-pet-liquid-ripple';
 export const LIQUID_GLASS_INTERACTION_EVENT = 'ai-pet-liquid-interaction';
+export const LIQUID_GLASS_COMMUNITY_CARDS_EVENT = 'ai-pet-community-card-count';
+export const LIQUID_GLASS_SUPPORT_SELECTION_EVENT = 'ai-pet-support-selection';
 
 interface LiquidGlassHomeProps {
   active: boolean;
@@ -107,6 +109,7 @@ export function LiquidGlassHome({
       .reduce((total, text) => total + Array.from(text).length, 0);
     const pointer = { x: 0.5, y: 0.5 };
     const glassInteraction = { hoverAmount: 0, hovered: -1, dragging: false };
+    const supportSelection = { feedback: 0, payment: 0 };
     const blobOffsets = new Float32Array(6);
     const rippleData = new Float32Array(6 * 4);
     const createdTextures: WebGLTexture[] = [];
@@ -188,6 +191,11 @@ export function LiquidGlassHome({
         motion: gl.getUniformLocation(program, 'u_motion'),
         transition: gl.getUniformLocation(program, 'u_transition'),
         downloadTransition: gl.getUniformLocation(program, 'u_downloadTransition'),
+        communityTransition: gl.getUniformLocation(program, 'u_communityTransition'),
+        supportTransition: gl.getUniformLocation(program, 'u_supportTransition'),
+        supportFeedbackActive: gl.getUniformLocation(program, 'u_supportFeedbackActive'),
+        supportPaymentActive: gl.getUniformLocation(program, 'u_supportPaymentActive'),
+        communityCardCount: gl.getUniformLocation(program, 'u_communityCardCount'),
         blobOffsets: gl.getUniformLocation(program, 'u_blobOffsets[0]'),
         hoveredBlob: gl.getUniformLocation(program, 'u_hoveredBlob'),
         hoverAmount: gl.getUniformLocation(program, 'u_hoverAmount'),
@@ -198,7 +206,9 @@ export function LiquidGlassHome({
         textTexture: gl.getUniformLocation(program, 'u_textTexture'),
         cornerTextTexture: gl.getUniformLocation(program, 'u_cornerTextTexture'),
         glassTextTexture: gl.getUniformLocation(program, 'u_glassTextTexture'),
-        downloadTextTexture: gl.getUniformLocation(program, 'u_downloadTextTexture')
+        downloadTextTexture: gl.getUniformLocation(program, 'u_downloadTextTexture'),
+        communityTextTexture: gl.getUniformLocation(program, 'u_communityTextTexture'),
+        supportTextTexture: gl.getUniformLocation(program, 'u_supportTextTexture')
       };
 
       const logoCanvas = document.createElement('canvas');
@@ -211,12 +221,18 @@ export function LiquidGlassHome({
       const glassTextContext = glassTextCanvas.getContext('2d');
       const downloadTextCanvas = document.createElement('canvas');
       const downloadTextContext = downloadTextCanvas.getContext('2d');
+      const communityTextCanvas = document.createElement('canvas');
+      const communityTextContext = communityTextCanvas.getContext('2d');
+      const supportTextCanvas = document.createElement('canvas');
+      const supportTextContext = supportTextCanvas.getContext('2d');
       if (
         !logoContext
         || !textContext
         || !cornerTextContext
         || !glassTextContext
         || !downloadTextContext
+        || !communityTextContext
+        || !supportTextContext
       ) {
         throw new Error('无法创建首页纹理画布');
       }
@@ -226,9 +242,14 @@ export function LiquidGlassHome({
       const cornerTextTexture = createTexture();
       const glassTextTexture = createTexture();
       const downloadTextTexture = createTexture();
+      const communityTextTexture = createTexture();
+      const supportTextTexture = createTexture();
       const logoImage = new Image();
       let logoReady = false;
       let lastTextProgress = -1;
+      let communityCardCount = 0;
+      let communityCurrentPage = '1';
+      let communityTotalPages = '0';
 
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, logoTexture);
@@ -281,11 +302,29 @@ export function LiquidGlassHome({
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.uniform1i(uniforms.downloadTextTexture, 4);
 
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D, communityTextTexture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.uniform1i(uniforms.communityTextTexture, 5);
+
+      gl.activeTexture(gl.TEXTURE6);
+      gl.bindTexture(gl.TEXTURE_2D, supportTextTexture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.uniform1i(uniforms.supportTextTexture, 6);
+
       const updateTextTexture = (
         width: number,
         height: number,
         transition: number,
         downloadTransition: number,
+        communityTransition: number,
+        supportTransition: number,
         typedCharacters: number,
         staticLayersChanged: boolean
       ) => {
@@ -305,8 +344,18 @@ export function LiquidGlassHome({
           downloadTextCanvas.width = width;
           downloadTextCanvas.height = height;
         }
+        if (communityTextCanvas.width !== width || communityTextCanvas.height !== height) {
+          communityTextCanvas.width = width;
+          communityTextCanvas.height = height;
+        }
+        if (supportTextCanvas.width !== width || supportTextCanvas.height !== height) {
+          supportTextCanvas.width = width;
+          supportTextCanvas.height = height;
+        }
         glassTextContext.clearRect(0, 0, width, height);
         downloadTextContext.clearRect(0, 0, width, height);
+        communityTextContext.clearRect(0, 0, width, height);
+        supportTextContext.clearRect(0, 0, width, height);
 
         let fontSize = Math.min(width * 0.235, height * 0.40);
         const gradient = textContext.createLinearGradient(width * 0.18, 0, width * 0.82, 0);
@@ -365,10 +414,26 @@ export function LiquidGlassHome({
           downloadCenterX + downloadTotalWidth * 0.5 - downloadPetWidth * 0.5
         ];
         const currentFontSize = mix(fontSize, downloadFontSize, downloadTransition);
-        const positions = aboutPositions.map((position, index) => ({
+        const downloadPositions = aboutPositions.map((position, index) => ({
           ...position,
           x: mix(position.x, finalPositions[index]!, downloadTransition),
           y: mix(position.y, downloadY, downloadTransition)
+        }));
+        setHeroFont(currentFontSize);
+        const communityAiWidth = textContext.measureText('AI').width;
+        const communityPetWidth = textContext.measureText('PET').width;
+        const communityGap = currentFontSize * 0.20;
+        const communityTotalWidth = communityAiWidth + communityGap + communityPetWidth;
+        const positions = downloadPositions.map((position, index) => ({
+          ...position,
+          x: mix(
+            position.x,
+            index === 0
+              ? width * 0.5 - communityTotalWidth * 0.5 + communityAiWidth * 0.5
+              : width * 0.5 + communityTotalWidth * 0.5 - communityPetWidth * 0.5,
+            communityTransition
+          ),
+          y: mix(position.y, height * 0.50, communityTransition)
         }));
 
         const drawText = (text: string, x: number, y: number, alpha: number) => {
@@ -392,14 +457,14 @@ export function LiquidGlassHome({
         positions.forEach(({ text, x, y }) => drawText(text, x, y, 1));
         textContext.globalAlpha = 1;
 
-        let cornerFontSize = Math.min(width * 0.13, height * 0.26);
+        let cornerFontSize = Math.min(width * 0.092, height * 0.19);
         cornerTextContext.font = `900 ${cornerFontSize}px "Arial Black", "Segoe UI", sans-serif`;
         const widestCornerWord = Math.max(
           cornerTextContext.measureText('AGENT').width,
           cornerTextContext.measureText('YOUR').width
         );
-        if (widestCornerWord > width * 0.45) {
-          cornerFontSize *= width * 0.45 / widestCornerWord;
+        if (widestCornerWord > width * 0.36) {
+          cornerFontSize *= width * 0.36 / widestCornerWord;
           cornerTextContext.font = `900 ${cornerFontSize}px "Arial Black", "Segoe UI", sans-serif`;
         }
         const agentWidth = cornerTextContext.measureText('AGENT').width;
@@ -427,6 +492,111 @@ export function LiquidGlassHome({
         yourGradient.addColorStop(1, '#F7DCC8');
         cornerTextContext.textBaseline = 'middle';
         cornerTextContext.globalAlpha = 1;
+
+        /* 共享仓库大字进入底层纹理，使玻璃交集区域参与真实折射。 */
+        const communityWordSize = Math.min(width * 0.067, height * 0.14);
+        const communityNumberSize = Math.min(width * 0.18, height * 0.34);
+        const communityGradient = communityTextContext.createLinearGradient(
+          width * 0.20,
+          0,
+          width * 0.80,
+          0
+        );
+        communityGradient.addColorStop(0, '#BDFCF5');
+        communityGradient.addColorStop(0.34, '#CFF8D5');
+        communityGradient.addColorStop(0.68, '#F6F7A7');
+        communityGradient.addColorStop(1, '#F7DCC8');
+        const shareWord = t('sharedPet.chapter.shareWord');
+        const repositoryWord = t('sharedPet.chapter.repositoryWord');
+        communityTextContext.globalAlpha = 1;
+        communityTextContext.fillStyle = communityGradient;
+        communityTextContext.shadowColor = 'rgba(2, 7, 8, 0.72)';
+        communityTextContext.shadowBlur = Math.max(10, communityWordSize * 0.10);
+        communityTextContext.shadowOffsetY = communityWordSize * 0.055;
+        communityTextContext.font = `900 ${communityWordSize}px "Arial Black", "Segoe UI", sans-serif`;
+        communityTextContext.textBaseline = 'middle';
+        communityTextContext.textAlign = 'right';
+        const shareRestX = mix(
+          -communityTextContext.measureText(shareWord).width,
+          width * 0.347,
+          communityTransition
+        );
+        communityTextContext.fillText(
+          shareWord,
+          mix(shareRestX, -communityTextContext.measureText(shareWord).width * 1.2, supportTransition),
+          height * 0.50
+        );
+        communityTextContext.textAlign = 'left';
+        const repositoryRestX = mix(
+          width + communityTextContext.measureText(repositoryWord).width,
+          width * 0.653,
+          communityTransition
+        );
+        communityTextContext.fillText(
+          repositoryWord,
+          mix(repositoryRestX, width + communityTextContext.measureText(repositoryWord).width * 1.2, supportTransition),
+          height * 0.50
+        );
+
+        communityTextContext.font = `900 ${communityNumberSize}px "Arial Black", "Segoe UI", sans-serif`;
+        communityTextContext.textAlign = 'center';
+        communityTextContext.fillText(
+          communityCurrentPage,
+          width * 0.355,
+          mix(
+            mix(-communityNumberSize, height * 0.39, communityTransition),
+            height + communityNumberSize,
+            supportTransition
+          )
+        );
+        communityTextContext.fillText(
+          communityTotalPages,
+          width * 0.652,
+          mix(
+            mix(height + communityNumberSize, height * 0.61, communityTransition),
+            -communityNumberSize,
+            supportTransition
+          )
+        );
+        communityTextContext.shadowColor = 'transparent';
+        communityTextContext.shadowBlur = 0;
+        communityTextContext.shadowOffsetY = 0;
+
+        /* 六项按钮文字独立绘制，着色后由着色器按各玻璃中心折射与浮动。 */
+        const supportLabels = [
+          t('feedback.action.suggestion'),
+          t('feedback.action.feedback'),
+          t('feedback.action.create'),
+          t('donation.wechat'),
+          t('donation.alipay'),
+          t('donation.paypal')
+        ];
+        supportTextContext.textAlign = 'center';
+        supportTextContext.textBaseline = 'middle';
+        supportTextContext.fillStyle = '#FFF6AC';
+        supportTextContext.shadowColor = 'rgba(2, 7, 8, 0.76)';
+        supportTextContext.shadowBlur = Math.max(9, height * 0.012);
+        supportTextContext.shadowOffsetY = Math.max(3, height * 0.006);
+        supportLabels.forEach((label, index) => {
+          let labelSize = Math.min(width * 0.034, height * 0.062);
+          supportTextContext.font = `900 ${labelSize}px "Arial Black", "Segoe UI", sans-serif`;
+          const maximumWidth = width * 0.24;
+          const measuredWidth = supportTextContext.measureText(label).width;
+          if (measuredWidth > maximumWidth) {
+            labelSize *= maximumWidth / measuredWidth;
+            supportTextContext.font = `900 ${labelSize}px "Arial Black", "Segoe UI", sans-serif`;
+          }
+          const stackIndex = index % 3;
+          const isLeft = index < 3;
+          supportTextContext.fillText(
+            label,
+            width * (isLeft ? 0.23 : 0.77),
+            height * ((isLeft ? 0.64 : 0.16) + stackIndex * 0.105)
+          );
+        });
+        supportTextContext.shadowColor = 'transparent';
+        supportTextContext.shadowBlur = 0;
+        supportTextContext.shadowOffsetY = 0;
         cornerTextContext.fillStyle = 'rgba(4, 10, 11, 0.52)';
         cornerTextContext.shadowColor = 'rgba(2, 7, 8, 0.72)';
         cornerTextContext.shadowBlur = Math.max(14, cornerFontSize * 0.1);
@@ -611,6 +781,28 @@ export function LiquidGlassHome({
             gl.UNSIGNED_BYTE,
             cornerTextCanvas
           );
+          gl.activeTexture(gl.TEXTURE5);
+          gl.bindTexture(gl.TEXTURE_2D, communityTextTexture);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            communityTextCanvas
+          );
+          gl.activeTexture(gl.TEXTURE6);
+          gl.bindTexture(gl.TEXTURE_2D, supportTextTexture);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            supportTextCanvas
+          );
         }
         if (staticLayersChanged) {
           gl.activeTexture(gl.TEXTURE3);
@@ -636,7 +828,7 @@ export function LiquidGlassHome({
           gl.UNSIGNED_BYTE,
           downloadTextCanvas
         );
-        lastTextProgress = transition + downloadTransition;
+        lastTextProgress = transition + downloadTransition + communityTransition + supportTransition;
         lastTypedCharacters = typedCharacters;
       };
 
@@ -699,6 +891,8 @@ export function LiquidGlassHome({
             height,
             Math.min(1, rawTransition),
             Math.min(1, Math.max(0, rawTransition - 1)),
+            Math.min(1, Math.max(0, rawTransition - 2)),
+            Math.min(1, Math.max(0, rawTransition - 3)),
             Math.max(0, lastTypedCharacters),
             true
           );
@@ -750,6 +944,18 @@ export function LiquidGlassHome({
         pointerY(y);
         addRipple(x, y, detail.strength);
       };
+      const handleCommunityCardCount = (event: Event) => {
+        const detail = (event as CustomEvent<{
+          count?: number;
+          currentPage?: number;
+          totalPages?: number | string;
+        }>).detail;
+        communityCardCount = Math.min(8, Math.max(0, detail?.count ?? 0));
+        communityCurrentPage = String(detail?.currentPage ?? 1);
+        communityTotalPages = String(detail?.totalPages ?? 0);
+        lastTextProgress = -1;
+        renderedStaticFrame = false;
+      };
       const handleGlassInteraction = (event: Event) => {
         const detail = (event as CustomEvent<LiquidGlassInteractionDetail>).detail;
         if (!detail) return;
@@ -764,6 +970,36 @@ export function LiquidGlassHome({
         blobOffsets.set(detail.offsets);
         renderedStaticFrame = false;
       };
+      const nearestSelectionTarget = (current: number, target: number) => {
+        const normalized = ((current % 3) + 3) % 3;
+        let delta = target - normalized;
+        if (delta > 1.5) delta -= 3;
+        if (delta < -1.5) delta += 3;
+        return current + delta;
+      };
+      const handleSupportSelection = (event: Event) => {
+        const detail = (event as CustomEvent<{
+          feedbackIndex?: number;
+          paymentIndex?: number;
+        }>).detail;
+        if (!detail) return;
+        gsap.to(supportSelection, {
+          feedback: nearestSelectionTarget(
+            supportSelection.feedback,
+            Math.min(2, Math.max(0, detail.feedbackIndex ?? 0))
+          ),
+          payment: nearestSelectionTarget(
+            supportSelection.payment,
+            Math.min(2, Math.max(0, detail.paymentIndex ?? 0))
+          ),
+          duration: reducedMotion ? 0 : 0.52,
+          ease: 'power3.inOut',
+          overwrite: 'auto',
+          onUpdate: () => {
+            renderedStaticFrame = false;
+          }
+        });
+      };
 
       render = (time: number) => {
         if (disposed || pausedRef.current || (reducedMotion && renderedStaticFrame)) return;
@@ -771,6 +1007,8 @@ export function LiquidGlassHome({
         const rawTransition = transitionRef.current;
         const transition = Math.min(1, rawTransition);
         const downloadTransition = Math.min(1, Math.max(0, rawTransition - 1));
+        const communityTransition = Math.min(1, Math.max(0, rawTransition - 2));
+        const supportTransition = Math.min(1, Math.max(0, rawTransition - 3));
         let typedCharacters = 0;
         if (downloadTransition > 0.38) {
           if (downloadTypingStartedAt < 0) downloadTypingStartedAt = currentTime;
@@ -790,6 +1028,8 @@ export function LiquidGlassHome({
             canvas.height,
             transition,
             downloadTransition,
+            communityTransition,
+            supportTransition,
             typedCharacters,
             staticLayersChanged
           );
@@ -802,6 +1042,11 @@ export function LiquidGlassHome({
         gl.uniform1f(uniforms.motion, reducedMotion ? 0 : 1);
         gl.uniform1f(uniforms.transition, transition);
         gl.uniform1f(uniforms.downloadTransition, downloadTransition);
+        gl.uniform1f(uniforms.communityTransition, communityTransition);
+        gl.uniform1f(uniforms.supportTransition, supportTransition);
+        gl.uniform1f(uniforms.supportFeedbackActive, supportSelection.feedback);
+        gl.uniform1f(uniforms.supportPaymentActive, supportSelection.payment);
+        gl.uniform1f(uniforms.communityCardCount, communityCardCount);
         gl.uniform2fv(uniforms.blobOffsets, blobOffsets);
         gl.uniform1f(uniforms.hoveredBlob, glassInteraction.hovered);
         gl.uniform1f(uniforms.hoverAmount, glassInteraction.hoverAmount);
@@ -847,7 +1092,9 @@ export function LiquidGlassHome({
       window.addEventListener('resize', resize, { passive: true });
       window.addEventListener('pointermove', updatePointer, { passive: true });
       window.addEventListener(LIQUID_GLASS_RIPPLE_EVENT, handleControlRipple);
+      window.addEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, handleCommunityCardCount);
       window.addEventListener(LIQUID_GLASS_INTERACTION_EVENT, handleGlassInteraction);
+      window.addEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, handleSupportSelection);
       canvas.addEventListener('pointerdown', handleCanvasPointerDown, { passive: true });
       document.addEventListener('visibilitychange', handleVisibilityChange);
 
@@ -856,10 +1103,13 @@ export function LiquidGlassHome({
         gsap.ticker.remove(render);
         gsap.killTweensOf(pointer);
         gsap.killTweensOf(glassInteraction);
+        gsap.killTweensOf(supportSelection);
         window.removeEventListener('resize', resize);
         window.removeEventListener('pointermove', updatePointer);
         window.removeEventListener(LIQUID_GLASS_RIPPLE_EVENT, handleControlRipple);
+        window.removeEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, handleCommunityCardCount);
         window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, handleGlassInteraction);
+        window.removeEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, handleSupportSelection);
         canvas.removeEventListener('pointerdown', handleCanvasPointerDown);
         document.removeEventListener('visibilitychange', handleVisibilityChange);
         logoImage.removeEventListener('load', handleLogoLoad);
@@ -873,6 +1123,7 @@ export function LiquidGlassHome({
       disposed = true;
       gsap.killTweensOf(pointer);
       gsap.killTweensOf(glassInteraction);
+      gsap.killTweensOf(supportSelection);
       createdTextures.forEach(texture => gl.deleteTexture(texture));
       createdBuffers.forEach(buffer => gl.deleteBuffer(buffer));
       createdShaders.forEach(shader => gl.deleteShader(shader));

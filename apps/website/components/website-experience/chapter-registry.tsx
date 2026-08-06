@@ -1,14 +1,13 @@
 import type { ComponentType } from 'react';
 import type { MessageKey } from '../i18n/i18n-types';
 import { AboutChapter } from './about/AboutChapter';
-import { DonationChapter } from './donation/DonationChapter';
 import { DownloadChapter } from './download/DownloadChapter';
-import { FeedbackChapter } from './feedback/FeedbackChapter';
 import { SharedPetChapter } from './community/SharedPetChapter';
 import { CloudSharedPetRepository } from './community/cloud-shared-pet-repository';
 import { CloudFeedbackRepository } from './feedback/cloud-feedback-repository';
 import { ApiClient } from '../../lib/api-client';
 import { CaptchaClient } from '../../lib/captcha';
+import { SupportChapter } from './support/SupportChapter';
 import type { ChapterId, ChapterRuntimeProps } from './types';
 
 /** 公开页面只使用 REST 仓库，验证码不承担且不创建用户身份。 */
@@ -27,7 +26,7 @@ function CommunityChapter(props: ChapterRuntimeProps) {
 }
 
 function FeedbackCloudChapter(props: ChapterRuntimeProps) {
-  return <FeedbackChapter {...props} repository={feedbackRepository} captcha={feedbackCaptcha} />;
+  return <SupportChapter {...props} repository={feedbackRepository} captcha={feedbackCaptcha} />;
 }
 
 interface ChapterDefinition {
@@ -49,8 +48,7 @@ export const CHAPTER_REGISTRY = [
     labelKey: 'chapter.community',
     component: CommunityChapter
   },
-  { id: 'feedback', labelKey: 'chapter.feedback', component: FeedbackCloudChapter },
-  { id: 'donation', labelKey: 'chapter.donation', component: DonationChapter }
+  { id: 'feedback', labelKey: 'chapter.feedback', component: FeedbackCloudChapter }
 ] as const satisfies readonly ChapterDefinition[];
 
 export function getChapterIndex(id: ChapterId): number {

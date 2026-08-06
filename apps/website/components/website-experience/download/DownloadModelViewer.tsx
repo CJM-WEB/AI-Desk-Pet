@@ -10,6 +10,7 @@ import styles from './download-model-viewer.module.css';
 export interface DownloadModelViewerProps {
   active: boolean;
   entryProgress: number;
+  exitProgress?: number;
   modelUrl: string;
   motionDisabled: boolean;
   paused: boolean;
@@ -42,6 +43,7 @@ function disposeModel(model: THREE.Object3D) {
 export function DownloadModelViewer({
   active,
   entryProgress,
+  exitProgress = 0,
   modelUrl,
   motionDisabled,
   paused,
@@ -298,9 +300,11 @@ export function DownloadModelViewer({
     const model = runtimeRef.current?.currentModel;
     if (!model || motionDisabled) return;
     model.position.x = (1 - entryProgress) * 1.3;
-    model.position.y = (1 - entryProgress) * -2.35;
-    model.rotation.y = rotationRef.current + (1 - entryProgress) * -Math.PI * 2;
-  }, [entryProgress, motionDisabled]);
+    model.position.y = (1 - entryProgress) * -2.35 + exitProgress * 2.8;
+    model.rotation.y = rotationRef.current
+      + (1 - entryProgress) * -Math.PI * 2
+      + exitProgress * Math.PI * 2;
+  }, [entryProgress, exitProgress, motionDisabled]);
 
   return (
     <div

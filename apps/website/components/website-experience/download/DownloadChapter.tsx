@@ -82,6 +82,7 @@ export function DownloadChapter({
   const finalProgress = Math.min(1, Math.max(0, (progress - 0.78) / 0.22));
   const platformProgress = Math.min(1, Math.max(0, (progress - 0.92) / 0.08));
   const modelEntryProgress = platformProgress;
+  const exitProgress = Math.min(1, Math.max(0, transitionProgress - 2));
   const platformInteractive = interactive || progress >= 0.82;
   const activePlatform = content.platforms[activePlatformIndex] ?? content.platforms[0]!;
   const modelActive = progress >= 0.92 && transitionProgress < 2.98;
@@ -230,8 +231,11 @@ export function DownloadChapter({
         '--download-final-progress': finalProgress,
         '--platform-progress': platformProgress,
         '--download-header-y': `${(1 - progress) * -30}vh`,
-        '--download-glass-x': `${(1 - progress) * -58}vw`,
-        '--platform-offset': `${platformProgress >= 0.999 ? 0 : (1 - platformProgress) * 130}vw`
+        '--download-title-exit-y': `${exitProgress * -130}vh`,
+        '--download-selector-exit-x': `${exitProgress * 120}vw`,
+        '--download-glass-x': `${(1 - progress) * -58 - exitProgress * 110}vw`,
+        '--platform-offset': `${platformProgress >= 0.999 ? 0 : (1 - platformProgress) * 130}vw`,
+        '--platform-exit-x': `${exitProgress * 120}vw`
       } as CSSProperties}
     >
       <header className={styles.platformHeader}>
@@ -239,6 +243,7 @@ export function DownloadChapter({
           pointer={pointer}
           viewport={viewport}
           disabled={motionDisabled}
+          className={styles.platformTitleTilt!}
         >
           <h2>{t('download.title')}</h2>
         </PointerTiltText>
@@ -305,6 +310,7 @@ export function DownloadChapter({
           <DownloadModelViewer
             active={modelActive}
             entryProgress={modelEntryProgress}
+            exitProgress={exitProgress}
             modelUrl={getModelUrl(activePlatform)}
             motionDisabled={motionDisabled}
             paused={isPaused}
