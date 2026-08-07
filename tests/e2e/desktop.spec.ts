@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -28,6 +28,7 @@ type ElectronFixtureModule = {
     cdpPort: number;
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    recycleBinDirectory?: string;
     characterAssetsDirectory?: string;
     parentEnvironment?: NodeJS.ProcessEnv;
     enableSoftwareRasterizer?: boolean;
@@ -43,6 +44,7 @@ type ElectronFixtureModule = {
     secrets: {
       apiKey: string;
       authorizedRootDirectory: string;
+      recycleBinDirectory?: string;
       userDataDirectory?: string;
       characterAssetsDirectory?: string;
       safeCharacterPackage?: string;
@@ -129,6 +131,7 @@ type ElectronFixtureModule = {
     executablePath: string;
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    recycleBinDirectory?: string;
     safeCharacterPackage?: string;
     maliciousCharacterPackage?: string;
     characterExportDestination?: string;
@@ -174,7 +177,12 @@ function emitFakeExit(process: FakeElectronProcess | FakeCommandProcess, code: n
   process.emit('exit', code, null);
 }
 
-type JourneyToolName = 'list_directory' | 'create_file' | 'rename_entry';
+type JourneyToolName =
+  | 'list_directory'
+  | 'create_file'
+  | 'rename_entry'
+  | 'move_to_recycle_bin'
+  | 'builtin.files.move_to_recycle_bin';
 
 function runtimeDiagnosticKey(): string {
   return `myself-e2e-${randomBytes(24).toString('hex')}`;
@@ -2648,6 +2656,317 @@ test.describe('自主行为最小闭环', () => {
 });
 
 test.describe('真实 Provider 业务闭环', () => {
+  test('回收站搬运闭环只在提交帧后写入隔离适配器并安全处理中断与失败', async () => {
+    test.setTimeout(120_000);
+    const provider = await startProviderServer([
+      {
+        response: toolResponse(
+          'recycle-success',
+          'builtin.files.move_to_recycle_bin',
+          { relativePath: 'success.txt' }
+        )
+      },
+      {
+        response: { type: 'text', text: 'success.txt 已移入回收站。' },
+        inspect: request => {
+          const result = lastToolResult(request) as {
+            toolName?: string;
+            targetRelativePath?: string;
+          };
+          if (
+            result.toolName !== 'move_to_recycle_bin'
+            || result.targetRelativePath !== 'success.txt'
+          ) throw new Error('回收站结果不符合脚本预期');
+        }
+      },
+      {
+        response: toolResponse(
+          'recycle-switch',
+          'builtin.files.move_to_recycle_bin',
+          { relativePath: 'switch.txt' }
+        )
+      },
+      {
+        response: toolResponse(
+          'recycle-drag',
+          'builtin.files.move_to_recycle_bin',
+          { relativePath: 'drag.txt' }
+        )
+      },
+      {
+        response: toolResponse(
+          'recycle-failure',
+          'builtin.files.move_to_recycle_bin',
+          { relativePath: 'failure.txt' }
+        )
+      }
+    ]);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) {
+      await provider.close();
+      return;
+    }
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+    const recycleBinDirectory = fixture.recycleBinDirectory;
+    if (!recycleBinDirectory) throw new Error('缺少隔离回收站目录');
+    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+    const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
+      try {
+        return new URL(page.url()).searchParams.get('view') === view;
+      } catch {
+        return false;
+      }
+    });
+
+    try {
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
+      const pet = pageFor('pet')!;
+      const chat = pageFor('chat')!;
+      await pet.evaluate(() => {
+        const scope = globalThis as typeof globalThis & {
+          __recycleCarryEvents?: Array<{
+            playbackToken: string;
+            actionId: string;
+            commitFrameId: string | null;
+          }>;
+        };
+        scope.__recycleCarryEvents = [];
+        window.myself.subscribeCharacterMotion(event => {
+          if (event.type !== 'behavior-action' || event.stateId !== 'carrying') return;
+          scope.__recycleCarryEvents?.push({
+            playbackToken: event.playbackToken,
+            actionId: event.actionId,
+            commitFrameId: event.commitFrameId ?? null
+          });
+        });
+      });
+      const imported = await pet.evaluate(() => window.myself.importCharacterPackage());
+      expect(imported.kind).toBe('imported');
+      if (imported.kind !== 'imported') return;
+      await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
+        await window.myself.activateCharacter(characterId);
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'recycle-e2e',
+            displayName: '回收站 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'recycle-e2e-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'recycle-e2e',
+          chatProfileId: 'recycle-e2e',
+          agentProfileId: 'recycle-e2e',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: {
+            file: true,
+            screenshot: false,
+            clipboard: false,
+            memory: false
+          },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+        await window.myself.openChat();
+      }, {
+        characterId: imported.characterId,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey
+      });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      const carryEventCount = async (): Promise<number> => pet.evaluate(() => (
+        (globalThis as typeof globalThis & { __recycleCarryEvents?: unknown[] })
+          .__recycleCarryEvents?.length ?? 0
+      ));
+      const waitForCarry = async (offset: number) => {
+        await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
+          intervals: [10, 20, 50, 100]
+        }).toMatchObject({
+          primaryStateId: 'carrying',
+          actionId: 'safe-carry-action',
+          playbackStatus: 'started'
+        });
+        return pet.evaluate(index => {
+          const events = (globalThis as typeof globalThis & {
+            __recycleCarryEvents?: Array<{
+              playbackToken: string;
+              actionId: string;
+              commitFrameId: string | null;
+            }>;
+          }).__recycleCarryEvents ?? [];
+          const event = events[index];
+          if (!event) throw new Error('缺少搬运授权事件');
+          return event;
+        }, offset);
+      };
+      const beginRecycle = async (fileName: string): Promise<{
+        source: string;
+        carryOffset: number;
+      }> => {
+        const source = join(fixture.authorizedRootDirectory, fileName);
+        await writeFile(source, `${fileName} 内容`, 'utf8');
+        const carryOffset = await carryEventCount();
+        await submitChatMessage(chat, `把 ${fileName} 移入回收站`);
+        const card = chat.getByRole('region', { name: `将 ${fileName} 移入回收站` });
+        await expect(card).toBeVisible();
+        await expect(card.getByText(fileName, { exact: true })).toBeVisible();
+        await expect(card.getByText('将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。'))
+          .toBeVisible();
+        expect(await pathExistsForAssertion(source)).toBe(true);
+        await card.getByRole('button', { name: '确认移入回收站' }).click();
+        return { source, carryOffset };
+      };
+
+      const success = await beginRecycle('success.txt');
+      const successGrant = await waitForCarry(success.carryOffset);
+      expect(await pathExistsForAssertion(success.source)).toBe(true);
+      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
+        .toEqual([]);
+      await pet.evaluate(async grant => {
+        for (const candidate of [
+          { ...grant, playbackToken: 'forged-token', kind: 'commit-frame' as const },
+          { ...grant, actionId: 'cross-character-action', kind: 'commit-frame' as const },
+          { ...grant, commitFrameId: 'stale-frame', kind: 'commit-frame' as const }
+        ]) {
+          try {
+            await window.myself.reportCharacterActionMilestone({
+              playbackToken: candidate.playbackToken,
+              actionId: candidate.actionId,
+              kind: candidate.kind,
+              frameId: candidate.commitFrameId ?? 'missing-frame'
+            });
+          } catch {
+            // 伪造反馈必须由 Main 拒绝；测试只观察拒绝后无文件副作用。
+          }
+        }
+      }, successGrant);
+      expect(await pathExistsForAssertion(success.source)).toBe(true);
+      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
+        .toEqual([]);
+      await expect.poll(() => pathExistsForAssertion(success.source)).toBe(false);
+      await expect(chat.getByText('success.txt 已移入回收站。')).toBeVisible();
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'success',
+        actionId: 'safe-celebrate-action',
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+      });
+      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
+        .toEqual(['.attempt-1']);
+      await pet.evaluate(async grant => {
+        try {
+          await window.myself.reportCharacterActionMilestone({
+            playbackToken: grant.playbackToken,
+            actionId: grant.actionId,
+            kind: 'commit-frame',
+            frameId: grant.commitFrameId ?? 'missing-frame'
+          });
+        } catch {
+          // 已完成事务的重复里程碑必须被拒绝。
+        }
+      }, successGrant);
+      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
+        .toEqual(['.attempt-1']);
+
+      const switched = await beginRecycle('switch.txt');
+      const switchedGrant = await waitForCarry(switched.carryOffset);
+      await pet.evaluate(async oldGrant => {
+        try {
+          await window.myself.reportCharacterActionMilestone({
+            playbackToken: oldGrant.playbackToken,
+            actionId: oldGrant.actionId,
+            kind: 'commit-frame',
+            frameId: oldGrant.commitFrameId ?? 'missing-frame'
+          });
+        } catch {
+          // 上一事务真实授权不得提交当前事务。
+        }
+      }, successGrant);
+      expect(await pathExistsForAssertion(switched.source)).toBe(true);
+      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
+        .toHaveLength(1);
+      const characters = await pet.evaluate(() => window.myself.listCharacters());
+      const builtin = characters.find(character => character.id === 'builtin-default');
+      if (!builtin) throw new Error('缺少内置角色');
+      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), builtin.id);
+      await expect(chat.getByText('搬运动画未完成，文件未被移动。')).toBeVisible();
+      await pet.evaluate(async oldGrant => {
+        try {
+          await window.myself.reportCharacterActionMilestone({
+            playbackToken: oldGrant.playbackToken,
+            actionId: oldGrant.actionId,
+            kind: 'commit-frame',
+            frameId: oldGrant.commitFrameId ?? 'missing-frame'
+          });
+        } catch {
+          // 角色切换后原角色真实授权必须立即失效。
+        }
+      }, switchedGrant);
+      expect(await pathExistsForAssertion(switched.source)).toBe(true);
+      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
+        .toHaveLength(1);
+
+      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), imported.characterId);
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'idle',
+        actionId: 'safe-idle-action',
+        playbackStatus: 'started'
+      });
+      const dragged = await beginRecycle('drag.txt');
+      await waitForCarry(dragged.carryOffset);
+      await pet.evaluate(async () => {
+        await window.myself.beginPetDrag();
+        await window.myself.endPetDrag();
+      });
+      await expect(chat.getByText('搬运动画未完成，文件未被移动。')).toHaveCount(2);
+      expect(await pathExistsForAssertion(dragged.source)).toBe(true);
+      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
+        .toHaveLength(1);
+
+      await writeFile(join(recycleBinDirectory, '.force-failure'), '', 'utf8');
+      const failed = await beginRecycle('failure.txt');
+      await waitForCarry(failed.carryOffset);
+      await expect(chat.getByText('移入回收站失败，文件仍保留在原位置。')).toBeVisible({
+        timeout: 10_000
+      });
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'error',
+        actionId: 'safe-fail-action',
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+      });
+      expect(await pathExistsForAssertion(failed.source)).toBe(true);
+      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
+        .toEqual(['.attempt-1', '.attempt-2']);
+
+      provider.assertComplete();
+      expect(provider.requests).toHaveLength(5);
+      expect(provider.inspectionErrors).toEqual([]);
+      const captured = fixture.logs.join('\n');
+      expect(captured).not.toContain(fixture.authorizedRootDirectory);
+      expect(captured).not.toContain(recycleBinDirectory);
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
   test('通过正式白名单完成设置、文件操作与聊天窗口状态', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();

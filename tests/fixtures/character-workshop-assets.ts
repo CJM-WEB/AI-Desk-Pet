@@ -114,7 +114,8 @@ export async function materializeCharacterWorkshopFixtures(
     assetId: string
   ): CharacterActionPresentationV2 => ({
     actionId,
-    fps: 8,
+    fps: actionId === 'safe-carry-action' ? 1 : 8,
+    ...(actionId === 'safe-carry-action' ? { commitFrameId: 'frame-4' } : {}),
     frames: [0, 1, 2, 3].map(index => ({
       id: `frame-${index + 1}`,
       assetId,

@@ -1,4 +1,5 @@
-import { join } from 'node:path';
+import { access, rename, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { AgentLoop, ModelRouter } from '@myself/agent-core';
 import { FileToolService, PathPolicy } from '@myself/file-tools';
 import { providerCatalog, type TaskEvent } from '@myself/shared-types';
@@ -89,6 +90,7 @@ let isQuitting = false;
 let activeAgentService: AgentService | null = null;
 let activeDesktopSettingsService: DesktopSettingsService | null = null;
 let primaryPetWindow: BrowserWindow | null = null;
+let e2eRecycleAttempt = 0;
 
 const e2eBoundary = resolveMainE2eBoundary({
   appIsPackaged: app.isPackaged,
@@ -100,6 +102,27 @@ if (e2eBoundary) {
   app.setPath('userData', e2eBoundary.userDataDirectory);
 }
 const isPrimaryInstance = configureSingleInstance(app, () => primaryPetWindow);
+
+/** E2E 只把目标搬入受校验的临时目录，并用空标记记录调用次数，绝不触碰系统回收站。 */
+async function moveToE2eRecycleBin(absolutePath: string): Promise<void> {
+  if (!e2eBoundary) throw new Error('E2E_RECYCLE_BOUNDARY_UNAVAILABLE');
+  e2eRecycleAttempt += 1;
+  await writeFile(
+    join(e2eBoundary.recycleBinDirectory, `.attempt-${e2eRecycleAttempt}`),
+    '',
+    { flag: 'wx' }
+  );
+  try {
+    await access(join(e2eBoundary.recycleBinDirectory, '.force-failure'));
+    throw new Error('E2E_RECYCLE_BIN_FORCED_FAILURE');
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+  await rename(
+    absolutePath,
+    join(e2eBoundary.recycleBinDirectory, `${e2eRecycleAttempt}-${basename(absolutePath)}`)
+  );
+}
 
 type RendererView = 'pet' | 'chat' | 'settings' | 'characters';
 
@@ -565,7 +588,9 @@ async function createApplicationWindows(): Promise<void> {
       const policy = await PathPolicy.create(authorizedRootPath);
       // Electron 只在组合根适配平台能力，workspace 文件工具保持与 Electron 解耦。
       const fileTools = new FileToolService(policy, {
-        moveToRecycleBin: absolutePath => shell.trashItem(absolutePath)
+        moveToRecycleBin: e2eBoundary
+          ? absolutePath => moveToE2eRecycleBin(absolutePath)
+          : absolutePath => shell.trashItem(absolutePath)
       });
       const fileDisclosureAllowed = privacySettings.dataCategories.file;
       const registry = createSessionToolRegistry(fileDisclosureAllowed);

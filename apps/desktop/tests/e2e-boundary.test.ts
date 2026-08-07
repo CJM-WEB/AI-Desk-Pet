@@ -12,6 +12,7 @@ type BoundaryModule = {
   }): {
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    recycleBinDirectory: string;
   } | null;
 };
 
@@ -27,12 +28,14 @@ let testBaseDirectory = '';
 let temporaryDirectory = '';
 let userDataDirectory = '';
 let authorizedRootDirectory = '';
+let recycleBinDirectory = '';
 
 function validEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     MYSELF_E2E: '1',
     MYSELF_E2E_USER_DATA: userDataDirectory,
     MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory,
+    MYSELF_E2E_RECYCLE_BIN: recycleBinDirectory,
     MYSELF_E2E_CHARACTER_ASSETS: join(temporaryDirectory, 'character-assets'),
     MYSELF_E2E_SAFE_CHARACTER_PACKAGE: join(
       temporaryDirectory,
@@ -59,9 +62,11 @@ describe('Main E2E 安全边界', () => {
     temporaryDirectory = join(testBaseDirectory, 'temporary-root');
     userDataDirectory = join(temporaryDirectory, 'user-data');
     authorizedRootDirectory = join(temporaryDirectory, 'authorized-root');
+    recycleBinDirectory = join(temporaryDirectory, 'recycle-bin');
     await Promise.all([
       mkdir(userDataDirectory, { recursive: true }),
       mkdir(authorizedRootDirectory, { recursive: true }),
+      mkdir(recycleBinDirectory, { recursive: true }),
       mkdir(join(temporaryDirectory, 'character-assets'), { recursive: true }),
       mkdir(join(temporaryDirectory, 'packages'), { recursive: true }),
       mkdir(join(temporaryDirectory, 'exports'), { recursive: true })
@@ -94,6 +99,7 @@ describe('Main E2E 安全边界', () => {
     })).toEqual({
       userDataDirectory: realpathSync.native(userDataDirectory),
       authorizedRootDirectory: realpathSync.native(authorizedRootDirectory),
+      recycleBinDirectory: realpathSync.native(recycleBinDirectory),
       characterAssetsDirectory: realpathSync.native(
         join(temporaryDirectory, 'character-assets')
       ),
@@ -147,6 +153,12 @@ describe('Main E2E 安全边界', () => {
     })],
     ['授权目录逃逸临时目录', false, () => validEnvironment({
       MYSELF_E2E_AUTHORIZED_ROOT: join(testBaseDirectory, 'outside-authorized-root')
+    })],
+    ['隔离回收站逃逸临时目录', false, () => validEnvironment({
+      MYSELF_E2E_RECYCLE_BIN: join(testBaseDirectory, 'outside-recycle-bin')
+    })],
+    ['隔离回收站与授权目录重合', false, () => validEnvironment({
+      MYSELF_E2E_RECYCLE_BIN: authorizedRootDirectory
     })]
   ] as const)('完整忽略无效边界：%s', async (_name, appIsPackaged, environment) => {
     const boundary = await loadBoundaryModule();
@@ -234,6 +246,8 @@ describe('Main E2E 安全边界', () => {
       '../src/renderer/src/App.tsx'
     ].map(path => readFile(new URL(path, import.meta.url), 'utf8')));
 
-    expect(sources.join('\n')).not.toMatch(/MYSELF_E2E|E2E_USER_DATA|E2E_AUTHORIZED_ROOT/u);
+    expect(sources.join('\n')).not.toMatch(
+      /MYSELF_E2E|E2E_USER_DATA|E2E_AUTHORIZED_ROOT|E2E_RECYCLE_BIN/u
+    );
   });
 });

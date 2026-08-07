@@ -14,6 +14,7 @@ export interface ElectronLaunchPlanOptions {
   cdpPort: number;
   userDataDirectory: string;
   authorizedRootDirectory: string;
+  recycleBinDirectory?: string;
   characterAssetsDirectory?: string;
   safeCharacterPackage?: string;
   maliciousCharacterPackage?: string;
@@ -61,6 +62,9 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
       MYSELF_E2E: '1',
       MYSELF_E2E_USER_DATA: options.userDataDirectory,
       MYSELF_E2E_AUTHORIZED_ROOT: options.authorizedRootDirectory,
+      ...(options.recycleBinDirectory
+        ? { MYSELF_E2E_RECYCLE_BIN: options.recycleBinDirectory }
+        : {}),
       ...(options.characterAssetsDirectory
         ? { MYSELF_E2E_CHARACTER_ASSETS: options.characterAssetsDirectory }
         : {}),
@@ -88,6 +92,7 @@ export function redactElectronLog(
     apiKey: string;
     authorizedRootDirectory: string;
     userDataDirectory?: string;
+    recycleBinDirectory?: string;
     characterAssetsDirectory?: string;
     safeCharacterPackage?: string;
     maliciousCharacterPackage?: string;
@@ -99,6 +104,7 @@ export function redactElectronLog(
     secrets.apiKey,
     secrets.authorizedRootDirectory,
     secrets.userDataDirectory,
+    secrets.recycleBinDirectory,
     secrets.characterAssetsDirectory,
     secrets.safeCharacterPackage,
     secrets.maliciousCharacterPackage,
@@ -159,6 +165,7 @@ export interface ElectronTemporaryDirectories {
   baseDirectory: string;
   userDataDirectory: string;
   authorizedRootDirectory: string;
+  recycleBinDirectory?: string;
   characterAssetsDirectory?: string;
   packagesDirectory?: string;
   exportsDirectory?: string;
@@ -190,6 +197,7 @@ export interface ElectronAppFixture {
   readonly executablePath: string;
   readonly userDataDirectory: string;
   readonly authorizedRootDirectory: string;
+  readonly recycleBinDirectory?: string;
   readonly characterAssetsDirectory?: string;
   readonly safeCharacterPackage?: string;
   readonly maliciousCharacterPackage?: string;
@@ -235,12 +243,14 @@ async function createTemporaryDirectories(): Promise<ElectronTemporaryDirectorie
   const baseDirectory = await mkdtemp(join(tmpdir(), 'myself-e2e-'));
   const userDataDirectory = join(baseDirectory, 'user-data');
   const authorizedRootDirectory = join(baseDirectory, 'authorized-root');
+  const recycleBinDirectory = join(baseDirectory, 'recycle-bin');
   const characterAssetsDirectory = join(baseDirectory, 'character-assets');
   const packagesDirectory = join(baseDirectory, 'packages');
   const exportsDirectory = join(baseDirectory, 'exports');
   await Promise.all([
     mkdir(userDataDirectory, { recursive: true }),
     mkdir(authorizedRootDirectory, { recursive: true }),
+    mkdir(recycleBinDirectory, { recursive: true }),
     mkdir(characterAssetsDirectory, { recursive: true }),
     mkdir(packagesDirectory, { recursive: true }),
     mkdir(exportsDirectory, { recursive: true })
@@ -249,6 +259,7 @@ async function createTemporaryDirectories(): Promise<ElectronTemporaryDirectorie
     baseDirectory,
     userDataDirectory,
     authorizedRootDirectory,
+    recycleBinDirectory,
     characterAssetsDirectory,
     packagesDirectory,
     exportsDirectory
@@ -845,6 +856,7 @@ export async function createElectronAppFixture(
       cdpPort,
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
+      recycleBinDirectory: directories.recycleBinDirectory,
       ...characterFixtures,
       parentEnvironment: globalThis.process.env,
       enableSoftwareRasterizer: options.enableSoftwareRasterizer
@@ -937,6 +949,7 @@ export async function createElectronAppFixture(
       },
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
+      recycleBinDirectory: directories.recycleBinDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
       safeCharacterPackage: characterFixtures.safeCharacterPackage,
       maliciousCharacterPackage: characterFixtures.maliciousCharacterPackage,

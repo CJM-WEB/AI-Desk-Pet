@@ -3,6 +3,7 @@ import {
   mkdir,
   readFile,
   rename,
+  rm,
   symlink,
   writeFile
 } from 'node:fs/promises';
@@ -216,6 +217,42 @@ describe('权限边界安全回归', () => {
     expect(port.moveToRecycleBin).toHaveBeenCalledTimes(1);
     await expect(readFile(target, 'utf8')).resolves.toBe('keep');
   });
+
+  test.each(['替换', '删除'] as const)(
+    '回收站预览后目标被%s时拒绝旧动作且不调用系统端口',
+    async mutation => {
+      const authorized = await createAuthorizedRoot();
+      roots.push(authorized);
+      const target = join(authorized.root, 'docs', 'changed.txt');
+      const original = join(authorized.root, 'docs', 'changed-original.txt');
+      await writeFile(target, '原实体', 'utf8');
+      let recycleCalls = 0;
+      const fileTools = new FileToolService(authorized.policy, {
+        moveToRecycleBin: async () => {
+          recycleCalls += 1;
+        }
+      });
+      const action = await fileTools.preview({
+        requestId: `secure-recycle-${mutation}`,
+        toolName: 'move_to_recycle_bin',
+        arguments: { relativePath: 'docs/changed.txt' }
+      });
+      if (mutation === '替换') {
+        await rename(target, original);
+        await writeFile(target, '替代实体', 'utf8');
+      } else {
+        await rm(target);
+      }
+
+      await expect(fileTools.executeWrite(action)).rejects.toMatchObject({
+        code: mutation === '替换' ? 'ENTRY_CHANGED' : 'ENTRY_NOT_FOUND'
+      });
+      await expect(fileTools.executeWrite(action)).rejects.toMatchObject({
+        code: 'ACTION_EXPIRED'
+      });
+      expect(recycleCalls).toBe(0);
+    }
+  );
 
   test('Provider 控制的请求标识不能把认证凭据泄露给 Renderer', async () => {
     const fixture = await harness(apiKey => [{

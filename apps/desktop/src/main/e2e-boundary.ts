@@ -5,6 +5,7 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 export interface MainE2eBoundary {
   userDataDirectory: string;
   authorizedRootDirectory: string;
+  recycleBinDirectory: string;
   characterAssetsDirectory: string;
   safeCharacterPackage: string;
   maliciousCharacterPackage: string;
@@ -27,6 +28,7 @@ export function resolveMainE2eBoundary(
 
   const rawUserData = options.env['MYSELF_E2E_USER_DATA'];
   const rawAuthorizedRoot = options.env['MYSELF_E2E_AUTHORIZED_ROOT'];
+  const rawRecycleBin = options.env['MYSELF_E2E_RECYCLE_BIN'];
   const rawCharacterAssets = options.env['MYSELF_E2E_CHARACTER_ASSETS'];
   const rawSafePackage = options.env['MYSELF_E2E_SAFE_CHARACTER_PACKAGE'];
   const rawMaliciousPackage = options.env['MYSELF_E2E_MALICIOUS_CHARACTER_PACKAGE'];
@@ -34,6 +36,7 @@ export function resolveMainE2eBoundary(
   if (
     !rawUserData
     || !rawAuthorizedRoot
+    || !rawRecycleBin
     || !rawCharacterAssets
     || !rawSafePackage
     || !rawMaliciousPackage
@@ -87,6 +90,7 @@ export function resolveMainE2eBoundary(
 
   const userDataDirectory = resolveTemporaryChild(rawUserData);
   const authorizedRootDirectory = resolveTemporaryChild(rawAuthorizedRoot);
+  const recycleBinDirectory = resolveTemporaryChild(rawRecycleBin);
   const characterAssetsDirectory = resolveTemporaryChild(rawCharacterAssets);
   const safeCharacterPackage = resolveTemporaryFile(rawSafePackage);
   const maliciousCharacterPackage = resolveTemporaryFile(rawMaliciousPackage);
@@ -94,15 +98,23 @@ export function resolveMainE2eBoundary(
   if (
     !userDataDirectory
     || !authorizedRootDirectory
+    || !recycleBinDirectory
     || !characterAssetsDirectory
     || !safeCharacterPackage
     || !maliciousCharacterPackage
     || !characterExportDestination
   ) return null;
+  if (new Set([
+    userDataDirectory,
+    authorizedRootDirectory,
+    recycleBinDirectory,
+    characterAssetsDirectory
+  ]).size !== 4) return null;
 
   return {
     userDataDirectory,
     authorizedRootDirectory,
+    recycleBinDirectory,
     characterAssetsDirectory,
     safeCharacterPackage,
     maliciousCharacterPackage,

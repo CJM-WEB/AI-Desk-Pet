@@ -61,7 +61,6 @@ export interface AgentServiceOptions {
 type ActiveFileTask = {
   action: VerifiedWriteAction;
   session: AgentSession;
-  executionError: unknown;
   resolveResult(result: FileTaskResult): void;
 };
 
@@ -407,7 +406,6 @@ export class AgentService {
     const activeTask: ActiveFileTask = {
       action: execution.verifiedAction,
       session,
-      executionError: null,
       resolveResult
     };
     this.activeFileTask = activeTask;
@@ -423,7 +421,7 @@ export class AgentService {
       this.fileTaskCoordinator.begin(execution.verifiedAction, grant);
       const result = await resultPromise;
       if (result.status !== 'succeeded') {
-        throw this.fileTaskResultError(result, activeTask.executionError);
+        throw this.fileTaskResultError(result);
       }
       writeCompleted = true;
       taskCarry.endTaskCarry();
@@ -474,22 +472,16 @@ export class AgentService {
     if (!activeTask || activeTask.action !== action) {
       throw new Error('FILE_TASK_TRANSACTION_MISMATCH');
     }
-    try {
-      await activeTask.session.fileTools.executeWrite(action);
-    } catch (error) {
-      activeTask.executionError = error;
-      throw error;
-    }
+    await activeTask.session.fileTools.executeWrite(action);
   }
 
-  private fileTaskResultError(result: FileTaskResult, executionError: unknown): Error {
+  private fileTaskResultError(result: FileTaskResult): Error {
     if (result.status === 'succeeded') {
       return Object.assign(new Error('FILE_TASK_RESULT_INVALID'), {
         code: 'FILE_TASK_RESULT_INVALID'
       });
     }
     if (result.status === 'failed') {
-      if (executionError instanceof Error) return executionError;
       return Object.assign(new Error('FILE_TASK_EXECUTION_FAILED'), {
         code: 'FILE_TASK_EXECUTION_FAILED'
       });

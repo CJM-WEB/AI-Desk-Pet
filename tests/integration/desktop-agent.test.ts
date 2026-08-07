@@ -707,15 +707,104 @@ describe('桌面 Agent 真实服务集成', () => {
     expectProviderExchange(fixture.providerServer, 2);
   });
 
+  test('回收站事务拒绝乱序、伪造、过期和跨角色令牌并在提交前中断', async () => {
+    const fixture = await harness([{
+      response: toolCall(
+        'recycle-token-matrix',
+        'builtin.files.move_to_recycle_bin',
+        { relativePath: 'docs/token.txt' }
+      )
+    }]);
+    const source = join(fixture.authorized.root, 'docs', 'token.txt');
+    await writeFile(source, '令牌矩阵', 'utf8');
+    let recycleCalls = 0;
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: async () => {
+        recycleCalls += 1;
+      }
+    });
+
+    await fixture.service.submit('把 docs/token.txt 移入回收站');
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(false);
+    expect(fixture.service.onPlaybackStarted('forged-token', 'integration-carry-action'))
+      .toBe(false);
+    expect(fixture.service.onPlaybackStarted(
+      'integration-carry-token',
+      'integration-carry-action'
+    )).toBe(true);
+    for (const [token, actionId, frameId] of [
+      ['expired-token', 'integration-carry-action', 'integration-commit-frame'],
+      ['integration-carry-token', 'cross-character-action', 'integration-commit-frame'],
+      ['integration-carry-token', 'integration-carry-action', 'wrong-frame']
+    ] as const) {
+      expect(fixture.service.onCommitFrame(token, actionId, frameId)).toBe(false);
+    }
+    expect(fixture.service.invalidateFileTaskPlaybackGrant()).toBe(true);
+
+    await expect(confirming).rejects.toMatchObject({
+      code: 'FILE_TASK_PLAYBACK_CANCELLED'
+    });
+    expect(recycleCalls).toBe(0);
+    await expect(readFile(source, 'utf8')).resolves.toBe('令牌矩阵');
+    expectProviderExchange(fixture.providerServer, 1);
+  });
+
+  test('系统回收站失败时原文件保留且事务只发布一次失败终态', async () => {
+    const fixture = await harness([{
+      response: toolCall(
+        'recycle-port-failure',
+        'builtin.files.move_to_recycle_bin',
+        { relativePath: 'docs/failure.txt' }
+      )
+    }]);
+    const source = join(fixture.authorized.root, 'docs', 'failure.txt');
+    await writeFile(source, '保留内容', 'utf8');
+    let recycleCalls = 0;
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: async () => {
+        recycleCalls += 1;
+        throw new Error('测试回收站拒绝');
+      }
+    });
+
+    await fixture.service.submit('把 docs/failure.txt 移入回收站');
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+    expect(fixture.service.onPlaybackStarted(
+      'integration-carry-token',
+      'integration-carry-action'
+    )).toBe(true);
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(true);
+
+    await expect(confirming).rejects.toMatchObject({ code: 'FILE_TASK_EXECUTION_FAILED' });
+    expect(recycleCalls).toBe(1);
+    await expect(readFile(source, 'utf8')).resolves.toBe('保留内容');
+    expect(fixture.events.filter(event => (
+      event.type === 'error' && event.code === 'FILE_TASK_EXECUTION_FAILED'
+    ))).toHaveLength(1);
+    expect(fixture.carryCounts()).toEqual({ started: 1, ended: 1 });
+    expectProviderExchange(fixture.providerServer, 1);
+  });
+
   test('生产组合根只通过 Electron shell.trashItem 注入回收站端口', async () => {
     const mainSource = await readFile(
       join(process.cwd(), 'apps/desktop/src/main/index.ts'),
       'utf8'
     );
 
-    expect(mainSource).toMatch(
-      /new FileToolService\(policy,\s*\{\s*moveToRecycleBin:\s*absolutePath\s*=>\s*shell\.trashItem\(absolutePath\)\s*\}\)/u
-    );
+    expect(mainSource).toContain(': absolutePath => shell.trashItem(absolutePath)');
+    expect(mainSource).toContain('? absolutePath => moveToE2eRecycleBin(absolutePath)');
     expect(mainSource).not.toContain("from '@myself/file-tools/electron'");
   });
 
