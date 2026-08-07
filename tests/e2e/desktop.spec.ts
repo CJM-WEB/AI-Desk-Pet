@@ -2961,6 +2961,10 @@ test.describe('真实 Provider 业务闭环', () => {
       const captured = fixture.logs.join('\n');
       expect(captured).not.toContain(fixture.authorizedRootDirectory);
       expect(captured).not.toContain(recycleBinDirectory);
+      // 四条事务分别使用唯一正文哨兵，确保成功、中断和失败路径都不会记录文件内容。
+      for (const fileName of ['success.txt', 'switch.txt', 'drag.txt', 'failure.txt']) {
+        expect(captured).not.toContain(`${fileName} 内容`);
+      }
     } finally {
       await fixture.dispose();
       await provider.close();

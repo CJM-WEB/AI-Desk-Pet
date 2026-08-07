@@ -144,7 +144,7 @@ describe('V1 角色数据转换器', () => {
 
   test('V1 搬运动作只映射 carry 语义，不伪造精确任务提交帧', () => {
     const source = createV1Manifest();
-    source.states[0] = { ...source.states[0]!, id: 'carrying' };
+    source.states[0] = { ...source.states[0]!, id: 'carrying', kind: 'core' };
 
     const result = convertCharacterManifestV1ToV2(source);
     const presentation = result.document.skins[0]?.presentations[0];
