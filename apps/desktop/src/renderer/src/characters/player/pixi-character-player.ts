@@ -157,6 +157,8 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
           loop: selection.action.loop
         });
         this.notifyHitRegion();
+        // AnimatedSprite 首帧可能不会触发 onFrameChange，展示成功后显式发布当前稳定帧。
+        this.notifyFrame();
       }
     } catch (error) {
       this.finishActivePlayback('failed');

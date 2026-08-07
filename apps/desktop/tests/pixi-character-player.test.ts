@@ -953,4 +953,36 @@ describe('稳定帧订阅', () => {
 
     expect(notify).toHaveBeenCalledWith('frame-commit');
   });
+
+  test('首帧或单帧动作在 showAction 成功后主动发布当前稳定帧 ID', () => {
+    const singleFrameAction = {
+      ...action,
+      frames: [{ ...action.frames[0]!, id: 'frame-commit' }]
+    } as ActionClip;
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn(() => ({
+        action: singleFrameAction,
+        frameIndex: 0,
+        bounds: { x: 0, y: 0, width: 1, height: 1 }
+      })),
+      // 模拟 AnimatedSprite 首帧不触发 onFrameChange 的真实行为。
+      subscribeFrame: vi.fn(() => vi.fn()),
+      destroy: vi.fn()
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const notify = vi.fn();
+    player.subscribeFrame(notify);
+
+    player.play({
+      stateId: 'idle',
+      action: singleFrameAction,
+      reason: 'matched'
+    }, 'animated');
+
+    expect(notify).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith('frame-commit');
+  });
 });
