@@ -35,7 +35,7 @@ export function ConfirmationCard({ action, busy, onConfirm, onCancel }: Confirma
         </div>
       ) : null}
       <div className="path-row">
-        <span>目标位置</span>
+        <span>{isRecycleBin ? '待移入项目' : '目标位置'}</span>
         <code>{action.targetRelativePath}</code>
       </div>
       <p className="confirmation-safety">

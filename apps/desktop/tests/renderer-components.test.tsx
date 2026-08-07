@@ -110,6 +110,8 @@ describe('Renderer 可见组件', () => {
     );
 
     expect(markup).toContain('移入 Windows 回收站，可从回收站恢复');
+    expect(markup).toContain('待移入项目');
+    expect(markup).not.toContain('目标位置');
     expect(markup).toContain('确认移入回收站');
     expect(markup).toContain('先不移入');
     expect(markup).toContain('danger-button');
