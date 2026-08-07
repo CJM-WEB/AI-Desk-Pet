@@ -153,7 +153,7 @@ export interface CharacterWorkshopState {
     rows: number;
     columns: number;
     frameCount: number;
-  }): Promise<void>;
+  }, confirmCommitFrameRemoval?: boolean): Promise<CharacterReferenceImpact | void>;
   compileAndPublish(): Promise<void>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
   updateCurrentAction(patch: LegacyWorkshopActionPatch): void;
@@ -1252,7 +1252,7 @@ export function createCharacterWorkshopStore(
         });
       },
 
-      async applySpriteSheet(input) {
+      async applySpriteSheet(input, confirmCommitFrameRemoval = false) {
         const current = get();
         const characterId = current.selectedCharacterId;
         const requestTargetRevision = workspaceTargetRevision;
@@ -1289,6 +1289,35 @@ export function createCharacterWorkshopStore(
           enqueueToast({ tone: 'error', text: '精灵图网格参数无效。' });
           return;
         }
+        const currentCommitFrameId = (): string | undefined => {
+          const latest = get();
+          return latest.draft
+            ? resolveCharacterPresentation(
+              latest.draft,
+              skinId,
+              actionId
+            )?.presentation.commitFrameId
+            : undefined;
+        };
+        const markerImpact = (): CharacterReferenceImpact | null => {
+          const latest = get();
+          const skinIndex = latest.draft?.skins.findIndex(skin => skin.id === skinId) ?? -1;
+          const presentationIndex = skinIndex < 0
+            ? -1
+            : latest.draft!.skins[skinIndex]!.presentations.findIndex(
+              presentation => presentation.actionId === actionId
+            );
+          if (!currentCommitFrameId()) return null;
+          return {
+            safeReferencePaths: [presentationIndex >= 0
+              ? `skins.${skinIndex}.presentations.${presentationIndex}.commitFrameId`
+              : `skins.${skinIndex}.presentations`],
+            blockingReferencePaths: []
+          };
+        };
+        const markerAtRequest = currentCommitFrameId();
+        const initialImpact = markerImpact();
+        if (initialImpact && !confirmCommitFrameRemoval) return initialImpact;
         let bytes: Uint8Array;
         let dimensions: { width: number; height: number };
         try {
@@ -1325,6 +1354,8 @@ export function createCharacterWorkshopStore(
           height
         }));
         if (!isStillCurrent()) return;
+        // 旧确认只授权清理请求时看到的引用，等待期间的新标记不会被覆盖。
+        if (currentCommitFrameId() !== markerAtRequest) return markerImpact() ?? undefined;
         updateDraft(draft => {
           const skin = draft.skins.find(candidate => candidate.id === skinId);
           if (!skin) return;
@@ -1333,10 +1364,7 @@ export function createCharacterWorkshopStore(
           );
           if (existing) {
             existing.frames = frames;
-            if (
-              existing.commitFrameId
-              && !frames.some(frame => frame.id === existing.commitFrameId)
-            ) delete existing.commitFrameId;
+            delete existing.commitFrameId;
           } else {
             skin.presentations.push({
               actionId,

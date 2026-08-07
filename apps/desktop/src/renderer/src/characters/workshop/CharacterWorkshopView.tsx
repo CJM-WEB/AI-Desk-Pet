@@ -94,6 +94,8 @@ function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
   } : projected;
 }
 
+type SpriteSheetInput = Parameters<CharacterWorkshopState['applySpriteSheet']>[0];
+
 type PendingConfigurationDelete =
   | {
       kind: 'action';
@@ -120,6 +122,14 @@ type PendingConfigurationDelete =
       kind: 'frame';
       id: string;
       name: string;
+      safeReferencePaths: string[];
+      blockingReferencePaths: string[];
+    }
+  | {
+      kind: 'sprite-sheet';
+      id: string;
+      name: string;
+      input: SpriteSheetInput;
       safeReferencePaths: string[];
       blockingReferencePaths: string[];
     };
@@ -371,7 +381,7 @@ export function CharacterWorkshopWorkspace(
   }
 
   function openReferenceDelete(
-    kind: PendingConfigurationDelete['kind'],
+    kind: Exclude<PendingConfigurationDelete['kind'], 'sprite-sheet'>,
     id: string,
     name: string,
     impact: { safeReferencePaths: string[]; blockingReferencePaths: string[] }
@@ -419,6 +429,21 @@ export function CharacterWorkshopWorkspace(
     state.updateCurrentAction({ frames });
   }
 
+  async function applySpriteSheet(input: SpriteSheetInput): Promise<void> {
+    const impact = await state.applySpriteSheet(input);
+    if (!impact || (
+      impact.safeReferencePaths.length === 0
+      && impact.blockingReferencePaths.length === 0
+    )) return;
+    setPendingConfigurationDelete({
+      kind: 'sprite-sheet',
+      id: 'sprite-sheet-grid',
+      name: '精灵图网格',
+      input,
+      ...impact
+    });
+  }
+
   function closeConfigurationDeleteDialog(): void {
     if (configurationDeleteDialogRef.current?.open) {
       configurationDeleteDialogRef.current.close();
@@ -435,7 +460,11 @@ export function CharacterWorkshopWorkspace(
       state.requestRemoveState(pendingConfigurationDelete.id, true);
     } else if (pendingConfigurationDelete.kind === 'skin') {
       state.requestRemoveSkin(pendingConfigurationDelete.id, true);
-    } else state.requestRemoveCurrentFrame(pendingConfigurationDelete.id, true);
+    } else if (pendingConfigurationDelete.kind === 'frame') {
+      state.requestRemoveCurrentFrame(pendingConfigurationDelete.id, true);
+    } else {
+      void state.applySpriteSheet(pendingConfigurationDelete.input, true);
+    }
     closeConfigurationDeleteDialog();
   }
 
@@ -743,7 +772,7 @@ export function CharacterWorkshopWorkspace(
               <AtlasImportPanel
                 sources={state.availableSources}
                 disabled={busy}
-                onApply={state.applySpriteSheet}
+                onApply={applySpriteSheet}
               />
               <ActionInspector
                 action={selectedActionDefinition}
@@ -892,13 +921,17 @@ export function CharacterWorkshopWorkspace(
         >
           <div className="workshop-dialog">
             <h2 id="delete-configuration-title">
-              删除{pendingConfigurationDelete.kind === 'action'
-                ? '动作'
-                : pendingConfigurationDelete.kind === 'state'
-                  ? '状态'
-                  : '皮肤'}“{pendingConfigurationDelete.name}”
+              {pendingConfigurationDelete.kind === 'sprite-sheet'
+                ? '替换精灵图网格并清理提交帧'
+                : `删除${pendingConfigurationDelete.kind === 'action'
+                  ? '动作'
+                  : pendingConfigurationDelete.kind === 'state'
+                    ? '状态'
+                    : pendingConfigurationDelete.kind === 'skin'
+                      ? '皮肤'
+                      : '帧'}“${pendingConfigurationDelete.name}”`}
             </h2>
-            <p>删除会清理以下安全引用；阻塞引用必须先重选，系统不会自动猜测替代项。</p>
+            <p>操作会清理以下安全引用；阻塞引用必须先重选，系统不会自动猜测替代项。</p>
             {pendingConfigurationDelete.safeReferencePaths.length > 0 ? (
               <section aria-labelledby="safe-reference-title">
                 <h3 id="safe-reference-title">可安全清理的引用</h3>

@@ -123,6 +123,7 @@ describe('浏览器图集编译', () => {
       32, 0, 32, 32
     );
     expect(result.frames).toEqual([{
+      id: 'frame-1',
       assetId: 'idle-atlas',
       x: 0,
       y: 0,
@@ -130,6 +131,7 @@ describe('浏览器图集编译', () => {
       height: 32,
       anchors: { ground: { x: 0.5, y: 1 } }
     }, {
+      id: 'frame-2',
       assetId: 'idle-atlas',
       x: 32,
       y: 0,

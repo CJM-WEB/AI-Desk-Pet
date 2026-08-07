@@ -267,6 +267,7 @@ export async function compileAtlas(
       const source = decoded.sourceRect;
       const destination = placement.rect;
       return {
+        id: decoded.input.frameId,
         assetId: input.atlasAssetId,
         x: destination.x,
         y: destination.y,

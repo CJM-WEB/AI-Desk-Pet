@@ -1229,6 +1229,57 @@ describe('角色工作室 Zustand 状态层', () => {
       ]);
   });
 
+  test('网格替换命中提交帧时先返回引用影响，确认后原子清标记并替换帧', async () => {
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.actions[0]!.semantic = 'carry';
+    loadedDraft.skins[0]!.presentations = [{
+      actionId: 'idle-main',
+      fps: 8,
+      anchors: { ground: { x: 0.5, y: 1 } },
+      frames: [{
+        id: 'carry-commit',
+        assetId: 'old-atlas',
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1
+      }],
+      commitFrameId: 'carry-commit'
+    }];
+    const readCharacterSource = vi.fn(async () => new Uint8Array([1]));
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft),
+      readCharacterSource,
+      listCharacterSources: vi.fn(async () => [
+        sourceDto('123e4567-e89b-42d3-a456-426614174000', 'carry.png')
+      ])
+    });
+    const store = createCharacterWorkshopStore(api, {
+      inspectImage: async () => ({ width: 2, height: 1 })
+    });
+    await store.getState().load();
+    const before = structuredClone(store.getState().draft);
+    const input = {
+      sourceAssetId: '123e4567-e89b-42d3-a456-426614174000',
+      rows: 1,
+      columns: 2,
+      frameCount: 2
+    };
+
+    await expect(store.getState().applySpriteSheet(input)).resolves.toEqual({
+      safeReferencePaths: ['skins.0.presentations.0.commitFrameId'],
+      blockingReferencePaths: []
+    });
+    expect(store.getState().draft).toEqual(before);
+    expect(readCharacterSource).not.toHaveBeenCalled();
+
+    await expect(store.getState().applySpriteSheet(input, true)).resolves.toBeUndefined();
+    const presentation = store.getState().draft?.skins[0]?.presentations[0];
+    expect(presentation).not.toHaveProperty('commitFrameId');
+    expect(presentation?.frames.map(frame => frame.id)).toEqual(['frame-1', 'frame-2']);
+    expect(() => characterDraftV2Schema.parse(store.getState().draft)).not.toThrow();
+  });
+
   test('应用网格读取素材失败时转为错误提示而不向调用方拒绝', async () => {
     const { api } = apiDouble({
       readCharacterSource: vi.fn(async () => {
