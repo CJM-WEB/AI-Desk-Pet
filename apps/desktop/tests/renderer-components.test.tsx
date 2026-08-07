@@ -68,6 +68,7 @@ describe('Renderer 可见组件', () => {
           actionId: 'action-1',
           conversationId: 'conversation-1',
           risk: 'write',
+          operation: 'rename_entry',
           summary: '将 notes.md 重命名为 ideas.md',
           sourceRelativePath: 'notes.md',
           targetRelativePath: 'ideas.md',

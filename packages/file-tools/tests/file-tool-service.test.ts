@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileToolService, type VerifiedWriteAction } from '../src/file-tool-service';
 import { PathPolicy } from '../src/path-policy';
+import { toolArguments } from '../src/schemas';
 
 const temporaryRoots: string[] = [];
 
@@ -29,6 +30,34 @@ afterEach(async () => {
 });
 
 describe('FileToolService.preview 与 executeWrite', () => {
+  it('回收站工具参数只接受非空相对路径', () => {
+    expect(toolArguments.move_to_recycle_bin.parse({ relativePath: 'docs/old.txt' })).toEqual({
+      relativePath: 'docs/old.txt'
+    });
+    expect(() => toolArguments.move_to_recycle_bin.parse({ relativePath: '' })).toThrow();
+    expect(() => toolArguments.move_to_recycle_bin.parse({ relativePath: '   ' })).toThrow();
+    expect(() => toolArguments.move_to_recycle_bin.parse({ relativePath: '/docs/old.txt' })).toThrow();
+    expect(() => toolArguments.move_to_recycle_bin.parse({ relativePath: 'C:\\docs\\old.txt' })).toThrow();
+    expect(() => toolArguments.move_to_recycle_bin.parse({
+      relativePath: 'docs/old.txt',
+      recursive: true
+    })).toThrow();
+  });
+
+  it('公开写动作契约包含回收站分支且不携带系统能力', () => {
+    const action = {
+      id: 'recycle-1',
+      toolName: 'move_to_recycle_bin',
+      targetRelativePath: 'docs/old.txt'
+    } satisfies VerifiedWriteAction;
+
+    expect(action).toEqual({
+      id: 'recycle-1',
+      toolName: 'move_to_recycle_bin',
+      targetRelativePath: 'docs/old.txt'
+    });
+  });
+
   it('预览新建文件时不修改磁盘，执行时排他创建空文件', async () => {
     const { service, root } = await fixtureService();
     const target = join(root, 'notes.md');

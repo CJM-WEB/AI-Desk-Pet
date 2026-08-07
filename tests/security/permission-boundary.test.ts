@@ -365,6 +365,7 @@ describe('权限边界安全回归', () => {
         actionId: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/u),
         conversationId: 'conversation-task-9a-security',
         risk: 'write',
+        operation: 'create_file',
         summary: '创建文件 injection-owned.txt',
         targetRelativePath: 'injection-owned.txt',
         createdAt: expect.any(String),

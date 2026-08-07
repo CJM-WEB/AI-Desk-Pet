@@ -43,11 +43,12 @@ describe('toolRequestSchema', () => {
 });
 
 describe('pendingActionSchema', () => {
-  it('要求目标相对路径和过期时间', () => {
+  it('以严格操作字段判别四种公开确认动作', () => {
     const result = pendingActionSchema.parse({
       actionId: 'act-1',
       conversationId: 'conv-1',
       risk: 'write',
+      operation: 'create_file',
       summary: '新建 notes.md',
       targetRelativePath: 'notes.md',
       createdAt: '2026-07-20T00:00:00.000Z',
@@ -56,6 +57,32 @@ describe('pendingActionSchema', () => {
 
     expect(result.risk).toBe('write');
     expect(result).not.toHaveProperty('requestId');
+
+    for (const operation of [
+      'create_file',
+      'create_directory',
+      'rename_entry',
+      'move_to_recycle_bin'
+    ]) {
+      expect(pendingActionSchema.parse({ ...result, operation }).operation).toBe(operation);
+    }
+  });
+
+  it('拒绝缺失、未知操作和多余字段', () => {
+    const base = {
+      actionId: 'act-1',
+      conversationId: 'conv-1',
+      risk: 'write',
+      operation: 'create_file',
+      summary: '新建 notes.md',
+      targetRelativePath: 'notes.md',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      expiresAt: '2026-07-20T00:02:00.000Z'
+    };
+
+    expect(() => pendingActionSchema.parse(({ ...base, operation: undefined }))).toThrow();
+    expect(() => pendingActionSchema.parse({ ...base, operation: 'delete_permanently' })).toThrow();
+    expect(() => pendingActionSchema.parse({ ...base, command: 'rm notes.md' })).toThrow();
   });
 });
 

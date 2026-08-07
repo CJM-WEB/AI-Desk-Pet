@@ -47,6 +47,11 @@ export type VerifiedWriteAction = Readonly<
     sourceRelativePath: string;
     targetRelativePath: string;
   }
+  | {
+    id: string;
+    toolName: 'move_to_recycle_bin';
+    targetRelativePath: string;
+  }
 >;
 
 type InternalWriteAction =

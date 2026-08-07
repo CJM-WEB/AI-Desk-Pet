@@ -9,6 +9,7 @@ function publicData(targetRelativePath = 'result.txt') {
   return {
     conversationId: 'conversation-1',
     risk: 'write' as const,
+    operation: 'create_file' as const,
     summary: `创建 ${targetRelativePath}`,
     targetRelativePath
   };

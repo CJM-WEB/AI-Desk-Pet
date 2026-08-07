@@ -179,6 +179,39 @@ function withoutPlayableDefault<T extends CharacterDraftV2>(draft: T): T {
 }
 
 describe('角色包 V2 严格契约', () => {
+  test('表现提交帧必须引用同一表现内的唯一稳定帧标识', () => {
+    const draft = createCharacterDraftV2Fixture();
+    const presentation = draft.skins[0]!.presentations[0]!;
+    presentation.frames = [
+      { ...presentation.frames[0]!, id: 'carry-start' },
+      { ...presentation.frames[0]!, id: 'carry-commit', x: 256 }
+    ];
+    presentation.commitFrameId = 'carry-commit';
+
+    expect(characterDraftV2Schema.parse(draft).skins[0]!.presentations[0]!.commitFrameId)
+      .toBe('carry-commit');
+
+    const dangling = structuredClone(draft);
+    dangling.skins[0]!.presentations[0]!.commitFrameId = 'missing-frame';
+    expect(() => characterDraftV2Schema.parse(dangling)).toThrow(/提交帧/u);
+
+    const duplicate = structuredClone(draft);
+    duplicate.skins[0]!.presentations[0]!.frames[1]!.id = 'carry-start';
+    duplicate.skins[0]!.presentations[0]!.commitFrameId = 'carry-start';
+    expect(() => characterDraftV2Schema.parse(duplicate)).toThrow(/提交帧.*唯一.*帧标识/u);
+  });
+
+  test('表现提交帧拒绝未知字段', () => {
+    const draft = createCharacterDraftV2Fixture();
+    Object.assign(draft.skins[0]!.presentations[0]!, {
+      commitFrameId: 'frame-1',
+      commitCommand: 'trash'
+    });
+    draft.skins[0]!.presentations[0]!.frames[0]!.id = 'frame-1';
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
   test('V2 表现和资源契约消费 V1 共享 Schema', () => {
     const frame: ActionFrame = actionFrameSchema.parse({
       assetId: 'atlas-1', x: 0, y: 0, width: 256, height: 256

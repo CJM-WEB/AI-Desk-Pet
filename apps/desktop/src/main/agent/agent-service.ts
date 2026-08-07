@@ -333,6 +333,7 @@ export class AgentService {
         const publicAction = this.pending.issue({
           conversationId: this.createConversationId(),
           risk: 'write',
+          operation: verifiedAction.toolName,
           summary: actionSummary(verifiedAction),
           ...(verifiedAction.toolName === 'rename_entry'
             ? { sourceRelativePath: verifiedAction.sourceRelativePath }

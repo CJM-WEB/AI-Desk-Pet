@@ -271,6 +271,7 @@ describe('AgentService', () => {
       action: expect.objectContaining({
         conversationId: 'conversation-1',
         risk: 'write',
+        operation: 'create_file',
         targetRelativePath: 'result.txt'
       })
     });

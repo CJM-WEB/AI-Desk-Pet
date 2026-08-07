@@ -39,6 +39,12 @@ export const pendingActionSchema = z.object({
   actionId: z.string().min(1),
   conversationId: z.string().min(1),
   risk: z.literal('write'),
+  operation: z.enum([
+    'create_file',
+    'create_directory',
+    'rename_entry',
+    'move_to_recycle_bin'
+  ]),
   summary: z.string().min(1),
   sourceRelativePath: z.string().min(1).optional(),
   targetRelativePath: z.string().min(1),

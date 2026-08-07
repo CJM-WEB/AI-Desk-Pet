@@ -107,6 +107,7 @@ const actionPresentationSchema = z.object({
   fps: finiteNumberSchema.min(1).max(60),
   frames: z.array(actionFrameSchema),
   anchors: anchorSetSchema,
+  commitFrameId: safeIdentifierSchema.optional(),
   regions: z.object({
     click: interactionRegionSchema.optional(),
     drag: interactionRegionSchema.optional(),
@@ -287,6 +288,18 @@ function validateDocumentReferences(document: V2Document, context: z.RefinementC
       presentationActionIds.add(presentation.actionId);
       if (!actionIds.has(presentation.actionId)) {
         addReferenceIssue(context, '皮肤表现必须引用已声明的动作。', ['skins', skinIndex, 'presentations', presentationIndex, 'actionId']);
+      }
+      if (presentation.commitFrameId) {
+        const matchingFrames = presentation.frames.filter(
+          (frame) => frame.id === presentation.commitFrameId
+        );
+        if (matchingFrames.length !== 1) {
+          addReferenceIssue(
+            context,
+            '表现提交帧必须引用同一表现内唯一的稳定帧标识。',
+            ['skins', skinIndex, 'presentations', presentationIndex, 'commitFrameId']
+          );
+        }
       }
     });
 
