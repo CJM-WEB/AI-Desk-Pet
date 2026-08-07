@@ -83,7 +83,8 @@ export class CharacterBehaviorService {
   private direction: 'left' | 'right' = 'right';
   private moving = false;
   private carrying = false;
-  private idleBlocked = false;
+  private taskIdleBlocked = false;
+  private carryIdleBlocked = false;
   private transitioning = false;
   private activeTaskSignal: 'listening' | 'thinking' | null = null;
   private taskContextSignal: CharacterBehaviorSignal | null = null;
@@ -136,7 +137,7 @@ export class CharacterBehaviorService {
       commitFrameId: resolved.presentation.commitFrameId ?? null
     };
     this.carrying = true;
-    this.idleBlocked = true;
+    this.carryIdleBlocked = true;
     this.publish(decision);
     return grant;
   }
@@ -145,7 +146,7 @@ export class CharacterBehaviorService {
   endTaskCarry(): void {
     if (this.closed || this.transitioning || !this.engine || !this.carrying) return;
     this.carrying = false;
-    this.idleBlocked = false;
+    this.carryIdleBlocked = false;
     const now = this.now();
     this.nextIdleAt = now + this.idleIntervalMs;
     this.publish(this.engine.dispatch({
@@ -163,7 +164,7 @@ export class CharacterBehaviorService {
       return;
     }
     if (event.type === 'pending_action') {
-      this.idleBlocked = true;
+      this.taskIdleBlocked = true;
       return;
     }
     if (event.type !== 'phase') return;
@@ -171,7 +172,7 @@ export class CharacterBehaviorService {
     if (event.phase === 'idle' || event.phase === 'cancelled') {
       this.taskContextSignal = null;
       this.deactivateTaskSignal(now);
-      this.idleBlocked = false;
+      this.taskIdleBlocked = false;
       this.nextIdleAt = now + this.idleIntervalMs;
       this.restoreDefaultPlayback(now);
       return;
@@ -179,11 +180,11 @@ export class CharacterBehaviorService {
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
       this.taskContextSignal = null;
       this.deactivateTaskSignal(now);
-      this.idleBlocked = true;
+      this.taskIdleBlocked = true;
       return;
     }
 
-    this.idleBlocked = event.phase === 'listening' || event.phase === 'thinking';
+    this.taskIdleBlocked = event.phase === 'listening' || event.phase === 'thinking';
     this.nextIdleAt = now + this.idleIntervalMs;
     if (event.phase === 'listening' || event.phase === 'thinking') {
       this.deactivateTaskSignal(now);
@@ -241,7 +242,7 @@ export class CharacterBehaviorService {
   handleIdleDue(): void {
     if (this.closed) return;
     if (!this.transitioning && this.engine) this.publish(this.engine.advance());
-    if (this.transitioning || this.idleBlocked || this.moving) return;
+    if (this.transitioning || this.taskIdleBlocked || this.carryIdleBlocked || this.moving) return;
     const now = this.now();
     if (now < this.nextIdleAt) return;
     this.nextIdleAt = now + this.idleIntervalMs;
@@ -295,6 +296,8 @@ export class CharacterBehaviorService {
     this.activeTaskSignal = null;
     this.taskContextSignal = null;
     this.carrying = false;
+    this.taskIdleBlocked = false;
+    this.carryIdleBlocked = false;
     this.legacyTokens.clear();
     this.listeners.clear();
   }
@@ -305,6 +308,7 @@ export class CharacterBehaviorService {
     // 已结束任务的结果只属于旧角色；切换期间新到达的事件仍会由 captureTaskContext 接管。
     if (replacing) {
       this.carrying = false;
+      this.carryIdleBlocked = false;
       if (this.taskContextSignal?.type === 'task') this.taskContextSignal = null;
     }
     this.transitioning = true;
@@ -384,24 +388,24 @@ export class CharacterBehaviorService {
   /** 切换窗口内只记录最新可信任务事实，不允许旧引擎消费任何边沿。 */
   private captureTaskContext(event: TaskEvent, occurredAtMs: number): void {
     if (event.type === 'pending_action') {
-      this.idleBlocked = true;
+      this.taskIdleBlocked = true;
       return;
     }
     if (event.type !== 'phase') return;
     if (event.phase === 'idle' || event.phase === 'cancelled') {
       this.activeTaskSignal = null;
       this.taskContextSignal = null;
-      this.idleBlocked = false;
+      this.taskIdleBlocked = false;
       this.nextIdleAt = occurredAtMs + this.idleIntervalMs;
       return;
     }
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
       this.activeTaskSignal = null;
       this.taskContextSignal = null;
-      this.idleBlocked = true;
+      this.taskIdleBlocked = true;
       return;
     }
-    this.idleBlocked = event.phase === 'listening' || event.phase === 'thinking';
+    this.taskIdleBlocked = event.phase === 'listening' || event.phase === 'thinking';
     this.nextIdleAt = occurredAtMs + this.idleIntervalMs;
     if (event.phase === 'listening' || event.phase === 'thinking') {
       this.activeTaskSignal = event.phase;

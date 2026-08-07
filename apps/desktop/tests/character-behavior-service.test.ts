@@ -414,6 +414,97 @@ describe('Main 角色行为权威服务', () => {
     });
   });
 
+  test('搬运中切换角色只清除搬运阻塞，新角色动作结束后可恢复待机', async () => {
+    let active = createManifest('first');
+    const fixture = createFixture({ getV2: async () => active });
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    service.beginTaskCarry();
+    active = createManifest('second');
+
+    await service.handleActiveCharacterChanged();
+    service.endTaskCarry();
+    const switched = requireBehaviorAction(events.at(-1));
+    service.applyPlaybackFeedback({
+      playbackToken: switched.playbackToken,
+      actionId: switched.actionId,
+      status: 'started',
+      occurredAtMs: 1
+    });
+    service.applyPlaybackFeedback({
+      playbackToken: switched.playbackToken,
+      actionId: switched.actionId,
+      status: 'completed',
+      occurredAtMs: 2
+    });
+    events.splice(0);
+    fixture.setNow(1_000);
+
+    service.handleIdleDue();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'behavior-action', actionId: 'idle-action' });
+  });
+
+  test.each([
+    {
+      name: 'pending_action',
+      event: {
+        type: 'pending_action',
+        action: {
+          actionId: 'carry-pending',
+          conversationId: 'conversation-carry',
+          risk: 'write',
+          operation: 'create_file',
+          summary: '等待用户确认',
+          targetRelativePath: 'carry.txt',
+          createdAt: '2026-08-07T00:00:00.000Z',
+          expiresAt: '2026-08-07T00:10:00.000Z'
+        }
+      } as TaskEvent
+    },
+    {
+      name: 'awaiting_confirmation',
+      event: { type: 'phase', phase: 'awaiting_confirmation' } as TaskEvent
+    }
+  ])('搬运中切换角色不会清除 $name 设置的任务阻塞', async ({ event }) => {
+    let active = createManifest('first');
+    const fixture = createFixture({ getV2: async () => active });
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(next => events.push(next));
+    await service.initialize();
+    service.handleTaskEvent(event);
+    service.beginTaskCarry();
+    active = createManifest('second');
+
+    await service.handleActiveCharacterChanged();
+    service.endTaskCarry();
+    const switched = requireBehaviorAction(events.at(-1));
+    service.applyPlaybackFeedback({
+      playbackToken: switched.playbackToken,
+      actionId: switched.actionId,
+      status: 'started',
+      occurredAtMs: 1
+    });
+    service.applyPlaybackFeedback({
+      playbackToken: switched.playbackToken,
+      actionId: switched.actionId,
+      status: 'completed',
+      occurredAtMs: 2
+    });
+    events.splice(0);
+    fixture.setNow(1_000);
+
+    service.handleIdleDue();
+    expect(events).toEqual([]);
+
+    service.handleTaskEvent({ type: 'phase', phase: 'idle' });
+    expect(events.at(-1)).toMatchObject({ type: 'behavior-action', actionId: 'idle-action' });
+  });
+
   test('初始化读取 V2 清单并发出默认状态动作', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
