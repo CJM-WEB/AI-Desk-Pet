@@ -357,6 +357,7 @@ describe('角色播放器组件', () => {
   function behaviorFixture(options?: {
     failActionId?: string;
     behaviorAuthorityMode?: 'main-v2' | 'legacy-v1';
+    startedFeedback?: Promise<void>;
   }) {
     const currentManifest = manifest('character-a');
     currentManifest.states.push({
@@ -375,8 +376,14 @@ describe('角色播放器组件', () => {
       characterId: string;
     }) => void) | undefined;
     let lifecycleListener: ((event: CharacterPlaybackLifecycleEvent) => void) | undefined;
+    let frameListener: ((frameId: string | null) => void) | undefined;
     let nextPlaybackId = 0;
-    const reportCharacterActionFeedback = vi.fn(async () => undefined);
+    const reportCharacterActionFeedback = vi.fn(async input => {
+      if (input.status === 'started' && options?.startedFeedback) {
+        await options.startedFeedback;
+      }
+    });
+    const reportCharacterActionMilestone = vi.fn(async () => undefined);
     const player = {
       load: vi.fn().mockResolvedValue(undefined),
       play: vi.fn((selection: ActionSelectionResult) => {
@@ -390,6 +397,10 @@ describe('角色播放器组件', () => {
       getAnchor: vi.fn().mockReturnValue(null),
       subscribePlaybackLifecycle: vi.fn(listener => {
         lifecycleListener = listener;
+        return vi.fn();
+      }),
+      subscribeFrame: vi.fn(listener => {
+        frameListener = listener;
         return vi.fn();
       }),
       destroy: vi.fn()
@@ -416,7 +427,8 @@ describe('角色播放器组件', () => {
         motionListener = listener;
         return vi.fn();
       }),
-      reportCharacterActionFeedback
+      reportCharacterActionFeedback,
+      reportCharacterActionMilestone
     } as unknown as MyselfApi;
     const createPlayer = async () => player;
     const loadBundle = async () => bundle('character-a');
@@ -437,11 +449,13 @@ describe('角色播放器组件', () => {
         characterListener?.(event)
       ),
       lifecycle: (event: CharacterPlaybackLifecycleEvent) => lifecycleListener?.(event),
+      frame: (frameId: string | null) => frameListener?.(frameId),
       motion: (event: CharacterMotionEvent) => motionListener?.(event),
       player,
       rerenderState: (stateId: 'idle' | 'thinking') => rendered.rerender(renderPlayer(stateId)),
       rendered,
-      reportCharacterActionFeedback
+      reportCharacterActionFeedback,
+      reportCharacterActionMilestone
     };
   }
 
@@ -583,6 +597,54 @@ describe('角色播放器组件', () => {
     ));
     expect(fixture.players[1]!.play).toHaveBeenCalledOnce();
     expect(fixture.players[1]!.play.mock.calls[0]?.[0].action.id).toBe('idle');
+    fixture.rendered.unmount();
+  });
+
+  test('任务动作首次进入提交帧只报告一次且旧令牌不会复活', async () => {
+    const started = deferred<void>();
+    const fixture = behaviorFixture({
+      behaviorAuthorityMode: 'main-v2',
+      startedFeedback: started.promise
+    });
+    await waitFor(() => expect(fixture.player.load).toHaveBeenCalledOnce());
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'thinking',
+      actionId: 'thinking-once',
+      playbackToken: 'behavior-token-commit',
+      commitFrameId: 'commit-frame'
+    }));
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-commit',
+      actionId: 'thinking-once',
+      status: 'started'
+    }));
+
+    act(() => {
+      fixture.frame('other-frame');
+      fixture.frame('commit-frame');
+      fixture.frame('commit-frame');
+    });
+    expect(fixture.reportCharacterActionMilestone).not.toHaveBeenCalled();
+    await act(async () => started.resolve());
+    await waitFor(() => expect(fixture.reportCharacterActionMilestone).toHaveBeenCalledOnce());
+    expect(fixture.reportCharacterActionMilestone).toHaveBeenCalledWith({
+      playbackToken: 'behavior-token-commit',
+      actionId: 'thinking-once',
+      kind: 'commit-frame',
+      frameId: 'commit-frame'
+    });
+
+    act(() => fixture.motion({
+      type: 'behavior-action',
+      revision: 3,
+      stateId: 'thinking',
+      actionId: 'thinking-once',
+      playbackToken: 'behavior-token-next'
+    }));
+    act(() => fixture.frame('commit-frame'));
+    expect(fixture.reportCharacterActionMilestone).toHaveBeenCalledOnce();
     fixture.rendered.unmount();
   });
 

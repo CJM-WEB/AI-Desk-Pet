@@ -919,3 +919,38 @@ describe('共享 Pixi 角色动作场景', () => {
     }
   });
 });
+
+describe('稳定帧订阅', () => {
+  test('把场景索引映射为清单帧 ID', () => {
+    let sceneFrame: (() => void) | undefined;
+    const stableAction = {
+      ...action,
+      frames: [
+        { ...action.frames[0]!, id: 'frame-start' },
+        { ...action.frames[1]!, id: 'frame-commit' }
+      ]
+    } as ActionClip;
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn(() => ({
+        action: stableAction,
+        frameIndex: 1,
+        bounds: { x: 0, y: 0, width: 1, height: 1 }
+      })),
+      subscribeFrame: vi.fn(listener => {
+        sceneFrame = listener;
+        return vi.fn();
+      }),
+      destroy: vi.fn()
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const notify = vi.fn();
+    player.subscribeFrame(notify);
+
+    sceneFrame?.();
+
+    expect(notify).toHaveBeenCalledWith('frame-commit');
+  });
+});

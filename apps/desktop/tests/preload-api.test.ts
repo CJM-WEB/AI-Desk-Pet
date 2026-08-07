@@ -197,3 +197,23 @@ describe('受限桌宠窗口交互 preload API', () => {
     expect((await exposedApi?.getCharacterBehaviorProbe?.())?.playbackStatus).toBe('completed');
   });
 });
+
+describe('角色动作提交帧 preload API', () => {
+  test('只转发严格里程碑字段', async () => {
+    await exposedApi?.reportCharacterActionMilestone({
+      playbackToken: 'behavior-token-2',
+      actionId: 'carry-action',
+      kind: 'commit-frame',
+      frameId: 'carry-commit',
+      path: 'C:\\private',
+      confirmationId: 'secret'
+    } as never);
+
+    expect(invoke).toHaveBeenCalledWith(ipcChannels.characterActionMilestone, {
+      playbackToken: 'behavior-token-2',
+      actionId: 'carry-action',
+      kind: 'commit-frame',
+      frameId: 'carry-commit'
+    });
+  });
+});

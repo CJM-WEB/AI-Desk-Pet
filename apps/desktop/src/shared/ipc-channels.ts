@@ -47,6 +47,7 @@ export const ipcChannels = {
   characterMotionSnapshotGet: 'character-motion:snapshot-get',
   characterMotionEvent: 'character-motion:event',
   characterActionPlayed: 'character-motion:action-played',
+  characterActionMilestone: 'character-motion:action-milestone',
   petMousePassthroughSet: 'pet-window:mouse-passthrough-set',
   petDragBegin: 'pet-window:drag-begin',
   petDragEnd: 'pet-window:drag-end',

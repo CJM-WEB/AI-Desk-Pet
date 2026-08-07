@@ -22,6 +22,7 @@ export interface CharacterPlayerPort {
   getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
   hitTest(point: { x: number; y: number }, threshold?: number): boolean;
   subscribeHitRegion(listener: () => void): () => void;
+  subscribeFrame?(listener: (frameId: string | null) => void): () => void;
   subscribePlaybackLifecycle?(
     listener: (event: CharacterPlaybackLifecycleEvent) => void
   ): () => void;
@@ -90,6 +91,7 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     loop: boolean;
   } | null = null;
   private readonly hitRegionListeners = new Set<() => void>();
+  private readonly frameListeners = new Set<(frameId: string | null) => void>();
   private readonly playbackLifecycleListeners = new Set<
     (event: CharacterPlaybackLifecycleEvent) => void
   >();
@@ -99,7 +101,10 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   constructor(private readonly scene: PixiCharacterScene | LegacyPixiCharacterScene) {
     this.unsubscribeSceneFrame = isLegacyScene(scene)
       ? null
-      : scene.subscribeFrame(() => this.notifyHitRegion());
+      : scene.subscribeFrame(() => {
+          this.notifyHitRegion();
+          this.notifyFrame();
+        });
     this.unsubscribeSceneComplete = isLegacyScene(scene)
       ? null
       : scene.subscribeActionComplete?.(() => this.completeActivePlayback()) ?? null;
@@ -216,6 +221,13 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     return () => this.hitRegionListeners.delete(listener);
   }
 
+  /** 只发布清单中的稳定帧 ID，不把 Pixi 数组索引扩散到 Renderer 业务层。 */
+  subscribeFrame(listener: (frameId: string | null) => void): () => void {
+    if (this.destroyed) return () => undefined;
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
+  }
+
   /** 生命周期订阅只暴露播放编号、动作标识与收敛状态。 */
   subscribePlaybackLifecycle(
     listener: (event: CharacterPlaybackLifecycleEvent) => void
@@ -237,6 +249,7 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     this.unsubscribeSceneFrame?.();
     this.unsubscribeSceneComplete?.();
     this.hitRegionListeners.clear();
+    this.frameListeners.clear();
     this.playbackLifecycleListeners.clear();
     if (isLegacyScene(this.scene)) {
       try {
@@ -252,6 +265,13 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   private notifyHitRegion(): void {
     if (this.destroyed) return;
     for (const listener of this.hitRegionListeners) listener();
+  }
+
+  private notifyFrame(): void {
+    if (this.destroyed || isLegacyScene(this.scene)) return;
+    const current = this.scene.getCurrentFrame();
+    const frameId = current?.action.frames[current.frameIndex]?.id ?? null;
+    for (const listener of this.frameListeners) listener(frameId);
   }
 
   private completeActivePlayback(): void {

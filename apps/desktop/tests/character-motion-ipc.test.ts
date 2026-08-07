@@ -5,6 +5,7 @@ import type { MyselfApi } from '../src/shared/myself-api';
 import { registerCharacterMotionIpc } from '../src/main/ipc/register-ipc';
 import {
   characterActionFeedbackInputSchema,
+  characterActionMilestoneInputSchema,
   characterMotionEventSchema
 } from '../src/shared/character-motion-ipc';
 
@@ -101,6 +102,27 @@ describe('角色运动严格 IPC', () => {
     })).toThrow();
   });
 
+  test('提交帧里程碑只接受严格字段', () => {
+    expect(characterActionMilestoneInputSchema.parse({
+      playbackToken: 'behavior-token-2',
+      actionId: 'carry-action',
+      kind: 'commit-frame',
+      frameId: 'carry-commit'
+    })).toEqual({
+      playbackToken: 'behavior-token-2',
+      actionId: 'carry-action',
+      kind: 'commit-frame',
+      frameId: 'carry-commit'
+    });
+    expect(() => characterActionMilestoneInputSchema.parse({
+      playbackToken: 'behavior-token-2',
+      actionId: 'carry-action',
+      kind: 'commit-frame',
+      frameId: 'carry-commit',
+      path: 'C:\\private'
+    })).toThrow();
+  });
+
   test.each(['started', 'completed', 'interrupted', 'failed'] as const)(
     '播放反馈接受 %s 且拒绝伪造令牌和未知字段',
     status => {
@@ -134,7 +156,12 @@ describe('角色运动严格 IPC', () => {
       getSnapshot: vi.fn(() => snapshot()),
       applyPlaybackFeedback: vi.fn(async () => undefined)
     };
-    registerCharacterMotionIpc(ipcMain, service, petSender as never);
+    const observer = {
+      onPlaybackStarted: vi.fn(),
+      onPlaybackTerminal: vi.fn(),
+      onCommitFrame: vi.fn(() => true)
+    };
+    registerCharacterMotionIpc(ipcMain, service, petSender as never, observer);
     const handler = handlers.get(ipcChannels.characterMotionSnapshotGet);
 
     await expect(handler?.({}, {})).resolves.toEqual({ snapshot: snapshot() });
@@ -169,6 +196,33 @@ describe('角色运动严格 IPC', () => {
       actionId: 'thinking-loop',
       status: 'completed'
     });
+    expect(observer.onPlaybackStarted).toHaveBeenCalledWith('opaque-token', 'idle-a');
+    expect(observer.onPlaybackTerminal).toHaveBeenCalledWith(
+      'behavior-token-2', 'thinking-loop', 'completed'
+    );
+    const milestone = handlers.get(ipcChannels.characterActionMilestone);
+    await expect(milestone?.({ sender: petSender }, {
+      playbackToken: 'behavior-token-2',
+      actionId: 'carry-action',
+      kind: 'commit-frame',
+      frameId: 'carry-commit'
+    })).resolves.toEqual({ ok: true });
+    expect(observer.onCommitFrame).toHaveBeenCalledWith(
+      'behavior-token-2', 'carry-action', 'carry-commit'
+    );
+    observer.onCommitFrame.mockReturnValueOnce(false);
+    await expect(milestone?.({ sender: petSender }, {
+      playbackToken: 'behavior-token-old',
+      actionId: 'carry-action',
+      kind: 'commit-frame',
+      frameId: 'carry-commit'
+    })).rejects.toThrow('CHARACTER_ACTION_MILESTONE_REJECTED');
+    await expect(milestone?.({ sender: { id: 2 } }, {
+      playbackToken: 'behavior-token-2',
+      actionId: 'carry-action',
+      kind: 'commit-frame',
+      frameId: 'carry-commit'
+    })).rejects.toThrow('CHARACTER_PLAYBACK_SENDER_INVALID');
     await expect(report?.({ sender: { id: 2 } }, {
       playbackToken: 'opaque-token',
       actionId: 'idle-a'
@@ -187,6 +241,24 @@ describe('角色运动严格 IPC', () => {
       actionId: 'thinking-loop',
       status: 'started'
     })).rejects.toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  });
+
+  test('事务端口未接线时稳定拒绝提交帧', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const petSender = { id: 1 };
+    registerCharacterMotionIpc(ipcMain, {
+      getSnapshot: () => snapshot(),
+      applyPlaybackFeedback: vi.fn()
+    }, petSender as never);
+    await expect(handlers.get(ipcChannels.characterActionMilestone)?.(
+      { sender: petSender },
+      {
+        playbackToken: 'behavior-token-2',
+        actionId: 'carry-action',
+        kind: 'commit-frame',
+        frameId: 'carry-commit'
+      }
+    )).rejects.toThrow('CHARACTER_ACTION_MILESTONE_UNAVAILABLE');
   });
 
   test('preload 只暴露快照读取和固定事件订阅，不暴露任意坐标写入', async () => {

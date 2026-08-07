@@ -45,7 +45,8 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
     stateId: characterMotionIdentifierSchema,
     modifierStateIds: z.array(characterMotionIdentifierSchema).optional(),
     actionId: characterMotionIdentifierSchema,
-    playbackToken: characterPlaybackTokenSchema
+    playbackToken: characterPlaybackTokenSchema,
+    commitFrameId: characterMotionIdentifierSchema.optional()
   }).strict()
 ]);
 
@@ -59,12 +60,21 @@ export const characterActionFeedbackInputSchema = z.object({
   actionId: characterMotionIdentifierSchema,
   status: z.enum(['started', 'completed', 'interrupted', 'failed'])
 }).strict();
+export const characterActionMilestoneInputSchema = z.object({
+  playbackToken: characterPlaybackTokenSchema,
+  actionId: characterMotionIdentifierSchema,
+  kind: z.literal('commit-frame'),
+  frameId: characterMotionIdentifierSchema
+}).strict();
 
 export type CharacterMotionPoint = z.output<typeof characterMotionPointSchema>;
 export type CharacterMotionSnapshot = z.output<typeof characterMotionSnapshotSchema>;
 export type CharacterMotionEvent = z.output<typeof characterMotionEventSchema>;
 export type CharacterActionFeedbackInput = z.output<
   typeof characterActionFeedbackInputSchema
+>;
+export type CharacterActionMilestoneInput = z.output<
+  typeof characterActionMilestoneInputSchema
 >;
 
 /** E2E 只读行为探针不包含播放令牌、素材标识或本地环境信息。 */

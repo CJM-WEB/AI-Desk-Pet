@@ -325,7 +325,8 @@ describe('Main 角色行为权威服务', () => {
       stateId: 'carry-state',
       modifierStateIds: [],
       actionId: grant.actionId,
-      playbackToken: grant.playbackToken
+      playbackToken: grant.playbackToken,
+      commitFrameId: 'carry-commit'
     }]);
   });
 
@@ -334,9 +335,13 @@ describe('Main 角色行为权威服务', () => {
     delete manifest.skins[0]!.presentations.find(item => item.actionId === 'carry-action')!.commitFrameId;
     const fixture = createFixture({ getV2: async () => manifest });
     const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
     await service.initialize();
+    events.splice(0);
 
     expect(service.beginTaskCarry().commitFrameId).toBeNull();
+    expect(events.at(-1)).not.toHaveProperty('commitFrameId');
   });
 
   test('搬运动作不满足当前方向硬约束时不把默认待机伪装成授权', async () => {

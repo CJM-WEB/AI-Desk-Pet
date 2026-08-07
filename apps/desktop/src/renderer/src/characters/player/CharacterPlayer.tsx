@@ -81,6 +81,11 @@ type ActiveBehaviorPlayback = {
   player: CharacterPlayerPort;
   playerPlaybackId: number | null;
   terminal: boolean;
+  commitFrameId: string | null;
+  commitFrameReached: boolean;
+  startedAccepted: boolean;
+  milestoneReported: boolean;
+  unsubscribeFrame: (() => void) | null;
 };
 
 type BehaviorPlaybackTokenState = 'active' | 'terminal';
@@ -557,20 +562,59 @@ export function CharacterPlayer({
         actionId: event.actionId,
         player,
         playerPlaybackId: null,
-        terminal: false
+        terminal: false,
+        commitFrameId: event.commitFrameId ?? null,
+        commitFrameReached: false,
+        startedAccepted: false,
+        milestoneReported: false,
+        unsubscribeFrame: null
       };
       activeBehaviorPlaybackRef.current = current;
       try {
+        const reportCommitMilestoneIfReady = (): void => {
+          if (
+            activeBehaviorPlaybackRef.current !== current
+            || current.terminal
+            || !current.startedAccepted
+            || !current.commitFrameReached
+            || current.milestoneReported
+            || current.commitFrameId === null
+          ) return;
+          // 本地先封口，确保循环帧、方向重建和投影刷新都不能重复提交。
+          current.milestoneReported = true;
+          void api.reportCharacterActionMilestone({
+            playbackToken: current.playbackToken,
+            actionId: current.actionId,
+            kind: 'commit-frame',
+            frameId: current.commitFrameId
+          }).catch(() => undefined);
+        };
+        if (current.commitFrameId && player.subscribeFrame) {
+          current.unsubscribeFrame = player.subscribeFrame(frameId => {
+            if (
+              activeBehaviorPlaybackRef.current !== current
+              || current.terminal
+              || frameId === null
+              || frameId !== current.commitFrameId
+            ) return;
+            current.commitFrameReached = true;
+            reportCommitMilestoneIfReady();
+          });
+        }
         const playbackId = player.play({
           stateId: state.id,
           action,
           reason: 'matched'
         }, playback.motionMode);
         current.playerPlaybackId = typeof playbackId === 'number' ? playbackId : null;
-        reportActionFeedback(api, {
+        void reportActionFeedback(api, {
           playbackToken: current.playbackToken,
           actionId: current.actionId,
           status: 'started'
+        }).then(accepted => {
+          if (!accepted || activeBehaviorPlaybackRef.current !== current || current.terminal) return;
+          current.startedAccepted = true;
+          reportCommitMilestoneIfReady();
         });
       } catch {
         finishBehaviorPlayback(
@@ -757,10 +801,11 @@ export type CharacterBehaviorAuthorityMode = 'main-v2' | 'legacy-v1';
 function reportActionFeedback(
   api: MyselfApi,
   feedback: Parameters<MyselfApi['reportCharacterActionFeedback']>[0]
-): void {
-  if (typeof api.reportCharacterActionFeedback !== 'function') return;
-  void api.reportCharacterActionFeedback(feedback).catch(() => {
+): Promise<boolean> {
+  if (typeof api.reportCharacterActionFeedback !== 'function') return Promise.resolve(false);
+  return api.reportCharacterActionFeedback(feedback).then(() => true).catch(() => {
     // 生命周期回报失败不影响当前画面，Main 会继续按令牌超时规则收敛。
+    return false;
   });
 }
 
@@ -774,6 +819,8 @@ function finishBehaviorPlayback(
   const playback = playbackRef.current;
   if (!playback || playback.terminal) return;
   playback.terminal = true;
+  playback.unsubscribeFrame?.();
+  playback.unsubscribeFrame = null;
   settleBehaviorPlaybackToken(api, tokenStatesRef, {
     playbackToken: playback.playbackToken,
     actionId: playback.actionId,

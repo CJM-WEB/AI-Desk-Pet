@@ -36,10 +36,12 @@ import type { CharacterDraftV2 } from '@myself/character-runtime';
 import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
 import {
   characterActionFeedbackInputSchema,
+  characterActionMilestoneInputSchema,
   characterMotionEmptyInputSchema,
   characterActionPlayedInputSchema,
   characterMotionSnapshotResultSchema,
   type CharacterActionFeedbackInput,
+  type CharacterActionMilestoneInput,
   type CharacterMotionSnapshot
 } from '../../shared/character-motion-ipc';
 
@@ -397,6 +399,16 @@ export interface CharacterMotionIpcService {
   applyPlaybackFeedback(feedback: CharacterActionFeedbackInput): void | Promise<void>;
 }
 
+export interface CharacterActionTransactionObserver {
+  onPlaybackStarted(playbackToken: string, actionId: string): boolean | void;
+  onPlaybackTerminal(
+    playbackToken: string,
+    actionId: string,
+    terminal: Exclude<CharacterActionFeedbackInput['status'], 'started'>
+  ): boolean | void;
+  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean;
+}
+
 function characterInputError(): Error & { code: string } {
   return Object.assign(new Error('CHARACTER_INPUT_INVALID'), {
     code: 'CHARACTER_INPUT_INVALID'
@@ -596,7 +608,8 @@ export function registerCharacterIpc(
 export function registerCharacterMotionIpc(
   ipcMain: IpcMain,
   service: CharacterMotionIpcService,
-  petWebContents: WebContents
+  petWebContents: WebContents,
+  transactionObserver?: CharacterActionTransactionObserver
 ): void {
   replaceHandler(
     ipcMain,
@@ -626,6 +639,35 @@ export function registerCharacterMotionIpc(
         ...report,
         status: 'status' in report ? report.status : 'started'
       });
+      const status = 'status' in report ? report.status : 'started';
+      if (status === 'started') {
+        transactionObserver?.onPlaybackStarted(report.playbackToken, report.actionId);
+      } else {
+        transactionObserver?.onPlaybackTerminal(report.playbackToken, report.actionId, status);
+      }
+      return { ok: true };
+    }
+  );
+  replaceHandler(
+    ipcMain,
+    ipcChannels.characterActionMilestone,
+    async (event, raw) => {
+      if (event.sender !== petWebContents) {
+        throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
+      }
+      const milestone: CharacterActionMilestoneInput = parseCharacterInput(
+        characterActionMilestoneInputSchema,
+        raw
+      );
+      if (!transactionObserver) {
+        throw new Error('CHARACTER_ACTION_MILESTONE_UNAVAILABLE');
+      }
+      const accepted = transactionObserver.onCommitFrame(
+        milestone.playbackToken,
+        milestone.actionId,
+        milestone.frameId
+      );
+      if (!accepted) throw new Error('CHARACTER_ACTION_MILESTONE_REJECTED');
       return { ok: true };
     }
   );

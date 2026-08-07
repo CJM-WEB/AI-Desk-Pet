@@ -20,6 +20,7 @@ import type {
 } from './character-ipc';
 import type {
   CharacterActionFeedbackInput,
+  CharacterActionMilestoneInput,
   CharacterBehaviorProbe,
   CharacterMotionEvent,
   CharacterMotionSnapshot
@@ -191,6 +192,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   subscribeCharacterMotion(listener: (event: CharacterMotionEvent) => void): () => void;
   reportCharacterActionPlayed(playbackToken: string, actionId: string): Promise<void>;
   reportCharacterActionFeedback(input: CharacterActionFeedbackInput): Promise<void>;
+  reportCharacterActionMilestone(input: CharacterActionMilestoneInput): Promise<void>;
   getCharacterBehaviorProbe?(): Promise<CharacterBehaviorProbe>;
   openChat(): Promise<void>;
   openSettings(): Promise<void>;

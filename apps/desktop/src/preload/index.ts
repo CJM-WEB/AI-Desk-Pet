@@ -246,6 +246,14 @@ const api: MyselfApi = {
       behaviorProbe = { ...behaviorProbe, playbackStatus: input.status };
     }
   },
+  reportCharacterActionMilestone: async input => {
+    await ipcRenderer.invoke(ipcChannels.characterActionMilestone, {
+      playbackToken: input.playbackToken,
+      actionId: input.actionId,
+      kind: input.kind,
+      frameId: input.frameId
+    });
+  },
   setPetMousePassthrough: async ignore => {
     await ipcRenderer.invoke(ipcChannels.petMousePassthroughSet, { ignore });
   },

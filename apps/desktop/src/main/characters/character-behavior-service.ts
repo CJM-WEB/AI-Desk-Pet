@@ -27,6 +27,7 @@ export type CharacterBehaviorPlaybackEvent =
       modifierStateIds: string[];
       actionId: string;
       playbackToken: string;
+      commitFrameId?: string;
     }
   | {
       type: 'idle-action';
@@ -138,7 +139,7 @@ export class CharacterBehaviorService {
     };
     this.carrying = true;
     this.carryIdleBlocked = true;
-    this.publish(decision);
+    this.publish(decision, grant.commitFrameId);
     return grant;
   }
 
@@ -481,7 +482,10 @@ export class CharacterBehaviorService {
   }
 
   /** 只把已通过调度器的 play effect 转为 Main 播放事件。 */
-  private publish(decision: CharacterBehaviorDecision): void {
+  private publish(
+    decision: CharacterBehaviorDecision,
+    commitFrameId: string | null = null
+  ): void {
     for (const effect of decision.effects) {
       if (effect.type !== 'play') continue;
       const event: CharacterBehaviorPlaybackEvent = {
@@ -490,7 +494,8 @@ export class CharacterBehaviorService {
         stateId: effect.action.stateId,
         modifierStateIds: [...decision.snapshot.state.modifierStateIds],
         actionId: effect.action.actionId,
-        playbackToken: effect.action.playbackToken
+        playbackToken: effect.action.playbackToken,
+        ...(commitFrameId === null ? {} : { commitFrameId })
       };
       const action = this.manifest?.actions.find(
         candidate => candidate.id === effect.action.actionId
