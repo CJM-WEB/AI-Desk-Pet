@@ -1,4 +1,8 @@
 import type { VerifiedWriteAction } from '@myself/file-tools';
+import {
+  characterPlaybackFeedbackSchema,
+  safeIdentifierSchema
+} from '@myself/character-runtime';
 
 export type FileTaskPlaybackGrant = Readonly<{
   playbackToken: string;
@@ -84,6 +88,10 @@ type TransactionState =
 
 const DEFAULT_PLAYBACK_START_TIMEOUT_MS = 30_000;
 const DEFAULT_COMMIT_TIMEOUT_MS = 30_000;
+const fileTaskPlaybackGrantSchema = characterPlaybackFeedbackSchema
+  .pick({ playbackToken: true, actionId: true })
+  .extend({ commitFrameId: safeIdentifierSchema.nullable() })
+  .strict();
 
 function requirePositiveTimeout(value: number, name: string): number {
   if (!Number.isFinite(value) || value <= 0) {
@@ -126,9 +134,14 @@ export class FileTaskTransactionCoordinator {
     if (this.#isActive(this.#current)) {
       throw new Error('TRANSACTION_ACTIVE');
     }
+    const parsedGrant = fileTaskPlaybackGrantSchema.safeParse(grant);
+    if (!parsedGrant.success) {
+      throw new Error('INVALID_PLAYBACK_GRANT');
+    }
+    const boundGrant: FileTaskPlaybackGrant = Object.freeze({ ...parsedGrant.data });
 
     // confirmed 是用户确认与播放授权已绑定的显式边界；随后原子进入等待播放。
-    const confirmed: ConfirmedState = { state: 'confirmed', action, grant };
+    const confirmed: ConfirmedState = { state: 'confirmed', action, grant: boundGrant };
     this.#current = confirmed;
     this.#current = {
       state: 'waiting-playback',

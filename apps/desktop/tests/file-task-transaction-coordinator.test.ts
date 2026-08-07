@@ -242,4 +242,49 @@ describe('FileTaskTransactionCoordinator', () => {
     expect(serialized).not.toContain('playback-token');
     expect(serialized).not.toContain('commit-frame');
   });
+
+  test('begin 防御性复制并冻结授权，调用方后续突变不能改写已绑定里程碑', () => {
+    const { coordinator, execute } = createFixture();
+    const mutableGrant = {
+      playbackToken: 'playback-token-1',
+      actionId: 'carry-action',
+      commitFrameId: 'commit-frame'
+    };
+    coordinator.begin(verifiedAction(), mutableGrant);
+
+    mutableGrant.playbackToken = 'playback-token-2';
+    mutableGrant.actionId = 'other-action';
+    mutableGrant.commitFrameId = 'other-frame';
+
+    expect(coordinator.onPlaybackStarted(
+      mutableGrant.playbackToken,
+      mutableGrant.actionId
+    )).toBe(false);
+    expect(coordinator.onPlaybackStarted('playback-token-1', 'carry-action')).toBe(true);
+    expect(coordinator.onCommitFrame('playback-token-1', 'carry-action', 'other-frame')).toBe(false);
+    expect(coordinator.onCommitFrame('playback-token-1', 'carry-action', 'commit-frame')).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['', 'carry-action', 'commit-frame'],
+    ['UPPERCASE-TOKEN', 'carry-action', 'commit-frame'],
+    ['playback-token-1', '', 'commit-frame'],
+    ['playback-token-1', '../carry-action', 'commit-frame'],
+    ['playback-token-1', 'carry-action', ''],
+    ['playback-token-1', 'carry-action', 'bad/frame']
+  ])(
+    'begin 稳定拒绝非法授权 token=%s action=%s frame=%s 且不改变状态',
+    (playbackToken, actionId, commitFrameId) => {
+      const { coordinator, execute } = createFixture();
+
+      expect(() => coordinator.begin(verifiedAction(), {
+        playbackToken,
+        actionId,
+        commitFrameId
+      })).toThrow('INVALID_PLAYBACK_GRANT');
+      expect(coordinator.snapshot()).toEqual({ state: 'idle', result: null });
+      expect(execute).not.toHaveBeenCalled();
+    }
+  );
 });
