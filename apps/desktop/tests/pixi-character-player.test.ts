@@ -363,7 +363,7 @@ describe('共享 Pixi 角色动作场景', () => {
     );
   });
 
-  test('方向重建异常只把当前播放结算一次为 failed，并保留新方向', () => {
+  test('方向重建失败后再次改变方向不会恢复已 failed 动作', () => {
     const directionalAction: ActionClip = {
       ...manifest().states[0]!.actions[0]!,
       anchors: {
@@ -405,6 +405,10 @@ describe('共享 Pixi 角色动作场景', () => {
       status: 'failed'
     });
     expect(player.getAnchor('carry')).toEqual({ x: 0.8, y: 0.4 });
+
+    player.setDirection('right');
+    expect(showAction).toHaveBeenCalledTimes(2);
+    expect(lifecycle).toHaveBeenCalledOnce();
 
     player.destroy();
     expect(lifecycle).toHaveBeenCalledOnce();

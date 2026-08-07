@@ -167,7 +167,8 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       this.scene.setDirection(direction);
       return;
     }
-    if (!changed || !this.currentSelection || !this.currentMotionMode) return;
+    // 终态动作仅保留只读快照供锚点查询，不能再通过方向切换恢复播放。
+    if (!changed || !this.activePlayback || !this.currentSelection || !this.currentMotionMode) return;
     const frameIndex = this.scene.getCurrentFrame()?.frameIndex;
     try {
       this.scene.showAction(this.currentSelection.action, {
