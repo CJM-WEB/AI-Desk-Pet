@@ -115,6 +115,13 @@ type PendingConfigurationDelete =
       name: string;
       safeReferencePaths: string[];
       blockingReferencePaths: string[];
+    }
+  | {
+      kind: 'frame';
+      id: string;
+      name: string;
+      safeReferencePaths: string[];
+      blockingReferencePaths: string[];
     };
 
 /**
@@ -235,6 +242,14 @@ export function CharacterWorkshopWorkspace(
       state.selectedSkinId,
       state.selectedActionId
     )?.source ?? null;
+  }, [state.draft, state.selectedSkinId, state.selectedActionId]);
+  const selectedPresentation = useMemo(() => {
+    if (!state.draft || !state.selectedSkinId || !state.selectedActionId) return null;
+    return resolveCharacterPresentation(
+      state.draft,
+      state.selectedSkinId,
+      state.selectedActionId
+    )?.presentation ?? null;
   }, [state.draft, state.selectedSkinId, state.selectedActionId]);
   const activationCharacter = state.characters.find(
     character => character.id === pendingActivation
@@ -386,6 +401,24 @@ export function CharacterWorkshopWorkspace(
     openReferenceDelete('skin', skinId, definition.name, state.requestRemoveSkin(skinId));
   }
 
+  /** 单帧删除先走 Store 引用审计；排序、复制等批量变更仍沿用完整帧数组更新。 */
+  function updateTimelineFrames(frames: DraftActionClip['frames']): void {
+    const previousFrames = action ? ensureStableFrameIds(action.frames) : [];
+    const nextIds = new Set(frames.map(frame => frame.id));
+    const removed = previousFrames.filter(frame => !nextIds.has(frame.id));
+    if (removed.length === 1 && frames.length === previousFrames.length - 1) {
+      const target = removed[0]!;
+      openReferenceDelete(
+        'frame',
+        target.id,
+        `帧 ${target.id}`,
+        state.requestRemoveCurrentFrame(target.id)
+      );
+      return;
+    }
+    state.updateCurrentAction({ frames });
+  }
+
   function closeConfigurationDeleteDialog(): void {
     if (configurationDeleteDialogRef.current?.open) {
       configurationDeleteDialogRef.current.close();
@@ -400,7 +433,9 @@ export function CharacterWorkshopWorkspace(
       state.requestRemoveAction(pendingConfigurationDelete.id, true);
     } else if (pendingConfigurationDelete.kind === 'state') {
       state.requestRemoveState(pendingConfigurationDelete.id, true);
-    } else state.requestRemoveSkin(pendingConfigurationDelete.id, true);
+    } else if (pendingConfigurationDelete.kind === 'skin') {
+      state.requestRemoveSkin(pendingConfigurationDelete.id, true);
+    } else state.requestRemoveCurrentFrame(pendingConfigurationDelete.id, true);
     closeConfigurationDeleteDialog();
   }
 
@@ -638,7 +673,7 @@ export function CharacterWorkshopWorkspace(
                 if (frameIndex < 0) return;
                 syncPreviewFrame(frameIndex, true);
               }}
-              onChange={frames => state.updateCurrentAction({ frames })}
+              onChange={updateTimelineFrames}
             />
           ) : (
             <div className="timeline-empty">当前没有可编辑动作</div>
@@ -714,8 +749,10 @@ export function CharacterWorkshopWorkspace(
                 action={selectedActionDefinition}
                 actions={state.draft?.actions ?? []}
                 states={state.draft?.states ?? []}
+                presentation={selectedPresentation}
                 disabled={busy}
                 onChange={patch => state.updateAction(selectedActionDefinition.id, patch)}
+                onCommitFrameChange={state.setCurrentActionCommitFrame}
               />
               {action ? (
                 <AnchorEditor

@@ -634,6 +634,85 @@ describe('角色工作室 Zustand 状态层', () => {
     expect(() => characterDraftV2Schema.parse(store.getState().draft)).not.toThrow();
   });
 
+  test('搬运提交帧可清空，离开 carry 时清理全部皮肤表现标记', async () => {
+    const loadedDraft = draft('demo', '演示角色');
+    loadedDraft.actions[0]!.semantic = 'carry';
+    const carryPresentation = {
+      actionId: 'idle-main',
+      fps: 8,
+      anchors: { ground: { x: 0.5, y: 1 } },
+      frames: [{
+        id: 'carry-frame-1',
+        assetId: 'carry-atlas',
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1
+      }, {
+        id: 'carry-frame-2',
+        assetId: 'carry-atlas',
+        x: 1,
+        y: 0,
+        width: 1,
+        height: 1
+      }]
+    };
+    loadedDraft.skins[0]!.presentations = [structuredClone(carryPresentation)];
+    loadedDraft.skins[1]!.presentations = [structuredClone(carryPresentation)];
+    const api = apiDouble({ getCharacterDraft: vi.fn(async () => loadedDraft) }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+
+    store.getState().setCurrentActionCommitFrame('carry-frame-2');
+    expect(store.getState().draft?.skins[0]?.presentations[0]?.commitFrameId)
+      .toBe('carry-frame-2');
+    store.getState().setCurrentActionCommitFrame(null);
+    expect(store.getState().draft?.skins[0]?.presentations[0])
+      .not.toHaveProperty('commitFrameId');
+
+    store.getState().setCurrentActionCommitFrame('carry-frame-2');
+    store.getState().selectSkin('winter');
+    store.getState().setCurrentActionCommitFrame('carry-frame-1');
+    store.getState().updateAction('idle-main', { semantic: 'speak' });
+
+    expect(store.getState().draft?.skins.map(skin => (
+      skin.presentations[0]?.commitFrameId
+    ))).toEqual([undefined, undefined]);
+    expect(() => characterDraftV2Schema.parse(store.getState().draft)).not.toThrow();
+  });
+
+  test('删除提交帧先报告引用影响，确认后原子清除标记且不留悬空引用', async () => {
+    const loadedDraft = draft('demo', '演示角色');
+    loadedDraft.actions[0]!.semantic = 'carry';
+    loadedDraft.skins[0]!.presentations = [{
+      actionId: 'idle-main',
+      fps: 8,
+      anchors: { ground: { x: 0.5, y: 1 } },
+      frames: [{
+        id: 'carry-start', assetId: 'carry-atlas', x: 0, y: 0, width: 1, height: 1
+      }, {
+        id: 'carry-commit', assetId: 'carry-atlas', x: 1, y: 0, width: 1, height: 1
+      }],
+      commitFrameId: 'carry-commit'
+    }];
+    const api = apiDouble({ getCharacterDraft: vi.fn(async () => loadedDraft) }).api;
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().selectCharacter('demo');
+
+    expect(store.getState().requestRemoveCurrentFrame('carry-commit')).toEqual({
+      safeReferencePaths: ['skins.0.presentations.0.commitFrameId'],
+      blockingReferencePaths: []
+    });
+    expect(store.getState().draft?.skins[0]?.presentations[0]?.frames)
+      .toHaveLength(2);
+
+    store.getState().requestRemoveCurrentFrame('carry-commit', true);
+    const presentation = store.getState().draft?.skins[0]?.presentations[0];
+    expect(presentation?.frames.map(frame => frame.id)).toEqual(['carry-start']);
+    expect(presentation).not.toHaveProperty('commitFrameId');
+    expect(() => characterDraftV2Schema.parse(store.getState().draft)).not.toThrow();
+  });
+
   test('确认删除状态时仅清理目标子句，保留同一条件中的可信信号', async () => {
     const loadedDraft = draft('demo', '演示角色');
     loadedDraft.states.push({
@@ -1194,11 +1273,15 @@ describe('角色工作室 Zustand 状态层', () => {
     const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
     const sourceAssetId = '123e4567-e89b-42d3-a456-426614174000';
     const loadedDraft = draft('default', 'AI Pet 默认角色');
+    loadedDraft.actions[0]!.semantic = 'carry';
     loadedDraft.skins[0]!.presentations = [{
       actionId: 'idle-main',
       fps: 8,
+      commitFrameId: 'carry-commit',
       anchors: { ground: { x: 0.5, y: 1 } },
-      frames: [{ assetId: sourceAssetId, x: 0, y: 0, width: 1, height: 1 }]
+      frames: [{
+        id: 'carry-commit', assetId: sourceAssetId, x: 0, y: 0, width: 1, height: 1
+      }]
     }];
     loadedDraft.skins[1]!.presentations = [{
       actionId: 'idle-main',
@@ -1229,6 +1312,7 @@ describe('角色工作室 Zustand 状态层', () => {
       sha256: input.atlasAssetId.endsWith('-1') ? 'a'.repeat(64) : 'b'.repeat(64),
       bytes: new Uint8Array([9]),
       frames: input.frames.map((frame, index) => ({
+        id: frame.frameId,
         assetId: input.atlasAssetId,
         x: index,
         y: 0,
@@ -1252,7 +1336,9 @@ describe('角色工作室 Zustand 状态层', () => {
       defaultSkinId: 'default',
       skins: [{
         id: 'default',
-        presentations: [{ actionId: 'idle-main', fps: 8 }]
+        presentations: [{
+          actionId: 'idle-main', fps: 8, commitFrameId: 'carry-commit'
+        }]
       }, {
         id: 'winter',
         presentations: [{ actionId: 'idle-main', fps: 12 }]

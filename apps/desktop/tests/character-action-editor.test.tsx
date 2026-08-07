@@ -217,6 +217,42 @@ describe('动作属性与锚点', () => {
     expect(markup).toContain('朝向');
   });
 
+  test('只有搬运动作展示当前表现的任务提交帧选择器', () => {
+    const carrying = { ...actionDefinition, semantic: 'carry' as const };
+    const presentation = {
+      frames: action.frames,
+      commitFrameId: 'frame-b'
+    };
+
+    const carryingMarkup = renderToStaticMarkup(
+      <ActionInspector
+        action={carrying}
+        actions={[carrying]}
+        states={[]}
+        presentation={presentation}
+        disabled={false}
+        onChange={vi.fn()}
+        onCommitFrameChange={vi.fn()}
+      />
+    );
+    const idleMarkup = renderToStaticMarkup(
+      <ActionInspector
+        action={actionDefinition}
+        actions={[actionDefinition]}
+        states={[]}
+        presentation={presentation}
+        disabled={false}
+        onChange={vi.fn()}
+        onCommitFrameChange={vi.fn()}
+      />
+    );
+
+    expect(carryingMarkup).toContain('任务提交帧');
+    expect(carryingMarkup).toContain('value="frame-b" selected=""');
+    expect(carryingMarkup).toContain('value="">不设置</option>');
+    expect(idleMarkup).not.toContain('任务提交帧');
+  });
+
   test('左右镜像时锚点同步镜像', () => {
     expect(mirrorAnchor({ x: 0.2, y: 0.8 }))
       .toEqual({ x: 0.8, y: 0.8 });

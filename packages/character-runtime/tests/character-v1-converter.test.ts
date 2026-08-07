@@ -142,6 +142,17 @@ describe('V1 角色数据转换器', () => {
     expect(characterManifestV2Schema.parse(result.document)).toEqual(result.document);
   });
 
+  test('V1 搬运动作只映射 carry 语义，不伪造精确任务提交帧', () => {
+    const source = createV1Manifest();
+    source.states[0] = { ...source.states[0]!, id: 'carrying' };
+
+    const result = convertCharacterManifestV1ToV2(source);
+    const presentation = result.document.skins[0]?.presentations[0];
+
+    expect(result.document.actions[0]?.semantic).toBe('carry');
+    expect(presentation).not.toHaveProperty('commitFrameId');
+  });
+
   test('按源顺序重命名重复动作并保持结果确定', () => {
     const first = convertCharacterDraftV1ToV2(createV1WithDuplicateActionIds());
     const second = convertCharacterDraftV1ToV2(createV1WithDuplicateActionIds());

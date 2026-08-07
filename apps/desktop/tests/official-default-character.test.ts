@@ -54,6 +54,12 @@ describe('官方默认角色安装', () => {
       'success',
       'error'
     ]);
+    const carrying = publishedManifest.skins[0]!.presentations.find(
+      presentation => presentation.actionId === 'carrying-main'
+    );
+    expect(carrying?.commitFrameId).toBe('carrying-frame-3');
+    expect(carrying?.frames.findIndex(frame => frame.id === carrying.commitFrameId))
+      .toBe(2);
   });
 
   test('已有可用默认角色时不重写其运行版本', async () => {

@@ -142,6 +142,8 @@ export interface CharacterWorkshopState {
   requestRemoveState(stateId: string, confirm?: boolean): CharacterReferenceImpact;
   addAction(stateId?: string, name?: string): void;
   updateAction(actionId: string, patch: Partial<CharacterActionDefinitionV2>): void;
+  setCurrentActionCommitFrame(frameId: string | null): void;
+  requestRemoveCurrentFrame(frameId: string, confirm?: boolean): CharacterReferenceImpact;
   requestRemoveAction(actionId: string, confirm?: boolean): CharacterReferenceImpact;
   removeAction(stateId: string, actionId: string): void;
   removeExtensionState(stateId: string): void;
@@ -1111,8 +1113,85 @@ export function createCharacterWorkshopStore(
             skin.semanticFallbacks = skin.semanticFallbacks.filter(fallback => (
               fallback.actionId !== actionId || fallback.semantic === action.semantic
             ));
+            // 提交帧是 carry 专属语义；离开 carry 时必须跨皮肤清除。
+            if (action.semantic !== 'carry') {
+              skin.presentations.forEach(presentation => {
+                if (presentation.actionId === actionId) delete presentation.commitFrameId;
+              });
+            }
           });
         });
+      },
+
+      setCurrentActionCommitFrame(frameId) {
+        const current = get();
+        const { draft, selectedActionId: actionId, selectedSkinId: skinId } = current;
+        if (!draft || !actionId || !skinId) return;
+        const action = draft.actions.find(candidate => candidate.id === actionId);
+        const skin = draft.skins.find(candidate => candidate.id === skinId);
+        const resolved = resolveCharacterPresentation(draft, skinId, actionId);
+        if (!action || action.semantic !== 'carry' || !skin || !resolved) return;
+        if (frameId !== null && !resolved.presentation.frames.some(frame => frame.id === frameId)) {
+          return;
+        }
+        updateDraft(next => {
+          const targetSkin = next.skins.find(candidate => candidate.id === skinId)!;
+          let presentation = targetSkin.presentations.find(candidate => candidate.actionId === actionId);
+          if (!presentation) {
+            const inherited = resolveCharacterPresentation(next, skinId, actionId);
+            if (!inherited) return;
+            presentation = {
+              ...structuredClone(inherited.presentation),
+              actionId
+            };
+            targetSkin.presentations.push(presentation);
+          }
+          if (frameId === null) delete presentation.commitFrameId;
+          else presentation.commitFrameId = frameId;
+        });
+      },
+
+      requestRemoveCurrentFrame(frameId, confirm = false) {
+        const current = get();
+        const { draft, selectedActionId: actionId, selectedSkinId: skinId } = current;
+        if (!draft || !actionId || !skinId) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const skinIndex = draft.skins.findIndex(candidate => candidate.id === skinId);
+        const resolved = resolveCharacterPresentation(draft, skinId, actionId);
+        const frameMatches = resolved?.presentation.frames.filter(frame => frame.id === frameId) ?? [];
+        if (skinIndex < 0 || !resolved || frameMatches.length !== 1) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const exactPresentationIndex = draft.skins[skinIndex]!.presentations.findIndex(
+          candidate => candidate.actionId === actionId
+        );
+        const referenced = resolved.presentation.commitFrameId === frameId;
+        const safeReferencePaths = referenced
+          ? [exactPresentationIndex >= 0
+            ? `skins.${skinIndex}.presentations.${exactPresentationIndex}.commitFrameId`
+            : `skins.${skinIndex}.presentations`]
+          : [];
+        const impact = { safeReferencePaths, blockingReferencePaths: [] };
+        if (referenced && !confirm) return impact;
+
+        updateDraft(next => {
+          const targetSkin = next.skins.find(candidate => candidate.id === skinId)!;
+          let presentation = targetSkin.presentations.find(candidate => candidate.actionId === actionId);
+          if (!presentation) {
+            const inherited = resolveCharacterPresentation(next, skinId, actionId);
+            if (!inherited) return;
+            presentation = {
+              ...structuredClone(inherited.presentation),
+              actionId
+            };
+            targetSkin.presentations.push(presentation);
+          }
+          if (presentation.frames.filter(frame => frame.id === frameId).length !== 1) return;
+          if (presentation.commitFrameId === frameId) delete presentation.commitFrameId;
+          presentation.frames = presentation.frames.filter(frame => frame.id !== frameId);
+        });
+        return impact;
       },
 
       requestRemoveAction(actionId, confirm = false) {
@@ -1254,6 +1333,10 @@ export function createCharacterWorkshopStore(
           );
           if (existing) {
             existing.frames = frames;
+            if (
+              existing.commitFrameId
+              && !frames.some(frame => frame.id === existing.commitFrameId)
+            ) delete existing.commitFrameId;
           } else {
             skin.presentations.push({
               actionId,
@@ -1402,6 +1485,9 @@ export function createCharacterWorkshopStore(
                 actionId: presentation.actionId,
                 fps: presentation.fps,
                 anchors: presentation.anchors,
+                ...(presentation.commitFrameId === undefined
+                  ? {}
+                  : { commitFrameId: presentation.commitFrameId }),
                 ...(presentation.regions === undefined
                   ? {}
                   : { regions: presentation.regions }),
@@ -1522,7 +1608,13 @@ export function createCharacterWorkshopStore(
             };
             skin.presentations.push(presentation);
           }
-          if (frames !== undefined) presentation.frames = frames;
+          if (frames !== undefined) {
+            presentation.frames = frames;
+            if (
+              presentation.commitFrameId
+              && !frames.some(frame => frame.id === presentation.commitFrameId)
+            ) delete presentation.commitFrameId;
+          }
           if (fps !== undefined) presentation.fps = fps;
           if (anchors !== undefined) presentation.anchors = anchors;
           if (regions !== undefined) presentation.regions = regions;

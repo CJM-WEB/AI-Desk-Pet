@@ -29,6 +29,8 @@ function presentation(state: CoreCharacterState, assetId: string) {
   return {
     actionId: `${state}-main`,
     fps: 8,
+    // 第三帧是搬运循环的中段稳定姿势，避开起手首帧和收势末帧。
+    ...(state === 'carrying' ? { commitFrameId: 'carrying-frame-3' } : {}),
     anchors: {
       ground: { x: 0.5, y: 1 },
       ...(state === 'carrying' ? { carry: { x: 0.7, y: 0.45 } } : {})

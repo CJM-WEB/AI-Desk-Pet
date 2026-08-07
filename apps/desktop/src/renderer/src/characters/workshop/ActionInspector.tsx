@@ -1,6 +1,7 @@
 import {
   STANDARD_CHARACTER_SEMANTICS,
   type CharacterActionDefinitionV2,
+  type CharacterActionPresentationV2,
   type CharacterStateDefinitionV2
 } from '@myself/character-runtime';
 import { TagEditor } from './TagEditor';
@@ -9,8 +10,10 @@ export interface ActionInspectorProps {
   action: CharacterActionDefinitionV2;
   actions: CharacterActionDefinitionV2[];
   states: CharacterStateDefinitionV2[];
+  presentation?: Pick<CharacterActionPresentationV2, 'frames' | 'commitFrameId'> | null;
   disabled: boolean;
   onChange(patch: Partial<CharacterActionDefinitionV2>): void;
+  onCommitFrameChange?(frameId: string | null): void;
 }
 
 function fallbackOptions(
@@ -88,6 +91,10 @@ function StateReferenceEditor(props: StateReferenceEditorProps) {
 /** 动作 Inspector 只维护行为策略；帧与 FPS 属于当前皮肤表现。 */
 export function ActionInspector(props: ActionInspectorProps) {
   const candidates = fallbackOptions(props.actions, props.action.id);
+  // 旧草稿未补 ID 的帧不能成为跨保存周期的提交标记候选。
+  const stablePresentationFrames = props.presentation?.frames.filter(
+    (frame): frame is typeof frame & { id: string } => typeof frame.id === 'string'
+  ) ?? [];
   const primaryStates = props.states.filter(state => state.kind === 'primary');
   const modifierStates = props.states.filter(state => state.kind === 'modifier');
   const updateStateReferences = (key: StateReferenceKey, ids: string[]) => {
@@ -118,6 +125,26 @@ export function ActionInspector(props: ActionInspectorProps) {
           ))}
         </select>
       </label>
+      {props.action.semantic === 'carry' ? (
+        <label>
+          任务提交帧
+          <select
+            value={props.presentation?.commitFrameId ?? ''}
+            disabled={props.disabled || !props.presentation}
+            onChange={event => props.onCommitFrameChange?.(
+              event.currentTarget.value || null
+            )}
+          >
+            <option value="">不设置</option>
+            {stablePresentationFrames.map(frame => (
+              <option key={frame.id} value={frame.id}>{frame.id}</option>
+            ))}
+          </select>
+          <span className="field-help">
+            文件任务只会在该稳定帧到达时提交；普通搬运动画不会触发文件操作。
+          </span>
+        </label>
+      ) : null}
       <TagEditor
         ownerId={props.action.id}
         ownerLabel="动作"

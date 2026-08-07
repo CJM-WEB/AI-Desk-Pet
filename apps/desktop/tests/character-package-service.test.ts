@@ -86,8 +86,12 @@ function runtime(characterId: string): {
   assets: Readonly<Record<string, Uint8Array>>;
 } {
   const legacy = legacyRuntime(characterId);
+  const manifest = convertCharacterManifestV1ToV2(legacy.manifest).document;
+  const presentation = manifest.skins[0]!.presentations[0]!;
+  presentation.frames[0]!.id = 'carry-commit';
+  presentation.commitFrameId = 'carry-commit';
   return {
-    manifest: convertCharacterManifestV1ToV2(legacy.manifest).document,
+    manifest,
     assets: legacy.assets
   };
 }
@@ -208,7 +212,10 @@ describe('角色包 Main 服务', () => {
       .toMatchObject({
         version: 2,
         id: 'demo',
-        identity: { description: '演示角色' }
+        identity: { description: '演示角色' },
+        skins: [{
+          presentations: [{ commitFrameId: 'carry-commit' }]
+        }]
       });
     expect((await readdir(testDirectory)).some(name => (
       name.startsWith('.character-export-')
@@ -811,8 +818,13 @@ describe('角色包 Main 服务', () => {
 
     expect(observedIsolation).toBe(true);
     expect(importedId).toBe('demo');
-    await expect(new CharacterStore(importedCharacters).getRuntimeManifest(importedId))
+    const importedStore = new CharacterStore(importedCharacters);
+    await expect(importedStore.getRuntimeManifest(importedId))
       .resolves.toMatchObject({ id: importedId, name: '演示角色' });
+    await expect(importedStore.getPublishedManifest(importedId))
+      .resolves.toMatchObject({
+        skins: [{ presentations: [{ commitFrameId: 'carry-commit' }] }]
+      });
     await expect(access(observedStaging)).resolves.toBeUndefined();
     await expect(readFile(competitorFile, 'utf8')).resolves.toBe('COMPETITOR');
   });

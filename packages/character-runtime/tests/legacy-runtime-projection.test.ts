@@ -89,6 +89,7 @@ function action(
 describe('旧播放器投影', () => {
   test('按语义投影状态、恢复自定义触发器并保持输入不可变', () => {
     const manifest = createManifest();
+    manifest.skins[0]!.presentations[0]!.frames[0]!.id = 'rest-frame-1';
     const before = structuredClone(manifest);
 
     const projected = projectCharacterManifestV2ToLegacy(manifest);
@@ -102,6 +103,8 @@ describe('旧播放器投影', () => {
       kind: 'extension', triggers: { events: ['idle', 'single_click'] }
     });
     expect(projected.states.find((state) => state.id === 'idle')?.actions[0]?.id).toBe('rest-action');
+    expect(projected.states.find((state) => state.id === 'idle')?.actions[0]?.frames[0]?.id)
+      .toBe('rest-frame-1');
     expect(manifest).toEqual(before);
     expect(characterManifestV1Schema.parse(projected)).toEqual(projected);
   });
