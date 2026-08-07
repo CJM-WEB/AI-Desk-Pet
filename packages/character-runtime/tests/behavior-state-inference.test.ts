@@ -79,6 +79,12 @@ const 语义状态 = [
   创建状态({ id: 'receiving-core', kind: 'primary', semantic: 'listen' }),
   创建状态({ id: 'reasoning-core', kind: 'primary', semantic: 'think' }),
   创建状态({ id: 'travelling-core', kind: 'primary', semantic: 'move' }),
+  创建状态({
+    id: 'carrying-core',
+    kind: 'primary',
+    semantic: 'carry',
+    exitConditions: [{ mode: 'all', clauses: [{ kind: 'signal', signal: 'carry-stop' }] }]
+  }),
   创建状态({ id: 'victory-core', kind: 'primary', semantic: 'celebrate' }),
   创建状态({ id: 'recovery-core', kind: 'primary', semantic: 'fail' })
 ];
@@ -102,6 +108,7 @@ describe('V2 行为状态推断', () => {
     [{ type: 'listening', active: true, occurredAtMs: 1 }, 'receiving-core', 'listen'],
     [{ type: 'thinking', active: true, occurredAtMs: 1 }, 'reasoning-core', 'think'],
     [{ type: 'movement', active: true, occurredAtMs: 1 }, 'travelling-core', 'move'],
+    [{ type: 'carrying', active: true, occurredAtMs: 1 }, 'carrying-core', 'carry'],
     [{ type: 'task', phase: 'success', occurredAtMs: 1 }, 'victory-core', 'celebrate'],
     [{ type: 'task', phase: 'failure', occurredAtMs: 1 }, 'recovery-core', 'fail']
   ] satisfies Array<[CharacterBehaviorSignal, string, string]>)('本地信号 %o 按标准语义映射到非同名状态', (signal, stateId, semantic) => {
@@ -120,6 +127,45 @@ describe('V2 行为状态推断', () => {
     expect(listening.activeSignals).toEqual(['listening']);
     expect(moving.activeSignals).toEqual(['listening', 'move-start']);
     expect(stopped.activeSignals).toEqual(['listening', 'move-stop']);
+  });
+
+  test('搬运活动事实映射 carry-start/carry-stop，并在结束后退出搬运状态', () => {
+    const manifest = 创建清单(语义状态);
+    const carrying = 推断(manifest, { type: 'carrying', active: true, occurredAtMs: 1 });
+    const stopped = 推断(manifest, { type: 'carrying', active: false, occurredAtMs: 2 }, carrying);
+
+    expect(carrying.activeSignals).toContain('carry-start');
+    expect(carrying.desiredActionSemantic).toBe('carry');
+    expect(stopped.activeSignals).toContain('carry-stop');
+    expect(stopped.activeSignals).not.toContain('carry-start');
+    expect(stopped.primaryStateId).toBe('resting-core');
+  });
+
+  test('活动搬运事实阻止待机、移动和低优先级 Agent 意图抢占', () => {
+    const manifest = 创建清单([
+      ...语义状态,
+      创建状态({ id: 'agent-speaking', kind: 'primary', semantic: 'speak', agentInferable: true })
+    ]);
+    const carrying = 推断(manifest, { type: 'carrying', active: true, occurredAtMs: 1 });
+    const idle = 推断(manifest, { type: 'idle-due', occurredAtMs: 2 }, carrying);
+    const moving = 推断(manifest, { type: 'movement', active: true, occurredAtMs: 3 }, idle);
+    const agent = inferCharacterBehaviorState({
+      manifest,
+      previous: moving,
+      signal: { type: 'task', phase: 'start', occurredAtMs: 4 },
+      agentIntent: {
+        stateIntent: { stateId: 'agent-speaking' },
+        actionSemantic: 'speak',
+        urgency: 1,
+        explanation: '低优先级意图不能覆盖本地搬运事实。'
+      }
+    });
+
+    for (const snapshot of [idle, moving, agent]) {
+      expect(snapshot.primaryStateId).toBe('carrying-core');
+      expect(snapshot.desiredActionSemantic).toBe('carry');
+      expect(snapshot.activeSignals).toContain('carry-start');
+    }
   });
 
   test('all 与 any 条件基于本轮活动信号和候选语义匹配', () => {

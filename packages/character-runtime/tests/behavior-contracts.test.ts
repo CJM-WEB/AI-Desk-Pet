@@ -22,6 +22,14 @@ describe('自主行为严格契约', () => {
     });
   });
 
+  test('接受由 Main 产生的搬运活动事实', () => {
+    expect(characterBehaviorSignalSchema.parse({
+      type: 'carrying', active: true, occurredAtMs: 1_001
+    })).toEqual({
+      type: 'carrying', active: true, occurredAtMs: 1_001
+    });
+  });
+
   test('接受合法的智能体行为意图', () => {
     expect(characterAgentBehaviorIntentSchema.parse({
       stateIntent: { semantic: 'think' },

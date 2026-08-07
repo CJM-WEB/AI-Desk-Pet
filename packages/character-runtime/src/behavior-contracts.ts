@@ -15,7 +15,8 @@ export type CharacterBehaviorSignal =
   | { type: 'listening'; active: boolean; occurredAtMs: number }
   | { type: 'thinking'; active: boolean; occurredAtMs: number }
   | { type: 'task'; phase: 'start' | 'success' | 'failure'; occurredAtMs: number }
-  | { type: 'movement'; active: boolean; occurredAtMs: number };
+  | { type: 'movement'; active: boolean; occurredAtMs: number }
+  | { type: 'carrying'; active: boolean; occurredAtMs: number };
 
 export type CharacterAgentBehaviorIntent = {
   stateIntent: { stateId: string } | { semantic: CharacterStandardSemantic } | null;
@@ -53,7 +54,8 @@ export const characterBehaviorSignalSchema = z.discriminatedUnion('type', [
     phase: z.enum(['start', 'success', 'failure']),
     occurredAtMs: occurredAtMsSchema
   }).strict(),
-  z.object({ type: z.literal('movement'), active: z.boolean(), occurredAtMs: occurredAtMsSchema }).strict()
+  z.object({ type: z.literal('movement'), active: z.boolean(), occurredAtMs: occurredAtMsSchema }).strict(),
+  z.object({ type: z.literal('carrying'), active: z.boolean(), occurredAtMs: occurredAtMsSchema }).strict()
 ]);
 
 const stateIntentSchema = z.union([

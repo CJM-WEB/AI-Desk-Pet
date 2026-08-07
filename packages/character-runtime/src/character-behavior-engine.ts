@@ -2,7 +2,8 @@ import type {
   CharacterAgentBehaviorIntent,
   CharacterBehaviorSignal,
   CharacterBehaviorStateSnapshot,
-  CharacterPlaybackFeedback
+  CharacterPlaybackFeedback,
+  CharacterStandardSemantic
 } from './behavior-contracts';
 import {
   authorizeCharacterBehaviorAction,
@@ -56,10 +57,22 @@ function isActionUnavailable(error: unknown): boolean {
   return error instanceof Error && error.message === 'CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE';
 }
 
-/** 系统事实只在约定的三类边沿信号上强制替换抗中断动作。 */
+/** 只有用户交互、任务结果与 Main 搬运事实可以强制替换抗中断动作。 */
 function isSystemForced(signal: CharacterBehaviorSignal): boolean {
   return signal.type === 'user-interaction'
+    || signal.type === 'carrying'
     || (signal.type === 'task' && signal.phase !== 'start');
+}
+
+/** 活动搬运事实只吸收低优先级上下文，不为其创建新的身体播放令牌。 */
+function isCarryProtectedUpdate(
+  state: CharacterBehaviorStateSnapshot,
+  signal: CharacterBehaviorSignal
+): boolean {
+  if (!state.activeSignals.includes('carry-start')) return false;
+  return signal.type === 'idle-due'
+    || signal.type === 'movement'
+    || (signal.type === 'task' && signal.phase === 'start');
 }
 
 /** 优先使用动作定义时长，否则累加解析后表现的一轮帧时长。 */
@@ -113,17 +126,33 @@ export class CharacterBehaviorEngine {
     signal: CharacterBehaviorSignal;
     agentIntent?: CharacterAgentBehaviorIntent;
     direction: 'left' | 'right';
+    requiredActionSemantic?: CharacterStandardSemantic;
   }): CharacterBehaviorDecision {
     this.lastDirection = input.direction;
+    const carryProtectedUpdate = isCarryProtectedUpdate(this.state, input.signal);
+    const previousState = this.state;
     this.applySignal(input.signal, input.agentIntent);
+    if (carryProtectedUpdate) return this.decision([NONE_EFFECT], []);
 
     const systemForced = isSystemForced(input.signal);
-    return this.selectAndSchedule({
+    const decision = this.selectAndSchedule({
       direction: input.direction,
       nowMs: this.now(),
       urgency: systemForced ? 100 : input.agentIntent?.urgency ?? 0,
-      systemForced
+      systemForced,
+      ...(input.requiredActionSemantic === undefined
+        ? {}
+        : { requiredActionSemantic: input.requiredActionSemantic })
     });
+    if (
+      input.requiredActionSemantic
+      && decision.diagnosticCodes.includes('CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE')
+    ) {
+      // 必需语义失败不应把未获授权的活动事实留在引擎内，也不能撤销原播放令牌。
+      this.state = previousState;
+      return this.decision(decision.effects, decision.diagnosticCodes);
+    }
+    return decision;
   }
 
   /** 原子重放最新可信上下文，全部状态事实应用完成后才产生首个播放动作。 */
@@ -306,6 +335,7 @@ export class CharacterBehaviorEngine {
       nowMs: number;
       urgency: number;
       systemForced: boolean;
+      requiredActionSemantic?: CharacterStandardSemantic;
     },
     diagnosticCodes: CharacterBehaviorDiagnosticCode[] = []
   ): CharacterBehaviorDecision {
@@ -327,6 +357,17 @@ export class CharacterBehaviorEngine {
         [NONE_EFFECT],
         [...diagnosticCodes, 'CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']
       );
+    }
+
+    if (
+      input.requiredActionSemantic
+      && this.manifest.actions.find((action) => action.id === selection.actionId)?.semantic
+        !== input.requiredActionSemantic
+    ) {
+      return this.decision([NONE_EFFECT], [
+        ...diagnosticCodes,
+        'CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE'
+      ]);
     }
 
     const playbackToken = this.createPlaybackToken();

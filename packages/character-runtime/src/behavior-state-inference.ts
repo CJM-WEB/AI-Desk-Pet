@@ -22,7 +22,7 @@ const EDGE_SIGNALS = new Set<TrustedBehaviorSignal>([
   'idle', 'user-interaction', 'conversation-start', 'task-start', 'task-success', 'task-failure'
 ]);
 const PROTECTED_PRIMARY_SEMANTICS = new Set<CharacterStandardSemantic>([
-  'think', 'move', 'celebrate', 'fail'
+  'think', 'move', 'carry', 'celebrate', 'fail'
 ]);
 
 /** 将本次本地事件映射为可参与状态仲裁的标准语义。 */
@@ -33,6 +33,7 @@ function signalSemantic(signal: CharacterBehaviorSignal): CharacterStandardSeman
     case 'listening': return signal.active ? 'listen' : null;
     case 'thinking': return signal.active ? 'think' : null;
     case 'movement': return signal.active ? 'move' : null;
+    case 'carrying': return signal.active ? 'carry' : null;
     case 'task': return signal.phase === 'success' ? 'celebrate' : signal.phase === 'failure' ? 'fail' : null;
     case 'user-interaction': return null;
   }
@@ -46,6 +47,11 @@ function activeSignals(previous: CharacterBehaviorStateSnapshot, signal: Charact
     current.delete('move-stop');
     current.add(value);
   };
+  const setCarrySignal = (value: 'carry-start' | 'carry-stop') => {
+    current.delete('carry-start');
+    current.delete('carry-stop');
+    current.add(value);
+  };
 
   switch (signal.type) {
     case 'idle-due': current.add('idle'); break;
@@ -55,6 +61,7 @@ function activeSignals(previous: CharacterBehaviorStateSnapshot, signal: Charact
     case 'thinking': signal.active ? current.add('thinking') : current.delete('thinking'); break;
     case 'task': current.add(`task-${signal.phase}` as TrustedBehaviorSignal); break;
     case 'movement': setMovementSignal(signal.active ? 'move-start' : 'move-stop'); break;
+    case 'carrying': setCarrySignal(signal.active ? 'carry-start' : 'carry-stop'); break;
   }
 
   return TRUSTED_BEHAVIOR_SIGNALS.filter((value): value is TrustedBehaviorSignal => current.has(value));
@@ -201,6 +208,8 @@ function isProtectedPrimary(
     ? signals.includes('thinking')
     : semantic === 'move'
       ? signals.includes('move-start')
+      : semantic === 'carry'
+        ? signals.includes('carry-start')
       : semantic === 'celebrate'
         ? signals.includes('task-success')
         : signals.includes('task-failure');
@@ -251,7 +260,7 @@ export function inferCharacterBehaviorState(
 ): CharacterBehaviorStateSnapshot {
   const { manifest, previous, signal, agentIntent } = input;
   const signals = activeSignals(previous, signal);
-  const localSemantic = signalSemantic(signal);
+  const inferredLocalSemantic = signalSemantic(signal);
   const agentState = agentStateSelection(manifest, agentIntent);
   const agentActionSemantic = agentIntent?.actionSemantic ?? null;
   const currentPrimary = manifest.states.find((state) => state.id === previous.primaryStateId && state.kind === 'primary');
@@ -262,8 +271,16 @@ export function inferCharacterBehaviorState(
     new Set([currentPrimary.id])
   )));
 
-  const protectedFromAgent = !localSemantic
-    && isProtectedPrimary(manifest, previous.primaryStateId, signals);
+  const carryingProtected = isProtectedPrimary(manifest, previous.primaryStateId, signals)
+    && manifest.states.find((state) => state.id === previous.primaryStateId)?.semantic === 'carry';
+  // 搬运是 Main 持有的活动文件事实；普通待机、移动边沿和任务模型意图只能更新事实，不能改写身体主状态。
+  const localSemantic = carryingProtected && (
+    signal.type === 'idle-due'
+    || signal.type === 'movement'
+    || (signal.type === 'task' && signal.phase === 'start')
+  ) ? null : inferredLocalSemantic;
+  const protectedFromAgent = carryingProtected || (!localSemantic
+    && isProtectedPrimary(manifest, previous.primaryStateId, signals));
   const canUseAgent = !localSemantic && !protectedFromAgent && agentState.kind !== 'invalid';
   // task-start 携带非法状态时仍由本地思考语义收敛，模型不能把主状态打回待机。
   const requestedSemantic = localSemantic
@@ -300,7 +317,7 @@ export function inferCharacterBehaviorState(
     modifierStateIds: modifiers.map((state) => state.id),
     activeSignals: signals,
     desiredActionSemantic: localSemantic
-      ?? agentActionSemantic
+      ?? (carryingProtected ? null : agentActionSemantic)
       ?? standardSemantic(primary)
   };
 }

@@ -143,6 +143,41 @@ function 创建六语义清单(id = 'six-semantics'): CharacterManifestV2 {
   return 创建清单({ id, states, actions, presentations, defaultStateId: 'idle-state' });
 }
 
+/** 创建带真实搬运状态、动作与提交帧表现的角色清单。 */
+function 创建搬运清单(id = 'carry-character', commitFrameId: string | null = 'carry-commit'): CharacterManifestV2 {
+  const idle = 创建动作('idle-action', 'idle');
+  const carry = 创建动作('carry-action', 'carry', { loopPolicy: 'until-interrupted' });
+  return 创建清单({
+    id,
+    actions: [idle, carry],
+    states: [
+      创建状态('idle-state', 'idle', [idle.id]),
+      创建状态('carry-state', 'carry', [carry.id], {
+        exitConditions: [{ mode: 'all', clauses: [{ kind: 'signal', signal: 'carry-stop' }] }]
+      })
+    ],
+    presentations: [
+      {
+        actionId: idle.id,
+        fps: 20,
+        frames: [{ id: 'idle-frame', assetId: 'idle-asset', x: 0, y: 0, width: 1, height: 1 }],
+        anchors: { ground: { x: 0.5, y: 1 } }
+      },
+      {
+        actionId: carry.id,
+        fps: 20,
+        frames: [
+          { id: 'carry-start-frame', assetId: 'carry-asset', x: 0, y: 0, width: 1, height: 1 },
+          { id: 'carry-commit', assetId: 'carry-asset', x: 1, y: 0, width: 1, height: 1 }
+        ],
+        anchors: { ground: { x: 0.5, y: 1 } },
+        ...(commitFrameId === null ? {} : { commitFrameId })
+      }
+    ],
+    defaultStateId: 'idle-state'
+  });
+}
+
 /** 创建可观察、稳定递增的播放令牌工厂。 */
 function 创建令牌工厂(prefix = 'token'): () => string {
   let index = 0;
@@ -164,6 +199,76 @@ function 创建引擎(
 }
 
 describe('事件驱动角色行为引擎', () => {
+  test('Main 搬运事实通过现有选择与调度链生成真实播放令牌', () => {
+    const engine = 创建引擎(创建搬运清单());
+
+    const decision = engine.dispatch({
+      signal: { type: 'carrying', active: true, occurredAtMs: 1 },
+      direction: 'right'
+    });
+
+    expect(decision.snapshot.state).toMatchObject({
+      primaryStateId: 'carry-state',
+      desiredActionSemantic: 'carry',
+      activeSignals: expect.arrayContaining(['carry-start'])
+    });
+    expect(decision.snapshot.schedule.current).toMatchObject({
+      actionId: 'carry-action',
+      playbackToken: 'token-1'
+    });
+    expect(decision.effects).toEqual([{ type: 'play', action: decision.snapshot.schedule.current }]);
+  });
+
+  test('搬运活动期间待机和低优先级 Agent 意图不会替换搬运令牌', () => {
+    const engine = 创建引擎(创建搬运清单());
+    engine.dispatch({ signal: { type: 'carrying', active: true, occurredAtMs: 1 }, direction: 'right' });
+
+    const idle = engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 2 }, direction: 'right' });
+    const agent = engine.dispatch({
+      signal: { type: 'task', phase: 'start', occurredAtMs: 3 },
+      agentIntent: {
+        stateIntent: { semantic: 'idle' },
+        actionSemantic: 'idle',
+        urgency: 1,
+        explanation: '普通模型意图不能抢占搬运。'
+      },
+      direction: 'right'
+    });
+
+    expect(idle.snapshot.schedule.current?.playbackToken).toBe('token-1');
+    expect(agent.snapshot.schedule.current?.playbackToken).toBe('token-1');
+    expect(idle.effects).toEqual([{ type: 'none' }]);
+    expect(agent.effects).toEqual([{ type: 'none' }]);
+
+    const stopped = engine.dispatch({
+      signal: { type: 'carrying', active: false, occurredAtMs: 4 },
+      direction: 'right'
+    });
+    expect(stopped.snapshot.state.primaryStateId).toBe('idle-state');
+    expect(stopped.effects).toEqual([{ type: 'interrupt', playbackToken: 'token-1', fallbackActionId: null }, {
+      type: 'play',
+      action: stopped.snapshot.schedule.current!
+    }]);
+  });
+
+  test('用户直接交互仍按既有强制中断规则替换搬运令牌', () => {
+    const engine = 创建引擎(创建搬运清单());
+    engine.dispatch({ signal: { type: 'carrying', active: true, occurredAtMs: 1 }, direction: 'right' });
+
+    const interrupted = engine.dispatch({
+      signal: { type: 'user-interaction', occurredAtMs: 2 },
+      direction: 'right'
+    });
+
+    expect(interrupted.effects).toEqual([
+      { type: 'interrupt', playbackToken: 'token-1', fallbackActionId: null },
+      { type: 'play', action: interrupted.snapshot.schedule.current! }
+    ]);
+    expect(interrupted.snapshot.schedule.current).toMatchObject({
+      actionId: 'carry-action',
+      playbackToken: 'token-2'
+    });
+  });
   test.each([
     ['待机', { type: 'idle-due', occurredAtMs: 1 }, 'idle', 320],
     ['倾听', { type: 'listening', active: true, occurredAtMs: 2 }, 'listen', 90],

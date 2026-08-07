@@ -6,7 +6,8 @@ import {
   type CharacterBehaviorSignal,
   type CharacterManifestV1,
   type CharacterManifestV2,
-  type CharacterPlaybackFeedback
+  type CharacterPlaybackFeedback,
+  resolveCharacterPresentation
 } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
 import type { CharacterMotionSnapshot } from '../../shared/character-motion-ipc';
@@ -33,6 +34,12 @@ export type CharacterBehaviorPlaybackEvent =
       actionId: string;
       playbackToken: string;
     };
+
+export type CharacterTaskCarryGrant = Readonly<{
+  playbackToken: string;
+  actionId: string;
+  commitFrameId: string | null;
+}>;
 
 type CharacterBehaviorStorePort = Pick<
   CharacterStore,
@@ -75,6 +82,7 @@ export class CharacterBehaviorService {
   private legacyManifest: CharacterManifestV1 | null = null;
   private direction: 'left' | 'right' = 'right';
   private moving = false;
+  private carrying = false;
   private idleBlocked = false;
   private transitioning = false;
   private activeTaskSignal: 'listening' | 'thinking' | null = null;
@@ -97,6 +105,53 @@ export class CharacterBehaviorService {
     this.direction = snapshot.direction;
     this.moving = snapshot.moving;
     await this.loadActiveCharacter(false);
+  }
+
+  /**
+   * 同步取得并发布同一个 Main 调度结果；调用方须在返回后的同一调用栈立即绑定事务。
+   * 生产订阅者只会调用 webContents.send，Renderer 的反馈必须跨事件循环返回，因而不会早于绑定。
+   */
+  beginTaskCarry(): CharacterTaskCarryGrant {
+    if (this.closed || this.transitioning || !this.engine || !this.manifest || this.carrying) {
+      throw new Error('CHARACTER_BEHAVIOR_CARRY_UNAVAILABLE');
+    }
+    const decision = this.engine.dispatch({
+      signal: { type: 'carrying', active: true, occurredAtMs: this.now() },
+      direction: this.direction,
+      requiredActionSemantic: 'carry'
+    });
+    const play = decision.effects.find((effect) => effect.type === 'play');
+    if (play?.type !== 'play') throw new Error('CHARACTER_BEHAVIOR_CARRY_UNAVAILABLE');
+
+    const resolved = resolveCharacterPresentation(
+      this.manifest,
+      decision.snapshot.skinId,
+      play.action.actionId
+    );
+    if (!resolved) throw new Error('CHARACTER_BEHAVIOR_CARRY_UNAVAILABLE');
+
+    const grant: CharacterTaskCarryGrant = {
+      playbackToken: play.action.playbackToken,
+      actionId: play.action.actionId,
+      commitFrameId: resolved.presentation.commitFrameId ?? null
+    };
+    this.carrying = true;
+    this.idleBlocked = true;
+    this.publish(decision);
+    return grant;
+  }
+
+  /** 结束本地搬运事实；结果语义由后续可信任务事件决定。 */
+  endTaskCarry(): void {
+    if (this.closed || this.transitioning || !this.engine || !this.carrying) return;
+    this.carrying = false;
+    this.idleBlocked = false;
+    const now = this.now();
+    this.nextIdleAt = now + this.idleIntervalMs;
+    this.publish(this.engine.dispatch({
+      signal: { type: 'carrying', active: false, occurredAtMs: now },
+      direction: this.direction
+    }));
   }
 
   handleTaskEvent(event: TaskEvent): void {
@@ -239,6 +294,7 @@ export class CharacterBehaviorService {
     this.transitioning = false;
     this.activeTaskSignal = null;
     this.taskContextSignal = null;
+    this.carrying = false;
     this.legacyTokens.clear();
     this.listeners.clear();
   }
@@ -247,8 +303,9 @@ export class CharacterBehaviorService {
   private async loadActiveCharacter(replacing: boolean): Promise<void> {
     const revision = ++this.loadRevision;
     // 已结束任务的结果只属于旧角色；切换期间新到达的事件仍会由 captureTaskContext 接管。
-    if (replacing && this.taskContextSignal?.type === 'task') {
-      this.taskContextSignal = null;
+    if (replacing) {
+      this.carrying = false;
+      if (this.taskContextSignal?.type === 'task') this.taskContextSignal = null;
     }
     this.transitioning = true;
     try {

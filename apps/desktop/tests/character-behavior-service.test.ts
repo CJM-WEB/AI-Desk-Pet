@@ -40,6 +40,8 @@ function requireBehaviorAction(
 
 type BehaviorService = {
   initialize(): Promise<void>;
+  beginTaskCarry(): { playbackToken: string; actionId: string; commitFrameId: string | null };
+  endTaskCarry(): void;
   handleTaskEvent(event: TaskEvent): void;
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void;
   handleMovement(snapshot: CharacterMotionSnapshot): void;
@@ -53,7 +55,7 @@ type BehaviorService = {
 
 type BehaviorServiceConstructor = new (options: Record<string, unknown>) => BehaviorService;
 
-const SEMANTICS = ['idle', 'listen', 'think', 'move', 'celebrate', 'fail'] as const;
+const SEMANTICS = ['idle', 'listen', 'think', 'move', 'carry', 'celebrate', 'fail'] as const;
 
 function createManifest(id = 'first'): CharacterManifestV2 {
   return {
@@ -86,7 +88,9 @@ function createManifest(id = 'first'): CharacterManifestV2 {
       coexistWithStateIds: [],
       forbiddenStateIds: [],
       enterConditions: [],
-      exitConditions: [],
+      exitConditions: semantic === 'carry'
+        ? [{ mode: 'all' as const, clauses: [{ kind: 'signal' as const, signal: 'carry-stop' as const }] }]
+        : [],
       agentInferable: true,
       actionIds: [`${semantic}-action`]
     })),
@@ -112,8 +116,14 @@ function createManifest(id = 'first'): CharacterManifestV2 {
       presentations: SEMANTICS.map(semantic => ({
         actionId: `${semantic}-action`,
         fps: 20,
-        frames: [{ assetId: `${semantic}-asset`, x: 0, y: 0, width: 1, height: 1 }],
-        anchors: { ground: { x: 0.5, y: 1 } }
+        frames: semantic === 'carry'
+          ? [
+            { id: 'carry-start-frame', assetId: `${semantic}-asset`, x: 0, y: 0, width: 1, height: 1 },
+            { id: 'carry-commit', assetId: `${semantic}-asset`, x: 1, y: 0, width: 1, height: 1 }
+          ]
+          : [{ assetId: `${semantic}-asset`, x: 0, y: 0, width: 1, height: 1 }],
+        anchors: { ground: { x: 0.5, y: 1 } },
+        ...(semantic === 'carry' ? { commitFrameId: 'carry-commit' } : {})
       })),
       semanticFallbacks: []
     }],
@@ -292,6 +302,116 @@ describe('Main 角色行为权威服务', () => {
 
   beforeEach(async () => {
     Constructor = await loadConstructor();
+  });
+
+  test('开始任务搬运返回当前皮肤的精确授权并只发布同一个真实动作', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+
+    const grant = service.beginTaskCarry();
+
+    expect(grant).toEqual({
+      playbackToken: 'behavior-token-2',
+      actionId: 'carry-action',
+      commitFrameId: 'carry-commit'
+    });
+    expect(events).toEqual([{
+      type: 'behavior-action',
+      revision: 2,
+      stateId: 'carry-state',
+      modifierStateIds: [],
+      actionId: grant.actionId,
+      playbackToken: grant.playbackToken
+    }]);
+  });
+
+  test('搬运表现没有提交帧时授权明确返回 null', async () => {
+    const manifest = createManifest();
+    delete manifest.skins[0]!.presentations.find(item => item.actionId === 'carry-action')!.commitFrameId;
+    const fixture = createFixture({ getV2: async () => manifest });
+    const service = new Constructor(fixture.options);
+    await service.initialize();
+
+    expect(service.beginTaskCarry().commitFrameId).toBeNull();
+  });
+
+  test('搬运动作不满足当前方向硬约束时不把默认待机伪装成授权', async () => {
+    const manifest = createManifest();
+    manifest.actions.find(action => action.id === 'carry-action')!.direction = 'left';
+    const fixture = createFixture({ getV2: async () => manifest });
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+
+    expect(() => service.beginTaskCarry()).toThrow('CHARACTER_BEHAVIOR_CARRY_UNAVAILABLE');
+    expect(events).toEqual([]);
+    expect(() => service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: 1
+    })).not.toThrow();
+  });
+
+  test('搬运期间普通待机、移动和低优先级 Agent 不抢占，结束后恢复默认动作', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    const grant = service.beginTaskCarry();
+    events.splice(0);
+
+    fixture.setNow(10_000);
+    service.handleIdleDue();
+    service.handleMovement(snapshot(true));
+    service.handleAgentIntent({
+      stateIntent: { semantic: 'idle' },
+      actionSemantic: 'idle',
+      urgency: 1,
+      explanation: '低优先级意图不能抢占搬运。'
+    });
+
+    expect(events).toEqual([]);
+    expect(() => service.applyPlaybackFeedback({
+      playbackToken: grant.playbackToken,
+      actionId: grant.actionId,
+      status: 'started',
+      occurredAtMs: 10_001
+    })).not.toThrow();
+
+    fixture.setNow(10_002);
+    service.endTaskCarry();
+    expect(events.at(-1)).toMatchObject({ actionId: 'idle-action' });
+  });
+
+  test('角色切换撤销旧搬运授权且新角色不继承旧提交帧', async () => {
+    let active = createManifest('first');
+    const fixture = createFixture({ getV2: async () => active });
+    const service = new Constructor(fixture.options);
+    await service.initialize();
+    const oldGrant = service.beginTaskCarry();
+    active = createManifest('second');
+    delete active.skins[0]!.presentations.find(item => item.actionId === 'carry-action')!.commitFrameId;
+
+    await service.handleActiveCharacterChanged();
+
+    expect(() => service.applyPlaybackFeedback({
+      playbackToken: oldGrant.playbackToken,
+      actionId: oldGrant.actionId,
+      status: 'started',
+      occurredAtMs: 10
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    expect(service.beginTaskCarry()).toMatchObject({
+      actionId: 'carry-action',
+      commitFrameId: null
+    });
   });
 
   test('初始化读取 V2 清单并发出默认状态动作', async () => {
