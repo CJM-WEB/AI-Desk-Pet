@@ -5,6 +5,7 @@ import type { ToolRequest } from '@myself/shared-types';
 import { ZodError } from 'zod';
 import { FileToolError } from './errors';
 import { PathPolicy } from './path-policy';
+import type { RecycleBinPort } from './recycle-bin-port';
 import { toolArguments } from './schemas';
 
 const MAX_DIRECTORY_ENTRIES = 200;
@@ -67,7 +68,18 @@ type InternalWriteAction =
     toolName: 'rename_entry';
     sourceRelativePath: string;
     targetRelativePath: string;
+  }
+  | {
+    toolName: 'move_to_recycle_bin';
+    targetRelativePath: string;
+    targetIdentity: EntryIdentity;
   };
+
+type EntryIdentity = Readonly<{
+  device: bigint;
+  inode: bigint;
+  type: 'file' | 'directory';
+}>;
 
 function normalizeRelativePathForResult(input: string): string {
   return posix.normalize(input.replaceAll('\\', '/'));
@@ -104,6 +116,31 @@ function entryType(information: Awaited<ReturnType<typeof lstat>>): DirectoryEnt
   return 'other';
 }
 
+/** 捕获不对外公开的文件系统身份，用于阻断预览后的同路径替换。 */
+async function captureEntryIdentity(absolutePath: string): Promise<EntryIdentity> {
+  const information = await lstat(absolutePath, { bigint: true });
+  if (information.isSymbolicLink()) {
+    throw new FileToolError('LINK_NOT_ALLOWED', '不允许将符号链接或 Junction 移入回收站');
+  }
+  const type = information.isFile()
+    ? 'file' as const
+    : information.isDirectory()
+      ? 'directory' as const
+      : null;
+  if (!type) {
+    throw new FileToolError('ENTRY_TYPE_UNSUPPORTED', '只允许将普通文件或目录移入回收站');
+  }
+  return {
+    device: information.dev,
+    inode: information.ino,
+    type
+  };
+}
+
+function hasSameIdentity(left: EntryIdentity, right: EntryIdentity): boolean {
+  return left.device === right.device && left.inode === right.inode && left.type === right.type;
+}
+
 async function readBoundedFile(filePath: string): Promise<Buffer> {
   const handle = await open(filePath, 'r');
   try {
@@ -134,10 +171,34 @@ async function readBoundedFile(filePath: string): Promise<Buffer> {
 export class FileToolService {
   readonly #issuedActions = new WeakMap<VerifiedWriteAction, InternalWriteAction>();
 
-  constructor(private readonly policy: PathPolicy) {}
+  constructor(
+    private readonly policy: PathPolicy,
+    private readonly recycleBinPort?: RecycleBinPort
+  ) {}
 
   async preview(request: ToolRequest): Promise<VerifiedWriteAction> {
     try {
+      if (request.toolName === 'move_to_recycle_bin') {
+        const arguments_ = toolArguments.move_to_recycle_bin.parse(request.arguments);
+        const targetRelativePath = normalizeRelativePathForResult(arguments_.relativePath);
+        if (targetRelativePath === '.') {
+          throw new FileToolError('PATH_INVALID', '不能将授权根目录本身移入回收站');
+        }
+        const target = await this.policy.resolveExisting(arguments_.relativePath);
+        const targetIdentity = await captureEntryIdentity(target);
+        const action = Object.freeze({
+          id: randomUUID(),
+          toolName: 'move_to_recycle_bin' as const,
+          targetRelativePath
+        });
+        this.#issuedActions.set(action, {
+          toolName: action.toolName,
+          targetRelativePath,
+          targetIdentity
+        });
+        return action;
+      }
+
       if (request.toolName === 'rename_entry') {
         const arguments_ = toolArguments.rename_entry.parse(request.arguments);
         const source = await this.policy.resolveExisting(arguments_.sourceRelativePath);
@@ -190,6 +251,8 @@ export class FileToolService {
     if (!issuedAction) {
       throw new FileToolError('ACTION_EXPIRED', '写操作未由当前服务签发或已经失效');
     }
+    // 所有写动作统一在解析路径或调用平台端口之前消费，失败后也不能重放。
+    this.#issuedActions.delete(action);
 
     try {
       if (issuedAction.toolName === 'create_file') {
@@ -201,6 +264,45 @@ export class FileToolService {
       if (issuedAction.toolName === 'create_directory') {
         const target = await this.policy.resolveTarget(issuedAction.targetRelativePath);
         await mkdir(target, { recursive: false });
+        return;
+      }
+
+      if (issuedAction.toolName === 'move_to_recycle_bin') {
+        const target = await this.policy.resolveExisting(issuedAction.targetRelativePath);
+        const currentIdentity = await captureEntryIdentity(target);
+        if (!hasSameIdentity(issuedAction.targetIdentity, currentIdentity)) {
+          throw new FileToolError('ENTRY_CHANGED', '目标在确认后已经发生变化，请重新确认');
+        }
+        if (!this.recycleBinPort) {
+          throw new FileToolError('RECYCLE_BIN_FAILED', '系统回收站当前不可用');
+        }
+        try {
+          await this.recycleBinPort.moveToRecycleBin(target);
+        } catch (error) {
+          throw new FileToolError('RECYCLE_BIN_FAILED', '无法将目标移入系统回收站', {
+            cause: error
+          });
+        }
+
+        // 平台端口成功时原实体必须已经离开该路径；同路径新实体不归本动作处理。
+        try {
+          const remainingIdentity = await captureEntryIdentity(target);
+          if (hasSameIdentity(currentIdentity, remainingIdentity)) {
+            throw new FileToolError('RECYCLE_BIN_FAILED', '系统回收站未移走目标');
+          }
+        } catch (error) {
+          if (
+            error instanceof Error
+            && 'code' in error
+            && (error as NodeJS.ErrnoException).code === 'ENOENT'
+          ) {
+            return;
+          }
+          if (error instanceof FileToolError) throw error;
+          throw new FileToolError('RECYCLE_BIN_FAILED', '无法确认系统回收站执行结果', {
+            cause: error
+          });
+        }
         return;
       }
 

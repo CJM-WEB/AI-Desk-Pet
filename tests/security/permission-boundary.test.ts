@@ -9,6 +9,7 @@ import {
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AgentLoop, type ModelResponse } from '@myself/agent-core';
+import { FileToolService, type RecycleBinPort } from '@myself/file-tools';
 import { taskEventSchema, type TaskEvent, type ToolRequest } from '@myself/shared-types';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
 import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
@@ -147,6 +148,75 @@ function expectSerializableBoundarySafe(
 }
 
 describe('权限边界安全回归', () => {
+  test('回收站端口只能消费服务私下签发的单次动作且公开边界不泄露绝对路径', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    const target = join(authorized.root, 'docs', 'private.txt');
+    const recycled = join(authorized.base, 'recycled-private.txt');
+    await writeFile(target, 'private', 'utf8');
+    const port: RecycleBinPort = {
+      moveToRecycleBin: vi.fn(async absolutePath => {
+        await rename(absolutePath, recycled);
+      })
+    };
+    const fileTools = new FileToolService(authorized.policy, port);
+    const action = await fileTools.preview({
+      requestId: 'secure-recycle-1',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: 'docs/private.txt' }
+    });
+
+    expect(action).toMatchObject({
+      toolName: 'move_to_recycle_bin',
+      targetRelativePath: 'docs/private.txt'
+    });
+    expect(JSON.stringify(action)).not.toContain(authorized.root);
+    await expect(fileTools.executeWrite({ ...action })).rejects.toMatchObject({
+      code: 'ACTION_EXPIRED'
+    });
+    await fileTools.executeWrite(action);
+    await expect(fileTools.executeWrite(action)).rejects.toMatchObject({
+      code: 'ACTION_EXPIRED'
+    });
+    expect(port.moveToRecycleBin).toHaveBeenCalledTimes(1);
+    await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(recycled, 'utf8')).resolves.toBe('private');
+  });
+
+  test('回收站端口错误转换为脱敏中文错误且失败动作不可重放', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    const target = join(authorized.root, 'docs', 'keep.txt');
+    await writeFile(target, 'keep', 'utf8');
+    const port: RecycleBinPort = {
+      moveToRecycleBin: vi.fn(async absolutePath => {
+        throw new Error(`回收站拒绝：${absolutePath}`);
+      })
+    };
+    const fileTools = new FileToolService(authorized.policy, port);
+    const action = await fileTools.preview({
+      requestId: 'secure-recycle-failure',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: 'docs/keep.txt' }
+    });
+
+    const error = await fileTools.executeWrite(action).then(
+      () => null,
+      reason => reason as Error & { code: string }
+    );
+    if (!error) throw new Error('预期回收站端口失败');
+    expect(error).toMatchObject({
+      code: 'RECYCLE_BIN_FAILED',
+      message: '无法将目标移入系统回收站'
+    });
+    expect(error.message).not.toContain(authorized.root);
+    await expect(fileTools.executeWrite(action)).rejects.toMatchObject({
+      code: 'ACTION_EXPIRED'
+    });
+    expect(port.moveToRecycleBin).toHaveBeenCalledTimes(1);
+    await expect(readFile(target, 'utf8')).resolves.toBe('keep');
+  });
+
   test('Provider 控制的请求标识不能把认证凭据泄露给 Renderer', async () => {
     const fixture = await harness(apiKey => [{
       response: toolCall(

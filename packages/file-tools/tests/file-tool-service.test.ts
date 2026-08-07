@@ -3,24 +3,44 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
+  rename,
   rm,
   symlink,
   writeFile
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { basename, dirname, join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileToolService, type VerifiedWriteAction } from '../src/file-tool-service';
 import { PathPolicy } from '../src/path-policy';
+import type { RecycleBinPort } from '../src/recycle-bin-port';
 import { toolArguments } from '../src/schemas';
 
 const temporaryRoots: string[] = [];
 
-async function fixtureService() {
+async function fixtureService(recycleBinPort?: RecycleBinPort) {
   const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
   temporaryRoots.push(root);
   await mkdir(join(root, 'docs'));
-  return { root, service: new FileToolService(await PathPolicy.create(root)) };
+  return {
+    root,
+    service: new FileToolService(await PathPolicy.create(root), recycleBinPort)
+  };
+}
+
+function movingRecycleBinPort(): RecycleBinPort & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    async moveToRecycleBin(absolutePath) {
+      calls.push(absolutePath);
+      await rename(
+        absolutePath,
+        join(dirname(absolutePath), `.recycled-${basename(absolutePath)}`)
+      );
+    }
+  };
 }
 
 afterEach(async () => {
@@ -78,9 +98,7 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await service.executeWrite(action);
     expect((await lstat(target)).isFile()).toBe(true);
     await expect(readFile(target, 'utf8')).resolves.toBe('');
-    await expect(service.executeWrite(action)).rejects.toMatchObject({
-      code: 'TARGET_EXISTS'
-    });
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
   });
 
   it('取消新建文件预览时磁盘保持不变', async () => {
@@ -230,6 +248,183 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await expect(service.executeWrite(forged)).rejects.toMatchObject({
       code: 'ACTION_EXPIRED'
     });
+  });
+
+  it.each([
+    ['普通文件', 'docs/old.txt', false],
+    ['普通目录', 'docs/old-directory', true]
+  ] as const)('通过可注入端口把%s移出原路径且公开动作不泄露绝对路径', async (
+    _label,
+    relativePath,
+    directory
+  ) => {
+    const port = movingRecycleBinPort();
+    const { service, root } = await fixtureService(port);
+    const target = join(root, relativePath);
+    if (directory) await mkdir(target);
+    else await writeFile(target, '待回收内容', 'utf8');
+
+    const action = await service.preview({
+      requestId: `recycle-${relativePath}`,
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath }
+    });
+
+    expect(action).toEqual(expect.objectContaining({
+      toolName: 'move_to_recycle_bin',
+      targetRelativePath: relativePath.replaceAll('\\', '/')
+    }));
+    expect(JSON.stringify(action)).not.toContain(root);
+    const resolvedTarget = await realpath(target);
+    await service.executeWrite(action);
+
+    expect(port.calls).toEqual([resolvedTarget]);
+    await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('拒绝回收授权根本身、越界路径和链接目标', async ({ skip }) => {
+    const port = movingRecycleBinPort();
+    const { service, root } = await fixtureService(port);
+    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-outside-'));
+    temporaryRoots.push(outside);
+    await writeFile(join(outside, 'secret.txt'), 'secret', 'utf8');
+
+    await expect(service.preview({
+      requestId: 'recycle-root',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: '.' }
+    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+    await expect(service.preview({
+      requestId: 'recycle-outside',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: '../outside/secret.txt' }
+    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+
+    try {
+      await symlink(outside, join(root, 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (
+        error instanceof Error
+        && 'code' in error
+        && (error.code === 'EPERM' || error.code === 'EACCES')
+      ) {
+        skip(`当前系统不允许创建测试 Junction：${String(error.code)}`);
+        return;
+      }
+      throw error;
+    }
+    await expect(service.preview({
+      requestId: 'recycle-link',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: 'outside-link' }
+    })).rejects.toMatchObject({ code: 'LINK_NOT_ALLOWED' });
+    expect(port.calls).toEqual([]);
+  });
+
+  it('提交前目标被同路径新实体替换时返回 ENTRY_CHANGED 且不调用端口', async () => {
+    const port = movingRecycleBinPort();
+    const { service, root } = await fixtureService(port);
+    const target = join(root, 'docs', 'replace-me.txt');
+    const original = join(root, 'docs', 'original.txt');
+    await writeFile(target, 'original', 'utf8');
+    const action = await service.preview({
+      requestId: 'recycle-replaced',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: 'docs/replace-me.txt' }
+    });
+    await rename(target, original);
+    await writeFile(target, 'replacement', 'utf8');
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    expect(port.calls).toEqual([]);
+    await expect(readFile(target, 'utf8')).resolves.toBe('replacement');
+  });
+
+  it('提交前目标消失时返回稳定错误、动作被消费且不调用端口', async () => {
+    const port = movingRecycleBinPort();
+    const { service, root } = await fixtureService(port);
+    const target = join(root, 'docs', 'vanished.txt');
+    await writeFile(target, 'vanished', 'utf8');
+    const action = await service.preview({
+      requestId: 'recycle-vanished',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: 'docs/vanished.txt' }
+    });
+    await rm(target);
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_NOT_FOUND' });
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    expect(port.calls).toEqual([]);
+  });
+
+  it('回收动作在任何副作用前消费，成功、失败或伪造都不能重复调用端口', async () => {
+    const port: RecycleBinPort = {
+      moveToRecycleBin: vi.fn(async () => {
+        throw new Error('系统错误包含 C:\\private\\secret.txt');
+      })
+    };
+    const { service, root } = await fixtureService(port);
+    await writeFile(join(root, 'docs', 'fail.txt'), 'keep', 'utf8');
+    const action = await service.preview({
+      requestId: 'recycle-port-failure',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: 'docs/fail.txt' }
+    });
+
+    const firstError = await service.executeWrite(action).then(
+      () => null,
+      error => error as Error & { code: string }
+    );
+    if (!firstError) throw new Error('预期回收站端口失败');
+    expect(firstError).toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
+    expect(firstError.message).toBe('无法将目标移入系统回收站');
+    expect(firstError.message).not.toContain(root);
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    await expect(service.executeWrite({ ...action })).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    expect(port.moveToRecycleBin).toHaveBeenCalledTimes(1);
+    await expect(readFile(join(root, 'docs', 'fail.txt'), 'utf8')).resolves.toBe('keep');
+  });
+
+  it('拒绝没有移走目标却返回成功的端口，且动作仍不可重放', async () => {
+    const port: RecycleBinPort = { moveToRecycleBin: vi.fn(async () => undefined) };
+    const { service, root } = await fixtureService(port);
+    await writeFile(join(root, 'docs', 'still-here.txt'), 'keep', 'utf8');
+    const action = await service.preview({
+      requestId: 'recycle-false-success',
+      toolName: 'move_to_recycle_bin',
+      arguments: { relativePath: 'docs/still-here.txt' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({
+      code: 'RECYCLE_BIN_FAILED',
+      message: '系统回收站未移走目标'
+    });
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    expect(port.moveToRecycleBin).toHaveBeenCalledTimes(1);
+  });
+
+  it('现有创建与重命名写动作也统一为一次性，失败后不可重放', async () => {
+    const { service, root } = await fixtureService();
+    const createAction = await service.preview({
+      requestId: 'one-shot-create',
+      toolName: 'create_file',
+      arguments: { relativePath: 'one-shot.txt' }
+    });
+    await writeFile(join(root, 'one-shot.txt'), 'collision', 'utf8');
+    await expect(service.executeWrite(createAction)).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+    await expect(service.executeWrite(createAction)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+
+    await writeFile(join(root, 'docs', 'before-one-shot.txt'), 'before', 'utf8');
+    const renameAction = await service.preview({
+      requestId: 'one-shot-rename',
+      toolName: 'rename_entry',
+      arguments: {
+        sourceRelativePath: 'docs/before-one-shot.txt',
+        targetRelativePath: 'docs/after-one-shot.txt'
+      }
+    });
+    await service.executeWrite(renameAction);
+    await expect(service.executeWrite(renameAction)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
   });
 
   it('读工具不能生成待确认写动作', async () => {
