@@ -197,6 +197,26 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
     )
   });
 
+  registry.register({
+    definition: definition(
+      'builtin.files.move_to_recycle_bin',
+      '将授权根目录内的单个文件或目录移入 Windows 回收站，需要用户确认。',
+      {
+        type: 'object',
+        properties: { relativePath: { type: 'string' } },
+        required: ['relativePath'],
+        additionalProperties: false
+      }
+    ),
+    argumentsSchema: toolArguments.move_to_recycle_bin,
+    executionToolName: 'move_to_recycle_bin',
+    risk: 'recoverable',
+    enabled: true,
+    auditSummary: arguments_ => (
+      `移入回收站 ${displayRelativePath(arguments_['relativePath'])}`
+    )
+  });
+
   return registry;
 }
 

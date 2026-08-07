@@ -33,14 +33,16 @@ const toolNames = [
   'builtin.files.read_text',
   'builtin.files.create_file',
   'builtin.files.create_directory',
-  'builtin.files.rename_entry'
+  'builtin.files.rename_entry',
+  'builtin.files.move_to_recycle_bin'
 ] as const;
 const internalToolNames = [
   'list_directory',
   'read_text_file',
   'create_file',
   'create_directory',
-  'rename_entry'
+  'rename_entry',
+  'move_to_recycle_bin'
 ] as const;
 
 const roots: AuthorizedRootFixture[] = [];
@@ -497,7 +499,7 @@ describe('桌面 Agent 真实服务集成', () => {
     });
   });
 
-  test('只通过五个允许工具列出授权目录', async () => {
+  test('只通过六个允许工具列出授权目录', async () => {
     const fixture = await harness([
       {
         response: toolCall('list-1', 'builtin.files.list_directory', { relativePath: '.' }),
@@ -609,6 +611,40 @@ describe('桌面 Agent 真实服务集成', () => {
     expectProviderExchange(fixture.providerServer, 1);
     await expect(lstat(join(fixture.authorized.root, 'cancelled.txt')))
       .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('回收站预览使用显式 operation，取消不执行系统操作', async () => {
+    const fixture = await harness([{
+      response: toolCall(
+        'recycle-cancel',
+        'builtin.files.move_to_recycle_bin',
+        { relativePath: 'docs' }
+      )
+    }]);
+
+    await fixture.service.submit('将 docs 移入回收站');
+    const action = pendingAction(fixture.events);
+    expect(action).toMatchObject({
+      operation: 'move_to_recycle_bin',
+      targetRelativePath: 'docs'
+    });
+
+    fixture.service.cancelAction(action.actionId);
+
+    expectProviderExchange(fixture.providerServer, 1);
+    await expect(lstat(join(fixture.authorized.root, 'docs'))).resolves.toBeDefined();
+  });
+
+  test('生产组合根只通过 Electron shell.trashItem 注入回收站端口', async () => {
+    const mainSource = await readFile(
+      join(process.cwd(), 'apps/desktop/src/main/index.ts'),
+      'utf8'
+    );
+
+    expect(mainSource).toMatch(
+      /new FileToolService\(policy,\s*\{\s*moveToRecycleBin:\s*absolutePath\s*=>\s*shell\.trashItem\(absolutePath\)\s*\}\)/u
+    );
+    expect(mainSource).not.toContain("from '@myself/file-tools/electron'");
   });
 
   test('新建预览后确认会真实创建空文件', async () => {

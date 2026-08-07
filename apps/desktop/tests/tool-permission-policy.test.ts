@@ -202,7 +202,7 @@ describe('内置文件工具注册', () => {
     )).toContain('builtin.files.list_directory');
   });
 
-  test('五个公开工具映射到旧内部动作和本地风险', () => {
+  test('六个公开工具映射到内部动作和本地风险', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
     const cases = [
@@ -215,6 +215,12 @@ describe('内置文件工具注册', () => {
         'rename_entry',
         'recoverable',
         { sourceRelativePath: 'old.txt', targetRelativePath: 'new.txt' }
+      ],
+      [
+        'builtin.files.move_to_recycle_bin',
+        'move_to_recycle_bin',
+        'recoverable',
+        { relativePath: 'old.txt' }
       ]
     ] as const;
 

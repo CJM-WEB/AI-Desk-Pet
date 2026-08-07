@@ -90,6 +90,55 @@ describe('Renderer 可见组件', () => {
     expect(markup).not.toContain('rename_entry');
   });
 
+  test('回收站确认卡按 operation 显示可恢复危险提示', () => {
+    const markup = renderToStaticMarkup(
+      <ConfirmationCard
+        action={{
+          actionId: 'action-recycle',
+          conversationId: 'conversation-1',
+          risk: 'write',
+          operation: 'move_to_recycle_bin',
+          summary: '备份目录',
+          targetRelativePath: 'docs/backup',
+          createdAt: '2026-08-07T12:00:00.000Z',
+          expiresAt: '2026-08-07T12:02:00.000Z'
+        }}
+        busy={false}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('移入 Windows 回收站，可从回收站恢复');
+    expect(markup).toContain('确认移入回收站');
+    expect(markup).toContain('先不移入');
+    expect(markup).toContain('danger-button');
+    expect(markup).not.toContain('永久删除');
+    expect(markup).not.toContain('move_to_recycle_bin');
+  });
+
+  test('创建目录确认卡不依赖 summary 关键字', () => {
+    const markup = renderToStaticMarkup(
+      <ConfirmationCard
+        action={{
+          actionId: 'action-directory',
+          conversationId: 'conversation-1',
+          risk: 'write',
+          operation: 'create_directory',
+          summary: '新建一个收纳位置',
+          targetRelativePath: 'archive',
+          createdAt: '2026-08-07T12:00:00.000Z',
+          expiresAt: '2026-08-07T12:02:00.000Z'
+        }}
+        busy={false}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('确认创建目录');
+  });
+
   test('设置工作区仅提供模型、隐私和本地数据导航', () => {
     const markup = renderToStaticMarkup(
       <SettingsWorkspace

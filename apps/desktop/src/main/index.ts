@@ -11,6 +11,7 @@ import {
   nativeImage,
   safeStorage,
   screen,
+  shell,
   Tray,
   type MenuItemConstructorOptions
 } from 'electron';
@@ -545,7 +546,10 @@ async function createApplicationWindows(): Promise<void> {
         throw settingsIncompleteError();
       }
       const policy = await PathPolicy.create(authorizedRootPath);
-      const fileTools = new FileToolService(policy);
+      // Electron 只在组合根适配平台能力，workspace 文件工具保持与 Electron 解耦。
+      const fileTools = new FileToolService(policy, {
+        moveToRecycleBin: absolutePath => shell.trashItem(absolutePath)
+      });
       const fileDisclosureAllowed = privacySettings.dataCategories.file;
       const registry = createSessionToolRegistry(fileDisclosureAllowed);
       for (const registration of await desktopSettingsService.enabledReadToolRegistrations()) {
