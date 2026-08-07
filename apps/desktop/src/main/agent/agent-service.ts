@@ -15,6 +15,11 @@ import type {
   PendingActionClearReason,
   PendingActionStore
 } from './pending-action-store';
+import {
+  FileTaskTransactionCoordinator,
+  type FileTaskPlaybackTerminal,
+  type FileTaskResult
+} from './file-task-transaction-coordinator';
 
 const MAX_USER_TEXT_LENGTH = 4_000;
 
@@ -34,14 +39,31 @@ export interface AgentSession {
   messages: ModelMessage[];
 }
 
+export interface AgentTaskCarryPort {
+  beginTaskCarry(): Readonly<{
+    playbackToken: string;
+    actionId: string;
+    commitFrameId: string | null;
+  }>;
+  endTaskCarry(): void;
+}
+
 export interface AgentServiceOptions {
   loop: AgentLoop;
   pending: PendingActionStore;
   createSession(signal?: AbortSignal): Promise<AgentSession>;
   emit(event: TaskEvent): void;
   emitBehaviorIntent?(intent: CharacterAgentBehaviorIntent): void;
+  taskCarry?: AgentTaskCarryPort;
   createConversationId?: () => string;
 }
+
+type ActiveFileTask = {
+  action: VerifiedWriteAction;
+  session: AgentSession;
+  executionError: unknown;
+  resolveResult(result: FileTaskResult): void;
+};
 
 function errorCode(error: unknown): string {
   if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
@@ -75,7 +97,12 @@ function publicErrorEvent(error: unknown): Extract<TaskEvent, { type: 'error' }>
     SETTINGS_INCOMPLETE: '请先完成模型服务和授权目录设置。',
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
     INPUT_INVALID: '消息不能为空且不能超过 4000 个字符。',
-    TOOL_PERMISSION_DENIED: '该工具操作未获本地权限策略允许。'
+    TOOL_PERMISSION_DENIED: '该工具操作未获本地权限策略允许。',
+    FILE_TASK_USER_CANCELLED: '回收站操作已取消，文件未被移动。',
+    FILE_TASK_PLAYBACK_UNAVAILABLE: '当前角色无法播放搬运动作，文件未被移动。',
+    FILE_TASK_PLAYBACK_CANCELLED: '搬运动画未完成，文件未被移动。',
+    FILE_TASK_PLAYBACK_TIMEOUT: '等待搬运动画超时，文件未被移动。',
+    FILE_TASK_EXECUTION_FAILED: '移入回收站失败，文件仍保留在原位置。'
   };
   return {
     type: 'error',
@@ -134,6 +161,13 @@ function writeResult(action: VerifiedWriteAction): Record<string, unknown> {
       targetRelativePath: action.targetRelativePath
     };
   }
+  if (action.toolName === 'move_to_recycle_bin') {
+    return {
+      ok: true,
+      toolName: action.toolName,
+      targetRelativePath: action.targetRelativePath
+    };
+  }
   return {
     ok: true,
     toolName: action.toolName,
@@ -144,6 +178,9 @@ function writeResult(action: VerifiedWriteAction): Record<string, unknown> {
 function actionSummary(action: VerifiedWriteAction): string {
   if (action.toolName === 'rename_entry') {
     return `将 ${action.sourceRelativePath} 重命名为 ${action.targetRelativePath}`;
+  }
+  if (action.toolName === 'move_to_recycle_bin') {
+    return `将 ${action.targetRelativePath} 移入回收站`;
   }
   if (action.toolName === 'create_file') return `创建文件 ${action.targetRelativePath}`;
   return `创建目录 ${action.targetRelativePath}`;
@@ -158,7 +195,10 @@ export class AgentService {
     | ((intent: CharacterAgentBehaviorIntent) => void)
     | undefined;
   private readonly createConversationId: () => string;
+  private readonly taskCarry: AgentTaskCarryPort | undefined;
+  private readonly fileTaskCoordinator: FileTaskTransactionCoordinator;
   private activeController: AbortController | null = null;
+  private activeFileTask: ActiveFileTask | null = null;
   private pendingSession: AgentSession | null = null;
   private readonly reportedFailures = new WeakSet<object>();
 
@@ -174,7 +214,12 @@ export class AgentService {
     this.createSession = options.createSession;
     this.emit = options.emit;
     this.emitBehaviorIntent = options.emitBehaviorIntent;
+    this.taskCarry = options.taskCarry;
     this.createConversationId = options.createConversationId ?? randomUUID;
+    this.fileTaskCoordinator = new FileTaskTransactionCoordinator({
+      execute: action => this.executeFileTask(action),
+      reportResult: result => this.activeFileTask?.resolveResult(result)
+    });
   }
 
   async submit(text: string): Promise<void> {
@@ -208,6 +253,7 @@ export class AgentService {
 
   cancelActive(): void {
     if (this.activeController) {
+      this.fileTaskCoordinator.cancel();
       this.activeController.abort();
       return;
     }
@@ -238,6 +284,9 @@ export class AgentService {
 
     const controller = new AbortController();
     this.activeController = controller;
+    if (execution.verifiedAction.toolName === 'move_to_recycle_bin') {
+      return this.confirmRecycleBin(execution, session, controller);
+    }
     let writeCompleted = false;
     this.emit({ type: 'phase', phase: 'acting' });
     try {
@@ -288,8 +337,44 @@ export class AgentService {
   }
 
   clearPending(reason: PendingActionClearReason): void {
+    this.fileTaskCoordinator.cancel();
     this.pending.clear(reason);
     this.pendingSession = null;
+  }
+
+  /** 接收 Renderer 已由行为服务认证的播放开始反馈。 */
+  onPlaybackStarted(playbackToken: string, actionId: string): boolean {
+    return this.fileTaskCoordinator.onPlaybackStarted(playbackToken, actionId);
+  }
+
+  /** 接收 Renderer 已由行为服务认证的终止反馈。 */
+  onPlaybackTerminal(
+    playbackToken: string,
+    actionId: string,
+    terminal: FileTaskPlaybackTerminal
+  ): boolean {
+    return this.fileTaskCoordinator.onPlaybackTerminal(playbackToken, actionId, terminal);
+  }
+
+  /** 消费严格匹配当前授权的提交帧；返回值供 IPC 拒绝伪造或重复里程碑。 */
+  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean {
+    return this.fileTaskCoordinator.onCommitFrame(playbackToken, actionId, frameId);
+  }
+
+  /** 由 Main 的短周期轮询推进开始与提交超时。 */
+  advanceFileTaskTransaction(): boolean {
+    return this.fileTaskCoordinator.advance();
+  }
+
+  /** 角色切换或用户交互使旧播放令牌失效时，同步撤销尚未提交的文件能力。 */
+  invalidateFileTaskPlaybackGrant(): boolean {
+    return this.fileTaskCoordinator.cancel('playback_interrupted');
+  }
+
+  /** 应用退出或桌宠窗口关闭时撤销尚未提交的文件能力。 */
+  close(): void {
+    this.fileTaskCoordinator.close();
+    this.activeController?.abort();
   }
 
   private assertIdle(): void {
@@ -297,6 +382,124 @@ export class AgentService {
     const error = Object.assign(new Error('TASK_ALREADY_ACTIVE'), { code: 'TASK_ALREADY_ACTIVE' });
     this.emitFailure(error);
     throw error;
+  }
+
+  private async confirmRecycleBin(
+    execution: { verifiedAction: VerifiedWriteAction; continuationToken: string },
+    session: AgentSession,
+    controller: AbortController
+  ): Promise<void> {
+    const taskCarry = this.taskCarry;
+    if (!taskCarry) {
+      this.loop.discard(execution.continuationToken);
+      const error = Object.assign(new Error('FILE_TASK_PLAYBACK_UNAVAILABLE'), {
+        code: 'FILE_TASK_PLAYBACK_UNAVAILABLE'
+      });
+      this.emitFailure(error);
+      if (this.activeController === controller) this.activeController = null;
+      throw error;
+    }
+
+    let resolveResult!: (result: FileTaskResult) => void;
+    const resultPromise = new Promise<FileTaskResult>(resolve => {
+      resolveResult = resolve;
+    });
+    const activeTask: ActiveFileTask = {
+      action: execution.verifiedAction,
+      session,
+      executionError: null,
+      resolveResult
+    };
+    this.activeFileTask = activeTask;
+    let writeCompleted = false;
+    let carryStarted = false;
+    let carryingPublished = true;
+    this.emit({ type: 'phase', phase: 'acting' });
+    this.emit({ type: 'character_carrying', carrying: true });
+    try {
+      this.assertFileDisclosureAllowed(session);
+      const grant = taskCarry.beginTaskCarry();
+      carryStarted = true;
+      this.fileTaskCoordinator.begin(execution.verifiedAction, grant);
+      const result = await resultPromise;
+      if (result.status !== 'succeeded') {
+        throw this.fileTaskResultError(result, activeTask.executionError);
+      }
+      writeCompleted = true;
+      taskCarry.endTaskCarry();
+      carryStarted = false;
+      this.emit({ type: 'character_carrying', carrying: false });
+      carryingPublished = false;
+      await this.forward(
+        this.loop.resume(
+          execution.continuationToken,
+          writeResult(execution.verifiedAction),
+          this.runContext(session, controller.signal)
+        ),
+        session
+      );
+    } catch (error) {
+      if (!writeCompleted && this.fileTaskCoordinator.snapshot().state === 'waiting-playback') {
+        this.fileTaskCoordinator.cancel();
+      }
+      if (!writeCompleted && this.fileTaskCoordinator.snapshot().state === 'waiting-commit') {
+        this.fileTaskCoordinator.cancel();
+      }
+      if (!writeCompleted && this.activeFileTask === activeTask) {
+        // beginTaskCarry 或授权校验失败时协调器尚未接管续跑令牌。
+        this.loop.discard(execution.continuationToken);
+      }
+      if (writeCompleted) {
+        this.emit({
+          type: 'error',
+          code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
+          message: '本地文件操作已成功，但模型总结失败。',
+          nextAction: '可以查看文件结果，或稍后重新请求总结。'
+        });
+        this.emit({ type: 'phase', phase: 'success' });
+      } else {
+        this.emitFailure(error);
+      }
+      throw error;
+    } finally {
+      if (carryStarted) taskCarry.endTaskCarry();
+      if (carryingPublished) this.emit({ type: 'character_carrying', carrying: false });
+      if (this.activeFileTask === activeTask) this.activeFileTask = null;
+      if (this.activeController === controller) this.activeController = null;
+    }
+  }
+
+  private async executeFileTask(action: VerifiedWriteAction): Promise<void> {
+    const activeTask = this.activeFileTask;
+    if (!activeTask || activeTask.action !== action) {
+      throw new Error('FILE_TASK_TRANSACTION_MISMATCH');
+    }
+    try {
+      await activeTask.session.fileTools.executeWrite(action);
+    } catch (error) {
+      activeTask.executionError = error;
+      throw error;
+    }
+  }
+
+  private fileTaskResultError(result: FileTaskResult, executionError: unknown): Error {
+    if (result.status === 'succeeded') {
+      return Object.assign(new Error('FILE_TASK_RESULT_INVALID'), {
+        code: 'FILE_TASK_RESULT_INVALID'
+      });
+    }
+    if (result.status === 'failed') {
+      if (executionError instanceof Error) return executionError;
+      return Object.assign(new Error('FILE_TASK_EXECUTION_FAILED'), {
+        code: 'FILE_TASK_EXECUTION_FAILED'
+      });
+    }
+    const code = result.reason === 'user_cancelled'
+      ? 'FILE_TASK_USER_CANCELLED'
+      : result.reason === 'playback_start_timeout' || result.reason === 'commit_timeout'
+        ? 'FILE_TASK_PLAYBACK_TIMEOUT'
+        : 'FILE_TASK_PLAYBACK_CANCELLED';
+    return Object.assign(new Error(code), { code });
   }
 
   private runContext(session: AgentSession, signal: AbortSignal): RunContext {

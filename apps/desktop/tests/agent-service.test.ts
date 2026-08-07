@@ -57,6 +57,14 @@ function verifiedAction(): VerifiedWriteAction {
   });
 }
 
+function recycleAction(): VerifiedWriteAction {
+  return Object.freeze({
+    id: 'verified-recycle-1',
+    toolName: 'move_to_recycle_bin' as const,
+    targetRelativePath: 'archive/old.txt'
+  });
+}
+
 function createHarness(
   provider: ModelProvider,
   fileOverrides: Partial<AgentFileTools> = {},
@@ -90,6 +98,18 @@ function createHarness(
   const pending = new PendingActionStore({
     onDiscard: execution => loop.discard(execution.continuationToken)
   });
+  const taskCarry = {
+    beginTaskCarry: vi.fn<() => {
+      playbackToken: string;
+      actionId: string;
+      commitFrameId: string | null;
+    }>(() => ({
+      playbackToken: 'carry-token-1',
+      actionId: 'carry-action-1',
+      commitFrameId: 'carry-frame-1'
+    })),
+    endTaskCarry: vi.fn()
+  };
   const service = new AgentService({
     loop,
     pending,
@@ -99,9 +119,10 @@ function createHarness(
       onEmit?.(event);
     },
     ...(emitBehaviorIntent === undefined ? {} : { emitBehaviorIntent }),
+    taskCarry,
     createConversationId: () => 'conversation-1'
   });
-  return { events, fileTools, loop, pending, provider, service };
+  return { events, fileTools, loop, pending, provider, service, taskCarry };
 }
 
 function phases(events: TaskEvent[]) {
@@ -321,6 +342,198 @@ describe('AgentService', () => {
     });
     await expect(service.confirm(pendingEvent.action.actionId)).rejects.toThrow('ACTION_EXPIRED');
     expect(fileTools.executeWrite).toHaveBeenCalledOnce();
+  });
+
+  test('回收站确认等待匹配的开始与提交帧后才执行并恢复总结', async () => {
+    const provider = new ScriptedProvider([
+      writeResponse(),
+      { type: 'text', text: 'old.txt 已移入回收站' }
+    ]);
+    const harness = createHarness(provider, {
+      preview: vi.fn(async () => recycleAction())
+    });
+    await harness.service.submit('把 old.txt 移入回收站');
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+    expect(harness.service.onPlaybackStarted('wrong-token', 'carry-action-1')).toBe(false);
+    expect(harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1')).toBe(true);
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+    expect(harness.service.onCommitFrame(
+      'carry-token-1',
+      'carry-action-1',
+      'carry-frame-1'
+    )).toBe(true);
+    await confirming;
+
+    expect(harness.fileTools.executeWrite).toHaveBeenCalledExactlyOnceWith(recycleAction());
+    expect(harness.taskCarry.beginTaskCarry).toHaveBeenCalledOnce();
+    expect(harness.taskCarry.endTaskCarry).toHaveBeenCalledOnce();
+    expect(phases(harness.events)).toEqual([
+      'listening',
+      'thinking',
+      'awaiting_confirmation',
+      'acting',
+      'thinking',
+      'success'
+    ]);
+  });
+
+  test('回收站无提交帧时由匹配的 started 提交且只执行一次', async () => {
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse(), { type: 'text', text: '已完成' }]),
+      { preview: vi.fn(async () => recycleAction()) }
+    );
+    harness.taskCarry.beginTaskCarry.mockReturnValue({
+      playbackToken: 'carry-token-1',
+      actionId: 'carry-action-1',
+      commitFrameId: null
+    });
+    await harness.service.submit('移入回收站');
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+    expect(harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1')).toBe(true);
+    expect(harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1')).toBe(false);
+    await confirming;
+
+    expect(harness.fileTools.executeWrite).toHaveBeenCalledOnce();
+  });
+
+  test('回收站提交前取消会丢弃续跑且永不执行文件动作', async () => {
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse()]),
+      { preview: vi.fn(async () => recycleAction()) }
+    );
+    const discard = vi.spyOn(harness.loop, 'discard');
+    await harness.service.submit('移入回收站');
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+    harness.service.cancelActive();
+    await expect(confirming).rejects.toThrow('FILE_TASK_USER_CANCELLED');
+
+    expect(discard).toHaveBeenCalledOnce();
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+    expect(harness.taskCarry.endTaskCarry).toHaveBeenCalledOnce();
+    expect(harness.service.onCommitFrame(
+      'carry-token-1',
+      'carry-action-1',
+      'carry-frame-1'
+    )).toBe(false);
+  });
+
+  test('回收站提交前收到匹配的播放终止会撤销提交权', async () => {
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse()]),
+      { preview: vi.fn(async () => recycleAction()) }
+    );
+    await harness.service.submit('移入回收站');
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
+    expect(harness.service.onPlaybackTerminal(
+      'carry-token-1',
+      'carry-action-1',
+      'interrupted'
+    )).toBe(true);
+    await expect(confirming).rejects.toThrow('FILE_TASK_PLAYBACK_CANCELLED');
+
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+    expect(harness.service.onCommitFrame(
+      'carry-token-1',
+      'carry-action-1',
+      'carry-frame-1'
+    )).toBe(false);
+  });
+
+  test('角色切换或用户交互使播放授权失效后旧提交帧不能写文件', async () => {
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse()]),
+      { preview: vi.fn(async () => recycleAction()) }
+    );
+    await harness.service.submit('移入回收站');
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
+    expect(harness.service.invalidateFileTaskPlaybackGrant()).toBe(true);
+    await expect(confirming).rejects.toThrow('FILE_TASK_PLAYBACK_CANCELLED');
+
+    expect(harness.service.onCommitFrame(
+      'carry-token-1',
+      'carry-action-1',
+      'carry-frame-1'
+    )).toBe(false);
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+  });
+
+  test('回收站等待播放超时由 Main 轮询推进并撤销提交权', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createHarness(
+        new ScriptedProvider([writeResponse()]),
+        { preview: vi.fn(async () => recycleAction()) }
+      );
+      await harness.service.submit('移入回收站');
+      const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+      if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+      const confirming = harness.service.confirm(pendingEvent.action.actionId);
+      await Promise.resolve();
+      vi.advanceTimersByTime(30_001);
+      expect(harness.service.advanceFileTaskTransaction()).toBe(true);
+      await expect(confirming).rejects.toThrow('FILE_TASK_PLAYBACK_TIMEOUT');
+
+      expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+      expect(harness.service.onPlaybackStarted(
+        'carry-token-1',
+        'carry-action-1'
+      )).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('回收站本地成功但模型总结失败时警告且保持 success 终态', async () => {
+    const summaryError = Object.assign(new Error('provider failed'), {
+      code: 'PROVIDER_SERVER_ERROR',
+      retryable: false
+    });
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse(), summaryError]),
+      { preview: vi.fn(async () => recycleAction()) }
+    );
+    await harness.service.submit('移入回收站');
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
+    harness.service.onCommitFrame('carry-token-1', 'carry-action-1', 'carry-frame-1');
+    await expect(confirming).rejects.toThrow('provider failed');
+
+    expect(harness.events).toContainEqual({
+      type: 'error',
+      code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
+      message: '本地文件操作已成功，但模型总结失败。',
+      nextAction: '可以查看文件结果，或稍后重新请求总结。'
+    });
+    expect(phases(harness.events)).not.toContain('error');
+    expect(phases(harness.events).at(-1)).toBe('success');
   });
 
   test('取消进行中的 Provider 调用会进入 cancelled', async () => {

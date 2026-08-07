@@ -252,12 +252,12 @@ export class FileTaskTransactionCoordinator {
     return false;
   }
 
-  cancel(): boolean {
+  cancel(reason: FileTaskCancellationReason = 'user_cancelled'): boolean {
     const current = this.#current;
     if (current?.state !== 'waiting-playback' && current?.state !== 'waiting-commit') {
       return false;
     }
-    this.#settle({ status: 'cancelled', reason: 'user_cancelled' });
+    this.#settle({ status: 'cancelled', reason });
     return true;
   }
 

@@ -262,6 +262,7 @@ async function createApplicationWindows(): Promise<void> {
     screen,
     motion: {
       beginUserMove: () => {
+        activeAgentService?.invalidateFileTaskPlaybackGrant();
         characterBehavior.handleUserInteraction();
         characterMotion.beginUserMove();
       },
@@ -281,7 +282,17 @@ async function createApplicationWindows(): Promise<void> {
         occurredAtMs: performance.now()
       });
     }
-  }, pet.webContents);
+  }, pet.webContents, {
+    onPlaybackStarted: (playbackToken, actionId) => (
+      activeAgentService?.onPlaybackStarted(playbackToken, actionId) ?? false
+    ),
+    onPlaybackTerminal: (playbackToken, actionId, terminal) => (
+      activeAgentService?.onPlaybackTerminal(playbackToken, actionId, terminal) ?? false
+    ),
+    onCommitFrame: (playbackToken, actionId, frameId) => (
+      activeAgentService?.onCommitFrame(playbackToken, actionId, frameId) ?? false
+    )
+  });
   const releaseMotionEvents = characterMotion.subscribe(snapshot => {
     characterBehavior.handleMovement(snapshot);
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
@@ -298,12 +309,16 @@ async function createApplicationWindows(): Promise<void> {
   });
   const motionRuntime = startCharacterMotionTimers({
     tick: () => characterMotion.tick(),
-    poll: () => characterBehavior.handleIdleDue(),
+    poll: () => {
+      characterBehavior.handleIdleDue();
+      activeAgentService?.advanceFileTaskTransaction();
+    },
     isDestroyed: () => pet.isDestroyed(),
     tickIntervalMs: 50,
     idleIntervalMs: 500
   });
   app.once('before-quit', () => {
+    activeAgentService?.close();
     releasePetWindowInteraction();
     motionRuntime.destroy();
     releaseMotionEvents();
@@ -312,6 +327,7 @@ async function createApplicationWindows(): Promise<void> {
     releaseMotionWindowEvents();
   });
   pet.once('closed', () => {
+    activeAgentService?.close();
     motionRuntime.destroy();
     releaseMotionEvents();
     releaseBehaviorEvents();
@@ -448,6 +464,7 @@ async function createApplicationWindows(): Promise<void> {
   );
   characterActions.subscribeCharacterEvents(event => {
     if (event.type === 'active-character-changed') {
+      activeAgentService?.invalidateFileTaskPlaybackGrant();
       void characterBehavior.handleActiveCharacterChanged();
     }
     broadcastCharacterEvent(
@@ -603,7 +620,11 @@ async function createApplicationWindows(): Promise<void> {
         }
       }
     },
-    emitBehaviorIntent: intent => characterBehavior.handleAgentIntent(intent)
+    emitBehaviorIntent: intent => characterBehavior.handleAgentIntent(intent),
+    taskCarry: {
+      beginTaskCarry: () => characterBehavior.beginTaskCarry(),
+      endTaskCarry: () => characterBehavior.endTaskCarry()
+    }
   });
   activeAgentService = agentService;
   registerAgentIpc(ipcMain, agentService);
@@ -643,6 +664,7 @@ async function createApplicationWindows(): Promise<void> {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  activeAgentService?.close();
   activeAgentService?.cancelActive();
   activeAgentService?.clearPending('application_exit');
 });

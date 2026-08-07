@@ -1,4 +1,4 @@
-import { lstat, readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, rename, writeFile } from 'node:fs/promises';
 import { fork, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -9,6 +9,7 @@ import {
 } from '@myself/agent-core';
 import type { CharacterManifestV2 } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
+import { FileToolService } from '@myself/file-tools';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
 import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
 import { PendingActionStore } from '../../apps/desktop/src/main/agent/pending-action-store';
@@ -179,6 +180,21 @@ async function harness(steps: ProviderStep[]) {
   }, async () => providerServer.apiKey);
   const registry = createBuiltinFileToolRegistry();
   const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
+  let carryStarted = 0;
+  let carryEnded = 0;
+  const taskCarry = {
+    beginTaskCarry: () => {
+      carryStarted += 1;
+      return {
+        playbackToken: 'integration-carry-token',
+        actionId: 'integration-carry-action',
+        commitFrameId: 'integration-commit-frame'
+      };
+    },
+    endTaskCarry: () => {
+      carryEnded += 1;
+    }
+  };
   const service = new AgentService({
     loop,
     pending,
@@ -194,9 +210,18 @@ async function harness(steps: ProviderStep[]) {
       messages: []
     }),
     emit: event => events.push(event),
+    taskCarry,
     createConversationId: () => 'conversation-task-9a'
   });
-  return { authorized, events, loop, pending, providerServer, service };
+  return {
+    authorized,
+    events,
+    loop,
+    pending,
+    providerServer,
+    service,
+    carryCounts: () => ({ started: carryStarted, ended: carryEnded })
+  };
 }
 
 function pendingAction(events: TaskEvent[]) {
@@ -626,6 +651,7 @@ describe('桌面 Agent 真实服务集成', () => {
     const action = pendingAction(fixture.events);
     expect(action).toMatchObject({
       operation: 'move_to_recycle_bin',
+      summary: '将 docs 移入回收站',
       targetRelativePath: 'docs'
     });
 
@@ -633,6 +659,52 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expectProviderExchange(fixture.providerServer, 1);
     await expect(lstat(join(fixture.authorized.root, 'docs'))).resolves.toBeDefined();
+  });
+
+  test('回收站确认在匹配提交帧前保持原文件并在提交后只执行一次', async () => {
+    const fixture = await harness([
+      {
+        response: toolCall(
+          'recycle-confirm',
+          'builtin.files.move_to_recycle_bin',
+          { relativePath: 'docs/old.txt' }
+        )
+      },
+      { response: { type: 'text', text: 'old.txt 已移入回收站' } }
+    ]);
+    const source = join(fixture.authorized.root, 'docs', 'old.txt');
+    const recycled = join(fixture.authorized.root, 'docs', '.recycled-old.txt');
+    await writeFile(source, '旧内容', 'utf8');
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: absolutePath => rename(absolutePath, recycled)
+    });
+
+    await fixture.service.submit('把 docs/old.txt 移入回收站');
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+
+    await expect(readFile(source, 'utf8')).resolves.toBe('旧内容');
+    expect(fixture.service.onPlaybackStarted(
+      'integration-carry-token',
+      'integration-carry-action'
+    )).toBe(true);
+    await expect(readFile(source, 'utf8')).resolves.toBe('旧内容');
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(true);
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(false);
+    await confirming;
+
+    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(recycled, 'utf8')).resolves.toBe('旧内容');
+    expect(fixture.carryCounts()).toEqual({ started: 1, ended: 1 });
+    expectProviderExchange(fixture.providerServer, 2);
   });
 
   test('生产组合根只通过 Electron shell.trashItem 注入回收站端口', async () => {
