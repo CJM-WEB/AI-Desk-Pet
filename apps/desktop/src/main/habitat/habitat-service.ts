@@ -51,6 +51,14 @@ export interface ExplorerAuthoritySnapshot {
   instanceId: string | null;
 }
 
+type HabitatExplorerBinding = ExplorerCandidateBinding & {
+  nonce: string;
+};
+
+type HabitatExplorerWatermark = ExplorerCandidateWatermark & {
+  nonce: string;
+};
+
 export interface HabitatServiceSnapshot {
   state: HabitatServiceState;
   directoryId: string | null;
@@ -138,8 +146,8 @@ export class HabitatService {
   private closePromise: Promise<void> | undefined;
   private errorCode: HabitatErrorCode | undefined;
   private epoch = 0;
-  private binding: ExplorerCandidateBinding | undefined;
-  private watermark: ExplorerCandidateWatermark | undefined;
+  private binding: HabitatExplorerBinding | undefined;
+  private watermark: HabitatExplorerWatermark | undefined;
   private observerLifecycle: ObserverLifecycle = 'idle';
   private desktopRecoveryPending = false;
 
@@ -309,16 +317,22 @@ export class HabitatService {
         }]
       },
       ...(this.binding === undefined ? {} : { previous: this.binding }),
-      ...(this.watermark === undefined ? {} : { watermark: this.watermark })
+      ...(
+        this.watermark === undefined || this.watermark.nonce !== observation.nonce
+          ? {}
+          : { watermark: this.watermark }
+      )
     });
     if (!await this.retainObservation(epoch, observation)) return;
-    this.watermark = selected.watermark ?? undefined;
+    this.watermark = selected.watermark === null
+      ? undefined
+      : { ...selected.watermark, nonce: observation.nonce };
     if (selected.status !== 'selected') {
       await this.conceal(epoch, 'tab-race');
       return;
     }
 
-    this.binding = selected.binding;
+    this.binding = { ...selected.binding, nonce: observation.nonce };
     this.state = 'revealing';
     try {
       await this.options.layer.activate({ explorerHwnd: selected.binding.hwnd });
@@ -456,7 +470,7 @@ export class HabitatService {
       throw habitatError('HABITAT_WINDOW_FAILED');
     }
     const committed = await this.storeUpdateLocation({
-      expected: { kind: 'desktop' },
+      expected: previousDesktopLocation,
       expectedDirectory: directory,
       location
     });
@@ -465,9 +479,17 @@ export class HabitatService {
     try {
       this.assertEntryAllowed(reason);
     } catch (error) {
+      if (committed.status !== 'updated') {
+        this.stableSnapshot = structuredClone(committed.snapshot);
+        this.restoreStableState();
+        if (this.stableSnapshot.location.kind === 'folder') {
+          await this.cleanupCurrent(epoch, 'leave');
+        }
+        throw error;
+      }
       try {
         const compensated = await this.storeUpdateLocation({
-          expected: { kind: 'folder', directoryId },
+          expected: committed.snapshot.location,
           location: previousDesktopLocation
         });
         this.assertOperation(epoch);
@@ -510,11 +532,13 @@ export class HabitatService {
       const previous = this.stableSnapshot.location;
       this.state = 'recalling';
       const committed = await this.storeUpdateLocation({
-        expected: { kind: 'folder', directoryId: previous.directoryId },
+        expected: previous,
         location: { kind: 'desktop', position: previous.previousDesktopPosition }
       });
       this.assertOperation(epoch);
       if (committed.status === 'conflict' && committed.snapshot.location.kind !== 'desktop') {
+        this.stableSnapshot = structuredClone(committed.snapshot);
+        this.restoreStableState();
         throw habitatError('HABITAT_STATE_INVALID');
       }
       this.stableSnapshot = structuredClone(committed.snapshot);
@@ -813,6 +837,7 @@ export class HabitatService {
 
   private bindingMatchesAuthority(authority: ExplorerAuthoritySnapshot): boolean {
     return this.binding !== undefined
+      && this.binding.nonce === authority.nonce
       && this.binding.instanceId === authority.instanceId
       && this.binding.sequence === authority.revision;
   }

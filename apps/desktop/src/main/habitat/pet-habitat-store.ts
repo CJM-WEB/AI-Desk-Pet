@@ -171,9 +171,7 @@ export interface HabitatDirectoryPathUpdate {
   absolutePath: string;
 }
 
-export type HabitatLocationExpectation =
-  | { kind: 'desktop' }
-  | { kind: 'folder'; directoryId: string };
+export type HabitatLocationExpectation = HabitatLocation;
 
 export interface HabitatLocationUpdate {
   expected: HabitatLocationExpectation;
@@ -226,10 +224,23 @@ function locationMatchesExpectation(
   location: HabitatLocation,
   expected: HabitatLocationExpectation
 ): boolean {
-  return location.kind === expected.kind && (
-    location.kind === 'desktop'
-    || (expected.kind === 'folder' && location.directoryId === expected.directoryId)
-  );
+  if (location.kind !== expected.kind) return false;
+  if (location.kind === 'desktop' && expected.kind === 'desktop') {
+    return location.position === expected.position || (
+      location.position !== null
+      && expected.position !== null
+      && location.position.x === expected.position.x
+      && location.position.y === expected.position.y
+    );
+  }
+  return location.kind === 'folder'
+    && expected.kind === 'folder'
+    && location.directoryId === expected.directoryId
+    && location.enteredAt === expected.enteredAt
+    && location.previousDesktopPosition.x === expected.previousDesktopPosition.x
+    && location.previousDesktopPosition.y === expected.previousDesktopPosition.y
+    && location.localOffset.x === expected.localOffset.x
+    && location.localOffset.y === expected.localOffset.y;
 }
 
 function sameLocationTarget(left: HabitatLocation, right: HabitatLocation): boolean {
@@ -358,13 +369,7 @@ export class PetHabitatStore {
   updateLocation(input: HabitatLocationUpdate): Promise<HabitatLocationUpdateResult> {
     return this.enqueue(async () => {
       const parsedInput = z.object({
-        expected: z.discriminatedUnion('kind', [
-          z.object({ kind: z.literal('desktop') }).strict(),
-          z.object({
-            kind: z.literal('folder'),
-            directoryId: safeIdentifierSchema
-          }).strict()
-        ]),
+        expected: habitatLocationSchema,
         location: habitatLocationSchema,
         expectedDirectory: habitatDirectoryRecordSchema.optional()
       }).strict().parse(input);

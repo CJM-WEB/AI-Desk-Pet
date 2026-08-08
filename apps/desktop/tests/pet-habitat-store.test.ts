@@ -400,7 +400,7 @@ describe('PetHabitatStore', () => {
 
     const settingsWrite = new PetHabitatStore(file).save(latest);
     const locationWrite = new PetHabitatStore(file).updateLocation({
-      expected: { kind: 'folder', directoryId: 'directory-1' },
+      expected: initial.location,
       location: { kind: 'desktop', position: { x: 120, y: 240 } }
     });
     await settingsWrite;
@@ -424,7 +424,7 @@ describe('PetHabitatStore', () => {
 
     const settingsWrite = new PetHabitatStore(file).save(disabled);
     const locationWrite = new PetHabitatStore(file).updateLocation({
-      expected: { kind: 'desktop' },
+      expected: initial.location,
       expectedDirectory: initial.directories[0]!,
       location: {
         kind: 'folder',
@@ -452,7 +452,7 @@ describe('PetHabitatStore', () => {
 
     const concurrentWrite = new PetHabitatStore(file).save(concurrentFolder);
     const locationWrite = new PetHabitatStore(file).updateLocation({
-      expected: { kind: 'desktop' },
+      expected: desktop.location,
       expectedDirectory: desktop.directories[0]!,
       location: folderSnapshot(join(directory, 'project')).location
     });
@@ -460,5 +460,53 @@ describe('PetHabitatStore', () => {
 
     await expect(locationWrite).resolves.toMatchObject({ status: 'conflict' });
     await expect(store.load()).resolves.toEqual(concurrentFolder);
+  });
+
+  test('location 条件更新拒绝同一 folder 的 ABA 稳定位置替换', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-location-folder-aba-');
+    const file = join(directory, 'private', 'habitat.json');
+    const first = folderSnapshot(join(directory, 'project'));
+    const replacement = structuredClone(first);
+    replacement.location = {
+      kind: 'folder',
+      directoryId: 'directory-1',
+      enteredAt: '2026-08-08T10:00:00.000Z',
+      previousDesktopPosition: { x: 300, y: 400 },
+      localOffset: { x: 40, y: 50 }
+    };
+    const store = new PetHabitatStore(file);
+    await store.save(first);
+
+    const replacementWrite = new PetHabitatStore(file).save(replacement);
+    const delayedRecall = new PetHabitatStore(file).updateLocation({
+      expected: first.location,
+      location: { kind: 'desktop', position: { x: 120, y: 240 } }
+    });
+    await replacementWrite;
+
+    await expect(delayedRecall).resolves.toMatchObject({ status: 'conflict' });
+    await expect(store.load()).resolves.toEqual(replacement);
+  });
+
+  test('location 条件更新严格比较 desktop position，拒绝同槽位 ABA', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-location-desktop-aba-');
+    const file = join(directory, 'private', 'habitat.json');
+    const first = folderSnapshot(join(directory, 'project'));
+    first.location = { kind: 'desktop', position: { x: 120, y: 240 } };
+    const replacement = structuredClone(first);
+    replacement.location = { kind: 'desktop', position: { x: 300, y: 400 } };
+    const store = new PetHabitatStore(file);
+    await store.save(first);
+
+    const replacementWrite = new PetHabitatStore(file).save(replacement);
+    const delayedEnter = new PetHabitatStore(file).updateLocation({
+      expected: first.location,
+      expectedDirectory: first.directories[0]!,
+      location: folderSnapshot(join(directory, 'project')).location
+    });
+    await replacementWrite;
+
+    await expect(delayedEnter).resolves.toMatchObject({ status: 'conflict' });
+    await expect(store.load()).resolves.toEqual(replacement);
   });
 });

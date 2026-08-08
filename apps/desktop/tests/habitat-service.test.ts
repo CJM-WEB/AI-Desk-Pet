@@ -103,10 +103,23 @@ function matchesExpected(
   location: HabitatLocation,
   expected: HabitatLocationExpectation
 ): boolean {
-  return location.kind === expected.kind && (
-    location.kind === 'desktop'
-    || (expected.kind === 'folder' && location.directoryId === expected.directoryId)
-  );
+  if (location.kind !== expected.kind) return false;
+  if (location.kind === 'desktop' && expected.kind === 'desktop') {
+    return location.position === expected.position || (
+      location.position !== null
+      && expected.position !== null
+      && location.position.x === expected.position.x
+      && location.position.y === expected.position.y
+    );
+  }
+  return location.kind === 'folder'
+    && expected.kind === 'folder'
+    && location.directoryId === expected.directoryId
+    && location.enteredAt === expected.enteredAt
+    && location.previousDesktopPosition.x === expected.previousDesktopPosition.x
+    && location.previousDesktopPosition.y === expected.previousDesktopPosition.y
+    && location.localOffset.x === expected.localOffset.x
+    && location.localOffset.y === expected.localOffset.y;
 }
 
 function sameTarget(left: HabitatLocation, right: HabitatLocation): boolean {
@@ -408,6 +421,33 @@ describe('HabitatService 权威状态机', () => {
     expect(JSON.stringify(harness.service.snapshot())).not.toContain('PRIVATE');
   });
 
+  test('enter 遇到外部同 folder unchanged 后出现 blocker，不得补偿掉他人 authority', async () => {
+    const harness = createHarness();
+    const external = folderSnapshot();
+    external.location = {
+      kind: 'folder',
+      directoryId: 'directory-1',
+      enteredAt: '2026-08-08T10:00:00.000Z',
+      previousDesktopPosition: { x: 300, y: 400 },
+      localOffset: { x: 40, y: 50 }
+    };
+    const updateLocation = harness.store.updateLocation.getMockImplementation()!;
+    harness.store.updateLocation.mockImplementationOnce(async update => {
+      harness.replacePersisted(external);
+      harness.blockers.dragging = true;
+      return updateLocation(update);
+    });
+
+    await expect(harness.service.enterDirectory('directory-1', 'manual'))
+      .rejects.toThrow('HABITAT_ENTRY_BLOCKED');
+
+    expect(harness.persisted()).toEqual(external);
+    expect(harness.store.updateLocation).toHaveBeenCalledOnce();
+    expect(harness.service.snapshot()).toMatchObject({
+      state: 'folder-hidden', directoryId: 'directory-1'
+    });
+  });
+
   test('重复 recall 在 desktop 已提交但层级恢复未决时返回同一 Promise且不重复写', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const invalidation = deferred<void>();
@@ -473,6 +513,33 @@ describe('HabitatService 权威状态机', () => {
     await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
     expect(harness.store.updateLocation).toHaveBeenCalledOnce();
     expect(JSON.stringify(harness.service.snapshot())).not.toContain('LAYER_PRIVATE');
+  });
+
+  test('旧 folder A t1 的迟到 recall 不得覆盖同 folder A t2 authority', async () => {
+    const first = folderSnapshot();
+    const replacement = folderSnapshot();
+    replacement.location = {
+      kind: 'folder',
+      directoryId: 'directory-1',
+      enteredAt: '2026-08-08T10:00:00.000Z',
+      previousDesktopPosition: { x: 300, y: 400 },
+      localOffset: { x: 40, y: 50 }
+    };
+    const harness = createHarness({ initialSnapshot: first });
+    harness.replacePersisted(replacement);
+
+    await expect(harness.service.recallToDesktop()).rejects.toThrow('HABITAT_STATE_INVALID');
+
+    expect(harness.persisted()).toEqual(replacement);
+    expect(harness.petWindow.show).not.toHaveBeenCalled();
+    expect(harness.service.snapshot()).toMatchObject({
+      state: 'folder-hidden', directoryId: 'directory-1'
+    });
+
+    await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
+    expect(harness.persisted().location).toEqual({
+      kind: 'desktop', position: { x: 300, y: 400 }
+    });
   });
 
   test('旧 reveal A 卡在 activate 时，recall 完成后 A 返回无权隐藏、失效、显示或改状态', async () => {
@@ -632,6 +699,45 @@ describe('HabitatService 权威状态机', () => {
 
     expect(harness.order).toEqual(['hide', 'invalidate:tab-race']);
     expect(harness.service.snapshot().state).toBe('folder-hidden');
+  });
+
+  test('仅 nonce 换代且旧 A binding 仍可见时，迟到 A 必须隐藏并失效', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    await reveal(harness);
+    harness.setAuthority({
+      nonce: 'b'.repeat(32), revision: 10, instanceId: 'instance-current'
+    });
+
+    await harness.service.observeExplorer(readySnapshot());
+
+    expect(harness.order).toEqual(['hide', 'invalidate:tab-race']);
+    expect(harness.service.snapshot().state).toBe('folder-hidden');
+  });
+
+  test('仅 nonce 换代后当前 B binding 已可见时，迟到 A 不得误伤 B', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const snapshotB = readySnapshot({ nonce: 'b'.repeat(32) });
+    await observeReady(harness, snapshotB);
+    harness.order.length = 0;
+    vi.clearAllMocks();
+
+    await harness.service.observeExplorer(readySnapshot());
+
+    expect(harness.petWindow.hide).not.toHaveBeenCalled();
+    expect(harness.layer.invalidate).not.toHaveBeenCalled();
+    expect(harness.service.snapshot().state).toBe('folder-visible');
+  });
+
+  test('A 可见后仅 nonce 换代的当前 B 不受旧 generation watermark 阻塞', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    await reveal(harness);
+    const snapshotB = readySnapshot({ nonce: 'b'.repeat(32), hwnd: '202' });
+
+    await observeReady(harness, snapshotB);
+
+    expect(harness.layer.activate).toHaveBeenCalledWith({ explorerHwnd: '202' });
+    expect(harness.petWindow.show).toHaveBeenCalledOnce();
+    expect(harness.service.snapshot().state).toBe('folder-visible');
   });
 
   test('私有 layer 错误只映射封闭错误码，不进入 reject 或 snapshot', async () => {
