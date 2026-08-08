@@ -172,6 +172,29 @@ describe('管理员审核服务', () => {
     expect(storage.createSignedUrl).not.toHaveBeenCalled();
   });
 
+  it('待人工审核的共享包无需系统扫描即可由管理员批准', async () => {
+    const { service, store } = createService(submission('manual_review_pending', {
+      kind: 'shared_package',
+      moderationResults: []
+    }));
+
+    await service.applyAction(
+      { uid: 'uid-admin', email: 'admin@example.com' },
+      'submission-1',
+      {
+        action: 'approve',
+        version: 3,
+        idempotencyKey: 'manual-review-approve',
+        reason: '人工检查通过'
+      }
+    );
+
+    expect(store.applyAdminAction).toHaveBeenCalledWith(expect.objectContaining({
+      submissionId: 'submission-1',
+      nextStatus: 'published'
+    }));
+  });
+
   it('管理员不能批准技术扫描未通过的自动驳回投稿', async () => {
     const { service, store } = createService(submission('auto_rejected', {
       moderationResults: [moderationResult('Block')]
@@ -190,9 +213,9 @@ describe('管理员审核服务', () => {
     expect(store.applyAdminAction).not.toHaveBeenCalled();
   });
 
-  it('自动驳回转人工后仍不能用任意历史 Pass 绕过当前包门禁', async () => {
+  it('自动驳回共享包不能用任意历史 Pass 绕过当前包门禁', async () => {
     const { service, store } = createService(submission(
-      'manual_review_pending',
+      'auto_rejected',
       {
         moderationResults: [moderationResult('Pass', {
           packageStorageKey: 'private/old-pet.zip',

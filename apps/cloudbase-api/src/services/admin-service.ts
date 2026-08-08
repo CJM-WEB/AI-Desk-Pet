@@ -78,7 +78,8 @@ function nextStatusFor(
   const status = submission.status;
   if (action === 'approve') {
     if (
-      submission.kind === 'shared_package'
+      status === 'auto_rejected'
+      && submission.kind === 'shared_package'
       && !hasCurrentTechnicalPass(submission)
     ) {
       throw new ApiError('TECHNICAL_SCAN_REQUIRED', 409);
