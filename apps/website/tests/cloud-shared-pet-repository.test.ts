@@ -29,6 +29,10 @@ function createApi(...values: unknown[]) {
 }
 
 describe('云端共享仓库', () => {
+  it('投稿接口只接收输入和可选进度回调', () => {
+    expect(CloudSharedPetRepository.prototype.submit.length).toBe(2);
+  });
+
   it('默认 XHR 上传设置 PUT、规范 MIME、真实进度并处理失败', async () => {
     class FakeRequest extends EventTarget {
       static last: FakeRequest | undefined;

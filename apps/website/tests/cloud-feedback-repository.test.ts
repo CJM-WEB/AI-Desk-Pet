@@ -21,6 +21,10 @@ function deferred<T>() {
 }
 
 describe('云端反馈仓库', () => {
+  it('投稿接口只接收输入', () => {
+    expect(CloudFeedbackRepository.prototype.create.length).toBe(1);
+  });
+
   it('只把公开接口返回的已发布反馈装入同步快照', async () => {
     const api = createApi({
       items: [{
