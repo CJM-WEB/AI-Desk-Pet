@@ -53,6 +53,10 @@ describe('投稿审核契约', () => {
       ...receipt,
       status: 'system_reviewing'
     }).status).toBe('system_reviewing');
+    expect(submissionReceiptSchema.parse({
+      ...receipt,
+      status: 'manual_review_pending'
+    }).status).toBe('manual_review_pending');
     expect(() => submissionReceiptSchema.parse({
       ...receipt,
       status: 'published'

@@ -47,7 +47,7 @@ export class TextSubmissionService {
       submissionId,
       statusToken,
       statusPath: '/submission-status/',
-      status: 'system_reviewing'
+      status: 'manual_review_pending'
     };
   }
 }
