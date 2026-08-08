@@ -61,6 +61,8 @@ function isActionUnavailable(error: unknown): boolean {
 function isSystemForced(signal: CharacterBehaviorSignal): boolean {
   return signal.type === 'user-interaction'
     || signal.type === 'carrying'
+    || signal.type === 'habitat-enter'
+    || signal.type === 'habitat-found'
     || (signal.type === 'task' && signal.phase !== 'start');
 }
 

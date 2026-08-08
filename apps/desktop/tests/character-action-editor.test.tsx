@@ -217,6 +217,24 @@ describe('动作属性与锚点', () => {
     expect(markup).toContain('朝向');
   });
 
+  test('动作语义仅增加目录藏身表现选项，不暴露路径、权限或系统命令字段', () => {
+    const markup = renderToStaticMarkup(
+      <ActionInspector
+        action={actionDefinition}
+        actions={[actionDefinition]}
+        states={[]}
+        disabled={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('value="hide"');
+    expect(markup).toContain('value="emerge"');
+    expect(markup).not.toContain('capabilityRef');
+    expect(markup).not.toContain('系统命令');
+    expect(markup).not.toContain('文件路径');
+  });
+
   test('只有搬运动作展示当前表现的任务提交帧选择器', () => {
     const carrying = { ...actionDefinition, semantic: 'carry' as const };
     const presentation = {

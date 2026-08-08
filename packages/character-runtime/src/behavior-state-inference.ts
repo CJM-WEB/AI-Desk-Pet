@@ -19,11 +19,13 @@ export type CharacterBehaviorInferenceInput = {
 };
 
 const EDGE_SIGNALS = new Set<TrustedBehaviorSignal>([
-  'idle', 'user-interaction', 'conversation-start', 'task-start', 'task-success', 'task-failure'
+  'idle', 'user-interaction', 'conversation-start', 'task-start', 'task-success', 'task-failure',
+  'habitat-enter', 'habitat-found'
 ]);
 const PROTECTED_PRIMARY_SEMANTICS = new Set<CharacterStandardSemantic>([
-  'think', 'move', 'carry', 'celebrate', 'fail'
+  'think', 'move', 'carry', 'celebrate', 'fail', 'hide', 'emerge'
 ]);
+const SYSTEM_RESERVED_SEMANTICS = new Set<CharacterStandardSemantic>(['hide', 'emerge']);
 
 /** 将本次本地事件映射为可参与状态仲裁的标准语义。 */
 function signalSemantic(signal: CharacterBehaviorSignal): CharacterStandardSemantic | null {
@@ -36,6 +38,10 @@ function signalSemantic(signal: CharacterBehaviorSignal): CharacterStandardSeman
     case 'carrying': return signal.active ? 'carry' : null;
     case 'task': return signal.phase === 'success' ? 'celebrate' : signal.phase === 'failure' ? 'fail' : null;
     case 'user-interaction': return null;
+    case 'habitat-enter': return 'hide';
+    case 'habitat-found': return 'emerge';
+    case 'habitat-hidden':
+    case 'habitat-lost': return null;
   }
 }
 
@@ -62,6 +68,14 @@ function activeSignals(previous: CharacterBehaviorStateSnapshot, signal: Charact
     case 'task': current.add(`task-${signal.phase}` as TrustedBehaviorSignal); break;
     case 'movement': setMovementSignal(signal.active ? 'move-start' : 'move-stop'); break;
     case 'carrying': setCarrySignal(signal.active ? 'carry-start' : 'carry-stop'); break;
+    case 'habitat-enter': current.add('habitat-enter'); break;
+    case 'habitat-found':
+      current.delete('habitat-hidden');
+      current.delete('habitat-lost');
+      current.add('habitat-found');
+      break;
+    case 'habitat-hidden': current.add('habitat-hidden'); break;
+    case 'habitat-lost': current.add('habitat-lost'); break;
   }
 
   return TRUSTED_BEHAVIOR_SIGNALS.filter((value): value is TrustedBehaviorSignal => current.has(value));
@@ -210,9 +224,13 @@ function isProtectedPrimary(
       ? signals.includes('move-start')
       : semantic === 'carry'
         ? signals.includes('carry-start')
-      : semantic === 'celebrate'
-        ? signals.includes('task-success')
-        : signals.includes('task-failure');
+        : semantic === 'celebrate'
+          ? signals.includes('task-success')
+          : semantic === 'fail'
+            ? signals.includes('task-failure')
+            : semantic === 'hide'
+              ? signals.includes('habitat-enter')
+              : signals.includes('habitat-found');
 }
 
 type AgentStateSelection =
@@ -222,6 +240,16 @@ type AgentStateSelection =
   | { kind: 'primary-state'; stateId: string }
   | { kind: 'modifier-state'; stateId: string };
 
+/** Agent 不能借可推断状态的动作引用间接进入系统保留表现。 */
+function referencesSystemReservedAction(
+  manifest: CharacterManifestV2,
+  state: CharacterStateDefinitionV2
+): boolean {
+  return state.actionIds.some((actionId) => SYSTEM_RESERVED_SEMANTICS.has(
+    manifest.actions.find((action) => action.id === actionId)?.semantic as CharacterStandardSemantic
+  ));
+}
+
 function agentStateSelection(
   manifest: CharacterManifestV2,
   intent: CharacterAgentBehaviorIntent | undefined
@@ -230,14 +258,17 @@ function agentStateSelection(
   if (!stateIntent) return { kind: 'none' };
   if ('stateId' in stateIntent) {
     const state = manifest.states.find((candidate) => candidate.id === stateIntent.stateId);
-    if (!state?.agentInferable) return { kind: 'invalid' };
+    if (!state?.agentInferable || referencesSystemReservedAction(manifest, state) || (
+      typeof state.semantic === 'string' && SYSTEM_RESERVED_SEMANTICS.has(state.semantic)
+    )) return { kind: 'invalid' };
     return state.kind === 'modifier'
       ? { kind: 'modifier-state', stateId: state.id }
       : { kind: 'primary-state', stateId: state.id };
   }
 
-  const available = manifest.states.some((state) => (
-    state.kind === 'primary' && state.agentInferable && standardSemantic(state) === stateIntent.semantic
+  const available = !SYSTEM_RESERVED_SEMANTICS.has(stateIntent.semantic) && manifest.states.some((state) => (
+    state.kind === 'primary' && state.agentInferable && !referencesSystemReservedAction(manifest, state)
+    && standardSemantic(state) === stateIntent.semantic
   ));
   return available
     ? { kind: 'primary-semantic', semantic: stateIntent.semantic }
@@ -262,7 +293,9 @@ export function inferCharacterBehaviorState(
   const signals = activeSignals(previous, signal);
   const inferredLocalSemantic = signalSemantic(signal);
   const agentState = agentStateSelection(manifest, agentIntent);
-  const agentActionSemantic = agentIntent?.actionSemantic ?? null;
+  const agentActionSemantic = agentIntent?.actionSemantic && !SYSTEM_RESERVED_SEMANTICS.has(
+    agentIntent.actionSemantic
+  ) ? agentIntent.actionSemantic : null;
   const currentPrimary = manifest.states.find((state) => state.id === previous.primaryStateId && state.kind === 'primary');
   const previousExited = Boolean(currentPrimary?.exitConditions.some((condition) => conditionMatches(
     condition,

@@ -141,7 +141,12 @@ function legacyStateFor(
   customStateIdsBySemantic: Map<string, ReturnType<typeof createExtensionStateId>>
 ): LegacyState {
   if (typeof state.semantic === 'string') {
-    const stateId = LEGACY_STATE_BY_SEMANTIC[state.semantic];
+    // 旧播放器没有目录藏身状态，只投影到受控的既有移动或待机表现。
+    const stateId = state.semantic === 'hide'
+      ? 'moving'
+      : state.semantic === 'emerge'
+        ? 'idle'
+        : LEGACY_STATE_BY_SEMANTIC[state.semantic];
     const existing = statesById.get(stateId);
     if (existing) return existing;
 

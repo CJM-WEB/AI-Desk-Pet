@@ -97,7 +97,11 @@ export async function ensureOfficialDefaultCharacter(
         id: 'default',
         name: '默认皮肤',
         presentations: loaded.map(({ state, assetId }) => presentation(state, assetId)),
-        semanticFallbacks: []
+        // 藏身仅复用随包的移动和待机表现，不附带目录能力或新素材。
+        semanticFallbacks: [
+          { semantic: 'hide', actionId: 'moving-main' },
+          { semantic: 'emerge', actionId: 'idle-main' }
+        ]
       }],
       states: loaded.map(({ state, assetId }) => ({
         id: state,
@@ -111,24 +115,38 @@ export async function ensureOfficialDefaultCharacter(
         enterConditions: [],
         exitConditions: [],
         agentInferable: false,
-        actionIds: [`${state}-main`]
+        actionIds: state === 'idle'
+          ? ['idle-main', 'hide-main', 'emerge-main']
+          : [`${state}-main`]
       })),
-      actions: loaded.map(({ state }) => ({
-        id: `${state}-main`,
-        name: state,
-        semantic: V1_STATE_SEMANTICS[state],
-        tags: [],
-        preference: 1,
-        cooldownMs: 0,
-        repeatSuppressionMs: 0,
-        loopPolicy: 'until-interrupted' as const,
-        interrupt: 'normal' as const,
-        allowedPrimaryStateIds: [state],
-        forbiddenPrimaryStateIds: [],
-        requiredModifierStateIds: [],
-        forbiddenModifierStateIds: [],
-        direction: 'any' as const
-      }))
+      actions: [
+        ...loaded.map(({ state }) => ({
+          id: `${state}-main`,
+          name: state,
+          semantic: V1_STATE_SEMANTICS[state],
+          tags: [],
+          preference: 1,
+          cooldownMs: 0,
+          repeatSuppressionMs: 0,
+          loopPolicy: 'until-interrupted' as const,
+          interrupt: 'normal' as const,
+          allowedPrimaryStateIds: [state],
+          forbiddenPrimaryStateIds: [],
+          requiredModifierStateIds: [],
+          forbiddenModifierStateIds: [],
+          direction: 'any' as const
+        })),
+        ...(['hide', 'emerge'] as const).map(semantic => ({
+          id: `${semantic}-main`,
+          name: semantic === 'hide' ? '藏身' : '现身',
+          semantic,
+          tags: [],
+          preference: 1,
+          cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'never' as const, interrupt: 'normal' as const,
+          allowedPrimaryStateIds: ['idle'], forbiddenPrimaryStateIds: [], requiredModifierStateIds: [],
+          forbiddenModifierStateIds: [], direction: 'any' as const
+        }))
+      ]
     };
     const manifest: CharacterManifestV2 = {
       ...draft,

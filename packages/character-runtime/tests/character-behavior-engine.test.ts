@@ -395,6 +395,26 @@ describe('事件驱动角色行为引擎', () => {
     expect(decision.snapshot.schedule.current?.playbackToken).toBe('token-2');
   });
 
+  test.each([
+    ['habitat-enter', 'hide'],
+    ['habitat-found', 'emerge']
+  ] as const)('%s 作为系统强制信号可替换抗中断动作并播放 %s', (type, semantic) => {
+    const idle = 创建动作('idle-action', 'idle', { interrupt: 'resistant' });
+    const transition = 创建动作(`${semantic}-action`, semantic);
+    const manifest = 创建清单({
+      actions: [idle, transition],
+      states: [
+        创建状态('idle-state', 'idle', ['idle-action']),
+        创建状态(`${semantic}-state`, semantic, [transition.id])
+      ]
+    });
+    const engine = 创建引擎(manifest);
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 1 }, direction: 'right' });
+
+    expect(engine.dispatch({ signal: { type, occurredAtMs: 2 }, direction: 'right' })
+      .snapshot.schedule.current?.actionId).toBe(transition.id);
+  });
+
   test('相同固定随机序列可重现相同动作序列', () => {
     const actions = [创建动作('idle-first', 'idle'), 创建动作('idle-second', 'idle')];
     const manifest = 创建清单({

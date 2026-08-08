@@ -241,6 +241,8 @@ function convertDocument(input: CharacterDraftV1 | CharacterManifestV1): Charact
 
   if (states.length === 0) states.push(emptyIdleState());
   const defaultStateId = states.find((state) => state.id === 'idle')?.id ?? states[0]!.id;
+  const moveActionId = actions.find((action) => action.semantic === 'move')?.id;
+  const idleActionId = actions.find((action) => action.semantic === 'idle')?.id;
 
   const draft: CharacterDraftV2 = {
     version: 2,
@@ -254,7 +256,11 @@ function convertDocument(input: CharacterDraftV1 | CharacterManifestV1): Charact
       id: 'default',
       name: '默认皮肤',
       presentations,
-      semanticFallbacks: []
+      // 旧格式不生成目录动作，只复用已有表现作为受控回退。
+      semanticFallbacks: [
+        ...(moveActionId ? [{ semantic: 'hide' as const, actionId: moveActionId }] : []),
+        ...(idleActionId ? [{ semantic: 'emerge' as const, actionId: idleActionId }] : [])
+      ]
     }],
     states,
     actions

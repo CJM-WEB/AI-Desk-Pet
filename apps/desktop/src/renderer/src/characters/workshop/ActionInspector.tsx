@@ -124,6 +124,7 @@ export function ActionInspector(props: ActionInspectorProps) {
             <option key={semantic} value={semantic}>{semantic}</option>
           ))}
         </select>
+        <span className="field-help">藏身语义只影响动作表现与素材播放，不授予目录能力。</span>
       </label>
       {props.action.semantic === 'carry' ? (
         <label>

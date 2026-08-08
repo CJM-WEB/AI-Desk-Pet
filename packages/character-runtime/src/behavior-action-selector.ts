@@ -44,6 +44,11 @@ type ActionCandidate = {
   presentation: CharacterActionPresentationV2;
 };
 
+const CONTROLLED_PRESENTATION_FALLBACKS: Partial<Record<
+  CharacterActionDefinitionV2['semantic'],
+  CharacterActionDefinitionV2['semantic']
+>> = { hide: 'move', emerge: 'idle' };
+
 /** 按主状态优先、修饰状态快照顺序收集动作归属，避免共享动作的归属随机变化。 */
 function referencedActions(
   manifest: CharacterManifestV2,
@@ -205,12 +210,38 @@ function selectFromStateContext(
   };
 }
 
+/** 缺少藏身动作时，仅按清单显式回退复用既有动作和表现。 */
+function selectControlledPresentationFallback(
+  input: CharacterBehaviorActionSelectionInput,
+  state: CharacterBehaviorStateSnapshot
+): Omit<CharacterBehaviorActionSelection, 'reason'> | undefined {
+  const semantic = state.desiredActionSemantic;
+  const targetSemantic = semantic ? CONTROLLED_PRESENTATION_FALLBACKS[semantic] : undefined;
+  const skin = input.manifest.skins.find((candidate) => candidate.id === input.skinId);
+  const fallback = semantic && targetSemantic
+    ? skin?.semanticFallbacks.find((candidate) => candidate.semantic === semantic)
+    : undefined;
+  const action = fallback ? input.manifest.actions.find((candidate) => candidate.id === fallback.actionId) : undefined;
+  if (!action || action.semantic !== targetSemantic || isCoolingDown(action, input)) return undefined;
+
+  const resolved = resolveCharacterPresentation(input.manifest, input.skinId, action.id);
+  if (!resolved) return undefined;
+  return { actionId: action.id, stateId: state.primaryStateId, presentation: resolved.presentation };
+}
+
 /** 选择当前行为状态允许、可播放且可调度的逻辑动作。 */
 export function selectCharacterBehaviorAction(
   input: CharacterBehaviorActionSelectionInput
 ): CharacterBehaviorActionSelection {
   const currentStateIds = [input.state.primaryStateId, ...input.state.modifierStateIds];
   const selected = selectFromStateContext(input, input.state, currentStateIds);
+  const selectedSemantic = selected
+    ? input.manifest.actions.find((action) => action.id === selected.actionId)?.semantic
+    : undefined;
+  const controlledFallback = selectedSemantic === input.state.desiredActionSemantic
+    ? undefined
+    : selectControlledPresentationFallback(input, input.state);
+  if (controlledFallback) return { ...controlledFallback, reason: 'semantic' };
   if (selected) {
     return {
       ...selected,
@@ -231,6 +262,13 @@ export function selectCharacterBehaviorAction(
     modifierStateIds: []
   };
   const fallback = selectFromStateContext(input, defaultContext, [defaultState.id]);
+  const fallbackSemantic = fallback
+    ? input.manifest.actions.find((action) => action.id === fallback.actionId)?.semantic
+    : undefined;
+  const defaultControlledFallback = fallbackSemantic === defaultContext.desiredActionSemantic
+    ? undefined
+    : selectControlledPresentationFallback(input, defaultContext);
+  if (defaultControlledFallback) return { ...defaultControlledFallback, reason: 'semantic' };
   if (!fallback) throw new Error('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
 
   return { ...fallback, stateId: defaultState.id, reason: 'default-fallback' };

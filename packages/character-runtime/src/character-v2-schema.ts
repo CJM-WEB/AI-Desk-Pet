@@ -7,13 +7,14 @@ import {
 } from './character-schema';
 
 export const STANDARD_CHARACTER_SEMANTICS = [
-  'idle', 'listen', 'think', 'move', 'speak', 'carry', 'celebrate', 'fail'
+  'idle', 'listen', 'think', 'move', 'speak', 'carry', 'celebrate', 'fail', 'hide', 'emerge'
 ] as const;
 
 export const TRUSTED_BEHAVIOR_SIGNALS = [
   'idle', 'user-interaction', 'conversation-start', 'listening', 'thinking',
   'task-start', 'task-success', 'task-failure', 'move-start', 'move-stop',
-  'carry-start', 'carry-stop'
+  'carry-start', 'carry-stop', 'habitat-enter', 'habitat-found',
+  'habitat-hidden', 'habitat-lost'
 ] as const;
 
 const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,119}$/;
@@ -119,6 +120,16 @@ const semanticFallbackSchema = z.object({
   semantic: z.enum(STANDARD_CHARACTER_SEMANTICS),
   actionId: safeIdentifierSchema
 }).strict();
+
+/** 目录藏身仅允许复用既有移动或待机表现，不借此声明目录能力。 */
+function isAllowedSemanticFallback(
+  semantic: typeof STANDARD_CHARACTER_SEMANTICS[number],
+  actionSemantic: typeof STANDARD_CHARACTER_SEMANTICS[number]
+): boolean {
+  if (semantic === 'hide') return actionSemantic === 'move';
+  if (semantic === 'emerge') return actionSemantic === 'idle';
+  return semantic === actionSemantic;
+}
 
 const skinSchema = z.object({
   id: safeIdentifierSchema,
@@ -312,7 +323,7 @@ function validateDocumentReferences(document: V2Document, context: z.RefinementC
       const action = document.actions.find((candidate) => candidate.id === fallback.actionId);
       if (!action) {
         addReferenceIssue(context, '语义回退必须引用已声明的动作。', ['skins', skinIndex, 'semanticFallbacks', fallbackIndex, 'actionId']);
-      } else if (action.semantic !== fallback.semantic) {
+      } else if (!isAllowedSemanticFallback(fallback.semantic, action.semantic)) {
         addReferenceIssue(context, '语义回退不能跨语义引用动作。', ['skins', skinIndex, 'semanticFallbacks', fallbackIndex, 'actionId']);
       }
     });

@@ -153,6 +153,25 @@ describe('V1 角色数据转换器', () => {
     expect(presentation).not.toHaveProperty('commitFrameId');
   });
 
+  test('V1 仅为目录藏身生成受控表现回退，不新增目录能力或素材', () => {
+    const source = createV1Manifest();
+    source.states.push({
+      id: 'moving',
+      kind: 'core',
+      actions: [createV1DraftAction('moving-main')]
+    });
+
+    const result = convertCharacterManifestV1ToV2(source);
+
+    expect(result.document.skins[0]?.semanticFallbacks).toEqual([
+      { semantic: 'hide', actionId: 'moving-main' },
+      { semantic: 'emerge', actionId: 'idle-main' }
+    ]);
+    expect(result.document.actions).toHaveLength(2);
+    expect(result.document.resources).toEqual(source.resources);
+    expect(characterManifestV2Schema.parse(result.document)).toEqual(result.document);
+  });
+
   test('按源顺序重命名重复动作并保持结果确定', () => {
     const first = convertCharacterDraftV1ToV2(createV1WithDuplicateActionIds());
     const second = convertCharacterDraftV1ToV2(createV1WithDuplicateActionIds());
