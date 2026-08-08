@@ -59,6 +59,7 @@ export function AdminQueue({
 
 export function kindLabel(kind: string, t: Translate): string {
   return ({
+    system_reviewing: t('admin.status.systemReviewing'),
     shared_package: t('admin.kind.sharedPackage'),
     feedback: t('admin.kind.feedback'),
     suggestion: t('admin.kind.suggestion')

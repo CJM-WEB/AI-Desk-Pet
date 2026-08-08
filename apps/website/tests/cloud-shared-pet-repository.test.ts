@@ -29,6 +29,10 @@ function createApi(...values: unknown[]) {
 }
 
 describe('云端共享仓库', () => {
+  it('投稿接口只接收输入和可选进度回调', () => {
+    expect(CloudSharedPetRepository.prototype.submit.length).toBe(2);
+  });
+
   it('默认 XHR 上传设置 PUT、规范 MIME、真实进度并处理失败', async () => {
     class FakeRequest extends EventTarget {
       static last: FakeRequest | undefined;
@@ -82,6 +86,7 @@ describe('云端共享仓库', () => {
       method: 'POST',
       body: expect.stringContaining('"contentType":"application/zip"')
     }));
+    expect(JSON.parse(vi.mocked(api.request).mock.calls[0]![1]!.body as string)).not.toHaveProperty('captcha');
     expect(upload).toHaveBeenNthCalledWith(1, 'https://storage.example/cover', expect.any(File), 'image/png', expect.any(Function));
     expect(upload).toHaveBeenNthCalledWith(2, 'https://storage.example/package', expect.any(File), 'application/zip', expect.any(Function));
     expect(api.request).toHaveBeenNthCalledWith(2, '/submissions/submission-1/finalize', {

@@ -6,10 +6,8 @@ import type {
   ModerationSignal,
   ObjectStorage,
   PackageScanner,
-  RelevanceClassifier,
   SubmissionWithAssets
 } from '../ports.js';
-import { keywordRelevanceRuleVersion } from './keyword-relevance.js';
 
 export interface ModerationProcessResult {
   status: 'manual_review_pending' | 'auto_rejected';
@@ -23,7 +21,8 @@ export interface BatchResult {
 }
 
 const leaseMilliseconds = 10 * 60 * 1000;
-const signedUrlSeconds = 300;
+// 为跨地域请求预留一分钟时钟偏差，避免扫描器把临界的五分钟链接误判为超时。
+const signedUrlSeconds = 4 * 60;
 
 class ModerationDependencyError extends Error {
   constructor(
@@ -40,7 +39,6 @@ export class ModerationService {
     private readonly store: ModerationJobStore,
     private readonly storage: ObjectStorage,
     private readonly moderator: ContentModerator,
-    private readonly relevance: RelevanceClassifier,
     private readonly scanner: PackageScanner,
     private readonly clock: Clock
   ) {}
@@ -57,27 +55,25 @@ export class ModerationService {
       const fileSignals = submission.kind === 'shared_package'
         ? await this.reviewSharedPackage(submission, results)
         : [];
-      if (fileSignals.some(signal => (
+      const technicalBlocked = fileSignals.some(signal => (
         signal.suggestion === 'Block'
         && signal.label.startsWith('技术检查：')
-      ))) {
+      ));
+      if (technicalBlocked) {
         return this.persistDecision(
           submission,
           expectedVersion,
           results,
-          fileSignals,
-          'reject'
+          fileSignals
         );
       }
       const textSignals = await this.reviewBaseText(submission, results);
-      const relevance = await this.reviewRelevance(submission, results);
       const signals = [...textSignals, ...fileSignals];
       return this.persistDecision(
         submission,
         expectedVersion,
         results,
-        signals,
-        relevance
+        signals
       );
     } catch (error) {
       if (error instanceof ModerationDependencyError) throw error;
@@ -263,32 +259,6 @@ export class ModerationService {
     return signals;
   }
 
-  private async reviewRelevance(
-    submission: SubmissionWithAssets,
-    results: ModerationRecord[]
-  ): Promise<'pass' | 'review' | 'reject'> {
-    const suggestion = await this.dependency(
-      () => this.relevance.classify({
-        title: submission.title ?? '',
-        body: submission.body ?? ''
-      }),
-      results
-    );
-    const record = this.record(submission.id, 'relevance', 'local-keyword', {
-      suggestion: suggestion === 'pass'
-        ? 'Pass'
-        : suggestion === 'reject'
-          ? 'Block'
-          : 'Review',
-      label: `AI_PET_${suggestion.toUpperCase()}`
-    });
-    results.push({
-      ...record,
-      ruleVersion: keywordRelevanceRuleVersion
-    });
-    return suggestion;
-  }
-
   private async runSignal(
     operation: () => Promise<ModerationSignal>,
     results: ModerationRecord[],
@@ -340,14 +310,11 @@ export class ModerationService {
     submission: SubmissionWithAssets,
     expectedVersion: number,
     results: readonly ModerationRecord[],
-    signals: readonly ModerationSignal[],
-    relevance: 'pass' | 'review' | 'reject'
+    signals: readonly ModerationSignal[]
   ): Promise<ModerationProcessResult> {
-    const blocked = relevance === 'reject'
-      || signals.some(signal => signal.suggestion === 'Block');
-    const status = blocked
-      ? 'auto_rejected' as const
-      : 'manual_review_pending' as const;
+    // 自动检查只保留风险证据，发布与驳回统一由管理员决定。
+    const blocked = signals.some(signal => signal.suggestion === 'Block');
+    const status = 'manual_review_pending' as const;
     const blockedLabels = signals
       .filter(signal => signal.suggestion === 'Block')
       .map(signal => signal.label)
@@ -362,9 +329,7 @@ export class ModerationService {
         signalCount: results.length,
         blockedLabels
       },
-      autoRejectionReason: blocked
-        ? (blockedLabels[0] ?? '内容与 AI Pet 产品无关').slice(0, 500)
-        : null
+      autoRejectionReason: null
     });
     return { status, applied };
   }

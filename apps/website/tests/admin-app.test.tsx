@@ -289,12 +289,13 @@ describe('管理员审核工作台', () => {
     expect(screen.queryByLabelText('审核理由')).toBeNull();
   });
 
-  it('401 会登出并返回登录，403 显示明确无权限状态', async () => {
+  it('401 保留当前会话供重试，403 显示明确无权限状态', async () => {
     const unauthorized = setup({
       listQueue: vi.fn().mockRejectedValue(new ApiClientError('UNAUTHORIZED', 401))
     });
-    expect(await screen.findByLabelText('管理员邮箱')).toBeTruthy();
-    expect(unauthorized.auth.signOut).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('审核队列暂时无法加载，请稍后重试。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '退出登录' })).toBeTruthy();
+    expect(unauthorized.auth.signOut).not.toHaveBeenCalled();
     cleanup();
 
     setup({

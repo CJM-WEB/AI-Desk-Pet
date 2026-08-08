@@ -12,6 +12,7 @@ interface AdminSidebarProps {
 }
 
 const views: ReadonlyArray<{ view: AdminView; label: MessageKey }> = [
+  { view: 'system_reviewing', label: 'admin.sidebar.systemReviewing' },
   { view: 'manual_review_pending', label: 'admin.sidebar.manual' },
   { view: 'auto_rejected', label: 'admin.sidebar.autoRejected' },
   { view: 'published', label: 'admin.sidebar.published' },

@@ -138,6 +138,7 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
 }
 
 function availableActions(detail: AdminSubmissionDetail): AdminAction['action'][] {
+  if (detail.status === 'system_reviewing') return ['delete'];
   if (detail.status === 'manual_review_pending') return ['approve', 'reject', 'delete'];
   if (detail.status === 'auto_rejected') return ['move_to_manual', 'approve', 'delete'];
   if (detail.status === 'published') return ['delete'];

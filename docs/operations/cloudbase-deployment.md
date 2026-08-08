@@ -23,11 +23,10 @@
 
 ## 3. 云服务与认证
 
-1. 开通腾讯云 CAPTCHA、文本内容安全 TMS、图片内容安全 IMS，并创建 AI Pet 专用业务策略。
-2. 服务端配置 `CAPTCHA_APP_ID`、`CAPTCHA_SECRET_KEY`、`TMS_BIZ_TYPE`、`IMS_BIZ_TYPE`、`MODERATION_REGION`、`TENCENTCLOUD_SECRETID`、`TENCENTCLOUD_SECRETKEY`；临时凭据另配 `TENCENTCLOUD_SESSIONTOKEN`。
-3. 前端只配置公开的 `NEXT_PUBLIC_CAPTCHA_APP_ID`，不得把任何 Secret Key 放入 `NEXT_PUBLIC_*`。
-4. 在 CloudBase 身份认证中启用邮箱 OTP，预先创建唯一管理员账号。服务端 `ADMIN_EMAIL` 只配置这一地址；关闭自动注册，普通投稿者不登录。
-5. 前端使用 `@cloudbase/js-sdk` v3，并配置 `NEXT_PUBLIC_CLOUDBASE_ENV_ID` 与 `NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY`。安全域名必须只包含实际 HTTPS 域名。
+1. 开通文本内容安全 TMS、图片内容安全 IMS，并创建 AI Pet 专用业务策略。
+2. 服务端配置 `TMS_BIZ_TYPE`、`IMS_BIZ_TYPE`、`MODERATION_REGION`、`TENCENTCLOUD_SECRETID`、`TENCENTCLOUD_SECRETKEY`；临时凭据另配 `TENCENTCLOUD_SESSIONTOKEN`。
+3. 在 CloudBase 身份认证中启用邮箱 OTP，预先创建唯一管理员账号。服务端 `ADMIN_EMAIL` 只配置这一地址；关闭自动注册，普通投稿者不登录。
+4. 前端使用 `@cloudbase/js-sdk` v3，并配置 `NEXT_PUBLIC_CLOUDBASE_ENV_ID` 与 `NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY`。安全域名必须只包含实际 HTTPS 域名。
 
 ## 4. 本地关键词相关性审核
 
@@ -54,8 +53,6 @@ CLOUDBASE_REGION
 CLOUDBASE_API_KEY
 PRIVATE_BUCKET_ID
 ADMIN_EMAIL
-CAPTCHA_APP_ID
-CAPTCHA_SECRET_KEY
 ABUSE_HMAC_SECRET
 TENCENTCLOUD_SECRETID
 TENCENTCLOUD_SECRETKEY
@@ -85,20 +82,20 @@ pnpm.cmd exec cloudbase fn deploy --all
 ## 8. HTTP 网关
 
 1. 将 `/api/v1` 关联到 `ai-pet-api`。
-2. 公开投稿、状态和公开列表路径允许匿名访问，但必须保留 CAPTCHA、限流和服务端校验。
+2. 公开投稿、状态和公开列表路径允许匿名访问；匿名投稿依靠 IP 限流、内容审核和管理员审批控制风险。
 3. `/api/v1/admin/*` 同时启用 CloudBase 身份认证；后端仍会校验 Bearer 会话、邮箱白名单与管理员角色，网关认证不能替代应用层授权。
 4. CORS 只允许正式网站和已批准的开发域名及所需方法/请求头，不使用通配来源携带认证信息。
 
 ## 9. 静态站点、域名与浏览器配置
 
-1. 配置 `NEXT_PUBLIC_API_BASE_URL`、`NEXT_PUBLIC_CAPTCHA_APP_ID`、`NEXT_PUBLIC_CLOUDBASE_ENV_ID`、`NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY` 后构建：
+1. 配置 `NEXT_PUBLIC_API_BASE_URL`、`NEXT_PUBLIC_CLOUDBASE_ENV_ID`、`NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY` 后构建：
 
    ```powershell
    pnpm.cmd --filter @myself/website build
    pnpm.cmd exec cloudbase hosting deploy apps/website/out -e $env:CLOUDBASE_ENV_ID
    ```
 
-2. 绑定已备案的自定义域名并强制 HTTPS；将实际域名加入 CloudBase Web 安全域名与 CAPTCHA 域名配置。
+2. 绑定已备案的自定义域名并强制 HTTPS；将实际域名加入 CloudBase Web 安全域名配置。
 3. 配置 CSP，至少限制默认来源、脚本来源、连接目标、图片来源和 frame 祖先；为 `/api/v1` 配置匹配的 CORS。
 4. 检查 `apps/website/out/admin/index.html`、`apps/website/out/submission-status/index.html` 和三个 `/legal/*.html` 均可访问。
 
