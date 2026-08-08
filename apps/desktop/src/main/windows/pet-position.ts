@@ -14,6 +14,8 @@ interface MoveAwareWindow {
 interface PetPositionControllerOptions {
   window: MoveAwareWindow;
   savePosition: (position: Point) => Promise<void>;
+  getLocalOffset?: () => Point;
+  saveLocalOffset?: (offset: Point) => Promise<void>;
   debounceMs?: number;
   onError?: (error: unknown) => void;
 }
@@ -29,8 +31,16 @@ interface QuitAfterPositionFlushOptions {
 }
 
 export interface PetPositionController {
+  setPersistenceMode(mode: PetPositionPersistenceMode): void;
   flush(): Promise<void>;
 }
+
+export type PetPositionPersistenceMode = 'desktop' | 'folder' | 'disabled';
+
+type PendingPosition = {
+  mode: Exclude<PetPositionPersistenceMode, 'disabled'>;
+  point: Point;
+};
 
 const DEFAULT_DEBOUNCE_MS = 250;
 
@@ -49,32 +59,54 @@ export function restorePetPosition(
 export function createPetPositionController(
   options: PetPositionControllerOptions
 ): PetPositionController {
-  let pendingPosition: Point | null = null;
+  let persistenceMode: PetPositionPersistenceMode = 'desktop';
+  let pendingPosition: PendingPosition | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let writeQueue = Promise.resolve();
 
-  const saveSafely = async (position: Point): Promise<void> => {
+  const reportError = (error: unknown): void => {
     try {
-      await options.savePosition(position);
-    } catch (error) {
-      try {
-        options.onError?.(error);
-      } catch {
-        // 错误记录本身不得影响应用退出或产生未处理拒绝。
+      options.onError?.(error);
+    } catch {
+      // 错误记录本身不得影响应用退出或产生未处理拒绝。
+    }
+  };
+
+  const saveSafely = async (pending: PendingPosition): Promise<void> => {
+    try {
+      if (pending.mode === 'desktop') {
+        await options.savePosition(pending.point);
+      } else if (options.saveLocalOffset) {
+        await options.saveLocalOffset(pending.point);
       }
+    } catch (error) {
+      reportError(error);
     }
   };
 
   const persistPending = async (): Promise<void> => {
-    const position = pendingPosition;
+    const pending = pendingPosition;
     pendingPosition = null;
-    if (position) writeQueue = writeQueue.then(() => saveSafely(position));
+    if (pending) writeQueue = writeQueue.then(() => saveSafely(pending));
     await writeQueue;
   };
 
   options.window.on('move', () => {
-    const [x = 0, y = 0] = options.window.getPosition();
-    pendingPosition = { x, y };
+    if (persistenceMode === 'disabled') return;
+    let point: Point;
+    try {
+      if (persistenceMode === 'folder') {
+        if (!options.getLocalOffset) return;
+        point = options.getLocalOffset();
+      } else {
+        const [x = 0, y = 0] = options.window.getPosition();
+        point = { x, y };
+      }
+    } catch (error) {
+      reportError(error);
+      return;
+    }
+    pendingPosition = { mode: persistenceMode, point };
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
@@ -83,6 +115,13 @@ export function createPetPositionController(
   });
 
   return {
+    setPersistenceMode(mode: PetPositionPersistenceMode): void {
+      if (persistenceMode === mode) return;
+      persistenceMode = mode;
+      pendingPosition = null;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
     async flush(): Promise<void> {
       while (true) {
         if (timer) clearTimeout(timer);

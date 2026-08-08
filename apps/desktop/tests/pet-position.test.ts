@@ -61,6 +61,17 @@ describe('桌宠位置恢复', () => {
       ]
     )).toEqual({ x: 2100, y: 100 });
   });
+
+  test('recall 优先恢复进入前桌面坐标，失效时回退到主显示器', () => {
+    const workAreas = [
+      primaryWorkArea,
+      { x: -1280, y: -200, width: 1280, height: 1024 }
+    ];
+    expect(restorePetPosition({ x: -1000, y: 100 }, windowSize, workAreas))
+      .toEqual({ x: -1000, y: 100 });
+    expect(restorePetPosition({ x: -5000, y: -5000 }, windowSize, workAreas))
+      .toEqual({ x: 1724, y: 804 });
+  });
 });
 
 describe('桌宠位置控制器', () => {
@@ -186,6 +197,82 @@ describe('桌宠位置控制器', () => {
       { x: 500, y: 520 }
     ]);
     expect(savedPositions.at(-1)).toEqual({ x: 500, y: 520 });
+  });
+
+  test('folder 模式只保存目录局部偏移，不覆盖桌面坐标', async () => {
+    vi.useFakeTimers();
+    const window = new FakePetWindow();
+    const desktopPositions: Array<{ x: number; y: number }> = [];
+    const localOffsets: Array<{ x: number; y: number }> = [];
+    let localOffset = { x: 16, y: 24 };
+    const controller = createPetPositionController({
+      window,
+      debounceMs: 100,
+      savePosition: async position => {
+        desktopPositions.push(position);
+      },
+      getLocalOffset: () => localOffset,
+      saveLocalOffset: async offset => {
+        localOffsets.push(offset);
+      }
+    });
+
+    controller.setPersistenceMode('folder');
+    window.moveTo(900, 700);
+    localOffset = { x: 40, y: 50 };
+    window.moveTo(924, 726);
+    await controller.flush();
+
+    expect(localOffsets).toEqual([{ x: 40, y: 50 }]);
+    expect(desktopPositions).toEqual([]);
+  });
+
+  test('desktop 模式保存绝对坐标，不依赖窗口可见性猜测', async () => {
+    vi.useFakeTimers();
+    const window = new FakePetWindow() as FakePetWindow & { isVisible(): boolean };
+    window.isVisible = () => false;
+    const desktopPositions: Array<{ x: number; y: number }> = [];
+    const localOffsets: Array<{ x: number; y: number }> = [];
+    const controller = createPetPositionController({
+      window,
+      savePosition: async position => {
+        desktopPositions.push(position);
+      },
+      getLocalOffset: () => ({ x: 1, y: 2 }),
+      saveLocalOffset: async offset => {
+        localOffsets.push(offset);
+      }
+    });
+
+    controller.setPersistenceMode('desktop');
+    window.moveTo(320, 340);
+    await controller.flush();
+
+    expect(desktopPositions).toEqual([{ x: 320, y: 340 }]);
+    expect(localOffsets).toEqual([]);
+  });
+
+  test('disabled 模式取消待写位置且后续 move 不写任何 Store', async () => {
+    vi.useFakeTimers();
+    const window = new FakePetWindow();
+    const savePosition = vi.fn(async () => undefined);
+    const saveLocalOffset = vi.fn(async () => undefined);
+    const controller = createPetPositionController({
+      window,
+      debounceMs: 100,
+      savePosition,
+      getLocalOffset: () => ({ x: 16, y: 24 }),
+      saveLocalOffset
+    });
+
+    window.moveTo(100, 120);
+    controller.setPersistenceMode('disabled');
+    window.moveTo(500, 520);
+    await vi.advanceTimersByTimeAsync(100);
+    await controller.flush();
+
+    expect(savePosition).not.toHaveBeenCalled();
+    expect(saveLocalOffset).not.toHaveBeenCalled();
   });
 });
 

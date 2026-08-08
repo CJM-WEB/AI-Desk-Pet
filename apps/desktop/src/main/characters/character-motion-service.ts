@@ -77,6 +77,9 @@ export class CharacterMotionService {
     expiresAt: number;
   }>();
   private userMoving = false;
+  private suspended = false;
+  private suspendedAtMs = 0;
+  private movementRegions: Rectangle[] | null = null;
 
   constructor(private readonly options: CharacterMotionServiceOptions) {
     this.now = options.now ?? performance.now.bind(performance);
@@ -109,26 +112,51 @@ export class CharacterMotionService {
       throw new Error('CHARACTER_MOTION_INPUT_INVALID');
     }
     const bounds = this.options.window.getBounds();
-    const area = containingWorkArea(target, this.options.getWorkAreas());
-    this.target = area
-      ? {
-          x: Math.min(
-            Math.max(area.x, area.x + area.width - bounds.width),
-            Math.max(area.x, target.x)
-          ),
-          y: Math.min(
-            Math.max(area.y, area.y + area.height - bounds.height),
-            Math.max(area.y, target.y)
-          )
-        }
-      : { x: bounds.x, y: bounds.y };
+    this.target = this.constrainTarget(target, bounds);
     if (this.target.x !== bounds.x) {
       this.direction = this.target.x < bounds.x ? 'left' : 'right';
     }
     this.speed = speed;
   }
 
+  /** 隐藏和候选切换期间冻结运动时钟，恢复时不补走暂停时间。 */
+  setSuspended(suspended: boolean): void {
+    if (this.suspended === suspended) return;
+    const now = Math.max(this.lastTickMs, this.now());
+    this.suspended = suspended;
+    if (suspended) {
+      this.suspendedAtMs = now;
+      this.expectedProgrammaticPositions.splice(0);
+      return;
+    }
+    const suspendedDuration = Math.max(0, now - this.suspendedAtMs);
+    this.lastTickMs = now;
+    this.nextIdleAt += suspendedDuration;
+    if (Number.isFinite(this.idleAllowedAt)) this.idleAllowedAt += suspendedDuration;
+  }
+
+  /** null 恢复桌面工作区；显式矩形只保留能容纳当前窗口的区域。 */
+  setMovementRegions(rectangles: readonly Rectangle[] | null): void {
+    if (rectangles === null) {
+      this.movementRegions = null;
+    } else {
+      const bounds = this.options.window.getBounds();
+      this.movementRegions = rectangles
+        .filter(rectangle => (
+          Number.isFinite(rectangle.x)
+          && Number.isFinite(rectangle.y)
+          && Number.isFinite(rectangle.width)
+          && Number.isFinite(rectangle.height)
+          && rectangle.width >= bounds.width
+          && rectangle.height >= bounds.height
+        ))
+        .map(rectangle => ({ ...rectangle }));
+    }
+    this.target = this.constrainTarget(this.target, this.options.window.getBounds());
+  }
+
   tick(): CharacterMotionSnapshot {
+    if (this.suspended) return structuredClone(this.latestSnapshot);
     const now = Math.max(this.lastTickMs, this.now());
     const bounds = this.options.window.getBounds();
     if (this.userMoving) {
@@ -184,6 +212,16 @@ export class CharacterMotionService {
   handleWindowMoved(): void {
     const bounds = this.options.window.getBounds();
     const position = { x: bounds.x, y: bounds.y };
+    if (this.suspended) {
+      this.target = position;
+      this.latestSnapshot = {
+        ...this.latestSnapshot,
+        position,
+        target: { ...position },
+        moving: false
+      };
+      return;
+    }
     if (!this.userMoving) {
       const expectedIndex = this.expectedProgrammaticPositions.findIndex(expected => (
         position.x === expected.x && position.y === expected.y
@@ -319,6 +357,7 @@ export class CharacterMotionService {
     direction: 'left' | 'right',
     random: () => number
   ): ActionSelectionResult | null {
+    if (this.suspended) return null;
     const now = this.now();
     if (now < this.nextIdleAt || now < this.idleAllowedAt) return null;
     this.nextIdleAt = now + this.idleIntervalMs;
@@ -334,7 +373,7 @@ export class CharacterMotionService {
 
   requestIntent(intent: CharacterMotionIntent): void {
     const bounds = this.options.window.getBounds();
-    const areas = this.options.getWorkAreas();
+    const areas = this.availableMovementRegions();
     const area = containingWorkArea({ x: bounds.x, y: bounds.y }, areas) ?? areas[0];
     if (!area) return;
     if (intent === 'return-visible') {
@@ -348,6 +387,35 @@ export class CharacterMotionService {
       x: area.x + (maximumX - area.x) * random(),
       y: area.y + (maximumY - area.y) * random()
     });
+  }
+
+  private availableMovementRegions(): readonly Rectangle[] {
+    return this.movementRegions ?? this.options.getWorkAreas();
+  }
+
+  private constrainTarget(
+    target: CharacterMotionPoint,
+    bounds: WindowBounds
+  ): CharacterMotionPoint {
+    const areas = this.availableMovementRegions();
+    const currentArea = this.movementRegions?.find(area => (
+      bounds.x >= area.x
+      && bounds.y >= area.y
+      && bounds.x + bounds.width <= area.x + area.width
+      && bounds.y + bounds.height <= area.y + area.height
+    ));
+    const area = currentArea ?? containingWorkArea(target, areas);
+    if (!area) return { x: bounds.x, y: bounds.y };
+    return {
+      x: Math.min(
+        Math.max(area.x, area.x + area.width - bounds.width),
+        Math.max(area.x, target.x)
+      ),
+      y: Math.min(
+        Math.max(area.y, area.y + area.height - bounds.height),
+        Math.max(area.y, target.y)
+      )
+    };
   }
 }
 
