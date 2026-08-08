@@ -246,6 +246,28 @@ describe('管理员审核工作台', () => {
     await waitFor(() => expect(screen.queryByText('旧敏感正文')).toBeNull());
   });
 
+  it('人工审核中的共享包无需系统扫描即可批准', async () => {
+    const pending = detail({
+      id: 'manual-package',
+      kind: 'shared_package',
+      status: 'manual_review_pending',
+      title: '直接人工审核共享包'
+    });
+    setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(pending)),
+      getDetail: vi.fn().mockResolvedValue(pending)
+    });
+
+    fireEvent.click(await screen.findByText('直接人工审核共享包'));
+    fireEvent.change(await screen.findByLabelText('审核理由'), {
+      target: { value: '人工确认内容可发布' }
+    });
+
+    expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+    expect(screen.queryByText('技术扫描未明确通过，不能批准共享包。')).toBeNull();
+  });
+
   it('自动驳回共享包执行技术扫描门禁，隔离内容提供恢复动作', async () => {
     const blocked = detail({ id: 'blocked', kind: 'shared_package', status: 'auto_rejected', title: '待复核共享包' });
     const { view } = setup({

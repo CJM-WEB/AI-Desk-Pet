@@ -23,6 +23,10 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
 
   const actions = availableActions(detail);
   const technicalPass = hasCurrentTechnicalPass(detail);
+  // 仅历史自动驳回项保留技术扫描门禁；直接进入人工队列的新投稿由管理员判断。
+  const technicalScanRequired = detail.status === 'auto_rejected'
+    && detail.kind === 'shared_package'
+    && !technicalPass;
   const actionDisabled = acting || !reason.trim();
 
   return (
@@ -112,9 +116,7 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
             </button>
           ) : null}
           {actions.map(action => {
-            const blockedApprove = action === 'approve'
-              && detail.kind === 'shared_package'
-              && !technicalPass;
+            const blockedApprove = action === 'approve' && technicalScanRequired;
             return (
               <button
                 key={action}
@@ -129,7 +131,7 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
             );
           })}
         </div>
-        {detail.kind === 'shared_package' && !technicalPass && actions.includes('approve') ? (
+        {technicalScanRequired && actions.includes('approve') ? (
           <p className={styles.warningText}>{t('admin.detail.technicalBlocked')}</p>
         ) : null}
       </section>
