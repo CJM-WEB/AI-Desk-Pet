@@ -15,8 +15,30 @@ import type {
 const migrationPath = fileURLToPath(
   new URL('../../../cloudbase/migrations/20260730000000_moderation.sql', import.meta.url)
 );
+const directManualReviewMigrationPath = fileURLToPath(
+  new URL(
+    '../../../cloudbase/migrations/20260808000000_direct_manual_review.sql',
+    import.meta.url
+  )
+);
 
 describe('CloudBase PostgreSQL 迁移', () => {
+  it('直接人工审核迁移同步修改两类投稿入口、历史数据和共享包门禁', () => {
+    const sql = readFileSync(directManualReviewMigrationPath, 'utf8');
+
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION create_text_submission');
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION complete_submission_upload');
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION apply_admin_action');
+    expect(sql).toMatch(/SET status = 'manual_review_pending'[\s\S]+status = 'uploading'/u);
+    expect(sql).toMatch(/VALUES \([\s\S]+?'manual_review_pending'[\s\S]+?status_token_hash/u);
+    expect(sql).toContain("v_previous_status = 'auto_rejected'");
+    expect(sql).toContain("WHERE status = 'system_reviewing'");
+    expect(sql).toContain('moderation_lease_until = NULL');
+    expect(sql).toContain('moderation_next_retry_at = NULL');
+    expect(sql.trim().startsWith('BEGIN;')).toBe(true);
+    expect(sql.trim().endsWith('COMMIT;')).toBe(true);
+  });
+
   it('迁移包含必要表、状态约束和版本条件更新', () => {
     const sql = readFileSync(migrationPath, 'utf8');
 
