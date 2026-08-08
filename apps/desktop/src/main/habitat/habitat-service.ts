@@ -480,30 +480,23 @@ export class HabitatService {
       this.assertEntryAllowed(reason);
     } catch (error) {
       if (committed.status !== 'updated') {
-        this.stableSnapshot = structuredClone(committed.snapshot);
-        this.restoreStableState();
-        if (this.stableSnapshot.location.kind === 'folder') {
-          await this.cleanupCurrent(epoch, 'leave');
-        }
+        await this.adoptAuthorityAndConceal(epoch, committed.snapshot);
         throw error;
       }
+      let compensated: HabitatLocationUpdateResult;
       try {
-        const compensated = await this.storeUpdateLocation({
+        compensated = await this.storeUpdateLocation({
           expected: committed.snapshot.location,
           location: previousDesktopLocation
         });
         this.assertOperation(epoch);
-        this.stableSnapshot = structuredClone(compensated.snapshot);
-        this.restoreStableState();
       } catch (compensationError) {
         if (this.isCurrentEpoch(epoch) && !this.closed) {
-          this.stableSnapshot = structuredClone(committed.snapshot);
-          this.directoryId = directoryId;
-          this.state = 'folder-hidden';
-          await this.cleanupCurrent(epoch, 'leave');
+          await this.adoptAuthorityAndConceal(epoch, committed.snapshot);
         }
         throw compensationError;
       }
+      await this.adoptAuthorityAndConceal(epoch, compensated.snapshot);
       throw error;
     }
     this.stableSnapshot = structuredClone(committed.snapshot);
@@ -537,8 +530,7 @@ export class HabitatService {
       });
       this.assertOperation(epoch);
       if (committed.status === 'conflict' && committed.snapshot.location.kind !== 'desktop') {
-        this.stableSnapshot = structuredClone(committed.snapshot);
-        this.restoreStableState();
+        await this.adoptAuthorityAndConceal(epoch, committed.snapshot);
         throw habitatError('HABITAT_STATE_INVALID');
       }
       this.stableSnapshot = structuredClone(committed.snapshot);
@@ -782,6 +774,29 @@ export class HabitatService {
       error = 'HABITAT_WINDOW_FAILED';
     }
     return error;
+  }
+
+  /** 采纳并发 location authority；只有窗口清理成功后才发布 folder-hidden。 */
+  private async adoptAuthorityAndConceal(
+    epoch: number,
+    snapshot: PetHabitatSnapshot
+  ): Promise<void> {
+    this.stableSnapshot = structuredClone(snapshot);
+    if (this.stableSnapshot.location.kind === 'desktop') {
+      this.binding = undefined;
+      this.watermark = undefined;
+      this.restoreStableState();
+      return;
+    }
+
+    this.directoryId = this.stableSnapshot.location.directoryId;
+    this.state = 'recalling';
+    const cleanupError = await this.cleanupCurrent(epoch, 'leave');
+    this.assertOperation(epoch);
+    this.binding = undefined;
+    this.watermark = undefined;
+    if (cleanupError !== null) throw this.fail(cleanupError);
+    this.state = 'folder-hidden';
   }
 
   private assertEntryAllowed(reason: HabitatEnterReason): void {

@@ -448,6 +448,70 @@ describe('HabitatService 权威状态机', () => {
     });
   });
 
+  test('enter 自身提交后 blocker 补偿遇到同 folder t2 conflict，采纳 t2 并可靠隐藏', async () => {
+    const harness = createHarness();
+    const replacement = folderSnapshot();
+    replacement.location = {
+      kind: 'folder',
+      directoryId: 'directory-1',
+      enteredAt: '2026-08-08T11:00:00.000Z',
+      previousDesktopPosition: { x: 320, y: 420 },
+      localOffset: { x: 42, y: 52 }
+    };
+    const updateLocation = harness.store.updateLocation.getMockImplementation()!;
+    harness.store.updateLocation
+      .mockImplementationOnce(async update => {
+        const result = await updateLocation(update);
+        harness.blockers.dragging = true;
+        return result;
+      })
+      .mockImplementationOnce(async update => {
+        harness.replacePersisted(replacement);
+        return updateLocation(update);
+      });
+
+    await expect(harness.service.enterDirectory('directory-1', 'manual'))
+      .rejects.toThrow('HABITAT_ENTRY_BLOCKED');
+
+    expect(harness.persisted()).toEqual(replacement);
+    expect(harness.order.slice(-2)).toEqual(['hide', 'invalidate:leave']);
+    expect(harness.service.snapshot()).toMatchObject({
+      state: 'folder-hidden', directoryId: 'directory-1'
+    });
+  });
+
+  test('enter unchanged 后 blocker 清理失败时窗口错误优先且保持可重试', async () => {
+    const harness = createHarness();
+    const external = folderSnapshot();
+    external.location = {
+      kind: 'folder',
+      directoryId: 'directory-1',
+      enteredAt: '2026-08-08T11:00:00.000Z',
+      previousDesktopPosition: { x: 320, y: 420 },
+      localOffset: { x: 42, y: 52 }
+    };
+    const updateLocation = harness.store.updateLocation.getMockImplementation()!;
+    harness.store.updateLocation.mockImplementationOnce(async update => {
+      harness.replacePersisted(external);
+      harness.blockers.dragging = true;
+      return updateLocation(update);
+    });
+    harness.petWindow.hide.mockImplementationOnce(() => {
+      harness.order.push('hide');
+      throw new Error('WINDOW_PRIVATE_HIDE');
+    });
+
+    await expect(harness.service.enterDirectory('directory-1', 'manual')).rejects.toMatchObject({
+      code: 'HABITAT_WINDOW_FAILED', message: 'HABITAT_WINDOW_FAILED'
+    });
+    expect(harness.service.snapshot()).toMatchObject({
+      state: 'recalling', directoryId: 'directory-1', errorCode: 'HABITAT_WINDOW_FAILED'
+    });
+    expect(JSON.stringify(harness.service.snapshot())).not.toContain('PRIVATE');
+
+    await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
+  });
+
   test('重复 recall 在 desktop 已提交但层级恢复未决时返回同一 Promise且不重复写', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const invalidation = deferred<void>();
@@ -526,12 +590,14 @@ describe('HabitatService 权威状态机', () => {
       localOffset: { x: 40, y: 50 }
     };
     const harness = createHarness({ initialSnapshot: first });
+    await reveal(harness);
     harness.replacePersisted(replacement);
 
     await expect(harness.service.recallToDesktop()).rejects.toThrow('HABITAT_STATE_INVALID');
 
     expect(harness.persisted()).toEqual(replacement);
     expect(harness.petWindow.show).not.toHaveBeenCalled();
+    expect(harness.order.slice(-2)).toEqual(['hide', 'invalidate:leave']);
     expect(harness.service.snapshot()).toMatchObject({
       state: 'folder-hidden', directoryId: 'directory-1'
     });
@@ -540,6 +606,35 @@ describe('HabitatService 权威状态机', () => {
     expect(harness.persisted().location).toEqual({
       kind: 'desktop', position: { x: 300, y: 400 }
     });
+  });
+
+  test('可见 recall ABA conflict 的清理失败映射窗口错误并保持可重试', async () => {
+    const first = folderSnapshot();
+    const replacement = folderSnapshot();
+    replacement.location = {
+      kind: 'folder',
+      directoryId: 'directory-1',
+      enteredAt: '2026-08-08T11:00:00.000Z',
+      previousDesktopPosition: { x: 320, y: 420 },
+      localOffset: { x: 42, y: 52 }
+    };
+    const harness = createHarness({ initialSnapshot: first });
+    await reveal(harness);
+    harness.replacePersisted(replacement);
+    harness.petWindow.hide.mockImplementationOnce(() => {
+      harness.order.push('hide');
+      throw new Error('WINDOW_PRIVATE_HIDE');
+    });
+
+    await expect(harness.service.recallToDesktop()).rejects.toMatchObject({
+      code: 'HABITAT_WINDOW_FAILED', message: 'HABITAT_WINDOW_FAILED'
+    });
+    expect(harness.order.slice(-2)).toEqual(['hide', 'invalidate:leave']);
+    expect(harness.service.snapshot()).toMatchObject({
+      state: 'recalling', directoryId: 'directory-1', errorCode: 'HABITAT_WINDOW_FAILED'
+    });
+
+    await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
   });
 
   test('旧 reveal A 卡在 activate 时，recall 完成后 A 返回无权隐藏、失效、显示或改状态', async () => {
