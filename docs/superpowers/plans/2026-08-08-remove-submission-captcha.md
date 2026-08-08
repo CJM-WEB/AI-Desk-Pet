@@ -20,7 +20,7 @@
 
 ---
 
-### 任务 1：用失败测试定义无 CAPTCHA 的后端投稿契约
+### Task 1：用失败测试定义无 CAPTCHA 的后端投稿契约
 
 **文件：**
 - 修改：`apps/cloudbase-api/tests/api.test.ts`
@@ -45,7 +45,7 @@
 
 ---
 
-### 任务 2：最小化后端实现并删除验票运行链路
+### Task 2：最小化后端实现并删除验票运行链路
 
 **文件：**
 - 修改：`apps/cloudbase-api/src/functions/api.ts`
@@ -87,7 +87,7 @@
 
 ---
 
-### 任务 3：用失败测试定义无 CAPTCHA 的前端投稿契约
+### Task 3：用失败测试定义无 CAPTCHA 的前端投稿契约
 
 **文件：**
 - 修改：`apps/website/tests/shared-pet-chapter.test.tsx`
@@ -111,7 +111,7 @@
 
 ---
 
-### 任务 4：移除前端 CAPTCHA 模块与参数传递
+### Task 4：移除前端 CAPTCHA 模块与参数传递
 
 **文件：**
 - 修改：`apps/website/components/website-experience/chapter-registry.tsx`
@@ -150,7 +150,7 @@
 
 ---
 
-### 任务 5：删除共享类型、更新声明并证明没有残留
+### Task 5：删除共享类型、更新声明并证明没有残留
 
 **文件：**
 - 修改：`packages/shared-types/src/moderation.ts`
@@ -183,7 +183,7 @@
 
 ---
 
-### 任务 6：生产构建、部署和线上验收
+### Task 6：生产构建、部署和线上验收
 
 **文件：**
 - 构建产物：`apps/cloudbase-api/dist/**`
