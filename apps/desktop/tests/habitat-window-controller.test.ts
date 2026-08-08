@@ -8,6 +8,10 @@ import {
 
 const NOW = 5_000;
 
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+}
+
 function observation(
   overrides: Partial<HabitatExplorerObservation> = {}
 ): HabitatExplorerObservation {
@@ -39,7 +43,7 @@ function createFixture(options: {
       events.push(`position:${x},${y}`);
       bounds = { ...bounds, x, y };
     }),
-    setAlwaysOnTop: vi.fn((value: boolean) => {
+    setAlwaysOnTop: vi.fn((value: boolean, _level?: 'floating') => {
       events.push(`topmost:${value}`);
       alwaysOnTop = value;
     }),
@@ -203,6 +207,64 @@ describe('HabitatWindowController', () => {
       .toBeLessThan(fixture.events.indexOf('invalidate:explorer-blurred'));
   });
 
+  it('layer.activate 挂起时可见转换仍在 1000ms 内失败关闭', async () => {
+    const fixture = createFixture();
+    let releaseActivate: (() => void) | undefined;
+    fixture.layer.activate.mockImplementationOnce(() => new Promise<void>(resolve => {
+      releaseActivate = resolve;
+    }));
+
+    const transition = fixture.controller.showFolder(observation());
+    await flushMicrotasks();
+    expect(fixture.window.showInactive).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(999);
+    expect(fixture.window.hide).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    await vi.runAllTimersAsync();
+
+    expect(fixture.events.indexOf('hide'))
+      .toBeLessThan(fixture.events.indexOf('invalidate:tab-race'));
+    releaseActivate?.();
+    await expect(transition).rejects.toThrow('HABITAT_TRANSITION_SUPERSEDED');
+  });
+
+  it('二次 Explorer 身份校验挂起时不会使可见窗口无限续命', async () => {
+    let releaseValidation: ((value: boolean) => void) | undefined;
+    const current = vi.fn<(hwnd: string) => boolean | Promise<boolean>>()
+      .mockReturnValueOnce(true)
+      .mockImplementationOnce(() => new Promise<boolean>(resolve => {
+        releaseValidation = resolve;
+      }));
+    const fixture = createFixture({ isCurrentExplorerWindow: current });
+
+    const transition = fixture.controller.showFolder(observation());
+    await flushMicrotasks();
+    expect(current).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1_000);
+    await vi.runAllTimersAsync();
+
+    expect(fixture.events.indexOf('hide'))
+      .toBeLessThan(fixture.events.indexOf('invalidate:tab-race'));
+    releaseValidation?.(true);
+    await expect(transition).rejects.toThrow('HABITAT_TRANSITION_SUPERSEDED');
+  });
+
+  it('旧观察 timer 不会误伤新成功代次，新代次仍有独立 1000ms 上限', async () => {
+    const fixture = createFixture();
+    await fixture.controller.showFolder(observation({ sequence: 1 }));
+    vi.advanceTimersByTime(500);
+    await fixture.controller.showFolder(observation({ sequence: 2 }));
+    fixture.window.hide.mockClear();
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(fixture.controller.getMode()).toBe('folder-visible');
+    expect(fixture.window.hide).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(fixture.controller.getMode()).toBe('lost');
+    expect(fixture.window.hide).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['零句柄', { explorerHwnd: '0' }],
     ['非规范句柄', { explorerHwnd: '043210' }],
@@ -277,6 +339,156 @@ describe('HabitatWindowController', () => {
     expect(fixture.controller.getMode()).toBe('folder-visible');
     expect(fixture.window.hide).not.toHaveBeenCalled();
     expect(fixture.layer.invalidate).not.toHaveBeenCalled();
+  });
+
+  it('续期提升失败不丢失既有 10 秒上限，且窗口立即隐藏', async () => {
+    const fixture = createFixture();
+    fixture.controller.beginInteraction();
+    const original = fixture.window.setAlwaysOnTop.getMockImplementation();
+    fixture.window.setAlwaysOnTop.mockImplementation((value: boolean, level?: 'floating') => {
+      original?.(value, level);
+      throw new Error('topmost failure');
+    });
+
+    expect(() => fixture.controller.beginInteraction()).toThrow('topmost failure');
+    expect(fixture.window.hide).toHaveBeenCalled();
+    const callsAfterFailure = fixture.window.setAlwaysOnTop.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(fixture.window.setAlwaysOnTop).toHaveBeenCalledTimes(callsAfterFailure);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fixture.window.setAlwaysOnTop.mock.calls.length).toBeGreaterThan(callsAfterFailure);
+    expect(fixture.window.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
+  });
+
+  it.each(['finish', 'timeout'] as const)(
+    '交互%s回落失败时隐藏窗口且不产生未处理异常',
+    async exit => {
+      const fixture = createFixture();
+      const finish = fixture.controller.beginInteraction();
+      const original = fixture.window.setAlwaysOnTop.getMockImplementation();
+      fixture.window.setAlwaysOnTop.mockImplementation((value: boolean, level?: 'floating') => {
+        original?.(value, level);
+        if (!value) throw new Error('topmost reset failure');
+      });
+
+      if (exit === 'finish') {
+        expect(() => finish()).not.toThrow();
+      } else {
+        await expect((async () => {
+          vi.advanceTimersByTime(10_000);
+          await vi.runAllTimersAsync();
+        })()).resolves.toBeUndefined();
+      }
+
+      expect(fixture.window.hide).toHaveBeenCalled();
+      expect(fixture.window.showInactive).not.toHaveBeenCalled();
+    }
+  );
+
+  it('showFolder 清除 interaction topmost 失败时不显示目录窗口', async () => {
+    const fixture = createFixture();
+    fixture.controller.beginInteraction();
+    const original = fixture.window.setAlwaysOnTop.getMockImplementation();
+    fixture.window.setAlwaysOnTop.mockImplementation((value: boolean, level?: 'floating') => {
+      original?.(value, level);
+      if (!value) throw new Error('topmost reset failure');
+    });
+
+    await expect(fixture.controller.showFolder(observation()))
+      .rejects.toThrow();
+
+    expect(fixture.window.hide).toHaveBeenCalled();
+    expect(fixture.window.showInactive).not.toHaveBeenCalled();
+    expect(fixture.layer.activate).not.toHaveBeenCalled();
+  });
+
+  it('enterDesktopIdle 清除 topmost 失败时保持隐藏并返回封闭错误', async () => {
+    const fixture = createFixture();
+    fixture.controller.beginInteraction();
+    const original = fixture.window.setAlwaysOnTop.getMockImplementation();
+    fixture.window.setAlwaysOnTop.mockImplementation((value: boolean, level?: 'floating') => {
+      original?.(value, level);
+      if (!value) throw new Error('topmost reset failure');
+    });
+
+    await expect(fixture.controller.enterDesktopIdle())
+      .rejects.toThrow('HABITAT_FAIL_CLOSED_INCOMPLETE');
+
+    expect(fixture.window.hide).toHaveBeenCalled();
+    expect(fixture.window.showInactive).not.toHaveBeenCalled();
+  });
+
+  it('dispose 会尝试清除 interaction topmost，失败时仍隐藏并释放 layer', async () => {
+    const fixture = createFixture();
+    fixture.controller.beginInteraction();
+    const original = fixture.window.setAlwaysOnTop.getMockImplementation();
+    fixture.window.setAlwaysOnTop.mockImplementation((value: boolean, level?: 'floating') => {
+      original?.(value, level);
+      if (!value) throw new Error('topmost reset failure');
+    });
+
+    await expect(fixture.controller.dispose())
+      .rejects.toThrow('HABITAT_FAIL_CLOSED_INCOMPLETE');
+
+    expect(fixture.window.hide).toHaveBeenCalled();
+    expect(fixture.window.setAlwaysOnTop).toHaveBeenCalledWith(false);
+    expect(fixture.layer.dispose).toHaveBeenCalledOnce();
+  });
+
+  it.each(['motion', 'interaction', 'position', 'layer'] as const)(
+    'failClosed 在%s清理失败时仍尝试全部清理并 invalidate',
+    async failurePoint => {
+      const fixture = createFixture();
+      if (failurePoint === 'motion') {
+        fixture.motion.setSuspended.mockImplementation(() => {
+          throw new Error('motion failure');
+        });
+      } else if (failurePoint === 'interaction') {
+        fixture.interaction.setPassthrough.mockImplementation(() => {
+          throw new Error('interaction failure');
+        });
+      } else if (failurePoint === 'position') {
+        fixture.position.setPersistenceMode.mockImplementation(() => {
+          throw new Error('position failure');
+        });
+      } else {
+        fixture.layer.invalidate.mockImplementation(async reason => {
+          fixture.events.push(`invalidate:${reason}`);
+          throw new Error('layer failure');
+        });
+      }
+
+      await expect(fixture.controller.loseExplorer('tab-race'))
+        .rejects.toThrow('HABITAT_FAIL_CLOSED_INCOMPLETE');
+
+      expect(fixture.window.hide).toHaveBeenCalled();
+      expect(fixture.window.setAlwaysOnTop).toHaveBeenCalledWith(false);
+      expect(fixture.motion.setSuspended).toHaveBeenCalledWith(true);
+      expect(fixture.interaction.setPassthrough).toHaveBeenCalledWith(true);
+      expect(fixture.position.setPersistenceMode).toHaveBeenCalledWith('disabled');
+      expect(fixture.layer.invalidate).toHaveBeenCalledWith('tab-race');
+      expect(fixture.events.indexOf('hide'))
+        .toBeLessThan(fixture.events.findIndex(event => event.startsWith('invalidate:')));
+    }
+  );
+
+  it('watchdog 的失败关闭依赖抛错时不产生未处理拒绝', async () => {
+    const fixture = createFixture();
+    await fixture.controller.showFolder(observation());
+    fixture.motion.setSuspended.mockImplementation(() => {
+      throw new Error('motion failure');
+    });
+
+    await expect((async () => {
+      vi.advanceTimersByTime(1_000);
+      await vi.runAllTimersAsync();
+    })()).resolves.toBeUndefined();
+
+    expect(fixture.window.hide).toHaveBeenCalled();
+    expect(fixture.interaction.setPassthrough).toHaveBeenCalledWith(true);
+    expect(fixture.position.setPersistenceMode).toHaveBeenCalledWith('disabled');
+    expect(fixture.layer.invalidate).toHaveBeenCalledWith('tab-race');
   });
 
   it('拒绝已销毁桌宠窗口，不写坐标也不激活层级', async () => {
