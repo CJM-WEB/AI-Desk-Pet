@@ -304,6 +304,21 @@ describe('管理员审核工作台', () => {
     expect(await screen.findByText('该邮箱没有管理员权限')).toBeTruthy();
   });
 
+  it('队列失败只记录稳定错误码，不记录访问令牌或投稿内容', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setup({
+      listQueue: vi.fn().mockRejectedValue(
+        new ApiClientError('AUTH_SERVICE_UNAVAILABLE', 503)
+      )
+    });
+
+    expect(await screen.findByText('审核队列暂时无法加载，请稍后重试。')).toBeTruthy();
+    expect(warning).toHaveBeenCalledWith(
+      '管理员接口请求失败 scope=queue code=AUTH_SERVICE_UNAVAILABLE status=503'
+    );
+    warning.mockRestore();
+  });
+
   it('英文环境提供可访问的核心管理员文案', async () => {
     const row = detail({ title: 'English submission' });
     const api = {

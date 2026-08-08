@@ -4,7 +4,7 @@ import { AdminApiClient } from '../lib/admin-api-client';
 import { ApiClient, ApiClientError } from '../lib/api-client';
 
 describe('管理员 API 客户端', () => {
-  it('每个管理员请求都携带短期 Bearer 令牌', async () => {
+  it('管理员令牌使用专用请求头，避免被 CloudBase 网关抢先认证', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: { items: [], nextCursor: null },
       error: null
@@ -16,9 +16,10 @@ describe('管理员 API 客户端', () => {
     expect(fetcher).toHaveBeenCalledWith(
       '/api/v1/admin/submissions?limit=20&status=manual_review_pending',
       expect.objectContaining({
-        headers: expect.objectContaining({ authorization: 'Bearer access-token' })
+        headers: expect.objectContaining({ 'x-ai-pet-admin-token': 'access-token' })
       })
     );
+    expect(fetcher.mock.calls[0]?.[1]?.headers).not.toHaveProperty('authorization');
   });
 
   it('严格拒绝包含未知字段的管理员响应', async () => {

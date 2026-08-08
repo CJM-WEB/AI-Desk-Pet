@@ -171,6 +171,12 @@ function AdminWorkspace({
       if (append && cursor !== undefined) seenCursors.current.add(cursor);
     } catch (error) {
       if (epoch !== sessionEpoch.current || isAbort(error)) return;
+      // 仅记录稳定错误元数据，线上诊断不得包含访问令牌或投稿内容。
+      if (error instanceof ApiClientError) {
+        console.warn(
+          `管理员接口请求失败 scope=queue code=${error.code} status=${error.statusCode}`
+        );
+      }
       if (!await handleApiError(error)) setNotice(t('admin.error.queue'));
     } finally {
       if (append && cursor !== undefined) pendingCursors.current.delete(cursor);

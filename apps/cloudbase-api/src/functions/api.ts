@@ -146,7 +146,7 @@ async function dispatch(
     : event.path;
 
   if (method === 'GET' && path === '/api/v1/admin/submissions') {
-    await dependencies.adminIdentity.requireAdmin(requireBearerToken(event));
+    await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
     return dependencies.admin.listQueue(adminListQuery(event));
   }
 
@@ -159,7 +159,7 @@ async function dispatch(
   );
   if (adminActionId !== null) {
     const identity = await dependencies.adminIdentity.requireAdmin(
-      requireBearerToken(event)
+      requireAdminToken(event)
     );
     const action = adminActionSchema.safeParse(requestRecord(event));
     if (!action.success) throw invalidRequest();
@@ -174,7 +174,7 @@ async function dispatch(
     ''
   );
   if (adminDetailId !== null) {
-    await dependencies.adminIdentity.requireAdmin(requireBearerToken(event));
+    await dependencies.adminIdentity.requireAdmin(requireAdminToken(event));
     return dependencies.admin.getDetail(adminDetailId);
   }
 
@@ -452,20 +452,16 @@ function header(
   return value.slice(0, 512);
 }
 
-/** 管理接口只接受格式完整且长度受限的 Bearer 访问令牌。 */
-function requireBearerToken(event: ApiHttpEvent): string {
-  const authorization = Object.entries(event.headers)
-    .find(([key]) => key.toLowerCase() === 'authorization')?.[1];
+/** 管理接口使用专用头传递短期令牌，避免 CloudBase 网关抢先消费 Authorization。 */
+function requireAdminToken(event: ApiHttpEvent): string {
+  const token = Object.entries(event.headers)
+    .find(([key]) => key.toLowerCase() === 'x-ai-pet-admin-token')?.[1];
   if (
-    typeof authorization !== 'string'
-    || authorization.length > 16_384
-    || /[\r\n]/u.test(authorization)
-    || !authorization.startsWith('Bearer ')
+    typeof token !== 'string'
+    || token.length === 0
+    || token.length > 16_384
+    || /\s/u.test(token)
   ) {
-    throw new ApiError('UNAUTHORIZED', 401);
-  }
-  const token = authorization.slice('Bearer '.length);
-  if (token.length === 0 || /\s/u.test(token)) {
     throw new ApiError('UNAUTHORIZED', 401);
   }
   return token;

@@ -158,7 +158,7 @@ function event(
     path,
     headers: {
       'user-agent': userAgent,
-      authorization: 'Bearer test-access-token'
+      'x-ai-pet-admin-token': 'test-access-token'
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   };
