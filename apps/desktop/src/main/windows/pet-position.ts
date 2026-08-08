@@ -40,6 +40,7 @@ export type PetPositionPersistenceMode = 'desktop' | 'folder' | 'disabled';
 type PendingPosition = {
   mode: Exclude<PetPositionPersistenceMode, 'disabled'>;
   point: Point;
+  generation: number;
 };
 
 const DEFAULT_DEBOUNCE_MS = 250;
@@ -60,6 +61,7 @@ export function createPetPositionController(
   options: PetPositionControllerOptions
 ): PetPositionController {
   let persistenceMode: PetPositionPersistenceMode = 'desktop';
+  let persistenceGeneration = 0;
   let pendingPosition: PendingPosition | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let writeQueue = Promise.resolve();
@@ -73,6 +75,11 @@ export function createPetPositionController(
   };
 
   const saveSafely = async (pending: PendingPosition): Promise<void> => {
+    if (
+      persistenceMode === 'disabled'
+      || pending.generation !== persistenceGeneration
+      || pending.mode !== persistenceMode
+    ) return;
     try {
       if (pending.mode === 'desktop') {
         await options.savePosition(pending.point);
@@ -106,7 +113,11 @@ export function createPetPositionController(
       reportError(error);
       return;
     }
-    pendingPosition = { mode: persistenceMode, point };
+    pendingPosition = {
+      mode: persistenceMode,
+      point,
+      generation: persistenceGeneration
+    };
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
@@ -117,6 +128,7 @@ export function createPetPositionController(
   return {
     setPersistenceMode(mode: PetPositionPersistenceMode): void {
       if (persistenceMode === mode) return;
+      persistenceGeneration += 1;
       persistenceMode = mode;
       pendingPosition = null;
       if (timer) clearTimeout(timer);

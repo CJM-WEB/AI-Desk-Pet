@@ -141,7 +141,7 @@ export class CharacterMotionService {
       this.movementRegions = null;
     } else {
       const bounds = this.options.window.getBounds();
-      this.movementRegions = rectangles
+      const nextRegions = rectangles
         .filter(rectangle => (
           Number.isFinite(rectangle.x)
           && Number.isFinite(rectangle.y)
@@ -151,6 +151,13 @@ export class CharacterMotionService {
           && rectangle.height >= bounds.height
         ))
         .map(rectangle => ({ ...rectangle }));
+      if (
+        !this.suspended
+        && !nextRegions.some(region => this.regionContainsBounds(region, bounds))
+      ) {
+        throw new Error('CHARACTER_MOTION_REGION_TRANSITION_UNSAFE');
+      }
+      this.movementRegions = nextRegions;
     }
     this.target = this.constrainTarget(this.target, this.options.window.getBounds());
   }
@@ -399,10 +406,7 @@ export class CharacterMotionService {
   ): CharacterMotionPoint {
     const areas = this.availableMovementRegions();
     const currentArea = this.movementRegions?.find(area => (
-      bounds.x >= area.x
-      && bounds.y >= area.y
-      && bounds.x + bounds.width <= area.x + area.width
-      && bounds.y + bounds.height <= area.y + area.height
+      this.regionContainsBounds(area, bounds)
     ));
     const area = currentArea ?? containingWorkArea(target, areas);
     if (!area) return { x: bounds.x, y: bounds.y };
@@ -416,6 +420,13 @@ export class CharacterMotionService {
         Math.max(area.y, target.y)
       )
     };
+  }
+
+  private regionContainsBounds(region: Rectangle, bounds: WindowBounds): boolean {
+    return bounds.x >= region.x
+      && bounds.y >= region.y
+      && bounds.x + bounds.width <= region.x + region.width
+      && bounds.y + bounds.height <= region.y + region.height;
   }
 }
 

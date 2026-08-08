@@ -392,6 +392,44 @@ describe('Main 角色运动服务', () => {
     expect(service.getSnapshot().target).toEqual({ x: 220, y: 100 });
   });
 
+  test('运动中未暂停时拒绝切到不包含当前窗口的区域', () => {
+    let now = 0;
+    let bounds = { x: 10, y: 10, width: 180, height: 220 };
+    const setPosition = vi.fn((x: number, y: number) => {
+      bounds = { ...bounds, x, y };
+    });
+    const service = new CharacterMotionService({
+      window: { getBounds: () => bounds, setPosition },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1200, height: 800 }],
+      now: () => now,
+      maxDeltaMs: 100
+    });
+    service.setMovementRegions([{ x: 0, y: 0, width: 400, height: 500 }]);
+    service.moveTo({ x: 200, y: 100 }, 100);
+    now = 100;
+    service.tick();
+    const targetBeforeRejectedSwitch = service.getSnapshot().target;
+
+    expect(() => service.setMovementRegions([
+      { x: 800, y: 0, width: 400, height: 500 }
+    ])).toThrow('CHARACTER_MOTION_REGION_TRANSITION_UNSAFE');
+    expect(service.getSnapshot().target).toEqual(targetBeforeRejectedSwitch);
+
+    service.setSuspended(true);
+    expect(() => service.setMovementRegions([
+      { x: 800, y: 0, width: 400, height: 500 }
+    ])).not.toThrow();
+    bounds = { ...bounds, x: 820, y: 20 };
+    service.handleWindowMoved();
+    service.setSuspended(false);
+    service.moveTo({ x: 900, y: 100 }, 100);
+    now = 200;
+    service.tick();
+
+    expect(setPosition.mock.calls.at(-1)).toEqual([827, 27]);
+    expect(bounds.x).toBeGreaterThanOrEqual(800);
+  });
+
   test('切换 Explorer 候选可先暂停、重设区域和坐标后再恢复', () => {
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };

@@ -274,6 +274,102 @@ describe('桌宠位置控制器', () => {
     expect(savePosition).not.toHaveBeenCalled();
     expect(saveLocalOffset).not.toHaveBeenCalled();
   });
+
+  test('disabled 使已进入写队列但未执行的旧代位置失效', async () => {
+    vi.useFakeTimers();
+    const window = new FakePetWindow();
+    const savedPositions: Array<{ x: number; y: number }> = [];
+    let releaseFirstSave = (): void => {};
+    const firstSave = new Promise<void>(resolve => {
+      releaseFirstSave = resolve;
+    });
+    const controller = createPetPositionController({
+      window,
+      debounceMs: 100,
+      savePosition: async position => {
+        savedPositions.push(position);
+        if (position.x === 100) await firstSave;
+      }
+    });
+
+    window.moveTo(100, 120);
+    await vi.advanceTimersByTimeAsync(100);
+    window.moveTo(300, 320);
+    await vi.advanceTimersByTimeAsync(100);
+    controller.setPersistenceMode('disabled');
+    releaseFirstSave();
+    await controller.flush();
+
+    expect(savedPositions).toEqual([{ x: 100, y: 120 }]);
+  });
+
+  test('desktop 切到 folder 后不执行已排队的旧桌面代写入', async () => {
+    vi.useFakeTimers();
+    const window = new FakePetWindow();
+    const desktopPositions: Array<{ x: number; y: number }> = [];
+    const localOffsets: Array<{ x: number; y: number }> = [];
+    let localOffset = { x: 16, y: 24 };
+    let releaseFirstSave = (): void => {};
+    const firstSave = new Promise<void>(resolve => {
+      releaseFirstSave = resolve;
+    });
+    const controller = createPetPositionController({
+      window,
+      debounceMs: 100,
+      savePosition: async position => {
+        desktopPositions.push(position);
+        if (position.x === 100) await firstSave;
+      },
+      getLocalOffset: () => localOffset,
+      saveLocalOffset: async offset => {
+        localOffsets.push(offset);
+      }
+    });
+
+    window.moveTo(100, 120);
+    await vi.advanceTimersByTimeAsync(100);
+    window.moveTo(300, 320);
+    await vi.advanceTimersByTimeAsync(100);
+    controller.setPersistenceMode('folder');
+    releaseFirstSave();
+    await controller.flush();
+
+    localOffset = { x: 40, y: 50 };
+    window.moveTo(900, 700);
+    await controller.flush();
+
+    expect(desktopPositions).toEqual([{ x: 100, y: 120 }]);
+    expect(localOffsets).toEqual([{ x: 40, y: 50 }]);
+  });
+
+  test('desktop 模式 ABA 后同名旧代队列项仍然失效', async () => {
+    vi.useFakeTimers();
+    const window = new FakePetWindow();
+    const savedPositions: Array<{ x: number; y: number }> = [];
+    let releaseFirstSave = (): void => {};
+    const firstSave = new Promise<void>(resolve => {
+      releaseFirstSave = resolve;
+    });
+    const controller = createPetPositionController({
+      window,
+      debounceMs: 100,
+      savePosition: async position => {
+        savedPositions.push(position);
+        if (position.x === 100) await firstSave;
+      }
+    });
+
+    window.moveTo(100, 120);
+    await vi.advanceTimersByTimeAsync(100);
+    window.moveTo(300, 320);
+    await vi.advanceTimersByTimeAsync(100);
+    controller.setPersistenceMode('folder');
+    controller.setPersistenceMode('desktop');
+    releaseFirstSave();
+    await controller.flush();
+
+    expect(savedPositions).toEqual([{ x: 100, y: 120 }]);
+  });
 });
 
 describe('主进程桌宠位置接入', () => {
