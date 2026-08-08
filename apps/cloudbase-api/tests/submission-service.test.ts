@@ -17,10 +17,6 @@ const validInput: PrepareSubmissionInput = {
   kind: 'shared_package',
   title: '云端小助手',
   body: '一个用于测试的共享角色包。',
-  captcha: {
-    ticket: 'captcha-ticket',
-    randstr: 'captcha-randstr'
-  },
   packageFile: {
     fileName: 'pet.zip',
     sizeBytes: 100 * MiB,
@@ -117,37 +113,27 @@ class MemoryStorage {
 function createFixture(): {
   store: MemorySubmissionStore;
   storage: MemoryStorage;
-  verifier: { verify: ReturnType<typeof vi.fn> };
   service: SubmissionService;
 } {
   const store = new MemorySubmissionStore();
   const storage = new MemoryStorage();
-  const verifier = {
-    verify: vi.fn(async () => undefined)
-  };
   return {
     store,
     storage,
-    verifier,
     service: new SubmissionService(
       store as never,
       storage,
-      verifier,
       () => 'submission-1'
     )
   };
 }
 
 describe('投稿服务', () => {
-  it('prepare 验票后只返回私有单次上传目标和一次性状态令牌', async () => {
-    const { service, store, storage, verifier } = createFixture();
+  it('prepare 无 CAPTCHA 时创建投稿并返回私有单次上传目标和一次性状态令牌', async () => {
+    const { service, store, storage } = createFixture();
 
     const receipt = await service.prepare(validInput, { ip: '203.0.113.8' });
 
-    expect(verifier.verify).toHaveBeenCalledWith(
-      validInput.captcha,
-      '203.0.113.8'
-    );
     expect(receipt).toMatchObject({
       submissionId: 'submission-1',
       status: 'uploading',
@@ -186,14 +172,13 @@ describe('投稿服务', () => {
     ['封面', {
       coverFile: { ...validInput.coverFile, sizeBytes: 5 * MiB + 1 }
     }]
-  ])('%s 超过边界时不验票也不创建投稿', async (_name, change) => {
-    const { service, store, verifier } = createFixture();
+  ])('%s 超过边界时不创建投稿', async (_name, change) => {
+    const { service, store } = createFixture();
 
     await expect(service.prepare(
       { ...validInput, ...change } as PrepareSubmissionInput,
       { ip: '203.0.113.8' }
     )).rejects.toMatchObject({ code: 'INVALID_UPLOAD' });
-    expect(verifier.verify).not.toHaveBeenCalled();
     expect(store.created).toBeNull();
   });
 
@@ -241,14 +226,13 @@ describe('投稿服务', () => {
   it.each([
     ['标题为空', { title: '  ' }],
     ['正文超过五百字', { body: '字'.repeat(501) }]
-  ])('%s 时在验票前拒绝请求', async (_name, change) => {
-    const { service, verifier } = createFixture();
+  ])('%s 时在创建前拒绝请求', async (_name, change) => {
+    const { service } = createFixture();
 
     await expect(service.prepare(
       { ...validInput, ...change },
       { ip: '203.0.113.8' }
     )).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
-    expect(verifier.verify).not.toHaveBeenCalled();
   });
 
   it('缺少文件声明时返回受控请求错误', async () => {

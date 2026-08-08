@@ -225,18 +225,31 @@ describe('公开 HTTP API', () => {
     expect(JSON.parse(response.body).error).toBeNull();
   });
 
-  it('匿名 prepare 缺少 CAPTCHA 返回 400', async () => {
+  it('匿名 prepare 无 CAPTCHA 仍进入投稿服务', async () => {
     const dependencies = createDependencies();
     const main = createApi(dependencies);
 
     const response = await main(
-      event('POST', '/api/v1/submissions/prepare', {}),
+      event('POST', '/api/v1/submissions/prepare', {
+        kind: 'shared_package',
+        title: '名称',
+        body: '说明',
+        packageFile: {
+          fileName: 'pet.zip',
+          sizeBytes: 1024,
+          contentType: 'application/zip'
+        },
+        coverFile: {
+          fileName: 'cover.webp',
+          sizeBytes: 512,
+          contentType: 'image/webp'
+        }
+      }),
       context
     );
 
-    expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body).error.code).toBe('INVALID_REQUEST');
-    expect(dependencies.submissions.prepare).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(200);
+    expect(dependencies.submissions.prepare).toHaveBeenCalledOnce();
   });
 
   it('只从受信 context 读取来源 IP 并忽略代理头', async () => {
@@ -246,7 +259,6 @@ describe('公开 HTTP API', () => {
       kind: 'shared_package',
       title: '名称',
       body: '说明',
-      captcha: { ticket: 'ticket', randstr: 'randstr' },
       packageFile: {
         fileName: 'pet.zip',
         sizeBytes: 1024,
@@ -271,6 +283,27 @@ describe('公开 HTTP API', () => {
       .not.toContain(sourceIp);
     expect(JSON.stringify(dependencies.abuseControl.consume.mock.calls))
       .not.toContain('198.51.100.99');
+  });
+
+  it('反馈无 CAPTCHA 时仍限流并进入文本投稿服务', async () => {
+    const dependencies = createDependencies();
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/feedback', {
+        kind: 'feedback',
+        authorName: '匿名用户',
+        content: '反馈内容'
+      }),
+      context
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(dependencies.abuseControl.consume).toHaveBeenCalledWith(
+      'submission_prepare',
+      expect.stringMatching(/^[a-f0-9]{64}$/u)
+    );
+    expect(dependencies.textSubmissions.submit).toHaveBeenCalledOnce();
   });
 
   it('缺少受信来源 IP 时失败关闭', async () => {
