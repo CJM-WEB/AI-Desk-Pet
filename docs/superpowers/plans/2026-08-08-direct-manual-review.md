@@ -15,6 +15,7 @@
 - 共享包仍必须完成对象存在性、大小、类型和上传完整性校验。
 - 新人工审核共享包可以直接批准；历史 `auto_rejected` 共享包继续执行技术扫描门禁。
 - 数据库只新增前向迁移，不修改已执行的历史迁移。
+- 网站生产构建必须注入现有 `NEXT_PUBLIC_CLOUDBASE_ENV_ID` 与 `NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY`，不得用空配置覆盖线上静态站。
 - 所有新增文档和结构性注释使用中文。
 - 先提交当前工作区已有的管理员路由修复，避免与本功能混入同一提交。
 
@@ -243,6 +244,8 @@ pnpm --filter cloudbase-api test
 pnpm --filter website typecheck
 pnpm --filter website test
 pnpm --filter cloudbase-api build
+$env:NEXT_PUBLIC_CLOUDBASE_ENV_ID='ai-pet-dev-d0gkscb2j2fc77664'
+# NEXT_PUBLIC_CLOUDBASE_PUBLISHABLE_KEY 从现有安全配置注入，不在命令、代码或日志中回显。
 pnpm --filter website build
 git diff --check
 ```
