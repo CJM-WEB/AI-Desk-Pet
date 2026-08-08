@@ -25,13 +25,13 @@ describe('secureWebPreferences', () => {
 });
 
 describe('窗口安全配置', () => {
-  it('创建透明、置顶且不进入任务栏的固定尺寸桌宠窗口', () => {
+  it('创建透明、普通层级且不进入任务栏的固定尺寸桌宠窗口', () => {
     expect(petWindowOptions('preload.js')).toMatchObject({
       width: 180,
       height: 220,
       transparent: true,
       frame: false,
-      alwaysOnTop: true,
+      alwaysOnTop: false,
       skipTaskbar: true,
       resizable: false,
       show: false
