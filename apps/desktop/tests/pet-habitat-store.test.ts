@@ -108,6 +108,93 @@ describe('PetHabitatStore', () => {
     ))).toHaveLength(1);
   });
 
+  test.each([
+    'bad：name',
+    'folder／name',
+    'folder＼name'
+  ])('直接保存拒绝 NFKC 后含保留字符的 pathHint %s', async pathHint => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-path-hint-save-');
+    const file = join(directory, 'private', 'habitat.json');
+    const snapshot = folderSnapshot(join(directory, 'project'));
+    snapshot.directories[0]!.pathHint = pathHint;
+    const store = new PetHabitatStore(file);
+
+    await expect(store.save(snapshot)).rejects.toThrow();
+
+    const restored = await store.load();
+    expect(restored).toEqual(DEFAULT_HABITAT_SNAPSHOT);
+    expect(JSON.stringify(projectHabitatSnapshot(restored))).not.toContain(pathHint);
+    expect(await readdir(directory)).toEqual([]);
+  });
+
+  test.each([
+    'bad：name',
+    'folder／name',
+    'folder＼name'
+  ])('磁盘中的全角恶意 pathHint %s 被隔离且不会进入公开投影', async pathHint => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-fullwidth-path-hint-');
+    const privateDirectory = join(directory, 'private');
+    const file = join(privateDirectory, 'habitat.json');
+    const snapshot = folderSnapshot('C:\\Users\\Alice\\Secret\\project');
+    snapshot.directories[0]!.pathHint = pathHint;
+    await mkdir(privateDirectory);
+    await writeFile(file, JSON.stringify(snapshot), 'utf8');
+
+    const restored = await new PetHabitatStore(file).load();
+
+    expect(restored).toEqual(DEFAULT_HABITAT_SNAPSHOT);
+    expect(JSON.stringify(projectHabitatSnapshot(restored))).not.toContain(pathHint);
+    expect((await readdir(privateDirectory)).filter(name => (
+      /^habitat\.json\.corrupt-/u.test(name)
+    ))).toHaveLength(1);
+  });
+
+  test('直接保存合法兼容字符时落盘和投影统一使用 NFKC 形式', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-normalized-name-');
+    const file = join(directory, 'private', 'habitat.json');
+    const snapshot = folderSnapshot(join(directory, 'project'));
+    snapshot.directories[0]!.displayName = 'Ｐｒｏｊｅｃｔ';
+    snapshot.directories[0]!.pathHint = 'Ｐｒｏｊｅｃｔ';
+    const store = new PetHabitatStore(file);
+
+    await store.save(snapshot);
+
+    const restored = await store.load();
+    expect(restored.directories[0]).toMatchObject({
+      displayName: 'Project',
+      pathHint: 'Project'
+    });
+    expect(projectHabitatSnapshot(restored).directories[0]).toMatchObject({
+      displayName: 'Project',
+      pathHint: 'Project'
+    });
+    expect(await readFile(file, 'utf8')).not.toContain('Ｐｒｏｊｅｃｔ');
+  });
+
+  test('NFKC 新引入的首尾空白在落盘和投影前统一清除', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-normalized-space-');
+    const file = join(directory, 'private', 'habitat.json');
+    const snapshot = folderSnapshot(join(directory, 'project'));
+    snapshot.directories[0]!.displayName = '¨Project';
+    snapshot.directories[0]!.pathHint = '¨Project';
+    const store = new PetHabitatStore(file);
+
+    await store.save(snapshot);
+
+    const restored = await store.load();
+    expect(restored.directories[0]).toMatchObject({
+      displayName: '\u0308Project',
+      pathHint: '\u0308Project'
+    });
+    expect(projectHabitatSnapshot(restored).directories[0]).toMatchObject({
+      displayName: '\u0308Project',
+      pathHint: '\u0308Project'
+    });
+    const persisted = await readFile(file, 'utf8');
+    expect(persisted).toContain('"displayName": "\u0308Project"');
+    expect(persisted).toContain('"pathHint": "\u0308Project"');
+  });
+
   test('原子写失败保留上一版本且后续写入仍可继续', async () => {
     const directory = await createTemporaryDirectory('ai-pet-habitat-write-');
     const file = join(directory, 'private', 'habitat.json');

@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import {
   isValidHabitatPathHint,
   MAX_HABITAT_PUBLIC_NAME_CODE_POINTS,
+  normalizeHabitatPublicName,
   type HabitatDirectoryAvailability,
   type HabitatDirectoryRecord
 } from './pet-habitat-store';
@@ -94,8 +95,7 @@ function isSameOrDescendant(candidate: string, root: string): boolean {
 }
 
 function boundedDirectoryName(path: string): string {
-  const normalized = basename(path)
-    .normalize('NFKC')
+  const normalized = normalizeHabitatPublicName(basename(path))
     .replace(/[\u0000-\u001f\u007f]/gu, '')
     .replace(/\s+/gu, ' ')
     .trim();

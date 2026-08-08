@@ -11,16 +11,21 @@ import {
 const MAX_STORE_BYTES = 64 * 1024;
 export const MAX_HABITAT_PUBLIC_NAME_CODE_POINTS = 80;
 
+export function normalizeHabitatPublicName(value: string): string {
+  return value.normalize('NFKC').trim();
+}
+
 export function isValidHabitatPublicName(value: string): boolean {
-  const length = Array.from(value).length;
+  const length = Array.from(normalizeHabitatPublicName(value)).length;
   return length >= 1 && length <= MAX_HABITAT_PUBLIC_NAME_CODE_POINTS;
 }
 
 export function isValidHabitatPathHint(value: string): boolean {
-  return isValidHabitatPublicName(value)
-    && value !== '.'
-    && value !== '..'
-    && !/[\\/:]/u.test(value);
+  const normalized = normalizeHabitatPublicName(value);
+  return isValidHabitatPublicName(normalized)
+    && normalized !== '.'
+    && normalized !== '..'
+    && !/[\\/:]/u.test(normalized);
 }
 
 const safeIdentifierSchema = z.string()
@@ -28,11 +33,14 @@ const safeIdentifierSchema = z.string()
   .max(64)
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u);
 const boundedTextSchema = z.string()
-  .trim()
-  .min(1)
-  .refine(
-    isValidHabitatPublicName,
-    '公开名称超过 80 个 Unicode 码点'
+  .transform(normalizeHabitatPublicName)
+  .pipe(
+    z.string()
+      .min(1)
+      .refine(
+        isValidHabitatPublicName,
+        '公开名称超过 80 个 Unicode 码点'
+      )
   );
 const pathHintSchema = boundedTextSchema.refine(
   isValidHabitatPathHint,
