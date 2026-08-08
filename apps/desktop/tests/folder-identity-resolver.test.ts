@@ -227,6 +227,46 @@ describe('FolderIdentityResolver', () => {
     expect(await readFile(file, 'utf8')).toContain('C:\\\\workspace\\\\new-name');
   });
 
+  test('较新路径续接提交后，迟到解析不得以同一身份覆盖新路径', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-folder-identity-stale-update-');
+    const file = join(directory, 'private', 'habitat.json');
+    const initialPath = 'C:\\workspace\\original';
+    await new PetHabitatStore(file).save(snapshot(initialPath));
+    let releaseStaleLoad: (() => void) | undefined;
+    const staleLoadPaused = new Promise<void>(resolve => { releaseStaleLoad = resolve; });
+    let staleLoaded = false;
+
+    class PausingHabitatStore extends PetHabitatStore {
+      override async load(): Promise<PetHabitatSnapshot> {
+        const loaded = await super.load();
+        staleLoaded = true;
+        await staleLoadPaused;
+        return loaded;
+      }
+    }
+
+    const staleResolver = new FolderIdentityResolver(
+      new PausingHabitatStore(file),
+      fakeDependencies({ physicalPath: 'C:\\workspace\\stale-a' })
+    );
+    const staleResolution = staleResolver.resolve('C:\\workspace\\stale-a');
+    await vi.waitFor(() => expect(staleLoaded).toBe(true));
+
+    const freshResolver = new FolderIdentityResolver(
+      new PetHabitatStore(file),
+      fakeDependencies({ physicalPath: 'C:\\workspace\\fresh-b' })
+    );
+    await expect(freshResolver.resolve('C:\\workspace\\fresh-b')).resolves.toEqual({
+      status: 'matched',
+      directoryId: 'directory-1'
+    });
+    releaseStaleLoad?.();
+
+    await expect(staleResolution).resolves.toEqual({ status: 'hidden' });
+    expect((await new PetHabitatStore(file).load()).directories[0]?.absolutePath)
+      .toBe('C:\\workspace\\fresh-b');
+  });
+
   test('Store 条件更新拒绝已禁用目录，撤销授权优先于身份续接', async () => {
     const directory = await createTemporaryDirectory('ai-pet-folder-identity-disabled-');
     const file = join(directory, 'private', 'habitat.json');
@@ -238,6 +278,7 @@ describe('FolderIdentityResolver', () => {
     await expect(store.updateDirectoryPath({
       directoryId: 'directory-1',
       expectedIdentity: { dev: 12, ino: 34 },
+      expectedAbsolutePath: 'C:\\workspace\\old-name',
       absolutePath: 'C:\\workspace\\new-name'
     })).resolves.toBe('missing');
     expect((await store.load()).directories[0]?.absolutePath).toBe('C:\\workspace\\old-name');

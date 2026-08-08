@@ -33,7 +33,7 @@ function frame(
 }
 
 function expectHidden(selection: ExplorerCandidateSelection): void {
-  expect(selection).toEqual({ status: 'hidden' });
+  expect(selection.status).toBe('hidden');
 }
 
 describe('selectExplorerCandidate', () => {
@@ -65,6 +65,7 @@ describe('selectExplorerCandidate', () => {
 
     expect(selection).toEqual({
       status: 'selected',
+      watermark: { instanceId: 'instance-current', sequence: 10 },
       binding: {
         instanceId: 'instance-current',
         hwnd: '18446744073709551615',
@@ -76,6 +77,21 @@ describe('selectExplorerCandidate', () => {
     if (selection.status === 'selected') {
       expect(typeof selection.binding.hwnd).toBe('string');
     }
+  });
+
+  test.each([
+    ['普通数字', 101],
+    ['超过安全整数精度的数字', Number.MAX_SAFE_INTEGER + 1]
+  ])('%s HWND 不得隐式转为十进制字符串', (_name, numericHwnd) => {
+    const base = frame();
+    expectHidden(selectExplorerCandidate({
+      activeInstanceId: 'instance-current',
+      frame: {
+        ...base,
+        foregroundHwnd: numericHwnd,
+        candidates: [{ ...base.candidates[0]!, hwnd: numericHwnd }]
+      } as unknown as ExplorerCandidateFrame
+    }));
   });
 
   test('同一路径多窗口与同 HWND 多标签按最大激活序号选择', () => {
@@ -157,6 +173,31 @@ describe('selectExplorerCandidate', () => {
       activeInstanceId: 'instance-current',
       previous: selected.binding,
       frame: frame({ foregroundHwnd: '202', sequence: 11 })
+    }));
+  });
+
+  test.each([
+    ['实例销毁', { destroyed: true }],
+    ['前台 HWND 变化', { foregroundHwnd: '202' }]
+  ] as const)('%s 撤销后以独立水位拒绝旧序列重放', (_name, revokedPatch) => {
+    const selected = selectExplorerCandidate({
+      activeInstanceId: 'instance-current',
+      frame: frame({ sequence: 10 })
+    });
+    if (selected.status !== 'selected') throw new Error('测试前置选择失败');
+    const revoked = selectExplorerCandidate({
+      activeInstanceId: 'instance-current',
+      previous: selected.binding,
+      frame: frame({ sequence: 20, ...revokedPatch })
+    });
+    const { watermark } = revoked;
+    expect(watermark).toEqual({ instanceId: 'instance-current', sequence: 20 });
+    if (watermark === null) throw new Error('撤销事件未推进序列水位');
+
+    expectHidden(selectExplorerCandidate({
+      activeInstanceId: 'instance-current',
+      watermark,
+      frame: frame({ sequence: 15 })
     }));
   });
 });

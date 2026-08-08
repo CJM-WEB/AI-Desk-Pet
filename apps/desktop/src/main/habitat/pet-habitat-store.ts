@@ -166,6 +166,7 @@ export type HabitatDirectoryPathUpdateResult =
 export interface HabitatDirectoryPathUpdate {
   directoryId: string;
   expectedIdentity: HabitatDirectoryRecord['identity'];
+  expectedAbsolutePath: string;
   absolutePath: string;
 }
 
@@ -269,7 +270,7 @@ export class PetHabitatStore {
   }
 
   /**
-   * 在同一文件队列中复核目录身份并更新路径，避免 load 后再 save 覆盖并发更改。
+   * 在同一文件队列中复核启用态、身份和旧路径，避免迟到续接覆盖并发更改。
    */
   updateDirectoryPath(
     input: HabitatDirectoryPathUpdate
@@ -278,6 +279,7 @@ export class PetHabitatStore {
       const parsedInput = z.object({
         directoryId: safeIdentifierSchema,
         expectedIdentity: directoryIdentitySchema,
+        expectedAbsolutePath: z.string().min(1).max(32_768),
         absolutePath: z.string().min(1).max(32_768)
       }).strict().parse(input);
       try {
@@ -291,6 +293,9 @@ export class PetHabitatStore {
           !current.enabled
           || !sameFile(current.identity, parsedInput.expectedIdentity)
         ) return 'missing';
+        if (!samePrivatePath(current.absolutePath, parsedInput.expectedAbsolutePath)) {
+          return 'conflict';
+        }
 
         const conflicts = snapshot.directories.some((directory, otherIndex) => (
           otherIndex !== index

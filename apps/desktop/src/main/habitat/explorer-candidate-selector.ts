@@ -32,21 +32,36 @@ export interface ExplorerCandidateBinding {
   directoryId: string;
 }
 
+export interface ExplorerCandidateWatermark {
+  instanceId: string;
+  sequence: number;
+}
+
 export type ExplorerCandidateSelection =
-  | { status: 'hidden' }
-  | { status: 'selected'; binding: ExplorerCandidateBinding };
+  | { status: 'hidden'; watermark: ExplorerCandidateWatermark | null }
+  | {
+    status: 'selected';
+    watermark: ExplorerCandidateWatermark;
+    binding: ExplorerCandidateBinding;
+  };
 
 export interface ExplorerCandidateSelectionInput {
   activeInstanceId: string;
   frame: ExplorerCandidateFrame;
   previous?: ExplorerCandidateBinding;
+  watermark?: ExplorerCandidateWatermark;
 }
 
-const HIDDEN_SELECTION = { status: 'hidden' } as const;
 const HWND_PATTERN = /^[1-9][0-9]{0,19}$/u;
 
 function isSequence(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
+}
+
+function hiddenSelection(
+  watermark: ExplorerCandidateWatermark | null
+): ExplorerCandidateSelection {
+  return { status: 'hidden', watermark };
 }
 
 function candidateFingerprint(candidate: ExplorerCandidate): string {
@@ -87,6 +102,7 @@ function isEligibleCandidate(
     && !candidate.minimized
     && !candidate.search
     && !candidate.ambiguous
+    && typeof candidate.hwnd === 'string'
     && HWND_PATTERN.test(candidate.hwnd)
     && candidate.hwnd === frame.foregroundHwnd
     && isSequence(candidate.activationSequence)
@@ -103,31 +119,43 @@ export function selectExplorerCandidate(
   input: ExplorerCandidateSelectionInput
 ): ExplorerCandidateSelection {
   const { activeInstanceId, frame, previous } = input;
+  const previousWatermark = input.watermark ?? (previous === undefined
+    ? null
+    : { instanceId: previous.instanceId, sequence: previous.sequence });
+  if (
+    frame.instanceId !== activeInstanceId
+    || !isSequence(frame.sequence)
+  ) return hiddenSelection(previousWatermark);
+  if (
+    previousWatermark?.instanceId === frame.instanceId
+    && frame.sequence <= previousWatermark.sequence
+  ) return hiddenSelection(previousWatermark);
+
+  const watermark = { instanceId: frame.instanceId, sequence: frame.sequence };
   if (
     frame.destroyed
-    || frame.instanceId !== activeInstanceId
-    || !isSequence(frame.sequence)
     || !Number.isFinite(frame.now)
+    || typeof frame.foregroundHwnd !== 'string'
     || !HWND_PATTERN.test(frame.foregroundHwnd)
+    || frame.candidates.some(candidate => typeof candidate.hwnd !== 'string')
     || hasConflictingFacts(frame.candidates)
-  ) return HIDDEN_SELECTION;
+  ) return hiddenSelection(watermark);
 
   if (previous?.instanceId === frame.instanceId) {
-    if (frame.sequence <= previous.sequence || frame.foregroundHwnd !== previous.hwnd) {
-      return HIDDEN_SELECTION;
-    }
+    if (frame.foregroundHwnd !== previous.hwnd) return hiddenSelection(watermark);
   }
 
   const eligible = frame.candidates.filter(candidate => isEligibleCandidate(candidate, frame));
-  if (eligible.length === 0) return HIDDEN_SELECTION;
+  if (eligible.length === 0) return hiddenSelection(watermark);
 
   const maximumActivation = Math.max(...eligible.map(candidate => candidate.activationSequence));
   const latest = eligible.filter(candidate => candidate.activationSequence === maximumActivation);
-  if (latest.length !== 1) return HIDDEN_SELECTION;
+  if (latest.length !== 1) return hiddenSelection(watermark);
 
   const selected = latest[0]!;
   return {
     status: 'selected',
+    watermark,
     binding: {
       instanceId: frame.instanceId,
       hwnd: selected.hwnd,

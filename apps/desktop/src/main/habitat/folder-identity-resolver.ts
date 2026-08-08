@@ -93,6 +93,7 @@ export class FolderIdentityResolver {
       const update = await this.store.updateDirectoryPath({
         directoryId: matched.id,
         expectedIdentity: inspected.identity,
+        expectedAbsolutePath: matched.absolutePath,
         absolutePath: inspected.physicalPath
       });
       if (update === 'missing' || update === 'conflict') return HIDDEN_RESOLUTION;
