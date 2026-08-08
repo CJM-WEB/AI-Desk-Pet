@@ -6,8 +6,6 @@ export interface CloudConfig {
   cloudbaseApiKey: string;
   privateBucketId: string;
   adminEmail: string;
-  captchaAppId: number;
-  captchaSecretKey: string;
   abuseHmacSecret: string;
   tencentCloudSecretId: string;
   tencentCloudSecretKey: string;
@@ -48,10 +46,6 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
   }
   const privateBucketId = readRequired(env, 'PRIVATE_BUCKET_ID');
   const adminEmail = readRequired(env, 'ADMIN_EMAIL');
-  const captchaAppId = Number(readRequired(env, 'CAPTCHA_APP_ID'));
-  if (!Number.isSafeInteger(captchaAppId) || captchaAppId <= 0) {
-    throw new Error('CAPTCHA_APP_ID 必须是正整数');
-  }
 
   const scannerUrl = normalizeHttpsUrl(
     readRequired(env, 'SCANNER_URL'),
@@ -67,8 +61,6 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
     cloudbaseApiKey: readRequired(env, 'CLOUDBASE_API_KEY'),
     privateBucketId,
     adminEmail,
-    captchaAppId,
-    captchaSecretKey: readRequired(env, 'CAPTCHA_SECRET_KEY'),
     abuseHmacSecret: readRequired(env, 'ABUSE_HMAC_SECRET'),
     tencentCloudSecretId: readCredential(
       env,

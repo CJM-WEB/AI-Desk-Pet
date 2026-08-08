@@ -6,8 +6,6 @@ export function stubCloudConfig(): void {
     CLOUDBASE_ENV_ID: 'env-test',
     PRIVATE_BUCKET_ID: 'private-bucket',
     ADMIN_EMAIL: 'admin@example.com',
-    CAPTCHA_APP_ID: '10001',
-    CAPTCHA_SECRET_KEY: 'captcha-secret',
     CLOUDBASE_API_KEY: 'service-role-key',
     ABUSE_HMAC_SECRET: 'abuse-secret',
     TENCENTCLOUD_SECRETID: 'secret-id',

@@ -1,11 +1,10 @@
 import type {
   AdminAction,
-  CaptchaProof,
   SubmissionStatus,
   SubmissionStatusView
 } from '@myself/shared-types';
 
-export type { CaptchaProof, SubmissionStatusView } from '@myself/shared-types';
+export type { SubmissionStatusView } from '@myself/shared-types';
 
 /** 创建投稿记录所需的最小字段。 */
 export interface NewSubmission {
@@ -166,12 +165,6 @@ export interface AbuseLimitInput {
 export interface AbuseLimitResult {
   allowed: boolean;
   retryAfterSeconds: number;
-}
-
-/** CAPTCHA 票据哈希的原子消费输入。 */
-export interface CaptchaTicketInput {
-  ticketHash: string;
-  expiresAt: string;
 }
 
 /** 公开互动写入的设备哈希输入。 */
@@ -404,9 +397,8 @@ export interface ModerationJobStore {
   recordModerationFailure(input: RecordModerationFailureInput): Promise<void>;
 }
 
-/** 多实例共享的 CAPTCHA 防重放与限流存储。 */
+/** 多实例共享的滥用限流存储。 */
 export interface SecurityStore {
-  consumeCaptchaTicket(input: CaptchaTicketInput): Promise<boolean>;
   consumeAbuseLimit(input: AbuseLimitInput): Promise<AbuseLimitResult>;
 }
 
@@ -429,11 +421,6 @@ export interface ObjectStorage {
   info(path: string): Promise<StoredObjectInfo | null>;
   createSignedUrl(path: string, expiresInSeconds: number): Promise<SignedDownload>;
   delete(path: string): Promise<void>;
-}
-
-/** 服务端 CAPTCHA 验票边界。 */
-export interface CaptchaVerifier {
-  verify(proof: CaptchaProof, ip: string): Promise<void>;
 }
 
 /** 文本与图片审核边界。 */

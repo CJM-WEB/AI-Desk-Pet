@@ -17,8 +17,6 @@ const validConfig: CloudConfig = {
   cloudbaseApiKey: 'service-role-key',
   privateBucketId: 'ai-pet-private',
   adminEmail: 'admin@example.com',
-  captchaAppId: 10001,
-  captchaSecretKey: 'captcha-secret',
   abuseHmacSecret: 'abuse-hmac-secret',
   tencentCloudSecretId: 'secret-id',
   tencentCloudSecretKey: 'secret-key',

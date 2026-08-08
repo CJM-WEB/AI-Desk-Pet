@@ -3,10 +3,8 @@ import { describe, expectTypeOf, it } from 'vitest';
 import type {
   AdminIdentityProvider,
   AdminIdentity,
-  CaptchaVerifier,
   Clock,
   ContentModerator,
-  CaptchaProof,
   ModerationImageInput,
   ModerationSignal,
   ModerationTextInput,
@@ -46,8 +44,6 @@ describe('审核 API 端口', () => {
       .toEqualTypeOf<(path: string, expiresInSeconds: number) => Promise<SignedDownload>>();
     expectTypeOf<ObjectStorage['delete']>()
       .toEqualTypeOf<(path: string) => Promise<void>>();
-    expectTypeOf<CaptchaVerifier['verify']>()
-      .toEqualTypeOf<(proof: CaptchaProof, ip: string) => Promise<void>>();
     expectTypeOf<ContentModerator['reviewText']>()
       .toEqualTypeOf<(input: ModerationTextInput) => Promise<ModerationSignal>>();
     expectTypeOf<ContentModerator['reviewImage']>()

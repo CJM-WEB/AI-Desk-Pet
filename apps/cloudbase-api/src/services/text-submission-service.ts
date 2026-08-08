@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
-import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
 
 import { createStatusToken, hashStatusToken } from '../crypto/status-token.js';
 import { ApiError } from '../errors.js';
 import type {
-  CaptchaVerifier,
   PublicInteractionStore,
   TextSubmissionKind
 } from '../ports.js';
@@ -15,7 +14,6 @@ export interface TextSubmissionInput {
   kind: TextSubmissionKind;
   authorName: string;
   content: string;
-  captcha: CaptchaProof;
 }
 
 type CreateId = () => string;
@@ -27,7 +25,6 @@ export class TextSubmissionService {
       PublicInteractionStore,
       'createTextSubmission'
     >,
-    private readonly captcha: CaptchaVerifier,
     private readonly createId: CreateId = randomUUID
   ) {}
 
@@ -36,7 +33,6 @@ export class TextSubmissionService {
     context: RequestContext
   ): Promise<SubmissionReceipt> {
     const normalized = validateInput(input, context);
-    await this.captcha.verify(normalized.captcha, context.ip);
 
     const submissionId = this.createId();
     const statusToken = createStatusToken();
@@ -68,10 +64,6 @@ function validateInput(
     || (input.kind !== 'feedback' && input.kind !== 'suggestion')
     || typeof input.authorName !== 'string'
     || typeof input.content !== 'string'
-    || typeof input.captcha !== 'object'
-    || input.captcha === null
-    || typeof input.captcha.ticket !== 'string'
-    || typeof input.captcha.randstr !== 'string'
     || typeof context.ip !== 'string'
     || context.ip.trim().length === 0
   ) {

@@ -2,7 +2,6 @@ import { createHmac, randomUUID } from 'node:crypto';
 
 import {
   adminActionSchema,
-  captchaProofSchema,
   submissionStatusSchema,
   submissionStatusViewSchema
 } from '@myself/shared-types';
@@ -14,10 +13,6 @@ import {
 } from '../adapters/cloudbase-postgres.js';
 import { createCloudBaseServerRuntime } from '../adapters/cloudbase-runtime.js';
 import { CloudBaseStorage } from '../adapters/cloudbase-storage.js';
-import {
-  createTencentCaptchaClient,
-  TencentCaptchaVerifier
-} from '../adapters/tencent-captcha.js';
 import { loadCloudConfig } from '../config.js';
 import {
   ApiError,
@@ -183,9 +178,6 @@ async function dispatch(
 
   if (method === 'POST' && path === '/api/v1/submissions/prepare') {
     const body = requestRecord(event);
-    if (!captchaProofSchema.safeParse(body.captcha).success) {
-      throw invalidRequest();
-    }
     const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'submission_prepare',
@@ -211,9 +203,6 @@ async function dispatch(
 
   if (method === 'POST' && path === '/api/v1/feedback') {
     const body = requestRecord(event);
-    if (!captchaProofSchema.safeParse(body.captcha).success) {
-      throw invalidRequest();
-    }
     const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'submission_prepare',
@@ -567,14 +556,9 @@ export function createProductionHandler(): ApiHandler {
     new CloudBasePostgresRpcClient(config.envId, config.cloudbaseApiKey)
   );
   const storage = new CloudBaseStorage(runtime.bucket);
-  const captcha = new TencentCaptchaVerifier(
-    createTencentCaptchaClient(config),
-    store,
-    config
-  );
   return createApi({
-    submissions: new SubmissionService(store, storage, captcha),
-    textSubmissions: new TextSubmissionService(store, captcha),
+    submissions: new SubmissionService(store, storage),
+    textSubmissions: new TextSubmissionService(store),
     publicContent: new PublicContentService(store, storage),
     abuseControl: new AbuseControl(store),
     adminIdentity: new CloudBaseAdminIdentityProvider(
