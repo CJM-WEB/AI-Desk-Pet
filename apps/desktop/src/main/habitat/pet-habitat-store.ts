@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, win32 } from 'node:path';
 import { z } from 'zod';
 import {
   atomicWriteText,
@@ -157,6 +157,18 @@ export interface PetHabitatStoreDependencies {
   onCheckpoint?: (checkpoint: HabitatStoreCheckpoint) => Promise<void>;
 }
 
+export type HabitatDirectoryPathUpdateResult =
+  | 'updated'
+  | 'unchanged'
+  | 'missing'
+  | 'conflict';
+
+export interface HabitatDirectoryPathUpdate {
+  directoryId: string;
+  expectedIdentity: HabitatDirectoryRecord['identity'];
+  absolutePath: string;
+}
+
 function cloneSnapshot(snapshot: PetHabitatSnapshot): PetHabitatSnapshot {
   return structuredClone(snapshot);
 }
@@ -186,6 +198,11 @@ function sameParent(left: ParentIdentity, right: ParentIdentity): boolean {
 
 function sameFile(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+function samePrivatePath(left: string, right: string): boolean {
+  return win32.normalize(left).toLocaleLowerCase('en-US')
+    === win32.normalize(right).toLocaleLowerCase('en-US');
 }
 
 /**
@@ -243,6 +260,52 @@ export class PetHabitatStore {
       const snapshot = petHabitatSnapshotSchema.parse(input);
       try {
         await this.writeSnapshot(snapshot);
+      } catch (error) {
+        if (isKnownHabitatError(error)) throw error;
+        if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');
+        throw new Error('HABITAT_STORAGE_FAILED');
+      }
+    });
+  }
+
+  /**
+   * 在同一文件队列中复核目录身份并更新路径，避免 load 后再 save 覆盖并发更改。
+   */
+  updateDirectoryPath(
+    input: HabitatDirectoryPathUpdate
+  ): Promise<HabitatDirectoryPathUpdateResult> {
+    return this.enqueue(async () => {
+      const parsedInput = z.object({
+        directoryId: safeIdentifierSchema,
+        expectedIdentity: directoryIdentitySchema,
+        absolutePath: z.string().min(1).max(32_768)
+      }).strict().parse(input);
+      try {
+        const snapshot = await this.loadUnsafe();
+        const index = snapshot.directories.findIndex(directory => (
+          directory.id === parsedInput.directoryId
+        ));
+        if (index < 0) return 'missing';
+        const current = snapshot.directories[index]!;
+        if (
+          !current.enabled
+          || !sameFile(current.identity, parsedInput.expectedIdentity)
+        ) return 'missing';
+
+        const conflicts = snapshot.directories.some((directory, otherIndex) => (
+          otherIndex !== index
+          && (
+            sameFile(directory.identity, parsedInput.expectedIdentity)
+            || samePrivatePath(directory.absolutePath, parsedInput.absolutePath)
+          )
+        ));
+        if (conflicts) return 'conflict';
+        if (samePrivatePath(current.absolutePath, parsedInput.absolutePath)) return 'unchanged';
+
+        const directories = snapshot.directories.slice();
+        directories[index] = { ...current, absolutePath: parsedInput.absolutePath };
+        await this.writeSnapshot(petHabitatSnapshotSchema.parse({ ...snapshot, directories }));
+        return 'updated';
       } catch (error) {
         if (isKnownHabitatError(error)) throw error;
         if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');
