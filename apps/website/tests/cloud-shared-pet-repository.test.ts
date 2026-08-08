@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CaptchaProof } from '@myself/shared-types';
 import { ApiClientError, type ApiClient } from '../lib/api-client';
 import {
   CloudSharedPetRepository,
@@ -7,7 +6,6 @@ import {
   uploadWithXhr
 } from '../components/website-experience/community/cloud-shared-pet-repository';
 
-const captcha: CaptchaProof = { ticket: 'captcha-ticket', randstr: 'captcha-randstr' };
 const prepared = {
   submissionId: 'submission-1',
   statusToken: 'a'.repeat(43),
@@ -78,12 +76,13 @@ describe('云端共享仓库', () => {
     const upload = vi.fn(async (_url, _file, _type, progress) => progress(_file.size)) as SignedUpload;
     const repository = new CloudSharedPetRepository(api, upload);
 
-    const receipt = await repository.submit(createInput('application/x-zip-compressed'), captcha);
+    const receipt = await repository.submit(createInput('application/x-zip-compressed'));
 
     expect(api.request).toHaveBeenNthCalledWith(1, '/submissions/prepare', expect.objectContaining({
       method: 'POST',
       body: expect.stringContaining('"contentType":"application/zip"')
     }));
+    expect(JSON.parse(vi.mocked(api.request).mock.calls[0]![1]!.body as string)).not.toHaveProperty('captcha');
     expect(upload).toHaveBeenNthCalledWith(1, 'https://storage.example/cover', expect.any(File), 'image/png', expect.any(Function));
     expect(upload).toHaveBeenNthCalledWith(2, 'https://storage.example/package', expect.any(File), 'application/zip', expect.any(Function));
     expect(api.request).toHaveBeenNthCalledWith(2, '/submissions/submission-1/finalize', {
@@ -95,7 +94,7 @@ describe('云端共享仓库', () => {
   it.each(['', 'application/x-zip-compressed'])('空或别名 ZIP MIME 仍以 application/zip 上传：%s', async zipType => {
     const api = createApi(prepared, { status: 'system_reviewing' });
     const upload = vi.fn(async () => undefined) as SignedUpload;
-    await new CloudSharedPetRepository(api, upload).submit(createInput(zipType), captcha);
+    await new CloudSharedPetRepository(api, upload).submit(createInput(zipType));
     expect(JSON.parse(vi.mocked(api.request).mock.calls[0]![1]!.body as string).packageFile.contentType)
       .toBe('application/zip');
     expect(vi.mocked(upload).mock.calls[1]![2]).toBe('application/zip');
@@ -108,7 +107,7 @@ describe('云端共享仓库', () => {
       progress(file.size);
     }) as SignedUpload;
     const progress: number[] = [];
-    await new CloudSharedPetRepository(api, upload).submit(createInput(), captcha, value => progress.push(value));
+    await new CloudSharedPetRepository(api, upload).submit(createInput(), value => progress.push(value));
     expect(progress).toEqual([0, 16, 41, 66, 100]);
   });
 
@@ -169,7 +168,7 @@ describe('云端共享仓库', () => {
   it('封面上传失败时只请求 prepare 且不上传 ZIP', async () => {
     const api = createApi(prepared, { status: 'system_reviewing' });
     const upload = vi.fn(async () => { throw new Error('cover'); }) as SignedUpload;
-    await expect(new CloudSharedPetRepository(api, upload).submit(createInput(), captcha)).rejects.toThrow('cover');
+    await expect(new CloudSharedPetRepository(api, upload).submit(createInput())).rejects.toThrow('cover');
     expect(upload).toHaveBeenCalledTimes(1);
     expect(api.request).toHaveBeenCalledTimes(1);
   });
@@ -181,7 +180,7 @@ describe('云端共享仓库', () => {
       calls += 1;
       if (calls === 2) throw new Error('package');
     }) as SignedUpload;
-    await expect(new CloudSharedPetRepository(api, upload).submit(createInput(), captcha)).rejects.toThrow('package');
+    await expect(new CloudSharedPetRepository(api, upload).submit(createInput())).rejects.toThrow('package');
     expect(upload).toHaveBeenCalledTimes(2);
     expect(api.request).toHaveBeenCalledTimes(1);
   });
@@ -192,7 +191,7 @@ describe('云端共享仓库', () => {
       .mockRejectedValueOnce(new Error('finalize'))
     } as unknown as ApiClient;
     const upload = vi.fn(async () => undefined) as SignedUpload;
-    await expect(new CloudSharedPetRepository(api, upload).submit(createInput(), captcha)).rejects.toThrow('finalize');
+    await expect(new CloudSharedPetRepository(api, upload).submit(createInput())).rejects.toThrow('finalize');
     expect(upload).toHaveBeenCalledTimes(2);
     expect(api.request).toHaveBeenCalledTimes(2);
   });

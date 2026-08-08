@@ -12,7 +12,7 @@ import {
   within
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
 import { I18nProvider } from '../components/i18n/I18nProvider';
 import { SharedPetChapter } from '../components/website-experience/community/SharedPetChapter';
 import {
@@ -121,8 +121,7 @@ function createRepository(itemCount: number) {
     return item;
   });
   const submit = vi.fn(async (
-    input: CreateSharedPetInput,
-    _captcha: CaptchaProof
+    input: CreateSharedPetInput
   ): Promise<SubmissionReceipt> => {
     await create(input);
     return {
@@ -194,7 +193,6 @@ function renderChapter(repository: SharedPetRepository, props = {}) {
       <SharedPetChapter
         interactive
         repository={repository}
-        captcha={{ verify: async () => ({ ticket: 'test-ticket', randstr: 'test-randstr' }) }}
         {...props}
       />
     </I18nProvider>
@@ -481,11 +479,10 @@ describe('共享仓库章节', () => {
     expect(screen.getByText('请立即保存此链接，丢失后无法找回。')).toBeTruthy();
   });
 
-  it('加载失败后的投稿仍调用 CAPTCHA 并优先显示状态链接', async () => {
+  it('加载失败后的投稿仍调用仓库并优先显示状态链接', async () => {
     const harness = createRepository(0);
-    const verify = vi.fn(async () => ({ ticket: 'ticket', randstr: 'randstr' }));
     harness.listPage.mockRejectedValueOnce(new Error('load failed'));
-    renderChapter(harness.repository, { captcha: { verify } });
+    renderChapter(harness.repository);
     await screen.findByText('共享内容暂时无法加载，请稍后重试。');
 
     fireEvent.click(screen.getByRole('button', { name: '分享您的 AI Pet' }));
@@ -499,7 +496,7 @@ describe('共享仓库章节', () => {
     fireEvent.change(screen.getByLabelText('描述'), { target: { value: '共享包描述' } });
     fireEvent.click(screen.getByRole('button', { name: '发布分享' }));
 
-    await waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(harness.submit).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('投稿已收到，正在系统审核。')).toBeTruthy();
     expect(screen.queryByText('共享内容暂时无法加载，请稍后重试。')).toBeNull();
   });
@@ -529,7 +526,6 @@ describe('共享仓库章节', () => {
     let complete!: (receipt: SubmissionReceipt) => void;
     harness.submit.mockImplementationOnce((
       _input: CreateSharedPetInput,
-      _captcha: CaptchaProof,
       progress?: (percent: number) => void
     ) => new Promise<SubmissionReceipt>(resolve => {
       progress?.(42);

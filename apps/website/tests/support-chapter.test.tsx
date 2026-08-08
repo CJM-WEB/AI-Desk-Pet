@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../components/i18n/I18nProvider';
@@ -37,18 +37,11 @@ function createRepository() {
   return {
     list: vi.fn((kind: FeedbackKind) => entries.filter((entry) => entry.kind === kind)),
     refresh: vi.fn(async () => undefined),
-    create: vi.fn(async (_input, _captcha: CaptchaProof) => receipt),
+    create: vi.fn(async _input => receipt),
     toggleLike: vi.fn(async (id: string) => entries.find((entry) => entry.id === id)!),
     subscribe: vi.fn(() => () => undefined)
   } satisfies FeedbackRepository;
 }
-
-const captcha = {
-  verify: vi.fn(async (): Promise<CaptchaProof> => ({
-    ticket: 'ticket',
-    randstr: 'randstr'
-  }))
-};
 
 afterEach(() => {
   cleanup();
@@ -57,7 +50,7 @@ afterEach(() => {
 
 describe('合并后的反馈与支持模块', () => {
   it('只渲染一个第五模块并提供三项反馈与三项支付入口', () => {
-    render(<SupportChapter interactive repository={createRepository()} captcha={captcha} />);
+    render(<SupportChapter interactive repository={createRepository()} />);
 
     expect(screen.getByTestId('support-chapter')).toBeTruthy();
     expect(screen.getByRole('button', { name: '查看更新建议' })).toBeTruthy();
@@ -71,7 +64,7 @@ describe('合并后的反馈与支持模块', () => {
 
   it('进入模块时刷新两类反馈快照', async () => {
     const repository = createRepository();
-    render(<SupportChapter interactive repository={repository} captcha={captcha} />);
+    render(<SupportChapter interactive repository={repository} />);
 
     await waitFor(() => {
       expect(repository.refresh).toHaveBeenCalledWith('feedback');
@@ -80,7 +73,7 @@ describe('合并后的反馈与支持模块', () => {
   });
 
   it('点击反馈按钮直接打开对应列表面板', () => {
-    render(<SupportChapter interactive repository={createRepository()} captcha={captcha} />);
+    render(<SupportChapter interactive repository={createRepository()} />);
 
     const feedbackButton = screen.getByRole('button', { name: '查看用户反馈' });
     fireEvent.click(feedbackButton);
@@ -91,7 +84,7 @@ describe('合并后的反馈与支持模块', () => {
   });
 
   it('点击支付按钮直接打开对应二维码面板', () => {
-    render(<SupportChapter interactive repository={createRepository()} captcha={captcha} />);
+    render(<SupportChapter interactive repository={createRepository()} />);
 
     const alipayButton = screen.getByRole('button', { name: '打开支付宝付款码' });
     fireEvent.click(alipayButton);
@@ -101,7 +94,7 @@ describe('合并后的反馈与支持模块', () => {
   });
 
   it('两组局部滚轮分别循环选中项且不影响另一组', () => {
-    render(<SupportChapter interactive repository={createRepository()} captcha={captcha} />);
+    render(<SupportChapter interactive repository={createRepository()} />);
     const feedbackGroup = screen.getByRole('group', { name: '选择反馈操作' });
     const paymentGroup = screen.getByRole('group', { name: '选择付款方式' });
 
@@ -113,9 +106,9 @@ describe('合并后的反馈与支持模块', () => {
     expect(paymentGroup.getAttribute('data-active-payment')).toBe('alipay');
   });
 
-  it('新建投稿继续使用验证码与原反馈仓库接口', async () => {
+  it('新建投稿直接调用原反馈仓库接口', async () => {
     const repository = createRepository();
-    render(<SupportChapter interactive repository={repository} captcha={captcha} />);
+    render(<SupportChapter interactive repository={repository} />);
 
     const createButton = screen.getByRole('button', { name: '新建投稿' });
     fireEvent.click(createButton);
@@ -125,13 +118,12 @@ describe('合并后的反馈与支持模块', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: '发布投稿' }));
 
-    await waitFor(() => expect(captcha.verify).toHaveBeenCalledTimes(1));
-    expect(repository.create).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(repository.create).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('投稿已收到，正在系统审核。')).toBeTruthy();
   });
 
   it('不可交互时六个入口全部禁用', () => {
-    render(<SupportChapter interactive={false} repository={createRepository()} captcha={captcha} />);
+    render(<SupportChapter interactive={false} repository={createRepository()} />);
     const buttons = screen.getAllByRole('button');
     expect(buttons).toHaveLength(6);
     expect(buttons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
@@ -140,7 +132,7 @@ describe('合并后的反馈与支持模块', () => {
   it('英文环境同步反馈与支付按钮文案', () => {
     render(
       <I18nProvider initialLocale="en">
-        <SupportChapter interactive repository={createRepository()} captcha={captcha} />
+        <SupportChapter interactive repository={createRepository()} />
       </I18nProvider>
     );
 
