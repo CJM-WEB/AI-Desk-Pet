@@ -14,7 +14,11 @@
 - ../specs/2026-07-27-explorer-pet-space-design.md
 - ./2026-07-27-explorer-pet-space.md
 
-**替代关系：** 2026-07-27 的资源管理器计划保留为历史设计输入，但不再作为当前分支的直接执行清单。本计划按当前代码和“系统 API → UIA → 视觉”的安全顺序重新规划：阶段 3B 首选 Windows Shell/COM 与固定 Win32 窗口函数；不开放通用 UIA、截图、视觉定位或任意桌面执行器。
+**替代关系：** 2026-07-27 的资源管理器计划保留为历史设计输入，但不再作为当前分支的直接执行清单。阶段 3B 当前采用受限 Shell 标签 HWND 唯一映射观察与 Electron `moveAbove` 层级控制；受限 UIA 已在 Task 0 实机证明不可行，不开放通用 UIA、截图、视觉定位或任意桌面执行器。
+
+**2026-08-08 状态同步：** 用户接受 Task 0E 剩余人工未验收风险后，Task 0F 已完成精确 profile、新 helper 唯一生产观察、Electron-only 层级控制和无事实观察心跳的技术切换，旧 UIA 观察与 User32 层级路线已删除，并通过自动总门。桥接与 helper 运行源文件已经准备，但 `extraResources`、完整性清单和正式生产组合仍归 Task 10。该状态不追认 Task 0E 未完成的 rapid、父目录、特殊字符、Explorer 重启/新 generation、完整失败矩阵或多屏/DPI 项；当前机器虽有双显示器，本轮仅按用户限定的单屏范围验收。Main、正式桌宠窗口、Renderer 和 Preload 尚未接入，当前 `alwaysOnTop` 行为保持不变，仍须按 Task 6 和 Task 10 完成正式组合。因此阶段 3B 尚未完成，Task 1 及后续业务范围没有因本次技术切换自动解锁。
+
+**2026-08-08 阶段门例外：** 用户再次明确要求跳过剩余验证、接受风险并执行下一步。本次 `accuracy-core` 重跑仅取得 W1-A `ready`、`round=1`，等待 B 时由用户 `Ctrl-C` 终止，进程残留为零。自动 rapid、父目录、特殊字符、Explorer 重启与新 generation、Shell/COM 停滞、HWND 复用完整矩阵和多屏相关项目仍为未验收，多屏继续按用户限定暂缓。该显式授权允许从现在起按计划顺序进入 Task 1，但不修改下文 Task 0 原始完成定义，不追认其全部技术门已经满足，也不代表跨屏支持；阶段 3B 仍未完成。
 
 ---
 
@@ -106,10 +110,11 @@ entering、revealing 和 recalling 只作为 Main 内存中的过渡状态；重
 
 桥接层只允许以下固定能力：
 
-1. 使用 Shell.Application.Windows 枚举当前前台 Explorer 的活动目录。
-2. 使用 User32 的 GetForegroundWindow、GetWindowRect、IsIconic 和 SetWindowPos 读取前台窗口事实并将桌宠 HWND 放到目标 Explorer 的相邻层级。
-3. 输出递增序号、Explorer HWND、不透明实例 ID、规范化候选路径和窗口矩形。
-4. 接收 start-observing、stop-observing、place-near、remove-layer 和 shutdown 五类固定命令。
+1. 加载固定 Shell 标签 helper，以活动 `ShellTabWindowClass` HWND 和 `IShellBrowser.GetWindow` 的唯一映射观察前台 Explorer 活动目录。
+2. 输出递增序号、Explorer HWND、不透明实例 ID、规范化候选路径和窗口矩形；稳定快照去重期间只输出不含路径、HWND、实例、矩形或状态事实的观察心跳。
+3. 只接收 `start-observing`、`stop-observing` 和 `shutdown` 三类固定命令。
+
+桥接层不接收宠物 HWND，也不执行窗口层级操作。层级只由 Electron Main 内的 `ExplorerWindowLayerController` 调用 `BrowserWindow.moveAbove` 完成。
 
 禁止提供任意 PowerShell、任意 COM ProgID、任意窗口消息、鼠标键盘、截图、文件枚举或进程启动能力。
 
@@ -117,9 +122,9 @@ entering、revealing 和 recalling 只作为 Main 内存中的过渡状态；重
 
 - 仅在 folder-hidden、folder-visible、folder-lost 或等待呼唤绑定期间运行桥接层。
 - desktop 状态关闭桥接层，不保留后台观察进程。
-- 桥接层最多每 750ms 查询一次活动 Explorer；相同事实不重复发送，窗口移动事件合并。
+- 桥接层最多每 750ms 查询一次活动 Explorer；相同事实不重复发送，观察期间按固定有界间隔发送无事实心跳。
 - Main 对每行限制 16 KiB，对请求和事件设置 5 秒超时，对重启采用 1s、5s、30s 退避，五分钟内最多重启三次。
-- 桥接层退出、协议错误或输出超限时立即隐藏目录空间桌宠并进入失联或降级状态，不影响聊天、Agent 和托盘召回。
+- Explorer 观察退出、协议错误、超时或输出超限时，Main 立即隐藏目录空间桌宠并进入失联或降级状态，不影响聊天、Agent 和托盘召回。
 
 ### 2.3 准确性失败门
 
@@ -128,7 +133,7 @@ Shell/COM 在 Windows 版本和 Explorer 多标签实现上可能存在差异，
 - 必须在当前 Windows 环境证明单窗口、多窗口、多标签、地址栏切换、最小化和 Explorer 重启的准确路径。
 - 同一 HWND 下无法区分活动标签时必须返回 ambiguous，Main 保持隐藏。
 - 不得用窗口标题、文件夹名称、最近路径、搜索结果或时间猜测当前目录。
-- 不得为了通过此门直接改用通用 UIA 或截图。若 Shell/COM 无法满足准确性，停止阶段 3B 实施，记录证据并提交新的 UIA 安全设计等待用户批准。
+- 不得为了通过此门直接改用通用 UIA 或截图。原外层 HWND Shell/COM 和后续受限 UIA 已完成失败记录；当前只允许按恢复计划验证 Shell 标签 HWND 唯一映射，失败时继续 blocked，不得再扩大 UIA。
 
 ---
 
@@ -188,7 +193,9 @@ Renderer 不接收 absolutePath、dev、ino、Explorer HWND、宠物 HWND、桥�
 
 ## 4. 实施任务
 
-### Task 0：建立 Shell/COM 准确发现与层级技术门
+### Task 0：建立 Shell 标签准确观察与 Electron 层级技术门
+
+> **2026-08-07 恢复说明：** 本 Task 的外层 HWND Shell/COM 归因和后续受限 UIA 路线已取得真实失败证据。当前执行清单由 `2026-08-07-ai-pet-shell-tab-window-task0-recovery.md` 替代；新路线使用 `ShellTabWindowClass` 活动候选与 `IShellBrowser.GetWindow` 唯一映射。层级路线比较已经收敛为 Electron `moveAbove`，生产不保留另一套层级实现。恢复计划通过前不得执行 Task 1。
 
 **文件：**
 
@@ -205,7 +212,7 @@ Renderer 不接收 absolutePath、dev、ino、Explorer HWND、宠物 HWND、桥�
 
 - hello 协议版本、进程 nonce、请求 ID和递增事件序号。
 - 严格拒绝未知字段、超长行、重复序号、过期响应、错误矩形、空路径和非 Explorer 类型。
-- start/stop/place/remove/shutdown 之外的命令全部拒绝。
+- `start-observing`、`stop-observing`、`shutdown` 之外的命令全部拒绝；观察心跳只允许固定协议身份字段。
 - stderr 只允许稳定诊断码，不得输出路径、命令正文或环境。
 
 运行：
@@ -216,10 +223,10 @@ Renderer 不接收 absolutePath、dev、ino、Explorer HWND、宠物 HWND、桥�
 
 **步骤 2：实现最小固定桥接**
 
-- 脚本只加载 Shell.Application 和固定 User32 P/Invoke。
+- 脚本只加载固定 Shell 标签 helper 和有界输入队列，不内联另一套 Explorer 归因或窗口层级实现。
 - Main 使用 spawn 的参数数组，不拼接命令字符串。
 - 环境从显式允许名单构造，stdio 固定为 pipe，窗口隐藏。
-- Main 在收到 hello 并验证版本前不发送窗口命令。
+- Main 在收到 hello 并验证版本前不发送观察命令。
 - 客户端关闭必须等待进程退出；超时后只终止该已验证 PID。
 
 **步骤 3：完成真实准确性验证**
@@ -232,10 +239,10 @@ Renderer 不接收 absolutePath、dev、ino、Explorer HWND、宠物 HWND、桥�
 - 地址栏进入上级目录和搜索结果。
 - 最小化、关闭和 Explorer 重启。
 - 路径包含空格、中文、#、% 和非 BMP 字符。
-- 在不使用真实桌宠数据的测试窗口上验证固定层级函数：测试窗口只位于目标 Explorer 相邻层级，切换到其他应用后不会继续覆盖该应用，remove-layer 后恢复普通层级。
+- 在不使用真实桌宠数据的测试窗口上验证 `ExplorerWindowLayerController.moveAbove`：测试窗口只位于目标 Explorer 相邻层级，切换到其他应用时先隐藏并 `invalidate`，不会继续覆盖该应用。
 - 验证默认企业 ExecutionPolicy 允许固定资源脚本运行；若被系统策略阻止，客户端只返回稳定不可用错误并确保没有残留进程，不得自动加入 Bypass。
 
-若任一多标签场景只能猜测，桥接必须输出 ambiguous；若固定层级函数不能证明“非全局置顶”，也必须失败。任一技术门失败时停止后续任务并把计划状态标记为 blocked，不得放宽为标题匹配、永久置顶或执行策略绕过。
+若任一多标签场景只能猜测，桥接必须输出 ambiguous；若 Electron 层级控制器不能证明“非全局置顶”，也必须失败。任一技术门失败时停止后续任务并把计划状态标记为 blocked，不得放宽为标题匹配、永久置顶或执行策略绕过。
 
 **步骤 4：验证并提交**
 
@@ -394,8 +401,8 @@ Renderer 不接收 absolutePath、dev、ino、Explorer HWND、宠物 HWND、桥�
 - enter 先重新验证目录身份和阻塞条件，再保存稳定 folder 位置；持久化成功后隐藏窗口。崩溃重启时启动链在任何 pet.show 前读取 HabitatStore。
 - recall 先保存 desktop 稳定位置，再恢复窗口坐标和显示；目录不可访问不阻止 recall。
 - revealing 只消费当前桥接 revision 和实例 ID；旧窗口事件不能恢复可见性。
-- bridge 异常、窗口失焦或候选不确定立即隐藏，但不清除 folder 位置。
-- close 幂等停止桥接、撤销层级并隐藏未完成的目录窗口。
+- Explorer 观察异常、窗口失焦或候选不确定时，先隐藏并 `invalidate` 层级控制器，但不清除 folder 位置。
+- close 幂等停止观察、隐藏并 `invalidate` 层级控制器，清理未完成的目录窗口。
 - 同一时刻只允许一个 enter/recall/summon 操作；重复命令返回当前结果，不重复写状态。
 
 **阻塞条件：**
@@ -460,7 +467,9 @@ Renderer 不接收 absolutePath、dev、ino、Explorer HWND、宠物 HWND、桥�
 
 - 修改：apps/desktop/src/main/windows/window-manager.ts
 - 新建：apps/desktop/src/main/habitat/habitat-window-controller.ts
+- 复用：apps/desktop/src/main/habitat/explorer-window-layer-controller.ts
 - 新建测试：apps/desktop/tests/habitat-window-controller.test.ts
+- 复用测试：apps/desktop/tests/explorer-window-layer-controller.test.ts
 - 修改测试：apps/desktop/tests/window-security.test.ts
 
 **窗口模式：**
@@ -468,17 +477,17 @@ Renderer 不接收 absolutePath、dev、ino、Explorer HWND、宠物 HWND、桥�
 - desktop-idle：alwaysOnTop=false，普通桌面窗口层级。
 - interaction-raised：点击、聊天、拖拽或托盘命令期间临时提升；结束或超时后恢复。
 - folder-hidden：window.hide、运动暂停、鼠标穿透回到安全状态。
-- folder-visible：Main 设置安全坐标，桥接层只执行固定 place-near，把宠物 HWND 放在匹配 Explorer HWND 之后的相邻 Z 序；不是全局置顶。
-- lost：隐藏并移除旧层级。
+- folder-visible：Main 设置安全坐标，再调用 `ExplorerWindowLayerController.activate({ explorerHwnd })`；控制器只通过 Electron `BrowserWindow.moveAbove` 放到匹配 Explorer 的相邻 Z 序，不是全局置顶。
+- lost：先隐藏窗口，再 `invalidate` 层级控制器。
 
 **RED：**
 
 - 创建选项不再永久 alwaysOnTop。
 - 临时提升有固定最大时长，窗口销毁后不执行延迟恢复。
 - 旧 Explorer HWND、其他进程 HWND、零句柄和已销毁窗口全部拒绝。
-- 前台切换到其他应用时先隐藏，再移除层级；不得在轮询间隔内继续全局置顶。
+- 前台切换到其他应用时先隐藏，再 `invalidate`；不得在轮询间隔内继续覆盖其他应用。
 - 最小化、DPI 改变、多显示器负坐标、任务栏四方向和 Explorer 移动时区域重算。
-- 桥接失败后没有残留置顶或可见透明窗口。
+- Explorer 观察失败后没有残留置顶或可见透明窗口。
 
 运行：
 
@@ -647,8 +656,8 @@ Renderer 不接收 absolutePath、dev、ino、Explorer HWND、宠物 HWND、桥�
 
 **打包：**
 
-- extraResources 只包含固定 explorer-space-bridge.ps1 和完整性清单。
-- 包配置测试证明脚本进入安装包，生产不从 userData、授权目录或角色包加载脚本。
+- `extraResources` 只包含固定 `explorer-space-bridge.ps1`、`explorer-space-shell-tab-helper.cs` 和二者的完整性清单。
+- 包配置测试证明脚本、C# helper 与完整性清单逐文件进入安装包，生产不从 userData、授权目录、藏身目录或角色包加载源码。
 - E2E 使用 Main 内部 fake bridge，不打开用户真实 Explorer，不暴露 fake 控制到生产 preload。
 
 运行：
