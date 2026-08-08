@@ -142,6 +142,8 @@ export class HabitatWindowController {
   async showFolder(observation: HabitatExplorerObservation): Promise<void> {
     this.requireActiveWindow();
     const transitionGeneration = ++this.folderTransitionGeneration;
+    // 新代次在首次异步身份校验前原子接管 watchdog，不留可见空窗。
+    this.armObservationTimeout(observation.observedAt, transitionGeneration);
     const safeObservation = await this.isSafeObservation(observation);
     if (transitionGeneration !== this.folderTransitionGeneration) {
       throw new Error('HABITAT_TRANSITION_SUPERSEDED');
@@ -151,8 +153,6 @@ export class HabitatWindowController {
       throw new Error('HABITAT_EXPLORER_UNSAFE');
     }
 
-    // 可见副作用前必须建立当前转换代次的观察上限。
-    this.armObservationTimeout(observation.observedAt, transitionGeneration);
     let failedClosedByThisTransition = false;
     try {
       this.cancelInteractionTimer();

@@ -249,6 +249,29 @@ describe('HabitatWindowController', () => {
     await expect(transition).rejects.toThrow('HABITAT_TRANSITION_SUPERSEDED');
   });
 
+  it('新序列首次身份校验挂起时不会提前使旧 watchdog 失效', async () => {
+    let releaseValidation: ((value: boolean) => void) | undefined;
+    const current = vi.fn<(hwnd: string) => boolean | Promise<boolean>>()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true)
+      .mockImplementationOnce(() => new Promise<boolean>(resolve => {
+        releaseValidation = resolve;
+      }));
+    const fixture = createFixture({ isCurrentExplorerWindow: current });
+    await fixture.controller.showFolder(observation({ sequence: 1 }));
+    fixture.events.splice(0);
+
+    const transition = fixture.controller.showFolder(observation({ sequence: 2 }));
+    await flushMicrotasks();
+    expect(current).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1_200);
+
+    expect(fixture.events.indexOf('hide'))
+      .toBeLessThan(fixture.events.indexOf('invalidate:tab-race'));
+    releaseValidation?.(true);
+    await expect(transition).rejects.toThrow('HABITAT_TRANSITION_SUPERSEDED');
+  });
+
   it('旧观察 timer 不会误伤新成功代次，新代次仍有独立 1000ms 上限', async () => {
     const fixture = createFixture();
     await fixture.controller.showFolder(observation({ sequence: 1 }));
