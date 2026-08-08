@@ -74,8 +74,14 @@ function activeSignals(previous: CharacterBehaviorStateSnapshot, signal: Charact
       current.delete('habitat-lost');
       current.add('habitat-found');
       break;
-    case 'habitat-hidden': current.add('habitat-hidden'); break;
-    case 'habitat-lost': current.add('habitat-lost'); break;
+    case 'habitat-hidden':
+      current.delete('habitat-lost');
+      current.add('habitat-hidden');
+      break;
+    case 'habitat-lost':
+      current.delete('habitat-hidden');
+      current.add('habitat-lost');
+      break;
   }
 
   return TRUSTED_BEHAVIOR_SIGNALS.filter((value): value is TrustedBehaviorSignal => current.has(value));

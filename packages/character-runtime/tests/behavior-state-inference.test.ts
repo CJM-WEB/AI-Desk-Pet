@@ -157,6 +157,16 @@ describe('V2 行为状态推断', () => {
       .not.toContain('habitat-hidden');
   });
 
+  test('habitat-hidden 与 habitat-lost 始终互斥，并在相互切换时移除旧条件事实', () => {
+    const manifest = 创建清单(语义状态);
+    const hidden = 推断(manifest, { type: 'habitat-hidden', occurredAtMs: 1 });
+    const lost = 推断(manifest, { type: 'habitat-lost', occurredAtMs: 2 }, hidden);
+    const hiddenAgain = 推断(manifest, { type: 'habitat-hidden', occurredAtMs: 3 }, lost);
+
+    expect(lost.activeSignals).toEqual(['habitat-lost']);
+    expect(hiddenAgain.activeSignals).toEqual(['habitat-hidden']);
+  });
+
   test.each(['hide', 'emerge'] as const)(
     'Agent 意图不能直接触发系统保留的 %s 目录过渡',
     (semantic) => {

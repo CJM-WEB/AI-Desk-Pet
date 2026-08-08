@@ -49,6 +49,12 @@ const CONTROLLED_PRESENTATION_FALLBACKS: Partial<Record<
   CharacterActionDefinitionV2['semantic']
 >> = { hide: 'move', emerge: 'idle' };
 
+function isSystemReservedSemantic(
+  semantic: CharacterActionDefinitionV2['semantic'] | null
+): boolean {
+  return semantic !== null && CONTROLLED_PRESENTATION_FALLBACKS[semantic] !== undefined;
+}
+
 /** 按主状态优先、修饰状态快照顺序收集动作归属，避免共享动作的归属随机变化。 */
 function referencedActions(
   manifest: CharacterManifestV2,
@@ -195,11 +201,16 @@ function selectFromStateContext(
   const candidates = eligibleCandidates(input, state, stateIds);
   const nonRepeatedCandidates = candidates.filter((candidate) => !isRepeatSuppressed(candidate.action, input));
   const repeatAdjustedCandidates = nonRepeatedCandidates.length ? nonRepeatedCandidates : candidates;
-  const semanticCandidates = input.state.desiredActionSemantic
-    ? repeatAdjustedCandidates.filter((candidate) => candidate.action.semantic === input.state.desiredActionSemantic)
+  const semanticCandidates = state.desiredActionSemantic
+    ? repeatAdjustedCandidates.filter((candidate) => candidate.action.semantic === state.desiredActionSemantic)
     : [];
+  const candidatesForSelection = semanticCandidates.length
+    ? semanticCandidates
+    : isSystemReservedSemantic(state.desiredActionSemantic)
+      ? []
+      : repeatAdjustedCandidates.filter((candidate) => !isSystemReservedSemantic(candidate.action.semantic));
   const selected = selectWeightedCandidate(
-    semanticCandidates.length ? semanticCandidates : repeatAdjustedCandidates,
+    candidatesForSelection,
     input.random
   );
 
@@ -251,6 +262,10 @@ export function selectCharacterBehaviorAction(
     };
   }
 
+  if (isSystemReservedSemantic(input.state.desiredActionSemantic)) {
+    throw new Error('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
+  }
+
   const defaultState = input.manifest.states.find((state) => state.id === input.manifest.defaultStateId);
   if (!defaultState || defaultState.kind !== 'primary') {
     throw new Error('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
@@ -262,13 +277,6 @@ export function selectCharacterBehaviorAction(
     modifierStateIds: []
   };
   const fallback = selectFromStateContext(input, defaultContext, [defaultState.id]);
-  const fallbackSemantic = fallback
-    ? input.manifest.actions.find((action) => action.id === fallback.actionId)?.semantic
-    : undefined;
-  const defaultControlledFallback = fallbackSemantic === defaultContext.desiredActionSemantic
-    ? undefined
-    : selectControlledPresentationFallback(input, defaultContext);
-  if (defaultControlledFallback) return { ...defaultControlledFallback, reason: 'semantic' };
   if (!fallback) throw new Error('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
 
   return { ...fallback, stateId: defaultState.id, reason: 'default-fallback' };
