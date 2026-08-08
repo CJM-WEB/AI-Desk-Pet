@@ -1,4 +1,4 @@
-import type { CaptchaProof, SubmissionReceipt } from '@myself/shared-types';
+import type { SubmissionReceipt } from '@myself/shared-types';
 
 export const feedbackKinds = ['feedback', 'suggestion'] as const;
 
@@ -42,7 +42,7 @@ export interface FeedbackStorageDocument {
 export interface FeedbackRepository {
   list(kind: FeedbackKind): readonly FeedbackEntry[];
   refresh(kind: FeedbackKind): Promise<void>;
-  create(input: CreateFeedbackInput, captcha: CaptchaProof): Promise<SubmissionReceipt>;
+  create(input: CreateFeedbackInput): Promise<SubmissionReceipt>;
   toggleLike(id: string): Promise<FeedbackEntry>;
   subscribe(listener: () => void): () => void;
 }

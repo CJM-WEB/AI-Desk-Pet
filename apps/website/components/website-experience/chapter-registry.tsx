@@ -6,27 +6,24 @@ import { SharedPetChapter } from './community/SharedPetChapter';
 import { CloudSharedPetRepository } from './community/cloud-shared-pet-repository';
 import { CloudFeedbackRepository } from './feedback/cloud-feedback-repository';
 import { ApiClient } from '../../lib/api-client';
-import { CaptchaClient } from '../../lib/captcha';
 import { SupportChapter } from './support/SupportChapter';
 import type { ChapterId, ChapterRuntimeProps } from './types';
 
-/** 公开页面只使用 REST 仓库，验证码不承担且不创建用户身份。 */
+/** 公开页面只使用 REST 仓库，不创建用户身份。 */
 const sharedPetRepository = new CloudSharedPetRepository(
   new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1')
 );
-const sharedPetCaptcha = new CaptchaClient();
 /** 反馈章节与粒子预览共用此唯一快照仓库。 */
 export const feedbackRepository = new CloudFeedbackRepository(
   new ApiClient(process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api/v1')
 );
-const feedbackCaptcha = new CaptchaClient();
 
 function CommunityChapter(props: ChapterRuntimeProps) {
-  return <SharedPetChapter {...props} repository={sharedPetRepository} captcha={sharedPetCaptcha} />;
+  return <SharedPetChapter {...props} repository={sharedPetRepository} />;
 }
 
 function FeedbackCloudChapter(props: ChapterRuntimeProps) {
-  return <SupportChapter {...props} repository={feedbackRepository} captcha={feedbackCaptcha} />;
+  return <SupportChapter {...props} repository={feedbackRepository} />;
 }
 
 interface ChapterDefinition {
