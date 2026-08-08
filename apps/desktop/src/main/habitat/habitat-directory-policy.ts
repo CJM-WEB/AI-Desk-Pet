@@ -4,12 +4,13 @@ import { lstat, realpath, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, isAbsolute, join, normalize, parse, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import type {
-  HabitatDirectoryAvailability,
-  HabitatDirectoryRecord
+import {
+  isValidHabitatPathHint,
+  MAX_HABITAT_PUBLIC_NAME_CODE_POINTS,
+  type HabitatDirectoryAvailability,
+  type HabitatDirectoryRecord
 } from './pet-habitat-store';
 
-const MAX_PUBLIC_NAME_LENGTH = 80;
 const execFileAsync = promisify(execFile);
 const WINDOWS_CLOUD_ATTRIBUTE_MASK = 0x400
   | 0x1000
@@ -41,7 +42,7 @@ export interface HabitatDirectoryPolicyRoots {
 export type HabitatDirectoryPolicyCheckpoint = 'after-first-inspection';
 
 export interface HabitatDirectoryPolicyDependencies {
-  realpathPath?: typeof realpath;
+  realpathPath?: (path: string) => Promise<string>;
   lstatPath?: typeof lstat;
   statPath?: typeof stat;
   inspectStorage?: (physicalPath: string) => Promise<HabitatStorageKind>;
@@ -98,8 +99,10 @@ function boundedDirectoryName(path: string): string {
     .replace(/[\u0000-\u001f\u007f]/gu, '')
     .replace(/\s+/gu, ' ')
     .trim();
-  const bounded = Array.from(normalized).slice(0, MAX_PUBLIC_NAME_LENGTH).join('');
-  if (bounded.length === 0) throw policyError('HABITAT_DIRECTORY_INVALID');
+  const bounded = Array.from(normalized)
+    .slice(0, MAX_HABITAT_PUBLIC_NAME_CODE_POINTS)
+    .join('');
+  if (!isValidHabitatPathHint(bounded)) throw policyError('HABITAT_DIRECTORY_INVALID');
   return bounded;
 }
 
@@ -160,7 +163,7 @@ async function inspectWindowsStorage(physicalPath: string): Promise<HabitatStora
  * 目录策略只验证 Main 已取得的选择结果，不枚举、读取或修改目录内容。
  */
 export class HabitatDirectoryPolicy {
-  private readonly realpathPath: typeof realpath;
+  private readonly realpathPath: NonNullable<HabitatDirectoryPolicyDependencies['realpathPath']>;
   private readonly lstatPath: typeof lstat;
   private readonly statPath: typeof stat;
   private readonly inspectStorage: NonNullable<HabitatDirectoryPolicyDependencies['inspectStorage']>;

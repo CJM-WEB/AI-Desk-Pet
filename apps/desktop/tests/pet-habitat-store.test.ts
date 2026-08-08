@@ -83,6 +83,31 @@ describe('PetHabitatStore', () => {
     expect(await readdir(targetDirectory)).toEqual(['marker.txt']);
   });
 
+  test.each([
+    'folder/name',
+    'folder\\name',
+    'C:secret',
+    '.',
+    '..'
+  ])('磁盘中的恶意 pathHint %s 被隔离且不会进入公开投影', async pathHint => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-path-hint-');
+    const privateDirectory = join(directory, 'private');
+    const file = join(privateDirectory, 'habitat.json');
+    const privatePath = 'C:\\Users\\Alice\\Secret\\project';
+    const snapshot = folderSnapshot(privatePath);
+    snapshot.directories[0]!.pathHint = pathHint;
+    await mkdir(privateDirectory);
+    await writeFile(file, JSON.stringify(snapshot), 'utf8');
+
+    const restored = await new PetHabitatStore(file).load();
+
+    expect(restored).toEqual(DEFAULT_HABITAT_SNAPSHOT);
+    expect(JSON.stringify(projectHabitatSnapshot(restored))).not.toContain(pathHint);
+    expect((await readdir(privateDirectory)).filter(name => (
+      /^habitat\.json\.corrupt-/u.test(name)
+    ))).toHaveLength(1);
+  });
+
   test('原子写失败保留上一版本且后续写入仍可继续', async () => {
     const directory = await createTemporaryDirectory('ai-pet-habitat-write-');
     const file = join(directory, 'private', 'habitat.json');
@@ -153,6 +178,19 @@ describe('PetHabitatStore', () => {
     expect(restored.directories[0]?.identity).toEqual({ dev: 12, ino: 34 });
   });
 
+  test('目录公开名称与 pathHint 按 Unicode 码点允许 41 个 emoji', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-unicode-');
+    const file = join(directory, 'private', 'habitat.json');
+    const snapshot = folderSnapshot(join(directory, 'project'));
+    const emojiName = '😀'.repeat(41);
+    snapshot.directories[0]!.displayName = emojiName;
+    snapshot.directories[0]!.pathHint = emojiName;
+
+    await new PetHabitatStore(file).save(snapshot);
+
+    await expect(new PetHabitatStore(file).load()).resolves.toEqual(snapshot);
+  });
+
   test('Renderer 投影不含绝对路径、目录身份或进入前桌面坐标', () => {
     const privatePath = 'C:\\Users\\Alice\\Secret\\project';
     const projected = projectHabitatSnapshot(
@@ -196,22 +234,65 @@ describe('PetHabitatStore', () => {
     expect(await readdir(targetDirectory)).toEqual(['marker.txt']);
   });
 
-  test('保存前后发现私有父目录身份变化时拒绝成功提交', async () => {
+  test('私有父目录被替换时失败保存不覆盖无关文件且保留上一版本', async () => {
     const directory = await createTemporaryDirectory('ai-pet-habitat-parent-race-');
     const privateDirectory = join(directory, 'private');
     const movedDirectory = join(directory, 'private-moved');
     const file = join(privateDirectory, 'habitat.json');
+    const first = folderSnapshot(join(directory, 'first-target'));
+    const second = {
+      ...first,
+      preferences: { ...first.preferences, idleDelayMs: 60_000 }
+    };
+    await new PetHabitatStore(file).save(first);
+    const firstBytes = await readFile(file, 'utf8');
+    const unrelatedBytes = '{"owner":"unrelated"}\n';
     let replaced = false;
     const store = new PetHabitatStore(file, {
       onCheckpoint: async checkpoint => {
-        if (checkpoint !== 'before-write' || replaced) return;
+        if (checkpoint !== 'before-commit' || replaced) return;
         replaced = true;
         await rename(privateDirectory, movedDirectory);
         await mkdir(privateDirectory);
+        await writeFile(file, unrelatedBytes, 'utf8');
       }
     });
 
-    await expect(store.save(folderSnapshot(join(directory, 'target'))))
+    await expect(store.save(second))
       .rejects.toThrow('HABITAT_STORAGE_CHANGED');
+    expect(await readFile(file, 'utf8')).toBe(unrelatedBytes);
+    expect(await readFile(join(movedDirectory, 'habitat.json'), 'utf8')).toBe(firstBytes);
   });
+
+  test.each(['ENOENT', 'ENOTDIR'] as const)(
+    '提交前父路径发生 %s 命名空间变化时稳定报告 STORAGE_CHANGED',
+    async failureCode => {
+      const directory = await createTemporaryDirectory('ai-pet-habitat-parent-missing-');
+      const privateRoot = join(directory, 'private');
+      const privateDirectory = join(privateRoot, 'nested');
+      const movedRoot = join(directory, 'private-moved');
+      const file = join(privateDirectory, 'habitat.json');
+      const first = folderSnapshot(join(directory, 'first-target'));
+      const second = {
+        ...first,
+        preferences: { ...first.preferences, idleDelayMs: 60_000 }
+      };
+      await new PetHabitatStore(file).save(first);
+      const firstBytes = await readFile(file, 'utf8');
+      let replaced = false;
+      const store = new PetHabitatStore(file, {
+        onCheckpoint: async checkpoint => {
+          if (checkpoint !== 'before-commit' || replaced) return;
+          replaced = true;
+          await rename(privateRoot, movedRoot);
+          if (failureCode === 'ENOTDIR') await writeFile(privateRoot, '替代文件', 'utf8');
+        }
+      });
+
+      await expect(store.save(second))
+        .rejects.toThrow('HABITAT_STORAGE_CHANGED');
+      expect(await readFile(join(movedRoot, 'nested', 'habitat.json'), 'utf8'))
+        .toBe(firstBytes);
+    }
+  );
 });

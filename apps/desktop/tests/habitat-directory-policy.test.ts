@@ -51,12 +51,47 @@ describe('HabitatDirectoryPolicy', () => {
     expect(record.absolutePath).toBe(await realpath(target));
     expect(record.identity.dev).toBeTypeOf('number');
     expect(record.identity.ino).toBeTypeOf('number');
-    expect(record.displayName.length).toBeLessThanOrEqual(80);
-    expect(record.pathHint.length).toBeLessThanOrEqual(80);
+    expect(Array.from(record.displayName)).toHaveLength(80);
+    expect(Array.from(record.pathHint)).toHaveLength(80);
     expect(record.pathHint).not.toContain(dirname(target));
     expect(record.enabled).toBe(true);
     expect(await policy.availability(record)).toBe('available');
   });
+
+  test('41 个 emoji 的合法末级目录名按 Unicode 码点原样授权', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-emoji-');
+    const emojiName = '😀'.repeat(41);
+    const target = join(directory, emojiName);
+    await mkdir(target);
+    const policy = new HabitatDirectoryPolicy({
+      userDataPath: join(directory, 'user-data'),
+      characterStoragePath: join(directory, 'characters')
+    });
+
+    const record = await policy.authorize(target);
+
+    expect(record.displayName).toBe(emojiName);
+    expect(record.pathHint).toBe(emojiName);
+    expect(Array.from(record.pathHint)).toHaveLength(41);
+  });
+
+  test.each(['bad:name', 'bad：name'])(
+    '拒绝无法生成严格 pathHint 的末级目录名 %s',
+    async terminalName => {
+      const directory = await createTemporaryDirectory('ai-pet-habitat-path-hint-policy-');
+      const target = join(directory, 'target');
+      await mkdir(target);
+      const policy = new HabitatDirectoryPolicy({
+        userDataPath: join(directory, 'user-data'),
+        characterStoragePath: join(directory, 'characters')
+      }, {
+        realpathPath: async () => `C:\\safe\\${terminalName}`,
+        inspectStorage: async () => 'fixed'
+      });
+
+      await expectPolicyError(policy.authorize(target), 'HABITAT_DIRECTORY_INVALID');
+    }
+  );
 
   test('相同真实目录不能重复添加但名称前缀碰撞不视为同目录', async () => {
     const directory = await createTemporaryDirectory('ai-pet-habitat-duplicate-');

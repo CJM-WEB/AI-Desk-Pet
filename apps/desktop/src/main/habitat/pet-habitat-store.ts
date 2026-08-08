@@ -1,4 +1,5 @@
-import { lstat, mkdir, readFile, realpath, rename, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import {
@@ -8,11 +9,35 @@ import {
 } from '../storage/atomic-file-coordinator';
 
 const MAX_STORE_BYTES = 64 * 1024;
+export const MAX_HABITAT_PUBLIC_NAME_CODE_POINTS = 80;
+
+export function isValidHabitatPublicName(value: string): boolean {
+  const length = Array.from(value).length;
+  return length >= 1 && length <= MAX_HABITAT_PUBLIC_NAME_CODE_POINTS;
+}
+
+export function isValidHabitatPathHint(value: string): boolean {
+  return isValidHabitatPublicName(value)
+    && value !== '.'
+    && value !== '..'
+    && !/[\\/:]/u.test(value);
+}
+
 const safeIdentifierSchema = z.string()
   .min(1)
   .max(64)
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u);
-const boundedTextSchema = z.string().trim().min(1).max(80);
+const boundedTextSchema = z.string()
+  .trim()
+  .min(1)
+  .refine(
+    isValidHabitatPublicName,
+    '公开名称超过 80 个 Unicode 码点'
+  );
+const pathHintSchema = boundedTextSchema.refine(
+  isValidHabitatPathHint,
+  '目录提示必须是单一末级显示名'
+);
 const coordinateSchema = z.object({
   x: z.number().finite(),
   y: z.number().finite()
@@ -25,7 +50,7 @@ const directoryIdentitySchema = z.object({
 export const habitatDirectoryRecordSchema = z.object({
   id: safeIdentifierSchema,
   displayName: boundedTextSchema,
-  pathHint: boundedTextSchema,
+  pathHint: pathHintSchema,
   absolutePath: z.string().min(1).max(32_768),
   identity: directoryIdentitySchema,
   enabled: z.boolean()
@@ -112,7 +137,12 @@ interface ParentIdentity {
   ino: number;
 }
 
-export type HabitatStoreCheckpoint = 'before-write' | 'after-write';
+interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+export type HabitatStoreCheckpoint = 'before-commit';
 
 export interface PetHabitatStoreDependencies {
   writeText?: typeof atomicWriteText;
@@ -131,6 +161,11 @@ function isKnownHabitatError(error: unknown): error is Error {
   return error instanceof Error && /^HABITAT_(?:STORAGE_FAILED|STORAGE_CHANGED)$/u.test(error.message);
 }
 
+function isStorageNamespaceChanged(error: unknown): boolean {
+  if (!(error instanceof Error) || !('code' in error)) return false;
+  return error.code === 'ENOENT' || error.code === 'ENOTDIR';
+}
+
 function sameParent(left: ParentIdentity, right: ParentIdentity): boolean {
   const leftPath = process.platform === 'win32'
     ? left.physicalPath.toLocaleLowerCase('en-US')
@@ -139,6 +174,10 @@ function sameParent(left: ParentIdentity, right: ParentIdentity): boolean {
     ? right.physicalPath.toLocaleLowerCase('en-US')
     : right.physicalPath;
   return leftPath === rightPath && left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameFile(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 /**
@@ -198,6 +237,7 @@ export class PetHabitatStore {
         await this.writeSnapshot(snapshot);
       } catch (error) {
         if (isKnownHabitatError(error)) throw error;
+        if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');
         throw new Error('HABITAT_STORAGE_FAILED');
       }
     });
@@ -253,11 +293,59 @@ export class PetHabitatStore {
   private async writeSnapshot(snapshot: PetHabitatSnapshot): Promise<void> {
     await mkdir(dirname(this.file), { recursive: true });
     const parentBefore = await this.captureParentIdentity();
-    await this.onCheckpoint?.('before-write');
-    await this.writeText(this.file, `${JSON.stringify(snapshot, null, 2)}\n`);
-    await this.onCheckpoint?.('after-write');
-    const parentAfter = await this.captureParentIdentity();
-    if (!sameParent(parentBefore, parentAfter)) throw new Error('HABITAT_STORAGE_CHANGED');
+    const stagedFile = `${this.file}.${randomUUID()}.tmp`;
+    let stagedIdentity: FileIdentity | undefined;
+    try {
+      await this.writeText(stagedFile, `${JSON.stringify(snapshot, null, 2)}\n`);
+      stagedIdentity = await this.captureStagedFileIdentity(stagedFile);
+      await this.onCheckpoint?.('before-commit');
+
+      const parentAtCommit = await this.captureParentIdentity();
+      if (!sameParent(parentBefore, parentAtCommit)) {
+        throw new Error('HABITAT_STORAGE_CHANGED');
+      }
+      const stagedAtCommit = await this.captureStagedFileIdentity(stagedFile);
+      if (!sameFile(stagedIdentity, stagedAtCommit)) {
+        throw new Error('HABITAT_STORAGE_CHANGED');
+      }
+
+      await rename(stagedFile, this.file);
+      stagedIdentity = undefined;
+    } finally {
+      if (stagedIdentity) {
+        await this.removeStagedFileIfOwned(stagedFile, stagedIdentity, parentBefore);
+      }
+    }
+  }
+
+  /**
+   * 暂存文件必须仍是本次写入创建的普通文件，避免提交或清理同名替代项。
+   */
+  private async captureStagedFileIdentity(stagedFile: string): Promise<FileIdentity> {
+    const entry = await lstat(stagedFile);
+    if (entry.isSymbolicLink() || !entry.isFile()) {
+      throw new Error('HABITAT_STORAGE_CHANGED');
+    }
+    return { dev: entry.dev, ino: entry.ino };
+  }
+
+  /**
+   * 只在父目录和暂存文件身份均未变化时清理本次写入的唯一暂存文件。
+   */
+  private async removeStagedFileIfOwned(
+    stagedFile: string,
+    stagedIdentity: FileIdentity,
+    expectedParent: ParentIdentity
+  ): Promise<void> {
+    try {
+      const currentParent = await this.captureParentIdentity();
+      if (!sameParent(expectedParent, currentParent)) return;
+      const currentStaged = await this.captureStagedFileIdentity(stagedFile);
+      if (!sameFile(stagedIdentity, currentStaged)) return;
+      await rm(stagedFile, { force: true });
+    } catch {
+      // 身份无法复核时保守保留，不能误删替代父目录中的同名文件。
+    }
   }
 
   private async captureParentIdentity(): Promise<ParentIdentity> {
