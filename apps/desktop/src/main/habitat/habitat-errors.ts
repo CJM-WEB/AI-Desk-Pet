@@ -6,9 +6,12 @@ export type HabitatErrorCode =
   | 'HABITAT_AUTOMATION_BLOCKED'
   | 'HABITAT_DIRECTORY_NOT_FOUND'
   | 'HABITAT_DIRECTORY_UNAVAILABLE'
+  | 'HABITAT_STORAGE_CHANGED'
+  | 'HABITAT_STORAGE_FAILED'
   | 'HABITAT_OBSERVER_FAILED'
   | 'HABITAT_SUMMON_FAILED'
-  | 'HABITAT_WINDOW_FAILED';
+  | 'HABITAT_WINDOW_FAILED'
+  | 'HABITAT_OPERATION_FAILED';
 
 /** 仅向 Main 调用方暴露稳定错误码，不携带私有路径或窗口事实。 */
 export class HabitatServiceError extends Error {

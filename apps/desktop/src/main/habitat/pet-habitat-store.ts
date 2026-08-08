@@ -83,6 +83,7 @@ const habitatLocationSchema = z.discriminatedUnion('kind', [
     localOffset: coordinateSchema
   }).strict()
 ]);
+export type HabitatLocation = z.infer<typeof habitatLocationSchema>;
 
 export const petHabitatSnapshotSchema = z.object({
   version: z.literal(1),
@@ -170,6 +171,21 @@ export interface HabitatDirectoryPathUpdate {
   absolutePath: string;
 }
 
+export type HabitatLocationExpectation =
+  | { kind: 'desktop' }
+  | { kind: 'folder'; directoryId: string };
+
+export interface HabitatLocationUpdate {
+  expected: HabitatLocationExpectation;
+  location: HabitatLocation;
+  expectedDirectory?: HabitatDirectoryRecord;
+}
+
+export type HabitatLocationUpdateResult = {
+  status: 'updated' | 'unchanged' | 'conflict';
+  snapshot: PetHabitatSnapshot;
+};
+
 function cloneSnapshot(snapshot: PetHabitatSnapshot): PetHabitatSnapshot {
   return structuredClone(snapshot);
 }
@@ -204,6 +220,23 @@ function sameFile(left: FileIdentity, right: FileIdentity): boolean {
 function samePrivatePath(left: string, right: string): boolean {
   return win32.normalize(left).toLocaleLowerCase('en-US')
     === win32.normalize(right).toLocaleLowerCase('en-US');
+}
+
+function locationMatchesExpectation(
+  location: HabitatLocation,
+  expected: HabitatLocationExpectation
+): boolean {
+  return location.kind === expected.kind && (
+    location.kind === 'desktop'
+    || (expected.kind === 'folder' && location.directoryId === expected.directoryId)
+  );
+}
+
+function sameLocationTarget(left: HabitatLocation, right: HabitatLocation): boolean {
+  return left.kind === right.kind && (
+    left.kind === 'desktop'
+    || (right.kind === 'folder' && left.directoryId === right.directoryId)
+  );
 }
 
 /**
@@ -311,6 +344,64 @@ export class PetHabitatStore {
         directories[index] = { ...current, absolutePath: parsedInput.absolutePath };
         await this.writeSnapshot(petHabitatSnapshotSchema.parse({ ...snapshot, directories }));
         return 'updated';
+      } catch (error) {
+        if (isKnownHabitatError(error)) throw error;
+        if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');
+        throw new Error('HABITAT_STORAGE_FAILED');
+      }
+    });
+  }
+
+  /**
+   * 在同一文件队列中条件更新稳定位置，只替换 location 并保留最新配置与目录记录。
+   */
+  updateLocation(input: HabitatLocationUpdate): Promise<HabitatLocationUpdateResult> {
+    return this.enqueue(async () => {
+      const parsedInput = z.object({
+        expected: z.discriminatedUnion('kind', [
+          z.object({ kind: z.literal('desktop') }).strict(),
+          z.object({
+            kind: z.literal('folder'),
+            directoryId: safeIdentifierSchema
+          }).strict()
+        ]),
+        location: habitatLocationSchema,
+        expectedDirectory: habitatDirectoryRecordSchema.optional()
+      }).strict().parse(input);
+      try {
+        const snapshot = await this.loadUnsafe();
+        if (parsedInput.location.kind === 'folder') {
+          const expectedDirectory = parsedInput.expectedDirectory;
+          const current = expectedDirectory === undefined
+            ? undefined
+            : snapshot.directories.find(directory => directory.id === expectedDirectory.id);
+          if (
+            expectedDirectory === undefined
+            || parsedInput.location.directoryId !== expectedDirectory.id
+            || current === undefined
+            || !current.enabled
+            || !sameFile(current.identity, expectedDirectory.identity)
+            || !samePrivatePath(current.absolutePath, expectedDirectory.absolutePath)
+          ) {
+            return { status: 'conflict', snapshot };
+          }
+        }
+
+        if (!locationMatchesExpectation(snapshot.location, parsedInput.expected)) {
+          return {
+            status: sameLocationTarget(snapshot.location, parsedInput.location)
+              ? 'unchanged' as const
+              : 'conflict' as const,
+            snapshot
+          };
+        }
+
+        const updated = petHabitatSnapshotSchema.parse({
+          ...snapshot,
+          location: parsedInput.location
+        });
+        await this.writeSnapshot(updated);
+        return { status: 'updated', snapshot: cloneSnapshot(updated) };
       } catch (error) {
         if (isKnownHabitatError(error)) throw error;
         if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');

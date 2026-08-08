@@ -7,10 +7,16 @@ import {
 } from './explorer-candidate-selector';
 import type { ExplorerSnapshot } from './explorer-space-protocol';
 import type { ExplorerLayerUnsafeReason } from './explorer-window-layer-controller';
-import { habitatError, type HabitatErrorCode } from './habitat-errors';
+import {
+  HabitatServiceError,
+  habitatError,
+  type HabitatErrorCode
+} from './habitat-errors';
 import type {
   HabitatDirectoryAvailability,
   HabitatDirectoryRecord,
+  HabitatLocationUpdate,
+  HabitatLocationUpdateResult,
   PetHabitatSnapshot
 } from './pet-habitat-store';
 
@@ -26,7 +32,7 @@ export type HabitatServiceState =
   | 'revealing'
   | 'recalling';
 
-export type HabitatOperation = 'enter' | 'recall' | 'summon';
+export type HabitatOperation = 'enter' | 'recall' | 'summon' | 'availability';
 export type HabitatEnterReason = 'manual' | 'automatic';
 
 export interface HabitatBlockerSnapshot {
@@ -39,17 +45,23 @@ export interface HabitatBlockerSnapshot {
   proactivityMode: 'passive' | 'assistive' | 'autonomous';
 }
 
+export interface ExplorerAuthoritySnapshot {
+  nonce: string;
+  revision: number;
+  instanceId: string | null;
+}
+
 export interface HabitatServiceSnapshot {
   state: HabitatServiceState;
   directoryId: string | null;
   operation: HabitatOperation | null;
   closed: boolean;
-  errorCode?: string;
+  errorCode?: HabitatErrorCode;
 }
 
 interface HabitatStorePort {
   load(): Promise<PetHabitatSnapshot>;
-  save(snapshot: PetHabitatSnapshot): Promise<void>;
+  updateLocation(update: HabitatLocationUpdate): Promise<HabitatLocationUpdateResult>;
 }
 
 interface HabitatDirectoryPolicyPort {
@@ -93,6 +105,7 @@ export interface HabitatServiceOptions {
   petWindow: HabitatPetWindowPort;
   openDirectory(path: string): Promise<void>;
   readBlockers(): HabitatBlockerSnapshot;
+  readExplorerAuthority(): ExplorerAuthoritySnapshot;
   now?: () => number;
 }
 
@@ -101,15 +114,18 @@ export type HabitatExplorerObservation = ExplorerSnapshot | Error | null | undef
 interface ActiveOperation {
   key: string;
   kind: HabitatOperation;
+  epoch: number;
   promise: Promise<HabitatServiceSnapshot>;
 }
+
+type ObserverLifecycle = 'idle' | 'starting' | 'observing';
 
 const BLOCKED_AGENT_PHASES = new Set([
   'listening', 'thinking', 'awaiting_confirmation', 'acting'
 ]);
 
 /**
- * Main 内目录空间的唯一权威协调器；外部能力全部经窄端口注入，类本身不新增系统能力。
+ * Main 内目录空间的唯一权威协调器；所有异步 continuation 都受同一单调 epoch 约束。
  */
 export class HabitatService {
   private readonly now: () => number;
@@ -120,10 +136,12 @@ export class HabitatService {
   private agentPhase = 'idle';
   private closed = false;
   private closePromise: Promise<void> | undefined;
-  private errorCode: string | undefined;
-  private observationToken = 0;
+  private errorCode: HabitatErrorCode | undefined;
+  private epoch = 0;
   private binding: ExplorerCandidateBinding | undefined;
   private watermark: ExplorerCandidateWatermark | undefined;
+  private observerLifecycle: ObserverLifecycle = 'idle';
+  private desktopRecoveryPending = false;
 
   constructor(private readonly options: HabitatServiceOptions) {
     this.now = options.now ?? Date.now;
@@ -151,6 +169,8 @@ export class HabitatService {
     directoryId: string,
     reason: HabitatEnterReason
   ): Promise<HabitatServiceSnapshot> {
+    const active = this.activeResult(`enter:${directoryId}:${reason}`);
+    if (active !== null) return active;
     if (this.closed) return Promise.reject(habitatError('HABITAT_CLOSED'));
     if (
       this.directoryId === directoryId
@@ -158,69 +178,117 @@ export class HabitatService {
       && this.state !== 'entering'
       && this.state !== 'recalling'
     ) return Promise.resolve(this.snapshot());
-    return this.beginOperation(`enter:${directoryId}:${reason}`, 'enter', () => (
-      this.performEnter(directoryId, reason)
+    return this.beginOperation(`enter:${directoryId}:${reason}`, 'enter', epoch => (
+      this.performEnter(epoch, directoryId, reason)
     ));
   }
 
   summon(): Promise<HabitatServiceSnapshot> {
+    const active = this.activeResult('summon');
+    if (active !== null) return active;
     if (this.closed) return Promise.reject(habitatError('HABITAT_CLOSED'));
-    return this.beginOperation('summon', 'summon', () => this.performSummon());
+    return this.beginOperation('summon', 'summon', epoch => this.performSummon(epoch));
   }
 
   recallToDesktop(): Promise<HabitatServiceSnapshot> {
+    const active = this.activeResult('recall');
+    if (active !== null) return active;
     if (this.closed) return Promise.reject(habitatError('HABITAT_CLOSED'));
-    if (this.state === 'desktop') return Promise.resolve(this.snapshot());
-    return this.beginOperation('recall', 'recall', () => this.performRecall());
+    if (this.state === 'desktop' && !this.desktopRecoveryPending) {
+      return Promise.resolve(this.snapshot());
+    }
+    return this.beginOperation('recall', 'recall', epoch => this.performRecall(epoch));
+  }
+
+  handleDirectoryAvailability(): Promise<HabitatServiceSnapshot> {
+    const active = this.activeResult('availability');
+    if (active !== null) return active;
+    if (this.closed) return Promise.reject(habitatError('HABITAT_CLOSED'));
+    if (this.state === 'desktop' && !this.desktopRecoveryPending) {
+      return Promise.resolve(this.snapshot());
+    }
+    return this.beginOperation('availability', 'availability', epoch => (
+      this.performDirectoryAvailability(epoch)
+    ));
   }
 
   async observeExplorer(observation: HabitatExplorerObservation): Promise<void> {
-    if (this.closed || this.state === 'desktop' || this.state === 'entering' || this.state === 'recalling') {
-      return;
-    }
-    const token = ++this.observationToken;
+    if (
+      this.closed
+      || this.activeOperation !== null
+      || this.state === 'desktop'
+      || this.state === 'entering'
+      || this.state === 'recalling'
+    ) return;
     if (!(observation && !(observation instanceof Error) && observation.type === 'explorer-snapshot')) {
-      await this.conceal('explorer-closed', false, 'HABITAT_OBSERVER_FAILED');
+      const epoch = this.advanceEpoch();
+      await this.conceal(epoch, 'explorer-closed', false, 'HABITAT_OBSERVER_FAILED');
       return;
     }
+    let authority: ExplorerAuthoritySnapshot;
+    try {
+      authority = this.readAuthority();
+    } catch {
+      const epoch = this.advanceEpoch();
+      await this.conceal(epoch, 'explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
+      throw habitatError('HABITAT_OBSERVER_FAILED');
+    }
+    if (!this.observationMatchesAuthority(observation, authority)) {
+      if (
+        (this.state === 'folder-visible' || this.state === 'revealing')
+        && !this.bindingMatchesAuthority(authority)
+      ) {
+        const epoch = this.advanceEpoch();
+        await this.conceal(epoch, 'tab-race');
+      }
+      return;
+    }
+    const epoch = this.advanceEpoch();
+
     if (observation.status === 'unavailable') {
-      await this.conceal('explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
+      await this.conceal(epoch, 'explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
       return;
     }
     if (observation.status === 'ambiguous') {
-      await this.conceal('tab-race');
+      await this.conceal(epoch, 'tab-race');
       return;
     }
     if (observation.status === 'none') {
-      await this.conceal('explorer-blurred');
+      await this.conceal(epoch, 'explorer-blurred');
       return;
     }
-    if (this.state === 'folder-lost') {
-      await this.hideAndInvalidate('leave');
-      return;
-    }
+    if (this.state === 'folder-lost') return;
 
-    // 新的路径事实尚未完成身份复核时必须先隐藏，不能沿用旧标签页的可见性。
-    await this.conceal('tab-race');
+    await this.conceal(epoch, 'tab-race');
+    if (!await this.retainObservation(epoch, observation) || this.isRevealBlocked()) return;
+
     let resolution: Awaited<ReturnType<FolderIdentityResolverPort['resolve']>>;
     try {
       resolution = await this.options.identityResolver.resolve(observation.path);
     } catch {
-      await this.conceal('tab-race');
+      if (this.isCurrentEpoch(epoch) && !this.closed) {
+        await this.conceal(epoch, 'tab-race');
+      }
       return;
     }
-    if (token !== this.observationToken || this.closed) return;
+    if (!await this.retainObservation(epoch, observation) || this.isRevealBlocked()) return;
     if (
       resolution.status !== 'matched'
       || resolution.directoryId !== this.directoryId
     ) {
-      await this.conceal('tab-race');
+      await this.conceal(epoch, 'tab-race');
       return;
     }
 
-    const observedAt = this.now();
+    let observedAt: number;
+    try {
+      observedAt = this.now();
+    } catch {
+      await this.conceal(epoch, 'tab-race', false, 'HABITAT_OBSERVER_FAILED');
+      throw habitatError('HABITAT_OBSERVER_FAILED');
+    }
     const selected = selectExplorerCandidate({
-      activeInstanceId: observation.instanceId,
+      activeInstanceId: authority.instanceId ?? '',
       frame: {
         instanceId: observation.instanceId,
         sequence: observation.sequence,
@@ -243,297 +311,572 @@ export class HabitatService {
       ...(this.binding === undefined ? {} : { previous: this.binding }),
       ...(this.watermark === undefined ? {} : { watermark: this.watermark })
     });
+    if (!await this.retainObservation(epoch, observation)) return;
     this.watermark = selected.watermark ?? undefined;
     if (selected.status !== 'selected') {
-      await this.conceal('tab-race');
+      await this.conceal(epoch, 'tab-race');
       return;
     }
 
+    this.binding = selected.binding;
     this.state = 'revealing';
     try {
       await this.options.layer.activate({ explorerHwnd: selected.binding.hwnd });
-      if (token !== this.observationToken || this.closed) {
-        await this.hideAndInvalidate('tab-race');
-        this.restoreFolderStableState();
-        return;
-      }
-      this.binding = selected.binding;
-      this.state = 'folder-visible';
-      this.errorCode = undefined;
+    } catch {
+      if (!this.isCurrentEpoch(epoch) || this.closed) return;
+      await this.conceal(epoch, 'tab-race', false, 'HABITAT_WINDOW_FAILED');
+      throw habitatError('HABITAT_WINDOW_FAILED');
+    }
+    if (!await this.retainObservation(epoch, observation)) return;
+    if (this.isRevealBlocked()) {
+      await this.conceal(epoch, 'leave');
+      return;
+    }
+
+    this.state = 'folder-visible';
+    this.errorCode = undefined;
+    try {
       this.options.petWindow.show();
     } catch {
-      await this.conceal('tab-race', false, 'HABITAT_WINDOW_FAILED');
+      if (!this.isCurrentEpoch(epoch) || this.closed) return;
+      await this.conceal(epoch, 'leave', false, 'HABITAT_WINDOW_FAILED');
+      throw habitatError('HABITAT_WINDOW_FAILED');
     }
-  }
-
-  async handleDirectoryAvailability(): Promise<HabitatServiceSnapshot> {
-    if (this.closed) throw habitatError('HABITAT_CLOSED');
-    if (this.state === 'desktop' || this.directoryId === null) return this.snapshot();
-    const loaded = await this.options.store.load();
-    const directory = loaded.directories.find(candidate => (
-      candidate.id === this.directoryId && candidate.enabled
-    ));
-    const available = directory === undefined
-      ? false
-      : await this.options.directoryPolicy.availability(directory) === 'available';
-    if (!available) {
-      await this.conceal('explorer-closed', true, 'HABITAT_DIRECTORY_UNAVAILABLE');
-      return this.snapshot();
-    }
-
-    this.stableSnapshot = structuredClone(loaded);
-    if (this.state === 'folder-lost') {
-      this.state = 'folder-hidden';
-      this.errorCode = undefined;
-      try {
-        await this.startObserving();
-      } catch {
-        await this.conceal('explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
-        throw habitatError('HABITAT_OBSERVER_FAILED');
-      }
-    }
-    return this.snapshot();
   }
 
   async handleTaskEvent(event: TaskEvent): Promise<void> {
     if (this.closed || event.type !== 'phase') return;
     this.agentPhase = event.phase;
-    if (BLOCKED_AGENT_PHASES.has(event.phase)) await this.concealForInteraction();
+    if (!BLOCKED_AGENT_PHASES.has(event.phase)) return;
+    if (this.state !== 'folder-visible' && this.state !== 'revealing') return;
+    const epoch = this.advanceEpoch();
+    await this.conceal(epoch, 'leave');
   }
 
   async handleUserInteraction(): Promise<void> {
-    if (this.closed) return;
-    await this.concealForInteraction();
+    if (this.closed || (this.state !== 'folder-visible' && this.state !== 'revealing')) return;
+    const epoch = this.advanceEpoch();
+    await this.conceal(epoch, 'leave');
   }
 
   close(): Promise<void> {
     if (this.closePromise !== undefined) return this.closePromise;
-    const pendingStableWrite = this.activeOperation?.kind === 'enter'
+    const pending = this.activeOperation?.kind === 'enter'
       || this.activeOperation?.kind === 'recall'
+      || this.activeOperation?.kind === 'availability'
       ? this.activeOperation.promise
       : undefined;
+    const startupOverlap = this.observerLifecycle === 'starting';
     this.closed = true;
-    this.observationToken += 1;
+    const epoch = this.advanceEpoch();
+    this.errorCode = undefined;
     this.restoreStableState();
-    this.closePromise = this.performClose(pendingStableWrite);
+    this.closePromise = this.performClose(epoch, pending, startupOverlap);
     return this.closePromise;
   }
 
-  /** 同类同参命令共享正在进行的结果，其他命令在权威迁移期间失败关闭。 */
+  private activeResult(key: string): Promise<HabitatServiceSnapshot> | null {
+    if (this.activeOperation === null) return null;
+    return this.activeOperation.key === key
+      ? this.activeOperation.promise
+      : Promise.reject(habitatError('HABITAT_OPERATION_BUSY'));
+  }
+
   private beginOperation(
     key: string,
     kind: HabitatOperation,
-    work: () => Promise<HabitatServiceSnapshot>
+    work: (epoch: number) => Promise<HabitatServiceSnapshot>
   ): Promise<HabitatServiceSnapshot> {
-    if (this.activeOperation !== null) {
-      return this.activeOperation.key === key
-        ? this.activeOperation.promise
-        : Promise.reject(habitatError('HABITAT_OPERATION_BUSY'));
-    }
+    const epoch = this.advanceEpoch();
     let operation!: ActiveOperation;
-    const promise = work().finally(() => {
-      if (this.activeOperation === operation) this.activeOperation = null;
-    });
-    operation = { key, kind, promise };
+    const promise = Promise.resolve()
+      .then(() => work(epoch))
+      .catch(error => {
+        const mapped = this.mapError(error, 'HABITAT_OPERATION_FAILED');
+        if (this.isCurrentEpoch(epoch) && !this.closed) this.errorCode = mapped.code;
+        throw mapped;
+      })
+      .finally(() => {
+        if (this.activeOperation === operation) this.activeOperation = null;
+      });
+    operation = { key, kind, epoch, promise };
     this.activeOperation = operation;
     return promise;
   }
 
   private async performEnter(
+    epoch: number,
+    directoryId: string,
+    reason: HabitatEnterReason
+  ): Promise<HabitatServiceSnapshot> {
+    try {
+      return await this.performCurrentEnter(epoch, directoryId, reason);
+    } catch (error) {
+      if (this.isCurrentEpoch(epoch) && !this.closed && this.state === 'entering') {
+        this.restoreStableState();
+      }
+      throw error;
+    }
+  }
+
+  /** enter 尚未提交稳定位置时，任何失败都由外层恢复到原稳定态。 */
+  private async performCurrentEnter(
+    epoch: number,
     directoryId: string,
     reason: HabitatEnterReason
   ): Promise<HabitatServiceSnapshot> {
     if (this.state !== 'desktop') throw habitatError('HABITAT_STATE_INVALID');
+    if (this.stableSnapshot.location.kind !== 'desktop') {
+      throw habitatError('HABITAT_STATE_INVALID');
+    }
+    const previousDesktopLocation = structuredClone(this.stableSnapshot.location);
     this.state = 'entering';
     this.errorCode = undefined;
-    let persisted = false;
+    const loaded = await this.storeLoad();
+    this.assertOperation(epoch);
+    const directory = loaded.directories.find(candidate => (
+      candidate.id === directoryId && candidate.enabled
+    ));
+    if (directory === undefined) throw habitatError('HABITAT_DIRECTORY_NOT_FOUND');
+    const availability = await this.directoryAvailability(directory);
+    this.assertOperation(epoch);
+    if (availability !== 'available') throw habitatError('HABITAT_DIRECTORY_UNAVAILABLE');
+    this.assertEntryAllowed(reason);
+
+    let location: Extract<PetHabitatSnapshot['location'], { kind: 'folder' }>;
     try {
-      const loaded = await this.options.store.load();
-      const directory = loaded.directories.find(candidate => (
-        candidate.id === directoryId && candidate.enabled
-      ));
-      if (directory === undefined) throw habitatError('HABITAT_DIRECTORY_NOT_FOUND');
-      if (await this.options.directoryPolicy.availability(directory) !== 'available') {
-        throw habitatError('HABITAT_DIRECTORY_UNAVAILABLE');
-      }
-      this.assertOpen();
+      location = {
+        kind: 'folder',
+        directoryId,
+        enteredAt: new Date(this.now()).toISOString(),
+        previousDesktopPosition: this.options.petWindow.getPosition(),
+        localOffset: this.options.petWindow.getLocalOffset()
+      };
+    } catch {
+      throw habitatError('HABITAT_WINDOW_FAILED');
+    }
+    const committed = await this.storeUpdateLocation({
+      expected: { kind: 'desktop' },
+      expectedDirectory: directory,
+      location
+    });
+    this.assertOperation(epoch);
+    if (committed.status === 'conflict') throw habitatError('HABITAT_DIRECTORY_UNAVAILABLE');
+    try {
       this.assertEntryAllowed(reason);
-
-      const next: PetHabitatSnapshot = {
-        ...loaded,
-        location: {
-          kind: 'folder',
-          directoryId,
-          enteredAt: new Date(this.now()).toISOString(),
-          previousDesktopPosition: this.options.petWindow.getPosition(),
-          localOffset: this.options.petWindow.getLocalOffset()
-        }
-      };
-      await this.options.store.save(next);
-      persisted = true;
-      this.stableSnapshot = structuredClone(next);
-      this.directoryId = directoryId;
-      this.state = 'folder-hidden';
-      if (this.closed) throw habitatError('HABITAT_CLOSED');
-
-      await this.hideAndInvalidate('leave');
+    } catch (error) {
       try {
-        await this.startObserving();
-      } catch {
-        await this.conceal('explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
-        throw habitatError('HABITAT_OBSERVER_FAILED');
-      }
-      return this.snapshot();
-    } catch (error) {
-      if (!persisted) {
-        this.state = 'desktop';
-        this.directoryId = null;
-      }
-      this.captureError(error);
-      throw error;
-    }
-  }
-
-  private async performRecall(): Promise<HabitatServiceSnapshot> {
-    if (
-      this.directoryId === null
-      || this.stableSnapshot.location.kind !== 'folder'
-    ) throw habitatError('HABITAT_STATE_INVALID');
-    const previousState = this.state;
-    const previousLocation = this.stableSnapshot.location;
-    this.state = 'recalling';
-    this.errorCode = undefined;
-    try {
-      const loaded = await this.options.store.load();
-      const latestLocation = loaded.location.kind === 'folder'
-        && loaded.location.directoryId === this.directoryId
-        ? loaded.location
-        : previousLocation;
-      const next: PetHabitatSnapshot = {
-        ...loaded,
-        location: {
-          kind: 'desktop',
-          position: latestLocation.previousDesktopPosition
+        const compensated = await this.storeUpdateLocation({
+          expected: { kind: 'folder', directoryId },
+          location: previousDesktopLocation
+        });
+        this.assertOperation(epoch);
+        this.stableSnapshot = structuredClone(compensated.snapshot);
+        this.restoreStableState();
+      } catch (compensationError) {
+        if (this.isCurrentEpoch(epoch) && !this.closed) {
+          this.stableSnapshot = structuredClone(committed.snapshot);
+          this.directoryId = directoryId;
+          this.state = 'folder-hidden';
+          await this.cleanupCurrent(epoch, 'leave');
         }
-      };
-      await this.options.store.save(next);
-      this.stableSnapshot = structuredClone(next);
-      this.directoryId = null;
-      this.state = 'desktop';
-      this.observationToken += 1;
-      this.binding = undefined;
-      this.watermark = undefined;
-      await this.stopObservingSafely();
-      await this.hideAndInvalidate('leave');
-      if (this.closed) throw habitatError('HABITAT_CLOSED');
-      this.options.petWindow.setPosition(
-        latestLocation.previousDesktopPosition.x,
-        latestLocation.previousDesktopPosition.y
-      );
-      this.options.petWindow.show();
-      return this.snapshot();
-    } catch (error) {
-      if (this.stableSnapshot.location.kind === 'folder') {
-        this.state = previousState;
-        this.directoryId = previousLocation.directoryId;
+        throw compensationError;
       }
-      this.captureError(error);
       throw error;
     }
+    this.stableSnapshot = structuredClone(committed.snapshot);
+    this.directoryId = directoryId;
+    this.state = 'folder-hidden';
+
+    const cleanupError = await this.cleanupCurrent(epoch, 'leave');
+    this.assertOperation(epoch);
+    if (cleanupError !== null) throw this.fail(cleanupError);
+    try {
+      await this.ensureObserving(epoch);
+    } catch (error) {
+      const mapped = this.mapError(error, 'HABITAT_OBSERVER_FAILED');
+      if (this.isCurrentEpoch(epoch) && !this.closed) {
+        await this.conceal(epoch, 'explorer-closed', true, mapped.code);
+      }
+      throw mapped;
+    }
+    this.assertOperation(epoch);
+    return this.snapshot();
   }
 
-  private async performSummon(): Promise<HabitatServiceSnapshot> {
+  private async performRecall(epoch: number): Promise<HabitatServiceSnapshot> {
+    this.errorCode = undefined;
+    if (this.stableSnapshot.location.kind === 'folder') {
+      const previous = this.stableSnapshot.location;
+      this.state = 'recalling';
+      const committed = await this.storeUpdateLocation({
+        expected: { kind: 'folder', directoryId: previous.directoryId },
+        location: { kind: 'desktop', position: previous.previousDesktopPosition }
+      });
+      this.assertOperation(epoch);
+      if (committed.status === 'conflict' && committed.snapshot.location.kind !== 'desktop') {
+        throw habitatError('HABITAT_STATE_INVALID');
+      }
+      this.stableSnapshot = structuredClone(committed.snapshot);
+    }
+    if (this.stableSnapshot.location.kind !== 'desktop') {
+      throw habitatError('HABITAT_STATE_INVALID');
+    }
+    this.directoryId = null;
+    this.state = 'recalling';
+    this.desktopRecoveryPending = true;
+    await this.recoverDesktop(epoch);
+    return this.snapshot();
+  }
+
+  private async recoverDesktop(epoch: number): Promise<void> {
+    const errors: HabitatErrorCode[] = [];
+    const stopError = await this.stopObserver();
+    this.assertOperation(epoch);
+    if (stopError !== null) errors.push(stopError);
+
+    if (this.isCurrentEpoch(epoch)) {
+      try {
+        this.options.petWindow.hide();
+      } catch {
+        errors.push('HABITAT_WINDOW_FAILED');
+      }
+    }
+    if (this.isCurrentEpoch(epoch)) {
+      try {
+        await this.options.layer.invalidate('leave');
+      } catch {
+        errors.push('HABITAT_WINDOW_FAILED');
+      }
+    }
+    this.assertOperation(epoch);
+
+    let position = this.stableSnapshot.location.kind === 'desktop'
+      ? this.stableSnapshot.location.position
+      : null;
+    if (position === null) {
+      try {
+        position = this.options.petWindow.getPosition();
+      } catch {
+        errors.push('HABITAT_WINDOW_FAILED');
+      }
+    }
+    let positioned = position !== null;
+    if (position !== null) {
+      try {
+        this.options.petWindow.setPosition(position.x, position.y);
+      } catch {
+        positioned = false;
+        errors.push('HABITAT_WINDOW_FAILED');
+      }
+    }
+    if (positioned) {
+      try {
+        this.options.petWindow.show();
+      } catch {
+        errors.push('HABITAT_WINDOW_FAILED');
+      }
+    }
+
+    if (errors.length > 0) {
+      this.state = 'recalling';
+      this.desktopRecoveryPending = true;
+      throw this.fail(errors[0]!);
+    }
+    this.binding = undefined;
+    this.watermark = undefined;
+    this.state = 'desktop';
+    this.desktopRecoveryPending = false;
+    this.errorCode = undefined;
+  }
+
+  private async performSummon(epoch: number): Promise<HabitatServiceSnapshot> {
+    this.errorCode = undefined;
     if (this.state === 'desktop') {
       try {
         this.options.petWindow.show();
         this.options.petWindow.focus();
-        return this.snapshot();
       } catch {
-        this.errorCode = 'HABITAT_WINDOW_FAILED';
         throw habitatError('HABITAT_WINDOW_FAILED');
       }
+      return this.snapshot();
     }
     if (this.directoryId === null) throw habitatError('HABITAT_STATE_INVALID');
-    const loaded = await this.options.store.load();
+    const loaded = await this.storeLoad();
+    this.assertOperation(epoch);
     const directory = loaded.directories.find(candidate => (
       candidate.id === this.directoryId && candidate.enabled
     ));
     if (directory === undefined) throw habitatError('HABITAT_DIRECTORY_NOT_FOUND');
     try {
       await this.options.openDirectory(directory.absolutePath);
-      this.assertOpen();
-      await this.startObserving();
-      return this.snapshot();
-    } catch (error) {
-      if (error instanceof Error && error.message === 'HABITAT_CLOSED') throw error;
-      this.errorCode = 'HABITAT_SUMMON_FAILED';
+    } catch {
       throw habitatError('HABITAT_SUMMON_FAILED');
+    }
+    this.assertOperation(epoch);
+    await this.ensureObserving(epoch);
+    this.assertOperation(epoch);
+    return this.snapshot();
+  }
+
+  private async performDirectoryAvailability(epoch: number): Promise<HabitatServiceSnapshot> {
+    const loaded = await this.storeLoad();
+    this.assertOperation(epoch);
+    if (loaded.location.kind === 'desktop') {
+      this.stableSnapshot = structuredClone(loaded);
+      this.directoryId = null;
+      this.state = 'recalling';
+      this.desktopRecoveryPending = true;
+      await this.recoverDesktop(epoch);
+      return this.snapshot();
+    }
+    const folderLocation = loaded.location;
+    const locationChanged = this.stableSnapshot.location.kind !== 'folder'
+      || this.stableSnapshot.location.directoryId !== folderLocation.directoryId;
+    if (locationChanged) {
+      const cleanupError = await this.cleanupCurrent(epoch, 'leave');
+      this.assertOperation(epoch);
+      this.binding = undefined;
+      this.watermark = undefined;
+      this.state = 'folder-hidden';
+      if (cleanupError !== null) throw this.fail(cleanupError);
+    }
+    const directory = loaded.directories.find(candidate => (
+      candidate.id === folderLocation.directoryId && candidate.enabled
+    ));
+    const available = directory === undefined
+      ? false
+      : await this.directoryAvailability(directory) === 'available';
+    this.assertOperation(epoch);
+    this.stableSnapshot = structuredClone(loaded);
+    this.directoryId = folderLocation.directoryId;
+    if (!available) {
+      if (locationChanged) {
+        this.state = 'folder-lost';
+        this.errorCode = 'HABITAT_DIRECTORY_UNAVAILABLE';
+        return this.snapshot();
+      }
+      await this.conceal(epoch, 'explorer-closed', true, 'HABITAT_DIRECTORY_UNAVAILABLE');
+      return this.snapshot();
+    }
+    if (locationChanged) {
+      this.errorCode = undefined;
+      await this.ensureObserving(epoch);
+      this.assertOperation(epoch);
+      return this.snapshot();
+    }
+    if (this.state === 'folder-lost') {
+      this.state = 'folder-hidden';
+      this.errorCode = undefined;
+      await this.ensureObserving(epoch);
+      this.assertOperation(epoch);
+    }
+    return this.snapshot();
+  }
+
+  private async ensureObserving(epoch: number): Promise<void> {
+    if (this.observerLifecycle === 'observing') return;
+    this.observerLifecycle = 'starting';
+    try {
+      await this.options.explorer.start();
+    } catch {
+      this.observerLifecycle = 'idle';
+      throw habitatError('HABITAT_OBSERVER_FAILED');
+    }
+    this.assertOperation(epoch);
+    try {
+      await this.options.explorer.startObserving();
+      this.observerLifecycle = 'observing';
+    } catch {
+      this.observerLifecycle = 'idle';
+      throw habitatError('HABITAT_OBSERVER_FAILED');
+    }
+    this.assertOperation(epoch);
+  }
+
+  private async stopObserver(force = false): Promise<HabitatErrorCode | null> {
+    if (!force && this.observerLifecycle === 'idle') return null;
+    try {
+      await this.options.explorer.stopObserving();
+      this.observerLifecycle = 'idle';
+      return null;
+    } catch {
+      return 'HABITAT_OBSERVER_FAILED';
     }
   }
 
+  private async performClose(
+    epoch: number,
+    pending: Promise<HabitatServiceSnapshot> | undefined,
+    startupOverlap: boolean
+  ): Promise<void> {
+    const errors: HabitatErrorCode[] = [];
+    const stopError = await this.stopObserver();
+    if (stopError !== null) errors.push(stopError);
+    const cleanupError = await this.cleanupCurrent(epoch, 'leave');
+    if (cleanupError !== null) errors.push(cleanupError);
+    await pending?.catch(() => undefined);
+    if (startupOverlap) {
+      const finalStopError = await this.stopObserver(true);
+      if (finalStopError !== null) errors.push(finalStopError);
+    }
+    if (errors.length > 0) throw this.fail(errors[0]!);
+  }
+
+  private async conceal(
+    epoch: number,
+    reason: ExplorerLayerUnsafeReason,
+    lost = false,
+    errorCode?: HabitatErrorCode
+  ): Promise<void> {
+    const cleanupError = await this.cleanupCurrent(epoch, reason);
+    if (!this.isCurrentEpoch(epoch)) return;
+    this.binding = undefined;
+    if (lost) this.state = 'folder-lost';
+    else if (this.state !== 'folder-lost') this.state = 'folder-hidden';
+    const code = errorCode ?? cleanupError;
+    if (code !== null && code !== undefined) this.errorCode = code;
+    if (cleanupError !== null) throw this.fail(cleanupError);
+  }
+
+  /** 每个副作用前复核 epoch；调用后的异步结果不得改写新 authority。 */
+  private async cleanupCurrent(
+    epoch: number,
+    reason: ExplorerLayerUnsafeReason
+  ): Promise<HabitatErrorCode | null> {
+    if (!this.isCurrentEpoch(epoch)) return null;
+    let error: HabitatErrorCode | null = null;
+    try {
+      this.options.petWindow.hide();
+    } catch {
+      error = 'HABITAT_WINDOW_FAILED';
+    }
+    if (!this.isCurrentEpoch(epoch)) return error;
+    try {
+      await this.options.layer.invalidate(reason);
+    } catch {
+      error = 'HABITAT_WINDOW_FAILED';
+    }
+    return error;
+  }
+
   private assertEntryAllowed(reason: HabitatEnterReason): void {
-    const blockers = this.options.readBlockers();
+    let blockers: HabitatBlockerSnapshot;
+    try {
+      blockers = this.options.readBlockers();
+    } catch {
+      throw habitatError('HABITAT_ENTRY_BLOCKED');
+    }
     if (reason === 'automatic' && blockers.proactivityMode !== 'autonomous') {
       throw habitatError('HABITAT_AUTOMATION_BLOCKED');
     }
-    if (
-      BLOCKED_AGENT_PHASES.has(this.agentPhase)
+    if (this.isBlocked(blockers)) throw habitatError('HABITAT_ENTRY_BLOCKED');
+  }
+
+  private isRevealBlocked(): boolean {
+    try {
+      return this.isBlocked(this.options.readBlockers());
+    } catch {
+      return true;
+    }
+  }
+
+  private isBlocked(blockers: HabitatBlockerSnapshot): boolean {
+    return BLOCKED_AGENT_PHASES.has(this.agentPhase)
       || blockers.fileTaskActive
       || blockers.characterSwitching
       || blockers.dragging
       || blockers.chatInteracting
       || blockers.appQuitting
-      || blockers.foregroundFullscreen
-    ) throw habitatError('HABITAT_ENTRY_BLOCKED');
+      || blockers.foregroundFullscreen;
   }
 
-  private async startObserving(): Promise<void> {
-    await this.options.explorer.start();
-    await this.options.explorer.startObserving();
-  }
-
-  private async stopObservingSafely(): Promise<void> {
+  private readAuthority(): ExplorerAuthoritySnapshot {
     try {
-      await this.options.explorer.stopObserving();
+      return this.options.readExplorerAuthority();
     } catch {
-      // 召回和关闭不能依赖观察器仍可用。
+      throw habitatError('HABITAT_OBSERVER_FAILED');
     }
   }
 
-  private async concealForInteraction(): Promise<void> {
-    if (this.state !== 'folder-visible' && this.state !== 'revealing') return;
-    this.observationToken += 1;
-    await this.conceal('leave');
-  }
-
-  private async conceal(
-    reason: ExplorerLayerUnsafeReason,
-    lost = false,
-    errorCode?: HabitatErrorCode
-  ): Promise<void> {
-    await this.hideAndInvalidate(reason);
-    this.binding = undefined;
-    if (lost) this.state = 'folder-lost';
-    else if (this.state !== 'folder-lost') this.state = 'folder-hidden';
-    if (errorCode !== undefined) this.errorCode = errorCode;
-  }
-
-  /** 明确先隐藏桌宠，再撤销 Explorer 相邻层级。 */
-  private async hideAndInvalidate(reason: ExplorerLayerUnsafeReason): Promise<void> {
-    try {
-      this.options.petWindow.hide();
-    } catch {
-      this.errorCode = 'HABITAT_WINDOW_FAILED';
+  private observationMatchesAuthority(
+    observation: HabitatExplorerObservation,
+    authority: ExplorerAuthoritySnapshot
+  ): boolean {
+    if (!(observation && !(observation instanceof Error) && observation.type === 'explorer-snapshot')) {
+      return true;
     }
-    await this.options.layer.invalidate(reason);
+    return observation.nonce === authority.nonce
+      && observation.sequence === authority.revision
+      && (observation.status !== 'ready' || observation.instanceId === authority.instanceId);
   }
 
-  private async performClose(
-    pendingStableWrite: Promise<HabitatServiceSnapshot> | undefined
-  ): Promise<void> {
-    await this.stopObservingSafely();
-    await this.hideAndInvalidate('leave');
-    await pendingStableWrite?.catch(() => undefined);
+  private bindingMatchesAuthority(authority: ExplorerAuthoritySnapshot): boolean {
+    return this.binding !== undefined
+      && this.binding.instanceId === authority.instanceId
+      && this.binding.sequence === authority.revision;
+  }
+
+  /** 外部 authority 换代时，只有仍持有当前 epoch 的观察可以执行失败关闭。 */
+  private async retainObservation(
+    epoch: number,
+    observation: ExplorerSnapshot
+  ): Promise<boolean> {
+    if (!this.isCurrentEpoch(epoch) || this.closed) return false;
+    let authority: ExplorerAuthoritySnapshot;
+    try {
+      authority = this.readAuthority();
+    } catch {
+      await this.conceal(epoch, 'explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
+      throw habitatError('HABITAT_OBSERVER_FAILED');
+    }
+    if (!this.observationMatchesAuthority(observation, authority)) {
+      await this.conceal(epoch, 'tab-race');
+      return false;
+    }
+    return true;
+  }
+
+  private async storeLoad(): Promise<PetHabitatSnapshot> {
+    try {
+      return await this.options.store.load();
+    } catch (error) {
+      throw this.mapError(error, 'HABITAT_STORAGE_FAILED');
+    }
+  }
+
+  private async storeUpdateLocation(
+    update: HabitatLocationUpdate
+  ): Promise<HabitatLocationUpdateResult> {
+    try {
+      return await this.options.store.updateLocation(update);
+    } catch (error) {
+      throw this.mapError(error, 'HABITAT_STORAGE_FAILED');
+    }
+  }
+
+  private async directoryAvailability(
+    directory: HabitatDirectoryRecord
+  ): Promise<HabitatDirectoryAvailability> {
+    try {
+      return await this.options.directoryPolicy.availability(directory);
+    } catch {
+      throw habitatError('HABITAT_DIRECTORY_UNAVAILABLE');
+    }
+  }
+
+  private advanceEpoch(): number {
+    this.epoch += 1;
+    return this.epoch;
+  }
+
+  private isCurrentEpoch(epoch: number): boolean {
+    return epoch === this.epoch;
+  }
+
+  private assertOperation(epoch: number): void {
+    if (this.closed) throw habitatError('HABITAT_CLOSED');
+    if (!this.isCurrentEpoch(epoch)) throw habitatError('HABITAT_OPERATION_BUSY');
   }
 
   private restoreStableState(): void {
@@ -546,23 +889,21 @@ export class HabitatService {
     }
   }
 
-  private restoreFolderStableState(): void {
-    if (this.stableSnapshot.location.kind === 'folder') {
-      this.state = 'folder-hidden';
-      this.directoryId = this.stableSnapshot.location.directoryId;
-    } else {
-      this.state = 'desktop';
-      this.directoryId = null;
-    }
+  private fail(code: HabitatErrorCode): HabitatServiceError {
+    this.errorCode = code;
+    return habitatError(code);
   }
 
-  private assertOpen(): void {
-    if (this.closed) throw habitatError('HABITAT_CLOSED');
-  }
-
-  private captureError(error: unknown): void {
-    if (error instanceof Error && /^[A-Z][A-Z0-9_]+$/u.test(error.message)) {
-      this.errorCode = error.message;
+  private mapError(error: unknown, fallback: HabitatErrorCode): HabitatServiceError {
+    if (error instanceof HabitatServiceError) return error;
+    if (error instanceof Error) {
+      if (error.message === 'HABITAT_STORAGE_CHANGED') {
+        return habitatError('HABITAT_STORAGE_CHANGED');
+      }
+      if (error.message === 'HABITAT_STORAGE_FAILED') {
+        return habitatError('HABITAT_STORAGE_FAILED');
+      }
     }
+    return habitatError(fallback);
   }
 }

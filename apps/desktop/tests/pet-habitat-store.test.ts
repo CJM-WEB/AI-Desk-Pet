@@ -382,4 +382,83 @@ describe('PetHabitatStore', () => {
         .toBe(firstBytes);
     }
   );
+
+  test('location 条件更新在同一文件队列中保留先提交的偏好与目录路径', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-location-cas-');
+    const file = join(directory, 'private', 'habitat.json');
+    const initial = folderSnapshot(join(directory, 'old-project'));
+    const latest = {
+      ...initial,
+      preferences: { ...initial.preferences, idleDelayMs: 90_000 },
+      directories: [{
+        ...initial.directories[0]!,
+        absolutePath: join(directory, 'moved-project')
+      }]
+    };
+    const store = new PetHabitatStore(file);
+    await store.save(initial);
+
+    const settingsWrite = new PetHabitatStore(file).save(latest);
+    const locationWrite = new PetHabitatStore(file).updateLocation({
+      expected: { kind: 'folder', directoryId: 'directory-1' },
+      location: { kind: 'desktop', position: { x: 120, y: 240 } }
+    });
+    await settingsWrite;
+
+    await expect(locationWrite).resolves.toMatchObject({ status: 'updated' });
+    await expect(store.load()).resolves.toEqual({
+      ...latest,
+      location: { kind: 'desktop', position: { x: 120, y: 240 } }
+    });
+  });
+
+  test('进入 folder 的条件更新在队列内复核目录仍启用且身份路径未变化', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-location-enter-');
+    const file = join(directory, 'private', 'habitat.json');
+    const initial = folderSnapshot(join(directory, 'project'));
+    initial.location = { kind: 'desktop', position: { x: 120, y: 240 } };
+    const disabled = structuredClone(initial);
+    disabled.directories[0]!.enabled = false;
+    const store = new PetHabitatStore(file);
+    await store.save(initial);
+
+    const settingsWrite = new PetHabitatStore(file).save(disabled);
+    const locationWrite = new PetHabitatStore(file).updateLocation({
+      expected: { kind: 'desktop' },
+      expectedDirectory: initial.directories[0]!,
+      location: {
+        kind: 'folder',
+        directoryId: 'directory-1',
+        enteredAt: '2026-08-08T09:00:00.000Z',
+        previousDesktopPosition: { x: 120, y: 240 },
+        localOffset: { x: 16, y: 24 }
+      }
+    });
+    await settingsWrite;
+
+    await expect(locationWrite).resolves.toMatchObject({ status: 'conflict' });
+    await expect(store.load()).resolves.toEqual(disabled);
+  });
+
+  test('并发方已写入同一 folder 时 unchanged 也不能绕过目录停用复核', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-location-unchanged-');
+    const file = join(directory, 'private', 'habitat.json');
+    const desktop = folderSnapshot(join(directory, 'project'));
+    desktop.location = { kind: 'desktop', position: { x: 120, y: 240 } };
+    const concurrentFolder = folderSnapshot(join(directory, 'project'));
+    concurrentFolder.directories[0]!.enabled = false;
+    const store = new PetHabitatStore(file);
+    await store.save(desktop);
+
+    const concurrentWrite = new PetHabitatStore(file).save(concurrentFolder);
+    const locationWrite = new PetHabitatStore(file).updateLocation({
+      expected: { kind: 'desktop' },
+      expectedDirectory: desktop.directories[0]!,
+      location: folderSnapshot(join(directory, 'project')).location
+    });
+    await concurrentWrite;
+
+    await expect(locationWrite).resolves.toMatchObject({ status: 'conflict' });
+    await expect(store.load()).resolves.toEqual(concurrentFolder);
+  });
 });
