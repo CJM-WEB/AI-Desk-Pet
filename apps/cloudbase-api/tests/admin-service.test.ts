@@ -261,6 +261,29 @@ describe('管理员审核服务', () => {
     }));
   });
 
+  it.each(['feedback', 'suggestion', 'shared_package'] as const)(
+    '管理员可删除已发布的 %s',
+    async kind => {
+      const { service, store } = createService(submission('published', { kind }));
+
+      await service.applyAction(
+        { uid: 'uid-admin', email: 'admin@example.com' },
+        'submission-1',
+        {
+          action: 'delete',
+          version: 3,
+          idempotencyKey: `delete-${kind}`,
+          reason: '管理员下架'
+        }
+      );
+
+      expect(store.applyAdminAction).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'delete',
+        nextStatus: 'deleted_quarantined'
+      }));
+    }
+  );
+
   it('相同幂等请求在状态已变化后仍交给数据库返回原结果', async () => {
     const { service, store } = createService(submission('published', {
       moderationResults: [moderationResult('Pass', {

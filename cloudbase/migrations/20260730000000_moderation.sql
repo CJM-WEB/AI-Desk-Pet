@@ -1092,7 +1092,8 @@ BEGIN
   SELECT status, kind INTO v_status, v_kind
   FROM submissions
   WHERE id = p_submission_id;
-  IF v_status IS DISTINCT FROM 'published' OR v_kind <> 'shared_package' THEN
+  IF v_status IS DISTINCT FROM 'published'
+    OR v_kind NOT IN ('shared_package', 'feedback', 'suggestion') THEN
     RAISE EXCEPTION 'published submission not found' USING ERRCODE = 'P0002';
   END IF;
 

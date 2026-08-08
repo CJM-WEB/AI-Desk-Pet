@@ -66,11 +66,11 @@ function setup(overrides: Partial<AdminApi> = {}, authOverrides: Partial<AdminAu
 }
 
 describe('管理员审核工作台', () => {
-  it('取得现有会话后加载队列并提供五个侧栏视图', async () => {
+  it('取得现有会话后加载队列并提供六个侧栏视图', async () => {
     const { api } = setup();
 
     expect(await screen.findByText('改进建议')).toBeTruthy();
-    for (const label of ['待我审核', '自动驳回', '已发布', '隔离区', '审计记录']) {
+    for (const label of ['系统处理中', '待我审核', '自动驳回', '已发布', '隔离区', '审计记录']) {
       expect(screen.getByRole('button', { name: label })).toBeTruthy();
     }
     expect(api.listQueue).toHaveBeenCalledWith(
@@ -281,18 +281,23 @@ describe('管理员审核工作台', () => {
     expect(screen.queryByLabelText('审核理由')).toBeNull();
   });
 
-  it('401 会登出并返回登录，403 显示明确无权限状态', async () => {
+  it('401 保留工作台供重试，403 只清理页面状态且不自动销毁登录会话', async () => {
     const unauthorized = setup({
       listQueue: vi.fn().mockRejectedValue(new ApiClientError('UNAUTHORIZED', 401))
     });
-    expect(await screen.findByLabelText('管理员邮箱')).toBeTruthy();
-    expect(unauthorized.auth.signOut).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('审核队列暂时无法加载，请稍后重试。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '退出登录' })).toBeTruthy();
+    expect(screen.queryByLabelText('管理员邮箱')).toBeNull();
+    expect(unauthorized.auth.signOut).not.toHaveBeenCalled();
     cleanup();
 
-    setup({
+    const forbidden = setup({
       listQueue: vi.fn().mockRejectedValue(new ApiClientError('FORBIDDEN', 403))
     });
     expect(await screen.findByText('该邮箱没有管理员权限')).toBeTruthy();
+    expect(forbidden.auth.signOut).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '退出当前会话' }));
+    expect(forbidden.auth.signOut).toHaveBeenCalledTimes(1);
   });
 
   it('英文环境提供可访问的核心管理员文案', async () => {

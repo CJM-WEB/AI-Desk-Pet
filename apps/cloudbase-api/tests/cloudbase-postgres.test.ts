@@ -153,6 +153,14 @@ describe('CloudBase PostgreSQL 迁移', () => {
     expect(sql).not.toMatch(/\buser_ip\b|\buser_agent\b/);
   });
 
+  it('公开点赞允许资源包、反馈和建议', () => {
+    const sql = readFileSync(migrationPath, 'utf8');
+
+    expect(sql).toContain(
+      "v_kind NOT IN ('shared_package', 'feedback', 'suggestion')"
+    );
+  });
+
   it('管理员动作同时具备版本条件更新和幂等请求保护', () => {
     const sql = readFileSync(migrationPath, 'utf8');
 

@@ -400,8 +400,11 @@ describe('公开 HTTP API', () => {
     const main = createApi(dependencies);
 
     const response = await main(
-      event('POST', '/api/v1/feedback/feedback-1/like', {}),
-      context
+      {
+        ...event('POST', '/api/v1/feedback/feedback-1/like', {}),
+        requestContext: { sourceIp }
+      },
+      { requestId: context.requestId }
     );
 
     const deviceHash = createHmac('sha256', fingerprintSecret)

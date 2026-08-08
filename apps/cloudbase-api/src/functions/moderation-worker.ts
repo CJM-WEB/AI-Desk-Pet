@@ -8,7 +8,6 @@ import {
   ModerationService,
   type BatchResult
 } from '../services/moderation-service.js';
-import { KeywordRelevanceClassifier } from '../services/keyword-relevance.js';
 
 interface ModerationBatchProcessor {
   processNextBatch(limit: number): Promise<BatchResult>;
@@ -48,7 +47,6 @@ export function createProductionWorker(): () => Promise<BatchResult> {
     store,
     new CloudBaseStorage(runtime.bucket),
     createTencentContentModerator(config),
-    new KeywordRelevanceClassifier(),
     new ScannerClient(config.scannerUrl, config.scannerHmacSecret),
     { now: () => new Date() }
   );

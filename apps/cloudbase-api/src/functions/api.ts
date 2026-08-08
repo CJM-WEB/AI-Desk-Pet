@@ -43,6 +43,9 @@ import {
 
 export interface ApiHttpEvent extends CloudBaseHttpEvent {
   queryStringParameters?: Record<string, string | undefined>;
+  requestContext?: {
+    sourceIp?: unknown;
+  };
 }
 
 export interface ApiContext {
@@ -183,7 +186,7 @@ async function dispatch(
     if (!captchaProofSchema.safeParse(body.captcha).success) {
       throw invalidRequest();
     }
-    const ip = requireSourceIp(context);
+    const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'submission_prepare',
       ipFingerprint(ip, dependencies.fingerprintSecret)
@@ -211,7 +214,7 @@ async function dispatch(
     if (!captchaProofSchema.safeParse(body.captcha).success) {
       throw invalidRequest();
     }
-    const ip = requireSourceIp(context);
+    const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'submission_prepare',
       ipFingerprint(ip, dependencies.fingerprintSecret)
@@ -225,7 +228,7 @@ async function dispatch(
   if (method === 'POST' && path === '/api/v1/submission-status') {
     const body = requestRecord(event);
     if (typeof body.statusToken !== 'string') throw invalidRequest();
-    const ip = requireSourceIp(context);
+    const ip = requireSourceIp(event, context);
     await dependencies.abuseControl.consume(
       'status_query',
       ipFingerprint(ip, dependencies.fingerprintSecret)
@@ -266,7 +269,7 @@ async function dispatch(
   if (feedbackLikeId !== null) {
     requestRecord(event);
     const deviceHash = deviceFingerprint(
-      requireSourceIp(context),
+      requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
@@ -284,7 +287,7 @@ async function dispatch(
   if (likeId !== null) {
     requestRecord(event);
     const deviceHash = deviceFingerprint(
-      requireSourceIp(context),
+      requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
@@ -302,7 +305,7 @@ async function dispatch(
   if (downloadId !== null) {
     requestRecord(event);
     const deviceHash = deviceFingerprint(
-      requireSourceIp(context),
+      requireSourceIp(event, context),
       header(event.headers, 'user-agent'),
       dependencies.fingerprintSecret
     );
@@ -418,8 +421,11 @@ function dynamicId(
   return decoded;
 }
 
-function requireSourceIp(context: ApiContext): string {
-  const ip = context.sourceIp;
+function requireSourceIp(event: ApiHttpEvent, context: ApiContext): string {
+  // HTTP 网关按触发方式提供事件字段或受保护的真实地址请求头；context 兼容本地直调。
+  const ip = context.sourceIp
+    ?? event.requestContext?.sourceIp
+    ?? header(event.headers, 'x-real-ip');
   if (
     typeof ip !== 'string'
     || ip.trim().length === 0

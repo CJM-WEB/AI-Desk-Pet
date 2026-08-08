@@ -21,7 +21,7 @@ interface AdminAppProps {
 }
 
 type QueueStatus = Extract<SubmissionStatus,
-  'manual_review_pending' | 'auto_rejected' | 'published' | 'deleted_quarantined'>;
+  'system_reviewing' | 'manual_review_pending' | 'auto_rejected' | 'published' | 'deleted_quarantined'>;
 type Phase = 'checking' | 'login' | 'workspace' | 'forbidden';
 
 /** 管理员页面只在内存持有令牌；真实授权仍由每个后端路由执行。 */
@@ -74,7 +74,7 @@ function AdminWorkspace({
   const pendingCursors = useRef(new Set<number>());
   const sessionEpoch = useRef(0);
 
-  /** 在任何会话边界同步擦除敏感状态，异步登出只做尽力清理。 */
+  /** 清除当前页面持有的敏感状态；只有用户主动退出时才销毁 CloudBase 会话。 */
   const clearSensitiveSessionState = useCallback((nextPhase: 'login' | 'forbidden') => {
     queueAbort.current?.abort();
     detailAbort.current?.abort();
@@ -95,8 +95,7 @@ function AdminWorkspace({
     setActing(false);
     setActiveView('manual_review_pending');
     setPhase(nextPhase);
-    void resolvedAuth.signOut().catch(() => undefined);
-  }, [resolvedAuth]);
+  }, []);
 
   useEffect(() => () => {
     queueAbort.current?.abort();
@@ -108,10 +107,8 @@ function AdminWorkspace({
 
   const handleApiError = useCallback(async (error: unknown): Promise<boolean> => {
     if (!(error instanceof ApiClientError)) return false;
-    if (error.statusCode === 401) {
-      clearSensitiveSessionState('login');
-      return true;
-    }
+    // 单次 401 可能来自网关或令牌刷新时序，保留工作台并交由当前操作显示可重试错误。
+    if (error.statusCode === 401) return false;
     if (error.statusCode === 403) {
       clearSensitiveSessionState('forbidden');
       return true;
@@ -260,6 +257,7 @@ function AdminWorkspace({
 
   function signOut(): void {
     clearSensitiveSessionState('login');
+    void resolvedAuth.signOut().catch(() => undefined);
   }
 
   if (phase === 'checking') {

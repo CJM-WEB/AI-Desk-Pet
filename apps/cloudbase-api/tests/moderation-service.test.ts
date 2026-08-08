@@ -76,7 +76,6 @@ function createStorage() {
 function createService(overrides: {
   signal?: ModerationSignal;
   scan?: PackageScanResult;
-  relevance?: 'pass' | 'review' | 'reject';
   store?: ReturnType<typeof createStore>;
   reviewText?: (input: { text: string }) => Promise<ModerationSignal>;
 } = {}) {
@@ -92,19 +91,16 @@ function createService(overrides: {
   const scanner = {
     scan: vi.fn().mockResolvedValue(overrides.scan ?? safeScan)
   };
-  const relevance = {
-    classify: vi.fn().mockResolvedValue(overrides.relevance ?? 'pass')
-  };
+  const storage = createStorage();
   return {
     store,
+    storage,
     moderator,
     scanner,
-    relevance,
     service: new ModerationService(
       store,
-      createStorage(),
+      storage,
       moderator,
-      relevance,
       scanner,
       { now: () => now }
     )
@@ -113,7 +109,7 @@ function createService(overrides: {
 
 describe('自动审核编排', () => {
   it.each([
-    [{ suggestion: 'Block', label: 'Abuse' } as ModerationSignal, 'auto_rejected'],
+    [{ suggestion: 'Block', label: 'Abuse' } as ModerationSignal, 'manual_review_pending'],
     [{ suggestion: 'Review', label: 'Politics' } as ModerationSignal, 'manual_review_pending'],
     [{ suggestion: 'Pass', label: 'Normal' } as ModerationSignal, 'manual_review_pending']
   ])('把审核建议映射为固定状态', async (signal, expected) => {
@@ -136,62 +132,40 @@ describe('自动审核编排', () => {
     )).toBe(true);
   });
 
-  it('相关性拒绝时自动驳回', async () => {
-    const { service } = createService({ relevance: 'reject' });
-    await expect(service.process('submission-1')).resolves.toEqual(
-      expect.objectContaining({ status: 'auto_rejected' })
-    );
-  });
-
-  it.each([
-    ['pass' as const, 'Pass', 'AI_PET_PASS'],
-    ['review' as const, 'Review', 'AI_PET_REVIEW']
-  ])('记录本地关键词审核来源和版本：%s', async (
-    relevanceSuggestion,
-    signalSuggestion,
-    label
-  ) => {
+  it('关闭关键词层后所有内容统一进入管理员审核', async () => {
     const { service, store } = createService({
-      relevance: relevanceSuggestion
+      signal: { suggestion: 'Block', label: 'Abuse' }
     });
 
-    await service.process('submission-1');
-
-    const records = store.applyModerationDecision.mock.calls[0]![0].results;
-    expect(records.find(
-      (record: ModerationRecord) => record.kind === 'relevance'
-    )).toMatchObject({
-      provider: 'local-keyword',
-      ruleVersion: 'keyword-relevance-2026-08-01',
-      suggestion: signalSuggestion,
-      label
-    });
+    await expect(service.process('submission-1')).resolves.toEqual(
+      expect.objectContaining({ status: 'manual_review_pending' })
+    );
     expect(store.applyModerationDecision).toHaveBeenCalledWith(
       expect.objectContaining({ nextStatus: 'manual_review_pending' })
     );
+    const records = store.applyModerationDecision.mock.calls[0]![0].results;
+    expect(records.some(
+      (record: ModerationRecord) => record.provider === 'local-keyword'
+    )).toBe(false);
   });
 
-  it('技术扫描明确不安全后直接原子驳回且不被后续依赖故障拖延', async () => {
-    const { service, store, moderator, relevance } = createService({
+  it('技术扫描不安全时保留风险证据并交由管理员处理', async () => {
+    const { service, store, moderator } = createService({
       scan: {
         ...safeScan,
         safe: false,
         code: 'CHARACTER_PACKAGE_MALWARE_DETECTED'
       }
     });
-    relevance.classify.mockRejectedValue(new Error('RELEVANCE_UNAVAILABLE'));
 
     await expect(service.process('submission-1')).resolves.toEqual({
-      status: 'auto_rejected',
+      status: 'manual_review_pending',
       applied: true
     });
-    expect(relevance.classify).not.toHaveBeenCalled();
     expect(moderator.reviewText).not.toHaveBeenCalled();
     expect(store.applyModerationDecision).toHaveBeenCalledWith(
       expect.objectContaining({
-        nextStatus: 'auto_rejected',
-        autoRejectionReason:
-          '技术检查：CHARACTER_PACKAGE_MALWARE_DETECTED'
+        nextStatus: 'manual_review_pending'
       })
     );
   });
@@ -208,10 +182,14 @@ describe('自动审核编排', () => {
   });
 
   it('共享包使用五分钟私有 URL 扫描并审核 JSON、OCR 与封面', async () => {
-    const { service, scanner, moderator, store } = createService();
+    const { service, storage, scanner, moderator, store } = createService();
 
     await service.process('submission-1');
 
+    expect(storage.createSignedUrl).toHaveBeenCalledWith(
+      'private/pet.zip',
+      4 * 60
+    );
     expect(scanner.scan).toHaveBeenCalledWith({
       submissionId: 'submission-1',
       downloadUrl: 'https://storage.example.com/private/pet.zip?sig=1',
@@ -282,17 +260,13 @@ describe('自动审核编排', () => {
       assets: []
     };
     const store = createStore(submission);
-    const { service, scanner, moderator, relevance } = createService({ store });
+    const { service, scanner, moderator } = createService({ store });
 
     await service.process('feedback-1');
 
     expect(scanner.scan).not.toHaveBeenCalled();
     expect(moderator.reviewImage).not.toHaveBeenCalled();
     expect(moderator.reviewText).toHaveBeenCalledTimes(2);
-    expect(relevance.classify).toHaveBeenCalledWith({
-      title: '匿名用户',
-      body: '希望增加桌宠动作'
-    });
   });
 
   it('批处理中单个失败不阻止其他任务并记录持久化退避', async () => {
@@ -303,10 +277,10 @@ describe('自动审核编排', () => {
     store.findById
       .mockResolvedValueOnce(first)
       .mockResolvedValueOnce(second);
-    const { service, relevance } = createService({ store });
-    relevance.classify
-      .mockRejectedValueOnce(new Error('RELEVANCE_UNAVAILABLE'))
-      .mockResolvedValueOnce('pass');
+    const { service, moderator } = createService({ store });
+    moderator.reviewText
+      .mockRejectedValueOnce(new Error('TMS_UNAVAILABLE'))
+      .mockResolvedValue({ suggestion: 'Pass', label: 'Normal' });
 
     const result = await service.processNextBatch(3);
 
@@ -314,7 +288,7 @@ describe('自动审核编排', () => {
     expect(store.recordModerationFailure).toHaveBeenCalledWith({
       submissionId: 'submission-1',
       expectedVersion: 2,
-      errorSummary: 'RELEVANCE_UNAVAILABLE',
+      errorSummary: 'TMS_UNAVAILABLE',
       results: expect.any(Array)
     });
     expect(store.applyModerationDecision).toHaveBeenCalledWith(
@@ -333,10 +307,10 @@ describe('自动审核编排', () => {
     store.recordModerationFailure.mockRejectedValueOnce(
       new Error('DATABASE_UNAVAILABLE')
     );
-    const { service, relevance } = createService({ store });
-    relevance.classify
-      .mockRejectedValueOnce(new Error('RELEVANCE_UNAVAILABLE'))
-      .mockResolvedValueOnce('pass');
+    const { service, moderator } = createService({ store });
+    moderator.reviewText
+      .mockRejectedValueOnce(new Error('TMS_UNAVAILABLE'))
+      .mockResolvedValue({ suggestion: 'Pass', label: 'Normal' });
 
     await expect(service.processNextBatch(3)).resolves.toEqual({
       claimed: 2,
