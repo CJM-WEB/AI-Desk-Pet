@@ -1,5 +1,4 @@
 import type { MenuItemConstructorOptions } from 'electron';
-import type { HabitatDirectoryOpenRequest } from '../habitat/habitat-service';
 
 /** 窗口命令只依赖正式 BrowserWindow 所需的最小职责面。 */
 export interface ChatWindowCommandTarget {
@@ -74,22 +73,6 @@ export function buildApplicationTrayMenu(options: {
     { type: 'separator' },
     { label: '退出', click: options.quit }
   ];
-}
-
-/** opener 只从 Main 已复核记录取路径；shell.openPath 非空返回同样表示失败。 */
-export function createVerifiedDirectoryOpener(
-  openPath: (absolutePath: string) => Promise<string>
-): (request: HabitatDirectoryOpenRequest) => Promise<void> {
-  return async ({ directory, signal }) => {
-    try {
-      if (signal.aborted) throw new Error('OPEN_PATH_ABORTED');
-      const errorMessage = await openPath(directory.absolutePath);
-      if (signal.aborted) throw new Error('OPEN_PATH_ABORTED');
-      if (errorMessage !== '') throw new Error('OPEN_PATH_FAILED');
-    } catch {
-      throw new Error('HABITAT_SUMMON_FAILED');
-    }
-  };
 }
 
 /**

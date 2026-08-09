@@ -3,7 +3,6 @@ import {
   lstat,
   mkdir,
   readFile,
-  readdir,
   rename,
   rm,
   symlink,
@@ -22,10 +21,6 @@ import {
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import {
-  habitatDashboardSchema,
-  habitatDirectoryIdInputSchema
-} from '../../apps/desktop/src/shared/habitat-ipc';
-import {
   parseBridgeLine,
   serializeBridgeCommand
 } from '../../apps/desktop/src/main/habitat/explorer-space-protocol';
@@ -35,10 +30,6 @@ import {
 import {
   createMainE2eExplorerBridge
 } from '../../apps/desktop/src/main/e2e-boundary';
-import { FolderIdentityResolver } from
-  '../../apps/desktop/src/main/habitat/folder-identity-resolver';
-import { PetHabitatStore } from
-  '../../apps/desktop/src/main/habitat/pet-habitat-store';
 import {
   createAuthorizedRoot,
   type AuthorizedRootFixture
@@ -169,44 +160,7 @@ function expectSerializableBoundarySafe(
 }
 
 describe('权限边界安全回归', () => {
-  test('目录 IPC 与桥接协议共同拒绝伪造私有身份和窗口命令', () => {
-    for (const forgedDirectory of [
-      { directoryId: 'C:\\Private\\Habitat' },
-      { directoryId: '../directory-1' },
-      { directoryId: 'directory-1', absolutePath: 'C:\\Private\\Habitat' }
-    ]) {
-      expect(habitatDirectoryIdInputSchema.safeParse(forgedDirectory).success).toBe(false);
-    }
-
-    const publicDashboard = {
-      enabled: true,
-      autoHideEnabled: true,
-      idleDelayMs: 30_000,
-      directories: [{
-        id: 'directory-1',
-        displayName: '项目',
-        pathHint: '项目',
-        enabled: true,
-        availability: 'available'
-      }],
-      current: { kind: 'folder', directoryId: 'directory-1', visibility: 'hidden' },
-      busyReason: null,
-      errorCode: null
-    };
-    expect(habitatDashboardSchema.safeParse(publicDashboard).success).toBe(true);
-    for (const privateField of [
-      { absolutePath: 'C:\\Private\\Habitat' },
-      { hwnd: '123' },
-      { identity: { dev: 7, ino: 11 } },
-      { bridgeState: 'ready' },
-      { e2eControl: 'inject-snapshot' }
-    ]) {
-      expect(habitatDashboardSchema.safeParse({
-        ...publicDashboard,
-        ...privateField
-      }).success).toBe(false);
-    }
-
+  test('桥接协议拒绝伪造窗口命令', () => {
     const validSnapshot = {
       version: 1,
       type: 'explorer-snapshot',
@@ -359,55 +313,6 @@ describe('权限边界安全回归', () => {
       errorCode: 'E2E_BRIDGE_CRASHED'
     });
     await bridge.close();
-  });
-
-  test('Windows 真实大整数目录身份以 bigint 采样并按无损字符串命中', async () => {
-    const base = await createAuthorizedRoot();
-    roots.push(base);
-    const identityFixtureRoot = join(process.cwd(), '.pnpm-store', 'v11', 'files');
-    const candidates = [identityFixtureRoot, ...(await readdir(identityFixtureRoot)).map(
-      name => join(identityFixtureRoot, name)
-    )];
-    let physicalPath: string | undefined;
-    for (const candidate of candidates) {
-      const candidateStats = await lstat(candidate, { bigint: true });
-      if (candidateStats.isDirectory() && candidateStats.ino > BigInt(Number.MAX_SAFE_INTEGER)) {
-        physicalPath = candidate;
-        break;
-      }
-    }
-    if (physicalPath === undefined) throw new Error('WINDOWS_LARGE_INODE_FIXTURE_MISSING');
-    const information = await lstat(physicalPath, { bigint: true });
-    expect(information.ino).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
-    const identity = {
-      dev: information.dev.toString(),
-      ino: information.ino.toString()
-    };
-
-    const store = new PetHabitatStore(join(base.root, 'pet-habitat.json'));
-    await store.save({
-      version: 1,
-      preferences: {
-        enabled: true,
-        autoHideEnabled: false,
-        idleDelayMs: 30_000
-      },
-      directories: [{
-        id: 'large-identity-directory',
-        displayName: '大整数身份目录',
-        pathHint: '大整数身份目录',
-        absolutePath: physicalPath,
-        identity,
-        enabled: true
-      }],
-      location: { kind: 'desktop', position: null }
-    });
-    const resolver = new FolderIdentityResolver(store);
-
-    await expect(resolver.resolve(physicalPath)).resolves.toEqual({
-      status: 'matched',
-      directoryId: 'large-identity-directory'
-    });
   });
 
   test('回收站端口只能消费服务私下签发的单次动作且公开边界不泄露绝对路径', async () => {

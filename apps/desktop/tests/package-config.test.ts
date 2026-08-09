@@ -78,7 +78,7 @@ describe('electron-builder 配置', () => {
   test('生产桥源码只从应用固定资源根加载', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
     const start = main.indexOf('const explorerResourceRoot =');
-    const end = main.indexOf('let latestExplorerObservation', start);
+    const end = main.indexOf('const explorerLayer =', start);
     const bridgeSetup = main.slice(start, end);
 
     expect(start).toBeGreaterThanOrEqual(0);

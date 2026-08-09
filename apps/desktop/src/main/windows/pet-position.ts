@@ -14,8 +14,6 @@ interface MoveAwareWindow {
 interface PetPositionControllerOptions {
   window: MoveAwareWindow;
   savePosition: (position: Point) => Promise<void>;
-  getLocalOffset?: () => Point;
-  saveLocalOffset?: (offset: Point) => Promise<void>;
   debounceMs?: number;
   onError?: (error: unknown) => void;
 }
@@ -31,18 +29,9 @@ interface QuitAfterPositionFlushOptions {
 }
 
 export interface PetPositionController {
-  setPersistenceMode(mode: PetPositionPersistenceMode): void;
   flush(): Promise<void>;
   freezeAndFlush(): Promise<void>;
 }
-
-export type PetPositionPersistenceMode = 'desktop' | 'folder' | 'disabled';
-
-type PendingPosition = {
-  mode: Exclude<PetPositionPersistenceMode, 'disabled'>;
-  point: Point;
-  generation: number;
-};
 
 const DEFAULT_DEBOUNCE_MS = 250;
 
@@ -58,48 +47,28 @@ export function restorePetPosition(
   return clampPositionToVisibleWorkArea(savedPosition, windowSize, workAreas);
 }
 
+/** 桌宠位置只写入桌面坐标，并在退出冻结后排空最后一次移动。 */
 export function createPetPositionController(
   options: PetPositionControllerOptions
 ): PetPositionController {
-  let persistenceMode: PetPositionPersistenceMode = 'desktop';
-  let persistenceGeneration = 0;
-  let pendingPosition: PendingPosition | null = null;
+  let pendingPosition: Point | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let writeQueue = Promise.resolve();
   let frozen = false;
 
   const reportError = (error: unknown): void => {
-    try {
-      options.onError?.(error);
-    } catch {
-      // 错误记录本身不得影响应用退出或产生未处理拒绝。
-    }
+    try { options.onError?.(error); } catch { /* 日志失败不得影响退出。 */ }
   };
-
-  const saveSafely = async (pending: PendingPosition): Promise<void> => {
-    if (
-      persistenceMode === 'disabled'
-      || pending.generation !== persistenceGeneration
-      || pending.mode !== persistenceMode
-    ) return;
-    try {
-      if (pending.mode === 'desktop') {
-        await options.savePosition(pending.point);
-      } else if (options.saveLocalOffset) {
-        await options.saveLocalOffset(pending.point);
-      }
-    } catch (error) {
-      reportError(error);
-    }
-  };
-
   const persistPending = async (): Promise<void> => {
     const pending = pendingPosition;
     pendingPosition = null;
-    if (pending) writeQueue = writeQueue.then(() => saveSafely(pending));
+    if (pending) {
+      writeQueue = writeQueue.then(async () => {
+        try { await options.savePosition(pending); } catch (error) { reportError(error); }
+      });
+    }
     await writeQueue;
   };
-
   const flushAll = async (): Promise<void> => {
     while (true) {
       if (timer) clearTimeout(timer);
@@ -112,25 +81,9 @@ export function createPetPositionController(
   };
 
   options.window.on('move', () => {
-    if (frozen || persistenceMode === 'disabled') return;
-    let point: Point;
-    try {
-      if (persistenceMode === 'folder') {
-        if (!options.getLocalOffset) return;
-        point = options.getLocalOffset();
-      } else {
-        const [x = 0, y = 0] = options.window.getPosition();
-        point = { x, y };
-      }
-    } catch (error) {
-      reportError(error);
-      return;
-    }
-    pendingPosition = {
-      mode: persistenceMode,
-      point,
-      generation: persistenceGeneration
-    };
+    if (frozen) return;
+    const [x = 0, y = 0] = options.window.getPosition();
+    pendingPosition = { x, y };
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
@@ -139,14 +92,6 @@ export function createPetPositionController(
   });
 
   return {
-    setPersistenceMode(mode: PetPositionPersistenceMode): void {
-      if (persistenceMode === mode) return;
-      persistenceGeneration += 1;
-      persistenceMode = mode;
-      pendingPosition = null;
-      if (timer) clearTimeout(timer);
-      timer = null;
-    },
     flush: flushAll,
     async freezeAndFlush(): Promise<void> {
       frozen = true;
@@ -160,7 +105,6 @@ export function createQuitAfterPositionFlush(
 ): (event: QuitEvent) => Promise<void> {
   let exitReady = false;
   let activeFlush: Promise<void> | null = null;
-
   return async event => {
     if (exitReady) return;
     event.preventDefault();
@@ -168,11 +112,7 @@ export function createQuitAfterPositionFlush(
       try {
         await options.flush();
       } catch (error) {
-        try {
-          options.onError?.(error);
-        } catch {
-          // 错误记录失败也必须继续退出。
-        }
+        try { options.onError?.(error); } catch { /* 日志失败也必须继续退出。 */ }
       }
       exitReady = true;
       options.quit();

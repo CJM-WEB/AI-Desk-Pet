@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { access, lstat, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
-import { basename, join, normalize } from 'node:path';
+import { access, readFile, rename, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { AgentLoop, ModelRouter } from '@myself/agent-core';
 import { FileToolService, PathPolicy } from '@myself/file-tools';
 import { providerCatalog, type TaskEvent } from '@myself/shared-types';
@@ -11,7 +11,6 @@ import {
   ipcMain,
   Menu,
   nativeImage,
-  powerMonitor,
   safeStorage,
   screen,
   shell,
@@ -46,33 +45,15 @@ import { ExplorerSpaceClient, buildExplorerBridgeSpawnSpec } from
 import type { ExplorerSnapshot } from './habitat/explorer-space-protocol';
 import { ExplorerWindowLayerController } from
   './habitat/explorer-window-layer-controller';
-import { FolderIdentityResolver } from './habitat/folder-identity-resolver';
-import { HabitatAutonomyPolicy } from './habitat/habitat-autonomy-policy';
-import { HabitatDirectoryPolicy } from './habitat/habitat-directory-policy';
-import {
-  HabitatService,
-  type HabitatExplorerObservation
-} from './habitat/habitat-service';
-import { HabitatWindowController } from './habitat/habitat-window-controller';
-import {
-  PetHabitatStore,
-  type HabitatDirectoryAvailability,
-  type HabitatDirectoryRecord
-} from './habitat/pet-habitat-store';
-import { createForegroundFullscreenProbe } from './habitat/foreground-fullscreen-probe';
+import { ExplorerPetLayerCoordinator } from './explorer/explorer-pet-layer-coordinator';
+import { createExplorerMainComposition } from './explorer/explorer-main-wiring';
 import {
   createApplicationQuitCoordinator,
   createCharacterActivationCoordinator,
-  createExplorerObservationRelay,
-  createForegroundFullscreenBlocker,
   createIntegrityCheckedExplorerPort,
   createStartupCleanupStack,
-  createStartupVisibilityGate,
-  createTrayRefreshController,
-  refreshAfter,
-  runMainEventSafely,
-  synchronizeHabitatStartup
-} from './habitat/habitat-main-lifecycle';
+  createTrayRefreshController
+} from './lifecycle/main-lifecycle';
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
 import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
@@ -116,7 +97,6 @@ import {
   createCharacterQuickSwitchCommand,
   createLoadBeforePublishWindow,
   createPetVisibilityCommand,
-  createVerifiedDirectoryOpener,
   createWindowCommandController
 } from './windows/window-commands';
 import {
@@ -145,100 +125,6 @@ const EXPLORER_SPACE_RESOURCE_NAMES = [
   'explorer-space-bridge.ps1',
   'explorer-space-shell-tab-helper.cs'
 ] as const;
-
-function sameMainE2ePath(left: string, right: string): boolean {
-  const normalizeForComparison = (value: string) => process.platform === 'win32'
-    ? normalize(value).toLocaleLowerCase('en-US')
-    : normalize(value);
-  return normalizeForComparison(left) === normalizeForComparison(right);
-}
-
-/**
- * E2E 目录策略只认可启动边界已规范化的唯一目录；令牌文件不能提交路径，
- * Renderer 也只能收到脱敏后的公开目录记录。
- */
-function createMainE2eHabitatDirectoryPolicy(expectedPath: string) {
-  const inspectOnce = async (): Promise<Pick<HabitatDirectoryRecord, 'absolutePath' | 'identity'>> => {
-    const [physicalPath, entry, target] = await Promise.all([
-      realpath(expectedPath),
-      lstat(expectedPath, { bigint: true }),
-      stat(expectedPath, { bigint: true })
-    ]);
-    if (
-      !sameMainE2ePath(physicalPath, expectedPath)
-      || entry.isSymbolicLink()
-      || !entry.isDirectory()
-      || !target.isDirectory()
-      || entry.dev !== target.dev
-      || entry.ino !== target.ino
-      || entry.dev < 0n
-      || entry.ino < 0n
-    ) throw new Error('HABITAT_DIRECTORY_UNSAFE');
-    return {
-      absolutePath: physicalPath,
-      identity: { dev: entry.dev.toString(), ino: entry.ino.toString() }
-    };
-  };
-  const inspect = async (): Promise<Pick<HabitatDirectoryRecord, 'absolutePath' | 'identity'>> => {
-    const first = await inspectOnce();
-    const second = await inspectOnce();
-    if (
-      !sameMainE2ePath(first.absolutePath, second.absolutePath)
-      || first.identity.dev !== second.identity.dev
-      || first.identity.ino !== second.identity.ino
-    ) throw new Error('HABITAT_DIRECTORY_CHANGED');
-    return second;
-  };
-
-  return {
-    async authorize(
-      selectedPath: string,
-      existingDirectories: readonly HabitatDirectoryRecord[] = []
-    ): Promise<HabitatDirectoryRecord> {
-      if (!sameMainE2ePath(selectedPath, expectedPath)) {
-        throw new Error('HABITAT_DIRECTORY_UNSAFE');
-      }
-      const inspected = await inspect();
-      if (existingDirectories.some(directory => (
-        sameMainE2ePath(directory.absolutePath, inspected.absolutePath)
-        && directory.identity.dev === inspected.identity.dev
-        && directory.identity.ino === inspected.identity.ino
-      ))) throw new Error('HABITAT_DIRECTORY_DUPLICATE');
-      if (existingDirectories.some(directory => (
-        sameMainE2ePath(directory.absolutePath, inspected.absolutePath)
-        || (
-          directory.identity.dev === inspected.identity.dev
-          && directory.identity.ino === inspected.identity.ino
-        )
-      ))) throw new Error('HABITAT_DIRECTORY_IDENTITY_CONFLICT');
-      const displayName = basename(inspected.absolutePath);
-      return {
-        id: 'e2e-habitat-directory',
-        displayName,
-        pathHint: displayName,
-        ...inspected,
-        enabled: true
-      };
-    },
-    async availability(
-      directory: HabitatDirectoryRecord
-    ): Promise<HabitatDirectoryAvailability> {
-      try {
-        if (
-          directory.id !== 'e2e-habitat-directory'
-          || !sameMainE2ePath(directory.absolutePath, expectedPath)
-        ) return 'unavailable';
-        const inspected = await inspect();
-        return directory.identity.dev === inspected.identity.dev
-          && directory.identity.ino === inspected.identity.ino
-          ? 'available'
-          : 'unavailable';
-      } catch {
-        return 'unavailable';
-      }
-    }
-  };
-}
 
 /** 生产桥只信任固定清单中的两个逐文件 SHA-256，任何缺失或多余项都失败关闭。 */
 async function verifyExplorerSpaceResourceIntegrity(resourceRoot: string): Promise<void> {
@@ -360,11 +246,8 @@ async function createApplicationWindows(
   let chat = createChatWindow(BrowserWindow, preload);
   let settings = createSettingsWindow(BrowserWindow, preload);
 
-  // 阶段一：窗口保持隐藏，先恢复 Habitat 稳定事实并准备受信桥接边界。
+  // Explorer 桥接只提供窗口事实，桌宠可见性始终由普通窗口流程管理。
   const storageDirectory = app.getPath('userData');
-  const habitatStore = new PetHabitatStore(join(storageDirectory, 'pet-habitat.json'));
-  let habitatSnapshot = await habitatStore.load();
-  const explorerRelay = createExplorerObservationRelay<HabitatExplorerObservation>();
   const e2eExplorer = e2eBoundary
     ? createMainE2eExplorerBridge({
         eventFile: e2eBoundary.explorerEventFile,
@@ -427,12 +310,28 @@ async function createApplicationWindows(
         verify: () => verifyExplorerSpaceResourceIntegrity(explorerResourceRoot),
         explorer
       });
-  startupCleanup.add(() => explorerPort.close());
-  let latestExplorerObservation: ExplorerSnapshot | null = null;
+  const explorerLayer = e2eBoundary
+    ? {
+        async activate({ explorerHwnd }: { explorerHwnd: string }): Promise<void> {
+          if (explorerHwnd !== '9002') throw new Error('E2E_EXPLORER_LAYER_UNSAFE');
+        },
+        async dispose(): Promise<void> {}
+      }
+    : new ExplorerWindowLayerController({ window: pet });
+  const explorerCoordinator = new ExplorerPetLayerCoordinator({
+    layer: explorerLayer,
+    reportError: code => console.error('调整 Explorer 图层失败。', code)
+  });
+  const explorerComposition = createExplorerMainComposition({
+    bridge: explorerPort,
+    coordinator: explorerCoordinator,
+    showPet: () => pet.showInactive(),
+    reportError: code => console.error('Explorer 桥接不可用。', code)
+  });
+  startupCleanup.add(() => explorerComposition.close());
   let latestExplorerHandling = Promise.resolve();
   explorer.on('snapshot', observation => {
-    latestExplorerObservation = observation as ExplorerSnapshot;
-    const handling = explorerRelay.accept(observation as ExplorerSnapshot);
+    const handling = explorerComposition.onExplorerSnapshot(observation as ExplorerSnapshot);
     latestExplorerHandling = handling.catch(() => undefined);
     void handling.then(
       () => {
@@ -440,19 +339,18 @@ async function createApplicationWindows(
         return publishMainE2eState();
       },
       () => {
-        console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED');
+        console.error('处理 Explorer 观察失败。', 'EXPLORER_BRIDGE_FAILED');
       }
     );
   });
   explorer.on('error', error => {
-    latestExplorerObservation = null;
-    void explorerRelay.accept(new Error('HABITAT_OBSERVER_FAILED')).then(
+    void explorerComposition.onExplorerError(error).then(
       () => {
         completeMainE2eObservation(error);
         return publishMainE2eState();
       },
       () => {
-        console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED');
+        console.error('处理 Explorer 观察失败。', 'EXPLORER_BRIDGE_FAILED');
       }
     );
   });
@@ -534,76 +432,21 @@ async function createApplicationWindows(
       .map(display => display.workArea)
   ];
   const petBounds = pet.getBounds();
-  // 阶段二：桌面与目录局部坐标共用同一持久化控制器，禁止跨模式迟到写入。
-  const restoredDesktopPosition = habitatSnapshot.location.kind === 'desktop'
-    ? habitatSnapshot.location.position
-    : habitatSnapshot.location.previousDesktopPosition;
+  // 桌宠只持久化普通桌面坐标，Explorer 图层调整不改变位置模型。
   const petPosition = restorePetPosition(
-    restoredDesktopPosition ?? (await settingsStore.getPublic()).petPosition,
+    (await settingsStore.getPublic()).petPosition,
     { width: petBounds.width, height: petBounds.height },
     workAreas
   );
-  const synchronizedHabitat = await synchronizeHabitatStartup({
-    initialSnapshot: habitatSnapshot,
-    restoredDesktopPosition: petPosition,
-    store: habitatStore,
-    window: { hide: () => pet.hide() },
-    explorer: explorerPort
-  });
-  habitatSnapshot = synchronizedHabitat.snapshot;
-  const restoredObserverActive = synchronizedHabitat.observerInitiallyActive;
-  if (habitatSnapshot.location.kind === 'desktop') {
-    const finalPosition = restorePetPosition(
-      habitatSnapshot.location.position ?? petPosition,
-      { width: petBounds.width, height: petBounds.height },
-      workAreas
-    );
-    pet.setPosition(finalPosition.x, finalPosition.y);
-  }
+  pet.setPosition(petPosition.x, petPosition.y);
   const reportPetPositionError = (error: unknown): void => {
     console.error('保存桌宠位置失败。', error);
   };
   const petPositionController = createPetPositionController({
     window: pet,
-    savePosition: async position => {
-      const current = await habitatStore.load();
-      if (current.location.kind === 'desktop') {
-        await habitatStore.updateLocation({
-          expected: current.location,
-          location: { kind: 'desktop', position }
-        });
-      }
-      await settingsStore.savePetPosition(position);
-    },
-    getLocalOffset: () => {
-      const observation = latestExplorerObservation;
-      if (!observation || observation.status !== 'ready') {
-        return habitatSnapshot.location.kind === 'folder'
-          ? habitatSnapshot.location.localOffset
-          : { x: 0, y: 0 };
-      }
-      const [x = 0, y = 0] = pet.getPosition();
-      return { x: x - observation.rect.x, y: y - observation.rect.y };
-    },
-    saveLocalOffset: async localOffset => {
-      const current = await habitatStore.load();
-      if (current.location.kind !== 'folder') return;
-      const folderLocation = current.location;
-      const expectedDirectory = current.directories.find(directory => (
-        directory.id === folderLocation.directoryId
-      ));
-      if (!expectedDirectory) return;
-      await habitatStore.updateLocation({
-        expected: folderLocation,
-        location: { ...folderLocation, localOffset },
-        expectedDirectory
-      });
-    },
+    savePosition: position => settingsStore.savePetPosition(position),
     onError: reportPetPositionError
   });
-  if (habitatSnapshot.location.kind === 'folder') {
-    petPositionController.setPersistenceMode('folder');
-  }
   const characterMotion = new CharacterMotionService({
     window: pet,
     getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea)
@@ -632,13 +475,6 @@ async function createApplicationWindows(
     motion: {
       beginUserMove: () => {
         activeAgentService?.invalidateFileTaskPlaybackGrant();
-        void runMainEventSafely(
-          async () => {
-            await habitatService.handleUserInteraction();
-            await refreshTray();
-          },
-          code => console.error('处理 Habitat 交互失败。', code)
-        );
         characterBehavior.handleUserInteraction();
         characterMotion.beginUserMove();
       },
@@ -650,161 +486,6 @@ async function createApplicationWindows(
     petWindowInteraction
   );
   const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion);
-  // 阶段三：既有窗口、目录身份与桥接服务在 Main 组合根内收口为唯一状态机。
-  const explorerLayer = e2eBoundary
-    ? {
-        // E2E 只认可 fake bridge 内部生成的固定句柄，不调用真实窗口相邻层 API。
-        async activate({ explorerHwnd }: { explorerHwnd: string }): Promise<void> {
-          if (explorerHwnd !== '9002') throw new Error('E2E_EXPLORER_LAYER_UNSAFE');
-        },
-        async dispose(): Promise<void> {}
-      }
-    : new ExplorerWindowLayerController({ window: pet });
-  const habitatWindowController = new HabitatWindowController({
-    window: pet,
-    layer: explorerLayer,
-    motion: characterMotion,
-    interaction: petWindowInteraction,
-    position: petPositionController,
-    getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea),
-    isCurrentExplorerWindow: (explorerHwnd, instanceId) => {
-      const observation = latestExplorerObservation;
-      return observation?.status === 'ready'
-        && observation.hwnd === explorerHwnd
-        && observation.instanceId === instanceId
-        && observation.foreground
-        && !observation.minimized;
-    }
-  });
-  startupCleanup.add(() => habitatWindowController.dispose());
-  const habitatDirectoryPolicy = e2eBoundary
-    ? createMainE2eHabitatDirectoryPolicy(e2eBoundary.habitatDirectory)
-    : new HabitatDirectoryPolicy({
-        userDataPath: storageDirectory,
-        characterStoragePath: charactersDirectory
-      });
-  const folderIdentityResolver = new FolderIdentityResolver(habitatStore);
-  let currentAgentPhase = 'idle';
-  let currentProactivityMode: 'passive' | 'assistive' | 'autonomous' = 'assistive';
-  let readStableHabitatState = (): 'desktop' | 'folder-hidden' | 'folder-visible' | 'folder-lost' => (
-    habitatSnapshot.location.kind === 'desktop' ? 'desktop' : 'folder-hidden'
-  );
-  const visibilityGate = createStartupVisibilityGate({
-    window: {
-      isVisible: () => pet.isVisible(),
-      hide: () => pet.hide(),
-      show: () => pet.showInactive()
-    },
-    readState: () => readStableHabitatState()
-  });
-  const foregroundFullscreen = createForegroundFullscreenBlocker(
-    e2eBoundary
-      ? createForegroundFullscreenProbe({
-          platform: 'win32',
-          runFixedProbe: () => Promise.resolve('0')
-        })
-      : createForegroundFullscreenProbe()
-  );
-  // E2E 不调用 PowerShell/Win32 探针，并在接收目录命令前固定完成一次非全屏采样。
-  if (e2eBoundary) await foregroundFullscreen.sampleIfEligible(true);
-  startupCleanup.add(() => foregroundFullscreen.close());
-  const habitatService = new HabitatService({
-    initialSnapshot: habitatSnapshot,
-    observerInitiallyActive: restoredObserverActive,
-    store: habitatStore,
-    directoryPolicy: habitatDirectoryPolicy,
-    identityResolver: folderIdentityResolver,
-    explorer: explorerPort,
-    habitatWindow: {
-      activate: async ({ explorerHwnd }) => {
-        const observation = latestExplorerObservation;
-        const current = await habitatStore.load();
-        if (
-          !observation
-          || observation.status !== 'ready'
-          || observation.hwnd !== explorerHwnd
-          || current.location.kind !== 'folder'
-        ) throw new Error('HABITAT_EXPLORER_UNSAFE');
-        await habitatWindowController.showFolder({
-          instanceId: observation.instanceId,
-          sequence: observation.sequence,
-          explorerHwnd,
-          explorerBounds: observation.rect,
-          observedAt: Date.now(),
-          foreground: observation.foreground,
-          minimized: observation.minimized,
-          localOffset: current.location.localOffset
-        });
-      },
-      invalidate: reason => reason === 'leave'
-        ? habitatWindowController.hideFolder()
-        : habitatWindowController.loseExplorer(reason)
-    },
-    petWindow: {
-      getPosition: () => {
-        const [x = 0, y = 0] = pet.getPosition();
-        return { x, y };
-      },
-      getLocalOffset: () => {
-        const observation = latestExplorerObservation;
-        const [x = 0, y = 0] = pet.getPosition();
-        return observation?.status === 'ready'
-          ? { x: x - observation.rect.x, y: y - observation.rect.y }
-          : { x: 0, y: 0 };
-      },
-      setPosition: (x, y) => pet.setPosition(x, y),
-      hide: () => visibilityGate.hide(),
-      show: () => visibilityGate.show(),
-      focus: () => pet.focus()
-    },
-    openDirectory: e2eBoundary
-      ? async ({ directory, signal }) => {
-          if (
-            signal.aborted
-            || directory.id !== 'e2e-habitat-directory'
-            || !sameMainE2ePath(directory.absolutePath, e2eBoundary.habitatDirectory)
-          ) throw new Error('HABITAT_SUMMON_FAILED');
-        }
-      : createVerifiedDirectoryOpener(path => shell.openPath(path)),
-    readBlockers: () => ({
-      fileTaskActive: ['listening', 'thinking', 'awaiting_confirmation', 'acting']
-        .includes(currentAgentPhase),
-      characterSwitching: characterSwitching.current(),
-      dragging: petWindowInteraction.getProbe().dragging,
-      chatInteracting: chat.isFocused(),
-      appQuitting: isQuitting,
-      foregroundFullscreen: foregroundFullscreen.current(),
-      proactivityMode: currentProactivityMode
-    }),
-    readExplorerAuthority: () => {
-      const observation = latestExplorerObservation;
-      return observation
-        ? {
-            nonce: observation.nonce,
-            revision: observation.sequence,
-            instanceId: observation.status === 'ready' ? observation.instanceId : null
-          }
-        : { nonce: '', revision: 0, instanceId: null };
-    }
-  });
-  startupCleanup.add(() => habitatService.close());
-  readStableHabitatState = () => {
-    const state = habitatService.snapshot().state;
-    if (
-      state === 'desktop'
-      || state === 'folder-hidden'
-      || state === 'folder-visible'
-      || state === 'folder-lost'
-    ) return state;
-    return habitatService.snapshot().directoryId === null ? 'desktop' : 'folder-hidden';
-  };
-  const consumeExplorerObservation = async (
-    observation: HabitatExplorerObservation
-  ): Promise<void> => {
-    await habitatService.observeExplorer(observation)
-      .catch(() => console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED'));
-    await refreshTray();
-  };
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),
     applyPlaybackFeedback: feedback => {
@@ -886,24 +567,14 @@ async function createApplicationWindows(
     prepare: window => workshopCloseHandshake.bindWindow(window, () => isQuitting),
     load: window => loadRenderer(window, 'characters')
   });
-  let habitatAutonomyTimer: ReturnType<typeof setInterval> | undefined;
-  const stopHabitatAutonomyTimer = (): void => {
-    if (habitatAutonomyTimer === undefined) return;
-    clearInterval(habitatAutonomyTimer);
-    habitatAutonomyTimer = undefined;
-  };
-  let habitatShutdownStarted = false;
+  let shutdownStarted = false;
   // 退出事务严格串行，单点失败记录后仍继续释放后续资源。
   const shutdownApplication = async (): Promise<void> => {
-    if (habitatShutdownStarted) return;
-    habitatShutdownStarted = true;
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     const errors: unknown[] = [];
-    stopHabitatAutonomyTimer();
-    try { await foregroundFullscreen.close(); } catch (error) { errors.push(error); }
+    try { await explorerComposition.close(); } catch (error) { errors.push(error); }
     try { await petPositionController.freezeAndFlush(); } catch (error) { errors.push(error); }
-    try { await habitatService.close(); } catch (error) { errors.push(error); }
-    try { await habitatWindowController.dispose(); } catch (error) { errors.push(error); }
-    try { await explorerPort.close(); } catch (error) { errors.push(error); }
     try {
       await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent());
     } catch (error) {
@@ -911,7 +582,7 @@ async function createApplicationWindows(
     }
     try { await desktopSettingsService.close(); } catch (error) { errors.push(error); }
     releaseCharacterRuntime();
-    if (errors.length > 0) throw new AggregateError(errors, 'HABITAT_SHUTDOWN_INCOMPLETE');
+    if (errors.length > 0) throw new AggregateError(errors, 'APPLICATION_SHUTDOWN_INCOMPLETE');
   };
   const quitApplication = (): void => app.quit();
   const e2eCharacterDialogs = e2eBoundary
@@ -1142,14 +813,6 @@ async function createApplicationWindows(
       };
     },
     emit: (event: TaskEvent) => {
-      if (event.type === 'phase') currentAgentPhase = event.phase;
-      void runMainEventSafely(
-        async () => {
-          await habitatService.handleTaskEvent(event);
-          await refreshTray();
-        },
-        code => console.error('处理 Habitat 任务事件失败。', code)
-      );
       characterBehavior.handleTaskEvent(event);
       for (const window of [
         pet,
@@ -1194,57 +857,6 @@ async function createApplicationWindows(
     onConfigurationChanged: () => agentService.clearPending('provider_changed')
   });
 
-  const habitatAutonomy = new HabitatAutonomyPolicy({
-    enterDirectory: (directoryId, reason) => refreshAfter(
-      () => habitatService.enterDirectory(directoryId, reason),
-      refreshTray
-    ),
-    recallToDesktop: () => refreshAfter(() => habitatService.recallToDesktop(), refreshTray),
-    recordFailure: code => console.error('自动藏身失败。', code),
-    now: Date.now,
-    random: Math.random,
-    cooldownMs: 60_000
-  });
-  // 自动策略只读取 Main 已有状态；定时器必须在 Habitat 关闭前停止。
-  habitatAutonomyTimer = setInterval(() => {
-    void Promise.all([
-      habitatStore.load(),
-      settingsStore.getPrivacySettings()
-    ])
-      .then(async ([snapshot, privacy]) => {
-        currentProactivityMode = privacy.proactivityMode;
-        const serviceState = habitatService.snapshot().state;
-        const habitatState = serviceState === 'desktop'
-          || serviceState === 'folder-hidden'
-          || serviceState === 'folder-visible'
-          || serviceState === 'folder-lost'
-          ? serviceState
-          : 'folder-hidden';
-        const idle = powerMonitor.getSystemIdleTime() > 0;
-        const cheapBlockers = {
-          taskActive: ['listening', 'thinking', 'acting'].includes(currentAgentPhase),
-          confirmationPending: currentAgentPhase === 'awaiting_confirmation',
-          chatInteracting: chat.isFocused(),
-          dragging: petWindowInteraction.getProbe().dragging,
-          characterSwitching: characterSwitching.current(),
-          appQuitting: isQuitting,
-          bridgeDegraded: explorer.snapshot().state === 'failed'
-        };
-        return habitatAutonomy.tick({
-          snapshot,
-          proactivityMode: currentProactivityMode,
-          idle,
-          habitatState,
-          blockers: {
-            ...cheapBlockers,
-            foregroundFullscreen: false
-          }
-        }, () => foregroundFullscreen.sampleIfEligible(true));
-      })
-      .catch(error => console.error('自动藏身调度失败。', error));
-  }, 500);
-  startupCleanup.add(stopHabitatAutonomyTimer);
-
   await Promise.all([
     loadRenderer(pet, 'pet'),
     loadRenderer(chat, 'chat'),
@@ -1252,8 +864,7 @@ async function createApplicationWindows(
     ensureCharacterWorkshopWindow()
   ]);
   await characterBehavior.initialize();
-  visibilityGate.markReady();
-  await explorerRelay.attach(consumeExplorerObservation);
+  await explorerComposition.start();
   if (!applicationQuit.activateNormal(shutdownApplication)) return;
   startupCleanup.dismiss();
   } finally {
@@ -1268,7 +879,7 @@ if (isPrimaryInstance) {
   const applicationQuit = createApplicationQuitCoordinator({
     cleanupBootstrap: () => startupCleanup.run(),
     quit: () => app.quit(),
-    onError: () => console.error('应用关闭失败。', 'HABITAT_SHUTDOWN_INCOMPLETE')
+    onError: () => console.error('应用关闭失败。', 'APPLICATION_SHUTDOWN_INCOMPLETE')
   });
   // 首个窗口资源创建前即接管退出；成功启动后同一入口原子切换到完整关闭事务。
   app.on('before-quit', event => {
