@@ -49,8 +49,8 @@ describe('HabitatDirectoryPolicy', () => {
 
     expect(record.id).toMatch(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/u);
     expect(record.absolutePath).toBe(await realpath(target));
-    expect(record.identity.dev).toBeTypeOf('number');
-    expect(record.identity.ino).toBeTypeOf('number');
+    expect(record.identity.dev).toMatch(/^(?:0|[1-9]\d*)$/u);
+    expect(record.identity.ino).toMatch(/^(?:0|[1-9]\d*)$/u);
     expect(Array.from(record.displayName)).toHaveLength(80);
     expect(Array.from(record.pathHint)).toHaveLength(80);
     expect(record.pathHint).not.toContain(dirname(target));

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { BigIntStats } from 'node:fs';
 import { lstat, mkdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { dirname, win32 } from 'node:path';
 import { z } from 'zod';
@@ -50,9 +51,14 @@ const coordinateSchema = z.object({
   x: z.number().finite(),
   y: z.number().finite()
 }).strict();
+const decimalIdentityPartSchema = z.string().regex(/^(?:0|[1-9]\d*)$/u);
 const directoryIdentitySchema = z.object({
-  dev: z.number().finite().int().nonnegative(),
-  ino: z.number().finite().int().nonnegative()
+  dev: decimalIdentityPartSchema,
+  ino: decimalIdentityPartSchema
+}).strict();
+const legacyDirectoryIdentitySchema = z.object({
+  dev: z.number().safe().int().nonnegative(),
+  ino: z.number().safe().int().nonnegative()
 }).strict();
 
 export const habitatDirectoryRecordSchema = z.object({
@@ -64,6 +70,10 @@ export const habitatDirectoryRecordSchema = z.object({
   enabled: z.boolean()
 }).strict();
 export type HabitatDirectoryRecord = z.infer<typeof habitatDirectoryRecordSchema>;
+
+const legacyHabitatDirectoryRecordSchema = habitatDirectoryRecordSchema.extend({
+  identity: legacyDirectoryIdentitySchema
+});
 
 const habitatPreferencesSchema = z.object({
   enabled: z.boolean().default(false),
@@ -113,6 +123,13 @@ export const petHabitatSnapshotSchema = z.object({
 });
 export type PetHabitatSnapshot = z.input<typeof petHabitatSnapshotSchema>;
 
+const legacyPetHabitatSnapshotSchema = z.object({
+  version: z.literal(1),
+  preferences: habitatPreferencesSchema,
+  directories: z.array(legacyHabitatDirectoryRecordSchema).max(128),
+  location: habitatLocationSchema
+}).strict();
+
 export type HabitatDirectoryAvailability = 'available' | 'unavailable';
 
 export interface RendererHabitatSnapshot {
@@ -145,13 +162,13 @@ export const DEFAULT_HABITAT_SNAPSHOT: PetHabitatSnapshot = {
 
 interface ParentIdentity {
   physicalPath: string;
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
 }
 
 interface FileIdentity {
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
 }
 
 export type HabitatStoreCheckpoint = 'before-commit';
@@ -220,6 +237,29 @@ function sameParent(left: ParentIdentity, right: ParentIdentity): boolean {
 
 function sameFile(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameDirectoryIdentity(
+  left: HabitatDirectoryRecord['identity'],
+  right: HabitatDirectoryRecord['identity']
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function migrateLegacySnapshot(input: unknown): PetHabitatSnapshot | undefined {
+  const legacy = legacyPetHabitatSnapshotSchema.safeParse(input);
+  if (!legacy.success) return undefined;
+  const migrated = petHabitatSnapshotSchema.safeParse({
+    ...legacy.data,
+    directories: legacy.data.directories.map(directory => ({
+      ...directory,
+      identity: {
+        dev: String(directory.identity.dev),
+        ino: String(directory.identity.ino)
+      }
+    }))
+  });
+  return migrated.success ? migrated.data : undefined;
 }
 
 function samePrivatePath(left: string, right: string): boolean {
@@ -347,7 +387,7 @@ export class PetHabitatStore {
         const snapshot = await this.loadUnsafe();
         for (const existing of snapshot.directories) {
           const pathMatches = samePrivatePath(existing.absolutePath, directory.absolutePath);
-          const identityMatches = sameFile(existing.identity, directory.identity);
+          const identityMatches = sameDirectoryIdentity(existing.identity, directory.identity);
           if (pathMatches && identityMatches) return 'duplicate';
           if (existing.id === directory.id || pathMatches || identityMatches) return 'conflict';
         }
@@ -440,7 +480,7 @@ export class PetHabitatStore {
         const current = snapshot.directories[index]!;
         if (
           !current.enabled
-          || !sameFile(current.identity, parsedInput.expectedIdentity)
+          || !sameDirectoryIdentity(current.identity, parsedInput.expectedIdentity)
         ) return 'missing';
         if (!samePrivatePath(current.absolutePath, parsedInput.expectedAbsolutePath)) {
           return 'conflict';
@@ -449,7 +489,7 @@ export class PetHabitatStore {
         const conflicts = snapshot.directories.some((directory, otherIndex) => (
           otherIndex !== index
           && (
-            sameFile(directory.identity, parsedInput.expectedIdentity)
+            sameDirectoryIdentity(directory.identity, parsedInput.expectedIdentity)
             || samePrivatePath(directory.absolutePath, parsedInput.absolutePath)
           )
         ));
@@ -490,7 +530,7 @@ export class PetHabitatStore {
             || parsedInput.location.directoryId !== expectedDirectory.id
             || current === undefined
             || !current.enabled
-            || !sameFile(current.identity, expectedDirectory.identity)
+            || !sameDirectoryIdentity(current.identity, expectedDirectory.identity)
             || !samePrivatePath(current.absolutePath, expectedDirectory.absolutePath)
           ) {
             return { status: 'conflict', snapshot };
@@ -529,9 +569,9 @@ export class PetHabitatStore {
   }
 
   private async loadUnsafe(): Promise<PetHabitatSnapshot> {
-    let fileInformation: Awaited<ReturnType<typeof lstat>>;
+    let fileInformation: BigIntStats;
     try {
-      fileInformation = await lstat(this.file);
+      fileInformation = await lstat(this.file, { bigint: true });
     } catch (error) {
       if (isMissingFile(error)) return cloneSnapshot(DEFAULT_HABITAT_SNAPSHOT);
       throw error;
@@ -541,7 +581,7 @@ export class PetHabitatStore {
     if (
       fileInformation.isSymbolicLink()
       || !fileInformation.isFile()
-      || fileInformation.size > MAX_STORE_BYTES
+      || fileInformation.size > BigInt(MAX_STORE_BYTES)
     ) {
       return this.quarantine(parentBefore);
     }
@@ -553,11 +593,13 @@ export class PetHabitatStore {
       return this.quarantine(parentBefore);
     }
     const validated = petHabitatSnapshotSchema.safeParse(parsed);
-    if (!validated.success) return this.quarantine(parentBefore);
+    const snapshot = validated.success ? validated.data : migrateLegacySnapshot(parsed);
+    if (snapshot === undefined) return this.quarantine(parentBefore);
 
     const parentAfter = await this.captureParentIdentity();
     if (!sameParent(parentBefore, parentAfter)) throw new Error('HABITAT_STORAGE_CHANGED');
-    return cloneSnapshot(validated.data);
+    if (!validated.success) await this.writeSnapshot(snapshot);
+    return cloneSnapshot(snapshot);
   }
 
   private async quarantine(parentBefore: ParentIdentity): Promise<PetHabitatSnapshot> {
@@ -599,7 +641,7 @@ export class PetHabitatStore {
    * 暂存文件必须仍是本次写入创建的普通文件，避免提交或清理同名替代项。
    */
   private async captureStagedFileIdentity(stagedFile: string): Promise<FileIdentity> {
-    const entry = await lstat(stagedFile);
+    const entry = await lstat(stagedFile, { bigint: true });
     if (entry.isSymbolicLink() || !entry.isFile()) {
       throw new Error('HABITAT_STORAGE_CHANGED');
     }
@@ -628,8 +670,8 @@ export class PetHabitatStore {
   private async captureParentIdentity(): Promise<ParentIdentity> {
     const parent = dirname(this.file);
     const [entry, target, physicalPath] = await Promise.all([
-      lstat(parent),
-      stat(parent),
+      lstat(parent, { bigint: true }),
+      stat(parent, { bigint: true }),
       realpath(parent)
     ]);
     if (

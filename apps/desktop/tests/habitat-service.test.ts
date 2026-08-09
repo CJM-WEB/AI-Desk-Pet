@@ -46,7 +46,7 @@ function desktopSnapshot(): PetHabitatSnapshot {
       displayName: 'Project',
       pathHint: 'Project',
       absolutePath: 'C:\\Users\\pet\\Project',
-      identity: { dev: 7, ino: 11 },
+      identity: { dev: '7', ino: '11' },
       enabled: true
     }],
     location: { kind: 'desktop', position: DESKTOP_POSITION }
@@ -335,6 +335,22 @@ describe('HabitatService 权威状态机', () => {
     await harness.service.close();
 
     expect(harness.explorer.stopObserving).toHaveBeenCalledOnce();
+  });
+
+  test('fatal 观察事件立即清空观察记账，召回后可重新启动且不重复停止失效资源', async () => {
+    const harness = createHarness({
+      initialSnapshot: folderSnapshot(),
+      observerInitiallyActive: true
+    });
+
+    await harness.service.observeExplorer(new Error('BRIDGE_CRASHED'));
+    await harness.service.recallToDesktop();
+    await harness.service.enterDirectory('directory-1', 'manual');
+
+    expect(harness.service.snapshot().state).toBe('folder-hidden');
+    expect(harness.explorer.stopObserving).not.toHaveBeenCalled();
+    expect(harness.explorer.start).toHaveBeenCalledOnce();
+    expect(harness.explorer.startObserving).toHaveBeenCalledOnce();
   });
 
   test('enter 先复核目录与阻塞，再以条件 location 更新提交 folder，随后隐藏并观察', async () => {
@@ -1142,7 +1158,7 @@ describe('HabitatService 权威状态机', () => {
       displayName: 'Project B',
       pathHint: 'Project B',
       absolutePath: 'C:\\Users\\pet\\Project-B',
-      identity: { dev: 7, ino: 12 },
+      identity: { dev: '7', ino: '12' },
       enabled: true
     });
     next.location = {

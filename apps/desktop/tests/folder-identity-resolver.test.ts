@@ -19,7 +19,10 @@ async function createTemporaryDirectory(name: string): Promise<string> {
   return directory;
 }
 
-function snapshot(absolutePath: string, identity = { dev: 12, ino: 34 }): PetHabitatSnapshot {
+function snapshot(
+  absolutePath: string,
+  identity = { dev: '12', ino: '34' }
+): PetHabitatSnapshot {
   return {
     version: 1,
     preferences: { autoHideEnabled: true, idleDelayMs: 30_000 },
@@ -36,7 +39,7 @@ function snapshot(absolutePath: string, identity = { dev: 12, ino: 34 }): PetHab
 }
 
 function fakeStats(
-  identity: { dev: number; ino: number },
+  identity: { dev: bigint; ino: bigint },
   options: { symbolicLink?: boolean; directory?: boolean } = {}
 ): FolderIdentityStat {
   return {
@@ -49,11 +52,11 @@ function fakeStats(
 
 function fakeDependencies(input: {
   physicalPath: string;
-  identity?: { dev: number; ino: number };
+  identity?: { dev: bigint; ino: bigint };
   symbolicLink?: boolean;
   onCheckpoint?: FolderIdentityResolverDependencies['onCheckpoint'];
 }): FolderIdentityResolverDependencies {
-  const identity = input.identity ?? { dev: 12, ino: 34 };
+  const identity = input.identity ?? { dev: 12n, ino: 34n };
   const dependencies: FolderIdentityResolverDependencies = {
     realpathPath: vi.fn(async () => input.physicalPath),
     lstatPath: vi.fn(async () => fakeStats(
@@ -74,9 +77,9 @@ afterEach(async () => {
 
 describe('FolderIdentityResolver', () => {
   test.each([
-    ['上级目录', 'C:\\work', { dev: 12, ino: 33 }],
-    ['同名目录', 'D:\\other\\project', { dev: 99, ino: 34 }],
-    ['路径前缀', 'C:\\workspace\\project-copy', { dev: 12, ino: 35 }]
+    ['上级目录', 'C:\\work', { dev: 12n, ino: 33n }],
+    ['同名目录', 'D:\\other\\project', { dev: 99n, ino: 34n }],
+    ['路径前缀', 'C:\\workspace\\project-copy', { dev: 12n, ino: 35n }]
   ] as const)('%s 不能仅凭路径文本命中', async (_name, physicalPath, identity) => {
     const directory = await createTemporaryDirectory('ai-pet-folder-identity-negative-');
     const store = new PetHabitatStore(join(directory, 'private', 'habitat.json'));
@@ -114,7 +117,7 @@ describe('FolderIdentityResolver', () => {
     await store.save(snapshot(originalPath));
     const dependencies = fakeDependencies({
       physicalPath: originalPath,
-      identity: { dev: 12, ino: 99 }
+      identity: { dev: 12n, ino: 99n }
     });
 
     await expect(new FolderIdentityResolver(store, dependencies).resolve(originalPath))
@@ -161,8 +164,8 @@ describe('FolderIdentityResolver', () => {
     let sample = 0;
     const resolver = new FolderIdentityResolver(store, {
       realpathPath: async () => 'C:\\workspace\\new-name',
-      lstatPath: async () => fakeStats(sample++ === 0 ? { dev: 12, ino: 34 } : { dev: 12, ino: 35 }),
-      statPath: async () => fakeStats(sample <= 1 ? { dev: 12, ino: 34 } : { dev: 12, ino: 35 })
+      lstatPath: async () => fakeStats(sample++ === 0 ? { dev: 12n, ino: 34n } : { dev: 12n, ino: 35n }),
+      statPath: async () => fakeStats(sample <= 1 ? { dev: 12n, ino: 34n } : { dev: 12n, ino: 35n })
     });
 
     await expect(resolver.resolve('C:\\workspace\\new-name'))
@@ -277,7 +280,7 @@ describe('FolderIdentityResolver', () => {
 
     await expect(store.updateDirectoryPath({
       directoryId: 'directory-1',
-      expectedIdentity: { dev: 12, ino: 34 },
+      expectedIdentity: { dev: '12', ino: '34' },
       expectedAbsolutePath: 'C:\\workspace\\old-name',
       absolutePath: 'C:\\workspace\\new-name'
     })).resolves.toBe('missing');

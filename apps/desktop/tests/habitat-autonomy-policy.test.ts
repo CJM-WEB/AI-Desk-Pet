@@ -72,7 +72,7 @@ function enabledSnapshot(): PetHabitatSnapshot {
       displayName: '目录 A',
       pathHint: 'A',
       absolutePath: 'C:\\Private\\A',
-      identity: { dev: 1, ino: 1 },
+      identity: { dev: '1', ino: '1' },
       enabled: true
     }]
   });

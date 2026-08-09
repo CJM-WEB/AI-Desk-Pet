@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { appendFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
@@ -213,6 +213,7 @@ export interface ElectronAppFixture {
   readonly characterExportDestination?: string;
   readonly logs: readonly string[];
   sendExplorerEvent(event: MainE2eExplorerEvent): Promise<void>;
+  getMainE2eState(): Promise<MainE2eState>;
   getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
   getCharacterBehaviorProbe(): Promise<{
     revision: number;
@@ -244,7 +245,23 @@ export type MainE2eExplorerEvent =
   | 'exact-foreground'
   | 'minimized'
   | 'blurred'
+  | 'tray-summon'
   | 'crash';
+
+export interface MainE2eState {
+  revision: number;
+  petWindowVisible: boolean;
+  processedExplorerEventRevision: number;
+  processedExplorerEvent: MainE2eExplorerEvent | null;
+  traySummonState: 'idle' | 'pending' | 'visible' | 'timeout';
+  bridge: {
+    state: 'idle' | 'ready' | 'failed' | 'closed';
+    observing: boolean;
+    polling: boolean;
+    childProcessCount: number;
+    eventRevision: number;
+  };
+}
 
 const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
   'wrong-directory',
@@ -254,6 +271,7 @@ const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
   'exact-foreground',
   'minimized',
   'blurred',
+  'tray-summon',
   'crash'
 ]);
 
@@ -1014,6 +1032,30 @@ export async function createElectronAppFixture(
         directories.userDataDirectory,
         event
       ),
+      async getMainE2eState() {
+        const parsed = JSON.parse(await readFile(
+          join(directories.userDataDirectory, 'main-e2e-state.json'),
+          'utf8'
+        )) as MainE2eState;
+        if (
+          !Number.isSafeInteger(parsed.revision)
+          || parsed.revision <= 0
+          || typeof parsed.petWindowVisible !== 'boolean'
+          || !Number.isSafeInteger(parsed.processedExplorerEventRevision)
+          || parsed.processedExplorerEventRevision < 0
+          || (parsed.processedExplorerEvent !== null
+            && !MAIN_E2E_EXPLORER_EVENTS.has(parsed.processedExplorerEvent))
+          || !new Set(['idle', 'pending', 'visible', 'timeout']).has(parsed.traySummonState)
+          || !parsed.bridge
+          || !new Set(['idle', 'ready', 'failed', 'closed']).has(parsed.bridge.state)
+          || typeof parsed.bridge.observing !== 'boolean'
+          || typeof parsed.bridge.polling !== 'boolean'
+          || parsed.bridge.childProcessCount !== 0
+          || !Number.isSafeInteger(parsed.bridge.eventRevision)
+          || parsed.bridge.eventRevision < 0
+        ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
+        return parsed;
+      },
       async getPetInteractionProbe() {
         if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
           throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');

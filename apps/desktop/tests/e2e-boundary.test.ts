@@ -1,8 +1,8 @@
 import { realpathSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 type BoundaryModule = {
   resolveMainE2eBoundary(options: {
@@ -14,13 +14,21 @@ type BoundaryModule = {
     authorizedRootDirectory: string;
     habitatDirectory: string;
     explorerEventFile: string;
+    mainStateFile: string;
     recycleBinDirectory: string;
   } | null;
   createMainE2eExplorerBridge(options: {
     eventFile: string;
     habitatDirectory: string;
     wrongDirectory: string;
+    pollIntervalMs?: number;
   }): {
+    on(event: 'snapshot', listener: (snapshot: {
+      sequence: number;
+      foreground?: boolean;
+      hwnd?: string;
+    }) => void): void;
+    snapshot(): { state: string; errorCode?: string };
     start(): Promise<void>;
     startObserving(): Promise<{ ok: true }>;
     stopObserving(): Promise<{ ok: true }>;
@@ -121,6 +129,7 @@ describe('Main E2E 安全边界', () => {
         realpathSync.native(userDataDirectory),
         'main-e2e-explorer-events'
       ),
+      mainStateFile: join(realpathSync.native(userDataDirectory), 'main-e2e-state.json'),
       recycleBinDirectory: realpathSync.native(recycleBinDirectory),
       characterAssetsDirectory: realpathSync.native(
         join(temporaryDirectory, 'character-assets')
@@ -174,6 +183,46 @@ describe('Main E2E 安全边界', () => {
     await expect(fake.startObserving()).resolves.toEqual({ ok: true });
     await expect(fake.stopObserving()).resolves.toEqual({ ok: true });
     await expect(fake.close()).resolves.toBeUndefined();
+  });
+
+  test('旧序列进入真实观察链且 fatal 后 fake 资源收敛为空闲', async () => {
+    const boundary = await loadBoundaryModule();
+    expect(boundary).not.toBeNull();
+    if (!boundary) return;
+    const eventFile = join(userDataDirectory, 'main-e2e-explorer-events');
+    const fake = boundary.createMainE2eExplorerBridge({
+      eventFile,
+      habitatDirectory,
+      wrongDirectory: authorizedRootDirectory,
+      pollIntervalMs: 1
+    }) as ReturnType<typeof boundary.createMainE2eExplorerBridge> & {
+      inspection(): {
+        state: string;
+        observing: boolean;
+        polling: boolean;
+        childProcessCount: number;
+      };
+    };
+    const snapshots: Array<{ sequence: number; foreground?: boolean; hwnd?: string }> = [];
+    fake.on('snapshot', snapshot => snapshots.push(snapshot));
+
+    await fake.start();
+    await fake.startObserving();
+    await appendFile(eventFile, 'stale-revision\ncrash\n', 'utf8');
+    await vi.waitFor(() => expect(fake.snapshot()).toMatchObject({ state: 'failed' }));
+
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]).toMatchObject({ foreground: true, hwnd: '9003' });
+    expect(snapshots[1]).toMatchObject({ foreground: true, hwnd: '9002' });
+    expect(snapshots[1]?.sequence).toBe(snapshots[0]?.sequence);
+    expect(fake.inspection()).toEqual({
+      state: 'failed',
+      observing: false,
+      polling: false,
+      childProcessCount: 0,
+      eventRevision: 2
+    });
+    await fake.close();
   });
 
   test.each([

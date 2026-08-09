@@ -44,16 +44,23 @@ export type HabitatDirectoryPolicyCheckpoint = 'after-first-inspection';
 
 export interface HabitatDirectoryPolicyDependencies {
   realpathPath?: (path: string) => Promise<string>;
-  lstatPath?: typeof lstat;
-  statPath?: typeof stat;
+  lstatPath?: (path: string) => Promise<DirectoryIdentityStat>;
+  statPath?: (path: string) => Promise<DirectoryIdentityStat>;
   inspectStorage?: (physicalPath: string) => Promise<HabitatStorageKind>;
   onCheckpoint?: (checkpoint: HabitatDirectoryPolicyCheckpoint) => Promise<void>;
 }
 
 interface DirectoryInspection {
   physicalPath: string;
-  dev: number;
-  ino: number;
+  dev: string;
+  ino: string;
+}
+
+interface DirectoryIdentityStat {
+  dev: bigint;
+  ino: bigint;
+  isSymbolicLink(): boolean;
+  isDirectory(): boolean;
 }
 
 function policyError(code: HabitatDirectoryPolicyErrorCode): Error {
@@ -76,15 +83,6 @@ function sameIdentity(
   right: Pick<DirectoryInspection, 'dev' | 'ino'>
 ): boolean {
   return left.dev === right.dev && left.ino === right.ino;
-}
-
-function isFiniteIdentity(identity: Pick<DirectoryInspection, 'dev' | 'ino'>): boolean {
-  return Number.isFinite(identity.dev)
-    && Number.isInteger(identity.dev)
-    && identity.dev >= 0
-    && Number.isFinite(identity.ino)
-    && Number.isInteger(identity.ino)
-    && identity.ino >= 0;
 }
 
 function isSameOrDescendant(candidate: string, root: string): boolean {
@@ -164,8 +162,8 @@ async function inspectWindowsStorage(physicalPath: string): Promise<HabitatStora
  */
 export class HabitatDirectoryPolicy {
   private readonly realpathPath: NonNullable<HabitatDirectoryPolicyDependencies['realpathPath']>;
-  private readonly lstatPath: typeof lstat;
-  private readonly statPath: typeof stat;
+  private readonly lstatPath: NonNullable<HabitatDirectoryPolicyDependencies['lstatPath']>;
+  private readonly statPath: NonNullable<HabitatDirectoryPolicyDependencies['statPath']>;
   private readonly inspectStorage: NonNullable<HabitatDirectoryPolicyDependencies['inspectStorage']>;
   private readonly onCheckpoint?: HabitatDirectoryPolicyDependencies['onCheckpoint'];
 
@@ -174,8 +172,8 @@ export class HabitatDirectoryPolicy {
     dependencies: HabitatDirectoryPolicyDependencies = {}
   ) {
     this.realpathPath = dependencies.realpathPath ?? realpath;
-    this.lstatPath = dependencies.lstatPath ?? lstat;
-    this.statPath = dependencies.statPath ?? stat;
+    this.lstatPath = dependencies.lstatPath ?? (path => lstat(path, { bigint: true }));
+    this.statPath = dependencies.statPath ?? (path => stat(path, { bigint: true }));
     this.inspectStorage = dependencies.inspectStorage ?? inspectWindowsStorage;
     this.onCheckpoint = dependencies.onCheckpoint;
   }
@@ -269,12 +267,15 @@ export class HabitatDirectoryPolicy {
       this.lstatPath(candidate),
       this.statPath(candidate)
     ]);
-    const identity = { dev: entry.dev, ino: entry.ino };
+    const identity = { dev: entry.dev.toString(), ino: entry.ino.toString() };
     if (
       entry.isSymbolicLink()
       || !entry.isDirectory()
       || !target.isDirectory()
-      || !isFiniteIdentity(identity)
+      || entry.dev < 0n
+      || entry.ino < 0n
+      || target.dev < 0n
+      || target.ino < 0n
       || entry.dev !== target.dev
       || entry.ino !== target.ino
     ) {

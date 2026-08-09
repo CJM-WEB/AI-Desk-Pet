@@ -237,6 +237,8 @@ export class HabitatService {
       || this.state === 'recalling'
     ) return;
     if (!(observation && !(observation instanceof Error) && observation.type === 'explorer-snapshot')) {
+      // fatal 事件表示底层观察资源已终止，先清空记账以允许召回后的新观察周期。
+      this.observerLifecycle = 'idle';
       const epoch = this.advanceEpoch();
       await this.conceal(epoch, 'explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
       return;

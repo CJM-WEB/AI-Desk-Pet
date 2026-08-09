@@ -25,7 +25,7 @@ function directoryRecord(absolutePath: string): HabitatDirectoryRecord {
     displayName: '项目空间',
     pathHint: 'project',
     absolutePath,
-    identity: { dev: 12, ino: 34 },
+    identity: { dev: '12', ino: '34' },
     enabled: true
   };
 }
@@ -56,6 +56,89 @@ afterEach(async () => {
 });
 
 describe('PetHabitatStore', () => {
+  test('大整数目录身份以规范十进制字符串无损往返且相邻值不碰撞', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-bigint-identity-');
+    const file = join(directory, 'private', 'habitat.json');
+    const snapshot = folderSnapshot(join(directory, 'first'));
+    snapshot.location = { kind: 'desktop', position: null };
+    snapshot.directories[0]!.identity = {
+      dev: '173504896',
+      ino: '9007199254740992'
+    } as never;
+    const store = new PetHabitatStore(file);
+
+    await store.save(snapshot);
+    await expect(store.addDirectory({
+      ...directoryRecord(join(directory, 'second')),
+      id: 'directory-2',
+      displayName: '第二空间',
+      pathHint: 'second',
+      identity: {
+        dev: '173504896',
+        ino: '9007199254740993'
+      }
+    } as never)).resolves.toBe('added');
+
+    const restored = await new PetHabitatStore(file).load();
+    expect(restored.directories.map(item => item.identity)).toEqual([
+      { dev: '173504896', ino: '9007199254740992' },
+      { dev: '173504896', ino: '9007199254740993' }
+    ]);
+    expect(JSON.parse(await readFile(file, 'utf8')).directories.map(
+      (item: { identity: unknown }) => item.identity
+    )).toEqual(restored.directories.map(item => item.identity));
+  });
+
+  test('旧 v1 安全整数身份迁移为规范十进制字符串并重写磁盘', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-safe-identity-migration-');
+    const privateDirectory = join(directory, 'private');
+    const file = join(privateDirectory, 'habitat.json');
+    const legacy = folderSnapshot(join(directory, 'project'));
+    legacy.directories[0]!.identity = { dev: 12, ino: 34 } as never;
+    await mkdir(privateDirectory);
+    await writeFile(file, JSON.stringify(legacy), 'utf8');
+
+    const restored = await new PetHabitatStore(file).load();
+
+    expect(restored.directories[0]?.identity).toEqual({ dev: '12', ino: '34' });
+    expect(JSON.parse(await readFile(file, 'utf8')).directories[0].identity).toEqual({
+      dev: '12',
+      ino: '34'
+    });
+  });
+
+  test('旧 v1 非安全整数身份失败关闭并要求重新授权', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-unsafe-identity-');
+    const privateDirectory = join(directory, 'private');
+    const file = join(privateDirectory, 'habitat.json');
+    const legacy = folderSnapshot(join(directory, 'project'));
+    legacy.directories[0]!.identity = {
+      dev: 12,
+      ino: 9_007_199_254_740_992
+    } as never;
+    await mkdir(privateDirectory);
+    await writeFile(file, JSON.stringify(legacy), 'utf8');
+
+    await expect(new PetHabitatStore(file).load()).resolves.toEqual(DEFAULT_HABITAT_SNAPSHOT);
+    expect((await readdir(privateDirectory)).filter(name => (
+      /^habitat\.json\.corrupt-/u.test(name)
+    ))).toHaveLength(1);
+  });
+
+  test.each([
+    { dev: '01', ino: '2' },
+    { dev: '-1', ino: '2' },
+    { dev: '1.5', ino: '2' },
+    { dev: '1', ino: ' 2' }
+  ])('直接保存拒绝非规范十进制身份 $dev/$ino', async identity => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-invalid-identity-');
+    const snapshot = folderSnapshot(join(directory, 'project'));
+    snapshot.directories[0]!.identity = identity as never;
+
+    await expect(new PetHabitatStore(join(directory, 'habitat.json')).save(snapshot))
+      .rejects.toThrow();
+  });
+
   test('缺失文件的功能总开关默认关闭', async () => {
     const directory = await createTemporaryDirectory('ai-pet-habitat-enabled-default-');
     const store = new PetHabitatStore(join(directory, 'private', 'habitat.json'));
@@ -112,7 +195,7 @@ describe('PetHabitatStore', () => {
     });
     const pathWrite = new PetHabitatStore(file).updateDirectoryPath({
       directoryId: 'directory-1',
-      expectedIdentity: { dev: 12, ino: 34 },
+      expectedIdentity: { dev: '12', ino: '34' },
       expectedAbsolutePath: join(directory, 'project-old'),
       absolutePath: join(directory, 'project-new')
     });
@@ -153,7 +236,7 @@ describe('PetHabitatStore', () => {
       id: 'directory-2',
       displayName: '第二空间',
       pathHint: 'second',
-      identity: { dev: 56, ino: 78 }
+      identity: { dev: '56', ino: '78' }
     });
     await new PetHabitatStore(file).save(initial);
 
@@ -166,7 +249,7 @@ describe('PetHabitatStore', () => {
       new PetHabitatStore(file).setDirectoryEnabled('directory-1', false),
       new PetHabitatStore(file).updateDirectoryPath({
         directoryId: 'directory-2',
-        expectedIdentity: { dev: 56, ino: 78 },
+        expectedIdentity: { dev: '56', ino: '78' },
         expectedAbsolutePath: join(directory, 'second-old'),
         absolutePath: join(directory, 'second-new')
       }),
@@ -175,7 +258,7 @@ describe('PetHabitatStore', () => {
         id: 'directory-3',
         displayName: '第三空间',
         pathHint: 'third',
-        identity: { dev: 90, ino: 91 }
+        identity: { dev: '90', ino: '91' }
       })
     ]);
     await new PetHabitatStore(file).removeDirectory('directory-1');
@@ -402,7 +485,7 @@ describe('PetHabitatStore', () => {
       previousDesktopPosition: { x: 120, y: 240 },
       localOffset: { x: 16, y: 24 }
     });
-    expect(restored.directories[0]?.identity).toEqual({ dev: 12, ino: 34 });
+    expect(restored.directories[0]?.identity).toEqual({ dev: '12', ino: '34' });
   });
 
   test('目录公开名称与 pathHint 按 Unicode 码点允许 41 个 emoji', async () => {

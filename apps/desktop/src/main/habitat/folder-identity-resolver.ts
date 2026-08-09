@@ -7,14 +7,14 @@ import {
 
 interface FolderInspection {
   physicalPath: string;
-  identity: { dev: number; ino: number };
+  identity: HabitatDirectoryRecord['identity'];
 }
 
 export type FolderIdentityResolverCheckpoint = 'after-first-inspection';
 
 export interface FolderIdentityStat {
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
   isSymbolicLink(): boolean;
   isDirectory(): boolean;
 }
@@ -44,15 +44,6 @@ function sameIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-function isValidIdentity(identity: HabitatDirectoryRecord['identity']): boolean {
-  return Number.isFinite(identity.dev)
-    && Number.isInteger(identity.dev)
-    && identity.dev >= 0
-    && Number.isFinite(identity.ino)
-    && Number.isInteger(identity.ino)
-    && identity.ino >= 0;
-}
-
 /**
  * 只复核给定候选路径，不枚举目录，也不搜索任何相似路径。
  */
@@ -67,8 +58,8 @@ export class FolderIdentityResolver {
     dependencies: FolderIdentityResolverDependencies = {}
   ) {
     this.realpathPath = dependencies.realpathPath ?? realpath;
-    this.lstatPath = dependencies.lstatPath ?? lstat;
-    this.statPath = dependencies.statPath ?? stat;
+    this.lstatPath = dependencies.lstatPath ?? (path => lstat(path, { bigint: true }));
+    this.statPath = dependencies.statPath ?? (path => stat(path, { bigint: true }));
     this.onCheckpoint = dependencies.onCheckpoint;
   }
 
@@ -124,7 +115,7 @@ export class FolderIdentityResolver {
       this.lstatPath(candidatePath),
       this.statPath(candidatePath)
     ]);
-    const identity = { dev: entry.dev, ino: entry.ino };
+    const identity = { dev: entry.dev.toString(), ino: entry.ino.toString() };
     if (
       typeof physicalPath !== 'string'
       || physicalPath.length === 0
@@ -133,7 +124,10 @@ export class FolderIdentityResolver {
       || entry.isSymbolicLink()
       || !entry.isDirectory()
       || !target.isDirectory()
-      || !isValidIdentity(identity)
+      || entry.dev < 0n
+      || entry.ino < 0n
+      || target.dev < 0n
+      || target.ino < 0n
       || entry.dev !== target.dev
       || entry.ino !== target.ino
     ) return undefined;

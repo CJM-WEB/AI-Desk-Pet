@@ -145,8 +145,23 @@ type ElectronFixtureModule = {
     logs: readonly string[];
     sendExplorerEvent(
       event: 'wrong-directory' | 'stale-revision' | 'background-window'
-        | 'ambiguous' | 'exact-foreground' | 'minimized' | 'blurred' | 'crash'
+        | 'ambiguous' | 'exact-foreground' | 'minimized' | 'blurred' | 'tray-summon'
+        | 'crash'
     ): Promise<void>;
+    getMainE2eState(): Promise<{
+      revision: number;
+      petWindowVisible: boolean;
+      processedExplorerEventRevision: number;
+      processedExplorerEvent: string | null;
+      traySummonState: 'idle' | 'pending' | 'visible' | 'timeout';
+      bridge: {
+        state: 'idle' | 'ready' | 'failed' | 'closed';
+        observing: boolean;
+        polling: boolean;
+        childProcessCount: number;
+        eventRevision: number;
+      };
+    }>;
     getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
     restart(): Promise<void>;
@@ -3443,6 +3458,22 @@ test.describe('目录藏身与资源管理器空间', () => {
       await expect.poll(() => settings.evaluate(async () => (
         (await window.myself.getCharacterMotionSnapshot()).moving
       ))).toBe(false);
+      await expect.poll(async () => (await fixture.getMainE2eState()).petWindowVisible)
+        .toBe(false);
+
+      const sendAndWait = async (
+        event: 'wrong-directory' | 'stale-revision' | 'background-window'
+          | 'ambiguous' | 'exact-foreground' | 'minimized' | 'blurred' | 'crash'
+      ) => {
+        const before = await fixture.getMainE2eState();
+        await fixture.sendExplorerEvent(event);
+        await expect.poll(async () => {
+          const state = await fixture.getMainE2eState();
+          return state.processedExplorerEvent === event
+            && state.processedExplorerEventRevision > before.processedExplorerEventRevision;
+        }).toBe(true);
+        return fixture.getMainE2eState();
+      };
 
       for (const event of [
         'wrong-directory',
@@ -3450,20 +3481,22 @@ test.describe('目录藏身与资源管理器空间', () => {
         'background-window',
         'ambiguous'
       ] as const) {
-        await fixture.sendExplorerEvent(event);
-        await pet.waitForTimeout(100);
+        const mainState = await sendAndWait(event);
         expect((await settings.evaluate(() => (
           window.myself.getHabitatDashboard()
         ))).current).toMatchObject({ kind: 'folder', visibility: 'hidden' });
+        expect(mainState.petWindowVisible).toBe(false);
       }
 
-      await fixture.sendExplorerEvent('exact-foreground');
+      await sendAndWait('exact-foreground');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'visible' });
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
         actionId: 'emerge-main'
       });
+      await expect.poll(async () => (await fixture.getMainE2eState()).petWindowVisible)
+        .toBe(true);
       expect(pages().filter(page => {
         try {
           return new URL(page.url()).searchParams.get('view') === 'pet';
@@ -3472,56 +3505,70 @@ test.describe('目录藏身与资源管理器空间', () => {
         }
       })).toHaveLength(1);
 
-      await fixture.sendExplorerEvent('wrong-directory');
+      await sendAndWait('wrong-directory');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
-      await fixture.sendExplorerEvent('exact-foreground');
+      await sendAndWait('exact-foreground');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'visible' });
-      await fixture.sendExplorerEvent('minimized');
+      await sendAndWait('minimized');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
-      await fixture.sendExplorerEvent('exact-foreground');
+      await sendAndWait('exact-foreground');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'visible' });
-      await fixture.sendExplorerEvent('blurred');
+      await sendAndWait('blurred');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
 
-      const unmatchedSummon = await settings.evaluate(() => window.myself.summonHabitat());
-      expect(unmatchedSummon.current).toMatchObject({
-        kind: 'folder',
-        visibility: 'hidden'
-      });
-      await pet.waitForTimeout(1_100);
-      expect((await settings.evaluate(() => (
-        window.myself.getHabitatDashboard()
-      ))).current).toMatchObject({ kind: 'folder', visibility: 'hidden' });
-      await settings.evaluate(() => window.myself.summonHabitat());
-      await fixture.sendExplorerEvent('exact-foreground');
+      const timeoutStartedAt = Date.now();
+      await fixture.sendExplorerEvent('tray-summon');
+      await expect.poll(async () => (await fixture.getMainE2eState()).traySummonState)
+        .toBe('pending');
+      await expect.poll(async () => {
+        const state = await fixture.getMainE2eState();
+        return state.traySummonState === 'timeout';
+      }, { timeout: 7_000 }).toBe(true);
+      expect(Date.now() - timeoutStartedAt).toBeGreaterThanOrEqual(4_800);
+      expect((await fixture.getMainE2eState()).petWindowVisible).toBe(false);
+
+      await fixture.sendExplorerEvent('tray-summon');
+      await expect.poll(async () => (await fixture.getMainE2eState()).traySummonState)
+        .toBe('pending');
+      await sendAndWait('exact-foreground');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'visible' });
-      await fixture.sendExplorerEvent('blurred');
+      await expect.poll(async () => (await fixture.getMainE2eState()).traySummonState)
+        .toBe('visible');
+      await sendAndWait('blurred');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
 
-      await fixture.sendExplorerEvent('crash');
+      const crashedState = await sendAndWait('crash');
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
       )).toMatchObject({ kind: 'folder', visibility: 'lost' });
+      expect(crashedState.petWindowVisible).toBe(false);
+      expect(crashedState.bridge).toMatchObject({
+        state: 'failed',
+        observing: false,
+        polling: false,
+        childProcessCount: 0
+      });
       await rm(habitatDirectory, { recursive: true, force: true });
       await settings.evaluate(() => window.myself.recallHabitat());
       await expect.poll(async () => (
         (await settings.evaluate(() => window.myself.getHabitatDashboard())).current.kind
       )).toBe('desktop');
-      await expect.poll(() => pet.evaluate(() => document.visibilityState)).toBe('visible');
+      await expect.poll(async () => (await fixture.getMainE2eState()).petWindowVisible)
+        .toBe(true);
       const recalledPosition = await pet.evaluate(() => ({
         x: window.screenX,
         y: window.screenY

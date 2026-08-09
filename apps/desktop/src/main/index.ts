@@ -73,7 +73,8 @@ import {
   createStateGuardedPetVisibilityCommand,
   createTrayRefreshController,
   refreshAfter,
-  runMainEventSafely
+  runMainEventSafely,
+  synchronizeHabitatStartup
 } from './habitat/habitat-main-lifecycle';
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
@@ -163,8 +164,8 @@ function createMainE2eHabitatDirectoryPolicy(expectedPath: string) {
   const inspectOnce = async (): Promise<Pick<HabitatDirectoryRecord, 'absolutePath' | 'identity'>> => {
     const [physicalPath, entry, target] = await Promise.all([
       realpath(expectedPath),
-      lstat(expectedPath),
-      stat(expectedPath)
+      lstat(expectedPath, { bigint: true }),
+      stat(expectedPath, { bigint: true })
     ]);
     if (
       !sameMainE2ePath(physicalPath, expectedPath)
@@ -173,14 +174,12 @@ function createMainE2eHabitatDirectoryPolicy(expectedPath: string) {
       || !target.isDirectory()
       || entry.dev !== target.dev
       || entry.ino !== target.ino
-      || !Number.isInteger(entry.dev)
-      || !Number.isInteger(entry.ino)
-      || entry.dev < 0
-      || entry.ino < 0
+      || entry.dev < 0n
+      || entry.ino < 0n
     ) throw new Error('HABITAT_DIRECTORY_UNSAFE');
     return {
       absolutePath: physicalPath,
-      identity: { dev: entry.dev, ino: entry.ino }
+      identity: { dev: entry.dev.toString(), ino: entry.ino.toString() }
     };
   };
   const inspect = async (): Promise<Pick<HabitatDirectoryRecord, 'absolutePath' | 'identity'>> => {
@@ -376,6 +375,45 @@ async function createApplicationWindows(
         wrongDirectory: e2eBoundary.authorizedRootDirectory
       })
     : null;
+  let e2eStateRevision = 0;
+  let processedExplorerEventRevision = 0;
+  let processedExplorerEvent: string | null = null;
+  let traySummonState: 'idle' | 'pending' | 'visible' | 'timeout' = 'idle';
+  let e2eStateWrite = Promise.resolve();
+  const publishMainE2eState = (): Promise<void> => {
+    if (!e2eBoundary || !e2eExplorer) return Promise.resolve();
+    e2eStateRevision += 1;
+    const state = {
+      revision: e2eStateRevision,
+      petWindowVisible: pet.isVisible(),
+      processedExplorerEventRevision,
+      processedExplorerEvent,
+      traySummonState,
+      bridge: e2eExplorer.inspection()
+    };
+    const staged = `${e2eBoundary.mainStateFile}.tmp`;
+    const write = e2eStateWrite.then(async () => {
+      await writeFile(staged, `${JSON.stringify(state)}\n`, 'utf8');
+      await rename(staged, e2eBoundary.mainStateFile);
+    });
+    e2eStateWrite = write.catch(() => undefined);
+    return write;
+  };
+  const completeMainE2eObservation = (observation: object): void => {
+    const completed = e2eExplorer?.completeObservation(observation);
+    // 并发事件按脚本序号保留最新完成证据，禁止较早的异步完成覆盖后续事件。
+    if (!completed || completed.revision <= processedExplorerEventRevision) return;
+    processedExplorerEventRevision = completed.revision;
+    processedExplorerEvent = completed.event;
+  };
+  const e2eStateTimer = e2eBoundary
+    ? setInterval(() => { void publishMainE2eState(); }, 20)
+    : undefined;
+  e2eStateTimer?.unref?.();
+  startupCleanup.add(async () => {
+    if (e2eStateTimer !== undefined) clearInterval(e2eStateTimer);
+    await e2eStateWrite;
+  });
   const explorerResourceRoot = app.isPackaged
     ? process.resourcesPath
     : join(__dirname, '../../resources');
@@ -396,24 +434,33 @@ async function createApplicationWindows(
       });
   startupCleanup.add(() => explorerPort.close());
   let latestExplorerObservation: ExplorerSnapshot | null = null;
+  let latestExplorerHandling = Promise.resolve();
   explorer.on('snapshot', observation => {
     latestExplorerObservation = observation as ExplorerSnapshot;
-    void explorerRelay.accept(observation as ExplorerSnapshot).catch(() => {
-      console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED');
-    });
+    const handling = explorerRelay.accept(observation as ExplorerSnapshot);
+    latestExplorerHandling = handling.catch(() => undefined);
+    void handling.then(
+      () => {
+        completeMainE2eObservation(observation);
+        return publishMainE2eState();
+      },
+      () => {
+        console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED');
+      }
+    );
   });
-  explorer.on('error', () => {
+  explorer.on('error', error => {
     latestExplorerObservation = null;
-    void explorerRelay.accept(new Error('HABITAT_OBSERVER_FAILED')).catch(() => {
-      console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED');
-    });
+    void explorerRelay.accept(new Error('HABITAT_OBSERVER_FAILED')).then(
+      () => {
+        completeMainE2eObservation(error);
+        return publishMainE2eState();
+      },
+      () => {
+        console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED');
+      }
+    );
   });
-  const restoredObserverActive = habitatSnapshot.location.kind === 'folder';
-  if (restoredObserverActive) {
-    pet.hide();
-    await explorerPort.start();
-    await explorerPort.startObserving();
-  }
   const charactersDirectory = join(storageDirectory, 'characters');
   const characterStore = new CharacterStore(charactersDirectory);
   const characterAssetService = new CharacterAssetService(charactersDirectory);
@@ -501,14 +548,22 @@ async function createApplicationWindows(
     { width: petBounds.width, height: petBounds.height },
     workAreas
   );
+  const synchronizedHabitat = await synchronizeHabitatStartup({
+    initialSnapshot: habitatSnapshot,
+    restoredDesktopPosition: petPosition,
+    store: habitatStore,
+    window: { hide: () => pet.hide() },
+    explorer: explorerPort
+  });
+  habitatSnapshot = synchronizedHabitat.snapshot;
+  const restoredObserverActive = synchronizedHabitat.observerInitiallyActive;
   if (habitatSnapshot.location.kind === 'desktop') {
-    pet.setPosition(petPosition.x, petPosition.y);
-    // 服务构造前提交恢复坐标，确保首次目录操作使用 Store 返回的最新 CAS 权威。
-    const synchronized = await habitatStore.updateLocation({
-      expected: habitatSnapshot.location,
-      location: { kind: 'desktop', position: petPosition }
-    });
-    habitatSnapshot = synchronized.snapshot;
+    const finalPosition = restorePetPosition(
+      habitatSnapshot.location.position ?? petPosition,
+      { width: petBounds.width, height: petBounds.height },
+      workAreas
+    );
+    pet.setPosition(finalPosition.x, finalPosition.y);
   }
   const reportPetPositionError = (error: unknown): void => {
     console.error('保存桌宠位置失败。', error);
@@ -926,7 +981,8 @@ async function createApplicationWindows(
       };
       const onAbort = (): void => finish(false);
       const onSnapshot = (): void => {
-        queueMicrotask(() => {
+        const handled = latestExplorerHandling;
+        void handled.then(() => {
           const snapshot = habitatService.snapshot();
           if (snapshot.state === 'folder-visible' && snapshot.directoryId === directoryId) {
             finish(true);
@@ -946,6 +1002,24 @@ async function createApplicationWindows(
   const reportCharacterUiError = (error: unknown): void => {
     console.error('更新角色界面失败。', error);
   };
+  let pendingTraySummonRevision: number | undefined;
+  let invokeTraySummon: (() => void) | undefined;
+  const summonFromTray = async () => {
+    traySummonState = 'pending';
+    await publishMainE2eState();
+    const result = await refreshAfter(() => petSummon.summon(), refreshTray);
+    traySummonState = result.status === 'visible' ? 'visible' : 'timeout';
+    if (
+      pendingTraySummonRevision !== undefined
+      && pendingTraySummonRevision > processedExplorerEventRevision
+    ) {
+      processedExplorerEventRevision = pendingTraySummonRevision;
+      processedExplorerEvent = 'tray-summon';
+    }
+    pendingTraySummonRevision = undefined;
+    await publishMainE2eState();
+    return result;
+  };
   const buildContextMenu = async (): Promise<Menu> => {
     // Habitat 菜单只消费脱敏目录摘要和稳定状态，不把绝对路径交给 Tray。
     const installedCharacters = await characterActions.listCharacters().catch(() => []);
@@ -961,11 +1035,15 @@ async function createApplicationWindows(
           return result;
         }, refreshTray);
       },
-      summon: () => refreshAfter(() => petSummon.summon(), refreshTray),
+      summon: summonFromTray,
       recall: () => refreshAfter(() => habitatService.recallToDesktop(), refreshTray),
       togglePetVisibility,
       reportError: code => console.error('目录空间命令失败。', code)
     }) as unknown as MenuItemConstructorOptions[];
+    const summonItem = habitatItems.find(item => item.label === '呼唤桌宠');
+    invokeTraySummon = typeof summonItem?.click === 'function'
+      ? () => (summonItem.click as () => void)()
+      : undefined;
     const quickSwitchItems: MenuItemConstructorOptions[] = installedCharacters.map(
       character => ({
         label: character.name,
@@ -1001,6 +1079,10 @@ async function createApplicationWindows(
     ]);
   };
   let contextMenu = await buildContextMenu();
+  e2eExplorer?.on('tray-summon', ({ revision }: { revision: number }) => {
+    pendingTraySummonRevision = revision;
+    invokeTraySummon?.();
+  });
 
   tray = new Tray(createTrayImage());
   tray.setToolTip('AI Pet 桌宠');

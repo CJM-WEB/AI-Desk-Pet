@@ -337,7 +337,7 @@ function createFolderHabitatService() {
       displayName: '集成目录',
       pathHint: '集成目录',
       absolutePath: 'C:\\Habitat\\Integration',
-      identity: { dev: 7, ino: 11 },
+      identity: { dev: '7', ino: '11' },
       enabled: true
     }],
     location: {

@@ -1,4 +1,13 @@
-import { describe, expect, test } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, test, vi } from 'vitest';
+import {
+  PetHabitatStore,
+  type HabitatLocationUpdate,
+  type HabitatLocationUpdateResult,
+  type PetHabitatSnapshot
+} from '../src/main/habitat/pet-habitat-store';
 
 type LifecycleModule = {
   createForegroundFullscreenBlocker?(probe: {
@@ -75,6 +84,21 @@ type LifecycleModule = {
     operation: () => Promise<void>,
     report: (code: 'HABITAT_EVENT_FAILED') => void
   ): Promise<void>;
+  synchronizeHabitatStartup?(options: {
+    initialSnapshot: PetHabitatSnapshot;
+    restoredDesktopPosition: { x: number; y: number };
+    store: {
+      updateLocation(input: HabitatLocationUpdate): Promise<HabitatLocationUpdateResult>;
+    };
+    window: { hide(): void };
+    explorer: {
+      start(): Promise<void>;
+      startObserving(): Promise<{ ok: true }>;
+    };
+  }): Promise<{
+    snapshot: PetHabitatSnapshot;
+    observerInitiallyActive: boolean;
+  }>;
 };
 
 async function loadLifecycle(): Promise<LifecycleModule | null> {
@@ -86,6 +110,119 @@ async function loadLifecycle(): Promise<LifecycleModule | null> {
 }
 
 describe('Habitat Main 真实生命周期', () => {
+  test('启动 CAS 遇到 desktop→folder 并发时只按最终 Store 事实启动观察', async () => {
+    const module = await loadLifecycle();
+    expect(module?.synchronizeHabitatStartup).toBeTypeOf('function');
+    if (!module?.synchronizeHabitatStartup) return;
+    const directory = await mkdtemp(join(tmpdir(), 'ai-pet-startup-desktop-folder-'));
+    try {
+      const store = new PetHabitatStore(join(directory, 'habitat.json'));
+      const initial: PetHabitatSnapshot = {
+        version: 1,
+        preferences: { enabled: true, autoHideEnabled: true, idleDelayMs: 30_000 },
+        directories: [{
+          id: 'directory-1',
+          displayName: '启动目录',
+          pathHint: '启动目录',
+          absolutePath: 'C:\\Habitat\\Startup',
+          identity: { dev: '7', ino: '11' },
+          enabled: true
+        }],
+        location: { kind: 'desktop', position: { x: 10, y: 20 } }
+      };
+      await store.save(initial);
+      const stale = await store.load();
+      await store.updateLocation({
+        expected: initial.location,
+        expectedDirectory: initial.directories[0]!,
+        location: {
+          kind: 'folder',
+          directoryId: 'directory-1',
+          enteredAt: '2026-08-09T08:00:00.000Z',
+          previousDesktopPosition: { x: 30, y: 40 },
+          localOffset: { x: 5, y: 6 }
+        }
+      });
+      const order: string[] = [];
+
+      const result = await module.synchronizeHabitatStartup({
+        initialSnapshot: stale,
+        restoredDesktopPosition: { x: 12, y: 22 },
+        store,
+        window: { hide: () => order.push('hide') },
+        explorer: {
+          start: async () => { order.push('start'); },
+          startObserving: async () => { order.push('observe'); return { ok: true }; }
+        }
+      });
+
+      expect(result.snapshot.location.kind).toBe('folder');
+      expect(result.observerInitiallyActive).toBe(true);
+      expect((await store.load()).location).toEqual(result.snapshot.location);
+      expect(order).toEqual(['hide', 'start', 'observe']);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('启动 CAS 遇到 folder→desktop 并发时不启动陈旧观察', async () => {
+    const module = await loadLifecycle();
+    expect(module?.synchronizeHabitatStartup).toBeTypeOf('function');
+    if (!module?.synchronizeHabitatStartup) return;
+    const directory = await mkdtemp(join(tmpdir(), 'ai-pet-startup-folder-desktop-'));
+    try {
+      const store = new PetHabitatStore(join(directory, 'habitat.json'));
+      const initial: PetHabitatSnapshot = {
+        version: 1,
+        preferences: { enabled: true, autoHideEnabled: true, idleDelayMs: 30_000 },
+        directories: [{
+          id: 'directory-1',
+          displayName: '启动目录',
+          pathHint: '启动目录',
+          absolutePath: 'C:\\Habitat\\Startup',
+          identity: { dev: '7', ino: '11' },
+          enabled: true
+        }],
+        location: {
+          kind: 'folder',
+          directoryId: 'directory-1',
+          enteredAt: '2026-08-09T08:00:00.000Z',
+          previousDesktopPosition: { x: 30, y: 40 },
+          localOffset: { x: 5, y: 6 }
+        }
+      };
+      await store.save(initial);
+      const stale = await store.load();
+      await store.updateLocation({
+        expected: initial.location,
+        location: { kind: 'desktop', position: { x: 70, y: 80 } }
+      });
+      const hide = vi.fn();
+      const start = vi.fn(async () => undefined);
+      const startObserving = vi.fn(async () => ({ ok: true as const }));
+
+      const result = await module.synchronizeHabitatStartup({
+        initialSnapshot: stale,
+        restoredDesktopPosition: { x: 32, y: 42 },
+        store,
+        window: { hide },
+        explorer: { start, startObserving }
+      });
+
+      expect(result.snapshot.location).toEqual({
+        kind: 'desktop',
+        position: { x: 70, y: 80 }
+      });
+      expect(result.observerInitiallyActive).toBe(false);
+      expect((await store.load()).location).toEqual(result.snapshot.location);
+      expect(hide).not.toHaveBeenCalled();
+      expect(start).not.toHaveBeenCalled();
+      expect(startObserving).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test('Main blocker 初始与探针失败都失败关闭，成功采样后才允许自动藏身', async () => {
     const module = await loadLifecycle();
     let reject = false;

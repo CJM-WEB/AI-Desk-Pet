@@ -1,4 +1,9 @@
 import type { ForegroundFullscreenProbe } from './foreground-fullscreen-probe';
+import type {
+  HabitatLocationUpdate,
+  HabitatLocationUpdateResult,
+  PetHabitatSnapshot
+} from './pet-habitat-store';
 
 type StableHabitatState = 'desktop' | 'folder-hidden' | 'folder-visible' | 'folder-lost';
 
@@ -184,6 +189,45 @@ interface ExplorerLifecyclePort {
   startObserving(): Promise<{ ok: true }>;
   stopObserving(): Promise<{ ok: true }>;
   close(): Promise<void>;
+}
+
+/** 坐标恢复先通过 Store CAS 取得最终事实，观察桥只服从该新鲜快照。 */
+export async function synchronizeHabitatStartup(options: {
+  initialSnapshot: PetHabitatSnapshot;
+  restoredDesktopPosition: { x: number; y: number };
+  store: {
+    updateLocation(input: HabitatLocationUpdate): Promise<HabitatLocationUpdateResult>;
+  };
+  window: { hide(): void };
+  explorer: Pick<ExplorerLifecyclePort, 'start' | 'startObserving'>;
+}): Promise<{
+  snapshot: PetHabitatSnapshot;
+  observerInitiallyActive: boolean;
+}> {
+  const initialLocation = options.initialSnapshot.location;
+  const location = initialLocation.kind === 'desktop'
+    ? { kind: 'desktop' as const, position: options.restoredDesktopPosition }
+    : {
+        ...initialLocation,
+        previousDesktopPosition: options.restoredDesktopPosition
+      };
+  const expectedDirectory = initialLocation.kind === 'folder'
+    ? options.initialSnapshot.directories.find(directory => (
+        directory.id === initialLocation.directoryId
+      ))
+    : undefined;
+  const synchronized = await options.store.updateLocation({
+    expected: initialLocation,
+    location,
+    ...(expectedDirectory === undefined ? {} : { expectedDirectory })
+  });
+  const observerInitiallyActive = synchronized.snapshot.location.kind === 'folder';
+  if (observerInitiallyActive) {
+    options.window.hide();
+    await options.explorer.start();
+    await options.explorer.startObserving();
+  }
+  return { snapshot: synchronized.snapshot, observerInitiallyActive };
 }
 
 /** 每个真实 spawn 尝试都先重新校验固定资源，不缓存启动时结论。 */

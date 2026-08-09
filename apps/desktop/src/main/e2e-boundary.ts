@@ -14,6 +14,7 @@ export interface MainE2eBoundary {
   authorizedRootDirectory: string;
   habitatDirectory: string;
   explorerEventFile: string;
+  mainStateFile: string;
   recycleBinDirectory: string;
   characterAssetsDirectory: string;
   safeCharacterPackage: string;
@@ -47,11 +48,41 @@ export function createMainE2eExplorerBridge(options: {
     private lastSnapshotAt = 0;
     private pollTimer: ReturnType<typeof setInterval> | undefined;
     private reading = false;
+    private eventRevision = 0;
+    private activeEvent: { revision: number; event: string } | undefined;
+    private readonly eventProgress = new Map<number, {
+      event: string;
+      emitted: number;
+      completed: number;
+    }>();
+    private readonly observationEvents = new WeakMap<object, number>();
 
     snapshot() {
       return this.errorCode === undefined
         ? { state: this.state }
         : { state: this.state, errorCode: this.errorCode };
+    }
+
+    /** Main-only 资源账本只供隔离 fixture 读取，不进入任何应用公开边界。 */
+    inspection() {
+      return {
+        state: this.state,
+        observing: this.observing,
+        polling: this.pollTimer !== undefined,
+        childProcessCount: 0,
+        eventRevision: this.eventRevision
+      };
+    }
+
+    completeObservation(observation: object): { revision: number; event: string } | undefined {
+      const revision = this.observationEvents.get(observation);
+      if (revision === undefined) return undefined;
+      const progress = this.eventProgress.get(revision);
+      if (!progress) return undefined;
+      progress.completed += 1;
+      return progress.completed === progress.emitted
+        ? { revision, event: progress.event }
+        : undefined;
     }
 
     async start(): Promise<void> {
@@ -128,7 +159,37 @@ export function createMainE2eExplorerBridge(options: {
     }
 
     private consumeEvent(event: string): void {
-      if (event === 'stale-revision') return;
+      this.eventRevision += 1;
+      this.activeEvent = { revision: this.eventRevision, event };
+      this.eventProgress.set(this.eventRevision, { event, emitted: 0, completed: 0 });
+      try {
+        this.dispatchEvent(event);
+      } finally {
+        this.activeEvent = undefined;
+      }
+    }
+
+    private dispatchEvent(event: string): void {
+      if (event === 'tray-summon') {
+        this.emit('tray-summon', { revision: this.eventRevision });
+        return;
+      }
+      if (event === 'stale-revision') {
+        const facts: ExplorerSnapshotFacts<ExplorerSnapshot> = {
+          status: 'ready',
+          windowType: 'explorer',
+          instanceId: 'e2e-explorer-exact',
+          hwnd: '9003',
+          path: options.habitatDirectory,
+          rect: { x: 80, y: 80, width: 900, height: 700 },
+          foreground: true,
+          minimized: false,
+          search: false
+        };
+        this.emitSnapshot(facts);
+        this.emitSnapshot({ ...facts, hwnd: '9002' }, this.sequence);
+        return;
+      }
       if (event === 'crash') {
         this.fail('E2E_BRIDGE_CRASHED');
         return;
@@ -178,18 +239,25 @@ export function createMainE2eExplorerBridge(options: {
     }
 
     private emitSnapshot(
-      facts: ExplorerSnapshotFacts<ExplorerSnapshot>
+      facts: ExplorerSnapshotFacts<ExplorerSnapshot>,
+      forcedSequence?: number
     ): void {
       if (!this.observing || this.state !== 'ready') return;
-      this.sequence += 1;
+      if (forcedSequence === undefined) this.sequence += 1;
       this.lastSnapshotAt = Date.now();
-      this.emit('snapshot', {
+      const snapshot = {
         version: 1,
         type: 'explorer-snapshot',
         nonce: 'e'.repeat(32),
-        sequence: this.sequence,
+        sequence: forcedSequence ?? this.sequence,
         ...facts
-      } satisfies ExplorerSnapshot);
+      } satisfies ExplorerSnapshot;
+      if (this.activeEvent) {
+        this.observationEvents.set(snapshot, this.activeEvent.revision);
+        const progress = this.eventProgress.get(this.activeEvent.revision);
+        if (progress) progress.emitted += 1;
+      }
+      this.emit('snapshot', snapshot);
     }
 
     private startPolling(): void {
@@ -213,7 +281,15 @@ export function createMainE2eExplorerBridge(options: {
       this.errorCode = code;
       this.observing = false;
       this.stopPolling();
-      if (this.listenerCount('error') > 0) this.emit('error', new Error(code));
+      if (this.listenerCount('error') > 0) {
+        const error = new Error(code);
+        if (this.activeEvent) {
+          this.observationEvents.set(error, this.activeEvent.revision);
+          const progress = this.eventProgress.get(this.activeEvent.revision);
+          if (progress) progress.emitted += 1;
+        }
+        this.emit('error', error);
+      }
     }
   }
 
@@ -327,6 +403,7 @@ export function resolveMainE2eBoundary(
     authorizedRootDirectory,
     habitatDirectory,
     explorerEventFile: resolve(userDataDirectory, 'main-e2e-explorer-events'),
+    mainStateFile: resolve(userDataDirectory, 'main-e2e-state.json'),
     recycleBinDirectory,
     characterAssetsDirectory,
     safeCharacterPackage,

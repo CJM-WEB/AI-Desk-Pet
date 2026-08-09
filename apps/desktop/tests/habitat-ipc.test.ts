@@ -99,7 +99,7 @@ function serviceHarness(options: {
       displayName: '项目空间',
       pathHint: 'project',
       absolutePath: 'C:\\Users\\Alice\\project',
-      identity: { dev: 1, ino: 2 },
+      identity: { dev: '1', ino: '2' },
       enabled: true
     }],
     location: { kind: 'desktop', position: null }
@@ -145,7 +145,7 @@ function serviceHarness(options: {
       displayName: '资料空间',
       pathHint: 'docs',
       absolutePath: 'D:\\Private\\docs',
-      identity: { dev: 3, ino: 4 },
+      identity: { dev: '3', ino: '4' },
       enabled: true
     })),
     availability: vi.fn(async () => 'available' as const)

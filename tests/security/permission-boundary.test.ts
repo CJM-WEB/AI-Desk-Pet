@@ -3,6 +3,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   symlink,
@@ -332,7 +333,7 @@ describe('权限边界安全回归', () => {
     ].join('\n') + '\n', 'utf8');
     await vi.waitFor(() => expect(errors).toHaveLength(1));
 
-    expect(snapshots).toHaveLength(6);
+    expect(snapshots).toHaveLength(8);
     expect(snapshots).toEqual(expect.arrayContaining([
       expect.objectContaining({ status: 'ready', path: wrongDirectory }),
       expect.objectContaining({ status: 'ambiguous' }),
@@ -344,6 +345,15 @@ describe('权限边界安全回归', () => {
       && 'status' in snapshot
       && snapshot.status === 'none'
     ))).toHaveLength(3);
+    const stalePair = snapshots.filter(snapshot => (
+      typeof snapshot === 'object'
+      && snapshot !== null
+      && 'instanceId' in snapshot
+      && snapshot.instanceId === 'e2e-explorer-exact'
+      && 'sequence' in snapshot
+      && snapshot.sequence === 2
+    ));
+    expect(stalePair).toHaveLength(2);
     expect(bridge.snapshot()).toEqual({
       state: 'failed',
       errorCode: 'E2E_BRIDGE_CRASHED'
@@ -351,14 +361,28 @@ describe('权限边界安全回归', () => {
     await bridge.close();
   });
 
-  test('Windows 大整数目录身份仍按授权时记录的同一事实命中', async () => {
+  test('Windows 真实大整数目录身份以 bigint 采样并按无损字符串命中', async () => {
     const base = await createAuthorizedRoot();
     roots.push(base);
-    const physicalPath = join(base.root, 'large-identity-habitat');
-    await mkdir(physicalPath);
-    const identity = { dev: 173_504_896, ino: 21_110_623_253_964_840 };
-    expect(Number.isInteger(identity.ino)).toBe(true);
-    expect(Number.isSafeInteger(identity.ino)).toBe(false);
+    const identityFixtureRoot = join(process.cwd(), '.pnpm-store', 'v11', 'files');
+    const candidates = [identityFixtureRoot, ...(await readdir(identityFixtureRoot)).map(
+      name => join(identityFixtureRoot, name)
+    )];
+    let physicalPath: string | undefined;
+    for (const candidate of candidates) {
+      const candidateStats = await lstat(candidate, { bigint: true });
+      if (candidateStats.isDirectory() && candidateStats.ino > BigInt(Number.MAX_SAFE_INTEGER)) {
+        physicalPath = candidate;
+        break;
+      }
+    }
+    if (physicalPath === undefined) throw new Error('WINDOWS_LARGE_INODE_FIXTURE_MISSING');
+    const information = await lstat(physicalPath, { bigint: true });
+    expect(information.ino).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
+    const identity = {
+      dev: information.dev.toString(),
+      ino: information.ino.toString()
+    };
 
     const store = new PetHabitatStore(join(base.root, 'pet-habitat.json'));
     await store.save({
@@ -378,16 +402,7 @@ describe('权限边界安全回归', () => {
       }],
       location: { kind: 'desktop', position: null }
     });
-    const fileStats = {
-      ...identity,
-      isSymbolicLink: () => false,
-      isDirectory: () => true
-    };
-    const resolver = new FolderIdentityResolver(store, {
-      realpathPath: async () => physicalPath,
-      lstatPath: async () => fileStats,
-      statPath: async () => fileStats
-    });
+    const resolver = new FolderIdentityResolver(store);
 
     await expect(resolver.resolve(physicalPath)).resolves.toEqual({
       status: 'matched',
