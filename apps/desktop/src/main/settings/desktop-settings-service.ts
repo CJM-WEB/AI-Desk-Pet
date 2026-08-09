@@ -183,6 +183,9 @@ function assertMcpEnabled(): void {
 export class DesktopSettingsService {
   private readonly statuses = new Map<string, McpServerDto['status']>();
   private readonly discoveredTools = new Map<string, DiscoveredTool[]>();
+  private petAlwaysOnTopQueue: Promise<void> = Promise.resolve();
+  private petAlwaysOnTopFrozen = false;
+  private petAlwaysOnTopFlush: Promise<void> | undefined;
 
   constructor(private readonly options: DesktopSettingsServiceOptions) {}
 
@@ -667,7 +670,25 @@ export class DesktopSettingsService {
   }
 
   /** 先提交运行态再落盘；任一步失败都把窗口层级恢复到旧值。 */
-  async savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto> {
+  savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto> {
+    if (this.petAlwaysOnTopFrozen) {
+      return Promise.reject(new Error('PET_ALWAYS_ON_TOP_FROZEN'));
+    }
+    const transaction = this.petAlwaysOnTopQueue.then(() => (
+      this.commitPetAlwaysOnTop(enabled)
+    ));
+    this.petAlwaysOnTopQueue = transaction.then(() => undefined, () => undefined);
+    return transaction;
+  }
+
+  /** 退出前同步冻结入口，并等待此前已接收的置顶事务全部完成补偿。 */
+  freezeAndFlushPetAlwaysOnTop(): Promise<void> {
+    this.petAlwaysOnTopFrozen = true;
+    this.petAlwaysOnTopFlush ??= this.petAlwaysOnTopQueue;
+    return this.petAlwaysOnTopFlush;
+  }
+
+  private async commitPetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto> {
     const previous = await this.options.settings.getPetAlwaysOnTop();
     try {
       await this.options.applyPetAlwaysOnTop(enabled);

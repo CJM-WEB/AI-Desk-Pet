@@ -1,6 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { createExplorerMainComposition } from '../src/main/explorer/explorer-main-wiring';
+import {
+  createExplorerMainComposition,
+  restorePetLayerPreference
+} from '../src/main/explorer/explorer-main-wiring';
 
 const readySnapshot = {
   nonce: 'a'.repeat(32),
@@ -13,6 +16,35 @@ const readySnapshot = {
 };
 
 describe('Explorer Main 图层组合', () => {
+  test('启动恢复失败时回退普通动态图层并只报告稳定码', async () => {
+    const apply = vi.fn()
+      .mockRejectedValueOnce(new Error('PRIVATE_RESTORE'))
+      .mockResolvedValueOnce(undefined);
+    const reportError = vi.fn();
+
+    await expect(restorePetLayerPreference({
+      read: async () => true,
+      apply,
+      reportError
+    })).resolves.toBeUndefined();
+
+    expect(apply).toHaveBeenNthCalledWith(1, true);
+    expect(apply).toHaveBeenNthCalledWith(2, false);
+    expect(reportError).toHaveBeenCalledExactlyOnceWith('PET_LAYER_PREFERENCE_RESTORE_FAILED');
+  });
+
+  test('启动恢复与回退同时失败也不阻断启动并报告两个稳定码', async () => {
+    const reportError = vi.fn();
+    await expect(restorePetLayerPreference({
+      read: async () => { throw new Error('PRIVATE_READ'); },
+      apply: async () => { throw new Error('PRIVATE_FALLBACK'); },
+      reportError
+    })).resolves.toBeUndefined();
+    expect(reportError.mock.calls).toEqual([
+      ['PET_LAYER_PREFERENCE_RESTORE_FAILED'],
+      ['PET_LAYER_PREFERENCE_FALLBACK_FAILED']
+    ]);
+  });
   test('快照只交给图层协调器，错误只报告稳定码且不隐藏桌宠', async () => {
     const effects: string[] = [];
     let windowVisible = true;

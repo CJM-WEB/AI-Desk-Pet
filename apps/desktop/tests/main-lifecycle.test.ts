@@ -38,6 +38,7 @@ describe('Main 通用生命周期', () => {
   test('关闭事务严格按图层、桥接、位置和既有服务顺序且保持幂等', async () => {
     const order: string[] = [];
     const shutdown = createMainShutdownTransaction({
+      beforeExplorerClose: async () => { order.push('topmost-flush'); },
       coordinator: { close: async () => { order.push('coordinator'); } },
       bridge: { close: async () => { order.push('bridge'); } },
       position: { freezeAndFlush: async () => { order.push('position'); } },
@@ -51,13 +52,14 @@ describe('Main 通用生命周期', () => {
     await Promise.all([shutdown(), shutdown()]);
 
     expect(order).toEqual([
-      'coordinator', 'bridge', 'position', 'workshop', 'settings', 'runtime'
+      'topmost-flush', 'coordinator', 'bridge', 'position', 'workshop', 'settings', 'runtime'
     ]);
   });
 
   test('关闭单点失败仍释放全部资源并稳定聚合错误', async () => {
     const order: string[] = [];
     const shutdown = createMainShutdownTransaction({
+      beforeExplorerClose: async () => { order.push('topmost-flush'); throw new Error('FLUSH'); },
       coordinator: { close: async () => { order.push('coordinator'); } },
       bridge: { close: async () => { order.push('bridge'); throw new Error('PRIVATE'); } },
       position: { freezeAndFlush: async () => { order.push('position'); } },
@@ -71,8 +73,8 @@ describe('Main 通用生命周期', () => {
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect(failure?.message).toBe('APPLICATION_SHUTDOWN_INCOMPLETE');
-    expect(failure?.errors).toHaveLength(2);
-    expect(order).toEqual(['coordinator', 'bridge', 'position', 'settings', 'runtime']);
+    expect(failure?.errors).toHaveLength(3);
+    expect(order).toEqual(['topmost-flush', 'coordinator', 'bridge', 'position', 'settings', 'runtime']);
 
     const report = vi.fn();
     const quit = vi.fn();
@@ -85,7 +87,7 @@ describe('Main 通用生命周期', () => {
     await application.handle({ preventDefault: vi.fn() });
     expect(report).toHaveBeenCalledExactlyOnceWith(failure);
     expect(quit).toHaveBeenCalledOnce();
-    expect(order).toEqual(['coordinator', 'bridge', 'position', 'settings', 'runtime']);
+    expect(order).toEqual(['topmost-flush', 'coordinator', 'bridge', 'position', 'settings', 'runtime']);
   });
 
   test('角色切换期间保持活动标记并在失败后复位', async () => {

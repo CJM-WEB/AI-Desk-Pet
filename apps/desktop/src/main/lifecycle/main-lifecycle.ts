@@ -146,6 +146,7 @@ export function createApplicationQuitCoordinator(options: {
 
 /** 关闭顺序是资源依赖的一部分；单点失败只记录，不阻断后续释放。 */
 export function createMainShutdownTransaction(options: {
+  beforeExplorerClose(): Promise<void>;
   coordinator: { close(): Promise<void> };
   bridge: { close(): Promise<void> };
   position: { freezeAndFlush(): Promise<void> };
@@ -165,6 +166,7 @@ export function createMainShutdownTransaction(options: {
   return (): Promise<void> => {
     active ??= (async () => {
       const errors: unknown[] = [];
+      await runSafely(options.beforeExplorerClose, errors);
       await runSafely(() => options.coordinator.close(), errors);
       await runSafely(() => options.bridge.close(), errors);
       await runSafely(() => options.position.freezeAndFlush(), errors);

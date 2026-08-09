@@ -141,7 +141,9 @@ function createFixture() {
     mcpStoreMethods,
     mcpManager,
     privacySessions,
-    applyPetAlwaysOnTop
+    applyPetAlwaysOnTop,
+    readStoredPetAlwaysOnTop: () => storedPetAlwaysOnTop,
+    setStoredPetAlwaysOnTop: (enabled: boolean) => { storedPetAlwaysOnTop = enabled; }
   };
 }
 
@@ -226,6 +228,54 @@ describe('DesktopSettingsService', () => {
     expect(failure.message).toBe('PET_ALWAYS_ON_TOP_APPLY_ROLLBACK_FAILED');
     expect(failure.errors).toEqual([applyError, rollbackError]);
     expect(fixture.settings.savePetAlwaysOnTop).not.toHaveBeenCalled();
+  });
+
+  test('并发置顶保存按到达顺序串行且后项失败回滚到前项已提交值', async () => {
+    const fixture = createFixture();
+    let runtime = false;
+    let dynamicLayer = true;
+    let releaseFirst = (): void => undefined;
+    const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+    fixture.applyPetAlwaysOnTop.mockImplementation(async enabled => {
+      if (enabled && runtime === false) await firstBlocked;
+      runtime = enabled;
+      dynamicLayer = !enabled;
+    });
+    fixture.settings.savePetAlwaysOnTop.mockImplementationOnce(async enabled => {
+      fixture.setStoredPetAlwaysOnTop(enabled);
+    });
+    fixture.settings.savePetAlwaysOnTop.mockImplementationOnce(async () => {
+      throw new Error('SECOND_PERSIST_FAILED');
+    });
+
+    const first = fixture.service.savePetAlwaysOnTop(true);
+    await vi.waitFor(() => expect(fixture.applyPetAlwaysOnTop).toHaveBeenCalledTimes(1));
+    const second = fixture.service.savePetAlwaysOnTop(false);
+    releaseFirst();
+    await first;
+    await expect(second).rejects.toThrow('SECOND_PERSIST_FAILED');
+
+    expect(runtime).toBe(true);
+    expect(dynamicLayer).toBe(false);
+    expect(fixture.readStoredPetAlwaysOnTop()).toBe(true);
+  });
+
+  test('冻结置顶队列后拒绝新保存并等待既有事务收敛且保持幂等', async () => {
+    const fixture = createFixture();
+    let release = (): void => undefined;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    fixture.applyPetAlwaysOnTop.mockImplementationOnce(async () => blocked);
+
+    const first = fixture.service.savePetAlwaysOnTop(true);
+    const second = fixture.service.savePetAlwaysOnTop(false);
+    await vi.waitFor(() => expect(fixture.applyPetAlwaysOnTop).toHaveBeenCalledOnce());
+    const flush = fixture.service.freezeAndFlushPetAlwaysOnTop();
+    expect(fixture.service.freezeAndFlushPetAlwaysOnTop()).toBe(flush);
+    await expect(fixture.service.savePetAlwaysOnTop(true))
+      .rejects.toThrow('PET_ALWAYS_ON_TOP_FROZEN');
+    release();
+    await Promise.all([first, second, flush]);
+    expect(fixture.readStoredPetAlwaysOnTop()).toBe(false);
   });
 
   test('Dashboard 明确声明当前隐私能力的运行时支持范围', async () => {

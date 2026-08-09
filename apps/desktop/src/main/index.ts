@@ -47,7 +47,10 @@ import type { ExplorerSnapshot } from './explorer/explorer-space-protocol';
 import { ExplorerWindowLayerController } from
   './explorer/explorer-window-layer-controller';
 import { ExplorerPetLayerCoordinator } from './explorer/explorer-pet-layer-coordinator';
-import { createExplorerMainComposition } from './explorer/explorer-main-wiring';
+import {
+  createExplorerMainComposition,
+  restorePetLayerPreference
+} from './explorer/explorer-main-wiring';
 import {
   createApplicationQuitCoordinator,
   createCharacterActivationCoordinator,
@@ -401,9 +404,11 @@ async function createApplicationWindows(
     join(storageDirectory, 'settings.json'),
     profileId => secrets.hasStoredSecret(profileId)
   );
-  await explorerCoordinator.setPetAlwaysOnTop(
-    await settingsStore.getPetAlwaysOnTop()
-  );
+  await restorePetLayerPreference({
+    read: () => settingsStore.getPetAlwaysOnTop(),
+    apply: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled),
+    reportError: code => console.error('恢复桌宠图层偏好失败。', code)
+  });
   const providerRegistry = new ProviderRegistry(providerCatalog);
   const mcpStore = new McpServerStore();
   const mcpManager = new McpManager({
@@ -569,6 +574,7 @@ async function createApplicationWindows(
     load: window => loadRenderer(window, 'characters')
   });
   const shutdownApplication = createMainShutdownTransaction({
+    beforeExplorerClose: () => desktopSettingsService.freezeAndFlushPetAlwaysOnTop(),
     coordinator: explorerCoordinator,
     bridge: explorerPort,
     position: petPositionController,

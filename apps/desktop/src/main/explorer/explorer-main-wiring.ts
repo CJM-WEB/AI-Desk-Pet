@@ -14,6 +14,29 @@ interface ExplorerCoordinatorPort {
   close(): Promise<void>;
 }
 
+type PetLayerPreferenceError =
+  | 'PET_LAYER_PREFERENCE_RESTORE_FAILED'
+  | 'PET_LAYER_PREFERENCE_FALLBACK_FAILED';
+
+/** 启动偏好恢复失败时回到普通动态图层，任何失败都不得阻断桌宠显示。 */
+export async function restorePetLayerPreference(options: {
+  read(): Promise<boolean>;
+  apply(enabled: boolean): Promise<void>;
+  reportError(code: PetLayerPreferenceError): void;
+}): Promise<void> {
+  try {
+    await options.apply(await options.read());
+    return;
+  } catch {
+    try { options.reportError('PET_LAYER_PREFERENCE_RESTORE_FAILED'); } catch { /* 日志不得阻断恢复。 */ }
+  }
+  try {
+    await options.apply(false);
+  } catch {
+    try { options.reportError('PET_LAYER_PREFERENCE_FALLBACK_FAILED'); } catch { /* 日志不得阻断启动。 */ }
+  }
+}
+
 /** Main 只组合 Explorer 桥接与相邻图层，不持有任何目录状态或窗口可见性策略。 */
 export function createExplorerMainComposition(options: {
   bridge: ExplorerBridgePort;
