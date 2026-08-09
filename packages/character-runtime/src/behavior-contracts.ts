@@ -16,11 +16,7 @@ export type CharacterBehaviorSignal =
   | { type: 'thinking'; active: boolean; occurredAtMs: number }
   | { type: 'task'; phase: 'start' | 'success' | 'failure'; occurredAtMs: number }
   | { type: 'movement'; active: boolean; occurredAtMs: number }
-  | { type: 'carrying'; active: boolean; occurredAtMs: number }
-  | { type: 'habitat-enter'; occurredAtMs: number }
-  | { type: 'habitat-found'; occurredAtMs: number }
-  | { type: 'habitat-hidden'; occurredAtMs: number }
-  | { type: 'habitat-lost'; occurredAtMs: number };
+  | { type: 'carrying'; active: boolean; occurredAtMs: number };
 
 export type CharacterAgentBehaviorIntent = {
   stateIntent: { stateId: string } | { semantic: CharacterStandardSemantic } | null;
@@ -59,11 +55,7 @@ export const characterBehaviorSignalSchema = z.discriminatedUnion('type', [
     occurredAtMs: occurredAtMsSchema
   }).strict(),
   z.object({ type: z.literal('movement'), active: z.boolean(), occurredAtMs: occurredAtMsSchema }).strict(),
-  z.object({ type: z.literal('carrying'), active: z.boolean(), occurredAtMs: occurredAtMsSchema }).strict(),
-  z.object({ type: z.literal('habitat-enter'), occurredAtMs: occurredAtMsSchema }).strict(),
-  z.object({ type: z.literal('habitat-found'), occurredAtMs: occurredAtMsSchema }).strict(),
-  z.object({ type: z.literal('habitat-hidden'), occurredAtMs: occurredAtMsSchema }).strict(),
-  z.object({ type: z.literal('habitat-lost'), occurredAtMs: occurredAtMsSchema }).strict()
+  z.object({ type: z.literal('carrying'), active: z.boolean(), occurredAtMs: occurredAtMsSchema }).strict()
 ]);
 
 const stateIntentSchema = z.union([

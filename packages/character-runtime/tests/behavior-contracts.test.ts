@@ -30,6 +30,18 @@ describe('自主行为严格契约', () => {
     });
   });
 
+  test.each([
+    'habitat-enter',
+    'habitat-found',
+    'habitat-hidden',
+    'habitat-lost'
+  ])('拒绝已退出角色运行时的目录空间信号：%s', (type) => {
+    expect(() => characterBehaviorSignalSchema.parse({
+      type,
+      occurredAtMs: 1_002
+    })).toThrow();
+  });
+
   test('接受合法的智能体行为意图', () => {
     expect(characterAgentBehaviorIntentSchema.parse({
       stateIntent: { semantic: 'think' },

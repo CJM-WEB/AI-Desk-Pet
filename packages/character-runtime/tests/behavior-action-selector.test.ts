@@ -343,57 +343,6 @@ describe('V2 行为动作选择器', () => {
     }))).toMatchObject({ actionId: 'fallback', stateId: 'idle-state', reason: 'default-fallback' });
   });
 
-  test.each([
-    ['hide', 'move'],
-    ['emerge', 'idle']
-  ] as const)('缺少 %s 动作时仅选择受控的 %s 既有表现动作', (semantic, fallbackSemantic) => {
-    const fallback = createAction(`${fallbackSemantic}-fallback`, fallbackSemantic);
-    const manifest = createManifest({
-      actions: [fallback],
-      states: [createState('idle-state', 'primary', [])],
-      defaultStateId: 'idle-state',
-      skins: [createSkin(
-        'default-skin',
-        [fallback.id],
-        'default',
-        [{ semantic, actionId: fallback.id }]
-      )]
-    });
-
-    expect(selectCharacterBehaviorAction(createInput(manifest, {
-      state: { revision: 1, primaryStateId: 'idle-state', modifierStateIds: [], activeSignals: [], desiredActionSemantic: semantic }
-    }))).toMatchObject({ actionId: fallback.id, reason: 'semantic' });
-  });
-
-  test('缺少合法 hide→move 回退时不能把 habitat-enter 降级为普通动作', () => {
-    const idle = createAction('idle-fallback', 'idle');
-    const manifest = createManifest({
-      actions: [idle],
-      states: [createState('idle-state', 'primary', [idle.id])],
-      defaultStateId: 'idle-state',
-      skins: [createSkin('default-skin', [idle.id])]
-    });
-
-    expect(() => selectCharacterBehaviorAction(createInput(manifest, {
-      state: { revision: 1, primaryStateId: 'idle-state', modifierStateIds: [], activeSignals: [], desiredActionSemantic: 'hide' }
-    }))).toThrow('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
-  });
-
-  test('缺少普通 speak 时不能将 Agent 请求回退为保留的 hide 或 emerge', () => {
-    const hidden = createAction('hidden', 'hide');
-    const emerged = createAction('emerged', 'emerge');
-    const manifest = createManifest({
-      actions: [hidden, emerged],
-      states: [createState('idle-state', 'primary', [hidden.id, emerged.id])],
-      defaultStateId: 'idle-state',
-      skins: [createSkin('default-skin', [hidden.id, emerged.id])]
-    });
-
-    expect(() => selectCharacterBehaviorAction(createInput(manifest, {
-      state: { revision: 1, primaryStateId: 'idle-state', modifierStateIds: [], activeSignals: [], desiredActionSemantic: 'speak' }
-    }))).toThrow('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
-  });
-
   test('默认状态回退不继承当前主状态或修饰状态的约束上下文', () => {
     const blocked = createAction('blocked', 'speak', { direction: 'left' });
     const fallback = createAction('fallback', 'idle', {

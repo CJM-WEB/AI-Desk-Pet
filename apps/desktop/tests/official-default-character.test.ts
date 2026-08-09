@@ -60,6 +60,10 @@ describe('官方默认角色安装', () => {
     expect(carrying?.commitFrameId).toBe('carrying-frame-3');
     expect(carrying?.frames.findIndex(frame => frame.id === carrying.commitFrameId))
       .toBe(2);
+    expect(publishedManifest.skins[0]?.semanticFallbacks).toEqual([]);
+    expect(publishedManifest.actions.map(action => action.semantic)).not.toEqual(
+      expect.arrayContaining(['hide', 'emerge'])
+    );
   });
 
   test('已有可用默认角色时不重写其运行版本', async () => {

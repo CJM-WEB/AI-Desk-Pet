@@ -153,7 +153,7 @@ describe('V1 角色数据转换器', () => {
     expect(presentation).not.toHaveProperty('commitFrameId');
   });
 
-  test('V1 仅为目录藏身生成受控表现回退，不新增目录能力或素材', () => {
+  test('V1 转换只保留原角色动作，不生成目录表现回退或额外素材', () => {
     const source = createV1Manifest();
     source.states.push({
       id: 'moving',
@@ -163,10 +163,7 @@ describe('V1 角色数据转换器', () => {
 
     const result = convertCharacterManifestV1ToV2(source);
 
-    expect(result.document.skins[0]?.semanticFallbacks).toEqual([
-      { semantic: 'hide', actionId: 'moving-main' },
-      { semantic: 'emerge', actionId: 'idle-main' }
-    ]);
+    expect(result.document.skins[0]?.semanticFallbacks).toEqual([]);
     expect(result.document.actions).toHaveLength(2);
     expect(result.document.resources).toEqual(source.resources);
     expect(characterManifestV2Schema.parse(result.document)).toEqual(result.document);

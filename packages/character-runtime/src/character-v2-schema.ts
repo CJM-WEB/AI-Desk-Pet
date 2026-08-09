@@ -7,14 +7,13 @@ import {
 } from './character-schema';
 
 export const STANDARD_CHARACTER_SEMANTICS = [
-  'idle', 'listen', 'think', 'move', 'speak', 'carry', 'celebrate', 'fail', 'hide', 'emerge'
+  'idle', 'listen', 'think', 'move', 'speak', 'carry', 'celebrate', 'fail'
 ] as const;
 
 export const TRUSTED_BEHAVIOR_SIGNALS = [
   'idle', 'user-interaction', 'conversation-start', 'listening', 'thinking',
   'task-start', 'task-success', 'task-failure', 'move-start', 'move-stop',
-  'carry-start', 'carry-stop', 'habitat-enter', 'habitat-found',
-  'habitat-hidden', 'habitat-lost'
+  'carry-start', 'carry-stop'
 ] as const;
 
 const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,119}$/;
@@ -121,13 +120,11 @@ const semanticFallbackSchema = z.object({
   actionId: safeIdentifierSchema
 }).strict();
 
-/** 目录藏身仅允许复用既有移动或待机表现，不借此声明目录能力。 */
+/** 通用语义回退只能复用相同语义的既有动作。 */
 function isAllowedSemanticFallback(
   semantic: typeof STANDARD_CHARACTER_SEMANTICS[number],
   actionSemantic: typeof STANDARD_CHARACTER_SEMANTICS[number]
 ): boolean {
-  if (semantic === 'hide') return actionSemantic === 'move';
-  if (semantic === 'emerge') return actionSemantic === 'idle';
   return semantic === actionSemantic;
 }
 

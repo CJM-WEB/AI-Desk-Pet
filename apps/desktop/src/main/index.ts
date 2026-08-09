@@ -802,16 +802,6 @@ async function createApplicationWindows(
     observation: HabitatExplorerObservation
   ): Promise<void> => {
     await habitatService.observeExplorer(observation)
-      .then(() => {
-        const state = habitatService.snapshot().state;
-        if (state === 'folder-visible') {
-          void characterBehavior.requestHabitatPresentation('found');
-        } else if (state === 'folder-lost') {
-          void characterBehavior.requestHabitatPresentation('lost');
-        } else if (state === 'folder-hidden') {
-          characterBehavior.handleHabitatHidden();
-        }
-      })
       .catch(() => console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED'));
     await refreshTray();
   };
@@ -1205,14 +1195,10 @@ async function createApplicationWindows(
   });
 
   const habitatAutonomy = new HabitatAutonomyPolicy({
-    enterDirectory: async (directoryId, reason) => {
-      return refreshAfter(async () => {
-        await characterBehavior.requestHabitatPresentation('enter');
-        const result = await habitatService.enterDirectory(directoryId, reason);
-        characterBehavior.handleHabitatHidden();
-        return result;
-      }, refreshTray);
-    },
+    enterDirectory: (directoryId, reason) => refreshAfter(
+      () => habitatService.enterDirectory(directoryId, reason),
+      refreshTray
+    ),
     recallToDesktop: () => refreshAfter(() => habitatService.recallToDesktop(), refreshTray),
     recordFailure: code => console.error('自动藏身失败。', code),
     now: Date.now,

@@ -240,28 +240,31 @@ describe('角色包 V2 严格契约', () => {
     expect(characterDraftV2Schema.parse(draft)).toEqual(draft);
   });
 
-  test.each(['hide', 'emerge'] as const)(
-    '草稿允许声明 %s 表现语义但仍拒绝能力引用',
-    (semantic) => {
-      const draft = createCharacterDraftV2Fixture();
-      draft.actions[0]!.semantic = semantic;
-
-      expect(characterDraftV2Schema.parse(draft).actions[0]!.semantic).toBe(semantic);
-
-      (draft.actions[0] as Record<string, unknown>).capabilityRef = 'directory-access';
-      expect(() => characterDraftV2Schema.parse(draft)).toThrow();
-    }
-  );
-
-  test.each([
-    ['hide', 'hide'],
-    ['emerge', 'emerge']
-  ] as const)('草稿拒绝目录藏身的非受控 %s→%s 回退', (semantic, actionSemantic) => {
+  test.each(['hide', 'emerge'])('草稿拒绝已退出标准动作集合的目录表现语义：%s', (semantic) => {
     const draft = createCharacterDraftV2Fixture();
-    draft.actions[0]!.semantic = actionSemantic;
-    draft.skins[0]!.semanticFallbacks = [{ semantic, actionId: 'idle-main' }];
+    (draft.actions[0] as Record<string, unknown>).semantic = semantic;
 
     expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
+  test.each([
+    'habitat-enter',
+    'habitat-found',
+    'habitat-hidden',
+    'habitat-lost'
+  ])('草稿状态条件拒绝已退出运行时的目录空间信号：%s', (signal) => {
+    const draft = createCharacterDraftV2Fixture();
+    (draft.states[0]!.enterConditions[0]!.clauses[0] as Record<string, unknown>).signal = signal;
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
+  test('草稿继续接受普通语义回退与搬运条件信号', () => {
+    const draft = createCharacterDraftV2Fixture();
+    draft.skins[0]!.semanticFallbacks = [{ semantic: 'idle', actionId: 'idle-main' }];
+    draft.states[0]!.enterConditions[0]!.clauses[0] = { kind: 'signal', signal: 'carry-start' };
+
+    expect(characterDraftV2Schema.parse(draft)).toEqual(draft);
   });
 
   test.each([

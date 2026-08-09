@@ -217,7 +217,7 @@ describe('动作属性与锚点', () => {
     expect(markup).toContain('朝向');
   });
 
-  test('动作语义仅增加目录藏身表现选项，不暴露路径、权限或系统命令字段', () => {
+  test('动作语义只展示普通角色表现，不暴露目录表现或系统能力字段', () => {
     const markup = renderToStaticMarkup(
       <ActionInspector
         action={actionDefinition}
@@ -228,8 +228,9 @@ describe('动作属性与锚点', () => {
       />
     );
 
-    expect(markup).toContain('value="hide"');
-    expect(markup).toContain('value="emerge"');
+    expect(markup).toContain('value="carry"');
+    expect(markup).not.toContain('value="hide"');
+    expect(markup).not.toContain('value="emerge"');
     expect(markup).not.toContain('capabilityRef');
     expect(markup).not.toContain('系统命令');
     expect(markup).not.toContain('文件路径');
