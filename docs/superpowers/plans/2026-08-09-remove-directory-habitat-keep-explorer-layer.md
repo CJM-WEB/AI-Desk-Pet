@@ -214,14 +214,16 @@ git commit -m "refactor: 删除目录空间公开入口"
 更新 V1 转换、V2 schema、行为推断和默认角色测试，以普通角色行为为手工期望：
 
 ```ts
-expect(STANDARD_CHARACTER_SEMANTICS).toEqual(['carry-start', 'carry-stop']);
+expect(STANDARD_CHARACTER_SEMANTICS).toEqual([
+  'idle', 'listen', 'think', 'move', 'speak', 'carry', 'celebrate', 'fail'
+]);
 expect(converted.skins[0]?.semanticFallbacks).toEqual([]);
 expect(official.actions.map(action => action.state)).not.toEqual(
   expect.arrayContaining(['hide', 'emerge'])
 );
 ```
 
-同时验证 carry fallback 和 idle/moving 推断仍正常。
+同时验证 `carry-start`/`carry-stop` 等非 Habitat 行为信号、carry fallback 和 idle/moving 推断仍正常。
 
 - [ ] **Step 2：运行 RED**
 
