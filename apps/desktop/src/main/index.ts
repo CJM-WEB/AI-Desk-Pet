@@ -51,6 +51,7 @@ import {
   createApplicationQuitCoordinator,
   createCharacterActivationCoordinator,
   createIntegrityCheckedExplorerPort,
+  createMainShutdownTransaction,
   createStartupCleanupStack,
   createTrayRefreshController
 } from './lifecycle/main-lifecycle';
@@ -329,10 +330,8 @@ async function createApplicationWindows(
     reportError: code => console.error('Explorer 桥接不可用。', code)
   });
   startupCleanup.add(() => explorerComposition.close());
-  let latestExplorerHandling = Promise.resolve();
   explorer.on('snapshot', observation => {
     const handling = explorerComposition.onExplorerSnapshot(observation as ExplorerSnapshot);
-    latestExplorerHandling = handling.catch(() => undefined);
     void handling.then(
       () => {
         completeMainE2eObservation(observation);
@@ -567,23 +566,16 @@ async function createApplicationWindows(
     prepare: window => workshopCloseHandshake.bindWindow(window, () => isQuitting),
     load: window => loadRenderer(window, 'characters')
   });
-  let shutdownStarted = false;
-  // 退出事务严格串行，单点失败记录后仍继续释放后续资源。
-  const shutdownApplication = async (): Promise<void> => {
-    if (shutdownStarted) return;
-    shutdownStarted = true;
-    const errors: unknown[] = [];
-    try { await explorerComposition.close(); } catch (error) { errors.push(error); }
-    try { await petPositionController.freezeAndFlush(); } catch (error) { errors.push(error); }
-    try {
-      await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent());
-    } catch (error) {
-      errors.push(error);
-    }
-    try { await desktopSettingsService.close(); } catch (error) { errors.push(error); }
-    releaseCharacterRuntime();
-    if (errors.length > 0) throw new AggregateError(errors, 'APPLICATION_SHUTDOWN_INCOMPLETE');
-  };
+  const shutdownApplication = createMainShutdownTransaction({
+    coordinator: explorerCoordinator,
+    bridge: explorerPort,
+    position: petPositionController,
+    services: [
+      () => workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()),
+      () => desktopSettingsService.close(),
+      releaseCharacterRuntime
+    ]
+  });
   const quitApplication = (): void => app.quit();
   const e2eCharacterDialogs = e2eBoundary
     ? createE2eCharacterDialogAdapter(e2eBoundary)

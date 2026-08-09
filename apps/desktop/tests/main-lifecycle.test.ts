@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   createApplicationQuitCoordinator,
   createCharacterActivationCoordinator,
+  createMainShutdownTransaction,
   createStartupCleanupStack,
   createTrayRefreshController
 } from '../src/main/lifecycle/main-lifecycle';
@@ -32,6 +33,59 @@ describe('Main 通用生命周期', () => {
     expect(shutdown).toHaveBeenCalledOnce();
     expect(cleanupBootstrap).not.toHaveBeenCalled();
     expect(quit).toHaveBeenCalledOnce();
+  });
+
+  test('关闭事务严格按图层、桥接、位置和既有服务顺序且保持幂等', async () => {
+    const order: string[] = [];
+    const shutdown = createMainShutdownTransaction({
+      coordinator: { close: async () => { order.push('coordinator'); } },
+      bridge: { close: async () => { order.push('bridge'); } },
+      position: { freezeAndFlush: async () => { order.push('position'); } },
+      services: [
+        async () => { order.push('workshop'); },
+        async () => { order.push('settings'); },
+        () => { order.push('runtime'); }
+      ]
+    });
+
+    await Promise.all([shutdown(), shutdown()]);
+
+    expect(order).toEqual([
+      'coordinator', 'bridge', 'position', 'workshop', 'settings', 'runtime'
+    ]);
+  });
+
+  test('关闭单点失败仍释放全部资源并稳定聚合错误', async () => {
+    const order: string[] = [];
+    const shutdown = createMainShutdownTransaction({
+      coordinator: { close: async () => { order.push('coordinator'); } },
+      bridge: { close: async () => { order.push('bridge'); throw new Error('PRIVATE'); } },
+      position: { freezeAndFlush: async () => { order.push('position'); } },
+      services: [
+        async () => { order.push('settings'); throw new Error('SETTINGS_PRIVATE'); },
+        () => { order.push('runtime'); }
+      ]
+    });
+
+    const failure = await shutdown().then(() => null, error => error as AggregateError);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure?.message).toBe('APPLICATION_SHUTDOWN_INCOMPLETE');
+    expect(failure?.errors).toHaveLength(2);
+    expect(order).toEqual(['coordinator', 'bridge', 'position', 'settings', 'runtime']);
+
+    const report = vi.fn();
+    const quit = vi.fn();
+    const application = createApplicationQuitCoordinator({
+      cleanupBootstrap: async () => undefined,
+      quit,
+      onError: report
+    });
+    application.activateNormal(shutdown);
+    await application.handle({ preventDefault: vi.fn() });
+    expect(report).toHaveBeenCalledExactlyOnceWith(failure);
+    expect(quit).toHaveBeenCalledOnce();
+    expect(order).toEqual(['coordinator', 'bridge', 'position', 'settings', 'runtime']);
   });
 
   test('角色切换期间保持活动标记并在失败后复位', async () => {

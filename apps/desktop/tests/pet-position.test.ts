@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   createPetPositionController,
-  createQuitAfterPositionFlush,
   restorePetPosition
 } from '../src/main/windows/pet-position';
 
@@ -58,30 +57,7 @@ describe('桌宠桌面位置控制器', () => {
     expect(saved).toEqual([{ x: 300, y: 320 }]);
   });
 
-  test('flush 串行排空写入期间到达的新位置', async () => {
-    vi.useFakeTimers();
-    const window = new FakePetWindow();
-    const saved: Array<{ x: number; y: number }> = [];
-    let release = (): void => undefined;
-    const pending = new Promise<void>(resolve => { release = resolve; });
-    const controller = createPetPositionController({
-      window,
-      debounceMs: 100,
-      savePosition: async position => {
-        saved.push(position);
-        if (position.x === 100) await pending;
-      }
-    });
-    window.moveTo(100, 120);
-    await vi.advanceTimersByTimeAsync(100);
-    const flushing = controller.flush();
-    window.moveTo(500, 520);
-    release();
-    await flushing;
-    expect(saved).toEqual([{ x: 100, y: 120 }, { x: 500, y: 520 }]);
-  });
-
-  test('保存失败只上报错误且 flush 正常完成', async () => {
+  test('保存失败只上报错误且冻结刷新正常完成', async () => {
     const failure = new Error('SAVE_FAILED');
     const errors: unknown[] = [];
     const window = new FakePetWindow();
@@ -91,7 +67,7 @@ describe('桌宠桌面位置控制器', () => {
       onError: error => errors.push(error)
     });
     window.moveTo(10, 20);
-    await expect(controller.flush()).resolves.toBeUndefined();
+    await expect(controller.freezeAndFlush()).resolves.toBeUndefined();
     expect(errors).toEqual([failure]);
   });
 
@@ -109,36 +85,5 @@ describe('桌宠桌面位置控制器', () => {
     window.moveTo(900, 920);
     await vi.advanceTimersByTimeAsync(100);
     expect(saved).toEqual([{ x: 320, y: 340 }]);
-  });
-});
-
-describe('退出前位置刷新', () => {
-  test('首次退出等待刷新，后续退出不重复事务', async () => {
-    let release = (): void => undefined;
-    const flush = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
-    const quit = vi.fn();
-    const handle = createQuitAfterPositionFlush({ flush, quit });
-    const first = { preventDefault: vi.fn() };
-    const running = handle(first);
-    expect(first.preventDefault).toHaveBeenCalledOnce();
-    release();
-    await running;
-    await handle({ preventDefault: vi.fn() });
-    expect(flush).toHaveBeenCalledOnce();
-    expect(quit).toHaveBeenCalledOnce();
-  });
-
-  test('刷新失败仍报告并继续退出', async () => {
-    const failure = new Error('FLUSH_FAILED');
-    const quit = vi.fn();
-    const onError = vi.fn();
-    const handle = createQuitAfterPositionFlush({
-      flush: async () => { throw failure; },
-      quit,
-      onError
-    });
-    await handle({ preventDefault: vi.fn() });
-    expect(onError).toHaveBeenCalledWith(failure);
-    expect(quit).toHaveBeenCalledOnce();
   });
 });

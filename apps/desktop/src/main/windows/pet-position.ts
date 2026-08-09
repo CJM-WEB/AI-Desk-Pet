@@ -18,21 +18,6 @@ interface PetPositionControllerOptions {
   onError?: (error: unknown) => void;
 }
 
-interface QuitEvent {
-  preventDefault(): void;
-}
-
-interface QuitAfterPositionFlushOptions {
-  flush: () => Promise<void>;
-  quit: () => void;
-  onError?: (error: unknown) => void;
-}
-
-export interface PetPositionController {
-  flush(): Promise<void>;
-  freezeAndFlush(): Promise<void>;
-}
-
 const DEFAULT_DEBOUNCE_MS = 250;
 
 export function restorePetPosition(
@@ -50,7 +35,7 @@ export function restorePetPosition(
 /** 桌宠位置只写入桌面坐标，并在退出冻结后排空最后一次移动。 */
 export function createPetPositionController(
   options: PetPositionControllerOptions
-): PetPositionController {
+) {
   let pendingPosition: Point | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let writeQueue = Promise.resolve();
@@ -92,31 +77,9 @@ export function createPetPositionController(
   });
 
   return {
-    flush: flushAll,
     async freezeAndFlush(): Promise<void> {
       frozen = true;
       await flushAll();
     }
-  };
-}
-
-export function createQuitAfterPositionFlush(
-  options: QuitAfterPositionFlushOptions
-): (event: QuitEvent) => Promise<void> {
-  let exitReady = false;
-  let activeFlush: Promise<void> | null = null;
-  return async event => {
-    if (exitReady) return;
-    event.preventDefault();
-    activeFlush ??= (async () => {
-      try {
-        await options.flush();
-      } catch (error) {
-        try { options.onError?.(error); } catch { /* 日志失败也必须继续退出。 */ }
-      }
-      exitReady = true;
-      options.quit();
-    })();
-    await activeFlush;
   };
 }

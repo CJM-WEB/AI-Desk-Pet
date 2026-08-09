@@ -144,6 +144,39 @@ export function createApplicationQuitCoordinator(options: {
   };
 }
 
+/** 关闭顺序是资源依赖的一部分；单点失败只记录，不阻断后续释放。 */
+export function createMainShutdownTransaction(options: {
+  coordinator: { close(): Promise<void> };
+  bridge: { close(): Promise<void> };
+  position: { freezeAndFlush(): Promise<void> };
+  services: ReadonlyArray<() => Promise<void> | void>;
+}): () => Promise<void> {
+  let active: Promise<void> | undefined;
+  const runSafely = async (
+    operation: () => Promise<void> | void,
+    errors: unknown[]
+  ): Promise<void> => {
+    try {
+      await operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  return (): Promise<void> => {
+    active ??= (async () => {
+      const errors: unknown[] = [];
+      await runSafely(() => options.coordinator.close(), errors);
+      await runSafely(() => options.bridge.close(), errors);
+      await runSafely(() => options.position.freezeAndFlush(), errors);
+      for (const service of options.services) await runSafely(service, errors);
+      if (errors.length > 0) {
+        throw new AggregateError(errors, 'APPLICATION_SHUTDOWN_INCOMPLETE');
+      }
+    })();
+    return active;
+  };
+}
+
 /** 用计数器收敛重叠异步活动，失败也会可靠释放活动标记。 */
 export function createAsyncActivityBlocker(): {
   run<T>(operation: () => Promise<T>): Promise<T>;
