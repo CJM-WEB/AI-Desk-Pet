@@ -662,7 +662,6 @@ async function createApplicationWindows(
         async activate({ explorerHwnd }: { explorerHwnd: string }): Promise<void> {
           if (explorerHwnd !== '9002') throw new Error('E2E_EXPLORER_LAYER_UNSAFE');
         },
-        async invalidate(): Promise<void> {},
         async dispose(): Promise<void> {}
       }
     : new ExplorerWindowLayerController({ window: pet });

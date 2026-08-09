@@ -6,7 +6,7 @@ import {
   type ExplorerCandidateWatermark
 } from './explorer-candidate-selector';
 import type { ExplorerSnapshot } from './explorer-space-protocol';
-import type { ExplorerLayerUnsafeReason } from './explorer-window-layer-controller';
+import type { HabitatExplorerUnsafeReason } from './habitat-window-controller';
 import {
   HabitatServiceError,
   habitatError,
@@ -97,7 +97,7 @@ interface ExplorerObserverPort {
 
 interface ExplorerLayerPort {
   activate(target: { explorerHwnd: string }): Promise<void>;
-  invalidate(reason: ExplorerLayerUnsafeReason): Promise<void>;
+  invalidate(reason: HabitatExplorerUnsafeReason): Promise<void>;
 }
 
 interface HabitatPetWindowPort {
@@ -796,7 +796,7 @@ export class HabitatService {
 
   private async conceal(
     epoch: number,
-    reason: ExplorerLayerUnsafeReason,
+    reason: HabitatExplorerUnsafeReason,
     lost = false,
     errorCode?: HabitatErrorCode
   ): Promise<void> {
@@ -813,7 +813,7 @@ export class HabitatService {
   /** 每个副作用前复核 epoch；调用后的异步结果不得改写新 authority。 */
   private async cleanupCurrent(
     epoch: number,
-    reason: ExplorerLayerUnsafeReason
+    reason: HabitatExplorerUnsafeReason
   ): Promise<HabitatErrorCode | null> {
     if (!this.isCurrentEpoch(epoch)) return null;
     let error: HabitatErrorCode | null = null;

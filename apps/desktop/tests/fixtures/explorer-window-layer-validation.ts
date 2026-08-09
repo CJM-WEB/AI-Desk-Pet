@@ -509,9 +509,7 @@ async function run(): Promise<void> {
             continue;
           }
 
-          await guardManual(controller!.invalidate(
-            sampled.publicResult.status === 'none' ? 'explorer-blurred' : 'tab-race'
-          ));
+          window!.hide();
           const hidden = await guardManual(probeLayer(petHwnd, target.outerHwnd));
           const exposureUpperBoundMs = performance.now() - lastReadyCompletedAt;
           const hiddenDecision = classifyHiddenNegativeExplorerSample(
@@ -746,8 +744,8 @@ async function run(): Promise<void> {
       if (!isSameExplorerValidationTarget(
         { ...sampled.publicResult, outerHwnd: sampled.outerHwnd }, validationTarget
       )) {
-        // 任意不确定状态先隐藏并验证硬门；之后仅等待真实 none，验收仍失败关闭。
-        await guardManual(controller.invalidate('tab-race'));
+        // 任意不确定状态由验收窗口自身隐藏；之后仅等待真实 none，验收仍失败关闭。
+        window.hide();
         const unsafeHidden = await guardManual(probeLayer(petHwnd, third.outerHwnd));
         const unsafeExposureUpperBoundMs = performance.now() - lastReadyCompletedAt;
         process.stdout.write(`${JSON.stringify({
@@ -780,7 +778,7 @@ async function run(): Promise<void> {
       await guardManual(new Promise(resolveWait => setTimeout(resolveWait, 75)));
     }
     if (blurred === undefined) throw new Error('VALIDATION_NORMAL_APP_SWITCH_NOT_OBSERVED');
-    await guardManual(controller.invalidate('explorer-blurred'));
+    window.hide();
     const hidden = await guardManual(probeLayer(petHwnd, third.outerHwnd));
     const conservativeExposureUpperBoundMs = performance.now() - lastReadyCompletedAt;
     process.stdout.write(`${JSON.stringify({

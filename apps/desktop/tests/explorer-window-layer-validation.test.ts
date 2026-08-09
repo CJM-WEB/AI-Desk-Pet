@@ -280,10 +280,11 @@ describe('Task 0E 固定实机验收夹具', () => {
     const source = readFileSync(layerFixture, 'utf8');
 
     expect(source).toContain("type: 'foreground-sample'");
-    expect(source).toContain("await guardManual(controller.invalidate('tab-race'))");
+    expect(source).toContain('window.hide();');
+    expect(source).not.toContain('.invalidate(');
     expect(source).toContain('unsafeExposureUpperBoundMs');
     expect(source).toContain('VALIDATION_FOREGROUND_UNSAFE_HIDE_FAILED');
-    expect(source.indexOf("controller.invalidate('tab-race')"))
+    expect(source.indexOf('window.hide();'))
       .toBeLessThan(source.indexOf("throw new Error('VALIDATION_FOREGROUND_SAMPLE_UNSAFE')"));
   });
 

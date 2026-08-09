@@ -1,13 +1,5 @@
 const MAX_NATIVE_HWND = '18446744073709551615';
 
-export type ExplorerLayerUnsafeReason =
-  | 'explorer-blurred'
-  | 'explorer-minimized'
-  | 'explorer-closed'
-  | 'tab-race'
-  | 'hwnd-invalid'
-  | 'leave';
-
 export interface ExplorerLayerWindow {
   moveAbove(mediaSourceId: string): void;
   isDestroyed(): boolean;

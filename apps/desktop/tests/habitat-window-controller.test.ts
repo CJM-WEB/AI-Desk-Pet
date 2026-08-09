@@ -60,9 +60,6 @@ function createFixture(options: {
     activate: vi.fn(async ({ explorerHwnd }: { explorerHwnd: string }) => {
       events.push(`activate:${explorerHwnd}`);
     }),
-    invalidate: vi.fn(async (reason: string) => {
-      events.push(`invalidate:${reason}`);
-    }),
     dispose: vi.fn(async () => {
       events.push('dispose-layer');
     })
@@ -181,11 +178,10 @@ describe('HabitatWindowController', () => {
     expect(fixture.motion.setSuspended).toHaveBeenLastCalledWith(true);
     expect(fixture.interaction.setPassthrough).toHaveBeenLastCalledWith(true);
     expect(fixture.position.setPersistenceMode).toHaveBeenLastCalledWith('disabled');
-    expect(fixture.layer.invalidate).toHaveBeenLastCalledWith('leave');
     expect(fixture.controller.getMode()).toBe('folder-hidden');
   });
 
-  it('Explorer 失焦与观察超时都先隐藏再 invalidate，且超时不超过 1000ms', async () => {
+  it('Explorer 失焦与观察超时都由 Habitat 自身隐藏，且超时不超过 1000ms', async () => {
     const fixture = createFixture();
     await fixture.controller.showFolder(observation());
     fixture.events.splice(0);
@@ -195,16 +191,14 @@ describe('HabitatWindowController', () => {
     vi.advanceTimersByTime(1);
     await vi.runAllTimersAsync();
 
-    expect(fixture.events.indexOf('hide'))
-      .toBeLessThan(fixture.events.indexOf('invalidate:tab-race'));
+    expect(fixture.events[0]).toBe('hide');
     expect(fixture.controller.getMode()).toBe('lost');
     expect(fixture.window.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
 
     await fixture.controller.showFolder(observation({ sequence: 2 }));
     fixture.events.splice(0);
     await fixture.controller.loseExplorer('explorer-blurred');
-    expect(fixture.events.indexOf('hide'))
-      .toBeLessThan(fixture.events.indexOf('invalidate:explorer-blurred'));
+    expect(fixture.events[0]).toBe('hide');
   });
 
   it('layer.activate 挂起时可见转换仍在 1000ms 内失败关闭', async () => {
@@ -222,8 +216,7 @@ describe('HabitatWindowController', () => {
     vi.advanceTimersByTime(1);
     await vi.runAllTimersAsync();
 
-    expect(fixture.events.indexOf('hide'))
-      .toBeLessThan(fixture.events.indexOf('invalidate:tab-race'));
+    expect(fixture.window.hide).toHaveBeenCalledOnce();
     releaseActivate?.();
     await expect(transition).rejects.toThrow('HABITAT_TRANSITION_SUPERSEDED');
   });
@@ -243,8 +236,7 @@ describe('HabitatWindowController', () => {
     vi.advanceTimersByTime(1_000);
     await vi.runAllTimersAsync();
 
-    expect(fixture.events.indexOf('hide'))
-      .toBeLessThan(fixture.events.indexOf('invalidate:tab-race'));
+    expect(fixture.window.hide).toHaveBeenCalledOnce();
     releaseValidation?.(true);
     await expect(transition).rejects.toThrow('HABITAT_TRANSITION_SUPERSEDED');
   });
@@ -266,8 +258,7 @@ describe('HabitatWindowController', () => {
     expect(current).toHaveBeenCalledTimes(3);
     await vi.advanceTimersByTimeAsync(1_200);
 
-    expect(fixture.events.indexOf('hide'))
-      .toBeLessThan(fixture.events.indexOf('invalidate:tab-race'));
+    expect(fixture.events).toContain('hide');
     releaseValidation?.(true);
     await expect(transition).rejects.toThrow('HABITAT_TRANSITION_SUPERSEDED');
   });
@@ -354,14 +345,12 @@ describe('HabitatWindowController', () => {
     await vi.waitFor(() => expect(releaseOld).toBeTypeOf('function'));
     await fixture.controller.showFolder(observation({ sequence: 2 }));
     fixture.window.hide.mockClear();
-    fixture.layer.invalidate.mockClear();
 
     releaseOld?.();
     await expect(oldTransition).rejects.toThrow('HABITAT_TRANSITION_SUPERSEDED');
 
     expect(fixture.controller.getMode()).toBe('folder-visible');
     expect(fixture.window.hide).not.toHaveBeenCalled();
-    expect(fixture.layer.invalidate).not.toHaveBeenCalled();
   });
 
   it('续期提升失败不丢失既有 10 秒上限，且窗口立即隐藏', async () => {
@@ -459,8 +448,8 @@ describe('HabitatWindowController', () => {
     expect(fixture.layer.dispose).toHaveBeenCalledOnce();
   });
 
-  it.each(['motion', 'interaction', 'position', 'layer'] as const)(
-    'failClosed 在%s清理失败时仍尝试全部清理并 invalidate',
+  it.each(['motion', 'interaction', 'position'] as const)(
+    'failClosed 在%s清理失败时仍尝试其余本地清理',
     async failurePoint => {
       const fixture = createFixture();
       if (failurePoint === 'motion') {
@@ -475,11 +464,6 @@ describe('HabitatWindowController', () => {
         fixture.position.setPersistenceMode.mockImplementation(() => {
           throw new Error('position failure');
         });
-      } else {
-        fixture.layer.invalidate.mockImplementation(async reason => {
-          fixture.events.push(`invalidate:${reason}`);
-          throw new Error('layer failure');
-        });
       }
 
       await expect(fixture.controller.loseExplorer('tab-race'))
@@ -490,9 +474,6 @@ describe('HabitatWindowController', () => {
       expect(fixture.motion.setSuspended).toHaveBeenCalledWith(true);
       expect(fixture.interaction.setPassthrough).toHaveBeenCalledWith(true);
       expect(fixture.position.setPersistenceMode).toHaveBeenCalledWith('disabled');
-      expect(fixture.layer.invalidate).toHaveBeenCalledWith('tab-race');
-      expect(fixture.events.indexOf('hide'))
-        .toBeLessThan(fixture.events.findIndex(event => event.startsWith('invalidate:')));
     }
   );
 
@@ -511,7 +492,6 @@ describe('HabitatWindowController', () => {
     expect(fixture.window.hide).toHaveBeenCalled();
     expect(fixture.interaction.setPassthrough).toHaveBeenCalledWith(true);
     expect(fixture.position.setPersistenceMode).toHaveBeenCalledWith('disabled');
-    expect(fixture.layer.invalidate).toHaveBeenCalledWith('tab-race');
   });
 
   it('拒绝已销毁桌宠窗口，不写坐标也不激活层级', async () => {

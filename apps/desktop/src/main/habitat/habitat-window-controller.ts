@@ -9,10 +9,7 @@ import type { PetPositionController } from '../windows/pet-position';
 import {
   calculateHabitatMovementRegions
 } from './habitat-motion-region';
-import type {
-  ExplorerLayerUnsafeReason,
-  ExplorerWindowLayerController
-} from './explorer-window-layer-controller';
+import type { ExplorerWindowLayerController } from './explorer-window-layer-controller';
 
 export const INTERACTION_RAISE_MAX_DURATION_MS = 10_000;
 export const HABITAT_OBSERVATION_MAX_AGE_MS = 1_000;
@@ -26,6 +23,14 @@ export type HabitatWindowMode =
   | 'folder-hidden'
   | 'folder-visible'
   | 'lost';
+
+export type HabitatExplorerUnsafeReason =
+  | 'explorer-blurred'
+  | 'explorer-minimized'
+  | 'explorer-closed'
+  | 'tab-race'
+  | 'hwnd-invalid'
+  | 'leave';
 
 export interface HabitatExplorerObservation {
   instanceId: string;
@@ -56,7 +61,7 @@ interface HabitatInteractionController {
 
 interface HabitatWindowControllerOptions {
   window: HabitatWindow;
-  layer: Pick<ExplorerWindowLayerController, 'activate' | 'invalidate' | 'dispose'>;
+  layer: Pick<ExplorerWindowLayerController, 'activate' | 'dispose'>;
   motion: Pick<CharacterMotionService, 'setSuspended' | 'setMovementRegions'>;
   interaction: HabitatInteractionController;
   position: Pick<PetPositionController, 'setPersistenceMode'>;
@@ -149,7 +154,7 @@ export class HabitatWindowController {
       throw new Error('HABITAT_TRANSITION_SUPERSEDED');
     }
     if (!safeObservation) {
-      await this.failClosed(this.reasonFor(observation), 'lost');
+      await this.failClosed('lost');
       throw new Error('HABITAT_EXPLORER_UNSAFE');
     }
 
@@ -192,7 +197,7 @@ export class HabitatWindowController {
       }
       if (!stillCurrent || this.options.window.isDestroyed()) {
         failedClosedByThisTransition = true;
-        await this.failClosed('tab-race', 'lost');
+        await this.failClosed('lost');
         throw new Error('HABITAT_EXPLORER_UNSAFE');
       }
       this.options.position.setPersistenceMode('folder');
@@ -210,7 +215,7 @@ export class HabitatWindowController {
         throw new Error('HABITAT_TRANSITION_SUPERSEDED');
       }
       if (!failedClosedByThisTransition) {
-        await this.failClosed('tab-race', 'lost');
+        await this.failClosed('lost');
       }
       throw error;
     }
@@ -218,18 +223,18 @@ export class HabitatWindowController {
 
   /** 用户离开目录模式时仍保留独立的 folder-hidden 状态。 */
   hideFolder(): Promise<void> {
-    return this.failClosed('leave', 'folder-hidden');
+    return this.failClosed('folder-hidden');
   }
 
-  /** 失焦、最小化、关闭或观察不确定统一先隐藏再失效层级。 */
-  loseExplorer(reason: ExplorerLayerUnsafeReason): Promise<void> {
-    return this.failClosed(reason, 'lost');
+  /** 失焦、最小化、关闭或观察不确定统一由 Habitat 自身失败关闭。 */
+  loseExplorer(_reason: HabitatExplorerUnsafeReason): Promise<void> {
+    return this.failClosed('lost');
   }
 
   /** 从目录模式返回普通桌面层级，不保留相邻层级或目录坐标持久化。 */
   async enterDesktopIdle(): Promise<void> {
     this.requireActiveWindow();
-    await this.failClosed('leave', 'folder-hidden');
+    await this.failClosed('folder-hidden');
     this.options.motion.setMovementRegions(null);
     this.options.position.setPersistenceMode('desktop');
     this.options.window.showInactive();
@@ -313,13 +318,6 @@ export class HabitatWindowController {
     }
   }
 
-  private reasonFor(observation: HabitatExplorerObservation): ExplorerLayerUnsafeReason {
-    if (observation.minimized) return 'explorer-minimized';
-    if (!observation.foreground) return 'explorer-blurred';
-    if (!isCanonicalHwnd(observation.explorerHwnd)) return 'hwnd-invalid';
-    return 'tab-race';
-  }
-
   private canPlaceAt(point: Point, size: Rectangle, region: Rectangle): boolean {
     return point.x >= region.x
       && point.y >= region.y
@@ -327,9 +325,8 @@ export class HabitatWindowController {
       && point.y + size.height <= region.y + region.height;
   }
 
-  /** 所有不安全分支共用同一路径，隐藏动作必须先于 layer.invalidate。 */
+  /** 所有不安全分支共用同一本地失败关闭路径。 */
   private async failClosed(
-    reason: ExplorerLayerUnsafeReason,
     mode: Extract<HabitatWindowMode, 'folder-hidden' | 'lost'>
   ): Promise<void> {
     this.folderTransitionGeneration += 1;
@@ -341,11 +338,6 @@ export class HabitatWindowController {
     this.collectLocalSafetyCleanup(errors);
     this.mode = mode;
     this.activeExplorerHwnd = undefined;
-    try {
-      await this.options.layer.invalidate(reason);
-    } catch (error) {
-      errors.push(error);
-    }
     if (errors.length > 0) throw incompleteCleanupError(errors);
   }
 
