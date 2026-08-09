@@ -462,6 +462,11 @@ textarea {
   font-size: 10px;
 }
 
+.path-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .path-row code {
   overflow: hidden;
   border-radius: 6px;
