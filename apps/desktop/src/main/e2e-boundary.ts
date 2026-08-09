@@ -169,10 +169,6 @@ export function createMainE2eExplorerBridge(options: {
     }
 
     private dispatchEvent(event: string): void {
-      if (event === 'tray-summon') {
-        this.emit('tray-summon', { revision: this.eventRevision });
-        return;
-      }
       if (event === 'stale-revision') {
         const facts: ExplorerSnapshotFacts<ExplorerSnapshot> = {
           status: 'ready',

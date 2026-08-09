@@ -28,6 +28,7 @@ type BoundaryModule = {
       foreground?: boolean;
       hwnd?: string;
     }) => void): void;
+    on(event: 'tray-summon', listener: (payload: unknown) => void): void;
     snapshot(): { state: string; errorCode?: string };
     start(): Promise<void>;
     startObserving(): Promise<{ ok: true }>;
@@ -183,6 +184,31 @@ describe('Main E2E 安全边界', () => {
     await expect(fake.startObserving()).resolves.toEqual({ ok: true });
     await expect(fake.stopObserving()).resolves.toEqual({ ok: true });
     await expect(fake.close()).resolves.toBeUndefined();
+  });
+
+  test('Main E2E 边界不再派发目录空间托盘召回事件', async () => {
+    const boundary = await loadBoundaryModule();
+    expect(boundary).not.toBeNull();
+    if (!boundary) return;
+    const eventFile = join(userDataDirectory, 'main-e2e-explorer-events');
+    const fake = boundary.createMainE2eExplorerBridge({
+      eventFile,
+      habitatDirectory,
+      wrongDirectory: authorizedRootDirectory,
+      pollIntervalMs: 1
+    }) as ReturnType<typeof boundary.createMainE2eExplorerBridge> & {
+      inspection(): { eventRevision: number };
+    };
+    const listener = vi.fn();
+    fake.on('tray-summon', listener);
+
+    await fake.start();
+    await fake.startObserving();
+    await appendFile(eventFile, 'tray-summon\n', 'utf8');
+    await vi.waitFor(() => expect(fake.inspection().eventRevision).toBe(1));
+
+    expect(listener).not.toHaveBeenCalled();
+    await fake.close();
   });
 
   test('旧序列进入真实观察链且 fatal 后 fake 资源收敛为空闲', async () => {

@@ -139,21 +139,6 @@ export function createStartupVisibilityGate(options: {
   };
 }
 
-/** 托盘项可能已陈旧，执行时必须读取当前稳定状态而不是复用构建期快照。 */
-export function createStateGuardedPetVisibilityCommand(options: {
-  window: VisibilityWindow;
-  readState(): StableHabitatState;
-}): () => void {
-  return () => {
-    if (options.readState() !== 'desktop') {
-      options.window.hide();
-      return;
-    }
-    if (options.window.isVisible()) options.window.hide();
-    else options.window.show();
-  };
-}
-
 /** 多个状态变化共用串行刷新，后发生的构建结果不会被旧 Promise 覆盖。 */
 export function createTrayRefreshController<T>(options: {
   build(): Promise<T>;

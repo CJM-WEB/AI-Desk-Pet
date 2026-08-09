@@ -30,10 +30,6 @@ type LifecycleModule = {
     window: { isVisible(): boolean; hide(): void; show(): void };
     readState(): 'desktop' | 'folder-hidden' | 'folder-visible' | 'folder-lost';
   }): { show(): void; hide(): void; toggle(): void; markReady(): void };
-  createStateGuardedPetVisibilityCommand?(options: {
-    window: { isVisible(): boolean; hide(): void; show(): void };
-    readState(): 'desktop' | 'folder-hidden' | 'folder-visible' | 'folder-lost';
-  }): () => void;
   createTrayRefreshController?<T>(options: {
     build(): Promise<T>;
     publish(value: T): void;
@@ -339,27 +335,10 @@ describe('Habitat Main 真实生命周期', () => {
     expect(visible).toBe(true);
   });
 
-  test('陈旧 desktop 菜单命令执行时复核状态，folder-hidden 绝不直接 show', async () => {
+  test('不再导出读取 Habitat 状态的托盘显示命令', async () => {
     const module = await loadLifecycle();
-    let state: 'desktop' | 'folder-hidden' = 'desktop';
-    let visible = false;
-    const effects: string[] = [];
-    const staleCommand = module?.createStateGuardedPetVisibilityCommand?.({
-      window: {
-        isVisible: () => visible,
-        hide: () => { visible = false; effects.push('hide'); },
-        show: () => { visible = true; effects.push('show'); }
-      },
-      readState: () => state
-    });
-    expect(staleCommand).toBeDefined();
-    if (!staleCommand) return;
-    state = 'folder-hidden';
-
-    staleCommand();
-
-    expect(effects).toEqual(['hide']);
-    expect(visible).toBe(false);
+    expect(module).not.toBeNull();
+    expect(module).not.toHaveProperty('createStateGuardedPetVisibilityCommand');
   });
 
   test('Habitat 或目录配置变化后刷新并发布最新托盘结果', async () => {

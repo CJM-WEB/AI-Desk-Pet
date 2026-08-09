@@ -246,7 +246,6 @@ export type MainE2eExplorerEvent =
   | 'exact-foreground'
   | 'minimized'
   | 'blurred'
-  | 'tray-summon'
   | 'crash';
 
 export interface MainE2eState {
@@ -254,7 +253,6 @@ export interface MainE2eState {
   petWindowVisible: boolean;
   processedExplorerEventRevision: number;
   processedExplorerEvent: MainE2eExplorerEvent | null;
-  traySummonState: 'idle' | 'pending' | 'visible' | 'timeout';
   bridge: {
     state: 'idle' | 'ready' | 'failed' | 'closed';
     observing: boolean;
@@ -271,7 +269,6 @@ const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
   'exact-foreground',
   'minimized',
   'blurred',
-  'tray-summon',
   'crash'
 ]);
 
@@ -1163,7 +1160,6 @@ export async function createElectronAppFixture(
           || parsed.processedExplorerEventRevision < 0
           || (parsed.processedExplorerEvent !== null
             && !MAIN_E2E_EXPLORER_EVENTS.has(parsed.processedExplorerEvent))
-          || !new Set(['idle', 'pending', 'visible', 'timeout']).has(parsed.traySummonState)
           || !parsed.bridge
           || !new Set(['idle', 'ready', 'failed', 'closed']).has(parsed.bridge.state)
           || typeof parsed.bridge.observing !== 'boolean'
