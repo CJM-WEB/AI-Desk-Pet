@@ -341,10 +341,15 @@ function habitatIpcServiceDouble() {
 }
 
 describe('Habitat IPC 注册边界', () => {
-  test('只注册计划内八项命令并将严格公开字段交给服务', async () => {
+  test('只注册计划内八项命令且正确 Settings sender 可调用全部通道', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = habitatIpcServiceDouble();
-    registerHabitatIpc(ipcMain, service);
+    const settingsSender = { isDestroyed: () => false };
+    registerHabitatIpc(
+      ipcMain,
+      service,
+      sender => sender === settingsSender
+    );
 
     expect([...handlers.keys()]).toEqual([
       ipcChannels.habitatDashboardGet,
@@ -357,38 +362,105 @@ describe('Habitat IPC 注册边界', () => {
       ipcChannels.habitatRecall
     ]);
 
-    await handlers.get(ipcChannels.habitatDirectoryToggle)?.({}, {
+    const event = { sender: settingsSender };
+    await handlers.get(ipcChannels.habitatDashboardGet)?.(event, {});
+    await handlers.get(ipcChannels.habitatDirectoryChoose)?.(event, {});
+    await handlers.get(ipcChannels.habitatDirectoryToggle)?.(event, {
       directoryId: 'directory-1',
       enabled: false
     });
-    await handlers.get(ipcChannels.habitatPreferencesSave)?.({}, {
+    await handlers.get(ipcChannels.habitatDirectoryRemove)?.(event, {
+      directoryId: 'directory-1'
+    });
+    await handlers.get(ipcChannels.habitatPreferencesSave)?.(event, {
       enabled: true,
       autoHideEnabled: false,
       idleDelayMs: 30_000
     });
-    await handlers.get(ipcChannels.habitatEnter)?.({}, { directoryId: 'directory-1' });
+    await handlers.get(ipcChannels.habitatEnter)?.(event, {
+      directoryId: 'directory-1'
+    });
+    await handlers.get(ipcChannels.habitatSummon)?.(event, {});
+    await handlers.get(ipcChannels.habitatRecall)?.(event, {});
 
+    expect(service.getDashboard).toHaveBeenCalledOnce();
+    expect(service.chooseAndAddDirectory).toHaveBeenCalledOnce();
     expect(service.setDirectoryEnabled).toHaveBeenCalledWith('directory-1', false);
+    expect(service.removeDirectory).toHaveBeenCalledWith('directory-1');
     expect(service.savePreferences).toHaveBeenCalledWith({
       enabled: true,
       autoHideEnabled: false,
       idleDelayMs: 30_000
     });
     expect(service.enterDirectory).toHaveBeenCalledWith('directory-1');
+    expect(service.summon).toHaveBeenCalledOnce();
+    expect(service.recall).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ['错误 sender', { sender: { isDestroyed: () => false } }],
+    ['已销毁 sender', { sender: { isDestroyed: () => true } }],
+    ['缺失 sender', {}]
+  ])('%s 在 schema 与服务前被全部八个通道稳定拒绝', async (_name, event) => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = habitatIpcServiceDouble();
+    const settingsSender = { isDestroyed: () => false };
+    registerHabitatIpc(
+      ipcMain,
+      service,
+      sender => sender === settingsSender
+    );
+    const invalidInvocations = [
+      [ipcChannels.habitatDashboardGet, { absolutePath: 'C:\\Private' }],
+      [ipcChannels.habitatDirectoryChoose, { hwnd: 42 }],
+      [ipcChannels.habitatDirectoryToggle, {
+        directoryId: 'directory-1',
+        enabled: true,
+        actionToken: 'private-token'
+      }],
+      [ipcChannels.habitatDirectoryRemove, {
+        directoryId: 'directory-1',
+        absolutePath: 'C:\\Private'
+      }],
+      [ipcChannels.habitatPreferencesSave, {
+        enabled: true,
+        autoHideEnabled: false,
+        idleDelayMs: 30_000,
+        x: 10
+      }],
+      [ipcChannels.habitatEnter, {
+        directoryId: 'directory-1',
+        bridgeCommand: 'attach'
+      }],
+      [ipcChannels.habitatSummon, { actionToken: 'private-token' }],
+      [ipcChannels.habitatRecall, { y: 20 }]
+    ] as const;
+
+    for (const [channel, input] of invalidInvocations) {
+      await expect(handlers.get(channel)?.(event, input)).rejects.toMatchObject({
+        code: 'HABITAT_SETTINGS_SENDER_INVALID',
+        message: 'HABITAT_SETTINGS_SENDER_INVALID'
+      });
+    }
+    for (const method of Object.values(service)) {
+      expect(method).not.toHaveBeenCalled();
+    }
   });
 
   test('未知字段和私有控制参数在调用服务前稳定拒绝', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = habitatIpcServiceDouble();
-    registerHabitatIpc(ipcMain, service);
+    const settingsSender = { isDestroyed: () => false };
+    registerHabitatIpc(ipcMain, service, sender => sender === settingsSender);
+    const event = { sender: settingsSender };
 
-    await expect(handlers.get(ipcChannels.habitatDashboardGet)?.({}, {
+    await expect(handlers.get(ipcChannels.habitatDashboardGet)?.(event, {
       absolutePath: 'C:\\Private'
     })).rejects.toMatchObject({
       code: 'HABITAT_INPUT_INVALID',
       message: 'HABITAT_INPUT_INVALID'
     });
-    await expect(handlers.get(ipcChannels.habitatDirectoryToggle)?.({}, {
+    await expect(handlers.get(ipcChannels.habitatDirectoryToggle)?.(event, {
       directoryId: 'directory-1',
       enabled: true,
       actionToken: 'private-token'
@@ -400,13 +472,17 @@ describe('Habitat IPC 注册边界', () => {
   test('服务意外返回私有字段时稳定关闭响应边界', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = habitatIpcServiceDouble();
+    const settingsSender = { isDestroyed: () => false };
     service.getDashboard.mockResolvedValueOnce({
       ...dashboard,
       absolutePath: 'C:\\Private'
     } as never);
-    registerHabitatIpc(ipcMain, service);
+    registerHabitatIpc(ipcMain, service, sender => sender === settingsSender);
 
-    await expect(handlers.get(ipcChannels.habitatDashboardGet)?.({}, {}))
+    await expect(handlers.get(ipcChannels.habitatDashboardGet)?.(
+      { sender: settingsSender },
+      {}
+    ))
       .rejects.toMatchObject({
         code: 'HABITAT_RESPONSE_INVALID',
         message: 'HABITAT_RESPONSE_INVALID'

@@ -374,7 +374,10 @@ export interface HabitatIpcService {
 }
 
 function habitatBoundaryError(
-  code: 'HABITAT_INPUT_INVALID' | 'HABITAT_RESPONSE_INVALID'
+  code:
+    | 'HABITAT_SETTINGS_SENDER_INVALID'
+    | 'HABITAT_INPUT_INVALID'
+    | 'HABITAT_RESPONSE_INVALID'
 ): Error & { code: string } {
   return Object.assign(new Error(code), { code });
 }
@@ -391,23 +394,52 @@ function parseHabitatOutput<T>(schema: z.ZodType<T>, raw: unknown): T {
   return parsed.data;
 }
 
-/** Habitat Renderer 边界固定为八项命令，输入与响应均使用共享 strict schema。 */
+export type HabitatSettingsSenderAuthorizer = (sender: WebContents) => boolean;
+
+function assertHabitatSettingsSender(
+  event: IpcMainInvokeEvent,
+  isSettingsSender: HabitatSettingsSenderAuthorizer
+): void {
+  try {
+    const sender = event?.sender;
+    if (
+      sender
+      && !sender.isDestroyed()
+      && isSettingsSender(sender)
+    ) return;
+  } catch {
+    // sender 生命周期或授权端口异常统一失败关闭，不跨边界暴露细节。
+  }
+  throw habitatBoundaryError('HABITAT_SETTINGS_SENDER_INVALID');
+}
+
+/** Habitat Renderer 边界固定为八项命令，并仅接受 Settings 窗口 sender。 */
 export function registerHabitatIpc(
   ipcMain: IpcMain,
-  service: HabitatIpcService
+  service: HabitatIpcService,
+  isSettingsSender: HabitatSettingsSenderAuthorizer
 ): void {
-  replaceHandler(ipcMain, ipcChannels.habitatDashboardGet, async (_event, raw) => {
+  const settingsOnly = (
+    handler: (raw: unknown) => unknown
+  ): ((event: IpcMainInvokeEvent, raw: unknown) => unknown) => (
+    async (event, raw) => {
+      assertHabitatSettingsSender(event, isSettingsSender);
+      return handler(raw);
+    }
+  );
+
+  replaceHandler(ipcMain, ipcChannels.habitatDashboardGet, settingsOnly(async raw => {
     parseHabitatInput(habitatEmptyInputSchema, raw);
     return parseHabitatOutput(habitatDashboardSchema, await service.getDashboard());
-  });
-  replaceHandler(ipcMain, ipcChannels.habitatDirectoryChoose, async (_event, raw) => {
+  }));
+  replaceHandler(ipcMain, ipcChannels.habitatDirectoryChoose, settingsOnly(async raw => {
     parseHabitatInput(habitatEmptyInputSchema, raw);
     return parseHabitatOutput(
       habitatChooseResultSchema,
       await service.chooseAndAddDirectory()
     );
-  });
-  replaceHandler(ipcMain, ipcChannels.habitatDirectoryToggle, async (_event, raw) => {
+  }));
+  replaceHandler(ipcMain, ipcChannels.habitatDirectoryToggle, settingsOnly(async raw => {
     const { directoryId, enabled } = parseHabitatInput(
       habitatDirectoryToggleInputSchema,
       raw
@@ -416,36 +448,36 @@ export function registerHabitatIpc(
       habitatDashboardSchema,
       await service.setDirectoryEnabled(directoryId, enabled)
     );
-  });
-  replaceHandler(ipcMain, ipcChannels.habitatDirectoryRemove, async (_event, raw) => {
+  }));
+  replaceHandler(ipcMain, ipcChannels.habitatDirectoryRemove, settingsOnly(async raw => {
     const { directoryId } = parseHabitatInput(habitatDirectoryIdInputSchema, raw);
     return parseHabitatOutput(
       habitatDashboardSchema,
       await service.removeDirectory(directoryId)
     );
-  });
-  replaceHandler(ipcMain, ipcChannels.habitatPreferencesSave, async (_event, raw) => {
+  }));
+  replaceHandler(ipcMain, ipcChannels.habitatPreferencesSave, settingsOnly(async raw => {
     const input = parseHabitatInput(habitatPreferencesInputSchema, raw);
     return parseHabitatOutput(
       habitatDashboardSchema,
       await service.savePreferences(input)
     );
-  });
-  replaceHandler(ipcMain, ipcChannels.habitatEnter, async (_event, raw) => {
+  }));
+  replaceHandler(ipcMain, ipcChannels.habitatEnter, settingsOnly(async raw => {
     const { directoryId } = parseHabitatInput(habitatDirectoryIdInputSchema, raw);
     return parseHabitatOutput(
       habitatDashboardSchema,
       await service.enterDirectory(directoryId)
     );
-  });
-  replaceHandler(ipcMain, ipcChannels.habitatSummon, async (_event, raw) => {
+  }));
+  replaceHandler(ipcMain, ipcChannels.habitatSummon, settingsOnly(async raw => {
     parseHabitatInput(habitatEmptyInputSchema, raw);
     return parseHabitatOutput(habitatDashboardSchema, await service.summon());
-  });
-  replaceHandler(ipcMain, ipcChannels.habitatRecall, async (_event, raw) => {
+  }));
+  replaceHandler(ipcMain, ipcChannels.habitatRecall, settingsOnly(async raw => {
     parseHabitatInput(habitatEmptyInputSchema, raw);
     return parseHabitatOutput(habitatDashboardSchema, await service.recall());
-  });
+  }));
 }
 
 export interface CharacterIpcService {
