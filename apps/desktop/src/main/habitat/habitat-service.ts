@@ -229,20 +229,32 @@ export class HabitatService {
   }
 
   async observeExplorer(observation: HabitatExplorerObservation): Promise<void> {
+    const fatal = !(
+      observation
+      && !(observation instanceof Error)
+      && observation.type === 'explorer-snapshot'
+    );
+    if (this.closed) return;
+    if (fatal) {
+      // fatal 先换代 operation authority；清理完成后立即释放旧事务，迟到 continuation 只会失败。
+      const cancelledOperation = this.activeOperation;
+      this.observerLifecycle = 'idle';
+      const epoch = this.advanceEpoch();
+      try {
+        if (this.state !== 'desktop') {
+          await this.conceal(epoch, 'explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
+        }
+      } finally {
+        if (this.activeOperation === cancelledOperation) this.activeOperation = null;
+      }
+      return;
+    }
     if (
-      this.closed
-      || this.activeOperation !== null
+      this.activeOperation !== null
       || this.state === 'desktop'
       || this.state === 'entering'
       || this.state === 'recalling'
     ) return;
-    if (!(observation && !(observation instanceof Error) && observation.type === 'explorer-snapshot')) {
-      // fatal 事件表示底层观察资源已终止，先清空记账以允许召回后的新观察周期。
-      this.observerLifecycle = 'idle';
-      const epoch = this.advanceEpoch();
-      await this.conceal(epoch, 'explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
-      return;
-    }
     let authority: ExplorerAuthoritySnapshot;
     try {
       authority = this.readAuthority();

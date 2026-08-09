@@ -69,7 +69,6 @@ export function createMainE2eExplorerBridge(options: {
         state: this.state,
         observing: this.observing,
         polling: this.pollTimer !== undefined,
-        childProcessCount: 0,
         eventRevision: this.eventRevision
       };
     }

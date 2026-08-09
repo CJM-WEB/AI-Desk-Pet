@@ -71,9 +71,9 @@ export const habitatDirectoryRecordSchema = z.object({
 }).strict();
 export type HabitatDirectoryRecord = z.infer<typeof habitatDirectoryRecordSchema>;
 
-const legacyHabitatDirectoryRecordSchema = habitatDirectoryRecordSchema.extend({
-  identity: legacyDirectoryIdentitySchema
-});
+const legacyHabitatDirectoryEnvelopeSchema = habitatDirectoryRecordSchema
+  .omit({ identity: true })
+  .extend({ identity: z.unknown() });
 
 const habitatPreferencesSchema = z.object({
   enabled: z.boolean().default(false),
@@ -123,10 +123,10 @@ export const petHabitatSnapshotSchema = z.object({
 });
 export type PetHabitatSnapshot = z.input<typeof petHabitatSnapshotSchema>;
 
-const legacyPetHabitatSnapshotSchema = z.object({
+const legacyPetHabitatSnapshotEnvelopeSchema = z.object({
   version: z.literal(1),
   preferences: habitatPreferencesSchema,
-  directories: z.array(legacyHabitatDirectoryRecordSchema).max(128),
+  directories: z.array(z.unknown()).max(128),
   location: habitatLocationSchema
 }).strict();
 
@@ -247,17 +247,51 @@ function sameDirectoryIdentity(
 }
 
 function migrateLegacySnapshot(input: unknown): PetHabitatSnapshot | undefined {
-  const legacy = legacyPetHabitatSnapshotSchema.safeParse(input);
+  const legacy = legacyPetHabitatSnapshotEnvelopeSchema.safeParse(input);
   if (!legacy.success) return undefined;
+  const directories: HabitatDirectoryRecord[] = [];
+  const directoryIds = new Set<string>();
+  const discardedIds = new Set<string>();
+  for (const inputDirectory of legacy.data.directories) {
+    const envelope = legacyHabitatDirectoryEnvelopeSchema.safeParse(inputDirectory);
+    if (!envelope.success || directoryIds.has(envelope.data.id)) return undefined;
+    directoryIds.add(envelope.data.id);
+    const currentIdentity = directoryIdentitySchema.safeParse(envelope.data.identity);
+    const legacyIdentity = legacyDirectoryIdentitySchema.safeParse(envelope.data.identity);
+    const identity = currentIdentity.success
+      ? currentIdentity.data
+      : legacyIdentity.success
+        ? {
+            dev: String(legacyIdentity.data.dev),
+            ino: String(legacyIdentity.data.ino)
+          }
+        : undefined;
+    if (identity === undefined) {
+      discardedIds.add(envelope.data.id);
+      continue;
+    }
+    const { identity: _identity, ...directory } = envelope.data;
+    directories.push({
+      ...directory,
+      identity
+    });
+  }
+  if (
+    legacy.data.location.kind === 'folder'
+    && !directoryIds.has(legacy.data.location.directoryId)
+  ) return undefined;
+  // 身份无法无损恢复时只撤销对应授权，并沿用进入前桌面坐标。
+  const location = legacy.data.location.kind === 'folder'
+    && discardedIds.has(legacy.data.location.directoryId)
+    ? {
+        kind: 'desktop' as const,
+        position: legacy.data.location.previousDesktopPosition
+      }
+    : legacy.data.location;
   const migrated = petHabitatSnapshotSchema.safeParse({
     ...legacy.data,
-    directories: legacy.data.directories.map(directory => ({
-      ...directory,
-      identity: {
-        dev: String(directory.identity.dev),
-        ino: String(directory.identity.ino)
-      }
-    }))
+    directories,
+    location
   });
   return migrated.success ? migrated.data : undefined;
 }

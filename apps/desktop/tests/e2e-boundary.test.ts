@@ -200,7 +200,6 @@ describe('Main E2E 安全边界', () => {
         state: string;
         observing: boolean;
         polling: boolean;
-        childProcessCount: number;
       };
     };
     const snapshots: Array<{ sequence: number; foreground?: boolean; hwnd?: string }> = [];
@@ -219,7 +218,6 @@ describe('Main E2E 安全边界', () => {
       state: 'failed',
       observing: false,
       polling: false,
-      childProcessCount: 0,
       eventRevision: 2
     });
     await fake.close();

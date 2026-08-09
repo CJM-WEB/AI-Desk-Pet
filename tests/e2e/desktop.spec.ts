@@ -78,6 +78,21 @@ type ElectronFixtureModule = {
     | { status: 'absent' }
     | { status: 'running'; executablePath: string }
   >;
+  inspectWindowsElectronDescendants(
+    processId: number,
+    options?: {
+      runCommand?(file: string, args: string[], signal?: AbortSignal): Promise<{
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+      }>;
+    }
+  ): Promise<Array<{
+    processId: number;
+    name: string;
+    powershell: boolean;
+    explorerBridge: boolean;
+  }>>;
   terminateElectronProcess(
     process: FakeElectronProcess,
     executablePath: string,
@@ -158,10 +173,15 @@ type ElectronFixtureModule = {
         state: 'idle' | 'ready' | 'failed' | 'closed';
         observing: boolean;
         polling: boolean;
-        childProcessCount: number;
         eventRevision: number;
       };
     }>;
+    getMainDescendantProcesses(): Promise<Array<{
+      processId: number;
+      name: string;
+      powershell: boolean;
+      explorerBridge: boolean;
+    }>>;
     getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
     restart(): Promise<void>;
@@ -890,6 +910,40 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(probeCalls).toBe(3);
     expect(spawnCalls).toBe(0);
     expect(killCalls).toBe(0);
+  });
+
+  test('Main 后代进程探针能从人为进程树发现 bridge PowerShell 子进程', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.inspectWindowsElectronDescendants).toBe('function');
+    if (!fixture?.inspectWindowsElectronDescendants) return;
+
+    const descendants = await fixture.inspectWindowsElectronDescendants(6114, {
+      runCommand: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify([
+          { ProcessId: 6114, ParentProcessId: 100, Name: 'electron.exe', CommandLine: 'app' },
+          { ProcessId: 6115, ParentProcessId: 6114, Name: 'electron.exe', CommandLine: 'renderer' },
+          {
+            ProcessId: 6116,
+            ParentProcessId: 6115,
+            Name: 'powershell.exe',
+            CommandLine: 'powershell.exe -File explorer-space-bridge.ps1'
+          },
+          {
+            ProcessId: 7000,
+            ParentProcessId: 999,
+            Name: 'powershell.exe',
+            CommandLine: 'unrelated.ps1'
+          }
+        ]),
+        stderr: ''
+      })
+    });
+
+    expect(descendants).toEqual([
+      { processId: 6115, name: 'electron.exe', powershell: false, explorerBridge: false },
+      { processId: 6116, name: 'powershell.exe', powershell: true, explorerBridge: true }
+    ]);
   });
 
   test('默认 OS 进程探针：命令失败诊断保留退出码并截断脱敏 stderr', async () => {
@@ -3559,9 +3613,13 @@ test.describe('目录藏身与资源管理器空间', () => {
       expect(crashedState.bridge).toMatchObject({
         state: 'failed',
         observing: false,
-        polling: false,
-        childProcessCount: 0
+        polling: false
       });
+      const descendants = await fixture.getMainDescendantProcesses();
+      expect(descendants.some(process => process.name.toLocaleLowerCase('en-US') === 'electron.exe'))
+        .toBe(true);
+      expect(descendants.filter(process => process.powershell || process.explorerBridge))
+        .toEqual([]);
       await rm(habitatDirectory, { recursive: true, force: true });
       await settings.evaluate(() => window.myself.recallHabitat());
       await expect.poll(async () => (

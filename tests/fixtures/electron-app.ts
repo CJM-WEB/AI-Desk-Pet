@@ -214,6 +214,7 @@ export interface ElectronAppFixture {
   readonly logs: readonly string[];
   sendExplorerEvent(event: MainE2eExplorerEvent): Promise<void>;
   getMainE2eState(): Promise<MainE2eState>;
+  getMainDescendantProcesses(): Promise<ElectronDescendantProcess[]>;
   getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
   getCharacterBehaviorProbe(): Promise<{
     revision: number;
@@ -258,7 +259,6 @@ export interface MainE2eState {
     state: 'idle' | 'ready' | 'failed' | 'closed';
     observing: boolean;
     polling: boolean;
-    childProcessCount: number;
     eventRevision: number;
   };
 }
@@ -363,6 +363,22 @@ export interface WindowsProcessProbeCommandResult {
 }
 
 export interface ProbeWindowsProcessOptions {
+  signal?: AbortSignal;
+  runCommand?(
+    file: string,
+    args: string[],
+    signal?: AbortSignal
+  ): Promise<WindowsProcessProbeCommandResult>;
+}
+
+export interface ElectronDescendantProcess {
+  processId: number;
+  name: string;
+  powershell: boolean;
+  explorerBridge: boolean;
+}
+
+export interface InspectWindowsElectronDescendantsOptions {
   signal?: AbortSignal;
   runCommand?(
     file: string,
@@ -561,6 +577,108 @@ export async function probeWindowsProcess(
     throw new Error('WINDOWS_PROCESS_PATH_UNVERIFIED');
   }
   return { status: 'running', executablePath: resolve(output) };
+}
+
+interface WindowsProcessTreeRow {
+  processId: number;
+  parentProcessId: number;
+  name: string;
+  commandLine: string;
+}
+
+function parseWindowsProcessTree(stdout: string): WindowsProcessTreeRow[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout) as unknown;
+  } catch {
+    throw new Error('WINDOWS_PROCESS_TREE_OUTPUT_INVALID');
+  }
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  if (rows.length > 4_096) throw new Error('WINDOWS_PROCESS_TREE_OUTPUT_INVALID');
+  return rows.map(row => {
+    if (!row || typeof row !== 'object') {
+      throw new Error('WINDOWS_PROCESS_TREE_OUTPUT_INVALID');
+    }
+    const candidate = row as Record<string, unknown>;
+    const processId = candidate['ProcessId'];
+    const parentProcessId = candidate['ParentProcessId'];
+    const name = candidate['Name'];
+    const commandLine = candidate['CommandLine'];
+    if (
+      typeof processId !== 'number'
+      || !Number.isSafeInteger(processId)
+      || processId < 0
+      || typeof parentProcessId !== 'number'
+      || !Number.isSafeInteger(parentProcessId)
+      || parentProcessId < 0
+      || typeof name !== 'string'
+      || name.length < 1
+      || name.length > 260
+      || (commandLine !== null && typeof commandLine !== 'string')
+      || (typeof commandLine === 'string' && commandLine.length > 32_768)
+    ) throw new Error('WINDOWS_PROCESS_TREE_OUTPUT_INVALID');
+    return {
+      processId,
+      parentProcessId,
+      name,
+      commandLine: commandLine ?? ''
+    };
+  });
+}
+
+/** fixture-only 只读证据：从一次 Windows 进程快照筛出 Electron Main 的全部后代。 */
+export async function inspectWindowsElectronDescendants(
+  processId: number,
+  options: InspectWindowsElectronDescendantsOptions = {}
+): Promise<ElectronDescendantProcess[]> {
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new Error('WINDOWS_PROCESS_TREE_PID_INVALID');
+  }
+  const script = [
+    'Get-CimInstance Win32_Process',
+    '| Select-Object ProcessId,ParentProcessId,Name,CommandLine',
+    '| ConvertTo-Json -Compress'
+  ].join(' ');
+  const result = await (options.runCommand ?? runWindowsProbeCommand)(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    options.signal ?? AbortSignal.timeout(5_000)
+  );
+  if (result.exitCode !== 0) {
+    const diagnostic = sanitizeProcessProbeDiagnostic(result.stderr);
+    throw new Error(
+      `WINDOWS_PROCESS_TREE_COMMAND_FAILED:exit=${String(result.exitCode)}`
+      + (diagnostic ? `\nstderr:${diagnostic}` : '')
+    );
+  }
+
+  const children = new Map<number, WindowsProcessTreeRow[]>();
+  for (const row of parseWindowsProcessTree(result.stdout)) {
+    const siblings = children.get(row.parentProcessId) ?? [];
+    siblings.push(row);
+    children.set(row.parentProcessId, siblings);
+  }
+  const descendants: ElectronDescendantProcess[] = [];
+  const pending = [processId];
+  const visited = new Set(pending);
+  while (pending.length > 0) {
+    const parentProcessId = pending.shift()!;
+    for (const child of children.get(parentProcessId) ?? []) {
+      if (visited.has(child.processId)) continue;
+      visited.add(child.processId);
+      pending.push(child.processId);
+      const normalizedName = child.name.toLocaleLowerCase('en-US');
+      const powershell = normalizedName === 'powershell.exe' || normalizedName === 'pwsh.exe';
+      descendants.push({
+        processId: child.processId,
+        name: child.name,
+        powershell,
+        explorerBridge: powershell
+          && child.commandLine.toLocaleLowerCase('en-US').includes('explorer-space-bridge.ps1')
+      });
+    }
+  }
+  return descendants;
 }
 
 /** 只终止已验证路径与 PID 的原始 child，并以其真实退出作为成功条件。 */
@@ -1050,11 +1168,17 @@ export async function createElectronAppFixture(
           || !new Set(['idle', 'ready', 'failed', 'closed']).has(parsed.bridge.state)
           || typeof parsed.bridge.observing !== 'boolean'
           || typeof parsed.bridge.polling !== 'boolean'
-          || parsed.bridge.childProcessCount !== 0
           || !Number.isSafeInteger(parsed.bridge.eventRevision)
           || parsed.bridge.eventRevision < 0
         ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
         return parsed;
+      },
+      getMainDescendantProcesses() {
+        const processId = child?.pid;
+        if (!Number.isSafeInteger(processId) || !processId || processId <= 0) {
+          throw new Error('ELECTRON_PROCESS_PID_INVALID');
+        }
+        return inspectWindowsElectronDescendants(processId);
       },
       async getPetInteractionProbe() {
         if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {

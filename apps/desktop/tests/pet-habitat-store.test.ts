@@ -107,22 +107,59 @@ describe('PetHabitatStore', () => {
     });
   });
 
-  test('旧 v1 非安全整数身份失败关闭并要求重新授权', async () => {
+  test('旧 v1 混合身份只丢弃不安全目录并保留偏好与安全目录', async () => {
     const directory = await createTemporaryDirectory('ai-pet-habitat-unsafe-identity-');
     const privateDirectory = join(directory, 'private');
     const file = join(privateDirectory, 'habitat.json');
     const legacy = folderSnapshot(join(directory, 'project'));
-    legacy.directories[0]!.identity = {
-      dev: 12,
-      ino: 9_007_199_254_740_992
-    } as never;
+    legacy.preferences = {
+      enabled: true,
+      autoHideEnabled: false,
+      idleDelayMs: 12_345
+    };
+    legacy.directories = [
+      {
+        ...directoryRecord(join(directory, 'safe')),
+        identity: { dev: 12, ino: 34 } as never
+      },
+      {
+        ...directoryRecord(join(directory, 'unsafe')),
+        id: 'directory-unsafe',
+        displayName: '不安全空间',
+        pathHint: 'unsafe',
+        identity: { dev: 12, ino: 9_007_199_254_740_992 } as never
+      },
+      {
+        ...directoryRecord(join(directory, 'invalid')),
+        id: 'directory-invalid',
+        displayName: '非法空间',
+        pathHint: 'invalid',
+        identity: { dev: '01', ino: '2' } as never
+      }
+    ];
+    legacy.location = {
+      kind: 'folder',
+      directoryId: 'directory-unsafe',
+      enteredAt: '2026-08-08T08:00:00.000Z',
+      previousDesktopPosition: { x: 321, y: 654 },
+      localOffset: { x: 16, y: 24 }
+    };
     await mkdir(privateDirectory);
     await writeFile(file, JSON.stringify(legacy), 'utf8');
 
-    await expect(new PetHabitatStore(file).load()).resolves.toEqual(DEFAULT_HABITAT_SNAPSHOT);
-    expect((await readdir(privateDirectory)).filter(name => (
-      /^habitat\.json\.corrupt-/u.test(name)
-    ))).toHaveLength(1);
+    const restored = await new PetHabitatStore(file).load();
+
+    expect(restored.preferences).toEqual(legacy.preferences);
+    expect(restored.directories).toEqual([{
+      ...legacy.directories[0],
+      identity: { dev: '12', ino: '34' }
+    }]);
+    expect(restored.location).toEqual({
+      kind: 'desktop',
+      position: { x: 321, y: 654 }
+    });
+    expect(await readdir(privateDirectory)).toEqual(['habitat.json']);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(restored);
   });
 
   test.each([

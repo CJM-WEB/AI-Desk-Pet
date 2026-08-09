@@ -353,6 +353,115 @@ describe('HabitatService 权威状态机', () => {
     expect(harness.explorer.startObserving).toHaveBeenCalledOnce();
   });
 
+  test('summon 加载期间 fatal 先进入 lost，迟到加载不得打开目录或覆盖错误', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const loading = deferred<PetHabitatSnapshot>();
+    harness.store.load.mockReturnValueOnce(loading.promise);
+    const summoning = harness.service.summon();
+    await vi.waitFor(() => expect(harness.store.load).toHaveBeenCalledOnce());
+
+    await harness.service.observeExplorer(new Error('BRIDGE_CRASHED'));
+    const failed = harness.service.snapshot();
+    loading.resolve(folderSnapshot());
+
+    await expect(summoning).rejects.toThrow('HABITAT_OPERATION_BUSY');
+    expect(failed).toMatchObject({
+      state: 'folder-lost', operation: null, errorCode: 'HABITAT_OBSERVER_FAILED'
+    });
+    expect(harness.service.snapshot()).toMatchObject(failed);
+    expect(harness.openDirectory).not.toHaveBeenCalled();
+  });
+
+  test('availability 加载期间 null fatal 先进入 lost，迟到结果不得恢复 hidden', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const loading = deferred<PetHabitatSnapshot>();
+    harness.store.load.mockReturnValueOnce(loading.promise);
+    const checking = harness.service.handleDirectoryAvailability();
+    await vi.waitFor(() => expect(harness.store.load).toHaveBeenCalledOnce());
+
+    await harness.service.observeExplorer(null);
+    const failed = harness.service.snapshot();
+    loading.resolve(folderSnapshot());
+
+    await expect(checking).rejects.toThrow('HABITAT_OPERATION_BUSY');
+    expect(failed).toMatchObject({
+      state: 'folder-lost', operation: null, errorCode: 'HABITAT_OBSERVER_FAILED'
+    });
+    expect(harness.service.snapshot()).toMatchObject(failed);
+  });
+
+  test('enter 加载期间 undefined fatal 取消活动 authority，迟到结果不得启动观察', async () => {
+    const harness = createHarness();
+    const loading = deferred<PetHabitatSnapshot>();
+    harness.store.load.mockReturnValueOnce(loading.promise);
+    const entering = harness.service.enterDirectory('directory-1', 'manual');
+    await vi.waitFor(() => expect(harness.store.load).toHaveBeenCalledOnce());
+
+    await harness.service.observeExplorer(undefined);
+    const failed = harness.service.snapshot();
+    loading.resolve(desktopSnapshot());
+
+    await expect(entering).rejects.toThrow('HABITAT_OPERATION_BUSY');
+    expect(failed).toMatchObject({
+      state: 'folder-lost', operation: null, errorCode: 'HABITAT_OBSERVER_FAILED'
+    });
+    expect(harness.service.snapshot()).toMatchObject(failed);
+    expect(harness.store.updateLocation).not.toHaveBeenCalled();
+    expect(harness.explorer.start).not.toHaveBeenCalled();
+  });
+
+  test('recall 提交期间 fatal 保持 lost，迟到 desktop 提交不得显示或覆盖错误', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const committing = deferred<HabitatLocationUpdateResult>();
+    harness.store.updateLocation.mockReturnValueOnce(committing.promise);
+    const recalling = harness.service.recallToDesktop();
+    await vi.waitFor(() => expect(harness.store.updateLocation).toHaveBeenCalledOnce());
+
+    await harness.service.observeExplorer(new Error('BRIDGE_CRASHED'));
+    const failed = harness.service.snapshot();
+    committing.resolve({ status: 'updated', snapshot: desktopSnapshot() });
+
+    await expect(recalling).rejects.toThrow('HABITAT_OPERATION_BUSY');
+    expect(failed).toMatchObject({
+      state: 'folder-lost', operation: null, errorCode: 'HABITAT_OBSERVER_FAILED'
+    });
+    expect(harness.service.snapshot()).toMatchObject(failed);
+    expect(harness.petWindow.show).not.toHaveBeenCalled();
+  });
+
+  test('reveal 激活期间 fatal 撤销旧 authority，迟到激活不得 show 或覆盖错误', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const activating = deferred<void>();
+    harness.layer.activate.mockReturnValueOnce(activating.promise);
+    const revealing = observeReady(harness);
+    await vi.waitFor(() => expect(harness.service.snapshot().state).toBe('revealing'));
+
+    await harness.service.observeExplorer(null);
+    const failed = harness.service.snapshot();
+    activating.resolve();
+    await revealing;
+
+    expect(failed).toMatchObject({
+      state: 'folder-lost', operation: null, errorCode: 'HABITAT_OBSERVER_FAILED'
+    });
+    expect(harness.service.snapshot()).toMatchObject(failed);
+    expect(harness.petWindow.show).not.toHaveBeenCalled();
+  });
+
+  test('desktop 与 closed 收到 fatal 保持安全状态且不触发额外窗口副作用', async () => {
+    const desktop = createHarness();
+    await desktop.service.observeExplorer(new Error('BRIDGE_CRASHED'));
+    expect(desktop.service.snapshot()).toMatchObject({ state: 'desktop', operation: null });
+    expect(desktop.petWindow.hide).not.toHaveBeenCalled();
+
+    const closed = createHarness({ initialSnapshot: folderSnapshot() });
+    await closed.service.close();
+    const sideEffects = closed.order.length;
+    await closed.service.observeExplorer(undefined);
+    expect(closed.service.snapshot().closed).toBe(true);
+    expect(closed.order).toHaveLength(sideEffects);
+  });
+
   test('enter 先复核目录与阻塞，再以条件 location 更新提交 folder，随后隐藏并观察', async () => {
     const harness = createHarness();
 
