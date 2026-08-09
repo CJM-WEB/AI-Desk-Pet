@@ -229,6 +229,48 @@ describe('FileTaskAdapter', () => {
     })).resolves.toBeUndefined();
   });
 
+  test('确认进行中取消只清活动代次，旧确认收敛前拒绝新提交', async () => {
+    const confirmation = deferred();
+    let emitAgentEvent!: (event: TaskEvent) => void;
+    const agent = createAgentDouble(async () => {
+      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+    });
+    agent.confirm.mockImplementation(() => confirmation.promise);
+    const adapter = new FileTaskAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentService: emit => {
+        emitAgentEvent = emit;
+        return asAgentService(agent);
+      }
+    });
+    const listener = vi.fn();
+    adapter.onEvent(listener);
+    await adapter.submit({ text: '等待确认', visibleHistory: [], generation: 'g-confirm' });
+
+    const confirming = adapter.resolveAction('pending-action', 'confirm');
+    await vi.waitFor(() => expect(agent.confirm).toHaveBeenCalledOnce());
+    adapter.cancelActive();
+    emitAgentEvent({ type: 'phase', phase: 'cancelled' });
+
+    await expect(adapter.submit({
+      text: '过早的新任务',
+      visibleHistory: [],
+      generation: 'g-too-early'
+    })).rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
+    expect(listener).not.toHaveBeenCalledWith(
+      { type: 'phase', phase: 'cancelled' },
+      'g-too-early'
+    );
+
+    confirmation.resolve();
+    await confirming;
+    await expect(adapter.submit({
+      text: '确认收敛后的任务',
+      visibleHistory: [],
+      generation: 'g-after-confirm'
+    })).resolves.toBeUndefined();
+  });
+
   test('确认、取消和动画授权反馈只转交给当前 Adapter 持有的 Agent', async () => {
     let emitAgentEvent!: (event: TaskEvent) => void;
     const agent = createAgentDouble(async () => {
@@ -263,6 +305,56 @@ describe('FileTaskAdapter', () => {
     expect(agent.invalidateFileTaskPlaybackGrant).toHaveBeenCalledOnce();
     expect(agent.confirm).toHaveBeenCalledExactlyOnceWith('pending-action');
     expect(agent.cancelAction).toHaveBeenCalledExactlyOnceWith('cancel-action');
+  });
+
+  test('工厂同步 reset 后不安装或提交刚创建的 Agent，且清理异常不覆盖主错误', async () => {
+    const agent = createAgentDouble();
+    agent.cancelActive.mockImplementation(() => {
+      throw new Error('cancel cleanup failed');
+    });
+    agent.close.mockImplementation(() => {
+      throw new Error('close cleanup failed');
+    });
+    let adapter!: FileTaskAdapter;
+    adapter = new FileTaskAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentService: () => {
+        void adapter.resetForNewConversation();
+        return asAgentService(agent);
+      }
+    });
+
+    await expect(adapter.submit({
+      text: '同步 reset 任务',
+      visibleHistory: [],
+      generation: 'g-reset'
+    })).rejects.toMatchObject({ code: 'TASK_CANCELLED' });
+
+    expect(agent.submitFileTask).not.toHaveBeenCalled();
+    expect(agent.cancelActive).toHaveBeenCalledOnce();
+    expect(agent.close).toHaveBeenCalledOnce();
+  });
+
+  test('工厂同步 close 后不安装或提交刚创建的 Agent', async () => {
+    const agent = createAgentDouble();
+    let adapter!: FileTaskAdapter;
+    adapter = new FileTaskAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentService: () => {
+        adapter.close();
+        return asAgentService(agent);
+      }
+    });
+
+    await expect(adapter.submit({
+      text: '同步 close 任务',
+      visibleHistory: [],
+      generation: 'g-close'
+    })).rejects.toMatchObject({ code: 'CONVERSATION_CLOSED' });
+
+    expect(agent.submitFileTask).not.toHaveBeenCalled();
+    expect(agent.cancelActive).toHaveBeenCalledOnce();
+    expect(agent.close).toHaveBeenCalledOnce();
   });
 
   test('close 后拒绝新任务并隔离旧 Agent 事件', async () => {

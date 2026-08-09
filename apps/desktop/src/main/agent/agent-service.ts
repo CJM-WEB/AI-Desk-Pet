@@ -156,6 +156,36 @@ function providerWithFallback(
   };
 }
 
+function snapshotVisibleHistory(value: unknown): readonly ModelMessage[] | null {
+  if (!Array.isArray(value)) return null;
+  const snapshot: ModelMessage[] = [];
+  for (const candidate of value) {
+    if (typeof candidate !== 'object' || candidate === null) return null;
+    const prototype = Object.getPrototypeOf(candidate);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const keys = Reflect.ownKeys(candidate);
+    if (
+      keys.length !== 2
+      || !Object.hasOwn(candidate, 'role')
+      || !Object.hasOwn(candidate, 'content')
+    ) {
+      return null;
+    }
+    const record = candidate as Record<string, unknown>;
+    if (
+      (record.role !== 'user' && record.role !== 'assistant')
+      || typeof record.content !== 'string'
+    ) {
+      return null;
+    }
+    snapshot.push(Object.freeze({
+      role: record.role,
+      content: record.content
+    }));
+  }
+  return Object.freeze(snapshot);
+}
+
 function writeResult(action: VerifiedWriteAction): Record<string, unknown> {
   if (action.toolName === 'rename_entry') {
     return {
@@ -228,10 +258,11 @@ export class AgentService {
 
   async submitFileTask(input: AgentFileTaskSubmission): Promise<void> {
     const normalized = typeof input?.text === 'string' ? input.text.trim() : '';
+    const visibleHistory = snapshotVisibleHistory(input?.visibleHistory);
     if (
       normalized.length === 0
       || normalized.length > MAX_USER_TEXT_LENGTH
-      || !Array.isArray(input.visibleHistory)
+      || visibleHistory === null
     ) {
       const error = Object.assign(new Error('INPUT_INVALID'), { code: 'INPUT_INVALID' });
       this.emitFailure(error);
@@ -247,7 +278,7 @@ export class AgentService {
       await this.forward(
         this.loop.run(
           normalized,
-          this.runContext(session, controller.signal, input.visibleHistory)
+          this.runContext(session, controller.signal, visibleHistory)
         ),
         session
       );

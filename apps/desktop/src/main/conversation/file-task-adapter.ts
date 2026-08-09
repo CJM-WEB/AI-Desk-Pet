@@ -60,7 +60,8 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
         throw adapterError('FILE_AUTHORIZATION_REQUIRED');
       }
 
-      const ownedAgent = this.getOrCreateAgent();
+      const ownedAgent = this.getOrCreateAgent(owner);
+      this.assertOwned(owner);
       const submission: AgentFileTaskSubmission = {
         text: input.text,
         visibleHistory: input.visibleHistory
@@ -87,6 +88,9 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     const active = this.active;
     const service = this.agent?.service;
     if (!active || !service) throw adapterError('ACTION_EXPIRED');
+    if (this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
+    const owner = active.owner;
+    this.inFlightOwner = owner;
     try {
       if (decision === 'confirm') {
         await service.confirm(actionId);
@@ -94,7 +98,8 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
         service.cancelAction(actionId);
       }
     } finally {
-      if (this.active?.owner === active.owner) this.active = null;
+      if (this.inFlightOwner === owner) this.inFlightOwner = null;
+      if (this.active?.owner === owner) this.active = null;
     }
   }
 
@@ -132,15 +137,38 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     return this.agent?.service.invalidateFileTaskPlaybackGrant() ?? false;
   }
 
-  private getOrCreateAgent(): OwnedAgent {
-    if (this.agent) return this.agent;
+  private getOrCreateAgent(submissionOwner: symbol): OwnedAgent {
+    if (this.agent) {
+      this.assertOwned(submissionOwner);
+      return this.agent;
+    }
     const owner = Symbol('file-task-agent');
     const service = this.options.createAgentService(event => {
       this.publishAgentEvent(event, owner);
     });
+    try {
+      this.assertOwned(submissionOwner);
+    } catch (error) {
+      // 工厂同步重入已撤销所有权时，新实例只能尽力关闭，不能覆盖主状态错误。
+      this.disposeDetachedService(service);
+      throw error;
+    }
     const owned = { service, owner };
     this.agent = owned;
     return owned;
+  }
+
+  private disposeDetachedService(service: AgentService): void {
+    for (const cleanup of [
+      () => service.cancelActive(),
+      () => service.close()
+    ]) {
+      try {
+        cleanup();
+      } catch {
+        // 未安装实例的清理失败不具备覆盖所有权错误的权限。
+      }
+    }
   }
 
   private publishAgentEvent(event: TaskEvent, agentOwner: symbol): void {

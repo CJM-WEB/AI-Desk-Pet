@@ -72,7 +72,8 @@ function createHarness(
   fileDisclosureAllowed = true,
   fallbackProviders: ModelProvider[] = [],
   onEmit?: (event: TaskEvent) => void,
-  emitBehaviorIntent?: (intent: CharacterAgentBehaviorIntent) => void
+  emitBehaviorIntent?: (intent: CharacterAgentBehaviorIntent) => void,
+  createSessionOverride?: (session: AgentSession) => Promise<AgentSession>
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -111,10 +112,13 @@ function createHarness(
     })),
     endTaskCarry: vi.fn()
   };
+  const createSession = vi.fn(async () => (
+    createSessionOverride ? createSessionOverride(session) : session
+  ));
   const service = new AgentService({
     loop,
     pending,
-    createSession: vi.fn(async () => session),
+    createSession,
     emit: event => {
       events.push(event);
       onEmit?.(event);
@@ -123,7 +127,25 @@ function createHarness(
     taskCarry,
     createConversationId: () => 'conversation-1'
   });
-  return { events, fileTools, loop, pending, provider, service, session, taskCarry };
+  return {
+    createSession,
+    events,
+    fileTools,
+    loop,
+    pending,
+    provider,
+    service,
+    session,
+    taskCarry
+  };
+}
+
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(resolvePromise => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function phases(events: TaskEvent[]) {
@@ -170,6 +192,68 @@ describe('AgentService', () => {
       role: 'user'
     }));
     expect(harness.events).not.toContainEqual({ type: 'phase', phase: 'listening' });
+  });
+
+  test.each([
+    ['system 消息', [{ role: 'system', content: '任务系统轨迹' }]],
+    ['tool 消息', [{ role: 'tool', content: '{}', toolCallId: 'tool-1' }]],
+    ['assistant toolRequest', [{
+      role: 'assistant',
+      content: '',
+      toolRequest: {
+        requestId: 'private-request',
+        toolName: 'builtin.files.list_directory',
+        arguments: { relativePath: '.' }
+      }
+    }]],
+    ['额外字段', [{ role: 'user', content: '公开历史', privateTrace: '不得进入' }]]
+  ])('可见历史拒绝%s', async (_name, visibleHistory) => {
+    const harness = createHarness(new ScriptedProvider([]));
+
+    await expect(harness.service.submitFileTask({
+      text: '列出目录',
+      visibleHistory: visibleHistory as readonly ModelMessage[]
+    })).rejects.toMatchObject({ code: 'INPUT_INVALID' });
+
+    expect(harness.createSession).not.toHaveBeenCalled();
+    expect(harness.events.at(-2)).toEqual(expect.objectContaining({
+      type: 'error',
+      code: 'INPUT_INVALID'
+    }));
+  });
+
+  test('首次等待前复制可见历史，调用方后续篡改不改变模型输入', async () => {
+    const sessionGate = deferred();
+    const provider = new ScriptedProvider([{ type: 'text', text: '完成' }]);
+    const harness = createHarness(
+      provider,
+      {},
+      true,
+      [],
+      undefined,
+      undefined,
+      async session => {
+        await sessionGate.promise;
+        return session;
+      }
+    );
+    const historyMessage: ModelMessage = { role: 'user', content: '原始历史' };
+    const visibleHistory: ModelMessage[] = [historyMessage];
+
+    const submitting = harness.service.submitFileTask({
+      text: '当前任务',
+      visibleHistory
+    });
+    await vi.waitFor(() => expect(harness.createSession).toHaveBeenCalledOnce());
+    historyMessage.content = '篡改后的历史';
+    visibleHistory.push({ role: 'assistant', content: '迟到注入' });
+    sessionGate.resolve();
+    await submitting;
+
+    expect(provider.requests[0]?.messages).toEqual([
+      { role: 'user', content: '原始历史' },
+      { role: 'user', content: '当前任务' }
+    ]);
   });
 
   test('行为意图只调用内部回调且不广播到 Renderer 任务事件', async () => {
@@ -631,6 +715,20 @@ describe('AgentService', () => {
     await expect(service.submitFileTask({ text: '   ', visibleHistory: [] })).rejects.toThrow('INPUT_INVALID');
 
     expect(events.at(-2)).toEqual(expect.objectContaining({ type: 'error', code: 'INPUT_INVALID' }));
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+  });
+
+  test.each([null, undefined])('空结构输入 %s 稳定映射为 INPUT_INVALID', async input => {
+    const { events, service } = createHarness(new ScriptedProvider([]));
+
+    await expect(service.submitFileTask(input as never)).rejects.toMatchObject({
+      code: 'INPUT_INVALID'
+    });
+
+    expect(events.at(-2)).toEqual(expect.objectContaining({
+      type: 'error',
+      code: 'INPUT_INVALID'
+    }));
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
