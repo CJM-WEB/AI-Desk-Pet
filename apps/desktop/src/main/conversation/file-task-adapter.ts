@@ -1,17 +1,32 @@
 import type { ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
-import type {
-  AgentFileTaskSubmission,
-  AgentService
-} from '../agent/agent-service';
+import type { AgentFileTaskSubmission } from '../agent/agent-service';
 import type { FileTaskPlaybackTerminal } from '../agent/file-task-transaction-coordinator';
 import type {
   ConversationFileTaskPort,
   PreparedFileTaskTarget
 } from './conversation-coordinator';
 
+export interface FileTaskAgentPort {
+  submitFileTask(input: AgentFileTaskSubmission): Promise<void>;
+  cancelActive(): void;
+  confirm(actionId: string): Promise<void>;
+  cancelAction(actionId: string): void;
+  resetForNewConversation(): Promise<void>;
+  close(): void;
+  onPlaybackStarted(playbackToken: string, actionId: string): boolean;
+  onPlaybackTerminal(
+    playbackToken: string,
+    actionId: string,
+    terminal: FileTaskPlaybackTerminal
+  ): boolean;
+  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean;
+  advanceFileTaskTransaction(): boolean;
+  invalidateFileTaskPlaybackGrant(): boolean;
+}
+
 export type PreparedAgentTarget = PreparedFileTaskTarget & Readonly<{
-  service: AgentService;
+  service: FileTaskAgentPort;
 }>;
 
 export interface FileTaskAdapterOptions {
@@ -27,7 +42,7 @@ type ActiveSubmission = {
 };
 
 type OwnedAgent = {
-  service: AgentService;
+  service: FileTaskAgentPort;
   owner: symbol;
   target: PreparedFileTaskTarget;
 };
@@ -38,6 +53,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
   private inFlightOwner: symbol | null = null;
   private agent: OwnedAgent | null = null;
   private resetPromise: Promise<void> | null = null;
+  private closePromise: Promise<void> | null = null;
   private closed = false;
 
   constructor(private readonly options: FileTaskAdapterOptions) {}
@@ -175,27 +191,32 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     }
   }
 
-  close(): void {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    if (this.closed) return Promise.resolve();
     this.closed = true;
     const owned = this.agent;
+    const pendingReset = this.resetPromise;
     this.active = null;
     this.inFlightOwner = null;
     this.agent = null;
     this.listeners.clear();
-    if (!owned) return;
-    let firstFailure: unknown;
-    for (const cleanup of [
-      () => owned.service.cancelActive(),
-      () => owned.service.close()
-    ]) {
+    const closing = Promise.resolve().then(async () => {
+      const failures: unknown[] = [];
       try {
-        cleanup();
+        if (pendingReset) await pendingReset;
       } catch (error) {
-        firstFailure ??= error;
+        failures.push(error);
       }
-    }
-    if (firstFailure !== undefined) throw firstFailure;
+      try {
+        await this.resetOwnedAgent(owned);
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length > 0) throw failures[0];
+    });
+    this.closePromise = closing;
+    return closing;
   }
 
   onPlaybackStarted(playbackToken: string, actionId: string): boolean {
@@ -257,7 +278,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     return owned;
   }
 
-  private disposeDetachedService(service: AgentService): void {
+  private disposeDetachedService(service: FileTaskAgentPort): void {
     for (const cleanup of [
       () => service.cancelActive(),
       () => service.close()

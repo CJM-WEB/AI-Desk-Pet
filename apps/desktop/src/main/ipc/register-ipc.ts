@@ -1,5 +1,6 @@
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron';
 import {
+  type HistoryDisclosureDecision,
   modelRouteConfigSchema,
   storedProviderProfileV2Schema,
   type PublicSettings
@@ -92,12 +93,22 @@ const actionIdSchema = z.object({
   actionId: z.string().min(1)
 }).strict();
 
+const historyDisclosureSchema = z.object({
+  requestId: z.string().trim().min(1).max(128),
+  decision: z.enum(['share_once', 'current_message_only'])
+}).strict();
+const emptyArgumentsSchema = z.tuple([]);
+
 export interface AgentIpcService {
   submit(text: string): Promise<void>;
   hasReportedFailure(error: unknown): boolean;
   cancelActive(): void;
-  confirm(actionId: string): Promise<void>;
-  cancelAction(actionId: string): void;
+  resolveFileAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
+  resolveHistoryDisclosure(
+    requestId: string,
+    decision: HistoryDisclosureDecision
+  ): Promise<void>;
+  resetConversation(): Promise<void>;
 }
 
 export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): void {
@@ -113,11 +124,19 @@ export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): vo
   replaceHandler(ipcMain, ipcChannels.chatCancel, () => service.cancelActive());
   replaceHandler(ipcMain, ipcChannels.actionConfirm, async (_event, raw) => {
     const { actionId } = actionIdSchema.parse(raw);
-    await service.confirm(actionId);
+    await service.resolveFileAction(actionId, 'confirm');
   });
-  replaceHandler(ipcMain, ipcChannels.actionCancel, (_event, raw) => {
+  replaceHandler(ipcMain, ipcChannels.actionCancel, async (_event, raw) => {
     const { actionId } = actionIdSchema.parse(raw);
-    service.cancelAction(actionId);
+    await service.resolveFileAction(actionId, 'cancel');
+  });
+  replaceHandler(ipcMain, ipcChannels.conversationDisclosureResolve, async (_event, raw) => {
+    const { requestId, decision } = historyDisclosureSchema.parse(raw);
+    await service.resolveHistoryDisclosure(requestId, decision);
+  });
+  replaceHandler(ipcMain, ipcChannels.conversationReset, async (_event, ...args) => {
+    emptyArgumentsSchema.parse(args);
+    await service.resetConversation();
   });
 }
 

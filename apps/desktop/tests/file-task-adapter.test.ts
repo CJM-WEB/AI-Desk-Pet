@@ -398,7 +398,7 @@ describe('FileTaskAdapter', () => {
       generation: 'g1'
     });
 
-    adapter.close();
+    await adapter.close();
     emitAgentEvent({ type: 'phase', phase: 'thinking' });
 
     expect(agent.close).toHaveBeenCalledOnce();
@@ -408,6 +408,49 @@ describe('FileTaskAdapter', () => {
       visibleHistory: [],
       generation: 'g2'
     })).rejects.toMatchObject({ code: 'CONVERSATION_CLOSED' });
+  });
+
+  test('close 先等待 Agent 不可逆执行屏障，再关闭实例且并发调用保持幂等', async () => {
+    const barrier = deferred();
+    const agent = createAgentDouble();
+    agent.resetForNewConversation.mockImplementation(() => barrier.promise);
+    const adapter = new FileTaskAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentTarget: () => preparedAgent(agent)
+    });
+    await adapter.prepareTarget('g-irreversible');
+    let settled = false;
+
+    const first = adapter.close().then(() => { settled = true; });
+    const second = adapter.close();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(agent.resetForNewConversation).toHaveBeenCalledOnce();
+    expect(agent.close).not.toHaveBeenCalled();
+    barrier.resolve();
+    await Promise.all([first, second]);
+    expect(agent.close).toHaveBeenCalledOnce();
+  });
+
+  test('close 不等待仅悬挂的可撤销 Provider 请求', async () => {
+    const provider = deferred();
+    const agent = createAgentDouble(() => provider.promise);
+    const adapter = new FileTaskAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentTarget: () => preparedAgent(agent)
+    });
+    await adapter.prepareTarget('g-provider');
+    const submission = adapter.submit({
+      text: '悬挂请求',
+      visibleHistory: [],
+      generation: 'g-provider'
+    });
+    await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledOnce());
+
+    await expect(adapter.close()).resolves.toBeUndefined();
+    provider.resolve();
+    await submission;
   });
 
   test('准备目标时原子绑定 Agent 快照，提交前设置变化不能替换已披露目标', async () => {

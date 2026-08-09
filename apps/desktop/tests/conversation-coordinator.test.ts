@@ -28,6 +28,9 @@ class CapturingFileTasks implements ConversationFileTaskPort {
   resetCalls = 0;
   prepareError: Error | null = null;
   resetError: Error | null = null;
+  closeCalls = 0;
+  closeError: Error | null = null;
+  closeBarrier: Promise<void> | null = null;
   target: {
     profileId: string;
     providerIdentity: string;
@@ -65,6 +68,12 @@ class CapturingFileTasks implements ConversationFileTaskPort {
   async resetForNewConversation(): Promise<void> {
     this.resetCalls += 1;
     if (this.resetError) throw this.resetError;
+  }
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+    if (this.closeBarrier) await this.closeBarrier;
+    if (this.closeError) throw this.closeError;
   }
 
   publish(event: TaskEvent, generation: string): void {
@@ -114,6 +123,12 @@ function deferredProvider(): ProviderScript & {
       }
     }
   };
+}
+
+function deferredVoid(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 function createHarness(scripts: Array<{
@@ -677,6 +692,7 @@ describe('ConversationCoordinator', () => {
     expect(errorCode(rejection)).toBe('AGENT_INTERNAL_ERROR');
     expect((rejection as Error).message).toBe('任务执行失败，请重试。');
     expect(fileTasks.unsubscribeCalls).toBe(1);
+    expect(fileTasks.closeCalls).toBe(1);
     expect(resetCalls).toBe(1);
     expect(script.signals[0]?.aborted).toBe(true);
     await expect(harness.coordinator.submit('不得重开')).rejects.toSatisfy(
@@ -685,6 +701,24 @@ describe('ConversationCoordinator', () => {
 
     script.reject(new Error('raw-late-error'));
     await expect(pending).resolves.toBeUndefined();
+  });
+
+  test('close 等待文件端口不可逆执行屏障收敛且并发关闭共享同一结果', async () => {
+    const fileTasks = new CapturingFileTasks();
+    const barrier = deferredVoid();
+    fileTasks.closeBarrier = barrier.promise;
+    const { coordinator } = createHarness([], { fileTasks });
+    let settled = false;
+
+    const first = coordinator.close().then(() => { settled = true; });
+    const second = coordinator.close();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(fileTasks.closeCalls).toBe(1);
+    barrier.resolve();
+    await Promise.all([first, second]);
+    expect(settled).toBe(true);
   });
 
   test('只转发当前会话 generation 的文件端口事件', async () => {

@@ -36,6 +36,7 @@ export interface ConversationFileTaskPort {
   cancelActive(): void;
   resolveAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
   resetForNewConversation(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export interface ConversationCoordinatorOptions {
@@ -94,6 +95,7 @@ export class ConversationCoordinator {
   private readonly unsubscribeFileEvents: () => void;
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
   private activeFileTurn: ActiveFileTurn | null = null;
+  private closePromise: Promise<void> | null = null;
 
   constructor(private readonly options: ConversationCoordinatorOptions) {
     this.createId = options.createId ?? randomUUID;
@@ -352,8 +354,9 @@ export class ConversationCoordinator {
     if (this.state === resettingState) this.state = { kind: 'idle' };
   }
 
-  async close(): Promise<void> {
-    if (this.state.kind === 'closed') return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    if (this.state.kind === 'closed') return Promise.resolve();
     const controller = this.state.kind === 'running_chat'
       ? this.state.controller
       : this.state.kind === 'awaiting_history_disclosure'
@@ -366,22 +369,31 @@ export class ConversationCoordinator {
     this.state = { kind: 'closed' };
     this.pendingDisclosure = null;
     this.activeFileTurn = null;
-    const failures: unknown[] = [];
-    for (const cleanup of [
-      () => this.unsubscribeFileEvents(),
-      () => controller?.abort(),
-      () => {
-        if (cancelFileTask) this.options.fileTasks.cancelActive();
-      },
-      () => this.options.disclosureAdapter.reset()
-    ]) {
+    const closing = Promise.resolve().then(async () => {
+      const failures: unknown[] = [];
+      for (const cleanup of [
+        () => this.unsubscribeFileEvents(),
+        () => controller?.abort(),
+        () => {
+          if (cancelFileTask) this.options.fileTasks.cancelActive();
+        },
+        () => this.options.disclosureAdapter.reset()
+      ]) {
+        try {
+          cleanup();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
       try {
-        cleanup();
+        await this.options.fileTasks.close();
       } catch (error) {
         failures.push(error);
       }
-    }
-    if (failures.length > 0) throw publicError(failures[0]);
+      if (failures.length > 0) throw publicError(failures[0]);
+    });
+    this.closePromise = closing;
+    return closing;
   }
 
   /** 在可见文本写入历史前复核控制器与会话代次，隔离迟到模型响应。 */

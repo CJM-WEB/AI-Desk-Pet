@@ -1,4 +1,5 @@
 import type {
+  HistoryDisclosureDecision,
   ModelRouteConfig,
   ProviderCatalogEntry,
   ProviderProfileV2,
@@ -165,6 +166,11 @@ export interface MyselfApi extends PetWindowInteractionApi {
   cancelTask(): Promise<void>;
   confirmAction(actionId: string): Promise<void>;
   cancelAction(actionId: string): Promise<void>;
+  resetConversation(): Promise<void>;
+  resolveHistoryDisclosure(
+    requestId: string,
+    decision: HistoryDisclosureDecision
+  ): Promise<void>;
   onTaskEvent(listener: (event: TaskEvent) => void): () => void;
   listCharacters(): Promise<CharacterSummaryDto[]>;
   createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV2>;

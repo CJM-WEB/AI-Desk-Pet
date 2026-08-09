@@ -1,7 +1,9 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, test, vi } from 'vitest';
 
 import {
   createApplicationQuitCoordinator,
+  createDetachedCloseController,
   createCharacterActivationCoordinator,
   createMainShutdownTransaction,
   createStartupCleanupStack,
@@ -9,6 +11,52 @@ import {
 } from '../src/main/lifecycle/main-lifecycle';
 
 describe('Main 通用生命周期', () => {
+  test('生产组合根以会话协调器作为唯一聊天入口并先关闭会话', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const beforeQuit = source.slice(source.indexOf("app.on('before-quit'"));
+
+    expect(source).toContain('createMainConversationComposition({');
+    expect(source).toContain('registerAgentIpc(ipcMain, conversationIpcService)');
+    expect(source).not.toContain('registerAgentIpc(ipcMain, agentService)');
+    expect(source).not.toContain('activeAgentService');
+    expect(source).toMatch(
+      /beforeExplorerClose:\s*async \(\) => \{[\s\S]*await conversationComposition\.close\(\);[\s\S]*freezeAndFlushPetAlwaysOnTop/u
+    );
+    expect(beforeQuit).not.toContain('cancelActive()');
+    expect(source).toContain('conversationClose.close();');
+    expect(source).toMatch(
+      /const releaseCharacterRuntime = \(\): void => \{[\s\S]*conversationClose\.close\(\);[\s\S]*activeFileTaskAdapter = null;/u
+    );
+  });
+
+  test('窗口关闭同步触发会话封口且异步失败只稳定报告一次', async () => {
+    let rejectClose!: (error: Error) => void;
+    const pendingClose = new Promise<void>((_resolve, reject) => { rejectClose = reject; });
+    const close = vi.fn(() => pendingClose);
+    const report = vi.fn();
+    const controller = createDetachedCloseController({ onError: report });
+    expect(controller.activate(close)).toBe(true);
+
+    controller.close();
+    controller.close();
+    expect(close).toHaveBeenCalledOnce();
+
+    rejectClose(new Error('PRIVATE_CLOSE_FAILURE'));
+    await vi.waitFor(() => expect(report).toHaveBeenCalledOnce());
+    expect(report.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+  });
+
+  test('窗口先关闭时迟到的会话能力在激活瞬间立即封口', () => {
+    const close = vi.fn(async () => undefined);
+    const controller = createDetachedCloseController({ onError: vi.fn() });
+
+    controller.close();
+
+    expect(controller.activate(close)).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+    expect(controller.activate(close)).toBe(false);
+  });
+
   test('启动清理严格逆序并汇总失败', async () => {
     const order: string[] = [];
     const cleanup = createStartupCleanupStack();

@@ -19,13 +19,14 @@ function createService() {
     submit: vi.fn(async () => undefined),
     hasReportedFailure: vi.fn(() => false),
     cancelActive: vi.fn(() => undefined),
-    confirm: vi.fn(async () => undefined),
-    cancelAction: vi.fn(() => undefined)
+    resolveFileAction: vi.fn(async () => undefined),
+    resolveHistoryDisclosure: vi.fn(async () => undefined),
+    resetConversation: vi.fn(async () => undefined)
   };
 }
 
 describe('Agent IPC', () => {
-  test('聊天输入通过 Schema 后才交给 AgentService', async () => {
+  test('聊天输入通过严格 Schema 后才交给会话协调器', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = createService();
     registerAgentIpc(ipcMain, service);
@@ -77,10 +78,10 @@ describe('Agent IPC', () => {
       actionId: 'action-1',
       targetRelativePath: 'tampered.txt'
     })).rejects.toThrow();
-    expect(service.confirm).not.toHaveBeenCalled();
+    expect(service.resolveFileAction).not.toHaveBeenCalled();
 
     await handlers.get(ipcChannels.actionConfirm)?.({}, { actionId: 'action-1' });
-    expect(service.confirm).toHaveBeenCalledWith('action-1');
+    expect(service.resolveFileAction).toHaveBeenCalledWith('action-1', 'confirm');
   });
 
   test('取消任务和取消动作使用固定通道', async () => {
@@ -92,6 +93,56 @@ describe('Agent IPC', () => {
     await handlers.get(ipcChannels.actionCancel)?.({}, { actionId: 'action-1' });
 
     expect(service.cancelActive).toHaveBeenCalledOnce();
-    expect(service.cancelAction).toHaveBeenCalledWith('action-1');
+    expect(service.resolveFileAction).toHaveBeenCalledWith('action-1', 'cancel');
+  });
+
+  test('新对话只接受无参数并委托会话协调器', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = createService();
+    registerAgentIpc(ipcMain, service);
+
+    await expect(handlers.get(ipcChannels.conversationReset)?.({}, {})).rejects.toThrow();
+    expect(service.resetConversation).not.toHaveBeenCalled();
+
+    await handlers.get(ipcChannels.conversationReset)?.({});
+    expect(service.resetConversation).toHaveBeenCalledOnce();
+  });
+
+  test('历史披露只接受 requestId 与固定决策', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = createService();
+    registerAgentIpc(ipcMain, service);
+
+    await handlers.get(ipcChannels.conversationDisclosureResolve)?.({}, {
+      requestId: 'request-1',
+      decision: 'share_once'
+    });
+    expect(service.resolveHistoryDisclosure).toHaveBeenCalledWith('request-1', 'share_once');
+
+    await expect(handlers.get(ipcChannels.conversationDisclosureResolve)?.({}, {
+      requestId: 'request-2',
+      decision: 'current_message_only'
+    })).resolves.toBeUndefined();
+    expect(service.resolveHistoryDisclosure)
+      .toHaveBeenLastCalledWith('request-2', 'current_message_only');
+  });
+
+  test.each([
+    { requestId: '', decision: 'share_once' },
+    { requestId: 'x'.repeat(129), decision: 'share_once' },
+    { requestId: 'request-1', decision: 'always_share' },
+    { requestId: 'request-1', decision: 'share_once', history: ['私有正文'] },
+    { requestId: 'request-1', decision: 'share_once', provider: 'private-provider' },
+    { requestId: 'request-1', decision: 'share_once', generation: 'forged' },
+    { requestId: 'request-1', decision: 'share_once', route: 'file_task' }
+  ])('拒绝 Renderer 越权披露负载 %#', async input => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = createService();
+    registerAgentIpc(ipcMain, service);
+
+    await expect(
+      handlers.get(ipcChannels.conversationDisclosureResolve)?.({}, input)
+    ).rejects.toThrow();
+    expect(service.resolveHistoryDisclosure).not.toHaveBeenCalled();
   });
 });

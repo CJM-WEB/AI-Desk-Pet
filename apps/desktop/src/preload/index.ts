@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { PublicSettings, TaskEvent } from '@myself/shared-types';
+import type {
+  HistoryDisclosureDecision,
+  PublicSettings,
+  TaskEvent
+} from '@myself/shared-types';
 import { ipcChannels } from '../shared/ipc-channels';
 import type {
   CharacterCreateInput,
@@ -127,6 +131,14 @@ const api: MyselfApi = {
   ),
   cancelAction: (actionId: string): Promise<void> => (
     ipcRenderer.invoke(ipcChannels.actionCancel, { actionId })
+  ),
+  resetConversation: (): Promise<void> => ipcRenderer.invoke(ipcChannels.conversationReset),
+  resolveHistoryDisclosure: (
+    requestId: string,
+    decision: HistoryDisclosureDecision
+  ): Promise<void> => ipcRenderer.invoke(
+    ipcChannels.conversationDisclosureResolve,
+    { requestId, decision }
   ),
   onTaskEvent: (listener: (event: TaskEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: TaskEvent) => listener(payload);

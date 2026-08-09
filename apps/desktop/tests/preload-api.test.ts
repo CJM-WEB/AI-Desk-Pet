@@ -82,6 +82,87 @@ describe('preload 清除本地数据转发', () => {
 });
 
 describe('preload 公开 API', () => {
+  test('新对话与历史披露只映射固定白名单通道', async () => {
+    await exposedApi?.resetConversation();
+    await exposedApi?.resolveHistoryDisclosure('request-1', 'current_message_only');
+
+    expect(invoke).toHaveBeenNthCalledWith(1, ipcChannels.conversationReset);
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      ipcChannels.conversationDisclosureResolve,
+      { requestId: 'request-1', decision: 'current_message_only' }
+    );
+  });
+
+  test('公开键严格等于既有白名单加两个会话入口', () => {
+    expect(Object.keys(exposedApi ?? {})).toEqual([
+      'getStatus',
+      'getSettings',
+      'saveProvider',
+      'testProvider',
+      'chooseAuthorizedRoot',
+      'clearLocalData',
+      'getSettingsDashboard',
+      'saveProviderProfile',
+      'deleteProviderProfile',
+      'testProviderProfile',
+      'saveModelRoute',
+      'upsertMcpServer',
+      'confirmMcpLaunch',
+      'testMcpServer',
+      'setMcpServerEnabled',
+      'setMcpToolEnabled',
+      'authorizeMcpToolReadOnly',
+      'revokeMcpToolReadOnly',
+      'deleteMcpServer',
+      'savePrivacySettings',
+      'savePetAlwaysOnTop',
+      'setIncognitoSession',
+      'revokeAuthorizedRoot',
+      'submitMessage',
+      'cancelTask',
+      'confirmAction',
+      'cancelAction',
+      'resetConversation',
+      'resolveHistoryDisclosure',
+      'onTaskEvent',
+      'listCharacters',
+      'createCharacter',
+      'duplicateCharacter',
+      'getCharacterDraft',
+      'saveCharacterDraft',
+      'chooseCharacterSources',
+      'listCharacterSources',
+      'readCharacterSource',
+      'publishCharacter',
+      'activateCharacter',
+      'deleteCharacter',
+      'importCharacterPackage',
+      'exportCharacterPackage',
+      'getCharacterRuntimeSnapshot',
+      'getCharacterRecoverySnapshot',
+      'readCharacterRuntimeAsset',
+      'subscribeCharacterEvents',
+      'getCharacterMotionSnapshot',
+      'subscribeCharacterMotion',
+      'reportCharacterActionPlayed',
+      'reportCharacterActionFeedback',
+      'reportCharacterActionMilestone',
+      'setPetMousePassthrough',
+      'beginPetDrag',
+      'endPetDrag',
+      'openPetContextMenu',
+      'getPetInteractionProbe',
+      'getCharacterBehaviorProbe',
+      'openChat',
+      'openSettings',
+      'openCharacterWorkshop',
+      'onCharacterWorkshopFlushRequested',
+      'hideChat',
+      'quit'
+    ]);
+  });
+
   test('不再暴露目录空间控制入口', () => {
     const apiKeys = Object.keys(exposedApi ?? {});
     const removedKeys = [

@@ -144,6 +144,52 @@ export function createApplicationQuitCoordinator(options: {
   };
 }
 
+/**
+ * 窗口 closed 事件无法等待异步清理；此控制器同步触发封口并完整接住后台拒绝。
+ * 若窗口先于会话组合关闭，迟到的关闭能力会在激活瞬间执行，避免资源失去所有者。
+ */
+export function createDetachedCloseController(options: {
+  onError(error: unknown): void;
+}): {
+  activate(close: () => Promise<void>): boolean;
+  close(): void;
+} {
+  let activated = false;
+  let closed = false;
+  let activeClose: (() => Promise<void>) | null = null;
+  const report = (error: unknown): void => {
+    try {
+      options.onError(error);
+    } catch {
+      // 日志失败不能形成新的未处理异常。
+    }
+  };
+  const start = (): void => {
+    const close = activeClose;
+    if (!close) return;
+    activeClose = null;
+    try {
+      void close().catch(report);
+    } catch (error) {
+      report(error);
+    }
+  };
+  return {
+    activate(close): boolean {
+      if (activated) return false;
+      activated = true;
+      activeClose = close;
+      if (closed) start();
+      return true;
+    },
+    close(): void {
+      if (closed) return;
+      closed = true;
+      start();
+    }
+  };
+}
+
 /** 关闭顺序是资源依赖的一部分；单点失败只记录，不阻断后续释放。 */
 export function createMainShutdownTransaction(options: {
   beforeExplorerClose(): Promise<void>;
