@@ -111,6 +111,7 @@ interface HabitatPetWindowPort {
 
 export interface HabitatServiceOptions {
   initialSnapshot: PetHabitatSnapshot;
+  observerInitiallyActive?: boolean;
   store: HabitatStorePort;
   directoryPolicy: HabitatDirectoryPolicyPort;
   identityResolver: FolderIdentityResolverPort;
@@ -163,6 +164,7 @@ export class HabitatService {
     if (this.stableSnapshot.location.kind === 'folder') {
       this.state = 'folder-hidden';
       this.directoryId = this.stableSnapshot.location.directoryId;
+      if (options.observerInitiallyActive === true) this.observerLifecycle = 'observing';
     } else {
       this.state = 'desktop';
       this.directoryId = null;

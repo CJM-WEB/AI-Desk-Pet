@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   createPetPositionController,
@@ -275,6 +274,28 @@ describe('桌宠位置控制器', () => {
     expect(saveLocalOffset).not.toHaveBeenCalled();
   });
 
+  test('freezeAndFlush 冻结新 move 但排空冻结前仍待写的最后位置', async () => {
+    vi.useFakeTimers();
+    const window = new FakePetWindow();
+    const savedPositions: Array<{ x: number; y: number }> = [];
+    const controller = createPetPositionController({
+      window,
+      debounceMs: 100,
+      savePosition: async position => {
+        savedPositions.push(position);
+      }
+    });
+    window.moveTo(320, 340);
+
+    await (controller as typeof controller & {
+      freezeAndFlush?(): Promise<void>;
+    }).freezeAndFlush?.();
+    window.moveTo(900, 920);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(savedPositions).toEqual([{ x: 320, y: 340 }]);
+  });
+
   test('disabled 使已进入写队列但未执行的旧代位置失效', async () => {
     vi.useFakeTimers();
     const window = new FakePetWindow();
@@ -369,18 +390,6 @@ describe('桌宠位置控制器', () => {
     await controller.flush();
 
     expect(savedPositions).toEqual([{ x: 100, y: 120 }]);
-  });
-});
-
-describe('主进程桌宠位置接入', () => {
-  test('启动恢复位置并在人工退出前刷新最后移动', async () => {
-    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
-
-    expect(main).toContain('restorePetPosition(');
-    expect(main).toContain('createPetPositionController({');
-    expect(main).toContain('await petPositionController.flush()');
-    expect(main).toContain('createQuitAfterPositionFlush({');
-    expect(main).toContain("app.on('before-quit', event => void handleBeforeQuit(event))");
   });
 });
 

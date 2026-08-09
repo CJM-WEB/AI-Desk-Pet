@@ -33,6 +33,7 @@ interface QuitAfterPositionFlushOptions {
 export interface PetPositionController {
   setPersistenceMode(mode: PetPositionPersistenceMode): void;
   flush(): Promise<void>;
+  freezeAndFlush(): Promise<void>;
 }
 
 export type PetPositionPersistenceMode = 'desktop' | 'folder' | 'disabled';
@@ -65,6 +66,7 @@ export function createPetPositionController(
   let pendingPosition: PendingPosition | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let writeQueue = Promise.resolve();
+  let frozen = false;
 
   const reportError = (error: unknown): void => {
     try {
@@ -98,8 +100,19 @@ export function createPetPositionController(
     await writeQueue;
   };
 
+  const flushAll = async (): Promise<void> => {
+    while (true) {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      await persistPending();
+      const observedQueue = writeQueue;
+      await observedQueue;
+      if (pendingPosition === null && timer === null && observedQueue === writeQueue) return;
+    }
+  };
+
   options.window.on('move', () => {
-    if (persistenceMode === 'disabled') return;
+    if (frozen || persistenceMode === 'disabled') return;
     let point: Point;
     try {
       if (persistenceMode === 'folder') {
@@ -134,15 +147,10 @@ export function createPetPositionController(
       if (timer) clearTimeout(timer);
       timer = null;
     },
-    async flush(): Promise<void> {
-      while (true) {
-        if (timer) clearTimeout(timer);
-        timer = null;
-        await persistPending();
-        const observedQueue = writeQueue;
-        await observedQueue;
-        if (pendingPosition === null && timer === null && observedQueue === writeQueue) return;
-      }
+    flush: flushAll,
+    async freezeAndFlush(): Promise<void> {
+      frozen = true;
+      await flushAll();
     }
   };
 }

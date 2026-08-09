@@ -449,3 +449,4 @@ export class HabitatWindowController {
     if (this.options.window.isDestroyed()) throw new Error('HABITAT_WINDOW_DESTROYED');
   }
 }
+export { createForegroundFullscreenProbe } from './foreground-fullscreen-probe';

@@ -133,6 +133,7 @@ function sameTarget(left: HabitatLocation, right: HabitatLocation): boolean {
 function createHarness(input: {
   initialSnapshot?: PetHabitatSnapshot;
   blockers?: Partial<HabitatBlockerSnapshot>;
+  observerInitiallyActive?: boolean;
   now?: () => number;
 } = {}) {
   let persisted = structuredClone(input.initialSnapshot ?? desktopSnapshot());
@@ -227,6 +228,9 @@ function createHarness(input: {
   });
   const service = new HabitatService({
     initialSnapshot: structuredClone(persisted),
+    ...(input.observerInitiallyActive === undefined
+      ? {}
+      : { observerInitiallyActive: input.observerInitiallyActive }),
     store,
     directoryPolicy,
     identityResolver,
@@ -293,6 +297,44 @@ describe('HabitatService 权威状态机', () => {
     expect(createHarness({ initialSnapshot: folderSnapshot() }).service.snapshot()).toMatchObject({
       state: 'folder-hidden', directoryId: 'directory-1', operation: null, closed: false
     });
+  });
+
+  test('接管已启动的恢复观察后不重复 start，首个权威快照可直接恢复 folder-visible', async () => {
+    const harness = createHarness({
+      initialSnapshot: folderSnapshot(),
+      observerInitiallyActive: true
+    });
+
+    await observeReady(harness);
+
+    expect(harness.service.snapshot().state).toBe('folder-visible');
+    expect(harness.explorer.start).not.toHaveBeenCalled();
+    expect(harness.explorer.startObserving).not.toHaveBeenCalled();
+    expect(harness.petWindow.show).toHaveBeenCalledOnce();
+  });
+
+  test('recall 会停止已接管的恢复观察', async () => {
+    const harness = createHarness({
+      initialSnapshot: folderSnapshot(),
+      observerInitiallyActive: true
+    });
+
+    await harness.service.recallToDesktop();
+
+    expect(harness.explorer.stopObserving).toHaveBeenCalledOnce();
+    expect(harness.explorer.start).not.toHaveBeenCalled();
+    expect(harness.explorer.startObserving).not.toHaveBeenCalled();
+  });
+
+  test('close 会停止已接管的恢复观察', async () => {
+    const harness = createHarness({
+      initialSnapshot: folderSnapshot(),
+      observerInitiallyActive: true
+    });
+
+    await harness.service.close();
+
+    expect(harness.explorer.stopObserving).toHaveBeenCalledOnce();
   });
 
   test('enter 先复核目录与阻塞，再以条件 location 更新提交 folder，随后隐藏并观察', async () => {
