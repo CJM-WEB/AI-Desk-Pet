@@ -1,3 +1,5 @@
+import type { HabitatDirectoryOpenRequest } from '../habitat/habitat-service';
+
 /** 窗口命令只依赖正式 BrowserWindow 所需的最小职责面。 */
 export interface ChatWindowCommandTarget {
   isDestroyed(): boolean;
@@ -72,13 +74,15 @@ export function createPetVisibilityCommand(pet: PetVisibilityTarget): () => void
   };
 }
 
-/** shell.openPath 的非空字符串同样表示失败，且不能把系统详情向外透传。 */
+/** opener 只从 Main 已复核记录取路径；shell.openPath 非空返回同样表示失败。 */
 export function createVerifiedDirectoryOpener(
   openPath: (absolutePath: string) => Promise<string>
-): (absolutePath: string) => Promise<void> {
-  return async absolutePath => {
+): (request: HabitatDirectoryOpenRequest) => Promise<void> {
+  return async ({ directory, signal }) => {
     try {
-      const errorMessage = await openPath(absolutePath);
+      if (signal.aborted) throw new Error('OPEN_PATH_ABORTED');
+      const errorMessage = await openPath(directory.absolutePath);
+      if (signal.aborted) throw new Error('OPEN_PATH_ABORTED');
       if (errorMessage !== '') throw new Error('OPEN_PATH_FAILED');
     } catch {
       throw new Error('HABITAT_SUMMON_FAILED');
@@ -92,7 +96,7 @@ export function createVerifiedDirectoryOpener(
 export function createPetSummonController(options: {
   habitat: {
     snapshot(): HabitatCommandSnapshot;
-    summon(): Promise<unknown>;
+    summon(signal: AbortSignal): Promise<unknown>;
   };
   waitForExactExplorer(
     directoryId: string,
@@ -112,11 +116,14 @@ export function createPetSummonController(options: {
         };
       }
       if (before.state === 'desktop') {
+        const abort = new AbortController();
         try {
-          await options.habitat.summon();
+          await options.habitat.summon(abort.signal);
           return { status: 'visible' };
         } catch {
           return { status: 'error', errorCode: 'HABITAT_SUMMON_FAILED', canRecall: true };
+        } finally {
+          abort.abort();
         }
       }
       if (before.directoryId === null) {
@@ -126,20 +133,29 @@ export function createPetSummonController(options: {
       const abort = new AbortController();
       const timeoutMs = options.timeoutMs ?? DEFAULT_SUMMON_TIMEOUT_MS;
       let timeout: ReturnType<typeof setTimeout> | undefined;
+      let summonOperation: Promise<unknown> | undefined;
       try {
         const timedOut = new Promise<boolean>(resolve => {
-          timeout = setTimeout(() => resolve(false), timeoutMs);
+          timeout = setTimeout(() => {
+            abort.abort();
+            resolve(false);
+          }, timeoutMs);
         });
         const exactMatch = options.waitForExactExplorer(
           before.directoryId,
           timeoutMs,
           abort.signal
         );
+        summonOperation = Promise.resolve().then(() => options.habitat.summon(abort.signal));
         const summonAndWait = Promise.all([
-          Promise.resolve().then(() => options.habitat.summon()),
+          summonOperation,
           exactMatch
         ]).then(([, matched]) => matched);
         const matched = await Promise.race([summonAndWait, timedOut]);
+        if (!matched) {
+          abort.abort();
+          await summonOperation.catch(() => undefined);
+        }
         const after = options.habitat.snapshot();
         return matched
           && after.state === 'folder-visible'
@@ -147,6 +163,8 @@ export function createPetSummonController(options: {
           ? { status: 'visible' }
           : { status: 'error', errorCode: 'HABITAT_SUMMON_FAILED', canRecall: true };
       } catch {
+        abort.abort();
+        await summonOperation?.catch(() => undefined);
         return { status: 'error', errorCode: 'HABITAT_SUMMON_FAILED', canRecall: true };
       } finally {
         if (timeout !== undefined) clearTimeout(timeout);

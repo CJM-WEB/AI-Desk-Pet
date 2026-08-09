@@ -126,7 +126,10 @@ export class HabitatAutonomyPolicy {
     if (candidates.length === 0) {
       return { kind: 'skipped', reason: 'same-directory' };
     }
-    const random = Math.min(Math.max(this.options.random(), 0), 1 - Number.EPSILON);
+    const sample = this.options.random();
+    const random = Number.isFinite(sample)
+      ? Math.min(Math.max(sample, 0), 1 - Number.EPSILON)
+      : 0;
     const directory = candidates[Math.floor(random * candidates.length)]!;
     this.lastAttemptAt = now;
     this.lastDirectoryId = directory.id;

@@ -6,6 +6,13 @@ type HabitatSnapshot = {
   directoryId: string | null;
 };
 
+type DirectoryOpenRequest = {
+  directory: Readonly<{
+    absolutePath: string;
+  }>;
+  signal: AbortSignal;
+};
+
 type TrayItem = {
   label?: string;
   enabled?: boolean;
@@ -16,11 +23,11 @@ type TrayItem = {
 type PetSummonModule = {
   createVerifiedDirectoryOpener(
     openPath: (absolutePath: string) => Promise<string>
-  ): (absolutePath: string) => Promise<void>;
+  ): (request: DirectoryOpenRequest) => Promise<void>;
   createPetSummonController(options: {
     habitat: {
       snapshot(): HabitatSnapshot;
-      summon(): Promise<unknown>;
+      summon(signal: AbortSignal): Promise<unknown>;
     };
     waitForExactExplorer(
       directoryId: string,
@@ -77,7 +84,11 @@ describe('托盘呼唤与召回', () => {
     const openPath = vi.fn(async () => '');
     const openDirectory = module.createVerifiedDirectoryOpener(openPath);
 
-    await openDirectory('C:\\Private Habitat\\Exact');
+    const signal = new AbortController().signal;
+    await openDirectory({
+      directory: { absolutePath: 'C:\\Private Habitat\\Exact' },
+      signal
+    });
 
     expect(openPath).toHaveBeenCalledWith('C:\\Private Habitat\\Exact');
     expect(openPath).toHaveBeenCalledOnce();
@@ -92,9 +103,28 @@ describe('托盘呼唤与召回', () => {
     if (!module) return;
     const openDirectory = module.createVerifiedDirectoryOpener(openPath);
 
-    await expect(openDirectory('C:\\Private\\Exact')).rejects.toMatchObject({
+    await expect(openDirectory({
+      directory: { absolutePath: 'C:\\Private\\Exact' },
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
       message: 'HABITAT_SUMMON_FAILED'
     });
+  });
+
+  test('目录打开器收到已取消请求时不调用 openPath', async () => {
+    const module = await loadModule();
+    expect(module).not.toBeNull();
+    if (!module) return;
+    const openPath = vi.fn(async () => '');
+    const openDirectory = module.createVerifiedDirectoryOpener(openPath);
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(openDirectory({
+      directory: { absolutePath: 'C:\\Private\\Exact' },
+      signal: abort.signal
+    })).rejects.toThrow('HABITAT_SUMMON_FAILED');
+    expect(openPath).not.toHaveBeenCalled();
   });
 
   test('folder 呼唤先监听同目录准确事件，再执行打开并等待可见', async () => {
@@ -109,7 +139,10 @@ describe('托盘呼唤与召回', () => {
     const controller = module.createPetSummonController({
       habitat: {
         snapshot: () => state,
-        summon: async () => { order.push('summon'); }
+        summon: async signal => {
+          expect(signal.aborted).toBe(false);
+          order.push('summon');
+        }
       },
       waitForExactExplorer: (directoryId, timeoutMs) => {
         order.push(`wait:${directoryId}:${timeoutMs}`);
@@ -142,7 +175,9 @@ describe('托盘呼唤与召回', () => {
     const controller = module.createPetSummonController({
       habitat: {
         snapshot: () => state,
-        summon: vi.fn(() => new Promise<never>(() => undefined))
+        summon: vi.fn(signal => new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('ABORTED')), { once: true });
+        }))
       },
       waitForExactExplorer: vi.fn((_directoryId, _timeoutMs, signal) => (
         new Promise<boolean>((_resolve, reject) => {
@@ -173,12 +208,58 @@ describe('托盘呼唤与召回', () => {
     }
   });
 
+  test('总超时先取消底层 summon，并等待其取消清理收敛后才返回', async () => {
+    vi.useFakeTimers();
+    const module = await loadModule();
+    expect(module).not.toBeNull();
+    if (!module) {
+      vi.useRealTimers();
+      return;
+    }
+    const cleanup = deferred<void>();
+    let aborted = false;
+    const controller = module.createPetSummonController({
+      habitat: {
+        snapshot: () => ({ state: 'folder-hidden', directoryId: 'directory-exact' }),
+        summon: signal => new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            aborted = true;
+            void cleanup.promise.then(() => reject(new Error('ABORTED')));
+          }, { once: true });
+        })
+      },
+      waitForExactExplorer: (_directoryId, _timeoutMs, signal) => (
+        new Promise<boolean>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('ABORTED')), { once: true });
+        })
+      ),
+      timeoutMs: 2_000
+    });
+
+    try {
+      const result = controller.summon();
+      let settled = false;
+      void result.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(aborted).toBe(true);
+      expect(settled).toBe(false);
+
+      cleanup.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(result).resolves.toEqual({
+        status: 'error', errorCode: 'HABITAT_SUMMON_FAILED', canRecall: true
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('准确事件监听器同步失败时仍返回稳定错误并执行 abort 清理', async () => {
     const module = await loadModule();
     expect(module).not.toBeNull();
     if (!module) return;
     let aborted = false;
-    const summon = vi.fn(async () => undefined);
+    const summon = vi.fn(async (_signal: AbortSignal) => undefined);
     const controller = module.createPetSummonController({
       habitat: {
         snapshot: () => ({ state: 'folder-hidden', directoryId: 'directory-exact' }),
@@ -209,7 +290,9 @@ describe('托盘呼唤与召回', () => {
     const controller = module.createPetSummonController({
       habitat: {
         snapshot: () => ({ state: 'folder-hidden', directoryId: 'directory-exact' }),
-        summon: () => new Promise<never>(() => undefined)
+        summon: signal => new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('ABORTED')), { once: true });
+        })
       },
       waitForExactExplorer: () => watcher.promise
     });
@@ -240,7 +323,7 @@ describe('托盘呼唤与召回', () => {
     const controller = module.createPetSummonController({
       habitat: {
         snapshot: () => state,
-        summon: vi.fn(async () => undefined)
+        summon: vi.fn(async (_signal: AbortSignal) => undefined)
       },
       waitForExactExplorer: vi.fn(async () => {
         state = { state: 'folder-visible', directoryId: 'same-title-other-id' };
@@ -257,7 +340,7 @@ describe('托盘呼唤与召回', () => {
     const module = await loadModule();
     expect(module).not.toBeNull();
     if (!module) return;
-    const summon = vi.fn(async () => undefined);
+    const summon = vi.fn(async (_signal: AbortSignal) => undefined);
     const waitForExactExplorer = vi.fn(async () => true);
     const controller = module.createPetSummonController({
       habitat: {

@@ -273,6 +273,42 @@ describe('Main 自动藏身策略', () => {
     ]);
   });
 
+  test.each([
+    ['NaN', Number.NaN, 'directory-a'],
+    ['正无穷', Number.POSITIVE_INFINITY, 'directory-a'],
+    ['负无穷', Number.NEGATIVE_INFINITY, 'directory-a'],
+    ['负数', -0.5, 'directory-a'],
+    ['上界 1', 1, 'directory-b']
+  ])('random 返回%s时稳定夹紧或回退，不向策略外抛错', async (_label, random, directoryId) => {
+    const module = await loadPolicyModule();
+    expect(module).not.toBeNull();
+    if (!module) return;
+    const enterDirectory = vi.fn(async () => undefined);
+    const policy = new module.HabitatAutonomyPolicy({
+      enterDirectory,
+      recallToDesktop: vi.fn(async () => undefined),
+      recordFailure: vi.fn(),
+      now: () => 0,
+      random: () => random,
+      cooldownMs: 0
+    });
+    const configured = enabledSnapshot();
+    configured.preferences.idleDelayMs = 0;
+    configured.directories.push({
+      ...configured.directories[0]!,
+      id: 'directory-b'
+    });
+
+    await expect(policy.tick({
+      snapshot: configured,
+      proactivityMode: 'autonomous',
+      idle: true,
+      habitatState: 'desktop',
+      blockers: noBlockers
+    })).resolves.toEqual({ kind: 'entered', directoryId });
+    expect(enterDirectory).toHaveBeenCalledWith(directoryId, 'automatic');
+  });
+
   test('自动进入未完成时后续 tick 不启动第二个目录事务', async () => {
     const module = await loadPolicyModule();
     expect(module).not.toBeNull();

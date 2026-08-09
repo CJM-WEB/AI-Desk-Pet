@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
   HabitatService,
+  type HabitatDirectoryOpenRequest,
   type ExplorerAuthoritySnapshot,
   type HabitatBlockerSnapshot
 } from '../src/main/habitat/habitat-service';
@@ -221,8 +222,8 @@ function createHarness(input: {
       order.push('focus');
     })
   };
-  const openDirectory = vi.fn(async (path: string) => {
-    order.push(`open:${path}`);
+  const openDirectory = vi.fn(async (request: HabitatDirectoryOpenRequest) => {
+    order.push(`open:${request.directory.absolutePath}`);
   });
   const service = new HabitatService({
     initialSnapshot: structuredClone(persisted),
@@ -530,14 +531,156 @@ describe('HabitatService 权威状态机', () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const opening = deferred<void>();
     harness.openDirectory.mockReturnValueOnce(opening.promise);
+    const abort = new AbortController();
 
-    const first = harness.service.summon();
-    const duplicate = harness.service.summon();
+    const first = harness.service.summon(abort.signal);
+    const duplicate = harness.service.summon(abort.signal);
     expect(duplicate).toBe(first);
     await expect(harness.service.recallToDesktop()).rejects.toThrow('HABITAT_OPERATION_BUSY');
     opening.resolve();
     await first;
     expect(harness.openDirectory).toHaveBeenCalledOnce();
+  });
+
+  test('summon 打开前即时复核目录并仅向 opener 传递已验证记录与同一取消信号', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const abort = new AbortController();
+
+    await harness.service.summon(abort.signal);
+
+    expect(harness.directoryPolicy.availability).toHaveBeenCalledWith(
+      harness.persisted().directories[0]
+    );
+    expect(harness.openDirectory).toHaveBeenCalledWith({
+      directory: harness.persisted().directories[0],
+      signal: abort.signal
+    });
+  });
+
+  test('summon 遇到目录身份替换或不可访问时返回稳定不可用错误且不调用 opener', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    harness.directoryPolicy.availability.mockResolvedValueOnce('unavailable');
+
+    await expect(harness.service.summon(new AbortController().signal)).rejects.toMatchObject({
+      code: 'HABITAT_DIRECTORY_UNAVAILABLE',
+      message: 'HABITAT_DIRECTORY_UNAVAILABLE'
+    });
+    expect(harness.openDirectory).not.toHaveBeenCalled();
+  });
+
+  test('summon 读取到目录已停用时返回稳定不可用错误且不调用 opener', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const disabled = folderSnapshot();
+    disabled.directories[0]!.enabled = false;
+    harness.replacePersisted(disabled);
+
+    await expect(harness.service.summon(new AbortController().signal)).rejects.toThrow(
+      'HABITAT_DIRECTORY_UNAVAILABLE'
+    );
+    expect(harness.directoryPolicy.availability).not.toHaveBeenCalled();
+    expect(harness.openDirectory).not.toHaveBeenCalled();
+  });
+
+  test('summon 加载期间取消会及时释放事务，允许立即 recall 且迟到结果无副作用', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const loading = deferred<PetHabitatSnapshot>();
+    harness.store.load.mockReturnValueOnce(loading.promise);
+    const abort = new AbortController();
+
+    const summoning = harness.service.summon(abort.signal);
+    await vi.waitFor(() => expect(harness.store.load).toHaveBeenCalledOnce());
+    abort.abort();
+
+    await expect(summoning).rejects.toThrow('HABITAT_SUMMON_FAILED');
+    expect(harness.service.snapshot().operation).toBeNull();
+    await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
+
+    loading.resolve(folderSnapshot());
+    await Promise.resolve();
+    expect(harness.openDirectory).not.toHaveBeenCalled();
+    expect(harness.explorer.start).not.toHaveBeenCalled();
+    expect(harness.service.snapshot()).toMatchObject({ state: 'desktop', operation: null });
+  });
+
+  test('summon 可用性复核期间取消会及时释放事务，迟到复核不得调用 opener', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const checking = deferred<HabitatDirectoryAvailability>();
+    harness.directoryPolicy.availability.mockReturnValueOnce(checking.promise);
+    const abort = new AbortController();
+
+    const summoning = harness.service.summon(abort.signal);
+    await vi.waitFor(() => expect(harness.directoryPolicy.availability).toHaveBeenCalledOnce());
+    abort.abort();
+
+    await expect(summoning).rejects.toThrow('HABITAT_SUMMON_FAILED');
+    expect(harness.service.snapshot().operation).toBeNull();
+    await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
+
+    checking.resolve('available');
+    await Promise.resolve();
+    expect(harness.openDirectory).not.toHaveBeenCalled();
+    expect(harness.explorer.start).not.toHaveBeenCalled();
+    expect(harness.service.snapshot()).toMatchObject({ state: 'desktop', operation: null });
+  });
+
+  test('summon 打开期间取消会及时释放事务，迟到打开完成不得启动观察或改回目录状态', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const opening = deferred<void>();
+    harness.openDirectory.mockReturnValueOnce(opening.promise);
+    const abort = new AbortController();
+
+    const summoning = harness.service.summon(abort.signal);
+    await vi.waitFor(() => expect(harness.openDirectory).toHaveBeenCalledOnce());
+    abort.abort();
+
+    await expect(summoning).rejects.toThrow('HABITAT_SUMMON_FAILED');
+    expect(harness.service.snapshot().operation).toBeNull();
+    await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
+
+    opening.resolve();
+    await Promise.resolve();
+    expect(harness.explorer.start).not.toHaveBeenCalled();
+    expect(harness.service.snapshot()).toMatchObject({ state: 'desktop', operation: null });
+  });
+
+  test('summon 启动观察桥期间取消后，迟到完成不得继续 startObserving', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const starting = deferred<void>();
+    harness.explorer.start.mockReturnValueOnce(starting.promise);
+    const abort = new AbortController();
+
+    const summoning = harness.service.summon(abort.signal);
+    await vi.waitFor(() => expect(harness.explorer.start).toHaveBeenCalledOnce());
+    abort.abort();
+
+    await expect(summoning).rejects.toThrow('HABITAT_SUMMON_FAILED');
+    expect(harness.service.snapshot().operation).toBeNull();
+    await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
+
+    starting.resolve();
+    await Promise.resolve();
+    expect(harness.explorer.startObserving).not.toHaveBeenCalled();
+    expect(harness.service.snapshot()).toMatchObject({ state: 'desktop', operation: null });
+  });
+
+  test('summon 开始观察期间取消会立即释放事务，迟到成功只收敛观察资源', async () => {
+    const harness = createHarness({ initialSnapshot: folderSnapshot() });
+    const observing = deferred<{ ok: true }>();
+    harness.explorer.startObserving.mockReturnValueOnce(observing.promise);
+    const abort = new AbortController();
+
+    const summoning = harness.service.summon(abort.signal);
+    await vi.waitFor(() => expect(harness.explorer.startObserving).toHaveBeenCalledOnce());
+    abort.abort();
+
+    await expect(summoning).rejects.toThrow('HABITAT_SUMMON_FAILED');
+    expect(harness.service.snapshot().operation).toBeNull();
+    await expect(harness.service.recallToDesktop()).resolves.toMatchObject({ state: 'desktop' });
+
+    observing.resolve({ ok: true });
+    await vi.waitFor(() => expect(harness.explorer.stopObserving).toHaveBeenCalledOnce());
+    expect(harness.petWindow.show).toHaveBeenCalledOnce();
+    expect(harness.service.snapshot()).toMatchObject({ state: 'desktop', operation: null });
   });
 
   test('recall 永不检查阻塞或目录可用性，并以 location CAS 保留最新配置', async () => {
@@ -1015,7 +1158,7 @@ describe('HabitatService 权威状态机', () => {
 
   test('close 的 stopObserving 失败映射稳定错误但仍 hide 与 invalidate，重复 close 返回同一拒绝 Promise', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
-    await harness.service.summon();
+    await harness.service.summon(new AbortController().signal);
     harness.explorer.stopObserving.mockRejectedValue(new Error('BRIDGE_PRIVATE_NONCE'));
     harness.order.length = 0;
 

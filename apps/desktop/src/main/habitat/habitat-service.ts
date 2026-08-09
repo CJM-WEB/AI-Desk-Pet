@@ -67,6 +67,12 @@ export interface HabitatServiceSnapshot {
   errorCode?: HabitatErrorCode;
 }
 
+/** opener 只能接收服务刚复核过的目录记录，禁止外部重新拼装路径。 */
+export interface HabitatDirectoryOpenRequest {
+  directory: Readonly<HabitatDirectoryRecord>;
+  signal: AbortSignal;
+}
+
 interface HabitatStorePort {
   load(): Promise<PetHabitatSnapshot>;
   updateLocation(update: HabitatLocationUpdate): Promise<HabitatLocationUpdateResult>;
@@ -111,7 +117,7 @@ export interface HabitatServiceOptions {
   explorer: ExplorerObserverPort;
   layer: ExplorerLayerPort;
   petWindow: HabitatPetWindowPort;
-  openDirectory(path: string): Promise<void>;
+  openDirectory(request: HabitatDirectoryOpenRequest): Promise<void>;
   readBlockers(): HabitatBlockerSnapshot;
   readExplorerAuthority(): ExplorerAuthoritySnapshot;
   now?: () => number;
@@ -191,11 +197,11 @@ export class HabitatService {
     ));
   }
 
-  summon(): Promise<HabitatServiceSnapshot> {
+  summon(signal: AbortSignal = new AbortController().signal): Promise<HabitatServiceSnapshot> {
     const active = this.activeResult('summon');
     if (active !== null) return active;
     if (this.closed) return Promise.reject(habitatError('HABITAT_CLOSED'));
-    return this.beginOperation('summon', 'summon', epoch => this.performSummon(epoch));
+    return this.beginOperation('summon', 'summon', epoch => this.performSummon(epoch, signal));
   }
 
   recallToDesktop(): Promise<HabitatServiceSnapshot> {
@@ -606,7 +612,11 @@ export class HabitatService {
     this.errorCode = undefined;
   }
 
-  private async performSummon(epoch: number): Promise<HabitatServiceSnapshot> {
+  private async performSummon(
+    epoch: number,
+    signal: AbortSignal
+  ): Promise<HabitatServiceSnapshot> {
+    this.assertSummonOperation(epoch, signal);
     this.errorCode = undefined;
     if (this.state === 'desktop') {
       try {
@@ -618,20 +628,28 @@ export class HabitatService {
       return this.snapshot();
     }
     if (this.directoryId === null) throw habitatError('HABITAT_STATE_INVALID');
-    const loaded = await this.storeLoad();
-    this.assertOperation(epoch);
+    const loaded = await this.awaitSummonBoundary(this.storeLoad(), epoch, signal);
     const directory = loaded.directories.find(candidate => (
       candidate.id === this.directoryId && candidate.enabled
     ));
-    if (directory === undefined) throw habitatError('HABITAT_DIRECTORY_NOT_FOUND');
+    if (directory === undefined) throw habitatError('HABITAT_DIRECTORY_UNAVAILABLE');
+    const availability = await this.awaitSummonBoundary(
+      this.directoryAvailability(directory),
+      epoch,
+      signal
+    );
+    if (availability !== 'available') throw habitatError('HABITAT_DIRECTORY_UNAVAILABLE');
     try {
-      await this.options.openDirectory(directory.absolutePath);
-    } catch {
-      throw habitatError('HABITAT_SUMMON_FAILED');
+      await this.awaitSummonBoundary(
+        this.options.openDirectory({ directory, signal }),
+        epoch,
+        signal
+      );
+    } catch (error) {
+      throw this.mapError(error, 'HABITAT_SUMMON_FAILED');
     }
-    this.assertOperation(epoch);
-    await this.ensureObserving(epoch);
-    this.assertOperation(epoch);
+    await this.ensureObserving(epoch, signal);
+    this.assertSummonOperation(epoch, signal);
     return this.snapshot();
   }
 
@@ -690,24 +708,45 @@ export class HabitatService {
     return this.snapshot();
   }
 
-  private async ensureObserving(epoch: number): Promise<void> {
+  private async ensureObserving(epoch: number, signal?: AbortSignal): Promise<void> {
     if (this.observerLifecycle === 'observing') return;
+    this.assertOptionalSummonOperation(epoch, signal);
     this.observerLifecycle = 'starting';
+    const starting = Promise.resolve().then(() => this.options.explorer.start());
     try {
-      await this.options.explorer.start();
-    } catch {
+      if (signal === undefined) {
+        await starting;
+        this.assertOperation(epoch);
+      } else {
+        await this.awaitSummonBoundary(starting, epoch, signal);
+      }
+    } catch (error) {
       this.observerLifecycle = 'idle';
-      throw habitatError('HABITAT_OBSERVER_FAILED');
+      throw this.mapError(error, 'HABITAT_OBSERVER_FAILED');
     }
-    this.assertOperation(epoch);
+    this.assertOptionalSummonOperation(epoch, signal);
+    const observing = Promise.resolve().then(() => this.options.explorer.startObserving());
     try {
-      await this.options.explorer.startObserving();
+      if (signal === undefined) {
+        await observing;
+        this.assertOperation(epoch);
+      } else {
+        await this.awaitSummonBoundary(observing, epoch, signal);
+      }
       this.observerLifecycle = 'observing';
-    } catch {
+    } catch (error) {
       this.observerLifecycle = 'idle';
-      throw habitatError('HABITAT_OBSERVER_FAILED');
+      if (signal?.aborted) {
+        // 已发出的桥调用不能撤回；迟到成功时仅在没有新观察者的前提下收敛资源。
+        void observing
+          .then(async () => {
+            if (this.observerLifecycle === 'idle') await this.stopObserver(true);
+          })
+          .catch(() => undefined);
+      }
+      throw this.mapError(error, 'HABITAT_OBSERVER_FAILED');
     }
-    this.assertOperation(epoch);
+    this.assertOptionalSummonOperation(epoch, signal);
   }
 
   private async stopObserver(force = false): Promise<HabitatErrorCode | null> {
@@ -917,6 +956,40 @@ export class HabitatService {
   private assertOperation(epoch: number): void {
     if (this.closed) throw habitatError('HABITAT_CLOSED');
     if (!this.isCurrentEpoch(epoch)) throw habitatError('HABITAT_OPERATION_BUSY');
+  }
+
+  private assertOptionalSummonOperation(epoch: number, signal?: AbortSignal): void {
+    if (signal === undefined) this.assertOperation(epoch);
+    else this.assertSummonOperation(epoch, signal);
+  }
+
+  private assertSummonOperation(epoch: number, signal: AbortSignal): void {
+    if (signal.aborted) throw habitatError('HABITAT_SUMMON_FAILED');
+    this.assertOperation(epoch);
+  }
+
+  /**
+   * 取消只终止本服务对依赖结果的授权；Promise 仍挂有处理器，迟到完成不会继续推进状态机。
+   */
+  private async awaitSummonBoundary<T>(
+    operation: Promise<T>,
+    epoch: number,
+    signal: AbortSignal
+  ): Promise<T> {
+    this.assertSummonOperation(epoch, signal);
+    let rejectAborted!: (error: HabitatServiceError) => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAborted = reject;
+    });
+    const handleAbort = () => rejectAborted(habitatError('HABITAT_SUMMON_FAILED'));
+    signal.addEventListener('abort', handleAbort, { once: true });
+    try {
+      const result = await Promise.race([operation, aborted]);
+      this.assertSummonOperation(epoch, signal);
+      return result;
+    } finally {
+      signal.removeEventListener('abort', handleAbort);
+    }
   }
 
   private restoreStableState(): void {
