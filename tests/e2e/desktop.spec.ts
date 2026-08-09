@@ -25,15 +25,14 @@ type CharacterBehaviorProbe = {
 type ElectronFixtureModule = {
   writeMainE2eExplorerEvent(
     userDataDirectory: string,
-    event: 'wrong-directory' | 'stale-revision' | 'background-window'
-      | 'ambiguous' | 'exact-foreground' | 'minimized' | 'blurred' | 'crash'
+    event: 'layer-error' | 'stale-sequence' | 'non-explorer'
+      | 'ambiguous' | 'foreground-explorer' | 'minimized' | 'blurred' | 'crash'
   ): Promise<void>;
   createElectronLaunchPlan(options: {
     workspaceRoot: string;
     cdpPort: number;
     userDataDirectory: string;
     authorizedRootDirectory: string;
-    habitatDirectory?: string;
     recycleBinDirectory?: string;
     characterAssetsDirectory?: string;
     parentEnvironment?: NodeJS.ProcessEnv;
@@ -152,20 +151,20 @@ type ElectronFixtureModule = {
     executablePath: string;
     userDataDirectory: string;
     authorizedRootDirectory: string;
-    habitatDirectory?: string;
     recycleBinDirectory?: string;
     safeCharacterPackage?: string;
     maliciousCharacterPackage?: string;
     characterExportDestination?: string;
     logs: readonly string[];
     sendExplorerEvent(
-      event: 'wrong-directory' | 'stale-revision' | 'background-window'
-        | 'ambiguous' | 'exact-foreground' | 'minimized' | 'blurred'
+      event: 'layer-error' | 'stale-sequence' | 'non-explorer'
+        | 'ambiguous' | 'foreground-explorer' | 'minimized' | 'blurred'
         | 'crash'
     ): Promise<void>;
     getMainE2eState(): Promise<{
       revision: number;
       petWindowVisible: boolean;
+      petWindowAlwaysOnTop: boolean;
       processedExplorerEventRevision: number;
       processedExplorerEvent: string | null;
       bridge: {
@@ -173,6 +172,11 @@ type ElectronFixtureModule = {
         observing: boolean;
         polling: boolean;
         eventRevision: number;
+      };
+      layer: {
+        status: 'idle' | 'active' | 'failed' | 'closed';
+        activationRevision: number;
+        errorRevision: number;
       };
     }>;
     getMainDescendantProcesses(): Promise<Array<{
@@ -317,7 +321,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     const workspaceRoot = resolve(process.cwd());
     const userDataDirectory = resolve('C:\\Temp\\myself-user-data');
     const authorizedRootDirectory = resolve('C:\\Temp\\myself-authorized-root');
-    const habitatDirectory = resolve('C:\\Temp\\myself-habitat');
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
     const expectedExecutable = requireFromDesktop('electron') as string;
     const plan = fixture.createElectronLaunchPlan({
@@ -325,7 +328,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
       cdpPort: 43123,
       userDataDirectory,
       authorizedRootDirectory,
-      habitatDirectory,
       parentEnvironment: { PATH: process.env['PATH'] }
     });
 
@@ -344,8 +346,7 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(plan.environment).toMatchObject({
       MYSELF_E2E: '1',
       MYSELF_E2E_USER_DATA: userDataDirectory,
-      MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory,
-      MYSELF_E2E_HABITAT_DIRECTORY: habitatDirectory
+      MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory
     });
     expect(Object.keys(plan.environment)).not.toContain('MYSELF_E2E_EXPLORER_SCRIPT');
 
@@ -2429,15 +2430,15 @@ test.describe('真实角色工作室闭环', () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), 'myself-e2e-explorer-events-'));
     try {
       await fixture.writeMainE2eExplorerEvent(temporaryDirectory, 'ambiguous');
-      await fixture.writeMainE2eExplorerEvent(temporaryDirectory, 'exact-foreground');
+      await fixture.writeMainE2eExplorerEvent(temporaryDirectory, 'foreground-explorer');
 
       await expect(readFile(
         join(temporaryDirectory, 'main-e2e-explorer-events'),
         'utf8'
-      )).resolves.toBe('ambiguous\nexact-foreground\n');
+      )).resolves.toBe('ambiguous\nforeground-explorer\n');
       await expect(fixture.writeMainE2eExplorerEvent(
         temporaryDirectory,
-        'C:\\Private\\Habitat' as never
+        'C:\\Private\\Explorer' as never
       )).rejects.toThrow('E2E_EXPLORER_EVENT_INVALID');
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
@@ -2756,6 +2757,65 @@ test.describe('自主行为最小闭环', () => {
       firstResponseGate.release();
       await fixture.dispose();
       await provider.close();
+    }
+  });
+});
+
+test.describe('Explorer 动态图层自动验收', () => {
+  test('准确快照建立层级，非 Explorer 与失败路径不隐藏或置顶桌宠', async () => {
+    test.setTimeout(60_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000
+    });
+
+    const waitForEvent = async (event: Parameters<typeof fixture.sendExplorerEvent>[0]) => {
+      const before = await fixture.getMainE2eState();
+      await fixture.sendExplorerEvent(event);
+      await expect.poll(() => fixture.getMainE2eState()).toMatchObject({
+        petWindowVisible: true,
+        petWindowAlwaysOnTop: false,
+        processedExplorerEventRevision: before.processedExplorerEventRevision + 1,
+        processedExplorerEvent: event
+      });
+      return fixture.getMainE2eState();
+    };
+
+    try {
+      await expect.poll(() => fixture.getMainE2eState()).toMatchObject({
+        petWindowVisible: true,
+        petWindowAlwaysOnTop: false,
+        bridge: { state: 'ready', observing: true, polling: true },
+        layer: { status: 'idle', activationRevision: 0, errorRevision: 0 }
+      });
+
+      const active = await waitForEvent('foreground-explorer');
+      expect(active.layer).toEqual({
+        status: 'active', activationRevision: 1, errorRevision: 0
+      });
+
+      for (const event of ['non-explorer', 'blurred', 'minimized', 'ambiguous'] as const) {
+        const unchanged = await waitForEvent(event);
+        expect(unchanged.layer).toEqual({
+          status: 'active', activationRevision: 1, errorRevision: 0
+        });
+      }
+
+      const failed = await waitForEvent('layer-error');
+      expect(failed.layer).toEqual({
+        status: 'failed', activationRevision: 1, errorRevision: 1
+      });
+
+      const recovered = await waitForEvent('foreground-explorer');
+      expect(recovered.layer).toEqual({
+        status: 'active', activationRevision: 2, errorRevision: 1
+      });
+    } finally {
+      await fixture.dispose();
     }
   });
 });

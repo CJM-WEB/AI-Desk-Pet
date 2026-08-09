@@ -197,7 +197,7 @@ describe('角色工作室关闭握手接入', () => {
       'prepare: window => workshopCloseHandshake.bindWindow(window, () => isQuitting)'
     );
     expect(main).toContain(
-      'await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent())'
+      '() => workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent())'
     );
     expect(renderer).not.toContain("window.addEventListener('beforeunload'");
   });

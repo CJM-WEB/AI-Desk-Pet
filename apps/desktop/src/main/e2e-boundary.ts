@@ -12,7 +12,6 @@ type ExplorerSnapshotFacts<T> = T extends ExplorerSnapshot
 export interface MainE2eBoundary {
   userDataDirectory: string;
   authorizedRootDirectory: string;
-  habitatDirectory: string;
   explorerEventFile: string;
   mainStateFile: string;
   recycleBinDirectory: string;
@@ -33,8 +32,6 @@ export interface MainE2eBoundaryOptions {
  */
 export function createMainE2eExplorerBridge(options: {
   eventFile: string;
-  habitatDirectory: string;
-  wrongDirectory: string;
   pollIntervalMs?: number;
 }) {
   class MainE2eExplorerBridge extends EventEmitter {
@@ -118,7 +115,7 @@ export function createMainE2eExplorerBridge(options: {
       this.state = 'closed';
     }
 
-    /** 文件队列只接收八种固定令牌；路径、句柄和序列均由 Main 内部生成。 */
+    /** 文件队列只接收固定图层令牌；路径、句柄和序列均由 Main 内部生成。 */
     private async consumeEvents(): Promise<void> {
       if (this.reading || !this.observing || this.state !== 'ready') return;
       this.reading = true;
@@ -169,7 +166,7 @@ export function createMainE2eExplorerBridge(options: {
     }
 
     private dispatchEvent(event: string): void {
-      if (event === 'stale-revision') {
+      if (event === 'stale-sequence') {
         const facts: ExplorerSnapshotFacts<ExplorerSnapshot> = {
           status: 'ready',
           windowType: 'explorer',
@@ -199,21 +196,17 @@ export function createMainE2eExplorerBridge(options: {
         this.injectSnapshot({ status: 'ambiguous' });
         return;
       }
-      if (
-        event === 'background-window'
-        || event === 'minimized'
-        || event === 'blurred'
-      ) {
+      if (event === 'non-explorer' || event === 'minimized' || event === 'blurred') {
         this.injectSnapshot({ status: 'none' });
         return;
       }
-      if (event === 'wrong-directory' || event === 'exact-foreground') {
-        const exact = event === 'exact-foreground';
+      if (event === 'layer-error' || event === 'foreground-explorer') {
+        const validLayer = event === 'foreground-explorer';
         this.injectSnapshot({
           status: 'ready',
           windowType: 'explorer',
-          instanceId: exact ? 'e2e-explorer-exact' : 'e2e-explorer-wrong',
-          hwnd: exact ? '9002' : '9001',
+          instanceId: validLayer ? 'e2e-explorer-foreground' : 'e2e-explorer-layer-error',
+          hwnd: validLayer ? '9002' : '9001',
           rect: { x: 80, y: 80, width: 900, height: 700 },
           foreground: true,
           minimized: false
@@ -295,6 +288,30 @@ export function createMainE2eExplorerBridge(options: {
   return new MainE2eExplorerBridge();
 }
 
+/** E2E 图层替身只公开去标识化状态，禁止把 HWND 或路径写入测试状态文件。 */
+export function createMainE2eExplorerLayer() {
+  let status: 'idle' | 'active' | 'failed' | 'closed' = 'idle';
+  let activationRevision = 0;
+  let errorRevision = 0;
+  return {
+    async activate({ explorerHwnd }: { explorerHwnd: string }): Promise<void> {
+      if (explorerHwnd !== '9002') {
+        status = 'failed';
+        errorRevision += 1;
+        throw new Error('E2E_EXPLORER_LAYER_UNSAFE');
+      }
+      status = 'active';
+      activationRevision += 1;
+    },
+    async dispose(): Promise<void> {
+      status = 'closed';
+    },
+    inspection() {
+      return { status, activationRevision, errorRevision };
+    }
+  };
+}
+
 /**
  * Main 侧唯一的 E2E 环境入口。任一条件不满足时完整回退到正式逻辑。
  */
@@ -309,7 +326,6 @@ export function resolveMainE2eBoundary(
 
   const rawUserData = options.env['MYSELF_E2E_USER_DATA'];
   const rawAuthorizedRoot = options.env['MYSELF_E2E_AUTHORIZED_ROOT'];
-  const rawHabitatDirectory = options.env['MYSELF_E2E_HABITAT_DIRECTORY'];
   const rawRecycleBin = options.env['MYSELF_E2E_RECYCLE_BIN'];
   const rawCharacterAssets = options.env['MYSELF_E2E_CHARACTER_ASSETS'];
   const rawSafePackage = options.env['MYSELF_E2E_SAFE_CHARACTER_PACKAGE'];
@@ -318,7 +334,6 @@ export function resolveMainE2eBoundary(
   if (
     !rawUserData
     || !rawAuthorizedRoot
-    || !rawHabitatDirectory
     || !rawRecycleBin
     || !rawCharacterAssets
     || !rawSafePackage
@@ -373,7 +388,6 @@ export function resolveMainE2eBoundary(
 
   const userDataDirectory = resolveTemporaryChild(rawUserData);
   const authorizedRootDirectory = resolveTemporaryChild(rawAuthorizedRoot);
-  const habitatDirectory = resolveTemporaryChild(rawHabitatDirectory);
   const recycleBinDirectory = resolveTemporaryChild(rawRecycleBin);
   const characterAssetsDirectory = resolveTemporaryChild(rawCharacterAssets);
   const safeCharacterPackage = resolveTemporaryFile(rawSafePackage);
@@ -382,7 +396,6 @@ export function resolveMainE2eBoundary(
   if (
     !userDataDirectory
     || !authorizedRootDirectory
-    || !habitatDirectory
     || !recycleBinDirectory
     || !characterAssetsDirectory
     || !safeCharacterPackage
@@ -392,15 +405,13 @@ export function resolveMainE2eBoundary(
   if (new Set([
     userDataDirectory,
     authorizedRootDirectory,
-    habitatDirectory,
     recycleBinDirectory,
     characterAssetsDirectory
-  ]).size !== 5) return null;
+  ]).size !== 4) return null;
 
   return {
     userDataDirectory,
     authorizedRootDirectory,
-    habitatDirectory,
     explorerEventFile: resolve(userDataDirectory, 'main-e2e-explorer-events'),
     mainStateFile: resolve(userDataDirectory, 'main-e2e-state.json'),
     recycleBinDirectory,

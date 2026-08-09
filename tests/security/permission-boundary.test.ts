@@ -23,10 +23,10 @@ import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/
 import {
   parseBridgeLine,
   serializeBridgeCommand
-} from '../../apps/desktop/src/main/habitat/explorer-space-protocol';
+} from '../../apps/desktop/src/main/explorer/explorer-space-protocol';
 import {
   buildExplorerBridgeSpawnSpec
-} from '../../apps/desktop/src/main/habitat/explorer-space-client';
+} from '../../apps/desktop/src/main/explorer/explorer-space-client';
 import {
   createMainE2eExplorerBridge
 } from '../../apps/desktop/src/main/e2e-boundary';
@@ -170,11 +170,9 @@ describe('权限边界安全回归', () => {
       windowType: 'explorer',
       instanceId: 'instance-1',
       hwnd: '123',
-      path: 'C:\\Private\\Habitat',
       rect: { x: 0, y: 0, width: 800, height: 600 },
       foreground: true,
-      minimized: false,
-      search: false
+      minimized: false
     };
     expect(parseBridgeLine(JSON.stringify(validSnapshot))).toEqual(validSnapshot);
     for (const forgedSnapshot of [
@@ -183,6 +181,7 @@ describe('权限边界安全回归', () => {
       { ...validSnapshot, hwnd: '0' },
       { ...validSnapshot, hwnd: 'window:123:0' },
       { ...validSnapshot, foreground: false },
+      { ...validSnapshot, path: 'C:\\Private' },
       { ...validSnapshot, command: 'show-window' }
     ]) {
       expect(() => parseBridgeLine(JSON.stringify(forgedSnapshot)))
@@ -250,22 +249,15 @@ describe('权限边界安全回归', () => {
   test('Main fake 只消费固定无参数令牌并在崩溃时失败关闭', async () => {
     const base = await createAuthorizedRoot();
     roots.push(base);
-    const habitatDirectory = join(base.root, 'habitat-space');
-    const wrongDirectory = join(base.root, 'wrong-space');
-    await Promise.all([mkdir(habitatDirectory), mkdir(wrongDirectory)]);
     const eventFile = join(base.root, 'main-e2e-explorer-events');
     const createScriptedBridge = createMainE2eExplorerBridge as unknown as (
       options: {
         eventFile: string;
-        habitatDirectory: string;
-        wrongDirectory: string;
         pollIntervalMs: number;
       }
     ) => ReturnType<typeof createMainE2eExplorerBridge>;
     const bridge = createScriptedBridge({
       eventFile,
-      habitatDirectory,
-      wrongDirectory,
       pollIntervalMs: 1
     });
     const snapshots: unknown[] = [];
@@ -276,11 +268,11 @@ describe('权限边界安全回归', () => {
     await bridge.start();
     await bridge.startObserving();
     await appendFile(eventFile, [
-      'wrong-directory',
-      'stale-revision',
-      'background-window',
+      'layer-error',
+      'stale-sequence',
+      'non-explorer',
       'ambiguous',
-      'exact-foreground',
+      'foreground-explorer',
       'minimized',
       'blurred',
       'crash'
@@ -289,10 +281,11 @@ describe('权限边界安全回归', () => {
 
     expect(snapshots).toHaveLength(8);
     expect(snapshots).toEqual(expect.arrayContaining([
-      expect.objectContaining({ status: 'ready', path: wrongDirectory }),
+      expect.objectContaining({ status: 'ready', instanceId: 'e2e-explorer-layer-error' }),
       expect.objectContaining({ status: 'ambiguous' }),
-      expect.objectContaining({ status: 'ready', path: habitatDirectory })
+      expect.objectContaining({ status: 'ready', instanceId: 'e2e-explorer-foreground' })
     ]));
+    for (const snapshot of snapshots) expect(snapshot).not.toHaveProperty('path');
     expect(snapshots.filter(snapshot => (
       typeof snapshot === 'object'
       && snapshot !== null

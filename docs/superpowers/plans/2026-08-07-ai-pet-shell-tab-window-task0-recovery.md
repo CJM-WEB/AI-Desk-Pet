@@ -1,5 +1,7 @@
 # 智能桌宠阶段 3B Task 0：Explorer 活动标签与动态层级恢复实施计划
 
+> **2026-08-10 历史状态：** 目录路径识别与目录藏身部分已退役，生产 helper 已收敛为不读取路径的 Explorer 实例识别，层级只保留 Electron `moveAbove`。本计划保留原技术假设、风险接受和未验收矩阵，不追认任何未完成项目；当前执行依据改为 `2026-08-09-remove-directory-habitat-keep-explorer-layer.md`。
+
 **日期：** 2026-08-07
 
 **状态：** 待实施

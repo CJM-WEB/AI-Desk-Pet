@@ -14,7 +14,6 @@ export interface ElectronLaunchPlanOptions {
   cdpPort: number;
   userDataDirectory: string;
   authorizedRootDirectory: string;
-  habitatDirectory?: string;
   recycleBinDirectory?: string;
   characterAssetsDirectory?: string;
   safeCharacterPackage?: string;
@@ -64,9 +63,6 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
       MYSELF_E2E_FAKE_EXPLORER_BRIDGE: '1',
       MYSELF_E2E_USER_DATA: options.userDataDirectory,
       MYSELF_E2E_AUTHORIZED_ROOT: options.authorizedRootDirectory,
-      ...(options.habitatDirectory
-        ? { MYSELF_E2E_HABITAT_DIRECTORY: options.habitatDirectory }
-        : {}),
       ...(options.recycleBinDirectory
         ? { MYSELF_E2E_RECYCLE_BIN: options.recycleBinDirectory }
         : {}),
@@ -96,7 +92,6 @@ export function redactElectronLog(
   secrets: {
     apiKey: string;
     authorizedRootDirectory: string;
-    habitatDirectory?: string;
     userDataDirectory?: string;
     recycleBinDirectory?: string;
     characterAssetsDirectory?: string;
@@ -109,7 +104,6 @@ export function redactElectronLog(
   for (const secret of [
     secrets.apiKey,
     secrets.authorizedRootDirectory,
-    secrets.habitatDirectory,
     secrets.userDataDirectory,
     secrets.recycleBinDirectory,
     secrets.characterAssetsDirectory,
@@ -172,7 +166,6 @@ export interface ElectronTemporaryDirectories {
   baseDirectory: string;
   userDataDirectory: string;
   authorizedRootDirectory: string;
-  habitatDirectory?: string;
   recycleBinDirectory?: string;
   characterAssetsDirectory?: string;
   packagesDirectory?: string;
@@ -205,7 +198,6 @@ export interface ElectronAppFixture {
   readonly executablePath: string;
   readonly userDataDirectory: string;
   readonly authorizedRootDirectory: string;
-  readonly habitatDirectory?: string;
   readonly recycleBinDirectory?: string;
   readonly characterAssetsDirectory?: string;
   readonly safeCharacterPackage?: string;
@@ -239,11 +231,11 @@ export interface CreateElectronAppFixtureOptions {
 }
 
 export type MainE2eExplorerEvent =
-  | 'wrong-directory'
-  | 'stale-revision'
-  | 'background-window'
+  | 'layer-error'
+  | 'stale-sequence'
+  | 'non-explorer'
   | 'ambiguous'
-  | 'exact-foreground'
+  | 'foreground-explorer'
   | 'minimized'
   | 'blurred'
   | 'crash';
@@ -251,6 +243,7 @@ export type MainE2eExplorerEvent =
 export interface MainE2eState {
   revision: number;
   petWindowVisible: boolean;
+  petWindowAlwaysOnTop: boolean;
   processedExplorerEventRevision: number;
   processedExplorerEvent: MainE2eExplorerEvent | null;
   bridge: {
@@ -259,14 +252,19 @@ export interface MainE2eState {
     polling: boolean;
     eventRevision: number;
   };
+  layer: {
+    status: 'idle' | 'active' | 'failed' | 'closed';
+    activationRevision: number;
+    errorRevision: number;
+  };
 }
 
 const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
-  'wrong-directory',
-  'stale-revision',
-  'background-window',
+  'layer-error',
+  'stale-sequence',
+  'non-explorer',
   'ambiguous',
-  'exact-foreground',
+  'foreground-explorer',
   'minimized',
   'blurred',
   'crash'
@@ -304,7 +302,6 @@ async function createTemporaryDirectories(): Promise<ElectronTemporaryDirectorie
   const baseDirectory = await mkdtemp(join(tmpdir(), 'myself-e2e-'));
   const userDataDirectory = join(baseDirectory, 'user-data');
   const authorizedRootDirectory = join(baseDirectory, 'authorized-root');
-  const habitatDirectory = join(baseDirectory, 'habitat-directory');
   const recycleBinDirectory = join(baseDirectory, 'recycle-bin');
   const characterAssetsDirectory = join(baseDirectory, 'character-assets');
   const packagesDirectory = join(baseDirectory, 'packages');
@@ -312,7 +309,6 @@ async function createTemporaryDirectories(): Promise<ElectronTemporaryDirectorie
   await Promise.all([
     mkdir(userDataDirectory, { recursive: true }),
     mkdir(authorizedRootDirectory, { recursive: true }),
-    mkdir(habitatDirectory, { recursive: true }),
     mkdir(recycleBinDirectory, { recursive: true }),
     mkdir(characterAssetsDirectory, { recursive: true }),
     mkdir(packagesDirectory, { recursive: true }),
@@ -322,7 +318,6 @@ async function createTemporaryDirectories(): Promise<ElectronTemporaryDirectorie
     baseDirectory,
     userDataDirectory,
     authorizedRootDirectory,
-    habitatDirectory,
     recycleBinDirectory,
     characterAssetsDirectory,
     packagesDirectory,
@@ -917,7 +912,6 @@ export async function createElectronAppFixture(
     const sanitized = redactElectronLog(capturedChunks.join(''), {
       apiKey: options.apiKey,
       authorizedRootDirectory: directories.authorizedRootDirectory,
-      habitatDirectory: directories.habitatDirectory,
       userDataDirectory: directories.userDataDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
       safeCharacterPackage: characterFixtures.safeCharacterPackage,
@@ -940,7 +934,6 @@ export async function createElectronAppFixture(
     const sanitizedCause = redactElectronLog(rawCause, {
       apiKey: options.apiKey,
       authorizedRootDirectory: directories.authorizedRootDirectory,
-      habitatDirectory: directories.habitatDirectory,
       userDataDirectory: directories.userDataDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
       safeCharacterPackage: characterFixtures.safeCharacterPackage,
@@ -1040,7 +1033,6 @@ export async function createElectronAppFixture(
       cdpPort,
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
-      habitatDirectory: directories.habitatDirectory,
       recycleBinDirectory: directories.recycleBinDirectory,
       ...characterFixtures,
       parentEnvironment: globalThis.process.env,
@@ -1134,7 +1126,6 @@ export async function createElectronAppFixture(
       },
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
-      habitatDirectory: directories.habitatDirectory,
       recycleBinDirectory: directories.recycleBinDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
       safeCharacterPackage: characterFixtures.safeCharacterPackage,
@@ -1156,6 +1147,7 @@ export async function createElectronAppFixture(
           !Number.isSafeInteger(parsed.revision)
           || parsed.revision <= 0
           || typeof parsed.petWindowVisible !== 'boolean'
+          || typeof parsed.petWindowAlwaysOnTop !== 'boolean'
           || !Number.isSafeInteger(parsed.processedExplorerEventRevision)
           || parsed.processedExplorerEventRevision < 0
           || (parsed.processedExplorerEvent !== null
@@ -1166,6 +1158,12 @@ export async function createElectronAppFixture(
           || typeof parsed.bridge.polling !== 'boolean'
           || !Number.isSafeInteger(parsed.bridge.eventRevision)
           || parsed.bridge.eventRevision < 0
+          || !parsed.layer
+          || !new Set(['idle', 'active', 'failed', 'closed']).has(parsed.layer.status)
+          || !Number.isSafeInteger(parsed.layer.activationRevision)
+          || parsed.layer.activationRevision < 0
+          || !Number.isSafeInteger(parsed.layer.errorRevision)
+          || parsed.layer.errorRevision < 0
         ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
         return parsed;
       },

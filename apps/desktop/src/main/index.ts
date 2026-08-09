@@ -24,6 +24,7 @@ import { createSessionToolRegistry } from './agent/tool-registry';
 import { PrivacySessionRegistry } from './agent/disclosure-policy';
 import {
   createMainE2eExplorerBridge,
+  createMainE2eExplorerLayer,
   resolveMainE2eBoundary
 } from './e2e-boundary';
 import {
@@ -251,11 +252,10 @@ async function createApplicationWindows(
   const storageDirectory = app.getPath('userData');
   const e2eExplorer = e2eBoundary
     ? createMainE2eExplorerBridge({
-        eventFile: e2eBoundary.explorerEventFile,
-        habitatDirectory: e2eBoundary.habitatDirectory,
-        wrongDirectory: e2eBoundary.authorizedRootDirectory
+        eventFile: e2eBoundary.explorerEventFile
       })
     : null;
+  const e2eExplorerLayer = e2eBoundary ? createMainE2eExplorerLayer() : null;
   let e2eStateRevision = 0;
   let processedExplorerEventRevision = 0;
   let processedExplorerEvent: string | null = null;
@@ -266,9 +266,11 @@ async function createApplicationWindows(
     const state = {
       revision: e2eStateRevision,
       petWindowVisible: pet.isVisible(),
+      petWindowAlwaysOnTop: pet.isAlwaysOnTop(),
       processedExplorerEventRevision,
       processedExplorerEvent,
-      bridge: e2eExplorer.inspection()
+      bridge: e2eExplorer.inspection(),
+      layer: e2eExplorerLayer!.inspection()
     };
     const staged = `${e2eBoundary.mainStateFile}.tmp`;
     const write = e2eStateWrite.then(async () => {
@@ -312,12 +314,7 @@ async function createApplicationWindows(
         explorer
       });
   const explorerLayer = e2eBoundary
-    ? {
-        async activate({ explorerHwnd }: { explorerHwnd: string }): Promise<void> {
-          if (explorerHwnd !== '9002') throw new Error('E2E_EXPLORER_LAYER_UNSAFE');
-        },
-        async dispose(): Promise<void> {}
-      }
+    ? e2eExplorerLayer!
     : new ExplorerWindowLayerController({ window: pet });
   const explorerCoordinator = new ExplorerPetLayerCoordinator({
     layer: explorerLayer,
