@@ -267,6 +267,30 @@ export class DisclosurePolicy {
   }
 
   createManifest(requestInput: DisclosureRequest): DisclosureManifest {
+    return this.createManifestWithSource(
+      requestInput,
+      sessionId => this.options.resolveCurrentSourceProvider(sessionId),
+      false
+    );
+  }
+
+  /** 仅供 Main 内可信组合根为保守历史来源生成清单。 */
+  createManifestForSource(
+    requestInput: DisclosureRequest,
+    sourceProviderIdentity: string
+  ): DisclosureManifest {
+    return this.createManifestWithSource(
+      requestInput,
+      () => sourceProviderIdentity,
+      true
+    );
+  }
+
+  private createManifestWithSource(
+    requestInput: DisclosureRequest,
+    resolveSourceProvider: (sessionId: string) => string | null,
+    requestScopedConversationOnly: boolean
+  ): DisclosureManifest {
     const parsed = requestSchema.safeParse(requestInput);
     if (!parsed.success) throw new Error('DISCLOSURE_REQUEST_INVALID');
     const request = parsed.data;
@@ -289,8 +313,7 @@ export class DisclosurePolicy {
     const targetProviderIdentity = this.resolveProvider(request.targetProfileId);
     let sourceProviderIdentity: string | null;
     try {
-      sourceProviderIdentity =
-        this.options.resolveCurrentSourceProvider(request.sessionId);
+      sourceProviderIdentity = resolveSourceProvider(request.sessionId);
     } catch {
       throw new Error('DISCLOSURE_SOURCE_PROVIDER_UNKNOWN');
     }
@@ -309,7 +332,8 @@ export class DisclosurePolicy {
         category,
         sessionGeneration,
         sourceProviderIdentity,
-        targetProviderIdentity
+        targetProviderIdentity,
+        requestScopedConversationOnly
       )) {
         requestGrantsToConsume.add(grantId);
       }
@@ -358,7 +382,8 @@ export class DisclosurePolicy {
     category: DisclosureCategory,
     sessionGeneration: string,
     sourceProviderIdentity: string,
-    targetProviderIdentity: string
+    targetProviderIdentity: string,
+    requestScopedConversationOnly: boolean
   ): string[] {
     const scoped = [...this.grants.values()].filter(grant =>
       grant.sessionId === request.sessionId
@@ -379,7 +404,14 @@ export class DisclosurePolicy {
 
     const crossesProvider = sourceProviderIdentity !== targetProviderIdentity;
     if (crossesProvider) {
-      const authorized = targetMatched.filter(grant => grant.allowCrossProvider);
+      const authorized = targetMatched.filter(grant =>
+        grant.allowCrossProvider
+        && (
+          !requestScopedConversationOnly
+          || category !== 'conversation'
+          || grant.scope === 'request'
+        )
+      );
       if (authorized.length === 0) {
         throw new Error('DISCLOSURE_CROSS_PROVIDER_NOT_AUTHORIZED');
       }

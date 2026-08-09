@@ -324,6 +324,58 @@ describe('DisclosurePolicy', () => {
     expect(policy.createManifest(crossProviderRequest).targetProviderIdentity).toBe('anthropic');
   });
 
+  test('显式混合来源仍需单次跨 Provider 授权且不可重放', () => {
+    const { policy } = createHarness();
+    const request: DisclosureRequest = {
+      ...baseRequest,
+      targetProfileId: 'profile-anthropic'
+    };
+
+    expectErrorCode(
+      () => policy.createManifestForSource(request, 'conversation:mixed'),
+      'DISCLOSURE_CROSS_PROVIDER_NOT_AUTHORIZED'
+    );
+    policy.grant(requestGrant('conversation', {
+      targetProfileId: 'profile-anthropic',
+      allowCrossProvider: true
+    }));
+    expect(policy.createManifestForSource(request, 'conversation:mixed'))
+      .toMatchObject({
+        requestId: 'request-1',
+        targetProfileId: 'profile-anthropic',
+        targetProviderIdentity: 'anthropic'
+      });
+    expectErrorCode(
+      () => policy.createManifestForSource(request, 'conversation:mixed'),
+      'DISCLOSURE_CROSS_PROVIDER_NOT_AUTHORIZED'
+    );
+  });
+
+  test('会话级 grant 不能授权显式历史来源但保留旧入口语义', () => {
+    const { policy } = createHarness();
+    const request: DisclosureRequest = {
+      ...baseRequest,
+      targetProfileId: 'profile-anthropic'
+    };
+    policy.grant({
+      scope: 'session',
+      sessionId: 'session-1',
+      category: 'conversation',
+      targetProfileId: 'profile-anthropic',
+      allowCrossProvider: true
+    });
+
+    expectErrorCode(
+      () => policy.createManifestForSource(request, 'conversation:mixed'),
+      'DISCLOSURE_CROSS_PROVIDER_NOT_AUTHORIZED'
+    );
+    expect(policy.createManifest(request).targetProviderIdentity).toBe('anthropic');
+    expect(policy.createManifest({
+      ...request,
+      requestId: 'request-2'
+    }).targetProviderIdentity).toBe('anthropic');
+  });
+
   test('重复类别稳定拒绝，清单只保留类别和受限元数据', () => {
     const { policy } = createHarness();
     policy.grant(requestGrant('file'));
