@@ -78,6 +78,7 @@ import {
   broadcastCharacterEvent,
   createCharacterQuickSwitchCommand,
   createLoadBeforePublishWindow,
+  createPetVisibilityCommand,
   createWindowCommandController
 } from './windows/window-commands';
 import {
@@ -428,6 +429,7 @@ async function createApplicationWindows(): Promise<void> {
     positionChat: chatWindow => positionChatNearPet(pet, chatWindow),
     ensureCharacterWorkshopWindow
   });
+  const togglePetVisibility = createPetVisibilityCommand(pet);
   const showSettings = async (): Promise<void> => {
     const settingsWindow = await ensureSettingsWindow();
     settingsWindow.show();
@@ -465,7 +467,7 @@ async function createApplicationWindows(): Promise<void> {
       { label: '设置', click: () => void showSettings() },
       {
         label: '显示/隐藏桌宠',
-        click: () => pet.isVisible() ? pet.hide() : pet.show()
+        click: togglePetVisibility
       },
       { type: 'separator' },
       { label: '退出', click: () => void quitApplication() }
