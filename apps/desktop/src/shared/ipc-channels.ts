@@ -20,6 +20,7 @@ export const ipcChannels = {
   settingsMcpToolRevokeRead: 'settings:mcp-tool-revoke-read',
   settingsMcpDelete: 'settings:mcp-delete',
   settingsPrivacySave: 'settings:privacy-save',
+  settingsPetAlwaysOnTopSave: 'settings:pet-always-on-top-save',
   settingsIncognitoSet: 'settings:incognito-set',
   settingsRootRevoke: 'settings:root-revoke',
   chatSubmit: 'chat:submit',

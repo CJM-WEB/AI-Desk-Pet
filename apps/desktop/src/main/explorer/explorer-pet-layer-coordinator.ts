@@ -21,7 +21,7 @@ export interface ExplorerPetLayerPort {
 
 export interface ExplorerPetLayerCoordinatorOptions {
   layer: ExplorerPetLayerPort;
-  setAlwaysOnTop?(enabled: boolean): void;
+  setAlwaysOnTop(enabled: boolean): void;
   reportError(code: 'EXPLORER_LAYER_FAILED'): void;
 }
 
@@ -47,7 +47,7 @@ export class ExplorerPetLayerCoordinator {
   setPetAlwaysOnTop(enabled: boolean): Promise<void> {
     if (this.closed) return Promise.reject(new Error('EXPLORER_LAYER_CLOSED'));
     return this.enqueue(async () => {
-      this.options.setAlwaysOnTop?.(enabled);
+      this.options.setAlwaysOnTop(enabled);
       this.dynamicLayerEnabled = !enabled;
     });
   }

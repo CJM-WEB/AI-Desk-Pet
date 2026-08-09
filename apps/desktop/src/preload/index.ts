@@ -111,6 +111,9 @@ const api: MyselfApi = {
   savePrivacySettings: (input: PrivacySettingsDto) => (
     ipcRenderer.invoke(ipcChannels.settingsPrivacySave, input)
   ),
+  savePetAlwaysOnTop: (enabled: boolean) => (
+    ipcRenderer.invoke(ipcChannels.settingsPetAlwaysOnTopSave, { enabled })
+  ),
   setIncognitoSession: (incognito: boolean) => (
     ipcRenderer.invoke(ipcChannels.settingsIncognitoSet, { incognito })
   ),

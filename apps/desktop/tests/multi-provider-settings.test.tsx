@@ -116,6 +116,7 @@ const dashboard: SettingsDashboardDto = {
     longTermMemory: false,
     proactivity: false
   },
+  petAlwaysOnTop: false,
   authorizedRoot: {
     id: 'root-1',
     displayName: 'workspace',
@@ -333,6 +334,7 @@ describe('多 Provider 设置组件', () => {
   });
 
   test('隐私类别独立开关、主动性分段控件和权限撤销均可访问', () => {
+    const onPetAlwaysOnTopChange = vi.fn();
     const markup = renderToStaticMarkup(
       <PrivacySettings
         privacy={dashboard.privacy}
@@ -340,7 +342,9 @@ describe('多 Provider 设置组件', () => {
         authorizedRoot={dashboard.authorizedRoot}
         busy={false}
         incognito={false}
+        petAlwaysOnTop={false}
         onSave={vi.fn()}
+        onPetAlwaysOnTopChange={onPetAlwaysOnTopChange}
         onIncognitoChange={vi.fn()}
         onChooseRoot={vi.fn()}
         onRevokeRoot={vi.fn()}
@@ -358,6 +362,24 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('无痕会话');
     expect(markup).toContain('桌宠始终置顶');
     expect(markup).toContain('aria-label="桌宠始终置顶"');
+
+    render(
+      <PrivacySettings
+        privacy={dashboard.privacy}
+        runtimeSupport={dashboard.privacyRuntimeSupport}
+        authorizedRoot={dashboard.authorizedRoot}
+        busy={false}
+        incognito={false}
+        petAlwaysOnTop={false}
+        onSave={vi.fn()}
+        onPetAlwaysOnTopChange={onPetAlwaysOnTopChange}
+        onIncognitoChange={vi.fn()}
+        onChooseRoot={vi.fn()}
+        onRevokeRoot={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByRole('checkbox', { name: '桌宠始终置顶' }));
+    expect(onPetAlwaysOnTopChange).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   test('MCP 禁用时设置导航不公开工具页且旧 tools 状态回退到模型档案', () => {
@@ -393,6 +415,7 @@ describe('多 Provider 设置组件', () => {
         privacyActions={{
           incognito: false,
           onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
           onIncognitoChange: vi.fn(),
           onChooseRoot: vi.fn(),
           onRevokeRoot: vi.fn()

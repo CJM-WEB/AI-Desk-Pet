@@ -49,6 +49,7 @@ describe('preload 清除本地数据转发', () => {
       allowCrossProviderFallback: false
     });
     await exposedApi?.setIncognitoSession(true);
+    await exposedApi?.savePetAlwaysOnTop(true);
     await exposedApi?.authorizeMcpToolReadOnly('local-tools', 'echo');
     await exposedApi?.revokeMcpToolReadOnly('local-tools', 'echo');
 
@@ -66,11 +67,14 @@ describe('preload 清除本地数据转发', () => {
     expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.settingsIncognitoSet, {
       incognito: true
     });
-    expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.settingsMcpToolAuthorizeRead, {
+    expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.settingsPetAlwaysOnTopSave, {
+      enabled: true
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.settingsMcpToolAuthorizeRead, {
       serverId: 'local-tools',
       toolName: 'echo'
     });
-    expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.settingsMcpToolRevokeRead, {
+    expect(invoke).toHaveBeenNthCalledWith(6, ipcChannels.settingsMcpToolRevokeRead, {
       serverId: 'local-tools',
       toolName: 'echo'
     });

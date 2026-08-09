@@ -402,7 +402,7 @@ async function createApplicationWindows(
     profileId => secrets.hasStoredSecret(profileId)
   );
   await explorerCoordinator.setPetAlwaysOnTop(
-    (await settingsStore.getPrivacySettings()).petAlwaysOnTop
+    await settingsStore.getPetAlwaysOnTop()
   );
   const providerRegistry = new ProviderRegistry(providerCatalog);
   const mcpStore = new McpServerStore();
@@ -421,7 +421,7 @@ async function createApplicationWindows(
     mcpManager,
     privacySessions,
     sessionId: 'desktop-session',
-    onPrivacyChanged: privacy => explorerCoordinator.setPetAlwaysOnTop(privacy.petAlwaysOnTop)
+    applyPetAlwaysOnTop: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled)
   });
   await desktopSettingsService.initialize();
   startupCleanup.add(() => desktopSettingsService.close());

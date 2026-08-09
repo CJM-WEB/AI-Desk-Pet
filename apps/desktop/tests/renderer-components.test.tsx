@@ -204,6 +204,7 @@ describe('Renderer 可见组件', () => {
         privacyActions={{
           incognito: false,
           onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
           onIncognitoChange: vi.fn(),
           onChooseRoot: vi.fn(),
           onRevokeRoot: vi.fn()

@@ -12,7 +12,9 @@ export interface PrivacySettingsProps {
   authorizedRoot: SettingsDashboardDto['authorizedRoot'];
   busy: boolean;
   incognito: boolean;
+  petAlwaysOnTop: boolean;
   onSave(input: PrivacySettingsDto): void;
+  onPetAlwaysOnTopChange(enabled: boolean): void;
   onIncognitoChange(value: boolean): void;
   onChooseRoot(): void;
   onRevokeRoot(): void;
@@ -103,12 +105,9 @@ export function PrivacySettings(props: PrivacySettingsProps) {
             <input
               type="checkbox"
               aria-label="桌宠始终置顶"
-              checked={privacy.petAlwaysOnTop}
+              checked={props.petAlwaysOnTop}
               disabled={props.busy}
-              onChange={event => setPrivacy(current => ({
-                ...current,
-                petAlwaysOnTop: event.target.checked
-              }))}
+              onChange={event => props.onPetAlwaysOnTopChange(event.target.checked)}
             />
           </label>
         </div>

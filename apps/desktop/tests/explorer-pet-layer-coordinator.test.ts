@@ -31,6 +31,22 @@ describe('ExplorerPetLayerCoordinator', () => {
     expect(setAlwaysOnTop).toHaveBeenLastCalledWith(false);
     expect(activate).toHaveBeenCalledExactlyOnceWith({ explorerHwnd: '101' });
   });
+
+  test('切换原生置顶失败时保持原动态图层门状态', async () => {
+    const activate = vi.fn(async () => undefined);
+    const coordinator = new ExplorerPetLayerCoordinator({
+      layer: { activate, dispose: async () => undefined },
+      setAlwaysOnTop: () => { throw new Error('NATIVE_TOPMOST_FAILED'); },
+      reportError: vi.fn()
+    });
+
+    await expect(coordinator.setPetAlwaysOnTop(true)).rejects.toThrow('NATIVE_TOPMOST_FAILED');
+    await coordinator.accept({
+      nonce: nonceA, sequence: 1, status: 'ready', instanceId: 'i-1',
+      hwnd: '101', foreground: true, minimized: false
+    });
+    expect(activate).toHaveBeenCalledExactlyOnceWith({ explorerHwnd: '101' });
+  });
   test('只有当前代次内递增的准确前台 Explorer 才调整层级', async () => {
     const effects: string[] = [];
     const coordinator = new ExplorerPetLayerCoordinator({
@@ -38,6 +54,7 @@ describe('ExplorerPetLayerCoordinator', () => {
         activate: async ({ explorerHwnd }) => { effects.push(`move:${explorerHwnd}`); },
         dispose: async () => { effects.push('dispose'); }
       },
+      setAlwaysOnTop: vi.fn(),
       reportError: code => effects.push(`error:${code}`)
     });
 
@@ -58,6 +75,7 @@ describe('ExplorerPetLayerCoordinator', () => {
     const activate = vi.fn(async () => undefined);
     const coordinator = new ExplorerPetLayerCoordinator({
       layer: { activate, dispose: async () => undefined },
+      setAlwaysOnTop: vi.fn(),
       reportError: vi.fn()
     });
 
@@ -87,6 +105,7 @@ describe('ExplorerPetLayerCoordinator', () => {
         },
         dispose: async () => undefined
       },
+      setAlwaysOnTop: vi.fn(),
       reportError: vi.fn()
     });
 
@@ -109,6 +128,7 @@ describe('ExplorerPetLayerCoordinator', () => {
     const activate = vi.fn(async () => undefined);
     const coordinator = new ExplorerPetLayerCoordinator({
       layer: { activate, dispose: async () => undefined },
+      setAlwaysOnTop: vi.fn(),
       reportError: vi.fn()
     });
 
@@ -135,6 +155,7 @@ describe('ExplorerPetLayerCoordinator', () => {
         activate: async () => { throw new Error('native failure'); },
         dispose: async () => undefined
       },
+      setAlwaysOnTop: vi.fn(),
       reportError
     });
 

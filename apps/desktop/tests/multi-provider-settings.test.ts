@@ -224,8 +224,7 @@ describe('多 Provider 设置持久化', () => {
         memory: false
       },
       longTermMemory: false,
-      proactivityMode: 'assistive',
-      petAlwaysOnTop: false
+      proactivityMode: 'assistive'
     });
 
     await store.savePrivacySettings({
@@ -236,8 +235,7 @@ describe('多 Provider 设置持久化', () => {
         memory: false
       },
       longTermMemory: true,
-      proactivityMode: 'passive',
-      petAlwaysOnTop: true
+      proactivityMode: 'passive'
     });
 
     await expect(store.getPrivacySettings()).resolves.toEqual({
@@ -248,8 +246,7 @@ describe('多 Provider 设置持久化', () => {
         memory: false
       },
       longTermMemory: true,
-      proactivityMode: 'passive',
-      petAlwaysOnTop: true
+      proactivityMode: 'passive'
     });
   });
 
@@ -275,13 +272,11 @@ describe('多 Provider 设置持久化', () => {
     }), 'utf8');
 
     const store = new SettingsStore(file, async () => false);
-    await expect(store.getPrivacySettings()).resolves.toMatchObject({ petAlwaysOnTop: false });
-    await store.savePrivacySettings({
-      ...(await store.getPrivacySettings()),
-      petAlwaysOnTop: true
-    });
+    await expect(store.getPetAlwaysOnTop()).resolves.toBe(false);
+    await store.savePetAlwaysOnTop(true);
     const restarted = new SettingsStore(file, async () => false);
-    await expect(restarted.getPrivacySettings()).resolves.toMatchObject({ petAlwaysOnTop: true });
+    await expect(restarted.getPetAlwaysOnTop()).resolves.toBe(true);
+    await expect(restarted.getPrivacySettings()).resolves.not.toHaveProperty('petAlwaysOnTop');
   });
 
   test('MCP 配置持久化只保存认证字段名而不保存认证值', async () => {

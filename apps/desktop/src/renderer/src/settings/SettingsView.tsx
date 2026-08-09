@@ -39,8 +39,7 @@ const emptyDashboard: SettingsDashboardDto = {
       memory: false
     },
     longTermMemory: false,
-    proactivityMode: 'assistive',
-    petAlwaysOnTop: false
+    proactivityMode: 'assistive'
   },
   privacyRuntimeSupport: {
     dataCategories: {
@@ -52,6 +51,7 @@ const emptyDashboard: SettingsDashboardDto = {
     longTermMemory: false,
     proactivity: false
   },
+  petAlwaysOnTop: false,
   authorizedRoot: null
 };
 
@@ -83,6 +83,7 @@ export interface SettingsWorkspaceProps {
   privacyActions: {
     incognito: boolean;
     onSave(input: PrivacySettingsDto): void;
+    onPetAlwaysOnTopChange(enabled: boolean): void;
     onIncognitoChange(value: boolean): void;
     onChooseRoot(): void;
     onRevokeRoot(): void;
@@ -165,6 +166,7 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
           runtimeSupport={props.dashboard.privacyRuntimeSupport}
           authorizedRoot={props.dashboard.authorizedRoot}
           busy={props.busy}
+          petAlwaysOnTop={props.dashboard.petAlwaysOnTop}
           {...props.privacyActions}
         />
       ) : null}
@@ -314,6 +316,10 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       privacyActions={{
         incognito,
         onSave: input => void run(() => api.savePrivacySettings(input), '隐私设置已保存。'),
+        onPetAlwaysOnTopChange: enabled => void run(
+          () => api.savePetAlwaysOnTop(enabled),
+          enabled ? '桌宠已置顶。' : '桌宠已恢复动态图层。'
+        ),
         onIncognitoChange: value => void run(async () => {
           await api.setIncognitoSession(value);
           setIncognito(value);

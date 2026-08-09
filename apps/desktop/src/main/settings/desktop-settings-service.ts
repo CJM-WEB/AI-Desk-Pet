@@ -53,6 +53,8 @@ interface SettingsAccess {
   saveModelRoute(route: ModelRouteConfig): Promise<void>;
   getPrivacySettings(): Promise<PrivacySettings>;
   savePrivacySettings(settings: PrivacySettings): Promise<void>;
+  getPetAlwaysOnTop(): Promise<boolean>;
+  savePetAlwaysOnTop(enabled: boolean): Promise<void>;
   getPublic(): Promise<{
     authorizedRoot: SettingsDashboardDto['authorizedRoot'];
   }>;
@@ -97,7 +99,7 @@ export interface DesktopSettingsServiceOptions {
   mcpManager: McpManagerAccess;
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
-  onPrivacyChanged?(settings: PrivacySettings): Promise<void> | void;
+  applyPetAlwaysOnTop(enabled: boolean): Promise<void> | void;
 }
 
 interface DiscoveredTool {
@@ -239,10 +241,11 @@ export class DesktopSettingsService {
   }
 
   async getDashboard(): Promise<SettingsDashboardDto> {
-    const [providerSettings, privacy, publicSettings] = await Promise.all([
+    const [providerSettings, privacy, publicSettings, petAlwaysOnTop] = await Promise.all([
       this.options.settings.getProviderSettings(),
       this.options.settings.getPrivacySettings(),
-      this.options.settings.getPublic()
+      this.options.settings.getPublic(),
+      this.options.settings.getPetAlwaysOnTop()
     ]);
     return {
       catalog: structuredClone(providerCatalog),
@@ -268,6 +271,7 @@ export class DesktopSettingsService {
         longTermMemory: false,
         proactivity: false
       },
+      petAlwaysOnTop,
       authorizedRoot: publicSettings.authorizedRoot
     };
   }
@@ -659,7 +663,38 @@ export class DesktopSettingsService {
 
   async savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto> {
     await this.options.settings.savePrivacySettings(input);
-    await this.options.onPrivacyChanged?.(input);
+    return this.getDashboard();
+  }
+
+  /** 先提交运行态再落盘；任一步失败都把窗口层级恢复到旧值。 */
+  async savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto> {
+    const previous = await this.options.settings.getPetAlwaysOnTop();
+    try {
+      await this.options.applyPetAlwaysOnTop(enabled);
+    } catch (error) {
+      try {
+        await this.options.applyPetAlwaysOnTop(previous);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'PET_ALWAYS_ON_TOP_APPLY_ROLLBACK_FAILED'
+        );
+      }
+      throw error;
+    }
+    try {
+      await this.options.settings.savePetAlwaysOnTop(enabled);
+    } catch (error) {
+      try {
+        await this.options.applyPetAlwaysOnTop(previous);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'PET_ALWAYS_ON_TOP_PERSIST_ROLLBACK_FAILED'
+        );
+      }
+      throw error;
+    }
     return this.getDashboard();
   }
 

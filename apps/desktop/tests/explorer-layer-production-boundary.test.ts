@@ -130,6 +130,7 @@ describe('Explorer 动态图层最终生产边界', () => {
     };
     const coordinator = new ExplorerPetLayerCoordinator({
       layer: new ExplorerWindowLayerController({ window }),
+      setAlwaysOnTop: enabled => { alwaysOnTop = enabled; },
       reportError
     });
 

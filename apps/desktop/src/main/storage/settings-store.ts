@@ -40,8 +40,7 @@ export const privacySettingsSchema = z.object({
     memory: z.boolean()
   }).strict(),
   longTermMemory: z.boolean(),
-  proactivityMode: z.enum(['passive', 'assistive', 'autonomous']),
-  petAlwaysOnTop: z.boolean().default(false)
+  proactivityMode: z.enum(['passive', 'assistive', 'autonomous'])
 }).strict();
 export type PrivacySettings = z.infer<typeof privacySettingsSchema>;
 
@@ -90,6 +89,7 @@ const storedSettingsV2Schema = z.object({
   authorizedRoot: authorizedRootSchema.nullable(),
   petPosition: petPositionSchema.nullable(),
   fileDisclosureAccepted: z.boolean(),
+  petAlwaysOnTop: z.boolean().optional(),
   privacy: privacySettingsSchema.optional(),
   mcpServers: z.array(mcpServerSettingsSchema).optional()
 }).strict();
@@ -124,6 +124,7 @@ function defaultSettings(): StoredSettings {
     authorizedRoot: null,
     petPosition: null,
     fileDisclosureAccepted: false,
+    petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
     mcpServers: []
   };
@@ -138,8 +139,7 @@ function defaultPrivacySettings(): PrivacySettings {
       memory: false
     },
     longTermMemory: false,
-    proactivityMode: 'assistive',
-    petAlwaysOnTop: false
+    proactivityMode: 'assistive'
   };
 }
 
@@ -172,6 +172,7 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
     authorizedRoot: settings.authorizedRoot,
     petPosition: settings.petPosition,
     fileDisclosureAccepted: settings.fileDisclosureAccepted,
+    petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
     mcpServers: []
   };
@@ -297,6 +298,7 @@ export class SettingsStore {
     if (v2.success) {
       return {
         ...v2.data,
+        petAlwaysOnTop: v2.data.petAlwaysOnTop ?? false,
         privacy: v2.data.privacy ?? defaultPrivacySettings(),
         mcpServers: v2.data.mcpServers ?? []
       };
@@ -404,6 +406,18 @@ export class SettingsStore {
       const privacy = privacySettingsSchema.parse(input);
       const settings = await this.load();
       settings.privacy = privacy;
+      await atomicWrite(this.file, settings);
+    });
+  }
+
+  async getPetAlwaysOnTop(): Promise<boolean> {
+    return this.enqueue(async () => (await this.load()).petAlwaysOnTop ?? false);
+  }
+
+  savePetAlwaysOnTop(enabled: boolean): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const settings = await this.load();
+      settings.petAlwaysOnTop = z.boolean().parse(enabled);
       await atomicWrite(this.file, settings);
     });
   }

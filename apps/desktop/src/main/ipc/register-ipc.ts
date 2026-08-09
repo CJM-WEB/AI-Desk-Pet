@@ -242,6 +242,7 @@ const toolAuthorizationSchema = z.object({
   toolName: identifierSchema
 }).strict();
 const incognitoSchema = z.object({ incognito: z.boolean() }).strict();
+const petAlwaysOnTopSaveSchema = z.object({ enabled: z.boolean() }).strict();
 
 export interface AdvancedSettingsIpcService {
   getDashboard(): Promise<unknown>;
@@ -258,6 +259,7 @@ export interface AdvancedSettingsIpcService {
   revokeMcpToolReadOnly(serverId: string, toolName: string): Promise<unknown>;
   deleteMcpServer(serverId: string): Promise<unknown>;
   savePrivacySettings(input: z.infer<typeof privacySettingsSchema>): Promise<unknown>;
+  savePetAlwaysOnTop(enabled: boolean): Promise<unknown>;
   setIncognitoSession(incognito: boolean): Promise<unknown>;
   revokeAuthorizedRoot(): Promise<unknown>;
 }
@@ -339,10 +341,12 @@ export function registerAdvancedSettingsIpc(
     return changed(() => service.deleteMcpServer(serverId));
   });
   replaceHandler(ipcMain, ipcChannels.settingsPrivacySave, async (_event, raw) => {
-    const parsed = privacySettingsSchema.safeParse(raw);
-    if (!parsed.success) throw inputError();
-    const input = parsed.data;
+    const input = parseInput(privacySettingsSchema, raw);
     return changed(() => service.savePrivacySettings(input));
+  });
+  replaceHandler(ipcMain, ipcChannels.settingsPetAlwaysOnTopSave, async (_event, raw) => {
+    const { enabled } = parseInput(petAlwaysOnTopSaveSchema, raw);
+    return service.savePetAlwaysOnTop(enabled);
   });
   replaceHandler(ipcMain, ipcChannels.settingsIncognitoSet, async (_event, raw) => {
     const { incognito } = parseInput(incognitoSchema, raw);

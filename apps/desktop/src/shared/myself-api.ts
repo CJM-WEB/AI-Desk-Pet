@@ -47,7 +47,6 @@ export interface PrivacySettingsDto {
   };
   longTermMemory: boolean;
   proactivityMode: 'passive' | 'assistive' | 'autonomous';
-  petAlwaysOnTop: boolean;
 }
 
 export interface PrivacyRuntimeSupportDto {
@@ -87,6 +86,7 @@ export interface SettingsDashboardDto {
   mcpServers: McpServerDto[];
   privacy: PrivacySettingsDto;
   privacyRuntimeSupport: PrivacyRuntimeSupportDto;
+  petAlwaysOnTop: boolean;
   authorizedRoot: PublicSettings['authorizedRoot'];
 }
 
@@ -158,6 +158,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   ): Promise<SettingsDashboardDto>;
   deleteMcpServer(serverId: string): Promise<SettingsDashboardDto>;
   savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto>;
+  savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto>;
   setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }>;
   revokeAuthorizedRoot(): Promise<SettingsDashboardDto>;
   submitMessage(text: string): Promise<void>;
