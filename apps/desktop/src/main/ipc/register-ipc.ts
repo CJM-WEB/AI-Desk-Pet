@@ -35,6 +35,17 @@ import {
 import type { CharacterDraftV2 } from '@myself/character-runtime';
 import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
 import {
+  habitatChooseResultSchema,
+  habitatDashboardSchema,
+  habitatDirectoryIdInputSchema,
+  habitatDirectoryToggleInputSchema,
+  habitatEmptyInputSchema,
+  habitatPreferencesInputSchema,
+  type HabitatChooseResult,
+  type HabitatDashboardDto,
+  type HabitatPreferencesInput
+} from '../../shared/habitat-ipc';
+import {
   characterActionFeedbackInputSchema,
   characterActionMilestoneInputSchema,
   characterMotionEmptyInputSchema,
@@ -349,6 +360,92 @@ export function registerAdvancedSettingsIpc(
   replaceHandler(ipcMain, ipcChannels.settingsRootRevoke, async () => (
     changed(() => service.revokeAuthorizedRoot())
   ));
+}
+
+export interface HabitatIpcService {
+  getDashboard(): Promise<HabitatDashboardDto>;
+  chooseAndAddDirectory(): Promise<HabitatChooseResult>;
+  setDirectoryEnabled(directoryId: string, enabled: boolean): Promise<HabitatDashboardDto>;
+  removeDirectory(directoryId: string): Promise<HabitatDashboardDto>;
+  savePreferences(input: HabitatPreferencesInput): Promise<HabitatDashboardDto>;
+  enterDirectory(directoryId: string): Promise<HabitatDashboardDto>;
+  summon(): Promise<HabitatDashboardDto>;
+  recall(): Promise<HabitatDashboardDto>;
+}
+
+function habitatBoundaryError(
+  code: 'HABITAT_INPUT_INVALID' | 'HABITAT_RESPONSE_INVALID'
+): Error & { code: string } {
+  return Object.assign(new Error(code), { code });
+}
+
+function parseHabitatInput<T>(schema: z.ZodType<T>, raw: unknown): T {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw habitatBoundaryError('HABITAT_INPUT_INVALID');
+  return parsed.data;
+}
+
+function parseHabitatOutput<T>(schema: z.ZodType<T>, raw: unknown): T {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw habitatBoundaryError('HABITAT_RESPONSE_INVALID');
+  return parsed.data;
+}
+
+/** Habitat Renderer 边界固定为八项命令，输入与响应均使用共享 strict schema。 */
+export function registerHabitatIpc(
+  ipcMain: IpcMain,
+  service: HabitatIpcService
+): void {
+  replaceHandler(ipcMain, ipcChannels.habitatDashboardGet, async (_event, raw) => {
+    parseHabitatInput(habitatEmptyInputSchema, raw);
+    return parseHabitatOutput(habitatDashboardSchema, await service.getDashboard());
+  });
+  replaceHandler(ipcMain, ipcChannels.habitatDirectoryChoose, async (_event, raw) => {
+    parseHabitatInput(habitatEmptyInputSchema, raw);
+    return parseHabitatOutput(
+      habitatChooseResultSchema,
+      await service.chooseAndAddDirectory()
+    );
+  });
+  replaceHandler(ipcMain, ipcChannels.habitatDirectoryToggle, async (_event, raw) => {
+    const { directoryId, enabled } = parseHabitatInput(
+      habitatDirectoryToggleInputSchema,
+      raw
+    );
+    return parseHabitatOutput(
+      habitatDashboardSchema,
+      await service.setDirectoryEnabled(directoryId, enabled)
+    );
+  });
+  replaceHandler(ipcMain, ipcChannels.habitatDirectoryRemove, async (_event, raw) => {
+    const { directoryId } = parseHabitatInput(habitatDirectoryIdInputSchema, raw);
+    return parseHabitatOutput(
+      habitatDashboardSchema,
+      await service.removeDirectory(directoryId)
+    );
+  });
+  replaceHandler(ipcMain, ipcChannels.habitatPreferencesSave, async (_event, raw) => {
+    const input = parseHabitatInput(habitatPreferencesInputSchema, raw);
+    return parseHabitatOutput(
+      habitatDashboardSchema,
+      await service.savePreferences(input)
+    );
+  });
+  replaceHandler(ipcMain, ipcChannels.habitatEnter, async (_event, raw) => {
+    const { directoryId } = parseHabitatInput(habitatDirectoryIdInputSchema, raw);
+    return parseHabitatOutput(
+      habitatDashboardSchema,
+      await service.enterDirectory(directoryId)
+    );
+  });
+  replaceHandler(ipcMain, ipcChannels.habitatSummon, async (_event, raw) => {
+    parseHabitatInput(habitatEmptyInputSchema, raw);
+    return parseHabitatOutput(habitatDashboardSchema, await service.summon());
+  });
+  replaceHandler(ipcMain, ipcChannels.habitatRecall, async (_event, raw) => {
+    parseHabitatInput(habitatEmptyInputSchema, raw);
+    return parseHabitatOutput(habitatDashboardSchema, await service.recall());
+  });
 }
 
 export interface CharacterIpcService {

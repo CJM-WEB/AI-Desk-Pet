@@ -34,6 +34,7 @@ function folderSnapshot(absolutePath: string): PetHabitatSnapshot {
   return {
     version: 1,
     preferences: {
+      enabled: true,
       autoHideEnabled: true,
       idleDelayMs: 45_000
     },
@@ -55,6 +56,145 @@ afterEach(async () => {
 });
 
 describe('PetHabitatStore', () => {
+  test('缺失文件的功能总开关默认关闭', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-enabled-default-');
+    const store = new PetHabitatStore(join(directory, 'private', 'habitat.json'));
+
+    expect((await store.load()).preferences.enabled).toBe(false);
+  });
+
+  test('缺少总开关字段的旧版 v1 记录按关闭状态恢复', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-enabled-legacy-');
+    const privateDirectory = join(directory, 'private');
+    const file = join(privateDirectory, 'habitat.json');
+    const legacySnapshot = folderSnapshot(join(directory, 'project'));
+    delete legacySnapshot.preferences.enabled;
+    await mkdir(privateDirectory);
+    await writeFile(file, JSON.stringify(legacySnapshot), 'utf8');
+
+    const restored = await new PetHabitatStore(file).load();
+
+    expect(restored.preferences.enabled).toBe(false);
+    expect(restored.location).toEqual(legacySnapshot.location);
+    expect(await readdir(privateDirectory)).toEqual(['habitat.json']);
+  });
+
+  test('功能总开关与其他偏好一同持久化', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-enabled-save-');
+    const file = join(directory, 'private', 'habitat.json');
+    const snapshot = folderSnapshot(join(directory, 'project')) as PetHabitatSnapshot & {
+      preferences: PetHabitatSnapshot['preferences'] & { enabled: boolean };
+    };
+    snapshot.preferences.enabled = true;
+
+    await new PetHabitatStore(file).save(snapshot);
+
+    await expect(new PetHabitatStore(file).load()).resolves.toMatchObject({
+      preferences: {
+        enabled: true,
+        autoHideEnabled: true,
+        idleDelayMs: 45_000
+      }
+    });
+  });
+
+  test('偏好原子更新保留其他实例并发提交的目录路径与当前位置', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-preferences-race-');
+    const file = join(directory, 'private', 'habitat.json');
+    const initial = folderSnapshot(join(directory, 'project-old'));
+    initial.location = { kind: 'desktop', position: { x: 10, y: 20 } };
+    await new PetHabitatStore(file).save(initial);
+
+    const preferencesWrite = new PetHabitatStore(file).updatePreferences({
+      enabled: false,
+      autoHideEnabled: true,
+      idleDelayMs: 75_000
+    });
+    const pathWrite = new PetHabitatStore(file).updateDirectoryPath({
+      directoryId: 'directory-1',
+      expectedIdentity: { dev: 12, ino: 34 },
+      expectedAbsolutePath: join(directory, 'project-old'),
+      absolutePath: join(directory, 'project-new')
+    });
+    await Promise.all([preferencesWrite, pathWrite]);
+    const beforeLocation = await new PetHabitatStore(file).load();
+    await new PetHabitatStore(file).updateLocation({
+      expected: beforeLocation.location,
+      expectedDirectory: beforeLocation.directories[0]!,
+      location: {
+        kind: 'folder',
+        directoryId: 'directory-1',
+        enteredAt: '2026-08-09T01:00:00.000Z',
+        previousDesktopPosition: { x: 10, y: 20 },
+        localOffset: { x: 3, y: 4 }
+      }
+    });
+
+    const restored = await new PetHabitatStore(file).load();
+    expect(restored.preferences).toEqual({
+      enabled: false,
+      autoHideEnabled: true,
+      idleDelayMs: 75_000
+    });
+    expect(restored.directories[0]?.absolutePath).toBe(join(directory, 'project-new'));
+    expect(restored.location).toMatchObject({
+      kind: 'folder',
+      directoryId: 'directory-1'
+    });
+  });
+
+  test('目录增删与启用原子更新保留并发偏好和其他目录最新字段', async () => {
+    const directory = await createTemporaryDirectory('ai-pet-habitat-directory-settings-race-');
+    const file = join(directory, 'private', 'habitat.json');
+    const initial = folderSnapshot(join(directory, 'first'));
+    initial.location = { kind: 'desktop', position: null };
+    initial.directories.push({
+      ...directoryRecord(join(directory, 'second-old')),
+      id: 'directory-2',
+      displayName: '第二空间',
+      pathHint: 'second',
+      identity: { dev: 56, ino: 78 }
+    });
+    await new PetHabitatStore(file).save(initial);
+
+    await Promise.all([
+      new PetHabitatStore(file).updatePreferences({
+        enabled: true,
+        autoHideEnabled: true,
+        idleDelayMs: 60_000
+      }),
+      new PetHabitatStore(file).setDirectoryEnabled('directory-1', false),
+      new PetHabitatStore(file).updateDirectoryPath({
+        directoryId: 'directory-2',
+        expectedIdentity: { dev: 56, ino: 78 },
+        expectedAbsolutePath: join(directory, 'second-old'),
+        absolutePath: join(directory, 'second-new')
+      }),
+      new PetHabitatStore(file).addDirectory({
+        ...directoryRecord(join(directory, 'third')),
+        id: 'directory-3',
+        displayName: '第三空间',
+        pathHint: 'third',
+        identity: { dev: 90, ino: 91 }
+      })
+    ]);
+    await new PetHabitatStore(file).removeDirectory('directory-1');
+
+    const restored = await new PetHabitatStore(file).load();
+    expect(restored.preferences).toEqual({
+      enabled: true,
+      autoHideEnabled: true,
+      idleDelayMs: 60_000
+    });
+    expect(restored.directories).toEqual([
+      expect.objectContaining({
+        id: 'directory-2',
+        absolutePath: join(directory, 'second-new')
+      }),
+      expect.objectContaining({ id: 'directory-3' })
+    ]);
+  });
+
   test('缺失文件返回关闭自动藏身的安全默认值', async () => {
     const directory = await createTemporaryDirectory('ai-pet-habitat-default-');
     const store = new PetHabitatStore(join(directory, 'private', 'habitat.json'));
@@ -287,6 +427,7 @@ describe('PetHabitatStore', () => {
     const serialized = JSON.stringify(projected);
 
     expect(projected).toEqual({
+      enabled: true,
       autoHideEnabled: true,
       idleDelayMs: 45_000,
       directories: [{

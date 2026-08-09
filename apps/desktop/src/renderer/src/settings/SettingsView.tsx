@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bot, Box, Database, ShieldCheck, Wrench, X } from 'lucide-react';
+import { Bot, Box, Database, FolderHeart, ShieldCheck, Wrench, X } from 'lucide-react';
 import type {
   McpServerInput,
   MyselfApi,
@@ -16,8 +16,17 @@ import {
   type McpLaunchConfirmation
 } from './McpSettings';
 import { PrivacySettings } from './PrivacySettings';
+import type {
+  HabitatChooseResult,
+  HabitatDashboardDto
+} from '../../../shared/habitat-ipc';
+import {
+  HabitatSettings,
+  habitatErrorMessage,
+  type HabitatSettingsProps
+} from './HabitatSettings';
 
-export type SettingsTab = 'models' | 'tools' | 'privacy' | 'local';
+export type SettingsTab = 'models' | 'tools' | 'habitat' | 'privacy' | 'local';
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
 const emptyDashboard: SettingsDashboardDto = {
@@ -87,6 +96,7 @@ export interface SettingsWorkspaceProps {
     onChooseRoot(): void;
     onRevokeRoot(): void;
   };
+  habitat?: HabitatSettingsProps;
   onClear(scope: LocalDataScope): void;
   onOpenCharacterWorkshop(): void;
 }
@@ -94,6 +104,7 @@ export interface SettingsWorkspaceProps {
 const tabs = [
   ['models', '模型', Bot],
   ['tools', '工具', Wrench],
+  ['habitat', '空间', FolderHeart],
   ['privacy', '隐私', ShieldCheck],
   ['local', '本地数据', Database]
 ] as const;
@@ -138,7 +149,10 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
         ))}
       </nav>
       {props.notice
-        ? <div className={`settings-notice notice-${props.notice.tone}`} role="status">
+        ? <div
+            className={`settings-notice notice-${props.notice.tone}`}
+            role={props.notice.tone === 'error' ? 'alert' : 'status'}
+          >
             {props.notice.text}
           </div>
         : null}
@@ -165,6 +179,9 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
           {...props.privacyActions}
         />
       ) : null}
+      {activeTab === 'habitat' && props.habitat ? (
+        <HabitatSettings {...props.habitat} />
+      ) : null}
       {activeTab === 'local' ? (
         <section className="settings-band local-data-pane" aria-labelledby="local-heading">
           <div className="pane-heading">
@@ -184,6 +201,9 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
 
 export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const [dashboard, setDashboard] = useState(emptyDashboard);
+  const [habitatDashboard, setHabitatDashboard] = useState<HabitatDashboardDto | null>(null);
+  const [habitatLoading, setHabitatLoading] = useState(true);
+  const [habitatBusyLabel, setHabitatBusyLabel] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>('models');
   const [busy, setBusy] = useState(false);
   const [incognito, setIncognito] = useState(false);
@@ -195,12 +215,21 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
 
   useEffect(() => {
     let active = true;
-    void api.getSettingsDashboard().then(value => {
+    void Promise.allSettled([
+      api.getSettingsDashboard(),
+      api.getHabitatDashboard()
+    ]).then(([settingsResult, habitatResult]) => {
       if (!active) return;
-      setDashboard(value);
-      setNotice(null);
-    }).catch(() => {
-      if (active) setNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
+      if (settingsResult.status === 'fulfilled') setDashboard(settingsResult.value);
+      if (habitatResult.status === 'fulfilled') setHabitatDashboard(habitatResult.value);
+      setHabitatLoading(false);
+      if (settingsResult.status === 'rejected') {
+        setNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
+      } else if (habitatResult.status === 'rejected') {
+        setNotice({ tone: 'error', text: '无法读取空间设置，请稍后重试。' });
+      } else {
+        setNotice(null);
+      }
     });
     return () => { active = false; };
   }, [api]);
@@ -213,7 +242,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
     >,
     success: string
   ): Promise<void> => {
-    if (busy) return;
+    if (busy || habitatBusyLabel !== null) return;
     setBusy(true);
     try {
       const result = await operation();
@@ -228,6 +257,31 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       setNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const runHabitat = async (
+    operation: () => Promise<HabitatDashboardDto | HabitatChooseResult>,
+    progress: string,
+    success: string
+  ): Promise<void> => {
+    if (busy || habitatBusyLabel !== null) return;
+    setHabitatBusyLabel(progress);
+    try {
+      const result = await operation();
+      if ('kind' in result) {
+        setHabitatDashboard(result.dashboard);
+        setNotice(result.kind === 'cancelled'
+          ? { tone: 'info', text: '未选择目录，配置保持不变。' }
+          : { tone: 'success', text: success });
+      } else {
+        setHabitatDashboard(result);
+        setNotice({ tone: 'success', text: success });
+      }
+    } catch (error) {
+      setNotice({ tone: 'error', text: habitatErrorMessage(error) });
+    } finally {
+      setHabitatBusyLabel(null);
     }
   };
 
@@ -306,6 +360,47 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
         onDelete: serverId => void run(
           () => api.deleteMcpServer(serverId),
           'MCP 服务已删除。'
+        )
+      }}
+      habitat={{
+        dashboard: habitatDashboard,
+        loading: habitatLoading,
+        busy: busy || habitatBusyLabel !== null,
+        busyLabel: habitatBusyLabel,
+        onAdd: () => void runHabitat(
+          () => api.chooseAndAddHabitatDirectory(),
+          '正在选择并验证目录…',
+          '目录空间已添加。'
+        ),
+        onToggleDirectory: (directoryId, enabled) => void runHabitat(
+          () => api.setHabitatDirectoryEnabled(directoryId, enabled),
+          '正在更新目录状态…',
+          '目录状态已更新。'
+        ),
+        onRemove: directoryId => void runHabitat(
+          () => api.removeHabitatDirectory(directoryId),
+          '正在删除目录配置…',
+          '目录配置已删除，磁盘目录保持不变。'
+        ),
+        onSavePreferences: input => void runHabitat(
+          () => api.saveHabitatPreferences(input),
+          '正在保存空间偏好…',
+          '空间偏好已保存。'
+        ),
+        onEnter: directoryId => void runHabitat(
+          () => api.enterHabitatDirectory(directoryId),
+          '正在进入目录空间…',
+          '桌宠已藏到目录空间。'
+        ),
+        onSummon: () => void runHabitat(
+          () => api.summonHabitat(),
+          '正在呼唤桌宠…',
+          '正在打开目录并呼唤桌宠。'
+        ),
+        onRecall: () => void runHabitat(
+          () => api.recallHabitat(),
+          '正在召回桌面…',
+          '桌宠已召回桌面。'
         )
       }}
       privacyActions={{

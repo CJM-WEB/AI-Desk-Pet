@@ -66,6 +66,7 @@ export const habitatDirectoryRecordSchema = z.object({
 export type HabitatDirectoryRecord = z.infer<typeof habitatDirectoryRecordSchema>;
 
 const habitatPreferencesSchema = z.object({
+  enabled: z.boolean().default(false),
   autoHideEnabled: z.boolean(),
   idleDelayMs: z.number().finite().int().min(1_000).max(86_400_000)
 }).strict();
@@ -110,11 +111,12 @@ export const petHabitatSnapshotSchema = z.object({
     });
   }
 });
-export type PetHabitatSnapshot = z.infer<typeof petHabitatSnapshotSchema>;
+export type PetHabitatSnapshot = z.input<typeof petHabitatSnapshotSchema>;
 
 export type HabitatDirectoryAvailability = 'available' | 'unavailable';
 
 export interface RendererHabitatSnapshot {
+  enabled: boolean;
   autoHideEnabled: boolean;
   idleDelayMs: number;
   directories: Array<{
@@ -130,6 +132,7 @@ export interface RendererHabitatSnapshot {
 export const DEFAULT_HABITAT_SNAPSHOT: PetHabitatSnapshot = {
   version: 1,
   preferences: {
+    enabled: false,
     autoHideEnabled: false,
     idleDelayMs: 30_000
   },
@@ -163,6 +166,10 @@ export type HabitatDirectoryPathUpdateResult =
   | 'unchanged'
   | 'missing'
   | 'conflict';
+
+export type HabitatDirectoryAddResult = 'added' | 'duplicate' | 'conflict';
+export type HabitatDirectoryToggleResult = 'updated' | 'unchanged' | 'missing';
+export type HabitatDirectoryRemoveResult = 'removed' | 'missing' | 'in-use';
 
 export interface HabitatDirectoryPathUpdate {
   directoryId: string;
@@ -259,6 +266,7 @@ export function projectHabitatSnapshot(
 ): RendererHabitatSnapshot {
   const parsed = petHabitatSnapshotSchema.parse(snapshot);
   return {
+    enabled: parsed.preferences.enabled,
     autoHideEnabled: parsed.preferences.autoHideEnabled,
     idleDelayMs: parsed.preferences.idleDelayMs,
     directories: parsed.directories.map(directory => ({
@@ -305,6 +313,103 @@ export class PetHabitatStore {
       const snapshot = petHabitatSnapshotSchema.parse(input);
       try {
         await this.writeSnapshot(snapshot);
+      } catch (error) {
+        if (isKnownHabitatError(error)) throw error;
+        if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');
+        throw new Error('HABITAT_STORAGE_FAILED');
+      }
+    });
+  }
+
+  /** 原子替换偏好字段，保留并发提交的位置和目录事实。 */
+  updatePreferences(input: PetHabitatSnapshot['preferences']): Promise<void> {
+    return this.enqueue(async () => {
+      const preferences = habitatPreferencesSchema.parse(input);
+      try {
+        const snapshot = await this.loadUnsafe();
+        await this.writeSnapshot(petHabitatSnapshotSchema.parse({
+          ...snapshot,
+          preferences
+        }));
+      } catch (error) {
+        if (isKnownHabitatError(error)) throw error;
+        if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');
+        throw new Error('HABITAT_STORAGE_FAILED');
+      }
+    });
+  }
+
+  /** 原子追加已授权目录，并复核并发加入的路径与身份冲突。 */
+  addDirectory(input: HabitatDirectoryRecord): Promise<HabitatDirectoryAddResult> {
+    return this.enqueue(async () => {
+      const directory = habitatDirectoryRecordSchema.parse(input);
+      try {
+        const snapshot = await this.loadUnsafe();
+        for (const existing of snapshot.directories) {
+          const pathMatches = samePrivatePath(existing.absolutePath, directory.absolutePath);
+          const identityMatches = sameFile(existing.identity, directory.identity);
+          if (pathMatches && identityMatches) return 'duplicate';
+          if (existing.id === directory.id || pathMatches || identityMatches) return 'conflict';
+        }
+        await this.writeSnapshot(petHabitatSnapshotSchema.parse({
+          ...snapshot,
+          directories: [...snapshot.directories, directory]
+        }));
+        return 'added';
+      } catch (error) {
+        if (isKnownHabitatError(error)) throw error;
+        if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');
+        throw new Error('HABITAT_STORAGE_FAILED');
+      }
+    });
+  }
+
+  /** 原子切换单个目录，不覆盖并发修改的其他目录字段。 */
+  setDirectoryEnabled(
+    directoryId: string,
+    enabled: boolean
+  ): Promise<HabitatDirectoryToggleResult> {
+    return this.enqueue(async () => {
+      const parsed = z.object({
+        directoryId: safeIdentifierSchema,
+        enabled: z.boolean()
+      }).strict().parse({ directoryId, enabled });
+      try {
+        const snapshot = await this.loadUnsafe();
+        const index = snapshot.directories.findIndex(directory => (
+          directory.id === parsed.directoryId
+        ));
+        if (index < 0) return 'missing';
+        if (snapshot.directories[index]!.enabled === parsed.enabled) return 'unchanged';
+        const directories = snapshot.directories.slice();
+        directories[index] = { ...directories[index]!, enabled: parsed.enabled };
+        await this.writeSnapshot(petHabitatSnapshotSchema.parse({ ...snapshot, directories }));
+        return 'updated';
+      } catch (error) {
+        if (isKnownHabitatError(error)) throw error;
+        if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');
+        throw new Error('HABITAT_STORAGE_FAILED');
+      }
+    });
+  }
+
+  /** 原子删除配置记录；当前 folder 引用仍存在时拒绝删除。 */
+  removeDirectory(directoryId: string): Promise<HabitatDirectoryRemoveResult> {
+    return this.enqueue(async () => {
+      const parsedId = safeIdentifierSchema.parse(directoryId);
+      try {
+        const snapshot = await this.loadUnsafe();
+        const exists = snapshot.directories.some(directory => directory.id === parsedId);
+        if (!exists) return 'missing';
+        if (
+          snapshot.location.kind === 'folder'
+          && snapshot.location.directoryId === parsedId
+        ) return 'in-use';
+        await this.writeSnapshot(petHabitatSnapshotSchema.parse({
+          ...snapshot,
+          directories: snapshot.directories.filter(directory => directory.id !== parsedId)
+        }));
+        return 'removed';
       } catch (error) {
         if (isKnownHabitatError(error)) throw error;
         if (isStorageNamespaceChanged(error)) throw new Error('HABITAT_STORAGE_CHANGED');

@@ -359,7 +359,7 @@ describe('多 Provider 设置组件', () => {
   });
 
   test('MCP 禁用时设置导航不公开工具页且旧 tools 状态回退到模型档案', () => {
-    expect(availableSettingsTabs()).toEqual(['models', 'privacy', 'local']);
+    expect(availableSettingsTabs()).toEqual(['models', 'habitat', 'privacy', 'local']);
     expect(resolveSettingsTab('tools')).toBe('models');
 
     const markup = renderToStaticMarkup(
