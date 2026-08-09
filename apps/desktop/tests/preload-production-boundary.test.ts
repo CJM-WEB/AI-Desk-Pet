@@ -36,4 +36,22 @@ describe('生产 preload 探针边界', () => {
     expect(exposedApi).not.toHaveProperty('getAuthorizedRootPath');
     expect(exposedApi).not.toHaveProperty('getE2eRecycleBinProbe');
   });
+
+  test('生产 API 不暴露目录绝对路径、句柄、私有身份、桥状态或 fake 控制', () => {
+    expect(exposedApi).toBeDefined();
+    const apiKeys = Object.keys(exposedApi ?? {});
+
+    expect(apiKeys).not.toEqual(expect.arrayContaining([
+      'getHabitatAbsolutePath',
+      'getExplorerHwnd',
+      'getHabitatPrivateIdentity',
+      'getExplorerBridgeState',
+      'injectExplorerSnapshot',
+      'crashExplorerBridge',
+      'getHabitatE2eControl'
+    ]));
+    expect(apiKeys.join('\n')).not.toMatch(
+      /absolutePath|hwnd|privateIdentity|bridgeState|injectExplorer|crashExplorer|HabitatE2e/iu
+    );
+  });
 });

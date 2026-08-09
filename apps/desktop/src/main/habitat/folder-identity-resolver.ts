@@ -44,10 +44,12 @@ function sameIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-function isSafeIdentity(identity: HabitatDirectoryRecord['identity']): boolean {
-  return Number.isSafeInteger(identity.dev)
+function isValidIdentity(identity: HabitatDirectoryRecord['identity']): boolean {
+  return Number.isFinite(identity.dev)
+    && Number.isInteger(identity.dev)
     && identity.dev >= 0
-    && Number.isSafeInteger(identity.ino)
+    && Number.isFinite(identity.ino)
+    && Number.isInteger(identity.ino)
     && identity.ino >= 0;
 }
 
@@ -131,7 +133,7 @@ export class FolderIdentityResolver {
       || entry.isSymbolicLink()
       || !entry.isDirectory()
       || !target.isDirectory()
-      || !isSafeIdentity(identity)
+      || !isValidIdentity(identity)
       || entry.dev !== target.dev
       || entry.ino !== target.ino
     ) return undefined;

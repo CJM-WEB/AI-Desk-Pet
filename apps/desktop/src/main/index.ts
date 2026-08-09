@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { access, readFile, rename, writeFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { access, lstat, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { basename, join, normalize } from 'node:path';
 import { AgentLoop, ModelRouter } from '@myself/agent-core';
 import { FileToolService, PathPolicy } from '@myself/file-tools';
 import { providerCatalog, type TaskEvent } from '@myself/shared-types';
@@ -50,10 +50,17 @@ import { ExplorerWindowLayerController } from
 import { FolderIdentityResolver } from './habitat/folder-identity-resolver';
 import { HabitatAutonomyPolicy } from './habitat/habitat-autonomy-policy';
 import { HabitatDirectoryPolicy } from './habitat/habitat-directory-policy';
-import { HabitatService } from './habitat/habitat-service';
+import {
+  HabitatService,
+  type HabitatExplorerObservation
+} from './habitat/habitat-service';
 import { HabitatSettingsService } from './habitat/habitat-settings-service';
 import { HabitatWindowController } from './habitat/habitat-window-controller';
-import { PetHabitatStore } from './habitat/pet-habitat-store';
+import {
+  PetHabitatStore,
+  type HabitatDirectoryAvailability,
+  type HabitatDirectoryRecord
+} from './habitat/pet-habitat-store';
 import { createForegroundFullscreenProbe } from './habitat/foreground-fullscreen-probe';
 import {
   createApplicationQuitCoordinator,
@@ -140,6 +147,102 @@ const EXPLORER_SPACE_RESOURCE_NAMES = [
   'explorer-space-bridge.ps1',
   'explorer-space-shell-tab-helper.cs'
 ] as const;
+
+function sameMainE2ePath(left: string, right: string): boolean {
+  const normalizeForComparison = (value: string) => process.platform === 'win32'
+    ? normalize(value).toLocaleLowerCase('en-US')
+    : normalize(value);
+  return normalizeForComparison(left) === normalizeForComparison(right);
+}
+
+/**
+ * E2E 目录策略只认可启动边界已规范化的唯一目录；令牌文件不能提交路径，
+ * Renderer 也只能收到脱敏后的公开目录记录。
+ */
+function createMainE2eHabitatDirectoryPolicy(expectedPath: string) {
+  const inspectOnce = async (): Promise<Pick<HabitatDirectoryRecord, 'absolutePath' | 'identity'>> => {
+    const [physicalPath, entry, target] = await Promise.all([
+      realpath(expectedPath),
+      lstat(expectedPath),
+      stat(expectedPath)
+    ]);
+    if (
+      !sameMainE2ePath(physicalPath, expectedPath)
+      || entry.isSymbolicLink()
+      || !entry.isDirectory()
+      || !target.isDirectory()
+      || entry.dev !== target.dev
+      || entry.ino !== target.ino
+      || !Number.isInteger(entry.dev)
+      || !Number.isInteger(entry.ino)
+      || entry.dev < 0
+      || entry.ino < 0
+    ) throw new Error('HABITAT_DIRECTORY_UNSAFE');
+    return {
+      absolutePath: physicalPath,
+      identity: { dev: entry.dev, ino: entry.ino }
+    };
+  };
+  const inspect = async (): Promise<Pick<HabitatDirectoryRecord, 'absolutePath' | 'identity'>> => {
+    const first = await inspectOnce();
+    const second = await inspectOnce();
+    if (
+      !sameMainE2ePath(first.absolutePath, second.absolutePath)
+      || first.identity.dev !== second.identity.dev
+      || first.identity.ino !== second.identity.ino
+    ) throw new Error('HABITAT_DIRECTORY_CHANGED');
+    return second;
+  };
+
+  return {
+    async authorize(
+      selectedPath: string,
+      existingDirectories: readonly HabitatDirectoryRecord[] = []
+    ): Promise<HabitatDirectoryRecord> {
+      if (!sameMainE2ePath(selectedPath, expectedPath)) {
+        throw new Error('HABITAT_DIRECTORY_UNSAFE');
+      }
+      const inspected = await inspect();
+      if (existingDirectories.some(directory => (
+        sameMainE2ePath(directory.absolutePath, inspected.absolutePath)
+        && directory.identity.dev === inspected.identity.dev
+        && directory.identity.ino === inspected.identity.ino
+      ))) throw new Error('HABITAT_DIRECTORY_DUPLICATE');
+      if (existingDirectories.some(directory => (
+        sameMainE2ePath(directory.absolutePath, inspected.absolutePath)
+        || (
+          directory.identity.dev === inspected.identity.dev
+          && directory.identity.ino === inspected.identity.ino
+        )
+      ))) throw new Error('HABITAT_DIRECTORY_IDENTITY_CONFLICT');
+      const displayName = basename(inspected.absolutePath);
+      return {
+        id: 'e2e-habitat-directory',
+        displayName,
+        pathHint: displayName,
+        ...inspected,
+        enabled: true
+      };
+    },
+    async availability(
+      directory: HabitatDirectoryRecord
+    ): Promise<HabitatDirectoryAvailability> {
+      try {
+        if (
+          directory.id !== 'e2e-habitat-directory'
+          || !sameMainE2ePath(directory.absolutePath, expectedPath)
+        ) return 'unavailable';
+        const inspected = await inspect();
+        return directory.identity.dev === inspected.identity.dev
+          && directory.identity.ino === inspected.identity.ino
+          ? 'available'
+          : 'unavailable';
+      } catch {
+        return 'unavailable';
+      }
+    }
+  };
+}
 
 /** 生产桥只信任固定清单中的两个逐文件 SHA-256，任何缺失或多余项都失败关闭。 */
 async function verifyExplorerSpaceResourceIntegrity(resourceRoot: string): Promise<void> {
@@ -264,12 +367,20 @@ async function createApplicationWindows(
   // 阶段一：窗口保持隐藏，先恢复 Habitat 稳定事实并准备受信桥接边界。
   const storageDirectory = app.getPath('userData');
   const habitatStore = new PetHabitatStore(join(storageDirectory, 'pet-habitat.json'));
-  const habitatSnapshot = await habitatStore.load();
+  let habitatSnapshot = await habitatStore.load();
+  const explorerRelay = createExplorerObservationRelay<HabitatExplorerObservation>();
+  const e2eExplorer = e2eBoundary
+    ? createMainE2eExplorerBridge({
+        eventFile: e2eBoundary.explorerEventFile,
+        habitatDirectory: e2eBoundary.habitatDirectory,
+        wrongDirectory: e2eBoundary.authorizedRootDirectory
+      })
+    : null;
   const explorerResourceRoot = app.isPackaged
     ? process.resourcesPath
     : join(__dirname, '../../resources');
   const explorer: ExplorerSpaceClient | ReturnType<typeof createMainE2eExplorerBridge> = e2eBoundary
-    ? createMainE2eExplorerBridge()
+    ? e2eExplorer!
     : new ExplorerSpaceClient({
       spawnSpec: buildExplorerBridgeSpawnSpec({
         windowsDirectory: process.env.SystemRoot ?? 'C:\\Windows',
@@ -284,11 +395,16 @@ async function createApplicationWindows(
         explorer
       });
   startupCleanup.add(() => explorerPort.close());
-  const explorerRelay = createExplorerObservationRelay<ExplorerSnapshot>();
   let latestExplorerObservation: ExplorerSnapshot | null = null;
   explorer.on('snapshot', observation => {
     latestExplorerObservation = observation as ExplorerSnapshot;
     void explorerRelay.accept(observation as ExplorerSnapshot).catch(() => {
+      console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED');
+    });
+  });
+  explorer.on('error', () => {
+    latestExplorerObservation = null;
+    void explorerRelay.accept(new Error('HABITAT_OBSERVER_FAILED')).catch(() => {
       console.error('处理 Explorer 观察失败。', 'HABITAT_EVENT_FAILED');
     });
   });
@@ -387,6 +503,12 @@ async function createApplicationWindows(
   );
   if (habitatSnapshot.location.kind === 'desktop') {
     pet.setPosition(petPosition.x, petPosition.y);
+    // 服务构造前提交恢复坐标，确保首次目录操作使用 Store 返回的最新 CAS 权威。
+    const synchronized = await habitatStore.updateLocation({
+      expected: habitatSnapshot.location,
+      location: { kind: 'desktop', position: petPosition }
+    });
+    habitatSnapshot = synchronized.snapshot;
   }
   const reportPetPositionError = (error: unknown): void => {
     console.error('保存桌宠位置失败。', error);
@@ -479,7 +601,16 @@ async function createApplicationWindows(
   );
   const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion);
   // 阶段三：既有窗口、目录身份与桥接服务在 Main 组合根内收口为唯一状态机。
-  const explorerLayer = new ExplorerWindowLayerController({ window: pet });
+  const explorerLayer = e2eBoundary
+    ? {
+        // E2E 只认可 fake bridge 内部生成的固定句柄，不调用真实窗口相邻层 API。
+        async activate({ explorerHwnd }: { explorerHwnd: string }): Promise<void> {
+          if (explorerHwnd !== '9002') throw new Error('E2E_EXPLORER_LAYER_UNSAFE');
+        },
+        async invalidate(): Promise<void> {},
+        async dispose(): Promise<void> {}
+      }
+    : new ExplorerWindowLayerController({ window: pet });
   const habitatWindowController = new HabitatWindowController({
     window: pet,
     layer: explorerLayer,
@@ -497,10 +628,12 @@ async function createApplicationWindows(
     }
   });
   startupCleanup.add(() => habitatWindowController.dispose());
-  const habitatDirectoryPolicy = new HabitatDirectoryPolicy({
-    userDataPath: storageDirectory,
-    characterStoragePath: charactersDirectory
-  });
+  const habitatDirectoryPolicy = e2eBoundary
+    ? createMainE2eHabitatDirectoryPolicy(e2eBoundary.habitatDirectory)
+    : new HabitatDirectoryPolicy({
+        userDataPath: storageDirectory,
+        characterStoragePath: charactersDirectory
+      });
   const folderIdentityResolver = new FolderIdentityResolver(habitatStore);
   let currentAgentPhase = 'idle';
   let currentProactivityMode: 'passive' | 'assistive' | 'autonomous' = 'assistive';
@@ -516,8 +649,15 @@ async function createApplicationWindows(
     readState: () => readStableHabitatState()
   });
   const foregroundFullscreen = createForegroundFullscreenBlocker(
-    createForegroundFullscreenProbe()
+    e2eBoundary
+      ? createForegroundFullscreenProbe({
+          platform: 'win32',
+          runFixedProbe: () => Promise.resolve('0')
+        })
+      : createForegroundFullscreenProbe()
   );
+  // E2E 不调用 PowerShell/Win32 探针，并在接收目录命令前固定完成一次非全屏采样。
+  if (e2eBoundary) await foregroundFullscreen.sampleIfEligible(true);
   startupCleanup.add(() => foregroundFullscreen.close());
   const habitatService = new HabitatService({
     initialSnapshot: habitatSnapshot,
@@ -568,7 +708,15 @@ async function createApplicationWindows(
       show: () => visibilityGate.show(),
       focus: () => pet.focus()
     },
-    openDirectory: createVerifiedDirectoryOpener(path => shell.openPath(path)),
+    openDirectory: e2eBoundary
+      ? async ({ directory, signal }) => {
+          if (
+            signal.aborted
+            || directory.id !== 'e2e-habitat-directory'
+            || !sameMainE2ePath(directory.absolutePath, e2eBoundary.habitatDirectory)
+          ) throw new Error('HABITAT_SUMMON_FAILED');
+        }
+      : createVerifiedDirectoryOpener(path => shell.openPath(path)),
     readBlockers: () => ({
       fileTaskActive: ['listening', 'thinking', 'awaiting_confirmation', 'acting']
         .includes(currentAgentPhase),
@@ -601,7 +749,9 @@ async function createApplicationWindows(
     ) return state;
     return habitatService.snapshot().directoryId === null ? 'desktop' : 'folder-hidden';
   };
-  const consumeExplorerObservation = async (observation: ExplorerSnapshot): Promise<void> => {
+  const consumeExplorerObservation = async (
+    observation: HabitatExplorerObservation
+  ): Promise<void> => {
     await habitatService.observeExplorer(observation)
       .then(() => {
         const state = habitatService.snapshot().state;
@@ -1066,10 +1216,13 @@ async function createApplicationWindows(
     habitat: habitatService,
     chooseDirectory: async () => {
       const owner = await ensureSettingsWindow();
-      const result = await dialog.showOpenDialog(owner, {
-        title: '选择桌宠藏身目录',
-        properties: ['openDirectory']
-      });
+      // E2E 只替换 Main 已验证的选择结果，不向 Renderer 暴露隔离路径或 fake 控制。
+      const result = e2eBoundary
+        ? { canceled: false, filePaths: [e2eBoundary.habitatDirectory] }
+        : await dialog.showOpenDialog(owner, {
+            title: '选择桌宠藏身目录',
+            properties: ['openDirectory']
+          });
       return result.canceled ? null : (result.filePaths[0] ?? null);
     }
   });

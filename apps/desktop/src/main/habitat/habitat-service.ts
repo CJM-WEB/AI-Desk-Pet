@@ -238,7 +238,7 @@ export class HabitatService {
     ) return;
     if (!(observation && !(observation instanceof Error) && observation.type === 'explorer-snapshot')) {
       const epoch = this.advanceEpoch();
-      await this.conceal(epoch, 'explorer-closed', false, 'HABITAT_OBSERVER_FAILED');
+      await this.conceal(epoch, 'explorer-closed', true, 'HABITAT_OBSERVER_FAILED');
       return;
     }
     let authority: ExplorerAuthoritySnapshot;

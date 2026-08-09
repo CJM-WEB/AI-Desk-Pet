@@ -1,4 +1,5 @@
 import {
+  appendFile,
   lstat,
   mkdir,
   readFile,
@@ -19,6 +20,24 @@ import {
   createBuiltinFileToolRegistry
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
+import {
+  habitatDashboardSchema,
+  habitatDirectoryIdInputSchema
+} from '../../apps/desktop/src/shared/habitat-ipc';
+import {
+  parseBridgeLine,
+  serializeBridgeCommand
+} from '../../apps/desktop/src/main/habitat/explorer-space-protocol';
+import {
+  buildExplorerBridgeSpawnSpec
+} from '../../apps/desktop/src/main/habitat/explorer-space-client';
+import {
+  createMainE2eExplorerBridge
+} from '../../apps/desktop/src/main/e2e-boundary';
+import { FolderIdentityResolver } from
+  '../../apps/desktop/src/main/habitat/folder-identity-resolver';
+import { PetHabitatStore } from
+  '../../apps/desktop/src/main/habitat/pet-habitat-store';
 import {
   createAuthorizedRoot,
   type AuthorizedRootFixture
@@ -149,6 +168,233 @@ function expectSerializableBoundarySafe(
 }
 
 describe('权限边界安全回归', () => {
+  test('目录 IPC 与桥接协议共同拒绝伪造私有身份和窗口命令', () => {
+    for (const forgedDirectory of [
+      { directoryId: 'C:\\Private\\Habitat' },
+      { directoryId: '../directory-1' },
+      { directoryId: 'directory-1', absolutePath: 'C:\\Private\\Habitat' }
+    ]) {
+      expect(habitatDirectoryIdInputSchema.safeParse(forgedDirectory).success).toBe(false);
+    }
+
+    const publicDashboard = {
+      enabled: true,
+      autoHideEnabled: true,
+      idleDelayMs: 30_000,
+      directories: [{
+        id: 'directory-1',
+        displayName: '项目',
+        pathHint: '项目',
+        enabled: true,
+        availability: 'available'
+      }],
+      current: { kind: 'folder', directoryId: 'directory-1', visibility: 'hidden' },
+      busyReason: null,
+      errorCode: null
+    };
+    expect(habitatDashboardSchema.safeParse(publicDashboard).success).toBe(true);
+    for (const privateField of [
+      { absolutePath: 'C:\\Private\\Habitat' },
+      { hwnd: '123' },
+      { identity: { dev: 7, ino: 11 } },
+      { bridgeState: 'ready' },
+      { e2eControl: 'inject-snapshot' }
+    ]) {
+      expect(habitatDashboardSchema.safeParse({
+        ...publicDashboard,
+        ...privateField
+      }).success).toBe(false);
+    }
+
+    const validSnapshot = {
+      version: 1,
+      type: 'explorer-snapshot',
+      nonce: 'a'.repeat(32),
+      sequence: 1,
+      status: 'ready',
+      windowType: 'explorer',
+      instanceId: 'instance-1',
+      hwnd: '123',
+      path: 'C:\\Private\\Habitat',
+      rect: { x: 0, y: 0, width: 800, height: 600 },
+      foreground: true,
+      minimized: false,
+      search: false
+    };
+    expect(parseBridgeLine(JSON.stringify(validSnapshot))).toEqual(validSnapshot);
+    for (const forgedSnapshot of [
+      { ...validSnapshot, version: 2 },
+      { ...validSnapshot, sequence: 0 },
+      { ...validSnapshot, hwnd: '0' },
+      { ...validSnapshot, hwnd: 'window:123:0' },
+      { ...validSnapshot, foreground: false },
+      { ...validSnapshot, command: 'show-window' }
+    ]) {
+      expect(() => parseBridgeLine(JSON.stringify(forgedSnapshot)))
+        .toThrow('BRIDGE_PROTOCOL_INVALID');
+    }
+    expect(() => serializeBridgeCommand({
+      version: 1,
+      nonce: 'a'.repeat(32),
+      requestId: 'request-1',
+      command: 'open-explorer'
+    } as never)).toThrow('BRIDGE_COMMAND_INVALID');
+  });
+
+  test('Agent 工具定义不包含目录空间、窗口或 Shell 能力', () => {
+    const definitions = createBuiltinFileToolRegistry().definitions();
+
+    expect(definitions.map(definition => definition.function.name)).toEqual([
+      'builtin.files.list_directory',
+      'builtin.files.read_text',
+      'builtin.files.create_file',
+      'builtin.files.create_directory',
+      'builtin.files.rename_entry',
+      'builtin.files.move_to_recycle_bin'
+    ]);
+    expect(JSON.stringify(definitions)).not.toMatch(
+      /habitat|explorer|\bwindow\b|powershell|\bshell\b/iu
+    );
+  });
+
+  test('桥接启动计划固定系统可执行文件、资源脚本和最小环境', () => {
+    const spec = buildExplorerBridgeSpawnSpec({
+      windowsDirectory: 'C:\\Windows',
+      resourceRoot: 'C:\\Program Files\\AI Pet\\resources',
+      tempDirectory: 'C:\\Temp\\ai-pet-bridge'
+    });
+
+    expect(spec).toEqual({
+      executable: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      args: [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-File',
+        'C:\\Program Files\\AI Pet\\resources\\windows\\explorer-space-bridge.ps1'
+      ],
+      options: {
+        shell: false,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          SystemRoot: 'C:\\Windows',
+          WINDIR: 'C:\\Windows',
+          ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+          PATHEXT: '.COM;.EXE;.BAT;.CMD',
+          TEMP: 'C:\\Temp\\ai-pet-bridge',
+          TMP: 'C:\\Temp\\ai-pet-bridge'
+        }
+      }
+    });
+    expect(JSON.stringify(spec)).not.toMatch(
+      /API_KEY|Authorization|AUTHORIZED_ROOT|MCP|MYSELF_E2E/iu
+    );
+  });
+
+  test('Main fake 只消费固定无参数令牌并在崩溃时失败关闭', async () => {
+    const base = await createAuthorizedRoot();
+    roots.push(base);
+    const habitatDirectory = join(base.root, 'habitat-space');
+    const wrongDirectory = join(base.root, 'wrong-space');
+    await Promise.all([mkdir(habitatDirectory), mkdir(wrongDirectory)]);
+    const eventFile = join(base.root, 'main-e2e-explorer-events');
+    const createScriptedBridge = createMainE2eExplorerBridge as unknown as (
+      options: {
+        eventFile: string;
+        habitatDirectory: string;
+        wrongDirectory: string;
+        pollIntervalMs: number;
+      }
+    ) => ReturnType<typeof createMainE2eExplorerBridge>;
+    const bridge = createScriptedBridge({
+      eventFile,
+      habitatDirectory,
+      wrongDirectory,
+      pollIntervalMs: 1
+    });
+    const snapshots: unknown[] = [];
+    const errors: Error[] = [];
+    bridge.on('snapshot', snapshot => snapshots.push(snapshot));
+    bridge.on('error', error => errors.push(error));
+
+    await bridge.start();
+    await bridge.startObserving();
+    await appendFile(eventFile, [
+      'wrong-directory',
+      'stale-revision',
+      'background-window',
+      'ambiguous',
+      'exact-foreground',
+      'minimized',
+      'blurred',
+      'crash'
+    ].join('\n') + '\n', 'utf8');
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+
+    expect(snapshots).toHaveLength(6);
+    expect(snapshots).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: 'ready', path: wrongDirectory }),
+      expect.objectContaining({ status: 'ambiguous' }),
+      expect.objectContaining({ status: 'ready', path: habitatDirectory })
+    ]));
+    expect(snapshots.filter(snapshot => (
+      typeof snapshot === 'object'
+      && snapshot !== null
+      && 'status' in snapshot
+      && snapshot.status === 'none'
+    ))).toHaveLength(3);
+    expect(bridge.snapshot()).toEqual({
+      state: 'failed',
+      errorCode: 'E2E_BRIDGE_CRASHED'
+    });
+    await bridge.close();
+  });
+
+  test('Windows 大整数目录身份仍按授权时记录的同一事实命中', async () => {
+    const base = await createAuthorizedRoot();
+    roots.push(base);
+    const physicalPath = join(base.root, 'large-identity-habitat');
+    await mkdir(physicalPath);
+    const identity = { dev: 173_504_896, ino: 21_110_623_253_964_840 };
+    expect(Number.isInteger(identity.ino)).toBe(true);
+    expect(Number.isSafeInteger(identity.ino)).toBe(false);
+
+    const store = new PetHabitatStore(join(base.root, 'pet-habitat.json'));
+    await store.save({
+      version: 1,
+      preferences: {
+        enabled: true,
+        autoHideEnabled: false,
+        idleDelayMs: 30_000
+      },
+      directories: [{
+        id: 'large-identity-directory',
+        displayName: '大整数身份目录',
+        pathHint: '大整数身份目录',
+        absolutePath: physicalPath,
+        identity,
+        enabled: true
+      }],
+      location: { kind: 'desktop', position: null }
+    });
+    const fileStats = {
+      ...identity,
+      isSymbolicLink: () => false,
+      isDirectory: () => true
+    };
+    const resolver = new FolderIdentityResolver(store, {
+      realpathPath: async () => physicalPath,
+      lstatPath: async () => fileStats,
+      statPath: async () => fileStats
+    });
+
+    await expect(resolver.resolve(physicalPath)).resolves.toEqual({
+      status: 'matched',
+      directoryId: 'large-identity-directory'
+    });
+  });
+
   test('回收站端口只能消费服务私下签发的单次动作且公开边界不泄露绝对路径', async () => {
     const authorized = await createAuthorizedRoot();
     roots.push(authorized);

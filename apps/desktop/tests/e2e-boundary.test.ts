@@ -12,9 +12,15 @@ type BoundaryModule = {
   }): {
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    habitatDirectory: string;
+    explorerEventFile: string;
     recycleBinDirectory: string;
   } | null;
-  createMainE2eExplorerBridge(): {
+  createMainE2eExplorerBridge(options: {
+    eventFile: string;
+    habitatDirectory: string;
+    wrongDirectory: string;
+  }): {
     start(): Promise<void>;
     startObserving(): Promise<{ ok: true }>;
     stopObserving(): Promise<{ ok: true }>;
@@ -34,6 +40,7 @@ let testBaseDirectory = '';
 let temporaryDirectory = '';
 let userDataDirectory = '';
 let authorizedRootDirectory = '';
+let habitatDirectory = '';
 let recycleBinDirectory = '';
 
 function validEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -42,6 +49,7 @@ function validEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv 
     MYSELF_E2E_FAKE_EXPLORER_BRIDGE: '1',
     MYSELF_E2E_USER_DATA: userDataDirectory,
     MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory,
+    MYSELF_E2E_HABITAT_DIRECTORY: habitatDirectory,
     MYSELF_E2E_RECYCLE_BIN: recycleBinDirectory,
     MYSELF_E2E_CHARACTER_ASSETS: join(temporaryDirectory, 'character-assets'),
     MYSELF_E2E_SAFE_CHARACTER_PACKAGE: join(
@@ -69,10 +77,12 @@ describe('Main E2E 安全边界', () => {
     temporaryDirectory = join(testBaseDirectory, 'temporary-root');
     userDataDirectory = join(temporaryDirectory, 'user-data');
     authorizedRootDirectory = join(temporaryDirectory, 'authorized-root');
+    habitatDirectory = join(temporaryDirectory, 'habitat-directory');
     recycleBinDirectory = join(temporaryDirectory, 'recycle-bin');
     await Promise.all([
       mkdir(userDataDirectory, { recursive: true }),
       mkdir(authorizedRootDirectory, { recursive: true }),
+      mkdir(habitatDirectory, { recursive: true }),
       mkdir(recycleBinDirectory, { recursive: true }),
       mkdir(join(temporaryDirectory, 'character-assets'), { recursive: true }),
       mkdir(join(temporaryDirectory, 'packages'), { recursive: true }),
@@ -106,6 +116,11 @@ describe('Main E2E 安全边界', () => {
     })).toEqual({
       userDataDirectory: realpathSync.native(userDataDirectory),
       authorizedRootDirectory: realpathSync.native(authorizedRootDirectory),
+      habitatDirectory: realpathSync.native(habitatDirectory),
+      explorerEventFile: join(
+        realpathSync.native(userDataDirectory),
+        'main-e2e-explorer-events'
+      ),
       recycleBinDirectory: realpathSync.native(recycleBinDirectory),
       characterAssetsDirectory: realpathSync.native(
         join(temporaryDirectory, 'character-assets')
@@ -150,7 +165,11 @@ describe('Main E2E 安全边界', () => {
     expect(boundary).not.toBeNull();
     if (!boundary) return;
 
-    const fake = boundary.createMainE2eExplorerBridge();
+    const fake = boundary.createMainE2eExplorerBridge({
+      eventFile: join(userDataDirectory, 'main-e2e-explorer-events'),
+      habitatDirectory,
+      wrongDirectory: authorizedRootDirectory
+    });
     await expect(fake.start()).resolves.toBeUndefined();
     await expect(fake.startObserving()).resolves.toEqual({ ok: true });
     await expect(fake.stopObserving()).resolves.toEqual({ ok: true });
@@ -173,11 +192,17 @@ describe('Main E2E 安全边界', () => {
     ['授权目录逃逸临时目录', false, () => validEnvironment({
       MYSELF_E2E_AUTHORIZED_ROOT: join(testBaseDirectory, 'outside-authorized-root')
     })],
+    ['藏身目录逃逸临时目录', false, () => validEnvironment({
+      MYSELF_E2E_HABITAT_DIRECTORY: join(testBaseDirectory, 'outside-habitat')
+    })],
     ['隔离回收站逃逸临时目录', false, () => validEnvironment({
       MYSELF_E2E_RECYCLE_BIN: join(testBaseDirectory, 'outside-recycle-bin')
     })],
     ['隔离回收站与授权目录重合', false, () => validEnvironment({
       MYSELF_E2E_RECYCLE_BIN: authorizedRootDirectory
+    })],
+    ['藏身目录与授权目录重合', false, () => validEnvironment({
+      MYSELF_E2E_HABITAT_DIRECTORY: authorizedRootDirectory
     })]
   ] as const)('完整忽略无效边界：%s', async (_name, appIsPackaged, environment) => {
     const boundary = await loadBoundaryModule();

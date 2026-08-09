@@ -1,7 +1,7 @@
 import { lstat, readFile, rename, writeFile } from 'node:fs/promises';
 import { fork, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   AgentLoop,
   type ModelProvider,
@@ -19,6 +19,8 @@ import {
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
 import { CharacterMotionService } from '../../apps/desktop/src/main/characters/character-motion-service';
+import { HabitatService } from '../../apps/desktop/src/main/habitat/habitat-service';
+import type { PetHabitatSnapshot } from '../../apps/desktop/src/main/habitat/pet-habitat-store';
 import {
   createAuthorizedRoot,
   type AuthorizedRootFixture
@@ -325,7 +327,91 @@ function scriptedProvider(responses: ModelResponse[]): ModelProvider {
   };
 }
 
+/** 构造最小真实状态机，确保桥接失败断言不依赖 Renderer 或真实 Explorer。 */
+function createFolderHabitatService() {
+  const snapshot: PetHabitatSnapshot = {
+    version: 1,
+    preferences: { enabled: true, autoHideEnabled: true, idleDelayMs: 30_000 },
+    directories: [{
+      id: 'directory-integration',
+      displayName: '集成目录',
+      pathHint: '集成目录',
+      absolutePath: 'C:\\Habitat\\Integration',
+      identity: { dev: 7, ino: 11 },
+      enabled: true
+    }],
+    location: {
+      kind: 'folder',
+      directoryId: 'directory-integration',
+      enteredAt: '2026-08-09T00:00:00.000Z',
+      previousDesktopPosition: { x: 120, y: 240 },
+      localOffset: { x: 18, y: 26 }
+    }
+  };
+  const hide = vi.fn();
+  const invalidate = vi.fn(async () => undefined);
+  const service = new HabitatService({
+    initialSnapshot: snapshot,
+    observerInitiallyActive: true,
+    store: {
+      load: async () => structuredClone(snapshot),
+      updateLocation: async update => ({
+        status: 'updated' as const,
+        snapshot: { ...structuredClone(snapshot), location: update.location }
+      })
+    },
+    directoryPolicy: { availability: async () => 'available' },
+    identityResolver: {
+      resolve: async () => ({ status: 'matched', directoryId: 'directory-integration' })
+    },
+    explorer: {
+      start: async () => undefined,
+      startObserving: async () => ({ ok: true }),
+      stopObserving: async () => ({ ok: true })
+    },
+    layer: { activate: async () => undefined, invalidate },
+    petWindow: {
+      getPosition: () => ({ x: 120, y: 240 }),
+      getLocalOffset: () => ({ x: 18, y: 26 }),
+      setPosition: () => undefined,
+      hide,
+      show: () => undefined,
+      focus: () => undefined
+    },
+    openDirectory: async () => undefined,
+    readBlockers: () => ({
+      fileTaskActive: false,
+      characterSwitching: false,
+      dragging: false,
+      chatInteracting: false,
+      appQuitting: false,
+      foregroundFullscreen: false,
+      proactivityMode: 'autonomous'
+    }),
+    readExplorerAuthority: () => ({
+      nonce: 'a'.repeat(32),
+      revision: 1,
+      instanceId: null
+    })
+  });
+  return { service, hide, invalidate };
+}
+
 describe('桌面 Agent 真实服务集成', () => {
+  test('桥接崩溃立即隐藏桌宠并进入可召回的 lost 状态', async () => {
+    const habitat = createFolderHabitatService();
+
+    await habitat.service.observeExplorer(new Error('BRIDGE_PROCESS_ERROR'));
+
+    expect(habitat.service.snapshot()).toMatchObject({
+      state: 'folder-lost',
+      directoryId: 'directory-integration',
+      errorCode: 'HABITAT_OBSERVER_FAILED'
+    });
+    expect(habitat.hide).toHaveBeenCalledOnce();
+    expect(habitat.invalidate).toHaveBeenCalledWith('explorer-closed');
+  });
+
   test('自主行为最小闭环按可信事件组合 Agent、Main 行为与窗口运动', async () => {
     let now = 0;
     let bounds = { x: 10, y: 20, width: 256, height: 256 };

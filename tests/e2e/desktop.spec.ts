@@ -23,11 +23,17 @@ type CharacterBehaviorProbe = {
 };
 
 type ElectronFixtureModule = {
+  writeMainE2eExplorerEvent(
+    userDataDirectory: string,
+    event: 'wrong-directory' | 'stale-revision' | 'background-window'
+      | 'ambiguous' | 'exact-foreground' | 'minimized' | 'blurred' | 'crash'
+  ): Promise<void>;
   createElectronLaunchPlan(options: {
     workspaceRoot: string;
     cdpPort: number;
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    habitatDirectory?: string;
     recycleBinDirectory?: string;
     characterAssetsDirectory?: string;
     parentEnvironment?: NodeJS.ProcessEnv;
@@ -131,11 +137,16 @@ type ElectronFixtureModule = {
     executablePath: string;
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    habitatDirectory?: string;
     recycleBinDirectory?: string;
     safeCharacterPackage?: string;
     maliciousCharacterPackage?: string;
     characterExportDestination?: string;
     logs: readonly string[];
+    sendExplorerEvent(
+      event: 'wrong-directory' | 'stale-revision' | 'background-window'
+        | 'ambiguous' | 'exact-foreground' | 'minimized' | 'blurred' | 'crash'
+    ): Promise<void>;
     getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
     restart(): Promise<void>;
@@ -272,6 +283,7 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     const workspaceRoot = resolve(process.cwd());
     const userDataDirectory = resolve('C:\\Temp\\myself-user-data');
     const authorizedRootDirectory = resolve('C:\\Temp\\myself-authorized-root');
+    const habitatDirectory = resolve('C:\\Temp\\myself-habitat');
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
     const expectedExecutable = requireFromDesktop('electron') as string;
     const plan = fixture.createElectronLaunchPlan({
@@ -279,6 +291,7 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
       cdpPort: 43123,
       userDataDirectory,
       authorizedRootDirectory,
+      habitatDirectory,
       parentEnvironment: { PATH: process.env['PATH'] }
     });
 
@@ -297,8 +310,10 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(plan.environment).toMatchObject({
       MYSELF_E2E: '1',
       MYSELF_E2E_USER_DATA: userDataDirectory,
-      MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory
+      MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory,
+      MYSELF_E2E_HABITAT_DIRECTORY: habitatDirectory
     });
+    expect(Object.keys(plan.environment)).not.toContain('MYSELF_E2E_EXPLORER_SCRIPT');
 
     const visualPlan = fixture.createElectronLaunchPlan({
       workspaceRoot,
@@ -2339,6 +2354,28 @@ test.describe('真实角色工作室闭环', () => {
     if (recoveryCleanupError) throw recoveryCleanupError;
   });
 
+  test('fake bridge 脚本只向隔离目录写入固定无参数事件令牌', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.writeMainE2eExplorerEvent).toBe('function');
+    if (!fixture?.writeMainE2eExplorerEvent) return;
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'myself-e2e-explorer-events-'));
+    try {
+      await fixture.writeMainE2eExplorerEvent(temporaryDirectory, 'ambiguous');
+      await fixture.writeMainE2eExplorerEvent(temporaryDirectory, 'exact-foreground');
+
+      await expect(readFile(
+        join(temporaryDirectory, 'main-e2e-explorer-events'),
+        'utf8'
+      )).resolves.toBe('ambiguous\nexact-foreground\n');
+      await expect(fixture.writeMainE2eExplorerEvent(
+        temporaryDirectory,
+        'C:\\Private\\Habitat' as never
+      )).rejects.toThrow('E2E_EXPLORER_EVENT_INVALID');
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
   test('工作室清理的单错误、聚合 errors 与 cause 均只保留脱敏错误', () => {
     const userDataDirectory = 'C:\\Temp\\private-user-data';
     const recoverySnapshot = 'C:\\Temp\\private-recovery';
@@ -3337,6 +3374,168 @@ test.describe('真实桌宠位置重启恢复', () => {
       await fixture.dispose();
       expect(await pathExistsForAssertion(userDataDirectory)).toBe(false);
       expect(await pathExistsForAssertion(authorizedRootDirectory)).toBe(false);
+    }
+  });
+});
+
+test.describe('目录藏身与资源管理器空间', () => {
+  test('隔离 HabitatStore 通过 Main fake 完成隐藏、出现、失联与召回', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000
+    });
+    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+    const pageFor = (view: string): Page | undefined => pages().find(page => {
+      try {
+        return new URL(page.url()).searchParams.get('view') === view;
+      } catch {
+        return false;
+      }
+    });
+    const waitForPage = async (view: string): Promise<Page> => {
+      await expect.poll(() => Boolean(pageFor(view)), { timeout: 15_000 }).toBe(true);
+      return pageFor(view)!;
+    };
+    const userDataDirectory = fixture.userDataDirectory;
+    const habitatDirectory = fixture.habitatDirectory;
+    expect(habitatDirectory).toBeTruthy();
+    if (!habitatDirectory) {
+      await fixture.dispose();
+      throw new Error('缺少隔离 Habitat 目录');
+    }
+
+    try {
+      const [pet, settings] = await Promise.all([
+        waitForPage('pet'),
+        waitForPage('settings')
+      ]);
+      await expect(settings.getByRole('tab', { name: '工具' })).toHaveCount(0);
+      await expect(settings.getByText('MCP 服务')).toHaveCount(0);
+      const originalPosition = await pet.evaluate(() => ({
+        x: window.screenX,
+        y: window.screenY
+      }));
+      const chooseResult = await settings.evaluate(() => (
+        window.myself.chooseAndAddHabitatDirectory()
+      ));
+      expect(chooseResult.kind).toBe('added');
+      expect(JSON.stringify(chooseResult)).not.toContain(habitatDirectory);
+      const addedDashboard = chooseResult.dashboard;
+      expect(addedDashboard.directories).toHaveLength(1);
+      expect(addedDashboard.directories[0]?.availability).toBe('available');
+      const directoryId = addedDashboard.directories[0]!.id;
+      await settings.evaluate(() => window.myself.saveHabitatPreferences({
+        enabled: true,
+        autoHideEnabled: false,
+        idleDelayMs: 30_000
+      }));
+
+      await settings.evaluate(id => window.myself.enterHabitatDirectory(id), directoryId);
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
+      await expect.poll(() => settings.evaluate(async () => (
+        (await window.myself.getCharacterMotionSnapshot()).moving
+      ))).toBe(false);
+
+      for (const event of [
+        'wrong-directory',
+        'stale-revision',
+        'background-window',
+        'ambiguous'
+      ] as const) {
+        await fixture.sendExplorerEvent(event);
+        await pet.waitForTimeout(100);
+        expect((await settings.evaluate(() => (
+          window.myself.getHabitatDashboard()
+        ))).current).toMatchObject({ kind: 'folder', visibility: 'hidden' });
+      }
+
+      await fixture.sendExplorerEvent('exact-foreground');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'visible' });
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        actionId: 'emerge-main'
+      });
+      expect(pages().filter(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === 'pet';
+        } catch {
+          return false;
+        }
+      })).toHaveLength(1);
+
+      await fixture.sendExplorerEvent('wrong-directory');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
+      await fixture.sendExplorerEvent('exact-foreground');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'visible' });
+      await fixture.sendExplorerEvent('minimized');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
+      await fixture.sendExplorerEvent('exact-foreground');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'visible' });
+      await fixture.sendExplorerEvent('blurred');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
+
+      const unmatchedSummon = await settings.evaluate(() => window.myself.summonHabitat());
+      expect(unmatchedSummon.current).toMatchObject({
+        kind: 'folder',
+        visibility: 'hidden'
+      });
+      await pet.waitForTimeout(1_100);
+      expect((await settings.evaluate(() => (
+        window.myself.getHabitatDashboard()
+      ))).current).toMatchObject({ kind: 'folder', visibility: 'hidden' });
+      await settings.evaluate(() => window.myself.summonHabitat());
+      await fixture.sendExplorerEvent('exact-foreground');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'visible' });
+      await fixture.sendExplorerEvent('blurred');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'hidden' });
+
+      await fixture.sendExplorerEvent('crash');
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current
+      )).toMatchObject({ kind: 'folder', visibility: 'lost' });
+      await rm(habitatDirectory, { recursive: true, force: true });
+      await settings.evaluate(() => window.myself.recallHabitat());
+      await expect.poll(async () => (
+        (await settings.evaluate(() => window.myself.getHabitatDashboard())).current.kind
+      )).toBe('desktop');
+      await expect.poll(() => pet.evaluate(() => document.visibilityState)).toBe('visible');
+      const recalledPosition = await pet.evaluate(() => ({
+        x: window.screenX,
+        y: window.screenY
+      }));
+      expect(Math.abs(recalledPosition.x - originalPosition.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(recalledPosition.y - originalPosition.y)).toBeLessThanOrEqual(1);
+
+      expect(JSON.stringify(await settings.evaluate(() => (
+        window.myself.getHabitatDashboard()
+      )))).not.toContain(habitatDirectory);
+      expect(fixture.logs.join('\n')).not.toContain(habitatDirectory);
+    } finally {
+      await fixture.dispose();
+      expect(await pathExistsForAssertion(userDataDirectory)).toBe(false);
     }
   });
 });
