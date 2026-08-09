@@ -112,6 +112,8 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         return;
       }
       if (event.type === 'character_carrying') return;
+      if (event.type === 'history_disclosure_required') return;
+      if (event.type === 'conversation_reset') return;
       if (event.type === 'error') {
         const message: TaskViewMessage = {
           id: `message-${++nextMessageId}`,

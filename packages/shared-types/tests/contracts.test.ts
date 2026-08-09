@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   pendingActionSchema,
   providerProfileV2Schema,
+  taskEventSchema,
   toolNameSchema,
   toolRequestSchema
 } from '../src/contracts';
@@ -100,5 +101,47 @@ describe('providerProfileV2Schema', () => {
       modelId: 'new-model-id',
       capabilities: ['chat']
     });
+  });
+});
+
+describe('taskEventSchema', () => {
+  it('只接受严格的历史披露和会话重置事件', () => {
+    expect(taskEventSchema.parse({
+      type: 'history_disclosure_required',
+      requestId: 'disclosure-1',
+      targetProviderName: 'OpenAI',
+      messageCount: 4,
+      characterCount: 120
+    })).toMatchObject({ type: 'history_disclosure_required' });
+
+    expect(taskEventSchema.parse({
+      type: 'conversation_reset',
+      generation: 'generation-2'
+    })).toMatchObject({ type: 'conversation_reset' });
+
+    expect(() => taskEventSchema.parse({
+      type: 'conversation_reset',
+      generation: 'generation-2',
+      history: ['不得进入 Renderer']
+    })).toThrow();
+  });
+
+  it('拒绝披露事件中的负数和过长标识', () => {
+    const event = {
+      type: 'history_disclosure_required' as const,
+      requestId: 'disclosure-1',
+      targetProviderName: 'OpenAI',
+      messageCount: 4,
+      characterCount: 120
+    };
+
+    expect(() => taskEventSchema.parse({ ...event, messageCount: -1 })).toThrow();
+    expect(() => taskEventSchema.parse({ ...event, characterCount: -1 })).toThrow();
+    expect(() => taskEventSchema.parse({ ...event, requestId: 'a'.repeat(129) })).toThrow();
+    expect(() => taskEventSchema.parse({ ...event, targetProviderName: 'a'.repeat(129) })).toThrow();
+    expect(() => taskEventSchema.parse({
+      type: 'conversation_reset',
+      generation: 'a'.repeat(129)
+    })).toThrow();
   });
 });

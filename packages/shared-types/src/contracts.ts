@@ -28,6 +28,31 @@ export const characterEmotionLabelSchema = z.enum([
 ]);
 export type CharacterEmotionLabel = z.infer<typeof characterEmotionLabelSchema>;
 
+export const historyDisclosureDecisionSchema = z.enum([
+  'share_once',
+  'current_message_only'
+]);
+export type HistoryDisclosureDecision = z.infer<
+  typeof historyDisclosureDecisionSchema
+>;
+
+export const historyDisclosureRequiredEventSchema = z.object({
+  type: z.literal('history_disclosure_required'),
+  requestId: z.string().min(1).max(128),
+  targetProviderName: z.string().min(1).max(128),
+  messageCount: z.number().int().min(0).max(40),
+  characterCount: z.number().int().min(0).max(16_000)
+}).strict();
+export type HistoryDisclosureRequiredEvent = z.infer<
+  typeof historyDisclosureRequiredEventSchema
+>;
+
+export const conversationResetEventSchema = z.object({
+  type: z.literal('conversation_reset'),
+  generation: z.string().min(1).max(128)
+}).strict();
+export type ConversationResetEvent = z.infer<typeof conversationResetEventSchema>;
+
 export const toolRequestSchema = z.object({
   requestId: z.string().min(1),
   toolName: toolNameSchema,
@@ -174,6 +199,8 @@ export const taskEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('character_carrying'),
     carrying: z.boolean()
-  }).strict()
+  }).strict(),
+  historyDisclosureRequiredEventSchema,
+  conversationResetEventSchema
 ]);
 export type TaskEvent = z.infer<typeof taskEventSchema>;

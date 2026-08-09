@@ -25,6 +25,8 @@ export const ipcChannels = {
   settingsRootRevoke: 'settings:root-revoke',
   chatSubmit: 'chat:submit',
   chatCancel: 'chat:cancel',
+  conversationReset: 'conversation:reset',
+  conversationDisclosureResolve: 'conversation:disclosure-resolve',
   actionConfirm: 'action:confirm',
   actionCancel: 'action:cancel',
   taskEvent: 'task:event',
