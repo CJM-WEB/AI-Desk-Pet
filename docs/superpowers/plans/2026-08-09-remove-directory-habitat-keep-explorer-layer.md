@@ -15,7 +15,7 @@
 - 图层协调器和图层控制器不得调用 `show`、`hide`、`focus`、`setPosition` 或 `setAlwaysOnTop(true)`。
 - 非 Explorer、失焦、最小化、歧义、不可用、陈旧序列、桥错误和 `moveAbove` 失败均不得改变桌宠可见性。
 - 只保留 Electron `moveAbove` 路线；不得恢复 User32 `SetWindowPos` 或其他层级回退。
-- 生产快照、日志、Renderer、preload、Agent 和 E2E 控制面不得包含 Explorer 路径、HWND 或实例私有事实；HWND 只允许在 Main 内部严格类型中传递。
+- Explorer 路径在任何生产边界都不得采集或传递；认证内部 bridge 快照可把 HWND/实例交给 Main 严格类型，日志、Renderer、preload、Agent 和 E2E 控制面不得包含 HWND 或实例私有事实。
 - 新版本不读取、不迁移且不自动删除旧 `habitat.json`。
 - 删除被替代的旧代码，不保留兼容壳、环境开关、双路线或无引用导出。
 - 当前未提交的 Task 12 人工验收、托盘预采样修复及其文档已被本计划取代，不得进入最终提交。
