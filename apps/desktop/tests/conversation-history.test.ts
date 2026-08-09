@@ -98,4 +98,15 @@ describe('ConversationHistory', () => {
     expect(() => new ConversationHistory({ maxCharacters: Number.NaN }))
       .toThrow('CONVERSATION_HISTORY_OPTIONS_INVALID');
   });
+
+  test('将超过系统上限的回合配置裁剪为二十回合', () => {
+    const history = new ConversationHistory({ maxTurns: 21 });
+    for (let index = 1; index <= 21; index += 1) {
+      history.append(turn(`用户${index}`, `助手${index}`));
+    }
+
+    expect(history.turns()).toHaveLength(20);
+    expect(history.turns()[0]?.userText).toBe('用户2');
+    expect(history.turns()[19]?.userText).toBe('用户21');
+  });
 });

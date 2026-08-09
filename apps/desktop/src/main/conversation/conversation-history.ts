@@ -2,6 +2,7 @@ import type { ModelMessage } from '@myself/agent-core';
 
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_MAX_CHARACTERS = 16_000;
+const SYSTEM_MAX_TURNS = 20;
 const SYSTEM_MAX_CHARACTERS = 16_000;
 
 export type VisibleConversationTurn = Readonly<{
@@ -27,7 +28,7 @@ export class ConversationHistory {
     ) {
       throw new Error('CONVERSATION_HISTORY_OPTIONS_INVALID');
     }
-    this.maxTurns = maxTurns;
+    this.maxTurns = Math.min(maxTurns, SYSTEM_MAX_TURNS);
     this.maxCharacters = Math.min(
       maxCharacters,
       SYSTEM_MAX_CHARACTERS
