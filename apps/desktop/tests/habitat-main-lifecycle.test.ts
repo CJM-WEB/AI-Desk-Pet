@@ -13,17 +13,6 @@ type LifecycleModule = {
     current(): boolean;
     close?(): Promise<void>;
   };
-  shouldSampleForegroundFullscreen?(input: {
-    enabled: boolean;
-    autoHideEnabled: boolean;
-    proactivityMode: 'passive' | 'assistive' | 'autonomous';
-    habitatState: 'desktop' | 'folder-hidden' | 'folder-visible' | 'folder-lost';
-    hasEnabledDirectory: boolean;
-    idle: boolean;
-    idleDurationMs: number;
-    idleDelayMs: number;
-    blockers: Record<string, boolean>;
-  }): boolean;
   createExplorerObservationRelay?<T>(): {
     accept(value: T): Promise<void>;
     attach(consumer: (value: T) => Promise<void>): Promise<void>;
@@ -59,10 +48,12 @@ type LifecycleModule = {
     add(cleanup: () => Promise<void> | void): void;
     run(): Promise<void>;
     dismiss(): void;
+    seal?(): void;
   };
   createApplicationQuitCoordinator?(options: {
     cleanupBootstrap(): Promise<void>;
     quit(): void;
+    onError?(error: unknown): void;
   }): {
     handle(event: { preventDefault(): void }): Promise<void>;
     activateNormal(shutdown: () => Promise<void>): boolean;
@@ -159,33 +150,6 @@ describe('Habitat Main 真实生命周期', () => {
     expect(closeCount).toBe(1);
     expect(await blocker?.sampleIfEligible?.(true)).toBe(true);
     expect(sampleCount).toBe(2);
-  });
-
-  test('只有自动藏身的内存配置、状态和廉价 blocker 全部允许时才取得探针资格', async () => {
-    const module = await loadLifecycle();
-    const eligible = {
-      enabled: true,
-      autoHideEnabled: true,
-      proactivityMode: 'autonomous' as const,
-      habitatState: 'desktop' as const,
-      hasEnabledDirectory: true,
-      idle: true,
-      idleDurationMs: 5_000,
-      idleDelayMs: 5_000,
-      blockers: { taskActive: false, characterSwitching: false, appQuitting: false }
-    };
-
-    expect(module?.shouldSampleForegroundFullscreen?.(eligible)).toBe(true);
-    expect(module?.shouldSampleForegroundFullscreen?.({ ...eligible, autoHideEnabled: false }))
-      .toBe(false);
-    expect(module?.shouldSampleForegroundFullscreen?.({ ...eligible, habitatState: 'folder-hidden' }))
-      .toBe(false);
-    expect(module?.shouldSampleForegroundFullscreen?.({ ...eligible, idleDurationMs: 4_999 }))
-      .toBe(false);
-    expect(module?.shouldSampleForegroundFullscreen?.({
-      ...eligible,
-      blockers: { ...eligible.blockers, characterSwitching: true }
-    })).toBe(false);
   });
 
   test('消费者就绪后先串行回放最新缓存快照，再处理后续快照', async () => {
@@ -329,6 +293,7 @@ describe('Habitat Main 真实生命周期', () => {
     stack.add(async () => { order.push('pet'); });
     stack.add(async () => { order.push('bridge'); throw new Error('PRIVATE_CLOSE'); });
     stack.add(async () => { order.push('behavior'); });
+    stack.seal?.();
 
     await expect(stack.run()).rejects.toThrow('STARTUP_CLEANUP_INCOMPLETE');
     await expect(stack.run()).rejects.toThrow('STARTUP_CLEANUP_INCOMPLETE');
@@ -375,12 +340,70 @@ describe('Habitat Main 真实生命周期', () => {
     expect(order).toEqual(['probe:start', 'probe:end', 'explorer:start']);
     expect(quitCount).toBe(0);
     finishExplorer();
+    cleanup.seal?.();
     await Promise.all([firstQuit, repeatedQuit]);
 
     expect(order).toEqual(['probe:start', 'probe:end', 'explorer:start', 'explorer:end']);
     expect(prevented).toBe(2);
     expect(quitCount).toBe(1);
     await coordinator?.exitAfterStartupFailure();
+    expect(quitCount).toBe(1);
+  });
+
+  test('bootstrap cleanup 持续接管初始化恢复后的迟到资源并等待启动协程终止', async () => {
+    const module = await loadLifecycle();
+    const cleanup = module?.createStartupCleanupStack?.();
+    expect(cleanup).toBeDefined();
+    if (!cleanup) return;
+    let finishExplorer = (): void => {};
+    const explorerClosed = new Promise<void>(resolve => { finishExplorer = resolve; });
+    let markSettingsCleaned = (): void => {};
+    const settingsCleaned = new Promise<void>(resolve => { markSettingsCleaned = resolve; });
+    const order: string[] = [];
+    cleanup.add(async () => {
+      order.push('explorer:start');
+      await explorerClosed;
+      order.push('explorer:end');
+    });
+    let resumeInitialization = (): void => {};
+    const initialization = new Promise<void>(resolve => { resumeInitialization = resolve; });
+    const startup = (async () => {
+      try {
+        await initialization;
+        cleanup.add(async () => { order.push('settings'); markSettingsCleaned(); });
+        cleanup.add(async () => { order.push('probe'); throw new Error('PRIVATE_LATE_CLOSE'); });
+        cleanup.add(() => { order.push('timer'); });
+      } finally {
+        cleanup.seal?.();
+      }
+    })();
+    let quitCount = 0;
+    let reported = 0;
+    const coordinator = module?.createApplicationQuitCoordinator?.({
+      cleanupBootstrap: () => cleanup.run(),
+      quit: () => { quitCount += 1; },
+      onError: () => { reported += 1; }
+    });
+
+    const quitting = coordinator?.handle({ preventDefault: () => undefined });
+    await Promise.resolve();
+    expect(order).toEqual(['explorer:start']);
+    resumeInitialization();
+    await startup;
+    expect(quitCount).toBe(0);
+    finishExplorer();
+    await settingsCleaned;
+
+    expect(order).toEqual([
+      'explorer:start',
+      'explorer:end',
+      'timer',
+      'probe',
+      'settings'
+    ]);
+    expect(quitCount).toBe(0);
+    await expect(quitting).resolves.toBeUndefined();
+    expect(reported).toBe(1);
     expect(quitCount).toBe(1);
   });
 

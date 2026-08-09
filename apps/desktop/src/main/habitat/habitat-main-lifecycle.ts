@@ -61,28 +61,6 @@ export function createForegroundFullscreenBlocker(
   };
 }
 
-/** 先用内存事实排除不可能自动藏身的 tick，避免无意义启动平台探针。 */
-export function shouldSampleForegroundFullscreen(input: {
-  enabled: boolean;
-  autoHideEnabled: boolean;
-  proactivityMode: 'passive' | 'assistive' | 'autonomous';
-  habitatState: StableHabitatState;
-  hasEnabledDirectory: boolean;
-  idle: boolean;
-  idleDurationMs: number;
-  idleDelayMs: number;
-  blockers: Record<string, boolean>;
-}): boolean {
-  return input.enabled
-    && input.autoHideEnabled
-    && input.proactivityMode === 'autonomous'
-    && input.habitatState === 'desktop'
-    && input.hasEnabledDirectory
-    && input.idle
-    && input.idleDurationMs >= input.idleDelayMs
-    && !Object.values(input.blockers).some(Boolean);
-}
-
 /** 桥接消费者发布前仅保留最新事实；发布后所有回放与新事件共用同一串行队列。 */
 export function createExplorerObservationRelay<T>(): {
   accept(value: T): Promise<void>;
@@ -224,25 +202,40 @@ export function createIntegrityCheckedExplorerPort(options: {
   };
 }
 
-/** 启动事务按资源创建逆序释放；单点失败不短路，其结果保持幂等。 */
+/** 启动事务持续接管迟到资源，直到启动协程封口后才完成逆序释放。 */
 export function createStartupCleanupStack(): {
   add(cleanup: () => Promise<void> | void): void;
   run(): Promise<void>;
   dismiss(): void;
+  seal(): void;
 } {
   const cleanups: Array<() => Promise<void> | void> = [];
   let dismissed = false;
+  let sealed = false;
+  let wake: (() => void) | undefined;
   let runPromise: Promise<void> | undefined;
+  const signal = (): void => {
+    wake?.();
+    wake = undefined;
+  };
   return {
     add(cleanup): void {
-      if (!dismissed && runPromise === undefined) cleanups.push(cleanup);
+      if (dismissed || sealed) return;
+      cleanups.push(cleanup);
+      signal();
     },
     run(): Promise<void> {
       if (runPromise) return runPromise;
       runPromise = (async () => {
         if (dismissed) return;
         const errors: unknown[] = [];
-        for (const cleanup of cleanups.reverse()) {
+        while (!dismissed) {
+          const cleanup = cleanups.pop();
+          if (!cleanup) {
+            if (sealed) break;
+            await new Promise<void>(resolve => { wake = resolve; });
+            continue;
+          }
           try {
             await cleanup();
           } catch (error) {
@@ -258,6 +251,11 @@ export function createStartupCleanupStack(): {
     dismiss(): void {
       dismissed = true;
       cleanups.length = 0;
+      signal();
+    },
+    seal(): void {
+      sealed = true;
+      signal();
     }
   };
 }

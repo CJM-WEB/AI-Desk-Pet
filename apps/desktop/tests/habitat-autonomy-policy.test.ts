@@ -1,5 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { PetHabitatSnapshot } from '../src/main/habitat/pet-habitat-store';
+import { createForegroundFullscreenBlocker } from
+  '../src/main/habitat/habitat-main-lifecycle';
 
 type HabitatAutonomyPolicyModule = {
   HabitatAutonomyPolicy: new (options: {
@@ -25,7 +27,7 @@ type HabitatAutonomyPolicyModule = {
         appQuitting: boolean;
         bridgeDegraded: boolean;
       };
-    }): Promise<
+    }, sampleForegroundFullscreen?: () => Promise<boolean>): Promise<
       | { kind: 'entered'; directoryId: string }
       | { kind: 'failed'; code: string }
       | { kind: 'skipped'; reason: string }
@@ -113,6 +115,45 @@ function deferred<T>() {
 }
 
 describe('Main 自动藏身策略', () => {
+  test('唯一 idleDelay 到点后才采样，并在 5000ms 当次允许策略进入', async () => {
+    const module = await loadPolicyModule();
+    expect(module).not.toBeNull();
+    if (!module) return;
+    let now = 0;
+    let samples = 0;
+    const harness = createPolicy(module, () => now);
+    const foreground = createForegroundFullscreenBlocker({
+      sample: async () => { samples += 1; return false; },
+      close: async () => undefined
+    });
+    const input = {
+      snapshot: snapshot({
+        preferences: { enabled: true, autoHideEnabled: true, idleDelayMs: 5_000 },
+        directories: enabledSnapshot().directories
+      }),
+      proactivityMode: 'autonomous' as const,
+      idle: true,
+      habitatState: 'desktop' as const,
+      blockers: noBlockers
+    };
+    const sampleForeground = () => foreground.sampleIfEligible(true);
+
+    await expect(harness.policy.tick(input, sampleForeground)).resolves.toEqual({
+      kind: 'skipped', reason: 'idle-delay'
+    });
+    now = 4_999;
+    await expect(harness.policy.tick(input, sampleForeground)).resolves.toEqual({
+      kind: 'skipped', reason: 'idle-delay'
+    });
+    expect(samples).toBe(0);
+    now = 5_000;
+    await expect(harness.policy.tick(input, sampleForeground)).resolves.toEqual({
+      kind: 'entered', directoryId: 'directory-a'
+    });
+    expect(samples).toBe(1);
+    expect(harness.enterDirectory).toHaveBeenCalledOnce();
+  });
+
   test('默认关闭时不触发目录进入', async () => {
     const module = await loadPolicyModule();
     expect(module, '应提供独立的 Main 自动藏身策略').not.toBeNull();

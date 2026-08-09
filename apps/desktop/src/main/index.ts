@@ -66,8 +66,7 @@ import {
   createStateGuardedPetVisibilityCommand,
   createTrayRefreshController,
   refreshAfter,
-  runMainEventSafely,
-  shouldSampleForegroundFullscreen
+  runMainEventSafely
 } from './habitat/habitat-main-lifecycle';
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
@@ -699,16 +698,18 @@ async function createApplicationWindows(
     load: window => loadRenderer(window, 'characters')
   });
   let habitatAutonomyTimer: ReturnType<typeof setInterval> | undefined;
+  const stopHabitatAutonomyTimer = (): void => {
+    if (habitatAutonomyTimer === undefined) return;
+    clearInterval(habitatAutonomyTimer);
+    habitatAutonomyTimer = undefined;
+  };
   let habitatShutdownStarted = false;
   // 退出事务严格串行，单点失败记录后仍继续释放后续资源。
   const shutdownApplication = async (): Promise<void> => {
     if (habitatShutdownStarted) return;
     habitatShutdownStarted = true;
     const errors: unknown[] = [];
-    if (habitatAutonomyTimer !== undefined) {
-      clearInterval(habitatAutonomyTimer);
-      habitatAutonomyTimer = undefined;
-    }
+    stopHabitatAutonomyTimer();
     try { await foregroundFullscreen.close(); } catch (error) { errors.push(error); }
     try { await petPositionController.freezeAndFlush(); } catch (error) { errors.push(error); }
     try { await habitatService.close(); } catch (error) { errors.push(error); }
@@ -1139,8 +1140,7 @@ async function createApplicationWindows(
           || serviceState === 'folder-lost'
           ? serviceState
           : 'folder-hidden';
-        const idleDurationMs = powerMonitor.getSystemIdleTime() * 1_000;
-        const idle = idleDurationMs > 0;
+        const idle = powerMonitor.getSystemIdleTime() > 0;
         const cheapBlockers = {
           taskActive: ['listening', 'thinking', 'acting'].includes(currentAgentPhase),
           confirmationPending: currentAgentPhase === 'awaiting_confirmation',
@@ -1150,19 +1150,6 @@ async function createApplicationWindows(
           appQuitting: isQuitting,
           bridgeDegraded: explorer.snapshot().state === 'failed'
         };
-        const foregroundIsFullscreen = await foregroundFullscreen.sampleIfEligible(
-          shouldSampleForegroundFullscreen({
-            enabled: snapshot.preferences.enabled === true,
-            autoHideEnabled: snapshot.preferences.autoHideEnabled === true,
-            proactivityMode: currentProactivityMode,
-            habitatState,
-            hasEnabledDirectory: snapshot.directories.some(directory => directory.enabled),
-            idle,
-            idleDurationMs,
-            idleDelayMs: snapshot.preferences.idleDelayMs,
-            blockers: cheapBlockers
-          })
-        );
         return habitatAutonomy.tick({
           snapshot,
           proactivityMode: currentProactivityMode,
@@ -1170,12 +1157,13 @@ async function createApplicationWindows(
           habitatState,
           blockers: {
             ...cheapBlockers,
-            foregroundFullscreen: foregroundIsFullscreen,
+            foregroundFullscreen: false
           }
-        });
+        }, () => foregroundFullscreen.sampleIfEligible(true));
       })
       .catch(error => console.error('自动藏身调度失败。', error));
   }, 500);
+  startupCleanup.add(stopHabitatAutonomyTimer);
 
   await Promise.all([
     loadRenderer(pet, 'pet'),
@@ -1188,13 +1176,8 @@ async function createApplicationWindows(
   await explorerRelay.attach(consumeExplorerObservation);
   if (!applicationQuit.activateNormal(shutdownApplication)) return;
   startupCleanup.dismiss();
-  } catch (error) {
-    try {
-      await startupCleanup.run();
-    } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], 'APPLICATION_STARTUP_FAILED');
-    }
-    throw error;
+  } finally {
+    startupCleanup.seal();
   }
 }
 

@@ -63,8 +63,14 @@ function stableFailureCode(error: unknown): HabitatErrorCode {
     : 'HABITAT_OPERATION_FAILED';
 }
 
-function hasBlocker(blockers: HabitatAutonomyBlockers): boolean {
-  return Object.values(blockers).some(Boolean);
+function hasStaticBlocker(blockers: HabitatAutonomyBlockers): boolean {
+  return blockers.taskActive
+    || blockers.confirmationPending
+    || blockers.chatInteracting
+    || blockers.dragging
+    || blockers.characterSwitching
+    || blockers.appQuitting
+    || blockers.bridgeDegraded;
 }
 
 /**
@@ -78,7 +84,10 @@ export class HabitatAutonomyPolicy {
 
   constructor(private readonly options: HabitatAutonomyPolicyOptions) {}
 
-  async tick(input: HabitatAutonomyInput): Promise<HabitatAutonomyDecision> {
+  async tick(
+    input: HabitatAutonomyInput,
+    sampleForegroundFullscreen?: () => Promise<boolean>
+  ): Promise<HabitatAutonomyDecision> {
     if (!input.snapshot.preferences.enabled || !input.snapshot.preferences.autoHideEnabled) {
       this.idleSince = null;
       return { kind: 'skipped', reason: 'disabled' };
@@ -100,7 +109,10 @@ export class HabitatAutonomyPolicy {
       this.idleSince = null;
       return { kind: 'skipped', reason: 'not-idle' };
     }
-    if (hasBlocker(input.blockers)) {
+    if (
+      hasStaticBlocker(input.blockers)
+      || (!sampleForegroundFullscreen && input.blockers.foregroundFullscreen)
+    ) {
       this.idleSince = null;
       return { kind: 'skipped', reason: 'blocked' };
     }
@@ -126,16 +138,28 @@ export class HabitatAutonomyPolicy {
     if (candidates.length === 0) {
       return { kind: 'skipped', reason: 'same-directory' };
     }
-    const sample = this.options.random();
-    const random = Number.isFinite(sample)
-      ? Math.min(Math.max(sample, 0), 1 - Number.EPSILON)
-      : 0;
-    const directory = candidates[Math.floor(random * candidates.length)]!;
-    this.lastAttemptAt = now;
-    this.lastDirectoryId = directory.id;
-    this.idleSince = null;
     this.attemptInFlight = true;
     try {
+      if (sampleForegroundFullscreen) {
+        let foregroundFullscreen = true;
+        try {
+          foregroundFullscreen = await sampleForegroundFullscreen();
+        } catch {
+          // 平台探针失败时按前台全屏处理，不泄露私有错误。
+        }
+        if (foregroundFullscreen) {
+          this.idleSince = null;
+          return { kind: 'skipped', reason: 'blocked' };
+        }
+      }
+      const sample = this.options.random();
+      const random = Number.isFinite(sample)
+        ? Math.min(Math.max(sample, 0), 1 - Number.EPSILON)
+        : 0;
+      const directory = candidates[Math.floor(random * candidates.length)]!;
+      this.lastAttemptAt = now;
+      this.lastDirectoryId = directory.id;
+      this.idleSince = null;
       await this.options.enterDirectory(directory.id, 'automatic');
       return { kind: 'entered', directoryId: directory.id };
     } catch (error) {
