@@ -28,20 +28,6 @@ import type {
   SaveProviderProfileInput
 } from '../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
-import {
-  habitatChooseResultSchema,
-  habitatDashboardSchema,
-  type HabitatPreferencesInput
-} from '../shared/habitat-ipc';
-
-function habitatResponse<T>(
-  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
-  value: unknown
-): T {
-  const parsed = schema.safeParse(value);
-  if (!parsed.success) throw new Error('HABITAT_RESPONSE_INVALID');
-  return parsed.data;
-}
 
 const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
 let behaviorProbe: CharacterBehaviorProbe = {
@@ -129,42 +115,6 @@ const api: MyselfApi = {
     ipcRenderer.invoke(ipcChannels.settingsIncognitoSet, { incognito })
   ),
   revokeAuthorizedRoot: () => ipcRenderer.invoke(ipcChannels.settingsRootRevoke),
-  getHabitatDashboard: async () => habitatResponse(
-    habitatDashboardSchema,
-    await ipcRenderer.invoke(ipcChannels.habitatDashboardGet, {})
-  ),
-  chooseAndAddHabitatDirectory: async () => habitatResponse(
-    habitatChooseResultSchema,
-    await ipcRenderer.invoke(ipcChannels.habitatDirectoryChoose, {})
-  ),
-  setHabitatDirectoryEnabled: async (directoryId, enabled) => habitatResponse(
-    habitatDashboardSchema,
-    await ipcRenderer.invoke(ipcChannels.habitatDirectoryToggle, { directoryId, enabled })
-  ),
-  removeHabitatDirectory: async directoryId => habitatResponse(
-    habitatDashboardSchema,
-    await ipcRenderer.invoke(ipcChannels.habitatDirectoryRemove, { directoryId })
-  ),
-  saveHabitatPreferences: async (input: HabitatPreferencesInput) => habitatResponse(
-    habitatDashboardSchema,
-    await ipcRenderer.invoke(ipcChannels.habitatPreferencesSave, {
-      enabled: input.enabled,
-      autoHideEnabled: input.autoHideEnabled,
-      idleDelayMs: input.idleDelayMs
-    })
-  ),
-  enterHabitatDirectory: async directoryId => habitatResponse(
-    habitatDashboardSchema,
-    await ipcRenderer.invoke(ipcChannels.habitatEnter, { directoryId })
-  ),
-  summonHabitat: async () => habitatResponse(
-    habitatDashboardSchema,
-    await ipcRenderer.invoke(ipcChannels.habitatSummon, {})
-  ),
-  recallHabitat: async () => habitatResponse(
-    habitatDashboardSchema,
-    await ipcRenderer.invoke(ipcChannels.habitatRecall, {})
-  ),
   submitMessage: (text: string): Promise<void> => (
     ipcRenderer.invoke(ipcChannels.chatSubmit, { text })
   ),

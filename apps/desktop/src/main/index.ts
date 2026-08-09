@@ -32,7 +32,6 @@ import {
   registerAgentIpc,
   registerCharacterIpc,
   registerCharacterMotionIpc,
-  registerHabitatIpc,
   registerPetWindowInteractionIpc,
   registerSettingsIpc,
   registerWindowIpc
@@ -54,7 +53,6 @@ import {
   HabitatService,
   type HabitatExplorerObservation
 } from './habitat/habitat-service';
-import { HabitatSettingsService } from './habitat/habitat-settings-service';
 import { HabitatWindowController } from './habitat/habitat-window-controller';
 import {
   PetHabitatStore,
@@ -70,7 +68,6 @@ import {
   createIntegrityCheckedExplorerPort,
   createStartupCleanupStack,
   createStartupVisibilityGate,
-  createStateGuardedPetVisibilityCommand,
   createTrayRefreshController,
   refreshAfter,
   runMainEventSafely,
@@ -115,10 +112,10 @@ import { PetWindowInteractionController } from
   './windows/pet-window-interaction-controller';
 import {
   broadcastCharacterEvent,
+  buildApplicationTrayMenu,
   createCharacterQuickSwitchCommand,
-  buildHabitatTrayMenu,
   createLoadBeforePublishWindow,
-  createPetSummonController,
+  createPetVisibilityCommand,
   createVerifiedDirectoryOpener,
   createWindowCommandController
 } from './windows/window-commands';
@@ -378,7 +375,6 @@ async function createApplicationWindows(
   let e2eStateRevision = 0;
   let processedExplorerEventRevision = 0;
   let processedExplorerEvent: string | null = null;
-  let traySummonState: 'idle' | 'pending' | 'visible' | 'timeout' = 'idle';
   let e2eStateWrite = Promise.resolve();
   const publishMainE2eState = (): Promise<void> => {
     if (!e2eBoundary || !e2eExplorer) return Promise.resolve();
@@ -388,7 +384,6 @@ async function createApplicationWindows(
       petWindowVisible: pet.isVisible(),
       processedExplorerEventRevision,
       processedExplorerEvent,
-      traySummonState,
       bridge: e2eExplorer.inspection()
     };
     const staged = `${e2eBoundary.mainStateFile}.tmp`;
@@ -954,44 +949,11 @@ async function createApplicationWindows(
     positionChat: chatWindow => positionChatNearPet(pet, chatWindow),
     ensureCharacterWorkshopWindow
   });
-  const stableHabitatCommandSnapshot = () => {
-    const snapshot = habitatService.snapshot();
-    return { state: readStableHabitatState(), directoryId: snapshot.directoryId };
-  };
-  const togglePetVisibility = createStateGuardedPetVisibilityCommand({
-    window: {
-      isVisible: () => pet.isVisible(),
-      hide: () => visibilityGate.hide(),
-      show: () => visibilityGate.show()
-    },
-    readState: readStableHabitatState
-  });
-  const petSummon = createPetSummonController({
-    habitat: {
-      snapshot: stableHabitatCommandSnapshot,
-      summon: signal => habitatService.summon(signal)
-    },
-    waitForExactExplorer: (directoryId, timeoutMs, signal) => new Promise(resolveMatch => {
-      const finish = (matched: boolean): void => {
-        clearTimeout(timeout);
-        explorer.removeListener('snapshot', onSnapshot);
-        signal.removeEventListener('abort', onAbort);
-        resolveMatch(matched);
-      };
-      const onAbort = (): void => finish(false);
-      const onSnapshot = (): void => {
-        const handled = latestExplorerHandling;
-        void handled.then(() => {
-          const snapshot = habitatService.snapshot();
-          if (snapshot.state === 'folder-visible' && snapshot.directoryId === directoryId) {
-            finish(true);
-          }
-        });
-      };
-      const timeout = setTimeout(() => finish(false), timeoutMs);
-      explorer.on('snapshot', onSnapshot);
-      signal.addEventListener('abort', onAbort, { once: true });
-    })
+  const togglePetVisibility = createPetVisibilityCommand({
+    isDestroyed: () => pet.isDestroyed(),
+    isVisible: () => pet.isVisible(),
+    hide: () => pet.hide(),
+    show: () => pet.showInactive()
   });
   const showSettings = async (): Promise<void> => {
     const settingsWindow = await ensureSettingsWindow();
@@ -1001,48 +963,8 @@ async function createApplicationWindows(
   const reportCharacterUiError = (error: unknown): void => {
     console.error('更新角色界面失败。', error);
   };
-  let pendingTraySummonRevision: number | undefined;
-  let invokeTraySummon: (() => void) | undefined;
-  const summonFromTray = async () => {
-    traySummonState = 'pending';
-    await publishMainE2eState();
-    const result = await refreshAfter(() => petSummon.summon(), refreshTray);
-    traySummonState = result.status === 'visible' ? 'visible' : 'timeout';
-    if (
-      pendingTraySummonRevision !== undefined
-      && pendingTraySummonRevision > processedExplorerEventRevision
-    ) {
-      processedExplorerEventRevision = pendingTraySummonRevision;
-      processedExplorerEvent = 'tray-summon';
-    }
-    pendingTraySummonRevision = undefined;
-    await publishMainE2eState();
-    return result;
-  };
   const buildContextMenu = async (): Promise<Menu> => {
-    // Habitat 菜单只消费脱敏目录摘要和稳定状态，不把绝对路径交给 Tray。
     const installedCharacters = await characterActions.listCharacters().catch(() => []);
-    const currentHabitat = await habitatStore.load();
-    const habitatItems = buildHabitatTrayMenu({
-      snapshot: stableHabitatCommandSnapshot(),
-      directories: currentHabitat.directories,
-      enterDirectory: async directoryId => {
-        return refreshAfter(async () => {
-          await characterBehavior.requestHabitatPresentation('enter');
-          const result = await habitatService.enterDirectory(directoryId, 'manual');
-          characterBehavior.handleHabitatHidden();
-          return result;
-        }, refreshTray);
-      },
-      summon: summonFromTray,
-      recall: () => refreshAfter(() => habitatService.recallToDesktop(), refreshTray),
-      togglePetVisibility,
-      reportError: code => console.error('目录空间命令失败。', code)
-    }) as unknown as MenuItemConstructorOptions[];
-    const summonItem = habitatItems.find(item => item.label === '呼唤桌宠');
-    invokeTraySummon = typeof summonItem?.click === 'function'
-      ? () => (summonItem.click as () => void)()
-      : undefined;
     const quickSwitchItems: MenuItemConstructorOptions[] = installedCharacters.map(
       character => ({
         label: character.name,
@@ -1055,33 +977,16 @@ async function createApplicationWindows(
         )
       })
     );
-    return Menu.buildFromTemplate([
-      ...habitatItems,
-      { type: 'separator' },
-      { label: '打开聊天', click: () => void windowCommands.showChat() },
-      {
-        label: '角色工作室',
-        click: () => void windowCommands.showCharacterWorkshop()
-      },
-      {
-        label: '切换角色',
-        enabled: quickSwitchItems.length > 0,
-        submenu: quickSwitchItems
-      },
-      { label: '设置', click: () => void showSettings() },
-      {
-        label: '显示/隐藏桌宠',
-        click: togglePetVisibility
-      },
-      { type: 'separator' },
-      { label: '退出', click: () => void quitApplication() }
-    ]);
+    return Menu.buildFromTemplate(buildApplicationTrayMenu({
+      togglePetVisibility,
+      openChat: () => void windowCommands.showChat(),
+      openCharacterWorkshop: () => void windowCommands.showCharacterWorkshop(),
+      quickSwitchItems,
+      openSettings: () => void showSettings(),
+      quit: () => void quitApplication()
+    }));
   };
   let contextMenu = await buildContextMenu();
-  e2eExplorer?.on('tray-summon', ({ revision }: { revision: number }) => {
-    pendingTraySummonRevision = revision;
-    invokeTraySummon?.();
-  });
 
   tray = new Tray(createTrayImage());
   tray.setToolTip('AI Pet 桌宠');
@@ -1291,51 +1196,6 @@ async function createApplicationWindows(
       return result.canceled ? null : (result.filePaths[0] ?? null);
     }
   });
-  const habitatSettingsService = new HabitatSettingsService({
-    store: habitatStore,
-    directoryPolicy: habitatDirectoryPolicy,
-    habitat: habitatService,
-    chooseDirectory: async () => {
-      const owner = await ensureSettingsWindow();
-      // E2E 只替换 Main 已验证的选择结果，不向 Renderer 暴露隔离路径或 fake 控制。
-      const result = e2eBoundary
-        ? { canceled: false, filePaths: [e2eBoundary.habitatDirectory] }
-        : await dialog.showOpenDialog(owner, {
-            title: '选择桌宠藏身目录',
-            properties: ['openDirectory']
-          });
-      return result.canceled ? null : (result.filePaths[0] ?? null);
-    }
-  });
-  const habitatSettingsIpcService = {
-    getDashboard: () => habitatSettingsService.getDashboard(),
-    chooseAndAddDirectory: () => refreshAfter(
-      () => habitatSettingsService.chooseAndAddDirectory(),
-      refreshTray
-    ),
-    setDirectoryEnabled: (directoryId: string, enabled: boolean) => refreshAfter(
-      () => habitatSettingsService.setDirectoryEnabled(directoryId, enabled),
-      refreshTray
-    ),
-    removeDirectory: (directoryId: string) => refreshAfter(
-      () => habitatSettingsService.removeDirectory(directoryId),
-      refreshTray
-    ),
-    savePreferences: (input: Parameters<HabitatSettingsService['savePreferences']>[0]) => (
-      refreshAfter(() => habitatSettingsService.savePreferences(input), refreshTray)
-    ),
-    enterDirectory: (directoryId: string) => refreshAfter(
-      () => habitatSettingsService.enterDirectory(directoryId),
-      refreshTray
-    ),
-    summon: () => refreshAfter(() => habitatSettingsService.summon(), refreshTray),
-    recall: () => refreshAfter(() => habitatSettingsService.recall(), refreshTray)
-  };
-  registerHabitatIpc(
-    ipcMain,
-    habitatSettingsIpcService,
-    sender => !settings.isDestroyed() && sender === settings.webContents
-  );
   registerSettingsIpc(ipcMain, settingsStore, secrets, {
     onProviderChanged: () => agentService.clearPending('provider_changed'),
     onAuthorizedRootChanged: () => agentService.clearPending('root_changed')

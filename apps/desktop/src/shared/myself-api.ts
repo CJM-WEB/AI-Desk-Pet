@@ -26,11 +26,6 @@ import type {
   CharacterMotionSnapshot
 } from './character-motion-ipc';
 import type { PetWindowInteractionApi } from './pet-window-interaction';
-import type {
-  HabitatChooseResult,
-  HabitatDashboardDto,
-  HabitatPreferencesInput
-} from './habitat-ipc';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 
@@ -164,17 +159,6 @@ export interface MyselfApi extends PetWindowInteractionApi {
   savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto>;
   setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }>;
   revokeAuthorizedRoot(): Promise<SettingsDashboardDto>;
-  getHabitatDashboard(): Promise<HabitatDashboardDto>;
-  chooseAndAddHabitatDirectory(): Promise<HabitatChooseResult>;
-  setHabitatDirectoryEnabled(
-    directoryId: string,
-    enabled: boolean
-  ): Promise<HabitatDashboardDto>;
-  removeHabitatDirectory(directoryId: string): Promise<HabitatDashboardDto>;
-  saveHabitatPreferences(input: HabitatPreferencesInput): Promise<HabitatDashboardDto>;
-  enterHabitatDirectory(directoryId: string): Promise<HabitatDashboardDto>;
-  summonHabitat(): Promise<HabitatDashboardDto>;
-  recallHabitat(): Promise<HabitatDashboardDto>;
   submitMessage(text: string): Promise<void>;
   cancelTask(): Promise<void>;
   confirmAction(actionId: string): Promise<void>;

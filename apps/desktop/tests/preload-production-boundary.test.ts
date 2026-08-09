@@ -40,8 +40,19 @@ describe('生产 preload 探针边界', () => {
   test('生产 API 不暴露目录绝对路径、句柄、私有身份、桥状态或 fake 控制', () => {
     expect(exposedApi).toBeDefined();
     const apiKeys = Object.keys(exposedApi ?? {});
+    const removedHabitatKeys = [
+      'getHabitatDashboard',
+      'chooseAndAddHabitatDirectory',
+      'setHabitatDirectoryEnabled',
+      'removeHabitatDirectory',
+      'saveHabitatPreferences',
+      'enterHabitatDirectory',
+      'summonHabitat',
+      'recallHabitat'
+    ];
 
     expect(apiKeys).not.toEqual(expect.arrayContaining([
+      ...removedHabitatKeys,
       'getHabitatAbsolutePath',
       'getExplorerHwnd',
       'getHabitatPrivateIdentity',
@@ -50,6 +61,7 @@ describe('生产 preload 探针边界', () => {
       'crashExplorerBridge',
       'getHabitatE2eControl'
     ]));
+    for (const removedKey of removedHabitatKeys) expect(apiKeys).not.toContain(removedKey);
     expect(apiKeys.join('\n')).not.toMatch(
       /absolutePath|hwnd|privateIdentity|bridgeState|injectExplorer|crashExplorer|HabitatE2e/iu
     );

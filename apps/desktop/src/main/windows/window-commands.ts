@@ -1,3 +1,4 @@
+import type { MenuItemConstructorOptions } from 'electron';
 import type { HabitatDirectoryOpenRequest } from '../habitat/habitat-service';
 
 /** 窗口命令只依赖正式 BrowserWindow 所需的最小职责面。 */
@@ -41,37 +42,38 @@ export interface PetVisibilityTarget {
   show(): void;
 }
 
-type HabitatTrayState = 'desktop' | 'folder-hidden' | 'folder-visible' | 'folder-lost';
-
-interface HabitatCommandSnapshot {
-  state: HabitatTrayState;
-  directoryId: string | null;
-}
-
-export type PetSummonResult =
-  | { status: 'visible' }
-  | {
-      status: 'error';
-      errorCode: 'HABITAT_DIRECTORY_UNAVAILABLE' | 'HABITAT_SUMMON_FAILED';
-      canRecall: true;
-    };
-
-export interface HabitatTrayMenuItem {
-  label: string;
-  enabled?: boolean;
-  submenu?: HabitatTrayMenuItem[];
-  click?: () => void;
-}
-
-const DEFAULT_SUMMON_TIMEOUT_MS = 5_000;
-
-/** 托盘与后续空间菜单复用同一普通桌宠显示/隐藏命令。 */
+/** 普通桌宠显示/隐藏命令只读取窗口自身状态。 */
 export function createPetVisibilityCommand(pet: PetVisibilityTarget): () => void {
   return () => {
     if (pet.isDestroyed()) return;
     if (pet.isVisible()) pet.hide();
     else pet.show();
   };
+}
+
+/** 生产托盘只组合普通窗口命令与角色切换，不再注入目录空间命令。 */
+export function buildApplicationTrayMenu(options: {
+  togglePetVisibility(): void;
+  openChat(): void;
+  openCharacterWorkshop(): void;
+  quickSwitchItems: MenuItemConstructorOptions[];
+  openSettings(): void;
+  quit(): void;
+}): MenuItemConstructorOptions[] {
+  return [
+    { label: '显示/隐藏桌宠', click: options.togglePetVisibility },
+    { type: 'separator' },
+    { label: '打开聊天', click: options.openChat },
+    { label: '角色工作室', click: options.openCharacterWorkshop },
+    {
+      label: '切换角色',
+      enabled: options.quickSwitchItems.length > 0,
+      submenu: options.quickSwitchItems
+    },
+    { label: '设置', click: options.openSettings },
+    { type: 'separator' },
+    { label: '退出', click: options.quit }
+  ];
 }
 
 /** opener 只从 Main 已复核记录取路径；shell.openPath 非空返回同样表示失败。 */
@@ -88,150 +90,6 @@ export function createVerifiedDirectoryOpener(
       throw new Error('HABITAT_SUMMON_FAILED');
     }
   };
-}
-
-/**
- * 呼唤只等待由 HabitatService 认可的准确目录事件；超时不改变隐藏状态。
- */
-export function createPetSummonController(options: {
-  habitat: {
-    snapshot(): HabitatCommandSnapshot;
-    summon(signal: AbortSignal): Promise<unknown>;
-  };
-  waitForExactExplorer(
-    directoryId: string,
-    timeoutMs: number,
-    signal: AbortSignal
-  ): Promise<boolean>;
-  timeoutMs?: number;
-}): { summon(): Promise<PetSummonResult> } {
-  return {
-    async summon() {
-      const before = options.habitat.snapshot();
-      if (before.state === 'folder-lost') {
-        return {
-          status: 'error',
-          errorCode: 'HABITAT_DIRECTORY_UNAVAILABLE',
-          canRecall: true
-        };
-      }
-      if (before.state === 'desktop') {
-        const abort = new AbortController();
-        try {
-          await options.habitat.summon(abort.signal);
-          return { status: 'visible' };
-        } catch {
-          return { status: 'error', errorCode: 'HABITAT_SUMMON_FAILED', canRecall: true };
-        } finally {
-          abort.abort();
-        }
-      }
-      if (before.directoryId === null) {
-        return { status: 'error', errorCode: 'HABITAT_SUMMON_FAILED', canRecall: true };
-      }
-
-      const abort = new AbortController();
-      const timeoutMs = options.timeoutMs ?? DEFAULT_SUMMON_TIMEOUT_MS;
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      let summonOperation: Promise<unknown> | undefined;
-      try {
-        const timedOut = new Promise<boolean>(resolve => {
-          timeout = setTimeout(() => {
-            abort.abort();
-            resolve(false);
-          }, timeoutMs);
-        });
-        const exactMatch = options.waitForExactExplorer(
-          before.directoryId,
-          timeoutMs,
-          abort.signal
-        );
-        summonOperation = Promise.resolve().then(() => options.habitat.summon(abort.signal));
-        const summonAndWait = Promise.all([
-          summonOperation,
-          exactMatch
-        ]).then(([, matched]) => matched);
-        const matched = await Promise.race([summonAndWait, timedOut]);
-        if (!matched) {
-          abort.abort();
-          await summonOperation.catch(() => undefined);
-        }
-        const after = options.habitat.snapshot();
-        return matched
-          && after.state === 'folder-visible'
-          && after.directoryId === before.directoryId
-          ? { status: 'visible' }
-          : { status: 'error', errorCode: 'HABITAT_SUMMON_FAILED', canRecall: true };
-      } catch {
-        abort.abort();
-        await summonOperation?.catch(() => undefined);
-        return { status: 'error', errorCode: 'HABITAT_SUMMON_FAILED', canRecall: true };
-      } finally {
-        if (timeout !== undefined) clearTimeout(timeout);
-        abort.abort();
-      }
-    }
-  };
-}
-
-function runTrayCommand(
-  command: () => Promise<unknown>,
-  reportError: (code: string) => void
-): () => void {
-  return () => {
-    void command().catch(() => reportError('HABITAT_OPERATION_FAILED'));
-  };
-}
-
-/** 根据 Habitat 稳定状态构造托盘空间命令，不暴露绝对路径。 */
-export function buildHabitatTrayMenu(options: {
-  snapshot: HabitatCommandSnapshot;
-  directories: Array<{ id: string; displayName: string; enabled: boolean }>;
-  enterDirectory(directoryId: string): Promise<unknown>;
-  summon(): Promise<PetSummonResult>;
-  recall(): Promise<unknown>;
-  togglePetVisibility(): void;
-  reportError(code: string): void;
-}): HabitatTrayMenuItem[] {
-  if (options.snapshot.state === 'desktop') {
-    const submenu = options.directories
-      .filter(directory => directory.enabled)
-      .map(directory => ({
-        label: directory.displayName,
-        click: runTrayCommand(
-          () => options.enterDirectory(directory.id),
-          options.reportError
-        )
-      }));
-    return [
-      {
-        label: '藏到目录',
-        enabled: submenu.length > 0,
-        submenu
-      },
-      {
-        label: '显示/隐藏桌宠',
-        click: options.togglePetVisibility
-      }
-    ];
-  }
-
-  const summon = options.snapshot.state === 'folder-lost'
-    ? () => options.reportError('HABITAT_DIRECTORY_UNAVAILABLE')
-    : () => {
-        void options.summon()
-          .then(result => {
-            if (result.status === 'error') options.reportError(result.errorCode);
-          })
-          .catch(() => options.reportError('HABITAT_OPERATION_FAILED'));
-      };
-  return [
-    { label: '呼唤桌宠', click: summon },
-    {
-      label: '召回桌面',
-      click: runTrayCommand(options.recall, options.reportError)
-    }
-  ];
 }
 
 /**

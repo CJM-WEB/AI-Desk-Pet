@@ -279,7 +279,6 @@ describe('Main 角色运动服务', () => {
     expect(source).toMatch(
       /registerPetWindowInteractionIpc\(\s*ipcMain,\s*petWindowInteraction,\s*pet\.webContents,\s*openPetContextMenu/u
     );
-    expect(source).toContain("{ label: '打开聊天'");
   });
 
   test('窗口真实位置由 Main 推进并受工作区边界约束', () => {

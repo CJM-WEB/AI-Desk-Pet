@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { ipcChannels } from '../src/shared/ipc-channels';
 import type { MyselfApi } from '../src/shared/myself-api';
-import type { HabitatDashboardDto } from '../src/shared/habitat-ipc';
 
 const invoke = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined);
 const on = vi.fn();
@@ -78,74 +77,22 @@ describe('preload 清除本地数据转发', () => {
   });
 });
 
-const habitatDashboard: HabitatDashboardDto = {
-  enabled: true,
-  autoHideEnabled: false,
-  idleDelayMs: 30_000,
-  directories: [{
-    id: 'directory-1',
-    displayName: '项目空间',
-    pathHint: 'project',
-    enabled: true,
-    availability: 'available'
-  }],
-  current: { kind: 'desktop' },
-  busyReason: null,
-  errorCode: null
-};
+describe('preload 公开 API', () => {
+  test('不再暴露目录空间控制入口', () => {
+    const apiKeys = Object.keys(exposedApi ?? {});
+    const removedKeys = [
+      'getHabitatDashboard',
+      'chooseAndAddHabitatDirectory',
+      'setHabitatDirectoryEnabled',
+      'removeHabitatDirectory',
+      'saveHabitatPreferences',
+      'enterHabitatDirectory',
+      'summonHabitat',
+      'recallHabitat'
+    ];
 
-describe('目录空间 preload API', () => {
-  test('计划内八项 API 只映射固定通道和公开负载', async () => {
-    invoke.mockImplementation(async (channel: unknown) => (
-      channel === ipcChannels.habitatDirectoryChoose
-        ? { kind: 'cancelled', dashboard: habitatDashboard }
-        : habitatDashboard
-    ));
-
-    await exposedApi?.getHabitatDashboard();
-    await exposedApi?.chooseAndAddHabitatDirectory();
-    await exposedApi?.setHabitatDirectoryEnabled('directory-1', false);
-    await exposedApi?.removeHabitatDirectory('directory-1');
-    await exposedApi?.saveHabitatPreferences({
-      enabled: true,
-      autoHideEnabled: false,
-      idleDelayMs: 30_000
-    });
-    await exposedApi?.enterHabitatDirectory('directory-1');
-    await exposedApi?.summonHabitat();
-    await exposedApi?.recallHabitat();
-
-    expect(invoke).toHaveBeenNthCalledWith(1, ipcChannels.habitatDashboardGet, {});
-    expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.habitatDirectoryChoose, {});
-    expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.habitatDirectoryToggle, {
-      directoryId: 'directory-1',
-      enabled: false
-    });
-    expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.habitatDirectoryRemove, {
-      directoryId: 'directory-1'
-    });
-    expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.habitatPreferencesSave, {
-      enabled: true,
-      autoHideEnabled: false,
-      idleDelayMs: 30_000
-    });
-    expect(invoke).toHaveBeenNthCalledWith(6, ipcChannels.habitatEnter, {
-      directoryId: 'directory-1'
-    });
-    expect(invoke).toHaveBeenNthCalledWith(7, ipcChannels.habitatSummon, {});
-    expect(invoke).toHaveBeenNthCalledWith(8, ipcChannels.habitatRecall, {});
-  });
-
-  test('私有字段污染 Main 响应时不向 Renderer 返回数据', async () => {
-    invoke.mockResolvedValueOnce({
-      ...habitatDashboard,
-      explorerHwnd: '123',
-      absolutePath: 'C:\\Private'
-    });
-
-    await expect(exposedApi?.getHabitatDashboard()).rejects.toThrow(
-      'HABITAT_RESPONSE_INVALID'
-    );
+    expect(apiKeys).not.toEqual(expect.arrayContaining(removedKeys));
+    for (const removedKey of removedKeys) expect(apiKeys).not.toContain(removedKey);
   });
 });
 
