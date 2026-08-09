@@ -82,13 +82,19 @@ export class ConversationCoordinator {
   }
 
   async submit(text: string): Promise<void> {
+    try {
+      this.assertIdle();
+    } catch (error) {
+      throw publicError(error);
+    }
+
     let normalized: string;
     try {
       normalized = normalizeUserText(text);
-      this.assertIdle();
     } catch (error) {
-      this.reportFailure(error);
-      throw error;
+      const normalizedError = publicError(error);
+      this.reportFailure(normalizedError);
+      throw normalizedError;
     }
 
     const context: ChatContext = {
@@ -101,11 +107,14 @@ export class ConversationCoordinator {
       generation: context.generation,
       controller: context.controller
     };
-    this.options.emit({ type: 'message', role: 'user', text: normalized });
-    this.options.emit({ type: 'phase', phase: 'listening' });
-    this.options.emit({ type: 'phase', phase: 'thinking' });
-
     try {
+      this.options.emit({ type: 'message', role: 'user', text: normalized });
+      if (!this.isRunning(context)) return;
+      this.options.emit({ type: 'phase', phase: 'listening' });
+      if (!this.isRunning(context)) return;
+      this.options.emit({ type: 'phase', phase: 'thinking' });
+      if (!this.isRunning(context)) return;
+
       const target = await this.options.chatTurnFactory.create(context.controller.signal);
       if (!this.isRunning(context)) return;
 
@@ -117,6 +126,7 @@ export class ConversationCoordinator {
         targetProviderName: target.providerName,
         history: this.options.history
       });
+      if (!this.isRunning(context)) return;
       if (disclosure.kind === 'confirmation_required') {
         this.pendingDisclosure = {
           ...context,
@@ -143,11 +153,12 @@ export class ConversationCoordinator {
 
       await this.runPlan(context, target.adapter, target.providerIdentity, disclosure.messages);
     } catch (error) {
-      if (!this.ownsChatContext(context)) throw error;
+      if (!this.ownsChatContext(context)) return;
+      const normalizedError = publicError(error);
       this.pendingDisclosure = null;
       this.state = { kind: 'idle' };
-      this.reportFailure(error);
-      throw error;
+      this.reportFailure(normalizedError);
+      throw normalizedError;
     }
   }
 
@@ -197,9 +208,7 @@ export class ConversationCoordinator {
       || pending.requestId !== requestId
       || pending.generation !== this.generation
     ) {
-      const error = codedError('DISCLOSURE_REQUEST_EXPIRED');
-      this.reportFailure(error);
-      throw error;
+      throw publicErrorForCode('DISCLOSURE_REQUEST_EXPIRED');
     }
 
     this.state = {
@@ -221,11 +230,12 @@ export class ConversationCoordinator {
         visibleHistory
       );
     } catch (error) {
-      if (!this.ownsChatContext(pending)) throw error;
+      if (!this.ownsChatContext(pending)) return;
+      const normalizedError = publicError(error);
       this.pendingDisclosure = null;
       this.state = { kind: 'idle' };
-      this.reportFailure(error);
-      throw error;
+      this.reportFailure(normalizedError);
+      throw normalizedError;
     }
   }
 
@@ -235,20 +245,33 @@ export class ConversationCoordinator {
 
   async close(): Promise<void> {
     if (this.state.kind === 'closed') return;
-    if (this.state.kind === 'running_chat') this.state.controller.abort();
-    if (this.state.kind === 'awaiting_history_disclosure') {
-      this.pendingDisclosure?.controller.abort();
-    }
-    if (
-      this.state.kind === 'running_file_task'
-      || this.state.kind === 'awaiting_file_confirmation'
-    ) {
-      this.options.fileTasks.cancelActive();
-    }
-    this.pendingDisclosure = null;
-    this.options.disclosureAdapter.reset();
+    const controller = this.state.kind === 'running_chat'
+      ? this.state.controller
+      : this.state.kind === 'awaiting_history_disclosure'
+        ? this.pendingDisclosure?.controller
+        : undefined;
+    const cancelFileTask = this.state.kind === 'running_file_task'
+      || this.state.kind === 'awaiting_file_confirmation';
+
+    // 先封闭所有公开入口，再逐项尽力清理；任一清理失败都不得恢复旧状态。
     this.state = { kind: 'closed' };
-    this.unsubscribeFileEvents();
+    this.pendingDisclosure = null;
+    const failures: unknown[] = [];
+    for (const cleanup of [
+      () => this.unsubscribeFileEvents(),
+      () => controller?.abort(),
+      () => {
+        if (cancelFileTask) this.options.fileTasks.cancelActive();
+      },
+      () => this.options.disclosureAdapter.reset()
+    ]) {
+      try {
+        cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) throw publicError(failures[0]);
   }
 
   /** 在可见文本写入历史前复核控制器与会话代次，隔离迟到模型响应。 */
@@ -265,7 +288,7 @@ export class ConversationCoordinator {
     });
     if (!this.isRunning(context)) return;
     if (plan.kind === 'file_task') {
-      throw codedError('FILE_TASK_ROUTE_NOT_READY');
+      throw publicErrorForCode('FILE_TASK_ROUTE_NOT_READY');
     }
 
     const assistantText = plan.kind === 'chat_reply' ? plan.text : plan.question;
@@ -275,11 +298,13 @@ export class ConversationCoordinator {
       providerIdentity
     });
     this.options.emit({ type: 'message', role: 'assistant', text: assistantText });
+    if (!this.isRunning(context)) return;
     if (plan.kind === 'chat_reply' && plan.emotion !== undefined) {
       this.options.emit({ type: 'character_emotion', label: plan.emotion });
+      if (!this.isRunning(context)) return;
     }
-    this.options.emit({ type: 'phase', phase: 'success' });
     this.state = { kind: 'idle' };
+    this.options.emit({ type: 'phase', phase: 'success' });
   }
 
   private isRunning(context: ChatContext): boolean {
@@ -297,23 +322,22 @@ export class ConversationCoordinator {
   }
 
   private assertIdle(): void {
-    if (this.state.kind === 'closed') throw codedError('CONVERSATION_CLOSED');
-    if (this.state.kind !== 'idle') throw codedError('TASK_ALREADY_ACTIVE');
+    if (this.state.kind === 'closed') throw publicErrorForCode('CONVERSATION_CLOSED');
+    if (this.state.kind !== 'idle') throw publicErrorForCode('TASK_ALREADY_ACTIVE');
   }
 
   private async rejectNotReady(code: string): Promise<never> {
-    const error = codedError(code);
-    this.reportFailure(error);
-    throw error;
+    throw publicErrorForCode(code);
   }
 
-  private reportFailure(error: unknown): void {
-    const code = errorCode(error);
+  private reportFailure(error: Error & { code: string }): void {
+    const boundaryState = this.state;
     this.options.emit({
       type: 'error',
-      code,
-      message: publicErrorMessage(code)
+      code: error.code,
+      message: error.message
     });
+    if (this.state !== boundaryState) return;
     this.options.emit({ type: 'phase', phase: 'error' });
   }
 }
@@ -322,29 +346,12 @@ function normalizeUserText(input: unknown): string {
   const normalized = typeof input === 'string' ? input.trim() : '';
   const characters = Array.from(normalized).length;
   if (characters < 1 || characters > 最大用户消息字符数) {
-    throw codedError('INPUT_INVALID');
+    throw publicErrorForCode('INPUT_INVALID');
   }
   return normalized;
 }
 
-function codedError(code: string): Error & { code: string } {
-  return Object.assign(new Error(code), { code });
-}
-
-function errorCode(error: unknown): string {
-  if (
-    error instanceof Error
-    && 'code' in error
-    && typeof error.code === 'string'
-    && error.code.length > 0
-  ) {
-    return error.code;
-  }
-  return 'AGENT_INTERNAL_ERROR';
-}
-
-function publicErrorMessage(code: string): string {
-  const messages: Record<string, string> = {
+const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     INPUT_INVALID: '消息不能为空且不能超过 4000 个字符。',
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
     CONVERSATION_CLOSED: '当前会话已经关闭。',
@@ -355,7 +362,28 @@ function publicErrorMessage(code: string): string {
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',
     PROVIDER_RATE_LIMITED: '模型服务当前繁忙，请稍后重试。',
     PROVIDER_SERVER_ERROR: '模型服务发生错误，请稍后重试。',
-    PROVIDER_TIMEOUT: '模型请求超时。'
-  };
-  return messages[code] ?? '任务执行失败，请重试。';
+    PROVIDER_TIMEOUT: '模型请求超时。',
+    SETTINGS_INCOMPLETE: '请先完成模型服务设置。',
+    AGENT_INTERNAL_ERROR: '任务执行失败，请重试。'
+});
+
+function publicError(error: unknown): Error & { code: string } {
+  const candidate = error instanceof Error
+    && 'code' in error
+    && typeof error.code === 'string'
+    ? error.code
+    : 'AGENT_INTERNAL_ERROR';
+  const code = Object.hasOwn(公开错误消息, candidate)
+    ? candidate
+    : 'AGENT_INTERNAL_ERROR';
+  return publicErrorForCode(code);
+}
+
+function publicErrorForCode(code: string): Error & { code: string } {
+  const normalizedCode = Object.hasOwn(公开错误消息, code)
+    ? code
+    : 'AGENT_INTERNAL_ERROR';
+  return Object.assign(new Error(公开错误消息[normalizedCode]!), {
+    code: normalizedCode
+  });
 }
