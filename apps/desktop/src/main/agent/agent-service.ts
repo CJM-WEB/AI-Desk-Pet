@@ -39,6 +39,11 @@ export interface AgentSession {
   messages: ModelMessage[];
 }
 
+export interface AgentFileTaskSubmission {
+  text: string;
+  visibleHistory: readonly ModelMessage[];
+}
+
 export interface AgentTaskCarryPort {
   beginTaskCarry(): Readonly<{
     playbackToken: string;
@@ -221,9 +226,13 @@ export class AgentService {
     });
   }
 
-  async submit(text: string): Promise<void> {
-    const normalized = text.trim();
-    if (normalized.length === 0 || normalized.length > MAX_USER_TEXT_LENGTH) {
+  async submitFileTask(input: AgentFileTaskSubmission): Promise<void> {
+    const normalized = typeof input?.text === 'string' ? input.text.trim() : '';
+    if (
+      normalized.length === 0
+      || normalized.length > MAX_USER_TEXT_LENGTH
+      || !Array.isArray(input.visibleHistory)
+    ) {
       const error = Object.assign(new Error('INPUT_INVALID'), { code: 'INPUT_INVALID' });
       this.emitFailure(error);
       throw error;
@@ -233,13 +242,13 @@ export class AgentService {
 
     const controller = new AbortController();
     this.activeController = controller;
-    this.emit({ type: 'message', role: 'user', text: normalized });
-    // Main 先发布会话开始的倾听阶段，再由 AgentLoop 接管思考及后续结果阶段。
-    this.emit({ type: 'phase', phase: 'listening' });
     try {
       const session = await this.createSession(controller.signal);
       await this.forward(
-        this.loop.run(normalized, this.runContext(session, controller.signal)),
+        this.loop.run(
+          normalized,
+          this.runContext(session, controller.signal, input.visibleHistory)
+        ),
         session
       );
     } catch (error) {
@@ -494,9 +503,14 @@ export class AgentService {
     return Object.assign(new Error(code), { code });
   }
 
-  private runContext(session: AgentSession, signal: AbortSignal): RunContext {
+  private runContext(
+    session: AgentSession,
+    signal: AbortSignal,
+    visibleHistory: readonly ModelMessage[] = []
+  ): RunContext {
     return {
-      messages: session.messages,
+      // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
+      messages: [...session.messages, ...visibleHistory],
       provider: providerWithFallback(session.provider, session.fallbackProviders ?? []),
       tools: session.tools,
       toolRuntime: session.toolRuntime,

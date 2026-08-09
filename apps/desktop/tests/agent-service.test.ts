@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { AgentLoop } from '@myself/agent-core';
 import type {
+  ModelMessage,
   ModelProvider,
   ModelRequest,
   ModelResponse
@@ -122,7 +123,7 @@ function createHarness(
     taskCarry,
     createConversationId: () => 'conversation-1'
   });
-  return { events, fileTools, loop, pending, provider, service, taskCarry };
+  return { events, fileTools, loop, pending, provider, service, session, taskCarry };
 }
 
 function phases(events: TaskEvent[]) {
@@ -130,6 +131,47 @@ function phases(events: TaskEvent[]) {
 }
 
 describe('AgentService', () => {
+  test('文件任务只发布 Agent 结果，并按系统消息、可见历史、当前用户消息的顺序请求模型', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'read-history-1',
+        toolName: 'builtin.files.list_directory',
+        arguments: { relativePath: '.' }
+      }
+    }, { type: 'text', text: '处理完成' }]);
+    const harness = createHarness(provider);
+    harness.session.messages.push({ role: 'system', content: '文件系统提示' });
+    const visibleHistory = Object.freeze([
+      { role: 'user', content: '历史用户消息' },
+      { role: 'assistant', content: '历史助手消息' }
+    ]) satisfies readonly ModelMessage[];
+
+    await harness.service.submitFileTask({
+      text: '列出目录',
+      visibleHistory
+    });
+
+    expect(provider.requests[0]?.messages).toEqual([
+      { role: 'system', content: '文件系统提示' },
+      { role: 'user', content: '历史用户消息' },
+      { role: 'assistant', content: '历史助手消息' },
+      { role: 'user', content: '列出目录' }
+    ]);
+    expect(harness.session.messages).toEqual([
+      { role: 'system', content: '文件系统提示' }
+    ]);
+    expect(visibleHistory).toEqual([
+      { role: 'user', content: '历史用户消息' },
+      { role: 'assistant', content: '历史助手消息' }
+    ]);
+    expect(harness.events).not.toContainEqual(expect.objectContaining({
+      type: 'message',
+      role: 'user'
+    }));
+    expect(harness.events).not.toContainEqual({ type: 'phase', phase: 'listening' });
+  });
+
   test('行为意图只调用内部回调且不广播到 Renderer 任务事件', async () => {
     const emitBehaviorIntent = vi.fn();
     const { events, service } = createHarness(
@@ -150,7 +192,7 @@ describe('AgentService', () => {
       emitBehaviorIntent
     );
 
-    await service.submit('处理任务');
+    await service.submitFileTask({ text: '处理任务', visibleHistory: [] });
 
     expect(emitBehaviorIntent).toHaveBeenCalledExactlyOnceWith({
       stateIntent: { semantic: 'think' },
@@ -191,11 +233,9 @@ describe('AgentService', () => {
     );
     const apply = vi.spyOn(store.getState(), 'apply');
 
-    await harness.service.submit('处理任务');
+    await harness.service.submitFileTask({ text: '处理任务', visibleHistory: [] });
 
     expect(harness.events).toEqual([
-      { type: 'message', role: 'user', text: '处理任务' },
-      { type: 'phase', phase: 'listening' },
       { type: 'phase', phase: 'thinking' },
       { type: 'character_emotion', label: 'happy' },
       { type: 'message', role: 'assistant', text: '处理完成' },
@@ -214,7 +254,7 @@ describe('AgentService', () => {
       text: '完成',
       emotion: 'happy'
     }]));
-    await service.submit('处理任务');
+    await service.submitFileTask({ text: '处理任务', visibleHistory: [] });
     expect(events).toContainEqual({
       type: 'character_emotion',
       label: 'happy'
@@ -228,7 +268,7 @@ describe('AgentService', () => {
     const fallback = new ScriptedProvider([{ type: 'text', text: '备用模型已响应' }]);
     const { events, service } = createHarness(primary, {}, true, [fallback]);
 
-    await service.submit('继续任务');
+    await service.submitFileTask({ text: '继续任务', visibleHistory: [] });
 
     expect(primary.requests).toHaveLength(2);
     expect(fallback.requests).toHaveLength(1);
@@ -246,7 +286,7 @@ describe('AgentService', () => {
       false
     );
 
-    await expect(service.submit('创建 result.txt')).rejects.toThrow(
+    await expect(service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] })).rejects.toThrow(
       'FILE_DISCLOSURE_DENIED'
     );
     expect(fileTools.preview).not.toHaveBeenCalled();
@@ -271,11 +311,10 @@ describe('AgentService', () => {
     ]);
     const { events, fileTools, service } = createHarness(provider);
 
-    await service.submit('列出目录');
+    await service.submitFileTask({ text: '列出目录', visibleHistory: [] });
 
     expect(fileTools.executeRead).toHaveBeenCalledOnce();
-    expect(phases(events)).toEqual(['listening', 'thinking', 'acting', 'success']);
-    expect(events).toContainEqual({ type: 'message', role: 'user', text: '列出目录' });
+    expect(phases(events)).toEqual(['thinking', 'acting', 'success']);
     expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '目录为空' });
   });
 
@@ -284,9 +323,9 @@ describe('AgentService', () => {
       new ScriptedProvider([writeResponse()])
     );
 
-    await service.submit('创建 result.txt');
+    await service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
 
-    expect(phases(events)).toEqual(['listening', 'thinking', 'awaiting_confirmation']);
+    expect(phases(events)).toEqual(['thinking', 'awaiting_confirmation']);
     expect(events.at(-1)).toEqual({
       type: 'pending_action',
       action: expect.objectContaining({
@@ -313,7 +352,7 @@ describe('AgentService', () => {
       { type: 'text', text: 'result.txt 已创建' }
     ]);
     const { events, fileTools, service } = createHarness(provider);
-    await service.submit('创建 result.txt');
+    await service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
     const pendingEvent = events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -328,7 +367,6 @@ describe('AgentService', () => {
       event.type === 'character_carrying' && !event.carrying
     )));
     expect(phases(events)).toEqual([
-      'listening',
       'thinking',
       'awaiting_confirmation',
       'acting',
@@ -352,7 +390,7 @@ describe('AgentService', () => {
     const harness = createHarness(provider, {
       preview: vi.fn(async () => recycleAction())
     });
-    await harness.service.submit('把 old.txt 移入回收站');
+    await harness.service.submitFileTask({ text: '把 old.txt 移入回收站', visibleHistory: [] });
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -373,7 +411,6 @@ describe('AgentService', () => {
     expect(harness.taskCarry.beginTaskCarry).toHaveBeenCalledOnce();
     expect(harness.taskCarry.endTaskCarry).toHaveBeenCalledOnce();
     expect(phases(harness.events)).toEqual([
-      'listening',
       'thinking',
       'awaiting_confirmation',
       'acting',
@@ -392,7 +429,7 @@ describe('AgentService', () => {
       actionId: 'carry-action-1',
       commitFrameId: null
     });
-    await harness.service.submit('移入回收站');
+    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -411,7 +448,7 @@ describe('AgentService', () => {
       { preview: vi.fn(async () => recycleAction()) }
     );
     const discard = vi.spyOn(harness.loop, 'discard');
-    await harness.service.submit('移入回收站');
+    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -435,7 +472,7 @@ describe('AgentService', () => {
       new ScriptedProvider([writeResponse()]),
       { preview: vi.fn(async () => recycleAction()) }
     );
-    await harness.service.submit('移入回收站');
+    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -462,7 +499,7 @@ describe('AgentService', () => {
       new ScriptedProvider([writeResponse()]),
       { preview: vi.fn(async () => recycleAction()) }
     );
-    await harness.service.submit('移入回收站');
+    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -487,7 +524,7 @@ describe('AgentService', () => {
         new ScriptedProvider([writeResponse()]),
         { preview: vi.fn(async () => recycleAction()) }
       );
-      await harness.service.submit('移入回收站');
+      await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
       const pendingEvent = harness.events.find(event => event.type === 'pending_action');
       if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -516,7 +553,7 @@ describe('AgentService', () => {
       new ScriptedProvider([writeResponse(), summaryError]),
       { preview: vi.fn(async () => recycleAction()) }
     );
-    await harness.service.submit('移入回收站');
+    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -543,13 +580,13 @@ describe('AgentService', () => {
       }))
     };
     const { events, service } = createHarness(provider);
-    const submitting = service.submit('等待模型');
+    const submitting = service.submitFileTask({ text: '等待模型', visibleHistory: [] });
     await vi.waitFor(() => expect(provider.respond).toHaveBeenCalledOnce());
 
     service.cancelActive();
     await submitting;
 
-    expect(phases(events)).toEqual(['listening', 'thinking', 'cancelled']);
+    expect(phases(events)).toEqual(['thinking', 'cancelled']);
   });
 
   test('Provider 失败会发送公开错误和 error 终止阶段', async () => {
@@ -559,7 +596,7 @@ describe('AgentService', () => {
     });
     const { events, service } = createHarness(new ScriptedProvider([providerError]));
 
-    await expect(service.submit('调用模型')).rejects.toThrow('private details');
+    await expect(service.submitFileTask({ text: '调用模型', visibleHistory: [] })).rejects.toThrow('private details');
     expect(service.hasReportedFailure(providerError)).toBe(true);
 
     expect(events.at(-2)).toEqual(expect.objectContaining({
@@ -581,17 +618,17 @@ describe('AgentService', () => {
     ]);
     const { events, service } = createHarness(provider);
 
-    await service.submit('调用模型');
+    await service.submitFileTask({ text: '调用模型', visibleHistory: [] });
 
     expect(provider.requests).toHaveLength(2);
     expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '重试成功' });
-    expect(phases(events)).toEqual(['listening', 'thinking', 'success']);
+    expect(phases(events)).toEqual(['thinking', 'success']);
   });
 
   test('无效输入返回明确的公开错误码', async () => {
     const { events, service } = createHarness(new ScriptedProvider([]));
 
-    await expect(service.submit('   ')).rejects.toThrow('INPUT_INVALID');
+    await expect(service.submitFileTask({ text: '   ', visibleHistory: [] })).rejects.toThrow('INPUT_INVALID');
 
     expect(events.at(-2)).toEqual(expect.objectContaining({ type: 'error', code: 'INPUT_INVALID' }));
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
@@ -604,7 +641,7 @@ describe('AgentService', () => {
     );
     const discard = vi.spyOn(loop, 'discard');
 
-    await expect(service.submit('创建越界文件')).rejects.toThrow('路径无效');
+    await expect(service.submitFileTask({ text: '创建越界文件', visibleHistory: [] })).rejects.toThrow('路径无效');
 
     expect(discard).toHaveBeenCalledOnce();
     expect(events.at(-2)).toEqual(expect.objectContaining({ type: 'error', code: 'PATH_INVALID' }));
@@ -618,7 +655,7 @@ describe('AgentService', () => {
         throw new FileToolError('TARGET_EXISTS', '目标已经存在');
       })
     });
-    await service.submit('创建 result.txt');
+    await service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
     const pendingEvent = events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
@@ -637,7 +674,7 @@ describe('AgentService', () => {
     });
     const provider = new ScriptedProvider([writeResponse(), summaryError]);
     const { events, fileTools, service } = createHarness(provider);
-    await service.submit('创建 result.txt');
+    await service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
     const pendingEvent = events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
