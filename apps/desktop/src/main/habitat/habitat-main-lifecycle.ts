@@ -8,15 +8,27 @@ interface VisibilityWindow {
   show(): void;
 }
 
-/** 自动藏身读取同步 blocker；未完成或失败的探针一律保持阻止状态。 */
-export function createForegroundFullscreenBlocker(probe: ForegroundFullscreenProbe): {
-  refresh(): Promise<boolean>;
+/** 自动藏身按资格懒采样；未完成、关闭或失败的探针一律保持阻止状态。 */
+export function createForegroundFullscreenBlocker(
+  probe: ForegroundFullscreenProbe,
+  options: { now(): number; ttlMs: number } = { now: Date.now, ttlMs: 2_000 }
+): {
+  sampleIfEligible(eligible: boolean): Promise<boolean>;
   current(): boolean;
+  close(): Promise<void>;
 } {
   let blocking = true;
+  let sampledAt: number | undefined;
   let refreshing: Promise<boolean> | undefined;
+  let closed = false;
+  let closePromise: Promise<void> | undefined;
   return {
-    refresh(): Promise<boolean> {
+    sampleIfEligible(eligible): Promise<boolean> {
+      if (closed || !eligible) return Promise.resolve(true);
+      const now = options.now();
+      if (sampledAt !== undefined && now - sampledAt < options.ttlMs) {
+        return Promise.resolve(blocking);
+      }
       if (refreshing) return refreshing;
       let sampled: Promise<boolean>;
       try {
@@ -25,17 +37,50 @@ export function createForegroundFullscreenBlocker(probe: ForegroundFullscreenPro
         sampled = Promise.resolve(true);
       }
       const current = sampled.then(
-        value => (blocking = value),
+        value => (blocking = closed ? true : value),
         () => (blocking = true)
       );
       refreshing = current;
       void current.then(() => {
+        if (!closed) sampledAt = options.now();
         if (refreshing === current) refreshing = undefined;
       });
       return current;
     },
-    current: () => blocking
+    current: () => blocking,
+    close(): Promise<void> {
+      if (closePromise) return closePromise;
+      closed = true;
+      blocking = true;
+      closePromise = (async () => {
+        await probe.close();
+        await refreshing;
+      })();
+      return closePromise;
+    }
   };
+}
+
+/** 先用内存事实排除不可能自动藏身的 tick，避免无意义启动平台探针。 */
+export function shouldSampleForegroundFullscreen(input: {
+  enabled: boolean;
+  autoHideEnabled: boolean;
+  proactivityMode: 'passive' | 'assistive' | 'autonomous';
+  habitatState: StableHabitatState;
+  hasEnabledDirectory: boolean;
+  idle: boolean;
+  idleDurationMs: number;
+  idleDelayMs: number;
+  blockers: Record<string, boolean>;
+}): boolean {
+  return input.enabled
+    && input.autoHideEnabled
+    && input.proactivityMode === 'autonomous'
+    && input.habitatState === 'desktop'
+    && input.hasEnabledDirectory
+    && input.idle
+    && input.idleDurationMs >= input.idleDelayMs
+    && !Object.values(input.blockers).some(Boolean);
 }
 
 /** 桥接消费者发布前仅保留最新事实；发布后所有回放与新事件共用同一串行队列。 */
@@ -217,6 +262,56 @@ export function createStartupCleanupStack(): {
   };
 }
 
+/** 启动期与正常期共用一个退出入口；启动清理开始后禁止再切回完整关闭事务。 */
+export function createApplicationQuitCoordinator(options: {
+  cleanupBootstrap(): Promise<void>;
+  quit(): void;
+  onError?(error: unknown): void;
+}): {
+  handle(event: { preventDefault(): void }): Promise<void>;
+  activateNormal(shutdown: () => Promise<void>): boolean;
+  exitAfterStartupFailure(): Promise<void>;
+  quitRequested(): boolean;
+} {
+  let phase: 'bootstrap' | 'normal' | 'exiting' = 'bootstrap';
+  let normalShutdown: (() => Promise<void>) | undefined;
+  let active: Promise<void> | undefined;
+  let quitIssued = false;
+  const finish = async (shutdown: () => Promise<void>): Promise<void> => {
+    try {
+      await shutdown();
+    } catch (error) {
+      try { options.onError?.(error); } catch { /* 退出不能被日志端口阻断。 */ }
+    }
+    phase = 'exiting';
+    if (!quitIssued) {
+      quitIssued = true;
+      options.quit();
+    }
+  };
+  const start = (shutdown: () => Promise<void>): Promise<void> => {
+    active ??= finish(shutdown);
+    return active;
+  };
+  return {
+    handle(event): Promise<void> {
+      if (phase === 'exiting') return Promise.resolve();
+      event.preventDefault();
+      return start(phase === 'normal' && normalShutdown
+        ? normalShutdown
+        : options.cleanupBootstrap);
+    },
+    activateNormal(shutdown): boolean {
+      if (phase !== 'bootstrap' || active) return false;
+      normalShutdown = shutdown;
+      phase = 'normal';
+      return true;
+    },
+    exitAfterStartupFailure: () => start(options.cleanupBootstrap),
+    quitRequested: () => active !== undefined || phase === 'exiting'
+  };
+}
+
 /** 重叠异步活动以计数器收敛，任一失败也不会留下永久 blocker。 */
 export function createAsyncActivityBlocker(): {
   run<T>(operation: () => Promise<T>): Promise<T>;
@@ -233,6 +328,24 @@ export function createAsyncActivityBlocker(): {
       }
     },
     current: () => active > 0
+  };
+}
+
+/** 角色提交与运行时加载属于同一切换事务，自动藏身只能在两者都结束后继续。 */
+export function createCharacterActivationCoordinator(options: {
+  activateInStore(characterId: string, confirmIncomplete?: boolean): Promise<void>;
+  reloadBehavior(): Promise<void>;
+}): {
+  activate(characterId: string, confirmIncomplete?: boolean): Promise<void>;
+  current(): boolean;
+} {
+  const activity = createAsyncActivityBlocker();
+  return {
+    activate: (characterId, confirmIncomplete) => activity.run(async () => {
+      await options.activateInStore(characterId, confirmIncomplete);
+      await options.reloadBehavior();
+    }),
+    current: activity.current
   };
 }
 

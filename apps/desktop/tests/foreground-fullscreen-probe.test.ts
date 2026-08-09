@@ -2,8 +2,9 @@ import { describe, expect, test, vi } from 'vitest';
 
 type ProbeFactory = (options: {
   platform: NodeJS.Platform;
-  runFixedProbe(): Promise<string>;
-}) => { sample(): Promise<boolean> };
+  runFixedProbe?(): Promise<string>;
+  startFixedProbe?(): { result: Promise<string>; cancel(): void };
+}) => { sample(): Promise<boolean>; close?(): Promise<void> };
 
 async function loadFactory(): Promise<ProbeFactory | undefined> {
   const module = await import('../src/main/habitat/habitat-window-controller');
@@ -30,10 +31,45 @@ describe('受限前台全屏探针', () => {
       runFixedProbe: async () => { throw new Error('PRIVATE_FOREGROUND'); }
     });
     const malformed = factory?.({ platform: 'win32', runFixedProbe: async () => 'window:123' });
+    const syncFailed = factory?.({
+      platform: 'win32',
+      startFixedProbe: () => { throw new Error('PRIVATE_START'); }
+    });
 
     expect(await nonWindows?.sample()).toBe(true);
     expect(await failed?.sample()).toBe(true);
     expect(await malformed?.sample()).toBe(true);
+    expect(await syncFailed?.sample()).toBe(true);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  test('close 取消并等待当前固定子进程，关闭后不再启动探针', async () => {
+    const factory = await loadFactory();
+    let finish = (_output: string): void => {};
+    const result = new Promise<string>(resolve => { finish = resolve; });
+    let starts = 0;
+    let cancels = 0;
+    const probe = factory?.({
+      platform: 'win32',
+      startFixedProbe: () => {
+        starts += 1;
+        return { result, cancel: () => { cancels += 1; } };
+      }
+    });
+
+    const sample = probe?.sample();
+    const closing = probe?.close?.();
+    let closeSettled = false;
+    void closing?.then(() => { closeSettled = true; });
+    await Promise.resolve();
+    expect(cancels).toBe(1);
+    expect(closeSettled).toBe(false);
+    finish('0');
+    await closing;
+
+    expect(await sample).toBe(true);
+    expect(closeSettled).toBe(true);
+    expect(await probe?.sample()).toBe(true);
+    expect(starts).toBe(1);
   });
 });

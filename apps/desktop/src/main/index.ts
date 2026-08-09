@@ -56,7 +56,8 @@ import { HabitatWindowController } from './habitat/habitat-window-controller';
 import { PetHabitatStore } from './habitat/pet-habitat-store';
 import { createForegroundFullscreenProbe } from './habitat/foreground-fullscreen-probe';
 import {
-  createAsyncActivityBlocker,
+  createApplicationQuitCoordinator,
+  createCharacterActivationCoordinator,
   createExplorerObservationRelay,
   createForegroundFullscreenBlocker,
   createIntegrityCheckedExplorerPort,
@@ -65,7 +66,8 @@ import {
   createStateGuardedPetVisibilityCommand,
   createTrayRefreshController,
   refreshAfter,
-  runMainEventSafely
+  runMainEventSafely,
+  shouldSampleForegroundFullscreen
 } from './habitat/habitat-main-lifecycle';
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
@@ -93,7 +95,6 @@ import {
 } from './settings/session-preflight';
 import {
   createPetPositionController,
-  createQuitAfterPositionFlush,
   restorePetPosition
 } from './windows/pet-position';
 import {
@@ -239,8 +240,10 @@ function positionChatNearPet(pet: BrowserWindow, chat: BrowserWindow): void {
   chat.setPosition(x, y);
 }
 
-async function createApplicationWindows(): Promise<void> {
-  const startupCleanup = createStartupCleanupStack();
+async function createApplicationWindows(
+  startupCleanup: ReturnType<typeof createStartupCleanupStack>,
+  applicationQuit: ReturnType<typeof createApplicationQuitCoordinator>
+): Promise<void> {
   try {
   Menu.setApplicationMenu(null);
   const preload = join(__dirname, '../preload/index.cjs');
@@ -308,11 +311,7 @@ async function createApplicationWindows(): Promise<void> {
     assets: characterAssetService,
     packages: characterPackageService
   });
-  const characterSwitching = createAsyncActivityBlocker();
-  const activateCharacter = characterActions.activateCharacter.bind(characterActions);
-  characterActions.activateCharacter = (characterId, confirmIncomplete) => (
-    characterSwitching.run(() => activateCharacter(characterId, confirmIncomplete))
-  );
+  const activateCharacterInStore = characterActions.activateCharacter.bind(characterActions);
   const recoveredCorruptCharacterIndex = await characterStore.recoverCorruptIndex();
   for (const warning of recoveredCorruptCharacterIndex.warnings) {
     console.warn(`角色索引恢复警告：${warning}`);
@@ -448,6 +447,13 @@ async function createApplicationWindows(): Promise<void> {
     motion: characterMotion,
     reportError: reportCharacterBehaviorError
   });
+  const characterSwitching = createCharacterActivationCoordinator({
+    activateInStore: activateCharacterInStore,
+    reloadBehavior: () => characterBehavior.handleActiveCharacterChanged()
+  });
+  characterActions.activateCharacter = (characterId, confirmIncomplete) => (
+    characterSwitching.activate(characterId, confirmIncomplete)
+  );
   let refreshTray = async (): Promise<void> => undefined;
   const petWindowInteraction = new PetWindowInteractionController({
     window: pet,
@@ -513,6 +519,7 @@ async function createApplicationWindows(): Promise<void> {
   const foregroundFullscreen = createForegroundFullscreenBlocker(
     createForegroundFullscreenProbe()
   );
+  startupCleanup.add(() => foregroundFullscreen.close());
   const habitatService = new HabitatService({
     initialSnapshot: habitatSnapshot,
     observerInitiallyActive: restoredObserverActive,
@@ -694,31 +701,28 @@ async function createApplicationWindows(): Promise<void> {
   let habitatAutonomyTimer: ReturnType<typeof setInterval> | undefined;
   let habitatShutdownStarted = false;
   // 退出事务严格串行，单点失败记录后仍继续释放后续资源。
-  const handleBeforeQuit = createQuitAfterPositionFlush({
-    flush: async () => {
-      if (habitatShutdownStarted) return;
-      habitatShutdownStarted = true;
-      const errors: unknown[] = [];
-      if (habitatAutonomyTimer !== undefined) {
-        clearInterval(habitatAutonomyTimer);
-        habitatAutonomyTimer = undefined;
-      }
-      try { await petPositionController.freezeAndFlush(); } catch (error) { errors.push(error); }
-      try { await habitatService.close(); } catch (error) { errors.push(error); }
-      try { await habitatWindowController.dispose(); } catch (error) { errors.push(error); }
-      try { await explorerPort.close(); } catch (error) { errors.push(error); }
-      try {
-        await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent());
-      } catch (error) {
-        errors.push(error);
-      }
-      try { await desktopSettingsService.close(); } catch (error) { errors.push(error); }
-      releaseCharacterRuntime();
-      if (errors.length > 0) throw new AggregateError(errors, 'HABITAT_SHUTDOWN_INCOMPLETE');
-    },
-    quit: () => app.quit(),
-    onError: reportPetPositionError
-  });
+  const shutdownApplication = async (): Promise<void> => {
+    if (habitatShutdownStarted) return;
+    habitatShutdownStarted = true;
+    const errors: unknown[] = [];
+    if (habitatAutonomyTimer !== undefined) {
+      clearInterval(habitatAutonomyTimer);
+      habitatAutonomyTimer = undefined;
+    }
+    try { await foregroundFullscreen.close(); } catch (error) { errors.push(error); }
+    try { await petPositionController.freezeAndFlush(); } catch (error) { errors.push(error); }
+    try { await habitatService.close(); } catch (error) { errors.push(error); }
+    try { await habitatWindowController.dispose(); } catch (error) { errors.push(error); }
+    try { await explorerPort.close(); } catch (error) { errors.push(error); }
+    try {
+      await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent());
+    } catch (error) {
+      errors.push(error);
+    }
+    try { await desktopSettingsService.close(); } catch (error) { errors.push(error); }
+    releaseCharacterRuntime();
+    if (errors.length > 0) throw new AggregateError(errors, 'HABITAT_SHUTDOWN_INCOMPLETE');
+  };
   const quitApplication = (): void => app.quit();
   const e2eCharacterDialogs = e2eBoundary
     ? createE2eCharacterDialogAdapter(e2eBoundary)
@@ -870,7 +874,6 @@ async function createApplicationWindows(): Promise<void> {
   characterActions.subscribeCharacterEvents(event => {
     if (event.type === 'active-character-changed') {
       activeAgentService?.invalidateFileTaskPlaybackGrant();
-      void characterBehavior.handleActiveCharacterChanged();
     }
     broadcastCharacterEvent(
       [pet, chat, settings, characterWorkshopWindows.getCurrent()],
@@ -1125,10 +1128,9 @@ async function createApplicationWindows(): Promise<void> {
   habitatAutonomyTimer = setInterval(() => {
     void Promise.all([
       habitatStore.load(),
-      settingsStore.getPrivacySettings(),
-      foregroundFullscreen.refresh()
+      settingsStore.getPrivacySettings()
     ])
-      .then(([snapshot, privacy, foregroundIsFullscreen]) => {
+      .then(async ([snapshot, privacy]) => {
         currentProactivityMode = privacy.proactivityMode;
         const serviceState = habitatService.snapshot().state;
         const habitatState = serviceState === 'desktop'
@@ -1137,20 +1139,38 @@ async function createApplicationWindows(): Promise<void> {
           || serviceState === 'folder-lost'
           ? serviceState
           : 'folder-hidden';
+        const idleDurationMs = powerMonitor.getSystemIdleTime() * 1_000;
+        const idle = idleDurationMs > 0;
+        const cheapBlockers = {
+          taskActive: ['listening', 'thinking', 'acting'].includes(currentAgentPhase),
+          confirmationPending: currentAgentPhase === 'awaiting_confirmation',
+          chatInteracting: chat.isFocused(),
+          dragging: petWindowInteraction.getProbe().dragging,
+          characterSwitching: characterSwitching.current(),
+          appQuitting: isQuitting,
+          bridgeDegraded: explorer.snapshot().state === 'failed'
+        };
+        const foregroundIsFullscreen = await foregroundFullscreen.sampleIfEligible(
+          shouldSampleForegroundFullscreen({
+            enabled: snapshot.preferences.enabled === true,
+            autoHideEnabled: snapshot.preferences.autoHideEnabled === true,
+            proactivityMode: currentProactivityMode,
+            habitatState,
+            hasEnabledDirectory: snapshot.directories.some(directory => directory.enabled),
+            idle,
+            idleDurationMs,
+            idleDelayMs: snapshot.preferences.idleDelayMs,
+            blockers: cheapBlockers
+          })
+        );
         return habitatAutonomy.tick({
           snapshot,
           proactivityMode: currentProactivityMode,
-          idle: powerMonitor.getSystemIdleTime() > 0,
+          idle,
           habitatState,
           blockers: {
-            taskActive: ['listening', 'thinking', 'acting'].includes(currentAgentPhase),
-            confirmationPending: currentAgentPhase === 'awaiting_confirmation',
-            chatInteracting: chat.isFocused(),
-            dragging: petWindowInteraction.getProbe().dragging,
-            characterSwitching: characterSwitching.current(),
+            ...cheapBlockers,
             foregroundFullscreen: foregroundIsFullscreen,
-            appQuitting: isQuitting,
-            bridgeDegraded: explorer.snapshot().state === 'failed'
           }
         });
       })
@@ -1166,7 +1186,7 @@ async function createApplicationWindows(): Promise<void> {
   await characterBehavior.initialize();
   visibilityGate.markReady();
   await explorerRelay.attach(consumeExplorerObservation);
-  app.on('before-quit', event => void handleBeforeQuit(event));
+  if (!applicationQuit.activateNormal(shutdownApplication)) return;
   startupCleanup.dismiss();
   } catch (error) {
     try {
@@ -1178,20 +1198,27 @@ async function createApplicationWindows(): Promise<void> {
   }
 }
 
-app.on('before-quit', () => {
-  isQuitting = true;
-  activeAgentService?.cancelActive();
-  activeAgentService?.clearPending('application_exit');
-});
-
 app.on('window-all-closed', () => {});
 
 if (isPrimaryInstance) {
+  const startupCleanup = createStartupCleanupStack();
+  const applicationQuit = createApplicationQuitCoordinator({
+    cleanupBootstrap: () => startupCleanup.run(),
+    quit: () => app.quit(),
+    onError: () => console.error('应用关闭失败。', 'HABITAT_SHUTDOWN_INCOMPLETE')
+  });
+  // 首个窗口资源创建前即接管退出；成功启动后同一入口原子切换到完整关闭事务。
+  app.on('before-quit', event => {
+    isQuitting = true;
+    activeAgentService?.cancelActive();
+    activeAgentService?.clearPending('application_exit');
+    void applicationQuit.handle(event);
+  });
   void app.whenReady().then(async () => {
-    await createApplicationWindows();
+    await createApplicationWindows(startupCleanup, applicationQuit);
   }).catch(error => {
     primaryPetWindow?.hide();
-    console.error('应用启动失败。', error);
-    app.quit();
+    if (!applicationQuit.quitRequested()) console.error('应用启动失败。', error);
+    void applicationQuit.exitAfterStartupFailure();
   });
 }

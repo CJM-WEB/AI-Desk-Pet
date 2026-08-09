@@ -252,7 +252,7 @@ describe('Main E2E 安全边界', () => {
     expect(disableHardwareAccelerationIndex).toBeLessThan(whenReadyIndex);
     expect(singleInstanceLockIndex).toBeGreaterThanOrEqual(0);
     expect(singleInstanceLockIndex).toBeLessThan(whenReadyIndex);
-    expect(singleInstanceLockIndex).toBeLessThan(main.lastIndexOf('createApplicationWindows()'));
+    expect(singleInstanceLockIndex).toBeLessThan(main.lastIndexOf('createApplicationWindows('));
     expect(main).toContain('e2eBoundary.authorizedRootDirectory');
     expect(main).toContain('dialog.showOpenDialog');
   });

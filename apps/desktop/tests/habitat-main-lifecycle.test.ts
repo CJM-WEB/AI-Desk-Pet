@@ -1,9 +1,29 @@
 import { describe, expect, test } from 'vitest';
 
 type LifecycleModule = {
-  createForegroundFullscreenBlocker?(options: {
+  createForegroundFullscreenBlocker?(probe: {
     sample(): Promise<boolean>;
-  }): { refresh(): Promise<boolean>; current(): boolean };
+    close?(): Promise<void>;
+  }, options?: {
+    now(): number;
+    ttlMs: number;
+  }): {
+    sampleIfEligible?(eligible: boolean): Promise<boolean>;
+    refresh?(): Promise<boolean>;
+    current(): boolean;
+    close?(): Promise<void>;
+  };
+  shouldSampleForegroundFullscreen?(input: {
+    enabled: boolean;
+    autoHideEnabled: boolean;
+    proactivityMode: 'passive' | 'assistive' | 'autonomous';
+    habitatState: 'desktop' | 'folder-hidden' | 'folder-visible' | 'folder-lost';
+    hasEnabledDirectory: boolean;
+    idle: boolean;
+    idleDurationMs: number;
+    idleDelayMs: number;
+    blockers: Record<string, boolean>;
+  }): boolean;
   createExplorerObservationRelay?<T>(): {
     accept(value: T): Promise<void>;
     attach(consumer: (value: T) => Promise<void>): Promise<void>;
@@ -40,8 +60,24 @@ type LifecycleModule = {
     run(): Promise<void>;
     dismiss(): void;
   };
+  createApplicationQuitCoordinator?(options: {
+    cleanupBootstrap(): Promise<void>;
+    quit(): void;
+  }): {
+    handle(event: { preventDefault(): void }): Promise<void>;
+    activateNormal(shutdown: () => Promise<void>): boolean;
+    exitAfterStartupFailure(): Promise<void>;
+    quitRequested(): boolean;
+  };
   createAsyncActivityBlocker?(): {
     run<T>(operation: () => Promise<T>): Promise<T>;
+    current(): boolean;
+  };
+  createCharacterActivationCoordinator?(options: {
+    activateInStore(characterId: string, confirmIncomplete?: boolean): Promise<void>;
+    reloadBehavior(): Promise<void>;
+  }): {
+    activate(characterId: string, confirmIncomplete?: boolean): Promise<void>;
     current(): boolean;
   };
   runMainEventSafely?(
@@ -62,18 +98,21 @@ describe('Habitat Main 真实生命周期', () => {
   test('Main blocker 初始与探针失败都失败关闭，成功采样后才允许自动藏身', async () => {
     const module = await loadLifecycle();
     let reject = false;
+    let now = 0;
     const blocker = module?.createForegroundFullscreenBlocker?.({
       sample: async () => {
         if (reject) throw new Error('PRIVATE_PROBE');
         return false;
-      }
-    });
+      },
+      close: async () => undefined
+    }, { now: () => now, ttlMs: 10 });
 
     expect(blocker?.current()).toBe(true);
-    expect(await blocker?.refresh()).toBe(false);
+    expect(await blocker?.sampleIfEligible?.(true)).toBe(false);
     expect(blocker?.current()).toBe(false);
     reject = true;
-    expect(await blocker?.refresh()).toBe(true);
+    now = 11;
+    expect(await blocker?.sampleIfEligible?.(true)).toBe(true);
     expect(blocker?.current()).toBe(true);
   });
 
@@ -86,14 +125,67 @@ describe('Habitat Main 真实生命周期', () => {
       sample: async () => {
         sampleCount += 1;
         return sampled;
-      }
+      },
+      close: async () => undefined
     });
 
-    const first = blocker?.refresh();
-    const second = blocker?.refresh();
+    const first = blocker?.sampleIfEligible?.(true);
+    const second = blocker?.sampleIfEligible?.(true);
     expect(sampleCount).toBe(1);
     finishSample(false);
     await expect(Promise.all([first, second])).resolves.toEqual([false, false]);
+  });
+
+  test('自动藏身廉价资格不满足时不采样，满足后在 TTL 内复用且 close 后失败关闭', async () => {
+    const module = await loadLifecycle();
+    let now = 0;
+    let sampleCount = 0;
+    let closeCount = 0;
+    const blocker = module?.createForegroundFullscreenBlocker?.({
+      sample: async () => { sampleCount += 1; return false; },
+      close: async () => { closeCount += 1; }
+    }, { now: () => now, ttlMs: 2_000 });
+
+    expect(await blocker?.sampleIfEligible?.(false)).toBe(true);
+    expect(sampleCount).toBe(0);
+    expect(await blocker?.sampleIfEligible?.(true)).toBe(false);
+    now = 1_999;
+    expect(await blocker?.sampleIfEligible?.(true)).toBe(false);
+    expect(sampleCount).toBe(1);
+    now = 2_001;
+    expect(await blocker?.sampleIfEligible?.(true)).toBe(false);
+    expect(sampleCount).toBe(2);
+    await blocker?.close?.();
+    expect(closeCount).toBe(1);
+    expect(await blocker?.sampleIfEligible?.(true)).toBe(true);
+    expect(sampleCount).toBe(2);
+  });
+
+  test('只有自动藏身的内存配置、状态和廉价 blocker 全部允许时才取得探针资格', async () => {
+    const module = await loadLifecycle();
+    const eligible = {
+      enabled: true,
+      autoHideEnabled: true,
+      proactivityMode: 'autonomous' as const,
+      habitatState: 'desktop' as const,
+      hasEnabledDirectory: true,
+      idle: true,
+      idleDurationMs: 5_000,
+      idleDelayMs: 5_000,
+      blockers: { taskActive: false, characterSwitching: false, appQuitting: false }
+    };
+
+    expect(module?.shouldSampleForegroundFullscreen?.(eligible)).toBe(true);
+    expect(module?.shouldSampleForegroundFullscreen?.({ ...eligible, autoHideEnabled: false }))
+      .toBe(false);
+    expect(module?.shouldSampleForegroundFullscreen?.({ ...eligible, habitatState: 'folder-hidden' }))
+      .toBe(false);
+    expect(module?.shouldSampleForegroundFullscreen?.({ ...eligible, idleDurationMs: 4_999 }))
+      .toBe(false);
+    expect(module?.shouldSampleForegroundFullscreen?.({
+      ...eligible,
+      blockers: { ...eligible.blockers, characterSwitching: true }
+    })).toBe(false);
   });
 
   test('消费者就绪后先串行回放最新缓存快照，再处理后续快照', async () => {
@@ -244,6 +336,54 @@ describe('Habitat Main 真实生命周期', () => {
     expect(order).toEqual(['behavior', 'bridge', 'pet']);
   });
 
+  test('Renderer 或回放挂起期间 quit 会等待已取得资源逆序关闭且不会 ABA 或双 quit', async () => {
+    const module = await loadLifecycle();
+    const cleanup = module?.createStartupCleanupStack?.();
+    expect(cleanup).toBeDefined();
+    if (!cleanup) return;
+    let finishExplorer = (): void => {};
+    let finishProbe = (): void => {};
+    const explorerClosed = new Promise<void>(resolve => { finishExplorer = resolve; });
+    const probeClosed = new Promise<void>(resolve => { finishProbe = resolve; });
+    const order: string[] = [];
+    cleanup.add(async () => {
+      order.push('explorer:start');
+      await explorerClosed;
+      order.push('explorer:end');
+    });
+    cleanup.add(async () => {
+      order.push('probe:start');
+      await probeClosed;
+      order.push('probe:end');
+    });
+    let quitCount = 0;
+    let prevented = 0;
+    const coordinator = module?.createApplicationQuitCoordinator?.({
+      cleanupBootstrap: () => cleanup.run(),
+      quit: () => { quitCount += 1; }
+    });
+
+    const firstQuit = coordinator?.handle({ preventDefault: () => { prevented += 1; } });
+    const repeatedQuit = coordinator?.handle({ preventDefault: () => { prevented += 1; } });
+    await Promise.resolve();
+    expect(order).toEqual(['probe:start']);
+    expect(quitCount).toBe(0);
+    expect(coordinator?.activateNormal(async () => { order.push('normal'); })).toBe(false);
+    finishProbe();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(['probe:start', 'probe:end', 'explorer:start']);
+    expect(quitCount).toBe(0);
+    finishExplorer();
+    await Promise.all([firstQuit, repeatedQuit]);
+
+    expect(order).toEqual(['probe:start', 'probe:end', 'explorer:start', 'explorer:end']);
+    expect(prevented).toBe(2);
+    expect(quitCount).toBe(1);
+    await coordinator?.exitAfterStartupFailure();
+    expect(quitCount).toBe(1);
+  });
+
   test('重叠角色切换全部结束前 blocker 始终为 true，失败也会释放', async () => {
     const module = await loadLifecycle();
     const blocker = module?.createAsyncActivityBlocker?.();
@@ -259,6 +399,35 @@ describe('Habitat Main 真实生命周期', () => {
     release();
     await first;
     expect(blocker.current()).toBe(false);
+  });
+
+  test('角色 Store 提交后仍等待延迟 Behavior runtime 加载完成再释放 blocker', async () => {
+    const module = await loadLifecycle();
+    let finishBehavior = (): void => {};
+    const behaviorPending = new Promise<void>(resolve => { finishBehavior = resolve; });
+    const order: string[] = [];
+    let runtime = 'old';
+    const coordinator = module?.createCharacterActivationCoordinator?.({
+      activateInStore: async () => { order.push('store'); },
+      reloadBehavior: async () => {
+        order.push('behavior:start');
+        await behaviorPending;
+        runtime = 'new';
+        order.push('behavior:end');
+      }
+    });
+
+    const switching = coordinator?.activate('nova');
+    await Promise.resolve();
+    expect(order).toEqual(['store', 'behavior:start']);
+    expect(runtime).toBe('old');
+    expect(coordinator?.current()).toBe(true);
+    finishBehavior();
+    await switching;
+
+    expect(runtime).toBe('new');
+    expect(order).toEqual(['store', 'behavior:start', 'behavior:end']);
+    expect(coordinator?.current()).toBe(false);
   });
 
   test('Main 事件清理失败只报告稳定码且 Promise 正常收敛', async () => {
