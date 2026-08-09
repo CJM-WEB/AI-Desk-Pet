@@ -1,4 +1,4 @@
-import type { ExplorerSnapshot } from '../habitat/explorer-space-protocol';
+import type { ExplorerSnapshot } from './explorer-space-protocol';
 
 /** 协调器只消费已通过桥协议校验的快照，或桥端传出的异常。 */
 export interface ExplorerPetLayerSnapshot {

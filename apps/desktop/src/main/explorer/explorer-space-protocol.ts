@@ -58,11 +58,9 @@ const snapshotSchema = z.discriminatedUnion('status', [
     windowType: z.literal('explorer'),
     instanceId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
     hwnd: hwndSchema,
-    path: z.string().min(1).max(4096),
     rect: rectSchema,
     foreground: z.literal(true),
-    minimized: z.literal(false),
-    search: z.literal(false)
+    minimized: z.literal(false)
   }).strict(),
   z.object({
     version: z.literal(EXPLORER_SPACE_PROTOCOL_VERSION),

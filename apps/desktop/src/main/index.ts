@@ -41,10 +41,10 @@ import { CharacterBehaviorService } from './characters/character-behavior-servic
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
 import { ExplorerSpaceClient, buildExplorerBridgeSpawnSpec } from
-  './habitat/explorer-space-client';
-import type { ExplorerSnapshot } from './habitat/explorer-space-protocol';
+  './explorer/explorer-space-client';
+import type { ExplorerSnapshot } from './explorer/explorer-space-protocol';
 import { ExplorerWindowLayerController } from
-  './habitat/explorer-window-layer-controller';
+  './explorer/explorer-window-layer-controller';
 import { ExplorerPetLayerCoordinator } from './explorer/explorer-pet-layer-coordinator';
 import { createExplorerMainComposition } from './explorer/explorer-main-wiring';
 import {

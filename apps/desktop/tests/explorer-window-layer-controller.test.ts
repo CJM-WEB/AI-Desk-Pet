@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ExplorerWindowLayerController,
   buildExplorerWindowMediaSourceId
-} from '../src/main/habitat/explorer-window-layer-controller';
+} from '../src/main/explorer/explorer-window-layer-controller';
 
 class FakeLayerWindow {
   readonly moveAbove = vi.fn<(mediaSourceId: string) => void>();

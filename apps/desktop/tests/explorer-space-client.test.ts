@@ -8,7 +8,7 @@ import {
   ExplorerSpaceClient,
   buildExplorerBridgeSpawnSpec,
   type ExplorerBridgeChild
-} from '../src/main/habitat/explorer-space-client';
+} from '../src/main/explorer/explorer-space-client';
 
 class FakeChild extends EventEmitter implements ExplorerBridgeChild {
   readonly stdout = new PassThrough();
@@ -36,11 +36,9 @@ function snapshotLine(input: { nonce?: string; sequence: number; instanceId: str
     windowType: 'explorer',
     instanceId: input.instanceId,
     hwnd: '43210',
-    path: 'C:\\target',
     rect: { x: 0, y: 0, width: 800, height: 600 },
     foreground: true,
-    minimized: false,
-    search: false
+    minimized: false
   })}\n`;
 }
 

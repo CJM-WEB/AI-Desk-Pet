@@ -107,9 +107,9 @@ function Get-ExplorerSnapshot {
     return @{
         status = 'ready'; windowType = 'explorer'
         instanceId = $observation.InstanceId
-        hwnd = $foregroundValue.ToString(); path = $observation.Path
+        hwnd = $foregroundValue.ToString()
         rect = @{ x = $observation.Rect.Left; y = $observation.Rect.Top; width = $width; height = $height }
-        foreground = $true; minimized = $false; search = $false
+        foreground = $true; minimized = $false
     }
 }
 

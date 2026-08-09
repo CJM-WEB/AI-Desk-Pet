@@ -3,7 +3,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
-import type { ExplorerSnapshot } from './habitat/explorer-space-protocol';
+import type { ExplorerSnapshot } from './explorer/explorer-space-protocol';
 
 type ExplorerSnapshotFacts<T> = T extends ExplorerSnapshot
   ? Omit<T, 'version' | 'type' | 'nonce' | 'sequence'>
@@ -175,14 +175,20 @@ export function createMainE2eExplorerBridge(options: {
           windowType: 'explorer',
           instanceId: 'e2e-explorer-exact',
           hwnd: '9003',
-          path: options.habitatDirectory,
           rect: { x: 80, y: 80, width: 900, height: 700 },
           foreground: true,
-          minimized: false,
-          search: false
+          minimized: false
         };
         this.emitSnapshot(facts);
-        this.emitSnapshot({ ...facts, hwnd: '9002' }, this.sequence);
+        this.emitSnapshot({
+          status: 'ready',
+          windowType: 'explorer',
+          instanceId: 'e2e-explorer-exact',
+          hwnd: '9002',
+          rect: { x: 80, y: 80, width: 900, height: 700 },
+          foreground: true,
+          minimized: false
+        }, this.sequence);
         return;
       }
       if (event === 'crash') {
@@ -208,11 +214,9 @@ export function createMainE2eExplorerBridge(options: {
           windowType: 'explorer',
           instanceId: exact ? 'e2e-explorer-exact' : 'e2e-explorer-wrong',
           hwnd: exact ? '9002' : '9001',
-          path: exact ? options.habitatDirectory : options.wrongDirectory,
           rect: { x: 80, y: 80, width: 900, height: 700 },
           foreground: true,
-          minimized: false,
-          search: false
+          minimized: false
         });
         return;
       }

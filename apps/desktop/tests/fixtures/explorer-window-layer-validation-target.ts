@@ -96,7 +96,6 @@ export function advanceSearchHiddenDwell(
 
 export interface QuickSwitchInternalSample extends ExplorerValidationSample {
   instanceId: string;
-  pathFingerprint: string;
 }
 
 export interface QuickSwitchEvidenceState {
@@ -120,7 +119,7 @@ export function advanceQuickSwitchEvidence(
   state: QuickSwitchEvidenceState | undefined,
   sample: QuickSwitchInternalSample,
   target: ExplorerValidationTarget,
-  knownInstances: ReadonlyMap<string, string>
+  knownInstances: ReadonlySet<string>
 ): QuickSwitchEvidenceState {
   const current = state ?? {
     failed: false,
@@ -142,7 +141,7 @@ export function advanceQuickSwitchEvidence(
   if (
     sample.status !== 'ready' || sample.matchCount !== 1
     || sample.outerHwnd !== target.outerHwnd
-    || knownInstances.get(sample.instanceId) !== sample.pathFingerprint
+    || !knownInstances.has(sample.instanceId)
     || sample.switchRound < current.lastRound
     || sample.switchRound > current.lastRound + 1
     || (current.lastInstanceId !== undefined
@@ -164,8 +163,8 @@ export function advanceQuickSwitchAutoCompletion(
   state: QuickSwitchAutoCompletionState | undefined,
   sample: QuickSwitchInternalSample,
   target: ExplorerValidationTarget,
-  knownInstances: ReadonlyMap<string, string>,
-  finalA: { instanceId: string; pathFingerprint: string },
+  knownInstances: ReadonlySet<string>,
+  finalA: { instanceId: string },
   sampledAt: number
 ): QuickSwitchAutoCompletionState {
   const current: QuickSwitchAutoCompletionState = state ?? {
@@ -187,8 +186,7 @@ export function advanceQuickSwitchAutoCompletion(
   const isStableA = sample.status === 'ready'
     && sample.matchCount === 1
     && sample.outerHwnd === target.outerHwnd
-    && sample.instanceId === finalA.instanceId
-    && sample.pathFingerprint === finalA.pathFingerprint;
+    && sample.instanceId === finalA.instanceId;
   if (!hasRaceEvidence || !isStableA) {
     return {
       ...current, ...evidence,

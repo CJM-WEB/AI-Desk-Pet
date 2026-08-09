@@ -29,10 +29,8 @@ const fixedScenarios = [
   'race-process-id',
   'race-process-created-at',
   'race-foreground',
-  'race-path',
-  'ending-path-unavailable',
-  'ending-path-none',
-  'ending-path-invalid',
+  'race-rect',
+  'race-minimized',
   'mapping-race',
   'rect-unavailable',
   'not-explorer',
@@ -54,11 +52,6 @@ const fixedScenarios = [
   'unknown-mapping-version',
   'candidate-profile-production',
   'candidate-profile-validation',
-  'invalid-percent-location',
-  'valid-percent-location',
-  'keyed-fingerprint-same',
-  'keyed-fingerprint-different-path',
-  'keyed-fingerprint-different-token',
   'production-boundary'
 ] as const;
 
@@ -69,9 +62,6 @@ interface SelfTestResult {
   scenario: FixedScenario;
   status?: DecisionStatus;
   statuses?: DecisionStatus[];
-  selectedPathToken?: 'A' | 'B';
-  selectedPathTokens?: Array<'A' | 'B'>;
-  pathGetterCalls: number;
   titleGetterCalls: number;
   candidateEnumerationCalls: number;
   candidateReleaseCalls: number;
@@ -116,42 +106,22 @@ function expectPrivateFactsHidden(result: SelfTestResult): void {
 
 describe('资源管理器活动标签固定 Helper', () => {
   it.each([
-    ['active-a', 'A'],
-    ['active-b', 'B']
-  ] as const)('同一外层窗口只选择活动候选：%s', (scenario, selectedPathToken) => {
+    'active-a',
+    'active-b'
+  ] as const)('同一外层窗口只选择活动候选：%s', scenario => {
     const result = runFixedScenario(scenario);
 
     expect(result).toMatchObject({
       scenario,
-      status: 'ready',
-      selectedPathToken,
-      pathGetterCalls: 2
+      status: 'ready'
     });
     expectPrivateFactsHidden(result);
   });
 
-  it('虚拟目录命名空间返回 none 且不依赖窗口标题', () => {
-    const result = runFixedScenario('virtual-directory');
-
-    expect(result.status).toBe('none');
-    expect(result.titleGetterCalls).toBe(0);
-    expectPrivateFactsHidden(result);
-  });
-
-  it.each([
-    'keyed-fingerprint-same',
-    'keyed-fingerprint-different-path',
-    'keyed-fingerprint-different-token'
-  ] as const)('%s 使用本次 token 的加钥指纹', (scenario) => {
-    expect(runFixedScenario(scenario).status).toBe('ready');
-  });
-
-  it('A → B → A 每轮重新决策，不重放旧路径', () => {
+  it('A → B → A 每轮重新决策，不重放旧候选', () => {
     const result = runFixedScenario('switch-a-b-a');
 
     expect(result.statuses).toEqual(['ready', 'ready', 'ready']);
-    expect(result.selectedPathTokens).toEqual(['A', 'B', 'A']);
-    expect(result.pathGetterCalls).toBe(6);
     expectPrivateFactsHidden(result);
   });
 
@@ -159,11 +129,10 @@ describe('资源管理器活动标签固定 Helper', () => {
     'zero-match',
     'multiple-match',
     'duplicate-tab-hwnd'
-  ] as const)('%s 在唯一映射前失败关闭且不读取路径', (scenario) => {
+  ] as const)('%s 在唯一映射前失败关闭', (scenario) => {
     const result = runFixedScenario(scenario);
 
     expect(result.status).toBe('ambiguous');
-    expect(result.pathGetterCalls).toBe(0);
     expectPrivateFactsHidden(result);
   });
 
@@ -173,55 +142,46 @@ describe('资源管理器活动标签固定 Helper', () => {
     'race-process-id',
     'race-process-created-at',
     'race-foreground',
+    'race-rect',
+    'race-minimized',
     'mapping-race'
-  ] as const)('%s 双采样变化时不返回旧路径', (scenario) => {
+  ] as const)('%s 双采样变化时不返回旧窗口', (scenario) => {
     const result = runFixedScenario(scenario);
 
     expect(result.status).toBe('ambiguous');
-    expect(result.pathGetterCalls).toBe(1);
     expectPrivateFactsHidden(result);
   });
 
-  it('race-path 在身份与映射稳定但二次路径变化时不得返回旧 ready', () => {
-    const result = runFixedScenario('race-path');
-
-    expect(result.status).toBe('ambiguous');
-    expect(result.pathGetterCalls).toBe(2);
-    expectPrivateFactsHidden(result);
-  });
-
-  it.each([
-    ['ending-path-unavailable', 'unavailable'],
-    ['ending-path-none', 'none'],
-    ['ending-path-invalid', 'ambiguous']
-  ] as const)('%s 的第二次路径读取按严格状态失败关闭', (scenario, status) => {
-    const result = runFixedScenario(scenario);
-
-    expect(result.status).toBe(status);
-    expect(result.pathGetterCalls).toBe(2);
-    expectPrivateFactsHidden(result);
-  });
-
-  it('窗口矩形读取失败时在路径 getter 前失败关闭', () => {
+  it('窗口矩形读取失败时在候选枚举前失败关闭', () => {
     const result = runFixedScenario('rect-unavailable');
 
     expect(result.status).toBe('ambiguous');
-    expect(result.pathGetterCalls).toBe(0);
+    expect(result.candidateEnumerationCalls).toBe(0);
     expectPrivateFactsHidden(result);
   });
 
   it.each([
     'not-explorer',
-    'minimized',
-    'search-result'
+    'minimized'
   ] as const)('%s 返回 none 且从不读取窗口标题', (scenario) => {
     const result = runFixedScenario(scenario);
 
     expect(result.status).toBe('none');
     expect(result.titleGetterCalls).toBe(0);
-    expect(result.candidateEnumerationCalls).toBe(scenario === 'search-result' ? 1 : 0);
+    expect(result.candidateEnumerationCalls).toBe(0);
     expectPrivateFactsHidden(result);
   });
+
+  it.each(['search-result', 'virtual-directory'] as const)(
+    '%s 按普通 Explorer 参与唯一活动标签映射',
+    scenario => {
+    const result = runFixedScenario(scenario);
+
+    expect(result.status).toBe('ready');
+    expect(result.candidateEnumerationCalls).toBe(2);
+    expectPrivateFactsHidden(result);
+    }
+  );
 
   it('二次映射变化时释放前后两批候选', () => {
     const result = runFixedScenario('mapping-race');
@@ -248,7 +208,6 @@ describe('资源管理器活动标签固定 Helper', () => {
     const result = runFixedScenario(scenario);
 
     expect(result.status).toBe('unavailable');
-    expect(result.pathGetterCalls).toBe(0);
     expectPrivateFactsHidden(result);
   });
 
@@ -257,21 +216,8 @@ describe('资源管理器活动标签固定 Helper', () => {
     const result = runFixedScenario('candidate-profile-validation');
 
     expect(production.status).toBe('ready');
-    expect(production.pathGetterCalls).toBe(0);
     expectPrivateFactsHidden(production);
     expect(result.status).toBe('ready');
-    expect(result.pathGetterCalls).toBe(0);
-    expectPrivateFactsHidden(result);
-  });
-
-  it.each([
-    ['invalid-percent-location', 'ambiguous'],
-    ['valid-percent-location', 'ready']
-  ] as const)('%s 直接命中同源 URI 规范化器', (scenario, status) => {
-    const result = runFixedScenario(scenario);
-
-    expect(result.status).toBe(status);
-    expect(result.pathGetterCalls).toBe(1);
     expectPrivateFactsHidden(result);
   });
 
@@ -305,6 +251,9 @@ describe('资源管理器活动标签固定 Helper', () => {
     expect(source).not.toContain('CandidateValidationEnabled');
     expect(source).toMatch(/versionInfo\.ProductVersion/u);
     expect(source).not.toMatch(/GetVersionInfo\([^)]*\)\.FileVersion/u);
+    for (const forbidden of [
+      'LocationURL', 'ReadPath', 'PathReadResult', 'ExplorerPathNormalizer', 'HMACSHA256'
+    ]) expect(source).not.toContain(forbidden);
 
     const boundary = runFixedScenario('production-boundary');
     expect(boundary.status).toBe('ready');

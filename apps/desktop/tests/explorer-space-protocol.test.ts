@@ -8,13 +8,13 @@ import {
   parseBridgeLine,
   parseBridgeStderrLine,
   serializeBridgeCommand
-} from '../src/main/habitat/explorer-space-protocol';
+} from '../src/main/explorer/explorer-space-protocol';
 
 const nonce = '0123456789abcdef0123456789abcdef';
 describe('资源管理器空间桥接协议', () => {
   it('协议源码不保留旧 UIA profile 事实或策略函数', () => {
     const source = readFileSync(resolve(
-      import.meta.dirname, '../src/main/habitat/explorer-space-protocol.ts'
+      import.meta.dirname, '../src/main/explorer/explorer-space-protocol.ts'
     ), 'utf8');
     for (const forbidden of [
       'RestrictedExplorerObservationFacts', 'evaluateRestrictedExplorerObservation',
@@ -62,7 +62,7 @@ describe('资源管理器空间桥接协议', () => {
     expect(() => parseBridgeLine(JSON.stringify(value))).toThrow('BRIDGE_PROTOCOL_INVALID');
   });
 
-  it('接受准确、歧义、无候选和组件不可用四种 Explorer 快照', () => {
+  it('ready 快照只接受固定的无路径窗口事实', () => {
     expect(parseBridgeLine(JSON.stringify({
       version: 1,
       type: 'explorer-snapshot',
@@ -72,12 +72,33 @@ describe('资源管理器空间桥接协议', () => {
       windowType: 'explorer',
       instanceId: 'shell-window-1',
       hwnd: '43210',
-      path: 'C:\\测试 空间\\#100%\\🦊',
       rect: { x: -1200, y: 10, width: 1000, height: 700 },
       foreground: true,
-      minimized: false,
-      search: false
+      minimized: false
     }))).toMatchObject({ status: 'ready', sequence: 1, hwnd: '43210' });
+
+    for (const forbidden of [
+      { path: 'C:\\不得采集' },
+      { search: false }
+    ]) {
+      expect(() => parseBridgeLine(JSON.stringify({
+        version: 1,
+        type: 'explorer-snapshot',
+        nonce,
+        sequence: 1,
+        status: 'ready',
+        windowType: 'explorer',
+        instanceId: 'shell-window-1',
+        hwnd: '43210',
+        rect: { x: -1200, y: 10, width: 1000, height: 700 },
+        foreground: true,
+        minimized: false,
+        ...forbidden
+      }))).toThrow('BRIDGE_PROTOCOL_INVALID');
+    }
+  });
+
+  it('接受歧义、无候选和组件不可用三种非 ready 快照', () => {
 
     expect(parseBridgeLine(JSON.stringify({
       version: 1,
@@ -119,7 +140,7 @@ describe('资源管理器空间桥接协议', () => {
 
   it.each([
     { status: 'ready', windowType: 'dialog' },
-    { status: 'ready', windowType: 'explorer', path: '' },
+    { status: 'ready', windowType: 'explorer', path: 'C:\\secret' },
     { status: 'ready', windowType: 'explorer', rect: { x: 0, y: 0, width: 0, height: 10 } },
     { status: 'ready', windowType: 'explorer', rect: { x: 0, y: 0, width: 10, height: Number.NaN } },
     { status: 'ready', tabHwnd: '76543' }
@@ -133,11 +154,9 @@ describe('资源管理器空间桥接协议', () => {
       windowType: 'explorer',
       instanceId: 'shell-window-1',
       hwnd: '43210',
-      path: 'C:\\target',
       rect: { x: 0, y: 0, width: 800, height: 600 },
       foreground: true,
-      minimized: false,
-      search: false
+      minimized: false
     };
     expect(() => parseBridgeLine(JSON.stringify({ ...base, ...override }))).toThrow('BRIDGE_PROTOCOL_INVALID');
   });

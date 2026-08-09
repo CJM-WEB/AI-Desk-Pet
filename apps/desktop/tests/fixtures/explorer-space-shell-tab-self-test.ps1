@@ -3,16 +3,14 @@ param(
     [ValidateSet(
         'active-a', 'active-b', 'switch-a-b-a', 'zero-match', 'multiple-match',
         'duplicate-tab-hwnd', 'race-active-tab', 'race-outer-hwnd', 'race-process-id',
-        'race-process-created-at', 'race-foreground', 'race-path', 'ending-path-unavailable',
-        'ending-path-none', 'ending-path-invalid', 'mapping-race', 'rect-unavailable', 'not-explorer', 'minimized',
+        'race-process-created-at', 'race-foreground', 'race-rect', 'race-minimized',
+        'mapping-race', 'rect-unavailable', 'not-explorer', 'minimized',
         'search-result', 'com-initialization-error', 'query-service-error', 'get-window-error',
         'fixed-helper-file-error', 'unknown-os-major', 'unknown-os-minor', 'unknown-os-build',
         'unknown-product-version', 'unknown-explorer-file-version',
         'unknown-file-major', 'unknown-file-minor', 'unknown-file-build',
         'candidate-profile-production', 'unknown-mapping-version', 'candidate-profile-validation',
-        'invalid-percent-location', 'valid-percent-location', 'virtual-directory',
-        'keyed-fingerprint-same', 'keyed-fingerprint-different-path',
-        'keyed-fingerprint-different-token', 'production-boundary'
+        'virtual-directory', 'production-boundary'
     )]
     [string]$Scenario
 )
@@ -39,7 +37,7 @@ if ($Scenario -eq 'production-boundary') {
         $observerMethods[0].GetParameters().Count -eq 0
     @{
         scenario = $Scenario; status = $(if ($valid) { 'ready' } else { 'unavailable' })
-        pathGetterCalls = 0; titleGetterCalls = 0; candidateEnumerationCalls = 0
+        titleGetterCalls = 0; candidateEnumerationCalls = 0
         candidateReleaseCalls = 0; publicPayload = @{ status = $(if ($valid) { 'ready' } else { 'unavailable' }) }
     } | ConvertTo-Json -Compress -Depth 5
     exit $(if ($valid) { 0 } else { 1 })

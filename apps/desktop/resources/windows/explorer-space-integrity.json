@@ -1,7 +1,7 @@
 {
   "version": 1,
   "files": {
-    "explorer-space-bridge.ps1": "0c83a2343af3f1cf0b0cb74e96476c2886e1114d648037bda651d3c30ff35ed6",
-    "explorer-space-shell-tab-helper.cs": "31f12085d2793c36ab84bf3ac35d7c20cc8c42049ca2374d15292e57e6770bf8"
+    "explorer-space-bridge.ps1": "0c5e55eca96a49bc9e9852c34eeb1493ade29da7da221712245e8173e821fe93",
+    "explorer-space-shell-tab-helper.cs": "7a398f658227608c7ca10f23f327f6db537afdc323f83a499a5fd516828d5f95"
   }
 }

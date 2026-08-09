@@ -15,7 +15,6 @@ namespace AiPet.ExplorerSpace
         public string Status { get; set; }
         public long Hwnd { get; set; }
         public string InstanceId { get; set; }
-        public string Path { get; set; }
         public ExplorerRect Rect { get; set; }
     }
 
@@ -45,14 +44,7 @@ namespace AiPet.ExplorerSpace
     internal sealed class ShellCandidate
     {
         internal long TabHwnd;
-        internal Func<PathReadResult> ReadPath;
         internal Action Release;
-    }
-
-    internal sealed class PathReadResult
-    {
-        internal string Status;
-        internal string Path;
     }
 
     internal interface IExplorerSystemAdapter : IDisposable
@@ -88,60 +80,6 @@ namespace AiPet.ExplorerSpace
         }
     }
 
-    /// <summary>只处理严格 file URI 与本地固定磁盘路径。</summary>
-    internal static class ExplorerPathNormalizer
-    {
-        internal static PathReadResult NormalizeLocation(string location)
-        {
-            if (!HasOnlyPercentEscapes(location))
-                return new PathReadResult { Status = "ambiguous" };
-            Uri uri;
-            if (!Uri.TryCreate(location, UriKind.Absolute, out uri))
-                return new PathReadResult { Status = "ambiguous" };
-            if (!String.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
-                return new PathReadResult { Status = "none" };
-            if (uri.IsUnc)
-                return new PathReadResult { Status = "ambiguous" };
-            return NormalizeFileSystemPath(uri.LocalPath);
-        }
-
-        internal static PathReadResult NormalizeFileSystemPath(string path)
-        {
-            if (!String.IsNullOrWhiteSpace(path) &&
-                (path.StartsWith("::{", StringComparison.Ordinal) ||
-                 path.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)))
-                return new PathReadResult { Status = "none" };
-            if (String.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path) || path.IndexOf('\0') >= 0)
-                return new PathReadResult { Status = "ambiguous" };
-            string normalized = Path.GetFullPath(path);
-            string root = Path.GetPathRoot(normalized);
-            if (String.IsNullOrEmpty(root) || root.StartsWith("\\\\", StringComparison.Ordinal))
-                return new PathReadResult { Status = "ambiguous" };
-            var drive = new DriveInfo(root);
-            if (drive.DriveType != DriveType.Fixed)
-                return new PathReadResult { Status = "ambiguous" };
-            return new PathReadResult { Status = "ready", Path = normalized };
-        }
-
-        private static bool HasOnlyPercentEscapes(string value)
-        {
-            for (int index = 0; index < value.Length; index++)
-            {
-                if (value[index] != '%') continue;
-                if (index + 2 >= value.Length || !IsHex(value[index + 1]) || !IsHex(value[index + 2]))
-                    return false;
-                index += 2;
-            }
-            return true;
-        }
-
-        private static bool IsHex(char value)
-        {
-            return (value >= '0' && value <= '9') || (value >= 'A' && value <= 'F') ||
-                (value >= 'a' && value <= 'f');
-        }
-    }
-
     /// <summary>固定系统适配器与测试共用的纯决策核。</summary>
     internal static class ExplorerDecisionCore
     {
@@ -166,15 +104,6 @@ namespace AiPet.ExplorerSpace
                 if (!TryGetUniqueMapping(candidates, before.ActiveTabHwnd, out matched))
                     return Result("ambiguous");
 
-                // 路径 getter 必须延迟到唯一标签映射成立之后。
-                PathReadResult path = matched.ReadPath();
-                if (path == null || path.Status == "unavailable")
-                    return Result("unavailable");
-                if (path.Status == "none")
-                    return Result("none");
-                if (path.Status != "ready" || String.IsNullOrWhiteSpace(path.Path))
-                    return Result("ambiguous");
-
                 ExplorerSample after = adapter.Sample();
                 if (!SameGeneration(before, after))
                     return Result("ambiguous");
@@ -183,23 +112,11 @@ namespace AiPet.ExplorerSpace
                 if (!TryGetUniqueMapping(endingCandidates, after.ActiveTabHwnd, out endingMatch))
                     return Result("ambiguous");
 
-                // 第二次唯一映射成立后重新规范读取路径，禁止返回采样窗口内已经变化的旧路径。
-                PathReadResult endingPath = endingMatch.ReadPath();
-                if (endingPath == null || endingPath.Status == "unavailable")
-                    return Result("unavailable");
-                if (endingPath.Status == "none")
-                    return Result("none");
-                if (endingPath.Status != "ready" || String.IsNullOrWhiteSpace(endingPath.Path))
-                    return Result("ambiguous");
-                if (!String.Equals(path.Path, endingPath.Path, StringComparison.OrdinalIgnoreCase))
-                    return Result("ambiguous");
-
                 return new ExplorerObservationResult
                 {
                     Status = "ready",
                     Hwnd = before.OuterHwnd,
                     InstanceId = CreateInstanceId(before),
-                    Path = endingPath.Path,
                     Rect = before.Rect
                 };
             }
@@ -377,7 +294,6 @@ namespace AiPet.ExplorerSpace
                         candidates.Add(new ShellCandidate
                         {
                             TabHwnd = tabHwnd.ToInt64(),
-                            ReadPath = delegate() { return ReadCandidatePath(captured); },
                             Release = delegate() { ReleaseCom(captured); }
                         });
                     }
@@ -499,29 +415,6 @@ namespace AiPet.ExplorerSpace
             }
         }
 
-        private static PathReadResult ReadCandidatePath(object item)
-        {
-            object document = null;
-            object folder = null;
-            object self = null;
-            try
-            {
-                string location = Convert.ToString(ReadProperty(item, "LocationURL"));
-                if (!String.IsNullOrWhiteSpace(location))
-                    return ExplorerPathNormalizer.NormalizeLocation(location);
-                document = ReadProperty(item, "Document");
-                folder = ReadProperty(document, "Folder");
-                self = ReadProperty(folder, "Self");
-                return ExplorerPathNormalizer.NormalizeFileSystemPath(Convert.ToString(ReadProperty(self, "Path")));
-            }
-            finally
-            {
-                ReleaseCom(self);
-                ReleaseCom(folder);
-                ReleaseCom(document);
-            }
-        }
-
         private static object ReadProperty(object target, string name)
         {
             if (target == null)
@@ -575,23 +468,6 @@ namespace AiPet.ExplorerSpace
         [DllImport("kernel32.dll")] internal static extern bool CloseHandle(IntPtr handle);
     }
 
-#if SHELL_TAB_HELPER_VALIDATION || SHELL_TAB_HELPER_TEST
-    internal static class ValidationOpaqueFingerprint
-    {
-        internal static string Compute(string value, string token)
-        {
-            if (String.IsNullOrEmpty(token)) throw new InvalidOperationException("TOKEN_REQUIRED");
-            using (var hash = new HMACSHA256(Encoding.UTF8.GetBytes(token)))
-            {
-                byte[] bytes = hash.ComputeHash(Encoding.UTF8.GetBytes(value ?? String.Empty));
-                var output = new StringBuilder(bytes.Length * 2);
-                foreach (byte item in bytes) output.Append(item.ToString("x2"));
-                return output.ToString();
-            }
-        }
-    }
-
-#endif
 #if SHELL_TAB_HELPER_VALIDATION
     public sealed class ShellTabCandidateValidationResult
     {
@@ -609,7 +485,6 @@ namespace AiPet.ExplorerSpace
         private static int switchRound;
         private static long validatedOuterHwnd;
         private static string validatedInstanceId;
-        private static string validatedPathFingerprint;
 
         public static ShellTabCandidateValidationResult ValidateExactCandidate()
         {
@@ -627,11 +502,6 @@ namespace AiPet.ExplorerSpace
             {
                 validatedOuterHwnd = observed.Status == "ready" ? observed.Hwnd : 0;
                 validatedInstanceId = observed.Status == "ready" ? observed.InstanceId : null;
-                validatedPathFingerprint = observed.Status == "ready"
-                    ? ValidationOpaqueFingerprint.Compute(
-                        observed.Path,
-                        Environment.GetEnvironmentVariable("AI_PET_TASK0E_PIPE_TOKEN"))
-                    : null;
                 if (observed.Status == "ready" &&
                     !String.Equals(lastInstanceId, observed.InstanceId, StringComparison.Ordinal))
                 {
@@ -659,11 +529,6 @@ namespace AiPet.ExplorerSpace
             lock (StateGate) return validatedInstanceId ?? String.Empty;
         }
 
-        internal static string GetValidatedPathFingerprint()
-        {
-            lock (StateGate) return validatedPathFingerprint ?? String.Empty;
-        }
-
     }
 #endif
 
@@ -674,7 +539,6 @@ namespace AiPet.ExplorerSpace
         private int sampleCount;
         private int enumerateCount;
         private int activeIndex;
-        internal int PathGetterCalls;
         internal int TitleGetterCalls;
         internal int EnumerationCalls;
         internal int CandidateReleaseCalls;
@@ -713,6 +577,8 @@ namespace AiPet.ExplorerSpace
                 if (scenario == "race-process-id") value.ProcessId = 301;
                 if (scenario == "race-process-created-at") value.ProcessCreatedAt = 401;
                 if (scenario == "race-foreground") value.Foreground = false;
+                if (scenario == "race-rect") value.Rect.Right = 801;
+                if (scenario == "race-minimized") value.Minimized = true;
             }
             return value;
         }
@@ -728,38 +594,21 @@ namespace AiPet.ExplorerSpace
                 return output;
             if (scenario == "mapping-race" && enumerateCount > 1)
             {
-                output.Add(Candidate(999, "B"));
+                output.Add(Candidate(999));
                 return output;
             }
-            output.Add(Candidate(201, "A"));
-            output.Add(Candidate(202, "B"));
-            if (scenario == "multiple-match") output.Add(Candidate(activeIndex == 0 ? 201 : 202, "B"));
-            if (scenario == "duplicate-tab-hwnd") output.Add(Candidate(201, "A"));
+            output.Add(Candidate(201));
+            output.Add(Candidate(202));
+            if (scenario == "multiple-match") output.Add(Candidate(activeIndex == 0 ? 201 : 202));
+            if (scenario == "duplicate-tab-hwnd") output.Add(Candidate(201));
             return output;
         }
 
-        private ShellCandidate Candidate(long hwnd, string token)
+        private ShellCandidate Candidate(long hwnd)
         {
             return new ShellCandidate
             {
                 TabHwnd = hwnd,
-                ReadPath = delegate()
-                {
-                    PathGetterCalls++;
-                    if (scenario == "search-result") return new PathReadResult { Status = "none" };
-                    if (PathGetterCalls > 1)
-                    {
-                        if (scenario == "race-path")
-                            return new PathReadResult { Status = "ready", Path = "C" };
-                        if (scenario == "ending-path-unavailable")
-                            return new PathReadResult { Status = "unavailable" };
-                        if (scenario == "ending-path-none")
-                            return new PathReadResult { Status = "none" };
-                        if (scenario == "ending-path-invalid")
-                            return new PathReadResult { Status = "ready", Path = null };
-                    }
-                    return new PathReadResult { Status = "ready", Path = token };
-                },
                 Release = delegate() { CandidateReleaseCalls++; }
             };
         }
@@ -772,9 +621,6 @@ namespace AiPet.ExplorerSpace
         public string scenario { get; set; }
         public string status { get; set; }
         public string[] statuses { get; set; }
-        public string selectedPathToken { get; set; }
-        public string[] selectedPathTokens { get; set; }
-        public int pathGetterCalls { get; set; }
         public int titleGetterCalls { get; set; }
         public int candidateEnumerationCalls { get; set; }
         public int candidateReleaseCalls { get; set; }
@@ -788,8 +634,6 @@ namespace AiPet.ExplorerSpace
             if (scenario == "switch-a-b-a")
             {
                 string[] statuses = new string[3];
-                string[] paths = new string[3];
-                int calls = 0;
                 int[] active = { 0, 1, 0 };
                 for (int index = 0; index < active.Length; index++)
                 {
@@ -797,11 +641,9 @@ namespace AiPet.ExplorerSpace
                     {
                         ExplorerObservationResult observed = ExplorerDecisionCore.Observe(adapter);
                         statuses[index] = observed.Status;
-                        paths[index] = observed.Path;
-                        calls += adapter.PathGetterCalls;
                     }
                 }
-                return Build(scenario, null, null, statuses, paths, calls, 0);
+                return Build(scenario, null, statuses, 0);
             }
             if (scenario == "unknown-os-major" || scenario == "unknown-os-minor" ||
                 scenario == "unknown-os-build" || scenario == "unknown-product-version" ||
@@ -821,32 +663,7 @@ namespace AiPet.ExplorerSpace
                     scenario == "unknown-file-build" ? 0 : ExplorerCandidateProfile.ExplorerFileBuildPart,
                     scenario == "unknown-explorer-file-version" ? 0 : ExplorerCandidateProfile.ExplorerFilePrivatePart,
                     scenario == "unknown-mapping-version" ? "unknown" : ExplorerCandidateProfile.MappingVersion);
-                return Build(scenario, accepted ? "ready" : "unavailable", accepted ? "A" : null,
-                    null, null, 0, 0);
-            }
-            if (scenario == "invalid-percent-location" || scenario == "valid-percent-location" ||
-                scenario == "virtual-directory")
-            {
-                PathReadResult normalized = scenario == "virtual-directory"
-                    ? ExplorerPathNormalizer.NormalizeFileSystemPath("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")
-                    : ExplorerPathNormalizer.NormalizeLocation(
-                        scenario == "invalid-percent-location" ? "file:///C:/folder%invalid" : "file:///C:/folder%2523");
-                return Build(scenario, normalized.Status, normalized.Status == "ready" ? "A" : null,
-                    null, null, 1, 0);
-            }
-            if (scenario.StartsWith("keyed-fingerprint-", StringComparison.Ordinal))
-            {
-                string first = ValidationOpaqueFingerprint.Compute("fixed-path-a", "token-a");
-                string second = scenario == "keyed-fingerprint-different-path"
-                    ? ValidationOpaqueFingerprint.Compute("fixed-path-b", "token-a")
-                    : scenario == "keyed-fingerprint-different-token"
-                        ? ValidationOpaqueFingerprint.Compute("fixed-path-a", "token-b")
-                        : ValidationOpaqueFingerprint.Compute("fixed-path-a", "token-a");
-                bool valid = scenario == "keyed-fingerprint-same"
-                    ? String.Equals(first, second, StringComparison.Ordinal)
-                    : !String.Equals(first, second, StringComparison.Ordinal);
-                return Build(scenario, valid ? "ready" : "unavailable", null,
-                    null, null, 0, 0);
+                return Build(scenario, accepted ? "ready" : "unavailable", null, 0);
             }
             if (!IsFixedScenario(scenario))
                 throw new ArgumentException("SCENARIO_INVALID");
@@ -854,8 +671,7 @@ namespace AiPet.ExplorerSpace
             using (var adapter = new FixedScenarioAdapter(scenario, activeIndex))
             {
                 ExplorerObservationResult observed = ExplorerDecisionCore.Observe(adapter);
-                return Build(scenario, observed.Status, observed.Path, null, null,
-                    adapter.PathGetterCalls, adapter.TitleGetterCalls,
+                return Build(scenario, observed.Status, null, adapter.TitleGetterCalls,
                     adapter.EnumerationCalls, adapter.CandidateReleaseCalls);
             }
         }
@@ -865,21 +681,18 @@ namespace AiPet.ExplorerSpace
             string[] values = {
                 "active-a", "active-b", "zero-match", "multiple-match", "duplicate-tab-hwnd",
                 "race-active-tab", "race-outer-hwnd", "race-process-id", "race-process-created-at",
-                "race-foreground", "race-path", "ending-path-unavailable", "ending-path-none",
-                "ending-path-invalid", "mapping-race", "rect-unavailable", "not-explorer", "minimized", "search-result",
+                "race-foreground", "race-rect", "race-minimized", "mapping-race", "rect-unavailable",
+                "not-explorer", "minimized", "search-result",
                 "com-initialization-error", "query-service-error", "get-window-error",
                 "fixed-helper-file-error", "unknown-os-major", "unknown-os-minor", "unknown-os-build",
                 "unknown-product-version", "unknown-explorer-file-version", "unknown-mapping-version",
-                "candidate-profile-production", "candidate-profile-validation", "invalid-percent-location",
-                "valid-percent-location", "virtual-directory",
-                "keyed-fingerprint-same", "keyed-fingerprint-different-path",
-                "keyed-fingerprint-different-token"
+                "candidate-profile-production", "candidate-profile-validation", "virtual-directory"
             };
             return Array.IndexOf(values, value) >= 0;
         }
 
-        private static ShellTabSelfTestResult Build(string scenario, string status, string path,
-            string[] statuses, string[] paths, int pathCalls, int titleCalls,
+        private static ShellTabSelfTestResult Build(string scenario, string status,
+            string[] statuses, int titleCalls,
             int enumerationCalls = 0, int releaseCalls = 0)
         {
             return new ShellTabSelfTestResult
@@ -887,9 +700,6 @@ namespace AiPet.ExplorerSpace
                 scenario = scenario,
                 status = status,
                 statuses = statuses,
-                selectedPathToken = path,
-                selectedPathTokens = paths,
-                pathGetterCalls = pathCalls,
                 titleGetterCalls = titleCalls,
                 candidateEnumerationCalls = enumerationCalls,
                 candidateReleaseCalls = releaseCalls,

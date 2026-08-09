@@ -24,7 +24,7 @@ import {
 import {
   ExplorerSpaceClient,
   buildExplorerBridgeSpawnSpec
-} from '../src/main/habitat/explorer-space-client';
+} from '../src/main/explorer/explorer-space-client';
 
 const fixtureDirectory = resolve(import.meta.dirname, 'fixtures');
 const shellFixture = resolve(fixtureDirectory, 'explorer-shell-tab-validation.ps1');
@@ -200,7 +200,7 @@ describe('Task 0E 固定实机验收夹具', () => {
     ]);
     expect(['ready', 'none', 'ambiguous', 'unavailable']).toContain(publicResult.status);
     expect(Object.keys(internalResult)).toEqual([
-      'outerHwnd', 'instanceId', 'pathFingerprint'
+      'outerHwnd', 'instanceId'
     ]);
     expect(JSON.stringify(publicResult)).not.toMatch(/hwnd|path|instance|pid/iu);
   }, 15_000);
@@ -435,26 +435,25 @@ describe('Task 0E 固定实机验收夹具', () => {
 
     expect(source).toContain("mode === 'accuracy-core'");
     expect(source).toContain("phase: 'accuracy-core'");
-    expect(source).toContain('pathFingerprint');
     expect(source).toContain('instanceId');
     expect(source).toContain('VALIDATION_ACCURACY_CORE_NOT_PROVEN');
-    expect(source).not.toMatch(/type:\s*'candidate'[^\n]*(outerHwnd|instanceId|pathFingerprint)/u);
+    expect(source).not.toMatch(/type:\s*'candidate'[^\n]*(outerHwnd|instanceId)/u);
   });
 
   it('快速切换只接受 ambiguous 或已建立的三标签 ready 身份', () => {
     const target = { outerHwnd: '11', switchRound: 4 };
-    const known = new Map([['A', 'p-a'], ['B', 'p-b'], ['C', 'p-c']]);
+    const known = new Set(['A', 'B', 'C']);
     const ambiguous = advanceQuickSwitchEvidence(undefined, {
       status: 'ambiguous', matchCount: 0, switchRound: 4,
-      outerHwnd: '0', instanceId: '', pathFingerprint: ''
+      outerHwnd: '0', instanceId: ''
     }, target, known);
     const knownReady = advanceQuickSwitchEvidence(ambiguous, {
       status: 'ready', matchCount: 1, switchRound: 5,
-      outerHwnd: '11', instanceId: 'B', pathFingerprint: 'p-b'
+      outerHwnd: '11', instanceId: 'B'
     }, target, known);
     const unknownReady = advanceQuickSwitchEvidence(knownReady, {
       status: 'ready', matchCount: 1, switchRound: 6,
-      outerHwnd: '11', instanceId: 'unknown', pathFingerprint: 'p-x'
+      outerHwnd: '11', instanceId: 'unknown'
     }, target, known);
 
     expect(ambiguous.failed).toBe(false);
@@ -464,23 +463,23 @@ describe('Task 0E 固定实机验收夹具', () => {
 
   it('快速切换先出现竞态证据，再由 A 连续稳定自动完成', () => {
     const target = { outerHwnd: '11', switchRound: 6 };
-    const known = new Map([['A', 'p-a'], ['B', 'p-b'], ['C', 'p-c']]);
-    const finalA = { instanceId: 'A', pathFingerprint: 'p-a' };
+    const known = new Set(['A', 'B', 'C']);
+    const finalA = { instanceId: 'A' };
     let state = advanceQuickSwitchAutoCompletion(undefined, {
       status: 'ambiguous', matchCount: 0, switchRound: 6,
-      outerHwnd: '0', instanceId: '', pathFingerprint: ''
+      outerHwnd: '0', instanceId: ''
     }, target, known, finalA, 0);
     state = advanceQuickSwitchAutoCompletion(state, {
       status: 'ready', matchCount: 1, switchRound: 6,
-      outerHwnd: '11', instanceId: 'A', pathFingerprint: 'p-a'
+      outerHwnd: '11', instanceId: 'A'
     }, target, known, finalA, 100);
     state = advanceQuickSwitchAutoCompletion(state, {
       status: 'ready', matchCount: 1, switchRound: 6,
-      outerHwnd: '11', instanceId: 'A', pathFingerprint: 'p-a'
+      outerHwnd: '11', instanceId: 'A'
     }, target, known, finalA, 350);
     state = advanceQuickSwitchAutoCompletion(state, {
       status: 'ready', matchCount: 1, switchRound: 6,
-      outerHwnd: '11', instanceId: 'A', pathFingerprint: 'p-a'
+      outerHwnd: '11', instanceId: 'A'
     }, target, known, finalA, 600);
 
     expect(state).toMatchObject({ failed: false, completed: true, stableACount: 3 });
@@ -488,19 +487,19 @@ describe('Task 0E 固定实机验收夹具', () => {
 
   it('A 稳定采样相邻超过 250ms 时重置连续计数', () => {
     const target = { outerHwnd: '11', switchRound: 6 };
-    const known = new Map([['A', 'p-a']]);
-    const finalA = { instanceId: 'A', pathFingerprint: 'p-a' };
+    const known = new Set(['A']);
+    const finalA = { instanceId: 'A' };
     let state = advanceQuickSwitchAutoCompletion(undefined, {
       status: 'ambiguous', matchCount: 0, switchRound: 6,
-      outerHwnd: '0', instanceId: '', pathFingerprint: ''
+      outerHwnd: '0', instanceId: ''
     }, target, known, finalA, 0);
     state = advanceQuickSwitchAutoCompletion(state, {
       status: 'ready', matchCount: 1, switchRound: 6,
-      outerHwnd: '11', instanceId: 'A', pathFingerprint: 'p-a'
+      outerHwnd: '11', instanceId: 'A'
     }, target, known, finalA, 100);
     state = advanceQuickSwitchAutoCompletion(state, {
       status: 'ready', matchCount: 1, switchRound: 6,
-      outerHwnd: '11', instanceId: 'A', pathFingerprint: 'p-a'
+      outerHwnd: '11', instanceId: 'A'
     }, target, known, finalA, 400);
 
     expect(state).toMatchObject({ completed: false, stableACount: 1, stableAStartedAt: 400 });
@@ -508,30 +507,30 @@ describe('Task 0E 固定实机验收夹具', () => {
 
   it('快速切换没有竞态证据或停在 B/C 时不能自动通过，none 必须失败', () => {
     const target = { outerHwnd: '11', switchRound: 6 };
-    const known = new Map([['A', 'p-a'], ['B', 'p-b'], ['C', 'p-c']]);
-    const finalA = { instanceId: 'A', pathFingerprint: 'p-a' };
+    const known = new Set(['A', 'B', 'C']);
+    const finalA = { instanceId: 'A' };
     const readyA = {
       status: 'ready' as const, matchCount: 1, switchRound: 6,
-      outerHwnd: '11', instanceId: 'A', pathFingerprint: 'p-a'
+      outerHwnd: '11', instanceId: 'A'
     };
     let noEvidence = advanceQuickSwitchAutoCompletion(undefined, readyA, target, known, finalA, 0);
     noEvidence = advanceQuickSwitchAutoCompletion(noEvidence, readyA, target, known, finalA, 600);
 
     let stableB = advanceQuickSwitchAutoCompletion(undefined, {
       status: 'ambiguous', matchCount: 0, switchRound: 6,
-      outerHwnd: '0', instanceId: '', pathFingerprint: ''
+      outerHwnd: '0', instanceId: ''
     }, target, known, finalA, 0);
     stableB = advanceQuickSwitchAutoCompletion(stableB, {
       status: 'ready', matchCount: 1, switchRound: 7,
-      outerHwnd: '11', instanceId: 'B', pathFingerprint: 'p-b'
+      outerHwnd: '11', instanceId: 'B'
     }, target, known, finalA, 100);
     stableB = advanceQuickSwitchAutoCompletion(stableB, {
       status: 'ready', matchCount: 1, switchRound: 7,
-      outerHwnd: '11', instanceId: 'B', pathFingerprint: 'p-b'
+      outerHwnd: '11', instanceId: 'B'
     }, target, known, finalA, 700);
     const none = advanceQuickSwitchAutoCompletion(stableB, {
       status: 'none', matchCount: 0, switchRound: 7,
-      outerHwnd: '0', instanceId: '', pathFingerprint: ''
+      outerHwnd: '0', instanceId: ''
     }, target, known, finalA, 800);
 
     expect(noEvidence.completed).toBe(false);

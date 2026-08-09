@@ -58,14 +58,9 @@ try {
             'GetValidatedInstanceId',
             [Reflection.BindingFlags]::Static -bor [Reflection.BindingFlags]::NonPublic
         )
-        $pathFingerprintMethod = [AiPet.ExplorerSpace.ShellTabCandidateValidation].GetMethod(
-            'GetValidatedPathFingerprint',
-            [Reflection.BindingFlags]::Static -bor [Reflection.BindingFlags]::NonPublic
-        )
         $internalWriter.WriteLine(([ordered]@{
             outerHwnd = $outerHwnd.ToString()
             instanceId = [string]$instanceMethod.Invoke($null, @())
-            pathFingerprint = [string]$pathFingerprintMethod.Invoke($null, @())
         } |
             ConvertTo-Json -Compress))
     }

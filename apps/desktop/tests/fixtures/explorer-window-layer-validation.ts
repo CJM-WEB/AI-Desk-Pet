@@ -7,7 +7,7 @@ import { app, BrowserWindow } from 'electron';
 
 import {
   ExplorerWindowLayerController
-} from '../../src/main/habitat/explorer-window-layer-controller';
+} from '../../src/main/explorer/explorer-window-layer-controller';
 import {
   monitorFixedValidationSignalFailure,
   waitForFixedValidationSignal,
@@ -139,7 +139,6 @@ async function observe(
   publicResult: ValidationPublicResult;
   outerHwnd: string;
   instanceId: string;
-  pathFingerprint: string;
 }> {
   child.stdin.write('observe\n');
   const [publicLine, internalLine] = await Promise.all([
@@ -150,7 +149,6 @@ async function observe(
   const internal = JSON.parse(internalLine) as {
     outerHwnd: string;
     instanceId: string;
-    pathFingerprint: string;
   };
   return { publicResult, ...internal };
 }
@@ -345,11 +343,9 @@ async function run(): Promise<void> {
       if (tabs.some((sample, index) =>
         sample.publicResult.status !== 'ready' || sample.publicResult.matchCount !== 1
         || sample.publicResult.switchRound !== index + 1 || sample.outerHwnd !== a.outerHwnd
-        || sample.instanceId === '' || sample.pathFingerprint === ''
+        || sample.instanceId === ''
       ) || a.instanceId === bSame.instanceId || bSame.instanceId === c.instanceId
         || a.instanceId !== aReturn.instanceId
-        || a.pathFingerprint !== bSame.pathFingerprint
-        || a.pathFingerprint === c.pathFingerprint
       ) throw new Error('VALIDATION_ACCURACY_CORE_NOT_PROVEN');
 
       const windowA = await candidateStep(
@@ -365,7 +361,6 @@ async function run(): Promise<void> {
         windowA.publicResult.status !== 'ready' || windowA.publicResult.matchCount !== 1
         || windowA.publicResult.switchRound !== 4 || windowA.outerHwnd !== a.outerHwnd
         || windowA.instanceId !== a.instanceId
-        || windowA.pathFingerprint !== a.pathFingerprint
         || windowB.publicResult.status !== 'ready' || windowB.publicResult.matchCount !== 1
         || windowB.publicResult.switchRound !== 5 || windowB.outerHwnd === windowA.outerHwnd
         || windowAReturn.publicResult.status !== 'ready'
@@ -373,18 +368,13 @@ async function run(): Promise<void> {
         || windowAReturn.publicResult.switchRound !== 6
         || windowAReturn.outerHwnd !== windowA.outerHwnd
         || windowAReturn.instanceId !== a.instanceId
-        || windowAReturn.pathFingerprint !== a.pathFingerprint
       ) throw new Error('VALIDATION_ACCURACY_CORE_NOT_PROVEN');
 
       process.stdout.write(`${JSON.stringify({
         type: 'instruction', action: 'rapid-switch-known-tabs-on-first-window',
         timeoutMs: MANUAL_SIGNAL_TIMEOUT_MS
       })}\n`);
-      const knownInstances = new Map([
-        [a.instanceId, a.pathFingerprint],
-        [bSame.instanceId, bSame.pathFingerprint],
-        [c.instanceId, c.pathFingerprint]
-      ]);
+      const knownInstances = new Set([a.instanceId, bSame.instanceId, c.instanceId]);
       const rapidTarget = { outerHwnd: windowA.outerHwnd, switchRound: 6 };
       let rapidState: ReturnType<typeof advanceQuickSwitchAutoCompletion> | undefined;
       let lastRapidPublicKey: string | undefined;
@@ -399,7 +389,7 @@ async function run(): Promise<void> {
           { ...sampled.publicResult, ...sampled },
           rapidTarget,
           knownInstances,
-          { instanceId: a.instanceId, pathFingerprint: a.pathFingerprint },
+          { instanceId: a.instanceId },
           performance.now()
         );
         const key = [
