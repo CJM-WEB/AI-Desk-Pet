@@ -10,7 +10,6 @@ export type ExplorerLayerUnsafeReason =
 
 export interface ExplorerLayerWindow {
   moveAbove(mediaSourceId: string): void;
-  hide(): void;
   isDestroyed(): boolean;
   isAlwaysOnTop(): boolean;
 }
@@ -35,7 +34,7 @@ export function buildExplorerWindowMediaSourceId(hwnd: string): string {
   return `window:${requireCanonicalHwnd(hwnd)}:0`;
 }
 
-/** 只负责 Electron 相邻层级；任何异常都立即隐藏且不获取焦点。 */
+/** 只负责 Electron 相邻层级，绝不改变窗口可见性。 */
 export class ExplorerWindowLayerController {
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
@@ -44,46 +43,21 @@ export class ExplorerWindowLayerController {
 
   async activate(target: ExplorerWindowLayerTarget): Promise<void> {
     if (this.disposed) throw new Error('EXPLORER_LAYER_DISPOSED');
-    try {
-      const explorerHwnd = requireCanonicalHwnd(target.explorerHwnd);
-      if (this.options.window.isDestroyed()) {
-        throw new Error('EXPLORER_LAYER_WINDOW_DESTROYED');
-      }
-      if (this.options.window.isAlwaysOnTop()) {
-        throw new Error('EXPLORER_LAYER_TOPMOST_FORBIDDEN');
-      }
-      this.options.window.moveAbove(buildExplorerWindowMediaSourceId(explorerHwnd));
-    } catch (error) {
-      this.hideSafely();
-      throw error;
+    const explorerHwnd = requireCanonicalHwnd(target.explorerHwnd);
+    if (this.options.window.isDestroyed()) {
+      throw new Error('EXPLORER_LAYER_WINDOW_DESTROYED');
     }
+    if (this.options.window.isAlwaysOnTop()) {
+      throw new Error('EXPLORER_LAYER_TOPMOST_FORBIDDEN');
+    }
+    this.options.window.moveAbove(buildExplorerWindowMediaSourceId(explorerHwnd));
   }
 
-  /** Explorer 失去安全前提时幂等隐藏。 */
-  async invalidate(_reason: ExplorerLayerUnsafeReason): Promise<void> {
-    if (this.disposed) return;
-    this.hideSafely();
-  }
-
-  leave(): Promise<void> {
-    return this.invalidate('leave');
-  }
-
-  /** 释放后不再触碰窗口，重复调用返回同一完成 promise。 */
+  /** 释放后不再触碰窗口，重复调用返回同一完成 Promise。 */
   dispose(): Promise<void> {
     if (this.disposePromise !== undefined) return this.disposePromise;
-    this.hideSafely();
     this.disposed = true;
     this.disposePromise = Promise.resolve();
     return this.disposePromise;
-  }
-
-  private hideSafely(): void {
-    if (this.options.window.isDestroyed()) return;
-    try {
-      this.options.window.hide();
-    } catch {
-      // 窗口可能恰在销毁；失败关闭不扩大控制范围。
-    }
   }
 }
