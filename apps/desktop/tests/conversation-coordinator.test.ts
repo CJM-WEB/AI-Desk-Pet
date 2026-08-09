@@ -455,6 +455,143 @@ describe('ConversationCoordinator', () => {
     expect(history.turns()).toEqual([]);
   });
 
+  test('abort 监听器同步 close 后旧取消栈不发布 cancelled', async () => {
+    const script = deferredProvider();
+    const { coordinator, events } = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script
+    }]);
+    const pending = coordinator.submit('将被关闭');
+    await Promise.resolve();
+    await Promise.resolve();
+    script.signals[0]?.addEventListener('abort', () => {
+      void coordinator.close();
+    });
+
+    coordinator.cancelActive();
+
+    expect(phases(events)).toEqual(['listening', 'thinking']);
+    await expect(coordinator.submit('不得重开')).rejects.toSatisfy(
+      error => errorCode(error) === 'CONVERSATION_CLOSED'
+    );
+    script.resolve({ type: 'text', text: '{"kind":"chat_reply","text":"迟到"}' });
+    await pending;
+  });
+
+  test('abort 监听器同步开始新请求后旧取消栈不污染新阶段', async () => {
+    const oldScript = deferredProvider();
+    const newScript = scriptedProvider({
+      type: 'text',
+      text: '{"kind":"chat_reply","text":"新回复"}'
+    });
+    const { coordinator, events } = createHarness([
+      {
+        profileId: 'profile-openai',
+        providerIdentity: 'openai',
+        providerName: 'OpenAI',
+        script: oldScript
+      },
+      {
+        profileId: 'profile-openai',
+        providerIdentity: 'openai',
+        providerName: 'OpenAI',
+        script: newScript
+      }
+    ]);
+    const oldPending = coordinator.submit('旧请求');
+    await Promise.resolve();
+    await Promise.resolve();
+    let newPending!: Promise<void>;
+    oldScript.signals[0]?.addEventListener('abort', () => {
+      newPending = coordinator.submit('新请求');
+    });
+
+    coordinator.cancelActive();
+    oldScript.resolve({ type: 'text', text: '{"kind":"chat_reply","text":"旧回复"}' });
+    await oldPending;
+    await newPending;
+
+    expect(phases(events)).toEqual([
+      'listening',
+      'thinking',
+      'listening',
+      'thinking',
+      'success'
+    ]);
+    expect(events).not.toContainEqual({ type: 'phase', phase: 'cancelled' });
+  });
+
+  test.each(['cancel', 'close'] as const)(
+    'Disclosure resolve 同步 %s 后不调用 Provider',
+    async action => {
+      const script = scriptedProvider({
+        type: 'text',
+        text: '{"kind":"chat_reply","text":"不应出现"}'
+      });
+      const harness = createHarness([{
+        profileId: 'profile-anthropic',
+        providerIdentity: 'anthropic',
+        providerName: 'Anthropic',
+        script
+      }]);
+      harness.history.append({
+        userText: '旧用户',
+        assistantText: '旧助手',
+        providerIdentity: 'openai'
+      });
+      await harness.coordinator.submit('新消息');
+      harness.disclosureAdapter.resolve = () => {
+        if (action === 'cancel') harness.coordinator.cancelActive();
+        else void harness.coordinator.close();
+        return [
+          { role: 'user', content: '不得发送的历史' },
+          { role: 'assistant', content: '不得发送的历史' }
+        ];
+      };
+
+      await harness.coordinator.resolveHistoryDisclosure('request-1', 'share_once');
+
+      expect(script.requests).toEqual([]);
+      expect(harness.history.turns()).toHaveLength(1);
+    }
+  );
+
+  test('History append 同步 close 后不发布 assistant 或覆盖 closed', async () => {
+    const script = scriptedProvider({
+      type: 'text',
+      text: '{"kind":"chat_reply","text":"不得公开"}'
+    });
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script
+    }]);
+    const append = harness.history.append.bind(harness.history);
+    harness.history.append = turn => {
+      append(turn);
+      void harness.coordinator.close();
+    };
+
+    await harness.coordinator.submit('追加后关闭');
+
+    expect(harness.history.turns()).toEqual([{
+      userText: '追加后关闭',
+      assistantText: '不得公开',
+      providerIdentity: 'openai'
+    }]);
+    expect(harness.events).not.toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '不得公开'
+    });
+    await expect(harness.coordinator.submit('不得重开')).rejects.toSatisfy(
+      error => errorCode(error) === 'CONVERSATION_CLOSED'
+    );
+  });
+
   test('助手消息监听器同步关闭后保留已可见回合且不覆盖 closed', async () => {
     const script = scriptedProvider({
       type: 'text',

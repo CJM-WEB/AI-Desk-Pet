@@ -165,27 +165,36 @@ export class ConversationCoordinator {
   cancelActive(): void {
     if (this.state.kind === 'running_chat') {
       const controller = this.state.controller;
-      this.state = { kind: 'idle' };
+      const releasedState: ConversationState = { kind: 'idle' };
+      this.state = releasedState;
       this.pendingDisclosure = null;
       controller.abort();
-      this.options.emit({ type: 'phase', phase: 'cancelled' });
+      if (this.state === releasedState) {
+        this.options.emit({ type: 'phase', phase: 'cancelled' });
+      }
       return;
     }
     if (this.state.kind === 'awaiting_history_disclosure') {
       const controller = this.pendingDisclosure?.controller;
-      this.state = { kind: 'idle' };
+      const releasedState: ConversationState = { kind: 'idle' };
+      this.state = releasedState;
       this.pendingDisclosure = null;
       controller?.abort();
-      this.options.emit({ type: 'phase', phase: 'cancelled' });
+      if (this.state === releasedState) {
+        this.options.emit({ type: 'phase', phase: 'cancelled' });
+      }
       return;
     }
     if (
       this.state.kind === 'running_file_task'
       || this.state.kind === 'awaiting_file_confirmation'
     ) {
+      const releasedState: ConversationState = { kind: 'idle' };
+      this.state = releasedState;
       this.options.fileTasks.cancelActive();
-      this.state = { kind: 'idle' };
-      this.options.emit({ type: 'phase', phase: 'cancelled' });
+      if (this.state === releasedState) {
+        this.options.emit({ type: 'phase', phase: 'cancelled' });
+      }
     }
   }
 
@@ -222,6 +231,7 @@ export class ConversationCoordinator {
         targetProfileId: pending.profileId,
         decision
       });
+      if (!this.isRunning(pending)) return;
       this.pendingDisclosure = null;
       await this.runPlan(
         pending,
@@ -281,6 +291,7 @@ export class ConversationCoordinator {
     providerIdentity: string,
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
+    if (!this.isRunning(context)) return;
     const plan = await adapter.plan({
       history: visibleHistory,
       text: context.text,
@@ -297,6 +308,7 @@ export class ConversationCoordinator {
       assistantText,
       providerIdentity
     });
+    if (!this.isRunning(context)) return;
     this.options.emit({ type: 'message', role: 'assistant', text: assistantText });
     if (!this.isRunning(context)) return;
     if (plan.kind === 'chat_reply' && plan.emotion !== undefined) {
