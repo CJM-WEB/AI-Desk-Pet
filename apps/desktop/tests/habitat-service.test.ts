@@ -199,7 +199,7 @@ function createHarness(input: {
       return { ok: true as const };
     })
   };
-  const layer = {
+  const habitatWindow = {
     activate: vi.fn(async ({ explorerHwnd }: { explorerHwnd: string }) => {
       order.push(`activate:${explorerHwnd}`);
     }),
@@ -235,7 +235,7 @@ function createHarness(input: {
     directoryPolicy,
     identityResolver,
     explorer,
-    layer,
+    habitatWindow,
     petWindow,
     openDirectory,
     readBlockers: () => ({ ...blockers }),
@@ -248,7 +248,7 @@ function createHarness(input: {
     directoryPolicy,
     identityResolver,
     explorer,
-    layer,
+    habitatWindow,
     petWindow,
     openDirectory,
     blockers,
@@ -432,7 +432,7 @@ describe('HabitatService 权威状态机', () => {
   test('reveal 激活期间 fatal 撤销旧 authority，迟到激活不得 show 或覆盖错误', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const activating = deferred<void>();
-    harness.layer.activate.mockReturnValueOnce(activating.promise);
+    harness.habitatWindow.activate.mockReturnValueOnce(activating.promise);
     const revealing = observeReady(harness);
     await vi.waitFor(() => expect(harness.service.snapshot().state).toBe('revealing'));
 
@@ -683,10 +683,10 @@ describe('HabitatService 权威状态机', () => {
   test('重复 recall 在 desktop 已提交但层级恢复未决时返回同一 Promise且不重复写', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const invalidation = deferred<void>();
-    harness.layer.invalidate.mockReturnValueOnce(invalidation.promise);
+    harness.habitatWindow.invalidate.mockReturnValueOnce(invalidation.promise);
 
     const first = harness.service.recallToDesktop();
-    await vi.waitFor(() => expect(harness.layer.invalidate).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(harness.habitatWindow.invalidate).toHaveBeenCalledOnce());
     const duplicate = harness.service.recallToDesktop();
     expect(duplicate).toBe(first);
     invalidation.resolve();
@@ -875,7 +875,7 @@ describe('HabitatService 权威状态机', () => {
 
   test('recall desktop 提交后的层级失败留下可重试 recalling，第二次完成恢复且不重复写', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
-    harness.layer.invalidate.mockRejectedValueOnce(new Error('LAYER_PRIVATE_HWND_123456'));
+    harness.habitatWindow.invalidate.mockRejectedValueOnce(new Error('LAYER_PRIVATE_HWND_123456'));
 
     await expect(harness.service.recallToDesktop()).rejects.toThrow('HABITAT_WINDOW_FAILED');
     expect(harness.service.snapshot()).toMatchObject({
@@ -950,7 +950,7 @@ describe('HabitatService 权威状态机', () => {
   test('旧 reveal A 卡在 activate 时，recall 完成后 A 返回无权隐藏、失效、显示或改状态', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const activation = deferred<void>();
-    harness.layer.activate.mockReturnValueOnce(activation.promise);
+    harness.habitatWindow.activate.mockReturnValueOnce(activation.promise);
     const snapshotA = readySnapshot({ sequence: 10, instanceId: 'instance-a', hwnd: '101' });
     setAuthorityFor(harness, snapshotA);
     const revealA = harness.service.observeExplorer(snapshotA);
@@ -959,7 +959,7 @@ describe('HabitatService 权威状态机', () => {
     await harness.service.recallToDesktop();
     const afterRecall = {
       hide: harness.petWindow.hide.mock.calls.length,
-      invalidate: harness.layer.invalidate.mock.calls.length,
+      invalidate: harness.habitatWindow.invalidate.mock.calls.length,
       show: harness.petWindow.show.mock.calls.length
     };
     activation.resolve();
@@ -967,14 +967,14 @@ describe('HabitatService 权威状态机', () => {
 
     expect(harness.service.snapshot().state).toBe('desktop');
     expect(harness.petWindow.hide).toHaveBeenCalledTimes(afterRecall.hide);
-    expect(harness.layer.invalidate).toHaveBeenCalledTimes(afterRecall.invalidate);
+    expect(harness.habitatWindow.invalidate).toHaveBeenCalledTimes(afterRecall.invalidate);
     expect(harness.petWindow.show).toHaveBeenCalledTimes(afterRecall.show);
   });
 
   test('旧 reveal A 卡在 activate 时，新 reveal B 完成后 A 返回不能破坏 B', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const activationA = deferred<void>();
-    harness.layer.activate
+    harness.habitatWindow.activate
       .mockReturnValueOnce(activationA.promise)
       .mockImplementationOnce(async ({ explorerHwnd }) => {
         harness.order.push(`activate:${explorerHwnd}`);
@@ -991,7 +991,7 @@ describe('HabitatService 权威状态机', () => {
     expect(harness.service.snapshot().state).toBe('folder-visible');
     const afterB = {
       hide: harness.petWindow.hide.mock.calls.length,
-      invalidate: harness.layer.invalidate.mock.calls.length,
+      invalidate: harness.habitatWindow.invalidate.mock.calls.length,
       show: harness.petWindow.show.mock.calls.length
     };
     activationA.resolve();
@@ -999,14 +999,14 @@ describe('HabitatService 权威状态机', () => {
 
     expect(harness.service.snapshot().state).toBe('folder-visible');
     expect(harness.petWindow.hide).toHaveBeenCalledTimes(afterB.hide);
-    expect(harness.layer.invalidate).toHaveBeenCalledTimes(afterB.invalidate);
+    expect(harness.habitatWindow.invalidate).toHaveBeenCalledTimes(afterB.invalidate);
     expect(harness.petWindow.show).toHaveBeenCalledTimes(afterB.show);
   });
 
   test('目录进入 lost 会撤销卡在 activate 的 reveal，旧返回不得 show 或 visible', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const activation = deferred<void>();
-    harness.layer.activate.mockReturnValueOnce(activation.promise);
+    harness.habitatWindow.activate.mockReturnValueOnce(activation.promise);
     const revealing = observeReady(harness);
     await vi.waitFor(() => expect(harness.service.snapshot().state).toBe('revealing'));
     harness.directoryPolicy.availability.mockResolvedValueOnce('unavailable');
@@ -1030,7 +1030,7 @@ describe('HabitatService 权威状态机', () => {
     resolution.resolve({ status: 'matched', directoryId: 'directory-1' });
     await observing;
 
-    expect(harness.layer.activate).not.toHaveBeenCalled();
+    expect(harness.habitatWindow.activate).not.toHaveBeenCalled();
     expect(harness.petWindow.show).not.toHaveBeenCalled();
     expect(harness.service.snapshot().state).toBe('folder-hidden');
   });
@@ -1048,9 +1048,9 @@ describe('HabitatService 权威状态机', () => {
   test('activate 期间动态 blocker 变为活动，show 前复核并由当前 epoch 隐藏失效', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const activation = deferred<void>();
-    harness.layer.activate.mockReturnValueOnce(activation.promise);
+    harness.habitatWindow.activate.mockReturnValueOnce(activation.promise);
     const observing = observeReady(harness);
-    await vi.waitFor(() => expect(harness.layer.activate).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(harness.habitatWindow.activate).toHaveBeenCalledOnce());
     harness.blockers.chatInteracting = true;
     activation.resolve();
     await observing;
@@ -1063,14 +1063,14 @@ describe('HabitatService 权威状态机', () => {
   test('用户交互在 activate 期间撤销 reveal，旧 continuation 不重复清理', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const activation = deferred<void>();
-    harness.layer.activate.mockReturnValueOnce(activation.promise);
+    harness.habitatWindow.activate.mockReturnValueOnce(activation.promise);
     const observing = observeReady(harness);
-    await vi.waitFor(() => expect(harness.layer.activate).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(harness.habitatWindow.activate).toHaveBeenCalledOnce());
     await harness.service.handleUserInteraction();
-    const cleanupCount = harness.layer.invalidate.mock.calls.length;
+    const cleanupCount = harness.habitatWindow.invalidate.mock.calls.length;
     activation.resolve();
     await observing;
-    expect(harness.layer.invalidate).toHaveBeenCalledTimes(cleanupCount);
+    expect(harness.habitatWindow.invalidate).toHaveBeenCalledTimes(cleanupCount);
     expect(harness.petWindow.show).not.toHaveBeenCalled();
   });
 
@@ -1088,7 +1088,7 @@ describe('HabitatService 权威状态机', () => {
     }));
 
     expect(harness.identityResolver.resolve).not.toHaveBeenCalled();
-    expect(harness.layer.invalidate).not.toHaveBeenCalled();
+    expect(harness.habitatWindow.invalidate).not.toHaveBeenCalled();
     expect(harness.petWindow.hide).not.toHaveBeenCalled();
     expect(harness.service.snapshot().state).toBe('folder-visible');
   });
@@ -1129,7 +1129,7 @@ describe('HabitatService 权威状态机', () => {
     await harness.service.observeExplorer(readySnapshot());
 
     expect(harness.petWindow.hide).not.toHaveBeenCalled();
-    expect(harness.layer.invalidate).not.toHaveBeenCalled();
+    expect(harness.habitatWindow.invalidate).not.toHaveBeenCalled();
     expect(harness.service.snapshot().state).toBe('folder-visible');
   });
 
@@ -1140,14 +1140,14 @@ describe('HabitatService 权威状态机', () => {
 
     await observeReady(harness, snapshotB);
 
-    expect(harness.layer.activate).toHaveBeenCalledWith({ explorerHwnd: '202' });
+    expect(harness.habitatWindow.activate).toHaveBeenCalledWith({ explorerHwnd: '202' });
     expect(harness.petWindow.show).toHaveBeenCalledOnce();
     expect(harness.service.snapshot().state).toBe('folder-visible');
   });
 
-  test('私有 layer 错误只映射封闭错误码，不进入 reject 或 snapshot', async () => {
+  test('Habitat 窗口私有错误只映射封闭错误码，不进入 reject 或 snapshot', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
-    harness.layer.activate.mockRejectedValueOnce(new Error('LAYER_PRIVATE_HWND_123456'));
+    harness.habitatWindow.activate.mockRejectedValueOnce(new Error('LAYER_PRIVATE_HWND_123456'));
 
     await expect(observeReady(harness)).rejects.toMatchObject({
       message: 'HABITAT_WINDOW_FAILED', code: 'HABITAT_WINDOW_FAILED'
@@ -1161,9 +1161,9 @@ describe('HabitatService 权威状态机', () => {
   test('activate 期间外部 authority 已换代时，当前 reveal 先隐藏失效且不得 show', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const activation = deferred<void>();
-    harness.layer.activate.mockReturnValueOnce(activation.promise);
+    harness.habitatWindow.activate.mockReturnValueOnce(activation.promise);
     const observing = observeReady(harness);
-    await vi.waitFor(() => expect(harness.layer.activate).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(harness.habitatWindow.activate).toHaveBeenCalledOnce());
     harness.order.length = 0;
     harness.setAuthority({
       nonce: 'b'.repeat(32), revision: 11, instanceId: 'instance-b'
@@ -1180,15 +1180,15 @@ describe('HabitatService 权威状态机', () => {
   test('旧 reveal 的失败清理等待期间新 reveal 完成，旧尾部不得回写 errorCode', async () => {
     const harness = createHarness({ initialSnapshot: folderSnapshot() });
     const oldCleanup = deferred<void>();
-    harness.layer.invalidate
+    harness.habitatWindow.invalidate
       .mockImplementationOnce(async reason => { harness.order.push(`invalidate:${reason}`); })
       .mockImplementationOnce(async reason => {
         harness.order.push(`invalidate:${reason}`);
         await oldCleanup.promise;
       });
-    harness.layer.activate.mockRejectedValueOnce(new Error('LAYER_PRIVATE_OLD'));
+    harness.habitatWindow.activate.mockRejectedValueOnce(new Error('LAYER_PRIVATE_OLD'));
     const oldReveal = observeReady(harness);
-    await vi.waitFor(() => expect(harness.layer.invalidate).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(harness.habitatWindow.invalidate).toHaveBeenCalledTimes(2));
 
     const current = readySnapshot({
       nonce: 'b'.repeat(32), sequence: 11, instanceId: 'instance-b', hwnd: '202'

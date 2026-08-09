@@ -95,7 +95,7 @@ interface ExplorerObserverPort {
   stopObserving(): Promise<{ ok: true }>;
 }
 
-interface ExplorerLayerPort {
+interface HabitatWindowPort {
   activate(target: { explorerHwnd: string }): Promise<void>;
   invalidate(reason: HabitatExplorerUnsafeReason): Promise<void>;
 }
@@ -116,7 +116,7 @@ export interface HabitatServiceOptions {
   directoryPolicy: HabitatDirectoryPolicyPort;
   identityResolver: FolderIdentityResolverPort;
   explorer: ExplorerObserverPort;
-  layer: ExplorerLayerPort;
+  habitatWindow: HabitatWindowPort;
   petWindow: HabitatPetWindowPort;
   openDirectory(request: HabitatDirectoryOpenRequest): Promise<void>;
   readBlockers(): HabitatBlockerSnapshot;
@@ -357,7 +357,7 @@ export class HabitatService {
     this.binding = { ...selected.binding, nonce: observation.nonce };
     this.state = 'revealing';
     try {
-      await this.options.layer.activate({ explorerHwnd: selected.binding.hwnd });
+      await this.options.habitatWindow.activate({ explorerHwnd: selected.binding.hwnd });
     } catch {
       if (!this.isCurrentEpoch(epoch) || this.closed) return;
       await this.conceal(epoch, 'tab-race', false, 'HABITAT_WINDOW_FAILED');
@@ -582,7 +582,7 @@ export class HabitatService {
     }
     if (this.isCurrentEpoch(epoch)) {
       try {
-        await this.options.layer.invalidate('leave');
+        await this.options.habitatWindow.invalidate('leave');
       } catch {
         errors.push('HABITAT_WINDOW_FAILED');
       }
@@ -824,7 +824,7 @@ export class HabitatService {
     }
     if (!this.isCurrentEpoch(epoch)) return error;
     try {
-      await this.options.layer.invalidate(reason);
+      await this.options.habitatWindow.invalidate(reason);
     } catch {
       error = 'HABITAT_WINDOW_FAILED';
     }

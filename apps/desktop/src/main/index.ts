@@ -720,7 +720,7 @@ async function createApplicationWindows(
     directoryPolicy: habitatDirectoryPolicy,
     identityResolver: folderIdentityResolver,
     explorer: explorerPort,
-    layer: {
+    habitatWindow: {
       activate: async ({ explorerHwnd }) => {
         const observation = latestExplorerObservation;
         const current = await habitatStore.load();
