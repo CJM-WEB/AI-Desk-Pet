@@ -356,6 +356,8 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('自主');
     expect(markup).toContain('撤销目录权限');
     expect(markup).toContain('无痕会话');
+    expect(markup).toContain('桌宠始终置顶');
+    expect(markup).toContain('aria-label="桌宠始终置顶"');
   });
 
   test('MCP 禁用时设置导航不公开工具页且旧 tools 状态回退到模型档案', () => {

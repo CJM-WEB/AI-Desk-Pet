@@ -95,6 +95,22 @@ export function PrivacySettings(props: PrivacySettingsProps) {
               onChange={event => props.onIncognitoChange(event.target.checked)}
             />
           </label>
+          <label className="permission-row">
+            <span>
+              <strong>桌宠始终置顶</strong>
+              <small>开启后桌宠会显示在其他窗口上方；关闭后恢复工作区友好的动态图层。</small>
+            </span>
+            <input
+              type="checkbox"
+              aria-label="桌宠始终置顶"
+              checked={privacy.petAlwaysOnTop}
+              disabled={props.busy}
+              onChange={event => setPrivacy(current => ({
+                ...current,
+                petAlwaysOnTop: event.target.checked
+              }))}
+            />
+          </label>
         </div>
 
         <fieldset className="proactivity-fieldset">

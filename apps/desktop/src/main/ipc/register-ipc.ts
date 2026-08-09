@@ -339,7 +339,9 @@ export function registerAdvancedSettingsIpc(
     return changed(() => service.deleteMcpServer(serverId));
   });
   replaceHandler(ipcMain, ipcChannels.settingsPrivacySave, async (_event, raw) => {
-    const input = parseInput(privacySettingsSchema, raw);
+    const parsed = privacySettingsSchema.safeParse(raw);
+    if (!parsed.success) throw inputError();
+    const input = parsed.data;
     return changed(() => service.savePrivacySettings(input));
   });
   replaceHandler(ipcMain, ipcChannels.settingsIncognitoSet, async (_event, raw) => {

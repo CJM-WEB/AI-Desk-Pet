@@ -39,7 +39,8 @@ const emptyDashboard: SettingsDashboardDto = {
       memory: false
     },
     longTermMemory: false,
-    proactivityMode: 'assistive'
+    proactivityMode: 'assistive',
+    petAlwaysOnTop: false
   },
   privacyRuntimeSupport: {
     dataCategories: {

@@ -40,7 +40,8 @@ export const privacySettingsSchema = z.object({
     memory: z.boolean()
   }).strict(),
   longTermMemory: z.boolean(),
-  proactivityMode: z.enum(['passive', 'assistive', 'autonomous'])
+  proactivityMode: z.enum(['passive', 'assistive', 'autonomous']),
+  petAlwaysOnTop: z.boolean().default(false)
 }).strict();
 export type PrivacySettings = z.infer<typeof privacySettingsSchema>;
 
@@ -137,7 +138,8 @@ function defaultPrivacySettings(): PrivacySettings {
       memory: false
     },
     longTermMemory: false,
-    proactivityMode: 'assistive'
+    proactivityMode: 'assistive',
+    petAlwaysOnTop: false
   };
 }
 

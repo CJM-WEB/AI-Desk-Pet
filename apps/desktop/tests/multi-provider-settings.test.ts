@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelRouteConfig, ProviderProfileV2 } from '@myself/shared-types';
@@ -224,7 +224,8 @@ describe('多 Provider 设置持久化', () => {
         memory: false
       },
       longTermMemory: false,
-      proactivityMode: 'assistive'
+      proactivityMode: 'assistive',
+      petAlwaysOnTop: false
     });
 
     await store.savePrivacySettings({
@@ -235,7 +236,8 @@ describe('多 Provider 设置持久化', () => {
         memory: false
       },
       longTermMemory: true,
-      proactivityMode: 'passive'
+      proactivityMode: 'passive',
+      petAlwaysOnTop: true
     });
 
     await expect(store.getPrivacySettings()).resolves.toEqual({
@@ -246,8 +248,40 @@ describe('多 Provider 设置持久化', () => {
         memory: false
       },
       longTermMemory: true,
-      proactivityMode: 'passive'
+      proactivityMode: 'passive',
+      petAlwaysOnTop: true
     });
+  });
+
+  test('旧版隐私设置缺少桌宠置顶字段时迁移为关闭且可持久化', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'myself-topmost-settings-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.json');
+    await writeFile(file, JSON.stringify({
+      version: 2,
+      providerProfiles: [],
+      modelRoute: {
+        primaryProfileId: null, chatProfileId: null, agentProfileId: null,
+        visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPosition: null,
+      fileDisclosureAccepted: false,
+      privacy: {
+        dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+        longTermMemory: false,
+        proactivityMode: 'assistive'
+      }
+    }), 'utf8');
+
+    const store = new SettingsStore(file, async () => false);
+    await expect(store.getPrivacySettings()).resolves.toMatchObject({ petAlwaysOnTop: false });
+    await store.savePrivacySettings({
+      ...(await store.getPrivacySettings()),
+      petAlwaysOnTop: true
+    });
+    const restarted = new SettingsStore(file, async () => false);
+    await expect(restarted.getPrivacySettings()).resolves.toMatchObject({ petAlwaysOnTop: true });
   });
 
   test('MCP 配置持久化只保存认证字段名而不保存认证值', async () => {

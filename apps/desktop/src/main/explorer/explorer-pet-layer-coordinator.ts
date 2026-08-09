@@ -21,6 +21,7 @@ export interface ExplorerPetLayerPort {
 
 export interface ExplorerPetLayerCoordinatorOptions {
   layer: ExplorerPetLayerPort;
+  setAlwaysOnTop?(enabled: boolean): void;
   reportError(code: 'EXPLORER_LAYER_FAILED'): void;
 }
 
@@ -32,6 +33,7 @@ export class ExplorerPetLayerCoordinator {
   private nonce: string | undefined;
   private sequence = 0;
   private closed = false;
+  private dynamicLayerEnabled = true;
   private closePromise: Promise<void> | undefined;
 
   constructor(private readonly options: ExplorerPetLayerCoordinatorOptions) {}
@@ -39,6 +41,15 @@ export class ExplorerPetLayerCoordinator {
   accept(observation: ExplorerPetLayerObservation): Promise<void> {
     if (this.closed) return Promise.reject(new Error('EXPLORER_LAYER_CLOSED'));
     return this.enqueue(async () => this.apply(observation));
+  }
+
+  /** 置顶偏好与 Explorer 快照共用同一队列，避免旧快照在切换后覆盖用户选择。 */
+  setPetAlwaysOnTop(enabled: boolean): Promise<void> {
+    if (this.closed) return Promise.reject(new Error('EXPLORER_LAYER_CLOSED'));
+    return this.enqueue(async () => {
+      this.options.setAlwaysOnTop?.(enabled);
+      this.dynamicLayerEnabled = !enabled;
+    });
   }
 
   close(): Promise<void> {
@@ -63,7 +74,8 @@ export class ExplorerPetLayerCoordinator {
     if (observation.sequence <= this.sequence) return;
     this.sequence = observation.sequence;
     if (
-      observation.status !== 'ready'
+      !this.dynamicLayerEnabled
+      || observation.status !== 'ready'
       || typeof observation.instanceId !== 'string'
       || observation.instanceId.length === 0
       || typeof observation.hwnd !== 'string'

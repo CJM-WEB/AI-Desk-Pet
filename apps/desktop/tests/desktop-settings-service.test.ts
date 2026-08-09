@@ -46,7 +46,8 @@ function createFixture() {
         memory: false
       },
       longTermMemory: false,
-      proactivityMode: 'assistive' as const
+      proactivityMode: 'assistive' as const,
+      petAlwaysOnTop: false
     })),
     savePrivacySettings: vi.fn(async () => undefined),
     getPublic: vi.fn(async () => ({
@@ -114,6 +115,7 @@ function createFixture() {
     executeTool: vi.fn(async () => ({ ok: true }))
   };
   const privacySessions = new PrivacySessionRegistry();
+  const onPrivacyChanged = vi.fn(async () => undefined);
   const service = new DesktopSettingsService({
     settings,
     secrets,
@@ -121,7 +123,8 @@ function createFixture() {
     mcpStore,
     mcpManager,
     privacySessions,
-    sessionId: 'desktop-session'
+    sessionId: 'desktop-session',
+    onPrivacyChanged
   });
   return {
     service,
@@ -131,11 +134,25 @@ function createFixture() {
     mcpStore,
     mcpStoreMethods,
     mcpManager,
-    privacySessions
+    privacySessions,
+    onPrivacyChanged
   };
 }
 
 describe('DesktopSettingsService', () => {
+  test('保存隐私设置后立即应用桌宠图层偏好', async () => {
+    const fixture = createFixture();
+    const input = {
+      ...(await fixture.settings.getPrivacySettings()),
+      petAlwaysOnTop: true
+    };
+
+    await fixture.service.savePrivacySettings(input);
+
+    expect(fixture.settings.savePrivacySettings).toHaveBeenCalledWith(input);
+    expect(fixture.onPrivacyChanged).toHaveBeenCalledExactlyOnceWith(input);
+  });
+
   test('Dashboard 明确声明当前隐私能力的运行时支持范围', async () => {
     const fixture = createFixture();
 

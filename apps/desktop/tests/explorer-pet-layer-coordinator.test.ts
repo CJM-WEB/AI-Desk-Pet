@@ -6,6 +6,31 @@ const nonceA = 'a'.repeat(32);
 const nonceB = 'b'.repeat(32);
 
 describe('ExplorerPetLayerCoordinator', () => {
+  test('全局置顶期间忽略 ready，关闭后由新鲜 ready 恢复相邻图层', async () => {
+    const activate = vi.fn(async () => undefined);
+    const setAlwaysOnTop = vi.fn();
+    const coordinator = new ExplorerPetLayerCoordinator({
+      layer: { activate, dispose: async () => undefined },
+      setAlwaysOnTop,
+      reportError: vi.fn()
+    });
+
+    await coordinator.setPetAlwaysOnTop(true);
+    await coordinator.accept({
+      nonce: nonceA, sequence: 1, status: 'ready', instanceId: 'i-1',
+      hwnd: '101', foreground: true, minimized: false
+    });
+    expect(setAlwaysOnTop).toHaveBeenLastCalledWith(true);
+    expect(activate).not.toHaveBeenCalled();
+
+    await coordinator.setPetAlwaysOnTop(false);
+    await coordinator.accept({
+      nonce: nonceA, sequence: 2, status: 'ready', instanceId: 'i-1',
+      hwnd: '101', foreground: true, minimized: false
+    });
+    expect(setAlwaysOnTop).toHaveBeenLastCalledWith(false);
+    expect(activate).toHaveBeenCalledExactlyOnceWith({ explorerHwnd: '101' });
+  });
   test('只有当前代次内递增的准确前台 Explorer 才调整层级', async () => {
     const effects: string[] = [];
     const coordinator = new ExplorerPetLayerCoordinator({
@@ -126,11 +151,13 @@ describe('ExplorerPetLayerCoordinator', () => {
     const activation = new Promise<void>(resolve => { releaseActivation = resolve; });
     const dispose = vi.fn(async () => undefined);
     const activate = vi.fn(async () => activation);
+    const setAlwaysOnTop = vi.fn();
     const coordinator = new ExplorerPetLayerCoordinator({
       layer: {
         activate,
         dispose
       },
+      setAlwaysOnTop,
       reportError: vi.fn()
     });
 
@@ -139,12 +166,16 @@ describe('ExplorerPetLayerCoordinator', () => {
       hwnd: '101', foreground: true, minimized: false
     });
     await vi.waitFor(() => expect(activate).toHaveBeenCalledOnce());
+    const topmost = coordinator.setPetAlwaysOnTop(true);
     const close = coordinator.close();
     await expect(coordinator.accept({ nonce: nonceA, sequence: 2, status: 'none' }))
       .rejects.toThrow('EXPLORER_LAYER_CLOSED');
     releaseActivation?.();
-    await Promise.all([pending, close]);
+    await Promise.all([pending, topmost, close]);
 
+    expect(setAlwaysOnTop).toHaveBeenCalledExactlyOnceWith(true);
     expect(dispose).toHaveBeenCalledOnce();
+    await expect(coordinator.setPetAlwaysOnTop(false))
+      .rejects.toThrow('EXPLORER_LAYER_CLOSED');
   });
 });

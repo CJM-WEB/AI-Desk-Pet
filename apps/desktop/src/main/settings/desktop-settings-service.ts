@@ -97,6 +97,7 @@ export interface DesktopSettingsServiceOptions {
   mcpManager: McpManagerAccess;
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
+  onPrivacyChanged?(settings: PrivacySettings): Promise<void> | void;
 }
 
 interface DiscoveredTool {
@@ -658,6 +659,7 @@ export class DesktopSettingsService {
 
   async savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto> {
     await this.options.settings.savePrivacySettings(input);
+    await this.options.onPrivacyChanged?.(input);
     return this.getDashboard();
   }
 

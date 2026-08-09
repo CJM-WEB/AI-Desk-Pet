@@ -318,6 +318,7 @@ async function createApplicationWindows(
     : new ExplorerWindowLayerController({ window: pet });
   const explorerCoordinator = new ExplorerPetLayerCoordinator({
     layer: explorerLayer,
+    setAlwaysOnTop: enabled => pet.setAlwaysOnTop(enabled),
     reportError: code => console.error('调整 Explorer 图层失败。', code)
   });
   const explorerComposition = createExplorerMainComposition({
@@ -400,6 +401,9 @@ async function createApplicationWindows(
     join(storageDirectory, 'settings.json'),
     profileId => secrets.hasStoredSecret(profileId)
   );
+  await explorerCoordinator.setPetAlwaysOnTop(
+    (await settingsStore.getPrivacySettings()).petAlwaysOnTop
+  );
   const providerRegistry = new ProviderRegistry(providerCatalog);
   const mcpStore = new McpServerStore();
   const mcpManager = new McpManager({
@@ -416,7 +420,8 @@ async function createApplicationWindows(
     mcpStore,
     mcpManager,
     privacySessions,
-    sessionId: 'desktop-session'
+    sessionId: 'desktop-session',
+    onPrivacyChanged: privacy => explorerCoordinator.setPetAlwaysOnTop(privacy.petAlwaysOnTop)
   });
   await desktopSettingsService.initialize();
   startupCleanup.add(() => desktopSettingsService.close());

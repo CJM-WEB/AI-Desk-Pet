@@ -47,6 +47,7 @@ export interface PrivacySettingsDto {
   };
   longTermMemory: boolean;
   proactivityMode: 'passive' | 'assistive' | 'autonomous';
+  petAlwaysOnTop: boolean;
 }
 
 export interface PrivacyRuntimeSupportDto {
