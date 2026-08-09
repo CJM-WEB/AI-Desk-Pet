@@ -35,8 +35,13 @@ export type CharacterBehaviorDiagnosticCode =
 
 export type CharacterBehaviorDecision = {
   snapshot: CharacterBehaviorEngineSnapshot;
-  effects: CharacterScheduleEffect[];
+  effects: CharacterBehaviorDecisionEffect[];
   diagnosticCodes: CharacterBehaviorDiagnosticCode[];
+};
+
+/** Main 决策中的中断效果额外携带旧动作身份，避免令牌碰撞误结算新动作。 */
+export type CharacterBehaviorDecisionEffect = CharacterScheduleEffect & {
+  actionId?: string;
 };
 
 export type CharacterHabitatPresentationFact = 'enter' | 'found' | 'lost';
@@ -95,7 +100,9 @@ function selectionDuration(
 }
 
 /** 复制公开效果，防止 play 效果与内部当前调度共享可变引用。 */
-function cloneEffects(effects: readonly CharacterScheduleEffect[]): CharacterScheduleEffect[] {
+function cloneEffects(
+  effects: readonly CharacterBehaviorDecisionEffect[]
+): CharacterBehaviorDecisionEffect[] {
   return effects.map((effect) => effect.type === 'play'
     ? { type: 'play', action: { ...effect.action } }
     : { ...effect });
@@ -195,6 +202,7 @@ export class CharacterBehaviorEngine {
         nowMs: this.now(),
         urgency: 100,
         systemForced: true,
+        requiredActionSemantic: input.fact === 'enter' ? 'hide' : 'emerge',
         fixedHabitatFallbackSemantic: input.fact === 'enter' ? 'move' : 'idle'
       });
     }
@@ -349,7 +357,7 @@ export class CharacterBehaviorEngine {
     contextSignals: readonly CharacterBehaviorSignal[] = [],
     direction: 'left' | 'right' = this.lastDirection
   ): CharacterBehaviorDecision {
-    const effects: CharacterScheduleEffect[] = [];
+    const effects: CharacterBehaviorDecisionEffect[] = [];
     const current = this.schedule.current;
     if (current && this.currentSelection) {
       const interrupted = reduceCharacterActionSchedule(this.schedule, {
@@ -363,7 +371,7 @@ export class CharacterBehaviorEngine {
         systemForced: true
       }, this.manifest.actions);
       const interruptEffect = interrupted.effects.find((effect) => effect.type === 'interrupt');
-      if (interruptEffect) effects.push(interruptEffect);
+      if (interruptEffect) effects.push({ ...interruptEffect, actionId: current.actionId });
     }
 
     this.manifest = manifest;
@@ -461,10 +469,16 @@ export class CharacterBehaviorEngine {
       && this.manifest.actions.find((action) => action.id === selection.actionId)?.semantic
         !== input.requiredActionSemantic
     ) {
-      return this.decision([NONE_EFFECT], [
-        ...diagnosticCodes,
-        'CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE'
-      ]);
+      const fixedFallback = input.fixedHabitatFallbackSemantic
+        ? this.selectFixedHabitatFallback(input.fixedHabitatFallbackSemantic, input)
+        : null;
+      if (!fixedFallback) {
+        return this.decision([NONE_EFFECT], [
+          ...diagnosticCodes,
+          'CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE'
+        ]);
+      }
+      selection = fixedFallback;
     }
 
     const playbackToken = this.createPlaybackToken();
@@ -490,7 +504,12 @@ export class CharacterBehaviorEngine {
     if (this.schedule.current?.playbackToken === playbackToken) {
       this.currentSelection = selection;
     }
-    return this.decision(result.effects, diagnosticCodes);
+    const effects = result.effects.map((effect): CharacterBehaviorDecisionEffect => (
+      effect.type === 'interrupt' && previous
+        ? { ...effect, actionId: previous.actionId }
+        : effect
+    ));
+    return this.decision(effects, diagnosticCodes);
   }
 
   /**
@@ -563,7 +582,7 @@ export class CharacterBehaviorEngine {
 
   /** 统一创建不可反向修改内部状态的公开决策。 */
   private decision(
-    effects: readonly CharacterScheduleEffect[],
+    effects: readonly CharacterBehaviorDecisionEffect[],
     diagnosticCodes: readonly CharacterBehaviorDiagnosticCode[]
   ): CharacterBehaviorDecision {
     return {

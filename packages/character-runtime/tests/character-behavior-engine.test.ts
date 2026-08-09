@@ -280,7 +280,12 @@ describe('事件驱动角色行为引擎', () => {
       direction: 'right'
     });
     expect(stopped.snapshot.state.primaryStateId).toBe('idle-state');
-    expect(stopped.effects).toEqual([{ type: 'interrupt', playbackToken: 'token-1', fallbackActionId: null }, {
+    expect(stopped.effects).toEqual([{
+      type: 'interrupt',
+      playbackToken: 'token-1',
+      actionId: 'carry-action',
+      fallbackActionId: null
+    }, {
       type: 'play',
       action: stopped.snapshot.schedule.current!
     }]);
@@ -296,7 +301,12 @@ describe('事件驱动角色行为引擎', () => {
     });
 
     expect(interrupted.effects).toEqual([
-      { type: 'interrupt', playbackToken: 'token-1', fallbackActionId: null },
+      {
+        type: 'interrupt',
+        playbackToken: 'token-1',
+        actionId: 'carry-action',
+        fallbackActionId: null
+      },
       { type: 'play', action: interrupted.snapshot.schedule.current! }
     ]);
     expect(interrupted.snapshot.schedule.current).toMatchObject({
@@ -514,6 +524,60 @@ describe('事件驱动角色行为引擎', () => {
     });
 
     expect(decision.snapshot.schedule.current?.actionId).toBe('move-action');
+  });
+
+  test.each([
+    ['方向不符', { direction: 'left' as const }],
+    ['主状态不符', { allowedPrimaryStateIds: ['move-state'] }]
+  ])('角色声明的 hide→move 在%s时不能抢占系统固定回退', (_name, constraints) => {
+    const manifest = 创建目录表现清单({ exact: false });
+    const roleFallback = 创建动作('role-move-action', 'move', constraints);
+    manifest.actions.unshift(roleFallback);
+    manifest.states.find((state) => state.id === 'move-state')!.actionIds.unshift(roleFallback.id);
+    manifest.skins[0]!.presentations.push({
+      actionId: roleFallback.id,
+      fps: 20,
+      frames: [{ assetId: 'role-move-asset', x: 0, y: 0, width: 1, height: 1 }],
+      anchors: { ground: { x: 0.5, y: 1 } }
+    });
+    manifest.resources.push({
+      assetId: 'role-move-asset',
+      fileName: 'role-move.png',
+      sha256: 'a'.repeat(64),
+      byteLength: 1
+    });
+    manifest.skins[0]!.semanticFallbacks = [
+      { semantic: 'hide', actionId: roleFallback.id }
+    ];
+    const engine = 创建引擎(manifest);
+
+    const decision = engine.dispatchHabitatPresentation({
+      fact: 'enter',
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+
+    expect(decision.snapshot.schedule.current?.actionId).toBe('move-action');
+  });
+
+  test('替换动作的 interrupt effect 同时绑定旧令牌与旧动作', () => {
+    const engine = 创建引擎(创建目录表现清单(), {
+      createPlaybackToken: () => 'collision-token'
+    });
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 1 }, direction: 'right' });
+
+    const decision = engine.dispatchHabitatPresentation({
+      fact: 'enter',
+      occurredAtMs: 2,
+      direction: 'right'
+    });
+
+    expect(decision.effects[0]).toEqual({
+      type: 'interrupt',
+      playbackToken: 'collision-token',
+      actionId: 'idle-action',
+      fallbackActionId: null
+    });
   });
 
   test('缺少系统固定目标动作时保留真实事实并报告表现不可用', () => {
@@ -939,7 +1003,12 @@ describe('事件驱动角色行为引擎', () => {
     const replaced = engine.replaceCharacter(newManifest, 'default-skin');
 
     expect(replaced.effects).toEqual([
-      { type: 'interrupt', playbackToken: 'token-2', fallbackActionId: 'old-fallback' },
+      {
+        type: 'interrupt',
+        playbackToken: 'token-2',
+        actionId: 'old-idle',
+        fallbackActionId: 'old-fallback'
+      },
       { type: 'play', action: replaced.snapshot.schedule.current }
     ]);
     expect(replaced.snapshot).toMatchObject({

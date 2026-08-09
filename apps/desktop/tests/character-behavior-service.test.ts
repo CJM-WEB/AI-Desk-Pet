@@ -267,6 +267,7 @@ async function loadConstructor(): Promise<BehaviorServiceConstructor> {
 function createFixture(overrides: {
   getV2?: () => Promise<CharacterManifestV2>;
   getV1?: () => Promise<CharacterManifestV1>;
+  createPlaybackToken?: () => string;
 } = {}) {
   let now = 0;
   const currentSnapshot = snapshot();
@@ -294,7 +295,7 @@ function createFixture(overrides: {
       motion,
       now: () => now,
       random: () => 0,
-      createPlaybackToken: tokenFactory(),
+      createPlaybackToken: overrides.createPlaybackToken ?? tokenFactory(),
       idleIntervalMs: 1_000,
       reportError
     }
@@ -1057,6 +1058,60 @@ describe('Main 角色行为权威服务', () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: 'behavior-action', actionId: 'idle-action' });
+  });
+
+  test('新 habitat 请求会立即结算已自然到期但仍在等待的旧请求', async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = createFixture({ getV2: async () => createHabitatManifest() });
+      const service = new Constructor(fixture.options);
+      await service.initialize();
+      const first = service.requestHabitatPresentation('enter');
+      service.applyPlaybackFeedback({
+        playbackToken: 'behavior-token-2',
+        actionId: 'hide-action',
+        status: 'started',
+        occurredAtMs: 0
+      });
+      fixture.setNow(50);
+      service.handleIdleDue();
+      let firstResult: Awaited<typeof first> | undefined;
+      void first.then((result) => { firstResult = result; });
+
+      const second = service.requestHabitatPresentation('found');
+      await Promise.resolve();
+
+      expect(firstResult).toEqual({ status: 'interrupted' });
+      service.close();
+      await expect(second).resolves.toEqual({ status: 'interrupted' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('令牌碰撞时旧动作 interrupt 不能误结算同令牌的新 habitat 请求', async () => {
+    const fixture = createFixture({
+      getV2: async () => createHabitatManifest(),
+      createPlaybackToken: () => 'collision-token'
+    });
+    const service = new Constructor(fixture.options);
+    await service.initialize();
+
+    const result = service.requestHabitatPresentation('enter');
+    service.applyPlaybackFeedback({
+      playbackToken: 'collision-token',
+      actionId: 'hide-action',
+      status: 'started',
+      occurredAtMs: 1
+    });
+    service.applyPlaybackFeedback({
+      playbackToken: 'collision-token',
+      actionId: 'hide-action',
+      status: 'completed',
+      occurredAtMs: 2
+    });
+
+    await expect(result).resolves.toEqual({ status: 'completed' });
   });
 
   test('habitat 表现最长两秒只结束等待，不伪造播放终态', async () => {

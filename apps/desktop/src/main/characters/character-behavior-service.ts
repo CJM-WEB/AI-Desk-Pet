@@ -186,6 +186,9 @@ export class CharacterBehaviorService {
       return Promise.resolve({ status: 'unavailable' });
     }
 
+    // 新请求不能覆盖旧等待器；即使引擎已自然收敛令牌，也要立即清理旧计时器与 Promise。
+    this.interruptHabitatPresentation();
+
     const decision = this.engine.dispatchHabitatPresentation({
       fact,
       occurredAtMs: this.now(),
@@ -615,7 +618,9 @@ export class CharacterBehaviorService {
     const pending = this.pendingHabitatPresentation;
     if (!pending) return;
     if (decision.effects.some((effect) => (
-      effect.type === 'interrupt' && effect.playbackToken === pending.playbackToken
+      effect.type === 'interrupt'
+      && effect.playbackToken === pending.playbackToken
+      && effect.actionId === pending.actionId
     ))) {
       this.settleHabitatPresentation('interrupted', pending);
     }
