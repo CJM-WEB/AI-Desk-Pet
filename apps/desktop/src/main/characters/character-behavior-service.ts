@@ -4,6 +4,7 @@ import {
   type CharacterAgentBehaviorIntent,
   type CharacterBehaviorDecision,
   type CharacterBehaviorSignal,
+  type CharacterHabitatPresentationFact,
   type CharacterManifestV1,
   type CharacterManifestV2,
   type CharacterPlaybackFeedback,
@@ -42,6 +43,17 @@ export type CharacterTaskCarryGrant = Readonly<{
   commitFrameId: string | null;
 }>;
 
+export type CharacterHabitatPresentationResult = Readonly<{
+  status: 'completed' | 'failed' | 'interrupted' | 'timed-out' | 'unavailable';
+}>;
+
+type PendingHabitatPresentation = {
+  playbackToken: string;
+  actionId: string;
+  timeout: ReturnType<typeof setTimeout>;
+  resolve: (result: CharacterHabitatPresentationResult) => void;
+};
+
 type CharacterBehaviorStorePort = Pick<
   CharacterStore,
   'getActiveManifestV2' | 'getActive'
@@ -69,6 +81,7 @@ export type CharacterBehaviorServiceOptions = {
 };
 
 const DEFAULT_IDLE_INTERVAL_MS = 10_000;
+const HABITAT_PRESENTATION_TIMEOUT_MS = 2_000;
 
 /** Main 独占角色行为决策、调度令牌和运动意图的生产权。 */
 export class CharacterBehaviorService {
@@ -78,6 +91,7 @@ export class CharacterBehaviorService {
   private readonly idleIntervalMs: number;
   private readonly listeners = new Set<(event: CharacterBehaviorPlaybackEvent) => void>();
   private readonly legacyTokens = new Map<string, { actionId: string; characterId: string }>();
+  private pendingHabitatPresentation: PendingHabitatPresentation | null = null;
   private engine: CharacterBehaviorEngine | null = null;
   private manifest: CharacterManifestV2 | null = null;
   private legacyManifest: CharacterManifestV1 | null = null;
@@ -156,10 +170,83 @@ export class CharacterBehaviorService {
     }));
   }
 
+  /**
+   * 将 Main 内部空间事实转为纯表现请求。结果只结算该次播放，
+   * 不承载目录、窗口或持久化状态。
+   */
+  requestHabitatPresentation(
+    fact: CharacterHabitatPresentationFact
+  ): Promise<CharacterHabitatPresentationResult> {
+    if (
+      this.closed
+      || this.transitioning
+      || !this.engine
+      || (fact !== 'enter' && fact !== 'found' && fact !== 'lost')
+    ) {
+      return Promise.resolve({ status: 'unavailable' });
+    }
+
+    const decision = this.engine.dispatchHabitatPresentation({
+      fact,
+      occurredAtMs: this.now(),
+      direction: this.direction
+    });
+    const play = decision.effects.find((effect) => effect.type === 'play');
+    if (play?.type !== 'play') {
+      this.publish(decision, null, false);
+      return Promise.resolve({ status: 'unavailable' });
+    }
+
+    // 新的空间表现可替换旧请求，但两者的令牌和结算必须完全隔离。
+    this.settleInterruptedEffects(decision);
+    return new Promise<CharacterHabitatPresentationResult>((resolve) => {
+      const pending: PendingHabitatPresentation = {
+        playbackToken: play.action.playbackToken,
+        actionId: play.action.actionId,
+        timeout: setTimeout(() => {
+          if (this.pendingHabitatPresentation === pending && this.engine) {
+            // 先在引擎撤销精确令牌，再结算等待；迟到反馈不得重新启动表现。
+            try {
+              this.engine.cancelPresentation({
+                playbackToken: pending.playbackToken,
+                actionId: pending.actionId,
+                occurredAtMs: this.now()
+              });
+            } catch {
+              // 令牌若已被其他本地事件撤销，同样按超时结算本次等待。
+            }
+          }
+          this.settleHabitatPresentation('timed-out', pending);
+        }, HABITAT_PRESENTATION_TIMEOUT_MS),
+        resolve
+      };
+      this.pendingHabitatPresentation = pending;
+      // move 只是 hide 的受控表现回退，不得因此请求桌面漫步。
+      this.publish(decision, null, false);
+    });
+  }
+
+  /** 只向引擎提交已隐藏事实，不等待或完成任何表现。 */
+  handleHabitatHidden(): void {
+    if (this.closed || this.transitioning || !this.engine) return;
+    this.publish(this.engine.recordHabitatHidden(this.now()), null, false);
+  }
+
   handleTaskEvent(event: TaskEvent): void {
     if (this.closed) return;
     this.options.motion.applyTaskEvent(event);
     const now = this.now();
+    if (
+      event.type === 'pending_action'
+      || (event.type === 'phase' && (
+        event.phase === 'listening'
+        || event.phase === 'thinking'
+        || event.phase === 'awaiting_confirmation'
+        || event.phase === 'acting'
+      ))
+    ) {
+      this.interruptHabitatPresentation();
+    }
     if (this.transitioning) {
       this.captureTaskContext(event, now);
       return;
@@ -211,6 +298,7 @@ export class CharacterBehaviorService {
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void {
     if (this.closed || this.transitioning || !this.engine) return;
     const now = this.now();
+    this.interruptHabitatPresentation();
     // Agent 意图在思考结束后参与决策；先撤销本地思考事实，仍由引擎校验可推断状态。
     this.deactivateTaskSignal(now);
     this.taskContextSignal = null;
@@ -237,6 +325,7 @@ export class CharacterBehaviorService {
     if (this.closed) return;
     const now = this.now();
     this.nextIdleAt = now + this.idleIntervalMs;
+    this.interruptHabitatPresentation();
     this.dispatch({ type: 'user-interaction', occurredAtMs: now });
   }
 
@@ -259,7 +348,17 @@ export class CharacterBehaviorService {
     if (this.closed) return;
     if (this.transitioning) throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
     if (this.engine) {
-      this.publish(this.engine.applyFeedback(feedback));
+      const pending = this.pendingHabitatPresentation;
+      const decision = this.engine.applyFeedback(feedback);
+      this.publish(decision);
+      if (
+        pending
+        && pending.playbackToken === feedback.playbackToken
+        && pending.actionId === feedback.actionId
+        && feedback.status !== 'started'
+      ) {
+        this.settleHabitatPresentation(feedback.status, pending);
+      }
       return;
     }
     const pending = this.legacyTokens.get(feedback.playbackToken);
@@ -277,6 +376,7 @@ export class CharacterBehaviorService {
 
   handleActiveCharacterChanged(): Promise<void> {
     if (this.closed) return Promise.resolve();
+    this.interruptHabitatPresentation();
     return this.loadActiveCharacter(true);
   }
 
@@ -288,6 +388,7 @@ export class CharacterBehaviorService {
 
   close(): void {
     if (this.closed) return;
+    this.interruptHabitatPresentation();
     this.closed = true;
     this.loadRevision += 1;
     this.engine = null;
@@ -484,8 +585,10 @@ export class CharacterBehaviorService {
   /** 只把已通过调度器的 play effect 转为 Main 播放事件。 */
   private publish(
     decision: CharacterBehaviorDecision,
-    commitFrameId: string | null = null
+    commitFrameId: string | null = null,
+    requestMovementIntent = true
   ): void {
+    this.settleInterruptedEffects(decision);
     for (const effect of decision.effects) {
       if (effect.type !== 'play') continue;
       const event: CharacterBehaviorPlaybackEvent = {
@@ -500,9 +603,52 @@ export class CharacterBehaviorService {
       const action = this.manifest?.actions.find(
         candidate => candidate.id === effect.action.actionId
       );
-      if (action?.semantic === 'move') this.options.motion.requestIntent('wander');
+      if (requestMovementIntent && action?.semantic === 'move') {
+        this.options.motion.requestIntent('wander');
+      }
       this.emit(event);
     }
+  }
+
+  /** 任何可信本地事件替换了当前令牌时，只结算匹配的表现等待。 */
+  private settleInterruptedEffects(decision: CharacterBehaviorDecision): void {
+    const pending = this.pendingHabitatPresentation;
+    if (!pending) return;
+    if (decision.effects.some((effect) => (
+      effect.type === 'interrupt' && effect.playbackToken === pending.playbackToken
+    ))) {
+      this.settleHabitatPresentation('interrupted', pending);
+    }
+  }
+
+  /** 主动中断同时撤销引擎令牌，确保迟到反馈不能复活旧表现。 */
+  private interruptHabitatPresentation(): void {
+    const pending = this.pendingHabitatPresentation;
+    if (!pending) return;
+    if (this.engine) {
+      try {
+        this.engine.cancelPresentation({
+          playbackToken: pending.playbackToken,
+          actionId: pending.actionId,
+          occurredAtMs: this.now()
+        });
+      } catch {
+        // 当前调度若已更换，旧令牌已自然失效，只需结算本地等待。
+      }
+    }
+    this.settleHabitatPresentation('interrupted', pending);
+  }
+
+  /** 带对象身份的一次性结算，迟到超时器不能结算后续请求。 */
+  private settleHabitatPresentation(
+    status: Exclude<CharacterHabitatPresentationResult['status'], 'unavailable'>,
+    expected: PendingHabitatPresentation | null = this.pendingHabitatPresentation
+  ): void {
+    const pending = this.pendingHabitatPresentation;
+    if (!pending || !expected || pending !== expected) return;
+    this.pendingHabitatPresentation = null;
+    clearTimeout(pending.timeout);
+    pending.resolve({ status });
   }
 
   private pollLegacyIdle(): void {

@@ -178,6 +178,41 @@ function 创建搬运清单(id = 'carry-character', commitFrameId: string | null
   });
 }
 
+/** 创建只携带目录表现语义的清单，不声明任何系统能力。 */
+function 创建目录表现清单(options: {
+  exact?: boolean;
+  fallback?: boolean;
+} = {}): CharacterManifestV2 {
+  const exact = options.exact ?? true;
+  const fallback = options.fallback ?? false;
+  const idle = 创建动作('idle-action', 'idle');
+  const move = 创建动作('move-action', 'move');
+  const fail = 创建动作('fail-action', 'fail');
+  const actions = [idle, move, fail];
+  const states = [
+    创建状态('idle-state', 'idle', [idle.id]),
+    创建状态('move-state', 'move', [move.id]),
+    创建状态('fail-state', 'fail', [fail.id])
+  ];
+  if (exact) {
+    const hide = 创建动作('hide-action', 'hide');
+    const emerge = 创建动作('emerge-action', 'emerge');
+    actions.push(hide, emerge);
+    states.push(
+      创建状态('hide-state', 'hide', [hide.id]),
+      创建状态('emerge-state', 'emerge', [emerge.id])
+    );
+  }
+  const manifest = 创建清单({ actions, states, defaultStateId: 'idle-state' });
+  if (fallback) {
+    manifest.skins[0]!.semanticFallbacks = [
+      { semantic: 'hide', actionId: move.id },
+      { semantic: 'emerge', actionId: idle.id }
+    ];
+  }
+  return manifest;
+}
+
 /** 创建可观察、稳定递增的播放令牌工厂。 */
 function 创建令牌工厂(prefix = 'token'): () => string {
   let index = 0;
@@ -413,6 +448,188 @@ describe('事件驱动角色行为引擎', () => {
 
     expect(engine.dispatch({ signal: { type, occurredAtMs: 2 }, direction: 'right' })
       .snapshot.schedule.current?.actionId).toBe(transition.id);
+  });
+
+  test.each([
+    ['enter', 'habitat-enter', 'hide-action'],
+    ['found', 'habitat-found', 'emerge-action']
+  ] as const)('Main %s 事实仅通过封闭桥接排程 %s', (fact, signal, actionId) => {
+    const engine = 创建引擎(创建目录表现清单());
+
+    const decision = engine.dispatchHabitatPresentation({
+      fact,
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+
+    expect(decision.snapshot.state.activeSignals).toContain(signal);
+    expect(decision.snapshot.schedule.current).toMatchObject({
+      actionId,
+      playbackToken: 'token-1'
+    });
+  });
+
+  test('lost 事实复用 fail 表现但不伪造任务失败事实', () => {
+    const engine = 创建引擎(创建目录表现清单());
+
+    const decision = engine.dispatchHabitatPresentation({
+      fact: 'lost',
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+
+    expect(decision.snapshot.state).toMatchObject({
+      primaryStateId: 'fail-state',
+      desiredActionSemantic: 'fail',
+      activeSignals: ['habitat-lost']
+    });
+    expect(decision.snapshot.schedule.current?.actionId).toBe('fail-action');
+  });
+
+  test.each([
+    ['enter', 'move-action'],
+    ['found', 'idle-action']
+  ] as const)('旧 V2 缺少精确动作时 %s 无需声明即使用系统固定回退', (fact, actionId) => {
+    const engine = 创建引擎(创建目录表现清单({ exact: false }));
+
+    const decision = engine.dispatchHabitatPresentation({
+      fact,
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+
+    expect(decision.snapshot.schedule.current?.actionId).toBe(actionId);
+    expect(decision.diagnosticCodes).toEqual([]);
+  });
+
+  test('角色包的任意跨语义 fallback 不能改写系统固定 hide→move', () => {
+    const manifest = 创建目录表现清单({ exact: false });
+    manifest.skins[0]!.semanticFallbacks = [{ semantic: 'hide', actionId: 'idle-action' }];
+    const engine = 创建引擎(manifest);
+
+    const decision = engine.dispatchHabitatPresentation({
+      fact: 'enter',
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+
+    expect(decision.snapshot.schedule.current?.actionId).toBe('move-action');
+  });
+
+  test('缺少系统固定目标动作时保留真实事实并报告表现不可用', () => {
+    const manifest = 创建目录表现清单({ exact: false });
+    manifest.actions = manifest.actions.filter((action) => action.id !== 'move-action');
+    manifest.states = manifest.states.filter((state) => state.id !== 'move-state');
+    manifest.skins[0]!.presentations = manifest.skins[0]!.presentations.filter(
+      (presentation) => presentation.actionId !== 'move-action'
+    );
+    const engine = 创建引擎(manifest);
+
+    const decision = engine.dispatchHabitatPresentation({
+      fact: 'enter',
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+
+    expect(decision.snapshot.state.activeSignals).toContain('habitat-enter');
+    expect(decision.snapshot.schedule.current).toBeNull();
+    expect(decision.diagnosticCodes).toEqual(['CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']);
+  });
+
+  test('habitat-hidden 只记录空间事实，不伪造新动作或播放成功', () => {
+    const engine = 创建引擎(创建目录表现清单());
+    const entering = engine.dispatchHabitatPresentation({
+      fact: 'enter',
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+
+    const hidden = engine.recordHabitatHidden(20);
+
+    expect(hidden.effects).toEqual([{ type: 'none' }]);
+    expect(hidden.snapshot.state.activeSignals).toEqual(['habitat-hidden']);
+    expect(hidden.snapshot.schedule.current).toEqual(entering.snapshot.schedule.current);
+  });
+
+  test('Main 超时撤销只失效精确表现令牌，不调度角色包回退', () => {
+    const engine = 创建引擎(创建目录表现清单());
+    engine.dispatchHabitatPresentation({
+      fact: 'enter',
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+
+    const cancelled = engine.cancelPresentation({
+      playbackToken: 'token-1',
+      actionId: 'hide-action',
+      occurredAtMs: 2_010
+    });
+
+    expect(cancelled.snapshot.schedule.current).toBeNull();
+    expect(cancelled.effects).toEqual([{ type: 'none' }]);
+    expect(cancelled.snapshot.state).toMatchObject({
+      primaryStateId: 'idle-state',
+      desiredActionSemantic: 'idle',
+      activeSignals: []
+    });
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'hide-action',
+      status: 'started',
+      occurredAtMs: 2_011
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    expect(() => engine.cancelPresentation({
+      playbackToken: 'forged-token',
+      actionId: 'hide-action',
+      occurredAtMs: 2_012
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  });
+
+  test.each([
+    ['habitat-hidden', 'enter', 20],
+    ['habitat-lost', 'lost', 20]
+  ] as const)('退休一次性表现时保留 %s 稳定事实', (signal, fact, occurredAtMs) => {
+    const engine = 创建引擎(创建目录表现清单());
+    const presentation = engine.dispatchHabitatPresentation({
+      fact,
+      occurredAtMs: 10,
+      direction: 'right'
+    });
+    if (signal === 'habitat-hidden') engine.recordHabitatHidden(15);
+
+    const retired = engine.cancelPresentation({
+      playbackToken: presentation.snapshot.schedule.current!.playbackToken,
+      actionId: presentation.snapshot.schedule.current!.actionId,
+      occurredAtMs
+    });
+
+    expect(retired.snapshot.state.activeSignals).toContain(signal);
+    expect(retired.snapshot.state.primaryStateId).toBe('idle-state');
+  });
+
+  test('正常终态后退休一次性 habitat 主状态，中性信号不会复活', () => {
+    const engine = 创建引擎(创建目录表现清单());
+    engine.dispatchHabitatPresentation({ fact: 'enter', occurredAtMs: 1, direction: 'right' });
+    engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'hide-action',
+      status: 'started',
+      occurredAtMs: 2
+    });
+
+    const completed = engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'hide-action',
+      status: 'completed',
+      occurredAtMs: 3
+    });
+    const interaction = engine.dispatch({
+      signal: { type: 'user-interaction', occurredAtMs: 4 },
+      direction: 'right'
+    });
+
+    expect(completed.snapshot.state.primaryStateId).toBe('idle-state');
+    expect(interaction.snapshot.schedule.current?.actionId).toBe('idle-action');
   });
 
   test('相同固定随机序列可重现相同动作序列', () => {

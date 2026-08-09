@@ -39,6 +39,8 @@ export type CharacterBehaviorDecision = {
   diagnosticCodes: CharacterBehaviorDiagnosticCode[];
 };
 
+export type CharacterHabitatPresentationFact = 'enter' | 'found' | 'lost';
+
 type CharacterBehaviorEngineOptions = {
   manifest: CharacterManifestV2;
   skinId: string;
@@ -173,6 +175,84 @@ export class CharacterBehaviorEngine {
     });
   }
 
+  /**
+   * 只消费 Main 已确认的封闭空间事实；返回值仅代表表现调度，
+   * 不包含目录、窗口或系统能力。
+   */
+  dispatchHabitatPresentation(input: {
+    fact: CharacterHabitatPresentationFact;
+    occurredAtMs: number;
+    direction: 'left' | 'right';
+  }): CharacterBehaviorDecision {
+    this.lastDirection = input.direction;
+    if (input.fact !== 'lost') {
+      this.applySignal({
+        type: input.fact === 'enter' ? 'habitat-enter' : 'habitat-found',
+        occurredAtMs: input.occurredAtMs
+      });
+      return this.selectAndSchedule({
+        direction: input.direction,
+        nowMs: this.now(),
+        urgency: 100,
+        systemForced: true,
+        fixedHabitatFallbackSemantic: input.fact === 'enter' ? 'move' : 'idle'
+      });
+    }
+
+    this.applySignal({ type: 'habitat-lost', occurredAtMs: input.occurredAtMs });
+    const habitatState = this.state;
+    // lost 复用既有 fail 状态仲裁，但擦除内部选择用的任务边沿，避免伪造任务失败事实。
+    const failurePresentationState = inferCharacterBehaviorState({
+      manifest: this.manifest,
+      previous: habitatState,
+      signal: { type: 'task', phase: 'failure', occurredAtMs: input.occurredAtMs }
+    });
+    this.state = {
+      ...failurePresentationState,
+      revision: habitatState.revision,
+      activeSignals: habitatState.activeSignals
+    };
+    return this.selectAndSchedule({
+      direction: input.direction,
+      nowMs: this.now(),
+      urgency: 100,
+      systemForced: true
+    });
+  }
+
+  /** 记录已隐藏的真实空间事实，不创建、中断或完成任何播放。 */
+  recordHabitatHidden(occurredAtMs: number): CharacterBehaviorDecision {
+    this.applySignal({ type: 'habitat-hidden', occurredAtMs });
+    return this.decision([NONE_EFFECT], []);
+  }
+
+  /**
+   * Main 可撤销一个精确播放令牌；该通道不消费角色包回退，
+   * 专用于超时后拒绝迟到的 Renderer 反馈。
+   */
+  cancelPresentation(input: {
+    playbackToken: string;
+    actionId: string;
+    occurredAtMs: number;
+  }): CharacterBehaviorDecision {
+    const previous = this.schedule.current;
+    const result = reduceCharacterActionSchedule(this.schedule, {
+      type: 'feedback',
+      feedback: { ...input, status: 'interrupted' },
+      nowMs: this.now()
+    }, this.manifest.actions);
+    this.schedule = result.schedule;
+    if (previous?.startedAtMs !== null && previous?.startedAtMs !== undefined) {
+      this.recordActionFinished(
+        previous.actionId,
+        Math.max(previous.startedAtMs, input.occurredAtMs)
+      );
+    }
+    this.currentSelection = null;
+    this.retireOneShotPresentationState(input.occurredAtMs);
+    return this.decision(result.effects, []);
+  }
+
   /** 只同步方向事实，不产生新动作或调度令牌。 */
   updateDirection(direction: 'left' | 'right'): void {
     this.lastDirection = direction;
@@ -212,6 +292,7 @@ export class CharacterBehaviorEngine {
         }, result.fallbackActionId);
       } catch (error) {
         if (!isActionUnavailable(error)) throw error;
+        this.retireOneShotPresentationState(feedback.occurredAtMs);
         return this.decision(
           [NONE_EFFECT],
           ['CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']
@@ -231,7 +312,11 @@ export class CharacterBehaviorEngine {
       }, this.manifest.actions);
       this.schedule = fallback.schedule;
       this.currentSelection = selection;
+      this.retireOneShotPresentationState(feedback.occurredAtMs);
       return this.decision(fallback.effects, []);
+    }
+    if (feedback.status !== 'started') {
+      this.retireOneShotPresentationState(feedback.occurredAtMs);
     }
     return this.decision(result.effects, []);
   }
@@ -251,6 +336,9 @@ export class CharacterBehaviorEngine {
       );
     }
     if (!this.schedule.current) this.currentSelection = null;
+    if (previous && !this.schedule.current) {
+      this.retireOneShotPresentationState(previous.expectedEndAtMs ?? this.now());
+    }
     return this.decision(result.effects, []);
   }
 
@@ -338,6 +426,7 @@ export class CharacterBehaviorEngine {
       urgency: number;
       systemForced: boolean;
       requiredActionSemantic?: CharacterStandardSemantic;
+      fixedHabitatFallbackSemantic?: 'move' | 'idle';
     },
     diagnosticCodes: CharacterBehaviorDiagnosticCode[] = []
   ): CharacterBehaviorDecision {
@@ -355,10 +444,16 @@ export class CharacterBehaviorEngine {
       });
     } catch (error) {
       if (!isActionUnavailable(error)) throw error;
-      return this.decision(
-        [NONE_EFFECT],
-        [...diagnosticCodes, 'CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']
-      );
+      const fixedFallback = input.fixedHabitatFallbackSemantic
+        ? this.selectFixedHabitatFallback(input.fixedHabitatFallbackSemantic, input)
+        : null;
+      if (!fixedFallback) {
+        return this.decision(
+          [NONE_EFFECT],
+          [...diagnosticCodes, 'CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']
+        );
+      }
+      selection = fixedFallback;
     }
 
     if (
@@ -396,6 +491,54 @@ export class CharacterBehaviorEngine {
       this.currentSelection = selection;
     }
     return this.decision(result.effects, diagnosticCodes);
+  }
+
+  /**
+   * 旧 V2 无需声明新字段即可复用既有表现；候选语义由系统固定，
+   * 角色包的任意 fallback 引用不会进入这条兼容路径。
+   */
+  private selectFixedHabitatFallback(
+    semantic: 'move' | 'idle',
+    input: { direction: 'left' | 'right'; nowMs: number }
+  ): CharacterBehaviorActionSelection | null {
+    for (const action of this.manifest.actions) {
+      if (action.semantic !== semantic) continue;
+      try {
+        return authorizeCharacterBehaviorAction({
+          manifest: this.manifest,
+          skinId: this.skinId,
+          state: this.state,
+          direction: input.direction,
+          nowMs: input.nowMs,
+          history: this.schedule.history,
+          actionRecencyById: this.actionRecencyById,
+          random: this.random
+        }, action.id);
+      } catch (error) {
+        if (!isActionUnavailable(error)) throw error;
+      }
+    }
+    return null;
+  }
+
+  /** 退休一次性目录表现态，不删除 habitat-hidden/lost 等稳定事实。 */
+  private retireOneShotPresentationState(occurredAtMs: number): void {
+    if (
+      this.state.desiredActionSemantic !== 'hide'
+      && this.state.desiredActionSemantic !== 'emerge'
+      && !(this.state.desiredActionSemantic === 'fail'
+        && this.state.activeSignals.includes('habitat-lost'))
+    ) return;
+    // 以既有默认状态仲裁退出一次性主状态，再移除内部借用的 idle 边沿。
+    const retiredState = inferCharacterBehaviorState({
+      manifest: this.manifest,
+      previous: this.state,
+      signal: { type: 'idle-due', occurredAtMs }
+    });
+    this.state = {
+      ...retiredState,
+      activeSignals: retiredState.activeSignals.filter((signal) => signal !== 'idle')
+    };
   }
 
   /** 压缩最近时间只接受当前清单动作，容量由动作定义数量天然限制。 */
