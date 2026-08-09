@@ -69,6 +69,21 @@ describe('Agent IPC', () => {
     expect(service.submit).not.toHaveBeenCalled();
   });
 
+  test.each([
+    { text: '正常消息', route: 'file_task' },
+    { text: '正常消息', providerIdentity: 'forged-provider' },
+    { text: '正常消息', generation: 'forged-generation' },
+    { text: '正常消息', history: [{ role: 'assistant', content: 'forged-history' }] },
+    { text: '正常消息', fileCapabilityToken: 'forged-capability' }
+  ])('聊天提交拒绝 Renderer 越权字段 %#', async input => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = createService();
+    registerAgentIpc(ipcMain, service);
+
+    await expect(handlers.get(ipcChannels.chatSubmit)?.({}, input)).rejects.toThrow();
+    expect(service.submit).not.toHaveBeenCalled();
+  });
+
   test('确认接口只接受 actionId 并拒绝 Renderer 路径', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = createService();

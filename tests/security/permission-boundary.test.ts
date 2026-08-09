@@ -20,6 +20,13 @@ import {
   createBuiltinFileToolRegistry
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
+import { PrivacySessionRegistry } from
+  '../../apps/desktop/src/main/agent/disclosure-policy';
+import { ConversationTurnAdapter } from
+  '../../apps/desktop/src/main/conversation/conversation-turn-adapter';
+import {
+  createMainConversationComposition
+} from '../../apps/desktop/src/main/conversation/main-conversation-composition';
 import {
   parseBridgeLine,
   serializeBridgeCommand
@@ -159,7 +166,190 @@ function expectSerializableBoundarySafe(
   }
 }
 
+function securityProfile() {
+  return {
+    id: 'security-chat-profile',
+    displayName: '安全会话服务',
+    modelId: 'security-model',
+    hasStoredSecret: true,
+    mode: 'custom' as const,
+    protocol: 'openai-compatible' as const,
+    baseUrl: 'https://security.example/v1',
+    additionalParameters: {},
+    capabilities: ['chat', 'tools'] as const
+  };
+}
+
+function conversationSecurityHarness(input: {
+  planningText: string;
+  authorizedRootPath?: string | null;
+}) {
+  const profile = securityProfile();
+  const privacySessions = new PrivacySessionRegistry();
+  privacySessions.register('security-conversation', { incognito: true });
+  const events: TaskEvent[] = [];
+  const modelRequests: Array<{ tools: unknown[] }> = [];
+  const readAuthorizedRootPath = vi.fn(async () => input.authorizedRootPath ?? null);
+  const readPrivacySettings = vi.fn(async () => ({ dataCategories: { file: true } }));
+  const readEnabledReadTools = vi.fn(async () => [{ name: 'read_text_file' }]);
+  const createPathPolicy = vi.fn(() => ({ kind: 'path-policy' }));
+  const createAgentService = vi.fn(() => {
+    createPathPolicy();
+    throw new Error('SECURITY_AGENT_FACTORY_MUST_NOT_RUN');
+  });
+  const composition = createMainConversationComposition({
+    catalog: [],
+    privacySessions,
+    sessionId: 'security-conversation',
+    readProviderSettings: async () => ({
+      profiles: [profile],
+      route: {
+        primaryProfileId: profile.id,
+        chatProfileId: profile.id,
+        agentProfileId: profile.id,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      }
+    }),
+    readAuthorizedRootPath,
+    readPrivacySettings,
+    readEnabledReadTools,
+    createChatAdapter: () => new ConversationTurnAdapter({
+      async respond(request) {
+        modelRequests.push({ tools: request.tools });
+        return { type: 'text', text: input.planningText };
+      }
+    }),
+    createAgentService,
+    emit: event => events.push(event)
+  });
+  return {
+    composition,
+    createAgentService,
+    createPathPolicy,
+    events,
+    modelRequests,
+    readAuthorizedRootPath,
+    readEnabledReadTools,
+    readPrivacySettings
+  };
+}
+
 describe('权限边界安全回归', () => {
+  test('完整 Main 组合的普通聊天不读取任何文件能力依赖', async () => {
+    const harness = conversationSecurityHarness({
+      planningText: '{"kind":"chat_reply","text":"普通聊天已完成"}'
+    });
+    harness.readAuthorizedRootPath.mockImplementation(async () => {
+      throw new Error('授权读取器不应调用');
+    });
+    harness.readPrivacySettings.mockImplementation(async () => {
+      throw new Error('隐私设置不应调用');
+    });
+    harness.readEnabledReadTools.mockImplementation(async () => {
+      throw new Error('文件工具设置不应调用');
+    });
+
+    await expect(harness.composition.coordinator.submit('只进行普通聊天'))
+      .resolves.toBeUndefined();
+
+    expect(harness.modelRequests).toEqual([{ tools: [] }]);
+    expect(harness.readAuthorizedRootPath).not.toHaveBeenCalled();
+    expect(harness.readPrivacySettings).not.toHaveBeenCalled();
+    expect(harness.readEnabledReadTools).not.toHaveBeenCalled();
+    expect(harness.createAgentService).not.toHaveBeenCalled();
+    expect(harness.createPathPolicy).not.toHaveBeenCalled();
+    await harness.composition.close();
+  });
+
+  test('明确文件任务才读取授权且无授权稳定失败并不创建 Agent', async () => {
+    const harness = conversationSecurityHarness({
+      planningText: '{"kind":"file_task"}',
+      authorizedRootPath: null
+    });
+
+    await expect(harness.composition.coordinator.submit('读取明确指定的文件'))
+      .rejects.toMatchObject({ code: 'FILE_AUTHORIZATION_REQUIRED' });
+
+    expect(harness.readAuthorizedRootPath).toHaveBeenCalledOnce();
+    expect(harness.readPrivacySettings).toHaveBeenCalledOnce();
+    expect(harness.readEnabledReadTools).toHaveBeenCalledOnce();
+    expect(harness.createAgentService).not.toHaveBeenCalled();
+    expect(harness.createPathPolicy).not.toHaveBeenCalled();
+    expect(harness.events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'FILE_AUTHORIZATION_REQUIRED'
+    }));
+    await harness.composition.close();
+  });
+
+  test('私有哨兵不会进入错误、控制台或文件组合输出', async () => {
+    const sentinels = {
+      chat: `private-chat-${crypto.randomUUID()}`,
+      file: `private-file-${crypto.randomUUID()}`,
+      key: `private-key-${crypto.randomUUID()}`,
+      path: `C:\\private-${crypto.randomUUID()}\\secret.txt`
+    };
+    const consoleOutput: unknown[] = [];
+    const consoleSpies = [
+      vi.spyOn(console, 'debug').mockImplementation((...args) => { consoleOutput.push(args); }),
+      vi.spyOn(console, 'info').mockImplementation((...args) => { consoleOutput.push(args); }),
+      vi.spyOn(console, 'warn').mockImplementation((...args) => { consoleOutput.push(args); }),
+      vi.spyOn(console, 'error').mockImplementation((...args) => { consoleOutput.push(args); })
+    ];
+    const harness = conversationSecurityHarness({
+      planningText: '{"kind":"file_task"}',
+      authorizedRootPath: sentinels.path
+    });
+    harness.readPrivacySettings.mockResolvedValue({
+      dataCategories: { file: true },
+      privateFileContent: sentinels.file,
+      apiKey: sentinels.key
+    } as never);
+    harness.readEnabledReadTools.mockResolvedValue([{
+      name: 'read_text_file',
+      privateFileContent: sentinels.file
+    }] as never);
+    harness.createAgentService.mockImplementation(() => {
+      throw new Error(Object.values(sentinels).join(':'));
+    });
+
+    const error = await harness.composition.coordinator.submit(sentinels.chat).then(
+      () => null,
+      reason => reason
+    );
+    const expectedUserMessages = harness.events.filter(event => (
+      event.type === 'message'
+      && event.role === 'user'
+      && event.text === sentinels.chat
+    ));
+    const observableEvents = harness.events.filter(event => !(
+      event.type === 'message'
+      && event.role === 'user'
+      && event.text === sentinels.chat
+    ));
+    const boundaryArtifacts = {
+      error: error instanceof Error
+        ? { name: error.name, message: error.message, code: (error as { code?: string }).code }
+        : error,
+      publicEventsExceptExpectedUserMessage: observableEvents,
+      consoleOutput,
+      agentFactoryCalls: harness.createAgentService.mock.calls.length
+    };
+    const serialized = JSON.stringify(boundaryArtifacts);
+    expect(sentinels).toMatchObject({
+      file: expect.stringContaining('private-file-'),
+      key: expect.stringContaining('private-key-'),
+      path: expect.stringContaining('private-')
+    });
+    expect(expectedUserMessages).toHaveLength(1);
+    expect(Object.values(sentinels).some(value => serialized.includes(value))).toBe(false);
+    expect(harness.createAgentService).toHaveBeenCalledOnce();
+    for (const spy of consoleSpies) spy.mockRestore();
+    await harness.composition.close();
+  });
+
   test('桥接协议拒绝伪造窗口命令', () => {
     const validSnapshot = {
       version: 1,
@@ -421,7 +611,7 @@ describe('权限边界安全回归', () => {
         { relativePath: 'safe.txt' }
       )
     }]);
-    await fixture.service.submit('创建安全文件');
+    await fixture.service.submitFileTask({ text: '创建安全文件', visibleHistory: [] });
 
     const serialized = JSON.stringify(fixture.events);
     expect(serialized).not.toContain(fixture.providerServer.apiKey);
@@ -444,7 +634,10 @@ describe('权限边界安全回归', () => {
       )
     }]);
 
-    await expect(fixture.service.submit('创建越界文件')).rejects.toMatchObject({
+    await expect(fixture.service.submitFileTask({
+      text: '创建越界文件',
+      visibleHistory: []
+    })).rejects.toMatchObject({
       code: 'PATH_INVALID'
     });
 
@@ -533,7 +726,7 @@ describe('权限边界安全回归', () => {
       },
       { response: { type: 'text', text: '安全文件已创建' } }
     ]);
-    await fixture.service.submit('创建 replay.txt');
+    await fixture.service.submitFileTask({ text: '创建 replay.txt', visibleHistory: [] });
     const actionId = pendingAction(fixture.events).actionId;
 
     await fixture.service.confirm(actionId);
@@ -555,7 +748,7 @@ describe('权限边界安全回归', () => {
       },
       { response: { type: 'text', text: '安全文件已创建' } }
     ]);
-    await fixture.service.submit('创建 safe.txt');
+    await fixture.service.submitFileTask({ text: '创建 safe.txt', visibleHistory: [] });
     const action = pendingAction(fixture.events);
     (action as { targetRelativePath: string }).targetRelativePath = 'tampered.txt';
 
@@ -621,7 +814,10 @@ describe('权限边界安全回归', () => {
     expect(rejectedLeaks).toEqual([true, true, true, true]);
     const executeWrite = vi.spyOn(fixture.authorized.fileTools, 'executeWrite');
 
-    await fixture.service.submit('读取 docs/untrusted.txt');
+    await fixture.service.submitFileTask({
+      text: '读取 docs/untrusted.txt',
+      visibleHistory: []
+    });
 
     expect(fixture.providerServer.inspectionErrors).toEqual([]);
     const pendingEvents = fixture.events.filter(event => event.type === 'pending_action');

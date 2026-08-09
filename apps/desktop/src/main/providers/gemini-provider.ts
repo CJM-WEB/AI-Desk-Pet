@@ -183,9 +183,10 @@ export class GeminiProvider implements ModelProvider {
     const body: Record<string, unknown> = {
       ...this.config.additionalParameters,
       contents: serializeMessages(request.messages, this.thoughtSignatures),
-      tools: [{
-        functionDeclarations: request.tools.map(serializeTool)
-      }]
+      // 普通聊天保持协议层工具数组也为空，避免空声明包装被服务端解释为工具能力。
+      tools: request.tools.length === 0
+        ? []
+        : [{ functionDeclarations: request.tools.map(serializeTool) }]
     };
     if (systemParts.length > 0) {
       body.systemInstruction = { parts: systemParts };

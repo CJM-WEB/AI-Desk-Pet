@@ -1,4 +1,4 @@
-import { lstat, readFile, rename, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { fork, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -8,7 +8,7 @@ import {
   type ModelResponse
 } from '@myself/agent-core';
 import type { CharacterManifestV2 } from '@myself/character-runtime';
-import type { TaskEvent } from '@myself/shared-types';
+import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
 import { FileToolService } from '@myself/file-tools';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
 import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
@@ -19,6 +19,14 @@ import {
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
 import { CharacterMotionService } from '../../apps/desktop/src/main/characters/character-motion-service';
+import { PrivacySessionRegistry } from
+  '../../apps/desktop/src/main/agent/disclosure-policy';
+import { ConversationTurnAdapter } from
+  '../../apps/desktop/src/main/conversation/conversation-turn-adapter';
+import {
+  createMainConversationComposition,
+  type MainConversationAgentFactoryInput
+} from '../../apps/desktop/src/main/conversation/main-conversation-composition';
 import {
   createAuthorizedRoot,
   type AuthorizedRootFixture
@@ -325,6 +333,300 @@ function scriptedProvider(responses: ModelResponse[]): ModelProvider {
   };
 }
 
+function conversationProfile(id: string, baseUrl: string): ProviderProfileV2 {
+  return {
+    id,
+    displayName: id,
+    modelId: 'conversation-model',
+    hasStoredSecret: true,
+    mode: 'custom',
+    protocol: 'openai-compatible',
+    baseUrl,
+    additionalParameters: {},
+    capabilities: ['chat', 'tools']
+  };
+}
+
+const conversationPrimary = conversationProfile(
+  'conversation-primary',
+  'https://conversation-a.example/v1'
+);
+const conversationSameFallback = conversationProfile(
+  'conversation-same-fallback',
+  'https://conversation-a.example/v1/'
+);
+const conversationCross = conversationProfile(
+  'conversation-cross',
+  'https://conversation-b.example/v1'
+);
+
+function conversationIntegrationHarness(input: {
+  responses: string[];
+  authorizedRootPath?: string | null;
+  incognito?: boolean;
+}) {
+  const privacySessions = new PrivacySessionRegistry();
+  privacySessions.register('integration-conversation', {
+    incognito: input.incognito ?? false
+  });
+  let chatProfileId = conversationPrimary.id;
+  const providerSettings = {
+    profiles: [conversationPrimary, conversationSameFallback, conversationCross],
+    route: {
+      primaryProfileId: conversationPrimary.id,
+      chatProfileId,
+      agentProfileId: conversationPrimary.id,
+      visionProfileId: null,
+      fallbackProfileIds: [conversationSameFallback.id, conversationCross.id],
+      allowCrossProviderFallback: true
+    }
+  };
+  const events: TaskEvent[] = [];
+  const chatRequests: Array<{ profileId: string; request: Parameters<ModelProvider['respond']>[0] }> = [];
+  const fileSubmissions: Array<{
+    text: string;
+    visibleHistory: readonly unknown[];
+  }> = [];
+  const agentFactoryInputs: Array<MainConversationAgentFactoryInput<
+    { dataCategories: { file: boolean } },
+    { name: string }
+  >> = [];
+  const readAuthorizedRootPath = vi.fn(async () => input.authorizedRootPath ?? null);
+  const readPrivacySettings = vi.fn(async () => ({ dataCategories: { file: true } }));
+  const readEnabledReadTools = vi.fn(async () => [{ name: 'read_text_file' }]);
+  const createAgentService = vi.fn((factoryInput: MainConversationAgentFactoryInput<
+    { dataCategories: { file: boolean } },
+    { name: string }
+  >) => {
+    agentFactoryInputs.push(factoryInput);
+    return {
+      async submitFileTask(submission: {
+        text: string;
+        visibleHistory: readonly unknown[];
+      }) {
+        fileSubmissions.push(submission);
+        factoryInput.emit({
+          type: 'message',
+          role: 'assistant',
+          text: '文件任务已由安全 Agent 完成'
+        });
+        factoryInput.emit({ type: 'phase', phase: 'success' });
+      },
+      cancelActive: vi.fn(),
+      confirm: vi.fn(async () => undefined),
+      cancelAction: vi.fn(),
+      resetForNewConversation: vi.fn(async () => undefined),
+      close: vi.fn(),
+      onPlaybackStarted: vi.fn(() => true),
+      onPlaybackTerminal: vi.fn(() => true),
+      onCommitFrame: vi.fn(() => true),
+      advanceFileTaskTransaction: vi.fn(() => true),
+      invalidateFileTaskPlaybackGrant: vi.fn(() => true)
+    };
+  });
+  const composition = createMainConversationComposition({
+    catalog: [],
+    privacySessions,
+    sessionId: 'integration-conversation',
+    readProviderSettings: async () => ({
+      ...providerSettings,
+      route: { ...providerSettings.route, chatProfileId }
+    }),
+    readAuthorizedRootPath,
+    readPrivacySettings,
+    readEnabledReadTools,
+    createChatAdapter: profile => new ConversationTurnAdapter({
+      async respond(request) {
+        chatRequests.push({ profileId: profile.id, request });
+        const response = input.responses.shift();
+        if (!response) throw new Error('会话规划脚本已耗尽');
+        return { type: 'text', text: response };
+      }
+    }),
+    createAgentService,
+    emit: event => events.push(event)
+  });
+  return {
+    agentFactoryInputs,
+    chatRequests,
+    composition,
+    createAgentService,
+    events,
+    fileSubmissions,
+    readAuthorizedRootPath,
+    readEnabledReadTools,
+    readPrivacySettings,
+    setChatProfile(profileId: string) {
+      chatProfileId = profileId;
+    }
+  };
+}
+
+function latestDisclosureRequest(events: TaskEvent[]): string {
+  const event = [...events].reverse().find(candidate => (
+    candidate.type === 'history_disclosure_required'
+  ));
+  if (!event || event.type !== 'history_disclosure_required') {
+    throw new Error('缺少历史披露请求');
+  }
+  return event.requestId;
+}
+
+describe('桌面会话分流纵向集成', () => {
+  test('无授权根可连续普通聊天且第二轮收到有界可见历史', async () => {
+    const fixture = conversationIntegrationHarness({
+      responses: [
+        '{"kind":"chat_reply","text":"第一轮回复"}',
+        '{"kind":"chat_reply","text":"第二轮回复"}'
+      ]
+    });
+
+    await fixture.composition.coordinator.submit('第一轮消息');
+    await fixture.composition.coordinator.submit('第二轮消息');
+
+    expect(fixture.chatRequests).toHaveLength(2);
+    expect(fixture.chatRequests[1]?.request.tools).toEqual([]);
+    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+      { role: 'user', content: '第一轮消息' },
+      { role: 'assistant', content: '第一轮回复' },
+      { role: 'user', content: '第二轮消息' }
+    ]);
+    expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
+    expect(fixture.readPrivacySettings).not.toHaveBeenCalled();
+    expect(fixture.readEnabledReadTools).not.toHaveBeenCalled();
+    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    await fixture.composition.close();
+  });
+
+  test('模糊请求固定澄清且隔离目录无变化', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    const before = await readdir(authorized.root, { recursive: true });
+    const fixture = conversationIntegrationHarness({
+      responses: ['无法确定请求类型'],
+      authorizedRootPath: authorized.root
+    });
+
+    await fixture.composition.coordinator.submit('帮我整理一下');
+
+    expect(fixture.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '我还不确定你是想聊天，还是希望我处理本地文件。可以再具体说明一下吗？'
+    });
+    await expect(readdir(authorized.root, { recursive: true })).resolves.toEqual(before);
+    expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
+    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    await fixture.composition.close();
+  });
+
+  test('严格文件计划无授权时公开稳定错误', async () => {
+    const fixture = conversationIntegrationHarness({
+      responses: ['{"kind":"file_task"}']
+    });
+
+    await expect(fixture.composition.coordinator.submit('读取 docs/note.txt'))
+      .rejects.toMatchObject({ code: 'FILE_AUTHORIZATION_REQUIRED' });
+    expect(fixture.readAuthorizedRootPath).toHaveBeenCalledOnce();
+    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    await fixture.composition.close();
+  });
+
+  test('授权后的严格文件计划进入既有 Agent 且排除跨 Provider fallback', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    const fixture = conversationIntegrationHarness({
+      responses: ['{"kind":"file_task"}'],
+      authorizedRootPath: authorized.root
+    });
+
+    await fixture.composition.coordinator.submit('读取 docs/note.txt');
+
+    expect(fixture.fileSubmissions).toEqual([{
+      text: '读取 docs/note.txt',
+      visibleHistory: []
+    }]);
+    expect(fixture.agentFactoryInputs[0]?.fallbackProfiles.map(profile => profile.id))
+      .toEqual([conversationSameFallback.id]);
+    expect(fixture.agentFactoryInputs[0]?.fallbackProfiles.map(profile => profile.id))
+      .not.toContain(conversationCross.id);
+    await fixture.composition.close();
+  });
+
+  test('跨 Provider 仅发送当前消息时历史为空且当前消息继续执行', async () => {
+    const fixture = conversationIntegrationHarness({
+      responses: [
+        '{"kind":"chat_reply","text":"来源回复"}',
+        '{"kind":"chat_reply","text":"目标回复"}'
+      ],
+      incognito: true
+    });
+    await fixture.composition.coordinator.submit('来源消息');
+    fixture.setChatProfile(conversationCross.id);
+
+    await fixture.composition.coordinator.submit('当前目标消息');
+    const requestId = latestDisclosureRequest(fixture.events);
+    await fixture.composition.coordinator.resolveHistoryDisclosure(
+      requestId,
+      'current_message_only'
+    );
+
+    expect(fixture.chatRequests[1]?.profileId).toBe(conversationCross.id);
+    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+      { role: 'user', content: '当前目标消息' }
+    ]);
+    await fixture.composition.close();
+  });
+
+  test('跨 Provider 单次共享只恢复原请求且旧、伪造、重复请求均失效', async () => {
+    const fixture = conversationIntegrationHarness({
+      responses: [
+        '{"kind":"chat_reply","text":"来源回复"}',
+        '{"kind":"chat_reply","text":"目标回复"}',
+        '{"kind":"chat_reply","text":"再次回复"}'
+      ]
+    });
+    await fixture.composition.coordinator.submit('来源消息');
+    fixture.setChatProfile(conversationCross.id);
+    await fixture.composition.coordinator.submit('目标消息');
+    const firstRequestId = latestDisclosureRequest(fixture.events);
+
+    await expect(fixture.composition.coordinator.resolveHistoryDisclosure(
+      'forged-request',
+      'share_once'
+    )).rejects.toMatchObject({ code: 'DISCLOSURE_REQUEST_EXPIRED' });
+    await fixture.composition.coordinator.resolveHistoryDisclosure(
+      firstRequestId,
+      'share_once'
+    );
+    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+      { role: 'user', content: '来源消息' },
+      { role: 'assistant', content: '来源回复' },
+      { role: 'user', content: '目标消息' }
+    ]);
+    await expect(fixture.composition.coordinator.resolveHistoryDisclosure(
+      firstRequestId,
+      'share_once'
+    )).rejects.toMatchObject({ code: 'DISCLOSURE_REQUEST_EXPIRED' });
+
+    await fixture.composition.coordinator.submit('再次发送');
+    const secondRequestId = latestDisclosureRequest(fixture.events);
+    expect(secondRequestId).not.toBe(firstRequestId);
+    await expect(fixture.composition.coordinator.resolveHistoryDisclosure(
+      firstRequestId,
+      'share_once'
+    )).rejects.toMatchObject({ code: 'DISCLOSURE_REQUEST_EXPIRED' });
+    await fixture.composition.coordinator.resolveHistoryDisclosure(
+      secondRequestId,
+      'current_message_only'
+    );
+    expect(fixture.chatRequests[2]?.request.messages.slice(1)).toEqual([
+      { role: 'user', content: '再次发送' }
+    ]);
+    await fixture.composition.close();
+  });
+});
+
 describe('桌面 Agent 真实服务集成', () => {
   test('自主行为最小闭环按可信事件组合 Agent、Main 行为与窗口运动', async () => {
     let now = 0;
@@ -421,8 +723,15 @@ describe('桌面 Agent 真实服务集成', () => {
       },
       emitBehaviorIntent: intent => behavior.handleAgentIntent(intent)
     });
+    // 生产链由 Main Coordinator 先发布 listening，再把明确文件任务交给 Agent。
+    const submitAgentTask = async (text: string): Promise<void> => {
+      const listening = { type: 'phase', phase: 'listening' } as const;
+      taskEvents.push(listening);
+      behavior.handleTaskEvent(listening);
+      await agent.submitFileTask({ text, visibleHistory: [] });
+    };
 
-    await agent.submit('执行合法意图');
+    await submitAgentTask('执行合法意图');
     expect(taskEvents.filter(event => event.type === 'phase').slice(0, 2)).toEqual([
       { type: 'phase', phase: 'listening' },
       { type: 'phase', phase: 'thinking' }
@@ -433,7 +742,7 @@ describe('桌面 Agent 真实服务集成', () => {
     expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'celebrate-action' });
 
     const illegalStart = behaviorEvents.length;
-    await agent.submit('执行非法意图');
+    await submitAgentTask('执行非法意图');
     expect(behaviorEvents.slice(illegalStart).filter(event => (
       event.stateId === 'think-state' && event.actionId === 'think-action'
     ))).toHaveLength(3);
@@ -442,7 +751,7 @@ describe('桌面 Agent 真实服务集成', () => {
     }));
 
     const noIntentStart = behaviorEvents.length;
-    await agent.submit('执行无意图降级');
+    await submitAgentTask('执行无意图降级');
     expect(behaviorEvents.slice(noIntentStart)).toEqual(expect.arrayContaining([
       expect.objectContaining({ actionId: 'listen-action' }),
       expect.objectContaining({ actionId: 'think-action' }),
@@ -506,7 +815,10 @@ describe('桌面 Agent 真实服务集成', () => {
         return result;
       });
 
-    await fixture.service.submit('编译角色时继续响应');
+    await fixture.service.submitFileTask({
+      text: '编译角色时继续响应',
+      visibleHistory: []
+    });
 
     expect(compileCompleted).toBe(false);
     expect(fixture.events).toContainEqual({
@@ -572,7 +884,7 @@ describe('桌面 Agent 真实服务集成', () => {
       text: fixture.authorized.root
     }], fixture.authorized.root, fixture.providerServer.apiKey)).toThrow();
 
-    await fixture.service.submit('列出授权目录');
+    await fixture.service.submitFileTask({ text: '列出授权目录', visibleHistory: [] });
 
     expectProviderExchange(fixture.providerServer, 2);
     expect(fixture.providerServer.inspectionErrors).toEqual([]);
@@ -609,7 +921,10 @@ describe('桌面 Agent 真实服务集成', () => {
     ]);
     await writeFile(join(fixture.authorized.root, 'docs', 'note.txt'), content, 'utf8');
 
-    await fixture.service.submit('读取 docs/note.txt');
+    await fixture.service.submitFileTask({
+      text: '读取 docs/note.txt',
+      visibleHistory: []
+    });
 
     expectProviderExchange(fixture.providerServer, 2);
     expect(fixture.providerServer.inspectionErrors).toEqual([]);
@@ -628,7 +943,10 @@ describe('桌面 Agent 真实服务集成', () => {
         )
       }
     ]);
-    await fixture.service.submit('新建 cancelled.txt');
+    await fixture.service.submitFileTask({
+      text: '新建 cancelled.txt',
+      visibleHistory: []
+    });
     const action = pendingAction(fixture.events);
 
     fixture.service.cancelAction(action.actionId);
@@ -647,7 +965,10 @@ describe('桌面 Agent 真实服务集成', () => {
       )
     }]);
 
-    await fixture.service.submit('将 docs 移入回收站');
+    await fixture.service.submitFileTask({
+      text: '将 docs 移入回收站',
+      visibleHistory: []
+    });
     const action = pendingAction(fixture.events);
     expect(action).toMatchObject({
       operation: 'move_to_recycle_bin',
@@ -679,7 +1000,10 @@ describe('桌面 Agent 真实服务集成', () => {
       moveToRecycleBin: absolutePath => rename(absolutePath, recycled)
     });
 
-    await fixture.service.submit('把 docs/old.txt 移入回收站');
+    await fixture.service.submitFileTask({
+      text: '把 docs/old.txt 移入回收站',
+      visibleHistory: []
+    });
     const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
     await Promise.resolve();
 
@@ -724,7 +1048,10 @@ describe('桌面 Agent 真实服务集成', () => {
       }
     });
 
-    await fixture.service.submit('把 docs/token.txt 移入回收站');
+    await fixture.service.submitFileTask({
+      text: '把 docs/token.txt 移入回收站',
+      visibleHistory: []
+    });
     const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
     await Promise.resolve();
 
@@ -774,7 +1101,10 @@ describe('桌面 Agent 真实服务集成', () => {
       }
     });
 
-    await fixture.service.submit('把 docs/failure.txt 移入回收站');
+    await fixture.service.submitFileTask({
+      text: '把 docs/failure.txt 移入回收站',
+      visibleHistory: []
+    });
     const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
     await Promise.resolve();
     expect(fixture.service.onPlaybackStarted(
@@ -819,7 +1149,7 @@ describe('桌面 Agent 真实服务集成', () => {
       },
       { response: { type: 'text', text: '空文件已创建' } }
     ]);
-    await fixture.service.submit('新建 created.txt');
+    await fixture.service.submitFileTask({ text: '新建 created.txt', visibleHistory: [] });
 
     await fixture.service.confirm(pendingAction(fixture.events).actionId);
 
@@ -841,7 +1171,7 @@ describe('桌面 Agent 真实服务集成', () => {
       { response: { type: 'text', text: '重命名已完成' } }
     ]);
     await writeFile(join(fixture.authorized.root, 'docs', 'before.txt'), '原始内容', 'utf8');
-    await fixture.service.submit('重命名文件');
+    await fixture.service.submitFileTask({ text: '重命名文件', visibleHistory: [] });
 
     await fixture.service.confirm(pendingAction(fixture.events).actionId);
 
@@ -866,7 +1196,10 @@ describe('桌面 Agent 真实服务集成', () => {
       }
     ]);
 
-    await expect(fixture.service.submit('新建越界文件')).rejects.toMatchObject({
+    await expect(fixture.service.submitFileTask({
+      text: '新建越界文件',
+      visibleHistory: []
+    })).rejects.toMatchObject({
       code: 'PATH_INVALID'
     });
     expectProviderExchange(fixture.providerServer, 1);
@@ -887,7 +1220,10 @@ describe('桌面 Agent 真实服务集成', () => {
     const target = join(fixture.authorized.root, 'existing.txt');
     await writeFile(target, '必须保留', 'utf8');
 
-    await expect(fixture.service.submit('新建 existing.txt')).rejects.toMatchObject({
+    await expect(fixture.service.submitFileTask({
+      text: '新建 existing.txt',
+      visibleHistory: []
+    })).rejects.toMatchObject({
       code: 'TARGET_EXISTS'
     });
     expectProviderExchange(fixture.providerServer, 1);
@@ -904,7 +1240,7 @@ describe('桌面 Agent 真实服务集成', () => {
         )
       }
     ]);
-    await fixture.service.submit('新建 stale.txt');
+    await fixture.service.submitFileTask({ text: '新建 stale.txt', visibleHistory: [] });
     const staleActionId = pendingAction(fixture.events).actionId;
     fixture.service.clearPending('application_exit');
 

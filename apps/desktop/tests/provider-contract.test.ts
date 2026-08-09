@@ -12,6 +12,7 @@ import {
 import { AnthropicProvider } from '../src/main/providers/anthropic-provider';
 import { GeminiProvider } from '../src/main/providers/gemini-provider';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
+import { ConversationTurnAdapter } from '../src/main/conversation/conversation-turn-adapter';
 import {
   providerCatalog,
   toolRequestSchema,
@@ -93,6 +94,201 @@ function expectObservableErrorTextHidden(
     expect(String(observableError.cause ?? '')).not.toContain(sensitiveValue);
   }
 }
+
+interface PlanningProtocolCase {
+  name: string;
+  createProvider(fetchClient: FetchLike): ModelProvider;
+  textResponse(text: string): unknown;
+  toolResponse: unknown;
+  requestTools(body: Record<string, unknown>): unknown;
+}
+
+const planningProtocolCases: PlanningProtocolCase[] = [
+  {
+    name: 'OpenAI Compatible',
+    createProvider: fetchClient => new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'planning-secret',
+      fetchClient
+    ),
+    textResponse: text => ({ choices: [{ message: { content: text } }] }),
+    toolResponse: {
+      choices: [{
+        message: {
+          content: null,
+          tool_calls: [{
+            id: 'planning-tool-call',
+            type: 'function',
+            function: { name: 'read_text_file', arguments: '{}' }
+          }]
+        }
+      }]
+    },
+    requestTools: body => body.tools
+  },
+  {
+    name: 'Anthropic',
+    createProvider: fetchClient => new AnthropicProvider(
+      adapterProfile,
+      async () => 'planning-secret',
+      fetchClient
+    ),
+    textResponse: text => ({ content: [{ type: 'text', text }] }),
+    toolResponse: {
+      content: [{
+        type: 'tool_use',
+        id: 'planning-tool-call',
+        name: 'read_text_file',
+        input: {}
+      }]
+    },
+    requestTools: body => body.tools
+  },
+  {
+    name: 'Gemini',
+    createProvider: fetchClient => new GeminiProvider(
+      adapterProfile,
+      async () => 'planning-secret',
+      fetchClient
+    ),
+    textResponse: text => ({
+      candidates: [{ content: { parts: [{ text }] } }]
+    }),
+    toolResponse: {
+      candidates: [{
+        content: {
+          parts: [{ functionCall: { name: 'read_text_file', args: {} } }]
+        }
+      }]
+    },
+    requestTools: body => body.tools
+  }
+];
+
+describe('ConversationTurnAdapter 三类 Provider 规划契约', () => {
+  test.each(planningProtocolCases)(
+    '$name 的合法 Chat/Clarify/File 结果都通过严格协议且请求工具数组为空',
+    async contract => {
+      const responses = [
+        '{"kind":"chat_reply","text":"我在这里。"}',
+        '{"kind":"clarify","question":"你希望处理哪个文件？"}',
+        '{"kind":"file_task"}'
+      ];
+      const fetchClient = vi.fn<FetchLike>(async () => {
+        const response = responses.shift();
+        if (!response) throw new Error('规划响应脚本已耗尽');
+        return jsonResponse(contract.textResponse(response));
+      });
+      const adapter = new ConversationTurnAdapter(contract.createProvider(fetchClient));
+
+      await expect(adapter.plan({
+        history: [],
+        text: '第一轮',
+        signal: new AbortController().signal
+      })).resolves.toEqual({ kind: 'chat_reply', text: '我在这里。' });
+      await expect(adapter.plan({
+        history: [],
+        text: '第二轮',
+        signal: new AbortController().signal
+      })).resolves.toEqual({ kind: 'clarify', question: '你希望处理哪个文件？' });
+      await expect(adapter.plan({
+        history: [],
+        text: '第三轮',
+        signal: new AbortController().signal
+      })).resolves.toEqual({ kind: 'file_task' });
+
+      expect(fetchClient).toHaveBeenCalledTimes(3);
+      for (const call of fetchClient.mock.calls) {
+        const body = JSON.parse(String(call[1]?.body)) as Record<string, unknown>;
+        expect(contract.requestTools(body)).toEqual([]);
+      }
+    }
+  );
+
+  test.each(planningProtocolCases)(
+    '$name 的非法、混合、缺字段和多字段结果只安全澄清',
+    async contract => {
+      const invalidOutputs = [
+        'not-json',
+        '正文 {"kind":"file_task"}',
+        '{"kind":"chat_reply"}',
+        '{"kind":"file_task","extra":true}'
+      ];
+      const fetchClient = vi.fn<FetchLike>(async () => {
+        const response = invalidOutputs.shift();
+        if (!response) throw new Error('非法规划响应脚本已耗尽');
+        return jsonResponse(contract.textResponse(response));
+      });
+      const adapter = new ConversationTurnAdapter(contract.createProvider(fetchClient));
+
+      for (let index = 0; index < 4; index += 1) {
+        await expect(adapter.plan({
+          history: [],
+          text: `非法规划-${String(index)}`,
+          signal: new AbortController().signal
+        })).resolves.toEqual({
+          kind: 'clarify',
+          question: '我还不确定你是想聊天，还是希望我处理本地文件。可以再具体说明一下吗？'
+        });
+      }
+    }
+  );
+
+  test.each(planningProtocolCases)(
+    '$name 的 Provider 工具调用只安全澄清且不会变成文件计划',
+    async contract => {
+      const adapter = new ConversationTurnAdapter(contract.createProvider(
+        vi.fn(async () => jsonResponse(contract.toolResponse))
+      ));
+
+      await expect(adapter.plan({
+        history: [],
+        text: '尝试调用工具',
+        signal: new AbortController().signal
+      })).resolves.toEqual({
+        kind: 'clarify',
+        question: '我还不确定你是想聊天，还是希望我处理本地文件。可以再具体说明一下吗？'
+      });
+    }
+  );
+
+  test.each(planningProtocolCases)(
+    '$name 的受控取消保持取消错误且不产生规划结果',
+    async contract => {
+      const abortError = new DOMException('测试取消', 'AbortError');
+      const controller = new AbortController();
+      const adapter = new ConversationTurnAdapter(contract.createProvider(
+        vi.fn(async () => { throw abortError; })
+      ));
+      controller.abort();
+
+      await expect(adapter.plan({
+        history: [],
+        text: '取消规划',
+        signal: controller.signal
+      })).rejects.toBe(abortError);
+    }
+  );
+
+  test.each(planningProtocolCases)(
+    '$name 的受控超时只返回稳定错误且不产生文件计划',
+    async contract => {
+      const timeoutError = new DOMException('测试超时', 'TimeoutError');
+      const adapter = new ConversationTurnAdapter(contract.createProvider(
+        vi.fn(async () => { throw timeoutError; })
+      ));
+
+      await expect(adapter.plan({
+        history: [],
+        text: '超时规划',
+        signal: new AbortController().signal
+      })).rejects.toMatchObject({
+        code: 'PROVIDER_TIMEOUT',
+        retryable: true
+      });
+    }
+  );
+});
 
 // 共享契约只验证 Agent Core 可观察到的统一行为，各协议请求形状另行验证。
 function verifyProviderContract(contract: ProviderContractCase): void {
