@@ -7,11 +7,14 @@ directories:
 files:
   - out/**
   - package.json
+  - resources/characters/default/**/*
 extraResources:
-  - from: resources/characters/default
-    to: characters/default
-    filter:
-      - '**/*'
+  - from: resources/windows/explorer-space-bridge.ps1
+    to: windows/explorer-space-bridge.ps1
+  - from: resources/windows/explorer-space-shell-tab-helper.cs
+    to: windows/explorer-space-shell-tab-helper.cs
+  - from: resources/windows/explorer-space-integrity.json
+    to: windows/explorer-space-integrity.json
 asar: true
 win:
   target:

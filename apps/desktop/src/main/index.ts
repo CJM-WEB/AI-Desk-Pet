@@ -1,4 +1,5 @@
-import { access, rename, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { AgentLoop, ModelRouter } from '@myself/agent-core';
 import { FileToolService, PathPolicy } from '@myself/file-tools';
@@ -10,6 +11,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  powerMonitor,
   safeStorage,
   screen,
   shell,
@@ -21,12 +23,16 @@ import { PermissionPolicy } from './agent/permission-policy';
 import { PendingActionStore } from './agent/pending-action-store';
 import { createSessionToolRegistry } from './agent/tool-registry';
 import { PrivacySessionRegistry } from './agent/disclosure-policy';
-import { resolveMainE2eBoundary } from './e2e-boundary';
+import {
+  createMainE2eExplorerBridge,
+  resolveMainE2eBoundary
+} from './e2e-boundary';
 import {
   registerAdvancedSettingsIpc,
   registerAgentIpc,
   registerCharacterIpc,
   registerCharacterMotionIpc,
+  registerHabitatIpc,
   registerPetWindowInteractionIpc,
   registerSettingsIpc,
   registerWindowIpc
@@ -36,6 +42,18 @@ import { CharacterAssetService } from './characters/character-asset-service';
 import { CharacterBehaviorService } from './characters/character-behavior-service';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
+import { ExplorerSpaceClient, buildExplorerBridgeSpawnSpec } from
+  './habitat/explorer-space-client';
+import type { ExplorerSnapshot } from './habitat/explorer-space-protocol';
+import { ExplorerWindowLayerController } from
+  './habitat/explorer-window-layer-controller';
+import { FolderIdentityResolver } from './habitat/folder-identity-resolver';
+import { HabitatAutonomyPolicy } from './habitat/habitat-autonomy-policy';
+import { HabitatDirectoryPolicy } from './habitat/habitat-directory-policy';
+import { HabitatService } from './habitat/habitat-service';
+import { HabitatSettingsService } from './habitat/habitat-settings-service';
+import { HabitatWindowController } from './habitat/habitat-window-controller';
+import { PetHabitatStore } from './habitat/pet-habitat-store';
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
 import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
@@ -77,8 +95,11 @@ import { PetWindowInteractionController } from
 import {
   broadcastCharacterEvent,
   createCharacterQuickSwitchCommand,
+  buildHabitatTrayMenu,
   createLoadBeforePublishWindow,
+  createPetSummonController,
   createPetVisibilityCommand,
+  createVerifiedDirectoryOpener,
   createWindowCommandController
 } from './windows/window-commands';
 import {
@@ -103,6 +124,43 @@ if (e2eBoundary) {
   app.setPath('userData', e2eBoundary.userDataDirectory);
 }
 const isPrimaryInstance = configureSingleInstance(app, () => primaryPetWindow);
+
+const EXPLORER_SPACE_RESOURCE_NAMES = [
+  'explorer-space-bridge.ps1',
+  'explorer-space-shell-tab-helper.cs'
+] as const;
+
+/** 生产桥只信任固定清单中的两个逐文件 SHA-256，任何缺失或多余项都失败关闭。 */
+async function verifyExplorerSpaceResourceIntegrity(resourceRoot: string): Promise<void> {
+  try {
+    const manifestPath = join(resourceRoot, 'windows', 'explorer-space-integrity.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      version?: unknown;
+      files?: unknown;
+    };
+    if (
+      manifest.version !== 1
+      || !manifest.files
+      || typeof manifest.files !== 'object'
+      || Array.isArray(manifest.files)
+    ) throw new Error('MANIFEST_INVALID');
+    const files = manifest.files as Record<string, unknown>;
+    if (
+      Object.keys(files).length !== EXPLORER_SPACE_RESOURCE_NAMES.length
+      || !EXPLORER_SPACE_RESOURCE_NAMES.every(name => (
+        typeof files[name] === 'string' && /^[a-f0-9]{64}$/u.test(files[name])
+      ))
+    ) throw new Error('MANIFEST_INVALID');
+    for (const name of EXPLORER_SPACE_RESOURCE_NAMES) {
+      const content = await readFile(join(resourceRoot, 'windows', name));
+      if (createHash('sha256').update(content).digest('hex') !== files[name]) {
+        throw new Error('HASH_MISMATCH');
+      }
+    }
+  } catch {
+    throw new Error('EXPLORER_SPACE_RESOURCE_INTEGRITY_FAILED');
+  }
+}
 
 /** E2E 只把目标搬入受校验的临时目录，并用空标记记录调用次数，绝不触碰系统回收站。 */
 async function moveToE2eRecycleBin(absolutePath: string): Promise<void> {
@@ -183,7 +241,37 @@ async function createApplicationWindows(): Promise<void> {
   let chat = createChatWindow(BrowserWindow, preload);
   let settings = createSettingsWindow(BrowserWindow, preload);
 
+  // 阶段一：窗口保持隐藏，先恢复 Habitat 稳定事实并准备受信桥接边界。
   const storageDirectory = app.getPath('userData');
+  const habitatStore = new PetHabitatStore(join(storageDirectory, 'pet-habitat.json'));
+  const habitatSnapshot = await habitatStore.load();
+  const explorerResourceRoot = app.isPackaged
+    ? process.resourcesPath
+    : join(__dirname, '../../resources');
+  let explorer: ExplorerSpaceClient | ReturnType<typeof createMainE2eExplorerBridge>;
+  if (e2eBoundary) {
+    explorer = createMainE2eExplorerBridge();
+  } else {
+    await verifyExplorerSpaceResourceIntegrity(explorerResourceRoot);
+    explorer = new ExplorerSpaceClient({
+      spawnSpec: buildExplorerBridgeSpawnSpec({
+        windowsDirectory: process.env.SystemRoot ?? 'C:\\Windows',
+        resourceRoot: explorerResourceRoot,
+        tempDirectory: app.getPath('temp')
+      })
+    });
+  }
+  let latestExplorerObservation: ExplorerSnapshot | null = null;
+  explorer.on('snapshot', observation => {
+    latestExplorerObservation = observation as ExplorerSnapshot;
+  });
+  let explorerObserving = false;
+  if (habitatSnapshot.location.kind === 'folder') {
+    pet.hide();
+    await explorer.start();
+    await explorer.startObserving();
+    explorerObserving = true;
+  }
   const charactersDirectory = join(storageDirectory, 'characters');
   const characterStore = new CharacterStore(charactersDirectory);
   const characterAssetService = new CharacterAssetService(charactersDirectory);
@@ -213,7 +301,7 @@ async function createApplicationWindows(): Promise<void> {
   });
   if (characterStartup.kind === 'fallback') {
     const defaultResources = app.isPackaged
-      ? join(process.resourcesPath, 'characters', 'default')
+      ? join(app.getAppPath(), 'resources/characters/default')
       : join(__dirname, '../../resources/characters/default');
     await ensureOfficialDefaultCharacter(characterStore, defaultResources);
     const recoveryErrorCode = recoveredCorruptCharacterIndex.recovered
@@ -261,12 +349,62 @@ async function createApplicationWindows(): Promise<void> {
       .map(display => display.workArea)
   ];
   const petBounds = pet.getBounds();
+  // 阶段二：桌面与目录局部坐标共用同一持久化控制器，禁止跨模式迟到写入。
+  const restoredDesktopPosition = habitatSnapshot.location.kind === 'desktop'
+    ? habitatSnapshot.location.position
+    : habitatSnapshot.location.previousDesktopPosition;
   const petPosition = restorePetPosition(
-    (await settingsStore.getPublic()).petPosition,
+    restoredDesktopPosition ?? (await settingsStore.getPublic()).petPosition,
     { width: petBounds.width, height: petBounds.height },
     workAreas
   );
-  pet.setPosition(petPosition.x, petPosition.y);
+  if (habitatSnapshot.location.kind === 'desktop') {
+    pet.setPosition(petPosition.x, petPosition.y);
+  }
+  const reportPetPositionError = (error: unknown): void => {
+    console.error('保存桌宠位置失败。', error);
+  };
+  const petPositionController = createPetPositionController({
+    window: pet,
+    savePosition: async position => {
+      const current = await habitatStore.load();
+      if (current.location.kind === 'desktop') {
+        await habitatStore.updateLocation({
+          expected: current.location,
+          location: { kind: 'desktop', position }
+        });
+      }
+      await settingsStore.savePetPosition(position);
+    },
+    getLocalOffset: () => {
+      const observation = latestExplorerObservation;
+      if (!observation || observation.status !== 'ready') {
+        return habitatSnapshot.location.kind === 'folder'
+          ? habitatSnapshot.location.localOffset
+          : { x: 0, y: 0 };
+      }
+      const [x = 0, y = 0] = pet.getPosition();
+      return { x: x - observation.rect.x, y: y - observation.rect.y };
+    },
+    saveLocalOffset: async localOffset => {
+      const current = await habitatStore.load();
+      if (current.location.kind !== 'folder') return;
+      const folderLocation = current.location;
+      const expectedDirectory = current.directories.find(directory => (
+        directory.id === folderLocation.directoryId
+      ));
+      if (!expectedDirectory) return;
+      await habitatStore.updateLocation({
+        expected: folderLocation,
+        location: { ...folderLocation, localOffset },
+        expectedDirectory
+      });
+    },
+    onError: reportPetPositionError
+  });
+  if (habitatSnapshot.location.kind === 'folder') {
+    petPositionController.setPersistenceMode('folder');
+  }
   const characterMotion = new CharacterMotionService({
     window: pet,
     getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea)
@@ -287,6 +425,7 @@ async function createApplicationWindows(): Promise<void> {
     motion: {
       beginUserMove: () => {
         activeAgentService?.invalidateFileTaskPlaybackGrant();
+        void habitatService.handleUserInteraction();
         characterBehavior.handleUserInteraction();
         characterMotion.beginUserMove();
       },
@@ -298,6 +437,129 @@ async function createApplicationWindows(): Promise<void> {
     petWindowInteraction
   );
   const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion);
+  // 阶段三：既有窗口、目录身份与桥接服务在 Main 组合根内收口为唯一状态机。
+  const explorerLayer = new ExplorerWindowLayerController({ window: pet });
+  const habitatWindowController = new HabitatWindowController({
+    window: pet,
+    layer: explorerLayer,
+    motion: characterMotion,
+    interaction: petWindowInteraction,
+    position: petPositionController,
+    getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea),
+    isCurrentExplorerWindow: (explorerHwnd, instanceId) => {
+      const observation = latestExplorerObservation;
+      return observation?.status === 'ready'
+        && observation.hwnd === explorerHwnd
+        && observation.instanceId === instanceId
+        && observation.foreground
+        && !observation.minimized;
+    }
+  });
+  const habitatDirectoryPolicy = new HabitatDirectoryPolicy({
+    userDataPath: storageDirectory,
+    characterStoragePath: charactersDirectory
+  });
+  const folderIdentityResolver = new FolderIdentityResolver(habitatStore);
+  let currentAgentPhase = 'idle';
+  let currentProactivityMode: 'passive' | 'assistive' | 'autonomous' = 'assistive';
+  const habitatService = new HabitatService({
+    initialSnapshot: habitatSnapshot,
+    store: habitatStore,
+    directoryPolicy: habitatDirectoryPolicy,
+    identityResolver: folderIdentityResolver,
+    explorer: {
+      start: () => explorer.start(),
+      startObserving: async () => {
+        if (explorerObserving) return { ok: true };
+        const result = await explorer.startObserving();
+        explorerObserving = true;
+        return result;
+      },
+      stopObserving: async () => {
+        if (!explorerObserving) return { ok: true };
+        const result = await explorer.stopObserving();
+        explorerObserving = false;
+        return result;
+      }
+    },
+    layer: {
+      activate: async ({ explorerHwnd }) => {
+        const observation = latestExplorerObservation;
+        const current = await habitatStore.load();
+        if (
+          !observation
+          || observation.status !== 'ready'
+          || observation.hwnd !== explorerHwnd
+          || current.location.kind !== 'folder'
+        ) throw new Error('HABITAT_EXPLORER_UNSAFE');
+        await habitatWindowController.showFolder({
+          instanceId: observation.instanceId,
+          sequence: observation.sequence,
+          explorerHwnd,
+          explorerBounds: observation.rect,
+          observedAt: Date.now(),
+          foreground: observation.foreground,
+          minimized: observation.minimized,
+          localOffset: current.location.localOffset
+        });
+      },
+      invalidate: reason => reason === 'leave'
+        ? habitatWindowController.hideFolder()
+        : habitatWindowController.loseExplorer(reason)
+    },
+    petWindow: {
+      getPosition: () => {
+        const [x = 0, y = 0] = pet.getPosition();
+        return { x, y };
+      },
+      getLocalOffset: () => {
+        const observation = latestExplorerObservation;
+        const [x = 0, y = 0] = pet.getPosition();
+        return observation?.status === 'ready'
+          ? { x: x - observation.rect.x, y: y - observation.rect.y }
+          : { x: 0, y: 0 };
+      },
+      setPosition: (x, y) => pet.setPosition(x, y),
+      hide: () => pet.hide(),
+      show: () => pet.showInactive(),
+      focus: () => pet.focus()
+    },
+    openDirectory: createVerifiedDirectoryOpener(path => shell.openPath(path)),
+    readBlockers: () => ({
+      fileTaskActive: ['listening', 'thinking', 'awaiting_confirmation', 'acting']
+        .includes(currentAgentPhase),
+      characterSwitching: false,
+      dragging: petWindowInteraction.getProbe().dragging,
+      chatInteracting: chat.isFocused(),
+      appQuitting: isQuitting,
+      foregroundFullscreen: BrowserWindow.getAllWindows().some(window => window.isFullScreen()),
+      proactivityMode: currentProactivityMode
+    }),
+    readExplorerAuthority: () => {
+      const observation = latestExplorerObservation;
+      return observation
+        ? {
+            nonce: observation.nonce,
+            revision: observation.sequence,
+            instanceId: observation.status === 'ready' ? observation.instanceId : null
+          }
+        : { nonce: '', revision: 0, instanceId: null };
+    }
+  });
+  explorer.on('snapshot', observation => {
+    void habitatService.observeExplorer(observation as ExplorerSnapshot)
+      .then(() => {
+        const state = habitatService.snapshot().state;
+        if (state === 'folder-visible') {
+          void characterBehavior.requestHabitatPresentation('found');
+        } else if (state === 'folder-lost') {
+          void characterBehavior.requestHabitatPresentation('lost');
+        } else if (state === 'folder-hidden') {
+          characterBehavior.handleHabitatHidden();
+        }
+      })
+      .catch(error => console.error('处理 Explorer 观察失败。', error));
+  });
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),
     applyPlaybackFeedback: feedback => {
@@ -341,15 +603,6 @@ async function createApplicationWindows(): Promise<void> {
     tickIntervalMs: 50,
     idleIntervalMs: 500
   });
-  app.once('before-quit', () => {
-    activeAgentService?.close();
-    releasePetWindowInteraction();
-    motionRuntime.destroy();
-    releaseMotionEvents();
-    releaseBehaviorEvents();
-    characterBehavior.close();
-    releaseMotionWindowEvents();
-  });
   pet.once('closed', () => {
     activeAgentService?.close();
     motionRuntime.destroy();
@@ -357,14 +610,6 @@ async function createApplicationWindows(): Promise<void> {
     releaseBehaviorEvents();
     characterBehavior.close();
     releaseMotionWindowEvents();
-  });
-  const reportPetPositionError = (error: unknown): void => {
-    console.error('保存桌宠位置失败。', error);
-  };
-  const petPositionController = createPetPositionController({
-    window: pet,
-    savePosition: position => settingsStore.savePetPosition(position),
-    onError: reportPetPositionError
   });
   const hideOnClose = (window: BrowserWindow): void => {
     window.on('close', event => {
@@ -390,11 +635,36 @@ async function createApplicationWindows(): Promise<void> {
     prepare: window => workshopCloseHandshake.bindWindow(window, () => isQuitting),
     load: window => loadRenderer(window, 'characters')
   });
+  let habitatAutonomyTimer: ReturnType<typeof setInterval> | undefined;
+  let habitatShutdownStarted = false;
+  // 退出事务严格串行，单点失败记录后仍继续释放后续资源。
   const handleBeforeQuit = createQuitAfterPositionFlush({
     flush: async () => {
-      await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent());
-      await petPositionController.flush();
-      await activeDesktopSettingsService?.close();
+      if (habitatShutdownStarted) return;
+      habitatShutdownStarted = true;
+      const errors: unknown[] = [];
+      if (habitatAutonomyTimer !== undefined) {
+        clearInterval(habitatAutonomyTimer);
+        habitatAutonomyTimer = undefined;
+      }
+      try { await habitatService.close(); } catch (error) { errors.push(error); }
+      try { await habitatWindowController.dispose(); } catch (error) { errors.push(error); }
+      try { await explorer.close(); } catch (error) { errors.push(error); }
+      try { await petPositionController.flush(); } catch (error) { errors.push(error); }
+      try {
+        await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent());
+      } catch (error) {
+        errors.push(error);
+      }
+      try { await desktopSettingsService.close(); } catch (error) { errors.push(error); }
+      releasePetWindowInteraction();
+      motionRuntime.destroy();
+      releaseMotionEvents();
+      releaseBehaviorEvents();
+      releaseMotionWindowEvents();
+      characterBehavior.close();
+      activeAgentService?.close();
+      if (errors.length > 0) throw new AggregateError(errors, 'HABITAT_SHUTDOWN_INCOMPLETE');
     },
     quit: () => app.quit(),
     onError: reportPetPositionError
@@ -430,6 +700,42 @@ async function createApplicationWindows(): Promise<void> {
     ensureCharacterWorkshopWindow
   });
   const togglePetVisibility = createPetVisibilityCommand(pet);
+  const stableHabitatCommandSnapshot = () => {
+    const snapshot = habitatService.snapshot();
+    const state = snapshot.state === 'desktop'
+      || snapshot.state === 'folder-hidden'
+      || snapshot.state === 'folder-visible'
+      || snapshot.state === 'folder-lost'
+      ? snapshot.state
+      : snapshot.directoryId === null ? 'desktop' as const : 'folder-hidden' as const;
+    return { state, directoryId: snapshot.directoryId };
+  };
+  const petSummon = createPetSummonController({
+    habitat: {
+      snapshot: stableHabitatCommandSnapshot,
+      summon: signal => habitatService.summon(signal)
+    },
+    waitForExactExplorer: (directoryId, timeoutMs, signal) => new Promise(resolveMatch => {
+      const finish = (matched: boolean): void => {
+        clearTimeout(timeout);
+        explorer.removeListener('snapshot', onSnapshot);
+        signal.removeEventListener('abort', onAbort);
+        resolveMatch(matched);
+      };
+      const onAbort = (): void => finish(false);
+      const onSnapshot = (): void => {
+        queueMicrotask(() => {
+          const snapshot = habitatService.snapshot();
+          if (snapshot.state === 'folder-visible' && snapshot.directoryId === directoryId) {
+            finish(true);
+          }
+        });
+      };
+      const timeout = setTimeout(() => finish(false), timeoutMs);
+      explorer.on('snapshot', onSnapshot);
+      signal.addEventListener('abort', onAbort, { once: true });
+    })
+  });
   const showSettings = async (): Promise<void> => {
     const settingsWindow = await ensureSettingsWindow();
     settingsWindow.show();
@@ -440,7 +746,23 @@ async function createApplicationWindows(): Promise<void> {
   };
 
   const buildContextMenu = async (): Promise<Menu> => {
+    // Habitat 菜单只消费脱敏目录摘要和稳定状态，不把绝对路径交给 Tray。
     const installedCharacters = await characterActions.listCharacters().catch(() => []);
+    const currentHabitat = await habitatStore.load();
+    const habitatItems = buildHabitatTrayMenu({
+      snapshot: stableHabitatCommandSnapshot(),
+      directories: currentHabitat.directories,
+      enterDirectory: async directoryId => {
+        await characterBehavior.requestHabitatPresentation('enter');
+        const result = await habitatService.enterDirectory(directoryId, 'manual');
+        characterBehavior.handleHabitatHidden();
+        return result;
+      },
+      summon: () => petSummon.summon(),
+      recall: () => habitatService.recallToDesktop(),
+      togglePetVisibility,
+      reportError: code => console.error('目录空间命令失败。', code)
+    }) as unknown as MenuItemConstructorOptions[];
     const quickSwitchItems: MenuItemConstructorOptions[] = installedCharacters.map(
       character => ({
         label: character.name,
@@ -454,6 +776,8 @@ async function createApplicationWindows(): Promise<void> {
       })
     );
     return Menu.buildFromTemplate([
+      ...habitatItems,
+      { type: 'separator' },
       { label: '打开聊天', click: () => void windowCommands.showChat() },
       {
         label: '角色工作室',
@@ -635,6 +959,8 @@ async function createApplicationWindows(): Promise<void> {
       };
     },
     emit: (event: TaskEvent) => {
+      if (event.type === 'phase') currentAgentPhase = event.phase;
+      void habitatService.handleTaskEvent(event);
       characterBehavior.handleTaskEvent(event);
       for (const window of [
         pet,
@@ -671,6 +997,24 @@ async function createApplicationWindows(): Promise<void> {
       return result.canceled ? null : (result.filePaths[0] ?? null);
     }
   });
+  const habitatSettingsService = new HabitatSettingsService({
+    store: habitatStore,
+    directoryPolicy: habitatDirectoryPolicy,
+    habitat: habitatService,
+    chooseDirectory: async () => {
+      const owner = await ensureSettingsWindow();
+      const result = await dialog.showOpenDialog(owner, {
+        title: '选择桌宠藏身目录',
+        properties: ['openDirectory']
+      });
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    }
+  });
+  registerHabitatIpc(
+    ipcMain,
+    habitatSettingsService,
+    sender => !settings.isDestroyed() && sender === settings.webContents
+  );
   registerSettingsIpc(ipcMain, settingsStore, secrets, {
     onProviderChanged: () => agentService.clearPending('provider_changed'),
     onAuthorizedRootChanged: () => agentService.clearPending('root_changed')
@@ -679,6 +1023,52 @@ async function createApplicationWindows(): Promise<void> {
     onConfigurationChanged: () => agentService.clearPending('provider_changed')
   });
 
+  const habitatAutonomy = new HabitatAutonomyPolicy({
+    enterDirectory: async (directoryId, reason) => {
+      await characterBehavior.requestHabitatPresentation('enter');
+      const result = await habitatService.enterDirectory(directoryId, reason);
+      characterBehavior.handleHabitatHidden();
+      return result;
+    },
+    recallToDesktop: () => habitatService.recallToDesktop(),
+    recordFailure: code => console.error('自动藏身失败。', code),
+    now: Date.now,
+    random: Math.random,
+    cooldownMs: 60_000
+  });
+  // 自动策略只读取 Main 已有状态；定时器必须在 Habitat 关闭前停止。
+  habitatAutonomyTimer = setInterval(() => {
+    void Promise.all([habitatStore.load(), settingsStore.getPrivacySettings()])
+      .then(([snapshot, privacy]) => {
+        currentProactivityMode = privacy.proactivityMode;
+        const serviceState = habitatService.snapshot().state;
+        const habitatState = serviceState === 'desktop'
+          || serviceState === 'folder-hidden'
+          || serviceState === 'folder-visible'
+          || serviceState === 'folder-lost'
+          ? serviceState
+          : 'folder-hidden';
+        return habitatAutonomy.tick({
+          snapshot,
+          proactivityMode: currentProactivityMode,
+          idle: powerMonitor.getSystemIdleTime() > 0,
+          habitatState,
+          blockers: {
+            taskActive: ['listening', 'thinking', 'acting'].includes(currentAgentPhase),
+            confirmationPending: currentAgentPhase === 'awaiting_confirmation',
+            chatInteracting: chat.isFocused(),
+            dragging: petWindowInteraction.getProbe().dragging,
+            characterSwitching: false,
+            foregroundFullscreen: BrowserWindow.getAllWindows()
+              .some(window => window.isFullScreen()),
+            appQuitting: isQuitting,
+            bridgeDegraded: explorer.snapshot().state === 'failed'
+          }
+        });
+      })
+      .catch(error => console.error('自动藏身调度失败。', error));
+  }, 500);
+
   await Promise.all([
     loadRenderer(pet, 'pet'),
     loadRenderer(chat, 'chat'),
@@ -686,12 +1076,13 @@ async function createApplicationWindows(): Promise<void> {
     ensureCharacterWorkshopWindow()
   ]);
   await characterBehavior.initialize();
-  pet.show();
+  if (habitatService.snapshot().state === 'desktop') {
+    pet.show();
+  }
 }
 
 app.on('before-quit', () => {
   isQuitting = true;
-  activeAgentService?.close();
   activeAgentService?.cancelActive();
   activeAgentService?.clearPending('application_exit');
 });
@@ -701,5 +1092,9 @@ app.on('window-all-closed', () => {});
 if (isPrimaryInstance) {
   void app.whenReady().then(async () => {
     await createApplicationWindows();
+  }).catch(error => {
+    primaryPetWindow?.hide();
+    console.error('应用启动失败。', error);
+    app.quit();
   });
 }

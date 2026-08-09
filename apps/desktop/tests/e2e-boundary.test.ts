@@ -14,6 +14,12 @@ type BoundaryModule = {
     authorizedRootDirectory: string;
     recycleBinDirectory: string;
   } | null;
+  createMainE2eExplorerBridge(): {
+    start(): Promise<void>;
+    startObserving(): Promise<{ ok: true }>;
+    stopObserving(): Promise<{ ok: true }>;
+    close(): Promise<void>;
+  };
 };
 
 async function loadBoundaryModule(): Promise<BoundaryModule | null> {
@@ -33,6 +39,7 @@ let recycleBinDirectory = '';
 function validEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     MYSELF_E2E: '1',
+    MYSELF_E2E_FAKE_EXPLORER_BRIDGE: '1',
     MYSELF_E2E_USER_DATA: userDataDirectory,
     MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory,
     MYSELF_E2E_RECYCLE_BIN: recycleBinDirectory,
@@ -136,6 +143,18 @@ describe('Main E2E 安全边界', () => {
       env: validEnvironment(),
       temporaryDirectory
     })).toBeNull();
+  });
+
+  test('E2E 只取得 Main 内部 fake bridge，不启动真实 Explorer', async () => {
+    const boundary = await loadBoundaryModule();
+    expect(boundary).not.toBeNull();
+    if (!boundary) return;
+
+    const fake = boundary.createMainE2eExplorerBridge();
+    await expect(fake.start()).resolves.toBeUndefined();
+    await expect(fake.startObserving()).resolves.toEqual({ ok: true });
+    await expect(fake.stopObserving()).resolves.toEqual({ ok: true });
+    await expect(fake.close()).resolves.toBeUndefined();
   });
 
   test.each([
@@ -247,7 +266,7 @@ describe('Main E2E 安全边界', () => {
     ].map(path => readFile(new URL(path, import.meta.url), 'utf8')));
 
     expect(sources.join('\n')).not.toMatch(
-      /MYSELF_E2E|E2E_USER_DATA|E2E_AUTHORIZED_ROOT|E2E_RECYCLE_BIN/u
+      /MYSELF_E2E|E2E_USER_DATA|E2E_AUTHORIZED_ROOT|E2E_RECYCLE_BIN|FAKE_EXPLORER/u
     );
   });
 });

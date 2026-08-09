@@ -60,6 +60,7 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
     environment: {
       ...environment,
       MYSELF_E2E: '1',
+      MYSELF_E2E_FAKE_EXPLORER_BRIDGE: '1',
       MYSELF_E2E_USER_DATA: options.userDataDirectory,
       MYSELF_E2E_AUTHORIZED_ROOT: options.authorizedRootDirectory,
       ...(options.recycleBinDirectory

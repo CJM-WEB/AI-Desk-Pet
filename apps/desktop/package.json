@@ -13,7 +13,7 @@
     "preview": "electron-vite preview",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
-    "verify:package-config": "vitest run --config vitest.config.ts -- package-config.test.ts",
+    "verify:package-config": "vitest run --config vitest.config.ts package-config.test.ts habitat-main-wiring.test.ts",
     "validate:explorer-layer:build": "esbuild tests/fixtures/explorer-window-layer-validation.ts --bundle --platform=node --format=cjs --external:electron --outfile=%TEMP%\\ai-pet-explorer-layer-validation.cjs",
     "validate:explorer-layer:electron": "pnpm validate:explorer-layer:build && node scripts/run-explorer-window-layer-validation.mjs electron manual",
     "validate:explorer-layer:electron:smoke": "pnpm validate:explorer-layer:build && node scripts/run-explorer-window-layer-validation.mjs electron smoke",
