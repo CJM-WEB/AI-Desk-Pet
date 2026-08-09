@@ -58,6 +58,23 @@ function verifiedAction(): VerifiedWriteAction {
   });
 }
 
+class DeferredProvider implements ModelProvider {
+  readonly requests: ModelRequest[] = [];
+  private resolveResponse!: (response: ModelResponse) => void;
+  private readonly response = new Promise<ModelResponse>(resolve => {
+    this.resolveResponse = resolve;
+  });
+
+  async respond(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(structuredClone(request));
+    return this.response;
+  }
+
+  resolve(response: ModelResponse): void {
+    this.resolveResponse(response);
+  }
+}
+
 function recycleAction(): VerifiedWriteAction {
   return Object.freeze({
     id: 'verified-recycle-1',
@@ -361,6 +378,22 @@ describe('AgentService', () => {
       role: 'assistant',
       text: '备用模型已响应'
     });
+  });
+
+  test('非空可见历史绑定主 Provider，主模型失败时绝不披露给备用 Provider', async () => {
+    const firstError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
+    const secondError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
+    const primary = new ScriptedProvider([firstError, secondError]);
+    const fallback = new ScriptedProvider([{ type: 'text', text: '不得收到历史' }]);
+    const { service } = createHarness(primary, {}, true, [fallback]);
+
+    await expect(service.submitFileTask({
+      text: '继续任务',
+      visibleHistory: [{ role: 'user', content: '仅授权给主 Provider 的历史' }]
+    })).rejects.toThrow('PRIMARY_DOWN');
+
+    expect(primary.requests).toHaveLength(2);
+    expect(fallback.requests).toEqual([]);
   });
 
   test('文件分类未授权时拒绝历史写请求进入预览和执行', async () => {
@@ -671,6 +704,153 @@ describe('AgentService', () => {
     await submitting;
 
     expect(phases(events)).toEqual(['thinking', 'cancelled']);
+  });
+
+  test('reset 先隔离不服从 AbortSignal 的 Provider，迟到回复不得穿透新会话', async () => {
+    const provider = new DeferredProvider();
+    const harness = createHarness(provider);
+    const submitting = harness.service.submitFileTask({ text: '旧任务', visibleHistory: [] });
+    await vi.waitFor(() => expect(provider.requests).toHaveLength(1));
+
+    const resetting = (harness.service as unknown as {
+      resetForNewConversation(): Promise<void>;
+    }).resetForNewConversation();
+    let resetSettled = false;
+    void resetting.then(() => {
+      resetSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(resetSettled).toBe(true);
+    provider.resolve({ type: 'text', text: '不得进入新会话' });
+    await resetting;
+    await submitting;
+
+    expect(harness.events).not.toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '不得进入新会话'
+    });
+  });
+
+  test('reset 在等待文件确认时丢弃 continuation，旧 actionId 永久失效', async () => {
+    const harness = createHarness(new ScriptedProvider([writeResponse()]));
+    const discard = vi.spyOn(harness.loop, 'discard');
+    await harness.service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+    await (harness.service as unknown as {
+      resetForNewConversation(): Promise<void>;
+    }).resetForNewConversation();
+
+    expect(discard).toHaveBeenCalledOnce();
+    await expect(harness.service.confirm(pendingEvent.action.actionId)).rejects
+      .toThrow('ACTION_EXPIRED');
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+  });
+
+  test('reset 在动画提交前撤销事务并等待确认流程真实收敛', async () => {
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse()]),
+      { preview: vi.fn(async () => recycleAction()) }
+    );
+    const discard = vi.spyOn(harness.loop, 'discard');
+    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+
+    await (harness.service as unknown as {
+      resetForNewConversation(): Promise<void>;
+    }).resetForNewConversation();
+
+    await expect(confirming).rejects.toThrow('FILE_TASK_USER_CANCELLED');
+    expect(discard).toHaveBeenCalledOnce();
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+    expect(harness.service.onCommitFrame(
+      'carry-token-1',
+      'carry-action-1',
+      'carry-frame-1'
+    )).toBe(false);
+  });
+
+  test.each(['acting', 'carrying'] as const)(
+    '普通写在 %s 事件监听器同步 reset 后不得越过不可逆写边界',
+    async resetAt => {
+      let service!: AgentService;
+      let resetting: Promise<void> | null = null;
+      const harness = createHarness(
+        new ScriptedProvider([writeResponse(), { type: 'text', text: '不得公开旧总结' }]),
+        {},
+        true,
+        [],
+        event => {
+          const matched = resetAt === 'acting'
+            ? event.type === 'phase' && event.phase === 'acting'
+            : event.type === 'character_carrying' && event.carrying;
+          if (matched && resetting === null) resetting = service.resetForNewConversation();
+        }
+      );
+      service = harness.service;
+      const discard = vi.spyOn(harness.loop, 'discard');
+      await service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
+      const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+      if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+      const confirming = service.confirm(pendingEvent.action.actionId);
+
+      await expect(confirming).rejects.toThrow('FILE_TASK_USER_CANCELLED');
+      await resetting;
+      expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+      expect(discard).toHaveBeenCalledOnce();
+      expect(harness.events).not.toContainEqual({
+        type: 'message',
+        role: 'assistant',
+        text: '不得公开旧总结'
+      });
+      expect(phases(harness.events).slice(-1)).toEqual(['acting']);
+    }
+  );
+
+  test('reset 遇到不可逆执行时等待真实结果，但屏蔽旧总结和终态事件', async () => {
+    const execution = deferred();
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse(), { type: 'text', text: '旧总结不得公开' }]),
+      {
+        preview: vi.fn(async () => recycleAction()),
+        executeWrite: vi.fn(() => execution.promise)
+      }
+    );
+    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
+    harness.service.onCommitFrame('carry-token-1', 'carry-action-1', 'carry-frame-1');
+    await vi.waitFor(() => expect(harness.fileTools.executeWrite).toHaveBeenCalledOnce());
+
+    let resetSettled = false;
+    const resetting = (harness.service as unknown as {
+      resetForNewConversation(): Promise<void>;
+    }).resetForNewConversation().then(() => {
+      resetSettled = true;
+    });
+    await Promise.resolve();
+    expect(resetSettled).toBe(false);
+    execution.resolve();
+    await resetting;
+    await confirming.catch(() => undefined);
+
+    expect(harness.events).not.toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '旧总结不得公开'
+    });
+    expect(harness.fileTools.executeWrite).toHaveBeenCalledOnce();
   });
 
   test('Provider 失败会发送公开错误和 error 终止阶段', async () => {

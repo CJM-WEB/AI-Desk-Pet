@@ -19,8 +19,15 @@ export interface ChatTurnFactory {
   }>;
 }
 
+export type PreparedFileTaskTarget = Readonly<{
+  profileId: string;
+  providerIdentity: string;
+  providerName: string;
+}>;
+
 export interface ConversationFileTaskPort {
   onEvent(listener: (event: TaskEvent, generation: string) => void): () => void;
+  prepareTarget(generation: string): Promise<PreparedFileTaskTarget>;
   submit(input: {
     text: string;
     visibleHistory: readonly ModelMessage[];
@@ -55,7 +62,8 @@ interface ChatContext {
   controller: AbortController;
 }
 
-interface PendingHistoryDisclosure extends ChatContext {
+interface PendingChatDisclosure extends ChatContext {
+  kind: 'chat_plan';
   requestId: string;
   adapter: ConversationTurnAdapter;
   profileId: string;
@@ -63,21 +71,35 @@ interface PendingHistoryDisclosure extends ChatContext {
   providerName: string;
 }
 
+interface PendingFileDisclosure extends ChatContext {
+  kind: 'file_task';
+  requestId: string;
+  target: PreparedFileTaskTarget;
+}
+
+type PendingHistoryDisclosure = PendingChatDisclosure | PendingFileDisclosure;
+
+interface ActiveFileTurn {
+  generation: string;
+  text: string;
+  target: PreparedFileTaskTarget;
+  assistantText: string | null;
+  terminalPhase: 'error' | 'cancelled' | null;
+}
+
 export class ConversationCoordinator {
   private state: ConversationState = { kind: 'idle' };
   private readonly createId: () => string;
-  private readonly generation: string;
+  private generation: string;
   private readonly unsubscribeFileEvents: () => void;
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
+  private activeFileTurn: ActiveFileTurn | null = null;
 
   constructor(private readonly options: ConversationCoordinatorOptions) {
     this.createId = options.createId ?? randomUUID;
     this.generation = this.createId();
     this.unsubscribeFileEvents = options.fileTasks.onEvent((event, generation) => {
-      // 文件端口只携带内部代次；旧会话事件不得越过 Coordinator。
-      if (this.state.kind !== 'closed' && generation === this.generation) {
-        this.options.emit(event);
-      }
+      this.handleFileEvent(event, generation);
     });
   }
 
@@ -129,6 +151,7 @@ export class ConversationCoordinator {
       if (!this.isRunning(context)) return;
       if (disclosure.kind === 'confirmation_required') {
         this.pendingDisclosure = {
+          kind: 'chat_plan',
           ...context,
           requestId,
           adapter: target.adapter,
@@ -153,7 +176,10 @@ export class ConversationCoordinator {
 
       await this.runPlan(context, target.adapter, target.providerIdentity, disclosure.messages);
     } catch (error) {
-      if (!this.ownsChatContext(context)) return;
+      if (!this.ownsChatContext(context)) {
+        if (this.shouldRethrowReportedFileError(error, context)) throw publicError(error);
+        return;
+      }
       const normalizedError = publicError(error);
       this.pendingDisclosure = null;
       this.state = { kind: 'idle' };
@@ -175,10 +201,12 @@ export class ConversationCoordinator {
       return;
     }
     if (this.state.kind === 'awaiting_history_disclosure') {
-      const controller = this.pendingDisclosure?.controller;
+      const pending = this.pendingDisclosure;
+      const controller = pending?.controller;
       const releasedState: ConversationState = { kind: 'idle' };
       this.state = releasedState;
       this.pendingDisclosure = null;
+      if (pending?.kind === 'file_task') this.options.fileTasks.cancelActive();
       controller?.abort();
       if (this.state === releasedState) {
         this.options.emit({ type: 'phase', phase: 'cancelled' });
@@ -199,10 +227,29 @@ export class ConversationCoordinator {
   }
 
   async resolveFileAction(
-    _actionId: string,
-    _decision: 'confirm' | 'cancel'
+    actionId: string,
+    decision: 'confirm' | 'cancel'
   ): Promise<void> {
-    return this.rejectNotReady('FILE_TASK_ROUTE_NOT_READY');
+    const active = this.activeFileTurn;
+    if (
+      this.state.kind !== 'awaiting_file_confirmation'
+      || active === null
+      || active.generation !== this.generation
+    ) {
+      throw publicErrorForCode('ACTION_EXPIRED');
+    }
+    this.state = { kind: 'running_file_task', generation: active.generation };
+    try {
+      await this.options.fileTasks.resolveAction(actionId, decision);
+    } catch (error) {
+      const normalized = publicFileError(error);
+      if (this.activeFileTurn === active) {
+        this.activeFileTurn = null;
+        this.state = { kind: 'idle' };
+        this.reportFailure(normalized);
+      }
+      throw normalized;
+    }
   }
 
   async resolveHistoryDisclosure(
@@ -220,27 +267,36 @@ export class ConversationCoordinator {
       throw publicErrorForCode('DISCLOSURE_REQUEST_EXPIRED');
     }
 
-    this.state = {
-      kind: 'running_chat',
-      generation: pending.generation,
-      controller: pending.controller
-    };
     try {
       const visibleHistory = this.options.disclosureAdapter.resolve({
         requestId,
-        targetProfileId: pending.profileId,
+        targetProfileId: pending.kind === 'chat_plan'
+          ? pending.profileId
+          : pending.target.profileId,
         decision
       });
-      if (!this.isRunning(pending)) return;
+      if (!this.ownsPendingDisclosure(pending)) return;
       this.pendingDisclosure = null;
-      await this.runPlan(
-        pending,
-        pending.adapter,
-        pending.providerIdentity,
-        visibleHistory
-      );
+      if (pending.kind === 'chat_plan') {
+        this.state = {
+          kind: 'running_chat',
+          generation: pending.generation,
+          controller: pending.controller
+        };
+        await this.runPlan(
+          pending,
+          pending.adapter,
+          pending.providerIdentity,
+          visibleHistory
+        );
+      } else {
+        await this.submitFileTask(pending, pending.target, visibleHistory);
+      }
     } catch (error) {
-      if (!this.ownsChatContext(pending)) return;
+      if (!this.ownsChatContext(pending)) {
+        if (this.shouldRethrowReportedFileError(error, pending)) throw publicError(error);
+        return;
+      }
       const normalizedError = publicError(error);
       this.pendingDisclosure = null;
       this.state = { kind: 'idle' };
@@ -250,7 +306,50 @@ export class ConversationCoordinator {
   }
 
   async resetConversation(): Promise<void> {
-    return this.rejectNotReady('CONVERSATION_RESET_NOT_READY');
+    if (this.state.kind === 'closed') throw publicErrorForCode('CONVERSATION_CLOSED');
+    if (this.state.kind === 'resetting') throw publicErrorForCode('TASK_ALREADY_ACTIVE');
+
+    const controller = this.state.kind === 'running_chat'
+      ? this.state.controller
+      : this.state.kind === 'awaiting_history_disclosure'
+        ? this.pendingDisclosure?.controller
+        : undefined;
+    const nextGeneration = this.createId();
+    this.generation = nextGeneration;
+    const resettingState: ConversationState = {
+      kind: 'resetting',
+      generation: nextGeneration
+    };
+    this.state = resettingState;
+    this.pendingDisclosure = null;
+    this.activeFileTurn = null;
+
+    const failures: unknown[] = [];
+    try {
+      controller?.abort();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      this.options.disclosureAdapter.reset();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await this.options.fileTasks.resetForNewConversation();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      this.options.history.clear();
+    } catch (error) {
+      failures.push(error);
+    }
+
+    if (failures.length > 0) throw publicError(failures[0]);
+    if (this.state !== resettingState) return;
+    this.options.emit({ type: 'conversation_reset', generation: nextGeneration });
+    if (this.state === resettingState) this.state = { kind: 'idle' };
   }
 
   async close(): Promise<void> {
@@ -266,6 +365,7 @@ export class ConversationCoordinator {
     // 先封闭所有公开入口，再逐项尽力清理；任一清理失败都不得恢复旧状态。
     this.state = { kind: 'closed' };
     this.pendingDisclosure = null;
+    this.activeFileTurn = null;
     const failures: unknown[] = [];
     for (const cleanup of [
       () => this.unsubscribeFileEvents(),
@@ -299,7 +399,8 @@ export class ConversationCoordinator {
     });
     if (!this.isRunning(context)) return;
     if (plan.kind === 'file_task') {
-      throw publicErrorForCode('FILE_TASK_ROUTE_NOT_READY');
+      await this.prepareFileTask(context);
+      return;
     }
 
     const assistantText = plan.kind === 'chat_reply' ? plan.text : plan.question;
@@ -333,13 +434,142 @@ export class ConversationCoordinator {
       && this.pendingDisclosure?.controller === context.controller;
   }
 
+  private ownsPendingDisclosure(pending: PendingHistoryDisclosure): boolean {
+    return this.state.kind === 'awaiting_history_disclosure'
+      && this.state.requestId === pending.requestId
+      && this.pendingDisclosure === pending
+      && pending.generation === this.generation;
+  }
+
+  /** 文件目标在 Main 内先完成授权与 Provider 快照，再据此计算本轮历史披露。 */
+  private async prepareFileTask(context: ChatContext): Promise<void> {
+    let target: PreparedFileTaskTarget;
+    try {
+      target = await this.options.fileTasks.prepareTarget(context.generation);
+    } catch (error) {
+      throw publicFileError(error);
+    }
+    if (!this.isRunning(context)) return;
+    const requestId = this.createId();
+    const disclosure = this.options.disclosureAdapter.prepare({
+      requestId,
+      targetProfileId: target.profileId,
+      targetProviderIdentity: target.providerIdentity,
+      targetProviderName: target.providerName,
+      history: this.options.history
+    });
+    if (!this.isRunning(context)) return;
+    if (disclosure.kind === 'confirmation_required') {
+      this.pendingDisclosure = {
+        kind: 'file_task',
+        ...context,
+        requestId,
+        target
+      };
+      this.state = {
+        kind: 'awaiting_history_disclosure',
+        generation: context.generation,
+        requestId
+      };
+      this.options.emit({
+        type: 'history_disclosure_required',
+        requestId: disclosure.requestId,
+        targetProviderName: disclosure.targetProviderName,
+        messageCount: disclosure.messageCount,
+        characterCount: disclosure.characterCount
+      });
+      return;
+    }
+    await this.submitFileTask(context, target, disclosure.messages);
+  }
+
+  private async submitFileTask(
+    context: ChatContext,
+    target: PreparedFileTaskTarget,
+    visibleHistory: readonly ModelMessage[]
+  ): Promise<void> {
+    if (context.generation !== this.generation) return;
+    const active: ActiveFileTurn = {
+      generation: context.generation,
+      text: context.text,
+      target,
+      assistantText: null,
+      terminalPhase: null
+    };
+    this.activeFileTurn = active;
+    this.state = { kind: 'running_file_task', generation: context.generation };
+    try {
+      await this.options.fileTasks.submit({
+        text: context.text,
+        visibleHistory,
+        generation: context.generation
+      });
+    } catch (error) {
+      if (active.generation !== this.generation || this.isClosed()) return;
+      const normalized = publicFileError(error);
+      if (active.terminalPhase === 'error') throw reportedFileError(normalized);
+      if (active.terminalPhase === 'cancelled' || this.activeFileTurn !== active) return;
+      this.activeFileTurn = null;
+      this.state = {
+        kind: 'running_chat',
+        generation: context.generation,
+        controller: context.controller
+      };
+      throw normalized;
+    }
+  }
+
+  /** 文件事件只能更新当前 generation；终态在公开前先完成 Main 历史与状态提交。 */
+  private handleFileEvent(event: TaskEvent, generation: string): void {
+    if (this.state.kind === 'closed' || generation !== this.generation) return;
+    const active = this.activeFileTurn;
+    if (active?.generation === generation) {
+      if (event.type === 'message' && event.role === 'assistant') {
+        active.assistantText = event.text;
+      }
+      if (
+        event.type === 'pending_action'
+        || (event.type === 'phase' && event.phase === 'awaiting_confirmation')
+      ) {
+        this.state = { kind: 'awaiting_file_confirmation', generation };
+      }
+      if (event.type === 'phase' && event.phase === 'success') {
+        if (active.assistantText !== null) {
+          this.options.history.append({
+            userText: active.text,
+            assistantText: active.assistantText,
+            providerIdentity: active.target.providerIdentity
+          });
+        }
+        this.activeFileTurn = null;
+        this.state = { kind: 'idle' };
+      }
+      if (
+        event.type === 'phase'
+        && (event.phase === 'error' || event.phase === 'cancelled')
+      ) {
+        active.terminalPhase = event.phase;
+        this.activeFileTurn = null;
+        this.state = { kind: 'idle' };
+      }
+    }
+    this.options.emit(event);
+  }
+
   private assertIdle(): void {
     if (this.state.kind === 'closed') throw publicErrorForCode('CONVERSATION_CLOSED');
     if (this.state.kind !== 'idle') throw publicErrorForCode('TASK_ALREADY_ACTIVE');
   }
 
-  private async rejectNotReady(code: string): Promise<never> {
-    throw publicErrorForCode(code);
+  private isClosed(): boolean {
+    return this.state.kind === 'closed';
+  }
+
+  private shouldRethrowReportedFileError(error: unknown, context: ChatContext): boolean {
+    return isReportedFileError(error)
+      && context.generation === this.generation
+      && this.state.kind !== 'closed'
+      && this.state.kind !== 'resetting';
   }
 
   private reportFailure(error: Error & { code: string }): void {
@@ -368,8 +598,20 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
     CONVERSATION_CLOSED: '当前会话已经关闭。',
     DISCLOSURE_REQUEST_EXPIRED: '历史披露确认已失效，请重新提交消息。',
-    FILE_TASK_ROUTE_NOT_READY: '文件任务路由尚未接管。',
-    CONVERSATION_RESET_NOT_READY: '新会话重置尚未接管。',
+    FILE_AUTHORIZATION_REQUIRED: '请先在设置中授权文件目录。',
+    FILE_DISCLOSURE_DENIED: '文件数据类别未授权。',
+    ACTION_EXPIRED: '待确认操作已经失效，请重新发起任务。',
+    PATH_INVALID: '文件路径无效。',
+    PATH_OUTSIDE_ROOT: '文件路径超出授权目录。',
+    TARGET_EXISTS: '目标已经存在，未执行覆盖。',
+    ENTRY_NOT_FOUND: '指定条目不存在。',
+    PERMISSION_DENIED: 'Windows 拒绝了本地文件操作。',
+    TOOL_PERMISSION_DENIED: '该工具操作未获本地权限策略允许。',
+    FILE_TASK_USER_CANCELLED: '文件操作已取消。',
+    FILE_TASK_PLAYBACK_UNAVAILABLE: '当前角色无法播放文件搬运动画。',
+    FILE_TASK_PLAYBACK_CANCELLED: '搬运动画未完成，文件未被移动。',
+    FILE_TASK_PLAYBACK_TIMEOUT: '等待搬运动画超时，文件未被移动。',
+    FILE_TASK_EXECUTION_FAILED: '文件操作执行失败。',
     PROVIDER_AUTHENTICATION_FAILED: '模型服务身份认证失败，请检查 API Key。',
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',
     PROVIDER_RATE_LIMITED: '模型服务当前繁忙，请稍后重试。',
@@ -379,16 +621,61 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     AGENT_INTERNAL_ERROR: '任务执行失败，请重试。'
 });
 
+const 文件端口公开错误代码 = new Set([
+  'FILE_AUTHORIZATION_REQUIRED',
+  'FILE_DISCLOSURE_DENIED',
+  'ACTION_EXPIRED',
+  'PATH_INVALID',
+  'PATH_OUTSIDE_ROOT',
+  'TARGET_EXISTS',
+  'ENTRY_NOT_FOUND',
+  'PERMISSION_DENIED',
+  'TOOL_PERMISSION_DENIED',
+  'FILE_TASK_USER_CANCELLED',
+  'FILE_TASK_PLAYBACK_UNAVAILABLE',
+  'FILE_TASK_PLAYBACK_CANCELLED',
+  'FILE_TASK_PLAYBACK_TIMEOUT',
+  'FILE_TASK_EXECUTION_FAILED'
+]);
+const 可信文件端口错误 = Symbol('trusted-file-task-error');
+const 已公开文件错误 = Symbol('reported-file-task-error');
+
 function publicError(error: unknown): Error & { code: string } {
   const candidate = error instanceof Error
     && 'code' in error
     && typeof error.code === 'string'
     ? error.code
     : 'AGENT_INTERNAL_ERROR';
+  const trustedFileError = error instanceof Error
+    && 可信文件端口错误 in error
+    && error[可信文件端口错误] === true;
   const code = Object.hasOwn(公开错误消息, candidate)
+    && (!文件端口公开错误代码.has(candidate) || trustedFileError)
     ? candidate
     : 'AGENT_INTERNAL_ERROR';
   return publicErrorForCode(code);
+}
+
+function publicFileError(error: unknown): Error & { code: string } {
+  const candidate = error instanceof Error
+    && 'code' in error
+    && typeof error.code === 'string'
+    ? error.code
+    : '';
+  if (!文件端口公开错误代码.has(candidate)) return publicError(error);
+  return Object.assign(publicErrorForCode(candidate), {
+    [可信文件端口错误]: true as const
+  });
+}
+
+function reportedFileError(error: Error & { code: string }): Error & { code: string } {
+  return Object.assign(error, { [已公开文件错误]: true as const });
+}
+
+function isReportedFileError(error: unknown): boolean {
+  return error instanceof Error
+    && 已公开文件错误 in error
+    && error[已公开文件错误] === true;
 }
 
 function publicErrorForCode(code: string): Error & { code: string } {

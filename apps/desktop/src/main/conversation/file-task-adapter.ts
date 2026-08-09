@@ -5,22 +5,31 @@ import type {
   AgentService
 } from '../agent/agent-service';
 import type { FileTaskPlaybackTerminal } from '../agent/file-task-transaction-coordinator';
-import type { ConversationFileTaskPort } from './conversation-coordinator';
+import type {
+  ConversationFileTaskPort,
+  PreparedFileTaskTarget
+} from './conversation-coordinator';
+
+export type PreparedAgentTarget = PreparedFileTaskTarget & Readonly<{
+  service: AgentService;
+}>;
 
 export interface FileTaskAdapterOptions {
   getAuthorizedRootPath(): Promise<string | null>;
-  createAgentService(emit: (event: TaskEvent) => void): AgentService;
+  createAgentTarget(emit: (event: TaskEvent) => void): PreparedAgentTarget;
 }
 
 type ActiveSubmission = {
   generation: string;
   owner: symbol;
   awaitingConfirmation: boolean;
+  target: PreparedFileTaskTarget | null;
 };
 
 type OwnedAgent = {
   service: AgentService;
   owner: symbol;
+  target: PreparedFileTaskTarget;
 };
 
 export class FileTaskAdapter implements ConversationFileTaskPort {
@@ -28,6 +37,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
   private active: ActiveSubmission | null = null;
   private inFlightOwner: symbol | null = null;
   private agent: OwnedAgent | null = null;
+  private resetPromise: Promise<void> | null = null;
   private closed = false;
 
   constructor(private readonly options: FileTaskAdapterOptions) {}
@@ -38,29 +48,73 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     return () => this.listeners.delete(listener);
   }
 
-  async submit(input: {
-    text: string;
-    visibleHistory: readonly ModelMessage[];
-    generation: string;
-  }): Promise<void> {
-    this.assertOpen();
+  async prepareTarget(generation: string): Promise<PreparedFileTaskTarget> {
+    this.assertAvailable();
     if (this.active || this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
 
     const owner = Symbol('file-task-submission');
     this.inFlightOwner = owner;
     this.active = {
-      generation: input.generation,
+      generation,
       owner,
-      awaitingConfirmation: false
+      awaitingConfirmation: false,
+      target: null
     };
     try {
+      const previousAgent = this.agent;
+      if (previousAgent) {
+        this.agent = null;
+        await this.resetOwnedAgent(previousAgent);
+        this.assertOwned(owner);
+      }
+      const authorizedRoot = await this.options.getAuthorizedRootPath();
+      this.assertOwned(owner);
+      if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
+        throw adapterError('FILE_AUTHORIZATION_REQUIRED');
+      }
+      const ownedAgent = this.createOwnedAgent(owner);
+      this.assertOwned(owner);
+      this.active.target = ownedAgent.target;
+      return ownedAgent.target;
+    } catch (error) {
+      if (this.active?.owner === owner) this.active = null;
+      throw error;
+    } finally {
+      if (this.inFlightOwner === owner) this.inFlightOwner = null;
+    }
+  }
+
+  async submit(input: {
+    text: string;
+    visibleHistory: readonly ModelMessage[];
+    generation: string;
+  }): Promise<void> {
+    this.assertAvailable();
+    const prepared = this.active;
+    if (
+      !prepared
+      || prepared.generation !== input.generation
+      || prepared.target === null
+      || this.inFlightOwner
+    ) {
+      throw adapterError(prepared || this.inFlightOwner
+        ? 'TASK_ALREADY_ACTIVE'
+        : 'FILE_TARGET_NOT_PREPARED');
+    }
+    const owner = prepared.owner;
+    this.inFlightOwner = owner;
+    try {
+      // 披露后再次读取授权；Provider 则固定使用 prepareTarget 已创建的同一 Agent。
       const authorizedRoot = await this.options.getAuthorizedRootPath();
       this.assertOwned(owner);
       if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
         throw adapterError('FILE_AUTHORIZATION_REQUIRED');
       }
 
-      const ownedAgent = this.getOrCreateAgent(owner);
+      const ownedAgent = this.agent;
+      if (!ownedAgent || ownedAgent.target !== prepared.target) {
+        throw adapterError('FILE_TARGET_MISMATCH');
+      }
       this.assertOwned(owner);
       const submission: AgentFileTaskSubmission = {
         text: input.text,
@@ -104,13 +158,44 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
   }
 
   async resetForNewConversation(): Promise<void> {
-    this.releaseOwnedState();
+    if (this.resetPromise) return this.resetPromise;
+    this.assertOpen();
+    const owned = this.agent;
+    this.active = null;
+    this.inFlightOwner = null;
+    this.agent = null;
+    const resetting = this.resetOwnedAgent(owned);
+    this.resetPromise = resetting;
+    try {
+      await resetting;
+      if (this.resetPromise === resetting) this.resetPromise = null;
+    } catch (error) {
+      // 清理失败时保留 resetting 闸门，禁止复用可能仍持有旧能力的 Adapter。
+      throw error;
+    }
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.releaseOwnedState();
+    const owned = this.agent;
+    this.active = null;
+    this.inFlightOwner = null;
+    this.agent = null;
+    this.listeners.clear();
+    if (!owned) return;
+    let firstFailure: unknown;
+    for (const cleanup of [
+      () => owned.service.cancelActive(),
+      () => owned.service.close()
+    ]) {
+      try {
+        cleanup();
+      } catch (error) {
+        firstFailure ??= error;
+      }
+    }
+    if (firstFailure !== undefined) throw firstFailure;
   }
 
   onPlaybackStarted(playbackToken: string, actionId: string): boolean {
@@ -137,23 +222,37 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     return this.agent?.service.invalidateFileTaskPlaybackGrant() ?? false;
   }
 
-  private getOrCreateAgent(submissionOwner: symbol): OwnedAgent {
-    if (this.agent) {
-      this.assertOwned(submissionOwner);
-      return this.agent;
-    }
+  private createOwnedAgent(submissionOwner: symbol): OwnedAgent {
+    if (this.agent) throw adapterError('TASK_ALREADY_ACTIVE');
     const owner = Symbol('file-task-agent');
-    const service = this.options.createAgentService(event => {
+    const prepared = this.options.createAgentTarget(event => {
       this.publishAgentEvent(event, owner);
     });
+    const service = prepared?.service;
     try {
+      if (
+        !service
+        || typeof prepared.profileId !== 'string'
+        || prepared.profileId.length === 0
+        || typeof prepared.providerIdentity !== 'string'
+        || prepared.providerIdentity.length === 0
+        || typeof prepared.providerName !== 'string'
+        || prepared.providerName.length === 0
+      ) {
+        throw adapterError('FILE_TARGET_INVALID');
+      }
       this.assertOwned(submissionOwner);
     } catch (error) {
       // 工厂同步重入已撤销所有权时，新实例只能尽力关闭，不能覆盖主状态错误。
       this.disposeDetachedService(service);
       throw error;
     }
-    const owned = { service, owner };
+    const target = Object.freeze({
+      profileId: prepared.profileId,
+      providerIdentity: prepared.providerIdentity,
+      providerName: prepared.providerName
+    });
+    const owned = { service, owner, target };
     this.agent = owned;
     return owned;
   }
@@ -192,21 +291,16 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     }
   }
 
-  private releaseOwnedState(): void {
-    const owned = this.agent;
-    this.active = null;
-    this.inFlightOwner = null;
-    this.agent = null;
-    this.listeners.clear();
+  private async resetOwnedAgent(owned: OwnedAgent | null): Promise<void> {
     if (!owned) return;
 
     let firstFailure: unknown;
     for (const cleanup of [
-      () => owned.service.cancelActive(),
+      () => owned.service.resetForNewConversation(),
       () => owned.service.close()
     ]) {
       try {
-        cleanup();
+        await cleanup();
       } catch (error) {
         firstFailure ??= error;
       }
@@ -216,6 +310,11 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
 
   private assertOpen(): void {
     if (this.closed) throw adapterError('CONVERSATION_CLOSED');
+  }
+
+  private assertAvailable(): void {
+    this.assertOpen();
+    if (this.resetPromise) throw adapterError('TASK_ALREADY_ACTIVE');
   }
 
   private assertOwned(owner: symbol): void {

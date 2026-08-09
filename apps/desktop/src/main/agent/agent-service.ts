@@ -234,6 +234,12 @@ export class AgentService {
   private activeController: AbortController | null = null;
   private activeFileTask: ActiveFileTask | null = null;
   private pendingSession: AgentSession | null = null;
+  private taskOwner: symbol | null = null;
+  private irreversibleExecution: {
+    promise: Promise<void>;
+    resolve(): void;
+  } | null = null;
+  private readonly historyBoundSessions = new WeakSet<AgentSession>();
   private readonly reportedFailures = new WeakSet<object>();
 
   hasReportedFailure(error: unknown): boolean {
@@ -271,22 +277,27 @@ export class AgentService {
     this.assertIdle();
     this.clearPending('new_task');
 
+    const owner = Symbol('agent-file-task');
+    this.taskOwner = owner;
     const controller = new AbortController();
     this.activeController = controller;
     try {
       const session = await this.createSession(controller.signal);
+      if (visibleHistory.length > 0) this.historyBoundSessions.add(session);
       await this.forward(
         this.loop.run(
           normalized,
           this.runContext(session, controller.signal, visibleHistory)
         ),
-        session
+        session,
+        owner
       );
     } catch (error) {
-      this.emitFailure(error);
+      this.emitFailure(error, owner);
       throw error;
     } finally {
       if (this.activeController === controller) this.activeController = null;
+      if (this.taskOwner === owner && this.pendingSession === null) this.taskOwner = null;
     }
   }
 
@@ -297,8 +308,10 @@ export class AgentService {
       return;
     }
     if (this.pendingSession) {
+      const owner = this.taskOwner;
       this.clearPending('task_cancelled');
-      this.emit({ type: 'phase', phase: 'cancelled' });
+      this.publish({ type: 'phase', phase: 'cancelled' }, owner);
+      if (this.taskOwner === owner) this.taskOwner = null;
     }
   }
 
@@ -313,8 +326,9 @@ export class AgentService {
     }
 
     const session = this.pendingSession;
+    const owner = this.taskOwner;
     this.pendingSession = null;
-    if (!session) {
+    if (!session || !owner) {
       this.loop.discard(execution.continuationToken);
       const error = new Error('ACTION_EXPIRED');
       this.emitFailure(error);
@@ -324,15 +338,26 @@ export class AgentService {
     const controller = new AbortController();
     this.activeController = controller;
     if (execution.verifiedAction.toolName === 'move_to_recycle_bin') {
-      return this.confirmRecycleBin(execution, session, controller);
+      try {
+        return await this.confirmRecycleBin(execution, session, controller, owner);
+      } finally {
+        if (this.taskOwner === owner) this.taskOwner = null;
+      }
     }
     let writeCompleted = false;
-    this.emit({ type: 'phase', phase: 'acting' });
     try {
+      this.publish({ type: 'phase', phase: 'acting' }, owner);
+      this.assertTaskOwned(owner, controller.signal);
       this.assertFileDisclosureAllowed(session);
-      this.emit({ type: 'character_carrying', carrying: true });
+      this.publish({ type: 'character_carrying', carrying: true }, owner);
+      this.assertTaskOwned(owner, controller.signal);
       try {
-        await session.fileTools.executeWrite(execution.verifiedAction);
+        const irreversible = this.beginIrreversibleExecution();
+        try {
+          await session.fileTools.executeWrite(execution.verifiedAction);
+        } finally {
+          this.finishIrreversibleExecution(irreversible);
+        }
         writeCompleted = true;
         await this.forward(
           this.loop.resume(
@@ -340,27 +365,29 @@ export class AgentService {
             writeResult(execution.verifiedAction),
             this.runContext(session, controller.signal)
           ),
-          session
+          session,
+          owner
         );
       } finally {
-        this.emit({ type: 'character_carrying', carrying: false });
+        this.publish({ type: 'character_carrying', carrying: false }, owner);
       }
     } catch (error) {
       if (!writeCompleted) this.loop.discard(execution.continuationToken);
       if (writeCompleted) {
-        this.emit({
+        this.publish({
           type: 'error',
           code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
           message: '本地文件操作已成功，但模型总结失败。',
           nextAction: '可以查看文件结果，或稍后重新请求总结。'
-        });
-        this.emit({ type: 'phase', phase: 'error' });
+        }, owner);
+        this.publish({ type: 'phase', phase: 'error' }, owner);
       } else {
-        this.emitFailure(error);
+        this.emitFailure(error, owner);
       }
       throw error;
     } finally {
       if (this.activeController === controller) this.activeController = null;
+      if (this.taskOwner === owner) this.taskOwner = null;
     }
   }
 
@@ -368,7 +395,9 @@ export class AgentService {
     try {
       this.pending.cancel(actionId);
       this.pendingSession = null;
-      this.emit({ type: 'phase', phase: 'cancelled' });
+      const owner = this.taskOwner;
+      this.publish({ type: 'phase', phase: 'cancelled' }, owner);
+      if (this.taskOwner === owner) this.taskOwner = null;
     } catch (error) {
       this.emitFailure(error);
       throw error;
@@ -379,6 +408,31 @@ export class AgentService {
     this.fileTaskCoordinator.cancel();
     this.pending.clear(reason);
     this.pendingSession = null;
+  }
+
+  /**
+   * 先使旧任务事件失去所有权；可撤销阶段立即取消，不可逆执行则等待真实结果收敛。
+   */
+  async resetForNewConversation(): Promise<void> {
+    this.taskOwner = null;
+    const irreversible = this.irreversibleExecution?.promise ?? null;
+    const controller = this.activeController;
+    this.pendingSession = null;
+    const failures: unknown[] = [];
+    for (const cleanup of [
+      () => this.fileTaskCoordinator.cancel(),
+      () => this.pending.clear('task_cancelled'),
+      () => controller?.abort()
+    ]) {
+      try {
+        cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (irreversible) await irreversible;
+    if (this.activeController === controller) this.activeController = null;
+    if (failures.length > 0) throw failures[0];
   }
 
   /** 接收 Renderer 已由行为服务认证的播放开始反馈。 */
@@ -412,7 +466,10 @@ export class AgentService {
 
   /** 应用退出或桌宠窗口关闭时撤销尚未提交的文件能力。 */
   close(): void {
+    this.taskOwner = null;
     this.fileTaskCoordinator.close();
+    this.pending.clear('application_exit');
+    this.pendingSession = null;
     this.activeController?.abort();
   }
 
@@ -426,7 +483,8 @@ export class AgentService {
   private async confirmRecycleBin(
     execution: { verifiedAction: VerifiedWriteAction; continuationToken: string },
     session: AgentSession,
-    controller: AbortController
+    controller: AbortController,
+    owner: symbol
   ): Promise<void> {
     const taskCarry = this.taskCarry;
     if (!taskCarry) {
@@ -434,7 +492,7 @@ export class AgentService {
       const error = Object.assign(new Error('FILE_TASK_PLAYBACK_UNAVAILABLE'), {
         code: 'FILE_TASK_PLAYBACK_UNAVAILABLE'
       });
-      this.emitFailure(error);
+      this.emitFailure(error, owner);
       if (this.activeController === controller) this.activeController = null;
       throw error;
     }
@@ -452,12 +510,16 @@ export class AgentService {
     let writeCompleted = false;
     let carryStarted = false;
     let carryingPublished = true;
-    this.emit({ type: 'phase', phase: 'acting' });
-    this.emit({ type: 'character_carrying', carrying: true });
     try {
+      this.publish({ type: 'phase', phase: 'acting' }, owner);
+      this.assertTaskOwned(owner, controller.signal);
+      this.publish({ type: 'character_carrying', carrying: true }, owner);
+      this.assertTaskOwned(owner, controller.signal);
       this.assertFileDisclosureAllowed(session);
+      this.assertTaskOwned(owner, controller.signal);
       const grant = taskCarry.beginTaskCarry();
       carryStarted = true;
+      this.assertTaskOwned(owner, controller.signal);
       this.fileTaskCoordinator.begin(execution.verifiedAction, grant);
       const result = await resultPromise;
       if (result.status !== 'succeeded') {
@@ -466,7 +528,7 @@ export class AgentService {
       writeCompleted = true;
       taskCarry.endTaskCarry();
       carryStarted = false;
-      this.emit({ type: 'character_carrying', carrying: false });
+      this.publish({ type: 'character_carrying', carrying: false }, owner);
       carryingPublished = false;
       await this.forward(
         this.loop.resume(
@@ -474,7 +536,8 @@ export class AgentService {
           writeResult(execution.verifiedAction),
           this.runContext(session, controller.signal)
         ),
-        session
+        session,
+        owner
       );
     } catch (error) {
       if (!writeCompleted && this.fileTaskCoordinator.snapshot().state === 'waiting-playback') {
@@ -488,20 +551,22 @@ export class AgentService {
         this.loop.discard(execution.continuationToken);
       }
       if (writeCompleted) {
-        this.emit({
+        this.publish({
           type: 'error',
           code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
           message: '本地文件操作已成功，但模型总结失败。',
           nextAction: '可以查看文件结果，或稍后重新请求总结。'
-        });
-        this.emit({ type: 'phase', phase: 'success' });
+        }, owner);
+        this.publish({ type: 'phase', phase: 'success' }, owner);
       } else {
-        this.emitFailure(error);
+        this.emitFailure(error, owner);
       }
       throw error;
     } finally {
       if (carryStarted) taskCarry.endTaskCarry();
-      if (carryingPublished) this.emit({ type: 'character_carrying', carrying: false });
+      if (carryingPublished) {
+        this.publish({ type: 'character_carrying', carrying: false }, owner);
+      }
       if (this.activeFileTask === activeTask) this.activeFileTask = null;
       if (this.activeController === controller) this.activeController = null;
     }
@@ -512,7 +577,12 @@ export class AgentService {
     if (!activeTask || activeTask.action !== action) {
       throw new Error('FILE_TASK_TRANSACTION_MISMATCH');
     }
-    await activeTask.session.fileTools.executeWrite(action);
+    const irreversible = this.beginIrreversibleExecution();
+    try {
+      await activeTask.session.fileTools.executeWrite(action);
+    } finally {
+      this.finishIrreversibleExecution(irreversible);
+    }
   }
 
   private fileTaskResultError(result: FileTaskResult): Error {
@@ -542,34 +612,48 @@ export class AgentService {
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
       messages: [...session.messages, ...visibleHistory],
-      provider: providerWithFallback(session.provider, session.fallbackProviders ?? []),
+      provider: this.historyBoundSessions.has(session)
+        ? providerWithOneRetry(session.provider)
+        : providerWithFallback(session.provider, session.fallbackProviders ?? []),
       tools: session.tools,
       toolRuntime: session.toolRuntime,
       signal
     };
   }
 
-  private async forward(stream: AsyncGenerator<AgentEvent>, session: AgentSession): Promise<void> {
+  private async forward(
+    stream: AsyncGenerator<AgentEvent>,
+    session: AgentSession,
+    owner: symbol
+  ): Promise<void> {
     for await (const event of stream) {
+      if (this.taskOwner !== owner) {
+        if (event.type === 'write_request') this.loop.discard(event.continuationToken);
+        return;
+      }
       if (event.type === 'phase') {
-        this.emit(event);
+        this.publish(event, owner);
         continue;
       }
       if (event.type === 'message') {
-        this.emit({ type: 'message', role: 'assistant', text: event.text });
+        this.publish({ type: 'message', role: 'assistant', text: event.text }, owner);
         continue;
       }
       if (event.type === 'emotion') {
-        this.emit({ type: 'character_emotion', label: event.label });
+        this.publish({ type: 'character_emotion', label: event.label }, owner);
         continue;
       }
       if (event.type === 'behavior_intent') {
-        this.emitBehaviorIntent?.(event.intent);
+        if (this.taskOwner === owner) this.emitBehaviorIntent?.(event.intent);
         continue;
       }
       try {
         this.assertFileDisclosureAllowed(session);
         const verifiedAction = await session.fileTools.preview(event.executionRequest);
+        if (this.taskOwner !== owner) {
+          this.loop.discard(event.continuationToken);
+          return;
+        }
         const publicAction = this.pending.issue({
           conversationId: this.createConversationId(),
           risk: 'write',
@@ -584,7 +668,7 @@ export class AgentService {
           continuationToken: event.continuationToken
         });
         this.pendingSession = session;
-        this.emit({ type: 'pending_action', action: publicAction });
+        this.publish({ type: 'pending_action', action: publicAction }, owner);
       } catch (error) {
         this.loop.discard(event.continuationToken);
         throw error;
@@ -592,18 +676,47 @@ export class AgentService {
     }
   }
 
-  private emitFailure(error: unknown): void {
+  private emitFailure(error: unknown, owner?: symbol): void {
     if (typeof error === 'object' && error !== null) {
       this.reportedFailures.add(error);
     }
-    this.emit(publicErrorEvent(error));
-    this.emit({ type: 'phase', phase: 'error' });
+    this.publish(publicErrorEvent(error), owner);
+    this.publish({ type: 'phase', phase: 'error' }, owner);
+  }
+
+  private publish(event: TaskEvent, owner?: symbol | null): void {
+    if (owner !== undefined && owner !== null && this.taskOwner !== owner) return;
+    this.emit(event);
+  }
+
+  private beginIrreversibleExecution(): NonNullable<AgentService['irreversibleExecution']> {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => {
+      resolve = done;
+    });
+    const execution = { promise, resolve };
+    this.irreversibleExecution = execution;
+    return execution;
+  }
+
+  private finishIrreversibleExecution(
+    execution: NonNullable<AgentService['irreversibleExecution']>
+  ): void {
+    execution.resolve();
+    if (this.irreversibleExecution === execution) this.irreversibleExecution = null;
   }
 
   private assertFileDisclosureAllowed(session: AgentSession): void {
     if (session.fileDisclosureAllowed) return;
     throw Object.assign(new Error('FILE_DISCLOSURE_DENIED'), {
       code: 'FILE_DISCLOSURE_DENIED'
+    });
+  }
+
+  private assertTaskOwned(owner: symbol, signal: AbortSignal): void {
+    if (this.taskOwner === owner && !signal.aborted) return;
+    throw Object.assign(new Error('FILE_TASK_USER_CANCELLED'), {
+      code: 'FILE_TASK_USER_CANCELLED'
     });
   }
 }
