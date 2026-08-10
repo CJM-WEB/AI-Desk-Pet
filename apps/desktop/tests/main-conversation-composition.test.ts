@@ -6,8 +6,8 @@ import type {
 import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
 import { describe, expect, test, vi } from 'vitest';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
-import { ConversationTurnAdapter } from
-  '../src/main/conversation/conversation-turn-adapter';
+import { ConversationChatAdapter } from
+  '../src/main/conversation/conversation-chat-adapter';
 import {
   createMainConversationComposition,
   type MainConversationAgentFactoryInput
@@ -109,10 +109,10 @@ function baseOptions(input: {
     readAuthorizedRootPath,
     readPrivacySettings,
     readEnabledReadTools,
-    createChatAdapter: () => new ConversationTurnAdapter(providerWith(
+    createChatAdapter: () => new ConversationChatAdapter(providerWith(
       input.chatResponse ?? {
         type: 'text',
-        text: '{"kind":"chat_reply","text":"你好"}'
+        text: '你好'
       }
     )),
     createAgentService,

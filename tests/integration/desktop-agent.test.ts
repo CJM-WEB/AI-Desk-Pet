@@ -21,8 +21,8 @@ import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters
 import { CharacterMotionService } from '../../apps/desktop/src/main/characters/character-motion-service';
 import { PrivacySessionRegistry } from
   '../../apps/desktop/src/main/agent/disclosure-policy';
-import { ConversationTurnAdapter } from
-  '../../apps/desktop/src/main/conversation/conversation-turn-adapter';
+import { ConversationChatAdapter } from
+  '../../apps/desktop/src/main/conversation/conversation-chat-adapter';
 import {
   createMainConversationComposition,
   type MainConversationAgentFactoryInput
@@ -435,11 +435,11 @@ function conversationIntegrationHarness(input: {
     readAuthorizedRootPath,
     readPrivacySettings,
     readEnabledReadTools,
-    createChatAdapter: profile => new ConversationTurnAdapter({
+    createChatAdapter: profile => new ConversationChatAdapter({
       async respond(request) {
         chatRequests.push({ profileId: profile.id, request });
         const response = input.responses.shift();
-        if (!response) throw new Error('会话规划脚本已耗尽');
+        if (!response) throw new Error('聊天响应脚本已耗尽');
         return { type: 'text', text: response };
       }
     }),
@@ -476,8 +476,8 @@ describe('桌面会话分流纵向集成', () => {
   test('无授权根可连续普通聊天且第二轮收到有界可见历史', async () => {
     const fixture = conversationIntegrationHarness({
       responses: [
-        '{"kind":"chat_reply","text":"第一轮回复"}',
-        '{"kind":"chat_reply","text":"第二轮回复"}'
+        '第一轮回复',
+        '第二轮回复'
       ]
     });
 
@@ -498,7 +498,7 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.close();
   });
 
-  test('模糊请求固定澄清且隔离目录无变化', async () => {
+  test('模糊请求按默认聊天返回自然文本且隔离目录无变化', async () => {
     const authorized = await createAuthorizedRoot();
     roots.push(authorized);
     const before = await readdir(authorized.root, { recursive: true });
@@ -512,7 +512,7 @@ describe('桌面会话分流纵向集成', () => {
     expect(fixture.events).toContainEqual({
       type: 'message',
       role: 'assistant',
-      text: '我还不确定你是想聊天，还是希望我处理本地文件。可以再具体说明一下吗？'
+      text: '无法确定请求类型'
     });
     await expect(readdir(authorized.root, { recursive: true })).resolves.toEqual(before);
     expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
@@ -520,23 +520,24 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.close();
   });
 
-  test('严格文件计划无授权时公开稳定错误', async () => {
+  test('明确文件请求无授权时公开稳定错误', async () => {
     const fixture = conversationIntegrationHarness({
-      responses: ['{"kind":"file_task"}']
+      responses: []
     });
 
     await expect(fixture.composition.coordinator.submit('读取 docs/note.txt'))
       .rejects.toMatchObject({ code: 'FILE_AUTHORIZATION_REQUIRED' });
     expect(fixture.readAuthorizedRootPath).toHaveBeenCalledOnce();
     expect(fixture.createAgentService).not.toHaveBeenCalled();
+    expect(fixture.chatRequests).toEqual([]);
     await fixture.composition.close();
   });
 
-  test('授权后的严格文件计划进入既有 Agent 且排除跨 Provider fallback', async () => {
+  test('授权后的明确文件请求进入既有 Agent 且排除跨 Provider fallback', async () => {
     const authorized = await createAuthorizedRoot();
     roots.push(authorized);
     const fixture = conversationIntegrationHarness({
-      responses: ['{"kind":"file_task"}'],
+      responses: [],
       authorizedRootPath: authorized.root
     });
 
@@ -550,14 +551,15 @@ describe('桌面会话分流纵向集成', () => {
       .toEqual([conversationSameFallback.id]);
     expect(fixture.agentFactoryInputs[0]?.fallbackProfiles.map(profile => profile.id))
       .not.toContain(conversationCross.id);
+    expect(fixture.chatRequests).toEqual([]);
     await fixture.composition.close();
   });
 
   test('跨 Provider 仅发送当前消息时历史为空且当前消息继续执行', async () => {
     const fixture = conversationIntegrationHarness({
       responses: [
-        '{"kind":"chat_reply","text":"来源回复"}',
-        '{"kind":"chat_reply","text":"目标回复"}'
+        '来源回复',
+        '目标回复'
       ],
       incognito: true
     });
@@ -581,9 +583,9 @@ describe('桌面会话分流纵向集成', () => {
   test('跨 Provider 单次共享只恢复原请求且旧、伪造、重复请求均失效', async () => {
     const fixture = conversationIntegrationHarness({
       responses: [
-        '{"kind":"chat_reply","text":"来源回复"}',
-        '{"kind":"chat_reply","text":"目标回复"}',
-        '{"kind":"chat_reply","text":"再次回复"}'
+        '来源回复',
+        '目标回复',
+        '再次回复'
       ]
     });
     await fixture.composition.coordinator.submit('来源消息');

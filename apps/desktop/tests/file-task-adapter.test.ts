@@ -95,6 +95,37 @@ describe('FileTaskAdapter', () => {
     expect(createAgentTarget).not.toHaveBeenCalled();
   });
 
+  test('取消进行中的目标准备会立即释放 owner，旧授权返回后不得覆盖新目标', async () => {
+    const authorization = deferred();
+    let authorizationCalls = 0;
+    const agent = createAgentDouble();
+    const createAgentTarget = vi.fn(() => preparedAgent(agent));
+    const adapter = new FileTaskAdapter({
+      getAuthorizedRootPath: vi.fn(async () => {
+        authorizationCalls += 1;
+        if (authorizationCalls === 1) await authorization.promise;
+        return 'D:\\authorized';
+      }),
+      createAgentTarget
+    });
+    const oldPrepare = adapter.prepareTarget('g-old');
+    await vi.waitFor(() => expect(authorizationCalls).toBe(1));
+
+    adapter.cancelActive();
+    await expect(adapter.prepareTarget('g-new')).resolves.toMatchObject({
+      profileId: 'profile-agent'
+    });
+
+    authorization.resolve();
+    await expect(oldPrepare).rejects.toMatchObject({ code: 'TASK_CANCELLED' });
+    await expect(adapter.submit({
+      text: '读取 new.txt',
+      visibleHistory: [],
+      generation: 'g-new'
+    })).resolves.toBeUndefined();
+    expect(createAgentTarget).toHaveBeenCalledOnce();
+  });
+
   test('只透传获准可见历史，并给 Agent 事件绑定当前 generation', async () => {
     let emitAgentEvent!: (event: TaskEvent) => void;
     const agent = createAgentDouble(async () => {

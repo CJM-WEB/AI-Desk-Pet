@@ -6,13 +6,14 @@ import type {
 } from '@myself/shared-types';
 import type { ConversationDisclosureAdapter } from './conversation-disclosure-adapter';
 import type { ConversationHistory } from './conversation-history';
-import type { ConversationTurnAdapter } from './conversation-turn-adapter';
+import type { ConversationChatAdapter } from './conversation-chat-adapter';
+import { ExplicitFileIntentGate } from './explicit-file-intent-gate';
 
 const 最大用户消息字符数 = 4_000;
 
 export interface ChatTurnFactory {
   create(signal: AbortSignal): Promise<{
-    adapter: ConversationTurnAdapter;
+    adapter: ConversationChatAdapter;
     profileId: string;
     providerIdentity: string;
     providerName: string;
@@ -51,6 +52,7 @@ export interface ConversationCoordinatorOptions {
 type ConversationState =
   | { kind: 'idle' }
   | { kind: 'running_chat'; generation: string; controller: AbortController }
+  | { kind: 'preparing_file_task'; generation: string; controller: AbortController }
   | { kind: 'awaiting_history_disclosure'; generation: string; requestId: string }
   | { kind: 'running_file_task'; generation: string }
   | { kind: 'awaiting_file_confirmation'; generation: string }
@@ -64,9 +66,9 @@ interface ChatContext {
 }
 
 interface PendingChatDisclosure extends ChatContext {
-  kind: 'chat_plan';
+  kind: 'chat_reply';
   requestId: string;
-  adapter: ConversationTurnAdapter;
+  adapter: ConversationChatAdapter;
   profileId: string;
   providerIdentity: string;
   providerName: string;
@@ -139,6 +141,17 @@ export class ConversationCoordinator {
       this.options.emit({ type: 'phase', phase: 'thinking' });
       if (!this.isRunning(context)) return;
 
+      // Main Gate 是唯一分流权威；文件请求在创建聊天 Provider 前直接进入既有文件链。
+      if (ExplicitFileIntentGate.classify(normalized).kind === 'file_task') {
+        this.state = {
+          kind: 'preparing_file_task',
+          generation: context.generation,
+          controller: context.controller
+        };
+        await this.prepareFileTask(context);
+        return;
+      }
+
       const target = await this.options.chatTurnFactory.create(context.controller.signal);
       if (!this.isRunning(context)) return;
 
@@ -153,7 +166,7 @@ export class ConversationCoordinator {
       if (!this.isRunning(context)) return;
       if (disclosure.kind === 'confirmation_required') {
         this.pendingDisclosure = {
-          kind: 'chat_plan',
+          kind: 'chat_reply',
           ...context,
           requestId,
           adapter: target.adapter,
@@ -176,7 +189,12 @@ export class ConversationCoordinator {
         return;
       }
 
-      await this.runPlan(context, target.adapter, target.providerIdentity, disclosure.messages);
+      await this.runChatReply(
+        context,
+        target.adapter,
+        target.providerIdentity,
+        disclosure.messages
+      );
     } catch (error) {
       if (!this.ownsChatContext(context)) {
         if (this.shouldRethrowReportedFileError(error, context)) throw publicError(error);
@@ -191,11 +209,16 @@ export class ConversationCoordinator {
   }
 
   cancelActive(): void {
-    if (this.state.kind === 'running_chat') {
+    if (
+      this.state.kind === 'running_chat'
+      || this.state.kind === 'preparing_file_task'
+    ) {
+      const cancelFilePreparation = this.state.kind === 'preparing_file_task';
       const controller = this.state.controller;
       const releasedState: ConversationState = { kind: 'idle' };
       this.state = releasedState;
       this.pendingDisclosure = null;
+      if (cancelFilePreparation) this.options.fileTasks.cancelActive();
       controller.abort();
       if (this.state === releasedState) {
         this.options.emit({ type: 'phase', phase: 'cancelled' });
@@ -272,20 +295,20 @@ export class ConversationCoordinator {
     try {
       const visibleHistory = this.options.disclosureAdapter.resolve({
         requestId,
-        targetProfileId: pending.kind === 'chat_plan'
+        targetProfileId: pending.kind === 'chat_reply'
           ? pending.profileId
           : pending.target.profileId,
         decision
       });
       if (!this.ownsPendingDisclosure(pending)) return;
       this.pendingDisclosure = null;
-      if (pending.kind === 'chat_plan') {
+      if (pending.kind === 'chat_reply') {
         this.state = {
           kind: 'running_chat',
           generation: pending.generation,
           controller: pending.controller
         };
-        await this.runPlan(
+        await this.runChatReply(
           pending,
           pending.adapter,
           pending.providerIdentity,
@@ -312,6 +335,7 @@ export class ConversationCoordinator {
     if (this.state.kind === 'resetting') throw publicErrorForCode('TASK_ALREADY_ACTIVE');
 
     const controller = this.state.kind === 'running_chat'
+      || this.state.kind === 'preparing_file_task'
       ? this.state.controller
       : this.state.kind === 'awaiting_history_disclosure'
         ? this.pendingDisclosure?.controller
@@ -358,6 +382,7 @@ export class ConversationCoordinator {
     if (this.closePromise) return this.closePromise;
     if (this.state.kind === 'closed') return Promise.resolve();
     const controller = this.state.kind === 'running_chat'
+      || this.state.kind === 'preparing_file_task'
       ? this.state.controller
       : this.state.kind === 'awaiting_history_disclosure'
         ? this.pendingDisclosure?.controller
@@ -397,35 +422,29 @@ export class ConversationCoordinator {
   }
 
   /** 在可见文本写入历史前复核控制器与会话代次，隔离迟到模型响应。 */
-  private async runPlan(
+  private async runChatReply(
     context: ChatContext,
-    adapter: ConversationTurnAdapter,
+    adapter: ConversationChatAdapter,
     providerIdentity: string,
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
     if (!this.isRunning(context)) return;
-    const plan = await adapter.plan({
+    const reply = await adapter.respond({
       history: visibleHistory,
       text: context.text,
       signal: context.controller.signal
     });
     if (!this.isRunning(context)) return;
-    if (plan.kind === 'file_task') {
-      await this.prepareFileTask(context);
-      return;
-    }
-
-    const assistantText = plan.kind === 'chat_reply' ? plan.text : plan.question;
+    this.options.emit({ type: 'message', role: 'assistant', text: reply.text });
+    if (!this.isRunning(context)) return;
     this.options.history.append({
       userText: context.text,
-      assistantText,
+      assistantText: reply.text,
       providerIdentity
     });
     if (!this.isRunning(context)) return;
-    this.options.emit({ type: 'message', role: 'assistant', text: assistantText });
-    if (!this.isRunning(context)) return;
-    if (plan.kind === 'chat_reply' && plan.emotion !== undefined) {
-      this.options.emit({ type: 'character_emotion', label: plan.emotion });
+    if (reply.emotion !== undefined) {
+      this.options.emit({ type: 'character_emotion', label: reply.emotion });
       if (!this.isRunning(context)) return;
     }
     this.state = { kind: 'idle' };
@@ -433,7 +452,10 @@ export class ConversationCoordinator {
   }
 
   private isRunning(context: ChatContext): boolean {
-    return this.state.kind === 'running_chat'
+    return (
+      this.state.kind === 'running_chat'
+      || this.state.kind === 'preparing_file_task'
+    )
       && this.state.generation === context.generation
       && this.state.controller === context.controller
       && context.generation === this.generation;

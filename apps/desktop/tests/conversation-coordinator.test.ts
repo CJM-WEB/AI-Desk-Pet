@@ -12,7 +12,7 @@ import {
 } from '../src/main/conversation/conversation-coordinator';
 import { ConversationDisclosureAdapter } from '../src/main/conversation/conversation-disclosure-adapter';
 import { ConversationHistory } from '../src/main/conversation/conversation-history';
-import { ConversationTurnAdapter } from '../src/main/conversation/conversation-turn-adapter';
+import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 
 interface ProviderScript {
   requests: ModelRequest[];
@@ -31,6 +31,8 @@ class CapturingFileTasks implements ConversationFileTaskPort {
   closeCalls = 0;
   closeError: Error | null = null;
   closeBarrier: Promise<void> | null = null;
+  prepareBarrier: Promise<void> | null = null;
+  cancelCalls = 0;
   target: {
     profileId: string;
     providerIdentity: string;
@@ -57,11 +59,16 @@ class CapturingFileTasks implements ConversationFileTaskPort {
 
   async prepareTarget(generation: string) {
     this.preparedGenerations.push(generation);
+    const barrier = this.prepareBarrier;
+    this.prepareBarrier = null;
+    if (barrier) await barrier;
     if (this.prepareError) throw this.prepareError;
     return this.target;
   }
 
-  cancelActive(): void {}
+  cancelActive(): void {
+    this.cancelCalls += 1;
+  }
 
   async resolveAction(): Promise<void> {}
 
@@ -167,7 +174,7 @@ function createHarness(scripts: Array<{
       const item = scripts[factoryIndex++];
       if (!item) throw new Error('UNEXPECTED_FACTORY_CALL');
       return {
-        adapter: new ConversationTurnAdapter(item.script.provider),
+        adapter: new ConversationChatAdapter(item.script.provider),
         profileId: item.profileId,
         providerIdentity: item.providerIdentity,
         providerName: item.providerName
@@ -210,10 +217,70 @@ function errorCode(error: unknown): unknown {
 }
 
 describe('ConversationCoordinator', () => {
+  test.each(['你好', '聊天呀', '我想和你聊天', '帮我整理一下'])(
+    '默认聊天“%s”只创建聊天目标且不触碰文件端口',
+    async text => {
+      const script = scriptedProvider({ type: 'text', text: '自然回复' });
+      const harness = createHarness([{
+        profileId: 'profile-openai',
+        providerIdentity: 'openai',
+        providerName: 'OpenAI',
+        script
+      }]);
+
+      await harness.coordinator.submit(text);
+
+      expect(harness.factoryCallCount()).toBe(1);
+      expect(harness.fileTasks.preparedGenerations).toEqual([]);
+      expect(harness.fileTasks.submissions).toEqual([]);
+    }
+  );
+
+  test.each(['读取 a.txt', '列出当前文件夹'])(
+    '明确文件请求“%s”只进入文件链且不创建聊天目标',
+    async text => {
+      const harness = createHarness([]);
+
+      await harness.coordinator.submit(text);
+
+      expect(harness.factoryCallCount()).toBe(0);
+      expect(harness.fileTasks.preparedGenerations).toEqual(['generation-current']);
+      expect(harness.fileTasks.submissions).toEqual([{
+        text,
+        visibleHistory: [],
+        generation: 'generation-current'
+      }]);
+    }
+  );
+
+  test('文件目标准备期间取消会释放文件 owner，并允许下一次文件请求立即进入准备', async () => {
+    const fileTasks = new CapturingFileTasks();
+    const barrier = deferredVoid();
+    fileTasks.prepareBarrier = barrier.promise;
+    const harness = createHarness([], { fileTasks });
+    const first = harness.coordinator.submit('读取 old.txt');
+    await vi.waitFor(() => expect(fileTasks.preparedGenerations).toHaveLength(1));
+
+    harness.coordinator.cancelActive();
+    await expect(harness.coordinator.submit('读取 new.txt')).resolves.toBeUndefined();
+
+    expect(fileTasks.cancelCalls).toBe(1);
+    expect(fileTasks.preparedGenerations).toEqual([
+      'generation-current',
+      'generation-current'
+    ]);
+    expect(fileTasks.submissions).toEqual([expect.objectContaining({ text: '读取 new.txt' })]);
+
+    barrier.resolve();
+    await expect(first).resolves.toBeUndefined();
+    expect(fileTasks.submissions).toHaveLength(1);
+  });
+
   test('普通聊天只广播一次用户消息并形成完整历史回合', async () => {
     const script = scriptedProvider({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"我在这里。","emotion":"calm"}'
+      text: '  **我在这里。**\n',
+      emotion: 'calm'
     });
     const { coordinator, events, fileTasks, history } = createHarness([{
       profileId: 'profile-openai',
@@ -228,20 +295,24 @@ describe('ConversationCoordinator', () => {
       { type: 'message', role: 'user', text: '今天有点累' }
     ]);
     expect(phases(events)).toEqual(['listening', 'thinking', 'success']);
-    expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '我在这里。' });
+    expect(events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '  **我在这里。**\n'
+    });
     expect(events).toContainEqual({ type: 'character_emotion', label: 'calm' });
     expect(history.turns()).toEqual([{
       userText: '今天有点累',
-      assistantText: '我在这里。',
+      assistantText: '  **我在这里。**\n',
       providerIdentity: 'openai'
     }]);
     expect(fileTasks.submissions).toEqual([]);
   });
 
-  test('澄清回复形成完整历史回合且不调用文件端口', async () => {
+  test('自然文本回复形成完整历史回合且不调用文件端口', async () => {
     const script = scriptedProvider({
       type: 'text',
-      text: '{"kind":"clarify","question":"你希望我怎么帮你？"}'
+      text: '你希望我怎么帮你？'
     });
     const { coordinator, events, fileTasks, history } = createHarness([{
       profileId: 'profile-openai',
@@ -288,7 +359,7 @@ describe('ConversationCoordinator', () => {
     expect(phases(events)).toEqual(['listening', 'thinking']);
     expect(events.filter(event => event.type === 'error')).toEqual([]);
 
-    script.resolve({ type: 'text', text: '{"kind":"chat_reply","text":"完成"}' });
+    script.resolve({ type: 'text', text: '完成' });
     await first;
   });
 
@@ -315,6 +386,48 @@ describe('ConversationCoordinator', () => {
     expect(phases(events)).toEqual(['listening', 'thinking', 'error']);
     expect(fileTasks.submissions).toEqual([]);
     expect(history.turns()).toEqual([]);
+  });
+
+  test.each<[string, ModelResponse]>([
+    ['工具请求', {
+      type: 'tool_request',
+      request: {
+        requestId: 'tool-request',
+        toolName: 'read_text_file',
+        arguments: {}
+      }
+    }],
+    ['空白正文', { type: 'text', text: '   ' }],
+    ['超长正文', { type: 'text', text: '长'.repeat(8_001) }]
+  ])('聊天适配器拒绝%s后回到 idle、历史不追加且允许重试', async (_name, response) => {
+    const harness = createHarness([
+      {
+        profileId: 'profile-openai',
+        providerIdentity: 'openai',
+        providerName: 'OpenAI',
+        script: scriptedProvider(response)
+      },
+      {
+        profileId: 'profile-openai',
+        providerIdentity: 'openai',
+        providerName: 'OpenAI',
+        script: scriptedProvider({ type: 'text', text: '重试成功' })
+      }
+    ]);
+
+    await expect(harness.coordinator.submit('第一次')).rejects.toMatchObject({
+      code: 'AGENT_INTERNAL_ERROR',
+      message: '任务执行失败，请重试。'
+    });
+    expect(harness.history.turns()).toEqual([]);
+    expect(harness.fileTasks.preparedGenerations).toEqual([]);
+
+    await expect(harness.coordinator.submit('重试')).resolves.toBeUndefined();
+    expect(harness.history.turns()).toEqual([{
+      userText: '重试',
+      assistantText: '重试成功',
+      providerIdentity: 'openai'
+    }]);
   });
 
   test.each([
@@ -346,7 +459,7 @@ describe('ConversationCoordinator', () => {
       providerName: 'OpenAI',
       script: scriptedProvider({
         type: 'text',
-        text: '{"kind":"chat_reply","text":"不应调用"}'
+        text: '不应调用'
       })
     }]);
     harness.disclosureAdapter.prepare = () => {
@@ -363,11 +476,11 @@ describe('ConversationCoordinator', () => {
   test('跨 Provider 历史先暂停确认且确认后不重复用户消息', async () => {
     const first = scriptedProvider({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"第一轮回复"}'
+      text: '第一轮回复'
     });
     const second = scriptedProvider({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"第二轮回复"}'
+      text: '第二轮回复'
     });
     const { coordinator, events, history } = createHarness([
       {
@@ -433,7 +546,7 @@ describe('ConversationCoordinator', () => {
     await Promise.resolve();
 
     coordinator.cancelActive();
-    script.resolve({ type: 'text', text: '{"kind":"chat_reply","text":"旧回复"}' });
+    script.resolve({ type: 'text', text: '旧回复' });
     await pending;
 
     expect(history.turns()).toEqual([]);
@@ -462,10 +575,10 @@ describe('ConversationCoordinator', () => {
   });
 
   test('用户消息监听器同步取消后不再发布阶段或创建模型', async () => {
-    const script = scriptedProvider({
-      type: 'text',
-      text: '{"kind":"chat_reply","text":"不应出现"}'
-    });
+      const script = scriptedProvider({
+        type: 'text',
+        text: '不应出现'
+      });
     let cancelled = false;
     const { coordinator, events, factoryCallCount, history } = createHarness([{
       profileId: 'profile-openai',
@@ -513,7 +626,7 @@ describe('ConversationCoordinator', () => {
     await expect(coordinator.submit('不得重开')).rejects.toSatisfy(
       error => errorCode(error) === 'CONVERSATION_CLOSED'
     );
-    script.resolve({ type: 'text', text: '{"kind":"chat_reply","text":"迟到"}' });
+    script.resolve({ type: 'text', text: '迟到' });
     await pending;
   });
 
@@ -521,7 +634,7 @@ describe('ConversationCoordinator', () => {
     const oldScript = deferredProvider();
     const newScript = scriptedProvider({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"新回复"}'
+      text: '新回复'
     });
     const { coordinator, events } = createHarness([
       {
@@ -546,7 +659,7 @@ describe('ConversationCoordinator', () => {
     });
 
     coordinator.cancelActive();
-    oldScript.resolve({ type: 'text', text: '{"kind":"chat_reply","text":"旧回复"}' });
+    oldScript.resolve({ type: 'text', text: '旧回复' });
     await oldPending;
     await newPending;
 
@@ -565,7 +678,7 @@ describe('ConversationCoordinator', () => {
     async action => {
       const script = scriptedProvider({
         type: 'text',
-        text: '{"kind":"chat_reply","text":"不应出现"}'
+        text: '不应出现'
       });
       const harness = createHarness([{
         profileId: 'profile-anthropic',
@@ -595,10 +708,10 @@ describe('ConversationCoordinator', () => {
     }
   );
 
-  test('History append 同步 close 后不发布 assistant 或覆盖 closed', async () => {
+  test('History append 同步 close 时助手已公开且不会覆盖 closed', async () => {
     const script = scriptedProvider({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"不得公开"}'
+      text: '不得公开'
     });
     const harness = createHarness([{
       profileId: 'profile-openai',
@@ -619,7 +732,7 @@ describe('ConversationCoordinator', () => {
       assistantText: '不得公开',
       providerIdentity: 'openai'
     }]);
-    expect(harness.events).not.toContainEqual({
+    expect(harness.events).toContainEqual({
       type: 'message',
       role: 'assistant',
       text: '不得公开'
@@ -629,12 +742,16 @@ describe('ConversationCoordinator', () => {
     );
   });
 
-  test('助手消息监听器同步关闭后保留已可见回合且不覆盖 closed', async () => {
+  test.each(['cancel', 'reset', 'close'] as const)(
+    '助手消息监听器同步 %s 后不写历史或覆盖新状态',
+    async action => {
     const script = scriptedProvider({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"已可见回复","emotion":"calm"}'
+      text: '已可见回复',
+      emotion: 'calm'
     });
-    let closed = false;
+    let acted = false;
+    let lifecycle = Promise.resolve();
     const { coordinator, events, history } = createHarness([{
       profileId: 'profile-openai',
       providerIdentity: 'openai',
@@ -642,30 +759,54 @@ describe('ConversationCoordinator', () => {
       script
     }], {
       onEmit: (event, target) => {
-        if (event.type === 'message' && event.role === 'assistant' && !closed) {
-          closed = true;
-          void target.close();
+        if (event.type === 'message' && event.role === 'assistant' && !acted) {
+          acted = true;
+          if (action === 'cancel') target.cancelActive();
+          else lifecycle = action === 'reset'
+            ? target.resetConversation()
+            : target.close();
         }
       }
     });
 
     await coordinator.submit('同步关闭');
+    await lifecycle;
 
-    expect(history.turns()).toEqual([{
-      userText: '同步关闭',
-      assistantText: '已可见回复',
-      providerIdentity: 'openai'
-    }]);
-    expect(events.at(-1)).toEqual({
+    expect(history.turns()).toEqual([]);
+    expect(events).toContainEqual({
       type: 'message',
       role: 'assistant',
       text: '已可见回复'
     });
     expect(events).not.toContainEqual({ type: 'character_emotion', label: 'calm' });
     expect(phases(events)).not.toContain('success');
-    await expect(coordinator.submit('关闭后消息')).rejects.toSatisfy(
-      error => errorCode(error) === 'CONVERSATION_CLOSED'
-    );
+    if (action === 'close') {
+      await expect(coordinator.submit('关闭后消息')).rejects.toSatisfy(
+        error => errorCode(error) === 'CONVERSATION_CLOSED'
+      );
+    }
+  });
+
+  test('助手消息公开失败时不写历史并回到公开错误边界', async () => {
+    const rawError = new Error('renderer-send-private-error');
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: scriptedProvider({ type: 'text', text: '不得写入历史' })
+    }], {
+      onEmit: event => {
+        if (event.type === 'message' && event.role === 'assistant') throw rawError;
+      }
+    });
+
+    await expect(harness.coordinator.submit('触发公开失败')).rejects.toMatchObject({
+      code: 'AGENT_INTERNAL_ERROR',
+      message: '任务执行失败，请重试。'
+    });
+
+    expect(harness.history.turns()).toEqual([]);
+    expect(JSON.stringify(harness.events)).not.toContain('renderer-send-private-error');
   });
 
   test('close 先封闭状态并在清理失败时继续全部清理', async () => {
@@ -724,7 +865,7 @@ describe('ConversationCoordinator', () => {
   test('只转发当前会话 generation 的文件端口事件', async () => {
     const script = scriptedProvider({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"回复"}'
+      text: '回复'
     });
     const { coordinator, events, fileTasks } = createHarness([{
       profileId: 'profile-openai',
@@ -745,7 +886,7 @@ describe('ConversationCoordinator', () => {
   test('按 Unicode 字符校验并规范化一到四千字符输入', async () => {
     const script = scriptedProvider({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"收到"}'
+      text: '收到'
     });
     const { coordinator, events } = createHarness([{
       profileId: 'profile-openai',
@@ -766,17 +907,8 @@ describe('ConversationCoordinator', () => {
     expect(events.filter(event => event.type === 'message' && event.role === 'user')).toHaveLength(1);
   });
 
-  test('只有 file_task 规划会准备目标并把同一目标快照提交给文件端口', async () => {
-    const script = scriptedProvider({
-      type: 'text',
-      text: '{"kind":"file_task"}'
-    });
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script
-    }]);
+  test('明确文件请求直接准备目标并把同一目标快照提交给文件端口', async () => {
+    const harness = createHarness([]);
     harness.history.append({
       userText: '旧问题',
       assistantText: '旧回答',
@@ -810,12 +942,7 @@ describe('ConversationCoordinator', () => {
     fileTasks.prepareError = Object.assign(new Error('FILE_AUTHORIZATION_REQUIRED'), {
       code: 'FILE_AUTHORIZATION_REQUIRED'
     });
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: scriptedProvider({ type: 'text', text: '{"kind":"file_task"}' })
-    }], { fileTasks });
+    const harness = createHarness([], { fileTasks });
 
     await expect(harness.coordinator.submit('整理文件')).rejects.toSatisfy(
       error => errorCode(error) === 'FILE_AUTHORIZATION_REQUIRED'
@@ -830,21 +957,8 @@ describe('ConversationCoordinator', () => {
   });
 
   test('文件任务 phase:error 公开失败后释放状态、允许再次提交且不写历史', async () => {
-    const harness = createHarness([
-      {
-        profileId: 'profile-openai',
-        providerIdentity: 'openai',
-        providerName: 'OpenAI',
-        script: scriptedProvider({ type: 'text', text: '{"kind":"file_task"}' })
-      },
-      {
-        profileId: 'profile-openai',
-        providerIdentity: 'openai',
-        providerName: 'OpenAI',
-        script: scriptedProvider({ type: 'text', text: '{"kind":"file_task"}' })
-      }
-    ]);
-    await harness.coordinator.submit('失败任务');
+    const harness = createHarness([]);
+    await harness.coordinator.submit('读取 失败.txt');
 
     harness.fileTasks.publish({
       type: 'error',
@@ -859,7 +973,7 @@ describe('ConversationCoordinator', () => {
       message: '文件路径无效。'
     });
     expect(harness.history.turns()).toEqual([]);
-    await expect(harness.coordinator.submit('重试任务')).resolves.toBeUndefined();
+    await expect(harness.coordinator.submit('读取 重试.txt')).resolves.toBeUndefined();
     expect(harness.fileTasks.submissions).toHaveLength(2);
   });
 
@@ -880,20 +994,12 @@ describe('ConversationCoordinator', () => {
       throw Object.assign(new Error('private-path-details'), { code: 'PATH_INVALID' });
     };
     let newPending: Promise<void> | null = null;
-    const harness = createHarness([
-      {
-        profileId: 'profile-openai',
-        providerIdentity: 'openai',
-        providerName: 'OpenAI',
-        script: scriptedProvider({ type: 'text', text: '{"kind":"file_task"}' })
-      },
-      {
-        profileId: 'profile-openai',
-        providerIdentity: 'openai',
-        providerName: 'OpenAI',
-        script: nextProvider
-      }
-    ], {
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: nextProvider
+    }], {
       fileTasks,
       onEmit: (event, coordinator) => {
         if (event.type === 'phase' && event.phase === 'error' && newPending === null) {
@@ -902,7 +1008,7 @@ describe('ConversationCoordinator', () => {
       }
     });
 
-    await expect(harness.coordinator.submit('失败文件任务')).rejects
+    await expect(harness.coordinator.submit('读取 失败.txt')).rejects
       .toSatisfy(error => errorCode(error) === 'PATH_INVALID');
     await vi.waitFor(() => expect(nextProvider.requests).toHaveLength(1));
 
@@ -914,7 +1020,7 @@ describe('ConversationCoordinator', () => {
     expect(JSON.stringify(harness.events)).not.toContain('private-path-details');
     nextProvider.resolve({
       type: 'text',
-      text: '{"kind":"chat_reply","text":"新任务完成"}'
+      text: '新任务完成'
     });
     await newPending;
     expect(harness.events).toContainEqual({
@@ -931,12 +1037,7 @@ describe('ConversationCoordinator', () => {
     ]],
     ['current_message_only', []]
   ] as const)('文件目标跨 Provider 时 %s 后只恢复一次原提交', async (decision, expectedHistory) => {
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: scriptedProvider({ type: 'text', text: '{"kind":"file_task"}' })
-    }]);
+    const harness = createHarness([]);
     harness.fileTasks.target = Object.freeze({
       profileId: 'profile-anthropic-agent',
       providerIdentity: 'anthropic',
@@ -953,7 +1054,7 @@ describe('ConversationCoordinator', () => {
     expect(harness.fileTasks.submissions).toEqual([]);
     expect(harness.events).toContainEqual({
       type: 'history_disclosure_required',
-      requestId: 'request-2',
+      requestId: 'request-1',
       targetProviderName: 'Anthropic Agent',
       messageCount: 2,
       characterCount: 6
@@ -961,14 +1062,14 @@ describe('ConversationCoordinator', () => {
     await expect(harness.coordinator.resolveHistoryDisclosure('forged', decision)).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
 
-    await harness.coordinator.resolveHistoryDisclosure('request-2', decision);
+    await harness.coordinator.resolveHistoryDisclosure('request-1', decision);
 
     expect(harness.fileTasks.submissions).toEqual([{
       text: '整理文件',
       visibleHistory: expectedHistory,
       generation: 'generation-current'
     }]);
-    await expect(harness.coordinator.resolveHistoryDisclosure('request-2', decision)).rejects
+    await expect(harness.coordinator.resolveHistoryDisclosure('request-1', decision)).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
   });
 
@@ -1003,7 +1104,7 @@ describe('ConversationCoordinator', () => {
     await vi.waitFor(() => expect(oldProvider.requests).toHaveLength(1));
 
     const resetting = harness.coordinator.resetConversation();
-    oldProvider.resolve({ type: 'text', text: '{"kind":"chat_reply","text":"不得进入新会话"}' });
+    oldProvider.resolve({ type: 'text', text: '不得进入新会话' });
     await resetting;
     await running;
 
@@ -1020,12 +1121,7 @@ describe('ConversationCoordinator', () => {
   });
 
   test('等待文件披露时 reset 使旧 requestId 失效且绝不提交旧目标', async () => {
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: scriptedProvider({ type: 'text', text: '{"kind":"file_task"}' })
-    }]);
+    const harness = createHarness([]);
     harness.fileTasks.target = Object.freeze({
       profileId: 'profile-anthropic-agent',
       providerIdentity: 'anthropic',
@@ -1040,12 +1136,12 @@ describe('ConversationCoordinator', () => {
 
     await harness.coordinator.resetConversation();
 
-    await expect(harness.coordinator.resolveHistoryDisclosure('request-2', 'share_once')).rejects
+    await expect(harness.coordinator.resolveHistoryDisclosure('request-1', 'share_once')).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
     expect(harness.fileTasks.submissions).toEqual([]);
     expect(harness.events).toContainEqual({
       type: 'conversation_reset',
-      generation: 'request-3'
+      generation: 'request-2'
     });
   });
 
@@ -1068,12 +1164,7 @@ describe('ConversationCoordinator', () => {
       }, input.generation);
       fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
     };
-    const harness = createHarness([{
-      profileId: 'profile-openai',
-      providerIdentity: 'openai',
-      providerName: 'OpenAI',
-      script: scriptedProvider({ type: 'text', text: '{"kind":"file_task"}' })
-    }], { fileTasks });
+    const harness = createHarness([], { fileTasks });
 
     await harness.coordinator.submit('创建文件');
     await harness.coordinator.resetConversation();

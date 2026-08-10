@@ -22,7 +22,7 @@ import { PermissionPolicy } from './agent/permission-policy';
 import { PendingActionStore } from './agent/pending-action-store';
 import { createSessionToolRegistry } from './agent/tool-registry';
 import { PrivacySessionRegistry } from './agent/disclosure-policy';
-import { ConversationTurnAdapter } from './conversation/conversation-turn-adapter';
+import { ConversationChatAdapter } from './conversation/conversation-chat-adapter';
 import { FileTaskAdapter } from './conversation/file-task-adapter';
 import { createMainConversationComposition } from
   './conversation/main-conversation-composition';
@@ -747,7 +747,7 @@ async function createApplicationWindows(
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
     readEnabledReadTools: () => desktopSettingsService.enabledReadToolRegistrations(),
-    createChatAdapter: profile => new ConversationTurnAdapter(providerRegistry.create(
+    createChatAdapter: profile => new ConversationChatAdapter(providerRegistry.create(
       profile,
       () => secrets.readForProviderCall(profile.id)
     )),

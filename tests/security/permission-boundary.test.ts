@@ -22,8 +22,8 @@ import {
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import { PrivacySessionRegistry } from
   '../../apps/desktop/src/main/agent/disclosure-policy';
-import { ConversationTurnAdapter } from
-  '../../apps/desktop/src/main/conversation/conversation-turn-adapter';
+import { ConversationChatAdapter } from
+  '../../apps/desktop/src/main/conversation/conversation-chat-adapter';
 import {
   createMainConversationComposition
 } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
@@ -181,7 +181,7 @@ function securityProfile() {
 }
 
 function conversationSecurityHarness(input: {
-  planningText: string;
+  chatText: string;
   authorizedRootPath?: string | null;
 }) {
   const profile = securityProfile();
@@ -215,10 +215,10 @@ function conversationSecurityHarness(input: {
     readAuthorizedRootPath,
     readPrivacySettings,
     readEnabledReadTools,
-    createChatAdapter: () => new ConversationTurnAdapter({
+    createChatAdapter: () => new ConversationChatAdapter({
       async respond(request) {
         modelRequests.push({ tools: request.tools });
-        return { type: 'text', text: input.planningText };
+        return { type: 'text', text: input.chatText };
       }
     }),
     createAgentService,
@@ -239,7 +239,7 @@ function conversationSecurityHarness(input: {
 describe('权限边界安全回归', () => {
   test('完整 Main 组合的普通聊天不读取任何文件能力依赖', async () => {
     const harness = conversationSecurityHarness({
-      planningText: '{"kind":"chat_reply","text":"普通聊天已完成"}'
+      chatText: '普通聊天已完成'
     });
     harness.readAuthorizedRootPath.mockImplementation(async () => {
       throw new Error('授权读取器不应调用');
@@ -265,7 +265,7 @@ describe('权限边界安全回归', () => {
 
   test('明确文件任务才读取授权且无授权稳定失败并不创建 Agent', async () => {
     const harness = conversationSecurityHarness({
-      planningText: '{"kind":"file_task"}',
+      chatText: '不得调用聊天模型',
       authorizedRootPath: null
     });
 
@@ -277,6 +277,7 @@ describe('权限边界安全回归', () => {
     expect(harness.readEnabledReadTools).toHaveBeenCalledOnce();
     expect(harness.createAgentService).not.toHaveBeenCalled();
     expect(harness.createPathPolicy).not.toHaveBeenCalled();
+    expect(harness.modelRequests).toEqual([]);
     expect(harness.events).toContainEqual(expect.objectContaining({
       type: 'error',
       code: 'FILE_AUTHORIZATION_REQUIRED'
@@ -299,9 +300,10 @@ describe('权限边界安全回归', () => {
       vi.spyOn(console, 'error').mockImplementation((...args) => { consoleOutput.push(args); })
     ];
     const harness = conversationSecurityHarness({
-      planningText: '{"kind":"file_task"}',
+      chatText: '不得调用聊天模型',
       authorizedRootPath: sentinels.path
     });
+    const userText = `读取 ${sentinels.chat}.txt`;
     harness.readPrivacySettings.mockResolvedValue({
       dataCategories: { file: true },
       privateFileContent: sentinels.file,
@@ -315,19 +317,19 @@ describe('权限边界安全回归', () => {
       throw new Error(Object.values(sentinels).join(':'));
     });
 
-    const error = await harness.composition.coordinator.submit(sentinels.chat).then(
+    const error = await harness.composition.coordinator.submit(userText).then(
       () => null,
       reason => reason
     );
     const expectedUserMessages = harness.events.filter(event => (
       event.type === 'message'
       && event.role === 'user'
-      && event.text === sentinels.chat
+      && event.text === userText
     ));
     const observableEvents = harness.events.filter(event => !(
       event.type === 'message'
       && event.role === 'user'
-      && event.text === sentinels.chat
+      && event.text === userText
     ));
     const boundaryArtifacts = {
       error: error instanceof Error
@@ -346,6 +348,7 @@ describe('权限边界安全回归', () => {
     expect(expectedUserMessages).toHaveLength(1);
     expect(Object.values(sentinels).some(value => serialized.includes(value))).toBe(false);
     expect(harness.createAgentService).toHaveBeenCalledOnce();
+    expect(harness.modelRequests).toEqual([]);
     for (const spy of consoleSpies) spy.mockRestore();
     await harness.composition.close();
   });

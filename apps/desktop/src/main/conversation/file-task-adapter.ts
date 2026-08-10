@@ -51,6 +51,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
   private readonly listeners = new Set<(event: TaskEvent, generation: string) => void>();
   private active: ActiveSubmission | null = null;
   private inFlightOwner: symbol | null = null;
+  private preparingOwner: symbol | null = null;
   private agent: OwnedAgent | null = null;
   private resetPromise: Promise<void> | null = null;
   private closePromise: Promise<void> | null = null;
@@ -70,6 +71,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
 
     const owner = Symbol('file-task-submission');
     this.inFlightOwner = owner;
+    this.preparingOwner = owner;
     this.active = {
       generation,
       owner,
@@ -97,6 +99,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
       throw error;
     } finally {
       if (this.inFlightOwner === owner) this.inFlightOwner = null;
+      if (this.preparingOwner === owner) this.preparingOwner = null;
     }
   }
 
@@ -151,6 +154,11 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     if (!active) return;
     this.agent?.service.cancelActive();
     if (this.active?.owner === active.owner) this.active = null;
+    // 仅准备阶段尚未进入 Agent 不可逆执行，可立即撤销 owner 允许下一请求接管。
+    if (this.preparingOwner === active.owner) {
+      this.preparingOwner = null;
+      if (this.inFlightOwner === active.owner) this.inFlightOwner = null;
+    }
   }
 
   async resolveAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void> {
@@ -179,6 +187,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     const owned = this.agent;
     this.active = null;
     this.inFlightOwner = null;
+    this.preparingOwner = null;
     this.agent = null;
     const resetting = this.resetOwnedAgent(owned);
     this.resetPromise = resetting;
@@ -199,6 +208,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     const pendingReset = this.resetPromise;
     this.active = null;
     this.inFlightOwner = null;
+    this.preparingOwner = null;
     this.agent = null;
     this.listeners.clear();
     const closing = Promise.resolve().then(async () => {

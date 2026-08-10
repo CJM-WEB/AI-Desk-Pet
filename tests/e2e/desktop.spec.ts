@@ -2555,18 +2555,15 @@ test.describe('自主行为最小闭环', () => {
     const firstResponseGate = createProviderResponseGate();
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: '无意图本地降级完成'
-        }) },
+        response: { type: 'text', text: '无意图本地降级完成' },
         gate: firstResponseGate
       },
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
+        response: {
+          type: 'text',
           text: '情绪标签已安全处理',
           emotion: 'happy'
-        }) }
+        }
       }
     ]);
     const fixtureModule = await loadElectronFixtureModule();
@@ -2853,10 +2850,7 @@ test.describe('真实 Provider 业务闭环', () => {
     const assistantMessages = ['第一轮回复', '第二轮回复', '第三轮回复'] as const;
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: assistantMessages[0]
-        }) },
+        response: { type: 'text', text: assistantMessages[0] },
         inspect: request => {
           const visible = request.messages.slice(1);
           if (request.tools.length !== 0
@@ -2868,10 +2862,7 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: assistantMessages[1]
-        }) },
+        response: { type: 'text', text: assistantMessages[1] },
         inspect: request => {
           const visible = request.messages.slice(1);
           if (request.tools.length !== 0
@@ -2887,10 +2878,7 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: assistantMessages[2]
-        }) },
+        response: { type: 'text', text: assistantMessages[2] },
         inspect: request => {
           const visible = request.messages.slice(1);
           if (request.tools.length !== 0
@@ -2977,26 +2965,17 @@ test.describe('真实 Provider 业务闭环', () => {
     }
   });
 
-  test('模糊请求只澄清且明确文件请求在无授权时只引导设置', async () => {
+  test('模糊请求按默认聊天回复且明确文件请求在无授权时只引导设置', async () => {
     test.setTimeout(120_000);
     const ambiguousText = '帮我整理一下';
     const privateLogSentinel = randomBytes(12).toString('hex');
     const fileName = `未授权-${privateLogSentinel}.txt`;
-    const fixedClarification = '我还不确定你是想聊天，还是希望我处理本地文件。可以再具体说明一下吗？';
     const provider = await startProviderServer([
       {
         response: { type: 'text', text: '无法确定请求类型' },
         inspect: request => {
           if (request.tools.length !== 0 || request.messages.at(-1)?.content !== ambiguousText) {
-            throw new Error('模糊请求未走无工具规划');
-          }
-        }
-      },
-      {
-        response: { type: 'text', text: '{"kind":"file_task"}' },
-        inspect: request => {
-          if (request.tools.length !== 0 || request.messages.at(-1)?.content !== `读取 ${fileName}`) {
-            throw new Error('明确文件请求未先走无工具规划');
+            throw new Error('模糊请求未走无工具聊天');
           }
         }
       }
@@ -3057,7 +3036,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: false,
         fileConfirmationVisible: false
       });
-      await expect(chat.getByText(fixedClarification, { exact: true })).toBeVisible();
+      await expect(chat.getByText('无法确定请求类型', { exact: true })).toBeVisible();
       expect(await readdir(fixture.authorizedRootDirectory, { recursive: true })).toEqual(before);
 
       await submitChatMessage(chat, `读取 ${fileName}`);
@@ -3068,7 +3047,7 @@ test.describe('真实 Provider 业务闭环', () => {
         fileConfirmationVisible: false
       });
       expect(await readdir(fixture.authorizedRootDirectory, { recursive: true })).toEqual(before);
-      expect(provider.requests).toHaveLength(2);
+      expect(provider.requests).toHaveLength(1);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
 
@@ -3096,19 +3075,11 @@ test.describe('真实 Provider 业务闭环', () => {
     const sourceReplies = ['来源服务回复一', '来源服务回复二'] as const;
     const sourceProvider = await startProviderServer([
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: sourceReplies[0]
-        }) }
+        response: { type: 'text', text: sourceReplies[0] }
       },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: sourceReplies[1]
-        }) }
-      },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } }
+        response: { type: 'text', text: sourceReplies[1] }
+      }
     ]);
     const targetProvider = await startProviderServer([
       {
@@ -3307,17 +3278,11 @@ test.describe('真实 Provider 业务闭环', () => {
     const newText = `新会话正文-${randomBytes(12).toString('hex')}`;
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: '不得回流的旧回复'
-        }) },
+        response: { type: 'text', text: '不得回流的旧回复' },
         gate: oldGate
       },
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: '新会话回复'
-        }) },
+        response: { type: 'text', text: '新会话回复' },
         inspect: request => {
           const visible = request.messages.slice(1);
           if (request.tools.length !== 0
@@ -3432,7 +3397,6 @@ test.describe('真实 Provider 业务闭环', () => {
     const fileName = `待确认-${randomBytes(12).toString('hex')}.txt`;
     const newText = `重置后正文-${randomBytes(12).toString('hex')}`;
     const provider = await startProviderServer([
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'reset-pending-create',
@@ -3444,10 +3408,7 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: JSON.stringify({
-          kind: 'chat_reply',
-          text: '重置后新会话回复'
-        }) },
+        response: { type: 'text', text: '重置后新会话回复' },
         inspect: request => {
           const visible = request.messages.slice(1);
           if (request.tools.length !== 0
@@ -3562,7 +3523,6 @@ test.describe('真实 Provider 业务闭环', () => {
   test('回收站搬运闭环只在提交帧后写入隔离适配器并安全处理中断与失败', async () => {
     test.setTimeout(120_000);
     const provider = await startProviderServer([
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'recycle-success',
@@ -3583,7 +3543,6 @@ test.describe('真实 Provider 业务闭环', () => {
           ) throw new Error('回收站结果不符合脚本预期');
         }
       },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'recycle-switch',
@@ -3591,7 +3550,6 @@ test.describe('真实 Provider 业务闭环', () => {
           { relativePath: 'switch.txt' }
         )
       },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'recycle-drag',
@@ -3599,7 +3557,6 @@ test.describe('真实 Provider 业务闭环', () => {
           { relativePath: 'drag.txt' }
         )
       },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'recycle-failure',
@@ -3886,7 +3843,6 @@ test.describe('真实 Provider 业务闭环', () => {
 
     const providerSteps: ProviderStep[] = [
       { response: { type: 'text', text: '本地连接正常' } },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'list-root',
@@ -3918,7 +3874,6 @@ test.describe('真实 Provider 业务闭环', () => {
           }
         }
       },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'create-file',
@@ -3935,7 +3890,6 @@ test.describe('真实 Provider 业务闭环', () => {
           }
         }
       },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse('rename-file', 'builtin.files.rename_entry', {
           sourceRelativePath: 'created.txt',
@@ -3957,7 +3911,6 @@ test.describe('真实 Provider 业务闭环', () => {
           }
         }
       },
-      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'cancel-file',

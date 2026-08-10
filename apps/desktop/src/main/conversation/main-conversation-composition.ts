@@ -15,9 +15,9 @@ import {
   settingsIncompleteError
 } from '../settings/session-preflight';
 import { ConversationCoordinator } from './conversation-coordinator';
+import type { ConversationChatAdapter } from './conversation-chat-adapter';
 import { ConversationDisclosureAdapter } from './conversation-disclosure-adapter';
 import { ConversationHistory } from './conversation-history';
-import type { ConversationTurnAdapter } from './conversation-turn-adapter';
 import {
   FileTaskAdapter,
   type FileTaskAgentPort
@@ -46,7 +46,7 @@ export interface MainConversationCompositionOptions<TPrivacy, TReadTool> {
   readAuthorizedRootPath(): Promise<string | null>;
   readPrivacySettings(): Promise<TPrivacy>;
   readEnabledReadTools(): Promise<readonly TReadTool[]>;
-  createChatAdapter(profile: ProviderProfileV2): ConversationTurnAdapter;
+  createChatAdapter(profile: ProviderProfileV2): ConversationChatAdapter;
   createAgentService(
     input: MainConversationAgentFactoryInput<TPrivacy, TReadTool>
   ): FileTaskAgentPort;
