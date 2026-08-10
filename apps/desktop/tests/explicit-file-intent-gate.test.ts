@@ -36,7 +36,8 @@ describe('ExplicitFileIntentGate', () => {
 
   test.each([
     '为什么删除 a.txt 会有风险？',
-    'The delete a.txt operation is dangerous.'
+    'The delete a.txt operation is dangerous.',
+    '删除 a.txt 需要管理员权限。'
   ])('知识陈述而非实际执行请求时将“%s”归为普通聊天', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
@@ -54,7 +55,8 @@ describe('ExplicitFileIntentGate', () => {
     '修改 README.MD',
     '整理当前目录中的文件',
     '删除 docs/guide',
-    '读取 README'
+    '读取 README',
+    '在当前目录中删除 a.txt'
   ])('明确请求实际操作文件实体时将“%s”归为文件任务', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'file_task' });
   });
