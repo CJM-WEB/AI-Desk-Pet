@@ -5,6 +5,52 @@ import {
 } from '../fixtures/provider-server';
 
 describe('脚本化 Provider 生命周期', () => {
+  test('请求摘要只保留方法、模型、角色计数与工具计数', async () => {
+    const provider = await startProviderServer([
+      { response: { type: 'text', text: '已收到' } }
+    ]);
+
+    try {
+      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${provider.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'summary-model',
+          messages: [
+            { role: 'system', content: '私密系统正文' },
+            { role: 'user', content: '私密用户正文' },
+            { role: 'assistant', content: '私密助手正文' },
+            { role: 'tool', tool_call_id: 'private-call', content: '私密工具正文' }
+          ],
+          tools: [{
+            type: 'function',
+            function: {
+              name: 'builtin.files.list_directory',
+              description: '私密工具描述',
+              parameters: { type: 'object' }
+            }
+          }]
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(provider.requests).toEqual([{
+        method: 'POST',
+        model: 'summary-model',
+        messageRoleCounts: { system: 1, user: 1, assistant: 1, tool: 1 },
+        toolCount: 1
+      }]);
+      expect(JSON.stringify(provider.requests)).not.toMatch(
+        /私密|authorization|pathname|toolNames|messageRoles|private-call/iu
+      );
+    } finally {
+      await provider.close();
+    }
+  });
+
   test('每个服务实例在运行时生成不同 API Key', async () => {
     const first = await startProviderServer([]);
     const second = await startProviderServer([]);

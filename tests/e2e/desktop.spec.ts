@@ -2061,7 +2061,7 @@ test.describe('真实角色工作室闭环', () => {
       text: string
     ): Promise<void> => {
       const close = page.getByRole('button', {
-        name: `关闭提示：${text}`
+        name: `关闭工作台提示：${text}`
       });
       await expect(close).toBeVisible({ timeout: 15_000 });
       await close.click();
@@ -2249,7 +2249,7 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByRole('button', { name: '保存草稿' }).click();
       await expect(workshop.getByText('草稿已保存', { exact: true })).toBeVisible();
       await expect(workshop.getByRole('button', {
-        name: '关闭提示：草稿已保存'
+        name: '关闭工作台提示：草稿已保存'
       })).toHaveCount(0);
       recoverySnapshot = await mkdtemp(join(tmpdir(), 'ai-pet-character-recovery-'));
       await cp(
@@ -2840,6 +2840,206 @@ test.describe('Explorer 动态图层自动验收', () => {
 });
 
 test.describe('真实 Provider 业务闭环', () => {
+  test('默认聊天与设置浮层提示', async () => {
+    test.setTimeout(120_000);
+    const chatInputs = [
+      '你好',
+      '聊天呀',
+      '我想和你聊天',
+      '帮我整理一下',
+      '如何更安全地删除文件'
+    ] as const;
+    const chatReplies = [
+      '你好！很高兴见到你。',
+      '当然可以，我们随便聊聊。',
+      "## 一起聊天\n\n- 我会认真听\n\n```ts\nconst topic = '陪伴';\n```",
+      '可以，我们先把目标和优先级理清。',
+      '可以先确认范围并使用可恢复的回收站操作。'
+    ] as const;
+    const chatSteps: ProviderStep[] = chatReplies.map((reply, index) => ({
+      response: { type: 'text', text: reply },
+      inspect: request => {
+        const systemMessage = request.messages[0];
+        if (request.tools.length !== 0
+          || systemMessage?.role !== 'system'
+          || /只输出单个 JSON 对象|规划系统协议/u.test(systemMessage.content)
+          || request.messages.at(-1)?.content !== chatInputs[index]) {
+          throw new Error(`第 ${index + 1} 轮默认聊天请求越界`);
+        }
+      }
+    }));
+    const provider = await startProviderServer([
+      { response: { type: 'text', text: '第一次连接正常' } },
+      { response: { type: 'text', text: '第二次连接正常' } },
+      ...chatSteps,
+      {
+        response: toolResponse(
+          'acceptance-list-root',
+          'builtin.files.list_directory',
+          { relativePath: '.' }
+        )
+      },
+      {
+        response: { type: 'text', text: '当前文件夹包含 docs 目录。' },
+        inspect: request => {
+          const result = lastToolResult(request) as {
+            toolName?: string;
+            entries?: Array<{ name?: string; type?: string }>;
+          };
+          if (result.toolName !== 'list_directory'
+            || !result.entries?.some(entry => entry.name === 'docs'
+              && entry.type === 'directory')) {
+            throw new Error('文件列表结果未保持授权边界');
+          }
+        }
+      }
+    ]);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) {
+      await provider.close();
+      return;
+    }
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000
+    });
+    const rendererDiagnostics: string[] = [];
+    let rendererLeakDetected = false;
+    const sensitiveValues = [provider.apiKey, fixture.authorizedRootDirectory];
+    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+    const pageFor = (view: 'pet' | 'chat' | 'settings'): Page | undefined => pages().find(page => {
+      try {
+        return new URL(page.url()).searchParams.get('view') === view;
+      } catch {
+        return false;
+      }
+    });
+
+    try {
+      await mkdir(join(fixture.authorizedRootDirectory, 'docs'), { recursive: true });
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat') && pageFor('settings')))
+        .toBe(true);
+      const pet = pageFor('pet')!;
+      const chat = pageFor('chat')!;
+      let settings = pageFor('settings')!;
+
+      // 只记录脱敏后的 Renderer 诊断，泄漏判定仅保留布尔结果。
+      for (const page of pages()) {
+        const recordDiagnostic = (text: string): void => {
+          rendererLeakDetected ||= sensitiveValues.some(value => text.includes(value));
+          rendererDiagnostics.push(sanitizeCapturedDiagnostic(text, ...sensitiveValues));
+        };
+        page.on('console', message => recordDiagnostic(message.text()));
+        page.on('pageerror', error => recordDiagnostic(error.message));
+      }
+
+      await pet.evaluate(() => window.myself.openSettings());
+      await expect.poll(() => settings.evaluate(() => document.visibilityState)).toBe('visible');
+      await settings.getByLabel('自定义').check();
+      await settings.getByText('高级设置', { exact: true }).click();
+      await settings.getByLabel('档案名称').fill('默认聊天验收');
+      await settings.getByLabel('Base URL').fill(provider.baseUrl);
+      await settings.getByLabel('Model ID').fill('acceptance-chat-model');
+      await settings.getByLabel('API Key', { exact: true }).fill(provider.apiKey);
+      await settings.getByRole('button', { name: '保存档案' }).click();
+      await expect(settings.getByText('模型档案已保存。')).toBeVisible();
+
+      const paneBeforeToast = await settings.locator('.settings-pane').evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      });
+      await settings.getByRole('button', { name: '测试 默认聊天验收 连接' }).click();
+      const autoToast = settings.getByText('连接测试完成。', { exact: true });
+      await expect(autoToast).toBeVisible();
+      const paneWithToast = await settings.locator('.settings-pane').evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      });
+      expect(paneWithToast).toEqual(paneBeforeToast);
+      await expect.poll(() => autoToast.count(), {
+        timeout: 5_000,
+        intervals: [100, 200, 400]
+      }).toBe(0);
+
+      await settings.getByRole('button', { name: '测试 默认聊天验收 连接' }).click();
+      await expect(autoToast).toBeVisible();
+      await settings.getByRole('button', {
+        name: '关闭设置提示：连接测试完成。'
+      }).click();
+      await expect(autoToast).toHaveCount(0);
+
+      await settings.getByRole('combobox', { name: '主模型', exact: true })
+        .selectOption({ label: '默认聊天验收' });
+      await settings.getByRole('combobox', { name: '对话模型', exact: true })
+        .selectOption({ label: '默认聊天验收' });
+      await settings.getByRole('combobox', { name: 'Agent 模型', exact: true })
+        .selectOption({ label: '默认聊天验收' });
+      await settings.getByRole('button', { name: '保存路由' }).click();
+      await expect(settings.getByText('模型路由已保存。')).toBeVisible();
+      await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
+
+      await pet.evaluate(() => window.myself.openChat());
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+      for (let index = 0; index < chatInputs.length; index += 1) {
+        await submitChatMessage(chat, chatInputs[index]);
+        await expect(chat.getByText(chatReplies[index], { exact: true })).toBeVisible();
+        await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+          visibleMessageCount: (index + 1) * 2,
+          historyDisclosureVisible: false,
+          fileConfirmationVisible: false
+        });
+      }
+      await expect(chat.getByText('## 一起聊天', { exact: false })).toBeVisible();
+      await expect(chat.getByText("const topic = '陪伴';", { exact: false })).toBeVisible();
+      await expect(chat.getByText(
+        '我还不确定你是想聊天，还是希望我处理本地文件。可以再具体说明一下吗？',
+        { exact: true }
+      )).toHaveCount(0);
+      await expect(chat.getByRole('button', { name: '打开设置' })).toHaveCount(0);
+
+      await submitChatMessage(chat, '列出当前文件夹');
+      await expect(chat.getByRole('button', { name: '打开设置' })).toBeVisible();
+      expect(provider.requests).toHaveLength(7);
+      await chat.getByRole('button', { name: '打开设置' }).click();
+      await expect.poll(() => Boolean(pageFor('settings'))).toBe(true);
+      settings = pageFor('settings')!;
+      await expect.poll(() => settings.evaluate(() => document.visibilityState)).toBe('visible');
+      await settings.getByRole('button', { name: '隐私' }).click();
+      await settings.getByRole('checkbox', { name: '文件数据授权' }).check();
+      await settings.getByRole('button', { name: '保存隐私设置' }).click();
+      await expect(settings.getByText('隐私设置已保存。')).toBeVisible();
+      await settings.getByRole('button', { name: '选择目录' }).click();
+      await expect(settings.getByText('授权目录已更新。')).toBeVisible();
+      await expect(settings.getByText('authorized-root', { exact: true })).toBeVisible();
+      await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
+
+      await submitChatMessage(chat, '列出当前文件夹');
+      await expect(chat.getByText('当前文件夹包含 docs 目录。', { exact: true })).toBeVisible();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(provider.requests).toHaveLength(9);
+      expect(provider.requests.slice(2, 7).every(request => request.toolCount === 0)).toBe(true);
+      expect(Object.keys(provider.requests[0] ?? {}).sort()).toEqual([
+        'messageRoleCounts', 'method', 'model', 'toolCount'
+      ]);
+      expect(rendererLeakDetected).toBe(false);
+      const captured = [...rendererDiagnostics, ...fixture.logs].join('\n');
+      expect(captured).not.toContain(provider.apiKey);
+      expect(captured).not.toContain(fixture.authorizedRootDirectory);
+      expect(captured).not.toMatch(/authorization\s*:/iu);
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
   test('无授权范围时连续三轮普通聊天并把完整可见回合传入第三轮', async () => {
     test.setTimeout(120_000);
     const privateUserMessages = [
@@ -4015,7 +4215,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await settingsPage.getByRole('button', { name: '选择目录' }).click();
       await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
       await expect(settingsPage.getByText('authorized-root', { exact: true })).toBeVisible();
-      await settingsPage.getByRole('button', { name: '关闭设置' }).click();
+      await settingsPage.getByRole('button', { name: '关闭设置', exact: true }).click();
 
       await submitChatMessage(chatPage, '列出当前目录');
       await expect(chatPage.getByText('目录里有 docs 文件夹。')).toBeVisible();
@@ -4063,9 +4263,9 @@ test.describe('真实 Provider 业务闭环', () => {
       for (const request of provider.requests) {
         expect(request).toMatchObject({
           method: 'POST',
-          pathname: '/v1/chat/completions',
-          authorizationPresent: true
+          model: 'task-9b2-model'
         });
+        expect(request.toolCount).toBeGreaterThanOrEqual(0);
       }
 
       const captured = [...rendererDiagnostics, ...fixture.logs].join('\n');

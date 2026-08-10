@@ -145,9 +145,11 @@ function expectProviderExchange(
   for (const requestLog of providerServer.requests) {
     expect(requestLog).toMatchObject({
       method: 'POST',
-      pathname: '/v1/chat/completions',
-      authorizationPresent: true
+      model: 'task-9a-model'
     });
+    expect(requestLog.toolCount).toBeGreaterThanOrEqual(0);
+    expect(Object.values(requestLog.messageRoleCounts).reduce((sum, count) => sum + count, 0))
+      .toBeGreaterThan(0);
   }
   expect(providerServer.remainingSteps()).toBe(0);
   providerServer.assertComplete();

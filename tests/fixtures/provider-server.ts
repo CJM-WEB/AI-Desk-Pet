@@ -19,10 +19,9 @@ export type ProviderScript = ProviderStep[] | ((apiKey: string) => ProviderStep[
 
 export interface ProviderRequestLog {
   method: string;
-  pathname: string;
-  authorizationPresent: boolean;
-  toolNames: string[];
-  messageRoles: string[];
+  model: string;
+  messageRoleCounts: Record<ModelMessage['role'], number>;
+  toolCount: number;
 }
 
 export interface ProviderServerFixture {
@@ -86,21 +85,29 @@ export async function startProviderServer(
     }
 
     let parsed: ModelRequest;
+    let rawRequest: unknown;
     try {
-      parsed = normalizeRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      rawRequest = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      parsed = normalizeRequest(rawRequest);
     } catch {
       response.writeHead(400, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: '请求格式无效' } }));
       return;
     }
 
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    // 持久摘要仅保留路由计数，正文、密钥、路径和工具名均停留在当前请求内。
+    const messageRoleCounts: ProviderRequestLog['messageRoleCounts'] = {
+      system: 0,
+      user: 0,
+      assistant: 0,
+      tool: 0
+    };
+    for (const message of parsed.messages) messageRoleCounts[message.role] += 1;
     requests.push({
       method: request.method ?? '',
-      pathname: url.pathname,
-      authorizationPresent: request.headers.authorization === `Bearer ${apiKey}`,
-      toolNames: parsed.tools.map(tool => tool.function.name),
-      messageRoles: parsed.messages.map(message => message.role)
+      model: isRecord(rawRequest) && typeof rawRequest.model === 'string' ? rawRequest.model : '',
+      messageRoleCounts,
+      toolCount: parsed.tools.length
     });
     const step = script.shift();
     if (!step) {
