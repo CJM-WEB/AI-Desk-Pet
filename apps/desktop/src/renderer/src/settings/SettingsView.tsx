@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Bot, Box, Database, ShieldCheck, Wrench, X } from 'lucide-react';
 import type {
   McpServerInput,
@@ -16,8 +16,13 @@ import {
   type McpLaunchConfirmation
 } from './McpSettings';
 import { PrivacySettings } from './PrivacySettings';
+import {
+  TransientToastLayer,
+  type TransientToast
+} from '../components/TransientToastLayer';
 export type SettingsTab = 'models' | 'tools' | 'privacy' | 'local';
-type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
+type Notice = TransientToast | null;
+type NoticePayload = Omit<TransientToast, 'id'>;
 
 const emptyDashboard: SettingsDashboardDto = {
   catalog: [],
@@ -60,6 +65,7 @@ export interface SettingsWorkspaceProps {
   activeTab: SettingsTab;
   busy: boolean;
   notice: Notice;
+  onDismissNotice(id: string): void;
   onTabChange(tab: SettingsTab): void;
   onClose(): void;
   providerActions: {
@@ -126,6 +132,12 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
           </button>
         </div>
       </header>
+      <TransientToastLayer
+        queue={props.notice ? [props.notice] : []}
+        onDismiss={props.onDismissNotice}
+        durationMs={() => 3000}
+        ariaLabel="设置提示"
+      />
       <nav className="settings-tabs" aria-label="设置分类">
         {visibleTabs.map(([id, label, Icon]) => (
           <button
@@ -138,14 +150,6 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
           </button>
         ))}
       </nav>
-      {props.notice
-        ? <div
-            className={`settings-notice notice-${props.notice.tone}`}
-            role={props.notice.tone === 'error' ? 'alert' : 'status'}
-          >
-            {props.notice.text}
-          </div>
-        : null}
       {activeTab === 'models' ? (
         <ProviderSettings
           dashboard={props.dashboard}
@@ -193,19 +197,32 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const [busy, setBusy] = useState(false);
   const [incognito, setIncognito] = useState(false);
   const [launchSummary, setLaunchSummary] = useState<McpLaunchConfirmation | null>(null);
+  const noticeSequence = useRef(0);
   const [notice, setNotice] = useState<Notice>({
+    id: 'settings-toast-0',
     tone: 'info',
     text: '正在读取本地设置…'
   });
+
+  /** 所有设置操作共用同一个入口，保证提示 id 单调递增并替换当前提示。 */
+  const showNotice = (next: NoticePayload): void => {
+    noticeSequence.current += 1;
+    setNotice({ ...next, id: `settings-toast-${noticeSequence.current}` });
+  };
+
+  /** 仅关闭仍与回调 id 对应的提示，隔离过期 timer 和异步回调。 */
+  const dismissNotice = (id: string): void => {
+    setNotice(current => current?.id === id ? null : current);
+  };
 
   useEffect(() => {
     let active = true;
     void api.getSettingsDashboard().then(result => {
       if (!active) return;
       setDashboard(result);
-      setNotice(null);
+      dismissNotice('settings-toast-0');
     }).catch(() => {
-      if (active) setNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
+      if (active) showNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
     });
     return () => { active = false; };
   }, [api]);
@@ -213,7 +230,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const run = async (
     operation: () => Promise<
       SettingsDashboardDto
-      | { dashboard?: SettingsDashboardDto; notice?: Exclude<Notice, null> }
+      | { dashboard?: SettingsDashboardDto; notice?: NoticePayload }
       | void
     >,
     success: string
@@ -224,13 +241,13 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       const result = await operation();
       if (result && 'catalog' in result) {
         setDashboard(result);
-        setNotice({ tone: 'success', text: success });
+        showNotice({ tone: 'success', text: success });
       } else {
         if (result?.dashboard) setDashboard(result.dashboard);
-        setNotice(result?.notice ?? { tone: 'success', text: success });
+        showNotice(result?.notice ?? { tone: 'success', text: success });
       }
     } catch {
-      setNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
+      showNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
     } finally {
       setBusy(false);
     }
@@ -242,6 +259,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       activeTab={activeTab}
       busy={busy}
       notice={notice}
+      onDismissNotice={dismissNotice}
       onTabChange={tab => setActiveTab(resolveSettingsTab(tab))}
       onClose={() => window.close()}
       providerActions={{
@@ -264,7 +282,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
         launchSummary,
         onCancelLaunch: () => {
           setLaunchSummary(null);
-          setNotice({ tone: 'info', text: '已取消启动 MCP 服务。' });
+          showNotice({ tone: 'info', text: '已取消启动 MCP 服务。' });
         },
         onUpsert: input => void run(async () => {
           const result = await api.upsertMcpServer(input);

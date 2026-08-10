@@ -392,6 +392,7 @@ describe('多 Provider 设置组件', () => {
         activeTab="tools"
         busy={false}
         notice={null}
+        onDismissNotice={vi.fn()}
         onTabChange={vi.fn()}
         onClose={vi.fn()}
         providerActions={{

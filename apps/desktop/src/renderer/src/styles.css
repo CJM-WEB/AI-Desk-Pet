@@ -583,18 +583,6 @@ textarea {
   font-size: 23px;
 }
 
-.settings-notice {
-  margin-bottom: 13px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  padding: 10px 12px;
-  font-size: 12px;
-}
-
-.notice-success { color: #3f7358; background: #eef8f1; }
-.notice-error { color: #91433e; background: #fff0ed; }
-.notice-info { color: var(--brown-700); background: #fff8e9; }
-
 .settings-section {
   margin-top: 13px;
   border: 1px solid var(--line);
@@ -837,12 +825,6 @@ textarea {
 .settings-shell summary:focus-visible {
   outline: 3px solid rgba(36, 115, 163, 0.28);
   outline-offset: 2px;
-}
-
-.settings-shell .settings-notice {
-  margin: 12px 18px 0;
-  border-radius: 7px;
-  font-size: 12px;
 }
 
 .settings-pane,
@@ -1359,7 +1341,18 @@ textarea {
   color: #344b47;
   background: #edf3f2;
   box-shadow: 0 8px 24px rgba(23, 35, 33, 0.18);
+  overflow-wrap: anywhere;
   pointer-events: auto;
+  animation: transient-toast-enter 160ms ease-out both;
+}
+
+@keyframes transient-toast-enter {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transient-toast { animation-duration: 1ms; }
 }
 
 .transient-toast-success {

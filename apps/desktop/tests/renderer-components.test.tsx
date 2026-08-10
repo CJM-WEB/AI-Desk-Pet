@@ -605,6 +605,7 @@ describe('Renderer 可见组件', () => {
         activeTab="local"
         busy={false}
         notice={null}
+        onDismissNotice={vi.fn()}
         onTabChange={vi.fn()}
         onClose={vi.fn()}
         providerActions={{
@@ -641,6 +642,8 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('模型');
     expect(markup).toContain('隐私');
     expect(markup).toContain('清除全部本地数据');
+    expect(markup).not.toContain('notice-success');
+    expect(markup).not.toContain('transient-toast-layer');
     expect(availableSettingsTabs()).not.toContain('tools');
   });
 });
