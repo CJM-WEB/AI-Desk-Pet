@@ -26,6 +26,21 @@ describe('ExplicitFileIntentGate', () => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
 
+  test.each(['a.txt', './reports', '当前文件夹', 'README'])('只有文件对象时将“%s”归为普通聊天', text => {
+    expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
+  });
+
+  test.each(['删除', 'Rename', '整理'])('只有文件操作时将“%s”归为普通聊天', text => {
+    expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
+  });
+
+  test.each([
+    '为什么删除 a.txt 会有风险？',
+    'The delete a.txt operation is dangerous.'
+  ])('知识陈述而非实际执行请求时将“%s”归为普通聊天', text => {
+    expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
+  });
+
   test.each([
     '读取 a.txt',
     '请列出当前文件夹',
@@ -37,7 +52,9 @@ describe('ExplicitFileIntentGate', () => {
     'move ./drafts to 当前目录',
     'Search 授权目录',
     '修改 README.MD',
-    '整理当前目录中的文件'
+    '整理当前目录中的文件',
+    '删除 docs/guide',
+    '读取 README'
   ])('明确请求实际操作文件实体时将“%s”归为文件任务', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'file_task' });
   });
