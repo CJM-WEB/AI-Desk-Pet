@@ -5,7 +5,7 @@ export type ConversationRoute =
 const chatRoute: ConversationRoute = Object.freeze({ kind: 'chat' });
 const fileTaskRoute: ConversationRoute = Object.freeze({ kind: 'file_task' });
 
-const fileObjectPattern = /(?:\b[\w.-]+\.(?:txt|md|json|csv|ts|tsx|js|jsx|css|html|xml|yml|yaml|pdf|docx?|xlsx?|png|jpe?g|gif|zip)\b|(?:^|\s)(?:\.\/|\.\.\/)[^\s]+|\b(?:[\w.-]+\/)+[\w.-]+\b|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件|文件夹|目录)|授权目录|文件(?:夹)?)/iu;
+const fileObjectPattern = /(?:(?:^|\s)[^\s/]+\.(?:txt|md|json|csv|ts|tsx|js|jsx|css|html|xml|yml|yaml|pdf|docx?|xlsx?|png|jpe?g|gif|zip)\b|(?:^|\s)(?:\.\/|\.\.\/)[^\s]+|\b(?:[\w.-]+\/)+[\w.-]+\b|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件|文件夹|目录)|授权目录|文件(?:夹)?)/iu;
 const fileOperationPattern = /(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理|read|list|create|write|modify|rename|copy|move|delete|search|organize)/iu;
 const chineseDirectExecutionPattern = /^(?:在[^，,。！？!?]*(?:中|里)\s*)?(?:(?:请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理)/u;
 const chineseReorderedExecutionPattern = /^(?:把|将).+(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理)/u;
@@ -14,6 +14,11 @@ const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|why\b|
 const negationPattern = /(?:不要|别|无需|do\s+not|don't)/iu;
 const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
 
+/** 陈述词出现在文件名或路径中不代表用户在陈述文件操作。 */
+function removeFileObjectFragments(text: string): string {
+  return text.replace(new RegExp(fileObjectPattern.source, 'giu'), ' ');
+}
+
 export class ExplicitFileIntentGate {
   /**
    * 只有文件对象、文件操作和直接执行请求三项独立证据同时成立才允许进入文件链路，
@@ -21,10 +26,11 @@ export class ExplicitFileIntentGate {
    */
   static classify(text: string): ConversationRoute {
     const normalizedText = text.normalize('NFKC').trim().toLocaleLowerCase();
+    const statementSubjectText = removeFileObjectFragments(normalizedText);
     if (!normalizedText
       || knowledgePattern.test(normalizedText)
       || negationPattern.test(normalizedText)
-      || statementPattern.test(normalizedText)) {
+      || statementPattern.test(statementSubjectText)) {
       return chatRoute;
     }
 

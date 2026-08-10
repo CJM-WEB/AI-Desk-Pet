@@ -56,7 +56,11 @@ describe('ExplicitFileIntentGate', () => {
     '整理当前目录中的文件',
     '删除 docs/guide',
     '读取 README',
-    '在当前目录中删除 a.txt'
+    '在当前目录中删除 a.txt',
+    'delete permission.txt',
+    'delete will.txt',
+    '读取 需要.md',
+    'delete docs/permission'
   ])('明确请求实际操作文件实体时将“%s”归为文件任务', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'file_task' });
   });
