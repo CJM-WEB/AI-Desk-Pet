@@ -13,6 +13,7 @@ import { AnthropicProvider } from '../src/main/providers/anthropic-provider';
 import { GeminiProvider } from '../src/main/providers/gemini-provider';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
 import { ConversationTurnAdapter } from '../src/main/conversation/conversation-turn-adapter';
+import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import {
   providerCatalog,
   toolRequestSchema,
@@ -164,6 +165,78 @@ const planningProtocolCases: PlanningProtocolCase[] = [
     requestTools: body => body.tools
   }
 ];
+
+describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
+  test.each(planningProtocolCases)(
+    '$name 直接返回自然文本，且请求工具数组为空',
+    async contract => {
+      const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(
+        contract.textResponse('  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n')
+      ));
+      const adapter = new ConversationChatAdapter(contract.createProvider(fetchClient));
+
+      await expect(adapter.respond({
+        history: [],
+        text: '请给出示例',
+        signal: new AbortController().signal
+      })).resolves.toEqual({
+        text: '  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n'
+      });
+
+      const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body)) as Record<
+        string,
+        unknown
+      >;
+      expect(contract.requestTools(body)).toEqual([]);
+    }
+  );
+
+  test.each(planningProtocolCases)(
+    '$name 的工具响应会被聊天适配器拒绝',
+    async contract => {
+      const adapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => jsonResponse(contract.toolResponse))
+      ));
+
+      await expect(adapter.respond({
+        history: [],
+        text: '调用工具',
+        signal: new AbortController().signal
+      })).rejects.toMatchObject({
+        code: 'PROVIDER_MALFORMED_RESPONSE',
+        retryable: false
+      });
+    }
+  );
+
+  test.each(planningProtocolCases)(
+    '$name 保留取消与超时错误分类',
+    async contract => {
+      const abortError = new DOMException('测试取消', 'AbortError');
+      const timeoutError = new DOMException('测试超时', 'TimeoutError');
+      const abortAdapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => { throw abortError; })
+      ));
+      const timeoutAdapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => { throw timeoutError; })
+      ));
+
+      await expect(abortAdapter.respond({
+        history: [],
+        text: '取消',
+        signal: new AbortController().signal
+      })).rejects.toBe(abortError);
+      await expect(timeoutAdapter.respond({
+        history: [],
+        text: '超时',
+        signal: new AbortController().signal
+      })).rejects.toMatchObject({
+        code: 'PROVIDER_TIMEOUT',
+        retryable: true
+      });
+    }
+  );
+});
 
 describe('ConversationTurnAdapter 三类 Provider 规划契约', () => {
   test.each(planningProtocolCases)(
@@ -1234,6 +1307,45 @@ describe('ProviderRegistry', () => {
       expect(JSON.parse(String(init?.body)).model).toBe(expectedModelId);
     }
   );
+
+  test('DeepSeek 预设通过既有 OpenAI Compatible 边界返回自然文本', async () => {
+    const profile: ProviderProfileV2 = {
+      id: 'deepseek-chat-profile',
+      displayName: 'DeepSeek',
+      mode: 'preset',
+      providerId: 'deepseek',
+      modelId: 'deepseek-v4-flash',
+      hasStoredSecret: true
+    };
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '  **自然回复**\n\n```ts\n你好();\n```\n' } }]
+    }));
+    const provider = new ProviderRegistry(providerCatalog).create(
+      profile,
+      async () => 'deepseek-secret',
+      fetchClient
+    );
+    const adapter = new ConversationChatAdapter(provider);
+
+    await expect(adapter.respond({
+      history: [],
+      text: '给出 Markdown 示例',
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      text: '  **自然回复**\n\n```ts\n你好();\n```\n'
+    });
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    expect(provider).toBeInstanceOf(OpenAICompatibleProvider);
+    expect(body).toMatchObject({
+      model: 'deepseek-v4-flash',
+      tools: [],
+      messages: [
+        { role: 'system', content: expect.any(String) },
+        { role: 'user', content: '给出 Markdown 示例' }
+      ]
+    });
+  });
 
   test('拒绝未知预置提供商', () => {
     const profile: ProviderProfileV2 = {
