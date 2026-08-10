@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import { SettingsView, SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
@@ -77,6 +80,40 @@ afterEach(() => {
 });
 
 describe('设置页瞬时提示', () => {
+  test('陈旧的初始读取不会覆盖后完成操作的 dashboard 或 success 提示', async () => {
+    let rejectInitialDashboard: ((reason?: unknown) => void) | undefined;
+    const newerDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      profiles: [{
+        id: 'newer-profile',
+        displayName: '较新档案',
+        mode: 'preset',
+        providerId: 'openai',
+        modelId: 'newer-model',
+        hasStoredSecret: false
+      }]
+    };
+    const api = {
+      getSettingsDashboard: vi.fn(() => new Promise<SettingsDashboardDto>((_resolve, reject) => {
+        rejectInitialDashboard = reject;
+      })),
+      saveProviderProfile: vi.fn(async () => newerDashboard)
+    };
+    render(<SettingsView api={api as never} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole('status').textContent).toContain('模型档案已保存');
+    expect(screen.getAllByText('较新档案').length).toBeGreaterThan(0);
+
+    await act(async () => {
+      rejectInitialDashboard?.(new Error('陈旧读取失败'));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('status').textContent).toContain('模型档案已保存');
+    expect(screen.getAllByText('较新档案').length).toBeGreaterThan(0);
+  });
+
   test.each([
     ['success', 'status'],
     ['info', 'status'],
@@ -152,5 +189,25 @@ describe('设置页瞬时提示', () => {
     expect(screen.getByRole('alert').textContent).toContain('无法读取设置');
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  test('浮层保留 fixed 视口定位、无正文 notice，并只使用安全动画属性', () => {
+    const markup = renderToStaticMarkup(
+      workspace({ id: 'structure', tone: 'info', text: '结构提示' })
+    );
+    const styles = readFileSync(
+      resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
+      'utf8'
+    );
+
+    expect(markup).toContain('transient-toast-layer');
+    expect(markup).not.toContain('notice-success');
+    expect(markup.indexOf('transient-toast-layer')).toBeLessThan(
+      markup.indexOf('settings-pane')
+    );
+    expect(styles).toMatch(/\.transient-toast-layer\s*\{[^}]*position:\s*fixed[^}]*top:\s*68px[^}]*right:\s*16px[^}]*width:\s*min\(360px,\s*calc\(100vw\s*-\s*32px\)\)/s);
+    expect(styles).toMatch(/\.transient-toast\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*animation:\s*transient-toast-enter/s);
+    expect(styles).toMatch(/@keyframes transient-toast-enter\s*\{\s*from\s*\{\s*opacity:[^}]*transform:[^}]*\}\s*to\s*\{\s*opacity:[^}]*transform:/s);
+    expect(styles).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.transient-toast\s*\{\s*animation-duration:\s*1ms/s);
   });
 });

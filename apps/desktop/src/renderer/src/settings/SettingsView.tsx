@@ -217,12 +217,15 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
 
   useEffect(() => {
     let active = true;
+    const initialLoadOwner = noticeSequence.current;
     void api.getSettingsDashboard().then(result => {
-      if (!active) return;
+      if (!active || noticeSequence.current !== initialLoadOwner) return;
       setDashboard(result);
       dismissNotice('settings-toast-0');
     }).catch(() => {
-      if (active) showNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
+      if (active && noticeSequence.current === initialLoadOwner) {
+        showNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
+      }
     });
     return () => { active = false; };
   }, [api]);
