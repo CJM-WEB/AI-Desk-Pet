@@ -91,6 +91,7 @@ export function redactElectronLog(
   text: string,
   secrets: {
     apiKey: string;
+    additionalSecrets?: readonly string[];
     authorizedRootDirectory: string;
     userDataDirectory?: string;
     recycleBinDirectory?: string;
@@ -103,6 +104,7 @@ export function redactElectronLog(
   let sanitized = text.replace(/authorization\s*:[^\r\n]*/giu, '[已脱敏]');
   for (const secret of [
     secrets.apiKey,
+    ...(secrets.additionalSecrets ?? []),
     secrets.authorizedRootDirectory,
     secrets.userDataDirectory,
     secrets.recycleBinDirectory,
@@ -215,6 +217,13 @@ export interface ElectronAppFixture {
     actionId: string | null;
     playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
   }>;
+  getConversationProbe(): Promise<{
+    phase: 'idle' | 'listening' | 'thinking' | 'awaiting_confirmation'
+      | 'acting' | 'success' | 'error' | 'cancelled';
+    visibleMessageCount: number;
+    historyDisclosureVisible: boolean;
+    fileConfirmationVisible: boolean;
+  }>;
   restart(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -222,6 +231,7 @@ export interface ElectronAppFixture {
 export interface CreateElectronAppFixtureOptions {
   workspaceRoot: string;
   apiKey: string;
+  additionalSecrets?: readonly string[];
   launchTimeoutMs?: number;
   operationTimeoutMs?: number;
   enableSoftwareRasterizer?: boolean;
@@ -911,6 +921,7 @@ export async function createElectronAppFixture(
   const sanitizedLogs = (): string[] => {
     const sanitized = redactElectronLog(capturedChunks.join(''), {
       apiKey: options.apiKey,
+      additionalSecrets: options.additionalSecrets,
       authorizedRootDirectory: directories.authorizedRootDirectory,
       userDataDirectory: directories.userDataDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
@@ -933,6 +944,7 @@ export async function createElectronAppFixture(
     const rawCause = cause instanceof Error ? cause.message : String(cause ?? '');
     const sanitizedCause = redactElectronLog(rawCause, {
       apiKey: options.apiKey,
+      additionalSecrets: options.additionalSecrets,
       authorizedRootDirectory: directories.authorizedRootDirectory,
       userDataDirectory: directories.userDataDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
@@ -1235,6 +1247,51 @@ export async function createElectronAppFixture(
           throw new Error('ELECTRON_E2E_BEHAVIOR_PROBE_RESULT_INVALID');
         }
         return probe;
+      },
+      async getConversationProbe() {
+        if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
+          throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
+        }
+        const chatPage = browser.contexts()
+          .flatMap(context => context.pages())
+          .find(page => {
+            try {
+              return new URL(page.url()).searchParams.get('view') === 'chat';
+            } catch {
+              return false;
+            }
+          });
+        if (!chatPage) throw new Error('ELECTRON_E2E_PROBE_CHAT_PAGE_UNAVAILABLE');
+        // 只从可见 DOM 提取去标识化状态，禁止返回消息正文、Provider 或能力标识。
+        const probe = await chatPage.evaluate(() => {
+          const phaseElement = document.querySelector('.phase-pill');
+          const phaseClass = phaseElement
+            ? [...phaseElement.classList].find(name => (
+                name !== 'phase-pill' && name.startsWith('phase-')
+              ))
+            : undefined;
+          return {
+            phase: phaseClass?.slice('phase-'.length) ?? '',
+            visibleMessageCount: document.querySelectorAll('.messages article.message').length,
+            historyDisclosureVisible: document.querySelector('#history-disclosure-title') !== null,
+            fileConfirmationVisible: document.querySelector('#confirmation-title') !== null
+          };
+        });
+        const phases = new Set([
+          'idle', 'listening', 'thinking', 'awaiting_confirmation',
+          'acting', 'success', 'error', 'cancelled'
+        ]);
+        if (
+          !phases.has(probe.phase)
+          || !Number.isSafeInteger(probe.visibleMessageCount)
+          || probe.visibleMessageCount < 0
+          || typeof probe.historyDisclosureVisible !== 'boolean'
+          || typeof probe.fileConfirmationVisible !== 'boolean'
+          || Object.keys(probe).length !== 4
+        ) {
+          throw new Error('ELECTRON_E2E_CONVERSATION_PROBE_RESULT_INVALID');
+        }
+        return probe as Awaited<ReturnType<ElectronAppFixture['getConversationProbe']>>;
       },
       async restart() {
         if (disposed) throw new Error('ELECTRON_FIXTURE_DISPOSED');

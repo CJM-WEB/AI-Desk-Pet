@@ -29,6 +29,31 @@ describe('脚本化 Provider 生命周期', () => {
     expect(() => provider.assertComplete?.()).toThrow('脚本化 Provider 仍有 1 个响应未消费');
   });
 
+  test('assertComplete 拒绝脚本耗尽后的额外请求', async () => {
+    const provider = await startProviderServer([
+      { response: { type: 'text', text: '唯一响应' } }
+    ]);
+    const request = () => fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${provider.apiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: '验证精确消费' }],
+        tools: []
+      })
+    });
+
+    try {
+      expect((await request()).status).toBe(200);
+      expect((await request()).status).toBe(500);
+      expect(() => provider.assertComplete()).toThrow('脚本化 Provider 收到 1 个额外请求');
+    } finally {
+      await provider.close();
+    }
+  });
+
   test('脚本 factory 只接收当前实例运行时生成的 API Key', async () => {
     let receivedKey = '';
     const startWithFactory = startProviderServer as unknown as (
@@ -72,6 +97,45 @@ describe('脚本化 Provider 生命周期', () => {
       await vi.waitFor(() => expect(gate.isWaiting()).toBe(true));
       expect(settled).toBe(false);
       gate.release();
+      expect((await pendingResponse).status).toBe(200);
+    } finally {
+      gate.release();
+      await pendingResponse.catch(() => undefined);
+      await provider.close();
+    }
+  });
+
+  test('响应完成屏障只在指定数量的 Provider 步骤执行 response.end 后释放', async () => {
+    const gate = createProviderResponseGate();
+    const provider = await startProviderServer([{
+      response: { type: 'text', text: '屏障完成后返回' },
+      gate
+    }]) as Awaited<ReturnType<typeof startProviderServer>> & {
+      waitForCompletedResponses?: (count: number) => Promise<void>;
+    };
+    const pendingResponse = fetch(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${provider.apiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: '验证完成屏障' }],
+        tools: []
+      })
+    });
+
+    try {
+      await vi.waitFor(() => expect(gate.isWaiting()).toBe(true));
+      expect(typeof provider.waitForCompletedResponses).toBe('function');
+      let completed = false;
+      const barrier = provider.waitForCompletedResponses?.(1).then(() => {
+        completed = true;
+      });
+      expect(completed).toBe(false);
+      gate.release();
+      await barrier;
+      expect(completed).toBe(true);
       expect((await pendingResponse).status).toBe(200);
     } finally {
       gate.release();

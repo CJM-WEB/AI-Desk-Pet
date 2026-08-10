@@ -22,6 +22,14 @@ type CharacterBehaviorProbe = {
   playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
 };
 
+type ConversationE2eProbe = {
+  phase: 'idle' | 'listening' | 'thinking' | 'awaiting_confirmation'
+    | 'acting' | 'success' | 'error' | 'cancelled';
+  visibleMessageCount: number;
+  historyDisclosureVisible: boolean;
+  fileConfirmationVisible: boolean;
+};
+
 type ElectronFixtureModule = {
   writeMainE2eExplorerEvent(
     userDataDirectory: string,
@@ -48,6 +56,7 @@ type ElectronFixtureModule = {
     text: string,
     secrets: {
       apiKey: string;
+      additionalSecrets?: readonly string[];
       authorizedRootDirectory: string;
       recycleBinDirectory?: string;
       userDataDirectory?: string;
@@ -114,6 +123,7 @@ type ElectronFixtureModule = {
   createElectronAppFixture(options: {
     workspaceRoot: string;
     apiKey: string;
+    additionalSecrets?: readonly string[];
     launchTimeoutMs?: number;
     operationTimeoutMs?: number;
     prepareUserData?(directories: {
@@ -187,6 +197,7 @@ type ElectronFixtureModule = {
     }>>;
     getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
+    getConversationProbe(): Promise<ConversationE2eProbe>;
     restart(): Promise<void>;
     dispose(): Promise<void>;
   }>;
@@ -298,7 +309,9 @@ function sanitizedCapturedError(
 
 async function submitChatMessage(page: Page, text: string): Promise<void> {
   await page.getByLabel('和我说点什么').fill(text);
-  await page.getByRole('button', { name: '发送给 AI Pet' }).click();
+  const send = page.getByRole('button', { name: '发送给 AI Pet' });
+  await expect(send).toBeEnabled();
+  await send.click();
 }
 
 async function loadElectronFixtureModule(): Promise<ElectronFixtureModule | null> {
@@ -944,6 +957,25 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
       { processId: 6115, name: 'electron.exe', powershell: false, explorerBridge: false },
       { processId: 6116, name: 'powershell.exe', powershell: true, explorerBridge: true }
     ]);
+  });
+
+  test('跨 Provider 诊断同时清除附加密钥', async () => {
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.redactElectronLog).toBe('function');
+    if (!fixtureModule?.redactElectronLog) return;
+    const primaryKey = runtimeDiagnosticKey();
+    const secondaryKey = runtimeDiagnosticKey();
+    const sanitized = fixtureModule.redactElectronLog(
+      `primary=${primaryKey}; secondary=${secondaryKey}`,
+      {
+        apiKey: primaryKey,
+        additionalSecrets: [secondaryKey],
+        authorizedRootDirectory: resolve('fixture-authorized-root')
+      }
+    );
+
+    expect(sanitized.includes(primaryKey), '主 Provider 密钥必须脱敏').toBe(false);
+    expect(sanitized.includes(secondaryKey), '附加 Provider 密钥必须脱敏').toBe(false);
   });
 
   test('默认 OS 进程探针：命令失败诊断保留退出码并截断脱敏 stderr', async () => {
@@ -2204,7 +2236,7 @@ test.describe('真实角色工作室闭环', () => {
       await pet.evaluate(() => window.myself.openChat());
       const chat = await waitForPage(fixture, 'chat', '初始启动：验证聊天降级');
       await submitChatMessage(chat, 'thinking 降级期间继续验证 Agent');
-      await expect(chat.getByText('请先完成模型服务和授权目录设置。')).toBeVisible();
+      await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
 
       await workshop.getByRole('button', { name: '导出角色包' }).click();
       await expect(workshop.getByText('角色包已导出。')).toBeVisible();
@@ -2518,37 +2550,23 @@ test.describe('自主行为最小闭环', () => {
     }
   });
 
-  test('聊天、移动、错误降级与角色切换保持 Main 到 Renderer 闭环', async () => {
+  test('聊天阶段、情绪、错误降级与角色切换保持 Main 到 Renderer 闭环', async () => {
     test.setTimeout(120_000);
     const firstResponseGate = createProviderResponseGate();
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: '无意图本地降级完成' },
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: '无意图本地降级完成'
+        }) },
         gate: firstResponseGate
       },
       {
-        response: {
-          type: 'text',
-          text: '非法意图已忽略',
-          behaviorIntent: {
-            stateIntent: { stateId: 'missing-state' },
-            actionSemantic: 'think',
-            urgency: 50,
-            explanation: '测试非法状态回退'
-          }
-        }
-      },
-      {
-        response: {
-          type: 'text',
-          text: '开始移动',
-          behaviorIntent: {
-            stateIntent: { semantic: 'move' },
-            actionSemantic: 'move',
-            urgency: 80,
-            explanation: '测试移动闭环'
-          }
-        }
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: '情绪标签已安全处理',
+          emotion: 'happy'
+        }) }
       }
     ]);
     const fixtureModule = await loadElectronFixtureModule();
@@ -2587,10 +2605,15 @@ test.describe('自主行为最小闭环', () => {
         });
       });
       await chat.evaluate(() => {
-        const scope = globalThis as typeof globalThis & { __taskPhases?: string[] };
+        const scope = globalThis as typeof globalThis & {
+          __taskPhases?: string[];
+          __emotionLabels?: string[];
+        };
         scope.__taskPhases = [];
+        scope.__emotionLabels = [];
         window.myself.onTaskEvent(event => {
           if (event.type === 'phase') scope.__taskPhases?.push(event.phase);
+          if (event.type === 'character_emotion') scope.__emotionLabels?.push(event.label);
         });
       });
       const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
@@ -2692,35 +2715,34 @@ test.describe('自主行为最小闭环', () => {
         { stateId: 'success', actionId: 'safe-celebrate-action' }
       ]));
 
-      const invalidActionOffset = await pet.evaluate(() => (
+      const emotionActionOffset = await pet.evaluate(() => (
         (globalThis as typeof globalThis & { __behaviorActions?: unknown[] })
           .__behaviorActions?.length ?? 0
       ));
-      await submitChatMessage(chat, '验证非法意图');
-      await expect(chat.getByText('非法意图已忽略')).toBeVisible();
-      const invalidActions = await pet.evaluate(offset => (
+      const emotionEventOffset = await chat.evaluate(() => (
+        (globalThis as typeof globalThis & { __emotionLabels?: string[] })
+          .__emotionLabels?.length ?? 0
+      ));
+      await submitChatMessage(chat, '验证安全情绪标签');
+      await expect(chat.getByText('情绪标签已安全处理')).toBeVisible();
+      await expect.poll(() => chat.evaluate(offset => (
+        (globalThis as typeof globalThis & { __emotionLabels?: string[] })
+          .__emotionLabels?.slice(offset) ?? []
+      ), emotionEventOffset)).toEqual(['happy']);
+      const emotionActions = await pet.evaluate(offset => (
         (globalThis as typeof globalThis & {
           __behaviorActions?: Array<{ stateId: string; actionId: string }>;
         }).__behaviorActions?.slice(offset) ?? []
-      ), invalidActionOffset);
-      expect(invalidActions.filter(action => action.stateId === 'thinking')).toHaveLength(3);
-      expect(invalidActions).not.toContainEqual(expect.objectContaining({ stateId: 'missing-state' }));
-      const invalidFallback = await fixture.getCharacterBehaviorProbe();
-      expect(invalidFallback.primaryStateId).not.toBe('missing-state');
-      expect(invalidFallback.actionId).toBe('safe-celebrate-action');
-
-      const positionBeforeMove = await pet.evaluate(() => ({ x: window.screenX, y: window.screenY }));
-      await submitChatMessage(chat, '验证移动');
-      await expect(chat.getByText('开始移动')).toBeVisible();
+      ), emotionActionOffset);
+      expect(emotionActions).toEqual(expect.arrayContaining([
+        { stateId: 'thinking', actionId: 'safe-think-action' },
+        { stateId: 'success', actionId: 'safe-celebrate-action' }
+      ]));
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'moving',
-        actionId: 'safe-move-action',
+        primaryStateId: 'success',
+        actionId: 'safe-celebrate-action',
         playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
-      await expect.poll(async () => {
-        const current = await pet.evaluate(() => ({ x: window.screenX, y: window.screenY }));
-        return current.x !== positionBeforeMove.x || current.y !== positionBeforeMove.y;
-      }).toBe(true);
 
       await expect(chat.getByLabel('和我说点什么')).toBeEnabled();
       await submitChatMessage(chat, '验证模型不可用');
@@ -2821,9 +2843,726 @@ test.describe('Explorer 动态图层自动验收', () => {
 });
 
 test.describe('真实 Provider 业务闭环', () => {
+  test('无授权范围时连续三轮普通聊天并把完整可见回合传入第三轮', async () => {
+    test.setTimeout(120_000);
+    const privateUserMessages = [
+      `聊天正文-${randomBytes(12).toString('hex')}`,
+      `继续正文-${randomBytes(12).toString('hex')}`,
+      `总结正文-${randomBytes(12).toString('hex')}`
+    ] as const;
+    const assistantMessages = ['第一轮回复', '第二轮回复', '第三轮回复'] as const;
+    const provider = await startProviderServer([
+      {
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: assistantMessages[0]
+        }) },
+        inspect: request => {
+          const visible = request.messages.slice(1);
+          if (request.tools.length !== 0
+            || visible.length !== 1
+            || visible[0]?.role !== 'user'
+            || visible[0].content !== privateUserMessages[0]) {
+            throw new Error('第一轮普通聊天上下文不符合预期');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: assistantMessages[1]
+        }) },
+        inspect: request => {
+          const visible = request.messages.slice(1);
+          if (request.tools.length !== 0
+            || visible.length !== 3
+            || visible[0]?.role !== 'user'
+            || visible[0].content !== privateUserMessages[0]
+            || visible[1]?.role !== 'assistant'
+            || visible[1].content !== assistantMessages[0]
+            || visible[2]?.role !== 'user'
+            || visible[2].content !== privateUserMessages[1]) {
+            throw new Error('第二轮普通聊天上下文不符合预期');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: assistantMessages[2]
+        }) },
+        inspect: request => {
+          const visible = request.messages.slice(1);
+          if (request.tools.length !== 0
+            || visible.length !== 5
+            || visible[0]?.content !== privateUserMessages[0]
+            || visible[1]?.content !== assistantMessages[0]
+            || visible[2]?.content !== privateUserMessages[1]
+            || visible[3]?.content !== assistantMessages[1]
+            || visible[4]?.content !== privateUserMessages[2]) {
+            throw new Error('第三轮未收到前两轮完整可见上下文');
+          }
+        }
+      }
+    ]);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) {
+      await provider.close();
+      return;
+    }
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000
+    });
+    try {
+      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === view;
+        } catch {
+          return false;
+        }
+      });
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
+      const pet = pageFor('pet')!;
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'conversation-e2e',
+            displayName: '会话 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'conversation-e2e-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'conversation-e2e',
+          chatProfileId: 'conversation-e2e',
+          agentProfileId: 'conversation-e2e',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.openChat();
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+
+      for (let index = 0; index < privateUserMessages.length; index += 1) {
+        await submitChatMessage(pageFor('chat')!, privateUserMessages[index]);
+        await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+          visibleMessageCount: (index + 1) * 2,
+          historyDisclosureVisible: false,
+          fileConfirmationVisible: false
+        });
+      }
+
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      const captured = fixture.logs.join('\n');
+      for (const privateText of privateUserMessages) {
+        expect(captured.includes(privateText), 'Electron 日志不得包含聊天正文').toBe(false);
+      }
+      expect(captured.includes(provider.apiKey), 'Electron 日志不得包含 Provider 密钥').toBe(false);
+      expect(captured.includes(fixture.authorizedRootDirectory), 'Electron 日志不得包含绝对路径')
+        .toBe(false);
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
+  test('模糊请求只澄清且明确文件请求在无授权时只引导设置', async () => {
+    test.setTimeout(120_000);
+    const ambiguousText = '帮我整理一下';
+    const privateLogSentinel = randomBytes(12).toString('hex');
+    const fileName = `未授权-${privateLogSentinel}.txt`;
+    const fixedClarification = '我还不确定你是想聊天，还是希望我处理本地文件。可以再具体说明一下吗？';
+    const provider = await startProviderServer([
+      {
+        response: { type: 'text', text: '无法确定请求类型' },
+        inspect: request => {
+          if (request.tools.length !== 0 || request.messages.at(-1)?.content !== ambiguousText) {
+            throw new Error('模糊请求未走无工具规划');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: '{"kind":"file_task"}' },
+        inspect: request => {
+          if (request.tools.length !== 0 || request.messages.at(-1)?.content !== `读取 ${fileName}`) {
+            throw new Error('明确文件请求未先走无工具规划');
+          }
+        }
+      }
+    ]);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) {
+      await provider.close();
+      return;
+    }
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000
+    });
+    try {
+      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === view;
+        } catch {
+          return false;
+        }
+      });
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
+      const pet = pageFor('pet')!;
+      const chat = pageFor('chat')!;
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'routing-e2e',
+            displayName: '分流 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'routing-e2e-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'routing-e2e',
+          chatProfileId: 'routing-e2e',
+          agentProfileId: 'routing-e2e',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.openChat();
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+
+      const before = await readdir(fixture.authorizedRootDirectory, { recursive: true });
+      await submitChatMessage(chat, ambiguousText);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 2,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+      await expect(chat.getByText(fixedClarification, { exact: true })).toBeVisible();
+      expect(await readdir(fixture.authorizedRootDirectory, { recursive: true })).toEqual(before);
+
+      await submitChatMessage(chat, `读取 ${fileName}`);
+      await expect(chat.getByRole('button', { name: '打开设置' })).toBeVisible();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 4,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+      expect(await readdir(fixture.authorizedRootDirectory, { recursive: true })).toEqual(before);
+      expect(provider.requests).toHaveLength(2);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+
+      const captured = fixture.logs.join('\n');
+      for (const privateText of [privateLogSentinel, fileName, provider.apiKey]) {
+        expect(captured.includes(privateText), 'Electron 日志不得包含私密输入或密钥').toBe(false);
+      }
+      expect(captured.includes(fixture.authorizedRootDirectory), 'Electron 日志不得包含绝对路径')
+        .toBe(false);
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
+  test('Chat 与 Agent 跨 Provider 时两种披露决定均继续且单次共享不会复用', async () => {
+    test.setTimeout(120_000);
+    const privateMessages = [
+      `来源正文一-${randomBytes(12).toString('hex')}`,
+      `仅当前文件正文-${randomBytes(12).toString('hex')}`,
+      `来源正文二-${randomBytes(12).toString('hex')}`,
+      `共享文件正文-${randomBytes(12).toString('hex')}`,
+      `再次文件正文-${randomBytes(12).toString('hex')}`
+    ] as const;
+    const sourceReplies = ['来源服务回复一', '来源服务回复二'] as const;
+    const sourceProvider = await startProviderServer([
+      {
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: sourceReplies[0]
+        }) }
+      },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
+      {
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: sourceReplies[1]
+        }) }
+      },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } }
+    ]);
+    const targetProvider = await startProviderServer([
+      {
+        response: { type: 'text', text: '仅当前文件任务已结束' },
+        inspect: request => {
+          if (request.tools.length === 0
+            || request.messages.some(message => message.content === privateMessages[0])
+            || request.messages.some(message => message.content === sourceReplies[0])
+            || request.messages.at(-1)?.content !== privateMessages[1]) {
+            throw new Error('仅当前消息决策向文件 Agent 携带了旧历史');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: '共享文件任务已结束' },
+        inspect: request => {
+          if (request.tools.length === 0
+            || !request.messages.some(message => message.content === privateMessages[2])
+            || !request.messages.some(message => message.content === sourceReplies[1])
+            || request.messages.at(-1)?.content !== privateMessages[3]) {
+            throw new Error('单次共享没有把可见历史交给文件 Agent');
+          }
+        }
+      }
+    ]);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) {
+      await sourceProvider.close();
+      await targetProvider.close();
+      return;
+    }
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: sourceProvider.apiKey,
+      additionalSecrets: [targetProvider.apiKey],
+      launchTimeoutMs: 15_000
+    });
+    try {
+      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === view;
+        } catch {
+          return false;
+        }
+      });
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
+      const pet = pageFor('pet')!;
+      const chat = pageFor('chat')!;
+      await pet.evaluate(async input => {
+        for (const profile of input.profiles) {
+          await window.myself.saveProviderProfile({
+            profile: {
+              id: profile.id,
+              displayName: profile.displayName,
+              mode: 'custom',
+              protocol: 'openai-compatible',
+              baseUrl: profile.baseUrl,
+              modelId: `${profile.id}-model`,
+              additionalParameters: {},
+              capabilities: ['chat', 'tools']
+            },
+            secret: profile.apiKey,
+            persistSecret: false
+          });
+        }
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'source-e2e',
+          chatProfileId: 'source-e2e',
+          agentProfileId: 'target-e2e',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: {
+            file: true,
+            screenshot: false,
+            clipboard: false,
+            memory: false
+          },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+        await window.myself.openChat();
+      }, {
+        profiles: [
+          {
+            id: 'source-e2e',
+            displayName: '来源 E2E',
+            baseUrl: sourceProvider.baseUrl,
+            apiKey: sourceProvider.apiKey
+          },
+          {
+            id: 'target-e2e',
+            displayName: '目标 E2E',
+            baseUrl: targetProvider.baseUrl,
+            apiKey: targetProvider.apiKey
+          }
+        ]
+      });
+
+      await submitChatMessage(chat, privateMessages[0]);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 2,
+        historyDisclosureVisible: false
+      });
+      await expect.poll(async () => {
+        const { phase } = await fixture.getConversationProbe();
+        return phase === 'success' || phase === 'idle';
+      }).toBe(true);
+
+      await submitChatMessage(chat, privateMessages[1]);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 3,
+        historyDisclosureVisible: true
+      });
+      await chat.getByRole('button', { name: '仅发送当前消息' }).click();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 4,
+        historyDisclosureVisible: false
+      });
+      await expect.poll(async () => {
+        const { phase } = await fixture.getConversationProbe();
+        return phase === 'success' || phase === 'idle';
+      }).toBe(true);
+
+      await chat.getByRole('button', { name: '新对话' }).click();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        phase: 'idle',
+        visibleMessageCount: 0,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+
+      await submitChatMessage(chat, privateMessages[2]);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 2,
+        historyDisclosureVisible: false
+      });
+      await expect.poll(async () => {
+        const { phase } = await fixture.getConversationProbe();
+        return phase === 'success' || phase === 'idle';
+      }).toBe(true);
+
+      await submitChatMessage(chat, privateMessages[3]);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 3,
+        historyDisclosureVisible: true
+      });
+      await chat.getByRole('button', { name: '仅本次共享历史' }).click();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 4,
+        historyDisclosureVisible: false
+      });
+      await expect.poll(async () => {
+        const { phase } = await fixture.getConversationProbe();
+        return phase === 'success' || phase === 'idle';
+      }).toBe(true);
+
+      await submitChatMessage(chat, privateMessages[4]);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 5,
+        historyDisclosureVisible: true
+      });
+
+      expect(sourceProvider.requests).toHaveLength(4);
+      expect(targetProvider.requests).toHaveLength(2);
+
+      sourceProvider.assertComplete();
+      targetProvider.assertComplete();
+      expect(sourceProvider.inspectionErrors).toEqual([]);
+      expect(targetProvider.inspectionErrors).toEqual([]);
+      const captured = fixture.logs.join('\n');
+      for (const privateText of [
+        ...privateMessages,
+        sourceProvider.apiKey,
+        targetProvider.apiKey,
+        fixture.authorizedRootDirectory
+      ]) {
+        expect(captured.includes(privateText), '跨 Provider 诊断不得泄露私密数据').toBe(false);
+      }
+    } finally {
+      await fixture.dispose();
+      await sourceProvider.close();
+      await targetProvider.close();
+    }
+  });
+
+  test('模型响应挂起时新建对话会隔离迟到回复并允许新会话继续', async () => {
+    test.setTimeout(120_000);
+    const oldGate = createProviderResponseGate();
+    const oldText = `旧会话正文-${randomBytes(12).toString('hex')}`;
+    const newText = `新会话正文-${randomBytes(12).toString('hex')}`;
+    const provider = await startProviderServer([
+      {
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: '不得回流的旧回复'
+        }) },
+        gate: oldGate
+      },
+      {
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: '新会话回复'
+        }) },
+        inspect: request => {
+          const visible = request.messages.slice(1);
+          if (request.tools.length !== 0
+            || visible.length !== 1
+            || visible[0]?.content !== newText) {
+            throw new Error('新会话错误携带了旧会话历史');
+          }
+        }
+      }
+    ]);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) {
+      await provider.close();
+      return;
+    }
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000
+    });
+    try {
+      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === view;
+        } catch {
+          return false;
+        }
+      });
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
+      const pet = pageFor('pet')!;
+      const chat = pageFor('chat')!;
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'reset-e2e',
+            displayName: '重置 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'reset-e2e-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'reset-e2e',
+          chatProfileId: 'reset-e2e',
+          agentProfileId: 'reset-e2e',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.openChat();
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+
+      await submitChatMessage(chat, oldText);
+      await expect.poll(() => oldGate.isWaiting()).toBe(true);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        phase: 'thinking',
+        visibleMessageCount: 1,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+      await chat.getByRole('button', { name: '新对话' }).click();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        phase: 'idle',
+        visibleMessageCount: 0,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+
+      oldGate.release();
+      await provider.waitForCompletedResponses(1);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        phase: 'idle',
+        visibleMessageCount: 0,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+
+      await submitChatMessage(chat, newText);
+      await provider.waitForCompletedResponses(2);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 2,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+      await expect.poll(async () => {
+        const { phase } = await fixture.getConversationProbe();
+        return phase === 'success' || phase === 'idle';
+      }).toBe(true);
+
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      const captured = fixture.logs.join('\n');
+      for (const privateText of [oldText, newText, provider.apiKey, fixture.authorizedRootDirectory]) {
+        expect(captured.includes(privateText), '重置诊断不得泄露私密数据').toBe(false);
+      }
+    } finally {
+      oldGate.release();
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
+  test('文件动作待确认时新建对话会使旧确认失效且不改文件', async () => {
+    test.setTimeout(120_000);
+    const fileName = `待确认-${randomBytes(12).toString('hex')}.txt`;
+    const newText = `重置后正文-${randomBytes(12).toString('hex')}`;
+    const provider = await startProviderServer([
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
+      {
+        response: toolResponse(
+          'reset-pending-create',
+          'builtin.files.create_file',
+          { relativePath: fileName }
+        ),
+        inspect: request => {
+          if (request.tools.length === 0) throw new Error('文件 Agent 未收到工具白名单');
+        }
+      },
+      {
+        response: { type: 'text', text: JSON.stringify({
+          kind: 'chat_reply',
+          text: '重置后新会话回复'
+        }) },
+        inspect: request => {
+          const visible = request.messages.slice(1);
+          if (request.tools.length !== 0
+            || visible.length !== 1
+            || visible[0]?.content !== newText) {
+            throw new Error('重置后新会话携带了旧文件任务上下文');
+          }
+        }
+      }
+    ]);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) {
+      await provider.close();
+      return;
+    }
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000
+    });
+    try {
+      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === view;
+        } catch {
+          return false;
+        }
+      });
+      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
+      const pet = pageFor('pet')!;
+      const chat = pageFor('chat')!;
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'pending-reset-e2e',
+            displayName: '确认重置 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'pending-reset-e2e-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'pending-reset-e2e',
+          chatProfileId: 'pending-reset-e2e',
+          agentProfileId: 'pending-reset-e2e',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: {
+            file: true,
+            screenshot: false,
+            clipboard: false,
+            memory: false
+          },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+        await window.myself.openChat();
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+
+      const target = join(fixture.authorizedRootDirectory, fileName);
+      expect(await pathExistsForAssertion(target)).toBe(false);
+      await submitChatMessage(chat, `创建 ${fileName}`);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        phase: 'awaiting_confirmation',
+        visibleMessageCount: 1,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: true
+      });
+      const oldConfirmation = chat.getByRole('button', { name: '确认创建文件' });
+      await expect(oldConfirmation).toBeVisible();
+      await chat.getByRole('button', { name: '新对话' }).click();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        phase: 'idle',
+        visibleMessageCount: 0,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+      await expect(oldConfirmation).toHaveCount(0);
+      expect(await pathExistsForAssertion(target)).toBe(false);
+
+      await submitChatMessage(chat, newText);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        visibleMessageCount: 2,
+        historyDisclosureVisible: false,
+        fileConfirmationVisible: false
+      });
+      expect(await pathExistsForAssertion(target)).toBe(false);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+
+      const captured = fixture.logs.join('\n');
+      for (const privateText of [fileName, newText, provider.apiKey, target]) {
+        expect(captured.includes(privateText), '待确认重置诊断不得泄露私密数据').toBe(false);
+      }
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
   test('回收站搬运闭环只在提交帧后写入隔离适配器并安全处理中断与失败', async () => {
     test.setTimeout(120_000);
     const provider = await startProviderServer([
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'recycle-success',
@@ -2844,6 +3583,7 @@ test.describe('真实 Provider 业务闭环', () => {
           ) throw new Error('回收站结果不符合脚本预期');
         }
       },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'recycle-switch',
@@ -2851,6 +3591,7 @@ test.describe('真实 Provider 业务闭环', () => {
           { relativePath: 'switch.txt' }
         )
       },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'recycle-drag',
@@ -2858,6 +3599,7 @@ test.describe('真实 Provider 业务闭环', () => {
           { relativePath: 'drag.txt' }
         )
       },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'recycle-failure',
@@ -3121,7 +3863,7 @@ test.describe('真实 Provider 业务闭环', () => {
         .toEqual(['.attempt-1', '.attempt-2']);
 
       provider.assertComplete();
-      expect(provider.requests).toHaveLength(5);
+      expect(provider.requests).toHaveLength(9);
       expect(provider.inspectionErrors).toEqual([]);
       const captured = fixture.logs.join('\n');
       expect(captured).not.toContain(fixture.authorizedRootDirectory);
@@ -3144,6 +3886,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
     const providerSteps: ProviderStep[] = [
       { response: { type: 'text', text: '本地连接正常' } },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'list-root',
@@ -3175,6 +3918,7 @@ test.describe('真实 Provider 业务闭环', () => {
           }
         }
       },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'create-file',
@@ -3191,6 +3935,7 @@ test.describe('真实 Provider 业务闭环', () => {
           }
         }
       },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse('rename-file', 'builtin.files.rename_entry', {
           sourceRelativePath: 'created.txt',
@@ -3212,6 +3957,7 @@ test.describe('真实 Provider 业务闭环', () => {
           }
         }
       },
+      { response: { type: 'text', text: '{"kind":"file_task"}' } },
       {
         response: toolResponse(
           'cancel-file',
@@ -3287,7 +4033,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
 
       await submitChatMessage(chatPage, '请列出工作目录');
-      await expect(chatPage.getByText('请先完成模型服务和授权目录设置。')).toBeVisible();
+      await expect(chatPage.getByText('请先完成模型服务设置。')).toBeVisible();
 
       await chatPage.getByRole('button', { name: '设置' }).click();
       await expect.poll(() => settingsPage.evaluate(() => document.visibilityState)).toBe('visible');
@@ -3360,7 +4106,7 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(provider.inspectionErrors).toEqual([]);
       expect(provider.remainingSteps()).toBe(0);
       provider.assertComplete();
-      expect(provider.requests).toHaveLength(8);
+      expect(provider.requests).toHaveLength(12);
       for (const request of provider.requests) {
         expect(request).toMatchObject({
           method: 'POST',

@@ -32,6 +32,7 @@ export interface ProviderServerFixture {
   inspectionErrors: string[];
   remainingSteps(): number;
   assertComplete(): void;
+  waitForCompletedResponses(count: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -65,6 +66,19 @@ export async function startProviderServer(
   const inspectionErrors: string[] = [];
   const apiKey = `myself-e2e-${randomBytes(24).toString('hex')}`;
   const script = [...(typeof steps === 'function' ? steps(apiKey) : steps)];
+  let unexpectedRequestCount = 0;
+  let completedResponseCount = 0;
+  const completionWaiters: Array<{ count: number; resolve: () => void }> = [];
+  const markResponseCompleted = () => {
+    completedResponseCount += 1;
+    for (let index = completionWaiters.length - 1; index >= 0; index -= 1) {
+      const waiter = completionWaiters[index];
+      if (waiter && completedResponseCount >= waiter.count) {
+        completionWaiters.splice(index, 1);
+        waiter.resolve();
+      }
+    }
+  };
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) {
@@ -88,11 +102,12 @@ export async function startProviderServer(
       toolNames: parsed.tools.map(tool => tool.function.name),
       messageRoles: parsed.messages.map(message => message.role)
     });
-
     const step = script.shift();
     if (!step) {
+      unexpectedRequestCount += 1;
       response.writeHead(500, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: '测试脚本没有更多响应' } }));
+      markResponseCompleted();
       return;
     }
     if (step.inspect) {
@@ -107,6 +122,8 @@ export async function startProviderServer(
 
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify(compatibleResponse(step.response)));
+    // reset 会主动中止客户端连接；以脚本步骤执行完 response.end 作为确定性完成屏障。
+    markResponseCompleted();
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -124,6 +141,17 @@ export async function startProviderServer(
       if (script.length > 0) {
         throw new Error(`脚本化 Provider 仍有 ${script.length} 个响应未消费`);
       }
+      // 同时拒绝脚本耗尽后的请求，避免 500 响应被上层错误路径掩盖成假绿。
+      if (unexpectedRequestCount > 0) {
+        throw new Error(`脚本化 Provider 收到 ${unexpectedRequestCount} 个额外请求`);
+      }
+    },
+    waitForCompletedResponses(count) {
+      if (!Number.isSafeInteger(count) || count < 0) {
+        return Promise.reject(new Error('脚本化 Provider 响应完成数量无效'));
+      }
+      if (completedResponseCount >= count) return Promise.resolve();
+      return new Promise<void>(resolve => completionWaiters.push({ count, resolve }));
     },
     async close() {
       await new Promise<void>((resolve, reject) => {
