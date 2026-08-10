@@ -809,6 +809,29 @@ describe('ConversationCoordinator', () => {
     expect(JSON.stringify(harness.events)).not.toContain('renderer-send-private-error');
   });
 
+  test('情绪公开失败时本回合不写历史并回到公开错误边界', async () => {
+    const rawError = new Error('emotion-send-private-error');
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: scriptedProvider({ type: 'text', text: '回复已公开', emotion: 'calm' })
+    }], {
+      onEmit: event => {
+        if (event.type === 'character_emotion') throw rawError;
+      }
+    });
+
+    await expect(harness.coordinator.submit('触发情绪公开失败')).rejects.toMatchObject({
+      code: 'AGENT_INTERNAL_ERROR',
+      message: '任务执行失败，请重试。'
+    });
+
+    expect(phases(harness.events)).toEqual(['listening', 'thinking', 'error']);
+    expect(harness.history.turns()).toEqual([]);
+    expect(JSON.stringify(harness.events)).not.toContain('emotion-send-private-error');
+  });
+
   test('close 先封闭状态并在清理失败时继续全部清理', async () => {
     const script = deferredProvider();
     const fileTasks = new CapturingFileTasks();

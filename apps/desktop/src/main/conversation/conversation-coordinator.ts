@@ -59,13 +59,13 @@ type ConversationState =
   | { kind: 'resetting'; generation: string }
   | { kind: 'closed' };
 
-interface ChatContext {
+interface TurnContext {
   text: string;
   generation: string;
   controller: AbortController;
 }
 
-interface PendingChatDisclosure extends ChatContext {
+interface PendingChatDisclosure extends TurnContext {
   kind: 'chat_reply';
   requestId: string;
   adapter: ConversationChatAdapter;
@@ -74,7 +74,7 @@ interface PendingChatDisclosure extends ChatContext {
   providerName: string;
 }
 
-interface PendingFileDisclosure extends ChatContext {
+interface PendingFileDisclosure extends TurnContext {
   kind: 'file_task';
   requestId: string;
   target: PreparedFileTaskTarget;
@@ -123,7 +123,7 @@ export class ConversationCoordinator {
       throw normalizedError;
     }
 
-    const context: ChatContext = {
+    const context: TurnContext = {
       text: normalized,
       generation: this.generation,
       controller: new AbortController()
@@ -196,7 +196,7 @@ export class ConversationCoordinator {
         disclosure.messages
       );
     } catch (error) {
-      if (!this.ownsChatContext(context)) {
+      if (!this.ownsTurnContext(context)) {
         if (this.shouldRethrowReportedFileError(error, context)) throw publicError(error);
         return;
       }
@@ -318,7 +318,7 @@ export class ConversationCoordinator {
         await this.submitFileTask(pending, pending.target, visibleHistory);
       }
     } catch (error) {
-      if (!this.ownsChatContext(pending)) {
+      if (!this.ownsTurnContext(pending)) {
         if (this.shouldRethrowReportedFileError(error, pending)) throw publicError(error);
         return;
       }
@@ -423,7 +423,7 @@ export class ConversationCoordinator {
 
   /** 在可见文本写入历史前复核控制器与会话代次，隔离迟到模型响应。 */
   private async runChatReply(
-    context: ChatContext,
+    context: TurnContext,
     adapter: ConversationChatAdapter,
     providerIdentity: string,
     visibleHistory: readonly ModelMessage[]
@@ -437,21 +437,21 @@ export class ConversationCoordinator {
     if (!this.isRunning(context)) return;
     this.options.emit({ type: 'message', role: 'assistant', text: reply.text });
     if (!this.isRunning(context)) return;
+    if (reply.emotion !== undefined) {
+      this.options.emit({ type: 'character_emotion', label: reply.emotion });
+      if (!this.isRunning(context)) return;
+    }
     this.options.history.append({
       userText: context.text,
       assistantText: reply.text,
       providerIdentity
     });
     if (!this.isRunning(context)) return;
-    if (reply.emotion !== undefined) {
-      this.options.emit({ type: 'character_emotion', label: reply.emotion });
-      if (!this.isRunning(context)) return;
-    }
     this.state = { kind: 'idle' };
     this.options.emit({ type: 'phase', phase: 'success' });
   }
 
-  private isRunning(context: ChatContext): boolean {
+  private isRunning(context: TurnContext): boolean {
     return (
       this.state.kind === 'running_chat'
       || this.state.kind === 'preparing_file_task'
@@ -461,7 +461,7 @@ export class ConversationCoordinator {
       && context.generation === this.generation;
   }
 
-  private ownsChatContext(context: ChatContext): boolean {
+  private ownsTurnContext(context: TurnContext): boolean {
     if (this.isRunning(context)) return true;
     return this.state.kind === 'awaiting_history_disclosure'
       && this.state.generation === context.generation
@@ -476,7 +476,7 @@ export class ConversationCoordinator {
   }
 
   /** 文件目标在 Main 内先完成授权与 Provider 快照，再据此计算本轮历史披露。 */
-  private async prepareFileTask(context: ChatContext): Promise<void> {
+  private async prepareFileTask(context: TurnContext): Promise<void> {
     let target: PreparedFileTaskTarget;
     try {
       target = await this.options.fileTasks.prepareTarget(context.generation);
@@ -518,7 +518,7 @@ export class ConversationCoordinator {
   }
 
   private async submitFileTask(
-    context: ChatContext,
+    context: TurnContext,
     target: PreparedFileTaskTarget,
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
@@ -599,7 +599,7 @@ export class ConversationCoordinator {
     return this.state.kind === 'closed';
   }
 
-  private shouldRethrowReportedFileError(error: unknown, context: ChatContext): boolean {
+  private shouldRethrowReportedFileError(error: unknown, context: TurnContext): boolean {
     return isReportedFileError(error)
       && context.generation === this.generation
       && this.state.kind !== 'closed'

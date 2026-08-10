@@ -53,6 +53,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
   private inFlightOwner: symbol | null = null;
   private preparingOwner: symbol | null = null;
   private agent: OwnedAgent | null = null;
+  private prepareCleanupPromise: Promise<void> | null = null;
   private resetPromise: Promise<void> | null = null;
   private closePromise: Promise<void> | null = null;
   private closed = false;
@@ -79,10 +80,21 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
       target: null
     };
     try {
+      const pendingCleanup = this.prepareCleanupPromise;
+      if (pendingCleanup) {
+        await pendingCleanup;
+        this.assertOwned(owner);
+      }
       const previousAgent = this.agent;
       if (previousAgent) {
         this.agent = null;
-        await this.resetOwnedAgent(previousAgent);
+        const cleanup = this.resetOwnedAgent(previousAgent);
+        this.prepareCleanupPromise = cleanup;
+        try {
+          await cleanup;
+        } finally {
+          if (this.prepareCleanupPromise === cleanup) this.prepareCleanupPromise = null;
+        }
         this.assertOwned(owner);
       }
       const authorizedRoot = await this.options.getAuthorizedRootPath();
@@ -189,7 +201,8 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     this.inFlightOwner = null;
     this.preparingOwner = null;
     this.agent = null;
-    const resetting = this.resetOwnedAgent(owned);
+    const pendingPrepareCleanup = this.prepareCleanupPromise;
+    const resetting = this.finishOwnedAgentCleanup(pendingPrepareCleanup, owned);
     this.resetPromise = resetting;
     try {
       await resetting;
@@ -206,6 +219,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     this.closed = true;
     const owned = this.agent;
     const pendingReset = this.resetPromise;
+    const pendingPrepareCleanup = this.prepareCleanupPromise;
     this.active = null;
     this.inFlightOwner = null;
     this.preparingOwner = null;
@@ -214,7 +228,8 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     const closing = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
       try {
-        if (pendingReset) await pendingReset;
+        const pendingCleanup = pendingReset ?? pendingPrepareCleanup;
+        if (pendingCleanup) await pendingCleanup;
       } catch (error) {
         failures.push(error);
       }
@@ -335,6 +350,25 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
       } catch (error) {
         firstFailure ??= error;
       }
+    }
+    if (firstFailure !== undefined) throw firstFailure;
+  }
+
+  /** 生命周期先收敛已脱离字段的旧 Agent，再清理当前持有实例。 */
+  private async finishOwnedAgentCleanup(
+    pendingCleanup: Promise<void> | null,
+    owned: OwnedAgent | null
+  ): Promise<void> {
+    let firstFailure: unknown;
+    try {
+      if (pendingCleanup) await pendingCleanup;
+    } catch (error) {
+      firstFailure = error;
+    }
+    try {
+      await this.resetOwnedAgent(owned);
+    } catch (error) {
+      firstFailure ??= error;
     }
     if (firstFailure !== undefined) throw firstFailure;
   }

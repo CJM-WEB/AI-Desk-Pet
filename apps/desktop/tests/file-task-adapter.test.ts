@@ -33,6 +33,11 @@ function deferred(): {
   return { promise, resolve };
 }
 
+/** 排空本用例内已知的短 Promise 链，不使用墙钟等待制造竞态。 */
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 5; index += 1) await Promise.resolve();
+}
+
 function createAgentDouble(
   submitFileTask: (input: {
     text: string;
@@ -125,6 +130,77 @@ describe('FileTaskAdapter', () => {
     })).resolves.toBeUndefined();
     expect(createAgentTarget).toHaveBeenCalledOnce();
   });
+
+  test('取消旧 Agent 清理中的准备会释放 owner，但下一准备仍等待清理屏障', async () => {
+    const cleanup = deferred();
+    const oldAgent = createAgentDouble();
+    oldAgent.resetForNewConversation.mockImplementation(() => cleanup.promise);
+    const newAgent = createAgentDouble();
+    const agents = [oldAgent, newAgent];
+    const createAgentTarget = vi.fn(() => preparedAgent(agents.shift()!));
+    const adapter = new FileTaskAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentTarget
+    });
+    await adapter.prepareTarget('g-old');
+    adapter.cancelActive();
+
+    const replacing = adapter.prepareTarget('g-replacing');
+    await vi.waitFor(() => expect(oldAgent.resetForNewConversation).toHaveBeenCalledOnce());
+    adapter.cancelActive();
+    let nextSettled = false;
+    const next = adapter.prepareTarget('g-new').then(target => {
+      nextSettled = true;
+      return target;
+    });
+    await flushMicrotasks();
+    const settledBeforeCleanup = nextSettled;
+
+    cleanup.resolve();
+    await expect(replacing).rejects.toMatchObject({ code: 'TASK_CANCELLED' });
+    await expect(next).resolves.toMatchObject({ profileId: 'profile-agent' });
+
+    expect(settledBeforeCleanup).toBe(false);
+    expect(oldAgent.close).toHaveBeenCalledOnce();
+    expect(createAgentTarget).toHaveBeenCalledTimes(2);
+  });
+
+  test.each(['reset', 'close'] as const)(
+    '%s 会等待准备阶段已开始的旧 Agent 清理并完成 reset/close',
+    async action => {
+      const cleanup = deferred();
+      const oldAgent = createAgentDouble();
+      oldAgent.resetForNewConversation.mockImplementation(() => cleanup.promise);
+      const adapter = new FileTaskAdapter({
+        getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+        createAgentTarget: () => preparedAgent(oldAgent)
+      });
+      await adapter.prepareTarget('g-old');
+      adapter.cancelActive();
+      const replacing = adapter.prepareTarget('g-replacing');
+      await vi.waitFor(() => expect(oldAgent.resetForNewConversation).toHaveBeenCalledOnce());
+
+      let lifecycleSettled = false;
+      const lifecycle = (action === 'reset'
+        ? adapter.resetForNewConversation()
+        : adapter.close()).then(() => {
+          lifecycleSettled = true;
+        });
+      await flushMicrotasks();
+      const settledBeforeCleanup = lifecycleSettled;
+
+      cleanup.resolve();
+      const replacementError = await replacing.catch(error => error);
+      await lifecycle;
+
+      expect(settledBeforeCleanup).toBe(false);
+      expect(replacementError).toMatchObject({
+        code: action === 'reset' ? 'TASK_CANCELLED' : 'CONVERSATION_CLOSED'
+      });
+      expect(oldAgent.resetForNewConversation).toHaveBeenCalledOnce();
+      expect(oldAgent.close).toHaveBeenCalledOnce();
+    }
+  );
 
   test('只透传获准可见历史，并给 Agent 事件绑定当前 generation', async () => {
     let emitAgentEvent!: (event: TaskEvent) => void;

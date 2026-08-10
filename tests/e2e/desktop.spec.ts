@@ -3067,10 +3067,10 @@ test.describe('真实 Provider 业务闭环', () => {
     test.setTimeout(120_000);
     const privateMessages = [
       `来源正文一-${randomBytes(12).toString('hex')}`,
-      `仅当前文件正文-${randomBytes(12).toString('hex')}`,
+      `读取 仅当前-${randomBytes(12).toString('hex')}.txt`,
       `来源正文二-${randomBytes(12).toString('hex')}`,
-      `共享文件正文-${randomBytes(12).toString('hex')}`,
-      `再次文件正文-${randomBytes(12).toString('hex')}`
+      `读取 共享-${randomBytes(12).toString('hex')}.txt`,
+      `读取 再次-${randomBytes(12).toString('hex')}.txt`
     ] as const;
     const sourceReplies = ['来源服务回复一', '来源服务回复二'] as const;
     const sourceProvider = await startProviderServer([
@@ -3248,7 +3248,7 @@ test.describe('真实 Provider 业务闭环', () => {
         historyDisclosureVisible: true
       });
 
-      expect(sourceProvider.requests).toHaveLength(4);
+      expect(sourceProvider.requests).toHaveLength(2);
       expect(targetProvider.requests).toHaveLength(2);
 
       sourceProvider.assertComplete();
@@ -3688,7 +3688,7 @@ test.describe('真实 Provider 业务闭环', () => {
         const source = join(fixture.authorizedRootDirectory, fileName);
         await writeFile(source, `${fileName} 内容`, 'utf8');
         const carryOffset = await carryEventCount();
-        await submitChatMessage(chat, `把 ${fileName} 移入回收站`);
+        await submitChatMessage(chat, `把 ${fileName} 移动到回收站`);
         const card = chat.getByRole('region', { name: `将 ${fileName} 移入回收站` });
         await expect(card).toBeVisible();
         await expect(card.getByText(fileName, { exact: true })).toBeVisible();
@@ -3820,7 +3820,7 @@ test.describe('真实 Provider 业务闭环', () => {
         .toEqual(['.attempt-1', '.attempt-2']);
 
       provider.assertComplete();
-      expect(provider.requests).toHaveLength(9);
+      expect(provider.requests).toHaveLength(5);
       expect(provider.inspectionErrors).toEqual([]);
       const captured = fixture.logs.join('\n');
       expect(captured).not.toContain(fixture.authorizedRootDirectory);
@@ -4017,10 +4017,10 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(settingsPage.getByText('authorized-root', { exact: true })).toBeVisible();
       await settingsPage.getByRole('button', { name: '关闭设置' }).click();
 
-      await submitChatMessage(chatPage, '列出授权根目录');
+      await submitChatMessage(chatPage, '列出当前目录');
       await expect(chatPage.getByText('目录里有 docs 文件夹。')).toBeVisible();
 
-      await submitChatMessage(chatPage, '新建空文件 created.txt');
+      await submitChatMessage(chatPage, '创建空文件 created.txt');
       const createCard = chatPage.getByRole('region', { name: '创建文件 created.txt' });
       await expect(createCard).toBeVisible();
       await createCard.getByRole('button', { name: '确认创建文件' }).click();
@@ -4038,7 +4038,7 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe(false);
       expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'renamed.txt'))).toBe(true);
 
-      await submitChatMessage(chatPage, '新建 cancelled.txt，但先让我确认');
+      await submitChatMessage(chatPage, '创建 cancelled.txt，但先让我确认');
       const cancelCard = chatPage.getByRole('region', { name: '创建文件 cancelled.txt' });
       await expect(cancelCard).toBeVisible();
       await cancelCard.getByRole('button', { name: '先不创建' }).click();
@@ -4059,7 +4059,7 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(provider.inspectionErrors).toEqual([]);
       expect(provider.remainingSteps()).toBe(0);
       provider.assertComplete();
-      expect(provider.requests).toHaveLength(12);
+      expect(provider.requests).toHaveLength(8);
       for (const request of provider.requests) {
         expect(request).toMatchObject({
           method: 'POST',
