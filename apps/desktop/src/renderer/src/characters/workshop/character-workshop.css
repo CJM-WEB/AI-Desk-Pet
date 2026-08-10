@@ -213,46 +213,6 @@
   background: var(--workshop-border);
 }
 
-.workshop-toast-layer {
-  position: fixed;
-  z-index: 50;
-  top: 68px;
-  right: 16px;
-  width: min(360px, calc(100vw - 32px));
-  pointer-events: none;
-}
-
-.workshop-toast {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 10px 10px 14px;
-  border: 1px solid var(--workshop-border);
-  border-radius: 7px;
-  color: #344b47;
-  background: #edf3f2;
-  box-shadow: 0 8px 24px rgba(23, 35, 33, 0.18);
-  pointer-events: auto;
-}
-
-.workshop-toast-success {
-  color: #075f59;
-  background: #e9f4f2;
-}
-
-.workshop-toast-warning {
-  color: #7a4a00;
-  background: #fff4d6;
-}
-
-.workshop-toast-error {
-  color: #7a271a;
-  background: #fef0ed;
-}
-
-.workshop-toast button,
 .row-commands button {
   width: 30px;
   height: 30px;
@@ -408,8 +368,7 @@
   display: flex;
 }
 
-.row-commands button:hover:not(:disabled),
-.workshop-toast button:hover {
+.row-commands button:hover:not(:disabled) {
   border-color: #b7c3c1;
   background: rgba(255, 255, 255, 0.72);
 }

@@ -50,12 +50,20 @@ import {
   type PreviewState
 } from './PreviewControls';
 import { AtlasImportPanel } from './AtlasImportPanel';
-import { WorkshopToastLayer } from './WorkshopToastLayer';
+import {
+  TransientToastLayer,
+  type TransientToast
+} from '../../components/TransientToastLayer';
 import {
   DraftCharacterPreview,
   draftActionFromResolvedPresentation
 } from './DraftCharacterPreview';
 import './character-workshop.css';
+
+/** 工作室保留既有的提示持续时间策略。 */
+function workshopToastDurationMs(toast: TransientToast): 3000 | 6000 {
+  return toast.tone === 'warning' || toast.tone === 'error' ? 6000 : 3000;
+}
 
 export interface CharacterWorkshopViewProps {
   api: CharacterWorkshopApi & Pick<
@@ -564,9 +572,11 @@ export function CharacterWorkshopWorkspace(
         </button>
       </nav>
 
-      <WorkshopToastLayer
+      <TransientToastLayer
         queue={state.toastQueue}
         onDismiss={state.dismissToast}
+        durationMs={workshopToastDurationMs}
+        ariaLabel="工作台提示"
       />
 
       <div className="workshop-columns">

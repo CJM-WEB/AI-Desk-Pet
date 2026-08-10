@@ -170,6 +170,13 @@ async function workshopCss(): Promise<string> {
   ), 'utf8');
 }
 
+async function rendererStyles(): Promise<string> {
+  return readFile(new URL(
+    '../src/renderer/src/styles.css',
+    import.meta.url
+  ), 'utf8');
+}
+
 function cssToken(css: string, name: string): string {
   const value = css.match(new RegExp(`${name}:\\s*(#[0-9a-f]{6})`, 'iu'))?.[1];
   if (!value) throw new Error(`缺少 CSS token：${name}`);
@@ -378,7 +385,7 @@ describe('角色工作室 SSR 外壳', () => {
     );
 
     expect(markup).toContain('草稿已保存');
-    expect(markup).toContain('workshop-toast-layer');
+    expect(markup).toContain('transient-toast-layer');
     expect(markup).toContain('第一条。');
     expect(markup).not.toContain('第二条。');
     expect(markup).not.toContain('workshop-notice');
@@ -426,7 +433,7 @@ describe('角色工作室 SSR 外壳', () => {
   });
 
   test('Toast 固定覆盖层不占工作区轨道，窄窗口仍可滚动访问 Inspector', async () => {
-    const css = await workshopCss();
+    const [css, globalCss] = await Promise.all([workshopCss(), rendererStyles()]);
 
     expect(css).toMatch(
       /\.character-workshop-shell\s*\{[^}]*grid-template-rows:\s*56px 45px minmax\(0,\s*1fr\);/su
@@ -434,11 +441,11 @@ describe('角色工作室 SSR 外壳', () => {
     expect(css).toMatch(
       /\.workshop-columns\s*\{[^}]*grid-row:\s*3;/su
     );
-    expect(css).toMatch(
-      /\.workshop-toast-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*50;[^}]*top:\s*68px;[^}]*right:\s*16px;[^}]*pointer-events:\s*none;/su
+    expect(globalCss).toMatch(
+      /\.transient-toast-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*50;[^}]*top:\s*68px;[^}]*right:\s*16px;[^}]*pointer-events:\s*none;/su
     );
-    expect(css).toMatch(
-      /\.workshop-toast\s*\{[^}]*pointer-events:\s*auto;/su
+    expect(globalCss).toMatch(
+      /\.transient-toast\s*\{[^}]*pointer-events:\s*auto;/su
     );
     expect(css).toMatch(
       /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-columns\s*\{[^}]*overflow-y:\s*auto;/su

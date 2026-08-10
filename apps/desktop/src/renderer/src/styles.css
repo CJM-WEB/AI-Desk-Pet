@@ -1337,3 +1337,61 @@ textarea {
   width: 100%;
   height: 100%;
 }
+/* 通用瞬时提示：只提供跨页面复用的视觉和交互基础。 */
+.transient-toast-layer {
+  position: fixed;
+  z-index: 50;
+  top: 68px;
+  right: 16px;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.transient-toast {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px 10px 14px;
+  border: 1px solid #c9d5d2;
+  border-radius: 7px;
+  color: #344b47;
+  background: #edf3f2;
+  box-shadow: 0 8px 24px rgba(23, 35, 33, 0.18);
+  pointer-events: auto;
+}
+
+.transient-toast-success {
+  color: #075f59;
+  background: #e9f4f2;
+}
+
+.transient-toast-warning {
+  color: #7a4a00;
+  background: #fff4d6;
+}
+
+.transient-toast-error {
+  color: #7a271a;
+  background: #fef0ed;
+}
+
+.transient-toast button {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #617774;
+  background: transparent;
+  cursor: pointer;
+}
+
+.transient-toast button:hover {
+  border-color: #b7c3c1;
+  background: rgba(255, 255, 255, 0.72);
+}
