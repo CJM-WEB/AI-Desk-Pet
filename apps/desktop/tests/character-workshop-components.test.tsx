@@ -448,6 +448,12 @@ describe('角色工作室 SSR 外壳', () => {
       /\.transient-toast\s*\{[^}]*pointer-events:\s*auto;/su
     );
     expect(css).toMatch(
+      /\.character-workshop-shell\s*\{[^}]*--workshop-border:\s*#cbd4d3;[^}]*--transient-toast-border:\s*var\(--workshop-border\);/su
+    );
+    expect(globalCss).toMatch(
+      /\.transient-toast\s*\{[^}]*border:\s*1px solid var\(--transient-toast-border,\s*#c9d5d2\);/su
+    );
+    expect(css).toMatch(
       /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-columns\s*\{[^}]*overflow-y:\s*auto;/su
     );
   });

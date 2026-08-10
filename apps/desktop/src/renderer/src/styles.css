@@ -1354,7 +1354,7 @@ textarea {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 10px 10px 14px;
-  border: 1px solid #c9d5d2;
+  border: 1px solid var(--transient-toast-border, #c9d5d2);
   border-radius: 7px;
   color: #344b47;
   background: #edf3f2;

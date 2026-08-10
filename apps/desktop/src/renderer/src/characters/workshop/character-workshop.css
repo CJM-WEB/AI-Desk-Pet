@@ -3,6 +3,7 @@
   --workshop-panel: #ffffff;
   --workshop-subtle: #e9eeee;
   --workshop-border: #cbd4d3;
+  --transient-toast-border: var(--workshop-border);
   --workshop-text: #172321;
   --workshop-muted: #60706d;
   --workshop-teal: #087f76;
