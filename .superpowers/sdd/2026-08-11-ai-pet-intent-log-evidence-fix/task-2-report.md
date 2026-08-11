@@ -199,3 +199,35 @@
 - `git diff --check`
   - 结果：退出码 0。
 - 静态差异仅为 `tests/fixtures/electron-app.ts` 与 `tests/e2e/desktop.spec.ts`；公开证据快照结构、冻结布尔语义、脱敏缓存上限和生产代码均未改变。
+
+## Fix round 3/5：restart 与 dispose 重叠竞态
+
+- 修复实现提交：`fff4932 test: 阻止释放期间重启桌面夹具`
+- 报告提交：见最终交付。
+- 本轮只修改 `tests/fixtures/electron-app.ts` 与 `tests/e2e/desktop.spec.ts`；未修改生产 preload、Main 或网站。
+
+### Finding：restart 入口检查后的 dispose 竞态
+
+> restart 入口过 disposeStarted 检查后，在 cleanupCurrentProcess/beforeRestart await 期间 dispose 可开始并永久封闭 tracker，restart 恢复后仍 launch。以确定性 deferred/gate 写单一 RED，最小在 launch 前复检生命周期门或等价串行化；不得加大锁框架。
+
+- 代码核验：restart 只在入口读取一次 `disposeStarted`，随后依次等待 `cleanupCurrentProcess()` 与可选 `beforeRestart()`；调用 launch 前没有第二次生命周期检查。dispose 可在任一 await 期间置位并永久封闭 tracker、回收目录，restart 恢复后仍启动新进程。
+- RED：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "restart 等待钩子期间 dispose 开始后不得再启动新进程"`
+  - 结果：退出码 1，1 个测试失败，总耗时约 1.8 秒。
+  - 确定性证据：`beforeRestart` deferred gate 暂停 restart；测试在 gate 内完成 dispose 后再释放。restart 实际正常 resolve，预期稳定拒绝 `ELECTRON_FIXTURE_DISPOSED`。
+- GREEN：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "restart 等待钩子期间 dispose 开始后不得再启动新进程|首次 dispose 进程清理失败后保留资源|重启时复用隔离目录"`
+  - 结果：退出码 0，本项与 fix round 2 两项合并 3/3 通过，总耗时 879 毫秒。
+- 最小修复：在 `beforeRestart` 返回后、进入 launch 之前再次检查 `disposeStarted`。没有引入锁、队列、sleep 或新超时；dispose 与二次资源清理语义保持不变。
+
+### Fix round 3 最终验证
+
+- 完整受影响边界：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "原始日志证据|首次 dispose 进程清理失败后保留资源|重启时复用隔离目录|restart 等待钩子期间 dispose 开始后不得再启动新进程"`
+  - 结果：退出码 0，7/7 通过，总耗时 997 毫秒。
+- 命名 Electron 场景：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "测试夹具直接 spawn 后连接 CDP|默认聊天与设置浮层提示"`
+  - 结果：退出码 0，2/2 通过，总耗时 12.2 秒。
+- `pnpm.cmd test:integration`
+  - 结果：退出码 0，4/4 测试文件、33/33 测试通过，Vitest 报告耗时 4.77 秒。
+- `git diff --name-only -- apps/desktop/src/preload apps/website`
+  - 结果：退出码 0、无输出。
+- `git diff --check`
+  - 结果：退出码 0。
+- 静态差异仅包含夹具与 E2E；生命周期修复为 launch 前单行复检，未扩大实现结构或公开接口。
