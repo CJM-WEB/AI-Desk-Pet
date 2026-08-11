@@ -124,6 +124,7 @@ type ElectronFixtureModule = {
     workspaceRoot: string;
     apiKey: string;
     additionalSecrets?: readonly string[];
+    logSentinels?: readonly string[];
     launchTimeoutMs?: number;
     operationTimeoutMs?: number;
     prepareUserData?(directories: {
@@ -166,6 +167,12 @@ type ElectronFixtureModule = {
     maliciousCharacterPackage?: string;
     characterExportDestination?: string;
     logs: readonly string[];
+    capturedLogEvidence: Readonly<{
+      apiKey: boolean;
+      authorizedRoot: boolean;
+      authorizationHeader: boolean;
+      sentinels: readonly boolean[];
+    }>;
     sendExplorerEvent(
       event: 'layer-error' | 'stale-sequence' | 'non-explorer'
         | 'ambiguous' | 'foreground-explorer' | 'minimized' | 'blurred'
@@ -1315,10 +1322,12 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     const removed: string[] = [];
     const browserCloseCalls: number[] = [];
     const apiKey = runtimeDiagnosticKey();
+    const logSentinel = 'fixture-provider-reply-sentinel';
 
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot,
       apiKey,
+      logSentinels: [logSentinel],
       dependencies: {
         allocateLoopbackPort: async () => 43124,
         createTemporaryDirectories: async () => ({
@@ -1331,6 +1340,7 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
           queueMicrotask(() => {
             fakeProcess.stdout.write(`Authorization: Bearer ${apiKey}\n`);
             fakeProcess.stderr.write(`root=${authorizedRootDirectory}\n`);
+            fakeProcess.stderr.write(`${logSentinel}\n`);
           });
           return fakeProcess;
         },
@@ -1358,6 +1368,13 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(fixture.executablePath).toBe(expectedExecutable);
     expect(fixture.logs.join('\n')).not.toContain(apiKey);
     expect(fixture.logs.join('\n')).not.toContain(authorizedRootDirectory);
+    expect(fixture.logs.join('\n')).not.toContain(logSentinel);
+    expect(fixture.capturedLogEvidence).toEqual({
+      apiKey: true,
+      authorizedRoot: true,
+      authorizationHeader: true,
+      sentinels: [true]
+    });
 
     await fixture.dispose();
 
@@ -2915,7 +2932,7 @@ test.describe('真实 Provider 业务闭环', () => {
       fixture = await fixtureModule.createElectronAppFixture({
         workspaceRoot: resolve(process.cwd()),
         apiKey: provider.apiKey,
-        additionalSecrets: logTextSentinels,
+        logSentinels: logTextSentinels,
         launchTimeoutMs: 15_000
       });
     } catch (error) {
@@ -3052,8 +3069,14 @@ test.describe('真实 Provider 业务闭环', () => {
         'messageRoleCounts', 'method', 'model', 'toolCount'
       ]);
       expect(rendererLeakDetected).toBe(false);
+      expect(fixture.capturedLogEvidence).toEqual({
+        apiKey: false,
+        authorizedRoot: false,
+        authorizationHeader: false,
+        sentinels: logTextSentinels.map(() => false)
+      });
       const captured = [...rendererDiagnostics, ...fixture.logs].join('\n');
-      for (const sensitiveValue of sensitiveValues) {
+      for (const sensitiveValue of [provider.apiKey, fixture.authorizedRootDirectory]) {
         expect(captured).not.toContain(sensitiveValue);
       }
       expect(captured).not.toMatch(/authorization\s*:/iu);

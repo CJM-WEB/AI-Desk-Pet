@@ -82,9 +82,14 @@ export function TransientToastLayer({
   useEffect(() => {
     clearTimer();
     dismissedRef.current = false;
-    pausedRef.current = { focus: false, hover: false };
     remainingRef.current = toast ? durationMs(toast) : 0;
-    if (toast) startTimer();
+    if (toast) {
+      // 原位替换 ID 时 DOM 仍可能处于 hover/focus；保留暂停位并重置新提示时长。
+      startTimer();
+    } else {
+      // 节点移除后清空交互状态，避免后续新节点继承已消失节点的暂停位。
+      pausedRef.current = { focus: false, hover: false };
+    }
 
     return clearTimer;
   }, [toast?.id]);

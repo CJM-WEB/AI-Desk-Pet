@@ -21,7 +21,11 @@ describe('ExplicitFileIntentGate', () => {
     '帮我',
     '不要重命名 report.md 为 archive.md',
     "Don't move a.txt",
-    '请告诉我怎么读取 a.txt'
+    '请告诉我怎么读取 a.txt',
+    '读取 a.txt 是什么意思？',
+    '搜索文件是什么功能？',
+    '把“删除 a.txt”这句话翻译成英文',
+    'read https://example.com/manual.pdf'
   ])('缺少三项证据之一时将“%s”归为普通聊天', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
@@ -60,7 +64,13 @@ describe('ExplicitFileIntentGate', () => {
     'delete permission.txt',
     'delete will.txt',
     '读取 需要.md',
-    'delete docs/permission'
+    'delete docs/permission',
+    '请把 report.md 重命名为 archive.md',
+    '帮我把 report.md 重命名为 archive.md',
+    'Can you delete a.txt?',
+    '列出 .\\drafts',
+    '读取 pyproject.toml',
+    '读取 不要删除.txt'
   ])('明确请求实际操作文件实体时将“%s”归为文件任务', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'file_task' });
   });

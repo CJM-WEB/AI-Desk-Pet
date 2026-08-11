@@ -129,6 +129,97 @@ describe('通用瞬时提示层', () => {
     expect(onDismiss).toHaveBeenCalledExactlyOnceWith('next');
   });
 
+  test('hover 中原位替换 ID 会保持暂停，离开后从新提示完整时长计时', async () => {
+    vi.useFakeTimers({ toFake: ['clearTimeout', 'performance', 'setTimeout'] });
+    const onDismiss = vi.fn();
+    const view = renderToastLayer(
+      [{ id: 'old', tone: 'success', text: '旧提示。' }],
+      onDismiss
+    );
+    const toast = screen.getByRole('status');
+
+    fireEvent.mouseEnter(toast);
+    view.rerender(
+      <TransientToastLayer
+        queue={[{ id: 'next', tone: 'success', text: '新提示。' }]}
+        onDismiss={onDismiss}
+        durationMs={workshopDurationMs}
+        ariaLabel="工作台提示"
+      />
+    );
+    expect(screen.getByRole('status')).toBe(toast);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(onDismiss).not.toHaveBeenCalled();
+
+    fireEvent.mouseLeave(toast);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(onDismiss).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onDismiss).toHaveBeenCalledExactlyOnceWith('next');
+  });
+
+  test('焦点内原位替换 ID 会保持暂停，失焦后恢复新提示计时', async () => {
+    vi.useFakeTimers({ toFake: ['clearTimeout', 'performance', 'setTimeout'] });
+    const onDismiss = vi.fn();
+    const view = renderToastLayer(
+      [{ id: 'old', tone: 'success', text: '旧提示。' }],
+      onDismiss
+    );
+    const toast = screen.getByRole('status');
+    const close = screen.getByRole('button', { name: '关闭工作台提示：旧提示。' });
+
+    fireEvent.focus(close);
+    view.rerender(
+      <TransientToastLayer
+        queue={[{ id: 'next', tone: 'success', text: '新提示。' }]}
+        onDismiss={onDismiss}
+        durationMs={workshopDurationMs}
+        ariaLabel="工作台提示"
+      />
+    );
+    expect(screen.getByRole('status')).toBe(toast);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(onDismiss).not.toHaveBeenCalled();
+
+    fireEvent.blur(close, { relatedTarget: document.body });
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(onDismiss).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onDismiss).toHaveBeenCalledExactlyOnceWith('next');
+  });
+
+  test('提示移除到空队列后清空暂停状态，后续提示正常计时', async () => {
+    vi.useFakeTimers({ toFake: ['clearTimeout', 'performance', 'setTimeout'] });
+    const onDismiss = vi.fn();
+    const view = renderToastLayer(
+      [{ id: 'old', tone: 'success', text: '旧提示。' }],
+      onDismiss
+    );
+
+    fireEvent.mouseEnter(screen.getByRole('status'));
+    view.rerender(
+      <TransientToastLayer
+        queue={[]}
+        onDismiss={onDismiss}
+        durationMs={workshopDurationMs}
+        ariaLabel="工作台提示"
+      />
+    );
+    view.rerender(
+      <TransientToastLayer
+        queue={[{ id: 'next', tone: 'success', text: '新提示。' }]}
+        onDismiss={onDismiss}
+        durationMs={workshopDurationMs}
+        ariaLabel="工作台提示"
+      />
+    );
+
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(onDismiss).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onDismiss).toHaveBeenCalledExactlyOnceWith('next');
+  });
+
   test.each([
     ['hover', (toast: HTMLElement) => fireEvent.mouseEnter(toast), (toast: HTMLElement) => fireEvent.mouseLeave(toast)],
     ['focus', (_toast: HTMLElement, close: HTMLElement) => fireEvent.focus(close), (_toast: HTMLElement, close: HTMLElement) => fireEvent.blur(close, { relatedTarget: document.body })]

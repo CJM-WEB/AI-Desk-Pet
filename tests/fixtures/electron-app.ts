@@ -206,6 +206,12 @@ export interface ElectronAppFixture {
   readonly maliciousCharacterPackage?: string;
   readonly characterExportDestination?: string;
   readonly logs: readonly string[];
+  readonly capturedLogEvidence: Readonly<{
+    apiKey: boolean;
+    authorizedRoot: boolean;
+    authorizationHeader: boolean;
+    sentinels: readonly boolean[];
+  }>;
   sendExplorerEvent(event: MainE2eExplorerEvent): Promise<void>;
   getMainE2eState(): Promise<MainE2eState>;
   getMainDescendantProcesses(): Promise<ElectronDescendantProcess[]>;
@@ -232,6 +238,7 @@ export interface CreateElectronAppFixtureOptions {
   workspaceRoot: string;
   apiKey: string;
   additionalSecrets?: readonly string[];
+  logSentinels?: readonly string[];
   launchTimeoutMs?: number;
   operationTimeoutMs?: number;
   enableSoftwareRasterizer?: boolean;
@@ -911,17 +918,37 @@ export async function createElectronAppFixture(
   let plan: ElectronLaunchPlan | null = null;
   let disposed = false;
   const operationTimeoutMs = options.operationTimeoutMs ?? 5_000;
+  const diagnosticRedactionValues = [
+    ...(options.additionalSecrets ?? []),
+    ...(options.logSentinels ?? [])
+  ];
 
   const capture = (chunk: string | Buffer): void => {
     capturedChunks.push(String(chunk).slice(0, 4_000));
     if (capturedChunks.length > 100) capturedChunks.shift();
   };
 
+  /** 只公开原始捕获流的布尔命中证据，不把诊断正文带出夹具。 */
+  const capturedLogEvidence = (): ElectronAppFixture['capturedLogEvidence'] => {
+    const raw = capturedChunks.join('');
+    return Object.freeze({
+      apiKey: Boolean(options.apiKey && raw.includes(options.apiKey)),
+      authorizedRoot: Boolean(
+        directories.authorizedRootDirectory
+        && raw.includes(directories.authorizedRootDirectory)
+      ),
+      authorizationHeader: /authorization\s*:/iu.test(raw),
+      sentinels: Object.freeze((options.logSentinels ?? []).map(sentinel => (
+        Boolean(sentinel && raw.includes(sentinel))
+      )))
+    });
+  };
+
   /** 对完整聚合文本脱敏后再切段，避免跨 chunk 秘密绕过单段替换。 */
   const sanitizedLogs = (): string[] => {
     const sanitized = redactElectronLog(capturedChunks.join(''), {
       apiKey: options.apiKey,
-      additionalSecrets: options.additionalSecrets,
+      additionalSecrets: diagnosticRedactionValues,
       authorizedRootDirectory: directories.authorizedRootDirectory,
       userDataDirectory: directories.userDataDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
@@ -944,7 +971,7 @@ export async function createElectronAppFixture(
     const rawCause = cause instanceof Error ? cause.message : String(cause ?? '');
     const sanitizedCause = redactElectronLog(rawCause, {
       apiKey: options.apiKey,
-      additionalSecrets: options.additionalSecrets,
+      additionalSecrets: diagnosticRedactionValues,
       authorizedRootDirectory: directories.authorizedRootDirectory,
       userDataDirectory: directories.userDataDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
@@ -1145,6 +1172,9 @@ export async function createElectronAppFixture(
       characterExportDestination: characterFixtures.characterExportDestination,
       get logs() {
         return sanitizedLogs();
+      },
+      get capturedLogEvidence() {
+        return capturedLogEvidence();
       },
       sendExplorerEvent: event => writeMainE2eExplorerEvent(
         directories.userDataDirectory,
