@@ -130,3 +130,28 @@
    ```
 
    结果：2 个文件、165 个测试全部通过。
+
+## 修复轮次 4/5
+
+- 修复实现提交：`dcfeaa9 fix: 拒绝未引用的命令评价尾句`；子智能体审批拒绝后由主控依据用户直接授权提交。
+
+1. RED：新增两个不同命令与问法的中文评价句“运行 git 安全吗？”、“运行 node 合适吗？”，以及英文评价问句“Run git - is that safe?”；同时增加四个引号内疑问参数或中文路径正例。运行：
+
+   ```powershell
+   pnpm.cmd exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts
+   ```
+
+   结果：125 项中 3 项按预期失败，三个未引用评价问句均错误返回 `powershell_task`；引号内的疑问参数与中文路径保持通过。
+
+2. 根因：通用 Shell 载荷正则只约束首 token 为 ASCII 可执行标识或显式相对路径，其后的 `\S+` 参数可接受任意 Unicode 与问句尾部，因此自然语言评价被误当作命令参数。
+
+3. GREEN：仅在 `isShellCommandPayload` 载荷校验接缝增加统一结构化否定：先等长屏蔽成对引号，再将未引用 Unicode 参数或句尾问号视为无法与咨询稳定区分的歧义尾句，保守回落 `chat`。该实现不硬编码整句、不依赖中英文评价词黑名单、不回退到命令白名单；成对引号内的疑问结构与中文路径/参数不参与否定。
+
+4. GREEN 与回归验证：
+
+   - Router 单文件：125 项全部通过。
+   - Router + Coordinator：2 个文件、172 项全部通过。
+   - `pnpm.cmd --filter @myself/desktop typecheck`：通过。
+   - 旧名静态检索：无命中。
+   - `git diff --check`：通过。
+   - `git diff --name-only -- apps/website`：无输出，网站零差异；本轮未执行任何网站命令。
