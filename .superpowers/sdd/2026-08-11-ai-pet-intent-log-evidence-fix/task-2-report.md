@@ -153,3 +153,49 @@
 ### 自审更正
 
 初版报告“自审确认 dispose 后无副作用、两流尾部不拼接”的结论覆盖过强：它只验证了成功 dispose 后的字符串块和同一进程内的 stdout/stderr 隔离，没有覆盖 cleanup 抛错间隙、restart 流 epoch、UTF-8 半码及调用方突变。Fix round 1 用四个独立 RED 补齐这些边界，并用 decoder-reset 变异证明 reset 不仅清字符串尾部，也清未完成字节。修复后公开快照仍只含冻结布尔对象/数组，命中累计仍不可逆，完整原始日志历史仍未进入 tracker 状态。
+
+## Fix round 2/5：dispose 后重启门与旧 listener 隔离
+
+- 修复实现提交：`086045c test: 修复日志证据重启隔离`
+- 报告提交：见最终交付。
+- 本轮只修改 `tests/fixtures/electron-app.ts` 与 `tests/e2e/desktop.spec.ts`；未修改生产 preload、Main 或网站。
+- 按 `receiving-code-review` 对照当前代码核验后，两项 Important 均成立：资源 `disposed` 与证据 tracker 的 sealed 状态不同步；旧 child 的匿名 data listener 在 restart 后仍可调用共享 capture。
+
+### Finding 1：失败 dispose 后禁止 restart
+
+> 首次 dispose 清理失败后 tracker 已永久关闭但 fixture.disposed 仍 false，restart 可启动而 capture 永久静默；补 RED，修为失败 dispose 后不得 restart（或等价保持证据可靠且不破坏二次 dispose 资源清理）。
+
+- 根因：fix round 1 在 dispose 的 finally 中永久封闭 tracker，但 `restart()` 只检查资源是否已完全 `disposed`。首次清理失败时资源标志仍为 `false`，所以 restart 会启动新进程，而 tracker.capture 永久无副作用。
+- RED：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "首次 dispose 进程清理失败后保留资源"`
+  - 结果：退出码 1，1 个测试失败，总耗时约 1.7 秒。
+  - 稳定证据：首次 dispose 拒绝后，`restart()` 实际正常 resolve，预期稳定拒绝 `ELECTRON_FIXTURE_DISPOSED`。
+- GREEN：同一命令。
+  - 结果：退出码 0，1/1 通过，总耗时 887 毫秒。
+- 最小修复：新增独立 `disposeStarted` 生命周期门。首次 dispose 调用立即置位；restart 只要观察到该门就稳定拒绝。dispose 本身仍以资源 `disposed` 判断，因此首次清理失败后的第二次 dispose 仍可重试并完成进程、目录回收。
+
+### Finding 2：旧 child data listener 不得进入新 epoch
+
+> restart 只 resetStreams，旧 child 匿名 data listener/迟到块仍可进入新 epoch；补旧进程在 reset 后迟到发块的 RED，以 epoch token 或解绑 listener 做最小隔离，确保同一 epoch 跨块仍工作。
+
+- 根因：每次 launch 都在 child stdout/stderr 注册匿名 listener，cleanup 没有解绑。resetStreams 只清 tracker 状态；旧 child 在新 launch 后迟到发块仍通过共享 capture 写入新 epoch。
+- RED：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "重启时复用隔离目录"`
+  - 结果：退出码 1，1 个测试失败，总耗时约 1.7 秒。
+  - 布尔证据：旧 child 在 reset 后发送前半、新 child 发送后半，实际快照 `[true,true,true]`，预期 `[true,false,true]`；第三项同时证明新 child 在同一 epoch 的两块仍可正常拼接命中。
+- GREEN：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "首次 dispose 进程清理失败后保留资源|重启时复用隔离目录"`
+  - 结果：退出码 0，2/2 通过，总耗时 971 毫秒。
+- 最小修复：每次 launch 递增 `logStreamEpoch`，stdout/stderr listener 捕获其创建时 epoch；只有与当前 epoch 相等才调用共享 capture。旧 listener 在进入证据跟踪器和诊断缓存之前被丢弃，新 child 的同 epoch 跨块行为保持不变。
+
+### Fix round 2 最终验证
+
+- 受影响边界：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "原始日志证据|首次 dispose 进程清理失败后保留资源|重启时复用隔离目录"`
+  - 结果：退出码 0，6/6 通过，总耗时 943 毫秒。
+- 命名 Electron 场景首次合并运行：直接夹具通过，真实 Provider 场景因设置页在点击期间关闭而失败；失败点不经过本轮夹具生命周期差异。按系统化调试窄化运行真实 Provider 场景，1/1 通过，未修改场景、未增加超时或 sleep。
+- 命名 Electron 场景最终新鲜合并运行：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "测试夹具直接 spawn 后连接 CDP|默认聊天与设置浮层提示"`
+  - 结果：退出码 0，2/2 通过，总耗时 11.8 秒。
+- `pnpm.cmd test:integration`
+  - 结果：退出码 0，4/4 测试文件、33/33 测试通过，Vitest 报告耗时 4.81 秒。
+- `git diff --name-only -- apps/desktop/src/preload apps/website`
+  - 结果：退出码 0、无输出。
+- `git diff --check`
+  - 结果：退出码 0。
+- 静态差异仅为 `tests/fixtures/electron-app.ts` 与 `tests/e2e/desktop.spec.ts`；公开证据快照结构、冻结布尔语义、脱敏缓存上限和生产代码均未改变。
