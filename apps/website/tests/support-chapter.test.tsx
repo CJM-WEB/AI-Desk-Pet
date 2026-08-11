@@ -118,9 +118,35 @@ describe('合并后的反馈与支持模块', () => {
       expect(group.querySelectorAll('[data-depth-index="2"]')).toHaveLength(1);
       expect(group.querySelectorAll('[data-active="true"]')).toHaveLength(1);
       expect(group.querySelector('[data-depth-index="0"]')?.getAttribute('aria-pressed')).toBe('true');
+      expect(group.querySelector('[data-depth-index="0"]')?.getAttribute('data-blur-px')).toBe('0');
+      expect(group.querySelector('[data-depth-index="1"]')?.getAttribute('data-blur-px')).toBe('2.5');
+      expect(group.querySelector('[data-depth-index="2"]')?.getAttribute('data-blur-px')).toBe('5');
     }
+  });
+
+  it('反馈组后层首次点击只切换，清晰层点击才打开反馈业务', () => {
+    render(<SupportChapter interactive repository={createRepository()} />);
+
+    const feedbackGroup = screen.getByRole('group', { name: '选择反馈操作' });
+    fireEvent.click(feedbackGroup.querySelector('[data-depth-index="1"]')!);
+
+    expect(feedbackGroup.getAttribute('data-active-action')).toBe('feedback');
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     fireEvent.click(feedbackGroup.querySelector('[data-depth-index="0"]')!);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('付款组后层首次点击只切换，清晰层点击才打开付款业务', () => {
+    render(<SupportChapter interactive repository={createRepository()} />);
+
+    const paymentGroup = screen.getByRole('group', { name: '选择付款方式' });
+    fireEvent.click(paymentGroup.querySelector('[data-depth-index="1"]')!);
+
+    expect(paymentGroup.getAttribute('data-active-payment')).toBe('alipay');
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(paymentGroup.querySelector('[data-depth-index="0"]')!);
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
