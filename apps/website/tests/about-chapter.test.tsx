@@ -94,6 +94,25 @@ describe('AI Pet 液态玻璃介绍章节', () => {
     );
   });
 
+  it('着色器仅用固定五点采样柔化后层支持按钮', () => {
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('float supportButtonDepthRank(float index)');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('float supportButtonBlurPx(float index)');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('supportBlurStep');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('supportButtonBlurPx(supportIndex)');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('return clamp(depth, 0.0, 2.0) * 2.5;');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
+      'if (supportSourceMask > 0.001 && supportMask > 0.001)'
+    );
+
+    const sampler = LIQUID_GLASS_FRAGMENT_SHADER.match(
+      /vec4 sampleSupportText\(vec2 uv, float blurPx\) \{[\s\S]*?return softened;\s*\}/
+    )?.[0];
+    expect(sampler).toBeDefined();
+    expect(sampler?.match(/texture2D\(u_supportTextTexture/g)).toHaveLength(5);
+    expect(sampler).not.toContain('for (');
+    expect(sampler).toContain('if (blurPx <= 0.001) return sharp;');
+  });
+
   it('减少动态效果时关闭持续浮动', () => {
     render(<AboutChapter interactive reducedMotion />);
     expect(screen.getByTestId('about-chapter').dataset.motionDisabled).toBe('true');

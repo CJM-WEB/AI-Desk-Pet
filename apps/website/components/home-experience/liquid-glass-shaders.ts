@@ -264,6 +264,19 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     return (stackIndex - activeIndex) * 2.0943951;
   }
 
+  /* 相位连续映射为前、中、后三层，稳定位置对应 0、1、2。 */
+  float supportButtonDepthRank(float index) {
+    float phase = supportButtonPhase(index);
+    float frontAmount = clamp((cos(phase) + 0.5) / 1.5, 0.0, 1.0);
+    float backOrder = smoothstep(-0.05, 0.05, sin(phase));
+    return (1.0 - frontAmount) * mix(1.0, 2.0, backOrder);
+  }
+
+  float supportButtonBlurPx(float index) {
+    float depth = supportButtonDepthRank(index);
+    return clamp(depth, 0.0, 2.0) * 2.5;
+  }
+
   float supportButtonScale(float index) {
     float frontAmount = clamp((cos(supportButtonPhase(index)) + 0.5) / 1.5, 0.0, 1.0);
     return mix(0.84, 1.0, frontAmount);
@@ -280,6 +293,40 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     center.y += sin(u_time * 0.68 + index * 1.23)
       * min(u_resolution.x, u_resolution.y) * 0.014 * u_motion * eased;
     return center;
+  }
+
+  /* 仅扩宽最近按钮的玻璃边缘，前层与按钮之外保持清晰。 */
+  float supportButtonEdgeBlur(vec2 pixel) {
+    float nearestSdf = 100000.0;
+    float nearestBlur = 0.0;
+    float radius = min(u_resolution.x, u_resolution.y) * 0.060;
+    for (int index = 0; index < 6; index++) {
+      float supportIndex = float(index);
+      float scale = supportButtonScale(supportIndex);
+      float candidate = roundedBoxSdf(
+        pixel - supportButtonCenter(supportIndex),
+        u_resolution * vec2(0.145, 0.085) * scale,
+        radius * scale
+      );
+      if (candidate < nearestSdf) {
+        nearestSdf = candidate;
+        nearestBlur = supportButtonBlurPx(supportIndex);
+      }
+    }
+    return nearestSdf < 24.0 ? nearestBlur : 0.0;
+  }
+
+  /* 后层文字固定五点采样；前层直接返回单次清晰采样。 */
+  vec4 sampleSupportText(vec2 uv, float blurPx) {
+    vec4 sharp = texture2D(u_supportTextTexture, uv);
+    if (blurPx <= 0.001) return sharp;
+    vec2 supportBlurStep = vec2(blurPx) / u_resolution;
+    vec4 softened = sharp * 0.40;
+    softened += texture2D(u_supportTextTexture, uv + vec2(supportBlurStep.x, 0.0)) * 0.15;
+    softened += texture2D(u_supportTextTexture, uv - vec2(supportBlurStep.x, 0.0)) * 0.15;
+    softened += texture2D(u_supportTextTexture, uv + vec2(0.0, supportBlurStep.y)) * 0.15;
+    softened += texture2D(u_supportTextTexture, uv - vec2(0.0, supportBlurStep.y)) * 0.15;
+    return softened;
   }
 
   /* 中央玻璃连续裂变为左右两组三层按钮，保持与前四模块一致的材质。 */
@@ -407,7 +454,16 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
     vec2 halfSize = center - vec2(u_inset);
     vec2 localPosition = pixel - center;
     float sdf = liquidGlassSdf(pixel);
-    float glassMask = 1.0 - smoothstep(-26.0, 10.0, sdf);
+    float supportEdgeBlur = 0.0;
+    if (u_supportTransition > 0.001) {
+      supportEdgeBlur = supportButtonEdgeBlur(pixel)
+        * smoothstep(0.0, 0.08, u_supportTransition);
+    }
+    float glassMask = 1.0 - smoothstep(
+      -26.0 - supportEdgeBlur,
+      10.0 + supportEdgeBlur,
+      sdf
+    );
     vec2 edgeNormal = normalize(vec2(
       liquidGlassSdf(pixel + vec2(1.5, 0.0)) - liquidGlassSdf(pixel - vec2(1.5, 0.0)),
       liquidGlassSdf(pixel + vec2(0.0, 1.5)) - liquidGlassSdf(pixel - vec2(0.0, 1.5))
@@ -553,7 +609,6 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
       );
       vec2 motion = supportButtonCenter(supportIndex) / u_resolution - base;
       vec2 supportSampleUv = featureUv - motion;
-      vec4 supportFeature = texture2D(u_supportTextTexture, supportSampleUv);
       float supportSourceMask = 1.0 - smoothstep(
         -4.0,
         8.0,
@@ -572,11 +627,17 @@ export const LIQUID_GLASS_FRAGMENT_SHADER = `
           minimumSide * 0.060 * supportButtonScale(supportIndex)
         )
       );
-      color = mix(
-        color,
-        supportFeature.rgb,
-        supportFeature.a * supportSourceMask * supportMask * u_supportTransition
-      );
+      if (supportSourceMask > 0.001 && supportMask > 0.001) {
+        vec4 supportFeature = sampleSupportText(
+          supportSampleUv,
+          supportButtonBlurPx(supportIndex)
+        );
+        color = mix(
+          color,
+          supportFeature.rgb,
+          supportFeature.a * supportSourceMask * supportMask * u_supportTransition
+        );
+      }
     }
 
     /* 英雄字在色调映射后以折射坐标合成，保留原渐变并继续响应水波。 */
