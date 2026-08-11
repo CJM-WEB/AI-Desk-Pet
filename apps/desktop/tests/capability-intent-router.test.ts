@@ -209,6 +209,9 @@ describe('能力意图路由器', () => {
     '运行 PowerShell Get-ChildItem',
     '请运行 Get-ChildItem',
     '执行这条命令 npm test',
+    '执行这条命令 git status',
+    '运行 node build.js',
+    '运行 .\\scripts\\build.ps1',
     '后台运行构建'
   ])('明确请求运行命令时将“%s”归为 PowerShell 任务', text => {
     expectIntentKind(text, 'powershell_task');

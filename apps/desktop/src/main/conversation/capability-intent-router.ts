@@ -60,7 +60,7 @@ const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|wi
 const chineseShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s+|执行\s*(?:(?:这条|以下|下面)?\s*(?:命令|powershell|脚本)\s+))([\s\S]+)$/iu;
 const englishShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+|execute\s+(?:(?:this|the)\s+command\s*:?\s*|powershell\s+))([\s\S]+)$/iu;
 const backgroundShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?后台运行\s*(?:构建|测试|build\b|test\b)$/iu;
-const shellCommandPayloadPattern = /^(?:[a-z][a-z\d]*-[a-z][a-z\d]*(?:\s+\S+)*|(?:npm|pnpm|yarn)\s+(?:run\s+\S+|test|build|start)(?:\s+\S+)*|(?:\.{0,2}[\\/])?[^\s\\/]+\.(?:ps1|cmd|bat)(?:\s+\S+)*)$/iu;
+const shellCommandPayloadPattern = /^(?:[a-z][a-z\d._-]*|\.{1,2}[\\/](?:[a-z\d._-]+[\\/])*[a-z\d._-]+)(?:\s+\S+){0,16}$/iu;
 const embeddedFileContentPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)\s*([\s\S]*)$/iu;
 
 function getHostPart(candidate: string): string {
@@ -351,7 +351,7 @@ function hasExecutionStructure(
   return targetRanges.some(([start]) => !hasSentenceBoundary(text.slice(0, start)));
 }
 
-/** 只有保守命令形态的载荷才能构成 Shell 正向证据。 */
+/** ASCII 可执行标识或显式相对脚本路径加有界参数才构成 Shell 正向证据。 */
 function isShellCommandPayload(payload: string): boolean {
   const withoutShellHost = payload.trim().replace(/^powershell\s+/iu, '');
   return shellCommandPayloadPattern.test(withoutShellHost);
