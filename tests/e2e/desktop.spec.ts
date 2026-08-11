@@ -72,6 +72,20 @@ type ElectronFixtureModule = {
     intervalMs?: number;
     probe?: (endpoint: string) => Promise<boolean>;
   }): Promise<void>;
+  createCapturedLogEvidenceTracker(input: Readonly<{
+    apiKey: string;
+    authorizedRootDirectory: string;
+    sentinels: readonly string[];
+  }>): {
+    capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
+    snapshot(): Readonly<{
+      apiKey: boolean;
+      authorizedRoot: boolean;
+      authorizationHeader: boolean;
+      sentinels: readonly boolean[];
+    }>;
+    dispose(): void;
+  };
   probeWindowsProcess(
     processId: number,
     options?: {
@@ -436,14 +450,17 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
       }
     );
 
-    expect(sanitized).not.toContain(apiKey);
-    expect(sanitized).not.toContain(authorizedRootDirectory);
-    expect(sanitized).not.toContain(userDataDirectory);
-    expect(sanitized).not.toContain(characterAssetsDirectory);
-    expect(sanitized).not.toContain(safeCharacterPackage);
-    expect(sanitized).not.toContain(maliciousCharacterPackage);
-    expect(sanitized).not.toContain(characterExportDestination);
-    expect(sanitized).not.toMatch(/Authorization\s*:/iu);
+    const leakFlags = [
+      apiKey,
+      authorizedRootDirectory,
+      userDataDirectory,
+      characterAssetsDirectory,
+      safeCharacterPackage,
+      maliciousCharacterPackage,
+      characterExportDestination
+    ].map(value => sanitized.includes(value));
+    expect(leakFlags).toEqual([false, false, false, false, false, false, false]);
+    expect(/Authorization\s*:/iu.test(sanitized)).toBe(false);
     expect(sanitized).toContain('[已脱敏]');
   });
 
@@ -509,12 +526,97 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
       caught instanceof Error ? caught.message : '',
       caught instanceof Error ? caught.stack ?? '' : ''
     ].join('\n');
-    expect(observableText).not.toContain(apiKey);
-    expect(observableText).not.toContain(authorizedRootDirectory);
-    expect(observableText).not.toMatch(/Authorization\s*:/iu);
+    expect([
+      observableText.includes(apiKey),
+      observableText.includes(authorizedRootDirectory),
+      /Authorization\s*:/iu.test(observableText)
+    ]).toEqual([false, false, false]);
     expect(observableText).toContain('[已脱敏]');
 
     await fixture.dispose();
+  });
+
+  test('原始日志证据仅在同一流跨块匹配，并识别普通与 JSON Authorization', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
+    if (!fixture?.createCapturedLogEvidenceTracker) return;
+
+    const apiKey = 'tracker-api-key';
+    const authorizedRootDirectory = resolve('C:\\Temp\\tracker-authorized-root');
+    const sameStreamSentinel = 'same-stream-sentinel';
+    const crossStreamSentinel = 'cross-stream-sentinel';
+    const sameStream = fixture.createCapturedLogEvidenceTracker({
+      apiKey,
+      authorizedRootDirectory,
+      sentinels: [sameStreamSentinel]
+    });
+    sameStream.capture('stdout', sameStreamSentinel.slice(0, 8));
+    sameStream.capture('stdout', sameStreamSentinel.slice(8));
+
+    const crossStream = fixture.createCapturedLogEvidenceTracker({
+      apiKey,
+      authorizedRootDirectory,
+      sentinels: [crossStreamSentinel]
+    });
+    crossStream.capture('stdout', crossStreamSentinel.slice(0, 9));
+    crossStream.capture('stderr', crossStreamSentinel.slice(9));
+
+    const textHeader = fixture.createCapturedLogEvidenceTracker({
+      apiKey,
+      authorizedRootDirectory,
+      sentinels: []
+    });
+    textHeader.capture('stdout', `Authorization: Bearer ${apiKey}`);
+    const jsonHeader = fixture.createCapturedLogEvidenceTracker({
+      apiKey,
+      authorizedRootDirectory,
+      sentinels: []
+    });
+    jsonHeader.capture('stderr', `{"authorization":"Bearer ${apiKey}"}`);
+
+    expect([
+      sameStream.snapshot().sentinels[0],
+      crossStream.snapshot().sentinels[0],
+      textHeader.snapshot().authorizationHeader,
+      jsonHeader.snapshot().authorizationHeader
+    ]).toEqual([true, false, true, true]);
+  });
+
+  test('原始日志证据拒绝空哨兵，返回冻结布尔快照且 dispose 后不再变化', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
+    if (!fixture?.createCapturedLogEvidenceTracker) return;
+
+    expect(() => fixture.createCapturedLogEvidenceTracker({
+      apiKey: 'tracker-api-key',
+      authorizedRootDirectory: resolve('C:\\Temp\\tracker-authorized-root'),
+      sentinels: ['']
+    })).toThrow('EMPTY_LOG_SENTINEL');
+
+    const sentinel = 'dispose-sentinel';
+    const tracker = fixture.createCapturedLogEvidenceTracker({
+      apiKey: 'tracker-api-key',
+      authorizedRootDirectory: resolve('C:\\Temp\\tracker-authorized-root'),
+      sentinels: [sentinel]
+    });
+    tracker.capture('stdout', sentinel.slice(0, 7));
+    const beforeDispose = tracker.snapshot();
+    tracker.dispose();
+    tracker.capture('stdout', sentinel.slice(7));
+    tracker.capture('stderr', 'Authorization: Bearer tracker-api-key');
+    const afterDispose = tracker.snapshot();
+
+    expect(afterDispose).toEqual(beforeDispose);
+    expect({
+      snapshot: Object.isFrozen(afterDispose),
+      sentinels: Object.isFrozen(afterDispose.sentinels),
+      booleans: [
+        afterDispose.apiKey,
+        afterDispose.authorizedRoot,
+        afterDispose.authorizationHeader,
+        ...afterDispose.sentinels
+      ].every(value => typeof value === 'boolean')
+    }).toEqual({ snapshot: true, sentinels: true, booleans: true });
   });
 
   test('自然退出宽限期内 child 退出时不启动任何强制清理', async () => {
@@ -1303,7 +1405,7 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(killCalls).toBe(0);
   });
 
-  test('直接 spawn 后连接 CDP，并在释放时按精确 Electron 路径和 PID 清理', async () => {
+  test('测试夹具直接 spawn 后连接 CDP，并在释放时按精确 Electron 路径和 PID 清理', async () => {
     const fixtureModule = await loadElectronFixtureModule();
     expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
     if (!fixtureModule?.createElectronAppFixture) return;
@@ -1340,7 +1442,10 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
           queueMicrotask(() => {
             fakeProcess.stdout.write(`Authorization: Bearer ${apiKey}\n`);
             fakeProcess.stderr.write(`root=${authorizedRootDirectory}\n`);
-            fakeProcess.stderr.write(`${logSentinel}\n`);
+            fakeProcess.stderr.write(`${'x'.repeat(4_100)}${logSentinel}\n`);
+            for (let index = 0; index < 101; index += 1) {
+              fakeProcess.stderr.write(`safe-diagnostic-${index}\n`);
+            }
           });
           return fakeProcess;
         },
@@ -1366,9 +1471,9 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(connectedEndpoints).toEqual(['http://127.0.0.1:43124']);
     expect(fixture.processId).toBe(4242);
     expect(fixture.executablePath).toBe(expectedExecutable);
-    expect(fixture.logs.join('\n')).not.toContain(apiKey);
-    expect(fixture.logs.join('\n')).not.toContain(authorizedRootDirectory);
-    expect(fixture.logs.join('\n')).not.toContain(logSentinel);
+    const publicLogLeakFlags = [apiKey, authorizedRootDirectory, logSentinel]
+      .map(value => fixture.logs.some(log => log.includes(value)));
+    expect(publicLogLeakFlags).toEqual([false, false, false]);
     expect(fixture.capturedLogEvidence).toEqual({
       apiKey: true,
       authorizedRoot: true,
@@ -3076,10 +3181,11 @@ test.describe('真实 Provider 业务闭环', () => {
         sentinels: logTextSentinels.map(() => false)
       });
       const captured = [...rendererDiagnostics, ...fixture.logs].join('\n');
-      for (const sensitiveValue of [provider.apiKey, fixture.authorizedRootDirectory]) {
-        expect(captured).not.toContain(sensitiveValue);
-      }
-      expect(captured).not.toMatch(/authorization\s*:/iu);
+      expect([
+        captured.includes(provider.apiKey),
+        captured.includes(fixture.authorizedRootDirectory),
+        /authorization\s*:/iu.test(captured)
+      ]).toEqual([false, false, false]);
     } finally {
       // 任一 Electron 清理错误都不得跳过 Provider 关闭。
       try {

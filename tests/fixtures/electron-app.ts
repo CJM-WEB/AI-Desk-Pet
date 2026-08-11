@@ -234,6 +234,65 @@ export interface ElectronAppFixture {
   dispose(): Promise<void>;
 }
 
+export interface CapturedLogEvidenceTracker {
+  capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
+  snapshot(): ElectronAppFixture['capturedLogEvidence'];
+  dispose(): void;
+}
+
+/** 仅累计原始日志中的布尔泄漏证据，不保留完整正文。 */
+export function createCapturedLogEvidenceTracker(input: Readonly<{
+  apiKey: string;
+  authorizedRootDirectory: string;
+  sentinels: readonly string[];
+}>): CapturedLogEvidenceTracker {
+  if (input.sentinels.some(sentinel => sentinel.length === 0)) {
+    throw new Error('EMPTY_LOG_SENTINEL');
+  }
+  let apiKey = false;
+  let authorizedRoot = false;
+  let authorizationHeader = false;
+  const sentinels = input.sentinels.map(() => false);
+  const tailLength = Math.max(
+    64,
+    input.apiKey.length - 1,
+    input.authorizedRootDirectory.length - 1,
+    ...input.sentinels.map(value => value.length - 1)
+  );
+  const tails: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' };
+  let disposed = false;
+
+  return {
+    capture(source, chunk) {
+      if (disposed) return;
+      const text = tails[source] + String(chunk);
+      apiKey ||= Boolean(input.apiKey && text.includes(input.apiKey));
+      authorizedRoot ||= Boolean(
+        input.authorizedRootDirectory
+        && text.includes(input.authorizedRootDirectory)
+      );
+      authorizationHeader ||= /["']?authorization["']?\s*:/iu.test(text);
+      input.sentinels.forEach((sentinel, index) => {
+        sentinels[index] ||= Boolean(sentinel && text.includes(sentinel));
+      });
+      tails[source] = text.slice(-tailLength);
+    },
+    snapshot() {
+      return Object.freeze({
+        apiKey,
+        authorizedRoot,
+        authorizationHeader,
+        sentinels: Object.freeze([...sentinels])
+      });
+    },
+    dispose() {
+      tails.stdout = '';
+      tails.stderr = '';
+      disposed = true;
+    }
+  };
+}
+
 export interface CreateElectronAppFixtureOptions {
   workspaceRoot: string;
   apiKey: string;
@@ -913,6 +972,11 @@ export async function createElectronAppFixture(
       );
   await options.prepareUserData?.(directories);
   const capturedChunks: string[] = [];
+  const capturedLogEvidenceTracker = createCapturedLogEvidenceTracker({
+    apiKey: options.apiKey,
+    authorizedRootDirectory: directories.authorizedRootDirectory,
+    sentinels: options.logSentinels ?? []
+  });
   let child: SpawnedElectronProcess | null = null;
   let browser: Pick<Browser, 'close'> | null = null;
   let plan: ElectronLaunchPlan | null = null;
@@ -923,25 +987,10 @@ export async function createElectronAppFixture(
     ...(options.logSentinels ?? [])
   ];
 
-  const capture = (chunk: string | Buffer): void => {
+  const capture = (source: 'stdout' | 'stderr', chunk: string | Buffer): void => {
+    capturedLogEvidenceTracker.capture(source, chunk);
     capturedChunks.push(String(chunk).slice(0, 4_000));
     if (capturedChunks.length > 100) capturedChunks.shift();
-  };
-
-  /** 只公开原始捕获流的布尔命中证据，不把诊断正文带出夹具。 */
-  const capturedLogEvidence = (): ElectronAppFixture['capturedLogEvidence'] => {
-    const raw = capturedChunks.join('');
-    return Object.freeze({
-      apiKey: Boolean(options.apiKey && raw.includes(options.apiKey)),
-      authorizedRoot: Boolean(
-        directories.authorizedRootDirectory
-        && raw.includes(directories.authorizedRootDirectory)
-      ),
-      authorizationHeader: /authorization\s*:/iu.test(raw),
-      sentinels: Object.freeze((options.logSentinels ?? []).map(sentinel => (
-        Boolean(sentinel && raw.includes(sentinel))
-      )))
-    });
   };
 
   /** 对完整聚合文本脱敏后再切段，避免跨 chunk 秘密绕过单段替换。 */
@@ -1080,8 +1129,8 @@ export async function createElectronAppFixture(
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;
     child = nextChild;
-    nextChild.stdout?.on('data', capture);
-    nextChild.stderr?.on('data', capture);
+    nextChild.stdout?.on('data', chunk => capture('stdout', chunk));
+    nextChild.stderr?.on('data', chunk => capture('stderr', chunk));
     try {
       const processFailure = new Promise<never>((_resolveFailure, rejectFailure) => {
         nextChild.once('error', rejectFailure);
@@ -1142,6 +1191,7 @@ export async function createElectronAppFixture(
         cause: cleanupErrors[0]
       });
     }
+    capturedLogEvidenceTracker.dispose();
     disposed = true;
   };
 
@@ -1174,7 +1224,7 @@ export async function createElectronAppFixture(
         return sanitizedLogs();
       },
       get capturedLogEvidence() {
-        return capturedLogEvidence();
+        return capturedLogEvidenceTracker.snapshot();
       },
       sendExplorerEvent: event => writeMainE2eExplorerEvent(
         directories.userDataDirectory,
