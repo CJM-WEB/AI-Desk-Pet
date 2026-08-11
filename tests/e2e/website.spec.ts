@@ -734,6 +734,19 @@ async function readProgress(page: Page): Promise<number> {
   return Number(await page.locator(HOME).getAttribute('data-progress'));
 }
 
+async function readSupportDepths(group: Locator): Promise<Array<{
+  id: string | null;
+  depth: string | null;
+  blur: string | null;
+}>> {
+  return group.locator('button').evaluateAll((buttons) => buttons.map((button) => ({
+    id: button.getAttribute('data-action-id')
+      ?? button.getAttribute('data-payment-id'),
+    depth: button.getAttribute('data-depth-index'),
+    blur: button.getAttribute('data-blur-px')
+  })));
+}
+
 async function countWebglLitSamples(canvas: Locator): Promise<number> {
   return canvas.evaluate((element) => {
     if (!(element instanceof HTMLCanvasElement)) {
@@ -1322,20 +1335,86 @@ test('逐章节交接且快速输入不能跳过相邻章节', async ({ page }) 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('普通鼠标滚轮按真实刻度突发累积并在结束后进入介绍章', async ({ page }) => {
+test('普通鼠标滚轮巨大输入受相邻章限制并进入介绍章', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
   await page.mouse.move(720, 450);
 
-  for (let index = 0; index < 8; index += 1) {
-    await page.mouse.wheel(0, 120);
-    await page.waitForTimeout(70);
-  }
+  await page.mouse.wheel(0, 5_000);
 
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'about'
   );
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('普通滚轮连续追赶、吸附、隔离惯性并重计新手势', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  const experience = page.locator(WEBSITE);
+  await page.mouse.move(720, 450);
+
+  // 前两次只累计 240px；第三次的余量才开始推动连续进度。
+  await page.mouse.wheel(0, 120);
+  await page.mouse.wheel(0, 120);
+  expect(await readProgress(page)).toBe(0);
+  await page.mouse.wheel(0, 120);
+
+  const firstFrame = await readProgress(page);
+  await page.waitForTimeout(32);
+  const followingFrame = await readProgress(page);
+  expect(followingFrame).toBeGreaterThan(firstFrame);
+  expect(followingFrame).toBeLessThan(1);
+
+  // 小余量停止后先吸附回首页；解锁下一次手势后再以巨大输入推进相邻章。
+  await expect.poll(
+    () => readProgress(page),
+    { timeout: 1_500, message: '小余量停止后应吸附回首页' }
+  ).toBe(0);
+  await page.waitForTimeout(950);
+  await page.mouse.wheel(0, 5_000);
+  await expect.poll(
+    () => experience.getAttribute('data-active-chapter'),
+    { timeout: 1_500, message: '滚轮停止后应吸附到介绍章节' }
+  ).toBe('about');
+  await expect.poll(() => readProgress(page)).toBe(1);
+
+  await page.mouse.wheel(0, 600);
+  await page.waitForTimeout(700);
+  await expect(experience).toHaveAttribute('data-active-chapter', 'about');
+  expect(await readProgress(page)).toBe(1);
+
+  // 等待余下 100ms 锁定及最后一次输入的 120ms 静止期结束。
+  await page.waitForTimeout(250);
+  await page.mouse.wheel(0, 120);
+  await page.mouse.wheel(0, 120);
+  expect(await readProgress(page)).toBe(1);
+
+  // 反向后丢弃旧方向累计，重新累计到阈值仍保持整数章节。
+  await page.mouse.wheel(0, -120);
+  await page.mouse.wheel(0, -120);
+  expect(await readProgress(page)).toBe(1);
+  await page.mouse.wheel(0, -120);
+  await expect.poll(
+    () => readProgress(page),
+    { message: '第三次反向滚轮应开始离开稳定章节' }
+  ).toBeLessThan(1);
+
+  await expect.poll(
+    () => readProgress(page),
+    { timeout: 1_500, message: '小幅反向手势应重新吸附到介绍章节' }
+  ).toBe(1);
+  await expect(experience).toHaveAttribute('data-active-chapter', 'about');
+
+  await page.waitForTimeout(950);
+  await page.mouse.wheel(0, 5_000);
+  await expect.poll(
+    () => experience.getAttribute('data-active-chapter'),
+    { timeout: 1_500, message: '巨大输入最多只能推进到相邻下载章节' }
+  ).toBe('download');
+  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '2.0000');
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1479,6 +1558,64 @@ test('下载章节公开安装与常见问题文本，并准确展示 Windows �
   await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
   await expect(download.getByRole('button', { name: '尚未发布' })).toBeDisabled();
   await expect(download).toContainText('v0.1.0-alpha.1');
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('支持页左右按钮组呈现 0/2.5/5 景深且后层按钮先切换再执行业务', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  await enterChapter(page, 'feedback');
+
+  const liquidHome = page.locator(LIQUID_HOME);
+  const feedbackGroup = page.getByRole('group', { name: '选择反馈操作' });
+  const paymentGroup = page.getByRole('group', { name: '选择付款方式' });
+  await expect(liquidHome).toHaveAttribute('data-initialization-failed', 'false');
+  await expect(liquidHome.locator('canvas')).toBeVisible();
+  expect(await readSupportDepths(feedbackGroup)).toEqual([
+    { id: 'suggestion', depth: '0', blur: '0' },
+    { id: 'feedback', depth: '1', blur: '2.5' },
+    { id: 'create', depth: '2', blur: '5' }
+  ]);
+  expect(await readSupportDepths(paymentGroup)).toEqual([
+    { id: 'wechat', depth: '0', blur: '0' },
+    { id: 'alipay', depth: '1', blur: '2.5' },
+    { id: 'paypal', depth: '2', blur: '5' }
+  ]);
+  await page.waitForTimeout(500);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'support-depth-stable-1440.png')
+  });
+
+  const feedbackButton = page.getByRole('button', { name: '查看用户反馈' });
+  await feedbackButton.click();
+  await expect(feedbackGroup).toHaveAttribute('data-active-action', 'feedback');
+  await expect(page.getByRole('dialog', { name: '用户反馈' })).toHaveCount(0);
+  expect(await readSupportDepths(feedbackGroup)).toEqual([
+    { id: 'suggestion', depth: '2', blur: '5' },
+    { id: 'feedback', depth: '0', blur: '0' },
+    { id: 'create', depth: '1', blur: '2.5' }
+  ]);
+  await page.waitForTimeout(210);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'support-depth-transition-1440.png')
+  });
+  await feedbackButton.click();
+  const feedbackDialog = page.getByRole('dialog', { name: '用户反馈' });
+  await expect(feedbackDialog).toBeVisible();
+  await page.getByRole('button', { name: '关闭用户反馈' }).click();
+
+  const alipayButton = page.getByRole('button', { name: '打开支付宝付款码' });
+  await alipayButton.click();
+  await expect(paymentGroup).toHaveAttribute('data-active-payment', 'alipay');
+  await expect(page.getByRole('dialog', { name: '支付宝付款码' })).toHaveCount(0);
+  expect(await readSupportDepths(paymentGroup)).toEqual([
+    { id: 'wechat', depth: '2', blur: '5' },
+    { id: 'alipay', depth: '0', blur: '0' },
+    { id: 'paypal', depth: '1', blur: '2.5' }
+  ]);
+  await alipayButton.click();
+  await expect(page.getByRole('dialog', { name: '支付宝付款码' })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });
 
