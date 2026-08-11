@@ -432,3 +432,61 @@ git diff --check：exit 0
 - 集中修复实现提交：`16a5e94 fix: 绑定文件意图对象并线性扫描`。
 - 集中修复报告提交：见最终交付记录；报告不自指自身提交哈希。
 - Git 审批器已明确禁止本代理重试 Git 写；继续交主控完成实现与报告两笔精确提交。
+
+## 最终修复 round 5/5
+
+### Standards Important 与根因
+
+- **Finding**：中文相邻 `target-operation-target` 校验对每组三槽调用两次 `lastIndexOf`，即使槽位调度已线性化，最坏仍会因反复从前缀回溯而达到 O(n²)。
+- **核验结论**：属实。`hasChineseSourceTargetConnection` 每次分别回溯“把”和“将”，并再次切片检查短句与空白；大量合法形态干扰槽会按窗口数量重复扫描文本前缀。
+- **修复边界**：只调整中文 marker 状态的获取方式，不改变中英文连接语义、公共后缀裁决、候选正则或其他生产模块。
+
+### 可控 RED 与最小 GREEN
+
+测试输入由 `把。a.md 重命名为 b.md。` 重复 `100` 次构成。每组上一句包含 marker，下一句包含相邻源、操作和目标，但不得跨句形成强结构，最终路由应为 `chat`。
+
+测试不设置绝对墙钟阈值，而是监测真实 `String.prototype.lastIndexOf`，仅统计搜索参数为“把/将”的调用：
+
+```powershell
+& .\node_modules\.bin\vitest.cmd run --config apps/desktop/vitest.config.ts apps/desktop/tests/explicit-file-intent-gate.test.ts -t 前向标记状态
+```
+
+RED 输出为 `1` 失败、`99` 跳过；路由保持 `chat`，但 marker 回溯调用预期 `0`、实际 `200`，准确证明每个中文窗口两次前缀回溯。
+
+GREEN 在 operation/target 槽线性合并时同步前向扫描槽间文本：
+
+- 维护当前短句最近“把/将”的位置；
+- 同步维护 marker 后是否仍只有空白；
+- 在每个槽位记录源 marker 的 O(1) 状态快照；
+- 中文连接校验只读取源槽快照，删除两次 `lastIndexOf`、短句切片和 marker 后空白切片。
+
+聚焦 GREEN 为 `1` 通过、`99` 跳过，测试体 `11ms`；完整 Gate 为 `100/100` 通过。中英文 rename/copy/move 正例、讨论反例、跨句对象反例与公共后缀行为均保持不变。
+
+### 六证据变异
+
+每次仅变异一项证据，取得 RED 后立即恢复：
+
+| 证据 | 恒真结果 | 恒假结果 | 代表捕获用例 |
+| --- | --- | --- | --- |
+| 已验证对象范围 | `20` 失败、`80` 通过 | `33` 失败、`67` 通过 | 远程/畸形 token、跨句对象、中文干扰组、全部正例 |
+| 文件操作 | `2` 失败、`98` 通过 | `33` 失败、`67` 通过 | 两条 `frobnicate`、全部正例 |
+| 执行结构 | `3` 失败、`97` 通过 | `33` 失败、`67` 通过 | 元语言、英文跨句与对象借用、全部正例 |
+
+### 最终验证、自审与提交
+
+```text
+Gate + Coordinator：2 files passed；146/146 passed；Duration 2.17s
+desktop typecheck：$ tsc --noEmit；exit 0
+权限字段检索：无匹配；rg exit 1
+website diff：空
+git diff --check：exit 0
+```
+
+- 强结构调度与中文 marker 状态均为前向处理；每个槽位只读取常量时间快照。
+- 成对引用继续在槽位扫描前屏蔽，marker 不会从引用内容泄漏。
+- 所有新增测试名称、结构注释与报告均使用中文。
+- 修改仅涉及 Main Gate、Gate 测试与本报告；未修改网站、Renderer、权限链或 Provider。
+- RED、GREEN、六次变异与最终验证约 `5` 分钟；单点均在 `10` 分钟内收敛。
+- Round 5 实现提交：`daf9734 perf: 线性校验中文文件操作槽`。
+- Round 5 报告提交：见最终交付记录；报告不自指自身提交哈希。
+- Git 审批器已明确禁止本代理重试 Git 写；继续交主控完成实现与报告两笔精确提交。
