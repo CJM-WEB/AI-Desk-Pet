@@ -79,3 +79,77 @@
 - 自审确认命中不可逆、两流尾部不拼接、空哨兵稳定拒绝、dispose 后无副作用、快照对象与数组冻结、公开快照无原始正文。
 - 静态差异只包含 `tests/fixtures/electron-app.ts` 与 `tests/e2e/desktop.spec.ts`；无生产 preload、无网站、无永久生产变异。
 - 各单点命令均未超过 10 分钟；最长单场景约 17.5 秒。
+
+## Fix round 1/5：日志证据生命周期边界
+
+- 修复实现提交：`ef877ff test: 修复日志证据生命周期边界`
+- 报告提交：见最终交付。
+- 本轮仍只修改 `tests/fixtures/electron-app.ts` 与 `tests/e2e/desktop.spec.ts`；没有修改生产 preload、Main、网站或受控生产变异文件。
+
+### Finding 1：cleanup 异常后的 tracker 封闭
+
+> Electron cleanup 抛错时 tracker.dispose 在 throw 之后未执行，第一次失败与第二次 dispose 间迟到日志仍改变证据。补异常清理间隙写日志 RED；确保首次 dispose 调用即在 finally 封闭 tracker/清尾，即使资源清理错误仍抛出。
+
+- 根因：夹具仅在 `cleanupErrors` 检查并抛错之后调用 tracker.dispose；首次清理失败会提前离开 dispose，证据流仍保持开放。
+- RED：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "首次 dispose 进程清理失败后保留资源"`
+  - 结果：退出码 1，1 个测试失败，总耗时约 1.8 秒。
+  - 布尔证据：第一次 dispose 拒绝后、第二次重试前写入迟到日志，`sentinels[0]` 从 `false` 变为 `true`。
+- GREEN：同一命令。
+  - 结果：退出码 0，1/1 通过，总耗时 1.7 秒。
+- 最小修复：用 `try/finally` 包围完整 dispose 清理体；首次调用无论成功或抛出资源清理错误，finally 都封闭 tracker 并清流状态。夹具资源的 `disposed` 仅在清理成功后置位，因此第二次 dispose 仍可重试进程和目录清理。
+
+### Finding 2：restart 流 epoch 隔离
+
+> restart 复用旧 stdout/stderr 尾部，旧进程尾+新进程首块可拼哨兵。布尔累计应跨 restart 保留，但每次 launch 前必须开启新流 epoch 清尾/解码状态。为 tracker 增加测试夹具级 `resetStreams(): void`（或等价明确方法），在 launch 边界调用；补 RED。
+
+- 根因：tracker 的累计布尔和流尾部共用同一生命周期；restart 创建新进程时没有清除旧进程的 stdout/stderr 尾部。
+- 测试接线更正：首次运行因变量被误插入相邻测试而出现 `ReferenceError`，不计有效 RED；修正测试位置后重新运行。
+- RED：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "重启时复用隔离目录"`
+  - 结果：退出码 1，1 个测试失败，总耗时约 1.7 秒。
+  - 布尔证据：已在旧 epoch 完整命中的第一项保持 `true`，但跨旧/新进程拼接的第二项也误命中，实际 `[true,true]`，预期 `[true,false]`。
+- GREEN：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "首次 dispose 进程清理失败后保留资源|重启时复用隔离目录"`
+  - 结果：退出码 0，2/2 通过，总耗时 909 毫秒。
+- 最小修复：为 `CapturedLogEvidenceTracker` 增加 `resetStreams(): void`，只清 stdout/stderr 的流尾和解码状态，不清累计布尔；每次 `launch` 的第一步开启新流 epoch。
+
+### Finding 3：Buffer 的 UTF-8 增量解码
+
+> Buffer UTF-8 字节中间拆分会产生 replacement char 假阴性。每个流使用 Node `StringDecoder('utf8')`，保持 stdout/stderr 独立；reset/dispose 同时重置 decoder；补中文哨兵、授权根或 API key 按字节中间拆分 RED。
+
+- 根因：每个 Buffer 块独立执行 `String(chunk)`；多字节字符在字节中间拆分时，两块都会生成替换字符，后续字符串尾部无法恢复原字符。
+- RED：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "UTF-8 多字节中间拆分 Buffer"`
+  - 结果：退出码 1，1 个测试失败，总耗时约 1.7 秒。
+  - 布尔证据：按字节中间拆分后，中文 API key、授权根和哨兵三项实际均为 `false`，预期均为 `true`。
+- GREEN：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "UTF-8 多字节中间拆分 Buffer|重启时复用隔离目录"`
+  - 结果：退出码 0，2/2 通过，总耗时 924 毫秒。
+- decoder reset 变异 RED：临时移除 reset 中两流 decoder 的重建后，重新运行 UTF-8 测试；退出码 1，跨 reset 的第 4 项由预期 `false` 误变为 `true`，总耗时约 1.7 秒。
+- decoder reset 恢复 GREEN：恢复两流 decoder 重建后，同一测试退出码 0，1/1 通过，总耗时 908 毫秒。
+- 最小修复：stdout 与 stderr 各持有一个 `StringDecoder('utf8')`；Buffer 走增量 `write`，字符串块先结束当前 decoder；resetStreams 与 dispose 同时丢弃两流尾部和未完成字节。
+
+### Finding 4：构造输入快照
+
+> 构造后调用方突变 input/sentinels 会改变槽位和尾长。构造时复制 apiKey、root、`[...sentinels]`；补替换/追加外部数组后快照长度和原目标不变 RED。
+
+- 根因：tracker 的 capture 闭包继续读取调用方传入的 input 和 sentinels 数组；构造后替换字段或修改数组会改变匹配目标及布尔槽位数量。
+- RED：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "构造后不受输入对象与外部哨兵数组突变影响"`
+  - 结果：退出码 1，1 个测试失败，总耗时约 1.8 秒。
+  - 布尔证据：原 API key 与授权根均未命中，外部数组追加还把快照槽位扩为 `[false,false]`；预期固定为原配置的一项 `[true]`。
+- GREEN：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "首次 dispose 进程清理失败后保留资源|重启时复用隔离目录|UTF-8 多字节中间拆分 Buffer|构造后不受输入对象与外部哨兵数组突变影响"`
+  - 结果：退出码 0，4/4 通过，总耗时 914 毫秒。
+- 最小修复：构造期复制 apiKey、授权根和 `[...sentinels]`；空值校验、尾长、槽位初始化和后续 capture 全部只使用内部配置快照。
+
+### Fix round 1 最终验证
+
+- 受影响边界：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "原始日志证据|首次 dispose 进程清理失败后保留资源|重启时复用隔离目录"`
+  - 结果：退出码 0，6/6 通过，总耗时 1.1 秒。
+- 命名 Electron 场景：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "测试夹具直接 spawn 后连接 CDP|默认聊天与设置浮层提示"`
+  - 结果：退出码 0，2/2 通过，总耗时 12.7 秒。
+- `pnpm.cmd test:integration`
+  - 结果：退出码 0，4/4 测试文件、33/33 测试通过，Vitest 报告耗时 4.81 秒。
+- `git diff --name-only -- apps/desktop/src/preload apps/website`
+  - 结果：退出码 0、无输出。
+- `git diff --check`
+  - 结果：退出码 0。
+
+### 自审更正
+
+初版报告“自审确认 dispose 后无副作用、两流尾部不拼接”的结论覆盖过强：它只验证了成功 dispose 后的字符串块和同一进程内的 stdout/stderr 隔离，没有覆盖 cleanup 抛错间隙、restart 流 epoch、UTF-8 半码及调用方突变。Fix round 1 用四个独立 RED 补齐这些边界，并用 decoder-reset 变异证明 reset 不仅清字符串尾部，也清未完成字节。修复后公开快照仍只含冻结布尔对象/数组，命中累计仍不可逆，完整原始日志历史仍未进入 tracker 状态。
