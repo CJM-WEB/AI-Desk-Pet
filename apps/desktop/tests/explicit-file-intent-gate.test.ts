@@ -26,12 +26,20 @@ describe('ExplicitFileIntentGate', () => {
     '搜索文件是什么功能？',
     '把“删除 a.txt”这句话翻译成英文',
     'read https://example.com/manual.pdf',
-    '关于 a.txt 的删除操作'
+    '关于 a.txt 的删除操作',
+    'Can you please frobnicate a.txt?'
   ])('缺少三项证据之一时将“%s”归为普通聊天', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
 
-  test.each(['a.txt', './reports', '当前文件夹', 'README'])('只有文件对象时将“%s”归为普通聊天', text => {
+  test.each([
+    'a.txt',
+    './reports',
+    '当前文件夹',
+    'README',
+    '删除.txt',
+    'read.txt'
+  ])('只有文件对象时将“%s”归为普通聊天', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
 
@@ -97,10 +105,27 @@ describe('ExplicitFileIntentGate', () => {
   test.each([
     'read www.example.com/manual.pdf',
     'read www.example.com',
+    'read example.com',
+    'read example.com/manual.pdf',
+    'read ftp.example.com',
+    'read report.com',
     'delete user@example.com',
     'Can you delete version 1.2?',
-    'read release 2.0.1'
+    'read release 2.0.1',
+    'delete version=1.2'
   ])('非本地点号 token“%s”不进入文件任务', text => {
+    expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
+  });
+
+  test('英文句号隔开的操作与目标不组成文件任务', () => {
+    expect(ExplicitFileIntentGate.classify('Delete nothing. a.txt'))
+      .toEqual({ kind: 'chat' });
+  });
+
+  test.each([
+    'Read the phrase "delete a.txt" aloud',
+    '读取“删除 a.txt”这句话'
+  ])('引号内引用不为“%s”提供文件执行证据', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
 
