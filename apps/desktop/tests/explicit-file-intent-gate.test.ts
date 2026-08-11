@@ -122,9 +122,18 @@ describe('ExplicitFileIntentGate', () => {
   test.each([
     'read ./report.md',
     'read file report.md',
-    'rename report.md to archive.md'
+    'rename report.md to archive.md',
+    'copy report.md to archive.md',
+    'move report.md to archive.md'
   ])('显式本地限定或强文件结构使“%s”进入文件任务', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'file_task' });
+  });
+
+  test.each([
+    'Rename is different from copy when comparing example.com and archive.com',
+    '重命名和复制有什么区别，例如 example.com 和 archive.com'
+  ])('讨论双目标操作“%s”不构成源到目标的文件结构', text => {
+    expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
 
   test('英文句号隔开的操作与目标不组成文件任务', () => {

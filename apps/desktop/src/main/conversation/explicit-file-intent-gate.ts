@@ -130,13 +130,58 @@ function scanTargetRanges(text: string): readonly TextRange[] {
     .filter(([, end]) => !/[\\/]/u.test(text[end] ?? ''));
 }
 
-/** rename/copy/move 只有在同一短句出现至少两个目标槽时才构成强文件结构。 */
+function isWhitespaceGap(text: string, left: TextRange, right: TextRange): boolean {
+  return text.slice(left[1], right[0]).trim().length === 0;
+}
+
+/** 英文强结构只接受“操作 + 源 + 连接词 + 目标”的连续槽位。 */
+function hasEnglishSourceTargetConnection(
+  text: string,
+  operationRange: TextRange,
+  sourceRange: TextRange,
+  targetRange: TextRange
+): boolean {
+  return operationRange[1] <= sourceRange[0]
+    && sourceRange[1] <= targetRange[0]
+    && areInSameSentence(text, operationRange, targetRange)
+    && isWhitespaceGap(text, operationRange, sourceRange)
+    && /^\s+(?:to|as|into)\s+$/u.test(text.slice(sourceRange[1], targetRange[0]));
+}
+
+/** 中文强结构只接受“把/将 + 源 + 操作 + 为/到/至 + 目标”的连续槽位。 */
+function hasChineseSourceTargetConnection(
+  text: string,
+  operationRange: TextRange,
+  sourceRange: TextRange,
+  targetRange: TextRange
+): boolean {
+  if (sourceRange[1] > operationRange[0]
+    || operationRange[1] > targetRange[0]
+    || !areInSameSentence(text, sourceRange, targetRange)
+    || !isWhitespaceGap(text, sourceRange, operationRange)
+    || !/^\s*(?:为|到|至)\s*$/u.test(text.slice(operationRange[1], targetRange[0]))) {
+    return false;
+  }
+  const markerIndex = Math.max(
+    text.lastIndexOf('把', sourceRange[0]),
+    text.lastIndexOf('将', sourceRange[0])
+  );
+  return markerIndex >= 0
+    && !hasSentenceBoundary(text.slice(markerIndex, sourceRange[0]))
+    && text.slice(markerIndex + 1, sourceRange[0]).trim().length === 0;
+}
+
+/** 强文件结构必须存在真实源到目标连接，不能由操作词与两个近邻候选凑成。 */
 function hasStrongFileStructure(text: string, targetRanges: readonly TextRange[]): boolean {
   const operationRanges = Array.from(text.matchAll(strongFileOperationPattern))
     .map(match => [match.index, match.index + match[0].length] as const);
-  return operationRanges.some(operationRange => targetRanges
-    .filter(targetRange => areInSameSentence(text, operationRange, targetRange))
-    .length >= 2);
+  return operationRanges.some(operationRange => targetRanges.some(sourceRange =>
+    targetRanges.some(targetRange => hasEnglishSourceTargetConnection(
+      text,
+      operationRange,
+      sourceRange,
+      targetRange
+    ) || hasChineseSourceTargetConnection(text, operationRange, sourceRange, targetRange))));
 }
 
 /** 对象词法扫描不读取操作证据，只过滤目标槽的本地属性。 */
