@@ -25,7 +25,8 @@ describe('ExplicitFileIntentGate', () => {
     '读取 a.txt 是什么意思？',
     '搜索文件是什么功能？',
     '把“删除 a.txt”这句话翻译成英文',
-    'read https://example.com/manual.pdf'
+    'read https://example.com/manual.pdf',
+    '关于 a.txt 的删除操作'
   ])('缺少三项证据之一时将“%s”归为普通聊天', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
@@ -70,9 +71,37 @@ describe('ExplicitFileIntentGate', () => {
     'Can you delete a.txt?',
     '列出 .\\drafts',
     '读取 pyproject.toml',
-    '读取 不要删除.txt'
+    '读取 不要删除.txt',
+    'read report.v2.txt'
   ])('明确请求实际操作文件实体时将“%s”归为文件任务', text => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'file_task' });
+  });
+
+  test.each([
+    '你能帮我读取 a.txt 吗？',
+    'Can you please delete a.txt?',
+    'Could you read pyproject.toml?',
+    'Would you please list .\\drafts?'
+  ])('礼貌请求实际操作文件实体时将“%s”归为文件任务', text => {
+    expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'file_task' });
+  });
+
+  test.each([
+    '读取 a.txt是什么意思？',
+    '读取 a.txt为什么失败？',
+    'Can you explain why reading a.txt failed?'
+  ])('讨论文件操作而非要求执行时将“%s”归为普通聊天', text => {
+    expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
+  });
+
+  test.each([
+    'read www.example.com/manual.pdf',
+    'read www.example.com',
+    'delete user@example.com',
+    'Can you delete version 1.2?',
+    'read release 2.0.1'
+  ])('非本地点号 token“%s”不进入文件任务', text => {
+    expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
 
   test('归一化 Unicode 与大小写后仍识别明确文件任务', () => {
