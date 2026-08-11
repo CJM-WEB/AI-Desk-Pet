@@ -16,11 +16,31 @@ export const toolArguments = {
   read_text_file: z.object({
     relativePath: relativePathSchema
   }).strict(),
+  search_entries: z.object({
+    relativePath: relativePathSchema.default('.'),
+    name: z.string().min(1).max(255),
+    type: z.enum(['file', 'directory']).optional(),
+    maxDepth: z.number().int().min(1).max(8).default(4),
+    maxResults: z.number().int().min(1).max(200).default(100)
+  }).strict(),
   create_file: z.object({
-    relativePath: relativePathSchema
+    relativePath: relativePathSchema,
+    content: z.string().optional()
   }).strict(),
   create_directory: z.object({
     relativePath: relativePathSchema
+  }).strict(),
+  write_text_file: z.object({
+    relativePath: relativePathSchema,
+    content: z.string()
+  }).strict(),
+  copy_entry: z.object({
+    sourceRelativePath: relativePathSchema,
+    targetRelativePath: relativePathSchema
+  }).strict(),
+  move_entry: z.object({
+    sourceRelativePath: relativePathSchema,
+    targetRelativePath: relativePathSchema
   }).strict(),
   rename_entry: z.object({
     sourceRelativePath: relativePathSchema,
