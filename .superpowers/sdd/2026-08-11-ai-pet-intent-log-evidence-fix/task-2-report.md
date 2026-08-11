@@ -231,3 +231,35 @@
 - `git diff --check`
   - 结果：退出码 0。
 - 静态差异仅包含夹具与 E2E；生命周期修复为 launch 前单行复检，未扩大实现结构或公开接口。
+
+## Fix round 4/5：端口分配 await 后的 dispose 竞态
+
+- 修复实现提交：`e83b00f test: 阻止端口分配后重启桌面夹具`
+- 报告提交：见最终交付。
+- 本轮只修改 `tests/fixtures/electron-app.ts` 与 `tests/e2e/desktop.spec.ts`；未修改生产 preload、Main 或网站。
+
+### Finding：launch 端口分配窗口仍可与 dispose 重叠
+
+> launch 在生命周期检查后 await allocateLoopbackPort，dispose 可在此窗口完成，随后仍 spawn。请用可控 allocator deferred 写 RED；最小在端口分配完成后、同步 spawnProcess 前复检 disposeStarted/disposed（确保之后无 await），不要加锁/改生产。
+
+- 代码核验：fix round 3 在 restart 调用 launch 前复检生命周期，但 launch 进入后先等待 `allocateLoopbackPort()`；端口未决时 dispose 可以完成、永久封闭 tracker 并回收目录。端口返回后到 `spawnProcess` 之前原实现没有第二次检查。
+- RED：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "restart 分配端口期间 dispose 完成后不得再 spawn"`
+  - 结果：退出码 1，1 个测试失败，总耗时约 1.8 秒。
+  - 确定性证据：首次端口分配立即成功；restart 的第二次分配在 deferred gate 暂停。测试在 gate 内完成 dispose 后释放 allocator，restart 实际正常 resolve，预期稳定拒绝 `ELECTRON_FIXTURE_DISPOSED`。
+- GREEN：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "restart 分配端口期间 dispose 完成后不得再 spawn|restart 等待钩子期间 dispose 开始后不得再启动新进程|首次 dispose 进程清理失败后保留资源|重启时复用隔离目录"`
+  - 结果：退出码 0，本项与此前三项合并 4/4 通过，总耗时 925 毫秒。
+- 最小修复：端口分配返回后立即复检 `disposeStarted || disposed`，命中时抛出 `ELECTRON_FIXTURE_DISPOSED`。从该检查到 `spawnProcess` 全部为同步代码，没有新的 await、锁、队列或超时。
+
+### Fix round 4 最终验证
+
+- 完整受影响边界：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "原始日志证据|首次 dispose 进程清理失败后保留资源|重启时复用隔离目录|restart 等待钩子期间 dispose 开始后不得再启动新进程|restart 分配端口期间 dispose 完成后不得再 spawn"`
+  - 结果：退出码 0，8/8 通过，总耗时 999 毫秒。
+- 命名 Electron 场景：`node_modules\.bin\playwright.cmd test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts -g "测试夹具直接 spawn 后连接 CDP|默认聊天与设置浮层提示"`
+  - 结果：退出码 0，2/2 通过，总耗时 12.3 秒。
+- `pnpm.cmd test:integration`
+  - 结果：退出码 0，4/4 测试文件、33/33 测试通过，Vitest 报告耗时 4.79 秒。
+- `git diff --name-only -- apps/desktop/src/preload apps/website`
+  - 结果：退出码 0、无输出。
+- `git diff --check`
+  - 结果：退出码 0。
+- 静态差异仅包含夹具与 E2E；实现只增加端口分配后的单行生命周期复检，未改变公开快照、日志证据判定、生产代码或网站。
