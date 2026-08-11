@@ -155,3 +155,33 @@
    - 旧名静态检索：无命中。
    - `git diff --check`：通过。
    - `git diff --name-only -- apps/website`：无输出，网站零差异；本轮未执行任何网站命令。
+
+## 修复轮次 5/5
+
+- 修复实现提交：`dbe4f59 fix: 识别未引用的命令咨询从句`；子智能体审批拒绝后由主控依据用户直接授权提交。
+
+1. RED：为每一种误分类分别命名生产错误，新增无句尾标点的英文咨询/评价：
+
+   - `Run git - is that safe`：独立破折号后的系词从句；
+   - `Run npm test does this modify files`：无分隔符的助动词从句；
+   - `Run node where does this write files`：疑问词起始从句；
+   - `Run cargo build, would that change outputs`：逗号后的情态助动词从句。
+
+   同时加入不同命令的合法参数正例，覆盖 git、npm、node、cargo、deno 与 python 的选项、子命令和脚本参数。运行：
+
+   ```powershell
+   & '..\\..\\node_modules\\.bin\\vitest.cmd' run --config vitest.config.ts tests/capability-intent-router.test.ts
+   ```
+
+   结果：133 项中 4 项按预期失败，均错误返回 `powershell_task`；6 个合法参数正例保持通过。
+2. 根因：轮次 4 的尾部规则只把未引用 Unicode 或句尾问号视为咨询歧义；通用载荷正则仍会把任意 ASCII 非空 token 当作命令参数，因此没有问号的系词、助动词和疑问词从句会穿透。
+3. GREEN：在 `isShellCommandPayload` 的既有引号屏蔽接缝内增加纯函数判断。成对引号先等长屏蔽，再忽略首个可执行 token，仅扫描未引用参数流；独立的系词、助动词或疑问词在仍有后续内容时构成自然语言从句起点，歧义保守回落 `chat`。规则不包含整句、命令白名单或 `safe` 等评价词，词内片段、选项、路径及引号内自然语言继续作为合法参数。
+4. 变异思考：首轮 GREEN 为 133/133。随后主动加入“`Run deno is stable`”短系词评价和“`Run python what happens next`”疑问词直连实义动词，两项先按预期 RED；将从句接缝收敛为“独立语法起始 token + 至少一个后续 token”后，Router 为 137/137。若删除任一语法类别、恢复至少两个后续 token 或取消引号屏蔽，对应具名反例或引号正例会失败。
+5. GREEN 与回归验证：
+
+   - Router 单文件：137 项全部通过；
+   - Router + Coordinator：2 个文件、184 项全部通过；
+   - `pnpm.cmd --filter @myself/desktop typecheck`：通过；
+   - 旧名静态检索：无命中；
+   - `git diff --check`：通过；
+   - `git diff --name-only -- apps/website`：无输出，网站零差异。
