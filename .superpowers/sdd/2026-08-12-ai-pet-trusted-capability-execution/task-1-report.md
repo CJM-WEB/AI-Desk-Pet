@@ -62,3 +62,27 @@
 - `powershell_task` 只由明确、消息开头的正向执行措辞产生；未实现执行端口时稳定报 `POWERSHELL_TASK_NOT_READY`，不创建聊天 Provider、不触发文件端口、不写历史。
 - `ExplicitBehaviorHint` 在 C1 是无成员的封闭联合，`chat.behaviorHint` 恒为 `null`，不授予能力。
 - 路由证据不含文件路径、命令或正文；三种意图互斥。
+
+## 修复轮次 1/5
+
+- 修复实现提交：`1126240 fix: 封闭命令讨论与文件正文路由`。
+
+1. RED：在 `capability-intent-router.test.ts` 新增“运行 PowerShell 是什么？”和“执行这条命令有什么风险？”后，运行：
+
+   ```powershell
+   & '..\\..\\node_modules\\.bin\\vitest.cmd' run --config vitest.config.ts tests/capability-intent-router.test.ts
+   ```
+
+   结果：111 项中 3 项失败。前两项错误返回 `powershell_task`，证明 Shell 正向证据在知识/风险语义判定前被采纳；“读取 notes.txt，文件正文为：执行这条命令 npm test”错误返回 `file_task`，证明正文封闭只覆盖部分句式。
+
+2. GREEN：先保留现有文件对象脱敏后的知识、否定和风险语义封闭，再判断 Shell；Shell 正则要求明确可执行请求及其载荷。文件正文结构提取正文片段并复用同一完整 Shell 正向证据函数，不使用示例字符串黑名单。
+
+3. GREEN 验证：
+
+   ```powershell
+   & '..\\..\\node_modules\\.bin\\vitest.cmd' run --config vitest.config.ts tests/capability-intent-router.test.ts tests/conversation-coordinator.test.ts
+   ```
+
+   结果：2 个文件、158 个测试全部通过。
+
+4. 同轮最小修改：测试套件标题由英文 `CapabilityIntentRouter` 改为中文“能力意图路由器”。
