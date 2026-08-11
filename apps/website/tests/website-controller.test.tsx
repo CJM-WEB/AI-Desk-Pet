@@ -84,6 +84,25 @@ describe('官网章节控制器', () => {
     expect(Number(state.dataset.progress)).toBeLessThan(0.132);
   });
 
+  it('减少动态效果时达到新手势阈值后直接稳定到相邻章节', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    const requestFrame = installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    requestFrame.mockClear();
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    expect(state.dataset.progress).toBe('0.0000');
+
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+
+    expect(state.dataset.index).toBe('1');
+    expect(state.dataset.progress).toBe('1.0000');
+    expect(requestFrame).not.toHaveBeenCalled();
+  });
+
   it('停止 120ms 后用 380ms 吸附并锁住后续 800ms 惯性', () => {
     vi.useFakeTimers();
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
@@ -126,6 +145,53 @@ describe('官网章节控制器', () => {
     fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
     act(() => { vi.advanceTimersByTime(32); });
     expect(Number(state.dataset.progress)).toBeGreaterThan(1);
+  });
+
+  it('首页越界滚轮不留累计量，反向后仍需重新累计完整阈值', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.wheel(window, { deltaY: -120, deltaMode: 0 });
+    }
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(state.dataset.progress).toBe('0.0000');
+
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(Number(state.dataset.progress)).toBeGreaterThan(0);
+  });
+
+  it('末页越界滚轮不留累计量，反向后仍需重新累计完整阈值', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    for (let index = 0; index < 5; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+      act(() => { vi.advanceTimersByTime(400); });
+    }
+    act(() => { vi.advanceTimersByTime(920); });
+    expect(state.dataset.progress).toBe('5.0000');
+
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    }
+    fireEvent.wheel(window, { deltaY: -120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: -120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(state.dataset.progress).toBe('5.0000');
+
+    fireEvent.wheel(window, { deltaY: -120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(Number(state.dataset.progress)).toBeLessThan(5);
   });
 
   it('首页边界键打断向下滚轮后回到当前章节且稳定边界不启动动画', () => {

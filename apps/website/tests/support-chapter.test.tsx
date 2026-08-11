@@ -124,6 +124,34 @@ describe('合并后的反馈与支持模块', () => {
     }
   });
 
+  it('Tab 顺序只保留两组容器和各自清晰层按钮', () => {
+    const { container } = render(
+      <SupportChapter interactive repository={createRepository()} />
+    );
+    const feedbackGroup = screen.getByRole('group', { name: '选择反馈操作' });
+    const paymentGroup = screen.getByRole('group', { name: '选择付款方式' });
+    const activeFeedback = feedbackGroup.querySelector<HTMLElement>('[data-depth-index="0"]')!;
+    const activePayment = paymentGroup.querySelector<HTMLElement>('[data-depth-index="0"]')!;
+
+    expect(Array.from(container.querySelectorAll<HTMLElement>(
+      'button:not([tabindex="-1"]), [tabindex="0"]'
+    ))).toEqual([
+      feedbackGroup,
+      activeFeedback,
+      paymentGroup,
+      activePayment
+    ]);
+    for (const group of [feedbackGroup, paymentGroup]) {
+      expect(group.querySelectorAll('button[tabindex="-1"]')).toHaveLength(2);
+      expect(group.querySelector('button[data-depth-index="0"]')?.getAttribute('tabindex')).toBe('0');
+    }
+
+    activeFeedback.focus();
+    expect(document.activeElement).toBe(activeFeedback);
+    activePayment.focus();
+    expect(document.activeElement).toBe(activePayment);
+  });
+
   it('反馈组后层首次点击只切换，清晰层点击才打开反馈业务', () => {
     render(<SupportChapter interactive repository={createRepository()} />);
 

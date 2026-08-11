@@ -362,6 +362,7 @@ export function SupportChapter({
               data-depth-index={depthIndex}
               data-blur-px={visual.blurPx}
               disabled={!interactive}
+              tabIndex={interactive && visual.activatable ? 0 : -1}
               style={{
                 '--support-button-offset': `${visual.translateYPercent}%`,
                 '--support-button-scale': visual.scale,
@@ -404,6 +405,7 @@ export function SupportChapter({
               data-depth-index={depthIndex}
               data-blur-px={visual.blurPx}
               disabled={!interactive}
+              tabIndex={interactive && visual.activatable ? 0 : -1}
               style={{
                 '--support-button-offset': `${visual.translateYPercent}%`,
                 '--support-button-scale': visual.scale,

@@ -15,7 +15,6 @@ import {
   reduceIntroPhase
 } from '../components/home-experience/intro-phase-model';
 import {
-  applyWheelChapterInput,
   calculateSwipeDelta,
   isLocalInputElement
 } from '../components/website-experience/use-website-controller';
@@ -88,27 +87,6 @@ describe('官网章节进度模型', () => {
     expect(clampChapterProgress(8, 5)).toBe(4);
     expect(applyChapterDelta(0, 8, 0, 5)).toBe(1);
     expect(applyChapterDelta(2, -8, 2, 5)).toBe(1);
-  });
-
-  it('滚轮输入按配置缩放并限制在稳定章节的相邻范围', () => {
-    expect(applyWheelChapterInput({
-      progress: 0.2,
-      deltaY: 100,
-      settledIndex: 0,
-      chapterCount: 5
-    })).toBeCloseTo(0.31);
-    expect(applyWheelChapterInput({
-      progress: 2,
-      deltaY: 100_000,
-      settledIndex: 2,
-      chapterCount: 5
-    })).toBe(3);
-    expect(applyWheelChapterInput({
-      progress: 2,
-      deltaY: -100_000,
-      settledIndex: 2,
-      chapterCount: 5
-    })).toBe(1);
   });
 
   it('吸附到最近章节并保持硬边界', () => {

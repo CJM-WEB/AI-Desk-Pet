@@ -1374,6 +1374,7 @@ test('普通滚轮连续追赶、吸附、隔离惯性并重计新手势', async
   // 离静止窗口仍有充足余量时保持连续值，跨过窗口后才吸附回整数。
   await page.waitForTimeout(24);
   const beforeIdleBoundary = await readProgress(page);
+  expect(beforeIdleBoundary).toBeGreaterThan(followingFrame);
   expect(beforeIdleBoundary).toBeGreaterThan(0);
   expect(beforeIdleBoundary).toBeLessThan(1);
 

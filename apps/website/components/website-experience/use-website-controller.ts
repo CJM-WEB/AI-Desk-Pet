@@ -54,23 +54,6 @@ export function calculateSwipeDelta(startY: number, currentY: number): -1 | 0 | 
 }
 
 /**
- * 把原始滚轮输入适配为受相邻章节边界约束的进度。
- */
-export function applyWheelChapterInput(input: {
-  progress: number;
-  deltaY: number;
-  settledIndex: number;
-  chapterCount: number;
-}): number {
-  return applyChapterDelta(
-    input.progress,
-    input.deltaY * EXPERIENCE_CONFIG.progress.wheelScale,
-    input.settledIndex,
-    input.chapterCount
-  );
-}
-
-/**
  * 统一管理官网章节输入：滚轮先改变目标，显示进度再逐帧追赶并吸附。
  */
 export function useWebsiteController(
@@ -96,7 +79,6 @@ export function useWebsiteController(
   const pointerFrameRef = useRef<number | null>(null);
   const progressFrameRef = useRef<number | null>(null);
   const lastFrameAtRef = useRef<number | null>(null);
-  const snapTargetRef = useRef<number | null>(null);
   const wheelModeRef = useRef<WheelMode>('resting');
   const wheelGestureRef = useRef<WheelGestureState>({ direction: 0, accumulated: 0 });
   const wheelIdleTimerRef = useRef<number | null>(null);
@@ -191,12 +173,9 @@ export function useWebsiteController(
     );
   }, [armWheelAfterSilence, stopWheelLockTimer]);
 
-  const cancelProgressMotion = useCallback((preserveTransition = false) => {
+  const cancelProgressMotion = useCallback(() => {
     stopProgressFrame();
-    snapTargetRef.current = null;
-    if (!preserveTransition) {
-      setIsChapterTransitioning(false);
-    }
+    setIsChapterTransitioning(false);
   }, [stopProgressFrame]);
 
   const startProgressFollow = useCallback(() => {
@@ -248,7 +227,6 @@ export function useWebsiteController(
     wheelModeRef.current = 'locked';
     const clampedTarget = clampChapterProgress(target, chapterCount);
     targetProgressRef.current = clampedTarget;
-    snapTargetRef.current = clampedTarget;
     setIsChapterTransitioning(
       clampedTarget !== settledIndexRef.current
       || Math.abs(progressRef.current - clampedTarget) > 0.0001
@@ -257,7 +235,6 @@ export function useWebsiteController(
     if (staticFallbackRef.current || prefersReducedMotionRef.current) {
       commitProgress(clampedTarget);
       commitSettledIndex(clampedTarget);
-      snapTargetRef.current = null;
       setIsChapterTransitioning(false);
       startWheelLock();
       return;
@@ -286,7 +263,6 @@ export function useWebsiteController(
       commitProgress(clampedTarget);
       targetProgressRef.current = clampedTarget;
       commitSettledIndex(clampedTarget);
-      snapTargetRef.current = null;
       progressFrameRef.current = null;
       lastFrameAtRef.current = null;
       setIsChapterTransitioning(false);
@@ -402,7 +378,6 @@ export function useWebsiteController(
         lastWheelAtRef.current = null;
         const nearest = snapChapterProgress(targetProgressRef.current, chapterCount);
         targetProgressRef.current = nearest;
-        snapTargetRef.current = null;
         commitProgress(nearest);
         commitSettledIndex(nearest);
         setIsChapterTransitioning(false);
@@ -444,6 +419,19 @@ export function useWebsiteController(
         return;
       }
 
+      const atSettledBoundary = progressRef.current === settledIndexRef.current
+        && targetProgressRef.current === settledIndexRef.current
+        && (
+          (settledIndexRef.current === 0 && delta < 0)
+          || (settledIndexRef.current === chapterCount - 1 && delta > 0)
+        );
+      if (atSettledBoundary) {
+        // 硬边界只吸收越界输入，不让它污染下一次反向手势的累计量。
+        wheelModeRef.current = 'arming';
+        resetWheelGesture();
+        return;
+      }
+
       let releasedDelta = delta;
       if (wheelModeRef.current !== 'tracking') {
         const unlock = accumulateWheelUnlock(
@@ -461,6 +449,12 @@ export function useWebsiteController(
           return;
         }
         wheelModeRef.current = 'tracking';
+      }
+
+      if (prefersReducedMotionRef.current) {
+        // 减少动态效果仍保留新手势阈值，但释放后直接稳定到相邻章节。
+        startSnap(settledIndexRef.current + (releasedDelta > 0 ? 1 : -1));
+        return;
       }
 
       targetProgressRef.current = applyChapterDelta(
@@ -583,7 +577,6 @@ export function useWebsiteController(
       stopProgressFrame();
       stopWheelIdleTimer();
       stopWheelLockTimer();
-      snapTargetRef.current = null;
       lastWheelAtRef.current = null;
       lastFrameAtRef.current = null;
       wheelModeRef.current = 'resting';
