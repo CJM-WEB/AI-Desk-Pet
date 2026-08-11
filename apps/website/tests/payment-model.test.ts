@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PAYMENT_METHODS } from '../components/website-experience/donation/donation-content';
 import {
   paymentCardVisual,
+  paymentDepthIndex,
   paymentRelativeOffset,
   wrapPaymentIndex
 } from '../components/website-experience/donation/payment-model';
@@ -44,5 +45,13 @@ describe('支付方式滚筒', () => {
       scale: 0.88,
       activatable: false
     });
+  });
+  it('按循环前后顺序给三个按钮分配清晰、中层和最深层', () => {
+    expect(paymentDepthIndex(0, 0, 3)).toBe(0);
+    expect(paymentDepthIndex(1, 0, 3)).toBe(1);
+    expect(paymentDepthIndex(2, 0, 3)).toBe(2);
+    expect(paymentCardVisual(0, 0).blurPx).toBe(0);
+    expect(paymentCardVisual(1, 1).blurPx).toBe(2.5);
+    expect(paymentCardVisual(-1, 2).blurPx).toBe(5);
   });
 });

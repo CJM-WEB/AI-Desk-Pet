@@ -96,11 +96,15 @@
   color: transparent;
   cursor: pointer;
   font: 900 clamp(1.45rem, 3.2vw, 4rem)/1 "Arial Black", "Segoe UI", sans-serif;
-  opacity: 1;
+  opacity: var(--support-button-opacity);
+  filter: blur(var(--support-button-blur));
   transform: translate3d(0, calc(-50% + var(--support-button-offset)), 0)
     scale(var(--support-button-scale));
   transform-origin: center;
-  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 420ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
   -webkit-tap-highlight-color: transparent;
 }

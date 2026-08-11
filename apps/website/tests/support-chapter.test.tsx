@@ -106,6 +106,24 @@ describe('合并后的反馈与支持模块', () => {
     expect(paymentGroup.getAttribute('data-active-payment')).toBe('alipay');
   });
 
+  it('左右按钮组共用景深层级，且只有清晰层可执行当前操作', () => {
+    render(<SupportChapter interactive repository={createRepository()} />);
+
+    const feedbackGroup = screen.getByRole('group', { name: '选择反馈操作' });
+    const paymentGroup = screen.getByRole('group', { name: '选择付款方式' });
+
+    for (const group of [feedbackGroup, paymentGroup]) {
+      expect(group.querySelectorAll('[data-depth-index="0"]')).toHaveLength(1);
+      expect(group.querySelectorAll('[data-depth-index="1"]')).toHaveLength(1);
+      expect(group.querySelectorAll('[data-depth-index="2"]')).toHaveLength(1);
+      expect(group.querySelectorAll('[data-active="true"]')).toHaveLength(1);
+      expect(group.querySelector('[data-depth-index="0"]')?.getAttribute('aria-pressed')).toBe('true');
+    }
+
+    fireEvent.click(feedbackGroup.querySelector('[data-depth-index="0"]')!);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
   it('新建投稿直接使用原反馈仓库接口', async () => {
     const repository = createRepository();
     render(<SupportChapter interactive repository={repository} />);

@@ -19,6 +19,7 @@ import { createPaymentMethods, type PaymentMethod } from '../donation/donation-c
 import { QrDialog } from '../donation/QrDialog';
 import {
   paymentCardVisual,
+  paymentDepthIndex,
   paymentRelativeOffset,
   wrapPaymentIndex
 } from '../donation/payment-model';
@@ -344,7 +345,8 @@ export function SupportChapter({
       >
         {feedbackActions.map((action, index) => {
           const offset = paymentRelativeOffset(index, activeFeedbackIndex, feedbackActions.length);
-          const visual = paymentCardVisual(offset);
+          const depthIndex = paymentDepthIndex(index, activeFeedbackIndex, feedbackActions.length);
+          const visual = paymentCardVisual(offset, depthIndex);
           return (
             <button
               key={action.id}
@@ -357,10 +359,14 @@ export function SupportChapter({
               aria-pressed={visual.activatable}
               data-action-id={action.id}
               data-active={visual.activatable}
+              data-depth-index={depthIndex}
+              data-blur-px={visual.blurPx}
               disabled={!interactive}
               style={{
                 '--support-button-offset': `${visual.translateYPercent}%`,
                 '--support-button-scale': visual.scale,
+                '--support-button-opacity': visual.opacity,
+                '--support-button-blur': `${visual.blurPx}px`,
                 zIndex: visual.zIndex
               } as CSSProperties}
               onClick={() => selectFeedbackAction(action, index)}
@@ -384,7 +390,8 @@ export function SupportChapter({
       >
         {paymentMethods.map((method, index) => {
           const offset = paymentRelativeOffset(index, activePaymentIndex, paymentMethods.length);
-          const visual = paymentCardVisual(offset);
+          const depthIndex = paymentDepthIndex(index, activePaymentIndex, paymentMethods.length);
+          const visual = paymentCardVisual(offset, depthIndex);
           return (
             <button
               key={method.id}
@@ -394,10 +401,14 @@ export function SupportChapter({
               aria-pressed={visual.activatable}
               data-payment-id={method.id}
               data-active={visual.activatable}
+              data-depth-index={depthIndex}
+              data-blur-px={visual.blurPx}
               disabled={!interactive}
               style={{
                 '--support-button-offset': `${visual.translateYPercent}%`,
                 '--support-button-scale': visual.scale,
+                '--support-button-opacity': visual.opacity,
+                '--support-button-blur': `${visual.blurPx}px`,
                 zIndex: visual.zIndex
               } as CSSProperties}
               onClick={() => selectPaymentMethod(method, index)}
