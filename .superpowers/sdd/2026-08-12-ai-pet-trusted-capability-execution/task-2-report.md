@@ -52,3 +52,12 @@
 ## 提交
 
 - 实现提交：`77b5f98 fix: 强制文件计划先调用真实工具`；子智能体审批拒绝后由主控依据用户直接授权提交。
+
+## 修复轮次 1：Abort 后迟到修复响应隔离
+
+- 修复实现提交：`0ce385a fix: 隔离中止后的模型迟到响应`；子智能体审批拒绝后由主控依据用户直接授权提交。
+
+1. RED：新增 AgentLoop 延迟 Provider 测试。首次协议违规已触发修复请求后，Abort 并正常兑现合法澄清，旧实现错误公开澄清消息和 `success`（25 项中 1 项失败）。
+2. RED：新增 AgentService 回归测试。取消后正常兑现迟到合法澄清，旧实现公开旧消息和 `success`（41 项中 1 项失败），会话历史保持为空。
+3. GREEN：在 `await provider.respond()` 正常返回后、任何 `response.type` 分支前复检 `signal.aborted`，沿既有 `cancelled` 路径结束，不抛出错误。
+4. GREEN：`pnpm.cmd exec vitest run --config packages/agent-core/vitest.config.ts packages/agent-core/tests/agent-loop.test.ts` 为 25/25；`pnpm.cmd exec vitest run --config apps/desktop/vitest.config.ts apps/desktop/tests/agent-service.test.ts` 为 41/41。
