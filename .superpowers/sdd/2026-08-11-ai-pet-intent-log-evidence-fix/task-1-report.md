@@ -219,3 +219,79 @@ git diff --check：exit 0
 - 本轮用时约 `10` 分钟；每个单一切片均在 `10` 分钟内收敛。
 - Fix round 1 实现提交：`83c699e fix: 修正文件意图词法边界`。
 - Fix round 1 报告提交：见最终交付记录。
+
+## 用户安全裁决与审查修复 round 2/5
+
+### 用户裁决
+
+1. 所有有效公共后缀裸名称默认 `chat`，包括 `example.museum` 与 `report.md`；只有 `./`、`.\\`、明确“文件/文件夹/目录”限定或 rename/copy/move 源目标强结构，才能把这类歧义名称作为本地对象。
+2. `tldts@7.4.9` 可复用当前已安装的公共后缀数据，但必须作为 `apps/desktop` 直接依赖并最小更新 lockfile，不能依赖未声明的传递依赖。
+3. 英文词内撇号不是引号；真正成对单引号仍屏蔽引用内容。
+4. 未知礼貌动词必须绑定真实操作槽，不能借用句尾出现的其他操作词。
+5. 对候选大正则只做必要的最小性能收敛，以适度长畸形 token 的行为测试保护，不使用脆弱墙钟阈值。
+
+### 依赖理由
+
+手工维护网络 TLD 集合无法完整、及时覆盖公共后缀，例如 `.museum` 与国家/地区后缀 `.md`。本轮采用已锁定版本 `tldts@7.4.9` 的公共后缀数据作为远程歧义判定权威，并在 desktop 的 `dependencies` 中直接声明，保证生产 Main 代码不依赖偶然存在的传递包。
+
+### Fix round 2 垂直 TDD 记录
+
+除特别注明的单例筛选外，各切片均使用根 Vitest：
+
+```powershell
+& .\node_modules\.bin\vitest.cmd run --config apps/desktop/vitest.config.ts apps/desktop/tests/explicit-file-intent-gate.test.ts
+```
+
+1. **公共后缀裸名称与本地强结构**
+   - RED：新增 `read example.museum`、`read report.md` 两个聊天反例，以及 `read ./report.md`、`read file report.md`、`rename report.md to archive.md` 三个文件任务正例；结果 `2` 失败、`86` 通过，两个公共后缀裸名称均被错误提升。
+   - 依赖安装：主控执行 `pnpm install --frozen-lockfile`，耗时 `35.6s`、退出码 `0`；根 Vitest 与 `apps/desktop/node_modules/tldts` 均存在。
+   - 实现：desktop 直接声明 `tldts@7.4.9`，lockfile importer 同步锁定；公共后缀裸名称默认聊天，显式相对路径、文件限定词或 rename/copy/move 双目标结构可消除歧义。
+   - 边界纠正：首次回归暴露五个旧正例与新规则冲突。`notes.md`、`README.MD`、`需要.md` 按裸公共后缀裁决迁为聊天；主控随后明确 `docs/guide`、`docs/permission` 的 `/` 多段结构本身是强本地结构，二者立即恢复为文件任务。实现以“路径首段无点号”区分本地多段路径与 `example.com/manual.pdf`，最终完整 Gate 回归通过。
+2. **英文词内撇号**
+   - RED：单例命令追加 `-t 撇号`；`1` 失败、`89` 跳过，`Can you read Bob's a.txt because it's ready?` 被误判为聊天。
+   - GREEN：单引号扫描跳过两侧均为字母或数字的词内撇号，并在寻找真正闭合引号时同样跳过缩写撇号；真正的 `Read the phrase 'delete a.txt' aloud` 继续为聊天。完整 Gate 为 `90/90` 通过。
+3. **礼貌请求操作槽绑定**
+   - RED：单例命令追加 `-t 未知礼貌动词`；`1` 失败、`90` 跳过，`Can you please frobnicate a.txt while we discuss delete` 被错误提升为文件任务。
+   - GREEN：礼貌壳捕获紧随请求前缀的真实动词槽，操作证据只接受与该槽完全重合的已知操作；执行结构仍独立描述“礼貌壳 + 目标”。完整 Gate 为 `91/91` 通过。
+4. **适度长畸形 token**
+   - RED：单例命令追加 `-t 畸形`；`1` 失败、`91` 跳过，`segment/` 重复 `128` 次的尾部分隔符 token 被候选正则截取前缀后误判为文件任务。
+   - GREEN：目标范围拒绝“匹配结尾后仍紧邻 `/` 或 `\\`”的不完整候选，不增加墙钟断言，也不扩大候选大正则；完整 Gate 为 `92/92` 通过。
+
+### Fix round 2 三证据恒真/恒假变异
+
+每次只修改最终合取中的一个证据，执行 Gate `92` 项测试，取得 RED 后立即恢复：
+
+| 证据 | 恒真结果 | 恒假结果 | 代表捕获用例 |
+| --- | --- | --- | --- |
+| 合法本地对象 | `15` 失败、`77` 通过 | `31` 失败、`61` 通过 | 公共后缀、URL、邮箱、版本；全部文件任务正例 |
+| 文件操作 | `2` 失败、`90` 通过 | `31` 失败、`61` 通过 | 两条 `frobnicate`；全部文件任务正例 |
+| 执行结构 | `2` 失败、`90` 通过 | `31` 失败、`61` 通过 | 元语言与跨句目标；全部文件任务正例 |
+
+六次变异均有效，证明对象、操作和执行结构三项证据仍能独立改变路由结果。恢复后重新执行 Gate 与 Coordinator：
+
+```text
+Test Files  2 passed (2)
+Tests       138 passed (138)
+Duration    1.45s
+```
+
+### Fix round 2 类型、依赖与静态验证
+
+- `pnpm.cmd --filter @myself/desktop typecheck` 首次发现 `tldts.parse(...).isIcann` 为 `boolean | null`；以 `=== true` 明确收敛为布尔值后，重跑输出 `$ tsc --noEmit`、退出码 `0`。
+- `rg -n -F tldts apps/desktop/package.json pnpm-lock.yaml` 显示 desktop 直接依赖与 importer 均为 `7.4.9`，并复用已锁定的 `tldts-core@7.4.9`。
+- 权限字段检索无匹配，`rg` 退出码 `1`；没有把 Provider、能力或授权根逻辑放入意图门。
+- `git diff --name-only -- apps/website` 输出为空；未启动、构建或测试网站。
+- `git diff --check` 退出码 `0`。
+- 变更文件仅为 Gate、Gate 测试、desktop 依赖清单、lockfile 与本报告；未修改 Renderer、权限链或 Provider。
+
+### Fix round 2 自审、耗时与提交
+
+- `ExplicitFileIntentGate.classify` 公共接口与冻结返回对象未变；歧义仍默认聊天。
+- 公共后缀依据来自 PSL，不是文件扩展名白名单；实现未加入测试字符串黑名单。
+- `docs/guide` 等无点号首段的多段路径保持本地，`example.com/manual.pdf` 等域名路径保持远程。
+- 成对引号继续统一屏蔽对象、操作和执行结构证据，词内撇号只影响引号边界识别。
+- 礼貌壳中的操作槽与句尾讨论词分离，三证据变异仍全部有效。
+- 安装约 `0.6` 分钟，四个垂直切片、变异、类型与最终验证约 `9` 分钟；每个单点均在 `10` 分钟内收敛。
+- Fix round 2 实现提交：`fec7ed5 fix: 明确裸域名与本地文件边界`。
+- Fix round 2 报告提交：见最终交付记录；报告不自指自身提交哈希。
+- 本代理尝试按批准约定提交时，审批器以“未从可信用户消息识别 Git 写授权”为由拒绝；未绕过审批，已交主控完成两笔精确提交。
