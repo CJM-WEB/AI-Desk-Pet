@@ -1335,17 +1335,20 @@ test('逐章节交接且快速输入不能跳过相邻章节', async ({ page }) 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('普通鼠标滚轮巨大输入受相邻章限制并进入介绍章', async ({ page }) => {
+test('普通鼠标以 120px 连续滚动多档后进入相邻介绍章', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
   await page.mouse.move(720, 450);
 
-  await page.mouse.wheel(0, 5_000);
+  for (let index = 0; index < 8; index += 1) {
+    await page.mouse.wheel(0, 120);
+  }
 
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'about'
-  );
+  await expect.poll(
+    () => page.locator(WEBSITE).getAttribute('data-active-chapter'),
+    { timeout: 1_500, message: '普通 120px 连续滚轮应吸附到相邻介绍章节' }
+  ).toBe('about');
+  await expect.poll(() => readProgress(page)).toBe(1);
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1367,6 +1370,12 @@ test('普通滚轮连续追赶、吸附、隔离惯性并重计新手势', async
   const followingFrame = await readProgress(page);
   expect(followingFrame).toBeGreaterThan(firstFrame);
   expect(followingFrame).toBeLessThan(1);
+
+  // 离静止窗口仍有充足余量时保持连续值，跨过窗口后才吸附回整数。
+  await page.waitForTimeout(24);
+  const beforeIdleBoundary = await readProgress(page);
+  expect(beforeIdleBoundary).toBeGreaterThan(0);
+  expect(beforeIdleBoundary).toBeLessThan(1);
 
   // 小余量停止后先吸附回首页；解锁下一次手势后再以巨大输入推进相邻章。
   await expect.poll(
