@@ -13,6 +13,10 @@ type LocalObjectScan = Readonly<{
 }>;
 
 type TextRange = readonly [start: number, end: number];
+type StructureSlot = Readonly<{
+  kind: 'operation' | 'target';
+  range: TextRange;
+}>;
 
 const localObjectCandidatePattern = /(?:[a-z][a-z\d+.-]*:\/\/[^\s“”"'（）()<>，,。！？!?；;]+|\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|(?:[^\s“”"'（）()<>\\/，,。！？!?；;]+[\\/])+[^\s“”"'（）()<>\\/，,。！？!?；;]+|[^\s“”"'（）()<>\\/，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件夹|文件|目录)|授权目录|文件夹|文件|目录)/giu;
 const emailPattern = /^[^@\s]+@[^@\s]+\.[a-z\d-]+$/iu;
@@ -126,8 +130,14 @@ function maskQuotedText(text: string): string {
 function scanTargetRanges(text: string): readonly TextRange[] {
   return Array.from(text.matchAll(localObjectCandidatePattern))
     .map(match => [match.index, match.index + match[0].length] as const)
-    // 正则不得截取以路径分隔符结尾的畸形 token 前缀充当完整目标。
-    .filter(([, end]) => !/[\\/]/u.test(text[end] ?? ''));
+    // 正则不得截取路径或邮箱形态的畸形 token 前缀充当完整目标。
+    .filter(([, end]) => {
+      const nextCharacter = text[end];
+      return !/[\\/@]/u.test(nextCharacter ?? '')
+        && (nextCharacter !== '.'
+          || text[end + 1] === undefined
+          || /\s/u.test(text[end + 1] ?? ''));
+    });
 }
 
 function isWhitespaceGap(text: string, left: TextRange, right: TextRange): boolean {
@@ -175,13 +185,40 @@ function hasChineseSourceTargetConnection(
 function hasStrongFileStructure(text: string, targetRanges: readonly TextRange[]): boolean {
   const operationRanges = Array.from(text.matchAll(strongFileOperationPattern))
     .map(match => [match.index, match.index + match[0].length] as const);
-  return operationRanges.some(operationRange => targetRanges.some(sourceRange =>
-    targetRanges.some(targetRange => hasEnglishSourceTargetConnection(
-      text,
-      operationRange,
-      sourceRange,
-      targetRange
-    ) || hasChineseSourceTargetConnection(text, operationRange, sourceRange, targetRange))));
+  const orderedSlots: StructureSlot[] = [];
+  let operationIndex = 0;
+  let targetIndex = 0;
+  while (operationIndex < operationRanges.length || targetIndex < targetRanges.length) {
+    const operationRange = operationRanges[operationIndex];
+    const targetRange = targetRanges[targetIndex];
+    if (operationRange !== undefined
+      && (targetRange === undefined || operationRange[0] < targetRange[0])) {
+      orderedSlots.push({ kind: 'operation', range: operationRange });
+      operationIndex += 1;
+    } else if (targetRange !== undefined) {
+      orderedSlots.push({ kind: 'target', range: targetRange });
+      targetIndex += 1;
+    }
+  }
+
+  // 只检查文本顺序中相邻的三槽，避免操作、源、目标的全组合。
+  for (let index = 0; index + 2 < orderedSlots.length; index += 1) {
+    const first = orderedSlots[index];
+    const second = orderedSlots[index + 1];
+    const third = orderedSlots[index + 2];
+    if (first === undefined || second === undefined || third === undefined) {
+      continue;
+    }
+    if (first.kind === 'operation' && second.kind === 'target' && third.kind === 'target'
+      && hasEnglishSourceTargetConnection(text, first.range, second.range, third.range)) {
+      return true;
+    }
+    if (first.kind === 'target' && second.kind === 'operation' && third.kind === 'target'
+      && hasChineseSourceTargetConnection(text, second.range, first.range, third.range)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** 对象词法扫描不读取操作证据，只过滤目标槽的本地属性。 */
@@ -279,7 +316,7 @@ export class ExplicitFileIntentGate {
     const hasFileOperation = requestedOperationRanges.length > 0;
     const hasDirectExecutionRequest = hasExecutionStructure(
       unquotedText,
-      targetRanges,
+      objectRanges,
       operationRanges
     );
     return localObjectScan.hasLocalObject && hasFileOperation && hasDirectExecutionRequest

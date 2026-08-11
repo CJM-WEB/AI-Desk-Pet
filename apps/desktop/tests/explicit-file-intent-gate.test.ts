@@ -136,8 +136,18 @@ describe('ExplicitFileIntentGate', () => {
     expect(ExplicitFileIntentGate.classify(text)).toEqual({ kind: 'chat' });
   });
 
+  test('有界多候选讨论不因双目标全组合阻塞 Main', () => {
+    const boundedInput = `${'rename '.repeat(240)}${'a.md '.repeat(400)}`;
+    expect(ExplicitFileIntentGate.classify(boundedInput)).toEqual({ kind: 'chat' });
+  });
+
   test('英文句号隔开的操作与目标不组成文件任务', () => {
     expect(ExplicitFileIntentGate.classify('Delete nothing. a.txt'))
+      .toEqual({ kind: 'chat' });
+  });
+
+  test('前句远程对象的执行结构不能借用后句本地对象', () => {
+    expect(ExplicitFileIntentGate.classify('read example.com. a.txt'))
       .toEqual({ kind: 'chat' });
   });
 
@@ -162,6 +172,12 @@ describe('ExplicitFileIntentGate', () => {
 
   test('适度长且以分隔符结尾的畸形 token 保持普通聊天', () => {
     const malformedToken = 'segment/'.repeat(128);
+    expect(ExplicitFileIntentGate.classify(`read ${malformedToken}`))
+      .toEqual({ kind: 'chat' });
+  });
+
+  test('有界重复点段不得截取畸形 token 前缀作为本地对象', () => {
+    const malformedToken = `${'a.'.repeat(512)}@`;
     expect(ExplicitFileIntentGate.classify(`read ${malformedToken}`))
       .toEqual({ kind: 'chat' });
   });
