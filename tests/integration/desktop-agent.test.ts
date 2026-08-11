@@ -147,7 +147,9 @@ function expectProviderExchange(
       method: 'POST',
       model: 'task-9a-model'
     });
-    expect(requestLog.toolCount).toBeGreaterThanOrEqual(0);
+    expect(Object.keys(requestLog).sort()).toEqual([
+      'messageRoleCounts', 'method', 'model', 'toolCount'
+    ]);
     expect(Object.values(requestLog.messageRoleCounts).reduce((sum, count) => sum + count, 0))
       .toBeGreaterThan(0);
   }

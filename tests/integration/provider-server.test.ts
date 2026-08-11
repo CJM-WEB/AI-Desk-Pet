@@ -1,8 +1,35 @@
+import { request as httpRequest } from 'node:http';
 import { describe, expect, test, vi } from 'vitest';
 import {
   createProviderResponseGate,
   startProviderServer
 } from '../fixtures/provider-server';
+
+/** 保持正文流未结束，证明边界响应不依赖正文读取完成。 */
+function requestStatusBeforeBodyEnds(
+  url: string,
+  options: { method: string; authorization: string }
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(url, {
+      method: options.method,
+      headers: {
+        authorization: options.authorization,
+        'content-type': 'application/json'
+      }
+    }, response => {
+      const status = response.statusCode ?? 0;
+      response.resume();
+      request.end();
+      response.once('end', () => resolve(status));
+    });
+    request.once('error', reject);
+    request.setTimeout(1_000, () => {
+      request.destroy(new Error('Provider 未在正文结束前响应'));
+    });
+    request.write('{"model":"未结束正文"');
+  });
+}
 
 describe('脚本化 Provider 生命周期', () => {
   test('请求摘要只保留方法、模型、角色计数与工具计数', async () => {
@@ -46,6 +73,65 @@ describe('脚本化 Provider 生命周期', () => {
       expect(JSON.stringify(provider.requests)).not.toMatch(
         /私密|authorization|pathname|toolNames|messageRoles|private-call/iu
       );
+    } finally {
+      await provider.close();
+    }
+  });
+
+  test('方法、端点或授权在正文结束前被即时拒绝且不写入请求摘要', async () => {
+    const provider = await startProviderServer([
+      { response: { type: 'text', text: '不应消费' } }
+    ]);
+    try {
+      const wrongMethod = await requestStatusBeforeBodyEnds(
+        `${provider.baseUrl}/chat/completions`,
+        { method: 'PUT', authorization: `Bearer ${provider.apiKey}` }
+      );
+      const wrongEndpoint = await requestStatusBeforeBodyEnds(
+        `${provider.baseUrl}/wrong-endpoint`,
+        { method: 'POST', authorization: `Bearer ${provider.apiKey}` }
+      );
+      const wrongAuthorization = await requestStatusBeforeBodyEnds(
+        `${provider.baseUrl}/chat/completions`,
+        { method: 'POST', authorization: 'Bearer wrong-key' }
+      );
+
+      expect(wrongMethod).toBe(405);
+      expect(wrongEndpoint).toBe(404);
+      expect(wrongAuthorization).toBe(401);
+      expect(provider.requests).toEqual([]);
+      expect(provider.remainingSteps()).toBe(1);
+    } finally {
+      await provider.close();
+    }
+  });
+
+  test('inspect 失败只记录稳定错误而不持久化正文', async () => {
+    const privateText = '私密检查正文';
+    const provider = await startProviderServer([{
+      response: { type: 'text', text: '已收到' },
+      inspect: () => {
+        throw new Error(privateText);
+      }
+    }]);
+
+    try {
+      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${provider.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'inspection-model',
+          messages: [{ role: 'user', content: privateText }],
+          tools: []
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(provider.inspectionErrors).toEqual(['脚本化 Provider 请求检查失败']);
+      expect(JSON.stringify(provider.inspectionErrors)).not.toContain(privateText);
     } finally {
       await provider.close();
     }

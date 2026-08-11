@@ -2856,6 +2856,16 @@ test.describe('真实 Provider 业务闭环', () => {
       '可以，我们先把目标和优先级理清。',
       '可以先确认范围并使用可恢复的回收站操作。'
     ] as const;
+    const connectionReplies = ['第一次连接正常', '第二次连接正常'] as const;
+    const fileRequest = '列出当前文件夹';
+    const fileReply = '当前文件夹包含 docs 目录。';
+    const logTextSentinels = [
+      ...chatInputs,
+      ...chatReplies,
+      ...connectionReplies,
+      fileRequest,
+      fileReply
+    ];
     const chatSteps: ProviderStep[] = chatReplies.map((reply, index) => ({
       response: { type: 'text', text: reply },
       inspect: request => {
@@ -2869,8 +2879,8 @@ test.describe('真实 Provider 业务闭环', () => {
       }
     }));
     const provider = await startProviderServer([
-      { response: { type: 'text', text: '第一次连接正常' } },
-      { response: { type: 'text', text: '第二次连接正常' } },
+      { response: { type: 'text', text: connectionReplies[0] } },
+      { response: { type: 'text', text: connectionReplies[1] } },
       ...chatSteps,
       {
         response: toolResponse(
@@ -2880,7 +2890,7 @@ test.describe('真实 Provider 业务闭环', () => {
         )
       },
       {
-        response: { type: 'text', text: '当前文件夹包含 docs 目录。' },
+        response: { type: 'text', text: fileReply },
         inspect: request => {
           const result = lastToolResult(request) as {
             toolName?: string;
@@ -2900,14 +2910,26 @@ test.describe('真实 Provider 业务闭环', () => {
       await provider.close();
       return;
     }
-    const fixture = await fixtureModule.createElectronAppFixture({
-      workspaceRoot: resolve(process.cwd()),
-      apiKey: provider.apiKey,
-      launchTimeoutMs: 15_000
-    });
+    let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+    try {
+      fixture = await fixtureModule.createElectronAppFixture({
+        workspaceRoot: resolve(process.cwd()),
+        apiKey: provider.apiKey,
+        additionalSecrets: logTextSentinels,
+        launchTimeoutMs: 15_000
+      });
+    } catch (error) {
+      // Electron 创建失败时也必须关闭已启动的本地 Provider。
+      await provider.close();
+      throw error;
+    }
     const rendererDiagnostics: string[] = [];
     let rendererLeakDetected = false;
-    const sensitiveValues = [provider.apiKey, fixture.authorizedRootDirectory];
+    const sensitiveValues = [
+      provider.apiKey,
+      fixture.authorizedRootDirectory,
+      ...logTextSentinels
+    ];
     const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
     const pageFor = (view: 'pet' | 'chat' | 'settings'): Page | undefined => pages().find(page => {
       try {
@@ -2999,7 +3021,7 @@ test.describe('真实 Provider 业务闭环', () => {
       )).toHaveCount(0);
       await expect(chat.getByRole('button', { name: '打开设置' })).toHaveCount(0);
 
-      await submitChatMessage(chat, '列出当前文件夹');
+      await submitChatMessage(chat, fileRequest);
       await expect(chat.getByRole('button', { name: '打开设置' })).toBeVisible();
       expect(provider.requests).toHaveLength(7);
       await chat.getByRole('button', { name: '打开设置' }).click();
@@ -3015,8 +3037,8 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(settings.getByText('authorized-root', { exact: true })).toBeVisible();
       await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
 
-      await submitChatMessage(chat, '列出当前文件夹');
-      await expect(chat.getByText('当前文件夹包含 docs 目录。', { exact: true })).toBeVisible();
+      await submitChatMessage(chat, fileRequest);
+      await expect(chat.getByText(fileReply, { exact: true })).toBeVisible();
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         historyDisclosureVisible: false,
         fileConfirmationVisible: false
@@ -3031,12 +3053,17 @@ test.describe('真实 Provider 业务闭环', () => {
       ]);
       expect(rendererLeakDetected).toBe(false);
       const captured = [...rendererDiagnostics, ...fixture.logs].join('\n');
-      expect(captured).not.toContain(provider.apiKey);
-      expect(captured).not.toContain(fixture.authorizedRootDirectory);
+      for (const sensitiveValue of sensitiveValues) {
+        expect(captured).not.toContain(sensitiveValue);
+      }
       expect(captured).not.toMatch(/authorization\s*:/iu);
     } finally {
-      await fixture.dispose();
-      await provider.close();
+      // 任一 Electron 清理错误都不得跳过 Provider 关闭。
+      try {
+        await fixture.dispose();
+      } finally {
+        await provider.close();
+      }
     }
   });
 

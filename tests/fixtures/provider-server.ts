@@ -79,6 +79,23 @@ export async function startProviderServer(
     }
   };
   const server = createServer(async (request, response) => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (request.method !== 'POST') {
+      response.writeHead(405, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: '请求方法无效' } }));
+      return;
+    }
+    if (url.pathname !== '/v1/chat/completions') {
+      response.writeHead(404, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: '请求端点无效' } }));
+      return;
+    }
+    if (request.headers.authorization !== `Bearer ${apiKey}`) {
+      response.writeHead(401, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: '请求授权无效' } }));
+      return;
+    }
+
     const chunks: Buffer[] = [];
     for await (const chunk of request) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -120,9 +137,8 @@ export async function startProviderServer(
     if (step.inspect) {
       try {
         step.inspect(parsed);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '未知错误';
-        inspectionErrors.push(`脚本化 Provider 请求检查失败：${message}`);
+      } catch {
+        inspectionErrors.push('脚本化 Provider 请求检查失败');
       }
     }
     if (step.gate) await step.gate.waitForRelease();
