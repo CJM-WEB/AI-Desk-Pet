@@ -108,3 +108,25 @@
    ```
 
    结果：2 个文件、162 个测试全部通过。
+
+## 修复轮次 3/5
+
+- 修复实现提交：`17c65f4 fix: 支持通用显式命令载荷`。
+
+1. RED：新增通用原生命令、解释器脚本和多段 Windows 相对脚本路径正例：“执行这条命令 git status”、“运行 node build.js”和“运行 `.\\scripts\\build.ps1`”。运行：
+
+   ```powershell
+   & '..\\..\\node_modules\\.bin\\vitest.cmd' run --config vitest.config.ts tests/capability-intent-router.test.ts
+   ```
+
+   结果：118 项中 3 项失败，三项均错误返回 `chat`；说明轮次 2 的载荷规则错误排除了普通原生命令与多段相对路径。
+
+2. GREEN：载荷改为通用结构：首 token 必须是 ASCII 可执行标识，或以 `./`、`.\\`、`../`、`..\\` 开头的相对路径；其后最多接受 16 个非空参数。盘符、UNC、设备路径和 Unicode 自然词不符合此词法，仍保守归为 `chat`。Router 仅分类，路径授权留待后续 AST/PathPolicy。
+
+3. GREEN 验证：
+
+   ```powershell
+   & '..\\..\\node_modules\\.bin\\vitest.cmd' run --config vitest.config.ts tests/capability-intent-router.test.ts tests/conversation-coordinator.test.ts
+   ```
+
+   结果：2 个文件、165 个测试全部通过。
