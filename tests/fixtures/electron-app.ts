@@ -1003,6 +1003,8 @@ export async function createElectronAppFixture(
   let browser: Pick<Browser, 'close'> | null = null;
   let plan: ElectronLaunchPlan | null = null;
   let disposed = false;
+  let disposeStarted = false;
+  let logStreamEpoch = 0;
   const operationTimeoutMs = options.operationTimeoutMs ?? 5_000;
   const diagnosticRedactionValues = [
     ...(options.additionalSecrets ?? []),
@@ -1137,6 +1139,7 @@ export async function createElectronAppFixture(
   };
 
   const launch = async (): Promise<void> => {
+    const currentLogStreamEpoch = ++logStreamEpoch;
     capturedLogEvidenceTracker.resetStreams();
     const cdpPort = await dependencies.allocateLoopbackPort();
     const nextPlan = createElectronLaunchPlan({
@@ -1152,8 +1155,12 @@ export async function createElectronAppFixture(
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;
     child = nextChild;
-    nextChild.stdout?.on('data', chunk => capture('stdout', chunk));
-    nextChild.stderr?.on('data', chunk => capture('stderr', chunk));
+    nextChild.stdout?.on('data', chunk => {
+      if (currentLogStreamEpoch === logStreamEpoch) capture('stdout', chunk);
+    });
+    nextChild.stderr?.on('data', chunk => {
+      if (currentLogStreamEpoch === logStreamEpoch) capture('stderr', chunk);
+    });
     try {
       const processFailure = new Promise<never>((_resolveFailure, rejectFailure) => {
         nextChild.once('error', rejectFailure);
@@ -1184,6 +1191,7 @@ export async function createElectronAppFixture(
 
   const dispose = async (): Promise<void> => {
     if (disposed) return;
+    disposeStarted = true;
     try {
       const cleanupErrors: Error[] = [];
       try {
@@ -1401,7 +1409,7 @@ export async function createElectronAppFixture(
         return probe as Awaited<ReturnType<ElectronAppFixture['getConversationProbe']>>;
       },
       async restart() {
-        if (disposed) throw new Error('ELECTRON_FIXTURE_DISPOSED');
+        if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
         await cleanupCurrentProcess();
         await options.beforeRestart?.(directories);
         try {
