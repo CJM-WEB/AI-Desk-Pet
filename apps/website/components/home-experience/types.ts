@@ -52,8 +52,13 @@ export interface ExperienceConfig {
   };
   progress: {
     wheelScale: number;
-    keyboardStep: number;
-    snapThreshold: number;
+    wheelIdleMs: number;
+    wheelLockMs: number;
+    wheelUnlockDelta: number;
+    snapDurationMs: number;
+    followTimeConstantMs: number;
+    maxFrameDeltaMs: number;
+    settleEpsilon: number;
   };
   swarm: {
     spawnIntervalMs: readonly [number, number];
