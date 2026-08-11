@@ -7,7 +7,7 @@ import type {
 import type { ConversationDisclosureAdapter } from './conversation-disclosure-adapter';
 import type { ConversationHistory } from './conversation-history';
 import type { ConversationChatAdapter } from './conversation-chat-adapter';
-import { ExplicitFileIntentGate } from './explicit-file-intent-gate';
+import { capabilityIntentRouter } from './capability-intent-router';
 
 const 最大用户消息字符数 = 4_000;
 
@@ -141,8 +141,12 @@ export class ConversationCoordinator {
       this.options.emit({ type: 'phase', phase: 'thinking' });
       if (!this.isRunning(context)) return;
 
-      // Main Gate 是唯一分流权威；文件请求在创建聊天 Provider 前直接进入既有文件链。
-      if (ExplicitFileIntentGate.classify(normalized).kind === 'file_task') {
+      // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
+      const intent = capabilityIntentRouter.route(normalized);
+      if (intent.kind === 'powershell_task') {
+        throw publicErrorForCode('POWERSHELL_TASK_NOT_READY');
+      }
+      if (intent.kind === 'file_task') {
         this.state = {
           kind: 'preparing_file_task',
           generation: context.generation,
@@ -646,6 +650,7 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     FILE_TASK_PLAYBACK_CANCELLED: '搬运动画未完成，文件未被移动。',
     FILE_TASK_PLAYBACK_TIMEOUT: '等待搬运动画超时，文件未被移动。',
     FILE_TASK_EXECUTION_FAILED: '文件操作执行失败。',
+    POWERSHELL_TASK_NOT_READY: 'PowerShell 任务暂未就绪。',
     PROVIDER_AUTHENTICATION_FAILED: '模型服务身份认证失败，请检查 API Key。',
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',
     PROVIDER_RATE_LIMITED: '模型服务当前繁忙，请稍后重试。',

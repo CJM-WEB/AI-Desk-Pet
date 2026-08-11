@@ -1,11 +1,32 @@
 import { parse } from 'tldts';
 
-export type ConversationRoute =
-  | Readonly<{ kind: 'chat' }>
-  | Readonly<{ kind: 'file_task' }>;
+/** C1 不授予行为权限；后续阶段只能显式扩展这个封闭联合。 */
+export type ExplicitBehaviorHint = never;
 
-const chatRoute: ConversationRoute = Object.freeze({ kind: 'chat' });
-const fileTaskRoute: ConversationRoute = Object.freeze({ kind: 'file_task' });
+/** 文件分流只暴露已验证的正向意图，不携带路径或正文。 */
+export type ExplicitFileEvidence = Readonly<{ kind: 'explicit_file_operation' }>;
+
+/** Shell 分流只暴露已验证的正向意图，不携带命令正文。 */
+export type ExplicitShellEvidence = Readonly<{ kind: 'explicit_shell_execution' }>;
+
+export type CapabilityIntent =
+  | Readonly<{ kind: 'chat'; behaviorHint: ExplicitBehaviorHint | null }>
+  | Readonly<{ kind: 'file_task'; evidence: ExplicitFileEvidence }>
+  | Readonly<{ kind: 'powershell_task'; evidence: ExplicitShellEvidence }>;
+
+export interface CapabilityIntentRouter {
+  route(prompt: string): CapabilityIntent;
+}
+
+const chatIntent: CapabilityIntent = Object.freeze({ kind: 'chat', behaviorHint: null });
+const fileTaskIntent: CapabilityIntent = Object.freeze({
+  kind: 'file_task',
+  evidence: Object.freeze({ kind: 'explicit_file_operation' })
+});
+const powershellTaskIntent: CapabilityIntent = Object.freeze({
+  kind: 'powershell_task',
+  evidence: Object.freeze({ kind: 'explicit_shell_execution' })
+});
 
 type LocalObjectScan = Readonly<{
   hasLocalObject: boolean;
@@ -36,6 +57,9 @@ const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:plea
 const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|什么意思|是什么(?:意思|功能)?|翻译|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b)/iu;
 const negationPattern = /(?:不要|别|无需|do\s+not|don't)/iu;
 const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
+const chineseShellExecutionPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s*(?:powershell\b|命令|脚本)|执行\s*(?:这条|以下|下面)?\s*(?:powershell\b|命令|脚本)|后台运行\s*(?:构建|测试|build\b|test\b))/iu;
+const englishShellExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+(?:powershell\b|this\s+command\b|the\s+command\b)|execute\s+(?:this\s+command\b|the\s+command\b)|run\s+(?:build\b|test\b)\s+in\s+the\s+background)/iu;
+const embeddedShellCommandPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)?\s*(?:运行\s*)?(?:powershell\b|命令\b|脚本\b)/iu;
 
 function getHostPart(candidate: string): string {
   const pathSeparatorIndex = candidate.search(/[\\/]/u);
@@ -325,13 +349,21 @@ function hasExecutionStructure(
   return targetRanges.some(([start]) => !hasSentenceBoundary(text.slice(0, start)));
 }
 
-export class ExplicitFileIntentGate {
+/** 只有用户消息开头的明确执行措辞才能进入 Shell 能力分支。 */
+function hasExplicitShellExecution(normalizedText: string): boolean {
+  return chineseShellExecutionPattern.test(normalizedText)
+    || englishShellExecutionPattern.test(normalizedText);
+}
+
+export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
   /**
    * 只有文件对象、文件操作和直接执行请求三项独立证据同时成立才允许进入文件链路，
    * 使不完整、陈述讨论或否定性表达始终停留在默认聊天，避免意外提升文件权限。
    */
-  static classify(text: string): ConversationRoute {
-    const normalizedText = text.normalize('NFKC').trim().toLocaleLowerCase();
+  route(prompt: string): CapabilityIntent {
+    const normalizedText = prompt.normalize('NFKC').trim().toLocaleLowerCase();
+    if (hasExplicitShellExecution(normalizedText)) return powershellTaskIntent;
+    if (embeddedShellCommandPattern.test(normalizedText)) return chatIntent;
     const unquotedText = maskQuotedText(normalizedText);
     const targetRanges = scanTargetRanges(unquotedText);
     const objectRanges = scanLocalObjectRanges(unquotedText, targetRanges);
@@ -340,7 +372,7 @@ export class ExplicitFileIntentGate {
       || knowledgePattern.test(localObjectScan.semanticText)
       || negationPattern.test(localObjectScan.semanticText)
       || statementPattern.test(localObjectScan.semanticText)) {
-      return chatRoute;
+      return chatIntent;
     }
 
     const operationRanges = scanFileOperationRanges(localObjectScan.semanticText);
@@ -355,7 +387,10 @@ export class ExplicitFileIntentGate {
       operationRanges
     );
     return localObjectScan.hasLocalObject && hasFileOperation && hasDirectExecutionRequest
-      ? fileTaskRoute
-      : chatRoute;
+      ? fileTaskIntent
+      : chatIntent;
   }
 }
+
+/** 对话协调器共享的唯一能力意图分流入口。 */
+export const capabilityIntentRouter: CapabilityIntentRouter = new DefaultCapabilityIntentRouter();

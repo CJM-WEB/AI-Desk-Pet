@@ -253,6 +253,24 @@ describe('ConversationCoordinator', () => {
     }
   );
 
+  test('明确 PowerShell 请求稳定终止且不降级聊天、不执行文件任务和不写历史', async () => {
+    const harness = createHarness([]);
+
+    await expect(harness.coordinator.submit('执行这条命令 npm test')).rejects.toSatisfy(
+      error => errorCode(error) === 'POWERSHELL_TASK_NOT_READY'
+    );
+
+    expect(harness.factoryCallCount()).toBe(0);
+    expect(harness.fileTasks.preparedGenerations).toEqual([]);
+    expect(harness.fileTasks.submissions).toEqual([]);
+    expect(harness.history.turns()).toEqual([]);
+    expect(harness.events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'POWERSHELL_TASK_NOT_READY'
+    }));
+    expect(phases(harness.events)).not.toContain('success');
+  });
+
   test('文件目标准备期间取消会释放文件 owner，并允许下一次文件请求立即进入准备', async () => {
     const fileTasks = new CapturingFileTasks();
     const barrier = deferredVoid();
