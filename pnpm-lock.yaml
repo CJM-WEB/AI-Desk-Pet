@@ -53,6 +53,9 @@ importers:
       react-dom:
         specifier: ^19.2.7
         version: 19.2.7(react@19.2.7)
+      tldts:
+        specifier: 7.4.9
+        version: 7.4.9
       yauzl:
         specifier: 3.4.0
         version: 3.4.0
