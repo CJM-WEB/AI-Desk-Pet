@@ -123,6 +123,12 @@ export class AgentLoop {
         throw error;
       }
 
+      // Provider 可能在 Abort 后正常兑现迟到响应，处理前必须再次隔离旧任务。
+      if (context.signal.aborted) {
+        yield { type: 'phase', phase: 'cancelled' };
+        return;
+      }
+
       if (response.type === 'text') {
         if (context.protocol === 'file_planner' && !hasTrustedToolResult) {
           const clarification = parseFilePlannerClarification(response.text);

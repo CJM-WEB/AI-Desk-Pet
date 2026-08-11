@@ -38,6 +38,24 @@ class ScriptedProvider implements ModelProvider {
   }
 }
 
+class RepairDeferredProvider implements ModelProvider {
+  readonly requests: ModelRequest[] = [];
+  private readonly responses: Array<(response: ModelResponse) => void> = [];
+
+  respond(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(structuredClone(request));
+    return new Promise(resolve => {
+      this.responses.push(resolve);
+    });
+  }
+
+  resolve(index: number, response: ModelResponse): void {
+    const resolve = this.responses[index];
+    if (!resolve) throw new Error('缺少待完成的模型响应');
+    resolve(response);
+  }
+}
+
 async function collectEvents(context: RunContext): Promise<AgentEvent[]> {
   return collect(new AgentLoop().run('请处理文件', context));
 }
@@ -350,6 +368,30 @@ describe('AgentLoop', () => {
       { type: 'phase', phase: 'thinking' },
       { type: 'message', text: '请提供目标文件名' },
       { type: 'phase', phase: 'success' }
+    ]);
+  });
+
+  test('文件规划在修复请求等待期间中止后忽略迟到合法澄清', async () => {
+    const controller = new AbortController();
+    const provider = new RepairDeferredProvider();
+    const runContext = {
+      ...context(provider, controller.signal),
+      protocol: 'file_planner' as const
+    };
+    const running = collectEvents(runContext);
+    await vi.waitFor(() => expect(provider.requests).toHaveLength(1));
+
+    provider.resolve(0, { type: 'text', text: '文件已经创建完成' });
+    await vi.waitFor(() => expect(provider.requests).toHaveLength(2));
+    controller.abort();
+    provider.resolve(1, {
+      type: 'text',
+      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+    });
+
+    await expect(running).resolves.toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'phase', phase: 'cancelled' }
     ]);
   });
 

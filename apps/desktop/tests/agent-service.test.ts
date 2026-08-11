@@ -254,6 +254,28 @@ describe('AgentService', () => {
     expect(session.messages).toEqual([]);
   });
 
+  test('取消后迟到的合法协议修复响应不公开消息也不写入会话历史', async () => {
+    const provider = new RepairDeferredProvider();
+    const { events, service, session } = createHarness(provider);
+    const submitting = service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
+    await vi.waitFor(() => expect(provider.requests).toHaveLength(1));
+
+    provider.resolve(0, { type: 'text', text: '文件已经创建完成' });
+    await vi.waitFor(() => expect(provider.requests).toHaveLength(2));
+    service.cancelActive();
+    provider.resolve(1, {
+      type: 'text',
+      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+    });
+    await submitting;
+
+    expect(events).toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'phase', phase: 'cancelled' }
+    ]);
+    expect(session.messages).toEqual([]);
+  });
+
   test('文件任务只发布 Agent 结果，并按系统消息、可见历史、当前用户消息的顺序请求模型', async () => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',
