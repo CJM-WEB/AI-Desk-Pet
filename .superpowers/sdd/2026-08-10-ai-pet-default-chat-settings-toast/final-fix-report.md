@@ -6,8 +6,7 @@
 - 实施时段：2026-08-11 20:39–21:09（Asia/Shanghai），约 30 分钟；后续验证与审批收口持续至 21:10 后。
 - 基线：`3ae4a763bb6d9b890ab2c027caa78d0ec9cda79c`
 - 分支：`AgentCoreExtension`
-- 提交哈希：未生成。平台拒绝了已请求的精确 `git add`/`git commit` 审批，按要求未绕过、未重试；全部修改仍在工作树中，待主控提交。
-- 建议提交主题：`fix: 收敛默认聊天最终审查问题`
+- 最终修复提交：`b08a9da fix: 收敛默认聊天最终审查问题`。
 
 ## 根因与最小修复
 
@@ -65,6 +64,20 @@
 | website | `git diff --name-only -- apps/website` 为空；未修改、构建、启动或测试 website；未运行根 `pnpm typecheck` |
 | 进程残留 | 最终只读扫描未发现本 worktree 相关 `electron.exe` 或 `node.exe` |
 
+## 第二轮文件意图与日志证据复审
+
+### Task 1：文件意图门
+
+- 实现与修复提交：`66a99ef`、`83c699e`、`fec7ed5`、`f4fbc37`；对应报告提交：`0d97331`、`1708853`、`11ab75a`、`c46d06e`。
+- 三轮限定复审后结论为 clean，`0` 项 Critical/Important 开放。
+- 保留 `1` 项性能 Minor：候选点号正则仍有理论最坏形态的超线性扫描疑点；现有适度长畸形 token 行为测试已通过，该项不阻断本轮交付。
+
+### Task 2：原始日志证据
+
+- 实现与修复提交：`6cca547`、`ef877ff`、`086045c`、`fff4932`、`e83b00f`；对应报告提交：`6700dc3`、`38997cd`、`85a49ac`、`116b133`、`6e8507f`。
+- 四轮限定复审后结论为 APPROVED，`0` 项 Critical/Important 开放。
+- 修复覆盖 cleanup 异常、restart 流 epoch、UTF-8 半码、构造输入快照，以及 restart/dispose 的两个确定性竞态；公开证据仍只包含冻结布尔结果。
+
 ## 修改文件
 
 1. `apps/desktop/src/main/conversation/explicit-file-intent-gate.ts`
@@ -84,4 +97,4 @@
 - 日志证据只暴露布尔命中，不新增生产 preload 测试接口，不把原始正文写入本报告。
 - 变异文件最终零 diff；工作树只包含上述目标文件与本报告。
 - 单个问题没有在无收敛状态下持续超过 10 分钟；完整门按主控要求拆成有界执行。`verify:behavior` 相同负载超时重复两次后停止，不修改无关测试超时。
-- 唯一疑虑：原始 `verify:behavior` 未取得 GREEN；平台同时拒绝 Git 写入审批，因此尚无提交。
+- 历史疑虑：本报告所记录的原始 `verify:behavior` 当时未取得 GREEN；该事实按原始执行结果保留，不改写为通过。

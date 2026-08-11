@@ -3206,23 +3206,31 @@ test.describe('真实 Provider 业务闭环', () => {
       '聊天呀',
       '我想和你聊天',
       '帮我整理一下',
-      '如何更安全地删除文件'
+      '如何更安全地删除文件',
+      'read example.com',
+      'Can you delete version 1.2?',
+      '读取 a.txt是什么意思？'
     ] as const;
     const chatReplies = [
       '你好！很高兴见到你。',
       '当然可以，我们随便聊聊。',
       "## 一起聊天\n\n- 我会认真听\n\n```ts\nconst topic = '陪伴';\n```",
       '可以，我们先把目标和优先级理清。',
-      '可以先确认范围并使用可恢复的回收站操作。'
+      '可以先确认范围并使用可恢复的回收站操作。',
+      '这是一个裸域名示例。',
+      '版本号本身不是本地文件。',
+      '这句话是在询问读取操作的含义。'
     ] as const;
     const connectionReplies = ['第一次连接正常', '第二次连接正常'] as const;
-    const fileRequest = '列出当前文件夹';
+    const fileRequestBeforeAuthorization = '你能帮我列出当前文件夹吗？';
+    const fileRequestAfterAuthorization = 'Could you please list .\\docs?';
     const fileReply = '当前文件夹包含 docs 目录。';
     const logTextSentinels = [
       ...chatInputs,
       ...chatReplies,
       ...connectionReplies,
-      fileRequest,
+      fileRequestBeforeAuthorization,
+      fileRequestAfterAuthorization,
       fileReply
     ];
     const chatSteps: ProviderStep[] = chatReplies.map((reply, index) => ({
@@ -3380,9 +3388,9 @@ test.describe('真实 Provider 业务闭环', () => {
       )).toHaveCount(0);
       await expect(chat.getByRole('button', { name: '打开设置' })).toHaveCount(0);
 
-      await submitChatMessage(chat, fileRequest);
+      await submitChatMessage(chat, fileRequestBeforeAuthorization);
       await expect(chat.getByRole('button', { name: '打开设置' })).toBeVisible();
-      expect(provider.requests).toHaveLength(7);
+      expect(provider.requests).toHaveLength(10);
       await chat.getByRole('button', { name: '打开设置' }).click();
       await expect.poll(() => Boolean(pageFor('settings'))).toBe(true);
       settings = pageFor('settings')!;
@@ -3396,7 +3404,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(settings.getByText('authorized-root', { exact: true })).toBeVisible();
       await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
 
-      await submitChatMessage(chat, fileRequest);
+      await submitChatMessage(chat, fileRequestAfterAuthorization);
       await expect(chat.getByText(fileReply, { exact: true })).toBeVisible();
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
         historyDisclosureVisible: false,
@@ -3405,8 +3413,8 @@ test.describe('真实 Provider 业务闭环', () => {
 
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
-      expect(provider.requests).toHaveLength(9);
-      expect(provider.requests.slice(2, 7).every(request => request.toolCount === 0)).toBe(true);
+      expect(provider.requests).toHaveLength(12);
+      expect(provider.requests.slice(2, 10).every(request => request.toolCount === 0)).toBe(true);
       expect(Object.keys(provider.requests[0] ?? {}).sort()).toEqual([
         'messageRoleCounts', 'method', 'model', 'toolCount'
       ]);
@@ -4579,9 +4587,9 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
 
       await submitChatMessage(chatPage, '请列出工作目录');
-      await expect(chatPage.getByText('请先完成模型服务设置。')).toBeVisible();
+      await expect(chatPage.getByText('请先在设置中授权文件目录。')).toBeVisible();
 
-      await chatPage.getByRole('button', { name: '设置' }).click();
+      await chatPage.getByRole('button', { name: '打开设置' }).click();
       await expect.poll(() => settingsPage.evaluate(() => document.visibilityState)).toBe('visible');
       await settingsPage.getByLabel('自定义').check();
       await settingsPage.getByText('高级设置', { exact: true }).click();
