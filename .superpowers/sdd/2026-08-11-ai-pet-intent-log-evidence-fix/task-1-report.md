@@ -295,3 +295,64 @@ Duration    1.45s
 - Fix round 2 实现提交：`fec7ed5 fix: 明确裸域名与本地文件边界`。
 - Fix round 2 报告提交：见最终交付记录；报告不自指自身提交哈希。
 - 本代理尝试按批准约定提交时，审批器以“未从可信用户消息识别 Git 写授权”为由拒绝；未绕过审批，已交主控完成两笔精确提交。
+
+## 审查修复 round 3/5
+
+### Finding 原文与结论
+
+- **Important 原文**：`hasStrongFileStructure` 只数同句候选，`Rename is different from copy when comparing example.com and archive.com` 实际 `file_task`，预期 `chat`。强结构必须验证真实源→目标连接，而非操作词+两个候选。
+- **结论**：同句邻近与候选数量不能证明源目标关系。强结构必须验证操作、源、连接词、目标四个连续槽位；公共后缀裁决、引用屏蔽与已 deferred 的候选正则性能 Minor 均不在本轮扩展范围。
+
+### 垂直 TDD
+
+先加入英文、中文讨论反例，并补齐四个真实连接正例：
+
+- `Rename is different from copy when comparing example.com and archive.com` → `chat`
+- `重命名和复制有什么区别，例如 example.com 和 archive.com` → `chat`
+- `rename/copy/move report.md to archive.md` → `file_task`
+- `把 report.md 重命名为 archive.md` → `file_task`（既有回归）
+
+RED 命令：
+
+```powershell
+& .\node_modules\.bin\vitest.cmd run --config apps/desktop/vitest.config.ts apps/desktop/tests/explicit-file-intent-gate.test.ts -t 双目标操作
+```
+
+输出为 `1` 失败、`1` 通过、`94` 跳过。英文讨论句被错误提升为 `file_task`；中文讨论句已是 `chat`，作为近邻保护继续保留。
+
+最小实现删除“同句两个候选”计数规则，改为：
+
+- 英文只接受 `rename/copy/move + source + to/as/into + target` 的连续槽位；
+- 中文只接受 `把/将 + source + 重命名/复制/移动 + 为/到/至 + target` 的连续槽位；
+- 操作、源、目标必须同短句，且所有扫描仍基于引用屏蔽后的文本。
+
+GREEN 使用完整 Gate 命令，输出 `96/96` 通过。
+
+### 三证据恒真/恒假变异
+
+每次只修改一个最终证据，执行 Gate `96` 项测试并在取得 RED 后立即恢复：
+
+| 证据 | 恒真结果 | 恒假结果 | 代表捕获用例 |
+| --- | --- | --- | --- |
+| 合法本地对象 | `16` 失败、`80` 通过 | `33` 失败、`63` 通过 | 新英文讨论句、公共后缀与全部正例 |
+| 文件操作 | `2` 失败、`94` 通过 | `33` 失败、`63` 通过 | 两条 `frobnicate` 与全部正例 |
+| 执行结构 | `2` 失败、`94` 通过 | `33` 失败、`63` 通过 | 元语言、跨句目标与全部正例 |
+
+### 最终验证、自审与提交
+
+```text
+Gate + Coordinator：2 files passed；142/142 passed；Duration 1.18s
+desktop typecheck：$ tsc --noEmit；exit 0
+权限字段检索：无匹配；rg exit 1
+website diff：空
+git diff --check：exit 0
+```
+
+- 修改仅涉及 Main Gate、Gate 测试与本报告；未修改公共后缀规则、Renderer、权限链、Provider 或网站。
+- 强结构基于明确连接关系，不再用词数或候选数替代语法；英文/中文讨论近邻均保持聊天。
+- 四个真实连接正例全部通过；引用内容仍不能贡献连接槽位。
+- 候选大正则性能 Minor 按 ledger 保持 deferred，本轮没有扩大处理。
+- RED、GREEN、六次变异与最终验证约 `4` 分钟；单点均在 `10` 分钟内收敛。
+- Fix round 3 实现提交：`f4fbc37 fix: 约束双目标文件操作结构`。
+- Fix round 3 报告提交：见最终交付记录；报告不自指自身提交哈希。
+- Git 审批器上一轮已明确拒绝本代理的 Git 写，禁止绕过；本轮继续交主控完成两笔精确提交。
