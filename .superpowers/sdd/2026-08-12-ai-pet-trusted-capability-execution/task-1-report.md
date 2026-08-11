@@ -86,3 +86,25 @@
    结果：2 个文件、158 个测试全部通过。
 
 4. 同轮最小修改：测试套件标题由英文 `CapabilityIntentRouter` 改为中文“能力意图路由器”。
+
+## 修复轮次 2/5
+
+- 修复实现提交：`e6ca246 fix: 收紧命令执行请求结构`。
+
+1. RED：新增三个同类评价/咨询句“运行 PowerShell 安全吗？”、“运行 PowerShell 好不好？”和“运行 PowerShell 值得吗？”，并补充礼貌明确执行正例“请运行 Get-ChildItem”。运行：
+
+   ```powershell
+   & '..\\..\\node_modules\\.bin\\vitest.cmd' run --config vitest.config.ts tests/capability-intent-router.test.ts
+   ```
+
+   结果：115 项中 4 项失败。三个咨询句错误返回 `powershell_task`，证明旧正则把任意非空尾词当作载荷；`请运行 Get-ChildItem`错误返回 `chat`，证明礼貌 cmdlet 请求未被识别。
+
+2. GREEN：把“运行/执行”解析为请求结构与独立命令载荷。载荷只接受 cmdlet、包管理器子命令或脚本路径，PowerShell 宿主前缀会被剥离后再验证；后台构建/测试作为独立明确请求保留。该规则不依赖任何测试句字符串，评价/咨询自然语言因不是命令形态默认归为 `chat`。
+
+3. GREEN 验证：
+
+   ```powershell
+   & '..\\..\\node_modules\\.bin\\vitest.cmd' run --config vitest.config.ts tests/capability-intent-router.test.ts tests/conversation-coordinator.test.ts
+   ```
+
+   结果：2 个文件、162 个测试全部通过。
