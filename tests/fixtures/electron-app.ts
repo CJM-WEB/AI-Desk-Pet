@@ -1412,6 +1412,8 @@ export async function createElectronAppFixture(
         if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
         await cleanupCurrentProcess();
         await options.beforeRestart?.(directories);
+        // restart 跨越异步清理与钩子后，必须重新确认释放尚未开始。
+        if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
         try {
           await launch();
         } catch (primaryError) {
