@@ -61,6 +61,9 @@ const chineseShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我
 const englishShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+|execute\s+(?:(?:this|the)\s+command\s*:?\s*|powershell\s+))([\s\S]+)$/iu;
 const backgroundShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?后台运行\s*(?:构建|测试|build\b|test\b)$/iu;
 const shellCommandPayloadPattern = /^(?:[a-z][a-z\d._-]*|\.{1,2}[\\/](?:[a-z\d._-]+[\\/])*[a-z\d._-]+)(?:\s+\S+){0,16}$/iu;
+const englishCopulaTokenPattern = /^(?:am|is|are|was|were|be|been|being)$/u;
+const englishAuxiliaryTokenPattern = /^(?:do|does|did|can|could|would|will|shall|should|may|might|must|has|have|had)$/u;
+const englishQuestionWordTokenPattern = /^(?:what|why|how|when|where|who|whom|whose|which)$/u;
 const embeddedFileContentPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)\s*([\s\S]*)$/iu;
 
 function getHostPart(candidate: string): string {
@@ -351,16 +354,33 @@ function hasExecutionStructure(
   return targetRanges.some(([start]) => !hasSentenceBoundary(text.slice(0, start)));
 }
 
+/** 未引用的英文语法词只有形成从句起点才封闭，选项、路径和词内片段仍是命令参数。 */
+function hasEnglishNaturalLanguageClause(tokens: readonly string[]): boolean {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]?.replace(/^[,，]/u, '');
+    if (token === undefined || tokens.length - index - 1 < 1) continue;
+    if (englishCopulaTokenPattern.test(token)
+      || englishAuxiliaryTokenPattern.test(token)
+      || englishQuestionWordTokenPattern.test(token)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
- * 未引用的 Unicode 尾部无法与自然语言评价稳定区分，句尾问号则表示咨询结构；
- * 二者在歧义时均保守回落聊天，成对引号内的命令参数不参与该判断。
+ * 成对引号先等长屏蔽；未引用的 Unicode、问号或英文自然语言从句均存在咨询歧义，
+ * 因而保守回落聊天，引号内的自然语言仍作为显式命令参数。
  */
 function hasUnquotedNaturalLanguageTail(commandText: string): boolean {
   const unquotedCommandText = maskQuotedText(commandText);
   const argumentStart = unquotedCommandText.search(/\s/u);
   if (argumentStart < 0) return false;
   const unquotedArguments = unquotedCommandText.slice(argumentStart).trim();
-  return /[^\x00-\x7f]/u.test(unquotedArguments) || /\?\s*$/u.test(unquotedArguments);
+  const argumentTokens = unquotedArguments.split(/\s+/u).filter(Boolean);
+  return /[^\x00-\x7f]/u.test(unquotedArguments)
+    || /\?\s*$/u.test(unquotedArguments)
+    || hasEnglishNaturalLanguageClause(argumentTokens);
 }
 
 /** ASCII 可执行标识或显式相对脚本路径加有界、非咨询尾部参数才构成 Shell 正向证据。 */

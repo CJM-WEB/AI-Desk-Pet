@@ -230,6 +230,41 @@ describe('能力意图路由器', () => {
     expectIntentKind(text, 'chat');
   });
 
+  test('独立破折号后的系词从句不能被误当成 git 参数', () => {
+    expectIntentKind('Run git - is that safe', 'chat');
+  });
+
+  test('无分隔符的助动词从句不能被误当成 npm 参数', () => {
+    expectIntentKind('Run npm test does this modify files', 'chat');
+  });
+
+  test('疑问词起始的自然语言从句不能被误当成 node 参数', () => {
+    expectIntentKind('Run node where does this write files', 'chat');
+  });
+
+  test('逗号后的情态助动词从句不能被误当成 cargo 参数', () => {
+    expectIntentKind('Run cargo build, would that change outputs', 'chat');
+  });
+
+  test('短系词评价不能因只剩一个谓语 token 而被误当成 deno 参数', () => {
+    expectIntentKind('Run deno is stable', 'chat');
+  });
+
+  test('疑问词直接连接实义动词时不能被误当成 python 参数', () => {
+    expectIntentKind('Run python what happens next', 'chat');
+  });
+
+  test.each([
+    'Run git log -1',
+    'Run npm test -- --runInBand',
+    'Run node where.js --mode fast',
+    'Run cargo build --release',
+    'Run deno task build',
+    'Run python what.py next'
+  ])('合法命令参数“%s”不因自然语言从句防线而被拒绝', text => {
+    expectIntentKind(text, 'powershell_task');
+  });
+
   test.each([
     '执行这条命令 node -e "console.log(\'safe?\')"',
     '运行 node --label "is that safe?"',
