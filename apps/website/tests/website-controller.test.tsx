@@ -68,49 +68,64 @@ describe('官网章节控制器', () => {
     vi.unstubAllGlobals();
   });
 
-  it('普通鼠标滚轮按实际滚动量连续改变章节进度且不自动吸附', () => {
+  it('滚轮先更新目标且显示进度通过动画帧连续追赶', () => {
     vi.useFakeTimers();
-    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    for (let index = 0; index < 5; index += 1) {
-      fireEvent.wheel(window, { deltaY: 120 });
-      act(() => {
-        vi.advanceTimersByTime(70);
-      });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    expect(state.dataset.progress).toBe('0.0000');
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(16); });
+    expect(Number(state.dataset.progress)).toBeGreaterThan(0);
+    expect(Number(state.dataset.progress)).toBeLessThan(0.132);
+  });
+
+  it('停止 120ms 后用 380ms 吸附并锁住后续 800ms 惯性', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    for (let index = 0; index < 7; index += 1) {
+      fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+      act(() => { vi.advanceTimersByTime(16); });
     }
+    act(() => { vi.advanceTimersByTime(120 + 400); });
+    expect(state.dataset.index).toBe('1');
+    expect(state.dataset.progress).toBe('1.0000');
 
-    expect(state.dataset.index).toBe('0');
-    expect(Number(state.dataset.progress)).toBeGreaterThan(0.5);
-
-    act(() => { vi.advanceTimersByTime(1000); });
-    expect(state.dataset.index).toBe('0');
-    expect(Number(state.dataset.progress)).toBeCloseTo(0.66, 2);
-
-    fireEvent.wheel(window, { deltaY: 400 });
+    fireEvent.wheel(window, { deltaY: 600, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(700); });
     expect(state.dataset.index).toBe('1');
     expect(state.dataset.progress).toBe('1.0000');
   });
 
-  it('单个微小滚轮最终返回原章且快速巨大输入只前进相邻一章', () => {
+  it('锁定结束后必须静止并重新累计 240px 才能离开', () => {
     vi.useFakeTimers();
-    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.wheel(window, { deltaY: 24 });
-    expect(state.dataset.index).toBe('0');
-    expect(Number(state.dataset.progress)).toBeCloseTo(0.0264, 3);
+    fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+    act(() => { vi.advanceTimersByTime(400); });
+    act(() => { vi.advanceTimersByTime(700); });
+    fireEvent.wheel(window, { deltaY: 40, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(220); });
 
-    for (let index = 0; index < 3; index += 1) {
-      fireEvent.wheel(window, { deltaY: 50_000 });
-      act(() => {
-        vi.advanceTimersByTime(20);
-      });
-    }
-    expect(state.dataset.index).toBe('3');
-    expect(state.dataset.progress).toBe('3.0000');
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(state.dataset.progress).toBe('1.0000');
+
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(Number(state.dataset.progress)).toBeGreaterThan(1);
   });
 
   it('首页边界键打断向下滚轮后回到当前章节且稳定边界不启动动画', () => {
@@ -126,11 +141,14 @@ describe('官网章节控制器', () => {
     expect(requestFrame).not.toHaveBeenCalled();
 
     fireEvent.wheel(window, { deltaY: 120 });
+    fireEvent.wheel(window, { deltaY: 120 });
+    fireEvent.wheel(window, { deltaY: 120 });
     act(() => {
       vi.advanceTimersByTime(100);
     });
     expect(Number(state.dataset.progress)).toBeGreaterThan(0);
 
+    requestFrame.mockClear();
     fireEvent.keyDown(window, { key: 'PageUp' });
     expect(requestFrame).toHaveBeenCalledOnce();
     act(() => {
@@ -162,12 +180,18 @@ describe('官网章节控制器', () => {
     fireEvent.keyDown(window, { key: 'PageDown' });
     expect(requestFrame).not.toHaveBeenCalled();
 
+    act(() => {
+      vi.advanceTimersByTime(800);
+    });
+    fireEvent.wheel(window, { deltaY: -120 });
+    fireEvent.wheel(window, { deltaY: -120 });
     fireEvent.wheel(window, { deltaY: -120 });
     act(() => {
       vi.advanceTimersByTime(100);
     });
     expect(Number(state.dataset.progress)).toBeLessThan(5);
 
+    requestFrame.mockClear();
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     expect(requestFrame).toHaveBeenCalledOnce();
     act(() => {

@@ -4,11 +4,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { EXPERIENCE_CONFIG } from '../home-experience/config';
 import type { ExperiencePhase, PointerPoint } from '../home-experience/types';
 import {
+  accumulateWheelUnlock,
   applyChapterDelta,
   clampChapterProgress,
+  dampChapterProgress,
+  hasChapterProgressSettled,
   interpolateChapterSnapProgress,
+  normalizeWheelDelta,
   snapChapterProgress
 } from './chapter-model';
+import type { WheelGestureState } from './chapter-model';
 
 export interface WebsiteControllerOptions {
   chapterCount: number;
@@ -28,12 +33,12 @@ export interface WebsiteControllerResult {
   goToAdjacent: (direction: -1 | 1) => void;
 }
 
-const SNAP_DURATION_MS = 300;
-
 type ChapterTouchGesture = {
   pointerId: number;
   startY: number;
 };
+
+type WheelMode = 'resting' | 'locked' | 'arming' | 'tracking';
 
 export function isLocalInputElement(
   target: { closest: (selector: string) => unknown } | null
@@ -66,7 +71,7 @@ export function applyWheelChapterInput(input: {
 }
 
 /**
- * 统一管理官网章节输入：滚轮直接驱动连续进度，按钮与键盘保留可恢复的章节导航动画。
+ * 统一管理官网章节输入：滚轮先改变目标，显示进度再逐帧追赶并吸附。
  */
 export function useWebsiteController(
   options: WebsiteControllerOptions
@@ -80,6 +85,7 @@ export function useWebsiteController(
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [initializationFailed, setInitializationFailed] = useState(false);
   const progressRef = useRef(0);
+  const targetProgressRef = useRef(0);
   const settledIndexRef = useRef(0);
   const prefersReducedMotionRef = useRef(false);
   const staticFallbackRef = useRef(Boolean(options.staticFallback));
@@ -88,8 +94,14 @@ export function useWebsiteController(
   const isWindowBlurredRef = useRef(false);
   const pointerTargetRef = useRef<PointerPoint>({ x: 0, y: 0 });
   const pointerFrameRef = useRef<number | null>(null);
-  const snapFrameRef = useRef<number | null>(null);
+  const progressFrameRef = useRef<number | null>(null);
+  const lastFrameAtRef = useRef<number | null>(null);
   const snapTargetRef = useRef<number | null>(null);
+  const wheelModeRef = useRef<WheelMode>('resting');
+  const wheelGestureRef = useRef<WheelGestureState>({ direction: 0, accumulated: 0 });
+  const wheelIdleTimerRef = useRef<number | null>(null);
+  const wheelLockTimerRef = useRef<number | null>(null);
+  const lastWheelAtRef = useRef<number | null>(null);
   const touchGestureRef = useRef<ChapterTouchGesture | null>(null);
   const onInitializationErrorRef = useRef(options.onInitializationError);
 
@@ -124,31 +136,130 @@ export function useWebsiteController(
     setSettledIndex(clamped);
   }, [chapterCount]);
 
-  const stopSnapFrame = useCallback(() => {
-    if (snapFrameRef.current !== null) {
-      window.cancelAnimationFrame(snapFrameRef.current);
-      snapFrameRef.current = null;
+  const stopProgressFrame = useCallback(() => {
+    if (progressFrameRef.current !== null) {
+      window.cancelAnimationFrame(progressFrameRef.current);
+      progressFrameRef.current = null;
+    }
+    lastFrameAtRef.current = null;
+  }, []);
+
+  const stopWheelIdleTimer = useCallback(() => {
+    if (wheelIdleTimerRef.current !== null) {
+      window.clearTimeout(wheelIdleTimerRef.current);
+      wheelIdleTimerRef.current = null;
     }
   }, []);
 
-  const cancelSnap = useCallback((preserveTransition = false) => {
-    stopSnapFrame();
+  const stopWheelLockTimer = useCallback(() => {
+    if (wheelLockTimerRef.current !== null) {
+      window.clearTimeout(wheelLockTimerRef.current);
+      wheelLockTimerRef.current = null;
+    }
+  }, []);
+
+  const resetWheelGesture = useCallback(() => {
+    wheelGestureRef.current = { direction: 0, accumulated: 0 };
+  }, []);
+
+  const armWheelAfterSilence = useCallback(() => {
+    const lastWheelAt = lastWheelAtRef.current;
+    const elapsed = lastWheelAt === null
+      ? EXPERIENCE_CONFIG.progress.wheelIdleMs
+      : performance.now() - lastWheelAt;
+    const remaining = EXPERIENCE_CONFIG.progress.wheelIdleMs - elapsed;
+
+    if (remaining > 0) {
+      wheelLockTimerRef.current = window.setTimeout(
+        armWheelAfterSilence,
+        remaining
+      );
+      return;
+    }
+
+    wheelLockTimerRef.current = null;
+    wheelModeRef.current = 'arming';
+    resetWheelGesture();
+  }, [resetWheelGesture]);
+
+  const startWheelLock = useCallback(() => {
+    stopWheelLockTimer();
+    wheelModeRef.current = 'locked';
+    wheelLockTimerRef.current = window.setTimeout(
+      armWheelAfterSilence,
+      EXPERIENCE_CONFIG.progress.wheelLockMs
+    );
+  }, [armWheelAfterSilence, stopWheelLockTimer]);
+
+  const cancelProgressMotion = useCallback((preserveTransition = false) => {
+    stopProgressFrame();
     snapTargetRef.current = null;
     if (!preserveTransition) {
       setIsChapterTransitioning(false);
     }
-  }, [stopSnapFrame]);
+  }, [stopProgressFrame]);
+
+  const startProgressFollow = useCallback(() => {
+    if (progressFrameRef.current !== null) {
+      return;
+    }
+
+    lastFrameAtRef.current = performance.now();
+    const advance = (frameAt: number) => {
+      if (isPausedRef.current) {
+        progressFrameRef.current = null;
+        lastFrameAtRef.current = null;
+        return;
+      }
+
+      const lastFrameAt = lastFrameAtRef.current ?? frameAt;
+      const next = dampChapterProgress(
+        progressRef.current,
+        targetProgressRef.current,
+        frameAt - lastFrameAt,
+        EXPERIENCE_CONFIG.progress.followTimeConstantMs,
+        EXPERIENCE_CONFIG.progress.maxFrameDeltaMs
+      );
+      lastFrameAtRef.current = frameAt;
+
+      if (hasChapterProgressSettled(
+        next,
+        targetProgressRef.current,
+        EXPERIENCE_CONFIG.progress.settleEpsilon
+      )) {
+        commitProgress(targetProgressRef.current);
+        progressFrameRef.current = null;
+        lastFrameAtRef.current = null;
+        return;
+      }
+
+      commitProgress(next);
+      progressFrameRef.current = window.requestAnimationFrame(advance);
+    };
+
+    progressFrameRef.current = window.requestAnimationFrame(advance);
+  }, [commitProgress]);
 
   const startSnap = useCallback((target: number) => {
-    stopSnapFrame();
-    snapTargetRef.current = target;
-    setIsChapterTransitioning(target !== settledIndexRef.current);
+    stopWheelIdleTimer();
+    stopWheelLockTimer();
+    stopProgressFrame();
+    resetWheelGesture();
+    wheelModeRef.current = 'locked';
+    const clampedTarget = clampChapterProgress(target, chapterCount);
+    targetProgressRef.current = clampedTarget;
+    snapTargetRef.current = clampedTarget;
+    setIsChapterTransitioning(
+      clampedTarget !== settledIndexRef.current
+      || Math.abs(progressRef.current - clampedTarget) > 0.0001
+    );
 
     if (staticFallbackRef.current || prefersReducedMotionRef.current) {
-      commitProgress(target);
-      commitSettledIndex(target);
+      commitProgress(clampedTarget);
+      commitSettledIndex(clampedTarget);
       snapTargetRef.current = null;
       setIsChapterTransitioning(false);
+      startWheelLock();
       return;
     }
 
@@ -157,28 +268,42 @@ export function useWebsiteController(
 
     const advance = (frameAt: number) => {
       if (isPausedRef.current) {
-        snapFrameRef.current = null;
+        progressFrameRef.current = null;
         return;
       }
 
       startedAt ??= frameAt;
-      const ratio = Math.min(1, (frameAt - startedAt) / SNAP_DURATION_MS);
-      commitProgress(interpolateChapterSnapProgress(from, target, ratio));
+      const ratio = Math.min(1, (
+        frameAt - startedAt
+      ) / EXPERIENCE_CONFIG.progress.snapDurationMs);
+      commitProgress(interpolateChapterSnapProgress(from, clampedTarget, ratio));
 
       if (ratio < 1) {
-        snapFrameRef.current = window.requestAnimationFrame(advance);
+        progressFrameRef.current = window.requestAnimationFrame(advance);
         return;
       }
 
-      commitProgress(target);
-      commitSettledIndex(target);
+      commitProgress(clampedTarget);
+      targetProgressRef.current = clampedTarget;
+      commitSettledIndex(clampedTarget);
       snapTargetRef.current = null;
-      snapFrameRef.current = null;
+      progressFrameRef.current = null;
+      lastFrameAtRef.current = null;
       setIsChapterTransitioning(false);
+      startWheelLock();
     };
 
-    snapFrameRef.current = window.requestAnimationFrame(advance);
-  }, [commitProgress, commitSettledIndex, stopSnapFrame]);
+    progressFrameRef.current = window.requestAnimationFrame(advance);
+  }, [
+    chapterCount,
+    commitProgress,
+    commitSettledIndex,
+    resetWheelGesture,
+    startWheelLock,
+    stopProgressFrame,
+    stopWheelIdleTimer,
+    stopWheelLockTimer
+  ]);
 
   const goToAdjacent = useCallback((direction: -1 | 1) => {
     if (isPausedRef.current) {
@@ -188,7 +313,10 @@ export function useWebsiteController(
     const target = clampChapterProgress(settledIndexRef.current + direction, chapterCount);
     if (target === settledIndexRef.current) {
       // 边界键若在连续进度中触发，只回到当前章节，不推进越界目标。
-      if (progressRef.current !== settledIndexRef.current) {
+      if (
+        progressRef.current !== settledIndexRef.current
+        || targetProgressRef.current !== settledIndexRef.current
+      ) {
         startSnap(settledIndexRef.current);
       }
       return;
@@ -207,13 +335,22 @@ export function useWebsiteController(
 
     staticFallbackRef.current = true;
     normalizePausedState();
-    cancelSnap();
+    cancelProgressMotion();
+    stopWheelIdleTimer();
+    stopWheelLockTimer();
+    resetWheelGesture();
+    wheelModeRef.current = 'resting';
+    lastWheelAtRef.current = null;
+    targetProgressRef.current = settledIndexRef.current;
     commitProgress(settledIndexRef.current);
   }, [
-    cancelSnap,
+    cancelProgressMotion,
     commitProgress,
     normalizePausedState,
-    options.staticFallback
+    options.staticFallback,
+    resetWheelGesture,
+    stopWheelIdleTimer,
+    stopWheelLockTimer
   ]);
 
   useEffect(() => {
@@ -246,7 +383,7 @@ export function useWebsiteController(
       return;
     }
 
-    // 失焦和隐藏共享暂停状态，恢复后继续向原目标章节吸附。
+    // 失焦和隐藏共享暂停状态，暂停时立即回收惯性并收敛到最近章节。
     const syncPausedState = () => {
       const nextPaused = isDocumentHiddenRef.current || isWindowBlurredRef.current;
       if (nextPaused === isPausedRef.current) {
@@ -257,17 +394,22 @@ export function useWebsiteController(
       setIsPaused(nextPaused);
 
       if (nextPaused) {
-        stopSnapFrame();
+        stopProgressFrame();
+        stopWheelIdleTimer();
+        stopWheelLockTimer();
+        resetWheelGesture();
+        wheelModeRef.current = 'resting';
+        lastWheelAtRef.current = null;
+        const nearest = snapChapterProgress(targetProgressRef.current, chapterCount);
+        targetProgressRef.current = nearest;
+        snapTargetRef.current = null;
+        commitProgress(nearest);
+        commitSettledIndex(nearest);
+        setIsChapterTransitioning(false);
         if (pointerFrameRef.current !== null) {
           window.cancelAnimationFrame(pointerFrameRef.current);
           pointerFrameRef.current = null;
         }
-        return;
-      }
-
-      const target = snapTargetRef.current;
-      if (target !== null) {
-        startSnap(target);
       }
     };
     const pause = () => {
@@ -291,20 +433,55 @@ export function useWebsiteController(
       }
 
       event.preventDefault();
-      cancelSnap(true);
-      const next = applyWheelChapterInput({
-        progress: progressRef.current,
-        deltaY: event.deltaY,
-        settledIndex: settledIndexRef.current,
-        chapterCount
-      });
-      setIsChapterTransitioning(Math.abs(next - settledIndexRef.current) > 0.0001);
-      commitProgress(next);
-      const reachedIndex = Math.round(next);
-      if (Math.abs(next - reachedIndex) < 0.0001) {
-        commitSettledIndex(reachedIndex);
-        setIsChapterTransitioning(false);
+      const delta = normalizeWheelDelta(
+        event.deltaY,
+        event.deltaMode,
+        window.innerHeight
+      );
+      lastWheelAtRef.current = performance.now();
+
+      if (wheelModeRef.current === 'locked') {
+        return;
       }
+
+      let releasedDelta = delta;
+      if (wheelModeRef.current !== 'tracking') {
+        const unlock = accumulateWheelUnlock(
+          wheelGestureRef.current,
+          delta,
+          EXPERIENCE_CONFIG.progress.wheelUnlockDelta
+        );
+        wheelGestureRef.current = {
+          direction: unlock.direction,
+          accumulated: unlock.accumulated
+        };
+        releasedDelta = unlock.releasedDelta;
+        if (releasedDelta === 0) {
+          targetProgressRef.current = settledIndexRef.current;
+          return;
+        }
+        wheelModeRef.current = 'tracking';
+      }
+
+      targetProgressRef.current = applyChapterDelta(
+        targetProgressRef.current,
+        releasedDelta * EXPERIENCE_CONFIG.progress.wheelScale,
+        settledIndexRef.current,
+        chapterCount
+      );
+      setIsChapterTransitioning(
+        Math.abs(targetProgressRef.current - settledIndexRef.current) > 0.0001
+      );
+      startProgressFollow();
+
+      stopWheelIdleTimer();
+      wheelIdleTimerRef.current = window.setTimeout(() => {
+        wheelIdleTimerRef.current = null;
+        if (wheelModeRef.current !== 'tracking') {
+          return;
+        }
+        startSnap(snapChapterProgress(targetProgressRef.current, chapterCount));
+      }, EXPERIENCE_CONFIG.progress.wheelIdleMs);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isLocalInput(event.target) || isPausedRef.current) {
@@ -403,7 +580,14 @@ export function useWebsiteController(
       if (tornDown) return;
       tornDown = true;
 
-      cancelSnap();
+      stopProgressFrame();
+      stopWheelIdleTimer();
+      stopWheelLockTimer();
+      snapTargetRef.current = null;
+      lastWheelAtRef.current = null;
+      lastFrameAtRef.current = null;
+      wheelModeRef.current = 'resting';
+      resetWheelGesture();
       touchGestureRef.current = null;
       if (pointerFrameRef.current !== null) {
         window.cancelAnimationFrame(pointerFrameRef.current);
@@ -440,14 +624,17 @@ export function useWebsiteController(
 
     return teardown;
   }, [
-    cancelSnap,
     chapterCount,
     commitSettledIndex,
     commitProgress,
     goToAdjacent,
     notifyInitializationError,
+    resetWheelGesture,
     startSnap,
-    stopSnapFrame,
+    startProgressFollow,
+    stopProgressFrame,
+    stopWheelIdleTimer,
+    stopWheelLockTimer,
     options.staticFallback
   ]);
 

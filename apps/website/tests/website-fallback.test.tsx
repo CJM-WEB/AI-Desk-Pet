@@ -435,12 +435,12 @@ describe('官网章节降级模式', () => {
 
     expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();
 
-    runNextFrame(300);
+    runNextFrame(400);
     fireEvent.click(screen.getByRole('button', { name: '上一章节' }));
     runNextFrame(400);
     expect(screen.queryByRole('button', { name: 'language' })).toBeNull();
 
-    runNextFrame(700);
+    runNextFrame(800);
 
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
       .toBe('home');
@@ -464,7 +464,13 @@ describe('官网章节降级模式', () => {
       return frames.length;
     }));
     const runNextSnapFrame = (frameAt: number) => {
-      const frameIndex = frames.findIndex((callback) => callback.name === 'advance');
+      let frameIndex = -1;
+      for (let index = frames.length - 1; index >= 0; index -= 1) {
+        if (frames[index]?.name === 'advance') {
+          frameIndex = index;
+          break;
+        }
+      }
       const callback = frameIndex < 0 ? undefined : frames.splice(frameIndex, 1)[0];
       if (!callback) throw new Error('缺少章节吸附动画帧');
       act(() => callback(frameAt));
@@ -473,10 +479,18 @@ describe('官网章节降级模式', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
     runNextSnapFrame(0);
-    runNextSnapFrame(300);
+    runNextSnapFrame(400);
     expect(experience.dataset.activeChapter).toBe('about');
 
-    fireEvent.wheel(window, { deltaY: -50_000 });
+    act(() => { vi.advanceTimersByTime(800); });
+    fireEvent.wheel(window, { deltaY: -120 });
+    fireEvent.wheel(window, { deltaY: -120 });
+    expect(experience.dataset.activeChapter).toBe('about');
+
+    fireEvent.wheel(window, { deltaY: -600 });
+    act(() => { vi.advanceTimersByTime(120); });
+    runNextSnapFrame(800);
+    runNextSnapFrame(1180);
 
     expect(experience.dataset.activeChapter).toBe('home');
     expect(screen.getByRole('button', { name: 'language' })).toBeTruthy();
