@@ -2040,6 +2040,77 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(terminated).toEqual([5101]);
     expect(removed).toEqual([baseDirectory]);
   });
+
+  test('restart 分配端口期间 dispose 完成后不得再 spawn', async () => {
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+
+    const workspaceRoot = resolve(process.cwd());
+    const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
+    const expectedExecutable = requireFromDesktop('electron') as string;
+    const baseDirectory = resolve('C:\\Temp\\myself-fixture-allocator-dispose-race');
+    const processes = [
+      fakeElectronProcess(5201, expectedExecutable),
+      fakeElectronProcess(5202, expectedExecutable)
+    ];
+    let allocatorEntered!: () => void;
+    const entered = new Promise<void>(resolveEntered => {
+      allocatorEntered = resolveEntered;
+    });
+    let releaseAllocator!: () => void;
+    const allocatorGate = new Promise<void>(resolveGate => {
+      releaseAllocator = resolveGate;
+    });
+    let allocationCalls = 0;
+    let spawnCalls = 0;
+    const terminated: number[] = [];
+    const removed: string[] = [];
+
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      dependencies: {
+        allocateLoopbackPort: async () => {
+          allocationCalls += 1;
+          if (allocationCalls === 1) return 43136;
+          allocatorEntered();
+          await allocatorGate;
+          return 43137;
+        },
+        createTemporaryDirectories: async () => ({
+          baseDirectory,
+          userDataDirectory: resolve(baseDirectory, 'user-data'),
+          authorizedRootDirectory: resolve(baseDirectory, 'authorized-root')
+        }),
+        spawnProcess: () => {
+          const child = processes[spawnCalls];
+          spawnCalls += 1;
+          if (!child) throw new Error('缺少测试进程');
+          return child;
+        },
+        waitForReady: async () => undefined,
+        connectOverCdp: async () => ({ close: async () => undefined }),
+        terminateProcess: async child => {
+          terminated.push(child.pid);
+        },
+        removeTemporaryBase: async directory => {
+          removed.push(directory);
+        }
+      }
+    });
+
+    const restarting = fixture.restart();
+    await entered;
+    await fixture.dispose();
+    releaseAllocator();
+
+    await expect(restarting).rejects.toThrow('ELECTRON_FIXTURE_DISPOSED');
+    expect(allocationCalls).toBe(2);
+    expect(spawnCalls).toBe(1);
+    expect(terminated).toEqual([5201]);
+    expect(removed).toEqual([baseDirectory]);
+  });
 });
 
 test.describe('真实 Electron CDP smoke', () => {

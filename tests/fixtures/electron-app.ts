@@ -1142,6 +1142,7 @@ export async function createElectronAppFixture(
     const currentLogStreamEpoch = ++logStreamEpoch;
     capturedLogEvidenceTracker.resetStreams();
     const cdpPort = await dependencies.allocateLoopbackPort();
+    if (disposeStarted || disposed) throw new Error('ELECTRON_FIXTURE_DISPOSED');
     const nextPlan = createElectronLaunchPlan({
       workspaceRoot: options.workspaceRoot,
       cdpPort,
