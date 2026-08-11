@@ -152,6 +152,40 @@ describe('合并后的反馈与支持模块', () => {
     expect(document.activeElement).toBe(activePayment);
   });
 
+  it('反馈按钮用方向键切换后焦点跟随清晰层，组容器触发时保留组焦点', () => {
+    render(<SupportChapter interactive repository={createRepository()} />);
+    const group = screen.getByRole('group', { name: '选择反馈操作' });
+    const initialActive = group.querySelector<HTMLButtonElement>('[data-depth-index="0"]')!;
+
+    initialActive.focus();
+    fireEvent.keyDown(initialActive, { key: 'ArrowDown' });
+    const nextActive = group.querySelector<HTMLButtonElement>('[data-depth-index="0"]')!;
+    expect(nextActive).not.toBe(initialActive);
+    expect(document.activeElement).toBe(nextActive);
+
+    group.focus();
+    fireEvent.keyDown(group, { key: 'ArrowDown' });
+    expect(group.getAttribute('data-active-action')).toBe('create');
+    expect(document.activeElement).toBe(group);
+  });
+
+  it('支付按钮用方向键切换后焦点跟随清晰层，组容器触发时保留组焦点', () => {
+    render(<SupportChapter interactive repository={createRepository()} />);
+    const group = screen.getByRole('group', { name: '选择付款方式' });
+    const initialActive = group.querySelector<HTMLButtonElement>('[data-depth-index="0"]')!;
+
+    initialActive.focus();
+    fireEvent.keyDown(initialActive, { key: 'ArrowRight' });
+    const nextActive = group.querySelector<HTMLButtonElement>('[data-depth-index="0"]')!;
+    expect(nextActive).not.toBe(initialActive);
+    expect(document.activeElement).toBe(nextActive);
+
+    group.focus();
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(group.getAttribute('data-active-payment')).toBe('paypal');
+    expect(document.activeElement).toBe(group);
+  });
+
   it('反馈组后层首次点击只切换，清晰层点击才打开反馈业务', () => {
     render(<SupportChapter interactive repository={createRepository()} />);
 

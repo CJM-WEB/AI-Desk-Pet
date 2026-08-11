@@ -48,6 +48,8 @@ type FeedbackAction = {
   kind?: FeedbackKind;
 };
 
+type SupportActionGroup = 'feedback' | 'payment';
+
 const EMPTY_DRAFT: FeedbackDraft = {
   kind: 'feedback',
   authorName: '',
@@ -110,6 +112,9 @@ export function SupportChapter({
   const createTriggerRef = useRef<HTMLButtonElement | null>(null);
   const restoreCreateFocusRef = useRef(false);
   const submittedDraftRef = useRef<FeedbackDraft | null>(null);
+  const feedbackGroupRef = useRef<HTMLDivElement | null>(null);
+  const paymentGroupRef = useRef<HTMLDivElement | null>(null);
+  const pendingKeyboardFocusRef = useRef<SupportActionGroup | null>(null);
   const motionDisabled = reducedMotion || staticFallback || isPaused;
   const supportProgress = Math.min(1, Math.max(0, transitionProgress - 3));
   const chapterStyle = {
@@ -155,6 +160,16 @@ export function SupportChapter({
         paymentIndex: activePaymentIndex
       }
     }));
+  }, [activeFeedbackIndex, activePaymentIndex]);
+
+  useEffect(() => {
+    const pendingGroup = pendingKeyboardFocusRef.current;
+    if (pendingGroup === null) return;
+    pendingKeyboardFocusRef.current = null;
+    const group = pendingGroup === 'feedback'
+      ? feedbackGroupRef.current
+      : paymentGroupRef.current;
+    group?.querySelector<HTMLButtonElement>('[data-depth-index="0"]')?.focus();
   }, [activeFeedbackIndex, activePaymentIndex]);
 
   useEffect(() => {
@@ -279,7 +294,8 @@ export function SupportChapter({
 
   const handleGroupKeyDown = (
     event: ReactKeyboardEvent<HTMLDivElement>,
-    cycle: (delta: number) => void
+    cycle: (delta: number) => void,
+    group: SupportActionGroup
   ) => {
     const delta = event.key === 'ArrowDown' || event.key === 'ArrowRight'
       ? 1
@@ -289,6 +305,9 @@ export function SupportChapter({
     if (delta === 0 || !interactive) return;
     event.preventDefault();
     event.stopPropagation();
+    if (event.target instanceof HTMLButtonElement) {
+      pendingKeyboardFocusRef.current = group;
+    }
     cycle(delta);
   };
 
@@ -334,13 +353,14 @@ export function SupportChapter({
       </PointerTiltText>
 
       <div
+        ref={feedbackGroupRef}
         className={`${styles.actionGroup} ${styles.feedbackGroup}`}
         data-input-scope="local"
         data-active-action={feedbackActions[activeFeedbackIndex]?.id}
         role="group"
         aria-label={t('feedback.group')}
         tabIndex={interactive ? 0 : -1}
-        onKeyDown={(event) => handleGroupKeyDown(event, cycleFeedback)}
+        onKeyDown={(event) => handleGroupKeyDown(event, cycleFeedback, 'feedback')}
         onWheel={(event) => handleGroupWheel(event, cycleFeedback)}
       >
         {feedbackActions.map((action, index) => {
@@ -379,6 +399,7 @@ export function SupportChapter({
       </div>
 
       <div
+        ref={paymentGroupRef}
         className={`${styles.actionGroup} ${styles.paymentGroup}`}
         data-testid="payment-roller"
         data-input-scope="local"
@@ -386,7 +407,7 @@ export function SupportChapter({
         role="group"
         aria-label={t('donation.group')}
         tabIndex={interactive ? 0 : -1}
-        onKeyDown={(event) => handleGroupKeyDown(event, cyclePayment)}
+        onKeyDown={(event) => handleGroupKeyDown(event, cyclePayment, 'payment')}
         onWheel={(event) => handleGroupWheel(event, cyclePayment)}
       >
         {paymentMethods.map((method, index) => {
