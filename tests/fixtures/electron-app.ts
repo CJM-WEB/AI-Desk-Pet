@@ -6,6 +6,7 @@ import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { chromium, type Browser } from '@playwright/test';
 import { materializeCharacterWorkshopFixtures } from './character-workshop-assets';
 
@@ -237,6 +238,7 @@ export interface ElectronAppFixture {
 export interface CapturedLogEvidenceTracker {
   capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
   snapshot(): ElectronAppFixture['capturedLogEvidence'];
+  resetStreams(): void;
   dispose(): void;
 }
 
@@ -246,33 +248,51 @@ export function createCapturedLogEvidenceTracker(input: Readonly<{
   authorizedRootDirectory: string;
   sentinels: readonly string[];
 }>): CapturedLogEvidenceTracker {
-  if (input.sentinels.some(sentinel => sentinel.length === 0)) {
+  const configuredApiKey = input.apiKey;
+  const configuredAuthorizedRoot = input.authorizedRootDirectory;
+  const configuredSentinels = [...input.sentinels];
+  if (configuredSentinels.some(sentinel => sentinel.length === 0)) {
     throw new Error('EMPTY_LOG_SENTINEL');
   }
   let apiKey = false;
   let authorizedRoot = false;
   let authorizationHeader = false;
-  const sentinels = input.sentinels.map(() => false);
+  const sentinels = configuredSentinels.map(() => false);
   const tailLength = Math.max(
     64,
-    input.apiKey.length - 1,
-    input.authorizedRootDirectory.length - 1,
-    ...input.sentinels.map(value => value.length - 1)
+    configuredApiKey.length - 1,
+    configuredAuthorizedRoot.length - 1,
+    ...configuredSentinels.map(value => value.length - 1)
   );
   const tails: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' };
+  const decoders: Record<'stdout' | 'stderr', StringDecoder> = {
+    stdout: new StringDecoder('utf8'),
+    stderr: new StringDecoder('utf8')
+  };
   let disposed = false;
+
+  const resetStreams = (): void => {
+    tails.stdout = '';
+    tails.stderr = '';
+    decoders.stdout = new StringDecoder('utf8');
+    decoders.stderr = new StringDecoder('utf8');
+  };
 
   return {
     capture(source, chunk) {
       if (disposed) return;
-      const text = tails[source] + String(chunk);
-      apiKey ||= Boolean(input.apiKey && text.includes(input.apiKey));
+      const decodedChunk = typeof chunk === 'string'
+        ? decoders[source].end() + chunk
+        : decoders[source].write(chunk);
+      if (typeof chunk === 'string') decoders[source] = new StringDecoder('utf8');
+      const text = tails[source] + decodedChunk;
+      apiKey ||= Boolean(configuredApiKey && text.includes(configuredApiKey));
       authorizedRoot ||= Boolean(
-        input.authorizedRootDirectory
-        && text.includes(input.authorizedRootDirectory)
+        configuredAuthorizedRoot
+        && text.includes(configuredAuthorizedRoot)
       );
       authorizationHeader ||= /["']?authorization["']?\s*:/iu.test(text);
-      input.sentinels.forEach((sentinel, index) => {
+      configuredSentinels.forEach((sentinel, index) => {
         sentinels[index] ||= Boolean(sentinel && text.includes(sentinel));
       });
       tails[source] = text.slice(-tailLength);
@@ -285,9 +305,11 @@ export function createCapturedLogEvidenceTracker(input: Readonly<{
         sentinels: Object.freeze([...sentinels])
       });
     },
+    resetStreams() {
+      resetStreams();
+    },
     dispose() {
-      tails.stdout = '';
-      tails.stderr = '';
+      resetStreams();
       disposed = true;
     }
   };
@@ -1115,6 +1137,7 @@ export async function createElectronAppFixture(
   };
 
   const launch = async (): Promise<void> => {
+    capturedLogEvidenceTracker.resetStreams();
     const cdpPort = await dependencies.allocateLoopbackPort();
     const nextPlan = createElectronLaunchPlan({
       workspaceRoot: options.workspaceRoot,
@@ -1161,38 +1184,42 @@ export async function createElectronAppFixture(
 
   const dispose = async (): Promise<void> => {
     if (disposed) return;
-    const cleanupErrors: Error[] = [];
     try {
-      await cleanupCurrentProcess();
-    } catch (error) {
-      if (error instanceof AggregateError) {
-        cleanupErrors.push(...error.errors.map(item => item instanceof Error
-          ? item
-          : new Error(String(item))));
-      } else {
-        cleanupErrors.push(error as Error);
-      }
-    }
-    // 原 child 尚存活时不得移除其正在使用的目录；browser 关闭失败不阻止已退出进程的目录回收。
-    if (!child) {
+      const cleanupErrors: Error[] = [];
       try {
-        await runStage(
-          'cleanup_temporary_directory',
-          () => dependencies.removeTemporaryBase(directories.baseDirectory),
-          operationTimeoutMs
-        );
+        await cleanupCurrentProcess();
       } catch (error) {
-        cleanupErrors.push(error as Error);
+        if (error instanceof AggregateError) {
+          cleanupErrors.push(...error.errors.map(item => item instanceof Error
+            ? item
+            : new Error(String(item))));
+        } else {
+          cleanupErrors.push(error as Error);
+        }
       }
+      // 原 child 尚存活时不得移除其正在使用的目录；browser 关闭失败不阻止已退出进程的目录回收。
+      if (!child) {
+        try {
+          await runStage(
+            'cleanup_temporary_directory',
+            () => dependencies.removeTemporaryBase(directories.baseDirectory),
+            operationTimeoutMs
+          );
+        } catch (error) {
+          cleanupErrors.push(error as Error);
+        }
+      }
+      if (cleanupErrors.length === 1) throw cleanupErrors[0];
+      if (cleanupErrors.length > 1) {
+        throw new AggregateError(cleanupErrors, 'ELECTRON_DISPOSE_FAILED', {
+          cause: cleanupErrors[0]
+        });
+      }
+      disposed = true;
+    } finally {
+      // 首次释放即封闭证据流；资源清理失败仍可由后续 dispose 重试。
+      capturedLogEvidenceTracker.dispose();
     }
-    if (cleanupErrors.length === 1) throw cleanupErrors[0];
-    if (cleanupErrors.length > 1) {
-      throw new AggregateError(cleanupErrors, 'ELECTRON_DISPOSE_FAILED', {
-        cause: cleanupErrors[0]
-      });
-    }
-    capturedLogEvidenceTracker.dispose();
-    disposed = true;
   };
 
   try {

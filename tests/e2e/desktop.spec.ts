@@ -84,6 +84,7 @@ type ElectronFixtureModule = {
       authorizationHeader: boolean;
       sentinels: readonly boolean[];
     }>;
+    resetStreams(): void;
     dispose(): void;
   };
   probeWindowsProcess(
@@ -580,6 +581,82 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
       textHeader.snapshot().authorizationHeader,
       jsonHeader.snapshot().authorizationHeader
     ]).toEqual([true, false, true, true]);
+  });
+
+  test('原始日志证据在 UTF-8 多字节中间拆分 Buffer 时仍命中', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
+    if (!fixture?.createCapturedLogEvidenceTracker) return;
+
+    const apiKey = '密钥-api';
+    const authorizedRootDirectory = 'C:\\授权根';
+    const sentinel = '中文哨兵';
+    const tracker = fixture.createCapturedLogEvidenceTracker({
+      apiKey,
+      authorizedRootDirectory,
+      sentinels: [sentinel]
+    });
+    const apiKeyBytes = Buffer.from(apiKey);
+    tracker.capture('stdout', apiKeyBytes.subarray(0, 1));
+    tracker.capture('stdout', apiKeyBytes.subarray(1));
+    const authorizedRootBytes = Buffer.from(authorizedRootDirectory);
+    tracker.capture('stdout', authorizedRootBytes.subarray(0, 4));
+    tracker.capture('stdout', authorizedRootBytes.subarray(4));
+    const sentinelBytes = Buffer.from(sentinel);
+    tracker.capture('stdout', sentinelBytes.subarray(0, 1));
+    tracker.capture('stdout', sentinelBytes.subarray(1));
+
+    const resetSentinel = '跨期哨兵';
+    const resetTracker = fixture.createCapturedLogEvidenceTracker({
+      apiKey,
+      authorizedRootDirectory,
+      sentinels: [resetSentinel]
+    });
+    const resetSentinelBytes = Buffer.from(resetSentinel);
+    resetTracker.capture('stdout', resetSentinelBytes.subarray(0, 1));
+    resetTracker.resetStreams();
+    resetTracker.capture('stdout', resetSentinelBytes.subarray(1));
+
+    const snapshot = tracker.snapshot();
+    expect([
+      snapshot.apiKey,
+      snapshot.authorizedRoot,
+      snapshot.sentinels[0],
+      resetTracker.snapshot().sentinels[0]
+    ]).toEqual([true, true, true, false]);
+  });
+
+  test('原始日志证据构造后不受输入对象与外部哨兵数组突变影响', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
+    if (!fixture?.createCapturedLogEvidenceTracker) return;
+
+    const originalApiKey = 'original-tracker-api-key';
+    const originalRoot = 'C:\\original-tracker-root';
+    const originalSentinel = `original-sentinel-${'x'.repeat(80)}`;
+    const externalSentinels = [originalSentinel];
+    const mutableInput = {
+      apiKey: originalApiKey,
+      authorizedRootDirectory: originalRoot,
+      sentinels: externalSentinels
+    };
+    const tracker = fixture.createCapturedLogEvidenceTracker(mutableInput);
+    mutableInput.apiKey = 'replacement-api-key';
+    mutableInput.authorizedRootDirectory = 'C:\\replacement-root';
+    externalSentinels[0] = 'replacement-sentinel';
+    externalSentinels.push('appended-sentinel');
+
+    tracker.capture('stdout', originalApiKey);
+    tracker.capture('stdout', originalRoot);
+    tracker.capture('stdout', originalSentinel.slice(0, 70));
+    tracker.capture('stdout', originalSentinel.slice(70));
+
+    expect(tracker.snapshot()).toEqual({
+      apiKey: true,
+      authorizedRoot: true,
+      authorizationHeader: false,
+      sentinels: [true]
+    });
   });
 
   test('原始日志证据拒绝空哨兵，返回冻结布尔快照且 dispose 后不再变化', async () => {
@@ -1656,12 +1733,14 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     const expectedExecutable = requireFromDesktop('electron') as string;
     const fakeProcess = fakeElectronProcess(6201, expectedExecutable);
     const baseDirectory = resolve('C:\\Temp\\myself-fixture-dispose-retry');
+    const lateLogSentinel = 'dispose-failure-late-log';
     let terminateCalls = 0;
     const removed: string[] = [];
 
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot,
       apiKey: runtimeDiagnosticKey(),
+      logSentinels: [lateLogSentinel],
       dependencies: {
         allocateLoopbackPort: async () => 43127,
         createTemporaryDirectories: async () => ({
@@ -1687,6 +1766,9 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     expect(terminateCalls).toBe(1);
     expect(removed).toEqual([]);
     expect(fixture.processId).toBe(6201);
+    const evidenceAfterFailedDispose = fixture.capturedLogEvidence;
+    fakeProcess.stdout.write(lateLogSentinel);
+    expect(fixture.capturedLogEvidence).toEqual(evidenceAfterFailedDispose);
 
     await fixture.dispose();
     await fixture.dispose();
@@ -1813,6 +1895,8 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     const baseDirectory = resolve('C:\\Temp\\myself-fixture-restart');
     const userDataDirectory = resolve(baseDirectory, 'user-data');
     const authorizedRootDirectory = resolve(baseDirectory, 'authorized-root');
+    const persistentSentinel = 'restart-persistent-sentinel';
+    const crossEpochSentinel = 'restart-cross-epoch-sentinel';
     const ports = [43130, 43131];
     const processes = [
       fakeElectronProcess(5001, expectedExecutable),
@@ -1825,6 +1909,7 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot,
       apiKey: runtimeDiagnosticKey(),
+      logSentinels: [persistentSentinel, crossEpochSentinel],
       dependencies: {
         allocateLoopbackPort: async () => {
           const port = ports.shift();
@@ -1840,6 +1925,12 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
           plans.push(plan);
           const child = processes.shift();
           if (!child) throw new Error('缺少测试进程');
+          const epoch = plans.length;
+          queueMicrotask(() => {
+            child.stdout.write(epoch === 1
+              ? `${persistentSentinel}\n${crossEpochSentinel.slice(0, 11)}`
+              : crossEpochSentinel.slice(11));
+          });
           return child;
         },
         waitForReady: async () => undefined,
@@ -1868,6 +1959,7 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     ]);
     expect(terminated).toEqual([5001]);
     expect(removed).toEqual([]);
+    expect(fixture.capturedLogEvidence.sentinels).toEqual([true, false]);
 
     await fixture.dispose();
 
