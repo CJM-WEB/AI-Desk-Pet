@@ -319,12 +319,64 @@ describe('AgentLoop', () => {
     expect(provider.requests[0]?.tools).toEqual(tools);
   });
 
+  test('文件规划在首次真实工具结果前拒绝普通文本，并在第二次违约时返回稳定错误', async () => {
+    const provider = new ScriptedProvider([
+      { type: 'text', text: '我没有权限执行这个文件任务' },
+      { type: 'text', text: '文件已经创建完成' }
+    ]);
+    const runContext = { ...context(provider), protocol: 'file_planner' as const };
+
+    await expect(collectEvents(runContext)).rejects.toMatchObject({
+      code: 'FILE_PLAN_PROTOCOL_INVALID'
+    });
+
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1]?.tools).toEqual(provider.requests[0]?.tools);
+    expect(JSON.stringify(provider.requests[1]?.messages)).not.toContain('我没有权限执行这个文件任务');
+    expect(provider.requests[1]?.messages.at(-1)).toEqual(expect.objectContaining({
+      role: 'system',
+      content: expect.stringContaining('FILE_PLAN_PROTOCOL_INVALID')
+    }));
+  });
+
+  test('文件规划在首次真实工具结果前只公开严格 JSON 澄清问题', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'text',
+      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+    }]);
+    const runContext = { ...context(provider), protocol: 'file_planner' as const };
+
+    await expect(collectEvents(runContext)).resolves.toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'message', text: '请提供目标文件名' },
+      { type: 'phase', phase: 'success' }
+    ]);
+  });
+
+  test.each([
+    '```json\n{"kind":"clarification_required","question":"请提供文件名"}\n```',
+    '{"kind":"clarification_required","question":"请提供文件名","extra":true}',
+    '{"kind":"clarification_required","question":"   "}',
+    `{"kind":"clarification_required","question":"${'a'.repeat(1_001)}"}`
+  ])('文件规划把工具前的非法澄清文本 %s 视为协议违约', async text => {
+    const provider = new ScriptedProvider([
+      { type: 'text', text },
+      { type: 'text', text }
+    ]);
+    const runContext = { ...context(provider), protocol: 'file_planner' as const };
+
+    await expect(collectEvents(runContext)).rejects.toMatchObject({
+      code: 'FILE_PLAN_PROTOCOL_INVALID'
+    });
+    expect(provider.requests).toHaveLength(2);
+  });
+
   test('读取工具执行后把结果交回模型生成最终文本', async () => {
     const provider = new ScriptedProvider([
       readRequest('read-1'),
       { type: 'text', text: 'notes.txt 的内容已读取' }
     ]);
-    const runContext = context(provider);
+    const runContext = { ...context(provider), protocol: 'file_planner' as const };
 
     const events = await collectEvents(runContext);
 

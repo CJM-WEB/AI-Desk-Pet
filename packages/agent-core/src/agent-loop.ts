@@ -1,7 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { characterAgentBehaviorIntentSchema } from '@myself/character-runtime';
 import { characterEmotionLabelSchema } from '@myself/shared-types';
-import type { AgentEvent, ModelMessage, PreparedToolRequest, RunContext } from './types';
+import type {
+  AgentEvent,
+  FilePlannerResult,
+  ModelMessage,
+  PreparedToolRequest,
+  RunContext
+} from './types';
+
+const FILE_PLANNER_QUESTION_MAX_LENGTH = 1_000;
 
 type ContinuationState = {
   messages: ModelMessage[];
@@ -13,6 +21,40 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+/** 只接受可直接展示给用户的、无扩展字段的 JSON 澄清协议。 */
+function parseFilePlannerClarification(text: string): Extract<
+  FilePlannerResult,
+  { kind: 'clarification_required' }
+> | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (
+    typeof value !== 'object'
+    || value === null
+    || Array.isArray(value)
+    || Object.keys(value).length !== 2
+  ) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    record.kind !== 'clarification_required'
+    || typeof record.question !== 'string'
+    || record.question.trim().length === 0
+    || record.question.length > FILE_PLANNER_QUESTION_MAX_LENGTH
+  ) return null;
+  if (!Object.hasOwn(record, 'kind') || !Object.hasOwn(record, 'question')) return null;
+  return { kind: 'clarification_required', question: record.question };
+}
+
+function filePlanProtocolError(): Error {
+  return Object.assign(new Error('FILE_PLAN_PROTOCOL_INVALID'), {
+    code: 'FILE_PLAN_PROTOCOL_INVALID'
+  });
+}
+
 export class AgentLoop {
   private readonly continuations = new Map<string, ContinuationState>();
 
@@ -21,7 +63,7 @@ export class AgentLoop {
       ...context.messages,
       { role: 'user' as const, content: userText }
     ];
-    yield* this.continueRun(messages, 0, context);
+    yield* this.continueRun(messages, 0, context, false);
   }
 
   async *resume(
@@ -43,7 +85,7 @@ export class AgentLoop {
       yield { type: 'phase', phase: 'success' };
       return;
     }
-    yield* this.continueRun(continuation.messages, continuation.nextTurn, context);
+    yield* this.continueRun(continuation.messages, continuation.nextTurn, context, true);
   }
 
   discard(continuationToken: string): void {
@@ -53,7 +95,8 @@ export class AgentLoop {
   private async *continueRun(
     messages: ModelMessage[],
     startTurn: number,
-    context: RunContext
+    context: RunContext,
+    hasTrustedToolResult: boolean
   ): AsyncGenerator<AgentEvent> {
     if (context.signal.aborted) {
       yield { type: 'phase', phase: 'cancelled' };
@@ -81,6 +124,22 @@ export class AgentLoop {
       }
 
       if (response.type === 'text') {
+        if (context.protocol === 'file_planner' && !hasTrustedToolResult) {
+          const clarification = parseFilePlannerClarification(response.text);
+          if (!clarification) {
+            if (correctionUsed) throw filePlanProtocolError();
+            correctionUsed = true;
+            // 该修复指令不改变本次 tools 或权限，仅要求重发受限协议结果。
+            messages.push({
+              role: 'system',
+              content: 'FILE_PLAN_PROTOCOL_INVALID：首次真实工具结果前，只能调用已提供的工具，或返回严格 JSON {"kind":"clarification_required","question":"非空问题"}。请仅修正一次。'
+            });
+            continue;
+          }
+          yield { type: 'message', text: clarification.question };
+          yield { type: 'phase', phase: 'success' };
+          return;
+        }
         if (response.emotion !== undefined) {
           const emotion = characterEmotionLabelSchema.safeParse(response.emotion);
           if (!emotion.success) throw new Error('AGENT_INVALID_EMOTION');
@@ -146,6 +205,7 @@ export class AgentLoop {
         toolCallId: prepared.request.requestId,
         content: JSON.stringify(result)
       });
+      hasTrustedToolResult = true;
     }
 
     throw new Error('AGENT_MAX_TURNS');

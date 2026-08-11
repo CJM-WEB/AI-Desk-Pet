@@ -58,6 +58,17 @@ function verifiedAction(): VerifiedWriteAction {
   });
 }
 
+function readResponse(requestId = 'read-1'): ModelResponse {
+  return {
+    type: 'tool_request',
+    request: {
+      requestId,
+      toolName: 'builtin.files.list_directory',
+      arguments: { relativePath: '.' }
+    }
+  };
+}
+
 class DeferredProvider implements ModelProvider {
   readonly requests: ModelRequest[] = [];
   private resolveResponse!: (response: ModelResponse) => void;
@@ -72,6 +83,24 @@ class DeferredProvider implements ModelProvider {
 
   resolve(response: ModelResponse): void {
     this.resolveResponse(response);
+  }
+}
+
+class RepairDeferredProvider implements ModelProvider {
+  readonly requests: ModelRequest[] = [];
+  private readonly responses: Array<(response: ModelResponse) => void> = [];
+
+  respond(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(structuredClone(request));
+    return new Promise(resolve => {
+      this.responses.push(resolve);
+    });
+  }
+
+  resolve(index: number, response: ModelResponse): void {
+    const resolve = this.responses[index];
+    if (!resolve) throw new Error('缺少待完成的模型响应');
+    resolve(response);
   }
 }
 
@@ -170,6 +199,61 @@ function phases(events: TaskEvent[]) {
 }
 
 describe('AgentService', () => {
+  test('文件任务在连续两次工具前伪成功时公开稳定错误且不泄露模型正文', async () => {
+    const firstViolation = '我没有权限执行这个文件任务';
+    const secondViolation = '文件已经创建完成';
+    const provider = new ScriptedProvider([
+      { type: 'text', text: firstViolation },
+      { type: 'text', text: secondViolation }
+    ]);
+    const { events, service, session } = createHarness(provider);
+
+    await expect(service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] }))
+      .rejects.toMatchObject({ code: 'FILE_PLAN_PROTOCOL_INVALID' });
+
+    expect(phases(events)).toEqual(['thinking', 'error']);
+    expect(events).not.toContainEqual({ type: 'phase', phase: 'success' });
+    expect(JSON.stringify(events)).not.toContain(firstViolation);
+    expect(JSON.stringify(events)).not.toContain(secondViolation);
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1]?.tools).toEqual(provider.requests[0]?.tools);
+    expect(session.messages).toEqual([]);
+  });
+
+  test('文件任务在首次工具前公开严格 JSON 所表达的澄清问题', async () => {
+    const { events, service } = createHarness(new ScriptedProvider([{
+      type: 'text',
+      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+    }]));
+
+    await service.submitFileTask({ text: '创建文件', visibleHistory: [] });
+
+    expect(events).toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'message', role: 'assistant', text: '请提供目标文件名' },
+      { type: 'phase', phase: 'success' }
+    ]);
+  });
+
+  test('重置后迟到的协议修复响应不公开消息也不写入会话历史', async () => {
+    const provider = new RepairDeferredProvider();
+    const { events, service, session } = createHarness(provider);
+    const submitting = service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
+    await vi.waitFor(() => expect(provider.requests).toHaveLength(1));
+
+    provider.resolve(0, { type: 'text', text: '文件已经创建完成' });
+    await vi.waitFor(() => expect(provider.requests).toHaveLength(2));
+    const resetting = service.resetForNewConversation();
+    provider.resolve(1, {
+      type: 'text',
+      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+    });
+    await Promise.all([submitting, resetting]);
+
+    expect(events).toEqual([{ type: 'phase', phase: 'thinking' }]);
+    expect(session.messages).toEqual([]);
+  });
+
   test('文件任务只发布 Agent 结果，并按系统消息、可见历史、当前用户消息的顺序请求模型', async () => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',
@@ -241,7 +325,10 @@ describe('AgentService', () => {
 
   test('首次等待前复制可见历史，调用方后续篡改不改变模型输入', async () => {
     const sessionGate = deferred();
-    const provider = new ScriptedProvider([{ type: 'text', text: '完成' }]);
+    const provider = new ScriptedProvider([{
+      type: 'text',
+      text: '{"kind":"clarification_required","question":"请补充目标文件名"}'
+    }]);
     const harness = createHarness(
       provider,
       {},
@@ -276,7 +363,7 @@ describe('AgentService', () => {
   test('行为意图只调用内部回调且不广播到 Renderer 任务事件', async () => {
     const emitBehaviorIntent = vi.fn();
     const { events, service } = createHarness(
-      new ScriptedProvider([{
+      new ScriptedProvider([readResponse(), {
         type: 'text',
         text: '处理完成',
         behaviorIntent: {
@@ -313,17 +400,34 @@ describe('AgentService', () => {
       keywords: [],
       emotions: ['happy']
     }]);
-    const provider = new OpenAICompatibleProvider(
-      { baseUrl: 'https://provider.example/v1', modelId: 'test-model' },
-      async () => 'secret',
-      vi.fn(async () => new Response(JSON.stringify({
+    const fetchClient = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: 'read-1',
+              type: 'function',
+              function: {
+                name: 'builtin.files.list_directory',
+                arguments: '{"relativePath":"."}'
+              }
+            }]
+          }
+        }]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
         choices: [{
           message: {
             content: '处理完成',
             metadata: { emotion: 'happy' }
           }
         }]
-      }), { status: 200 }))
+      }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(
+      { baseUrl: 'https://provider.example/v1', modelId: 'test-model' },
+      async () => 'secret',
+      fetchClient
     );
     const harness = createHarness(
       provider,
@@ -338,6 +442,7 @@ describe('AgentService', () => {
 
     expect(harness.events).toEqual([
       { type: 'phase', phase: 'thinking' },
+      { type: 'phase', phase: 'acting' },
       { type: 'character_emotion', label: 'happy' },
       { type: 'message', role: 'assistant', text: '处理完成' },
       { type: 'phase', phase: 'success' }
@@ -350,7 +455,7 @@ describe('AgentService', () => {
   });
 
   test('AgentLoop 情绪事件转换为无自由文本推测的 character_emotion 任务事件', async () => {
-    const { events, service } = createHarness(new ScriptedProvider([{
+    const { events, service } = createHarness(new ScriptedProvider([readResponse(), {
       type: 'text',
       text: '完成',
       emotion: 'happy'
@@ -366,13 +471,16 @@ describe('AgentService', () => {
     const firstError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
     const secondError = Object.assign(new Error('PRIMARY_DOWN'), { retryable: true });
     const primary = new ScriptedProvider([firstError, secondError]);
-    const fallback = new ScriptedProvider([{ type: 'text', text: '备用模型已响应' }]);
+    const fallback = new ScriptedProvider([
+      readResponse(),
+      { type: 'text', text: '备用模型已响应' }
+    ]);
     const { events, service } = createHarness(primary, {}, true, [fallback]);
 
     await service.submitFileTask({ text: '继续任务', visibleHistory: [] });
 
     expect(primary.requests).toHaveLength(2);
-    expect(fallback.requests).toHaveLength(1);
+    expect(fallback.requests).toHaveLength(2);
     expect(events).toContainEqual({
       type: 'message',
       role: 'assistant',
@@ -878,15 +986,16 @@ describe('AgentService', () => {
     });
     const provider = new ScriptedProvider([
       retryableError,
+      readResponse(),
       { type: 'text', text: '重试成功' }
     ]);
     const { events, service } = createHarness(provider);
 
     await service.submitFileTask({ text: '调用模型', visibleHistory: [] });
 
-    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests).toHaveLength(3);
     expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '重试成功' });
-    expect(phases(events)).toEqual(['thinking', 'success']);
+    expect(phases(events)).toEqual(['thinking', 'acting', 'success']);
   });
 
   test('无效输入返回明确的公开错误码', async () => {

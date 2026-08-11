@@ -102,6 +102,7 @@ function publicErrorEvent(error: unknown): Extract<TaskEvent, { type: 'error' }>
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
     INPUT_INVALID: '消息不能为空且不能超过 4000 个字符。',
     TOOL_PERMISSION_DENIED: '该工具操作未获本地权限策略允许。',
+    FILE_PLAN_PROTOCOL_INVALID: '文件任务需要先调用真实工具，或提出格式正确的澄清问题。',
     FILE_TASK_USER_CANCELLED: '回收站操作已取消，文件未被移动。',
     FILE_TASK_PLAYBACK_UNAVAILABLE: '当前角色无法播放搬运动作，文件未被移动。',
     FILE_TASK_PLAYBACK_CANCELLED: '搬运动画未完成，文件未被移动。',
@@ -617,7 +618,9 @@ export class AgentService {
         : providerWithFallback(session.provider, session.fallbackProviders ?? []),
       tools: session.tools,
       toolRuntime: session.toolRuntime,
-      signal
+      signal,
+      // 文件任务显式启用首个真实工具结果前的受限规划协议；聊天默认不受影响。
+      protocol: 'file_planner'
     };
   }
 
