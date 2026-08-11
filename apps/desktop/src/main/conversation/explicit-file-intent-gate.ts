@@ -16,6 +16,7 @@ type TextRange = readonly [start: number, end: number];
 type StructureSlot = Readonly<{
   kind: 'operation' | 'target';
   range: TextRange;
+  sourceMarkerIndex: number | null;
 }>;
 
 const localObjectCandidatePattern = /(?:[a-z][a-z\d+.-]*:\/\/[^\s“”"'（）()<>，,。！？!?；;]+|\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|(?:[^\s“”"'（）()<>\\/，,。！？!?；;]+[\\/])+[^\s“”"'（）()<>\\/，,。！？!?；;]+|[^\s“”"'（）()<>\\/，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件夹|文件|目录)|授权目录|文件夹|文件|目录)/giu;
@@ -81,6 +82,13 @@ function isLocalObjectCandidate(candidate: string, allowPublicSuffix: boolean): 
 /** 英文点号仅在后接空白或文本结束时作为句号，文件名内部点号不分句。 */
 function hasSentenceBoundary(text: string): boolean {
   return /[，,。！？!?；;\n]|\.(?=\s|$)/u.test(text);
+}
+
+function isSentenceBoundaryAt(text: string, index: number): boolean {
+  const character = text[index];
+  return character === '.'
+    ? text[index + 1] === undefined || /\s/u.test(text[index + 1] ?? '')
+    : /[，,。！？!?；;\n]/u.test(character ?? '');
 }
 
 function isWordInternalApostrophe(text: string, index: number): boolean {
@@ -163,7 +171,8 @@ function hasChineseSourceTargetConnection(
   text: string,
   operationRange: TextRange,
   sourceRange: TextRange,
-  targetRange: TextRange
+  targetRange: TextRange,
+  sourceMarkerIndex: number | null
 ): boolean {
   if (sourceRange[1] > operationRange[0]
     || operationRange[1] > targetRange[0]
@@ -172,13 +181,7 @@ function hasChineseSourceTargetConnection(
     || !/^\s*(?:为|到|至)\s*$/u.test(text.slice(operationRange[1], targetRange[0]))) {
     return false;
   }
-  const markerIndex = Math.max(
-    text.lastIndexOf('把', sourceRange[0]),
-    text.lastIndexOf('将', sourceRange[0])
-  );
-  return markerIndex >= 0
-    && !hasSentenceBoundary(text.slice(markerIndex, sourceRange[0]))
-    && text.slice(markerIndex + 1, sourceRange[0]).trim().length === 0;
+  return sourceMarkerIndex !== null;
 }
 
 /** 强文件结构必须存在真实源到目标连接，不能由操作词与两个近邻候选凑成。 */
@@ -188,15 +191,41 @@ function hasStrongFileStructure(text: string, targetRanges: readonly TextRange[]
   const orderedSlots: StructureSlot[] = [];
   let operationIndex = 0;
   let targetIndex = 0;
+  let scannedUntil = 0;
+  let recentMarkerIndex: number | null = null;
+  let markerHasOnlyWhitespace = true;
+  const appendSlot = (kind: StructureSlot['kind'], range: TextRange): void => {
+    for (let index = scannedUntil; index < range[0]; index += 1) {
+      const character = text[index];
+      if (isSentenceBoundaryAt(text, index)) {
+        recentMarkerIndex = null;
+        markerHasOnlyWhitespace = true;
+      } else if (character === '把' || character === '将') {
+        recentMarkerIndex = index;
+        markerHasOnlyWhitespace = true;
+      } else if (recentMarkerIndex !== null && !/\s/u.test(character ?? '')) {
+        markerHasOnlyWhitespace = false;
+      }
+    }
+    orderedSlots.push({
+      kind,
+      range,
+      sourceMarkerIndex: markerHasOnlyWhitespace ? recentMarkerIndex : null
+    });
+    if (recentMarkerIndex !== null) {
+      markerHasOnlyWhitespace = false;
+    }
+    scannedUntil = Math.max(scannedUntil, range[1]);
+  };
   while (operationIndex < operationRanges.length || targetIndex < targetRanges.length) {
     const operationRange = operationRanges[operationIndex];
     const targetRange = targetRanges[targetIndex];
     if (operationRange !== undefined
       && (targetRange === undefined || operationRange[0] < targetRange[0])) {
-      orderedSlots.push({ kind: 'operation', range: operationRange });
+      appendSlot('operation', operationRange);
       operationIndex += 1;
     } else if (targetRange !== undefined) {
-      orderedSlots.push({ kind: 'target', range: targetRange });
+      appendSlot('target', targetRange);
       targetIndex += 1;
     }
   }
@@ -214,7 +243,13 @@ function hasStrongFileStructure(text: string, targetRanges: readonly TextRange[]
       return true;
     }
     if (first.kind === 'target' && second.kind === 'operation' && third.kind === 'target'
-      && hasChineseSourceTargetConnection(text, second.range, first.range, third.range)) {
+      && hasChineseSourceTargetConnection(
+        text,
+        second.range,
+        first.range,
+        third.range,
+        first.sourceMarkerIndex
+      )) {
       return true;
     }
   }

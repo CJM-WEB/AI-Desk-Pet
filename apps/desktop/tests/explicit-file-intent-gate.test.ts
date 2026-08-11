@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { ExplicitFileIntentGate } from '../src/main/conversation/explicit-file-intent-gate';
 
 describe('ExplicitFileIntentGate', () => {
@@ -139,6 +139,19 @@ describe('ExplicitFileIntentGate', () => {
   test('有界多候选讨论不因双目标全组合阻塞 Main', () => {
     const boundedInput = `${'rename '.repeat(240)}${'a.md '.repeat(400)}`;
     expect(ExplicitFileIntentGate.classify(boundedInput)).toEqual({ kind: 'chat' });
+  });
+
+  test('中文双目标槽以前向标记状态取代逐槽回溯查询', () => {
+    const boundedInput = '把。a.md 重命名为 b.md。'.repeat(100);
+    const lastIndexOfSpy = vi.spyOn(String.prototype, 'lastIndexOf');
+    try {
+      expect(ExplicitFileIntentGate.classify(boundedInput)).toEqual({ kind: 'chat' });
+      const markerLookups = lastIndexOfSpy.mock.calls.filter(([searchText]) =>
+        searchText === '把' || searchText === '将');
+      expect(markerLookups).toHaveLength(0);
+    } finally {
+      lastIndexOfSpy.mockRestore();
+    }
   });
 
   test('英文句号隔开的操作与目标不组成文件任务', () => {
