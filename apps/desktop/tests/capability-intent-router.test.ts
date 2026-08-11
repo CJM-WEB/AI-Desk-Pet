@@ -222,9 +222,21 @@ describe('能力意图路由器', () => {
     '执行这条命令有什么风险？',
     '运行 PowerShell 安全吗？',
     '运行 PowerShell 好不好？',
-    '运行 PowerShell 值得吗？'
+    '运行 PowerShell 值得吗？',
+    '运行 git 安全吗？',
+    '运行 node 合适吗？',
+    'Run git - is that safe?'
   ])('讨论 Shell 执行“%s”时归为普通聊天', text => {
     expectIntentKind(text, 'chat');
+  });
+
+  test.each([
+    '执行这条命令 node -e "console.log(\'safe?\')"',
+    '运行 node --label "is that safe?"',
+    '运行 .\\scripts\\build.ps1 "参数安全吗？"',
+    '执行这条命令 node ".\\脚本\\构建.js"'
+  ])('引号内的疑问参数与中文路径使“%s”保持 PowerShell 任务', text => {
+    expectIntentKind(text, 'powershell_task');
   });
 
   test.each([

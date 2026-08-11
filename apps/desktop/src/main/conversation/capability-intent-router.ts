@@ -351,10 +351,23 @@ function hasExecutionStructure(
   return targetRanges.some(([start]) => !hasSentenceBoundary(text.slice(0, start)));
 }
 
-/** ASCII 可执行标识或显式相对脚本路径加有界参数才构成 Shell 正向证据。 */
+/**
+ * 未引用的 Unicode 尾部无法与自然语言评价稳定区分，句尾问号则表示咨询结构；
+ * 二者在歧义时均保守回落聊天，成对引号内的命令参数不参与该判断。
+ */
+function hasUnquotedNaturalLanguageTail(commandText: string): boolean {
+  const unquotedCommandText = maskQuotedText(commandText);
+  const argumentStart = unquotedCommandText.search(/\s/u);
+  if (argumentStart < 0) return false;
+  const unquotedArguments = unquotedCommandText.slice(argumentStart).trim();
+  return /[^\x00-\x7f]/u.test(unquotedArguments) || /\?\s*$/u.test(unquotedArguments);
+}
+
+/** ASCII 可执行标识或显式相对脚本路径加有界、非咨询尾部参数才构成 Shell 正向证据。 */
 function isShellCommandPayload(payload: string): boolean {
   const withoutShellHost = payload.trim().replace(/^powershell\s+/iu, '');
-  return shellCommandPayloadPattern.test(withoutShellHost);
+  return shellCommandPayloadPattern.test(withoutShellHost)
+    && !hasUnquotedNaturalLanguageTail(withoutShellHost);
 }
 
 /** 只有用户消息开头的明确执行措辞及可验证载荷才能进入 Shell 能力分支。 */
