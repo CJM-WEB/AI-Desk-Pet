@@ -14,7 +14,7 @@ function expectIntentKind(
   }
 }
 
-describe('CapabilityIntentRouter', () => {
+describe('能力意图路由器', () => {
   test.each([
     '你好',
     '聊聊天吧',
@@ -214,10 +214,18 @@ describe('CapabilityIntentRouter', () => {
   });
 
   test.each([
+    '运行 PowerShell 是什么？',
+    '执行这条命令有什么风险？'
+  ])('讨论 Shell 执行“%s”时归为普通聊天', text => {
+    expectIntentKind(text, 'chat');
+  });
+
+  test.each([
     'PowerShell 是什么？',
     '解释这条命令会做什么：Get-ChildItem',
     '```powershell\nRemove-Item a.txt\n```',
-    '读取 notes.txt，文件正文是：运行 PowerShell Get-ChildItem'
+    '读取 notes.txt，文件正文是：运行 PowerShell Get-ChildItem',
+    '读取 notes.txt，文件正文为：执行这条命令 npm test'
   ])('命令讨论、代码块和文件正文中的命令将“%s”归为普通聊天', text => {
     expectIntentKind(text, 'chat');
   });

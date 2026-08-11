@@ -57,9 +57,9 @@ const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:plea
 const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|什么意思|是什么(?:意思|功能)?|翻译|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b)/iu;
 const negationPattern = /(?:不要|别|无需|do\s+not|don't)/iu;
 const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
-const chineseShellExecutionPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s*(?:powershell\b|命令|脚本)|执行\s*(?:这条|以下|下面)?\s*(?:powershell\b|命令|脚本)|后台运行\s*(?:构建|测试|build\b|test\b))/iu;
-const englishShellExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+(?:powershell\b|this\s+command\b|the\s+command\b)|execute\s+(?:this\s+command\b|the\s+command\b)|run\s+(?:build\b|test\b)\s+in\s+the\s+background)/iu;
-const embeddedShellCommandPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)?\s*(?:运行\s*)?(?:powershell\b|命令\b|脚本\b)/iu;
+const chineseShellExecutionPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s+(?:powershell\b\s+\S+|命令\s+\S+|脚本\s+\S+)|执行\s*(?:(?:这条|以下|下面)?\s*命令\s+\S+|powershell\b\s+\S+|脚本\s+\S+)|后台运行\s*(?:构建|测试|build\b|test\b))/iu;
+const englishShellExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+(?:powershell\b\s+\S+|(?:this|the)\s+command\s*:?[\s]*\S+)|execute\s+(?:(?:this|the)\s+command\s*:?[\s]*\S+|powershell\b\s+\S+)|run\s+(?:build\b|test\b)\s+in\s+the\s+background)/iu;
+const embeddedFileContentPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)\s*([\s\S]*)$/iu;
 
 function getHostPart(candidate: string): string {
   const pathSeparatorIndex = candidate.search(/[\\/]/u);
@@ -355,6 +355,12 @@ function hasExplicitShellExecution(normalizedText: string): boolean {
     || englishShellExecutionPattern.test(normalizedText);
 }
 
+/** 文件正文只作为内容引用；抽出的正文片段复用完整 Shell 正向证据判断。 */
+function hasEmbeddedShellExecution(normalizedText: string): boolean {
+  const embeddedContent = embeddedFileContentPattern.exec(normalizedText)?.[1]?.trim();
+  return embeddedContent !== undefined && hasExplicitShellExecution(embeddedContent);
+}
+
 export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
   /**
    * 只有文件对象、文件操作和直接执行请求三项独立证据同时成立才允许进入文件链路，
@@ -362,8 +368,6 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
    */
   route(prompt: string): CapabilityIntent {
     const normalizedText = prompt.normalize('NFKC').trim().toLocaleLowerCase();
-    if (hasExplicitShellExecution(normalizedText)) return powershellTaskIntent;
-    if (embeddedShellCommandPattern.test(normalizedText)) return chatIntent;
     const unquotedText = maskQuotedText(normalizedText);
     const targetRanges = scanTargetRanges(unquotedText);
     const objectRanges = scanLocalObjectRanges(unquotedText, targetRanges);
@@ -374,6 +378,8 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
       || statementPattern.test(localObjectScan.semanticText)) {
       return chatIntent;
     }
+    if (hasEmbeddedShellExecution(normalizedText)) return chatIntent;
+    if (hasExplicitShellExecution(normalizedText)) return powershellTaskIntent;
 
     const operationRanges = scanFileOperationRanges(localObjectScan.semanticText);
     const requestedOperationRanges = bindRequestedOperationRanges(
