@@ -6,7 +6,7 @@
 
 **Architecture:** Main 每次拖拽冻结 `PetGeometrySnapshot` 并创建 epoch；每帧都以初始全局 DIP 光标和初始脚底锚点计算总位移，钳制可见矩形后反推透明窗口原点。拖拽期间只有控制器能写窗口位置。
 
-## Task D1：建立不触边的真实漂移 RED
+## Task 1（D1）：建立不触边的真实漂移 RED
 
 **Files:**
 
@@ -19,7 +19,7 @@
 - [ ] 运行 desktop build + `pnpm.cmd test:e2e:desktop -- --grep "连续拖拽不向左上漂移"`，要求旧实现真实失败；若 10 分钟内不能复现，依次改用缩放 100%、固定动作、禁用自动行为的更窄矩阵，不能先写修复。
 - [ ] 保存事件序列：Renderer pointer、Main begin/end、window move/will-move/moved、Motion userMoving、geometry revision；只记录类别和相对计数。
 
-## Task D2：把拖拽数学提取为单一纯模块
+## Task 2（D2）：把拖拽数学提取为单一纯模块
 
 **Files:**
 
@@ -41,7 +41,7 @@ type DragSession = Readonly<{
 - [ ] GREEN：导出 `createDragSession` 和 `resolveDragFrame` 两个小接口；纯函数不访问 Electron、计时器或设置。
 - [ ] 运行 `pnpm.cmd --filter @myself/desktop test -- pet-drag-session.test.ts`，提交 `feat: 建立桌宠拖拽纯坐标模型`。
 
-## Task D3：Main 独占拖拽 epoch 和窗口写入
+## Task 3（D3）：Main 独占拖拽 epoch 和窗口写入
 
 **Files:**
 
@@ -56,7 +56,7 @@ type DragSession = Readonly<{
 - [ ] 删除被替代的 expected-position/事件重入补偿分支；若删除范围超过少量局部代码，先由主控按“大量删除”规则取得二次批准。
 - [ ] 提交 `fix: 让 Main 独占桌宠拖拽位置`。
 
-## Task D4：拖拽期间冻结几何并原子收口
+## Task 4（D4）：拖拽期间冻结几何并原子收口
 
 **Files:**
 
@@ -70,7 +70,7 @@ type DragSession = Readonly<{
 - [ ] GREEN：Geometry 提供 `beginDragSnapshot/commitDeferredUpdates/cancelDeferredUpdates`；Controller close 等待原子收口。
 - [ ] 提交 `fix: 原子处理拖拽期间几何变化`。
 
-## Task D5：迁移位置持久化和跨屏/DPI
+## Task 5（D5）：迁移位置持久化和跨屏/DPI
 
 **Files:**
 
@@ -83,7 +83,7 @@ type DragSession = Readonly<{
 - [ ] GREEN：保存队列以 geometry revision 去重；退出 freeze/flush 等待最后合法位置；旧 top-left 读取路径在 G3 迁移后删除。
 - [ ] 提交 `fix: 持久化桌宠拖拽脚底锚点`。
 
-## Task D6：真实 Electron 复验与最终门禁
+## Task 6（D6）：真实 Electron 复验与最终门禁
 
 **Files:**
 

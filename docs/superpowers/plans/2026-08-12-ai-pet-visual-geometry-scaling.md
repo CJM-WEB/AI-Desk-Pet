@@ -6,7 +6,7 @@
 
 **Architecture:** 角色编译阶段生成稳定视觉元数据；Renderer 只报告经过 schema 限制的当前表现几何和滚轮档位；Main `PetVisualGeometry` 校验并持有不可变快照，运动、位置恢复和窗口布局只能消费该快照。
 
-## Task G1：为角色表现生成稳定视觉包围盒
+## Task 1（G1）：为角色表现生成稳定视觉包围盒
 
 **Files:**
 
@@ -36,7 +36,7 @@ type PresentationGeometryV2 = Readonly<{
 - [ ] RED/GREEN：V1/旧 V2 在可信导入时补齐；内置或既有角色绕过导入而首次加载时，由 `character-migrations` 在发布到运行态前原子生成并保存一次。生成失败使用经过 schema 验证的保守默认并报告资源错误，不保留运行双轨。
 - [ ] 运行 character-runtime 和 atlas 定向测试；提交 `feat: 编译角色动作视觉包围盒`。
 
-## Task G2：建立 Main 几何权威
+## Task 2（G2）：建立 Main 几何权威
 
 **Files:**
 
@@ -62,7 +62,7 @@ type PetGeometrySnapshot = Readonly<{
 - [ ] GREEN：快照始终 structuredClone/freeze；非法更新保持最后已验证快照并返回稳定错误码。
 - [ ] 提交 `feat: 建立桌宠视觉几何权威`。
 
-## Task G3：按角色持久缩放和脚底锚点位置
+## Task 3（G3）：按角色持久缩放和脚底锚点位置
 
 **Files:**
 
@@ -84,7 +84,7 @@ type StoredPetPlacement = Readonly<{
 - [ ] RED：显示器消失、负坐标、损坏设置安全恢复到主显示器可见默认；已有主动性和隐私设置不被覆盖。
 - [ ] GREEN：设置 schema 新版本或兼容迁移一次完成，删除旧运行读取分支；提交 `refactor: 以脚底锚点持久桌宠位置`。
 
-## Task G4：像素命中滚轮缩放与原子窗口布局
+## Task 4（G4）：像素命中滚轮缩放与原子窗口布局
 
 **Files:**
 
@@ -106,7 +106,7 @@ type StoredPetPlacement = Readonly<{
 - [ ] GREEN：Renderer 只传档位，不传比例、坐标、characterId；Main 根据活动角色和当前快照计算，保存成功后广播新几何。
 - [ ] 运行 pet interaction、preload、CharacterPlayer 和 Main lifecycle 测试；提交 `feat: 支持桌宠像素命中滚轮缩放`。
 
-## Task G5：运动和屏幕边界改用可见包围盒
+## Task 5（G5）：运动和屏幕边界改用可见包围盒
 
 **Files:**
 
@@ -120,7 +120,7 @@ type StoredPetPlacement = Readonly<{
 - [ ] GREEN：`constrainTarget` 只消费 `PetGeometrySnapshot`；删除固定 window size 作为运动权威的代码，保留 BrowserWindow bounds 仅为布局结果。
 - [ ] 提交 `fix: 以可见角色范围约束桌宠运动`。
 
-## Task G6：视觉几何纵向验收
+## Task 6（G6）：视觉几何纵向验收
 
 **Files:**
 

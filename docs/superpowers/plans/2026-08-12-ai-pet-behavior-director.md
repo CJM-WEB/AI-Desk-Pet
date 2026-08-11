@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript、Zod、character-runtime、agent-core、Electron、React、Vitest、Playwright。
 
-## Task B1：定义无权限行为计划协议
+## Task 1（B1）：定义无权限行为计划协议
 
 **Files:**
 
@@ -32,7 +32,7 @@ type CharacterBehaviorPlan =
 - [ ] GREEN：导出严格 Zod schema 和冻结类型；增加 `ModelRequest.responseContract` 与 `ModelResponse.structured_output`，明确它不是 ToolDefinition，不能进入 ToolRuntime。
 - [ ] 运行 `pnpm.cmd exec vitest run --project character-runtime packages/character-runtime/tests/character-behavior-plan.test.ts` 和 agent-core contracts；提交 `feat: 定义无权限角色行为计划`。
 
-## Task B2：同一次聊天返回正文与行为
+## Task 2（B2）：同一次聊天返回正文与行为
 
 **Files:**
 
@@ -59,7 +59,7 @@ type ConversationBehaviorContext = Readonly<{
 - [ ] GREEN：Adapter 返回 `{ text, emotion?, behaviorPlan? }`；移除对非标准 `message.metadata.behaviorIntent` 的生产依赖，迁移后静态检索旧路径无命中。
 - [ ] 运行 Provider contract + ChatAdapter 定向测试；提交 `feat: 同次聊天生成受限行为计划`。
 
-## Task B3：建立 Main 行为导演和清单解析
+## Task 3（B3）：建立 Main 行为导演和清单解析
 
 **Files:**
 
@@ -80,7 +80,7 @@ type ConversationBehaviorContext = Readonly<{
 - [ ] GREEN：Director 只输出已验证 actionId；BehaviorService 仍通过引擎状态条件、表现可用性、冷却和 playback token 授权，不增加直接播放旁路。
 - [ ] 运行 director、service、engine、selector 定向测试；提交 `feat: 增加可信角色行为导演`。
 
-## Task B4：显式停止、恢复和受限空间移动
+## Task 4（B4）：显式停止、恢复和受限空间移动
 
 **Files:**
 
@@ -100,7 +100,7 @@ type ConversationBehaviorContext = Readonly<{
 - [ ] GREEN：按当前可见角色尺寸换算 near/medium/far，并把目标限制到当前/指定显示器安全区域。
 - [ ] 运行 Coordinator、Director、Motion、BehaviorService 定向测试；提交 `feat: 让提示词可靠驱动桌宠移动`。
 
-## Task B5：持久停止锁和新用户默认主动性
+## Task 5（B5）：持久停止锁和新用户默认主动性
 
 **Files:**
 
@@ -117,7 +117,7 @@ type ConversationBehaviorContext = Readonly<{
 - [ ] GREEN：Settings schema 新增 `movementStopped`；runtimeSupport 将 proactivity 标为已接入；复用现有三档控件，不新增重复设置入口。
 - [ ] 保存失败不得让内存状态假成功；设置变更触发 Director 原子更新；提交 `feat: 持久桌宠停止锁与主动性`。
 
-## Task B6：主动性调度与低频无权限反思
+## Task 6（B6）：主动性调度与低频无权限反思
 
 **Files:**
 
@@ -144,7 +144,7 @@ interface ConversationBehaviorPort {
 - [ ] RED：反思请求 `tools: []`、无文件/PowerShell端口、不向用户发布正文；失败静默跳过且有退避。
 - [ ] GREEN：随机源和时钟由构造器注入，生产使用安全随机；close 取消所有计时器并等待在途反思失效；提交 `feat: 实现三档桌宠主动行为`。
 
-## Task B7：组合接线与纵向验收
+## Task 7（B7）：组合接线与纵向验收
 
 **Files:**
 

@@ -18,7 +18,7 @@
 
 ---
 
-## Task C1：统一能力意图路由并删除旧双路由
+## Task 1（C1）：统一能力意图路由并删除旧双路由
 
 **Files:**
 
@@ -48,7 +48,7 @@ export interface CapabilityIntentRouter {
 - [ ] Coordinator 只调用新 Router；迁移全部旧测试后删除 `ExplicitFileIntentGate`，静态检索旧名应无命中。
 - [ ] 提交 `refactor: 统一桌宠能力意图路由`。
 
-## Task C2：约束文件 Agent 首次工具协议
+## Task 2（C2）：约束文件 Agent 首次工具协议
 
 **Files:**
 
@@ -72,7 +72,7 @@ type FilePlannerResult =
 - [ ] 最小 GREEN：把“计划阶段”和“总结阶段”建成判别联合；修复请求不携带额外权限；不把违规模型正文写入历史。
 - [ ] 运行 AgentLoop 与 AgentService 定向测试并提交 `fix: 强制文件计划先调用真实工具`。
 
-## Task C3：补齐文件工具与快照执行
+## Task 3（C3）：补齐文件工具与快照执行
 
 **Files:**
 
@@ -103,7 +103,7 @@ type VerifiedWriteAction = Readonly<{
 - [ ] 每个操作逐一最小实现并复跑，禁止一次写完全部实现后才验证。
 - [ ] 对所有返回值冻结或克隆；错误只使用稳定码和相对摘要；提交 `feat: 补齐授权根内文件工具`。
 
-## Task C4：扩展工具注册和确认卡契约
+## Task 4（C4）：扩展工具注册和确认卡契约
 
 **Files:**
 
@@ -141,7 +141,7 @@ type ShellActionSummary = Readonly<{
 - [ ] 注册 C3 新工具，所有写工具为 recoverable/confirmed；公开事件不得带正文、哈希、绝对路径或 capability token。
 - [ ] 提交 `feat: 展示并绑定文件写入确认快照`。
 
-## Task C5：PowerShell AST 策略与受控前台执行
+## Task 5（C5）：PowerShell AST 策略与受控前台执行
 
 **Files:**
 
@@ -171,7 +171,7 @@ run(plan: VerifiedShellPlan, signal: AbortSignal): Promise<ShellResult>;
 - [ ] 明示 Job Object 只保证生命周期。extended 的原生命令/外部脚本只能宣传为“当前用户高风险逐次确认”，可识别的直接提权/凭据/永久删除硬拒绝；不得声称能阻止外部程序的间接越权。
 - [ ] 运行 `pnpm.cmd --filter @myself/desktop test -- powershell-ast-policy.test.ts powershell-process-runner.test.ts`，提交 `feat: 增加受控 PowerShell 前台执行`。
 
-## Task C6：受管理后台 PowerShell 任务
+## Task 6（C6）：受管理后台 PowerShell 任务
 
 **Files:**
 
@@ -199,7 +199,7 @@ interface PowerShellTaskManager {
 - [ ] 最小 GREEN：内存任务表只保存状态、计数和有界脱敏输出；Renderer 不得到 PID、绝对 cwd 或原始环境。
 - [ ] IPC 输入严格 `.strict()`，preload 精确白名单；提交 `feat: 管理后台 PowerShell 任务`。
 
-## Task C7：统一协调器、Renderer 和纵向验收
+## Task 7（C7）：统一协调器、Renderer 和纵向验收
 
 **Files:**
 
