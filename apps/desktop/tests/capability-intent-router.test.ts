@@ -207,6 +207,7 @@ describe('能力意图路由器', () => {
 
   test.each([
     '运行 PowerShell Get-ChildItem',
+    '请运行 Get-ChildItem',
     '执行这条命令 npm test',
     '后台运行构建'
   ])('明确请求运行命令时将“%s”归为 PowerShell 任务', text => {
@@ -215,7 +216,10 @@ describe('能力意图路由器', () => {
 
   test.each([
     '运行 PowerShell 是什么？',
-    '执行这条命令有什么风险？'
+    '执行这条命令有什么风险？',
+    '运行 PowerShell 安全吗？',
+    '运行 PowerShell 好不好？',
+    '运行 PowerShell 值得吗？'
   ])('讨论 Shell 执行“%s”时归为普通聊天', text => {
     expectIntentKind(text, 'chat');
   });

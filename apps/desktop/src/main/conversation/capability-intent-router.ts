@@ -57,8 +57,10 @@ const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:plea
 const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|什么意思|是什么(?:意思|功能)?|翻译|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b)/iu;
 const negationPattern = /(?:不要|别|无需|do\s+not|don't)/iu;
 const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
-const chineseShellExecutionPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s+(?:powershell\b\s+\S+|命令\s+\S+|脚本\s+\S+)|执行\s*(?:(?:这条|以下|下面)?\s*命令\s+\S+|powershell\b\s+\S+|脚本\s+\S+)|后台运行\s*(?:构建|测试|build\b|test\b))/iu;
-const englishShellExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+(?:powershell\b\s+\S+|(?:this|the)\s+command\s*:?[\s]*\S+)|execute\s+(?:(?:this|the)\s+command\s*:?[\s]*\S+|powershell\b\s+\S+)|run\s+(?:build\b|test\b)\s+in\s+the\s+background)/iu;
+const chineseShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s+|执行\s*(?:(?:这条|以下|下面)?\s*(?:命令|powershell|脚本)\s+))([\s\S]+)$/iu;
+const englishShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+|execute\s+(?:(?:this|the)\s+command\s*:?\s*|powershell\s+))([\s\S]+)$/iu;
+const backgroundShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?后台运行\s*(?:构建|测试|build\b|test\b)$/iu;
+const shellCommandPayloadPattern = /^(?:[a-z][a-z\d]*-[a-z][a-z\d]*(?:\s+\S+)*|(?:npm|pnpm|yarn)\s+(?:run\s+\S+|test|build|start)(?:\s+\S+)*|(?:\.{0,2}[\\/])?[^\s\\/]+\.(?:ps1|cmd|bat)(?:\s+\S+)*)$/iu;
 const embeddedFileContentPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)\s*([\s\S]*)$/iu;
 
 function getHostPart(candidate: string): string {
@@ -349,10 +351,19 @@ function hasExecutionStructure(
   return targetRanges.some(([start]) => !hasSentenceBoundary(text.slice(0, start)));
 }
 
-/** 只有用户消息开头的明确执行措辞才能进入 Shell 能力分支。 */
+/** 只有保守命令形态的载荷才能构成 Shell 正向证据。 */
+function isShellCommandPayload(payload: string): boolean {
+  const withoutShellHost = payload.trim().replace(/^powershell\s+/iu, '');
+  return shellCommandPayloadPattern.test(withoutShellHost);
+}
+
+/** 只有用户消息开头的明确执行措辞及可验证载荷才能进入 Shell 能力分支。 */
 function hasExplicitShellExecution(normalizedText: string): boolean {
-  return chineseShellExecutionPattern.test(normalizedText)
-    || englishShellExecutionPattern.test(normalizedText);
+  if (backgroundShellRequestPattern.test(normalizedText)) return true;
+  const chinesePayload = chineseShellRequestPattern.exec(normalizedText)?.[1];
+  if (chinesePayload !== undefined) return isShellCommandPayload(chinesePayload);
+  const englishPayload = englishShellRequestPattern.exec(normalizedText)?.[1];
+  return englishPayload !== undefined && isShellCommandPayload(englishPayload);
 }
 
 /** 文件正文只作为内容引用；抽出的正文片段复用完整 Shell 正向证据判断。 */
