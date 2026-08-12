@@ -7,6 +7,7 @@ import {
 
 function publicData(targetRelativePath = 'result.txt') {
   return {
+    category: 'file' as const,
     conversationId: 'conversation-1',
     risk: 'write' as const,
     operation: 'create_file' as const,
@@ -17,9 +18,12 @@ function publicData(targetRelativePath = 'result.txt') {
 
 function privateAction(targetRelativePath = 'result.txt'): VerifiedWriteAction {
   return Object.freeze({
-    id: 'verified-action-1',
-    toolName: 'create_file' as const,
-    targetRelativePath
+    operation: 'create_file' as const,
+    authorizationGeneration: 0,
+    targetRelativePath,
+    contentCharacters: 0,
+    contentPreview: null,
+    previewTruncated: false
   });
 }
 

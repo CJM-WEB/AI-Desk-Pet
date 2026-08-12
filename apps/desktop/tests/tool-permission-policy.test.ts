@@ -199,29 +199,18 @@ describe('内置文件工具注册', () => {
     expect(createSessionToolRegistry(false).definitions()).toEqual([]);
     expect(createSessionToolRegistry(true).definitions().map(
       definition => definition.function.name
-    )).toContain('builtin.files.list_directory');
+    )).toContain('builtin.files.list_files');
   });
 
-  test('六个公开工具映射到内部动作和本地风险', () => {
+  test('五个公开工具精确映射到内部动作和本地风险', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
     const cases = [
-      ['builtin.files.list_directory', 'list_directory', 'read', { relativePath: '.' }],
-      ['builtin.files.read_text', 'read_text_file', 'read', { relativePath: 'notes.txt' }],
-      ['builtin.files.create_file', 'create_file', 'recoverable', { relativePath: 'new.txt' }],
-      ['builtin.files.create_directory', 'create_directory', 'recoverable', { relativePath: 'new' }],
-      [
-        'builtin.files.rename_entry',
-        'rename_entry',
-        'recoverable',
-        { sourceRelativePath: 'old.txt', targetRelativePath: 'new.txt' }
-      ],
-      [
-        'builtin.files.move_to_recycle_bin',
-        'move_to_recycle_bin',
-        'recoverable',
-        { relativePath: 'old.txt' }
-      ]
+      ['builtin.files.list_files', 'list_files', 'read', { relativePath: '.', maxDepth: 1, maxResults: 100 }],
+      ['builtin.files.read_file', 'read_file', 'read', { relativePath: 'notes.txt', startLine: 1, lineCount: 200 }],
+      ['builtin.files.create_file', 'create_file', 'recoverable', { relativePath: 'new.txt', content: '正文' }],
+      ['builtin.files.apply_patch', 'apply_patch', 'recoverable', { relativePath: 'new.txt', patch: '@@ -1 +1 @@\n-a\n+b\n' }],
+      ['builtin.files.delete_file', 'delete_file', 'recoverable', { relativePath: 'old.txt' }]
     ] as const;
 
     expect(registry.definitions().map(item => item.function.name)).toEqual(
@@ -243,14 +232,14 @@ describe('内置文件工具注册', () => {
     }
   });
 
-  test('内置参数 Schema 复用严格校验并拒绝附加字段', () => {
+  test('内置参数 Schema 允许创建正文并拒绝附加字段', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
 
     expect(() => registry.prepare({
       requestId: 'extra-argument-1',
       toolName: 'builtin.files.create_file',
-      arguments: { relativePath: 'new.txt', content: '不得进入审计或执行' }
+      arguments: { relativePath: 'new.txt', content: '正文', unexpected: true }
     }, policy)).toThrowError(expect.objectContaining({ code: 'TOOL_ARGUMENTS_INVALID' }));
   });
 
@@ -261,7 +250,7 @@ describe('内置文件工具注册', () => {
 
     const prepared = registry.prepare({
       requestId: 'absolute-path-1',
-      toolName: 'builtin.files.read_text',
+      toolName: 'builtin.files.read_file',
       arguments: { relativePath: absolutePath }
     }, policy);
 

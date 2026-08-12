@@ -22,7 +22,12 @@ export type PendingExecution = {
   continuationToken: string;
 };
 
-type PendingActionPublicData = Omit<PendingAction, 'actionId' | 'createdAt' | 'expiresAt'>;
+/** 对联合类型逐分支省略由存储层签发的字段，避免抹平动作专属摘要。 */
+export type PendingActionDraft = PendingAction extends infer Action
+  ? Action extends PendingAction
+    ? Omit<Action, 'actionId' | 'createdAt' | 'expiresAt'>
+    : never
+  : never;
 
 type StoredPendingAction = {
   publicAction: PendingAction;
@@ -44,7 +49,7 @@ export class PendingActionStore {
     this.onDiscard = options.onDiscard ?? (() => undefined);
   }
 
-  issue(publicData: PendingActionPublicData, privateExecution: PendingExecution): PendingAction {
+  issue(publicData: PendingActionDraft, privateExecution: PendingExecution): PendingAction {
     if (this.current) this.onDiscard(this.current.privateExecution, 'new_task');
     const now = this.now();
     const publicAction: PendingAction = {

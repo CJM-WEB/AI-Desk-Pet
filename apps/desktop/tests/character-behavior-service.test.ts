@@ -813,6 +813,7 @@ describe('Main 角色行为权威服务', () => {
     service.handleTaskEvent({
       type: 'pending_action',
       action: {
+        category: 'file',
         actionId: 'action-1',
         conversationId: 'conversation-1',
         risk: 'write',
@@ -873,6 +874,7 @@ describe('Main 角色行为权威服务', () => {
     service.handleTaskEvent({
       type: 'pending_action',
       action: {
+        category: 'file',
         actionId: 'action-timeout',
         conversationId: 'conversation-timeout',
         risk: 'write',
@@ -908,6 +910,7 @@ describe('Main 角色行为权威服务', () => {
     service.handleTaskEvent({
       type: 'pending_action',
       action: {
+        category: 'file',
         actionId: 'action-terminal-timeout',
         conversationId: 'conversation-terminal-timeout',
         risk: 'write',

@@ -285,12 +285,16 @@ describe('Renderer 可见组件', () => {
       taskStore.getState().apply({
         type: 'pending_action',
         action: {
+          category: 'file',
           actionId: 'old-action',
           conversationId: 'old-conversation',
           risk: 'write',
           operation: 'create_file',
           summary: '旧文件',
           targetRelativePath: 'old.txt',
+          contentCharacters: 0,
+          contentPreview: null,
+          previewTruncated: false,
           createdAt: '2026-08-10T12:00:00.000Z',
           expiresAt: '2026-08-10T12:02:00.000Z'
         }
@@ -304,18 +308,23 @@ describe('Renderer 可见组件', () => {
       taskStore.getState().apply({
         type: 'pending_action',
         action: {
+          category: 'file',
           actionId: 'new-action',
           conversationId: 'new-conversation',
           risk: 'write',
-          operation: 'create_directory',
+          operation: 'apply_patch',
           summary: '新目录',
           targetRelativePath: 'new',
+          addedLines: 1,
+          removedLines: 0,
+          diffPreview: '@@ -1 +1 @@',
+          previewTruncated: false,
           createdAt: '2026-08-10T12:03:00.000Z',
           expiresAt: '2026-08-10T12:05:00.000Z'
         }
       });
     });
-    const newConfirm = screen.getByRole('button', { name: '确认创建目录' }) as HTMLButtonElement;
+    const newConfirm = screen.getByRole('button', { name: '确认应用补丁' }) as HTMLButtonElement;
     expect(newConfirm.disabled).toBe(false);
     fireEvent.click(newConfirm);
     await waitFor(() => expect(confirmAction).toHaveBeenCalledTimes(2));
@@ -325,7 +334,7 @@ describe('Renderer 可见组件', () => {
       await oldAction.promise.catch(() => undefined);
     });
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByRole('button', { name: '确认创建目录' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '确认应用补丁' })).toBeTruthy();
   });
 
   test('外部会话重置后旧消息提交 reject 不追加错误或改写新阶段', async () => {
@@ -379,12 +388,16 @@ describe('Renderer 可见组件', () => {
       taskStore.getState().apply({
         type: 'pending_action',
         action: {
+          category: 'file',
           actionId: 'action-reset',
           conversationId: 'conversation-1',
           risk: 'write',
           operation: 'create_file',
           summary: '创建文件',
           targetRelativePath: 'notes.md',
+          contentCharacters: 0,
+          contentPreview: null,
+          previewTruncated: false,
           createdAt: '2026-08-10T12:00:00.000Z',
           expiresAt: '2026-08-10T12:02:00.000Z'
         }
@@ -485,17 +498,20 @@ describe('Renderer 可见组件', () => {
     }
   });
 
-  test('重命名确认卡片只展示自然语言和相对路径', () => {
+  test('创建确认卡显示字符数和受限正文预览', () => {
     const markup = renderToStaticMarkup(
       <ConfirmationCard
         action={{
           actionId: 'action-1',
           conversationId: 'conversation-1',
           risk: 'write',
-          operation: 'rename_entry',
-          summary: '将 notes.md 重命名为 ideas.md',
-          sourceRelativePath: 'notes.md',
-          targetRelativePath: 'ideas.md',
+          category: 'file',
+          operation: 'create_file',
+          summary: '创建 notes.md',
+          targetRelativePath: 'notes.md',
+          contentCharacters: 204,
+          contentPreview: '仅展示前两百个字符',
+          previewTruncated: true,
           createdAt: '2026-07-20T12:00:00.000Z',
           expiresAt: '2026-07-20T12:02:00.000Z'
         }}
@@ -506,24 +522,27 @@ describe('Renderer 可见组件', () => {
     );
 
     expect(markup).toContain('notes.md');
-    expect(markup).toContain('ideas.md');
-    expect(markup).toContain('确认重命名');
-    expect(markup).toContain('先不重命名');
+    expect(markup).toContain('204');
+    expect(markup).toContain('仅展示前两百个字符');
+    expect(markup).toContain('确认创建文件');
+    expect(markup).toContain('先不创建');
     expect(markup).toContain('不会覆盖已有文件');
     expect(markup).not.toContain('C:\\');
-    expect(markup).not.toContain('rename_entry');
+    expect(markup).not.toContain('create_file');
   });
 
-  test('回收站确认卡按 operation 显示可恢复危险提示', () => {
+  test('删除确认卡按 operation 显示回收站提示', () => {
     const markup = renderToStaticMarkup(
       <ConfirmationCard
         action={{
           actionId: 'action-recycle',
           conversationId: 'conversation-1',
           risk: 'write',
-          operation: 'move_to_recycle_bin',
+          category: 'file',
+          operation: 'delete_file',
           summary: '备份目录',
           targetRelativePath: 'docs/backup',
+          targetType: 'empty_directory',
           createdAt: '2026-08-07T12:00:00.000Z',
           expiresAt: '2026-08-07T12:02:00.000Z'
         }}
@@ -536,23 +555,28 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('移入 Windows 回收站，可从回收站恢复');
     expect(markup).toContain('待移入项目');
     expect(markup).not.toContain('目标位置');
-    expect(markup).toContain('确认移入回收站');
-    expect(markup).toContain('先不移入');
+    expect(markup).toContain('确认删除');
+    expect(markup).toContain('先不删除');
     expect(markup).toContain('danger-button');
     expect(markup).not.toContain('永久删除');
-    expect(markup).not.toContain('move_to_recycle_bin');
+    expect(markup).not.toContain('delete_file');
   });
 
-  test('创建目录确认卡不依赖 summary 关键字', () => {
+  test('补丁确认卡不依赖 summary 关键字并展示增删行与预览', () => {
     const markup = renderToStaticMarkup(
       <ConfirmationCard
         action={{
           actionId: 'action-directory',
           conversationId: 'conversation-1',
           risk: 'write',
-          operation: 'create_directory',
+          category: 'file',
+          operation: 'apply_patch',
           summary: '新建一个收纳位置',
           targetRelativePath: 'archive',
+          addedLines: 3,
+          removedLines: 1,
+          diffPreview: '@@ -1 +1 @@',
+          previewTruncated: false,
           createdAt: '2026-08-07T12:00:00.000Z',
           expiresAt: '2026-08-07T12:02:00.000Z'
         }}
@@ -562,7 +586,9 @@ describe('Renderer 可见组件', () => {
       />
     );
 
-    expect(markup).toContain('确认创建目录');
+    expect(markup).toContain('确认应用补丁');
+    expect(markup).toContain('新增 3 行，删除 1 行');
+    expect(markup).toContain('@@ -1 +1 @@');
   });
 
   test('设置工作区仅提供模型、隐私和本地数据导航', () => {

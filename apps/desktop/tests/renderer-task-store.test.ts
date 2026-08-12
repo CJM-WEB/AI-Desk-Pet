@@ -118,6 +118,7 @@ describe('Renderer 任务视图状态', () => {
     store.getState().apply({
       type: 'pending_action',
       action: {
+        category: 'file',
         actionId: 'action-reset',
         conversationId: 'conversation-1',
         risk: 'write',
@@ -177,6 +178,7 @@ describe('Renderer 任务视图状态', () => {
 
   test('待确认动作在成功、错误或取消终止阶段被清除', () => {
     const action = {
+      category: 'file' as const,
       actionId: 'action-1',
       conversationId: 'conversation-1',
       risk: 'write' as const,
@@ -272,6 +274,7 @@ describe('Renderer 任务视图状态', () => {
     store.getState().apply({
       type: 'pending_action',
       action: {
+        category: 'file',
         actionId: 'a',
         conversationId: 'c',
         risk: 'write',

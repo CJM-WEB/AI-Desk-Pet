@@ -1193,6 +1193,7 @@ describe('ConversationCoordinator', () => {
       fileTasks.publish({
         type: 'pending_action',
         action: {
+          category: 'file',
           actionId: 'old-action',
           conversationId: 'conversation-old',
           risk: 'write',

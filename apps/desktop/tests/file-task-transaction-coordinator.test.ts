@@ -8,9 +8,10 @@ import {
 
 function verifiedAction(id = 'verified-action-1'): VerifiedWriteAction {
   return Object.freeze({
-    id,
-    toolName: 'move_to_recycle_bin' as const,
-    targetRelativePath: 'private/secret.txt'
+    operation: 'delete_file' as const,
+    authorizationGeneration: 0,
+    targetRelativePath: 'private/secret.txt',
+    targetType: 'file' as const
   });
 }
 
@@ -229,9 +230,10 @@ describe('FileTaskTransactionCoordinator', () => {
   test('公开快照不泄露写动作、绝对路径、播放令牌或提交细节', () => {
     const { coordinator } = createFixture();
     const privateAction = Object.freeze({
-      id: 'private-id',
-      toolName: 'move_to_recycle_bin' as const,
-      targetRelativePath: 'C:\\Users\\private\\secret.txt'
+      operation: 'delete_file' as const,
+      authorizationGeneration: 0,
+      targetRelativePath: 'C:\\Users\\private\\secret.txt',
+      targetType: 'file' as const
     }) satisfies VerifiedWriteAction;
     coordinator.begin(privateAction, playbackGrant());
 

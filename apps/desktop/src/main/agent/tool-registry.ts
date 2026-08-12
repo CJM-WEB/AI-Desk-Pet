@@ -104,46 +104,57 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
 
   registry.register({
     definition: definition(
-      'builtin.files.list_directory',
-      '列出授权根目录内指定相对目录的内容。',
+      'builtin.files.list_files',
+      '列出授权根目录内指定相对目录的文件。',
       {
         type: 'object',
-        properties: { relativePath: { type: 'string', default: '.' } },
+        properties: {
+          relativePath: { type: 'string', default: '.' },
+          maxDepth: { type: 'integer', default: 1 },
+          maxResults: { type: 'integer', default: 100 }
+        },
         additionalProperties: false
       }
     ),
-    argumentsSchema: toolArguments.list_directory,
-    executionToolName: 'list_directory',
+    argumentsSchema: toolArguments.list_files,
+    executionToolName: 'list_files',
     risk: 'read',
     enabled: true,
-    auditSummary: arguments_ => `列出目录 ${displayRelativePath(arguments_['relativePath'])}`
+    auditSummary: arguments_ => `列出文件 ${displayRelativePath(arguments_['relativePath'])}`
   });
 
   registry.register({
     definition: definition(
-      'builtin.files.read_text',
+      'builtin.files.read_file',
       '读取授权根目录内的 UTF-8 文本文件。',
       {
         type: 'object',
-        properties: { relativePath: { type: 'string' } },
+        properties: {
+          relativePath: { type: 'string' },
+          startLine: { type: 'integer', default: 1 },
+          lineCount: { type: 'integer', default: 200 }
+        },
         required: ['relativePath'],
         additionalProperties: false
       }
     ),
-    argumentsSchema: toolArguments.read_text_file,
-    executionToolName: 'read_text_file',
+    argumentsSchema: toolArguments.read_file,
+    executionToolName: 'read_file',
     risk: 'read',
     enabled: true,
-    auditSummary: arguments_ => `读取文本 ${displayRelativePath(arguments_['relativePath'])}`
+    auditSummary: arguments_ => `读取文件 ${displayRelativePath(arguments_['relativePath'])}`
   });
 
   registry.register({
     definition: definition(
       'builtin.files.create_file',
-      '创建空文件，需要用户确认。',
+      '创建文件，需要用户确认。',
       {
         type: 'object',
-        properties: { relativePath: { type: 'string' } },
+        properties: {
+          relativePath: { type: 'string' },
+          content: { type: 'string', default: '' }
+        },
         required: ['relativePath'],
         additionalProperties: false
       }
@@ -157,50 +168,29 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
 
   registry.register({
     definition: definition(
-      'builtin.files.create_directory',
-      '创建目录，需要用户确认。',
-      {
-        type: 'object',
-        properties: { relativePath: { type: 'string' } },
-        required: ['relativePath'],
-        additionalProperties: false
-      }
-    ),
-    argumentsSchema: toolArguments.create_directory,
-    executionToolName: 'create_directory',
-    risk: 'recoverable',
-    enabled: true,
-    auditSummary: arguments_ => `创建目录 ${displayRelativePath(arguments_['relativePath'])}`
-  });
-
-  registry.register({
-    definition: definition(
-      'builtin.files.rename_entry',
-      '在同一目录内重命名文件或目录，需要用户确认。',
+      'builtin.files.apply_patch',
+      '向单个文件应用补丁，需要用户确认。',
       {
         type: 'object',
         properties: {
-          sourceRelativePath: { type: 'string' },
-          targetRelativePath: { type: 'string' }
+          relativePath: { type: 'string' },
+          patch: { type: 'string' }
         },
-        required: ['sourceRelativePath', 'targetRelativePath'],
+        required: ['relativePath', 'patch'],
         additionalProperties: false
       }
     ),
-    argumentsSchema: toolArguments.rename_entry,
-    executionToolName: 'rename_entry',
+    argumentsSchema: toolArguments.apply_patch,
+    executionToolName: 'apply_patch',
     risk: 'recoverable',
     enabled: true,
-    auditSummary: arguments_ => (
-      `重命名 ${displayRelativePath(arguments_['sourceRelativePath'])}`
-      + ` 为 ${displayRelativePath(arguments_['targetRelativePath'])}`
-    )
+    auditSummary: arguments_ => `应用补丁 ${displayRelativePath(arguments_['relativePath'])}`
   });
 
   registry.register({
     definition: definition(
-      'builtin.files.move_to_recycle_bin',
-      '将授权根目录内的单个文件或目录移入 Windows 回收站，需要用户确认。',
+      'builtin.files.delete_file',
+      '将授权根目录内的文件或空目录移入 Windows 回收站，需要用户确认。',
       {
         type: 'object',
         properties: { relativePath: { type: 'string' } },
@@ -208,12 +198,12 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
         additionalProperties: false
       }
     ),
-    argumentsSchema: toolArguments.move_to_recycle_bin,
-    executionToolName: 'move_to_recycle_bin',
+    argumentsSchema: toolArguments.delete_file,
+    executionToolName: 'delete_file',
     risk: 'recoverable',
     enabled: true,
     auditSummary: arguments_ => (
-      `移入回收站 ${displayRelativePath(arguments_['relativePath'])}`
+      `删除文件 ${displayRelativePath(arguments_['relativePath'])}`
     )
   });
 

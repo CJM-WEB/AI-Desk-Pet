@@ -188,37 +188,24 @@ function snapshotVisibleHistory(value: unknown): readonly ModelMessage[] | null 
 }
 
 function writeResult(action: VerifiedWriteAction): Record<string, unknown> {
-  if (action.toolName === 'rename_entry') {
-    return {
-      ok: true,
-      toolName: action.toolName,
-      sourceRelativePath: action.sourceRelativePath,
-      targetRelativePath: action.targetRelativePath
-    };
-  }
-  if (action.toolName === 'move_to_recycle_bin') {
-    return {
-      ok: true,
-      toolName: action.toolName,
-      targetRelativePath: action.targetRelativePath
-    };
-  }
   return {
     ok: true,
-    toolName: action.toolName,
+    toolName: action.operation,
     targetRelativePath: action.targetRelativePath
   };
 }
 
+function assertNever(value: never): never {
+  throw new Error(`未处理的文件操作：${String(value)}`);
+}
+
 function actionSummary(action: VerifiedWriteAction): string {
-  if (action.toolName === 'rename_entry') {
-    return `将 ${action.sourceRelativePath} 重命名为 ${action.targetRelativePath}`;
+  switch (action.operation) {
+    case 'create_file': return `创建文件 ${action.targetRelativePath}`;
+    case 'apply_patch': return `修改文件 ${action.targetRelativePath}`;
+    case 'delete_file': return `删除文件 ${action.targetRelativePath}`;
+    default: return assertNever(action);
   }
-  if (action.toolName === 'move_to_recycle_bin') {
-    return `将 ${action.targetRelativePath} 移入回收站`;
-  }
-  if (action.toolName === 'create_file') return `创建文件 ${action.targetRelativePath}`;
-  return `创建目录 ${action.targetRelativePath}`;
 }
 
 export class AgentService {
@@ -338,9 +325,9 @@ export class AgentService {
 
     const controller = new AbortController();
     this.activeController = controller;
-    if (execution.verifiedAction.toolName === 'move_to_recycle_bin') {
+    if (execution.verifiedAction.operation === 'delete_file') {
       try {
-        return await this.confirmRecycleBin(execution, session, controller, owner);
+        return await this.confirmDeleteFile(execution, session, controller, owner);
       } finally {
         if (this.taskOwner === owner) this.taskOwner = null;
       }
@@ -481,7 +468,7 @@ export class AgentService {
     throw error;
   }
 
-  private async confirmRecycleBin(
+  private async confirmDeleteFile(
     execution: { verifiedAction: VerifiedWriteAction; continuationToken: string },
     session: AgentSession,
     controller: AbortController,
@@ -658,14 +645,26 @@ export class AgentService {
           return;
         }
         const publicAction = this.pending.issue({
+          category: 'file',
           conversationId: this.createConversationId(),
           risk: 'write',
-          operation: verifiedAction.toolName,
+          operation: verifiedAction.operation,
           summary: actionSummary(verifiedAction),
-          ...(verifiedAction.toolName === 'rename_entry'
-            ? { sourceRelativePath: verifiedAction.sourceRelativePath }
-            : {}),
-          targetRelativePath: verifiedAction.targetRelativePath
+          targetRelativePath: verifiedAction.targetRelativePath,
+          ...(verifiedAction.operation === 'create_file'
+            ? {
+                contentCharacters: verifiedAction.contentCharacters,
+                contentPreview: verifiedAction.contentPreview,
+                previewTruncated: verifiedAction.previewTruncated
+              }
+            : verifiedAction.operation === 'apply_patch'
+              ? {
+                  addedLines: verifiedAction.addedLines,
+                  removedLines: verifiedAction.removedLines,
+                  diffPreview: verifiedAction.diffPreview,
+                  previewTruncated: verifiedAction.previewTruncated
+                }
+              : { targetType: verifiedAction.targetType })
         }, {
           verifiedAction,
           continuationToken: event.continuationToken

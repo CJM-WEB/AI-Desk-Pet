@@ -43,34 +43,46 @@ describe('toolRequestSchema', () => {
   });
 });
 
-describe('pendingActionSchema', () => {
-  it('以严格操作字段判别四种公开确认动作', () => {
-    const result = pendingActionSchema.parse({
+describe('PendingAction 契约', () => {
+  it('以文件类别严格判别三种公开确认动作', () => {
+    const create = pendingActionSchema.parse({
+      category: 'file',
       actionId: 'act-1',
       conversationId: 'conv-1',
       risk: 'write',
       operation: 'create_file',
       summary: '新建 notes.md',
       targetRelativePath: 'notes.md',
+      contentCharacters: 3,
+      contentPreview: 'abc',
+      previewTruncated: false,
       createdAt: '2026-07-20T00:00:00.000Z',
       expiresAt: '2026-07-20T00:02:00.000Z'
     });
 
-    expect(result.risk).toBe('write');
-    expect(result).not.toHaveProperty('requestId');
-
-    for (const operation of [
-      'create_file',
-      'create_directory',
-      'rename_entry',
-      'move_to_recycle_bin'
-    ]) {
-      expect(pendingActionSchema.parse({ ...result, operation }).operation).toBe(operation);
-    }
+    expect(create).toMatchObject({ category: 'file', operation: 'create_file' });
+    expect(pendingActionSchema.parse({
+      ...create,
+      operation: 'apply_patch',
+      addedLines: 2,
+      removedLines: 1,
+      diffPreview: '@@ -1 +1 @@',
+      contentCharacters: undefined,
+      contentPreview: undefined
+    })).toMatchObject({ operation: 'apply_patch', addedLines: 2, removedLines: 1 });
+    expect(pendingActionSchema.parse({
+      ...create,
+      operation: 'delete_file',
+      targetType: 'file',
+      contentCharacters: undefined,
+      contentPreview: undefined,
+      previewTruncated: undefined
+    })).toMatchObject({ operation: 'delete_file', targetType: 'file' });
   });
 
-  it('拒绝缺失、未知操作和多余字段', () => {
+  it('拒绝旧分支、跨分支字段和多余字段', () => {
     const base = {
+      category: 'file',
       actionId: 'act-1',
       conversationId: 'conv-1',
       risk: 'write',
@@ -82,7 +94,8 @@ describe('pendingActionSchema', () => {
     };
 
     expect(() => pendingActionSchema.parse(({ ...base, operation: undefined }))).toThrow();
-    expect(() => pendingActionSchema.parse({ ...base, operation: 'delete_permanently' })).toThrow();
+    expect(() => pendingActionSchema.parse({ ...base, operation: 'create_directory' })).toThrow();
+    expect(() => pendingActionSchema.parse({ ...base, operation: 'delete_file', contentPreview: '泄露' })).toThrow();
     expect(() => pendingActionSchema.parse({ ...base, command: 'rm notes.md' })).toThrow();
   });
 });

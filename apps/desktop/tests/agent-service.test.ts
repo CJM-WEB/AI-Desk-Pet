@@ -35,7 +35,7 @@ class ScriptedProvider implements ModelProvider {
 }
 
 function writeResponse(
-  toolName: 'builtin.files.create_file' | 'builtin.files.create_directory'
+  toolName: 'builtin.files.create_file' | 'builtin.files.apply_patch' | 'builtin.files.delete_file'
     = 'builtin.files.create_file'
 ): ModelResponse {
   return {
@@ -43,18 +43,23 @@ function writeResponse(
     request: {
       requestId: 'write-1',
       toolName,
-      arguments: {
-        relativePath: toolName === 'builtin.files.create_file' ? 'result.txt' : 'output'
-      }
+      arguments: toolName === 'builtin.files.create_file'
+        ? { relativePath: 'result.txt', content: '正文' }
+        : toolName === 'builtin.files.apply_patch'
+          ? { relativePath: 'result.txt', patch: '@@ -1 +1 @@\n-before\n+after\n' }
+          : { relativePath: 'result.txt' }
     }
   };
 }
 
 function verifiedAction(): VerifiedWriteAction {
   return Object.freeze({
-    id: 'verified-1',
-    toolName: 'create_file' as const,
-    targetRelativePath: 'result.txt'
+    operation: 'create_file' as const,
+    authorizationGeneration: 0,
+    targetRelativePath: 'result.txt',
+    contentCharacters: 2,
+    contentPreview: '正文',
+    previewTruncated: false
   });
 }
 
@@ -63,7 +68,7 @@ function readResponse(requestId = 'read-1'): ModelResponse {
     type: 'tool_request',
     request: {
       requestId,
-      toolName: 'builtin.files.list_directory',
+      toolName: 'builtin.files.list_files',
       arguments: { relativePath: '.' }
     }
   };
@@ -106,9 +111,10 @@ class RepairDeferredProvider implements ModelProvider {
 
 function recycleAction(): VerifiedWriteAction {
   return Object.freeze({
-    id: 'verified-recycle-1',
-    toolName: 'move_to_recycle_bin' as const,
-    targetRelativePath: 'archive/old.txt'
+    operation: 'delete_file' as const,
+    authorizationGeneration: 0,
+    targetRelativePath: 'archive/old.txt',
+    targetType: 'file'
   });
 }
 
@@ -281,7 +287,7 @@ describe('AgentService', () => {
       type: 'tool_request',
       request: {
         requestId: 'read-history-1',
-        toolName: 'builtin.files.list_directory',
+        toolName: 'builtin.files.list_files',
         arguments: { relativePath: '.' }
       }
     }, { type: 'text', text: '处理完成' }]);
@@ -325,7 +331,7 @@ describe('AgentService', () => {
       content: '',
       toolRequest: {
         requestId: 'private-request',
-        toolName: 'builtin.files.list_directory',
+        toolName: 'builtin.files.list_files',
         arguments: { relativePath: '.' }
       }
     }]],
@@ -431,7 +437,7 @@ describe('AgentService', () => {
               id: 'read-1',
               type: 'function',
               function: {
-                name: 'builtin.files.list_directory',
+                name: 'builtin.files.list_files',
                 arguments: '{"relativePath":"."}'
               }
             }]
@@ -550,7 +556,7 @@ describe('AgentService', () => {
         type: 'tool_request',
         request: {
           requestId: 'read-1',
-          toolName: 'builtin.files.list_directory',
+          toolName: 'builtin.files.list_files',
           arguments: { relativePath: '.' }
         }
       },
@@ -576,20 +582,24 @@ describe('AgentService', () => {
     expect(events.at(-1)).toEqual({
       type: 'pending_action',
       action: expect.objectContaining({
+        category: 'file',
         conversationId: 'conversation-1',
         risk: 'write',
         operation: 'create_file',
-        targetRelativePath: 'result.txt'
+        targetRelativePath: 'result.txt',
+        contentCharacters: 2,
+        contentPreview: '正文',
+        previewTruncated: false
       })
     });
     expect(events.at(-1)).not.toHaveProperty('action.requestId');
     expect(JSON.stringify(events)).not.toContain('continuationToken');
     expect(JSON.stringify(events)).not.toContain('executionRequest');
-    expect(JSON.stringify(events)).not.toContain('verified-1');
+    expect(JSON.stringify(events)).not.toContain('authorizationGeneration');
     expect(fileTools.preview).toHaveBeenCalledExactlyOnceWith({
       requestId: 'write-1',
       toolName: 'create_file',
-      arguments: { relativePath: 'result.txt' }
+      arguments: { relativePath: 'result.txt', content: '正文' }
     });
   });
 
