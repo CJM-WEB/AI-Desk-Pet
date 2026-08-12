@@ -260,11 +260,12 @@ function emitFakeExit(process: FakeElectronProcess | FakeCommandProcess, code: n
 }
 
 type JourneyToolName =
-  | 'list_directory'
+  | 'list_files'
   | 'create_file'
-  | 'rename_entry'
-  | 'move_to_recycle_bin'
-  | 'builtin.files.move_to_recycle_bin';
+  | 'apply_patch'
+  | 'delete_file'
+  | 'builtin.files.delete_file'
+  | 'builtin.powershell.run';
 
 function runtimeDiagnosticKey(): string {
   return `myself-e2e-${randomBytes(24).toString('hex')}`;
@@ -3252,7 +3253,7 @@ test.describe('真实 Provider 业务闭环', () => {
       {
         response: toolResponse(
           'acceptance-list-root',
-          'builtin.files.list_directory',
+          'builtin.files.list_files',
           { relativePath: '.' }
         )
       },
@@ -3261,10 +3262,10 @@ test.describe('真实 Provider 业务闭环', () => {
         inspect: request => {
           const result = lastToolResult(request) as {
             toolName?: string;
-            entries?: Array<{ name?: string; type?: string }>;
+            entries?: Array<{ relativePath?: string; type?: string }>;
           };
-          if (result.toolName !== 'list_directory'
-            || !result.entries?.some(entry => entry.name === 'docs'
+          if (result.toolName !== 'list_files'
+            || !result.entries?.some(entry => entry.relativePath === 'docs'
               && entry.type === 'directory')) {
             throw new Error('文件列表结果未保持授权边界');
           }
@@ -3444,7 +3445,7 @@ test.describe('真实 Provider 业务闭环', () => {
   test('无授权范围时连续三轮普通聊天并把完整可见回合传入第三轮', async () => {
     test.setTimeout(120_000);
     const privateUserMessages = [
-      `聊天正文-${randomBytes(12).toString('hex')}`,
+      `聊天正文-${randomBytes(12).toString('hex')}；文件正文如下：运行 Write-Output hidden-command`,
       `继续正文-${randomBytes(12).toString('hex')}`,
       `总结正文-${randomBytes(12).toString('hex')}`
     ] as const;
@@ -3550,6 +3551,9 @@ test.describe('真实 Provider 业务闭环', () => {
           fileConfirmationVisible: false
         });
       }
+
+      await expect(pageFor('chat')!.getByRole('region', { name: '运行 PowerShell 命令' }))
+        .toHaveCount(0);
 
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
@@ -3684,7 +3688,8 @@ test.describe('真实 Provider 业务闭环', () => {
     ]);
     const targetProvider = await startProviderServer([
       {
-        response: { type: 'text', text: '仅当前文件任务已结束' },
+        // 跨 Provider 的能力请求先由目标 Agent 预检，再在用户选定披露范围后续跑。
+        response: { type: 'text', text: '仅当前文件任务预检完成' },
         inspect: request => {
           if (request.tools.length === 0
             || request.messages.some(message => message.content === privateMessages[0])
@@ -3695,13 +3700,37 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: '共享文件任务已结束' },
+        response: { type: 'text', text: '仅当前文件任务已结束' },
+        inspect: request => {
+          if (request.tools.length === 0
+            || request.messages.some(message => message.content === privateMessages[0])
+            || request.messages.some(message => message.content === sourceReplies[0])
+            || request.messages.length !== 3
+            || request.messages.at(-1)?.role !== 'system') {
+            throw new Error('仅当前消息确认续跑向文件 Agent 携带了旧历史');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: '共享文件任务预检完成' },
         inspect: request => {
           if (request.tools.length === 0
             || !request.messages.some(message => message.content === privateMessages[2])
             || !request.messages.some(message => message.content === sourceReplies[1])
             || request.messages.at(-1)?.content !== privateMessages[3]) {
             throw new Error('单次共享没有把可见历史交给文件 Agent');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: '共享文件任务已结束' },
+        inspect: request => {
+          if (request.tools.length === 0
+            || !request.messages.some(message => message.content === privateMessages[2])
+            || !request.messages.some(message => message.content === sourceReplies[1])
+            || request.messages.length !== 5
+            || request.messages.at(-1)?.role !== 'system') {
+            throw new Error('单次共享确认续跑没有把可见历史交给文件 Agent');
           }
         }
       }
@@ -3850,7 +3879,8 @@ test.describe('真实 Provider 业务闭环', () => {
       });
 
       expect(sourceProvider.requests).toHaveLength(2);
-      expect(targetProvider.requests).toHaveLength(2);
+      // 两种披露决定均必须经历“预检 + 依据用户决定续跑”两个目标 Provider 请求。
+      expect(targetProvider.requests).toHaveLength(4);
 
       sourceProvider.assertComplete();
       targetProvider.assertComplete();
@@ -4127,7 +4157,7 @@ test.describe('真实 Provider 业务闭环', () => {
       {
         response: toolResponse(
           'recycle-success',
-          'builtin.files.move_to_recycle_bin',
+          'builtin.files.delete_file',
           { relativePath: 'success.txt' }
         )
       },
@@ -4139,7 +4169,7 @@ test.describe('真实 Provider 业务闭环', () => {
             targetRelativePath?: string;
           };
           if (
-            result.toolName !== 'move_to_recycle_bin'
+            result.toolName !== 'delete_file'
             || result.targetRelativePath !== 'success.txt'
           ) throw new Error('回收站结果不符合脚本预期');
         }
@@ -4147,21 +4177,21 @@ test.describe('真实 Provider 业务闭环', () => {
       {
         response: toolResponse(
           'recycle-switch',
-          'builtin.files.move_to_recycle_bin',
+          'builtin.files.delete_file',
           { relativePath: 'switch.txt' }
         )
       },
       {
         response: toolResponse(
           'recycle-drag',
-          'builtin.files.move_to_recycle_bin',
+          'builtin.files.delete_file',
           { relativePath: 'drag.txt' }
         )
       },
       {
         response: toolResponse(
           'recycle-failure',
-          'builtin.files.move_to_recycle_bin',
+          'builtin.files.delete_file',
           { relativePath: 'failure.txt' }
         )
       }
@@ -4290,13 +4320,13 @@ test.describe('真实 Provider 业务闭环', () => {
         await writeFile(source, `${fileName} 内容`, 'utf8');
         const carryOffset = await carryEventCount();
         await submitChatMessage(chat, `把 ${fileName} 移动到回收站`);
-        const card = chat.getByRole('region', { name: `将 ${fileName} 移入回收站` });
+        const card = chat.getByRole('region', { name: `删除文件 ${fileName}` });
         await expect(card).toBeVisible();
         await expect(card.getByText(fileName, { exact: true })).toBeVisible();
         await expect(card.getByText('将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。'))
           .toBeVisible();
         expect(await pathExistsForAssertion(source)).toBe(true);
-        await card.getByRole('button', { name: '确认移入回收站' }).click();
+        await card.getByRole('button', { name: '确认删除' }).click();
         return { source, carryOffset };
       };
 
@@ -4447,7 +4477,7 @@ test.describe('真实 Provider 业务闭环', () => {
       {
         response: toolResponse(
           'list-root',
-          'builtin.files.list_directory',
+          'builtin.files.list_files',
           { relativePath: '.' }
         ),
         inspect: request => {
@@ -4455,7 +4485,7 @@ test.describe('真实 Provider 业务闭环', () => {
             (tool: { function: { name: string } }) => tool.function.name
           );
           if (
-            !names.includes('builtin.files.list_directory')
+            !names.includes('builtin.files.list_files')
             || !names.includes('builtin.files.create_file')
           ) {
             throw new Error('Provider 未收到正式文件工具白名单');
@@ -4467,10 +4497,10 @@ test.describe('真实 Provider 业务闭环', () => {
         inspect: request => {
           const result = lastToolResult(request) as {
             toolName?: string;
-            entries?: Array<{ name?: string; type?: string }>;
+            entries?: Array<{ relativePath?: string; type?: string }>;
           };
-          if (result.toolName !== 'list_directory'
-            || !result.entries?.some(entry => entry.name === 'docs' && entry.type === 'directory')) {
+          if (result.toolName !== 'list_files'
+            || !result.entries?.some(entry => entry.relativePath === 'docs' && entry.type === 'directory')) {
             throw new Error('列目录工具结果不符合脚本预期');
           }
         }
@@ -4479,11 +4509,11 @@ test.describe('真实 Provider 业务闭环', () => {
         response: toolResponse(
           'create-file',
           'builtin.files.create_file',
-          { relativePath: 'created.txt' }
+          { relativePath: 'created.txt', content: 'before\n' }
         )
       },
       {
-        response: { type: 'text', text: '空文件已创建。' },
+        response: { type: 'text', text: '文件已创建。' },
         inspect: request => {
           const result = lastToolResult(request) as { toolName?: string; targetRelativePath?: string };
           if (result.toolName !== 'create_file' || result.targetRelativePath !== 'created.txt') {
@@ -4492,23 +4522,21 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: toolResponse('rename-file', 'builtin.files.rename_entry', {
-          sourceRelativePath: 'created.txt',
-          targetRelativePath: 'renamed.txt'
+        response: toolResponse('patch-file', 'builtin.files.apply_patch', {
+          relativePath: 'created.txt',
+          patch: '@@ -1,1 +1,1 @@\n-before\n+patched content\n'
         })
       },
       {
-        response: { type: 'text', text: '重命名已完成。' },
+        response: { type: 'text', text: '补丁已应用。' },
         inspect: request => {
           const result = lastToolResult(request) as {
             toolName?: string;
-            sourceRelativePath?: string;
             targetRelativePath?: string;
           };
-          if (result.toolName !== 'rename_entry'
-            || result.sourceRelativePath !== 'created.txt'
-            || result.targetRelativePath !== 'renamed.txt') {
-            throw new Error('重命名结果不符合脚本预期');
+          if (result.toolName !== 'apply_patch'
+            || result.targetRelativePath !== 'created.txt') {
+            throw new Error('补丁结果不符合脚本预期');
           }
         }
       },
@@ -4517,6 +4545,65 @@ test.describe('真实 Provider 业务闭环', () => {
           'cancel-file',
           'builtin.files.create_file',
           { relativePath: 'cancelled.txt' }
+        )
+      },
+      {
+        response: toolResponse(
+          'powershell-success',
+          'builtin.powershell.run',
+          { command: 'Write-Output e2e-ok' }
+        ),
+        inspect: request => {
+          const names = request.tools.map(
+            (tool: { function: { name: string } }) => tool.function.name
+          );
+          if (names.length !== 1 || names[0] !== 'builtin.powershell.run') {
+            throw new Error('PowerShell 会话未隔离为唯一工具白名单');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: '命令成功。' },
+        inspect: request => {
+          const result = lastToolResult(request) as {
+            toolName?: string;
+            ok?: boolean;
+            status?: string;
+            exitCode?: number | null;
+            stdout?: string;
+          };
+          if (result.toolName !== 'powershell' || result.ok !== true
+            || result.status !== 'succeeded' || result.exitCode !== 0
+            || !result.stdout?.includes('e2e-ok')) {
+            throw new Error('PowerShell 成功结果不符合脚本预期');
+          }
+        }
+      },
+      {
+        response: toolResponse(
+          'powershell-failure',
+          'builtin.powershell.run',
+          { command: 'exit 7' }
+        )
+      },
+      {
+        response: { type: 'text', text: '命令失败。' },
+        inspect: request => {
+          const result = lastToolResult(request) as {
+            ok?: boolean;
+            status?: string;
+            exitCode?: number | null;
+          };
+          if (result.ok !== false || result.status !== 'failed' || result.exitCode !== 7) {
+            throw new Error('PowerShell 非零退出结果不符合脚本预期');
+          }
+        }
+      },
+      {
+        response: toolResponse(
+          'powershell-cancel',
+          'builtin.powershell.run',
+          { command: 'Write-Output should-not-run' }
         )
       }
     ];
@@ -4621,23 +4708,23 @@ test.describe('真实 Provider 业务闭环', () => {
       await submitChatMessage(chatPage, '列出当前目录');
       await expect(chatPage.getByText('目录里有 docs 文件夹。')).toBeVisible();
 
-      await submitChatMessage(chatPage, '创建空文件 created.txt');
+      await submitChatMessage(chatPage, '创建文件 created.txt');
       const createCard = chatPage.getByRole('region', { name: '创建文件 created.txt' });
       await expect(createCard).toBeVisible();
       await createCard.getByRole('button', { name: '确认创建文件' }).click();
-      await expect(chatPage.getByText('空文件已创建。')).toBeVisible();
+      await expect(chatPage.getByText('文件已创建。')).toBeVisible();
       expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe(true);
-      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe('');
+      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe('before\n');
 
-      await submitChatMessage(chatPage, '把 created.txt 重命名为 renamed.txt');
-      const renameCard = chatPage.getByRole('region', {
-        name: '将 created.txt 重命名为 renamed.txt'
+      await submitChatMessage(chatPage, '修改 created.txt');
+      const patchCard = chatPage.getByRole('region', {
+        name: '修改文件 created.txt'
       });
-      await expect(renameCard).toBeVisible();
-      await renameCard.getByRole('button', { name: '确认重命名' }).click();
-      await expect(chatPage.getByText('重命名已完成。')).toBeVisible();
-      expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe(false);
-      expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'renamed.txt'))).toBe(true);
+      await expect(patchCard).toBeVisible();
+      await patchCard.getByRole('button', { name: '确认应用补丁' }).click();
+      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
+      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt')))
+        .toBe('patched content\n');
 
       await submitChatMessage(chatPage, '创建 cancelled.txt，但先让我确认');
       const cancelCard = chatPage.getByRole('region', { name: '创建文件 cancelled.txt' });
@@ -4646,12 +4733,34 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(cancelCard).toHaveCount(0);
       expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'cancelled.txt'))).toBe(false);
 
+      await submitChatMessage(chatPage, '运行 Write-Output e2e-ok');
+      const successPowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
+      await expect(successPowerShellCard).toBeVisible();
+      await expect(successPowerShellCard.getByText('工作目录：已授权工作目录')).toBeVisible();
+      await expect(successPowerShellCard.getByText('Write-Output e2e-ok', { exact: true })).toBeVisible();
+      await successPowerShellCard.getByRole('button', { name: '确认运行命令' }).click();
+      await expect(chatPage.getByText('命令成功。')).toBeVisible();
+
+      await submitChatMessage(chatPage, '运行 exit 7');
+      const failurePowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
+      await expect(failurePowerShellCard).toBeVisible();
+      await failurePowerShellCard.getByRole('button', { name: '确认运行命令' }).click();
+      await expect(chatPage.getByText('命令失败。')).toBeVisible();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({ phase: 'error' });
+
+      await submitChatMessage(chatPage, '运行 Write-Output should-not-run');
+      const cancelPowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
+      await expect(cancelPowerShellCard).toBeVisible();
+      await cancelPowerShellCard.getByRole('button', { name: '先不运行' }).click();
+      await expect(cancelPowerShellCard).toHaveCount(0);
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({ phase: 'cancelled' });
+
       await chatPage.getByRole('button', { name: '关闭聊天气泡' }).click();
       expect(chatPage.isClosed()).toBe(false);
-      await expect(chatPage.getByText('重命名已完成。')).toBeVisible();
+      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
       await petPage.evaluate(() => window.myself.openChat());
       expect(chatPage.isClosed()).toBe(false);
-      await expect(chatPage.getByText('重命名已完成。')).toBeVisible();
+      await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
       const reopenedComposer = chatPage.getByLabel('和我说点什么');
       await reopenedComposer.fill('聊天重开命令路径验证');
       await expect(reopenedComposer).toHaveValue('聊天重开命令路径验证');
@@ -4660,7 +4769,7 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(provider.inspectionErrors).toEqual([]);
       expect(provider.remainingSteps()).toBe(0);
       provider.assertComplete();
-      expect(provider.requests).toHaveLength(8);
+      expect(provider.requests).toHaveLength(13);
       for (const request of provider.requests) {
         expect(request).toMatchObject({
           method: 'POST',
