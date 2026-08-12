@@ -23,9 +23,14 @@
 - RED：Main 能力会话工厂测试导入不存在的模块，证明原有 `index.ts` 内联分支不可独立验证。
 - GREEN：新增可注入 `main-agent-session-factory`；PowerShell 会话只注册 `builtin.powershell.run` 并只构造 `PowerShellTool`，文件会话只注册五个文件工具且不构造 PowerShell。`index.ts` 仅注入平台依赖并调用该工厂。
 
+## 修复轮次 2
+
+- RED：真实 PowerShell 会话的 `toolRuntime.prepare()` 因高风险策略返回 `TOOL_PERMISSION_DENIED`，无法形成用户确认。
+- GREEN：会话工厂仅为 `taskKind: 'powershell'` 启用高风险确认策略；同一请求现在返回 `decision: 'confirm'` 且执行工具名为 `powershell`。文件会话继续只对可恢复写入返回确认，不构造 PowerShell。
+
 ## 验证
 
-- Desktop 定向 Vitest：9 个测试文件、285 个测试通过。
+- Desktop 定向 Vitest：9 个测试文件、287 个测试通过。
 - `@myself/file-tools`、`@myself/agent-core`、`@myself/shared-types`、`@myself/desktop` typecheck 均通过。
 - `git diff --check` 通过；`apps/website` 无差异。
 - 静态反查未命中 `FileTaskAdapter`、`ConversationFileTaskPort`、`POWERSHELL_TASK_NOT_READY` 及已废弃文件工具名称。

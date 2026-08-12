@@ -23,7 +23,9 @@ export async function createMainAgentSession(
     taskKind: input.taskKind,
     fileDisclosureAllowed: input.fileDisclosureAllowed
   });
-  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
+  const permissionPolicy = new PermissionPolicy({
+    highRiskEnabled: input.taskKind === 'powershell'
+  });
   const messages: ModelMessage[] = [{
     role: 'system',
     content: input.taskKind === 'powershell'

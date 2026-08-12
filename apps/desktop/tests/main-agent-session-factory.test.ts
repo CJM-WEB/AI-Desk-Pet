@@ -39,6 +39,19 @@ describe('Main 能力会话工厂', () => {
     expect(options.createFileTools).not.toHaveBeenCalled();
   });
 
+  test('PowerShell 会话把高风险命令交给确认而非权限拒绝', async () => {
+    const session = await createMainAgentSession(input('powershell'));
+
+    const prepared = session.toolRuntime.prepare({
+      requestId: 'shell-1',
+      toolName: 'builtin.powershell.run',
+      arguments: { command: 'Get-ChildItem' }
+    });
+
+    expect(prepared.decision).toBe('confirm');
+    expect(prepared.executionRequest.toolName).toBe('powershell');
+  });
+
   test('文件会话只注册五个文件工具且不构造 PowerShell', async () => {
     const options = input('file');
 
@@ -54,5 +67,18 @@ describe('Main 能力会话工厂', () => {
     ]);
     expect(options.createFileTools).toHaveBeenCalledOnce();
     expect(options.createPowerShellTool).not.toHaveBeenCalled();
+  });
+
+  test('文件会话保持仅可确认的可恢复写入策略', async () => {
+    const session = await createMainAgentSession(input('file'));
+
+    const prepared = session.toolRuntime.prepare({
+      requestId: 'file-1',
+      toolName: 'builtin.files.create_file',
+      arguments: { relativePath: 'note.txt', content: '内容' }
+    });
+
+    expect(prepared.decision).toBe('confirm');
+    expect(prepared.executionRequest.toolName).toBe('create_file');
   });
 });
