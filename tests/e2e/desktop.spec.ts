@@ -584,6 +584,30 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
     ]).toEqual([true, false, true, true]);
   });
 
+  test('六个任务正文 sentinel 的模拟 console 泄漏都会使原始证据断言变红', async () => {
+    const fixture = await loadElectronFixtureModule();
+    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
+    if (!fixture?.createCapturedLogEvidenceTracker) return;
+
+    const sentinels = [
+      'task6-user-body-sentinel',
+      'task6-model-body-sentinel',
+      'task6-file-body-sentinel',
+      "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')",
+      'task6-stdout-sentinel',
+      'task6-stderr-sentinel'
+    ];
+    const tracker = fixture.createCapturedLogEvidenceTracker({
+      apiKey: 'task6-sensitivity-key',
+      authorizedRootDirectory: resolve('C:\\Temp\\task6-sensitivity-root'),
+      sentinels
+    });
+
+    for (const sentinel of sentinels) tracker.capture('stdout', sentinel);
+
+    expect(tracker.snapshot().sentinels).toEqual(sentinels.map(() => true));
+  });
+
   test('原始日志证据在 UTF-8 多字节中间拆分 Buffer 时仍命中', async () => {
     const fixture = await loadElectronFixtureModule();
     expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
@@ -4476,7 +4500,7 @@ test.describe('真实 Provider 业务闭环', () => {
       'task6-user-body-sentinel',
       'task6-model-body-sentinel',
       'task6-file-body-sentinel',
-      'Write-Output task6-command-sentinel',
+      "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')",
       'task6-stdout-sentinel',
       'task6-stderr-sentinel'
     ] as const;
@@ -4501,7 +4525,7 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: '目录里有 docs 文件夹。' },
+        response: { type: 'text', text: 'task6-model-body-sentinel' },
         inspect: request => {
           const result = lastToolResult(request) as {
             toolName?: string;
@@ -4517,7 +4541,7 @@ test.describe('真实 Provider 业务闭环', () => {
         response: toolResponse(
           'create-file',
           'builtin.files.create_file',
-          { relativePath: 'created.txt', content: 'before\n' }
+          { relativePath: 'created.txt', content: 'task6-file-body-sentinel\n' }
         )
       },
       {
@@ -4532,7 +4556,7 @@ test.describe('真实 Provider 业务闭环', () => {
       {
         response: toolResponse('patch-file', 'builtin.files.apply_patch', {
           relativePath: 'created.txt',
-          patch: '@@ -1,1 +1,1 @@\n-before\n+patched content\n'
+          patch: '@@ -1,1 +1,1 @@\n-task6-file-body-sentinel\n+patched content\n'
         })
       },
       {
@@ -4559,7 +4583,7 @@ test.describe('真实 Provider 业务闭环', () => {
         response: toolResponse(
           'powershell-success',
           'builtin.powershell.run',
-          { command: 'Write-Output e2e-ok' }
+          { command: "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')" }
         ),
         inspect: request => {
           const names = request.tools.map(
@@ -4579,10 +4603,12 @@ test.describe('真实 Provider 业务闭环', () => {
             status?: string;
             exitCode?: number | null;
             stdout?: string;
+            stderr?: string;
           };
           if (result.toolName !== 'powershell' || result.ok !== true
             || result.status !== 'succeeded' || result.exitCode !== 0
-            || !result.stdout?.includes('e2e-ok')) {
+            || !result.stdout?.includes('task6-stdout-sentinel')
+            || !result.stderr?.includes('task6-stderr-sentinel')) {
             throw new Error('PowerShell 成功结果不符合脚本预期');
           }
         }
@@ -4714,8 +4740,8 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(settingsPage.getByText('authorized-root', { exact: true })).toBeVisible();
       await settingsPage.getByRole('button', { name: '关闭设置', exact: true }).click();
 
-      await submitChatMessage(chatPage, '列出当前目录');
-      await expect(chatPage.getByText('目录里有 docs 文件夹。')).toBeVisible();
+      await submitChatMessage(chatPage, '列出当前目录 task6-user-body-sentinel');
+      await expect(chatPage.getByText('task6-model-body-sentinel')).toBeVisible();
 
       await submitChatMessage(chatPage, '创建文件 created.txt');
       const createCard = chatPage.getByRole('region', { name: '创建文件 created.txt' });
@@ -4723,7 +4749,8 @@ test.describe('真实 Provider 业务闭环', () => {
       await createCard.getByRole('button', { name: '确认创建文件' }).click();
       await expect(chatPage.getByText('文件已创建。')).toBeVisible();
       expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe(true);
-      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe('before\n');
+      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt')))
+        .toBe('task6-file-body-sentinel\n');
 
       await submitChatMessage(chatPage, '修改 created.txt');
       const patchCard = chatPage.getByRole('region', {
@@ -4742,11 +4769,17 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(cancelCard).toHaveCount(0);
       expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'cancelled.txt'))).toBe(false);
 
-      await submitChatMessage(chatPage, '运行 Write-Output e2e-ok');
+      await submitChatMessage(
+        chatPage,
+        "运行 Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')"
+      );
       const successPowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
       await expect(successPowerShellCard).toBeVisible();
       await expect(successPowerShellCard.getByText('工作目录：已授权工作目录')).toBeVisible();
-      await expect(successPowerShellCard.getByText('Write-Output e2e-ok', { exact: true })).toBeVisible();
+      await expect(successPowerShellCard.getByText(
+        "Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')",
+        { exact: true }
+      )).toBeVisible();
       await successPowerShellCard.getByRole('button', { name: '确认运行命令' }).click();
       await expect(chatPage.getByText('命令成功。')).toBeVisible();
 

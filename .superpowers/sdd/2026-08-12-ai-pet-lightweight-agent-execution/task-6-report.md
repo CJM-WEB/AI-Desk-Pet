@@ -20,21 +20,21 @@
 
 ## 最终修复轮次证据
 
-- `pnpm.cmd test:integration`：4 个文件、44 项通过。
+- `pnpm.cmd test:integration`：4 个文件、45 项通过。
 - `pnpm.cmd test:security`：1 个文件、20 项通过。
-- 主控 fresh Electron E2E：56/56 通过、exit 0、3.2 分钟。
+- 主控上一轮 fresh Electron E2E：56/56 通过、exit 0、3.2 分钟；本轮六 sentinel 敏感性与正式白名单聚焦 E2E 2/2 通过（14.7 秒）。
 - `pnpm.cmd --filter @myself/desktop typecheck`：通过。
 
 ## 审查 finding 闭环
 
 - 文件工具：真实 `list_files` 条目、分页 `read_file`、带正文且独占的 `create_file`、确认后外部改动的 `apply_patch` 冲突、`delete_file` 空目录回收站成功与非空目录拒绝均有纵向断言；旧工具名稳定为 `TOOL_UNKNOWN`。
 - 能力协议：口头拒绝在同一 `submit` 内只触发一次协议修复后进入真实工具调用；连续伪成功稳定报告 `CAPABILITY_PLAN_PROTOCOL_INVALID`。
-- PowerShell：真实受控进程端口覆盖成功、非零退出、确认取消零 spawn、reset 后迟到 close 隔离，以及组合入口的 background 拒绝；超时终止路径由 `powershell-tool` 的可控时钟测试覆盖。
-- 原始日志：Electron 夹具为 API Key、Authorization、授权根及六个正文/命令/输出 sentinel 保存脱敏前命中布尔证据；正式白名单场景传入六个独立 sentinel 并断言全部布尔值为 `false`，同时保留既有跨块原始日志命中测试。
+- PowerShell：真实受控进程端口覆盖成功、非零退出、确认取消零 spawn、reset 后迟到 close 隔离，以及组合入口的 background 拒绝；`AgentService` 纵向测试以假时钟触发静默超时，公开 `error`，并验证超时后的 stdout、stderr、close 不增加事件或续跑 Provider。
+- 原始日志：六个 sentinel 已真实经过用户输入、Provider assistant 文本、`create_file` 正文、完整 PowerShell 命令、stdout、stderr；正式白名单断言脱敏前捕获布尔值全为 `false`。夹具敏感性测试模拟每一路 console 泄漏，均使相应原始证据为 `true`，且不保留生产变异。
 - 行为集成：自主行为闭环已通过真实 `AgentService`、provider-server、`CharacterBehaviorService` 和窗口运动事件连接，而非手工 `AgentLoop`。
 
 ## E2E 迁移事实
 
-- 正式白名单场景覆盖创建、补丁、取消、PowerShell 成功、非零失败和取消；PowerShell 仅运行 `Write-Output` 与 `exit 7`，取消场景保留零 spawn 证据。
+- 正式白名单场景覆盖创建、补丁、取消、PowerShell 成功、非零失败和取消；PowerShell 仅运行受控 `Write-Output`、标准错误写入和 `exit 7`，取消场景保留零 spawn 证据。
 - 回收站场景已迁移到 `delete_file`，通过真实回收站端口覆盖成功、角色切换中断和失败。
 - 跨 Provider 披露按实际“预检 + 用户决定后续跑”更新为严格四步，并分别验证仅当前与单次共享的历史边界。

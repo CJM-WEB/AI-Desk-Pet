@@ -812,6 +812,60 @@ describe('桌面会话分流纵向集成', () => {
     expect(fixture.providerServer.requests).toHaveLength(1);
     expect(fixture.providerServer.remainingSteps()).toBe(1);
   });
+
+  test('PowerShell 静默超时公开 error 且迟到流事件不会续跑 Provider', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4323,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(() => true)
+    });
+    const spawn = vi.fn(() => child);
+    const fixture = await harness([
+      {
+        response: toolCall('powershell-timeout', 'builtin.powershell.run', {
+          command: 'Write-Output timeout-late'
+        })
+      },
+      {
+        response: { type: 'text', text: '命令已超时。' },
+        inspect: request => {
+          const result = request.messages.at(-1);
+          if (!result || result.role !== 'tool') throw new Error('缺少 PowerShell 超时结果');
+          expect(JSON.parse(result.content)).toMatchObject({
+            toolName: 'powershell',
+            ok: false,
+            status: 'timed_out',
+            timeoutKind: 'idle'
+          });
+        }
+      }
+    ], 'powershell', new PowerShellTool({
+      processPort: { spawn, killTree: async () => undefined }
+    }));
+
+    await fixture.service.submitFileTask({ text: '执行 Write-Output timeout-late', visibleHistory: [] });
+    vi.useFakeTimers();
+    try {
+      const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await confirming;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(fixture.events).toContainEqual({ type: 'phase', phase: 'error' });
+    expectProviderExchange(fixture.providerServer, 2);
+    const eventsAfterTimeout = [...fixture.events];
+    child.stdout.write('late-stdout');
+    child.stderr.write('late-stderr');
+    child.emit('close', 0);
+    await Promise.resolve();
+    expect(fixture.events).toEqual(eventsAfterTimeout);
+    expect(fixture.providerServer.requests).toHaveLength(2);
+  });
 });
 
 describe('桌面 Agent 真实服务集成', () => {
