@@ -11,6 +11,7 @@ import {
   type ToolRequest
 } from '@myself/shared-types';
 import type { z } from 'zod';
+import { z as zod } from 'zod';
 import type { PermissionPolicy } from './permission-policy';
 
 export interface ToolRegistration {
@@ -172,9 +173,39 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
   return registry;
 }
 
+/** 当前 PowerShell 任务只公开一个前台命令能力，不能混入文件工具。 */
+export function createBuiltinPowerShellToolRegistry(): ToolRegistry {
+  const registry = new ToolRegistry();
+  const argumentsSchema = zod.object({
+    command: zod.string().min(1).max(16_384)
+  }).strict();
+  registry.register({
+    definition: definition(
+      'builtin.powershell.run',
+      '在授权工作目录以前台非交互方式运行 PowerShell 命令，需要用户确认。',
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['command'],
+        properties: { command: { type: 'string', minLength: 1, maxLength: 16_384 } }
+      }
+    ),
+    argumentsSchema,
+    executionToolName: 'powershell',
+    risk: 'high',
+    enabled: true,
+    auditSummary: () => '运行 PowerShell 命令'
+  });
+  return registry;
+}
+
 /**
  * 按当前会话的数据授权构建工具表，避免把未授权能力暴露给模型。
  */
-export function createSessionToolRegistry(fileDisclosureAllowed: boolean): ToolRegistry {
-  return fileDisclosureAllowed ? createBuiltinFileToolRegistry() : new ToolRegistry();
+export function createSessionToolRegistry(input: {
+  taskKind: 'file' | 'powershell';
+  fileDisclosureAllowed: boolean;
+}): ToolRegistry {
+  if (input.taskKind === 'powershell') return createBuiltinPowerShellToolRegistry();
+  return input.fileDisclosureAllowed ? createBuiltinFileToolRegistry() : new ToolRegistry();
 }

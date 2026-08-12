@@ -18,6 +18,8 @@ import { PermissionPolicy } from '../src/main/agent/permission-policy';
 import { PendingActionStore } from '../src/main/agent/pending-action-store';
 import { OpenAICompatibleProvider } from '../src/main/providers/openai-provider';
 import { createBuiltinFileToolRegistry } from '../src/main/agent/tool-registry';
+import { createBuiltinPowerShellToolRegistry } from '../src/main/agent/tool-registry';
+import type { PowerShellTool, VerifiedPowerShellAction } from '../src/main/agent/powershell-tool';
 import { createTaskStore } from '../src/renderer/src/stores/task-store';
 
 class ScriptedProvider implements ModelProvider {
@@ -138,6 +140,7 @@ function createHarness(
   const registry = createBuiltinFileToolRegistry();
   const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
   const session: AgentSession = {
+    taskKind: 'file',
     provider,
     fallbackProviders,
     fileTools,
@@ -205,6 +208,80 @@ function phases(events: TaskEvent[]) {
 }
 
 describe('AgentService', () => {
+  test('PowerShell 确认使用会话目录上下文并将真实失败事实续跑给模型', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'shell-1',
+        toolName: 'builtin.powershell.run',
+        arguments: { command: 'Get-ChildItem' }
+      }
+    }, { type: 'text', text: '命令执行失败。' }]);
+    const action: VerifiedPowerShellAction = Object.freeze({
+      kind: 'powershell',
+      command: 'Get-ChildItem',
+      workingDirectoryLabel: '工作区',
+      runMode: 'foreground',
+      generation: 'generation-1',
+      expiresAtMs: Date.now() + 60_000
+    });
+    const preview = vi.fn(() => action);
+    const execute = vi.fn(async () => ({
+      ok: false,
+      toolName: 'powershell' as const,
+      status: 'failed' as const,
+      timeoutKind: null,
+      exitCode: 1,
+      stdout: '',
+      stderr: '失败',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      durationMs: 1
+    }));
+    const loop = new AgentLoop();
+    const pending = new PendingActionStore({
+      onDiscard: execution => loop.discard(execution.continuationToken)
+    });
+    const events: TaskEvent[] = [];
+    const registry = createBuiltinPowerShellToolRegistry();
+    const session: AgentSession = {
+      taskKind: 'powershell',
+      provider,
+      powershell: { preview, execute } as unknown as PowerShellTool,
+      workingDirectory: 'C:\\workspace',
+      workingDirectoryLabel: '工作区',
+      generation: 'generation-1',
+      tools: registry.definitions(),
+      toolRuntime: {
+        prepare: raw => registry.prepare(raw, new PermissionPolicy({ highRiskEnabled: true })),
+        executeRead: vi.fn()
+      },
+      messages: []
+    };
+    const service = new AgentService({
+      loop,
+      pending,
+      createSession: async () => session,
+      emit: event => events.push(event),
+      createConversationId: () => 'conversation-1'
+    });
+
+    await service.submitFileTask({ text: '运行 Get-ChildItem', visibleHistory: [] });
+    const pendingEvent = events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少 PowerShell 确认');
+    await service.confirm(pendingEvent.action.actionId);
+
+    expect(preview).toHaveBeenCalledWith({
+      command: 'Get-ChildItem',
+      workingDirectory: 'C:\\workspace',
+      workingDirectoryLabel: '工作区',
+      generation: 'generation-1'
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(events.filter(event => event.type === 'character_carrying')).toEqual([]);
+    expect(phases(events).at(-1)).toBe('error');
+  });
+
   test('文件任务在连续两次工具前伪成功时公开稳定错误且不泄露模型正文', async () => {
     const firstViolation = '我没有权限执行这个文件任务';
     const secondViolation = '文件已经创建完成';
@@ -215,7 +292,7 @@ describe('AgentService', () => {
     const { events, service, session } = createHarness(provider);
 
     await expect(service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] }))
-      .rejects.toMatchObject({ code: 'FILE_PLAN_PROTOCOL_INVALID' });
+      .rejects.toMatchObject({ code: 'CAPABILITY_PLAN_PROTOCOL_INVALID' });
 
     expect(phases(events)).toEqual(['thinking', 'error']);
     expect(events).not.toContainEqual({ type: 'phase', phase: 'success' });

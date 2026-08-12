@@ -3,18 +3,19 @@ import { characterAgentBehaviorIntentSchema } from '@myself/character-runtime';
 import { characterEmotionLabelSchema } from '@myself/shared-types';
 import type {
   AgentEvent,
-  FilePlannerResult,
+  CapabilityPlannerResult,
   ModelMessage,
   PreparedToolRequest,
   RunContext
 } from './types';
 
-const FILE_PLANNER_QUESTION_MAX_LENGTH = 1_000;
+const CAPABILITY_PLANNER_QUESTION_MAX_LENGTH = 1_000;
 
 type ContinuationState = {
   messages: ModelMessage[];
   nextTurn: number;
   requestId: string;
+  latestTrustedResultOk: boolean | undefined;
 };
 
 function isAbortError(error: unknown): boolean {
@@ -22,8 +23,8 @@ function isAbortError(error: unknown): boolean {
 }
 
 /** 只接受可直接展示给用户的、无扩展字段的 JSON 澄清协议。 */
-function parseFilePlannerClarification(text: string): Extract<
-  FilePlannerResult,
+function parseCapabilityPlannerClarification(text: string): Extract<
+  CapabilityPlannerResult,
   { kind: 'clarification_required' }
 > | null {
   let value: unknown;
@@ -43,15 +44,15 @@ function parseFilePlannerClarification(text: string): Extract<
     record.kind !== 'clarification_required'
     || typeof record.question !== 'string'
     || record.question.trim().length === 0
-    || record.question.length > FILE_PLANNER_QUESTION_MAX_LENGTH
+    || record.question.length > CAPABILITY_PLANNER_QUESTION_MAX_LENGTH
   ) return null;
   if (!Object.hasOwn(record, 'kind') || !Object.hasOwn(record, 'question')) return null;
   return { kind: 'clarification_required', question: record.question };
 }
 
-function filePlanProtocolError(): Error {
-  return Object.assign(new Error('FILE_PLAN_PROTOCOL_INVALID'), {
-    code: 'FILE_PLAN_PROTOCOL_INVALID'
+function capabilityPlanProtocolError(): Error {
+  return Object.assign(new Error('CAPABILITY_PLAN_PROTOCOL_INVALID'), {
+    code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
   });
 }
 
@@ -63,7 +64,7 @@ export class AgentLoop {
       ...context.messages,
       { role: 'user' as const, content: userText }
     ];
-    yield* this.continueRun(messages, 0, context, false);
+    yield* this.continueRun(messages, 0, context, false, undefined);
   }
 
   async *resume(
@@ -82,10 +83,16 @@ export class AgentLoop {
     });
     if (continuation.nextTurn >= 4) {
       yield { type: 'message', text: '本地文件操作已完成；已达到模型响应轮次上限。' };
-      yield { type: 'phase', phase: 'success' };
+      yield { type: 'phase', phase: continuation.latestTrustedResultOk === false ? 'error' : 'success' };
       return;
     }
-    yield* this.continueRun(continuation.messages, continuation.nextTurn, context, true);
+    yield* this.continueRun(
+      continuation.messages,
+      continuation.nextTurn,
+      context,
+      true,
+      trustedResultOk(toolResult)
+    );
   }
 
   discard(continuationToken: string): void {
@@ -96,7 +103,8 @@ export class AgentLoop {
     messages: ModelMessage[],
     startTurn: number,
     context: RunContext,
-    hasTrustedToolResult: boolean
+    hasTrustedToolResult: boolean,
+    latestTrustedResultOk: boolean | undefined
   ): AsyncGenerator<AgentEvent> {
     if (context.signal.aborted) {
       yield { type: 'phase', phase: 'cancelled' };
@@ -130,20 +138,20 @@ export class AgentLoop {
       }
 
       if (response.type === 'text') {
-        if (context.protocol === 'file_planner' && !hasTrustedToolResult) {
-          const clarification = parseFilePlannerClarification(response.text);
+        if (context.protocol === 'capability_planner' && !hasTrustedToolResult) {
+          const clarification = parseCapabilityPlannerClarification(response.text);
           if (!clarification) {
-            if (correctionUsed) throw filePlanProtocolError();
+            if (correctionUsed) throw capabilityPlanProtocolError();
             correctionUsed = true;
             // 该修复指令不改变本次 tools 或权限，仅要求重发受限协议结果。
             messages.push({
               role: 'system',
-              content: 'FILE_PLAN_PROTOCOL_INVALID：首次真实工具结果前，只能调用已提供的工具，或返回严格 JSON {"kind":"clarification_required","question":"非空问题"}。请仅修正一次。'
+              content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：首次真实工具结果前，只能调用当前提供的工具，或返回严格 JSON {"kind":"clarification_required","question":"非空问题"}。请仅修正一次。'
             });
             continue;
           }
           yield { type: 'message', text: clarification.question };
-          yield { type: 'phase', phase: 'success' };
+          yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
           return;
         }
         if (response.emotion !== undefined) {
@@ -161,7 +169,7 @@ export class AgentLoop {
           }
         }
         yield { type: 'message', text: response.text };
-        yield { type: 'phase', phase: 'success' };
+        yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
         return;
       }
 
@@ -190,7 +198,8 @@ export class AgentLoop {
         this.continuations.set(continuationToken, {
           messages: [...messages],
           nextTurn: turn + 1,
-          requestId: prepared.request.requestId
+          requestId: prepared.request.requestId,
+          latestTrustedResultOk
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
         yield {
@@ -212,8 +221,16 @@ export class AgentLoop {
         content: JSON.stringify(result)
       });
       hasTrustedToolResult = true;
+      latestTrustedResultOk = trustedResultOk(result);
     }
 
     throw new Error('AGENT_MAX_TURNS');
   }
+}
+
+/** 本地执行结果是终态的唯一事实；没有 ok 字段时保持既有兼容语义。 */
+function trustedResultOk(result: unknown): boolean | undefined {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return undefined;
+  const ok = (result as Record<string, unknown>)['ok'];
+  return typeof ok === 'boolean' ? ok : undefined;
 }

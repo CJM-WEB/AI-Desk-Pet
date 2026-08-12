@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { VerifiedWriteAction } from '@myself/file-tools';
 import { pendingActionSchema, type PendingAction } from '@myself/shared-types';
+import type { VerifiedPowerShellAction } from './powershell-tool';
 
 export type PendingActionClearReason =
   | 'new_task'
@@ -17,10 +18,15 @@ export interface PendingActionStoreOptions {
   onDiscard?: (execution: PendingExecution, reason: PendingActionClearReason) => void;
 }
 
-export type PendingExecution = {
-  verifiedAction: VerifiedWriteAction;
+/** 私有执行票据与公开确认摘要分离，Renderer 永远不接触执行能力。 */
+export type VerifiedCapabilityAction =
+  | Readonly<{ category: 'file'; action: VerifiedWriteAction }>
+  | Readonly<{ category: 'powershell'; action: VerifiedPowerShellAction }>;
+
+export type PendingExecution = Readonly<{
+  verifiedAction: VerifiedCapabilityAction;
   continuationToken: string;
-};
+}>;
 
 /** 对联合类型逐分支省略由存储层签发的字段，避免抹平动作专属摘要。 */
 export type PendingActionDraft = PendingAction extends infer Action

@@ -88,6 +88,19 @@ describe('PendingAction 契约', () => {
       createdAt: '2026-07-20T00:00:00.000Z',
       expiresAt: '2026-07-20T00:02:00.000Z'
     })).toMatchObject({ operation: 'delete_file', targetType: 'file' });
+    expect(pendingActionSchema.parse({
+      category: 'powershell',
+      actionId: 'act-4',
+      conversationId: 'conv-1',
+      risk: 'shell',
+      operation: 'powershell',
+      summary: '运行 PowerShell 命令',
+      command: 'Get-ChildItem',
+      workingDirectoryLabel: '项目目录',
+      runMode: 'foreground',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      expiresAt: '2026-07-20T00:02:00.000Z'
+    })).toMatchObject({ category: 'powershell', operation: 'powershell' });
   });
 
   it('拒绝旧分支、跨分支字段和多余字段', () => {

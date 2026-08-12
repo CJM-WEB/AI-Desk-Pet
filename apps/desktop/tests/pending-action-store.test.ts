@@ -32,7 +32,7 @@ function privateAction(targetRelativePath = 'result.txt'): VerifiedWriteAction {
 
 function pendingExecution(targetRelativePath = 'result.txt'): PendingExecution {
   return {
-    verifiedAction: privateAction(targetRelativePath),
+    verifiedAction: { category: 'file', action: privateAction(targetRelativePath) },
     continuationToken: `continue_${targetRelativePath}`
   };
 }
@@ -139,7 +139,10 @@ describe('PendingActionStore', () => {
     (issued as { targetRelativePath: string }).targetRelativePath = 'tampered.txt';
 
     expect(store.consume(issued.actionId)).toBe(verified);
-    expect(verified.verifiedAction.targetRelativePath).toBe('safe.txt');
+    expect(verified.verifiedAction.category).toBe('file');
+    if (verified.verifiedAction.category === 'file') {
+      expect(verified.verifiedAction.action.targetRelativePath).toBe('safe.txt');
+    }
   });
 
   test('错误 ID 不会清除仍有效的动作', () => {

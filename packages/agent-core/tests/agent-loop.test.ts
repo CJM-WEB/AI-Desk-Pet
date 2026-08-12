@@ -342,10 +342,10 @@ describe('AgentLoop', () => {
       { type: 'text', text: '我没有权限执行这个文件任务' },
       { type: 'text', text: '文件已经创建完成' }
     ]);
-    const runContext = { ...context(provider), protocol: 'file_planner' as const };
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
 
     await expect(collectEvents(runContext)).rejects.toMatchObject({
-      code: 'FILE_PLAN_PROTOCOL_INVALID'
+      code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
     });
 
     expect(provider.requests).toHaveLength(2);
@@ -353,8 +353,64 @@ describe('AgentLoop', () => {
     expect(JSON.stringify(provider.requests[1]?.messages)).not.toContain('我没有权限执行这个文件任务');
     expect(provider.requests[1]?.messages.at(-1)).toEqual(expect.objectContaining({
       role: 'system',
-      content: expect.stringContaining('FILE_PLAN_PROTOCOL_INVALID')
+      content: expect.stringContaining('CAPABILITY_PLAN_PROTOCOL_INVALID')
     }));
+  });
+
+  test('能力任务把最新真实工具失败保留为 error，即使模型返回总结文本', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'shell-1',
+        toolName: 'builtin.files.create_file',
+        arguments: { relativePath: 'result.txt' }
+      }
+    }, { type: 'text', text: '命令已执行，详见输出。' }]);
+    const loop = new AgentLoop();
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    const firstEvents = await collect(loop.run('运行命令', runContext));
+    const request = firstEvents.find(event => event.type === 'write_request');
+    if (!request || request.type !== 'write_request') throw new Error('缺少待确认请求');
+    const events = await collect(loop.resume(request.continuationToken, {
+      ok: false,
+      toolName: 'powershell',
+      status: 'failed'
+    }, runContext));
+
+    expect(events).toContainEqual({ type: 'message', text: '命令已执行，详见输出。' });
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+  });
+
+  test('后续真实工具成功可以覆盖较早失败并恢复 success 终态', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-after-failure'),
+      { type: 'text', text: '第二次工具已成功。' }
+    ]);
+    const runtime = createToolRuntime();
+    runtime.executeRead = vi.fn(async () => ({ ok: true, content: '文件内容' }));
+    const runContext = {
+      ...context(provider),
+      toolRuntime: runtime,
+      protocol: 'capability_planner' as const
+    };
+    const loop = new AgentLoop();
+    const firstEvents = await collect(loop.run('先失败', {
+      ...runContext,
+      provider: new ScriptedProvider([{
+        type: 'tool_request',
+        request: {
+          requestId: 'failed-shell',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      }])
+    }));
+    const request = firstEvents.find(event => event.type === 'write_request');
+    if (!request || request.type !== 'write_request') throw new Error('缺少待确认请求');
+    const resumeEvents = await collect(loop.resume(request.continuationToken, { ok: false }, runContext));
+
+    expect(resumeEvents.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
   test('文件规划在首次真实工具结果前只公开严格 JSON 澄清问题', async () => {
@@ -362,7 +418,7 @@ describe('AgentLoop', () => {
       type: 'text',
       text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
     }]);
-    const runContext = { ...context(provider), protocol: 'file_planner' as const };
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
 
     await expect(collectEvents(runContext)).resolves.toEqual([
       { type: 'phase', phase: 'thinking' },
@@ -376,7 +432,7 @@ describe('AgentLoop', () => {
     const provider = new RepairDeferredProvider();
     const runContext = {
       ...context(provider, controller.signal),
-      protocol: 'file_planner' as const
+      protocol: 'capability_planner' as const
     };
     const running = collectEvents(runContext);
     await vi.waitFor(() => expect(provider.requests).toHaveLength(1));
@@ -405,10 +461,10 @@ describe('AgentLoop', () => {
       { type: 'text', text },
       { type: 'text', text }
     ]);
-    const runContext = { ...context(provider), protocol: 'file_planner' as const };
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
 
     await expect(collectEvents(runContext)).rejects.toMatchObject({
-      code: 'FILE_PLAN_PROTOCOL_INVALID'
+      code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
     });
     expect(provider.requests).toHaveLength(2);
   });
@@ -418,7 +474,7 @@ describe('AgentLoop', () => {
       readRequest('read-1'),
       { type: 'text', text: 'notes.txt 的内容已读取' }
     ]);
-    const runContext = { ...context(provider), protocol: 'file_planner' as const };
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
 
     const events = await collectEvents(runContext);
 

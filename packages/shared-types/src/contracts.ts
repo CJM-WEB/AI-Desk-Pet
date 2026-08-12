@@ -89,6 +89,19 @@ export type PendingAction =
   | Readonly<PendingFileActionBase & {
       operation: 'delete_file';
       targetType: 'file' | 'empty_directory';
+    }>
+  | Readonly<{
+      category: 'powershell';
+      actionId: string;
+      conversationId: string;
+      risk: 'shell';
+      operation: 'powershell';
+      summary: string;
+      command: string;
+      workingDirectoryLabel: string;
+      runMode: 'foreground';
+      createdAt: string;
+      expiresAt: string;
     }>;
 
 const pendingFileActionBaseSchema = z.object({
@@ -119,6 +132,19 @@ export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
   pendingFileActionBaseSchema.extend({
     operation: z.literal('delete_file'),
     targetType: z.enum(['file', 'empty_directory'])
+  }).strict(),
+  z.object({
+    category: z.literal('powershell'),
+    actionId: z.string().min(1),
+    conversationId: z.string().min(1),
+    risk: z.literal('shell'),
+    operation: z.literal('powershell'),
+    summary: z.string().min(1),
+    command: z.string().min(1).max(16_384),
+    workingDirectoryLabel: z.string().min(1),
+    runMode: z.literal('foreground'),
+    createdAt: z.string().datetime(),
+    expiresAt: z.string().datetime()
   }).strict()
 ]);
 

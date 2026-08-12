@@ -196,10 +196,31 @@ describe('ToolRegistry', () => {
 
 describe('内置文件工具注册', () => {
   test('文件分类未授权时会话不注册任何 builtin 文件工具', () => {
-    expect(createSessionToolRegistry(false).definitions()).toEqual([]);
-    expect(createSessionToolRegistry(true).definitions().map(
+    expect(createSessionToolRegistry({ taskKind: 'file', fileDisclosureAllowed: false }).definitions()).toEqual([]);
+    expect(createSessionToolRegistry({ taskKind: 'file', fileDisclosureAllowed: true }).definitions().map(
       definition => definition.function.name
     )).toContain('builtin.files.list_files');
+  });
+
+  test('PowerShell 任务只暴露前台命令工具，不混入文件能力', () => {
+    const registry = createSessionToolRegistry({
+      taskKind: 'powershell',
+      fileDisclosureAllowed: true
+    });
+    const policy = new PermissionPolicy({ highRiskEnabled: true });
+
+    expect(registry.definitions().map(item => item.function.name)).toEqual([
+      'builtin.powershell.run'
+    ]);
+    expect(registry.prepare({
+      requestId: 'shell-1',
+      toolName: 'builtin.powershell.run',
+      arguments: { command: 'Get-ChildItem' }
+    }, policy)).toMatchObject({
+      executionRequest: { toolName: 'powershell', arguments: { command: 'Get-ChildItem' } },
+      risk: 'high',
+      decision: 'confirm'
+    });
   });
 
   test('五个公开工具精确映射到内部动作和本地风险', () => {

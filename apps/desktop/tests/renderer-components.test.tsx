@@ -592,6 +592,36 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('仅修改已有文件；执行前还会再次进行冲突校验。');
   });
 
+  test('PowerShell 确认卡展示完整命令、目录摘要、前台模式和非沙箱风险', () => {
+    const markup = renderToStaticMarkup(
+      <ConfirmationCard
+        action={{
+          actionId: 'shell-1',
+          conversationId: 'conversation-1',
+          category: 'powershell',
+          risk: 'shell',
+          operation: 'powershell',
+          summary: '运行 PowerShell 命令',
+          command: 'Get-ChildItem -Force',
+          workingDirectoryLabel: '项目目录',
+          runMode: 'foreground',
+          createdAt: '2026-08-12T12:00:00.000Z',
+          expiresAt: '2026-08-12T12:02:00.000Z'
+        }}
+        busy={false}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('Get-ChildItem -Force');
+    expect(markup).toContain('项目目录');
+    expect(markup).toContain('前台非交互执行');
+    expect(markup).toContain('不是安全沙箱');
+    expect(markup).toContain('确认运行命令');
+    expect(markup).toContain('先不运行');
+  });
+
   test('设置工作区仅提供模型、隐私和本地数据导航', () => {
     const markup = renderToStaticMarkup(
       <SettingsWorkspace

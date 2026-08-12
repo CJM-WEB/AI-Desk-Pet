@@ -773,10 +773,14 @@ async function createApplicationWindows(
               : absolutePath => shell.trashItem(absolutePath)
           });
           const fileDisclosureAllowed = snapshot.privacySettings.dataCategories.file;
-          const registry = createSessionToolRegistry(fileDisclosureAllowed);
+          const registry = createSessionToolRegistry({
+            taskKind: 'file',
+            fileDisclosureAllowed
+          });
           for (const registration of snapshot.enabledReadTools) registry.register(registration);
           const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
           return {
+            taskKind: 'file' as const,
             provider: providerRegistry.create(
               primaryProfile,
               () => secrets.readForProviderCall(primaryProfile.id)
