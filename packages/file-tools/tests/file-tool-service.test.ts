@@ -1,4 +1,16 @@
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -152,6 +164,23 @@ describe('FileToolService.executeRead', () => {
     })).rejects.toMatchObject({ code: 'ENTRY_TYPE_UNSUPPORTED' });
     await expect(lstat(join(root, 'docs', 'binary.bin'))).resolves.toBeDefined();
   });
+
+  it('read_file 对单行 1 MiB 文本施加严格返回字符上限', async () => {
+    const { service, root } = await fixtureService();
+    const content = '界'.repeat(Math.floor((1024 * 1024) / 3));
+    await writeFile(join(root, 'docs', 'single-line.txt'), content, 'utf8');
+
+    const result = await service.executeRead({
+      requestId: 'read-single-line-limit',
+      toolName: 'read_file',
+      arguments: { relativePath: 'docs/single-line.txt', startLine: 1, lineCount: 1 }
+    });
+
+    if (result.toolName !== 'read_file') throw new Error('预期文件读取结果');
+    expect(result.content.length).toBeLessThan(content.length);
+    expect(result.content.endsWith('\uFFFD')).toBe(false);
+    expect(result).toMatchObject({ startLine: 1, endLine: 1, truncated: true });
+  });
 });
 
 describe('FileToolService.preview 与 executeWrite', () => {
@@ -169,6 +198,7 @@ describe('FileToolService.preview 与 executeWrite', () => {
       targetRelativePath: 'created.txt',
       contentCharacters: 4,
       contentPreview: '私有正文',
+      contentPreviewSuppressedReason: null,
       previewTruncated: false
     });
     expect(JSON.stringify(action)).not.toContain(root);
@@ -189,6 +219,86 @@ describe('FileToolService.preview 与 executeWrite', () => {
 
     await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
     await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+  });
+
+  it.each([
+    ['API key 赋值', 'api_key = sk-private-value'],
+    ['带前缀 API key 赋值', 'OPENAI_API_KEY=sk-private-value'],
+    ['Bearer 凭据', 'Authorization: Bearer abc'],
+    ['PEM 私钥', '-----BEGIN PRIVATE KEY-----\nprivate-material'],
+    ['PEM 证书', '-----BEGIN CERTIFICATE-----\nprivate-material'],
+    ['password 赋值', 'password="private-value"'],
+    ['secret 赋值', 'secret: private-value'],
+    ['token 赋值', 'token = private-value']
+  ])('create_file 对%s抑制公开正文预览', async (_label, content) => {
+    const { service } = await fixtureService();
+    const action = await service.preview({
+      requestId: `create-sensitive-${_label}`,
+      toolName: 'create_file',
+      arguments: { relativePath: 'sensitive.txt', content }
+    });
+
+    expect(action).toMatchObject({
+      operation: 'create_file',
+      contentCharacters: Array.from(content).length,
+      contentPreview: null,
+      contentPreviewSuppressedReason: 'sensitive'
+    });
+    expect(JSON.stringify(action)).not.toContain('private');
+  });
+
+  it('create_file 对过长正文只公开字符数和抑制原因', async () => {
+    const { service } = await fixtureService();
+    const content = '长'.repeat(201);
+    const action = await service.preview({
+      requestId: 'create-long-preview',
+      toolName: 'create_file',
+      arguments: { relativePath: 'long.txt', content }
+    });
+
+    expect(action).toMatchObject({
+      operation: 'create_file',
+      contentCharacters: 201,
+      contentPreview: null,
+      contentPreviewSuppressedReason: 'too_long'
+    });
+    expect(JSON.stringify(action)).not.toContain('长');
+  });
+
+  it.each(['write', 'close'] as const)('create_file 在%s失败后清理本次新建目标', async failure => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    temporaryRoots.push(root);
+    await mkdir(join(root, 'docs'));
+    const fileOperations = {
+      open: async (path: string, flags: string) => {
+        const handle = await open(path, flags);
+        return {
+          stat: async (_options: { bigint: true }) => handle.stat({ bigint: true }),
+          writeFile: async (content: string, encoding: BufferEncoding) => {
+            if (failure === 'write') {
+              await handle.writeFile('partial', encoding);
+              throw new Error('注入写入失败');
+            }
+            await handle.writeFile(content, encoding);
+          },
+          close: async () => {
+            await handle.close();
+            if (failure === 'close') throw new Error('注入关闭失败');
+          }
+        };
+      },
+      rename,
+      unlink
+    };
+    const service = new FileToolService(await PathPolicy.create(root), undefined, undefined, fileOperations);
+    const action = await service.preview({
+      requestId: `create-${failure}-failure`,
+      toolName: 'create_file',
+      arguments: { relativePath: 'docs/failed.txt', content: '完整正文' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toBeDefined();
+    await expect(lstat(join(root, 'docs', 'failed.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('apply_patch 只公开补丁摘要并以预览版本作为基础写入', async () => {
@@ -248,6 +358,90 @@ describe('FileToolService.preview 与 executeWrite', () => {
     });
 
     expect(action).toMatchObject({ operation: 'apply_patch', addedLines: 1, removedLines: 1 });
+  });
+
+  it.each(['write', 'close', 'rename'] as const)('apply_patch 在临时文件%s失败后清理本次临时文件', async failure => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    temporaryRoots.push(root);
+    await mkdir(join(root, 'docs'));
+    const target = join(root, 'docs', 'patch-failure.txt');
+    await writeFile(target, 'before\n', 'utf8');
+    const fileOperations = {
+      open: async (path: string, flags: string) => {
+        const handle = await open(path, flags);
+        return {
+          stat: async (_options: { bigint: true }) => handle.stat({ bigint: true }),
+          writeFile: async (content: string, encoding: BufferEncoding) => {
+            if (failure === 'write') {
+              await handle.writeFile('partial', encoding);
+              throw new Error('注入写入失败');
+            }
+            await handle.writeFile(content, encoding);
+          },
+          close: async () => {
+            await handle.close();
+            if (failure === 'close') throw new Error('注入关闭失败');
+          }
+        };
+      },
+      rename: async (source: string, destination: string) => {
+        if (failure === 'rename') throw new Error('注入改名失败');
+        await rename(source, destination);
+      },
+      unlink
+    };
+    const service = new FileToolService(await PathPolicy.create(root), undefined, undefined, fileOperations);
+    const action = await service.preview({
+      requestId: `patch-${failure}-failure`,
+      toolName: 'apply_patch',
+      arguments: {
+        relativePath: 'docs/patch-failure.txt',
+        patch: '@@ -1,1 +1,1 @@\n-before\n+after\n'
+      }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toBeDefined();
+    await expect(readFile(target, 'utf8')).resolves.toBe('before\n');
+    expect((await readdir(join(root, 'docs'))).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('apply_patch 清理前核对临时文件身份，不删除竞争方替换文件', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    temporaryRoots.push(root);
+    await mkdir(join(root, 'docs'));
+    const target = join(root, 'docs', 'patch-race.txt');
+    await writeFile(target, 'before\n', 'utf8');
+    let competingPath = '';
+    const fileOperations = {
+      open: async (path: string, flags: string) => {
+        const handle = await open(path, flags);
+        return {
+          stat: async (_options: { bigint: true }) => handle.stat({ bigint: true }),
+          writeFile: (content: string, encoding: BufferEncoding) => handle.writeFile(content, encoding),
+          close: () => handle.close()
+        };
+      },
+      rename: async (source: string) => {
+        competingPath = source;
+        await unlink(source);
+        await writeFile(source, '竞争方文件', 'utf8');
+        throw new Error('注入改名失败');
+      },
+      unlink
+    };
+    const service = new FileToolService(await PathPolicy.create(root), undefined, undefined, fileOperations);
+    const action = await service.preview({
+      requestId: 'patch-rename-race',
+      toolName: 'apply_patch',
+      arguments: {
+        relativePath: 'docs/patch-race.txt',
+        patch: '@@ -1,1 +1,1 @@\n-before\n+after\n'
+      }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toBeDefined();
+    await expect(readFile(target, 'utf8')).resolves.toBe('before\n');
+    await expect(readFile(competingPath, 'utf8')).resolves.toBe('竞争方文件');
   });
 
   it('delete_file 只通过回收站端口删除普通文件和空目录', async () => {

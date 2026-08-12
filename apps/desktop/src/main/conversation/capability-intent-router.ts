@@ -68,6 +68,8 @@ const chineseShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我
 const englishShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+|execute\s+(?:(?:this|the)\s+command\s*:?\s*|powershell\s+))([\s\S]+)$/iu;
 const backgroundShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?后台运行\s*(?:构建|测试|build\b|test\b)$/iu;
 const shellCommandPayloadPattern = /^(?:[a-z][a-z\d._-]*|\.{1,2}[\\/](?:[a-z\d._-]+[\\/])*[a-z\d._-]+)(?:\s+\S+){0,16}$/iu;
+const powershellAssignmentScriptPattern = /^\$[a-z_][a-z\d_:]*\s*=\s*[^;\r\n]+;\s*\S[\s\S]*$/iu;
+const powershellScriptBlockPattern = /^&\s*\{[\s\S]+\}$/u;
 const englishCopulaTokenPattern = /^(?:am|is|are|was|were|be|been|being)$/u;
 const englishAuxiliaryTokenPattern = /^(?:do|does|did|can|could|would|will|shall|should|may|might|must|has|have|had)$/u;
 const englishQuestionWordTokenPattern = /^(?:what|why|how|when|where|who|whom|whose|which)$/u;
@@ -390,10 +392,13 @@ function hasUnquotedNaturalLanguageTail(commandText: string): boolean {
     || hasEnglishNaturalLanguageClause(argumentTokens);
 }
 
-/** ASCII 可执行标识或显式相对脚本路径加有界、非咨询尾部参数才构成 Shell 正向证据。 */
+/** 命令标识或明确 PowerShell 脚本结构加非咨询尾部才构成 Shell 正向证据。 */
 function isShellCommandPayload(payload: string): boolean {
   const withoutShellHost = payload.trim().replace(/^powershell\s+/iu, '');
-  return shellCommandPayloadPattern.test(withoutShellHost)
+  const hasExecutablePayload = shellCommandPayloadPattern.test(withoutShellHost)
+    || powershellAssignmentScriptPattern.test(withoutShellHost)
+    || powershellScriptBlockPattern.test(withoutShellHost);
+  return hasExecutablePayload
     && !hasUnquotedNaturalLanguageTail(withoutShellHost);
 }
 

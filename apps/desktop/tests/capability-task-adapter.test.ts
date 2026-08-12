@@ -63,6 +63,29 @@ function asAgentService(agent: AgentDouble): AgentService {
   return agent as unknown as AgentService;
 }
 
+type 类型完全一致<Left, Right> = [Left] extends [Right]
+  ? [Right] extends [Left] ? true : false
+  : false;
+type 断言类型<Condition extends true> = Condition;
+
+/** 编译期契约：准备与提交参数必须精确携带任务类型。 */
+type 准备参数契约 = 断言类型<类型完全一致<
+  Parameters<CapabilityTaskAdapter['prepareTarget']>[0],
+  { generation: string; taskKind: 'file' | 'powershell' }
+>>;
+type 提交参数契约 = 断言类型<类型完全一致<
+  Parameters<CapabilityTaskAdapter['submit']>[0],
+  {
+    text: string;
+    visibleHistory: readonly ModelMessage[];
+    generation: string;
+    taskKind: 'file' | 'powershell';
+  }
+>>;
+
+void (null as unknown as 准备参数契约);
+void (null as unknown as 提交参数契约);
+
 function preparedAgent(
   agent: AgentDouble,
   target: {
@@ -80,9 +103,14 @@ function preparedAgent(
 
 async function submitPrepared(
   adapter: CapabilityTaskAdapter,
-  input: { text: string; visibleHistory: readonly ModelMessage[]; generation: string }
+  input: {
+    text: string;
+    visibleHistory: readonly ModelMessage[];
+    generation: string;
+    taskKind: 'file' | 'powershell';
+  }
 ): Promise<void> {
-  await adapter.prepareTarget(input.generation);
+  await adapter.prepareTarget({ generation: input.generation, taskKind: input.taskKind });
   await adapter.submit(input);
 }
 
@@ -126,7 +154,8 @@ describe('CapabilityTaskAdapter', () => {
     await expect(adapter.submit({
       text: '读取 new.txt',
       visibleHistory: [],
-      generation: 'g-new'
+      generation: 'g-new',
+      taskKind: 'file'
     })).resolves.toBeUndefined();
     expect(createAgentTarget).toHaveBeenCalledOnce();
   });
@@ -226,7 +255,8 @@ describe('CapabilityTaskAdapter', () => {
     await submitPrepared(adapter, {
       text: '列出目录',
       visibleHistory,
-      generation: 'g-visible'
+      generation: 'g-visible',
+      taskKind: 'file'
     });
 
     expect(agent.submitFileTask).toHaveBeenCalledExactlyOnceWith({
@@ -264,7 +294,8 @@ describe('CapabilityTaskAdapter', () => {
     await expect(adapter.submit({
       text: '读取文件',
       visibleHistory: [],
-      generation: 'g-revoked'
+      generation: 'g-revoked',
+      taskKind: 'file'
     })).rejects.toMatchObject({ code: 'FILE_AUTHORIZATION_REQUIRED' });
 
     expect(getAuthorizedRootPath).toHaveBeenCalledTimes(2);
@@ -286,12 +317,14 @@ describe('CapabilityTaskAdapter', () => {
     await expect(adapter.submit({
       text: '读取私有文件',
       visibleHistory: [],
-      generation: 'g-denied'
+      generation: 'g-denied',
+      taskKind: 'file'
     })).rejects.toMatchObject({ code: 'FILE_DISCLOSURE_DENIED' });
     await expect(submitPrepared(adapter, {
       text: '列出公开目录',
       visibleHistory: [],
-      generation: 'g-next'
+      generation: 'g-next',
+      taskKind: 'file'
     })).resolves.toBeUndefined();
 
     expect(agent.submitFileTask).toHaveBeenCalledTimes(2);
@@ -312,7 +345,12 @@ describe('CapabilityTaskAdapter', () => {
     adapter.onEvent(listener);
 
     await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
-    const first = adapter.submit({ text: '第一个任务', visibleHistory: [], generation: 'g1' });
+    const first = adapter.submit({
+      text: '第一个任务',
+      visibleHistory: [],
+      generation: 'g1',
+      taskKind: 'file'
+    });
     await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledOnce());
     await expect(adapter.prepareTarget({ generation: 'g2', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
@@ -340,7 +378,12 @@ describe('CapabilityTaskAdapter', () => {
     });
 
     await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
-    const first = adapter.submit({ text: '旧任务', visibleHistory: [], generation: 'g-old' });
+    const first = adapter.submit({
+      text: '旧任务',
+      visibleHistory: [],
+      generation: 'g-old',
+      taskKind: 'file'
+    });
     await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledOnce());
     adapter.cancelActive();
 
@@ -352,7 +395,8 @@ describe('CapabilityTaskAdapter', () => {
     await expect(submitPrepared(adapter, {
       text: '已隔离的新任务',
       visibleHistory: [],
-      generation: 'g-new'
+      generation: 'g-new',
+      taskKind: 'file'
     })).resolves.toBeUndefined();
   });
 
@@ -375,7 +419,8 @@ describe('CapabilityTaskAdapter', () => {
     await submitPrepared(adapter, {
       text: '等待确认',
       visibleHistory: [],
-      generation: 'g-confirm'
+      generation: 'g-confirm',
+      taskKind: 'file'
     });
 
     const confirming = adapter.resolveAction('pending-action', 'confirm');
@@ -395,7 +440,8 @@ describe('CapabilityTaskAdapter', () => {
     await expect(submitPrepared(adapter, {
       text: '确认收敛后的任务',
       visibleHistory: [],
-      generation: 'g-after-confirm'
+      generation: 'g-after-confirm',
+      taskKind: 'file'
     })).resolves.toBeUndefined();
   });
 
@@ -414,7 +460,8 @@ describe('CapabilityTaskAdapter', () => {
     await submitPrepared(adapter, {
       text: '删除文件',
       visibleHistory: [],
-      generation: 'g-action'
+      generation: 'g-action',
+      taskKind: 'file'
     });
 
     expect(adapter.onPlaybackStarted('token', 'action')).toBe(true);
@@ -426,7 +473,8 @@ describe('CapabilityTaskAdapter', () => {
     await submitPrepared(adapter, {
       text: '取消删除',
       visibleHistory: [],
-      generation: 'g-cancel'
+      generation: 'g-cancel',
+      taskKind: 'file'
     });
     await adapter.resolveAction('cancel-action', 'cancel');
 
@@ -502,7 +550,8 @@ describe('CapabilityTaskAdapter', () => {
     await submitPrepared(adapter, {
       text: '先运行一次',
       visibleHistory: [],
-      generation: 'g1'
+      generation: 'g1',
+      taskKind: 'file'
     });
 
     await adapter.close();
@@ -513,7 +562,8 @@ describe('CapabilityTaskAdapter', () => {
     await expect(adapter.submit({
       text: '关闭后任务',
       visibleHistory: [],
-      generation: 'g2'
+      generation: 'g2',
+      taskKind: 'file'
     })).rejects.toMatchObject({ code: 'CONVERSATION_CLOSED' });
   });
 
@@ -551,7 +601,8 @@ describe('CapabilityTaskAdapter', () => {
     const submission = adapter.submit({
       text: '悬挂请求',
       visibleHistory: [],
-      generation: 'g-provider'
+      generation: 'g-provider',
+      taskKind: 'file'
     });
     await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledOnce());
 
@@ -580,14 +631,13 @@ describe('CapabilityTaskAdapter', () => {
       createAgentTarget: vi.fn(() => targets.shift()!)
     } as never);
 
-    const target = await (adapter as unknown as {
-      prepareTarget(generation: string): Promise<{
-        profileId: string;
-        providerIdentity: string;
-        providerName: string;
-      }>;
-    }).prepareTarget('g-bound');
-    await adapter.submit({ text: '整理文件', visibleHistory: [], generation: 'g-bound' });
+    const target = await adapter.prepareTarget({ generation: 'g-bound', taskKind: 'file' });
+    await adapter.submit({
+      text: '整理文件',
+      visibleHistory: [],
+      generation: 'g-bound',
+      taskKind: 'file'
+    });
 
     expect(target).toEqual({
       profileId: 'profile-a',
@@ -623,19 +673,22 @@ describe('CapabilityTaskAdapter', () => {
     } as never);
     const listener = vi.fn();
     adapter.onEvent(listener);
-    await (adapter as unknown as { prepareTarget(generation: string): Promise<unknown> })
-      .prepareTarget('g-old');
+    await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
 
     const resetting = adapter.resetForNewConversation();
     oldEmit({ type: 'message', role: 'assistant', text: '旧会话事件' });
-    await expect((adapter as unknown as { prepareTarget(generation: string): Promise<unknown> })
-      .prepareTarget('g-too-early')).rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
+    await expect(adapter.prepareTarget({ generation: 'g-too-early', taskKind: 'file' }))
+      .rejects.toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
     oldReset.resolve();
     await resetting;
 
-    await (adapter as unknown as { prepareTarget(generation: string): Promise<unknown> })
-      .prepareTarget('g-new');
-    await adapter.submit({ text: '新任务', visibleHistory: [], generation: 'g-new' });
+    await adapter.prepareTarget({ generation: 'g-new', taskKind: 'file' });
+    await adapter.submit({
+      text: '新任务',
+      visibleHistory: [],
+      generation: 'g-new',
+      taskKind: 'file'
+    });
 
     expect(listener).not.toHaveBeenCalledWith(
       { type: 'message', role: 'assistant', text: '旧会话事件' },

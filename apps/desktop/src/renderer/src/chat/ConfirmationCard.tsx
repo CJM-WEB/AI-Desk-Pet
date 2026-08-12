@@ -42,6 +42,12 @@ function safetyMessage(action: PendingAction): string {
   }
 }
 
+function suppressedPreviewMessage(reason: 'sensitive' | 'too_long' | null | undefined): string | null {
+  if (reason === 'sensitive') return '正文预览已隐藏：检测到敏感内容。';
+  if (reason === 'too_long') return '正文预览已隐藏：正文超过预览上限。';
+  return null;
+}
+
 export function ConfirmationCard({ action, busy, onConfirm, onCancel }: ConfirmationCardProps) {
   const labels = actionLabels(action);
   const isDelete = action.category === 'file' && action.operation === 'delete_file';
@@ -65,7 +71,9 @@ export function ConfirmationCard({ action, busy, onConfirm, onCancel }: Confirma
         <div className="confirmation-details">
           <span>内容：{action.contentCharacters} 个字符</span>
           {action.contentPreview === null ? null : <pre>{action.contentPreview}</pre>}
-          {action.previewTruncated ? <span>预览已截断</span> : null}
+          {suppressedPreviewMessage(action.contentPreviewSuppressedReason) === null
+            ? action.previewTruncated ? <span>预览已截断</span> : null
+            : <span>{suppressedPreviewMessage(action.contentPreviewSuppressedReason)}</span>}
         </div>
       ) : action.category === 'file' && action.operation === 'apply_patch' ? (
         <div className="confirmation-details">

@@ -78,6 +78,14 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
+function deferredCleanup(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe('PowerShellTool', () => {
   test('确认后以固定前台 argv、授权 cwd 和脱敏白名单环境启动', async () => {
     const { tool, child, processPort } = createFixture();
@@ -333,6 +341,38 @@ describe('PowerShellTool', () => {
           status: reason === 'abort' || reason === 'close' ? 'cancelled' : 'timed_out'
         });
         if (close !== undefined) await expect(close).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  test.each(['abort', 'idle'] as const)(
+    '%s 已进入挂起清理后 close 等待同一次运行完成',
+    async reason => {
+      vi.useFakeTimers();
+      try {
+        const cleanup = deferredCleanup();
+        const controller = new AbortController();
+        const fixture = createFixture({ killTree: () => cleanup.promise });
+        const run = fixture.tool.execute(preview(fixture.tool), controller.signal);
+
+        if (reason === 'abort') controller.abort();
+        if (reason === 'idle') await vi.advanceTimersByTimeAsync(60_000);
+        await flush();
+        expect(fixture.processPort.killTree).toHaveBeenCalledOnce();
+
+        let closeSettled = false;
+        const close = fixture.tool.close().then(() => { closeSettled = true; });
+        await flush();
+        expect(closeSettled).toBe(false);
+
+        cleanup.resolve();
+        await expect(close).resolves.toBeUndefined();
+        await expect(run).resolves.toMatchObject({
+          status: reason === 'abort' ? 'cancelled' : 'timed_out'
+        });
+        expect(fixture.processPort.killTree).toHaveBeenCalledOnce();
       } finally {
         vi.useRealTimers();
       }

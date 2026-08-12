@@ -26,6 +26,10 @@ import {
   type FileTaskPlaybackTerminal,
   type FileTaskResult
 } from './file-task-transaction-coordinator';
+import {
+  isPublicFileTaskErrorCode,
+  publicFileTaskErrorDetails
+} from './file-task-public-errors';
 
 const MAX_USER_TEXT_LENGTH = 4_000;
 
@@ -87,6 +91,7 @@ type ActiveFileTask = {
   action: VerifiedWriteAction;
   session: AgentSession;
   resolveResult(result: FileTaskResult): void;
+  executionErrorCode: string | null;
 };
 
 type CapabilityExecution = import('./pending-action-store').PendingExecution;
@@ -101,20 +106,11 @@ function errorCode(error: unknown): string {
 
 function publicErrorEvent(error: unknown): Extract<TaskEvent, { type: 'error' }> {
   const code = errorCode(error);
-  if (code === 'FILE_DISCLOSURE_DENIED') {
-    return {
-      type: 'error',
-      code,
-      message: '文件数据类别未授权。'
-    };
+  const fileError = publicFileTaskErrorDetails(code);
+  if (fileError !== null) {
+    return { type: 'error', code, ...fileError };
   }
   const messages: Record<string, string> = {
-    ACTION_EXPIRED: '待确认操作已失效，请重新发起任务。',
-    PATH_INVALID: '文件路径无效。',
-    PATH_OUTSIDE_ROOT: '文件路径超出授权目录。',
-    TARGET_EXISTS: '目标已经存在，未执行覆盖。',
-    ENTRY_NOT_FOUND: '指定条目不存在。',
-    PERMISSION_DENIED: 'Windows 拒绝了本地文件操作。',
     PROVIDER_AUTHENTICATION_FAILED: '模型服务身份认证失败，请检查 API Key。',
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',
     PROVIDER_RATE_LIMITED: '模型服务当前繁忙，请稍后重试。',
@@ -124,12 +120,7 @@ function publicErrorEvent(error: unknown): Extract<TaskEvent, { type: 'error' }>
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
     INPUT_INVALID: '消息不能为空且不能超过 4000 个字符。',
     TOOL_PERMISSION_DENIED: '该工具操作未获本地权限策略允许。',
-    CAPABILITY_PLAN_PROTOCOL_INVALID: '能力任务需要先调用真实工具，或提出格式正确的澄清问题。',
-    FILE_TASK_USER_CANCELLED: '回收站操作已取消，文件未被移动。',
-    FILE_TASK_PLAYBACK_UNAVAILABLE: '当前角色无法播放搬运动作，文件未被移动。',
-    FILE_TASK_PLAYBACK_CANCELLED: '搬运动画未完成，文件未被移动。',
-    FILE_TASK_PLAYBACK_TIMEOUT: '等待搬运动画超时，文件未被移动。',
-    FILE_TASK_EXECUTION_FAILED: '移入回收站失败，文件仍保留在原位置。'
+    CAPABILITY_PLAN_PROTOCOL_INVALID: '能力任务需要先调用真实工具，或提出格式正确的澄清问题。'
   };
   return {
     type: 'error',
@@ -548,7 +539,8 @@ export class AgentService {
     const activeTask: ActiveFileTask = {
       action: execution.verifiedAction.action,
       session,
-      resolveResult
+      resolveResult,
+      executionErrorCode: null
     };
     this.activeFileTask = activeTask;
     let writeCompleted = false;
@@ -567,7 +559,7 @@ export class AgentService {
       this.fileTaskCoordinator.begin(execution.verifiedAction.action, grant);
       const result = await resultPromise;
       if (result.status !== 'succeeded') {
-        throw this.fileTaskResultError(result);
+        throw this.fileTaskResultError(result, activeTask.executionErrorCode);
       }
       writeCompleted = true;
       taskCarry.endTaskCarry();
@@ -625,6 +617,10 @@ export class AgentService {
     try {
       if (activeTask.session.taskKind !== 'file') throw new Error('FILE_TASK_TRANSACTION_MISMATCH');
       await activeTask.session.fileTools.executeWrite(action);
+    } catch (error) {
+      const code = errorCode(error);
+      activeTask.executionErrorCode = isPublicFileTaskErrorCode(code) ? code : null;
+      throw error;
     } finally {
       this.finishIrreversibleExecution(irreversible);
     }
@@ -660,16 +656,15 @@ export class AgentService {
     }
   }
 
-  private fileTaskResultError(result: FileTaskResult): Error {
+  private fileTaskResultError(result: FileTaskResult, executionErrorCode: string | null): Error {
     if (result.status === 'succeeded') {
       return Object.assign(new Error('FILE_TASK_RESULT_INVALID'), {
         code: 'FILE_TASK_RESULT_INVALID'
       });
     }
     if (result.status === 'failed') {
-      return Object.assign(new Error('FILE_TASK_EXECUTION_FAILED'), {
-        code: 'FILE_TASK_EXECUTION_FAILED'
-      });
+      const code = executionErrorCode ?? 'FILE_TASK_EXECUTION_FAILED';
+      return Object.assign(new Error(code), { code });
     }
     const code = result.reason === 'user_cancelled'
       ? 'FILE_TASK_USER_CANCELLED'
@@ -836,7 +831,14 @@ function pendingActionDraft(
   const fileAction = action.action;
   const common = { category: 'file' as const, conversationId, risk: 'write' as const, summary: actionSummary(fileAction), targetRelativePath: fileAction.targetRelativePath };
   switch (fileAction.operation) {
-    case 'create_file': return { ...common, operation: 'create_file', contentCharacters: fileAction.contentCharacters, contentPreview: fileAction.contentPreview, previewTruncated: fileAction.previewTruncated };
+    case 'create_file': return {
+      ...common,
+      operation: 'create_file',
+      contentCharacters: fileAction.contentCharacters,
+      contentPreview: fileAction.contentPreview,
+      contentPreviewSuppressedReason: fileAction.contentPreviewSuppressedReason,
+      previewTruncated: fileAction.previewTruncated
+    };
     case 'apply_patch': return { ...common, operation: 'apply_patch', addedLines: fileAction.addedLines, removedLines: fileAction.removedLines, diffPreview: fileAction.diffPreview, previewTruncated: fileAction.previewTruncated };
     case 'delete_file': return { ...common, operation: 'delete_file', targetType: fileAction.targetType };
     default: return assertNever(fileAction);

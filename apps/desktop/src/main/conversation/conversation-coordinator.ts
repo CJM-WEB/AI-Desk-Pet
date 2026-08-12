@@ -8,6 +8,10 @@ import type { ConversationDisclosureAdapter } from './conversation-disclosure-ad
 import type { ConversationHistory } from './conversation-history';
 import type { ConversationChatAdapter } from './conversation-chat-adapter';
 import { capabilityIntentRouter } from './capability-intent-router';
+import {
+  isPublicFileTaskErrorCode,
+  publicFileTaskErrorDetails
+} from '../agent/file-task-public-errors';
 
 const 最大用户消息字符数 = 4_000;
 
@@ -638,12 +642,13 @@ export class ConversationCoordinator {
       && this.state.kind !== 'resetting';
   }
 
-  private reportFailure(error: Error & { code: string }): void {
+  private reportFailure(error: Error & { code: string; nextAction?: string }): void {
     const boundaryState = this.state;
     this.options.emit({
       type: 'error',
       code: error.code,
-      message: error.message
+      message: error.message,
+      ...(error.nextAction === undefined ? {} : { nextAction: error.nextAction })
     });
     if (this.state !== boundaryState) return;
     this.options.emit({ type: 'phase', phase: 'error' });
@@ -664,20 +669,6 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
     CONVERSATION_CLOSED: '当前会话已经关闭。',
     DISCLOSURE_REQUEST_EXPIRED: '历史披露确认已失效，请重新提交消息。',
-    FILE_AUTHORIZATION_REQUIRED: '请先在设置中授权文件目录。',
-    FILE_DISCLOSURE_DENIED: '文件数据类别未授权。',
-    ACTION_EXPIRED: '待确认操作已经失效，请重新发起任务。',
-    PATH_INVALID: '文件路径无效。',
-    PATH_OUTSIDE_ROOT: '文件路径超出授权目录。',
-    TARGET_EXISTS: '目标已经存在，未执行覆盖。',
-    ENTRY_NOT_FOUND: '指定条目不存在。',
-    PERMISSION_DENIED: 'Windows 拒绝了本地文件操作。',
-    TOOL_PERMISSION_DENIED: '该工具操作未获本地权限策略允许。',
-    FILE_TASK_USER_CANCELLED: '文件操作已取消。',
-    FILE_TASK_PLAYBACK_UNAVAILABLE: '当前角色无法播放文件搬运动画。',
-    FILE_TASK_PLAYBACK_CANCELLED: '搬运动画未完成，文件未被移动。',
-    FILE_TASK_PLAYBACK_TIMEOUT: '等待搬运动画超时，文件未被移动。',
-    FILE_TASK_EXECUTION_FAILED: '文件操作执行失败。',
     POWERSHELL_BACKGROUND_UNSUPPORTED: '暂不支持后台 PowerShell 任务，请改为前台执行。',
     PROVIDER_AUTHENTICATION_FAILED: '模型服务身份认证失败，请检查 API Key。',
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',
@@ -688,22 +679,6 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     AGENT_INTERNAL_ERROR: '任务执行失败，请重试。'
 });
 
-const 文件端口公开错误代码 = new Set([
-  'FILE_AUTHORIZATION_REQUIRED',
-  'FILE_DISCLOSURE_DENIED',
-  'ACTION_EXPIRED',
-  'PATH_INVALID',
-  'PATH_OUTSIDE_ROOT',
-  'TARGET_EXISTS',
-  'ENTRY_NOT_FOUND',
-  'PERMISSION_DENIED',
-  'TOOL_PERMISSION_DENIED',
-  'FILE_TASK_USER_CANCELLED',
-  'FILE_TASK_PLAYBACK_UNAVAILABLE',
-  'FILE_TASK_PLAYBACK_CANCELLED',
-  'FILE_TASK_PLAYBACK_TIMEOUT',
-  'FILE_TASK_EXECUTION_FAILED'
-]);
 const 可信文件端口错误 = Symbol('trusted-file-task-error');
 const 已公开文件错误 = Symbol('reported-file-task-error');
 
@@ -716,8 +691,8 @@ function publicError(error: unknown): Error & { code: string } {
   const trustedFileError = error instanceof Error
     && 可信文件端口错误 in error
     && error[可信文件端口错误] === true;
-  const code = Object.hasOwn(公开错误消息, candidate)
-    && (!文件端口公开错误代码.has(candidate) || trustedFileError)
+  const code = (Object.hasOwn(公开错误消息, candidate) || isPublicFileTaskErrorCode(candidate))
+    && (!isPublicFileTaskErrorCode(candidate) || trustedFileError)
     ? candidate
     : 'AGENT_INTERNAL_ERROR';
   return publicErrorForCode(code);
@@ -729,7 +704,7 @@ function publicFileError(error: unknown): Error & { code: string } {
     && typeof error.code === 'string'
     ? error.code
     : '';
-  if (!文件端口公开错误代码.has(candidate)) return publicError(error);
+  if (!isPublicFileTaskErrorCode(candidate)) return publicError(error);
   return Object.assign(publicErrorForCode(candidate), {
     [可信文件端口错误]: true as const
   });
@@ -745,11 +720,9 @@ function isReportedFileError(error: unknown): boolean {
     && error[已公开文件错误] === true;
 }
 
-function publicErrorForCode(code: string): Error & { code: string } {
-  const normalizedCode = Object.hasOwn(公开错误消息, code)
-    ? code
-    : 'AGENT_INTERNAL_ERROR';
-  return Object.assign(new Error(公开错误消息[normalizedCode]!), {
-    code: normalizedCode
-  });
+function publicErrorForCode(code: string): Error & { code: string; nextAction?: string } {
+  const fileError = publicFileTaskErrorDetails(code);
+  if (fileError !== null) return Object.assign(new Error(fileError.message), { code, ...fileError });
+  const normalizedCode = Object.hasOwn(公开错误消息, code) ? code : 'AGENT_INTERNAL_ERROR';
+  return Object.assign(new Error(公开错误消息[normalizedCode]!), { code: normalizedCode });
 }

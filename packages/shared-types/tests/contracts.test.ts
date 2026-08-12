@@ -55,6 +55,7 @@ describe('PendingAction 契约', () => {
       targetRelativePath: 'notes.md',
       contentCharacters: 3,
       contentPreview: 'abc',
+      contentPreviewSuppressedReason: null,
       previewTruncated: false,
       createdAt: '2026-07-20T00:00:00.000Z',
       expiresAt: '2026-07-20T00:02:00.000Z'
@@ -114,12 +115,14 @@ describe('PendingAction 契约', () => {
       targetRelativePath: 'notes.md',
       contentCharacters: 3,
       contentPreview: 'abc',
+      contentPreviewSuppressedReason: null,
       previewTruncated: false,
       createdAt: '2026-07-20T00:00:00.000Z',
       expiresAt: '2026-07-20T00:02:00.000Z'
     };
 
     expect(() => pendingActionSchema.parse(({ ...base, contentPreview: undefined }))).toThrow();
+    expect(() => pendingActionSchema.parse(({ ...base, contentPreviewSuppressedReason: undefined }))).toThrow();
     expect(() => pendingActionSchema.parse({ ...base, operation: 'create_directory' })).toThrow();
     expect(() => pendingActionSchema.parse({ ...base, targetType: 'file' })).toThrow();
     expect(() => pendingActionSchema.parse({ ...base, command: 'rm notes.md' })).toThrow();

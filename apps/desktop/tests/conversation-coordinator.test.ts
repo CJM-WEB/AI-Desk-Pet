@@ -1081,6 +1081,82 @@ describe('ConversationCoordinator', () => {
   });
 
   test.each([
+    ['ENTRY_CHANGED', '文件在确认后发生变化，未执行操作。', '请重新发起文件操作并确认最新内容。'],
+    ['ENTRY_TYPE_UNSUPPORTED', '该文件类型或目录状态不支持此操作。', '请选择普通文本文件、普通文件或空目录后重试。'],
+    ['LINK_NOT_ALLOWED', '不允许对符号链接或 Junction 执行此文件操作。', '请选择授权目录内的普通文件或目录。'],
+    ['RECYCLE_BIN_FAILED', '无法将目标移入 Windows 回收站，原目标仍保留。', '请检查目标是否被占用或 Windows 回收站是否可用后重试。']
+  ] as const)(
+    '文件端口错误 %s 已发布后不降级、不重复且不泄露底层消息',
+    async (code, message, nextAction) => {
+      const fileTasks = new CapturingCapabilityTasks();
+      fileTasks.submit = async input => {
+        fileTasks.submissions.push(input);
+        fileTasks.publish({ type: 'error', code, message, nextAction }, input.generation);
+        fileTasks.publish({ type: 'phase', phase: 'error' }, input.generation);
+        throw Object.assign(new Error('C:\\private\\secret.txt'), { code });
+      };
+      const harness = createHarness([], { fileTasks });
+
+      await expect(harness.coordinator.submit('整理文件')).rejects
+        .toSatisfy(error => errorCode(error) === code);
+
+      expect(harness.events.filter(event => event.type === 'error')).toEqual([{
+        type: 'error',
+        code,
+        message,
+        nextAction
+      }]);
+      expect(JSON.stringify(harness.events)).not.toContain('private');
+      expect(phases(harness.events).filter(phase => phase === 'error')).toHaveLength(1);
+    }
+  );
+
+  test.each([
+    ['ENTRY_CHANGED', '文件在确认后发生变化，未执行操作。', '请重新发起文件操作并确认最新内容。'],
+    ['RECYCLE_BIN_FAILED', '无法将目标移入 Windows 回收站，原目标仍保留。', '请检查目标是否被占用或 Windows 回收站是否可用后重试。']
+  ] as const)(
+    '确认路径的 %s 已发布后保持原错误码且不重复发布',
+    async (code, message, nextAction) => {
+      const fileTasks = new CapturingCapabilityTasks();
+      fileTasks.submit = async input => {
+        fileTasks.submissions.push(input);
+        fileTasks.publish({
+          type: 'pending_action',
+          action: {
+            category: 'file',
+            actionId: 'pending-action',
+            conversationId: 'conversation-1',
+            risk: 'write',
+            operation: 'delete_file',
+            summary: '删除文件',
+            targetRelativePath: 'old.txt',
+            targetType: 'file',
+            createdAt: '2026-08-12T00:00:00.000Z',
+            expiresAt: '2026-08-12T00:02:00.000Z'
+          }
+        }, input.generation);
+        fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
+      };
+      fileTasks.resolveAction = async () => {
+        fileTasks.publish({ type: 'error', code, message, nextAction }, 'generation-current');
+        fileTasks.publish({ type: 'phase', phase: 'error' }, 'generation-current');
+        throw Object.assign(new Error('C:\\private\\secret.txt'), { code });
+      };
+      const harness = createHarness([], { fileTasks });
+      await harness.coordinator.submit('删除 old.txt');
+
+      await expect(harness.coordinator.resolveFileAction('pending-action', 'confirm')).rejects
+        .toSatisfy(error => errorCode(error) === code);
+
+      expect(harness.events.filter(event => event.type === 'error')).toEqual([{
+        type: 'error', code, message, nextAction
+      }]);
+      expect(phases(harness.events).filter(phase => phase === 'error')).toHaveLength(1);
+      expect(JSON.stringify(harness.events)).not.toContain('private');
+    }
+  );
+
+  test.each([
     ['share_once', [
       { role: 'user', content: '旧问题' },
       { role: 'assistant', content: '旧回答' }
@@ -1210,7 +1286,7 @@ describe('ConversationCoordinator', () => {
           operation: 'create_file',
           summary: '创建文件',
           targetRelativePath: 'result.txt',
-          contentCharacters: 0, contentPreview: null, previewTruncated: false,
+          contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
           createdAt: '2026-08-10T00:00:00.000Z',
           expiresAt: '2026-08-10T00:02:00.000Z'
         }

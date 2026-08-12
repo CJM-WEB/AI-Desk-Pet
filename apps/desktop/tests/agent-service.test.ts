@@ -61,6 +61,7 @@ function verifiedAction(): VerifiedWriteAction {
     targetRelativePath: 'result.txt',
     contentCharacters: 2,
     contentPreview: '正文',
+    contentPreviewSuppressedReason: null,
     previewTruncated: false
   });
 }
@@ -1024,6 +1025,36 @@ describe('AgentService', () => {
     expect(harness.fileTools.executeWrite).toHaveBeenCalledOnce();
   });
 
+  test('回收站端口失败保留 RECYCLE_BIN_FAILED 并发布稳定下一步建议', async () => {
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse()]),
+      {
+        preview: vi.fn(async () => recycleAction()),
+        executeWrite: vi.fn(async () => {
+          throw new FileToolError('RECYCLE_BIN_FAILED', 'C:\\private\\secret.txt');
+        })
+      }
+    );
+    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
+
+    const confirming = harness.service.confirm(pendingEvent.action.actionId);
+    await Promise.resolve();
+    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
+    harness.service.onCommitFrame('carry-token-1', 'carry-action-1', 'carry-frame-1');
+
+    await expect(confirming).rejects.toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
+    expect(harness.events.filter(event => event.type === 'error')).toEqual([{
+      type: 'error',
+      code: 'RECYCLE_BIN_FAILED',
+      message: '无法将目标移入 Windows 回收站，原目标仍保留。',
+      nextAction: '请检查目标是否被占用或 Windows 回收站是否可用后重试。'
+    }]);
+    expect(JSON.stringify(harness.events)).not.toContain('private');
+    expect(phases(harness.events).filter(phase => phase === 'error')).toHaveLength(1);
+  });
+
   test('回收站提交前取消会丢弃续跑且永不执行文件动作', async () => {
     const harness = createHarness(
       new ScriptedProvider([writeResponse()]),
@@ -1391,6 +1422,28 @@ describe('AgentService', () => {
     expect(events.at(-2)).toEqual(expect.objectContaining({ type: 'error', code: 'PATH_INVALID' }));
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
+
+  test.each([
+    ['ENTRY_CHANGED', '文件在确认后发生变化，未执行操作。', '请重新发起文件操作并确认最新内容。'],
+    ['ENTRY_TYPE_UNSUPPORTED', '该文件类型或目录状态不支持此操作。', '请选择普通文本文件、普通文件或空目录后重试。'],
+    ['LINK_NOT_ALLOWED', '不允许对符号链接或 Junction 执行此文件操作。', '请选择授权目录内的普通文件或目录。'],
+    ['RECYCLE_BIN_FAILED', '无法将目标移入 Windows 回收站，原目标仍保留。', '请检查目标是否被占用或 Windows 回收站是否可用后重试。']
+  ] as const)(
+    '文件错误 %s 使用稳定脱敏消息和下一步建议',
+    async (code, message, nextAction) => {
+      const { events, service } = createHarness(
+        new ScriptedProvider([writeResponse()]),
+        { preview: vi.fn(async () => { throw new FileToolError(code, 'C:\\private\\secret.txt'); }) }
+      );
+
+      await expect(service.submitFileTask({ text: '处理文件', visibleHistory: [] })).rejects
+        .toMatchObject({ code });
+
+      expect(events.at(-2)).toEqual({ type: 'error', code, message, nextAction });
+      expect(JSON.stringify(events)).not.toContain('private');
+      expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+    }
+  );
 
   test('目标冲突不会恢复模型且产生 error 终止阶段', async () => {
     const provider = new ScriptedProvider([writeResponse()]);

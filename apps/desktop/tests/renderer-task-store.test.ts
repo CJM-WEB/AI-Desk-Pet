@@ -125,7 +125,7 @@ describe('Renderer 任务视图状态', () => {
         operation: 'create_file',
         summary: '创建文件',
         targetRelativePath: 'notes.md',
-        contentCharacters: 0, contentPreview: null, previewTruncated: false,
+        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
         createdAt: '2026-08-10T12:00:00.000Z',
         expiresAt: '2026-08-10T12:02:00.000Z'
       }
@@ -186,7 +186,7 @@ describe('Renderer 任务视图状态', () => {
       operation: 'create_file' as const,
       summary: '创建文件 notes.md',
       targetRelativePath: 'notes.md',
-      contentCharacters: 0, contentPreview: null, previewTruncated: false,
+      contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
       createdAt: '2026-07-20T12:00:00.000Z',
       expiresAt: '2026-07-20T12:02:00.000Z'
     };
@@ -283,7 +283,7 @@ describe('Renderer 任务视图状态', () => {
         operation: 'create_file',
         summary: '确认',
         targetRelativePath: 'a.txt',
-        contentCharacters: 0, contentPreview: null, previewTruncated: false,
+        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
         createdAt: '2026-01-01T00:00:00.000Z',
         expiresAt: '2026-01-01T00:01:00.000Z'
       }

@@ -511,6 +511,7 @@ describe('Renderer 可见组件', () => {
           targetRelativePath: 'notes.md',
           contentCharacters: 204,
           contentPreview: '仅展示前两百个字符',
+          contentPreviewSuppressedReason: null,
           previewTruncated: true,
           createdAt: '2026-07-20T12:00:00.000Z',
           expiresAt: '2026-07-20T12:02:00.000Z'
@@ -529,6 +530,38 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('不会覆盖已有文件');
     expect(markup).not.toContain('C:\\');
     expect(markup).not.toContain('create_file');
+  });
+
+  test.each([
+    ['sensitive', '检测到敏感内容'],
+    ['too_long', '正文超过预览上限']
+  ] as const)('创建确认卡正文因%s被抑制时只展示原因', (reason, reasonLabel) => {
+    const markup = renderToStaticMarkup(
+      <ConfirmationCard
+        action={{
+          actionId: `action-${reason}`,
+          conversationId: 'conversation-1',
+          risk: 'write',
+          category: 'file',
+          operation: 'create_file',
+          summary: '创建 sensitive.txt',
+          targetRelativePath: 'sensitive.txt',
+          contentCharacters: 28,
+          contentPreview: null,
+          contentPreviewSuppressedReason: reason,
+          previewTruncated: reason === 'too_long',
+          createdAt: '2026-07-20T12:00:00.000Z',
+          expiresAt: '2026-07-20T12:02:00.000Z'
+        }}
+        busy={false}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('28');
+    expect(markup).toContain(reasonLabel);
+    expect(markup).not.toContain('private-value');
   });
 
   test('删除确认卡按 operation 显示回收站提示', () => {

@@ -75,15 +75,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
   async prepareTarget(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
-  }): Promise<PreparedCapabilityTarget>;
-  async prepareTarget(generation: string): Promise<PreparedCapabilityTarget>;
-  async prepareTarget(input: {
-    generation: string;
-    taskKind: CapabilityTaskKind;
-  } | string): Promise<PreparedCapabilityTarget> {
-    const request = typeof input === 'string'
-      ? { generation: input, taskKind: 'file' as const }
-      : input;
+  }): Promise<PreparedCapabilityTarget> {
     this.assertAvailable();
     if (this.active || this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
 
@@ -91,8 +83,8 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     this.inFlightOwner = owner;
     this.preparingOwner = owner;
     this.active = {
-      generation: request.generation,
-      taskKind: request.taskKind,
+      generation: input.generation,
+      taskKind: input.taskKind,
       owner,
       awaitingConfirmation: false,
       target: null
@@ -115,12 +107,12 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
         }
         this.assertOwned(owner);
       }
-      const authorizedRoot = await this.options.getAuthorizedRootPath(request.taskKind);
+      const authorizedRoot = await this.options.getAuthorizedRootPath(input.taskKind);
       this.assertOwned(owner);
       if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
         throw adapterError('FILE_AUTHORIZATION_REQUIRED');
       }
-      const ownedAgent = this.createOwnedAgent(owner, request.generation, request.taskKind);
+      const ownedAgent = this.createOwnedAgent(owner, input.generation, input.taskKind);
       this.assertOwned(owner);
       this.active.target = ownedAgent.target;
       return ownedAgent.target;
@@ -138,25 +130,13 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     visibleHistory: readonly ModelMessage[];
     generation: string;
     taskKind: CapabilityTaskKind;
-  }): Promise<void>;
-  async submit(input: {
-    text: string;
-    visibleHistory: readonly ModelMessage[];
-    generation: string;
-  }): Promise<void>;
-  async submit(input: {
-    text: string;
-    visibleHistory: readonly ModelMessage[];
-    generation: string;
-    taskKind?: CapabilityTaskKind;
   }): Promise<void> {
-    const taskKind = input.taskKind ?? 'file';
     this.assertAvailable();
     const prepared = this.active;
     if (
       !prepared
       || prepared.generation !== input.generation
-      || prepared.taskKind !== taskKind
+      || prepared.taskKind !== input.taskKind
       || prepared.target === null
       || this.inFlightOwner
     ) {

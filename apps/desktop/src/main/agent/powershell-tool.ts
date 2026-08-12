@@ -164,6 +164,7 @@ export class PowerShellTool {
       let stdoutTruncated = false;
       let stderrTruncated = false;
       let settled = false;
+      let finishPromise: Promise<void> | undefined;
       let idleTimeout: ReturnType<typeof setTimeout> | undefined;
       let totalTimeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -177,29 +178,32 @@ export class PowerShellTool {
         if (idleTimeout !== undefined) clearTimeout(idleTimeout);
         idleTimeout = setTimeout(() => void finish('timed_out', 'idle', null, true), IDLE_TIMEOUT_MS);
       };
-      const finish = async (
+      const finish = (
         status: PowerShellRunResult['status'],
         timeoutKind: PowerShellRunResult['timeoutKind'],
         exitCode: number | null,
         terminate: boolean
       ): Promise<void> => {
-        if (settled) return;
+        if (finishPromise !== undefined) return finishPromise;
         settled = true;
         clearTimers();
         signal.removeEventListener('abort', onAbort);
-        if (this.#active?.child === child) this.#active = null;
-        if (terminate) await terminateProcess(this.#processPort, child, this.#cleanupTimeoutMs);
-        resolve(createResult(
-          status,
-          timeoutKind,
-          exitCode,
-          stdout,
-          stderr,
-          stdoutTruncated,
-          stderrTruncated,
-          startedAtMs,
-          this.#now()
-        ));
+        finishPromise = (async () => {
+          if (terminate) await terminateProcess(this.#processPort, child, this.#cleanupTimeoutMs);
+          if (this.#active?.child === child) this.#active = null;
+          resolve(createResult(
+            status,
+            timeoutKind,
+            exitCode,
+            stdout,
+            stderr,
+            stdoutTruncated,
+            stderrTruncated,
+            startedAtMs,
+            this.#now()
+          ));
+        })();
+        return finishPromise;
       };
       const onAbort = (): void => { void finish('cancelled', null, null, true); };
       const append = (value: string, stream: 'stdout' | 'stderr'): void => {

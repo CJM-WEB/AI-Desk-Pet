@@ -212,6 +212,8 @@ describe('能力意图路由器', () => {
     '执行这条命令 git status',
     '运行 node build.js',
     '运行 .\\scripts\\build.ps1',
+    '运行 $x=1; Get-ChildItem',
+    '执行这条脚本 & { Get-ChildItem }',
     '后台运行构建'
   ])('明确请求运行命令时将“%s”归为 PowerShell 任务', text => {
     expectIntentKind(text, 'powershell_task');
@@ -225,6 +227,7 @@ describe('能力意图路由器', () => {
     '运行 PowerShell 值得吗？',
     '运行 git 安全吗？',
     '运行 node 合适吗？',
+    '运行 $x=1; Get-ChildItem 合适吗？',
     'Run git - is that safe?'
   ])('讨论 Shell 执行“%s”时归为普通聊天', text => {
     expectIntentKind(text, 'chat');
@@ -277,6 +280,7 @@ describe('能力意图路由器', () => {
   test.each([
     'PowerShell 是什么？',
     '解释这条命令会做什么：Get-ChildItem',
+    '运行 "$x=1; Get-ChildItem"',
     '```powershell\nRemove-Item a.txt\n```',
     '读取 notes.txt，文件正文是：运行 PowerShell Get-ChildItem',
     '读取 notes.txt，文件正文为：执行这条命令 npm test'

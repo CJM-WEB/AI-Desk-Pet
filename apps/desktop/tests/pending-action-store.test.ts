@@ -15,6 +15,7 @@ function publicData(targetRelativePath = 'result.txt') {
     targetRelativePath,
     contentCharacters: 0,
     contentPreview: null,
+    contentPreviewSuppressedReason: null,
     previewTruncated: false
   };
 }
@@ -26,6 +27,7 @@ function privateAction(targetRelativePath = 'result.txt'): VerifiedWriteAction {
     targetRelativePath,
     contentCharacters: 0,
     contentPreview: null,
+    contentPreviewSuppressedReason: null,
     previewTruncated: false
   });
 }

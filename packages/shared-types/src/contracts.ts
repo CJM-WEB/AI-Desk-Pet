@@ -77,6 +77,7 @@ export type PendingAction =
       operation: 'create_file';
       contentCharacters: number;
       contentPreview: string | null;
+      contentPreviewSuppressedReason: 'sensitive' | 'too_long' | null;
       previewTruncated: boolean;
     }>
   | Readonly<PendingFileActionBase & {
@@ -126,6 +127,7 @@ export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
     operation: z.literal('create_file'),
     contentCharacters: z.number().int().min(0),
     contentPreview: z.string().nullable(),
+    contentPreviewSuppressedReason: z.enum(['sensitive', 'too_long']).nullable(),
     previewTruncated: z.boolean()
   }).strict(),
   pendingFileActionBaseSchema.extend({
