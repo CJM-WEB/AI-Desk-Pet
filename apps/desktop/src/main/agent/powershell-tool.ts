@@ -407,9 +407,10 @@ function isDirectHighRiskCommand(command: string): boolean {
  * 引号内容、注释和帮助参数不是可执行命令；分号、换行、管道与调用运算符才开启下一命令位置。
  */
 function executableStatements(source: string): readonly (readonly string[])[] {
-  const statements: string[][] = [];
+  const statements: Array<readonly string[]> = [];
   let tokens: string[] = [];
   let token = '';
+  let staticCallPending = false;
   const pushToken = (): void => {
     if (token === '') return;
     tokens.push(token.toLowerCase());
@@ -424,17 +425,46 @@ function executableStatements(source: string): readonly (readonly string[])[] {
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index]!;
     if (character === "'" || character === '"') {
+      const quoted = readQuoted(source, index, character);
+      if (staticCallPending && token === '') {
+        token = quoted.value;
+        pushToken();
+      }
+      staticCallPending = false;
+      index = quoted.end;
+      continue;
+    }
+    if ((character === '$' || character === '@') && source[index + 1] === '(') {
       pushToken();
-      index = skipQuoted(source, index, character);
+      const end = findClosingDelimiter(source, index + 1, '(', ')');
+      statements.push(...executableStatements(source.slice(index + 2, end)));
+      staticCallPending = false;
+      index = end;
+      continue;
+    }
+    if (character === '{') {
+      pushToken();
+      const end = findClosingDelimiter(source, index, '{', '}');
+      statements.push(...executableStatements(source.slice(index + 1, end)));
+      staticCallPending = false;
+      index = end;
       continue;
     }
     if (character === '#') {
       pushToken();
       while (index + 1 < source.length && source[index + 1] !== '\n' && source[index + 1] !== '\r') index += 1;
+      staticCallPending = false;
       continue;
     }
-    if (character === ';' || character === '\n' || character === '\r' || character === '|' || character === '&') {
+    if (character === '&') {
       finishStatement();
+      staticCallPending = source[index + 1] !== '&';
+      if (source[index + 1] === '&') index += 1;
+      continue;
+    }
+    if (character === ';' || character === '\n' || character === '\r' || character === '|') {
+      finishStatement();
+      staticCallPending = false;
       continue;
     }
     if (/\s/.test(character)) {
@@ -447,18 +477,44 @@ function executableStatements(source: string): readonly (readonly string[])[] {
   return statements;
 }
 
-function skipQuoted(source: string, start: number, quote: "'" | '"'): number {
+function readQuoted(source: string, start: number, quote: "'" | '"'): { value: string; end: number } {
+  let value = '';
   for (let index = start + 1; index < source.length; index += 1) {
     if (quote === '"' && source[index] === '`') {
+      value += source[index + 1] ?? '';
       index += 1;
       continue;
     }
     if (source[index] === quote) {
       if (quote === "'" && source[index + 1] === "'") {
+        value += quote;
         index += 1;
         continue;
       }
-      return index;
+      return { value, end: index };
+    }
+    value += source[index];
+  }
+  return { value, end: source.length };
+}
+
+/** 以嵌套深度寻找当前子表达式或脚本块的终点；字符串和注释内的括号不参与计数。 */
+function findClosingDelimiter(source: string, start: number, open: '(' | '{', close: ')' | '}'): number {
+  let depth = 0;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (character === "'" || character === '"') {
+      index = readQuoted(source, index, character).end;
+      continue;
+    }
+    if (character === '#') {
+      while (index + 1 < source.length && source[index + 1] !== '\n' && source[index + 1] !== '\r') index += 1;
+      continue;
+    }
+    if (character === open) depth += 1;
+    if (character === close) {
+      depth -= 1;
+      if (depth === 0) return index;
     }
   }
   return source.length;

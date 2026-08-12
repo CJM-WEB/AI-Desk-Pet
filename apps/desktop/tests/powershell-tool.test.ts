@@ -186,6 +186,16 @@ describe('PowerShellTool', () => {
     expect(preview(tool, command)).toMatchObject({ command, kind: 'powershell' });
   });
 
+  test.each([
+    "& 'Get-Credential'",
+    "& 'runas.exe'",
+    'Write-Output $(Get-Credential)',
+    '{ Remove-Item C:\\work -Recurse -Force }'
+  ])('预览拒绝嵌套或静态调用的高风险命令：%s', command => {
+    const { tool } = createFixture();
+    expect(() => preview(tool, command)).toThrow('POWERSHELL_COMMAND_REJECTED');
+  });
+
   test('未知 token 不会被本地解析器误拒绝，仍产生一次确认动作', () => {
     const { tool, processPort } = createFixture();
     const action = preview(tool, 'Invoke-UnknownVendorTool -Feature experimental');
