@@ -72,7 +72,7 @@ const backgroundShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给
 const shellCommandPayloadPattern = /^(?:[a-z][a-z\d._-]*|\.{1,2}[\\/](?:[a-z\d._-]+[\\/])*[a-z\d._-]+)(?:\s+\S+){0,16}$/iu;
 const powershellAssignmentScriptPattern = /^\$[a-z_][a-z\d_:]*\s*=\s*[^;\r\n]+;\s*\S[\s\S]*$/iu;
 const powershellScriptBlockPattern = /^&\s*\{[\s\S]+\}$/u;
-const standaloneShellDiscussionPattern = /(?:安全吗|好不好|值得吗|是什么意思|会怎样)[？?]?$/u;
+const standaloneShellDiscussionPattern = /(?:安全吗|好不好|值得吗|是什么(?:意思)?|会怎样)[？?]?$/u;
 const englishCopulaTokenPattern = /^(?:am|is|are|was|were|be|been|being)$/u;
 const englishAuxiliaryTokenPattern = /^(?:do|does|did|can|could|would|will|shall|should|may|might|must|has|have|had)$/u;
 const englishQuestionWordTokenPattern = /^(?:what|why|how|when|where|who|whom|whose|which)$/u;
@@ -415,14 +415,19 @@ function isExplicitPowerShellPayload(payload: string): boolean {
     && !hasUnquotedNaturalLanguageTail(commandText);
 }
 
+/** 未命中显式前缀返回 undefined；命中后无论接受或拒绝都终止后续文件扫描。 */
+function explicitPowerShellExecutionIntent(normalizedText: string): CapabilityIntent | undefined {
+  const payload = chineseExplicitPowerShellRequestPattern.exec(normalizedText)?.[1]
+    ?? englishExplicitPowerShellRequestPattern.exec(normalizedText)?.[1];
+  if (payload === undefined) return undefined;
+  return isExplicitPowerShellPayload(payload) ? powershellTaskIntent : chatIntent;
+}
+
 /** 只有用户消息开头的明确执行措辞及可验证载荷才能进入 Shell 能力分支。 */
 function shellExecutionIntent(normalizedText: string): CapabilityIntent | null {
   if (backgroundShellRequestPattern.test(normalizedText)) return backgroundPowerShellTaskIntent;
-  const explicitPowerShellPayload = chineseExplicitPowerShellRequestPattern.exec(normalizedText)?.[1]
-    ?? englishExplicitPowerShellRequestPattern.exec(normalizedText)?.[1];
-  if (explicitPowerShellPayload !== undefined) {
-    return isExplicitPowerShellPayload(explicitPowerShellPayload) ? powershellTaskIntent : null;
-  }
+  const explicitIntent = explicitPowerShellExecutionIntent(normalizedText);
+  if (explicitIntent !== undefined) return explicitIntent.kind === 'powershell_task' ? explicitIntent : null;
   const chinesePayload = chineseShellRequestPattern.exec(normalizedText)?.[1];
   if (chinesePayload !== undefined) return isShellCommandPayload(chinesePayload) ? powershellTaskIntent : null;
   const englishPayload = englishShellRequestPattern.exec(normalizedText)?.[1];
@@ -437,41 +442,46 @@ function hasEmbeddedShellExecution(normalizedText: string): boolean {
   return embeddedContent !== undefined && shellExecutionIntent(embeddedContent) !== null;
 }
 
+/** 文件 Gate 封装全部候选扫描；显式 PowerShell 请求必须在调用它之前完成裁决。 */
+function hasExplicitFileIntent(normalizedText: string): boolean {
+  const unquotedText = maskQuotedText(normalizedText);
+  const targetRanges = scanTargetRanges(unquotedText);
+  const objectRanges = scanLocalObjectRanges(unquotedText, targetRanges);
+  const localObjectScan = scanLocalObjects(unquotedText, objectRanges);
+  if (!normalizedText
+    || knowledgePattern.test(localObjectScan.semanticText)
+    || negationPattern.test(localObjectScan.semanticText)
+    || statementPattern.test(localObjectScan.semanticText)) {
+    return false;
+  }
+
+  const operationRanges = scanFileOperationRanges(localObjectScan.semanticText);
+  const requestedOperationRanges = bindRequestedOperationRanges(
+    localObjectScan.semanticText,
+    operationRanges
+  );
+  return localObjectScan.hasLocalObject
+    && requestedOperationRanges.length > 0
+    && hasExecutionStructure(unquotedText, objectRanges, operationRanges);
+}
+
 export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
+  constructor(
+    private readonly fileIntentGate: (normalizedText: string) => boolean = hasExplicitFileIntent
+  ) {}
+
   /**
    * 只有文件对象、文件操作和直接执行请求三项独立证据同时成立才允许进入文件链路，
    * 使不完整、陈述讨论或否定性表达始终停留在默认聊天，避免意外提升文件权限。
    */
   route(prompt: string): CapabilityIntent {
     const normalizedText = prompt.normalize('NFKC').trim().toLocaleLowerCase();
-    const unquotedText = maskQuotedText(normalizedText);
-    const targetRanges = scanTargetRanges(unquotedText);
-    const objectRanges = scanLocalObjectRanges(unquotedText, targetRanges);
-    const localObjectScan = scanLocalObjects(unquotedText, objectRanges);
-    if (!normalizedText
-      || knowledgePattern.test(localObjectScan.semanticText)
-      || negationPattern.test(localObjectScan.semanticText)
-      || statementPattern.test(localObjectScan.semanticText)) {
-      return chatIntent;
-    }
+    const explicitPowerShellIntent = explicitPowerShellExecutionIntent(normalizedText);
+    if (explicitPowerShellIntent !== undefined) return explicitPowerShellIntent;
     if (hasEmbeddedShellExecution(normalizedText)) return chatIntent;
     const shellIntent = shellExecutionIntent(normalizedText);
     if (shellIntent !== null) return shellIntent;
-
-    const operationRanges = scanFileOperationRanges(localObjectScan.semanticText);
-    const requestedOperationRanges = bindRequestedOperationRanges(
-      localObjectScan.semanticText,
-      operationRanges
-    );
-    const hasFileOperation = requestedOperationRanges.length > 0;
-    const hasDirectExecutionRequest = hasExecutionStructure(
-      unquotedText,
-      objectRanges,
-      operationRanges
-    );
-    return localObjectScan.hasLocalObject && hasFileOperation && hasDirectExecutionRequest
-      ? fileTaskIntent
-      : chatIntent;
+    return this.fileIntentGate(normalizedText) ? fileTaskIntent : chatIntent;
   }
 }
 

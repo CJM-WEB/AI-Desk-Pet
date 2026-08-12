@@ -1,5 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
-import { capabilityIntentRouter } from '../src/main/conversation/capability-intent-router';
+import {
+  capabilityIntentRouter,
+  DefaultCapabilityIntentRouter
+} from '../src/main/conversation/capability-intent-router';
 
 function expectIntentKind(
   text: string,
@@ -224,6 +227,14 @@ describe('能力意图路由器', () => {
 
   test('显式 PowerShell 脚本载荷不得超过 16 KiB', () => {
     expectIntentKind(`执行 PowerShell ${'a'.repeat(16 * 1_024 + 1)}`, 'chat');
+  });
+
+  test('超限显式 PowerShell 请求在文件意图 Gate 前拒绝', () => {
+    const fileIntentGate = vi.fn(() => false);
+    const router = new DefaultCapabilityIntentRouter(fileIntentGate);
+
+    expect(router.route(`执行 PowerShell ${'a'.repeat(16 * 1_024 + 1)}`).kind).toBe('chat');
+    expect(fileIntentGate).not.toHaveBeenCalled();
   });
 
   test.each([
