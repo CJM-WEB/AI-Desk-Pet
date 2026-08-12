@@ -4462,7 +4462,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await writeFile(join(recycleBinDirectory, '.force-failure'), '', 'utf8');
       const failed = await beginRecycle('failure.txt');
       await waitForCarry(failed.carryOffset);
-      await expect(chat.getByText('移入回收站失败，文件仍保留在原位置。')).toBeVisible({
+      await expect(chat.getByText('无法将目标移入 Windows 回收站，原目标仍保留。')).toBeVisible({
         timeout: 10_000
       });
       await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
