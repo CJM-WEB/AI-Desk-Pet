@@ -616,8 +616,7 @@ describe('Renderer 可见组件', () => {
 
     expect(markup).toContain('Get-ChildItem -Force');
     expect(markup).toContain('项目目录');
-    expect(markup).toContain('前台非交互执行');
-    expect(markup).toContain('不是安全沙箱');
+    expect(markup).toContain('以当前 Windows 用户权限在前台非交互执行；这不是安全沙箱');
     expect(markup).toContain('确认运行命令');
     expect(markup).toContain('先不运行');
   });

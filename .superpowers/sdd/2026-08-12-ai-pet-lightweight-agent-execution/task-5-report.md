@@ -16,9 +16,16 @@
 - RED：新增后台 PowerShell 请求测试，旧实现错误地进入前台 PowerShell 路径。
 - GREEN：路由证据标记请求模式，协调器稳定拒绝后台请求；全量 Task 5 定向回归通过。
 
+## 修复轮次 1
+
+- RED：PowerShell 确认卡仅包含“前台非交互执行”和“不是安全沙箱”两个片段，缺少完整风险声明。
+- GREEN：确认卡逐字展示“以当前 Windows 用户权限在前台非交互执行；这不是安全沙箱”。
+- RED：Main 能力会话工厂测试导入不存在的模块，证明原有 `index.ts` 内联分支不可独立验证。
+- GREEN：新增可注入 `main-agent-session-factory`；PowerShell 会话只注册 `builtin.powershell.run` 并只构造 `PowerShellTool`，文件会话只注册五个文件工具且不构造 PowerShell。`index.ts` 仅注入平台依赖并调用该工厂。
+
 ## 验证
 
-- Desktop 定向 Vitest：8 个测试文件、283 个测试通过。
+- Desktop 定向 Vitest：9 个测试文件、285 个测试通过。
 - `@myself/file-tools`、`@myself/agent-core`、`@myself/shared-types`、`@myself/desktop` typecheck 均通过。
 - `git diff --check` 通过；`apps/website` 无差异。
 - 静态反查未命中 `FileTaskAdapter`、`ConversationFileTaskPort`、`POWERSHELL_TASK_NOT_READY` 及已废弃文件工具名称。

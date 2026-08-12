@@ -36,7 +36,7 @@ function safetyMessage(action: PendingAction): string {
     case 'delete_file':
       return '将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。';
     case 'powershell':
-      return '命令将在前台非交互执行；这不是安全沙箱，请确认完整命令和工作目录。';
+      return '以当前 Windows 用户权限在前台非交互执行；这不是安全沙箱。请确认完整命令和工作目录。';
     default:
       return assertNever(action);
   }
