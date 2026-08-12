@@ -195,12 +195,34 @@ function createHarness(
   };
 }
 
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>(resolvePromise => {
+function deferred<T = void>(): { promise: Promise<T>; resolve(value?: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(resolvePromise => {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function shellRequest(): ModelResponse {
+  return {
+    type: 'tool_request',
+    request: {
+      requestId: 'shell-1',
+      toolName: 'builtin.powershell.run',
+      arguments: { command: 'Get-ChildItem' }
+    }
+  };
+}
+
+function powerShellAction(): VerifiedPowerShellAction {
+  return Object.freeze({
+    kind: 'powershell',
+    command: 'Get-ChildItem',
+    workingDirectoryLabel: '工作区',
+    runMode: 'foreground',
+    generation: 'generation-1',
+    expiresAtMs: Date.now() + 60_000
+  });
 }
 
 function phases(events: TaskEvent[]) {
@@ -224,7 +246,7 @@ function powerShellResult(ok: boolean) {
 
 function createPowerShellHarness(
   provider: ModelProvider,
-  powershell: Pick<PowerShellTool, 'preview' | 'execute'>
+  powershell: Pick<PowerShellTool, 'preview' | 'execute'> & Partial<Pick<PowerShellTool, 'close'>>
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -235,7 +257,7 @@ function createPowerShellHarness(
   const session: AgentSession = {
     taskKind: 'powershell',
     provider,
-    powershell: powershell as PowerShellTool,
+    powershell: { close: vi.fn(async () => undefined), ...powershell } as PowerShellTool,
     workingDirectory: 'C:\\workspace',
     workingDirectoryLabel: '工作区',
     generation: 'generation-1',
@@ -257,6 +279,60 @@ function createPowerShellHarness(
 }
 
 describe('AgentService', () => {
+  test('reset 等待前台 PowerShell 执行收敛且丢弃迟到结果', async () => {
+    const execution = deferred<ReturnType<typeof powerShellResult>>();
+    const execute = vi.fn(() => execution.promise);
+    const { events, service } = createPowerShellHarness(
+      new ScriptedProvider([shellRequest(), { type: 'text', text: '迟到总结不得公开' }]),
+      { preview: vi.fn(() => powerShellAction()), execute }
+    );
+
+    await service.submitFileTask({ text: '运行命令', visibleHistory: [] });
+    const pending = events.find(event => event.type === 'pending_action');
+    if (!pending || pending.type !== 'pending_action') throw new Error('缺少确认');
+    const confirming = service.confirm(pending.action.actionId);
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+    let resetSettled = false;
+    const resetting = service.resetForNewConversation().then(() => { resetSettled = true; });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(resetSettled).toBe(false);
+    execution.resolve(powerShellResult(false));
+    await resetting;
+    await confirming;
+
+    expect(events).not.toContainEqual({
+      type: 'message', role: 'assistant', text: '迟到总结不得公开'
+    });
+  });
+
+  test('close 等待前台 PowerShell 执行收敛且丢弃迟到结果', async () => {
+    const execution = deferred<ReturnType<typeof powerShellResult>>();
+    const execute = vi.fn(() => execution.promise);
+    const { events, service } = createPowerShellHarness(
+      new ScriptedProvider([shellRequest(), { type: 'text', text: '迟到总结不得公开' }]),
+      { preview: vi.fn(() => powerShellAction()), execute }
+    );
+
+    await service.submitFileTask({ text: '运行命令', visibleHistory: [] });
+    const pending = events.find(event => event.type === 'pending_action');
+    if (!pending || pending.type !== 'pending_action') throw new Error('缺少确认');
+    const confirming = service.confirm(pending.action.actionId);
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+    let closeSettled = false;
+    const closing = service.close().then(() => { closeSettled = true; });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(closeSettled).toBe(false);
+    execution.resolve(powerShellResult(false));
+    await closing;
+    await confirming;
+
+    expect(events).not.toContainEqual({
+      type: 'message', role: 'assistant', text: '迟到总结不得公开'
+    });
+  });
+
   test('失败 PowerShell 续跑出第二次确认时保留会话所有权，后续成功可确认', async () => {
     const provider = new ScriptedProvider([
       {

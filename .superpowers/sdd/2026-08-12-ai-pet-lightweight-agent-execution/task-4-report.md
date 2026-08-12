@@ -42,3 +42,9 @@
 - RED：失败 PowerShell 后第二确认 `ACTION_EXPIRED`，以及失败 PowerShell 总结失败伪称文件成功；GREEN：AgentService 45/45。
 - RED：能力会话可以追加 MCP 工具；GREEN：工具注册表 18/18。
 - RED：四种绝对目录标签均能通过公开契约；GREEN：Shared Types 18/18。
+
+## 审查修复轮次 2
+
+- `AgentService` 的前台 PowerShell 分支显式 `await execute()`，使不可逆执行屏障覆盖真实命令执行及其终止清理承诺；reset 和 close 不会在该承诺收敛前结束。
+- RED：deferred PowerShell 执行已开始但未完成时，reset 与 close 都会提前 resolve；两条 AgentService 测试失败。
+- GREEN：执行承诺完成前 reset/close 均保持未完成，随后迟到工具结果和模型总结不会穿透已失效任务；AgentService 定向测试 47/47 通过。

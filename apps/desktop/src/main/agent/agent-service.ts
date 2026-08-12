@@ -642,7 +642,7 @@ export class AgentService {
       if (execution.verifiedAction.category === 'powershell') {
         if (session.taskKind !== 'powershell') throw new Error('ACTION_EXPIRED');
         this.assertTaskOwned(owner, signal);
-        return session.powershell.execute(execution.verifiedAction.action, signal);
+        return await session.powershell.execute(execution.verifiedAction.action, signal);
       }
       if (session.taskKind !== 'file') throw new Error('ACTION_EXPIRED');
       this.assertTaskOwned(owner, signal);
