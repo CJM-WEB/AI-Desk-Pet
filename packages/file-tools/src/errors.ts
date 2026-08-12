@@ -7,6 +7,7 @@ export type FileToolErrorCode =
   | 'LINK_NOT_ALLOWED'
   | 'PERMISSION_DENIED'
   | 'ENTRY_CHANGED'
+  | 'RECYCLE_BIN_FAILED'
   | 'ACTION_EXPIRED';
 
 export class FileToolError extends Error {

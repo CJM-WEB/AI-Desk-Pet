@@ -127,13 +127,14 @@ function sha256(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-function patchLineCounts(patch: string): Readonly<{ addedLines: number; removedLines: number }> {
+function patchLineCounts(parsed: ReturnType<typeof parsePatch>): Readonly<{ addedLines: number; removedLines: number }> {
   let addedLines = 0;
   let removedLines = 0;
-  for (const line of patch.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
-    if (line.startsWith('+')) addedLines += 1;
-    if (line.startsWith('-')) removedLines += 1;
+  for (const hunk of parsed[0]!.hunks) {
+    for (const line of hunk.lines) {
+      if (line.startsWith('+')) addedLines += 1;
+      if (line.startsWith('-')) removedLines += 1;
+    }
   }
   return { addedLines, removedLines };
 }
@@ -215,7 +216,7 @@ export class FileToolService {
         const base = decodeUtf8(await readBoundedFile(target));
         const result = applyPatch(base, arguments_.patch, { fuzzFactor: 0 });
         if (result === false) throw new FileToolError('PATH_INVALID', '补丁无法应用到当前文件内容');
-        const counts = patchLineCounts(arguments_.patch);
+        const counts = patchLineCounts(parsed);
         const action = Object.freeze({
           operation: 'apply_patch' as const,
           authorizationGeneration,
@@ -283,9 +284,13 @@ export class FileToolService {
         throw new FileToolError('ENTRY_CHANGED', '目标在确认后已经发生变化，请重新确认');
       }
       if (!this.recycleBinPort) throw new FileToolError('PERMISSION_DENIED', '系统回收站当前不可用');
-      await this.recycleBinPort.moveToRecycleBin(target);
+      try {
+        await this.recycleBinPort.moveToRecycleBin(target);
+      } catch {
+        throw new FileToolError('RECYCLE_BIN_FAILED', '无法将目标移入系统回收站');
+      }
     } catch (error) {
-      throw toFileToolError(error, '文件创建失败');
+      throw toFileToolError(error, '文件写操作失败');
     }
   }
 

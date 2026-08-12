@@ -237,6 +237,19 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
   });
 
+  it('apply_patch 将 hunk 正文 --- 与 +++ 分别计为删除和新增行', async () => {
+    const { service, root } = await fixtureService();
+    await writeFile(join(root, 'docs', 'markers.txt'), '---\n', 'utf8');
+
+    const action = await service.preview({
+      requestId: 'patch-markers',
+      toolName: 'apply_patch',
+      arguments: { relativePath: 'docs/markers.txt', patch: '@@ -1,1 +1,1 @@\n----\n++++\n' }
+    });
+
+    expect(action).toMatchObject({ operation: 'apply_patch', addedLines: 1, removedLines: 1 });
+  });
+
   it('delete_file 只通过回收站端口删除普通文件和空目录', async () => {
     const calls: string[] = [];
     const { service, root } = await fixtureService({
@@ -296,6 +309,30 @@ describe('FileToolService.preview 与 executeWrite', () => {
       throw error;
     }
     await expect(service.preview({ requestId: 'delete-link', toolName: 'delete_file', arguments: { relativePath: 'docs/outside-link' } })).rejects.toMatchObject({ code: 'LINK_NOT_ALLOWED' });
+  });
+
+  it('delete_file 将回收站端口失败转换为稳定错误且动作不可重放', async () => {
+    const { service, root } = await fixtureService({
+      async moveToRecycleBin() {
+        throw new Error('系统错误包含 C:\\private\\secret.txt');
+      }
+    });
+    await writeFile(join(root, 'docs', 'failed-delete.txt'), '保留', 'utf8');
+    const action = await service.preview({
+      requestId: 'delete-port-failure',
+      toolName: 'delete_file',
+      arguments: { relativePath: 'docs/failed-delete.txt' }
+    });
+
+    const error = await service.executeWrite(action).then(
+      () => null,
+      reason => reason as Error & { code: string; cause?: unknown }
+    );
+    expect(error).toMatchObject({ code: 'RECYCLE_BIN_FAILED', message: '无法将目标移入系统回收站' });
+    expect(error?.message).not.toContain('private');
+    expect(error?.cause).toBeUndefined();
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    await expect(readFile(join(root, 'docs', 'failed-delete.txt'), 'utf8')).resolves.toBe('保留');
   });
 
   it('所有写动作拒绝克隆，删除预览后的同路径替换会失效', async () => {
