@@ -1,889 +1,315 @@
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  symlink,
-  writeFile
-} from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FileToolService, type VerifiedWriteAction } from '../src/file-tool-service';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { FileToolService } from '../src/file-tool-service';
 import { PathPolicy } from '../src/path-policy';
 import type { RecycleBinPort } from '../src/recycle-bin-port';
 import { toolArguments } from '../src/schemas';
 
 const temporaryRoots: string[] = [];
 
+/** 为每个用例隔离授权根目录，避免文件系统状态互相影响。 */
 async function fixtureService(
   recycleBinPort?: RecycleBinPort,
-  getAuthorizationGeneration: () => number = () => 1,
-  moveEntry: (source: string, target: string) => Promise<void> = rename
-) {
+  getAuthorizationGeneration?: () => number
+): Promise<{ service: FileToolService; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
   temporaryRoots.push(root);
   await mkdir(join(root, 'docs'));
-  return {
-    root,
-    service: new FileToolService(
-      await PathPolicy.create(root),
-      recycleBinPort,
-      getAuthorizationGeneration,
-      moveEntry
-    )
-  };
-}
-
-function movingRecycleBinPort(): RecycleBinPort & { calls: string[] } {
-  const calls: string[] = [];
-  return {
-    calls,
-    async moveToRecycleBin(absolutePath) {
-      calls.push(absolutePath);
-      await rename(
-        absolutePath,
-        join(dirname(absolutePath), `.recycled-${basename(absolutePath)}`)
-      );
-    }
-  };
+  return { service: new FileToolService(await PathPolicy.create(root), recycleBinPort, getAuthorizationGeneration), root };
 }
 
 afterEach(async () => {
-  await Promise.all(temporaryRoots.splice(0).map(async root => {
-    await rm(root, { recursive: true, force: true });
-  }));
+  await Promise.all(temporaryRoots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
-describe('FileToolService.preview 与 executeWrite', () => {
-  it('回收站工具参数只接受非空相对路径', () => {
-    expect(toolArguments.move_to_recycle_bin.parse({ relativePath: 'docs/old.txt' })).toEqual({
-      relativePath: 'docs/old.txt'
-    });
-    expect(() => toolArguments.move_to_recycle_bin.parse({ relativePath: '' })).toThrow();
-    expect(() => toolArguments.move_to_recycle_bin.parse({ relativePath: '   ' })).toThrow();
-    expect(() => toolArguments.move_to_recycle_bin.parse({ relativePath: '/docs/old.txt' })).toThrow();
-    expect(() => toolArguments.move_to_recycle_bin.parse({ relativePath: 'C:\\docs\\old.txt' })).toThrow();
-    expect(() => toolArguments.move_to_recycle_bin.parse({
-      relativePath: 'docs/old.txt',
-      recursive: true
-    })).toThrow();
-  });
-
-  it('公开写动作契约包含回收站分支且不携带系统能力', () => {
-    const action = {
-      operation: 'move_to_recycle_bin',
-      authorizationGeneration: 1,
-      source: { relativePath: 'docs/old.txt', type: 'file', size: 12 },
-      target: { relativePath: 'docs/old.txt', state: 'existing' }
-    } satisfies VerifiedWriteAction;
-
-    expect(JSON.stringify(action)).not.toMatch(/inode|device|absolute/u);
-  });
-
-  it('预览新建文件时不修改磁盘，执行时排他创建空文件', async () => {
-    const { service, root } = await fixtureService();
-    const target = join(root, 'notes.md');
-
-    const action = await service.preview({
-      requestId: 'create-file-1',
-      toolName: 'create_file',
-      arguments: { relativePath: 'notes.md' }
-    });
-
-    await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(action).toMatchObject({
-      operation: 'create_file',
-      target: { relativePath: 'notes.md', state: 'absent' }
-    });
-    expect(JSON.stringify(action)).not.toContain(root);
-
-    await service.executeWrite(action);
-    expect((await lstat(target)).isFile()).toBe(true);
-    await expect(readFile(target, 'utf8')).resolves.toBe('');
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-  });
-
-  it('取消新建文件预览时磁盘保持不变', async () => {
-    const { service, root } = await fixtureService();
-
-    await service.preview({
-      requestId: 'cancel-create-file',
-      toolName: 'create_file',
-      arguments: { relativePath: 'cancelled.md' }
-    });
-
-    await expect(lstat(join(root, 'cancelled.md'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('只创建一层目录且不递归创建父目录', async () => {
-    const { service, root } = await fixtureService();
-    const action = await service.preview({
-      requestId: 'create-directory-1',
-      toolName: 'create_directory',
-      arguments: { relativePath: 'docs/new-directory' }
-    });
-
-    await service.executeWrite(action);
-    expect((await lstat(join(root, 'docs', 'new-directory'))).isDirectory()).toBe(true);
-
-    await expect(service.preview({
-      requestId: 'create-directory-2',
-      toolName: 'create_directory',
-      arguments: { relativePath: 'missing/new-directory' }
-    })).rejects.toMatchObject({ code: 'ENTRY_NOT_FOUND' });
-  });
-
-  it('只允许在同一父目录内重命名且不覆盖目标', async () => {
-    const { service, root } = await fixtureService();
-    await writeFile(join(root, 'docs', 'before.txt'), 'before', 'utf8');
-    const action = await service.preview({
-      requestId: 'rename-1',
-      toolName: 'rename_entry',
-      arguments: {
-        sourceRelativePath: 'docs/before.txt',
-        targetRelativePath: 'docs/after.txt'
-      }
-    });
-
-    await service.executeWrite(action);
-    await expect(readFile(join(root, 'docs', 'after.txt'), 'utf8')).resolves.toBe('before');
-    await expect(lstat(join(root, 'docs', 'before.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-
-    await writeFile(join(root, 'docs', 'source.txt'), 'source', 'utf8');
-    await writeFile(join(root, 'docs', 'existing.txt'), 'existing', 'utf8');
-    await expect(service.preview({
-      requestId: 'rename-2',
-      toolName: 'rename_entry',
-      arguments: {
-        sourceRelativePath: 'docs/source.txt',
-        targetRelativePath: 'docs/existing.txt'
-      }
-    })).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
-    await expect(readFile(join(root, 'docs', 'existing.txt'), 'utf8')).resolves.toBe('existing');
-  });
-
-  it.runIf(process.platform === 'win32')('按 Windows 不区分大小写语义判断同一父目录', async () => {
-    const { service, root } = await fixtureService();
-    await writeFile(join(root, 'docs', 'before.txt'), 'before', 'utf8');
-
-    const action = await service.preview({
-      requestId: 'rename-case-insensitive',
-      toolName: 'rename_entry',
-      arguments: {
-        sourceRelativePath: 'docs/before.txt',
-        targetRelativePath: 'DOCS/after.txt'
-      }
-    });
-    await service.executeWrite(action);
-
-    await expect(readFile(join(root, 'docs', 'after.txt'), 'utf8')).resolves.toBe('before');
-  });
-
-  it('拒绝跨目录重命名和重命名授权根目录', async () => {
-    const { service, root } = await fixtureService();
-    await mkdir(join(root, 'other'));
-    await writeFile(join(root, 'docs', 'source.txt'), 'source', 'utf8');
-
-    await expect(service.preview({
-      requestId: 'rename-cross-directory',
-      toolName: 'rename_entry',
-      arguments: {
-        sourceRelativePath: 'docs/source.txt',
-        targetRelativePath: 'other/source.txt'
-      }
-    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
-
-    await expect(service.preview({
-      requestId: 'rename-root',
-      toolName: 'rename_entry',
-      arguments: {
-        sourceRelativePath: '.',
-        targetRelativePath: 'renamed-root'
-      }
-    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
-  });
-
-  it('执行前重新验证目标，预览后出现的冲突不会被覆盖', async () => {
-    const { service, root } = await fixtureService();
-    const action = await service.preview({
-      requestId: 'late-conflict',
-      toolName: 'create_file',
-      arguments: { relativePath: 'late.txt' }
-    });
-    await writeFile(join(root, 'late.txt'), 'keep', 'utf8');
-
-    await expect(service.executeWrite(action)).rejects.toMatchObject({
-      code: 'TARGET_EXISTS'
-    });
-    await expect(readFile(join(root, 'late.txt'), 'utf8')).resolves.toBe('keep');
-  });
-
-  it('重命名预览后的目标冲突不会覆盖文件', async () => {
-    const { service, root } = await fixtureService();
-    await writeFile(join(root, 'docs', 'source.txt'), 'source', 'utf8');
-    const action = await service.preview({
-      requestId: 'late-rename-conflict',
-      toolName: 'rename_entry',
-      arguments: {
-        sourceRelativePath: 'docs/source.txt',
-        targetRelativePath: 'docs/target.txt'
-      }
-    });
-    await writeFile(join(root, 'docs', 'target.txt'), 'target', 'utf8');
-
-    await expect(service.executeWrite(action)).rejects.toMatchObject({
-      code: 'TARGET_EXISTS'
-    });
-    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('source');
-    await expect(readFile(join(root, 'docs', 'target.txt'), 'utf8')).resolves.toBe('target');
-  });
-
-  it('拒绝伪造或复制的待执行动作', async () => {
-    const { service } = await fixtureService();
-    const action = await service.preview({
-      requestId: 'unforgeable',
-      toolName: 'create_file',
-      arguments: { relativePath: 'safe.txt' }
-    });
-    const forged = { ...action } as VerifiedWriteAction;
-
-    await expect(service.executeWrite(forged)).rejects.toMatchObject({
-      code: 'ACTION_EXPIRED'
-    });
-  });
-
-  it('带正文的新建文件仍使用排他创建且公开动作不携带正文', async () => {
-    const { service, root } = await fixtureService();
-    const action = await service.preview({
-      requestId: 'create-file-content',
-      toolName: 'create_file',
-      arguments: { relativePath: 'notes-with-content.md', content: '你好，桌宠' }
-    });
-
-    expect(JSON.stringify(action)).not.toContain('你好，桌宠');
-    await service.executeWrite(action);
-    await expect(readFile(join(root, 'notes-with-content.md'), 'utf8'))
-      .resolves.toBe('你好，桌宠');
-
-    await writeFile(join(root, 'occupied.md'), '保留', 'utf8');
-    await expect(service.preview({
-      requestId: 'create-file-exclusive',
-      toolName: 'create_file',
-      arguments: { relativePath: 'occupied.md', content: '覆盖' }
-    })).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
-    await expect(readFile(join(root, 'occupied.md'), 'utf8')).resolves.toBe('保留');
-  });
-
-  it('修改文本绑定预览时的旧实体与旧正文，变化后拒绝执行', async () => {
-    const { service, root } = await fixtureService();
-    const target = join(root, 'docs', 'editable.txt');
-    await writeFile(target, '旧正文', 'utf8');
-
-    const action = await service.preview({
-      requestId: 'write-text-cas',
-      toolName: 'write_text_file',
-      arguments: { relativePath: 'docs/editable.txt', content: '新正文' }
-    });
-    expect(JSON.stringify(action)).not.toContain('旧正文');
-    expect(JSON.stringify(action)).not.toContain('新正文');
-
-    await writeFile(target, '并发修改', 'utf8');
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
-    await expect(readFile(target, 'utf8')).resolves.toBe('并发修改');
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-
-    const freshAction = await service.preview({
-      requestId: 'write-text-success',
-      toolName: 'write_text_file',
-      arguments: { relativePath: 'docs/editable.txt', content: '新正文' }
-    });
-    await service.executeWrite(freshAction);
-    await expect(readFile(target, 'utf8')).resolves.toBe('新正文');
-  });
-
-  it('复制普通文件或目录树时不覆盖既有目标', async () => {
-    const { service, root } = await fixtureService();
-    await writeFile(join(root, 'docs', 'source.txt'), 'source', 'utf8');
-    await mkdir(join(root, 'docs', 'tree'));
-    await writeFile(join(root, 'docs', 'tree', 'child.txt'), 'child', 'utf8');
-
-    const fileAction = await service.preview({
-      requestId: 'copy-file',
-      toolName: 'copy_entry',
-      arguments: { sourceRelativePath: 'docs/source.txt', targetRelativePath: 'copied.txt' }
-    });
-    await service.executeWrite(fileAction);
-    await expect(readFile(join(root, 'copied.txt'), 'utf8')).resolves.toBe('source');
-
-    const directoryAction = await service.preview({
-      requestId: 'copy-directory',
-      toolName: 'copy_entry',
-      arguments: { sourceRelativePath: 'docs/tree', targetRelativePath: 'tree-copy' }
-    });
-    await service.executeWrite(directoryAction);
-    await expect(readFile(join(root, 'tree-copy', 'child.txt'), 'utf8')).resolves.toBe('child');
-
-    await writeFile(join(root, 'occupied-copy.txt'), 'keep', 'utf8');
-    await expect(service.preview({
-      requestId: 'copy-conflict',
-      toolName: 'copy_entry',
-      arguments: { sourceRelativePath: 'docs/source.txt', targetRelativePath: 'occupied-copy.txt' }
-    })).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
-    await expect(readFile(join(root, 'occupied-copy.txt'), 'utf8')).resolves.toBe('keep');
-  });
-
-  it('复制确认后源被替换或目录树出现链接时拒绝且不留下目标', async ({ skip }) => {
-    const { service, root } = await fixtureService();
-    const source = join(root, 'docs', 'replace-copy.txt');
-    await writeFile(source, 'original', 'utf8');
-    const replacedAction = await service.preview({
-      requestId: 'copy-replaced',
-      toolName: 'copy_entry',
-      arguments: { sourceRelativePath: 'docs/replace-copy.txt', targetRelativePath: 'copy-replaced.txt' }
-    });
-    await rm(source);
-    await writeFile(source, 'replacement', 'utf8');
-    await expect(service.executeWrite(replacedAction)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
-    await expect(lstat(join(root, 'copy-replaced.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-
-    const tree = join(root, 'docs', 'linked-tree');
-    await mkdir(tree);
-    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-copy-outside-'));
-    temporaryRoots.push(outside);
-    await writeFile(join(outside, 'secret.txt'), 'secret', 'utf8');
-    try {
-      await symlink(outside, join(tree, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES')) {
-        skip(`当前系统不允许创建测试 Junction：${String(error.code)}`);
-        return;
-      }
-      throw error;
-    }
-    await expect(service.preview({
-      requestId: 'copy-linked-tree',
-      toolName: 'copy_entry',
-      arguments: { sourceRelativePath: 'docs/linked-tree', targetRelativePath: 'linked-tree-copy' }
-    })).rejects.toMatchObject({ code: 'LINK_NOT_ALLOWED' });
-    await expect(lstat(join(root, 'linked-tree-copy'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('移动普通实体时不覆盖目标并绑定确认时的源身份', async () => {
-    const { service, root } = await fixtureService();
-    const source = join(root, 'docs', 'move-source.txt');
-    await writeFile(source, 'source', 'utf8');
-    const action = await service.preview({
-      requestId: 'move-file',
-      toolName: 'move_entry',
-      arguments: { sourceRelativePath: 'docs/move-source.txt', targetRelativePath: 'moved.txt' }
-    });
-    await service.executeWrite(action);
-    await expect(readFile(join(root, 'moved.txt'), 'utf8')).resolves.toBe('source');
-    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
-
-    await writeFile(join(root, 'docs', 'move-conflict.txt'), 'source', 'utf8');
-    await writeFile(join(root, 'occupied-move.txt'), 'keep', 'utf8');
-    await expect(service.preview({
-      requestId: 'move-conflict',
-      toolName: 'move_entry',
-      arguments: { sourceRelativePath: 'docs/move-conflict.txt', targetRelativePath: 'occupied-move.txt' }
-    })).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
-
-    const replaceSource = join(root, 'docs', 'move-replaced.txt');
-    await writeFile(replaceSource, 'original', 'utf8');
-    const replacedAction = await service.preview({
-      requestId: 'move-replaced',
-      toolName: 'move_entry',
-      arguments: { sourceRelativePath: 'docs/move-replaced.txt', targetRelativePath: 'move-replaced-target.txt' }
-    });
-    await rm(replaceSource);
-    await writeFile(replaceSource, 'replacement', 'utf8');
-    await expect(service.executeWrite(replacedAction)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
-    await expect(readFile(replaceSource, 'utf8')).resolves.toBe('replacement');
-    await expect(lstat(join(root, 'move-replaced-target.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('跨设备移动返回稳定错误且保留源与空目标', async () => {
-    const crossDeviceMove = vi.fn(async () => {
-      throw Object.assign(new Error('C:\\private\\source.txt'), { code: 'EXDEV' });
-    });
-    const { service, root } = await fixtureService(undefined, () => 1, crossDeviceMove);
-    await writeFile(join(root, 'docs', 'cross-device.txt'), 'source', 'utf8');
-    const action = await service.preview({
-      requestId: 'move-cross-device',
-      toolName: 'move_entry',
-      arguments: { sourceRelativePath: 'docs/cross-device.txt', targetRelativePath: 'cross-device-target.txt' }
-    });
-
-    const error = await service.executeWrite(action).then(
-      () => null,
-      failure => failure as Error & { code: string }
-    );
-    expect(error).toMatchObject({ code: 'CROSS_DEVICE_MOVE_NOT_ALLOWED' });
-    expect(error?.message).not.toContain('C:\\private');
-    await expect(readFile(join(root, 'docs', 'cross-device.txt'), 'utf8')).resolves.toBe('source');
-    await expect(lstat(join(root, 'cross-device-target.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('授权 generation 变化后旧动作立即失效且不产生副作用', async () => {
-    let generation = 7;
-    const { service, root } = await fixtureService(undefined, () => generation);
-    const action = await service.preview({
-      requestId: 'generation-create',
-      toolName: 'create_file',
-      arguments: { relativePath: 'generation.txt' }
-    });
-    expect(action).toMatchObject({ authorizationGeneration: 7 });
-
-    generation = 8;
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-    await expect(lstat(join(root, 'generation.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('公开动作使用深冻结快照契约且不暴露签发 id、绝对路径或内部身份', async () => {
-    const { service, root } = await fixtureService();
-    await writeFile(join(root, 'docs', 'contract-source.txt'), 'source', 'utf8');
-    const action = await service.preview({
-      requestId: 'contract-copy',
-      toolName: 'copy_entry',
-      arguments: {
-        sourceRelativePath: 'docs/contract-source.txt',
-        targetRelativePath: 'contract-target.txt'
-      }
-    });
-
-    expect(action).toEqual({
-      operation: 'copy_entry',
-      authorizationGeneration: 1,
-      source: { relativePath: 'docs/contract-source.txt', type: 'file', size: 6 },
-      target: { relativePath: 'contract-target.txt', state: 'absent' }
-    });
-    expect(Object.isFrozen(action)).toBe(true);
-    expect(Object.isFrozen(action.source)).toBe(true);
-    expect(Object.isFrozen(action.target)).toBe(true);
-    expect(action).not.toHaveProperty('id');
-    expect(action).not.toHaveProperty('toolName');
-    expect(JSON.stringify(action)).not.toContain(root);
-    expect(JSON.stringify(action)).not.toMatch(/inode|device|sha256/u);
-  });
-
-  it('重命名确认后源实体被同路径替换时拒绝执行', async () => {
-    const { service, root } = await fixtureService();
-    const source = join(root, 'docs', 'rename-replaced.txt');
-    await writeFile(source, 'original', 'utf8');
-    const action = await service.preview({
-      requestId: 'rename-replaced',
-      toolName: 'rename_entry',
-      arguments: {
-        sourceRelativePath: 'docs/rename-replaced.txt',
-        targetRelativePath: 'docs/rename-target.txt'
-      }
-    });
-    await rm(source);
-    await writeFile(source, 'replacement', 'utf8');
-
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
-    await expect(readFile(source, 'utf8')).resolves.toBe('replacement');
-    await expect(lstat(join(root, 'docs', 'rename-target.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it.each([
-    ['普通文件', 'docs/old.txt', false],
-    ['普通目录', 'docs/old-directory', true]
-  ] as const)('通过可注入端口把%s移出原路径且公开动作不泄露绝对路径', async (
-    _label,
-    relativePath,
-    directory
-  ) => {
-    const port = movingRecycleBinPort();
-    const { service, root } = await fixtureService(port);
-    const target = join(root, relativePath);
-    if (directory) await mkdir(target);
-    else await writeFile(target, '待回收内容', 'utf8');
-
-    const action = await service.preview({
-      requestId: `recycle-${relativePath}`,
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath }
-    });
-
-    expect(action).toEqual(expect.objectContaining({
-      operation: 'move_to_recycle_bin',
-      target: expect.objectContaining({
-        relativePath: relativePath.replaceAll('\\', '/'),
-        state: 'existing'
-      })
-    }));
-    expect(JSON.stringify(action)).not.toContain(root);
-    const resolvedTarget = await realpath(target);
-    await service.executeWrite(action);
-
-    expect(port.calls).toEqual([resolvedTarget]);
-    await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('拒绝回收授权根本身、越界路径和链接目标', async ({ skip }) => {
-    const port = movingRecycleBinPort();
-    const { service, root } = await fixtureService(port);
-    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-outside-'));
-    temporaryRoots.push(outside);
-    await writeFile(join(outside, 'secret.txt'), 'secret', 'utf8');
-
-    await expect(service.preview({
-      requestId: 'recycle-root',
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath: '.' }
-    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
-    await expect(service.preview({
-      requestId: 'recycle-outside',
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath: '../outside/secret.txt' }
-    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
-
-    try {
-      await symlink(outside, join(root, 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (error) {
-      if (
-        error instanceof Error
-        && 'code' in error
-        && (error.code === 'EPERM' || error.code === 'EACCES')
-      ) {
-        skip(`当前系统不允许创建测试 Junction：${String(error.code)}`);
-        return;
-      }
-      throw error;
-    }
-    await expect(service.preview({
-      requestId: 'recycle-link',
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath: 'outside-link' }
-    })).rejects.toMatchObject({ code: 'LINK_NOT_ALLOWED' });
-    expect(port.calls).toEqual([]);
-  });
-
-  it('提交前目标被同路径新实体替换时返回 ENTRY_CHANGED 且不调用端口', async () => {
-    const port = movingRecycleBinPort();
-    const { service, root } = await fixtureService(port);
-    const target = join(root, 'docs', 'replace-me.txt');
-    const original = join(root, 'docs', 'original.txt');
-    await writeFile(target, 'original', 'utf8');
-    const action = await service.preview({
-      requestId: 'recycle-replaced',
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath: 'docs/replace-me.txt' }
-    });
-    await rename(target, original);
-    await writeFile(target, 'replacement', 'utf8');
-
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
-    expect(port.calls).toEqual([]);
-    await expect(readFile(target, 'utf8')).resolves.toBe('replacement');
-  });
-
-  it('提交前目标消失时返回稳定错误、动作被消费且不调用端口', async () => {
-    const port = movingRecycleBinPort();
-    const { service, root } = await fixtureService(port);
-    const target = join(root, 'docs', 'vanished.txt');
-    await writeFile(target, 'vanished', 'utf8');
-    const action = await service.preview({
-      requestId: 'recycle-vanished',
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath: 'docs/vanished.txt' }
-    });
-    await rm(target);
-
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_NOT_FOUND' });
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-    expect(port.calls).toEqual([]);
-  });
-
-  it('回收动作在任何副作用前消费，成功、失败或伪造都不能重复调用端口', async () => {
-    const port: RecycleBinPort = {
-      moveToRecycleBin: vi.fn(async () => {
-        throw new Error('系统错误包含 C:\\private\\secret.txt');
-      })
-    };
-    const { service, root } = await fixtureService(port);
-    await writeFile(join(root, 'docs', 'fail.txt'), 'keep', 'utf8');
-    const action = await service.preview({
-      requestId: 'recycle-port-failure',
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath: 'docs/fail.txt' }
-    });
-
-    const firstError = await service.executeWrite(action).then(
-      () => null,
-      error => error as Error & { code: string }
-    );
-    if (!firstError) throw new Error('预期回收站端口失败');
-    expect(firstError).toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
-    expect(firstError.message).toBe('无法将目标移入系统回收站');
-    expect(firstError.message).not.toContain(root);
-    expect(firstError.cause).toBeUndefined();
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-    await expect(service.executeWrite({ ...action })).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-    expect(port.moveToRecycleBin).toHaveBeenCalledTimes(1);
-    await expect(readFile(join(root, 'docs', 'fail.txt'), 'utf8')).resolves.toBe('keep');
-  });
-
-  it('拒绝没有移走目标却返回成功的端口，且动作仍不可重放', async () => {
-    const port: RecycleBinPort = { moveToRecycleBin: vi.fn(async () => undefined) };
-    const { service, root } = await fixtureService(port);
-    await writeFile(join(root, 'docs', 'still-here.txt'), 'keep', 'utf8');
-    const action = await service.preview({
-      requestId: 'recycle-false-success',
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath: 'docs/still-here.txt' }
-    });
-
-    await expect(service.executeWrite(action)).rejects.toMatchObject({
-      code: 'RECYCLE_BIN_FAILED',
-      message: '系统回收站未移走目标'
-    });
-    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-    expect(port.moveToRecycleBin).toHaveBeenCalledTimes(1);
-  });
-
-  it('回收站端口只修改目标但未移走时仍判定失败', async () => {
-    const { service, root } = await fixtureService({
-      async moveToRecycleBin(absolutePath) {
-        await writeFile(absolutePath, '被端口修改但仍在原路径', 'utf8');
-      }
-    });
-    const target = join(root, 'docs', 'touched-not-moved.txt');
-    await writeFile(target, 'original', 'utf8');
-    const action = await service.preview({
-      requestId: 'recycle-touched-not-moved',
-      toolName: 'move_to_recycle_bin',
-      arguments: { relativePath: 'docs/touched-not-moved.txt' }
-    });
-
-    await expect(service.executeWrite(action)).rejects.toMatchObject({
-      code: 'RECYCLE_BIN_FAILED',
-      message: '系统回收站未移走目标'
-    });
-  });
-
-  it('现有创建与重命名写动作也统一为一次性，失败后不可重放', async () => {
-    const { service, root } = await fixtureService();
-    const createAction = await service.preview({
-      requestId: 'one-shot-create',
-      toolName: 'create_file',
-      arguments: { relativePath: 'one-shot.txt' }
-    });
-    await writeFile(join(root, 'one-shot.txt'), 'collision', 'utf8');
-    await expect(service.executeWrite(createAction)).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
-    await expect(service.executeWrite(createAction)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-
-    await writeFile(join(root, 'docs', 'before-one-shot.txt'), 'before', 'utf8');
-    const renameAction = await service.preview({
-      requestId: 'one-shot-rename',
-      toolName: 'rename_entry',
-      arguments: {
-        sourceRelativePath: 'docs/before-one-shot.txt',
-        targetRelativePath: 'docs/after-one-shot.txt'
-      }
-    });
-    await service.executeWrite(renameAction);
-    await expect(service.executeWrite(renameAction)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
-  });
-
-  it('读工具不能生成待确认写动作', async () => {
-    const { service } = await fixtureService();
-
-    await expect(service.preview({
-      requestId: 'invalid-preview',
-      toolName: 'list_directory',
-      arguments: { relativePath: '.' }
-    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
-  });
-
-  it('拒绝多余参数和超过 1024 个字符的路径', async () => {
-    const { service } = await fixtureService();
-
-    await expect(service.preview({
-      requestId: 'unknown-argument',
-      toolName: 'create_file',
-      arguments: { relativePath: 'safe.txt', overwrite: true }
-    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
-
-    await expect(service.preview({
-      requestId: 'long-path',
-      toolName: 'create_file',
-      arguments: { relativePath: 'a'.repeat(1025) }
-    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+describe('五个工具 schema', () => {
+  it('只公开五个严格参数 schema，且旧工具名称不存在', () => {
+    expect(Object.keys(toolArguments).sort()).toEqual([
+      'apply_patch',
+      'create_file',
+      'delete_file',
+      'list_files',
+      'read_file'
+    ]);
+    expect(() => toolArguments.create_file.parse({ relativePath: 'a.txt', extra: true })).toThrow();
+    expect((toolArguments as Record<string, unknown>)['copy_entry']).toBeUndefined();
   });
 });
 
 describe('FileToolService.executeRead', () => {
-  it('按字面名称有界搜索且不跟随目录链接', async ({ skip }) => {
+  it('list_files 默认不递归，并只返回相对摘要', async () => {
     const { service, root } = await fixtureService();
-    await writeFile(join(root, 'docs', 'needle-one.txt'), 'one', 'utf8');
-    await writeFile(join(root, 'docs', 'needle-two.txt'), 'two', 'utf8');
+    await writeFile(join(root, 'docs', 'visible.txt'), 'visible', 'utf8');
     await mkdir(join(root, 'docs', 'nested'));
-    await writeFile(join(root, 'docs', 'nested', 'needle-deep.txt'), 'deep', 'utf8');
-    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-search-outside-'));
+    await writeFile(join(root, 'docs', 'nested', 'hidden.txt'), 'hidden', 'utf8');
+
+    const result = await service.executeRead({
+      requestId: 'list-default',
+      toolName: 'list_files',
+      arguments: { relativePath: 'docs' }
+    });
+
+    expect(result).toMatchObject({ toolName: 'list_files', relativePath: 'docs', truncated: false });
+    if (result.toolName !== 'list_files') throw new Error('预期目录结果');
+    expect(result.entries.map(entry => entry.relativePath).sort()).toEqual(['docs/nested', 'docs/visible.txt']);
+    expect(result.entries.every(entry => !('modifiedAt' in entry) && !('size' in entry))).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(root);
+    expect(JSON.stringify(result)).not.toContain('hidden.txt');
+  });
+
+  it('list_files 按最大深度递归，达到最大结果时截断', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'docs', 'nested'));
+    await writeFile(join(root, 'docs', 'a.txt'), '', 'utf8');
+    await writeFile(join(root, 'docs', 'nested', 'b.txt'), '', 'utf8');
+    await writeFile(join(root, 'docs', 'nested', 'c.txt'), '', 'utf8');
+
+    const deep = await service.executeRead({
+      requestId: 'list-deep',
+      toolName: 'list_files',
+      arguments: { relativePath: 'docs', maxDepth: 2, maxResults: 10 }
+    });
+    if (deep.toolName !== 'list_files') throw new Error('预期目录结果');
+    expect(deep.entries.map(entry => entry.relativePath)).toContain('docs/nested/b.txt');
+
+    const limited = await service.executeRead({
+      requestId: 'list-limited',
+      toolName: 'list_files',
+      arguments: { relativePath: 'docs', maxDepth: 2, maxResults: 2 }
+    });
+    if (limited.toolName !== 'list_files') throw new Error('预期目录结果');
+    expect(limited.entries).toHaveLength(2);
+    expect(limited.truncated).toBe(true);
+  });
+
+  it('list_files 将链接作为条目返回但绝不下钻', async ({ skip }) => {
+    const { service, root } = await fixtureService();
+    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-outside-'));
     temporaryRoots.push(outside);
-    await writeFile(join(outside, 'needle-secret.txt'), 'secret', 'utf8');
+    await writeFile(join(outside, 'secret.txt'), 'secret', 'utf8');
     try {
       await symlink(outside, join(root, 'docs', 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
     } catch (error) {
-      if (error instanceof Error && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES')) {
-        skip(`当前系统不允许创建测试 Junction：${String(error.code)}`);
+      if (error instanceof Error && 'code' in error && ((error as NodeJS.ErrnoException).code === 'EPERM' || (error as NodeJS.ErrnoException).code === 'EACCES')) {
+        skip(`当前系统不允许创建测试 Junction：${String((error as NodeJS.ErrnoException).code)}`);
         return;
       }
       throw error;
     }
 
-    const shallow = await service.executeRead({
-      requestId: 'search-shallow',
-      toolName: 'search_entries',
-      arguments: { relativePath: 'docs', name: 'needle', maxDepth: 1, maxResults: 10 }
-    });
-    if (shallow.toolName !== 'search_entries') throw new Error('预期搜索结果');
-    expect(shallow.entries.map(entry => entry.relativePath).sort()).toEqual([
-      'docs/needle-one.txt',
-      'docs/needle-two.txt'
-    ]);
-    expect(JSON.stringify(shallow)).not.toContain(root);
-    expect(JSON.stringify(shallow)).not.toContain('needle-secret.txt');
-
-    const limited = await service.executeRead({
-      requestId: 'search-limited',
-      toolName: 'search_entries',
-      arguments: { relativePath: 'docs', name: 'needle', maxDepth: 2, maxResults: 2 }
-    });
-    if (limited.toolName !== 'search_entries') throw new Error('预期搜索结果');
-    expect(limited.entries).toHaveLength(2);
-    expect(limited.truncated).toBe(true);
-  });
-
-  it('只列出直接子项并返回本地元数据，不暴露绝对路径', async () => {
-    const { service, root } = await fixtureService();
-    await writeFile(join(root, 'docs', 'a.txt'), 'hello', 'utf8');
-    await mkdir(join(root, 'docs', 'nested'));
-    await writeFile(join(root, 'docs', 'nested', 'hidden.txt'), 'hidden', 'utf8');
-
-    const result = await service.executeRead({
-      requestId: 'list-1',
-      toolName: 'list_directory',
-      arguments: { relativePath: 'docs' }
-    });
-
-    expect(result).toMatchObject({
-      toolName: 'list_directory',
-      relativePath: 'docs',
-      truncated: false
-    });
-    if (result.toolName !== 'list_directory') throw new Error('预期目录结果');
-    expect(result.entries.map(entry => entry.name).sort()).toEqual(['a.txt', 'nested']);
-    expect(result.entries.find(entry => entry.name === 'a.txt')).toMatchObject({
-      type: 'file',
-      size: 5
-    });
-    expect(result.entries.find(entry => entry.name === 'nested')).toMatchObject({
-      type: 'directory',
-      size: null
-    });
-    expect(JSON.stringify(result)).not.toContain(root);
-    expect(JSON.stringify(result)).not.toContain('hidden.txt');
-  });
-
-  it('默认列出授权根目录，最多返回 200 项并标记截断', async () => {
-    const { service, root } = await fixtureService();
-    await Promise.all(Array.from({ length: 201 }, async (_, index) => {
-      await writeFile(join(root, `entry-${String(index).padStart(3, '0')}.txt`), '', 'utf8');
-    }));
-
-    const result = await service.executeRead({
-      requestId: 'list-limit',
-      toolName: 'list_directory',
-      arguments: {}
-    });
-
-    if (result.toolName !== 'list_directory') throw new Error('预期目录结果');
-    expect(result.relativePath).toBe('.');
-    expect(result.entries).toHaveLength(200);
-    expect(result.truncated).toBe(true);
-  });
-
-  it('列目录时识别链接但不跟随链接', async () => {
-    const { service, root } = await fixtureService();
-    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-outside-'));
-    temporaryRoots.push(outside);
-    await writeFile(join(outside, 'secret.txt'), 'secret', 'utf8');
-    await symlink(outside, join(root, 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
-
     const result = await service.executeRead({
       requestId: 'list-link',
-      toolName: 'list_directory',
-      arguments: {}
+      toolName: 'list_files',
+      arguments: { relativePath: 'docs', maxDepth: 4 }
     });
 
-    if (result.toolName !== 'list_directory') throw new Error('预期目录结果');
-    expect(result.entries.find(entry => entry.name === 'outside-link')).toMatchObject({
-      type: 'symbolic_link',
-      size: null
-    });
+    if (result.toolName !== 'list_files') throw new Error('预期目录结果');
+    expect(result.entries).toContainEqual({ relativePath: 'docs/outside-link', type: 'symbolic_link' });
     expect(JSON.stringify(result)).not.toContain('secret.txt');
   });
 
-  it('读取有效 UTF-8 普通文本并附带不可信数据警告', async () => {
+  it('read_file 按请求行范围返回内容并标记截断', async () => {
     const { service, root } = await fixtureService();
-    await writeFile(join(root, 'docs', 'note.txt'), '你好，Myself', 'utf8');
+    await writeFile(join(root, 'docs', 'lines.txt'), 'first\nsecond\nthird\nfourth\n', 'utf8');
 
     const result = await service.executeRead({
-      requestId: 'read-text',
-      toolName: 'read_text_file',
-      arguments: { relativePath: 'docs/note.txt' }
+      requestId: 'read-lines',
+      toolName: 'read_file',
+      arguments: { relativePath: 'docs/lines.txt', startLine: 2, lineCount: 2 }
     });
 
     expect(result).toMatchObject({
-      toolName: 'read_text_file',
-      relativePath: 'docs/note.txt',
-      content: '你好，Myself'
+      toolName: 'read_file',
+      relativePath: 'docs/lines.txt',
+      startLine: 2,
+      endLine: 3,
+      content: 'second\nthird',
+      truncated: true
     });
-    if (result.toolName !== 'read_text_file') throw new Error('预期文本结果');
-    expect(result.sizeBytes).toBe(Buffer.byteLength('你好，Myself'));
-    expect(result.untrustedDataNotice).toContain('不可信数据');
-    expect(JSON.stringify(result)).not.toContain(root);
   });
 
-  it('拒绝超过 1 MiB、无效 UTF-8 和非普通文件', async () => {
+  it('read_file 拒绝二进制、超限和非普通文件', async () => {
     const { service, root } = await fixtureService();
+    await writeFile(join(root, 'docs', 'binary.bin'), Buffer.from([0xc3, 0x28]));
     await writeFile(join(root, 'docs', 'large.txt'), Buffer.alloc(1024 * 1024 + 1, 0x61));
-    await writeFile(join(root, 'docs', 'invalid.txt'), Buffer.from([0xc3, 0x28]));
 
+    await expect(service.executeRead({
+      requestId: 'read-binary',
+      toolName: 'read_file',
+      arguments: { relativePath: 'docs/binary.bin' }
+    })).rejects.toMatchObject({ code: 'ENTRY_TYPE_UNSUPPORTED' });
     await expect(service.executeRead({
       requestId: 'read-large',
-      toolName: 'read_text_file',
+      toolName: 'read_file',
       arguments: { relativePath: 'docs/large.txt' }
     })).rejects.toMatchObject({ code: 'ENTRY_TYPE_UNSUPPORTED' });
-
-    await expect(service.executeRead({
-      requestId: 'read-invalid',
-      toolName: 'read_text_file',
-      arguments: { relativePath: 'docs/invalid.txt' }
-    })).rejects.toMatchObject({ code: 'ENTRY_TYPE_UNSUPPORTED' });
-
     await expect(service.executeRead({
       requestId: 'read-directory',
-      toolName: 'read_text_file',
+      toolName: 'read_file',
       arguments: { relativePath: 'docs' }
     })).rejects.toMatchObject({ code: 'ENTRY_TYPE_UNSUPPORTED' });
+    await expect(lstat(join(root, 'docs', 'binary.bin'))).resolves.toBeDefined();
+  });
+});
+
+describe('FileToolService.preview 与 executeWrite', () => {
+  it('create_file 只在私有动作保存正文并以排他方式创建', async () => {
+    const { service, root } = await fixtureService();
+    const action = await service.preview({
+      requestId: 'create-preview',
+      toolName: 'create_file',
+      arguments: { relativePath: 'created.txt', content: '私有正文' }
+    });
+
+    expect(action).toEqual({
+      operation: 'create_file',
+      authorizationGeneration: 0,
+      targetRelativePath: 'created.txt',
+      contentCharacters: 4,
+      contentPreview: '私有正文',
+      previewTruncated: false
+    });
+    expect(JSON.stringify(action)).not.toContain(root);
+    await expect(lstat(join(root, 'created.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await service.executeWrite(action);
+    await expect(lstat(join(root, 'created.txt'))).resolves.toBeDefined();
   });
 
-  it('写工具不能通过只读入口执行', async () => {
-    const { service } = await fixtureService();
-
-    await expect(service.executeRead({
-      requestId: 'invalid-read',
+  it('create_file 拒绝预览后出现的同名条目且动作不可重放', async () => {
+    const { service, root } = await fixtureService();
+    const action = await service.preview({
+      requestId: 'create-race',
       toolName: 'create_file',
-      arguments: { relativePath: 'unexpected.txt' }
+      arguments: { relativePath: 'existing.txt' }
+    });
+    await writeFile(join(root, 'existing.txt'), 'existing', 'utf8');
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+  });
+
+  it('apply_patch 只公开补丁摘要并以预览版本作为基础写入', async () => {
+    const { service, root } = await fixtureService();
+    await writeFile(join(root, 'docs', 'patch.txt'), 'before\n', 'utf8');
+    const action = await service.preview({
+      requestId: 'patch-preview',
+      toolName: 'apply_patch',
+      arguments: {
+        relativePath: 'docs/patch.txt',
+        patch: '@@ -1,1 +1,1 @@\n-before\n+after\n'
+      }
+    });
+
+    expect(action).toMatchObject({
+      operation: 'apply_patch',
+      authorizationGeneration: 0,
+      targetRelativePath: 'docs/patch.txt',
+      addedLines: 1,
+      removedLines: 1,
+      previewTruncated: false
+    });
+    if (action.operation !== 'apply_patch') throw new Error('预期补丁动作');
+    expect(action.diffPreview).toContain('-before');
+    await service.executeWrite(action);
+    await expect(readFile(join(root, 'docs', 'patch.txt'), 'utf8')).resolves.toBe('after\n');
+  });
+
+  it('apply_patch 拒绝不匹配补丁和预览后的基础内容变化', async () => {
+    const { service, root } = await fixtureService();
+    await writeFile(join(root, 'docs', 'changed.txt'), 'before\n', 'utf8');
+
+    await expect(service.preview({
+      requestId: 'patch-mismatch',
+      toolName: 'apply_patch',
+      arguments: { relativePath: 'docs/changed.txt', patch: '@@ -1,1 +1,1 @@\n-other\n+after\n' }
     })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+
+    const action = await service.preview({
+      requestId: 'patch-changed',
+      toolName: 'apply_patch',
+      arguments: { relativePath: 'docs/changed.txt', patch: '@@ -1,1 +1,1 @@\n-before\n+after\n' }
+    });
+    await writeFile(join(root, 'docs', 'changed.txt'), 'changed\n', 'utf8');
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+  });
+
+  it('delete_file 只通过回收站端口删除普通文件和空目录', async () => {
+    const calls: string[] = [];
+    const { service, root } = await fixtureService({
+      async moveToRecycleBin(absolutePath) {
+        calls.push(absolutePath);
+        await rm(absolutePath, { recursive: true, force: false });
+      }
+    });
+    await writeFile(join(root, 'docs', 'delete.txt'), '删除我', 'utf8');
+
+    const fileAction = await service.preview({
+      requestId: 'delete-file',
+      toolName: 'delete_file',
+      arguments: { relativePath: 'docs/delete.txt' }
+    });
+    expect(fileAction).toEqual({
+      operation: 'delete_file',
+      authorizationGeneration: 0,
+      targetRelativePath: 'docs/delete.txt',
+      targetType: 'file'
+    });
+    await service.executeWrite(fileAction);
+    expect(calls).toHaveLength(1);
+    await expect(lstat(join(root, 'docs', 'delete.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await mkdir(join(root, 'docs', 'empty'));
+    const directoryAction = await service.preview({
+      requestId: 'delete-directory',
+      toolName: 'delete_file',
+      arguments: { relativePath: 'docs/empty' }
+    });
+    expect(directoryAction).toMatchObject({ operation: 'delete_file', targetType: 'empty_directory' });
+  });
+
+  it('delete_file 拒绝授权根、链接和非空目录，且动作绑定身份与 generation', async ({ skip }) => {
+    let generation = 3;
+    const { service, root } = await fixtureService({ async moveToRecycleBin() {} }, () => generation);
+    await mkdir(join(root, 'docs', 'non-empty'));
+    await writeFile(join(root, 'docs', 'non-empty', 'child.txt'), '', 'utf8');
+    await writeFile(join(root, 'docs', 'replace.txt'), '原始内容', 'utf8');
+
+    await expect(service.preview({ requestId: 'delete-root', toolName: 'delete_file', arguments: { relativePath: '.' } })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+    await expect(service.preview({ requestId: 'delete-non-empty', toolName: 'delete_file', arguments: { relativePath: 'docs/non-empty' } })).rejects.toMatchObject({ code: 'ENTRY_TYPE_UNSUPPORTED' });
+    const action = await service.preview({ requestId: 'delete-changed', toolName: 'delete_file', arguments: { relativePath: 'docs/replace.txt' } });
+    generation = 4;
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+
+    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-outside-'));
+    temporaryRoots.push(outside);
+    try {
+      await symlink(outside, join(root, 'docs', 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && ((error as NodeJS.ErrnoException).code === 'EPERM' || (error as NodeJS.ErrnoException).code === 'EACCES')) {
+        skip(`当前系统不允许创建测试 Junction：${String((error as NodeJS.ErrnoException).code)}`);
+        return;
+      }
+      throw error;
+    }
+    await expect(service.preview({ requestId: 'delete-link', toolName: 'delete_file', arguments: { relativePath: 'docs/outside-link' } })).rejects.toMatchObject({ code: 'LINK_NOT_ALLOWED' });
+  });
+
+  it('所有写动作拒绝克隆，删除预览后的同路径替换会失效', async () => {
+    const calls: string[] = [];
+    const { service, root } = await fixtureService({ async moveToRecycleBin(path) { calls.push(path); } });
+    const createAction = await service.preview({ requestId: 'clone-create', toolName: 'create_file', arguments: { relativePath: 'clone.txt' } });
+    await expect(service.executeWrite({ ...createAction })).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+
+    await writeFile(join(root, 'docs', 'replace.txt'), '初始', 'utf8');
+    const deleteAction = await service.preview({ requestId: 'replace-delete', toolName: 'delete_file', arguments: { relativePath: 'docs/replace.txt' } });
+    await rm(join(root, 'docs', 'replace.txt'));
+    await writeFile(join(root, 'docs', 'replace.txt'), '替换', 'utf8');
+    await expect(service.executeWrite(deleteAction)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(service.executeWrite(deleteAction)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    expect(calls).toEqual([]);
   });
 });

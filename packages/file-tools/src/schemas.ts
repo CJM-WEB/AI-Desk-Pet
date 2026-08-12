@@ -1,52 +1,27 @@
-import { posix, win32 } from 'node:path';
 import { z } from 'zod';
 
 export const relativePathSchema = z.string().min(1).max(1024);
 
-/** 回收站写操作在进入路径策略前先拒绝两种平台的绝对路径形式。 */
-const recycleBinRelativePathSchema = relativePathSchema.refine(
-  value => value.trim().length > 0 && !posix.isAbsolute(value) && !win32.isAbsolute(value),
-  '回收站目标必须是授权根目录内的相对路径'
-);
-
 export const toolArguments = {
-  list_directory: z.object({
-    relativePath: relativePathSchema.default('.')
-  }).strict(),
-  read_text_file: z.object({
-    relativePath: relativePathSchema
-  }).strict(),
-  search_entries: z.object({
+  list_files: z.object({
     relativePath: relativePathSchema.default('.'),
-    name: z.string().min(1).max(255),
-    type: z.enum(['file', 'directory']).optional(),
-    maxDepth: z.number().int().min(1).max(8).default(4),
+    maxDepth: z.number().int().min(1).max(4).default(1),
     maxResults: z.number().int().min(1).max(200).default(100)
+  }).strict(),
+  read_file: z.object({
+    relativePath: relativePathSchema,
+    startLine: z.number().int().min(1).default(1),
+    lineCount: z.number().int().min(1).max(500).default(200)
   }).strict(),
   create_file: z.object({
     relativePath: relativePathSchema,
-    content: z.string().optional()
+    content: z.string().default('')
   }).strict(),
-  create_directory: z.object({
-    relativePath: relativePathSchema
-  }).strict(),
-  write_text_file: z.object({
+  apply_patch: z.object({
     relativePath: relativePathSchema,
-    content: z.string()
+    patch: z.string().min(1).max(262_144)
   }).strict(),
-  copy_entry: z.object({
-    sourceRelativePath: relativePathSchema,
-    targetRelativePath: relativePathSchema
-  }).strict(),
-  move_entry: z.object({
-    sourceRelativePath: relativePathSchema,
-    targetRelativePath: relativePathSchema
-  }).strict(),
-  rename_entry: z.object({
-    sourceRelativePath: relativePathSchema,
-    targetRelativePath: relativePathSchema
-  }).strict(),
-  move_to_recycle_bin: z.object({
-    relativePath: recycleBinRelativePathSchema
+  delete_file: z.object({
+    relativePath: relativePathSchema
   }).strict()
 } as const;
