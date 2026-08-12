@@ -196,6 +196,17 @@ describe('PowerShellTool', () => {
     expect(() => preview(tool, command)).toThrow('POWERSHELL_COMMAND_REJECTED');
   });
 
+  test.each([
+    'cmdkey.exe /list',
+    'vaultcmd.exe /listcreds',
+    'C:\\Windows\\System32\\runas.exe /user:Administrator cmd.exe',
+    "& 'C:\\Windows\\System32\\runas.exe' /user:Administrator cmd.exe",
+    'Microsoft.PowerShell.Security\\Get-Credential'
+  ])('预览拒绝等价的静态高风险命令名：%s', command => {
+    const { tool } = createFixture();
+    expect(() => preview(tool, command)).toThrow('POWERSHELL_COMMAND_REJECTED');
+  });
+
   test('未知 token 不会被本地解析器误拒绝，仍产生一次确认动作', () => {
     const { tool, processPort } = createFixture();
     const action = preview(tool, 'Invoke-UnknownVendorTool -Feature experimental');

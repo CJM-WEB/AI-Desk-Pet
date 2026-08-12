@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
+import { win32 } from 'node:path';
 
 export type VerifiedPowerShellAction = Readonly<{
   kind: 'powershell';
@@ -387,19 +388,28 @@ function sha256(value: string): string {
 
 function isDirectHighRiskCommand(command: string): boolean {
   return executableStatements(command).some((tokens) => {
-    const [commandName, ...argumentsList] = tokens;
-    if (commandName === undefined) return false;
+    const [rawCommandName, ...argumentsList] = tokens;
+    if (rawCommandName === undefined) return false;
+    const commandName = normalizeStaticCommandName(rawCommandName);
     if (commandName === 'start-process') {
       return hasToken(argumentsList, '-verb') && hasTokenAfter(argumentsList, '-verb', 'runas');
     }
     if (commandName === 'remove-item') {
       return hasToken(argumentsList, '-recurse') && hasToken(argumentsList, '-force');
     }
-    return commandName === 'runas.exe'
+    return commandName === 'runas'
+      || commandName === 'runas.exe'
       || commandName === 'get-credential'
       || commandName === 'cmdkey'
-      || commandName === 'vaultcmd';
+      || commandName === 'cmdkey.exe'
+      || commandName === 'vaultcmd'
+      || commandName === 'vaultcmd.exe';
   });
+}
+
+/** 路径与模块限定命令只按其静态末段比较，动态调用仍不在本地猜测。 */
+function normalizeStaticCommandName(commandName: string): string {
+  return win32.basename(commandName).toLowerCase();
 }
 
 /**
