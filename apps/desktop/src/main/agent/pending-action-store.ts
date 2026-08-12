@@ -50,7 +50,6 @@ export class PendingActionStore {
   }
 
   issue(publicData: PendingActionDraft, privateExecution: PendingExecution): PendingAction {
-    if (this.current) this.onDiscard(this.current.privateExecution, 'new_task');
     const now = this.now();
     const publicAction = pendingActionSchema.parse({
       ...publicData,
@@ -58,7 +57,9 @@ export class PendingActionStore {
       createdAt: new Date(now).toISOString(),
       expiresAt: new Date(now + this.ttlMilliseconds).toISOString()
     });
+    const previous = this.current;
     this.current = { publicAction: { ...publicAction }, privateExecution };
+    if (previous) this.onDiscard(previous.privateExecution, 'new_task');
     return { ...publicAction };
   }
 

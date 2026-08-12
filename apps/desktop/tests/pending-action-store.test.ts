@@ -38,6 +38,20 @@ function pendingExecution(targetRelativePath = 'result.txt'): PendingExecution {
 }
 
 describe('PendingActionStore', () => {
+  test('非法替换不会丢弃或清除已有动作', () => {
+    const discarded: string[] = [];
+    const store = new PendingActionStore({
+      onDiscard: execution => discarded.push(execution.continuationToken)
+    });
+    const original = pendingExecution('original.txt');
+    const issued = store.issue(publicData('original.txt'), original);
+    const invalid = { ...publicData('invalid.txt'), targetType: 'file' } as unknown as Parameters<PendingActionStore['issue']>[0];
+
+    expect(() => store.issue(invalid, pendingExecution('invalid.txt'))).toThrow();
+    expect(discarded).toEqual([]);
+    expect(store.consume(issued.actionId)).toBe(original);
+  });
+
   test.each([
     ['缺少创建摘要字段', ({ contentPreview: _contentPreview, ...draft }: Record<string, unknown>) => draft],
     ['混入其他动作字段', (draft: Record<string, unknown>) => ({ ...draft, targetType: 'file' })],

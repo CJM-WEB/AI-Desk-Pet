@@ -99,13 +99,16 @@ describe('PendingAction 契约', () => {
       operation: 'create_file',
       summary: '新建 notes.md',
       targetRelativePath: 'notes.md',
+      contentCharacters: 3,
+      contentPreview: 'abc',
+      previewTruncated: false,
       createdAt: '2026-07-20T00:00:00.000Z',
       expiresAt: '2026-07-20T00:02:00.000Z'
     };
 
-    expect(() => pendingActionSchema.parse(({ ...base, operation: undefined }))).toThrow();
+    expect(() => pendingActionSchema.parse(({ ...base, contentPreview: undefined }))).toThrow();
     expect(() => pendingActionSchema.parse({ ...base, operation: 'create_directory' })).toThrow();
-    expect(() => pendingActionSchema.parse({ ...base, operation: 'delete_file', contentPreview: '泄露' })).toThrow();
+    expect(() => pendingActionSchema.parse({ ...base, targetType: 'file' })).toThrow();
     expect(() => pendingActionSchema.parse({ ...base, command: 'rm notes.md' })).toThrow();
   });
 });
