@@ -1,5 +1,7 @@
 # 可信文件与 PowerShell 执行 Implementation Plan
 
+> **已被取代：** 本计划未完成部分已由 `2026-08-12-ai-pet-lightweight-agent-execution.md` 取代。已经提交并通过复审的可信意图路由与首次真实工具结果协议继续保留；不要继续执行本计划中的复杂文件快照、PowerShell AST、后台任务和 Job Object 任务。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development`；每个任务使用 `test-driven-development`。
 
 **Goal:** 让明确文件操作必经真实工具，让模型拒绝或伪造成功无法冒充结果，并提供显式触发、分级确认、可取消的受控 PowerShell。
