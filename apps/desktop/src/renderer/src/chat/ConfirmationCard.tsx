@@ -21,7 +21,20 @@ function actionLabels(action: PendingAction): { confirm: string; cancel: string 
     case 'delete_file':
       return { confirm: '确认删除', cancel: '先不删除' };
     default:
-      return assertNever(action.operation);
+      return assertNever(action);
+  }
+}
+
+function safetyMessage(action: PendingAction): string {
+  switch (action.operation) {
+    case 'create_file':
+      return '不会覆盖已有文件；执行前还会再次检查。';
+    case 'apply_patch':
+      return '仅修改已有文件；执行前还会再次进行冲突校验。';
+    case 'delete_file':
+      return '将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。';
+    default:
+      return assertNever(action);
   }
 }
 
@@ -49,11 +62,7 @@ export function ConfirmationCard({ action, busy, onConfirm, onCancel }: Confirma
           {action.previewTruncated ? <span>预览已截断</span> : null}
         </div>
       ) : null}
-      <p className="confirmation-safety">
-        {isDelete
-          ? '将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。'
-          : '不会覆盖已有文件；执行前还会再次检查。'}
-      </p>
+      <p className="confirmation-safety">{safetyMessage(action)}</p>
       <div className="confirmation-actions">
         <button
           className={isDelete ? 'danger-button' : 'primary-button'}

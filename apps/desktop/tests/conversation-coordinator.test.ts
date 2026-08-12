@@ -1200,6 +1200,7 @@ describe('ConversationCoordinator', () => {
           operation: 'create_file',
           summary: '创建文件',
           targetRelativePath: 'result.txt',
+          contentCharacters: 0, contentPreview: null, previewTruncated: false,
           createdAt: '2026-08-10T00:00:00.000Z',
           expiresAt: '2026-08-10T00:02:00.000Z'
         }

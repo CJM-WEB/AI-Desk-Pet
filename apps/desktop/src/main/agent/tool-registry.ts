@@ -4,7 +4,7 @@ import type {
   ToolDefinition,
   ToolRisk
 } from '@myself/agent-core';
-import { toolArguments } from '@myself/file-tools';
+import { toolArguments, toolJsonSchemas } from '@myself/file-tools';
 import {
   toolNameSchema,
   toolRequestSchema,
@@ -106,15 +106,7 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
     definition: definition(
       'builtin.files.list_files',
       '列出授权根目录内指定相对目录的文件。',
-      {
-        type: 'object',
-        properties: {
-          relativePath: { type: 'string', default: '.' },
-          maxDepth: { type: 'integer', default: 1 },
-          maxResults: { type: 'integer', default: 100 }
-        },
-        additionalProperties: false
-      }
+      toolJsonSchemas.list_files
     ),
     argumentsSchema: toolArguments.list_files,
     executionToolName: 'list_files',
@@ -127,16 +119,7 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
     definition: definition(
       'builtin.files.read_file',
       '读取授权根目录内的 UTF-8 文本文件。',
-      {
-        type: 'object',
-        properties: {
-          relativePath: { type: 'string' },
-          startLine: { type: 'integer', default: 1 },
-          lineCount: { type: 'integer', default: 200 }
-        },
-        required: ['relativePath'],
-        additionalProperties: false
-      }
+      toolJsonSchemas.read_file
     ),
     argumentsSchema: toolArguments.read_file,
     executionToolName: 'read_file',
@@ -149,15 +132,7 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
     definition: definition(
       'builtin.files.create_file',
       '创建文件，需要用户确认。',
-      {
-        type: 'object',
-        properties: {
-          relativePath: { type: 'string' },
-          content: { type: 'string', default: '' }
-        },
-        required: ['relativePath'],
-        additionalProperties: false
-      }
+      toolJsonSchemas.create_file
     ),
     argumentsSchema: toolArguments.create_file,
     executionToolName: 'create_file',
@@ -170,15 +145,7 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
     definition: definition(
       'builtin.files.apply_patch',
       '向单个文件应用补丁，需要用户确认。',
-      {
-        type: 'object',
-        properties: {
-          relativePath: { type: 'string' },
-          patch: { type: 'string' }
-        },
-        required: ['relativePath', 'patch'],
-        additionalProperties: false
-      }
+      toolJsonSchemas.apply_patch
     ),
     argumentsSchema: toolArguments.apply_patch,
     executionToolName: 'apply_patch',
@@ -191,12 +158,7 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
     definition: definition(
       'builtin.files.delete_file',
       '将授权根目录内的文件或空目录移入 Windows 回收站，需要用户确认。',
-      {
-        type: 'object',
-        properties: { relativePath: { type: 'string' } },
-        required: ['relativePath'],
-        additionalProperties: false
-      }
+      toolJsonSchemas.delete_file
     ),
     argumentsSchema: toolArguments.delete_file,
     executionToolName: 'delete_file',

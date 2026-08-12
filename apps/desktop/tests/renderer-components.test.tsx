@@ -589,6 +589,7 @@ describe('Renderer 可见组件', () => {
     expect(markup).toContain('确认应用补丁');
     expect(markup).toContain('新增 3 行，删除 1 行');
     expect(markup).toContain('@@ -1 +1 @@');
+    expect(markup).toContain('仅修改已有文件；执行前还会再次进行冲突校验。');
   });
 
   test('设置工作区仅提供模型、隐私和本地数据导航', () => {

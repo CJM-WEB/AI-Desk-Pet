@@ -12,7 +12,10 @@ function publicData(targetRelativePath = 'result.txt') {
     risk: 'write' as const,
     operation: 'create_file' as const,
     summary: `创建 ${targetRelativePath}`,
-    targetRelativePath
+    targetRelativePath,
+    contentCharacters: 0,
+    contentPreview: null,
+    previewTruncated: false
   };
 }
 
@@ -35,6 +38,17 @@ function pendingExecution(targetRelativePath = 'result.txt'): PendingExecution {
 }
 
 describe('PendingActionStore', () => {
+  test.each([
+    ['缺少创建摘要字段', ({ contentPreview: _contentPreview, ...draft }: Record<string, unknown>) => draft],
+    ['混入其他动作字段', (draft: Record<string, unknown>) => ({ ...draft, targetType: 'file' })],
+    ['混入未声明字段', (draft: Record<string, unknown>) => ({ ...draft, privateExecution: '禁止公开' })]
+  ])('签发时拒绝%s', (_name, mutate) => {
+    const store = new PendingActionStore();
+    const invalid = mutate(publicData()) as unknown as Parameters<PendingActionStore['issue']>[0];
+
+    expect(() => store.issue(invalid, pendingExecution())).toThrow();
+  });
+
   test('签发不可猜测且带短期有效期的动作 ID', () => {
     let now = Date.parse('2026-07-20T12:00:00.000Z');
     const store = new PendingActionStore({ now: () => now, ttlMilliseconds: 120_000 });

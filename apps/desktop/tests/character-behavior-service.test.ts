@@ -820,6 +820,7 @@ describe('Main 角色行为权威服务', () => {
         operation: 'create_file',
         summary: '写入文件',
         targetRelativePath: 'note.txt',
+        contentCharacters: 0, contentPreview: null, previewTruncated: false,
         createdAt: '2026-08-06T00:00:00.000Z',
         expiresAt: '2026-08-06T00:10:00.000Z'
       }
@@ -881,6 +882,7 @@ describe('Main 角色行为权威服务', () => {
         operation: 'create_file',
         summary: '等待确认期间仍需推进播放令牌',
         targetRelativePath: 'note.txt',
+        contentCharacters: 0, contentPreview: null, previewTruncated: false,
         createdAt: '2026-08-06T00:00:00.000Z',
         expiresAt: '2026-08-06T00:10:00.000Z'
       }
@@ -917,6 +919,7 @@ describe('Main 角色行为权威服务', () => {
         operation: 'create_file',
         summary: '等待确认期间仍需推进已开始动作',
         targetRelativePath: 'note.txt',
+        contentCharacters: 0, contentPreview: null, previewTruncated: false,
         createdAt: '2026-08-06T00:00:00.000Z',
         expiresAt: '2026-08-06T00:10:00.000Z'
       }

@@ -243,6 +243,27 @@ describe('内置文件工具注册', () => {
     }, policy)).toThrowError(expect.objectContaining({ code: 'TOOL_ARGUMENTS_INVALID' }));
   });
 
+  test('公开 JSON Schema 与文件参数边界一致', () => {
+    const definitions = createBuiltinFileToolRegistry().definitions();
+    const parameters = (name: string) => definitions.find(item => item.function.name === name)!
+      .function.parameters as { properties: Record<string, Record<string, unknown>> };
+
+    expect(parameters('builtin.files.list_files').properties).toMatchObject({
+      relativePath: { minLength: 1, maxLength: 1024 },
+      maxDepth: { minimum: 1, maximum: 4 },
+      maxResults: { minimum: 1, maximum: 200 }
+    });
+    expect(parameters('builtin.files.read_file').properties).toMatchObject({
+      relativePath: { minLength: 1, maxLength: 1024 },
+      startLine: { minimum: 1 },
+      lineCount: { minimum: 1, maximum: 500 }
+    });
+    expect(parameters('builtin.files.apply_patch').properties).toMatchObject({
+      relativePath: { minLength: 1, maxLength: 1024 },
+      patch: { minLength: 1, maxLength: 262_144 }
+    });
+  });
+
   test('审计摘要不包含模型提供的绝对路径', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });

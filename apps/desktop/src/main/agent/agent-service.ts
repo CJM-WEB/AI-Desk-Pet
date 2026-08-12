@@ -13,6 +13,7 @@ import type { ToolRequest, TaskEvent } from '@myself/shared-types';
 import type { VerifiedWriteAction } from '@myself/file-tools';
 import type {
   PendingActionClearReason,
+  PendingActionDraft,
   PendingActionStore
 } from './pending-action-store';
 import {
@@ -644,28 +645,10 @@ export class AgentService {
           this.loop.discard(event.continuationToken);
           return;
         }
-        const publicAction = this.pending.issue({
-          category: 'file',
-          conversationId: this.createConversationId(),
-          risk: 'write',
-          operation: verifiedAction.operation,
-          summary: actionSummary(verifiedAction),
-          targetRelativePath: verifiedAction.targetRelativePath,
-          ...(verifiedAction.operation === 'create_file'
-            ? {
-                contentCharacters: verifiedAction.contentCharacters,
-                contentPreview: verifiedAction.contentPreview,
-                previewTruncated: verifiedAction.previewTruncated
-              }
-            : verifiedAction.operation === 'apply_patch'
-              ? {
-                  addedLines: verifiedAction.addedLines,
-                  removedLines: verifiedAction.removedLines,
-                  diffPreview: verifiedAction.diffPreview,
-                  previewTruncated: verifiedAction.previewTruncated
-                }
-              : { targetType: verifiedAction.targetType })
-        }, {
+        const publicAction = this.pending.issue(pendingActionDraft(
+          verifiedAction,
+          this.createConversationId()
+        ), {
           verifiedAction,
           continuationToken: event.continuationToken
         });
@@ -720,5 +703,15 @@ export class AgentService {
     throw Object.assign(new Error('FILE_TASK_USER_CANCELLED'), {
       code: 'FILE_TASK_USER_CANCELLED'
     });
+  }
+}
+
+function pendingActionDraft(action: VerifiedWriteAction, conversationId: string): PendingActionDraft {
+  const common = { category: 'file' as const, conversationId, risk: 'write' as const, summary: actionSummary(action), targetRelativePath: action.targetRelativePath };
+  switch (action.operation) {
+    case 'create_file': return { ...common, operation: 'create_file', contentCharacters: action.contentCharacters, contentPreview: action.contentPreview, previewTruncated: action.previewTruncated };
+    case 'apply_patch': return { ...common, operation: 'apply_patch', addedLines: action.addedLines, removedLines: action.removedLines, diffPreview: action.diffPreview, previewTruncated: action.previewTruncated };
+    case 'delete_file': return { ...common, operation: 'delete_file', targetType: action.targetType };
+    default: return assertNever(action);
   }
 }

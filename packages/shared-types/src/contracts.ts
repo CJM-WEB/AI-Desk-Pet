@@ -60,7 +60,37 @@ export const toolRequestSchema = z.object({
 }).strict();
 export type ToolRequest = z.infer<typeof toolRequestSchema>;
 
+type PendingFileActionBase = Readonly<{
+  category: 'file';
+  actionId: string;
+  conversationId: string;
+  risk: 'write';
+  summary: string;
+  targetRelativePath: string;
+  createdAt: string;
+  expiresAt: string;
+}>;
+
 /** Renderer 仅接收经 Main 过滤后的文件写入摘要，不承载私有执行能力。 */
+export type PendingAction =
+  | Readonly<PendingFileActionBase & {
+      operation: 'create_file';
+      contentCharacters: number;
+      contentPreview: string | null;
+      previewTruncated: boolean;
+    }>
+  | Readonly<PendingFileActionBase & {
+      operation: 'apply_patch';
+      addedLines: number;
+      removedLines: number;
+      diffPreview: string;
+      previewTruncated: boolean;
+    }>
+  | Readonly<PendingFileActionBase & {
+      operation: 'delete_file';
+      targetType: 'file' | 'empty_directory';
+    }>;
+
 const pendingFileActionBaseSchema = z.object({
   category: z.literal('file'),
   actionId: z.string().min(1),
@@ -72,36 +102,25 @@ const pendingFileActionBaseSchema = z.object({
   expiresAt: z.string().datetime()
 });
 
-const pendingFileActionSchema = pendingFileActionBaseSchema.extend({
-  operation: z.enum(['create_file', 'apply_patch', 'delete_file']),
-  contentCharacters: z.number().int().min(0).optional(),
-  contentPreview: z.string().nullable().optional(),
-  previewTruncated: z.boolean().optional(),
-  addedLines: z.number().int().min(0).optional(),
-  removedLines: z.number().int().min(0).optional(),
-  diffPreview: z.string().optional(),
-  targetType: z.enum(['file', 'empty_directory']).optional()
-}).strict();
-
-/** Zod 不允许 category 相同的多个判别分支，文件操作的互斥字段在此补充校验。 */
-export const pendingActionSchema = z.discriminatedUnion('category', [
-  pendingFileActionSchema
-]).superRefine((action, context) => {
-  const fieldsByOperation = {
-    create_file: ['contentCharacters', 'contentPreview', 'previewTruncated'],
-    apply_patch: ['addedLines', 'removedLines', 'diffPreview', 'previewTruncated'],
-    delete_file: ['targetType']
-  } as const;
-  const requiredFields = fieldsByOperation[action.operation];
-  const allFields = Object.values(fieldsByOperation).flat();
-  for (const field of allFields) {
-    const value = action[field];
-    if (requiredFields.includes(field as never) ? value === undefined : value !== undefined) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'PENDING_ACTION_FIELDS_INVALID', path: [field] });
-    }
-  }
-});
-export type PendingAction = z.infer<typeof pendingActionSchema>;
+export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
+  pendingFileActionBaseSchema.extend({
+    operation: z.literal('create_file'),
+    contentCharacters: z.number().int().min(0),
+    contentPreview: z.string().nullable(),
+    previewTruncated: z.boolean()
+  }).strict(),
+  pendingFileActionBaseSchema.extend({
+    operation: z.literal('apply_patch'),
+    addedLines: z.number().int().min(0),
+    removedLines: z.number().int().min(0),
+    diffPreview: z.string(),
+    previewTruncated: z.boolean()
+  }).strict(),
+  pendingFileActionBaseSchema.extend({
+    operation: z.literal('delete_file'),
+    targetType: z.enum(['file', 'empty_directory'])
+  }).strict()
+]);
 
 export const providerProfileSchema = z.object({
   id: z.string().min(1),

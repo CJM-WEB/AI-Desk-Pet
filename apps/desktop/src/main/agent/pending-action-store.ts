@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { VerifiedWriteAction } from '@myself/file-tools';
-import type { PendingAction } from '@myself/shared-types';
+import { pendingActionSchema, type PendingAction } from '@myself/shared-types';
 
 export type PendingActionClearReason =
   | 'new_task'
@@ -52,12 +52,12 @@ export class PendingActionStore {
   issue(publicData: PendingActionDraft, privateExecution: PendingExecution): PendingAction {
     if (this.current) this.onDiscard(this.current.privateExecution, 'new_task');
     const now = this.now();
-    const publicAction: PendingAction = {
+    const publicAction = pendingActionSchema.parse({
       ...publicData,
       actionId: randomBytes(24).toString('base64url'),
       createdAt: new Date(now).toISOString(),
       expiresAt: new Date(now + this.ttlMilliseconds).toISOString()
-    };
+    });
     this.current = { publicAction: { ...publicAction }, privateExecution };
     return { ...publicAction };
   }
