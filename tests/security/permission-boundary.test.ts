@@ -838,6 +838,7 @@ describe('权限边界安全回归', () => {
         targetRelativePath: 'injection-owned.txt',
         contentCharacters: 0,
         contentPreview: null,
+        contentPreviewSuppressedReason: null,
         previewTruncated: false,
         createdAt: expect.any(String),
         expiresAt: expect.any(String)

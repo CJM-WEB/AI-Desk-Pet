@@ -1413,11 +1413,11 @@ describe('桌面 Agent 真实服务集成', () => {
       'integration-commit-frame'
     )).toBe(true);
 
-    await expect(confirming).rejects.toMatchObject({ code: 'FILE_TASK_EXECUTION_FAILED' });
+    await expect(confirming).rejects.toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
     expect(recycleCalls).toBe(1);
     await expect(readFile(source, 'utf8')).resolves.toBe('保留内容');
     expect(fixture.events.filter(event => (
-      event.type === 'error' && event.code === 'FILE_TASK_EXECUTION_FAILED'
+      event.type === 'error' && event.code === 'RECYCLE_BIN_FAILED'
     ))).toHaveLength(1);
     expect(fixture.carryCounts()).toEqual({ started: 1, ended: 1 });
     expectProviderExchange(fixture.providerServer, 1);
