@@ -4472,6 +4472,14 @@ test.describe('真实 Provider 业务闭环', () => {
     expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
     if (!fixtureModule?.createElectronAppFixture) return;
 
+    const privacyLogSentinels = [
+      'task6-user-body-sentinel',
+      'task6-model-body-sentinel',
+      'task6-file-body-sentinel',
+      'Write-Output task6-command-sentinel',
+      'task6-stdout-sentinel',
+      'task6-stderr-sentinel'
+    ] as const;
     const providerSteps: ProviderStep[] = [
       { response: { type: 'text', text: '本地连接正常' } },
       {
@@ -4614,6 +4622,7 @@ test.describe('真实 Provider 业务闭环', () => {
       fixture = await fixtureModule.createElectronAppFixture({
         workspaceRoot: resolve(process.cwd()),
         apiKey: provider.apiKey,
+        logSentinels: privacyLogSentinels,
         launchTimeoutMs: 15_000
       });
     } catch (error) {
@@ -4779,6 +4788,12 @@ test.describe('真实 Provider 业务闭环', () => {
       }
 
       const captured = [...rendererDiagnostics, ...fixture.logs].join('\n');
+      expect(fixture.capturedLogEvidence).toEqual({
+        apiKey: false,
+        authorizedRoot: false,
+        authorizationHeader: false,
+        sentinels: privacyLogSentinels.map(() => false)
+      });
       expect(captured).not.toContain(provider.apiKey);
       expect(captured).not.toContain(authorizedRootDirectory);
       expect(captured).not.toMatch(/authorization\s*:/iu);
