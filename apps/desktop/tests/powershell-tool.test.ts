@@ -196,6 +196,14 @@ describe('PowerShellTool', () => {
     expect(() => preview(tool, command)).toThrow('POWERSHELL_COMMAND_REJECTED');
   });
 
+  test('普通分组递归扫描可执行表达式，但不把分组内的纯字符串当作命令', () => {
+    const { tool } = createFixture();
+
+    expect(() => preview(tool, '(Get-Credential)')).toThrow('POWERSHELL_COMMAND_REJECTED');
+    expect(() => preview(tool, 'if (Get-Credential) {}')).toThrow('POWERSHELL_COMMAND_REJECTED');
+    expect(preview(tool, "('Get-Credential')")).toMatchObject({ command: "('Get-Credential')" });
+  });
+
   test.each([
     'cmdkey.exe /list',
     'vaultcmd.exe /listcreds',

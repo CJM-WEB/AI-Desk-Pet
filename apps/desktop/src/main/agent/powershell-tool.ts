@@ -452,6 +452,14 @@ function executableStatements(source: string): readonly (readonly string[])[] {
       index = end;
       continue;
     }
+    if (character === '(') {
+      pushToken();
+      const end = findClosingDelimiter(source, index, '(', ')');
+      statements.push(...executableStatements(source.slice(index + 1, end)));
+      staticCallPending = false;
+      index = end;
+      continue;
+    }
     if (character === '{') {
       pushToken();
       const end = findClosingDelimiter(source, index, '{', '}');
