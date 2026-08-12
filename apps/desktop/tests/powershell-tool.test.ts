@@ -1,24 +1,25 @@
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 import { describe, expect, test, vi } from 'vitest';
 
 import { PowerShellTool } from '../src/main/agent/powershell-tool';
 
 class FakeProcess extends EventEmitter {
-  readonly stdout = new EventEmitter();
-  readonly stderr = new EventEmitter();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
   readonly kill = vi.fn(() => true);
 
   constructor(readonly pid = 4242) {
     super();
   }
 
-  writeStdout(value: string): void {
-    this.stdout.emit('data', value);
+  writeStdout(value: string | Buffer): void {
+    this.stdout.write(value);
   }
 
-  writeStderr(value: string): void {
-    this.stderr.emit('data', value);
+  writeStderr(value: string | Buffer): void {
+    this.stderr.write(value);
   }
 
   finish(exitCode: number | null): void {
@@ -30,11 +31,13 @@ function createFixture(overrides: {
   now?: () => number;
   confirmationTtlMs?: number;
   environment?: NodeJS.ProcessEnv;
+  cleanupTimeoutMs?: number;
+  killTree?: () => Promise<void>;
 } = {}) {
   const child = new FakeProcess();
   const processPort = {
     spawn: vi.fn(() => child),
-    killTree: vi.fn(async () => undefined)
+    killTree: vi.fn(overrides.killTree ?? (async () => undefined))
   };
   const tool = new PowerShellTool({
     processPort,
@@ -42,6 +45,9 @@ function createFixture(overrides: {
     ...(overrides.confirmationTtlMs === undefined
       ? {}
       : { confirmationTtlMs: overrides.confirmationTtlMs }),
+    ...(overrides.cleanupTimeoutMs === undefined
+      ? {}
+      : { cleanupTimeoutMs: overrides.cleanupTimeoutMs }),
     environment: overrides.environment ?? {
       PATH: 'C:\\Windows\\System32',
       SystemRoot: 'C:\\Windows',
@@ -145,6 +151,19 @@ describe('PowerShellTool', () => {
     expect(result.stdoutTruncated).toBe(true);
   });
 
+  test('stdout 与 stderr 跨 Buffer 的 UTF-8 字符保持完整', async () => {
+    const { tool, child } = createFixture();
+    const execution = tool.execute(preview(tool), new AbortController().signal);
+
+    child.writeStdout(Buffer.from([0xc3]));
+    child.writeStderr(Buffer.from([0xc3]));
+    child.writeStdout(Buffer.from([0xa9]));
+    child.writeStderr(Buffer.from([0xa9]));
+    child.finish(0);
+
+    await expect(execution).resolves.toMatchObject({ stdout: 'é', stderr: 'é' });
+  });
+
   test.each([
     'Start-Process script.ps1 -Verb RunAs',
     'runas.exe /user:Administrator cmd.exe',
@@ -155,6 +174,16 @@ describe('PowerShellTool', () => {
   ])('预览拒绝直接可识别的高风险命令：%s', command => {
     const { tool } = createFixture();
     expect(() => preview(tool, command)).toThrow('POWERSHELL_COMMAND_REJECTED');
+  });
+
+  test.each([
+    "Write-Output 'Get-Credential'",
+    'Write-Output "runas.exe"',
+    'Get-Help Get-Credential',
+    '# vaultcmd'
+  ])('展示、帮助或注释中的 %s 仍进入逐次确认', command => {
+    const { tool } = createFixture();
+    expect(preview(tool, command)).toMatchObject({ command, kind: 'powershell' });
   });
 
   test('未知 token 不会被本地解析器误拒绝，仍产生一次确认动作', () => {
@@ -239,6 +268,47 @@ describe('PowerShellTool', () => {
       vi.useRealTimers();
     }
   });
+
+  test.each(['abort', 'idle', 'total', 'close'] as const)(
+    'taskkill 清理永不返回时，%s 仍在有界等待后收敛',
+    async reason => {
+      vi.useFakeTimers();
+      try {
+        const controller = new AbortController();
+        const fixture = createFixture({
+          cleanupTimeoutMs: 100,
+          killTree: () => new Promise<void>(() => undefined)
+        });
+        const run = fixture.tool.execute(preview(fixture.tool), controller.signal);
+        let settled = false;
+        void run.then(() => { settled = true; });
+
+        if (reason === 'abort') controller.abort();
+        if (reason === 'idle') await vi.advanceTimersByTimeAsync(60_000);
+        if (reason === 'total') {
+          for (let elapsed = 0; elapsed < 9; elapsed += 1) {
+            await vi.advanceTimersByTimeAsync(59_000);
+            fixture.child.writeStdout('activity');
+          }
+          await vi.advanceTimersByTimeAsync(59_000);
+          fixture.child.writeStdout('activity');
+          await vi.advanceTimersByTimeAsync(10_000);
+        }
+        const close = reason === 'close' ? fixture.tool.close() : undefined;
+
+        await flush();
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(settled).toBe(true);
+        await expect(run).resolves.toMatchObject({
+          status: reason === 'abort' || reason === 'close' ? 'cancelled' : 'timed_out'
+        });
+        if (close !== undefined) await expect(close).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
 
   test('命令超过 16 KiB 时不签发确认', () => {
     const { tool } = createFixture();

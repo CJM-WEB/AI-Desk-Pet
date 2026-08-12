@@ -68,6 +68,7 @@ interface PowerShellToolOptions {
   processPort?: ProcessPort;
   now?: () => number;
   confirmationTtlMs?: number;
+  cleanupTimeoutMs?: number;
   environment?: NodeJS.ProcessEnv;
 }
 
@@ -76,6 +77,7 @@ const MAX_STREAM_BYTES = 256 * 1024;
 const IDLE_TIMEOUT_MS = 60_000;
 const TOTAL_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_CONFIRMATION_TTL_MS = 120_000;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 1_000;
 const ENVIRONMENT_KEYS = ['PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP'] as const;
 
 /**
@@ -86,6 +88,7 @@ export class PowerShellTool {
   readonly #processPort: ProcessPort;
   readonly #now: () => number;
   readonly #confirmationTtlMs: number;
+  readonly #cleanupTimeoutMs: number;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #actions = new WeakMap<VerifiedPowerShellAction, InternalAction>();
   #active: ActiveRun | null = null;
@@ -96,6 +99,7 @@ export class PowerShellTool {
     this.#processPort = options.processPort ?? createNodeProcessPort();
     this.#now = options.now ?? Date.now;
     this.#confirmationTtlMs = requirePositive(options.confirmationTtlMs ?? DEFAULT_CONFIRMATION_TTL_MS, 'CONFIRMATION_TTL');
+    this.#cleanupTimeoutMs = requirePositive(options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS, 'CLEANUP_TIMEOUT');
     this.#environment = options.environment ?? process.env;
   }
 
@@ -183,7 +187,7 @@ export class PowerShellTool {
         clearTimers();
         signal.removeEventListener('abort', onAbort);
         if (this.#active?.child === child) this.#active = null;
-        if (terminate) await terminateProcess(this.#processPort, child);
+        if (terminate) await terminateProcess(this.#processPort, child, this.#cleanupTimeoutMs);
         resolve(createResult(
           status,
           timeoutKind,
@@ -212,6 +216,7 @@ export class PowerShellTool {
       };
 
       this.#active = { child, finish };
+      // StringDecoder 保留跨 Buffer 的 UTF-8 半字符，两个流仍独立收集。
       child.stdout.setEncoding?.('utf8');
       child.stderr.setEncoding?.('utf8');
       child.stdout.on('data', (chunk: Buffer | string) => append(String(chunk), 'stdout'));
@@ -338,7 +343,11 @@ function createResult(
   });
 }
 
-async function terminateProcess(processPort: ProcessPort, child: RunningProcess): Promise<void> {
+async function terminateProcess(
+  processPort: ProcessPort,
+  child: RunningProcess,
+  cleanupTimeoutMs: number
+): Promise<void> {
   try {
     child.kill('SIGTERM');
   } catch {
@@ -346,10 +355,25 @@ async function terminateProcess(processPort: ProcessPort, child: RunningProcess)
   }
   if (child.pid === undefined) return;
   try {
-    await processPort.killTree(child.pid);
+    await awaitCleanup(processPort.killTree(child.pid), cleanupTimeoutMs);
   } catch {
     // taskkill 仅是尽力清理，不影响已确定的取消或超时事实。
   }
+}
+
+/** taskkill 是尽力清理；任何挂起或失败都不能阻塞取消、超时与关闭的最终事实。 */
+function awaitCleanup(cleanup: Promise<void>, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(finish, timeoutMs);
+    void cleanup.then(finish, finish);
+  });
 }
 
 function requirePositive(value: number, name: string): number {
@@ -362,10 +386,89 @@ function sha256(value: string): string {
 }
 
 function isDirectHighRiskCommand(command: string): boolean {
-  return /\bstart-process\b[^;\r\n]*-verb\s+runas\b/i.test(command)
-    || /\brunas\.exe\b/i.test(command)
-    || /\bget-credential\b/i.test(command)
-    || /\bcmdkey\b/i.test(command)
-    || /\bvaultcmd\b/i.test(command)
-    || (/\bremove-item\b(?=[^;\r\n]*-recurse\b)(?=[^;\r\n]*-force\b)/i.test(command));
+  return executableStatements(command).some((tokens) => {
+    const [commandName, ...argumentsList] = tokens;
+    if (commandName === undefined) return false;
+    if (commandName === 'start-process') {
+      return hasToken(argumentsList, '-verb') && hasTokenAfter(argumentsList, '-verb', 'runas');
+    }
+    if (commandName === 'remove-item') {
+      return hasToken(argumentsList, '-recurse') && hasToken(argumentsList, '-force');
+    }
+    return commandName === 'runas.exe'
+      || commandName === 'get-credential'
+      || commandName === 'cmdkey'
+      || commandName === 'vaultcmd';
+  });
+}
+
+/**
+ * 仅抽取 PowerShell 语句的直接命令位置，不尝试解释脚本语义或构建 AST。
+ * 引号内容、注释和帮助参数不是可执行命令；分号、换行、管道与调用运算符才开启下一命令位置。
+ */
+function executableStatements(source: string): readonly (readonly string[])[] {
+  const statements: string[][] = [];
+  let tokens: string[] = [];
+  let token = '';
+  const pushToken = (): void => {
+    if (token === '') return;
+    tokens.push(token.toLowerCase());
+    token = '';
+  };
+  const finishStatement = (): void => {
+    pushToken();
+    if (tokens.length > 0) statements.push(tokens);
+    tokens = [];
+  };
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (character === "'" || character === '"') {
+      pushToken();
+      index = skipQuoted(source, index, character);
+      continue;
+    }
+    if (character === '#') {
+      pushToken();
+      while (index + 1 < source.length && source[index + 1] !== '\n' && source[index + 1] !== '\r') index += 1;
+      continue;
+    }
+    if (character === ';' || character === '\n' || character === '\r' || character === '|' || character === '&') {
+      finishStatement();
+      continue;
+    }
+    if (/\s/.test(character)) {
+      pushToken();
+      continue;
+    }
+    token += character;
+  }
+  finishStatement();
+  return statements;
+}
+
+function skipQuoted(source: string, start: number, quote: "'" | '"'): number {
+  for (let index = start + 1; index < source.length; index += 1) {
+    if (quote === '"' && source[index] === '`') {
+      index += 1;
+      continue;
+    }
+    if (source[index] === quote) {
+      if (quote === "'" && source[index + 1] === "'") {
+        index += 1;
+        continue;
+      }
+      return index;
+    }
+  }
+  return source.length;
+}
+
+function hasToken(tokens: readonly string[], expected: string): boolean {
+  return tokens.includes(expected);
+}
+
+function hasTokenAfter(tokens: readonly string[], before: string, expected: string): boolean {
+  const index = tokens.indexOf(before);
+  return index >= 0 && tokens[index + 1] === expected;
 }
