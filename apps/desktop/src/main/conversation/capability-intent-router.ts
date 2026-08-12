@@ -64,12 +64,15 @@ const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:plea
 const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|什么意思|是什么(?:意思|功能)?|翻译|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b)/iu;
 const negationPattern = /(?:不要|别|无需|do\s+not|don't)/iu;
 const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
+const chineseExplicitPowerShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
+const englishExplicitPowerShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run|execute)\s+powershell\s+([\s\S]+)$/iu;
 const chineseShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s+|执行\s*(?:(?:这条|以下|下面)?\s*(?:命令|powershell|脚本)\s+))([\s\S]+)$/iu;
 const englishShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+|execute\s+(?:(?:this|the)\s+command\s*:?\s*|powershell\s+))([\s\S]+)$/iu;
 const backgroundShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?后台运行\s*(?:构建|测试|build\b|test\b)$/iu;
 const shellCommandPayloadPattern = /^(?:[a-z][a-z\d._-]*|\.{1,2}[\\/](?:[a-z\d._-]+[\\/])*[a-z\d._-]+)(?:\s+\S+){0,16}$/iu;
 const powershellAssignmentScriptPattern = /^\$[a-z_][a-z\d_:]*\s*=\s*[^;\r\n]+;\s*\S[\s\S]*$/iu;
 const powershellScriptBlockPattern = /^&\s*\{[\s\S]+\}$/u;
+const standaloneShellDiscussionPattern = /(?:安全吗|好不好|值得吗|是什么意思|会怎样)[？?]?$/u;
 const englishCopulaTokenPattern = /^(?:am|is|are|was|were|be|been|being)$/u;
 const englishAuxiliaryTokenPattern = /^(?:do|does|did|can|could|would|will|shall|should|may|might|must|has|have|had)$/u;
 const englishQuestionWordTokenPattern = /^(?:what|why|how|when|where|who|whom|whose|which)$/u;
@@ -402,9 +405,24 @@ function isShellCommandPayload(payload: string): boolean {
     && !hasUnquotedNaturalLanguageTail(withoutShellHost);
 }
 
+/** 显式 PowerShell 前缀允许真实脚本语法，但仍拒绝超限、整段引用和讨论性正文。 */
+function isExplicitPowerShellPayload(payload: string): boolean {
+  const commandText = payload.trim();
+  return commandText.length > 0
+    && new TextEncoder().encode(commandText).byteLength <= 16 * 1_024
+    && maskQuotedText(commandText).trim().length > 0
+    && !standaloneShellDiscussionPattern.test(maskQuotedText(commandText).trim())
+    && !hasUnquotedNaturalLanguageTail(commandText);
+}
+
 /** 只有用户消息开头的明确执行措辞及可验证载荷才能进入 Shell 能力分支。 */
 function shellExecutionIntent(normalizedText: string): CapabilityIntent | null {
   if (backgroundShellRequestPattern.test(normalizedText)) return backgroundPowerShellTaskIntent;
+  const explicitPowerShellPayload = chineseExplicitPowerShellRequestPattern.exec(normalizedText)?.[1]
+    ?? englishExplicitPowerShellRequestPattern.exec(normalizedText)?.[1];
+  if (explicitPowerShellPayload !== undefined) {
+    return isExplicitPowerShellPayload(explicitPowerShellPayload) ? powershellTaskIntent : null;
+  }
   const chinesePayload = chineseShellRequestPattern.exec(normalizedText)?.[1];
   if (chinesePayload !== undefined) return isShellCommandPayload(chinesePayload) ? powershellTaskIntent : null;
   const englishPayload = englishShellRequestPattern.exec(normalizedText)?.[1];

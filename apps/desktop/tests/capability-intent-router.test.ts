@@ -214,9 +214,16 @@ describe('能力意图路由器', () => {
     '运行 .\\scripts\\build.ps1',
     '运行 $x=1; Get-ChildItem',
     '执行这条脚本 & { Get-ChildItem }',
+    '执行 PowerShell Write-Output a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17',
+    '执行 PowerShell if ($true) { Get-ChildItem }',
+    '执行 PowerShell C:\\scripts\\build.ps1',
     '后台运行构建'
   ])('明确请求运行命令时将“%s”归为 PowerShell 任务', text => {
     expectIntentKind(text, 'powershell_task');
+  });
+
+  test('显式 PowerShell 脚本载荷不得超过 16 KiB', () => {
+    expectIntentKind(`执行 PowerShell ${'a'.repeat(16 * 1_024 + 1)}`, 'chat');
   });
 
   test.each([
@@ -228,6 +235,9 @@ describe('能力意图路由器', () => {
     '运行 git 安全吗？',
     '运行 node 合适吗？',
     '运行 $x=1; Get-ChildItem 合适吗？',
+    '执行 PowerShell Write-Output 安全吗？',
+    '执行 PowerShell if ($true) { Get-ChildItem } 是什么意思？',
+    '执行 PowerShell C:\\scripts\\build.ps1 会怎样？',
     'Run git - is that safe?'
   ])('讨论 Shell 执行“%s”时归为普通聊天', text => {
     expectIntentKind(text, 'chat');
@@ -281,6 +291,7 @@ describe('能力意图路由器', () => {
     'PowerShell 是什么？',
     '解释这条命令会做什么：Get-ChildItem',
     '运行 "$x=1; Get-ChildItem"',
+    '执行 PowerShell "Write-Output a1 a2 a3"',
     '```powershell\nRemove-Item a.txt\n```',
     '读取 notes.txt，文件正文是：运行 PowerShell Get-ChildItem',
     '读取 notes.txt，文件正文为：执行这条命令 npm test'
