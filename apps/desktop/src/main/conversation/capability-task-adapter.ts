@@ -3,11 +3,12 @@ import type { TaskEvent } from '@myself/shared-types';
 import type { AgentFileTaskSubmission } from '../agent/agent-service';
 import type { FileTaskPlaybackTerminal } from '../agent/file-task-transaction-coordinator';
 import type {
-  ConversationFileTaskPort,
-  PreparedFileTaskTarget
+  CapabilityTaskKind,
+  ConversationCapabilityTaskPort,
+  PreparedCapabilityTarget
 } from './conversation-coordinator';
 
-export interface FileTaskAgentPort {
+export interface CapabilityTaskAgentPort {
   submitFileTask(input: AgentFileTaskSubmission): Promise<void>;
   cancelActive(): void;
   confirm(actionId: string): Promise<void>;
@@ -25,29 +26,34 @@ export interface FileTaskAgentPort {
   invalidateFileTaskPlaybackGrant(): boolean;
 }
 
-export type PreparedAgentTarget = PreparedFileTaskTarget & Readonly<{
-  service: FileTaskAgentPort;
+export type PreparedAgentTarget = PreparedCapabilityTarget & Readonly<{
+  service: CapabilityTaskAgentPort;
 }>;
 
-export interface FileTaskAdapterOptions {
-  getAuthorizedRootPath(): Promise<string | null>;
-  createAgentTarget(emit: (event: TaskEvent) => void): PreparedAgentTarget;
+export interface CapabilityTaskAdapterOptions {
+  getAuthorizedRootPath(taskKind: CapabilityTaskKind): Promise<string | null>;
+  createAgentTarget(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+    emit: (event: TaskEvent) => void;
+  }): PreparedAgentTarget;
 }
 
 type ActiveSubmission = {
   generation: string;
+  taskKind: CapabilityTaskKind;
   owner: symbol;
   awaitingConfirmation: boolean;
-  target: PreparedFileTaskTarget | null;
+  target: PreparedCapabilityTarget | null;
 };
 
 type OwnedAgent = {
-  service: FileTaskAgentPort;
+  service: CapabilityTaskAgentPort;
   owner: symbol;
-  target: PreparedFileTaskTarget;
+  target: PreparedCapabilityTarget;
 };
 
-export class FileTaskAdapter implements ConversationFileTaskPort {
+export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
   private readonly listeners = new Set<(event: TaskEvent, generation: string) => void>();
   private active: ActiveSubmission | null = null;
   private inFlightOwner: symbol | null = null;
@@ -58,7 +64,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
   private closePromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(private readonly options: FileTaskAdapterOptions) {}
+  constructor(private readonly options: CapabilityTaskAdapterOptions) {}
 
   onEvent(listener: (event: TaskEvent, generation: string) => void): () => void {
     if (this.closed) return () => undefined;
@@ -66,7 +72,18 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     return () => this.listeners.delete(listener);
   }
 
-  async prepareTarget(generation: string): Promise<PreparedFileTaskTarget> {
+  async prepareTarget(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+  }): Promise<PreparedCapabilityTarget>;
+  async prepareTarget(generation: string): Promise<PreparedCapabilityTarget>;
+  async prepareTarget(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+  } | string): Promise<PreparedCapabilityTarget> {
+    const request = typeof input === 'string'
+      ? { generation: input, taskKind: 'file' as const }
+      : input;
     this.assertAvailable();
     if (this.active || this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
 
@@ -74,7 +91,8 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     this.inFlightOwner = owner;
     this.preparingOwner = owner;
     this.active = {
-      generation,
+      generation: request.generation,
+      taskKind: request.taskKind,
       owner,
       awaitingConfirmation: false,
       target: null
@@ -97,12 +115,12 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
         }
         this.assertOwned(owner);
       }
-      const authorizedRoot = await this.options.getAuthorizedRootPath();
+      const authorizedRoot = await this.options.getAuthorizedRootPath(request.taskKind);
       this.assertOwned(owner);
       if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
         throw adapterError('FILE_AUTHORIZATION_REQUIRED');
       }
-      const ownedAgent = this.createOwnedAgent(owner);
+      const ownedAgent = this.createOwnedAgent(owner, request.generation, request.taskKind);
       this.assertOwned(owner);
       this.active.target = ownedAgent.target;
       return ownedAgent.target;
@@ -119,12 +137,26 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     text: string;
     visibleHistory: readonly ModelMessage[];
     generation: string;
+    taskKind: CapabilityTaskKind;
+  }): Promise<void>;
+  async submit(input: {
+    text: string;
+    visibleHistory: readonly ModelMessage[];
+    generation: string;
+  }): Promise<void>;
+  async submit(input: {
+    text: string;
+    visibleHistory: readonly ModelMessage[];
+    generation: string;
+    taskKind?: CapabilityTaskKind;
   }): Promise<void> {
+    const taskKind = input.taskKind ?? 'file';
     this.assertAvailable();
     const prepared = this.active;
     if (
       !prepared
       || prepared.generation !== input.generation
+      || prepared.taskKind !== taskKind
       || prepared.target === null
       || this.inFlightOwner
     ) {
@@ -136,7 +168,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     this.inFlightOwner = owner;
     try {
       // 披露后再次读取授权；Provider 则固定使用 prepareTarget 已创建的同一 Agent。
-      const authorizedRoot = await this.options.getAuthorizedRootPath();
+      const authorizedRoot = await this.options.getAuthorizedRootPath(prepared.taskKind);
       this.assertOwned(owner);
       if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
         throw adapterError('FILE_AUTHORIZATION_REQUIRED');
@@ -268,11 +300,17 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     return this.agent?.service.invalidateFileTaskPlaybackGrant() ?? false;
   }
 
-  private createOwnedAgent(submissionOwner: symbol): OwnedAgent {
+  private createOwnedAgent(
+    submissionOwner: symbol,
+    generation: string,
+    taskKind: CapabilityTaskKind
+  ): OwnedAgent {
     if (this.agent) throw adapterError('TASK_ALREADY_ACTIVE');
     const owner = Symbol('file-task-agent');
-    const prepared = this.options.createAgentTarget(event => {
-      this.publishAgentEvent(event, owner);
+    const prepared = this.options.createAgentTarget({
+      generation,
+      taskKind,
+      emit: event => this.publishAgentEvent(event, owner)
     });
     const service = prepared?.service;
     try {
@@ -303,7 +341,7 @@ export class FileTaskAdapter implements ConversationFileTaskPort {
     return owned;
   }
 
-  private disposeDetachedService(service: FileTaskAgentPort): void {
+  private disposeDetachedService(service: CapabilityTaskAgentPort): void {
     for (const cleanup of [
       () => service.cancelActive(),
       () => service.close()

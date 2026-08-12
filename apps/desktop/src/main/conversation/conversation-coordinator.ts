@@ -20,19 +20,25 @@ export interface ChatTurnFactory {
   }>;
 }
 
-export type PreparedFileTaskTarget = Readonly<{
+export type CapabilityTaskKind = 'file' | 'powershell';
+
+export type PreparedCapabilityTarget = Readonly<{
   profileId: string;
   providerIdentity: string;
   providerName: string;
 }>;
 
-export interface ConversationFileTaskPort {
+export interface ConversationCapabilityTaskPort {
   onEvent(listener: (event: TaskEvent, generation: string) => void): () => void;
-  prepareTarget(generation: string): Promise<PreparedFileTaskTarget>;
+  prepareTarget(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+  }): Promise<PreparedCapabilityTarget>;
   submit(input: {
     text: string;
     visibleHistory: readonly ModelMessage[];
     generation: string;
+    taskKind: CapabilityTaskKind;
   }): Promise<void>;
   cancelActive(): void;
   resolveAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
@@ -44,7 +50,7 @@ export interface ConversationCoordinatorOptions {
   history: ConversationHistory;
   chatTurnFactory: ChatTurnFactory;
   disclosureAdapter: ConversationDisclosureAdapter;
-  fileTasks: ConversationFileTaskPort;
+  capabilityTasks: ConversationCapabilityTaskPort;
   emit(event: TaskEvent): void;
   createId?: () => string;
 }
@@ -52,10 +58,10 @@ export interface ConversationCoordinatorOptions {
 type ConversationState =
   | { kind: 'idle' }
   | { kind: 'running_chat'; generation: string; controller: AbortController }
-  | { kind: 'preparing_file_task'; generation: string; controller: AbortController }
+  | { kind: 'preparing_capability_task'; generation: string; controller: AbortController; taskKind: CapabilityTaskKind }
   | { kind: 'awaiting_history_disclosure'; generation: string; requestId: string }
-  | { kind: 'running_file_task'; generation: string }
-  | { kind: 'awaiting_file_confirmation'; generation: string }
+  | { kind: 'running_capability_task'; generation: string; taskKind: CapabilityTaskKind }
+  | { kind: 'awaiting_capability_confirmation'; generation: string; taskKind: CapabilityTaskKind }
   | { kind: 'resetting'; generation: string }
   | { kind: 'closed' };
 
@@ -74,18 +80,20 @@ interface PendingChatDisclosure extends TurnContext {
   providerName: string;
 }
 
-interface PendingFileDisclosure extends TurnContext {
-  kind: 'file_task';
+interface PendingCapabilityDisclosure extends TurnContext {
+  kind: 'capability_task';
   requestId: string;
-  target: PreparedFileTaskTarget;
+  taskKind: CapabilityTaskKind;
+  target: PreparedCapabilityTarget;
 }
 
-type PendingHistoryDisclosure = PendingChatDisclosure | PendingFileDisclosure;
+type PendingHistoryDisclosure = PendingChatDisclosure | PendingCapabilityDisclosure;
 
-interface ActiveFileTurn {
+interface ActiveCapabilityTurn {
   generation: string;
   text: string;
-  target: PreparedFileTaskTarget;
+  taskKind: CapabilityTaskKind;
+  target: PreparedCapabilityTarget;
   assistantText: string | null;
   terminalPhase: 'error' | 'cancelled' | null;
 }
@@ -94,16 +102,16 @@ export class ConversationCoordinator {
   private state: ConversationState = { kind: 'idle' };
   private readonly createId: () => string;
   private generation: string;
-  private readonly unsubscribeFileEvents: () => void;
+  private readonly unsubscribeCapabilityEvents: () => void;
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
-  private activeFileTurn: ActiveFileTurn | null = null;
+  private activeCapabilityTurn: ActiveCapabilityTurn | null = null;
   private closePromise: Promise<void> | null = null;
 
   constructor(private readonly options: ConversationCoordinatorOptions) {
     this.createId = options.createId ?? randomUUID;
     this.generation = this.createId();
-    this.unsubscribeFileEvents = options.fileTasks.onEvent((event, generation) => {
-      this.handleFileEvent(event, generation);
+    this.unsubscribeCapabilityEvents = options.capabilityTasks.onEvent((event, generation) => {
+      this.handleCapabilityEvent(event, generation);
     });
   }
 
@@ -143,16 +151,18 @@ export class ConversationCoordinator {
 
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
       const intent = capabilityIntentRouter.route(normalized);
-      if (intent.kind === 'powershell_task') {
-        throw publicErrorForCode('POWERSHELL_TASK_NOT_READY');
-      }
-      if (intent.kind === 'file_task') {
+      if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
+        if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
+          throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
+        }
+        const taskKind: CapabilityTaskKind = intent.kind === 'file_task' ? 'file' : 'powershell';
         this.state = {
-          kind: 'preparing_file_task',
+          kind: 'preparing_capability_task',
           generation: context.generation,
-          controller: context.controller
+          controller: context.controller,
+          taskKind
         };
-        await this.prepareFileTask(context);
+        await this.prepareCapabilityTask(context, taskKind);
         return;
       }
 
@@ -215,14 +225,14 @@ export class ConversationCoordinator {
   cancelActive(): void {
     if (
       this.state.kind === 'running_chat'
-      || this.state.kind === 'preparing_file_task'
+      || this.state.kind === 'preparing_capability_task'
     ) {
-      const cancelFilePreparation = this.state.kind === 'preparing_file_task';
+      const cancelCapabilityPreparation = this.state.kind === 'preparing_capability_task';
       const controller = this.state.controller;
       const releasedState: ConversationState = { kind: 'idle' };
       this.state = releasedState;
       this.pendingDisclosure = null;
-      if (cancelFilePreparation) this.options.fileTasks.cancelActive();
+      if (cancelCapabilityPreparation) this.options.capabilityTasks.cancelActive();
       controller.abort();
       if (this.state === releasedState) {
         this.options.emit({ type: 'phase', phase: 'cancelled' });
@@ -235,7 +245,7 @@ export class ConversationCoordinator {
       const releasedState: ConversationState = { kind: 'idle' };
       this.state = releasedState;
       this.pendingDisclosure = null;
-      if (pending?.kind === 'file_task') this.options.fileTasks.cancelActive();
+      if (pending?.kind === 'capability_task') this.options.capabilityTasks.cancelActive();
       controller?.abort();
       if (this.state === releasedState) {
         this.options.emit({ type: 'phase', phase: 'cancelled' });
@@ -243,12 +253,12 @@ export class ConversationCoordinator {
       return;
     }
     if (
-      this.state.kind === 'running_file_task'
-      || this.state.kind === 'awaiting_file_confirmation'
+      this.state.kind === 'running_capability_task'
+      || this.state.kind === 'awaiting_capability_confirmation'
     ) {
       const releasedState: ConversationState = { kind: 'idle' };
       this.state = releasedState;
-      this.options.fileTasks.cancelActive();
+      this.options.capabilityTasks.cancelActive();
       if (this.state === releasedState) {
         this.options.emit({ type: 'phase', phase: 'cancelled' });
       }
@@ -259,21 +269,25 @@ export class ConversationCoordinator {
     actionId: string,
     decision: 'confirm' | 'cancel'
   ): Promise<void> {
-    const active = this.activeFileTurn;
+    const active = this.activeCapabilityTurn;
     if (
-      this.state.kind !== 'awaiting_file_confirmation'
+      this.state.kind !== 'awaiting_capability_confirmation'
       || active === null
       || active.generation !== this.generation
     ) {
       throw publicErrorForCode('ACTION_EXPIRED');
     }
-    this.state = { kind: 'running_file_task', generation: active.generation };
+    this.state = {
+      kind: 'running_capability_task',
+      generation: active.generation,
+      taskKind: active.taskKind
+    };
     try {
-      await this.options.fileTasks.resolveAction(actionId, decision);
+      await this.options.capabilityTasks.resolveAction(actionId, decision);
     } catch (error) {
       const normalized = publicFileError(error);
-      if (this.activeFileTurn === active) {
-        this.activeFileTurn = null;
+      if (this.activeCapabilityTurn === active) {
+        this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
         this.reportFailure(normalized);
       }
@@ -319,7 +333,7 @@ export class ConversationCoordinator {
           visibleHistory
         );
       } else {
-        await this.submitFileTask(pending, pending.target, visibleHistory);
+        await this.submitCapabilityTask(pending, pending.taskKind, pending.target, visibleHistory);
       }
     } catch (error) {
       if (!this.ownsTurnContext(pending)) {
@@ -339,7 +353,7 @@ export class ConversationCoordinator {
     if (this.state.kind === 'resetting') throw publicErrorForCode('TASK_ALREADY_ACTIVE');
 
     const controller = this.state.kind === 'running_chat'
-      || this.state.kind === 'preparing_file_task'
+      || this.state.kind === 'preparing_capability_task'
       ? this.state.controller
       : this.state.kind === 'awaiting_history_disclosure'
         ? this.pendingDisclosure?.controller
@@ -352,7 +366,7 @@ export class ConversationCoordinator {
     };
     this.state = resettingState;
     this.pendingDisclosure = null;
-    this.activeFileTurn = null;
+    this.activeCapabilityTurn = null;
 
     const failures: unknown[] = [];
     try {
@@ -366,7 +380,7 @@ export class ConversationCoordinator {
       failures.push(error);
     }
     try {
-      await this.options.fileTasks.resetForNewConversation();
+      await this.options.capabilityTasks.resetForNewConversation();
     } catch (error) {
       failures.push(error);
     }
@@ -386,25 +400,25 @@ export class ConversationCoordinator {
     if (this.closePromise) return this.closePromise;
     if (this.state.kind === 'closed') return Promise.resolve();
     const controller = this.state.kind === 'running_chat'
-      || this.state.kind === 'preparing_file_task'
+      || this.state.kind === 'preparing_capability_task'
       ? this.state.controller
       : this.state.kind === 'awaiting_history_disclosure'
         ? this.pendingDisclosure?.controller
         : undefined;
-    const cancelFileTask = this.state.kind === 'running_file_task'
-      || this.state.kind === 'awaiting_file_confirmation';
+    const cancelCapabilityTask = this.state.kind === 'running_capability_task'
+      || this.state.kind === 'awaiting_capability_confirmation';
 
     // 先封闭所有公开入口，再逐项尽力清理；任一清理失败都不得恢复旧状态。
     this.state = { kind: 'closed' };
     this.pendingDisclosure = null;
-    this.activeFileTurn = null;
+    this.activeCapabilityTurn = null;
     const closing = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
       for (const cleanup of [
-        () => this.unsubscribeFileEvents(),
+        () => this.unsubscribeCapabilityEvents(),
         () => controller?.abort(),
         () => {
-          if (cancelFileTask) this.options.fileTasks.cancelActive();
+          if (cancelCapabilityTask) this.options.capabilityTasks.cancelActive();
         },
         () => this.options.disclosureAdapter.reset()
       ]) {
@@ -415,7 +429,7 @@ export class ConversationCoordinator {
         }
       }
       try {
-        await this.options.fileTasks.close();
+        await this.options.capabilityTasks.close();
       } catch (error) {
         failures.push(error);
       }
@@ -458,7 +472,7 @@ export class ConversationCoordinator {
   private isRunning(context: TurnContext): boolean {
     return (
       this.state.kind === 'running_chat'
-      || this.state.kind === 'preparing_file_task'
+      || this.state.kind === 'preparing_capability_task'
     )
       && this.state.generation === context.generation
       && this.state.controller === context.controller
@@ -479,11 +493,17 @@ export class ConversationCoordinator {
       && pending.generation === this.generation;
   }
 
-  /** 文件目标在 Main 内先完成授权与 Provider 快照，再据此计算本轮历史披露。 */
-  private async prepareFileTask(context: TurnContext): Promise<void> {
-    let target: PreparedFileTaskTarget;
+  /** 能力目标在 Main 内先完成授权与 Provider 快照，再据此计算本轮历史披露。 */
+  private async prepareCapabilityTask(
+    context: TurnContext,
+    taskKind: CapabilityTaskKind
+  ): Promise<void> {
+    let target: PreparedCapabilityTarget;
     try {
-      target = await this.options.fileTasks.prepareTarget(context.generation);
+      target = await this.options.capabilityTasks.prepareTarget({
+        generation: context.generation,
+        taskKind
+      });
     } catch (error) {
       throw publicFileError(error);
     }
@@ -499,9 +519,10 @@ export class ConversationCoordinator {
     if (!this.isRunning(context)) return;
     if (disclosure.kind === 'confirmation_required') {
       this.pendingDisclosure = {
-        kind: 'file_task',
+        kind: 'capability_task',
         ...context,
         requestId,
+        taskKind,
         target
       };
       this.state = {
@@ -518,36 +539,39 @@ export class ConversationCoordinator {
       });
       return;
     }
-    await this.submitFileTask(context, target, disclosure.messages);
+    await this.submitCapabilityTask(context, taskKind, target, disclosure.messages);
   }
 
-  private async submitFileTask(
+  private async submitCapabilityTask(
     context: TurnContext,
-    target: PreparedFileTaskTarget,
+    taskKind: CapabilityTaskKind,
+    target: PreparedCapabilityTarget,
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
     if (context.generation !== this.generation) return;
-    const active: ActiveFileTurn = {
+    const active: ActiveCapabilityTurn = {
       generation: context.generation,
       text: context.text,
+      taskKind,
       target,
       assistantText: null,
       terminalPhase: null
     };
-    this.activeFileTurn = active;
-    this.state = { kind: 'running_file_task', generation: context.generation };
+    this.activeCapabilityTurn = active;
+    this.state = { kind: 'running_capability_task', generation: context.generation, taskKind };
     try {
-      await this.options.fileTasks.submit({
+      await this.options.capabilityTasks.submit({
         text: context.text,
         visibleHistory,
-        generation: context.generation
+        generation: context.generation,
+        taskKind
       });
     } catch (error) {
       if (active.generation !== this.generation || this.isClosed()) return;
       const normalized = publicFileError(error);
       if (active.terminalPhase === 'error') throw reportedFileError(normalized);
-      if (active.terminalPhase === 'cancelled' || this.activeFileTurn !== active) return;
-      this.activeFileTurn = null;
+      if (active.terminalPhase === 'cancelled' || this.activeCapabilityTurn !== active) return;
+      this.activeCapabilityTurn = null;
       this.state = {
         kind: 'running_chat',
         generation: context.generation,
@@ -557,10 +581,10 @@ export class ConversationCoordinator {
     }
   }
 
-  /** 文件事件只能更新当前 generation；终态在公开前先完成 Main 历史与状态提交。 */
-  private handleFileEvent(event: TaskEvent, generation: string): void {
+  /** 能力事件只能更新当前 generation；终态在公开前先完成 Main 历史与状态提交。 */
+  private handleCapabilityEvent(event: TaskEvent, generation: string): void {
     if (this.state.kind === 'closed' || generation !== this.generation) return;
-    const active = this.activeFileTurn;
+    const active = this.activeCapabilityTurn;
     if (active?.generation === generation) {
       if (event.type === 'message' && event.role === 'assistant') {
         active.assistantText = event.text;
@@ -569,7 +593,11 @@ export class ConversationCoordinator {
         event.type === 'pending_action'
         || (event.type === 'phase' && event.phase === 'awaiting_confirmation')
       ) {
-        this.state = { kind: 'awaiting_file_confirmation', generation };
+        this.state = {
+          kind: 'awaiting_capability_confirmation',
+          generation,
+          taskKind: active.taskKind
+        };
       }
       if (event.type === 'phase' && event.phase === 'success') {
         if (active.assistantText !== null) {
@@ -579,7 +607,7 @@ export class ConversationCoordinator {
             providerIdentity: active.target.providerIdentity
           });
         }
-        this.activeFileTurn = null;
+        this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
       }
       if (
@@ -587,7 +615,7 @@ export class ConversationCoordinator {
         && (event.phase === 'error' || event.phase === 'cancelled')
       ) {
         active.terminalPhase = event.phase;
-        this.activeFileTurn = null;
+        this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
       }
     }
@@ -650,7 +678,7 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     FILE_TASK_PLAYBACK_CANCELLED: '搬运动画未完成，文件未被移动。',
     FILE_TASK_PLAYBACK_TIMEOUT: '等待搬运动画超时，文件未被移动。',
     FILE_TASK_EXECUTION_FAILED: '文件操作执行失败。',
-    POWERSHELL_TASK_NOT_READY: 'PowerShell 任务暂未就绪。',
+    POWERSHELL_BACKGROUND_UNSUPPORTED: '暂不支持后台 PowerShell 任务，请改为前台执行。',
     PROVIDER_AUTHENTICATION_FAILED: '模型服务身份认证失败，请检查 API Key。',
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',
     PROVIDER_RATE_LIMITED: '模型服务当前繁忙，请稍后重试。',

@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import type { ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
 import type { AgentService } from '../src/main/agent/agent-service';
-import { FileTaskAdapter } from '../src/main/conversation/file-task-adapter';
+import { CapabilityTaskAdapter } from '../src/main/conversation/capability-task-adapter';
 
 type AgentDouble = {
   submitFileTask: ReturnType<typeof vi.fn>;
@@ -79,22 +79,22 @@ function preparedAgent(
 }
 
 async function submitPrepared(
-  adapter: FileTaskAdapter,
+  adapter: CapabilityTaskAdapter,
   input: { text: string; visibleHistory: readonly ModelMessage[]; generation: string }
 ): Promise<void> {
   await adapter.prepareTarget(input.generation);
   await adapter.submit(input);
 }
 
-describe('FileTaskAdapter', () => {
+describe('CapabilityTaskAdapter', () => {
   test('没有授权根时抛出稳定错误且不创建 Agent', async () => {
     const createAgentTarget = vi.fn();
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => null),
       createAgentTarget
     });
 
-    await expect(adapter.prepareTarget('g1')).rejects
+    await expect(adapter.prepareTarget({ generation: 'g1', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'FILE_AUTHORIZATION_REQUIRED' });
 
     expect(createAgentTarget).not.toHaveBeenCalled();
@@ -105,7 +105,7 @@ describe('FileTaskAdapter', () => {
     let authorizationCalls = 0;
     const agent = createAgentDouble();
     const createAgentTarget = vi.fn(() => preparedAgent(agent));
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => {
         authorizationCalls += 1;
         if (authorizationCalls === 1) await authorization.promise;
@@ -113,11 +113,11 @@ describe('FileTaskAdapter', () => {
       }),
       createAgentTarget
     });
-    const oldPrepare = adapter.prepareTarget('g-old');
+    const oldPrepare = adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
     await vi.waitFor(() => expect(authorizationCalls).toBe(1));
 
     adapter.cancelActive();
-    await expect(adapter.prepareTarget('g-new')).resolves.toMatchObject({
+    await expect(adapter.prepareTarget({ generation: 'g-new', taskKind: 'file' })).resolves.toMatchObject({
       profileId: 'profile-agent'
     });
 
@@ -138,18 +138,18 @@ describe('FileTaskAdapter', () => {
     const newAgent = createAgentDouble();
     const agents = [oldAgent, newAgent];
     const createAgentTarget = vi.fn(() => preparedAgent(agents.shift()!));
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget
     });
-    await adapter.prepareTarget('g-old');
+    await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
     adapter.cancelActive();
 
-    const replacing = adapter.prepareTarget('g-replacing');
+    const replacing = adapter.prepareTarget({ generation: 'g-replacing', taskKind: 'file' });
     await vi.waitFor(() => expect(oldAgent.resetForNewConversation).toHaveBeenCalledOnce());
     adapter.cancelActive();
     let nextSettled = false;
-    const next = adapter.prepareTarget('g-new').then(target => {
+    const next = adapter.prepareTarget({ generation: 'g-new', taskKind: 'file' }).then(target => {
       nextSettled = true;
       return target;
     });
@@ -171,13 +171,13 @@ describe('FileTaskAdapter', () => {
       const cleanup = deferred();
       const oldAgent = createAgentDouble();
       oldAgent.resetForNewConversation.mockImplementation(() => cleanup.promise);
-      const adapter = new FileTaskAdapter({
+      const adapter = new CapabilityTaskAdapter({
         getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
         createAgentTarget: () => preparedAgent(oldAgent)
       });
-      await adapter.prepareTarget('g-old');
+      await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
       adapter.cancelActive();
-      const replacing = adapter.prepareTarget('g-replacing');
+      const replacing = adapter.prepareTarget({ generation: 'g-replacing', taskKind: 'file' });
       await vi.waitFor(() => expect(oldAgent.resetForNewConversation).toHaveBeenCalledOnce());
 
       let lifecycleSettled = false;
@@ -209,9 +209,9 @@ describe('FileTaskAdapter', () => {
       emitAgentEvent({ type: 'message', role: 'assistant', text: '目录为空' });
       emitAgentEvent({ type: 'phase', phase: 'success' });
     });
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: emit => {
+      createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
         return preparedAgent(agent);
       }
@@ -255,12 +255,12 @@ describe('FileTaskAdapter', () => {
         throw codedError('FILE_AUTHORIZATION_REQUIRED');
       }
     });
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath,
       createAgentTarget: () => preparedAgent(agent)
     });
 
-    await adapter.prepareTarget('g-revoked');
+    await adapter.prepareTarget({ generation: 'g-revoked', taskKind: 'file' });
     await expect(adapter.submit({
       text: '读取文件',
       visibleHistory: [],
@@ -277,12 +277,12 @@ describe('FileTaskAdapter', () => {
       attempt += 1;
       if (attempt === 1) throw codedError('FILE_DISCLOSURE_DENIED');
     });
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => preparedAgent(agent)
     });
 
-    await adapter.prepareTarget('g-denied');
+    await adapter.prepareTarget({ generation: 'g-denied', taskKind: 'file' });
     await expect(adapter.submit({
       text: '读取私有文件',
       visibleHistory: [],
@@ -301,9 +301,9 @@ describe('FileTaskAdapter', () => {
     const pending = deferred();
     let emitAgentEvent!: (event: TaskEvent) => void;
     const agent = createAgentDouble(() => pending.promise);
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: emit => {
+      createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
         return preparedAgent(agent);
       }
@@ -311,10 +311,10 @@ describe('FileTaskAdapter', () => {
     const listener = vi.fn();
     adapter.onEvent(listener);
 
-    await adapter.prepareTarget('g1');
+    await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
     const first = adapter.submit({ text: '第一个任务', visibleHistory: [], generation: 'g1' });
     await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledOnce());
-    await expect(adapter.prepareTarget('g2')).rejects
+    await expect(adapter.prepareTarget({ generation: 'g2', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
 
     await adapter.resetForNewConversation();
@@ -334,17 +334,17 @@ describe('FileTaskAdapter', () => {
       attempts += 1;
       if (attempts === 1) await pending.promise;
     });
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => preparedAgent(agent)
     });
 
-    await adapter.prepareTarget('g-old');
+    await adapter.prepareTarget({ generation: 'g-old', taskKind: 'file' });
     const first = adapter.submit({ text: '旧任务', visibleHistory: [], generation: 'g-old' });
     await vi.waitFor(() => expect(agent.submitFileTask).toHaveBeenCalledOnce());
     adapter.cancelActive();
 
-    await expect(adapter.prepareTarget('g-too-early')).rejects
+    await expect(adapter.prepareTarget({ generation: 'g-too-early', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
 
     pending.resolve();
@@ -363,9 +363,9 @@ describe('FileTaskAdapter', () => {
       emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
     agent.confirm.mockImplementation(() => confirmation.promise);
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: emit => {
+      createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
         return preparedAgent(agent);
       }
@@ -383,7 +383,7 @@ describe('FileTaskAdapter', () => {
     adapter.cancelActive();
     emitAgentEvent({ type: 'phase', phase: 'cancelled' });
 
-    await expect(adapter.prepareTarget('g-too-early')).rejects
+    await expect(adapter.prepareTarget({ generation: 'g-too-early', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'TASK_ALREADY_ACTIVE' });
     expect(listener).not.toHaveBeenCalledWith(
       { type: 'phase', phase: 'cancelled' },
@@ -404,9 +404,9 @@ describe('FileTaskAdapter', () => {
     const agent = createAgentDouble(async () => {
       emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: emit => {
+      createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
         return preparedAgent(agent);
       }
@@ -451,8 +451,8 @@ describe('FileTaskAdapter', () => {
     agent.close.mockImplementation(() => {
       throw new Error('close cleanup failed');
     });
-    let adapter!: FileTaskAdapter;
-    adapter = new FileTaskAdapter({
+    let adapter!: CapabilityTaskAdapter;
+    adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => {
         void adapter.resetForNewConversation();
@@ -460,7 +460,7 @@ describe('FileTaskAdapter', () => {
       }
     });
 
-    await expect(adapter.prepareTarget('g-reset')).rejects
+    await expect(adapter.prepareTarget({ generation: 'g-reset', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'TASK_CANCELLED' });
 
     expect(agent.submitFileTask).not.toHaveBeenCalled();
@@ -470,8 +470,8 @@ describe('FileTaskAdapter', () => {
 
   test('工厂同步 close 后不安装或提交刚创建的 Agent', async () => {
     const agent = createAgentDouble();
-    let adapter!: FileTaskAdapter;
-    adapter = new FileTaskAdapter({
+    let adapter!: CapabilityTaskAdapter;
+    adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => {
         adapter.close();
@@ -479,7 +479,7 @@ describe('FileTaskAdapter', () => {
       }
     });
 
-    await expect(adapter.prepareTarget('g-close')).rejects
+    await expect(adapter.prepareTarget({ generation: 'g-close', taskKind: 'file' })).rejects
       .toMatchObject({ code: 'CONVERSATION_CLOSED' });
 
     expect(agent.submitFileTask).not.toHaveBeenCalled();
@@ -490,9 +490,9 @@ describe('FileTaskAdapter', () => {
   test('close 后拒绝新任务并隔离旧 Agent 事件', async () => {
     let emitAgentEvent!: (event: TaskEvent) => void;
     const agent = createAgentDouble();
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: emit => {
+      createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
         return preparedAgent(agent);
       }
@@ -521,11 +521,11 @@ describe('FileTaskAdapter', () => {
     const barrier = deferred();
     const agent = createAgentDouble();
     agent.resetForNewConversation.mockImplementation(() => barrier.promise);
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => preparedAgent(agent)
     });
-    await adapter.prepareTarget('g-irreversible');
+    await adapter.prepareTarget({ generation: 'g-irreversible', taskKind: 'file' });
     let settled = false;
 
     const first = adapter.close().then(() => { settled = true; });
@@ -543,11 +543,11 @@ describe('FileTaskAdapter', () => {
   test('close 不等待仅悬挂的可撤销 Provider 请求', async () => {
     const provider = deferred();
     const agent = createAgentDouble(() => provider.promise);
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => preparedAgent(agent)
     });
-    await adapter.prepareTarget('g-provider');
+    await adapter.prepareTarget({ generation: 'g-provider', taskKind: 'file' });
     const submission = adapter.submit({
       text: '悬挂请求',
       visibleHistory: [],
@@ -575,7 +575,7 @@ describe('FileTaskAdapter', () => {
         providerName: 'Provider B'
       })
     ];
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: vi.fn(() => targets.shift()!)
     } as never);
@@ -609,9 +609,9 @@ describe('FileTaskAdapter', () => {
       newEmit({ type: 'phase', phase: 'success' });
     });
     let created = 0;
-    const adapter = new FileTaskAdapter({
+    const adapter = new CapabilityTaskAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
-      createAgentTarget: vi.fn((emit: (event: TaskEvent) => void) => {
+      createAgentTarget: vi.fn(({ emit }: { emit: (event: TaskEvent) => void }) => {
         created += 1;
         if (created === 1) {
           oldEmit = emit;

@@ -7,7 +7,10 @@ export type ExplicitBehaviorHint = never;
 export type ExplicitFileEvidence = Readonly<{ kind: 'explicit_file_operation' }>;
 
 /** Shell 分流只暴露已验证的正向意图，不携带命令正文。 */
-export type ExplicitShellEvidence = Readonly<{ kind: 'explicit_shell_execution' }>;
+export type ExplicitShellEvidence = Readonly<{
+  kind: 'explicit_shell_execution';
+  requestedRunMode: 'foreground' | 'background';
+}>;
 
 export type CapabilityIntent =
   | Readonly<{ kind: 'chat'; behaviorHint: ExplicitBehaviorHint | null }>
@@ -25,7 +28,11 @@ const fileTaskIntent: CapabilityIntent = Object.freeze({
 });
 const powershellTaskIntent: CapabilityIntent = Object.freeze({
   kind: 'powershell_task',
-  evidence: Object.freeze({ kind: 'explicit_shell_execution' })
+  evidence: Object.freeze({ kind: 'explicit_shell_execution', requestedRunMode: 'foreground' })
+});
+const backgroundPowerShellTaskIntent: CapabilityIntent = Object.freeze({
+  kind: 'powershell_task',
+  evidence: Object.freeze({ kind: 'explicit_shell_execution', requestedRunMode: 'background' })
 });
 
 type LocalObjectScan = Readonly<{
@@ -391,18 +398,20 @@ function isShellCommandPayload(payload: string): boolean {
 }
 
 /** 只有用户消息开头的明确执行措辞及可验证载荷才能进入 Shell 能力分支。 */
-function hasExplicitShellExecution(normalizedText: string): boolean {
-  if (backgroundShellRequestPattern.test(normalizedText)) return true;
+function shellExecutionIntent(normalizedText: string): CapabilityIntent | null {
+  if (backgroundShellRequestPattern.test(normalizedText)) return backgroundPowerShellTaskIntent;
   const chinesePayload = chineseShellRequestPattern.exec(normalizedText)?.[1];
-  if (chinesePayload !== undefined) return isShellCommandPayload(chinesePayload);
+  if (chinesePayload !== undefined) return isShellCommandPayload(chinesePayload) ? powershellTaskIntent : null;
   const englishPayload = englishShellRequestPattern.exec(normalizedText)?.[1];
-  return englishPayload !== undefined && isShellCommandPayload(englishPayload);
+  return englishPayload !== undefined && isShellCommandPayload(englishPayload)
+    ? powershellTaskIntent
+    : null;
 }
 
 /** 文件正文只作为内容引用；抽出的正文片段复用完整 Shell 正向证据判断。 */
 function hasEmbeddedShellExecution(normalizedText: string): boolean {
   const embeddedContent = embeddedFileContentPattern.exec(normalizedText)?.[1]?.trim();
-  return embeddedContent !== undefined && hasExplicitShellExecution(embeddedContent);
+  return embeddedContent !== undefined && shellExecutionIntent(embeddedContent) !== null;
 }
 
 export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
@@ -423,7 +432,8 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
       return chatIntent;
     }
     if (hasEmbeddedShellExecution(normalizedText)) return chatIntent;
-    if (hasExplicitShellExecution(normalizedText)) return powershellTaskIntent;
+    const shellIntent = shellExecutionIntent(normalizedText);
+    if (shellIntent !== null) return shellIntent;
 
     const operationRanges = scanFileOperationRanges(localObjectScan.semanticText);
     const requestedOperationRanges = bindRequestedOperationRanges(

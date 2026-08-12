@@ -150,7 +150,7 @@ describe('Main 会话组合模块', () => {
   test('文件 Agent 与元数据消费同一设置快照并只创建同源 fallback', async () => {
     const harness = baseOptions();
 
-    const target = await harness.composition.fileTasks.prepareTarget('generation-1');
+    const target = await harness.composition.capabilityTasks.prepareTarget({ generation: 'generation-1', taskKind: 'file' });
 
     expect(target).toEqual({
       profileId: 'primary',
@@ -168,13 +168,26 @@ describe('Main 会话组合模块', () => {
     await harness.composition.close();
   });
 
+  test('PowerShell 能力目标只把 PowerShell taskKind 交给同一 Agent 工厂', async () => {
+    const harness = baseOptions();
+
+    await harness.composition.capabilityTasks.prepareTarget({
+      generation: 'generation-shell',
+      taskKind: 'powershell'
+    });
+
+    expect(harness.factoryInputs[0]?.snapshot.taskKind).toBe('powershell');
+    expect(harness.factoryInputs[0]?.generation).toBe('generation-shell');
+    await harness.composition.close();
+  });
+
   test('配置重置撤销旧目标并允许从新授权快照重新创建', async () => {
     const harness = baseOptions();
-    await harness.composition.fileTasks.prepareTarget('generation-old');
+    await harness.composition.capabilityTasks.prepareTarget({ generation: 'generation-old', taskKind: 'file' });
     harness.readAuthorizedRootPath.mockResolvedValue('E:\\new-root');
 
     await harness.composition.resetForConfigurationChange();
-    await expect(harness.composition.fileTasks.prepareTarget('generation-new'))
+    await expect(harness.composition.capabilityTasks.prepareTarget({ generation: 'generation-new', taskKind: 'file' }))
       .resolves.toMatchObject({ profileId: 'primary' });
 
     expect(harness.factoryInputs).toHaveLength(2);
@@ -187,7 +200,7 @@ describe('Main 会话组合模块', () => {
       resetForNewConversation: vi.fn(() => writeBarrier.promise)
     });
     const fileHarness = baseOptions({ createAgent: () => agent });
-    await fileHarness.composition.fileTasks.prepareTarget('generation-write');
+    await fileHarness.composition.capabilityTasks.prepareTarget({ generation: 'generation-write', taskKind: 'file' });
     let fileClosed = false;
     const fileClose = fileHarness.composition.close().then(() => { fileClosed = true; });
     await Promise.resolve();

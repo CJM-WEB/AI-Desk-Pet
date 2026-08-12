@@ -19,11 +19,13 @@ import type { ConversationChatAdapter } from './conversation-chat-adapter';
 import { ConversationDisclosureAdapter } from './conversation-disclosure-adapter';
 import { ConversationHistory } from './conversation-history';
 import {
-  FileTaskAdapter,
-  type FileTaskAgentPort
-} from './file-task-adapter';
+  CapabilityTaskAdapter,
+  type CapabilityTaskAgentPort
+} from './capability-task-adapter';
+import type { CapabilityTaskKind } from './conversation-coordinator';
 
 export type MainConversationAgentSnapshot<TPrivacy, TReadTool> = Readonly<{
+  taskKind: CapabilityTaskKind;
   providerSettings: ProviderSettingsSnapshot;
   authorizedRootPath: string;
   privacySettings: TPrivacy;
@@ -32,6 +34,7 @@ export type MainConversationAgentSnapshot<TPrivacy, TReadTool> = Readonly<{
 
 export interface MainConversationAgentFactoryInput<TPrivacy, TReadTool> {
   snapshot: MainConversationAgentSnapshot<TPrivacy, TReadTool>;
+  generation: string;
   selection: ModelSelection;
   primaryProfile: ProviderProfileV2;
   fallbackProfiles: readonly ProviderProfileV2[];
@@ -49,13 +52,13 @@ export interface MainConversationCompositionOptions<TPrivacy, TReadTool> {
   createChatAdapter(profile: ProviderProfileV2): ConversationChatAdapter;
   createAgentService(
     input: MainConversationAgentFactoryInput<TPrivacy, TReadTool>
-  ): FileTaskAgentPort;
+  ): CapabilityTaskAgentPort;
   emit(event: TaskEvent): void;
 }
 
 export interface MainConversationComposition {
   coordinator: ConversationCoordinator;
-  fileTasks: FileTaskAdapter;
+  capabilityTasks: CapabilityTaskAdapter;
   resetForConfigurationChange(): Promise<void>;
   close(): Promise<void>;
 }
@@ -111,7 +114,7 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
     };
   };
 
-  const getAuthorizedRootPath = async (): Promise<string | null> => {
+  const getAuthorizedRootPath = async (taskKind: CapabilityTaskKind): Promise<string | null> => {
     const [providerSettings, authorizedRootPath, privacySettings, enabledReadTools] =
       await Promise.all([
         options.readProviderSettings(),
@@ -124,6 +127,7 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
       : Object.freeze({
           providerSettings,
           authorizedRootPath,
+          taskKind,
           privacySettings,
           enabledReadTools
         });
@@ -131,7 +135,11 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
     return authorizedRootPath;
   };
 
-  const createAgentTarget = (emit: (event: TaskEvent) => void) => {
+  const createAgentTarget = (input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+    emit: (event: TaskEvent) => void;
+  }) => {
     const snapshot = preparedAgentSnapshot;
     preparedAgentSnapshot = null;
     if (!snapshot) throw settingsIncompleteError();
@@ -148,10 +156,11 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
     return {
       service: options.createAgentService({
         snapshot,
+        generation: input.generation,
         selection,
         primaryProfile,
         fallbackProfiles,
-        emit
+        emit: input.emit
       }),
       profileId: selection.disclosureTarget.profileId,
       providerIdentity: selection.disclosureTarget.providerIdentity,
@@ -159,7 +168,7 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
     };
   };
 
-  const fileTasks = new FileTaskAdapter({
+  const capabilityTasks = new CapabilityTaskAdapter({
     getAuthorizedRootPath,
     createAgentTarget
   });
@@ -171,13 +180,13 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
       privacySessions: options.privacySessions,
       disclosurePolicy
     }),
-    fileTasks,
+    capabilityTasks,
     emit: options.emit
   });
 
   return {
     coordinator,
-    fileTasks,
+    capabilityTasks,
     async resetForConfigurationChange(): Promise<void> {
       preparedAgentSnapshot = null;
       activeAgentRootPath = null;

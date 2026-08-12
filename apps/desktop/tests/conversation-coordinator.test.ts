@@ -8,7 +8,7 @@ import {
 import {
   ConversationCoordinator,
   type ChatTurnFactory,
-  type ConversationFileTaskPort
+  type ConversationCapabilityTaskPort
 } from '../src/main/conversation/conversation-coordinator';
 import { ConversationDisclosureAdapter } from '../src/main/conversation/conversation-disclosure-adapter';
 import { ConversationHistory } from '../src/main/conversation/conversation-history';
@@ -20,8 +20,8 @@ interface ProviderScript {
   provider: ModelProvider;
 }
 
-class CapturingFileTasks implements ConversationFileTaskPort {
-  readonly submissions: Array<Parameters<ConversationFileTaskPort['submit']>[0]> = [];
+class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
+  readonly submissions: Array<Parameters<ConversationCapabilityTaskPort['submit']>[0]> = [];
   readonly preparedGenerations: string[] = [];
   unsubscribeCalls = 0;
   unsubscribeError: Error | null = null;
@@ -42,9 +42,9 @@ class CapturingFileTasks implements ConversationFileTaskPort {
     providerIdentity: 'openai',
     providerName: 'OpenAI Agent'
   });
-  private listener: Parameters<ConversationFileTaskPort['onEvent']>[0] | null = null;
+  private listener: Parameters<ConversationCapabilityTaskPort['onEvent']>[0] | null = null;
 
-  onEvent(listener: Parameters<ConversationFileTaskPort['onEvent']>[0]): () => void {
+  onEvent(listener: Parameters<ConversationCapabilityTaskPort['onEvent']>[0]): () => void {
     this.listener = listener;
     return () => {
       this.unsubscribeCalls += 1;
@@ -53,12 +53,12 @@ class CapturingFileTasks implements ConversationFileTaskPort {
     };
   }
 
-  async submit(input: Parameters<ConversationFileTaskPort['submit']>[0]): Promise<void> {
+  async submit(input: Parameters<ConversationCapabilityTaskPort['submit']>[0]): Promise<void> {
     this.submissions.push(input);
   }
 
-  async prepareTarget(generation: string) {
-    this.preparedGenerations.push(generation);
+  async prepareTarget(input: { generation: string; taskKind: 'file' | 'powershell' }) {
+    this.preparedGenerations.push(input.generation);
     const barrier = this.prepareBarrier;
     this.prepareBarrier = null;
     if (barrier) await barrier;
@@ -145,12 +145,12 @@ function createHarness(scripts: Array<{
   script: ProviderScript;
 }>, options: {
   factoryError?: Error;
-  fileTasks?: CapturingFileTasks;
+  fileTasks?: CapturingCapabilityTasks;
   onEmit?: (event: TaskEvent, coordinator: ConversationCoordinator) => void;
 } = {}) {
   const history = new ConversationHistory();
   const events: TaskEvent[] = [];
-  const fileTasks = options.fileTasks ?? new CapturingFileTasks();
+  const fileTasks = options.fileTasks ?? new CapturingCapabilityTasks();
   const privacySessions = new PrivacySessionRegistry();
   privacySessions.register('session-1', { incognito: false });
   const providers = new Map(scripts.map(item => [item.profileId, item.providerIdentity]));
@@ -187,7 +187,7 @@ function createHarness(scripts: Array<{
     history,
     chatTurnFactory,
     disclosureAdapter,
-    fileTasks,
+    capabilityTasks: fileTasks,
     emit: event => {
       events.push(event);
       options.onEmit?.(event, coordinator);
@@ -248,31 +248,39 @@ describe('ConversationCoordinator', () => {
       expect(harness.fileTasks.submissions).toEqual([{
         text,
         visibleHistory: [],
-        generation: 'generation-current'
+        generation: 'generation-current',
+        taskKind: 'file'
       }]);
     }
   );
 
-  test('明确 PowerShell 请求稳定终止且不降级聊天、不执行文件任务和不写历史', async () => {
+  test('明确 PowerShell 请求只提交 PowerShell 能力任务且不降级聊天', async () => {
     const harness = createHarness([]);
 
-    await expect(harness.coordinator.submit('执行这条命令 npm test')).rejects.toSatisfy(
-      error => errorCode(error) === 'POWERSHELL_TASK_NOT_READY'
+    await expect(harness.coordinator.submit('执行这条命令 npm test')).resolves.toBeUndefined();
+
+    expect(harness.factoryCallCount()).toBe(0);
+    expect(harness.fileTasks.preparedGenerations).toEqual(['generation-current']);
+    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
+      taskKind: 'powershell',
+      text: '执行这条命令 npm test'
+    })]);
+    expect(harness.history.turns()).toEqual([]);
+  });
+
+  test('后台 PowerShell 请求稳定拒绝且不降级为前台执行', async () => {
+    const harness = createHarness([]);
+
+    await expect(harness.coordinator.submit('后台运行构建')).rejects.toSatisfy(
+      error => errorCode(error) === 'POWERSHELL_BACKGROUND_UNSUPPORTED'
     );
 
     expect(harness.factoryCallCount()).toBe(0);
-    expect(harness.fileTasks.preparedGenerations).toEqual([]);
     expect(harness.fileTasks.submissions).toEqual([]);
-    expect(harness.history.turns()).toEqual([]);
-    expect(harness.events).toContainEqual(expect.objectContaining({
-      type: 'error',
-      code: 'POWERSHELL_TASK_NOT_READY'
-    }));
-    expect(phases(harness.events)).not.toContain('success');
   });
 
   test('文件目标准备期间取消会释放文件 owner，并允许下一次文件请求立即进入准备', async () => {
-    const fileTasks = new CapturingFileTasks();
+    const fileTasks = new CapturingCapabilityTasks();
     const barrier = deferredVoid();
     fileTasks.prepareBarrier = barrier.promise;
     const harness = createHarness([], { fileTasks });
@@ -852,7 +860,7 @@ describe('ConversationCoordinator', () => {
 
   test('close 先封闭状态并在清理失败时继续全部清理', async () => {
     const script = deferredProvider();
-    const fileTasks = new CapturingFileTasks();
+    const fileTasks = new CapturingCapabilityTasks();
     fileTasks.unsubscribeError = new Error('raw-unsubscribe-error');
     const harness = createHarness([{
       profileId: 'profile-openai',
@@ -886,7 +894,7 @@ describe('ConversationCoordinator', () => {
   });
 
   test('close 等待文件端口不可逆执行屏障收敛且并发关闭共享同一结果', async () => {
-    const fileTasks = new CapturingFileTasks();
+    const fileTasks = new CapturingCapabilityTasks();
     const barrier = deferredVoid();
     fileTasks.closeBarrier = barrier.promise;
     const { coordinator } = createHarness([], { fileTasks });
@@ -969,7 +977,8 @@ describe('ConversationCoordinator', () => {
         { role: 'user', content: '旧问题' },
         { role: 'assistant', content: '旧回答' }
       ],
-      generation: 'generation-current'
+      generation: 'generation-current',
+      taskKind: 'file'
     }]);
     expect(harness.history.turns().at(-1)).toEqual({
       userText: '整理文件',
@@ -979,7 +988,7 @@ describe('ConversationCoordinator', () => {
   });
 
   test('文件目标预检缺少授权时稳定失败，且不降级为聊天成功', async () => {
-    const fileTasks = new CapturingFileTasks();
+    const fileTasks = new CapturingCapabilityTasks();
     fileTasks.prepareError = Object.assign(new Error('FILE_AUTHORIZATION_REQUIRED'), {
       code: 'FILE_AUTHORIZATION_REQUIRED'
     });
@@ -1019,7 +1028,7 @@ describe('ConversationCoordinator', () => {
   });
 
   test('文件失败终态同步重入新提交时旧 reject 不覆盖新 owner 且不重复报错', async () => {
-    const fileTasks = new CapturingFileTasks();
+    const fileTasks = new CapturingCapabilityTasks();
     const nextProvider = deferredProvider();
     let submissionCount = 0;
     fileTasks.submit = async input => {
@@ -1108,7 +1117,8 @@ describe('ConversationCoordinator', () => {
     expect(harness.fileTasks.submissions).toEqual([{
       text: '整理文件',
       visibleHistory: expectedHistory,
-      generation: 'generation-current'
+      generation: 'generation-current',
+      taskKind: 'file'
     }]);
     await expect(harness.coordinator.resolveHistoryDisclosure('request-1', decision)).rejects
       .toSatisfy(error => errorCode(error) === 'DISCLOSURE_REQUEST_EXPIRED');
@@ -1187,7 +1197,7 @@ describe('ConversationCoordinator', () => {
   });
 
   test('等待文件确认时 reset 委托文件清理并使旧 actionId 失效', async () => {
-    const fileTasks = new CapturingFileTasks();
+    const fileTasks = new CapturingCapabilityTasks();
     fileTasks.submit = async input => {
       fileTasks.submissions.push(input);
       fileTasks.publish({

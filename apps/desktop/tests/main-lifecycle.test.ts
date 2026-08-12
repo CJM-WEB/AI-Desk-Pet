@@ -25,7 +25,7 @@ describe('Main 通用生命周期', () => {
     expect(beforeQuit).not.toContain('cancelActive()');
     expect(source).toContain('conversationClose.close();');
     expect(source).toMatch(
-      /const releaseCharacterRuntime = \(\): void => \{[\s\S]*conversationClose\.close\(\);[\s\S]*activeFileTaskAdapter = null;/u
+      /const releaseCharacterRuntime = \(\): void => \{[\s\S]*conversationClose\.close\(\);[\s\S]*activeCapabilityTaskAdapter = null;/u
     );
   });
 
