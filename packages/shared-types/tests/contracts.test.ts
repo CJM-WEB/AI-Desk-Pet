@@ -62,21 +62,31 @@ describe('PendingAction 契约', () => {
 
     expect(create).toMatchObject({ category: 'file', operation: 'create_file' });
     expect(pendingActionSchema.parse({
-      ...create,
+      category: 'file',
+      actionId: 'act-2',
+      conversationId: 'conv-1',
+      risk: 'write',
       operation: 'apply_patch',
+      summary: '修改 notes.md',
+      targetRelativePath: 'notes.md',
       addedLines: 2,
       removedLines: 1,
       diffPreview: '@@ -1 +1 @@',
-      contentCharacters: undefined,
-      contentPreview: undefined
+      previewTruncated: false,
+      createdAt: '2026-07-20T00:00:00.000Z',
+      expiresAt: '2026-07-20T00:02:00.000Z'
     })).toMatchObject({ operation: 'apply_patch', addedLines: 2, removedLines: 1 });
     expect(pendingActionSchema.parse({
-      ...create,
+      category: 'file',
+      actionId: 'act-3',
+      conversationId: 'conv-1',
+      risk: 'write',
       operation: 'delete_file',
+      summary: '删除 notes.md',
+      targetRelativePath: 'notes.md',
       targetType: 'file',
-      contentCharacters: undefined,
-      contentPreview: undefined,
-      previewTruncated: undefined
+      createdAt: '2026-07-20T00:00:00.000Z',
+      expiresAt: '2026-07-20T00:02:00.000Z'
     })).toMatchObject({ operation: 'delete_file', targetType: 'file' });
   });
 
