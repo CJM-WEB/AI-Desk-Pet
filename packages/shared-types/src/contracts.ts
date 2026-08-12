@@ -115,6 +115,12 @@ const pendingFileActionBaseSchema = z.object({
   expiresAt: z.string().datetime()
 });
 
+/** 确认卡只展示受控目录名称，绝不承载本机绝对、UNC 或设备路径。 */
+const workingDirectoryLabelSchema = z.string().min(1).max(128).refine(
+  value => !/^(?:[a-z]:[\\/]|[\\/]{1,2}|[\\/]{2}[?.][\\/])/iu.test(value),
+  'WORKING_DIRECTORY_LABEL_INVALID'
+);
+
 export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
   pendingFileActionBaseSchema.extend({
     operation: z.literal('create_file'),
@@ -141,7 +147,7 @@ export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
     operation: z.literal('powershell'),
     summary: z.string().min(1),
     command: z.string().min(1).max(16_384),
-    workingDirectoryLabel: z.string().min(1),
+    workingDirectoryLabel: workingDirectoryLabelSchema,
     runMode: z.literal('foreground'),
     createdAt: z.string().datetime(),
     expiresAt: z.string().datetime()

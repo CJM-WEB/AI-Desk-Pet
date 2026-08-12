@@ -18,8 +18,8 @@
 
 ## 验证
 
-- Desktop 定向：`tool-permission-policy`、`pending-action-store`、`agent-service`、`powershell-tool`、`renderer-components` 共 129/129 通过。
-- Agent Core：40/40 通过；Shared Types：14/14 通过。
+- Desktop 定向：`tool-permission-policy`、`pending-action-store`、`agent-service`、`powershell-tool`、`renderer-components` 共 133/133 通过。
+- Agent Core：41/41 通过；Shared Types：18/18 通过。
 - `@myself/agent-core`、`@myself/shared-types`、`@myself/desktop` typecheck 均通过。
 - `git diff --check` 通过；`apps/website` 无差异。
 
@@ -27,3 +27,18 @@
 
 - Task 4 不触及 Task 5 的会话意图分流与组合根接线；现有组合根仍仅构造文件会话。
 - `close()` 与 reset 会等待活动 PowerShell 工具的有界关闭承诺，但不把前台进程清理描述为 OS 级隔离。
+
+## 审查修复轮次 1
+
+- 第四轮确认恢复先计算本次工具结果的 `ok`，再决定中性“本地能力操作”终态；前三轮成功、第四轮失败会稳定进入 `error`。
+- 当失败 PowerShell 续跑再次产生确认请求时，`AgentService` 保留 owner 与会话；第二次确认可继续并以新的真实结果决定终态。
+- 本地能力会话注册表签发后冻结，Main 不再追加 MCP 读取工具，也不再分支到 MCP 执行入口；文件会话保持精确五工具。
+- `workingDirectoryLabel` 在共享公开契约边界拒绝驱动器绝对路径、UNC、设备路径和 Unix 绝对路径；Service 因而不会发布含绝对目录的确认卡。
+- 模型总结失败时按能力类别与真实 `ok` 区分：成功文件保持既有结果文案；失败 PowerShell 采用中性能力结果文案，不伪称文件写入成功。
+
+### 审查轮 TDD 与验证
+
+- RED：第四轮确认使用旧成功事实；GREEN：AgentLoop 28/28。
+- RED：失败 PowerShell 后第二确认 `ACTION_EXPIRED`，以及失败 PowerShell 总结失败伪称文件成功；GREEN：AgentService 45/45。
+- RED：能力会话可以追加 MCP 工具；GREEN：工具注册表 18/18。
+- RED：四种绝对目录标签均能通过公开契约；GREEN：Shared Types 18/18。

@@ -81,9 +81,10 @@ export class AgentLoop {
       toolCallId: continuation.requestId,
       content: JSON.stringify(toolResult)
     });
+    const latestTrustedResultOk = trustedResultOk(toolResult);
     if (continuation.nextTurn >= 4) {
-      yield { type: 'message', text: '本地文件操作已完成；已达到模型响应轮次上限。' };
-      yield { type: 'phase', phase: continuation.latestTrustedResultOk === false ? 'error' : 'success' };
+      yield { type: 'message', text: '本地能力操作已结束；已达到模型响应轮次上限。' };
+      yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
       return;
     }
     yield* this.continueRun(
@@ -91,7 +92,7 @@ export class AgentLoop {
       continuation.nextTurn,
       context,
       true,
-      trustedResultOk(toolResult)
+      latestTrustedResultOk
     );
   }
 

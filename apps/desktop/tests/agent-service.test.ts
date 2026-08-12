@@ -207,7 +207,179 @@ function phases(events: TaskEvent[]) {
   return events.filter(event => event.type === 'phase').map(event => event.phase);
 }
 
+function powerShellResult(ok: boolean) {
+  return {
+    ok,
+    toolName: 'powershell' as const,
+    status: ok ? 'succeeded' as const : 'failed' as const,
+    timeoutKind: null,
+    exitCode: ok ? 0 : 1,
+    stdout: '',
+    stderr: ok ? '' : '失败',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    durationMs: 1
+  };
+}
+
+function createPowerShellHarness(
+  provider: ModelProvider,
+  powershell: Pick<PowerShellTool, 'preview' | 'execute'>
+) {
+  const events: TaskEvent[] = [];
+  const loop = new AgentLoop();
+  const pending = new PendingActionStore({
+    onDiscard: execution => loop.discard(execution.continuationToken)
+  });
+  const registry = createBuiltinPowerShellToolRegistry();
+  const session: AgentSession = {
+    taskKind: 'powershell',
+    provider,
+    powershell: powershell as PowerShellTool,
+    workingDirectory: 'C:\\workspace',
+    workingDirectoryLabel: '工作区',
+    generation: 'generation-1',
+    tools: registry.definitions(),
+    toolRuntime: {
+      prepare: raw => registry.prepare(raw, new PermissionPolicy({ highRiskEnabled: true })),
+      executeRead: vi.fn()
+    },
+    messages: []
+  };
+  const service = new AgentService({
+    loop,
+    pending,
+    createSession: async () => session,
+    emit: event => events.push(event),
+    createConversationId: () => 'conversation-1'
+  });
+  return { events, service };
+}
+
 describe('AgentService', () => {
+  test('失败 PowerShell 续跑出第二次确认时保留会话所有权，后续成功可确认', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'shell-1',
+          toolName: 'builtin.powershell.run',
+          arguments: { command: 'Get-ChildItem' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'shell-2',
+          toolName: 'builtin.powershell.run',
+          arguments: { command: 'Get-Date' }
+        }
+      },
+      { type: 'text', text: '第二个命令已成功。' }
+    ]);
+    const firstAction = Object.freeze({
+      kind: 'powershell' as const,
+      command: 'Get-ChildItem',
+      workingDirectoryLabel: '工作区',
+      runMode: 'foreground' as const,
+      generation: 'generation-1',
+      expiresAtMs: Date.now() + 60_000
+    });
+    const secondAction = Object.freeze({ ...firstAction, command: 'Get-Date' });
+    const preview = vi.fn((input: { command: string }) => (
+      input.command === 'Get-ChildItem' ? firstAction : secondAction
+    ));
+    const execute = vi.fn()
+      .mockResolvedValueOnce(powerShellResult(false))
+      .mockResolvedValueOnce(powerShellResult(true));
+    const { events, service } = createPowerShellHarness(provider, { preview, execute });
+
+    await service.submitFileTask({ text: '运行命令', visibleHistory: [] });
+    const firstPending = events.find(event => event.type === 'pending_action');
+    if (!firstPending || firstPending.type !== 'pending_action') throw new Error('缺少首次确认');
+    await service.confirm(firstPending.action.actionId);
+    const secondPending = events.filter(event => event.type === 'pending_action').at(-1);
+    if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少第二次确认');
+    await service.confirm(secondPending.action.actionId);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '第二个命令已成功。'
+    });
+    expect(phases(events).at(-1)).toBe('success');
+  });
+
+  test('失败 PowerShell 的模型总结失败只发布中性能力结果，绝不伪称文件成功', async () => {
+    const summaryError = Object.assign(new Error('provider failed'), {
+      code: 'PROVIDER_SERVER_ERROR',
+      retryable: false
+    });
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'shell-1',
+        toolName: 'builtin.powershell.run',
+        arguments: { command: 'Get-ChildItem' }
+      }
+    }, summaryError]);
+    const action = Object.freeze({
+      kind: 'powershell' as const,
+      command: 'Get-ChildItem',
+      workingDirectoryLabel: '工作区',
+      runMode: 'foreground' as const,
+      generation: 'generation-1',
+      expiresAtMs: Date.now() + 60_000
+    });
+    const { events, service } = createPowerShellHarness(provider, {
+      preview: vi.fn(() => action),
+      execute: vi.fn(async () => powerShellResult(false))
+    });
+
+    await service.submitFileTask({ text: '运行命令', visibleHistory: [] });
+    const pendingEvent = events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认');
+    await expect(service.confirm(pendingEvent.action.actionId)).rejects.toThrow('provider failed');
+
+    expect(events).toContainEqual({
+      type: 'error',
+      code: 'PROVIDER_SUMMARY_FAILED_AFTER_CAPABILITY_RESULT',
+      message: '本地能力操作已结束，但模型总结失败。',
+      nextAction: '可以查看本地操作结果，或稍后重新请求总结。'
+    });
+    expect(JSON.stringify(events)).not.toContain('本地文件操作已成功');
+  });
+
+  test('PowerShell 预览携带绝对目录标签时不发布确认卡', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'shell-1',
+        toolName: 'builtin.powershell.run',
+        arguments: { command: 'Get-ChildItem' }
+      }
+    }]);
+    const action = Object.freeze({
+      kind: 'powershell' as const,
+      command: 'Get-ChildItem',
+      workingDirectoryLabel: 'C:\\secret\\workspace',
+      runMode: 'foreground' as const,
+      generation: 'generation-1',
+      expiresAtMs: Date.now() + 60_000
+    });
+    const { events, service } = createPowerShellHarness(provider, {
+      preview: vi.fn(() => action),
+      execute: vi.fn(async () => powerShellResult(true))
+    });
+
+    await expect(service.submitFileTask({ text: '运行命令', visibleHistory: [] }))
+      .rejects.toThrow();
+
+    expect(events).not.toContainEqual(expect.objectContaining({ type: 'pending_action' }));
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+  });
+
   test('PowerShell 确认使用会话目录上下文并将真实失败事实续跑给模型', async () => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',

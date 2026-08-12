@@ -124,6 +124,27 @@ describe('PendingAction 契约', () => {
     expect(() => pendingActionSchema.parse({ ...base, targetType: 'file' })).toThrow();
     expect(() => pendingActionSchema.parse({ ...base, command: 'rm notes.md' })).toThrow();
   });
+
+  it.each([
+    'C:\\Users\\Administrator\\workspace',
+    '\\\\server\\share',
+    '\\\\?\\C:\\workspace',
+    '/workspace'
+  ])('拒绝向 Renderer 发布绝对工作目录：%s', workingDirectoryLabel => {
+    expect(() => pendingActionSchema.parse({
+      category: 'powershell',
+      actionId: 'act-shell',
+      conversationId: 'conv-1',
+      risk: 'shell',
+      operation: 'powershell',
+      summary: '运行 PowerShell 命令',
+      command: 'Get-ChildItem',
+      workingDirectoryLabel,
+      runMode: 'foreground',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      expiresAt: '2026-07-20T00:02:00.000Z'
+    })).toThrow();
+  });
 });
 
 describe('providerProfileV2Schema', () => {

@@ -413,6 +413,44 @@ describe('AgentLoop', () => {
     expect(resumeEvents.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
+  test('第四轮确认恢复时以当前工具失败事实结束，且不把能力说成文件操作', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-1'),
+      readRequest('read-2'),
+      readRequest('read-3'),
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'confirm-4',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      }
+    ]);
+    const runtime = createToolRuntime();
+    runtime.executeRead = vi.fn(async () => ({ ok: true, content: '已读取' }));
+    const loop = new AgentLoop();
+    const runContext = {
+      ...context(provider),
+      toolRuntime: runtime,
+      protocol: 'capability_planner' as const
+    };
+
+    const firstEvents = await collect(loop.run('执行能力任务', runContext));
+    const request = firstEvents.find(event => event.type === 'write_request');
+    if (!request || request.type !== 'write_request') throw new Error('缺少第四轮确认');
+    const events = await collect(loop.resume(request.continuationToken, {
+      ok: false,
+      toolName: 'powershell',
+      status: 'failed'
+    }, runContext));
+
+    expect(events).toEqual([
+      { type: 'message', text: '本地能力操作已结束；已达到模型响应轮次上限。' },
+      { type: 'phase', phase: 'error' }
+    ]);
+  });
+
   test('文件规划在首次真实工具结果前只公开严格 JSON 澄清问题', async () => {
     const provider = new ScriptedProvider([{
       type: 'text',
@@ -652,7 +690,7 @@ describe('AgentLoop', () => {
       { ok: true },
       runContext
     ))).resolves.toEqual([
-      { type: 'message', text: '本地文件操作已完成；已达到模型响应轮次上限。' },
+      { type: 'message', text: '本地能力操作已结束；已达到模型响应轮次上限。' },
       { type: 'phase', phase: 'success' }
     ]);
     expect(provider.requests).toHaveLength(4);

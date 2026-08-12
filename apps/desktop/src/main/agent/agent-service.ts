@@ -217,6 +217,13 @@ function writeResult(action: VerifiedWriteAction): Record<string, unknown> {
   };
 }
 
+/** 执行端口的 ok 字段是确认续跑后的本地能力事实。 */
+function capabilityResultOk(result: unknown): boolean {
+  return typeof result === 'object'
+    && result !== null
+    && (result as Record<string, unknown>)['ok'] === true;
+}
+
 function assertNever(value: never): never {
   throw new Error(`未处理的能力操作：${String(value)}`);
 }
@@ -365,15 +372,21 @@ export class AgentService {
           owner
         );
       } finally {
-        if (this.taskOwner === owner) this.taskOwner = null;
+        if (this.taskOwner === owner && this.pendingSession === null) {
+          this.taskOwner = null;
+          this.activeSession = null;
+        }
       }
     }
-    let writeCompleted = false;
+    let capabilityResult: { kind: 'file' | 'powershell'; ok: boolean } | null = null;
     try {
       this.publish({ type: 'phase', phase: 'acting' }, owner);
       this.assertTaskOwned(owner, controller.signal);
       const result = await this.executeCapability(execution, session, controller.signal, owner);
-      writeCompleted = true;
+      capabilityResult = {
+        kind: execution.verifiedAction.category,
+        ok: capabilityResultOk(result)
+      };
       await this.forward(
         this.loop.resume(
           execution.continuationToken,
@@ -384,14 +397,21 @@ export class AgentService {
         owner
       );
     } catch (error) {
-      if (!writeCompleted) this.loop.discard(execution.continuationToken);
-      if (writeCompleted) {
-        this.publish({
-          type: 'error',
-          code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
-          message: '本地文件操作已成功，但模型总结失败。',
-          nextAction: '可以查看文件结果，或稍后重新请求总结。'
-        }, owner);
+      if (!capabilityResult) this.loop.discard(execution.continuationToken);
+      if (capabilityResult) {
+        this.publish(capabilityResult.kind === 'file' && capabilityResult.ok
+          ? {
+              type: 'error',
+              code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
+              message: '本地文件操作已成功，但模型总结失败。',
+              nextAction: '可以查看文件结果，或稍后重新请求总结。'
+            }
+          : {
+              type: 'error',
+              code: 'PROVIDER_SUMMARY_FAILED_AFTER_CAPABILITY_RESULT',
+              message: '本地能力操作已结束，但模型总结失败。',
+              nextAction: '可以查看本地操作结果，或稍后重新请求总结。'
+            }, owner);
         this.publish({ type: 'phase', phase: 'error' }, owner);
       } else {
         this.emitFailure(error, owner);
@@ -399,7 +419,7 @@ export class AgentService {
       throw error;
     } finally {
       if (this.activeController === controller) this.activeController = null;
-      if (this.taskOwner === owner) {
+      if (this.taskOwner === owner && this.pendingSession === null) {
         this.taskOwner = null;
         this.activeSession = null;
       }
@@ -412,7 +432,7 @@ export class AgentService {
       this.pendingSession = null;
       const owner = this.taskOwner;
       this.publish({ type: 'phase', phase: 'cancelled' }, owner);
-      if (this.taskOwner === owner) this.taskOwner = null;
+        if (this.taskOwner === owner && this.pendingSession === null) this.taskOwner = null;
     } catch (error) {
       this.emitFailure(error);
       throw error;

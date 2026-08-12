@@ -50,8 +50,10 @@ function definition(
 
 export class ToolRegistry {
   private readonly registrations = new Map<string, ToolRegistration>();
+  private sealed = false;
 
   register(registration: ToolRegistration): void {
+    if (this.sealed) throw registryError('TOOL_REGISTRY_SEALED');
     const name = registration.definition.function.name;
     if (!toolNameSchema.safeParse(name).success) throw registryError('TOOL_NAME_INVALID');
     if (this.registrations.has(name)) throw registryError('TOOL_ALREADY_REGISTERED');
@@ -65,6 +67,12 @@ export class ToolRegistry {
     return [...this.registrations.values()]
       .filter(registration => registration.enabled)
       .map(registration => cloneDefinition(registration.definition));
+  }
+
+  /** 本地能力任务签发后冻结工具表，阻止后续混入其他执行能力。 */
+  seal(): this {
+    this.sealed = true;
+    return this;
   }
 
   prepare(raw: unknown, permissionPolicy: PermissionPolicy): PreparedToolRequest {
@@ -206,6 +214,6 @@ export function createSessionToolRegistry(input: {
   taskKind: 'file' | 'powershell';
   fileDisclosureAllowed: boolean;
 }): ToolRegistry {
-  if (input.taskKind === 'powershell') return createBuiltinPowerShellToolRegistry();
-  return input.fileDisclosureAllowed ? createBuiltinFileToolRegistry() : new ToolRegistry();
+  if (input.taskKind === 'powershell') return createBuiltinPowerShellToolRegistry().seal();
+  return input.fileDisclosureAllowed ? createBuiltinFileToolRegistry().seal() : new ToolRegistry().seal();
 }

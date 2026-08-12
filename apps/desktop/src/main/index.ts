@@ -777,7 +777,6 @@ async function createApplicationWindows(
             taskKind: 'file',
             fileDisclosureAllowed
           });
-          for (const registration of snapshot.enabledReadTools) registry.register(registration);
           const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
           return {
             taskKind: 'file' as const,
@@ -796,13 +795,7 @@ async function createApplicationWindows(
             tools: registry.definitions(),
             toolRuntime: {
               prepare: raw => registry.prepare(raw, permissionPolicy),
-              executeRead: request => request.toolName.startsWith('mcp-internal.')
-                ? desktopSettingsService.executeMcpRead(
-                    request.toolName,
-                    request.arguments,
-                    signal
-                  )
-                : fileDisclosureAllowed
+              executeRead: request => fileDisclosureAllowed
                   ? fileTools.executeRead(request)
                   : Promise.reject(Object.assign(new Error('FILE_DISCLOSURE_DENIED'), {
                       code: 'FILE_DISCLOSURE_DENIED'

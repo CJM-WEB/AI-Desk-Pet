@@ -223,6 +223,29 @@ describe('内置文件工具注册', () => {
     });
   });
 
+  test('能力会话注册表签发后拒绝追加 MCP 读取工具', () => {
+    const registry = createSessionToolRegistry({
+      taskKind: 'file',
+      fileDisclosureAllowed: true
+    });
+
+    expect(registry.definitions().map(item => item.function.name)).toEqual([
+      'builtin.files.list_files',
+      'builtin.files.read_file',
+      'builtin.files.create_file',
+      'builtin.files.apply_patch',
+      'builtin.files.delete_file'
+    ]);
+    expect(() => registry.register({
+      definition: definition('mcp.server.read'),
+      argumentsSchema: z.object({}).strict(),
+      executionToolName: 'mcp.server.read',
+      risk: 'read',
+      enabled: true,
+      auditSummary: () => '外部读取'
+    })).toThrow('TOOL_REGISTRY_SEALED');
+  });
+
   test('五个公开工具精确映射到内部动作和本地风险', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
