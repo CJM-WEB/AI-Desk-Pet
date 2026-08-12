@@ -1195,6 +1195,67 @@ describe('桌面 Agent 真实服务集成', () => {
     expectProviderExchange(fixture.providerServer, 3);
   });
 
+  test('模型删除确认被宿主修复为正式确认卡且不进入聊天正文', async () => {
+    const modelConfirmation = '请确认是否删除当前目录下的 empty 文件夹？';
+    const fixture = await harness([
+      {
+        response: {
+          type: 'text',
+          text: JSON.stringify({ kind: 'clarification_required', question: modelConfirmation })
+        }
+      },
+      {
+        response: toolCall(
+          'repair-delete-empty',
+          'builtin.files.delete_file',
+          { relativePath: 'empty' }
+        ),
+        inspect: request => {
+          expect(request.messages.at(-1)).toMatchObject({
+            role: 'system',
+            content: expect.stringContaining('不得自行索要执行确认')
+          });
+        }
+      },
+      { response: { type: 'text', text: 'empty 已移入回收站' } }
+    ]);
+    const source = join(fixture.authorized.root, 'empty');
+    const recycled = join(fixture.authorized.root, '.recycled-empty-confirmation');
+    await mkdir(source);
+    const recycle = vi.fn((absolutePath: string) => rename(absolutePath, recycled));
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: recycle
+    });
+
+    await fixture.service.submitFileTask({
+      text: '帮我把当前目录下的empty文件夹删除了',
+      visibleHistory: []
+    });
+
+    expect(JSON.stringify(fixture.events)).not.toContain(modelConfirmation);
+    expect(pendingAction(fixture.events)).toMatchObject({
+      operation: 'delete_file',
+      targetRelativePath: 'empty'
+    });
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+    expect(fixture.service.onPlaybackStarted(
+      'integration-carry-token',
+      'integration-carry-action'
+    )).toBe(true);
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(true);
+    await confirming;
+
+    expect(recycle).toHaveBeenCalledOnce();
+    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(lstat(recycled)).resolves.toBeDefined();
+    expectProviderExchange(fixture.providerServer, 3);
+  });
+
   test('连续口头伪成功在一次修复后稳定报 CAPABILITY_PLAN_PROTOCOL_INVALID', async () => {
     const fixture = await harness([
       { response: { type: 'text', text: '文件已经创建完成。' } },

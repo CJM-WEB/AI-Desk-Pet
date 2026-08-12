@@ -567,6 +567,61 @@ describe('AgentService', () => {
     ]);
   });
 
+  test('等待确认时新文字任务会替换旧卡且不能冒充 actionId 确认', async () => {
+    const modelConfirmation = '请确认是否删除当前目录下的 empty 文件夹？';
+    const provider = new ScriptedProvider([
+      {
+        type: 'text',
+        text: JSON.stringify({ kind: 'clarification_required', question: modelConfirmation })
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'delete-empty-1',
+          toolName: 'builtin.files.delete_file',
+          arguments: { relativePath: 'empty' }
+        }
+      },
+      {
+        type: 'text',
+        text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+      }
+    ]);
+    const harness = createHarness(provider, {
+      preview: vi.fn(async () => Object.freeze({
+        operation: 'delete_file' as const,
+        authorizationGeneration: 0,
+        targetRelativePath: 'empty',
+        targetType: 'empty_directory' as const
+      }))
+    });
+
+    await harness.service.submitFileTask({
+      text: '帮我把当前目录下的empty文件夹删除了',
+      visibleHistory: []
+    });
+
+    expect(JSON.stringify(harness.events)).not.toContain(modelConfirmation);
+    const pendingEvent = harness.events.at(-1);
+    expect(pendingEvent).toEqual({
+      type: 'pending_action',
+      action: expect.objectContaining({
+        actionId: expect.any(String),
+        operation: 'delete_file',
+        targetRelativePath: 'empty'
+      })
+    });
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少正式确认卡');
+    await harness.service.submitFileTask({
+      text: '确认执行',
+      visibleHistory: []
+    });
+    await expect(harness.service.confirm(pendingEvent.action.actionId))
+      .rejects.toThrow('ACTION_EXPIRED');
+    expect(provider.requests).toHaveLength(3);
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+  });
+
   test('重置后迟到的协议修复响应不公开消息也不写入会话历史', async () => {
     const provider = new RepairDeferredProvider();
     const { events, service, session } = createHarness(provider);

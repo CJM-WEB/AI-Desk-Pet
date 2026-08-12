@@ -50,6 +50,38 @@ function parseCapabilityPlannerClarification(text: string): Extract<
   return { kind: 'clarification_required', question: record.question };
 }
 
+/** 缺少目标或命令时必须允许模型询问执行必需参数。 */
+function isMissingParameterQuestion(question: string): boolean {
+  const normalized = question.trim().toLowerCase();
+  const chineseRequest = /(?:提供|说明|告知|指定|选择|输入)/u.test(normalized);
+  const chineseParameter = /(?:哪个|哪一个|路径|文件名|目录名|命令|脚本|目标|内容|参数)/u.test(normalized);
+  const englishRequest = /\b(?:provide|specify|tell|choose|enter)\b/u.test(normalized);
+  const englishParameter = /\b(?:which|path|file|directory|command|script|target|content|argument)\b/u.test(normalized);
+  return (chineseRequest && chineseParameter) || (englishRequest && englishParameter);
+}
+
+/** 中文确认句必须同时包含确认主干与操作意图，避免误伤真正的参数澄清。 */
+function isChineseExecutionConfirmation(question: string): boolean {
+  const hasConfirmationStem = /(?:确认|确定|真的|是否|要不要|需不需要|同意)/u.test(question);
+  const hasOperationIntent = /(?:执行|删除|创建|修改|写入|运行|继续)/u.test(question);
+  return hasConfirmationStem && hasOperationIntent;
+}
+
+/** 英文确认句采用清晰词组判断，不依赖易碎的任意词距。 */
+function isEnglishExecutionConfirmation(question: string): boolean {
+  const normalized = question.toLowerCase();
+  const hasConfirmationStem = /\b(?:confirm|approve|sure|really|should|whether)\b/u.test(normalized)
+    || normalized.includes('do you want me to');
+  const hasOperationIntent = /\b(?:execute|run|delete|remove|create|write|modify|edit|proceed|continue)\b/u.test(normalized);
+  return hasConfirmationStem && hasOperationIntent;
+}
+
+/** 模型不能把宿主负责的执行确认伪装成“缺少参数”澄清。 */
+function isExecutionConfirmationQuestion(question: string): boolean {
+  if (isMissingParameterQuestion(question)) return false;
+  return isChineseExecutionConfirmation(question) || isEnglishExecutionConfirmation(question);
+}
+
 function capabilityPlanProtocolError(): Error {
   return Object.assign(new Error('CAPABILITY_PLAN_PROTOCOL_INVALID'), {
     code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
@@ -141,13 +173,13 @@ export class AgentLoop {
       if (response.type === 'text') {
         if (context.protocol === 'capability_planner' && !hasTrustedToolResult) {
           const clarification = parseCapabilityPlannerClarification(response.text);
-          if (!clarification) {
+          if (!clarification || isExecutionConfirmationQuestion(clarification.question)) {
             if (correctionUsed) throw capabilityPlanProtocolError();
             correctionUsed = true;
             // 该修复指令不改变本次 tools 或权限，仅要求重发受限协议结果。
             messages.push({
               role: 'system',
-              content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：首次真实工具结果前，只能调用当前提供的工具，或返回严格 JSON {"kind":"clarification_required","question":"非空问题"}。请仅修正一次。'
+              content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：参数齐全时必须立即调用当前提供的工具，不得自行索要执行确认；确认由宿主在工具调用后处理。只有缺失执行必需参数时，才能返回严格 JSON {"kind":"clarification_required","question":"非空问题"}。请仅修正一次。'
             });
             continue;
           }

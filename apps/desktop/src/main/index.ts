@@ -329,7 +329,7 @@ async function createApplicationWindows(
     bridge: explorerPort,
     coordinator: explorerCoordinator,
     showPet: () => pet.showInactive(),
-    reportError: code => console.error('Explorer 桥接不可用。', code)
+    reportError: code => console.error('Explorer 图层桥不可用，不影响聊天、文件与 PowerShell 能力。', code)
   });
   startupCleanup.add(() => explorerComposition.close());
   explorer.on('snapshot', observation => {

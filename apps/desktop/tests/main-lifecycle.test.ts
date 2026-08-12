@@ -11,6 +11,15 @@ import {
 } from '../src/main/lifecycle/main-lifecycle';
 
 describe('Main 通用生命周期', () => {
+  test('Explorer 桥错误日志明确限定为图层能力且不误导本地能力状态', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source).toContain(
+      "console.error('Explorer 图层桥不可用，不影响聊天、文件与 PowerShell 能力。', code)"
+    );
+    expect(source).not.toContain("console.error('Explorer 桥接不可用。', code)");
+  });
+
   test('生产组合根以会话协调器作为唯一聊天入口并先关闭会话', async () => {
     const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
     const beforeQuit = source.slice(source.indexOf("app.on('before-quit'"));

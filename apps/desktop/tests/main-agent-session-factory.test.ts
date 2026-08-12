@@ -81,4 +81,17 @@ describe('Main 能力会话工厂', () => {
     expect(prepared.decision).toBe('confirm');
     expect(prepared.executionRequest.toolName).toBe('create_file');
   });
+
+  test.each(['file', 'powershell'] as const)(
+    '%s 能力规划提示把工具调用与宿主确认职责严格分开',
+    async taskKind => {
+      const session = await createMainAgentSession(input(taskKind));
+      const systemPrompt = session.messages[0]?.content ?? '';
+
+      expect(systemPrompt).toContain('参数齐全时立即调用工具');
+      expect(systemPrompt).toContain('绝不能自行索要操作确认');
+      expect(systemPrompt).toContain('确认完全由宿主在工具调用后生成确认卡');
+      expect(systemPrompt).toContain('澄清仅用于缺失执行必需参数');
+    }
+  );
 });

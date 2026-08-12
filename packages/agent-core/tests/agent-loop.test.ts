@@ -465,6 +465,85 @@ describe('AgentLoop', () => {
     ]);
   });
 
+  test.each([
+    '请提供要删除的文件名',
+    '请说明要运行的脚本'
+  ])('文件规划允许真正缺少执行参数的澄清：%s', async question => {
+    const provider = new ScriptedProvider([{
+      type: 'text',
+      text: JSON.stringify({ kind: 'clarification_required', question })
+    }]);
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    await expect(collectEvents(runContext)).resolves.toContainEqual({
+      type: 'message',
+      text: question
+    });
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test.each([
+    '确定要删除吗？',
+    '你真的要删除吗？',
+    'Do you want me to delete it?',
+    '请确认是否删除 empty 文件夹？'
+  ])('文件规划拒绝模型自行索要执行确认：%s', async question => {
+    const confirmation = {
+      type: 'text' as const,
+      text: JSON.stringify({ kind: 'clarification_required', question })
+    };
+    const provider = new ScriptedProvider([confirmation, confirmation]);
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    await expect(collectEvents(runContext)).rejects.toMatchObject({
+      code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
+    });
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  test('文件规划把模型自行索要执行确认视为协议违约并仅修复一次', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'text',
+        text: '{"kind":"clarification_required","question":"请确认是否删除 empty 文件夹？"}'
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'delete-empty-1',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      }
+    ]);
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    const events = await collectEvents(runContext);
+
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1]?.messages.at(-1)).toEqual(expect.objectContaining({
+      role: 'system',
+      content: expect.stringContaining('不得自行索要执行确认')
+    }));
+    expect(events).not.toContainEqual({ type: 'message', text: '请确认是否删除 empty 文件夹？' });
+    expect(events).toContainEqual({ type: 'phase', phase: 'awaiting_confirmation' });
+    expect(events.at(-1)).toEqual(expect.objectContaining({ type: 'write_request' }));
+  });
+
+  test('文件规划连续两次自行索要执行确认时报告协议违约', async () => {
+    const confirmation = {
+      type: 'text' as const,
+      text: '{"kind":"clarification_required","question":"是否执行删除操作？"}'
+    };
+    const provider = new ScriptedProvider([confirmation, confirmation]);
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    await expect(collectEvents(runContext)).rejects.toMatchObject({
+      code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
+    });
+    expect(provider.requests).toHaveLength(2);
+  });
+
   test('文件规划在修复请求等待期间中止后忽略迟到合法澄清', async () => {
     const controller = new AbortController();
     const provider = new RepairDeferredProvider();
