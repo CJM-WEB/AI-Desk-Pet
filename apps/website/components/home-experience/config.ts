@@ -54,16 +54,15 @@ export const EXPERIENCE_CONFIG = {
       ]
     }
   },
-  brandTransform: {
-    maxRotateX: 8,
-    maxRotateY: 10,
-    maxX: 10,
-    maxY: 8
-  },
   progress: {
     wheelScale: 0.0011,
-    keyboardStep: 0.12,
-    snapThreshold: 0.06
+    wheelIdleMs: 120,
+    wheelLockMs: 800,
+    wheelUnlockDelta: 240,
+    snapDurationMs: 380,
+    followTimeConstantMs: 90,
+    maxFrameDeltaMs: 50,
+    settleEpsilon: 0.0005
   },
   swarm: {
     spawnIntervalMs: [480, 920],

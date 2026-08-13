@@ -1,7 +1,74 @@
 import type { ChapterVisualState } from './types';
-import type { ExperiencePhase } from '../home-experience/types';
 
-export type IntroPhaseEvent = 'drawing-done' | 'settled' | 'skip';
+/** 滚轮手势的累计方向。 */
+export type WheelDirection = -1 | 0 | 1;
+
+/** 用于判断滚轮解锁的纯输入状态。 */
+export interface WheelGestureState {
+  direction: WheelDirection;
+  accumulated: number;
+}
+
+/** 滚轮解锁后交给章节进度的有向余量。 */
+export interface WheelUnlockResult extends WheelGestureState {
+  releasedDelta: number;
+}
+
+/** 将浏览器滚轮单位转换为像素。 */
+export function normalizeWheelDelta(
+  deltaY: number,
+  deltaMode: number,
+  viewportHeight: number
+): number {
+  if (!Number.isFinite(deltaY)) return 0;
+  if (deltaMode === 1) return deltaY * 16;
+  if (deltaMode === 2) return deltaY * Math.max(1, viewportHeight);
+  return deltaY;
+}
+
+/** 累计同方向滚轮输入，并在超过阈值时释放余量。 */
+export function accumulateWheelUnlock(
+  state: WheelGestureState,
+  delta: number,
+  threshold: number
+): WheelUnlockResult {
+  const direction = Math.sign(delta) as WheelDirection;
+  if (direction === 0) return { ...state, releasedDelta: 0 };
+  if (threshold <= 0) {
+    return { direction, accumulated: 0, releasedDelta: delta };
+  }
+  const accumulated = direction === state.direction
+    ? state.accumulated + Math.abs(delta)
+    : Math.abs(delta);
+  const released = Math.max(0, accumulated - threshold);
+  return {
+    direction,
+    accumulated: Math.min(accumulated, threshold),
+    releasedDelta: released === 0 ? 0 : direction * released
+  };
+}
+
+/** 按有限帧间隔指数逼近章节目标进度。 */
+export function dampChapterProgress(
+  current: number,
+  target: number,
+  deltaMs: number,
+  timeConstantMs: number,
+  maximumDeltaMs: number
+): number {
+  const safeDelta = Math.min(maximumDeltaMs, Math.max(0, deltaMs));
+  const alpha = 1 - Math.exp(-safeDelta / Math.max(1, timeConstantMs));
+  return current + (target - current) * alpha;
+}
+
+/** 判断章节进度是否已经逼近目标。 */
+export function hasChapterProgressSettled(
+  current: number,
+  target: number,
+  epsilon: number
+): boolean {
+  return Math.abs(target - current) < epsilon;
+}
 
 export function clampChapterProgress(value: number, chapterCount: number): number {
   const maximum = Math.max(0, chapterCount - 1);
@@ -24,30 +91,6 @@ export function snapChapterProgress(progress: number, chapterCount: number): num
   return clampChapterProgress(Math.round(progress), chapterCount);
 }
 
-export function isIntroPhase(phase: ExperiencePhase): boolean {
-  return phase === 'drawing' || phase === 'settling';
-}
-
-export function reduceIntroPhase(
-  phase: ExperiencePhase,
-  event: IntroPhaseEvent
-): ExperiencePhase {
-  if (event === 'skip') {
-    return isIntroPhase(phase) ? 'interactive' : phase;
-  }
-  if (event === 'drawing-done') {
-    return phase === 'drawing' ? 'settling' : phase;
-  }
-  return phase === 'settling' ? 'interactive' : phase;
-}
-
-export function deriveHomeExperiencePhase(
-  phase: ExperiencePhase,
-  exitProgress: number
-): ExperiencePhase {
-  return phase === 'interactive' && exitProgress > 0 ? 'exiting' : phase;
-}
-
 export function interpolateChapterSnapProgress(
   from: number,
   to: number,
@@ -61,25 +104,19 @@ export function interpolateChapterSnapProgress(
 export function deriveChapterVisualState(
   index: number,
   progress: number,
-  reducedMotion: boolean
+  _reducedMotion: boolean
 ): ChapterVisualState {
   const distance = index - progress;
   const visible = Math.abs(distance) <= 1;
   const opacity = visible ? 1 - Math.min(1, Math.abs(distance)) : 0;
   const exiting = distance < 0;
-  const scale = reducedMotion
-    ? 1
-    : exiting
-      ? 1 - Math.min(1, -distance) * 0.42
-      : 1 + Math.min(1, distance) * 0.32;
 
   return {
     opacity,
-    scale,
-    blurPx: reducedMotion ? 0 : Math.min(1, Math.abs(distance)) * 10,
-    contrast: reducedMotion
-      ? 1
-      : 1 - Math.min(1, Math.abs(distance)) * 0.18,
+    // 章节改为原位直接交接，不再使用前后推拉镜头。
+    scale: 1,
+    blurPx: 0,
+    contrast: 1,
     zIndex: exiting ? 1 : 2,
     visible,
     interactive: Math.abs(distance) < 0.0001

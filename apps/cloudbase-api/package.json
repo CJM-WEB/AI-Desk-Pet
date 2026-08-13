@@ -1,0 +1,22 @@
+{
+  "name": "@myself/cloudbase-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../../tools/build-cloudbase-functions.mjs",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudbase/node-sdk": "^4.0.3",
+    "@cloudbase/signature-nodejs": "^2.0.0",
+    "@myself/shared-types": "workspace:*",
+    "tencentcloud-sdk-nodejs": "^4.1.281",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "typescript": "^5",
+    "vitest": "^3"
+  }
+}

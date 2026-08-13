@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import type { PaymentMethod } from './donation-content';
+import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
+import type { Translate } from '../../i18n/i18n-types';
 import styles from './donation.module.css';
 
 export interface QrDialogProps {
@@ -31,6 +33,10 @@ export function QrDialog({
   motionDisabled = false,
   onClose
 }: QrDialogProps) {
+  const { t: rawTranslate } = useI18n();
+  const t = useCallback<Translate>((key, values) => (
+    interpolateMessage(rawTranslate(key), values)
+  ), [rawTranslate]);
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -137,11 +143,11 @@ export function QrDialog({
         data-testid="qr-panel"
         onClick={(event) => event.stopPropagation()}
       >
-        <h3 id={titleId}>{method.name}付款码</h3>
+        <h3 id={titleId}>{t('donation.qrCode', { method: method.name })}</h3>
         <div className={styles.qrMedia}>
           {imageFailed ? (
             <p className={styles.qrFallback} role="status">
-              付款码暂未配置
+              {t('donation.unconfigured')}
             </p>
           ) : (
             <img
@@ -157,7 +163,7 @@ export function QrDialog({
           ref={closeButtonRef}
           className={styles.qrClose}
           type="button"
-          aria-label="关闭付款码"
+          aria-label={t('donation.closeQrCode')}
           onClick={onClose}
         >
           <X aria-hidden="true" />

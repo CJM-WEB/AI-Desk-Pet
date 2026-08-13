@@ -9,10 +9,7 @@ import {
   waitFor
 } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  useWebsiteController,
-  WHEEL_SNAP_DEBOUNCE_MS
-} from '../components/website-experience/use-website-controller';
+import { useWebsiteController } from '../components/website-experience/use-website-controller';
 
 function createMediaQueryList(matches = false): MediaQueryList {
   return {
@@ -44,7 +41,7 @@ function ControllerHarness({
   staticFallback: boolean;
 }) {
   const controller = useWebsiteController({
-    chapterCount: 5,
+    chapterCount: 6,
     staticFallback
   });
 
@@ -56,12 +53,6 @@ function ControllerHarness({
       data-index={controller.settledIndex}
       data-progress={controller.progress.toFixed(4)}
     >
-      <button type="button" onClick={controller.drawingDone}>
-        完成绘制
-      </button>
-      <button type="button" onClick={controller.settled}>
-        完成落位
-      </button>
       <button type="button" onClick={() => controller.goToAdjacent(1)}>
         下一章节
       </button>
@@ -77,83 +68,153 @@ describe('官网章节控制器', () => {
     vi.unstubAllGlobals();
   });
 
-  it('普通鼠标滚轮突发结束后统一吸附并进入相邻章节', () => {
+  it('滚轮先更新目标且显示进度通过动画帧连续追赶', () => {
     vi.useFakeTimers();
-    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
-
-    for (let index = 0; index < 4; index += 1) {
-      fireEvent.wheel(window, { deltaY: 120 });
-      act(() => {
-        vi.advanceTimersByTime(70);
-      });
-    }
-
-    expect(state.dataset.index).toBe('0');
-    expect(Number(state.dataset.progress)).toBeGreaterThan(0.5);
-
-    act(() => {
-      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
-    });
-
-    expect(state.dataset.index).toBe('1');
-    expect(state.dataset.progress).toBe('1.0000');
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    expect(state.dataset.progress).toBe('0.0000');
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(16); });
+    expect(Number(state.dataset.progress)).toBeGreaterThan(0);
+    expect(Number(state.dataset.progress)).toBeLessThan(0.132);
   });
 
-  it('单个微小滚轮最终返回原章且快速巨大输入只前进相邻一章', () => {
+  it('减少动态效果时达到新手势阈值后直接稳定到相邻章节', () => {
     vi.useFakeTimers();
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    const requestFrame = installAnimationFrameTimers();
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
-    fireEvent.wheel(window, { deltaY: 24 });
-    act(() => {
-      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
-    });
-
-    expect(state.dataset.index).toBe('0');
+    requestFrame.mockClear();
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
     expect(state.dataset.progress).toBe('0.0000');
 
-    for (let index = 0; index < 3; index += 1) {
-      fireEvent.wheel(window, { deltaY: 50_000 });
-      act(() => {
-        vi.advanceTimersByTime(20);
-      });
-    }
-    act(() => {
-      vi.advanceTimersByTime(WHEEL_SNAP_DEBOUNCE_MS + 60);
-    });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
 
+    expect(state.dataset.index).toBe('1');
+    expect(state.dataset.progress).toBe('1.0000');
+    expect(requestFrame).not.toHaveBeenCalled();
+  });
+
+  it('停止 120ms 后用 380ms 吸附并锁住后续 800ms 惯性', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    for (let index = 0; index < 7; index += 1) {
+      fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+      act(() => { vi.advanceTimersByTime(16); });
+    }
+    act(() => { vi.advanceTimersByTime(120 + 400); });
+    expect(state.dataset.index).toBe('1');
+    expect(state.dataset.progress).toBe('1.0000');
+
+    fireEvent.wheel(window, { deltaY: 600, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(700); });
     expect(state.dataset.index).toBe('1');
     expect(state.dataset.progress).toBe('1.0000');
   });
 
-  it('首页边界键打断向下滚轮后恢复吸附且稳定边界不启动动画', () => {
+  it('锁定结束后必须静止并重新累计 240px 才能离开', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+    act(() => { vi.advanceTimersByTime(400); });
+    act(() => { vi.advanceTimersByTime(700); });
+    fireEvent.wheel(window, { deltaY: 40, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(220); });
+
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(state.dataset.progress).toBe('1.0000');
+
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(Number(state.dataset.progress)).toBeGreaterThan(1);
+  });
+
+  it('首页越界滚轮不留累计量，反向后仍需重新累计完整阈值', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.wheel(window, { deltaY: -120, deltaMode: 0 });
+    }
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(state.dataset.progress).toBe('0.0000');
+
+    fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(Number(state.dataset.progress)).toBeGreaterThan(0);
+  });
+
+  it('末页越界滚轮不留累计量，反向后仍需重新累计完整阈值', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
+    installAnimationFrameTimers();
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    for (let index = 0; index < 5; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
+      act(() => { vi.advanceTimersByTime(400); });
+    }
+    act(() => { vi.advanceTimersByTime(920); });
+    expect(state.dataset.progress).toBe('5.0000');
+
+    for (let index = 0; index < 3; index += 1) {
+      fireEvent.wheel(window, { deltaY: 120, deltaMode: 0 });
+    }
+    fireEvent.wheel(window, { deltaY: -120, deltaMode: 0 });
+    fireEvent.wheel(window, { deltaY: -120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(state.dataset.progress).toBe('5.0000');
+
+    fireEvent.wheel(window, { deltaY: -120, deltaMode: 0 });
+    act(() => { vi.advanceTimersByTime(32); });
+    expect(Number(state.dataset.progress)).toBeLessThan(5);
+  });
+
+  it('首页边界键打断向下滚轮后回到当前章节且稳定边界不启动动画', () => {
     vi.useFakeTimers();
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
     const requestFrame = installAnimationFrameTimers();
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     requestFrame.mockClear();
 
     fireEvent.keyDown(window, { key: 'ArrowUp' });
     expect(requestFrame).not.toHaveBeenCalled();
 
     fireEvent.wheel(window, { deltaY: 120 });
+    fireEvent.wheel(window, { deltaY: 120 });
+    fireEvent.wheel(window, { deltaY: 120 });
     act(() => {
       vi.advanceTimersByTime(100);
     });
     expect(Number(state.dataset.progress)).toBeGreaterThan(0);
 
+    requestFrame.mockClear();
     fireEvent.keyDown(window, { key: 'PageUp' });
     expect(requestFrame).toHaveBeenCalledOnce();
     act(() => {
@@ -165,34 +226,38 @@ describe('官网章节控制器', () => {
     expect(state.dataset.progress).toBe('0.0000');
   });
 
-  it('末章边界键打断向上滚轮后恢复吸附且稳定边界不启动动画', () => {
+  it('末章边界键打断向上滚轮后回到当前章节且稳定边界不启动动画', () => {
     vi.useFakeTimers();
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList()));
     const requestFrame = installAnimationFrameTimers();
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
       act(() => {
         vi.advanceTimersByTime(400);
       });
     }
-    expect(state.dataset.index).toBe('4');
-    expect(state.dataset.progress).toBe('4.0000');
+    expect(state.dataset.index).toBe('5');
+    expect(state.dataset.progress).toBe('5.0000');
     requestFrame.mockClear();
 
     fireEvent.keyDown(window, { key: 'PageDown' });
     expect(requestFrame).not.toHaveBeenCalled();
 
+    act(() => {
+      vi.advanceTimersByTime(800);
+    });
+    fireEvent.wheel(window, { deltaY: -120 });
+    fireEvent.wheel(window, { deltaY: -120 });
     fireEvent.wheel(window, { deltaY: -120 });
     act(() => {
       vi.advanceTimersByTime(100);
     });
-    expect(Number(state.dataset.progress)).toBeLessThan(4);
+    expect(Number(state.dataset.progress)).toBeLessThan(5);
 
+    requestFrame.mockClear();
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     expect(requestFrame).toHaveBeenCalledOnce();
     act(() => {
@@ -200,16 +265,16 @@ describe('官网章节控制器', () => {
     });
 
     expect(state.dataset.phase).toBe('interactive');
-    expect(state.dataset.index).toBe('4');
-    expect(state.dataset.progress).toBe('4.0000');
+    expect(state.dataset.index).toBe('5');
+    expect(state.dataset.progress).toBe('5.0000');
   });
 
-  it('drawing 阶段点击下一章节会跳过开场并完成一次相邻推进', () => {
+  it('初始即为交互态且下一章节只推进一次', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
     render(<ControllerHarness staticFallback={false} />);
     const state = screen.getByTestId('controller-state');
 
-    expect(state.dataset.phase).toBe('drawing');
+    expect(state.dataset.phase).toBe('interactive');
     fireEvent.click(screen.getByRole('button', { name: '下一章节' }));
 
     expect(state.dataset.phase).toBe('interactive');
@@ -229,8 +294,6 @@ describe('官网章节控制器', () => {
     );
     const state = screen.getByTestId('controller-state');
 
-    fireEvent.click(screen.getByRole('button', { name: '完成绘制' }));
-    fireEvent.click(screen.getByRole('button', { name: '完成落位' }));
     expect(state.dataset.phase).toBe('interactive');
 
     visibilityState = 'hidden';

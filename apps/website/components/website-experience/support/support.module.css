@@ -1,0 +1,160 @@
+.supportChapter {
+  position: relative;
+  z-index: 60;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  color: #effff8;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.supportHeadline {
+  position: relative;
+  width: min(43vw, 760px);
+  margin: 0;
+  color: transparent;
+  background: linear-gradient(92deg, #bdfcf5 0%, #cff8d5 32%, #f6f7a7 67%, #f7dcc8 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  filter: drop-shadow(0 0.055em 0 rgba(2, 7, 8, 0.68));
+  font: 900 clamp(2.2rem, 5.1vw, 6.8rem)/0.96 "Arial Black", "Segoe UI", sans-serif;
+  letter-spacing: -0.075em;
+  text-wrap: balance;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.headlineTilt {
+  position: absolute !important;
+  z-index: 64;
+  pointer-events: none;
+}
+
+.feedbackHeadlineTilt {
+  top: 5vh;
+  left: 4vw;
+}
+
+.feedbackHeadline {
+  transform: translate3d(0, var(--support-title-top-y), 0);
+}
+
+.donationHeadlineTilt {
+  right: 4vw;
+  bottom: 5vh;
+}
+
+.donationHeadline {
+  text-align: right;
+  transform: translate3d(0, var(--support-title-bottom-y), 0);
+}
+
+/* 透明 DOM 与 WebGL 六块玻璃严格同位，只承担点击、键盘与滚轮语义。 */
+.actionGroup {
+  position: absolute;
+  z-index: 65;
+  width: clamp(260px, 30vw, 560px);
+  height: clamp(230px, 34vh, 380px);
+  outline: none;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.feedbackGroup {
+  left: 8vw;
+  bottom: 7vh;
+}
+
+.paymentGroup {
+  top: 7vh;
+  right: 8vw;
+}
+
+.glassButton {
+  position: absolute;
+  top: 50%;
+  left: 4%;
+  width: 92%;
+  height: 48%;
+  min-width: 44px;
+  min-height: 56px;
+  padding: 0;
+  border: 0;
+  border-radius: clamp(28px, 4vw, 64px);
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+  font: 900 clamp(1.45rem, 3.2vw, 4rem)/1 "Arial Black", "Segoe UI", sans-serif;
+  opacity: var(--support-button-opacity);
+  filter: blur(var(--support-button-blur));
+  transform: translate3d(0, calc(-50% + var(--support-button-offset)), 0)
+    scale(var(--support-button-scale));
+  transform-origin: center;
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.glassButton:disabled { cursor: default; }
+
+.glassButton:focus-visible,
+.actionGroup:focus-visible {
+  outline: 2px solid #bdfcf5;
+  outline-offset: 5px;
+}
+
+.statusNotice {
+  position: absolute;
+  z-index: 80;
+  top: max(22px, env(safe-area-inset-top));
+  left: 50%;
+  width: min(560px, calc(100% - 40px));
+  padding: 10px 18px;
+  border: 1px solid rgba(224, 246, 239, 0.16);
+  border-radius: 999px;
+  background: rgba(8, 20, 19, 0.48);
+  color: #effff8;
+  text-align: center;
+  transform: translateX(-50%);
+  backdrop-filter: blur(18px) saturate(118%);
+}
+
+.statusNotice p { display: inline; margin: 0 5px; }
+.statusNotice a { color: #fff6ac; }
+
+@media (max-width: 760px) {
+  .supportHeadline {
+    width: 48vw;
+    font-size: clamp(1.55rem, 7vw, 3.1rem);
+  }
+  .actionGroup {
+    width: min(47vw, 360px);
+    height: min(36vh, 320px);
+  }
+
+  .feedbackGroup { left: 2vw; bottom: 5vh; }
+  .paymentGroup { top: 5vh; right: 2vw; }
+  .glassButton { font-size: clamp(1.1rem, 5.8vw, 2.4rem); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glassButton { transition: none; }
+}
+
+.supportChapter[data-motion-disabled='true'] .glassButton {
+  transition: none;
+}

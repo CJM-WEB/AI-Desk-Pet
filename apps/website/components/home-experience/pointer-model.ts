@@ -1,5 +1,4 @@
-import { EXPERIENCE_CONFIG } from './config';
-import type { BrandTransformLimits, PointerPoint } from './types';
+import type { PointerPoint } from './types';
 
 interface ViewportSize {
   width: number;
@@ -12,41 +11,6 @@ function finite(value: number, fallback = 0): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
-}
-
-function canonicalizeZero(value: number): number {
-  return value === 0 ? 0 : value;
-}
-
-function normalizeFromCenter(value: number, size: number): number {
-  if (!Number.isFinite(size) || size <= 0) {
-    return 0;
-  }
-
-  return clamp(((finite(value) - (size / 2)) / (size / 2)), -1, 1);
-}
-
-/**
- * 将视口指针映射为品牌元素可直接消费的受限变换值。
- */
-export function computeBrandTransform(
-  pointer: PointerPoint,
-  viewport: ViewportSize,
-  limits: BrandTransformLimits = EXPERIENCE_CONFIG.brandTransform
-): { rotateX: number; rotateY: number; x: number; y: number } {
-  if (!Number.isFinite(pointer.x) || !Number.isFinite(pointer.y)) {
-    return { rotateX: 0, rotateY: 0, x: 0, y: 0 };
-  }
-
-  const normalizedX = normalizeFromCenter(pointer.x, viewport.width);
-  const normalizedY = normalizeFromCenter(pointer.y, viewport.height);
-
-  return {
-    rotateX: canonicalizeZero(normalizedY * -limits.maxRotateX),
-    rotateY: canonicalizeZero(normalizedX * limits.maxRotateY),
-    x: canonicalizeZero(normalizedX * limits.maxX),
-    y: canonicalizeZero(normalizedY * limits.maxY)
-  };
 }
 
 /**

@@ -1,3 +1,5 @@
+import type { SubmissionReceipt } from '@myself/shared-types';
+
 export const feedbackKinds = ['feedback', 'suggestion'] as const;
 
 export type FeedbackKind = (typeof feedbackKinds)[number];
@@ -39,8 +41,9 @@ export interface FeedbackStorageDocument {
 
 export interface FeedbackRepository {
   list(kind: FeedbackKind): readonly FeedbackEntry[];
-  create(input: CreateFeedbackInput): FeedbackEntry;
-  toggleLike(id: string, localUserId: string): FeedbackEntry;
+  refresh(kind: FeedbackKind): Promise<void>;
+  create(input: CreateFeedbackInput): Promise<SubmissionReceipt>;
+  toggleLike(id: string): Promise<FeedbackEntry>;
   subscribe(listener: () => void): () => void;
 }
 
@@ -58,6 +61,7 @@ export interface FeedbackStatusNotice {
   code:
     | 'STORAGE_DATA_RECOVERED'
     | 'STORAGE_READ_FAILED'
-    | 'STORAGE_WRITE_FAILED';
+    | 'STORAGE_WRITE_FAILED'
+    | 'CLOUD_READ_FAILED';
   message: string;
 }

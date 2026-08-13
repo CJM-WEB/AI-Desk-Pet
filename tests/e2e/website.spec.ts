@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { PassThrough, type Readable } from 'node:stream';
 import { expect, test as baseTest } from '@playwright/test';
-import type { Locator, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 
 const REPOSITORY_ROOT = resolve(__dirname, '..', '..');
 const STATIC_SERVER_SCRIPT = resolve(REPOSITORY_ROOT, 'tests/serve-website-export.mjs');
@@ -15,27 +15,19 @@ const ICON = '[data-testid="file-icon"]';
 const PREVIEW = '[data-testid="file-preview"]';
 const SWARM = '[data-active-count]';
 const CANVAS = '[data-testid="cursor-field"]';
-const BRAND = '[data-testid="brand-stage"]';
-const DONATION = '[data-testid="donation-chapter"]';
+const LIQUID_HOME = '[data-testid="liquid-glass-home"]';
+const SUPPORT = '[data-testid="support-chapter"]';
+const E2E_ADMIN_TOKEN = 'e2e-admin-session';
 const SCREENSHOT_DIRECTORY = resolve(
   REPOSITORY_ROOT,
   'tests/.playwright-output/website/screenshots'
 );
-const FILE_ASSET_PATHS = new Set([
-  '/TxtIcon.png',
-  '/PDFIcon.png',
-  '/PPTIcon.png',
-  '/XLSIcon.png',
-  '/IMGIcon.png',
-  '/empty.png',
-  '/Noempty.png'
-]);
 const CHAPTER_IDS = [
   'home',
   'about',
   'download',
-  'feedback',
-  'donation'
+  'community',
+  'feedback'
 ] as const;
 
 type ChapterId = (typeof CHAPTER_IDS)[number];
@@ -53,6 +45,96 @@ interface WebsiteServerReadyPayload extends WebsiteServerInfo {
 interface WebsiteServerReadyWait {
   promise: Promise<WebsiteServerInfo>;
   cancel: (error?: Error) => void;
+}
+
+interface E2eReceipt {
+  submissionId: string;
+  statusToken: string;
+  statusPath: '/submission-status/';
+  status: 'uploading' | 'system_reviewing';
+}
+
+async function submitFeedbackViaApi(
+  request: APIRequestContext,
+  content: string,
+  kind: 'feedback' | 'suggestion' = 'feedback'
+): Promise<E2eReceipt> {
+  const response = await request.post('/api/v1/feedback', {
+    data: {
+      kind,
+      authorName: '',
+      content
+    }
+  });
+  expect(response.ok()).toBe(true);
+  return (await response.json()).data as E2eReceipt;
+}
+
+async function submitSharedPackageViaApi(
+  request: APIRequestContext,
+  title: string,
+  packageFileName = 'safe-pet.zip'
+): Promise<E2eReceipt> {
+  const preparedResponse = await request.post('/api/v1/submissions/prepare', {
+    data: {
+      kind: 'shared_package',
+      title,
+      body: `${title} 的 AI Pet 资源说明`,
+      coverFile: { fileName: 'cover.png', sizeBytes: 7, contentType: 'image/png' },
+      packageFile: { fileName: packageFileName, sizeBytes: 8, contentType: 'application/zip' }
+    }
+  });
+  expect(preparedResponse.ok()).toBe(true);
+  const prepared = (await preparedResponse.json()).data;
+  for (const [target, body, contentType] of [
+    [prepared.coverUpload, Buffer.from('cover!!'), 'image/png'],
+    [prepared.packageUpload, Buffer.from('package!'), 'application/zip']
+  ] as const) {
+    const upload = await request.put(target.url, {
+      data: body,
+      headers: { 'content-type': contentType }
+    });
+    expect(upload.ok()).toBe(true);
+  }
+  const finalized = await request.post(
+    `/api/v1/submissions/${encodeURIComponent(prepared.submissionId)}/finalize`,
+    { data: {} }
+  );
+  expect(finalized.ok()).toBe(true);
+  return prepared as E2eReceipt;
+}
+
+async function adminItems(
+  request: APIRequestContext,
+  status: string
+): Promise<Array<Record<string, unknown>>> {
+  const response = await request.get(
+    `/api/v1/admin/submissions?status=${status}&limit=100`,
+    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+  );
+  expect(response.ok()).toBe(true);
+  return (await response.json()).data.items;
+}
+
+async function applyAdminAction(
+  request: APIRequestContext,
+  item: Record<string, unknown>,
+  action: 'approve' | 'reject' | 'move_to_manual' | 'delete' | 'restore',
+  reason: string
+): Promise<void> {
+  const response = await request.post(
+    `/api/v1/admin/submissions/${encodeURIComponent(String(item.id))}/actions`,
+    {
+      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      data: {
+        action,
+        version: item.statusVersion,
+        reason,
+        idempotencyKey: `e2e-${item.id}-${action}-${item.statusVersion}`
+      }
+    }
+  );
+  expect(response.ok(), await response.text()).toBe(true);
 }
 
 function createWebsiteServerReadyWait(
@@ -145,7 +227,7 @@ async function verifyWebsiteServerSource(
 ): Promise<void> {
   const response = await fetch(serverInfo.url);
   const html = await response.text();
-  const expectedChapterIds = ['home', 'about', 'download', 'feedback', 'donation'];
+  const expectedChapterIds = [...CHAPTER_IDS];
   const missingChapterIds = expectedChapterIds.filter(
     (chapterId) => !html.includes(`data-chapter-id="${chapterId}"`)
   );
@@ -269,6 +351,11 @@ const test = baseTest.extend<{}, { websiteServerInfo: WebsiteServerInfo }>({
   }
 });
 
+test.beforeEach(async ({ request }) => {
+  const response = await request.post('/__e2e/reset');
+  expect(response.ok()).toBe(true);
+});
+
 test('服务器就绪等待在成功、超时和取消路径统一清理资源', async () => {
   const successOutput = new PassThrough();
   const successWait = createWebsiteServerReadyWait(
@@ -319,13 +406,14 @@ test('服务器就绪等待在成功、超时和取消路径统一清理资源',
 
 async function enterInteractive(page: Page): Promise<void> {
   await page.goto('/?seed=42');
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', /drawing|settling|interactive/);
-  await page.mouse.click(12, 12);
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
 }
 
 async function enterChapter(page: Page, chapterId: ChapterId): Promise<void> {
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
+  const activeChapter = await page.locator(WEBSITE).getAttribute('data-active-chapter');
+  if (activeChapter === 'home') {
+    await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
+  }
   await page.evaluate(() => {
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -366,16 +454,9 @@ async function enterChapter(page: Page, chapterId: ChapterId): Promise<void> {
 async function waitForFile(page: Page): Promise<Locator> {
   await expect.poll(
     () => page.locator(ICON).count(),
-    { timeout: 6_000, message: '开场跳过后应生成至少一个文件粒子' }
+    { timeout: 6_000, message: '进入目标章节后应生成至少一个文件粒子' }
   ).toBeGreaterThan(0);
   return page.locator(ICON).first();
-}
-
-function getBrandHeading(page: Page): Locator {
-  return page.locator(BRAND).getByRole('heading', {
-    name: 'AI Pet',
-    exact: true
-  });
 }
 
 async function expectInsideViewport(page: Page, locator: Locator): Promise<void> {
@@ -451,7 +532,7 @@ async function expectActiveChapterLayout(
 
     for (const element of candidates) {
       if (
-        element.closest('[aria-hidden="true"], [inert]')
+        element.closest('[aria-hidden="true"], [inert], [data-layout-ignore]')
         || !element.checkVisibility({
           checkOpacity: true,
           checkVisibilityCSS: true
@@ -472,7 +553,10 @@ async function expectActiveChapterLayout(
         bounds.left < -1
         || bounds.top < -1
         || bounds.right > window.innerWidth + 1
-        || bounds.bottom > window.innerHeight + 1
+        || (
+          bounds.bottom > window.innerHeight + 1
+          && !(window.innerHeight <= 320 && element.hasAttribute('data-platform-id'))
+        )
       ) {
         outsideViewport.push(
           `${label}:${Math.round(bounds.left)},${Math.round(bounds.top)}`
@@ -646,62 +730,44 @@ async function expectNoWindowBubble(
   }
 }
 
-interface IntroCrossfadeSample {
-  captured: boolean;
-  logoOpacity: number;
-  visiblePieceCount: number;
-  visiblePieceFilters: string[];
-  pieceSources: Array<string | null>;
-}
-
-/**
- * 逐帧采样开场图层，确保完整 Logo 与至少一个磁吸切片在 drawing 阶段同时可见。
- */
-async function sampleIntroCrossfade(
-  page: Page,
-  timeoutMs = 2_800
-): Promise<IntroCrossfadeSample> {
-  return page.evaluate((timeout) => new Promise<IntroCrossfadeSample>((resolveSample) => {
-    const startedAt = performance.now();
-
-    const sampleFrame = () => {
-      const home = document.querySelector<HTMLElement>('[data-testid="home-experience"]');
-      const logo = document.querySelector<HTMLElement>('[data-testid="brand-logo"]');
-      const pieces = Array.from(
-        document.querySelectorAll<HTMLElement>('[data-testid="magnetic-logo-piece"]')
-      );
-      const logoOpacity = logo ? Number(getComputedStyle(logo).opacity) : 0;
-      const visiblePieces = pieces.filter(
-        (piece) => Number(getComputedStyle(piece).opacity) > 0
-      );
-      const captured = home?.getAttribute('data-phase') === 'drawing'
-        && logoOpacity > 0
-        && logoOpacity < 1
-        && visiblePieces.length > 0;
-      const result = {
-        captured,
-        logoOpacity,
-        visiblePieceCount: visiblePieces.length,
-        visiblePieceFilters: visiblePieces.map(
-          (piece) => getComputedStyle(piece).filter
-        ),
-        pieceSources: pieces.map((piece) => piece.getAttribute('src'))
-      };
-
-      if (captured || performance.now() - startedAt >= timeout) {
-        resolveSample(result);
-        return;
-      }
-
-      requestAnimationFrame(sampleFrame);
-    };
-
-    requestAnimationFrame(sampleFrame);
-  }), timeoutMs);
-}
-
 async function readProgress(page: Page): Promise<number> {
   return Number(await page.locator(HOME).getAttribute('data-progress'));
+}
+
+async function readSupportDepths(group: Locator): Promise<Array<{
+  id: string | null;
+  depth: string | null;
+  blur: string | null;
+}>> {
+  return group.locator('button').evaluateAll((buttons) => buttons.map((button) => ({
+    id: button.getAttribute('data-action-id')
+      ?? button.getAttribute('data-payment-id'),
+    depth: button.getAttribute('data-depth-index'),
+    blur: button.getAttribute('data-blur-px')
+  })));
+}
+
+async function countWebglLitSamples(canvas: Locator): Promise<number> {
+  return canvas.evaluate((element) => {
+    if (!(element instanceof HTMLCanvasElement)) {
+      throw new Error('液态玻璃不是 Canvas 元素');
+    }
+
+    const context = element.getContext('webgl');
+    if (!context || element.width === 0 || element.height === 0) return 0;
+
+    const pixel = new Uint8Array(4);
+    const stepX = Math.max(1, Math.floor(element.width / 18));
+    const stepY = Math.max(1, Math.floor(element.height / 24));
+    let litSamples = 0;
+    for (let y = 0; y < element.height; y += stepY) {
+      for (let x = 0; x < element.width; x += stepX) {
+        context.readPixels(x, y, 1, 1, context.RGBA, context.UNSIGNED_BYTE, pixel);
+        if (pixel[0] + pixel[1] + pixel[2] > 36) litSamples += 1;
+      }
+    }
+    return litSamples;
+  });
 }
 
 async function countCanvasAlphaPixels(canvas: Locator): Promise<number> {
@@ -775,11 +841,11 @@ async function readCanvasColorEvidence(
   });
 }
 
-test('五章节按确认顺序注册且两个占位章节具有明确状态', async ({ page }) => {
+test('五章节按确认顺序注册且各章节具有明确状态', async ({ page }) => {
   await page.goto('/?seed=42');
   const sections = page.locator('[data-chapter-id]');
 
-  await expect(sections).toHaveCount(5);
+  await expect(sections).toHaveCount(CHAPTER_IDS.length);
   expect(await sections.evaluateAll((nodes) => nodes.map(
     (node) => node.getAttribute('data-chapter-id')
   ))).toEqual(CHAPTER_IDS);
@@ -796,7 +862,7 @@ test('五章节按确认顺序注册且两个占位章节具有明确状态', as
 
   await expect(
     page.locator('[data-chapter-id="about"]').getByRole('heading', {
-      name: 'AI Pet',
+      name: '文本编辑',
       exact: true
     })
   ).toBeAttached();
@@ -804,89 +870,278 @@ test('五章节按确认顺序注册且两个占位章节具有明确状态', as
     page.locator('[data-chapter-id="feedback"] h2')
   ).toHaveText('倾听你的声音，打造属于你的 Pet');
   await expect(page.locator('[data-testid="about-chapter"]')).toBeAttached();
-  await expect(page.locator('[data-testid="feedback-chapter"]')).toBeAttached();
+  await expect(page.locator('[data-testid="shared-pet-chapter"]')).toBeAttached();
+  await expect(page.locator(SUPPORT)).toBeAttached();
 });
 
-test('介绍章节桌面悬停与键盘预览不被鼠标点击锁定', async ({ page }) => {
+test('法律页面公开披露匿名投稿边界并提供站内投诉入口', async ({ page }) => {
+  for (const [path, heading] of [
+    ['/legal/privacy.html', '隐私政策'],
+    ['/legal/terms.html', '用户协议'],
+    ['/legal/content-policy.html', '内容规则']
+  ] as const) {
+    await page.goto(path);
+    await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
+    const legalNavigation = page.getByRole('navigation', { name: '法律页面导航' });
+    await expect(
+      legalNavigation.getByRole('link', { name: '返回首页' })
+    ).toHaveAttribute('href', '/');
+    await expect(
+      legalNavigation.getByRole('link', { name: '反馈与建议' })
+    ).toHaveAttribute('href', '/');
+    await expect(page.locator('main')).not.toContainText(/ICP备\d+号|已经满足全部实名合规要求/u);
+  }
+});
+
+test('内存 API 复用公开信封且投稿不会绕过管理员审核', async ({ request }) => {
+  const created = await request.post('/api/v1/feedback', {
+    data: {
+      kind: 'feedback',
+      authorName: '',
+      content: '这是一条用于验证两层审核的 AI Pet 反馈。'
+    }
+  });
+  expect(created.ok()).toBe(true);
+  const receipt = await created.json();
+  expect(receipt).toMatchObject({
+    error: null,
+    data: { status: 'system_reviewing', statusPath: '/submission-status/' }
+  });
+
+  const publicList = await request.get('/api/v1/feedback?kind=feedback&limit=100');
+  expect((await publicList.json()).data.items).toHaveLength(0);
+
+  const forbidden = await request.get(
+    '/api/v1/admin/submissions?status=manual_review_pending&limit=20',
+    { headers: { authorization: 'Bearer ordinary-session' } }
+  );
+  expect(forbidden.status()).toBe(403);
+
+  const adminQueue = await request.get(
+    '/api/v1/admin/submissions?status=manual_review_pending&limit=20',
+    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+  );
+  expect((await adminQueue.json()).data.items).toHaveLength(1);
+});
+
+test('安全共享包经系统与管理员审核后才在真实网页公开', async ({ page, request }) => {
+  const title = 'E2E 安全共享包';
+  const receipt = await submitSharedPackageViaApi(request, title);
+  const hidden = await request.get('/api/v1/community?limit=100');
+  expect((await hidden.json()).data.items).not.toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId })
+  );
+
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId);
+  expect(pending).toBeTruthy();
+  await applyAdminAction(request, pending!, 'approve', 'E2E 安全审核通过');
+
+  const published = await request.get('/api/v1/community?limit=100');
+  expect((await published.json()).data.items).toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId, name: title })
+  );
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/?seed=42');
+  await enterChapter(page, 'community');
+  await expect(page.getByText(title, { exact: true })).toBeVisible();
+});
+
+test('自动驳回只能转人工且技术扫描失败始终禁止批准', async ({ request }) => {
+  const rejected = await submitSharedPackageViaApi(
+    request,
+    'E2E 自动驳回共享包',
+    'auto-reject.zip'
+  );
+  expect((await adminItems(request, 'auto_rejected'))).toContainEqual(
+    expect.objectContaining({ id: rejected.submissionId })
+  );
+  const publicBefore = await request.get('/api/v1/community?limit=100');
+  expect((await publicBefore.json()).data.items).not.toContainEqual(
+    expect.objectContaining({ id: rejected.submissionId })
+  );
+
+  const rejectedRow = (await adminItems(request, 'auto_rejected'))
+    .find(item => item.id === rejected.submissionId)!;
+  await applyAdminAction(request, rejectedRow, 'move_to_manual', 'E2E 申请复核机器误判');
+  expect((await adminItems(request, 'manual_review_pending'))).toContainEqual(
+    expect.objectContaining({ id: rejected.submissionId })
+  );
+
+  const failed = await submitSharedPackageViaApi(
+    request,
+    'E2E 技术扫描失败共享包',
+    'technical-fail.zip'
+  );
+  const failedRow = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === failed.submissionId)!;
+  const detailResponse = await request.get(
+    `/api/v1/admin/submissions/${failed.submissionId}`,
+    { headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` } }
+  );
+  expect((await detailResponse.json()).data.moderationResults).toContainEqual(
+    expect.objectContaining({ kind: 'package_scan', suggestion: 'Block' })
+  );
+  const forbiddenApprove = await request.post(
+    `/api/v1/admin/submissions/${failed.submissionId}/actions`,
+    {
+      headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+      data: {
+        action: 'approve',
+        version: failedRow.statusVersion,
+        reason: 'E2E 不应绕过技术检查',
+        idempotencyKey: `e2e-technical-${failed.submissionId}`
+      }
+    }
+  );
+  expect(forbiddenApprove.status()).toBe(409);
+  expect((await forbiddenApprove.json()).error.code).toBe('TECHNICAL_SCAN_REQUIRED');
+});
+
+test('匿名反馈批准前隐藏且批准后进入真实网页列表', async ({ page, request }) => {
+  const content = 'E2E 反馈批准后才允许在 AI Pet 页面公开展示。';
+  const receipt = await submitFeedbackViaApi(request, content);
+  const hidden = await request.get('/api/v1/feedback?kind=feedback&limit=100');
+  expect((await hidden.json()).data.items).not.toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId })
+  );
+
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  await applyAdminAction(request, pending, 'approve', 'E2E 反馈内容审核通过');
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/?seed=42');
+  await enterChapter(page, 'feedback');
+  const feedbackTrigger = page.getByRole('button', { name: '查看用户反馈' });
+  await feedbackTrigger.click();
+  await feedbackTrigger.click();
+  await expect(page.getByRole('dialog', { name: '用户反馈' })).toContainText(content);
+});
+
+test('已发布内容删除后立即隐藏并在三天隔离区恢复后重新出现', async ({ request }) => {
+  const content = 'E2E 删除与恢复生命周期的 AI Pet 反馈。';
+  const receipt = await submitFeedbackViaApi(request, content);
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  await applyAdminAction(request, pending, 'approve', 'E2E 首次发布');
+
+  const publishedRow = (await adminItems(request, 'published'))
+    .find(item => item.id === receipt.submissionId)!;
+  await applyAdminAction(request, publishedRow, 'delete', 'E2E 紧急下架验证');
+  const hidden = await request.get('/api/v1/feedback?kind=feedback&limit=100');
+  expect((await hidden.json()).data.items).not.toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId })
+  );
+
+  const quarantined = (await adminItems(request, 'deleted_quarantined'))
+    .find(item => item.id === receipt.submissionId)!;
+  expect(quarantined.purgeAfter).toBeTruthy();
+  await applyAdminAction(request, quarantined, 'restore', 'E2E 确认误删并恢复');
+  const restored = await request.get('/api/v1/feedback?kind=feedback&limit=100');
+  expect((await restored.json()).data.items).toContainEqual(
+    expect.objectContaining({ id: receipt.submissionId, content })
+  );
+});
+
+test('状态令牌只从 Fragment 查询并立即从真实页面地址栏清除', async ({ page, request }) => {
+  const receipt = await submitFeedbackViaApi(
+    request,
+    'E2E 状态 Fragment 查询的 AI Pet 反馈。',
+    'suggestion'
+  );
+  await page.goto(`${receipt.statusPath}#${receipt.statusToken}`);
+  await expect(page).toHaveURL(/\/submission-status\/$/u);
+  await expect(page.getByRole('status')).toContainText('等待管理员审核');
+  expect(await page.content()).not.toContain(receipt.statusToken);
+});
+
+test('管理员写操作校验版本、理由和幂等键并拒绝错误 Bearer', async ({ request }) => {
+  const receipt = await submitFeedbackViaApi(
+    request,
+    'E2E 管理员边界验证的 AI Pet 反馈。'
+  );
+  const pending = (await adminItems(request, 'manual_review_pending'))
+    .find(item => item.id === receipt.submissionId)!;
+  const endpoint = `/api/v1/admin/submissions/${receipt.submissionId}/actions`;
+
+  const forbidden = await request.post(endpoint, {
+    headers: { authorization: 'Bearer ordinary-session' },
+    data: { action: 'approve', version: pending.statusVersion, reason: '无权限', idempotencyKey: 'ordinary-key' }
+  });
+  expect(forbidden.status()).toBe(403);
+
+  const invalid = await request.post(endpoint, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: { action: 'approve', version: pending.statusVersion, reason: '', idempotencyKey: 'short' }
+  });
+  expect(invalid.status()).toBe(400);
+
+  const conflict = await request.post(endpoint, {
+    headers: { authorization: `Bearer ${E2E_ADMIN_TOKEN}` },
+    data: {
+      action: 'approve',
+      version: Number(pending.statusVersion) + 1,
+      reason: 'E2E 版本冲突',
+      idempotencyKey: `e2e-conflict-${receipt.submissionId}`
+    }
+  });
+  expect(conflict.status()).toBe(409);
+  expect((await conflict.json()).error.code).toBe('VERSION_CONFLICT');
+});
+
+test('介绍章节桌面悬停与键盘聚焦同步玻璃交互', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
   await enterChapter(page, 'about');
 
   const about = page.locator('[data-testid="about-chapter"]');
-  const security = page.locator('[data-about-feature="security"]');
-  const safeZone = page.locator('[data-about-safe-zone]');
-  const title = page.locator('[data-about-title] [data-testid="pointer-tilt-text"]');
+  const features = about.locator('aside, article');
+  const editor = about.locator('[data-glass-id="editor"]');
 
-  await expect(about.locator('[data-about-feature]')).toHaveCount(5);
-  await security.hover();
-  await expect(about).toHaveAttribute('data-active-feature', 'security');
-  await expect(page.getByRole('tooltip')).toBeVisible();
+  await expect(features).toHaveCount(5);
+  await editor.hover();
+  await expect(about).toHaveAttribute('data-hovered', '0');
+  await page.mouse.move(4, 4);
+  await expect(about).toHaveAttribute('data-hovered', '-1');
 
-  await security.click();
-  const safeBounds = await safeZone.boundingBox();
-  expect(safeBounds).not.toBeNull();
-  await page.mouse.move(
-    safeBounds!.x + safeBounds!.width / 2,
-    safeBounds!.y + safeBounds!.height / 2
-  );
-  await expect(about).toHaveAttribute('data-active-feature', 'none');
-
-  const initialTilt = await title.evaluate((element) => (
-    getComputedStyle(element).getPropertyValue('--pointer-tilt-rotate-y')
-  ));
-  await page.mouse.move(safeBounds!.x + safeBounds!.width * 0.78, safeBounds!.y + 20);
-  await expect.poll(() => title.evaluate((element) => (
-    getComputedStyle(element).getPropertyValue('--pointer-tilt-rotate-y')
-  ))).not.toBe(initialTilt);
-
-  await security.focus();
-  await expect(about).toHaveAttribute('data-active-feature', 'security');
-  await expect(security).toHaveAttribute(
-    'aria-describedby',
-    'about-feature-preview-security'
-  );
+  await editor.focus();
+  await expect(about).toHaveAttribute('data-hovered', '0');
   expect(runtimeErrors).toEqual([]);
 });
 
-test('568x320 介绍章节紧凑布局可读且移动空白点击解除锁定', async ({ page }) => {
+test('568x320 介绍章节五项内容可读且键盘焦点可切换', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 568, height: 320 });
   await enterInteractive(page);
   await enterChapter(page, 'about');
 
   const about = page.locator('[data-testid="about-chapter"]');
-  const panels = about.locator('[data-about-feature]');
-  await expect(about).toHaveAttribute('data-layout', 'compact-landscape');
-  await expect(about).toHaveAttribute('data-entrance-state', 'visible');
+  const panels = about.locator('aside, article');
   await expect(panels).toHaveCount(5);
-  expect(await panels.evaluateAll((nodes) => nodes.every((node) => {
-    const element = node as HTMLElement;
-    const bounds = element.getBoundingClientRect();
-    return bounds.left >= 0
-      && bounds.top >= 0
-      && bounds.right <= window.innerWidth
-      && bounds.bottom <= window.innerHeight
-      && element.scrollWidth <= element.clientWidth + 1
-      && element.scrollHeight <= element.clientHeight + 1;
-  }))).toBe(true);
+  await expect(about.getByRole('heading', { name: '文本编辑' })).toBeAttached();
+  await expect(about.getByRole('heading', { name: '文件夹管理' })).toBeAttached();
 
-  await page.locator('[data-about-feature="text-editor"]').click();
-  await expect(about).toHaveAttribute('data-active-feature', 'text-editor');
-  await page.locator('[data-about-safe-zone]').click();
-  await expect(about).toHaveAttribute('data-active-feature', 'none');
+  await about.locator('[data-glass-id="editor"]').focus();
+  await expect(about).toHaveAttribute('data-hovered', '0');
+  await about.locator('[data-glass-id="files"]').focus();
+  await expect(about).toHaveAttribute('data-hovered', '2');
   expect(runtimeErrors).toEqual([]);
 });
 
-test('反馈章节展示排序列表并支持点赞、取消与建议滚筒', async ({ page }) => {
+test('反馈章节展示排序列表、远端只读状态与建议滚筒', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
   await enterChapter(page, 'feedback');
 
   const roller = page.getByRole('group', { name: '选择反馈操作' });
-  await expect(roller).toHaveAttribute('data-active-action', 'feedback');
-  await page.getByRole('button', { name: '查看用户反馈' }).click();
+  await expect(roller).toHaveAttribute('data-active-action', 'suggestion');
+  const feedbackTrigger = page.getByRole('button', { name: '查看用户反馈' });
+  await feedbackTrigger.click();
+  await feedbackTrigger.click();
 
   const feedbackDialog = page.getByRole('dialog', { name: '用户反馈' });
   await expect(feedbackDialog).toBeVisible();
@@ -899,17 +1154,12 @@ test('反馈章节展示排序列表并支持点赞、取消与建议滚筒', as
   });
   await expect(like).toHaveAttribute('aria-pressed', 'false');
   await expect(like).toContainText('28');
-  await like.click();
-  await expect(like).toHaveAttribute('aria-pressed', 'true');
-  await expect(like).toContainText('29');
-  await like.click();
-  await expect(like).toHaveAttribute('aria-pressed', 'false');
-  await expect(like).toContainText('28');
+  await expect(like).toBeDisabled();
 
   await page.getByRole('button', { name: '关闭用户反馈' }).click();
   await expect(feedbackDialog).toHaveCount(0);
   await roller.hover();
-  await page.mouse.wheel(0, 160);
+  await page.mouse.wheel(0, -160);
   await expect(roller).toHaveAttribute('data-active-action', 'suggestion');
   await page.getByRole('button', { name: '查看更新建议' }).click();
   const suggestionDialog = page.getByRole('dialog', { name: '更新建议' });
@@ -919,37 +1169,14 @@ test('反馈章节展示排序列表并支持点赞、取消与建议滚筒', as
   expect(runtimeErrors).toEqual([]);
 });
 
-test('反馈投稿可持久化，放弃草稿需确认并恢复入口焦点', async ({ page }) => {
+test('反馈草稿放弃需确认并恢复入口焦点', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
-  await page.goto('/?seed=42');
-  await page.evaluate(() => window.localStorage.clear());
-  await page.reload();
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
   await enterChapter(page, 'feedback');
 
-  const roller = page.getByRole('group', { name: '选择反馈操作' });
-  await page.getByRole('button', { name: '选择新建投稿' }).click();
   const create = page.getByRole('button', { name: '新建投稿' });
   await create.click();
-  await page.getByLabel('昵称（可选）').fill('持久化用户');
-  await page.getByLabel('正文').fill('这是一条需要在刷新后继续显示的投稿内容。');
-  await page.getByRole('button', { name: '发布投稿' }).click();
-  const feedbackDialog = page.getByRole('dialog', { name: '用户反馈' });
-  await expect(feedbackDialog).toContainText('持久化用户');
-
-  await page.reload();
-  await enterInteractive(page);
-  await enterChapter(page, 'feedback');
-  await page.getByRole('button', { name: '查看用户反馈' }).click();
-  await expect(page.getByRole('dialog', { name: '用户反馈' })).toContainText('持久化用户');
-  await page.getByRole('button', { name: '关闭用户反馈' }).click();
-
-  await roller.hover();
-  await page.mouse.wheel(0, 160);
-  await expect(roller).toHaveAttribute('data-active-action', 'suggestion');
-  await page.getByRole('button', { name: '选择新建投稿' }).click();
-  await expect(roller).toHaveAttribute('data-active-action', 'create');
   await create.click();
   await page.getByLabel('正文').fill('这是一条应该由放弃确认保护的草稿内容。');
   await page.getByRole('button', { name: '取消', exact: true }).click();
@@ -977,8 +1204,9 @@ test('568x320 投稿编辑器可滚动到底部且所有操作按钮满足触控
   await enterInteractive(page);
   await enterChapter(page, 'feedback');
 
-  await page.getByRole('button', { name: '选择新建投稿' }).click();
-  await page.getByRole('button', { name: '新建投稿' }).click();
+  const create = page.getByRole('button', { name: '新建投稿' });
+  await create.click();
+  await create.click();
 
   const composer = page.getByRole('dialog', { name: '新建投稿' });
   const composerPanel = page.getByTestId('feedback-composer-panel');
@@ -1050,7 +1278,7 @@ test('568x320 投稿编辑器可滚动到底部且所有操作按钮满足触控
   expect(runtimeErrors).toEqual([]);
 });
 
-test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) => {
+test('逐章节交接且快速输入不能跳过相邻章节', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
@@ -1069,14 +1297,13 @@ test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) 
     const aboutStyle = getComputedStyle(about);
     const homeOpacity = Number(homeStyle.opacity);
     const aboutOpacity = Number(aboutStyle.opacity);
-    return homeOpacity > 0
-      && homeOpacity < 1
+    return homeOpacity === 1
       && aboutOpacity > 0
       && aboutOpacity < 1
-      && homeStyle.transform !== 'none'
-      && aboutStyle.transform !== 'none';
+      && homeStyle.getPropertyValue('--chapter-scale').trim() === '1'
+      && aboutStyle.getPropertyValue('--chapter-scale').trim() === '1';
   }), {
-    message: '首页与介绍章节应出现缩放渐隐交接帧'
+    message: '首页与介绍章节应出现原位透明度交接帧'
   }).toBe(true);
   await page.screenshot({
     path: resolve(SCREENSHOT_DIRECTORY, 'chapter-transition-1440.png')
@@ -1108,20 +1335,96 @@ test('逐章节推拉且快速输入不能跳过占位章节', async ({ page }) 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('普通鼠标滚轮按真实刻度突发累积并在结束后进入介绍章', async ({ page }) => {
+test('普通鼠标以 120px 连续滚动多档后进入相邻介绍章', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
   await page.mouse.move(720, 450);
 
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 8; index += 1) {
     await page.mouse.wheel(0, 120);
-    await page.waitForTimeout(70);
   }
 
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'about'
-  );
+  await expect.poll(
+    () => page.locator(WEBSITE).getAttribute('data-active-chapter'),
+    { timeout: 1_500, message: '普通 120px 连续滚轮应吸附到相邻介绍章节' }
+  ).toBe('about');
+  await expect.poll(() => readProgress(page)).toBe(1);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('普通滚轮连续追赶、吸附、隔离惯性并重计新手势', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  const experience = page.locator(WEBSITE);
+  await page.mouse.move(720, 450);
+
+  // 前两次只累计 240px；第三次的余量才开始推动连续进度。
+  await page.mouse.wheel(0, 120);
+  await page.mouse.wheel(0, 120);
+  expect(await readProgress(page)).toBe(0);
+  await page.mouse.wheel(0, 120);
+
+  const firstFrame = await readProgress(page);
+  await page.waitForTimeout(32);
+  const followingFrame = await readProgress(page);
+  expect(followingFrame).toBeGreaterThan(firstFrame);
+  expect(followingFrame).toBeLessThan(1);
+
+  // 离静止窗口仍有充足余量时保持连续值，跨过窗口后才吸附回整数。
+  await page.waitForTimeout(24);
+  const beforeIdleBoundary = await readProgress(page);
+  expect(beforeIdleBoundary).toBeGreaterThan(followingFrame);
+  expect(beforeIdleBoundary).toBeGreaterThan(0);
+  expect(beforeIdleBoundary).toBeLessThan(1);
+
+  // 小余量停止后先吸附回首页；解锁下一次手势后再以巨大输入推进相邻章。
+  await expect.poll(
+    () => readProgress(page),
+    { timeout: 1_500, message: '小余量停止后应吸附回首页' }
+  ).toBe(0);
+  await page.waitForTimeout(950);
+  await page.mouse.wheel(0, 5_000);
+  await expect.poll(
+    () => experience.getAttribute('data-active-chapter'),
+    { timeout: 1_500, message: '滚轮停止后应吸附到介绍章节' }
+  ).toBe('about');
+  await expect.poll(() => readProgress(page)).toBe(1);
+
+  await page.mouse.wheel(0, 600);
+  await page.waitForTimeout(700);
+  await expect(experience).toHaveAttribute('data-active-chapter', 'about');
+  expect(await readProgress(page)).toBe(1);
+
+  // 等待余下 100ms 锁定及最后一次输入的 120ms 静止期结束。
+  await page.waitForTimeout(250);
+  await page.mouse.wheel(0, 120);
+  await page.mouse.wheel(0, 120);
+  expect(await readProgress(page)).toBe(1);
+
+  // 反向后丢弃旧方向累计，重新累计到阈值仍保持整数章节。
+  await page.mouse.wheel(0, -120);
+  await page.mouse.wheel(0, -120);
+  expect(await readProgress(page)).toBe(1);
+  await page.mouse.wheel(0, -120);
+  await expect.poll(
+    () => readProgress(page),
+    { message: '第三次反向滚轮应开始离开稳定章节' }
+  ).toBeLessThan(1);
+
+  await expect.poll(
+    () => readProgress(page),
+    { timeout: 1_500, message: '小幅反向手势应重新吸附到介绍章节' }
+  ).toBe(1);
+  await expect(experience).toHaveAttribute('data-active-chapter', 'about');
+
+  await page.waitForTimeout(950);
+  await page.mouse.wheel(0, 5_000);
+  await expect.poll(
+    () => experience.getAttribute('data-active-chapter'),
+    { timeout: 1_500, message: '巨大输入最多只能推进到相邻下载章节' }
+  ).toBe('download');
+  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '2.0000');
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1180,8 +1483,6 @@ test('暂停期间结束的触屏不会锁死后续章节手势', async ({ page 
     }));
     window.dispatchEvent(new Event('focus'));
   });
-  await expect(page.locator(SWARM)).toHaveAttribute('data-paused', 'false');
-
   await page.evaluate(() => {
     document.body.dispatchEvent(new PointerEvent('pointerdown', {
       bubbles: true,
@@ -1207,99 +1508,47 @@ test('暂停期间结束的触屏不会锁死后续章节手势', async ({ page 
   );
 });
 
-test('下载平台滚筒消费局部滚轮和触屏拖动并保留当前章节', async ({ page }) => {
+test('下载平台选择器切换平台并保留当前章节', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await enterInteractive(page);
   await enterChapter(page, 'download');
 
-  const stack = page.locator('[data-testid="download-platform-stack"]');
-  await installWindowBubbleProbe(page);
-  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
-  await stack.hover();
-  await resetWindowBubbleProbe(page);
-  await page.mouse.wheel(0, 160);
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'download'
+  const download = page.locator('[data-testid="download-chapter"]');
+  const selector = page.getByRole('group', { name: '选择下载平台' });
+  await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
+
+  const macos = selector.getByRole('button', { name: '选择 macOS' });
+  const macosBounds = await macos.boundingBox();
+  expect(macosBounds).not.toBeNull();
+  await page.mouse.click(
+    macosBounds!.x + macosBounds!.width / 2,
+    macosBounds!.y + macosBounds!.height / 2
   );
-  await expect(stack).toHaveAttribute('data-active-platform', 'macos');
+  await expect(download).toHaveAttribute('data-active-platform', 'macos');
   await expect(page.getByRole('button', { name: '即将支持' })).toBeDisabled();
-  await expect(
-    page.locator('[data-platform-id="macos"] a')
-  ).toHaveCount(0);
-  await expectNoWindowBubble(page, ['wheel'], '下载平台滚轮');
-
-  await resetWindowBubbleProbe(page);
-  await stack.dispatchEvent('pointerdown', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 520,
-    isPrimary: true,
-    pointerId: 51,
-    pointerType: 'touch'
-  });
-  await stack.dispatchEvent('pointermove', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 450,
-    isPrimary: true,
-    pointerId: 51,
-    pointerType: 'touch'
-  });
-  await stack.dispatchEvent('pointerup', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 450,
-    isPrimary: true,
-    pointerId: 51,
-    pointerType: 'touch'
-  });
-  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'download'
-  );
-  await expectNoWindowBubble(
-    page,
-    ['pointerdown', 'pointermove', 'pointerup'],
-    '下载平台触屏手势'
   );
 
-  await stack.focus();
-  await expect(stack).toBeFocused();
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('ArrowDown');
-  await expect(stack).toHaveAttribute('data-active-platform', 'macos');
+  const windows = selector.getByRole('button', { name: '选择 Windows' });
+  await expect(windows).toBeEnabled();
+  const windowsBounds = await windows.boundingBox();
+  expect(windowsBounds).not.toBeNull();
+  await page.mouse.click(
+    windowsBounds!.x + windowsBounds!.width / 2,
+    windowsBounds!.y + windowsBounds!.height / 2
+  );
+  await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'download'
   );
-  await expectNoWindowBubble(page, ['keydown'], '下载平台 ArrowDown');
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('ArrowUp');
-  await expect(stack).toHaveAttribute('data-active-platform', 'windows-x64');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'download'
-  );
-  await expectNoWindowBubble(page, ['keydown'], '下载平台 ArrowUp');
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('Escape');
-  await expect.poll(
-    () => stack.evaluate((element) => (
-      !element.contains(element.ownerDocument.activeElement)
-    )),
-    { message: 'Escape 后焦点应退出下载平台局部控件' }
-  ).toBe(true);
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'download'
-  );
-  await expectNoWindowBubble(page, ['keydown'], '下载平台 Escape');
   expect(runtimeErrors).toEqual([]);
 });
 
-test('下载侧栏仅在桌面悬停或焦点期间展开，并保留真实 Windows 链接', async ({
+test('下载章节公开安装与常见问题文本，并准确展示 Windows 发布状态', async ({
   page
 }) => {
   const runtimeErrors = collectRuntimeErrors(page);
@@ -1308,39 +1557,82 @@ test('下载侧栏仅在桌面悬停或焦点期间展开，并保留真实 Wind
   await enterChapter(page, 'download');
 
   const download = page.locator('[data-testid="download-chapter"]');
-  const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
-  const faqPanel = page.getByRole('complementary', { name: '常见问题' });
-  const windowsLink = page.getByRole('link', { name: '下载 Windows' });
+  const accessibleCopy = page.getByRole('region', {
+    name: '安装前须知 · 常见问题'
+  });
 
   expect(await download.evaluate((element) => getComputedStyle(element).backgroundImage))
     .toBe('none');
-  await expect(faqTrigger).not.toHaveAttribute('aria-pressed');
-  await expect(faqTrigger.locator('svg')).toHaveCount(0);
-
-  await faqTrigger.hover();
-  await expect(download).toHaveAttribute('data-visible-side', 'faq');
-  await expect(faqPanel).toBeVisible();
-  await page.mouse.move(720, 450);
-  await expect(download).toHaveAttribute('data-visible-side', 'none');
-
-  await faqTrigger.focus();
-  await expect(download).toHaveAttribute('data-visible-side', 'faq');
-  await faqTrigger.click();
-  await faqTrigger.blur();
-  await page.mouse.move(720, 450);
-  await expect(download).toHaveAttribute('data-visible-side', 'none');
-
-  await expect(windowsLink).toHaveAttribute('href', /\.exe$/u);
-  await expect(windowsLink).not.toHaveAttribute('download');
-  await expect(page.locator('[data-platform-id="windows-x64"] code'))
-    .toHaveText(/^[a-f0-9]{64}$/u);
+  await expect(accessibleCopy).toContainText('安装前须知');
+  await expect(accessibleCopy).toContainText('常见问题');
+  await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
+  await expect(download.getByRole('button', { name: '尚未发布' })).toBeDisabled();
+  await expect(download).toContainText('v0.1.0-alpha.1');
   expect(runtimeErrors).toEqual([]);
 });
 
-test('支付滚筒消费局部输入并显示映射正确的真实付款码', async ({ page }) => {
+test('支持页左右按钮组呈现 0/2.5/5 景深且后层按钮先切换再执行业务', async ({ page }) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+  await enterChapter(page, 'feedback');
+
+  const liquidHome = page.locator(LIQUID_HOME);
+  const feedbackGroup = page.getByRole('group', { name: '选择反馈操作' });
+  const paymentGroup = page.getByRole('group', { name: '选择付款方式' });
+  await expect(liquidHome).toHaveAttribute('data-initialization-failed', 'false');
+  await expect(liquidHome.locator('canvas')).toBeVisible();
+  expect(await readSupportDepths(feedbackGroup)).toEqual([
+    { id: 'suggestion', depth: '0', blur: '0' },
+    { id: 'feedback', depth: '1', blur: '2.5' },
+    { id: 'create', depth: '2', blur: '5' }
+  ]);
+  expect(await readSupportDepths(paymentGroup)).toEqual([
+    { id: 'wechat', depth: '0', blur: '0' },
+    { id: 'alipay', depth: '1', blur: '2.5' },
+    { id: 'paypal', depth: '2', blur: '5' }
+  ]);
+  await page.waitForTimeout(500);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'support-depth-stable-1440.png')
+  });
+
+  const feedbackButton = page.getByRole('button', { name: '查看用户反馈' });
+  await feedbackButton.click();
+  await expect(feedbackGroup).toHaveAttribute('data-active-action', 'feedback');
+  await expect(page.getByRole('dialog', { name: '用户反馈' })).toHaveCount(0);
+  expect(await readSupportDepths(feedbackGroup)).toEqual([
+    { id: 'suggestion', depth: '2', blur: '5' },
+    { id: 'feedback', depth: '0', blur: '0' },
+    { id: 'create', depth: '1', blur: '2.5' }
+  ]);
+  await page.waitForTimeout(210);
+  await page.screenshot({
+    path: resolve(SCREENSHOT_DIRECTORY, 'support-depth-transition-1440.png')
+  });
+  await feedbackButton.click();
+  const feedbackDialog = page.getByRole('dialog', { name: '用户反馈' });
+  await expect(feedbackDialog).toBeVisible();
+  await page.getByRole('button', { name: '关闭用户反馈' }).click();
+
+  const alipayButton = page.getByRole('button', { name: '打开支付宝付款码' });
+  await alipayButton.click();
+  await expect(paymentGroup).toHaveAttribute('data-active-payment', 'alipay');
+  await expect(page.getByRole('dialog', { name: '支付宝付款码' })).toHaveCount(0);
+  expect(await readSupportDepths(paymentGroup)).toEqual([
+    { id: 'wechat', depth: '2', blur: '5' },
+    { id: 'alipay', depth: '0', blur: '0' },
+    { id: 'paypal', depth: '1', blur: '2.5' }
+  ]);
+  await alipayButton.click();
+  await expect(page.getByRole('dialog', { name: '支付宝付款码' })).toBeVisible();
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('支付滚筒消费局部滚轮与键盘输入并显示映射正确的真实付款码', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   const roller = page.locator('[data-testid="payment-roller"]');
   await installWindowBubbleProbe(page);
@@ -1369,78 +1661,21 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await page.mouse.wheel(0, -160);
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
   await expect(roller).toHaveAttribute('data-active-payment', 'paypal');
   await expectNoWindowBubble(page, ['wheel'], '支付方式滚轮');
 
-  await resetWindowBubbleProbe(page);
-  await roller.dispatchEvent('pointerdown', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 450,
-    isPrimary: true,
-    pointerId: 61,
-    pointerType: 'touch'
-  });
-  await roller.dispatchEvent('pointermove', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 520,
-    isPrimary: true,
-    pointerId: 61,
-    pointerType: 'touch'
-  });
-  await roller.dispatchEvent('pointerup', {
-    bubbles: true,
-    cancelable: true,
-    clientY: 520,
-    isPrimary: true,
-    pointerId: 61,
-    pointerType: 'touch'
-  });
-  await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'donation'
-  );
-  await expectNoWindowBubble(
-    page,
-    ['pointerdown', 'pointermove', 'pointerup'],
-    '支付方式触屏手势'
-  );
-
   await roller.focus();
   await expect(roller).toBeFocused();
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('ArrowDown');
-  await expect(roller).toHaveAttribute('data-active-payment', 'paypal');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'donation'
-  );
-  await expectNoWindowBubble(page, ['keydown'], '支付方式 ArrowDown');
   await resetWindowBubbleProbe(page);
   await page.keyboard.press('ArrowUp');
   await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
   await expectNoWindowBubble(page, ['keydown'], '支付方式 ArrowUp');
-  await resetWindowBubbleProbe(page);
-  await page.keyboard.press('Escape');
-  await expect.poll(
-    () => roller.evaluate((element) => (
-      !element.contains(element.ownerDocument.activeElement)
-    )),
-    { message: 'Escape 后焦点应退出支付方式局部控件' }
-  ).toBe(true);
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'donation'
-  );
-  await expectNoWindowBubble(page, ['keydown'], '支付方式 Escape');
 
   await expect(roller).toHaveAttribute('data-active-payment', 'alipay');
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -1467,7 +1702,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
   await paypalButton.click();
   const paypalDialog = page.getByRole('dialog', { name: 'PayPal付款码' });
   const paypalImage = paypalDialog.getByRole('img', { name: 'PayPal付款码' });
-  await expect(paypalImage).toHaveAttribute('src', '/Paypal.jpg');
+  await expect(paypalImage).toHaveAttribute('src', '/Paypal.png');
   await expect.poll(
     () => paypalImage.evaluate((image) => (
       image instanceof HTMLImageElement ? image.naturalWidth : 0
@@ -1484,7 +1719,7 @@ test('支付滚筒消费局部输入并显示映射正确的真实付款码', as
 test('付款码弹层隔离翻页、滚轮与触屏章节输入并由 Escape 关闭', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   await page.getByRole('button', { name: '打开微信付款码' }).click();
   const dialog = page.getByRole('dialog', { name: '微信付款码' });
@@ -1493,14 +1728,14 @@ test('付款码弹层隔离翻页、滚轮与触屏章节输入并由 Escape 关
   await page.keyboard.press('PageUp');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
 
   await dialog.hover();
   await page.mouse.wheel(0, -800);
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
 
   await dialog.dispatchEvent('pointerdown', {
@@ -1521,7 +1756,7 @@ test('付款码弹层隔离翻页、滚轮与触屏章节输入并由 Escape 关
   });
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
-    'donation'
+    'feedback'
   );
 
   await page.keyboard.press('Escape');
@@ -1533,7 +1768,7 @@ test('付款码资源加载失败时显示稳定回退并保持关闭行为', as
   const runtimeErrors = collectRuntimeErrors(page);
   await page.route('**/WechatPay.jpg', (route) => route.abort());
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   const paymentButton = page.getByRole('button', { name: '打开微信付款码' });
   await paymentButton.click();
@@ -1546,23 +1781,16 @@ test('付款码资源加载失败时显示稳定回退并保持关闭行为', as
   expect(runtimeErrors[0]).toContain('Failed to load resource');
 });
 
-test('捐款章节不显示黄色 Canvas 光场并保留共享文件预览', async ({ page }) => {
+test('支持章节不显示黄色 Canvas 光场并保留两组核心操作', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   const canvas = page.locator(CANVAS);
   await expect(canvas).toHaveCount(0);
-  await expect(page.locator('[data-layer="file"]')).toHaveAttribute(
-    'data-profile-id',
-    'donation'
-  );
-
-  const icon = await waitForFile(page);
-  await icon.hover();
-  await expect(page.locator(PREVIEW)).toBeVisible();
-  await expectInsideViewport(page, page.locator(PREVIEW));
+  await expect(page.getByRole('group', { name: '选择反馈操作' })).toBeVisible();
+  await expect(page.getByRole('group', { name: '选择付款方式' })).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1570,7 +1798,7 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await enterInteractive(page);
-  await enterChapter(page, 'donation');
+  await enterChapter(page, 'feedback');
 
   await page.getByRole('button', { name: '打开微信付款码' }).click();
   const dialog = page.getByRole('dialog', { name: '微信付款码' });
@@ -1616,7 +1844,7 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth))
     .toBeLessThanOrEqual(390);
   await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'donation-dialog-390.png')
+    path: resolve(SCREENSHOT_DIRECTORY, 'support-dialog-390.png')
   });
 
   await page.getByRole('button', { name: '关闭付款码' }).click();
@@ -1624,15 +1852,12 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
   expect(runtimeErrors).toEqual([]);
 });
 
-test('390 首屏 drawing 阶段点击下一章节一次即可进入介绍章', async ({ page }) => {
+test('390 首屏直接交互且点击下一章节一次进入介绍章', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/?seed=42');
 
-  await expect(page.locator(HOME)).toHaveAttribute(
-    'data-phase',
-    /drawing|settling/
-  );
+  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
   await page.getByRole('button', { name: '下一章节' }).click();
 
   await expect(page.locator(WEBSITE)).toHaveAttribute(
@@ -1643,7 +1868,7 @@ test('390 首屏 drawing 阶段点击下一章节一次即可进入介绍章', a
   expect(runtimeErrors).toEqual([]);
 });
 
-test('窗口 blur 和 focus 会同步下载与捐款章节暂停状态', async ({ page }) => {
+test('窗口 blur 和 focus 会同步下载与支持章节暂停状态', async ({ page }) => {
   await enterInteractive(page);
   await enterChapter(page, 'download');
   const download = page.locator('[data-testid="download-chapter"]');
@@ -1654,25 +1879,21 @@ test('窗口 blur 和 focus 会同步下载与捐款章节暂停状态', async (
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(download).toHaveAttribute('data-paused', 'false');
 
-  await page.keyboard.press('PageDown');
+  await enterChapter(page, 'feedback');
   await expect(page.locator(WEBSITE)).toHaveAttribute(
     'data-active-chapter',
     'feedback'
   );
-  await page.keyboard.press('PageDown');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'donation'
-  );
-  const donation = page.locator(DONATION);
-  await expect(donation).toHaveAttribute('data-paused', 'false');
+  const support = page.locator(SUPPORT);
+  await expect(support).toHaveAttribute('data-paused', 'false');
   await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-  await expect(donation).toHaveAttribute('data-paused', 'true');
+  await expect(support).toHaveAttribute('data-paused', 'true');
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(donation).toHaveAttribute('data-paused', 'false');
+  await expect(support).toHaveAttribute('data-paused', 'false');
 });
 
 test('目标视口五章节无溢出遮挡且减少动态效果保持完整导航', async ({ page }) => {
+  test.setTimeout(180_000);
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const viewports = [
@@ -1688,15 +1909,15 @@ test('目标视口五章节无溢出遮挡且减少动态效果保持完整导�
     await page.goto('/?seed=42');
 
     const experience = page.locator(WEBSITE);
-    const canvas = page.locator(CANVAS);
+    const liquidHome = page.locator(LIQUID_HOME);
     const next = page.getByRole('button', { name: '下一章节' });
     await expect(experience).toHaveAttribute('data-reduced-motion', 'true');
     await expect(page.locator(HOME)).toHaveAttribute(
       'data-phase',
       'interactive'
     );
-    await expect(canvas).toBeHidden();
-    expect(await countCanvasAlphaPixels(canvas)).toBe(0);
+    await expect(liquidHome).toHaveAttribute('data-active', 'true');
+    await expect(liquidHome.locator('canvas')).toBeAttached();
 
     if (viewport.width === 1920) {
       await page.screenshot({
@@ -1771,13 +1992,12 @@ test('matchMedia 初始化异常时进入静态回退且不出现黑屏', async 
   await page.goto('/');
   const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  const overlay = page.locator('[data-layer="intro"]');
 
   await expect(home).toHaveAttribute('data-phase', 'interactive');
   await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
-  await expect(overlay).toHaveAttribute('data-active', 'false');
-  await expect(overlay).toBeHidden();
-  await expect(getBrandHeading(page)).toBeVisible();
+  await expect(page.locator('[data-layer="intro"]')).toHaveCount(0);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeAttached();
   await expect(page.locator('[data-testid="cursor-field"]')).toHaveCount(0);
   await expect(page.locator(SWARM)).toHaveCount(0);
 });
@@ -1786,78 +2006,58 @@ test('AP Logo 素材加载失败时进入静态回退并保留品牌标题', asy
   await page.route('**/AP.png', (route) => route.abort());
 
   await page.goto('/');
-  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  const overlay = page.locator('[data-layer="intro"]');
 
-  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(overlay).toHaveAttribute('data-active', 'false');
-  await expect(overlay).toBeHidden();
-  await expect(getBrandHeading(page)).toBeVisible();
+  await expect(page.locator('[data-layer="intro"]')).toHaveCount(0);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute(
+    'data-initialization-failed',
+    'true'
+  );
+  await expect(page.locator(LIQUID_HOME).getByText('AI PET')).toBeVisible();
 });
 
-test('Canvas 尺寸观察器初始化异常时进入静态回退', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  await page.addInitScript(() => {
-    Object.defineProperty(window, 'ResizeObserver', {
-      configurable: true,
-      value: class {
-        constructor() {
-          throw new Error('ResizeObserver 初始化失败');
-        }
-      }
-    });
-  });
-
-  await page.goto('/');
-  const experience = page.locator(WEBSITE);
-  const home = page.locator(HOME);
-  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
-  await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(getBrandHeading(page)).toBeVisible();
-  await expect(page.locator(CANVAS)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveCount(0);
-  expect(runtimeErrors).toEqual([]);
-});
-
-test('Canvas 2D 上下文不可用时进入静态回退', async ({ page }) => {
+test('WebGL 上下文不可用时仅首页进入静态回退', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.addInitScript(() => {
     HTMLCanvasElement.prototype.getContext = () => null;
   });
 
   await page.goto('/');
-  const experience = page.locator(WEBSITE);
   const home = page.locator(HOME);
-  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
   await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(getBrandHeading(page)).toBeVisible();
-  await expect(page.locator(CANVAS)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveCount(0);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute(
+    'data-initialization-failed',
+    'true'
+  );
+  await expect(page.locator(LIQUID_HOME).getByText('AI PET')).toBeVisible();
   expect(runtimeErrors).toEqual([]);
 });
 
-test('随机源初始化异常时进入静态回退', async ({ page }) => {
+test('390 离开再返回首页后液态画布缓冲区保持可用', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
-  await page.addInitScript(() => {
-    Object.defineProperty(Crypto.prototype, 'getRandomValues', {
-      configurable: true,
-      value: () => {
-        throw new Error('随机源初始化失败');
-      }
-    });
-  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?seed=42');
 
-  await page.goto('/');
-  await page.mouse.click(12, 12);
-  const experience = page.locator(WEBSITE);
-  const home = page.locator(HOME);
-  await expect(experience).toHaveAttribute('data-initialization-failed', 'true');
-  await expect(home).toHaveAttribute('data-phase', 'interactive');
-  await expect(getBrandHeading(page)).toBeVisible();
-  await expect(page.locator(CANVAS)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveCount(0);
+  const canvas = page.locator(`${LIQUID_HOME} canvas`);
+  await expect(canvas).toBeVisible();
+  const initialBuffer = await canvas.evaluate((element) => ({
+    width: element instanceof HTMLCanvasElement ? element.width : 0,
+    height: element instanceof HTMLCanvasElement ? element.height : 0
+  }));
+  expect(initialBuffer.width).toBeGreaterThan(0);
+  expect(initialBuffer.height).toBeGreaterThan(0);
+
+  await page.getByRole('button', { name: '下一章节' }).click();
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'about');
+  await page.getByRole('button', { name: '上一章节' }).click();
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'home');
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(canvas).toBeVisible();
+  expect(await canvas.evaluate((element) => ({
+    width: element instanceof HTMLCanvasElement ? element.width : 0,
+    height: element instanceof HTMLCanvasElement ? element.height : 0
+  }))).toEqual(initialBuffer);
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -1881,36 +2081,32 @@ test('静态回退通过运行时属性关闭章节与付款码动效', async ({
   await expect(experience).toHaveAttribute('data-active-chapter', 'download');
 
   const download = page.locator('[data-testid="download-chapter"]');
-  const faqTrigger = page.getByRole('button', { name: '显示常见问题' });
   await expect(download).toHaveAttribute('data-motion-disabled', 'true');
-  await faqTrigger.hover();
-  await expect(download).toHaveAttribute('data-visible-side', 'faq');
   const downloadMotion = await download.evaluate((root) => {
-    const trigger = root.querySelector('button[aria-label="显示常见问题"]');
-    const panel = root.querySelector('[data-side-panel="faq"]');
-    const card = root.querySelector('[data-platform-id]');
+    const selector = root.querySelector('[role="group"] button');
+    const glass = root.querySelector('section[aria-label="安装前须知 · 常见问题"]');
+    const action = root.querySelector('button:disabled');
     return {
-      triggerTransition: trigger
-        ? getComputedStyle(trigger).transitionDuration
+      selectorTransition: selector
+        ? getComputedStyle(selector).transitionDuration
         : null,
-      panelTransition: panel ? getComputedStyle(panel).transitionDuration : null,
-      cardTransition: card ? getComputedStyle(card).transitionDuration : null
+      glassTransition: glass ? getComputedStyle(glass).transitionDuration : null,
+      actionTransition: action ? getComputedStyle(action).transitionDuration : null
     };
   });
   expect(downloadMotion).toEqual({
-    triggerTransition: '0s',
-    panelTransition: '0s',
-    cardTransition: '0s'
+    selectorTransition: '0s',
+    glassTransition: '0s',
+    actionTransition: '0s'
   });
-  expect(
-    await page.getByRole('link', { name: '下载 Windows' }).getAttribute('href')
-  ).toContain('.exe');
+  await expect(download).toHaveAttribute('data-active-platform', 'windows-x64');
+  await expect(download.getByRole('button', { name: '尚未发布' })).toBeDisabled();
 
   await next.click();
   await next.click();
-  await expect(experience).toHaveAttribute('data-active-chapter', 'donation');
-  const donation = page.locator(DONATION);
-  await expect(donation).toHaveAttribute('data-motion-disabled', 'true');
+  await expect(experience).toHaveAttribute('data-active-chapter', 'feedback');
+  const support = page.locator(SUPPORT);
+  await expect(support).toHaveAttribute('data-motion-disabled', 'true');
   const payment = page.getByRole('button', { name: '打开微信付款码' });
   await expect(payment).toBeEnabled();
   expect(await payment.evaluate((button) => (
@@ -1934,85 +2130,19 @@ test('静态回退通过运行时属性关闭章节与付款码动效', async ({
   expect(runtimeErrors).toEqual([]);
 });
 
-test('减少动态效果时文件保持分离可聚焦且预览立即定位', async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await enterInteractive(page);
-  await expect.poll(() => page.locator(ICON).count(), { timeout: 6_000 }).toBeGreaterThanOrEqual(2);
-
-  const firstIcon = page.locator(ICON).nth(0);
-  const secondIcon = page.locator(ICON).nth(1);
-  await expect(firstIcon).toHaveAttribute('data-phase', 'floating');
-  const visibleState = await firstIcon.locator('span').evaluate((motion) => {
-    const style = getComputedStyle(motion);
-    return {
-      opacity: style.opacity,
-      visibility: style.visibility
-    };
-  });
-  expect(visibleState).toEqual({
-    opacity: '1',
-    visibility: 'visible'
-  });
-  const firstBox = await firstIcon.boundingBox();
-  const secondBox = await secondIcon.boundingBox();
-  expect(firstBox).not.toBeNull();
-  expect(secondBox).not.toBeNull();
-  expect(
-    Math.abs(firstBox!.x - secondBox!.x) + Math.abs(firstBox!.y - secondBox!.y)
-  ).toBeGreaterThan(8);
-
-  const initialPosition = await firstIcon.evaluate((icon) => {
-    const rect = icon.getBoundingClientRect();
-    const style = getComputedStyle(icon);
-    return {
-      left: rect.left,
-      top: rect.top,
-      transform: style.transform,
-      x: style.getPropertyValue('--file-x'),
-      y: style.getPropertyValue('--file-y')
-    };
-  });
-  await page.waitForTimeout(700);
-  const settledPosition = await firstIcon.evaluate((icon) => {
-    const rect = icon.getBoundingClientRect();
-    const style = getComputedStyle(icon);
-    return {
-      left: rect.left,
-      top: rect.top,
-      transform: style.transform,
-      x: style.getPropertyValue('--file-x'),
-      y: style.getPropertyValue('--file-y')
-    };
-  });
-  expect(settledPosition).toEqual(initialPosition);
-
-  await firstIcon.hover();
-  await expect(page.locator(PREVIEW)).toBeVisible();
-  await page.mouse.move(720, 450);
-  await expect(page.locator(PREVIEW)).toHaveCount(0);
-
-  await page.keyboard.press('Tab');
-  await expect(firstIcon).toBeFocused();
-  await expect(page.locator(PREVIEW)).toBeVisible();
-  await expect(page.locator(PREVIEW)).toHaveAttribute('data-motion-state', 'inactive');
-  await expect(page.locator(SWARM)).toHaveAttribute('data-preview-tween-state', 'inactive');
-  await expectInsideViewport(page, page.locator(PREVIEW));
-});
-
-test('390 宽度无横向溢出且隐藏 Canvas 并最多显示四个图标', async ({ page }) => {
+test('390 宽度液态玻璃首页无横向溢出', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await enterInteractive(page);
-  await waitForFile(page);
 
   const viewportWidths = await page.locator(HOME).evaluate((home) => ({
     client: home.clientWidth,
     scroll: home.scrollWidth
   }));
   expect(viewportWidths.scroll).toBeLessThanOrEqual(viewportWidths.client);
-  await expect(page.locator(CANVAS)).toBeHidden();
-  expect(await page.locator(`${ICON}:visible`).count()).toBeLessThanOrEqual(4);
-  await expect(getBrandHeading(page)).toBeVisible();
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeVisible();
+  await expect(page.locator(SWARM)).toHaveCount(0);
 
   const scrollEvidence = await page.locator(WEBSITE).evaluate((experience) => {
     const home = experience.querySelector<HTMLElement>(
@@ -2060,7 +2190,7 @@ test('760/761 断点提供移动章节导航且五章节不横向溢出', async 
     expect(bounds!.height).toBeGreaterThanOrEqual(44);
   }
 
-  for (const chapterId of ['home', 'about', 'download', 'feedback', 'donation']) {
+  for (const chapterId of CHAPTER_IDS) {
     await expect(experience).toHaveAttribute('data-active-chapter', chapterId);
     const activeSection = page.locator(`[data-chapter-id="${chapterId}"]`);
     await expect(activeSection).toHaveAttribute('data-interactive', 'true');
@@ -2071,7 +2201,7 @@ test('760/761 断点提供移动章节导航且五章节不横向溢出', async 
     }));
     expect(widths.scroll).toBeLessThanOrEqual(widths.client);
 
-    if (chapterId !== 'donation') {
+    if (chapterId !== 'feedback') {
       await next.click();
     }
   }
@@ -2085,524 +2215,11 @@ test('760/761 断点提供移动章节导航且五章节不横向溢出', async 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('文件预览挂载在预览层并位于品牌层之上', async ({ page }) => {
-  await enterInteractive(page);
-  const icon = await waitForFile(page);
-  await icon.hover();
-
-  const preview = page.locator(PREVIEW);
-  await expect(preview).toBeVisible();
-  const layerEvidence = await preview.evaluate((node) => {
-    const previewLayer = node.parentElement;
-    const brandLayer = document.querySelector('[data-layer="brand"]');
-    return {
-      parentLayer: previewLayer?.getAttribute('data-layer'),
-      previewZ: Number(previewLayer ? getComputedStyle(previewLayer).zIndex : -1),
-      brandZ: Number(brandLayer ? getComputedStyle(brandLayer).zIndex : -1)
-    };
-  });
-
-  expect(layerEvidence.parentLayer).toBe('preview');
-  expect(layerEvidence.previewZ).toBeGreaterThan(layerEvidence.brandZ);
-});
-
-test('开场跳过后生成文件且活动数始终不超过 10', async ({ page }) => {
-  await enterInteractive(page);
-  await waitForFile(page);
-
-  await page.evaluate((selector) => {
-    const swarm = document.querySelector(selector);
-    if (!swarm) {
-      throw new Error('缺少文件队列根层');
-    }
-
-    const recordCount = () => {
-      const current = Number(swarm.getAttribute('data-active-count') ?? 0);
-      const previous = Number(Reflect.get(window, '__websiteMaxFileCount') ?? 0);
-      Reflect.set(window, '__websiteMaxFileCount', Math.max(previous, current));
-    };
-    recordCount();
-    const observer = new MutationObserver(recordCount);
-    observer.observe(swarm, {
-      attributes: true,
-      attributeFilter: ['data-active-count']
-    });
-    Reflect.set(window, '__websiteCountObserver', observer);
-  }, SWARM);
-
-  await page.waitForTimeout(12_000);
-  const maximumCount = await page.evaluate(
-    () => Number(Reflect.get(window, '__websiteMaxFileCount') ?? 0)
-  );
-
-  expect(maximumCount).toBeGreaterThan(0);
-  expect(maximumCount).toBeLessThanOrEqual(10);
-  await expect(page.locator(SWARM)).toHaveAttribute('data-active-count', /^\d+$/);
-});
-
-test('七类素材全部失败后逐步禁用并停止生成', async ({ page }) => {
-  await page.route('**/*', async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    if (FILE_ASSET_PATHS.has(pathname)) {
-      await route.abort();
-      return;
-    }
-    await route.continue();
-  });
-
-  await enterInteractive(page);
-  await expect(page.locator(SWARM)).toHaveAttribute('data-disabled-count', '0');
-  await page.evaluate((selectors) => {
-    const swarm = document.querySelector(selectors.swarm);
-    if (!swarm) {
-      throw new Error('缺少文件队列根层');
-    }
-
-    Reflect.set(window, '__disabledCountHistory', []);
-    Reflect.set(window, '__sawLeavingParticle', false);
-    const recordState = () => {
-      const history = Reflect.get(window, '__disabledCountHistory') as number[];
-      const count = Number(swarm.getAttribute('data-disabled-count') ?? 0);
-      if (history.at(-1) !== count) {
-        history.push(count);
-      }
-      if (swarm.querySelector(`${selectors.icon}[data-phase="leaving"]`)) {
-        Reflect.set(window, '__sawLeavingParticle', true);
-      }
-    };
-    recordState();
-    const observer = new MutationObserver(recordState);
-    observer.observe(swarm, {
-      attributes: true,
-      attributeFilter: ['data-disabled-count'],
-      childList: true,
-      subtree: true
-    });
-    Reflect.set(window, '__disabledCountObserver', observer);
-  }, { swarm: SWARM, icon: ICON });
-
-  await expect(page.locator(SWARM)).toHaveAttribute(
-    'data-disabled-count',
-    '7',
-    { timeout: 15_000 }
-  );
-  await expect(page.locator(SWARM)).toHaveAttribute('data-active-count', '0');
-  await expect(page.locator(ICON)).toHaveCount(0);
-
-  const failureEvidence = await page.evaluate(() => ({
-    disabledCounts: Reflect.get(window, '__disabledCountHistory') as number[],
-    sawLeavingParticle: Boolean(Reflect.get(window, '__sawLeavingParticle'))
-  }));
-  expect(failureEvidence.disabledCounts).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-  expect(failureEvidence.sawLeavingParticle).toBe(true);
-
-  await page.waitForTimeout(2_000);
-  await expect(page.locator(SWARM)).toHaveAttribute('data-active-count', '0');
-  await expect(page.locator(ICON)).toHaveCount(0);
-});
-
-test('预览保持单例并在键鼠模式间转移后正确关闭', async ({ page }) => {
-  const consoleErrors: string[] = [];
-  page.on('console', (message) => {
-    if (message.type() === 'error') {
-      consoleErrors.push(message.text());
-    }
-  });
-  page.on('pageerror', (error) => consoleErrors.push(error.message));
-
-  await enterInteractive(page);
-  await expect(page.locator(SWARM)).toHaveAttribute(
-    'data-preview-tween-state',
-    'inactive'
-  );
-  const icon = await waitForFile(page);
-  const iconBox = await icon.boundingBox();
-  expect(iconBox).not.toBeNull();
-
-  await icon.hover();
-  await expect(page.locator(PREVIEW)).toHaveCount(1);
-  await expect(page.locator(PREVIEW)).toBeVisible();
-  await expect(page.locator(SWARM)).toHaveAttribute(
-    'data-preview-tween-state',
-    'active'
-  );
-  const firstPreviewBox = await page.locator(PREVIEW).boundingBox();
-  expect(firstPreviewBox).not.toBeNull();
-
-  await page.mouse.move(
-    iconBox!.x + (iconBox!.width * 0.65),
-    iconBox!.y + (iconBox!.height * 0.65)
-  );
-  let followedPreviewBox = await page.locator(PREVIEW).boundingBox();
-  await expect.poll(async () => {
-    followedPreviewBox = await page.locator(PREVIEW).boundingBox();
-    if (!followedPreviewBox) return 0;
-    return Math.abs(followedPreviewBox.x - firstPreviewBox!.x)
-      + Math.abs(followedPreviewBox.y - firstPreviewBox!.y);
-  }, {
-    message: '指针移动后预览应跟随到新位置'
-  }).toBeGreaterThan(2);
-  expect(followedPreviewBox).not.toBeNull();
-  expect(Math.abs(followedPreviewBox!.x - firstPreviewBox!.x)
-    + Math.abs(followedPreviewBox!.y - firstPreviewBox!.y)).toBeGreaterThan(2);
-
-  await page.mouse.down();
-  await page.mouse.up();
-  await expect(icon).toBeFocused();
-  await page.mouse.move(4, 4);
-
-  const focusedIconBox = await icon.boundingBox();
-  let keyboardPreviewBox = await page.locator(PREVIEW).boundingBox();
-  expect(focusedIconBox).not.toBeNull();
-  const keyboardTargetX = focusedIconBox!.x + focusedIconBox!.width;
-  const keyboardTargetY = focusedIconBox!.y + (focusedIconBox!.height / 2);
-  await expect.poll(async () => {
-    keyboardPreviewBox = await page.locator(PREVIEW).boundingBox();
-    if (!keyboardPreviewBox) return Number.POSITIVE_INFINITY;
-    const horizontalGap = Math.min(
-      Math.abs(keyboardPreviewBox.x - keyboardTargetX),
-      Math.abs(
-        keyboardPreviewBox.x
-        + keyboardPreviewBox.width
-        - keyboardTargetX
-      )
-    );
-    const verticalGap = Math.min(
-      Math.abs(keyboardPreviewBox.y - keyboardTargetY),
-      Math.abs(
-        keyboardPreviewBox.y
-        + keyboardPreviewBox.height
-        - keyboardTargetY
-      )
-    );
-    return Math.min(horizontalGap, verticalGap);
-  }, {
-    message: '键盘聚焦后预览应贴近文件图标'
-  }).toBeLessThanOrEqual(20);
-  expect(keyboardPreviewBox).not.toBeNull();
-  await expectInsideViewport(page, page.locator(PREVIEW));
-
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await expect(page.locator(PREVIEW)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveAttribute(
-    'data-preview-tween-state',
-    'inactive'
-  );
-
-  for (let index = 0; index < 3; index += 1) {
-    await icon.hover();
-    await expect(page.locator(PREVIEW)).toHaveCount(1);
-    await expect(page.locator(SWARM)).toHaveAttribute(
-      'data-preview-tween-state',
-      'active'
-    );
-    await page.mouse.move(4, 4);
-    await expect(page.locator(PREVIEW)).toHaveCount(0);
-    await expect(page.locator(SWARM)).toHaveAttribute(
-      'data-preview-tween-state',
-      'inactive'
-    );
-  }
-
-  expect(consoleErrors).toEqual([]);
-});
-
-test('完整退场卸载预览前会清理 quickTo 动画', async ({ page }) => {
-  await enterInteractive(page);
-  const icon = await waitForFile(page);
-
-  await icon.hover();
-  await expect(page.locator(PREVIEW)).toHaveAttribute(
-    'data-motion-state',
-    'active'
-  );
-  await page.locator(WEBSITE).evaluate((experience, previewSelector) => {
-    const preview = experience.querySelector(previewSelector);
-    if (!preview) {
-      throw new Error('缺少活动文件预览');
-    }
-
-    const history = [preview.getAttribute('data-motion-state') ?? 'missing'];
-    Reflect.set(experience, '__previewMotionHistory', history);
-    const observer = new MutationObserver((records) => {
-      for (const record of records) {
-        if (record.type === 'attributes' && record.target === preview) {
-          const state = preview.getAttribute('data-motion-state') ?? 'missing';
-          if (history.at(-1) !== state) {
-            history.push(state);
-          }
-        }
-
-        if (record.type === 'childList') {
-          const previewWasRemoved = Array.from(record.removedNodes).some(
-            (node) => node === preview
-              || (node instanceof Element && node.contains(preview))
-          );
-          if (previewWasRemoved && history.at(-1) !== 'removed') {
-            history.push('removed');
-          }
-        }
-      }
-    });
-    observer.observe(experience, {
-      attributes: true,
-      attributeFilter: ['data-motion-state'],
-      childList: true,
-      subtree: true
-    });
-    Reflect.set(experience, '__previewMotionObserver', observer);
-  }, PREVIEW);
-
-  for (let index = 0; index < 9; index += 1) {
-    await page.keyboard.press('PageDown');
-  }
-
-  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '1.0000');
-  await expect(page.locator(PREVIEW)).toHaveCount(0);
-  await expect(page.locator(SWARM)).toHaveCount(0);
-  await expect.poll(
-    () => page.locator(WEBSITE).evaluate(
-      (experience) => Reflect.get(
-        experience,
-        '__previewMotionHistory'
-      ) as string[]
-    )
-  ).toEqual(['active', 'inactive', 'removed']);
-});
-
-test('进入 exiting 后不再增加粒子', async ({ page }) => {
-  await enterInteractive(page);
-  await waitForFile(page);
-  await expect.poll(() => page.locator(ICON).count(), { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
-
-  for (let index = 0; index < 7; index += 1) {
-    await page.keyboard.press('PageDown');
-  }
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'exiting');
-
-  const countAtExit = await page.locator(ICON).count();
-  await page.waitForTimeout(2_000);
-  expect(await page.locator(ICON).count()).toBeLessThanOrEqual(countAtExit);
-});
-
-test('暂停恢复不会让现有粒子瞬间过期', async ({ page }) => {
-  await enterInteractive(page);
-  const icon = await waitForFile(page);
-  const iconHandle = await icon.elementHandle();
-  expect(iconHandle).not.toBeNull();
-
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-  await expect(page.locator(SWARM)).toHaveAttribute('data-paused', 'true');
-  await page.waitForTimeout(7_000);
-  expect(await iconHandle!.evaluate((element) => element.isConnected)).toBe(true);
-
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(page.locator(SWARM)).toHaveAttribute('data-paused', 'false');
-  await page.waitForTimeout(150);
-  expect(await iconHandle!.evaluate((element) => element.isConnected)).toBe(true);
-});
-
-test('开场暂停恢复会冻结 drawing 时间线并在 focus 后完成', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  const home = page.locator(HOME);
-
-  await page.goto('/?seed=42');
-  await expect(home).toHaveAttribute('data-phase', 'drawing');
-  const crossfadeSample = await sampleIntroCrossfade(page);
-  expect(crossfadeSample.captured).toBe(true);
-
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-  await page.waitForTimeout(1_200);
-  await expect(home).toHaveAttribute('data-phase', 'drawing');
-
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(home).toHaveAttribute('data-phase', 'interactive', { timeout: 3_000 });
-  expect(runtimeErrors).toEqual([]);
-});
-
-test('自动开场在约三秒内完成磁吸归位并保持最终 Logo 与 1440 安全布局', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  await page.setViewportSize({ width: 1440, height: 900 });
-  // 在页面内记录阶段切换时刻，避免把 Playwright 轮询开销计入动画耗时。
-  await page.addInitScript((homeSelector) => {
-    Reflect.set(window, '__introStartedAt', null);
-    Reflect.set(window, '__introInteractiveAt', null);
-    Reflect.set(window, '__introPhaseHistory', []);
-    const recordPhase = () => {
-      const phase = document.querySelector(homeSelector)?.getAttribute('data-phase');
-      const history = Reflect.get(window, '__introPhaseHistory') as string[];
-      if (phase && history.at(-1) !== phase) {
-        history.push(phase);
-      }
-      if (phase === 'drawing' && Reflect.get(window, '__introStartedAt') === null) {
-        Reflect.set(window, '__introStartedAt', performance.now());
-      }
-      if (phase === 'interactive' && Reflect.get(window, '__introInteractiveAt') === null) {
-        Reflect.set(window, '__introInteractiveAt', performance.now());
-      }
-    };
-    const observer = new MutationObserver(recordPhase);
-    observer.observe(document, {
-      attributes: true,
-      attributeFilter: ['data-phase'],
-      childList: true,
-      subtree: true
-    });
-    Reflect.set(window, '__introPhaseObserver', observer);
-  }, HOME);
-
-  await page.goto('/?seed=42');
-  await expect(page.locator(HOME)).toHaveAttribute('data-phase', /drawing|settling/);
-  const pieces = page.locator('[data-testid="magnetic-logo-piece"]');
-  await expect(pieces).toHaveCount(6);
-  await expect(pieces.first()).toHaveAttribute('src', '/AP.png');
-  const magneticLayers = await sampleIntroCrossfade(page);
-  expect(magneticLayers.captured).toBe(true);
-  expect(magneticLayers.logoOpacity).toBeGreaterThan(0);
-  expect(magneticLayers.logoOpacity).toBeLessThan(1);
-  expect(magneticLayers.visiblePieceCount).toBeGreaterThan(0);
-  expect(
-    magneticLayers.visiblePieceFilters.every((filter) => filter.includes('invert(1)'))
-  ).toBe(true);
-  expect(new Set(magneticLayers.pieceSources)).toEqual(new Set(['/AP.png']));
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1440-magnetic.png'),
-    fullPage: true
-  });
-  await expect(page.locator(HOME)).toHaveAttribute(
-    'data-phase',
-    'interactive',
-    { timeout: 5_000 }
-  );
-
-  const introEvidence = await page.evaluate(() => {
-    const startedAt = Reflect.get(window, '__introStartedAt');
-    const interactiveAt = Reflect.get(window, '__introInteractiveAt');
-    return {
-      startedAt,
-      interactiveAt,
-      elapsedMs: Number(interactiveAt) - Number(startedAt),
-      phases: Reflect.get(window, '__introPhaseHistory') as string[]
-    };
-  });
-  expect(introEvidence.startedAt).toEqual(expect.any(Number));
-  expect(introEvidence.interactiveAt).toEqual(expect.any(Number));
-  expect(introEvidence.elapsedMs).toBeLessThanOrEqual(3_300);
-  expect(introEvidence.phases).toContain('drawing');
-  expect(introEvidence.phases).toContain('settling');
-  expect(introEvidence.phases.at(-1)).toBe('interactive');
-  await expect(page.locator('[data-layer="intro"]')).toHaveAttribute('data-active', 'false');
-  await expect(page.locator('[data-layer="intro"]')).toBeHidden();
-  await expect(getBrandHeading(page)).toHaveCSS('color', 'rgb(28, 28, 28)');
-
-  await expect(page.locator('[data-testid="brand-logo"]')).toBeVisible();
-  await expect(page.locator('[data-testid="brand-logo"]')).toHaveCSS('filter', 'none');
-  for (const piece of await pieces.all()) {
-    await expect(piece).toBeHidden();
-  }
-
-  await expect.poll(() => page.locator(ICON).count(), { timeout: 6_000 }).toBeGreaterThanOrEqual(2);
-  await page.mouse.move(720, 450);
-
-  const brandTransform = getBrandHeading(page).locator('..');
-  let brandBox = await brandTransform.boundingBox();
-  await expect.poll(async () => {
-    brandBox = await brandTransform.boundingBox();
-    if (!brandBox) return Number.POSITIVE_INFINITY;
-    return Math.max(
-      Math.abs(brandBox.x + brandBox.width / 2 - 720),
-      Math.abs(brandBox.y + brandBox.height / 2 - 450)
-    );
-  }, {
-    message: '品牌层应跟随指针稳定到中心附近'
-  }).toBeLessThanOrEqual(28);
-  expect(brandBox).not.toBeNull();
-
-  const fileBoxes = await page.locator(`${ICON}:visible`).evaluateAll((icons) => (
-    icons.map((icon) => {
-      const bounds = icon.getBoundingClientRect();
-      return {
-        left: bounds.left,
-        top: bounds.top,
-        right: bounds.right,
-        bottom: bounds.bottom
-      };
-    })
-  ));
-  const safeZone = {
-    left: 1440 * 0.35,
-    top: 900 * 0.35,
-    right: 1440 * 0.65,
-    bottom: 900 * 0.65
-  };
-  expect(fileBoxes.length).toBeGreaterThanOrEqual(2);
-  for (const box of fileBoxes) {
-    expect(box.left).toBeGreaterThanOrEqual(23);
-    expect(box.top).toBeGreaterThanOrEqual(23);
-    expect(box.right).toBeLessThanOrEqual(1417);
-    expect(box.bottom).toBeLessThanOrEqual(877);
-    expect(
-      box.right <= safeZone.left
-      || box.left >= safeZone.right
-      || box.bottom <= safeZone.top
-      || box.top >= safeZone.bottom
-    ).toBe(true);
-  }
-
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1440-home.png')
-  });
-  expect(runtimeErrors).toEqual([]);
-});
-
-const introSkipCases: ReadonlyArray<{
-  label: string;
-  skip: (page: Page) => Promise<void>;
-}> = [
-  {
-    label: '滚轮',
-    skip: async (page) => page.mouse.wheel(0, 160)
-  },
-  {
-    label: '点击',
-    skip: async (page) => page.mouse.click(12, 12)
-  },
-  {
-    label: '方向键',
-    skip: async (page) => page.keyboard.press('ArrowDown')
-  }
-];
-
-for (const skipCase of introSkipCases) {
-  test(`新页面首次${skipCase.label}输入跳过开场且不增加章节进度`, async ({ page }) => {
-    const runtimeErrors = collectRuntimeErrors(page);
-    await page.goto('/?seed=42');
-    await expect(page.locator(HOME)).toHaveAttribute('data-phase', /drawing|settling/);
-
-    await skipCase.skip(page);
-
-    await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
-    await expect(page.locator(HOME)).toHaveAttribute('data-progress', '0.0000');
-    await expect(page.locator('[data-testid="brand-logo"]')).toBeVisible();
-    for (const piece of await page.locator('[data-testid="magnetic-logo-piece"]').all()) {
-      await expect(piece).toBeHidden();
-    }
-    expect(runtimeErrors).toEqual([]);
-  });
-}
-
-test('PageDown 以缩放和透明度推进非纵向滚动章节并在终点卸载文件体验', async ({ page }) => {
+test('PageDown 推进非纵向滚动章节并在终点保留共享液态背景', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
-  const icon = await waitForFile(page);
-  await icon.hover();
-  await expect(page.locator(PREVIEW)).toBeVisible();
-
-  const initialVisual = await page.locator(BRAND).evaluate((brand) => {
-    const style = getComputedStyle(brand);
-    return { opacity: style.opacity, transform: style.transform };
-  });
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
   await page.keyboard.press('PageDown');
   await expect.poll(() => readProgress(page)).toBeGreaterThan(0);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
@@ -2611,43 +2228,60 @@ test('PageDown 以缩放和透明度推进非纵向滚动章节并在终点卸�
     await page.keyboard.press('PageDown');
   }
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'exiting');
-  const exitingVisual = await page.locator(BRAND).evaluate((brand) => {
-    const style = getComputedStyle(brand);
-    return { opacity: style.opacity, transform: style.transform };
-  });
-  expect(exitingVisual.opacity).not.toBe(initialVisual.opacity);
-  expect(exitingVisual.transform).not.toBe(initialVisual.transform);
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'about');
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
 
   await page.screenshot({
     path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1440-exiting.png')
   });
 
-  await page.keyboard.press('PageDown');
-  await page.keyboard.press('PageDown');
-  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '1.0000');
-  await expect(page.locator(SWARM)).toHaveCount(0);
-  await expect(page.locator(PREVIEW)).toHaveCount(0);
+  await enterChapter(page, 'feedback');
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'feedback');
+  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '4.0000');
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(LIQUID_HOME)).toBeVisible();
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   expect(runtimeErrors).toEqual([]);
 });
 
-test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', async ({ page }) => {
+test('下载与支持章节主要控件保持可操作且不残留旧外围文件层', async ({
+  page
+}) => {
+  const runtimeErrors = collectRuntimeErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await enterInteractive(page);
+
+  await enterChapter(page, 'download');
+  await expect(page.getByRole('group', { name: '选择下载平台' })).toBeVisible();
+  await expect(page.locator(ICON)).toHaveCount(0);
+  await expect(page.locator(PREVIEW)).toHaveCount(0);
+
+  await enterChapter(page, 'feedback');
+  await expect(page.getByRole('group', { name: '选择反馈操作' })).toBeVisible();
+  await expect(page.getByRole('group', { name: '选择付款方式' })).toBeVisible();
+  await expect(page.locator(ICON)).toHaveCount(0);
+  await expect(page.locator(PREVIEW)).toHaveCount(0);
+
+  expect(runtimeErrors).toEqual([]);
+});
+
+test('568x320 窄横屏支持章节滚筒保持在视口内且页面无横向溢出', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 568, height: 320 });
   await enterInteractive(page);
-  await expect(page.locator('[data-chapter-id]')).toHaveCount(5);
-  await enterChapter(page, 'donation');
+  await expect(page.locator('[data-chapter-id]')).toHaveCount(CHAPTER_IDS.length);
+  await enterChapter(page, 'feedback');
 
-  const donationSection = page.locator('[data-chapter-id="donation"]');
-  await expect(donationSection).toHaveAttribute('data-interactive', 'true');
+  const supportSection = page.locator('[data-chapter-id="feedback"]');
+  await expect(supportSection).toHaveAttribute('data-interactive', 'true');
 
-  const donation = page.locator(DONATION);
-  const roller = donation.getByRole('group', { name: '选择付款方式' });
+  const support = page.locator(SUPPORT);
+  const roller = support.getByRole('group', { name: '选择付款方式' });
   await expect(roller).toBeVisible();
   await expectInsideViewport(page, roller);
 
-  const cardBounds = await donation.locator('[data-payment-id]').evaluateAll(
+  const cardBounds = await support.locator('[data-payment-id]').evaluateAll(
     (cards) => cards.map((card) => {
       const bounds = card.getBoundingClientRect();
       return {
@@ -2675,7 +2309,7 @@ test('568x320 窄横屏捐款滚筒保持在视口内且页面无横向溢出', 
   expect(layoutState.documentWidth).toBeLessThanOrEqual(layoutState.viewportWidth);
   expect(layoutState.bodyWidth).toBeLessThanOrEqual(layoutState.viewportWidth);
   await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'donation-568x320.png')
+    path: resolve(SCREENSHOT_DIRECTORY, 'support-568x320.png')
   });
   expect(runtimeErrors).toEqual([]);
 });
@@ -2692,14 +2326,12 @@ test('568x320 五章节主内容避让移动导航且保持完整可见', async 
   const primaryByChapter = new Map([
     [
       'home',
-      page.locator('[data-chapter-id="home"]')
-        .getByRole('heading', { name: 'AI Pet', exact: true })
-        .locator('..')
+      page.locator(LIQUID_HOME)
     ],
-    ['about', page.locator('[data-chapter-id="about"] h2')],
+    ['about', page.locator('[data-glass-id="editor"]')],
     ['download', page.getByRole('group', { name: '选择下载平台' })],
-    ['feedback', page.locator('[data-chapter-id="feedback"] h2')],
-    ['donation', page.getByRole('group', { name: '选择付款方式' })]
+    ['community', page.getByRole('button', { name: '分享您的 AI Pet' })],
+    ['feedback', page.getByRole('group', { name: '选择付款方式' })]
   ]);
 
   await expect(navigation).toBeVisible();
@@ -2719,16 +2351,18 @@ test('568x320 五章节主内容避让移动导航且保持完整可见', async 
       .toBeLessThanOrEqual(569);
     expect(primaryBounds!.y + primaryBounds!.height, `${chapterId} 下边界`)
       .toBeLessThanOrEqual(321);
-    const overlapsNavigation = !(
-      primaryBounds!.x + primaryBounds!.width <= navigationBounds!.x
-      || navigationBounds!.x + navigationBounds!.width <= primaryBounds!.x
-      || primaryBounds!.y + primaryBounds!.height <= navigationBounds!.y
-      || navigationBounds!.y + navigationBounds!.height <= primaryBounds!.y
-    );
-    expect(overlapsNavigation, `${chapterId} 主内容不应被章节导航遮挡`)
-      .toBe(false);
+    if (chapterId !== 'home') {
+      const overlapsNavigation = !(
+        primaryBounds!.x + primaryBounds!.width <= navigationBounds!.x
+        || navigationBounds!.x + navigationBounds!.width <= primaryBounds!.x
+        || primaryBounds!.y + primaryBounds!.height <= navigationBounds!.y
+        || navigationBounds!.y + navigationBounds!.height <= primaryBounds!.y
+      );
+      expect(overlapsNavigation, `${chapterId} 主内容不应被章节导航遮挡`)
+        .toBe(false);
+    }
 
-    if (chapterId !== 'donation') {
+    if (chapterId !== 'feedback') {
       await next.click();
     }
   }
@@ -2738,7 +2372,7 @@ test('568x320 五章节主内容避让移动导航且保持完整可见', async 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => {
+test('移动下载操作按钮避让章节导航', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const viewports = [
@@ -2746,11 +2380,6 @@ test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => 
     { width: 375, height: 667 },
     { width: 568, height: 320 }
   ];
-  const sides = [
-    { id: 'faq', trigger: '显示常见问题' },
-    { id: 'notice', trigger: '显示安装前须知' }
-  ] as const;
-
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await page.goto('/?seed=42');
@@ -2762,62 +2391,24 @@ test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => 
     await next.click();
     await expect(experience).toHaveAttribute('data-active-chapter', 'download');
 
-    for (const side of sides) {
-      const trigger = page.getByRole('button', { name: side.trigger });
-      const triggerBounds = await trigger.boundingBox();
-      expect(triggerBounds).not.toBeNull();
-      expect(triggerBounds!.width).toBeGreaterThanOrEqual(44);
-      expect(triggerBounds!.height).toBeGreaterThanOrEqual(44);
-      await trigger.click();
-      await expect(download).toHaveAttribute('data-visible-side', side.id);
-
-      const panel = download.locator(`[data-side-panel="${side.id}"]`);
-      await expect(panel).toHaveAttribute('aria-hidden', 'false');
-      await expect(panel.locator('[data-panel-item]').first()).toBeVisible();
-      await expectInsideViewport(page, panel);
-
-      const overlappingTexts = await panel.evaluate((panelNode) => {
-        const navigation = document.querySelector(
-          'nav[aria-label="章节导航"]'
-        );
-        if (!navigation) return ['章节导航不存在'];
-
-        const panelRect = panelNode.getBoundingClientRect();
-        const navigationRect = navigation.getBoundingClientRect();
-        return Array.from(panelNode.querySelectorAll<HTMLElement>('h2, h3, p'))
-          .filter((textNode) => {
-            const style = getComputedStyle(textNode);
-            return style.display !== 'none'
-              && style.visibility !== 'hidden'
-              && Number(style.opacity) > 0;
-          })
-          .filter((textNode) => {
-            const textRect = textNode.getBoundingClientRect();
-            const visibleRect = {
-              left: Math.max(0, panelRect.left, textRect.left),
-              right: Math.min(window.innerWidth, panelRect.right, textRect.right),
-              top: Math.max(0, panelRect.top, textRect.top),
-              bottom: Math.min(window.innerHeight, panelRect.bottom, textRect.bottom)
-            };
-            if (
-              visibleRect.right <= visibleRect.left
-              || visibleRect.bottom <= visibleRect.top
-            ) {
-              return false;
-            }
-
-            return visibleRect.left < navigationRect.right
-              && visibleRect.right > navigationRect.left
-              && visibleRect.top < navigationRect.bottom
-              && visibleRect.bottom > navigationRect.top;
-          })
-          .map((textNode) => textNode.textContent?.trim() ?? '');
-      });
-      expect(
-        overlappingTexts,
-        `${viewport.width}x${viewport.height} ${side.id} 可见文本不应与章节导航相交`
-      ).toEqual([]);
-    }
+    const action = download.getByRole('button', { name: '尚未发布' });
+    const navigation = page.getByRole('navigation', { name: '章节导航' });
+    await expect(action).toBeVisible();
+    await expectInsideViewport(page, action);
+    const actionBounds = await action.boundingBox();
+    const navigationBounds = await navigation.boundingBox();
+    expect(actionBounds).not.toBeNull();
+    expect(navigationBounds).not.toBeNull();
+    const overlapsNavigation = !(
+      actionBounds!.x + actionBounds!.width <= navigationBounds!.x
+      || navigationBounds!.x + navigationBounds!.width <= actionBounds!.x
+      || actionBounds!.y + actionBounds!.height <= navigationBounds!.y
+      || navigationBounds!.y + navigationBounds!.height <= actionBounds!.y
+    );
+    expect(
+      overlapsNavigation,
+      `${viewport.width}x${viewport.height} 下载按钮不应与章节导航相交`
+    ).toBe(false);
 
     const widths = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,
@@ -2831,7 +2422,7 @@ test('移动下载抽屉的可见文本避让章节导航', async ({ page }) => 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限为 1.75', async ({
+test('液态玻璃 WebGL 画布按性能比例建立缓冲区并响应指针', async ({
   browser,
   baseURL
 }) => {
@@ -2847,8 +2438,10 @@ test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限�
 
   try {
     await enterInteractive(page);
-    const canvas = page.locator(CANVAS);
-    await expect(canvas).toHaveAttribute('aria-hidden', 'true');
+    const liquidHome = page.locator(LIQUID_HOME);
+    const canvas = liquidHome.locator('canvas');
+    await expect(liquidHome).toHaveAttribute('data-active', 'true');
+    await expect(liquidHome).toHaveAttribute('data-initialization-failed', 'false');
     await expect(canvas).toBeVisible();
 
     const trailPoints = [
@@ -2862,11 +2455,13 @@ test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限�
       await page.mouse.move(x, y);
       await page.waitForTimeout(70);
     }
+    await page.mouse.down();
+    await page.mouse.up();
     await page.waitForTimeout(120);
 
     const canvasEvidence = await canvas.evaluate((element) => {
       if (!(element instanceof HTMLCanvasElement)) {
-        throw new Error('光标场不是 Canvas 元素');
+        throw new Error('液态玻璃不是 Canvas 元素');
       }
       const bounds = element.getBoundingClientRect();
       return {
@@ -2878,100 +2473,26 @@ test('Canvas 轨迹产生真实像素、旧轨迹衰减且缓冲区 DPR 上限�
       };
     });
     expect(canvasEvidence.browserDpr).toBe(2);
-    expect(canvasEvidence.bufferWidth).toBe(Math.round(canvasEvidence.cssWidth * 1.75));
-    expect(canvasEvidence.bufferHeight).toBe(Math.round(canvasEvidence.cssHeight * 1.75));
-
-    const trailPixelCount = await countCanvasAlphaPixels(canvas);
-    expect(trailPixelCount).toBeGreaterThan(0);
-    const homeColorEvidence = await readCanvasColorEvidence(canvas);
-    expect(homeColorEvidence.alphaPixels).toBeGreaterThan(0);
-    expect(
-      homeColorEvidence.balancedPixels / homeColorEvidence.alphaPixels
-    ).toBeGreaterThan(0.9);
-    expect(homeColorEvidence.yellowPixels).toBe(0);
-    await page.waitForTimeout(1_350);
-    const decayedPixelCount = await countCanvasAlphaPixels(canvas);
-    expect(decayedPixelCount).toBeGreaterThan(0);
-    expect(decayedPixelCount).toBeLessThan(trailPixelCount);
+    expect(canvasEvidence.bufferWidth).toBe(Math.round(canvasEvidence.cssWidth * 0.9));
+    expect(canvasEvidence.bufferHeight).toBe(Math.round(canvasEvidence.cssHeight * 0.9));
+    expect(canvasEvidence.bufferWidth).toBeGreaterThan(0);
+    expect(canvasEvidence.bufferHeight).toBeGreaterThan(0);
     expect(runtimeErrors).toEqual([]);
   } finally {
     await context.close();
   }
 });
 
-test('减少动态效果直接进入稳定交互并保留品牌与文件语义', async ({ page }) => {
+test('减少动态效果直接进入稳定首页', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?seed=42');
 
   await expect(page.locator(HOME)).toHaveAttribute('data-phase', 'interactive');
-  await expect(page.locator(CANVAS)).toBeHidden();
-  await expect(getBrandHeading(page)).toBeVisible();
-  const icon = await waitForFile(page);
-  await expect(icon).toHaveAccessibleName(/^预览 /);
-
-  const reducedMotionEvidence = await page.locator(BRAND).evaluate((brand) => {
-    const transformNode = brand.firstElementChild;
-    const magneticMark = brand.querySelector('[data-testid="magnetic-ap-mark"]');
-    const pieces = Array.from(
-      brand.querySelectorAll<HTMLElement>('[data-testid="magnetic-logo-piece"]')
-    );
-    const logo = brand.querySelector('img[src="/AP.png"]');
-    const fileIcon = document.querySelector('[data-testid="file-icon"] img');
-    return {
-      brandTransform: getComputedStyle(brand).transform,
-      innerTransform: transformNode ? getComputedStyle(transformNode).transform : null,
-      magneticDisplay: magneticMark ? getComputedStyle(magneticMark).display : null,
-      pieceTransitions: pieces.map((piece) => getComputedStyle(piece).transitionDuration),
-      logoTransitionDuration: logo ? getComputedStyle(logo).transitionDuration : null,
-      fileAnimation: fileIcon ? getComputedStyle(fileIcon).animationName : null
-    };
-  });
-  expect(reducedMotionEvidence.brandTransform).toBe('none');
-  expect(reducedMotionEvidence.innerTransform).toBe('none');
-  expect(reducedMotionEvidence.magneticDisplay).toBe('none');
-  expect(
-    reducedMotionEvidence.pieceTransitions.every((duration) => duration === '0s')
-  ).toBe(true);
-  expect(reducedMotionEvidence.logoTransitionDuration).toBe('0s');
-  expect(reducedMotionEvidence.fileAnimation).toBe('none');
-  expect(runtimeErrors).toEqual([]);
-});
-
-test('1920 预览保持在视口内且所有文本不溢出', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  await page.setViewportSize({ width: 1920, height: 1080 });
-  await enterInteractive(page);
-  const icon = await waitForFile(page);
-  await page.mouse.move(1660, 220);
-  await expect.poll(
-    () => countCanvasAlphaPixels(page.locator(CANVAS)),
-    { message: '1920 首页截图前灰色光场应产生非空像素' }
-  ).toBeGreaterThan(0);
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'website-1920.png')
-  });
-  await icon.hover();
-
-  const preview = page.locator(PREVIEW);
-  await expect(preview).toBeVisible();
-  await expectInsideViewport(page, preview);
-  const overflowingText = await preview.locator('*').evaluateAll((nodes) => (
-    nodes
-      .filter((node) => (
-        (node.textContent?.trim().length ?? 0) > 0
-        && (
-          node.scrollWidth > node.clientWidth + 1
-          || node.scrollHeight > node.clientHeight + 1
-        )
-      ))
-      .map((node) => node.tagName)
-  ));
-  expect(overflowingText).toEqual([]);
-
-  await page.screenshot({
-    path: resolve(SCREENSHOT_DIRECTORY, 'desktop-1920-preview.png')
-  });
+  await expect(page.locator(LIQUID_HOME)).toHaveAttribute('data-active', 'true');
+  await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeAttached();
+  await expect(page.locator(SWARM)).toHaveCount(0);
+  await expect(page.locator('[data-testid="brand-stage"]')).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);
 });

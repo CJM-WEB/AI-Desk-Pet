@@ -11,8 +11,11 @@ import {
   transitionPreviewHold
 } from '../components/home-experience/FileSwarm';
 import { EXPERIENCE_CONFIG } from '../components/home-experience/config';
-import { CONTENT_POOL } from '../components/home-experience/content-pool';
-import { VISUAL_PROFILES } from '../components/website-experience/shared-visual-model';
+import {
+  CONTENT_POOL,
+  createContentPool
+} from '../components/home-experience/content-pool';
+import { en } from '../components/i18n/messages';
 import {
   advanceParticle,
   createSeededRandom,
@@ -24,7 +27,7 @@ import type { FileParticle, Rect, SpawnViewport } from '../components/home-exper
 const viewport: SpawnViewport = {
   width: 1440,
   height: 900,
-  safeZoneRatio: VISUAL_PROFILES.home.safeZoneRatio
+  safeZoneRatio: 0.34
 };
 
 function createParticle(overrides: Partial<FileParticle> = {}): FileParticle {
@@ -202,6 +205,25 @@ describe('粒子放置约束', () => {
 });
 
 describe('粒子生成', () => {
+  it('使用英文内容池生成粒子并保存稳定预览索引', () => {
+    const pool = createContentPool((key) => en[key]);
+    const particle = spawnParticle({
+      id: 'particle-en',
+      now: 100,
+      viewport: { width: 320, height: 240, safeZoneRatio: 0 },
+      existing: [],
+      random: () => 0,
+      pool
+    });
+
+    expect(particle).toMatchObject({
+      kind: 'txt',
+      previewIndex: 0,
+      preview: pool.txt[0]
+    });
+    expect(particle?.preview.title).toBe('Today notes');
+  });
+
   it('使用同一随机源生成边距内的位置和指定范围内的外观属性', () => {
     const particle = spawnParticle({
       id: 'particle-1',

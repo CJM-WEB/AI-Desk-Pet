@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
+import { createMemoryWebsiteApi } from './memory-website-api.mjs';
 
 const host = '127.0.0.1';
 const configuredPort = Number.parseInt(process.env.PORT ?? '4173', 10);
@@ -29,6 +30,7 @@ const contentTypes = new Map([
   ['.txt', 'text/plain; charset=utf-8'],
   ['.webp', 'image/webp']
 ]);
+const memoryApi = createMemoryWebsiteApi({ runId: testRunId });
 
 async function resolveExportFile(pathname) {
   const decodedPath = decodeURIComponent(pathname);
@@ -46,6 +48,7 @@ async function resolveExportFile(pathname) {
 }
 
 const server = createServer(async (request, response) => {
+  if (await memoryApi.handle(request, response)) return;
   const pathname = new URL(request.url ?? '/', `http://${host}:${port}`).pathname;
   const filePath = await resolveExportFile(pathname);
   if (!filePath) {

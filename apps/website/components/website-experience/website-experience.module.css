@@ -132,7 +132,9 @@
   will-change: auto;
 }
 
-/* 捐款内容覆盖共享文件层，但仅滚筒接管指针，外围文件仍可被命中。 */
+/* 共享文件章节只让局部控件接管指针，外围区域继续命中文件图标。 */
+.chapter[data-chapter-id='download'],
+.chapter[data-chapter-id='feedback'],
 .chapter[data-chapter-id='donation'] {
   pointer-events: none;
 }

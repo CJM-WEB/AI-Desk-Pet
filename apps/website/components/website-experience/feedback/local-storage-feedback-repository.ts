@@ -5,7 +5,6 @@ import type {
   CreateFeedbackInput,
   FeedbackEntry,
   FeedbackRecord,
-  FeedbackRepository,
   FeedbackStatusNotice,
   FeedbackStorageDocument
 } from './feedback-types';
@@ -41,11 +40,17 @@ export class FeedbackValidationError extends Error {
   }
 }
 
+export type FeedbackStorageErrorCode =
+  | 'STORAGE_UNAVAILABLE'
+  | 'WRITE_FAILED';
+
 export class FeedbackStorageError extends Error {
   readonly name = 'FeedbackStorageError';
+  readonly code: FeedbackStorageErrorCode;
 
-  constructor(cause: unknown) {
+  constructor(code: FeedbackStorageErrorCode, cause?: unknown) {
     super('反馈数据无法写入本地存储，请稍后重试。');
+    this.code = code;
     this.cause = cause;
   }
 }
@@ -68,7 +73,10 @@ export interface LocalStorageFeedbackRepositoryOptions {
   now?: () => string;
 }
 
-export class LocalStorageFeedbackRepository implements FeedbackRepository {
+/**
+ * 仅保留给既有测试的本地适配器；生产反馈章节改用 CloudFeedbackRepository。
+ */
+export class LocalStorageFeedbackRepository {
   private readonly storage: Storage | null;
   private readonly eventTarget: StorageEventTarget | null;
   private readonly key: string;
@@ -79,7 +87,8 @@ export class LocalStorageFeedbackRepository implements FeedbackRepository {
   private statusNotice: FeedbackStatusNotice | null = null;
 
   constructor(options: LocalStorageFeedbackRepositoryOptions = {}) {
-    this.storage = options.storage ?? this.resolveStorage();
+    // 仅省略 storage 时自动解析浏览器实现；显式 null 表示禁用本地存储。
+    this.storage = options.storage === undefined ? this.resolveStorage() : options.storage;
     this.eventTarget = options.eventTarget ?? this.resolveEventTarget();
     this.key = options.key ?? feedbackStorageKey;
     this.createId = options.createId ?? (() => crypto.randomUUID());
@@ -257,10 +266,14 @@ export class LocalStorageFeedbackRepository implements FeedbackRepository {
         .filter((entry) => entry.source === 'local-user'),
       likedEntryIds: [...new Set(document.likedEntryIds)]
     };
+    // 缺少真实存储时禁止把写入误报为内存中的保存成功。
+    if (!this.storage) {
+      throw new FeedbackStorageError('STORAGE_UNAVAILABLE');
+    }
     try {
-      this.storage?.setItem(this.key, JSON.stringify(normalized));
+      this.storage.setItem(this.key, JSON.stringify(normalized));
     } catch (error) {
-      throw new FeedbackStorageError(error);
+      throw new FeedbackStorageError('WRITE_FAILED', error);
     }
     this.memoryDocument = normalized;
   }
@@ -271,7 +284,8 @@ export class LocalStorageFeedbackRepository implements FeedbackRepository {
     changed: boolean;
   } {
     const entries = trimFeedbackEntries(
-      document.entries.filter((entry) => entry.source === 'local-user'),
+      document.entries
+        .filter((entry) => entry.source === 'local-user'),
       MAX_USER_ENTRIES_PER_KIND
     ).filter((entry) => entry.source === 'local-user');
     const likedEntryIds = [...new Set(document.likedEntryIds)];

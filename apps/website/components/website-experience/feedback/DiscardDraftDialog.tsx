@@ -2,11 +2,13 @@
 
 import { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import type { Translate } from '../../i18n/i18n-types';
 import styles from './feedback.module.css';
 
 export interface DiscardDraftDialogProps {
   onContinueEditing: () => void;
   onDiscard: () => void;
+  t: Translate;
 }
 
 const FOCUSABLE_SELECTOR = 'button:not([disabled])';
@@ -14,7 +16,8 @@ const FOCUSABLE_SELECTOR = 'button:not([disabled])';
 /** 以不可穿透的确认层阻止未保存草稿被意外丢弃。 */
 export function DiscardDraftDialog({
   onContinueEditing,
-  onDiscard
+  onDiscard,
+  t
 }: DiscardDraftDialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -80,10 +83,10 @@ export function DiscardDraftDialog({
         aria-labelledby={titleId}
         onClick={(event) => event.stopPropagation()}
       >
-        <h3 id={titleId}>放弃未发布内容？</h3>
+        <h3 id={titleId}>{t('feedback.dialog.discardTitle')}</h3>
         <div className={styles.discardActions}>
-          <button ref={continueRef} type="button" onClick={onContinueEditing}>继续编辑</button>
-          <button type="button" onClick={onDiscard}>确认放弃</button>
+          <button ref={continueRef} type="button" onClick={onContinueEditing}>{t('feedback.dialog.continue')}</button>
+          <button type="button" onClick={onDiscard}>{t('feedback.dialog.discard')}</button>
         </div>
       </section>
     </div>,

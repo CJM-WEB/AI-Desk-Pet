@@ -31,8 +31,13 @@ import { Transform, Writable, type Readable } from 'node:stream';
 import { finished, pipeline } from 'node:stream/promises';
 import {
   CHARACTER_PACKAGE_LIMITS,
+  characterSourceCatalogV1Schema,
+  characterSourceFileName,
+  validateCharacterPackageStructure,
   validatePackageEntries,
+  type CharacterPackageFileMetadata,
   type CharacterPackageLimits,
+  type CharacterSourceCatalogV1,
   type PackageEntryDescriptor
 } from '@myself/character-assets';
 import {
@@ -41,7 +46,6 @@ import {
 } from '@myself/character-runtime';
 import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
-import { z } from 'zod';
 import { CharacterAssetService } from './character-asset-service';
 import {
   migrateCharacterDocument,
@@ -58,32 +62,6 @@ const IMPORT_STAGING_PREFIX = 'ai-pet-character-package-';
 const ROLLBACK_MARKER_PATTERN =
   /^\.package-import-rollback-([a-z0-9][a-z0-9_-]{0,119})\.json$/u;
 const packageImportQueues = new Map<string, Promise<void>>();
-
-const sourceCatalogSchema = z.object({
-  version: z.literal(1),
-  characterId: z.string().regex(SAFE_CHARACTER_ID),
-  sources: z.array(z.object({
-    assetId: z.string().regex(UUID_PATTERN),
-    displayName: z.string().min(1).max(255),
-    mimeType: z.enum(['image/png', 'image/webp']),
-    byteLength: z.number().int().safe().nonnegative(),
-    sha256: z.string().regex(SHA_256_PATTERN)
-  }).strict()).max(2_000)
-}).strict().superRefine((catalog, context) => {
-  const ids = new Set<string>();
-  catalog.sources.forEach((source, index) => {
-    if (ids.has(source.assetId)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: '源素材标识必须唯一。',
-        path: ['sources', index, 'assetId']
-      });
-    }
-    ids.add(source.assetId);
-  });
-});
-
-type SourceCatalog = z.output<typeof sourceCatalogSchema>;
 
 export type CharacterPackageCheckpoint =
   | 'extract:before-file-open'
@@ -128,7 +106,7 @@ type PreparedPackage = {
   draft: CharacterDraftV2;
   manifest: CharacterManifestV2;
   runtimeAssets: Readonly<Record<string, Uint8Array>>;
-  sourceCatalog: SourceCatalog;
+  sourceCatalog: CharacterSourceCatalogV1;
   sourceVersion: 1 | 2;
 };
 
@@ -1124,10 +1102,6 @@ function addPackageBytes(
   return total;
 }
 
-function sourceFileName(source: SourceCatalog['sources'][number]): string {
-  return `${source.assetId}${source.mimeType === 'image/png' ? '.png' : '.webp'}`;
-}
-
 function extractedPath(
   files: ExtractedFiles,
   archivePath: string
@@ -1155,7 +1129,7 @@ async function preparePackage(
   } catch {
     throw packageError('CHARACTER_PACKAGE_INVALID');
   }
-  const sourceResult = sourceCatalogSchema.safeParse(
+  const sourceResult = characterSourceCatalogV1Schema.safeParse(
     await readJson(extractedPath(files, 'source/catalog.json'))
   );
   if (
@@ -1167,56 +1141,66 @@ async function preparePackage(
   const draft = draftResult.document;
   const manifest = manifestResult.document;
   const sourceCatalog = sourceResult.data;
-  if (
-    draft.id !== manifest.id
-    || draft.id !== sourceCatalog.characterId
-  ) {
-    throw packageError('CHARACTER_PACKAGE_ID_MISMATCH');
-  }
-
-  const expectedFiles = new Set([
-    'draft/draft.json',
-    'compiled/manifest.json',
-    'source/catalog.json',
-    ...manifest.resources.map(resource => `compiled/${resource.fileName}`),
-    ...sourceCatalog.sources.map(source => `source/${sourceFileName(source)}`)
-  ]);
-  const actualFiles = entries
+  const packageFiles = new Map<string, CharacterPackageFileMetadata>(
+    entries
     .filter(entry => entry.descriptor.kind === 'file')
-    .map(entry => entry.normalizedPath);
-  if (
-    actualFiles.length !== expectedFiles.size
-    || actualFiles.some(path => !expectedFiles.has(path))
-  ) {
-    throw packageError('CHARACTER_PACKAGE_STRUCTURE_INVALID');
-  }
+    .map(entry => {
+      const path = entry.normalizedPath;
+      const lowerPath = path.toLocaleLowerCase('en-US');
+      const metadata: CharacterPackageFileMetadata = lowerPath.endsWith('.json')
+        ? { path, kind: 'json' }
+        : {
+            path,
+            kind: 'image',
+            mime: lowerPath.endsWith('.png') ? 'image/png' : 'image/webp'
+          };
+      return [path, metadata];
+    })
+  );
 
   const runtimeAssets: Record<string, Uint8Array> = {};
   for (const resource of manifest.resources) {
+    const path = `compiled/${resource.fileName}`;
     const bytes = await readRegularFile(
-      extractedPath(files, `compiled/${resource.fileName}`)
+      extractedPath(files, path)
     );
-    if (
-      bytes.byteLength !== resource.byteLength
-      || sha256(bytes) !== resource.sha256
-    ) {
-      throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
-    }
+    const lowerName = resource.fileName.toLocaleLowerCase('en-US');
+    packageFiles.set(path, {
+      path,
+      kind: lowerName.endsWith('.json') ? 'json' : 'image',
+      ...(lowerName.endsWith('.json')
+        ? {}
+        : {
+            mime: lowerName.endsWith('.png')
+              ? 'image/png' as const
+              : 'image/webp' as const
+          }),
+      byteLength: bytes.byteLength,
+      sha256: sha256(bytes)
+    });
     runtimeAssets[resource.fileName] = bytes;
   }
 
   for (const source of sourceCatalog.sources) {
-    const fileName = sourceFileName(source);
+    const fileName = characterSourceFileName(source);
+    const path = `source/${fileName}`;
     const bytes = await readRegularFile(
-      extractedPath(files, `source/${fileName}`)
+      extractedPath(files, path)
     );
-    if (
-      bytes.byteLength !== source.byteLength
-      || sha256(bytes) !== source.sha256
-    ) {
-      throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
-    }
+    packageFiles.set(path, {
+      path,
+      kind: 'image',
+      mime: source.mimeType,
+      byteLength: bytes.byteLength,
+      sha256: sha256(bytes)
+    });
   }
+  validateCharacterPackageStructure({
+    draftId: draft.id,
+    manifest,
+    sourceCatalog,
+    files: [...packageFiles.values()]
+  });
 
   return {
     originalId: draft.id,
@@ -1259,7 +1243,7 @@ async function validateSourcesInIsolation(
       mkdir(join(characterDirectory, 'compiled'), { recursive: true })
     ]);
     for (const source of prepared.sourceCatalog.sources) {
-      const fileName = sourceFileName(source);
+      const fileName = characterSourceFileName(source);
       await copyFile(
         extractedPath(files, `source/${fileName}`),
         join(sourceDirectory, fileName)
@@ -1638,8 +1622,8 @@ export class CharacterPackageService {
     const compiledRoot = resolve(characterRoot, 'compiled');
     try {
       for (const source of sources) {
-        const archivePath = `source/${sourceFileName(source)}`;
-        const diskPath = resolve(sourceRoot, sourceFileName(source));
+        const archivePath = `source/${characterSourceFileName(source)}`;
+        const diskPath = resolve(sourceRoot, characterSourceFileName(source));
         if (!isContained(sourceRoot, diskPath)) {
           throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
         }
@@ -1811,8 +1795,8 @@ export class CharacterPackageService {
       );
       for (const source of sources) {
         await assertDirectoryIdentity(sourceRootIdentity, characterRoot);
-        const archivePath = `source/${sourceFileName(source)}`;
-        const diskPath = resolve(sourceRoot, sourceFileName(source));
+        const archivePath = `source/${characterSourceFileName(source)}`;
+        const diskPath = resolve(sourceRoot, characterSourceFileName(source));
         if (!isContained(sourceRoot, diskPath)) {
           throw packageError('CHARACTER_PACKAGE_EXPORT_PATH_UNSAFE');
         }
@@ -1951,12 +1935,12 @@ export class CharacterPackageService {
       if (!isContained(characterDirectory, sourceDirectory)) {
         throw packageError('CHARACTER_PACKAGE_IMPORT_PATH_UNSAFE');
       }
-      const nextSourceCatalog: SourceCatalog = {
+      const nextSourceCatalog: CharacterSourceCatalogV1 = {
         ...prepared.sourceCatalog,
         characterId: createdId
       };
       for (const source of prepared.sourceCatalog.sources) {
-        const fileName = sourceFileName(source);
+        const fileName = characterSourceFileName(source);
         await copyFile(
           extractedPath(extractedFiles, `source/${fileName}`),
           join(sourceDirectory, fileName)

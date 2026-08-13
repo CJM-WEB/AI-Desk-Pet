@@ -1,0 +1,540 @@
+import { createHash } from 'node:crypto';
+
+const ADMIN_TOKEN = 'e2e-admin-session';
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+/** 为单次 Playwright worker 创建完全隔离的确定性 API 状态。 */
+export function createMemoryWebsiteApi({ runId }) {
+  const submissions = new Map();
+  const tokenIndex = new Map();
+  const uploads = new Map();
+  let sequence = 0;
+
+  const reset = () => {
+    submissions.clear();
+    tokenIndex.clear();
+    uploads.clear();
+    sequence = 0;
+  };
+
+  const nextId = () => `e2e-${++sequence}`;
+  const now = () => new Date(Date.UTC(2026, 6, 30, 12, 0, sequence)).toISOString();
+  const tokenFor = id => createHash('sha256').update(`${runId}:${id}`).digest('base64url');
+
+  async function handle(request, response) {
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
+    const { pathname, searchParams } = url;
+    if (request.method === 'POST' && pathname === '/__e2e/reset') {
+      reset();
+      return sendData(response, 200, { reset: true });
+    }
+    if (pathname.startsWith('/__e2e/upload/')) {
+      return handleUpload(request, response, pathname);
+    }
+    if (request.method === 'GET' && pathname.startsWith('/__e2e/cover/')) {
+      return sendBinary(response, 'image/png', Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64'
+      ));
+    }
+    if (request.method === 'GET' && pathname.startsWith('/__e2e/download/')) {
+      return sendBinary(response, 'application/zip', Buffer.from('e2e-package'));
+    }
+    if (!pathname.startsWith('/api/v1/')) return false;
+
+    try {
+      if (request.method === 'POST' && pathname === '/api/v1/submissions/prepare') {
+        const body = await readJson(request);
+        if (body.kind !== 'shared_package' || !body.coverFile || !body.packageFile) {
+          return sendError(response, 400, 'INVALID_REQUEST');
+        }
+        const id = nextId();
+        const statusToken = tokenFor(id);
+        const createdAt = now();
+        const record = {
+          id,
+          kind: 'shared_package',
+          title: String(body.title ?? '').trim(),
+          body: String(body.body ?? '').trim(),
+          status: 'uploading',
+          statusVersion: 0,
+          statusToken,
+          publicReason: null,
+          autoRejectionReason: null,
+          technicalPass: false,
+          riskSummary: { summary: '等待系统审核', labels: [] },
+          assets: [
+            assetFrom(body.coverFile, 'cover', `${id}/cover`),
+            assetFrom(body.packageFile, 'package', `${id}/package`)
+          ],
+          moderationResults: [],
+          auditLogs: [],
+          idempotency: new Map(),
+          moderationLeaseUntil: null,
+          purgeAfter: null,
+          preQuarantineStatus: null,
+          publishedAt: null,
+          createdAt,
+          updatedAt: createdAt,
+          likeCount: 0,
+          downloadCount: 0,
+          liked: false
+        };
+        submissions.set(id, record);
+        tokenIndex.set(statusToken, id);
+        const origin = `http://${request.headers.host}`;
+        return sendData(response, 200, {
+          submissionId: id,
+          statusToken,
+          statusPath: '/submission-status/',
+          status: 'uploading',
+          coverUpload: uploadTarget(origin, id, 'cover'),
+          packageUpload: uploadTarget(origin, id, 'package')
+        });
+      }
+
+      const finalizeId = matchId(pathname, '/api/v1/submissions/', '/finalize');
+      if (request.method === 'POST' && finalizeId) {
+        await readJson(request);
+        const record = requireSubmission(finalizeId);
+        if (!uploads.has(`${record.id}:cover`) || !uploads.has(`${record.id}:package`)) {
+          return sendError(response, 409, 'UPLOAD_INCOMPLETE');
+        }
+        const packageAsset = record.assets.find(asset => asset.role === 'package');
+        const marker = `${record.title} ${record.body} ${packageAsset?.fileName ?? ''}`.toLowerCase();
+        record.technicalPass = !marker.includes('technical-fail') && !marker.includes('扫描失败');
+        record.status = marker.includes('auto-reject') || marker.includes('自动驳回')
+          ? 'auto_rejected'
+          : 'manual_review_pending';
+        record.statusVersion += 1;
+        record.updatedAt = now();
+        record.riskSummary = {
+          summary: record.status === 'auto_rejected' ? '系统规则自动驳回' : '系统审核完成',
+          labels: record.status === 'auto_rejected' ? ['blocked'] : ['reviewed']
+        };
+        record.autoRejectionReason = record.status === 'auto_rejected'
+          ? '测试夹具命中自动驳回规则'
+          : null;
+        record.moderationResults = [packageScan(record, packageAsset)];
+        return sendData(response, 200, { status: 'system_reviewing' });
+      }
+
+      if (request.method === 'POST' && pathname === '/api/v1/feedback') {
+        const body = await readJson(request);
+        if (!['feedback', 'suggestion'].includes(body.kind) || typeof body.content !== 'string') {
+          return sendError(response, 400, 'INVALID_REQUEST');
+        }
+        const id = nextId();
+        const statusToken = tokenFor(id);
+        const createdAt = now();
+        const autoRejected = body.content.includes('自动驳回');
+        const record = {
+          id,
+          kind: body.kind,
+          title: String(body.authorName ?? '').trim() || '匿名用户',
+          body: body.content.trim(),
+          status: autoRejected ? 'auto_rejected' : 'manual_review_pending',
+          statusVersion: 1,
+          statusToken,
+          publicReason: null,
+          autoRejectionReason: autoRejected ? '测试夹具命中自动驳回规则' : null,
+          technicalPass: true,
+          riskSummary: { summary: autoRejected ? '系统规则自动驳回' : '系统审核完成', labels: [] },
+          assets: [],
+          moderationResults: [{
+            kind: 'text_moderation', provider: 'e2e-fixture', suggestion: autoRejected ? 'Block' : 'Pass',
+            label: autoRejected ? 'blocked' : 'safe', score: autoRejected ? 1 : 0,
+            evidence: { fixture: autoRejected ? 'auto_reject' : 'safe' }, createdAt
+          }],
+          auditLogs: [],
+          idempotency: new Map(),
+          moderationLeaseUntil: null,
+          purgeAfter: autoRejected ? plusDays(createdAt, 3) : null,
+          preQuarantineStatus: null,
+          publishedAt: null,
+          createdAt,
+          updatedAt: createdAt,
+          likeCount: 0,
+          downloadCount: 0,
+          liked: false
+        };
+        submissions.set(id, record);
+        tokenIndex.set(statusToken, id);
+        return sendData(response, 200, {
+          submissionId: id,
+          statusToken,
+          statusPath: '/submission-status/',
+          status: 'system_reviewing'
+        });
+      }
+
+      if (request.method === 'POST' && pathname === '/api/v1/submission-status') {
+        const body = await readJson(request);
+        const id = tokenIndex.get(body.statusToken);
+        if (!id) return sendError(response, 404, 'NOT_FOUND');
+        const record = submissions.get(id);
+        return sendData(response, 200, statusView(record));
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/community') {
+        return sendData(response, 200, pageOf(
+          [...submissions.values()].filter(row => row.kind === 'shared_package' && row.status === 'published'),
+          searchParams,
+          publicCommunity
+        ));
+      }
+
+      const communityId = matchId(pathname, '/api/v1/community/', '');
+      if (request.method === 'GET' && communityId) {
+        const record = requirePublished(communityId, 'shared_package');
+        return sendData(response, 200, publicCommunity(record));
+      }
+
+      const communityLikeId = matchId(pathname, '/api/v1/community/', '/like');
+      if (request.method === 'POST' && communityLikeId) {
+        await readJson(request);
+        return sendData(response, 200, toggleLike(requirePublished(communityLikeId, 'shared_package')));
+      }
+
+      const downloadId = matchId(pathname, '/api/v1/community/', '/download');
+      if (request.method === 'POST' && downloadId) {
+        await readJson(request);
+        const record = requirePublished(downloadId, 'shared_package');
+        record.downloadCount += 1;
+        return sendData(response, 200, {
+          url: `http://${request.headers.host}/__e2e/download/${record.id}`,
+          expiresAt: plusMinutes(now(), 5)
+        });
+      }
+
+      if (request.method === 'GET' && pathname === '/api/v1/feedback') {
+        const kind = searchParams.get('kind');
+        if (!['feedback', 'suggestion'].includes(kind)) return sendError(response, 400, 'INVALID_REQUEST');
+        return sendData(response, 200, pageOf(
+          [...submissions.values()].filter(row => row.kind === kind && row.status === 'published'),
+          searchParams,
+          publicFeedback
+        ));
+      }
+
+      const feedbackLikeId = matchId(pathname, '/api/v1/feedback/', '/like');
+      if (request.method === 'POST' && feedbackLikeId) {
+        await readJson(request);
+        return sendData(response, 200, toggleLike(requirePublished(feedbackLikeId, ['feedback', 'suggestion'])));
+      }
+
+      if (pathname.startsWith('/api/v1/admin/')) {
+        const authorized = requireAdmin(request, response);
+        if (!authorized) return true;
+
+        if (request.method === 'GET' && pathname === '/api/v1/admin/submissions') {
+          const status = searchParams.get('status');
+          return sendData(response, 200, pageOf(
+            [...submissions.values()].filter(row => !status || row.status === status),
+            searchParams,
+            adminSummary
+          ));
+        }
+
+        const actionId = matchId(pathname, '/api/v1/admin/submissions/', '/actions');
+        if (request.method === 'POST' && actionId) {
+          const body = await readJson(request);
+          return applyAdminAction(response, requireSubmission(actionId), body, now);
+        }
+
+        const detailId = matchId(pathname, '/api/v1/admin/submissions/', '');
+        if (request.method === 'GET' && detailId) {
+          return sendData(response, 200, adminDetail(requireSubmission(detailId), request));
+        }
+      }
+
+      return sendError(response, 404, 'NOT_FOUND');
+    } catch (error) {
+      if (error instanceof MemoryApiError) return sendError(response, error.status, error.code);
+      return sendError(response, 500, 'INTERNAL_ERROR');
+    }
+  }
+
+  function handleUpload(request, response, pathname) {
+    if (request.method !== 'PUT') return sendError(response, 405, 'METHOD_NOT_ALLOWED');
+    const match = /^\/__e2e\/upload\/([^/]+)\/(cover|package)$/u.exec(pathname);
+    if (!match || !submissions.has(match[1])) return sendError(response, 404, 'NOT_FOUND');
+    let bytes = 0;
+    request.on('data', chunk => { bytes += chunk.length; });
+    request.on('end', () => {
+      uploads.set(`${match[1]}:${match[2]}`, bytes);
+      const record = submissions.get(match[1]);
+      const asset = record.assets.find(item => item.role === match[2]);
+      if (asset) asset.actualBytes = bytes;
+      response.writeHead(204);
+      response.end();
+    });
+    return true;
+  }
+
+  function requireSubmission(id) {
+    const record = submissions.get(id);
+    if (!record) throw new MemoryApiError('NOT_FOUND', 404);
+    return record;
+  }
+
+  function requirePublished(id, kinds) {
+    const record = requireSubmission(id);
+    const allowed = Array.isArray(kinds) ? kinds.includes(record.kind) : record.kind === kinds;
+    if (!allowed || record.status !== 'published') throw new MemoryApiError('NOT_FOUND', 404);
+    return record;
+  }
+
+  return { handle };
+}
+
+class MemoryApiError extends Error {
+  constructor(code, status) {
+    super(code);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+async function readJson(request) {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    bytes += chunk.length;
+    if (bytes > MAX_BODY_BYTES) throw new MemoryApiError('INVALID_REQUEST', 400);
+    chunks.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  } catch {
+    throw new MemoryApiError('INVALID_REQUEST', 400);
+  }
+}
+
+function requireAdmin(request, response) {
+  const authorization = request.headers.authorization;
+  if (!authorization) {
+    sendError(response, 401, 'ADMIN_SESSION_REQUIRED');
+    return false;
+  }
+  if (authorization !== `Bearer ${ADMIN_TOKEN}`) {
+    sendError(response, 403, 'ADMIN_FORBIDDEN');
+    return false;
+  }
+  return true;
+}
+
+function assetFrom(value, role, storageKey) {
+  return {
+    role,
+    storageKey,
+    fileName: String(value.fileName ?? ''),
+    declaredBytes: Number(value.sizeBytes ?? 0),
+    contentType: String(value.contentType ?? ''),
+    actualBytes: null
+  };
+}
+
+function uploadTarget(origin, id, role) {
+  return {
+    path: `${id}/${role}`,
+    url: `${origin}/__e2e/upload/${id}/${role}`,
+    expiresAt: plusMinutes(new Date().toISOString(), 5)
+  };
+}
+
+function packageScan(record, packageAsset) {
+  return {
+    kind: 'package_scan',
+    provider: 'isolated-scanner',
+    suggestion: record.technicalPass ? 'Pass' : 'Block',
+    label: record.technicalPass ? 'safe' : 'technical_failure',
+    score: record.technicalPass ? 0 : 1,
+    evidence: {
+      packageStorageKey: packageAsset.storageKey,
+      packageSizeBytes: packageAsset.actualBytes,
+      scanCode: record.technicalPass ? 'CHARACTER_PACKAGE_SCAN_PASSED' : 'CHARACTER_PACKAGE_SCAN_FAILED'
+    },
+    createdAt: record.updatedAt
+  };
+}
+
+function matchId(pathname, prefix, suffix) {
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
+  const encoded = pathname.slice(prefix.length, suffix ? -suffix.length : undefined);
+  if (!encoded || encoded.includes('/')) return null;
+  try { return decodeURIComponent(encoded); } catch { return null; }
+}
+
+function pageOf(records, searchParams, project) {
+  const limit = Math.min(100, Math.max(1, Number(searchParams.get('limit') ?? 20)));
+  const cursor = Math.max(0, Number(searchParams.get('cursor') ?? 0));
+  const items = records.slice(cursor, cursor + limit).map(project);
+  return { items, nextCursor: cursor + items.length < records.length ? cursor + items.length : null };
+}
+
+function publicCommunity(record) {
+  const cover = record.assets.find(asset => asset.role === 'cover');
+  const packageAsset = record.assets.find(asset => asset.role === 'package');
+  return {
+    id: record.id,
+    name: record.title,
+    description: record.body,
+    cover: { url: `/__e2e/cover/${record.id}`, expiresAt: plusMinutes(record.updatedAt, 5) },
+    packageFileName: packageAsset.fileName,
+    packageSizeBytes: packageAsset.actualBytes ?? packageAsset.declaredBytes,
+    likeCount: record.likeCount,
+    downloadCount: record.downloadCount,
+    publishedAt: record.publishedAt
+  };
+}
+
+function publicFeedback(record) {
+  return {
+    id: record.id,
+    kind: record.kind,
+    authorName: record.title,
+    content: record.body,
+    likeCount: record.likeCount,
+    createdAt: record.publishedAt
+  };
+}
+
+function statusView(record) {
+  return {
+    submissionId: record.id,
+    status: record.status,
+    publicReason: record.publicReason,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+}
+
+function adminBase(record) {
+  return {
+    id: record.id,
+    status: record.status,
+    statusVersion: record.statusVersion,
+    kind: record.kind,
+    title: record.title,
+    body: record.body,
+    moderationLeaseUntil: record.moderationLeaseUntil,
+    purgeAfter: record.purgeAfter,
+    preQuarantineStatus: record.preQuarantineStatus,
+    publishedAt: record.publishedAt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+}
+
+function adminSummary(record) {
+  return { ...adminBase(record), riskSummary: record.riskSummary, autoRejectionReason: record.autoRejectionReason };
+}
+
+function adminDetail(record, request) {
+  const cover = record.assets.find(asset => asset.role === 'cover');
+  return {
+    ...adminSummary(record),
+    coverPreview: cover ? {
+      url: `http://${request.headers.host}/__e2e/cover/${record.id}`,
+      expiresAt: plusMinutes(record.updatedAt, 5)
+    } : null,
+    assets: record.assets,
+    moderationResults: record.moderationResults,
+    auditLogs: record.auditLogs
+  };
+}
+
+function toggleLike(record) {
+  record.liked = !record.liked;
+  record.likeCount += record.liked ? 1 : -1;
+  return { liked: record.liked, likeCount: record.likeCount };
+}
+
+function applyAdminAction(response, record, body, now) {
+  if (!body || typeof body.reason !== 'string' || !body.reason.trim()
+    || typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length < 8) {
+    return sendError(response, 400, 'INVALID_REQUEST');
+  }
+  if (record.idempotency.has(body.idempotencyKey)) {
+    return sendData(response, 200, { submission: adminBase(record), replayed: true });
+  }
+  if (body.version !== record.statusVersion) return sendError(response, 409, 'VERSION_CONFLICT');
+  const beforeStatus = record.status;
+  const action = body.action;
+  if (action === 'approve' && record.kind === 'shared_package' && !record.technicalPass) {
+    return sendError(response, 409, 'TECHNICAL_SCAN_REQUIRED');
+  }
+
+  if (action === 'approve' && ['manual_review_pending', 'auto_rejected'].includes(record.status)) {
+    record.status = 'published';
+    record.publishedAt = now();
+    record.purgeAfter = null;
+  } else if (action === 'reject' && record.status === 'manual_review_pending') {
+    record.status = 'admin_rejected';
+    record.purgeAfter = plusDays(now(), 3);
+  } else if (action === 'move_to_manual' && record.status === 'auto_rejected') {
+    record.status = 'manual_review_pending';
+    record.purgeAfter = null;
+  } else if (action === 'delete' && record.status !== 'purged') {
+    record.preQuarantineStatus = record.status;
+    record.status = 'deleted_quarantined';
+    record.purgeAfter = plusDays(now(), 3);
+  } else if (action === 'restore' && record.status === 'deleted_quarantined' && record.preQuarantineStatus) {
+    record.status = record.preQuarantineStatus;
+    record.preQuarantineStatus = null;
+    record.purgeAfter = null;
+  } else {
+    return sendError(response, 409, 'INVALID_ADMIN_ACTION');
+  }
+
+  record.statusVersion += 1;
+  record.updatedAt = now();
+  record.publicReason = body.reason.trim();
+  record.auditLogs.push({
+    action,
+    beforeStatus,
+    afterStatus: record.status,
+    reason: body.reason.trim(),
+    createdAt: record.updatedAt
+  });
+  record.idempotency.set(body.idempotencyKey, true);
+  return sendData(response, 200, { submission: adminBase(record), replayed: false });
+}
+
+function plusMinutes(value, minutes) {
+  return new Date(new Date(value).getTime() + minutes * 60_000).toISOString();
+}
+
+function plusDays(value, days) {
+  return new Date(new Date(value).getTime() + days * 86_400_000).toISOString();
+}
+
+function sendData(response, status, data) {
+  return sendJson(response, status, { data, error: null });
+}
+
+function sendError(response, status, code) {
+  return sendJson(response, status, { data: null, error: { code } });
+}
+
+function sendJson(response, status, value) {
+  const body = JSON.stringify(value);
+  response.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store'
+  });
+  response.end(body);
+  return true;
+}
+
+function sendBinary(response, contentType, body) {
+  response.writeHead(200, {
+    'content-type': contentType,
+    'content-length': body.length,
+    'cache-control': 'no-store'
+  });
+  response.end(body);
+  return true;
+}

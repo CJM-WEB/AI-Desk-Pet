@@ -1,0 +1,98 @@
+.page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+  color: #172033;
+  background: #f4f7fb;
+}
+
+.card {
+  width: min(100%, 640px);
+  padding: clamp(24px, 5vw, 48px);
+  border: 1px solid #dbe3ef;
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgb(36 55 84 / 10%);
+}
+
+.card h1,
+.card h2,
+.card p {
+  margin-top: 0;
+}
+
+.eyebrow,
+.resultLabel {
+  color: #46678e;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.introduction,
+.privacy {
+  color: #5a687c;
+  line-height: 1.7;
+}
+
+.notice,
+.error,
+.result {
+  margin: 24px 0;
+  padding: 18px;
+  border-radius: 14px;
+}
+
+.notice {
+  background: #eef5ff;
+}
+
+.error {
+  color: #932f35;
+  background: #fff0f1;
+}
+
+.result {
+  background: #effaf3;
+}
+
+.form {
+  display: grid;
+  gap: 10px;
+  margin: 24px 0;
+}
+
+.form label {
+  font-weight: 700;
+}
+
+.form input,
+.form button {
+  min-height: 46px;
+  border-radius: 10px;
+  font: inherit;
+}
+
+.form input {
+  padding: 0 14px;
+  border: 1px solid #b9c6d7;
+}
+
+.form button {
+  border: 0;
+  color: #fff;
+  background: #245da8;
+  cursor: pointer;
+}
+
+.form button:focus-visible,
+.form input:focus-visible {
+  outline: 3px solid #8bbcff;
+  outline-offset: 2px;
+}
+
+.privacy {
+  margin-bottom: 0;
+  font-size: 13px;
+}

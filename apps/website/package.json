@@ -9,11 +9,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@cloudbase/js-sdk": "3.6.8",
+    "@myself/shared-types": "workspace:*",
     "gsap": "3.15.0",
     "lucide-react": "^1.26.0",
     "next": "^15",
     "react": "^19",
     "react-dom": "^19",
+    "three": "^0.162.0",
     "zod": "^3"
   },
   "devDependencies": {
@@ -21,6 +24,8 @@
     "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "^0.162.0",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.1.1",
     "sharp": "0.34.5",
     "typescript": "^5",

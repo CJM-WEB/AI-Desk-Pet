@@ -8,21 +8,14 @@ import {
 } from 'react';
 import type { CSSProperties } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
+import { LanguageMenu } from '../i18n/LanguageMenu';
+import { interpolateMessage, useI18n } from '../i18n/I18nProvider';
+import type { Translate } from '../i18n/i18n-types';
 import { HomeExperience } from '../home-experience/HomeExperience';
-import {
-  deriveChapterVisualState,
-  deriveHomeExperiencePhase
-} from './chapter-model';
+import { deriveChapterVisualState } from './chapter-model';
 import { CHAPTER_REGISTRY } from './chapter-registry';
-import { SharedVisualLayers } from './SharedVisualLayers';
 import { ChapterBackdrop } from './visual/ChapterBackdrop';
 import { CHAPTER_LAYERS } from './layer-contract';
-import { createFeedbackVisualProfile } from './feedback/feedback-preview-source';
-import { LocalStorageFeedbackRepository } from './feedback/local-storage-feedback-repository';
-import {
-  resolveSharedVisualProfile,
-  VISUAL_PROFILES
-} from './shared-visual-model';
 import styles from './website-experience.module.css';
 import { useWebsiteController } from './use-website-controller';
 
@@ -30,6 +23,7 @@ export interface WebsiteExperienceProps {
   onRuntimeError?: () => void;
 }
 
+/** 生产粒子预览只读取章节已注入的云端反馈快照。 */
 function createChapterVisualStyle(
   visual: ReturnType<typeof deriveChapterVisualState>,
   zIndex = visual.zIndex
@@ -44,11 +38,15 @@ function createChapterVisualStyle(
 }
 
 /**
- * 组合五个章节，并把全局输入状态下发给受控首页。
+ * 组合首页、介绍、下载、社区和支持五个章节，并把全局输入状态下发给受控首页。
  */
 export function WebsiteExperience({
   onRuntimeError
 }: WebsiteExperienceProps = {}) {
+  const { t: rawTranslate } = useI18n();
+  const t = useCallback<Translate>((key, values) => (
+    interpolateMessage(rawTranslate(key), values)
+  ), [rawTranslate]);
   const [initializationFailed, setInitializationFailed] = useState(false);
   const mountedRef = useRef(true);
   const onRuntimeErrorRef = useRef(onRuntimeError);
@@ -77,45 +75,26 @@ export function WebsiteExperience({
   const staticFallback = initializationFailed || controller.initializationFailed;
   const reducedMotion = staticFallback || controller.prefersReducedMotion;
   const activeChapter = CHAPTER_REGISTRY[controller.settledIndex] ?? CHAPTER_REGISTRY[0];
-  const homeExitProgress = Math.min(1, Math.max(0, controller.progress));
-  const homePhase = deriveHomeExperiencePhase(
-    controller.phase,
-    homeExitProgress
-  );
-  const feedbackVisualProfileRef = useRef<ReturnType<
-    typeof createFeedbackVisualProfile
-  > | null>(null);
-  if (feedbackVisualProfileRef.current === null) {
-    feedbackVisualProfileRef.current = createFeedbackVisualProfile(
-      new LocalStorageFeedbackRepository(),
-      Math.random
-    );
-  }
-  const sharedVisualProfile = controller.phase === 'interactive'
-    && Math.abs(controller.progress - 3) < 0.0001
-    ? feedbackVisualProfileRef.current
-    : resolveSharedVisualProfile(controller.progress, controller.phase);
-  const mountedVisualProfile = sharedVisualProfile
-    ?? (controller.progress < 1 ? VISUAL_PROFILES.home : null);
-  const sharedVisualChapterIndex = sharedVisualProfile
-    ? {
-        home: 0,
-        download: 2,
-        feedback: 3,
-        donation: 4
-      }[sharedVisualProfile.id]
-    : 0;
-  const sharedVisualGenerating = sharedVisualProfile !== null
-    && controller.phase === 'interactive'
-    && Math.abs(controller.progress - sharedVisualChapterIndex) < 0.0001;
-  const chapters = CHAPTER_REGISTRY.map((chapter, index) => ({
-    chapter,
-    visual: deriveChapterVisualState(
+  const homeExitProgress = controller.progress;
+  const homeAboutProgress = Math.min(1, Math.max(0, controller.progress));
+  const showLanguageMenu = controller.progress < 1;
+    // 只更新后续生成粒子的翻译快照，已绑定粒子保持生成时的内容。
+  const chapters = CHAPTER_REGISTRY.map((chapter, index) => {
+    const derived = deriveChapterVisualState(
       index,
       controller.progress,
       reducedMotion
-    )
-  }));
+    );
+    // 首页 WebGL 在介绍模块完成前持续作为共同背景，保证玻璃分裂不跳帧。
+    const visual = chapter.id === 'home' && controller.progress <= 4
+      ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+      : chapter.id === 'download'
+          && controller.progress > 1
+          && controller.progress <= 2
+        ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+      : derived;
+    return { chapter, visual };
+  });
 
   return (
     <div
@@ -148,6 +127,12 @@ export function WebsiteExperience({
       </div>
       {chapters.map(({ chapter, visual }) => {
         const RegisteredChapter = chapter.component;
+        // 连续滚动停在下载主体时立即恢复点击与拖拽，不等待离散章节吸附状态。
+        const chapterInteractive = visual.interactive || (
+          chapter.id === 'download'
+          && controller.progress >= 1.82
+          && controller.progress < 2.98
+        );
         const style = createChapterVisualStyle(
           visual,
           CHAPTER_LAYERS.focal
@@ -156,33 +141,28 @@ export function WebsiteExperience({
         return (
           <section
             key={chapter.id}
+            id={chapter.id}
             className={styles.chapter}
             data-chapter-id={chapter.id}
             data-visible={visual.visible}
-            data-interactive={visual.interactive}
+            data-interactive={chapterInteractive}
             data-layer="focal"
-            aria-label={chapter.label}
+            aria-label={t(chapter.labelKey)}
             aria-hidden={!visual.visible}
-            inert={!visual.interactive ? true : undefined}
+            inert={!chapterInteractive ? true : undefined}
             style={style}
           >
             {chapter.id === 'home' ? (
               <HomeExperience
-                phase={homePhase}
                 exitProgress={homeExitProgress}
-                pointer={controller.pointer}
                 isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
-                staticFallback={staticFallback}
-                registerIntroSkip={controller.registerIntroSkip}
-                onDrawingDone={controller.drawingDone}
-                onSettled={controller.settled}
-                onInitializationError={handleInitializationError}
               />
             ) : null}
             {RegisteredChapter ? (
               <RegisteredChapter
-                interactive={visual.interactive}
+                interactive={chapterInteractive}
+                transitionProgress={controller.progress}
                 isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
                 staticFallback={staticFallback}
@@ -195,11 +175,11 @@ export function WebsiteExperience({
       <nav
         className={styles.chapterControls}
         data-input-scope="local"
-        aria-label="章节导航"
+        aria-label={t('navigation.label')}
       >
         <button
           type="button"
-          aria-label="上一章节"
+          aria-label={t('navigation.previousChapter')}
           disabled={controller.settledIndex === 0}
           onClick={() => controller.goToAdjacent(-1)}
         >
@@ -207,26 +187,17 @@ export function WebsiteExperience({
         </button>
         <button
           type="button"
-          aria-label="下一章节"
+          aria-label={t('navigation.nextChapter')}
           disabled={controller.settledIndex === CHAPTER_REGISTRY.length - 1}
           onClick={() => controller.goToAdjacent(1)}
         >
           <ChevronDown aria-hidden="true" />
         </button>
       </nav>
-      {mountedVisualProfile && !staticFallback ? (
-        <SharedVisualLayers
-          profile={mountedVisualProfile}
-          running={sharedVisualProfile !== null}
-          generating={sharedVisualGenerating}
-          exitProgress={
-            mountedVisualProfile.id === 'home' ? homeExitProgress : 0
-          }
-          pointer={controller.pointer}
-          isPaused={controller.isPaused}
-          reducedMotion={controller.prefersReducedMotion}
-          onInitializationError={handleInitializationError}
-        />
+      {showLanguageMenu ? (
+        <div data-layer="fixed-controls">
+          <LanguageMenu transitionProgress={homeAboutProgress} />
+        </div>
       ) : null}
     </div>
   );
