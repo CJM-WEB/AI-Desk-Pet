@@ -33,9 +33,64 @@ export default {
       from: { pathNot: '(^|/)node_modules/' },
       to: {
         dependencyTypes: ['unknown', 'undetermined', 'npm-no-pkg', 'npm-unknown'],
-        // pnpm 工作区别名已由 exports 解析到这些公开入口，不属于未声明依赖。
+        // 工作区公开入口由下方五条目标专属规则校验声明关系，避免合法别名产生重复告警。
         pathNot:
           '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$',
+      },
+    },
+    {
+      name: 'no-undeclared-workspace-alias-agent-core',
+      comment: 'agent-core 公开入口只允许由已声明该依赖的桌面工作区调用。',
+      severity: 'warn',
+      from: { pathNot: '^apps/desktop/' },
+      to: {
+        path: '^packages/agent-core/src/index\\.[cm]?[jt]s$',
+        dependencyTypes: ['undetermined'],
+      },
+    },
+    {
+      name: 'no-undeclared-workspace-alias-character-assets',
+      comment: 'character-assets 公开入口只允许由已声明该依赖的桌面与包扫描工作区调用。',
+      severity: 'warn',
+      from: { pathNot: '^apps/(desktop|package-scanner)/' },
+      to: {
+        path: '^packages/character-assets/src/index\\.[cm]?[jt]s$',
+        dependencyTypes: ['undetermined'],
+      },
+    },
+    {
+      name: 'no-undeclared-workspace-alias-character-runtime',
+      comment: 'character-runtime 公开入口只允许由已声明该依赖的应用与共享包调用。',
+      severity: 'warn',
+      from: {
+        pathNot: '^(apps/(desktop|package-scanner)|packages/(agent-core|character-assets))/',
+      },
+      to: {
+        path: '^packages/character-runtime/src/index\\.[cm]?[jt]s$',
+        dependencyTypes: ['undetermined'],
+      },
+    },
+    {
+      name: 'no-undeclared-workspace-alias-file-tools',
+      comment: 'file-tools 公开入口只允许由已声明该依赖的桌面工作区调用。',
+      severity: 'warn',
+      from: { pathNot: '^apps/desktop/' },
+      to: {
+        path: '^packages/file-tools/src/index\\.[cm]?[jt]s$',
+        dependencyTypes: ['undetermined'],
+      },
+    },
+    {
+      name: 'no-undeclared-workspace-alias-shared-types',
+      comment: 'shared-types 公开入口只允许由已声明该依赖的应用与共享包调用。',
+      severity: 'warn',
+      from: {
+        pathNot:
+          '^(apps/(cloudbase-api|desktop|website)|packages/(agent-core|character-runtime|file-tools))/',
+      },
+      to: {
+        path: '^packages/shared-types/src/index\\.[cm]?[jt]s$',
+        dependencyTypes: ['undetermined'],
       },
     },
     {
@@ -47,16 +102,39 @@ export default {
         pathNot: [
           '(^|/)(tests?|__tests__)(/|$)',
           '\\.(test|spec)\\.[cm]?[jt]sx?$',
-          // 云端迁移仅由该运维入口执行，使用根级开发工具链。
+          // 两类运行时例外分别由下方专属规则校验精确目标。
+          '^apps/desktop/',
           '^tools/apply-cloudbase-migrations\\.mjs$',
         ],
       },
+      to: { dependencyTypes: ['npm-dev'] },
+    },
+    {
+      name: 'no-desktop-production-to-dev-dependency',
+      comment: '桌面生产源码只能使用由桌面运行时提供的 Electron 开发依赖。',
+      severity: 'warn',
+      from: {
+        path: '^apps/desktop/',
+        pathNot: ['(^|/)(tests?|__tests__)(/|$)', '\\.(test|spec)\\.[cm]?[jt]sx?$'],
+      },
       to: {
         dependencyTypes: ['npm-dev'],
-        // Electron 由桌面运行时提供，不能按普通生产 npm 依赖处理。
         pathNot: [
           '(^|/)node_modules/electron/index\\.js$',
           '(^|/)node_modules/\\.pnpm/electron@[^/]+/node_modules/electron/index\\.js$',
+        ],
+      },
+    },
+    {
+      name: 'no-migration-production-to-dev-dependency',
+      comment: '根级迁移入口只能使用 CloudBase 管理 SDK 开发依赖。',
+      severity: 'warn',
+      from: { path: '^tools/apply-cloudbase-migrations\\.mjs$' },
+      to: {
+        dependencyTypes: ['npm-dev'],
+        pathNot: [
+          '(^|/)node_modules/@cloudbase/manager-node/',
+          '(^|/)node_modules/\\.pnpm/[^/]+/node_modules/@cloudbase/manager-node/',
         ],
       },
     },
@@ -401,20 +479,14 @@ export default {
       name: 'website-cloudbase-sdk-only-in-client-adapter',
       comment: '浏览器 CloudBase SDK 只允许由网站客户端适配器封装。',
       severity: 'warn',
-      from: {
-        path: '^apps/website/',
-        pathNot: ['^apps/website/lib/cloudbase-client\\.ts$', '(^|/)tests?(/|$)', '\\.(test|spec)\\.[cm]?[jt]sx?$'],
-      },
+      from: { pathNot: '^apps/website/lib/cloudbase-client\\.ts$' },
       to: { path: '(^|/)node_modules/@cloudbase/js-sdk/|^@cloudbase/js-sdk$' },
     },
     {
       name: 'cloudbase-node-sdk-only-in-runtime-adapter',
       comment: 'CloudBase Node SDK 只允许由服务端运行时适配器封装。',
       severity: 'warn',
-      from: {
-        path: '^apps/cloudbase-api/',
-        pathNot: ['^apps/cloudbase-api/src/adapters/cloudbase-runtime\\.ts$', '(^|/)tests?(/|$)', '\\.(test|spec)\\.[cm]?[jt]sx?$'],
-      },
+      from: { pathNot: '^apps/cloudbase-api/src/adapters/cloudbase-runtime\\.ts$' },
       to: { path: '(^|/)node_modules/@cloudbase/node-sdk/|^@cloudbase/node-sdk$' },
     },
     {
@@ -422,12 +494,9 @@ export default {
       comment: '腾讯内容安全 SDK 只允许由 CloudBase 审核适配器或包扫描服务端适配器封装。',
       severity: 'warn',
       from: {
-        path: '^apps/',
         pathNot: [
           '^apps/cloudbase-api/src/adapters/tencent-content-moderation\\.ts$',
           '^apps/package-scanner/src/server\\.ts$',
-          '(^|/)tests?(/|$)',
-          '\\.(test|spec)\\.[cm]?[jt]sx?$',
         ],
       },
       to: { path: '(^|/)node_modules/tencentcloud-sdk-nodejs/|^tencentcloud-sdk-nodejs$' },
