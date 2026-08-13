@@ -33,6 +33,9 @@ export default {
       from: { pathNot: '(^|/)node_modules/' },
       to: {
         dependencyTypes: ['unknown', 'undetermined', 'npm-no-pkg', 'npm-unknown'],
+        // pnpm 工作区别名已由 exports 解析到这些公开入口，不属于未声明依赖。
+        pathNot:
+          '^packages/(agent-core|character-assets|character-runtime|file-tools|shared-types)/src/index\\.[cm]?[jt]s$',
       },
     },
     {
@@ -51,7 +54,10 @@ export default {
       to: {
         dependencyTypes: ['npm-dev'],
         // Electron 由桌面运行时提供，不能按普通生产 npm 依赖处理。
-        pathNot: '^apps/desktop/node_modules/electron/index\\.js$',
+        pathNot: [
+          '(^|/)node_modules/electron/index\\.js$',
+          '(^|/)node_modules/\\.pnpm/electron@[^/]+/node_modules/electron/index\\.js$',
+        ],
       },
     },
     {
@@ -259,11 +265,109 @@ export default {
       to: { path: '(^|/)electron($|/)' },
     },
     {
+      name: 'no-desktop-main-bootstrap-to-characters',
+      comment: '桌面主进程组合根不得直接耦合角色实现，避免启动与角色域形成双向依赖。',
+      severity: 'warn',
+      from: { path: '^apps/desktop/src/main/(index\\.ts|lifecycle/)' },
+      to: { path: '^apps/desktop/src/main/characters/' },
+    },
+    {
+      name: 'no-desktop-main-characters-to-bootstrap',
+      comment: '角色域不得反向依赖桌面主进程组合根。',
+      severity: 'warn',
+      from: { path: '^apps/desktop/src/main/characters/' },
+      to: { path: '^apps/desktop/src/main/(index\\.ts|lifecycle/)' },
+    },
+    {
+      name: 'no-desktop-renderer-pet-to-characters',
+      comment: '桌宠视图不得直接耦合角色实现目录。',
+      severity: 'warn',
+      from: { path: '^apps/desktop/src/renderer/src/pet/' },
+      to: { path: '^apps/desktop/src/renderer/src/characters/' },
+    },
+    {
+      name: 'no-desktop-renderer-characters-to-pet',
+      comment: '角色渲染实现不得反向依赖桌宠视图目录。',
+      severity: 'warn',
+      from: { path: '^apps/desktop/src/renderer/src/characters/' },
+      to: { path: '^apps/desktop/src/renderer/src/pet/' },
+    },
+    {
+      name: 'no-desktop-renderer-stores-to-characters',
+      comment: '通用状态目录不得直接耦合角色渲染实现。',
+      severity: 'warn',
+      from: { path: '^apps/desktop/src/renderer/src/stores/' },
+      to: { path: '^apps/desktop/src/renderer/src/characters/' },
+    },
+    {
+      name: 'no-desktop-renderer-characters-to-stores',
+      comment: '角色渲染实现不得反向依赖通用状态目录。',
+      severity: 'warn',
+      from: { path: '^apps/desktop/src/renderer/src/characters/' },
+      to: { path: '^apps/desktop/src/renderer/src/stores/' },
+    },
+    {
       name: 'desktop-root-tests-use-public-seam',
       comment: '桌面根测试应通过公开接缝而非直接依赖桌面源码。',
       severity: 'warn',
       from: { path: '^tests/(integration|security|fixtures)/' },
       to: { path: '^apps/desktop/src/' },
+    },
+    {
+      name: 'no-internal-source-import-agent-core',
+      comment: '跨工作区依赖 agent-core 必须经过包入口，不得绕入内部源码。',
+      severity: 'warn',
+      from: { pathNot: '^packages/agent-core/' },
+      to: { path: '^packages/agent-core/src/(?!index\\.[cm]?[jt]s$)' },
+    },
+    {
+      name: 'no-internal-source-import-character-assets',
+      comment: '跨工作区依赖 character-assets 必须经过包入口，不得绕入内部源码。',
+      severity: 'warn',
+      from: { pathNot: '^packages/character-assets/' },
+      to: { path: '^packages/character-assets/src/(?!index\\.[cm]?[jt]s$)' },
+    },
+    {
+      name: 'no-internal-source-import-character-runtime',
+      comment: '跨工作区依赖 character-runtime 必须经过包入口，不得绕入内部源码。',
+      severity: 'warn',
+      from: { pathNot: '^packages/character-runtime/' },
+      to: { path: '^packages/character-runtime/src/(?!index\\.[cm]?[jt]s$)' },
+    },
+    {
+      name: 'no-internal-source-import-file-tools',
+      comment: '跨工作区依赖 file-tools 必须经过包入口，不得绕入内部源码。',
+      severity: 'warn',
+      from: { pathNot: '^packages/file-tools/' },
+      to: { path: '^packages/file-tools/src/(?!index\\.[cm]?[jt]s$)' },
+    },
+    {
+      name: 'no-internal-source-import-shared-types',
+      comment: '跨工作区依赖 shared-types 必须经过包入口，不得绕入内部源码。',
+      severity: 'warn',
+      from: { pathNot: '^packages/shared-types/' },
+      to: { path: '^packages/shared-types/src/(?!index\\.[cm]?[jt]s$)' },
+    },
+    {
+      name: 'no-website-to-cloud-or-migration-source',
+      comment: '网站源码不得直接穿透 CloudBase API 或迁移实现。',
+      severity: 'warn',
+      from: { path: '^apps/website/' },
+      to: { path: '^(apps/cloudbase-api/|tools/apply-cloudbase-migrations\\.mjs$)' },
+    },
+    {
+      name: 'no-cloud-to-website-or-migration-source',
+      comment: 'CloudBase API 源码不得直接穿透网站或迁移实现。',
+      severity: 'warn',
+      from: { path: '^apps/cloudbase-api/' },
+      to: { path: '^(apps/website/|tools/apply-cloudbase-migrations\\.mjs$)' },
+    },
+    {
+      name: 'no-migration-to-website-or-cloud-source',
+      comment: '迁移入口不得复用网站或 CloudBase API 内部源码。',
+      severity: 'warn',
+      from: { path: '^tools/apply-cloudbase-migrations\\.mjs$' },
+      to: { path: '^apps/(website|cloudbase-api)/' },
     },
     {
       name: 'cloud-services-stay-inward',
@@ -294,6 +398,48 @@ export default {
       to: { dependencyTypes: ['core'] },
     },
     {
+      name: 'website-cloudbase-sdk-only-in-client-adapter',
+      comment: '浏览器 CloudBase SDK 只允许由网站客户端适配器封装。',
+      severity: 'warn',
+      from: {
+        path: '^apps/website/',
+        pathNot: ['^apps/website/lib/cloudbase-client\\.ts$', '(^|/)tests?(/|$)', '\\.(test|spec)\\.[cm]?[jt]sx?$'],
+      },
+      to: { path: '(^|/)node_modules/@cloudbase/js-sdk/|^@cloudbase/js-sdk$' },
+    },
+    {
+      name: 'cloudbase-node-sdk-only-in-runtime-adapter',
+      comment: 'CloudBase Node SDK 只允许由服务端运行时适配器封装。',
+      severity: 'warn',
+      from: {
+        path: '^apps/cloudbase-api/',
+        pathNot: ['^apps/cloudbase-api/src/adapters/cloudbase-runtime\\.ts$', '(^|/)tests?(/|$)', '\\.(test|spec)\\.[cm]?[jt]sx?$'],
+      },
+      to: { path: '(^|/)node_modules/@cloudbase/node-sdk/|^@cloudbase/node-sdk$' },
+    },
+    {
+      name: 'tencent-sdk-only-in-content-adapters',
+      comment: '腾讯内容安全 SDK 只允许由 CloudBase 审核适配器或包扫描服务端适配器封装。',
+      severity: 'warn',
+      from: {
+        path: '^apps/',
+        pathNot: [
+          '^apps/cloudbase-api/src/adapters/tencent-content-moderation\\.ts$',
+          '^apps/package-scanner/src/server\\.ts$',
+          '(^|/)tests?(/|$)',
+          '\\.(test|spec)\\.[cm]?[jt]sx?$',
+        ],
+      },
+      to: { path: '(^|/)node_modules/tencentcloud-sdk-nodejs/|^tencentcloud-sdk-nodejs$' },
+    },
+    {
+      name: 'cloudbase-manager-sdk-only-in-migration-adapter',
+      comment: 'CloudBase 管理 SDK 只允许由根级迁移入口封装。',
+      severity: 'warn',
+      from: { pathNot: '^tools/apply-cloudbase-migrations\\.mjs$' },
+      to: { path: '(^|/)node_modules/@cloudbase/manager-node/|^@cloudbase/manager-node$' },
+    },
+    {
       name: 'website-features-do-not-import-liquid-glass',
       comment: '网站功能层不得直接依赖首页液态玻璃组件。',
       severity: 'warn',
@@ -303,8 +449,6 @@ export default {
   ],
   options: {
     combinedDependencies: true,
-    // 保留 pnpm 工作区符号链接，使别名按工作区依赖解析。
-    preserveSymlinks: true,
     enhancedResolveOptions: {
       // 工作区包通过 package.json 的 exports 暴露 TypeScript 入口。
       exportsFields: ['exports'],
