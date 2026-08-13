@@ -43,7 +43,8 @@ export type CharacterPackageFileMetadata = {
 
 export type CharacterPackageStructureInput = {
   draftId: string;
-  manifest: CharacterManifestV1;
+  /** V1 与 V2 角色包共享同一资源完整性契约，不在此处绑定文档版本。 */
+  manifest: Pick<CharacterManifestV1, 'id' | 'resources'>;
   sourceCatalog: CharacterSourceCatalogV1;
   files: readonly CharacterPackageFileMetadata[];
 };

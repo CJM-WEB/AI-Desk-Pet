@@ -1,5 +1,6 @@
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron';
 import {
+  type HistoryDisclosureDecision,
   modelRouteConfigSchema,
   storedProviderProfileV2Schema,
   type PublicSettings
@@ -26,16 +27,22 @@ import {
   characterSourceChoiceResultSchema,
   characterSourceReadInputSchema,
   characterSourceSchema,
+  characterSummarySchema,
+  characterSourcesResultSchema,
   type CharacterPublishInput,
   type CharacterRuntimeSnapshot,
-  type CharacterSummaryDto
+  type CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
-import type { CharacterDraftV1 } from '@myself/character-runtime';
+import type { CharacterDraftV2 } from '@myself/character-runtime';
 import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
 import {
+  characterActionFeedbackInputSchema,
+  characterActionMilestoneInputSchema,
   characterMotionEmptyInputSchema,
   characterActionPlayedInputSchema,
   characterMotionSnapshotResultSchema,
+  type CharacterActionFeedbackInput,
+  type CharacterActionMilestoneInput,
   type CharacterMotionSnapshot
 } from '../../shared/character-motion-ipc';
 
@@ -86,12 +93,22 @@ const actionIdSchema = z.object({
   actionId: z.string().min(1)
 }).strict();
 
+const historyDisclosureSchema = z.object({
+  requestId: z.string().trim().min(1).max(128),
+  decision: z.enum(['share_once', 'current_message_only'])
+}).strict();
+const emptyArgumentsSchema = z.tuple([]);
+
 export interface AgentIpcService {
   submit(text: string): Promise<void>;
   hasReportedFailure(error: unknown): boolean;
   cancelActive(): void;
-  confirm(actionId: string): Promise<void>;
-  cancelAction(actionId: string): void;
+  resolveFileAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
+  resolveHistoryDisclosure(
+    requestId: string,
+    decision: HistoryDisclosureDecision
+  ): Promise<void>;
+  resetConversation(): Promise<void>;
 }
 
 export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): void {
@@ -107,11 +124,19 @@ export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): vo
   replaceHandler(ipcMain, ipcChannels.chatCancel, () => service.cancelActive());
   replaceHandler(ipcMain, ipcChannels.actionConfirm, async (_event, raw) => {
     const { actionId } = actionIdSchema.parse(raw);
-    await service.confirm(actionId);
+    await service.resolveFileAction(actionId, 'confirm');
   });
-  replaceHandler(ipcMain, ipcChannels.actionCancel, (_event, raw) => {
+  replaceHandler(ipcMain, ipcChannels.actionCancel, async (_event, raw) => {
     const { actionId } = actionIdSchema.parse(raw);
-    service.cancelAction(actionId);
+    await service.resolveFileAction(actionId, 'cancel');
+  });
+  replaceHandler(ipcMain, ipcChannels.conversationDisclosureResolve, async (_event, raw) => {
+    const { requestId, decision } = historyDisclosureSchema.parse(raw);
+    await service.resolveHistoryDisclosure(requestId, decision);
+  });
+  replaceHandler(ipcMain, ipcChannels.conversationReset, async (_event, ...args) => {
+    emptyArgumentsSchema.parse(args);
+    await service.resetConversation();
   });
 }
 
@@ -236,6 +261,7 @@ const toolAuthorizationSchema = z.object({
   toolName: identifierSchema
 }).strict();
 const incognitoSchema = z.object({ incognito: z.boolean() }).strict();
+const petAlwaysOnTopSaveSchema = z.object({ enabled: z.boolean() }).strict();
 
 export interface AdvancedSettingsIpcService {
   getDashboard(): Promise<unknown>;
@@ -252,6 +278,7 @@ export interface AdvancedSettingsIpcService {
   revokeMcpToolReadOnly(serverId: string, toolName: string): Promise<unknown>;
   deleteMcpServer(serverId: string): Promise<unknown>;
   savePrivacySettings(input: z.infer<typeof privacySettingsSchema>): Promise<unknown>;
+  savePetAlwaysOnTop(enabled: boolean): Promise<unknown>;
   setIncognitoSession(incognito: boolean): Promise<unknown>;
   revokeAuthorizedRoot(): Promise<unknown>;
 }
@@ -336,6 +363,10 @@ export function registerAdvancedSettingsIpc(
     const input = parseInput(privacySettingsSchema, raw);
     return changed(() => service.savePrivacySettings(input));
   });
+  replaceHandler(ipcMain, ipcChannels.settingsPetAlwaysOnTopSave, async (_event, raw) => {
+    const { enabled } = parseInput(petAlwaysOnTopSaveSchema, raw);
+    return service.savePetAlwaysOnTop(enabled);
+  });
   replaceHandler(ipcMain, ipcChannels.settingsIncognitoSet, async (_event, raw) => {
     const { incognito } = parseInput(incognitoSchema, raw);
     return changed(() => service.setIncognitoSession(incognito));
@@ -346,21 +377,29 @@ export function registerAdvancedSettingsIpc(
 }
 
 export interface CharacterIpcService {
-  listCharacters(): Promise<CharacterSummaryDto[]>;
-  createCharacter(input: { name: string }): Promise<CharacterDraftV1>;
-  duplicateCharacter(characterId: string): Promise<CharacterDraftV1>;
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV1>;
-  saveCharacterDraft(characterId: string, draft: CharacterDraftV1): Promise<void>;
+  listCharacters(): Promise<Array<z.input<typeof characterSummarySchema>>>;
+  createCharacter(input: { name: string }): Promise<CharacterDraftV2>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
+  saveCharacterDraft(
+    characterId: string,
+    draft: CharacterDraftV2,
+    draftRevision: string
+  ): Promise<void>;
   chooseCharacterSources(
     characterId: string,
     selectedPaths: readonly string[]
   ): Promise<unknown[]>;
+  listCharacterSources(characterId: string): Promise<CharacterWorkshopSourceDto[]>;
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
   activateCharacter(characterId: string, confirmIncomplete?: boolean): Promise<void>;
   deleteCharacter(characterId: string): Promise<void>;
   importCharacterPackage(packagePath: string): Promise<string>;
-  exportCharacterPackage(characterId: string, destination: string): Promise<void>;
+  exportCharacterPackage(
+    characterId: string,
+    destination: string
+  ): Promise<'exported' | 'recovery-exported'>;
   getCharacterRuntimeSnapshot(): Promise<CharacterRuntimeSnapshot | null>;
   readCharacterRuntimeAsset(assetId: string): Promise<Uint8Array>;
 }
@@ -382,7 +421,17 @@ export interface CharacterIpcDialogs {
 
 export interface CharacterMotionIpcService {
   getSnapshot(): CharacterMotionSnapshot;
-  reportPlayedAction(playbackToken: string, actionId: string): Promise<void>;
+  applyPlaybackFeedback(feedback: CharacterActionFeedbackInput): void | Promise<void>;
+}
+
+export interface CharacterActionTransactionObserver {
+  onPlaybackStarted(playbackToken: string, actionId: string): boolean | void;
+  onPlaybackTerminal(
+    playbackToken: string,
+    actionId: string,
+    terminal: Exclude<CharacterActionFeedbackInput['status'], 'started'>
+  ): boolean | void;
+  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean;
 }
 
 function characterInputError(): Error & { code: string } {
@@ -453,12 +502,12 @@ export function registerCharacterIpc(
     }));
   });
   replaceHandler(ipcMain, ipcChannels.characterDraftSave, async (_event, raw) => {
-    const { characterId, draft } = parseCharacterInput(
+    const { characterId, draft, draftRevision } = parseCharacterInput(
       characterDraftSaveInputSchema,
       raw
     );
     return characterOperation(characterMutationResultSchema, async () => {
-      await service.saveCharacterDraft(characterId, draft);
+      await service.saveCharacterDraft(characterId, draft, draftRevision);
       return { ok: true };
     });
   });
@@ -476,6 +525,12 @@ export function registerCharacterIpc(
         sources: z.array(characterSourceSchema).parse(sources)
       };
     });
+  });
+  replaceHandler(ipcMain, ipcChannels.characterSourcesList, async (_event, raw) => {
+    const { characterId } = parseCharacterInput(characterIdInputSchema, raw);
+    return characterOperation(characterSourcesResultSchema, async () => ({
+      sources: await service.listCharacterSources(characterId)
+    }));
   });
   replaceHandler(ipcMain, ipcChannels.characterSourceRead, async (_event, raw) => {
     const { characterId, assetId } = parseCharacterInput(
@@ -535,8 +590,11 @@ export function registerCharacterIpc(
       if (!selected.filePath) {
         throw new Error('CHARACTER_PACKAGE_SELECTION_INVALID');
       }
-      await service.exportCharacterPackage(characterId, selected.filePath);
-      return { kind: 'exported' };
+      const kind = await service.exportCharacterPackage(
+        characterId,
+        selected.filePath
+      );
+      return { kind };
     });
   });
   replaceHandler(
@@ -575,7 +633,8 @@ export function registerCharacterIpc(
 export function registerCharacterMotionIpc(
   ipcMain: IpcMain,
   service: CharacterMotionIpcService,
-  petWebContents: WebContents
+  petWebContents: WebContents,
+  transactionObserver?: CharacterActionTransactionObserver
 ): void {
   replaceHandler(
     ipcMain,
@@ -594,11 +653,46 @@ export function registerCharacterMotionIpc(
       if (event.sender !== petWebContents) {
         throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
       }
-      const { playbackToken, actionId } = parseCharacterInput(
-        characterActionPlayedInputSchema,
+      const report = parseCharacterInput(
+        z.union([
+          characterActionFeedbackInputSchema,
+          characterActionPlayedInputSchema
+        ]),
         raw
       );
-      await service.reportPlayedAction(playbackToken, actionId);
+      await service.applyPlaybackFeedback({
+        ...report,
+        status: 'status' in report ? report.status : 'started'
+      });
+      const status = 'status' in report ? report.status : 'started';
+      if (status === 'started') {
+        transactionObserver?.onPlaybackStarted(report.playbackToken, report.actionId);
+      } else {
+        transactionObserver?.onPlaybackTerminal(report.playbackToken, report.actionId, status);
+      }
+      return { ok: true };
+    }
+  );
+  replaceHandler(
+    ipcMain,
+    ipcChannels.characterActionMilestone,
+    async (event, raw) => {
+      if (event.sender !== petWebContents) {
+        throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
+      }
+      const milestone: CharacterActionMilestoneInput = parseCharacterInput(
+        characterActionMilestoneInputSchema,
+        raw
+      );
+      if (!transactionObserver) {
+        throw new Error('CHARACTER_ACTION_MILESTONE_UNAVAILABLE');
+      }
+      const accepted = transactionObserver.onCommitFrame(
+        milestone.playbackToken,
+        milestone.actionId,
+        milestone.frameId
+      );
+      if (!accepted) throw new Error('CHARACTER_ACTION_MILESTONE_REJECTED');
       return { ok: true };
     }
   );

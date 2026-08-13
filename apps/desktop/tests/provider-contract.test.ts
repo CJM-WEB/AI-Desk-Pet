@@ -12,6 +12,7 @@ import {
 import { AnthropicProvider } from '../src/main/providers/anthropic-provider';
 import { GeminiProvider } from '../src/main/providers/gemini-provider';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
+import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import {
   providerCatalog,
   toolRequestSchema,
@@ -25,6 +26,10 @@ interface ProviderContractCase {
   createProvider: (fetchClient: FetchLike) => ModelProvider;
   textResponse: unknown;
   toolResponse: unknown;
+  behaviorIntentResponse: unknown;
+  expectedBehaviorIntentResponse: ModelResponse;
+  invalidBehaviorIntentResponse: unknown;
+  toolResponseWithBehaviorIntent: unknown;
   mixedTextAndToolResponse: unknown;
   multipleToolsResponse: unknown;
   missingFieldsResponse: unknown;
@@ -90,6 +95,148 @@ function expectObservableErrorTextHidden(
   }
 }
 
+interface ChatProviderContractCase {
+  name: string;
+  createProvider(fetchClient: FetchLike): ModelProvider;
+  textResponse(text: string): unknown;
+  toolResponse: unknown;
+  requestTools(body: Record<string, unknown>): unknown;
+}
+
+const chatProviderContractCases: ChatProviderContractCase[] = [
+  {
+    name: 'OpenAI Compatible',
+    createProvider: fetchClient => new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'chat-contract-secret',
+      fetchClient
+    ),
+    textResponse: text => ({ choices: [{ message: { content: text } }] }),
+    toolResponse: {
+      choices: [{
+        message: {
+          content: null,
+          tool_calls: [{
+            id: 'chat-contract-tool-call',
+            type: 'function',
+            function: { name: 'read_text_file', arguments: '{}' }
+          }]
+        }
+      }]
+    },
+    requestTools: body => body.tools
+  },
+  {
+    name: 'Anthropic',
+    createProvider: fetchClient => new AnthropicProvider(
+      adapterProfile,
+      async () => 'chat-contract-secret',
+      fetchClient
+    ),
+    textResponse: text => ({ content: [{ type: 'text', text }] }),
+    toolResponse: {
+      content: [{
+        type: 'tool_use',
+        id: 'chat-contract-tool-call',
+        name: 'read_text_file',
+        input: {}
+      }]
+    },
+    requestTools: body => body.tools
+  },
+  {
+    name: 'Gemini',
+    createProvider: fetchClient => new GeminiProvider(
+      adapterProfile,
+      async () => 'chat-contract-secret',
+      fetchClient
+    ),
+    textResponse: text => ({
+      candidates: [{ content: { parts: [{ text }] } }]
+    }),
+    toolResponse: {
+      candidates: [{
+        content: {
+          parts: [{ functionCall: { name: 'read_text_file', args: {} } }]
+        }
+      }]
+    },
+    requestTools: body => body.tools
+  }
+];
+
+describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
+  test.each(chatProviderContractCases)(
+    '$name 直接返回自然文本，且请求工具数组为空',
+    async contract => {
+      const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(
+        contract.textResponse('  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n')
+      ));
+      const adapter = new ConversationChatAdapter(contract.createProvider(fetchClient));
+
+      await expect(adapter.respond({
+        history: [],
+        text: '请给出示例',
+        signal: new AbortController().signal
+      })).resolves.toEqual({
+        text: '  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n'
+      });
+
+      const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body)) as Record<
+        string,
+        unknown
+      >;
+      expect(contract.requestTools(body)).toEqual([]);
+    }
+  );
+
+  test.each(chatProviderContractCases)(
+    '$name 的工具响应会被聊天适配器拒绝',
+    async contract => {
+      const adapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => jsonResponse(contract.toolResponse))
+      ));
+
+      await expect(adapter.respond({
+        history: [],
+        text: '调用工具',
+        signal: new AbortController().signal
+      })).rejects.toMatchObject({
+        code: 'PROVIDER_MALFORMED_RESPONSE',
+        retryable: false
+      });
+    }
+  );
+
+  test.each(chatProviderContractCases)(
+    '$name 保留取消与超时错误分类',
+    async contract => {
+      const abortError = new DOMException('测试取消', 'AbortError');
+      const timeoutError = new DOMException('测试超时', 'TimeoutError');
+      const abortAdapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => { throw abortError; })
+      ));
+      const timeoutAdapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => { throw timeoutError; })
+      ));
+
+      await expect(abortAdapter.respond({
+        history: [],
+        text: '取消',
+        signal: new AbortController().signal
+      })).rejects.toBe(abortError);
+      await expect(timeoutAdapter.respond({
+        history: [],
+        text: '超时',
+        signal: new AbortController().signal
+      })).rejects.toMatchObject({
+        code: 'PROVIDER_TIMEOUT',
+        retryable: true
+      });
+    }
+  );
+});
+
 // 共享契约只验证 Agent Core 可观察到的统一行为，各协议请求形状另行验证。
 function verifyProviderContract(contract: ProviderContractCase): void {
   describe(`${contract.name} 共享契约`, () => {
@@ -104,6 +251,42 @@ function verifyProviderContract(contract: ProviderContractCase): void {
 
     test('把单个工具调用归一化为统一工具事件', async () => {
       const provider = contract.createProvider(vi.fn(async () => jsonResponse(contract.toolResponse)));
+
+      await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
+        type: 'tool_request',
+        request: {
+          requestId: 'call-contract',
+          toolName: 'read_text_file',
+          arguments: { relativePath: 'notes.txt' }
+        }
+      });
+    });
+
+    test('只规范化协议允许的合法行为意图元数据', async () => {
+      const provider = contract.createProvider(vi.fn(async () => (
+        jsonResponse(contract.behaviorIntentResponse)
+      )));
+
+      await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual(
+        contract.expectedBehaviorIntentResponse
+      );
+    });
+
+    test('忽略非法行为意图元数据并保留文本响应', async () => {
+      const provider = contract.createProvider(vi.fn(async () => (
+        jsonResponse(contract.invalidBehaviorIntentResponse)
+      )));
+
+      await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
+        type: 'text',
+        text: '契约文本'
+      });
+    });
+
+    test('工具请求不会夹带行为意图', async () => {
+      const provider = contract.createProvider(vi.fn(async () => (
+        jsonResponse(contract.toolResponseWithBehaviorIntent)
+      )));
 
       await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
         type: 'tool_request',
@@ -244,6 +427,69 @@ verifyProviderContract({
       }
     }]
   },
+  behaviorIntentResponse: {
+    choices: [{
+      message: {
+        content: '契约文本',
+        metadata: {
+          behaviorIntent: {
+            stateIntent: { semantic: 'think' },
+            actionSemantic: 'think',
+            urgency: 50,
+            explanation: '正在整理回应。'
+          }
+        }
+      }
+    }]
+  },
+  expectedBehaviorIntentResponse: {
+    type: 'text',
+    text: '契约文本',
+    behaviorIntent: {
+      stateIntent: { semantic: 'think' },
+      actionSemantic: 'think',
+      urgency: 50,
+      explanation: '正在整理回应。'
+    }
+  },
+  invalidBehaviorIntentResponse: {
+    choices: [{
+      message: {
+        content: '契约文本',
+        metadata: {
+          behaviorIntent: {
+            stateIntent: null,
+            actionSemantic: 'dance',
+            urgency: 50,
+            explanation: '不应采用。'
+          }
+        }
+      }
+    }]
+  },
+  toolResponseWithBehaviorIntent: {
+    choices: [{
+      message: {
+        content: null,
+        metadata: {
+          behaviorIntent: {
+            stateIntent: { semantic: 'think' },
+            actionSemantic: 'think',
+            urgency: 50,
+            explanation: '不应采用。'
+          }
+        },
+        tool_calls: [{
+          id: 'call-contract',
+          type: 'function',
+          function: {
+            name: 'read_text_file',
+            arguments: '{"relativePath":"notes.txt"}'
+          }
+        }]
+      }
+    }]
+  },
   mixedTextAndToolResponse: {
     choices: [{
       message: {
@@ -340,6 +586,45 @@ verifyProviderContract({
       input: { relativePath: 'notes.txt' }
     }]
   },
+  behaviorIntentResponse: {
+    metadata: {
+      behaviorIntent: {
+        stateIntent: { semantic: 'think' },
+        actionSemantic: 'think',
+        urgency: 50,
+        explanation: '协议未定义此扩展槽。'
+      }
+    },
+    content: [{ type: 'text', text: '契约文本' }]
+  },
+  expectedBehaviorIntentResponse: { type: 'text', text: '契约文本' },
+  invalidBehaviorIntentResponse: {
+    metadata: {
+      behaviorIntent: {
+        stateIntent: null,
+        actionSemantic: 'dance',
+        urgency: 50,
+        explanation: '协议未定义此扩展槽。'
+      }
+    },
+    content: [{ type: 'text', text: '契约文本' }]
+  },
+  toolResponseWithBehaviorIntent: {
+    metadata: {
+      behaviorIntent: {
+        stateIntent: { semantic: 'think' },
+        actionSemantic: 'think',
+        urgency: 50,
+        explanation: '协议未定义此扩展槽。'
+      }
+    },
+    content: [{
+      type: 'tool_use',
+      id: 'call-contract',
+      name: 'read_text_file',
+      input: { relativePath: 'notes.txt' }
+    }]
+  },
   mixedTextAndToolResponse: {
     content: [
       { type: 'text', text: '不得静默丢弃' },
@@ -391,6 +676,54 @@ verifyProviderContract({
   },
   toolResponse: {
     candidates: [{
+      content: {
+        parts: [{
+          functionCall: {
+            id: 'call-contract',
+            name: 'read_text_file',
+            args: { relativePath: 'notes.txt' }
+          }
+        }]
+      }
+    }]
+  },
+  behaviorIntentResponse: {
+    candidates: [{
+      metadata: {
+        behaviorIntent: {
+          stateIntent: { semantic: 'think' },
+          actionSemantic: 'think',
+          urgency: 50,
+          explanation: '协议未定义此扩展槽。'
+        }
+      },
+      content: { parts: [{ text: '契约文本' }] }
+    }]
+  },
+  expectedBehaviorIntentResponse: { type: 'text', text: '契约文本' },
+  invalidBehaviorIntentResponse: {
+    candidates: [{
+      metadata: {
+        behaviorIntent: {
+          stateIntent: null,
+          actionSemantic: 'dance',
+          urgency: 50,
+          explanation: '协议未定义此扩展槽。'
+        }
+      },
+      content: { parts: [{ text: '契约文本' }] }
+    }]
+  },
+  toolResponseWithBehaviorIntent: {
+    candidates: [{
+      metadata: {
+        behaviorIntent: {
+          stateIntent: { semantic: 'think' },
+          actionSemantic: 'think',
+          urgency: 50,
+          explanation: '协议未定义此扩展槽。'
+        }
+      },
       content: {
         parts: [{
           functionCall: {
@@ -849,6 +1182,45 @@ describe('ProviderRegistry', () => {
     }
   );
 
+  test('DeepSeek 预设通过既有 OpenAI Compatible 边界返回自然文本', async () => {
+    const profile: ProviderProfileV2 = {
+      id: 'deepseek-chat-profile',
+      displayName: 'DeepSeek',
+      mode: 'preset',
+      providerId: 'deepseek',
+      modelId: 'deepseek-v4-flash',
+      hasStoredSecret: true
+    };
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '  **自然回复**\n\n```ts\n你好();\n```\n' } }]
+    }));
+    const provider = new ProviderRegistry(providerCatalog).create(
+      profile,
+      async () => 'deepseek-secret',
+      fetchClient
+    );
+    const adapter = new ConversationChatAdapter(provider);
+
+    await expect(adapter.respond({
+      history: [],
+      text: '给出 Markdown 示例',
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      text: '  **自然回复**\n\n```ts\n你好();\n```\n'
+    });
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    expect(provider).toBeInstanceOf(OpenAICompatibleProvider);
+    expect(body).toMatchObject({
+      model: 'deepseek-v4-flash',
+      tools: [],
+      messages: [
+        { role: 'system', content: expect.any(String) },
+        { role: 'user', content: '给出 Markdown 示例' }
+      ]
+    });
+  });
+
   test('拒绝未知预置提供商', () => {
     const profile: ProviderProfileV2 = {
       id: 'unknown-profile',
@@ -868,23 +1240,20 @@ describe('ProviderRegistry', () => {
     );
   });
 
-  test('拒绝不在预置目录中的模型', () => {
+  test('已知预置提供商可创建目录外模型适配器', () => {
     const profile: ProviderProfileV2 = {
       id: 'openai-profile',
       displayName: 'OpenAI',
       mode: 'preset',
       providerId: 'openai',
       modelId: 'not-in-catalog',
+      capabilities: ['chat'],
       hasStoredSecret: true
     };
     const registry = new ProviderRegistry(providerCatalog);
 
-    expect(() => registry.create(profile, async () => 'secret')).toThrowError(
-      expect.objectContaining({
-        code: 'PROVIDER_MODEL_NOT_FOUND',
-        retryable: false
-      })
-    );
+    expect(registry.create(profile, async () => 'secret'))
+      .toBeInstanceOf(OpenAICompatibleProvider);
   });
 
   test('把自定义档案的白名单标量参数合并到请求顶层', async () => {

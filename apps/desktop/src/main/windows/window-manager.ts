@@ -34,7 +34,7 @@ export function petWindowOptions(
     height: PET_HEIGHT,
     transparent: true,
     frame: false,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     skipTaskbar: true,
     resizable: false,
     show: false,

@@ -228,7 +228,7 @@ describe('ModelRouter', () => {
     expect(selection.fallbackProfiles).toEqual([档案[3]]);
   });
 
-  test('拒绝重复档案 ID、未知主档案和未知预置目录项', () => {
+  test('拒绝重复档案 ID、未知主档案和未知预置提供商', () => {
     expect(() => 创建路由器(路由(), [
       {
         id: 'duplicated',
@@ -259,14 +259,24 @@ describe('ModelRouter', () => {
       modelId: 'alpha-chat',
       hasStoredSecret: true
     }])).toThrow('MODEL_PROVIDER_NOT_FOUND');
-    expect(() => 创建路由器(路由(), [{
-      id: 'missing-model',
-      displayName: '未知模型',
+  });
+
+  test('已知预置提供商的目录外模型可按声明能力用于聊天', () => {
+    const unknownPreset: ProviderProfileV2 = {
+      id: 'alpha-new',
+      displayName: 'Alpha New',
       mode: 'preset',
       providerId: 'alpha',
-      modelId: 'missing',
+      modelId: 'alpha-new-model',
+      capabilities: ['chat'],
       hasStoredSecret: true
-    }])).toThrow('MODEL_MODEL_NOT_FOUND');
+    };
+
+    expect(() => new ModelRouter({
+      profiles: [unknownPreset],
+      route: 路由({ primaryProfileId: 'alpha-new' }),
+      catalog: 目录
+    }).select('chat', 空披露)).not.toThrow();
   });
 
   test('构造输入与选择输出均不会污染路由器内部配置', () => {

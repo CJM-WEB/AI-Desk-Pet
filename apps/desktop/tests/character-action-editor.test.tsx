@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test, vi } from 'vitest';
 import type {
   AnchorSet,
+  CharacterActionDefinitionV2,
   DraftActionClip,
   InteractionRegion
 } from '@myself/character-runtime';
@@ -67,6 +68,23 @@ const action: DraftActionClip = {
     width: 64,
     height: 64
   }]
+};
+
+const actionDefinition: CharacterActionDefinitionV2 = {
+  id: 'idle-main',
+  name: '待机',
+  semantic: 'idle',
+  tags: [],
+  preference: 1,
+  cooldownMs: 0,
+  repeatSuppressionMs: 0,
+  loopPolicy: 'presentation',
+  interrupt: 'normal',
+  allowedPrimaryStateIds: [],
+  forbiddenPrimaryStateIds: [],
+  requiredModifierStateIds: [],
+  forbiddenModifierStateIds: [],
+  direction: 'any'
 };
 
 describe('动作时间轴', () => {
@@ -184,17 +202,74 @@ describe('动作属性与锚点', () => {
   test('动作属性遵循协议边界并提供可访问标签', () => {
     const markup = renderToStaticMarkup(
       <ActionInspector
-        action={action}
+        action={actionDefinition}
+        actions={[actionDefinition]}
+        states={[]}
         disabled={false}
         onChange={vi.fn()}
       />
     );
 
-    expect(markup).toContain('min="1"');
-    expect(markup).toContain('max="60"');
+    expect(markup).not.toContain('帧率');
+    expect(markup).toContain('动作语义');
     expect(markup).toContain('min="0.01"');
     expect(markup).toContain('max="100"');
-    expect(markup).toContain('aria-label="动作朝向"');
+    expect(markup).toContain('朝向');
+  });
+
+  test('动作语义只展示普通角色表现，不暴露目录表现或系统能力字段', () => {
+    const markup = renderToStaticMarkup(
+      <ActionInspector
+        action={actionDefinition}
+        actions={[actionDefinition]}
+        states={[]}
+        disabled={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('value="carry"');
+    expect(markup).not.toContain('value="hide"');
+    expect(markup).not.toContain('value="emerge"');
+    expect(markup).not.toContain('capabilityRef');
+    expect(markup).not.toContain('系统命令');
+    expect(markup).not.toContain('文件路径');
+  });
+
+  test('只有搬运动作展示当前表现的任务提交帧选择器', () => {
+    const carrying = { ...actionDefinition, semantic: 'carry' as const };
+    const presentation = {
+      frames: action.frames,
+      commitFrameId: 'frame-b'
+    };
+
+    const carryingMarkup = renderToStaticMarkup(
+      <ActionInspector
+        action={carrying}
+        actions={[carrying]}
+        states={[]}
+        presentation={presentation}
+        disabled={false}
+        onChange={vi.fn()}
+        onCommitFrameChange={vi.fn()}
+      />
+    );
+    const idleMarkup = renderToStaticMarkup(
+      <ActionInspector
+        action={actionDefinition}
+        actions={[actionDefinition]}
+        states={[]}
+        presentation={presentation}
+        disabled={false}
+        onChange={vi.fn()}
+        onCommitFrameChange={vi.fn()}
+      />
+    );
+
+    expect(carryingMarkup).toContain('任务提交帧');
+    expect(carryingMarkup).toContain('value="frame-b" selected=""');
+    expect(carryingMarkup).toContain('value="">不设置</option>');
+    expect(idleMarkup).not.toContain('任务提交帧');
   });
 
   test('左右镜像时锚点同步镜像', () => {

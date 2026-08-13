@@ -1,4 +1,5 @@
 import type {
+  HistoryDisclosureDecision,
   ModelRouteConfig,
   ProviderCatalogEntry,
   ProviderProfileV2,
@@ -6,7 +7,7 @@ import type {
   StoredProviderProfileV2,
   TaskEvent
 } from '@myself/shared-types';
-import type { CharacterDraftV1 } from '@myself/character-runtime';
+import type { CharacterDraftV2 } from '@myself/character-runtime';
 import type {
   CharacterCreateInput,
   CharacterEvent,
@@ -15,9 +16,13 @@ import type {
   CharacterPublishInput,
   CharacterRuntimeSnapshot,
   CharacterSourceChoiceResult,
-  CharacterSummaryDto
+  CharacterSummaryDto,
+  CharacterWorkshopSourceDto
 } from './character-ipc';
 import type {
+  CharacterActionFeedbackInput,
+  CharacterActionMilestoneInput,
+  CharacterBehaviorProbe,
   CharacterMotionEvent,
   CharacterMotionSnapshot
 } from './character-motion-ipc';
@@ -82,6 +87,7 @@ export interface SettingsDashboardDto {
   mcpServers: McpServerDto[];
   privacy: PrivacySettingsDto;
   privacyRuntimeSupport: PrivacyRuntimeSupportDto;
+  petAlwaysOnTop: boolean;
   authorizedRoot: PublicSettings['authorizedRoot'];
 }
 
@@ -153,19 +159,30 @@ export interface MyselfApi extends PetWindowInteractionApi {
   ): Promise<SettingsDashboardDto>;
   deleteMcpServer(serverId: string): Promise<SettingsDashboardDto>;
   savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto>;
+  savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto>;
   setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }>;
   revokeAuthorizedRoot(): Promise<SettingsDashboardDto>;
   submitMessage(text: string): Promise<void>;
   cancelTask(): Promise<void>;
   confirmAction(actionId: string): Promise<void>;
   cancelAction(actionId: string): Promise<void>;
+  resetConversation(): Promise<void>;
+  resolveHistoryDisclosure(
+    requestId: string,
+    decision: HistoryDisclosureDecision
+  ): Promise<void>;
   onTaskEvent(listener: (event: TaskEvent) => void): () => void;
   listCharacters(): Promise<CharacterSummaryDto[]>;
-  createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV1>;
-  duplicateCharacter(characterId: string): Promise<CharacterDraftV1>;
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV1>;
-  saveCharacterDraft(characterId: string, draft: CharacterDraftV1): Promise<void>;
+  createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV2>;
+  duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV2>;
+  saveCharacterDraft(
+    characterId: string,
+    draft: CharacterDraftV2,
+    draftRevision: string
+  ): Promise<void>;
   chooseCharacterSources(characterId: string): Promise<CharacterSourceChoiceResult>;
+  listCharacterSources(characterId: string): Promise<CharacterWorkshopSourceDto[]>;
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
   activateCharacter(
@@ -182,6 +199,9 @@ export interface MyselfApi extends PetWindowInteractionApi {
   getCharacterMotionSnapshot(): Promise<CharacterMotionSnapshot>;
   subscribeCharacterMotion(listener: (event: CharacterMotionEvent) => void): () => void;
   reportCharacterActionPlayed(playbackToken: string, actionId: string): Promise<void>;
+  reportCharacterActionFeedback(input: CharacterActionFeedbackInput): Promise<void>;
+  reportCharacterActionMilestone(input: CharacterActionMilestoneInput): Promise<void>;
+  getCharacterBehaviorProbe?(): Promise<CharacterBehaviorProbe>;
   openChat(): Promise<void>;
   openSettings(): Promise<void>;
   openCharacterWorkshop(): Promise<void>;

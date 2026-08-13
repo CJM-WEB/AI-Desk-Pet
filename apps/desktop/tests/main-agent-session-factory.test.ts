@@ -1,0 +1,97 @@
+import type { ModelProvider } from '@myself/agent-core';
+import { describe, expect, test, vi } from 'vitest';
+import type { AgentFileTools } from '../src/main/agent/agent-service';
+import type { PowerShellTool } from '../src/main/agent/powershell-tool';
+import { createMainAgentSession } from '../src/main/agent/main-agent-session-factory';
+
+const provider: ModelProvider = {
+  respond: vi.fn()
+};
+
+const fileTools: AgentFileTools = {
+  executeRead: vi.fn(),
+  preview: vi.fn(),
+  executeWrite: vi.fn()
+};
+
+function input(taskKind: 'file' | 'powershell') {
+  return {
+    taskKind,
+    authorizedRootPath: 'D:\\authorized',
+    generation: 'generation-1',
+    fileDisclosureAllowed: true,
+    provider,
+    fallbackProviders: [],
+    createFileTools: vi.fn(async () => fileTools),
+    createPowerShellTool: vi.fn(() => ({}) as PowerShellTool)
+  };
+}
+
+describe('Main 能力会话工厂', () => {
+  test('PowerShell 会话只注册 builtin.powershell.run 且不构造文件能力', async () => {
+    const options = input('powershell');
+
+    const session = await createMainAgentSession(options);
+
+    expect(session.taskKind).toBe('powershell');
+    expect(session.tools.map(tool => tool.function.name)).toEqual(['builtin.powershell.run']);
+    expect(options.createPowerShellTool).toHaveBeenCalledOnce();
+    expect(options.createFileTools).not.toHaveBeenCalled();
+  });
+
+  test('PowerShell 会话把高风险命令交给确认而非权限拒绝', async () => {
+    const session = await createMainAgentSession(input('powershell'));
+
+    const prepared = session.toolRuntime.prepare({
+      requestId: 'shell-1',
+      toolName: 'builtin.powershell.run',
+      arguments: { command: 'Get-ChildItem' }
+    });
+
+    expect(prepared.decision).toBe('confirm');
+    expect(prepared.executionRequest.toolName).toBe('powershell');
+  });
+
+  test('文件会话只注册五个文件工具且不构造 PowerShell', async () => {
+    const options = input('file');
+
+    const session = await createMainAgentSession(options);
+
+    expect(session.taskKind).toBe('file');
+    expect(session.tools.map(tool => tool.function.name).sort()).toEqual([
+      'builtin.files.apply_patch',
+      'builtin.files.create_file',
+      'builtin.files.delete_file',
+      'builtin.files.list_files',
+      'builtin.files.read_file'
+    ]);
+    expect(options.createFileTools).toHaveBeenCalledOnce();
+    expect(options.createPowerShellTool).not.toHaveBeenCalled();
+  });
+
+  test('文件会话保持仅可确认的可恢复写入策略', async () => {
+    const session = await createMainAgentSession(input('file'));
+
+    const prepared = session.toolRuntime.prepare({
+      requestId: 'file-1',
+      toolName: 'builtin.files.create_file',
+      arguments: { relativePath: 'note.txt', content: '内容' }
+    });
+
+    expect(prepared.decision).toBe('confirm');
+    expect(prepared.executionRequest.toolName).toBe('create_file');
+  });
+
+  test.each(['file', 'powershell'] as const)(
+    '%s 能力规划提示把工具调用与宿主确认职责严格分开',
+    async taskKind => {
+      const session = await createMainAgentSession(input(taskKind));
+      const systemPrompt = session.messages[0]?.content ?? '';
+
+      expect(systemPrompt).toContain('参数齐全时立即调用工具');
+      expect(systemPrompt).toContain('绝不能自行索要操作确认');
+      expect(systemPrompt).toContain('确认完全由宿主在工具调用后生成确认卡');
+      expect(systemPrompt).toContain('澄清仅用于缺失执行必需参数');
+    }
+  );
+});

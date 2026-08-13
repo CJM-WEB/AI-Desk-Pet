@@ -20,6 +20,12 @@ type WindowCommandController = {
 };
 
 type WindowCommandsModule = {
+  createPetVisibilityCommand(pet: {
+    isDestroyed(): boolean;
+    isVisible(): boolean;
+    hide(): void;
+    show(): void;
+  }): () => void;
   createWindowCommandController(options: {
     getChatWindow(): TestWindow;
     ensureChatWindow(): Promise<TestWindow>;
@@ -76,6 +82,44 @@ function testWindow(sequence: string[], destroyed = false): TestWindow {
 }
 
 describe('Main 窗口命令控制器', () => {
+  test.each([
+    ['可见', true, ['hide']],
+    ['隐藏', false, ['show']]
+  ] as const)('托盘切换命令在桌宠%s时执行单一反向动作', async (_label, visible, expected) => {
+    const module = await loadWindowCommandsModule();
+    expect(module, '应提供普通桌宠显示隐藏命令').not.toBeNull();
+    if (!module) return;
+    const sequence: string[] = [];
+    const toggle = module.createPetVisibilityCommand({
+      isDestroyed: () => false,
+      isVisible: () => visible,
+      hide: () => sequence.push('hide'),
+      show: () => sequence.push('show')
+    });
+
+    toggle();
+
+    expect(sequence).toEqual(expected);
+  });
+
+  test('托盘切换命令忽略已销毁桌宠窗口', async () => {
+    const module = await loadWindowCommandsModule();
+    expect(module).not.toBeNull();
+    if (!module) return;
+    const hide = vi.fn();
+    const show = vi.fn();
+
+    module.createPetVisibilityCommand({
+      isDestroyed: () => true,
+      isVisible: () => true,
+      hide,
+      show
+    })();
+
+    expect(hide).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
+  });
+
   test('hideChat 只隐藏未销毁的聊天窗口', async () => {
     const module = await loadWindowCommandsModule();
     expect(module, '应提供独立的窗口命令控制器').not.toBeNull();

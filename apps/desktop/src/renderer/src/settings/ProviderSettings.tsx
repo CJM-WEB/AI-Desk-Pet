@@ -26,10 +26,10 @@ function profileCapabilities(
   const profile = dashboard.profiles.find(item => item.id === profileId);
   if (!profile) return [];
   if (profile.mode === 'custom') return profile.capabilities ?? ['chat'];
-  return dashboard.catalog
-    .find(item => item.providerId === profile.providerId)
-    ?.models.find(item => item.modelId === profile.modelId)
-    ?.capabilities ?? [];
+  const provider = dashboard.catalog.find(item => item.providerId === profile.providerId);
+  if (!provider) return [];
+  return provider.models.find(item => item.modelId === profile.modelId)
+    ?.capabilities ?? profile.capabilities ?? ['chat'];
 }
 
 export function ProviderSettings(props: ProviderSettingsProps) {
@@ -39,8 +39,7 @@ export function ProviderSettings(props: ProviderSettingsProps) {
     ?? firstProvider;
   const firstModel = selectedProvider?.models[0];
   const [modelId, setModelId] = useState(firstModel?.modelId ?? '');
-  const selectedModel = selectedProvider?.models.find(item => item.modelId === modelId)
-    ?? selectedProvider?.models[0];
+  const selectedModel = selectedProvider?.models.find(item => item.modelId === modelId);
   const [displayName, setDisplayName] = useState(selectedProvider?.displayName ?? '');
   const [secret, setSecret] = useState('');
   const [persistSecret, setPersistSecret] = useState(true);
@@ -53,7 +52,7 @@ export function ProviderSettings(props: ProviderSettingsProps) {
   const [additionalParameters, setAdditionalParameters] = useState('');
   const [formError, setFormError] = useState('');
   const [route, setRoute] = useState<ModelRouteConfig>(props.dashboard.route);
-  const capabilities = selectedModel?.capabilities ?? [];
+  const capabilities = selectedModel?.capabilities ?? ['chat'];
 
   useEffect(() => {
     const provider = props.dashboard.catalog[0];
@@ -116,7 +115,8 @@ export function ProviderSettings(props: ProviderSettingsProps) {
         displayName,
         mode: 'preset',
         providerId,
-        modelId
+        modelId,
+        capabilities
       };
     }
     props.onSave({
@@ -164,18 +164,19 @@ export function ProviderSettings(props: ProviderSettingsProps) {
             </label>
             <label>
               模型
-              <select
+              <input
+                list="preset-model-options"
                 value={modelId}
                 disabled={customMode || props.busy}
-                onChange={event => setModelId(event.target.value)}
-              >
+                onChange={event => setModelId(event.target.value.trim())}
+              />
+              <datalist id="preset-model-options">
                 {selectedProvider?.models.map(model => (
-                  <option key={model.modelId} value={model.modelId}>
-                    {model.displayName}
-                  </option>
+                  <option key={model.modelId} value={model.modelId}>{model.displayName}</option>
                 ))}
-              </select>
+              </datalist>
             </label>
+            <small>列表没有新模型时，可直接输入服务商公布的模型 ID；未知模型默认仅启用聊天。</small>
             <label className="wide-field">
               <span className="label-with-icon"><KeyRound size={16} />API Key</span>
               <input

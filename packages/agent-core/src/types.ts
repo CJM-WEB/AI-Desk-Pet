@@ -3,6 +3,7 @@ import type {
   ToolName,
   ToolRequest
 } from '@myself/shared-types';
+import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import type { ProviderProfileV2 } from '@myself/shared-types';
 
 export type ModelRequestKind = 'chat' | 'agent' | 'vision';
@@ -42,8 +43,21 @@ export interface ModelRequest {
 }
 
 export type ModelResponse =
-  | { type: 'text'; text: string; emotion?: CharacterEmotionLabel }
+  | {
+      type: 'text';
+      text: string;
+      emotion?: CharacterEmotionLabel;
+      behaviorIntent?: CharacterAgentBehaviorIntent;
+    }
   | { type: 'tool_request'; request: unknown };
+
+/** 能力任务在首个真实工具结果前仅允许的规划结果。 */
+export type CapabilityPlannerResult =
+  | Readonly<{ kind: 'tool_request'; request: ToolRequest }>
+  | Readonly<{ kind: 'clarification_required'; question: string }>;
+
+/** 控制单次运行对模型文本响应施加的协议，默认保留聊天兼容语义。 */
+export type AgentRunProtocol = 'default' | 'capability_planner';
 
 export interface ModelProvider {
   respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse>;
@@ -71,12 +85,14 @@ export interface RunContext {
   tools: ToolDefinition[];
   toolRuntime: ToolRuntime;
   signal: AbortSignal;
+  protocol?: AgentRunProtocol;
 }
 
 export type AgentEvent =
-  | { type: 'phase'; phase: 'thinking' | 'acting' | 'awaiting_confirmation' | 'success' | 'cancelled' }
+  | { type: 'phase'; phase: 'thinking' | 'acting' | 'awaiting_confirmation' | 'success' | 'error' | 'cancelled' }
   | { type: 'message'; text: string }
   | { type: 'emotion'; label: CharacterEmotionLabel }
+  | { type: 'behavior_intent'; intent: CharacterAgentBehaviorIntent }
   | {
       type: 'write_request';
       request: ToolRequest;

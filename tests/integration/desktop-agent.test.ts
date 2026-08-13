@@ -1,16 +1,36 @@
-import { lstat, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { fork, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
-import { AgentLoop, type ModelResponse } from '@myself/agent-core';
-import type { TaskEvent } from '@myself/shared-types';
+import { PassThrough } from 'node:stream';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  AgentLoop,
+  type ModelProvider,
+  type ModelResponse
+} from '@myself/agent-core';
+import type { CharacterManifestV2 } from '@myself/character-runtime';
+import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
+import { FileToolService } from '@myself/file-tools';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
 import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
 import { PendingActionStore } from '../../apps/desktop/src/main/agent/pending-action-store';
 import {
-  createBuiltinFileToolRegistry
+  createBuiltinFileToolRegistry,
+  createBuiltinPowerShellToolRegistry
 } from '../../apps/desktop/src/main/agent/tool-registry';
+import { PowerShellTool } from '../../apps/desktop/src/main/agent/powershell-tool';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
+import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
+import { CharacterMotionService } from '../../apps/desktop/src/main/characters/character-motion-service';
+import { PrivacySessionRegistry } from
+  '../../apps/desktop/src/main/agent/disclosure-policy';
+import { ConversationChatAdapter } from
+  '../../apps/desktop/src/main/conversation/conversation-chat-adapter';
+import {
+  createMainConversationComposition,
+  type MainConversationAgentFactoryInput
+} from '../../apps/desktop/src/main/conversation/main-conversation-composition';
 import {
   createAuthorizedRoot,
   type AuthorizedRootFixture
@@ -22,18 +42,18 @@ import {
 } from '../fixtures/provider-server';
 
 const toolNames = [
-  'builtin.files.list_directory',
-  'builtin.files.read_text',
+  'builtin.files.list_files',
+  'builtin.files.read_file',
   'builtin.files.create_file',
-  'builtin.files.create_directory',
-  'builtin.files.rename_entry'
+  'builtin.files.apply_patch',
+  'builtin.files.delete_file'
 ] as const;
 const internalToolNames = [
-  'list_directory',
-  'read_text_file',
+  'list_files',
+  'read_file',
   'create_file',
-  'create_directory',
-  'rename_entry'
+  'apply_patch',
+  'delete_file'
 ] as const;
 
 const roots: AuthorizedRootFixture[] = [];
@@ -127,9 +147,13 @@ function expectProviderExchange(
   for (const requestLog of providerServer.requests) {
     expect(requestLog).toMatchObject({
       method: 'POST',
-      pathname: '/v1/chat/completions',
-      authorizationPresent: true
+      model: 'task-9a-model'
     });
+    expect(Object.keys(requestLog).sort()).toEqual([
+      'messageRoleCounts', 'method', 'model', 'toolCount'
+    ]);
+    expect(Object.values(requestLog.messageRoleCounts).reduce((sum, count) => sum + count, 0))
+      .toBeGreaterThan(0);
   }
   expect(providerServer.remainingSteps()).toBe(0);
   providerServer.assertComplete();
@@ -137,7 +161,7 @@ function expectProviderExchange(
 
 function toolCall(
   requestId: string,
-  toolName: (typeof toolNames)[number],
+  toolName: (typeof toolNames)[number] | 'builtin.powershell.run',
   arguments_: Record<string, unknown>
 ): ModelResponse {
   return {
@@ -146,7 +170,13 @@ function toolCall(
   };
 }
 
-async function harness(steps: ProviderStep[]) {
+async function harness(
+  steps: ProviderStep[],
+  taskKind: 'file' | 'powershell' = 'file',
+  powershell?: PowerShellTool,
+  emitBehaviorIntent?: (intent: Parameters<CharacterBehaviorService['handleAgentIntent']>[0]) => void,
+  onTaskEvent?: (event: TaskEvent) => void
+) {
   const authorized = await createAuthorizedRoot();
   roots.push(authorized);
   const providerServer = await startProviderServer(steps);
@@ -168,26 +198,72 @@ async function harness(steps: ProviderStep[]) {
     model: 'task-9a-model',
     hasStoredSecret: true
   }, async () => providerServer.apiKey);
-  const registry = createBuiltinFileToolRegistry();
-  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
+  const registry = taskKind === 'powershell'
+    ? createBuiltinPowerShellToolRegistry()
+    : createBuiltinFileToolRegistry();
+  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: taskKind === 'powershell' });
+  let carryStarted = 0;
+  let carryEnded = 0;
+  const taskCarry = {
+    beginTaskCarry: () => {
+      carryStarted += 1;
+      return {
+        playbackToken: 'integration-carry-token',
+        actionId: 'integration-carry-action',
+        commitFrameId: 'integration-commit-frame'
+      };
+    },
+    endTaskCarry: () => {
+      carryEnded += 1;
+    }
+  };
   const service = new AgentService({
     loop,
     pending,
-    createSession: async () => ({
-      provider,
-      fileTools: authorized.fileTools,
-      fileDisclosureAllowed: true,
-      tools: registry.definitions(),
-      toolRuntime: {
-        prepare: raw => registry.prepare(raw, permissionPolicy),
-        executeRead: request => authorized.fileTools.executeRead(request)
-      },
-      messages: []
-    }),
-    emit: event => events.push(event),
+    createSession: async () => taskKind === 'powershell'
+      ? {
+          taskKind: 'powershell' as const,
+          provider,
+          powershell: powershell ?? new PowerShellTool(),
+          workingDirectory: authorized.root,
+          workingDirectoryLabel: '授权工作目录',
+          generation: 'integration-powershell-generation',
+          tools: registry.definitions(),
+          toolRuntime: {
+            prepare: raw => registry.prepare(raw, permissionPolicy),
+            executeRead: async () => { throw new Error('TOOL_UNKNOWN'); }
+          },
+          messages: []
+        }
+      : {
+          taskKind: 'file' as const,
+          provider,
+          fileTools: authorized.fileTools,
+          fileDisclosureAllowed: true,
+          tools: registry.definitions(),
+          toolRuntime: {
+            prepare: raw => registry.prepare(raw, permissionPolicy),
+            executeRead: request => authorized.fileTools.executeRead(request)
+          },
+          messages: []
+    },
+    emit: event => {
+      events.push(event);
+      onTaskEvent?.(event);
+    },
+    emitBehaviorIntent,
+    taskCarry,
     createConversationId: () => 'conversation-task-9a'
   });
-  return { authorized, events, loop, pending, providerServer, service };
+  return {
+    authorized,
+    events,
+    loop,
+    pending,
+    providerServer,
+    service,
+    carryCounts: () => ({ started: carryStarted, ended: carryEnded })
+  };
 }
 
 function pendingAction(events: TaskEvent[]) {
@@ -196,9 +272,754 @@ function pendingAction(events: TaskEvent[]) {
   return event.action;
 }
 
+const behaviorSemantics = ['idle', 'listen', 'think', 'move', 'celebrate', 'fail'] as const;
+
+/** 固定 V2 角色让集成断言独立于生产默认角色的素材与命名。 */
+function createBehaviorManifest(): CharacterManifestV2 {
+  const states: CharacterManifestV2['states'] = behaviorSemantics.map(semantic => ({
+    id: `${semantic}-state`,
+    name: `${semantic} 状态`,
+    kind: 'primary',
+    semantic,
+    tags: [],
+    intensity: 10,
+    coexistWithStateIds: [],
+    forbiddenStateIds: [],
+    enterConditions: [],
+    exitConditions: [],
+    agentInferable: semantic === 'think',
+    actionIds: [`${semantic}-action`]
+  }));
+  states.push({
+    id: 'agent-focus',
+    name: 'Agent 专注',
+    kind: 'primary',
+    semantic: { kind: 'custom', value: 'focus' },
+    tags: [],
+    intensity: 80,
+    coexistWithStateIds: [],
+    forbiddenStateIds: [],
+    enterConditions: [],
+    exitConditions: [],
+    agentInferable: true,
+    actionIds: ['focus-action']
+  });
+  const actions: CharacterManifestV2['actions'] = behaviorSemantics.map(semantic => ({
+    id: `${semantic}-action`,
+    name: `${semantic} 动作`,
+    semantic,
+    tags: [],
+    preference: 1,
+    cooldownMs: 0,
+    repeatSuppressionMs: 0,
+    loopPolicy: 'never',
+    interrupt: 'normal',
+    allowedPrimaryStateIds: [],
+    forbiddenPrimaryStateIds: [],
+    requiredModifierStateIds: [],
+    forbiddenModifierStateIds: [],
+    direction: 'any'
+  }));
+  actions.push({
+    ...actions.find(action => action.semantic === 'think')!,
+    id: 'focus-action',
+    name: '专注动作'
+  });
+  return {
+    version: 2,
+    id: 'integration-behavior-v2',
+    name: '集成行为角色',
+    thumbnailAssetId: 'thumbnail',
+    compilerVersion: 'task-9',
+    identity: {
+      description: '自主行为闭环集成角色', background: '固定测试夹具', traits: [],
+      languageStyle: '简洁', formsOfAddress: [], likes: [], dislikes: [],
+      behavioralTendencies: [], boundaries: [], exampleLines: []
+    },
+    defaultSkinId: 'default',
+    defaultStateId: 'idle-state',
+    states,
+    actions,
+    skins: [{
+      id: 'default',
+      name: '默认皮肤',
+      presentations: actions.map(action => ({
+        actionId: action.id,
+        fps: 8,
+        frames: [{ assetId: 'atlas', x: 0, y: 0, width: 1, height: 1 }],
+        anchors: { ground: { x: 0.5, y: 1 } }
+      })),
+      semanticFallbacks: []
+    }],
+    resources: [{
+      assetId: 'atlas', fileName: 'atlas.png', sha256: 'a'.repeat(64), byteLength: 1
+    }]
+  };
+}
+
+function scriptedProvider(responses: ModelResponse[]): ModelProvider {
+  return {
+    async respond() {
+      const response = responses.shift();
+      if (!response) throw new Error('集成模型脚本已耗尽');
+      return response;
+    }
+  };
+}
+
+function conversationProfile(id: string, baseUrl: string): ProviderProfileV2 {
+  return {
+    id,
+    displayName: id,
+    modelId: 'conversation-model',
+    hasStoredSecret: true,
+    mode: 'custom',
+    protocol: 'openai-compatible',
+    baseUrl,
+    additionalParameters: {},
+    capabilities: ['chat', 'tools']
+  };
+}
+
+const conversationPrimary = conversationProfile(
+  'conversation-primary',
+  'https://conversation-a.example/v1'
+);
+const conversationSameFallback = conversationProfile(
+  'conversation-same-fallback',
+  'https://conversation-a.example/v1/'
+);
+const conversationCross = conversationProfile(
+  'conversation-cross',
+  'https://conversation-b.example/v1'
+);
+
+function conversationIntegrationHarness(input: {
+  responses: string[];
+  authorizedRootPath?: string | null;
+  incognito?: boolean;
+}) {
+  const privacySessions = new PrivacySessionRegistry();
+  privacySessions.register('integration-conversation', {
+    incognito: input.incognito ?? false
+  });
+  let chatProfileId = conversationPrimary.id;
+  const providerSettings = {
+    profiles: [conversationPrimary, conversationSameFallback, conversationCross],
+    route: {
+      primaryProfileId: conversationPrimary.id,
+      chatProfileId,
+      agentProfileId: conversationPrimary.id,
+      visionProfileId: null,
+      fallbackProfileIds: [conversationSameFallback.id, conversationCross.id],
+      allowCrossProviderFallback: true
+    }
+  };
+  const events: TaskEvent[] = [];
+  const chatRequests: Array<{ profileId: string; request: Parameters<ModelProvider['respond']>[0] }> = [];
+  const fileSubmissions: Array<{
+    text: string;
+    visibleHistory: readonly unknown[];
+  }> = [];
+  const agentFactoryInputs: Array<MainConversationAgentFactoryInput<
+    { dataCategories: { file: boolean } },
+    { name: string }
+  >> = [];
+  const readAuthorizedRootPath = vi.fn(async () => input.authorizedRootPath ?? null);
+  const readPrivacySettings = vi.fn(async () => ({ dataCategories: { file: true } }));
+  const readEnabledReadTools = vi.fn(async () => [{ name: 'read_text_file' }]);
+  const createAgentService = vi.fn((factoryInput: MainConversationAgentFactoryInput<
+    { dataCategories: { file: boolean } },
+    { name: string }
+  >) => {
+    agentFactoryInputs.push(factoryInput);
+    return {
+      async submitFileTask(submission: {
+        text: string;
+        visibleHistory: readonly unknown[];
+      }) {
+        fileSubmissions.push(submission);
+        factoryInput.emit({
+          type: 'message',
+          role: 'assistant',
+          text: '文件任务已由安全 Agent 完成'
+        });
+        factoryInput.emit({ type: 'phase', phase: 'success' });
+      },
+      cancelActive: vi.fn(),
+      confirm: vi.fn(async () => undefined),
+      cancelAction: vi.fn(),
+      resetForNewConversation: vi.fn(async () => undefined),
+      close: vi.fn(),
+      onPlaybackStarted: vi.fn(() => true),
+      onPlaybackTerminal: vi.fn(() => true),
+      onCommitFrame: vi.fn(() => true),
+      advanceFileTaskTransaction: vi.fn(() => true),
+      invalidateFileTaskPlaybackGrant: vi.fn(() => true)
+    };
+  });
+  const composition = createMainConversationComposition({
+    catalog: [],
+    privacySessions,
+    sessionId: 'integration-conversation',
+    readProviderSettings: async () => ({
+      ...providerSettings,
+      route: { ...providerSettings.route, chatProfileId }
+    }),
+    readAuthorizedRootPath,
+    readPrivacySettings,
+    readEnabledReadTools,
+    createChatAdapter: profile => new ConversationChatAdapter({
+      async respond(request) {
+        chatRequests.push({ profileId: profile.id, request });
+        const response = input.responses.shift();
+        if (!response) throw new Error('聊天响应脚本已耗尽');
+        return { type: 'text', text: response };
+      }
+    }),
+    createAgentService,
+    emit: event => events.push(event)
+  });
+  return {
+    agentFactoryInputs,
+    chatRequests,
+    composition,
+    createAgentService,
+    events,
+    fileSubmissions,
+    readAuthorizedRootPath,
+    readEnabledReadTools,
+    readPrivacySettings,
+    setChatProfile(profileId: string) {
+      chatProfileId = profileId;
+    }
+  };
+}
+
+function latestDisclosureRequest(events: TaskEvent[]): string {
+  const event = [...events].reverse().find(candidate => (
+    candidate.type === 'history_disclosure_required'
+  ));
+  if (!event || event.type !== 'history_disclosure_required') {
+    throw new Error('缺少历史披露请求');
+  }
+  return event.requestId;
+}
+
+describe('桌面会话分流纵向集成', () => {
+  test('无授权根可连续普通聊天且第二轮收到有界可见历史', async () => {
+    const fixture = conversationIntegrationHarness({
+      responses: [
+        '第一轮回复',
+        '第二轮回复'
+      ]
+    });
+
+    await fixture.composition.coordinator.submit('第一轮消息');
+    await fixture.composition.coordinator.submit('第二轮消息');
+
+    expect(fixture.chatRequests).toHaveLength(2);
+    expect(fixture.chatRequests[1]?.request.tools).toEqual([]);
+    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+      { role: 'user', content: '第一轮消息' },
+      { role: 'assistant', content: '第一轮回复' },
+      { role: 'user', content: '第二轮消息' }
+    ]);
+    expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
+    expect(fixture.readPrivacySettings).not.toHaveBeenCalled();
+    expect(fixture.readEnabledReadTools).not.toHaveBeenCalled();
+    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    await fixture.composition.close();
+  });
+
+  test('模糊请求按默认聊天返回自然文本且隔离目录无变化', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    const before = await readdir(authorized.root, { recursive: true });
+    const fixture = conversationIntegrationHarness({
+      responses: ['无法确定请求类型'],
+      authorizedRootPath: authorized.root
+    });
+
+    await fixture.composition.coordinator.submit('帮我整理一下');
+
+    expect(fixture.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '无法确定请求类型'
+    });
+    await expect(readdir(authorized.root, { recursive: true })).resolves.toEqual(before);
+    expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
+    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    await fixture.composition.close();
+  });
+
+  test('明确文件请求无授权时公开稳定错误', async () => {
+    const fixture = conversationIntegrationHarness({
+      responses: []
+    });
+
+    await expect(fixture.composition.coordinator.submit('读取 docs/note.txt'))
+      .rejects.toMatchObject({ code: 'FILE_AUTHORIZATION_REQUIRED' });
+    expect(fixture.readAuthorizedRootPath).toHaveBeenCalledOnce();
+    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    expect(fixture.chatRequests).toEqual([]);
+    await fixture.composition.close();
+  });
+
+  test('后台 PowerShell 在组合入口稳定拒绝且不创建 Agent 或聊天请求', async () => {
+    const fixture = conversationIntegrationHarness({ responses: [] });
+
+    await expect(fixture.composition.coordinator.submit('后台运行构建'))
+      .rejects.toMatchObject({ code: 'POWERSHELL_BACKGROUND_UNSUPPORTED' });
+
+    expect(fixture.createAgentService).not.toHaveBeenCalled();
+    expect(fixture.chatRequests).toEqual([]);
+    await fixture.composition.close();
+  });
+
+  test('授权后的明确文件请求进入既有 Agent 且排除跨 Provider fallback', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    const fixture = conversationIntegrationHarness({
+      responses: [],
+      authorizedRootPath: authorized.root
+    });
+
+    await fixture.composition.coordinator.submit('读取 docs/note.txt');
+
+    expect(fixture.fileSubmissions).toEqual([{
+      text: '读取 docs/note.txt',
+      visibleHistory: []
+    }]);
+    expect(fixture.agentFactoryInputs[0]?.fallbackProfiles.map(profile => profile.id))
+      .toEqual([conversationSameFallback.id]);
+    expect(fixture.agentFactoryInputs[0]?.fallbackProfiles.map(profile => profile.id))
+      .not.toContain(conversationCross.id);
+    expect(fixture.chatRequests).toEqual([]);
+    await fixture.composition.close();
+  });
+
+  test('跨 Provider 仅发送当前消息时历史为空且当前消息继续执行', async () => {
+    const fixture = conversationIntegrationHarness({
+      responses: [
+        '来源回复',
+        '目标回复'
+      ],
+      incognito: true
+    });
+    await fixture.composition.coordinator.submit('来源消息');
+    fixture.setChatProfile(conversationCross.id);
+
+    await fixture.composition.coordinator.submit('当前目标消息');
+    const requestId = latestDisclosureRequest(fixture.events);
+    await fixture.composition.coordinator.resolveHistoryDisclosure(
+      requestId,
+      'current_message_only'
+    );
+
+    expect(fixture.chatRequests[1]?.profileId).toBe(conversationCross.id);
+    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+      { role: 'user', content: '当前目标消息' }
+    ]);
+    await fixture.composition.close();
+  });
+
+  test('跨 Provider 单次共享只恢复原请求且旧、伪造、重复请求均失效', async () => {
+    const fixture = conversationIntegrationHarness({
+      responses: [
+        '来源回复',
+        '目标回复',
+        '再次回复'
+      ]
+    });
+    await fixture.composition.coordinator.submit('来源消息');
+    fixture.setChatProfile(conversationCross.id);
+    await fixture.composition.coordinator.submit('目标消息');
+    const firstRequestId = latestDisclosureRequest(fixture.events);
+
+    await expect(fixture.composition.coordinator.resolveHistoryDisclosure(
+      'forged-request',
+      'share_once'
+    )).rejects.toMatchObject({ code: 'DISCLOSURE_REQUEST_EXPIRED' });
+    await fixture.composition.coordinator.resolveHistoryDisclosure(
+      firstRequestId,
+      'share_once'
+    );
+    expect(fixture.chatRequests[1]?.request.messages.slice(1)).toEqual([
+      { role: 'user', content: '来源消息' },
+      { role: 'assistant', content: '来源回复' },
+      { role: 'user', content: '目标消息' }
+    ]);
+    await expect(fixture.composition.coordinator.resolveHistoryDisclosure(
+      firstRequestId,
+      'share_once'
+    )).rejects.toMatchObject({ code: 'DISCLOSURE_REQUEST_EXPIRED' });
+
+    await fixture.composition.coordinator.submit('再次发送');
+    const secondRequestId = latestDisclosureRequest(fixture.events);
+    expect(secondRequestId).not.toBe(firstRequestId);
+    await expect(fixture.composition.coordinator.resolveHistoryDisclosure(
+      firstRequestId,
+      'share_once'
+    )).rejects.toMatchObject({ code: 'DISCLOSURE_REQUEST_EXPIRED' });
+    await fixture.composition.coordinator.resolveHistoryDisclosure(
+      secondRequestId,
+      'current_message_only'
+    );
+    expect(fixture.chatRequests[2]?.request.messages.slice(1)).toEqual([
+      { role: 'user', content: '再次发送' }
+    ]);
+    await fixture.composition.close();
+  });
+
+  test('PowerShell 确认后返回真实 stdout、stderr 与退出码', async () => {
+    const fixture = await harness([
+      {
+        response: toolCall('powershell-success', 'builtin.powershell.run', {
+          command: "Write-Output 'integration-stdout'; [Console]::Error.Write('integration-stderr'); exit 0"
+        }),
+        inspect: request => expect(request.tools.map(tool => tool.function.name))
+          .toEqual(['builtin.powershell.run'])
+      },
+      {
+        response: { type: 'text', text: 'PowerShell 已完成' },
+        inspect: request => {
+          const result = request.messages.at(-1);
+          if (!result || result.role !== 'tool') throw new Error('MISSING_POWERSHELL_RESULT');
+          expect(JSON.parse(result.content)).toMatchObject({
+            toolName: 'powershell',
+            ok: true,
+            status: 'succeeded',
+            exitCode: 0,
+            stdout: expect.stringContaining('integration-stdout'),
+            stderr: expect.stringContaining('integration-stderr')
+          });
+        }
+      }
+    ], 'powershell');
+
+    await fixture.service.submitFileTask({ text: '执行 PowerShell 命令', visibleHistory: [] });
+    const action = pendingAction(fixture.events);
+    expect(action).toMatchObject({
+      category: 'powershell',
+      operation: 'powershell',
+      command: expect.stringContaining('integration-stdout'),
+      workingDirectoryLabel: '授权工作目录'
+    });
+
+    await fixture.service.confirm(action.actionId);
+
+    expectProviderExchange(fixture.providerServer, 2);
+    expect(fixture.events).toContainEqual({
+      type: 'message', role: 'assistant', text: 'PowerShell 已完成'
+    });
+  });
+
+  test('PowerShell 非零退出会把真实失败结果续跑为 error 终态', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4321,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(() => true)
+    });
+    const spawn = vi.fn(() => child);
+    const powershell = new PowerShellTool({
+      processPort: { spawn, killTree: async () => undefined }
+    });
+    const fixture = await harness([
+      {
+        response: toolCall('powershell-failure', 'builtin.powershell.run', {
+          command: 'exit 7'
+        })
+      },
+      {
+        response: { type: 'text', text: '命令失败' },
+        inspect: request => {
+          const last = request.messages.at(-1);
+          if (!last || last.role !== 'tool') throw new Error('缺少 PowerShell 失败结果');
+          expect(JSON.parse(last.content)).toMatchObject({
+            toolName: 'powershell', ok: false, status: 'failed', exitCode: 7
+          });
+        }
+      }
+    ], 'powershell', powershell);
+
+    await fixture.service.submitFileTask({ text: '执行 exit 7', visibleHistory: [] });
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+    child.emit('close', 7);
+    await confirming;
+
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(fixture.events).toContainEqual({ type: 'phase', phase: 'error' });
+    expectProviderExchange(fixture.providerServer, 2);
+  });
+
+  test('取消 PowerShell 确认不启动进程', async () => {
+    const spawn = vi.fn();
+    const powershell = new PowerShellTool({
+      processPort: {
+        spawn: spawn as never,
+        killTree: async () => undefined
+      }
+    });
+    const fixture = await harness([{
+      response: toolCall('powershell-cancel', 'builtin.powershell.run', {
+        command: 'Write-Output no-spawn'
+      })
+    }], 'powershell', powershell);
+
+    await fixture.service.submitFileTask({ text: '执行 Write-Output no-spawn', visibleHistory: [] });
+    fixture.service.cancelAction(pendingAction(fixture.events).actionId);
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fixture.events).toContainEqual({ type: 'phase', phase: 'cancelled' });
+    expectProviderExchange(fixture.providerServer, 1);
+  });
+
+  test('reset 等待 PowerShell 收敛并忽略迟到 close 事件', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4322,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(() => true)
+    });
+    const killTree = vi.fn(async () => undefined);
+    const fixture = await harness([
+      {
+        response: toolCall('powershell-reset', 'builtin.powershell.run', {
+          command: 'Write-Output reset-late'
+        })
+      },
+      { response: { type: 'text', text: '迟到总结不得公开' } }
+    ], 'powershell', new PowerShellTool({
+      processPort: { spawn: vi.fn(() => child), killTree }
+    }));
+
+    await fixture.service.submitFileTask({ text: '执行 Write-Output reset-late', visibleHistory: [] });
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+    const resetting = fixture.service.resetForNewConversation();
+    child.emit('close', 0);
+    await resetting;
+    await confirming;
+
+    expect(killTree).toHaveBeenCalledWith(4322);
+    expect(fixture.events).not.toContainEqual({
+      type: 'message', role: 'assistant', text: '迟到总结不得公开'
+    });
+    expect(fixture.providerServer.requests).toHaveLength(1);
+    expect(fixture.providerServer.remainingSteps()).toBe(1);
+  });
+
+  test('PowerShell 静默超时公开 error 且迟到流事件不会续跑 Provider', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4323,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(() => true)
+    });
+    const spawn = vi.fn(() => child);
+    const fixture = await harness([
+      {
+        response: toolCall('powershell-timeout', 'builtin.powershell.run', {
+          command: 'Write-Output timeout-late'
+        })
+      },
+      {
+        response: { type: 'text', text: '命令已超时。' },
+        inspect: request => {
+          const result = request.messages.at(-1);
+          if (!result || result.role !== 'tool') throw new Error('缺少 PowerShell 超时结果');
+          expect(JSON.parse(result.content)).toMatchObject({
+            toolName: 'powershell',
+            ok: false,
+            status: 'timed_out',
+            timeoutKind: 'idle'
+          });
+        }
+      }
+    ], 'powershell', new PowerShellTool({
+      processPort: { spawn, killTree: async () => undefined }
+    }));
+
+    await fixture.service.submitFileTask({ text: '执行 Write-Output timeout-late', visibleHistory: [] });
+    vi.useFakeTimers();
+    try {
+      const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await confirming;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(fixture.events).toContainEqual({ type: 'phase', phase: 'error' });
+    expectProviderExchange(fixture.providerServer, 2);
+    const eventsAfterTimeout = [...fixture.events];
+    child.stdout.write('late-stdout');
+    child.stderr.write('late-stderr');
+    child.emit('close', 0);
+    await Promise.resolve();
+    expect(fixture.events).toEqual(eventsAfterTimeout);
+    expect(fixture.providerServer.requests).toHaveLength(2);
+  });
+});
+
 describe('桌面 Agent 真实服务集成', () => {
+  test('自主行为最小闭环按可信事件组合 Agent、Main 行为与窗口运动', async () => {
+    let now = 0;
+    let bounds = { x: 10, y: 20, width: 256, height: 256 };
+    const positions: Array<{ x: number; y: number }> = [];
+    const motion = new CharacterMotionService({
+      window: {
+        getBounds: () => ({ ...bounds }),
+        setPosition: (x, y) => {
+          bounds = { ...bounds, x, y };
+          positions.push({ x, y });
+        }
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_024, height: 768 }],
+      now: () => now,
+      random: () => 0.75
+    });
+    let token = 0;
+    const behavior = new CharacterBehaviorService({
+      store: {
+        getActiveManifestV2: async () => createBehaviorManifest(),
+        getActive: async () => { throw new Error('不应读取 V1 回退'); }
+      },
+      motion,
+      now: () => now,
+      random: () => 0,
+      createPlaybackToken: () => `integration-token-${++token}`,
+      idleIntervalMs: 100
+    });
+    const behaviorEvents: Array<{
+      revision: number;
+      stateId?: string;
+      actionId: string;
+      playbackToken: string;
+    }> = [];
+    behavior.subscribe(event => {
+      if (event.type !== 'behavior-authority') behaviorEvents.push(event);
+    });
+    motion.subscribe(snapshot => behavior.handleMovement(snapshot));
+    await behavior.initialize();
+
+    const initialIdle = behaviorEvents.at(-1)!;
+    expect(initialIdle).toMatchObject({ stateId: 'idle-state', actionId: 'idle-action' });
+    behavior.applyPlaybackFeedback({
+      playbackToken: initialIdle.playbackToken,
+      actionId: initialIdle.actionId,
+      status: 'started',
+      occurredAtMs: now
+    });
+    behavior.handleUserInteraction();
+    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'idle-action' });
+    expect(behaviorEvents.at(-1)?.playbackToken).not.toBe(initialIdle.playbackToken);
+
+    const responses: ModelResponse[] = [{
+      type: 'text',
+      text: '进入专注状态',
+      behaviorIntent: {
+        stateIntent: { stateId: 'agent-focus' },
+        actionSemantic: 'think',
+        urgency: 70,
+        explanation: '需要专注回应'
+      }
+    }, {
+      type: 'text',
+      text: '非法意图已降级',
+      behaviorIntent: {
+        stateIntent: { stateId: 'missing-state' },
+        actionSemantic: 'think',
+        urgency: 70,
+        explanation: '不存在的状态'
+      }
+    }, {
+      type: 'text',
+      text: '无行为意图'
+    }];
+    const fixture = await harness(
+      responses.flatMap((response, index) => ([
+        { response: toolCall(`behavior-read-${index}`, 'builtin.files.list_files', { relativePath: '.' }) },
+        { response }
+      ])),
+      'file',
+      undefined,
+      intent => behavior.handleAgentIntent(intent),
+      event => behavior.handleTaskEvent(event)
+    );
+    const taskEvents = fixture.events;
+    // 生产链由 Main Coordinator 先发布 listening，再把明确文件任务交给 Agent。
+    const submitAgentTask = async (text: string): Promise<void> => {
+      const listening = { type: 'phase', phase: 'listening' } as const;
+      taskEvents.push(listening);
+      behavior.handleTaskEvent(listening);
+      await fixture.service.submitFileTask({ text, visibleHistory: [] });
+    };
+
+    await submitAgentTask('执行合法意图');
+    expect(taskEvents.filter(event => event.type === 'phase').slice(0, 2)).toEqual([
+      { type: 'phase', phase: 'listening' },
+      { type: 'phase', phase: 'thinking' }
+    ]);
+    expect(behaviorEvents).toContainEqual(expect.objectContaining({
+      stateId: 'agent-focus', actionId: 'focus-action'
+    }));
+    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'celebrate-action' });
+
+    const illegalStart = behaviorEvents.length;
+    await submitAgentTask('执行非法意图');
+    expect(behaviorEvents.slice(illegalStart).filter(event => (
+      event.stateId === 'think-state' && event.actionId === 'think-action'
+    ))).toHaveLength(3);
+    expect(behaviorEvents.slice(illegalStart)).not.toContainEqual(expect.objectContaining({
+      stateId: 'missing-state'
+    }));
+
+    const noIntentStart = behaviorEvents.length;
+    await submitAgentTask('执行无意图降级');
+    expect(behaviorEvents.slice(noIntentStart)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actionId: 'listen-action' }),
+      expect.objectContaining({ actionId: 'think-action' }),
+      expect.objectContaining({ actionId: 'celebrate-action' })
+    ]));
+
+    motion.requestIntent('wander');
+    now = 100;
+    motion.tick();
+    now = 200;
+    motion.tick();
+    expect(behaviorEvents).toContainEqual(expect.objectContaining({ actionId: 'move-action' }));
+    expect(positions.length).toBeGreaterThan(0);
+
+    behavior.handleTaskEvent({ type: 'phase', phase: 'error' });
+    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'fail-action' });
+    const failure = behaviorEvents.at(-1)!;
+    behavior.applyPlaybackFeedback({
+      playbackToken: failure.playbackToken,
+      actionId: failure.actionId,
+      status: 'started',
+      occurredAtMs: now
+    });
+    behavior.applyPlaybackFeedback({
+      playbackToken: failure.playbackToken,
+      actionId: failure.actionId,
+      status: 'completed',
+      occurredAtMs: now + 1
+    });
+    behavior.handleTaskEvent({ type: 'phase', phase: 'idle' });
+    expect(behaviorEvents.at(-1)).toMatchObject({ actionId: 'idle-action' });
+  });
+
   test('Renderer 真实图集编译挂起时 Main Agent 请求仍先完成', async () => {
     const fixture = await harness([{
+      response: toolCall('compile-list', 'builtin.files.list_files', { relativePath: '.' })
+    }, {
       response: { type: 'text', text: 'Agent 在编译期间正常响应' }
     }]);
     const child = fork(
@@ -227,7 +1048,10 @@ describe('桌面 Agent 真实服务集成', () => {
         return result;
       });
 
-    await fixture.service.submit('编译角色时继续响应');
+    await fixture.service.submitFileTask({
+      text: '编译角色时继续响应',
+      visibleHistory: []
+    });
 
     expect(compileCompleted).toBe(false);
     expect(fixture.events).toContainEqual({
@@ -235,7 +1059,7 @@ describe('桌面 Agent 真实服务集成', () => {
       role: 'assistant',
       text: 'Agent 在编译期间正常响应'
     });
-    expectProviderExchange(fixture.providerServer, 1);
+    expectProviderExchange(fixture.providerServer, 2);
 
     child.send({ type: 'release_decode' });
     await expect(compileResult).resolves.toMatchObject({
@@ -248,40 +1072,20 @@ describe('桌面 Agent 真实服务集成', () => {
   test('只通过五个允许工具列出授权目录', async () => {
     const fixture = await harness([
       {
-        response: toolCall('list-1', 'builtin.files.list_directory', { relativePath: '.' }),
+        response: toolCall('list-1', 'builtin.files.list_files', { relativePath: '.' }),
         inspect: request => expect(request.tools.map(tool => tool.function.name)).toEqual(toolNames)
       },
       {
         response: { type: 'text', text: '目录已列出' },
         inspect: request => {
-          const assistantCall = request.messages.at(-2);
-          if (
-            !assistantCall
-            || assistantCall.role !== 'assistant'
-            || !assistantCall.toolRequest
-          ) {
-            throw new Error('缺少助手工具调用历史');
-          }
-          expect(assistantCall.toolRequest).toEqual({
-            requestId: 'list-1',
-            toolName: 'builtin.files.list_directory',
-            arguments: { relativePath: '.' }
-          });
-          expect(assistantCall.toolRequest.toolName).toMatch(/^builtin\.files\./u);
-          expect(internalToolNames).not.toContain(assistantCall.toolRequest.toolName);
-
           const last = request.messages.at(-1);
-          if (!last || last.role !== 'tool') throw new Error('缺少列目录结果');
-          const result = JSON.parse(last.content) as {
-            toolName: string;
-            relativePath: string;
-            entries: Array<{ name: string; type: string }>;
-          };
-          expect(result).toMatchObject({
-            toolName: 'list_directory',
+          expect(last).toMatchObject({ role: 'tool', toolCallId: 'list-1' });
+          if (!last || last.role !== 'tool') throw new Error('缺少列目录工具结果');
+          expect(JSON.parse(last.content)).toMatchObject({
+            toolName: 'list_files',
             relativePath: '.',
             entries: expect.arrayContaining([
-              expect.objectContaining({ name: 'docs', type: 'directory' })
+              expect.objectContaining({ relativePath: 'docs', type: 'directory' })
             ])
           });
         }
@@ -293,7 +1097,7 @@ describe('桌面 Agent 真实服务集成', () => {
       text: fixture.authorized.root
     }], fixture.authorized.root, fixture.providerServer.apiKey)).toThrow();
 
-    await fixture.service.submit('列出授权目录');
+    await fixture.service.submitFileTask({ text: '列出授权目录', visibleHistory: [] });
 
     expectProviderExchange(fixture.providerServer, 2);
     expect(fixture.providerServer.inspectionErrors).toEqual([]);
@@ -304,13 +1108,13 @@ describe('桌面 Agent 真实服务集成', () => {
   });
 
   test('读取受限 UTF-8 文本并作为不可信数据交回模型', async () => {
-    const content = '你好，任务九。';
+    const content = '第一行\n第二行\n第三行\n';
     const fixture = await harness([
       {
         response: toolCall(
           'read-1',
-          'builtin.files.read_text',
-          { relativePath: 'docs/note.txt' }
+          'builtin.files.read_file',
+          { relativePath: 'docs/note.txt', startLine: 2, lineCount: 1 }
         )
       },
       {
@@ -320,9 +1124,11 @@ describe('桌面 Agent 真实服务集成', () => {
           expect(last).toMatchObject({ role: 'tool', toolCallId: 'read-1' });
           if (!last || last.role !== 'tool') throw new Error('缺少工具结果');
           expect(JSON.parse(last.content)).toMatchObject({
-            toolName: 'read_text_file',
+            toolName: 'read_file',
             relativePath: 'docs/note.txt',
-            content,
+            content: '第二行',
+            startLine: 2,
+            endLine: 2,
             untrustedDataNotice: expect.stringContaining('不可信数据')
           });
         }
@@ -330,7 +1136,10 @@ describe('桌面 Agent 真实服务集成', () => {
     ]);
     await writeFile(join(fixture.authorized.root, 'docs', 'note.txt'), content, 'utf8');
 
-    await fixture.service.submit('读取 docs/note.txt');
+    await fixture.service.submitFileTask({
+      text: '读取 docs/note.txt',
+      visibleHistory: []
+    });
 
     expectProviderExchange(fixture.providerServer, 2);
     expect(fixture.providerServer.inspectionErrors).toEqual([]);
@@ -349,7 +1158,10 @@ describe('桌面 Agent 真实服务集成', () => {
         )
       }
     ]);
-    await fixture.service.submit('新建 cancelled.txt');
+    await fixture.service.submitFileTask({
+      text: '新建 cancelled.txt',
+      visibleHistory: []
+    });
     const action = pendingAction(fixture.events);
 
     fixture.service.cancelAction(action.actionId);
@@ -359,23 +1171,347 @@ describe('桌面 Agent 真实服务集成', () => {
       .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  test('新建预览后确认会真实创建空文件', async () => {
+  test('口头拒绝只触发一次协议修复并继续真实工具调用', async () => {
+    const fixture = await harness([
+      { response: { type: 'text', text: '我没有权限执行这个文件任务。' } },
+      {
+        response: toolCall('repair-after-refusal', 'builtin.files.create_file', {
+          relativePath: 'repaired.txt', content: '已修复\n'
+        }),
+        inspect: request => {
+          expect(request.tools.map(tool => tool.function.name)).toEqual(toolNames);
+          expect(request.messages.at(-1)).toMatchObject({
+            role: 'system', content: expect.stringContaining('CAPABILITY_PLAN_PROTOCOL_INVALID')
+          });
+        }
+      },
+      { response: { type: 'text', text: '文件已创建。' } }
+    ]);
+
+    await fixture.service.submitFileTask({ text: '创建 repaired.txt', visibleHistory: [] });
+    await fixture.service.confirm(pendingAction(fixture.events).actionId);
+
+    await expect(readFile(join(fixture.authorized.root, 'repaired.txt'), 'utf8')).resolves.toBe('已修复\n');
+    expectProviderExchange(fixture.providerServer, 3);
+  });
+
+  test('模型删除确认被宿主修复为正式确认卡且不进入聊天正文', async () => {
+    const modelConfirmation = '请确认是否删除当前目录下的 empty 文件夹？';
+    const fixture = await harness([
+      {
+        response: {
+          type: 'text',
+          text: JSON.stringify({ kind: 'clarification_required', question: modelConfirmation })
+        }
+      },
+      {
+        response: toolCall(
+          'repair-delete-empty',
+          'builtin.files.delete_file',
+          { relativePath: 'empty' }
+        ),
+        inspect: request => {
+          expect(request.messages.at(-1)).toMatchObject({
+            role: 'system',
+            content: expect.stringContaining('不得自行索要执行确认')
+          });
+        }
+      },
+      { response: { type: 'text', text: 'empty 已移入回收站' } }
+    ]);
+    const source = join(fixture.authorized.root, 'empty');
+    const recycled = join(fixture.authorized.root, '.recycled-empty-confirmation');
+    await mkdir(source);
+    const recycle = vi.fn((absolutePath: string) => rename(absolutePath, recycled));
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: recycle
+    });
+
+    await fixture.service.submitFileTask({
+      text: '帮我把当前目录下的empty文件夹删除了',
+      visibleHistory: []
+    });
+
+    expect(JSON.stringify(fixture.events)).not.toContain(modelConfirmation);
+    expect(pendingAction(fixture.events)).toMatchObject({
+      operation: 'delete_file',
+      targetRelativePath: 'empty'
+    });
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+    expect(fixture.service.onPlaybackStarted(
+      'integration-carry-token',
+      'integration-carry-action'
+    )).toBe(true);
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(true);
+    await confirming;
+
+    expect(recycle).toHaveBeenCalledOnce();
+    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(lstat(recycled)).resolves.toBeDefined();
+    expectProviderExchange(fixture.providerServer, 3);
+  });
+
+  test('连续口头伪成功在一次修复后稳定报 CAPABILITY_PLAN_PROTOCOL_INVALID', async () => {
+    const fixture = await harness([
+      { response: { type: 'text', text: '文件已经创建完成。' } },
+      { response: { type: 'text', text: '文件已经创建完成。' } }
+    ]);
+
+    await expect(fixture.service.submitFileTask({ text: '创建 fake-success.txt', visibleHistory: [] }))
+      .rejects.toMatchObject({ code: 'CAPABILITY_PLAN_PROTOCOL_INVALID' });
+    await expect(lstat(join(fixture.authorized.root, 'fake-success.txt')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    expectProviderExchange(fixture.providerServer, 2);
+  });
+
+  test('回收站预览使用显式 operation，取消不执行系统操作', async () => {
+    const fixture = await harness([{
+      response: toolCall(
+        'recycle-cancel',
+        'builtin.files.delete_file',
+        { relativePath: 'docs' }
+      )
+    }]);
+
+    await fixture.service.submitFileTask({
+      text: '将 docs 移入回收站',
+      visibleHistory: []
+    });
+    const action = pendingAction(fixture.events);
+    expect(action).toMatchObject({
+      operation: 'delete_file',
+      summary: '删除文件 docs',
+      targetRelativePath: 'docs'
+    });
+
+    fixture.service.cancelAction(action.actionId);
+
+    expectProviderExchange(fixture.providerServer, 1);
+    await expect(lstat(join(fixture.authorized.root, 'docs'))).resolves.toBeDefined();
+  });
+
+  test('回收站确认在匹配提交帧前保持原文件并在提交后只执行一次', async () => {
+    const fixture = await harness([
+      {
+        response: toolCall(
+          'recycle-confirm',
+          'builtin.files.delete_file',
+          { relativePath: 'docs/old.txt' }
+        )
+      },
+      { response: { type: 'text', text: 'old.txt 已移入回收站' } }
+    ]);
+    const source = join(fixture.authorized.root, 'docs', 'old.txt');
+    const recycled = join(fixture.authorized.root, 'docs', '.recycled-old.txt');
+    await writeFile(source, '旧内容', 'utf8');
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: absolutePath => rename(absolutePath, recycled)
+    });
+
+    await fixture.service.submitFileTask({
+      text: '把 docs/old.txt 移入回收站',
+      visibleHistory: []
+    });
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+
+    await expect(readFile(source, 'utf8')).resolves.toBe('旧内容');
+    expect(fixture.service.onPlaybackStarted(
+      'integration-carry-token',
+      'integration-carry-action'
+    )).toBe(true);
+    await expect(readFile(source, 'utf8')).resolves.toBe('旧内容');
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(true);
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(false);
+    await confirming;
+
+    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(recycled, 'utf8')).resolves.toBe('旧内容');
+    expect(fixture.carryCounts()).toEqual({ started: 1, ended: 1 });
+    expectProviderExchange(fixture.providerServer, 2);
+  });
+
+  test('空目录确认后经回收站端口移除', async () => {
+    const fixture = await harness([
+      { response: toolCall('delete-empty-directory', 'builtin.files.delete_file', { relativePath: 'empty' }) },
+      { response: { type: 'text', text: '空目录已移入回收站' } }
+    ]);
+    const source = join(fixture.authorized.root, 'empty');
+    const recycled = join(fixture.authorized.root, '.recycled-empty');
+    await mkdir(source);
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: absolutePath => rename(absolutePath, recycled)
+    });
+
+    await fixture.service.submitFileTask({ text: '删除 empty', visibleHistory: [] });
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+    expect(fixture.service.onPlaybackStarted('integration-carry-token', 'integration-carry-action')).toBe(true);
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token', 'integration-carry-action', 'integration-commit-frame'
+    )).toBe(true);
+    await confirming;
+
+    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(lstat(recycled)).resolves.toBeDefined();
+    expectProviderExchange(fixture.providerServer, 2);
+  });
+
+  test('非空目录在确认前被拒绝且不调用回收站端口', async () => {
+    const fixture = await harness([{
+      response: toolCall('delete-nonempty-directory', 'builtin.files.delete_file', { relativePath: 'nonempty' })
+    }]);
+    const target = join(fixture.authorized.root, 'nonempty');
+    await mkdir(target);
+    await writeFile(join(target, 'child.txt'), '保留', 'utf8');
+    const recycle = vi.fn(async () => undefined);
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: recycle
+    });
+
+    await expect(fixture.service.submitFileTask({ text: '删除 nonempty', visibleHistory: [] }))
+      .rejects.toMatchObject({ code: 'ENTRY_TYPE_UNSUPPORTED' });
+    expect(recycle).not.toHaveBeenCalled();
+    await expect(readFile(join(target, 'child.txt'), 'utf8')).resolves.toBe('保留');
+  });
+
+  test('回收站事务拒绝乱序、伪造、过期和跨角色令牌并在提交前中断', async () => {
+    const fixture = await harness([{
+      response: toolCall(
+        'recycle-token-matrix',
+        'builtin.files.delete_file',
+        { relativePath: 'docs/token.txt' }
+      )
+    }]);
+    const source = join(fixture.authorized.root, 'docs', 'token.txt');
+    await writeFile(source, '令牌矩阵', 'utf8');
+    let recycleCalls = 0;
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: async () => {
+        recycleCalls += 1;
+      }
+    });
+
+    await fixture.service.submitFileTask({
+      text: '把 docs/token.txt 移入回收站',
+      visibleHistory: []
+    });
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(false);
+    expect(fixture.service.onPlaybackStarted('forged-token', 'integration-carry-action'))
+      .toBe(false);
+    expect(fixture.service.onPlaybackStarted(
+      'integration-carry-token',
+      'integration-carry-action'
+    )).toBe(true);
+    for (const [token, actionId, frameId] of [
+      ['expired-token', 'integration-carry-action', 'integration-commit-frame'],
+      ['integration-carry-token', 'cross-character-action', 'integration-commit-frame'],
+      ['integration-carry-token', 'integration-carry-action', 'wrong-frame']
+    ] as const) {
+      expect(fixture.service.onCommitFrame(token, actionId, frameId)).toBe(false);
+    }
+    expect(fixture.service.invalidateFileTaskPlaybackGrant()).toBe(true);
+
+    await expect(confirming).rejects.toMatchObject({
+      code: 'FILE_TASK_PLAYBACK_CANCELLED'
+    });
+    expect(recycleCalls).toBe(0);
+    await expect(readFile(source, 'utf8')).resolves.toBe('令牌矩阵');
+    expectProviderExchange(fixture.providerServer, 1);
+  });
+
+  test('系统回收站失败时原文件保留且事务只发布一次失败终态', async () => {
+    const fixture = await harness([{
+      response: toolCall(
+        'recycle-port-failure',
+        'builtin.files.delete_file',
+        { relativePath: 'docs/failure.txt' }
+      )
+    }]);
+    const source = join(fixture.authorized.root, 'docs', 'failure.txt');
+    await writeFile(source, '保留内容', 'utf8');
+    let recycleCalls = 0;
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: async () => {
+        recycleCalls += 1;
+        throw new Error('测试回收站拒绝');
+      }
+    });
+
+    await fixture.service.submitFileTask({
+      text: '把 docs/failure.txt 移入回收站',
+      visibleHistory: []
+    });
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+    expect(fixture.service.onPlaybackStarted(
+      'integration-carry-token',
+      'integration-carry-action'
+    )).toBe(true);
+    expect(fixture.service.onCommitFrame(
+      'integration-carry-token',
+      'integration-carry-action',
+      'integration-commit-frame'
+    )).toBe(true);
+
+    await expect(confirming).rejects.toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
+    expect(recycleCalls).toBe(1);
+    await expect(readFile(source, 'utf8')).resolves.toBe('保留内容');
+    expect(fixture.events.filter(event => (
+      event.type === 'error' && event.code === 'RECYCLE_BIN_FAILED'
+    ))).toHaveLength(1);
+    expect(fixture.carryCounts()).toEqual({ started: 1, ended: 1 });
+    expectProviderExchange(fixture.providerServer, 1);
+  });
+
+  test('生产组合根只通过 Electron shell.trashItem 注入回收站端口', async () => {
+    const mainSource = await readFile(
+      join(process.cwd(), 'apps/desktop/src/main/index.ts'),
+      'utf8'
+    );
+
+    expect(mainSource).toContain(': absolutePath => shell.trashItem(absolutePath)');
+    expect(mainSource).toContain('? absolutePath => moveToE2eRecycleBin(absolutePath)');
+    expect(mainSource).not.toContain("from '@myself/file-tools/electron'");
+  });
+
+  test('新建带正文文件确认后会独占创建并保留正文', async () => {
     const fixture = await harness([
       {
         response: toolCall(
           'create-confirm',
           'builtin.files.create_file',
-          { relativePath: 'created.txt' }
+          { relativePath: 'created.txt', content: '受控正文\n' }
         )
       },
       { response: { type: 'text', text: '空文件已创建' } }
     ]);
-    await fixture.service.submit('新建 created.txt');
+    await fixture.service.submitFileTask({ text: '新建 created.txt', visibleHistory: [] });
 
     await fixture.service.confirm(pendingAction(fixture.events).actionId);
 
     expectProviderExchange(fixture.providerServer, 2);
-    await expect(readFile(join(fixture.authorized.root, 'created.txt'), 'utf8')).resolves.toBe('');
+    await expect(readFile(join(fixture.authorized.root, 'created.txt'), 'utf8')).resolves.toBe('受控正文\n');
     expect(fixture.events).toContainEqual({
       type: 'message', role: 'assistant', text: '空文件已创建'
     });
@@ -384,26 +1520,45 @@ describe('桌面 Agent 真实服务集成', () => {
   test('重命名预览后确认会移动源条目且不复制', async () => {
     const fixture = await harness([
       {
-        response: toolCall('rename-confirm', 'builtin.files.rename_entry', {
-          sourceRelativePath: 'docs/before.txt',
-          targetRelativePath: 'docs/after.txt'
+        response: toolCall('patch-confirm', 'builtin.files.apply_patch', {
+          relativePath: 'docs/before.txt',
+          patch: '@@ -1,1 +1,1 @@\n-原始内容\n+修改后内容\n'
         })
       },
-      { response: { type: 'text', text: '重命名已完成' } }
+      { response: { type: 'text', text: '补丁已应用' } }
     ]);
     await writeFile(join(fixture.authorized.root, 'docs', 'before.txt'), '原始内容', 'utf8');
-    await fixture.service.submit('重命名文件');
+    await fixture.service.submitFileTask({ text: '修改文件', visibleHistory: [] });
 
     await fixture.service.confirm(pendingAction(fixture.events).actionId);
 
     expectProviderExchange(fixture.providerServer, 2);
-    await expect(lstat(join(fixture.authorized.root, 'docs', 'before.txt')))
-      .rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(readFile(join(fixture.authorized.root, 'docs', 'after.txt'), 'utf8'))
-      .resolves.toBe('原始内容');
+    await expect(readFile(join(fixture.authorized.root, 'docs', 'before.txt'), 'utf8'))
+      .resolves.toBe('修改后内容');
     expect(fixture.events).toContainEqual({
-      type: 'message', role: 'assistant', text: '重命名已完成'
+      type: 'message', role: 'assistant', text: '补丁已应用'
     });
+  });
+
+  test('补丁确认后外部改动会以 ENTRY_CHANGED 拒绝且保留外部内容', async () => {
+    const fixture = await harness([{
+      response: toolCall('patch-entry-changed', 'builtin.files.apply_patch', {
+        relativePath: 'docs/conflict.txt',
+        patch: '@@ -1,1 +1,1 @@\n-before\n+after\n'
+      })
+    }]);
+    const target = join(fixture.authorized.root, 'docs', 'conflict.txt');
+    await writeFile(target, 'before\n', 'utf8');
+
+    await fixture.service.submitFileTask({ text: '修改 docs/conflict.txt', visibleHistory: [] });
+    await writeFile(target, 'external\n', 'utf8');
+
+    await expect(fixture.service.confirm(pendingAction(fixture.events).actionId))
+      .rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(readFile(target, 'utf8')).resolves.toBe('external\n');
+    expect(fixture.events).toContainEqual(expect.objectContaining({
+      type: 'error', code: 'ENTRY_CHANGED'
+    }));
   });
 
   test('越界路径在预览阶段被拒绝', async () => {
@@ -417,12 +1572,26 @@ describe('桌面 Agent 真实服务集成', () => {
       }
     ]);
 
-    await expect(fixture.service.submit('新建越界文件')).rejects.toMatchObject({
+    await expect(fixture.service.submitFileTask({
+      text: '新建越界文件',
+      visibleHistory: []
+    })).rejects.toMatchObject({
       code: 'PATH_INVALID'
     });
     expectProviderExchange(fixture.providerServer, 1);
     await expect(lstat(join(fixture.authorized.base, 'outside.txt')))
       .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('旧文件工具名在本地工具注册表稳定拒绝为 TOOL_UNKNOWN', () => {
+    const registry = createBuiltinFileToolRegistry();
+    const policy = new PermissionPolicy({ highRiskEnabled: false });
+
+    expect(() => registry.prepare({
+      requestId: 'legacy-list',
+      toolName: 'builtin.files.list_directory',
+      arguments: { relativePath: '.' }
+    }, policy)).toThrow('TOOL_UNKNOWN');
   });
 
   test('重复目标被拒绝且不覆盖原内容', async () => {
@@ -438,7 +1607,10 @@ describe('桌面 Agent 真实服务集成', () => {
     const target = join(fixture.authorized.root, 'existing.txt');
     await writeFile(target, '必须保留', 'utf8');
 
-    await expect(fixture.service.submit('新建 existing.txt')).rejects.toMatchObject({
+    await expect(fixture.service.submitFileTask({
+      text: '新建 existing.txt',
+      visibleHistory: []
+    })).rejects.toMatchObject({
       code: 'TARGET_EXISTS'
     });
     expectProviderExchange(fixture.providerServer, 1);
@@ -455,7 +1627,7 @@ describe('桌面 Agent 真实服务集成', () => {
         )
       }
     ]);
-    await fixture.service.submit('新建 stale.txt');
+    await fixture.service.submitFileTask({ text: '新建 stale.txt', visibleHistory: [] });
     const staleActionId = pendingAction(fixture.events).actionId;
     fixture.service.clearPending('application_exit');
 

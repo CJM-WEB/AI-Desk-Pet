@@ -10,6 +10,161 @@ afterEach(() => {
 });
 
 describe('Renderer 任务视图状态', () => {
+  test('披露事件保存不可变展示摘要且不覆盖待处理请求', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = createTaskStore();
+    store.getState().apply({
+      type: 'history_disclosure_required',
+      requestId: 'disclosure-1',
+      targetProviderName: 'OpenAI',
+      messageCount: 4,
+      characterCount: 120
+    });
+
+    const firstDisclosure = store.getState().pendingHistoryDisclosure;
+    expect(firstDisclosure).toEqual({
+      requestId: 'disclosure-1',
+      targetProviderName: 'OpenAI',
+      messageCount: 4,
+      characterCount: 120
+    });
+    expect(Object.isFrozen(firstDisclosure)).toBe(true);
+
+    store.getState().apply({
+      type: 'history_disclosure_required',
+      requestId: 'disclosure-2',
+      targetProviderName: 'Anthropic',
+      messageCount: 2,
+      characterCount: 80
+    });
+    store.getState().apply({ type: 'phase', phase: 'thinking' });
+
+    expect(store.getState().pendingHistoryDisclosure).toBe(firstDisclosure);
+    expect(warn).toHaveBeenCalledExactlyOnceWith('HISTORY_DISCLOSURE_ALREADY_PENDING');
+  });
+
+  test('只有同一请求的成功披露决策才能移除卡片', () => {
+    const store = createTaskStore();
+    store.getState().apply({
+      type: 'history_disclosure_required',
+      requestId: 'disclosure-owner',
+      targetProviderName: 'OpenAI',
+      messageCount: 1,
+      characterCount: 20
+    });
+
+    store.getState().completeHistoryDisclosure('stale-request');
+    expect(store.getState().pendingHistoryDisclosure?.requestId).toBe('disclosure-owner');
+    store.getState().completeHistoryDisclosure('disclosure-owner');
+    expect(store.getState().pendingHistoryDisclosure).toBeNull();
+  });
+
+  test('披露决策握手只在 Main 下游失败时清卡', () => {
+    const store = createTaskStore();
+    store.getState().apply({
+      type: 'history_disclosure_required',
+      requestId: 'disclosure-handshake',
+      targetProviderName: 'OpenAI',
+      messageCount: 1,
+      characterCount: 20
+    });
+
+    store.getState().apply({
+      type: 'error',
+      code: 'IPC_REQUEST_FAILED',
+      message: '普通错误不得误清披露卡。'
+    });
+    expect(store.getState().pendingHistoryDisclosure?.requestId).toBe('disclosure-handshake');
+    expect(store.getState().beginHistoryDisclosureResolution('stale-request')).toBe(false);
+    expect(store.getState().beginHistoryDisclosureResolution('disclosure-handshake')).toBe(true);
+    expect(store.getState().resolvingHistoryDisclosureRequestId).toBe('disclosure-handshake');
+
+    store.getState().apply({ type: 'phase', phase: 'thinking' });
+    expect(store.getState().pendingHistoryDisclosure?.requestId).toBe('disclosure-handshake');
+    store.getState().apply({ type: 'phase', phase: 'error' });
+    expect(store.getState().pendingHistoryDisclosure).toBeNull();
+    expect(store.getState().resolvingHistoryDisclosureRequestId).toBeNull();
+  });
+
+  test('披露传输失败可释放握手并保留原卡重试', () => {
+    const store = createTaskStore();
+    store.getState().apply({
+      type: 'history_disclosure_required',
+      requestId: 'disclosure-retry',
+      targetProviderName: 'OpenAI',
+      messageCount: 1,
+      characterCount: 20
+    });
+    expect(store.getState().beginHistoryDisclosureResolution('disclosure-retry')).toBe(true);
+
+    store.getState().releaseHistoryDisclosureResolution('disclosure-retry');
+
+    expect(store.getState().pendingHistoryDisclosure?.requestId).toBe('disclosure-retry');
+    expect(store.getState().resolvingHistoryDisclosureRequestId).toBeNull();
+    expect(store.getState().beginHistoryDisclosureResolution('disclosure-retry')).toBe(true);
+  });
+
+  test('会话重置原子清空视图状态并使旧终态定时器失效', () => {
+    vi.useFakeTimers();
+    const store = createTaskStore();
+    store.getState().apply({ type: 'message', role: 'assistant', text: '旧会话' });
+    store.getState().apply({
+      type: 'history_disclosure_required',
+      requestId: 'disclosure-1',
+      targetProviderName: 'OpenAI',
+      messageCount: 1,
+      characterCount: 3
+    });
+    store.getState().apply({
+      type: 'pending_action',
+      action: {
+        category: 'file',
+        actionId: 'action-reset',
+        conversationId: 'conversation-1',
+        risk: 'write',
+        operation: 'create_file',
+        summary: '创建文件',
+        targetRelativePath: 'notes.md',
+        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
+        createdAt: '2026-08-10T12:00:00.000Z',
+        expiresAt: '2026-08-10T12:02:00.000Z'
+      }
+    });
+    store.getState().apply({ type: 'phase', phase: 'success' });
+
+    store.getState().apply({ type: 'conversation_reset', generation: 'generation-2' });
+    expect(store.getState()).toMatchObject({
+      conversationRevision: 1,
+      phase: 'idle',
+      messages: [],
+      pendingAction: null,
+      pendingHistoryDisclosure: null,
+      characterState: { stateId: 'idle', source: 'system' }
+    });
+
+    store.getState().apply({ type: 'phase', phase: 'thinking' });
+    vi.advanceTimersByTime(1_500);
+    expect(store.getState().phase).toBe('thinking');
+
+    store.getState().apply({ type: 'conversation_reset', generation: 'untrusted-generation-value' });
+    expect(store.getState().conversationRevision).toBe(2);
+  });
+
+  test('错误消息保留稳定错误码而不派生内部正文', () => {
+    const store = createTaskStore();
+    store.getState().apply({
+      type: 'error',
+      code: 'FILE_AUTHORIZATION_REQUIRED',
+      message: '请先在设置中授权文件目录。'
+    });
+
+    expect(store.getState().messages.at(-1)).toMatchObject({
+      role: 'error',
+      code: 'FILE_AUTHORIZATION_REQUIRED',
+      text: '请先在设置中授权文件目录。'
+    });
+  });
+
   test('消息历史只保留最近 100 条', () => {
     const store = createTaskStore();
 
@@ -24,11 +179,14 @@ describe('Renderer 任务视图状态', () => {
 
   test('待确认动作在成功、错误或取消终止阶段被清除', () => {
     const action = {
+      category: 'file' as const,
       actionId: 'action-1',
       conversationId: 'conversation-1',
       risk: 'write' as const,
+      operation: 'create_file' as const,
       summary: '创建文件 notes.md',
       targetRelativePath: 'notes.md',
+      contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
       createdAt: '2026-07-20T12:00:00.000Z',
       expiresAt: '2026-07-20T12:02:00.000Z'
     };
@@ -118,11 +276,14 @@ describe('Renderer 任务视图状态', () => {
     store.getState().apply({
       type: 'pending_action',
       action: {
+        category: 'file',
         actionId: 'a',
         conversationId: 'c',
         risk: 'write',
+        operation: 'create_file',
         summary: '确认',
         targetRelativePath: 'a.txt',
+        contentCharacters: 0, contentPreview: null, contentPreviewSuppressedReason: null, previewTruncated: false,
         createdAt: '2026-01-01T00:00:00.000Z',
         expiresAt: '2026-01-01T00:01:00.000Z'
       }

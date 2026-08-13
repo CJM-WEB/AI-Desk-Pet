@@ -25,13 +25,13 @@ describe('secureWebPreferences', () => {
 });
 
 describe('窗口安全配置', () => {
-  it('创建透明、置顶且不进入任务栏的固定尺寸桌宠窗口', () => {
+  it('创建透明、普通层级且不进入任务栏的固定尺寸桌宠窗口', () => {
     expect(petWindowOptions('preload.js')).toMatchObject({
       width: 180,
       height: 220,
       transparent: true,
       frame: false,
-      alwaysOnTop: true,
+      alwaysOnTop: false,
       skipTaskbar: true,
       resizable: false,
       show: false
@@ -245,10 +245,12 @@ describe('preload 白名单', () => {
     expect(main).not.toContain("'../preload/index.mjs'");
   });
 
-  it('在 Main 注册 Agent IPC 并只通过固定任务事件通道推送状态', async () => {
+  it('在 Main 只注册 Coordinator 聊天入口并通过固定任务事件通道推送状态', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
-    expect(main).toContain('registerAgentIpc(ipcMain, agentService)');
+    expect(main).toContain('createMainConversationComposition({');
+    expect(main).toContain('registerAgentIpc(ipcMain, conversationIpcService)');
+    expect(main).not.toContain('registerAgentIpc(ipcMain, agentService)');
     expect(main).toContain('webContents.send(ipcChannels.taskEvent, event)');
   });
 

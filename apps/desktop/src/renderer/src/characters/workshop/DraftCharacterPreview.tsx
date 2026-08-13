@@ -1,14 +1,17 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
 } from 'react';
 import type {
-  CharacterDraftV1,
-  CharacterStateId,
-  DraftActionClip
+  CharacterDraftV2,
+  CharacterPresentationSource,
+  DraftActionClip,
+  ResolvedCharacterPresentation
 } from '@myself/character-runtime';
+import { resolveCharacterPresentation } from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
 import {
   createBrowserPixiCharacterScene,
@@ -23,8 +26,9 @@ import type { PreviewState } from './PreviewControls';
 
 export interface DraftCharacterPreviewProps {
   characterId: string | null;
-  draft: CharacterDraftV1 | null;
-  stateId: CharacterStateId | null;
+  draft: CharacterDraftV2 | null;
+  selectedSkinId: string | null;
+  stateId: string | null;
   actionId: string | null;
   selectedFrameId: string | null;
   preview: PreviewState;
@@ -37,6 +41,8 @@ type PreviewStatus = 'loading' | 'ready' | 'empty' | 'error';
 
 type PreviewTarget = {
   action: DraftActionClip | null;
+  source: CharacterPresentationSource | null;
+  requestedActionId: string | null;
   emptyMessage: string | null;
   touring: boolean;
 };
@@ -52,20 +58,50 @@ type AppliedPreview = {
 
 const ANCHOR_NAMES = ['ground', 'focus', 'carry', 'mouth', 'seat'] as const;
 
-function selectedAction(
-  draft: CharacterDraftV1 | null,
-  stateId: CharacterStateId | null,
-  actionId: string | null
-): DraftActionClip | null {
-  if (!draft || !stateId || !actionId) return null;
-  return draft.states.find(state => state.id === stateId)
-    ?.actions.find(action => action.id === actionId) ?? null;
+/** 将 V2 定义与皮肤表现组合成正式 Pixi 场景仍可复用的动作视图。 */
+export function draftActionFromResolvedPresentation(
+  resolved: ResolvedCharacterPresentation
+): DraftActionClip {
+  return {
+    id: resolved.action.id,
+    name: resolved.action.name,
+    fps: resolved.presentation.fps,
+    loop: resolved.action.loopPolicy !== 'never',
+    weight: resolved.action.preference,
+    direction: resolved.action.direction,
+    anchors: resolved.presentation.anchors,
+    ...(resolved.presentation.regions
+      ? { regions: resolved.presentation.regions }
+      : {}),
+    frames: resolved.presentation.frames
+  };
 }
 
-function playableActions(draft: CharacterDraftV1 | null): DraftActionClip[] {
-  return draft?.states.flatMap(state => (
-    state.actions.filter(action => action.frames.length > 0)
-  )) ?? [];
+type ResolvedPreviewAction = {
+  action: DraftActionClip;
+  source: CharacterPresentationSource;
+  requestedActionId: string;
+};
+
+function playableActions(
+  draft: CharacterDraftV2 | null,
+  skinId: string | null
+): ResolvedPreviewAction[] {
+  if (!draft || !skinId) return [];
+  const seen = new Set<string>();
+  const result: ResolvedPreviewAction[] = [];
+  for (const requestedActionId of draft.states.flatMap(state => state.actionIds)) {
+    if (seen.has(requestedActionId)) continue;
+    seen.add(requestedActionId);
+    const resolved = resolveCharacterPresentation(draft, skinId, requestedActionId);
+    if (!resolved) continue;
+    result.push({
+      action: draftActionFromResolvedPresentation(resolved),
+      source: resolved.source,
+      requestedActionId
+    });
+  }
+  return result;
 }
 
 function invalidFrameRectangle(action: DraftActionClip): boolean {
@@ -83,20 +119,55 @@ function invalidFrameRectangle(action: DraftActionClip): boolean {
 
 function stableTarget(
   props: DraftCharacterPreviewProps,
-  touringAction: DraftActionClip | null
+  touringAction: ResolvedPreviewAction | null
 ): PreviewTarget {
   if (!props.characterId || !props.draft) {
-    return { action: null, emptyMessage: '请选择角色', touring: false };
+    return {
+      action: null,
+      source: null,
+      requestedActionId: null,
+      emptyMessage: '请选择角色',
+      touring: false
+    };
   }
-  const action = props.preview.tourAllStates
+  if (!props.selectedSkinId || !props.actionId) {
+    return {
+      action: null,
+      source: null,
+      requestedActionId: null,
+      emptyMessage: '请选择动作',
+      touring: false
+    };
+  }
+  const resolved = props.preview.tourAllStates
     ? touringAction
-    : selectedAction(props.draft, props.stateId, props.actionId);
-  if (!action) {
-    return { action: null, emptyMessage: '请选择动作', touring: false };
+    : (() => {
+        const selected = resolveCharacterPresentation(
+          props.draft!,
+          props.selectedSkinId!,
+          props.actionId!
+        );
+        return selected ? {
+          action: draftActionFromResolvedPresentation(selected),
+          source: selected.source,
+          requestedActionId: props.actionId!
+        } : null;
+      })();
+  if (!resolved) {
+    return {
+      action: null,
+      source: null,
+      requestedActionId: props.actionId,
+      emptyMessage: '无可播放表现',
+      touring: false
+    };
   }
+  const action = resolved.action;
   if (action.frames.length === 0) {
     return {
       action: null,
+      source: null,
+      requestedActionId: resolved.requestedActionId,
       emptyMessage: '当前动作没有可预览帧',
       touring: false
     };
@@ -104,16 +175,27 @@ function stableTarget(
   if (invalidFrameRectangle(action)) {
     return {
       action: null,
+      source: null,
+      requestedActionId: resolved.requestedActionId,
       emptyMessage: '当前帧矩形无效',
       touring: false
     };
   }
   return {
     action,
+    source: resolved.source,
+    requestedActionId: resolved.requestedActionId,
     emptyMessage: null,
     touring: props.preview.tourAllStates
   };
 }
+
+const PRESENTATION_SOURCE_MESSAGE: Record<CharacterPresentationSource, string> = {
+  'skin-action': '当前使用：当前皮肤精确表现',
+  'skin-semantic': '当前使用：当前皮肤语义回退',
+  'default-action': '当前使用：默认皮肤动作',
+  'default-state': '当前使用：默认状态回退'
+};
 
 function actionDurationMs(action: DraftActionClip, speed: number): number {
   const frameDuration = 1_000 / Math.max(1, action.fps);
@@ -232,6 +314,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
   const previousPlayingRef = useRef(props.preview.playing);
   const touringRef = useRef(false);
   const requestedFrameRef = useRef(props.preview.frameIndex);
+  const previousSelectionIdentityRef = useRef<string | null>(null);
 
   const [sceneRevision, setSceneRevision] = useState(0);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
@@ -247,21 +330,44 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
   motionPausedRef.current = continuousMotionPaused;
 
   const tourActions = useMemo(
-    () => playableActions(props.draft),
-    [props.draft]
+    () => playableActions(props.draft, props.selectedSkinId),
+    [props.draft, props.selectedSkinId]
   );
   const tourOrderKey = useMemo(
-    () => tourActions.map(action => action.id).join('\u0000'),
+    () => tourActions.map(item => (
+      `${item.requestedActionId}\u0000${item.action.id}\u0000${item.source}`
+    )).join('\u0001'),
     [tourActions]
   );
   const touringAction = props.preview.tourAllStates
     ? tourActions[tourIndex] ?? null
     : null;
-  const target = stableTarget(props, touringAction);
+  const target = useMemo(() => stableTarget(props, touringAction), [
+    props.actionId,
+    props.characterId,
+    props.draft,
+    props.preview.tourAllStates,
+    props.selectedSkinId,
+    touringAction
+  ]);
   touringRef.current = target.touring;
   const resourceKey = target.action
-    ? JSON.stringify([props.characterId, target.action])
+    ? JSON.stringify([
+        props.characterId,
+        props.selectedSkinId,
+        target.source,
+        target.action
+      ])
     : null;
+  const selectionIdentity = JSON.stringify([
+    props.characterId,
+    props.draft?.id ?? null,
+    props.selectedSkinId,
+    props.stateId,
+    target.requestedActionId ?? props.actionId,
+    target.action?.id ?? null,
+    target.source
+  ]);
 
   useEffect(() => {
     setTourIndex(0);
@@ -338,13 +444,22 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
     };
   }, [props.api]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scene = sceneRef.current;
     const cache = cacheRef.current;
     const revision = ++loadRevisionRef.current;
     const abort = new AbortController();
 
     if (!scene || !cache) return () => abort.abort();
+
+    const identityChanged = previousSelectionIdentityRef.current
+      !== selectionIdentity;
+    previousSelectionIdentityRef.current = selectionIdentity;
+    if (identityChanged || !target.action) scene.clear();
+    if (identityChanged) {
+      activeBundleRef.current?.release();
+      activeBundleRef.current = null;
+    }
 
     if (!target.action || !resourceKey || !props.characterId) {
       setLoadedKey(null);
@@ -399,6 +514,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
         activeBundleRef.current = null;
         previousBundle?.release();
         bundle.release();
+        scene.clear();
         appliedRef.current = null;
         setAppliedPreview(null);
         setLoadedKey(null);
@@ -418,6 +534,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
       if (isAbortError(error) || revision !== loadRevisionRef.current) return;
       activeBundleRef.current?.release();
       activeBundleRef.current = null;
+      scene.clear();
       appliedRef.current = null;
       setAppliedPreview(null);
       setLoadedKey(null);
@@ -432,6 +549,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
     props.api,
     resourceKey,
     sceneRevision,
+    selectionIdentity,
     target.action,
     target.emptyMessage
   ]);
@@ -491,6 +609,7 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
       setMessage('预览已就绪');
       setFrameRevision(revision => revision + 1);
     } catch {
+      scene.clear();
       setStatus('error');
       setMessage('预览渲染失败');
     }
@@ -584,6 +703,11 @@ export function DraftCharacterPreview(props: DraftCharacterPreviewProps) {
       <p className="draft-preview-status" aria-live="polite">
         {renderedMessage}
       </p>
+      {renderedStatus === 'ready' && target.source ? (
+        <p className="draft-preview-source" aria-live="polite">
+          {PRESENTATION_SOURCE_MESSAGE[target.source]}
+        </p>
+      ) : null}
       {props.preview.showAnchors && currentFrame && anchors
         ? ANCHOR_NAMES.map(name => {
           const anchor = anchors[name];

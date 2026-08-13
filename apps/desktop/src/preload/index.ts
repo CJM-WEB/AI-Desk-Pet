@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { PublicSettings, TaskEvent } from '@myself/shared-types';
+import type {
+  HistoryDisclosureDecision,
+  PublicSettings,
+  TaskEvent
+} from '@myself/shared-types';
 import { ipcChannels } from '../shared/ipc-channels';
 import type {
   CharacterCreateInput,
@@ -9,12 +13,14 @@ import type {
   CharacterPublishInput,
   CharacterRuntimeSnapshot,
   CharacterSourceChoiceResult,
-  CharacterSummaryDto
+  CharacterSummaryDto,
+  CharacterWorkshopSourceDto
 } from '../shared/character-ipc';
 import { characterRecoverySnapshotResultSchema } from '../shared/character-ipc';
 import {
   characterMotionEventSchema,
   characterMotionSnapshotResultSchema,
+  type CharacterBehaviorProbe,
   type CharacterMotionEvent,
   type CharacterMotionSnapshot
 } from '../shared/character-motion-ipc';
@@ -26,6 +32,32 @@ import type {
   SaveProviderProfileInput
 } from '../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
+
+const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
+let behaviorProbe: CharacterBehaviorProbe = {
+  revision: 0,
+  primaryStateId: '',
+  modifierStateIds: [],
+  actionId: null,
+  playbackStatus: null
+};
+let behaviorProbePlaybackToken: string | null = null;
+
+if (e2eProbeEnabled) {
+  // preload 在 Main 初始化行为服务前监听，因此不会遗漏首个待机动作。
+  ipcRenderer.on(ipcChannels.characterMotionEvent, (_event, payload: unknown) => {
+    const parsed = characterMotionEventSchema.safeParse(payload);
+    if (!parsed.success || parsed.data.type !== 'behavior-action') return;
+    behaviorProbePlaybackToken = parsed.data.playbackToken;
+    behaviorProbe = {
+      revision: parsed.data.revision,
+      primaryStateId: parsed.data.stateId,
+      modifierStateIds: [...(parsed.data.modifierStateIds ?? [])],
+      actionId: parsed.data.actionId,
+      playbackStatus: 'scheduled'
+    };
+  });
+}
 
 const api: MyselfApi = {
   getStatus: () => ipcRenderer.invoke(ipcChannels.appGetStatus),
@@ -83,6 +115,9 @@ const api: MyselfApi = {
   savePrivacySettings: (input: PrivacySettingsDto) => (
     ipcRenderer.invoke(ipcChannels.settingsPrivacySave, input)
   ),
+  savePetAlwaysOnTop: (enabled: boolean) => (
+    ipcRenderer.invoke(ipcChannels.settingsPetAlwaysOnTopSave, { enabled })
+  ),
   setIncognitoSession: (incognito: boolean) => (
     ipcRenderer.invoke(ipcChannels.settingsIncognitoSet, { incognito })
   ),
@@ -96,6 +131,14 @@ const api: MyselfApi = {
   ),
   cancelAction: (actionId: string): Promise<void> => (
     ipcRenderer.invoke(ipcChannels.actionCancel, { actionId })
+  ),
+  resetConversation: (): Promise<void> => ipcRenderer.invoke(ipcChannels.conversationReset),
+  resolveHistoryDisclosure: (
+    requestId: string,
+    decision: HistoryDisclosureDecision
+  ): Promise<void> => ipcRenderer.invoke(
+    ipcChannels.conversationDisclosureResolve,
+    { requestId, decision }
   ),
   onTaskEvent: (listener: (event: TaskEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: TaskEvent) => listener(payload);
@@ -118,12 +161,25 @@ const api: MyselfApi = {
     const result = await ipcRenderer.invoke(ipcChannels.characterDraftGet, { characterId });
     return result.draft;
   },
-  saveCharacterDraft: async (characterId, draft) => {
-    await ipcRenderer.invoke(ipcChannels.characterDraftSave, { characterId, draft });
+  saveCharacterDraft: async (characterId, draft, draftRevision) => {
+    await ipcRenderer.invoke(ipcChannels.characterDraftSave, {
+      characterId,
+      draft,
+      draftRevision
+    });
   },
   chooseCharacterSources: (characterId): Promise<CharacterSourceChoiceResult> => (
     ipcRenderer.invoke(ipcChannels.characterSourcesChoose, { characterId })
   ),
+  listCharacterSources: async (
+    characterId
+  ): Promise<CharacterWorkshopSourceDto[]> => {
+    const result = await ipcRenderer.invoke(
+      ipcChannels.characterSourcesList,
+      { characterId }
+    );
+    return result.sources;
+  },
   readCharacterSource: async (characterId, assetId) => {
     const result = await ipcRenderer.invoke(ipcChannels.characterSourceRead, {
       characterId,
@@ -186,6 +242,33 @@ const api: MyselfApi = {
   reportCharacterActionPlayed: async (playbackToken, actionId) => {
     await ipcRenderer.invoke(ipcChannels.characterActionPlayed, { playbackToken, actionId });
   },
+  reportCharacterActionFeedback: async input => {
+    await ipcRenderer.invoke(ipcChannels.characterActionPlayed, {
+      playbackToken: input.playbackToken,
+      actionId: input.actionId,
+      status: input.status
+    });
+    if (
+      e2eProbeEnabled
+      && behaviorProbePlaybackToken === input.playbackToken
+      && behaviorProbe.actionId === input.actionId
+      && behaviorProbe.revision > 0
+      // 当前令牌一旦进入终态，乱序返回的 started 或其他终态不得改写结果。
+      && behaviorProbe.playbackStatus !== 'completed'
+      && behaviorProbe.playbackStatus !== 'interrupted'
+      && behaviorProbe.playbackStatus !== 'failed'
+    ) {
+      behaviorProbe = { ...behaviorProbe, playbackStatus: input.status };
+    }
+  },
+  reportCharacterActionMilestone: async input => {
+    await ipcRenderer.invoke(ipcChannels.characterActionMilestone, {
+      playbackToken: input.playbackToken,
+      actionId: input.actionId,
+      kind: input.kind,
+      frameId: input.frameId
+    });
+  },
   setPetMousePassthrough: async ignore => {
     await ipcRenderer.invoke(ipcChannels.petMousePassthroughSet, { ignore });
   },
@@ -198,11 +281,12 @@ const api: MyselfApi = {
   openPetContextMenu: async () => {
     await ipcRenderer.invoke(ipcChannels.petContextMenuOpen);
   },
-  ...(process.argv.includes('--myself-e2e-probe')
+  ...(e2eProbeEnabled
     ? {
         getPetInteractionProbe: async () => (
           ipcRenderer.invoke(ipcChannels.petInteractionProbeGet)
-        )
+        ),
+        getCharacterBehaviorProbe: async () => structuredClone(behaviorProbe)
       }
     : {}),
   openChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenChat),

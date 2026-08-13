@@ -19,15 +19,29 @@ export type TaskViewMessage = {
   id: string;
   role: 'user' | 'assistant' | 'error';
   text: string;
+  code?: string;
   nextAction?: string;
 };
 
+export type PendingHistoryDisclosure = Readonly<{
+  requestId: string;
+  targetProviderName: string;
+  messageCount: number;
+  characterCount: number;
+}>;
+
 export interface TaskViewState {
+  conversationRevision: number;
   phase: TaskPhase;
   messages: TaskViewMessage[];
   pendingAction: PendingAction | null;
+  pendingHistoryDisclosure: PendingHistoryDisclosure | null;
+  resolvingHistoryDisclosureRequestId: string | null;
   characterState: CharacterStateSnapshot;
   apply(event: TaskEvent): void;
+  beginHistoryDisclosureResolution(requestId: string): boolean;
+  releaseHistoryDisclosureResolution(requestId: string): void;
+  completeHistoryDisclosure(requestId: string): void;
   beginListening(): void;
   requestCharacterState(request: CharacterStateRequest): void;
   configureCharacterExtensions(definitions: readonly ExtensionTriggerDefinition[]): void;
@@ -52,10 +66,36 @@ export function createTaskStore(): StoreApi<TaskViewState> {
   };
 
   const store = createStore<TaskViewState>((set, get) => ({
+    conversationRevision: 0,
     phase: 'idle',
     messages: [],
     pendingAction: null,
+    pendingHistoryDisclosure: null,
+    resolvingHistoryDisclosureRequestId: null,
     characterState: { stateId: 'idle', source: 'system' },
+    beginHistoryDisclosureResolution: requestId => {
+      let began = false;
+      set(state => {
+        if (state.pendingHistoryDisclosure?.requestId !== requestId
+          || state.resolvingHistoryDisclosureRequestId !== null) return state;
+        began = true;
+        return { resolvingHistoryDisclosureRequestId: requestId };
+      });
+      return began;
+    },
+    releaseHistoryDisclosureResolution: requestId => {
+      set(state => state.resolvingHistoryDisclosureRequestId === requestId
+        ? { resolvingHistoryDisclosureRequestId: null }
+        : state);
+    },
+    completeHistoryDisclosure: requestId => {
+      set(state => state.pendingHistoryDisclosure?.requestId === requestId
+        ? {
+            pendingHistoryDisclosure: null,
+            resolvingHistoryDisclosureRequestId: null
+          }
+        : state);
+    },
     requestCharacterState: request => {
       set(state => ({
         characterState: reduceCharacterState(state.characterState, request)
@@ -112,14 +152,56 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         return;
       }
       if (event.type === 'character_carrying') return;
+      if (event.type === 'history_disclosure_required') {
+        // 同一时刻只展示一个由 Main 签发的请求，后到事件不能替换用户正在决策的卡片。
+        if (get().pendingHistoryDisclosure) {
+          console.warn('HISTORY_DISCLOSURE_ALREADY_PENDING');
+          return;
+        }
+        set({
+          pendingHistoryDisclosure: Object.freeze({
+            requestId: event.requestId,
+            targetProviderName: event.targetProviderName,
+            messageCount: event.messageCount,
+            characterCount: event.characterCount
+          })
+        });
+        return;
+      }
+      if (event.type === 'conversation_reset') {
+        // reset 事件是 Renderer 清空当前会话状态的唯一事实来源。
+        clearTransientTimer();
+        pendingEmotionRequest = null;
+        set(state => ({
+          conversationRevision: state.conversationRevision + 1,
+          phase: 'idle',
+          messages: [],
+          pendingAction: null,
+          pendingHistoryDisclosure: null,
+          resolvingHistoryDisclosureRequestId: null,
+          characterState: { stateId: 'idle', source: 'system' }
+        }));
+        return;
+      }
       if (event.type === 'error') {
         const message: TaskViewMessage = {
           id: `message-${++nextMessageId}`,
           role: 'error',
           text: event.message,
+          code: event.code,
           ...(event.nextAction ? { nextAction: event.nextAction } : {})
         };
-        set(state => ({ messages: [...state.messages, message].slice(-MAX_MESSAGES) }));
+        set(state => ({
+          messages: [...state.messages, message].slice(-MAX_MESSAGES),
+          ...(state.resolvingHistoryDisclosureRequestId
+            && state.pendingHistoryDisclosure?.requestId
+              === state.resolvingHistoryDisclosureRequestId
+            ? {
+                pendingHistoryDisclosure: null,
+                resolvingHistoryDisclosureRequestId: null
+              }
+            : {})
+        }));
         return;
       }
       if (event.type === 'pending_action') {
@@ -138,12 +220,22 @@ export function createTaskStore(): StoreApi<TaskViewState> {
       clearTransientTimer();
       const phase = event.phase;
       if (phase === 'thinking') pendingEmotionRequest = null;
+      const resolvingDisclosureFailed = phase === 'error'
+        && get().resolvingHistoryDisclosureRequestId !== null
+        && get().pendingHistoryDisclosure?.requestId
+          === get().resolvingHistoryDisclosureRequestId;
       set({
         phase,
         characterState: reduceCharacterState(get().characterState, {
           type: 'task',
           phase
         }),
+        ...(resolvingDisclosureFailed
+          ? {
+              pendingHistoryDisclosure: null,
+              resolvingHistoryDisclosureRequestId: null
+            }
+          : {}),
         ...(terminalPhase(phase) ? { pendingAction: null } : {})
       });
       if (phase === 'idle' && pendingEmotionRequest) {

@@ -1,8 +1,8 @@
 import { realpathSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 type BoundaryModule = {
   resolveMainE2eBoundary(options: {
@@ -12,7 +12,25 @@ type BoundaryModule = {
   }): {
     userDataDirectory: string;
     authorizedRootDirectory: string;
+    explorerEventFile: string;
+    mainStateFile: string;
+    recycleBinDirectory: string;
   } | null;
+  createMainE2eExplorerBridge(options: {
+    eventFile: string;
+    pollIntervalMs?: number;
+  }): {
+    on(event: 'snapshot', listener: (snapshot: {
+      sequence: number;
+      foreground?: boolean;
+      hwnd?: string;
+    }) => void): void;
+    snapshot(): { state: string; errorCode?: string };
+    start(): Promise<void>;
+    startObserving(): Promise<{ ok: true }>;
+    stopObserving(): Promise<{ ok: true }>;
+    close(): Promise<void>;
+  };
 };
 
 async function loadBoundaryModule(): Promise<BoundaryModule | null> {
@@ -27,12 +45,15 @@ let testBaseDirectory = '';
 let temporaryDirectory = '';
 let userDataDirectory = '';
 let authorizedRootDirectory = '';
+let recycleBinDirectory = '';
 
 function validEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     MYSELF_E2E: '1',
+    MYSELF_E2E_FAKE_EXPLORER_BRIDGE: '1',
     MYSELF_E2E_USER_DATA: userDataDirectory,
     MYSELF_E2E_AUTHORIZED_ROOT: authorizedRootDirectory,
+    MYSELF_E2E_RECYCLE_BIN: recycleBinDirectory,
     MYSELF_E2E_CHARACTER_ASSETS: join(temporaryDirectory, 'character-assets'),
     MYSELF_E2E_SAFE_CHARACTER_PACKAGE: join(
       temporaryDirectory,
@@ -59,9 +80,11 @@ describe('Main E2E 安全边界', () => {
     temporaryDirectory = join(testBaseDirectory, 'temporary-root');
     userDataDirectory = join(temporaryDirectory, 'user-data');
     authorizedRootDirectory = join(temporaryDirectory, 'authorized-root');
+    recycleBinDirectory = join(temporaryDirectory, 'recycle-bin');
     await Promise.all([
       mkdir(userDataDirectory, { recursive: true }),
       mkdir(authorizedRootDirectory, { recursive: true }),
+      mkdir(recycleBinDirectory, { recursive: true }),
       mkdir(join(temporaryDirectory, 'character-assets'), { recursive: true }),
       mkdir(join(temporaryDirectory, 'packages'), { recursive: true }),
       mkdir(join(temporaryDirectory, 'exports'), { recursive: true })
@@ -82,7 +105,7 @@ describe('Main E2E 安全边界', () => {
     await rm(testBaseDirectory, { recursive: true, force: true });
   });
 
-  test('仅在未打包、开关严格为 1 且两个绝对路径都位于系统临时目录下时启用', async () => {
+  test('仅在未打包、开关严格为 1 且所有测试资源都位于系统临时目录下时启用', async () => {
     const boundary = await loadBoundaryModule();
     expect(boundary, '应提供独立的 Main E2E 边界解析模块').not.toBeNull();
     if (!boundary) return;
@@ -94,6 +117,12 @@ describe('Main E2E 安全边界', () => {
     })).toEqual({
       userDataDirectory: realpathSync.native(userDataDirectory),
       authorizedRootDirectory: realpathSync.native(authorizedRootDirectory),
+      explorerEventFile: join(
+        realpathSync.native(userDataDirectory),
+        'main-e2e-explorer-events'
+      ),
+      mainStateFile: join(realpathSync.native(userDataDirectory), 'main-e2e-state.json'),
+      recycleBinDirectory: realpathSync.native(recycleBinDirectory),
       characterAssetsDirectory: realpathSync.native(
         join(temporaryDirectory, 'character-assets')
       ),
@@ -132,6 +161,76 @@ describe('Main E2E 安全边界', () => {
     })).toBeNull();
   });
 
+  test('E2E 只取得 Main 内部 fake bridge，不启动真实 Explorer', async () => {
+    const boundary = await loadBoundaryModule();
+    expect(boundary).not.toBeNull();
+    if (!boundary) return;
+
+    const fake = boundary.createMainE2eExplorerBridge({
+      eventFile: join(userDataDirectory, 'main-e2e-explorer-events')
+    });
+    await expect(fake.start()).resolves.toBeUndefined();
+    await expect(fake.startObserving()).resolves.toEqual({ ok: true });
+    await expect(fake.stopObserving()).resolves.toEqual({ ok: true });
+    await expect(fake.close()).resolves.toBeUndefined();
+  });
+
+  test('Main E2E 边界拒绝任意旧控制令牌', async () => {
+    const boundary = await loadBoundaryModule();
+    expect(boundary).not.toBeNull();
+    if (!boundary) return;
+    const eventFile = join(userDataDirectory, 'main-e2e-explorer-events');
+    const fake = boundary.createMainE2eExplorerBridge({
+      eventFile,
+      pollIntervalMs: 1
+    }) as ReturnType<typeof boundary.createMainE2eExplorerBridge> & {
+      inspection(): { eventRevision: number };
+    };
+    await fake.start();
+    await fake.startObserving();
+    await appendFile(eventFile, 'removed-control\n', 'utf8');
+    await vi.waitFor(() => expect(fake.snapshot()).toMatchObject({
+      state: 'failed', errorCode: 'E2E_BRIDGE_EVENT_INVALID'
+    }));
+    await fake.close();
+  });
+
+  test('旧序列进入真实观察链且 fatal 后 fake 资源收敛为空闲', async () => {
+    const boundary = await loadBoundaryModule();
+    expect(boundary).not.toBeNull();
+    if (!boundary) return;
+    const eventFile = join(userDataDirectory, 'main-e2e-explorer-events');
+    const fake = boundary.createMainE2eExplorerBridge({
+      eventFile,
+      pollIntervalMs: 1
+    }) as ReturnType<typeof boundary.createMainE2eExplorerBridge> & {
+      inspection(): {
+        state: string;
+        observing: boolean;
+        polling: boolean;
+      };
+    };
+    const snapshots: Array<{ sequence: number; foreground?: boolean; hwnd?: string }> = [];
+    fake.on('snapshot', snapshot => snapshots.push(snapshot));
+
+    await fake.start();
+    await fake.startObserving();
+    await appendFile(eventFile, 'stale-sequence\ncrash\n', 'utf8');
+    await vi.waitFor(() => expect(fake.snapshot()).toMatchObject({ state: 'failed' }));
+
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]).toMatchObject({ foreground: true, hwnd: '9003' });
+    expect(snapshots[1]).toMatchObject({ foreground: true, hwnd: '9002' });
+    expect(snapshots[1]?.sequence).toBe(snapshots[0]?.sequence);
+    expect(fake.inspection()).toEqual({
+      state: 'failed',
+      observing: false,
+      polling: false,
+      eventRevision: 2
+    });
+    await fake.close();
+  });
+
   test.each([
     ['已打包应用', true, () => validEnvironment()],
     ['开关缺失', false, () => validEnvironment({ MYSELF_E2E: undefined })],
@@ -147,7 +246,13 @@ describe('Main E2E 安全边界', () => {
     })],
     ['授权目录逃逸临时目录', false, () => validEnvironment({
       MYSELF_E2E_AUTHORIZED_ROOT: join(testBaseDirectory, 'outside-authorized-root')
-    })]
+    })],
+    ['隔离回收站逃逸临时目录', false, () => validEnvironment({
+      MYSELF_E2E_RECYCLE_BIN: join(testBaseDirectory, 'outside-recycle-bin')
+    })],
+    ['隔离回收站与授权目录重合', false, () => validEnvironment({
+      MYSELF_E2E_RECYCLE_BIN: authorizedRootDirectory
+    })],
   ] as const)('完整忽略无效边界：%s', async (_name, appIsPackaged, environment) => {
     const boundary = await loadBoundaryModule();
     expect(boundary, '应提供独立的 Main E2E 边界解析模块').not.toBeNull();
@@ -221,7 +326,7 @@ describe('Main E2E 安全边界', () => {
     expect(disableHardwareAccelerationIndex).toBeLessThan(whenReadyIndex);
     expect(singleInstanceLockIndex).toBeGreaterThanOrEqual(0);
     expect(singleInstanceLockIndex).toBeLessThan(whenReadyIndex);
-    expect(singleInstanceLockIndex).toBeLessThan(main.lastIndexOf('createApplicationWindows()'));
+    expect(singleInstanceLockIndex).toBeLessThan(main.lastIndexOf('createApplicationWindows('));
     expect(main).toContain('e2eBoundary.authorizedRootDirectory');
     expect(main).toContain('dialog.showOpenDialog');
   });
@@ -234,6 +339,8 @@ describe('Main E2E 安全边界', () => {
       '../src/renderer/src/App.tsx'
     ].map(path => readFile(new URL(path, import.meta.url), 'utf8')));
 
-    expect(sources.join('\n')).not.toMatch(/MYSELF_E2E|E2E_USER_DATA|E2E_AUTHORIZED_ROOT/u);
+    expect(sources.join('\n')).not.toMatch(
+      /MYSELF_E2E|E2E_USER_DATA|E2E_AUTHORIZED_ROOT|E2E_RECYCLE_BIN|FAKE_EXPLORER/u
+    );
   });
 });

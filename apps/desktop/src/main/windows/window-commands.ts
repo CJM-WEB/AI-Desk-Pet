@@ -1,3 +1,5 @@
+import type { MenuItemConstructorOptions } from 'electron';
+
 /** 窗口命令只依赖正式 BrowserWindow 所需的最小职责面。 */
 export interface ChatWindowCommandTarget {
   isDestroyed(): boolean;
@@ -30,6 +32,47 @@ export interface CharacterBroadcastTarget {
     isDestroyed(): boolean;
     send(channel: string, payload: unknown): void;
   };
+}
+
+export interface PetVisibilityTarget {
+  isDestroyed(): boolean;
+  isVisible(): boolean;
+  hide(): void;
+  show(): void;
+}
+
+/** 普通桌宠显示/隐藏命令只读取窗口自身状态。 */
+export function createPetVisibilityCommand(pet: PetVisibilityTarget): () => void {
+  return () => {
+    if (pet.isDestroyed()) return;
+    if (pet.isVisible()) pet.hide();
+    else pet.show();
+  };
+}
+
+/** 生产托盘只组合普通窗口命令与角色切换，不再注入目录空间命令。 */
+export function buildApplicationTrayMenu(options: {
+  togglePetVisibility(): void;
+  openChat(): void;
+  openCharacterWorkshop(): void;
+  quickSwitchItems: MenuItemConstructorOptions[];
+  openSettings(): void;
+  quit(): void;
+}): MenuItemConstructorOptions[] {
+  return [
+    { label: '显示/隐藏桌宠', click: options.togglePetVisibility },
+    { type: 'separator' },
+    { label: '打开聊天', click: options.openChat },
+    { label: '角色工作室', click: options.openCharacterWorkshop },
+    {
+      label: '切换角色',
+      enabled: options.quickSwitchItems.length > 0,
+      submenu: options.quickSwitchItems
+    },
+    { label: '设置', click: options.openSettings },
+    { type: 'separator' },
+    { label: '退出', click: options.quit }
+  ];
 }
 
 /**

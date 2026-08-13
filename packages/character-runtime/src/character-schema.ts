@@ -71,7 +71,7 @@ const anchorPointSchema = z.object({
   y: finiteNumberSchema.min(0).max(1)
 }).strict();
 
-const anchorSetSchema = z.object({
+export const anchorSetSchema = z.object({
   ground: anchorPointSchema,
   focus: anchorPointSchema.optional(),
   carry: anchorPointSchema.optional(),
@@ -79,7 +79,7 @@ const anchorSetSchema = z.object({
   seat: anchorPointSchema.optional()
 }).strict();
 
-const interactionRegionSchema = z.object({
+export const interactionRegionSchema = z.object({
   x: finiteNumberSchema.min(0).max(1),
   y: finiteNumberSchema.min(0).max(1),
   width: finiteNumberSchema.min(0).max(1),
@@ -113,7 +113,7 @@ const extensionTriggerConfigSchema = z.object({
   emotions: z.array(safeIdentifierSchema).max(32).default([])
 }).strict();
 
-const actionFrameSchema = z.object({
+export const actionFrameSchema = z.object({
   id: safeIdentifierSchema.optional(),
   assetId: safeIdentifierSchema,
   x: finiteNumberSchema.int().nonnegative(),
@@ -210,7 +210,7 @@ const characterDraftStateDefinitionSchema = z.discriminatedUnion('kind', [
   extensionDraftStateDefinitionSchema
 ]);
 
-const characterResourceSchema = z.object({
+export const characterResourceSchema = z.object({
   assetId: safeIdentifierSchema,
   fileName: z.string().regex(SAFE_FILE_NAME_PATTERN),
   sha256: z.string().regex(SHA_256_PATTERN),

@@ -43,12 +43,42 @@ function serviceDouble() {
     revokeMcpToolReadOnly: vi.fn(async () => ({ marker: 'tool-revoked' })),
     deleteMcpServer: vi.fn(async () => ({ marker: 'mcp-deleted' })),
     savePrivacySettings: vi.fn(async () => ({ marker: 'privacy' })),
+    savePetAlwaysOnTop: vi.fn(async () => ({ marker: 'topmost' })),
     setIncognitoSession: vi.fn(async () => ({ incognito: true })),
     revokeAuthorizedRoot: vi.fn(async () => ({ marker: 'root-revoked' }))
   };
 }
 
 describe('高级设置白名单 IPC', () => {
+  test('桌宠置顶使用独立严格布尔通道', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = serviceDouble();
+    const lifecycle = { onConfigurationChanged: vi.fn() };
+    registerAdvancedSettingsIpc(ipcMain, service, lifecycle);
+
+    await handlers.get(ipcChannels.settingsPetAlwaysOnTopSave)?.({}, { enabled: true });
+    expect(service.savePetAlwaysOnTop).toHaveBeenCalledExactlyOnceWith(true);
+    expect(lifecycle.onConfigurationChanged).not.toHaveBeenCalled();
+    await expect(handlers.get(ipcChannels.settingsPetAlwaysOnTopSave)?.({}, {
+      enabled: true,
+      injected: 'forbidden'
+    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+  });
+
+  test('隐私保存负载拒绝混入桌宠窗口偏好', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = serviceDouble();
+    registerAdvancedSettingsIpc(ipcMain, service);
+
+    await expect(handlers.get(ipcChannels.settingsPrivacySave)?.({}, {
+      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      longTermMemory: false,
+      proactivityMode: 'assistive',
+      petAlwaysOnTop: true
+    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    expect(service.savePrivacySettings).not.toHaveBeenCalled();
+  });
+
   test('保存 Provider 档案时严格校验并仅把密钥交给 Main 服务', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = serviceDouble();

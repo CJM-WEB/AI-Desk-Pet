@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 const finiteNumberSchema = z.number().finite();
+const characterMotionIdentifierSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,119}$/u);
+const characterPlaybackTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{8,128}$/u);
 
 export const characterMotionPointSchema = z.object({
   x: finiteNumberSchema,
@@ -27,19 +29,59 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
     snapshot: characterMotionSnapshotSchema
   }).strict(),
   z.object({
+    type: z.literal('behavior-authority'),
+    characterId: characterMotionIdentifierSchema,
+    mode: z.literal('legacy-v1')
+  }).strict(),
+  z.object({
     type: z.literal('idle-action'),
     revision: z.number().int().nonnegative(),
-    actionId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,119}$/u),
-    playbackToken: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/u)
+    actionId: characterMotionIdentifierSchema,
+    playbackToken: characterPlaybackTokenSchema
+  }).strict(),
+  z.object({
+    type: z.literal('behavior-action'),
+    revision: z.number().int().nonnegative(),
+    stateId: characterMotionIdentifierSchema,
+    modifierStateIds: z.array(characterMotionIdentifierSchema).optional(),
+    actionId: characterMotionIdentifierSchema,
+    playbackToken: characterPlaybackTokenSchema,
+    commitFrameId: characterMotionIdentifierSchema.optional()
   }).strict()
 ]);
 
 export const characterMotionEmptyInputSchema = z.object({}).strict();
 export const characterActionPlayedInputSchema = z.object({
-  playbackToken: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/u),
-  actionId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,119}$/u)
+  playbackToken: characterPlaybackTokenSchema,
+  actionId: characterMotionIdentifierSchema
+}).strict();
+export const characterActionFeedbackInputSchema = z.object({
+  playbackToken: characterPlaybackTokenSchema,
+  actionId: characterMotionIdentifierSchema,
+  status: z.enum(['started', 'completed', 'interrupted', 'failed'])
+}).strict();
+export const characterActionMilestoneInputSchema = z.object({
+  playbackToken: characterPlaybackTokenSchema,
+  actionId: characterMotionIdentifierSchema,
+  kind: z.literal('commit-frame'),
+  frameId: characterMotionIdentifierSchema
 }).strict();
 
 export type CharacterMotionPoint = z.output<typeof characterMotionPointSchema>;
 export type CharacterMotionSnapshot = z.output<typeof characterMotionSnapshotSchema>;
 export type CharacterMotionEvent = z.output<typeof characterMotionEventSchema>;
+export type CharacterActionFeedbackInput = z.output<
+  typeof characterActionFeedbackInputSchema
+>;
+export type CharacterActionMilestoneInput = z.output<
+  typeof characterActionMilestoneInputSchema
+>;
+
+/** E2E 只读行为探针不包含播放令牌、素材标识或本地环境信息。 */
+export type CharacterBehaviorProbe = {
+  revision: number;
+  primaryStateId: string;
+  modifierStateIds: string[];
+  actionId: string | null;
+  playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
+};

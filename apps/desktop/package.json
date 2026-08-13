@@ -13,7 +13,13 @@
     "preview": "electron-vite preview",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
-    "verify:package-config": "vitest run --config vitest.config.ts -- package-config.test.ts"
+    "verify:package-config": "vitest run --config vitest.config.ts package-config.test.ts explorer-main-wiring.test.ts",
+    "validate:explorer-layer:build": "esbuild tests/fixtures/explorer-window-layer-validation.ts --bundle --platform=node --format=cjs --external:electron --outfile=%TEMP%\\ai-pet-explorer-layer-validation.cjs",
+    "validate:explorer-layer:electron": "pnpm validate:explorer-layer:build && node scripts/run-explorer-window-layer-validation.mjs electron manual",
+    "validate:explorer-layer:electron:smoke": "pnpm validate:explorer-layer:build && node scripts/run-explorer-window-layer-validation.mjs electron smoke",
+    "validate:explorer-candidate:lifecycle": "pnpm validate:explorer-layer:build && node scripts/run-explorer-window-layer-validation.mjs electron lifecycle",
+    "validate:explorer-candidate:negative": "pnpm validate:explorer-layer:build && node scripts/run-explorer-window-layer-validation.mjs electron negative",
+    "validate:explorer-candidate:accuracy-core": "pnpm validate:explorer-layer:build && node scripts/run-explorer-window-layer-validation.mjs electron accuracy-core"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
@@ -26,6 +32,7 @@
     "pixi.js": "^8.19.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "tldts": "7.4.9",
     "yauzl": "3.4.0",
     "yazl": "3.3.1",
     "zod": "^3.25.76",
@@ -40,6 +47,7 @@
     "electron": "^43.1.1",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
+    "esbuild": "0.25.12",
     "jsdom": "29.1.1"
   }
 }

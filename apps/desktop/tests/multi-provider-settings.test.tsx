@@ -1,10 +1,17 @@
+// @vitest-environment jsdom
+
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, test, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import { ProviderSettings } from '../src/renderer/src/settings/ProviderSettings';
 import { McpSettings } from '../src/renderer/src/settings/McpSettings';
 import { PrivacySettings } from '../src/renderer/src/settings/PrivacySettings';
-import { SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
+import {
+  availableSettingsTabs,
+  resolveSettingsTab,
+  SettingsWorkspace
+} from '../src/renderer/src/settings/SettingsView';
 
 const dashboard: SettingsDashboardDto = {
   catalog: [{
@@ -109,12 +116,15 @@ const dashboard: SettingsDashboardDto = {
     longTermMemory: false,
     proactivity: false
   },
+  petAlwaysOnTop: false,
   authorizedRoot: {
     id: 'root-1',
     displayName: 'workspace',
     pathHint: 'D:\\…\\workspace'
   }
 };
+
+afterEach(cleanup);
 
 describe('多 Provider 设置组件', () => {
   test('普通模式聚焦 Provider、Model 和 API Key，高级字段折叠', () => {
@@ -136,6 +146,108 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('高级设置');
     expect(markup).toContain('Base URL');
     expect(markup).toContain('tools');
+  });
+
+  test('预置模型输入提示可直接填写服务商公布的模型 ID', () => {
+    render(
+      <ProviderSettings
+        dashboard={dashboard}
+        busy={false}
+        onSave={vi.fn()}
+        onTest={vi.fn()}
+        onRouteSave={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/可直接输入服务商公布的模型 ID/u)).toBeTruthy();
+  });
+
+  test('提交目录外预置模型时保存保守聊天能力', () => {
+    const onSave = vi.fn();
+    render(
+      <ProviderSettings
+        dashboard={dashboard}
+        busy={false}
+        onSave={onSave}
+        onTest={vi.fn()}
+        onRouteSave={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    const modelInput = screen.getByRole('combobox', { name: '模型' });
+    fireEvent.change(modelInput, { target: { value: 'provider-new-model' } });
+    fireEvent.click(screen.getByRole('button', { name: /保存档案/u }));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      profile: expect.objectContaining({
+        mode: 'preset',
+        modelId: 'provider-new-model',
+        capabilities: ['chat']
+      })
+    }));
+  });
+
+  test('目录外预置档案按显式能力参与路由选项校验', () => {
+    const unknownProfileDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      profiles: [...dashboard.profiles, {
+        id: 'openai-new-chat',
+        displayName: 'OpenAI 新聊天模型',
+        mode: 'preset',
+        providerId: 'openai',
+        modelId: 'provider-new-chat',
+        capabilities: ['chat'],
+        hasStoredSecret: true
+      }]
+    };
+    render(
+      <ProviderSettings
+        dashboard={unknownProfileDashboard}
+        busy={false}
+        onSave={vi.fn()}
+        onTest={vi.fn()}
+        onRouteSave={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    const chatOption = screen.getByLabelText('对话模型')
+      .querySelector<HTMLOptionElement>('option[value="openai-new-chat"]');
+    const agentOption = screen.getByLabelText('Agent 模型')
+      .querySelector<HTMLOptionElement>('option[value="openai-new-chat"]');
+    expect(chatOption?.disabled).toBe(false);
+    expect(agentOption?.disabled).toBe(true);
+  });
+
+  test('未知预置提供商即使声明能力也不能参与 Agent 路由', () => {
+    const unknownProviderDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      profiles: [...dashboard.profiles, {
+        id: 'unknown-agent',
+        displayName: '未知 Agent',
+        mode: 'preset',
+        providerId: 'unknown',
+        modelId: 'unknown-agent-model',
+        capabilities: ['chat', 'tools'],
+        hasStoredSecret: true
+      }]
+    };
+    render(
+      <ProviderSettings
+        dashboard={unknownProviderDashboard}
+        busy={false}
+        onSave={vi.fn()}
+        onTest={vi.fn()}
+        onRouteSave={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    const agentOption = screen.getByLabelText('Agent 模型')
+      .querySelector<HTMLOptionElement>('option[value="unknown-agent"]');
+    expect(agentOption?.disabled).toBe(true);
   });
 
   test('无 tools 档案不能选择为 Agent 且显示跨提供商授权提示', () => {
@@ -222,6 +334,7 @@ describe('多 Provider 设置组件', () => {
   });
 
   test('隐私类别独立开关、主动性分段控件和权限撤销均可访问', () => {
+    const onPetAlwaysOnTopChange = vi.fn();
     const markup = renderToStaticMarkup(
       <PrivacySettings
         privacy={dashboard.privacy}
@@ -229,7 +342,9 @@ describe('多 Provider 设置组件', () => {
         authorizedRoot={dashboard.authorizedRoot}
         busy={false}
         incognito={false}
+        petAlwaysOnTop={false}
         onSave={vi.fn()}
+        onPetAlwaysOnTopChange={onPetAlwaysOnTopChange}
         onIncognitoChange={vi.fn()}
         onChooseRoot={vi.fn()}
         onRevokeRoot={vi.fn()}
@@ -245,15 +360,39 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('自主');
     expect(markup).toContain('撤销目录权限');
     expect(markup).toContain('无痕会话');
+    expect(markup).toContain('桌宠始终置顶');
+    expect(markup).toContain('aria-label="桌宠始终置顶"');
+
+    render(
+      <PrivacySettings
+        privacy={dashboard.privacy}
+        runtimeSupport={dashboard.privacyRuntimeSupport}
+        authorizedRoot={dashboard.authorizedRoot}
+        busy={false}
+        incognito={false}
+        petAlwaysOnTop={false}
+        onSave={vi.fn()}
+        onPetAlwaysOnTopChange={onPetAlwaysOnTopChange}
+        onIncognitoChange={vi.fn()}
+        onChooseRoot={vi.fn()}
+        onRevokeRoot={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByRole('checkbox', { name: '桌宠始终置顶' }));
+    expect(onPetAlwaysOnTopChange).toHaveBeenCalledExactlyOnceWith(true);
   });
 
-  test('设置工作区使用四个紧凑 tab 并提供关闭按钮', () => {
+  test('MCP 禁用时设置导航不公开工具页且旧 tools 状态回退到模型档案', () => {
+    expect(availableSettingsTabs()).toEqual(['models', 'privacy', 'local']);
+    expect(resolveSettingsTab('tools')).toBe('models');
+
     const markup = renderToStaticMarkup(
       <SettingsWorkspace
         dashboard={dashboard}
-        activeTab="models"
+        activeTab="tools"
         busy={false}
         notice={null}
+        onDismissNotice={vi.fn()}
         onTabChange={vi.fn()}
         onClose={vi.fn()}
         providerActions={{
@@ -277,18 +416,17 @@ describe('多 Provider 设置组件', () => {
         privacyActions={{
           incognito: false,
           onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
           onIncognitoChange: vi.fn(),
           onChooseRoot: vi.fn(),
           onRevokeRoot: vi.fn()
         }}
         onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
       />
     );
 
-    expect(markup).toContain('模型');
-    expect(markup).toContain('工具');
-    expect(markup).toContain('隐私');
-    expect(markup).toContain('本地数据');
-    expect(markup).toContain('aria-label="关闭设置"');
+    expect(markup).toContain('模型档案');
+    expect(markup).not.toContain('MCP 服务');
   });
 });

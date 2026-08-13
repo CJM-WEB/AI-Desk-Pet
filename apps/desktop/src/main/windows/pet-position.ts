@@ -18,20 +18,6 @@ interface PetPositionControllerOptions {
   onError?: (error: unknown) => void;
 }
 
-interface QuitEvent {
-  preventDefault(): void;
-}
-
-interface QuitAfterPositionFlushOptions {
-  flush: () => Promise<void>;
-  quit: () => void;
-  onError?: (error: unknown) => void;
-}
-
-export interface PetPositionController {
-  flush(): Promise<void>;
-}
-
 const DEFAULT_DEBOUNCE_MS = 250;
 
 export function restorePetPosition(
@@ -46,33 +32,41 @@ export function restorePetPosition(
   return clampPositionToVisibleWorkArea(savedPosition, windowSize, workAreas);
 }
 
+/** 桌宠位置只写入桌面坐标，并在退出冻结后排空最后一次移动。 */
 export function createPetPositionController(
   options: PetPositionControllerOptions
-): PetPositionController {
+) {
   let pendingPosition: Point | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let writeQueue = Promise.resolve();
+  let frozen = false;
 
-  const saveSafely = async (position: Point): Promise<void> => {
-    try {
-      await options.savePosition(position);
-    } catch (error) {
-      try {
-        options.onError?.(error);
-      } catch {
-        // 错误记录本身不得影响应用退出或产生未处理拒绝。
-      }
+  const reportError = (error: unknown): void => {
+    try { options.onError?.(error); } catch { /* 日志失败不得影响退出。 */ }
+  };
+  const persistPending = async (): Promise<void> => {
+    const pending = pendingPosition;
+    pendingPosition = null;
+    if (pending) {
+      writeQueue = writeQueue.then(async () => {
+        try { await options.savePosition(pending); } catch (error) { reportError(error); }
+      });
+    }
+    await writeQueue;
+  };
+  const flushAll = async (): Promise<void> => {
+    while (true) {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      await persistPending();
+      const observedQueue = writeQueue;
+      await observedQueue;
+      if (pendingPosition === null && timer === null && observedQueue === writeQueue) return;
     }
   };
 
-  const persistPending = async (): Promise<void> => {
-    const position = pendingPosition;
-    pendingPosition = null;
-    if (position) writeQueue = writeQueue.then(() => saveSafely(position));
-    await writeQueue;
-  };
-
   options.window.on('move', () => {
+    if (frozen) return;
     const [x = 0, y = 0] = options.window.getPosition();
     pendingPosition = { x, y };
     if (timer) clearTimeout(timer);
@@ -83,41 +77,9 @@ export function createPetPositionController(
   });
 
   return {
-    async flush(): Promise<void> {
-      while (true) {
-        if (timer) clearTimeout(timer);
-        timer = null;
-        await persistPending();
-        const observedQueue = writeQueue;
-        await observedQueue;
-        if (pendingPosition === null && timer === null && observedQueue === writeQueue) return;
-      }
+    async freezeAndFlush(): Promise<void> {
+      frozen = true;
+      await flushAll();
     }
-  };
-}
-
-export function createQuitAfterPositionFlush(
-  options: QuitAfterPositionFlushOptions
-): (event: QuitEvent) => Promise<void> {
-  let exitReady = false;
-  let activeFlush: Promise<void> | null = null;
-
-  return async event => {
-    if (exitReady) return;
-    event.preventDefault();
-    activeFlush ??= (async () => {
-      try {
-        await options.flush();
-      } catch (error) {
-        try {
-          options.onError?.(error);
-        } catch {
-          // 错误记录失败也必须继续退出。
-        }
-      }
-      exitReady = true;
-      options.quit();
-    })();
-    await activeFlush;
   };
 }

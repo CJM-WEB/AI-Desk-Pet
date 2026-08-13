@@ -89,6 +89,7 @@ const storedSettingsV2Schema = z.object({
   authorizedRoot: authorizedRootSchema.nullable(),
   petPosition: petPositionSchema.nullable(),
   fileDisclosureAccepted: z.boolean(),
+  petAlwaysOnTop: z.boolean().optional(),
   privacy: privacySettingsSchema.optional(),
   mcpServers: z.array(mcpServerSettingsSchema).optional()
 }).strict();
@@ -123,6 +124,7 @@ function defaultSettings(): StoredSettings {
     authorizedRoot: null,
     petPosition: null,
     fileDisclosureAccepted: false,
+    petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
     mcpServers: []
   };
@@ -170,6 +172,7 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
     authorizedRoot: settings.authorizedRoot,
     petPosition: settings.petPosition,
     fileDisclosureAccepted: settings.fileDisclosureAccepted,
+    petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
     mcpServers: []
   };
@@ -204,9 +207,9 @@ function storedProfile(profile: ProviderProfileV2): StoredProviderProfileV2 {
 function profileCapabilities(profile: StoredProviderProfileV2): readonly ModelCapability[] {
   if (profile.mode === 'custom') return profile.capabilities ?? ['chat'];
   const provider = providerCatalog.find(entry => entry.providerId === profile.providerId);
-  const model = provider?.models.find(entry => entry.modelId === profile.modelId);
-  if (!model) throw settingsError('PROVIDER_MODEL_NOT_FOUND');
-  return model.capabilities;
+  if (!provider) throw settingsError('PROVIDER_MODEL_NOT_FOUND');
+  const model = provider.models.find(entry => entry.modelId === profile.modelId);
+  return model?.capabilities ?? profile.capabilities ?? ['chat'];
 }
 
 function providerIdentity(profile: StoredProviderProfileV2): string {
@@ -295,6 +298,7 @@ export class SettingsStore {
     if (v2.success) {
       return {
         ...v2.data,
+        petAlwaysOnTop: v2.data.petAlwaysOnTop ?? false,
         privacy: v2.data.privacy ?? defaultPrivacySettings(),
         mcpServers: v2.data.mcpServers ?? []
       };
@@ -402,6 +406,18 @@ export class SettingsStore {
       const privacy = privacySettingsSchema.parse(input);
       const settings = await this.load();
       settings.privacy = privacy;
+      await atomicWrite(this.file, settings);
+    });
+  }
+
+  async getPetAlwaysOnTop(): Promise<boolean> {
+    return this.enqueue(async () => (await this.load()).petAlwaysOnTop ?? false);
+  }
+
+  savePetAlwaysOnTop(enabled: boolean): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const settings = await this.load();
+      settings.petAlwaysOnTop = z.boolean().parse(enabled);
       await atomicWrite(this.file, settings);
     });
   }

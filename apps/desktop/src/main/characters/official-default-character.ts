@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
-  CharacterDraftV1,
-  CharacterManifestV1,
+  CharacterDraftV2,
+  CharacterManifestV2,
   CoreCharacterState
 } from '@myself/character-runtime';
+import { V1_STATE_SEMANTICS } from '@myself/character-runtime';
 import type { CharacterStore } from './character-store';
 
 const DEFAULT_CHARACTER_ID = 'builtin-default';
@@ -24,14 +25,12 @@ function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function action(state: CoreCharacterState, assetId: string) {
+function presentation(state: CoreCharacterState, assetId: string) {
   return {
-    id: `${state}-main`,
-    name: state,
+    actionId: `${state}-main`,
     fps: 8,
-    loop: true,
-    weight: 1,
-    direction: 'any' as const,
+    // 第三帧是搬运循环的中段稳定姿势，避开起手首帧和收势末帧。
+    ...(state === 'carrying' ? { commitFrameId: 'carrying-frame-3' } : {}),
     anchors: {
       ground: { x: 0.5, y: 1 },
       ...(state === 'carrying' ? { carry: { x: 0.7, y: 0.45 } } : {})
@@ -75,30 +74,74 @@ export async function ensureOfficialDefaultCharacter(
       const bytes = await readFile(join(resourceDirectory, `${state}.png`));
       return { state, bytes, assetId: `${state}-atlas` };
     }));
-    const draft: CharacterDraftV1 = {
-      version: 1,
+    const draft: CharacterDraftV2 = {
+      version: 2,
       id: DEFAULT_CHARACTER_ID,
       name: 'AI Pet 默认角色',
       thumbnailAssetId: 'idle-atlas',
+      identity: {
+        description: 'AI Pet 官方默认桌宠角色。',
+        background: '随桌面应用一同安装的本地默认角色。',
+        traits: ['友好', '可靠'],
+        languageStyle: '简洁友好',
+        formsOfAddress: [],
+        likes: [],
+        dislikes: [],
+        behavioralTendencies: [],
+        boundaries: [],
+        exampleLines: []
+      },
+      defaultSkinId: 'default',
+      defaultStateId: 'idle',
+      skins: [{
+        id: 'default',
+        name: '默认皮肤',
+        presentations: loaded.map(({ state, assetId }) => presentation(state, assetId)),
+        semanticFallbacks: []
+      }],
       states: loaded.map(({ state, assetId }) => ({
         id: state,
-        kind: 'core' as const,
-        actions: [action(state, assetId)]
-      }))
+        name: state,
+        kind: 'primary' as const,
+        semantic: V1_STATE_SEMANTICS[state],
+        tags: [],
+        intensity: 1,
+        coexistWithStateIds: [],
+        forbiddenStateIds: [],
+        enterConditions: [],
+        exitConditions: [],
+        agentInferable: false,
+        actionIds: [`${state}-main`]
+      })),
+      actions: [
+        ...loaded.map(({ state }) => ({
+          id: `${state}-main`,
+          name: state,
+          semantic: V1_STATE_SEMANTICS[state],
+          tags: [],
+          preference: 1,
+          cooldownMs: 0,
+          repeatSuppressionMs: 0,
+          loopPolicy: 'until-interrupted' as const,
+          interrupt: 'normal' as const,
+          allowedPrimaryStateIds: [state],
+          forbiddenPrimaryStateIds: [],
+          requiredModifierStateIds: [],
+          forbiddenModifierStateIds: [],
+          direction: 'any' as const
+        }))
+      ]
     };
-    const manifest: CharacterManifestV1 = {
-      version: 1,
-      id: DEFAULT_CHARACTER_ID,
-      name: 'AI Pet 默认角色',
+    const manifest: CharacterManifestV2 = {
+      ...draft,
       thumbnailAssetId: 'idle-atlas',
-      compilerVersion: 'official-default-v1',
+      compilerVersion: 'official-default-v2',
       resources: loaded.map(({ state, assetId, bytes }) => ({
         assetId,
         fileName: `${state}.png`,
         sha256: sha256(bytes),
         byteLength: bytes.byteLength
-      })),
-      states: draft.states
+      }))
     };
     await store.saveDraft(DEFAULT_CHARACTER_ID, draft);
     await store.publishCompiled(

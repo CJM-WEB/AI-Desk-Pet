@@ -6,17 +6,22 @@ import type { ModelMessage, ModelRequest, ModelResponse } from '@myself/agent-co
 export interface ProviderStep {
   response: ModelResponse;
   inspect?: (request: ModelRequest) => void;
-  delayMs?: number;
+  gate?: ProviderResponseGate;
+}
+
+export interface ProviderResponseGate {
+  isWaiting(): boolean;
+  release(): void;
+  waitForRelease(): Promise<void>;
 }
 
 export type ProviderScript = ProviderStep[] | ((apiKey: string) => ProviderStep[]);
 
 export interface ProviderRequestLog {
   method: string;
-  pathname: string;
-  authorizationPresent: boolean;
-  toolNames: string[];
-  messageRoles: string[];
+  model: string;
+  messageRoleCounts: Record<ModelMessage['role'], number>;
+  toolCount: number;
 }
 
 export interface ProviderServerFixture {
@@ -26,7 +31,31 @@ export interface ProviderServerFixture {
   inspectionErrors: string[];
   remainingSteps(): number;
   assertComplete(): void;
+  waitForCompletedResponses(count: number): Promise<void>;
   close(): Promise<void>;
+}
+
+/** 由测试条件显式释放响应，避免通过墙钟休眠制造可观察窗口。 */
+export function createProviderResponseGate(): ProviderResponseGate {
+  let waiting = false;
+  let released = false;
+  let resolveRelease!: () => void;
+  const releasedPromise = new Promise<void>(resolve => {
+    resolveRelease = resolve;
+  });
+  return {
+    isWaiting: () => waiting,
+    release() {
+      if (released) return;
+      released = true;
+      resolveRelease();
+    },
+    async waitForRelease() {
+      waiting = true;
+      await releasedPromise;
+      waiting = false;
+    }
+  };
 }
 
 export async function startProviderServer(
@@ -36,50 +65,88 @@ export async function startProviderServer(
   const inspectionErrors: string[] = [];
   const apiKey = `myself-e2e-${randomBytes(24).toString('hex')}`;
   const script = [...(typeof steps === 'function' ? steps(apiKey) : steps)];
+  let unexpectedRequestCount = 0;
+  let completedResponseCount = 0;
+  const completionWaiters: Array<{ count: number; resolve: () => void }> = [];
+  const markResponseCompleted = () => {
+    completedResponseCount += 1;
+    for (let index = completionWaiters.length - 1; index >= 0; index -= 1) {
+      const waiter = completionWaiters[index];
+      if (waiter && completedResponseCount >= waiter.count) {
+        completionWaiters.splice(index, 1);
+        waiter.resolve();
+      }
+    }
+  };
   const server = createServer(async (request, response) => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (request.method !== 'POST') {
+      response.writeHead(405, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: '请求方法无效' } }));
+      return;
+    }
+    if (url.pathname !== '/v1/chat/completions') {
+      response.writeHead(404, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: '请求端点无效' } }));
+      return;
+    }
+    if (request.headers.authorization !== `Bearer ${apiKey}`) {
+      response.writeHead(401, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: '请求授权无效' } }));
+      return;
+    }
+
     const chunks: Buffer[] = [];
     for await (const chunk of request) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
 
     let parsed: ModelRequest;
+    let rawRequest: unknown;
     try {
-      parsed = normalizeRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      rawRequest = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      parsed = normalizeRequest(rawRequest);
     } catch {
       response.writeHead(400, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: '请求格式无效' } }));
       return;
     }
 
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    // 持久摘要仅保留路由计数，正文、密钥、路径和工具名均停留在当前请求内。
+    const messageRoleCounts: ProviderRequestLog['messageRoleCounts'] = {
+      system: 0,
+      user: 0,
+      assistant: 0,
+      tool: 0
+    };
+    for (const message of parsed.messages) messageRoleCounts[message.role] += 1;
     requests.push({
       method: request.method ?? '',
-      pathname: url.pathname,
-      authorizationPresent: request.headers.authorization === `Bearer ${apiKey}`,
-      toolNames: parsed.tools.map(tool => tool.function.name),
-      messageRoles: parsed.messages.map(message => message.role)
+      model: isRecord(rawRequest) && typeof rawRequest.model === 'string' ? rawRequest.model : '',
+      messageRoleCounts,
+      toolCount: parsed.tools.length
     });
-
     const step = script.shift();
     if (!step) {
+      unexpectedRequestCount += 1;
       response.writeHead(500, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: '测试脚本没有更多响应' } }));
+      markResponseCompleted();
       return;
     }
     if (step.inspect) {
       try {
         step.inspect(parsed);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '未知错误';
-        inspectionErrors.push(`脚本化 Provider 请求检查失败：${message}`);
+      } catch {
+        inspectionErrors.push('脚本化 Provider 请求检查失败');
       }
     }
-    if (step.delayMs) {
-      await new Promise(resolveDelay => setTimeout(resolveDelay, step.delayMs));
-    }
+    if (step.gate) await step.gate.waitForRelease();
 
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify(compatibleResponse(step.response)));
+    // reset 会主动中止客户端连接；以脚本步骤执行完 response.end 作为确定性完成屏障。
+    markResponseCompleted();
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -97,6 +164,17 @@ export async function startProviderServer(
       if (script.length > 0) {
         throw new Error(`脚本化 Provider 仍有 ${script.length} 个响应未消费`);
       }
+      // 同时拒绝脚本耗尽后的请求，避免 500 响应被上层错误路径掩盖成假绿。
+      if (unexpectedRequestCount > 0) {
+        throw new Error(`脚本化 Provider 收到 ${unexpectedRequestCount} 个额外请求`);
+      }
+    },
+    waitForCompletedResponses(count) {
+      if (!Number.isSafeInteger(count) || count < 0) {
+        return Promise.reject(new Error('脚本化 Provider 响应完成数量无效'));
+      }
+      if (completedResponseCount >= count) return Promise.resolve();
+      return new Promise<void>(resolve => completionWaiters.push({ count, resolve }));
     },
     async close() {
       await new Promise<void>((resolve, reject) => {
@@ -173,7 +251,23 @@ function normalizeRequest(value: unknown): ModelRequest {
 
 function compatibleResponse(response: ModelResponse): unknown {
   if (response.type === 'text') {
-    return { choices: [{ message: { content: response.text } }] };
+    return {
+      choices: [{
+        message: {
+          content: response.text,
+          ...((response.emotion !== undefined || response.behaviorIntent !== undefined)
+            ? {
+                metadata: {
+                  ...(response.emotion === undefined ? {} : { emotion: response.emotion }),
+                  ...(response.behaviorIntent === undefined
+                    ? {}
+                    : { behaviorIntent: response.behaviorIntent })
+                }
+              }
+            : {})
+        }
+      }]
+    };
   }
   const request = response.request;
   if (!isRecord(request)

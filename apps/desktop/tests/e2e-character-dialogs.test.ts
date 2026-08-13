@@ -7,6 +7,9 @@ describe('角色工作室 E2E 对话框适配器', () => {
     const adapter = createE2eCharacterDialogAdapter({
       userDataDirectory: 'temp/user-data',
       authorizedRootDirectory: 'temp/root',
+      explorerEventFile: 'temp/user-data/main-e2e-explorer-events',
+      mainStateFile: 'temp/user-data/main-e2e-state.json',
+      recycleBinDirectory: 'temp/recycle-bin',
       characterAssetsDirectory: 'temp/assets',
       safeCharacterPackage: 'temp/packages/safe.zip',
       maliciousCharacterPackage: 'temp/packages/malicious.zip',

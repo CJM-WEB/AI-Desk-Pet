@@ -11,7 +11,7 @@ import {
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type {
-  CharacterDraftV1,
+  CharacterDraftV2,
   CharacterStateId,
   DraftActionClip
 } from '@myself/character-runtime';
@@ -385,24 +385,93 @@ const actingAction: DraftActionClip = {
 function draftWith(
   idle: DraftActionClip = idleAction,
   acting: DraftActionClip = actingAction
-): CharacterDraftV1 {
+): CharacterDraftV2 {
   return {
-    version: 1,
+    version: 2,
     id: 'nova',
     name: 'Nova',
+    identity: {
+      description: '桌面伙伴',
+      background: '生活在桌面上',
+      traits: [],
+      languageStyle: '简洁',
+      formsOfAddress: [],
+      likes: [],
+      dislikes: [],
+      behavioralTendencies: [],
+      boundaries: [],
+      exampleLines: []
+    },
+    defaultSkinId: 'default',
+    defaultStateId: 'idle',
+    skins: [{
+      id: 'default',
+      name: '默认皮肤',
+      semanticFallbacks: [],
+      presentations: [idle, acting].map(action => ({
+        actionId: action.id,
+        fps: action.fps,
+        anchors: action.anchors,
+        ...(action.regions ? { regions: action.regions } : {}),
+        frames: action.frames
+      }))
+    }],
     states: [{
       id: 'idle',
-      kind: 'core',
-      actions: [idle]
+      name: '待机',
+      kind: 'primary',
+      semantic: 'idle',
+      tags: [],
+      intensity: 20,
+      coexistWithStateIds: [],
+      forbiddenStateIds: [],
+      enterConditions: [],
+      exitConditions: [],
+      agentInferable: true,
+      actionIds: [idle.id]
     }, {
       id: 'thinking',
-      kind: 'core',
-      actions: []
+      name: '思考',
+      kind: 'primary',
+      semantic: 'think',
+      tags: [],
+      intensity: 50,
+      coexistWithStateIds: [],
+      forbiddenStateIds: [],
+      enterConditions: [],
+      exitConditions: [],
+      agentInferable: true,
+      actionIds: []
     }, {
       id: 'acting',
-      kind: 'core',
-      actions: [acting]
-    }]
+      name: '行动',
+      kind: 'primary',
+      semantic: 'working',
+      tags: [],
+      intensity: 60,
+      coexistWithStateIds: [],
+      forbiddenStateIds: [],
+      enterConditions: [],
+      exitConditions: [],
+      agentInferable: true,
+      actionIds: [acting.id]
+    }],
+    actions: [idle, acting].map(action => ({
+      id: action.id,
+      name: action.name,
+      semantic: action.id === idle.id ? 'idle' : 'working',
+      tags: [],
+      preference: action.weight,
+      cooldownMs: 0,
+      repeatSuppressionMs: 0,
+      loopPolicy: action.loop ? 'presentation' : 'never',
+      interrupt: 'normal',
+      allowedPrimaryStateIds: [],
+      forbiddenPrimaryStateIds: [],
+      requiredModifierStateIds: [],
+      forbiddenModifierStateIds: [],
+      direction: action.direction
+    }))
   };
 }
 
@@ -416,12 +485,13 @@ function previewState(
 }
 
 function previewProps(
-  draft: CharacterDraftV1 = draftWith(),
+  draft: CharacterDraftV2 = draftWith(),
   overrides: Partial<React.ComponentProps<typeof DraftCharacterPreview>> = {}
 ): React.ComponentProps<typeof DraftCharacterPreview> {
   return {
     characterId: 'nova',
     draft,
+    selectedSkinId: 'default',
     stateId: 'idle',
     actionId: 'idle-main',
     selectedFrameId: 'idle-a',
@@ -437,6 +507,7 @@ function sceneDouble() {
   const unsubscribe = vi.fn();
   const scene: PixiCharacterScene = {
     loadAssets: vi.fn(async () => undefined),
+    clear: vi.fn(() => { currentFrame = null; }),
     showAction: vi.fn((action, options) => {
       currentFrame = {
         action,
@@ -458,6 +529,60 @@ function sceneDouble() {
     },
     scene,
     unsubscribe
+  };
+}
+
+function toPresentation(action: DraftActionClip) {
+  return {
+    actionId: action.id,
+    fps: action.fps,
+    anchors: action.anchors,
+    ...(action.regions ? { regions: action.regions } : {}),
+    frames: action.frames
+  };
+}
+
+/** 构造彼此独立的四级回退，期望值不复用解析器实现。 */
+function draftForSource(
+  source: 'skin-action' | 'skin-semantic' | 'default-action' | 'default-state' | 'none'
+): CharacterDraftV2 {
+  const base = draftWith();
+  const winterFallback: DraftActionClip = {
+    ...actingAction,
+    id: 'winter-working',
+    name: '冬装通用工作',
+    frames: [{ ...actingAction.frames[0]!, assetId: 'winter-working-sheet' }]
+  };
+  const winterPresentations = source === 'skin-action'
+    ? [{ ...toPresentation(actingAction), frames: [{
+        ...actingAction.frames[0]!,
+        assetId: 'winter-acting-sheet'
+      }] }]
+    : source === 'skin-semantic'
+      ? [toPresentation(winterFallback)]
+      : [];
+  const defaultPresentations = source === 'default-state' || source === 'none'
+    ? [toPresentation(idleAction)]
+    : base.skins[0]!.presentations;
+  if (source === 'none') defaultPresentations.length = 0;
+  return {
+    ...base,
+    actions: [...base.actions, {
+      ...base.actions.find(action => action.id === 'acting-main')!,
+      id: winterFallback.id,
+      name: winterFallback.name
+    }],
+    skins: [{
+      ...base.skins[0]!,
+      presentations: defaultPresentations
+    }, {
+      id: 'winter',
+      name: '冬装',
+      presentations: winterPresentations,
+      semanticFallbacks: source === 'skin-semantic'
+        ? [{ semantic: 'working', actionId: winterFallback.id }]
+        : []
+    }]
   };
 }
 
@@ -492,6 +617,128 @@ describe('真实草稿预览', () => {
     vi.restoreAllMocks();
   });
 
+  test.each([
+    ['skin-action', '当前使用：当前皮肤精确表现', 'winter-acting-sheet'],
+    ['skin-semantic', '当前使用：当前皮肤语义回退', 'winter-working-sheet'],
+    ['default-action', '当前使用：默认皮肤动作', 'acting-sheet'],
+    ['default-state', '当前使用：默认状态回退', 'idle-sheet']
+  ] as const)('%s 来源只加载解析后的候选并显示可访问说明', async (
+    source,
+    expectedMessage,
+    expectedAssetId
+  ) => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const readCharacterSource = vi.fn(async () => PNG_BYTES);
+
+    render(<DraftCharacterPreview {...previewProps(draftForSource(source), {
+      selectedSkinId: 'winter',
+      stateId: 'acting',
+      actionId: 'acting-main',
+      api: apiWithReader(readCharacterSource)
+    })} />);
+
+    expect(await screen.findByText(expectedMessage)).not.toBeNull();
+    expect(readCharacterSource).toHaveBeenCalledWith('nova', expectedAssetId);
+    expect(current.scene.showAction).toHaveBeenCalledOnce();
+  });
+
+  test('完整回退链为空时立即清空旧画面并显示无可播放表现', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps();
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('当前使用：当前皮肤精确表现');
+    vi.mocked(current.scene.clear).mockClear();
+
+    view.rerender(<DraftCharacterPreview {...props}
+      draft={draftForSource('none')}
+      selectedSkinId="winter"
+      stateId="acting"
+      actionId="acting-main"
+    />);
+
+    expect(screen.getByText('无可播放表现')).not.toBeNull();
+    expect(current.scene.clear).toHaveBeenCalledOnce();
+    expect(current.scene.getCurrentFrame()).toBeNull();
+  });
+
+  test('相同动作切换皮肤会先清屏、释放旧 bundle 并加载新候选', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const draft = draftForSource('skin-semantic');
+    const props = previewProps(draft, {
+      stateId: 'acting',
+      actionId: 'acting-main'
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('当前使用：当前皮肤精确表现');
+    vi.mocked(current.scene.clear).mockClear();
+
+    view.rerender(<DraftCharacterPreview {...props} selectedSkinId="winter" />);
+
+    expect(current.scene.clear).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:draft-1');
+    expect(await screen.findByText('当前使用：当前皮肤语义回退')).not.toBeNull();
+    expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'winter-working' }),
+      expect.anything()
+    );
+  });
+
+  test('旧皮肤素材迟到时不能覆盖已经就绪的新皮肤', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const oldSource = deferred<Uint8Array>();
+    const readCharacterSource = vi.fn(async (_characterId: string, assetId: string) => (
+      assetId === 'acting-sheet' ? oldSource.promise : PNG_BYTES
+    ));
+    const draft = draftForSource('skin-action');
+    const props = previewProps(draft, {
+      stateId: 'acting',
+      actionId: 'acting-main',
+      api: apiWithReader(readCharacterSource)
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await waitFor(() => expect(readCharacterSource).toHaveBeenCalledWith(
+      'nova',
+      'acting-sheet'
+    ));
+
+    view.rerender(<DraftCharacterPreview {...props} selectedSkinId="winter" />);
+    expect(await screen.findByText('当前使用：当前皮肤精确表现')).not.toBeNull();
+    oldSource.resolve(PNG_BYTES);
+    await act(async () => settle());
+
+    expect(current.scene.showAction).toHaveBeenCalledOnce();
+    expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ frames: [
+        expect.objectContaining({ assetId: 'winter-acting-sheet' })
+      ] }),
+      expect.anything()
+    );
+  });
+
+  test('新皮肤场景素材加载失败后保持清屏', async () => {
+    const current = sceneDouble();
+    vi.mocked(current.scene.loadAssets)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('SCENE_LOAD_FAILED'));
+    pixiFactory.mockResolvedValue(current.scene);
+    const draft = draftForSource('skin-action');
+    const props = previewProps(draft, {
+      stateId: 'acting',
+      actionId: 'acting-main'
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+
+    view.rerender(<DraftCharacterPreview {...props} selectedSkinId="winter" />);
+
+    await screen.findByText('预览素材读取失败');
+    expect(current.scene.getCurrentFrame()).toBeNull();
+  });
+
   test('内存草稿无需保存或发布即可加载唯一源素材并显示动作', async () => {
     const current = sceneDouble();
     pixiFactory.mockResolvedValue(current.scene);
@@ -521,6 +768,129 @@ describe('真实草稿预览', () => {
         speed: 1
       })
     );
+  });
+
+  test('切换到无帧动作形成空链时立即清空旧场景且不再显示旧 bundle', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps();
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+    vi.mocked(current.scene.showAction).mockClear();
+    const emptyAction: DraftActionClip = {
+      ...idleAction,
+      id: 'idle-empty',
+      name: '空动作',
+      frames: []
+    };
+
+    view.rerender(<DraftCharacterPreview
+      {...props}
+      actionId="idle-empty"
+      draft={draftWith(emptyAction)}
+    />);
+
+    expect(current.scene.clear).toHaveBeenCalledOnce();
+    expect(screen.getByText('无可播放表现')).not.toBeNull();
+    expect(current.scene.showAction).not.toHaveBeenCalled();
+  });
+
+  test('角色身份变化时在新素材完成前清空旧场景', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const nextSource = deferred<Uint8Array>();
+    const readCharacterSource = vi.fn((characterId: string) => (
+      characterId === 'nova' ? Promise.resolve(PNG_BYTES) : nextSource.promise
+    ));
+    const props = previewProps(draftWith(), {
+      api: apiWithReader(readCharacterSource)
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+
+    view.rerender(<DraftCharacterPreview {...props} characterId="luna" />);
+
+    await waitFor(() => expect(current.scene.clear).toHaveBeenCalledOnce());
+    expect(screen.getByTestId('draft-character-preview').getAttribute(
+      'data-preview-status'
+    )).toBe('loading');
+  });
+
+  test('旧角色素材晚返回时不会重新展示旧动作', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const oldSource = deferred<Uint8Array>();
+    const readCharacterSource = vi.fn((characterId: string) => (
+      characterId === 'nova' ? oldSource.promise : Promise.resolve(PNG_BYTES)
+    ));
+    const props = previewProps(draftWith(), {
+      api: apiWithReader(readCharacterSource)
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await waitFor(() => expect(readCharacterSource).toHaveBeenCalledOnce());
+
+    view.rerender(<DraftCharacterPreview {...props} characterId="luna" />);
+    await waitFor(() => expect(current.scene.showAction).toHaveBeenCalledOnce());
+    oldSource.resolve(PNG_BYTES);
+    await act(async () => settle());
+
+    expect(current.scene.showAction).toHaveBeenCalledOnce();
+  });
+
+  test('新角色素材读取失败后保持场景为空', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const readCharacterSource = vi.fn((characterId: string) => {
+      if (characterId === 'luna') {
+        return Promise.reject(new Error('CHARACTER_SOURCE_READ_FAILED'));
+      }
+      return Promise.resolve(PNG_BYTES);
+    });
+    const props = previewProps(draftWith(), {
+      api: apiWithReader(readCharacterSource)
+    });
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+
+    view.rerender(<DraftCharacterPreview {...props} characterId="luna" />);
+
+    await screen.findByText('预览素材读取失败');
+    expect(current.scene.clear).toHaveBeenCalled();
+    expect(current.scene.getCurrentFrame()).toBeNull();
+  });
+
+  test('同一动作仅修改循环或锚点时不重复清空整个场景', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps();
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+
+    view.rerender(<DraftCharacterPreview {...props} preview={previewState({
+      loop: false
+    })} />);
+    await waitFor(() => expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      idleAction,
+      expect.objectContaining({ loop: false })
+    ));
+    const revisedAction: DraftActionClip = {
+      ...idleAction,
+      anchors: {
+        ...idleAction.anchors,
+        carry: { x: 0.4, y: 0.2 }
+      }
+    };
+
+    view.rerender(<DraftCharacterPreview {...props} draft={draftWith(revisedAction)} />);
+    await waitFor(() => expect(current.scene.showAction).toHaveBeenLastCalledWith(
+      revisedAction,
+      expect.anything()
+    ));
+    expect(current.scene.clear).not.toHaveBeenCalled();
   });
 
   test('控制重建动作时复用单个帧订阅，暂停逐帧不会请求连续播放', async () => {
@@ -553,7 +923,7 @@ describe('真实草稿预览', () => {
     expect(current.scene.destroy).toHaveBeenCalledOnce();
   });
 
-  test('Inspector 修改 loop 驱动真实场景，临时覆盖不被其他动作编辑重置', async () => {
+  test('预览循环临时覆盖驱动真实场景且不被动作编辑重置', async () => {
     const current = sceneDouble();
     pixiFactory.mockResolvedValue(current.scene);
     const api = apiWithReader(vi.fn(async () => PNG_BYTES));
@@ -567,10 +937,13 @@ describe('真实草稿预览', () => {
           thumbnailAssetId: null,
           active: true,
           completeness: 'complete',
-          missingCoreStates: []
+          missingRequirements: [],
+          migrationRecoveryAvailable: false
         }],
         selectedCharacterId: 'nova',
         draft,
+        selectedEntity: { kind: 'action', actionId: 'idle-main' },
+        selectedSkinId: 'default',
         selectedStateId: 'idle',
         selectedActionId: 'idle-main',
         draftStatus: 'saved',
@@ -582,6 +955,8 @@ describe('真实草稿预览', () => {
         load: vi.fn(async () => undefined),
         mount: vi.fn(() => () => undefined),
         selectCharacter: vi.fn(async () => undefined),
+        selectIdentity: vi.fn(),
+        selectSkin: vi.fn(),
         selectState: vi.fn(),
         selectAction: vi.fn(),
         createCharacter: vi.fn(async () => undefined),
@@ -591,22 +966,63 @@ describe('真实草稿预览', () => {
         importCharacterPackage: vi.fn(async () => undefined),
         exportCharacterPackage: vi.fn(async () => undefined),
         importSources: vi.fn(async () => undefined),
+        updateIdentity: vi.fn(),
+        addSkin: vi.fn(),
+        duplicateSkin: vi.fn(),
+        updateSkin: vi.fn(),
+        setDefaultSkin: vi.fn(),
+        requestRemoveSkin: vi.fn(() => ({
+          safeReferencePaths: [], blockingReferencePaths: []
+        })),
+        addState: vi.fn(),
+        updateState: vi.fn(),
+        requestRemoveState: vi.fn(() => ({
+          safeReferencePaths: [], blockingReferencePaths: []
+        })),
         addAction: vi.fn(),
+        updateAction: (actionId, patch) => {
+          setDraft(previous => ({
+            ...previous,
+            actions: previous.actions.map(action => action.id === actionId
+              ? { ...action, ...patch }
+              : action)
+          }));
+        },
+        requestRemoveAction: vi.fn(() => ({
+          safeReferencePaths: [], blockingReferencePaths: []
+        })),
+        removeAction: vi.fn(),
         addExtensionState: vi.fn(),
+        removeExtensionState: vi.fn(),
         applySpriteSheet: vi.fn(async () => undefined),
         compileAndPublish: vi.fn(async () => undefined),
         publishCharacter: vi.fn(async () => undefined),
         updateCurrentAction: patch => {
           setDraft(previous => ({
             ...previous,
-            states: previous.states.map(state => state.id !== 'idle'
-              ? state
+            actions: previous.actions.map(action => action.id !== 'idle-main'
+              ? action
               : {
-                  ...state,
-                  actions: state.actions.map(action => action.id !== 'idle-main'
-                    ? action
-                    : { ...action, ...patch })
-                })
+                  ...action,
+                  ...(patch.name === undefined ? {} : { name: patch.name }),
+                  ...(patch.loop === undefined ? {} : {
+                    loopPolicy: patch.loop ? 'presentation' as const : 'never' as const
+                  })
+                }),
+            skins: previous.skins.map(skin => ({
+              ...skin,
+              presentations: skin.presentations.map(presentation => (
+                presentation.actionId !== 'idle-main'
+                  ? presentation
+                  : {
+                    ...presentation,
+                    ...(patch.frames === undefined ? {} : { frames: patch.frames }),
+                    ...(patch.fps === undefined ? {} : { fps: patch.fps }),
+                    ...(patch.anchors === undefined ? {} : { anchors: patch.anchors }),
+                    ...(patch.regions === undefined ? {} : { regions: patch.regions })
+                  }
+              ))
+            }))
           }));
         },
         flushDraft: vi.fn(async () => undefined),
@@ -623,11 +1039,11 @@ describe('真实草稿预览', () => {
 
     render(<WorkspaceHarness />);
     await screen.findByText('预览已就绪');
-    fireEvent.click(screen.getByRole('checkbox', { name: /循环播放/u }));
+    fireEvent.click(screen.getByRole('button', { name: '切换循环' }));
 
     await waitFor(() => {
       expect(current.scene.showAction).toHaveBeenLastCalledWith(
-        expect.objectContaining({ loop: false }),
+        expect.anything(),
         expect.objectContaining({ loop: false })
       );
     });
@@ -792,6 +1208,7 @@ describe('真实草稿预览', () => {
     const current = sceneDouble();
     pixiFactory.mockResolvedValue(current.scene);
     const committedStatuses: Array<string | null> = [];
+    const committedClearCalls: number[] = [];
     const props = previewProps();
 
     function StatusCommitProbe(probeProps: {
@@ -805,6 +1222,7 @@ describe('真实草稿预览', () => {
             'data-preview-status'
           )
         );
+        committedClearCalls.push(vi.mocked(current.scene.clear).mock.calls.length);
       }, [probeProps.actionId]);
       return (
         <DraftCharacterPreview
@@ -821,6 +1239,8 @@ describe('真实草稿预览', () => {
     />);
     await screen.findByText('预览已就绪');
     committedStatuses.length = 0;
+    committedClearCalls.length = 0;
+    vi.mocked(current.scene.clear).mockClear();
 
     view.rerender(<StatusCommitProbe
       stateId="acting"
@@ -829,6 +1249,7 @@ describe('真实草稿预览', () => {
     />);
 
     expect(committedStatuses[0]).toBe('loading');
+    expect(committedClearCalls[0]).toBe(1);
   });
 
   test('API 切换即使新场景初始化挂起也立即取消旧资源等待', async () => {
@@ -1027,10 +1448,10 @@ describe('真实草稿预览', () => {
       stateId: 'thinking',
       actionId: null
     }), '请选择动作'],
-    ['动作没有帧', previewProps(draftWith({
+    ['动作没有帧时回退链为空', previewProps(draftWith({
       ...idleAction,
       frames: []
-    })), '当前动作没有可预览帧'],
+    })), '无可播放表现'],
     ['帧矩形无效', previewProps(draftWith({
       ...idleAction,
       frames: [{ ...idleAction.frames[0]!, width: 0 }]
@@ -1094,6 +1515,26 @@ describe('真实草稿预览', () => {
     const preview = screen.getByTestId('draft-character-preview');
     expect(preview.getAttribute('data-preview-status')).toBe('error');
     expect(preview.getAttribute('data-preview-speed')).not.toBe('3');
+  });
+
+  test('同一资源的控制更新渲染失败时清空场景', async () => {
+    const current = sceneDouble();
+    pixiFactory.mockResolvedValue(current.scene);
+    const props = previewProps(draftWith());
+    const view = render(<DraftCharacterPreview {...props} />);
+    await screen.findByText('预览已就绪');
+    vi.mocked(current.scene.clear).mockClear();
+    vi.mocked(current.scene.showAction).mockImplementationOnce(() => {
+      throw new Error('SHOW_FAILED');
+    });
+
+    view.rerender(<DraftCharacterPreview {...props} preview={previewState({
+      loop: false
+    })} />);
+
+    await screen.findByText('预览渲染失败');
+    expect(current.scene.clear).toHaveBeenCalledOnce();
+    expect(current.scene.getCurrentFrame()).toBeNull();
   });
 
   test.each([
@@ -1164,7 +1605,7 @@ describe('真实草稿预览', () => {
       await settle();
     });
     expect(vi.mocked(current.scene.showAction).mock.calls.at(-1)?.[0])
-      .toBe(actingWithThreeFrames);
+      .toStrictEqual(actingWithThreeFrames);
 
     current.setFrame(2);
     act(() => current.emitFrame());

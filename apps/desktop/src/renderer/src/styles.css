@@ -462,6 +462,11 @@ textarea {
   font-size: 10px;
 }
 
+.path-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .path-row code {
   overflow: hidden;
   border-radius: 6px;
@@ -577,18 +582,6 @@ textarea {
   margin: 3px 0 0;
   font-size: 23px;
 }
-
-.settings-notice {
-  margin-bottom: 13px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  padding: 10px 12px;
-  font-size: 12px;
-}
-
-.notice-success { color: #3f7358; background: #eef8f1; }
-.notice-error { color: #91433e; background: #fff0ed; }
-.notice-info { color: var(--brown-700); background: #fff8e9; }
 
 .settings-section {
   margin-top: 13px;
@@ -832,12 +825,6 @@ textarea {
 .settings-shell summary:focus-visible {
   outline: 3px solid rgba(36, 115, 163, 0.28);
   outline-offset: 2px;
-}
-
-.settings-shell .settings-notice {
-  margin: 12px 18px 0;
-  border-radius: 7px;
-  font-size: 12px;
 }
 
 .settings-pane,
@@ -1331,4 +1318,73 @@ textarea {
   display: block;
   width: 100%;
   height: 100%;
+}
+/* 通用瞬时提示：只提供跨页面复用的视觉和交互基础。 */
+.transient-toast-layer {
+  position: fixed;
+  z-index: 50;
+  top: 68px;
+  right: 16px;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.transient-toast {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px 10px 14px;
+  border: 1px solid var(--transient-toast-border, #c9d5d2);
+  border-radius: 7px;
+  color: #344b47;
+  background: #edf3f2;
+  box-shadow: 0 8px 24px rgba(23, 35, 33, 0.18);
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+  animation: transient-toast-enter 160ms ease-out both;
+}
+
+@keyframes transient-toast-enter {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transient-toast { animation-duration: 1ms; }
+}
+
+.transient-toast-success {
+  color: #075f59;
+  background: #e9f4f2;
+}
+
+.transient-toast-warning {
+  color: #7a4a00;
+  background: #fff4d6;
+}
+
+.transient-toast-error {
+  color: #7a271a;
+  background: #fef0ed;
+}
+
+.transient-toast button {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #617774;
+  background: transparent;
+  cursor: pointer;
+}
+
+.transient-toast button:hover {
+  border-color: #b7c3c1;
+  background: rgba(255, 255, 255, 0.72);
 }

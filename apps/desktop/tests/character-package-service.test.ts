@@ -14,7 +14,11 @@ import { createWriteStream as openWriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { finished } from 'node:stream/promises';
-import type { CharacterManifestV1 } from '@myself/character-runtime';
+import {
+  convertCharacterManifestV1ToV2,
+  type CharacterManifestV1,
+  type CharacterManifestV2
+} from '@myself/character-runtime';
 import * as yauzl from 'yauzl';
 import { ZipFile } from 'yazl';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -35,7 +39,7 @@ function checksum(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function runtime(characterId: string): {
+function legacyRuntime(characterId: string): {
   manifest: CharacterManifestV1;
   assets: Readonly<Record<string, Uint8Array>>;
 } {
@@ -74,6 +78,21 @@ function runtime(characterId: string): {
       }]
     },
     assets: { 'atlas.png': bytes }
+  };
+}
+
+function runtime(characterId: string): {
+  manifest: CharacterManifestV2;
+  assets: Readonly<Record<string, Uint8Array>>;
+} {
+  const legacy = legacyRuntime(characterId);
+  const manifest = convertCharacterManifestV1ToV2(legacy.manifest).document;
+  const presentation = manifest.skins[0]!.presentations[0]!;
+  presentation.frames[0]!.id = 'carry-commit';
+  presentation.commitFrameId = 'carry-commit';
+  return {
+    manifest,
+    assets: legacy.assets
   };
 }
 
@@ -179,6 +198,399 @@ describe('角色包 Main 服务', () => {
     return { store, sourceAssetId: imported!.assetId };
   }
 
+  test('V2 导出直接读取正式草稿与发布清单', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'v2-export.zip');
+
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', destination);
+
+    const files = await readZip(destination);
+    expect(JSON.parse(files.get('draft/draft.json')!.toString('utf8')))
+      .toMatchObject({ version: 2, id: 'demo' });
+    expect(JSON.parse(files.get('compiled/manifest.json')!.toString('utf8')))
+      .toMatchObject({
+        version: 2,
+        id: 'demo',
+        identity: { description: '演示角色' },
+        skins: [{
+          presentations: [{ commitFrameId: 'carry-commit' }]
+        }]
+      });
+    expect((await readdir(testDirectory)).some(name => (
+      name.startsWith('.character-export-')
+    ))).toBe(false);
+  });
+
+  test('V1 角色包在 staging 内统一转换为 V2 后安装', async () => {
+    const packagePath = join(testDirectory, 'legacy-v1.zip');
+    const legacy = legacyRuntime('legacy');
+    await writeZip(packagePath, [
+      {
+        path: 'draft/draft.json',
+        bytes: JSON.stringify({
+          version: 1,
+          id: 'legacy',
+          name: '旧版角色',
+          states: legacy.manifest.states
+        })
+      },
+      {
+        path: 'compiled/manifest.json',
+        bytes: JSON.stringify({ ...legacy.manifest, name: '旧版角色' })
+      },
+      {
+        path: 'source/catalog.json',
+        bytes: JSON.stringify({ version: 1, characterId: 'legacy', sources: [] })
+      },
+      { path: 'compiled/atlas.png', bytes: legacy.assets['atlas.png']! }
+    ]);
+    const importedCharacters = join(testDirectory, 'legacy-imported');
+    const store = new CharacterStore(importedCharacters);
+
+    const importedId = await new CharacterPackageService(importedCharacters, {
+      store,
+      assetService: new CharacterAssetService(importedCharacters)
+    }).importCharacter(packagePath);
+
+    expect(importedId).toBe('legacy');
+    await expect(store.getDraft(importedId)).resolves.toMatchObject({ version: 2 });
+    await expect(store.getPublishedManifest(importedId))
+      .resolves.toMatchObject({ version: 2 });
+  });
+
+  test.each([
+    {
+      name: '未知 V2 字段',
+      slug: 'unknown-v2-field',
+      mutate(files: Map<string, Buffer>) {
+        const draft = JSON.parse(files.get('draft/draft.json')!.toString('utf8'));
+        draft.shell = 'powershell.exe';
+        files.set('draft/draft.json', Buffer.from(JSON.stringify(draft)));
+      }
+    },
+    {
+      name: 'capabilityRef',
+      slug: 'capability-ref',
+      mutate(files: Map<string, Buffer>) {
+        const manifest = convertCharacterManifestV1ToV2(
+          legacyRuntime('demo').manifest
+        ).document as unknown as {
+          actions: Array<Record<string, unknown>>;
+        };
+        manifest.actions[0]!.capabilityRef = 'agent:run-shell';
+        files.set('compiled/manifest.json', Buffer.from(JSON.stringify(manifest)));
+      }
+    },
+    {
+      name: '混合 V1/V2 来源版本',
+      slug: 'mixed-source-version',
+      mutate(files: Map<string, Buffer>) {
+        const legacy = legacyRuntime('demo');
+        files.set('compiled/manifest.json', Buffer.from(JSON.stringify(
+          convertCharacterManifestV1ToV2(legacy.manifest).document
+        )));
+        files.set('draft/draft.json', Buffer.from(JSON.stringify({
+          version: 1,
+          id: 'demo',
+          name: '演示角色',
+          states: legacy.manifest.states
+        })));
+      }
+    }
+  ])('拒绝$name且不创建角色', async ({ slug, mutate }) => {
+    await createPublishedCharacter();
+    const exported = join(testDirectory, `${slug}.source.zip`);
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', exported);
+    const files = await readZip(exported);
+    mutate(files);
+    const malicious = join(testDirectory, `${slug}.zip`);
+    await writeZip(malicious, [...files].map(([path, bytes]) => ({ path, bytes })));
+    const importedCharacters = join(testDirectory, `${slug}-characters`);
+    const store = new CharacterStore(importedCharacters);
+
+    await expect(new CharacterPackageService(importedCharacters, { store })
+      .importCharacter(malicious)).rejects.toThrow('CHARACTER_PACKAGE_INVALID');
+    await expect(store.list()).resolves.toEqual([]);
+  });
+
+  test('恢复包只包含原始草稿、已验证目录和源素材', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'demo', name: '待恢复角色' });
+    const selectedDirectory = join(testDirectory, 'recovery-selected');
+    await mkdir(selectedDirectory);
+    const sourcePath = join(selectedDirectory, 'idle.png');
+    await writeFile(sourcePath, PNG_BYTES);
+    const [source] = await new CharacterAssetService(charactersDirectory)
+      .importSources('demo', [sourcePath]);
+    const originalDraft = { version: 3, id: 'demo', name: '待恢复角色' };
+    await writeFile(
+      join(charactersDirectory, 'demo', 'draft', 'draft.json'),
+      JSON.stringify(originalDraft)
+    );
+    await writeFile(
+      join(charactersDirectory, 'demo', '.package-import-owner.json'),
+      JSON.stringify({ importTransactionId: '不得导出' })
+    );
+    await writeFile(
+      join(charactersDirectory, 'demo', 'private.txt'),
+      'C:\\private\\characters\\demo'
+    );
+    await expect(store.list()).resolves.toMatchObject([{
+      id: 'demo',
+      migrationErrorCode: 'CHARACTER_MIGRATION_FAILED',
+      migrationRecoveryAvailable: true
+    }]);
+    const destination = join(testDirectory, 'recovery.zip');
+
+    await new CharacterPackageService(charactersDirectory, { store })
+      .exportCharacterRecovery('demo', destination);
+
+    const files = await readZip(destination);
+    expect([...files.keys()].sort()).toEqual([
+      'recovery/original-draft.json',
+      'source/catalog.json',
+      `source/${source!.assetId}.png`
+    ].sort());
+    expect(JSON.parse(
+      files.get('recovery/original-draft.json')!.toString('utf8')
+    )).toEqual(originalDraft);
+    const serialized = Buffer.concat([...files.values()]).toString('utf8');
+    expect(serialized).not.toContain('importTransactionId');
+    expect(serialized).not.toContain('C:\\private');
+  });
+
+  test('恢复导出使用 checkpoint 前的不可变草稿与素材快照', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'demo', name: '待恢复角色' });
+    const selectedDirectory = join(testDirectory, 'snapshot-selected');
+    await mkdir(selectedDirectory);
+    const selectedSource = join(selectedDirectory, 'idle.png');
+    await writeFile(selectedSource, PNG_BYTES);
+    const [source] = await new CharacterAssetService(charactersDirectory)
+      .importSources('demo', [selectedSource]);
+    const draftPath = join(charactersDirectory, 'demo', 'draft', 'draft.json');
+    const sourcePath = join(
+      charactersDirectory,
+      'demo',
+      'source',
+      `${source!.assetId}.png`
+    );
+    const originalDraft = Buffer.from(JSON.stringify({
+      version: 3,
+      id: 'demo',
+      name: '待恢复角色'
+    }));
+    await writeFile(draftPath, originalDraft);
+    const destination = join(testDirectory, 'snapshot-recovery.zip');
+    let mutated = false;
+    const service = new CharacterPackageService(charactersDirectory, {
+      store,
+      async onCheckpoint(checkpoint, _root, targetPath) {
+        if (
+          checkpoint !== 'export:resource-validated'
+          || targetPath !== sourcePath
+          || mutated
+        ) {
+          return;
+        }
+        mutated = true;
+        await writeFile(draftPath, Buffer.alloc(originalDraft.byteLength, 0x20));
+        await writeFile(sourcePath, Buffer.alloc(PNG_BYTES.byteLength, 0x42));
+      }
+    });
+
+    await service.exportCharacterRecovery('demo', destination);
+
+    expect(mutated).toBe(true);
+    const files = await readZip(destination);
+    expect(files.get('recovery/original-draft.json')).toEqual(originalDraft);
+    expect(files.get(`source/${source!.assetId}.png`)).toEqual(PNG_BYTES);
+    const catalog = JSON.parse(
+      files.get('source/catalog.json')!.toString('utf8')
+    ) as { sources: Array<{ sha256: string }> };
+    expect(catalog.sources[0]!.sha256).toBe(checksum(PNG_BYTES));
+    expect(checksum(files.get(`source/${source!.assetId}.png`)!))
+      .toBe(catalog.sources[0]!.sha256);
+  });
+
+  test.each(['draft', 'source'] as const)(
+    '恢复快照后同路径重建 %s 目录时拒绝提交',
+    async directoryName => {
+      const store = new CharacterStore(charactersDirectory);
+      await store.create({ id: 'demo', name: '待恢复角色' });
+      const selectedDirectory = join(testDirectory, 'identity-selected');
+      await mkdir(selectedDirectory);
+      const selectedSource = join(selectedDirectory, 'idle.png');
+      await writeFile(selectedSource, PNG_BYTES);
+      const [source] = await new CharacterAssetService(charactersDirectory)
+        .importSources('demo', [selectedSource]);
+      const draftPath = join(charactersDirectory, 'demo', 'draft', 'draft.json');
+      await writeFile(draftPath, JSON.stringify({
+        version: 3,
+        id: 'demo',
+        name: '待恢复角色'
+      }));
+      const sourcePath = join(
+        charactersDirectory,
+        'demo',
+        'source',
+        `${source!.assetId}.png`
+      );
+      const destination = join(testDirectory, `identity-${directoryName}.zip`);
+      let replaced = false;
+      const service = new CharacterPackageService(charactersDirectory, {
+        store,
+        async onCheckpoint(checkpoint, _root, targetPath) {
+          if (
+            checkpoint !== 'export:resource-validated'
+            || targetPath !== sourcePath
+            || replaced
+          ) {
+            return;
+          }
+          replaced = true;
+          const directory = join(charactersDirectory, 'demo', directoryName);
+          const moved = `${directory}.original`;
+          await rename(directory, moved);
+          await mkdir(directory);
+          for (const entry of await readdir(moved, { withFileTypes: true })) {
+            if (!entry.isFile()) continue;
+            await writeFile(
+              join(directory, entry.name),
+              await readFile(join(moved, entry.name))
+            );
+          }
+        }
+      });
+
+      await expect(service.exportCharacterRecovery('demo', destination))
+        .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+      expect(replaced).toBe(true);
+      await expect(access(destination)).rejects.toThrow();
+    }
+  );
+
+  test('提交前临时 ZIP 路径被替换时拒绝且不建立目标', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'replaced-temporary.zip');
+    let replaced = false;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'export:before-commit' || replaced) return;
+        replaced = true;
+        const temporaryPath = join(stagingDirectory, 'archive.tmp');
+        await rename(temporaryPath, `${temporaryPath}.original`);
+        await writeFile(temporaryPath, 'ATTACKER_ARCHIVE');
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    expect(replaced).toBe(true);
+    await expect(access(destination)).rejects.toThrow();
+  });
+
+  test('临时 ZIP 复核后、目标创建前被替换时拒绝且不删除陌生文件', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'replaced-before-link.zip');
+    let replacedTemporaryPath: string | undefined;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'export:before-link' || replacedTemporaryPath) return;
+        replacedTemporaryPath = join(stagingDirectory, 'archive.tmp');
+        await rename(
+          replacedTemporaryPath,
+          `${replacedTemporaryPath}.original`
+        );
+        await writeFile(replacedTemporaryPath, 'ATTACKER_ARCHIVE');
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    expect(replacedTemporaryPath).toBeTypeOf('string');
+    await expect(access(destination)).rejects.toThrow();
+    await expect(readFile(replacedTemporaryPath!))
+      .resolves.toEqual(Buffer.from('ATTACKER_ARCHIVE'));
+  });
+
+  test('归档写完、可信基准捕获前替换临时路径时拒绝提交', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'replaced-before-baseline.zip');
+    const attacker = Buffer.from('ATTACKER_ARCHIVE');
+    let replacedTemporaryPath: string | undefined;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'export:after-temp-write') return;
+        replacedTemporaryPath = join(stagingDirectory, 'archive.tmp');
+        await rename(
+          replacedTemporaryPath,
+          `${replacedTemporaryPath}.original`
+        );
+        await writeFile(replacedTemporaryPath, attacker);
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    await expect(access(destination)).rejects.toThrow();
+    await expect(readFile(replacedTemporaryPath!)).resolves.toEqual(attacker);
+  });
+
+  test('目标写入后被并发替换时拒绝且不删除并发方文件', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'replaced-after-write.zip');
+    const competitor = Buffer.from('COMPETITOR');
+    let replaced = false;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint) {
+        if (checkpoint !== 'export:after-destination-write' || replaced) return;
+        replaced = true;
+        await rename(destination, `${destination}.original`);
+        await writeFile(destination, competitor, { flag: 'wx' });
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    expect(replaced).toBe(true);
+    await expect(readFile(destination)).resolves.toEqual(competitor);
+  });
+
+  test('清理校验后路径被替换时保留竞争方并失效化本方 inode', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'cleanup-race.zip');
+    const movedDestination = `${destination}.original`;
+    const competitor = Buffer.from('COMPETITOR');
+    let raced = false;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint, _root, targetPath) {
+        if (checkpoint === 'export:after-destination-write') {
+          throw new Error('FORCE_EXPORT_FAILURE');
+        }
+        if (
+          checkpoint !== 'export:cleanup-verified'
+          || targetPath !== destination
+          || raced
+        ) {
+          return;
+        }
+        raced = true;
+        await rename(destination, movedDestination);
+        await writeFile(destination, competitor, { flag: 'wx' });
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('FORCE_EXPORT_FAILURE');
+    expect(raced).toBe(true);
+    await expect(readFile(destination)).resolves.toEqual(competitor);
+    await expect(readFile(movedDestination))
+      .resolves.toHaveLength(0);
+  });
+
   test('导出只包含指定角色草稿、源素材和运行时必需文件', async () => {
     const { sourceAssetId } = await createPublishedCharacter();
     await Promise.all([
@@ -241,6 +653,31 @@ describe('角色包 Main 服务', () => {
       'compiled/atlas.png',
       `source/${sourceAssetId}.png`
     ]);
+  });
+
+  test('普通导出拒绝 checkpoint 后同 inode 等长改写的实际流字节', async () => {
+    await createPublishedCharacter();
+    const destination = join(testDirectory, 'mutated-stream.zip');
+    const mutatedBytes = Buffer.from([9, 8, 7]);
+    let mutated = false;
+    const service = new CharacterPackageService(charactersDirectory, {
+      async onCheckpoint(checkpoint, _root, targetPath) {
+        if (
+          checkpoint !== 'export:resource-validated'
+          || !targetPath?.endsWith('atlas.png')
+          || mutated
+        ) {
+          return;
+        }
+        mutated = true;
+        await writeFile(targetPath, mutatedBytes);
+      }
+    });
+
+    await expect(service.exportCharacter('demo', destination))
+      .rejects.toThrow('CHARACTER_PACKAGE_EXPORT_SOURCE_CHANGED');
+    expect(mutated).toBe(true);
+    await expect(access(destination)).rejects.toThrow();
   });
 
   test.each([
@@ -330,9 +767,12 @@ describe('角色包 Main 服务', () => {
     await expect(service.exportCharacter('demo', destination))
       .rejects.toThrow('ARCHIVE_STREAM_FAILED');
     await expect(access(destination)).rejects.toThrow();
+    expect((await readdir(testDirectory)).some(name => (
+      name.startsWith('.character-export-')
+    ))).toBe(false);
   });
 
-  test('导入在隔离临时目录完成校验后才创建角色', async () => {
+  test('导入成功保留本方 staging 且不递归删除竞争目录', async () => {
     await createPublishedCharacter();
     const packagePath = join(testDirectory, 'demo.zip');
     await new CharacterPackageService(charactersDirectory)
@@ -341,6 +781,12 @@ describe('角色包 Main 服务', () => {
     const temporaryDirectory = join(testDirectory, 'isolated');
     await mkdir(temporaryDirectory);
     let observedIsolation = false;
+    let observedStaging = '';
+    const competitorFile = join(
+      temporaryDirectory,
+      'competitor-success',
+      'competitor.txt'
+    );
     const dependencies: CharacterPackageServiceDependencies = {
       temporaryDirectory,
       async onCheckpoint(checkpoint, stagingDirectory) {
@@ -358,6 +804,9 @@ describe('角色包 Main 服务', () => {
             .test(entry.name)
         ))).toBe(true);
         await expect(access(importedCharacters)).rejects.toThrow();
+        await mkdir(dirname(competitorFile));
+        await writeFile(competitorFile, 'COMPETITOR');
+        observedStaging = stagingDirectory;
         observedIsolation = true;
       }
     };
@@ -369,9 +818,92 @@ describe('角色包 Main 服务', () => {
 
     expect(observedIsolation).toBe(true);
     expect(importedId).toBe('demo');
-    await expect(new CharacterStore(importedCharacters).getRuntimeManifest(importedId))
+    const importedStore = new CharacterStore(importedCharacters);
+    await expect(importedStore.getRuntimeManifest(importedId))
       .resolves.toMatchObject({ id: importedId, name: '演示角色' });
-    await expect(readdir(temporaryDirectory)).resolves.toEqual([]);
+    await expect(importedStore.getPublishedManifest(importedId))
+      .resolves.toMatchObject({
+        skins: [{ presentations: [{ commitFrameId: 'carry-commit' }] }]
+      });
+    await expect(access(observedStaging)).resolves.toBeUndefined();
+    await expect(readFile(competitorFile, 'utf8')).resolves.toBe('COMPETITOR');
+  });
+
+  test('导入校验后 staging 被替换时不删除陌生替代目录', async () => {
+    await createPublishedCharacter();
+    const packagePath = join(testDirectory, 'demo.zip');
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', packagePath);
+    const importedCharacters = join(testDirectory, 'imported-staging-replaced');
+    const temporaryDirectory = join(testDirectory, 'import-staging-replaced');
+    await mkdir(temporaryDirectory);
+    let replacementFile = '';
+    const service = new CharacterPackageService(importedCharacters, {
+      temporaryDirectory,
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'import:validated') return;
+        await rename(stagingDirectory, `${stagingDirectory}-original`);
+        await mkdir(stagingDirectory);
+        replacementFile = join(stagingDirectory, 'competitor.txt');
+        await writeFile(replacementFile, 'COMPETITOR');
+      }
+    });
+
+    await expect(service.importCharacter(packagePath)).rejects.toThrow();
+
+    await expect(readFile(replacementFile, 'utf8')).resolves.toBe('COMPETITOR');
+  });
+
+  test('导入失败时保留被移动的本方 staging 与竞争目录', async () => {
+    await createPublishedCharacter();
+    const packagePath = join(testDirectory, 'demo.zip');
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', packagePath);
+    const importedCharacters = join(testDirectory, 'imported-staging-moved');
+    const temporaryDirectory = join(testDirectory, 'import-staging-moved');
+    await mkdir(temporaryDirectory);
+    let movedStaging = '';
+    let competitorFile = '';
+    const service = new CharacterPackageService(importedCharacters, {
+      temporaryDirectory,
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'import:validated') return;
+        movedStaging = `${stagingDirectory}-original`;
+        await rename(stagingDirectory, movedStaging);
+        await mkdir(stagingDirectory);
+        competitorFile = join(stagingDirectory, 'competitor.txt');
+        await writeFile(competitorFile, 'COMPETITOR');
+      }
+    });
+
+    await expect(service.importCharacter(packagePath)).rejects.toThrow();
+
+    await expect(access(movedStaging)).resolves.toBeUndefined();
+    await expect(readFile(competitorFile, 'utf8')).resolves.toBe('COMPETITOR');
+  });
+
+  test('导入失败不扫描或删除无关命名目录', async () => {
+    await createPublishedCharacter();
+    const packagePath = join(testDirectory, 'demo.zip');
+    await new CharacterPackageService(charactersDirectory)
+      .exportCharacter('demo', packagePath);
+    const importedCharacters = join(testDirectory, 'imported-prefix-scope');
+    const temporaryDirectory = join(testDirectory, 'import-prefix-scope');
+    await mkdir(temporaryDirectory);
+    const unrelatedDirectory = join(temporaryDirectory, 'unrelated-directory');
+    const service = new CharacterPackageService(importedCharacters, {
+      temporaryDirectory,
+      async onCheckpoint(checkpoint, stagingDirectory) {
+        if (checkpoint !== 'import:validated') return;
+        await rename(stagingDirectory, unrelatedDirectory);
+        await mkdir(stagingDirectory);
+        await writeFile(join(stagingDirectory, 'competitor.txt'), 'COMPETITOR');
+      }
+    });
+
+    await expect(service.importCharacter(packagePath)).rejects.toThrow();
+
+    await expect(access(unrelatedDirectory)).resolves.toBeUndefined();
   });
 
   test.each([

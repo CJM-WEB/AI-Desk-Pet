@@ -47,9 +47,14 @@ describe('electron-builder 配置', () => {
     expect(nsisConfig).toContain('deleteAppDataOnUninstall: false');
 
     const extraResources = readSection(configText, 'extraResources');
-    expect(extraResources).toContain('- from: resources/characters/default');
-    expect(extraResources).toContain('to: characters/default');
-    expect(extraResources).toContain("- '**/*'");
+    expect(extraResources.match(/^\s*- from:/gmu)).toHaveLength(3);
+    expect(extraResources).toContain('- from: resources/windows/explorer-space-bridge.ps1');
+    expect(extraResources).toContain('- from: resources/windows/explorer-space-shell-tab-helper.cs');
+    expect(extraResources).toContain('- from: resources/windows/explorer-space-integrity.json');
+    expect(extraResources).not.toMatch(/userData|authorized|habitat|characters/iu);
+
+    const files = readSection(configText, 'files');
+    expect(files).toContain('- resources/characters/default/**/*');
   });
 
   test('Windows 图标包含 256 像素资源', async () => {
@@ -68,5 +73,17 @@ describe('electron-builder 配置', () => {
 
     expect(Math.max(...widths)).toBeGreaterThanOrEqual(256);
     expect(Math.max(...heights)).toBeGreaterThanOrEqual(256);
+  });
+
+  test('生产桥源码只从应用固定资源根加载', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const start = main.indexOf('const explorerResourceRoot =');
+    const end = main.indexOf('const explorerLayer =', start);
+    const bridgeSetup = main.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(bridgeSetup).toContain('process.resourcesPath');
+    expect(bridgeSetup).toContain("join(__dirname, '../../resources')");
+    expect(bridgeSetup).not.toMatch(/userData|authorized|habitat|characters/iu);
   });
 });

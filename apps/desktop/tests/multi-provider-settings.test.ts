@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelRouteConfig, ProviderProfileV2 } from '@myself/shared-types';
@@ -53,6 +53,57 @@ describe('多 Provider 设置持久化', () => {
       expect(profile).not.toHaveProperty('secret');
       expect(profile).not.toHaveProperty('apiKey');
     }
+  });
+
+  test('目录外预置模型可按显式能力保存并用于 Agent 路由', async () => {
+    const store = await createStore();
+    await store.saveProviderProfile({
+      id: 'openai-new-agent',
+      displayName: 'OpenAI 新 Agent',
+      mode: 'preset',
+      providerId: 'openai',
+      modelId: 'provider-new-agent',
+      capabilities: ['chat', 'tools'],
+      hasStoredSecret: false
+    });
+
+    await expect(store.saveModelRoute({
+      primaryProfileId: 'openai-new-agent',
+      chatProfileId: null,
+      agentProfileId: 'openai-new-agent',
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    })).resolves.toBeUndefined();
+  });
+
+  test('目录外预置模型未声明能力时不从名称推断工具或视觉', async () => {
+    const store = await createStore();
+    await store.saveProviderProfile({
+      id: 'openai-vision-tools',
+      displayName: 'OpenAI Vision Tools',
+      mode: 'preset',
+      providerId: 'openai',
+      modelId: 'provider-vision-tools-model',
+      hasStoredSecret: false
+    });
+    const baseRoute: ModelRouteConfig = {
+      primaryProfileId: null,
+      chatProfileId: null,
+      agentProfileId: null,
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    };
+
+    await expect(store.saveModelRoute({
+      ...baseRoute,
+      agentProfileId: 'openai-vision-tools'
+    })).rejects.toMatchObject({ code: 'AGENT_MODEL_REQUIRES_TOOLS' });
+    await expect(store.saveModelRoute({
+      ...baseRoute,
+      visionProfileId: 'openai-vision-tools'
+    })).rejects.toMatchObject({ code: 'VISION_MODEL_REQUIRES_VISION' });
   });
 
   test('Agent 路由拒绝不支持工具的自定义档案', async () => {
@@ -197,6 +248,35 @@ describe('多 Provider 设置持久化', () => {
       longTermMemory: true,
       proactivityMode: 'passive'
     });
+  });
+
+  test('旧版隐私设置缺少桌宠置顶字段时迁移为关闭且可持久化', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'myself-topmost-settings-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.json');
+    await writeFile(file, JSON.stringify({
+      version: 2,
+      providerProfiles: [],
+      modelRoute: {
+        primaryProfileId: null, chatProfileId: null, agentProfileId: null,
+        visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPosition: null,
+      fileDisclosureAccepted: false,
+      privacy: {
+        dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+        longTermMemory: false,
+        proactivityMode: 'assistive'
+      }
+    }), 'utf8');
+
+    const store = new SettingsStore(file, async () => false);
+    await expect(store.getPetAlwaysOnTop()).resolves.toBe(false);
+    await store.savePetAlwaysOnTop(true);
+    const restarted = new SettingsStore(file, async () => false);
+    await expect(restarted.getPetAlwaysOnTop()).resolves.toBe(true);
+    await expect(restarted.getPrivacySettings()).resolves.not.toHaveProperty('petAlwaysOnTop');
   });
 
   test('MCP 配置持久化只保存认证字段名而不保存认证值', async () => {

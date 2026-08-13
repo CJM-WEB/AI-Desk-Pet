@@ -40,6 +40,9 @@ describe('官方默认角色安装', () => {
     );
 
     const manifest = await store.getActive();
+    const publishedManifest = await store.getPublishedManifest('builtin-default');
+    expect(manifest.version).toBe(1);
+    expect(publishedManifest.version).toBe(2);
     expect(manifest.id).toBe('builtin-default');
     expect(manifest.states.map(state => state.id)).toEqual([
       'idle',
@@ -51,6 +54,16 @@ describe('官方默认角色安装', () => {
       'success',
       'error'
     ]);
+    const carrying = publishedManifest.skins[0]!.presentations.find(
+      presentation => presentation.actionId === 'carrying-main'
+    );
+    expect(carrying?.commitFrameId).toBe('carrying-frame-3');
+    expect(carrying?.frames.findIndex(frame => frame.id === carrying.commitFrameId))
+      .toBe(2);
+    expect(publishedManifest.skins[0]?.semanticFallbacks).toEqual([]);
+    expect(publishedManifest.actions.map(action => action.semantic)).not.toEqual(
+      expect.arrayContaining(['hide', 'emerge'])
+    );
   });
 
   test('已有可用默认角色时不重写其运行版本', async () => {
@@ -71,7 +84,7 @@ describe('官方默认角色安装', () => {
     await ensureOfficialDefaultCharacter(store, resourceDirectory);
 
     const defaultDraft = await store.getDraft('builtin-default');
-    const defaultManifest = await store.getRuntimeManifest('builtin-default');
+    const defaultManifest = await store.getPublishedManifest('builtin-default');
     await store.create({ id: 'user-pet', name: '用户角色' });
     await store.saveDraft('user-pet', {
       ...defaultDraft,

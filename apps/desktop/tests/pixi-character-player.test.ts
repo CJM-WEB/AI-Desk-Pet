@@ -51,6 +51,136 @@ function manifest(): CharacterManifestV1 {
 }
 
 describe('共享 Pixi 角色动作场景', () => {
+  function lifecycleScene(options?: { failPlay?: boolean }) {
+    let complete: (() => void) | undefined;
+    const unsubscribeComplete = vi.fn();
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
+      showAction: vi.fn(() => {
+        if (options?.failPlay) throw new Error('CHARACTER_RUNTIME_ASSET_MISSING');
+      }),
+      getCurrentFrame: vi.fn().mockReturnValue(null),
+      subscribeFrame: vi.fn(() => vi.fn()),
+      subscribeActionComplete: vi.fn(listener => {
+        complete = listener;
+        return unsubscribeComplete;
+      }),
+      destroy: vi.fn()
+    };
+    return { complete: () => complete?.(), scene, unsubscribeComplete };
+  }
+
+  test('非循环动作自然结束时只报告一次 completed', () => {
+    const fixture = lifecycleScene();
+    const currentManifest = manifest();
+    currentManifest.states[0]!.actions[0]!.loop = false;
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+
+    const playbackId = player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+    fixture.complete();
+    fixture.complete();
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({
+      playbackId,
+      actionId: 'idle',
+      status: 'completed'
+    });
+  });
+
+  test('循环动作不会把场景完成信号报告为自然完成', () => {
+    const fixture = lifecycleScene();
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+
+    player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+    fixture.complete();
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test('新动作替换当前播放时报告旧播放 interrupted', () => {
+    const fixture = lifecycleScene();
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+    const firstPlaybackId = player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+
+    player.play({
+      stateId: 'idle',
+      action: { ...currentManifest.states[0]!.actions[0]!, id: 'idle-next' },
+      reason: 'matched'
+    }, 'animated');
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({
+      playbackId: firstPlaybackId,
+      actionId: 'idle',
+      status: 'interrupted'
+    });
+  });
+
+  test('场景展示资源异常时报告 failed 且仍向调用方抛出稳定错误', () => {
+    const fixture = lifecycleScene({ failPlay: true });
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+
+    expect(() => player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated')).toThrow('CHARACTER_RUNTIME_ASSET_MISSING');
+    expect(listener).toHaveBeenCalledWith({
+      playbackId: 1,
+      actionId: 'idle',
+      status: 'failed'
+    });
+  });
+
+  test('销毁时中断当前播放并清理场景完成订阅', () => {
+    const fixture = lifecycleScene();
+    const currentManifest = manifest();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const listener = vi.fn();
+    player.subscribePlaybackLifecycle(listener);
+    const playbackId = player.play({
+      stateId: 'idle',
+      action: currentManifest.states[0]!.actions[0]!,
+      reason: 'matched'
+    }, 'animated');
+
+    player.destroy();
+    fixture.complete();
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith({
+      playbackId,
+      actionId: 'idle',
+      status: 'interrupted'
+    });
+    expect(fixture.unsubscribeComplete).toHaveBeenCalledOnce();
+  });
+
   test('播放器使用正式场景快照命中，并将帧变更通知给可取消订阅者', () => {
     let frameListener: (() => void) | undefined;
     const unsubscribeFrame = vi.fn();
@@ -62,6 +192,7 @@ describe('共享 Pixi 角色动作场景', () => {
     };
     const scene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
       showAction: vi.fn(),
       getCurrentFrame: vi.fn().mockReturnValue(null),
       getHitSnapshot: vi.fn(() => currentSnapshot),
@@ -92,6 +223,7 @@ describe('共享 Pixi 角色动作场景', () => {
     let frameListener: (() => void) | undefined;
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
       showAction: vi.fn(),
       getCurrentFrame: vi.fn().mockReturnValue(null),
       subscribeFrame: vi.fn(listener => { frameListener = listener; return vi.fn(); }),
@@ -118,6 +250,7 @@ describe('共享 Pixi 角色动作场景', () => {
   test('播放器只将动作帧白名单 Blob URL 映射给共享场景并展示动作', async () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
       showAction: vi.fn(),
       getCurrentFrame: vi.fn().mockReturnValue(null),
       subscribeFrame: vi.fn(() => vi.fn()),
@@ -153,6 +286,7 @@ describe('共享 Pixi 角色动作场景', () => {
   test('加载阶段缺失动作帧资源时保持原有失败语义', async () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
       showAction: vi.fn(),
       getCurrentFrame: vi.fn().mockReturnValue(null),
       subscribeFrame: vi.fn(() => vi.fn()),
@@ -175,6 +309,7 @@ describe('共享 Pixi 角色动作场景', () => {
   test('运行时方向变更时以新方向重新展示当前动作', () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
       showAction: vi.fn(),
       getCurrentFrame: vi.fn().mockReturnValue(null),
       subscribeFrame: vi.fn(() => vi.fn()),
@@ -202,6 +337,7 @@ describe('共享 Pixi 角色动作场景', () => {
   test('运行时方向变更时保持非零当前帧', () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
       showAction: vi.fn(),
       getCurrentFrame: vi.fn().mockReturnValue({
         action,
@@ -227,9 +363,61 @@ describe('共享 Pixi 角色动作场景', () => {
     );
   });
 
+  test('方向重建失败后再次改变方向不会恢复已 failed 动作', () => {
+    const directionalAction: ActionClip = {
+      ...manifest().states[0]!.actions[0]!,
+      anchors: {
+        ...manifest().states[0]!.actions[0]!.anchors,
+        carry: { x: 0.2, y: 0.4 }
+      }
+    };
+    const showAction = vi.fn()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error('CHARACTER_DIRECTION_REBUILD_FAILED');
+      });
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
+      showAction,
+      getCurrentFrame: vi.fn(() => ({
+        action: directionalAction,
+        frameIndex: 0,
+        bounds: { x: 0, y: 0, width: 32, height: 32 }
+      })),
+      subscribeFrame: vi.fn(() => vi.fn()),
+      destroy: vi.fn()
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const lifecycle = vi.fn();
+    player.subscribePlaybackLifecycle(lifecycle);
+    const playbackId = player.play({
+      stateId: 'idle',
+      action: directionalAction,
+      reason: 'matched'
+    }, 'animated');
+
+    expect(() => player.setDirection('left'))
+      .toThrow('CHARACTER_DIRECTION_REBUILD_FAILED');
+    expect(lifecycle).toHaveBeenCalledExactlyOnceWith({
+      playbackId,
+      actionId: directionalAction.id,
+      status: 'failed'
+    });
+    expect(player.getAnchor('carry')).toEqual({ x: 0.8, y: 0.4 });
+
+    player.setDirection('right');
+    expect(showAction).toHaveBeenCalledTimes(2);
+    expect(lifecycle).toHaveBeenCalledOnce();
+
+    player.destroy();
+    expect(lifecycle).toHaveBeenCalledOnce();
+  });
+
   test('内部 ticker 状态能力会继续反映共享场景的动画状态', () => {
     const scene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
       showAction: vi.fn(),
       getCurrentFrame: vi.fn().mockReturnValue(null),
       subscribeFrame: vi.fn(() => vi.fn()),
@@ -384,6 +572,106 @@ describe('共享 Pixi 角色动作场景', () => {
       expect(notify).toHaveBeenCalledTimes(3);
       scene.destroy();
       expect(latestSprites[1]!.onFrameChange).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('清空场景停止播放、移除精灵并立即重绘', async () => {
+    const latestSprites: TestAnimatedSprite[] = [];
+    const applications: TestApplication[] = [];
+    class TestTexture {
+      source: unknown;
+      frame: { x: number; y: number; width: number; height: number };
+
+      constructor(options: { source: unknown; frame: { x: number; y: number; width: number; height: number } }) {
+        this.source = options.source;
+        this.frame = options.frame;
+      }
+
+      static from(image: unknown) {
+        return new TestTexture({
+          source: image,
+          frame: { x: 0, y: 0, width: 1, height: 1 }
+        });
+      }
+
+      destroy = vi.fn();
+    }
+    class TestAnimatedSprite {
+      currentFrame = 0;
+      loop = false;
+      anchor = { set: vi.fn() };
+      scale = { set: vi.fn() };
+      position = { set: vi.fn() };
+      onFrameChange?: (currentFrame: number) => void;
+
+      constructor(readonly frames: Array<{ texture: TestTexture; time: number }>) {
+        latestSprites.push(this);
+      }
+
+      play = vi.fn();
+      stop = vi.fn();
+      update = vi.fn();
+      destroy = vi.fn();
+      gotoAndStop(index: number) { this.currentFrame = index; }
+      getBounds() { return { x: 3, y: 4, width: 32, height: 32 }; }
+    }
+    class TestApplication {
+      canvas = document.createElement('canvas');
+      screen = { width: 100, height: 100 };
+      stage = { addChild: vi.fn(), removeChild: vi.fn() };
+      ticker = {
+        started: false,
+        add: vi.fn(),
+        remove: vi.fn(),
+        start: vi.fn(() => { this.ticker.started = true; }),
+        stop: vi.fn(() => { this.ticker.started = false; })
+      };
+      init = vi.fn(async () => undefined);
+      render = vi.fn();
+      destroy = vi.fn();
+
+      constructor() { applications.push(this); }
+    }
+    class TestImage {
+      src = '';
+      decode = vi.fn(async () => undefined);
+    }
+    vi.stubGlobal('Image', TestImage);
+    try {
+      const scene = await createBrowserPixiCharacterScene(
+        document.createElement('div'),
+        async () => ({
+          Application: TestApplication,
+          Texture: TestTexture,
+          AnimatedSprite: TestAnimatedSprite,
+          Rectangle: class {
+            constructor(
+              readonly x: number,
+              readonly y: number,
+              readonly width: number,
+              readonly height: number
+            ) {}
+          }
+        }) as never
+      );
+      await scene.loadAssets(new Map([['atlas', 'blob:atlas']]));
+      scene.showAction(action, {
+        direction: 'right', motionMode: 'animated', speed: 1, loop: true
+      });
+      const notify = vi.fn();
+      scene.subscribeFrame(notify);
+      const sprite = latestSprites[0]!;
+
+      scene.clear();
+
+      expect(applications[0]!.ticker.stop).toHaveBeenCalled();
+      expect(applications[0]!.stage.removeChild).toHaveBeenCalledWith(sprite);
+      expect(applications[0]!.render).toHaveBeenCalled();
+      expect(scene.getCurrentFrame()).toBeNull();
+      expect(scene.getHitSnapshot?.()).toBeNull();
+      expect(notify).toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -629,5 +917,72 @@ describe('共享 Pixi 角色动作场景', () => {
       getContext.mockRestore();
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('稳定帧订阅', () => {
+  test('把场景索引映射为清单帧 ID', () => {
+    let sceneFrame: (() => void) | undefined;
+    const stableAction = {
+      ...action,
+      frames: [
+        { ...action.frames[0]!, id: 'frame-start' },
+        { ...action.frames[1]!, id: 'frame-commit' }
+      ]
+    } as ActionClip;
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn(() => ({
+        action: stableAction,
+        frameIndex: 1,
+        bounds: { x: 0, y: 0, width: 1, height: 1 }
+      })),
+      subscribeFrame: vi.fn(listener => {
+        sceneFrame = listener;
+        return vi.fn();
+      }),
+      destroy: vi.fn()
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const notify = vi.fn();
+    player.subscribeFrame(notify);
+
+    sceneFrame?.();
+
+    expect(notify).toHaveBeenCalledWith('frame-commit');
+  });
+
+  test('首帧或单帧动作在 showAction 成功后主动发布当前稳定帧 ID', () => {
+    const singleFrameAction = {
+      ...action,
+      frames: [{ ...action.frames[0]!, id: 'frame-commit' }]
+    } as ActionClip;
+    const scene: PixiCharacterScene = {
+      loadAssets: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(),
+      showAction: vi.fn(),
+      getCurrentFrame: vi.fn(() => ({
+        action: singleFrameAction,
+        frameIndex: 0,
+        bounds: { x: 0, y: 0, width: 1, height: 1 }
+      })),
+      // 模拟 AnimatedSprite 首帧不触发 onFrameChange 的真实行为。
+      subscribeFrame: vi.fn(() => vi.fn()),
+      destroy: vi.fn()
+    };
+    const player = new PixiCharacterPlayer(scene);
+    const notify = vi.fn();
+    player.subscribeFrame(notify);
+
+    player.play({
+      stateId: 'idle',
+      action: singleFrameAction,
+      reason: 'matched'
+    }, 'animated');
+
+    expect(notify).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith('frame-commit');
   });
 });

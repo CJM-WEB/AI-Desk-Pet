@@ -1,9 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test, vi } from 'vitest';
-import type { CharacterDraftV1 } from '@myself/character-runtime';
+import type { CharacterDraftV2 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
+import { CharacterIdentityInspector } from '../src/renderer/src/characters/workshop/CharacterIdentityInspector';
+import { SkinList } from '../src/renderer/src/characters/workshop/SkinList';
+import { SkinInspector } from '../src/renderer/src/characters/workshop/SkinInspector';
+import { StateInspector } from '../src/renderer/src/characters/workshop/StateInspector';
+import { ActionInspector } from '../src/renderer/src/characters/workshop/ActionInspector';
 import {
   CharacterWorkshopWorkspace as CharacterWorkshopWorkspaceComponent
 } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
@@ -12,27 +17,43 @@ import type {
   CharacterWorkshopState
 } from '../src/renderer/src/characters/store/character-workshop-store';
 
-const currentDraft: CharacterDraftV1 = {
-  version: 1,
+const currentDraft: CharacterDraftV2 = {
+  version: 2,
   id: 'nova',
   name: 'Nova',
+  identity: {
+    description: '桌面伙伴', background: '来自桌面', traits: ['友好'],
+    languageStyle: '简洁', formsOfAddress: ['朋友'], likes: ['晴天'],
+    dislikes: ['噪声'], behavioralTendencies: ['问候'], boundaries: ['尊重隐私'],
+    exampleLines: ['你好。']
+  },
+  defaultSkinId: 'default',
+  defaultStateId: 'idle',
+  skins: [{
+    id: 'default',
+    name: '默认皮肤',
+    presentations: [{
+      actionId: 'idle-main', fps: 12, frames: [],
+      anchors: { ground: { x: 0.5, y: 1 } }
+    }],
+    semanticFallbacks: []
+  }],
   states: [{
     id: 'idle',
-    kind: 'core',
-    actions: [{
-      id: 'idle-main',
-      name: '轻呼吸',
-      fps: 12,
-      loop: true,
-      weight: 1,
-      direction: 'any',
-      anchors: { ground: { x: 0.5, y: 1 } },
-      frames: []
-    }]
+    name: '待机', kind: 'primary', semantic: 'idle', tags: [], intensity: 20,
+    coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+    exitConditions: [], agentInferable: true, actionIds: ['idle-main']
   }, {
     id: 'thinking',
-    kind: 'core',
-    actions: []
+    name: '思考', kind: 'primary', semantic: 'think', tags: [], intensity: 50,
+    coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [],
+    exitConditions: [], agentInferable: true, actionIds: []
+  }],
+  actions: [{
+    id: 'idle-main', name: '轻呼吸', semantic: 'idle', tags: [], preference: 1,
+    cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation', interrupt: 'normal',
+    allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [], requiredModifierStateIds: [],
+    forbiddenModifierStateIds: [], direction: 'any'
   }]
 };
 
@@ -42,14 +63,16 @@ const characters: CharacterSummaryDto[] = [{
   thumbnailAssetId: null,
   active: true,
   completeness: 'complete',
-  missingCoreStates: []
+  missingRequirements: [],
+  migrationRecoveryAvailable: false
 }, {
   id: 'nova',
   name: 'Nova',
   thumbnailAssetId: null,
   active: false,
   completeness: 'incomplete',
-  missingCoreStates: ['listening']
+  missingRequirements: ['default-presentation-unplayable'],
+  migrationRecoveryAvailable: false
 }];
 
 function apiDouble(): CharacterWorkshopApi {
@@ -90,6 +113,8 @@ function state(
     characters,
     selectedCharacterId: 'nova',
     draft: currentDraft,
+    selectedEntity: { kind: 'action', actionId: 'idle-main' },
+    selectedSkinId: 'default',
     selectedStateId: 'idle',
     selectedActionId: 'idle-main',
     draftStatus: 'saved',
@@ -101,6 +126,8 @@ function state(
     load: vi.fn(),
     mount: vi.fn(() => vi.fn()),
     selectCharacter: vi.fn(),
+    selectIdentity: vi.fn(),
+    selectSkin: vi.fn(),
     selectState: vi.fn(),
     selectAction: vi.fn(),
     createCharacter: vi.fn(),
@@ -110,8 +137,21 @@ function state(
     importCharacterPackage: vi.fn(),
     exportCharacterPackage: vi.fn(),
     importSources: vi.fn(),
+    updateIdentity: vi.fn(),
+    addSkin: vi.fn(),
+    duplicateSkin: vi.fn(),
+    updateSkin: vi.fn(),
+    setDefaultSkin: vi.fn(),
+    requestRemoveSkin: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    addState: vi.fn(),
+    updateState: vi.fn(),
+    requestRemoveState: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     addAction: vi.fn(),
+    updateAction: vi.fn(),
+    requestRemoveAction: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
+    removeAction: vi.fn(),
     addExtensionState: vi.fn(),
+    removeExtensionState: vi.fn(),
     applySpriteSheet: vi.fn(),
     compileAndPublish: vi.fn(),
     publishCharacter: vi.fn(),
@@ -126,6 +166,13 @@ function state(
 async function workshopCss(): Promise<string> {
   return readFile(new URL(
     '../src/renderer/src/characters/workshop/character-workshop.css',
+    import.meta.url
+  ), 'utf8');
+}
+
+async function rendererStyles(): Promise<string> {
+  return readFile(new URL(
+    '../src/renderer/src/styles.css',
     import.meta.url
   ), 'utf8');
 }
@@ -171,7 +218,7 @@ describe('角色工作室 SSR 外壳', () => {
       '角色',
       '状态与动作',
       '实时预览',
-      '动作属性',
+      '角色人设',
       '新建角色',
       '导入素材',
       '启用角色',
@@ -209,6 +256,43 @@ describe('角色工作室 SSR 外壳', () => {
     );
 
     expect(markup).toContain('保存草稿');
+  });
+
+  test('新增入口位于状态与动作层级且顶部旧按钮已移除', () => {
+    const markup = renderToStaticMarkup(
+      <CharacterWorkshopWorkspace state={state()} />
+    );
+    const toolbar = markup.match(
+      /<nav class="workshop-toolbar"[\s\S]*?<\/nav>/u
+    )?.[0] ?? '';
+
+    expect(toolbar).not.toContain('添加动作');
+    expect(toolbar).not.toContain('扩展状态');
+    expect(markup).toContain('aria-label="添加扩展状态"');
+    expect(markup).toContain('aria-label="向“待机”添加动作"');
+    expect(markup).toContain('aria-label="删除动作“轻呼吸”"');
+  });
+
+  test('默认状态没有减号而非默认主状态和修饰状态均可删除', () => {
+    const extensionDraft: CharacterDraftV2 = {
+      ...currentDraft,
+      states: [
+        ...currentDraft.states,
+        {
+          id: 'wave', name: '挥手', kind: 'modifier', semantic: 'speak', tags: [],
+          intensity: 70, coexistWithStateIds: [], forbiddenStateIds: [],
+          enterConditions: [], exitConditions: [], agentInferable: true, actionIds: []
+        }
+      ]
+    };
+    const markup = renderToStaticMarkup(
+      <CharacterWorkshopWorkspace state={state({ draft: extensionDraft })} />
+    );
+
+    expect(markup).not.toContain('aria-label="删除状态“待机”"');
+    expect(markup).toContain('aria-label="删除状态“思考”"');
+    expect(markup).toContain('aria-label="向“挥手”添加动作"');
+    expect(markup).toContain('aria-label="删除状态“挥手”"');
   });
 
   test('官方默认角色不呈现删除命令，自定义角色提供带标签的单项命令', () => {
@@ -301,7 +385,7 @@ describe('角色工作室 SSR 外壳', () => {
     );
 
     expect(markup).toContain('草稿已保存');
-    expect(markup).toContain('workshop-toast-layer');
+    expect(markup).toContain('transient-toast-layer');
     expect(markup).toContain('第一条。');
     expect(markup).not.toContain('第二条。');
     expect(markup).not.toContain('workshop-notice');
@@ -349,7 +433,7 @@ describe('角色工作室 SSR 外壳', () => {
   });
 
   test('Toast 固定覆盖层不占工作区轨道，窄窗口仍可滚动访问 Inspector', async () => {
-    const css = await workshopCss();
+    const [css, globalCss] = await Promise.all([workshopCss(), rendererStyles()]);
 
     expect(css).toMatch(
       /\.character-workshop-shell\s*\{[^}]*grid-template-rows:\s*56px 45px minmax\(0,\s*1fr\);/su
@@ -357,11 +441,17 @@ describe('角色工作室 SSR 外壳', () => {
     expect(css).toMatch(
       /\.workshop-columns\s*\{[^}]*grid-row:\s*3;/su
     );
-    expect(css).toMatch(
-      /\.workshop-toast-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*50;[^}]*top:\s*68px;[^}]*right:\s*16px;[^}]*pointer-events:\s*none;/su
+    expect(globalCss).toMatch(
+      /\.transient-toast-layer\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*50;[^}]*top:\s*68px;[^}]*right:\s*16px;[^}]*pointer-events:\s*none;/su
+    );
+    expect(globalCss).toMatch(
+      /\.transient-toast\s*\{[^}]*pointer-events:\s*auto;/su
     );
     expect(css).toMatch(
-      /\.workshop-toast\s*\{[^}]*pointer-events:\s*auto;/su
+      /\.character-workshop-shell\s*\{[^}]*--workshop-border:\s*#cbd4d3;[^}]*--transient-toast-border:\s*var\(--workshop-border\);/su
+    );
+    expect(globalCss).toMatch(
+      /\.transient-toast\s*\{[^}]*border:\s*1px solid var\(--transient-toast-border,\s*#c9d5d2\);/su
     );
     expect(css).toMatch(
       /@media \(max-width:\s*920px\)[\s\S]*?\.workshop-columns\s*\{[^}]*overflow-y:\s*auto;/su
@@ -446,5 +536,186 @@ describe('角色工作室 SSR 外壳', () => {
     expect(css).toMatch(
       /\.workshop-title h1\s*\{[^}]*line-height:\s*1\.25;/su
     );
+  });
+});
+
+describe('V2 结构化 Inspector', () => {
+  test('角色与皮肤区域只保留一个二级标题', () => {
+    const markup = renderToStaticMarkup(<CharacterWorkshopWorkspace state={state()} />);
+    expect(markup.match(/<h2[^>]*>角色与皮肤<\/h2>/gu)).toHaveLength(1);
+  });
+
+  test('皮肤列表区分默认皮肤并只允许删除非默认皮肤', () => {
+    const markup = renderToStaticMarkup(
+      <SkinList
+        skins={[
+          { id: 'default', name: '默认皮肤', presentations: [], semanticFallbacks: [] },
+          { id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }
+        ]}
+        defaultSkinId="default"
+        selectedSkinId="winter"
+        disabled={false}
+        onAdd={vi.fn()}
+        onSelect={vi.fn()}
+        onSetDefault={vi.fn()}
+        onRequestDelete={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('aria-label="皮肤"');
+    expect(markup).not.toContain('<h2');
+    expect(markup).toContain('aria-label="新增皮肤"');
+    expect(markup).not.toContain('删除皮肤“默认皮肤”');
+    expect(markup).toContain('aria-label="删除皮肤“冬装”"');
+  });
+
+  test('人设只提供 V2 结构化字段且复杂字段具有持续帮助文字', () => {
+    const markup = renderToStaticMarkup(
+      <CharacterIdentityInspector
+        identity={{
+          description: '爱观察的桌宠',
+          background: '来自数字花园',
+          traits: ['好奇'],
+          languageStyle: '简洁温和',
+          formsOfAddress: ['朋友'],
+          likes: ['晴天'],
+          dislikes: ['噪声'],
+          behavioralTendencies: ['主动问候'],
+          boundaries: ['不读取隐私'],
+          exampleLines: ['今天也一起加油。']
+        }}
+        disabled={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('角色描述');
+    expect(markup).toContain('性格标签');
+    expect(markup).toContain('最多 32 项');
+    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本/u);
+  });
+
+  test('皮肤属性说明当前表现覆盖状态且字段受协议长度限制', () => {
+    const markup = renderToStaticMarkup(
+      <SkinInspector
+        skin={{
+          id: 'winter',
+          name: '冬装',
+          description: '适合冬季',
+          presentations: [{
+            actionId: 'idle-main',
+            fps: 12,
+            frames: [],
+            anchors: { ground: { x: 0.5, y: 1 } }
+          }],
+          semanticFallbacks: []
+        }}
+        actions={currentDraft.actions}
+        selectedActionId="idle-main"
+        presentationSource="skin-action"
+        disabled={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('皮肤名称');
+    expect(markup).toContain('当前皮肤精确表现');
+    expect(markup).toContain('idle 语义回退');
+    expect(markup).toContain('maxLength="120"');
+    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
+  });
+
+  test.each([
+    ['skin-action', '当前皮肤精确表现'],
+    ['skin-semantic', '当前皮肤语义回退'],
+    ['default-action', '默认皮肤动作'],
+    ['default-state', '默认状态回退'],
+    [null, '无可播放表现']
+  ] as const)('皮肤检查器说明当前动作表现来源：%s', (presentationSource, expected) => {
+    const markup = renderToStaticMarkup(
+      <SkinInspector
+        skin={{ id: 'winter', name: '冬装', presentations: [], semanticFallbacks: [] }}
+        actions={currentDraft.actions}
+        selectedActionId="idle-main"
+        presentationSource={presentationSource}
+        disabled={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain(expected);
+  });
+
+  test('状态属性只暴露可信 signal、标准语义和当前状态引用', () => {
+    const markup = renderToStaticMarkup(
+      <StateInspector
+        state={{
+          id: 'calm',
+          name: '平静',
+          kind: 'modifier',
+          semantic: 'idle',
+          tags: [],
+          intensity: 50,
+          coexistWithStateIds: [],
+          forbiddenStateIds: [],
+          enterConditions: [],
+          exitConditions: [],
+          agentInferable: false,
+          actionIds: []
+        }}
+        allStates={[
+          {
+            id: 'idle', name: '待机', kind: 'primary', semantic: 'idle', tags: [],
+            intensity: 20, coexistWithStateIds: [], forbiddenStateIds: [],
+            enterConditions: [], exitConditions: [], agentInferable: false, actionIds: []
+          }
+        ]}
+        disabled={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('进入条件类型');
+    expect(markup).toContain('user-interaction');
+    expect(markup).toContain('标准语义');
+    expect(markup).toContain('当前状态引用');
+    expect(markup).toContain('状态标签');
+    expect(markup).not.toMatch(/关键词|情绪文本/u);
+    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
+  });
+
+  test('动作属性从合法动作生成回退选项且不再编辑表现帧率', () => {
+    const action = {
+      id: 'wave', name: '挥手', semantic: 'speak' as const, tags: [], preference: 1,
+      cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation' as const,
+      interrupt: 'normal' as const, allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [],
+      requiredModifierStateIds: [], forbiddenModifierStateIds: [], direction: 'any' as const
+    };
+    const fallback = { ...action, id: 'idle-main', name: '待机', semantic: 'idle' as const };
+    const markup = renderToStaticMarkup(
+      <ActionInspector
+        action={action}
+        actions={[action, fallback]}
+        states={[]}
+        disabled={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('动作失败回退');
+    expect(markup).toContain('value="idle-main"');
+    expect(markup).toContain('动作标签');
+    expect(markup).toContain('动作建议持续时间');
+    expect(markup).not.toMatch(/帧率|表现帧/u);
+    expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
+  });
+
+  test('V2 列表与表单保持 44px 目标和至少 8px 操作间距', async () => {
+    const css = await workshopCss();
+
+    expect(css).toMatch(/\.skin-select\s*\{[^}]*min-height:\s*44px;/su);
+    expect(css).toMatch(/\.inspector-form\s+(?:input|select|textarea)[^\{]*\{[^}]*min-height:\s*44px;/su);
+    expect(css).toMatch(/\.skin-row-commands\s*\{[^}]*gap:\s*8px;/su);
+    expect(css).toMatch(/\.recovery-actions\s*\{[^}]*gap:\s*8px;/su);
   });
 });

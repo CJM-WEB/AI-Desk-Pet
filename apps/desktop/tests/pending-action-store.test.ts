@@ -7,29 +7,64 @@ import {
 
 function publicData(targetRelativePath = 'result.txt') {
   return {
+    category: 'file' as const,
     conversationId: 'conversation-1',
     risk: 'write' as const,
+    operation: 'create_file' as const,
     summary: `创建 ${targetRelativePath}`,
-    targetRelativePath
+    targetRelativePath,
+    contentCharacters: 0,
+    contentPreview: null,
+    contentPreviewSuppressedReason: null,
+    previewTruncated: false
   };
 }
 
 function privateAction(targetRelativePath = 'result.txt'): VerifiedWriteAction {
   return Object.freeze({
-    id: 'verified-action-1',
-    toolName: 'create_file' as const,
-    targetRelativePath
+    operation: 'create_file' as const,
+    authorizationGeneration: 0,
+    targetRelativePath,
+    contentCharacters: 0,
+    contentPreview: null,
+    contentPreviewSuppressedReason: null,
+    previewTruncated: false
   });
 }
 
 function pendingExecution(targetRelativePath = 'result.txt'): PendingExecution {
   return {
-    verifiedAction: privateAction(targetRelativePath),
+    verifiedAction: { category: 'file', action: privateAction(targetRelativePath) },
     continuationToken: `continue_${targetRelativePath}`
   };
 }
 
 describe('PendingActionStore', () => {
+  test('非法替换不会丢弃或清除已有动作', () => {
+    const discarded: string[] = [];
+    const store = new PendingActionStore({
+      onDiscard: execution => discarded.push(execution.continuationToken)
+    });
+    const original = pendingExecution('original.txt');
+    const issued = store.issue(publicData('original.txt'), original);
+    const invalid = { ...publicData('invalid.txt'), targetType: 'file' } as unknown as Parameters<PendingActionStore['issue']>[0];
+
+    expect(() => store.issue(invalid, pendingExecution('invalid.txt'))).toThrow();
+    expect(discarded).toEqual([]);
+    expect(store.consume(issued.actionId)).toBe(original);
+  });
+
+  test.each([
+    ['缺少创建摘要字段', ({ contentPreview: _contentPreview, ...draft }: Record<string, unknown>) => draft],
+    ['混入其他动作字段', (draft: Record<string, unknown>) => ({ ...draft, targetType: 'file' })],
+    ['混入未声明字段', (draft: Record<string, unknown>) => ({ ...draft, privateExecution: '禁止公开' })]
+  ])('签发时拒绝%s', (_name, mutate) => {
+    const store = new PendingActionStore();
+    const invalid = mutate(publicData()) as unknown as Parameters<PendingActionStore['issue']>[0];
+
+    expect(() => store.issue(invalid, pendingExecution())).toThrow();
+  });
+
   test('签发不可猜测且带短期有效期的动作 ID', () => {
     let now = Date.parse('2026-07-20T12:00:00.000Z');
     const store = new PendingActionStore({ now: () => now, ttlMilliseconds: 120_000 });
@@ -106,7 +141,10 @@ describe('PendingActionStore', () => {
     (issued as { targetRelativePath: string }).targetRelativePath = 'tampered.txt';
 
     expect(store.consume(issued.actionId)).toBe(verified);
-    expect(verified.verifiedAction.targetRelativePath).toBe('safe.txt');
+    expect(verified.verifiedAction.category).toBe('file');
+    if (verified.verifiedAction.category === 'file') {
+      expect(verified.verifiedAction.action.targetRelativePath).toBe('safe.txt');
+    }
   });
 
   test('错误 ID 不会清除仍有效的动作', () => {

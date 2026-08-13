@@ -109,19 +109,7 @@ export class CharacterMotionService {
       throw new Error('CHARACTER_MOTION_INPUT_INVALID');
     }
     const bounds = this.options.window.getBounds();
-    const area = containingWorkArea(target, this.options.getWorkAreas());
-    this.target = area
-      ? {
-          x: Math.min(
-            Math.max(area.x, area.x + area.width - bounds.width),
-            Math.max(area.x, target.x)
-          ),
-          y: Math.min(
-            Math.max(area.y, area.y + area.height - bounds.height),
-            Math.max(area.y, target.y)
-          )
-        }
-      : { x: bounds.x, y: bounds.y };
+    this.target = this.constrainTarget(target, bounds);
     if (this.target.x !== bounds.x) {
       this.direction = this.target.x < bounds.x ? 'left' : 'right';
     }
@@ -131,6 +119,22 @@ export class CharacterMotionService {
   tick(): CharacterMotionSnapshot {
     const now = Math.max(this.lastTickMs, this.now());
     const bounds = this.options.window.getBounds();
+    if (this.userMoving) {
+      const position = { x: bounds.x, y: bounds.y };
+      this.target = position;
+      this.lastTickMs = now;
+      this.latestSnapshot = {
+        revision: ++this.revision,
+        timestampMs: now,
+        position,
+        target: { ...position },
+        direction: this.direction,
+        moving: false,
+        carrying: this.carrying
+      };
+      for (const listener of [...this.listeners]) listener(this.latestSnapshot);
+      return structuredClone(this.latestSnapshot);
+    }
     const next = advanceMotion({
       current: { x: bounds.x, y: bounds.y },
       target: this.target,
@@ -318,7 +322,7 @@ export class CharacterMotionService {
 
   requestIntent(intent: CharacterMotionIntent): void {
     const bounds = this.options.window.getBounds();
-    const areas = this.options.getWorkAreas();
+    const areas = this.availableMovementRegions();
     const area = containingWorkArea({ x: bounds.x, y: bounds.y }, areas) ?? areas[0];
     if (!area) return;
     if (intent === 'return-visible') {
@@ -333,6 +337,30 @@ export class CharacterMotionService {
       y: area.y + (maximumY - area.y) * random()
     });
   }
+
+  private availableMovementRegions(): readonly Rectangle[] {
+    return this.options.getWorkAreas();
+  }
+
+  private constrainTarget(
+    target: CharacterMotionPoint,
+    bounds: WindowBounds
+  ): CharacterMotionPoint {
+    const areas = this.availableMovementRegions();
+    const area = containingWorkArea(target, areas);
+    if (!area) return { x: bounds.x, y: bounds.y };
+    return {
+      x: Math.min(
+        Math.max(area.x, area.x + area.width - bounds.width),
+        Math.max(area.x, target.x)
+      ),
+      y: Math.min(
+        Math.max(area.y, area.y + area.height - bounds.height),
+        Math.max(area.y, target.y)
+      )
+    };
+  }
+
 }
 
 type MotionWindowEvents = CharacterMotionWindow & {
@@ -356,12 +384,6 @@ export function bindCharacterMotionWindow(
     window.removeListener('move', onMove);
     window.removeListener('moved', onMoved);
   };
-}
-
-export function applyIdleMotionIntent(
-  service: Pick<CharacterMotionService, 'requestIntent'>
-): void {
-  service.requestIntent('wander');
 }
 
 export function startCharacterMotionTimers(options: {

@@ -196,26 +196,65 @@ describe('ToolRegistry', () => {
 
 describe('内置文件工具注册', () => {
   test('文件分类未授权时会话不注册任何 builtin 文件工具', () => {
-    expect(createSessionToolRegistry(false).definitions()).toEqual([]);
-    expect(createSessionToolRegistry(true).definitions().map(
+    expect(createSessionToolRegistry({ taskKind: 'file', fileDisclosureAllowed: false }).definitions()).toEqual([]);
+    expect(createSessionToolRegistry({ taskKind: 'file', fileDisclosureAllowed: true }).definitions().map(
       definition => definition.function.name
-    )).toContain('builtin.files.list_directory');
+    )).toContain('builtin.files.list_files');
   });
 
-  test('五个公开工具映射到旧内部动作和本地风险', () => {
+  test('PowerShell 任务只暴露前台命令工具，不混入文件能力', () => {
+    const registry = createSessionToolRegistry({
+      taskKind: 'powershell',
+      fileDisclosureAllowed: true
+    });
+    const policy = new PermissionPolicy({ highRiskEnabled: true });
+
+    expect(registry.definitions().map(item => item.function.name)).toEqual([
+      'builtin.powershell.run'
+    ]);
+    expect(registry.prepare({
+      requestId: 'shell-1',
+      toolName: 'builtin.powershell.run',
+      arguments: { command: 'Get-ChildItem' }
+    }, policy)).toMatchObject({
+      executionRequest: { toolName: 'powershell', arguments: { command: 'Get-ChildItem' } },
+      risk: 'high',
+      decision: 'confirm'
+    });
+  });
+
+  test('能力会话注册表签发后拒绝追加 MCP 读取工具', () => {
+    const registry = createSessionToolRegistry({
+      taskKind: 'file',
+      fileDisclosureAllowed: true
+    });
+
+    expect(registry.definitions().map(item => item.function.name)).toEqual([
+      'builtin.files.list_files',
+      'builtin.files.read_file',
+      'builtin.files.create_file',
+      'builtin.files.apply_patch',
+      'builtin.files.delete_file'
+    ]);
+    expect(() => registry.register({
+      definition: definition('mcp.server.read'),
+      argumentsSchema: z.object({}).strict(),
+      executionToolName: 'mcp.server.read',
+      risk: 'read',
+      enabled: true,
+      auditSummary: () => '外部读取'
+    })).toThrow('TOOL_REGISTRY_SEALED');
+  });
+
+  test('五个公开工具精确映射到内部动作和本地风险', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
     const cases = [
-      ['builtin.files.list_directory', 'list_directory', 'read', { relativePath: '.' }],
-      ['builtin.files.read_text', 'read_text_file', 'read', { relativePath: 'notes.txt' }],
-      ['builtin.files.create_file', 'create_file', 'recoverable', { relativePath: 'new.txt' }],
-      ['builtin.files.create_directory', 'create_directory', 'recoverable', { relativePath: 'new' }],
-      [
-        'builtin.files.rename_entry',
-        'rename_entry',
-        'recoverable',
-        { sourceRelativePath: 'old.txt', targetRelativePath: 'new.txt' }
-      ]
+      ['builtin.files.list_files', 'list_files', 'read', { relativePath: '.', maxDepth: 1, maxResults: 100 }],
+      ['builtin.files.read_file', 'read_file', 'read', { relativePath: 'notes.txt', startLine: 1, lineCount: 200 }],
+      ['builtin.files.create_file', 'create_file', 'recoverable', { relativePath: 'new.txt', content: '正文' }],
+      ['builtin.files.apply_patch', 'apply_patch', 'recoverable', { relativePath: 'new.txt', patch: '@@ -1 +1 @@\n-a\n+b\n' }],
+      ['builtin.files.delete_file', 'delete_file', 'recoverable', { relativePath: 'old.txt' }]
     ] as const;
 
     expect(registry.definitions().map(item => item.function.name)).toEqual(
@@ -237,15 +276,36 @@ describe('内置文件工具注册', () => {
     }
   });
 
-  test('内置参数 Schema 复用严格校验并拒绝附加字段', () => {
+  test('内置参数 Schema 允许创建正文并拒绝附加字段', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
 
     expect(() => registry.prepare({
       requestId: 'extra-argument-1',
       toolName: 'builtin.files.create_file',
-      arguments: { relativePath: 'new.txt', content: '不得进入审计或执行' }
+      arguments: { relativePath: 'new.txt', content: '正文', unexpected: true }
     }, policy)).toThrowError(expect.objectContaining({ code: 'TOOL_ARGUMENTS_INVALID' }));
+  });
+
+  test('公开 JSON Schema 与文件参数边界一致', () => {
+    const definitions = createBuiltinFileToolRegistry().definitions();
+    const parameters = (name: string) => definitions.find(item => item.function.name === name)!
+      .function.parameters as { properties: Record<string, Record<string, unknown>> };
+
+    expect(parameters('builtin.files.list_files').properties).toMatchObject({
+      relativePath: { minLength: 1, maxLength: 1024 },
+      maxDepth: { minimum: 1, maximum: 4 },
+      maxResults: { minimum: 1, maximum: 200 }
+    });
+    expect(parameters('builtin.files.read_file').properties).toMatchObject({
+      relativePath: { minLength: 1, maxLength: 1024 },
+      startLine: { minimum: 1 },
+      lineCount: { minimum: 1, maximum: 500 }
+    });
+    expect(parameters('builtin.files.apply_patch').properties).toMatchObject({
+      relativePath: { minLength: 1, maxLength: 1024 },
+      patch: { minLength: 1, maxLength: 262_144 }
+    });
   });
 
   test('审计摘要不包含模型提供的绝对路径', () => {
@@ -255,7 +315,7 @@ describe('内置文件工具注册', () => {
 
     const prepared = registry.prepare({
       requestId: 'absolute-path-1',
-      toolName: 'builtin.files.read_text',
+      toolName: 'builtin.files.read_file',
       arguments: { relativePath: absolutePath }
     }, policy);
 

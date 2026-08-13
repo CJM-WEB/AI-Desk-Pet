@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Bot, Box, Database, ShieldCheck, Wrench, X } from 'lucide-react';
 import type {
   McpServerInput,
@@ -9,15 +9,20 @@ import type {
 } from '../../../shared/myself-api';
 import type { LocalDataScope } from '../../../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
+import { desktopRuntimeCapabilities } from '../../../shared/desktop-runtime-capabilities';
 import { ProviderSettings } from './ProviderSettings';
 import {
   McpSettings,
   type McpLaunchConfirmation
 } from './McpSettings';
 import { PrivacySettings } from './PrivacySettings';
-
+import {
+  TransientToastLayer,
+  type TransientToast
+} from '../components/TransientToastLayer';
 export type SettingsTab = 'models' | 'tools' | 'privacy' | 'local';
-type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
+type Notice = TransientToast | null;
+type NoticePayload = Omit<TransientToast, 'id'>;
 
 const emptyDashboard: SettingsDashboardDto = {
   catalog: [],
@@ -51,6 +56,7 @@ const emptyDashboard: SettingsDashboardDto = {
     longTermMemory: false,
     proactivity: false
   },
+  petAlwaysOnTop: false,
   authorizedRoot: null
 };
 
@@ -59,6 +65,7 @@ export interface SettingsWorkspaceProps {
   activeTab: SettingsTab;
   busy: boolean;
   notice: Notice;
+  onDismissNotice(id: string): void;
   onTabChange(tab: SettingsTab): void;
   onClose(): void;
   providerActions: {
@@ -82,6 +89,7 @@ export interface SettingsWorkspaceProps {
   privacyActions: {
     incognito: boolean;
     onSave(input: PrivacySettingsDto): void;
+    onPetAlwaysOnTopChange(enabled: boolean): void;
     onIncognitoChange(value: boolean): void;
     onChooseRoot(): void;
     onRevokeRoot(): void;
@@ -97,7 +105,20 @@ const tabs = [
   ['local', '本地数据', Database]
 ] as const;
 
+export function availableSettingsTabs(): readonly SettingsTab[] {
+  return tabs
+    .filter(([id]) => id !== 'tools' || desktopRuntimeCapabilities.mcp)
+    .map(([id]) => id);
+}
+
+export function resolveSettingsTab(tab: SettingsTab): SettingsTab {
+  return tab === 'tools' && !desktopRuntimeCapabilities.mcp ? 'models' : tab;
+}
+
 export function SettingsWorkspace(props: SettingsWorkspaceProps) {
+  const activeTab = resolveSettingsTab(props.activeTab);
+  const visibleTabs = tabs.filter(([id]) => availableSettingsTabs().includes(id));
+
   return (
     <main className="settings-shell">
       <header className="settings-header">
@@ -111,47 +132,49 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
           </button>
         </div>
       </header>
+      <TransientToastLayer
+        queue={props.notice ? [props.notice] : []}
+        onDismiss={props.onDismissNotice}
+        durationMs={() => 3000}
+        ariaLabel="设置提示"
+      />
       <nav className="settings-tabs" aria-label="设置分类">
-        {tabs.map(([id, label, Icon]) => (
+        {visibleTabs.map(([id, label, Icon]) => (
           <button
             key={id}
             type="button"
-            aria-current={props.activeTab === id ? 'page' : undefined}
+            aria-current={activeTab === id ? 'page' : undefined}
             onClick={() => props.onTabChange(id)}
           >
             <Icon size={17} />{label}
           </button>
         ))}
       </nav>
-      {props.notice
-        ? <div className={`settings-notice notice-${props.notice.tone}`} role="status">
-            {props.notice.text}
-          </div>
-        : null}
-      {props.activeTab === 'models' ? (
+      {activeTab === 'models' ? (
         <ProviderSettings
           dashboard={props.dashboard}
           busy={props.busy}
           {...props.providerActions}
         />
       ) : null}
-      {props.activeTab === 'tools' ? (
+      {activeTab === 'tools' && desktopRuntimeCapabilities.mcp ? (
         <McpSettings
           servers={props.dashboard.mcpServers}
           busy={props.busy}
           {...props.mcpActions}
         />
       ) : null}
-      {props.activeTab === 'privacy' ? (
+      {activeTab === 'privacy' ? (
         <PrivacySettings
           privacy={props.dashboard.privacy}
           runtimeSupport={props.dashboard.privacyRuntimeSupport}
           authorizedRoot={props.dashboard.authorizedRoot}
           busy={props.busy}
+          petAlwaysOnTop={props.dashboard.petAlwaysOnTop}
           {...props.privacyActions}
         />
       ) : null}
-      {props.activeTab === 'local' ? (
+      {activeTab === 'local' ? (
         <section className="settings-band local-data-pane" aria-labelledby="local-heading">
           <div className="pane-heading">
             <div><h2 id="local-heading">本地数据</h2><p>按范围清理，不会删除授权目录中的文件。</p></div>
@@ -174,19 +197,35 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const [busy, setBusy] = useState(false);
   const [incognito, setIncognito] = useState(false);
   const [launchSummary, setLaunchSummary] = useState<McpLaunchConfirmation | null>(null);
+  const noticeSequence = useRef(0);
   const [notice, setNotice] = useState<Notice>({
+    id: 'settings-toast-0',
     tone: 'info',
     text: '正在读取本地设置…'
   });
 
+  /** 所有设置操作共用同一个入口，保证提示 id 单调递增并替换当前提示。 */
+  const showNotice = (next: NoticePayload): void => {
+    noticeSequence.current += 1;
+    setNotice({ ...next, id: `settings-toast-${noticeSequence.current}` });
+  };
+
+  /** 仅关闭仍与回调 id 对应的提示，隔离过期 timer 和异步回调。 */
+  const dismissNotice = (id: string): void => {
+    setNotice(current => current?.id === id ? null : current);
+  };
+
   useEffect(() => {
     let active = true;
-    void api.getSettingsDashboard().then(value => {
-      if (!active) return;
-      setDashboard(value);
-      setNotice(null);
+    const initialLoadOwner = noticeSequence.current;
+    void api.getSettingsDashboard().then(result => {
+      if (!active || noticeSequence.current !== initialLoadOwner) return;
+      setDashboard(result);
+      dismissNotice('settings-toast-0');
     }).catch(() => {
-      if (active) setNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
+      if (active && noticeSequence.current === initialLoadOwner) {
+        showNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
+      }
     });
     return () => { active = false; };
   }, [api]);
@@ -194,7 +233,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const run = async (
     operation: () => Promise<
       SettingsDashboardDto
-      | { dashboard?: SettingsDashboardDto; notice?: Exclude<Notice, null> }
+      | { dashboard?: SettingsDashboardDto; notice?: NoticePayload }
       | void
     >,
     success: string
@@ -205,13 +244,13 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       const result = await operation();
       if (result && 'catalog' in result) {
         setDashboard(result);
-        setNotice({ tone: 'success', text: success });
+        showNotice({ tone: 'success', text: success });
       } else {
         if (result?.dashboard) setDashboard(result.dashboard);
-        setNotice(result?.notice ?? { tone: 'success', text: success });
+        showNotice(result?.notice ?? { tone: 'success', text: success });
       }
     } catch {
-      setNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
+      showNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
     } finally {
       setBusy(false);
     }
@@ -223,7 +262,8 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       activeTab={activeTab}
       busy={busy}
       notice={notice}
-      onTabChange={setActiveTab}
+      onDismissNotice={dismissNotice}
+      onTabChange={tab => setActiveTab(resolveSettingsTab(tab))}
       onClose={() => window.close()}
       providerActions={{
         onSave: input => void run(() => api.saveProviderProfile(input), '模型档案已保存。'),
@@ -245,7 +285,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
         launchSummary,
         onCancelLaunch: () => {
           setLaunchSummary(null);
-          setNotice({ tone: 'info', text: '已取消启动 MCP 服务。' });
+          showNotice({ tone: 'info', text: '已取消启动 MCP 服务。' });
         },
         onUpsert: input => void run(async () => {
           const result = await api.upsertMcpServer(input);
@@ -297,6 +337,10 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       privacyActions={{
         incognito,
         onSave: input => void run(() => api.savePrivacySettings(input), '隐私设置已保存。'),
+        onPetAlwaysOnTopChange: enabled => void run(
+          () => api.savePetAlwaysOnTop(enabled),
+          enabled ? '桌宠已置顶。' : '桌宠已恢复动态图层。'
+        ),
         onIncognitoChange: value => void run(async () => {
           await api.setIncognitoSession(value);
           setIncognito(value);

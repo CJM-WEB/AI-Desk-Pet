@@ -12,6 +12,7 @@ import type {
   SaveProviderProfileInput,
   SettingsDashboardDto
 } from '../../shared/myself-api';
+import { desktopRuntimeCapabilities } from '../../shared/desktop-runtime-capabilities';
 import type { PrivacySessionRegistry } from '../agent/disclosure-policy';
 import type { ToolRegistration } from '../agent/tool-registry';
 import type { McpServerSnapshot } from '../mcp/mcp-manager';
@@ -52,6 +53,8 @@ interface SettingsAccess {
   saveModelRoute(route: ModelRouteConfig): Promise<void>;
   getPrivacySettings(): Promise<PrivacySettings>;
   savePrivacySettings(settings: PrivacySettings): Promise<void>;
+  getPetAlwaysOnTop(): Promise<boolean>;
+  savePetAlwaysOnTop(enabled: boolean): Promise<void>;
   getPublic(): Promise<{
     authorizedRoot: SettingsDashboardDto['authorizedRoot'];
   }>;
@@ -96,6 +99,7 @@ export interface DesktopSettingsServiceOptions {
   mcpManager: McpManagerAccess;
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
+  applyPetAlwaysOnTop(enabled: boolean): Promise<void> | void;
 }
 
 interface DiscoveredTool {
@@ -169,13 +173,24 @@ function parseMcpSecrets(raw: string): {
   }
 }
 
+/** 集中约束已关闭的 MCP 运行时入口。 */
+function assertMcpEnabled(): void {
+  if (!desktopRuntimeCapabilities.mcp) {
+    throw new Error('MCP_MODULE_DISABLED');
+  }
+}
+
 export class DesktopSettingsService {
   private readonly statuses = new Map<string, McpServerDto['status']>();
   private readonly discoveredTools = new Map<string, DiscoveredTool[]>();
+  private petAlwaysOnTopQueue: Promise<void> = Promise.resolve();
+  private petAlwaysOnTopFrozen = false;
+  private petAlwaysOnTopFlush: Promise<void> | undefined;
 
   constructor(private readonly options: DesktopSettingsServiceOptions) {}
 
   async initialize(): Promise<void> {
+    if (!desktopRuntimeCapabilities.mcp) return;
     for (const stored of await this.options.settings.getMcpServerSettings()) {
       const secrets: ReturnType<typeof parseMcpSecrets> = await this.options.secrets
         .readForProviderCall(`mcp:${stored.id}`)
@@ -229,22 +244,25 @@ export class DesktopSettingsService {
   }
 
   async getDashboard(): Promise<SettingsDashboardDto> {
-    const [providerSettings, privacy, publicSettings] = await Promise.all([
+    const [providerSettings, privacy, publicSettings, petAlwaysOnTop] = await Promise.all([
       this.options.settings.getProviderSettings(),
       this.options.settings.getPrivacySettings(),
-      this.options.settings.getPublic()
+      this.options.settings.getPublic(),
+      this.options.settings.getPetAlwaysOnTop()
     ]);
     return {
       catalog: structuredClone(providerCatalog),
       profiles: providerSettings.profiles,
       route: providerSettings.route,
-      mcpServers: this.options.mcpStore.list().map(config => (
-        publicMcpServer(
-          config,
-          this.statuses.get(config.id) ?? 'disconnected',
-          this.discoveredTools.get(config.id) ?? []
-        )
-      )),
+      mcpServers: desktopRuntimeCapabilities.mcp
+        ? this.options.mcpStore.list().map(config => (
+          publicMcpServer(
+            config,
+            this.statuses.get(config.id) ?? 'disconnected',
+            this.discoveredTools.get(config.id) ?? []
+          )
+        ))
+        : [],
       privacy,
       privacyRuntimeSupport: {
         dataCategories: {
@@ -256,6 +274,7 @@ export class DesktopSettingsService {
         longTermMemory: false,
         proactivity: false
       },
+      petAlwaysOnTop,
       authorizedRoot: publicSettings.authorizedRoot
     };
   }
@@ -371,6 +390,7 @@ export class DesktopSettingsService {
       summary: ReturnType<McpServerStore['getStdioLaunchSummary']>;
     }
   > {
+    assertMcpEnabled();
     const previousConfig = this.options.mcpStore.get(input.id);
     const previousStatus = this.statuses.get(input.id);
     const previousTools = structuredClone(this.discoveredTools.get(input.id));
@@ -444,11 +464,13 @@ export class DesktopSettingsService {
     serverId: string,
     fingerprint: string
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     this.options.mcpStore.confirmStdioLaunch(serverId, fingerprint);
     return this.getDashboard();
   }
 
   async testMcpServer(serverId: string): Promise<{ ok: boolean; message: string }> {
+    assertMcpEnabled();
     const previousConfig = this.options.mcpStore.get(serverId);
     const previousTools = structuredClone(this.discoveredTools.get(serverId));
     let connected = false;
@@ -507,6 +529,7 @@ export class DesktopSettingsService {
     serverId: string,
     enabled: boolean
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const previousConfig = this.options.mcpStore.get(serverId);
     const previousStatus = this.statuses.get(serverId);
     if (!enabled) {
@@ -532,6 +555,7 @@ export class DesktopSettingsService {
     toolName: string,
     enabled: boolean
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const tool = this.discoveredTools.get(serverId)?.find(item => item.name === toolName);
     if (!tool?.readOnly && enabled) throw new Error('MCP_WRITE_TOOL_DISABLED');
     const previousConfig = this.options.mcpStore.get(serverId);
@@ -551,6 +575,7 @@ export class DesktopSettingsService {
     serverId: string,
     toolName: string
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const tool = this.discoveredTools.get(serverId)?.find(item => item.name === toolName);
     if (!tool || !tool.definitionFingerprint) throw new Error('MCP_TOOL_NOT_DISCOVERED');
     const previousConfig = this.options.mcpStore.get(serverId);
@@ -581,6 +606,7 @@ export class DesktopSettingsService {
     serverId: string,
     toolName: string
   ): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const tool = this.discoveredTools.get(serverId)?.find(item => item.name === toolName);
     const previousConfig = this.options.mcpStore.get(serverId);
     if (!tool || !previousConfig?.capabilities.tools[toolName]) {
@@ -604,6 +630,7 @@ export class DesktopSettingsService {
   }
 
   async deleteMcpServer(serverId: string): Promise<SettingsDashboardDto> {
+    assertMcpEnabled();
     const config = this.options.mcpStore.get(serverId);
     const secretId = `mcp:${serverId}`;
     const secretSnapshot = await this.options.secrets.snapshot(secretId);
@@ -642,6 +669,56 @@ export class DesktopSettingsService {
     return this.getDashboard();
   }
 
+  /** 先提交运行态再落盘；任一步失败都把窗口层级恢复到旧值。 */
+  savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto> {
+    if (this.petAlwaysOnTopFrozen) {
+      return Promise.reject(new Error('PET_ALWAYS_ON_TOP_FROZEN'));
+    }
+    const transaction = this.petAlwaysOnTopQueue.then(() => (
+      this.commitPetAlwaysOnTop(enabled)
+    ));
+    this.petAlwaysOnTopQueue = transaction.then(() => undefined, () => undefined);
+    return transaction;
+  }
+
+  /** 退出前同步冻结入口，并等待此前已接收的置顶事务全部完成补偿。 */
+  freezeAndFlushPetAlwaysOnTop(): Promise<void> {
+    this.petAlwaysOnTopFrozen = true;
+    this.petAlwaysOnTopFlush ??= this.petAlwaysOnTopQueue;
+    return this.petAlwaysOnTopFlush;
+  }
+
+  private async commitPetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto> {
+    const previous = await this.options.settings.getPetAlwaysOnTop();
+    try {
+      await this.options.applyPetAlwaysOnTop(enabled);
+    } catch (error) {
+      try {
+        await this.options.applyPetAlwaysOnTop(previous);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'PET_ALWAYS_ON_TOP_APPLY_ROLLBACK_FAILED'
+        );
+      }
+      throw error;
+    }
+    try {
+      await this.options.settings.savePetAlwaysOnTop(enabled);
+    } catch (error) {
+      try {
+        await this.options.applyPetAlwaysOnTop(previous);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'PET_ALWAYS_ON_TOP_PERSIST_ROLLBACK_FAILED'
+        );
+      }
+      throw error;
+    }
+    return this.getDashboard();
+  }
+
   async setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }> {
     this.options.privacySessions.register(this.options.sessionId, { incognito });
     return { incognito };
@@ -660,6 +737,7 @@ export class DesktopSettingsService {
   async enabledReadToolRegistrations(): Promise<
     ToolRegistration[]
   > {
+    if (!desktopRuntimeCapabilities.mcp) return [];
     const registrations: ToolRegistration[] = [];
     for (const server of this.options.mcpStore.list().filter(config => config.enabled)) {
       try {
@@ -678,11 +756,12 @@ export class DesktopSettingsService {
     return registrations;
   }
 
-  executeMcpRead(
+  async executeMcpRead(
     executionToolName: string,
     arguments_: Record<string, unknown>,
     signal?: AbortSignal
   ): Promise<unknown> {
+    assertMcpEnabled();
     return this.options.mcpManager.executeTool(
       executionToolName,
       arguments_,

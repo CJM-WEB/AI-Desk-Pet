@@ -1,25 +1,30 @@
 import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
-import type { WorkshopToast } from '../store/character-workshop-store';
 
-export type { WorkshopToast } from '../store/character-workshop-store';
+/** 通用提示的最小展示形状；队列归调用方所有。 */
+export type TransientToast = Readonly<{
+  id: string;
+  tone: 'success' | 'info' | 'warning' | 'error';
+  text: string;
+}>;
 
-export interface WorkshopToastLayerProps {
-  queue: readonly WorkshopToast[];
+export interface TransientToastLayerProps {
+  queue: readonly TransientToast[];
   onDismiss(id: string): void;
-}
-
-export function toastDurationMs(tone: WorkshopToast['tone']): 3000 | 6000 {
-  return tone === 'warning' || tone === 'error' ? 6000 : 3000;
+  durationMs(toast: TransientToast): number;
+  ariaLabel: string;
 }
 
 /**
- * 右上角提示层只负责展示队首；队列的增删仍由工作台 store 统一管理。
+ * 瞬时提示层只消费队首，并负责其暂停、恢复与关闭生命周期。
+ * 队列写入、移除及各业务场景的持续时间策略由调用方管理。
  */
-export function WorkshopToastLayer({
+export function TransientToastLayer({
   queue,
-  onDismiss
-}: WorkshopToastLayerProps) {
+  onDismiss,
+  durationMs,
+  ariaLabel
+}: TransientToastLayerProps) {
   const toast = queue[0];
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const startedAtRef = useRef(0);
@@ -43,7 +48,7 @@ export function WorkshopToastLayer({
     try {
       onDismissRef.current(toast.id);
     } catch {
-      // 消费方回调失败时，本层仍应确保已停止计时，避免重复关闭。
+      /** 消费方回调失败时仍停止计时，避免重复关闭。 */
     }
   }
 
@@ -77,9 +82,14 @@ export function WorkshopToastLayer({
   useEffect(() => {
     clearTimer();
     dismissedRef.current = false;
-    pausedRef.current = { focus: false, hover: false };
-    remainingRef.current = toast ? toastDurationMs(toast.tone) : 0;
-    if (toast) startTimer();
+    remainingRef.current = toast ? durationMs(toast) : 0;
+    if (toast) {
+      // 原位替换 ID 时 DOM 仍可能处于 hover/focus；保留暂停位并重置新提示时长。
+      startTimer();
+    } else {
+      // 节点移除后清空交互状态，避免后续新节点继承已消失节点的暂停位。
+      pausedRef.current = { focus: false, hover: false };
+    }
 
     return clearTimer;
   }, [toast?.id]);
@@ -88,9 +98,9 @@ export function WorkshopToastLayer({
   const urgent = toast.tone === 'warning' || toast.tone === 'error';
 
   return (
-    <aside className="workshop-toast-layer" aria-label="工作台提示">
+    <aside className="transient-toast-layer" aria-label={ariaLabel}>
       <div
-        className={`workshop-toast workshop-toast-${toast.tone}`}
+        className={`transient-toast transient-toast-${toast.tone}`}
         role={urgent ? 'alert' : 'status'}
         aria-live={urgent ? 'assertive' : 'polite'}
         aria-atomic="true"
@@ -104,7 +114,7 @@ export function WorkshopToastLayer({
         <span>{toast.text}</span>
         <button
           type="button"
-          aria-label={`关闭提示：${toast.text}`}
+          aria-label={`关闭${ariaLabel}：${toast.text}`}
           title="关闭提示"
           onClick={dismissCurrent}
         >

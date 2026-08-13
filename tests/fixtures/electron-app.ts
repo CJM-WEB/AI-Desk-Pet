@@ -1,11 +1,12 @@
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { chromium, type Browser } from '@playwright/test';
 import { materializeCharacterWorkshopFixtures } from './character-workshop-assets';
 
@@ -14,6 +15,7 @@ export interface ElectronLaunchPlanOptions {
   cdpPort: number;
   userDataDirectory: string;
   authorizedRootDirectory: string;
+  recycleBinDirectory?: string;
   characterAssetsDirectory?: string;
   safeCharacterPackage?: string;
   maliciousCharacterPackage?: string;
@@ -59,8 +61,12 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
     environment: {
       ...environment,
       MYSELF_E2E: '1',
+      MYSELF_E2E_FAKE_EXPLORER_BRIDGE: '1',
       MYSELF_E2E_USER_DATA: options.userDataDirectory,
       MYSELF_E2E_AUTHORIZED_ROOT: options.authorizedRootDirectory,
+      ...(options.recycleBinDirectory
+        ? { MYSELF_E2E_RECYCLE_BIN: options.recycleBinDirectory }
+        : {}),
       ...(options.characterAssetsDirectory
         ? { MYSELF_E2E_CHARACTER_ASSETS: options.characterAssetsDirectory }
         : {}),
@@ -86,8 +92,10 @@ export function redactElectronLog(
   text: string,
   secrets: {
     apiKey: string;
+    additionalSecrets?: readonly string[];
     authorizedRootDirectory: string;
     userDataDirectory?: string;
+    recycleBinDirectory?: string;
     characterAssetsDirectory?: string;
     safeCharacterPackage?: string;
     maliciousCharacterPackage?: string;
@@ -97,8 +105,10 @@ export function redactElectronLog(
   let sanitized = text.replace(/authorization\s*:[^\r\n]*/giu, '[已脱敏]');
   for (const secret of [
     secrets.apiKey,
+    ...(secrets.additionalSecrets ?? []),
     secrets.authorizedRootDirectory,
     secrets.userDataDirectory,
+    secrets.recycleBinDirectory,
     secrets.characterAssetsDirectory,
     secrets.safeCharacterPackage,
     secrets.maliciousCharacterPackage,
@@ -159,6 +169,7 @@ export interface ElectronTemporaryDirectories {
   baseDirectory: string;
   userDataDirectory: string;
   authorizedRootDirectory: string;
+  recycleBinDirectory?: string;
   characterAssetsDirectory?: string;
   packagesDirectory?: string;
   exportsDirectory?: string;
@@ -190,24 +201,186 @@ export interface ElectronAppFixture {
   readonly executablePath: string;
   readonly userDataDirectory: string;
   readonly authorizedRootDirectory: string;
+  readonly recycleBinDirectory?: string;
+  readonly characterAssetsDirectory?: string;
   readonly safeCharacterPackage?: string;
   readonly maliciousCharacterPackage?: string;
   readonly characterExportDestination?: string;
   readonly logs: readonly string[];
+  readonly capturedLogEvidence: Readonly<{
+    apiKey: boolean;
+    authorizedRoot: boolean;
+    authorizationHeader: boolean;
+    sentinels: readonly boolean[];
+  }>;
+  sendExplorerEvent(event: MainE2eExplorerEvent): Promise<void>;
+  getMainE2eState(): Promise<MainE2eState>;
+  getMainDescendantProcesses(): Promise<ElectronDescendantProcess[]>;
   getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
+  getCharacterBehaviorProbe(): Promise<{
+    revision: number;
+    primaryStateId: string;
+    modifierStateIds: string[];
+    actionId: string | null;
+    playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
+  }>;
+  getConversationProbe(): Promise<{
+    phase: 'idle' | 'listening' | 'thinking' | 'awaiting_confirmation'
+      | 'acting' | 'success' | 'error' | 'cancelled';
+    visibleMessageCount: number;
+    historyDisclosureVisible: boolean;
+    fileConfirmationVisible: boolean;
+  }>;
   restart(): Promise<void>;
   dispose(): Promise<void>;
+}
+
+export interface CapturedLogEvidenceTracker {
+  capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
+  snapshot(): ElectronAppFixture['capturedLogEvidence'];
+  resetStreams(): void;
+  dispose(): void;
+}
+
+/** 仅累计原始日志中的布尔泄漏证据，不保留完整正文。 */
+export function createCapturedLogEvidenceTracker(input: Readonly<{
+  apiKey: string;
+  authorizedRootDirectory: string;
+  sentinels: readonly string[];
+}>): CapturedLogEvidenceTracker {
+  const configuredApiKey = input.apiKey;
+  const configuredAuthorizedRoot = input.authorizedRootDirectory;
+  const configuredSentinels = [...input.sentinels];
+  if (configuredSentinels.some(sentinel => sentinel.length === 0)) {
+    throw new Error('EMPTY_LOG_SENTINEL');
+  }
+  let apiKey = false;
+  let authorizedRoot = false;
+  let authorizationHeader = false;
+  const sentinels = configuredSentinels.map(() => false);
+  const tailLength = Math.max(
+    64,
+    configuredApiKey.length - 1,
+    configuredAuthorizedRoot.length - 1,
+    ...configuredSentinels.map(value => value.length - 1)
+  );
+  const tails: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' };
+  const decoders: Record<'stdout' | 'stderr', StringDecoder> = {
+    stdout: new StringDecoder('utf8'),
+    stderr: new StringDecoder('utf8')
+  };
+  let disposed = false;
+
+  const resetStreams = (): void => {
+    tails.stdout = '';
+    tails.stderr = '';
+    decoders.stdout = new StringDecoder('utf8');
+    decoders.stderr = new StringDecoder('utf8');
+  };
+
+  return {
+    capture(source, chunk) {
+      if (disposed) return;
+      const decodedChunk = typeof chunk === 'string'
+        ? decoders[source].end() + chunk
+        : decoders[source].write(chunk);
+      if (typeof chunk === 'string') decoders[source] = new StringDecoder('utf8');
+      const text = tails[source] + decodedChunk;
+      apiKey ||= Boolean(configuredApiKey && text.includes(configuredApiKey));
+      authorizedRoot ||= Boolean(
+        configuredAuthorizedRoot
+        && text.includes(configuredAuthorizedRoot)
+      );
+      authorizationHeader ||= /["']?authorization["']?\s*:/iu.test(text);
+      configuredSentinels.forEach((sentinel, index) => {
+        sentinels[index] ||= Boolean(sentinel && text.includes(sentinel));
+      });
+      tails[source] = text.slice(-tailLength);
+    },
+    snapshot() {
+      return Object.freeze({
+        apiKey,
+        authorizedRoot,
+        authorizationHeader,
+        sentinels: Object.freeze([...sentinels])
+      });
+    },
+    resetStreams() {
+      resetStreams();
+    },
+    dispose() {
+      resetStreams();
+      disposed = true;
+    }
+  };
 }
 
 export interface CreateElectronAppFixtureOptions {
   workspaceRoot: string;
   apiKey: string;
+  additionalSecrets?: readonly string[];
+  logSentinels?: readonly string[];
   launchTimeoutMs?: number;
   operationTimeoutMs?: number;
   enableSoftwareRasterizer?: boolean;
   prepareUserData?(directories: ElectronTemporaryDirectories): Promise<void>;
   beforeRestart?(directories: ElectronTemporaryDirectories): Promise<void>;
   dependencies?: ElectronAppDependencies;
+}
+
+export type MainE2eExplorerEvent =
+  | 'layer-error'
+  | 'stale-sequence'
+  | 'non-explorer'
+  | 'ambiguous'
+  | 'foreground-explorer'
+  | 'minimized'
+  | 'blurred'
+  | 'crash';
+
+export interface MainE2eState {
+  revision: number;
+  petWindowVisible: boolean;
+  petWindowAlwaysOnTop: boolean;
+  processedExplorerEventRevision: number;
+  processedExplorerEvent: MainE2eExplorerEvent | null;
+  bridge: {
+    state: 'idle' | 'ready' | 'failed' | 'closed';
+    observing: boolean;
+    polling: boolean;
+    eventRevision: number;
+  };
+  layer: {
+    status: 'idle' | 'active' | 'failed' | 'closed';
+    activationRevision: number;
+    errorRevision: number;
+  };
+}
+
+const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
+  'layer-error',
+  'stale-sequence',
+  'non-explorer',
+  'ambiguous',
+  'foreground-explorer',
+  'minimized',
+  'blurred',
+  'crash'
+]);
+
+/** fixture 只追加固定无参数令牌，禁止把路径、HWND 或任意命令写入 Main。 */
+export async function writeMainE2eExplorerEvent(
+  userDataDirectory: string,
+  event: MainE2eExplorerEvent
+): Promise<void> {
+  if (!MAIN_E2E_EXPLORER_EVENTS.has(event)) {
+    throw new Error('E2E_EXPLORER_EVENT_INVALID');
+  }
+  await appendFile(
+    join(userDataDirectory, 'main-e2e-explorer-events'),
+    `${event}\n`,
+    { encoding: 'utf8' }
+  );
 }
 
 async function allocateLoopbackPort(): Promise<number> {
@@ -227,12 +400,14 @@ async function createTemporaryDirectories(): Promise<ElectronTemporaryDirectorie
   const baseDirectory = await mkdtemp(join(tmpdir(), 'myself-e2e-'));
   const userDataDirectory = join(baseDirectory, 'user-data');
   const authorizedRootDirectory = join(baseDirectory, 'authorized-root');
+  const recycleBinDirectory = join(baseDirectory, 'recycle-bin');
   const characterAssetsDirectory = join(baseDirectory, 'character-assets');
   const packagesDirectory = join(baseDirectory, 'packages');
   const exportsDirectory = join(baseDirectory, 'exports');
   await Promise.all([
     mkdir(userDataDirectory, { recursive: true }),
     mkdir(authorizedRootDirectory, { recursive: true }),
+    mkdir(recycleBinDirectory, { recursive: true }),
     mkdir(characterAssetsDirectory, { recursive: true }),
     mkdir(packagesDirectory, { recursive: true }),
     mkdir(exportsDirectory, { recursive: true })
@@ -241,6 +416,7 @@ async function createTemporaryDirectories(): Promise<ElectronTemporaryDirectorie
     baseDirectory,
     userDataDirectory,
     authorizedRootDirectory,
+    recycleBinDirectory,
     characterAssetsDirectory,
     packagesDirectory,
     exportsDirectory
@@ -277,6 +453,22 @@ export interface WindowsProcessProbeCommandResult {
 }
 
 export interface ProbeWindowsProcessOptions {
+  signal?: AbortSignal;
+  runCommand?(
+    file: string,
+    args: string[],
+    signal?: AbortSignal
+  ): Promise<WindowsProcessProbeCommandResult>;
+}
+
+export interface ElectronDescendantProcess {
+  processId: number;
+  name: string;
+  powershell: boolean;
+  explorerBridge: boolean;
+}
+
+export interface InspectWindowsElectronDescendantsOptions {
   signal?: AbortSignal;
   runCommand?(
     file: string,
@@ -475,6 +667,108 @@ export async function probeWindowsProcess(
     throw new Error('WINDOWS_PROCESS_PATH_UNVERIFIED');
   }
   return { status: 'running', executablePath: resolve(output) };
+}
+
+interface WindowsProcessTreeRow {
+  processId: number;
+  parentProcessId: number;
+  name: string;
+  commandLine: string;
+}
+
+function parseWindowsProcessTree(stdout: string): WindowsProcessTreeRow[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout) as unknown;
+  } catch {
+    throw new Error('WINDOWS_PROCESS_TREE_OUTPUT_INVALID');
+  }
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  if (rows.length > 4_096) throw new Error('WINDOWS_PROCESS_TREE_OUTPUT_INVALID');
+  return rows.map(row => {
+    if (!row || typeof row !== 'object') {
+      throw new Error('WINDOWS_PROCESS_TREE_OUTPUT_INVALID');
+    }
+    const candidate = row as Record<string, unknown>;
+    const processId = candidate['ProcessId'];
+    const parentProcessId = candidate['ParentProcessId'];
+    const name = candidate['Name'];
+    const commandLine = candidate['CommandLine'];
+    if (
+      typeof processId !== 'number'
+      || !Number.isSafeInteger(processId)
+      || processId < 0
+      || typeof parentProcessId !== 'number'
+      || !Number.isSafeInteger(parentProcessId)
+      || parentProcessId < 0
+      || typeof name !== 'string'
+      || name.length < 1
+      || name.length > 260
+      || (commandLine !== null && typeof commandLine !== 'string')
+      || (typeof commandLine === 'string' && commandLine.length > 32_768)
+    ) throw new Error('WINDOWS_PROCESS_TREE_OUTPUT_INVALID');
+    return {
+      processId,
+      parentProcessId,
+      name,
+      commandLine: commandLine ?? ''
+    };
+  });
+}
+
+/** fixture-only 只读证据：从一次 Windows 进程快照筛出 Electron Main 的全部后代。 */
+export async function inspectWindowsElectronDescendants(
+  processId: number,
+  options: InspectWindowsElectronDescendantsOptions = {}
+): Promise<ElectronDescendantProcess[]> {
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new Error('WINDOWS_PROCESS_TREE_PID_INVALID');
+  }
+  const script = [
+    'Get-CimInstance Win32_Process',
+    '| Select-Object ProcessId,ParentProcessId,Name,CommandLine',
+    '| ConvertTo-Json -Compress'
+  ].join(' ');
+  const result = await (options.runCommand ?? runWindowsProbeCommand)(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    options.signal ?? AbortSignal.timeout(5_000)
+  );
+  if (result.exitCode !== 0) {
+    const diagnostic = sanitizeProcessProbeDiagnostic(result.stderr);
+    throw new Error(
+      `WINDOWS_PROCESS_TREE_COMMAND_FAILED:exit=${String(result.exitCode)}`
+      + (diagnostic ? `\nstderr:${diagnostic}` : '')
+    );
+  }
+
+  const children = new Map<number, WindowsProcessTreeRow[]>();
+  for (const row of parseWindowsProcessTree(result.stdout)) {
+    const siblings = children.get(row.parentProcessId) ?? [];
+    siblings.push(row);
+    children.set(row.parentProcessId, siblings);
+  }
+  const descendants: ElectronDescendantProcess[] = [];
+  const pending = [processId];
+  const visited = new Set(pending);
+  while (pending.length > 0) {
+    const parentProcessId = pending.shift()!;
+    for (const child of children.get(parentProcessId) ?? []) {
+      if (visited.has(child.processId)) continue;
+      visited.add(child.processId);
+      pending.push(child.processId);
+      const normalizedName = child.name.toLocaleLowerCase('en-US');
+      const powershell = normalizedName === 'powershell.exe' || normalizedName === 'pwsh.exe';
+      descendants.push({
+        processId: child.processId,
+        name: child.name,
+        powershell,
+        explorerBridge: powershell
+          && child.commandLine.toLocaleLowerCase('en-US').includes('explorer-space-bridge.ps1')
+      });
+    }
+  }
+  return descendants;
 }
 
 /** 只终止已验证路径与 PID 的原始 child，并以其真实退出作为成功条件。 */
@@ -700,13 +994,25 @@ export async function createElectronAppFixture(
       );
   await options.prepareUserData?.(directories);
   const capturedChunks: string[] = [];
+  const capturedLogEvidenceTracker = createCapturedLogEvidenceTracker({
+    apiKey: options.apiKey,
+    authorizedRootDirectory: directories.authorizedRootDirectory,
+    sentinels: options.logSentinels ?? []
+  });
   let child: SpawnedElectronProcess | null = null;
   let browser: Pick<Browser, 'close'> | null = null;
   let plan: ElectronLaunchPlan | null = null;
   let disposed = false;
+  let disposeStarted = false;
+  let logStreamEpoch = 0;
   const operationTimeoutMs = options.operationTimeoutMs ?? 5_000;
+  const diagnosticRedactionValues = [
+    ...(options.additionalSecrets ?? []),
+    ...(options.logSentinels ?? [])
+  ];
 
-  const capture = (chunk: string | Buffer): void => {
+  const capture = (source: 'stdout' | 'stderr', chunk: string | Buffer): void => {
+    capturedLogEvidenceTracker.capture(source, chunk);
     capturedChunks.push(String(chunk).slice(0, 4_000));
     if (capturedChunks.length > 100) capturedChunks.shift();
   };
@@ -715,6 +1021,7 @@ export async function createElectronAppFixture(
   const sanitizedLogs = (): string[] => {
     const sanitized = redactElectronLog(capturedChunks.join(''), {
       apiKey: options.apiKey,
+      additionalSecrets: diagnosticRedactionValues,
       authorizedRootDirectory: directories.authorizedRootDirectory,
       userDataDirectory: directories.userDataDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
@@ -737,6 +1044,7 @@ export async function createElectronAppFixture(
     const rawCause = cause instanceof Error ? cause.message : String(cause ?? '');
     const sanitizedCause = redactElectronLog(rawCause, {
       apiKey: options.apiKey,
+      additionalSecrets: diagnosticRedactionValues,
       authorizedRootDirectory: directories.authorizedRootDirectory,
       userDataDirectory: directories.userDataDirectory,
       characterAssetsDirectory: directories.characterAssetsDirectory,
@@ -831,12 +1139,16 @@ export async function createElectronAppFixture(
   };
 
   const launch = async (): Promise<void> => {
+    const currentLogStreamEpoch = ++logStreamEpoch;
+    capturedLogEvidenceTracker.resetStreams();
     const cdpPort = await dependencies.allocateLoopbackPort();
+    if (disposeStarted || disposed) throw new Error('ELECTRON_FIXTURE_DISPOSED');
     const nextPlan = createElectronLaunchPlan({
       workspaceRoot: options.workspaceRoot,
       cdpPort,
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
+      recycleBinDirectory: directories.recycleBinDirectory,
       ...characterFixtures,
       parentEnvironment: globalThis.process.env,
       enableSoftwareRasterizer: options.enableSoftwareRasterizer
@@ -844,8 +1156,12 @@ export async function createElectronAppFixture(
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;
     child = nextChild;
-    nextChild.stdout?.on('data', capture);
-    nextChild.stderr?.on('data', capture);
+    nextChild.stdout?.on('data', chunk => {
+      if (currentLogStreamEpoch === logStreamEpoch) capture('stdout', chunk);
+    });
+    nextChild.stderr?.on('data', chunk => {
+      if (currentLogStreamEpoch === logStreamEpoch) capture('stderr', chunk);
+    });
     try {
       const processFailure = new Promise<never>((_resolveFailure, rejectFailure) => {
         nextChild.once('error', rejectFailure);
@@ -876,37 +1192,43 @@ export async function createElectronAppFixture(
 
   const dispose = async (): Promise<void> => {
     if (disposed) return;
-    const cleanupErrors: Error[] = [];
+    disposeStarted = true;
     try {
-      await cleanupCurrentProcess();
-    } catch (error) {
-      if (error instanceof AggregateError) {
-        cleanupErrors.push(...error.errors.map(item => item instanceof Error
-          ? item
-          : new Error(String(item))));
-      } else {
-        cleanupErrors.push(error as Error);
-      }
-    }
-    // 原 child 尚存活时不得移除其正在使用的目录；browser 关闭失败不阻止已退出进程的目录回收。
-    if (!child) {
+      const cleanupErrors: Error[] = [];
       try {
-        await runStage(
-          'cleanup_temporary_directory',
-          () => dependencies.removeTemporaryBase(directories.baseDirectory),
-          operationTimeoutMs
-        );
+        await cleanupCurrentProcess();
       } catch (error) {
-        cleanupErrors.push(error as Error);
+        if (error instanceof AggregateError) {
+          cleanupErrors.push(...error.errors.map(item => item instanceof Error
+            ? item
+            : new Error(String(item))));
+        } else {
+          cleanupErrors.push(error as Error);
+        }
       }
+      // 原 child 尚存活时不得移除其正在使用的目录；browser 关闭失败不阻止已退出进程的目录回收。
+      if (!child) {
+        try {
+          await runStage(
+            'cleanup_temporary_directory',
+            () => dependencies.removeTemporaryBase(directories.baseDirectory),
+            operationTimeoutMs
+          );
+        } catch (error) {
+          cleanupErrors.push(error as Error);
+        }
+      }
+      if (cleanupErrors.length === 1) throw cleanupErrors[0];
+      if (cleanupErrors.length > 1) {
+        throw new AggregateError(cleanupErrors, 'ELECTRON_DISPOSE_FAILED', {
+          cause: cleanupErrors[0]
+        });
+      }
+      disposed = true;
+    } finally {
+      // 首次释放即封闭证据流；资源清理失败仍可由后续 dispose 重试。
+      capturedLogEvidenceTracker.dispose();
     }
-    if (cleanupErrors.length === 1) throw cleanupErrors[0];
-    if (cleanupErrors.length > 1) {
-      throw new AggregateError(cleanupErrors, 'ELECTRON_DISPOSE_FAILED', {
-        cause: cleanupErrors[0]
-      });
-    }
-    disposed = true;
   };
 
   try {
@@ -929,11 +1251,56 @@ export async function createElectronAppFixture(
       },
       userDataDirectory: directories.userDataDirectory,
       authorizedRootDirectory: directories.authorizedRootDirectory,
+      recycleBinDirectory: directories.recycleBinDirectory,
+      characterAssetsDirectory: directories.characterAssetsDirectory,
       safeCharacterPackage: characterFixtures.safeCharacterPackage,
       maliciousCharacterPackage: characterFixtures.maliciousCharacterPackage,
       characterExportDestination: characterFixtures.characterExportDestination,
       get logs() {
         return sanitizedLogs();
+      },
+      get capturedLogEvidence() {
+        return capturedLogEvidenceTracker.snapshot();
+      },
+      sendExplorerEvent: event => writeMainE2eExplorerEvent(
+        directories.userDataDirectory,
+        event
+      ),
+      async getMainE2eState() {
+        const parsed = JSON.parse(await readFile(
+          join(directories.userDataDirectory, 'main-e2e-state.json'),
+          'utf8'
+        )) as MainE2eState;
+        if (
+          !Number.isSafeInteger(parsed.revision)
+          || parsed.revision <= 0
+          || typeof parsed.petWindowVisible !== 'boolean'
+          || typeof parsed.petWindowAlwaysOnTop !== 'boolean'
+          || !Number.isSafeInteger(parsed.processedExplorerEventRevision)
+          || parsed.processedExplorerEventRevision < 0
+          || (parsed.processedExplorerEvent !== null
+            && !MAIN_E2E_EXPLORER_EVENTS.has(parsed.processedExplorerEvent))
+          || !parsed.bridge
+          || !new Set(['idle', 'ready', 'failed', 'closed']).has(parsed.bridge.state)
+          || typeof parsed.bridge.observing !== 'boolean'
+          || typeof parsed.bridge.polling !== 'boolean'
+          || !Number.isSafeInteger(parsed.bridge.eventRevision)
+          || parsed.bridge.eventRevision < 0
+          || !parsed.layer
+          || !new Set(['idle', 'active', 'failed', 'closed']).has(parsed.layer.status)
+          || !Number.isSafeInteger(parsed.layer.activationRevision)
+          || parsed.layer.activationRevision < 0
+          || !Number.isSafeInteger(parsed.layer.errorRevision)
+          || parsed.layer.errorRevision < 0
+        ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
+        return parsed;
+      },
+      getMainDescendantProcesses() {
+        const processId = child?.pid;
+        if (!Number.isSafeInteger(processId) || !processId || processId <= 0) {
+          throw new Error('ELECTRON_PROCESS_PID_INVALID');
+        }
+        return inspectWindowsElectronDescendants(processId);
       },
       async getPetInteractionProbe() {
         if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
@@ -962,10 +1329,92 @@ export async function createElectronAppFixture(
         }
         return probe;
       },
+      async getCharacterBehaviorProbe() {
+        if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
+          throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
+        }
+        const petPage = browser.contexts()
+          .flatMap(context => context.pages())
+          .find(page => {
+            try {
+              return new URL(page.url()).searchParams.get('view') === 'pet';
+            } catch {
+              return false;
+            }
+          });
+        if (!petPage) throw new Error('ELECTRON_E2E_PROBE_PET_PAGE_UNAVAILABLE');
+        const probe = await petPage.evaluate(async () => (
+          window.myself.getCharacterBehaviorProbe?.()
+        ));
+        const statuses = new Set([
+          null, 'scheduled', 'started', 'completed', 'interrupted', 'failed'
+        ]);
+        if (
+          !probe
+          || !Number.isInteger(probe.revision)
+          || probe.revision < 0
+          || typeof probe.primaryStateId !== 'string'
+          || !Array.isArray(probe.modifierStateIds)
+          || !probe.modifierStateIds.every(value => typeof value === 'string')
+          || (probe.actionId !== null && typeof probe.actionId !== 'string')
+          || !statuses.has(probe.playbackStatus)
+          || Object.keys(probe).length !== 5
+        ) {
+          throw new Error('ELECTRON_E2E_BEHAVIOR_PROBE_RESULT_INVALID');
+        }
+        return probe;
+      },
+      async getConversationProbe() {
+        if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
+          throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
+        }
+        const chatPage = browser.contexts()
+          .flatMap(context => context.pages())
+          .find(page => {
+            try {
+              return new URL(page.url()).searchParams.get('view') === 'chat';
+            } catch {
+              return false;
+            }
+          });
+        if (!chatPage) throw new Error('ELECTRON_E2E_PROBE_CHAT_PAGE_UNAVAILABLE');
+        // 只从可见 DOM 提取去标识化状态，禁止返回消息正文、Provider 或能力标识。
+        const probe = await chatPage.evaluate(() => {
+          const phaseElement = document.querySelector('.phase-pill');
+          const phaseClass = phaseElement
+            ? [...phaseElement.classList].find(name => (
+                name !== 'phase-pill' && name.startsWith('phase-')
+              ))
+            : undefined;
+          return {
+            phase: phaseClass?.slice('phase-'.length) ?? '',
+            visibleMessageCount: document.querySelectorAll('.messages article.message').length,
+            historyDisclosureVisible: document.querySelector('#history-disclosure-title') !== null,
+            fileConfirmationVisible: document.querySelector('#confirmation-title') !== null
+          };
+        });
+        const phases = new Set([
+          'idle', 'listening', 'thinking', 'awaiting_confirmation',
+          'acting', 'success', 'error', 'cancelled'
+        ]);
+        if (
+          !phases.has(probe.phase)
+          || !Number.isSafeInteger(probe.visibleMessageCount)
+          || probe.visibleMessageCount < 0
+          || typeof probe.historyDisclosureVisible !== 'boolean'
+          || typeof probe.fileConfirmationVisible !== 'boolean'
+          || Object.keys(probe).length !== 4
+        ) {
+          throw new Error('ELECTRON_E2E_CONVERSATION_PROBE_RESULT_INVALID');
+        }
+        return probe as Awaited<ReturnType<ElectronAppFixture['getConversationProbe']>>;
+      },
       async restart() {
-        if (disposed) throw new Error('ELECTRON_FIXTURE_DISPOSED');
+        if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
         await cleanupCurrentProcess();
         await options.beforeRestart?.(directories);
+        // restart 跨越异步清理与钩子后，必须重新确认释放尚未开始。
+        if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
         try {
           await launch();
         } catch (primaryError) {

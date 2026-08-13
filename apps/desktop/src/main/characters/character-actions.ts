@@ -3,13 +3,14 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
-  CharacterDraftV1,
+  CharacterDraftV2,
   CharacterManifestV1
 } from '@myself/character-runtime';
 import type {
   CharacterEvent,
   CharacterPublishInput,
-  CharacterRuntimeSnapshot
+  CharacterRuntimeSnapshot,
+  CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
 import type {
   CharacterAssetService,
@@ -32,11 +33,11 @@ type CharacterStorePort = Pick<
 >;
 type CharacterAssetPort = Pick<
   CharacterAssetService,
-  'importSources' | 'readSource'
+  'importSources' | 'listSources' | 'readSource'
 >;
 type CharacterPackagePort = Pick<
   CharacterPackageService,
-  'importCharacter' | 'exportCharacter'
+  'importCharacter' | 'exportCharacter' | 'exportCharacterRecovery'
 >;
 
 export type CharacterActionsDependencies = {
@@ -67,7 +68,7 @@ export class CharacterActions {
     return this.dependencies.store.list();
   }
 
-  async createCharacter(input: { name: string }): Promise<CharacterDraftV1> {
+  async createCharacter(input: { name: string }): Promise<CharacterDraftV2> {
     const characterId = randomUUID();
     await this.dependencies.store.create({ id: characterId, name: input.name });
     const draft = await this.dependencies.store.getDraft(characterId);
@@ -75,7 +76,7 @@ export class CharacterActions {
     return draft;
   }
 
-  async duplicateCharacter(characterId: string): Promise<CharacterDraftV1> {
+  async duplicateCharacter(characterId: string): Promise<CharacterDraftV2> {
     const packagePath = join(
       tmpdir(),
       `ai-pet-character-copy-${randomUUID()}.zip`
@@ -91,15 +92,16 @@ export class CharacterActions {
     }
   }
 
-  getCharacterDraft(characterId: string): Promise<CharacterDraftV1> {
+  getCharacterDraft(characterId: string): Promise<CharacterDraftV2> {
     return this.dependencies.store.getDraft(characterId);
   }
 
   async saveCharacterDraft(
     characterId: string,
-    draft: CharacterDraftV1
+    draft: CharacterDraftV2,
+    draftRevision: string
   ): Promise<void> {
-    await this.dependencies.store.saveDraft(characterId, draft);
+    await this.dependencies.store.saveDraft(characterId, draft, draftRevision);
     this.emit({ type: 'index-changed' });
   }
 
@@ -108,6 +110,14 @@ export class CharacterActions {
     selectedPaths: readonly string[]
   ): Promise<ImportedSource[]> {
     return this.dependencies.assets.importSources(characterId, selectedPaths);
+  }
+
+  async listCharacterSources(
+    characterId: string
+  ): Promise<CharacterWorkshopSourceDto[]> {
+    return (await this.dependencies.assets.listSources(characterId)).map(
+      ({ assetId, displayName, mimeType }) => ({ assetId, displayName, mimeType })
+    );
   }
 
   readCharacterSource(characterId: string, assetId: string): Promise<Uint8Array> {
@@ -131,7 +141,8 @@ export class CharacterActions {
       await this.dependencies.store.publishCompiled(
         input.characterId,
         input.manifest,
-        assets
+        assets,
+        input.draftRevision
       );
       this.emit({
         type: 'compile-result',
@@ -174,8 +185,25 @@ export class CharacterActions {
     return characterId;
   }
 
-  exportCharacterPackage(characterId: string, destination: string): Promise<void> {
-    return this.dependencies.packages.exportCharacter(characterId, destination);
+  async exportCharacterPackage(
+    characterId: string,
+    destination: string
+  ): Promise<'exported' | 'recovery-exported'> {
+    try {
+      await this.dependencies.packages.exportCharacter(characterId, destination);
+      return 'exported';
+    } catch (error) {
+      const migrationFailed = error instanceof Error && (
+        error.message === 'CHARACTER_MIGRATION_FAILED'
+        || error.message === 'CHARACTER_VERSION_UNSUPPORTED'
+      );
+      if (!migrationFailed) throw error;
+      await this.dependencies.packages.exportCharacterRecovery(
+        characterId,
+        destination
+      );
+      return 'recovery-exported';
+    }
   }
 
   async getCharacterRuntimeSnapshot(): Promise<CharacterRuntimeSnapshot | null> {

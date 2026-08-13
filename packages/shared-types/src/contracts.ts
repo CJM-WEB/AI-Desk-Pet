@@ -28,6 +28,31 @@ export const characterEmotionLabelSchema = z.enum([
 ]);
 export type CharacterEmotionLabel = z.infer<typeof characterEmotionLabelSchema>;
 
+export const historyDisclosureDecisionSchema = z.enum([
+  'share_once',
+  'current_message_only'
+]);
+export type HistoryDisclosureDecision = z.infer<
+  typeof historyDisclosureDecisionSchema
+>;
+
+export const historyDisclosureRequiredEventSchema = z.object({
+  type: z.literal('history_disclosure_required'),
+  requestId: z.string().min(1).max(128),
+  targetProviderName: z.string().min(1).max(128),
+  messageCount: z.number().int().min(0).max(40),
+  characterCount: z.number().int().min(0).max(16_000)
+}).strict();
+export type HistoryDisclosureRequiredEvent = z.infer<
+  typeof historyDisclosureRequiredEventSchema
+>;
+
+export const conversationResetEventSchema = z.object({
+  type: z.literal('conversation_reset'),
+  generation: z.string().min(1).max(128)
+}).strict();
+export type ConversationResetEvent = z.infer<typeof conversationResetEventSchema>;
+
 export const toolRequestSchema = z.object({
   requestId: z.string().min(1),
   toolName: toolNameSchema,
@@ -35,17 +60,101 @@ export const toolRequestSchema = z.object({
 }).strict();
 export type ToolRequest = z.infer<typeof toolRequestSchema>;
 
-export const pendingActionSchema = z.object({
+type PendingFileActionBase = Readonly<{
+  category: 'file';
+  actionId: string;
+  conversationId: string;
+  risk: 'write';
+  summary: string;
+  targetRelativePath: string;
+  createdAt: string;
+  expiresAt: string;
+}>;
+
+/** Renderer 仅接收经 Main 过滤后的文件写入摘要，不承载私有执行能力。 */
+export type PendingAction =
+  | Readonly<PendingFileActionBase & {
+      operation: 'create_file';
+      contentCharacters: number;
+      contentPreview: string | null;
+      contentPreviewSuppressedReason: 'sensitive' | 'too_long' | null;
+      previewTruncated: boolean;
+    }>
+  | Readonly<PendingFileActionBase & {
+      operation: 'apply_patch';
+      addedLines: number;
+      removedLines: number;
+      diffPreview: string;
+      previewTruncated: boolean;
+    }>
+  | Readonly<PendingFileActionBase & {
+      operation: 'delete_file';
+      targetType: 'file' | 'empty_directory';
+    }>
+  | Readonly<{
+      category: 'powershell';
+      actionId: string;
+      conversationId: string;
+      risk: 'shell';
+      operation: 'powershell';
+      summary: string;
+      command: string;
+      workingDirectoryLabel: string;
+      runMode: 'foreground';
+      createdAt: string;
+      expiresAt: string;
+    }>;
+
+const pendingFileActionBaseSchema = z.object({
+  category: z.literal('file'),
   actionId: z.string().min(1),
   conversationId: z.string().min(1),
   risk: z.literal('write'),
   summary: z.string().min(1),
-  sourceRelativePath: z.string().min(1).optional(),
   targetRelativePath: z.string().min(1),
   createdAt: z.string().datetime(),
   expiresAt: z.string().datetime()
-}).strict();
-export type PendingAction = z.infer<typeof pendingActionSchema>;
+});
+
+/** 确认卡只展示受控目录名称，绝不承载本机绝对、UNC 或设备路径。 */
+const workingDirectoryLabelSchema = z.string().min(1).max(128).refine(
+  value => !/^(?:[a-z]:[\\/]|[\\/]{1,2}|[\\/]{2}[?.][\\/])/iu.test(value),
+  'WORKING_DIRECTORY_LABEL_INVALID'
+);
+
+export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
+  pendingFileActionBaseSchema.extend({
+    operation: z.literal('create_file'),
+    contentCharacters: z.number().int().min(0),
+    contentPreview: z.string().nullable(),
+    contentPreviewSuppressedReason: z.enum(['sensitive', 'too_long']).nullable(),
+    previewTruncated: z.boolean()
+  }).strict(),
+  pendingFileActionBaseSchema.extend({
+    operation: z.literal('apply_patch'),
+    addedLines: z.number().int().min(0),
+    removedLines: z.number().int().min(0),
+    diffPreview: z.string(),
+    previewTruncated: z.boolean()
+  }).strict(),
+  pendingFileActionBaseSchema.extend({
+    operation: z.literal('delete_file'),
+    targetType: z.enum(['file', 'empty_directory'])
+  }).strict(),
+  z.object({
+    category: z.literal('powershell'),
+    actionId: z.string().min(1),
+    conversationId: z.string().min(1),
+    risk: z.literal('shell'),
+    operation: z.literal('powershell'),
+    summary: z.string().min(1),
+    command: z.string().min(1).max(16_384),
+    workingDirectoryLabel: workingDirectoryLabelSchema,
+    runMode: z.literal('foreground'),
+    createdAt: z.string().datetime(),
+    expiresAt: z.string().datetime()
+  }).strict()
+]);
 
 export const providerProfileSchema = z.object({
   id: z.string().min(1),
@@ -75,23 +184,26 @@ const providerBaseUrlSchema = z.string().url().refine(value => {
     && new Set(['localhost', '127.0.0.1', '[::1]']).has(url.hostname);
 }, 'PROVIDER_URL_UNSAFE');
 
+const declaredModelCapabilitiesSchema = z.array(z.enum([
+  'chat',
+  'tools',
+  'vision',
+  'streaming',
+  'longContext'
+])).min(1).optional();
+
 export const providerProfileV2Schema = z.discriminatedUnion('mode', [
   providerProfileV2BaseSchema.extend({
     mode: z.literal('preset'),
-    providerId: z.string().min(1)
+    providerId: z.string().min(1),
+    capabilities: declaredModelCapabilitiesSchema
   }).strict(),
   providerProfileV2BaseSchema.extend({
     mode: z.literal('custom'),
     protocol: providerProtocolSchema,
     baseUrl: providerBaseUrlSchema,
     additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()])),
-    capabilities: z.array(z.enum([
-      'chat',
-      'tools',
-      'vision',
-      'streaming',
-      'longContext'
-    ])).min(1).optional()
+    capabilities: declaredModelCapabilitiesSchema
   }).strict()
 ]);
 export type ProviderProfileV2 = z.infer<typeof providerProfileV2Schema>;
@@ -99,20 +211,15 @@ export type ProviderProfileV2 = z.infer<typeof providerProfileV2Schema>;
 export const storedProviderProfileV2Schema = z.discriminatedUnion('mode', [
   storedProviderProfileV2BaseSchema.extend({
     mode: z.literal('preset'),
-    providerId: z.string().min(1)
+    providerId: z.string().min(1),
+    capabilities: declaredModelCapabilitiesSchema
   }).strict(),
   storedProviderProfileV2BaseSchema.extend({
     mode: z.literal('custom'),
     protocol: providerProtocolSchema,
     baseUrl: providerBaseUrlSchema,
     additionalParameters: z.record(z.union([z.string(), z.number(), z.boolean()])),
-    capabilities: z.array(z.enum([
-      'chat',
-      'tools',
-      'vision',
-      'streaming',
-      'longContext'
-    ])).min(1).optional()
+    capabilities: declaredModelCapabilitiesSchema
   }).strict()
 ]);
 export type StoredProviderProfileV2 = z.infer<typeof storedProviderProfileV2Schema>;
@@ -170,6 +277,8 @@ export const taskEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('character_carrying'),
     carrying: z.boolean()
-  }).strict()
+  }).strict(),
+  historyDisclosureRequiredEventSchema,
+  conversationResetEventSchema
 ]);
 export type TaskEvent = z.infer<typeof taskEventSchema>;

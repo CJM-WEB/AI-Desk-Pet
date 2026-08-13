@@ -1,14 +1,22 @@
 import type {
   ActionFrame,
-  CharacterDraftV1,
-  CharacterStateId,
+  CharacterActionDefinitionV2,
+  CharacterDraftV2,
+  CharacterIdentityV2,
+  CharacterSkinV2,
+  CharacterStateDefinitionV2,
   DraftActionClip
+} from '@myself/character-runtime';
+import {
+  characterManifestV2Schema,
+  resolveCharacterPresentation
 } from '@myself/character-runtime';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type {
   CharacterEvent,
   CharacterPublishInput,
-  CharacterSummaryDto
+  CharacterSummaryDto,
+  CharacterWorkshopSourceDto
 } from '../../../../shared/character-ipc';
 import type { MyselfApi } from '../../../../shared/myself-api';
 import {
@@ -41,6 +49,7 @@ export type CharacterWorkshopApi = Pick<
   | 'createCharacter'
   | 'duplicateCharacter'
   | 'getCharacterDraft'
+  | 'listCharacterSources'
   | 'saveCharacterDraft'
   | 'chooseCharacterSources'
   | 'publishCharacter'
@@ -57,6 +66,19 @@ export type ImportedWorkshopSource = {
   displayName: string;
   mimeType: 'image/png' | 'image/webp';
 };
+
+export type CharacterWorkshopSelectedEntity =
+  | { kind: 'identity' }
+  | { kind: 'skin'; skinId: string }
+  | { kind: 'state'; stateId: string }
+  | { kind: 'action'; actionId: string };
+
+export type CharacterReferenceImpact = {
+  safeReferencePaths: string[];
+  blockingReferencePaths: string[];
+};
+
+type LegacyWorkshopActionPatch = Partial<DraftActionClip>;
 
 export interface CharacterWorkshopDependencies {
   /** 测试可注入稳定 ID；生产默认使用加密安全的 UUID。 */
@@ -80,8 +102,10 @@ export interface CharacterWorkshopDependencies {
 export interface CharacterWorkshopState {
   characters: CharacterSummaryDto[];
   selectedCharacterId: string | null;
-  draft: CharacterDraftV1 | null;
-  selectedStateId: CharacterStateId | null;
+  draft: CharacterDraftV2 | null;
+  selectedEntity: CharacterWorkshopSelectedEntity;
+  selectedSkinId: string | null;
+  selectedStateId: string | null;
   selectedActionId: string | null;
   draftStatus: 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
   compileStatus: 'idle' | 'compiling' | 'success' | 'error';
@@ -92,7 +116,9 @@ export interface CharacterWorkshopState {
   load(): Promise<void>;
   mount(): () => void;
   selectCharacter(characterId: string): Promise<void>;
-  selectState(stateId: CharacterStateId): void;
+  selectIdentity(): void;
+  selectSkin(skinId: string): void;
+  selectState(stateId: string): void;
   selectAction(actionId: string): void;
   createCharacter(name: string): Promise<void>;
   duplicateCharacter(characterId: string): Promise<void>;
@@ -101,43 +127,110 @@ export interface CharacterWorkshopState {
   importCharacterPackage(): Promise<void>;
   exportCharacterPackage(): Promise<void>;
   importSources(): Promise<void>;
-  addAction(): void;
+  updateIdentity(patch: Partial<CharacterIdentityV2>): void;
+  addSkin(name: string): void;
+  duplicateSkin(skinId: string, name: string): void;
+  updateSkin(skinId: string, patch: Partial<CharacterSkinV2>): void;
+  setDefaultSkin(skinId: string): void;
+  requestRemoveSkin(skinId: string, confirm?: boolean): CharacterReferenceImpact;
+  addState(input: {
+    name: string;
+    kind: 'primary' | 'modifier';
+    semantic: CharacterStateDefinitionV2['semantic'];
+  }): void;
+  updateState(stateId: string, patch: Partial<CharacterStateDefinitionV2>): void;
+  requestRemoveState(stateId: string, confirm?: boolean): CharacterReferenceImpact;
+  addAction(stateId?: string, name?: string): void;
+  updateAction(actionId: string, patch: Partial<CharacterActionDefinitionV2>): void;
+  setCurrentActionCommitFrame(frameId: string | null): void;
+  requestRemoveCurrentFrame(frameId: string, confirm?: boolean): CharacterReferenceImpact;
+  requestRemoveAction(actionId: string, confirm?: boolean): CharacterReferenceImpact;
+  removeAction(stateId: string, actionId: string): void;
+  removeExtensionState(stateId: string): void;
   addExtensionState(name: string, event: 'single_click' | 'double_click' | 'context_menu'): void;
   applySpriteSheet(input: {
     sourceAssetId: string;
     rows: number;
     columns: number;
     frameCount: number;
-  }): Promise<void>;
+  }, confirmCommitFrameRemoval?: boolean): Promise<CharacterReferenceImpact | void>;
   compileAndPublish(): Promise<void>;
   publishCharacter(input: CharacterPublishInput): Promise<void>;
-  updateCurrentAction(patch: Partial<DraftActionClip>): void;
+  updateCurrentAction(patch: LegacyWorkshopActionPatch): void;
   flushDraft(): Promise<void>;
   dismissToast(id: string): void;
   dispose(): void;
 }
 
 type WorkshopStore = StoreApi<CharacterWorkshopState>;
+const COMPILE_CANCELLED = Symbol('CHARACTER_COMPILE_CANCELLED');
 
 function errorText(error: unknown): string {
   const code = error instanceof Error ? error.message : 'CHARACTER_OPERATION_FAILED';
   return characterOperationMessage(code);
 }
 
-function initialSelection(draft: CharacterDraftV1): {
-  stateId: CharacterStateId | null;
+function initialSelection(draft: CharacterDraftV2): {
+  skinId: string | null;
+  stateId: string | null;
   actionId: string | null;
+  entity: CharacterWorkshopSelectedEntity;
 } {
-  const state = draft.states.find(candidate => candidate.id === 'idle')
+  const skin = draft.skins.find(candidate => candidate.id === draft.defaultSkinId)
+    ?? draft.skins[0];
+  const state = draft.states.find(candidate => candidate.id === draft.defaultStateId)
     ?? draft.states[0];
+  const actionId = state?.actionIds.find(id => draft.actions.some(action => action.id === id))
+    ?? null;
   return {
+    skinId: skin?.id ?? null,
     stateId: state?.id ?? null,
-    actionId: state?.actions[0]?.id ?? null
+    actionId,
+    entity: actionId
+      ? { kind: 'action', actionId }
+      : state
+        ? { kind: 'state', stateId: state.id }
+        : skin
+          ? { kind: 'skin', skinId: skin.id }
+          : { kind: 'identity' }
   };
 }
 
-function cloneDraft(draft: CharacterDraftV1): CharacterDraftV1 {
+function cloneDraft(draft: CharacterDraftV2): CharacterDraftV2 {
   return structuredClone(draft);
+}
+
+function sameSelectedEntity(
+  left: CharacterWorkshopSelectedEntity,
+  right: CharacterWorkshopSelectedEntity
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'identity' && right.kind === 'identity') return true;
+  if (left.kind === 'skin' && right.kind === 'skin') return left.skinId === right.skinId;
+  if (left.kind === 'state' && right.kind === 'state') return left.stateId === right.stateId;
+  return left.kind === 'action'
+    && right.kind === 'action'
+    && left.actionId === right.actionId;
+}
+
+/** 从可读名称生成有界、确定且碰撞安全的 V2 标识符。 */
+function createEntityId(
+  name: string,
+  fallback: string,
+  usedIds: ReadonlySet<string>
+): string {
+  const normalized = name.trim().toLocaleLowerCase('en-US')
+    .replace(/[^a-z0-9_-]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 112);
+  const base = normalized || fallback;
+  let candidate = base.slice(0, 120);
+  let suffix = 2;
+  while (usedIds.has(candidate)) {
+    const postfix = `-${suffix++}`;
+    candidate = `${base.slice(0, 120 - postfix.length)}${postfix}`;
+  }
+  return candidate;
 }
 
 async function inspectBrowserImage(
@@ -199,10 +292,18 @@ export function createCharacterWorkshopStore(
 ): WorkshopStore {
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let saveInFlight: Promise<void> | null = null;
+  let compileInFlight: Promise<void> | null = null;
+  let localCompileEventBarrier: {
+    characterId: string;
+    selectionRevision: number;
+    draftRevision: number;
+  } | null = null;
   let saveRequested = false;
   let draftRevision = 0;
   let savedRevision = 0;
+  let savedDraftRevisionToken: string | null = null;
   let selectionRevision = 0;
+  let workspaceTargetRevision = 0;
   let listRevision = 0;
   let eventRefreshRevision = 0;
   let eventLoading = false;
@@ -217,15 +318,82 @@ export function createCharacterWorkshopStore(
       }));
     }
 
-    function setDraft(draft: CharacterDraftV1): void {
+    const migrationReadFailureText = '旧版角色迁移读取失败，请重试或导出恢复包。';
+
+    function isMigrationRecoveryTarget(characterId: string): boolean {
+      return get().characters.some(character => (
+        character.id === characterId
+        && character.migrationErrorCode === 'CHARACTER_MIGRATION_FAILED'
+        && character.migrationRecoveryAvailable
+      ));
+    }
+
+    /** 初次加载与手动重试共用同一恢复上下文，避免原始路径或堆栈进入提示层。 */
+    function enterMigrationRecovery(characterId: string): void {
+      workspaceTargetRevision += 1;
+      set({
+        selectedCharacterId: characterId,
+        draft: null,
+        selectedEntity: { kind: 'identity' },
+        selectedSkinId: null,
+        selectedStateId: null,
+        selectedActionId: null,
+        availableSources: [],
+        draftStatus: 'idle',
+        compileStatus: 'idle',
+        loadStatus: 'error'
+      });
+      enqueueToast({ tone: 'error', text: migrationReadFailureText });
+    }
+
+    /** 只有工作区实际目标变化时才推进 ABA 屏障令牌。 */
+    function setWorkspaceTarget(
+      patch: Partial<Pick<CharacterWorkshopState,
+        'selectedEntity' | 'selectedSkinId' | 'selectedStateId' | 'selectedActionId'>>
+    ): void {
+      const current = get();
+      const nextEntity = patch.selectedEntity ?? current.selectedEntity;
+      const nextSkinId = patch.selectedSkinId === undefined
+        ? current.selectedSkinId
+        : patch.selectedSkinId;
+      const nextStateId = patch.selectedStateId === undefined
+        ? current.selectedStateId
+        : patch.selectedStateId;
+      const nextActionId = patch.selectedActionId === undefined
+        ? current.selectedActionId
+        : patch.selectedActionId;
+      if (
+        !sameSelectedEntity(current.selectedEntity, nextEntity)
+        || current.selectedSkinId !== nextSkinId
+        || current.selectedStateId !== nextStateId
+        || current.selectedActionId !== nextActionId
+      ) {
+        workspaceTargetRevision += 1;
+      }
+      set(patch);
+    }
+
+    function setDraft(
+      draft: CharacterDraftV2,
+      sources: readonly CharacterWorkshopSourceDto[] = []
+    ): void {
       const selection = initialSelection(draft);
       draftRevision += 1;
       savedRevision = draftRevision;
+      savedDraftRevisionToken = null;
+      workspaceTargetRevision += 1;
       set({
         selectedCharacterId: draft.id,
         draft: cloneDraft(draft),
+        selectedEntity: selection.entity,
+        selectedSkinId: selection.skinId,
         selectedStateId: selection.stateId,
         selectedActionId: selection.actionId,
+        availableSources: sources.map(({ assetId, displayName, mimeType }) => ({
+          assetId,
+          displayName,
+          mimeType
+        })),
         draftStatus: 'idle',
         compileStatus: 'idle'
       });
@@ -242,9 +410,12 @@ export function createCharacterWorkshopStore(
       characterId: string,
       requestRevision: number
     ): Promise<void> {
-      const loadedDraft = await api.getCharacterDraft(characterId);
+      const [loadedDraft, sources] = await Promise.all([
+        api.getCharacterDraft(characterId),
+        api.listCharacterSources(characterId)
+      ]);
       if (requestRevision !== selectionRevision) return;
-      setDraft(loadedDraft);
+      setDraft(loadedDraft, sources);
     }
 
     async function reportFailure(
@@ -256,7 +427,9 @@ export function createCharacterWorkshopStore(
         await operation();
         return true;
       } catch (error) {
-        enqueueToast({ tone: 'error', text: errorText(error) });
+        if (error !== COMPILE_CANCELLED) {
+          enqueueToast({ tone: 'error', text: errorText(error) });
+        }
         return false;
       } finally {
         if (get().busyAction === action) set({ busyAction: null });
@@ -272,8 +445,78 @@ export function createCharacterWorkshopStore(
       }, 500);
     }
 
+    /** 所有领域编辑统一经过深克隆，并在提交前收敛可能失效的选择。 */
+    function updateDraft(
+      mutate: (draft: CharacterDraftV2) => void,
+      requestedEntity?: CharacterWorkshopSelectedEntity
+    ): void {
+      const current = get();
+      if (!current.draft) return;
+      const next = cloneDraft(current.draft);
+      mutate(next);
+
+      const selectedSkin = next.skins.find(skin => skin.id === current.selectedSkinId)
+        ?? next.skins.find(skin => skin.id === next.defaultSkinId)
+        ?? next.skins[0];
+      const selectedState = next.states.find(state => state.id === current.selectedStateId)
+        ?? next.states.find(state => state.id === next.defaultStateId)
+        ?? next.states[0];
+      const selectedActionId = selectedState?.actionIds.find(actionId => (
+        next.actions.some(action => action.id === actionId)
+      )) ?? null;
+      const candidateEntity = requestedEntity ?? current.selectedEntity;
+      const selectedEntity: CharacterWorkshopSelectedEntity = (
+        candidateEntity.kind === 'identity'
+        || (candidateEntity.kind === 'skin' && next.skins.some(skin => skin.id === candidateEntity.skinId))
+        || (candidateEntity.kind === 'state' && next.states.some(state => state.id === candidateEntity.stateId))
+        || (
+          candidateEntity.kind === 'action'
+          && selectedState?.actionIds.includes(candidateEntity.actionId)
+          && next.actions.some(action => action.id === candidateEntity.actionId)
+        )
+      )
+        ? candidateEntity
+        : selectedActionId
+          ? { kind: 'action', actionId: selectedActionId }
+          : selectedState
+            ? { kind: 'state', stateId: selectedState.id }
+            : selectedSkin
+              ? { kind: 'skin', skinId: selectedSkin.id }
+              : { kind: 'identity' };
+      const resolvedActionId = selectedEntity.kind === 'action'
+        ? selectedEntity.actionId
+        : selectedActionId;
+
+      draftRevision += 1;
+      if (
+        !sameSelectedEntity(current.selectedEntity, selectedEntity)
+        || current.selectedSkinId !== (selectedSkin?.id ?? null)
+        || current.selectedStateId !== (selectedState?.id ?? null)
+        || current.selectedActionId !== resolvedActionId
+      ) {
+        workspaceTargetRevision += 1;
+      }
+      set({
+        draft: next,
+        selectedEntity,
+        selectedSkinId: selectedSkin?.id ?? null,
+        selectedStateId: selectedState?.id ?? null,
+        selectedActionId: resolvedActionId,
+        draftStatus: 'dirty',
+        compileStatus: 'idle'
+      });
+      if (compileInFlight) {
+        // 发布在途时立即把新修订送往 Main，使提交前的修订令牌复核可观察到编辑。
+        void get().flushDraft().catch(() => undefined);
+      } else {
+        scheduleSave();
+      }
+    }
+
     function hasPendingDraft(): boolean {
-      return get().draftStatus === 'dirty' || get().draftStatus === 'saving';
+      return get().draftStatus === 'dirty'
+        || get().draftStatus === 'saving'
+        || get().draftStatus === 'error';
     }
 
     async function flushBeforeSelectionChange(): Promise<boolean> {
@@ -287,9 +530,21 @@ export function createCharacterWorkshopStore(
 
     async function refreshFromEvent(event: CharacterEvent): Promise<void> {
       const requestRevision = ++eventRefreshRevision;
-      if (event.type === 'compile-result' && event.characterId === get().selectedCharacterId) {
-        set({ compileStatus: event.ok ? 'success' : 'error' });
-        if (!event.ok) enqueueToast({ tone: 'error', text: event.errorCode });
+      if (event.type === 'compile-result') {
+        const barrier = localCompileEventBarrier;
+        const belongsToLocalAttempt = barrier?.characterId === event.characterId;
+        const targetsSelectedCharacter = event.characterId === get().selectedCharacterId;
+        const localAttemptIsCurrent = belongsToLocalAttempt && (
+          barrier.selectionRevision === selectionRevision
+          && barrier.draftRevision === draftRevision
+          && get().draft?.id === barrier.characterId
+        );
+        // Main 每次发布只产生一个结果事件；消费后恢复后续外部事件的既有语义。
+        if (belongsToLocalAttempt) localCompileEventBarrier = null;
+        if (targetsSelectedCharacter && (!belongsToLocalAttempt || localAttemptIsCurrent)) {
+          set({ compileStatus: event.ok ? 'success' : 'error' });
+          if (!event.ok) enqueueToast({ tone: 'error', text: event.errorCode });
+        }
       }
       if (event.type === 'active-character-changed') {
         set({
@@ -320,9 +575,12 @@ export function createCharacterWorkshopStore(
           if (next) {
             await loadSelectedDraft(next.id, requestRevision);
           } else {
+            workspaceTargetRevision += 1;
             set({
               selectedCharacterId: null,
               draft: null,
+              selectedEntity: { kind: 'identity' },
+              selectedSkinId: null,
               selectedStateId: null,
               selectedActionId: null,
               draftStatus: 'idle',
@@ -344,6 +602,8 @@ export function createCharacterWorkshopStore(
       characters: [],
       selectedCharacterId: null,
       draft: null,
+      selectedEntity: { kind: 'identity' },
+      selectedSkinId: null,
       selectedStateId: null,
       selectedActionId: null,
       draftStatus: 'idle',
@@ -355,6 +615,7 @@ export function createCharacterWorkshopStore(
 
       async load() {
         const requestRevision = ++selectionRevision;
+        let attemptedCharacterId: string | null = null;
         set({
           loadStatus: 'loading',
           busyAction: 'loading',
@@ -368,9 +629,12 @@ export function createCharacterWorkshopStore(
             ?? characters.find(character => character.active)
             ?? characters[0];
           if (!selected) {
+            if (get().draft) workspaceTargetRevision += 1;
             set({
               selectedCharacterId: null,
               draft: null,
+              selectedEntity: { kind: 'identity' },
+              selectedSkinId: null,
               selectedStateId: null,
               selectedActionId: null,
               draftStatus: 'idle',
@@ -379,12 +643,17 @@ export function createCharacterWorkshopStore(
             });
             return;
           }
+          attemptedCharacterId = selected.id;
           await loadSelectedDraft(selected.id, requestRevision);
           if (requestRevision === selectionRevision) set({ loadStatus: 'ready' });
         } catch (error) {
           if (requestRevision === selectionRevision) {
-            set({ loadStatus: 'error' });
-            enqueueToast({ tone: 'error', text: errorText(error) });
+            if (attemptedCharacterId && isMigrationRecoveryTarget(attemptedCharacterId)) {
+              enterMigrationRecovery(attemptedCharacterId);
+            } else {
+              set({ loadStatus: 'error' });
+              enqueueToast({ tone: 'error', text: errorText(error) });
+            }
           }
         } finally {
           if (
@@ -408,22 +677,20 @@ export function createCharacterWorkshopStore(
 
       async selectCharacter(characterId) {
         if (characterId === get().selectedCharacterId && get().draft) return;
-        if (hasPendingDraft() && !await flushBeforeSelectionChange()) return;
+        // 选择意图立即失效化旧异步任务，实际工作区仍等待当前草稿安全落盘。
         const requestRevision = ++selectionRevision;
-        set({
-          selectedCharacterId: characterId,
-          draft: null,
-          selectedStateId: null,
-          selectedActionId: null,
-          draftStatus: 'idle',
-          compileStatus: 'idle',
-          busyAction: 'loading'
-        });
+        if (hasPendingDraft() && !await flushBeforeSelectionChange()) return;
+        if (requestRevision !== selectionRevision) return;
+        set({ busyAction: 'loading' });
         try {
           await loadSelectedDraft(characterId, requestRevision);
         } catch (error) {
           if (requestRevision === selectionRevision) {
-            enqueueToast({ tone: 'error', text: errorText(error) });
+            if (isMigrationRecoveryTarget(characterId)) {
+              enterMigrationRecovery(characterId);
+            } else {
+              enqueueToast({ tone: 'error', text: errorText(error) });
+            }
           }
         } finally {
           if (
@@ -438,9 +705,25 @@ export function createCharacterWorkshopStore(
       selectState(stateId) {
         const state = get().draft?.states.find(candidate => candidate.id === stateId);
         if (!state) return;
-        set({
+        const actionId = state.actionIds.find(id => (
+          get().draft?.actions.some(action => action.id === id)
+        )) ?? null;
+        setWorkspaceTarget({
+          selectedEntity: { kind: 'state', stateId },
           selectedStateId: stateId,
-          selectedActionId: state.actions[0]?.id ?? null
+          selectedActionId: actionId
+        });
+      },
+
+      selectIdentity() {
+        setWorkspaceTarget({ selectedEntity: { kind: 'identity' } });
+      },
+
+      selectSkin(skinId) {
+        if (!get().draft?.skins.some(skin => skin.id === skinId)) return;
+        setWorkspaceTarget({
+          selectedSkinId: skinId,
+          selectedEntity: { kind: 'skin', skinId }
         });
       },
 
@@ -448,8 +731,14 @@ export function createCharacterWorkshopStore(
         const state = get().draft?.states.find(
           candidate => candidate.id === get().selectedStateId
         );
-        if (state?.actions.some(action => action.id === actionId)) {
-          set({ selectedActionId: actionId });
+        if (
+          state?.actionIds.includes(actionId)
+          && get().draft?.actions.some(action => action.id === actionId)
+        ) {
+          setWorkspaceTarget({
+            selectedEntity: { kind: 'action', actionId },
+            selectedActionId: actionId
+          });
         }
       },
 
@@ -474,8 +763,8 @@ export function createCharacterWorkshopStore(
         await reportFailure('creating', async () => {
           const duplicate = await api.duplicateCharacter(characterId);
           await refreshCharacters();
-          selectionRevision += 1;
-          setDraft(duplicate);
+          const requestRevision = ++selectionRevision;
+          await loadSelectedDraft(duplicate.id, requestRevision);
           enqueueToast({ tone: 'success', text: '角色副本已创建。' });
         });
       },
@@ -499,9 +788,12 @@ export function createCharacterWorkshopStore(
               const requestRevision = selectionRevision;
               await loadSelectedDraft(next.id, requestRevision);
             } else {
+              workspaceTargetRevision += 1;
               set({
                 selectedCharacterId: null,
                 draft: null,
+                selectedEntity: { kind: 'identity' },
+                selectedSkinId: null,
                 selectedStateId: null,
                 selectedActionId: null,
                 draftStatus: 'idle',
@@ -549,7 +841,17 @@ export function createCharacterWorkshopStore(
       async exportCharacterPackage() {
         const characterId = get().selectedCharacterId;
         if (!characterId) return;
+        const exportSelectionRevision = selectionRevision;
+        const exportDraftRevision = draftRevision;
         await reportFailure('exporting', async () => {
+          if (hasPendingDraft() && !await flushBeforeSelectionChange()) return;
+          // 保存等待期间目标或草稿发生变化时，旧导出请求不得读取另一修订。
+          if (
+            selectionRevision !== exportSelectionRevision
+            || draftRevision !== exportDraftRevision
+            || get().selectedCharacterId !== characterId
+            || hasPendingDraft()
+          ) return;
           const result = await api.exportCharacterPackage(characterId);
           enqueueToast(result.kind === 'cancelled'
             ? { tone: 'info', text: '已取消导出角色包。' }
@@ -560,99 +862,421 @@ export function createCharacterWorkshopStore(
       async importSources() {
         const characterId = get().selectedCharacterId;
         if (!characterId) return;
+        const requestRevision = selectionRevision;
         await reportFailure('importing', async () => {
           const result = await api.chooseCharacterSources(characterId);
-          set({
-            ...(result.kind === 'selected'
-              ? {
-                  availableSources: result.sources.map(source => ({
-                    assetId: source.assetId,
-                    displayName: source.displayName,
-                    mimeType: source.mimeType
-                  }))
-                }
-              : {})
-          });
+          if (result.kind === 'selected') {
+            const sources = await api.listCharacterSources(characterId);
+            if (
+              requestRevision === selectionRevision
+              && get().selectedCharacterId === characterId
+            ) {
+              set({
+                availableSources: sources.map(({ assetId, displayName, mimeType }) => ({
+                  assetId,
+                  displayName,
+                  mimeType
+                }))
+              });
+            }
+          }
           enqueueToast(result.kind === 'cancelled'
             ? { tone: 'info', text: '已取消导入素材。' }
             : { tone: 'success', text: `已导入 ${result.sources.length} 个素材。` });
         });
       },
 
-      addAction() {
-        const current = get();
-        if (!current.draft || !current.selectedStateId) return;
-        const nextDraft = cloneDraft(current.draft);
-        const state = nextDraft.states.find(candidate => (
-          candidate.id === current.selectedStateId
-        ));
-        if (!state) return;
-        const base = `${String(state.id).replace(/[^a-z0-9]+/gu, '-')}-action`;
-        let index = state.actions.length + 1;
-        let id = `${base}-${index}`;
-        while (state.actions.some(action => action.id === id)) {
-          id = `${base}-${++index}`;
-        }
-        state.actions.push({
-          id,
-          name: `动作 ${index}`,
-          fps: 8,
-          loop: true,
-          weight: 1,
-          direction: 'any',
-          anchors: { ground: { x: 0.5, y: 1 } },
-          frames: []
-        });
-        draftRevision += 1;
-        set({
-          draft: nextDraft,
-          selectedActionId: id,
-          draftStatus: 'dirty'
-        });
-        scheduleSave();
+      updateIdentity(patch) {
+        const safePatch = structuredClone(patch);
+        updateDraft(draft => Object.assign(draft.identity, safePatch));
       },
 
-      addExtensionState(name, event) {
-        const normalized = name.trim().toLocaleLowerCase('en-US')
-          .replace(/[^a-z0-9_-]+/gu, '-')
-          .replace(/^-+|-+$/gu, '');
-        if (!normalized) {
-          enqueueToast({ tone: 'error', text: '扩展状态名称不能为空。' });
-          return;
-        }
+      addSkin(name) {
+        const normalizedName = name.trim();
         const current = get();
-        if (!current.draft) return;
-        const id = `custom:${normalized}` as `custom:${string}`;
-        if (current.draft.states.some(state => state.id === id)) {
-          enqueueToast({ tone: 'error', text: '扩展状态已存在。' });
-          return;
-        }
-        const nextDraft = cloneDraft(current.draft);
-        nextDraft.states.push({
-          id,
-          kind: 'extension',
-          triggers: { events: [event], keywords: [], emotions: [] },
-          actions: []
-        });
-        draftRevision += 1;
-        set({
-          draft: nextDraft,
-          selectedStateId: id,
-          selectedActionId: null,
-          draftStatus: 'dirty'
-        });
-        scheduleSave();
+        if (!current.draft || !normalizedName) return;
+        const id = createEntityId(
+          normalizedName,
+          'skin',
+          new Set(current.draft.skins.map(skin => skin.id))
+        );
+        updateDraft(draft => {
+          draft.skins.push({
+            id,
+            name: normalizedName,
+            presentations: [],
+            semanticFallbacks: []
+          });
+        }, { kind: 'skin', skinId: id });
+        setWorkspaceTarget({ selectedSkinId: id });
       },
 
-      async applySpriteSheet(input) {
+      duplicateSkin(skinId, name) {
+        const normalizedName = name.trim();
         const current = get();
+        const source = current.draft?.skins.find(skin => skin.id === skinId);
+        if (!current.draft || !source || !normalizedName) return;
+        const id = createEntityId(
+          normalizedName,
+          'skin',
+          new Set(current.draft.skins.map(skin => skin.id))
+        );
+        updateDraft(draft => {
+          draft.skins.push({ ...structuredClone(source), id, name: normalizedName });
+        }, { kind: 'skin', skinId: id });
+        setWorkspaceTarget({ selectedSkinId: id });
+      },
+
+      updateSkin(skinId, patch) {
+        if (!get().draft?.skins.some(skin => skin.id === skinId)) return;
+        const { id: _ignoredId, ...safePatch } = structuredClone(patch);
+        updateDraft(draft => {
+          Object.assign(draft.skins.find(skin => skin.id === skinId)!, safePatch);
+        });
+      },
+
+      setDefaultSkin(skinId) {
+        if (!get().draft?.skins.some(skin => skin.id === skinId)) return;
+        updateDraft(draft => {
+          draft.defaultSkinId = skinId;
+        }, { kind: 'skin', skinId });
+        setWorkspaceTarget({ selectedSkinId: skinId });
+      },
+
+      requestRemoveSkin(skinId, confirm = false) {
+        const current = get();
+        const skinIndex = current.draft?.skins.findIndex(skin => skin.id === skinId) ?? -1;
+        if (!current.draft || skinIndex < 0) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const skin = current.draft.skins[skinIndex]!;
+        const impact: CharacterReferenceImpact = {
+          safeReferencePaths: [
+            ...(skin.presentations.length > 0 ? [`skins.${skinIndex}.presentations`] : []),
+            ...(skin.semanticFallbacks.length > 0 ? [`skins.${skinIndex}.semanticFallbacks`] : [])
+          ],
+          blockingReferencePaths: current.draft.defaultSkinId === skinId
+            ? ['defaultSkinId']
+            : []
+        };
+        if (
+          impact.blockingReferencePaths.length === 0
+          && (impact.safeReferencePaths.length === 0 || confirm)
+        ) {
+          updateDraft(draft => {
+            draft.skins = draft.skins.filter(candidate => candidate.id !== skinId);
+          });
+        }
+        return impact;
+      },
+
+      addState(input) {
+        const normalizedName = input.name.trim();
+        const current = get();
+        if (!current.draft || !normalizedName) return;
+        const id = createEntityId(
+          normalizedName,
+          'state',
+          new Set(current.draft.states.map(state => state.id))
+        );
+        const safeSemantic = structuredClone(input.semantic);
+        updateDraft(draft => {
+          draft.states.push({
+            id,
+            name: normalizedName,
+            kind: input.kind,
+            semantic: safeSemantic,
+            tags: [],
+            intensity: 50,
+            coexistWithStateIds: [],
+            forbiddenStateIds: [],
+            enterConditions: [],
+            exitConditions: [],
+            agentInferable: false,
+            actionIds: []
+          });
+        }, { kind: 'state', stateId: id });
+        setWorkspaceTarget({ selectedStateId: id, selectedActionId: null });
+      },
+
+      updateState(stateId, patch) {
+        if (!get().draft?.states.some(state => state.id === stateId)) return;
+        const { id: _ignoredId, ...safePatch } = structuredClone(patch);
+        updateDraft(draft => {
+          Object.assign(draft.states.find(state => state.id === stateId)!, safePatch);
+        });
+      },
+
+      requestRemoveState(stateId, confirm = false) {
+        const current = get();
+        const targetIndex = current.draft?.states.findIndex(state => state.id === stateId) ?? -1;
+        if (!current.draft || targetIndex < 0) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const safeReferencePaths: string[] = [];
+        current.draft.states.forEach((state, index) => {
+          if (state.coexistWithStateIds.includes(stateId)) safeReferencePaths.push(`states.${index}.coexistWithStateIds`);
+          if (state.forbiddenStateIds.includes(stateId)) safeReferencePaths.push(`states.${index}.forbiddenStateIds`);
+          if (state.enterConditions.some(condition => (
+            condition.clauses.some(clause => clause.kind === 'state' && clause.stateId === stateId)
+          ))) safeReferencePaths.push(`states.${index}.enterConditions`);
+          if (state.exitConditions.some(condition => (
+            condition.clauses.some(clause => clause.kind === 'state' && clause.stateId === stateId)
+          ))) safeReferencePaths.push(`states.${index}.exitConditions`);
+        });
+        current.draft.actions.forEach((action, index) => {
+          (['allowedPrimaryStateIds', 'forbiddenPrimaryStateIds', 'requiredModifierStateIds', 'forbiddenModifierStateIds'] as const)
+            .forEach(field => {
+              if (action[field].includes(stateId)) safeReferencePaths.push(`actions.${index}.${field}`);
+            });
+        });
+        const impact: CharacterReferenceImpact = {
+          safeReferencePaths,
+          blockingReferencePaths: current.draft.defaultStateId === stateId
+            ? ['defaultStateId']
+            : []
+        };
+        if (impact.blockingReferencePaths.length === 0 && (safeReferencePaths.length === 0 || confirm)) {
+          updateDraft(draft => {
+            draft.states = draft.states.filter(state => state.id !== stateId);
+            draft.states.forEach(state => {
+              state.coexistWithStateIds = state.coexistWithStateIds.filter(id => id !== stateId);
+              state.forbiddenStateIds = state.forbiddenStateIds.filter(id => id !== stateId);
+              const cleanConditions = (conditions: typeof state.enterConditions) => conditions
+                .map(condition => ({
+                  ...condition,
+                  clauses: condition.clauses.filter(
+                    clause => clause.kind !== 'state' || clause.stateId !== stateId
+                  )
+                }))
+                .filter(condition => condition.clauses.length > 0);
+              state.enterConditions = cleanConditions(state.enterConditions);
+              state.exitConditions = cleanConditions(state.exitConditions);
+            });
+            draft.actions.forEach(action => {
+              action.allowedPrimaryStateIds = action.allowedPrimaryStateIds.filter(id => id !== stateId);
+              action.forbiddenPrimaryStateIds = action.forbiddenPrimaryStateIds.filter(id => id !== stateId);
+              action.requiredModifierStateIds = action.requiredModifierStateIds.filter(id => id !== stateId);
+              action.forbiddenModifierStateIds = action.forbiddenModifierStateIds.filter(id => id !== stateId);
+            });
+          });
+        }
+        return impact;
+      },
+
+      addAction(stateId, name = '') {
+        const current = get();
+        const targetStateId = stateId ?? current.selectedStateId;
+        const state = current.draft?.states.find(candidate => candidate.id === targetStateId);
+        if (!current.draft || !state) return;
+        const normalizedName = name.trim() || `动作 ${state.actionIds.length + 1}`;
+        const id = createEntityId(
+          `${state.id}-action`,
+          'action',
+          new Set(current.draft.actions.map(action => action.id))
+        );
+        updateDraft(draft => {
+          draft.actions.push({
+            id,
+            name: normalizedName,
+            semantic: typeof state.semantic === 'string' ? state.semantic : 'idle',
+            tags: [],
+            preference: 1,
+            cooldownMs: 0,
+            repeatSuppressionMs: 0,
+            loopPolicy: 'presentation',
+            interrupt: 'normal',
+            allowedPrimaryStateIds: [],
+            forbiddenPrimaryStateIds: [],
+            requiredModifierStateIds: [],
+            forbiddenModifierStateIds: [],
+            direction: 'any'
+          });
+          draft.states.find(candidate => candidate.id === targetStateId)!.actionIds.push(id);
+        }, { kind: 'action', actionId: id });
+        setWorkspaceTarget({
+          selectedEntity: { kind: 'action', actionId: id },
+          selectedStateId: targetStateId,
+          selectedActionId: id
+        });
+      },
+
+      updateAction(actionId, patch) {
+        if (!get().draft?.actions.some(action => action.id === actionId)) return;
+        const { id: _ignoredId, ...safePatch } = structuredClone(patch);
+        updateDraft(draft => {
+          const action = draft.actions.find(candidate => candidate.id === actionId)!;
+          Object.assign(action, safePatch);
+          if (safePatch.semantic === undefined) return;
+          // 动作换语义后，原皮肤回退已不再是同语义安全引用。
+          draft.skins.forEach(skin => {
+            skin.semanticFallbacks = skin.semanticFallbacks.filter(fallback => (
+              fallback.actionId !== actionId || fallback.semantic === action.semantic
+            ));
+            // 提交帧是 carry 专属语义；离开 carry 时必须跨皮肤清除。
+            if (action.semantic !== 'carry') {
+              skin.presentations.forEach(presentation => {
+                if (presentation.actionId === actionId) delete presentation.commitFrameId;
+              });
+            }
+          });
+        });
+      },
+
+      setCurrentActionCommitFrame(frameId) {
+        const current = get();
+        const { draft, selectedActionId: actionId, selectedSkinId: skinId } = current;
+        if (!draft || !actionId || !skinId) return;
+        const action = draft.actions.find(candidate => candidate.id === actionId);
+        const skin = draft.skins.find(candidate => candidate.id === skinId);
+        const resolved = resolveCharacterPresentation(draft, skinId, actionId);
+        if (!action || action.semantic !== 'carry' || !skin || !resolved) return;
+        if (frameId !== null && !resolved.presentation.frames.some(frame => frame.id === frameId)) {
+          return;
+        }
+        updateDraft(next => {
+          const targetSkin = next.skins.find(candidate => candidate.id === skinId)!;
+          let presentation = targetSkin.presentations.find(candidate => candidate.actionId === actionId);
+          if (!presentation) {
+            const inherited = resolveCharacterPresentation(next, skinId, actionId);
+            if (!inherited) return;
+            presentation = {
+              ...structuredClone(inherited.presentation),
+              actionId
+            };
+            targetSkin.presentations.push(presentation);
+          }
+          if (frameId === null) delete presentation.commitFrameId;
+          else presentation.commitFrameId = frameId;
+        });
+      },
+
+      requestRemoveCurrentFrame(frameId, confirm = false) {
+        const current = get();
+        const { draft, selectedActionId: actionId, selectedSkinId: skinId } = current;
+        if (!draft || !actionId || !skinId) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const skinIndex = draft.skins.findIndex(candidate => candidate.id === skinId);
+        const resolved = resolveCharacterPresentation(draft, skinId, actionId);
+        const frameMatches = resolved?.presentation.frames.filter(frame => frame.id === frameId) ?? [];
+        if (skinIndex < 0 || !resolved || frameMatches.length !== 1) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const exactPresentationIndex = draft.skins[skinIndex]!.presentations.findIndex(
+          candidate => candidate.actionId === actionId
+        );
+        const referenced = resolved.presentation.commitFrameId === frameId;
+        const safeReferencePaths = referenced
+          ? [exactPresentationIndex >= 0
+            ? `skins.${skinIndex}.presentations.${exactPresentationIndex}.commitFrameId`
+            : `skins.${skinIndex}.presentations`]
+          : [];
+        const impact = { safeReferencePaths, blockingReferencePaths: [] };
+        if (referenced && !confirm) return impact;
+
+        updateDraft(next => {
+          const targetSkin = next.skins.find(candidate => candidate.id === skinId)!;
+          let presentation = targetSkin.presentations.find(candidate => candidate.actionId === actionId);
+          if (!presentation) {
+            const inherited = resolveCharacterPresentation(next, skinId, actionId);
+            if (!inherited) return;
+            presentation = {
+              ...structuredClone(inherited.presentation),
+              actionId
+            };
+            targetSkin.presentations.push(presentation);
+          }
+          if (presentation.frames.filter(frame => frame.id === frameId).length !== 1) return;
+          if (presentation.commitFrameId === frameId) delete presentation.commitFrameId;
+          presentation.frames = presentation.frames.filter(frame => frame.id !== frameId);
+        });
+        return impact;
+      },
+
+      requestRemoveAction(actionId, confirm = false) {
+        const current = get();
+        if (!current.draft?.actions.some(action => action.id === actionId)) {
+          return { safeReferencePaths: [], blockingReferencePaths: [] };
+        }
+        const safeReferencePaths: string[] = [];
+        current.draft.states.forEach((state, index) => {
+          if (state.actionIds.includes(actionId)) safeReferencePaths.push(`states.${index}.actionIds`);
+        });
+        current.draft.skins.forEach((skin, index) => {
+          if (skin.presentations.some(presentation => presentation.actionId === actionId)) {
+            safeReferencePaths.push(`skins.${index}.presentations`);
+          }
+          if (skin.semanticFallbacks.some(fallback => fallback.actionId === actionId)) {
+            safeReferencePaths.push(`skins.${index}.semanticFallbacks`);
+          }
+        });
+        const blockingReferencePaths = current.draft.actions.flatMap((action, index) => [
+          ...(action.failureFallbackActionId === actionId
+            ? [`actions.${index}.failureFallbackActionId`]
+            : []),
+          ...(action.interruptedFallbackActionId === actionId
+            ? [`actions.${index}.interruptedFallbackActionId`]
+            : [])
+        ]);
+        const impact = { safeReferencePaths, blockingReferencePaths };
+        if (blockingReferencePaths.length === 0 && (safeReferencePaths.length === 0 || confirm)) {
+          updateDraft(draft => {
+            draft.actions = draft.actions.filter(action => action.id !== actionId);
+            draft.states.forEach(state => {
+              state.actionIds = state.actionIds.filter(id => id !== actionId);
+            });
+            draft.skins.forEach(skin => {
+              skin.presentations = skin.presentations.filter(presentation => presentation.actionId !== actionId);
+              skin.semanticFallbacks = skin.semanticFallbacks.filter(fallback => fallback.actionId !== actionId);
+            });
+          });
+        }
+        return impact;
+      },
+
+      /** 旧组件在 Task 8 改造前继续通过确认入口删除。 */
+      removeAction(_stateId, actionId) {
+        get().requestRemoveAction(actionId, true);
+      },
+
+      removeExtensionState(stateId) {
+        get().requestRemoveState(stateId, true);
+      },
+
+      addExtensionState(name, _event) {
+        get().addState({
+          name,
+          kind: 'modifier',
+          semantic: { kind: 'custom', value: createEntityId(name, 'state', new Set()) }
+        });
+      },
+
+      async applySpriteSheet(input, confirmCommitFrameRemoval = false) {
+        const current = get();
+        const characterId = current.selectedCharacterId;
+        const requestTargetRevision = workspaceTargetRevision;
+        const skinId = current.selectedSkinId;
+        const actionId = current.selectedActionId;
         const source = current.availableSources.find(candidate => (
           candidate.assetId === input.sourceAssetId
         ));
-        if (!source || !current.draft || !current.selectedStateId || !current.selectedActionId) {
+        if (!source || !current.draft || !characterId || !skinId || !actionId) {
           enqueueToast({ tone: 'error', text: '请先选择动作和已导入素材。' });
           return;
         }
+        /** 异步读取期间任一工作区目标变化都使本次结果失效。 */
+        const isStillCurrent = (): boolean => {
+          const latest = get();
+          return workspaceTargetRevision === requestTargetRevision
+            && latest.selectedCharacterId === characterId
+            && latest.draft?.id === characterId
+            && latest.selectedSkinId === skinId
+            && latest.selectedActionId === actionId
+            && latest.availableSources.some(candidate => candidate.assetId === source.assetId)
+            && latest.draft.skins.some(skin => skin.id === skinId)
+            && latest.draft.actions.some(action => action.id === actionId);
+        };
         if (
           !Number.isSafeInteger(input.rows)
           || !Number.isSafeInteger(input.columns)
@@ -665,18 +1289,50 @@ export function createCharacterWorkshopStore(
           enqueueToast({ tone: 'error', text: '精灵图网格参数无效。' });
           return;
         }
+        const currentCommitFrameId = (): string | undefined => {
+          const latest = get();
+          return latest.draft
+            ? resolveCharacterPresentation(
+              latest.draft,
+              skinId,
+              actionId
+            )?.presentation.commitFrameId
+            : undefined;
+        };
+        const markerImpact = (): CharacterReferenceImpact | null => {
+          const latest = get();
+          const skinIndex = latest.draft?.skins.findIndex(skin => skin.id === skinId) ?? -1;
+          const presentationIndex = skinIndex < 0
+            ? -1
+            : latest.draft!.skins[skinIndex]!.presentations.findIndex(
+              presentation => presentation.actionId === actionId
+            );
+          if (!currentCommitFrameId()) return null;
+          return {
+            safeReferencePaths: [presentationIndex >= 0
+              ? `skins.${skinIndex}.presentations.${presentationIndex}.commitFrameId`
+              : `skins.${skinIndex}.presentations`],
+            blockingReferencePaths: []
+          };
+        };
+        const markerAtRequest = currentCommitFrameId();
+        const initialImpact = markerImpact();
+        if (initialImpact && !confirmCommitFrameRemoval) return initialImpact;
         let bytes: Uint8Array;
         let dimensions: { width: number; height: number };
         try {
           bytes = await api.readCharacterSource(
-            current.selectedCharacterId!,
+            characterId,
             source.assetId
           );
+          if (!isStillCurrent()) return;
           dimensions = await (dependencies.inspectImage ?? inspectBrowserImage)(
             bytes,
             source.mimeType
           );
+          if (!isStillCurrent()) return;
         } catch (error) {
+          if (!isStillCurrent()) return;
           enqueueToast({ tone: 'error', text: errorText(error) });
           return;
         }
@@ -697,19 +1353,93 @@ export function createCharacterWorkshopStore(
           width,
           height
         }));
-        get().updateCurrentAction({ frames });
+        if (!isStillCurrent()) return;
+        // 旧确认只授权清理请求时看到的引用，等待期间的新标记不会被覆盖。
+        if (currentCommitFrameId() !== markerAtRequest) return markerImpact() ?? undefined;
+        updateDraft(draft => {
+          const skin = draft.skins.find(candidate => candidate.id === skinId);
+          if (!skin) return;
+          const existing = skin.presentations.find(
+            presentation => presentation.actionId === actionId
+          );
+          if (existing) {
+            existing.frames = frames;
+            delete existing.commitFrameId;
+          } else {
+            skin.presentations.push({
+              actionId,
+              fps: 8,
+              anchors: { ground: { x: 0.5, y: 1 } },
+              frames
+            });
+          }
+        });
         enqueueToast({ tone: 'success', text: '精灵图网格已应用到当前动作。' });
       },
 
-      async compileAndPublish() {
+      compileAndPublish() {
+        if (compileInFlight) return compileInFlight;
         const current = get();
-        if (!current.draft || !current.selectedCharacterId) return;
-        await reportFailure('compiling', async () => {
-          await get().flushDraft();
-          if (draftRevision !== savedRevision || get().draftStatus !== 'saved') {
+        if (!current.draft || !current.selectedCharacterId) return Promise.resolve();
+        const characterId = current.selectedCharacterId;
+        const compileSelectionRevision = selectionRevision;
+        let cancelled = false;
+
+        const isSelectionCurrent = (): boolean => (
+          selectionRevision === compileSelectionRevision
+          && get().selectedCharacterId === characterId
+          && get().draft?.id === characterId
+        );
+        const cancelUnless = (condition: boolean): void => {
+          if (condition) return;
+          cancelled = true;
+          throw COMPILE_CANCELLED;
+        };
+
+        set({ compileStatus: 'compiling' });
+        const publishedOperation = reportFailure('compiling', async () => {
+          if (savedDraftRevisionToken === null) {
+            set({ draftStatus: 'dirty' });
+          }
+          try {
+            await get().flushDraft();
+          } catch (error) {
+            cancelUnless(isSelectionCurrent());
+            throw error;
+          }
+          cancelUnless(isSelectionCurrent());
+          if (
+            draftRevision !== savedRevision
+            || !['idle', 'saved'].includes(get().draftStatus)
+          ) {
             throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
           }
           const latest = cloneDraft(get().draft!);
+          const compileDraftRevision = draftRevision;
+          const compileDraftRevisionToken = savedDraftRevisionToken;
+          if (compileDraftRevisionToken === null) {
+            throw new Error('CHARACTER_DRAFT_SAVE_FAILED');
+          }
+          const isCompileCurrent = (): boolean => (
+            isSelectionCurrent() && draftRevision === compileDraftRevision
+          );
+          const awaitCurrent = async <T>(pending: Promise<T>): Promise<T> => {
+            try {
+              const result = await pending;
+              cancelUnless(isCompileCurrent());
+              return result;
+            } catch (error) {
+              cancelUnless(isCompileCurrent());
+              throw error;
+            }
+          };
+          const defaultState = latest.states.find(state => state.id === latest.defaultStateId);
+          const hasPlayableDefault = defaultState?.actionIds.some(actionId => (
+            resolveCharacterPresentation(latest, latest.defaultSkinId, actionId) !== null
+          ));
+          if (!hasPlayableDefault) {
+            throw new Error('CHARACTER_DEFAULT_PRESENTATION_UNAVAILABLE');
+          }
           const sourceCache = new Map<string, Promise<Uint8Array>>();
           const readSource = (assetId: string): Promise<Uint8Array> => {
             let pending = sourceCache.get(assetId);
@@ -721,15 +1451,19 @@ export function createCharacterWorkshopStore(
           };
           const resources: CharacterPublishInput['resources'] = [];
           const manifestResources: CharacterPublishInput['manifest']['resources'] = [];
-          const states = [];
-          for (const [stateIndex, state] of latest.states.entries()) {
-            const actions = [];
-            for (const [actionIndex, action] of state.actions.entries()) {
-              if (action.frames.length === 0) continue;
-              const atlasAssetId = `atlas-${stateIndex + 1}-${actionIndex + 1}`;
+          const resourceByHash = new Map<string, { assetId: string }>();
+          const compilationByFrames = new Map<string, Promise<Awaited<ReturnType<
+            NonNullable<CharacterWorkshopDependencies['compileAction']>
+          >>>>();
+          const compiledSkins = [];
+          for (const [skinIndex, skin] of latest.skins.entries()) {
+            const presentations = [];
+            for (const [presentationIndex, presentation] of skin.presentations.entries()) {
+              if (presentation.frames.length === 0) continue;
+              const atlasAssetId = `atlas-${skinIndex + 1}-${presentationIndex + 1}`;
               const sourceFrames: AtlasSourceFrame[] = [];
-              for (const [frameIndex, frame] of action.frames.entries()) {
-                const bytes = await readSource(frame.assetId);
+              for (const [frameIndex, frame] of presentation.frames.entries()) {
+                const bytes = await awaitCurrent(readSource(frame.assetId));
                 sourceFrames.push({
                   frameId: frame.id ?? `frame-${frameIndex + 1}`,
                   sourceAssetId: frame.assetId,
@@ -749,44 +1483,92 @@ export function createCharacterWorkshopStore(
                     : { anchors: frame.anchors })
                 });
               }
-              const compiled = await (dependencies.compileAction ?? compileBrowserAction)({
-                atlasAssetId,
-                frames: sourceFrames
+              // 相同帧输入共享一次编译；源素材读取同时由 sourceCache 跨表现去重。
+              const compilationKey = JSON.stringify(presentation.frames);
+              let compilation = compilationByFrames.get(compilationKey);
+              if (!compilation) {
+                compilation = (dependencies.compileAction ?? compileBrowserAction)({
+                  atlasAssetId,
+                  frames: sourceFrames
+                });
+                compilationByFrames.set(compilationKey, compilation);
+              }
+              const compiled = await awaitCurrent(compilation);
+              const existingResource = resourceByHash.get(compiled.sha256);
+              const resourceAssetId = existingResource?.assetId ?? compiled.assetId;
+              if (!existingResource) {
+                resourceByHash.set(compiled.sha256, { assetId: compiled.assetId });
+                resources.push({
+                  assetId: compiled.assetId,
+                  bytes: Uint8Array.from(compiled.bytes)
+                });
+                manifestResources.push({
+                  assetId: compiled.assetId,
+                  fileName: compiled.fileName,
+                  sha256: compiled.sha256,
+                  byteLength: compiled.bytes.byteLength
+                });
+              }
+              presentations.push({
+                actionId: presentation.actionId,
+                fps: presentation.fps,
+                anchors: presentation.anchors,
+                ...(presentation.commitFrameId === undefined
+                  ? {}
+                  : { commitFrameId: presentation.commitFrameId }),
+                ...(presentation.regions === undefined
+                  ? {}
+                  : { regions: presentation.regions }),
+                frames: compiled.frames.map(frame => ({
+                  ...frame,
+                  assetId: resourceAssetId
+                }))
               });
-              resources.push({
-                assetId: compiled.assetId,
-                bytes: Uint8Array.from(compiled.bytes)
-              });
-              manifestResources.push({
-                assetId: compiled.assetId,
-                fileName: compiled.fileName,
-                sha256: compiled.sha256,
-                byteLength: compiled.bytes.byteLength
-              });
-              actions.push({ ...action, frames: compiled.frames });
             }
-            states.push({ ...state, actions });
+            compiledSkins.push({
+              ...skin,
+              presentations
+            });
           }
-          if (resources.length === 0) {
-            throw new Error('CHARACTER_IDLE_UNAVAILABLE');
-          }
-          await api.publishCharacter({
-            characterId: latest.id,
-            manifest: {
-              version: 1,
-              id: latest.id,
-              name: latest.name,
-              thumbnailAssetId: resources[0]!.assetId,
-              compilerVersion: 'character-atlas-compiler-v1',
-              resources: manifestResources,
-              states
-            },
-            resources
+          cancelUnless(isCompileCurrent());
+          const manifest = characterManifestV2Schema.parse({
+            ...latest,
+            thumbnailAssetId: manifestResources[0]!.assetId,
+            compilerVersion: 'character-atlas-compiler-v2',
+            resources: manifestResources,
+            skins: compiledSkins
           });
+          cancelUnless(isCompileCurrent());
+          localCompileEventBarrier = {
+            characterId: latest.id,
+            selectionRevision: compileSelectionRevision,
+            draftRevision: compileDraftRevision
+          };
+          await awaitCurrent(api.publishCharacter({
+            characterId: latest.id,
+            draftRevision: compileDraftRevisionToken,
+            manifest,
+            resources
+          }));
           set({ compileStatus: 'success' });
           enqueueToast({ tone: 'success', text: '运行版本已编译并发布。' });
-          await refreshCharacters();
+          // 发布已经提交后，索引刷新失败不应把成功发布反转为失败。
+          try {
+            await refreshCharacters();
+          } catch {
+            // 后续索引事件仍会刷新视图；此处保留发布成功状态和单一成功提示。
+          }
         });
+        const operation = publishedOperation.then(published => {
+          if (!published && !cancelled && isSelectionCurrent()) {
+            set({ compileStatus: 'error' });
+          }
+        });
+        const tracked = operation.finally(() => {
+          if (compileInFlight === tracked) compileInFlight = null;
+        });
+        compileInFlight = tracked;
+        return tracked;
       },
 
       async publishCharacter(input) {
@@ -804,24 +1586,67 @@ export function createCharacterWorkshopStore(
 
       updateCurrentAction(patch) {
         const current = get();
-        if (!current.draft || !current.selectedStateId || !current.selectedActionId) {
+        if (!current.selectedActionId) return;
+        const safePatch = structuredClone(patch);
+        const {
+          frames,
+          fps,
+          anchors,
+          regions,
+          name,
+          direction,
+          loop,
+          weight
+        } = safePatch;
+        const actionPatch: Partial<CharacterActionDefinitionV2> = {
+          ...(name === undefined ? {} : { name }),
+          ...(direction === undefined ? {} : { direction }),
+          ...(loop === undefined ? {} : { loopPolicy: loop ? 'presentation' : 'never' }),
+          ...(weight === undefined ? {} : { preference: weight })
+        };
+        if (
+          frames === undefined
+          && fps === undefined
+          && anchors === undefined
+          && regions === undefined
+        ) {
+          get().updateAction(current.selectedActionId, actionPatch);
           return;
         }
-        const nextDraft = cloneDraft(current.draft);
-        const state = nextDraft.states.find(
-          candidate => candidate.id === current.selectedStateId
-        );
-        const action = state?.actions.find(
-          candidate => candidate.id === current.selectedActionId
-        );
-        if (!action) return;
-        Object.assign(action, patch);
-        draftRevision += 1;
-        set({
-          draft: nextDraft,
-          draftStatus: 'dirty'
+        const actionId = current.selectedActionId;
+        const skinId = current.selectedSkinId;
+        updateDraft(draft => {
+          Object.assign(draft.actions.find(action => action.id === actionId)!, actionPatch);
+          const skin = draft.skins.find(candidate => candidate.id === skinId);
+          if (!skin) return;
+          let presentation = skin.presentations.find(candidate => candidate.actionId === actionId);
+          if (!presentation) {
+            // 回退表现首次被编辑时先克隆为当前皮肤的精确覆盖，避免改写来源。
+            const resolved = resolveCharacterPresentation(draft, skin.id, actionId);
+            presentation = {
+              ...(resolved ? structuredClone(resolved.presentation) : {}),
+              actionId,
+              fps: fps ?? resolved?.presentation.fps ?? 8,
+              anchors: anchors
+                ?? structuredClone(resolved?.presentation.anchors)
+                ?? { ground: { x: 0.5, y: 1 } },
+              frames: frames
+                ?? structuredClone(resolved?.presentation.frames)
+                ?? []
+            };
+            skin.presentations.push(presentation);
+          }
+          if (frames !== undefined) {
+            presentation.frames = frames;
+            if (
+              presentation.commitFrameId
+              && !frames.some(frame => frame.id === presentation.commitFrameId)
+            ) delete presentation.commitFrameId;
+          }
+          if (fps !== undefined) presentation.fps = fps;
+          if (anchors !== undefined) presentation.anchors = anchors;
+          if (regions !== undefined) presentation.regions = regions;
         });
-        scheduleSave();
       },
 
       flushDraft() {
@@ -839,15 +1664,23 @@ export function createCharacterWorkshopStore(
             if (
               !current.draft
               || !current.selectedCharacterId
-              || current.draftStatus !== 'dirty'
+              || (current.draftStatus !== 'dirty' && current.draftStatus !== 'error')
             ) continue;
             const characterId = current.selectedCharacterId;
             const revision = draftRevision;
             const pendingDraft = cloneDraft(current.draft);
+            const persistenceRevision = crypto.randomUUID();
             set({ draftStatus: 'saving' });
             try {
-              await api.saveCharacterDraft(characterId, pendingDraft);
+              await api.saveCharacterDraft(
+                characterId,
+                pendingDraft,
+                persistenceRevision
+              );
               savedRevision = revision;
+              if (get().selectedCharacterId === characterId) {
+                savedDraftRevisionToken = persistenceRevision;
+              }
               if (
                 get().selectedCharacterId === characterId
                 && draftRevision === revision
