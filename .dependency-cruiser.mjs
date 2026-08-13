@@ -41,9 +41,18 @@ export default {
       severity: 'warn',
       from: {
         path: '^(apps|packages|tools)/',
-        pathNot: ['(^|/)(tests?|__tests__)(/|$)', '\\.(test|spec)\\.[cm]?[jt]sx?$'],
+        pathNot: [
+          '(^|/)(tests?|__tests__)(/|$)',
+          '\\.(test|spec)\\.[cm]?[jt]sx?$',
+          // 云端迁移仅由该运维入口执行，使用根级开发工具链。
+          '^tools/apply-cloudbase-migrations\\.mjs$',
+        ],
       },
-      to: { dependencyTypes: ['npm-dev'] },
+      to: {
+        dependencyTypes: ['npm-dev'],
+        // Electron 由桌面运行时提供，不能按普通生产 npm 依赖处理。
+        pathNot: '^apps/desktop/node_modules/electron/index\\.js$',
+      },
     },
     {
       name: 'no-production-to-test-or-output',
