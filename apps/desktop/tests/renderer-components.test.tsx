@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 async function loadRendererCommandButtons(): Promise<{
-  ChatCloseButton?: () => ClickableElement;
+  ChatCloseButton: (() => ClickableElement) | undefined;
 }> {
   const chat = await import('../src/renderer/src/chat/ChatPanel');
   return {
@@ -294,6 +294,7 @@ describe('Renderer 可见组件', () => {
           targetRelativePath: 'old.txt',
           contentCharacters: 0,
           contentPreview: null,
+          contentPreviewSuppressedReason: null,
           previewTruncated: false,
           createdAt: '2026-08-10T12:00:00.000Z',
           expiresAt: '2026-08-10T12:02:00.000Z'
@@ -397,6 +398,7 @@ describe('Renderer 可见组件', () => {
           targetRelativePath: 'notes.md',
           contentCharacters: 0,
           contentPreview: null,
+          contentPreviewSuppressedReason: null,
           previewTruncated: false,
           createdAt: '2026-08-10T12:00:00.000Z',
           expiresAt: '2026-08-10T12:02:00.000Z'
@@ -689,6 +691,7 @@ describe('Renderer 可见组件', () => {
             longTermMemory: false,
             proactivity: false
           },
+          petAlwaysOnTop: false,
           authorizedRoot: null
         }}
         activeTab="local"

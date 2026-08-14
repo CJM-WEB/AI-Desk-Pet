@@ -32,6 +32,7 @@
 
 - `apps/desktop/vitest.config.ts` 匹配 `tests/**/*.test.{ts,tsx}`。
 - `apps/desktop/tsconfig.json` 当前包含 `tests/**/*.ts`，没有包含 `tests/**/*.tsx`。
+- `apps/desktop/tests/multi-provider-settings.test.ts` 与 `.tsx` 使用同一 basename；TypeScript rootNames 会优先保留 `.ts`，因此必须把 Store 测试职责化改名后才能同时检查两份源码。
 - `tests/playwright.config.ts` 的 `testDir` 为 `./e2e`，但没有 `testMatch`。
 - `tests/playwright.website.config.ts` 已用 `testMatch: 'website.spec.ts'` 拥有网站 E2E。
 - 根 `test:e2e:desktop` 当前在命令行点名 `tests/e2e/desktop.spec.ts`。
@@ -86,7 +87,7 @@ const parsed = ts.parseJsonConfigFileContent(
 
 测试递归枚举 `apps/desktop/tests` 下所有 `.ts` 和 `.tsx` 文件，并与 `parsed.fileNames` 比较。路径在 Windows 上必须统一分隔符并进行不区分大小写的规范化。断言比较动态枚举结果，不硬编码当前测试文件名单，确保未来新增文件也受约束。
 
-生产配置只增加 `tests/**/*.tsx`。不创建第二份 tsconfig，不扩大到网站或其他 workspace。
+生产配置只增加 `tests/**/*.tsx`。同时将 Main `SettingsStore` 测试改名为 `multi-provider-settings-store.test.ts`，Renderer `.tsx` 测试名称保持不变；不修改两份测试内容。该改名由用户于 2026-08-15 单独批准，用于消除 TypeScript 的同 basename 解析冲突。不创建第二份 tsconfig，不扩大到网站或其他 workspace。
 
 ### 4.2 旧 MCP E2E 裁决
 
@@ -168,6 +169,7 @@ verify:desktop
 ### 5.2 修改
 
 - `apps/desktop/tsconfig.json`：加入 `tests/**/*.tsx`。
+- `apps/desktop/tests/multi-provider-settings.test.ts`：只改名为 `multi-provider-settings-store.test.ts`，不改变测试内容。
 - `tests/playwright.config.ts`：显式列出两个 Desktop E2E owner。
 - `tests/e2e/desktop.spec.ts`：在现有 Provider 请求检查中断言不存在 `mcp.*` 工具。
 - `package.json`：让 `test:e2e:desktop` 只调用 Desktop Playwright 配置；保留现有 `verify:desktop` 链路。

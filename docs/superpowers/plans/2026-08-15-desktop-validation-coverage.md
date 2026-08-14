@@ -30,6 +30,7 @@
 | --- | --- | --- |
 | `apps/desktop/tests/typescript-test-coverage.test.ts` | 创建 | 证明 Desktop `.ts`/`.tsx` 测试都进入 TypeScript rootNames |
 | `apps/desktop/tsconfig.json` | 修改 | 补入 `tests/**/*.tsx` |
+| `apps/desktop/tests/multi-provider-settings.test.ts` | 改名 | 改为 `multi-provider-settings-store.test.ts`，消除 TypeScript 同 basename 覆盖 |
 | `apps/desktop/tests/desktop-e2e-entry.test.ts` | 创建 | 证明 Desktop E2E 唯一 owner 与根门禁可达性 |
 | `tests/playwright.config.ts` | 修改 | 成为 Desktop E2E 文件清单唯一 owner |
 | `tests/e2e/desktop-settings-layout.spec.ts` | 创建 | 保留两种视口布局检查并验证 MCP UI 隐藏 |
@@ -43,6 +44,7 @@
 **Files:**
 - Create: `apps/desktop/tests/typescript-test-coverage.test.ts`
 - Modify: `apps/desktop/tsconfig.json`
+- Rename: `apps/desktop/tests/multi-provider-settings.test.ts` → `apps/desktop/tests/multi-provider-settings-store.test.ts`
 - Test: `apps/desktop/tests/typescript-test-coverage.test.ts`
 
 **Interfaces:**
@@ -97,27 +99,29 @@ describe('Desktop TypeScript 配置覆盖', () => {
 Run:
 
 ```powershell
-pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts tests/typescript-test-coverage.test.ts
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/typescript-test-coverage.test.ts
 ```
 
 Expected: FAIL；`missingTestFiles` 列出当前未进入 tsconfig 的 `.tsx` 测试。失败原因必须是 `tests/**/*.tsx` 缺失，而不是路径计算或配置解析错误。
 
 - [ ] **Step 3: 用最小配置变更实现 GREEN**
 
-只在 `apps/desktop/tsconfig.json` 的 `include` 中增加一项：
+在 `apps/desktop/tsconfig.json` 的 `include` 中增加一项：
 
 ```json
 "tests/**/*.tsx"
 ```
 
-不要创建新 tsconfig，不修改 Vitest include，不增加 exclude。
+把测试 Main `SettingsStore` 的 `apps/desktop/tests/multi-provider-settings.test.ts` 只改名为 `multi-provider-settings-store.test.ts`，不修改内容；Renderer `multi-provider-settings.test.tsx` 保持原名。该改名已由用户于 2026-08-15 批准，用于避免 TypeScript 在同 basename 下忽略 `.tsx`。不要创建新 tsconfig，不修改 Vitest include，不增加 exclude。
+
+若纳入 `.tsx` 后暴露既有测试类型错误，按测试文件或同一类型根因拆成小聚类逐项最小修复；每个聚类受 15 分钟上限约束。不得修改生产接口来迁就测试，不得放宽 strictness、增加 exclude 或删除测试。
 
 - [ ] **Step 4: 运行定向测试与 Desktop TypeScript 门禁**
 
 Run:
 
 ```powershell
-pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts tests/typescript-test-coverage.test.ts
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/typescript-test-coverage.test.ts
 pnpm.cmd --filter @myself/desktop typecheck
 ```
 
@@ -289,7 +293,7 @@ test('每个 Desktop E2E spec 恰由一个显式入口拥有且 verify:desktop �
 Run:
 
 ```powershell
-pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts tests/desktop-e2e-entry.test.ts
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/desktop-e2e-entry.test.ts
 ```
 
 Expected: FAIL；原因是 Desktop Playwright 配置没有显式 `testMatch`，且根 `test:e2e:desktop` 仍点名单个 spec。若失败来自 Website 测试被执行，说明测试实现越界，必须改成只读配置检查。
@@ -319,7 +323,7 @@ testMatch: ['desktop.spec.ts', 'desktop-settings-layout.spec.ts'],
 Run:
 
 ```powershell
-pnpm.cmd --filter @myself/desktop exec vitest run --config vitest.config.ts tests/desktop-e2e-entry.test.ts
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/desktop-e2e-entry.test.ts
 pnpm.cmd exec playwright test --list --config tests/playwright.config.ts
 ```
 

@@ -94,6 +94,8 @@ function stateDouble(
     addState: vi.fn(), updateState: vi.fn(),
     requestRemoveState: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     addAction: vi.fn(), updateAction: vi.fn(),
+    setCurrentActionCommitFrame: vi.fn(),
+    requestRemoveCurrentFrame: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     requestRemoveAction: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     removeAction: vi.fn(), removeExtensionState: vi.fn(), addExtensionState: vi.fn(),
     applySpriteSheet: vi.fn(async () => undefined), compileAndPublish: vi.fn(async () => undefined),

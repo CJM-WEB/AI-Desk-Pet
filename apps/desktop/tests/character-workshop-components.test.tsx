@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test, vi } from 'vitest';
 import type { CharacterDraftV2 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
+import type { MyselfApi } from '../src/shared/myself-api';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 import { CharacterIdentityInspector } from '../src/renderer/src/characters/workshop/CharacterIdentityInspector';
 import { SkinList } from '../src/renderer/src/characters/workshop/SkinList';
@@ -16,6 +17,11 @@ import type {
   CharacterWorkshopApi,
   CharacterWorkshopState
 } from '../src/renderer/src/characters/store/character-workshop-store';
+
+type CharacterWorkshopViewApi = CharacterWorkshopApi & Pick<
+  MyselfApi,
+  'onCharacterWorkshopFlushRequested'
+>;
 
 const currentDraft: CharacterDraftV2 = {
   version: 2,
@@ -75,12 +81,13 @@ const characters: CharacterSummaryDto[] = [{
   migrationRecoveryAvailable: false
 }];
 
-function apiDouble(): CharacterWorkshopApi {
+function apiDouble(): CharacterWorkshopViewApi {
   return {
     listCharacters: vi.fn(async () => []),
     createCharacter: vi.fn(),
     duplicateCharacter: vi.fn(),
     getCharacterDraft: vi.fn(),
+    listCharacterSources: vi.fn(async () => []),
     saveCharacterDraft: vi.fn(),
     chooseCharacterSources: vi.fn(),
     readCharacterSource: vi.fn(),
@@ -148,6 +155,8 @@ function state(
     requestRemoveState: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     addAction: vi.fn(),
     updateAction: vi.fn(),
+    setCurrentActionCommitFrame: vi.fn(),
+    requestRemoveCurrentFrame: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     requestRemoveAction: vi.fn(() => ({ safeReferencePaths: [], blockingReferencePaths: [] })),
     removeAction: vi.fn(),
     addExtensionState: vi.fn(),

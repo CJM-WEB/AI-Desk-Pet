@@ -82,6 +82,14 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+/** 统一补齐播放器端口新增的命中区域能力，避免测试夹具偏离真实接口。 */
+function characterPlayerHitRegionFixture() {
+  return {
+    hitTest: vi.fn().mockReturnValue(false),
+    subscribeHitRegion: vi.fn(() => vi.fn())
+  };
+}
+
 describe('角色资源缓存', () => {
   test('同角色强制重载成功前保留旧 bundle，提交后才销毁旧 bundle', async () => {
     const replacement = deferred<CharacterAssetBundle>();
@@ -110,7 +118,7 @@ describe('角色资源缓存', () => {
   test('运行资源加载器只读取动作帧引用的白名单纹理', async () => {
     const currentManifest = manifest('character-a');
     const bytes = new Uint8Array([1]);
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
     currentManifest.resources[0]!.sha256 = [...new Uint8Array(digest)]
       .map(value => value.toString(16).padStart(2, '0'))
       .join('');
@@ -283,7 +291,7 @@ describe('PixiJS 适配器边界', () => {
 
 describe('PixiJS 角色播放器端口', () => {
   test('静态模式委托场景显示代表帧且不启动 ticker', async () => {
-    const scene: PixiCharacterScene = {
+    const scene = {
       load: vi.fn().mockResolvedValue(undefined),
       show: vi.fn(),
       setDirection: vi.fn(),
@@ -311,7 +319,7 @@ describe('PixiJS 角色播放器端口', () => {
   });
 
   test('销毁播放器时停止动画、ticker、纹理和应用资源', () => {
-    const scene: PixiCharacterScene = {
+    const scene = {
       load: vi.fn().mockResolvedValue(undefined),
       show: vi.fn(),
       setDirection: vi.fn(),
@@ -329,7 +337,7 @@ describe('PixiJS 角色播放器端口', () => {
 
   test('重复销毁播放器只停止并释放场景一次', () => {
     let destroyed = false;
-    const scene: PixiCharacterScene = {
+    const scene = {
       load: vi.fn().mockResolvedValue(undefined),
       show: vi.fn(),
       setDirection: vi.fn(),
@@ -395,6 +403,7 @@ describe('角色播放器组件', () => {
       }),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       subscribePlaybackLifecycle: vi.fn(listener => {
         lifecycleListener = listener;
         return vi.fn();
@@ -492,6 +501,7 @@ describe('角色播放器组件', () => {
         play: vi.fn((_selection: ActionSelectionResult) => ++playbackId),
         setDirection: vi.fn(),
         getAnchor: vi.fn().mockReturnValue(null),
+        ...characterPlayerHitRegionFixture(),
         destroy: vi.fn(),
         prefix
       };
@@ -1256,6 +1266,7 @@ describe('角色播放器组件', () => {
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
       getFrameBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 32, height: 32 }),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const onMotionChange = vi.fn();
@@ -1339,6 +1350,7 @@ describe('角色播放器组件', () => {
         name === 'carry' ? { x: 0.75, y: 0.5 } : null
       )),
       getFrameBounds: vi.fn().mockReturnValue({ x: 10, y: 20, width: 80, height: 100 }),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const rendered = render(
@@ -1402,6 +1414,7 @@ describe('角色播放器组件', () => {
       }),
       getAnchor: vi.fn().mockReturnValue(null),
       getFrameBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 32, height: 32 }),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const api = {
@@ -1490,6 +1503,7 @@ describe('角色播放器组件', () => {
         width: 80,
         height: 100
       })),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const onDesktopAnchors = vi.fn();
@@ -1552,6 +1566,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     }));
     render(
@@ -1577,7 +1592,7 @@ describe('角色播放器组件', () => {
 
   test('默认加载器使用期望快照并拒绝读取期间发生的同 ID 发布变化', async () => {
     const bytes = new Uint8Array([1, 2, 3]);
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
     const expected = manifest('character-a');
     expected.resources[0]!.sha256 = [...new Uint8Array(digest)]
       .map(value => value.toString(16).padStart(2, '0'))
@@ -1645,6 +1660,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const api = {
@@ -1676,7 +1692,7 @@ describe('角色播放器组件', () => {
     const oldBytes = new Uint8Array([2]);
     const newBytes = new Uint8Array([3]);
     const hash = async (bytes: Uint8Array): Promise<string> => {
-      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
       return [...new Uint8Array(digest)]
         .map(value => value.toString(16).padStart(2, '0'))
         .join('');
@@ -1723,6 +1739,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     try {
@@ -1765,6 +1782,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     }));
     const api = {
@@ -1828,6 +1846,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const createPlayer = vi.fn(async () => player) as CharacterPlayerPortFactory;
@@ -1955,6 +1974,7 @@ describe('角色播放器组件', () => {
           play: vi.fn(),
           setDirection: vi.fn(),
           getAnchor: vi.fn(() => null),
+          ...characterPlayerHitRegionFixture(),
           destroy: vi.fn()
         })}
         loadBundle={async characterId => bundle(characterId)}
@@ -1980,6 +2000,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const api = {
@@ -2017,6 +2038,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const api = {
@@ -2056,6 +2078,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const newPlayer = {
@@ -2063,6 +2086,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const createPlayer = vi.fn()
@@ -2166,6 +2190,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const currentManifest = manifest('character-a');
@@ -2212,6 +2237,7 @@ describe('角色播放器组件', () => {
       play: vi.fn(),
       setDirection: vi.fn(),
       getAnchor: vi.fn().mockReturnValue(null),
+      ...characterPlayerHitRegionFixture(),
       destroy: vi.fn()
     };
     const currentManifest = manifest('character-a');

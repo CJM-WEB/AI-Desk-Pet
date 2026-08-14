@@ -100,13 +100,14 @@ describe('角色工作室 Renderer 关闭刷新', () => {
     fireEvent.change(nameInput, { target: { value: '轻呼吸新版' } });
     await waitFor(() => expect(flushListener).not.toBeNull());
 
-    let flushPromise: Promise<void> | null = null;
+    const flush = { promise: null as Promise<void> | null };
     act(() => {
-      flushPromise = flushListener?.() ?? null;
+      flush.promise = flushListener?.() ?? null;
     });
     await waitFor(() => expect(saveCharacterDraft).toHaveBeenCalledOnce());
+    if (!flush.promise) throw new Error('未注册草稿刷新监听器');
     let settled = false;
-    void flushPromise?.then(() => {
+    void flush.promise.then(() => {
       settled = true;
     });
     await Promise.resolve();
@@ -114,7 +115,7 @@ describe('角色工作室 Renderer 关闭刷新', () => {
 
     releaseSave();
     await act(async () => {
-      await flushPromise;
+      await flush.promise;
     });
     expect(settled).toBe(true);
 

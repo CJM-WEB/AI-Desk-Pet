@@ -446,7 +446,7 @@ function draftWith(
       id: 'acting',
       name: '行动',
       kind: 'primary',
-      semantic: 'working',
+      semantic: 'move',
       tags: [],
       intensity: 60,
       coexistWithStateIds: [],
@@ -459,7 +459,7 @@ function draftWith(
     actions: [idle, acting].map(action => ({
       id: action.id,
       name: action.name,
-      semantic: action.id === idle.id ? 'idle' : 'working',
+      semantic: action.id === idle.id ? 'idle' : 'move',
       tags: [],
       preference: action.weight,
       cooldownMs: 0,
@@ -470,7 +470,7 @@ function draftWith(
       forbiddenPrimaryStateIds: [],
       requiredModifierStateIds: [],
       forbiddenModifierStateIds: [],
-      direction: action.direction
+      direction: action.direction ?? 'any'
     }))
   };
 }
@@ -580,7 +580,7 @@ function draftForSource(
       name: '冬装',
       presentations: winterPresentations,
       semanticFallbacks: source === 'skin-semantic'
-        ? [{ semantic: 'working', actionId: winterFallback.id }]
+        ? [{ semantic: 'move', actionId: winterFallback.id }]
         : []
     }]
   };
@@ -988,6 +988,10 @@ describe('真实草稿预览', () => {
               : action)
           }));
         },
+        setCurrentActionCommitFrame: vi.fn(),
+        requestRemoveCurrentFrame: vi.fn(() => ({
+          safeReferencePaths: [], blockingReferencePaths: []
+        })),
         requestRemoveAction: vi.fn(() => ({
           safeReferencePaths: [], blockingReferencePaths: []
         })),
@@ -1258,11 +1262,11 @@ describe('真实草稿预览', () => {
     pixiFactory
       .mockResolvedValueOnce(current.scene)
       .mockReturnValueOnce(nextScene.promise);
-    let oldSignal: AbortSignal | null = null;
+    const oldRequest = { signal: null as AbortSignal | null };
     const pendingBundle = deferred<never>();
     const load = vi.spyOn(DraftPreviewResourceCache.prototype, 'load')
       .mockImplementationOnce((_characterId, _assetIds, signal) => {
-        oldSignal = signal;
+        oldRequest.signal = signal;
         return pendingBundle.promise;
       });
     const props = previewProps();
@@ -1274,7 +1278,8 @@ describe('真实草稿预览', () => {
       api={apiWithReader(vi.fn(async () => PNG_BYTES))}
     />);
 
-    expect(oldSignal?.aborted).toBe(true);
+    if (!oldRequest.signal) throw new Error('未获取旧资源加载信号');
+    expect(oldRequest.signal.aborted).toBe(true);
     view.unmount();
   });
 
