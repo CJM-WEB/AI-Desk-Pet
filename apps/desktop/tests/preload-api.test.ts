@@ -4,6 +4,7 @@ import type { MyselfApi } from '../src/shared/myself-api';
 
 const invoke = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined);
 const on = vi.fn();
+const removeListener = vi.fn();
 let exposedApi: MyselfApi | undefined;
 
 vi.mock('electron', () => ({
@@ -12,7 +13,7 @@ vi.mock('electron', () => ({
       exposedApi = api;
     }
   },
-  ipcRenderer: { invoke, on }
+  ipcRenderer: { invoke, on, removeListener }
 }));
 
 process.argv.push('--myself-e2e-probe');
@@ -178,6 +179,87 @@ describe('preload 公开 API', () => {
 
     expect(apiKeys).not.toEqual(expect.arrayContaining(removedKeys));
     for (const removedKey of removedKeys) expect(apiKeys).not.toContain(removedKey);
+  });
+});
+
+describe('TaskEvent preload 运行时边界', () => {
+  const validPendingActionEvent = {
+    type: 'pending_action',
+    action: {
+      category: 'file',
+      actionId: 'action-file-1',
+      conversationId: 'conversation-1',
+      risk: 'write',
+      operation: 'create_file',
+      summary: '创建测试文件',
+      targetRelativePath: 'safe.txt',
+      contentCharacters: 4,
+      contentPreview: 'safe',
+      contentPreviewSuppressedReason: null,
+      previewTruncated: false,
+      createdAt: '2026-08-15T00:00:00.000Z',
+      expiresAt: '2026-08-15T00:05:00.000Z'
+    }
+  } as const;
+
+  const getTaskEventHandler = () => {
+    const handler = on.mock.calls
+      .filter(([channel]) => channel === ipcChannels.taskEvent)
+      .at(-1)?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
+    expect(handler).toBeTypeOf('function');
+    return handler;
+  };
+
+  test.each([
+    { type: 'phase', phase: 'thinking' },
+    validPendingActionEvent
+  ])('合法 TaskEvent 解析后只通知一次监听者', event => {
+    const listener = vi.fn();
+    exposedApi!.onTaskEvent(listener);
+    const handler = getTaskEventHandler();
+
+    handler?.({}, event);
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith(event);
+  });
+
+  test.each([
+    { type: 'unknown' },
+    { type: 'phase', phase: 'thinking', unexpected: true },
+    { type: 'pending_action', action: { category: 'file' } },
+    {
+      type: 'pending_action',
+      action: { ...validPendingActionEvent.action, absolutePath: 'C:\\private' }
+    }
+  ])('畸形 TaskEvent 静默丢弃且不进入 Renderer listener', payload => {
+    const listener = vi.fn();
+    const consoleLog = vi.spyOn(console, 'log');
+    const consoleWarn = vi.spyOn(console, 'warn');
+    const consoleError = vi.spyOn(console, 'error');
+    exposedApi!.onTaskEvent(listener);
+    const handler = getTaskEventHandler();
+
+    handler?.({}, payload);
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleWarn).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleLog.mockRestore();
+    consoleWarn.mockRestore();
+    consoleError.mockRestore();
+  });
+
+  test('退订只移除同一个 taskEvent handler', () => {
+    const release = exposedApi!.onTaskEvent(vi.fn());
+    const handler = getTaskEventHandler();
+    removeListener.mockClear();
+
+    release();
+
+    expect(removeListener).toHaveBeenCalledOnce();
+    expect(removeListener).toHaveBeenCalledWith(ipcChannels.taskEvent, handler);
   });
 });
 

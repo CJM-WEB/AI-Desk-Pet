@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type {
-  HistoryDisclosureDecision,
-  PublicSettings,
-  TaskEvent
+import {
+  taskEventSchema,
+  type HistoryDisclosureDecision,
+  type PublicSettings,
+  type TaskEvent
 } from '@myself/shared-types';
 import { ipcChannels } from '../shared/ipc-channels';
 import type {
@@ -141,7 +142,10 @@ const api: MyselfApi = {
     { requestId, decision }
   ),
   onTaskEvent: (listener: (event: TaskEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, payload: TaskEvent) => listener(payload);
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+      const parsed = taskEventSchema.safeParse(payload);
+      if (parsed.success) listener(parsed.data);
+    };
     ipcRenderer.on(ipcChannels.taskEvent, handler);
     return () => ipcRenderer.removeListener(ipcChannels.taskEvent, handler);
   },
