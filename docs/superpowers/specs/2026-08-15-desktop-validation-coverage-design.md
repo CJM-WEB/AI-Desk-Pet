@@ -103,6 +103,8 @@ const parsed = ts.parseJsonConfigFileContent(
 
 迁移后的文件命名为 `tests/e2e/desktop-settings-layout.spec.ts`，只负责设置页在两种视口下的溢出、重叠与 MCP 入口不可见检查。旧文件在迁移完成并通过定向测试后单文件删除。
 
+迁移 RED 证明现有 `.settings-header button` 的统一 `44×44px` 规则会真实裁剪带可见文字的“角色工作室”按钮。用户于 2026-08-15 批准在本任务内给该按钮增加职责化 class，并在 `styles.css` 中使用自适应宽度、44px 高度和单行文本修复；关闭按钮继续保持 `44×44px`。不得放宽通用 `+1px` 裁剪门禁、隐藏按钮文案或按按钮名称豁免检测。
+
 ### 4.3 MCP 禁用的 E2E 证据
 
 设置页布局 E2E 必须验证：
@@ -170,6 +172,8 @@ verify:desktop
 
 - `apps/desktop/tsconfig.json`：加入 `tests/**/*.tsx`。
 - `apps/desktop/tests/multi-provider-settings.test.ts`：只改名为 `multi-provider-settings-store.test.ts`，不改变测试内容。
+- `apps/desktop/src/renderer/src/settings/SettingsView.tsx`：只给“角色工作室”按钮增加专用样式 class。
+- `apps/desktop/src/renderer/src/styles.css`：只为该专用 class 增加自适应宽度、单行文本和图标间距，保留关闭按钮尺寸。
 - `tests/playwright.config.ts`：显式列出两个 Desktop E2E owner。
 - `tests/e2e/desktop.spec.ts`：在现有 Provider 请求检查中断言不存在 `mcp.*` 工具。
 - `package.json`：让 `test:e2e:desktop` 只调用 Desktop Playwright 配置；保留现有 `verify:desktop` 链路。

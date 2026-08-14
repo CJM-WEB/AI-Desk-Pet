@@ -429,4 +429,49 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('模型档案');
     expect(markup).not.toContain('MCP 服务');
   });
+
+  test('角色工作室入口保留可见文案并使用专属布局职责', () => {
+    const markup = renderToStaticMarkup(
+      <SettingsWorkspace
+        dashboard={dashboard}
+        activeTab="models"
+        busy={false}
+        notice={null}
+        onDismissNotice={vi.fn()}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        providerActions={{
+          onSave: vi.fn(),
+          onTest: vi.fn(),
+          onRouteSave: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        mcpActions={{
+          launchSummary: null,
+          onCancelLaunch: vi.fn(),
+          onUpsert: vi.fn(),
+          onConfirmLaunch: vi.fn(),
+          onTest: vi.fn(),
+          onToggleServer: vi.fn(),
+          onToggleTool: vi.fn(),
+          onAuthorizeReadOnly: vi.fn(),
+          onRevokeReadOnly: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('class="settings-workshop-button"');
+    expect(markup).toContain('角色工作室</button>');
+  });
 });

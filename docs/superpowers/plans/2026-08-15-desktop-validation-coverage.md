@@ -12,7 +12,7 @@
 
 - 已批准规格：`docs/superpowers/specs/2026-08-15-desktop-validation-coverage-design.md`。
 - 上位规格：`docs/superpowers/specs/2026-08-15-ai-pet-desktop-architecture-optimization-design.md` 的 A1。
-- 只修改本计划精确列出的 Desktop 测试、配置、根脚本和验收文档；不修改生产代码。
+- 只修改本计划精确列出的 Desktop 测试、配置、根脚本和验收文档；唯一生产 UI 例外是用户于 2026-08-15 批准的 `SettingsView.tsx` 与 `styles.css` 角色工作室按钮裁剪修复。
 - `desktopRuntimeCapabilities.mcp` 必须保持 `false`；不得恢复 MCP 运行时、Agent MCP 工具或 Renderer 工具页。
 - 不创建 `VerificationCatalog`、`verify:repo`、第二套 Desktop tsconfig 或全 workspace 验证框架。
 - 网站、CloudBase、包扫描器业务代码、测试和验证入口必须零差异。
@@ -36,6 +36,8 @@
 | `tests/e2e/desktop-settings-layout.spec.ts` | 创建 | 保留两种视口布局检查并验证 MCP UI 隐藏 |
 | `tests/e2e/desktop.spec.ts` | 修改 | 在正式 Agent 请求中验证不暴露 `mcp.*` |
 | `tests/e2e/agent-mcp-flow.spec.ts` | 删除 | 移除冲突的 MCP enable 孤立测试 |
+| `apps/desktop/src/renderer/src/settings/SettingsView.tsx` | 修改 | 为带文字的角色工作室按钮增加专用 class |
+| `apps/desktop/src/renderer/src/styles.css` | 修改 | 修复该按钮真实文字裁剪且不放宽通用布局门禁 |
 | `package.json` | 修改 | 让 `test:e2e:desktop` 只调用 Desktop Playwright 配置 |
 | `docs/operations/desktop-validation-coverage-acceptance.md` | 创建 | 记录真实验证结果、未覆盖项与零差异证据 |
 
@@ -144,6 +146,8 @@ Expected: PASS。
 **Files:**
 - Create: `tests/e2e/desktop-settings-layout.spec.ts`
 - Modify: `tests/e2e/desktop.spec.ts`
+- Modify: `apps/desktop/src/renderer/src/settings/SettingsView.tsx`
+- Modify: `apps/desktop/src/renderer/src/styles.css`
 - Delete: `tests/e2e/agent-mcp-flow.spec.ts`
 - Test: `tests/e2e/desktop-settings-layout.spec.ts`
 - Test: `tests/e2e/desktop.spec.ts`
@@ -187,6 +191,8 @@ pnpm.cmd exec playwright test --config tests/playwright.config.ts tests/e2e/desk
 ```
 
 Expected: 两个场景 PASS；如果失败，只允许修正新测试的窗口获取、稳定定位器或布局 helper 迁移错误，不允许恢复 MCP UI。
+
+若严格 `+1px` 裁剪门禁暴露“角色工作室”按钮真实文字裁剪，保持门禁不变：给按钮增加职责化 class，在 `styles.css` 中只覆盖为自适应宽度、44px 高度、单行文本和合理图标间距。关闭按钮继续保持 `44×44px`；不得隐藏可见文案、按名称跳过检测或提高通用容差。该范围扩展已由用户于 2026-08-15 批准。
 
 - [ ] **Step 3: 在正式 Agent 请求检查中增加 MCP 工具不可见断言**
 

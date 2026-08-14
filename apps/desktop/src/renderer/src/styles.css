@@ -786,6 +786,19 @@ textarea {
   background: #ffffff;
 }
 
+/* 角色工作室入口保留可见文案，不能复用仅图标按钮的固定宽度。 */
+.settings-shell .settings-header .settings-workshop-button {
+  display: inline-flex;
+  width: auto;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
 .settings-tabs {
   position: sticky;
   z-index: 2;

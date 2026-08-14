@@ -49,8 +49,8 @@ async function assertNoClippedTextOrControlOverlap(page: Page): Promise<void> {
     const clipped = [...document.querySelectorAll('button, summary, strong, small, dt, dd')]
       .filter(visible)
       .filter(element => (
-        element.scrollWidth > element.clientWidth + 2
-        || element.scrollHeight > element.clientHeight + 2
+        element.scrollWidth > element.clientWidth + 1
+        || element.scrollHeight > element.clientHeight + 1
       ))
       .slice(0, 10)
       .map(element => `${element.tagName}.${element.className}`);

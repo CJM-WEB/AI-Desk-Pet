@@ -124,7 +124,11 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
       <header className="settings-header">
         <div><span className="companion-kicker">AI PET</span><h1>设置</h1></div>
         <div className="settings-header-actions">
-          <button type="button" onClick={props.onOpenCharacterWorkshop}>
+          <button
+            className="settings-workshop-button"
+            type="button"
+            onClick={props.onOpenCharacterWorkshop}
+          >
             <Box size={17} />角色工作室
           </button>
           <button type="button" aria-label="关闭设置" title="关闭设置" onClick={props.onClose}>
