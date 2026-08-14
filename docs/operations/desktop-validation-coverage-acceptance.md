@@ -94,7 +94,7 @@ git status --short
 
 结果如下：
 
-- `rg` 退出码为 0。输出显示 `tests/playwright.config.ts` 的 `testMatch` 仅包含 `desktop.spec.ts` 和 `desktop-settings-layout.spec.ts`；MCP 能力开关、`MCP_MODULE_DISABLED` 拒绝路径及其内部测试仍存在。`agent-mcp-flow` 没有匹配结果。
+- 该条 `rg` 命令把本验收记录作为搜索路径；其模式包含 `agent-mcp-flow`，因此文档自身会命中。该命令不能证明旧 E2E 文件或运行入口不存在，原“没有匹配结果”的表述不实；已由第 12 节的拆分只读检查替代。
 - `git diff --check` 退出码为 0 且无输出。
 - `git status --short` 仅显示本验收记录为未跟踪文件。
 - `git check-ignore -v .superpowers/sdd/2026-08-15-desktop-validation-coverage/task-4-report.md` 显示该执行报告由 `.gitignore` 第 27 行的 `.superpowers/` 规则忽略。
@@ -127,3 +127,25 @@ git status --short
 | `git diff --name-only d523cb5..HEAD -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` | 0 | 无输出 | 本轮提交范围内网站、CloudBase、包扫描器及受保护 E2E/配置路径保持零差异。 |
 
 上述命令覆盖的是已提交的修复轮 1 范围，不以工作副本状态替代提交范围证据。
+
+## 12. A1 最终集中修复
+
+用户于 2026-08-15 批准以生产设置窗口参数为准，布局 E2E 的两条场景已由历史的 `1200×720`、`960×640` 改为默认 `720×620` 与最小 `640×520`。测试名称与失败时的 CDP 截图文件名同步使用这两个真实尺寸；MCP 入口、表单不可见断言和严格 `+1px` 裁剪容差保持不变。
+
+| 命令 | 退出码 | 结果 | 实际输出摘要 |
+| --- | --- | --- | --- |
+| `pnpm.cmd exec playwright test --config tests/playwright.config.ts tests/e2e/desktop-settings-layout.spec.ts` | 0 | 通过 | 两条真实尺寸场景均通过，输出为 `2 passed (23.2s)`。 |
+| `pnpm.cmd --filter @myself/desktop build` | 0 | 通过 | Electron main、preload 与 renderer 均完成构建；`lucide-react` 的 `use client` 指令警告未导致失败。 |
+| `Test-Path tests/e2e/agent-mcp-flow.spec.ts` | 0 | 通过 | 输出 `False`，旧 E2E 文件不存在。 |
+| `rg -n "agent-mcp-flow|mcp\.local-tools\.echo" tests/e2e apps/desktop` | 1 | 符合预期 | 无输出；退出码 1 表示运行时和 E2E 搜索范围没有匹配。 |
+| `rg -n "MCP_MODULE_DISABLED|desktopRuntimeCapabilities|desktop-settings-layout" apps/desktop tests` | 0 | 通过 | 输出包含 Desktop Playwright 的两个 owner、MCP 能力开关、`MCP_MODULE_DISABLED` 拒绝路径及其测试。 |
+| `pnpm.cmd verify:desktop` | 1 | 失败 | TypeScript、单元（107 个文件、2141 通过、14 跳过）、安全（20/20）和集成（46/46）均通过；Desktop E2E 的两条真实尺寸布局场景通过，但“真实角色工作室闭环：V2 人设、皮肤和精确表现重启后保留且导出回导等价”等待“动作 1”按钮 15 秒超时，最终为 58/59 通过。 |
+| `pnpm.cmd exec playwright test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts --grep "V2 人设、皮肤和精确表现重启后保留且导出回导等价"` | 0 | 通过（定向复现） | 同一角色工作室场景独立复跑为 `1 passed (35.1s)`；该结果不替代完整门禁失败。 |
+
+本轮将两条既有 E2E 改为真实尺寸后立即运行定向测试；它们直接通过，未形成 RED。这表明既有“角色工作室”按钮最小修复已覆盖真实尺寸，未观察到裁剪或重叠，故未修改 `SettingsView.tsx` 或 `styles.css`，也没有放宽任何布局门禁。此处记录实际结果，不将“应当失败”的预期写成已发生的 RED 证据。
+
+历史规格、计划和验收文档可保留 `agent-mcp-flow` 的裁决背景，因而允许全文档检索命中；“旧文件不存在”和“运行入口不存在”的结论只依据上表中排除历史文档路径的两条只读命令。
+
+完整门禁中的角色工作室失败不在本轮设置窗口测试、规格或验收文本变更范围内，且同一场景定向复跑通过；本轮不对此既有不稳定表现进行越界修复。完整 `verify:desktop` 的当前真实状态为失败。
+
+提交前 `git diff --check` 退出码为 0，未报告空白格式错误；Git 仅提示这四个改动文件下次触碰时 LF 会转为 CRLF。`git diff --name-only -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` 与 `git diff --name-only b686eca..HEAD -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` 均无输出，前者覆盖本次工作副本，后者覆盖提交前既有 A1 提交范围。

@@ -158,11 +158,11 @@ Expected: PASS。
 
 - [ ] **Step 1: 创建只负责设置布局的 E2E，并先写 MCP 隐藏断言**
 
-从旧文件复制且只复制布局所需 imports、三个布局/截图 helper、fixture 生命周期和两个 viewport 场景。测试名固定为：
+从旧文件复制且只复制布局所需 imports、三个布局/截图 helper、fixture 生命周期和两个生产窗口尺寸场景。测试名固定为：
 
 ```ts
-test('1200x720 下设置页无横向溢出且 MCP 入口不可见', async () => {});
-test('960x640 下设置页无文字或控件重叠且 MCP 入口不可见', async () => {});
+test('720x620 默认尺寸下设置页无横向溢出且 MCP 入口不可见', async () => {});
+test('640x520 最小尺寸下设置页无文字或控件重叠且 MCP 入口不可见', async () => {});
 ```
 
 每个场景打开设置窗口后先执行：
@@ -179,7 +179,7 @@ for (const tab of ['模型', '隐私', '本地数据']) {
 }
 ```
 
-1200×720 与 960×640 都保留失败截图；不得再点击“工具”页。
+720×620 默认尺寸与 640×520 最小尺寸都保留失败截图；不得再点击“工具”页。
 
 - [ ] **Step 2: 运行新布局测试确认当前行为与测试定位器**
 
@@ -431,12 +431,14 @@ Expected: `git diff --check` 无输出；第二条命令空输出；`git status 
 Run:
 
 ```powershell
-rg -n "MCP_MODULE_DISABLED|desktopRuntimeCapabilities|agent-mcp-flow|desktop-settings-layout" apps/desktop tests docs/operations/desktop-validation-coverage-acceptance.md
+Test-Path tests/e2e/agent-mcp-flow.spec.ts
+rg -n "agent-mcp-flow|mcp\.local-tools\.echo" tests/e2e apps/desktop
+rg -n "MCP_MODULE_DISABLED|desktopRuntimeCapabilities|desktop-settings-layout" apps/desktop tests
 git diff --check
 git status --short
 ```
 
-Expected: MCP 禁用契约仍存在；旧 E2E 文件名只允许出现在历史规格/计划或验收说明中，不得存在对应文件；新布局 E2E 有唯一 owner；差异检查无格式错误；未发生 Git 写操作。
+Expected: `Test-Path` 输出 `False`；第二条 `rg` 允许以退出码 1 表示无运行时或 E2E 匹配，不能把历史规格、计划或验收说明纳入该命令后再声称空输出；第三条命令证明 MCP 禁用契约与新布局 E2E 仍在运行范围内；差异检查无格式错误；未发生未批准的 Git 写操作。
 
 ## Task 4 修复轮 1：Desktop Vitest 门禁稳定性例外
 
@@ -452,7 +454,7 @@ Expected: MCP 禁用契约仍存在；旧 E2E 文件名只允许出现在历史�
 
 - Desktop `.ts` 与 `.tsx` 测试全部进入 TypeScript 检查，动态 rootNames 契约通过。
 - 旧 MCP enable E2E 已在有效布局覆盖迁移后单文件删除。
-- 设置页两种视口不显示 MCP 入口且布局检查通过。
+- 设置页在生产默认 `720×620` 与最小 `640×520` 尺寸下不显示 MCP 入口且布局检查通过。
 - 正式 Agent Provider 请求不含 `mcp.*` 工具。
 - 每个有效 Desktop E2E 文件恰好有一个 Playwright owner。
 - 根 `test:e2e:desktop` 不再点名单个 spec；`verify:desktop` 实际到达安全、集成与 Desktop E2E。

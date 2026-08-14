@@ -144,7 +144,7 @@ async function capturePageViaCdp(page: Page, path: string): Promise<Buffer> {
   }
 }
 
-test('1200x720 下设置页无横向溢出且 MCP 入口不可见', async ({}, testInfo) => {
+test('720x620 默认尺寸下设置页无横向溢出且 MCP 入口不可见', async ({}, testInfo) => {
   test.setTimeout(30_000);
   const fixture = await createElectronAppFixture({
     workspaceRoot: resolve(process.cwd()),
@@ -157,7 +157,7 @@ test('1200x720 下设置页无横向溢出且 MCP 入口不可见', async ({}, t
       () => fixture.browser.contexts().flatMap(context => context.pages())
     );
     settingsPage.setDefaultTimeout(8_000);
-    await settingsPage.setViewportSize({ width: 1200, height: 720 });
+    await settingsPage.setViewportSize({ width: 720, height: 620 });
     try {
       await expect(settingsPage.getByRole('button', { name: '工具' })).toHaveCount(0);
       await expect(settingsPage.getByLabel('服务 ID')).toHaveCount(0);
@@ -171,7 +171,7 @@ test('1200x720 下设置页无横向溢出且 MCP 入口不可见', async ({}, t
     } catch (error) {
       await capturePageViaCdp(
         settingsPage,
-        testInfo.outputPath('settings-1200x720-failure.png')
+        testInfo.outputPath('settings-720x620-failure.png')
       ).catch(() => undefined);
       throw error;
     }
@@ -180,7 +180,7 @@ test('1200x720 下设置页无横向溢出且 MCP 入口不可见', async ({}, t
   }
 });
 
-test('960x640 下设置页无文字或控件重叠且 MCP 入口不可见', async ({}, testInfo) => {
+test('640x520 最小尺寸下设置页无文字或控件重叠且 MCP 入口不可见', async ({}, testInfo) => {
   test.setTimeout(30_000);
   const fixture = await createElectronAppFixture({
     workspaceRoot: resolve(process.cwd()),
@@ -193,7 +193,7 @@ test('960x640 下设置页无文字或控件重叠且 MCP 入口不可见', asyn
       () => fixture.browser.contexts().flatMap(context => context.pages())
     );
     settingsPage.setDefaultTimeout(8_000);
-    await settingsPage.setViewportSize({ width: 960, height: 640 });
+    await settingsPage.setViewportSize({ width: 640, height: 520 });
     try {
       await expect(settingsPage.getByRole('button', { name: '工具' })).toHaveCount(0);
       await expect(settingsPage.getByLabel('服务 ID')).toHaveCount(0);
@@ -207,7 +207,7 @@ test('960x640 下设置页无文字或控件重叠且 MCP 入口不可见', asyn
     } catch (error) {
       await capturePageViaCdp(
         settingsPage,
-        testInfo.outputPath('settings-960x640-failure.png')
+        testInfo.outputPath('settings-640x520-failure.png')
       ).catch(() => undefined);
       throw error;
     }

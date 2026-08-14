@@ -99,9 +99,9 @@ const parsed = ts.parseJsonConfigFileContent(
 | 调用 `mcp.local-tools.echo` | 删除 | MCP 工具不得进入 Agent 工具白名单 |
 | MCP 子进程存活与退出清理 | 随旧启用流程删除 | 当前正式运行时不会创建该进程；Manager 内部进程测试继续保留 |
 | Provider 配置、文件确认/取消、失败/取消 | 不从旧文件迁移 | `desktop.spec.ts` 已有正式业务闭环覆盖，继续保留会重复验证 |
-| 1200×720 与 960×640 设置页布局检查 | 迁移 | 仍是有效的真实 Electron UI 风险 |
+| 720×620 默认尺寸与 640×520 最小尺寸的设置页布局检查 | 迁移 | 覆盖生产设置窗口的真实默认和最小 Electron UI 风险 |
 
-迁移后的文件命名为 `tests/e2e/desktop-settings-layout.spec.ts`，只负责设置页在两种视口下的溢出、重叠与 MCP 入口不可见检查。旧文件在迁移完成并通过定向测试后单文件删除。
+迁移后的文件命名为 `tests/e2e/desktop-settings-layout.spec.ts`，只负责设置页在生产默认 `720×620` 与最小 `640×520` 尺寸下的溢出、重叠与 MCP 入口不可见检查。旧文件在迁移完成并通过定向测试后单文件删除。
 
 迁移 RED 证明现有 `.settings-header button` 的统一 `44×44px` 规则会真实裁剪带可见文字的“角色工作室”按钮。用户于 2026-08-15 批准在本任务内给该按钮增加职责化 class，并在 `styles.css` 中使用自适应宽度、44px 高度和单行文本修复；关闭按钮继续保持 `44×44px`。不得放宽通用 `+1px` 裁剪门禁、隐藏按钮文案或按按钮名称豁免检测。
 
@@ -112,7 +112,7 @@ const parsed = ts.parseJsonConfigFileContent(
 - 可见导航只有模型、隐私和本地数据相关入口；
 - “工具”按钮不存在；
 - `服务 ID` 输入或“添加服务”按钮不存在；
-- 两种视口下没有横向溢出和文字/控件重叠。
+- 生产默认 `720×620` 与最小 `640×520` 尺寸下没有横向溢出和文字/控件重叠。
 
 `tests/e2e/desktop.spec.ts` 的正式文件 Agent 请求检查必须继续验证 `builtin.files.*` 白名单，并追加：
 
@@ -236,7 +236,7 @@ git diff --check
 
 1. rootNames 契约动态枚举 `.ts` 与 `.tsx`；当前 Desktop 测试无遗漏。
 2. `playwright --list` 只列出 `desktop.spec.ts` 和 `desktop-settings-layout.spec.ts` 的 Desktop 测试，不列出旧 MCP 文件或网站文件。
-3. 两种设置页视口均无横向溢出、文字或控件重叠，且不显示 MCP 入口和表单。
+3. 设置页在生产默认 `720×620` 与最小 `640×520` 尺寸下均无横向溢出、文字或控件重叠，且不显示 MCP 入口和表单。
 4. 正式文件 Agent 请求只暴露批准的 `builtin.*` 工具，不含 `mcp.*`。
 5. MCP 禁用单测与 Manager 内部测试继续通过。
 6. `verify:desktop` 实际到达安全、集成和 Desktop E2E 门禁。
