@@ -10,7 +10,7 @@
     "test:unit": "vitest run --project shared-types --project file-tools --project agent-core --project character-runtime --project character-assets --project desktop",
     "test:security": "vitest run --config tests/vitest.config.ts tests/security",
     "test:integration": "vitest run --config tests/vitest.config.ts tests/integration",
-    "test:e2e:desktop": "pnpm --filter @myself/desktop build && playwright test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts",
+    "test:e2e:desktop": "pnpm --filter @myself/desktop build && playwright test --config tests/playwright.config.ts",
     "build:website:e2e": "node tests/build-website-export.mjs",
     "test:e2e:website": "pnpm build:website:e2e && node node_modules/@playwright/test/cli.js test --config tests/playwright.website.config.ts",
     "build:cloudbase": "pnpm --filter @myself/cloudbase-api build",
