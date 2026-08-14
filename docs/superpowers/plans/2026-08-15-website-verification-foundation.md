@@ -512,7 +512,8 @@ assert.deepEqual(fastIds, [
 const fullIds = createWebChainSteps('full').map(step => step.id);
 assert.deepEqual(fullIds.slice(0, fastIds.length), fastIds);
 assert.deepEqual(fullIds.slice(fastIds.length), [
-  'cloudbase-build', 'cloudbase-build-tool-test', 'scanner-build', 'website-e2e'
+  'cloudbase-build', 'cloudbase-build-output-test',
+  'cloudbase-build-tool-test', 'scanner-build', 'website-e2e'
 ]);
 assert.doesNotMatch(JSON.stringify(createWebChainSteps('full')), /desktop|agent-core|file-tools|character-runtime|character-assets/u);
 ```
@@ -539,13 +540,14 @@ catalog 中每步使用可执行文件和参数数组，不使用 shell 长字�
 { id: 'website-typecheck', command: 'pnpm.cmd', args: ['--filter', '@myself/website', 'typecheck'] }
 { id: 'website-test', command: 'pnpm.cmd', args: ['--filter', '@myself/website', 'test'] }
 { id: 'cloudbase-typecheck', command: 'pnpm.cmd', args: ['--filter', '@myself/cloudbase-api', 'typecheck'] }
-{ id: 'cloudbase-test', command: 'pnpm.cmd', args: ['--filter', '@myself/cloudbase-api', 'test'] }
+{ id: 'cloudbase-test', command: 'pnpm.cmd', args: ['--filter', '@myself/cloudbase-api', 'exec', 'vitest', 'run', '--config', 'vitest.config.ts', '--exclude', 'tests/build-output.test.ts'] }
 { id: 'scanner-typecheck', command: 'pnpm.cmd', args: ['--filter', '@myself/package-scanner', 'typecheck'] }
 { id: 'scanner-test', command: 'pnpm.cmd', args: ['--filter', '@myself/package-scanner', 'test'] }
 { id: 'release-typecheck', command: 'pnpm.cmd', args: ['--filter', '@myself/release-tools', 'typecheck'] }
 { id: 'release-test', command: 'pnpm.cmd', args: ['--filter', '@myself/release-tools', 'test'] }
 { id: 'migration-tool-test', command: process.execPath, args: ['--test', 'tools/apply-cloudbase-migrations.test.mjs'] }
 { id: 'cloudbase-build', command: 'pnpm.cmd', args: ['--filter', '@myself/cloudbase-api', 'build'] }
+{ id: 'cloudbase-build-output-test', command: 'pnpm.cmd', args: ['--filter', '@myself/cloudbase-api', 'exec', 'vitest', 'run', '--config', 'vitest.config.ts', 'tests/build-output.test.ts'] }
 { id: 'cloudbase-build-tool-test', command: process.execPath, args: ['--test', 'tools/build-cloudbase-functions.test.mjs'] }
 { id: 'scanner-build', command: 'pnpm.cmd', args: ['--filter', '@myself/package-scanner', 'build'] }
 { id: 'website-e2e', command: 'pnpm.cmd', args: ['test:e2e:website'] }
@@ -587,7 +589,7 @@ Run:
 pnpm.cmd verify:web-chain:fast
 ```
 
-Expected: 退出 0；覆盖 shared-types、website、cloudbase-api、package-scanner、release-tools 的 test/typecheck，迁移工具 `node:test`，网站依赖审查、归属和范围守卫；不执行构建或 E2E。
+Expected: 退出 0；覆盖 shared-types、website、cloudbase-api（排除依赖 `dist` 的 `build-output.test.ts`）、package-scanner、release-tools 的 test/typecheck，迁移工具 `node:test`，网站依赖审查、归属和范围守卫；不执行构建、产物测试或 E2E。
 
 - [ ] **Step 7: 运行完整网站链门**
 
@@ -597,7 +599,7 @@ Run:
 pnpm.cmd verify:web-chain
 ```
 
-Expected: 退出 0；在快速门基础上，CloudBase 三函数构建及其根 `node:test`、Scanner Vite build、网站静态构建与 Playwright E2E 全部通过。没有 Electron 启动、desktop build、desktop E2E、根 integration/security 或角色包测试。
+Expected: 退出 0；在快速门基础上，CloudBase 三函数构建、构建后的 `build-output.test.ts` 及根 `node:test`、Scanner Vite build、网站静态构建与 Playwright E2E 全部通过。没有 Electron 启动、desktop build、desktop E2E、根 integration/security 或角色包测试。
 
 **删除条件:** 本阶段不删除 `verify:website`、`verify:cloudbase` 或现有构建脚本，因为尚未验证所有外部调用方已迁移；它们不再代表完整网站链门。阶段 5 在调用方清单明确后删除或改为唯一入口别名，不保留永久平行权威。
 
