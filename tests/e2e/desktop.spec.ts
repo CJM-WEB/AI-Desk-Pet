@@ -4658,6 +4658,7 @@ test.describe('真实 Provider 业务闭环', () => {
       for (const event of petEvents) {
         expect(event).not.toBeNull();
         expect(typeof event).toBe('object');
+        expect((event as { type?: unknown }).type).toBe('phase');
         expect(Object.keys(event as object).sort()).toEqual(['phase', 'type']);
       }
       expect(settingsEvents).toEqual([]);
