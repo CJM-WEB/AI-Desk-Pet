@@ -14,12 +14,15 @@ pnpm.cmd --version
 
 ## 1. 变更范围
 
-本次实际创建以下文件：
+以下为 A1 已实际变更文件及职责摘要：
 
-- `docs/operations/desktop-validation-coverage-acceptance.md`：本验收记录。
-- `.superpowers/sdd/2026-08-15-desktop-validation-coverage/task-4-report.md`：任务执行报告；该文件受忽略规则保护，未纳入提交。
+- `apps/desktop/src/renderer/src/settings/SettingsView.tsx`、`apps/desktop/src/renderer/src/styles.css`：获批的设置页工作室入口与窄视口布局修复。
+- `apps/desktop/tests/desktop-e2e-entry.test.ts`、`apps/desktop/tests/typescript-test-coverage.test.ts`、`apps/desktop/tsconfig.json`：Desktop 测试源码的 TypeScript 覆盖和动态 E2E owner 契约。
+- `apps/desktop/tests/character-action-editor.test.tsx`、`character-player.test.tsx`、`character-workshop-close-renderer.test.tsx`、`character-workshop-components.test.tsx`、`character-workshop-state-list.dom.test.tsx`、`draft-character-preview.test.tsx`、`multi-provider-settings-store.test.ts`、`multi-provider-settings.test.tsx`、`renderer-components.test.tsx`：与 TypeScript 测试纳入和设置页组件相关的既有 Desktop 测试调整；原 `multi-provider-settings.test.ts` 已更名为 `multi-provider-settings-store.test.ts`。
+- `tests/e2e/agent-mcp-flow.spec.ts`（删除）、`tests/e2e/desktop-settings-layout.spec.ts`（新增）、`tests/e2e/desktop.spec.ts`、`tests/playwright.config.ts`、`package.json`：退役旧 MCP enable E2E，新增设置页布局 owner，并使 Desktop E2E 从统一配置执行。
+- `docs/superpowers/specs/2026-08-15-desktop-validation-coverage-design.md`、`docs/superpowers/plans/2026-08-15-desktop-validation-coverage.md`、`docs/operations/desktop-validation-coverage-acceptance.md`：规格、计划和本验收记录。
 
-本次未修改或删除生产代码、测试和配置文件。
+`.superpowers/sdd/2026-08-15-desktop-validation-coverage/task-4-report.md` 是受忽略规则保护的执行报告，未纳入提交。
 
 ## 2. 自动化结果
 
@@ -32,7 +35,7 @@ pnpm.cmd --version
 | `git diff --name-only -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase`（创建本记录前） | 0 | 通过 | 无输出。 |
 | `git status --short`（创建本记录前） | 0 | 通过 | 无输出。 |
 
-完整 `verify:desktop` 的验收状态为**失败**；独立 Desktop E2E 的通过结果不改变该总体结论。
+首次 `verify:desktop` 的验收状态为**失败**；独立 Desktop E2E 的通过结果不改变该首次总体结论。修复后的第二次完整门禁结果见第 8 节。
 
 ## 3. E2E owner 结果
 
@@ -46,7 +49,7 @@ pnpm.cmd --version
 ## 4. MCP 禁用证据
 
 - Desktop E2E 实测通过了 `desktop-settings-layout.spec.ts` 中 1200×720 与 960×640 两项“设置页 MCP 入口不可见”断言。
-- 完整门禁在类型检查阶段中止，因此本次未通过 `verify:desktop` 运行单元、安全或集成链。Provider 请求不含 `mcp.*` 的直接自动化结果未在本次独立命令中单独采集，状态为“未验证”。
+- 首次完整门禁在类型检查阶段中止，因此该次未运行单元、安全或集成链。修复后的完整门禁已通过类型检查，但在单元链的超时失败后中止；安全、集成和由该命令触发的 E2E 链均未执行。Provider 请求不含 `mcp.*` 的直接自动化结果未在本次独立命令中单独采集，状态为“未验证”。
 - 最终只读检索用于确认 MCP 禁用契约源码、内部测试和测试桩仍在仓库中；检索结果见第 5 节后的最终自检。
 
 ## 5. 零差异检查
@@ -59,8 +62,25 @@ pnpm.cmd --version
 
 - 真实 Windows 窗口层级、视觉布局、鼠标拖拽、系统托盘和资源管理器交互：待用户人工确认。
 - 干净环境安装、卸载与生产部署：未验证。
-- 完整 Desktop 门禁中的单元、安全和集成链：因 typecheck 失败未执行。
+- 修复后的完整 Desktop 门禁：TypeScript 检查通过；单元链因 6 个 5 秒超时失败；安全、集成和该次门禁触发的 E2E 链未执行。
 - Provider 请求不含 `mcp.*` 的单独运行时断言：未验证。
+
+## 8. 修复后完整门禁复验
+
+时间线与实际结果如下：
+
+1. 首次 `pnpm.cmd verify:desktop` 退出码为 1，在 `apps/desktop/tests/desktop-e2e-entry.test.ts` 第 62、63、64 行的 TS2345 后停止。
+2. 提交 `0ed1dee` 修复上述 E2E gate 的 TypeScript 问题。修复后的完整门禁实际通过全部 workspace TypeScript 检查，包括 `apps/desktop typecheck`。
+3. 修复后再次执行 `pnpm.cmd verify:desktop`，退出码为 1。单元链输出为 `Test Files 3 failed | 103 passed (106)`、`Tests 6 failed | 2134 passed | 14 skipped (2154)`：`character-package-service.test.ts` 2 项、`character-store.test.ts` 1 项和 `official-default-character.test.ts` 3 项均在 5 秒后超时。由于 `&&` 链在 `test:unit` 失败处停止，`test:security`、`test:integration` 和该次门禁调用的 `test:e2e:desktop` 均未执行。
+4. 未提高超时，对上述三个失败文件进行一次定向复跑：`pnpm.cmd --filter @myself/desktop exec vitest run --project desktop tests/character-package-service.test.ts tests/character-store.test.ts tests/official-default-character.test.ts` 退出码为 0，输出为 `Test Files 3 passed (3)`、`Tests 113 passed (113)`，耗时 35.39 秒。
+
+因此，修复后的完整 Desktop 门禁当前状态仍为**失败**：定向复跑的通过结果仅说明该次失败表现为高并发下的 5 秒超时抖动，不能替代完整门禁通过。未调整测试超时，未再次重跑完整门禁。
+
+## 9. 复验后零差异检查
+
+- `git diff --check` 退出码为 0；输出了 Git 的 LF 将在下次触碰文件时替换为 CRLF 的工作副本警告，未输出空白格式错误。
+- `git diff --name-only -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` 退出码为 0 且无输出。
+- `git status --short` 仅显示 `docs/operations/desktop-validation-coverage-acceptance.md` 被修改；本次没有网站、CloudBase 或包扫描器路径差异。
 
 ## 7. 最终只读自检
 
