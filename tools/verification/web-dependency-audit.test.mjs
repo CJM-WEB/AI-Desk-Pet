@@ -1,0 +1,134 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+const REPOSITORY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const RUNNER_PATH = join(REPOSITORY_ROOT, 'tools/verification/run-web-dependency-audit.mjs');
+const WEB_CONFIGURATION_PATH = join(REPOSITORY_ROOT, '.dependency-cruiser.web.mjs');
+
+/** 执行命令并保留完整诊断，避免把真实规则失败误判为 JSON 解析问题。 */
+function runNode(args, options = {}) {
+  const result = spawnSync(process.execPath, args, {
+    cwd: REPOSITORY_ROOT,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+    ...options,
+  });
+
+  assert.equal(
+    result.status,
+    0,
+    `命令执行失败：node ${args.join(' ')}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
+  return result.stdout;
+}
+
+/** 从 ESM 入口定位真实 CLI，测试不依赖平台相关的 .bin 包装脚本。 */
+function resolveDependencyCruiserCli() {
+  return fileURLToPath(
+    new URL('../../bin/dependency-cruise.mjs', import.meta.resolve('dependency-cruiser')),
+  );
+}
+
+/** 创建只覆盖网站链安全边界的最小真实模块图。 */
+async function createRuleFixture() {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'ai-pet-web-dependency-audit-'));
+  const files = {
+    'apps/website/lib/cloudbase-client.ts': "import cloudbase from '@cloudbase/js-sdk';\nexport { cloudbase };\n",
+    'apps/website/lib/sdk-offender.ts': "import cloudbase from '@cloudbase/js-sdk';\nexport { cloudbase };\n",
+    'apps/website/lib/cloud-offender.ts':
+      "import { internal } from '../../cloudbase-api/src/internal.ts';\nexport { internal };\n",
+    'apps/cloudbase-api/src/internal.ts': 'export const internal = true;\n',
+    'apps/cloudbase-api/src/services/offender.ts':
+      "import { runtime } from '../adapters/cloudbase-runtime.ts';\nexport { runtime };\n",
+    'apps/cloudbase-api/src/adapters/cloudbase-runtime.ts': 'export const runtime = true;\n',
+    'node_modules/@cloudbase/js-sdk/package.json': JSON.stringify({
+      name: '@cloudbase/js-sdk',
+      version: '0.0.0-fixture',
+      type: 'module',
+      exports: './index.js',
+    }),
+    'node_modules/@cloudbase/js-sdk/index.js': 'export default {};\n',
+    'package.json': JSON.stringify({ name: 'dependency-audit-fixture', private: true, type: 'module' }),
+  };
+
+  await Promise.all(
+    Object.entries(files).map(async ([relativePath, contents]) => {
+      const absolutePath = join(fixtureRoot, relativePath);
+      await mkdir(dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, contents, 'utf8');
+    }),
+  );
+
+  return fixtureRoot;
+}
+
+test('网站链审查仅报告已批准的历史 warning，且不载入桌面模块或规则', () => {
+  const stdout = runNode([RUNNER_PATH, '--output-type', 'json']);
+  const report = JSON.parse(stdout);
+
+  assert.equal(report.summary.error, 0);
+  assert.ok(report.modules.some(module => module.source.startsWith('apps/website/')));
+  assert.ok(report.modules.some(module => module.source.startsWith('apps/cloudbase-api/')));
+  assert.ok(report.modules.some(module => module.source.startsWith('apps/package-scanner/')));
+  assert.equal(report.modules.some(module => module.source.startsWith('apps/desktop/')), false);
+  assert.equal(
+    report.summary.ruleSetUsed.forbidden.some(rule => /desktop|electron/u.test(rule.name)),
+    false,
+  );
+
+  const allowedDebt = new Set([
+    'no-circular',
+    'no-orphan-production-module',
+    'website-features-do-not-import-liquid-glass',
+  ]);
+  assert.ok(report.summary.violations.every(item => allowedDebt.has(item.rule.name)));
+  assert.ok(report.summary.violations.length <= 14);
+});
+
+test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用', async t => {
+  const fixtureRoot = await createRuleFixture();
+  t.after(async () => rm(fixtureRoot, { recursive: true, force: true }));
+  const cliPath = resolveDependencyCruiserCli();
+  const stdout = runNode(
+    [
+      cliPath,
+      '--config',
+      WEB_CONFIGURATION_PATH,
+      '--output-type',
+      'json',
+      'apps/website',
+      'apps/cloudbase-api',
+    ],
+    { cwd: fixtureRoot },
+  );
+  const report = JSON.parse(stdout);
+  const hasViolation = (ruleName, from) =>
+    report.summary.violations.some(
+      violation => violation.rule.name === ruleName && violation.from === from,
+    );
+
+  assert.ok(
+    hasViolation(
+      'no-website-to-cloud-or-migration-source',
+      'apps/website/lib/cloud-offender.ts',
+    ),
+  );
+  assert.ok(
+    hasViolation('cloud-services-stay-inward', 'apps/cloudbase-api/src/services/offender.ts'),
+  );
+  assert.ok(
+    hasViolation('website-cloudbase-sdk-only-in-client-adapter', 'apps/website/lib/sdk-offender.ts'),
+  );
+  assert.equal(
+    hasViolation(
+      'website-cloudbase-sdk-only-in-client-adapter',
+      'apps/website/lib/cloudbase-client.ts',
+    ),
+    false,
+  );
+});
