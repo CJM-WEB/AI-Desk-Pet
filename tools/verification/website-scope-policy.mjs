@@ -35,14 +35,14 @@ export const FORBIDDEN_WEBSITE_SCOPE_PATHS = Object.freeze([
   'vitest.config.ts',
 ]);
 
-/** 根 manifest 只能新增这些网站链入口，既有脚本不允许改写。 */
-export const ALLOWED_ROOT_SCRIPT_CHANGES = Object.freeze([
-  'deps:audit:web',
-  'verify:web-chain:ownership',
-  'verify:web-chain:scope',
-  'verify:web-chain:fast',
-  'verify:web-chain',
-]);
+/** 根 manifest 只能新增这些精确的网站链命令，既有脚本不允许改写。 */
+export const ALLOWED_ROOT_SCRIPT_CHANGES = Object.freeze({
+  'deps:audit:web': 'node tools/verification/run-web-dependency-audit.mjs',
+  'verify:web-chain:ownership': 'node tools/verification/verify-web-test-ownership.mjs',
+  'verify:web-chain:scope': 'node tools/verification/verify-website-scope.mjs',
+  'verify:web-chain:fast': 'node tools/verification/verify-web-chain.mjs --profile fast',
+  'verify:web-chain': 'node tools/verification/verify-web-chain.mjs --profile full',
+});
 
 /** 依赖审查器使用固定版本，避免范围守卫本身被浮动依赖削弱。 */
 export const ALLOWED_ROOT_DEV_DEPENDENCY_CHANGES = Object.freeze({

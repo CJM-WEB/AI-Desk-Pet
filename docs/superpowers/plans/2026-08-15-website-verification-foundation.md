@@ -430,13 +430,13 @@ Expected: FAIL with `ERR_MODULE_NOT_FOUND`。
 policy 精确导出本计划前述白名单、黑名单、基线提交，以及仅允许新增的根键：
 
 ```javascript
-export const ALLOWED_ROOT_SCRIPT_CHANGES = Object.freeze([
-  'deps:audit:web',
-  'verify:web-chain:ownership',
-  'verify:web-chain:scope',
-  'verify:web-chain:fast',
-  'verify:web-chain'
-]);
+export const ALLOWED_ROOT_SCRIPT_CHANGES = Object.freeze({
+  'deps:audit:web': 'node tools/verification/run-web-dependency-audit.mjs',
+  'verify:web-chain:ownership': 'node tools/verification/verify-web-test-ownership.mjs',
+  'verify:web-chain:scope': 'node tools/verification/verify-website-scope.mjs',
+  'verify:web-chain:fast': 'node tools/verification/verify-web-chain.mjs --profile fast',
+  'verify:web-chain': 'node tools/verification/verify-web-chain.mjs --profile full'
+});
 export const ALLOWED_ROOT_DEV_DEPENDENCY_CHANGES = Object.freeze({
   'dependency-cruiser': '18.2.0'
 });

@@ -50,3 +50,27 @@ test('根 manifest 拒绝阶段 0 依赖的非精确版本', () => {
     /dependency-cruiser/u,
   );
 });
+
+test('根 manifest 拒绝阶段 0 脚本的错误命令值', () => {
+  const changedCommand = structuredClone(baseManifest);
+  changedCommand.scripts['verify:web-chain'] = 'echo unexpected-command';
+
+  assert.throws(
+    () => assertRootManifestChange(baseManifest, changedCommand),
+    /verify:web-chain/u,
+  );
+});
+
+test('根 manifest 接受全部精确阶段 0 脚本和 dependency-cruiser', () => {
+  const allowedChange = structuredClone(baseManifest);
+  Object.assign(allowedChange.scripts, {
+    'deps:audit:web': 'node tools/verification/run-web-dependency-audit.mjs',
+    'verify:web-chain:ownership': 'node tools/verification/verify-web-test-ownership.mjs',
+    'verify:web-chain:scope': 'node tools/verification/verify-website-scope.mjs',
+    'verify:web-chain:fast': 'node tools/verification/verify-web-chain.mjs --profile fast',
+    'verify:web-chain': 'node tools/verification/verify-web-chain.mjs --profile full',
+  });
+  allowedChange.devDependencies['dependency-cruiser'] = '18.2.0';
+
+  assert.doesNotThrow(() => assertRootManifestChange(baseManifest, allowedChange));
+});

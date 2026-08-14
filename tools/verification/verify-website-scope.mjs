@@ -65,9 +65,10 @@ export function assertRootManifestChange(baseManifest, currentManifest) {
   assertExistingEntriesUnchanged('根 manifest 原有脚本', baseScripts, currentScripts);
   assertExistingEntriesUnchanged('根 manifest 原有开发依赖', baseDevDependencies, currentDevDependencies);
 
-  for (const key of Object.keys(currentScripts)) {
-    if (!Object.hasOwn(baseScripts, key) && !ALLOWED_ROOT_SCRIPT_CHANGES.includes(key)) {
-      throw new Error(`根 manifest 不允许新增脚本: ${key}`);
+  for (const [key, value] of Object.entries(currentScripts)) {
+    if (!Object.hasOwn(baseScripts, key)
+      && ALLOWED_ROOT_SCRIPT_CHANGES[key] !== value) {
+      throw new Error(`根 manifest 不允许新增或改写脚本: ${key}`);
     }
   }
 
