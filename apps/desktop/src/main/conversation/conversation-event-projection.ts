@@ -16,7 +16,7 @@ type ConversationEventProjectionOptions = Readonly<{
  * 无状态地将已验证的会话事件投影到最小窗口视图。
  *
  * 先解析以保证无效输入不产生副作用；Main 保持完整事件，chat 接收完整事件，
- * pet 仅接收 phase。每个窗口的投递失败彼此隔离，不缓存、不重试也不重放。
+ * pet 仅接收 phase。每个窗口及其失败报告均彼此隔离，不缓存、不重试也不重放。
  */
 export class ConversationEventProjection {
   constructor(private readonly options: ConversationEventProjectionOptions) {}
@@ -46,7 +46,11 @@ export class ConversationEventProjection {
     try {
       target.send(ipcChannels.taskEvent, event);
     } catch {
-      this.options.reportDeliveryFailure?.(targetName);
+      try {
+        this.options.reportDeliveryFailure?.(targetName);
+      } catch {
+        // 报告器属于非关键观测路径，不能中断另一窗口的最小投影。
+      }
     }
   }
 }

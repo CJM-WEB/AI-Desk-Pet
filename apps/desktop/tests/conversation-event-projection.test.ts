@@ -170,4 +170,33 @@ describe('ConversationEventProjection', () => {
       phase: 'thinking'
     });
   });
+
+  test.each(['chat', 'pet'] as const)(
+    '报告器对 %s 发送失败抛错时仍隔离另一个窗口',
+    failedTarget => {
+      const chat = target();
+      const pet = target();
+      const failed = failedTarget === 'chat' ? chat : pet;
+      const delivered = failedTarget === 'chat' ? pet : chat;
+      failed.send.mockImplementation(() => { throw new Error('PRIVATE_PAYLOAD'); });
+      const reportDeliveryFailure = vi.fn(() => { throw new Error('REPORTER_FAILED'); });
+      const projection = new ConversationEventProjection({
+        getChatTarget: () => chat,
+        getPetTarget: () => pet,
+        applyCharacterBehavior: vi.fn(),
+        reportDeliveryFailure
+      });
+      const phase: TaskEvent = { type: 'phase', phase: 'thinking' };
+      let result: TaskEvent | undefined;
+
+      expect(() => { result = projection.publish(phase); }).not.toThrow();
+
+      expect(result).toStrictEqual(phase);
+      expect(reportDeliveryFailure).toHaveBeenCalledWith(failedTarget);
+      expect(delivered.send).toHaveBeenCalledWith(ipcChannels.taskEvent, {
+        type: 'phase',
+        phase: 'thinking'
+      });
+    }
+  );
 });
