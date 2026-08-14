@@ -4490,6 +4490,209 @@ test.describe('真实 Provider 业务闭环', () => {
     }
   });
 
+  test('会话任务事件只向 chat 完整投递并向 pet 投递 phase', async () => {
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+
+    const providerProfileName = '投影隐私专用 Provider';
+    const bodySentinel = 'projection-private-body-sentinel';
+    const provider = await startProviderServer([
+      { response: { type: 'text', text: bodySentinel } },
+      {
+        response: toolResponse(
+          'projection-file-action',
+          'builtin.files.create_file',
+          { relativePath: 'projection-privacy.txt', content: bodySentinel }
+        )
+      },
+      {
+        response: toolResponse(
+          'projection-powershell-action',
+          'builtin.powershell.run',
+          { command: `Write-Output ${bodySentinel}` }
+        )
+      }
+    ]);
+    let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+    try {
+      fixture = await fixtureModule.createElectronAppFixture({
+        workspaceRoot: resolve(process.cwd()),
+        apiKey: provider.apiKey,
+        logSentinels: [bodySentinel]
+      });
+    } catch (error) {
+      await provider.close();
+      throw error;
+    }
+
+    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+    const pageFor = (view: 'pet' | 'chat' | 'settings' | 'characters'): Page | undefined => (
+      pages().find(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === view;
+        } catch {
+          return false;
+        }
+      })
+    );
+    const waitForPage = async (
+      view: 'pet' | 'chat' | 'settings' | 'characters'
+    ): Promise<Page> => {
+      await expect.poll(() => Boolean(pageFor(view))).toBe(true);
+      const page = pageFor(view);
+      if (!page) throw new Error(`缺少 ${view} Renderer`);
+      return page;
+    };
+    const readEvents = (page: Page, view: string): Promise<unknown[]> => page.evaluate(key => (
+      globalThis as typeof globalThis & {
+        __projectedTaskEvents?: Record<string, unknown[]>;
+      }
+    ).__projectedTaskEvents?.[key] ?? [], view);
+
+    try {
+      const petPage = await waitForPage('pet');
+      const chatPage = await waitForPage('chat');
+      const settingsPage = await waitForPage('settings');
+
+      await petPage.evaluate(() => window.myself.openChat());
+      await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
+      await chatPage.getByRole('button', { name: '设置' }).click();
+      await expect.poll(() => settingsPage.evaluate(() => document.visibilityState))
+        .toBe('visible');
+      await settingsPage.getByLabel('自定义').check();
+      await settingsPage.getByText('高级设置', { exact: true }).click();
+      await settingsPage.getByLabel('档案名称').fill(providerProfileName);
+      await settingsPage.getByLabel('Base URL').fill(provider.baseUrl);
+      await settingsPage.getByLabel('Model ID').fill('projection-privacy-model');
+      await settingsPage.getByLabel('API Key', { exact: true }).fill(provider.apiKey);
+      await settingsPage.getByRole('button', { name: '保存档案' }).click();
+      await expect(settingsPage.getByText('模型档案已保存。')).toBeVisible();
+      await settingsPage.getByRole('combobox', { name: '主模型', exact: true })
+        .selectOption({ label: providerProfileName });
+      await settingsPage.getByRole('combobox', { name: 'Agent 模型', exact: true })
+        .selectOption({ label: providerProfileName });
+      await settingsPage.getByRole('button', { name: '保存路由' }).click();
+      await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
+      await settingsPage.getByRole('button', { name: '隐私', exact: true }).click();
+      await settingsPage.getByRole('checkbox', { name: '文件数据授权' }).check();
+      await settingsPage.getByRole('button', { name: '保存隐私设置' }).click();
+      await expect(settingsPage.getByText('隐私设置已保存。')).toBeVisible();
+      await settingsPage.getByRole('button', { name: '选择目录' }).click();
+      await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
+
+      await settingsPage.getByRole('button', { name: '角色工作室' }).click();
+      const charactersPage = await waitForPage('characters');
+      await expect.poll(() => charactersPage.evaluate(() => document.visibilityState))
+        .toBe('visible');
+
+      // 四个真实 Renderer 各自持有观测数组，避免共享状态掩盖跨窗口泄漏。
+      for (const [view, page] of [
+        ['pet', petPage],
+        ['chat', chatPage],
+        ['settings', settingsPage],
+        ['characters', charactersPage]
+      ] as const) {
+        await page.evaluate(key => {
+          const scope = globalThis as typeof globalThis & {
+            __projectedTaskEvents?: Record<string, unknown[]>;
+          };
+          scope.__projectedTaskEvents ??= {};
+          scope.__projectedTaskEvents[key] = [];
+          window.myself.onTaskEvent(event => scope.__projectedTaskEvents?.[key]?.push(event));
+        }, view);
+      }
+
+      await submitChatMessage(chatPage, '请和我普通聊天');
+      await expect(chatPage.getByText(bodySentinel, { exact: true })).toBeVisible();
+
+      await submitChatMessage(chatPage, '创建 projection-privacy.txt');
+      const fileConfirmation = chatPage.getByRole('region', {
+        name: '创建文件 projection-privacy.txt'
+      });
+      await expect(fileConfirmation).toBeVisible();
+      await fileConfirmation.getByRole('button', { name: '先不创建' }).click();
+      await expect(fileConfirmation).toHaveCount(0);
+
+      await submitChatMessage(chatPage, `运行 Write-Output ${bodySentinel}`);
+      const powershellConfirmation = chatPage.getByRole('region', {
+        name: '运行 PowerShell 命令'
+      });
+      await expect(powershellConfirmation).toBeVisible();
+      await powershellConfirmation.getByRole('button', { name: '先不运行' }).click();
+      await expect(powershellConfirmation).toHaveCount(0);
+
+      const chatEvents = await readEvents(chatPage, 'chat');
+      const petEvents = await readEvents(petPage, 'pet');
+      const settingsEvents = await readEvents(settingsPage, 'settings');
+      const charactersEvents = await readEvents(charactersPage, 'characters');
+
+      expect(chatEvents).toContainEqual({
+        type: 'message',
+        role: 'assistant',
+        text: bodySentinel
+      });
+      expect(chatEvents.some(event => (
+        event !== null
+        && typeof event === 'object'
+        && (event as { type?: unknown }).type === 'phase'
+      ))).toBe(true);
+      const pendingActions = chatEvents.flatMap(event => {
+        if (event === null
+          || typeof event !== 'object'
+          || (event as { type?: unknown }).type !== 'pending_action') return [];
+        const action = (event as { action?: Record<string, unknown> }).action;
+        return action ? [action] : [];
+      });
+      expect(pendingActions.map(action => action['category'])).toEqual(['file', 'powershell']);
+      expect(pendingActions[0]).toMatchObject({
+        category: 'file',
+        contentPreview: bodySentinel
+      });
+      expect(pendingActions[1]).toMatchObject({
+        category: 'powershell',
+        command: `Write-Output ${bodySentinel}`
+      });
+
+      expect(petEvents.length).toBeGreaterThan(0);
+      for (const event of petEvents) {
+        expect(event).not.toBeNull();
+        expect(typeof event).toBe('object');
+        expect(Object.keys(event as object).sort()).toEqual(['phase', 'type']);
+      }
+      expect(settingsEvents).toEqual([]);
+      expect(charactersEvents).toEqual([]);
+
+      // 非 chat 投影不得携带票据、命令、预览、Provider、正文或授权根事实。
+      const forbiddenValues = [
+        'actionId',
+        'command',
+        'contentPreview',
+        'diffPreview',
+        'requestId',
+        providerProfileName,
+        bodySentinel,
+        fixture.authorizedRootDirectory
+      ];
+      for (const serialized of [
+        JSON.stringify(petEvents),
+        JSON.stringify(settingsEvents),
+        JSON.stringify(charactersEvents)
+      ]) {
+        for (const forbidden of forbiddenValues) expect(serialized).not.toContain(forbidden);
+      }
+
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      try {
+        await fixture.dispose();
+      } finally {
+        await provider.close();
+      }
+    }
+  });
+
   test('只有当前聊天窗口能使用已知 actionId 确认文件动作', async () => {
     const fixtureModule = await loadElectronFixtureModule();
     expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');

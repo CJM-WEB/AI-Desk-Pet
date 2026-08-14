@@ -255,7 +255,23 @@ describe('preload 白名单', () => {
     );
     expect(main).not.toContain('registerAgentIpc(ipcMain, conversationIpcService);');
     expect(main).not.toContain('registerAgentIpc(ipcMain, agentService)');
-    expect(main).toContain('webContents.send(ipcChannels.taskEvent, event)');
+  });
+
+  it('Main 由会话投影器独占 taskEvent 窗口投递', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(main).toContain(
+      'const conversationEventProjection = new ConversationEventProjection({'
+    );
+    expect(main).toContain('const validated = conversationEventProjection.publish(event);');
+    expect(main).toContain(
+      'applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)'
+    );
+    expect(main.match(/characterBehavior\.handleTaskEvent\(event\)/gu)).toHaveLength(1);
+    expect(main).not.toContain(
+      'for (const window of [pet, chat, settings, characterWorkshopWindows.getCurrent()])'
+    );
+    expect(main).not.toContain('ipcChannels.taskEvent');
   });
 
   it('在 pet 生命周期内唯一创建交互控制器并复用现有菜单弹出回调', async () => {

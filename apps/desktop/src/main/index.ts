@@ -25,6 +25,8 @@ import { PowerShellTool } from './agent/powershell-tool';
 import { PrivacySessionRegistry } from './agent/disclosure-policy';
 import { ConversationChatAdapter } from './conversation/conversation-chat-adapter';
 import { CapabilityTaskAdapter } from './conversation/capability-task-adapter';
+import { ConversationEventProjection } from
+  './conversation/conversation-event-projection';
 import { createMainConversationComposition } from
   './conversation/main-conversation-composition';
 import {
@@ -736,14 +738,22 @@ async function createApplicationWindows(
   const sessionId = 'desktop-session';
   privacySessions.register(sessionId, { incognito: false });
   let reportedSubmitErrorCode: string | null = null;
+  const conversationEventProjection = new ConversationEventProjection({
+    getChatTarget: getCurrentChatWebContents,
+    getPetTarget: () => (
+      pet.isDestroyed() || pet.webContents.isDestroyed() ? null : pet.webContents
+    ),
+    applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event),
+    reportDeliveryFailure: target => console.error(
+      '投递会话公开事件失败。',
+      target === 'chat'
+        ? 'CHAT_TASK_EVENT_DELIVERY_FAILED'
+        : 'PET_TASK_EVENT_DELIVERY_FAILED'
+    )
+  });
   const emitConversationEvent = (event: TaskEvent): void => {
-    if (event.type === 'error') reportedSubmitErrorCode = event.code;
-    characterBehavior.handleTaskEvent(event);
-    for (const window of [pet, chat, settings, characterWorkshopWindows.getCurrent()]) {
-      if (window && !window.isDestroyed()) {
-        window.webContents.send(ipcChannels.taskEvent, event);
-      }
-    }
+    const validated = conversationEventProjection.publish(event);
+    if (validated.type === 'error') reportedSubmitErrorCode = validated.code;
   };
   const conversationComposition = createMainConversationComposition({
     catalog: providerCatalog,
