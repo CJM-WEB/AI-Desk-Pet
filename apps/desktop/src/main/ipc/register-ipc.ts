@@ -6,6 +6,7 @@ import {
   type PublicSettings
 } from '@myself/shared-types';
 import { privacySettingsSchema } from '../storage/settings-store';
+import type { AgentIpcAuthorization } from './agent-ipc-authorization';
 import { z } from 'zod';
 import { ipcChannels } from '../../shared/ipc-channels';
 import {
@@ -111,8 +112,13 @@ export interface AgentIpcService {
   resetConversation(): Promise<void>;
 }
 
-export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): void {
-  replaceHandler(ipcMain, ipcChannels.chatSubmit, async (_event, raw) => {
+export function registerAgentIpc(
+  ipcMain: IpcMain,
+  service: AgentIpcService,
+  authorization: Pick<AgentIpcAuthorization, 'assertCurrentChatSender'>
+): void {
+  replaceHandler(ipcMain, ipcChannels.chatSubmit, async (event, raw) => {
+    authorization.assertCurrentChatSender(event);
     const { text } = chatSubmitSchema.parse(raw);
     try {
       await service.submit(text);
@@ -121,20 +127,27 @@ export function registerAgentIpc(ipcMain: IpcMain, service: AgentIpcService): vo
       if (!service.hasReportedFailure(error)) throw error;
     }
   });
-  replaceHandler(ipcMain, ipcChannels.chatCancel, () => service.cancelActive());
-  replaceHandler(ipcMain, ipcChannels.actionConfirm, async (_event, raw) => {
+  replaceHandler(ipcMain, ipcChannels.chatCancel, event => {
+    authorization.assertCurrentChatSender(event);
+    return service.cancelActive();
+  });
+  replaceHandler(ipcMain, ipcChannels.actionConfirm, async (event, raw) => {
+    authorization.assertCurrentChatSender(event);
     const { actionId } = actionIdSchema.parse(raw);
     await service.resolveFileAction(actionId, 'confirm');
   });
-  replaceHandler(ipcMain, ipcChannels.actionCancel, async (_event, raw) => {
+  replaceHandler(ipcMain, ipcChannels.actionCancel, async (event, raw) => {
+    authorization.assertCurrentChatSender(event);
     const { actionId } = actionIdSchema.parse(raw);
     await service.resolveFileAction(actionId, 'cancel');
   });
-  replaceHandler(ipcMain, ipcChannels.conversationDisclosureResolve, async (_event, raw) => {
+  replaceHandler(ipcMain, ipcChannels.conversationDisclosureResolve, async (event, raw) => {
+    authorization.assertCurrentChatSender(event);
     const { requestId, decision } = historyDisclosureSchema.parse(raw);
     await service.resolveHistoryDisclosure(requestId, decision);
   });
-  replaceHandler(ipcMain, ipcChannels.conversationReset, async (_event, ...args) => {
+  replaceHandler(ipcMain, ipcChannels.conversationReset, async (event, ...args) => {
+    authorization.assertCurrentChatSender(event);
     emptyArgumentsSchema.parse(args);
     await service.resetConversation();
   });
