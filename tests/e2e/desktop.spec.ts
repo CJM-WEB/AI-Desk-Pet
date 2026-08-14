@@ -4490,6 +4490,150 @@ test.describe('真实 Provider 业务闭环', () => {
     }
   });
 
+  test('只有当前聊天窗口能使用已知 actionId 确认文件动作', async () => {
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+
+    const provider = await startProviderServer([
+      {
+        response: toolResponse(
+          'sender-guard-create',
+          'builtin.files.create_file',
+          { relativePath: 'sender-guard.txt', content: '' }
+        )
+      },
+      {
+        response: { type: 'text', text: '跨窗口授权验证文件已创建。' },
+        inspect: request => {
+          const result = lastToolResult(request) as {
+            toolName?: string;
+            targetRelativePath?: string;
+          };
+          if (result.toolName !== 'create_file'
+            || result.targetRelativePath !== 'sender-guard.txt') {
+            throw new Error('跨窗口授权验证的文件结果不符合预期');
+          }
+        }
+      }
+    ]);
+    let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+    try {
+      fixture = await fixtureModule.createElectronAppFixture({
+        workspaceRoot: resolve(process.cwd()),
+        apiKey: provider.apiKey,
+        launchTimeoutMs: 15_000
+      });
+    } catch (error) {
+      await provider.close();
+      throw error;
+    }
+
+    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
+    const pageFor = (view: 'pet' | 'chat' | 'settings' | 'characters'): Page | undefined => (
+      pages().find(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === view;
+        } catch {
+          return false;
+        }
+      })
+    );
+    const waitForPage = async (
+      view: 'pet' | 'chat' | 'settings' | 'characters'
+    ): Promise<Page> => {
+      await expect.poll(() => Boolean(pageFor(view))).toBe(true);
+      const page = pageFor(view);
+      if (!page) throw new Error(`缺少 ${view} Renderer`);
+      return page;
+    };
+    const target = join(fixture.authorizedRootDirectory, 'sender-guard.txt');
+
+    try {
+      const petPage = await waitForPage('pet');
+      const chatPage = await waitForPage('chat');
+      const settingsPage = await waitForPage('settings');
+
+      await petPage.evaluate(() => window.myself.openChat());
+      await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
+      await chatPage.evaluate(() => {
+        const scope = globalThis as typeof globalThis & { __pendingActionId?: string };
+        window.myself.onTaskEvent(event => {
+          if (event.type === 'pending_action') {
+            scope.__pendingActionId = event.action.actionId;
+          }
+        });
+      });
+
+      await chatPage.getByRole('button', { name: '设置' }).click();
+      await expect.poll(() => settingsPage.evaluate(() => document.visibilityState))
+        .toBe('visible');
+      await settingsPage.getByLabel('自定义').check();
+      await settingsPage.getByText('高级设置', { exact: true }).click();
+      await settingsPage.getByLabel('档案名称').fill('跨窗口授权验证');
+      await settingsPage.getByLabel('Base URL').fill(provider.baseUrl);
+      await settingsPage.getByLabel('Model ID').fill('sender-guard-model');
+      await settingsPage.getByLabel('API Key', { exact: true }).fill(provider.apiKey);
+      await settingsPage.getByRole('button', { name: '保存档案' }).click();
+      await expect(settingsPage.getByText('模型档案已保存。')).toBeVisible();
+      await settingsPage.getByRole('combobox', { name: '主模型', exact: true })
+        .selectOption({ label: '跨窗口授权验证' });
+      await settingsPage.getByRole('combobox', { name: 'Agent 模型', exact: true })
+        .selectOption({ label: '跨窗口授权验证' });
+      await settingsPage.getByRole('button', { name: '保存路由' }).click();
+      await expect(settingsPage.getByText('模型路由已保存。')).toBeVisible();
+      await settingsPage.getByRole('button', { name: '隐私' }).click();
+      await settingsPage.getByRole('checkbox', { name: '文件数据授权' }).check();
+      await settingsPage.getByRole('button', { name: '保存隐私设置' }).click();
+      await expect(settingsPage.getByText('隐私设置已保存。')).toBeVisible();
+      await settingsPage.getByRole('button', { name: '选择目录' }).click();
+      await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
+
+      await settingsPage.getByRole('button', { name: '角色工作室' }).click();
+      const charactersPage = await waitForPage('characters');
+      await expect.poll(() => charactersPage.evaluate(() => document.visibilityState))
+        .toBe('visible');
+
+      await submitChatMessage(chatPage, '创建 sender-guard.txt');
+      await expect.poll(() => chatPage.evaluate(() => (
+        globalThis as typeof globalThis & { __pendingActionId?: string }
+      ).__pendingActionId)).toBeTruthy();
+      const actionId = await chatPage.evaluate(() => (
+        globalThis as typeof globalThis & { __pendingActionId?: string }
+      ).__pendingActionId!);
+
+      for (const page of [petPage, settingsPage, charactersPage]) {
+        const error = await page.evaluate(async id => {
+          try {
+            await window.myself.confirmAction(id);
+            return null;
+          } catch (caught) {
+            return String(caught);
+          }
+        }, actionId);
+        expect(error).toContain('AGENT_IPC_SENDER_INVALID');
+      }
+
+      const confirmation = chatPage.getByRole('region', {
+        name: '创建文件 sender-guard.txt'
+      });
+      await expect(confirmation).toBeVisible();
+      expect(await pathExistsForAssertion(target)).toBe(false);
+
+      await confirmation.getByRole('button', { name: '确认创建文件' }).click();
+      await expect(chatPage.getByText('跨窗口授权验证文件已创建。')).toBeVisible();
+      await expect.poll(() => pathExistsForAssertion(target)).toBe(true);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      try {
+        await fixture.dispose();
+      } finally {
+        await provider.close();
+      }
+    }
+  });
+
   test('通过正式白名单完成设置、文件操作与聊天窗口状态', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();

@@ -15,7 +15,8 @@ import {
   screen,
   shell,
   Tray,
-  type MenuItemConstructorOptions
+  type MenuItemConstructorOptions,
+  type WebContents
 } from 'electron';
 import { AgentService } from './agent/agent-service';
 import { PendingActionStore } from './agent/pending-action-store';
@@ -40,6 +41,7 @@ import {
   registerSettingsIpc,
   registerWindowIpc
 } from './ipc/register-ipc';
+import { AgentIpcAuthorization } from './ipc/agent-ipc-authorization';
 import { CharacterActions } from './characters/character-actions';
 import { CharacterAssetService } from './characters/character-asset-service';
 import { CharacterBehaviorService } from './characters/character-behavior-service';
@@ -251,6 +253,10 @@ async function createApplicationWindows(
   });
   let chat = createChatWindow(BrowserWindow, preload);
   let settings = createSettingsWindow(BrowserWindow, preload);
+  const getCurrentChatWebContents = (): WebContents | null => {
+    if (chat.isDestroyed() || chat.webContents.isDestroyed()) return null;
+    return chat.webContents;
+  };
 
   // Explorer 桥接只提供窗口事实，桌宠可见性始终由普通窗口流程管理。
   const storageDirectory = app.getPath('userData');
@@ -825,7 +831,8 @@ async function createApplicationWindows(
     ) => conversationCoordinator.resolveHistoryDisclosure(requestId, decision),
     resetConversation: () => conversationCoordinator.resetConversation()
   };
-  registerAgentIpc(ipcMain, conversationIpcService);
+  const agentIpcAuthorization = new AgentIpcAuthorization(getCurrentChatWebContents);
+  registerAgentIpc(ipcMain, conversationIpcService, agentIpcAuthorization);
 
   const shutdownApplication = createMainShutdownTransaction({
     beforeExplorerClose: async () => {
