@@ -12,12 +12,7 @@ const WEB_CONFIGURATION_PATH = join(REPOSITORY_ROOT, '.dependency-cruiser.web.mj
 
 /** 执行命令并保留完整诊断，避免把真实规则失败误判为 JSON 解析问题。 */
 function runNode(args, options = {}) {
-  const result = spawnSync(process.execPath, args, {
-    cwd: REPOSITORY_ROOT,
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-    ...options,
-  });
+  const result = runNodeResult(args, options);
 
   assert.equal(
     result.status,
@@ -25,6 +20,16 @@ function runNode(args, options = {}) {
     `命令执行失败：node ${args.join(' ')}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
   return result.stdout;
+}
+
+/** 返回子进程结果，供拒绝路径断言退出码与诊断。 */
+function runNodeResult(args, options = {}) {
+  return spawnSync(process.execPath, args, {
+    cwd: REPOSITORY_ROOT,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+    ...options,
+  });
 }
 
 /** 从 ESM 入口定位真实 CLI，测试不依赖平台相关的 .bin 包装脚本。 */
@@ -88,6 +93,27 @@ test('网站链审查仅报告已批准的历史 warning，且不载入桌面模
   ]);
   assert.ok(report.summary.violations.every(item => allowedDebt.has(item.rule.name)));
   assert.ok(report.summary.violations.length <= 14);
+});
+
+test('runner 拒绝覆盖配置、输入范围或输出参数契约的调用', async t => {
+  const rejectedArguments = [
+    ['覆盖配置', ['--config', '.dependency-cruiser.mjs']],
+    ['覆盖排除范围', ['--exclude', '.*']],
+    ['追加输入', ['apps/desktop']],
+    ['未知参数', ['--validate']],
+    ['输出类型缺值', ['--output-type']],
+    ['输出路径缺值', ['--output-to']],
+    ['重复输出类型', ['--output-type', 'json', '--output-type', 'err']],
+    ['重复输出路径', ['--output-to', 'first.json', '--output-to', 'second.json']],
+  ];
+
+  for (const [name, args] of rejectedArguments) {
+    await t.test(name, () => {
+      const result = runNodeResult([RUNNER_PATH, ...args]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /网站依赖审查参数/u);
+    });
+  }
 });
 
 test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用', async t => {
