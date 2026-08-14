@@ -149,3 +149,17 @@ git status --short
 完整门禁中的角色工作室失败不在本轮设置窗口测试、规格或验收文本变更范围内，且同一场景定向复跑通过；本轮不对此既有不稳定表现进行越界修复。完整 `verify:desktop` 的当前真实状态为失败。
 
 提交前 `git diff --check` 退出码为 0，未报告空白格式错误；Git 仅提示这四个改动文件下次触碰时 LF 会转为 CRLF。`git diff --name-only -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` 与 `git diff --name-only b686eca..HEAD -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` 均无输出，前者覆盖本次工作副本，后者覆盖提交前既有 A1 提交范围。
+
+## 13. 最终当前提交复验
+
+主控制器在当前提交 `232c083` 上新鲜执行 `pnpm.cmd verify:desktop`，退出码为 0。该结果按时间覆盖第 12 节中“完整 `verify:desktop` 的当前真实状态为失败”的最新状态；第 12 节保留此前失败和定向复跑的历史证据，不作改写或删除。
+
+| 链路 | 实际结果 |
+| --- | --- |
+| TypeScript | 全部通过。 |
+| 单元测试 | `107/107` 个测试文件通过，`2141 passed`、`14 skipped`，耗时 36.69 秒。 |
+| 安全测试 | `20/20` 通过。 |
+| 集成测试 | `46/46` 通过。 |
+| Desktop E2E | `59/59` 通过，耗时约 3.0 分钟；`720×620` 默认尺寸与 `640×520` 最小尺寸布局场景均通过，先前超时的角色工作室场景本轮也通过。 |
+
+本次复验没有恢复 MCP 运行时或放宽布局门禁。真实 Windows 视觉、窗口层级、鼠标拖拽、系统托盘、资源管理器交互、干净环境安装卸载与生产部署仍待用户人工确认。
