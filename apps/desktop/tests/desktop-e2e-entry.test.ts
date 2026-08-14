@@ -26,6 +26,14 @@ function countCommand(script: string, command: string): number {
   }
 }
 
+function requiredScript(scripts: Record<string, string>, name: string): string {
+  const script = scripts[name];
+  if (typeof script !== 'string') {
+    expect.fail(`package.json 缺少必需脚本：${name}`);
+  }
+  return script;
+}
+
 /** Desktop E2E 的唯一入口契约：配置负责 spec 归属，门禁脚本负责调用该入口。 */
 test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop 可达全部门禁', () => {
   const repositoryRoot = resolve(import.meta.dirname, '../../..');
@@ -41,6 +49,10 @@ test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop �
     (websitePlaywrightConfig as PlaywrightConfigContract).testMatch
   );
   const scripts = packageJson.scripts;
+  const testE2eDesktop = requiredScript(scripts, 'test:e2e:desktop');
+  const verifyDesktop = requiredScript(scripts, 'verify:desktop');
+  const testSecurity = requiredScript(scripts, 'test:security');
+  const testIntegration = requiredScript(scripts, 'test:integration');
 
   expect(desktopMatches).toEqual([
     'desktop-settings-layout.spec.ts',
@@ -55,13 +67,13 @@ test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop �
   );
   expect(desktopMatches).toEqual(desktopCandidates.sort());
 
-  expect(scripts['test:e2e:desktop']).toContain(
+  expect(testE2eDesktop).toContain(
     'playwright test --config tests/playwright.config.ts'
   );
-  expect(scripts['test:e2e:desktop']).not.toMatch(/tests\/e2e\/.*\.spec\.ts/u);
-  expect(countCommand(scripts['verify:desktop'], 'pnpm test:security')).toBe(1);
-  expect(countCommand(scripts['verify:desktop'], 'pnpm test:integration')).toBe(1);
-  expect(countCommand(scripts['verify:desktop'], 'pnpm test:e2e:desktop')).toBe(1);
-  expect(scripts['test:security']).toContain('--config tests/vitest.config.ts');
-  expect(scripts['test:integration']).toContain('--config tests/vitest.config.ts');
+  expect(testE2eDesktop).not.toMatch(/tests\/e2e\/.*\.spec\.ts/u);
+  expect(countCommand(verifyDesktop, 'pnpm test:security')).toBe(1);
+  expect(countCommand(verifyDesktop, 'pnpm test:integration')).toBe(1);
+  expect(countCommand(verifyDesktop, 'pnpm test:e2e:desktop')).toBe(1);
+  expect(testSecurity).toContain('--config tests/vitest.config.ts');
+  expect(testIntegration).toContain('--config tests/vitest.config.ts');
 });
