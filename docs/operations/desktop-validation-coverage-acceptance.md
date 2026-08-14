@@ -116,3 +116,14 @@ git status --short
 该节的完整门禁结果更新并覆盖第 6、8 节中“最新完整门禁失败”的状态：本轮最后一次 `verify:desktop` 已通过并实际到达 security、integration 和两个 Desktop E2E owner。此前独立 `test:unit` 的一次 4 项超时仍保留为稳定性风险，不能被后续完整门禁通过抹除。
 
 完整 E2E 通过了设置页 MCP 入口不可见的两个视口断言，以及正式 Provider 白名单业务闭环；本轮没有恢复 MCP 运行时能力。真实 Windows 视觉、窗口层级、拖拽、托盘和资源管理器人工观察仍为待用户人工确认。
+
+## 11. 提交范围最终差异证据
+
+在修复轮 1 提交 `414b5fc` 后，针对本轮起点 `d523cb5` 至当前 `HEAD` 实际执行：
+
+| 命令 | 退出码 | 实际输出 | 结论 |
+| --- | --- | --- | --- |
+| `git diff --check d523cb5..HEAD` | 0 | 无输出 | 本轮提交范围没有 Git 空白格式错误。 |
+| `git diff --name-only d523cb5..HEAD -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` | 0 | 无输出 | 本轮提交范围内网站、CloudBase、包扫描器及受保护 E2E/配置路径保持零差异。 |
+
+上述命令覆盖的是已提交的修复轮 1 范围，不以工作副本状态替代提交范围证据。
