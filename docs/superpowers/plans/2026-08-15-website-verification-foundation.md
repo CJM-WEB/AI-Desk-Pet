@@ -56,7 +56,12 @@ pnpm-lock.yaml
 tools/verification/**
 docs/operations/website-chain-verification.md
 docs/operations/website-chain-verification-acceptance.md
+docs/superpowers/specs/2026-08-15-website-architecture-optimization-and-production-relaunch-design.md
 docs/superpowers/plans/2026-08-15-website-verification-foundation.md
+docs/superpowers/plans/2026-08-15-website-publication-stopgap-and-migration-freeze.md
+docs/superpowers/plans/2026-08-15-website-cloudbase-scanner-reliability.md
+docs/superpowers/plans/2026-08-15-website-http-contract-closure.md
+docs/superpowers/plans/2026-08-15-website-optimization-index.md
 ```
 
 黑名单为：
@@ -599,7 +604,7 @@ Expected: 退出 0；在快速门基础上，CloudBase 三函数构建及其根 
 - [ ] **Step 8: 获得用户 Git 写入授权后提交网站链门禁**
 
 ```powershell
-git add package.json tools/verification/web-chain-catalog.mjs tools/verification/run-web-chain.mjs tools/verification/run-web-chain.test.mjs
+git add package.json tools/verification/web-chain-catalog.mjs tools/verification/verify-web-chain.mjs tools/verification/verify-web-chain.test.mjs
 git commit -m "test: 建立完整网站链验证门"
 ```
 
@@ -675,7 +680,7 @@ Expected: 合并后的文件集合全部位于阶段 0 白名单；桌宠黑名�
 - [ ] **Step 5: 获得用户 Git 写入授权后提交阶段 0 文档**
 
 ```powershell
-git add docs/operations/website-verification.md docs/operations/website-chain-verification-acceptance.md
+git add docs/operations/website-chain-verification.md docs/operations/website-chain-verification-acceptance.md
 git commit -m "docs: 记录网站链验证基线"
 ```
 
