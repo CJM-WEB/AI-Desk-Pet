@@ -4516,6 +4516,11 @@ test.describe('真实 Provider 业务闭环', () => {
           const names = request.tools.map(
             (tool: { function: { name: string } }) => tool.function.name
           );
+          const mcpToolNames = names.filter(name => name.startsWith('mcp.'));
+
+          if (mcpToolNames.length > 0) {
+            throw new Error('MCP 禁用时不得向 Provider 暴露 mcp.* 工具');
+          }
           if (
             !names.includes('builtin.files.list_files')
             || !names.includes('builtin.files.create_file')
