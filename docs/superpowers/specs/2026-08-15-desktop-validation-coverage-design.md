@@ -159,6 +159,16 @@ verify:desktop
 
 `test:security` 与 `test:integration` 必须继续使用 `tests/vitest.config.ts`。本规格不把网站门禁加入 `verify:desktop`。
 
+### 4.6 门禁稳定性例外
+
+2026-08-15 的本机实测环境有 24 个逻辑 CPU。`pnpm.cmd test:unit` 在未设置 Desktop Vitest 文件 worker 上限时，随机出现多个彼此独立的 5 秒超时；同一失败文件定向复跑可以通过。用户批准仅在本 A1 门禁中采用以下稳定性例外：
+
+- 在 `apps/desktop/vitest.config.ts` 的 `test` 配置固定 `maxWorkers: 4`，限制文件级并发，避免按逻辑 CPU 默认扩张。
+- 不修改 `testTimeout`、不增加重试、不关闭文件并行，也不影响根目录安全、集成或网站配置。
+- 新增契约测试必须调用 Vitest 3.2.7 的 `resolveConfig`，断言实际解析后的 `vitestConfig.maxWorkers === 4`；不得仅搜索配置文本。
+
+该例外是用户批准的门禁稳定性配置，不改变 Desktop 产品行为或 MCP 禁用边界。每次完整门禁仍应记录真实结果；单次完整单元失败不能被定向复跑掩盖。
+
 ## 5. 文件职责
 
 ### 5.1 创建
@@ -192,6 +202,11 @@ verify:desktop
 - `apps/desktop/tests/multi-provider-settings.test.tsx` 中的 MCP 隐藏与 tab 回退测试。
 - `tests/fixtures/mcp-test-server.ts` 与 `tests/fixtures/mcp-http-test-server.ts`。
 - `McpSettings` dormant component；运行时继续不可达。
+
+### 5.5 门禁稳定性例外文件
+
+- `apps/desktop/vitest.config.ts`：仅固定 Desktop Vitest 的文件 worker 上限为 4。
+- `apps/desktop/tests/vitest-worker-cap.test.ts`：通过 Vitest 解析 API 断言上述配置真实生效。
 
 ## 6. 失败处理与安全边界
 

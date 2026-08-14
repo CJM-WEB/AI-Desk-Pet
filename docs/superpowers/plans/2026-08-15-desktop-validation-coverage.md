@@ -438,6 +438,16 @@ git status --short
 
 Expected: MCP 禁用契约仍存在；旧 E2E 文件名只允许出现在历史规格/计划或验收说明中，不得存在对应文件；新布局 E2E 有唯一 owner；差异检查无格式错误；未发生 Git 写操作。
 
+## Task 4 修复轮 1：Desktop Vitest 门禁稳定性例外
+
+用户已于 2026-08-15 批准以下最小稳定性例外：本机有 24 个逻辑 CPU，Desktop 文件级默认并发会随机触发多个 5 秒超时；仅在 `apps/desktop/vitest.config.ts` 设置 `test.maxWorkers: 4`，不得提高 `testTimeout`、增加重试或改变其他测试入口。
+
+1. 先通过 Vitest 3.2.7 本地 `--help` 与 `resolveConfig` 核验 `maxWorkers` 可用，确认修改前的实际解析值为 `undefined`。
+2. 新增 `apps/desktop/tests/vitest-worker-cap.test.ts`，使用 `resolveConfig` 断言已解析 `vitestConfig.maxWorkers` 为 4；先运行并确认 RED 的原因是未设置 worker 上限。
+3. GREEN 仅在 `apps/desktop/vitest.config.ts` 的 `test` 对象加入 `maxWorkers: 4`，再运行定向契约测试及 Desktop typecheck。
+4. 运行一次独立 `pnpm.cmd test:unit` 和一次完整 `pnpm.cmd verify:desktop`，两次结果均如实记录；不得用定向复跑替代失败的完整门禁。
+5. 仅在 `git diff --check` 与网站、CloudBase、scanner 零差异检查后提交；验收记录保留此前失败时间线、RED/GREEN 与本轮真实结果。
+
 ## 完成定义
 
 - Desktop `.ts` 与 `.tsx` 测试全部进入 TypeScript 检查，动态 rootNames 契约通过。

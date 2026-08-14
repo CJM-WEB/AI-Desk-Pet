@@ -100,3 +100,19 @@ git status --short
 - `git check-ignore -v .superpowers/sdd/2026-08-15-desktop-validation-coverage/task-4-report.md` 显示该执行报告由 `.gitignore` 第 27 行的 `.superpowers/` 规则忽略。
 
 自检结论以命令的实际输出为准；不以旧验收记录或计划目标替代本次运行结果。
+
+## 10. 门禁稳定性例外与本轮复验
+
+本机有 24 个逻辑 CPU。此前完整单元测试在默认文件并发下随机出现多个独立 5 秒超时，且失败文件定向复跑可以通过。用户批准将 Desktop Vitest 的文件 worker 上限固定为 4；未修改 `testTimeout`，未增加重试或关闭文件并行。
+
+| 命令 | 退出码 | 结果 | 实际输出摘要 |
+| --- | --- | --- | --- |
+| `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/vitest-worker-cap.test.ts`（RED） | 1 | 失败（符合预期） | 使用 Vitest 3.2.7 `resolveConfig` 读取实际解析配置，断言失败：接收值为 `undefined`，期望为 `4`。 |
+| 同一命令（GREEN） | 0 | 通过 | `maxWorkers: 4` 写入 Desktop Vitest 配置后，1 个文件、1 项测试通过。 |
+| `pnpm.cmd --filter @myself/desktop typecheck` | 0 | 通过 | `tsc --noEmit` 通过。 |
+| `pnpm.cmd test:unit` | 1 | 失败 | 2 个文件、4 项测试在 5 秒后超时：`character-package-service.test.ts` 2 项及 `official-default-character.test.ts` 2 项；总计 `Test Files 2 failed \| 105 passed (107)`、`Tests 4 failed \| 2137 passed \| 14 skipped (2155)`，耗时 55.37 秒。 |
+| `pnpm.cmd verify:desktop` | 0 | 通过 | 全部 workspace TypeScript 检查通过；单元链为 `Test Files 107 passed (107)`、`Tests 2141 passed \| 14 skipped (2155)`，耗时 41.86 秒；security 为 20/20，integration 为 46/46，Desktop E2E 为 59/59（3.4 分钟）。 |
+
+该节的完整门禁结果更新并覆盖第 6、8 节中“最新完整门禁失败”的状态：本轮最后一次 `verify:desktop` 已通过并实际到达 security、integration 和两个 Desktop E2E owner。此前独立 `test:unit` 的一次 4 项超时仍保留为稳定性风险，不能被后续完整门禁通过抹除。
+
+完整 E2E 通过了设置页 MCP 入口不可见的两个视口断言，以及正式 Provider 白名单业务闭环；本轮没有恢复 MCP 运行时能力。真实 Windows 视觉、窗口层级、拖拽、托盘和资源管理器人工观察仍为待用户人工确认。

@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     name: 'desktop',
     include: ['tests/**/*.test.{ts,tsx}'],
-    environment: 'node'
+    environment: 'node',
+    maxWorkers: 4
   }
 });
