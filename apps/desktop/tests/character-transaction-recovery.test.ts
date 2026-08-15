@@ -1,6 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   CharacterTransactionRecovery,
+  MAX_RECOVERY_CHARACTERS,
+  RECOVERY_SOFT_BUDGET_MS,
   type CharacterRecoveryCandidate
 } from '../src/main/characters/character-transaction-recovery';
 
@@ -153,5 +155,153 @@ describe('CharacterTransactionRecovery', () => {
       .toThrow('CHARACTER_RECOVERY_DEFERRED');
     expect(() => recovery.assertRuntimeAllowed('unknown'))
       .toThrow('CHARACTER_RECOVERY_DEFERRED');
+  });
+
+  test('活动角色优先恢复，但报告保持输入顺序且不修改候选数组或对象', async () => {
+    const calls: string[] = [];
+    const otherA = Object.freeze(candidate(
+      'other-a',
+      async () => { calls.push('other-a:draft'); },
+      async () => { calls.push('other-a:publish'); }
+    ));
+    const active = Object.freeze(candidate(
+      'active',
+      async () => { calls.push('active:draft'); },
+      async () => { calls.push('active:publish'); }
+    ));
+    const otherB = Object.freeze(candidate(
+      'other-b',
+      async () => { calls.push('other-b:draft'); },
+      async () => { calls.push('other-b:publish'); }
+    ));
+    const candidates = Object.freeze([otherA, active, otherB]);
+    const originalCandidates = [...candidates];
+    const recovery = new CharacterTransactionRecovery({
+      activeCharacterId: () => 'active',
+      now: () => 0
+    });
+
+    const report = await recovery.recoverAll(candidates);
+
+    expect(calls).toEqual([
+      'active:draft',
+      'active:publish',
+      'other-a:draft',
+      'other-a:publish',
+      'other-b:draft',
+      'other-b:publish'
+    ]);
+    expect(candidates).toEqual(originalCandidates);
+    expect(report.characters.map(({ characterId }) => characterId))
+      .toEqual(['other-a', 'active', 'other-b']);
+  });
+
+  test('超过角色上限时仅完整恢复前 256 个角色，并将剩余角色标为 deferred', async () => {
+    const draft = vi.fn(async () => undefined);
+    const publish = vi.fn(async () => undefined);
+    const deferredDraft = vi.fn(async () => undefined);
+    const deferredPublish = vi.fn(async () => undefined);
+    const candidates = [
+      ...Array.from(
+        { length: MAX_RECOVERY_CHARACTERS },
+        (_, index) => candidate(`character-${index}`, draft, publish)
+      ),
+      candidate('character-256', deferredDraft, deferredPublish)
+    ];
+    const recovery = new CharacterTransactionRecovery({
+      activeCharacterId: () => null,
+      now: () => 0
+    });
+
+    const report = await recovery.recoverAll(candidates);
+
+    expect(MAX_RECOVERY_CHARACTERS).toBe(256);
+    expect(draft).toHaveBeenCalledTimes(256);
+    expect(publish).toHaveBeenCalledTimes(256);
+    expect(deferredDraft).not.toHaveBeenCalled();
+    expect(deferredPublish).not.toHaveBeenCalled();
+    expect(report.budgetExceeded).toBe(true);
+    expect(report.characters).toHaveLength(257);
+    expect(report.characters.at(-1)).toEqual({
+      characterId: 'character-256',
+      kind: 'draft-and-publish-recovery-blocked',
+      draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+      publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+      deferred: true
+    });
+  });
+
+  test('软预算仅在完成第一个角色后阻止下一个角色开始', async () => {
+    const firstDraft = vi.fn(async () => undefined);
+    const firstPublish = vi.fn(async () => undefined);
+    const secondDraft = vi.fn(async () => undefined);
+    const secondPublish = vi.fn(async () => undefined);
+    const now = vi.fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(RECOVERY_SOFT_BUDGET_MS + 1);
+    const recovery = new CharacterTransactionRecovery({
+      activeCharacterId: () => null,
+      now
+    });
+
+    const report = await recovery.recoverAll([
+      candidate('first', firstDraft, firstPublish),
+      candidate('second', secondDraft, secondPublish)
+    ]);
+
+    expect(RECOVERY_SOFT_BUDGET_MS).toBe(2_000);
+    expect(firstDraft).toHaveBeenCalledTimes(1);
+    expect(firstPublish).toHaveBeenCalledTimes(1);
+    expect(secondDraft).not.toHaveBeenCalled();
+    expect(secondPublish).not.toHaveBeenCalled();
+    expect(now).toHaveBeenCalledTimes(2);
+    expect(report).toEqual({
+      characters: [
+        {
+          characterId: 'first',
+          kind: 'healthy',
+          draftErrorCode: null,
+          publishErrorCode: null,
+          deferred: false
+        },
+        {
+          characterId: 'second',
+          kind: 'draft-and-publish-recovery-blocked',
+          draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+          publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+          deferred: true
+        }
+      ],
+      budgetExceeded: true
+    });
+  });
+
+  test('空候选、空活动角色和未命中活动角色保持输入顺序与未超预算状态', async () => {
+    const calls: string[] = [];
+    const candidates = [
+      candidate('first', async () => { calls.push('first'); }),
+      candidate('second', async () => { calls.push('second'); })
+    ];
+    const missingActive = new CharacterTransactionRecovery({
+      activeCharacterId: () => 'missing',
+      now: () => 0
+    });
+    const noActive = new CharacterTransactionRecovery({
+      activeCharacterId: () => null,
+      now: () => 0
+    });
+
+    const missingActiveReport = await missingActive.recoverAll(candidates);
+    const noActiveReport = await noActive.recoverAll(candidates);
+    const emptyReport = await noActive.recoverAll([]);
+
+    expect(calls).toEqual(['first', 'second', 'first', 'second']);
+    expect(missingActiveReport.characters.map(({ characterId }) => characterId))
+      .toEqual(['first', 'second']);
+    expect(noActiveReport.characters.map(({ characterId }) => characterId))
+      .toEqual(['first', 'second']);
+    expect(missingActiveReport.budgetExceeded).toBe(false);
+    expect(noActiveReport.budgetExceeded).toBe(false);
+    expect(emptyReport).toEqual({ characters: [], budgetExceeded: false });
   });
 });

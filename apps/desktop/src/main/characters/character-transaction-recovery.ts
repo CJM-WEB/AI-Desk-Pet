@@ -9,6 +9,9 @@ export type CharacterTransactionRecoveryErrorCode =
   | 'CHARACTER_PUBLISH_RECOVERY_BLOCKED'
   | 'CHARACTER_RECOVERY_DEFERRED';
 
+export const MAX_RECOVERY_CHARACTERS = 256;
+export const RECOVERY_SOFT_BUDGET_MS = 2_000;
+
 export type CharacterTransactionRecoveryResult = Readonly<{
   characterId: string;
   kind: CharacterTransactionRecoveryKind;
@@ -40,7 +43,7 @@ export type CharacterTransactionRecoveryDependencies = Readonly<{
 export class CharacterTransactionRecovery {
   private readonly results = new Map<string, CharacterTransactionRecoveryResult>();
 
-  // 预留给后续排序和预算任务；本任务不得据此改变恢复行为。
+  // 仅用于恢复顺序和软预算判断；不将时钟或活动角色状态传递给候选项。
   private readonly activeCharacterId: () => string | null;
   private readonly now: () => number;
 
@@ -55,15 +58,46 @@ export class CharacterTransactionRecovery {
   async recoverAll(
     candidates: readonly CharacterRecoveryCandidate[]
   ): Promise<CharacterTransactionRecoveryReport> {
-    const characters: CharacterTransactionRecoveryResult[] = [];
+    const startedAt = this.now();
+    const results = new Map<string, CharacterTransactionRecoveryResult>();
+    const recoveryCandidates = [...candidates];
+    const activeIndex = activeCandidateIndex(
+      recoveryCandidates,
+      this.activeCharacterId()
+    );
+    let budgetExceeded = false;
 
-    for (const candidate of candidates) {
-      const result = await this.recoverCandidate(candidate);
-      this.results.set(candidate.characterId, result);
-      characters.push(result);
+    if (activeIndex > 0) {
+      const firstCandidate = recoveryCandidates[0];
+      const activeCandidate = recoveryCandidates[activeIndex];
+      if (firstCandidate && activeCandidate) {
+        recoveryCandidates[0] = activeCandidate;
+        recoveryCandidates[activeIndex] = firstCandidate;
+      }
     }
 
-    return { characters, budgetExceeded: false };
+    for (let index = 0; index < recoveryCandidates.length; index += 1) {
+      if (
+        index >= MAX_RECOVERY_CHARACTERS ||
+        (index > 0 && this.now() - startedAt >= RECOVERY_SOFT_BUDGET_MS)
+      ) {
+        budgetExceeded = true;
+        this.deferCandidates(recoveryCandidates.slice(index), results);
+        break;
+      }
+
+      const candidate = recoveryCandidates[index]!;
+      const result = await this.recoverCandidate(candidate);
+      this.results.set(candidate.characterId, result);
+      results.set(candidate.characterId, result);
+    }
+
+    return {
+      characters: candidates.map((candidate) =>
+        results.get(candidate.characterId) ?? deferredResult(candidate.characterId)
+      ),
+      budgetExceeded
+    };
   }
 
   resultFor(characterId: string): CharacterTransactionRecoveryResult {
@@ -106,11 +140,37 @@ export class CharacterTransactionRecovery {
     };
   }
 
+  /**
+   * 未获准启动的角色统一进入 fail-closed 状态，避免只恢复一半分面。
+   */
+  private deferCandidates(
+    candidates: readonly CharacterRecoveryCandidate[],
+    results: Map<string, CharacterTransactionRecoveryResult>
+  ): void {
+    for (const candidate of candidates) {
+      const result = deferredResult(candidate.characterId);
+      this.results.set(candidate.characterId, result);
+      results.set(candidate.characterId, result);
+    }
+  }
+
   private assertAllowed(errorCode: CharacterTransactionRecoveryErrorCode | null): void {
     if (errorCode) {
       throw new Error(errorCode);
     }
   }
+}
+
+function activeCandidateIndex(
+  candidates: readonly CharacterRecoveryCandidate[],
+  activeCharacterId: string | null
+): number {
+  if (activeCharacterId === null) {
+    return -1;
+  }
+  return candidates.findIndex(
+    (candidate) => candidate.characterId === activeCharacterId
+  );
 }
 
 async function recoveryErrorCode(
