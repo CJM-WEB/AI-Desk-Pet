@@ -197,17 +197,19 @@ describe('CharacterTransactionRecovery', () => {
   });
 
   test('超过角色上限时仅完整恢复前 256 个角色，并将剩余角色标为 deferred', async () => {
-    const draft = vi.fn(async () => undefined);
-    const publish = vi.fn(async () => undefined);
-    const deferredDraft = vi.fn(async () => undefined);
-    const deferredPublish = vi.fn(async () => undefined);
-    const candidates = [
-      ...Array.from(
-        { length: MAX_RECOVERY_CHARACTERS },
-        (_, index) => candidate(`character-${index}`, draft, publish)
-      ),
-      candidate('character-256', deferredDraft, deferredPublish)
-    ];
+    const draftIds: string[] = [];
+    const publishIds: string[] = [];
+    const candidates = Array.from(
+      { length: MAX_RECOVERY_CHARACTERS + 1 },
+      (_, index) => {
+        const characterId = `character-${index}`;
+        return candidate(
+          characterId,
+          async () => { draftIds.push(characterId); },
+          async () => { publishIds.push(characterId); }
+        );
+      }
+    );
     const recovery = new CharacterTransactionRecovery({
       activeCharacterId: () => null,
       now: () => 0
@@ -216,10 +218,14 @@ describe('CharacterTransactionRecovery', () => {
     const report = await recovery.recoverAll(candidates);
 
     expect(MAX_RECOVERY_CHARACTERS).toBe(256);
-    expect(draft).toHaveBeenCalledTimes(256);
-    expect(publish).toHaveBeenCalledTimes(256);
-    expect(deferredDraft).not.toHaveBeenCalled();
-    expect(deferredPublish).not.toHaveBeenCalled();
+    expect(draftIds).toEqual(Array.from(
+      { length: MAX_RECOVERY_CHARACTERS },
+      (_, index) => `character-${index}`
+    ));
+    expect(publishIds).toEqual(Array.from(
+      { length: MAX_RECOVERY_CHARACTERS },
+      (_, index) => `character-${index}`
+    ));
     expect(report.budgetExceeded).toBe(true);
     expect(report.characters).toHaveLength(257);
     expect(report.characters.at(-1)).toEqual({
@@ -238,7 +244,7 @@ describe('CharacterTransactionRecovery', () => {
     const secondPublish = vi.fn(async () => undefined);
     const now = vi.fn()
       .mockReturnValueOnce(0)
-      .mockReturnValueOnce(RECOVERY_SOFT_BUDGET_MS + 1);
+      .mockReturnValueOnce(RECOVERY_SOFT_BUDGET_MS);
     const recovery = new CharacterTransactionRecovery({
       activeCharacterId: () => null,
       now
@@ -274,6 +280,80 @@ describe('CharacterTransactionRecovery', () => {
       ],
       budgetExceeded: true
     });
+  });
+
+  test('恰好 256 个候选时完整恢复所有角色且不超过预算', async () => {
+    const draftIds: string[] = [];
+    const publishIds: string[] = [];
+    const candidates = Array.from(
+      { length: MAX_RECOVERY_CHARACTERS },
+      (_, index) => {
+        const characterId = `character-${index}`;
+        return candidate(
+          characterId,
+          async () => { draftIds.push(characterId); },
+          async () => { publishIds.push(characterId); }
+        );
+      }
+    );
+    const recovery = new CharacterTransactionRecovery({
+      activeCharacterId: () => null,
+      now: () => 0
+    });
+
+    const report = await recovery.recoverAll(candidates);
+
+    expect(draftIds).toEqual(candidates.map(({ characterId }) => characterId));
+    expect(publishIds).toEqual(candidates.map(({ characterId }) => characterId));
+    expect(report.budgetExceeded).toBe(false);
+    expect(report.characters.every(({ deferred }) => !deferred)).toBe(true);
+  });
+
+  test('第 257 位活动角色优先进入恢复上限，报告仍为原输入顺序', async () => {
+    const calls: string[] = [];
+    const others = Array.from(
+      { length: MAX_RECOVERY_CHARACTERS },
+      (_, index) => {
+        const characterId = `other-${index}`;
+        return candidate(
+          characterId,
+          async () => { calls.push(`${characterId}:draft`); },
+          async () => { calls.push(`${characterId}:publish`); }
+        );
+      }
+    );
+    const candidates = [
+      ...others,
+      candidate(
+        'active',
+        async () => { calls.push('active:draft'); },
+        async () => { calls.push('active:publish'); }
+      )
+    ];
+    const recovery = new CharacterTransactionRecovery({
+      activeCharacterId: () => 'active',
+      now: () => 0
+    });
+
+    const report = await recovery.recoverAll(candidates);
+
+    expect(calls).toEqual([
+      'active:draft',
+      'active:publish',
+      ...Array.from(
+        { length: MAX_RECOVERY_CHARACTERS - 1 },
+        (_, index) => [`other-${index}:draft`, `other-${index}:publish`]
+      ).flat()
+    ]);
+    expect(report.characters.map(({ characterId }) => characterId))
+      .toEqual(candidates.map(({ characterId }) => characterId));
+    expect(report.characters.filter(({ deferred }) => deferred)).toEqual([{
+      characterId: 'other-255',
+      kind: 'draft-and-publish-recovery-blocked',
+      draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+      publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+      deferred: true
+    }]);
   });
 
   test('空候选、空活动角色和未命中活动角色保持输入顺序与未超预算状态', async () => {

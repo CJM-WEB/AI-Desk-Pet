@@ -68,11 +68,10 @@ export class CharacterTransactionRecovery {
     let budgetExceeded = false;
 
     if (activeIndex > 0) {
-      const firstCandidate = recoveryCandidates[0];
       const activeCandidate = recoveryCandidates[activeIndex];
-      if (firstCandidate && activeCandidate) {
-        recoveryCandidates[0] = activeCandidate;
-        recoveryCandidates[activeIndex] = firstCandidate;
+      if (activeCandidate) {
+        recoveryCandidates.splice(activeIndex, 1);
+        recoveryCandidates.unshift(activeCandidate);
       }
     }
 
