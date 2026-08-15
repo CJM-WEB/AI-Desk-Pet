@@ -1,5 +1,7 @@
 # 网站 E2E Worker 隔离实施计划
 
+**执行状态：** 2026-08-15 已停止；完整 45 项证伪双 worker 假设，未提交实现。替代方案见 `docs/superpowers/specs/2026-08-15-website-e2e-browser-process-isolation-design.md`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将网站 Playwright E2E 从同一 worker 顺序复用改为最多两个隔离 worker 的用例级并行，并让阶段 0 完整网站链门稳定通过。
