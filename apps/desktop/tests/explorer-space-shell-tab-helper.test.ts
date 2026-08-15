@@ -117,15 +117,23 @@ function expectPrivateFactsHidden(result: SelfTestResult): void {
 
 describe('资源管理器活动标签固定 Helper', () => {
   it('固定场景等待期间让 Vitest worker 获得事件循环轮转', async () => {
-    const eventLoopTurn = new Promise<'event-loop'>(resolve => {
-      setImmediate(() => resolve('event-loop'));
+    let scenarioSettled = false;
+    const scenarioFinished = runFixedScenario('active-a');
+    void scenarioFinished.then(() => {
+      scenarioSettled = true;
+    }, () => {
+      scenarioSettled = true;
     });
-    const scenarioFinished = Promise.resolve(runFixedScenario('active-a'))
-      .then(() => 'scenario-finished' as const);
 
-    await expect(Promise.race([eventLoopTurn, scenarioFinished]))
-      .resolves.toBe('event-loop');
-    await expect(scenarioFinished).resolves.toBe('scenario-finished');
+    for (let turn = 0; turn < 2; turn += 1) {
+      await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+      expect(scenarioSettled).toBe(false);
+    }
+
+    await expect(scenarioFinished).resolves.toMatchObject({
+      scenario: 'active-a',
+      status: 'ready'
+    });
   });
 
   it.each([

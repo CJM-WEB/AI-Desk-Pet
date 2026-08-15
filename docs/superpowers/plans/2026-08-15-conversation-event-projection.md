@@ -458,23 +458,31 @@ function runFixedScenario(scenario: FixedScenario): Promise<SelfTestResult>;
 
 - [ ] **步骤 1：写 worker 活性 RED**
 
-在同一测试文件新增使用真实 `active-a` 场景的永久测试。调用 `runFixedScenario` 前安排一个 `setImmediate`，并竞争“该事件循环轮转”和“场景 Promise 已完成”两个信号：
+在同一测试文件新增使用真实 `active-a` 场景的永久测试。先调用 `runFixedScenario` 并跟踪场景 Promise 是否 settled，再连续等待两轮 `setImmediate` 事件循环；每轮观察都断言场景仍未 settled，最后等待场景成功：
 
 ```ts
 it('固定场景等待期间让 Vitest worker 获得事件循环轮转', async () => {
-  const eventLoopTurn = new Promise<'event-loop'>(resolve => {
-    setImmediate(() => resolve('event-loop'));
+  let scenarioSettled = false;
+  const scenarioFinished = runFixedScenario('active-a');
+  void scenarioFinished.then(() => {
+    scenarioSettled = true;
+  }, () => {
+    scenarioSettled = true;
   });
-  const scenarioFinished = Promise.resolve(runFixedScenario('active-a'))
-    .then(() => 'scenario-finished' as const);
 
-  await expect(Promise.race([eventLoopTurn, scenarioFinished]))
-    .resolves.toBe('event-loop');
-  await expect(scenarioFinished).resolves.toBe('scenario-finished');
+  for (let turn = 0; turn < 2; turn += 1) {
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    expect(scenarioSettled).toBe(false);
+  }
+
+  await expect(scenarioFinished).resolves.toMatchObject({
+    scenario: 'active-a',
+    status: 'ready'
+  });
 });
 ```
 
-这不是 mock：它保留真实 fixture 的 PowerShell 调用。旧 `spawnSync` 会先阻塞 worker、再返回一个已完成值，因此 Promise 竞争稳定得到 `scenario-finished`，活性断言失败。
+这不是 mock：它保留真实 fixture 的 PowerShell 调用。直接 `spawnSync` 会在返回前阻塞 worker；即使将 `spawnSync` 延迟到一轮 `setImmediate` 内，该回调也会先于测试后安排的第一轮观察执行并使场景 settled。两种同步 mutation 都必须使活性断言 RED。
 
 - [ ] **步骤 2：运行 RED 并确认根因**
 
@@ -482,7 +490,7 @@ it('固定场景等待期间让 Vitest worker 获得事件循环轮转', async (
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/explorer-space-shell-tab-helper.test.ts
 ```
 
-预期：新增活性测试失败，竞争结果为 `scenario-finished`；不能把预期失败替换成 worker RPC 超时，也不能调整 Vitest 配置。
+预期：新增活性测试失败，直接同步或延迟一轮的同步 mutation 都会在前两轮观察中暴露 `scenarioSettled === true`；不能把预期失败替换成 worker RPC 超时，也不能调整 Vitest 配置。
 
 - [ ] **步骤 3：实现最小异步运行器 GREEN**
 

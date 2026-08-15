@@ -169,7 +169,7 @@ const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
 
 - 将固定场景运行器从同步 `spawnSync` 改为异步 `execFile` 或 `spawn`，并将调用方改为等待 `Promise<SelfTestResult>`。
 - 每个场景仍独立启动一个 PowerShell 进程；保持 `windowsHide`、5 秒子进程期限、退出码检查、stderr 检查、单行 JSON 解析及既有场景断言。不得合并 fixture 编译、缓存结果或改变 PowerShell/C# fixture。
-- 新增永久活性契约：真实固定场景等待期间，预先安排的 `setImmediate` 必须先获得一次 worker 事件循环轮转。原同步运行器会在返回前阻塞该轮转，使 RED 稳定失败；异步运行器才满足该契约。
+- 新增永久活性契约：先调用真实固定场景并跟踪其 Promise 是否 settled，随后连续等待两轮 `setImmediate` 事件循环；每轮观察时场景都必须仍未 settled，最后再等待场景成功。直接调用 `spawnSync` 会在返回前阻塞 worker，将 `spawnSync` 延迟到一轮 `setImmediate` 内也会在测试的第一轮观察前完成；两种同步实现都必须使 RED 失败，只有真异步子进程等待才满足契约。
 - 不修改生产 Helper、fixture、Vitest timeout、retry 或 `maxWorkers`，也不将本问题归因于 A3。不得用提高阈值、重试或并行配置掩盖阻塞。
 
 修复后的门禁顺序为：活性契约与原 35 项场景先通过，再分别运行 Desktop typecheck、Desktop 全量测试、`verify:desktop` 与 `verify:behavior`。任一 GREEN 验证失败时保留首次失败输出并停止诊断；不得反复重跑绿色命令来掩盖失败。临时 worker 诊断仅可用于定位，GREEN 前必须删除；永久保留的仅是活性契约和原有场景断言。
