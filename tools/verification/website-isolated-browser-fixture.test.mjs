@@ -42,6 +42,44 @@ test('每次调用都启动并关闭独立浏览器，且保留既有启动参�
   ]);
 });
 
+test('浏览器回调与关闭同时失败时保留全部错误并关闭浏览器', async () => {
+  const events = [];
+  const useError = new Error('浏览器回调失败');
+  const closeError = new Error('浏览器关闭失败');
+  const browser = {
+    async close() {
+      events.push('browser.close');
+      throw closeError;
+    },
+  };
+  const browserType = {
+    async launch() {
+      events.push('browser.launch');
+      return browser;
+    },
+  };
+
+  await assert.rejects(
+    useIsolatedBrowser(
+      { browserType, headless: true, launchOptions: undefined },
+      async () => {
+        events.push('use.browser');
+        throw useError;
+      },
+    ),
+    (error) => {
+      assert.equal(error.constructor, AggregateError);
+      assert.deepEqual(error.errors, [useError, closeError]);
+      return true;
+    },
+  );
+  assert.deepEqual(events, [
+    'browser.launch',
+    'use.browser',
+    'browser.close',
+  ]);
+});
+
 test('页面成功时丢弃追踪，并按 tracing、context 顺序清理', async () => {
   const events = [];
   const page = { name: 'isolated-page' };
