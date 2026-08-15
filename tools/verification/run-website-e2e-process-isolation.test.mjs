@@ -208,6 +208,33 @@ test('owned child 超时时把同一对象交给终止器并等待清理完成',
   assert.equal(child.listenerCount('error'), 0);
 });
 
+test('超时收敛后 child 若已自然退出则不得启动 taskkill', async () => {
+  const child = createFakeChild(4321);
+  let taskkillStarted = false;
+
+  const result = await runner.executeOwnedProcess({ executable: 'node.exe', args: [], env: {} }, 50, {
+    spawnProcess: () => child,
+    setTimer: callback => {
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearTimer: () => {},
+    terminateOwnedProcessTree: async receivedChild => {
+      receivedChild.exitCode = 0;
+      await runner.terminateOwnedProcessTree(receivedChild, {
+        platform: 'win32',
+        spawnProcess: () => {
+          taskkillStarted = true;
+          return createFakeChild();
+        },
+      });
+    },
+  });
+
+  assert.deepEqual(result, { exitCode: null, timedOut: true });
+  assert.equal(taskkillStarted, false);
+});
+
 test('owned child 启动错误作为明确失败抛出且不触发终止', async () => {
   const child = createFakeChild();
   await assert.rejects(runner.executeOwnedProcess({ executable: 'missing.exe', args: [], env: {} }, 1_000, {
@@ -265,18 +292,19 @@ test('Windows 只按 owned child PID 调用 taskkill 并等待原 child 退出',
   assert.equal(taskkill.listenerCount('error'), 0);
 });
 
-test('taskkill 成功时原 child 若已退出则直接收敛', async () => {
+test('原 child 已退出时直接收敛且不启动 taskkill', async () => {
   const child = createFakeChild(4321);
   child.exitCode = 0;
-  const taskkill = createFakeChild(9876);
+  let taskkillStarted = false;
 
   await runner.terminateOwnedProcessTree(child, {
     platform: 'win32',
     spawnProcess: () => {
-      queueMicrotask(() => taskkill.emit('exit', 0, null));
-      return taskkill;
+      taskkillStarted = true;
+      return createFakeChild();
     },
   });
+  assert.equal(taskkillStarted, false);
   assert.equal(child.listenerCount('exit'), 0);
 });
 
@@ -311,12 +339,33 @@ test('taskkill 或原 child 在 5 秒内不退出时返回明确中文错误', a
   };
 
   await t.test('taskkill 不退出', async () => {
-    await assert.rejects(runner.terminateOwnedProcessTree(createFakeChild(), {
+    const child = createFakeChild(4321);
+    const taskkill = createFakeChild(9876);
+    let helperKillSignal = null;
+    let helperUnrefCalled = false;
+    taskkill.kill = signal => {
+      helperKillSignal = signal;
+      queueMicrotask(() => {
+        taskkill.signalCode = signal;
+        taskkill.emit('exit', null, signal);
+      });
+      return true;
+    };
+    taskkill.unref = () => { helperUnrefCalled = true; };
+
+    await assert.rejects(runner.terminateOwnedProcessTree(child, {
       platform: 'win32',
-      spawnProcess: () => createFakeChild(),
+      spawnProcess: () => taskkill,
       setTimer: immediateTimer,
       clearTimer: () => {},
-    }), /taskkill.*5 秒/u);
+    }), /taskkill.*5 秒.*原子进程.*5 秒/u);
+    assert.equal(helperKillSignal, 'SIGTERM');
+    assert.equal(helperUnrefCalled, true);
+    assert.equal(taskkill.signalCode, 'SIGTERM');
+    assert.equal(taskkill.listenerCount('exit'), 0);
+    assert.equal(taskkill.listenerCount('error'), 0);
+    assert.equal(child.listenerCount('exit'), 0);
+    assert.equal(child.listenerCount('error'), 0);
   });
 
   await t.test('原 child 不退出', async () => {

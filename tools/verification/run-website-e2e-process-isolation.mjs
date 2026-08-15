@@ -141,8 +141,25 @@ function waitForProcessExit(child, timeoutMessage, dependencies) {
   });
 }
 
+function releaseTimedOutHelper(helper) {
+  const failures = [];
+  try {
+    const signalled = helper.kill('SIGTERM');
+    if (!signalled && !hasProcessExited(helper)) failures.push('taskkill helper 拒绝终止信号');
+  } catch (error) {
+    failures.push(`taskkill helper 终止失败：${error.message}`);
+  }
+  try {
+    helper.unref();
+  } catch (error) {
+    failures.push(`taskkill helper 解除引用失败：${error.message}`);
+  }
+  return failures;
+}
+
 // 只终止调用方持有的 child：Windows 使用该 PID 的进程树，其他平台只向该对象发送 SIGTERM。
 export async function terminateOwnedProcessTree(child, dependencies = {}) {
+  if (hasProcessExited(child)) return;
   if (!Number.isInteger(child.pid) || child.pid <= 0) {
     throw new Error('无法终止 owned child：缺少 PID');
   }
@@ -164,7 +181,19 @@ export async function terminateOwnedProcessTree(child, dependencies = {}) {
     try {
       helperExit = await waitForProcessExit(taskkill, 'taskkill 在 5 秒内未退出', dependencies);
     } catch (error) {
-      if (error.message === 'taskkill 在 5 秒内未退出') throw error;
+      if (error.message === 'taskkill 在 5 秒内未退出') {
+        // helper 超时后先释放其活动句柄，再有界确认原 child；两段失败都必须进入最终错误。
+        const cleanupFailures = releaseTimedOutHelper(taskkill);
+        try {
+          await waitForProcessExit(child, '原子进程在 5 秒内未退出', dependencies);
+        } catch (childError) {
+          cleanupFailures.push(`原子进程清理失败：${childError.message}`);
+        }
+        if (cleanupFailures.length > 0) {
+          throw new Error(`${error.message}；${cleanupFailures.join('；')}`, { cause: error });
+        }
+        throw error;
+      }
       throw new Error(`taskkill 启动失败：${error.message}`, { cause: error });
     }
     if (helperExit.code !== 0) {
