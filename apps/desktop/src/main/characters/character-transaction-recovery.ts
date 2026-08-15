@@ -58,6 +58,8 @@ export class CharacterTransactionRecovery {
   async recoverAll(
     candidates: readonly CharacterRecoveryCandidate[]
   ): Promise<CharacterTransactionRecoveryReport> {
+    // 每轮仅信任当前候选的恢复结果，防止 Store 索引变更后复用过期裁决。
+    this.results.clear();
     const startedAt = this.now();
     const results = new Map<string, CharacterTransactionRecoveryResult>();
     const recoveryCandidates = [...candidates];

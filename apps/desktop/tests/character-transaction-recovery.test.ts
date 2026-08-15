@@ -356,6 +356,46 @@ describe('CharacterTransactionRecovery', () => {
     }]);
   });
 
+  test('新恢复轮次失败时，上一轮不在候选中的角色立即 fail closed', async () => {
+    const recovery = createRecovery();
+
+    await recovery.recoverAll([candidate('A')]);
+    await recovery.recoverAll([candidate('B', async () => {
+      throw new Error('B draft failure');
+    }, async () => {
+      throw new Error('B publish failure');
+    })]);
+
+    expect(recovery.resultFor('A')).toEqual({
+      characterId: 'A',
+      kind: 'draft-and-publish-recovery-blocked',
+      draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+      publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+      deferred: true
+    });
+    expect(() => recovery.assertDraftSaveAllowed('A'))
+      .toThrow('CHARACTER_RECOVERY_DEFERRED');
+    expect(() => recovery.assertPublishAllowed('A'))
+      .toThrow('CHARACTER_RECOVERY_DEFERRED');
+    expect(() => recovery.assertRuntimeAllowed('A'))
+      .toThrow('CHARACTER_RECOVERY_DEFERRED');
+  });
+
+  test('空候选的新恢复轮次清空上一轮角色结果', async () => {
+    const recovery = createRecovery();
+
+    await recovery.recoverAll([candidate('B')]);
+    await recovery.recoverAll([]);
+
+    expect(recovery.resultFor('B')).toEqual({
+      characterId: 'B',
+      kind: 'draft-and-publish-recovery-blocked',
+      draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+      publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+      deferred: true
+    });
+  });
+
   test('空候选、空活动角色和未命中活动角色保持输入顺序与未超预算状态', async () => {
     const calls: string[] = [];
     const candidates = [
