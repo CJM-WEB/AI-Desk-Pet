@@ -19,6 +19,7 @@
 - 一个目标失败不阻止另一个目标，失败日志不带事件正文。
 - 本计划不包含 snapshot、revision、reload hydrate、持久化或重放。
 - 新投影通过门后同批删除旧四窗口广播，不保留双轨。
+- Vitest worker 活性修复只改 `explorer-space-shell-tab-helper` 测试运行器；不改生产 Helper、PowerShell/C# fixture、Vitest timeout、retry 或 `maxWorkers`。
 
 ---
 
@@ -435,6 +436,87 @@ git diff --name-only -- apps/website apps/cloudbase-api apps/package-scanner clo
 ```
 
 预期：格式检查通过；网站与云端业务差异命令无输出。Git 命令只读。
+
+---
+
+### 任务 5：解除资源管理器固定场景对 Vitest worker 的同步阻塞
+
+**文件：**
+
+- 修改：`apps/desktop/tests/explorer-space-shell-tab-helper.test.ts:1-98,107-261`
+- 不修改：`apps/desktop/src/main/explorer-space-shell-tab-helper.ts`
+- 不修改：`apps/desktop/tests/fixtures/explorer-space-shell-tab-self-test.ps1` 及其 C# fixture 内容
+- 不修改：Vitest 配置、timeout、retry、`maxWorkers`
+
+**接口：**
+
+```ts
+function runFixedScenario(scenario: FixedScenario): Promise<SelfTestResult>;
+```
+
+该测试专用函数每次调用只启动一个独立的固定 PowerShell 场景。它在子进程结束后才解析 stdout：非零退出码、非空 stderr、非单行 stdout 或非法 JSON 都必须拒绝；成功时才返回 `SelfTestResult`。
+
+- [ ] **步骤 1：写 worker 活性 RED**
+
+在同一测试文件新增使用真实 `active-a` 场景的永久测试。调用 `runFixedScenario` 前安排一个 `setImmediate`，并竞争“该事件循环轮转”和“场景 Promise 已完成”两个信号：
+
+```ts
+it('固定场景等待期间让 Vitest worker 获得事件循环轮转', async () => {
+  const eventLoopTurn = new Promise<'event-loop'>(resolve => {
+    setImmediate(() => resolve('event-loop'));
+  });
+  const scenarioFinished = Promise.resolve(runFixedScenario('active-a'))
+    .then(() => 'scenario-finished' as const);
+
+  await expect(Promise.race([eventLoopTurn, scenarioFinished]))
+    .resolves.toBe('event-loop');
+  await expect(scenarioFinished).resolves.toBe('scenario-finished');
+});
+```
+
+这不是 mock：它保留真实 fixture 的 PowerShell 调用。旧 `spawnSync` 会先阻塞 worker、再返回一个已完成值，因此 Promise 竞争稳定得到 `scenario-finished`，活性断言失败。
+
+- [ ] **步骤 2：运行 RED 并确认根因**
+
+```powershell
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/explorer-space-shell-tab-helper.test.ts
+```
+
+预期：新增活性测试失败，竞争结果为 `scenario-finished`；不能把预期失败替换成 worker RPC 超时，也不能调整 Vitest 配置。
+
+- [ ] **步骤 3：实现最小异步运行器 GREEN**
+
+将 `node:child_process` 的同步导入和 `spawnSync` 替换为异步 `execFile`（或等价的异步 `spawn`），把 `runFixedScenario` 改为返回 `Promise<SelfTestResult>`。保持原 PowerShell 参数、每场景独立进程和 `windowsHide: true`；设置 5 秒子进程期限。仅在子进程以退出码 0 结束、stderr 为空且 stdout 恰为一行 JSON 时解析结果；其他情况以既有固定错误语义拒绝。将全部既有场景测试改为 `async` 并在断言前 `await runFixedScenario(...)`，不改变 35 项场景的输入、预期状态或私有事实断言。
+
+- [ ] **步骤 4：运行目标 GREEN**
+
+```powershell
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/explorer-space-shell-tab-helper.test.ts
+```
+
+预期：活性契约通过，原 35 项场景断言继续通过，且没有 `[vitest-worker]: Timeout calling "onTaskUpdate"`。本命令只执行一次；若失败，保留首次输出并停止，不能重试或提高 timeout。
+
+- [ ] **步骤 5：删除临时诊断并复核范围**
+
+不保留临时 worker 探针、额外诊断测试、`console` 输出、串行运行参数或诊断脚本；永久保留步骤 1 的活性契约。确认本任务没有改动生产 Helper、fixture 或 Vitest 配置：
+
+```powershell
+git diff --check -- apps/desktop/tests/explorer-space-shell-tab-helper.test.ts
+git diff --name-only -- apps/desktop/src/main/explorer-space-shell-tab-helper.ts apps/desktop/tests/fixtures/explorer-space-shell-tab-self-test.ps1 apps/desktop/vitest.config.ts vitest.config.ts
+```
+
+预期：格式检查通过；第二条命令无输出。Git 命令只读。
+
+- [ ] **步骤 6：运行最终验证门**
+
+```powershell
+pnpm.cmd --filter '@myself/desktop' typecheck
+pnpm.cmd --filter '@myself/desktop' test
+pnpm.cmd verify:desktop
+pnpm.cmd verify:behavior
+```
+
+预期：四条命令均退出 0，Desktop 全量测试不再出现 worker RPC 超时。每条最终 GREEN 命令仅运行一次；任一命令失败时记录实际失败并停止后续失败重跑，不能将此前或其后的成功写成对该失败的覆盖。
 
 ---
 

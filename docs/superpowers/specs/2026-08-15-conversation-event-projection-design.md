@@ -161,6 +161,19 @@ const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
 - 现有角色 behavior E2E 仍观察到 listening、thinking、success、error 与 carrying 动作。
 - A2 的已知 actionId 跨窗口拒绝 E2E 保持通过。
 
+### 9.1 Vitest worker 活性例外与修复设计
+
+2026-08-15 的 A3 任务 4 实测显示，`apps/desktop/tests/explorer-space-shell-tab-helper.test.ts` 在单个 Vitest worker 内对每个固定场景调用一次 `spawnSync` PowerShell。该文件的 35 项测试共启动约 36 次固定场景，且每次都会让 fixture 重新 `Add-Type` 编译；当同步调用累计阻塞 worker 超过 Vitest/birpc 的 60 秒 RPC 期限时，即使 35/35 断言已经通过，进程仍以退出码 1 结束，并报告 `[vitest-worker]: Timeout calling "onTaskUpdate"`。该问题不是 A3 引入，调整 `maxWorkers` 也不能让被阻塞的同一 worker 恢复处理 RPC。
+
+批准的最小修复仅限该测试文件：
+
+- 将固定场景运行器从同步 `spawnSync` 改为异步 `execFile` 或 `spawn`，并将调用方改为等待 `Promise<SelfTestResult>`。
+- 每个场景仍独立启动一个 PowerShell 进程；保持 `windowsHide`、5 秒子进程期限、退出码检查、stderr 检查、单行 JSON 解析及既有场景断言。不得合并 fixture 编译、缓存结果或改变 PowerShell/C# fixture。
+- 新增永久活性契约：真实固定场景等待期间，预先安排的 `setImmediate` 必须先获得一次 worker 事件循环轮转。原同步运行器会在返回前阻塞该轮转，使 RED 稳定失败；异步运行器才满足该契约。
+- 不修改生产 Helper、fixture、Vitest timeout、retry 或 `maxWorkers`，也不将本问题归因于 A3。不得用提高阈值、重试或并行配置掩盖阻塞。
+
+修复后的门禁顺序为：活性契约与原 35 项场景先通过，再分别运行 Desktop typecheck、Desktop 全量测试、`verify:desktop` 与 `verify:behavior`。任一 GREEN 验证失败时保留首次失败输出并停止诊断；不得反复重跑绿色命令来掩盖失败。临时 worker 诊断仅可用于定位，GREEN 前必须删除；永久保留的仅是活性契约和原有场景断言。
+
 ## 10. 人工验收
 
 - 真实 Windows 多窗口中，确认卡和披露卡只在 chat 出现。
@@ -176,5 +189,6 @@ const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
 - 旧 pet/chat/settings/workshop 全量广播循环归零。
 - Preload 不再把 unknown 直接断言为 `TaskEvent`。
 - A3 定向测试、Desktop typecheck、安全、集成、行为与 Electron E2E 通过。
+- Vitest worker 活性契约、原 35 项资源管理器固定场景、Desktop 全量测试、`verify:desktop` 与 `verify:behavior` 均在一次最终验证中通过。
 - A3 没有引入 snapshot、revision 或第二套会话状态。
 - 网站、CloudBase、扫描器与 cloudbase 业务文件零差异。
