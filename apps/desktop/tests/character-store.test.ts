@@ -1775,8 +1775,11 @@ describe('CharacterStore', () => {
   test('事务中间目录为 Junction 时拒绝恢复且不触碰链接目标', async () => {
     const store = new CharacterStore(charactersDirectory);
     const runtime = createRuntime();
+    const healthyRuntime = createRuntime('healthy', '健康角色');
     await store.create({ id: 'demo', name: '演示角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
     await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.publishCompiled('healthy', healthyRuntime.manifest, healthyRuntime.assets);
     const outsideDirectory = join(testDirectory, 'outside-transaction');
     await mkdir(outsideDirectory);
     await writeFile(join(outsideDirectory, 'sentinel.txt'), '保留', 'utf8');
@@ -1788,10 +1791,376 @@ describe('CharacterStore', () => {
 
     const restartedStore = new CharacterStore(charactersDirectory);
 
+    await expect(restartedStore.list()).resolves.toMatchObject([{
+      id: 'demo',
+      completeness: 'broken'
+    }, {
+      id: 'healthy'
+    }]);
     await expect(restartedStore.getRuntimeManifest('demo'))
-      .rejects.toThrow('CHARACTER_PATH_UNSAFE');
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    expect(restartedStore.getTransactionRecoveryReport()).toMatchObject({
+      characters: [{
+        characterId: 'demo',
+        draftErrorCode: null,
+        publishErrorCode: 'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
+        deferred: false
+      }, {
+        characterId: 'healthy',
+        draftErrorCode: null,
+        publishErrorCode: null,
+        deferred: false
+      }]
+    });
+    await expect(restartedStore.getRuntimeManifest('healthy'))
+      .resolves.toEqual(runtimeView(healthyRuntime.manifest));
     await expect(readFile(join(outsideDirectory, 'sentinel.txt'), 'utf8'))
       .resolves.toBe('保留');
+  });
+
+  test('事务恢复协调：活动与非活动角色的坏分面彼此隔离且原 marker 字节保持不变', async () => {
+    const brokenDraftMarker = Buffer.from('{"version":1,"phase":"prepared"');
+    const brokenPublishMarker = Buffer.from([0xff, 0x00, 0x7b, 0x7d]);
+    const scenarios = [
+      { active: true, draft: true, publish: false },
+      { active: true, draft: false, publish: true },
+      { active: true, draft: true, publish: true },
+      { active: false, draft: true, publish: false },
+      { active: false, draft: false, publish: true },
+      { active: false, draft: true, publish: true }
+    ] as const;
+
+    for (const [scenarioIndex, scenario] of scenarios.entries()) {
+      const directory = join(testDirectory, `matrix-${scenarioIndex}`);
+      const store = new CharacterStore(directory);
+      const targetRuntime = createRuntime('target', '目标角色');
+      const healthyRuntime = createRuntime('healthy', '健康角色');
+      await store.create({ id: 'target', name: '目标角色' });
+      await store.create({ id: 'healthy', name: '健康角色' });
+      await store.publishCompiled('target', targetRuntime.manifest, targetRuntime.assets);
+      await store.publishCompiled('healthy', healthyRuntime.manifest, healthyRuntime.assets);
+      await store.setActive(scenario.active ? 'target' : 'healthy', true);
+      const draftMarker = join(directory, 'target', 'draft', 'draft-transaction.json');
+      const publishMarker = join(directory, 'target', 'publish-transaction.json');
+      if (scenario.draft) await writeFile(draftMarker, brokenDraftMarker);
+      if (scenario.publish) await writeFile(publishMarker, brokenPublishMarker);
+      const healthyNext = join(directory, 'healthy', 'draft', 'draft.next.json');
+      await writeFile(healthyNext, JSON.stringify(createDraft('healthy', '未提交')));
+
+      const restarted = new CharacterStore(directory);
+      const summaries = await restarted.list();
+      const report = restarted.getTransactionRecoveryReport();
+      const targetResult = report.characters.find(result => result.characterId === 'target');
+
+      expect(summaries.map(summary => summary.id)).toEqual(['healthy', 'target']);
+      expect(targetResult).toEqual({
+        characterId: 'target',
+        kind: scenario.draft
+          ? (scenario.publish
+              ? 'draft-and-publish-recovery-blocked'
+              : 'draft-recovery-blocked')
+          : 'publish-recovery-blocked',
+        draftErrorCode: scenario.draft ? 'CHARACTER_DRAFT_RECOVERY_BLOCKED' : null,
+        publishErrorCode: scenario.publish ? 'CHARACTER_PUBLISH_RECOVERY_BLOCKED' : null,
+        deferred: false
+      });
+      expect(report.budgetExceeded).toBe(false);
+      expect(JSON.stringify(report)).not.toContain(directory);
+      await expect(access(healthyNext)).rejects.toThrow();
+      if (scenario.draft) {
+        expect(await readFile(draftMarker)).toEqual(brokenDraftMarker);
+      }
+      if (scenario.publish) {
+        expect(await readFile(publishMarker)).toEqual(brokenPublishMarker);
+      }
+    }
+  });
+
+  test('事务恢复协调：坏草稿仅关闭草稿保存与发布，健康活动运行时仍可读取', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.setActive('demo', true);
+    const markerFile = join(
+      charactersDirectory,
+      'demo',
+      'draft',
+      'draft-transaction.json'
+    );
+    const markerBytes = Buffer.from('{"version":1');
+    await writeFile(markerFile, markerBytes);
+
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.getRuntimeManifest('demo'))
+      .resolves.toEqual(runtimeView(runtime.manifest));
+    await expect(restarted.getPublishedManifest('demo')).resolves.toEqual(runtime.manifest);
+    await expect(restarted.getActive()).resolves.toEqual(runtimeView(runtime.manifest));
+    await expect(restarted.getActiveManifestV2()).resolves.toEqual(runtime.manifest);
+    await expect(restarted.readActiveRuntimeAsset('atlas'))
+      .resolves.toEqual(runtime.assets['atlas.png']);
+    await expect(restarted.getDraft('demo')).resolves.toMatchObject({
+      version: 2,
+      id: 'demo',
+      name: '演示角色'
+    });
+    await expect(restarted.setActive('demo', true)).resolves.toBeUndefined();
+    await expect(restarted.saveDraft('demo', createDraft('demo', '新草稿')))
+      .rejects.toThrow('CHARACTER_DRAFT_RECOVERY_BLOCKED');
+    await expect(restarted.publishCompiled('demo', runtime.manifest, runtime.assets))
+      .rejects.toThrow('CHARACTER_DRAFT_RECOVERY_BLOCKED');
+    expect(await readFile(markerFile)).toEqual(markerBytes);
+  });
+
+  test('事务恢复协调：坏发布仅关闭发布与运行时，草稿保存和其他角色保持可用', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const targetRuntime = createRuntime('target', '目标角色');
+    const healthyRuntime = createRuntime('healthy', '健康角色');
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
+    await store.publishCompiled('target', targetRuntime.manifest, targetRuntime.assets);
+    await store.publishCompiled('healthy', healthyRuntime.manifest, healthyRuntime.assets);
+    const markerFile = join(charactersDirectory, 'target', 'publish-transaction.json');
+    const markerBytes = Buffer.from([0x7b, 0x22, 0xff]);
+    await writeFile(markerFile, markerBytes);
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.saveDraft('target', createDraft('target', '可保存草稿')))
+      .resolves.toBeUndefined();
+    await expect(restarted.publishCompiled(
+      'target',
+      targetRuntime.manifest,
+      targetRuntime.assets
+    )).rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.setActive('target', true))
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getRuntimeManifest('target'))
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getPublishedManifest('target'))
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getRuntimeManifest('healthy'))
+      .resolves.toEqual(runtimeView(healthyRuntime.manifest));
+    expect(await readFile(markerFile)).toEqual(markerBytes);
+  });
+
+  test('事务恢复协调：未发布角色的坏 publish 也必须显示为 broken', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'demo', name: '演示角色' });
+    await writeFile(
+      join(charactersDirectory, 'demo', 'publish-transaction.json'),
+      Buffer.from('{"version":2')
+    );
+
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.list()).resolves.toMatchObject([{
+      id: 'demo',
+      completeness: 'broken'
+    }]);
+  });
+
+  test('事务恢复协调：坏草稿下 V1 草稿只做内存投影且不覆盖恢复证据', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'demo', name: '演示角色' });
+    const draftFile = join(charactersDirectory, 'demo', 'draft', 'draft.json');
+    const markerFile = join(
+      charactersDirectory,
+      'demo',
+      'draft',
+      'draft-transaction.json'
+    );
+    const indexFile = join(charactersDirectory, 'index.json');
+    const draftBytes = Buffer.from(`${JSON.stringify(createDraftV1(), null, 2)}\n`);
+    const markerBytes = Buffer.from('{"version":1,"phase":');
+    await writeFile(draftFile, draftBytes);
+    await writeFile(markerFile, markerBytes);
+    const indexBytes = await readFile(indexFile);
+
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.getDraft('demo')).resolves.toMatchObject({
+      version: 2,
+      id: 'demo'
+    });
+    expect(await readFile(draftFile)).toEqual(draftBytes);
+    expect(await readFile(markerFile)).toEqual(markerBytes);
+    expect(await readFile(indexFile)).toEqual(indexBytes);
+    await expect(access(join(charactersDirectory, 'demo', 'draft', 'draft.backup.json')))
+      .rejects.toThrow();
+  });
+
+  test('事务恢复协调：坏草稿下健康 V1 compiled 只读投影且不触发发布事务', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntimeV1();
+    await store.create({ id: 'demo', name: '演示角色' });
+    await writeRuntimeDirectory(join(charactersDirectory, 'demo', 'compiled'), runtime);
+    const draftMarker = join(
+      charactersDirectory,
+      'demo',
+      'draft',
+      'draft-transaction.json'
+    );
+    await writeFile(draftMarker, Buffer.from('{"version":1'));
+    const manifestFile = join(charactersDirectory, 'demo', 'compiled', 'manifest.json');
+    const indexFile = join(charactersDirectory, 'index.json');
+    const index = JSON.parse(await readFile(indexFile, 'utf8'));
+    index.characters[0].migrationErrorCode = 'CHARACTER_MIGRATION_FAILED';
+    await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    const manifestBytes = await readFile(manifestFile);
+    const indexBytes = await readFile(indexFile);
+
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.list()).resolves.toHaveLength(1);
+    await expect(restarted.getRuntimeManifest('demo')).resolves.toMatchObject(runtime.manifest);
+    await expect(restarted.getPublishedManifest('demo')).resolves.toMatchObject({ version: 2 });
+    expect(await readFile(manifestFile)).toEqual(manifestBytes);
+    expect(await readFile(indexFile)).toEqual(indexBytes);
+    await expect(access(join(charactersDirectory, 'demo', 'publish-transaction.json')))
+      .rejects.toThrow();
+    await expect(access(join(charactersDirectory, 'demo', 'compiled.backup')))
+      .rejects.toThrow();
+  });
+
+  test('事务恢复协调：软预算延后剩余角色且不读取或清理其事务文件', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'first', name: '第一角色' });
+    await store.create({ id: 'second', name: '第二角色' });
+    const activeRuntime = createRuntime('second', '第二角色');
+    await store.publishCompiled('second', activeRuntime.manifest, activeRuntime.assets);
+    await store.setActive('second', true);
+    const deferredNext = join(
+      charactersDirectory,
+      'first',
+      'draft',
+      'draft.next.json'
+    );
+    const deferredBytes = Buffer.from('延后角色证据');
+    await writeFile(deferredNext, deferredBytes);
+    const clock = [0, 2_000];
+    const restarted = new CharacterStore(charactersDirectory, {
+      recoveryNow: () => clock.shift() ?? 2_000
+    });
+
+    await expect(restarted.list()).resolves.toHaveLength(2);
+    expect(restarted.getTransactionRecoveryReport()).toEqual({
+      characters: [{
+        characterId: 'first',
+        kind: 'draft-and-publish-recovery-blocked',
+        draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+        publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
+        deferred: true
+      }, {
+        characterId: 'second',
+        kind: 'healthy',
+        draftErrorCode: null,
+        publishErrorCode: null,
+        deferred: false
+      }],
+      budgetExceeded: true
+    });
+    expect(await readFile(deferredNext)).toEqual(deferredBytes);
+  });
+
+  test('事务恢复协调：权限故障替代注入仅阻塞对应角色的 draft 分面', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
+    const targetDraftNext = join(
+      charactersDirectory,
+      'target',
+      'draft',
+      'draft.next.json'
+    );
+    let injected = false;
+    const restarted = new CharacterStore(charactersDirectory, {
+      async removePath(path, options) {
+        if (!injected && path === targetDraftNext) {
+          injected = true;
+          throw Object.assign(new Error('拒绝访问测试路径'), { code: 'EACCES' });
+        }
+        await rm(path, options);
+      }
+    });
+
+    await expect(restarted.list()).resolves.toHaveLength(2);
+    expect(restarted.getTransactionRecoveryReport()).toEqual({
+      characters: [{
+        characterId: 'target',
+        kind: 'draft-recovery-blocked',
+        draftErrorCode: 'CHARACTER_DRAFT_RECOVERY_BLOCKED',
+        publishErrorCode: null,
+        deferred: false
+      }, {
+        characterId: 'healthy',
+        kind: 'healthy',
+        draftErrorCode: null,
+        publishErrorCode: null,
+        deferred: false
+      }],
+      budgetExceeded: false
+    });
+    expect(JSON.stringify(restarted.getTransactionRecoveryReport()))
+      .not.toContain('拒绝访问测试路径');
+  });
+
+  test('事务恢复协调：显式删除不受坏分面 gate 阻断', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
+    await writeFile(
+      join(charactersDirectory, 'target', 'draft', 'draft-transaction.json'),
+      Buffer.from('{"version":1')
+    );
+    await writeFile(
+      join(charactersDirectory, 'target', 'publish-transaction.json'),
+      Buffer.from('{"version":2')
+    );
+
+    const restarted = new CharacterStore(charactersDirectory);
+
+    await expect(restarted.delete('target')).resolves.toBeUndefined();
+    await expect(restarted.list()).resolves.toMatchObject([{ id: 'healthy' }]);
+  });
+
+  test('事务恢复协调：索引集合、空索引、缺失索引与坏索引均清除上一轮报告', async () => {
+    const store = new CharacterStore(charactersDirectory);
+    await store.create({ id: 'removed', name: '待移除角色' });
+    await store.create({ id: 'kept', name: '保留角色' });
+    await writeFile(
+      join(charactersDirectory, 'removed', 'draft', 'draft-transaction.json'),
+      Buffer.from('{"version":1')
+    );
+    const restarted = new CharacterStore(charactersDirectory);
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport().characters)
+      .toHaveLength(2);
+
+    const indexFile = join(charactersDirectory, 'index.json');
+    const index = JSON.parse(await readFile(indexFile, 'utf8'));
+    index.characters = index.characters.filter((entry: { id: string }) => entry.id === 'kept');
+    await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport().characters.map(result => result.characterId))
+      .toEqual(['kept']);
+
+    index.characters = [];
+    index.activeCharacterId = null;
+    await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport()).toEqual({
+      characters: [],
+      budgetExceeded: false
+    });
+
+    await unlink(indexFile);
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport().characters).toEqual([]);
+
+    await writeFile(indexFile, Buffer.from('{损坏索引'));
+    await restarted.list();
+    expect(restarted.getTransactionRecoveryReport().characters).toEqual([]);
   });
 
   test('公开写入方法不修改调用方对象或字节', async () => {

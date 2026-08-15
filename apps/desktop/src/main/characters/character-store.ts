@@ -35,6 +35,10 @@ import {
   migrateCharacterDocument,
   migrateCharacterManifest
 } from './character-migrations';
+import {
+  CharacterTransactionRecovery,
+  type CharacterTransactionRecoveryReport
+} from './character-transaction-recovery';
 
 const DEFAULT_CHARACTER_ID = 'builtin-default';
 const SAFE_CHARACTER_ID = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
@@ -160,6 +164,7 @@ export type CharacterStoreDependencies = {
     checkpoint: 'before-rename',
     characterId: string
   ) => Promise<void>;
+  recoveryNow?: () => number;
 };
 
 export type CharacterIndexRecoveryResult = {
@@ -307,6 +312,12 @@ export class CharacterStore {
   private readonly onImportRollbackCheckpoint: NonNullable<
     CharacterStoreDependencies['onImportRollbackCheckpoint']
   >;
+  private readonly transactionRecovery: CharacterTransactionRecovery;
+  private recoveryActiveCharacterId: string | null = null;
+  private transactionRecoveryReport: CharacterTransactionRecoveryReport = {
+    characters: [],
+    budgetExceeded: false
+  };
 
   constructor(
     private readonly directory: string,
@@ -321,6 +332,17 @@ export class CharacterStore {
       ?? (async () => undefined);
     this.onImportRollbackCheckpoint = dependencies.onImportRollbackCheckpoint
       ?? (async () => undefined);
+    this.transactionRecovery = new CharacterTransactionRecovery({
+      activeCharacterId: () => this.recoveryActiveCharacterId,
+      ...(dependencies.recoveryNow === undefined
+        ? {}
+        : { now: dependencies.recoveryNow })
+    });
+  }
+
+  /** 返回最近一次有效索引加载产生的脱敏事务恢复裁决。 */
+  getTransactionRecoveryReport(): CharacterTransactionRecoveryReport {
+    return structuredClone(this.transactionRecoveryReport);
   }
 
   list(): Promise<CharacterSummary[]> {
@@ -682,7 +704,8 @@ export class CharacterStore {
         throw characterError('CHARACTER_ID_MISMATCH');
       }
 
-      const index = await this.requireCharacter(characterId);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertDraftSaveAllowed(characterId);
       if (
         revisionReservation
         && this.entry(index, characterId).draftRevision === revisionReservation.revision
@@ -691,7 +714,6 @@ export class CharacterStore {
         throw characterError('CHARACTER_DRAFT_REVISION_CONFLICT');
       }
       await this.assertSafeCharacterPath(characterId, join('draft'));
-      await this.recoverDraftTransaction(characterId, index);
       await this.installDraftTransaction(
         characterId,
         index,
@@ -705,7 +727,6 @@ export class CharacterStore {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       const index = await this.requireCharacter(characterId);
-      await this.recoverDraftTransaction(characterId, index);
       return this.ensureDraftV2(characterId, index);
     });
   }
@@ -724,7 +745,8 @@ export class CharacterStore {
     }
     return this.enqueue(async () => {
       assertCharacterId(characterId);
-      const index = await this.requireCharacter(characterId);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertPublishAllowed(characterId);
       if (draftRevision !== undefined) {
         z.string().regex(DRAFT_REVISION).parse(draftRevision);
         this.assertDraftRevision(characterId, index, draftRevision);
@@ -736,7 +758,6 @@ export class CharacterStore {
       this.validateAssets(parsedManifest, assets);
 
       await this.assertSafeCharacterPath(characterId);
-      await this.recoverPublishTransaction(characterId, index);
       await this.installPublishedTransaction(
         characterId,
         index,
@@ -750,8 +771,8 @@ export class CharacterStore {
   getRuntimeManifest(characterId: string): Promise<CharacterManifestV1> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
-      const index = await this.requireCharacter(characterId);
-      await this.recoverPublishTransaction(characterId, index);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertRuntimeAllowed(characterId);
       return projectCharacterManifestV2ToLegacy(
         await this.ensurePublishedV2(characterId, index)
       );
@@ -761,8 +782,8 @@ export class CharacterStore {
   getPublishedManifest(characterId: string): Promise<CharacterManifestV2> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
-      const index = await this.requireCharacter(characterId);
-      await this.recoverPublishTransaction(characterId, index);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertRuntimeAllowed(characterId);
       return this.ensurePublishedV2(characterId, index);
     });
   }
@@ -770,7 +791,8 @@ export class CharacterStore {
   setActive(characterId: string, confirmIncomplete = false): Promise<void> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
-      const index = await this.requireCharacter(characterId);
+      const index = await this.requireCharacter(characterId, false);
+      this.transactionRecovery.assertRuntimeAllowed(characterId);
       const manifest = await this.ensurePublishedV2(characterId, index);
       const missing = characterV2Completeness(manifest);
       const fingerprint = activationFingerprint(manifest);
@@ -785,6 +807,7 @@ export class CharacterStore {
       }
       index.activeCharacterId = characterId;
       await this.writeIndex(index);
+      this.recoveryActiveCharacterId = characterId;
     });
   }
 
@@ -794,6 +817,7 @@ export class CharacterStore {
       if (loaded.activeCharacterId === null) {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
+      this.transactionRecovery.assertRuntimeAllowed(loaded.activeCharacterId);
       return projectCharacterManifestV2ToLegacy(
         await this.ensurePublishedV2(loaded.activeCharacterId, loaded)
       );
@@ -807,6 +831,7 @@ export class CharacterStore {
       if (loaded.activeCharacterId === null) {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
+      this.transactionRecovery.assertRuntimeAllowed(loaded.activeCharacterId);
       return this.ensurePublishedV2(loaded.activeCharacterId, loaded);
     });
   }
@@ -818,6 +843,7 @@ export class CharacterStore {
       if (index.activeCharacterId === null) {
         throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
       }
+      this.transactionRecovery.assertRuntimeAllowed(index.activeCharacterId);
       await this.ensurePublishedV2(index.activeCharacterId, index);
       try {
         return await this.readRuntimeAssetFrom(
@@ -895,6 +921,7 @@ export class CharacterStore {
       source = await readFile(file, 'utf8');
     } catch (error) {
       if (!isMissingFile(error)) throw error;
+      await this.resetTransactionRecovery(null);
       const index = emptyIndex();
       await this.writeIndex(index);
       return { index, writable: true };
@@ -909,13 +936,34 @@ export class CharacterStore {
     })();
     const parsed = characterIndexSchema.safeParse(raw);
     if (!parsed.success) {
+      await this.resetTransactionRecovery(null);
       await this.preserveCorruptText(file, source);
       return { index: emptyIndex(), writable: false };
     }
 
+    this.recoveryActiveCharacterId = parsed.data.activeCharacterId;
+    this.transactionRecoveryReport = { characters: [], budgetExceeded: false };
     await this.recoverDeleteTombstones(parsed.data);
-    await this.recoverAllCharacterTransactions(parsed.data);
+    this.transactionRecoveryReport = await this.transactionRecovery.recoverAll(
+      parsed.data.characters.map(entry => ({
+        characterId: entry.id,
+        recoverDraft: async () => {
+          await this.assertSafeCharacterPath(entry.id, 'draft');
+          await this.recoverDraftTransaction(entry.id, parsed.data);
+        },
+        recoverPublish: async () => {
+          await this.assertSafeCharacterPath(entry.id);
+          await this.recoverPublishTransaction(entry.id, parsed.data);
+        }
+      }))
+    );
     return { index: parsed.data, writable: true };
+  }
+
+  /** 清空上轮裁决，避免索引缺失、损坏或集合变化后复用旧角色状态。 */
+  private async resetTransactionRecovery(activeCharacterId: string | null): Promise<void> {
+    this.recoveryActiveCharacterId = activeCharacterId;
+    this.transactionRecoveryReport = await this.transactionRecovery.recoverAll([]);
   }
 
   private async requireWritableIndex(): Promise<CharacterIndex> {
@@ -924,12 +972,17 @@ export class CharacterStore {
     return loaded.index;
   }
 
-  private async requireCharacter(characterId: string): Promise<CharacterIndex> {
+  private async requireCharacter(
+    characterId: string,
+    assertPath = true
+  ): Promise<CharacterIndex> {
     const index = await this.requireWritableIndex();
     if (!index.characters.some(character => character.id === characterId)) {
       throw characterError('CHARACTER_NOT_FOUND');
     }
-    await this.assertSafeCharacterPath(characterId);
+    if (assertPath) {
+      await this.assertSafeCharacterPath(characterId);
+    }
     return index;
   }
 
@@ -1046,6 +1099,9 @@ export class CharacterStore {
       true
     );
     if (migrated.sourceVersion === 2) return migrated.document;
+    if (this.transactionRecovery.resultFor(characterId).draftErrorCode !== null) {
+      return migrated.document;
+    }
     await this.installDraftTransaction(characterId, index, migrated.document, {
       keepBackup: true
     });
@@ -1145,6 +1201,13 @@ export class CharacterStore {
       characterId
     );
     if (migrated.sourceVersion === 2) return migrated.document;
+    const recoveryResult = this.transactionRecovery.resultFor(characterId);
+    if (
+      recoveryResult.draftErrorCode !== null
+      || recoveryResult.publishErrorCode !== null
+    ) {
+      return migrated.document;
+    }
     await this.installPublishedTransaction(
       characterId,
       index,
@@ -1153,14 +1216,6 @@ export class CharacterStore {
       { keepBackup: true }
     );
     return migrated.document;
-  }
-
-  private async recoverAllCharacterTransactions(index: CharacterIndex): Promise<void> {
-    for (const entry of index.characters) {
-      await this.assertSafeCharacterPath(entry.id);
-      await this.recoverDraftTransaction(entry.id, index);
-      await this.recoverPublishTransaction(entry.id, index);
-    }
   }
 
   private async recoverDeleteTombstones(index: CharacterIndex): Promise<void> {
@@ -1740,12 +1795,25 @@ export class CharacterStore {
       thumbnailAssetId: entry.thumbnailAssetId,
       active: index.activeCharacterId === entry.id
     });
+    try {
+      this.transactionRecovery.assertRuntimeAllowed(entry.id);
+    } catch {
+      return {
+        ...base(),
+        completeness: 'broken',
+        missingRequirements: [],
+        migrationRecoveryAvailable: false,
+        activationConfirmationRequired: false
+      };
+    }
     const compiledManifest = join(this.compiledDirectory(entry.id), 'manifest.json');
     if (await exists(compiledManifest)) {
       try {
         const manifest = await this.ensurePublishedV2(entry.id, index);
         const missing = characterV2Completeness(manifest);
-        delete this.entry(index, entry.id).migrationErrorCode;
+        if (this.transactionRecovery.resultFor(entry.id).draftErrorCode === null) {
+          delete this.entry(index, entry.id).migrationErrorCode;
+        }
         return {
           ...base(),
           completeness: missing.length === 0 ? 'complete' : 'incomplete',
@@ -1780,7 +1848,9 @@ export class CharacterStore {
 
     try {
       const draft = await this.ensureDraftV2(entry.id, index);
-      delete this.entry(index, entry.id).migrationErrorCode;
+      if (this.transactionRecovery.resultFor(entry.id).draftErrorCode === null) {
+        delete this.entry(index, entry.id).migrationErrorCode;
+      }
       return {
         ...base(),
         completeness: 'incomplete',
