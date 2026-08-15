@@ -7,10 +7,11 @@
 
 - 环境：Microsoft Windows 11 专业版，版本 `10.0.26200`，Build `26200`；Node.js `v24.18.0`；pnpm `11.9.0`。
 - 分支：`AgentCoreExtension`。
-- 最终复验 HEAD：`7296a35c306720034d709dcb0d0eabf395c3ffc1`（`test(desktop): 强化 worker 活性契约`）。
-- 提交范围：`8df6097..7296a35c306720034d709dcb0d0eabf395c3ffc1`；本记录是该范围完成后的日期化验收文档。
+- 验收文档提交前的代码 HEAD：`7296a35c306720034d709dcb0d0eabf395c3ffc1`（`test(desktop): 强化 worker 活性契约`）。
+- 代码提交范围：`8df6097..7296a35c306720034d709dcb0d0eabf395c3ffc1`；本记录是该代码范围完成后的日期化验收文档。
+- 验收文档提交 `ffb7138` 仅新增本记录，没有修改代码，也没有在该文档提交后重新运行门禁；下述最终复验证据均归属于验收文档提交前的代码 HEAD `7296a35`。
 - 自动化功能证据：A2 当前聊天窗口授权、A3 会话事件按窗口投影、既有角色行为与搬运关键链均取得本次通过证据。
-- 总体状态：**当前自动化门通过，真实 Windows 人工项待确认**。初次独立 `@myself/desktop test` 及其一次定向诊断均因 Vitest worker 的 `onTaskUpdate` RPC 超时退出 1；该历史失败完整保留。Task 5 已定位同步 PowerShell 场景阻塞 worker 的根因，以异步 `execFile` 和永久两轮活性契约修复；修复后目标 36/36、Desktop full 86/86，以及当前 HEAD 上各一次 `verify:desktop`、`verify:behavior` 均退出 0，且未再出现该 worker RPC 错误。
+- 总体状态：**验收文档提交前的代码 HEAD 自动化门通过，真实 Windows 人工项待确认**。初次独立 `@myself/desktop test` 及其一次定向诊断均因 Vitest worker 的 `onTaskUpdate` RPC 超时退出 1；该历史失败完整保留。Task 5 已定位同步 PowerShell 场景阻塞 worker 的根因，以异步 `execFile` 和永久两轮活性契约修复；修复后目标 36/36、Desktop full 86/86，以及代码 HEAD `7296a35` 上各一次 `verify:desktop`、`verify:behavior` 均退出 0，且未再出现该 worker RPC 错误。
 - 人工边界：真实 Windows BrowserWindow 销毁重建、普通 hide/open、多窗口视觉隔离以及 pet 动作与搬运主观观察均未由用户执行，状态保持“待用户人工确认”。
 - 非目标：本验收不声称 snapshot、revision、reload 恢复、事件缓存或重放已经实现。
 
@@ -42,7 +43,7 @@
 - GREEN：复审后的目标文件仅运行一次，退出 0，36/36 通过，活性契约 783ms，Vitest 25.43 秒；无 unhandled error、无 `onTaskUpdate`。
 - Task 5 Desktop full：退出 0，86/86 个文件通过，1737 项通过、14 项跳过；目标文件 36/36，通过时无 worker RPC 超时。
 
-### 2.2 当前 HEAD 最终复验
+### 2.2 验收文档提交前的代码 HEAD 最终复验
 
 以下两条命令在 `7296a35c306720034d709dcb0d0eabf395c3ffc1` 上各仅运行一次，失败不重跑：
 
@@ -51,7 +52,7 @@
 | `pnpm.cmd verify:desktop` | 0 | workspace typecheck 通过；unit 109/109 文件、2174 项通过、14 项跳过；helper 36/36；security 20/20；integration 46/46；build 通过；Electron E2E 61/61 | unit 38.70 秒，E2E 3.2 分钟；无 `onTaskUpdate`。保留角色失败路径 stderr、JSDOM Canvas、两条 `use client` 与 `NO_COLOR` 警告。 |
 | `pnpm.cmd verify:behavior` | 0 | character-runtime 221/221；agent-core 49/49；Desktop typecheck 通过；Desktop 86/86 文件、1737 项通过、14 项跳过；helper 36/36；security 20/20；integration 46/46；build 通过；Electron E2E 61/61 | Desktop 41.97 秒，E2E 3.2 分钟；无 `onTaskUpdate`。保留同类既有 stderr/build/环境警告。 |
 
-这两次新鲜完整门证明当前 HEAD 满足自动化完成定义；修复前两次退出 1 仍作为根因时间线保留。
+这两次新鲜完整门证明验收文档提交前的代码 HEAD `7296a35` 满足自动化完成定义；修复前两次退出 1 仍作为根因时间线保留。`ffb7138` 只新增本验收文档，未据此声称重新运行门禁。
 
 ## 3. A2 当前聊天窗口授权证据
 
@@ -84,8 +85,8 @@
 | `rg -n "ipcChannels\.taskEvent" apps/desktop/src/main` | 0 | 仅 1 个命中：`conversation-event-projection.ts` 内的 `target.send`；Main 的会话事件窗口发送 owner 只有 `ConversationEventProjection`。 |
 | `rg -n "characterWorkshopWindows\.getCurrent\(\).*taskEvent\|\[pet, chat, settings" apps/desktop/src/main/index.ts` | 0 | 命中第 682 行的宽窗口数组；上下文第 683 行明确为 `ipcChannels.characterEvent`，是合法角色事件广播，不是旧 `taskEvent` 广播。 |
 | `rg -n "registerAgentIpc\(" apps/desktop/src apps/desktop/tests tests` | 0 | 9 个文本命中；生产只有 1 个三参数调用，另有函数声明、测试夹具及否定静态断言。未发现生产两参数调用。 |
-| `git diff --check 8df6097..HEAD` | 0 | 无输出；提交范围无空白格式错误。 |
-| `git diff --name-only 8df6097..HEAD -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` | 0 | 无输出；受保护网站、CloudBase、scanner 与相关网站 E2E/配置路径在提交范围内零差异。 |
+| `git diff --check 8df6097..HEAD` | 0 | 执行时 `HEAD=7296a35`；无输出，代码提交范围无空白格式错误。 |
+| `git diff --name-only 8df6097..HEAD -- apps/website tests/e2e/website.spec.ts tests/playwright.website.config.ts apps/cloudbase-api apps/package-scanner cloudbase` | 0 | 执行时 `HEAD=7296a35`；无输出，受保护网站、CloudBase、scanner 与相关网站 E2E/配置路径在代码提交范围内零差异。 |
 
 网站和云端的结论只限于“受保护路径差异为零”。本次没有运行 `verify:website` 或 `verify:cloudbase`，不得据此声称网站、CloudBase 或 scanner 门禁通过。
 
