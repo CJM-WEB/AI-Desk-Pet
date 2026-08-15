@@ -2,11 +2,13 @@
 
 **日期：** 2026-08-15
 
-**状态：** 已获用户口头批准，待书面规格复核
+**状态：** 已证伪并退役
 
 **适用范围：** `tests/e2e/website.spec.ts`、网站专属 Playwright 配置、阶段 0 网站链门禁
 
 **不适用范围：** 桌面端、Electron E2E、Agent、文件工具、角色运行时、生产部署及远端数据
+
+**退役说明：** 完整 E2E 在 15.6 分钟止损时为 `20 passed / 10 failed / 1 interrupted / 14 did not run`，测试级独立 Chromium fixture 未消除序列性 GPU stall。本规格由 `2026-08-15-website-e2e-cli-process-isolation-design.md` 替代。
 
 ## 1. 背景与已证伪方案
 

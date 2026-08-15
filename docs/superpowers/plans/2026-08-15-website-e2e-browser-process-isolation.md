@@ -1,5 +1,7 @@
 # 网站 E2E 浏览器进程隔离实施计划
 
+> **执行状态：已停止。** Task 1 已提交；Task 2 的完整 E2E 在 15.6 分钟止损时为 `20 passed / 10 failed / 1 interrupted / 14 did not run`，且未提交。测试级独立 Chromium fixture 已证伪，后续由 `2026-08-15-website-e2e-cli-process-isolation-design.md` 替代；本计划 Task 3 不再执行。
+
 > **For Codex:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task.
 
 **Goal:** 将官网 Playwright 页面测试改为“每个请求 `page` 的测试独占一个 Chromium 进程”，消除跨测试 GPU/WebGL 进程状态污染，同时保持 API-only 测试不启动浏览器、串行执行、零重试和现有 60 秒超时。
