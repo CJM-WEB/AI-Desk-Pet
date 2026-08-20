@@ -25,6 +25,11 @@ import {
   type DraftActionClip
 } from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
+import type {
+  CharacterRecoveryIssueDto,
+  CharacterRecoverySnapshotDto
+} from '../../../../shared/character-ipc';
+import { characterRecoveryPresentation } from '../../../../shared/character-recovery';
 import {
   createCharacterWorkshopStore,
   type CharacterWorkshopApi,
@@ -68,7 +73,7 @@ function workshopToastDurationMs(toast: TransientToast): 3000 | 6000 {
 export interface CharacterWorkshopViewProps {
   api: CharacterWorkshopApi & Pick<
     MyselfApi,
-    'onCharacterWorkshopFlushRequested'
+    'onCharacterWorkshopFlushRequested' | 'getCharacterRecoverySnapshot'
   >;
 }
 
@@ -76,6 +81,8 @@ export interface CharacterWorkshopWorkspaceProps {
   state: CharacterWorkshopState;
   api: Pick<MyselfApi, 'readCharacterSource'>;
   pendingDeleteCharacterId?: string | null;
+  recoveryIssues?: readonly CharacterRecoveryIssueDto[];
+  recoveryLoadFailed?: boolean;
 }
 
 function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
@@ -579,6 +586,25 @@ export function CharacterWorkshopWorkspace(
         ariaLabel="工作台提示"
       />
 
+      {props.recoveryLoadFailed ? (
+        <p className="migration-recovery" role="alert">
+          恢复状态暂时无法读取，请稍后重试。
+        </p>
+      ) : props.recoveryIssues?.map(issue => {
+        const presentation = characterRecoveryPresentation(issue.errorCode);
+        return (
+          <section
+            className="migration-recovery"
+            aria-live="polite"
+            key={issue.errorCode}
+          >
+            <p role="alert">{presentation.text}</p>
+            <p>受影响能力：{presentation.affectedCapabilities.join('、')}</p>
+            <p>{presentation.suggestion}</p>
+          </section>
+        );
+      })}
+
       <div className="workshop-columns">
         <aside className="workshop-sidebar" aria-label="角色与状态">
           <section className="workshop-section character-section">
@@ -1055,17 +1081,42 @@ export function CharacterWorkshopWorkspace(
 export function CharacterWorkshopView(props: CharacterWorkshopViewProps) {
   const [store] = useState(() => createCharacterWorkshopStore(props.api));
   const state = useStore(store);
+  const [recoverySnapshot, setRecoverySnapshot] = useState<
+    CharacterRecoverySnapshotDto | null
+  >(null);
+  const [recoveryLoadFailed, setRecoveryLoadFailed] = useState(false);
+  // 同一挂载生命周期复用读取，避免 React StrictMode 重放 effect 时重复 IPC。
+  const recoverySnapshotPromiseRef = useRef<Promise<CharacterRecoverySnapshotDto> | null>(null);
 
   useEffect(() => {
+    let active = true;
     const dispose = store.getState().mount();
     const unsubscribeFlush = props.api.onCharacterWorkshopFlushRequested(
       () => store.getState().flushDraft()
     );
+    const recoverySnapshotPromise = recoverySnapshotPromiseRef.current
+      ??= props.api.getCharacterRecoverySnapshot();
+    void recoverySnapshotPromise.then(snapshot => {
+      if (active) setRecoverySnapshot(snapshot);
+    }).catch(() => {
+      if (active) setRecoveryLoadFailed(true);
+    });
     return () => {
+      active = false;
       unsubscribeFlush();
       dispose();
     };
   }, [props.api, store]);
 
-  return <CharacterWorkshopWorkspace state={state} api={props.api} />;
+  const recoveryIssues = recoverySnapshot?.issues.filter(
+    issue => issue.characterId === state.selectedCharacterId
+  ) ?? [];
+  return (
+    <CharacterWorkshopWorkspace
+      state={state}
+      api={props.api}
+      recoveryIssues={recoveryIssues}
+      recoveryLoadFailed={recoveryLoadFailed}
+    />
+  );
 }

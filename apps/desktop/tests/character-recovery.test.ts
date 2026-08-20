@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
   characterErrorCode,
-  characterOperationMessage
+  characterOperationMessage,
+  characterRecoveryPresentation
 } from '../src/shared/character-recovery';
 
 describe('角色稳定错误反馈', () => {
@@ -34,5 +35,25 @@ describe('角色稳定错误反馈', () => {
     );
     expect(characterOperationMessage('C:\\Users\\name\\secret.png'))
       .toBe('角色操作失败，请在角色工作室检查素材和草稿。');
+  });
+});
+
+describe('角色恢复问题展示映射', () => {
+  test.each([
+    ['CHARACTER_DRAFT_RECOVERY_BLOCKED', '角色草稿恢复受阻，当前草稿无法安全保存或发布。', ['draft-save', 'publish'], '请先保留恢复证据，再重试读取或重新导入素材。'],
+    ['CHARACTER_PUBLISH_RECOVERY_BLOCKED', '角色发布恢复受阻，当前发布版本无法安全启用。', ['publish', 'activate'], '请重新编译发布；问题持续时先导出恢复包。'],
+    ['CHARACTER_RECOVERY_DEFERRED', '角色恢复暂未完成，相关编辑与启用操作已暂停。', ['draft-save', 'publish', 'activate'], '请稍后重新打开角色工作室重试。'],
+    ['CHARACTER_IMPORT_RECOVERY_BLOCKED', '角色导入恢复受阻，未完成的导入不会覆盖现有角色。', ['draft-save', 'publish', 'activate'], '请检查角色包后重新导入；问题持续时保留现有恢复证据。'],
+    ['CHARACTER_IMPORT_RECOVERY_DEFERRED', '角色导入恢复暂未完成，现有角色数据保持不变。', ['draft-save', 'publish', 'activate'], '请稍后重新打开角色工作室，再重试导入。']
+  ] as const)('为 %s 提供唯一的中文说明、能力影响和建议', (
+    errorCode,
+    text,
+    affectedCapabilities,
+    suggestion
+  ) => {
+    const presentation = characterRecoveryPresentation(errorCode);
+    expect(presentation).toEqual({ text, affectedCapabilities, suggestion });
+    expect(JSON.stringify(presentation)).not.toContain('C:\\Users\\private');
+    expect(JSON.stringify(presentation)).not.toContain('owner-token-sentinel');
   });
 });

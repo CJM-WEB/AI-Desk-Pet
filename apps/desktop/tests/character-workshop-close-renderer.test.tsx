@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { StrictMode } from 'react';
 import type { CharacterDraftV2 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
-import type { MyselfApi } from '../src/shared/myself-api';
 import { CharacterWorkshopView } from '../src/renderer/src/characters/workshop/CharacterWorkshopView';
 
 const draft: CharacterDraftV2 = {
@@ -48,6 +48,95 @@ afterEach(() => {
   cleanup();
 });
 
+type CharacterWorkshopViewApi = Parameters<typeof CharacterWorkshopView>[0]['api'];
+
+function workshopApi(
+  overrides: Partial<CharacterWorkshopViewApi> = {}
+): CharacterWorkshopViewApi {
+  return {
+    listCharacters: vi.fn(async () => characters),
+    createCharacter: vi.fn(),
+    duplicateCharacter: vi.fn(),
+    getCharacterDraft: vi.fn(async () => draft),
+    listCharacterSources: vi.fn(async () => []),
+    saveCharacterDraft: vi.fn(),
+    chooseCharacterSources: vi.fn(),
+    readCharacterSource: vi.fn(),
+    publishCharacter: vi.fn(),
+    activateCharacter: vi.fn(),
+    deleteCharacter: vi.fn(),
+    importCharacterPackage: vi.fn(),
+    exportCharacterPackage: vi.fn(),
+    subscribeCharacterEvents: vi.fn(() => vi.fn()),
+    getCharacterRecoverySnapshot: vi.fn(async () => ({
+      fallbackErrorCode: null,
+      issues: []
+    })),
+    onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn()),
+    ...overrides
+  };
+}
+
+describe('角色工作室恢复提示', () => {
+  test('只读取一次快照并随当前选择过滤内存问题，不触发写操作', async () => {
+    const getRecovery = vi.fn(async () => ({
+      fallbackErrorCode: null,
+      issues: [{
+        characterId: 'nova',
+        errorCode: 'CHARACTER_DRAFT_RECOVERY_BLOCKED' as const
+      }, {
+        characterId: 'luna',
+        errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED' as const
+      }]
+    }));
+    const listedCharacters: CharacterSummaryDto[] = [characters[0]!, {
+      ...characters[0]!, id: 'luna', name: 'Luna', active: false
+    }];
+    const api = workshopApi({
+      listCharacters: vi.fn(async () => listedCharacters),
+      getCharacterDraft: vi.fn(async characterId => ({
+        ...draft,
+        id: characterId,
+        name: characterId === 'luna' ? 'Luna' : 'Nova'
+      })),
+      getCharacterRecoverySnapshot: getRecovery
+    });
+
+    render(<StrictMode><CharacterWorkshopView api={api} /></StrictMode>);
+    expect(await screen.findByText('角色草稿恢复受阻，当前草稿无法安全保存或发布。'))
+      .toBeTruthy();
+    expect(screen.queryByText('角色导入恢复暂未完成，现有角色数据保持不变。'))
+      .toBeNull();
+
+    const lunaButton = within(screen.getByRole('list', { name: '角色列表' }))
+      .getByText('Luna').closest('button');
+    if (!lunaButton) throw new Error('缺少 Luna 选择按钮');
+    fireEvent.click(lunaButton);
+    expect(await screen.findByText('角色导入恢复暂未完成，现有角色数据保持不变。'))
+      .toBeTruthy();
+    expect(screen.queryByText('角色草稿恢复受阻，当前草稿无法安全保存或发布。'))
+      .toBeNull();
+    expect(getRecovery).toHaveBeenCalledOnce();
+    expect(api.saveCharacterDraft).not.toHaveBeenCalled();
+    expect(api.publishCharacter).not.toHaveBeenCalled();
+    expect(api.activateCharacter).not.toHaveBeenCalled();
+  });
+
+  test('快照读取失败时只显示通用安全文案', async () => {
+    const api = workshopApi({
+      getCharacterRecoverySnapshot: vi.fn(async () => {
+        throw new Error('C:\\Users\\private\\marker.json owner-token-sentinel');
+      })
+    });
+
+    render(<CharacterWorkshopView api={api} />);
+
+    expect(await screen.findByText('恢复状态暂时无法读取，请稍后重试。')).toBeTruthy();
+    expect(document.body.textContent).not.toContain('C:\\Users\\private');
+    expect(document.body.textContent).not.toContain('owner-token-sentinel');
+  });
+});
+
 describe('角色工作室 Renderer 关闭刷新', () => {
   test('Main 请求刷新时等待当前 store 的 flushDraft 完成', async () => {
     let flushListener: (() => Promise<void>) | null = null;
@@ -57,43 +146,13 @@ describe('角色工作室 Renderer 关闭刷新', () => {
     });
     const saveCharacterDraft = vi.fn(() => savePending);
     const unsubscribe = vi.fn();
-    const api = {
-      listCharacters: vi.fn(async () => characters),
-      createCharacter: vi.fn(),
-      duplicateCharacter: vi.fn(),
-      getCharacterDraft: vi.fn(async () => draft),
-      listCharacterSources: vi.fn(async () => []),
+    const api = workshopApi({
       saveCharacterDraft,
-      chooseCharacterSources: vi.fn(),
-      readCharacterSource: vi.fn(),
-      publishCharacter: vi.fn(),
-      activateCharacter: vi.fn(),
-      deleteCharacter: vi.fn(),
-      importCharacterPackage: vi.fn(),
-      exportCharacterPackage: vi.fn(),
-      subscribeCharacterEvents: vi.fn(() => vi.fn()),
       onCharacterWorkshopFlushRequested: vi.fn((listener: () => Promise<void>) => {
         flushListener = listener;
         return unsubscribe;
       })
-    } satisfies Pick<
-      MyselfApi,
-      | 'listCharacters'
-      | 'createCharacter'
-      | 'duplicateCharacter'
-      | 'getCharacterDraft'
-      | 'listCharacterSources'
-      | 'saveCharacterDraft'
-      | 'chooseCharacterSources'
-      | 'readCharacterSource'
-      | 'publishCharacter'
-      | 'activateCharacter'
-      | 'deleteCharacter'
-      | 'importCharacterPackage'
-      | 'exportCharacterPackage'
-      | 'subscribeCharacterEvents'
-      | 'onCharacterWorkshopFlushRequested'
-    >;
+    });
 
     const rendered = render(<CharacterWorkshopView api={api} />);
     const nameInput = await screen.findByLabelText('动作名称');
@@ -150,40 +209,11 @@ describe('角色工作室 Renderer 关闭刷新', () => {
       missingRequirements: ['default-presentation-unplayable']
     }];
     const activateCharacter = vi.fn(async () => undefined);
-    const api = {
+    const api = workshopApi({
       listCharacters: vi.fn(async () => staleCharacters),
-      createCharacter: vi.fn(),
-      duplicateCharacter: vi.fn(),
       getCharacterDraft: vi.fn(async () => completeDraft),
-      listCharacterSources: vi.fn(async () => []),
-      saveCharacterDraft: vi.fn(),
-      chooseCharacterSources: vi.fn(),
-      readCharacterSource: vi.fn(),
-      publishCharacter: vi.fn(),
       activateCharacter,
-      deleteCharacter: vi.fn(),
-      importCharacterPackage: vi.fn(),
-      exportCharacterPackage: vi.fn(),
-      subscribeCharacterEvents: vi.fn(() => vi.fn()),
-      onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn())
-    } satisfies Pick<
-      MyselfApi,
-      | 'listCharacters'
-      | 'createCharacter'
-      | 'duplicateCharacter'
-      | 'getCharacterDraft'
-      | 'listCharacterSources'
-      | 'saveCharacterDraft'
-      | 'chooseCharacterSources'
-      | 'readCharacterSource'
-      | 'publishCharacter'
-      | 'activateCharacter'
-      | 'deleteCharacter'
-      | 'importCharacterPackage'
-      | 'exportCharacterPackage'
-      | 'subscribeCharacterEvents'
-      | 'onCharacterWorkshopFlushRequested'
-    >;
+    });
 
     render(<CharacterWorkshopView api={api} />);
     fireEvent.click(await screen.findByRole('button', { name: '启用角色' }));

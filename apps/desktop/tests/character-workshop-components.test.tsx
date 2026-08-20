@@ -20,7 +20,7 @@ import type {
 
 type CharacterWorkshopViewApi = CharacterWorkshopApi & Pick<
   MyselfApi,
-  'onCharacterWorkshopFlushRequested'
+  'onCharacterWorkshopFlushRequested' | 'getCharacterRecoverySnapshot'
 >;
 
 const currentDraft: CharacterDraftV2 = {
@@ -97,7 +97,11 @@ function apiDouble(): CharacterWorkshopViewApi {
     importCharacterPackage: vi.fn(),
     exportCharacterPackage: vi.fn(),
     subscribeCharacterEvents: vi.fn(() => vi.fn()),
-    onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn())
+    onCharacterWorkshopFlushRequested: vi.fn(() => vi.fn()),
+    getCharacterRecoverySnapshot: vi.fn(async () => ({
+      fallbackErrorCode: null,
+      issues: []
+    }))
   };
 }
 
