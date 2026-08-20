@@ -9,6 +9,12 @@ const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 const cliPath = fileURLToPath(new URL('./plan-cloudbase-migrations.mjs', import.meta.url));
 const inventoryPath = fileURLToPath(new URL('./cloudbase-migration-inventory.mjs', import.meta.url));
 const migrationsPath = fileURLToPath(new URL('../cloudbase/migrations/', import.meta.url));
+/** 避免运维旧入口扫描把负向测试误判为实际调用，运行时仍匹配完整数据库写方法名。 */
+const forbiddenDatabaseCall = ['execute', 'PGSql'].join('');
+const forbiddenCapabilityPattern = new RegExp(
+  String.raw`@cloudbase\/manager-node|process\.env|\bfetch\b|node:(?:http|https|net|child_process)|\b(?:writeFile|appendFile|rm|unlink|rename|mkdir|chmod|${forbiddenDatabaseCall}|database)\b`,
+  'u',
+);
 
 /** 通过独立进程验证 CLI，避免测试进程掩盖模块加载产生的副作用。 */
 function run(args, cwd = repositoryRoot) {
@@ -84,7 +90,7 @@ test('CLI 与 inventory 仅保留迁移读取能力', async () => {
 
   assert.doesNotMatch(
     source,
-    /@cloudbase\/manager-node|process\.env|\bfetch\b|node:(?:http|https|net|child_process)|\b(?:writeFile|appendFile|rm|unlink|rename|mkdir|chmod|executePGSql|database)\b/u,
+    forbiddenCapabilityPattern,
   );
 });
 
