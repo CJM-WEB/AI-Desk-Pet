@@ -317,6 +317,13 @@ interface QueryResult {
   error: { code?: string; message: string } | null;
 }
 
+/** 模拟 PostgreSQL JSONB ->>：只接受字符串或有限数值标量。 */
+function jsonScalarText(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
 /** 只模拟仓储使用到的 PostgREST 查询语义，并保存可观察的数据库状态。 */
 class MemoryRdb {
   readonly submissions: MemorySubmission[] = [];
@@ -471,8 +478,9 @@ class MemoryRdb {
           && asset.actual_size !== null
           && evidenceRecord.submissionId === row.id
           && evidenceRecord.packageStorageKey === asset.object_key
-          && evidenceRecord.packageSizeBytes === String(asset.actual_size)
-          && evidenceRecord.submissionStatusVersion === String(params.p_expected_version)
+          && jsonScalarText(evidenceRecord.packageSizeBytes) === String(asset.actual_size)
+          && jsonScalarText(evidenceRecord.submissionStatusVersion)
+            === String(params.p_expected_version)
           && evidenceRecord.scanCode === 'CHARACTER_PACKAGE_SCAN_PASSED'
         );
       });
@@ -1437,6 +1445,56 @@ describe('CloudBase PostgreSQL 仓储', () => {
     })).rejects.toMatchObject({
       code: 'TECHNICAL_SCAN_REQUIRED',
       statusCode: 409
+    });
+  });
+
+  it('数据库 RPC 接受数值形式的当前共享包扫描证据', async () => {
+    const database = new MemoryRdb();
+    database.submissions.push(makeSubmission({
+      id: 'scanned-package',
+      kind: 'shared_package',
+      status: 'manual_review_pending',
+      status_version: 3
+    }));
+    database.assets.push({
+      submission_id: 'scanned-package',
+      object_key: 'submissions/scanned-package/package.zip',
+      original_name: 'pet.zip',
+      declared_size: 1024,
+      actual_size: 1024,
+      mime_type: 'application/zip',
+      role: 'package'
+    });
+    database.moderationResults.push({
+      submission_id: 'scanned-package',
+      kind: 'package_scan',
+      provider: 'isolated-scanner',
+      suggestion: 'Pass',
+      evidence: {
+        submissionId: 'scanned-package',
+        packageStorageKey: 'submissions/scanned-package/package.zip',
+        packageSizeBytes: 1024,
+        submissionStatusVersion: 3,
+        scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+      }
+    });
+    const { store } = createStore(database);
+
+    await expect(store.applyAdminAction({
+      submissionId: 'scanned-package',
+      adminId: 'admin-1',
+      action: 'approve',
+      nextStatus: 'published',
+      expectedVersion: 3,
+      idempotencyKey: 'scanned-package-approve',
+      reason: '批准'
+    })).resolves.toMatchObject({
+      submission: {
+        id: 'scanned-package',
+        status: 'published',
+        statusVersion: 4
+      },
+      replayed: false
     });
   });
 
