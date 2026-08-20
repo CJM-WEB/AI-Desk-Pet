@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { expect, test } from 'vitest';
+import { resolveConfig } from 'vitest/node';
 import desktopPlaywrightConfig from '../../../tests/playwright.config';
 import websitePlaywrightConfig from '../../../tests/playwright.website.config';
 
@@ -35,7 +36,7 @@ function requiredScript(scripts: Record<string, string>, name: string): string {
 }
 
 /** Desktop E2E 的唯一入口契约：配置负责 spec 归属，门禁脚本负责调用该入口。 */
-test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop 可达全部门禁', () => {
+test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop 可达全部门禁', async () => {
   const repositoryRoot = resolve(import.meta.dirname, '../../..');
   const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8')) as {
     scripts: Record<string, string>;
@@ -76,4 +77,11 @@ test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop �
   expect(countCommand(verifyDesktop, 'pnpm test:e2e:desktop')).toBe(1);
   expect(testSecurity).toContain('--config tests/vitest.config.ts');
   expect(testIntegration).toContain('--config tests/vitest.config.ts');
+
+  const desktopRoot = resolve(import.meta.dirname, '..');
+  const { vitestConfig } = await resolveConfig({
+    root: desktopRoot,
+    config: resolve(desktopRoot, 'vitest.config.ts')
+  });
+  expect(vitestConfig.maxWorkers).toBe(4);
 });
