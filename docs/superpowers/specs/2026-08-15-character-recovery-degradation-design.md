@@ -33,10 +33,10 @@
 
 `character-startup.ts` 是 B3 唯一的启动裁决 owner。它接收 B2 `initialize()` 的最小问题报告、索引恢复结果、现有活动运行版本校验、B1 最终分面报告读取和官方默认角色准备依赖，完成以下工作：
 
-1. B2 恢复完成后只执行最后一次 Store/活动 runtime load；该次 load 完成后立即读取 `CharacterStore.getTransactionRecoveryReport()`，把这一个一致性点上的 B1 每个非空分面码投影为公开 issue。不得在随后再次触发会刷新 B1 report 的 Store load；同一角色的草稿和发布均受阻时保留两个 issue，不新增 `BOTH` 派生状态。
+1. B2 恢复完成后先校验活动 runtime 并捕获 fallback 原因；如需 fallback，先完成官方默认角色准备。所有可能刷新 B1 report 的 Store 操作完成后，执行最后一次 Store load，随即读取 `CharacterStore.getTransactionRecoveryReport()`，把这一个一致性点上的 B1 每个非空分面码投影为公开 issue。构造快照前不得再触发 Store load；同一角色的草稿和发布均受阻时保留两个 issue，不新增 `BOTH` 派生状态。
 2. 直接接收 B2 的 `{ characterId, errorCode }` 问题项，不读取 marker 路径、正文、事务令牌或哈希。
 3. 对相同 `characterId + errorCode` 去重，并采用稳定顺序发布，保证测试和界面不会因文件枚举顺序抖动。
-4. 将此前 `recoverCorruptIndex()` 的索引恢复结果与最后一次活动 runtime load 一并裁决 fallback，并在返回非空 `fallbackErrorCode` 前完成官方默认角色准备。非活动角色和单纯导入恢复问题不得触发 fallback。
+4. 将此前 `recoverCorruptIndex()` 的索引恢复结果与活动 runtime 校验一并裁决 fallback，并在最后一次 Store load 与快照构造前完成官方默认角色准备。非活动角色和单纯导入恢复问题不得触发 fallback。
 5. 返回启动所需的内部结果与一份只读公开快照。Main 只保存这份已完成裁决的快照，后续调用只读取该快照，不重新执行恢复。
 
 现有数据流原位深化为：
@@ -88,7 +88,7 @@ type CharacterRecoverySnapshotDto = Readonly<{
 }>;
 ```
 
-实际 Schema 必须继续使用现有安全角色 ID 规则，并严格使用上述两个互不混用的封闭集合；不能仅接受任意字符串。Package issue 码不能进入 `fallbackErrorCode`，启动 fallback 码也不能伪装成逐角色 issue。对象与嵌套 issue 均拒绝额外字段。
+实际 Schema 必须继续使用现有安全角色 ID 规则，并按字段严格使用上述两个封闭集合，不能仅接受任意字符串。Package issue 码不能进入 `fallbackErrorCode`；只属于启动 fallback 的码不能进入逐角色 issue。`CHARACTER_PUBLISH_RECOVERY_BLOCKED` 与 `CHARACTER_RECOVERY_DEFERRED` 是两个集合有意共有的活动 B1 码，活动角色发生这些问题时允许同时出现在对应 issue 和 `fallbackErrorCode`。对象与嵌套 issue 均拒绝额外字段。
 
 契约不包含：
 
@@ -101,7 +101,7 @@ type CharacterRecoverySnapshotDto = Readonly<{
 
 ## 6. Main、IPC 与 Preload
 
-- Main 先完成索引损坏恢复与 B2，再调用现有启动模块。启动模块执行最后一次 Store/活动 runtime load，随后读取不再被刷新的一份 B1 report；只有活动角色不可运行、活动 publish 恢复受阻/推迟或索引整体不可用时，才通过注入依赖确保官方默认角色可用并形成 fallback 快照。
+- Main 先完成索引损坏恢复与 B2，再调用现有启动模块。启动模块先校验活动 runtime并决定是否准备官方默认角色；完成所有可能刷新恢复报告的 Store 操作后，再执行最后一次 Store load并立即读取 B1 report。只有活动角色不可运行、活动 publish 恢复受阻/推迟或索引整体不可用时，才形成非空 fallback 码。
 - 现有 `registerCharacterIpc()` 仍负责固定通道。其旧 `() => string | null` 标量 callback 原位替换为已经完成启动裁决的只读快照值，不保留无动态行为的 callback，也不增加新 handler 或 Actions 方法。
 - IPC 输入仍必须是严格空对象；输出必须经过新的严格快照 Schema。一次坏 issue 不得通过绕过 Schema 的方式进入 Renderer。
 - 现有 Preload `getCharacterRecoverySnapshot()` 方法保留并更新返回类型，仍对 Main 返回值再次执行同一 Schema 校验；不暴露第二个恢复方法。
@@ -131,7 +131,7 @@ Chat 的创建、Provider 配置、消息提交和工具状态均不读取恢复
 - B2 只向 B3 提供经过自身校验的最小 `{ characterId, errorCode }` 报告。无法可靠确认角色 ID 的损坏 marker 只在 Main 内隔离并记录固定错误码，不伪造公开 issue。
 - 活动角色只有草稿恢复受阻、但现有 compiled runtime 仍健康时继续运行；发布恢复受阻、运行清单或资源校验失败、活动运行版本缺失，或索引整体不可用时执行 fallback。
 - 非活动角色的任何 Store 或 Package 问题只进入 `issues`，不设置 `fallbackErrorCode`。
-- 未知内部异常统一收敛为允许公开的稳定错误码，不回显异常正文。公开映射缺少文案时使用统一安全兜底文案，不把未知字符串原样展示。
+- 任何不在 `CharacterRecoveryFallbackErrorCode` 白名单内的异常或稳定内部码（包括路径安全等不应公开区分的内部原因）统一规范化为 `CHARACTER_OPERATION_FAILED`，不回显异常正文或原始码。公开映射缺少文案时使用统一安全兜底文案，不把未知字符串原样展示。
 - B1/B2 的 256 项上限和 2000ms 角色间软预算继续由各自恢复 owner 执行；B3 只投影其结果，不重复计时或调度恢复。
 
 ## 9. 替换与删除
@@ -152,7 +152,7 @@ Chat 的创建、Provider 配置、消息提交和工具状态均不读取恢复
 
 按 replace-don't-layer 分配证据：
 
-- `character-startup` 测试完整覆盖 B2 完成后最后一次 Store/runtime load、随后读取 B1 report 且不再刷新这一顺序，以及 B1/B2 报告投影、去重与稳定顺序、活动/非活动裁决、草稿受阻但健康 runtime 继续运行、发布或 runtime 受阻触发 fallback；Chat 不作为依赖。
+- `character-startup` 测试完整覆盖 B2 完成后活动 runtime 校验、必要的默认角色准备、最后一次 Store load、读取 B1 report并构造快照的顺序，以及 B1/B2 报告投影、去重与稳定顺序、活动/非活动裁决、草稿受阻但健康 runtime 继续运行、发布或 runtime 受阻触发 fallback；Chat 不作为依赖。
 - Character IPC 与 Preload 测试各保留一条纵向证据，证明严格空输入、最小快照返回、额外字段和非白名单错误码被拒绝。
 - `character-recovery.ts` 测试公开错误码到中文说明、能力影响和建议的映射；Pet 测试只验证 fallback，Workshop View 测试只验证当前选中角色过滤且不写入 Store。
 - B1/B2 的损坏 marker、预算、所有权和逐项隔离矩阵留在各自模块测试，不在 B3 重复。
