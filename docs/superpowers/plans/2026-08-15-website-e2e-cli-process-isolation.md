@@ -505,7 +505,7 @@ Expected: 只提交两个编排器文件；尚未增加可执行 CLI 入口，�
 **Files:**
 - Modify: `tools/verification/run-website-e2e-process-isolation.mjs`
 - Modify: `tools/verification/run-website-e2e-process-isolation.test.mjs`
-- Modify: `tests/e2e/website.spec.ts`（只替换已批准的截图后四行断言）
+- Modify: `tests/e2e/website.spec.ts`（只删除已批准的截图后重复行为段并收窄测试名）
 
 **Interfaces:**
 - Consumes: Tasks 1—2 的解析、命令、顺序执行和精确终止接口。
@@ -514,8 +514,8 @@ Expected: 只提交两个编排器文件；尚未增加可执行 CLI 入口，�
 - Produces: `formatWebsiteRunSummary(summary: WebsiteRunSummary): string`。
 - Produces: `runWebsiteE2EMain(dependencies?: MainDependencies): Promise<WebsiteRunSummary>`。
 - Produces: CLI `node tools/verification/run-website-e2e-process-isolation.mjs`，无业务参数。
-- Reuses: 既有 `enterInteractive(page)`，不得新增等待 helper、fixture、产品逻辑或测试项。
-- Removes: 截图后依赖被阻塞 RAF 时序的四行 `data-active-chapter="home"` 断言，以一行既有 helper 调用替换，净减少三行。
+- Reuses: 紧随其后的滚轮状态机测试、`chapter-model.test.ts` 与后续 PageDown 测试已有覆盖，不新增重复测试。
+- Removes: 截图后的巨大滚轮、六次 `PageDown`、一次 `PageUp` 及对应重复断言；保留视觉交接、截图、当前章节与运行时错误证据。
 - Removes: 无外部消费者的 `WEBSITE_E2E_OUTPUT_ROOT` 导出，将其收回为模块私有 `const`；运行路径与值不变。
 
 - [ ] **Step 1: 写发现失败、汇总与临时文件清理 RED**
@@ -741,7 +741,7 @@ node.exe node_modules/@playwright/test/cli.js test --config tests/playwright.web
 
 Expected: 每条命令各发现并运行 1 项，均退出 0；进程之间无共享 Playwright worker。随后用 `apply_patch` 删除两个短期文件。
 
-- [ ] **Step 6: 复现截图阻塞 RED 并做净减法修正**
+- [ ] **Step 6: 复现截图阻塞 RED 并删除重复后半段**
 
 使用本轮 `--list` 返回的完整描述创建单项短期 test-list，并单独运行：
 
@@ -751,22 +751,9 @@ node.exe node_modules/@playwright/test/cli.js test --config tests/playwright.web
 
 Expected RED: `逐章节交接且快速输入不能跳过相邻章节` 在第二次滚轮后期望 `about`、实际为 `home`。该 RED 已于 2026-08-15 在独立 CLI 中重复两次，不得改写为 GPU 或产品失败。
 
-仅在该测试中把截图后的：
+把测试名称改为 `逐章节透明交接保持原位层级并生成截图证据`。保留截图后的 `data-active-chapter="home"` 断言和末尾 `runtimeErrors` 断言；删除从 `await page.mouse.wheel(0, 5_000);` 开始，到 `PageUp` 后 `about` 断言结束的整个重复行为段。
 
-```ts
-await expect(page.locator(WEBSITE)).toHaveAttribute(
-  'data-active-chapter',
-  'home'
-);
-```
-
-替换为：
-
-```ts
-await enterInteractive(page);
-```
-
-不得增加 `waitForTimeout`、新 helper、新测试、retry、timeout 或产品代码。随后原样复跑单项命令。Expected GREEN: `1 passed`、退出码 0；测试总数仍为 45。使用 `apply_patch` 删除短期 test-list。
+不得增加页面重载、`waitForTimeout`、新 helper、新测试、retry、timeout 或产品代码。随后从新清单复制改名后的完整描述并原样复跑单项命令。Expected GREEN: `1 passed`、退出码 0；测试总数仍为 45。使用 `apply_patch` 删除短期 test-list。
 
 - [ ] **Step 7: 直接运行正式编排器并执行 15 分钟止损**
 
@@ -807,7 +794,7 @@ Expected: 没有本轮遗留且命令行指向当前工作区的进程；全部�
 Task 3 报告必须明确记录：
 
 - 编排器新增职责为何无法由同步 `verify-web-chain.mjs` 复用；
-- `website.spec.ts` 只发生四行换一行，未增加 helper、测试项或产品分支；
+- `website.spec.ts` 只收窄测试名称并删除重复行为段，未增加 helper、测试项或产品分支；
 - `WEBSITE_E2E_OUTPUT_ROOT` 已取消导出，`rg` 对其余新增导出与 CLI 入口的消费者结果不含未使用公开接口；
 - Task 4 待删除旧 fixture 的精确文件和行数，不把计划中的删除误写成已完成。
 

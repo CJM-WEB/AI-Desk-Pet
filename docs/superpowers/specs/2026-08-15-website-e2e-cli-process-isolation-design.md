@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-15
 
-**修订：** 2026-08-20，加入“能不加就不加，能减则减”的严格替换门禁，并批准修正一个被截图阻塞污染的既有 E2E 用例。
+**修订：** 2026-08-20，加入“能不加就不加，能减则减”的严格替换门禁；第二次修订以删除重复断言替代已被真实运行证伪的页面重载方案。
 
 **状态：** 已获用户书面批准
 
@@ -221,16 +221,18 @@ tests/.playwright-output/website-process-isolation/002/
 
 若逐项 CLI 仍出现同类 GPU stall，立即停止隔离层修改；不得再增加分批、重试、超时或产品清理。后续必须以 trace、系统 GPU 进程与单项重复运行证据重新判断是否属于页面或 Windows 图形栈问题。
 
-### 10.3 截图阻塞污染的测试修正
+### 10.3 截图阻塞污染的测试减法
 
 真实逐项运行发现 `逐章节交接且快速输入不能跳过相邻章节` 可在独立 CLI 中稳定失败。诊断证据如下：
 
 1. 原用例单独运行两次均在第二次滚轮后停留 `home`。
 2. 第二次 `wheel(deltaY=5000)` 已到达页面，窗口仍为 focused/visible，但进度约为 `0.0002`，证明输入进入控制器后被锁定分支丢弃。
 3. 仅移动鼠标或等待 `950ms` 均失败；移除截图或在截图后等待覆盖回吸动画与锁定期的 `1400ms` 均通过。
-4. 根因是 Playwright 截图阻塞首轮回吸的 RAF；截图返回后仍需完成约 `380ms` 回吸，再进入 `800ms` 锁定。该失败不是产品行为回归，也不是 CLI 进程隔离失败。
+4. 首次修订提出在截图后复用 `enterInteractive(page)` 重载页面。真实运行两次均在 60 秒全局预算内失败，因此该方案已证伪，不得实施或保留在计划中。
+5. Trace 证明第二次导航返回 200，HTML、CSS 与全部 Next.js chunk 均成功加载，导航后快照仍为 `data-phase="interactive"`；随后出现 WebGL `CONTEXT_LOST` 与连续 `ReadPixels` GPU stall，阻塞 Playwright 观察直到耗尽全局预算。空 `data-phase` 是阻塞期症状，不是页面未初始化。
+6. 同一用例截图后的巨大滚轮相邻约束已由紧随其后的 `普通滚轮连续追赶、吸附、隔离惯性并重计新手势` 和 `apps/website/tests/chapter-model.test.ts` 覆盖；键盘推进与禁止纵向滚动已由 `PageDown 推进非纵向滚动章节并在终点保留共享液态背景` 覆盖。
 
-批准的最小修正只修改该用例：保留交接帧断言和截图，把截图后原有的四行 `data-active-chapter="home"` 断言替换为既有 `enterInteractive(page)`。该 helper 重新加载同一固定 seed 并等待交互阶段，使后续“大输入最多进入相邻章节”从干净页面验证。不得新增 sleep、helper、fixture、重试、产品分支或新测试项；替换后该处净减少三行。
+批准的修正只做删除：把测试名称收窄为 `逐章节透明交接保持原位层级并生成截图证据`，保留交接帧样式断言、截图、截图后当前章节仍为 `home` 的断言与运行时错误检查；删除其后的巨大滚轮、六次 `PageDown`、一次 `PageUp` 及对应重复断言。不得新增页面重载、sleep、helper、fixture、重试、产品分支或新测试项；测试总数保持 45。
 
 ## 11. 迁移与删除
 
@@ -257,12 +259,12 @@ tests/.playwright-output/website-process-isolation/002/
 预计修改：
 
 - `package.json` 的 `test:e2e:website` 独立 hunk；
-- `tests/e2e/website.spec.ts` 中一个截图后状态重置点，复用既有 `enterInteractive(page)` 且净减少三行；
+- `tests/e2e/website.spec.ts` 中一个截图用例，删除已由相邻测试覆盖的滚轮与键盘后半段；
 - `tools/verification/website-scope-policy.mjs` 及其测试；
 - 当前与已退役的网站 E2E 隔离规格、计划；
 - `docs/superpowers/plans/2026-08-15-website-verification-foundation.md` 的实际状态说明。
 
-验证通过后删除两个失败 fixture 文件。除第 10.3 节批准的单一替换外，`tests/e2e/website.spec.ts` 不修改；`tests/playwright.website.config.ts` 始终不修改。任何其他测试或配置变化必须先修订并重新批准本规格。
+验证通过后删除两个失败 fixture 文件。除第 10.3 节批准的单一删减外，`tests/e2e/website.spec.ts` 不修改；`tests/playwright.website.config.ts` 始终不修改。任何其他测试或配置变化必须先修订并重新批准本规格。
 
 始终禁止修改：
 
