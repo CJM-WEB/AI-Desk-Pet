@@ -25,7 +25,7 @@
 
 | 文件 | 本轮职责 | 允许的修改 |
 | --- | --- | --- |
-| `tests/e2e/desktop.spec.ts` | Desktop E2E 与 Electron fixture 消费者 | 深化 loader，删除 58 处重复存在性断言、早退与同义 cleanup 守卫 |
+| `tests/e2e/desktop.spec.ts` | Desktop E2E 与 Electron fixture 消费者 | 深化 loader，收敛 58 个调用点中的 57 组 nullable 断言/guard 和 1 个 `beforeAll` 的 nullable throw |
 | `apps/desktop/tests/character-startup.test.ts` | 启动恢复行为 owner | 让 `start()` 复用既有 `recordingDependencies()` |
 | `apps/desktop/tests/character-ipc.test.ts` | Main IPC 与共享恢复 Schema owner | 删除恢复专用 case 中已被通用空输入矩阵覆盖的非法输入断言 |
 | `apps/desktop/tests/preload-api.test.ts` | Preload 二次 Schema 边界 owner | 非法 Main 返回矩阵只保留一个代表样例 |
@@ -35,7 +35,7 @@
 
 ---
 
-### Task 1：深化 Electron fixture loader 并删除 58 处重复守卫
+### Task 1：深化 Electron fixture loader 并收敛 58 个调用点
 
 **文件：**
 - 修改：`tests/e2e/desktop.spec.ts`
@@ -44,19 +44,72 @@
 - `loadElectronFixtureModule(): Promise<ElectronFixtureModule>` 成为 fixture 模块装载的唯一 owner。
 - 所有调用者直接获得非空模块；动态 import 失败沿原异常抛出，不再把基础设施错误伪装成 `null` 后早退。
 - 业务级 `fixture.dispose()`、诊断订阅、重启状态和场景自身 cleanup 不属于删除范围。
+- 审计基数是 58 个调用点：普通场景有 57 组 nullable 断言/guard，`角色恢复` 的 `beforeAll` 另有 1 个 `if (!loaded) throw`。不得把“58 个调用点”误写为 58 组可删除 guard。
+- `if (!fixture.restart) return` 检查的是可选业务能力，不检查 loader nullability，必须原样保留。
 
 - [ ] **Step 1：取得守卫清单与 characterization GREEN**
 
   ```powershell
   rg -n "loadElectronFixtureModule|not\.toBeNull|createElectronAppFixture\)\.toBe|if \(!(?:fixture|fixtureModule|loaded)|if \(!(?:fixture|fixtureModule|loaded)\?\.createElectronAppFixture" tests/e2e/desktop.spec.ts
+  rg -n "if \(!fixture\.restart\)|fixture\.restart" tests/e2e/desktop.spec.ts
   pnpm.cmd --filter @myself/desktop build
   pnpm.cmd exec playwright test --list --config tests/playwright.config.ts
   pnpm.cmd exec playwright test --config tests/playwright.config.ts
   ```
 
-  预期：清单能逐项对应只用于 nullable loader 的 58 处重复 `expect`、`if-return`、`if-throw` 或同义 cleanup 守卫；完整 Desktop E2E 与清单均 GREEN。若某个守卫还保护业务资源而非 module nullability，标为唯一 owner 并禁止删除。
+  预期：除函数定义外恰有 58 个 loader 调用点；57 组普通 nullable `expect`/guard 与 1 个 `beforeAll` nullable throw 可逐项对应。完整 Desktop E2E 与清单均 GREEN。若某个 guard 还保护业务资源而非 module nullability，标为唯一 owner 并禁止删除；单独记录现有 `if (!fixture.restart) return` 的行号，供完成门复核。
 
-- [ ] **Step 2：先用模块路径 mutation 证明失败必须可见**
+- [ ] **Step 2：先把八个 Provider 场景改为 loader-first**
+
+  下列八个场景当前先启动 Provider、后加载 fixture，nullable guard 内还承担 `provider.close()`：
+
+  1. “聊天阶段、情绪、错误降级与角色切换保持 Main 到 Renderer 闭环”；
+  2. “默认聊天与设置浮层提示”；
+  3. “无授权范围时连续三轮普通聊天并把完整可见回合传入第三轮”；
+  4. “模糊请求按默认聊天回复且明确文件请求在无授权时只引导设置”；
+  5. “Chat 与 Agent 跨 Provider 时两种披露决定均继续且单次共享不会复用”（`sourceProvider` 与 `targetProvider` 两个 Provider 都必须后移）；
+  6. “模型响应挂起时新建对话会隔离迟到回复并允许新会话继续”；
+  7. “文件动作待确认时新建对话会使旧确认失效且不改文件”；
+  8. “回收站搬运闭环只在提交帧后写入隔离适配器并安全处理中断与失败”。
+
+  在仍保留 nullable loader 实现和原 guard 的阶段，逐场景把：
+
+  ```ts
+  const fixtureModule = await loadElectronFixtureModule();
+  ```
+
+  移到该场景第一次 `startProviderServer(...)` 之前；双 Provider 场景必须位于两次启动之前。只移动 loader 调用，不新建 `try/finally` helper 或 cleanup DSL，不改变场景结束时已有的 `provider.close()`。
+
+  静态列出顺序并逐项人工核对：
+
+  ```powershell
+  rg -n "loadElectronFixtureModule|startProviderServer" tests/e2e/desktop.spec.ts
+  ```
+
+  完成门：上述八个场景中，loader 的行号都小于本场景任意 `startProviderServer` 行号；没有场景为了 loader 失败而先启动 Provider。通过后才进入 Step 3。
+
+- [ ] **Step 3：先实现非空 loader，再删除 nullable 表达**
+
+  将 loader 收敛为以下非空接口，不增加 wrapper：
+
+  ```ts
+  async function loadElectronFixtureModule(): Promise<ElectronFixtureModule> {
+    const moduleUrl = pathToFileURL(
+      resolve(process.cwd(), 'tests/fixtures/electron-app.ts')
+    ).href;
+    return await import(moduleUrl) as ElectronFixtureModule;
+  }
+  ```
+
+  确认该实现已落盘后，才机械删除 57 组只验证 module 存在的 nullable 断言/guard，并把 `const loaded = ...; if (!loaded) throw ...; fixtureModule = loaded` 收敛为直接赋值。八个 Provider 场景中 guard 内旧的 `provider.close()` 随 nullable guard 一并消失，因为此时 Provider 尚未启动且 loader 已直接抛错；场景结束时原有 cleanup 不动。
+
+  不得合并测试标题、删除场景、改 timeout、添加 retry，或删除业务对象自己的 dispose/cleanup。特别保留：
+
+  ```ts
+  if (!fixture.restart) return;
+  ```
+
+- [ ] **Step 4：在非空实现上做模块路径 mutation**
 
   临时把 loader 中的固定路径：
 
@@ -76,36 +129,27 @@
   pnpm.cmd exec playwright test --config tests/playwright.config.ts --grep "使用项目精确 Electron 路径"
   ```
 
-  预期：RED，错误直接指向无法导入 fixture，而不是测试静默 return。立即反向 `apply_patch` 恢复原路径，并用 `git diff -- tests/e2e/desktop.spec.ts` 确认只剩计划内测试重构。
+  预期：RED，错误含 `ERR_MODULE_NOT_FOUND` 或明确的“无法导入 `electron-app-does-not-exist.ts`”信息，证明非空 loader 直接抛出，而不是返回 `null` 后静默 return。立即反向 `apply_patch` 恢复原路径，并用 `git diff -- tests/e2e/desktop.spec.ts` 确认只剩计划内测试重构。
 
-- [ ] **Step 3：用最小实现替换 nullable loader**
-
-  将 loader 收敛为以下非空接口，不增加 wrapper：
-
-  ```ts
-  async function loadElectronFixtureModule(): Promise<ElectronFixtureModule> {
-    const moduleUrl = pathToFileURL(
-      resolve(process.cwd(), 'tests/fixtures/electron-app.ts')
-    ).href;
-    return await import(moduleUrl) as ElectronFixtureModule;
-  }
-  ```
-
-  机械删除 58 处只验证 module 存在后早退或抛错的重复表达；`const loaded = ...; if (!loaded) throw ...; fixtureModule = loaded` 收敛为直接赋值。不得合并测试标题、删除场景、改 timeout、添加 retry，或删除业务对象自己的 dispose/cleanup。
-
-- [ ] **Step 4：恢复后运行完整验证**
+- [ ] **Step 5：恢复后运行完整验证**
 
   ```powershell
   pnpm.cmd --filter @myself/desktop build
   pnpm.cmd exec playwright test --config tests/playwright.config.ts
   pnpm.cmd exec playwright test --list --config tests/playwright.config.ts
-  git diff --numstat b16d542..HEAD -- tests/e2e/desktop.spec.ts
+  git diff --numstat HEAD -- tests/e2e/desktop.spec.ts
   git diff --check
   ```
 
-  完成门：Desktop E2E 场景数和标题清单不变；loader 路径 mutation 曾因 import 失败 RED；最终完整 E2E GREEN；文件净减；独立审查确认没有删除业务 cleanup 且 Critical/Important 为零。
+  再做一次静态与人工顺序核对：
 
-- [ ] **Step 5：提交本任务**
+  ```powershell
+  rg -n "loadElectronFixtureModule|startProviderServer|if \(!fixture\.restart\)" tests/e2e/desktop.spec.ts
+  ```
+
+  完成门：Desktop E2E 场景数和标题清单不变；非空 loader 上的路径 mutation 曾因 `ERR_MODULE_NOT_FOUND` 或等价缺失模块错误 RED；最终完整 E2E GREEN；当前工作树相对 `HEAD` 的文件净减；57 组 nullable guard 与 1 个 `beforeAll` nullable throw 已删除；`if (!fixture.restart) return` 保留；上述八个场景均不存在本场景 `startProviderServer` 先于 loader；独立审查确认没有删除业务 cleanup 且 Critical/Important 为零。
+
+- [ ] **Step 6：提交本任务**
 
   ```powershell
   git add tests/e2e/desktop.spec.ts
