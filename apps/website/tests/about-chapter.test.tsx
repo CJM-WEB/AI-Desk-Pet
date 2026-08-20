@@ -56,42 +56,17 @@ describe('AI Pet 液态玻璃介绍章节', () => {
     }));
   });
 
-  it('着色器使用圆角块与水态颈部的同一 SDF 轮廓', () => {
+  it('着色器只保留首页到介绍交接的基础玻璃轮廓', () => {
     expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('liquidGlassSdf');
     expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('capsuleSdf');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_blobOffsets[3]');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_hoverAmount');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_dragging');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_rippleActivity');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_cornerTextTexture');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_glassTextTexture');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
-      'mix(neck01, 100000.0, disconnected)'
-    );
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('float cut01');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('/ scale0');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
-      'mix(7.0, 32.0, u_hoverAmount)'
-    );
-  });
-
-  it('着色器仅用固定五点采样柔化后层支持按钮', () => {
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('float supportButtonDepthRank(float index)');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('float supportButtonBlurPx(float index)');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('supportBlurStep');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('supportButtonBlurPx(supportIndex)');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('return clamp(depth, 0.0, 2.0) * 2.5;');
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
-      'if (supportSourceMask > 0.001 && supportMask > 0.001)'
-    );
-
-    const sampler = LIQUID_GLASS_FRAGMENT_SHADER.match(
-      /vec4 sampleSupportText\(vec2 uv, float blurPx\) \{[\s\S]*?return softened;\s*\}/
-    )?.[0];
-    expect(sampler).toBeDefined();
-    expect(sampler?.match(/texture2D\(u_supportTextTexture/g)).toHaveLength(5);
-    expect(sampler).not.toContain('for (');
-    expect(sampler).toContain('if (blurPx <= 0.001) return sharp;');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain('u_ripples[6]');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_blobOffsets');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_hoverAmount');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_dragging');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_cornerTextTexture');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_glassTextTexture');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_supportTextTexture');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('supportButton');
   });
 
   it('减少动态效果时关闭持续浮动', () => {

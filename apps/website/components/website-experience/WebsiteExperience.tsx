@@ -85,13 +85,10 @@ export function WebsiteExperience({
       controller.progress,
       reducedMotion
     );
-    // 首页 WebGL 在介绍模块完成前持续作为共同背景，保证玻璃分裂不跳帧。
-    const visual = chapter.id === 'home' && controller.progress <= 4
-      ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
-      : chapter.id === 'download'
+    const visual = chapter.id === 'download'
           && controller.progress > 1
           && controller.progress <= 2
-        ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
+      ? { ...derived, opacity: 1, scale: 1, blurPx: 0, contrast: 1, visible: true }
       : derived;
     return { chapter, visual };
   });

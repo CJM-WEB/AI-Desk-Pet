@@ -59,7 +59,7 @@ describe('下载模块', () => {
     window.removeEventListener('wheel', bubbledWheel);
   });
 
-  it('安装提示与常见问题只保留语义层并由独立玻璃纹理显示', () => {
+  it('安装提示与常见问题只由语义层显示，不再镜像到 GPU 纹理', () => {
     const { container } = render(
       <DownloadChapter interactive staticFallback transitionProgress={2} />
     );
@@ -67,15 +67,8 @@ describe('下载模块', () => {
     expect(notice.textContent).toContain('安装前须知');
     expect(notice.textContent).toContain('常见问题');
     expect(container.querySelector('[class*="glassCopyContent"]')).toBeNull();
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
-      'uniform sampler2D u_downloadTextTexture;'
-    );
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).toContain(
-      'texture2D(u_downloadTextTexture, featureUv - downloadMotion)'
-    );
-    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain(
-      'texture2D(u_glassTextTexture, featureUv - downloadMotion)'
-    );
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_downloadTextTexture');
+    expect(LIQUID_GLASS_FRAGMENT_SHADER).not.toContain('u_downloadTransition');
   });
 
   it('Windows 大字在下载过渡末段前保持在屏幕外', () => {

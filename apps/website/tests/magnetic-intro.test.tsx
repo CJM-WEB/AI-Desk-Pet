@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LiquidGlassHome } from '../components/home-experience/LiquidGlassHome';
+import { HomeExperience } from '../components/home-experience/HomeExperience';
 import { MagneticAPMark } from '../components/home-experience/MagneticAPMark';
 
 function createCanvasContext() {
@@ -70,6 +71,11 @@ afterEach(() => {
 });
 
 describe('磁吸 Logo 舞台', () => {
+  it('介绍交接结束后立即释放首页液态玻璃', () => {
+    render(<HomeExperience exitProgress={1.08} isPaused={false} reducedMotion />);
+
+    expect(screen.getByTestId('home-experience').dataset.liquidHomeActive).toBe('false');
+  });
   it('渲染六块来自真实 AP.png 的重叠裁切图片', () => {
     const html = renderToStaticMarkup(createElement(MagneticAPMark));
 

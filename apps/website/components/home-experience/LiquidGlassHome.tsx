@@ -1,10 +1,7 @@
 'use client';
 
 import { gsap } from 'gsap';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useI18n } from '../i18n/I18nProvider';
-import { createAboutFeatures } from '../website-experience/about/about-content';
-import { createDownloadContent } from '../website-experience/download/download-content';
+import { useEffect, useRef, useState } from 'react';
 import {
   LIQUID_GLASS_FRAGMENT_SHADER,
   LIQUID_GLASS_VERTEX_SHADER
@@ -19,7 +16,7 @@ interface LiquidGlassHomeProps {
 }
 
 /**
- * 将液态玻璃原型封装为首页稳定态叶子组件，离开首页时完整释放 GPU 与动画资源。
+ * 首页液态玻璃只负责首页到介绍章节的视觉交接；业务文案始终由章节 DOM 持有。
  */
 export function LiquidGlassHome({
   active,
@@ -27,29 +24,6 @@ export function LiquidGlassHome({
   reducedMotion,
   transitionProgress = 0
 }: LiquidGlassHomeProps) {
-  const { t } = useI18n();
-  const glassFeatures = useMemo(() => {
-    const featureMap = new Map(createAboutFeatures(t).map(feature => [feature.id, feature]));
-    return [
-      featureMap.get('text-editor')!,
-      featureMap.get('companion-chat')!,
-      featureMap.get('file-management')!
-    ];
-  }, [t]);
-  const downloadGlassCopy = useMemo(() => {
-    const content = createDownloadContent(t);
-    return {
-      faqBody: content.faqItems
-        .slice(0, 3)
-        .map((item) => `• ${item.question}\n  ${item.answer}`)
-        .join('\n\n'),
-      faqTitle: t('download.faq.label'),
-      noticeBody: content.installNoticeItems
-        .map((item) => `• ${item.title}\n  ${item.body}`)
-        .join('\n\n'),
-      noticeTitle: t('download.notice.label')
-    };
-  }, [t]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pausedRef = useRef(isPaused);
   const transitionRef = useRef(transitionProgress);
@@ -66,11 +40,9 @@ export function LiquidGlassHome({
   useEffect(() => {
     let systemReducedMotion = reducedMotion;
     try {
-      systemReducedMotion ||= window.matchMedia(
-        '(prefers-reduced-motion: reduce)'
-      ).matches;
+      systemReducedMotion ||= window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     } catch {
-      // 控制器统一报告媒体 API 失败；叶子组件保持既有初始化流程。
+      // 媒体 API 不可用时继续使用控制器传入的偏好。
     }
     if (!active || systemReducedMotion) {
       setInitializationFailed(false);
@@ -96,10 +68,7 @@ export function LiquidGlassHome({
     let inset = 48;
     let radius = 62;
     let rippleIndex = 0;
-    let downloadTypingStartedAt = -1;
-    let lastTypedCharacters = -1;
-    const downloadTypingLength = Object.values(downloadGlassCopy)
-      .reduce((total, text) => total + Array.from(text).length, 0);
+    let lastTextProgress = -1;
     const pointer = { x: 0.5, y: 0.5 };
     const rippleData = new Float32Array(6 * 4);
     const createdTextures: WebGLTexture[] = [];
@@ -130,14 +99,8 @@ export function LiquidGlassHome({
       return texture;
     };
 
-    const pointerX = gsap.quickTo(pointer, 'x', {
-      duration: 0.38,
-      ease: 'power3.out'
-    });
-    const pointerY = gsap.quickTo(pointer, 'y', {
-      duration: 0.38,
-      ease: 'power3.out'
-    });
+    const pointerX = gsap.quickTo(pointer, 'x', { duration: 0.38, ease: 'power3.out' });
+    const pointerY = gsap.quickTo(pointer, 'y', { duration: 0.38, ease: 'power3.out' });
     let render = (_time: number) => {};
     let resize = () => {};
     let updateLogoTexture = (_width: number, _height: number) => {};
@@ -160,14 +123,9 @@ export function LiquidGlassHome({
       createdBuffers.push(positions);
       gl.bindBuffer(gl.ARRAY_BUFFER, positions);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-        -1, -1,
-        1, -1,
-        -1, 1,
-        -1, 1,
-        1, -1,
-        1, 1
+        -1, -1, 1, -1, -1, 1,
+        -1, 1, 1, -1, 1, 1
       ]), gl.STATIC_DRAW);
-
       const positionLocation = gl.getAttribLocation(program, 'a_position');
       gl.enableVertexAttribArray(positionLocation);
       gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
@@ -180,72 +138,37 @@ export function LiquidGlassHome({
         radius: gl.getUniformLocation(program, 'u_radius'),
         motion: gl.getUniformLocation(program, 'u_motion'),
         transition: gl.getUniformLocation(program, 'u_transition'),
-        downloadTransition: gl.getUniformLocation(program, 'u_downloadTransition'),
-        communityTransition: gl.getUniformLocation(program, 'u_communityTransition'),
-        supportTransition: gl.getUniformLocation(program, 'u_supportTransition'),
-        supportFeedbackActive: gl.getUniformLocation(program, 'u_supportFeedbackActive'),
-        supportPaymentActive: gl.getUniformLocation(program, 'u_supportPaymentActive'),
-        communityCardCount: gl.getUniformLocation(program, 'u_communityCardCount'),
-        blobOffsets: gl.getUniformLocation(program, 'u_blobOffsets[0]'),
-        hoveredBlob: gl.getUniformLocation(program, 'u_hoveredBlob'),
-        hoverAmount: gl.getUniformLocation(program, 'u_hoverAmount'),
-        dragging: gl.getUniformLocation(program, 'u_dragging'),
-        rippleActivity: gl.getUniformLocation(program, 'u_rippleActivity'),
         ripples: gl.getUniformLocation(program, 'u_ripples[0]'),
         logoTexture: gl.getUniformLocation(program, 'u_logoTexture'),
-        textTexture: gl.getUniformLocation(program, 'u_textTexture'),
-        cornerTextTexture: gl.getUniformLocation(program, 'u_cornerTextTexture'),
-        glassTextTexture: gl.getUniformLocation(program, 'u_glassTextTexture'),
-        downloadTextTexture: gl.getUniformLocation(program, 'u_downloadTextTexture'),
-        communityTextTexture: gl.getUniformLocation(program, 'u_communityTextTexture'),
-        supportTextTexture: gl.getUniformLocation(program, 'u_supportTextTexture')
+        textTexture: gl.getUniformLocation(program, 'u_textTexture')
       };
 
       const logoCanvas = document.createElement('canvas');
       const logoContext = logoCanvas.getContext('2d');
       const textCanvas = document.createElement('canvas');
       const textContext = textCanvas.getContext('2d');
-      const cornerTextCanvas = document.createElement('canvas');
-      const cornerTextContext = cornerTextCanvas.getContext('2d');
-      const glassTextCanvas = document.createElement('canvas');
-      const glassTextContext = glassTextCanvas.getContext('2d');
-      const downloadTextCanvas = document.createElement('canvas');
-      const downloadTextContext = downloadTextCanvas.getContext('2d');
-      const communityTextCanvas = document.createElement('canvas');
-      const communityTextContext = communityTextCanvas.getContext('2d');
-      const supportTextCanvas = document.createElement('canvas');
-      const supportTextContext = supportTextCanvas.getContext('2d');
-      if (
-        !logoContext
-        || !textContext
-        || !cornerTextContext
-        || !glassTextContext
-        || !downloadTextContext
-        || !communityTextContext
-        || !supportTextContext
-      ) {
-        throw new Error('无法创建首页纹理画布');
-      }
+      if (!logoContext || !textContext) throw new Error('无法创建首页纹理画布');
 
       const logoTexture = createTexture();
       const textTexture = createTexture();
-      const cornerTextTexture = createTexture();
-      const glassTextTexture = createTexture();
-      const downloadTextTexture = createTexture();
-      const communityTextTexture = createTexture();
-      const supportTextTexture = createTexture();
       const logoImage = new Image();
       let logoReady = false;
-      let lastTextProgress = -1;
-      let communityCurrentPage = '1';
-      let communityTotalPages = '0';
 
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, logoTexture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      const initializeTexture = (
+        unit: number,
+        texture: WebGLTexture,
+        uniform: WebGLUniformLocation | null
+      ) => {
+        gl.activeTexture(unit);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.uniform1i(uniform, unit - gl.TEXTURE0);
+      };
+      initializeTexture(gl.TEXTURE0, textTexture, uniforms.textTexture);
+      initializeTexture(gl.TEXTURE1, logoTexture, uniforms.logoTexture);
       gl.texImage2D(
         gl.TEXTURE_2D,
         0,
@@ -257,568 +180,64 @@ export function LiquidGlassHome({
         gl.UNSIGNED_BYTE,
         new Uint8Array([0, 0, 0, 0])
       );
-      gl.uniform1i(uniforms.logoTexture, 1);
 
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, textTexture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.uniform1i(uniforms.textTexture, 0);
-
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, cornerTextTexture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.uniform1i(uniforms.cornerTextTexture, 2);
-
-      gl.activeTexture(gl.TEXTURE3);
-      gl.bindTexture(gl.TEXTURE_2D, glassTextTexture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.uniform1i(uniforms.glassTextTexture, 3);
-
-      gl.activeTexture(gl.TEXTURE4);
-      gl.bindTexture(gl.TEXTURE_2D, downloadTextTexture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.uniform1i(uniforms.downloadTextTexture, 4);
-
-      gl.activeTexture(gl.TEXTURE5);
-      gl.bindTexture(gl.TEXTURE_2D, communityTextTexture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.uniform1i(uniforms.communityTextTexture, 5);
-
-      gl.activeTexture(gl.TEXTURE6);
-      gl.bindTexture(gl.TEXTURE_2D, supportTextTexture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.uniform1i(uniforms.supportTextTexture, 6);
-
-      const updateTextTexture = (
-        width: number,
-        height: number,
-        transition: number,
-        downloadTransition: number,
-        communityTransition: number,
-        supportTransition: number,
-        typedCharacters: number,
-        staticLayersChanged: boolean
-      ) => {
-        if (staticLayersChanged) {
-          textCanvas.width = width;
-          textCanvas.height = height;
-          cornerTextCanvas.width = width;
-          cornerTextCanvas.height = height;
-          textContext.clearRect(0, 0, width, height);
-          cornerTextContext.clearRect(0, 0, width, height);
-        }
-        if (glassTextCanvas.width !== width || glassTextCanvas.height !== height) {
-          glassTextCanvas.width = width;
-          glassTextCanvas.height = height;
-        }
-        if (downloadTextCanvas.width !== width || downloadTextCanvas.height !== height) {
-          downloadTextCanvas.width = width;
-          downloadTextCanvas.height = height;
-        }
-        if (communityTextCanvas.width !== width || communityTextCanvas.height !== height) {
-          communityTextCanvas.width = width;
-          communityTextCanvas.height = height;
-        }
-        if (supportTextCanvas.width !== width || supportTextCanvas.height !== height) {
-          supportTextCanvas.width = width;
-          supportTextCanvas.height = height;
-        }
-        glassTextContext.clearRect(0, 0, width, height);
-        downloadTextContext.clearRect(0, 0, width, height);
-        communityTextContext.clearRect(0, 0, width, height);
-        supportTextContext.clearRect(0, 0, width, height);
-
+      const updateTextTexture = (width: number, height: number, transition: number) => {
+        textCanvas.width = width;
+        textCanvas.height = height;
+        textContext.clearRect(0, 0, width, height);
         let fontSize = Math.min(width * 0.235, height * 0.40);
-        const gradient = textContext.createLinearGradient(width * 0.18, 0, width * 0.82, 0);
-        gradient.addColorStop(0, '#BDFCF5');
-        gradient.addColorStop(0.28, '#CFF8D5');
-        gradient.addColorStop(0.52, '#F6F7A7');
-        gradient.addColorStop(0.74, '#FFE6BD');
-        gradient.addColorStop(1, '#F7DCC8');
-
-        const setHeroFont = (size: number) => {
-          textContext.font = `900 ${size}px "Arial Black", "Segoe UI", sans-serif`;
+        const setFont = () => {
+          textContext.font = `900 ${fontSize}px "Arial Black", "Segoe UI", sans-serif`;
         };
-        setHeroFont(fontSize);
+        setFont();
         const measuredWidth = textContext.measureText('AI PET').width;
         if (measuredWidth > width * 0.80) {
           fontSize *= width * 0.80 / measuredWidth;
-          setHeroFont(fontSize);
+          setFont();
         }
         textContext.textAlign = 'center';
         textContext.textBaseline = 'middle';
         const originalWidth = textContext.measureText('AI PET').width;
         const aiWidth = textContext.measureText('AI').width;
         const petWidth = textContext.measureText('PET').width;
-        const mix = (from: number, to: number, amount = transition) => (
-          from + ((to - from) * amount)
-        );
-        const aboutPositions = [
+        const mix = (from: number, to: number) => from + (to - from) * transition;
+        const positions = [
           {
             text: 'AI',
-            x: mix(
-              (width - originalWidth + aiWidth) * 0.5,
-              aiWidth * 0.5 + width * 0.065
-            ),
+            x: mix((width - originalWidth + aiWidth) * 0.5, aiWidth * 0.5 + width * 0.065),
             y: mix(height * 0.5, fontSize * 0.52 + height * 0.05)
           },
           {
             text: 'PET',
-            x: mix(
-              (width + originalWidth - petWidth) * 0.5,
-              width - petWidth * 0.5 - width * 0.065
-            ),
+            x: mix((width + originalWidth - petWidth) * 0.5, width - petWidth * 0.5 - width * 0.065),
             y: mix(height * 0.5, height - fontSize * 0.52 - height * 0.05)
           }
         ];
-
-        const downloadFontSize = Math.min(width * 0.082, height * 0.14);
-        setHeroFont(downloadFontSize);
-        const downloadAiWidth = textContext.measureText('AI').width;
-        const downloadPetWidth = textContext.measureText('PET').width;
-        const downloadGap = downloadFontSize * 0.20;
-        const downloadTotalWidth = downloadAiWidth + downloadGap + downloadPetWidth;
-        const downloadCenterX = width * 0.255;
-        const downloadY = height * 0.255;
-        const finalPositions = [
-          downloadCenterX - downloadTotalWidth * 0.5 + downloadAiWidth * 0.5,
-          downloadCenterX + downloadTotalWidth * 0.5 - downloadPetWidth * 0.5
-        ];
-        const currentFontSize = mix(fontSize, downloadFontSize, downloadTransition);
-        const downloadPositions = aboutPositions.map((position, index) => ({
-          ...position,
-          x: mix(position.x, finalPositions[index]!, downloadTransition),
-          y: mix(position.y, downloadY, downloadTransition)
-        }));
-        setHeroFont(currentFontSize);
-        const communityAiWidth = textContext.measureText('AI').width;
-        const communityPetWidth = textContext.measureText('PET').width;
-        const communityGap = currentFontSize * 0.20;
-        const communityTotalWidth = communityAiWidth + communityGap + communityPetWidth;
-        const positions = downloadPositions.map((position, index) => ({
-          ...position,
-          x: mix(
-            position.x,
-            index === 0
-              ? width * 0.5 - communityTotalWidth * 0.5 + communityAiWidth * 0.5
-              : width * 0.5 + communityTotalWidth * 0.5 - communityPetWidth * 0.5,
-            communityTransition
-          ),
-          y: mix(position.y, height * 0.50, communityTransition)
-        }));
-
-        const drawText = (text: string, x: number, y: number, alpha: number) => {
-          setHeroFont(currentFontSize);
-          textContext.globalAlpha = alpha;
+        const gradient = textContext.createLinearGradient(width * 0.18, 0, width * 0.82, 0);
+        gradient.addColorStop(0, '#BDFCF5');
+        gradient.addColorStop(0.28, '#CFF8D5');
+        gradient.addColorStop(0.52, '#F6F7A7');
+        gradient.addColorStop(0.74, '#FFE6BD');
+        gradient.addColorStop(1, '#F7DCC8');
+        for (const position of positions) {
           textContext.fillStyle = 'rgba(4, 10, 11, 0.52)';
           textContext.shadowColor = 'rgba(2, 7, 8, 0.72)';
-          textContext.shadowBlur = Math.max(10, currentFontSize * 0.10);
-          textContext.shadowOffsetX = currentFontSize * 0.018;
-          textContext.shadowOffsetY = currentFontSize * 0.055;
-          textContext.fillText(text, x, y);
+          textContext.shadowBlur = Math.max(10, fontSize * 0.10);
+          textContext.shadowOffsetX = fontSize * 0.018;
+          textContext.shadowOffsetY = fontSize * 0.055;
+          textContext.fillText(position.text, position.x, position.y);
           textContext.fillStyle = gradient;
           textContext.shadowColor = 'transparent';
           textContext.shadowBlur = 0;
           textContext.shadowOffsetX = 0;
           textContext.shadowOffsetY = 0;
-          textContext.fillText(text, x, y);
-        };
-
-        // 两段文字从首页原始字位连续移动，避免滚轮中间态出现叠字或跳帧。
-        positions.forEach(({ text, x, y }) => drawText(text, x, y, 1));
-        textContext.globalAlpha = 1;
-
-        let cornerFontSize = Math.min(width * 0.092, height * 0.19);
-        cornerTextContext.font = `900 ${cornerFontSize}px "Arial Black", "Segoe UI", sans-serif`;
-        const widestCornerWord = Math.max(
-          cornerTextContext.measureText('AGENT').width,
-          cornerTextContext.measureText('YOUR').width
-        );
-        if (widestCornerWord > width * 0.36) {
-          cornerFontSize *= width * 0.36 / widestCornerWord;
-          cornerTextContext.font = `900 ${cornerFontSize}px "Arial Black", "Segoe UI", sans-serif`;
+          textContext.fillText(position.text, position.x, position.y);
         }
-        const agentWidth = cornerTextContext.measureText('AGENT').width;
-        const yourWidth = cornerTextContext.measureText('YOUR').width;
-        /** 四角新字只跟随滚轮横向滑入，不使用透明度渐变。 */
-        const agentX = mix(width + agentWidth + width * 0.02, width * 0.94);
-        const yourX = mix(-yourWidth - width * 0.02, width * 0.06);
-        const agentY = mix(
-          cornerFontSize * 0.52 + height * 0.05,
-          -cornerFontSize,
-          downloadTransition
-        );
-        const yourY = mix(
-          height - cornerFontSize * 0.52 - height * 0.05,
-          height + cornerFontSize,
-          downloadTransition
-        );
-        const agentGradient = cornerTextContext.createLinearGradient(width * 0.5, 0, width * 0.94, 0);
-        agentGradient.addColorStop(0, '#BDFCF5');
-        agentGradient.addColorStop(0.55, '#CFF8D5');
-        agentGradient.addColorStop(1, '#F6F7A7');
-        const yourGradient = cornerTextContext.createLinearGradient(width * 0.06, 0, width * 0.45, 0);
-        yourGradient.addColorStop(0, '#F6F7A7');
-        yourGradient.addColorStop(0.52, '#FFE6BD');
-        yourGradient.addColorStop(1, '#F7DCC8');
-        cornerTextContext.textBaseline = 'middle';
-        cornerTextContext.globalAlpha = 1;
-
-        /* 共享仓库大字进入底层纹理，使玻璃交集区域参与真实折射。 */
-        const communityWordSize = Math.min(width * 0.067, height * 0.14);
-        const communityNumberSize = Math.min(width * 0.18, height * 0.34);
-        const communityGradient = communityTextContext.createLinearGradient(
-          width * 0.20,
-          0,
-          width * 0.80,
-          0
-        );
-        communityGradient.addColorStop(0, '#BDFCF5');
-        communityGradient.addColorStop(0.34, '#CFF8D5');
-        communityGradient.addColorStop(0.68, '#F6F7A7');
-        communityGradient.addColorStop(1, '#F7DCC8');
-        const shareWord = t('sharedPet.chapter.shareWord');
-        const repositoryWord = t('sharedPet.chapter.repositoryWord');
-        communityTextContext.globalAlpha = 1;
-        communityTextContext.fillStyle = communityGradient;
-        communityTextContext.shadowColor = 'rgba(2, 7, 8, 0.72)';
-        communityTextContext.shadowBlur = Math.max(10, communityWordSize * 0.10);
-        communityTextContext.shadowOffsetY = communityWordSize * 0.055;
-        communityTextContext.font = `900 ${communityWordSize}px "Arial Black", "Segoe UI", sans-serif`;
-        communityTextContext.textBaseline = 'middle';
-        communityTextContext.textAlign = 'right';
-        const shareRestX = mix(
-          -communityTextContext.measureText(shareWord).width,
-          width * 0.347,
-          communityTransition
-        );
-        communityTextContext.fillText(
-          shareWord,
-          mix(shareRestX, -communityTextContext.measureText(shareWord).width * 1.2, supportTransition),
-          height * 0.50
-        );
-        communityTextContext.textAlign = 'left';
-        const repositoryRestX = mix(
-          width + communityTextContext.measureText(repositoryWord).width,
-          width * 0.653,
-          communityTransition
-        );
-        communityTextContext.fillText(
-          repositoryWord,
-          mix(repositoryRestX, width + communityTextContext.measureText(repositoryWord).width * 1.2, supportTransition),
-          height * 0.50
-        );
-
-        communityTextContext.font = `900 ${communityNumberSize}px "Arial Black", "Segoe UI", sans-serif`;
-        communityTextContext.textAlign = 'center';
-        communityTextContext.fillText(
-          communityCurrentPage,
-          width * 0.355,
-          mix(
-            mix(-communityNumberSize, height * 0.39, communityTransition),
-            height + communityNumberSize,
-            supportTransition
-          )
-        );
-        communityTextContext.fillText(
-          communityTotalPages,
-          width * 0.652,
-          mix(
-            mix(height + communityNumberSize, height * 0.61, communityTransition),
-            -communityNumberSize,
-            supportTransition
-          )
-        );
-        communityTextContext.shadowColor = 'transparent';
-        communityTextContext.shadowBlur = 0;
-        communityTextContext.shadowOffsetY = 0;
-
-        /* 六项按钮文字独立绘制，着色后由着色器按各玻璃中心折射与浮动。 */
-        const supportLabels = [
-          t('feedback.action.suggestion'),
-          t('feedback.action.feedback'),
-          t('feedback.action.create'),
-          t('donation.wechat'),
-          t('donation.alipay'),
-          t('donation.paypal')
-        ];
-        supportTextContext.textAlign = 'center';
-        supportTextContext.textBaseline = 'middle';
-        supportTextContext.fillStyle = '#FFF6AC';
-        supportTextContext.shadowColor = 'rgba(2, 7, 8, 0.76)';
-        supportTextContext.shadowBlur = Math.max(9, height * 0.012);
-        supportTextContext.shadowOffsetY = Math.max(3, height * 0.006);
-        supportLabels.forEach((label, index) => {
-          let labelSize = Math.min(width * 0.034, height * 0.062);
-          supportTextContext.font = `900 ${labelSize}px "Arial Black", "Segoe UI", sans-serif`;
-          const maximumWidth = width * 0.24;
-          const measuredWidth = supportTextContext.measureText(label).width;
-          if (measuredWidth > maximumWidth) {
-            labelSize *= maximumWidth / measuredWidth;
-            supportTextContext.font = `900 ${labelSize}px "Arial Black", "Segoe UI", sans-serif`;
-          }
-          const stackIndex = index % 3;
-          const isLeft = index < 3;
-          supportTextContext.fillText(
-            label,
-            width * (isLeft ? 0.23 : 0.77),
-            height * ((isLeft ? 0.64 : 0.16) + stackIndex * 0.105)
-          );
-        });
-        supportTextContext.shadowColor = 'transparent';
-        supportTextContext.shadowBlur = 0;
-        supportTextContext.shadowOffsetY = 0;
-        cornerTextContext.fillStyle = 'rgba(4, 10, 11, 0.52)';
-        cornerTextContext.shadowColor = 'rgba(2, 7, 8, 0.72)';
-        cornerTextContext.shadowBlur = Math.max(14, cornerFontSize * 0.1);
-        cornerTextContext.shadowOffsetY = cornerFontSize * 0.05;
-        cornerTextContext.textAlign = 'right';
-        cornerTextContext.fillText(
-          'AGENT',
-          agentX,
-          agentY
-        );
-        cornerTextContext.textAlign = 'left';
-        cornerTextContext.fillText(
-          'YOUR',
-          yourX,
-          yourY
-        );
-        cornerTextContext.fillStyle = agentGradient;
-        cornerTextContext.shadowColor = 'transparent';
-        cornerTextContext.shadowBlur = 0;
-        cornerTextContext.textAlign = 'right';
-        cornerTextContext.fillText(
-          'AGENT',
-          agentX,
-          agentY
-        );
-        cornerTextContext.textAlign = 'left';
-        cornerTextContext.fillStyle = yourGradient;
-        cornerTextContext.fillText(
-          'YOUR',
-          yourX,
-          yourY
-        );
-        cornerTextContext.globalAlpha = 1;
-
-        /** 三项主介绍直接绘制进 WebGL 纹理，才能随玻璃位移并接受水波折射。 */
-        const drawGlassFeature = (
-          feature: typeof glassFeatures[number],
-          x: number,
-          y: number,
-          maxWidth: number
-        ) => {
-          const minimumSide = Math.min(width, height);
-          const fitFont = (weight: number, desiredSize: number, text: string) => {
-            let size = desiredSize;
-            glassTextContext.font = `${weight} ${size}px "Segoe UI", Arial, sans-serif`;
-            const measured = glassTextContext.measureText(text).width;
-            if (measured > maxWidth) size *= maxWidth / measured;
-            glassTextContext.font = `${weight} ${size}px "Segoe UI", Arial, sans-serif`;
-          };
-          glassTextContext.textAlign = 'left';
-          glassTextContext.textBaseline = 'top';
-          glassTextContext.shadowColor = 'rgba(0, 0, 0, 0.82)';
-          glassTextContext.shadowBlur = Math.max(4, minimumSide * 0.006);
-          glassTextContext.shadowOffsetY = Math.max(1, minimumSide * 0.002);
-          glassTextContext.fillStyle = '#D7FFF9';
-          fitFont(780, Math.max(9, minimumSide * 0.014), feature.eyebrow);
-          glassTextContext.fillText(feature.eyebrow.toUpperCase(), x, y);
-          glassTextContext.fillStyle = '#FFF6AC';
-          fitFont(760, Math.max(19, minimumSide * 0.031), feature.title);
-          glassTextContext.fillText(feature.title, x, y + minimumSide * 0.028);
-          glassTextContext.fillStyle = '#FFFFFF';
-          fitFont(450, Math.max(11, minimumSide * 0.016), feature.summary);
-          glassTextContext.fillText(feature.summary, x, y + minimumSide * 0.072);
-          glassTextContext.fillStyle = '#E9FFF7';
-          feature.details.slice(0, 2).forEach((detail, index) => {
-            const line = `• ${detail}`;
-            fitFont(520, Math.max(10, minimumSide * 0.0145), line);
-            glassTextContext.fillText(line, x, y + minimumSide * (0.102 + index * 0.025));
-          });
-          glassTextContext.shadowColor = 'transparent';
-          glassTextContext.shadowBlur = 0;
-          glassTextContext.shadowOffsetY = 0;
-        };
-        glassTextContext.globalAlpha = Math.max(0, Math.min(
-          1,
-          (transition - 0.14) * 1.17
-        )) * (1 - downloadTransition);
-        drawGlassFeature(glassFeatures[0]!, width * 0.065, height * 0.68, width * 0.33);
-        drawGlassFeature(glassFeatures[1]!, width * 0.29, height * 0.405, width * 0.40);
-        drawGlassFeature(glassFeatures[2]!, width * 0.60, height * 0.12, width * 0.33);
-        glassTextContext.globalAlpha = 1;
-
-        /** 下载文案使用独立纹理，逐字出现并只由下载玻璃采样。 */
-        let remainingCharacters = typedCharacters;
-        const revealCharacters = (text: string) => {
-          const characters = Array.from(text);
-          const visible = characters.slice(0, Math.max(0, remainingCharacters)).join('');
-          remainingCharacters -= characters.length;
-          return visible;
-        };
-        const visibleNoticeTitle = revealCharacters(downloadGlassCopy.noticeTitle);
-        const visibleNoticeBody = revealCharacters(downloadGlassCopy.noticeBody);
-        const visibleFaqTitle = revealCharacters(downloadGlassCopy.faqTitle);
-        const visibleFaqBody = revealCharacters(downloadGlassCopy.faqBody);
-        const minimumSide = Math.min(width, height);
-
-        const drawWrappedText = (
-          text: string,
-          x: number,
-          y: number,
-          maxWidth: number,
-          lineHeight: number
-        ) => {
-          let line = '';
-          let cursorY = y;
-          for (const character of text) {
-            if (character === '\n') {
-              if (line) downloadTextContext.fillText(line, x, cursorY);
-              line = '';
-              cursorY += lineHeight * 1.45;
-              continue;
-            }
-            const candidate = line + character;
-            if (line && downloadTextContext.measureText(candidate).width > maxWidth) {
-              downloadTextContext.fillText(line, x, cursorY);
-              line = character;
-              cursorY += lineHeight;
-            } else {
-              line = candidate;
-            }
-          }
-          if (line) downloadTextContext.fillText(line, x, cursorY);
-        };
-
-        const drawDownloadColumn = (
-          title: string,
-          body: string,
-          x: number,
-          maxWidth: number
-        ) => {
-          const startY = height * 0.465;
-          downloadTextContext.textAlign = 'left';
-          downloadTextContext.textBaseline = 'top';
-          downloadTextContext.shadowColor = 'rgba(0, 0, 0, 0.92)';
-          downloadTextContext.shadowBlur = Math.max(5, minimumSide * 0.0065);
-          downloadTextContext.shadowOffsetY = Math.max(1, minimumSide * 0.002);
-          downloadTextContext.fillStyle = '#FFF6AC';
-          downloadTextContext.font = `780 ${Math.max(18, minimumSide * 0.028)}px "Segoe UI", Arial, sans-serif`;
-          downloadTextContext.fillText(title, x, startY);
-          downloadTextContext.fillStyle = '#FFFFFF';
-          downloadTextContext.font = `560 ${Math.max(11, minimumSide * 0.015)}px "Segoe UI", Arial, sans-serif`;
-          drawWrappedText(
-            body,
-            x,
-            startY + minimumSide * 0.058,
-            maxWidth,
-            Math.max(16, minimumSide * 0.023)
-          );
-          downloadTextContext.shadowColor = 'transparent';
-          downloadTextContext.shadowBlur = 0;
-          downloadTextContext.shadowOffsetY = 0;
-        };
-
-        downloadTextContext.globalAlpha = downloadTransition;
-        drawDownloadColumn(
-          visibleNoticeTitle,
-          visibleNoticeBody,
-          width * 0.065,
-          width * 0.185
-        );
-        drawDownloadColumn(
-          visibleFaqTitle,
-          visibleFaqBody,
-          width * 0.275,
-          width * 0.185
-        );
-        downloadTextContext.globalAlpha = 1;
-
-        if (staticLayersChanged) {
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, textTexture);
-          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
-          gl.activeTexture(gl.TEXTURE2);
-          gl.bindTexture(gl.TEXTURE_2D, cornerTextTexture);
-          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            cornerTextCanvas
-          );
-          gl.activeTexture(gl.TEXTURE5);
-          gl.bindTexture(gl.TEXTURE_2D, communityTextTexture);
-          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            communityTextCanvas
-          );
-          gl.activeTexture(gl.TEXTURE6);
-          gl.bindTexture(gl.TEXTURE_2D, supportTextTexture);
-          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            supportTextCanvas
-          );
-        }
-        if (staticLayersChanged) {
-          gl.activeTexture(gl.TEXTURE3);
-          gl.bindTexture(gl.TEXTURE_2D, glassTextTexture);
-          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            glassTextCanvas
-          );
-        }
-        gl.activeTexture(gl.TEXTURE4);
-        gl.bindTexture(gl.TEXTURE_2D, downloadTextTexture);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, textTexture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.RGBA,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          downloadTextCanvas
-        );
-        lastTextProgress = transition + downloadTransition + communityTransition + supportTransition;
-        lastTypedCharacters = typedCharacters;
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textCanvas);
+        lastTextProgress = transition;
       };
 
       updateLogoTexture = (width: number, height: number) => {
@@ -826,11 +245,11 @@ export function LiquidGlassHome({
         logoCanvas.width = width;
         logoCanvas.height = height;
         logoContext.clearRect(0, 0, width, height);
-
         const source = { x: 450, y: 35, width: 560, height: 670 };
-        const maxWidth = width * (width < height ? 0.86 : 0.78);
-        const maxHeight = height * 0.92;
-        const scale = Math.min(maxWidth / source.width, maxHeight / source.height);
+        const scale = Math.min(
+          width * (width < height ? 0.86 : 0.78) / source.width,
+          height * 0.92 / source.height
+        );
         const targetWidth = source.width * scale;
         const targetHeight = source.height * scale;
         logoContext.drawImage(
@@ -844,7 +263,6 @@ export function LiquidGlassHome({
           targetWidth,
           targetHeight
         );
-
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, logoTexture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
@@ -862,96 +280,51 @@ export function LiquidGlassHome({
         const pixelRatio = Math.min(window.devicePixelRatio || 1, resolutionScale);
         const width = Math.round(window.innerWidth * pixelRatio);
         const height = Math.round(window.innerHeight * pixelRatio);
-
         const sizeChanged = canvas.width !== width || canvas.height !== height;
         if (sizeChanged) {
           canvas.width = width;
           canvas.height = height;
         }
-
-        // 同一 Canvas 的 WebGL 资源在章节离场时会释放；返回首页即使尺寸不变，
-        // 也必须为新程序恢复视口并重新上传全部纹理，避免首帧只剩黑色背景。
         if (!initializedViewport || sizeChanged) {
           gl.viewport(0, 0, width, height);
           updateLogoTexture(width, height);
-          const rawTransition = transitionRef.current;
-          updateTextTexture(
-            width,
-            height,
-            Math.min(1, rawTransition),
-            Math.min(1, Math.max(0, rawTransition - 1)),
-            Math.min(1, Math.max(0, rawTransition - 2)),
-            Math.min(1, Math.max(0, rawTransition - 3)),
-            Math.max(0, lastTypedCharacters),
-            true
-          );
+          updateTextTexture(width, height, Math.min(1, transitionRef.current));
           initializedViewport = true;
         }
-
-        inset = Math.min(
-          64,
-          Math.max(window.innerWidth < 640 ? 13 : 16, window.innerWidth * 0.04)
-        ) * pixelRatio;
+        inset = Math.min(64, Math.max(window.innerWidth < 640 ? 13 : 16, window.innerWidth * 0.04)) * pixelRatio;
         radius = Math.min(82, Math.max(30, window.innerWidth * 0.048)) * pixelRatio;
       };
 
-      const addRipple = (x: number, y: number, strength = 1) => {
+      const addRipple = (x: number, y: number) => {
         const offset = rippleIndex * 4;
         rippleData[offset] = x;
         rippleData[offset + 1] = y;
         rippleData[offset + 2] = currentTime;
-        rippleData[offset + 3] = strength;
+        rippleData[offset + 3] = 1.65;
         rippleIndex = (rippleIndex + 1) % 6;
       };
-      const isInsideGlass = (x: number, y: number) => {
-        const insetCss = Math.min(
-          64,
-          Math.max(window.innerWidth < 640 ? 13 : 16, window.innerWidth * 0.04)
-        );
-        return x > insetCss
-          && x < window.innerWidth - insetCss
-          && y > insetCss
-          && y < window.innerHeight - insetCss;
-      };
       const updatePointer = (event: PointerEvent, forceRipple = false) => {
-        if (!isInsideGlass(event.clientX, event.clientY)) return;
+        const insetCss = Math.min(64, Math.max(window.innerWidth < 640 ? 13 : 16, window.innerWidth * 0.04));
+        if (
+          event.clientX <= insetCss
+          || event.clientX >= window.innerWidth - insetCss
+          || event.clientY <= insetCss
+          || event.clientY >= window.innerHeight - insetCss
+        ) return;
         const x = event.clientX / window.innerWidth;
         const y = 1 - event.clientY / window.innerHeight;
         pointerX(x);
         pointerY(y);
-        if (forceRipple) addRipple(x, y, 1.65);
+        if (forceRipple) addRipple(x, y);
       };
       const handleCanvasPointerDown = (event: PointerEvent) => updatePointer(event, true);
+
       render = (time: number) => {
         if (disposed || pausedRef.current) return;
         currentTime = time;
-        const rawTransition = transitionRef.current;
-        const transition = Math.min(1, rawTransition);
-        const downloadTransition = Math.min(1, Math.max(0, rawTransition - 1));
-        const communityTransition = Math.min(1, Math.max(0, rawTransition - 2));
-        const supportTransition = Math.min(1, Math.max(0, rawTransition - 3));
-        let typedCharacters = 0;
-        if (downloadTransition > 0.38) {
-          if (downloadTypingStartedAt < 0) downloadTypingStartedAt = currentTime;
-          typedCharacters = Math.min(
-            downloadTypingLength,
-            Math.floor((currentTime - downloadTypingStartedAt) * 42)
-          );
-        } else {
-          downloadTypingStartedAt = -1;
-        }
-        const staticLayersChanged = Math.abs(rawTransition - lastTextProgress) > 0.002;
-        if (staticLayersChanged || typedCharacters !== lastTypedCharacters) {
-          updateTextTexture(
-            canvas.width,
-            canvas.height,
-            transition,
-            downloadTransition,
-            communityTransition,
-            supportTransition,
-            typedCharacters,
-            staticLayersChanged
-          );
+        const transition = Math.min(1, Math.max(0, transitionRef.current));
+        if (Math.abs(transition - lastTextProgress) > 0.002) {
+          updateTextTexture(canvas.width, canvas.height, transition);
         }
         gl.uniform2f(uniforms.resolution, canvas.width, canvas.height);
         gl.uniform2f(uniforms.pointer, pointer.x, pointer.y);
@@ -960,27 +333,12 @@ export function LiquidGlassHome({
         gl.uniform1f(uniforms.radius, radius);
         gl.uniform1f(uniforms.motion, 1);
         gl.uniform1f(uniforms.transition, transition);
-        gl.uniform1f(uniforms.downloadTransition, downloadTransition);
-        gl.uniform1f(uniforms.communityTransition, communityTransition);
-        gl.uniform1f(uniforms.supportTransition, supportTransition);
-        let rippleActivity = 0;
-        for (let index = 0; index < 6; index += 1) {
-          const offset = index * 4;
-          const age = currentTime - rippleData[offset + 2]!;
-          if (age > 0 && age < 4.2 && rippleData[offset + 3]! > 0) {
-            rippleActivity = Math.max(rippleActivity, 1 - age / 4.2);
-          }
-        }
-        gl.uniform1f(uniforms.rippleActivity, rippleActivity);
         gl.uniform4fv(uniforms.ripples, rippleData);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
       };
       const handleVisibilityChange = () => {
-        if (document.hidden) {
-          gsap.ticker.remove(render);
-        } else {
-          gsap.ticker.add(render);
-        }
+        if (document.hidden) gsap.ticker.remove(render);
+        else gsap.ticker.add(render);
       };
       const handleLogoLoad = () => {
         if (disposed) return;
@@ -989,8 +347,7 @@ export function LiquidGlassHome({
         render(currentTime);
       };
       const handleLogoError = () => {
-        if (disposed) return;
-        setInitializationFailed(true);
+        if (!disposed) setInitializationFailed(true);
       };
 
       logoImage.addEventListener('load', handleLogoLoad);
@@ -1028,7 +385,7 @@ export function LiquidGlassHome({
       if (program) gl.deleteProgram(program);
       setInitializationFailed(true);
     }
-  }, [active, downloadGlassCopy, glassFeatures, reducedMotion]);
+  }, [active, reducedMotion]);
 
   return (
     <div

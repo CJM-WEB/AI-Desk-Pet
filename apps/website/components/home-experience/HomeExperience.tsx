@@ -17,8 +17,8 @@ export function HomeExperience({
   isPaused,
   reducedMotion
 }: HomeExperienceProps) {
-  // 前五个模块连续复用首页液态玻璃；离开合并支持模块后再释放上下文。
-  const active = exitProgress < 4.08;
+  // 仅在首页到介绍章节的交接窗口保留 GPU 上下文。
+  const active = exitProgress < 1.08;
 
   return (
     <main
