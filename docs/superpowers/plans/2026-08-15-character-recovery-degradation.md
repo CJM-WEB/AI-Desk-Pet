@@ -1,291 +1,413 @@
 # AI Pet 角色恢复公开反馈与降级实施计划
 
-> **面向智能代理执行者：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐任务实施本计划。所有步骤使用复选框跟踪。
+> **面向智能代理执行者：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐任务实施本计划。所有步骤使用复选框（`- [ ]`）跟踪。
 
-**目标：** 实现 B3 结构化恢复快照、最小 IPC/Renderer 反馈和正确的官方默认角色降级，同时保证普通聊天独立可用。
+**目标：** 用 Main 启动时生成的一份最小不可变快照替换旧单错误码链，让 Pet 只提示真实 fallback、Workshop 只提示当前选中角色的问题，且普通聊天独立可用。
 
-**架构：** Main 汇总 B1 Store report、B2 Package report 与 startup runtime 校验，`CharacterActions` 映射为严格白名单 DTO；Pet 只消费活动 fallback，Workshop 消费逐角色 issue，Chat 不依赖角色恢复。
+**架构：** `character-startup.ts` 是唯一裁决 owner；它在 B2 完成后按固定顺序汇总 B1/B2 报告、索引恢复与活动 runtime 校验。现有 Character IPC 注册位置直接持有该值，Preload 复用现有方法；不新增 Actions getter、动态 callback、Renderer Store、通道或兼容双轨。
 
-**技术栈：** Electron 43、React 19、TypeScript、Zod、Vitest、Testing Library、Playwright。
+**技术栈：** Electron 43、React 19、TypeScript、Zod、Vitest、Testing Library、Playwright、Windows 10/11。
 
 **设计规格：** [角色恢复公开反馈与降级设计](../specs/2026-08-15-character-recovery-degradation-design.md)
 
-**覆盖规格：** [桌面架构优化减法收口设计](../specs/2026-08-20-desktop-code-subtraction-design.md)；B1 输入映射以该规格的双分面码接口为准。
+**约束规格：** [桌面架构优化减法收口设计](../specs/2026-08-20-desktop-code-subtraction-design.md)
 
-**前置计划：** [B1 Store 事务分面恢复](./2026-08-15-character-transaction-recovery.md) → [B2 角色包导入 Journal](./2026-08-15-character-import-journal.md) → 本计划。
+**硬前置：** [B2 角色包导入恢复设计](../specs/2026-08-15-character-import-journal-design.md)及其[实施计划](./2026-08-15-character-import-journal.md)必须已完成、审查通过并提交；`CharacterPackageService.initialize()` 必须已经返回下文的最小报告。前置未满足时不得开始 Task 1。
 
 ## 全局约束
 
-- B1、B2 必须先完成并通过各自定向测试；不得在 B3 重写两个 journal。
-- 活动角色优先；最多 256 个索引角色；2000ms 软预算只在角色之间检查，超限不阻断应用或聊天。
-- Renderer 只接收角色 ID、受影响能力、稳定错误码、恢复建议和 fallback 状态。
-- 不公开绝对路径、marker 正文、哈希、owner token、物理身份或 evidence 文件名。
-- Git 暂存和提交仅在用户另行明确授权后执行。
+- 只修改 `apps/desktop`、桌面 E2E 与现有角色验收文档；`apps/website`、`apps/cloudbase-api`、`apps/package-scanner` 及网站 E2E 必须零差异。
+- B3 不重做 B1/B2 的 256 项上限、2000ms 角色间软预算、证据保留、所有权或磁盘恢复算法。
+- 正式运行时只允许一个启动裁决 owner、一条 recovery IPC 通道和一种公开载荷。
+- 禁止新增 `CharacterActions.getCharacterRecoverySnapshot()` 或同义方法、函数式快照 getter/callback、Renderer 恢复 Store 和新 IPC 通道。
+- 禁止跨 IPC 传递 `fallbackActive`、`affectedCapabilities`、`suggestion`、绝对路径、marker 正文、哈希、事务令牌、物理身份或内部异常。
+- 每个任务执行 RED → 最小 GREEN → 删除旧路径；完整矩阵只放在最能证明不变量的一层。
+- 每个任务完成后由新审查者分别检查规格符合性和代码质量；Critical 或 Important 未清零不得进入下一任务。
+- 单点排障或单条命令达到 15 分钟即终止该路线，保存证据后拆分、换方案或按用户规则放宽门禁。
+- 用户已授权本计划所需的本地 Git 写操作；每个任务通过审查后小步提交，不执行 push、merge、rebase、reset。
+- 执行开始先记录 `$b3Base = git rev-parse HEAD`，最终所有范围检查均以该提交为基线，不使用会掩盖已提交变更的 `HEAD` 对 `HEAD` 比较。
 
-## 文件结构
+## 固定公开契约
 
-- 修改 `character-startup.ts`/测试：活动角色专属 fallback 判定。
-- 修改 `main/index.ts`：结构化汇总并保证聊天继续初始化。
-- 修改 `character-actions.ts`：唯一公开快照映射入口。
-- 修改 `character-ipc.ts`、`myself-api.ts`、`register-ipc.ts`、Preload：严格 DTO。
-- 修改 `character-recovery.ts`、`PetView.tsx`、Workshop 及测试：安全文案与能力提示。
-- 修改 `tests/e2e/desktop.spec.ts`，必要时最小扩展 `tests/fixtures/electron-app.ts`：真实重启闭环。
-
----
-
-### Task 1：实现活动角色专属启动裁决
-
-**文件：**
-
-- 修改：`apps/desktop/src/main/characters/character-startup.ts`
-- 修改：`apps/desktop/tests/character-startup.test.ts`
-- 修改：`apps/desktop/src/main/index.ts`
-
-**接口：**
-
-- 消费：`CharacterTransactionRecoveryReport`、`CharacterImportJournalRecoveryReport`。
-- 产出：
+`apps/desktop/src/shared/character-ipc.ts` 中旧 Schema 原位替换为以下封闭契约：
 
 ```ts
-export type CharacterStartupResult =
-  | { kind: 'active'; activeCharacterId: string; issues: readonly CharacterRecoveryIssue[] }
-  | { kind: 'fallback'; errorCode: string | null; issues: readonly CharacterRecoveryIssue[] };
+export const characterRecoveryIssueErrorCodeSchema = z.enum([
+  'CHARACTER_DRAFT_RECOVERY_BLOCKED',
+  'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
+  'CHARACTER_RECOVERY_DEFERRED',
+  'CHARACTER_IMPORT_RECOVERY_BLOCKED',
+  'CHARACTER_IMPORT_RECOVERY_DEFERRED'
+]);
+
+export const characterRecoveryFallbackErrorCodeSchema = z.enum([
+  'CHARACTER_INDEX_UNAVAILABLE',
+  'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
+  'CHARACTER_RECOVERY_DEFERRED',
+  'CHARACTER_MANIFEST_INVALID',
+  'CHARACTER_MIGRATION_FAILED',
+  'CHARACTER_RESOURCE_INTEGRITY_FAILED',
+  'CHARACTER_RESOURCE_NOT_FOUND',
+  'CHARACTER_RUNTIME_UNAVAILABLE',
+  'CHARACTER_VERSION_UNSUPPORTED',
+  'CHARACTER_OPERATION_FAILED'
+]);
+
+export const characterRecoveryIssueSchema = z.object({
+  characterId: characterIdSchema,
+  errorCode: characterRecoveryIssueErrorCodeSchema
+}).strict();
+
+export const characterRecoverySnapshotResultSchema = z.object({
+  fallbackErrorCode: characterRecoveryFallbackErrorCodeSchema.nullable(),
+  issues: z.array(characterRecoveryIssueSchema)
+}).strict();
+
+export type CharacterRecoveryIssueErrorCode = z.output<
+  typeof characterRecoveryIssueErrorCodeSchema
+>;
+export type CharacterRecoveryFallbackErrorCode = z.output<
+  typeof characterRecoveryFallbackErrorCodeSchema
+>;
+export type CharacterRecoveryIssueDto = Readonly<
+  z.output<typeof characterRecoveryIssueSchema>
+>;
+export type CharacterRecoverySnapshotDto = Readonly<{
+  fallbackErrorCode: CharacterRecoveryFallbackErrorCode | null;
+  issues: readonly CharacterRecoveryIssueDto[];
+}>;
 ```
 
-- [ ] **步骤 1：写 active/non-active RED 矩阵**
+`fallbackErrorCode !== null` 是已经切换官方默认角色的唯一表达。Package issue 码不能进入 fallback；fallback-only 码不能进入 issue。
 
-覆盖非活动 bad draft/bad publish/both，断言健康活动角色保持 `kind:'active'` 且 issues 包含故障角色。覆盖活动 bad draft + 健康 compiled，断言不 fallback；覆盖活动 bad publish，断言 fallback 且不调用任何 remove。
+## 固定启动接口与一致性顺序
 
-- [ ] **步骤 2：写 Package 与 deferred RED 测试**
+```ts
+export type CharacterStartupResult = Readonly<{
+  activeCharacterId: string;
+  recoverySnapshot: CharacterRecoverySnapshotDto;
+}>;
 
-传入 quarantined、blocked、deferred issue，断言启动继续、issues 保留稳定码。只有活动 publish/runtime 或索引整体不可用触发 fallback；Package 问题不触发全局 fallback。
+export type CharacterStartupInput = Readonly<{
+  indexRecovered: boolean;
+  packageRecoveryReport: CharacterPackageRecoveryReport;
+}>;
 
-- [ ] **步骤 3：运行 RED**
+export interface CharacterStartupDependencies {
+  validateActiveRuntime(): Promise<{ activeCharacterId: string } | null>;
+  ensureOfficialDefaultCharacter(): Promise<{ activeCharacterId: string }>;
+  loadFinalIndex(): Promise<unknown>;
+  getTransactionRecoveryReport(): CharacterTransactionRecoveryReport;
+}
 
-```powershell
-pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts
+export function prepareCharacterStartup(
+  input: CharacterStartupInput,
+  dependencies: CharacterStartupDependencies
+): Promise<CharacterStartupResult>;
 ```
 
-预期：FAIL，当前结果只有单个 errorCode 且所有异常统一 fallback。
+Main 先完成 `recoverCorruptIndex()` 和 B2 `initialize()`。`prepareCharacterStartup()` 内顺序固定为：校验活动 runtime → 必要时准备并启用默认角色 → 最后一次 `CharacterStore.list()` → 紧接着读取一次 `getTransactionRecoveryReport()` → 不再 load Store → 投影 B1/B2 → 去重排序 → 深冻结后返回。
 
-- [ ] **步骤 4：实现最小启动裁决**
+同一角色的 draft、publish 各保留一项；相同 `characterId + errorCode` 去重。先按 `characterId` 升序，再按以下次序升序：
 
-按活动角色 ID 查询 B1 的 `draftErrorCode` 与 `publishErrorCode`；publish 分面码受阻时跳过用户 runtime 并返回 fallback，只有 draft 分面码受阻时仍校验健康 runtime。把 B2 issues 合并但不据此退出应用。未知内部异常只返回 `CHARACTER_OPERATION_FAILED`。
-
-- [ ] **步骤 5：改 Main 启动编排并运行 GREEN**
-
-Main 接收 `characterPackageService.initialize()` report；即使存在 quarantined/blocked 项也继续 `prepareCharacterStartup()`、Secret/Settings、聊天 IPC 和窗口初始化。仅 `CharacterStartupResult.kind === 'fallback'` 时安装/启用官方默认角色。
-
-```powershell
-pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts
+```ts
+const CHARACTER_RECOVERY_ISSUE_ORDER = [
+  'CHARACTER_DRAFT_RECOVERY_BLOCKED',
+  'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
+  'CHARACTER_RECOVERY_DEFERRED',
+  'CHARACTER_IMPORT_RECOVERY_BLOCKED',
+  'CHARACTER_IMPORT_RECOVERY_DEFERRED'
+] as const;
 ```
 
-预期：PASS。
+## 文件责任
 
-- [ ] **步骤 6：在获得 Git 授权后提交本任务**
-
-未获授权不执行 Git 写操作。
+- `character-ipc.ts`：唯一公开 unions、严格 Schema 与 DTO。
+- `character-startup.ts`：唯一汇总、fallback 裁决、稳定排序与深冻结 owner。
+- `main/index.ts`：提供 B1/B2 输入并保存一次性快照。
+- `register-ipc.ts`：现有 recovery handler 直接返回注入值。
+- `myself-api.ts`、Preload：现有方法的精确返回类型与二次校验。
+- `character-recovery.ts`：稳定码到中文说明、能力影响和建议的唯一 Renderer 映射。
+- `PetView.tsx`：只读取 fallback；`CharacterWorkshopView.tsx`：View 内按当前选择过滤。
+- `desktop.spec.ts`：最多两个真实重启纵向场景。
 
 ---
 
-### Task 2：建立公开恢复 DTO 与 Actions 映射
+### Task 1：一次贯通 Schema、启动 owner、Main、IPC 与 Preload
 
 **文件：**
 
 - 修改：`apps/desktop/src/shared/character-ipc.ts`
 - 修改：`apps/desktop/src/shared/myself-api.ts`
-- 修改：`apps/desktop/src/main/characters/character-actions.ts`
-- 修改：`apps/desktop/tests/character-ipc.test.ts`
-- 修改：`apps/desktop/tests/character-recovery.test.ts`
-
-**接口：**
-
-- 产出：规格定义的 `CharacterRecoveryIssueDto`、`CharacterRecoverySnapshotDto` 及 Zod schemas。
-- 产出：`CharacterActions.getCharacterRecoverySnapshot(): Promise<CharacterRecoverySnapshotDto>`。
-- 消费：Task 1 的 startup result、B1/B2 内部 reports。
-
-- [ ] **步骤 1：写严格 Schema RED 测试**
-
-断言合法 snapshot 通过；在 issue 中逐项加入 `path`、`markerText`、`hash`、`ownerToken`、`physicalIdentity`、`evidenceFile`，每项都被 `.strict()` 拒绝。非法 capability、suggestion 和未知 recovery error code 也必须拒绝。
-
-- [ ] **步骤 2：写映射 RED 测试**
-
-分别输入 B1 的 draft 分面码、publish 分面码、两码同时受阻、任一分面 deferred，以及 B2 的 import-invalid、ownership-mismatch、evidence-failed 内部结果，断言派生的公开错误、角色 ID、capabilities 和 suggestion 精确匹配规格。B3 不接收 B1 的替代布尔值或分类字段；内部错误对象含私有路径 sentinel，序列化 DTO 后不得包含 sentinel。
-
-- [ ] **步骤 3：运行 RED**
-
-```powershell
-pnpm.cmd --filter @myself/desktop test -- character-ipc.test.ts character-recovery.test.ts
-```
-
-预期：FAIL，当前 schema 只有 `{errorCode}`。
-
-- [ ] **步骤 4：实现封闭 schemas 和白名单映射**
-
-所有 DTO 从字段白名单重新构造，不 spread 内部对象。`fallbackErrorCode` 继续只接受 `CHARACTER_*` 稳定码；未知异常映射 `CHARACTER_OPERATION_FAILED`。
-
-- [ ] **步骤 5：运行 GREEN**
-
-```powershell
-pnpm.cmd --filter @myself/desktop test -- character-ipc.test.ts character-recovery.test.ts
-```
-
-预期：PASS。
-
-- [ ] **步骤 6：在获得 Git 授权后提交本任务**
-
-未获授权不执行 Git 写操作。
-
----
-
-### Task 3：贯通 Main IPC 与 Preload
-
-**文件：**
-
-- 修改：`apps/desktop/src/main/ipc/register-ipc.ts`
+- 修改：`apps/desktop/src/main/characters/character-startup.ts`
 - 修改：`apps/desktop/src/main/index.ts`
+- 修改：`apps/desktop/src/main/ipc/register-ipc.ts`
 - 修改：`apps/desktop/src/preload/index.ts`
+- 修改：`apps/desktop/tests/character-startup.test.ts`
 - 修改：`apps/desktop/tests/character-ipc.test.ts`
+- 修改：`apps/desktop/tests/preload-api.test.ts`
+- 修改：`apps/desktop/tests/main-lifecycle.test.ts`
 
 **接口：**
 
-- 消费：`CharacterActions.getCharacterRecoverySnapshot()`。
-- 产出：`MyselfApi.getCharacterRecoverySnapshot(): Promise<CharacterRecoverySnapshotDto>`。
-- 删除：`registerCharacterIpc(..., recoveryErrorCode: () => string | null)` 参数。
+- 消费：B1 `CharacterTransactionRecoveryReport` 与 B2 `CharacterPackageRecoveryReport`。
+- 产出：上述固定公开契约、固定启动接口、`MyselfApi.getCharacterRecoverySnapshot(): Promise<CharacterRecoverySnapshotDto>`。
+- 产出直接值接口：
 
-- [ ] **步骤 1：写 IPC RED 测试**
-
-断言 recovery channel 只接受 `{}`；返回完整结构化 snapshot；带路径的 Renderer 输入被 `CHARACTER_INPUT_INVALID` 拒绝且 service 不调用；service 返回额外私有字段时结果 schema 拒绝。
-
-- [ ] **步骤 2：写 Preload RED 测试**
-
-mock IPC 返回合法 snapshot，断言 Preload 返回解析后的相同值；返回含 `ownerToken` 的 issue 时 Promise 拒绝；订阅面和通道数量不增加。
-
-- [ ] **步骤 3：运行 RED**
-
-```powershell
-pnpm.cmd --filter @myself/desktop test -- character-ipc.test.ts
+```ts
+export function registerCharacterIpc(
+  ipcMain: IpcMain,
+  service: CharacterIpcService,
+  dialogs: CharacterIpcDialogs,
+  recoverySnapshot: CharacterRecoverySnapshotDto
+): void;
 ```
 
-预期：FAIL，register 仍依赖标量 callback。
+- 删除：旧 `{ errorCode }` Schema/类型、`CharacterStartupResult` kind 联合、`startupRecoveryErrorCode`、`remove?` seam、`recoveryErrorCode: () => string | null` 及其默认值。
 
-- [ ] **步骤 4：最小替换 handler 与 Preload**
+- [ ] **步骤 1：写 Schema RED 测试**
 
-handler 调用 Actions 方法并以新 schema parse；Main 注册不再传 callback；Preload 继续在固定通道解析结果，不增加任何写入或路径参数。
+合法快照必须通过；外层额外 `fallbackActive`、issue 额外 `ownerToken`、非法角色 ID、issue 使用 fallback-only 码、fallback 使用 import-only 码分别失败：
 
-- [ ] **步骤 5：删除旧标量路径并运行 GREEN**
+```ts
+const valid = {
+  fallbackErrorCode: 'CHARACTER_RESOURCE_NOT_FOUND',
+  issues: [{
+    characterId: 'demo',
+    errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+  }]
+};
+expect(characterRecoverySnapshotResultSchema.parse(valid)).toEqual(valid);
+expect(() => characterRecoverySnapshotResultSchema.parse({
+  ...valid,
+  fallbackActive: true
+})).toThrow();
+```
 
-删除 `startupRecoveryErrorCode`、旧 callback 参数、旧 `{errorCode}` schema 和只服务标量返回的测试。
+- [ ] **步骤 2：写启动 owner RED 测试**
+
+用调用数组断言 `runtime → default（仅 fallback）→ final-index → b1-report`；报告读取后若再 load 就失败。完整覆盖：非活动 B1/B2 问题不 fallback；活动 draft blocked 且 runtime 健康不 fallback；活动 publish blocked、活动 deferred、runtime/manifest/resource/version 失败或索引已恢复触发对应 fallback；未知异常规范化为 `CHARACTER_OPERATION_FAILED`。断言重复问题去重、双分面保留、固定排序，以及快照/数组/每个 issue 均 `Object.isFrozen(...) === true`。
+
+- [ ] **步骤 3：写 IPC/Preload RED 纵向测试**
+
+handler 只接受严格空对象并返回注入值；额外输入在读取前失败。Preload 对合法值二次解析，含私有字段或非法 union 值时拒绝。只保留一条纵向边界证据，不重复启动矩阵。
+
+- [ ] **步骤 4：运行 RED**
 
 ```powershell
-pnpm.cmd --filter @myself/desktop test -- character-ipc.test.ts character-startup.test.ts
+pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts main-lifecycle.test.ts
+```
+
+预期：FAIL，旧链仍是标量 callback，启动 owner 尚不接收 B1/B2 报告。
+
+- [ ] **步骤 5：最小实现严格契约与启动 owner**
+
+逐字实现固定 unions 和接口；只从 B1 两个分面与 B2 `issues` 白名单重建对象，不 spread 内部报告。fallback 前先执行默认角色依赖，最后一次 load 与 report 读取相邻，随后不再触发 Store load。深冻结每个 issue、issues 数组和快照。
+
+- [ ] **步骤 6：原位替换 Main 与直接 IPC 值**
+
+Main 按下列形状保存值，不建立 getter：
+
+```ts
+const packageRecoveryReport = await characterPackageService.initialize();
+const characterStartup = await prepareCharacterStartup(
+  {
+    indexRecovered: recoveredCorruptCharacterIndex.recovered,
+    packageRecoveryReport
+  },
+  {
+    validateActiveRuntime: async () => {
+      const snapshot = await characterActions.getCharacterRuntimeSnapshot();
+      return snapshot ? { activeCharacterId: snapshot.activeCharacterId } : null;
+    },
+    ensureOfficialDefaultCharacter: async () => {
+      await ensureOfficialDefaultCharacter(characterStore, defaultResources);
+      return { activeCharacterId: 'builtin-default' };
+    },
+    loadFinalIndex: () => characterStore.list(),
+    getTransactionRecoveryReport: () =>
+      characterStore.getTransactionRecoveryReport()
+  }
+);
+const characterRecoverySnapshot = characterStartup.recoverySnapshot;
+```
+
+`registerCharacterIpc(..., characterRecoverySnapshot)` 直接注入深冻结值；handler 执行严格空输入校验后以新 Schema parse 该值。Preload 保留现有通道和方法，只更新返回类型与二次 Schema 校验。普通聊天、Secret、Settings 和窗口初始化不以恢复结果为退出条件。
+
+- [ ] **步骤 7：删除旧链并运行 GREEN**
+
+删除旧标量、callback、kind 分支、匿名返回类型及只服务旧形状的测试：
+
+```powershell
+pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts main-lifecycle.test.ts official-default-character.test.ts main-conversation-composition.test.ts
 pnpm.cmd --filter @myself/desktop typecheck
 ```
 
-预期：PASS。
+预期：全部 PASS；聊天组合没有 recovery snapshot 依赖。
 
-- [ ] **步骤 6：在获得 Git 授权后提交本任务**
+- [ ] **步骤 8：删除门与双重审查**
 
-未获授权不执行 Git 写操作。
+```powershell
+rg -n "startupRecoveryErrorCode|recoveryErrorCode|kind: 'fallback'|kind: 'active'|remove\?:|errorCode: string \| null|fallbackActive|affectedCapabilities|suggestion" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/tests
+rg -n "getCharacterRecoverySnapshot" apps/desktop/src/main/characters/character-actions.ts
+git diff --check
+```
+
+预期：前两条零命中。规格审查核对 B2 硬前置、exact unions 和一致性顺序；质量审查核对无 Actions getter、动态 callback、第二通道、双轨或内部数据泄漏。
+
+- [ ] **步骤 9：提交**
+
+```powershell
+git add apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/src/main/characters/character-startup.ts apps/desktop/src/main/index.ts apps/desktop/src/main/ipc/register-ipc.ts apps/desktop/src/preload/index.ts apps/desktop/tests/character-startup.test.ts apps/desktop/tests/character-ipc.test.ts apps/desktop/tests/preload-api.test.ts apps/desktop/tests/main-lifecycle.test.ts
+git commit -m "refactor(desktop): replace scalar character recovery chain"
+```
 
 ---
 
-### Task 4：实现 Pet 与 Workshop 的最小降级反馈
+### Task 2：原位替换 Pet 与 Workshop 并删除旧 loader
 
 **文件：**
 
 - 修改：`apps/desktop/src/shared/character-recovery.ts`
 - 修改：`apps/desktop/src/renderer/src/pet/PetView.tsx`
 - 修改：`apps/desktop/src/renderer/src/characters/workshop/CharacterWorkshopView.tsx`
-- 必要时修改：`apps/desktop/src/renderer/src/characters/store/character-workshop-store.ts`
+- 修改：`apps/desktop/tests/character-recovery.test.ts`
 - 修改：`apps/desktop/tests/pet-view.test.tsx`
 - 修改：`apps/desktop/tests/character-workshop-components.test.tsx`
-- 修改：`apps/desktop/tests/character-recovery.test.ts`
 
 **接口：**
 
-- 消费：`CharacterRecoverySnapshotDto`。
-- 产出：`loadCharacterStartupRecovery(api, applySnapshot): Promise<void>`。
-- 产出：稳定中文 issue 文案，不接收或插入内部详情。
+- 消费：Task 1 的 `MyselfApi.getCharacterRecoverySnapshot()`。
+- 产出仅限 Renderer 映射：
 
-- [ ] **步骤 1：写 Pet RED 测试**
+```ts
+export type CharacterRecoveryPresentation = Readonly<{
+  text: string;
+  affectedCapabilities: readonly ('draft-save' | 'publish' | 'activate')[];
+  suggestion: string;
+}>;
 
-活动 publish blocked + `fallbackActive:true` 时显示官方默认角色说明和“打开角色工作室”；非活动 issue + `fallbackActive:false` 时不显示全局 fallback，也不替换健康播放器。
-
-- [ ] **步骤 2：写 Workshop RED 测试**
-
-draft blocked 显示草稿保存/发布受限但草稿仍可查看；publish blocked 允许草稿保存但发布/启用显示稳定说明；deferred 显示后续恢复建议。渲染文本不得包含传入测试 sentinel 路径/token。
-
-- [ ] **步骤 3：写 IPC 失败安全文案 RED 测试**
-
-让 recovery snapshot RPC 抛包含绝对路径的错误，断言只显示通用 `CHARACTER_OPERATION_FAILED` 文案，不回显 RPC 原文。
-
-- [ ] **步骤 4：运行 RED**
-
-```powershell
-pnpm.cmd --filter @myself/desktop test -- pet-view.test.tsx character-workshop-components.test.tsx character-recovery.test.ts
+export function characterRecoveryPresentation(
+  errorCode: CharacterRecoveryIssueErrorCode
+): CharacterRecoveryPresentation;
 ```
 
-预期：FAIL，Renderer 仍消费单错误码。
+- 保留：`characterRecoveryMessage(errorCode: CharacterRecoveryFallbackErrorCode)` 作为 Pet fallback 文案入口。
+- 删除：`loadCharacterStartupRecovery()` 及其专属测试；不以新 loader 替代。
 
-- [ ] **步骤 5：实现最小 Renderer 映射**
+- [ ] **步骤 1：写共享映射 RED 测试**
 
-Pet 只读取 `fallbackActive/fallbackErrorCode`；Workshop 以角色 ID 匹配 issue 并复用现有 alert/toast/按钮。不要建立第二个 journal store，也不要在 Renderer 推导路径或删除操作。
+在 `character-recovery.test.ts` 对五个 issue union 值逐一断言中文 text、受影响能力和建议；这是完整文案矩阵唯一 owner。未知 RPC 异常只能产生通用安全文案，不回显注入的绝对路径或 token sentinel。
+
+- [ ] **步骤 2：写 Pet 与 Workshop RED 测试**
+
+Pet：fallback 非空显示官方默认角色提示和工作室入口；仅含非活动 issues 时不显示横幅、不替换健康播放器；RPC 失败不回显原文。Workshop：View 读取一次快照，按当前 `selectedCharacterId` 过滤；切换选择只过滤内存值；其他角色问题不显示；mock store action 不因恢复读取而调用。
+
+- [ ] **步骤 3：运行 RED**
+
+```powershell
+pnpm.cmd --filter @myself/desktop test -- character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx
+```
+
+预期：FAIL，Pet 仍依赖旧 loader，Workshop 尚未读取快照。
+
+- [ ] **步骤 4：实现最小 Renderer 映射**
+
+Pet 在既有 effect 直接调用 API，只保存 fallback 文案所需局部状态。`CharacterWorkshopViewProps.api` 原位扩展为 `CharacterWorkshopApi & Pick<MyselfApi, 'onCharacterWorkshopFlushRequested' | 'getCharacterRecoverySnapshot'>`；View 保存一次只读快照局部 state，并在 render 时执行：
+
+```ts
+const selectedRecoveryIssues = recoverySnapshot?.issues.filter(
+  issue => issue.characterId === state.selectedCharacterId
+) ?? [];
+```
+
+复用现有 alert/toast/按钮样式；不修改 `character-workshop-store.ts`，不把恢复状态交给 store action，不从错误码推导磁盘操作。
+
+- [ ] **步骤 5：删除旧 loader 与重复矩阵**
+
+删除 `loadCharacterStartupRecovery` 导出、导入、调用和测试。Pet 只保留 fallback、非 fallback、RPC 安全失败；Workshop 只保留选中角色过滤、切换选择和不写 Store。
 
 - [ ] **步骤 6：运行 GREEN 与聊天回归**
 
 ```powershell
-pnpm.cmd --filter @myself/desktop test -- pet-view.test.tsx character-workshop-components.test.tsx character-workshop-store.test.ts character-recovery.test.ts main-conversation-composition.test.ts
+pnpm.cmd --filter @myself/desktop test -- character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx character-workshop-store.test.ts main-conversation-composition.test.ts
+pnpm.cmd --filter @myself/desktop typecheck
 ```
 
-预期：PASS；角色恢复失败不得改变现有聊天 Main 组合和初始化结果。
+预期：全部 PASS。
 
-- [ ] **步骤 7：在获得 Git 授权后提交本任务**
+- [ ] **步骤 7：删除门与双重审查**
 
-未获授权不执行 Git 写操作。
+```powershell
+rg -n "loadCharacterStartupRecovery|fallbackActive" apps/desktop/src apps/desktop/tests
+rg -n "recoverySnapshot|RecoveryIssue" apps/desktop/src/renderer/src/characters/store
+rg -n "affectedCapabilities|suggestion" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts
+git diff --check
+```
+
+预期：三条零命中。规格审查确认 Pet/Workshop/Chat 职责；质量审查确认派生字段只在 `character-recovery.ts` 本地映射，Workshop Store 未成为第二 owner。
+
+- [ ] **步骤 8：提交**
+
+```powershell
+git add apps/desktop/src/shared/character-recovery.ts apps/desktop/src/renderer/src/pet/PetView.tsx apps/desktop/src/renderer/src/characters/workshop/CharacterWorkshopView.tsx apps/desktop/tests/character-recovery.test.ts apps/desktop/tests/pet-view.test.tsx apps/desktop/tests/character-workshop-components.test.tsx
+git commit -m "refactor(desktop): replace scalar recovery renderer path"
+```
 
 ---
 
-### Task 5：建立真实 Windows 重启与降级 E2E
+### Task 3：用最多两个重启场景验收并关闭旧路径
 
 **文件：**
 
 - 修改：`tests/e2e/desktop.spec.ts`
-- 必要时修改：`tests/fixtures/electron-app.ts`
+- 条件修改：`tests/fixtures/electron-app.ts`（只有现有 fixture 无法完成正式重启和用户数据准备时；不得增加公开 fault seam）
 - 复用：`tests/fixtures/character-storage-snapshot.ts`
+- 修改：`docs/operations/character-workshop-acceptance.md`
 
 **接口：**
 
-- 消费：正式工作室 UI、`fixture.restart()`/`prepareUserData()`、`window.myself.getCharacterRecoverySnapshot()`。
-- 产出：Store 与 Package 坏 marker 的真实 Electron 证据。
+- 消费：正式 Workshop、Pet、Chat UI，`fixture.restart()`、用户数据准备和既有 recovery API。
+- 产出：两个或更少的真实 Electron 重启纵向证据。
 
-- [ ] **步骤 1：写非活动 Store marker RED 场景**
+- [ ] **步骤 1：盘点并合并既有恢复 E2E**
 
-通过正式工作室创建、发布并启用健康角色，再建立非活动角色；退出后写入半截非活动 publish marker。重启断言 Electron 就绪、健康活动播放器 `data-status="ready"`、快照包含非活动 issue 且 `fallbackActive:false`。
+用 `rg` 列出角色恢复、marker 和 restart 场景。删除或合并可由 B1/B2 模块测试证明的矩阵，最终 B3 恢复重启场景不得超过两个。
 
-- [ ] **步骤 2：补充聊天与泄漏断言**
+- [ ] **步骤 2：写非活动角色合并 RED 场景**
 
-从 pet 打开 chat，提交现有测试消息并断言既有模型设置提示出现。序列化 snapshot，断言不含 userData 绝对路径、marker sentinel、哈希或 token。
+通过正式 UI 准备健康活动角色和非活动角色；退出后准备非活动 Store 坏 marker、一个坏 Package marker 和一个可恢复 Package marker；重启断言健康播放器 ready、Pet 无 fallback、Workshop 只在选中相应角色时显示问题、聊天可提交。序列化公开快照，断言不含用户目录、marker sentinel、哈希或 token。
 
-- [ ] **步骤 3：写活动 publish marker RED 场景**
+- [ ] **步骤 3：写活动角色 fallback RED 场景**
 
-损坏活动角色 publish marker 后重启，断言官方默认 fallback 和修复入口可见；存储快照证明损坏 marker 原字节未改写；工作室仍列出其他健康角色。
+损坏活动角色 publish marker 或 runtime 后重启；断言当前已是官方默认角色、Pet 显示降级与工作室入口、原始恢复证据字节仍保留、其他健康角色仍列出、聊天可提交。
 
-- [ ] **步骤 4：写 Package 多 marker RED 场景**
-
-准备一个半截 marker 与一个合法可恢复 marker，重启断言坏项被 quarantined/blocked、合法项仍处理、应用和聊天可用。不得通过 E2E 直接调用 Journal 内部方法。
-
-- [ ] **步骤 5：运行真实 Windows E2E**
+- [ ] **步骤 4：运行定向 E2E**
 
 ```powershell
-pnpm.cmd test:e2e:desktop
+pnpm.cmd build:desktop
+pnpm.cmd exec playwright test tests/e2e/desktop.spec.ts --grep "角色恢复"
 ```
 
-预期：PASS。窗口层级和人工文案可读性若未实际人工观察，验收记录写“待用户人工确认”。
+预期：两个或更少场景全部 PASS。单点失败最多定向复现一次；达到 15 分钟即停止该路线。
 
-- [ ] **步骤 6：运行最终门禁**
+- [ ] **步骤 5：最终删除与边界扫描**
 
 ```powershell
+rg -n "startupRecoveryErrorCode|loadCharacterStartupRecovery|fallbackActive|CharacterActions\.getCharacterRecoverySnapshot|recoveryErrorCode" apps/desktop/src apps/desktop/tests tests/e2e
+rg -n "affectedCapabilities|suggestion" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts
+git diff --name-only $b3Base..HEAD -- apps/website apps/cloudbase-api apps/package-scanner tests/e2e/website.spec.ts
+git diff --check $b3Base..HEAD
+```
+
+预期：全部无输出。另按测试标题确认恢复重启场景不超过两个。
+
+- [ ] **步骤 6：运行自动化门禁**
+
+逐条运行，任何单条达到 15 分钟即终止并记录现有证据：
+
+```powershell
+pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx
 pnpm.cmd --filter @myself/desktop typecheck
 pnpm.cmd --filter @myself/desktop test
 pnpm.cmd test:security
@@ -294,12 +416,30 @@ pnpm.cmd verify:characters
 pnpm.cmd verify:desktop
 ```
 
-预期：全部 PASS；`verify:characters` 与 `verify:desktop` 均包含桌面 E2E，记录重复覆盖而不虚构未运行结果。
+预期：全部退出 0。若出现与既有页面关闭波动相同的现象，只如实记录定向复现和等价门禁，不宣称根因已修复。
 
-- [ ] **步骤 7：检查旧路径已清理**
+- [ ] **步骤 7：更新现有验收记录**
 
-使用 `rg` 确认 `startupRecoveryErrorCode`、旧 recovery callback 和旧单字段 snapshot schema 均无正式运行引用；B1/B2 内部状态类型仍保持独立。
+在 `character-workshop-acceptance.md` 写明日期、环境、实际命令、退出码、两个场景结果、旧符号扫描、受保护路径零差异和生产/测试新增删除行数。真实 Windows 窗口层级、焦点、布局、文案可读性及重启视觉没有人工观察时写“待用户人工确认”。
 
-- [ ] **步骤 8：在获得 Git 授权后提交本任务**
+- [ ] **步骤 8：最终双重审查**
 
-未获授权不执行 Git 写操作。
+规格审查逐项对照 B3 设计第 4—12 节；质量审查确认 owner、接口和通道数量未增加，无兼容双轨或重复 B1/B2 矩阵。Critical、Important 清零且 Minor 已修复或由主智能体明确裁决后才能提交。
+
+- [ ] **步骤 9：提交**
+
+```powershell
+git add tests/e2e/desktop.spec.ts docs/operations/character-workshop-acceptance.md
+git add tests/fixtures/electron-app.ts # 仅当该文件确有本任务差异
+git commit -m "test(desktop): verify character recovery degradation flow"
+```
+
+## 完成标准
+
+- B2 已完成，B3 未重写 B1/B2 恢复算法。
+- `character-startup.ts` 是唯一启动裁决 owner，并按固定顺序产出一次性深冻结快照。
+- 公开类型严格等于两个封闭 union；`fallbackErrorCode !== null` 是唯一 fallback 状态。
+- IPC 直接持有不可变值；没有 Actions getter、动态 callback、第二通道或 Renderer 恢复 Store。
+- Pet 只消费 fallback，Workshop 只筛选当前角色，Chat 不读取快照。
+- 旧标量、旧 loader 和跨 IPC 派生字段零正式引用；B3 recovery E2E 不超过两个。
+- 定向测试、适用门禁、删除扫描和受保护路径检查均有真实记录；未执行或未人工观察项目不写成通过。
