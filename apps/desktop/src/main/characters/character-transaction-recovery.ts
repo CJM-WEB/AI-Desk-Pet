@@ -181,7 +181,17 @@ async function recoveryErrorCode(
   try {
     await recover();
     return null;
-  } catch {
+  } catch (error) {
+    const stableCharacterError = error instanceof Error
+      && /^CHARACTER_[A-Z0-9_]+$/u.test(error.message);
+    const systemError = typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && typeof error.code === 'string'
+      && /^E[A-Z0-9_]+$/u.test(error.code);
+    if (!stableCharacterError && !systemError) {
+      throw error;
+    }
     return errorCode;
   }
 }

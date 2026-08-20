@@ -24,12 +24,12 @@ function createRecovery(): CharacterTransactionRecovery {
 describe('CharacterTransactionRecovery', () => {
   test('隔离每个角色的 draft 与 publish 恢复失败，仍继续其余分面和角色', async () => {
     const firstDraft = vi.fn(async () => {
-      throw new Error('C:\\private\\draft-marker.json');
+      throw new Error('CHARACTER_TRANSACTION_INVALID');
     });
     const firstPublish = vi.fn(async () => undefined);
     const secondDraft = vi.fn(async () => undefined);
     const secondPublish = vi.fn(async () => {
-      throw new Error('C:\\private\\publish-marker.json');
+      throw Object.assign(new Error('拒绝访问'), { code: 'EACCES' });
     });
     const thirdDraft = vi.fn(async () => undefined);
     const thirdPublish = vi.fn(async () => undefined);
@@ -72,15 +72,15 @@ describe('CharacterTransactionRecovery', () => {
       ],
       budgetExceeded: false
     });
-    expect(JSON.stringify(report)).not.toContain('private');
+    expect(JSON.stringify(report)).not.toContain('拒绝访问');
   });
 
   test('双分面失败仍执行两个恢复 closure，并保存分面的稳定码', async () => {
     const recoverDraft = vi.fn(async () => {
-      throw new Error('draft failure');
+      throw new Error('CHARACTER_TRANSACTION_INVALID');
     });
     const recoverPublish = vi.fn(async () => {
-      throw new Error('publish failure');
+      throw Object.assign(new Error('系统错误'), { code: 'EPERM' });
     });
 
     const report = await createRecovery().recoverAll([
@@ -102,15 +102,15 @@ describe('CharacterTransactionRecovery', () => {
     const recovery = createRecovery();
     await recovery.recoverAll([
       candidate('draft-blocked', async () => {
-        throw new Error('draft failure');
+        throw new Error('CHARACTER_TRANSACTION_INVALID');
       }),
       candidate('publish-blocked', async () => undefined, async () => {
-        throw new Error('publish failure');
+        throw Object.assign(new Error('系统错误'), { code: 'EIO' });
       }),
       candidate('both-blocked', async () => {
-        throw new Error('draft failure');
+        throw new Error('CHARACTER_PATH_UNSAFE');
       }, async () => {
-        throw new Error('publish failure');
+        throw Object.assign(new Error('系统错误'), { code: 'EACCES' });
       }),
       candidate('healthy')
     ]);
@@ -155,6 +155,23 @@ describe('CharacterTransactionRecovery', () => {
       .toThrow('CHARACTER_RECOVERY_DEFERRED');
     expect(() => recovery.assertRuntimeAllowed('unknown'))
       .toThrow('CHARACTER_RECOVERY_DEFERRED');
+  });
+
+  test.each([
+    new TypeError('恢复程序错误'),
+    new Error('未分类普通错误'),
+    { message: '非错误对象' }
+  ])('未分类恢复异常必须原样重新抛出并停止本轮：%s', async (failure) => {
+    const laterDraft = vi.fn(async () => undefined);
+    const recovery = createRecovery();
+
+    const caught = await recovery.recoverAll([
+      candidate('broken-program', async () => { throw failure; }),
+      candidate('later', laterDraft)
+    ]).catch(error => error);
+
+    expect(caught).toBe(failure);
+    expect(laterDraft).not.toHaveBeenCalled();
   });
 
   test('活动角色优先恢复，但报告保持输入顺序且不修改候选数组或对象', async () => {
@@ -361,9 +378,9 @@ describe('CharacterTransactionRecovery', () => {
 
     await recovery.recoverAll([candidate('A')]);
     await recovery.recoverAll([candidate('B', async () => {
-      throw new Error('B draft failure');
+      throw new Error('CHARACTER_TRANSACTION_INVALID');
     }, async () => {
-      throw new Error('B publish failure');
+      throw Object.assign(new Error('系统错误'), { code: 'EACCES' });
     })]);
 
     expect(recovery.resultFor('A')).toEqual({

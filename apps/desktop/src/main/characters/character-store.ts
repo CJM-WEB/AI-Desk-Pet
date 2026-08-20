@@ -921,9 +921,10 @@ export class CharacterStore {
       source = await readFile(file, 'utf8');
     } catch (error) {
       if (!isMissingFile(error)) throw error;
-      await this.resetTransactionRecovery(null);
       const index = emptyIndex();
       await this.writeIndex(index);
+      this.recoveryActiveCharacterId = null;
+      this.transactionRecoveryReport = await this.transactionRecovery.recoverAll([]);
       return { index, writable: true };
     }
 
@@ -936,13 +937,13 @@ export class CharacterStore {
     })();
     const parsed = characterIndexSchema.safeParse(raw);
     if (!parsed.success) {
-      await this.resetTransactionRecovery(null);
       await this.preserveCorruptText(file, source);
+      this.recoveryActiveCharacterId = null;
+      this.transactionRecoveryReport = await this.transactionRecovery.recoverAll([]);
       return { index: emptyIndex(), writable: false };
     }
 
     this.recoveryActiveCharacterId = parsed.data.activeCharacterId;
-    this.transactionRecoveryReport = { characters: [], budgetExceeded: false };
     await this.recoverDeleteTombstones(parsed.data);
     this.transactionRecoveryReport = await this.transactionRecovery.recoverAll(
       parsed.data.characters.map(entry => ({
@@ -958,12 +959,6 @@ export class CharacterStore {
       }))
     );
     return { index: parsed.data, writable: true };
-  }
-
-  /** 清空上轮裁决，避免索引缺失、损坏或集合变化后复用旧角色状态。 */
-  private async resetTransactionRecovery(activeCharacterId: string | null): Promise<void> {
-    this.recoveryActiveCharacterId = activeCharacterId;
-    this.transactionRecoveryReport = await this.transactionRecovery.recoverAll([]);
   }
 
   private async requireWritableIndex(): Promise<CharacterIndex> {

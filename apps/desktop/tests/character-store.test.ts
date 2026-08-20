@@ -1921,6 +1921,7 @@ describe('CharacterStore', () => {
     await store.create({ id: 'healthy', name: '健康角色' });
     await store.publishCompiled('target', targetRuntime.manifest, targetRuntime.assets);
     await store.publishCompiled('healthy', healthyRuntime.manifest, healthyRuntime.assets);
+    await store.setActive('target', true);
     const markerFile = join(charactersDirectory, 'target', 'publish-transaction.json');
     const markerBytes = Buffer.from([0x7b, 0x22, 0xff]);
     await writeFile(markerFile, markerBytes);
@@ -1938,6 +1939,12 @@ describe('CharacterStore', () => {
     await expect(restarted.getRuntimeManifest('target'))
       .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
     await expect(restarted.getPublishedManifest('target'))
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getActive())
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.getActiveManifestV2())
+      .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
+    await expect(restarted.readActiveRuntimeAsset('atlas'))
       .rejects.toThrow('CHARACTER_PUBLISH_RECOVERY_BLOCKED');
     await expect(restarted.getRuntimeManifest('healthy'))
       .resolves.toEqual(runtimeView(healthyRuntime.manifest));
@@ -2003,11 +2010,18 @@ describe('CharacterStore', () => {
     );
     await writeFile(draftMarker, Buffer.from('{"version":1'));
     const manifestFile = join(charactersDirectory, 'demo', 'compiled', 'manifest.json');
+    const compiledDirectory = join(charactersDirectory, 'demo', 'compiled');
     const indexFile = join(charactersDirectory, 'index.json');
     const index = JSON.parse(await readFile(indexFile, 'utf8'));
     index.characters[0].migrationErrorCode = 'CHARACTER_MIGRATION_FAILED';
     await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
     const manifestBytes = await readFile(manifestFile);
+    const compiledSnapshot = new Map(await Promise.all(
+      (await readdir(compiledDirectory)).sort().map(async fileName => [
+        fileName,
+        await readFile(join(compiledDirectory, fileName))
+      ] as const)
+    ));
     const indexBytes = await readFile(indexFile);
 
     const restarted = new CharacterStore(charactersDirectory);
@@ -2016,6 +2030,13 @@ describe('CharacterStore', () => {
     await expect(restarted.getRuntimeManifest('demo')).resolves.toMatchObject(runtime.manifest);
     await expect(restarted.getPublishedManifest('demo')).resolves.toMatchObject({ version: 2 });
     expect(await readFile(manifestFile)).toEqual(manifestBytes);
+    const compiledAfter = new Map(await Promise.all(
+      (await readdir(compiledDirectory)).sort().map(async fileName => [
+        fileName,
+        await readFile(join(compiledDirectory, fileName))
+      ] as const)
+    ));
+    expect(compiledAfter).toEqual(compiledSnapshot);
     expect(await readFile(indexFile)).toEqual(indexBytes);
     await expect(access(join(charactersDirectory, 'demo', 'publish-transaction.json')))
       .rejects.toThrow();
@@ -2103,6 +2124,59 @@ describe('CharacterStore', () => {
     });
     expect(JSON.stringify(restarted.getTransactionRecoveryReport()))
       .not.toContain('拒绝访问测试路径');
+  });
+
+  test('事务恢复协调：未分类异常中止时在途与失败后的 getter 均保留上一完整报告', async () => {
+    let armed = false;
+    let releaseRecovery!: () => void;
+    let recoveryReached!: () => void;
+    const recoveryBlocked = new Promise<void>(resolve => { releaseRecovery = resolve; });
+    const reachedRecovery = new Promise<void>(resolve => { recoveryReached = resolve; });
+    const targetNext = join(charactersDirectory, 'target', 'draft', 'draft.next.json');
+    const store = new CharacterStore(charactersDirectory, {
+      async removePath(path, options) {
+        if (armed && path === targetNext) {
+          recoveryReached();
+          await recoveryBlocked;
+          throw new TypeError('恢复程序错误');
+        }
+        await rm(path, options);
+      }
+    });
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.create({ id: 'healthy', name: '健康角色' });
+    await store.list();
+    const previousReport = store.getTransactionRecoveryReport();
+    armed = true;
+
+    const pending = store.list();
+    await reachedRecovery;
+    expect(store.getTransactionRecoveryReport()).toEqual(previousReport);
+    releaseRecovery();
+    await expect(pending).rejects.toThrow('恢复程序错误');
+    expect(store.getTransactionRecoveryReport()).toEqual(previousReport);
+  });
+
+  test('事务恢复协调：tombstone 恢复异常保留上一完整报告', async () => {
+    let armed = false;
+    const tombstone = join(charactersDirectory, 'target.delete-tombstone');
+    const characterDirectory = join(charactersDirectory, 'target');
+    const store = new CharacterStore(charactersDirectory, {
+      async renamePath(source, destination) {
+        if (armed && source === tombstone && destination === characterDirectory) {
+          throw new TypeError('tombstone 程序错误');
+        }
+        await rename(source, destination);
+      }
+    });
+    await store.create({ id: 'target', name: '目标角色' });
+    await store.list();
+    const previousReport = store.getTransactionRecoveryReport();
+    await rename(characterDirectory, tombstone);
+    armed = true;
+
+    await expect(store.list()).rejects.toThrow('tombstone 程序错误');
+    expect(store.getTransactionRecoveryReport()).toEqual(previousReport);
   });
 
   test('事务恢复协调：显式删除不受坏分面 gate 阻断', async () => {
