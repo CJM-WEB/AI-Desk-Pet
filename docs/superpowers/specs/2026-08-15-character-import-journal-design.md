@@ -107,12 +107,11 @@ type CharacterPackageImportMarkerV3 = Readonly<{
 
 ### 6.1 调度与预算
 
-1. 读取 marker 候选后，先按严格文件名解析角色 ID；无归属候选独立隔离。
-2. 可识别候选按活动角色优先，其余按稳定文件名顺序处理。
-3. 最多关联并处理 256 个可识别角色；超过数量上限的 marker 保持不动，并对可识别角色返回 deferred。
-4. 2000ms 是软预算，只在两个角色之间检查；已经开始的单角色恢复不得在中途打断。
-5. 达到预算后，未开始的 marker 保持原字节和原路径，并对可识别角色返回 deferred；下一次初始化或导入前可继续处理。
-6. 每张 marker 有自己的错误隔离。单项解析、读取、隔离、回滚或清理失败不终止后续项。
+1. 读取全部 marker 候选后先形成有界 inventory；严格文件名能够解析的活动角色候选排在最前，其余候选按稳定文件名顺序排列，无归属候选也必须进入同一调度而不能绕过预算。
+2. 本轮最多开始处理 256 个 inventory 项。超过数量上限的 marker 保持原字节和原路径；可识别角色返回 deferred，无归属项只记录固定诊断码。
+3. 2000ms 是软预算，覆盖所有 inventory 项并只在两项之间检查；已经开始的单项恢复不得在中途打断。
+4. 达到预算后，未开始的 marker 保持原字节和原路径；可识别角色返回 deferred，无归属项只记录固定诊断码，下一次初始化或导入前继续处理。
+5. 每张 marker 有自己的错误隔离。单项解析、读取、隔离、回滚或清理失败不终止后续项。
 
 数量与时间预算只限制本轮恢复工作，不得被误用为“删除剩余 marker”或“整体初始化失败”。
 
@@ -175,13 +174,13 @@ type CharacterPackageRecoveryReport = Readonly<{
 
 - 同一角色只返回一个当前裁决；blocked 优先于 deferred，结果按角色 ID 稳定排序。
 - 不返回 `recovered` 成功项、数量统计、`budgetExceeded`、恢复阶段、内部原因或可由 `issues` 推导的字段。
-- 无法安全识别角色 ID 的 marker 不进入该报告，只在 Main 使用固定诊断码记录。
+- 无法安全识别角色 ID 的 marker 不进入该报告；`CharacterPackageService` 在 Main 进程内直接记录固定诊断码且不附带 marker 名称、路径或正文，不新增公开 callback 或诊断接口。
 - 报告不承担 UI 文案。后续 B3 只读取 `characterId + errorCode`，本地映射提示。
 - 初始化报告发布前一次性构造；调用者不能观察逐项处理中间态。
 
 ## 8. 失败处理与可用性
 
-- 角色根目录无法读取时，Main 只记录固定诊断码 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED`；`initialize()` 不伪造角色 issue，也不让该诊断细节跨进程。活动角色是否降级继续由 B1/B3 的运行版本校验决定。
+- 角色根目录无法读取时，`CharacterPackageService` 在 Main 进程内只记录固定诊断码 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED`；`initialize()` 不伪造角色 issue，也不让该诊断细节跨进程。活动角色是否降级继续由 B1/B3 的运行版本校验决定。
 - 单项 blocked 只限制该角色的导入恢复，不阻断其他 marker、基础桌宠或普通文字聊天。
 - deferred 不是成功或错误吞并；marker 保持未触碰，后续运行继续恢复。
 - 新的导入在进入 saga 前仍先执行恢复；若目标角色存在 blocked marker，不得覆盖 marker 或目录，应以稳定错误结束该次导入。
@@ -208,7 +207,7 @@ type CharacterPackageRecoveryReport = Readonly<{
 - 旧布尔回滚结果及把 `false` 当作同一种失败的调用逻辑；
 - 只验证 v1/v2 删除、旧物理摘要或整轮抛错的测试脚手架和重复矩阵。
 
-不得删除 Store owner 文件、带令牌回滚、移动前后身份复核、活动角色保护或已有 ZIP/导出安全逻辑。完成后必须用 `rg` 证明：v2 package marker owner、普通删除回退和假想 `CharacterImportJournal` 在正式代码中零引用；v3 Schema、create/complete/recover 各只有一个 owner。
+不得删除 Store owner 文件、带令牌回滚、移动前后身份复核、活动角色保护或已有 ZIP/导出安全逻辑。完成后必须在 `character-package-service.ts` 的限定范围内用 `rg` 证明 `CharacterOwnership`、`captureCharacterOwnership`、`sameCharacterOwnership`、`preserveRollback` 和导入 catch 中的 `store.delete(` 零引用，并在 `apps/desktop/src/main/characters` 内证明 `CharacterImportJournal` 与 `character-import-journal` 零引用。v3 Schema、创建、完成和恢复 owner 由最终差异审查确认全部位于 `CharacterPackageService`，不使用会误命中其他合法 v2 数据的宽泛字符串扫描。
 
 ## 11. TDD 与 replace-don't-layer
 

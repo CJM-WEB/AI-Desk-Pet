@@ -142,7 +142,7 @@ Import journal 的首选方案是修改现有 `CharacterPackageService` 私有�
 
 ## 8. B3 实施约束：原位扩展现有快照链
 
-B3 不新增 `CharacterActions.getCharacterRecoverySnapshot()` 浅转发。原位扩展现有 recovery snapshot Schema、现有 `registerCharacterIpc()` callback、现有 Preload 方法和现有 Renderer loader。
+B3 不新增 `CharacterActions.getCharacterRecoverySnapshot()` 浅转发。原位扩展现有 recovery snapshot Schema、现有 `registerCharacterIpc()` 注册参数位置、现有 Preload 方法和现有 Renderer loader；启动快照已经固定，因此直接注入不可变值，不保留 getter/callback。
 
 公开 issue 最小化为：
 
