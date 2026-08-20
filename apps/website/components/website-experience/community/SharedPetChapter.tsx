@@ -12,7 +12,6 @@ import type {
   SetStateAction
 } from 'react';
 import type { SubmissionReceipt } from '@myself/shared-types';
-import { LIQUID_GLASS_COMMUNITY_CARDS_EVENT } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ChapterRuntimeProps } from '../types';
 import {
@@ -536,19 +535,6 @@ export function SharedPetChapter({
     ? '?'
     : String(visiblePage.totalPages);
 
-  /* 同步真实卡片数量和页码，让底层液态玻璃只绘制当前视觉内容。 */
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      window.dispatchEvent(new CustomEvent(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, {
-        detail: {
-          count: visiblePage.items.length,
-          currentPage: visiblePage.page,
-          totalPages: totalPageLabel
-        }
-      }));
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [totalPageLabel, visiblePage.items.length, visiblePage.page]);
   const chapterStyle = {
     '--community-progress': communityProgress,
     '--community-share-x': `${(1 - communityProgress) * -74}vw`,

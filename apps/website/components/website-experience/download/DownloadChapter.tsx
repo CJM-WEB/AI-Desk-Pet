@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Clock3, Download } from 'lucide-react';
 import { formatReleaseSize } from '../../../lib/release-manifest';
-import { LIQUID_GLASS_RIPPLE_EVENT } from '../../home-experience/LiquidGlassHome';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
 import type { Translate } from '../../i18n/i18n-types';
 import type { PointerPoint } from '../../home-experience/types';
@@ -280,16 +279,6 @@ export function DownloadChapter({
       <section
         className={styles.glassCopy}
         aria-label={`${t('download.notice.label')} · ${t('download.faq.label')}`}
-        onPointerDown={(event) => {
-          if (motionDisabled || progress <= 0.12) return;
-          window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
-            detail: {
-              clientX: event.clientX,
-              clientY: event.clientY,
-              strength: 1.65
-            }
-          }));
-        }}
       >
         <p className={styles.accessibleCopy} data-layout-ignore aria-live="polite">
           {modelActive ? noticeAccessibilityText : ''}

@@ -11,7 +11,6 @@ import {
 import type { KeyboardEvent as ReactKeyboardEvent, WheelEvent as ReactWheelEvent } from 'react';
 import type { CSSProperties } from 'react';
 import { ApiClient } from '../../../lib/api-client';
-import { LIQUID_GLASS_SUPPORT_SELECTION_EVENT } from '../../home-experience/LiquidGlassHome';
 import type { PointerPoint } from '../../home-experience/types';
 import { interpolateMessage, useI18n } from '../../i18n/I18nProvider';
 import type { Translate } from '../../i18n/i18n-types';
@@ -152,15 +151,6 @@ export function SupportChapter({
       if (pointerFrameRef.current !== null) window.cancelAnimationFrame(pointerFrameRef.current);
     };
   }, []);
-
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, {
-      detail: {
-        feedbackIndex: activeFeedbackIndex,
-        paymentIndex: activePaymentIndex
-      }
-    }));
-  }, [activeFeedbackIndex, activePaymentIndex]);
 
   useEffect(() => {
     const pendingGroup = pendingKeyboardFocusRef.current;

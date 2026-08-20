@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EXPERIENCE_CONFIG } from '../home-experience/config';
-import type { ExperiencePhase, PointerPoint } from '../home-experience/types';
+import type { ExperiencePhase } from '../home-experience/types';
 import {
   accumulateWheelUnlock,
   applyChapterDelta,
@@ -26,7 +26,6 @@ export interface WebsiteControllerResult {
   progress: number;
   settledIndex: number;
   isChapterTransitioning: boolean;
-  pointer: PointerPoint;
   isPaused: boolean;
   prefersReducedMotion: boolean;
   initializationFailed: boolean;
@@ -63,7 +62,6 @@ export function useWebsiteController(
   const [progress, setProgress] = useState(0);
   const [settledIndex, setSettledIndex] = useState(0);
   const [isChapterTransitioning, setIsChapterTransitioning] = useState(false);
-  const [pointer, setPointer] = useState<PointerPoint>({ x: 0, y: 0 });
   const [isPaused, setIsPaused] = useState(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [initializationFailed, setInitializationFailed] = useState(false);
@@ -75,8 +73,6 @@ export function useWebsiteController(
   const isPausedRef = useRef(false);
   const isDocumentHiddenRef = useRef(false);
   const isWindowBlurredRef = useRef(false);
-  const pointerTargetRef = useRef<PointerPoint>({ x: 0, y: 0 });
-  const pointerFrameRef = useRef<number | null>(null);
   const progressFrameRef = useRef<number | null>(null);
   const lastFrameAtRef = useRef<number | null>(null);
   const wheelModeRef = useRef<WheelMode>('resting');
@@ -381,10 +377,6 @@ export function useWebsiteController(
         commitProgress(nearest);
         commitSettledIndex(nearest);
         setIsChapterTransitioning(false);
-        if (pointerFrameRef.current !== null) {
-          window.cancelAnimationFrame(pointerFrameRef.current);
-          pointerFrameRef.current = null;
-        }
       }
     };
     const pause = () => {
@@ -494,21 +486,6 @@ export function useWebsiteController(
       event.preventDefault();
       goToAdjacent(direction);
     };
-    const handlePointerMove = (event: PointerEvent) => {
-      if (isLocalInput(event.target) || isPausedRef.current) {
-        return;
-      }
-
-      pointerTargetRef.current = { x: event.clientX, y: event.clientY };
-      if (pointerFrameRef.current !== null) {
-        return;
-      }
-
-      pointerFrameRef.current = window.requestAnimationFrame(() => {
-        pointerFrameRef.current = null;
-        setPointer(pointerTargetRef.current);
-      });
-    };
     const handlePointerDown = (event: PointerEvent) => {
       if (
         isLocalInput(event.target)
@@ -582,11 +559,6 @@ export function useWebsiteController(
       wheelModeRef.current = 'resting';
       resetWheelGesture();
       touchGestureRef.current = null;
-      if (pointerFrameRef.current !== null) {
-        window.cancelAnimationFrame(pointerFrameRef.current);
-        pointerFrameRef.current = null;
-      }
-
       for (const removeListener of listenerTeardowns.reverse()) {
         try {
           removeListener();
@@ -602,7 +574,6 @@ export function useWebsiteController(
       syncPausedState();
       registerWindowListener('wheel', handleWheel, { passive: false });
       registerWindowListener('keydown', handleKeyDown);
-      registerWindowListener('pointermove', handlePointerMove);
       registerWindowListener('pointerdown', handlePointerDown);
       registerWindowListener('pointerup', handlePointerUp);
       registerWindowListener('pointercancel', clearTouchStart);
@@ -636,7 +607,6 @@ export function useWebsiteController(
     progress,
     settledIndex,
     isChapterTransitioning,
-    pointer,
     isPaused,
     prefersReducedMotion,
     initializationFailed,

@@ -89,23 +89,6 @@ describe('下载模块', () => {
     expect(chapter.style.getPropertyValue('--platform-offset')).toBe('0vw');
   });
 
-  it('点击下载玻璃时交给共享液态玻璃启动真实水波', () => {
-    const ripple = vi.fn();
-    window.addEventListener('ai-pet-liquid-ripple', ripple);
-    const { container } = render(
-      <DownloadChapter interactive transitionProgress={1.7} />
-    );
-    fireEvent.pointerDown(screen.getByRole('region', { name: '安装前须知 · 常见问题' }), {
-      button: 0,
-      clientX: 120,
-      clientY: 240
-    });
-
-    expect(ripple).toHaveBeenCalledOnce();
-    expect(container.querySelector('feDisplacementMap')).toBeNull();
-    window.removeEventListener('ai-pet-liquid-ripple', ripple);
-  });
-
   it('英文环境使用对应的平台与状态文案', () => {
     render(
       <I18nProvider initialLocale="en">

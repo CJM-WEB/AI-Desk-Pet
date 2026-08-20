@@ -250,7 +250,7 @@ describe('官网章节降级模式', () => {
       listener,
       options
     ) => {
-      if (type === 'pointermove') {
+      if (type === 'pointerup') {
         throw new Error('监听器注册失败');
       }
       originalAddEventListener(type, listener, options);

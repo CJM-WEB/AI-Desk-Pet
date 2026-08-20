@@ -1,7 +1,6 @@
 'use client';
 
 import { Download, ThumbsUp } from 'lucide-react';
-import { LIQUID_GLASS_RIPPLE_EVENT } from '../../home-experience/LiquidGlassHome';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { SharedPetPackageSummary } from './shared-pet-types';
 import { useObjectUrl } from './use-object-url';
@@ -17,7 +16,7 @@ export interface SharedPetCardProps {
   onDownload: (item: SharedPetPackageSummary) => void;
 }
 
-/** 卡片复用共享液态水波，同时隔离详情、点赞与下载操作。 */
+/** 卡片隔离详情、点赞与下载操作。 */
 export function SharedPetCard({
   item,
   detailDisabled = false,
@@ -35,18 +34,7 @@ export function SharedPetCard({
   const downloadLabel = t('sharedPet.card.download', { name: item.name });
 
   return (
-    <article
-      className={styles.card}
-      onPointerDown={(event) => {
-        window.dispatchEvent(new CustomEvent(LIQUID_GLASS_RIPPLE_EVENT, {
-          detail: {
-            clientX: event.clientX,
-            clientY: event.clientY,
-            strength: 1.35
-          }
-        }));
-      }}
-    >
+    <article className={styles.card}>
       <button
         className={styles.cardOpenButton}
         type="button"

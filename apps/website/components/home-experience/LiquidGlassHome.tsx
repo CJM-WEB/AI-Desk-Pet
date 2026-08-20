@@ -11,28 +11,11 @@ import {
 } from './liquid-glass-shaders';
 import styles from './liquid-glass-home.module.css';
 
-export const LIQUID_GLASS_RIPPLE_EVENT = 'ai-pet-liquid-ripple';
-export const LIQUID_GLASS_INTERACTION_EVENT = 'ai-pet-liquid-interaction';
-export const LIQUID_GLASS_COMMUNITY_CARDS_EVENT = 'ai-pet-community-card-count';
-export const LIQUID_GLASS_SUPPORT_SELECTION_EVENT = 'ai-pet-support-selection';
-
 interface LiquidGlassHomeProps {
   active: boolean;
   isPaused: boolean;
   reducedMotion: boolean;
   transitionProgress?: number;
-}
-
-interface RippleEventDetail {
-  clientX: number;
-  clientY: number;
-  strength: number;
-}
-
-export interface LiquidGlassInteractionDetail {
-  hovered: -1 | 0 | 1 | 2;
-  dragging: boolean;
-  offsets: readonly [number, number, number, number, number, number];
 }
 
 /**
@@ -118,9 +101,6 @@ export function LiquidGlassHome({
     const downloadTypingLength = Object.values(downloadGlassCopy)
       .reduce((total, text) => total + Array.from(text).length, 0);
     const pointer = { x: 0.5, y: 0.5 };
-    const glassInteraction = { hoverAmount: 0, hovered: -1, dragging: false };
-    const supportSelection = { feedback: 0, payment: 0 };
-    const blobOffsets = new Float32Array(6);
     const rippleData = new Float32Array(6 * 4);
     const createdTextures: WebGLTexture[] = [];
     const createdBuffers: WebGLBuffer[] = [];
@@ -257,7 +237,6 @@ export function LiquidGlassHome({
       const logoImage = new Image();
       let logoReady = false;
       let lastTextProgress = -1;
-      let communityCardCount = 0;
       let communityCurrentPage = '1';
       let communityTotalPages = '0';
 
@@ -943,67 +922,6 @@ export function LiquidGlassHome({
         if (forceRipple) addRipple(x, y, 1.65);
       };
       const handleCanvasPointerDown = (event: PointerEvent) => updatePointer(event, true);
-      const handleControlRipple = (event: Event) => {
-        const detail = (event as CustomEvent<RippleEventDetail>).detail;
-        if (!detail) return;
-        const x = detail.clientX / window.innerWidth;
-        const y = 1 - detail.clientY / window.innerHeight;
-        pointerX(x);
-        pointerY(y);
-        addRipple(x, y, detail.strength);
-      };
-      const handleCommunityCardCount = (event: Event) => {
-        const detail = (event as CustomEvent<{
-          count?: number;
-          currentPage?: number;
-          totalPages?: number | string;
-        }>).detail;
-        communityCardCount = Math.min(8, Math.max(0, detail?.count ?? 0));
-        communityCurrentPage = String(detail?.currentPage ?? 1);
-        communityTotalPages = String(detail?.totalPages ?? 0);
-        lastTextProgress = -1;
-      };
-      const handleGlassInteraction = (event: Event) => {
-        const detail = (event as CustomEvent<LiquidGlassInteractionDetail>).detail;
-        if (!detail) return;
-        glassInteraction.hovered = detail.hovered;
-        glassInteraction.dragging = detail.dragging;
-        gsap.to(glassInteraction, {
-          hoverAmount: detail.hovered >= 0 ? 1 : 0,
-          duration: detail.hovered >= 0 ? 0.32 : 1.1,
-          ease: 'power3.out',
-          overwrite: 'auto'
-        });
-        blobOffsets.set(detail.offsets);
-      };
-      const nearestSelectionTarget = (current: number, target: number) => {
-        const normalized = ((current % 3) + 3) % 3;
-        let delta = target - normalized;
-        if (delta > 1.5) delta -= 3;
-        if (delta < -1.5) delta += 3;
-        return current + delta;
-      };
-      const handleSupportSelection = (event: Event) => {
-        const detail = (event as CustomEvent<{
-          feedbackIndex?: number;
-          paymentIndex?: number;
-        }>).detail;
-        if (!detail) return;
-        gsap.to(supportSelection, {
-          feedback: nearestSelectionTarget(
-            supportSelection.feedback,
-            Math.min(2, Math.max(0, detail.feedbackIndex ?? 0))
-          ),
-          payment: nearestSelectionTarget(
-            supportSelection.payment,
-            Math.min(2, Math.max(0, detail.paymentIndex ?? 0))
-          ),
-          duration: 0.52,
-          ease: 'power3.inOut',
-          overwrite: 'auto',
-        });
-      };
-
       render = (time: number) => {
         if (disposed || pausedRef.current) return;
         currentTime = time;
@@ -1045,13 +963,6 @@ export function LiquidGlassHome({
         gl.uniform1f(uniforms.downloadTransition, downloadTransition);
         gl.uniform1f(uniforms.communityTransition, communityTransition);
         gl.uniform1f(uniforms.supportTransition, supportTransition);
-        gl.uniform1f(uniforms.supportFeedbackActive, supportSelection.feedback);
-        gl.uniform1f(uniforms.supportPaymentActive, supportSelection.payment);
-        gl.uniform1f(uniforms.communityCardCount, communityCardCount);
-        gl.uniform2fv(uniforms.blobOffsets, blobOffsets);
-        gl.uniform1f(uniforms.hoveredBlob, glassInteraction.hovered);
-        gl.uniform1f(uniforms.hoverAmount, glassInteraction.hoverAmount);
-        gl.uniform1f(uniforms.dragging, glassInteraction.dragging ? 1 : 0);
         let rippleActivity = 0;
         for (let index = 0; index < 6; index += 1) {
           const offset = index * 4;
@@ -1090,10 +1001,6 @@ export function LiquidGlassHome({
       gsap.ticker.add(render);
       window.addEventListener('resize', resize, { passive: true });
       window.addEventListener('pointermove', updatePointer, { passive: true });
-      window.addEventListener(LIQUID_GLASS_RIPPLE_EVENT, handleControlRipple);
-      window.addEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, handleCommunityCardCount);
-      window.addEventListener(LIQUID_GLASS_INTERACTION_EVENT, handleGlassInteraction);
-      window.addEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, handleSupportSelection);
       canvas.addEventListener('pointerdown', handleCanvasPointerDown, { passive: true });
       document.addEventListener('visibilitychange', handleVisibilityChange);
 
@@ -1101,14 +1008,8 @@ export function LiquidGlassHome({
         disposed = true;
         gsap.ticker.remove(render);
         gsap.killTweensOf(pointer);
-        gsap.killTweensOf(glassInteraction);
-        gsap.killTweensOf(supportSelection);
         window.removeEventListener('resize', resize);
         window.removeEventListener('pointermove', updatePointer);
-        window.removeEventListener(LIQUID_GLASS_RIPPLE_EVENT, handleControlRipple);
-        window.removeEventListener(LIQUID_GLASS_COMMUNITY_CARDS_EVENT, handleCommunityCardCount);
-        window.removeEventListener(LIQUID_GLASS_INTERACTION_EVENT, handleGlassInteraction);
-        window.removeEventListener(LIQUID_GLASS_SUPPORT_SELECTION_EVENT, handleSupportSelection);
         canvas.removeEventListener('pointerdown', handleCanvasPointerDown);
         document.removeEventListener('visibilitychange', handleVisibilityChange);
         logoImage.removeEventListener('load', handleLogoLoad);
@@ -1121,8 +1022,6 @@ export function LiquidGlassHome({
     } catch {
       disposed = true;
       gsap.killTweensOf(pointer);
-      gsap.killTweensOf(glassInteraction);
-      gsap.killTweensOf(supportSelection);
       createdTextures.forEach(texture => gl.deleteTexture(texture));
       createdBuffers.forEach(buffer => gl.deleteBuffer(buffer));
       createdShaders.forEach(shader => gl.deleteShader(shader));
