@@ -306,6 +306,66 @@ describe('管理员审核工作台', () => {
     expect(screen.getByText('技术扫描未明确通过，不能批准共享包。')).toBeTruthy();
   });
 
+  it('人工审核共享包具有完整当前技术证据时恢复批准按钮', async () => {
+    const pending = detail({
+      id: 'scanned-package',
+      kind: 'shared_package',
+      status: 'manual_review_pending',
+      title: '已扫描共享包',
+      assets: [{
+        role: 'package', storageKey: 'private/scanned-package.zip', fileName: 'scanned-package.zip',
+        declaredBytes: 20, actualBytes: 20, contentType: 'application/zip'
+      }],
+      moderationResults: [{
+        kind: 'package_scan', provider: 'isolated-scanner', suggestion: 'Pass', label: '扫描通过',
+        score: null,
+        evidence: {
+          submissionId: 'scanned-package',
+          packageStorageKey: 'private/scanned-package.zip',
+          packageSizeBytes: 20,
+          submissionStatusVersion: 3,
+          scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+        },
+        createdAt: '2026-07-30T12:00:00.000Z'
+      }]
+    });
+    setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(pending)),
+      getDetail: vi.fn().mockResolvedValue(pending)
+    });
+
+    fireEvent.click(await screen.findByText('已扫描共享包'));
+    fireEvent.change(await screen.findByLabelText('审核理由'), {
+      target: { value: '技术证据完整' }
+    });
+
+    expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+    expect(screen.queryByText('技术扫描未明确通过，不能批准共享包。')).toBeNull();
+  });
+
+  it('建议投稿不依赖共享包技术证据且可提交批准', async () => {
+    const pending = detail({ id: 'suggestion-1', kind: 'suggestion', title: '新增建议' });
+    const { api } = setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(pending)),
+      getDetail: vi.fn().mockResolvedValue(pending)
+    });
+
+    fireEvent.click(await screen.findByText('新增建议'));
+    fireEvent.change(await screen.findByLabelText('审核理由'), {
+      target: { value: '建议符合主题' }
+    });
+    const approve = screen.getByRole('button', { name: '批准发布' });
+    expect((approve as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(approve);
+
+    await waitFor(() => expect(api.applyAction).toHaveBeenCalledWith(
+      'access-token',
+      'suggestion-1',
+      expect.objectContaining({ action: 'approve', reason: '建议符合主题' })
+    ));
+  });
+
   it('自动驳回共享包执行技术扫描门禁，隔离内容提供恢复动作', async () => {
     const blocked = detail({ id: 'blocked', kind: 'shared_package', status: 'auto_rejected', title: '待复核共享包' });
     const { view } = setup({
