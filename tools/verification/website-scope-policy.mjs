@@ -32,6 +32,8 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/superpowers/specs/2026-08-20-website-e2e-responsibility-reduction-design.md',
   'docs/superpowers/plans/2026-08-20-website-liquid-glass-deep-module-reduction.md',
   'docs/superpowers/specs/2026-08-20-website-liquid-glass-deep-module-reduction-design.md',
+  'docs/superpowers/plans/2026-08-21-website-gpu-e2e-responsibility-subtraction.md',
+  'docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md',
   'tests/e2e/website.spec.ts',
   'tests/playwright.website.config.ts',
   'tools/cloudbase-migration-inventory.mjs',

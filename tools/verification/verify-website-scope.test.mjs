@@ -67,6 +67,8 @@ test('当前网站优化阶段只放行官网业务与精确获批文档', () =>
     'docs/superpowers/specs/2026-08-20-website-e2e-responsibility-reduction-design.md',
     'docs/superpowers/plans/2026-08-20-website-liquid-glass-deep-module-reduction.md',
     'docs/superpowers/specs/2026-08-20-website-liquid-glass-deep-module-reduction-design.md',
+    'docs/superpowers/plans/2026-08-21-website-gpu-e2e-responsibility-subtraction.md',
+    'docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md',
   ];
 
   assert.deepEqual(classifyChangedPaths([
