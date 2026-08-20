@@ -4647,6 +4647,7 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(await pathExistsForAssertion(target)).toBe(false);
       await fileConfirmation.getByRole('button', { name: '确认创建文件' }).click();
       await expect.poll(() => pathExistsForAssertion(target)).toBe(true);
+      await expect(chatPage.getByText('投影文件已创建。', { exact: true })).toBeVisible();
 
       await submitChatMessage(chatPage, `运行 Write-Output ${bodySentinel}`);
       const powershellConfirmation = chatPage.getByRole('region', {

@@ -168,20 +168,26 @@ describe('providerProfileV2Schema', () => {
 });
 
 describe('taskEventSchema', () => {
-  it('只接受严格的历史披露和会话重置事件', () => {
-    expect(taskEventSchema.parse({
-      type: 'history_disclosure_required',
-      requestId: 'disclosure-1',
-      targetProviderName: 'OpenAI',
-      messageCount: 4,
-      characterCount: 120
-    })).toMatchObject({ type: 'history_disclosure_required' });
+  it.each([
+    ['phase', { type: 'phase', phase: 'thinking' }],
+    ['message', { type: 'message', role: 'assistant', text: '已完成' }],
+    ['pending_action', { type: 'pending_action', action: {
+      category: 'file', actionId: 'act-1', conversationId: 'conv-1', risk: 'write',
+      operation: 'delete_file', summary: '删除 notes.md', targetRelativePath: 'notes.md',
+      targetType: 'file', createdAt: '2026-07-20T00:00:00.000Z',
+      expiresAt: '2026-07-20T00:02:00.000Z'
+    } }],
+    ['error', { type: 'error', code: 'ACTION_FAILED', message: '执行失败' }],
+    ['character_emotion', { type: 'character_emotion', label: 'happy' }],
+    ['character_carrying', { type: 'character_carrying', carrying: true }],
+    ['history_disclosure_required', { type: 'history_disclosure_required', requestId: 'disclosure-1',
+      targetProviderName: 'OpenAI', messageCount: 4, characterCount: 120 }],
+    ['conversation_reset', { type: 'conversation_reset', generation: 'generation-2' }]
+  ])('接受合法 %s 事件', (_type, event) => {
+    expect(taskEventSchema.parse(event)).toEqual(event);
+  });
 
-    expect(taskEventSchema.parse({
-      type: 'conversation_reset',
-      generation: 'generation-2'
-    })).toMatchObject({ type: 'conversation_reset' });
-
+  it('拒绝会话重置事件夹带额外历史', () => {
     expect(() => taskEventSchema.parse({
       type: 'conversation_reset',
       generation: 'generation-2',
