@@ -12,7 +12,7 @@ export const WEB_AUDIT_INPUTS = Object.freeze([
   'apps/package-scanner',
   'packages/shared-types',
   'tools/release',
-  'tools/apply-cloudbase-migrations.mjs',
+  'tools/plan-cloudbase-migrations.mjs',
   'tools/build-cloudbase-functions.mjs',
   'tests/build-website-export.mjs',
   'tests/serve-website-export.mjs',
@@ -28,7 +28,7 @@ export const WEB_TEST_OWNERS = Object.freeze([
   { id: 'cloudbase-api', pattern: /^apps\/cloudbase-api\/tests\/.*\.test\.ts$/u },
   { id: 'package-scanner', pattern: /^apps\/package-scanner\/tests\/.*\.test\.ts$/u },
   { id: 'release-tools', pattern: /^tools\/release\/tests\/.*\.test\.ts$/u },
-  { id: 'root-cloudbase-tools', pattern: /^tools\/(apply-cloudbase-migrations|build-cloudbase-functions)\.test\.mjs$/u },
+  { id: 'root-cloudbase-tools', pattern: /^tools\/(plan-cloudbase-migrations|build-cloudbase-functions)\.test\.mjs$/u },
   { id: 'website-e2e', pattern: /^tests\/e2e\/website\.spec\.ts$/u },
   { id: 'website-verification', pattern: /^tools\/verification\/.*\.test\.mjs$/u }
 ]);
@@ -61,7 +61,7 @@ const fastSteps = Object.freeze([
   defineStep('scanner-test', 'pnpm.cmd', ['--filter', '@myself/package-scanner', 'test']),
   defineStep('release-typecheck', 'pnpm.cmd', ['--filter', '@myself/release-tools', 'typecheck']),
   defineStep('release-test', 'pnpm.cmd', ['--filter', '@myself/release-tools', 'test']),
-  defineStep('migration-tool-test', process.execPath, ['--test', 'tools/apply-cloudbase-migrations.test.mjs']),
+  defineStep('migration-tool-test', process.execPath, ['--test', 'tools/plan-cloudbase-migrations.test.mjs']),
   defineStep('dependency-audit', process.execPath, ['tools/verification/run-web-dependency-audit.mjs']),
 ]);
 

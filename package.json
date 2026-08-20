@@ -10,6 +10,8 @@
     "verify:web-chain:scope": "node tools/verification/verify-website-scope.mjs",
     "verify:web-chain:fast": "node tools/verification/verify-web-chain.mjs --profile fast",
     "verify:web-chain": "node tools/verification/verify-web-chain.mjs --profile full",
+    "plan:cloudbase-migrations": "node tools/plan-cloudbase-migrations.mjs --dry-run",
+    "test:cloudbase-tools": "node --test tools/cloudbase-migration-inventory.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs",
     "test:watch": "vitest",
     "typecheck": "pnpm -r --if-present typecheck",
     "test:unit": "vitest run --project shared-types --project file-tools --project agent-core --project character-runtime --project character-assets --project desktop",

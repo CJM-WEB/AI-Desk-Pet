@@ -88,8 +88,6 @@ test('阶段一只放行获批的 CloudBase 发布止血路径', () => {
     'tools/cloudbase-migration-inventory.test.mjs',
     'tools/plan-cloudbase-migrations.mjs',
     'tools/plan-cloudbase-migrations.test.mjs',
-    'tools/apply-cloudbase-migrations.mjs',
-    'tools/apply-cloudbase-migrations.test.mjs',
   ];
 
   assert.deepEqual(classifyChangedPaths([
@@ -151,6 +149,8 @@ test('根 manifest 接受全部精确阶段 0 脚本和 dependency-cruiser', () 
     'verify:web-chain:scope': 'node tools/verification/verify-website-scope.mjs',
     'verify:web-chain:fast': 'node tools/verification/verify-web-chain.mjs --profile fast',
     'verify:web-chain': 'node tools/verification/verify-web-chain.mjs --profile full',
+    'plan:cloudbase-migrations': 'node tools/plan-cloudbase-migrations.mjs --dry-run',
+    'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
   });
   allowedChange.devDependencies['dependency-cruiser'] = '18.2.0';
 

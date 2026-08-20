@@ -38,6 +38,7 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'tools/cloudbase-migration-inventory.test.mjs',
   'tools/plan-cloudbase-migrations.mjs',
   'tools/plan-cloudbase-migrations.test.mjs',
+  /** 仅为验证已批准的旧入口删除，不能再新增或恢复这两个文件。 */
   'tools/apply-cloudbase-migrations.mjs',
   'tools/apply-cloudbase-migrations.test.mjs',
 ]);
@@ -66,6 +67,8 @@ export const ALLOWED_ROOT_SCRIPT_CHANGES = Object.freeze({
   'verify:web-chain:scope': 'node tools/verification/verify-website-scope.mjs',
   'verify:web-chain:fast': 'node tools/verification/verify-web-chain.mjs --profile fast',
   'verify:web-chain': 'node tools/verification/verify-web-chain.mjs --profile full',
+  'plan:cloudbase-migrations': 'node tools/plan-cloudbase-migrations.mjs --dry-run',
+  'test:cloudbase-tools': 'node --test tools/cloudbase-migration-inventory.test.mjs tools/plan-cloudbase-migrations.test.mjs tools/build-cloudbase-functions.test.mjs',
 });
 
 /** 依赖审查器使用固定版本，避免范围守卫本身被浮动依赖削弱。 */

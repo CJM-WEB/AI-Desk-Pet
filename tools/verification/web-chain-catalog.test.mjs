@@ -13,7 +13,7 @@ const currentTests = [
   'apps/cloudbase-api/tests/api.test.ts',
   'apps/package-scanner/tests/server.test.ts',
   'tools/release/tests/generate-manifest.test.ts',
-  'tools/apply-cloudbase-migrations.test.mjs',
+  'tools/plan-cloudbase-migrations.test.mjs',
   'tools/build-cloudbase-functions.test.mjs',
   'tests/e2e/website.spec.ts',
   'tools/verification/web-chain-catalog.test.mjs'

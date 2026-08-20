@@ -13,7 +13,7 @@ const OWNED_TEST_DIRECTORIES = Object.freeze([
 ]);
 
 const EXACT_TEST_FILES = Object.freeze([
-  'tools/apply-cloudbase-migrations.test.mjs',
+  'tools/plan-cloudbase-migrations.test.mjs',
   'tools/build-cloudbase-functions.test.mjs',
   'tests/e2e/website.spec.ts'
 ]);
