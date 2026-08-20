@@ -78,8 +78,8 @@ function nextStatusFor(
   const status = submission.status;
   if (action === 'approve') {
     if (
-      status === 'auto_rejected'
-      && submission.kind === 'shared_package'
+      submission.kind === 'shared_package'
+      && status !== 'published'
       && !hasCurrentTechnicalPass(submission)
     ) {
       throw new ApiError('TECHNICAL_SCAN_REQUIRED', 409);
@@ -121,8 +121,10 @@ function hasCurrentTechnicalPass(
     result.kind === 'package_scan'
     && result.provider === 'isolated-scanner'
     && result.suggestion === 'Pass'
+    && result.evidence.submissionId === submission.id
     && result.evidence.packageStorageKey === packageAsset.storageKey
     && result.evidence.packageSizeBytes === packageAsset.actualBytes
+    && result.evidence.submissionStatusVersion === submission.statusVersion
     && result.evidence.scanCode === 'CHARACTER_PACKAGE_SCAN_PASSED'
   ));
 }

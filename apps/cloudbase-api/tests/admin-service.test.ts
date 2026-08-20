@@ -172,27 +172,27 @@ describe('管理员审核服务', () => {
     expect(storage.createSignedUrl).not.toHaveBeenCalled();
   });
 
-  it('待人工审核的共享包无需系统扫描即可由管理员批准', async () => {
+  it('待人工审核共享包缺少当前技术证据时拒绝批准', async () => {
     const { service, store } = createService(submission('manual_review_pending', {
       kind: 'shared_package',
       moderationResults: []
     }));
 
-    await service.applyAction(
+    await expect(service.applyAction(
       { uid: 'uid-admin', email: 'admin@example.com' },
       'submission-1',
       {
         action: 'approve',
         version: 3,
         idempotencyKey: 'manual-review-approve',
-        reason: '人工检查通过'
+        reason: '尝试批准'
       }
-    );
+    )).rejects.toMatchObject({
+      code: 'TECHNICAL_SCAN_REQUIRED',
+      statusCode: 409
+    });
 
-    expect(store.applyAdminAction).toHaveBeenCalledWith(expect.objectContaining({
-      submissionId: 'submission-1',
-      nextStatus: 'published'
-    }));
+    expect(store.applyAdminAction).not.toHaveBeenCalled();
   });
 
   it('管理员不能批准技术扫描未通过的自动驳回投稿', async () => {
@@ -213,37 +213,71 @@ describe('管理员审核服务', () => {
     expect(store.applyAdminAction).not.toHaveBeenCalled();
   });
 
-  it('自动驳回共享包不能用任意历史 Pass 绕过当前包门禁', async () => {
-    const { service, store } = createService(submission(
-      'auto_rejected',
-      {
-        moderationResults: [moderationResult('Pass', {
-          packageStorageKey: 'private/old-pet.zip',
-          packageSizeBytes: 20
-        })]
-      }
-    ));
+  const staleEvidenceCases = [
+    ['对象键变化', {
+      submissionId: 'submission-1',
+      packageStorageKey: 'private/old-pet.zip',
+      packageSizeBytes: 20,
+      submissionStatusVersion: 3,
+      scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+    }],
+    ['实际大小变化', {
+      submissionId: 'submission-1',
+      packageStorageKey: 'private/current-pet.zip',
+      packageSizeBytes: 19,
+      submissionStatusVersion: 3,
+      scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+    }],
+    ['投稿身份变化', {
+      submissionId: 'other-submission',
+      packageStorageKey: 'private/current-pet.zip',
+      packageSizeBytes: 20,
+      submissionStatusVersion: 3,
+      scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+    }],
+    ['状态版本变化', {
+      submissionId: 'submission-1',
+      packageStorageKey: 'private/current-pet.zip',
+      packageSizeBytes: 20,
+      submissionStatusVersion: 2,
+      scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+    }]
+  ] as const;
 
-    await expect(service.applyAction(
-      { uid: 'uid-admin', email: 'admin@example.com' },
-      'submission-1',
-      {
-        action: 'approve',
-        version: 3,
-        idempotencyKey: 'request-bypass',
-        reason: '尝试发布'
-      }
-    )).rejects.toMatchObject({ code: 'TECHNICAL_SCAN_REQUIRED' });
-    expect(store.applyAdminAction).not.toHaveBeenCalled();
-  });
+  it.each(staleEvidenceCases)(
+    '待人工审核共享包的%s证据不能批准',
+    async (_caseName, evidence) => {
+      const { service, store } = createService(submission('manual_review_pending', {
+        moderationResults: [moderationResult('Pass', evidence)]
+      }));
+
+      await expect(service.applyAction(
+        { uid: 'uid-admin', email: 'admin@example.com' },
+        'submission-1',
+        {
+          action: 'approve',
+          version: 3,
+          idempotencyKey: `stale-evidence-${evidence.submissionId}`,
+          reason: '尝试发布'
+        }
+      )).rejects.toMatchObject({
+        code: 'TECHNICAL_SCAN_REQUIRED',
+        statusCode: 409
+      });
+      expect(store.applyAdminAction).not.toHaveBeenCalled();
+    }
+  );
 
   it('技术扫描通过时允许纠正自动驳回并发布', async () => {
+    const currentEvidence = {
+      submissionId: 'submission-1',
+      packageStorageKey: 'private/current-pet.zip',
+      packageSizeBytes: 20,
+      submissionStatusVersion: 3,
+      scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+    };
     const { service, store } = createService(submission('auto_rejected', {
-      moderationResults: [moderationResult('Pass', {
-        packageStorageKey: 'private/current-pet.zip',
-        packageSizeBytes: 20,
-        scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
-      })]
+      moderationResults: [moderationResult('Pass', currentEvidence)]
     }));
 
     await service.applyAction(
@@ -263,6 +297,32 @@ describe('管理员审核服务', () => {
       expectedVersion: 3
     }));
   });
+
+  it.each(['feedback', 'suggestion'] as const)(
+    '待人工审核的%s不依赖角色包扫描证据',
+    async kind => {
+      const { service, store } = createService(submission('manual_review_pending', {
+        kind,
+        assets: [],
+        moderationResults: []
+      }));
+
+      await service.applyAction(
+        { uid: 'uid-admin', email: 'admin@example.com' },
+        'submission-1',
+        {
+          action: 'approve',
+          version: 3,
+          idempotencyKey: `approve-${kind}`,
+          reason: '人工审核通过'
+        }
+      );
+
+      expect(store.applyAdminAction).toHaveBeenCalledWith(expect.objectContaining({
+        nextStatus: 'published'
+      }));
+    }
+  );
 
   it('拒绝后进入管理员驳回并使用原子存储写入', async () => {
     const { service, store } = createService();
