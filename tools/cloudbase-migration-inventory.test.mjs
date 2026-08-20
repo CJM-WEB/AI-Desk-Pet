@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { test } from 'node:test';
@@ -18,6 +18,17 @@ async function createMigrationDirectory(t) {
 /** 将临时目录转换为保留尾部分隔符的文件 URL。 */
 function directoryUrl(root) {
   return pathToFileURL(`${root}${sep}`);
+}
+
+/** 验证读取失败只暴露稳定且不含敏感输入的错误。 */
+function assertSanitizedReadError(message, sensitiveFragments) {
+  return (error) => {
+    assert.equal(error.message, message);
+    for (const fragment of sensitiveFragments) {
+      assert.equal(String(error).includes(fragment), false);
+    }
+    return true;
+  };
 }
 
 test('按版本排序并对 SQL 原始字节计算 SHA-256', async (t) => {
@@ -95,9 +106,40 @@ test('忽略非文件和非 SQL 文件', async (t) => {
   ]);
 });
 
-test('目录读取失败时向调用方抛出错误', async (t) => {
+test('目录读取失败时不泄漏输入路径或敏感内容', async (t) => {
   const root = await createMigrationDirectory(t);
-  const missingDirectoryUrl = directoryUrl(join(root, 'missing'));
+  const pathSentinel = join(root, 'directory-path-sentinel');
+  const missingDirectoryUrl = directoryUrl(pathSentinel);
 
-  await assert.rejects(inventoryCloudBaseMigrations(missingDirectoryUrl));
+  await assert.rejects(
+    inventoryCloudBaseMigrations(missingDirectoryUrl),
+    assertSanitizedReadError('无法读取 CloudBase PostgreSQL 迁移目录', [
+      pathSentinel,
+      'sql-content-sentinel',
+      'credential-sentinel'
+    ])
+  );
+});
+
+test('迁移读取失败时不泄漏路径、SQL 内容或凭据', async (t) => {
+  const root = await createMigrationDirectory(t);
+  const fileName = '20260808000000_unreadable.sql';
+  const pathSentinel = join(root, 'migration-path-sentinel');
+  await writeFile(join(root, fileName), 'SELECT 1;\n');
+
+  await assert.rejects(
+    inventoryCloudBaseMigrations(directoryUrl(root), {
+      readDirectory: readdir,
+      readMigrationFile: async () => {
+        throw new Error(
+          `EACCES: ${pathSentinel} sql-content-sentinel credential-sentinel`
+        );
+      }
+    }),
+    assertSanitizedReadError(`无法读取 CloudBase PostgreSQL 迁移文件：${fileName}`, [
+      pathSentinel,
+      'sql-content-sentinel',
+      'credential-sentinel'
+    ])
+  );
 });

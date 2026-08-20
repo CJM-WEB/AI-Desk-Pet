@@ -4,14 +4,30 @@ import { readFile, readdir } from 'node:fs/promises';
 const migrationFileNamePattern =
   /^(?<version>\d{14})_(?<name>[a-z0-9]+(?:_[a-z0-9]+)*)\.sql$/u;
 
+const defaultFileSystem = {
+  readDirectory: readdir,
+  readMigrationFile: readFile
+};
+
 /**
  * 读取迁移目录并生成稳定的内容清单。
  *
  * 仅接受符合版本与名称契约的普通 SQL 文件；任一无效迁移均会中止，
  * 避免调用方基于不完整或可变的目录状态继续执行。
  */
-export async function inventoryCloudBaseMigrations(directoryUrl) {
-  const entries = await readdir(directoryUrl, { withFileTypes: true });
+export async function inventoryCloudBaseMigrations(
+  directoryUrl,
+  fileSystem = defaultFileSystem
+) {
+  let entries;
+  try {
+    entries = await fileSystem.readDirectory(directoryUrl, {
+      withFileTypes: true
+    });
+  } catch {
+    throw new Error('无法读取 CloudBase PostgreSQL 迁移目录');
+  }
+
   const seenVersions = new Set();
   const migrations = [];
 
@@ -26,7 +42,14 @@ export async function inventoryCloudBaseMigrations(directoryUrl) {
       throw new Error(`迁移版本重复：${match.groups.version}`);
     }
 
-    const content = await readFile(new URL(entry.name, directoryUrl));
+    let content;
+    try {
+      content = await fileSystem.readMigrationFile(
+        new URL(entry.name, directoryUrl)
+      );
+    } catch {
+      throw new Error(`无法读取 CloudBase PostgreSQL 迁移文件：${entry.name}`);
+    }
     if (content.byteLength === 0) {
       throw new Error(`迁移文件为空：${entry.name}`);
     }
