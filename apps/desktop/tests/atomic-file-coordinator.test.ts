@@ -1,10 +1,12 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+type FailureStage = 'write' | 'sync' | 'link';
 
 const fault = vi.hoisted(() => ({
-  kind: undefined as 'write' | 'sync' | 'link' | undefined
+  kind: undefined as FailureStage | undefined
 }));
 
 vi.mock('node:fs/promises', async () => {
@@ -39,6 +41,12 @@ import { copyFile, rename } from 'node:fs/promises';
 
 describe('atomicWriteFileExclusive', () => {
   let directory: string;
+  let finalFile: string;
+
+  beforeEach(async () => {
+    directory = await mkdtemp(join(tmpdir(), 'atomic-file-coordinator-'));
+    finalFile = join(directory, 'character.bin');
+  });
 
   afterEach(async () => {
     fault.kind = undefined;
@@ -47,8 +55,6 @@ describe('atomicWriteFileExclusive', () => {
   });
 
   test('32 个并发排他写入只有一个成功且 final 正文完整', async () => {
-    directory = await mkdtemp(join(tmpdir(), 'atomic-file-coordinator-'));
-    const finalFile = join(directory, 'character.bin');
     const bodies = Array.from({ length: 32 }, (_, index) =>
       Buffer.from(`writer-${index}-${'x'.repeat(4096)}`, 'utf8'));
 
@@ -62,8 +68,6 @@ describe('atomicWriteFileExclusive', () => {
   });
 
   test('已有 final 时保持原字节且返回 EEXIST', async () => {
-    directory = await mkdtemp(join(tmpdir(), 'atomic-file-coordinator-'));
-    const finalFile = join(directory, 'character.bin');
     const original = Buffer.from('original-bytes', 'utf8');
     await writeFile(finalFile, original);
 
@@ -74,40 +78,17 @@ describe('atomicWriteFileExclusive', () => {
     expect(await readFile(finalFile)).toEqual(original);
   });
 
-  test('临时文件 write 失败时 final 不出现且清理 temp', async () => {
-    directory = await mkdtemp(join(tmpdir(), 'atomic-file-coordinator-'));
-    const finalFile = join(directory, 'character.bin');
-    fault.kind = 'write';
+  test.each([
+    ['write', 'TEST_WRITE_FAILED'],
+    ['sync', 'TEST_SYNC_FAILED'],
+    ['link', 'TEST_LINK_FAILED']
+  ] as const)('%s 阶段失败时 final 不存在、清理 temp 且不调用 fallback', async (stage, message) => {
+    fault.kind = stage;
 
     await expect(atomicWriteFileExclusive(finalFile, Buffer.from('content')))
-      .rejects.toThrow('TEST_WRITE_FAILED');
+      .rejects.toThrow(message);
 
-    expect(await readdir(directory)).toEqual([]);
-    expect(rename).not.toHaveBeenCalled();
-    expect(copyFile).not.toHaveBeenCalled();
-  });
-
-  test('临时文件 sync 失败时 final 不出现且清理 temp', async () => {
-    directory = await mkdtemp(join(tmpdir(), 'atomic-file-coordinator-'));
-    const finalFile = join(directory, 'character.bin');
-    fault.kind = 'sync';
-
-    await expect(atomicWriteFileExclusive(finalFile, Buffer.from('content')))
-      .rejects.toThrow('TEST_SYNC_FAILED');
-
-    expect(await readdir(directory)).toEqual([]);
-    expect(rename).not.toHaveBeenCalled();
-    expect(copyFile).not.toHaveBeenCalled();
-  });
-
-  test('hard-link 发布失败时不调用 rename 或 copyFile', async () => {
-    directory = await mkdtemp(join(tmpdir(), 'atomic-file-coordinator-'));
-    const finalFile = join(directory, 'character.bin');
-    fault.kind = 'link';
-
-    await expect(atomicWriteFileExclusive(finalFile, Buffer.from('content')))
-      .rejects.toThrow('TEST_LINK_FAILED');
-
+    await expect(access(finalFile)).rejects.toThrow();
     expect(await readdir(directory)).toEqual([]);
     expect(rename).not.toHaveBeenCalled();
     expect(copyFile).not.toHaveBeenCalled();
