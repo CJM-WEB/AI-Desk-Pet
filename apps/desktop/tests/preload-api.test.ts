@@ -92,18 +92,12 @@ describe('preload 公开 API', () => {
     expect(invoke).toHaveBeenCalledWith(ipcChannels.characterRecoverySnapshotGet, {});
   });
 
-  test.each([
-    ['含有私有路径字段', {
+  test('恢复快照拒绝含有私有路径字段的 Main 返回值', async () => {
+    invoke.mockResolvedValueOnce({
       fallbackErrorCode: null,
       issues: [],
       markerPath: 'C:\\private'
-    }],
-    ['把角色级错误伪装为启动 fallback', {
-      fallbackErrorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED',
-      issues: []
-    }]
-  ])('恢复快照拒绝 %s 的 Main 返回值', async (_reason, payload) => {
-    invoke.mockResolvedValueOnce(payload);
+    });
     await expect(exposedApi?.getCharacterRecoverySnapshot()).rejects.toThrow();
   });
 

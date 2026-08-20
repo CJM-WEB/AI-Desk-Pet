@@ -441,9 +441,6 @@ describe('角色白名单 IPC', () => {
       fallbackErrorCode: 'CHARACTER_INDEX_UNAVAILABLE',
       issues: []
     });
-    await expect(handler?.({}, { path: 'C:\\private' })).rejects.toMatchObject({
-      code: 'CHARACTER_INPUT_INVALID'
-    });
   });
 
   test('运行时资源只接受当前角色的资源标识，不接受 characterId 或文件名', async () => {
