@@ -47,6 +47,7 @@ async function createRuleFixture() {
     'apps/website/lib/sdk-offender.ts': "import cloudbase from '@cloudbase/js-sdk';\nexport { cloudbase };\n",
     'apps/website/lib/cloud-offender.ts':
       "import { internal } from '../../cloudbase-api/src/internal.ts';\nexport { internal };\n",
+    'apps/website/lib/migration-target.ts': 'export const website = true;\n',
     'apps/cloudbase-api/src/internal.ts': 'export const internal = true;\nexport const cloud = true;\n',
     'apps/cloudbase-api/src/services/offender.ts':
       "import { runtime } from '../adapters/cloudbase-runtime.ts';\nexport { runtime };\n",
@@ -54,6 +55,9 @@ async function createRuleFixture() {
     'tools/plan-cloudbase-migrations.mjs': "import './migration-bridge.mjs';\n",
     'tools/migration-bridge.mjs':
       "import { cloud } from '../apps/cloudbase-api/src/internal.ts';\nexport { cloud };\n",
+    'tools/cloudbase-migration-inventory.mjs': "import './inventory-bridge.mjs';\n",
+    'tools/inventory-bridge.mjs':
+      "import { website } from '../apps/website/lib/migration-target.ts';\nexport { website };\n",
     'node_modules/@cloudbase/js-sdk/package.json': JSON.stringify({
       name: '@cloudbase/js-sdk',
       version: '0.0.0-fixture',
@@ -113,6 +117,15 @@ test('依赖审查配置不再为已退役迁移入口或管理 SDK 保留例外
   ];
 
   assert.doesNotMatch(serialized, new RegExp(retiredTerms.join('|'), 'u'));
+
+  const configuration = (await import(`${new URL('../../.dependency-cruiser.mjs', import.meta.url)}?test=${Date.now()}`)).default;
+  const migrationToolRule = configuration.forbidden.find(
+    rule => rule.name === 'migration-planning-tools-do-not-import-web-or-cloud-source',
+  );
+  assert.equal(
+    migrationToolRule?.from.path,
+    '^tools/(plan-cloudbase-migrations|cloudbase-migration-inventory)\\.mjs$',
+  );
 });
 
 test('runner 拒绝覆盖配置、输入范围或输出参数契约的调用', async t => {
@@ -150,6 +163,7 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
       'apps/website',
       'apps/cloudbase-api',
       'tools/plan-cloudbase-migrations.mjs',
+      'tools/cloudbase-migration-inventory.mjs',
     ],
     { cwd: fixtureRoot },
   );
@@ -178,10 +192,13 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
     ),
     false,
   );
-  assert.ok(
-    hasViolation(
-      'migration-planning-tools-do-not-import-web-or-cloud-source',
-      'tools/plan-cloudbase-migrations.mjs',
-    ),
-  );
+  for (const entryPoint of [
+    'tools/plan-cloudbase-migrations.mjs',
+    'tools/cloudbase-migration-inventory.mjs',
+  ]) {
+    assert.ok(
+      hasViolation('migration-planning-tools-do-not-import-web-or-cloud-source', entryPoint),
+      entryPoint,
+    );
+  }
 });
