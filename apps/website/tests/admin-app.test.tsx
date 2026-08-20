@@ -246,26 +246,64 @@ describe('管理员审核工作台', () => {
     await waitFor(() => expect(screen.queryByText('旧敏感正文')).toBeNull());
   });
 
-  it('人工审核中的共享包无需系统扫描即可批准', async () => {
+  it('人工审核共享包缺少技术证据时禁用批准并显示稳定原因', async () => {
     const pending = detail({
       id: 'manual-package',
       kind: 'shared_package',
       status: 'manual_review_pending',
-      title: '直接人工审核共享包'
+      title: '待人工审核共享包'
     });
     setup({
       listQueue: vi.fn().mockResolvedValue(queuePage(pending)),
       getDetail: vi.fn().mockResolvedValue(pending)
     });
 
-    fireEvent.click(await screen.findByText('直接人工审核共享包'));
+    fireEvent.click(await screen.findByText('待人工审核共享包'));
     fireEvent.change(await screen.findByLabelText('审核理由'), {
-      target: { value: '人工确认内容可发布' }
+      target: { value: '尝试批准' }
     });
 
     expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled)
-      .toBe(false);
-    expect(screen.queryByText('技术扫描未明确通过，不能批准共享包。')).toBeNull();
+      .toBe(true);
+    expect(screen.getByText('技术扫描未明确通过，不能批准共享包。')).toBeTruthy();
+  });
+
+  it('人工审核共享包的过期技术证据不能解除批准门禁', async () => {
+    const pending = detail({
+      id: 'manual-package',
+      kind: 'shared_package',
+      status: 'manual_review_pending',
+      title: '证据过期共享包',
+      assets: [{
+        role: 'package', storageKey: 'private/manual-package.zip', fileName: 'manual-package.zip',
+        declaredBytes: 20, actualBytes: 20, contentType: 'application/zip'
+      }],
+      moderationResults: [{
+        kind: 'package_scan', provider: 'isolated-scanner', suggestion: 'Pass', label: '扫描通过',
+        score: null,
+        evidence: {
+          submissionId: 'manual-package',
+          packageStorageKey: 'private/manual-package.zip',
+          packageSizeBytes: 20,
+          submissionStatusVersion: 2,
+          scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+        },
+        createdAt: '2026-07-30T12:00:00.000Z'
+      }]
+    });
+    setup({
+      listQueue: vi.fn().mockResolvedValue(queuePage(pending)),
+      getDetail: vi.fn().mockResolvedValue(pending)
+    });
+
+    fireEvent.click(await screen.findByText('证据过期共享包'));
+    fireEvent.change(await screen.findByLabelText('审核理由'), {
+      target: { value: '尝试批准' }
+    });
+
+    expect((screen.getByRole('button', { name: '批准发布' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    expect(screen.getByText('技术扫描未明确通过，不能批准共享包。')).toBeTruthy();
   });
 
   it('自动驳回共享包执行技术扫描门禁，隔离内容提供恢复动作', async () => {

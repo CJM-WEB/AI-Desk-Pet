@@ -23,9 +23,8 @@ export function AdminDetail({ detail, loading, acting, onAction }: AdminDetailPr
 
   const actions = availableActions(detail);
   const technicalPass = hasCurrentTechnicalPass(detail);
-  // 仅历史自动驳回项保留技术扫描门禁；直接进入人工队列的新投稿由管理员判断。
-  const technicalScanRequired = detail.status === 'auto_rejected'
-    && detail.kind === 'shared_package'
+  const technicalScanRequired = detail.kind === 'shared_package'
+    && detail.status !== 'published'
     && !technicalPass;
   const actionDisabled = acting || !reason.trim();
 
@@ -166,8 +165,10 @@ function hasCurrentTechnicalPass(detail: AdminSubmissionDetail): boolean {
     result.kind === 'package_scan'
     && result.provider === 'isolated-scanner'
     && result.suggestion === 'Pass'
+    && result.evidence.submissionId === detail.id
     && result.evidence.packageStorageKey === packageAsset.storageKey
     && result.evidence.packageSizeBytes === packageAsset.actualBytes
+    && result.evidence.submissionStatusVersion === detail.statusVersion
     && result.evidence.scanCode === 'CHARACTER_PACKAGE_SCAN_PASSED'
   ));
 }
