@@ -73,3 +73,22 @@ B1 已删除 `CharacterTransactionRecoveryKind`、`kind`、`deferred`、`budgetE
 `pnpm.cmd verify:characters` 退出 0：character-runtime 13 个文件 221 项、character-assets 4 个文件 92 项、Desktop 85 个文件 1741 项（14 跳过）、security 20/20、integration 46/46 与 Electron E2E 60/60 全部通过，约 3.1 分钟。`pnpm.cmd verify:behavior` 也退出 0，含 Electron E2E 60/60。`pnpm.cmd verify:desktop` 的单次结果为 1，历史失败为“默认聊天与设置浮层提示”E2E 的页面/上下文关闭；其一次定向复现 1/1 通过。主裁决采用上述等价证据放行；只读诊断显示减法未触及窗口 owner、Electron fixture 或该失败场景主体，细根因尚未证实。B1 自动化完成，B2/B3 可在按本减法规格重写计划并再次审查删除门后进入。
 
 旧 owner 扫描无输出（`rg` 退出码 1，表示零命中）；受保护网站、CloudBase、scanner 和网站 E2E/配置路径在 `875048c..HEAD` 零差异，`git diff --check 875048c..HEAD` 退出 0 且无输出。相对 `875048c`，生产代码 +42/-74（净 -32），测试与 E2E 合计 +230/-669（净 -439）；相对 `c7d951d` 测试与 E2E 的净减同为 -439。既有真实 Windows、性能与资源释放人工项仍待用户确认。
+
+## 2026-08-20 角色包导入恢复验收（B2）
+
+环境为 Windows 11 专业版 10.0.26200。唯一新增 Electron 场景“角色包恢复一坏一好时继续启动桌宠与普通聊天”使用正式 `CharacterStore` 准备健康活动角色、带所有权令牌的半安装角色、合法 v3 marker 和可归属半截 marker；它验证合法半安装目录被回滚、坏 marker 原字节被排他保留、桌宠播放器进入 `ready`，并可继续普通聊天。Task 3 已先完成，因此该场景首次运行即为先验已绿，没有伪造 RED。
+
+实际命令与结果如下：
+
+- `pnpm.cmd --filter @myself/desktop build`：退出 0，约 7.5 秒。
+- `pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包恢复一坏一好时继续启动桌宠与普通聊天"`：退出 0，1/1 通过，9.1 秒。
+- `pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-store.test.ts character-package-service.test.ts`：退出 0；当前 Vitest 配置实际执行 Desktop 全组，86 个文件、1775 项通过、14 项跳过，43.5 秒。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出 0，约 8.4 秒。
+- `pnpm.cmd test:security`：退出 0，20/20 通过，1.36 秒。
+- `pnpm.cmd test:integration`：退出 0，46/46 通过，4.77 秒。
+- `pnpm.cmd verify:characters`：退出 0；character-runtime 221/221、character-assets 92/92、Desktop 1775 项通过（14 项跳过）、security 20/20、integration 46/46、Electron E2E 61/61，约 4.6 分钟。
+- `pnpm.cmd verify:desktop`：退出 0；全仓类型检查通过，单测 2220 项通过（14 项跳过）、security 20/20、integration 46/46、Electron E2E 61/61，约 4.5 分钟。
+
+删除门确认 `CharacterImportJournal`、v4 正式 marker、旧 `CharacterOwnership`/摘要 helper、`preserveRollback()` 和 PackageService 的普通 `store.delete()` 均为零命中，Journal 文件不存在。`character-store.ts` 仍保留 owner 文件、活动角色保护以及移动前后身份复核。以 B2 计划提交 `6bae15f` 为基线，生产代码 +468/-271（净 +197），测试与 E2E +981/-57（净 +924）；本次 Task 4 自身只增加一个纵向 E2E，+87/-1。受保护的网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。
+
+真实断电、强制终止、外部程序在恢复期间替换 marker，以及 B3 窗口提示可读性没有本次人工证据，状态均为“待用户人工确认”。

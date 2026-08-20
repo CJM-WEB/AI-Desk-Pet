@@ -1,12 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
+import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
+import { ensureOfficialDefaultCharacter } from '../../apps/desktop/src/main/characters/official-default-character';
 import {
   createProviderResponseGate,
   startProviderServer,
@@ -2322,6 +2324,90 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       );
       await dispatchPointer('contextmenu', visible, 2);
       await pet.keyboard.press('Escape');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+test.describe('角色包启动恢复', () => {
+  test('角色包恢复一坏一好时继续启动桌宠与普通聊天', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
+    if (!fixtureModule?.createElectronAppFixture) return;
+
+    const workspaceRoot = resolve(process.cwd());
+    const validCharacterId = 'recoverable-import';
+    const validTransactionId = '11111111-1111-4111-8111-111111111111';
+    const brokenMarkerBytes = Buffer.from('{"version":3');
+    let validImportedCharacterDirectory = '';
+    let brokenMarker = '';
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true,
+      prepareUserData: async directories => {
+        const charactersDirectory = join(directories.userDataDirectory, 'characters');
+        const store = new CharacterStore(charactersDirectory);
+        await store.create(
+          { id: validCharacterId, name: '待恢复半安装角色' },
+          { importTransactionId: validTransactionId }
+        );
+        validImportedCharacterDirectory = join(charactersDirectory, validCharacterId);
+        await writeFile(
+          join(charactersDirectory, `.package-import-rollback-${validCharacterId}.json`),
+          JSON.stringify({
+            version: 3,
+            characterId: validCharacterId,
+            importTransactionId: validTransactionId
+          }),
+          { flag: 'wx' }
+        );
+        brokenMarker = join(charactersDirectory, '.package-import-rollback-broken.json');
+        await writeFile(brokenMarker, brokenMarkerBytes, { flag: 'wx' });
+        await ensureOfficialDefaultCharacter(
+          store,
+          join(workspaceRoot, 'apps/desktop/resources/characters/default')
+        );
+      }
+    });
+
+    const pageFor = (view: string): Page | undefined => fixture.browser.contexts()
+      .flatMap(context => context.pages())
+      .find(page => {
+        try {
+          return new URL(page.url()).searchParams.get('view') === view;
+        } catch {
+          return false;
+        }
+      });
+
+    try {
+      await expect.poll(() => Boolean(pageFor('pet'))).toBe(true);
+      const pet = pageFor('pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      await expect(pet.locator('.character-player'))
+        .toHaveAttribute('data-status', 'ready');
+      await expect(access(validImportedCharacterDirectory)).rejects.toThrow();
+
+      const evidenceFiles = (await readdir(join(fixture.userDataDirectory, 'characters')))
+        .filter(name => name.startsWith('.package-import-rollback-broken.json.corrupt-'));
+      expect(evidenceFiles).toHaveLength(1);
+      await expect(readFile(join(
+        fixture.userDataDirectory,
+        'characters',
+        evidenceFiles[0]!
+      ))).resolves.toEqual(brokenMarkerBytes);
+      await expect(access(brokenMarker)).rejects.toThrow();
+
+      await pet.evaluate(() => window.myself.openChat());
+      await expect.poll(() => Boolean(pageFor('chat'))).toBe(true);
+      const chat = pageFor('chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
+      await submitChatMessage(chat, '角色包恢复后继续普通聊天');
+      await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
     } finally {
       await fixture.dispose();
     }
