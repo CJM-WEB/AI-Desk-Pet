@@ -5030,23 +5030,6 @@ test.describe('真实 Provider 业务闭环', () => {
     const authorizedRootDirectory = fixture.authorizedRootDirectory;
     const rendererDiagnostics: string[] = [];
 
-    const rendererPages = (): Page[] => fixture.browser.contexts()
-      .flatMap(context => context.pages());
-    const pageFor = (view: 'pet' | 'chat' | 'settings'): Page | undefined => (
-      rendererPages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      })
-    );
-    const waitForPage = async (view: 'pet' | 'chat' | 'settings'): Promise<Page> => {
-      await expect.poll(() => Boolean(pageFor(view))).toBe(true);
-      const page = pageFor(view);
-      if (!page) throw new Error(`缺少 ${view} Renderer`);
-      return page;
-    };
     const captureRendererDiagnostics = (pages: Page[]): void => {
       for (const page of pages) {
         page.on('console', message => {
@@ -5070,10 +5053,10 @@ test.describe('真实 Provider 业务闭环', () => {
     try {
       await mkdir(join(authorizedRootDirectory, 'docs'), { recursive: true });
 
-      const petPage = await waitForPage('pet');
-      const chatPage = await waitForPage('chat');
-      const settingsPage = await waitForPage('settings');
-      captureRendererDiagnostics(rendererPages());
+      const petPage = await waitForRendererPage(fixture, 'pet');
+      const chatPage = await waitForRendererPage(fixture, 'chat');
+      const settingsPage = await waitForRendererPage(fixture, 'settings');
+      captureRendererDiagnostics(rendererPages(fixture));
 
       await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
       await petPage.evaluate(() => window.myself.openChat());
@@ -5259,26 +5242,9 @@ test.describe('真实桌宠位置重启恢复', () => {
     });
     const userDataDirectory = fixture.userDataDirectory;
     const authorizedRootDirectory = fixture.authorizedRootDirectory;
-    const rendererPages = (): Page[] => fixture.browser.contexts()
-      .flatMap(context => context.pages());
-    const petPageForCurrentLaunch = (): Page | undefined => (
-      rendererPages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === 'pet';
-        } catch {
-          return false;
-        }
-      })
-    );
-    const waitForPetPage = async (): Promise<Page> => {
-      await expect.poll(() => Boolean(petPageForCurrentLaunch())).toBe(true);
-      const page = petPageForCurrentLaunch();
-      if (!page) throw new Error('缺少 pet Renderer');
-      return page;
-    };
 
     try {
-      const petPage = await waitForPetPage();
+      const petPage = await waitForRendererPage(fixture, 'pet');
       const originalPosition = await petPage.evaluate(() => ({
         x: window.screenX,
         y: window.screenY
@@ -5314,7 +5280,7 @@ test.describe('真实桌宠位置重启恢复', () => {
       await petPage.waitForTimeout(500);
 
       await fixture.restart();
-      const restartedPetPage = await waitForPetPage();
+      const restartedPetPage = await waitForRendererPage(fixture, 'pet');
       const restoredPosition = await restartedPetPage.evaluate(() => ({
         x: window.screenX,
         y: window.screenY
