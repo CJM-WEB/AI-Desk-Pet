@@ -133,6 +133,12 @@ export type CharacterCreateOptions = {
   importTransactionId?: string;
 };
 
+export type ImportedCharacterRollbackResult =
+  | Readonly<{ kind: 'rolled-back' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'ownership-mismatch' }>
+  | Readonly<{ kind: 'active-character' }>;
+
 export type CharacterSummary = {
   id: string;
   name: string;
@@ -183,6 +189,21 @@ type RuntimePathIdentity = {
   physicalPath: string;
   kind: 'directory' | 'file';
 };
+
+type ImportedCharacterOwnershipIdentity = Readonly<{
+  directoryDev: number;
+  directoryIno: number;
+  ownerDev: number;
+  ownerIno: number;
+}>;
+
+type ImportedCharacterOwnershipLookup =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'ownership-mismatch' }>
+  | Readonly<{
+      kind: 'owned';
+      identity: ImportedCharacterOwnershipIdentity;
+    }>;
 
 function emptyIndex(): CharacterIndex {
   return {
@@ -266,8 +287,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 function sameFileIdentity(
-  left: { directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number },
-  right: { directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number }
+  left: ImportedCharacterOwnershipIdentity,
+  right: ImportedCharacterOwnershipIdentity
 ): boolean {
   return left.directoryDev === right.directoryDev
     && left.directoryIno === right.directoryIno
@@ -531,7 +552,7 @@ export class CharacterStore {
   rollbackImportedCharacter(
     characterId: string,
     importTransactionId: string
-  ): Promise<boolean> {
+  ): Promise<ImportedCharacterRollbackResult> {
     return this.enqueue(async () => {
       assertCharacterId(characterId);
       z.string().regex(IMPORT_TRANSACTION_ID).parse(importTransactionId);
@@ -543,10 +564,13 @@ export class CharacterStore {
         characterId,
         importTransactionId
       );
-      if (!originalIdentity) return false;
+      if (originalIdentity.kind === 'absent') return { kind: 'absent' };
+      if (originalIdentity.kind === 'ownership-mismatch') {
+        return { kind: 'ownership-mismatch' };
+      }
 
       const index = await this.requireWritableIndex();
-      if (index.activeCharacterId === characterId) return false;
+      if (index.activeCharacterId === characterId) return { kind: 'active-character' };
       const originalIndex = cloneIndex(index);
       const tombstone = this.deleteTombstone(characterId);
       await this.assertSafePath(characterDirectory);
@@ -558,8 +582,11 @@ export class CharacterStore {
         characterId,
         importTransactionId
       );
-      if (!currentIdentity || !sameFileIdentity(originalIdentity, currentIdentity)) {
-        return false;
+      if (
+        currentIdentity.kind !== 'owned'
+        || !sameFileIdentity(originalIdentity.identity, currentIdentity.identity)
+      ) {
+        return { kind: 'ownership-mismatch' };
       }
       try {
         await this.removePath(tombstone, { recursive: true, force: true });
@@ -570,11 +597,14 @@ export class CharacterStore {
           characterId,
           importTransactionId
         );
-        if (!movedIdentity || !sameFileIdentity(originalIdentity, movedIdentity)) {
+        if (
+          movedIdentity.kind !== 'owned'
+          || !sameFileIdentity(originalIdentity.identity, movedIdentity.identity)
+        ) {
           if (!(await exists(characterDirectory))) {
             await this.renamePath(tombstone, characterDirectory);
           }
-          return false;
+          return { kind: 'ownership-mismatch' };
         }
         index.characters = index.characters.filter(entry => entry.id !== characterId);
         delete index.incompleteActivationConfirmations[characterId];
@@ -588,7 +618,7 @@ export class CharacterStore {
       }
       await this.removePath(tombstone, { recursive: true, force: true })
         .catch(() => undefined);
-      return true;
+      return { kind: 'rolled-back' };
     });
   }
 
@@ -597,46 +627,59 @@ export class CharacterStore {
     ownerFile: string,
     characterId: string,
     importTransactionId: string
-  ): Promise<{ directoryDev: number; directoryIno: number; ownerDev: number; ownerIno: number } | null> {
+  ): Promise<ImportedCharacterOwnershipLookup> {
     await this.assertSafePath(characterDirectory);
     await this.assertSafePath(ownerFile);
+    let directoryStats: Awaited<ReturnType<typeof lstat>>;
     try {
-      const [directoryStats, ownerStats, ownerText] = await Promise.all([
-        lstat(characterDirectory),
-        lstat(ownerFile),
-        readFile(ownerFile, 'utf8')
-      ]);
-      if (
-        !directoryStats.isDirectory()
-        || directoryStats.isSymbolicLink()
-        || !ownerStats.isFile()
-        || ownerStats.isSymbolicLink()
-      ) {
-        return null;
-      }
-      const owner = JSON.parse(ownerText) as unknown;
-      if (
-        typeof owner !== 'object'
-        || owner === null
-        || !('version' in owner)
-        || owner.version !== 1
-        || !('characterId' in owner)
-        || owner.characterId !== characterId
-        || !('importTransactionId' in owner)
-        || owner.importTransactionId !== importTransactionId
-      ) {
-        return null;
-      }
-      return {
+      directoryStats = await lstat(characterDirectory);
+    } catch (error) {
+      if (isMissingFile(error)) return { kind: 'absent' };
+      throw error;
+    }
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
+      return { kind: 'ownership-mismatch' };
+    }
+
+    let ownerStats: Awaited<ReturnType<typeof lstat>>;
+    try {
+      ownerStats = await lstat(ownerFile);
+    } catch (error) {
+      if (isMissingFile(error)) return { kind: 'ownership-mismatch' };
+      throw error;
+    }
+    if (!ownerStats.isFile() || ownerStats.isSymbolicLink()) {
+      return { kind: 'ownership-mismatch' };
+    }
+
+    let owner: unknown;
+    try {
+      owner = JSON.parse(await readFile(ownerFile, 'utf8'));
+    } catch (error) {
+      if (isMissingFile(error)) return { kind: 'ownership-mismatch' };
+      throw error;
+    }
+    if (
+      typeof owner !== 'object'
+      || owner === null
+      || !('version' in owner)
+      || owner.version !== 1
+      || !('characterId' in owner)
+      || owner.characterId !== characterId
+      || !('importTransactionId' in owner)
+      || owner.importTransactionId !== importTransactionId
+    ) {
+      return { kind: 'ownership-mismatch' };
+    }
+    return {
+      kind: 'owned',
+      identity: {
         directoryDev: directoryStats.dev,
         directoryIno: directoryStats.ino,
         ownerDev: ownerStats.dev,
         ownerIno: ownerStats.ino
-      };
-    } catch (error) {
-      if (isMissingFile(error)) return null;
-      throw error;
-    }
+      }
+    };
   }
 
   completeImportedCharacter(

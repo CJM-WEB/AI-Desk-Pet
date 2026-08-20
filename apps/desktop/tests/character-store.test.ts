@@ -423,12 +423,41 @@ describe('CharacterStore', () => {
 
     await expect(new CharacterStore(charactersDirectory)
       .rollbackImportedCharacter('demo', '22222222-2222-4222-8222-222222222222'))
-      .resolves.toBe(false);
+      .resolves.toEqual({ kind: 'ownership-mismatch' });
     await expect(new CharacterStore(charactersDirectory)
       .rollbackImportedCharacter('demo', transactionId))
-      .resolves.toBe(true);
+      .resolves.toEqual({ kind: 'rolled-back' });
     await expect(store.list()).resolves.toEqual([]);
     await expect(access(join(charactersDirectory, 'demo'))).rejects.toThrow();
+  });
+
+  test('不存在角色返回 absent 且不创建目录或索引项', async () => {
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    const store = new CharacterStore(charactersDirectory);
+
+    await expect(store.rollbackImportedCharacter('missing', transactionId))
+      .resolves.toEqual({ kind: 'absent' });
+    await expect(access(join(charactersDirectory, 'missing'))).rejects.toThrow();
+    await expect(store.list()).resolves.toEqual([]);
+  });
+
+  test('活动角色即使 owner 令牌匹配也返回 active-character 且不删除', async () => {
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    const store = new CharacterStore(charactersDirectory);
+    const runtime = createRuntime('demo', '导入中的活动角色');
+    await store.create(
+      { id: 'demo', name: '导入中的活动角色' },
+      { importTransactionId: transactionId }
+    );
+    await store.publishCompiled('demo', runtime.manifest, runtime.assets);
+    await store.setActive('demo', true);
+
+    await expect(store.rollbackImportedCharacter('demo', transactionId))
+      .resolves.toEqual({ kind: 'active-character' });
+    await expect(access(join(charactersDirectory, 'demo'))).resolves.toBeUndefined();
+    await expect(store.list()).resolves.toEqual([
+      expect.objectContaining({ id: 'demo', active: true })
+    ]);
   });
 
   test('角色包回滚读取令牌后同 ID 目录被替换时保留替代角色', async () => {
@@ -447,7 +476,7 @@ describe('CharacterStore', () => {
     );
 
     await expect(rollbackStore.rollbackImportedCharacter('demo', transactionId))
-      .resolves.toBe(false);
+      .resolves.toEqual({ kind: 'ownership-mismatch' });
     await expect(replacementStore.getDraft('demo')).resolves.toMatchObject({
       id: 'demo',
       name: '替代角色'
