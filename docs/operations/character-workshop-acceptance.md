@@ -65,3 +65,11 @@ pnpm verify:characters
 - CPU、内存和纹理释放没有进行人工测量，结果保持“待人工”。
 - 2026-07-31：角色工作室真实闭环 E2E 使用新行级加减号完成空动作直接删除、4 帧动作删除取消和完整进程重启恢复；重启后无需重新导入或编译即可恢复 `idle.png`、`carrying.png`、`acting.png`、帧率 9、首帧选择和 Pixi 预览，切换到无动作状态后预览为空。单用例 1 项通过，耗时 57.5 秒。
 - 本轮 Desktop 类型检查通过；角色工作室精确单测 6 个文件、154 项通过，Desktop 完整单测 59 个文件、897 项通过，security 1 个文件、9 项通过，integration 3 个文件、14 项通过。
+
+## 2026-08-20 减法 Task 6 最终门禁（B1）
+
+B1 已删除 `CharacterTransactionRecoveryKind`、`kind`、`deferred`、`budgetExceeded` 和可由两个分面错误码推导的辅助状态；正式恢复结果只保留角色 ID、草稿错误码和发布错误码。协调器与 Store 的重复矩阵已收敛，保留真实 marker、能力门、预算、Junction 与原子报告证据。
+
+`pnpm.cmd verify:characters` 退出 0：character-runtime 13 个文件 221 项、character-assets 4 个文件 92 项、Desktop 85 个文件 1741 项（14 跳过）、security 20/20、integration 46/46 与 Electron E2E 60/60 全部通过，约 3.1 分钟。`pnpm.cmd verify:behavior` 也退出 0，含 Electron E2E 60/60。`pnpm.cmd verify:desktop` 的单次结果为 1，原因是无关的“默认聊天与设置浮层提示”E2E 页面/上下文关闭；其一次定向复现 1/1 通过，不替代完整门禁失败。
+
+旧 owner 扫描无输出（`rg` 退出码 1，表示零命中）；受保护网站、CloudBase、scanner 和网站 E2E/配置路径在 `875048c..HEAD` 零差异，`git diff --check 875048c..HEAD` 退出 0 且无输出。相对 `875048c`，生产代码 +42/-74（净 -32），测试与 E2E 合计 +230/-669（净 -439）；相对 `c7d951d` 测试与 E2E 的净减同为 -439。既有真实 Windows、性能与资源释放人工项仍待用户确认。

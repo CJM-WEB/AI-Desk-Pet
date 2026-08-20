@@ -163,3 +163,22 @@ git status --short
 | Desktop E2E | `59/59` 通过，耗时约 3.0 分钟；`720×620` 默认尺寸与 `640×520` 最小尺寸布局场景均通过，先前超时的角色工作室场景本轮也通过。 |
 
 本次复验没有恢复 MCP 运行时或放宽布局门禁。真实 Windows 视觉、窗口层级、鼠标拖拽、系统托盘、资源管理器交互、干净环境安装卸载与生产部署仍待用户人工确认。
+
+## 14. 2026-08-20 减法 Task 6 最终门禁（A1/A2）
+
+本段只记录 `875048c..HEAD` 的减法复验；未执行人工 Windows 项继续为待用户人工确认。A1 已删除 `vitest-worker-cap.test.ts`，并将 `maxWorkers: 4` 的唯一配置断言并入 `desktop-e2e-entry.test.ts`；A2 已删除 `agent-ipc-authorization.ts`、其测试和重复 Main 字符串断言，授权判断原位收敛到 `register-ipc.ts`。
+
+| 命令 | 退出码 | 实际结果 |
+| --- | ---: | --- |
+| `pnpm.cmd --filter @myself/desktop typecheck` | 0 | `tsc --noEmit` 通过，8.4 秒。 |
+| `pnpm.cmd --filter @myself/desktop test` | 0 | 85 个文件、1741 项通过、14 项跳过，42.8 秒。 |
+| `pnpm.cmd test:security` | 0 | 20/20 通过，1.4 秒。 |
+| `pnpm.cmd test:integration` | 0 | 46/46 通过，4.8 秒。 |
+| `pnpm.cmd verify:desktop` | 1 | typecheck、108 个单元文件 2178 项、security 20/20、integration 46/46 均通过；Electron E2E 为 59/60，通过前在“默认聊天与设置浮层提示”关闭设置按钮时页面或上下文已关闭。 |
+| 失败场景的一次构建后定向 Playwright 复现 | 0 | 1/1 通过，11.3 秒；不能替代完整门禁失败。 |
+| `pnpm.cmd verify:behavior` | 0 | Desktop 1741 项、安全 20/20、集成 46/46、Electron E2E 60/60 均通过，约 3.1 分钟。 |
+| `pnpm.cmd verify:characters` | 0 | character-runtime 221 项、character-assets 92 项、Desktop 1741 项、安全 20/20、集成 46/46、Electron E2E 60/60 均通过，约 3.1 分钟。 |
+
+`rg -n "AgentIpcAuthorization|agent-ipc-authorization|只有当前聊天窗口能使用已知 actionId|CharacterTransactionRecoveryKind|budgetExceeded" apps/desktop/src apps/desktop/tests tests/e2e` 无输出（退出码 1，表示零命中）。`git diff --name-only 875048c..HEAD -- apps/website apps/cloudbase-api apps/package-scanner cloudbase tests/e2e/website.spec.ts tests/playwright.website.config.ts` 无输出；`git diff --check 875048c..HEAD` 退出码 0、无输出。
+
+相对 `875048c`，生产代码为 +42/-74（净 -32），Desktop 测试为 +193/-522（净 -329），E2E 为 +37/-147（净 -110）。完整 `verify:desktop` 的一次真实失败使本 owner 不得标记为“全部自动化通过”；定向复现只作为不稳定现象证据。

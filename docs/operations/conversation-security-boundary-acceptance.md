@@ -110,3 +110,11 @@
 - [ ] 人工确认销毁、隐藏、重新打开和应用退出后的窗口层级、焦点与清理表现。
 
 没有上述人工证据前，不能把真实 Windows 多窗口行为或主观动画表现写为已验收。
+
+## 8. 2026-08-20 减法 Task 6 最终门禁（A3）
+
+A3 已删除完整 variant 的重复投影测试样本，并将“已知 `actionId`”非 chat 拒绝合并到会话事件投影 Electron 场景；旧场景名和 owner 均已移除。旧 owner 扫描在 `apps/desktop/src`、`apps/desktop/tests` 和 `tests/e2e` 内无输出（`rg` 退出码 1，表示零命中）。
+
+本次 `pnpm.cmd --filter @myself/desktop typecheck`、`pnpm.cmd --filter @myself/desktop test`（85 个文件、1741 项通过、14 项跳过）、`pnpm.cmd test:security`（20/20）和 `pnpm.cmd test:integration`（46/46）均退出 0。`pnpm.cmd verify:behavior` 与 `pnpm.cmd verify:characters` 均退出 0，分别覆盖 Electron E2E 60/60；其中合并后的“会话任务事件只向 chat 完整投递、向 pet 只投递 phase 且非 chat 不能执行票据”通过。
+
+`pnpm.cmd verify:desktop` 一次退出 1：此前各子链通过，但 Electron E2E 的“默认聊天与设置浮层提示”在关闭设置时报告页面或上下文已关闭，最终 59/60。只进行一次该场景定向复现，构建后 1/1 通过（11.3 秒）；这不改变完整门禁失败结论。受保护路径差异和 `git diff --check 875048c..HEAD` 均为零。真实 Windows 多窗口视觉、销毁重建和 hide/open 人工项仍待用户确认。
