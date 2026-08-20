@@ -21,6 +21,12 @@ const directManualReviewMigrationPath = fileURLToPath(
     import.meta.url
   )
 );
+const sharedPackagePublicationGuardMigrationPath = fileURLToPath(
+  new URL(
+    '../../../cloudbase/migrations/20260815000000_shared_package_publication_guard.sql',
+    import.meta.url
+  )
+);
 
 describe('CloudBase PostgreSQL 迁移', () => {
   it('直接人工审核迁移同步修改两类投稿入口、历史数据和共享包门禁', () => {
@@ -35,6 +41,39 @@ describe('CloudBase PostgreSQL 迁移', () => {
     expect(sql).toContain("WHERE status = 'system_reviewing'");
     expect(sql).toContain('moderation_lease_until = NULL');
     expect(sql).toContain('moderation_next_retry_at = NULL');
+    expect(sql.trim().startsWith('BEGIN;')).toBe(true);
+    expect(sql.trim().endsWith('COMMIT;')).toBe(true);
+  });
+
+  it('前向迁移为共享包发布保留原子管理员动作防线并收紧扫描证据', () => {
+    const sql = readFileSync(sharedPackagePublicationGuardMigrationPath, 'utf8');
+
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION apply_admin_action(');
+    expect(sql).toContain("current_setting('request.jwt.claims', true)::jsonb ->> 'role'");
+    expect(sql).toContain("<> 'service_role'");
+    expect(sql).toContain('pg_advisory_xact_lock(hashtextextended(p_idempotency_key, 0))');
+    expect(sql).toContain('RETURN v_existing.result_snapshot || jsonb_build_object(\'replayed\', true)');
+    expect(sql).toContain('AND status_version = p_expected_version');
+    expect(sql).toContain('INSERT INTO admin_audit_logs');
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) FROM PUBLIC, anon, authenticated"
+    );
+    expect(sql).toContain(
+      'GRANT EXECUTE ON FUNCTION apply_admin_action(text, text, text, text, bigint, text, text) TO service_role'
+    );
+    const scanGuard = sql.match(/IF p_action = 'approve'[\s\S]+?END IF;/u)?.[0];
+    expect(scanGuard).toContain("v_previous_status <> 'published'");
+    expect(scanGuard).not.toContain("v_previous_status = 'auto_rejected'");
+    expect(scanGuard).toContain("result.evidence ->> 'submissionId' = p_submission_id");
+    expect(scanGuard).toContain("result.evidence ->> 'packageStorageKey' = asset.object_key");
+    expect(scanGuard).toContain("result.evidence ->> 'packageSizeBytes' = asset.actual_size::text");
+    expect(scanGuard).toMatch(
+      /result\.evidence ->> 'submissionStatusVersion'\s*= p_expected_version::text/u
+    );
+    expect(scanGuard).toMatch(
+      /result\.evidence ->> 'scanCode'\s*= 'CHARACTER_PACKAGE_SCAN_PASSED'/u
+    );
+    expect(sql).toContain("USING ERRCODE = 'P1003'");
     expect(sql.trim().startsWith('BEGIN;')).toBe(true);
     expect(sql.trim().endsWith('COMMIT;')).toBe(true);
   });
@@ -409,6 +448,43 @@ class MemoryRdb {
         return {
           data: null,
           error: { code: '40001', message: 'submission version conflict' }
+        };
+      }
+
+      const hasCurrentPackageScanEvidence = this.moderationResults.some((result) => {
+        const evidence = result.evidence;
+        if (
+          result.submission_id !== row.id
+          || result.kind !== 'package_scan'
+          || result.provider !== 'isolated-scanner'
+          || result.suggestion !== 'Pass'
+          || typeof evidence !== 'object'
+          || evidence === null
+          || Array.isArray(evidence)
+        ) {
+          return false;
+        }
+        const evidenceRecord = evidence as Record<string, unknown>;
+        return this.assets.some((asset) =>
+          asset.submission_id === row.id
+          && asset.role === 'package'
+          && asset.actual_size !== null
+          && evidenceRecord.submissionId === row.id
+          && evidenceRecord.packageStorageKey === asset.object_key
+          && evidenceRecord.packageSizeBytes === String(asset.actual_size)
+          && evidenceRecord.submissionStatusVersion === String(params.p_expected_version)
+          && evidenceRecord.scanCode === 'CHARACTER_PACKAGE_SCAN_PASSED'
+        );
+      });
+      if (
+        params.p_action === 'approve'
+        && row.status !== 'published'
+        && row.kind === 'shared_package'
+        && !hasCurrentPackageScanEvidence
+      ) {
+        return {
+          data: null,
+          error: { code: 'P1003', message: 'technical scan required' }
         };
       }
 
@@ -1283,6 +1359,85 @@ describe('CloudBase PostgreSQL 仓储', () => {
       replayed: true
     });
     expect(database.audits).toHaveLength(1);
+  });
+
+  it('数据库 RPC 拒绝缺少当前证据的待人工共享包批准', async () => {
+    const database = new MemoryRdb();
+    database.submissions.push(makeSubmission({
+      id: 'manual-package',
+      kind: 'shared_package',
+      status: 'manual_review_pending',
+      status_version: 3
+    }));
+    database.assets.push({
+      submission_id: 'manual-package',
+      object_key: 'submissions/manual-package/package.zip',
+      original_name: 'pet.zip',
+      declared_size: 1024,
+      actual_size: 1024,
+      mime_type: 'application/zip',
+      role: 'package'
+    });
+    const { store } = createStore(database);
+
+    await expect(store.applyAdminAction({
+      submissionId: 'manual-package',
+      adminId: 'admin-1',
+      action: 'approve',
+      nextStatus: 'published',
+      expectedVersion: 3,
+      idempotencyKey: 'manual-package-approve',
+      reason: '批准'
+    })).rejects.toMatchObject({
+      code: 'TECHNICAL_SCAN_REQUIRED',
+      statusCode: 409
+    });
+  });
+
+  it('数据库 RPC 拒绝绑定未完成包资产的伪造扫描证据', async () => {
+    const database = new MemoryRdb();
+    database.submissions.push(makeSubmission({
+      id: 'unfinished-package',
+      kind: 'shared_package',
+      status: 'manual_review_pending',
+      status_version: 3
+    }));
+    database.assets.push({
+      submission_id: 'unfinished-package',
+      object_key: 'submissions/unfinished-package/package.zip',
+      original_name: 'pet.zip',
+      declared_size: 1024,
+      actual_size: null,
+      mime_type: 'application/zip',
+      role: 'package'
+    });
+    database.moderationResults.push({
+      submission_id: 'unfinished-package',
+      kind: 'package_scan',
+      provider: 'isolated-scanner',
+      suggestion: 'Pass',
+      evidence: {
+        submissionId: 'unfinished-package',
+        packageStorageKey: 'submissions/unfinished-package/package.zip',
+        packageSizeBytes: 'null',
+        submissionStatusVersion: '3',
+        scanCode: 'CHARACTER_PACKAGE_SCAN_PASSED'
+      }
+    });
+    const { store } = createStore(database);
+
+    await expect(store.applyAdminAction({
+      submissionId: 'unfinished-package',
+      adminId: 'admin-1',
+      action: 'approve',
+      nextStatus: 'published',
+      expectedVersion: 3,
+      idempotencyKey: 'unfinished-package-approve',
+      reason: '批准'
+    })).rejects.toMatchObject({
+      code: 'TECHNICAL_SCAN_REQUIRED',
+      statusCode: 409
+    });
   });
 
   it('管理员动作版本过期时返回稳定冲突错误', async () => {
