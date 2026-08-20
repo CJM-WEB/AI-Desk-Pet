@@ -68,8 +68,7 @@ const MAX_IMPORT_MARKER_BYTES = 4_096;
 const IMPORT_STAGING_PREFIX = 'ai-pet-character-package-';
 const ROLLBACK_MARKER_PATTERN =
   /^\.package-import-rollback-([a-z0-9][a-z0-9_-]{0,119})\.json$/u;
-const DETACHED_ROLLBACK_MARKER_PATTERN =
-  /^\.package-import-rollback-([a-z0-9][a-z0-9_-]{0,119})\.json(?:\.complete-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)+$/u;
+const DETACHED_MARKER_EVIDENCE = new Error('DETACHED_MARKER_EVIDENCE');
 const packageImportQueues = new Map<string, Promise<void>>();
 
 const characterPackageImportMarkerV3Schema = z.object({
@@ -93,7 +92,7 @@ type ImportMarkerIdentity = Readonly<{
 type ImportRecoveryInventoryEntry = Readonly<{
   marker: string;
   name: string;
-  characterId: string | undefined;
+  characterId: string;
 }>;
 
 export type CharacterPackageRecoveryIssue = Readonly<{
@@ -1410,9 +1409,23 @@ export class CharacterPackageService {
     try {
       await rm(relocated);
     } catch (error) {
-      await link(relocated, marker).catch(() => undefined);
-      throw error;
+      await this.restoreRelocatedMarker(relocated, marker, error);
     }
+  }
+
+  /** 正式名只能通过排他 hard link 恢复；双故障留下不可执行证据。 */
+  private async restoreRelocatedMarker(
+    relocated: string,
+    marker: string,
+    cause: unknown
+  ): Promise<never> {
+    try {
+      await link(relocated, marker);
+    } catch {
+      console.error('CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE');
+      throw DETACHED_MARKER_EVIDENCE;
+    }
+    throw cause;
   }
 
   /** 先移走路径再复核，避免复核后的原路径替代文件被误删。 */
@@ -1422,7 +1435,11 @@ export class CharacterPackageService {
   ): Promise<string> {
     const relocated = `${marker}.complete-${randomUUID()}.tmp`;
     await rename(marker, relocated);
-    await this.requireOwnedMarker(relocated, expected);
+    try {
+      await this.requireOwnedMarker(relocated, expected);
+    } catch (error) {
+      await this.restoreRelocatedMarker(relocated, marker, error);
+    }
     return relocated;
   }
 
@@ -1454,23 +1471,15 @@ export class CharacterPackageService {
     } catch {
       console.error('CHARACTER_IMPORT_RECOVERY_SCAN_FAILED');
     }
-    const inventory: ImportRecoveryInventoryEntry[] = entries
+    const candidates: ImportRecoveryInventoryEntry[] = entries
       .filter(entry => (
         entry.isFile()
-        && (
-          (
-            entry.name.startsWith('.package-import-rollback-')
-            && entry.name.endsWith('.json')
-            && !entry.name.includes('.corrupt-')
-          )
-          || DETACHED_ROLLBACK_MARKER_PATTERN.test(entry.name)
-        )
+        && ROLLBACK_MARKER_PATTERN.test(entry.name)
       ))
       .map(entry => ({
         marker: join(this.charactersDirectory, entry.name),
         name: entry.name,
-        characterId: ROLLBACK_MARKER_PATTERN.exec(entry.name)?.[1]
-          ?? DETACHED_ROLLBACK_MARKER_PATTERN.exec(entry.name)?.[1]
+        characterId: ROLLBACK_MARKER_PATTERN.exec(entry.name)![1]!
       }))
       .sort((left, right) => {
         const leftActive = left.characterId === activeCharacterId;
@@ -1478,22 +1487,18 @@ export class CharacterPackageService {
         if (leftActive !== rightActive) return leftActive ? -1 : 1;
         return left.name.localeCompare(right.name, 'en-US');
       });
+    if (candidates.length > MAX_IMPORT_RECOVERY_ENTRIES) {
+      console.error('CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED');
+    }
+    const inventory = candidates.slice(0, MAX_IMPORT_RECOVERY_ENTRIES);
     const issues: CharacterPackageRecoveryIssue[] = [];
 
-    for (let index = 0; index < inventory.length; index += 1) {
-      const item = inventory[index]!;
-      if (
-        index >= MAX_IMPORT_RECOVERY_ENTRIES
-        || this.recoveryNow() - startedAt >= IMPORT_RECOVERY_BUDGET_MS
-      ) {
-        if (item.characterId) {
-          issues.push({
-            characterId: item.characterId,
-            errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED'
-          });
-        } else {
-          console.error('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
-        }
+    for (const item of inventory) {
+      if (this.recoveryNow() - startedAt >= IMPORT_RECOVERY_BUDGET_MS) {
+        issues.push({
+          characterId: item.characterId,
+          errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED'
+        });
         continue;
       }
 
@@ -1519,14 +1524,10 @@ export class CharacterPackageService {
             snapshot.bytes,
             snapshot.identity
           );
-          if (item.characterId) {
-            issues.push({
-              characterId: item.characterId,
-              errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
-            });
-          } else {
-            console.error('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
-          }
+          issues.push({
+            characterId: item.characterId,
+            errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+          });
           continue;
         }
 
@@ -1553,16 +1554,13 @@ export class CharacterPackageService {
             });
             break;
         }
-      } catch {
-        if (item.characterId) {
-          console.error('CHARACTER_IMPORT_RECOVERY_ITEM_FAILED');
-          issues.push({
-            characterId: item.characterId,
-            errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
-          });
-        } else {
-          console.error('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
-        }
+      } catch (error) {
+        if (error === DETACHED_MARKER_EVIDENCE) continue;
+        console.error('CHARACTER_IMPORT_RECOVERY_ITEM_FAILED');
+        issues.push({
+          characterId: item.characterId,
+          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+        });
       }
     }
     return immutableRecoveryReport(issues);

@@ -1487,20 +1487,6 @@ describe('角色包 Main 服务', () => {
     }
   });
 
-  test('无法从严格文件名识别角色时不伪造 issue', async () => {
-    const root = join(testDirectory, 'unattributed-recovery');
-    await mkdir(root, { recursive: true });
-    await writeFile(
-      join(root, '.package-import-rollback-BAD!.json'),
-      markerV3('body-id', '33333333-3333-4333-8333-333333333333')
-    );
-    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-    await expect(new CharacterPackageService(root).initialize())
-      .resolves.toEqual({ issues: [] });
-    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
-  });
-
   test('角色根目录不存在时记录固定扫描失败码', async () => {
     const root = join(testDirectory, 'missing-character-root');
     const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -1581,7 +1567,7 @@ describe('角色包 Main 服务', () => {
     expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', transactionId);
   });
 
-  test('marker 身份复核后被替换时不删除替代文件且后续项继续', async () => {
+  test('marker 身份错且正式名恢复失败时只留 inert 证据', async () => {
     const root = join(testDirectory, 'completion-race');
     const replacement = Buffer.from('replacement-after-assert');
     const transactionId = '33333333-3333-4333-8333-333333333333';
@@ -1599,31 +1585,37 @@ describe('角色包 Main 服务', () => {
       }
       await actualRename(...args);
     });
+    const originalLink = fsMockState.link;
+    vi.mocked(fsPromises.link).mockImplementation(async (...args) => {
+      if (String(args[1]) === racedMarker) {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      }
+      await originalLink(...args);
+    });
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const store = new AbsentRollbackStore(root);
     const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
 
     await expect(new CharacterPackageService(root, { store }).initialize())
-      .resolves.toEqual({
-        issues: [{
-          characterId: 'a-raced',
-          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
-        }]
-      });
+      .resolves.toEqual({ issues: [] });
     await expect(access(racedMarker)).rejects.toThrow();
     const detached = (await readdir(root)).find(name => (
       name.startsWith('.package-import-rollback-a-raced.json.complete-')
     ));
-    expect(detached).toBeDefined();
     expect(await readFile(join(root, detached!))).toEqual(replacement);
+    expect(fsPromises.link).toHaveBeenCalledWith(join(root, detached!), racedMarker);
+    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE');
     expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', transactionId);
 
+    const invalidMarker = join(root, '.package-import-rollback-BAD!.json');
+    await writeFile(invalidMarker, replacement);
+    rollbackSpy.mockClear();
+    logSpy.mockClear();
     await expect(new CharacterPackageService(root, { store }).initialize())
-      .resolves.toEqual({
-        issues: [{
-          characterId: 'a-raced',
-          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
-        }]
-      });
+      .resolves.toEqual({ issues: [] });
+    expect(await readFile(join(root, detached!))).toEqual(replacement);
+    expect(await readFile(invalidMarker)).toEqual(replacement);
+    expect(rollbackSpy).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -1701,7 +1693,10 @@ describe('角色包 Main 服务', () => {
     expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', transactionId);
   });
 
-  test('证据发布后清理原 marker 失败时不报告恢复且继续后续项', async () => {
+  test.each([
+    ['单独清理失败恢复正式名并支持重试', false, true],
+    ['清理与正式名恢复双故障只留 inert 证据', true, false]
+  ])('%s', async (_name, rejectRestore, shouldRetry) => {
     const root = join(testDirectory, 'cleanup-failure');
     const brokenBytes = Buffer.from('{"version":3');
     const transactionId = '33333333-3333-4333-8333-333333333333';
@@ -1719,39 +1714,45 @@ describe('角色包 Main 服务', () => {
       }
       return originalRm(...args);
     });
-    const originalLink = fsMockState.link;
-    vi.mocked(fsPromises.link).mockImplementation(async (...args) => {
-      if (String(args[1]) === rollbackMarker(root, 'a-broken')) {
-        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
-      }
-      await originalLink(...args);
-    });
+    if (rejectRestore) {
+      const originalLink = fsMockState.link;
+      vi.mocked(fsPromises.link).mockImplementation(async (...args) => {
+        if (String(args[1]) === rollbackMarker(root, 'a-broken')) {
+          throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+        }
+        await originalLink(...args);
+      });
+    }
     const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const store = new AbsentRollbackStore(root);
     const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+    const expectedIssues = shouldRetry ? [{
+      characterId: 'a-broken',
+      errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' as const
+    }] : [];
 
     await expect(new CharacterPackageService(root, { store }).initialize())
-      .resolves.toEqual({
-        issues: [{
-          characterId: 'a-broken',
-          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
-        }]
-      });
-    await expect(access(rollbackMarker(root, 'a-broken'))).rejects.toThrow();
+      .resolves.toEqual({ issues: expectedIssues });
+    if (shouldRetry) {
+      expect(await readFile(rollbackMarker(root, 'a-broken'))).toEqual(brokenBytes);
+    } else {
+      await expect(access(rollbackMarker(root, 'a-broken'))).rejects.toThrow();
+    }
     expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', transactionId);
-    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_ITEM_FAILED');
+    expect(logSpy).toHaveBeenCalledWith(shouldRetry
+      ? 'CHARACTER_IMPORT_RECOVERY_ITEM_FAILED'
+      : 'CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE');
 
-    await expect(new CharacterPackageService(root, { store }).initialize())
-      .resolves.toEqual({
-        issues: [{
-          characterId: 'a-broken',
-          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
-        }]
-      });
-    expect((await readdir(root)).some(name => (
+    const detached = (await readdir(root)).find(name => (
       name.includes('.complete-') && name.endsWith('.tmp')
-    ))).toBe(false);
-    expect(await preservedEvidence(root, 'a-broken')).toEqual(brokenBytes);
+    ));
+    rollbackSpy.mockClear();
+    logSpy.mockClear();
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({ issues: expectedIssues });
+    expect(await readFile(join(root, detached!))).toEqual(brokenBytes);
+    expect(rollbackSpy).not.toHaveBeenCalled();
+    expect(logSpy).not.toHaveBeenCalled();
   });
 
   test('活动角色 marker 先于稳定文件名顺序处理', async () => {
@@ -1783,7 +1784,7 @@ describe('角色包 Main 服务', () => {
       .toEqual(['z-active', 'a-inactive']);
   });
 
-  test('第 257 个 inventory 项保持原字节并返回 deferred', async () => {
+  test('排序后第 257 项保持原字节且只记录一次聚合诊断', async () => {
     const root = join(testDirectory, 'inventory-limit');
     const transactionId = '33333333-3333-4333-8333-333333333333';
     await mkdir(root, { recursive: true });
@@ -1793,23 +1794,21 @@ describe('角色包 Main 服务', () => {
     }));
     const store = new AbsentRollbackStore(root);
     const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
-    const deferredMarker = rollbackMarker(root, 'item-257');
-    const before = await readFile(deferredMarker);
+    const untouchedMarker = rollbackMarker(root, 'item-257');
+    const before = await readFile(untouchedMarker);
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     await expect(new CharacterPackageService(root, {
       store
-    }).initialize()).resolves.toEqual({
-      issues: [{
-        characterId: 'item-257',
-        errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED'
-      }]
-    });
+    }).initialize()).resolves.toEqual({ issues: [] });
     expect(rollbackSpy).toHaveBeenCalledTimes(256);
-    expect(rollbackSpy).toHaveBeenCalledWith('item-255', transactionId);
     expect(rollbackSpy).toHaveBeenCalledWith('item-256', transactionId);
+    expect(fsPromises.open).not.toHaveBeenCalledWith(untouchedMarker, 'r');
     await expect(access(rollbackMarker(root, 'item-255'))).rejects.toThrow();
     await expect(access(rollbackMarker(root, 'item-256'))).rejects.toThrow();
-    expect(await readFile(deferredMarker)).toEqual(before);
+    expect(await readFile(untouchedMarker)).toEqual(before);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED');
   });
 
   test('达到 2000ms 软预算后只推迟未开始项', async () => {
