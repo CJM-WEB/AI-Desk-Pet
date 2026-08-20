@@ -23,6 +23,9 @@
 - 当前计划只执行 Tasks 1—4。它不得读写 foundation 计划的 `.superpowers/sdd/` 工作区；完整门通过后由原 foundation 计划所有者更新 Task 4 报告并提交既有 runner。
 - Git 只精确暂存当前任务文件；禁止 `git add .` 与 `git add -A`。`package.json` 必须逐 hunk 暂存并验证缓存差异。
 - 正式网站重新部署、域名/CDN、CloudBase 生产数据与上线后人工验收不在本计划范围。
+- 所有选择遵守“能不加就不加，能复用不新建，能替换不并存，能减则减”；每个任务报告必须包含新增、复用、删除、引用扫描和保留理由组成的减法账本。
+- 新路径通过后，同职责旧入口、旧实现、别名及专用测试必须在本计划内删除；不得保留第二条可运行路径或永久兼容分支。
+- 不为追求净行数删除安全检查、失败清理或直接覆盖风险的测试；完成标准是正式路径唯一、运行引用无孤儿、重复职责为零。
 
 ---
 
@@ -502,6 +505,7 @@ Expected: 只提交两个编排器文件；尚未增加可执行 CLI 入口，�
 **Files:**
 - Modify: `tools/verification/run-website-e2e-process-isolation.mjs`
 - Modify: `tools/verification/run-website-e2e-process-isolation.test.mjs`
+- Modify: `tests/e2e/website.spec.ts`（只替换已批准的截图后四行断言）
 
 **Interfaces:**
 - Consumes: Tasks 1—2 的解析、命令、顺序执行和精确终止接口。
@@ -510,6 +514,9 @@ Expected: 只提交两个编排器文件；尚未增加可执行 CLI 入口，�
 - Produces: `formatWebsiteRunSummary(summary: WebsiteRunSummary): string`。
 - Produces: `runWebsiteE2EMain(dependencies?: MainDependencies): Promise<WebsiteRunSummary>`。
 - Produces: CLI `node tools/verification/run-website-e2e-process-isolation.mjs`，无业务参数。
+- Reuses: 既有 `enterInteractive(page)`，不得新增等待 helper、fixture、产品逻辑或测试项。
+- Removes: 截图后依赖被阻塞 RAF 时序的四行 `data-active-chapter="home"` 断言，以一行既有 helper 调用替换，净减少三行。
+- Removes: 无外部消费者的 `WEBSITE_E2E_OUTPUT_ROOT` 导出，将其收回为模块私有 `const`；运行路径与值不变。
 
 - [ ] **Step 1: 写发现失败、汇总与临时文件清理 RED**
 
@@ -734,9 +741,36 @@ node.exe node_modules/@playwright/test/cli.js test --config tests/playwright.web
 
 Expected: 每条命令各发现并运行 1 项，均退出 0；进程之间无共享 Playwright worker。随后用 `apply_patch` 删除两个短期文件。
 
-- [ ] **Step 6: 直接运行正式编排器并执行 15 分钟止损**
+- [ ] **Step 6: 复现截图阻塞 RED 并做净减法修正**
 
-构建已在 Step 10 完成，不重复构建：
+使用本轮 `--list` 返回的完整描述创建单项短期 test-list，并单独运行：
+
+```powershell
+node.exe node_modules/@playwright/test/cli.js test --config tests/playwright.website.config.ts --test-list .superpowers/sdd/2026-08-15-website-e2e-cli-process-isolation/debug-test-16.txt --output tests/.playwright-output/website-process-isolation/debug-016
+```
+
+Expected RED: `逐章节交接且快速输入不能跳过相邻章节` 在第二次滚轮后期望 `about`、实际为 `home`。该 RED 已于 2026-08-15 在独立 CLI 中重复两次，不得改写为 GPU 或产品失败。
+
+仅在该测试中把截图后的：
+
+```ts
+await expect(page.locator(WEBSITE)).toHaveAttribute(
+  'data-active-chapter',
+  'home'
+);
+```
+
+替换为：
+
+```ts
+await enterInteractive(page);
+```
+
+不得增加 `waitForTimeout`、新 helper、新测试、retry、timeout 或产品代码。随后原样复跑单项命令。Expected GREEN: `1 passed`、退出码 0；测试总数仍为 45。使用 `apply_patch` 删除短期 test-list。
+
+- [ ] **Step 7: 直接运行正式编排器并执行 15 分钟止损**
+
+构建已在 Step 5 完成，不重复构建：
 
 ```powershell
 node.exe tools/verification/run-website-e2e-process-isolation.mjs
@@ -751,7 +785,7 @@ node.exe tools/verification/run-website-e2e-process-isolation.mjs
 
 若出现 GPU stall、任何失败或达到 15 分钟：立即停止 Task 3，不修改产品、fixture、worker、retry 或 timeout；写清首错、计数和产物路径，状态 BLOCKED，不提交 Task 3。
 
-- [ ] **Step 7: 检查残留进程与定向验证**
+- [ ] **Step 8: 检查残留进程与定向验证**
 
 Run:
 
@@ -768,18 +802,25 @@ node.exe --test tools/verification/run-website-e2e-process-isolation.test.mjs
 
 Expected: 没有本轮遗留且命令行指向当前工作区的进程；全部编排器单测 PASS。
 
-- [ ] **Step 8: 检查并提交 Task 3**
+- [ ] **Step 9: 写减法账本、检查并提交 Task 3**
+
+Task 3 报告必须明确记录：
+
+- 编排器新增职责为何无法由同步 `verify-web-chain.mjs` 复用；
+- `website.spec.ts` 只发生四行换一行，未增加 helper、测试项或产品分支；
+- `WEBSITE_E2E_OUTPUT_ROOT` 已取消导出，`rg` 对其余新增导出与 CLI 入口的消费者结果不含未使用公开接口；
+- Task 4 待删除旧 fixture 的精确文件和行数，不把计划中的删除误写成已完成。
 
 Run:
 
 ```powershell
-git diff --check -- tools/verification/run-website-e2e-process-isolation.mjs tools/verification/run-website-e2e-process-isolation.test.mjs
-git diff -- tools/verification/run-website-e2e-process-isolation.mjs tools/verification/run-website-e2e-process-isolation.test.mjs
-git add -- tools/verification/run-website-e2e-process-isolation.mjs tools/verification/run-website-e2e-process-isolation.test.mjs
+git diff --check -- tools/verification/run-website-e2e-process-isolation.mjs tools/verification/run-website-e2e-process-isolation.test.mjs tests/e2e/website.spec.ts
+git diff -- tools/verification/run-website-e2e-process-isolation.mjs tools/verification/run-website-e2e-process-isolation.test.mjs tests/e2e/website.spec.ts
+git add -- tools/verification/run-website-e2e-process-isolation.mjs tools/verification/run-website-e2e-process-isolation.test.mjs tests/e2e/website.spec.ts
 git commit -m "build: 隔离网站 E2E CLI 进程"
 ```
 
-Expected: 只提交两个编排器文件；真实逐项运行证据写入本计划 Task 3 报告。
+Expected: 只提交两个编排器文件及单一测试净减法替换；真实逐项运行证据与减法账本写入本计划 Task 3 报告。
 
 ### Task 4: 切换正式入口、删除失败 fixture 并完成网站链验收
 
@@ -887,7 +928,7 @@ Expected: 构建一次；`discovered=45 passed=45 failed=0 interrupted=0 notRun=
 
 若失败或超时，停止 Task 4；不得删除 fixture、不得更新 foundation 状态、不得提交根入口。
 
-- [ ] **Step 6: 删除已证伪 fixture 与测试**
+- [ ] **Step 6: 删除已证伪 fixture 与测试并核算减法**
 
 先只读确认只有失败方案自身引用：
 
@@ -906,6 +947,8 @@ pnpm.cmd --filter @myself/website typecheck
 ```
 
 Expected: `rg` 无命中；全部 verification Node 测试 PASS；网站 typecheck PASS。Node `.ts` 直载产生的 `MODULE_TYPELESS_PACKAGE_JSON` warning 随失败 fixture 测试删除而消失。
+
+Task 4 报告必须记录删除前精确行数、删除后的运行引用扫描和根脚本唯一入口。当前基线为两个文件共 393 行；以实施时实际统计为准。不得用删除历史退役文档、必要失败测试或安全清理逻辑凑减法数字。
 
 - [ ] **Step 7: 更新 foundation 计划实际状态**
 
