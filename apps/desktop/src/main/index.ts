@@ -394,8 +394,13 @@ async function createApplicationWindows(
         : null;
     },
     ensureOfficialDefaultCharacter: async () => {
-      await ensureOfficialDefaultCharacter(characterStore, defaultResources);
-      return { activeCharacterId: 'builtin-default' };
+      try {
+        await ensureOfficialDefaultCharacter(characterStore, defaultResources);
+        return { activeCharacterId: 'builtin-default' };
+      } catch {
+        console.error('准备官方默认角色失败。', 'CHARACTER_DEFAULT_PREPARATION_FAILED');
+        throw new Error('CHARACTER_DEFAULT_PREPARATION_FAILED');
+      }
     },
     loadFinalIndex: () => characterStore.list(),
     getTransactionRecoveryReport: () => characterStore.getTransactionRecoveryReport()

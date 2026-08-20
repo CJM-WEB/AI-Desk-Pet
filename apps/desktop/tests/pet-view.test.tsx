@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { StrictMode } from 'react';
+import { StrictMode, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   PetAnchorOverlays,
@@ -13,40 +13,30 @@ import {
 import type { MyselfApi } from '../src/shared/myself-api';
 import { taskStore } from '../src/renderer/src/stores/task-store';
 import type { PetInteractionController } from '../src/renderer/src/pet/pet-interaction-controller';
-import {
-  characterRuntimeSnapshotSchema,
-  type CharacterRecoveryFallbackErrorCode
-} from '../src/shared/character-ipc';
+import type { CharacterRecoveryFallbackErrorCode } from '../src/shared/character-ipc';
+
+const playerDouble = vi.hoisted(() => ({
+  ready: false,
+  reportRuntimeError: undefined as
+    | ((errorCode: CharacterRecoveryFallbackErrorCode | null) => void)
+    | undefined
+}));
+const EMPTY_RECOVERY_SNAPSHOT = { fallbackErrorCode: null, issues: [] } as const;
 
 // PetView 测试只验证消费边界；播放器自身的 Pixi 与资源矩阵由其独立测试负责。
 vi.mock('../src/renderer/src/characters/player/CharacterPlayer', async importOriginal => {
   const actual = await importOriginal<
     typeof import('../src/renderer/src/characters/player/CharacterPlayer')
   >();
-  const React = await import('react');
   return {
     ...actual,
-    CharacterPlayer: ({ api, fallback, onRuntimeError }: {
-      api?: MyselfApi;
-      fallback?: React.ReactNode;
+    CharacterPlayer: ({ fallback, onRuntimeError }: {
+      fallback?: ReactNode;
       onRuntimeError?: (errorCode: CharacterRecoveryFallbackErrorCode | null) => void;
     }) => {
-      const [status, setStatus] = React.useState<'loading' | 'ready' | 'unavailable'>(
-        'loading'
-      );
-      React.useEffect(() => {
-        let disposed = false;
-        void (api ?? window.myself).getCharacterRuntimeSnapshot().then(snapshot => {
-          if (disposed) return;
-          setStatus(snapshot ? 'ready' : 'unavailable');
-          onRuntimeError?.(snapshot ? null : 'CHARACTER_RUNTIME_UNAVAILABLE');
-        });
-        return () => { disposed = true; };
-      }, [api, onRuntimeError]);
-      if (status === 'ready') return React.createElement('span', {
-        'data-testid': 'healthy-character-player'
-      });
-      return status === 'unavailable' ? fallback : null;
+      playerDouble.reportRuntimeError = onRuntimeError;
+      if (playerDouble.ready) return <span data-testid="healthy-character-player" />;
+      return fallback;
     }
   };
 });
@@ -59,6 +49,8 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  playerDouble.ready = false;
+  playerDouble.reportRuntimeError = undefined;
   taskStore.setState(originalTaskStoreActions);
 });
 
@@ -132,10 +124,7 @@ describe('桌宠锚点视觉消费者', () => {
 
 function createPetViewApi(): MyselfApi {
   return {
-    getCharacterRecoverySnapshot: vi.fn(async () => ({
-      fallbackErrorCode: null,
-      issues: []
-    })),
+    getCharacterRecoverySnapshot: vi.fn(async () => EMPTY_RECOVERY_SNAPSHOT),
     getCharacterRuntimeSnapshot: vi.fn(async () => null),
     subscribeCharacterEvents: vi.fn(() => vi.fn()),
     setPetMousePassthrough: vi.fn().mockResolvedValue(undefined),
@@ -145,38 +134,6 @@ function createPetViewApi(): MyselfApi {
     openChat: vi.fn().mockResolvedValue(undefined),
     openCharacterWorkshop: vi.fn().mockResolvedValue(undefined)
   } as unknown as MyselfApi;
-}
-
-function healthyRuntimeSnapshot() {
-  return characterRuntimeSnapshotSchema.parse({
-    activeCharacterId: 'active-pet',
-    manifest: {
-      version: 1,
-      id: 'active-pet',
-      name: '健康角色',
-      thumbnailAssetId: 'atlas',
-      compilerVersion: 'test',
-      resources: [{
-        assetId: 'atlas',
-        fileName: 'atlas.png',
-        sha256: '0'.repeat(64),
-        byteLength: 1
-      }],
-      states: [{
-        id: 'idle',
-        kind: 'core',
-        actions: [{
-          id: 'idle-main',
-          name: '待机',
-          fps: 8,
-          loop: true,
-          weight: 1,
-          frames: [{ assetId: 'atlas', x: 0, y: 0, width: 1, height: 1 }],
-          anchors: { ground: { x: 0.5, y: 1 } }
-        }]
-      }]
-    }
-  });
 }
 
 function installPetViewBrowserApi(api: MyselfApi): void {
@@ -199,10 +156,15 @@ function installPetViewBrowserApi(api: MyselfApi): void {
   });
 }
 
+function renderPet(api: MyselfApi, ready = false) {
+  playerDouble.ready = ready;
+  installPetViewBrowserApi(api);
+  return render(<PetView />);
+}
+
 describe('桌宠像素交互接线', () => {
   test('只有非活动角色 issues 时不显示降级横幅', async () => {
     const api = createPetViewApi();
-    vi.mocked(api.getCharacterRuntimeSnapshot).mockResolvedValue(healthyRuntimeSnapshot());
     vi.mocked(api.getCharacterRecoverySnapshot).mockResolvedValue({
       fallbackErrorCode: null,
       issues: [{
@@ -210,9 +172,7 @@ describe('桌宠像素交互接线', () => {
         errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
       }]
     });
-    installPetViewBrowserApi(api);
-
-    const result = render(<PetView />);
+    const result = renderPet(api, true);
     await result.findByTestId('healthy-character-player');
     expect(result.queryByRole('alert')).toBeNull();
     expect(result.container.querySelector('.pet-character')).toBeNull();
@@ -220,14 +180,11 @@ describe('桌宠像素交互接线', () => {
 
   test('fallback 显示官方默认角色提示和工作室入口', async () => {
     const api = createPetViewApi();
-    vi.mocked(api.getCharacterRuntimeSnapshot).mockResolvedValue(healthyRuntimeSnapshot());
     vi.mocked(api.getCharacterRecoverySnapshot).mockResolvedValue({
       fallbackErrorCode: 'CHARACTER_RESOURCE_NOT_FOUND',
       issues: []
     });
-    installPetViewBrowserApi(api);
-
-    const result = render(<PetView />);
+    const result = renderPet(api, true);
     await result.findByTestId('healthy-character-player');
     expect((await result.findByRole('alert')).textContent)
       .toContain('当前角色资源缺失，已切换到官方默认角色。');
@@ -235,39 +192,47 @@ describe('桌宠像素交互接线', () => {
     expect(api.openCharacterWorkshop).toHaveBeenCalledOnce();
   });
 
-  test('快照 RPC 失败只显示通用文案', async () => {
+  test('快照 RPC 失败不伪造已完成 fallback', async () => {
     const api = createPetViewApi();
-    vi.mocked(api.getCharacterRuntimeSnapshot).mockResolvedValue(healthyRuntimeSnapshot());
     vi.mocked(api.getCharacterRecoverySnapshot).mockRejectedValue(
       new Error('C:\\private\\marker.json')
     );
-    installPetViewBrowserApi(api);
-
-    const result = render(<PetView />);
+    const result = renderPet(api, true);
     await result.findByTestId('healthy-character-player');
-    const alert = await result.findByRole('alert');
-    expect(alert.textContent).toContain('当前角色无法加载');
-    expect(alert.textContent).not.toContain('private');
+    await waitFor(() => expect(api.getCharacterRecoverySnapshot).toHaveBeenCalledOnce());
+    expect(result.queryByRole('alert')).toBeNull();
   });
 
   test('较晚返回的无 fallback 快照不清除播放器故障', async () => {
     const api = createPetViewApi();
-    let resolveRecovery!: (value: {
-      fallbackErrorCode: null;
-      issues: [];
-    }) => void;
+    let resolveRecovery!: (value: typeof EMPTY_RECOVERY_SNAPSHOT) => void;
     vi.mocked(api.getCharacterRecoverySnapshot).mockImplementation(() => new Promise(resolve => {
       resolveRecovery = resolve;
     }));
-    installPetViewBrowserApi(api);
-
-    const result = render(<PetView />);
+    const result = renderPet(api, true);
+    await act(() => {
+      playerDouble.reportRuntimeError?.('CHARACTER_RUNTIME_UNAVAILABLE');
+    });
     expect((await result.findByRole('alert')).textContent)
-      .toContain('当前角色运行版本不可用');
-    resolveRecovery({ fallbackErrorCode: null, issues: [] });
+      .toContain('当前角色无法加载，请打开角色工作室检查并修复');
+    resolveRecovery(EMPTY_RECOVERY_SNAPSHOT);
     await waitFor(() => expect(api.getCharacterRecoverySnapshot).toHaveBeenCalledOnce());
-    expect(result.getByRole('alert').textContent)
-      .toContain('当前角色运行版本不可用');
+    expect(result.getByRole('alert').textContent).not.toContain('已切换');
+  });
+
+  test('启动 fallback 先到时不被较晚的播放器状态清除', async () => {
+    const api = createPetViewApi();
+    vi.mocked(api.getCharacterRecoverySnapshot).mockResolvedValue({
+      fallbackErrorCode: 'CHARACTER_RESOURCE_NOT_FOUND',
+      issues: []
+    });
+    const result = renderPet(api, true);
+    expect((await result.findByRole('alert')).textContent).toContain('当前角色资源缺失');
+    await act(() => {
+      playerDouble.reportRuntimeError?.('CHARACTER_RUNTIME_UNAVAILABLE');
+      playerDouble.reportRuntimeError?.(null);
+    });
+    expect(result.getByRole('alert').textContent).toContain('当前角色资源缺失');
   });
 
   test('服务端渲染阶段不构造控制器或发送穿透 IPC', () => {

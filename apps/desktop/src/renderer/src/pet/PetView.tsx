@@ -119,7 +119,14 @@ export function PetView({
     moving: false,
     carrying: false
   });
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [startupFallbackError, setStartupFallbackError] = useState<string | null>(null);
+  const [playerRuntimeError, setPlayerRuntimeError] = useState<string | null>(null);
+  const runtimeError = startupFallbackError ?? playerRuntimeError;
+  const runtimeErrorText = startupFallbackError
+    ? characterRecoveryMessage(startupFallbackError).text
+    : playerRuntimeError
+      ? '当前角色无法加载，请打开角色工作室检查并修复。'
+      : null;
   const [extensionDefinitions, setExtensionDefinitions] = useState<
     readonly ExtensionTriggerDefinition[]
   >([]);
@@ -128,12 +135,10 @@ export function PetView({
     void window.myself.getCharacterRecoverySnapshot().then(
       snapshot => {
         if (!disposed && snapshot.fallbackErrorCode) {
-          setRuntimeError(snapshot.fallbackErrorCode);
+          setStartupFallbackError(snapshot.fallbackErrorCode);
         }
       },
-      () => {
-        if (!disposed) setRuntimeError('CHARACTER_OPERATION_FAILED');
-      }
+      () => undefined
     );
     return () => {
       disposed = true;
@@ -273,7 +278,7 @@ export function PetView({
           onHitTestPortChange={handleHitTestPortChange}
           onDesktopAnchors={setDesktopAnchors}
           onMotionChange={handleMotionChange}
-          onRuntimeError={setRuntimeError}
+          onRuntimeError={setPlayerRuntimeError}
           fallback={(
             <PetCharacter
               state={fallbackState}
@@ -285,7 +290,7 @@ export function PetView({
       </div>
       {runtimeError ? (
         <span className="pet-runtime-recovery" role="alert">
-          <span>{characterRecoveryMessage(runtimeError).text}</span>
+          <span>{runtimeErrorText}</span>
           <button
             type="button"
             onClick={() => void window.myself.openCharacterWorkshop()}
