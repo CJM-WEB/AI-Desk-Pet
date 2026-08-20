@@ -6,7 +6,10 @@ import { join, sep } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { inventoryCloudBaseMigrations } from './cloudbase-migration-inventory.mjs';
+import {
+  createCloudBaseMigrationDryRun,
+  inventoryCloudBaseMigrations
+} from './cloudbase-migration-inventory.mjs';
 
 /** 创建用后即删的迁移目录，隔离每个用例的文件系统状态。 */
 async function createMigrationDirectory(t) {
@@ -141,5 +144,93 @@ test('迁移读取失败时不泄漏路径、SQL 内容或凭据', async (t) => 
       'sql-content-sentinel',
       'credential-sentinel'
     ])
+  );
+});
+
+test('按 inventory 顺序生成字段固定且稳定的 dry-run 计划', () => {
+  const firstChecksum = 'a'.repeat(64);
+  const secondChecksum = 'b'.repeat(64);
+  const migrations = [
+    {
+      version: '20260730000000',
+      name: 'moderation',
+      fileName: '20260730000000_moderation.sql',
+      sha256: firstChecksum,
+      bytes: 10
+    },
+    {
+      version: '20260808000000',
+      name: 'direct_manual_review',
+      fileName: '20260808000000_direct_manual_review.sql',
+      sha256: secondChecksum,
+      bytes: 20
+    }
+  ];
+
+  const firstPlan = createCloudBaseMigrationDryRun(migrations);
+  const secondPlan = createCloudBaseMigrationDryRun(migrations);
+
+  assert.deepEqual(firstPlan, {
+    mode: 'dry-run',
+    migrations: [
+      {
+        version: '20260730000000',
+        name: 'moderation',
+        fileName: '20260730000000_moderation.sql',
+        sha256: firstChecksum,
+        bytes: 10
+      },
+      {
+        version: '20260808000000',
+        name: 'direct_manual_review',
+        fileName: '20260808000000_direct_manual_review.sql',
+        sha256: secondChecksum,
+        bytes: 20
+      }
+    ],
+    planSha256: createHash('sha256')
+      .update(
+        `20260730000000:${firstChecksum}\n20260808000000:${secondChecksum}\n`
+      )
+      .digest('hex')
+  });
+  assert.deepEqual(secondPlan, firstPlan);
+});
+
+test('dry-run 不修改输入且不公开 SQL、绝对路径或凭据', () => {
+  const checksum = 'c'.repeat(64);
+  const migrations = Object.freeze([
+    Object.freeze({
+      version: '20260730000000',
+      name: 'moderation',
+      fileName: '20260730000000_moderation.sql',
+      sha256: checksum,
+      bytes: 10,
+      sql: 'SELECT secret_column FROM private_table;',
+      absolutePath: 'C:\\migration-path-sentinel\\migration.sql',
+      credential: 'credential-sentinel'
+    })
+  ]);
+
+  const plan = createCloudBaseMigrationDryRun(migrations);
+  const serializedPlan = JSON.stringify(plan);
+
+  assert.deepEqual(migrations, [
+    {
+      version: '20260730000000',
+      name: 'moderation',
+      fileName: '20260730000000_moderation.sql',
+      sha256: checksum,
+      bytes: 10,
+      sql: 'SELECT secret_column FROM private_table;',
+      absolutePath: 'C:\\migration-path-sentinel\\migration.sql',
+      credential: 'credential-sentinel'
+    }
+  ]);
+  assert.notEqual(plan.migrations, migrations);
+  assert.notEqual(plan.migrations[0], migrations[0]);
+  assert.doesNotMatch(
+    serializedPlan,
+    /SELECT|credential-sentinel|migration-path-sentinel|:\\\\/u
   );
 });
