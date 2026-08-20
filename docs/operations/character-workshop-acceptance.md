@@ -94,3 +94,15 @@ B1 已删除 `CharacterTransactionRecoveryKind`、`kind`、`deferred`、`budgetE
 终审进一步收紧了两项边界：`.complete-*` 只是不再执行的原字节证据；清理失败只有在正式 marker 排他恢复成功时才能由正式名支持下次重试，清理与恢复正式名双故障只允许固定诊断，不生成角色 issue。候选稳定排序后只取活动项加最多其余 255 项；第 257 项及以后保持不变且不逐项 issue/log，只记录一次聚合诊断；deferred 仅用于已入 256 项但因 2000ms 预算尚未开始的 marker。上述既有命令不作为这两项收紧边界的通过证据，须由后续定向测试与门禁重新验证。
 
 真实断电、强制终止、非恶意外部程序在恢复期间替换 marker，以及 B3 窗口提示可读性没有本次人工证据，状态均为“待用户人工确认”。同一 Windows 用户下主动绕过检查的恶意进程不在本阶段威胁模型内，不列为待验收承诺。
+
+### Task 3 边界收紧后的复验
+
+以 `124bb49` 为新实现基线复验，不覆盖上面的首次验收记录。该修复相对规格收紧提交 `ecdc3f5`，生产代码 +47/-49（净 -2），测试 +64/-65（净 -1）；删除了 detached 证据的执行入口，并把恢复 inventory 在排序后截断为 256 项。
+
+- `pnpm.cmd --filter @myself/desktop build`：退出 0，约 7.5 秒。
+- `pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包恢复一坏一好时继续启动桌宠与普通聊天"`：退出 0，1/1 通过，8.2 秒。
+- `pnpm.cmd verify:characters`：退出 0；character-runtime 221/221、character-assets 92/92、Desktop 1775 项通过（14 项跳过）、security 20/20、integration 46/46、Electron E2E 61/61，约 4.5 分钟。
+- `pnpm.cmd verify:desktop`：退出 1；全仓类型检查通过，单测阶段 2218 项通过、14 项跳过，两个未修改的旧场景分别在 5 秒超时，因此后续 security、integration 与 Electron 阶段未由该命令执行。失败场景为 `saveCompiled 首次写拒绝既有 ID，覆盖要求 expectedPreviousSha256 匹配` 和 `事务恢复协调：活动与非活动角色的坏分面彼此隔离且原 marker 字节保持不变`。
+- 按“一次定向复现”约束执行 `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/character-asset-service.test.ts tests/character-store.test.ts -t "saveCompiled 首次写拒绝既有 ID|事务恢复协调：活动与非活动角色"`：退出 0，2/2 通过，3.31 秒；没有重跑完整门。`verify:desktop` 的失败仍按事实保留，不写成通过；同一新 HEAD 的 security 20/20、integration 46/46 与 Electron 61/61 证据来自此前已完整通过的 `verify:characters`。
+
+复验删除门再次确认旧 Journal、v4 正式 marker、旧所有权摘要 helper、`preserveRollback()`、PackageService 普通 `store.delete()` 与 detached marker 执行匹配均为零命中，Journal 文件不存在；`.complete-*` 只保留在当前 marker 移动清理的内部临时文件名。生产代码明确先稳定排序，再用 `slice(0, MAX_IMPORT_RECOVERY_ENTRIES)` 截断 256 项。以最新 B2 计划提交 `ecdc3f5` 为保护基线，网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。
