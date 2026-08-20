@@ -200,12 +200,13 @@ describe('Agent IPC', () => {
   ])('六个 Agent mutating handler 在%s时均失败且 service 零调用', async (_state, current) => {
     const fixture = createAgentIpcFixture();
     fixture.replaceChat(current);
+    const sender = current ?? fixture.currentChat;
 
     for (const [channel, input] of agentMutatingInvocations) {
       await expect(Promise.resolve().then(() => (
         input === undefined
-          ? fixture.handlers.get(channel)?.({ sender: fixture.currentChat })
-          : fixture.handlers.get(channel)?.({ sender: fixture.currentChat }, input)
+          ? fixture.handlers.get(channel)?.({ sender })
+          : fixture.handlers.get(channel)?.({ sender }, input)
       ))).rejects.toThrow('AGENT_IPC_SENDER_INVALID');
     }
 
@@ -248,5 +249,7 @@ describe('Agent IPC', () => {
       { sender: newChat },
       { text: '新窗口消息' }
     )).resolves.toBeUndefined();
+    expect(fixture.service.submit).toHaveBeenCalledOnce();
+    expect(fixture.service.submit).toHaveBeenCalledWith('新窗口消息');
   });
 });
