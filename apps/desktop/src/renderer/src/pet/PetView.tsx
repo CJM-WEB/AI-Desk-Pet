@@ -25,24 +25,9 @@ import {
   type PetInteractionControllerOptions
 } from './pet-interaction-controller';
 import {
-  characterErrorCode,
   characterRecoveryMessage
 } from '../../../shared/character-recovery';
 import type { MyselfApi } from '../../../shared/myself-api';
-
-/** Renderer 挂载后主动读取恢复快照，避免一次性启动事件早于订阅而丢失。 */
-export async function loadCharacterStartupRecovery(
-  api: Pick<MyselfApi, 'getCharacterRecoverySnapshot'>,
-  apply: (errorCode: string) => void
-): Promise<void> {
-  try {
-    const snapshot = await api.getCharacterRecoverySnapshot();
-    if (snapshot.errorCode) apply(snapshot.errorCode);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '';
-    apply(characterErrorCode(message));
-  }
-}
 
 export interface PetCharacterProps {
   state: CharacterState;
@@ -140,9 +125,16 @@ export function PetView({
   >([]);
   useEffect(() => {
     let disposed = false;
-    void loadCharacterStartupRecovery(window.myself, errorCode => {
-      if (!disposed) setRuntimeError(errorCode);
-    });
+    void window.myself.getCharacterRecoverySnapshot().then(
+      snapshot => {
+        if (!disposed && snapshot.fallbackErrorCode) {
+          setRuntimeError(snapshot.fallbackErrorCode);
+        }
+      },
+      () => {
+        if (!disposed) setRuntimeError('CHARACTER_OPERATION_FAILED');
+      }
+    );
     return () => {
       disposed = true;
     };

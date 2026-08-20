@@ -83,6 +83,28 @@ describe('preload 清除本地数据转发', () => {
 });
 
 describe('preload 公开 API', () => {
+  test('恢复快照对 Main 返回值再次严格校验', async () => {
+    invoke.mockResolvedValueOnce({ fallbackErrorCode: null, issues: [] });
+    await expect(exposedApi?.getCharacterRecoverySnapshot()).resolves.toEqual({
+      fallbackErrorCode: null,
+      issues: []
+    });
+    expect(invoke).toHaveBeenCalledWith(ipcChannels.characterRecoverySnapshotGet, {});
+
+    invoke.mockResolvedValueOnce({
+      fallbackErrorCode: null,
+      issues: [],
+      markerPath: 'C:\\private'
+    });
+    await expect(exposedApi?.getCharacterRecoverySnapshot()).rejects.toThrow();
+
+    invoke.mockResolvedValueOnce({
+      fallbackErrorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED',
+      issues: []
+    });
+    await expect(exposedApi?.getCharacterRecoverySnapshot()).rejects.toThrow();
+  });
+
   test('新对话与历史披露只映射固定白名单通道', async () => {
     await exposedApi?.resetConversation();
     await exposedApi?.resolveHistoryDisclosure('request-1', 'current_message_only');

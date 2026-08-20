@@ -9,7 +9,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import * as ipcRegistration from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
 import {
+  characterRecoverySnapshotResultSchema,
   characterRuntimeSnapshotSchema,
+  type CharacterRecoverySnapshotDto,
   type CharacterSummaryDto,
   type CharacterWorkshopSourceDto
 } from '../src/shared/character-ipc';
@@ -20,8 +22,48 @@ type CharacterRegistration = (
   ipcMain: IpcMain,
   service: ReturnType<typeof characterServiceDouble>,
   dialogs: ReturnType<typeof dialogDouble>,
-  recoveryErrorCode?: () => string | null
+  recoverySnapshot: CharacterRecoverySnapshotDto
 ) => void;
+
+const EMPTY_RECOVERY_SNAPSHOT: CharacterRecoverySnapshotDto = Object.freeze({
+  fallbackErrorCode: null,
+  issues: Object.freeze([])
+});
+
+test('恢复快照 Schema 严格区分角色问题与启动 fallback', () => {
+  const valid = {
+    fallbackErrorCode: 'CHARACTER_RESOURCE_NOT_FOUND',
+    issues: [{
+      characterId: 'demo',
+      errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+    }]
+  } as const;
+  expect(characterRecoverySnapshotResultSchema.parse(valid)).toEqual(valid);
+  expect(() => characterRecoverySnapshotResultSchema.parse({
+    ...valid,
+    fallbackActive: true
+  })).toThrow();
+  expect(() => characterRecoverySnapshotResultSchema.parse({
+    fallbackErrorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED',
+    issues: []
+  })).toThrow();
+  expect(() => characterRecoverySnapshotResultSchema.parse({
+    fallbackErrorCode: null,
+    issues: [{
+      characterId: 'demo',
+      errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED',
+      ownerToken: 'private'
+    }]
+  })).toThrow();
+  expect(() => characterRecoverySnapshotResultSchema.parse({
+    fallbackErrorCode: null,
+    issues: [{ characterId: 'demo', errorCode: 'CHARACTER_RUNTIME_UNAVAILABLE' }]
+  })).toThrow();
+  expect(() => characterRecoverySnapshotResultSchema.parse({
+    fallbackErrorCode: null,
+    issues: [{ characterId: '../private', errorCode: 'CHARACTER_RECOVERY_DEFERRED' }]
+  })).toThrow();
+});
 
 const invoke = vi.fn(async (): Promise<unknown> => undefined);
 const on = vi.fn();
@@ -184,7 +226,7 @@ describe('V2 角色 IPC 边界', () => {
   test('草稿保存与发布只接受 V2，运行快照继续接受 V1', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel('characterDraftSave'))?.({}, {
       characterId: 'demo',
@@ -231,7 +273,7 @@ describe('V2 角色 IPC 边界', () => {
       migrationRecoveryAvailable: true,
       activationConfirmationRequired: false
     }]);
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel('characterList'))?.({}, {})).resolves.toEqual({
       characters: [{
@@ -252,7 +294,7 @@ describe('V2 角色 IPC 边界', () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
     service.exportCharacterPackage.mockResolvedValueOnce('recovery-exported');
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel('characterPackageExport'))?.({}, {
       characterId: 'demo'
@@ -295,7 +337,7 @@ describe('角色白名单 IPC', () => {
       mimeType: 'image/png' as const
     }];
     service.listCharacterSources.mockResolvedValue(sources);
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel('characterSourcesList'))?.({}, {
       characterId: 'demo'
@@ -318,7 +360,7 @@ describe('角色白名单 IPC', () => {
   test('不完整确认只通过固定布尔字段贯穿 preload 与 Main', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel('characterActivate'))?.({}, {
       characterId: 'demo',
@@ -336,7 +378,7 @@ describe('角色白名单 IPC', () => {
   test('拒绝路径型角色标识和多余字段，且不会进入应用服务', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel('characterDraftGet'))?.({}, {
       characterId: '../outside',
@@ -370,7 +412,7 @@ describe('角色白名单 IPC', () => {
   ] as const)('%s 拒绝多余 payload 字段', async (channelName, payload) => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel(channelName))?.({}, payload))
       .rejects.toMatchObject({
@@ -381,19 +423,23 @@ describe('角色白名单 IPC', () => {
       .toBe(true);
   });
 
-  test('启动恢复快照只接受空输入并返回固定稳定错误码', async () => {
+  test('启动恢复快照只接受空输入并返回注入的不可变值', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
     requireCharacterRegistration()(
       ipcMain,
       service,
       dialogDouble(),
-      () => 'CHARACTER_INDEX_UNAVAILABLE'
+      Object.freeze({
+        fallbackErrorCode: 'CHARACTER_INDEX_UNAVAILABLE',
+        issues: Object.freeze([])
+      })
     );
     const handler = handlers.get(channel('characterRecoverySnapshotGet'));
 
     await expect(handler?.({}, {})).resolves.toEqual({
-      errorCode: 'CHARACTER_INDEX_UNAVAILABLE'
+      fallbackErrorCode: 'CHARACTER_INDEX_UNAVAILABLE',
+      issues: []
     });
     await expect(handler?.({}, { path: 'C:\\private' })).rejects.toMatchObject({
       code: 'CHARACTER_INPUT_INVALID'
@@ -403,7 +449,7 @@ describe('角色白名单 IPC', () => {
   test('运行时资源只接受当前角色的资源标识，不接受 characterId 或文件名', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
     const handler = handlers.get(channel('characterRuntimeAssetRead'));
 
     await expect(handler?.({}, {
@@ -426,7 +472,7 @@ describe('角色白名单 IPC', () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = characterServiceDouble();
     const dialogs = dialogDouble();
-    requireCharacterRegistration()(ipcMain, service, dialogs);
+    requireCharacterRegistration()(ipcMain, service, dialogs, EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel('characterSourcesChoose'))?.({}, {
       characterId: 'demo',
@@ -491,7 +537,7 @@ describe('角色白名单 IPC', () => {
       manifest: null,
       localPath: 'C:\\private\\compiled'
     } as never);
-    requireCharacterRegistration()(ipcMain, service, dialogDouble());
+    requireCharacterRegistration()(ipcMain, service, dialogDouble(), EMPTY_RECOVERY_SNAPSHOT);
 
     await expect(handlers.get(channel('characterRuntimeSnapshotGet'))?.({}, {}))
       .rejects.toMatchObject({

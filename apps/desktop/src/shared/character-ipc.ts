@@ -93,8 +93,32 @@ export const characterBytesResultSchema = z.object({
 export const characterRuntimeSnapshotResultSchema = z.object({
   snapshot: characterRuntimeSnapshotSchema.nullable()
 }).strict();
+export const characterRecoveryIssueErrorCodeSchema = z.enum([
+  'CHARACTER_DRAFT_RECOVERY_BLOCKED',
+  'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
+  'CHARACTER_RECOVERY_DEFERRED',
+  'CHARACTER_IMPORT_RECOVERY_BLOCKED',
+  'CHARACTER_IMPORT_RECOVERY_DEFERRED'
+]);
+export const characterRecoveryFallbackErrorCodeSchema = z.enum([
+  'CHARACTER_INDEX_UNAVAILABLE',
+  'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
+  'CHARACTER_RECOVERY_DEFERRED',
+  'CHARACTER_MANIFEST_INVALID',
+  'CHARACTER_MIGRATION_FAILED',
+  'CHARACTER_RESOURCE_INTEGRITY_FAILED',
+  'CHARACTER_RESOURCE_NOT_FOUND',
+  'CHARACTER_RUNTIME_UNAVAILABLE',
+  'CHARACTER_VERSION_UNSUPPORTED',
+  'CHARACTER_OPERATION_FAILED'
+]);
+export const characterRecoveryIssueSchema = z.object({
+  characterId: characterIdSchema,
+  errorCode: characterRecoveryIssueErrorCodeSchema
+}).strict();
 export const characterRecoverySnapshotResultSchema = z.object({
-  errorCode: z.string().regex(STABLE_ERROR_CODE).nullable()
+  fallbackErrorCode: characterRecoveryFallbackErrorCodeSchema.nullable(),
+  issues: z.array(characterRecoveryIssueSchema)
 }).strict();
 export const characterSourceChoiceResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cancelled') }).strict(),
@@ -147,6 +171,19 @@ export type CharacterWorkshopSourceDto = z.output<
   typeof characterWorkshopSourceSchema
 >;
 export type CharacterRuntimeSnapshot = z.output<typeof characterRuntimeSnapshotSchema>;
+export type CharacterRecoveryIssueErrorCode = z.output<
+  typeof characterRecoveryIssueErrorCodeSchema
+>;
+export type CharacterRecoveryFallbackErrorCode = z.output<
+  typeof characterRecoveryFallbackErrorCodeSchema
+>;
+export type CharacterRecoveryIssueDto = Readonly<
+  z.output<typeof characterRecoveryIssueSchema>
+>;
+export type CharacterRecoverySnapshotDto = Readonly<{
+  fallbackErrorCode: CharacterRecoveryFallbackErrorCode | null;
+  issues: readonly CharacterRecoveryIssueDto[];
+}>;
 export type CharacterSourceChoiceResult = z.output<typeof characterSourceChoiceResultSchema>;
 export type CharacterImportResult = z.output<typeof characterImportResultSchema>;
 export type CharacterExportResult = z.output<typeof characterExportResultSchema>;

@@ -1,35 +1,120 @@
-const STABLE_CHARACTER_ERROR = /^CHARACTER_[A-Z0-9_]+$/u;
+import type { CharacterPackageRecoveryReport } from './character-package-service';
+import type { CharacterTransactionRecoveryReport } from './character-transaction-recovery';
+import type {
+  CharacterRecoveryFallbackErrorCode,
+  CharacterRecoveryIssueDto,
+  CharacterRecoveryIssueErrorCode,
+  CharacterRecoverySnapshotDto
+} from '../../shared/character-ipc';
+import { characterRecoveryFallbackErrorCodeSchema } from '../../shared/character-ipc';
+
 export { characterRecoveryMessage } from '../../shared/character-recovery';
 
-export type CharacterStartupResult =
-  | { kind: 'active'; activeCharacterId: string }
-  | { kind: 'fallback'; errorCode: string | null };
+export type CharacterStartupInput = Readonly<{
+  indexRecovered: boolean;
+  packageRecoveryReport: CharacterPackageRecoveryReport;
+}>;
 
 export interface CharacterStartupDependencies {
-  loadIndex(): Promise<unknown>;
   validateActiveRuntime(): Promise<{ activeCharacterId: string } | null>;
-  remove?: () => Promise<void>;
+  ensureOfficialDefaultCharacter(): Promise<{ activeCharacterId: string }>;
+  loadFinalIndex(): Promise<unknown>;
+  getTransactionRecoveryReport(): CharacterTransactionRecoveryReport;
 }
 
-/**
- * 启动恢复只读索引和运行版本；任何校验失败都保留损坏角色与草稿供工作室修复。
- */
+export type CharacterStartupResult = Readonly<{
+  activeCharacterId: string;
+  recoverySnapshot: CharacterRecoverySnapshotDto;
+}>;
+
+const CHARACTER_RECOVERY_ISSUE_ORDER: readonly CharacterRecoveryIssueErrorCode[] = [
+  'CHARACTER_DRAFT_RECOVERY_BLOCKED',
+  'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
+  'CHARACTER_RECOVERY_DEFERRED',
+  'CHARACTER_IMPORT_RECOVERY_BLOCKED',
+  'CHARACTER_IMPORT_RECOVERY_DEFERRED'
+];
+
+/** Main 中唯一的启动恢复裁决点，只公开深冻结的稳定事实。 */
 export async function prepareCharacterStartup(
+  input: CharacterStartupInput,
   dependencies: CharacterStartupDependencies
 ): Promise<CharacterStartupResult> {
+  let activeCharacterId = '';
+  let fallbackErrorCode: CharacterRecoveryFallbackErrorCode | null = input.indexRecovered
+    ? 'CHARACTER_INDEX_UNAVAILABLE'
+    : null;
+  let fallbackPrepared = false;
+  let fallbackPreparationFailed = false;
   try {
-    await dependencies.loadIndex();
     const active = await dependencies.validateActiveRuntime();
-    return active
-      ? { kind: 'active', activeCharacterId: active.activeCharacterId }
-      : { kind: 'fallback', errorCode: null };
+    if (active) activeCharacterId = active.activeCharacterId;
+    else fallbackErrorCode ??= 'CHARACTER_RUNTIME_UNAVAILABLE';
   } catch (error) {
-    const message = error instanceof Error ? error.message : '';
-    return {
-      kind: 'fallback',
-      errorCode: STABLE_CHARACTER_ERROR.test(message)
-        ? message
-        : 'CHARACTER_OPERATION_FAILED'
-    };
+    fallbackErrorCode ??= publicFallbackCode(error);
   }
+  if (fallbackErrorCode !== null) {
+    try {
+      activeCharacterId = (await dependencies.ensureOfficialDefaultCharacter()).activeCharacterId;
+      fallbackPrepared = true;
+    } catch {
+      fallbackErrorCode = null;
+      fallbackPreparationFailed = true;
+    }
+  }
+  let transactionReport: CharacterTransactionRecoveryReport = { characters: [] };
+  try {
+    await dependencies.loadFinalIndex();
+    transactionReport = dependencies.getTransactionRecoveryReport();
+  } catch (firstError) {
+    fallbackErrorCode = publicFallbackCode(firstError);
+    if (!fallbackPrepared && !fallbackPreparationFailed) {
+      try {
+        activeCharacterId = (await dependencies.ensureOfficialDefaultCharacter()).activeCharacterId;
+        fallbackPrepared = true;
+      } catch {
+        fallbackErrorCode = null;
+        fallbackPreparationFailed = true;
+      }
+    }
+    try {
+      await dependencies.loadFinalIndex();
+      transactionReport = dependencies.getTransactionRecoveryReport();
+    } catch (retryError) {
+      // Store 持续不可用时不发布过期 B1 报告，但保留 B2 事实并让基础桌宠继续启动。
+      fallbackErrorCode = publicFallbackCode(retryError);
+    }
+  }
+  if (!fallbackPrepared && fallbackPreparationFailed) fallbackErrorCode = null;
+  const issues = freezeIssues(transactionReport, input.packageRecoveryReport);
+  return Object.freeze({
+    activeCharacterId,
+    recoverySnapshot: Object.freeze({ fallbackErrorCode, issues })
+  });
+}
+
+function publicFallbackCode(error: unknown): CharacterRecoveryFallbackErrorCode {
+  const message = error instanceof Error ? error.message : '';
+  const parsed = characterRecoveryFallbackErrorCodeSchema.safeParse(message);
+  return parsed.success ? parsed.data : 'CHARACTER_OPERATION_FAILED';
+}
+
+function freezeIssues(
+  transactionReport: CharacterTransactionRecoveryReport,
+  packageReport: CharacterPackageRecoveryReport
+): readonly CharacterRecoveryIssueDto[] {
+  const unique = new Map<string, CharacterRecoveryIssueDto>();
+  const add = (characterId: string, errorCode: CharacterRecoveryIssueErrorCode): void => {
+    unique.set(`${characterId}\0${errorCode}`, { characterId, errorCode });
+  };
+  for (const character of transactionReport.characters) {
+    if (character.draftErrorCode) add(character.characterId, character.draftErrorCode);
+    if (character.publishErrorCode) add(character.characterId, character.publishErrorCode);
+  }
+  for (const issue of packageReport.issues) add(issue.characterId, issue.errorCode);
+  return Object.freeze([...unique.values()]
+    .sort((left, right) => left.characterId.localeCompare(right.characterId, 'en')
+      || CHARACTER_RECOVERY_ISSUE_ORDER.indexOf(left.errorCode)
+      - CHARACTER_RECOVERY_ISSUE_ORDER.indexOf(right.errorCode))
+    .map(issue => Object.freeze(issue)));
 }

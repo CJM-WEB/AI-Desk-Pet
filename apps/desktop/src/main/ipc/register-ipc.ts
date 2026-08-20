@@ -30,6 +30,7 @@ import {
   characterSummarySchema,
   characterSourcesResultSchema,
   type CharacterPublishInput,
+  type CharacterRecoverySnapshotDto,
   type CharacterRuntimeSnapshot,
   type CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
@@ -497,7 +498,7 @@ export function registerCharacterIpc(
   ipcMain: IpcMain,
   service: CharacterIpcService,
   dialogs: CharacterIpcDialogs,
-  recoveryErrorCode: () => string | null = () => null
+  recoverySnapshot: CharacterRecoverySnapshotDto
 ): void {
   replaceHandler(ipcMain, ipcChannels.characterList, async (_event, raw) => {
     parseCharacterInput(characterEmptyInputSchema, raw);
@@ -634,9 +635,10 @@ export function registerCharacterIpc(
     ipcChannels.characterRecoverySnapshotGet,
     async (_event, raw) => {
       parseCharacterInput(characterEmptyInputSchema, raw);
-      return characterOperation(characterRecoverySnapshotResultSchema, async () => ({
-        errorCode: recoveryErrorCode()
-      }));
+      return characterOperation(
+        characterRecoverySnapshotResultSchema,
+        async () => recoverySnapshot
+      );
     }
   );
   replaceHandler(

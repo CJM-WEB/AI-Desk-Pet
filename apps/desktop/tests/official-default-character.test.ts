@@ -113,9 +113,19 @@ describe('官方默认角色安装', () => {
       warnings: []
     });
     await expect(prepareCharacterStartup({
-      loadIndex: () => restarted.list(),
-      validateActiveRuntime: async () => null
-    })).resolves.toEqual({ kind: 'fallback', errorCode: null });
+      indexRecovered: true,
+      packageRecoveryReport: { issues: [] }
+    }, {
+      validateActiveRuntime: async () => null,
+      ensureOfficialDefaultCharacter: async () => ({
+        activeCharacterId: 'builtin-default'
+      }),
+      loadFinalIndex: () => restarted.list(),
+      getTransactionRecoveryReport: () => restarted.getTransactionRecoveryReport()
+    })).resolves.toMatchObject({
+      activeCharacterId: 'builtin-default',
+      recoverySnapshot: { fallbackErrorCode: 'CHARACTER_INDEX_UNAVAILABLE' }
+    });
     await expect(ensureOfficialDefaultCharacter(restarted, resourceDirectory))
       .resolves.toBeUndefined();
 

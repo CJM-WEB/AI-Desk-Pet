@@ -379,29 +379,30 @@ async function createApplicationWindows(
   for (const warning of recoveredCorruptCharacterIndex.warnings) {
     console.warn(`角色索引恢复警告：${warning}`);
   }
-  await characterPackageService.initialize();
-  let startupRecoveryErrorCode: string | null = null;
+  const packageRecoveryReport = await characterPackageService.initialize();
+  const defaultResources = app.isPackaged
+    ? join(app.getAppPath(), 'resources/characters/default')
+    : join(__dirname, '../../resources/characters/default');
   const characterStartup = await prepareCharacterStartup({
-    loadIndex: () => characterStore.list(),
+    indexRecovered: recoveredCorruptCharacterIndex.recovered,
+    packageRecoveryReport
+  }, {
     validateActiveRuntime: async () => {
       const snapshot = await characterActions.getCharacterRuntimeSnapshot();
       return snapshot
         ? { activeCharacterId: snapshot.activeCharacterId }
         : null;
-    }
+    },
+    ensureOfficialDefaultCharacter: async () => {
+      await ensureOfficialDefaultCharacter(characterStore, defaultResources);
+      return { activeCharacterId: 'builtin-default' };
+    },
+    loadFinalIndex: () => characterStore.list(),
+    getTransactionRecoveryReport: () => characterStore.getTransactionRecoveryReport()
   });
-  if (characterStartup.kind === 'fallback') {
-    const defaultResources = app.isPackaged
-      ? join(app.getAppPath(), 'resources/characters/default')
-      : join(__dirname, '../../resources/characters/default');
-    await ensureOfficialDefaultCharacter(characterStore, defaultResources);
-    const recoveryErrorCode = recoveredCorruptCharacterIndex.recovered
-      ? 'CHARACTER_INDEX_UNAVAILABLE'
-      : characterStartup.errorCode;
-    startupRecoveryErrorCode = recoveryErrorCode;
-    if (recoveryErrorCode) {
-      console.error(`角色启动恢复：${recoveryErrorCode}`);
-    }
+  const characterRecoverySnapshot = characterStartup.recoverySnapshot;
+  if (characterRecoverySnapshot.fallbackErrorCode) {
+    console.error(`角色启动恢复：${characterRecoverySnapshot.fallbackErrorCode}`);
   }
   const secrets = new SecretStore(join(storageDirectory, 'provider-secret.bin'), {
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -732,7 +733,7 @@ async function createApplicationWindows(
         }]
       });
     }
-  }, () => startupRecoveryErrorCode);
+  }, characterRecoverySnapshot);
 
   const sessionId = 'desktop-session';
   privacySessions.register(sessionId, { incognito: false });

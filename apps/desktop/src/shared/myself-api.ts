@@ -14,6 +14,7 @@ import type {
   CharacterExportResult,
   CharacterImportResult,
   CharacterPublishInput,
+  CharacterRecoverySnapshotDto,
   CharacterRuntimeSnapshot,
   CharacterSourceChoiceResult,
   CharacterSummaryDto,
@@ -193,7 +194,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   importCharacterPackage(): Promise<CharacterImportResult>;
   exportCharacterPackage(characterId: string): Promise<CharacterExportResult>;
   getCharacterRuntimeSnapshot(): Promise<CharacterRuntimeSnapshot | null>;
-  getCharacterRecoverySnapshot(): Promise<{ errorCode: string | null }>;
+  getCharacterRecoverySnapshot(): Promise<CharacterRecoverySnapshotDto>;
   readCharacterRuntimeAsset(assetId: string): Promise<Uint8Array>;
   subscribeCharacterEvents(listener: (event: CharacterEvent) => void): () => void;
   getCharacterMotionSnapshot(): Promise<CharacterMotionSnapshot>;
