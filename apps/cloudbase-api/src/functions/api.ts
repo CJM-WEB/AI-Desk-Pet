@@ -574,7 +574,10 @@ export function createProductionHandler(): ApiHandler {
   );
   const storage = new CloudBaseStorage(runtime.bucket);
   return createApi({
-    submissions: new SubmissionService(store, storage),
+    submissions: new SubmissionService(store, storage, {
+      sharedPackageSubmissionsEnabled:
+        config.sharedPackageSubmissionsEnabled
+    }),
     textSubmissions: new TextSubmissionService(store),
     publicContent: new PublicContentService(store, storage),
     abuseControl: new AbuseControl(store),

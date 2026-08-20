@@ -1131,6 +1131,7 @@ describe('CloudBase PostgreSQL 仓储', () => {
         },
         async delete(): Promise<void> {}
       },
+      { sharedPackageSubmissionsEnabled: true },
       () => 'failed-signature'
     );
 

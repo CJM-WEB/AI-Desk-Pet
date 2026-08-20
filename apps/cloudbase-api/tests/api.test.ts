@@ -8,6 +8,7 @@ import {
   main as productionMain,
   type ApiHttpEvent
 } from '../src/functions/api.js';
+import { ApiError } from '../src/errors.js';
 import { AbuseControl } from '../src/services/abuse-control.js';
 import {
   createFakeRuntime,
@@ -228,6 +229,25 @@ describe('公开 HTTP API', () => {
 
     expect(response.statusCode).toBe(200);
     expect(dependencies.submissions.prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('共享包投稿关闭时返回稳定失败信封', async () => {
+    const dependencies = createDependencies();
+    dependencies.submissions.prepare.mockRejectedValueOnce(
+      new ApiError('SHARED_PACKAGE_SUBMISSIONS_PAUSED', 503)
+    );
+    const main = createApi(dependencies);
+
+    const response = await main(
+      event('POST', '/api/v1/submissions/prepare', {}),
+      context
+    );
+
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body)).toMatchObject({
+      data: null,
+      error: { code: 'SHARED_PACKAGE_SUBMISSIONS_PAUSED' }
+    });
   });
 
   it('只从受信 context 读取来源 IP 并忽略代理头', async () => {

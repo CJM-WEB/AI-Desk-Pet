@@ -8,7 +8,8 @@ import {
 import { hashStatusToken } from '../src/crypto/status-token.js';
 import {
   SubmissionService,
-  type PrepareSubmissionInput
+  type PrepareSubmissionInput,
+  type SubmissionServiceOptions
 } from '../src/services/submission-service.js';
 
 const MiB = 1024 * 1024;
@@ -110,7 +111,7 @@ class MemoryStorage {
   async delete(): Promise<void> {}
 }
 
-function createFixture(): {
+function createFixture(options: SubmissionServiceOptions): {
   store: MemorySubmissionStore;
   storage: MemoryStorage;
   service: SubmissionService;
@@ -123,14 +124,33 @@ function createFixture(): {
     service: new SubmissionService(
       store as never,
       storage,
+      options,
       () => 'submission-1'
     )
   };
 }
 
 describe('投稿服务', () => {
+  it('共享包投稿开关关闭时不创建记录或签发上传地址', async () => {
+    const { service, store, storage } = createFixture({
+      sharedPackageSubmissionsEnabled: false
+    });
+
+    await expect(
+      service.prepare(validInput, { ip: '203.0.113.8' })
+    ).rejects.toMatchObject({
+      code: 'SHARED_PACKAGE_SUBMISSIONS_PAUSED',
+      statusCode: 503
+    });
+
+    expect(store.created).toBeNull();
+    expect(storage.uploadCalls).toEqual([]);
+  });
+
   it('prepare 只返回私有单次上传目标和一次性状态令牌', async () => {
-    const { service, store, storage } = createFixture();
+    const { service, store, storage } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
 
     const receipt = await service.prepare(validInput, { ip: '203.0.113.8' });
     expect(receipt).toMatchObject({
@@ -172,7 +192,9 @@ describe('投稿服务', () => {
       coverFile: { ...validInput.coverFile, sizeBytes: 5 * MiB + 1 }
     }]
   ])('%s 超过边界时不创建投稿', async (_name, change) => {
-    const { service, store } = createFixture();
+    const { service, store } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
 
     await expect(service.prepare(
       { ...validInput, ...change } as PrepareSubmissionInput,
@@ -189,7 +211,9 @@ describe('投稿服务', () => {
       coverFile: { ...validInput.coverFile, sizeBytes: 0 }
     }]
   ])('%s 声明为零字节时拒绝准备上传', async (_name, change) => {
-    const { service, store } = createFixture();
+    const { service, store } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
 
     await expect(service.prepare(
       { ...validInput, ...change } as PrepareSubmissionInput,
@@ -214,7 +238,9 @@ describe('投稿服务', () => {
       }
     ]
   ])('%s 不在允许集合时拒绝准备上传', async (_name, change) => {
-    const { service } = createFixture();
+    const { service } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
 
     await expect(service.prepare(
       { ...validInput, ...change } as PrepareSubmissionInput,
@@ -226,7 +252,9 @@ describe('投稿服务', () => {
     ['标题为空', { title: '  ' }],
     ['正文超过五百字', { body: '字'.repeat(501) }]
   ])('%s 时在写入前拒绝请求', async (_name, change) => {
-    const { service } = createFixture();
+    const { service } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
 
     await expect(service.prepare(
       { ...validInput, ...change },
@@ -235,7 +263,9 @@ describe('投稿服务', () => {
   });
 
   it('缺少文件声明时返回受控请求错误', async () => {
-    const { service } = createFixture();
+    const { service } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
 
     await expect(service.prepare(
       { ...validInput, packageFile: null } as unknown as PrepareSubmissionInput,
@@ -248,7 +278,9 @@ describe('投稿服务', () => {
   });
 
   it('签名阶段失败时不返回部分上传目标并保留隐藏记录供清理', async () => {
-    const { service, store, storage } = createFixture();
+    const { service, store, storage } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
     storage.uploadFailurePath = 'submissions/submission-1/package.zip';
 
     await expect(service.prepare(validInput, { ip: '203.0.113.8' }))
@@ -257,7 +289,9 @@ describe('投稿服务', () => {
   });
 
   it('finalize 核对两个对象后推进到人工审核且重复调用幂等', async () => {
-    const { service, store, storage } = createFixture();
+    const { service, store, storage } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
     await service.prepare(validInput, { ip: '203.0.113.8' });
     storage.infoByPath.set('submissions/submission-1/cover.webp', {
       path: 'submissions/submission-1/cover.webp',
@@ -297,7 +331,9 @@ describe('投稿服务', () => {
       contentType: 'application/octet-stream'
     }]
   ])('finalize 遇到%s时保持隐藏', async (_name, packageInfo) => {
-    const { service, store, storage } = createFixture();
+    const { service, store, storage } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
     await service.prepare(validInput, { ip: '203.0.113.8' });
     storage.infoByPath.set('submissions/submission-1/cover.webp', {
       path: 'submissions/submission-1/cover.webp',
@@ -314,7 +350,9 @@ describe('投稿服务', () => {
   });
 
   it('finalize 即使数据库声明异常也保留共享包绝对上限', async () => {
-    const { service, store, storage } = createFixture();
+    const { service, store, storage } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
     await service.prepare(validInput, { ip: '203.0.113.8' });
     const packageAsset = store.rows.get('submission-1').assets
       .find((asset: any) => asset.role === 'package');
@@ -336,7 +374,9 @@ describe('投稿服务', () => {
   });
 
   it('状态查询只把原始令牌转换为哈希后访问仓储', async () => {
-    const { service, store } = createFixture();
+    const { service, store } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
     const receipt = await service.prepare(validInput, { ip: '203.0.113.8' });
     const query = vi.spyOn(store, 'findByStatusTokenHash');
 
@@ -348,7 +388,9 @@ describe('投稿服务', () => {
   });
 
   it('无效或未知状态令牌统一返回不存在', async () => {
-    const { service } = createFixture();
+    const { service } = createFixture({
+      sharedPackageSubmissionsEnabled: true
+    });
 
     await expect(service.getStatus('not-a-token'))
       .rejects.toMatchObject({ code: 'NOT_FOUND' });

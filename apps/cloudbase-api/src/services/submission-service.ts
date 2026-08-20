@@ -42,6 +42,10 @@ export interface RequestContext {
   ip: string;
 }
 
+export interface SubmissionServiceOptions {
+  sharedPackageSubmissionsEnabled: boolean;
+}
+
 export interface FinalizeSubmissionInput {
   submissionId: string;
 }
@@ -64,6 +68,7 @@ export class SubmissionService {
   constructor(
     private readonly store: SubmissionStore,
     private readonly storage: ObjectStorage,
+    private readonly options: SubmissionServiceOptions,
     private readonly createId: CreateId = randomUUID
   ) {}
 
@@ -71,6 +76,9 @@ export class SubmissionService {
     input: PrepareSharedPackageInput,
     context: RequestContext
   ): Promise<SubmissionReceipt & UploadTargets> {
+    if (!this.options.sharedPackageSubmissionsEnabled) {
+      throw new ApiError('SHARED_PACKAGE_SUBMISSIONS_PAUSED', 503);
+    }
     const normalized = validatePrepareInput(input, context);
 
     const submissionId = this.createId();
