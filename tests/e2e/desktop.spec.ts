@@ -349,6 +349,37 @@ async function loadElectronFixtureModule(): Promise<ElectronFixtureModule | null
   }
 }
 
+type AppFixture = Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+
+/** 统一从当前 Electron 生命周期中查找 Renderer，避免旧窗口被重启后的场景复用。 */
+function rendererPages(fixture: AppFixture): Page[] {
+  return fixture.browser.contexts().flatMap(context => context.pages());
+}
+
+function rendererPage(fixture: AppFixture, view: string): Page | undefined {
+  return rendererPages(fixture).find(page => {
+    try {
+      return new URL(page.url()).searchParams.get('view') === view;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function waitForRendererPage(
+  fixture: AppFixture,
+  view: string,
+  timeout?: number
+): Promise<Page> {
+  await expect.poll(
+    () => Boolean(rendererPage(fixture, view)),
+    timeout === undefined ? undefined : { timeout }
+  ).toBe(true);
+  const page = rendererPage(fixture, view);
+  if (!page) throw new Error(`缺少 ${view} Renderer`);
+  return page;
+}
+
 test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
   test('使用项目精确 Electron 路径、构建入口、随机回环 CDP 参数和隔离环境', async () => {
     const fixture = await loadElectronFixtureModule();
@@ -2151,17 +2182,9 @@ test.describe('真实 Electron CDP smoke', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const rendererPages = (): Page[] => fixture.browser.contexts()
-        .flatMap(context => context.pages());
-      await expect.poll(() => rendererPages().some(page => (
-        new URL(page.url()).searchParams.get('view') === 'pet'
-      ))).toBe(true);
-      const petPage = rendererPages().find(page => (
-        new URL(page.url()).searchParams.get('view') === 'pet'
-      ));
-      expect(petPage).toBeDefined();
-      await expect(petPage!.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
-      const layout = await petPage!.evaluate(() => {
+      const petPage = await waitForRendererPage(fixture, 'pet');
+      await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
+      const layout = await petPage.evaluate(() => {
         const measure = (selector: string): { width: number; height: number } => {
           const element = document.querySelector<HTMLElement>(selector);
           if (!element) throw new Error(`缺少布局元素：${selector}`);
@@ -2218,18 +2241,7 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts()
-        .flatMap(context => context.pages());
-      await expect.poll(() => pages().some(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === 'pet';
-        } catch {
-          return false;
-        }
-      })).toBe(true);
-      const pet = pages().find(page => (
-        new URL(page.url()).searchParams.get('view') === 'pet'
-      ))!;
+      const pet = await waitForRendererPage(fixture, 'pet');
       await pet.emulateMedia({ reducedMotion: 'reduce' });
       await expect(pet.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
       await expect(pet.locator('.character-player')).toHaveAttribute(
@@ -2330,7 +2342,6 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
 });
 
 test.describe('角色恢复', () => {
-  type AppFixture = Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
   const workspaceRoot = resolve(process.cwd());
   const targetId = 'e2e-safe-character';
   let fixtureModule: ElectronFixtureModule;
@@ -2341,18 +2352,10 @@ test.describe('角色恢复', () => {
     fixtureModule = loaded;
   });
 
-  const waitForPage = async (fixture: AppFixture, view: string): Promise<Page> => {
-    const find = (): Page | undefined => fixture.browser.contexts()
-      .flatMap(context => context.pages())
-      .find(page => new URL(page.url()).searchParams.get('view') === view);
-    await expect.poll(() => Boolean(find()), { timeout: 15_000 }).toBe(true);
-    return find()!;
-  };
-
   const openWorkshop = async (fixture: AppFixture): Promise<Page> => {
-    const pet = await waitForPage(fixture, 'pet');
+    const pet = await waitForRendererPage(fixture, 'pet', 15_000);
     await pet.evaluate(() => window.myself.openCharacterWorkshop());
-    return waitForPage(fixture, 'characters');
+    return waitForRendererPage(fixture, 'characters', 15_000);
   };
 
   const importSafeCharacter = async (workshop: Page): Promise<void> => {
@@ -2407,7 +2410,7 @@ test.describe('角色恢复', () => {
         .toHaveAttribute('data-character-active', 'false');
       await fixture.restart();
 
-      const pet = await waitForPage(fixture, 'pet');
+      const pet = await waitForRendererPage(fixture, 'pet', 15_000);
       await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready');
       expect(await pet.evaluate(async () => (
         (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
@@ -2441,7 +2444,7 @@ test.describe('角色恢复', () => {
       await expect(readFile(join(charactersDirectory, packageEvidence[0]!)))
         .resolves.toEqual(brokenPackageBytes);
       await pet.evaluate(() => window.myself.openChat());
-      const chat = await waitForPage(fixture, 'chat');
+      const chat = await waitForRendererPage(fixture, 'chat', 15_000);
       await submitChatMessage(chat, '非活动角色恢复后继续聊天');
       await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
     } finally {
@@ -2474,7 +2477,7 @@ test.describe('角色恢复', () => {
       await expect(initialWorkshop.getByText('角色已启用。')).toBeVisible();
       await fixture.restart();
 
-      const pet = await waitForPage(fixture, 'pet');
+      const pet = await waitForRendererPage(fixture, 'pet', 15_000);
       await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready');
       await expect(pet.getByRole('alert')).toContainText('已切换到官方默认角色');
       await expect(pet.getByRole('button', { name: '打开角色工作室' })).toBeVisible();
@@ -2482,7 +2485,7 @@ test.describe('角色恢复', () => {
         (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
       ))).toBe('builtin-default');
       await pet.getByRole('button', { name: '打开角色工作室' }).click();
-      const workshop = await waitForPage(fixture, 'characters');
+      const workshop = await waitForRendererPage(fixture, 'characters', 15_000);
       await expect(workshop.locator('[data-character-id="builtin-default"]')).toBeVisible();
       await expect(workshop.locator(`[data-character-id="${targetId}"]`)).toBeVisible();
       await expect(readFile(join(
@@ -2490,7 +2493,7 @@ test.describe('角色恢复', () => {
       ))).resolves.toEqual(brokenPublishBytes);
 
       await pet.evaluate(() => window.myself.openChat());
-      const chat = await waitForPage(fixture, 'chat');
+      const chat = await waitForRendererPage(fixture, 'chat', 15_000);
       await submitChatMessage(chat, '活动角色降级后继续聊天');
       await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
     } finally {
@@ -3133,19 +3136,9 @@ test.describe('自主行为最小闭环', () => {
       launchTimeoutMs: 15_000,
       enableSoftwareRasterizer: true
     });
-    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-    const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-      try {
-        return new URL(page.url()).searchParams.get('view') === view;
-      } catch {
-        return false;
-      }
-    });
-
     try {
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      const pet = await waitForRendererPage(fixture, 'pet');
+      const chat = await waitForRendererPage(fixture, 'chat');
       await pet.evaluate(() => {
         const scope = globalThis as typeof globalThis & {
           __behaviorActions?: Array<{ stateId: string; actionId: string }>;
@@ -3702,16 +3695,8 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
+      const pet = await waitForRendererPage(fixture, 'pet');
+      const chat = await waitForRendererPage(fixture, 'chat');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -3739,7 +3724,7 @@ test.describe('真实 Provider 业务闭环', () => {
       }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
 
       for (let index = 0; index < privateUserMessages.length; index += 1) {
-        await submitChatMessage(pageFor('chat')!, privateUserMessages[index]);
+        await submitChatMessage(chat, privateUserMessages[index]);
         await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
           visibleMessageCount: (index + 1) * 2,
           historyDisclosureVisible: false,
@@ -3747,7 +3732,7 @@ test.describe('真实 Provider 业务闭环', () => {
         });
       }
 
-      await expect(pageFor('chat')!.getByRole('region', { name: '运行 PowerShell 命令' }))
+      await expect(chat.getByRole('region', { name: '运行 PowerShell 命令' }))
         .toHaveCount(0);
 
       provider.assertComplete();
@@ -3792,17 +3777,8 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      const pet = await waitForRendererPage(fixture, 'pet');
+      const chat = await waitForRendererPage(fixture, 'chat');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -3944,17 +3920,8 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      const pet = await waitForRendererPage(fixture, 'pet');
+      const chat = await waitForRendererPage(fixture, 'chat');
       await pet.evaluate(async input => {
         for (const profile of input.profiles) {
           await window.myself.saveProviderProfile({
@@ -4131,17 +4098,8 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      const pet = await waitForRendererPage(fixture, 'pet');
+      const chat = await waitForRendererPage(fixture, 'chat');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -4257,17 +4215,8 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-      const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      const pet = await waitForRendererPage(fixture, 'pet');
+      const chat = await waitForRendererPage(fixture, 'chat');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -4405,19 +4354,9 @@ test.describe('真实 Provider 业务闭环', () => {
     });
     const recycleBinDirectory = fixture.recycleBinDirectory;
     if (!recycleBinDirectory) throw new Error('缺少隔离回收站目录');
-    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-    const pageFor = (view: 'pet' | 'chat'): Page | undefined => pages().find(page => {
-      try {
-        return new URL(page.url()).searchParams.get('view') === view;
-      } catch {
-        return false;
-      }
-    });
-
     try {
-      await expect.poll(() => Boolean(pageFor('pet') && pageFor('chat'))).toBe(true);
-      const pet = pageFor('pet')!;
-      const chat = pageFor('chat')!;
+      const pet = await waitForRendererPage(fixture, 'pet');
+      const chat = await waitForRendererPage(fixture, 'chat');
       await pet.evaluate(() => {
         const scope = globalThis as typeof globalThis & {
           __recycleCarryEvents?: Array<{
@@ -4698,24 +4637,6 @@ test.describe('真实 Provider 业务闭环', () => {
       throw error;
     }
 
-    const pages = (): Page[] => fixture.browser.contexts().flatMap(context => context.pages());
-    const pageFor = (view: 'pet' | 'chat' | 'settings' | 'characters'): Page | undefined => (
-      pages().find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      })
-    );
-    const waitForPage = async (
-      view: 'pet' | 'chat' | 'settings' | 'characters'
-    ): Promise<Page> => {
-      await expect.poll(() => Boolean(pageFor(view))).toBe(true);
-      const page = pageFor(view);
-      if (!page) throw new Error(`缺少 ${view} Renderer`);
-      return page;
-    };
     const readEvents = (page: Page, view: string): Promise<unknown[]> => page.evaluate(key => (
       globalThis as typeof globalThis & {
         __projectedTaskEvents?: Record<string, unknown[]>;
@@ -4723,9 +4644,9 @@ test.describe('真实 Provider 业务闭环', () => {
     ).__projectedTaskEvents?.[key] ?? [], view);
 
     try {
-      const petPage = await waitForPage('pet');
-      const chatPage = await waitForPage('chat');
-      const settingsPage = await waitForPage('settings');
+      const petPage = await waitForRendererPage(fixture, 'pet');
+      const chatPage = await waitForRendererPage(fixture, 'chat');
+      const settingsPage = await waitForRendererPage(fixture, 'settings');
 
       await petPage.evaluate(() => window.myself.openChat());
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
@@ -4754,7 +4675,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(settingsPage.getByText('授权目录已更新。')).toBeVisible();
 
       await settingsPage.getByRole('button', { name: '角色工作室' }).click();
-      const charactersPage = await waitForPage('characters');
+      const charactersPage = await waitForRendererPage(fixture, 'characters');
       await expect.poll(() => charactersPage.evaluate(() => document.visibilityState))
         .toBe('visible');
 
