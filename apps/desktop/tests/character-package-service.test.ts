@@ -1392,11 +1392,7 @@ describe('角色包 Main 服务', () => {
         errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
       }]
     });
-    const evidenceName = (await readdir(root)).find(name => (
-      name.startsWith('.package-import-rollback-broken.json.corrupt-')
-    ));
-    expect(evidenceName).toBeDefined();
-    expect(await readFile(join(root, evidenceName!))).toEqual(BROKEN_MARKER_BYTES);
+    expect(await preservedEvidence(root, 'broken')).toEqual(BROKEN_MARKER_BYTES);
     expect(await preservedEvidence(root, 'BAD!')).toEqual(BROKEN_MARKER_BYTES);
     expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
     expect(rollbackSpy).toHaveBeenCalledWith('healthy', IMPORT_TOKEN);
