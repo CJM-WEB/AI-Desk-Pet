@@ -6,11 +6,16 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   '.dependency-cruiser.mjs',
   '.dependency-cruiser.web.mjs',
   'apps/website/**',
+  /** 阶段一获批的发布止血边界：不恢复 Scanner，也不扩展到其他 CloudBase 模块。 */
+  'apps/cloudbase-api/**',
+  'cloudbase/migrations/20260815000000_shared_package_publication_guard.sql',
   'package.json',
   'pnpm-lock.yaml',
   'tools/verification/**',
   'docs/operations/website-chain-verification.md',
   'docs/operations/website-chain-verification-acceptance.md',
+  'docs/operations/content-moderation.md',
+  'docs/operations/cloudbase-deployment.md',
   'docs/superpowers/specs/2026-08-15-website-architecture-optimization-and-production-relaunch-design.md',
   'docs/superpowers/plans/2026-08-15-website-verification-foundation.md',
   'docs/superpowers/plans/2026-08-15-website-publication-stopgap-and-migration-freeze.md',
@@ -29,6 +34,12 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/superpowers/specs/2026-08-20-website-liquid-glass-deep-module-reduction-design.md',
   'tests/e2e/website.spec.ts',
   'tests/playwright.website.config.ts',
+  'tools/cloudbase-migration-inventory.mjs',
+  'tools/cloudbase-migration-inventory.test.mjs',
+  'tools/plan-cloudbase-migrations.mjs',
+  'tools/plan-cloudbase-migrations.test.mjs',
+  'tools/apply-cloudbase-migrations.mjs',
+  'tools/apply-cloudbase-migrations.test.mjs',
 ]);
 
 /** 桌宠、Agent、角色及其根测试始终优先拒绝，即使未来误入白名单也不放行。 */

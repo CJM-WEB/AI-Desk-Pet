@@ -70,12 +70,46 @@ test('当前网站优化阶段只放行官网业务与精确获批文档', () =>
 
   assert.deepEqual(classifyChangedPaths([
     ...approvedWebsitePaths,
-    'apps/cloudbase-api/src/index.ts',
     'apps/desktop/src/main/index.ts',
   ]), {
     allowed: approvedWebsitePaths,
     forbidden: ['apps/desktop/src/main/index.ts'],
-    outside: ['apps/cloudbase-api/src/index.ts'],
+    outside: [],
+  });
+});
+
+test('阶段一只放行获批的 CloudBase 发布止血路径', () => {
+  const phaseOnePaths = [
+    'apps/cloudbase-api/src/services/submission-service.ts',
+    'cloudbase/migrations/20260815000000_shared_package_publication_guard.sql',
+    'docs/operations/content-moderation.md',
+    'docs/operations/cloudbase-deployment.md',
+    'tools/cloudbase-migration-inventory.mjs',
+    'tools/cloudbase-migration-inventory.test.mjs',
+    'tools/plan-cloudbase-migrations.mjs',
+    'tools/plan-cloudbase-migrations.test.mjs',
+    'tools/apply-cloudbase-migrations.mjs',
+    'tools/apply-cloudbase-migrations.test.mjs',
+  ];
+
+  assert.deepEqual(classifyChangedPaths([
+    ...phaseOnePaths,
+    'apps/package-scanner/src/index.ts',
+    'cloudbase/migrations/20260730000000_moderation.sql',
+    'tools/unapproved-cloudbase-tool.mjs',
+    'apps/desktop/src/main/index.ts',
+    'packages/agent-core/src/index.ts',
+  ]), {
+    allowed: phaseOnePaths,
+    forbidden: [
+      'apps/desktop/src/main/index.ts',
+      'packages/agent-core/src/index.ts',
+    ],
+    outside: [
+      'apps/package-scanner/src/index.ts',
+      'cloudbase/migrations/20260730000000_moderation.sql',
+      'tools/unapproved-cloudbase-tool.mjs',
+    ],
   });
 });
 
