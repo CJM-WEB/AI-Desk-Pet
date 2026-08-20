@@ -32,6 +32,13 @@ const communityCss = readFileSync(
   ),
   'utf8'
 );
+const supportCss = readFileSync(
+  resolve(
+    process.cwd(),
+    'components/website-experience/support/support.module.css'
+  ),
+  'utf8'
+);
 
 function emptySharedPetRepository(): SharedPetRepository {
   const page: SharedPetPage = {
@@ -88,6 +95,24 @@ describe('章节静态回退禁用内部动效', () => {
       .disabled).toBe(true);
   });
 
+  it('下载章节减少动态效果时不安排模型挂载且不创建 WebGL', () => {
+    const setTimeout = vi.spyOn(window, 'setTimeout');
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(null);
+
+    render(
+      <DownloadChapter
+        interactive
+        reducedMotion
+        transitionProgress={2}
+      />
+    );
+
+    expect(screen.queryByRole('img', { name: /3D 模型/ })).toBeNull();
+    expect(setTimeout).not.toHaveBeenCalledWith(expect.any(Function), 120);
+    expect(getContext.mock.calls.some(([type]) => type === 'webgl')).toBe(false);
+  });
+
   it('捐款静态回退关闭滚筒与付款码进入动效且保留支付按钮', () => {
     render(<SupportChapter interactive staticFallback />);
 
@@ -96,6 +121,9 @@ describe('章节静态回退禁用内部动效', () => {
 
     const payment = screen.getByRole('button', { name: '打开微信付款码' });
     expect((payment as HTMLButtonElement).disabled).toBe(false);
+    expect(supportCss).toMatch(
+      /\.supportChapter\[data-static-presentation='true'\] \.glassButton\s*\{[^}]*color:\s*#effff8;/s
+    );
     fireEvent.click(payment);
 
     const dialog = screen.getByRole('dialog', { name: '微信付款码' });
@@ -121,10 +149,12 @@ describe('章节静态回退禁用内部动效', () => {
   });
 
   it('下载章节暂停时关闭标题倾斜且恢复后重新启用', () => {
+    const setTimeout = vi.spyOn(window, 'setTimeout');
     const { rerender } = render(
       <DownloadChapter interactive isPaused />
     );
 
+    expect(setTimeout).toHaveBeenCalledWith(expect.any(Function), 120);
     expect(screen.getAllByTestId('pointer-tilt-text').every(
       (element) => element.dataset.motionEnabled === 'false'
     )).toBe(true);
@@ -151,6 +181,9 @@ describe('章节静态回退禁用内部动效', () => {
     expect(screen.queryAllByTestId('pointer-tilt-text')).toHaveLength(0);
     expect(communityCss).toMatch(
       /\.sharedPetChapter\[data-motion-disabled='true'\] \.sharedPetCardSlot,\s*\.sharedPetChapter\[data-motion-disabled='true'\] \.card\s*\{[^}]*animation:\s*none/s
+    );
+    expect(communityCss).toMatch(
+      /\.sharedPetChapter\[data-static-presentation='true'\] \.sharedPetPrevious,[\s\S]*\.sharedPetChapter\[data-static-presentation='true'\] \.totalPageNumber\s*\{[^}]*color:\s*#effff8;/s
     );
   });
 });

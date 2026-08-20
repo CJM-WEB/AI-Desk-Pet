@@ -327,6 +327,7 @@ export function SupportChapter({
       data-testid="support-chapter"
       data-dialog-open={openKind !== null || openMethod !== null || composerState !== null}
       data-motion-disabled={motionDisabled}
+      data-static-presentation={reducedMotion || staticFallback}
       data-paused={isPaused}
       style={chapterStyle}
     >

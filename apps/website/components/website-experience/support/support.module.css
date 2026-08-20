@@ -155,6 +155,12 @@
   .glassButton { transition: none; }
 }
 
+.supportChapter[data-static-presentation='true'] .glassButton {
+  border: 1px solid rgba(224, 246, 239, 0.16);
+  color: #effff8;
+  background: rgba(13, 24, 23, 0.42);
+}
+
 .supportChapter[data-motion-disabled='true'] .glassButton {
   transition: none;
 }

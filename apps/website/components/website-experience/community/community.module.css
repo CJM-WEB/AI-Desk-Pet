@@ -417,6 +417,19 @@
 .sharedPetChapter[data-motion-disabled='true'] .sharedPetCardSlot,
 .sharedPetChapter[data-motion-disabled='true'] .card { animation: none; transition: none; }
 
+.sharedPetChapter[data-static-presentation='true'] .sharedPetPrevious,
+.sharedPetChapter[data-static-presentation='true'] .sharedPetNext,
+.sharedPetChapter[data-static-presentation='true'] .sharedPetUpload,
+.sharedPetChapter[data-static-presentation='true'] .currentPageNumber,
+.sharedPetChapter[data-static-presentation='true'] .totalPageNumber {
+  color: #effff8;
+}
+
+.sharedPetChapter[data-static-presentation='true'] .sharedPetUpload {
+  border: 1px solid rgba(224, 246, 239, 0.16);
+  background: rgba(13, 24, 23, 0.42);
+}
+
 @media (max-width: 900px) {
   .sharedPetChapter { overflow-y: auto; }
   .sharedPetLayout { height: auto; min-height: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto; padding: 24px 18px 48px; }

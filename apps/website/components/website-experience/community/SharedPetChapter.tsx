@@ -562,6 +562,7 @@ export function SharedPetChapter({
       className={styles.sharedPetChapter}
       data-testid="shared-pet-chapter"
       data-motion-disabled={motionDisabled}
+      data-static-presentation={reducedMotion || staticFallback}
       data-paused={isPaused}
       data-transition={transition.status}
       data-page-locked={pageLocked}

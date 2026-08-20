@@ -85,7 +85,7 @@ describe('磁吸 Logo 舞台', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
       .mockImplementation((type) => type === 'webgl' ? webGl : createCanvasContext());
 
-    render(<LiquidGlassHome active isPaused={false} reducedMotion />);
+    render(<LiquidGlassHome active isPaused={false} reducedMotion={false} />);
 
     const home = screen.getByTestId('liquid-glass-home');
     expect(home.dataset.initializationFailed).toBe('false');

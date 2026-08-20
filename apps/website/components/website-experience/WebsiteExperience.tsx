@@ -165,7 +165,7 @@ export function WebsiteExperience({
                 transitionProgress={controller.progress}
                 isPaused={controller.isPaused}
                 reducedMotion={reducedMotion}
-                staticFallback={staticFallback}
+                staticFallback={reducedMotion}
                 onInitializationError={handleInitializationError}
               />
             ) : null}

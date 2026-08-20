@@ -171,7 +171,7 @@ export function AboutChapter({
       data-testid="about-chapter"
       data-hovered={hovered}
       data-motion-disabled={motionDisabled}
-      data-static-fallback={staticFallback}
+      data-static-fallback={reducedMotion || staticFallback}
       style={{
         '--about-progress': progress,
         '--about-exit': exitProgress

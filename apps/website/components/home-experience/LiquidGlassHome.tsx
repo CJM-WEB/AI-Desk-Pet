@@ -81,7 +81,18 @@ export function LiquidGlassHome({
   }, [transitionProgress]);
 
   useEffect(() => {
-    if (!active) return;
+    let systemReducedMotion = reducedMotion;
+    try {
+      systemReducedMotion ||= window.matchMedia(
+        '(prefers-reduced-motion: reduce)'
+      ).matches;
+    } catch {
+      // 控制器统一报告媒体 API 失败；叶子组件保持既有初始化流程。
+    }
+    if (!active || systemReducedMotion) {
+      setInitializationFailed(false);
+      return;
+    }
 
     const canvas = canvasRef.current;
     const gl = canvas?.getContext('webgl', {
@@ -97,7 +108,6 @@ export function LiquidGlassHome({
     }
 
     let disposed = false;
-    let renderedStaticFrame = false;
     let currentTime = 0;
     let initializedViewport = false;
     let inset = 48;
@@ -896,7 +906,6 @@ export function LiquidGlassHome({
             Math.max(0, lastTypedCharacters),
             true
           );
-          renderedStaticFrame = false;
           initializedViewport = true;
         }
 
@@ -926,7 +935,7 @@ export function LiquidGlassHome({
           && y < window.innerHeight - insetCss;
       };
       const updatePointer = (event: PointerEvent, forceRipple = false) => {
-        if (reducedMotion || !isInsideGlass(event.clientX, event.clientY)) return;
+        if (!isInsideGlass(event.clientX, event.clientY)) return;
         const x = event.clientX / window.innerWidth;
         const y = 1 - event.clientY / window.innerHeight;
         pointerX(x);
@@ -935,7 +944,6 @@ export function LiquidGlassHome({
       };
       const handleCanvasPointerDown = (event: PointerEvent) => updatePointer(event, true);
       const handleControlRipple = (event: Event) => {
-        if (reducedMotion) return;
         const detail = (event as CustomEvent<RippleEventDetail>).detail;
         if (!detail) return;
         const x = detail.clientX / window.innerWidth;
@@ -954,7 +962,6 @@ export function LiquidGlassHome({
         communityCurrentPage = String(detail?.currentPage ?? 1);
         communityTotalPages = String(detail?.totalPages ?? 0);
         lastTextProgress = -1;
-        renderedStaticFrame = false;
       };
       const handleGlassInteraction = (event: Event) => {
         const detail = (event as CustomEvent<LiquidGlassInteractionDetail>).detail;
@@ -968,7 +975,6 @@ export function LiquidGlassHome({
           overwrite: 'auto'
         });
         blobOffsets.set(detail.offsets);
-        renderedStaticFrame = false;
       };
       const nearestSelectionTarget = (current: number, target: number) => {
         const normalized = ((current % 3) + 3) % 3;
@@ -992,18 +998,15 @@ export function LiquidGlassHome({
             supportSelection.payment,
             Math.min(2, Math.max(0, detail.paymentIndex ?? 0))
           ),
-          duration: reducedMotion ? 0 : 0.52,
+          duration: 0.52,
           ease: 'power3.inOut',
           overwrite: 'auto',
-          onUpdate: () => {
-            renderedStaticFrame = false;
-          }
         });
       };
 
       render = (time: number) => {
-        if (disposed || pausedRef.current || (reducedMotion && renderedStaticFrame)) return;
-        currentTime = reducedMotion ? 12 : time;
+        if (disposed || pausedRef.current) return;
+        currentTime = time;
         const rawTransition = transitionRef.current;
         const transition = Math.min(1, rawTransition);
         const downloadTransition = Math.min(1, Math.max(0, rawTransition - 1));
@@ -1012,12 +1015,10 @@ export function LiquidGlassHome({
         let typedCharacters = 0;
         if (downloadTransition > 0.38) {
           if (downloadTypingStartedAt < 0) downloadTypingStartedAt = currentTime;
-          typedCharacters = reducedMotion
-            ? downloadTypingLength
-            : Math.min(
-                downloadTypingLength,
-                Math.floor((currentTime - downloadTypingStartedAt) * 42)
-              );
+          typedCharacters = Math.min(
+            downloadTypingLength,
+            Math.floor((currentTime - downloadTypingStartedAt) * 42)
+          );
         } else {
           downloadTypingStartedAt = -1;
         }
@@ -1039,7 +1040,7 @@ export function LiquidGlassHome({
         gl.uniform1f(uniforms.time, currentTime);
         gl.uniform1f(uniforms.inset, inset);
         gl.uniform1f(uniforms.radius, radius);
-        gl.uniform1f(uniforms.motion, reducedMotion ? 0 : 1);
+        gl.uniform1f(uniforms.motion, 1);
         gl.uniform1f(uniforms.transition, transition);
         gl.uniform1f(uniforms.downloadTransition, downloadTransition);
         gl.uniform1f(uniforms.communityTransition, communityTransition);
@@ -1062,7 +1063,6 @@ export function LiquidGlassHome({
         gl.uniform1f(uniforms.rippleActivity, rippleActivity);
         gl.uniform4fv(uniforms.ripples, rippleData);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
-        renderedStaticFrame = reducedMotion;
       };
       const handleVisibilityChange = () => {
         if (document.hidden) {
@@ -1075,7 +1075,6 @@ export function LiquidGlassHome({
         if (disposed) return;
         logoReady = true;
         updateLogoTexture(canvas.width, canvas.height);
-        renderedStaticFrame = false;
         render(currentTime);
       };
       const handleLogoError = () => {
@@ -1138,6 +1137,7 @@ export function LiquidGlassHome({
       data-testid="liquid-glass-home"
       data-active={active}
       data-initialization-failed={initializationFailed}
+      data-static-presentation={reducedMotion}
       aria-hidden={!active}
     >
       <canvas
@@ -1146,7 +1146,10 @@ export function LiquidGlassHome({
         data-liquid-glass-canvas
         aria-label="AI PET 互动液态玻璃画布"
       />
-      <div className={styles.fallback} aria-hidden={!initializationFailed}>
+      <div
+        className={styles.fallback}
+        aria-hidden={!initializationFailed && !reducedMotion}
+      >
         <span>AI PET</span>
       </div>
     </div>

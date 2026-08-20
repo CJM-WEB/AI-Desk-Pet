@@ -77,6 +77,7 @@ export function DownloadChapter({
   const switchTimelineRef = useRef<gsap.core.Timeline | null>(null);
   const [switching, setSwitching] = useState(false);
   const [modelMountReady, setModelMountReady] = useState(false);
+  const staticPresentation = reducedMotion || staticFallback;
   const motionDisabled = reducedMotion || staticFallback || isPaused;
   const progress = Math.min(1, Math.max(0, transitionProgress - 1));
   const finalProgress = Math.min(1, Math.max(0, (progress - 0.78) / 0.22));
@@ -88,7 +89,7 @@ export function DownloadChapter({
   const modelActive = progress >= 0.92 && transitionProgress < 2.98;
 
   useEffect(() => {
-    if (!modelActive) {
+    if (!modelActive || staticPresentation) {
       setModelMountReady(false);
       return;
     }
@@ -96,7 +97,7 @@ export function DownloadChapter({
     // 稍后挂载大型模型，优先保证下载章节过渡首帧稳定。
     const timer = window.setTimeout(() => setModelMountReady(true), 120);
     return () => window.clearTimeout(timer);
-  }, [modelActive]);
+  }, [modelActive, staticPresentation]);
 
   useEffect(() => {
     const syncViewport = () => {
@@ -306,7 +307,7 @@ export function DownloadChapter({
             <p className={styles.platformWord}>{activePlatform.name}</p>
           </PointerTiltText>
         </div>
-        {modelActive && modelMountReady ? (
+        {modelActive && modelMountReady && !staticPresentation ? (
           <DownloadModelViewer
             active={modelActive}
             entryProgress={modelEntryProgress}

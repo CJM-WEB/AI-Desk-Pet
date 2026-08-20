@@ -21,6 +21,33 @@ function createMediaQueryList(matches: boolean): MediaQueryList {
   };
 }
 
+function createMutableMediaQueryList(initialMatches: boolean) {
+  let matches = initialMatches;
+  const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  const mediaQuery = {
+    get matches() { return matches; },
+    media: '(prefers-reduced-motion: reduce)',
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => {
+      listeners.add(listener);
+    }),
+    removeEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => {
+      listeners.delete(listener);
+    }),
+    dispatchEvent: vi.fn()
+  } as unknown as MediaQueryList;
+  return {
+    mediaQuery,
+    setMatches(next: boolean) {
+      matches = next;
+      const event = { matches, media: mediaQuery.media } as MediaQueryListEvent;
+      listeners.forEach(listener => listener(event));
+    }
+  };
+}
+
 function LocaleTestControls() {
   const { setLocale } = useI18n();
   return (
@@ -306,17 +333,26 @@ describe('官网章节降级模式', () => {
 
   });
 
-  it('首页 WebGL 初始化失败只启用首页局部回退并保留章节内容', async () => {
+  it('减少动态效果使用静态品牌且浏览全部业务章节时不创建 WebGL', async () => {
     vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
+    const tickerAdd = vi.spyOn(gsap.ticker, 'add');
 
     render(<WebsiteExperience />);
 
     const experience = screen.getByTestId('website-experience');
     await waitFor(() => {
       expect(screen.getByTestId('liquid-glass-home').dataset.initializationFailed)
-        .toBe('true');
+        .toBe('false');
     });
+    expect(experience.dataset.initializationFailed).toBe('false');
     expect(experience.dataset.staticFallback).toBe('ready');
+    const liquidHome = screen.getByTestId('liquid-glass-home');
+    expect(liquidHome.querySelector('span')?.textContent).toBe('AI PET');
+    expect(liquidHome.querySelector('span')?.parentElement?.getAttribute('aria-hidden'))
+      .toBe('false');
+    expect(getContext.mock.calls.some(([type]) => type === 'webgl')).toBe(false);
+    expect(tickerAdd).not.toHaveBeenCalled();
 
     expect(document.querySelector('[data-layer="cursor"]')).toBeNull();
     expect(document.querySelector('[data-layer="file"]')).toBeNull();
@@ -324,18 +360,82 @@ describe('官网章节降级模式', () => {
 
     const next = screen.getByRole('button', { name: '下一章节' });
     fireEvent.click(next);
+    expect(screen.getByTestId('about-chapter').dataset.staticFallback).toBe('true');
+    expect(document.querySelector('[data-chapter-id="about"]')?.getAttribute('aria-hidden'))
+      .toBe('false');
     fireEvent.click(next);
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
       .toBe('download');
+    expect(document.querySelector('[data-chapter-id="download"]')?.getAttribute('aria-hidden'))
+      .toBe('false');
     expect(screen.queryByRole('link', { name: '下载 Windows' })).toBeNull();
     expect(screen.getByRole('button', { name: '尚未发布' })).toBeTruthy();
     fireEvent.click(next);
-    fireEvent.click(next);
+    expect(document.querySelector('[data-chapter-id="community"]')?.getAttribute('aria-hidden'))
+      .toBe('false');
     fireEvent.click(next);
     expect(screen.getByTestId('website-experience').dataset.activeChapter)
       .toBe('feedback');
+    expect(document.querySelector('[data-chapter-id="feedback"]')?.getAttribute('aria-hidden'))
+      .toBe('false');
     expect(screen.getByText('微信')).toBeTruthy();
     expect(screen.getByText('支付宝')).toBeTruthy();
+    expect(getContext.mock.calls.some(([type]) => type === 'webgl')).toBe(false);
+    expect(tickerAdd).not.toHaveBeenCalled();
+  });
+
+  it('运行期切换动态偏好会释放 WebGL 并可重新初始化', async () => {
+    const media = createMutableMediaQueryList(false);
+    vi.stubGlobal('matchMedia', vi.fn(() => media.mediaQuery));
+    const webGlMethods = new Map<string, ReturnType<typeof vi.fn>>();
+    const method = (name: string) => {
+      let implementation = webGlMethods.get(name);
+      if (!implementation) {
+        implementation = vi.fn(() => {
+          if (/^create(?:Buffer|Program|Shader|Texture)$/.test(name)) return {};
+          if (name === 'getUniformLocation') return {};
+          if (/^get(?:Program|Shader)Parameter$/.test(name)) return true;
+          if (name === 'getAttribLocation') return 0;
+          if (/^get(?:Program|Shader)InfoLog$/.test(name)) return '';
+          if (name === 'measureText') return { width: 48 };
+          if (name === 'createLinearGradient') return { addColorStop: vi.fn() };
+          return undefined;
+        });
+        webGlMethods.set(name, implementation);
+      }
+      return implementation;
+    };
+    const context = new Proxy({}, {
+      get: (_target, property) => {
+        const name = String(property);
+        return name === name.toUpperCase() ? 1 : method(name);
+      }
+    });
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockImplementation(() => context as CanvasRenderingContext2D);
+    const tickerAdd = vi.spyOn(gsap.ticker, 'add')
+      .mockImplementation(callback => callback);
+    const tickerRemove = vi.spyOn(gsap.ticker, 'remove').mockImplementation(() => {});
+
+    render(<WebsiteExperience />);
+    await waitFor(() => expect(tickerAdd).toHaveBeenCalledTimes(1));
+    expect(getContext.mock.calls.filter(([type]) => type === 'webgl')).toHaveLength(1);
+
+    act(() => media.setMatches(true));
+    await waitFor(() => {
+      expect(screen.getByTestId('website-experience').dataset.reducedMotion).toBe('true');
+    });
+    expect(screen.getByTestId('liquid-glass-home').dataset.initializationFailed)
+      .toBe('false');
+    expect(screen.getByTestId('liquid-glass-home').querySelector('span')
+      ?.parentElement?.getAttribute('aria-hidden')).toBe('false');
+    expect(tickerRemove).toHaveBeenCalledTimes(1);
+    expect(method('deleteProgram')).toHaveBeenCalledTimes(1);
+
+    act(() => media.setMatches(false));
+    await waitFor(() => expect(tickerAdd).toHaveBeenCalledTimes(2));
+    expect(getContext.mock.calls.filter(([type]) => type === 'webgl')).toHaveLength(2);
+    expect(screen.getByTestId('website-experience').dataset.reducedMotion).toBe('false');
   });
 
   it('首页切换英文后导航至共享仓库会隐藏语言入口，返回首页后恢复英文选择', () => {
