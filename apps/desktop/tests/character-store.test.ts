@@ -460,6 +460,32 @@ describe('CharacterStore', () => {
     ]);
   });
 
+  test('回滚 checkpoint 后另一 Store 激活角色时返回 active-character 且保留所有权', async () => {
+    const transactionId = '11111111-1111-4111-8111-111111111111';
+    const creatorStore = new CharacterStore(charactersDirectory);
+    const activeStore = new CharacterStore(charactersDirectory);
+    const rollbackStore = new CharacterStore(charactersDirectory, {
+      async onImportRollbackCheckpoint(checkpoint) {
+        if (checkpoint === 'before-rename') await activeStore.setActive('demo', true);
+      }
+    });
+    const runtime = createRuntime('demo', '导入中的竞争活动角色');
+    await creatorStore.create(
+      { id: 'demo', name: '导入中的竞争活动角色' },
+      { importTransactionId: transactionId }
+    );
+    await creatorStore.publishCompiled('demo', runtime.manifest, runtime.assets);
+
+    await expect(rollbackStore.rollbackImportedCharacter('demo', transactionId))
+      .resolves.toEqual({ kind: 'active-character' });
+    await expect(access(join(charactersDirectory, 'demo'))).resolves.toBeUndefined();
+    await expect(access(join(charactersDirectory, 'demo', '.package-import-owner.json')))
+      .resolves.toBeUndefined();
+    await expect(new CharacterStore(charactersDirectory).list()).resolves.toEqual([
+      expect.objectContaining({ id: 'demo', active: true })
+    ]);
+  });
+
   test('角色包回滚读取令牌后同 ID 目录被替换时保留替代角色', async () => {
     const transactionId = '11111111-1111-4111-8111-111111111111';
     const replacementStore = new CharacterStore(charactersDirectory);

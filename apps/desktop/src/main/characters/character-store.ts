@@ -571,7 +571,6 @@ export class CharacterStore {
 
       const index = await this.requireWritableIndex();
       if (index.activeCharacterId === characterId) return { kind: 'active-character' };
-      const originalIndex = cloneIndex(index);
       const tombstone = this.deleteTombstone(characterId);
       await this.assertSafePath(characterDirectory);
       await this.assertSafePath(tombstone);
@@ -588,6 +587,11 @@ export class CharacterStore {
       ) {
         return { kind: 'ownership-mismatch' };
       }
+      const currentIndex = await this.requireWritableIndex();
+      if (currentIndex.activeCharacterId === characterId) {
+        return { kind: 'active-character' };
+      }
+      const originalIndex = cloneIndex(currentIndex);
       try {
         await this.removePath(tombstone, { recursive: true, force: true });
         await this.renamePath(characterDirectory, tombstone);
@@ -606,9 +610,9 @@ export class CharacterStore {
           }
           return { kind: 'ownership-mismatch' };
         }
-        index.characters = index.characters.filter(entry => entry.id !== characterId);
-        delete index.incompleteActivationConfirmations[characterId];
-        await this.writeIndex(index);
+        currentIndex.characters = currentIndex.characters.filter(entry => entry.id !== characterId);
+        delete currentIndex.incompleteActivationConfirmations[characterId];
+        await this.writeIndex(currentIndex);
       } catch (error) {
         if (await exists(tombstone)) {
           await this.renamePath(tombstone, characterDirectory).catch(() => undefined);
