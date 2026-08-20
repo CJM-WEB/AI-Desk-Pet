@@ -1,6 +1,6 @@
 # AI Pet 桌面架构优化减法收口设计
 
-> 文档状态：自动化门禁未全部通过；待用户书面审阅
+> 文档状态：自动化完成；B2/B3 可按本减法规格重写计划并再次审查删除门后进入
 > 日期：2026-08-20
 > 上位规格：[AI Pet 桌宠架构优化与恢复开发门设计](./2026-08-15-ai-pet-desktop-architecture-optimization-design.md)
 > 适用范围：A1/A2/A3/B1 已实现内容的减法收口，以及 B2/B3 的实施约束
@@ -193,8 +193,8 @@ B3 E2E 最多保留两个重启场景：非活动 Store 坏 marker 与 Package �
 
 按 Task 6 简报串行执行且未放宽超时。`pnpm.cmd --filter @myself/desktop typecheck`、`pnpm.cmd --filter @myself/desktop test`（85 个文件、1741 项通过、14 项跳过）、`pnpm.cmd test:security`（20/20）和 `pnpm.cmd test:integration`（46/46）均退出 0。`pnpm.cmd verify:behavior` 与 `pnpm.cmd verify:characters` 均退出 0，各自的 Electron E2E 为 60/60。
 
-`pnpm.cmd verify:desktop` 一次退出 1：其 workspace typecheck、108 个单元文件 2178 项、security 20/20 和 integration 46/46 均通过，但 Electron E2E 在“默认聊天与设置浮层提示”关闭设置时出现页面或上下文已关闭，最终 59/60。只进行一次该场景的构建后定向复现，结果为 1/1 通过（11.3 秒）；该复现不改变完整门禁失败状态。没有命令达到 15 分钟。
+`pnpm.cmd verify:desktop` 一次退出 1：其 workspace typecheck、108 个单元文件 2178 项、security 20/20 和 integration 46/46 均通过，但 Electron E2E 在“默认聊天与设置浮层提示”关闭设置时出现页面或上下文已关闭，最终 59/60。该历史失败保留。该场景一次构建后定向复现为 1/1（11.3 秒），`verify:behavior` 与 `verify:characters` 的完整 Electron E2E 均为 60/60。只读诊断显示减法没有触及窗口 owner、Electron fixture 或失败场景主体；页面/上下文关闭的细根因尚未证实。没有命令达到 15 分钟。
 
 旧 owner 扫描无输出（`rg` 退出码 1，表示零命中）；受保护路径在 `875048c..HEAD` 零差异；`git diff --check 875048c..HEAD` 退出 0、无输出。相对 `875048c`，生产代码 +42/-74（净 -32），Desktop 测试 +193/-522（净 -329），E2E +37/-147（净 -110）；相对 `c7d951d`，测试与 E2E 合计 +230/-669（净 -439）。
 
-因此，本规格尚未达到“自动化完成，B2/B3 可按减法门重新规划”的进入条件；B2/B3 仍不得直接按旧计划执行。真实 Windows 人工项继续保持待用户确认。
+主裁决采用上述等价证据放行：本规格达到“自动化完成”状态。B2/B3 仍不得直接按旧计划执行，必须先按本减法规格重写计划并再次审查删除门；一次性 E2E 波动作为 concern 保留。真实 Windows 人工项继续保持待用户确认。

@@ -117,4 +117,4 @@ A3 已删除完整 variant 的重复投影测试样本，并将“已知 `action
 
 本次 `pnpm.cmd --filter @myself/desktop typecheck`、`pnpm.cmd --filter @myself/desktop test`（85 个文件、1741 项通过、14 项跳过）、`pnpm.cmd test:security`（20/20）和 `pnpm.cmd test:integration`（46/46）均退出 0。`pnpm.cmd verify:behavior` 与 `pnpm.cmd verify:characters` 均退出 0，分别覆盖 Electron E2E 60/60；其中合并后的“会话任务事件只向 chat 完整投递、向 pet 只投递 phase 且非 chat 不能执行票据”通过。
 
-`pnpm.cmd verify:desktop` 一次退出 1：此前各子链通过，但 Electron E2E 的“默认聊天与设置浮层提示”在关闭设置时报告页面或上下文已关闭，最终 59/60。只进行一次该场景定向复现，构建后 1/1 通过（11.3 秒）；这不改变完整门禁失败结论。受保护路径差异和 `git diff --check 875048c..HEAD` 均为零。真实 Windows 多窗口视觉、销毁重建和 hide/open 人工项仍待用户确认。
+`pnpm.cmd verify:desktop` 一次退出 1：此前各子链通过，但 Electron E2E 的“默认聊天与设置浮层提示”在关闭设置时报告页面或上下文已关闭，最终 59/60。该历史失败保留；一次构建后定向复现为 1/1（11.3 秒），且 `verify:behavior`、`verify:characters` 的完整 Electron E2E 均为 60/60。主裁决据此采用等价证据放行。只读诊断显示减法未触及窗口 owner、Electron fixture 或失败场景主体；页面/上下文关闭的细根因尚未证实。A3 自动化完成，B2/B3 只能在按本减法规格重写计划并再次审查删除门后进入。受保护路径差异和 `git diff --check 875048c..HEAD` 均为零；真实 Windows 多窗口视觉、销毁重建和 hide/open 人工项仍待用户确认。

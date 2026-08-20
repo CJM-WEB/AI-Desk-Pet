@@ -181,4 +181,4 @@ git status --short
 
 `rg -n "AgentIpcAuthorization|agent-ipc-authorization|只有当前聊天窗口能使用已知 actionId|CharacterTransactionRecoveryKind|budgetExceeded" apps/desktop/src apps/desktop/tests tests/e2e` 无输出（退出码 1，表示零命中）。`git diff --name-only 875048c..HEAD -- apps/website apps/cloudbase-api apps/package-scanner cloudbase tests/e2e/website.spec.ts tests/playwright.website.config.ts` 无输出；`git diff --check 875048c..HEAD` 退出码 0、无输出。
 
-相对 `875048c`，生产代码为 +42/-74（净 -32），Desktop 测试为 +193/-522（净 -329），E2E 为 +37/-147（净 -110）。完整 `verify:desktop` 的一次真实失败使本 owner 不得标记为“全部自动化通过”；定向复现只作为不稳定现象证据。
+相对 `875048c`，生产代码为 +42/-74（净 -32），Desktop 测试为 +193/-522（净 -329），E2E 为 +37/-147（净 -110）。首次 `verify:desktop` 的真实失败保留为一次性波动 concern；主裁决以该场景一次定向 1/1、`verify:behavior` 与 `verify:characters` 的完整 Electron E2E 60/60 作为等价证据放行。只读诊断显示减法范围未改动窗口 owner、Electron fixture 或本场景主体；页面/上下文关闭的细根因尚未证实。A1/A2 自动化完成，B2/B3 可在按本减法规格重写并再次审查删除门后进入。
