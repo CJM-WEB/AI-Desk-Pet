@@ -25,7 +25,7 @@
 
 ## 2. 目标
 
-1. 网站只构建一次，随后把全部 45 项测试逐项放入独立 Playwright CLI 进程。
+1. 网站只构建一次，随后把去重后的全部 44 项测试逐项放入独立 Playwright CLI 进程。
 2. 每项测试独占 Playwright driver、worker、随机端口静态服务器、BrowserContext、浏览器与 GPU 子进程。
 3. 测试发现自动跟随 Playwright 当前清单，不维护人工标题数组、源码行号数组或固定测试数量。
 4. 保持现有业务断言、串行语义、单 worker、零重试、60 秒测试超时、10 秒断言超时与失败 trace。
@@ -141,7 +141,7 @@ expect: { timeout: 10_000 }
   -> 全部通过返回 0，否则返回 1
 ```
 
-全部 45 项都使用该路径，包括 API-only 和不请求浏览器的 helper 测试。这样不会在两种调度模型间保留共享 Playwright driver 或服务器状态。
+去重后的全部 44 项都使用该路径，包括 API-only 和不请求浏览器的 helper 测试。这样不会在两种调度模型间保留共享 Playwright driver 或服务器状态。
 
 ## 7. 清单与选择契约
 
@@ -212,11 +212,11 @@ tests/.playwright-output/website-process-isolation/002/
 
 ### 10.2 集成验收
 
-1. 列表模式发现当前 45 项且不运行测试。
+1. 完成第 10.4 节减法后，列表模式发现当前 44 项且不运行测试。
 2. 用两个独立 CLI 进程分别执行先前稳定复现污染的“安全共享包……”和“介绍章节……”测试，两项均退出 0。
-3. 正式 `pnpm.cmd test:e2e:website` 一次运行发现并完成 45 项，得到 `45 passed / 0 failed / 0 interrupted / 0 not run`，总时长小于 15 分钟。
+3. 正式 `pnpm.cmd test:e2e:website` 一次运行发现并完成 44 项，得到 `44 passed / 0 failed / 0 interrupted / 0 not run`，总时长小于 15 分钟。
 4. 运行后没有命令行指向当前工作区的遗留 Node、Playwright、Chromium 或静态服务器进程。
-5. `pnpm.cmd verify:web:full` 完成 20/20 步且网站 E2E 汇总仍为 45/45。
+5. `pnpm.cmd verify:web:full` 完成 20/20 步且网站 E2E 汇总仍为 44/44。
 6. 全部 verification Node 测试、网站 typecheck、网站范围守卫、测试归属和 `git diff --check` 通过。
 
 若逐项 CLI 仍出现同类 GPU stall，立即停止隔离层修改；不得再增加分批、重试、超时或产品清理。后续必须以 trace、系统 GPU 进程与单项重复运行证据重新判断是否属于页面或 Windows 图形栈问题。
@@ -233,6 +233,12 @@ tests/.playwright-output/website-process-isolation/002/
 6. 同一用例截图后的巨大滚轮相邻约束已由紧随其后的 `普通滚轮连续追赶、吸附、隔离惯性并重计新手势` 和 `apps/website/tests/chapter-model.test.ts` 覆盖；键盘推进与禁止纵向滚动已由 `PageDown 推进非纵向滚动章节并在终点保留共享液态背景` 覆盖。
 
 批准的修正只做删除：把测试名称收窄为 `逐章节透明交接保持原位层级并生成截图证据`，保留交接帧样式断言、截图、截图后当前章节仍为 `home` 的断言与运行时错误检查；删除其后的巨大滚轮、六次 `PageDown`、一次 `PageUp` 及对应重复断言。不得新增页面重载、sleep、helper、fixture、重试、产品分支或新测试项；测试总数保持 45。
+
+### 10.4 删除较弱且时序敏感的重复滚轮用例
+
+第 10.3 节减法后，正式逐项运行中的 `普通鼠标以 120px 连续滚动多档后进入相邻介绍章` 曾在 `1500ms` 内停留 `home`，但同一测试随后单独运行通过。探针证明原点与视口中心都命中非局部输入 Canvas；八次滚轮均进入页面，进度即时达到 `0.6433`，之后可以吸附到 `about`。因此失败不是落点或输入隔离缺陷，而是该较弱集成用例依赖紧时序。
+
+该用例的职责已被更强证据覆盖：紧随其后的 `普通滚轮连续追赶、吸附、隔离惯性并重计新手势` 使用真实 `120px` 输入验证阈值解锁、连续进度、吸附、惯性隔离和相邻章节限制；`apps/website/tests/chapter-model.test.ts` 独立验证 `120px` 累计、`240px` 阈值及单次输入不能跨越相邻章节。批准整体删除这条较弱 E2E，不增加鼠标移动、等待、重试、timeout 或替代测试。删除后正式清单为 44 项。
 
 ## 11. 迁移与删除
 

@@ -4,7 +4,7 @@
 
 **Goal:** 网站只构建一次，并把当前全部 Playwright E2E 逐项放入独立 CLI 进程，在 15 分钟内得到可审计的完整汇总与退出码。
 
-**Architecture:** 新增一个无第三方依赖的 Node 编排器，使用 Playwright 1.61.1 官方 `--list` 发现测试、用单项 `--test-list` 顺序启动独立 CLI，并为每项分配独立产物目录。纯清单/参数契约与异步进程生命周期分两次 TDD 和审查；只有直接运行编排器完成 45/45 后才切换根脚本、删除已证伪 fixture 并运行完整网站链。
+**Architecture:** 新增一个无第三方依赖的 Node 编排器，使用 Playwright 1.61.1 官方 `--list` 发现测试、用单项 `--test-list` 顺序启动独立 CLI，并为每项分配独立产物目录。纯清单/参数契约与异步进程生命周期分两次 TDD 和审查；删除两条已证明重复或时序污染的断言路径后，只有直接运行编排器完成 44/44 才切换根脚本、删除已证伪 fixture 并运行完整网站链。
 
 **Tech Stack:** Node.js 24、原生 `node:test`、Playwright Test 1.61.1、pnpm workspace、PowerShell、Windows `taskkill.exe`。
 
@@ -516,6 +516,7 @@ Expected: 只提交两个编排器文件；尚未增加可执行 CLI 入口，�
 - Produces: CLI `node tools/verification/run-website-e2e-process-isolation.mjs`，无业务参数。
 - Reuses: 紧随其后的滚轮状态机测试、`chapter-model.test.ts` 与后续 PageDown 测试已有覆盖，不新增重复测试。
 - Removes: 截图后的巨大滚轮、六次 `PageDown`、一次 `PageUp` 及对应重复断言；保留视觉交接、截图、当前章节与运行时错误证据。
+- Removes: 整体删除较弱且时序敏感的 `普通鼠标以 120px 连续滚动多档后进入相邻介绍章`；不新增替代测试，其职责由既有完整滚轮状态机 E2E 与章节模型单测承担。
 - Removes: 无外部消费者的 `WEBSITE_E2E_OUTPUT_ROOT` 导出，将其收回为模块私有 `const`；运行路径与值不变。
 
 - [ ] **Step 1: 写发现失败、汇总与临时文件清理 RED**
@@ -755,7 +756,18 @@ Expected RED: `逐章节交接且快速输入不能跳过相邻章节` 在第二
 
 不得增加页面重载、`waitForTimeout`、新 helper、新测试、retry、timeout 或产品代码。随后从新清单复制改名后的完整描述并原样复跑单项命令。Expected GREEN: `1 passed`、退出码 0；测试总数仍为 45。使用 `apply_patch` 删除短期 test-list。
 
-- [ ] **Step 7: 直接运行正式编排器并执行 15 分钟止损**
+- [ ] **Step 7: 删除较弱重复滚轮用例并验证替代覆盖**
+
+删除完整测试 `普通鼠标以 120px 连续滚动多档后进入相邻介绍章`，不得把其断言、循环或等待迁移到其他测试。Run:
+
+```powershell
+pnpm.cmd --filter @myself/website test -- chapter-model.test.ts
+node.exe --input-type=module -e "import { discoverWebsiteTests } from './tools/verification/run-website-e2e-process-isolation.mjs'; const tests=await discoverWebsiteTests(); console.log(JSON.stringify({count:tests.length}));"
+```
+
+从新清单复制 `普通滚轮连续追赶、吸附、隔离惯性并重计新手势` 的完整描述到短期 test-list，并用独立 CLI 运行。Expected: 章节模型测试 PASS；清单 `count: 44`；完整滚轮状态机 E2E `1 passed`、退出码 0。随后删除短期 test-list。
+
+- [ ] **Step 8: 直接运行正式编排器并执行 15 分钟止损**
 
 构建已在 Step 5 完成，不重复构建：
 
@@ -765,14 +777,14 @@ node.exe tools/verification/run-website-e2e-process-isolation.mjs
 
 使用后台可续读会话每 30—60 秒读取输出。Expected:
 
-- `discovered=45 passed=45 failed=0 interrupted=0 notRun=0`；
+- `discovered=44 passed=44 failed=0 interrupted=0 notRun=0`；
 - 总时长小于 `900_000ms`；
 - 退出码 0；
 - 每项输出目录互不相同。
 
 若出现 GPU stall、任何失败或达到 15 分钟：立即停止 Task 3，不修改产品、fixture、worker、retry 或 timeout；写清首错、计数和产物路径，状态 BLOCKED，不提交 Task 3。
 
-- [ ] **Step 8: 检查残留进程与定向验证**
+- [ ] **Step 9: 检查残留进程与定向验证**
 
 Run:
 
@@ -789,12 +801,13 @@ node.exe --test tools/verification/run-website-e2e-process-isolation.test.mjs
 
 Expected: 没有本轮遗留且命令行指向当前工作区的进程；全部编排器单测 PASS。
 
-- [ ] **Step 9: 写减法账本、检查并提交 Task 3**
+- [ ] **Step 10: 写减法账本、检查并提交 Task 3**
 
 Task 3 报告必须明确记录：
 
 - 编排器新增职责为何无法由同步 `verify-web-chain.mjs` 复用；
 - `website.spec.ts` 只收窄测试名称并删除重复行为段，未增加 helper、测试项或产品分支；
+- 较弱滚轮用例已整体删除，正式清单由 45 减至 44，替代覆盖仍通过；
 - `WEBSITE_E2E_OUTPUT_ROOT` 已取消导出，`rg` 对其余新增导出与 CLI 入口的消费者结果不含未使用公开接口；
 - Task 4 待删除旧 fixture 的精确文件和行数，不把计划中的删除误写成已完成。
 
@@ -820,7 +833,7 @@ Expected: 只提交两个编排器文件及单一测试净减法替换；真实�
 - Delete: `tools/verification/website-isolated-browser-fixture.test.mjs`
 
 **Interfaces:**
-- Consumes: Task 3 CLI `node tools/verification/run-website-e2e-process-isolation.mjs` 与完整 45/45 证据。
+- Consumes: Task 3 CLI `node tools/verification/run-website-e2e-process-isolation.mjs` 与完整 44/44 证据。
 - Produces: 根脚本 `test:e2e:website = pnpm build:website:e2e && node tools/verification/run-website-e2e-process-isolation.mjs`。
 - Produces: 网站范围守卫对本计划全部网站文档和调度文件的精确允许，同时继续拒绝 `tests/e2e/desktop.spec.ts` 与 `apps/desktop/**`。
 - Removes: 已证伪的 `useIsolatedBrowser`、`useIsolatedPage` 正式代码和只覆盖该失败路径的测试。
@@ -911,7 +924,7 @@ Run:
 pnpm.cmd test:e2e:website
 ```
 
-Expected: 构建一次；`discovered=45 passed=45 failed=0 interrupted=0 notRun=0`；退出码 0；总时长小于 15 分钟。
+Expected: 构建一次；`discovered=44 passed=44 failed=0 interrupted=0 notRun=0`；退出码 0；总时长小于 15 分钟。
 
 若失败或超时，停止 Task 4；不得删除 fixture、不得更新 foundation 状态、不得提交根入口。
 
@@ -969,7 +982,7 @@ pnpm.cmd verify:web:full
 使用后台可续读会话每 30—60 秒读取。Expected:
 
 - full chain 20/20 PASS；
-- website-e2e 内部汇总 `45/45`；
+- website-e2e 内部汇总 `44/44`；
 - 退出码 0；
 - 总时长小于 15 分钟。
 
