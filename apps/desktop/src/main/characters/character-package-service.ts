@@ -89,12 +89,6 @@ type ImportMarkerIdentity = Readonly<{
   size: number;
 }>;
 
-type ImportRecoveryInventoryEntry = Readonly<{
-  marker: string;
-  name: string;
-  characterId: string;
-}>;
-
 export type CharacterPackageRecoveryIssue = Readonly<{
   characterId: string;
   errorCode:
@@ -229,6 +223,15 @@ function immutableRecoveryReport(
       .map(issue => Object.freeze({ ...issue }))
   );
   return Object.freeze({ issues: frozenIssues });
+}
+
+function appendRecoveryIssue(
+  issues: CharacterPackageRecoveryIssue[],
+  characterId: string | undefined,
+  errorCode: CharacterPackageRecoveryIssue['errorCode']
+): void {
+  if (characterId) issues.push({ characterId, errorCode });
+  else console.error('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -1455,7 +1458,6 @@ export class CharacterPackageService {
   }
 
   private async recoverPendingRollbacks(): Promise<CharacterPackageRecoveryReport> {
-    const startedAt = this.recoveryNow();
     let entries: Dirent<string>[];
     try {
       entries = await readdir(this.charactersDirectory, { withFileTypes: true });
@@ -1471,19 +1473,21 @@ export class CharacterPackageService {
     } catch {
       console.error('CHARACTER_IMPORT_RECOVERY_SCAN_FAILED');
     }
-    const candidates: ImportRecoveryInventoryEntry[] = entries
+    const candidates = entries
       .filter(entry => (
         entry.isFile()
-        && ROLLBACK_MARKER_PATTERN.test(entry.name)
+        && entry.name.startsWith('.package-import-rollback-')
+        && entry.name.endsWith('.json')
+        && !['.tmp', '.corrupt-', '.complete-'].some(part => entry.name.includes(part))
       ))
       .map(entry => ({
         marker: join(this.charactersDirectory, entry.name),
         name: entry.name,
-        characterId: ROLLBACK_MARKER_PATTERN.exec(entry.name)![1]!
+        characterId: ROLLBACK_MARKER_PATTERN.exec(entry.name)?.[1]
       }))
       .sort((left, right) => {
-        const leftActive = left.characterId === activeCharacterId;
-        const rightActive = right.characterId === activeCharacterId;
+        const leftActive = activeCharacterId !== undefined && left.characterId === activeCharacterId;
+        const rightActive = activeCharacterId !== undefined && right.characterId === activeCharacterId;
         if (leftActive !== rightActive) return leftActive ? -1 : 1;
         return left.name.localeCompare(right.name, 'en-US');
       });
@@ -1491,14 +1495,15 @@ export class CharacterPackageService {
       console.error('CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED');
     }
     const inventory = candidates.slice(0, MAX_IMPORT_RECOVERY_ENTRIES);
+    const startedAt = this.recoveryNow();
     const issues: CharacterPackageRecoveryIssue[] = [];
 
-    for (const item of inventory) {
-      if (this.recoveryNow() - startedAt >= IMPORT_RECOVERY_BUDGET_MS) {
-        issues.push({
-          characterId: item.characterId,
-          errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED'
-        });
+    for (const [index, item] of inventory.entries()) {
+      if (
+        index > 0
+        && this.recoveryNow() - startedAt >= IMPORT_RECOVERY_BUDGET_MS
+      ) {
+        appendRecoveryIssue(issues, item.characterId, 'CHARACTER_IMPORT_RECOVERY_DEFERRED');
         continue;
       }
 
@@ -1524,10 +1529,7 @@ export class CharacterPackageService {
             snapshot.bytes,
             snapshot.identity
           );
-          issues.push({
-            characterId: item.characterId,
-            errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
-          });
+          appendRecoveryIssue(issues, item.characterId, 'CHARACTER_IMPORT_RECOVERY_BLOCKED');
           continue;
         }
 
@@ -1556,11 +1558,8 @@ export class CharacterPackageService {
         }
       } catch (error) {
         if (error === DETACHED_MARKER_EVIDENCE) continue;
-        console.error('CHARACTER_IMPORT_RECOVERY_ITEM_FAILED');
-        issues.push({
-          characterId: item.characterId,
-          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
-        });
+        if (item.characterId) console.error('CHARACTER_IMPORT_RECOVERY_ITEM_FAILED');
+        appendRecoveryIssue(issues, item.characterId, 'CHARACTER_IMPORT_RECOVERY_BLOCKED');
       }
     }
     return immutableRecoveryReport(issues);

@@ -1378,6 +1378,7 @@ describe('角色包 Main 服务', () => {
     const transactionId = '33333333-3333-4333-8333-333333333333';
     await mkdir(root, { recursive: true });
     await writeFile(rollbackMarker(root, 'broken'), brokenBytes);
+    await writeFile(rollbackMarker(root, 'BAD!'), brokenBytes);
     await writeFile(rollbackMarker(root, 'healthy'), markerV3('healthy', transactionId));
     const store = new CharacterStore(root);
     await store.create(
@@ -1385,6 +1386,7 @@ describe('角色包 Main 服务', () => {
       { importTransactionId: transactionId }
     );
     const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const report = await new CharacterPackageService(root, { store }).initialize();
 
@@ -1399,11 +1401,11 @@ describe('角色包 Main 服务', () => {
     ));
     expect(evidenceName).toBeDefined();
     expect(await readFile(join(root, evidenceName!))).toEqual(brokenBytes);
+    expect(await preservedEvidence(root, 'BAD!')).toEqual(brokenBytes);
+    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED');
     expect(rollbackSpy).toHaveBeenCalledWith('healthy', transactionId);
-    expect(JSON.stringify(report)).not.toContain(transactionId);
-    expect(JSON.stringify(report)).not.toContain(root);
-    expect(Object.isFrozen(report)).toBe(true);
-    expect(Object.isFrozen(report.issues)).toBe(true);
+    expect([transactionId, root].some(value => JSON.stringify(report).includes(value))).toBe(false);
+    expect(Object.isFrozen(report) && Object.isFrozen(report.issues)).toBe(true);
     expect(report.issues.every(Object.isFrozen)).toBe(true);
   });
 
@@ -1607,14 +1609,11 @@ describe('角色包 Main 服务', () => {
     expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE');
     expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', transactionId);
 
-    const invalidMarker = join(root, '.package-import-rollback-BAD!.json');
-    await writeFile(invalidMarker, replacement);
     rollbackSpy.mockClear();
     logSpy.mockClear();
     await expect(new CharacterPackageService(root, { store }).initialize())
       .resolves.toEqual({ issues: [] });
     expect(await readFile(join(root, detached!))).toEqual(replacement);
-    expect(await readFile(invalidMarker)).toEqual(replacement);
     expect(rollbackSpy).not.toHaveBeenCalled();
   });
 
@@ -1784,31 +1783,30 @@ describe('角色包 Main 服务', () => {
       .toEqual(['z-active', 'a-inactive']);
   });
 
-  test('排序后第 257 项保持原字节且只记录一次聚合诊断', async () => {
+  test('无活动角色时稳定排序后截断且第 257 项不读取', async () => {
     const root = join(testDirectory, 'inventory-limit');
     const transactionId = '33333333-3333-4333-8333-333333333333';
     await mkdir(root, { recursive: true });
-    await Promise.all(Array.from({ length: 257 }, async (_, index) => {
-      const characterId = `item-${String(index + 1).padStart(3, '0')}`;
-      await writeFile(rollbackMarker(root, characterId), markerV3(characterId, transactionId));
+    await writeFile(rollbackMarker(root, '0-healthy'), markerV3('0-healthy', transactionId));
+    await Promise.all(Array.from({ length: 256 }, async (_, index) => {
+      const id = `BAD-${String(index + 1).padStart(3, '0')}`;
+      await writeFile(rollbackMarker(root, id), Buffer.from('unattributed'));
     }));
     const store = new AbsentRollbackStore(root);
     const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
-    const untouchedMarker = rollbackMarker(root, 'item-257');
+    const untouchedMarker = rollbackMarker(root, 'BAD-256');
     const before = await readFile(untouchedMarker);
     const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     await expect(new CharacterPackageService(root, {
       store
     }).initialize()).resolves.toEqual({ issues: [] });
-    expect(rollbackSpy).toHaveBeenCalledTimes(256);
-    expect(rollbackSpy).toHaveBeenCalledWith('item-256', transactionId);
+    expect(rollbackSpy).toHaveBeenCalledWith('0-healthy', transactionId);
     expect(fsPromises.open).not.toHaveBeenCalledWith(untouchedMarker, 'r');
-    await expect(access(rollbackMarker(root, 'item-255'))).rejects.toThrow();
-    await expect(access(rollbackMarker(root, 'item-256'))).rejects.toThrow();
+    await expect(access(rollbackMarker(root, '0-healthy'))).rejects.toThrow();
     expect(await readFile(untouchedMarker)).toEqual(before);
-    expect(logSpy).toHaveBeenCalledTimes(1);
-    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED');
+    expect(logSpy.mock.calls.filter(([code]) => code === 'CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED')).toHaveLength(1);
+    expect(logSpy.mock.calls.filter(([code]) => code === 'CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED')).toHaveLength(255);
   });
 
   test('达到 2000ms 软预算后只推迟未开始项', async () => {
@@ -1817,7 +1815,7 @@ describe('角色包 Main 服务', () => {
     await mkdir(root, { recursive: true });
     await writeFile(rollbackMarker(root, 'a-first'), markerV3('a-first', transactionId));
     await writeFile(rollbackMarker(root, 'b-deferred'), markerV3('b-deferred', transactionId));
-    const times = [0, 0, 2_000];
+    const times = [0, 2_000];
 
     await expect(new CharacterPackageService(root, {
       store: new AbsentRollbackStore(root),
@@ -1832,22 +1830,22 @@ describe('角色包 Main 服务', () => {
     await expect(access(rollbackMarker(root, 'b-deferred'))).resolves.toBeUndefined();
   });
 
-  test('单项开始后即使越过预算也完成身份复核与恢复', async () => {
+  test('inventory 阶段跨预算后首项仍开始并完成', async () => {
     const root = join(testDirectory, 'recovery-budget-item');
     const transactionId = '33333333-3333-4333-8333-333333333333';
     await mkdir(root, { recursive: true });
     await writeFile(rollbackMarker(root, 'only-item'), markerV3('only-item', transactionId));
-    class SlowStore extends CharacterStore {
-      override async rollbackImportedCharacter() {
-        times.splice(0, times.length, 3_000);
-        return { kind: 'absent' } as const;
+    let now = 0;
+    class SlowInventoryStore extends AbsentRollbackStore {
+      override async list() {
+        now = 2_000;
+        return [];
       }
     }
-    const times = [0, 0];
 
     await expect(new CharacterPackageService(root, {
-      store: new SlowStore(root),
-      recoveryNow: () => times.shift() ?? 3_000
+      store: new SlowInventoryStore(root),
+      recoveryNow: () => now
     }).initialize()).resolves.toEqual({ issues: [] });
     await expect(access(rollbackMarker(root, 'only-item'))).rejects.toThrow();
   });
