@@ -47,7 +47,6 @@ export function characterRecoveryPresentation(
 ): CharacterRecoveryPresentation {
   return RECOVERY_PRESENTATIONS[errorCode];
 }
-
 const RECOVERY_MESSAGES: Readonly<Record<string, string>> = {
   CHARACTER_INDEX_UNAVAILABLE: '角色索引无法读取，已切换到官方默认角色。',
   CHARACTER_MANIFEST_INVALID: '当前角色清单无效，已切换到官方默认角色。',

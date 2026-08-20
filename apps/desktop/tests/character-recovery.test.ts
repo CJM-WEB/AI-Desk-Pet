@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   characterErrorCode,
   characterOperationMessage,
+  characterRecoveryMessage,
   characterRecoveryPresentation
 } from '../src/shared/character-recovery';
 
@@ -53,7 +54,12 @@ describe('角色恢复问题展示映射', () => {
   ) => {
     const presentation = characterRecoveryPresentation(errorCode);
     expect(presentation).toEqual({ text, affectedCapabilities, suggestion });
-    expect(JSON.stringify(presentation)).not.toContain('C:\\Users\\private');
-    expect(JSON.stringify(presentation)).not.toContain('owner-token-sentinel');
+  });
+
+  test.each([
+    ['CHARACTER_RESOURCE_INTEGRITY_FAILED', '当前角色资源校验失败，已切换到官方默认角色。'],
+    ['UNKNOWN', '当前角色无法加载，已切换到官方默认角色。']
+  ])('启动恢复错误码 %s 映射为角色工作室修复入口', (errorCode, text) => {
+    expect(characterRecoveryMessage(errorCode)).toEqual({ text, actionLabel: '打开角色工作室' });
   });
 });

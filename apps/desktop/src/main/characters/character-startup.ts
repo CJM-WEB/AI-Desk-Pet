@@ -8,8 +8,6 @@ import type {
 } from '../../shared/character-ipc';
 import { characterRecoveryFallbackErrorCodeSchema } from '../../shared/character-ipc';
 
-export { characterRecoveryMessage } from '../../shared/character-recovery';
-
 export type CharacterStartupInput = Readonly<{
   indexRecovered: boolean;
   packageRecoveryReport: CharacterPackageRecoveryReport;

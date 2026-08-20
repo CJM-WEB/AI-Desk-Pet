@@ -1,11 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   prepareCharacterStartup,
-  characterRecoveryMessage
+  type CharacterStartupDependencies
 } from '../src/main/characters/character-startup';
 
 type StartupInput = Parameters<typeof prepareCharacterStartup>[0];
-type StartupDependencies = Parameters<typeof prepareCharacterStartup>[1];
 
 function startupInput(
   issues: StartupInput['packageRecoveryReport']['issues'] = [],
@@ -16,8 +15,30 @@ function startupInput(
 
 const EMPTY_INPUT = startupInput();
 
+function recordingDependencies(
+  order: string[],
+  overrides: Partial<CharacterStartupDependencies> = {}
+): CharacterStartupDependencies {
+  return {
+    validateActiveRuntime: async () => {
+      order.push('runtime');
+      return { activeCharacterId: 'active-pet' };
+    },
+    ensureOfficialDefaultCharacter: async () => {
+      order.push('default');
+      return { activeCharacterId: 'builtin-default' };
+    },
+    loadFinalIndex: async () => { order.push('final-index'); },
+    getTransactionRecoveryReport: () => {
+      order.push('b1-report');
+      return { characters: [] };
+    },
+    ...overrides
+  };
+}
+
 function start(
-  overrides: Partial<StartupDependencies> = {},
+  overrides: Partial<CharacterStartupDependencies> = {},
   startupInputValue: StartupInput = EMPTY_INPUT
 ) {
   return prepareCharacterStartup(startupInputValue, {
@@ -32,21 +53,12 @@ function start(
 describe('角色启动恢复', () => {
   test('以固定顺序产出深冻结快照', async () => {
     const order: string[] = [];
-    const result = await start({
+    const result = await prepareCharacterStartup(EMPTY_INPUT, recordingDependencies(order, {
       validateActiveRuntime: async () => {
         order.push('runtime');
         return { activeCharacterId: 'demo' };
-      },
-      ensureOfficialDefaultCharacter: async () => {
-        order.push('default');
-        return { activeCharacterId: 'builtin-default' };
-      },
-      loadFinalIndex: async () => { order.push('final-index'); },
-      getTransactionRecoveryReport: () => {
-        order.push('b1-report');
-        return { characters: [] };
       }
-    });
+    }));
 
     expect(order).toEqual(['runtime', 'final-index', 'b1-report']);
     expect(result.activeCharacterId).toBe('demo');
@@ -55,27 +67,10 @@ describe('角色启动恢复', () => {
     expect(Object.isFrozen(result.recoverySnapshot.issues)).toBe(true);
   });
 
-  test('活动运行版本损坏时回退官方默认且不删除角色或草稿', async () => {
-    const ensureDefault = vi.fn(async () => ({ activeCharacterId: 'builtin-default' }));
+  test('B1/B2 问题只投影、去重排序并深冻结，活动角色仍继续运行', async () => {
+    const ensureDefault = vi.fn();
     const result = await start({
-      validateActiveRuntime: async () => {
-        throw new Error('CHARACTER_RESOURCE_INTEGRITY_FAILED');
-      },
       ensureOfficialDefaultCharacter: ensureDefault,
-      loadFinalIndex: async () => undefined,
-      getTransactionRecoveryReport: () => ({ characters: [] })
-    });
-
-    expect(result.recoverySnapshot).toEqual({
-      fallbackErrorCode: 'CHARACTER_RESOURCE_INTEGRITY_FAILED',
-      issues: []
-    });
-    expect(ensureDefault).toHaveBeenCalledOnce();
-  });
-
-  test('非活动 B1/B2 问题只投影、去重排序并深冻结', async () => {
-    const result = await start({
-      ensureOfficialDefaultCharacter: vi.fn(),
       getTransactionRecoveryReport: () => ({ characters: [
         {
           characterId: 'a-pet',
@@ -86,12 +81,18 @@ describe('角色启动恢复', () => {
           characterId: 'a-pet',
           draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
           publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED'
+        },
+        {
+          characterId: 'active-pet',
+          draftErrorCode: 'CHARACTER_DRAFT_RECOVERY_BLOCKED',
+          publishErrorCode: null
         }
       ] })
     }, startupInput([
       { characterId: 'a-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' },
       { characterId: 'a-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED' },
-      { characterId: 'b-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' }
+      { characterId: 'b-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' },
+      { characterId: 'active-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED' }
     ]));
 
     expect(result.recoverySnapshot).toEqual({
@@ -102,29 +103,23 @@ describe('角色启动恢复', () => {
         { characterId: 'a-pet', errorCode: 'CHARACTER_RECOVERY_DEFERRED' },
         { characterId: 'a-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' },
         { characterId: 'a-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED' },
+        { characterId: 'active-pet', errorCode: 'CHARACTER_DRAFT_RECOVERY_BLOCKED' },
+        { characterId: 'active-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED' },
         { characterId: 'b-pet', errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED' }
       ]
     });
     expect(result.recoverySnapshot.issues.every(Object.isFrozen)).toBe(true);
+    expect(ensureDefault).not.toHaveBeenCalled();
   });
 
   test('索引已恢复时仍先校验 runtime，再准备默认角色', async () => {
     const order: string[] = [];
-    const result = await start({
+    const result = await prepareCharacterStartup(startupInput([], true), recordingDependencies(order, {
       validateActiveRuntime: async () => {
         order.push('runtime');
         return { activeCharacterId: 'demo' };
-      },
-      ensureOfficialDefaultCharacter: async () => {
-        order.push('default');
-        return { activeCharacterId: 'builtin-default' };
-      },
-      loadFinalIndex: async () => { order.push('final-index'); },
-      getTransactionRecoveryReport: () => {
-        order.push('b1-report');
-        return { characters: [] };
       }
-    }, startupInput([], true));
+    }));
 
     expect(order).toEqual(['runtime', 'default', 'final-index', 'b1-report']);
     expect(result.recoverySnapshot.fallbackErrorCode).toBe('CHARACTER_INDEX_UNAVAILABLE');
@@ -140,24 +135,6 @@ describe('角色启动恢复', () => {
     expect(result.recoverySnapshot.fallbackErrorCode).toBe('CHARACTER_OPERATION_FAILED');
   });
 
-  test('活动角色只有 draft 或 B2 问题时继续运行', async () => {
-    const ensureDefault = vi.fn();
-    const result = await start({
-      ensureOfficialDefaultCharacter: ensureDefault,
-      getTransactionRecoveryReport: () => ({ characters: [{
-        characterId: 'active-pet',
-        draftErrorCode: 'CHARACTER_DRAFT_RECOVERY_BLOCKED',
-        publishErrorCode: null
-      }] })
-    }, startupInput([{
-      characterId: 'active-pet',
-      errorCode: 'CHARACTER_IMPORT_RECOVERY_DEFERRED'
-    }]));
-
-    expect(result.recoverySnapshot.fallbackErrorCode).toBeNull();
-    expect(ensureDefault).not.toHaveBeenCalled();
-  });
-
   test.each([
     'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
     'CHARACTER_RECOVERY_DEFERRED',
@@ -168,35 +145,27 @@ describe('角色启动恢复', () => {
     'CHARACTER_RUNTIME_UNAVAILABLE',
     'CHARACTER_VERSION_UNSUPPORTED'
   ] as const)('活动 runtime 错误 %s 触发对应 fallback', async errorCode => {
+    const ensureDefault = vi.fn(async () => ({ activeCharacterId: 'builtin-default' }));
     const result = await start({
-      validateActiveRuntime: async () => { throw new Error(errorCode); }
+      validateActiveRuntime: async () => { throw new Error(errorCode); },
+      ensureOfficialDefaultCharacter: ensureDefault
     });
 
     expect(result.recoverySnapshot.fallbackErrorCode).toBe(errorCode);
+    expect(result.activeCharacterId).toBe('builtin-default');
+    expect(ensureDefault).toHaveBeenCalledOnce();
   });
 
   test('最后 Store load 瞬时失败时先完成 fallback 再重读一次', async () => {
     const order: string[] = [];
     let loadCount = 0;
-    const result = await start({
-      validateActiveRuntime: async () => {
-        order.push('runtime');
-        return { activeCharacterId: 'active-pet' };
-      },
-      ensureOfficialDefaultCharacter: async () => {
-        order.push('default');
-        return { activeCharacterId: 'builtin-default' };
-      },
+    const result = await prepareCharacterStartup(EMPTY_INPUT, recordingDependencies(order, {
       loadFinalIndex: async () => {
         order.push('final-index');
         loadCount += 1;
         if (loadCount === 1) throw new Error('C:\\private\\index.json');
-      },
-      getTransactionRecoveryReport: () => {
-        order.push('b1-report');
-        return { characters: [] };
       }
-    });
+    }));
 
     expect(order).toEqual(['runtime', 'final-index', 'default', 'final-index', 'b1-report']);
     expect(result.recoverySnapshot.fallbackErrorCode).toBe('CHARACTER_OPERATION_FAILED');
@@ -236,16 +205,4 @@ describe('角色启动恢复', () => {
     expect(result.recoverySnapshot.fallbackErrorCode).toBeNull();
   });
 
-  test('稳定错误码提供中文说明和角色工作室修复入口', () => {
-    expect(characterRecoveryMessage('CHARACTER_RESOURCE_INTEGRITY_FAILED'))
-      .toEqual({
-        text: '当前角色资源校验失败，已切换到官方默认角色。',
-        actionLabel: '打开角色工作室'
-      });
-    expect(characterRecoveryMessage('UNKNOWN'))
-      .toEqual({
-        text: '当前角色无法加载，已切换到官方默认角色。',
-        actionLabel: '打开角色工作室'
-      });
-  });
 });
