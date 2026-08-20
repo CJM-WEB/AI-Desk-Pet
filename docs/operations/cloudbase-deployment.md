@@ -12,15 +12,33 @@
    ```
 
 3. 只有阶段 2 的 Scanner 候选、协议契约和开发环境完整 smoke 均已完成并验收后，才可将该值改为 `true`；该条件不构成实际部署或上线授权。
-4. 新增的前向 migration 目前仅存在于仓库，尚未在任何 CloudBase PostgreSQL 环境执行；当前不得运行迁移脚本或通过控制台复制 SQL 绕过冻结。已提交数据库变更只能通过新的前向 migration 修复，历史 migration 不得改写。
+4. 新增的前向 migration 目前仅存在于仓库，尚未在任何 CloudBase PostgreSQL 环境执行。当前唯一迁移入口是以下只读 dry-run；它只读取仓库 migration 并输出 checksum plan，不读取凭据、不加载管理 SDK，也不连接或写入数据库：
+
+   ```powershell
+   pnpm.cmd plan:cloudbase-migrations
+   ```
+
+   阶段 2 完成前，任何环境都不得从仓库执行 migration，也不得通过控制台复制 SQL 绕过冻结。已提交数据库变更只能通过新的前向 migration 修复，历史 migration 不得改写。
 5. 解冻后的环境仍须保留独立的开发与生产环境，分别记录 `CLOUDBASE_ENV_ID`；数据库、Bucket、函数、扫描容器、域名、告警与所有密钥不得混用。服务端 CloudBase 固定使用 `ap-singapore`；`CLOUDBASE_REGION` 只能留空或设为 `ap-singapore`。
 
 ## 2. PostgreSQL 与私有存储
 
 1. 当前不得在任何环境执行 migration；阶段 2 事务型 migration runner、故障注入与开发环境 PostgreSQL smoke 完成前，不存在可用的数据库写入口。
-2. 解冻后的 runner 必须先校验有序 migration inventory、校验和、重复版本、非法文件名和空 migration；任一异常都必须在 SQL 写入前停止，且不得通过控制台手工执行 SQL 绕过该检查。
-3. 解冻后创建仅服务端可访问的私有 Bucket，将标识配置为 `PRIVATE_BUCKET_ID`。禁止公开读写；上传与下载只使用短期签名地址。
-4. 正式安装包放在独立发布目录和 CDN 策略中，不得复用匿名投稿的隔离区。
+2. 阶段 2 的 `CloudBaseMigrationPlan` 必须直接消费当前 inventory item，不得重新引入固定 migration 路径或按环境批量执行的宽入口：
+
+   ```ts
+   type MigrationIdentity = {
+     version: string;
+     fileName: string;
+     sha256: string;
+     bytes: number;
+   };
+   ```
+
+   以下仅固定阶段 2 runner 的输入边界与安全职责，不构成实现、解冻、部署或数据库写入授权：读取数据库不可变 ledger；在专用数据库会话持有整轮 advisory lock；锁内重读 ledger 并计算 pending；每份 SQL body 与 ledger/checksum 在同一事务提交；对 checksum 漂移、重复 ledger 和未知已应用版本失败关闭；覆盖 SQL 中途、ledger 写入、commit 前后失联、双 runner 并发及续跑的故障注入。只有新的 runner、自动化与开发环境 PostgreSQL smoke 均通过后，才可恢复数据库写入口。
+3. 解冻后的 runner 必须先校验有序 migration inventory、校验和、重复版本、非法文件名和空 migration；任一异常都必须在 SQL 写入前停止，且不得通过控制台手工执行 SQL 绕过该检查。
+4. 解冻后创建仅服务端可访问的私有 Bucket，将标识配置为 `PRIVATE_BUCKET_ID`。禁止公开读写；上传与下载只使用短期签名地址。
+5. 正式安装包放在独立发布目录和 CDN 策略中，不得复用匿名投稿的隔离区。
 
 ## 3. 云服务与认证
 
@@ -119,4 +137,4 @@ pnpm test:e2e:website
 
 ## 12. 发布与回滚
 
-当前不进行发布、灰度、回滚或开启共享包匿名投稿。完成阶段 2 的 Scanner 候选、协议契约、事务型 migration runner 和开发环境完整 smoke 并获得单独部署授权后，才可先小流量开放浏览；共享包投稿仍须保持关闭，直至确认监控、告警和完整扫描链均可用。出现严重问题时关闭投稿入口或网关写路径，保持公开只读内容可用。已执行的数据库迁移不得回滚，只能新增前向修复 migration；回滚后重新验证管理员权限、私有存储和失败关闭。
+当前不进行发布、灰度、回滚或开启共享包匿名投稿。`pnpm.cmd plan:cloudbase-migrations` 仍仅用于生成只读 checksum plan，不是部署或迁移执行命令。完成阶段 2 的 Scanner 候选、协议契约、事务型 migration runner 和开发环境完整 smoke 并获得单独部署授权后，才可先小流量开放浏览；共享包投稿仍须保持关闭，直至确认监控、告警和完整扫描链均可用。出现严重问题时关闭投稿入口或网关写路径，保持公开只读内容可用。已执行的数据库迁移不得回滚，只能新增前向修复 migration；回滚后重新验证管理员权限、私有存储和失败关闭。

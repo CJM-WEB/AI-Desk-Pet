@@ -96,3 +96,7 @@
 ## 13. 误判复盘
 
 复盘只记录最小必要的规则编号、风险类别、状态变化和修正措施。若需要调整关键词分组或组合规则，先增加对应回归用例，再在开发环境用安全/危险/边界夹具回归并修改源码；不得为减少人工量而取消政治内容、脏话、非 AI Pet 内容或技术扫描的强制检查。
+
+## 14. 数据库迁移冻结
+
+当前唯一迁移入口为 `pnpm.cmd plan:cloudbase-migrations`。该命令仅在本地读取仓库 migration 并输出 checksum plan；不读取凭据、不加载管理 SDK，也不连接或写入数据库。阶段 2 的事务型 runner、自动化和开发环境 PostgreSQL smoke 通过前，不得执行 migration 或通过控制台复制 SQL 绕过冻结；已提交数据库变更只能新增前向 migration。阶段 2 runner 仅可直接消费 inventory item 的 `version`、`fileName`、`sha256` 与 `bytes`，并须在 SQL 写入前对 checksum 漂移、重复版本、非法文件名和空 migration 失败关闭。该要求不构成阶段 2 runner 的实现、部署或数据库写入授权。
