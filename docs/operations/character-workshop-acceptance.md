@@ -106,3 +106,9 @@ B1 已删除 `CharacterTransactionRecoveryKind`、`kind`、`deferred`、`budgetE
 - 按“一次定向复现”约束执行 `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/character-asset-service.test.ts tests/character-store.test.ts -t "saveCompiled 首次写拒绝既有 ID|事务恢复协调：活动与非活动角色"`：退出 0，2/2 通过，3.31 秒；没有重跑完整门。`verify:desktop` 的失败仍按事实保留，不写成通过；同一新 HEAD 的 security 20/20、integration 46/46 与 Electron 61/61 证据来自此前已完整通过的 `verify:characters`。
 
 复验删除门再次确认旧 Journal、v4 正式 marker、旧所有权摘要 helper、`preserveRollback()`、PackageService 普通 `store.delete()` 与 detached marker 执行匹配均为零命中，Journal 文件不存在；`.complete-*` 只保留在当前 marker 移动清理的内部临时文件名。生产代码明确先稳定排序，再用 `slice(0, MAX_IMPORT_RECOVERY_ENTRIES)` 截断 256 项。以最新 B2 计划提交 `ecdc3f5` 为保护基线，网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。
+
+### 最终代码基线复验
+
+最终 B2 代码基线为 `c2455b2`。它相对上一验收提交 `aa2fb57` 的生产代码 +26/-27（净 -1）、测试 +25/-27（净 -2），把 2000ms 预算起点移到 inventory 排序与 256 项截断之后，并使已开始处理的坏候选同样受单项完成边界保护。其相邻 151 项测试与 Desktop typecheck 的通过属于修复提交前置证据；依据终审裁决，本轮不重复完整门禁。
+
+本轮实际执行 `pnpm.cmd --filter @myself/desktop build`，退出 0，约 7.8 秒；随后执行唯一纵向场景 `pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包恢复一坏一好时继续启动桌宠与普通聊天"`，退出 0，1/1 通过，7.9 秒。旧 Journal、v4 正式 marker、旧所有权摘要 helper、`preserveRollback()`、PackageService 普通 `store.delete()` 与 detached marker 执行匹配继续零命中，Journal 文件不存在；代码仍先截断 256 项，再记录 `startedAt`。以 `ecdc3f5` 为保护基线，网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。此前完整门及 `verify:desktop` 的历史结果保持原文，不由本轮小范围复验改写。
