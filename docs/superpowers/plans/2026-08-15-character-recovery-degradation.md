@@ -21,11 +21,11 @@
 - 正式运行时只允许一个启动裁决 owner、一条 recovery IPC 通道和一种公开载荷。
 - 禁止新增 `CharacterActions.getCharacterRecoverySnapshot()` 或同义方法、函数式快照 getter/callback、Renderer 恢复 Store 和新 IPC 通道。
 - 禁止跨 IPC 传递 `fallbackActive`、`affectedCapabilities`、`suggestion`、绝对路径、marker 正文、哈希、事务令牌、物理身份或内部异常。
-- 每个任务执行 RED → 最小 GREEN → 删除旧路径；完整矩阵只放在最能证明不变量的一层。
+- 实现任务 Task 1/2 执行 RED → 最小 GREEN → 删除旧路径；Task 3 是跨进程纵向验收，先记录 Task 1/2 的先验绿，再增加或合并替代证据，不伪造 RED。完整矩阵只放在最能证明不变量的一层。
 - 每个任务完成后由新审查者分别检查规格符合性和代码质量；Critical 或 Important 未清零不得进入下一任务。
 - 单点排障或单条命令达到 15 分钟即终止该路线，保存证据后拆分、换方案或按用户规则放宽门禁。
 - 用户已授权本计划所需的本地 Git 写操作；每个任务通过审查后小步提交，不执行 push、merge、rebase、reset。
-- 执行开始先记录 `$b3Base = git rev-parse HEAD`，最终所有范围检查均以该提交为基线，不使用会掩盖已提交变更的 `HEAD` 对 `HEAD` 比较。
+- 最终范围检查以本计划文件的最新提交为基线，并在同一个 PowerShell 进程中解析、引用该提交；不得使用会掩盖已提交 B3 变更的 `HEAD` 对 `HEAD` 比较。
 
 ## 固定公开契约
 
@@ -133,7 +133,7 @@ const CHARACTER_RECOVERY_ISSUE_ORDER = [
 
 ---
 
-### Task 1：一次贯通 Schema、启动 owner、Main、IPC 与 Preload
+### Task 1：一次贯通 Schema、启动 owner、Main、IPC、Preload 与 Pet
 
 **文件：**
 
@@ -143,10 +143,13 @@ const CHARACTER_RECOVERY_ISSUE_ORDER = [
 - 修改：`apps/desktop/src/main/index.ts`
 - 修改：`apps/desktop/src/main/ipc/register-ipc.ts`
 - 修改：`apps/desktop/src/preload/index.ts`
+- 修改：`apps/desktop/src/renderer/src/pet/PetView.tsx`
 - 修改：`apps/desktop/tests/character-startup.test.ts`
 - 修改：`apps/desktop/tests/character-ipc.test.ts`
 - 修改：`apps/desktop/tests/preload-api.test.ts`
 - 修改：`apps/desktop/tests/main-lifecycle.test.ts`
+- 修改：`apps/desktop/tests/official-default-character.test.ts`
+- 修改：`apps/desktop/tests/pet-view.test.tsx`
 
 **接口：**
 
@@ -163,7 +166,7 @@ export function registerCharacterIpc(
 ): void;
 ```
 
-- 删除：旧 `{ errorCode }` Schema/类型、`CharacterStartupResult` kind 联合、`startupRecoveryErrorCode`、`remove?` seam、`recoveryErrorCode: () => string | null` 及其默认值。
+- 删除：旧 `{ errorCode }` Schema/类型、`CharacterStartupResult` kind 联合、`startupRecoveryErrorCode`、`remove?` seam、`recoveryErrorCode: () => string | null` 及其默认值、`loadCharacterStartupRecovery()`。
 
 - [ ] **步骤 1：写 Schema RED 测试**
 
@@ -186,16 +189,16 @@ expect(() => characterRecoverySnapshotResultSchema.parse({
 
 - [ ] **步骤 2：写启动 owner RED 测试**
 
-用调用数组断言 `runtime → default（仅 fallback）→ final-index → b1-report`；报告读取后若再 load 就失败。完整覆盖：非活动 B1/B2 问题不 fallback；活动 draft blocked 且 runtime 健康不 fallback；活动 publish blocked、活动 deferred、runtime/manifest/resource/version 失败或索引已恢复触发对应 fallback；未知异常规范化为 `CHARACTER_OPERATION_FAILED`。断言重复问题去重、双分面保留、固定排序，以及快照/数组/每个 issue 均 `Object.isFrozen(...) === true`。
+用调用数组断言 `runtime → default（仅 fallback）→ final-index → b1-report`；报告读取后若再 load 就失败。完整覆盖：非活动 B1/B2 问题不 fallback；活动 draft blocked 且 runtime 健康不 fallback；活动角色只有 B2 blocked 或 deferred 且 runtime 健康时不 fallback；活动 publish blocked、活动 B1 deferred、runtime/manifest/resource/version 失败或索引已恢复触发对应 fallback；未知异常规范化为 `CHARACTER_OPERATION_FAILED`。断言重复问题去重、双分面保留、固定排序，以及快照/数组/每个 issue 均 `Object.isFrozen(...) === true`。
 
-- [ ] **步骤 3：写 IPC/Preload RED 纵向测试**
+- [ ] **步骤 3：写 IPC/Preload/Pet RED 纵向测试**
 
-handler 只接受严格空对象并返回注入值；额外输入在读取前失败。Preload 对合法值二次解析，含私有字段或非法 union 值时拒绝。只保留一条纵向边界证据，不重复启动矩阵。
+handler 只接受严格空对象并返回注入值；额外输入在读取前失败。Preload 对合法值二次解析，含私有字段或非法 union 值时拒绝。Pet 直接读取最小 DTO：fallback 非空显示官方默认角色提示和工作室入口；只有 issues 时不显示横幅、不替换健康播放器；RPC 失败不回显异常正文。只保留纵向边界证据，不重复启动矩阵。
 
 - [ ] **步骤 4：运行 RED**
 
 ```powershell
-pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts main-lifecycle.test.ts
+pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts main-lifecycle.test.ts official-default-character.test.ts pet-view.test.tsx
 ```
 
 预期：FAIL，旧链仍是标量 callback，启动 owner 尚不接收 B1/B2 报告。
@@ -210,6 +213,9 @@ Main 按下列形状保存值，不建立 getter：
 
 ```ts
 const packageRecoveryReport = await characterPackageService.initialize();
+const defaultResources = app.isPackaged
+  ? join(app.getAppPath(), 'resources/characters/default')
+  : join(__dirname, '../../resources/characters/default');
 const characterStartup = await prepareCharacterStartup(
   {
     indexRecovered: recoveredCorruptCharacterIndex.recovered,
@@ -232,14 +238,14 @@ const characterStartup = await prepareCharacterStartup(
 const characterRecoverySnapshot = characterStartup.recoverySnapshot;
 ```
 
-`registerCharacterIpc(..., characterRecoverySnapshot)` 直接注入深冻结值；handler 执行严格空输入校验后以新 Schema parse 该值。Preload 保留现有通道和方法，只更新返回类型与二次 Schema 校验。普通聊天、Secret、Settings 和窗口初始化不以恢复结果为退出条件。
+`registerCharacterIpc(..., characterRecoverySnapshot)` 直接注入深冻结值；handler 执行严格空输入校验后以新 Schema parse 该值。Preload 保留现有通道和方法，只更新返回类型与二次 Schema 校验。Pet 在既有 effect 中直接调用 API，只保存 fallback 文案所需局部状态，并在同一步删除 `loadCharacterStartupRecovery()` 的导出、调用和专属测试，不保留新旧载荷双轨。普通聊天、Secret、Settings 和窗口初始化不以恢复结果为退出条件。
 
 - [ ] **步骤 7：删除旧链并运行 GREEN**
 
-删除旧标量、callback、kind 分支、匿名返回类型及只服务旧形状的测试：
+删除旧标量、callback、kind 分支、匿名返回类型、Pet 旧 loader 及只服务旧形状的测试：
 
 ```powershell
-pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts main-lifecycle.test.ts official-default-character.test.ts main-conversation-composition.test.ts
+pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts main-lifecycle.test.ts official-default-character.test.ts pet-view.test.tsx main-conversation-composition.test.ts
 pnpm.cmd --filter @myself/desktop typecheck
 ```
 
@@ -248,32 +254,33 @@ pnpm.cmd --filter @myself/desktop typecheck
 - [ ] **步骤 8：删除门与双重审查**
 
 ```powershell
-rg -n "startupRecoveryErrorCode|recoveryErrorCode|kind: 'fallback'|kind: 'active'|remove\?:|errorCode: string \| null|fallbackActive|affectedCapabilities|suggestion" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/tests
+rg -n "startupRecoveryErrorCode" apps/desktop/src/main/index.ts
+rg -n "recoveryErrorCode\s*:\s*\(\)\s*=>|recoveryErrorCode\(\)" apps/desktop/src/main/index.ts apps/desktop/src/main/ipc/register-ipc.ts
+rg -n "kind: 'fallback'|kind: 'active'|remove\?:|errorCode: string \| null|fallbackActive|affectedCapabilities|suggestion|loadCharacterStartupRecovery" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/src/renderer/src/pet apps/desktop/tests/pet-view.test.tsx apps/desktop/tests/character-startup.test.ts
 rg -n "getCharacterRecoverySnapshot" apps/desktop/src/main/characters/character-actions.ts
 git diff --check
 ```
 
-预期：前两条零命中。规格审查核对 B2 硬前置、exact unions 和一致性顺序；质量审查核对无 Actions getter、动态 callback、第二通道、双轨或内部数据泄漏。
+预期：前四条零命中。扫描刻意不匹配 B1 内部合法的 `recoveryErrorCode` helper。规格审查核对 B2 硬前置、exact unions 和一致性顺序；质量审查核对无 Actions getter、动态 callback、第二通道、双轨或内部数据泄漏。
 
 - [ ] **步骤 9：提交**
 
 ```powershell
-git add apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/src/main/characters/character-startup.ts apps/desktop/src/main/index.ts apps/desktop/src/main/ipc/register-ipc.ts apps/desktop/src/preload/index.ts apps/desktop/tests/character-startup.test.ts apps/desktop/tests/character-ipc.test.ts apps/desktop/tests/preload-api.test.ts apps/desktop/tests/main-lifecycle.test.ts
+git add apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/src/main/characters/character-startup.ts apps/desktop/src/main/index.ts apps/desktop/src/main/ipc/register-ipc.ts apps/desktop/src/preload/index.ts apps/desktop/src/renderer/src/pet/PetView.tsx apps/desktop/tests/character-startup.test.ts apps/desktop/tests/character-ipc.test.ts apps/desktop/tests/preload-api.test.ts apps/desktop/tests/main-lifecycle.test.ts apps/desktop/tests/official-default-character.test.ts apps/desktop/tests/pet-view.test.tsx
 git commit -m "refactor(desktop): replace scalar character recovery chain"
 ```
 
 ---
 
-### Task 2：原位替换 Pet 与 Workshop 并删除旧 loader
+### Task 2：建立共享 issue presentation 并原位接入 Workshop
 
 **文件：**
 
 - 修改：`apps/desktop/src/shared/character-recovery.ts`
-- 修改：`apps/desktop/src/renderer/src/pet/PetView.tsx`
 - 修改：`apps/desktop/src/renderer/src/characters/workshop/CharacterWorkshopView.tsx`
 - 修改：`apps/desktop/tests/character-recovery.test.ts`
-- 修改：`apps/desktop/tests/pet-view.test.tsx`
 - 修改：`apps/desktop/tests/character-workshop-components.test.tsx`
+- 修改：`apps/desktop/tests/character-workshop-close-renderer.test.tsx`
 
 **接口：**
 
@@ -292,28 +299,27 @@ export function characterRecoveryPresentation(
 ): CharacterRecoveryPresentation;
 ```
 
-- 保留：`characterRecoveryMessage(errorCode: CharacterRecoveryFallbackErrorCode)` 作为 Pet fallback 文案入口。
-- 删除：`loadCharacterStartupRecovery()` 及其专属测试；不以新 loader 替代。
+- 保留：Task 1 已迁移的 Pet fallback 路径；本任务不再次修改 Pet。
 
 - [ ] **步骤 1：写共享映射 RED 测试**
 
-在 `character-recovery.test.ts` 对五个 issue union 值逐一断言中文 text、受影响能力和建议；这是完整文案矩阵唯一 owner。未知 RPC 异常只能产生通用安全文案，不回显注入的绝对路径或 token sentinel。
+在 `character-recovery.test.ts` 对五个 issue union 值逐一断言中文 text、受影响能力和建议；这是完整文案矩阵唯一 owner。映射结果不得包含注入的绝对路径或 token sentinel；Workshop RPC 失败只显示通用安全文案，不回显异常正文。
 
-- [ ] **步骤 2：写 Pet 与 Workshop RED 测试**
+- [ ] **步骤 2：写 Workshop RED 测试并补齐 API doubles**
 
-Pet：fallback 非空显示官方默认角色提示和工作室入口；仅含非活动 issues 时不显示横幅、不替换健康播放器；RPC 失败不回显原文。Workshop：View 读取一次快照，按当前 `selectedCharacterId` 过滤；切换选择只过滤内存值；其他角色问题不显示；mock store action 不因恢复读取而调用。
+Workshop View 读取一次快照，按当前 `selectedCharacterId` 过滤；切换选择只过滤内存值；其他角色问题不显示；mock store action 不因恢复读取而调用。同步更新 `character-workshop-components.test.tsx` 和 `character-workshop-close-renderer.test.tsx` 的 API double，为 `getCharacterRecoverySnapshot()` 返回 `{ fallbackErrorCode: null, issues: [] }`，避免类型检查靠强制断言绕过。
 
 - [ ] **步骤 3：运行 RED**
 
 ```powershell
-pnpm.cmd --filter @myself/desktop test -- character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx
+pnpm.cmd --filter @myself/desktop test -- character-recovery.test.ts character-workshop-components.test.tsx character-workshop-close-renderer.test.tsx
 ```
 
-预期：FAIL，Pet 仍依赖旧 loader，Workshop 尚未读取快照。
+预期：FAIL，Workshop 尚未读取和过滤恢复快照。
 
 - [ ] **步骤 4：实现最小 Renderer 映射**
 
-Pet 在既有 effect 直接调用 API，只保存 fallback 文案所需局部状态。`CharacterWorkshopViewProps.api` 原位扩展为 `CharacterWorkshopApi & Pick<MyselfApi, 'onCharacterWorkshopFlushRequested' | 'getCharacterRecoverySnapshot'>`；View 保存一次只读快照局部 state，并在 render 时执行：
+`CharacterWorkshopViewProps.api` 原位扩展为 `CharacterWorkshopApi & Pick<MyselfApi, 'onCharacterWorkshopFlushRequested' | 'getCharacterRecoverySnapshot'>`；View 保存一次只读快照局部 state，并在 render 时执行：
 
 ```ts
 const selectedRecoveryIssues = recoverySnapshot?.issues.filter(
@@ -323,14 +329,14 @@ const selectedRecoveryIssues = recoverySnapshot?.issues.filter(
 
 复用现有 alert/toast/按钮样式；不修改 `character-workshop-store.ts`，不把恢复状态交给 store action，不从错误码推导磁盘操作。
 
-- [ ] **步骤 5：删除旧 loader 与重复矩阵**
+- [ ] **步骤 5：删除重复矩阵**
 
-删除 `loadCharacterStartupRecovery` 导出、导入、调用和测试。Pet 只保留 fallback、非 fallback、RPC 安全失败；Workshop 只保留选中角色过滤、切换选择和不写 Store。
+共享映射测试拥有五个 issue 码完整矩阵；Workshop 只保留选中角色过滤、切换选择、不写 Store和 RPC 安全失败，不重复全部错误码。
 
 - [ ] **步骤 6：运行 GREEN 与聊天回归**
 
 ```powershell
-pnpm.cmd --filter @myself/desktop test -- character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx character-workshop-store.test.ts main-conversation-composition.test.ts
+pnpm.cmd --filter @myself/desktop test -- character-recovery.test.ts character-workshop-components.test.tsx character-workshop-close-renderer.test.tsx character-workshop-store.test.ts main-conversation-composition.test.ts
 pnpm.cmd --filter @myself/desktop typecheck
 ```
 
@@ -350,13 +356,13 @@ git diff --check
 - [ ] **步骤 8：提交**
 
 ```powershell
-git add apps/desktop/src/shared/character-recovery.ts apps/desktop/src/renderer/src/pet/PetView.tsx apps/desktop/src/renderer/src/characters/workshop/CharacterWorkshopView.tsx apps/desktop/tests/character-recovery.test.ts apps/desktop/tests/pet-view.test.tsx apps/desktop/tests/character-workshop-components.test.tsx
+git add apps/desktop/src/shared/character-recovery.ts apps/desktop/src/renderer/src/characters/workshop/CharacterWorkshopView.tsx apps/desktop/tests/character-recovery.test.ts apps/desktop/tests/character-workshop-components.test.tsx apps/desktop/tests/character-workshop-close-renderer.test.tsx
 git commit -m "refactor(desktop): replace scalar recovery renderer path"
 ```
 
 ---
 
-### Task 3：用最多两个重启场景验收并关闭旧路径
+### Task 3：用最多两个重启场景完成纵向验收并关闭旧路径
 
 **文件：**
 
@@ -372,21 +378,27 @@ git commit -m "refactor(desktop): replace scalar recovery renderer path"
 
 - [ ] **步骤 1：盘点并合并既有恢复 E2E**
 
-用 `rg` 列出角色恢复、marker 和 restart 场景。删除或合并可由 B1/B2 模块测试证明的矩阵，最终 B3 恢复重启场景不得超过两个。
+用 `rg` 列出角色恢复、marker 和 restart 场景。删除或合并可由 B1/B2 模块测试证明的矩阵，最终 B3 恢复重启场景不得超过两个。修改 E2E 前先运行并记录先验绿：
 
-- [ ] **步骤 2：写非活动角色合并 RED 场景**
+```powershell
+pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts official-default-character.test.ts character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx character-workshop-close-renderer.test.tsx
+```
+
+预期：Task 1/2 的定向行为证据 PASS；Task 3 只验证这些行为跨 Main/Preload/Renderer/真实重启后仍成立。
+
+- [ ] **步骤 2：建立非活动角色纵向场景**
 
 通过正式 UI 准备健康活动角色和非活动角色；退出后准备非活动 Store 坏 marker、一个坏 Package marker 和一个可恢复 Package marker；重启断言健康播放器 ready、Pet 无 fallback、Workshop 只在选中相应角色时显示问题、聊天可提交。序列化公开快照，断言不含用户目录、marker sentinel、哈希或 token。
 
-- [ ] **步骤 3：写活动角色 fallback RED 场景**
+- [ ] **步骤 3：建立活动角色 fallback 纵向场景**
 
-损坏活动角色 publish marker 或 runtime 后重启；断言当前已是官方默认角色、Pet 显示降级与工作室入口、原始恢复证据字节仍保留、其他健康角色仍列出、聊天可提交。
+损坏活动角色 publish marker 或 runtime 后重启；断言当前已是官方默认角色、Pet 显示降级与工作室入口、原始恢复证据字节仍保留、其他健康角色仍列出、聊天可提交。这两个场景是对已由 Task 1/2 单元测试证明行为的跨进程替代证据，不要求先出现失败；若现有场景已经覆盖，则原位合并并先记录修改前的通过基线，不为制造 RED 破坏生产代码。
 
 - [ ] **步骤 4：运行定向 E2E**
 
 ```powershell
-pnpm.cmd build:desktop
-pnpm.cmd exec playwright test tests/e2e/desktop.spec.ts --grep "角色恢复"
+pnpm.cmd --filter @myself/desktop build
+pnpm.cmd exec playwright test --config tests/playwright.config.ts --grep "角色恢复"
 ```
 
 预期：两个或更少场景全部 PASS。单点失败最多定向复现一次；达到 15 分钟即停止该路线。
@@ -394,10 +406,13 @@ pnpm.cmd exec playwright test tests/e2e/desktop.spec.ts --grep "角色恢复"
 - [ ] **步骤 5：最终删除与边界扫描**
 
 ```powershell
-rg -n "startupRecoveryErrorCode|loadCharacterStartupRecovery|fallbackActive|CharacterActions\.getCharacterRecoverySnapshot|recoveryErrorCode" apps/desktop/src apps/desktop/tests tests/e2e
+rg -n "startupRecoveryErrorCode" apps/desktop/src/main/index.ts
+rg -n "recoveryErrorCode\s*:\s*\(\)\s*=>|recoveryErrorCode\(\)" apps/desktop/src/main/index.ts apps/desktop/src/main/ipc/register-ipc.ts
+rg -n "loadCharacterStartupRecovery|fallbackActive|CharacterActions\.getCharacterRecoverySnapshot" apps/desktop/src apps/desktop/tests tests/e2e
 rg -n "affectedCapabilities|suggestion" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts
-git diff --name-only $b3Base..HEAD -- apps/website apps/cloudbase-api apps/package-scanner tests/e2e/website.spec.ts
-git diff --check $b3Base..HEAD
+$b3PlanBase = (git log -1 --format=%H -- docs/superpowers/plans/2026-08-15-character-recovery-degradation.md).Trim()
+git diff --name-only "$b3PlanBase" -- apps/website apps/cloudbase-api apps/package-scanner tests/e2e/website.spec.ts
+git diff --check "$b3PlanBase" --
 ```
 
 预期：全部无输出。另按测试标题确认恢复重启场景不超过两个。
@@ -407,7 +422,7 @@ git diff --check $b3Base..HEAD
 逐条运行，任何单条达到 15 分钟即终止并记录现有证据：
 
 ```powershell
-pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx
+pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts official-default-character.test.ts character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx character-workshop-close-renderer.test.tsx
 pnpm.cmd --filter @myself/desktop typecheck
 pnpm.cmd --filter @myself/desktop test
 pnpm.cmd test:security
