@@ -135,12 +135,12 @@ pnpm.cmd --filter @myself/desktop typecheck
 - [ ] **Step 6：执行删除门与自审**
 
 ```powershell
-rg -n "rename\(temporaryFile, file\)|copyFile\(temporaryFile, file\)" apps/desktop/src/main/storage/atomic-file-coordinator.ts
+git diff -- apps/desktop/src/main/storage/atomic-file-coordinator.ts | rg "^\+.*(rename|copyFile)"
 git diff --check
 git diff -- apps/desktop/src/main/storage/atomic-file-coordinator.ts apps/desktop/tests/atomic-file-coordinator.test.ts
 ```
 
-预期：第一条零命中；差异中没有 marker 业务、没有新的依赖注入接口、没有改变 `atomicWriteText()`。
+预期：第一条零命中；差异中没有新增 rename/copy fallback、marker 业务或依赖注入接口，也没有改变 `atomicWriteText()` 的既有 rename replacement 路径。
 
 - [ ] **Step 7：新鲜审查并提交**
 
@@ -235,8 +235,8 @@ pnpm.cmd --filter @myself/desktop typecheck
 - [ ] **Step 6：执行删除门与自审**
 
 ```powershell
-rg -n "rollbackImportedCharacter\(" apps/desktop/src apps/desktop/tests
-rg -n "resolves\.toBe\((true|false)\)" apps/desktop/tests/character-store.test.ts
+rg -n "rollbackImportedCharacter\(" apps/desktop/src
+rg -n -U "rollbackImportedCharacter\([^;]+?\)\)\s*\.resolves\.toBe\((true|false)\)" apps/desktop/tests/character-store.test.ts
 git diff --check
 ```
 
@@ -311,7 +311,25 @@ private preserveMarkerEvidence(
 
 - [ ] **Step 1：写 v3 完整发布与正常导入顺序 RED**
 
-把现有 `回滚删除失败时写入 marker 并在下一次导入前恢复` 替换为实际测试 `导入失败只调用带令牌回滚并保留无法完成的 v3 marker`；mock Store 的 `delete()` 在被调用时直接抛 `UNSAFE_DELETE_CALLED`，断言该错误永不出现。新增实际测试 `v3 marker 完整发布后才创建 Store owner且完成后复核并清理`，记录调用顺序并断言：
+把现有 `回滚删除失败时写入 marker 并在下一次导入前恢复` 改写为实际测试 `导入失败只调用带令牌回滚并保留无法完成的 v3 marker`。使用 spy 明确证明安全路径：
+
+```ts
+const deleteSpy = vi.spyOn(store, 'delete');
+const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
+
+await expect(service.importCharacter(packagePath))
+  .rejects.toThrow('CHARACTER_PACKAGE_ROLLBACK_FAILED');
+expect(rollbackSpy).toHaveBeenCalledTimes(1);
+const [[rolledBackId, rolledBackToken]] = rollbackSpy.mock.calls;
+expect(rolledBackId).toBe('demo');
+expect(JSON.parse(await readFile(marker, 'utf8')).importTransactionId)
+  .toBe(rolledBackToken);
+expect(deleteSpy).not.toHaveBeenCalled();
+```
+
+不得用让 `delete()` 抛 sentinel 的方式代替“未调用”证据。新增实际测试 `已有 blocked marker 的目标导入稳定失败且不换 ID`：预置目标 ID 的 blocked v3 marker，让 `createId` spy 依次可返回 `blocked-target`、`unexpected-retry`，断言导入以 `CHARACTER_PACKAGE_ROLLBACK_FAILED` 拒绝、`createId` 只调用一次、marker 和目标目录字节不变，且没有创建 `unexpected-retry`。
+
+新增实际测试 `v3 marker 完整发布后才创建 Store owner 且完成后复核并清理`，记录调用顺序并断言：
 
 ```ts
 expect(calls).toEqual([
@@ -334,6 +352,9 @@ expect(calls).toEqual([
 - `未知版本与正文文件名角色不一致均返回 blocked`
 - `无法从严格文件名识别角色时不伪造 issue`
 - `证据目标冲突或权限失败保留原 marker 且继续后续项`
+- `marker open 或 read 失败只 blocked 当前项且继续后续合法项`
+- `证据发布 ENOSPC 时保留原 marker 且继续后续合法项`
+- `证据发布后清理原 marker 失败时不报告恢复且继续后续项`
 
 用 `Buffer.from('{"version":3')` 作为半截字节 sentinel；恢复后逐字节比较隔离证据，报告只断言：
 
@@ -346,7 +367,12 @@ expect(report).toEqual({
 });
 expect(JSON.stringify(report)).not.toContain(transactionId);
 expect(JSON.stringify(report)).not.toContain(charactersDirectory);
+expect(Object.isFrozen(report)).toBe(true);
+expect(Object.isFrozen(report.issues)).toBe(true);
+expect(report.issues.every(Object.isFrozen)).toBe(true);
 ```
+
+`open/read`、`ENOSPC` 与清理失败通过 Vitest 模块 mock 在文件边界制造，不增加生产 fault seam。每个用例同时放置一张后续合法 v3 marker，并断言后续项确实调用带令牌回滚；不能只断言 `initialize()` 没有抛错。
 
 - [ ] **Step 3：写所有权、竞态和清理 RED**
 
@@ -354,7 +380,7 @@ expect(JSON.stringify(report)).not.toContain(charactersDirectory);
 
 - [ ] **Step 4：写活动优先、256 和 2000ms RED**
 
-在现有 `CharacterPackageServiceDependencies` 增加私有调度所需的 `recoveryNow?: () => number`，与 B1 既有时钟模式一致，不增加公开产品 API。添加实际测试：
+在现有 `CharacterPackageServiceDependencies` 增加私有调度所需的 `recoveryNow?: () => number`，与 B1 既有时钟模式一致；它只作为 Main 构造依赖中的时钟 seam，不进入 Renderer、Preload、IPC 或产品方法。添加实际测试：
 
 - `活动角色 marker 先于稳定文件名顺序处理`
 - `第 257 个 inventory 项保持原字节并返回 deferred`
@@ -363,21 +389,32 @@ expect(JSON.stringify(report)).not.toContain(charactersDirectory);
 
 数量测试只完整创建边界附近的 255、256、257 三类候选，不在 Store 或 E2E 重复 257 项矩阵。
 
-- [ ] **Step 5：运行 PackageService RED 并核对失败原因**
+- [ ] **Step 5：先同步改写或删除旧测试 owner**
+
+在运行整组 RED 前，原位改写所有仍断言 v1 静默删除、v2 物理摘要回滚、普通 `store.delete()` 或整轮抛错的旧测试；无法表达新接口行为且只服务旧实现的 fixture/helper 直接删除。不得保留旧矩阵再叠加新矩阵，也不得在 GREEN 后才删除会与新规格冲突的旧测试。
+
+```powershell
+rg -n "package-import-rollback|preserveRollback|rollbackImportedCharacter|store\.delete|CHARACTER_PACKAGE_ROLLBACK_FAILED" apps/desktop/tests/character-package-service.test.ts
+git diff -- apps/desktop/tests/character-package-service.test.ts
+```
+
+预期：检索到的 marker 样本中，v1/v2 只用于“隔离且不删除”的新断言；`delete` 只作为 `vi.spyOn(store, 'delete')` 的未调用证据；测试差异明确表现为替换旧测试而非只追加。
+
+- [ ] **Step 6：运行 PackageService RED 并核对失败原因**
 
 ```powershell
 pnpm.cmd --filter @myself/desktop test -- character-package-service.test.ts
 ```
 
-预期：FAIL，失败来自旧整轮恢复、旧 v1/v2 删除、普通 `store.delete()`、布尔结果或 `initialize(): Promise<void>`；ZIP 导入、导出和 source 校验旧测试仍应保持通过。
+预期：FAIL，失败来自生产代码仍是旧整轮恢复、旧 v1/v2 删除、普通 `store.delete()`、布尔结果或 `initialize(): Promise<void>`；已经改写的新规格测试必须失败，ZIP 导入、导出和 source 校验旧测试仍应保持通过。
 
-- [ ] **Step 6：实现 v3 Schema、inventory 与有界读取**
+- [ ] **Step 7：实现 v3 Schema、inventory 与有界读取**
 
 在 `character-package-service.ts` 内增加 `.strict()` 的 v3 Zod Schema、`MAX_IMPORT_RECOVERY_ENTRIES = 256`、`IMPORT_RECOVERY_BUDGET_MS = 2_000`、`MAX_IMPORT_MARKER_BYTES = 4_096`。inventory 只接收角色根直属普通目录项中 `.package-import-rollback-` 前缀与 `.json` 后缀候选，显式排除 `.tmp` 和 `.corrupt-` 证据；严格文件名可解析的活动角色排首位，其余按文件名稳定排序。
 
 marker 必须通过 `open('r')` 后的句柄 `stat()` 验证普通文件，读取至多 `MAX_IMPORT_MARKER_BYTES + 1`，记录 `dev/ino/size` 并在隔离、回滚和清理前后复核。超限、链接、Junction、路径越界或身份变化统一 fail closed。
 
-- [ ] **Step 7：实现逐项恢复、隔离与最小报告**
+- [ ] **Step 8：实现逐项恢复、隔离与最小报告**
 
 `recoverPendingRollbacks()` 原位改为返回 `CharacterPackageRecoveryReport`。每个 inventory 项独立捕获错误；v3 只调用 `rollbackImportedCharacter(characterId, importTransactionId)`：
 
@@ -399,11 +436,13 @@ switch (result.kind) {
 
 legacy、坏 JSON 和未知版本只调用同文件内的私有证据保留逻辑；证据正文通过 `atomicWriteFileExclusive()` 原样发布，随后复核原 marker 仍为读取时同一普通文件才移除。不可归属项只在 Main 内记录 `CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED`，扫描失败只记录 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED`，日志不拼接路径、文件名或正文。最终 issue 按角色 ID 稳定排序并按 blocked 高于 deferred 去重，使用 `Object.freeze()` 冻结每个 issue、issues 数组和 report 后一次性返回。
 
-- [ ] **Step 8：把正常导入失败改为同一安全回滚**
+- [ ] **Step 9：把正常导入失败改为同一安全回滚**
 
-`writePendingImport()` 继续作为 `CharacterPackageService` 私有方法，但正文固定为 v3 并调用 `atomicWriteFileExclusive()`。导入 catch 在已取得 `createdId + importTransactionId` 时只调用 `rollbackImportedCharacter()`；`rolled-back|absent` 才按身份复核完成 marker，`ownership-mismatch|active-character` 或异常均保留 v3 marker 并抛稳定 `CHARACTER_PACKAGE_ROLLBACK_FAILED`。正常完成仍要求 `completeImportedCharacter()` 返回 `true` 后才清理本次 marker 和返回角色 ID。
+`writePendingImport()` 继续作为 `CharacterPackageService` 私有方法，但正文固定为 v3 并调用 `atomicWriteFileExclusive()`。如果目标 marker 已存在或本轮恢复报告已把该目标判为 blocked，当前导入立即以稳定 `CHARACTER_PACKAGE_ROLLBACK_FAILED` 结束；不得把 marker 冲突解释成角色 ID 冲突并调用 `createId()` 换号重试。
 
-- [ ] **Step 9：运行 GREEN 与相邻回归**
+导入 catch 在已取得 `createdId + importTransactionId` 时只调用 `rollbackImportedCharacter()`；`rolled-back|absent` 才按身份复核完成 marker，`ownership-mismatch|active-character` 或异常均保留 v3 marker 并抛稳定 `CHARACTER_PACKAGE_ROLLBACK_FAILED`。正常完成仍要求 `completeImportedCharacter()` 返回 `true` 后才清理本次 marker 和返回角色 ID。
+
+- [ ] **Step 10：运行 GREEN 与相邻回归**
 
 ```powershell
 pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-store.test.ts character-package-service.test.ts
@@ -412,26 +451,29 @@ pnpm.cmd --filter @myself/desktop typecheck
 
 预期：全部 PASS；PackageService 已开始按 Task 2 的 `kind` 判别结果处理 marker。
 
-- [ ] **Step 10：删除旧 owner、旧回退和重复测试**
+- [ ] **Step 11：删除旧生产 owner 与旧回退**
 
-只在 Step 9 通过后删除：v1 静默删除、v2 物理摘要恢复/回写、`CharacterOwnership`、package rollback 专用 `captureCharacterOwnership()`/`sameCharacterOwnership()`/SHA-256 摘要、`preserveRollback()`、导入 catch 中普通 `store.delete()`，以及只验证这些旧行为的测试脚手架。若同名哈希或身份 helper 仍被 ZIP 导出安全使用，只删除 package rollback 专用分支，不动真实消费者。
+只在 Step 10 通过后删除生产代码中的 v1 静默删除、v2 物理摘要恢复/回写、`CharacterOwnership`、package rollback 专用 `captureCharacterOwnership()`/`sameCharacterOwnership()`/SHA-256 摘要、`preserveRollback()` 和导入 catch 中普通 `store.delete()`。旧测试 owner 已在 Step 5 与 RED 同步替换，不得拖到此处再删。若同名哈希或身份 helper 仍被 ZIP 导出安全使用，只删除 package rollback 专用分支，不动真实消费者。
 
-- [ ] **Step 11：执行删除门与差异审查**
+- [ ] **Step 12：执行删除门与差异审查**
 
 ```powershell
-rg -n "CharacterImportJournal|character-import-journal|version:\s*4" apps/desktop/src/main/characters apps/desktop/tests
+rg -n "CharacterImportJournal|character-import-journal|version:\s*4" apps/desktop/src/main/characters/character-package-service.ts
+Test-Path apps/desktop/src/main/characters/character-import-journal.ts
 rg -n "CharacterOwnership|captureCharacterOwnership|sameCharacterOwnership|preserveRollback" apps/desktop/src/main/characters/character-package-service.ts
 rg -n "store\.delete\(" apps/desktop/src/main/characters/character-package-service.ts
 rg -n "version:\s*[12].*ownership|document\.version === [12]" apps/desktop/src/main/characters/character-package-service.ts
+pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-store.test.ts character-package-service.test.ts
+pnpm.cmd --filter @myself/desktop typecheck
 git diff --check
 git diff --stat
 ```
 
-预期：前四条零命中；生产 owner 数仍为 1；差异报告分别记录生产代码与测试的新增、删除和净值。若生产代码只增不减，本任务不得过审，必须先核对旧路径是否真正删除。
+预期：第一、第三、第四、第五条零命中，`Test-Path` 返回 `False`，删除后的定向测试与 typecheck PASS；测试中允许保留 `version: 4` 作为未知版本拒绝样本。生产 owner 数仍为 1；差异报告分别记录生产代码与测试的新增、删除和净值。若生产代码只增不减，本任务不得过审，必须先核对旧路径是否真正删除。
 
-- [ ] **Step 12：新鲜审查并提交**
+- [ ] **Step 13：新鲜审查并提交**
 
-由未实现本任务的规格审查者逐条对照 B2 规格第 5—11 节，再由另一名代码质量审查者检查竞态、日志脱敏、测试分层和净删除；Critical/Important 全部修复并重跑 Step 9、Step 11 后提交：
+由未实现本任务的规格审查者逐条对照 B2 规格第 5—11 节，再由另一名代码质量审查者检查竞态、日志脱敏、测试分层和净删除；Critical/Important 全部修复并重跑 Step 10、Step 12 后提交：
 
 ```powershell
 git add apps/desktop/src/main/characters/character-package-service.ts apps/desktop/tests/character-package-service.test.ts
@@ -479,9 +521,9 @@ pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包�
 
 预期：在 Task 3 尚未通过时 FAIL 于坏 marker 阻断启动；Task 3 已通过时该步骤直接成为回归基线，必须记录为“先验已绿”，不得伪造 RED。
 
-- [ ] **Step 3：只做纵向测试所需的最小修正**
+- [ ] **Step 3：纵向失败时退回 Task 3 独立修复闭环**
 
-若失败暴露 Task 3 实现缺口，只修改 Task 3 已有 `CharacterPackageService` 路径并补对应接口测试；不得为 E2E 增加产品探针、恢复 IPC、第二个状态 owner 或测试专用 Journal。每个失败点最多诊断 15 分钟，超时后拆分到更小的 PackageService 定向复现。
+若失败暴露 Task 3 实现缺口，立即暂停 Task 4：先在 `character-package-service.test.ts` 写最小失败复现，再只修改 Task 3 已有 `CharacterPackageService` 路径；重跑 Task 3 定向测试与删除门，交给未参与修复的新鲜审查者复审，并以独立 `fix(desktop): ...` 提交完成修复。然后重新开始 Task 4 的定向 E2E。不得把任何产品代码或 PackageService 单元测试混入 Task 4 的验收提交，也不得为 E2E 增加产品探针、恢复 IPC、第二个状态 owner 或测试专用 Journal。每个失败点最多诊断 15 分钟，超时后拆分到更小的 PackageService 定向复现。
 
 - [ ] **Step 4：运行纵向 GREEN 与完整桌面门禁**
 
@@ -501,15 +543,16 @@ pnpm.cmd verify:desktop
 - [ ] **Step 5：核对旧路径、保护路径和文档范围**
 
 ```powershell
-rg -n "CharacterImportJournal|character-import-journal|version:\s*4" apps/desktop/src apps/desktop/tests tests/e2e
+rg -n "CharacterImportJournal|character-import-journal|version:\s*4" apps/desktop/src/main/characters/character-package-service.ts
+Test-Path apps/desktop/src/main/characters/character-import-journal.ts
 rg -n "CharacterOwnership|captureCharacterOwnership|sameCharacterOwnership|preserveRollback" apps/desktop/src/main/characters/character-package-service.ts
 rg -n "store\.delete\(" apps/desktop/src/main/characters/character-package-service.ts
 $b2PlanCommit = git log -1 --format=%H -- docs/superpowers/plans/2026-08-15-character-import-journal.md
-git diff --name-only "$b2PlanCommit..HEAD" -- apps/website apps/cloudbase-api apps/package-scanner tests/e2e/website.spec.ts
+git diff --name-only "$b2PlanCommit" -- apps/website apps/cloudbase-api apps/package-scanner tests/e2e/website.spec.ts
 git diff --check
 ```
 
-预期：前三条零命中，网站/CloudBase/Scanner 路径零差异，格式检查通过。另用只读差异确认 `character-store.ts` 中 owner 文件、活动角色保护和移动前后身份复核仍在。
+预期：第一、第三、第四条零命中，`Test-Path` 返回 `False`；测试中允许保留未知 v4 拒绝样本。保护路径命令同时覆盖已提交和未提交工作树差异，网站/CloudBase/Scanner 路径零差异，格式检查通过。另用只读差异确认 `character-store.ts` 中 owner 文件、活动角色保护和移动前后身份复核仍在。
 
 - [ ] **Step 6：更新现有验收记录**
 
