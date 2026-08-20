@@ -338,15 +338,11 @@ async function submitChatMessage(page: Page, text: string): Promise<void> {
   await send.click();
 }
 
-async function loadElectronFixtureModule(): Promise<ElectronFixtureModule | null> {
-  try {
-    const moduleUrl = pathToFileURL(
-      resolve(process.cwd(), 'tests/fixtures/electron-app.ts')
-    ).href;
-    return await import(moduleUrl) as ElectronFixtureModule;
-  } catch {
-    return null;
-  }
+async function loadElectronFixtureModule(): Promise<ElectronFixtureModule> {
+  const moduleUrl = pathToFileURL(
+    resolve(process.cwd(), 'tests/fixtures/electron-app.ts')
+  ).href;
+  return await import(moduleUrl) as ElectronFixtureModule;
 }
 
 type AppFixture = Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
@@ -383,8 +379,6 @@ async function waitForRendererPage(
 test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
   test('使用项目精确 Electron 路径、构建入口、随机回环 CDP 参数和隔离环境', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(fixture, '应提供直接启动 Electron 的 CDP 夹具').not.toBeNull();
-    if (!fixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const userDataDirectory = resolve('C:\\Temp\\myself-user-data');
@@ -431,8 +425,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('拒绝非回环 CDP 端点且等待使用有界超时', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(fixture, '应提供直接启动 Electron 的 CDP 夹具').not.toBeNull();
-    if (!fixture) return;
 
     await expect(fixture.waitForCdpReady({
       endpoint: 'http://0.0.0.0:9222',
@@ -452,8 +444,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('捕获日志时清除 API Key、Authorization Header 和授权根绝对路径', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(fixture, '应提供直接启动 Electron 的 CDP 夹具').not.toBeNull();
-    if (!fixture) return;
 
     const apiKey = runtimeDiagnosticKey();
     const authorizedRootDirectory = 'C:\\Temp\\myself-authorized-root';
@@ -500,8 +490,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('跨 chunk 拆分的动态 key、Authorization Header 与授权根在所有可观察诊断中仍脱敏', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -572,8 +560,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('原始日志证据仅在同一流跨块匹配，并识别普通与 JSON Authorization', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     const apiKey = 'tracker-api-key';
     const authorizedRootDirectory = resolve('C:\\Temp\\tracker-authorized-root');
@@ -618,8 +604,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('六个任务正文 sentinel 的模拟 console 泄漏都会使原始证据断言变红', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     const sentinels = [
       'task6-user-body-sentinel',
@@ -642,8 +626,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('原始日志证据在 UTF-8 多字节中间拆分 Buffer 时仍命中', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     const apiKey = '密钥-api';
     const authorizedRootDirectory = 'C:\\授权根';
@@ -685,8 +667,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('原始日志证据构造后不受输入对象与外部哨兵数组突变影响', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     const originalApiKey = 'original-tracker-api-key';
     const originalRoot = 'C:\\original-tracker-root';
@@ -718,8 +698,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('原始日志证据拒绝空哨兵，返回冻结布尔快照且 dispose 后不再变化', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.createCapturedLogEvidenceTracker).toBe('function');
-    if (!fixture?.createCapturedLogEvidenceTracker) return;
 
     expect(() => fixture.createCapturedLogEvidenceTracker({
       apiKey: 'tracker-api-key',
@@ -755,8 +733,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('自然退出宽限期内 child 退出时不启动任何强制清理', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6105, executablePath);
@@ -803,8 +779,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 非零时仅回退终止原 PID，并确认原 child 退出', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6101, executablePath);
@@ -842,8 +816,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 异步报错后原 PID 已消失时成功收敛并清理监听器', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6107, executablePath);
@@ -882,8 +854,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 异步报错后原 PID 仍精确匹配时安全回退并脱敏诊断', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const apiKey = runtimeDiagnosticKey();
     const authorizedRootDirectory = resolve(
@@ -942,8 +912,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：grace 后 PID 不存在时不得启动 taskkill', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6110, executablePath);
@@ -984,8 +952,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：默认预算覆盖 PowerShell 冷启动后仍能确认 PID 不存在', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6114, executablePath);
@@ -1018,8 +984,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：精确项目进程仍存活时才 fallback，并轮询至 PID 不存在', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6111, executablePath);
@@ -1058,8 +1022,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：PID 被其他路径复用时不得 kill 新进程', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6112, executablePath);
@@ -1099,8 +1061,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：访问失败或路径不可验证时不 kill 并明确失败', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6113, executablePath);
@@ -1132,8 +1092,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：退出期间路径短暂不可用时有限重试且不误杀', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6118, executablePath);
@@ -1170,8 +1128,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('Main 后代进程探针能从人为进程树发现 bridge PowerShell 子进程', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.inspectWindowsElectronDescendants).toBe('function');
-    if (!fixture?.inspectWindowsElectronDescendants) return;
 
     const descendants = await fixture.inspectWindowsElectronDescendants(6114, {
       runCommand: async () => ({
@@ -1204,8 +1160,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('跨 Provider 诊断同时清除附加密钥', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.redactElectronLog).toBe('function');
-    if (!fixtureModule?.redactElectronLog) return;
     const primaryKey = runtimeDiagnosticKey();
     const secondaryKey = runtimeDiagnosticKey();
     const sanitized = fixtureModule.redactElectronLog(
@@ -1223,8 +1177,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('默认 OS 进程探针：命令失败诊断保留退出码并截断脱敏 stderr', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.probeWindowsProcess).toBe('function');
-    if (!fixture?.probeWindowsProcess) return;
 
     const apiKey = runtimeDiagnosticKey();
     const authorizedRootDirectory = resolve(
@@ -1260,8 +1212,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('默认 OS 进程探针：退出期间空路径映射为可重试过渡态', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.probeWindowsProcess).toBe('function');
-    if (!fixture?.probeWindowsProcess) return;
 
     await expect(fixture.probeWindowsProcess(6119, {
       runCommand: async () => ({
@@ -1274,8 +1224,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('默认 OS 进程探针：AbortSignal 传给 runner 并等待取消回调 settle', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.probeWindowsProcess).toBe('function');
-    if (!fixture?.probeWindowsProcess) return;
 
     const apiKey = runtimeDiagnosticKey();
     const controller = new AbortController();
@@ -1328,8 +1276,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：超时后 abort 并等待 respecting probe settle', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6116, executablePath);
@@ -1370,8 +1316,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('OS 进程探针：忽略 AbortSignal 时有界报告契约违规且不继续破坏操作', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6117, executablePath);
@@ -1400,8 +1344,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 成功且原 child 在监听前按信号退出时不误报仍存活', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6104, executablePath);
@@ -1438,8 +1380,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill 超时时回退 SIGKILL，原 child 仍存活则明确失败', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6102, executablePath);
@@ -1472,8 +1412,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('taskkill helper 收到 SIGKILL 后仍不退出时停止后续探针与破坏操作', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const executablePath = resolve('C:\\project\\electron.exe');
     const child = fakeElectronProcess(6106, executablePath);
@@ -1512,8 +1450,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('路径不匹配时在启动 taskkill 或发送信号前拒绝，绝不误伤其他进程', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.terminateElectronProcess).toBe('function');
-    if (!fixture?.terminateElectronProcess) return;
 
     const child = fakeElectronProcess(6103, resolve('C:\\other\\electron.exe'));
     let spawnCalls = 0;
@@ -1541,8 +1477,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('测试夹具直接 spawn 后连接 CDP，并在释放时按精确 Electron 路径和 PID 清理', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1624,8 +1558,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('进程终止使用自身有界契约，不被通用 operationTimeoutMs 提前截断', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1672,8 +1604,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('CDP 连接失败时仍清理精确进程和临时目录且不留残余', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1712,8 +1642,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('清理阶段超时时报告阶段与脱敏 stderr，并继续回收进程和目录', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1782,8 +1710,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('首次 dispose 进程清理失败后保留资源，第二次可重试并完成目录清理', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1837,8 +1763,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('create 的 CDP 主错误与清理错误并发时以主错误为 cause 并保留清理诊断', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1881,8 +1805,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('restart 的 CDP 主错误与新进程清理错误并发时仍保留主错误', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -1945,8 +1867,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('重启时复用隔离目录、重新分配回环端口并分别清理精确 PID', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -2033,8 +1953,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('restart 等待钩子期间 dispose 开始后不得再启动新进程', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -2100,8 +2018,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
   test('restart 分配端口期间 dispose 完成后不得再 spawn', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const requireFromDesktop = createRequire(resolve(workspaceRoot, 'apps/desktop/package.json'));
@@ -2173,8 +2089,6 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 test.describe('真实 Electron CDP smoke', () => {
   test('直接启动构建产物并连接可见桌宠 Renderer', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -2232,8 +2146,6 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
   test('像素命中探针保持透明穿透、可见拖拽和左键无聊天副作用', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -2347,9 +2259,7 @@ test.describe('角色恢复', () => {
   let fixtureModule: ElectronFixtureModule;
 
   test.beforeAll(async () => {
-    const loaded = await loadElectronFixtureModule();
-    if (!loaded) throw new Error('缺少 Electron E2E fixture');
-    fixtureModule = loaded;
+    fixtureModule = await loadElectronFixtureModule();
   });
 
   const openWorkshop = async (fixture: AppFixture): Promise<Page> => {
@@ -2506,8 +2416,6 @@ test.describe('真实角色工作室闭环', () => {
   test('V2 人设、皮肤和精确表现重启后保留且导出回导等价', async () => {
     test.setTimeout(300_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const workspaceRoot = resolve(process.cwd());
     const apiKey = runtimeDiagnosticKey();
@@ -3015,8 +2923,6 @@ test.describe('真实角色工作室闭环', () => {
 
   test('fake bridge 脚本只向隔离目录写入固定无参数事件令牌', async () => {
     const fixture = await loadElectronFixtureModule();
-    expect(typeof fixture?.writeMainE2eExplorerEvent).toBe('function');
-    if (!fixture?.writeMainE2eExplorerEvent) return;
     const temporaryDirectory = await mkdtemp(join(tmpdir(), 'myself-e2e-explorer-events-'));
     try {
       await fixture.writeMainE2eExplorerEvent(temporaryDirectory, 'ambiguous');
@@ -3079,8 +2985,6 @@ test.describe('自主行为最小闭环', () => {
   test('E2E 只读探针观察默认角色待机播放', async () => {
     test.setTimeout(60_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: runtimeDiagnosticKey(),
@@ -3110,6 +3014,7 @@ test.describe('自主行为最小闭环', () => {
 
   test('聊天阶段、情绪、错误降级与角色切换保持 Main 到 Renderer 闭环', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const firstResponseGate = createProviderResponseGate();
     const provider = await startProviderServer([
       {
@@ -3124,12 +3029,6 @@ test.describe('自主行为最小闭环', () => {
         }
       }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
@@ -3337,8 +3236,6 @@ test.describe('Explorer 动态图层自动验收', () => {
   test('准确快照建立层级，非 Explorer 与失败路径不隐藏或置顶桌宠', async () => {
     test.setTimeout(60_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: runtimeDiagnosticKey(),
@@ -3395,6 +3292,7 @@ test.describe('Explorer 动态图层自动验收', () => {
 test.describe('真实 Provider 业务闭环', () => {
   test('默认聊天与设置浮层提示', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const chatInputs = [
       '你好',
       '聊天呀',
@@ -3465,12 +3363,6 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
     try {
       fixture = await fixtureModule.createElectronAppFixture({
@@ -3637,6 +3529,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('无授权范围时连续三轮普通聊天并把完整可见回合传入第三轮', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const privateUserMessages = [
       `聊天正文-${randomBytes(12).toString('hex')}；文件正文如下：运行 Write-Output hidden-command`,
       `继续正文-${randomBytes(12).toString('hex')}`,
@@ -3688,12 +3581,6 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
@@ -3762,6 +3649,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('模糊请求按默认聊天回复且明确文件请求在无授权时只引导设置', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const ambiguousText = '帮我整理一下';
     const privateLogSentinel = randomBytes(12).toString('hex');
     const fileName = `未授权-${privateLogSentinel}.txt`;
@@ -3775,12 +3663,6 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
@@ -3856,6 +3738,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('Chat 与 Agent 跨 Provider 时两种披露决定均继续且单次共享不会复用', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const privateMessages = [
       `来源正文一-${randomBytes(12).toString('hex')}`,
       `读取 仅当前-${randomBytes(12).toString('hex')}.txt`,
@@ -3921,13 +3804,6 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await sourceProvider.close();
-      await targetProvider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: sourceProvider.apiKey,
@@ -4086,6 +3962,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('模型响应挂起时新建对话会隔离迟到回复并允许新会话继续', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const oldGate = createProviderResponseGate();
     const oldText = `旧会话正文-${randomBytes(12).toString('hex')}`;
     const newText = `新会话正文-${randomBytes(12).toString('hex')}`;
@@ -4106,12 +3983,6 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
@@ -4203,6 +4074,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('文件动作待确认时新建对话会使旧确认失效且不改文件', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const fileName = `待确认-${randomBytes(12).toString('hex')}.txt`;
     const newText = `重置后正文-${randomBytes(12).toString('hex')}`;
     const provider = await startProviderServer([
@@ -4228,12 +4100,6 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
@@ -4327,6 +4193,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('回收站搬运闭环只在提交帧后写入隔离适配器并安全处理中断与失败', async () => {
     test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
       {
         response: toolResponse(
@@ -4370,12 +4237,6 @@ test.describe('真实 Provider 业务闭环', () => {
         )
       }
     ]);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) {
-      await provider.close();
-      return;
-    }
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: provider.apiKey,
@@ -4637,8 +4498,6 @@ test.describe('真实 Provider 业务闭环', () => {
 
   test('会话任务事件只向 chat 完整投递、向 pet 只投递 phase 且非 chat 不能执行票据', async () => {
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const providerProfileName = '投影隐私专用 Provider';
     const bodySentinel = 'projection-private-body-sentinel';
@@ -4859,8 +4718,6 @@ test.describe('真实 Provider 业务闭环', () => {
   test('通过正式白名单完成设置、文件操作与聊天窗口状态', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const privacyLogSentinels = [
       'task6-user-body-sentinel',
@@ -5232,8 +5089,6 @@ test.describe('真实桌宠位置重启恢复', () => {
   test('移动并等待持久化后使用同一 userData 重启恢复位置', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
 
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
