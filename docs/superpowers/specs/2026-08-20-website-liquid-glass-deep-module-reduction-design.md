@@ -93,6 +93,8 @@ About、Download、Community、Support 的真实内容和交互继续由现有 D
 
 ## 6. E2E 职责
 
+> **2026-08-21 当前职责接替：** 下列四项是 2026-08-20 阶段 0 的历史配置。当前 normal-motion 真实浏览器专项只保留 `390 离开再返回首页后液态画布缓冲区保持可用` 与 `390 宽度液态玻璃首页无横向溢出`；1440×900、DPR 2 的缓冲/viewport 以及 pointer uniform、点击 ripple 数据流由 `apps/website/tests/magnetic-intro.test.tsx` 的组件契约承担。滚轮状态机由模型/控制器测试承担，真实全局 wheel 接线合并到既有 reduced-motion E2E。接替规格为 `2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md`。
+
 网站 Playwright 默认使用真实 `reducedMotion: 'reduce'`，使法律、审核、反馈、付款码和普通移动布局链走无 GPU 产品路径。仅以下四项在导航前显式使用 `no-preference`：
 
 1. `普通滚轮连续追赶、吸附、隔离惯性并重计新手势`
@@ -141,6 +143,8 @@ About、Download、Community、Support 的真实内容和交互继续由现有 D
 - 桌宠、Agent、文件工具和角色代码完全不修改。
 
 ## 9. 验收与停止条件
+
+> **2026-08-21 当前验收：** 2026-08-20 的四项 normal-motion 与完整 16/16 仍是当日阶段 0 历史结果；当前门使用上述两条 390 E2E、组件 DPR/指针契约和 14 项完整清单，已在阶段 1 Task 11 中自动化通过。
 
 先写 RED：
 

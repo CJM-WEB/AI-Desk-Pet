@@ -1115,7 +1115,7 @@ Expected: 零命中。历史 specs/plans 允许保留旧决策记录。
 - Consumes: 两个子项目的 GREEN 结果
 - Produces: 仓库级阶段 1 验收记录所需的可复现证据
 
-- [ ] **Step 1: 运行定向测试**
+- [x] **Step 1: 运行定向测试**
 
 ```powershell
 pnpm.cmd --filter @myself/cloudbase-api test -- config.test.ts submission-service.test.ts admin-service.test.ts api.test.ts cloudbase-postgres.test.ts
@@ -1124,7 +1124,7 @@ node --test tools/cloudbase-migration-inventory.test.mjs
 node --test tools/plan-cloudbase-migrations.test.mjs
 ```
 
-- [ ] **Step 2: 运行包级与网站链门**
+- [x] **Step 2: 运行包级与网站链门**
 
 ```powershell
 pnpm.cmd --filter @myself/shared-types test
@@ -1143,7 +1143,7 @@ pnpm.cmd test:cloudbase-tools
 pnpm.cmd verify:web-chain
 ```
 
-- [ ] **Step 3: 运行范围、旧路径和格式检查**
+- [x] **Step 3: 运行范围、旧路径和格式检查**
 
 ```powershell
 git diff --name-only
@@ -1159,7 +1159,7 @@ Expected:
 - 当前入口无旧 migration 写路径；
 - 当前代码、测试名和运维文档无无扫描批准语义。
 
-- [ ] **Step 4: 记录完成状态**
+- [x] **Step 4: 记录完成状态**
 
 只有以下全部满足才可把两个子项目标记为“自动化通过”：
 
@@ -1182,6 +1182,8 @@ Expected:
 - Scanner 协议、镜像与完整扫描证据：`不在本次范围`。
 - 共享包投稿生产开启：`不在本次范围，继续关闭`。
 - 正式部署与上线：`不在本次范围`。
+
+> **2026-08-21 实际裁决：自动化通过。** 首轮 `verify:web-chain` 的 14 passed / 2 failed 与未运行项保留在 Task 11 报告中。随后依据 `docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md` 和对应计划完成职责减法：提交 `d602d87` 将正式清单收敛为 14 项，四项 mutation RED/GREEN、三个生产文件零差异，测试代码净减少 51 行；scope 精确白名单修复为 `aea8e03`。固定顺序重跑的定向/包级门、fast/full 网站链、独立 scope、migration dry-run 和两项负向检索全部通过，完整门内 E2E 为 14/14。详细命令、计数和耗时见 `.superpowers/sdd/2026-08-15-website-publication-stopgap-and-migration-freeze/task-11-report.md` 与 `docs/operations/website-chain-verification-acceptance.md`。本裁决不改变以上五项外部状态，也不表示 Chromium/GPU 阻塞已修复。
 
 ## 删除条件汇总
 

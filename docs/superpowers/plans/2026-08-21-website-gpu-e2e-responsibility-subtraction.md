@@ -40,6 +40,8 @@
 
 ### Task 2 当前事实来源
 
+> **跟踪裁决（2026-08-21）：** 下列十份事实来源均需同步，但 `.superpowers/` 下的 `progress.md` 与 `task-11-report.md` 从未进入 Git，且被仓库 `.gitignore` 明确排除；它们继续作为本地执行证据，不使用 `git add -f` 强制纳入仓库。Task 2 正式提交只包含其余八份受跟踪文档。
+
 - Modify: `docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md`：仅在实际通过后把状态和实施证据从“待实施”收敛为真实结果。
 - Modify: `docs/superpowers/specs/2026-08-20-website-e2e-responsibility-reduction-design.md`：追加本规格对当前两条用例和当前计数的接替说明，不改写历史 44→16 与 16/16 事实。
 - Modify: `docs/superpowers/specs/2026-08-20-website-liquid-glass-deep-module-reduction-design.md`：把当前 normal-motion 专项职责指向两条保留的 390 E2E 和组件 DPR/指针契约，不改写历史阶段 0 结果。
@@ -71,7 +73,7 @@
 - Produces: 一项组件契约，证明 1440×900、DPR 2 下后备缓冲和 viewport 为 1296×810，并证明 pointer move/down 的归一化坐标进入 `u_pointer` 与 `u_ripples[0]`；一项既有 reduced-motion E2E 内的全局 wheel 接线断言；精确 14 项 E2E 清单。
 - Does not produce: 新生产导出、测试专用产品接口、新测试文件、新 E2E 条目、新 fixture 或 Playwright 配置。
 
-- [ ] **Step 1: 建立删除前基线与精确范围证据**
+- [x] **Step 1: 建立删除前基线与精确范围证据**
 
 ```powershell
 git status --short
@@ -82,7 +84,7 @@ rg -n "普通滚轮吸附、隔离惯性并重计新手势|液态玻璃 WebGL �
 
 Expected: 列表仍为 16 项；两个退役标题、一个承接标题和两条保留的 390 标题各命中一次；记录任何既有差异并禁止覆盖。若三个临时生产文件已有非本任务差异，停止 mutation 并交由主智能体裁决。
 
-- [ ] **Step 2: 最小增强现有 WebGL 替身，使调用可按 uniform 名称观察**
+- [x] **Step 2: 最小增强现有 WebGL 替身，使调用可按 uniform 名称观察**
 
 在 `magnetic-intro.test.tsx` 保留一个 `createWebGlContext()`，不得建立第二套替身。对当前 helper 做以下精确结构调整：定义四个命名 spy；从 `objectMethods` 删除 `getUniformLocation`；从 `noopMethods` 删除 `uniform2f`、`uniform4fv`、`viewport`；在 Proxy 的现有分支前返回对应命名 spy；最后返回 context 与四个 spy。现有 Logo 失败用例只把 `webGl` 改为 `webGl.context`，行为不变：
 
@@ -123,7 +125,7 @@ function createWebGlContext() {
 
 其中 Set 的完整成员以当前 helper 为事实来源，除上述四个方法的归属变化外不得增删；必须保留“未定义接口立即抛错”防线。
 
-- [ ] **Step 3: 在同一文件写唯一一项 DPR 与指针组件契约**
+- [x] **Step 3: 在同一文件写唯一一项 DPR 与指针组件契约**
 
 使用 360×225 作为内部点，使归一化坐标不是默认的 0.5/0.5。通过 `gsap.quickTo` 的现有入参直接写回目标对象，通过 `gsap.ticker.add` 捕获实际 render callback；不新增生产钩子。核心断言结构为：
 
@@ -177,7 +179,7 @@ it('按性能比例建立缓冲区并把指针与点击写入 WebGL uniform', ()
 
 实施时必须用 `uniform2f.mock.calls` 和 `uniform4fv.mock.calls` 的真实参数完成最后两项断言，不能只断言“被调用”。`u_pointer` 调用应为 `(_, 0.25, 0.75)`；`u_ripples[0]` 的第二参数转换为数组后，前三项必须精确等于 `[0.25, 0.75, 0]`，第四项使用 `toBeCloseTo(1.65, 5)` 处理 `Float32Array` 精度。不得新增 pointer/resize 监听、ticker 或资源卸载断言：原高 DPR E2E 未持有这些生命周期职责，释放/重建继续由 `website-fallback.test.tsx` 的 `运行期切换动态偏好会释放 WebGL 并可重新初始化` 承担。
 
-- [ ] **Step 4: 运行组件契约的当前行为 GREEN**
+- [x] **Step 4: 运行组件契约的当前行为 GREEN**
 
 ```powershell
 pnpm.cmd --filter @myself/website test -- magnetic-intro.test.tsx
@@ -185,7 +187,7 @@ pnpm.cmd --filter @myself/website test -- magnetic-intro.test.tsx
 
 Expected: 新增组件契约与现有 Logo 回退测试全部通过。若 jsdom 无法稳定表达 uniform/ripple 数据流，停止；不得修改生产接口或增加等待。
 
-- [ ] **Step 5: 用 DPR mutation 取得预期 RED 并恢复**
+- [x] **Step 5: 用 DPR mutation 取得预期 RED 并恢复**
 
 用 `apply_patch` 只临时改动 `LiquidGlassHome.tsx` 的 1440 档：
 
@@ -202,7 +204,7 @@ pnpm.cmd --filter @myself/website test -- magnetic-intro.test.tsx
 
 Expected: 新增用例因实际缓冲/viewport 变为 1440×900 而失败，失败点必须是 1296×810 契约。立即用反向 `apply_patch` 恢复 `0.9`，重跑同一命令必须 GREEN。
 
-- [ ] **Step 6: 用指针 mutation 取得预期 RED 并恢复**
+- [x] **Step 6: 用指针 mutation 取得预期 RED 并恢复**
 
 用 `apply_patch` 只临时改动：
 
@@ -219,7 +221,7 @@ pnpm.cmd --filter @myself/website test -- magnetic-intro.test.tsx
 
 Expected: pointer uniform 仍正确，但 ripple 保持未写入状态，使前三项精确断言或第四项强度容差断言 RED；失败原因必须指向点击数据未进入 `u_ripples[0]`。立即用反向 `apply_patch` 恢复 `true`，重跑同一命令必须 GREEN。
 
-- [ ] **Step 7: 向既有 reduced-motion E2E 合并最小全局 wheel 接线断言**
+- [x] **Step 7: 向既有 reduced-motion E2E 合并最小全局 wheel 接线断言**
 
 只在 `减少动态效果直接进入稳定首页` 的现有稳定首页断言之后、runtime error 最终断言之前增加一次真实 wheel 和一个章节断言；不得改名、复制或新增 E2E：
 
@@ -230,7 +232,7 @@ await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'abou
 
 该用例必须继续显式使用 `reducedMotion: 'reduce'`，不得启动 WebGL，也不得增加 `waitForTimeout`、poll、timeout 或重试。
 
-- [ ] **Step 8: 运行 reduced-motion 接线 GREEN，再用监听 mutation 取得 RED 并恢复**
+- [x] **Step 8: 运行 reduced-motion 接线 GREEN，再用监听 mutation 取得 RED 并恢复**
 
 ```powershell
 pnpm.cmd exec playwright test --config tests/playwright.website.config.ts --grep "减少动态效果直接进入稳定首页"
@@ -244,7 +246,7 @@ registerWindowListener('wheel', handleWheel, { passive: false });
 
 再次运行同一 E2E。Expected: 用例因 `data-active-chapter` 仍为 `home` 而 RED；不得接受构建、启动或其他断言失败作为敏感性证据。立即用反向 `apply_patch` 在原位置恢复同一注册，重跑必须 1/1 GREEN。
 
-- [ ] **Step 9: 用阈值 mutation 证明既有滚轮状态机测试敏感，再恢复 GREEN**
+- [x] **Step 9: 用阈值 mutation 证明既有滚轮状态机测试敏感，再恢复 GREEN**
 
 用 `apply_patch` 只临时改动 `config.ts`：
 
@@ -261,7 +263,7 @@ pnpm.cmd --filter @myself/website test -- chapter-model.test.ts website-controll
 
 Expected: 至少一项明确锁定 240px 解锁/重新累计的现有测试因输入未释放而 RED；编译或无关失败不算证据。立即用反向 `apply_patch` 恢复 `240`，重跑同一命令必须 GREEN。
 
-- [ ] **Step 10: 证明三个生产文件最终零差异，才进入删除门**
+- [x] **Step 10: 证明三个生产文件最终零差异，才进入删除门**
 
 ```powershell
 git diff --exit-code -- apps/website/components/home-experience/config.ts apps/website/components/website-experience/use-website-controller.ts apps/website/components/home-experience/LiquidGlassHome.tsx
@@ -270,7 +272,7 @@ git diff -- apps/website/tests/magnetic-intro.test.tsx tests/e2e/website.spec.ts
 
 Expected: 第一条退出 0 且无输出；第二条只含组件契约/替身增强和 reduced-motion wheel 接线。若第一条非零，先逐行恢复本 Task 的 mutation，绝不使用 Git 覆盖其他改动。
 
-- [ ] **Step 11: 精确删除两个完整 E2E 测试块**
+- [x] **Step 11: 精确删除两个完整 E2E 测试块**
 
 从 `tests/e2e/website.spec.ts` 使用 `apply_patch` 删除：
 
@@ -281,7 +283,7 @@ Expected: 第一条退出 0 且无输出；第二条只含组件契约/替身增
 
 第二块独占的 `browser`/`baseURL` 参数、`browser.newContext({ deviceScaleFactor: 2 })`、五点轨迹与 `finally context.close()` 必须随测试块完整消失。只在删除后产生零引用时删除局部孤儿；共用 fixture、helper、定位器和其他 14 项 E2E 不得修改。
 
-- [ ] **Step 12: 验证精确 14 项清单和退役标题零命中**
+- [x] **Step 12: 验证精确 14 项清单和退役标题零命中**
 
 ```powershell
 node.exe node_modules/@playwright/test/cli.js test --config tests/playwright.website.config.ts --list
@@ -290,7 +292,7 @@ rg -n "普通滚轮吸附、隔离惯性并重计新手势|液态玻璃 WebGL �
 
 Expected: `--list` 精确列出 14 项；`rg` 退出 1 且零输出。不得新增计数常量或第二份运行清单。
 
-- [ ] **Step 13: 运行职责承接的定向 GREEN 门**
+- [x] **Step 13: 运行职责承接的定向 GREEN 门**
 
 ```powershell
 pnpm.cmd --filter @myself/website test -- magnetic-intro.test.tsx chapter-model.test.ts website-controller.test.tsx
@@ -300,7 +302,7 @@ pnpm.cmd exec playwright test --config tests/playwright.website.config.ts --grep
 
 Expected: 三个 Vitest 文件全部通过；typecheck 退出 0；三条保留/承接 E2E 为 3/3。若任一 390 用例失败，停止并检查真实 WebGL 接缝，不继续删除。
 
-- [ ] **Step 14: 运行完整 14 项网站 E2E**
+- [x] **Step 14: 运行完整 14 项网站 E2E**
 
 ```powershell
 pnpm.cmd test:e2e:website
@@ -308,7 +310,7 @@ pnpm.cmd test:e2e:website
 
 Expected: 生产构建成功且 14/14 通过。若出现同类 GPU stall，停止继续做 E2E 数量减法，保留产物路径和首错；不得更改 timeout、retry、worker、runner、fixture 或 trace。
 
-- [ ] **Step 15: 审查净减法、范围与格式**
+- [x] **Step 15: 审查净减法、范围与格式**
 
 ```powershell
 git diff --numstat -- apps/website/tests/magnetic-intro.test.tsx tests/e2e/website.spec.ts
@@ -319,7 +321,7 @@ git diff --exit-code -- apps/website/components/home-experience/config.ts apps/w
 
 Expected: 测试代码净减少至少 40 行；组件/替身新增不超过 60 行，reduced-motion E2E 新增不超过 4 行；格式检查无输出；正式差异不含产品文件、Playwright 配置、依赖、桌宠或其他受保护模块。
 
-- [ ] **Step 16: 独立复审 Task 1 后提交测试职责减法**
+- [x] **Step 16: 独立复审 Task 1 后提交测试职责减法**
 
 复审必须逐项核对：四项 mutation 的 RED 原因正确、三个生产文件零差异、14 项清单准确、两条保留 390 WebGL 接缝未被放宽、无配置/依赖/产品改动、净行数达标。通过后只提交两个测试文件：
 
@@ -355,7 +357,7 @@ Expected: 暂存区只含上述两个文件；提交成功后工作树仍保留�
 - Produces: 14 项当前单一事实来源、带日期/环境/命令/计数/耗时/首错的验收记录，以及只有在全部门实际通过时才成立的 Task 11“自动化通过”裁决。
 - Preserves: 2026-08-20 的历史 44→16、16/16 结果和 2026-08-21 首轮 14 passed / 2 failed；外部 PostgreSQL、runner、Scanner、生产投稿与正式部署状态不变。
 
-- [ ] **Step 1: 按阶段 1 Task 11 固定顺序重新运行定向与包级门**
+- [x] **Step 1: 按阶段 1 Task 11 固定顺序重新运行定向与包级门**
 
 每条命令独立记录 exit、测试文件数、测试数和耗时；首错立即停止当前序列并写入 `task-11-report.md`，不得把未运行项记为通过。
 
@@ -376,7 +378,7 @@ pnpm.cmd test:cloudbase-tools
 
 Expected: 全部退出 0；网站全测包含 Task 1 新增的唯一组件契约，CloudBase/Scanner/migration 工具结果不得用旧记录代替本次实际输出。
 
-- [ ] **Step 2: 运行网站链快速门、完整门和独立范围守卫**
+- [x] **Step 2: 运行网站链快速门、完整门和独立范围守卫**
 
 ```powershell
 pnpm.cmd verify:web-chain:fast
@@ -386,7 +388,7 @@ pnpm.cmd verify:web-chain:scope
 
 Expected: 三条命令均退出 0；完整门内网站 E2E 为 14/14。若完整门失败，只记录实际完成的前置子门和首错，不声称 Task 11 通过。
 
-- [ ] **Step 3: 运行 migration dry-run 与当前入口负向检查**
+- [x] **Step 3: 运行 migration dry-run 与当前入口负向检查**
 
 ```powershell
 pnpm.cmd plan:cloudbase-migrations
@@ -396,7 +398,7 @@ rg -n "无需系统扫描|直接人工审核共享包|扫描异常即通过" app
 
 Expected: dry-run 退出 0 且只输出既有脱敏计划；两条 `rg` 均退出 1 且零输出。不得连接数据库或执行 migration。
 
-- [ ] **Step 4: 用实际证据同步 2026-08-21 GPU E2E 规格与两个历史规格**
+- [x] **Step 4: 用实际证据同步 2026-08-21 GPU E2E 规格与两个历史规格**
 
 仅当 Step 1—3 全部通过时：
 
@@ -406,13 +408,13 @@ Expected: dry-run 退出 0 且只输出既有脱敏计划；两条 `rg` 均退�
 
 若任一门未通过，2026-08-21 规格状态保持“待实施”或改为“实施中/验证失败”，不得把预期结果写成实际结果。
 
-- [ ] **Step 5: 同步两个历史计划与本计划的接替状态**
+- [x] **Step 5: 同步两个历史计划与本计划的接替状态**
 
 1. 在 `2026-08-20-website-e2e-responsibility-reduction.md` 保留历史 Task 1—4，追加 2026-08-21 接替段：当前 14 项、退役标题、组件/模型承接与最新验收链接。
 2. 在 `2026-08-20-website-liquid-glass-deep-module-reduction.md` 保留历史 Task 4 的 16/16，追加当前两条 390 E2E 与组件 DPR/指针契约。
 3. 只勾选本计划有实际命令和审查证据的 checkbox；任何失败项保持未勾选并附首错。
 
-- [ ] **Step 6: 更新网站链验收记录，不覆盖历史表**
+- [x] **Step 6: 更新网站链验收记录，不覆盖历史表**
 
 在 `docs/operations/website-chain-verification-acceptance.md` 新增独立的 `2026-08-21 GPU E2E 职责再减法` 小节，精确记录：
 
@@ -425,14 +427,14 @@ Expected: dry-run 退出 0 且只输出既有脱敏计划；两条 `rg` 均退�
 
 不得删除或修改历史失败轮次与历史 16/16 行。
 
-- [ ] **Step 7: 更新阶段 1 Task 11 计划、台账与报告**
+- [x] **Step 7: 更新阶段 1 Task 11 计划、台账与报告**
 
 1. `2026-08-15-website-publication-stopgap-and-migration-freeze.md`：只有 Step 1—3 全部退出 0 才把 Task 11 标为“自动化通过”，并引用本次职责减法规格、计划和验收记录。
 2. `progress.md`：追加 Task 11 的职责减法提交、规格复审、代码质量复审与最终验证提交范围；不修改 Task 1—10。
 3. `task-11-report.md`：保留原首轮 14 passed / 2 failed 表和未运行项，新增“职责层级裁决”“mutation 证据”“最终固定顺序复验”三节；每条命令写实际 exit、计数、耗时，失败时写首错和未运行项。
 4. 无论成功或失败，报告末尾保持以下外部状态原文语义：CloudBase PostgreSQL 实际防线 `待阶段 2 开发环境确认`；事务型 migration runner `不在本次范围`；Scanner 协议、镜像与完整扫描证据 `不在本次范围`；共享包投稿生产开启 `不在本次范围，继续关闭`；正式部署与上线 `不在本次范围`。
 
-- [ ] **Step 8: 对最终文档差异重新运行范围与一致性检查**
+- [x] **Step 8: 对最终文档差异重新运行范围与一致性检查**
 
 ```powershell
 git diff --name-only
@@ -445,7 +447,7 @@ git diff --exit-code -- apps/website/components/home-experience/config.ts apps/w
 
 Expected: 差异文件仅在本计划白名单；`git diff --check` 与范围守卫通过；“当前 16 项”零有效命中，允许保留明确标为 2026-08-20 历史结果的 16/16；两个退役标题在运行 E2E 零命中；产品、Playwright 配置、依赖与锁文件零差异。
 
-- [ ] **Step 9: 独立复审 Task 2 的规格覆盖与证据真实性**
+- [x] **Step 9: 独立复审 Task 2 的规格覆盖与证据真实性**
 
 复审者必须逐份核对十个当前事实来源，确认：
 
@@ -453,21 +455,21 @@ Expected: 差异文件仅在本计划白名单；`git diff --check` 与范围守
 - Task 11 报告没有把首次失败、未运行项或外部待确认项改写为通过；
 - 完整门的计数与耗时来自本轮命令输出，不复用旧值；
 - 正式部署、数据库、Scanner 和生产投稿没有被扩大范围；
-- 代码正式差异仍只有 Task 1 的两个测试文件，文档未触碰桌宠业务；
+- `d602d87` 的职责迁移只修改两个测试文件；`aea8e03` 另修改两份精确 scope policy/test 文件；Task 2 当前工作树只包含八份受跟踪文档，且文档未触碰桌宠业务；
 - 计划不存在未定义接口、类型名漂移、空泛步骤或未覆盖规格要求。
 
 - [ ] **Step 10: 提交规格、计划与验收证据**
 
-独立复审与 `git diff --check` 均通过后，只暂存本 Task 列出的文档和本计划：
+独立复审与 `git diff --check` 均通过后，只暂存八份受跟踪文档；两份 `.superpowers/` 本地执行证据不得强制跟踪：
 
 ```powershell
-git add -- docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md docs/superpowers/specs/2026-08-20-website-e2e-responsibility-reduction-design.md docs/superpowers/specs/2026-08-20-website-liquid-glass-deep-module-reduction-design.md docs/superpowers/plans/2026-08-21-website-gpu-e2e-responsibility-subtraction.md docs/superpowers/plans/2026-08-20-website-e2e-responsibility-reduction.md docs/superpowers/plans/2026-08-20-website-liquid-glass-deep-module-reduction.md docs/superpowers/plans/2026-08-15-website-publication-stopgap-and-migration-freeze.md docs/operations/website-chain-verification-acceptance.md .superpowers/sdd/2026-08-15-website-publication-stopgap-and-migration-freeze/progress.md .superpowers/sdd/2026-08-15-website-publication-stopgap-and-migration-freeze/task-11-report.md
+git add -- docs/superpowers/specs/2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md docs/superpowers/specs/2026-08-20-website-e2e-responsibility-reduction-design.md docs/superpowers/specs/2026-08-20-website-liquid-glass-deep-module-reduction-design.md docs/superpowers/plans/2026-08-21-website-gpu-e2e-responsibility-subtraction.md docs/superpowers/plans/2026-08-20-website-e2e-responsibility-reduction.md docs/superpowers/plans/2026-08-20-website-liquid-glass-deep-module-reduction.md docs/superpowers/plans/2026-08-15-website-publication-stopgap-and-migration-freeze.md docs/operations/website-chain-verification-acceptance.md
 git diff --cached --check
 git diff --cached --name-only
 git commit -m "docs: 记录网站 GPU E2E 职责减法"
 ```
 
-Expected: 暂存区只含精确列出的十份文档；若任何最终门失败，提交信息和文档状态必须明确为“验证失败/待继续”，不得使用完成语义。
+Expected: 暂存区只含精确列出的八份受跟踪文档；两份 ignored 本地证据保持未跟踪。若任何最终门失败，提交信息和文档状态必须明确为“验证失败/待继续”，不得使用完成语义。
 
 ## 完成裁决
 

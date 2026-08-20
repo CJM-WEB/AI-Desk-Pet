@@ -59,3 +59,10 @@
 ### Task 4：阶段 0 状态收敛
 
 完整网站链通过后，更新 foundation Task 4 报告、进度台账与网站优化总索引。只提交真实通过证据；正式部署继续保持不在范围。
+
+## 2026-08-21 当前职责接替
+
+- 本计划的 44→16 和阶段 0 的 16/16 继续作为 2026-08-20 历史结果保留。
+- 当前正式清单由 `2026-08-21-website-gpu-e2e-responsibility-subtraction-design.md` 与对应实施计划接替为 14 项。
+- `普通滚轮吸附、隔离惯性并重计新手势` 与 `液态玻璃 WebGL 画布按性能比例建立缓冲区并响应指针` 已退役；前者的状态机职责由 chapter/controller 测试承担并把真实 wheel 接线合并到 reduced-motion E2E，后者由 `magnetic-intro.test.tsx` 的 DPR/viewport/指针/ripple 组件契约与两条 390 WebGL 接缝共同承担。
+- 最新命令、计数和历史边界见 `docs/operations/website-chain-verification-acceptance.md` 的“2026-08-21 GPU E2E 职责再减法”。

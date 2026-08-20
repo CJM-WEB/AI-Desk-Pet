@@ -1,6 +1,6 @@
 # 网站 GPU E2E 职责再减法设计
 
-> 文档状态：待实施；本文件不构成修复完成证明
+> 文档状态：已实施并自动化通过；不构成 Chromium/GPU 阻塞已修复的证明
 > 日期：2026-08-21
 > 适用范围：网站 Playwright、网站液态玻璃组件测试、网站验证文档
 > 替代关系：仅在“两条退役用例、E2E 数量及对应验收职责”范围内修订 `2026-08-20-website-e2e-responsibility-reduction-design.md` 第 3、6、7 节与 `2026-08-20-website-liquid-glass-deep-module-reduction-design.md` 第 6、9 节；其余安全边界和产品设计继续有效
@@ -40,7 +40,7 @@
 - 不删除其余 14 项 E2E，不放宽断言、超时、重试、worker、trace 或验证门。
 - 不触碰桌面端、Agent、文件工具、角色业务或其测试。
 - 不连接 CloudBase、Scanner、数据库或其他远端服务；不部署正式网站。
-- 不把 2026-08-20 的历史 16/16 记录改写为未通过，也不把本次设计写成当前已通过。
+- 不把 2026-08-20 的历史 16/16 记录改写为未通过；在全部验收完成前，不把本次设计写成已通过。
 
 ## 3. 精确退役范围
 
@@ -158,3 +158,11 @@ git diff --check
 - 若组件 mutation 未产生预期 RED，撤销新增测试与删除方案，报告职责缺口。
 - 若 14 项门仍出现同类 GPU stall，停止继续做 E2E 数量减法，记录新首错并重新审查仍保留用例的独有浏览器职责。
 - 未完成全部验收时只能写“待验证”或“失败”，不得声称 Task 11、阶段 1 或 GPU 问题已修复。
+
+## 11. 2026-08-21 实施证据
+
+- 测试职责减法提交：`d602d87`。正式代码差异只有 `magnetic-intro.test.tsx` 与 `website.spec.ts`；合计新增 61 行、删除 112 行，测试代码净减少 51 行。
+- 四项 mutation 均因指定断言取得 RED，恢复后 GREEN；三个临时生产文件最终零差异。监听 mutation 首次因复用旧静态导出得到的假 GREEN 已明确排除，不计入证据。
+- Playwright 当前清单为 14 项；两条退役标题零命中；两条 390 WebGL 接缝与 reduced-motion wheel 接线定向 3/3 通过；Task 1 完整 E2E 为 14/14。
+- 阶段 1 Task 11 固定顺序于同日重新执行：定向与包级门、`verify:web-chain:fast`、`verify:web-chain`、`verify:web-chain:scope`、migration dry-run 与两项负向检索全部通过；完整门内 E2E 为 14/14，Playwright 报告 54.6 秒。
+- 本结论只证明职责迁移后的自动化门稳定通过；没有修改或宣称修复 Chromium、ANGLE、显卡驱动或 Playwright 内部阻塞。
