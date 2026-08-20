@@ -96,7 +96,7 @@ type CharacterPackageImportMarkerV3 = Readonly<{
 
 ### 5.3 legacy 与损坏证据
 
-- 候选 inventory 只接受当前角色根目录下严格以 `.package-import-rollback-<characterId>.json` 命名的普通目录项；`.tmp`、`.corrupt-*` 与内部移走后留下的 `.complete-*` 永远只是不可执行证据，不得进入恢复 inventory。目录项名称本身不得作为路径片段越出角色根。
+- 候选 inventory 接受当前角色根目录下以 `.package-import-rollback-` 开头、以 `.json` 结尾的普通目录项，再用严格格式解析可选角色 ID；`.tmp`、`.corrupt-*` 与内部移走后留下的 `.complete-*` 永远只是不可执行证据，不得进入恢复 inventory。目录项名称本身不得作为路径片段越出角色根。
 - v1、v2、空文件、半截 JSON、未知版本、Schema 不匹配和正文/文件名角色 ID 不一致均不得触发角色目录删除。
 - 能从严格 marker 文件名安全取得角色 ID 时，原字节不覆盖地隔离，并为该角色返回稳定 blocked 问题码。
 - 文件名也无法可靠给出角色 ID 时，只隔离并保留原字节，在 Main 记录固定诊断码 `CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED`；不伪造角色 ID，不把该项加入面向 Renderer 的问题列表。

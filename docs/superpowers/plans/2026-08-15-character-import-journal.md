@@ -411,7 +411,7 @@ pnpm.cmd --filter @myself/desktop test -- character-package-service.test.ts
 
 - [ ] **Step 7：实现 v3 Schema、inventory 与有界读取**
 
-在 `character-package-service.ts` 内增加 `.strict()` 的 v3 Zod Schema、`MAX_IMPORT_RECOVERY_ENTRIES = 256`、`IMPORT_RECOVERY_BUDGET_MS = 2_000`、`MAX_IMPORT_MARKER_BYTES = 4_096`。候选只接收角色根直属、严格以 `.package-import-rollback-<characterId>.json` 命名的普通目录项；显式排除 `.tmp`、`.corrupt-*` 和 `.complete-*` 证据。候选先把活动角色正式 marker 排首位，其余按文件名稳定排序，再截取活动项加最多其余 255 项；第 257 项及以后保持不变，不读取、不生成 issue 或逐项日志，只记录一次 `CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED`。
+在 `character-package-service.ts` 内增加 `.strict()` 的 v3 Zod Schema、`MAX_IMPORT_RECOVERY_ENTRIES = 256`、`IMPORT_RECOVERY_BUDGET_MS = 2_000`、`MAX_IMPORT_MARKER_BYTES = 4_096`。候选接收角色根直属、以 `.package-import-rollback-` 开头并以 `.json` 结尾的普通目录项，再用严格格式解析可选角色 ID；显式排除 `.tmp`、`.corrupt-*` 和 `.complete-*` 证据。候选先把活动角色正式 marker 排首位，其余按文件名稳定排序，再截取活动项加最多其余 255 项；第 257 项及以后保持不变，不读取、不生成 issue 或逐项日志，只记录一次 `CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED`。
 
 marker 必须通过 `open('r')` 后的句柄 `stat()` 验证普通文件，读取至多 `MAX_IMPORT_MARKER_BYTES + 1`，记录 `dev/ino/size` 并在隔离、回滚和清理前后复核。超限、链接、Junction、路径越界或身份变化统一 fail closed。
 
