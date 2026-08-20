@@ -1,36 +1,45 @@
-# AI Pet 角色包导入 Journal 实施计划
+# AI Pet 角色包导入恢复原位收敛实施计划
 
-> **面向智能代理执行者：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐任务实施本计划。所有步骤使用复选框跟踪。
+> **面向智能代理执行者：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐任务实施本计划。所有步骤使用复选框（`- [ ]`）跟踪。
 
-**目标：** 实现 B2 独立 `CharacterImportJournal`，以 Windows 可验证的 exclusive 原子发布和逐 marker 隔离替换 PackageService 内旧 marker 路径。
+**目标：** 在不改变正常角色包业务的前提下，原位深化 `CharacterPackageService` 的 v3 导入恢复，保证异常退出后的完整排他 marker、逐项隔离和带令牌安全回滚，并删除旧 v1/v2 与普通删除路径。
 
-**架构：** 通用文件协调器只提供 exclusive 文件原语；ImportJournal 独立拥有 import marker schema、恢复与证据隔离；PackageService 继续拥有 ZIP、source、Store publish 和外层 saga；Store 继续拥有 owner 文件及物理身份验证。
+**架构：** `CharacterPackageService` 继续同时作为角色包导入 saga 和 package marker 的唯一 owner，不新增 `CharacterImportJournal` 或同义模块。现有原子文件协调器只增加可复用的完整排他发布原语；`CharacterStore` 只把现有带令牌回滚收敛为判别结果；B3 只消费 `initialize()` 返回的最小不可变问题报告。
 
-**技术栈：** Electron 43、TypeScript、Node.js `fs/promises`、Zod、Vitest、Windows NTFS 测试。
+**技术栈：** Electron 43、TypeScript、Node.js `fs/promises`、Zod、Vitest、Playwright、Windows NTFS。
 
-**设计规格：** [角色包导入 Journal 设计](../specs/2026-08-15-character-import-journal-design.md)
+**设计规格：** [角色包导入恢复设计](../specs/2026-08-15-character-import-journal-design.md)
+
+**覆盖规格：** [桌面架构优化减法收口设计](../specs/2026-08-20-desktop-code-subtraction-design.md)；本计划原位替代旧计划中的 v4、独立 Journal 和双 owner 任务，不保留附录式兼容路线。
+
+**后续消费者：** [角色恢复公开反馈与降级计划](./2026-08-15-character-recovery-degradation.md) 只能消费本文定义的 `CharacterPackageRecoveryReport`，不得读取 marker、令牌、路径或内部恢复阶段。
 
 ## 全局约束
 
-- 不合并 Store draft/publish journal 与 Package import journal。
-- 活动角色相关 marker 优先；最多 256 个索引角色；2000ms 软预算只在角色之间检查。
-- 最终 publish 禁止普通 rename、copy 或直接流式写 final；不支持 hard link 时 fail closed。
-- 删除角色目录前必须同时证明 character ID、owner token 和物理身份。
-- Git 暂存和提交仅在用户另行明确授权后执行。
+- 只修改桌面端角色恢复及其直接测试、验收记录；`apps/website`、`apps/cloudbase-api`、`apps/package-scanner` 与网站 E2E 零触碰。
+- 保留现有 v3 `{ version: 3, characterId, importTransactionId }` 磁盘语义；不得新增 v4、迁移器、`character-import-journal.ts`、`CharacterImportJournal` 或第二个恢复 owner。
+- 活动角色候选优先；一次最多开始 256 个 inventory 项；2000ms 软预算只在两项之间检查，已经开始的单项必须完成。
+- legacy、坏 marker、权限失败、证据冲突和身份变化全部 fail closed；无当前 owner token 的 v1/v2 绝不删除角色目录。
+- Renderer、Preload、Provider、普通日志和 B3 报告不得接收 marker 文件名、绝对路径、正文、哈希、`importTransactionId`、`dev/ino`、句柄或隔离证据名。
+- 测试采用 replace-don't-layer：原子协调器拥有文件发布矩阵，Store 拥有 token/活动角色/身份边界，PackageService 拥有调度、隔离和最小报告矩阵，Electron E2E 只保留一条纵向证据。
+- 用户已于 2026-08-20 对本规格第 10 节的大量删除范围完成二次批准；新路径定向测试通过后，同一任务直接删除批准范围内的旧实现和旧测试，不再等待额外删除批准。
+- Git 写操作已获用户授权；每个实现任务通过 RED → GREEN → 删除门 → 新鲜审查后，以独立提交落地，不使用破坏性 Git 命令。
+- 任一单点诊断或命令达到 15 分钟仍未收敛时，立即终止该次命令并拆分、换方案或按真实证据放宽非安全门；不得立即跳过，也不得用新增层掩盖卡点。
 
 ## 文件结构
 
-- 修改 `apps/desktop/src/main/storage/atomic-file-coordinator.ts`：exclusive 写入与证据发布原语。
-- 新增 `apps/desktop/tests/atomic-file-coordinator.test.ts`：Windows 真实并发测试。
-- 新增 `apps/desktop/src/main/characters/character-import-journal.ts`：独立 import journal。
-- 新增 `apps/desktop/tests/character-import-journal.test.ts`：journal 失败矩阵。
-- 修改 `character-store.ts`/`character-store.test.ts`：细化 import rollback/complete 结果。
-- 修改 `character-package-service.ts`/对应测试：接入 journal、删除旧路径。
-- 修改 `apps/desktop/src/main/index.ts`：接收恢复报告而非让单 marker 终止启动。
+- 修改 `apps/desktop/src/main/storage/atomic-file-coordinator.ts`：增加唯一通用能力 `atomicWriteFileExclusive()`，保持 `atomicWriteText()` replacement 语义不变。
+- 新增 `apps/desktop/tests/atomic-file-coordinator.test.ts`：独占真实 Windows 完整排他发布与失败清理矩阵。
+- 修改 `apps/desktop/src/main/characters/character-store.ts`：把 `rollbackImportedCharacter()` 的布尔结果原位替换为判别联合，不改变 draft/publish transaction recovery。
+- 修改 `apps/desktop/tests/character-store.test.ts`：保留 Store 独有的 owner token、活动角色、Junction 和移动前后身份边界。
+- 修改 `apps/desktop/src/main/characters/character-package-service.ts`：保留 v3 并原位实现 inventory、逐 marker 恢复、证据隔离、预算、最小报告和导入失败安全回滚，同时删除旧 owner。
+- 修改 `apps/desktop/tests/character-package-service.test.ts`：从公开 `initialize()` 与 `importCharacter()` 覆盖完整恢复算法，不为私有 helper 建第二套测试表面。
+- 修改 `tests/e2e/desktop.spec.ts`：只增加一个“一坏一好仍启动且聊天可用”的真实 Electron 纵向场景。
+- 修改 `docs/operations/character-workshop-acceptance.md`：只记录实际执行的环境、命令、结果和待人工确认项。
 
 ---
 
-### Task 1：实现并验证 Windows exclusive 原语
+### Task 1：增加完整排他文件发布原语
 
 **文件：**
 
@@ -39,101 +48,112 @@
 
 **接口：**
 
-- 产出：`atomicWriteTextExclusive(file: string, content: string): Promise<void>`。
-- 产出：内部 `publishExistingFileExclusive(source: string, destination: string): Promise<void>`，仅供同目录证据隔离。
-- 保留：现有 `atomicWriteText()` replacement 语义不变。
+- 保留：`atomicWriteText(file: string, content: string): Promise<void>`，继续使用 replacement 语义。
+- 产出：
 
-- [ ] **步骤 1：写真实 Windows 并发 RED 测试**
+```ts
+export async function atomicWriteFileExclusive(
+  file: string,
+  content: Uint8Array
+): Promise<void>;
+```
 
-在实际 `mkdtemp()` 目录并发发起 32 次不同正文写入。断言恰好一个 fulfilled、31 个因目标存在失败、最终正文完整等于 winner，且不存在可见半截 final。
+- 约束：函数只负责同目录临时文件、完整写入、`sync()`、关闭、`link(temp, final)` 和临时文件清理；不得拥有 marker Schema、角色 ID 或恢复状态。
 
-- [ ] **步骤 2：写已有目标和 fault RED 测试**
+- [ ] **Step 1：写并发与已有目标 RED 测试**
 
-预置 final 后断言字节不变；分别在 open/write/sync/link 注入失败，断言 link 前 final 不存在、临时文件可清理、不报告成功。验证不支持 hard link/跨卷错误不调用 rename/copy fallback。
+在 `atomic-file-coordinator.test.ts` 添加实际测试名 `32 个并发排他写入只有一个成功且 final 正文完整` 与 `已有 final 时保持原字节且返回 EEXIST`。核心断言固定为：
 
-- [ ] **步骤 3：运行 RED**
+```ts
+const bodies = Array.from({ length: 32 }, (_, index) =>
+  Buffer.from(`writer-${index}-${'x'.repeat(4096)}`, 'utf8'));
+const results = await Promise.allSettled(
+  bodies.map(bytes => atomicWriteFileExclusive(finalFile, bytes))
+);
+expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+expect(results.filter(result => result.status === 'rejected')).toHaveLength(31);
+expect(bodies).toContainEqual(await readFile(finalFile));
+```
+
+已有目标用例先写入 `original-bytes`，再调用原语并断言拒绝对象的 `code` 为 `EEXIST`、最终字节仍为 `original-bytes`。
+
+- [ ] **Step 2：写 write/sync/link 失败 RED 测试**
+
+通过 Vitest 对 `node:fs/promises` 做模块级 mock，不向生产接口增加 fault seam。添加实际测试名：
+
+- `临时文件 write 失败时 final 不出现且清理 temp`
+- `临时文件 sync 失败时 final 不出现且清理 temp`
+- `hard-link 发布失败时不调用 rename 或 copyFile`
+
+每项断言 final 不存在、目录中无本次 `.tmp`，且 `rename`、`copyFile` 调用次数均为 0。
+
+- [ ] **Step 3：运行 RED 并核对失败原因**
 
 ```powershell
 pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts
 ```
 
-预期：FAIL，新函数不存在。
+预期：FAIL，原因是 `atomicWriteFileExclusive` 尚未导出；不得接受环境、fixture 或现有 `atomicWriteText()` 失败作为正确 RED。
 
-- [ ] **步骤 4：实现 temp、flush、hard-link publish**
+- [ ] **Step 4：实现最小 GREEN 原语**
 
-固定顺序：同目录 UUID temp、`open('wx', 0o600)`、write、`handle.sync()`、close、`link(temp, final)`、finally 清理 temp。保留原生 `EEXIST` 语义，不添加 rename/copy fallback。
+在现有文件中增加 `link` 导入，并按固定顺序实现：
 
-- [ ] **步骤 5：运行真实 Windows GREEN**
-
-```powershell
-pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts
+```ts
+export async function atomicWriteFileExclusive(
+  file: string,
+  content: Uint8Array
+): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const temporaryFile = `${file}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(temporaryFile, 'wx', 0o600);
+    await handle.writeFile(content);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await link(temporaryFile, file);
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await rm(temporaryFile, { force: true }).catch(() => undefined);
+  }
+}
 ```
 
-预期：Windows 实际文件系统用例 PASS；若 hard link 不可用则明确 FAIL，不得跳过后宣称语义已验证。
+不得加入 `rename()`、`copyFile()` 或直接写 final 的 fallback；原生 `EEXIST` 原样向上抛出。
 
-- [ ] **步骤 6：在获得 Git 授权后提交本任务**
+- [ ] **Step 5：运行 GREEN 与相邻回归**
 
-未获授权不执行 Git 写操作。
+```powershell
+pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-store.test.ts official-default-character.test.ts
+pnpm.cmd --filter @myself/desktop typecheck
+```
+
+预期：全部 PASS；真实 Windows 并发结果恰好 1 成功/31 失败。hard link 不支持或权限拒绝时该验证必须 FAIL 并记录环境，不得跳过后宣称通过。
+
+- [ ] **Step 6：执行删除门与自审**
+
+```powershell
+rg -n "rename\(temporaryFile, file\)|copyFile\(temporaryFile, file\)" apps/desktop/src/main/storage/atomic-file-coordinator.ts
+git diff --check
+git diff -- apps/desktop/src/main/storage/atomic-file-coordinator.ts apps/desktop/tests/atomic-file-coordinator.test.ts
+```
+
+预期：第一条零命中；差异中没有 marker 业务、没有新的依赖注入接口、没有改变 `atomicWriteText()`。
+
+- [ ] **Step 7：新鲜审查并提交**
+
+由未实现本任务的审查者分别检查规格一致性与代码质量；Critical/Important 全部修复并重跑 Step 5 后提交：
+
+```powershell
+git add apps/desktop/src/main/storage/atomic-file-coordinator.ts apps/desktop/tests/atomic-file-coordinator.test.ts
+git commit -m "feat(desktop): 增加完整排他文件发布"
+```
 
 ---
 
-### Task 2：建立独立 ImportJournal 与失败隔离
-
-**文件：**
-
-- 新增：`apps/desktop/src/main/characters/character-import-journal.ts`
-- 新增：`apps/desktop/tests/character-import-journal.test.ts`
-
-**接口：**
-
-- 产出：规格定义的 record、entry result、recovery report。
-- 产出：`create(record)`、`complete(record)`、`recoverAll()`。
-- 消费：Task 1 的 exclusive writer/证据 publish。
-- 依赖端口：`rollbackImportedCharacter(characterId, importTransactionId)` 返回判别联合。
-
-- [ ] **步骤 1：写 durable 创建 RED 矩阵**
-
-在 `journal:open`、`journal:write`、`journal:flush`、`journal:publish` checkpoint 注入中断。断言 publish 前 final 不存在，publish 后 final 是完整 v4 JSON；已有 final 不覆盖。
-
-- [ ] **步骤 2：写损坏与隔离 RED 矩阵**
-
-分别放入空文件、半截 JSON、未知 version、合法 marker。断言坏 marker 各自隔离、evidence 字节逐字节相同、合法 marker 仍恢复。增加 evidence 名冲突、权限、磁盘满：失败项保留原 marker、返回 blocked、后续项继续。
-
-- [ ] **步骤 3：写所有权 RED 矩阵**
-
-对 `rolled-back`、`absent`、`ownership-mismatch`、`active-character` 逐项断言：前两者可完成 marker；后两者不得删除 marker 或目录并返回 blocked。v1/v2 legacy 只能隔离，不能触发 rollback。
-
-- [ ] **步骤 4：写预算 RED 测试**
-
-活动角色 marker 首先处理；第 257 个角色或角色间时钟超过 2000ms 后，剩余 marker 不打开、不修改并报告 deferred。单 marker 开始后必须完成其读、验证和恢复，不被时钟中断。
-
-- [ ] **步骤 5：运行 RED**
-
-```powershell
-pnpm.cmd --filter @myself/desktop test -- character-import-journal.test.ts
-```
-
-预期：FAIL，模块不存在。
-
-- [ ] **步骤 6：实现最小 journal**
-
-以 Zod 严格解析 v4；每个 marker 独立 `try/catch`。通过打开句柄读取原字节并记录物理身份；evidence hard-link 成功且身份复核一致后才 unlink 原 marker。隔离失败保留原文件并返回 blocked。
-
-- [ ] **步骤 7：运行 GREEN**
-
-```powershell
-pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-import-journal.test.ts
-```
-
-预期：PASS。
-
-- [ ] **步骤 8：在获得 Git 授权后提交本任务**
-
-未获授权不执行 Git 写操作。
-
----
-
-### Task 3：细化 Store import 所有权结果
+### Task 2：把 Store 导入回滚收敛为判别结果
 
 **文件：**
 
@@ -142,92 +162,368 @@ pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts charac
 
 **接口：**
 
-- 产出：`rollbackImportedCharacter()` 返回 `rolled-back|absent|ownership-mismatch|active-character`。
-- 产出：`completeImportedCharacter()` 返回 `completed|owner-missing|ownership-mismatch`。
-- 保留：owner 文件、rename 前后目录/owner `dev/ino` 复核。
+- 产出：
 
-- [ ] **步骤 1：写判别结果 RED 测试**
+```ts
+export type ImportedCharacterRollbackResult =
+  | Readonly<{ kind: 'rolled-back' }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'ownership-mismatch' }>
+  | Readonly<{ kind: 'active-character' }>;
 
-分别构造不存在、token 不匹配、活动角色、rename checkpoint 身份替换和正常回滚；断言准确 kind，且除正常回滚外均不删陌生目录。complete 对 owner 缺失/不匹配不得返回 completed。
+rollbackImportedCharacter(
+  characterId: string,
+  importTransactionId: string
+): Promise<ImportedCharacterRollbackResult>;
+```
 
-- [ ] **步骤 2：运行 RED**
+- 保留：`completeImportedCharacter(characterId, importTransactionId): Promise<boolean>`、Store owner 文件、活动角色保护、Junction 拒绝以及 rename 前后目录/owner `dev/ino` 复核。
+- 消费方：Task 3 的 `CharacterPackageService` 必须按 `kind` 决定是否完成 marker，不能把结果做真值判断。
+
+- [ ] **Step 1：把现有 token 测试改写为判别 RED**
+
+将实际测试 `角色包导入所有权令牌允许重启后只回滚本次创建的角色` 的断言改为：错误 token 返回 `{ kind: 'ownership-mismatch' }`，正确 token 返回 `{ kind: 'rolled-back' }`。新增实际测试 `不存在角色返回 absent 且不创建目录或索引项`：
+
+```ts
+await expect(store.rollbackImportedCharacter('missing', transactionId))
+  .resolves.toEqual({ kind: 'absent' });
+await expect(access(join(charactersDirectory, 'missing'))).rejects.toThrow();
+```
+
+- [ ] **Step 2：补齐活动角色与身份替换 RED**
+
+新增实际测试 `活动角色即使 owner 令牌匹配也返回 active-character 且不删除`；把现有 `角色包回滚读取令牌后同 ID 目录被替换时保留替代角色` 的期望改为 `{ kind: 'ownership-mismatch' }`。保留现有真实路径/Junction 断言，不复制 PackageService 的 marker 矩阵。
+
+- [ ] **Step 3：运行 RED 并核对失败原因**
 
 ```powershell
 pnpm.cmd --filter @myself/desktop test -- character-store.test.ts
 ```
 
-预期：FAIL，当前接口只返回 boolean。
+预期：FAIL，原因只应是当前接口返回 `boolean`，不是 Store 既有目录身份保护失效。
 
-- [ ] **步骤 3：最小替换返回类型并运行 GREEN**
+- [ ] **Step 4：最小替换返回类型**
 
-保留现有验证顺序，仅在每个现有 return 点返回对应判别对象；不改 Store draft/publish journal。
+导出 `ImportedCharacterRollbackResult`，并把现有私有 owner 查询结果收敛为：
+
+```ts
+type ImportedCharacterOwnershipLookup =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'ownership-mismatch' }>
+  | Readonly<{
+      kind: 'owned';
+      identity: Readonly<{
+        directoryDev: number;
+        directoryIno: number;
+        ownerDev: number;
+        ownerIno: number;
+      }>;
+    }>;
+```
+
+角色目录不存在返回 `{ kind: 'absent' }`；目录存在但 owner 缺失、token 不符或身份变化返回 `{ kind: 'ownership-mismatch' }`；有效 owner 对应活动角色返回 `{ kind: 'active-character' }`；tombstone、索引提交和尽力清理完成后返回 `{ kind: 'rolled-back' }`。不得新建 Store 包装器，不得删减移动前后身份复核。
+
+- [ ] **Step 5：运行 GREEN 与消费者类型检查**
 
 ```powershell
 pnpm.cmd --filter @myself/desktop test -- character-store.test.ts
+pnpm.cmd --filter @myself/desktop typecheck
 ```
 
-预期：PASS。
+预期：全部 PASS。当前 `CharacterPackageService` 只等待回滚 Promise 而不读取布尔值，因此本任务可以独立通过 typecheck；不得为 Task 3 提前加入兼容布尔分支、重载或临时字段。
 
-- [ ] **步骤 4：在获得 Git 授权后提交本任务**
+- [ ] **Step 6：执行删除门与自审**
 
-未获授权不执行 Git 写操作。
+```powershell
+rg -n "rollbackImportedCharacter\(" apps/desktop/src apps/desktop/tests
+rg -n "resolves\.toBe\((true|false)\)" apps/desktop/tests/character-store.test.ts
+git diff --check
+```
+
+预期：生产消费者只有 `CharacterPackageService`；第二条零命中；Store 没有同时保留布尔与判别两套正式接口。
+
+- [ ] **Step 7：新鲜审查并提交**
+
+由未实现本任务的审查者检查四种结果是否互斥、活动角色和陌生目录是否始终保留；Critical/Important 全部修复并重跑 Step 5 后提交：
+
+```powershell
+git add apps/desktop/src/main/characters/character-store.ts apps/desktop/tests/character-store.test.ts
+git commit -m "refactor(desktop): 细化导入回滚结果"
+```
 
 ---
 
-### Task 4：PackageService 接入 journal 并删除旧 marker owner
+### Task 3：原位替换 PackageService 恢复与导入回滚
 
 **文件：**
 
 - 修改：`apps/desktop/src/main/characters/character-package-service.ts`
 - 修改：`apps/desktop/tests/character-package-service.test.ts`
-- 修改：`apps/desktop/src/main/index.ts`
 
 **接口：**
 
-- 消费：Task 2 的 `CharacterImportJournal` 与 Task 3 的判别结果。
-- 产出：`CharacterPackageService.initialize(): Promise<CharacterImportJournalRecoveryReport>`。
-- 保留：ZIP 校验、source 安装、draft save、Store publish、外层 import saga。
+- 消费：Task 1 的 `atomicWriteFileExclusive(file, content)` 与 Task 2 的 `ImportedCharacterRollbackResult`。
+- 产出：
 
-- [ ] **步骤 1：写导入顺序与中断 RED 测试**
+```ts
+export type CharacterPackageRecoveryIssue = Readonly<{
+  characterId: string;
+  errorCode:
+    | 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+    | 'CHARACTER_IMPORT_RECOVERY_DEFERRED';
+}>;
 
-记录 journal create、Store create/owner、source、draft、Store publish、owner complete、journal complete 的调用顺序。分别在 owner/source/Store publish 后中断，重建 Service 后断言 journal 按 token、ID、物理身份恢复。
+export type CharacterPackageRecoveryReport = Readonly<{
+  issues: readonly CharacterPackageRecoveryIssue[];
+}>;
 
-- [ ] **步骤 2：写不误报成功 RED 测试**
+initialize(): Promise<CharacterPackageRecoveryReport>;
+```
 
-让 Store complete 返回 owner-missing/ownership-mismatch，断言 import 不返回 character ID、journal 不完成、无成功事件。让 rollback 返回 mismatch，断言不调用通用 `store.delete()`。
+- 私有磁盘类型固定为：
 
-- [ ] **步骤 3：写启动隔离 RED 测试**
+```ts
+type CharacterPackageImportMarkerV3 = Readonly<{
+  version: 3;
+  characterId: string;
+  importTransactionId: string;
+}>;
 
-一个坏 marker 与一个合法 marker 并存，断言 `initialize()` 返回两个独立结果且不抛全局异常。Main 收到 quarantined/blocked report 后继续调用角色启动和聊天初始化。
+type ImportMarkerIdentity = Readonly<{
+  dev: number;
+  ino: number;
+  size: number;
+}>;
 
-- [ ] **步骤 4：运行 RED**
+private completeOwnedMarker(
+  marker: string,
+  expected: ImportMarkerIdentity
+): Promise<void>;
+
+private preserveMarkerEvidence(
+  marker: string,
+  bytes: Uint8Array,
+  expected: ImportMarkerIdentity
+): Promise<void>;
+```
+
+- B3 只能接收不可变快照中的 `characterId + errorCode`；报告不得加入成功项、计数、`budgetExceeded`、阶段、内部原因或诊断详情。
+
+- [ ] **Step 1：写 v3 完整发布与正常导入顺序 RED**
+
+把现有 `回滚删除失败时写入 marker 并在下一次导入前恢复` 替换为实际测试 `导入失败只调用带令牌回滚并保留无法完成的 v3 marker`；mock Store 的 `delete()` 在被调用时直接抛 `UNSAFE_DELETE_CALLED`，断言该错误永不出现。新增实际测试 `v3 marker 完整发布后才创建 Store owner且完成后复核并清理`，记录调用顺序并断言：
+
+```ts
+expect(calls).toEqual([
+  'marker:published',
+  'store:create-owner',
+  'source:installed',
+  'draft:saved',
+  'compiled:published',
+  'owner:completed',
+  'marker:completed'
+]);
+```
+
+- [ ] **Step 2：写逐 marker 隔离与 legacy RED**
+
+添加实际测试：
+
+- `半截 marker 不阻断后续合法 v3 且原字节被排他隔离`
+- `v1 与 v2 只保留证据且从不调用角色删除`
+- `未知版本与正文文件名角色不一致均返回 blocked`
+- `无法从严格文件名识别角色时不伪造 issue`
+- `证据目标冲突或权限失败保留原 marker 且继续后续项`
+
+用 `Buffer.from('{"version":3')` 作为半截字节 sentinel；恢复后逐字节比较隔离证据，报告只断言：
+
+```ts
+expect(report).toEqual({
+  issues: [{
+    characterId: 'broken',
+    errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+  }]
+});
+expect(JSON.stringify(report)).not.toContain(transactionId);
+expect(JSON.stringify(report)).not.toContain(charactersDirectory);
+```
+
+- [ ] **Step 3：写所有权、竞态和清理 RED**
+
+添加实际测试 `rolled-back 与 absent 完成 marker，ownership-mismatch 与 active-character 保留证据并 blocked`。实际测试 `marker 读取后被替换时不删除替代文件且后续项继续` 使用 `CharacterStore` 测试子类覆写 `rollbackImportedCharacter()`：该方法被调用时说明 marker 已完成读取和解析，此时替换 marker 路径，再返回 `{ kind: 'ownership-mismatch' }`。不得为此扩展 `onCheckpoint`、公开 I/O fault seam、句柄或物理身份接口。
+
+- [ ] **Step 4：写活动优先、256 和 2000ms RED**
+
+在现有 `CharacterPackageServiceDependencies` 增加私有调度所需的 `recoveryNow?: () => number`，与 B1 既有时钟模式一致，不增加公开产品 API。添加实际测试：
+
+- `活动角色 marker 先于稳定文件名顺序处理`
+- `第 257 个 inventory 项保持原字节并返回 deferred`
+- `达到 2000ms 软预算后只推迟未开始项`
+- `单项开始后即使越过预算也完成身份复核与恢复`
+
+数量测试只完整创建边界附近的 255、256、257 三类候选，不在 Store 或 E2E 重复 257 项矩阵。
+
+- [ ] **Step 5：运行 PackageService RED 并核对失败原因**
 
 ```powershell
 pnpm.cmd --filter @myself/desktop test -- character-package-service.test.ts
 ```
 
-预期：FAIL，Service 仍直接拥有 marker。
+预期：FAIL，失败来自旧整轮恢复、旧 v1/v2 删除、普通 `store.delete()`、布尔结果或 `initialize(): Promise<void>`；ZIP 导入、导出和 source 校验旧测试仍应保持通过。
 
-- [ ] **步骤 5：最小接入独立 journal**
+- [ ] **Step 6：实现 v3 Schema、inventory 与有界读取**
 
-严格按批准顺序编排 saga；只有 owner complete 为 completed 后才 complete journal 和返回 ID。`initialize()` 直接返回 report，Main 保存报告供 B3 使用但不让单 marker 退出应用。
+在 `character-package-service.ts` 内增加 `.strict()` 的 v3 Zod Schema、`MAX_IMPORT_RECOVERY_ENTRIES = 256`、`IMPORT_RECOVERY_BUDGET_MS = 2_000`、`MAX_IMPORT_MARKER_BYTES = 4_096`。inventory 只接收角色根直属普通目录项中 `.package-import-rollback-` 前缀与 `.json` 后缀候选，显式排除 `.tmp` 和 `.corrupt-` 证据；严格文件名可解析的活动角色排首位，其余按文件名稳定排序。
 
-- [ ] **步骤 6：删除旧路径**
+marker 必须通过 `open('r')` 后的句柄 `stat()` 验证普通文件，读取至多 `MAX_IMPORT_MARKER_BYTES + 1`，记录 `dev/ino/size` 并在隔离、回滚和清理前后复核。超限、链接、Junction、路径越界或身份变化统一 fail closed。
 
-在新测试通过后删除 PackageService 内 marker schemas、regexp、直接 marker IO、`writePendingImport()`、`recoverPendingRollbacks()`、`preserveRollback()`，以及 v1 静默删除/v2 无 token 删除分支。不得删除 Store owner 文件或物理身份验证。
+- [ ] **Step 7：实现逐项恢复、隔离与最小报告**
 
-- [ ] **步骤 7：运行 B2 定向与阶段门禁**
+`recoverPendingRollbacks()` 原位改为返回 `CharacterPackageRecoveryReport`。每个 inventory 项独立捕获错误；v3 只调用 `rollbackImportedCharacter(characterId, importTransactionId)`：
 
-```powershell
-pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-import-journal.test.ts character-store.test.ts character-package-service.test.ts
-pnpm.cmd --filter @myself/desktop typecheck
-pnpm.cmd --filter @myself/desktop test
-pnpm.cmd test:security
-pnpm.cmd test:integration
+```ts
+switch (result.kind) {
+  case 'rolled-back':
+  case 'absent':
+    await this.completeOwnedMarker(marker, originalIdentity);
+    return null;
+  case 'ownership-mismatch':
+  case 'active-character':
+    await this.preserveMarkerEvidence(marker, originalBytes, originalIdentity);
+    return {
+      characterId,
+      errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+    } as const;
+}
 ```
 
-预期：全部 PASS。
+legacy、坏 JSON 和未知版本只调用同文件内的私有证据保留逻辑；证据正文通过 `atomicWriteFileExclusive()` 原样发布，随后复核原 marker 仍为读取时同一普通文件才移除。不可归属项只在 Main 内记录 `CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED`，扫描失败只记录 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED`，日志不拼接路径、文件名或正文。最终 issue 按角色 ID 稳定排序并按 blocked 高于 deferred 去重，使用 `Object.freeze()` 冻结每个 issue、issues 数组和 report 后一次性返回。
 
-- [ ] **步骤 8：在获得 Git 授权后提交本任务**
+- [ ] **Step 8：把正常导入失败改为同一安全回滚**
 
-未获授权不执行 Git 写操作。
+`writePendingImport()` 继续作为 `CharacterPackageService` 私有方法，但正文固定为 v3 并调用 `atomicWriteFileExclusive()`。导入 catch 在已取得 `createdId + importTransactionId` 时只调用 `rollbackImportedCharacter()`；`rolled-back|absent` 才按身份复核完成 marker，`ownership-mismatch|active-character` 或异常均保留 v3 marker 并抛稳定 `CHARACTER_PACKAGE_ROLLBACK_FAILED`。正常完成仍要求 `completeImportedCharacter()` 返回 `true` 后才清理本次 marker 和返回角色 ID。
+
+- [ ] **Step 9：运行 GREEN 与相邻回归**
+
+```powershell
+pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-store.test.ts character-package-service.test.ts
+pnpm.cmd --filter @myself/desktop typecheck
+```
+
+预期：全部 PASS；PackageService 已开始按 Task 2 的 `kind` 判别结果处理 marker。
+
+- [ ] **Step 10：删除旧 owner、旧回退和重复测试**
+
+只在 Step 9 通过后删除：v1 静默删除、v2 物理摘要恢复/回写、`CharacterOwnership`、package rollback 专用 `captureCharacterOwnership()`/`sameCharacterOwnership()`/SHA-256 摘要、`preserveRollback()`、导入 catch 中普通 `store.delete()`，以及只验证这些旧行为的测试脚手架。若同名哈希或身份 helper 仍被 ZIP 导出安全使用，只删除 package rollback 专用分支，不动真实消费者。
+
+- [ ] **Step 11：执行删除门与差异审查**
+
+```powershell
+rg -n "CharacterImportJournal|character-import-journal|version:\s*4" apps/desktop/src/main/characters apps/desktop/tests
+rg -n "CharacterOwnership|captureCharacterOwnership|sameCharacterOwnership|preserveRollback" apps/desktop/src/main/characters/character-package-service.ts
+rg -n "store\.delete\(" apps/desktop/src/main/characters/character-package-service.ts
+rg -n "version:\s*[12].*ownership|document\.version === [12]" apps/desktop/src/main/characters/character-package-service.ts
+git diff --check
+git diff --stat
+```
+
+预期：前四条零命中；生产 owner 数仍为 1；差异报告分别记录生产代码与测试的新增、删除和净值。若生产代码只增不减，本任务不得过审，必须先核对旧路径是否真正删除。
+
+- [ ] **Step 12：新鲜审查并提交**
+
+由未实现本任务的规格审查者逐条对照 B2 规格第 5—11 节，再由另一名代码质量审查者检查竞态、日志脱敏、测试分层和净删除；Critical/Important 全部修复并重跑 Step 9、Step 11 后提交：
+
+```powershell
+git add apps/desktop/src/main/characters/character-package-service.ts apps/desktop/tests/character-package-service.test.ts
+git commit -m "feat(desktop): 原位收敛角色包导入恢复"
+```
+
+---
+
+### Task 4：建立纵向启动证据并完成 B2 验收
+
+**文件：**
+
+- 修改：`tests/e2e/desktop.spec.ts`
+- 修改：`docs/operations/character-workshop-acceptance.md`
+- 只读核对：`apps/desktop/src/main/index.ts`
+- 只读核对：`apps/desktop/src/main/characters/character-startup.ts`
+
+**接口：**
+
+- 消费：Task 3 的 `CharacterPackageService.initialize(): Promise<CharacterPackageRecoveryReport>`；B2 阶段 Main 可以继续 `await` 并忽略返回值，B3 再把同一不可变报告汇入启动快照。
+- 产出：一个真实 Electron 场景，证明坏 marker 不阻断健康 v3 恢复、基础桌宠和普通聊天。
+- 禁止：本任务不得提前实现 B3 DTO、IPC、Pet/Workshop 提示、`startupRecoveryErrorCode` 替换或新的 Actions getter。
+
+- [ ] **Step 1：写唯一 Electron 纵向 RED 场景**
+
+在 `desktop.spec.ts` 添加实际测试名 `角色包恢复一坏一好时继续启动桌宠与普通聊天`。使用现有 `prepareUserData` 和 `CharacterStore` 正式接口准备：一个含合法 owner token 的半安装角色及对应合法 v3 marker、一个可归属的半截 marker、一个健康活动角色。启动后断言：
+
+```ts
+await expect(pet.locator('.character-player'))
+  .toHaveAttribute('data-status', 'ready');
+await expect(access(validImportedCharacterDirectory)).rejects.toThrow();
+expect(await readFile(brokenEvidenceFile)).toEqual(brokenMarkerBytes);
+await submitChatMessage(chat, '角色包恢复后继续普通聊天');
+await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
+```
+
+该场景不得读取新的恢复 IPC，不重复 256/2000ms、legacy、权限或全部 Store 结果矩阵。
+
+- [ ] **Step 2：运行定向 E2E RED**
+
+```powershell
+pnpm.cmd --filter @myself/desktop build
+pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包恢复一坏一好时继续启动桌宠与普通聊天"
+```
+
+预期：在 Task 3 尚未通过时 FAIL 于坏 marker 阻断启动；Task 3 已通过时该步骤直接成为回归基线，必须记录为“先验已绿”，不得伪造 RED。
+
+- [ ] **Step 3：只做纵向测试所需的最小修正**
+
+若失败暴露 Task 3 实现缺口，只修改 Task 3 已有 `CharacterPackageService` 路径并补对应接口测试；不得为 E2E 增加产品探针、恢复 IPC、第二个状态 owner 或测试专用 Journal。每个失败点最多诊断 15 分钟，超时后拆分到更小的 PackageService 定向复现。
+
+- [ ] **Step 4：运行纵向 GREEN 与完整桌面门禁**
+
+按从小到大的顺序执行，每条命令独立计时：
+
+```powershell
+pnpm.cmd --filter @myself/desktop test -- atomic-file-coordinator.test.ts character-store.test.ts character-package-service.test.ts
+pnpm.cmd --filter @myself/desktop typecheck
+pnpm.cmd test:security
+pnpm.cmd test:integration
+pnpm.cmd verify:characters
+pnpm.cmd verify:desktop
+```
+
+预期：全部 PASS。若完整门禁只有与本次变更无关的已知波动，保留失败命令、精确场景和一次定向复现证据，交由审查者按事实裁决；不得写成已通过，也不得无限重跑。
+
+- [ ] **Step 5：核对旧路径、保护路径和文档范围**
+
+```powershell
+rg -n "CharacterImportJournal|character-import-journal|version:\s*4" apps/desktop/src apps/desktop/tests tests/e2e
+rg -n "CharacterOwnership|captureCharacterOwnership|sameCharacterOwnership|preserveRollback" apps/desktop/src/main/characters/character-package-service.ts
+rg -n "store\.delete\(" apps/desktop/src/main/characters/character-package-service.ts
+$b2PlanCommit = git log -1 --format=%H -- docs/superpowers/plans/2026-08-15-character-import-journal.md
+git diff --name-only "$b2PlanCommit..HEAD" -- apps/website apps/cloudbase-api apps/package-scanner tests/e2e/website.spec.ts
+git diff --check
+```
+
+预期：前三条零命中，网站/CloudBase/Scanner 路径零差异，格式检查通过。另用只读差异确认 `character-store.ts` 中 owner 文件、活动角色保护和移动前后身份复核仍在。
+
+- [ ] **Step 6：更新现有验收记录**
+
+在 `character-workshop-acceptance.md` 的 B2 小节记录日期、Windows 环境、每条实际命令、退出码、测试数量、耗时、生产/测试净行数与未覆盖项。真实断电、强制终止、外部程序替换、窗口提示可读性没有人工证据时必须写“待用户人工确认”。
+
+- [ ] **Step 7：最终新鲜双审查**
+
+规格审查者核对：v3 唯一 owner、无 token 不删除、逐项隔离、预算、最小报告、B3 边界和网站零触碰。代码质量审查者核对：没有浅模块、公开 fault seam、重复矩阵、敏感日志或只增不减。Critical/Important 全部修复并重跑受影响的 Step 4 命令；Minor 必须明确裁决，不静默遗留。
+
+- [ ] **Step 8：提交纵向验收**
+
+```powershell
+git add tests/e2e/desktop.spec.ts docs/operations/character-workshop-acceptance.md
+git commit -m "test(desktop): 验收角色包导入恢复"
+```
+
+提交后使用 `git status --short` 确认没有遗漏属于 B2 的改动；随后才能把 `CharacterPackageRecoveryReport` 交给 B3 计划消费。
