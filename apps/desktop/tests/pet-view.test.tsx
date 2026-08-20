@@ -156,77 +156,80 @@ function installPetViewBrowserApi(api: MyselfApi): void {
   });
 }
 
-function renderPet(api: MyselfApi, ready = false) {
-  playerDouble.ready = ready;
+function renderPet(
+  loadRecovery: MyselfApi['getCharacterRecoverySnapshot'] = async () => EMPTY_RECOVERY_SNAPSHOT,
+  playerReady = false
+): ReturnType<typeof render> & { api: MyselfApi } {
+  const api = createPetViewApi();
+  vi.mocked(api.getCharacterRecoverySnapshot).mockImplementation(loadRecovery);
+  playerDouble.ready = playerReady;
   installPetViewBrowserApi(api);
-  return render(<PetView />);
+  return { ...render(<PetView />), api };
 }
 
 describe('桌宠像素交互接线', () => {
   test('只有非活动角色 issues 时不显示降级横幅', async () => {
-    const api = createPetViewApi();
-    vi.mocked(api.getCharacterRecoverySnapshot).mockResolvedValue({
+    const result = renderPet(async () => ({
       fallbackErrorCode: null,
       issues: [{
         characterId: 'other-pet',
         errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
       }]
-    });
-    const result = renderPet(api, true);
+    }), true);
     await result.findByTestId('healthy-character-player');
     expect(result.queryByRole('alert')).toBeNull();
     expect(result.container.querySelector('.pet-character')).toBeNull();
   });
 
   test('fallback 显示官方默认角色提示和工作室入口', async () => {
-    const api = createPetViewApi();
-    vi.mocked(api.getCharacterRecoverySnapshot).mockResolvedValue({
+    const result = renderPet(async () => ({
       fallbackErrorCode: 'CHARACTER_RESOURCE_NOT_FOUND',
       issues: []
-    });
-    const result = renderPet(api, true);
+    }), true);
     await result.findByTestId('healthy-character-player');
     expect((await result.findByRole('alert')).textContent)
       .toContain('当前角色资源缺失，已切换到官方默认角色。');
     fireEvent.click(result.getByRole('button', { name: '打开角色工作室' }));
-    expect(api.openCharacterWorkshop).toHaveBeenCalledOnce();
+    expect(result.api.openCharacterWorkshop).toHaveBeenCalledOnce();
   });
 
   test('快照 RPC 失败不伪造已完成 fallback', async () => {
-    const api = createPetViewApi();
-    vi.mocked(api.getCharacterRecoverySnapshot).mockRejectedValue(
-      new Error('C:\\private\\marker.json')
+    const result = renderPet(
+      async () => Promise.reject(new Error('C:\\private\\marker.json')),
+      true
     );
-    const result = renderPet(api, true);
     await result.findByTestId('healthy-character-player');
-    await waitFor(() => expect(api.getCharacterRecoverySnapshot).toHaveBeenCalledOnce());
+    await waitFor(() => expect(result.api.getCharacterRecoverySnapshot).toHaveBeenCalledOnce());
     expect(result.queryByRole('alert')).toBeNull();
   });
 
   test('较晚返回的无 fallback 快照不清除播放器故障', async () => {
-    const api = createPetViewApi();
     let resolveRecovery!: (value: typeof EMPTY_RECOVERY_SNAPSHOT) => void;
-    vi.mocked(api.getCharacterRecoverySnapshot).mockImplementation(() => new Promise(resolve => {
+    const result = renderPet(() => new Promise(resolve => {
       resolveRecovery = resolve;
-    }));
-    const result = renderPet(api, true);
+    }), true);
     await act(() => {
       playerDouble.reportRuntimeError?.('CHARACTER_RUNTIME_UNAVAILABLE');
     });
     expect((await result.findByRole('alert')).textContent)
       .toContain('当前角色无法加载，请打开角色工作室检查并修复');
     resolveRecovery(EMPTY_RECOVERY_SNAPSHOT);
-    await waitFor(() => expect(api.getCharacterRecoverySnapshot).toHaveBeenCalledOnce());
+    await waitFor(() => expect(result.api.getCharacterRecoverySnapshot).toHaveBeenCalledOnce());
     expect(result.getByRole('alert').textContent).not.toContain('已切换');
   });
 
   test('启动 fallback 先到时不被较晚的播放器状态清除', async () => {
-    const api = createPetViewApi();
-    vi.mocked(api.getCharacterRecoverySnapshot).mockResolvedValue({
+    let resolveRecovery!: (value: {
+      fallbackErrorCode: 'CHARACTER_RESOURCE_NOT_FOUND';
+      issues: [];
+    }) => void;
+    const result = renderPet(() => new Promise(resolve => {
+      resolveRecovery = resolve;
+    }), true);
+    resolveRecovery({
       fallbackErrorCode: 'CHARACTER_RESOURCE_NOT_FOUND',
       issues: []
     });
-    const result = renderPet(api, true);
     expect((await result.findByRole('alert')).textContent).toContain('当前角色资源缺失');
     await act(() => {
       playerDouble.reportRuntimeError?.('CHARACTER_RUNTIME_UNAVAILABLE');

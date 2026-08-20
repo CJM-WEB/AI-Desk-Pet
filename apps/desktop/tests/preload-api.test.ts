@@ -83,25 +83,27 @@ describe('preload 清除本地数据转发', () => {
 });
 
 describe('preload 公开 API', () => {
-  test('恢复快照对 Main 返回值再次严格校验', async () => {
+  test('恢复快照从固定 IPC 通道返回合法 Main 结果', async () => {
     invoke.mockResolvedValueOnce({ fallbackErrorCode: null, issues: [] });
     await expect(exposedApi?.getCharacterRecoverySnapshot()).resolves.toEqual({
       fallbackErrorCode: null,
       issues: []
     });
     expect(invoke).toHaveBeenCalledWith(ipcChannels.characterRecoverySnapshotGet, {});
+  });
 
-    invoke.mockResolvedValueOnce({
+  test.each([
+    ['含有私有路径字段', {
       fallbackErrorCode: null,
       issues: [],
       markerPath: 'C:\\private'
-    });
-    await expect(exposedApi?.getCharacterRecoverySnapshot()).rejects.toThrow();
-
-    invoke.mockResolvedValueOnce({
+    }],
+    ['把角色级错误伪装为启动 fallback', {
       fallbackErrorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED',
       issues: []
-    });
+    }]
+  ])('恢复快照拒绝 %s 的 Main 返回值', async (_reason, payload) => {
+    invoke.mockResolvedValueOnce(payload);
     await expect(exposedApi?.getCharacterRecoverySnapshot()).rejects.toThrow();
   });
 
