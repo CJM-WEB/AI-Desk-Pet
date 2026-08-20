@@ -8,7 +8,6 @@ import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
-import { ensureOfficialDefaultCharacter } from '../../apps/desktop/src/main/characters/official-default-character';
 import {
   createProviderResponseGate,
   startProviderServer,
@@ -2330,83 +2329,169 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
   });
 });
 
-test.describe('角色包启动恢复', () => {
-  test('角色包恢复一坏一好时继续启动桌宠与普通聊天', async () => {
-    test.setTimeout(120_000);
-    const fixtureModule = await loadElectronFixtureModule();
-    expect(typeof fixtureModule?.createElectronAppFixture).toBe('function');
-    if (!fixtureModule?.createElectronAppFixture) return;
+test.describe('角色恢复', () => {
+  type AppFixture = Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+  const workspaceRoot = resolve(process.cwd());
+  const targetId = 'e2e-safe-character';
+  let fixtureModule: ElectronFixtureModule;
 
-    const workspaceRoot = resolve(process.cwd());
-    const validCharacterId = 'recoverable-import';
-    const validTransactionId = '11111111-1111-4111-8111-111111111111';
-    const brokenMarkerBytes = Buffer.from('{"version":3');
-    let validImportedCharacterDirectory = '';
-    let brokenMarker = '';
+  test.beforeAll(async () => {
+    const loaded = await loadElectronFixtureModule();
+    if (!loaded) throw new Error('缺少 Electron E2E fixture');
+    fixtureModule = loaded;
+  });
+
+  const waitForPage = async (fixture: AppFixture, view: string): Promise<Page> => {
+    const find = (): Page | undefined => fixture.browser.contexts()
+      .flatMap(context => context.pages())
+      .find(page => new URL(page.url()).searchParams.get('view') === view);
+    await expect.poll(() => Boolean(find()), { timeout: 15_000 }).toBe(true);
+    return find()!;
+  };
+
+  const openWorkshop = async (fixture: AppFixture): Promise<Page> => {
+    const pet = await waitForPage(fixture, 'pet');
+    await pet.evaluate(() => window.myself.openCharacterWorkshop());
+    return waitForPage(fixture, 'characters');
+  };
+
+  const importSafeCharacter = async (workshop: Page): Promise<void> => {
+    await workshop.getByRole('button', { name: '导入角色包' }).click();
+    await expect(workshop.locator('[data-character-id="e2e-safe-character"]'))
+      .toBeVisible({ timeout: 15_000 });
+  };
+
+  test('非活动角色恢复问题不降级桌宠并只在选中角色时显示', async () => {
+    test.setTimeout(120_000);
+    const brokenDraftBytes = Buffer.from('{"version":1,"phase":"prepared"');
+    const brokenPackageBytes = Buffer.from('{"version":3,"private":"marker-sentinel"');
+    const recoverableId = 'recoverable-import';
+    const recoverableTransactionId = '11111111-1111-4111-8111-111111111111';
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot,
       apiKey: runtimeDiagnosticKey(),
       launchTimeoutMs: 15_000,
       enableSoftwareRasterizer: true,
-      prepareUserData: async directories => {
+      beforeRestart: async directories => {
         const charactersDirectory = join(directories.userDataDirectory, 'characters');
         const store = new CharacterStore(charactersDirectory);
         await store.create(
-          { id: validCharacterId, name: '待恢复半安装角色' },
-          { importTransactionId: validTransactionId }
+          { id: recoverableId, name: '待恢复半安装角色' },
+          { importTransactionId: recoverableTransactionId }
         );
-        validImportedCharacterDirectory = join(charactersDirectory, validCharacterId);
         await writeFile(
-          join(charactersDirectory, `.package-import-rollback-${validCharacterId}.json`),
+          join(charactersDirectory, `.package-import-rollback-${recoverableId}.json`),
           JSON.stringify({
-            version: 3,
-            characterId: validCharacterId,
-            importTransactionId: validTransactionId
+            version: 3, characterId: recoverableId,
+            importTransactionId: recoverableTransactionId
           }),
           { flag: 'wx' }
         );
-        brokenMarker = join(charactersDirectory, '.package-import-rollback-broken.json');
-        await writeFile(brokenMarker, brokenMarkerBytes, { flag: 'wx' });
-        await ensureOfficialDefaultCharacter(
-          store,
-          join(workspaceRoot, 'apps/desktop/resources/characters/default')
+        await writeFile(
+          join(charactersDirectory, targetId, 'draft', 'draft-transaction.json'),
+          brokenDraftBytes,
+          { flag: 'wx' }
+        );
+        await writeFile(
+          join(charactersDirectory, `.package-import-rollback-${targetId}.json`),
+          brokenPackageBytes,
+          { flag: 'wx' }
         );
       }
     });
 
-    const pageFor = (view: string): Page | undefined => fixture.browser.contexts()
-      .flatMap(context => context.pages())
-      .find(page => {
-        try {
-          return new URL(page.url()).searchParams.get('view') === view;
-        } catch {
-          return false;
-        }
-      });
+    try {
+      const initialWorkshop = await openWorkshop(fixture);
+      await importSafeCharacter(initialWorkshop);
+      await expect(initialWorkshop.locator(`[data-character-id="${targetId}"]`))
+        .toHaveAttribute('data-character-active', 'false');
+      await fixture.restart();
+
+      const pet = await waitForPage(fixture, 'pet');
+      await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready');
+      expect(await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
+      ))).toBe('builtin-default');
+      const workshop = await openWorkshop(fixture);
+      const snapshot = await workshop.evaluate(async () => (
+        window.myself.getCharacterRecoverySnapshot()
+      ));
+      expect(snapshot.fallbackErrorCode).toBeNull();
+      expect(snapshot.issues).toHaveLength(2);
+      await workshop.locator(`[data-character-id="${targetId}"] button`).first().click();
+      await expect(workshop.getByText(/角色草稿恢复受阻/)).toBeVisible();
+      await expect(workshop.getByText(/角色导入恢复受阻/)).toBeVisible();
+      await workshop.locator('[data-character-id="builtin-default"] button').first().click();
+      await expect(workshop.getByText(/角色草稿恢复受阻/)).toHaveCount(0);
+      await expect(workshop.getByText(/角色导入恢复受阻/)).toHaveCount(0);
+      await expect(pet.getByRole('alert')).toHaveCount(0);
+
+      const serialized = JSON.stringify(snapshot);
+      expect(serialized).not.toContain(fixture.userDataDirectory);
+      expect(serialized).not.toContain('marker-sentinel');
+      expect(serialized).not.toMatch(/hash|token|owner|11111111/iu);
+      const charactersDirectory = join(fixture.userDataDirectory, 'characters');
+      await expect(readFile(join(
+        charactersDirectory, targetId, 'draft', 'draft-transaction.json'
+      ))).resolves.toEqual(brokenDraftBytes);
+      await expect(access(join(charactersDirectory, recoverableId))).rejects.toThrow();
+      const packageEvidence = (await readdir(charactersDirectory))
+        .filter(name => name.startsWith(`.package-import-rollback-${targetId}.json.corrupt-`));
+      expect(packageEvidence).toHaveLength(1);
+      await expect(readFile(join(charactersDirectory, packageEvidence[0]!)))
+        .resolves.toEqual(brokenPackageBytes);
+      await pet.evaluate(() => window.myself.openChat());
+      const chat = await waitForPage(fixture, 'chat');
+      await submitChatMessage(chat, '非活动角色恢复后继续聊天');
+      await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test('活动角色发布恢复受阻后切换官方默认角色并保留证据', async () => {
+    test.setTimeout(120_000);
+    const brokenPublishBytes = Buffer.from([0xff, 0x00, 0x7b, 0x7d]);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true,
+      beforeRestart: async directories => {
+        await writeFile(
+          join(directories.userDataDirectory, 'characters', targetId, 'publish-transaction.json'),
+          brokenPublishBytes,
+          { flag: 'wx' }
+        );
+      }
+    });
 
     try {
-      await expect.poll(() => Boolean(pageFor('pet'))).toBe(true);
-      const pet = pageFor('pet');
-      if (!pet) throw new Error('缺少 pet Renderer');
-      await expect(pet.locator('.character-player'))
-        .toHaveAttribute('data-status', 'ready');
-      await expect(access(validImportedCharacterDirectory)).rejects.toThrow();
+      const initialWorkshop = await openWorkshop(fixture);
+      await importSafeCharacter(initialWorkshop);
+      await initialWorkshop.locator(`[data-character-id="${targetId}"] button`).first().click();
+      await initialWorkshop.getByRole('button', { name: '启用角色' }).click();
+      await expect(initialWorkshop.getByText('角色已启用。')).toBeVisible();
+      await fixture.restart();
 
-      const evidenceFiles = (await readdir(join(fixture.userDataDirectory, 'characters')))
-        .filter(name => name.startsWith('.package-import-rollback-broken.json.corrupt-'));
-      expect(evidenceFiles).toHaveLength(1);
+      const pet = await waitForPage(fixture, 'pet');
+      await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready');
+      await expect(pet.getByRole('alert')).toContainText('已切换到官方默认角色');
+      await expect(pet.getByRole('button', { name: '打开角色工作室' })).toBeVisible();
+      expect(await pet.evaluate(async () => (
+        (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
+      ))).toBe('builtin-default');
+      await pet.getByRole('button', { name: '打开角色工作室' }).click();
+      const workshop = await waitForPage(fixture, 'characters');
+      await expect(workshop.locator('[data-character-id="builtin-default"]')).toBeVisible();
+      await expect(workshop.locator(`[data-character-id="${targetId}"]`)).toBeVisible();
       await expect(readFile(join(
-        fixture.userDataDirectory,
-        'characters',
-        evidenceFiles[0]!
-      ))).resolves.toEqual(brokenMarkerBytes);
-      await expect(access(brokenMarker)).rejects.toThrow();
+        fixture.userDataDirectory, 'characters', targetId, 'publish-transaction.json'
+      ))).resolves.toEqual(brokenPublishBytes);
 
       await pet.evaluate(() => window.myself.openChat());
-      await expect.poll(() => Boolean(pageFor('chat'))).toBe(true);
-      const chat = pageFor('chat');
-      if (!chat) throw new Error('缺少 chat Renderer');
-      await submitChatMessage(chat, '角色包恢复后继续普通聊天');
+      const chat = await waitForPage(fixture, 'chat');
+      await submitChatMessage(chat, '活动角色降级后继续聊天');
       await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
     } finally {
       await fixture.dispose();

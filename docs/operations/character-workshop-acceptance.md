@@ -112,3 +112,29 @@ B1 已删除 `CharacterTransactionRecoveryKind`、`kind`、`deferred`、`budgetE
 最终 B2 代码基线为 `c2455b2`。它相对上一验收提交 `aa2fb57` 的生产代码 +26/-27（净 -1）、测试 +25/-27（净 -2），把 2000ms 预算起点移到 inventory 排序与 256 项截断之后，并使已开始处理的坏候选同样受单项完成边界保护。其相邻 151 项测试与 Desktop typecheck 的通过属于修复提交前置证据；依据终审裁决，本轮不重复完整门禁。
 
 本轮实际执行 `pnpm.cmd --filter @myself/desktop build`，退出 0，约 7.8 秒；随后执行唯一纵向场景 `pnpm.cmd exec playwright test --config tests/playwright.config.ts -g "角色包恢复一坏一好时继续启动桌宠与普通聊天"`，退出 0，1/1 通过，7.9 秒。旧 Journal、v4 正式 marker、旧所有权摘要 helper、`preserveRollback()`、PackageService 普通 `store.delete()` 与 detached marker 执行匹配继续零命中，Journal 文件不存在；代码仍先截断 256 项，再记录 `startedAt`。以 `ecdc3f5` 为保护基线，网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。此前完整门及 `verify:desktop` 的历史结果保持原文，不由本轮小范围复验改写。
+
+## 2026-08-21 角色恢复降级纵向验收（B3）
+
+环境为 Windows 11 专业版 10.0.26200。原“角色包启动恢复”场景已原位替换为两个真实 Electron 重启场景，没有新增 fixture fault seam，也没有修改生产代码：
+
+- 非活动角色场景通过正式工作室导入健康角色；退出后同时准备坏草稿 marker、坏包 marker 和可安全回滚的包 marker。重启后桌宠播放器保持 `ready`、不显示 fallback，工作室只在选中目标角色时显示草稿与导入恢复提示，普通聊天可继续提交；公开快照不含用户目录、marker sentinel、hash、token、owner 或事务标识。
+- 活动角色场景通过正式工作室导入并启用角色；退出后写入坏发布 marker。重启后活动角色切换为 `builtin-default`，桌宠显示降级提示和工作室入口，原 marker 字节保留，默认角色与问题角色仍在工作室列出，普通聊天可继续提交。
+
+实际命令与结果：
+
+- `rg -n -i "recovery|恢复|marker|restart\\(" tests/e2e/desktop.spec.ts`：完成既有恢复、marker 与重启场景盘点；B3 最终只保留下述两个“角色恢复”重启场景。
+- `pnpm.cmd --filter @myself/desktop build`：退出 0，生产构建和沙箱 preload 外部依赖校验通过，约 14 秒。
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/character-startup.test.ts tests/character-ipc.test.ts tests/preload-api.test.ts tests/official-default-character.test.ts tests/character-recovery.test.ts tests/pet-view.test.tsx tests/character-workshop-components.test.tsx tests/character-workshop-close-renderer.test.tsx`：退出 0，8 个文件、141 项通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出 0。
+- `pnpm.cmd exec playwright test --config tests/playwright.config.ts --grep "角色恢复"`：最终退出 0，2/2 通过，约 37 秒。
+- `pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts character-ipc.test.ts preload-api.test.ts official-default-character.test.ts character-recovery.test.ts pet-view.test.tsx character-workshop-components.test.tsx character-workshop-close-renderer.test.tsx`：该 package script 实际执行 Desktop 全组，退出 1；1801 项通过、14 项跳过，恢复矩阵用例达到固定 5 秒超时；随后一次定向复现退出 0，1/1 约 1.37 秒。
+- `pnpm.cmd test:security`：退出 0，20/20 通过。
+- `pnpm.cmd test:integration`：退出 0，46/46 通过。
+- `pnpm.cmd verify:characters`：退出 1；Desktop 阶段 1800 项通过、14 项跳过，两个既有 5 秒用例在并行负载下超时，因此后续 security、integration 与 Electron 阶段未由该命令执行。两个超时用例分别单独定向复现时均退出 0，其中恢复矩阵 1/1 约 1.37 秒、包导入串行场景 1/1 约 1.34 秒。
+- `pnpm.cmd verify:desktop`：退出 1；工作区类型检查通过，单元阶段 2238 项通过、14 项跳过，9 个既有文件系统重测试在并行负载下达到固定 5 秒超时，因此后续阶段未由该命令执行。本记录不把该门禁写成通过，也不为本次 E2E 范围修改生产代码或放宽安全断言。
+
+旧 `startupRecoveryErrorCode`、动态 recovery callback、`loadCharacterStartupRecovery`、Actions recovery getter、`fallbackActive` 及跨 IPC 派生字段扫描均为零命中。以 B3 计划基线 `d58f2e8` 检查，网站、CloudBase、scanner 和网站 E2E 路径零差异，`git diff --check` 退出 0，仅有工作树 CRLF 转换提示。
+
+Task 3 的 E2E 变更为 +139/-54（净 +85），已从初稿净 +110 继续删减重复导航与快照矩阵；最终恢复重启场景严格为两个。相对减法基线 `c7d951d`，Desktop 测试与 E2E 当前合计 +1837/-860（净 +977），尚未达到“测试与 E2E 净减”总门，不能宣称减法阶段完成；该缺口主要位于此前 B2/B3 单元测试提交，超出本 Task 3 仅允许 E2E 与验收记录的修改范围，须在提交前由主任务继续审计合并。
+
+真实 Windows 窗口层级、焦点、布局、文案可读性及重启视觉没有本次人工观察，均保持“待用户人工确认”。
