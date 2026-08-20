@@ -41,13 +41,10 @@ function start(
   overrides: Partial<CharacterStartupDependencies> = {},
   startupInputValue: StartupInput = EMPTY_INPUT
 ) {
-  return prepareCharacterStartup(startupInputValue, {
-    validateActiveRuntime: async () => ({ activeCharacterId: 'active-pet' }),
-    ensureOfficialDefaultCharacter: async () => ({ activeCharacterId: 'builtin-default' }),
-    loadFinalIndex: async () => undefined,
-    getTransactionRecoveryReport: () => ({ characters: [] }),
-    ...overrides
-  });
+  return prepareCharacterStartup(
+    startupInputValue,
+    recordingDependencies([], overrides)
+  );
 }
 
 describe('角色启动恢复', () => {
