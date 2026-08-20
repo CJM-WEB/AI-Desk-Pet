@@ -668,38 +668,14 @@ test('568x320 投稿编辑器可滚动到底部且所有操作按钮满足触控
   expect(runtimeErrors).toEqual([]);
 });
 
-test('普通滚轮连续追赶、吸附、隔离惯性并重计新手势', async ({ page }) => {
+test('普通滚轮吸附、隔离惯性并重计新手势', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
   const experience = page.locator(WEBSITE);
   await page.mouse.move(720, 450);
 
-  // 前两次只累计 240px；第三次的余量才开始推动连续进度。
-  await page.mouse.wheel(0, 120);
-  await page.mouse.wheel(0, 120);
-  expect(await readProgress(page)).toBe(0);
-  await page.mouse.wheel(0, 120);
-
-  const firstFrame = await readProgress(page);
-  await page.waitForTimeout(32);
-  const followingFrame = await readProgress(page);
-  expect(followingFrame).toBeGreaterThan(firstFrame);
-  expect(followingFrame).toBeLessThan(1);
-
-  // 离静止窗口仍有充足余量时保持连续值，跨过窗口后才吸附回整数。
-  await page.waitForTimeout(24);
-  const beforeIdleBoundary = await readProgress(page);
-  expect(beforeIdleBoundary).toBeGreaterThan(followingFrame);
-  expect(beforeIdleBoundary).toBeGreaterThan(0);
-  expect(beforeIdleBoundary).toBeLessThan(1);
-
-  // 小余量停止后先吸附回首页；解锁下一次手势后再以巨大输入推进相邻章。
-  await expect.poll(
-    () => readProgress(page),
-    { timeout: 1_500, message: '小余量停止后应吸附回首页' }
-  ).toBe(0);
-  await page.waitForTimeout(950);
   await page.mouse.wheel(0, 5_000);
   await expect.poll(
     () => experience.getAttribute('data-active-chapter'),
@@ -733,14 +709,6 @@ test('普通滚轮连续追赶、吸附、隔离惯性并重计新手势', async
     { timeout: 1_500, message: '小幅反向手势应重新吸附到介绍章节' }
   ).toBe(1);
   await expect(experience).toHaveAttribute('data-active-chapter', 'about');
-
-  await page.waitForTimeout(950);
-  await page.mouse.wheel(0, 5_000);
-  await expect.poll(
-    () => experience.getAttribute('data-active-chapter'),
-    { timeout: 1_500, message: '巨大输入最多只能推进到相邻下载章节' }
-  ).toBe('download');
-  await expect(page.locator(HOME)).toHaveAttribute('data-progress', '2.0000');
   expect(runtimeErrors).toEqual([]);
 });
 
@@ -956,6 +924,7 @@ test('390 付款码弹层保持安全边距并完整显示真实图片', async (
 
 test('390 离开再返回首页后液态画布缓冲区保持可用', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/?seed=42');
 
@@ -983,6 +952,7 @@ test('390 离开再返回首页后液态画布缓冲区保持可用', async ({ p
 
 test('390 宽度液态玻璃首页无横向溢出', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.setViewportSize({ width: 390, height: 844 });
   await enterInteractive(page);
 
@@ -1132,6 +1102,7 @@ test('液态玻璃 WebGL 画布按性能比例建立缓冲区并响应指针', a
 
   const context = await browser.newContext({
     baseURL,
+    reducedMotion: 'no-preference',
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 2
   });

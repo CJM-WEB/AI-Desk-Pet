@@ -14,6 +14,7 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     locale: 'zh-CN',
+    reducedMotion: 'reduce',
     viewport: { width: 1280, height: 720 },
     trace: 'retain-on-failure'
   }
