@@ -427,6 +427,13 @@ export default {
       to: { path: '^apps/website/' },
     },
     {
+      name: 'migration-planning-tools-do-not-import-web-or-cloud-source',
+      comment: '迁移规划工具不得直接或间接依赖网站或 CloudBase API 实现。',
+      severity: 'warn',
+      from: { path: '^tools/(plan-cloudbase-migrations|cloudbase-migration-inventory)\.mjs$' },
+      to: { path: '^apps/(website|cloudbase-api)/', reachable: true },
+    },
+    {
       name: 'cloud-services-stay-inward',
       comment: '云端服务层不得反向依赖适配器或函数层。',
       severity: 'warn',

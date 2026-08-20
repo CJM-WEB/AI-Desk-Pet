@@ -48,10 +48,15 @@ export function classifyChangedPaths(paths) {
   return result;
 }
 
-/** 确认仅为删除基线白名单的退役入口没有被恢复到当前工作树。 */
-export function assertRetiredWebsiteScopePathsAbsent(root, fileExists = existsSync) {
+/** 确认仅为删除基线白名单的退役入口未恢复到工作树或 Git 索引。 */
+export function assertRetiredWebsiteScopePathsAbsent(
+  root,
+  fileExists = existsSync,
+  indexedPaths = [],
+) {
+  const indexedPathSet = new Set(indexedPaths.map(normalizePath));
   const restoredPaths = RETIRED_WEBSITE_SCOPE_PATHS
-    .filter(path => fileExists(resolve(root, path)));
+    .filter(path => fileExists(resolve(root, path)) || indexedPathSet.has(path));
 
   if (restoredPaths.length > 0) {
     throw new Error(`已退役路径不得恢复：${restoredPaths.join(', ')}`);
@@ -116,6 +121,14 @@ function runGit(args) {
   }
 
   return result.stdout;
+}
+
+/** 读取索引中仍被跟踪的退役入口，防止暂存恢复后删除工作树绕过守卫。 */
+function collectRetiredIndexedPaths() {
+  return runGit(['ls-files', '--cached', '--', ...RETIRED_WEBSITE_SCOPE_PATHS])
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .map(normalizePath);
 }
 
 /** 合并 Git 的路径输出并去重，空行不构成路径。 */
@@ -195,7 +208,11 @@ export async function verifyWebsiteScope() {
   }
 
   try {
-    assertRetiredWebsiteScopePathsAbsent(repositoryRoot);
+    assertRetiredWebsiteScopePathsAbsent(
+      repositoryRoot,
+      existsSync,
+      collectRetiredIndexedPaths(),
+    );
   } catch (error) {
     failures.push(error.message);
   }

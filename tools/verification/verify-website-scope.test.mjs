@@ -120,6 +120,15 @@ test('已退役迁移写入口即使仍为删除差异白名单也不得恢复�
   );
 });
 
+test('工作树已删除但 Git 索引仍跟踪退役入口时拒绝范围验证', () => {
+  assert.throws(
+    () => assertRetiredWebsiteScopePathsAbsent('C:/workspace', () => false, [
+      'tools/apply-cloudbase-migrations.test.mjs',
+    ]),
+    /已退役路径不得恢复：tools\/apply-cloudbase-migrations\.test\.mjs/u,
+  );
+});
+
 test('根 manifest 只允许增加阶段 0 脚本和 dependency-cruiser', () => {
   const changedDesktop = structuredClone(baseManifest);
   changedDesktop.scripts['verify:desktop'] = 'echo bypass';

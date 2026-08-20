@@ -24,6 +24,7 @@ const WEB_RULE_NAMES = new Set([
   'no-internal-source-import-shared-types',
   'no-website-to-cloud-source',
   'no-cloud-to-website-source',
+  'migration-planning-tools-do-not-import-web-or-cloud-source',
   'cloud-services-stay-inward',
   'cloud-adapters-do-not-depend-on-services',
   'website-lib-does-not-import-ui',

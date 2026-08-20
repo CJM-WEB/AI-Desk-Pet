@@ -47,10 +47,13 @@ async function createRuleFixture() {
     'apps/website/lib/sdk-offender.ts': "import cloudbase from '@cloudbase/js-sdk';\nexport { cloudbase };\n",
     'apps/website/lib/cloud-offender.ts':
       "import { internal } from '../../cloudbase-api/src/internal.ts';\nexport { internal };\n",
-    'apps/cloudbase-api/src/internal.ts': 'export const internal = true;\n',
+    'apps/cloudbase-api/src/internal.ts': 'export const internal = true;\nexport const cloud = true;\n',
     'apps/cloudbase-api/src/services/offender.ts':
       "import { runtime } from '../adapters/cloudbase-runtime.ts';\nexport { runtime };\n",
     'apps/cloudbase-api/src/adapters/cloudbase-runtime.ts': 'export const runtime = true;\n',
+    'tools/plan-cloudbase-migrations.mjs': "import './migration-bridge.mjs';\n",
+    'tools/migration-bridge.mjs':
+      "import { cloud } from '../apps/cloudbase-api/src/internal.ts';\nexport { cloud };\n",
     'node_modules/@cloudbase/js-sdk/package.json': JSON.stringify({
       name: '@cloudbase/js-sdk',
       version: '0.0.0-fixture',
@@ -146,6 +149,7 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
       'json',
       'apps/website',
       'apps/cloudbase-api',
+      'tools/plan-cloudbase-migrations.mjs',
     ],
     { cwd: fixtureRoot },
   );
@@ -173,5 +177,11 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
       'apps/website/lib/cloudbase-client.ts',
     ),
     false,
+  );
+  assert.ok(
+    hasViolation(
+      'migration-planning-tools-do-not-import-web-or-cloud-source',
+      'tools/plan-cloudbase-migrations.mjs',
+    ),
   );
 });
