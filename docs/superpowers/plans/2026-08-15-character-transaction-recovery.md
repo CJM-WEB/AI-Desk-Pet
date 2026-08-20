@@ -95,7 +95,7 @@ pnpm.cmd --filter @myself/desktop test -- character-transaction-recovery.test.ts
 
 - [ ] **步骤 2：写软时间预算 RED 测试**
 
-注入时钟序列，使第一个角色开始时为 0、完成后为 2001。断言第一个角色的 draft/publish 均完成，第二个角色不开始且 deferred；证明预算只在角色边界检查。
+注入时钟序列，使第一个角色开始时为 0、完成后为 2000，精确覆盖 `>= 2_000` 边界。断言第一个角色的 draft/publish 均完成，第二个角色不开始且 deferred；证明预算只在角色边界检查。
 
 - [ ] **步骤 3：运行 RED**
 
