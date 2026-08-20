@@ -1,6 +1,6 @@
 # AI Pet 桌面架构优化减法收口设计
 
-> 文档状态：自动化完成；B2/B3 可按本减法规格重写计划并再次审查删除门后进入
+> 文档状态：`035fd96` 的最新门禁中 `verify:desktop` 单元阶段失败；测试与 E2E 行数门未满足，不得宣称全局减法完成
 > 日期：2026-08-20
 > 上位规格：[AI Pet 桌宠架构优化与恢复开发门设计](./2026-08-15-ai-pet-desktop-architecture-optimization-design.md)
 > 适用范围：A1/A2/A3/B1 已实现内容的减法收口，以及 B2/B3 的实施约束
@@ -198,3 +198,17 @@ B3 E2E 最多保留两个重启场景：非活动 Store 坏 marker 与 Package �
 旧 owner 扫描无输出（`rg` 退出码 1，表示零命中）；受保护路径在 `875048c..HEAD` 零差异；`git diff --check 875048c..HEAD` 退出 0、无输出。相对 `875048c`，生产代码 +42/-74（净 -32），Desktop 测试 +193/-522（净 -329），E2E +37/-147（净 -110）；相对 `c7d951d`，测试与 E2E 合计 +230/-669（净 -439）。
 
 主裁决采用上述等价证据放行：本规格达到“自动化完成”状态。B2/B3 仍不得直接按旧计划执行，必须先按本减法规格重写计划并再次审查删除门；一次性 E2E 波动作为 concern 保留。真实 Windows 人工项继续保持待用户确认。
+
+## 12. 2026-08-21 Task 6 新鲜门禁与状态裁决（`035fd96`）
+
+本节只更新实测账本和状态，不改变第 5 至 8 节的安全门。此前 `c715f13` 的全绿结果只保留为历史证据，不能替代本节的新基线结果。
+
+在 `035fd96` 上，定向聚合（8 文件、182 项，39.11 秒）、Desktop typecheck（10.39 秒）、Desktop test（86 文件、1808 通过、14 跳过，54.18 秒）、security（20/20，2.70 秒）、integration（46/46，6.13 秒）和 `verify:characters`（runtime 221、assets 92、Desktop 1808/14、security 20/20、integration 46/46、Electron E2E 62/62，335.74 秒）均退出 0。所有命令均在 15 分钟硬上限内结束。
+
+`verify:desktop` 唯一执行一次并退出 1（73.15 秒）：workspace typecheck 已通过，unit 为 108 文件通过、1 文件失败，2252 通过、1 失败、14 跳过；因此该脚本的 security、integration 与 Electron 阶段未执行。失败用例为 `draft-character-preview.test.tsx` 的“场景播放帧回写父级，纯索引同步不重建且后续控制从实际帧继续”：`showAction` 期望 2 次、实际 3 次。按一次失败定向复现约束，同一用例随后单独运行退出 0，1/1 通过、3.50 秒；这不能把原完整门禁改写为通过，也未触发完整重跑。
+
+相对 `c7d951d`，`apps/desktop/tests` 为 `+1661/-822`（净 `+839`），`tests/e2e` 为 `+297/-313`（净 `-16`），合计 `+1958/-1135`（净 `+823`）。**行数门未满足，不得宣称全局减法完成。**本轮没有新鲜的“安全减法已耗尽”owner 审计，亦不作该项宣称；后续仅可在保留唯一安全证据的前提下继续收敛。
+
+生产旧符号 `startupRecoveryErrorCode`、`loadCharacterStartupRecovery`、`fallbackActive`、`CharacterActions.*getCharacterRecoverySnapshot` 和 `export { characterRecoveryMessage }` 均为零命中；`fallbackActive` 仅在 `character-ipc.test.ts:48` 的严格 Schema 负例保留 1 个命中。Workshop StrictMode 单请求、RPC 失败通用文案与路径/token 脱敏、Pet RPC 失败不伪造完成 fallback 均仍有定向聚合证据。网站、CloudBase、scanner 与网站 E2E/配置保护路径在已提交、工作树和暂存区均为零差异，三项 `git diff --check` 均退出 0。
+
+Task 5 fix round 2 已由主任务独立复审通过，清除了此前局部 Renderer 页面发现闭包与全局 helper 重复的 Important；本次规格自核未发现新的 replace-don't-layer、旧路径残留或保护路径偏离。真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉和拖拽体验仍待用户人工确认。

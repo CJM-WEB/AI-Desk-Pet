@@ -138,3 +138,15 @@ B1 已删除 `CharacterTransactionRecoveryKind`、`kind`、`deferred`、`budgetE
 Task 3 的 E2E 变更为 +139/-54（净 +85），已从初稿净 +110 继续删减重复导航与快照矩阵；最终恢复重启场景严格为两个。相对减法基线 `c7d951d`，Desktop 测试与 E2E 当前合计 +1837/-860（净 +977），尚未达到“测试与 E2E 净减”总门，不能宣称减法阶段完成；该缺口主要位于此前 B2/B3 单元测试提交，超出本 Task 3 仅允许 E2E 与验收记录的修改范围，须在提交前由主任务继续审计合并。
 
 真实 Windows 窗口层级、焦点、布局、文案可读性及重启视觉没有本次人工观察，均保持“待用户人工确认”。
+
+## 2026-08-21 Task 6 新鲜全门禁与减法账本（`035fd96`）
+
+此前 `c715f13` 的全绿门禁仅作历史记录。本节从 Task 5 fix round 2 后的 `035fd96` 重新执行全部七条顶层命令，且每条仅一次、均未达到 15 分钟：定向聚合 8 文件/182 通过（39.11 秒）、Desktop typecheck 退出 0（10.39 秒）、Desktop test 86 文件/1808 通过/14 跳过（54.18 秒）、security 20/20（2.70 秒）、integration 46/46（6.13 秒）、`verify:characters` 退出 0（runtime 221、assets 92、Desktop 1808/14、security 20/20、integration 46/46、Electron E2E 62/62，335.74 秒）。
+
+`verify:desktop` 在 unit 阶段退出 1（73.15 秒）：workspace typecheck 通过，108 文件通过、1 文件失败，2252 通过、1 失败、14 跳过；后续 security、integration 与 Electron 阶段未执行。失败为 `draft-character-preview.test.tsx` 中“场景播放帧回写父级，纯索引同步不重建且后续控制从实际帧继续”，`showAction` 期望 2 次、实际 3 次。按失败后只定向一次的约束，该用例单独复现退出 0、1/1 通过（3.50 秒）。本记录不将完整 `verify:desktop` 写为通过，也不以定向通过掩盖原失败。
+
+相对 `c7d951d` 的精确 numstat 为 Desktop tests `+1661/-822`（净 `+839`）、E2E `+297/-313`（净 `-16`），合计 `+1958/-1135`（净 `+823`）。**行数门未满足，不得宣称全局减法完成。**本次没有新鲜 owner 审计可证明“安全减法已耗尽”，因此不作该项结论；后续收敛不得删除唯一安全证据。
+
+旧生产符号扫描为零命中；`fallbackActive` 只在 `character-ipc.test.ts:48` 的严格 Schema 负例出现一次。Workshop StrictMode 只读一次恢复快照且不写入、恢复快照 RPC 失败的通用文案/路径与 token 脱敏、Pet RPC 失败不伪造完成 fallback 均由本次定向聚合覆盖。网站、CloudBase、scanner、网站 E2E 与配置保护路径在提交、工作树及暂存区均为零差异；`git diff --check c7d951d..HEAD`、`git diff --check` 与 `git diff --cached --check` 均退出 0。Task 5 fix round 2 的独立复审已通过，先前关于重复 Renderer 页面发现 helper 的 Important 已清零。
+
+真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉与拖拽体验仍待用户人工确认。
