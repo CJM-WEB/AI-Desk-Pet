@@ -6,6 +6,10 @@
   "scripts": {
     "test": "vitest run",
     "deps:audit:web": "node tools/verification/run-web-dependency-audit.mjs",
+    "verify:web-chain:ownership": "node tools/verification/verify-web-test-ownership.mjs",
+    "verify:web-chain:scope": "node tools/verification/verify-website-scope.mjs",
+    "verify:web-chain:fast": "node tools/verification/verify-web-chain.mjs --profile fast",
+    "verify:web-chain": "node tools/verification/verify-web-chain.mjs --profile full",
     "test:watch": "vitest",
     "typecheck": "pnpm -r --if-present typecheck",
     "test:unit": "vitest run --project shared-types --project file-tools --project agent-core --project character-runtime --project character-assets --project desktop",
