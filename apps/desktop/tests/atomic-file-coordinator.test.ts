@@ -83,6 +83,8 @@ describe('atomicWriteFileExclusive', () => {
       .rejects.toThrow('TEST_WRITE_FAILED');
 
     expect(await readdir(directory)).toEqual([]);
+    expect(rename).not.toHaveBeenCalled();
+    expect(copyFile).not.toHaveBeenCalled();
   });
 
   test('临时文件 sync 失败时 final 不出现且清理 temp', async () => {
@@ -94,6 +96,8 @@ describe('atomicWriteFileExclusive', () => {
       .rejects.toThrow('TEST_SYNC_FAILED');
 
     expect(await readdir(directory)).toEqual([]);
+    expect(rename).not.toHaveBeenCalled();
+    expect(copyFile).not.toHaveBeenCalled();
   });
 
   test('hard-link 发布失败时不调用 rename 或 copyFile', async () => {
