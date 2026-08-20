@@ -3137,8 +3137,13 @@ test.describe('自主行为最小闭环', () => {
       enableSoftwareRasterizer: true
     });
     try {
-      const pet = await waitForRendererPage(fixture, 'pet');
-      const chat = await waitForRendererPage(fixture, 'chat');
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(() => {
         const scope = globalThis as typeof globalThis & {
           __behaviorActions?: Array<{ stateId: string; actionId: string }>;
@@ -3695,8 +3700,13 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pet = await waitForRendererPage(fixture, 'pet');
-      const chat = await waitForRendererPage(fixture, 'chat');
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -3777,8 +3787,13 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pet = await waitForRendererPage(fixture, 'pet');
-      const chat = await waitForRendererPage(fixture, 'chat');
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -3920,8 +3935,13 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pet = await waitForRendererPage(fixture, 'pet');
-      const chat = await waitForRendererPage(fixture, 'chat');
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async input => {
         for (const profile of input.profiles) {
           await window.myself.saveProviderProfile({
@@ -4098,8 +4118,13 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pet = await waitForRendererPage(fixture, 'pet');
-      const chat = await waitForRendererPage(fixture, 'chat');
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -4215,8 +4240,13 @@ test.describe('真实 Provider 业务闭环', () => {
       launchTimeoutMs: 15_000
     });
     try {
-      const pet = await waitForRendererPage(fixture, 'pet');
-      const chat = await waitForRendererPage(fixture, 'chat');
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -4355,8 +4385,13 @@ test.describe('真实 Provider 业务闭环', () => {
     const recycleBinDirectory = fixture.recycleBinDirectory;
     if (!recycleBinDirectory) throw new Error('缺少隔离回收站目录');
     try {
-      const pet = await waitForRendererPage(fixture, 'pet');
-      const chat = await waitForRendererPage(fixture, 'chat');
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      if (!pet) throw new Error('缺少 pet Renderer');
+      const chat = rendererPage(fixture, 'chat');
+      if (!chat) throw new Error('缺少 chat Renderer');
       await pet.evaluate(() => {
         const scope = globalThis as typeof globalThis & {
           __recycleCarryEvents?: Array<{
