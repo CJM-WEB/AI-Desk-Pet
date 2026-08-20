@@ -616,7 +616,7 @@ git commit -m "test: 建立完整网站链验证门"
 
 ### Task 5: 写入使用说明与日期化验收记录
 
-> **实际状态：2026-08-20 已完成。** 已写入唯一入口说明和日期化验收记录；最终固定顺序复跑已由主控完成并记录实际结果。Git 写入已获授权，文档尚待本次独立提交。
+> **实际状态：2026-08-20 已完成。** 已写入唯一入口说明和日期化验收记录；最终固定顺序复跑已由主控完成并记录实际结果。文档已由 `ffcf0d8` 提交。
 
 **Files:**
 - Create: `docs/operations/website-chain-verification.md`
@@ -683,7 +683,7 @@ Expected: 合并后的文件集合全部位于阶段 0 白名单；桌宠黑名�
 
 **删除条件:** 本任务不删除任何文档或历史验收记录。未来结论变化时新增日期化验收记录，旧记录保留日期和范围，不覆盖为“当前通过”。
 
-- [ ] **Step 5: 获得用户 Git 写入授权后提交阶段 0 文档**
+- [x] **Step 5: 获得用户 Git 写入授权后提交阶段 0 文档**
 
 ```powershell
 git add docs/operations/website-chain-verification.md docs/operations/website-chain-verification-acceptance.md
