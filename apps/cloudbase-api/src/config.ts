@@ -15,6 +15,7 @@ export interface CloudConfig {
   imsBizType: string;
   scannerUrl: string;
   scannerHmacSecret: string;
+  sharedPackageSubmissionsEnabled: boolean;
 }
 
 /** 读取必填环境变量，避免以空配置启动服务。 */
@@ -35,6 +36,17 @@ function readCredential(
     throw new Error(`缺少必填环境变量：${alias}（或 ${platformName}）`);
   }
   return value;
+}
+
+/** 读取共享包投稿开关，只接受明确的布尔环境变量值。 */
+function readBooleanSwitch(
+  env: NodeJS.ProcessEnv,
+  name: string
+): boolean {
+  const value = env[name]?.trim().toLowerCase();
+  if (!value || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error(`${name} 必须为 true 或 false`);
 }
 
 /** 从显式传入的环境变量构造运行配置。 */
@@ -83,7 +95,11 @@ export function loadCloudConfig(env: NodeJS.ProcessEnv): CloudConfig {
     tmsBizType: readRequired(env, 'TMS_BIZ_TYPE'),
     imsBizType: readRequired(env, 'IMS_BIZ_TYPE'),
     scannerUrl,
-    scannerHmacSecret: readRequired(env, 'SCANNER_HMAC_SECRET')
+    scannerHmacSecret: readRequired(env, 'SCANNER_HMAC_SECRET'),
+    sharedPackageSubmissionsEnabled: readBooleanSwitch(
+      env,
+      'SHARED_PACKAGE_SUBMISSIONS_ENABLED'
+    )
   };
 }
 

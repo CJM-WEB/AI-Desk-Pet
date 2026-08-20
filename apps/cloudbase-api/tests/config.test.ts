@@ -44,13 +44,37 @@ describe('loadCloudConfig', () => {
       tmsBizType: 'ai-pet-text',
       imsBizType: 'ai-pet-image',
       scannerUrl: 'https://scanner.example.com',
-      scannerHmacSecret: 'scanner-secret'
+      scannerHmacSecret: 'scanner-secret',
+      sharedPackageSubmissionsEnabled: false
     });
     expect(config.cloudbaseRegion).toBe('ap-singapore');
     expect(config.cloudbaseSdkTimeoutMs).toBe(15_000);
     expect(config).not.toHaveProperty('cloudbaseAiBaseUrl');
     expect(config).not.toHaveProperty('cloudbaseAiApiKey');
     expect(config).not.toHaveProperty('relevanceModel');
+  });
+
+  it.each([
+    [undefined, false],
+    ['', false],
+    ['false', false],
+    ['true', true]
+  ] as const)('投稿开关 %s 解析为 %s', (raw, expected) => {
+    const config = loadCloudConfig({
+      ...validEnv,
+      ...(raw === undefined
+        ? {}
+        : { SHARED_PACKAGE_SUBMISSIONS_ENABLED: raw })
+    });
+
+    expect(config.sharedPackageSubmissionsEnabled).toBe(expected);
+  });
+
+  it('投稿开关拒绝模糊值', () => {
+    expect(() => loadCloudConfig({
+      ...validEnv,
+      SHARED_PACKAGE_SUBMISSIONS_ENABLED: 'yes'
+    })).toThrow('SHARED_PACKAGE_SUBMISSIONS_ENABLED 必须为 true 或 false');
   });
 
   it('从 SCF 允许配置的别名加载审核凭据', () => {

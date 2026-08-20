@@ -23,7 +23,8 @@ const validConfig: CloudConfig = {
   tmsBizType: 'ai-pet-text',
   imsBizType: 'ai-pet-image',
   scannerUrl: 'https://scanner.example.com',
-  scannerHmacSecret: 'scanner-secret'
+  scannerHmacSecret: 'scanner-secret',
+  sharedPackageSubmissionsEnabled: false
 };
 
 describe('CloudBase V3 服务端运行时工厂', () => {
