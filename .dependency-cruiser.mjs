@@ -102,9 +102,8 @@ export default {
         pathNot: [
           '(^|/)(tests?|__tests__)(/|$)',
           '\\.(test|spec)\\.[cm]?[jt]sx?$',
-          // 两类运行时例外分别由下方专属规则校验精确目标。
+          // 桌面运行时例外由下方专属规则校验精确目标。
           '^apps/desktop/',
-          '^tools/apply-cloudbase-migrations\\.mjs$',
         ],
       },
       to: { dependencyTypes: ['npm-dev'] },
@@ -122,19 +121,6 @@ export default {
         pathNot: [
           '(^|/)node_modules/electron/index\\.js$',
           '(^|/)node_modules/\\.pnpm/electron@[^/]+/node_modules/electron/index\\.js$',
-        ],
-      },
-    },
-    {
-      name: 'no-migration-production-to-dev-dependency',
-      comment: '根级迁移入口只能使用 CloudBase 管理 SDK 开发依赖。',
-      severity: 'warn',
-      from: { path: '^tools/apply-cloudbase-migrations\\.mjs$' },
-      to: {
-        dependencyTypes: ['npm-dev'],
-        pathNot: [
-          '(^|/)node_modules/@cloudbase/manager-node/',
-          '(^|/)node_modules/\\.pnpm/[^/]+/node_modules/@cloudbase/manager-node/',
         ],
       },
     },
@@ -427,25 +413,18 @@ export default {
       to: { path: '^packages/shared-types/src/(?!index\\.[cm]?[jt]s$)' },
     },
     {
-      name: 'no-website-to-cloud-or-migration-source',
-      comment: '网站源码不得直接穿透 CloudBase API 或迁移实现。',
+      name: 'no-website-to-cloud-source',
+      comment: '网站源码不得直接穿透 CloudBase API 实现。',
       severity: 'warn',
       from: { path: '^apps/website/' },
-      to: { path: '^(apps/cloudbase-api/|tools/apply-cloudbase-migrations\\.mjs$)' },
+      to: { path: '^apps/cloudbase-api/' },
     },
     {
-      name: 'no-cloud-to-website-or-migration-source',
-      comment: 'CloudBase API 源码不得直接穿透网站或迁移实现。',
+      name: 'no-cloud-to-website-source',
+      comment: 'CloudBase API 源码不得直接穿透网站实现。',
       severity: 'warn',
       from: { path: '^apps/cloudbase-api/' },
-      to: { path: '^(apps/website/|tools/apply-cloudbase-migrations\\.mjs$)' },
-    },
-    {
-      name: 'no-migration-to-website-or-cloud-source',
-      comment: '迁移入口不得复用网站或 CloudBase API 内部源码。',
-      severity: 'warn',
-      from: { path: '^tools/apply-cloudbase-migrations\\.mjs$' },
-      to: { path: '^apps/(website|cloudbase-api)/' },
+      to: { path: '^apps/website/' },
     },
     {
       name: 'cloud-services-stay-inward',
@@ -500,13 +479,6 @@ export default {
         ],
       },
       to: { path: '(^|/)node_modules/tencentcloud-sdk-nodejs/|^tencentcloud-sdk-nodejs$' },
-    },
-    {
-      name: 'cloudbase-manager-sdk-only-in-migration-adapter',
-      comment: 'CloudBase 管理 SDK 只允许由根级迁移入口封装。',
-      severity: 'warn',
-      from: { pathNot: '^tools/apply-cloudbase-migrations\\.mjs$' },
-      to: { path: '(^|/)node_modules/@cloudbase/manager-node/|^@cloudbase/manager-node$' },
     },
     {
       name: 'website-features-do-not-import-liquid-glass',

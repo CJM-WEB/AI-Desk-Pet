@@ -28,7 +28,7 @@ export const WEB_TEST_OWNERS = Object.freeze([
   { id: 'cloudbase-api', pattern: /^apps\/cloudbase-api\/tests\/.*\.test\.ts$/u },
   { id: 'package-scanner', pattern: /^apps\/package-scanner\/tests\/.*\.test\.ts$/u },
   { id: 'release-tools', pattern: /^tools\/release\/tests\/.*\.test\.ts$/u },
-  { id: 'root-cloudbase-tools', pattern: /^tools\/(plan-cloudbase-migrations|build-cloudbase-functions)\.test\.mjs$/u },
+  { id: 'root-cloudbase-tools', pattern: /^tools\/(cloudbase-migration-inventory|plan-cloudbase-migrations|build-cloudbase-functions)\.test\.mjs$/u },
   { id: 'website-e2e', pattern: /^tests\/e2e\/website\.spec\.ts$/u },
   { id: 'website-verification', pattern: /^tools\/verification\/.*\.test\.mjs$/u }
 ]);

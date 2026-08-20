@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,6 +95,23 @@ test('网站链审查仅报告已批准的历史 warning，且不载入桌面模
   assert.ok(report.summary.violations.length <= 14);
 });
 
+test('依赖审查配置不再为已退役迁移入口或管理 SDK 保留例外', async () => {
+  const [baseConfiguration, webConfiguration] = await Promise.all([
+    readFile(join(REPOSITORY_ROOT, '.dependency-cruiser.mjs'), 'utf8'),
+    readFile(WEB_CONFIGURATION_PATH, 'utf8'),
+  ]);
+  const serialized = `${baseConfiguration}\n${webConfiguration}`;
+
+  const retiredTerms = [
+    'apply-cloudbase-migrations',
+    '@cloudbase/' + 'manager-node',
+    'migration-production-to-dev-dependency',
+    'migration-adapter',
+  ];
+
+  assert.doesNotMatch(serialized, new RegExp(retiredTerms.join('|'), 'u'));
+});
+
 test('runner 拒绝覆盖配置、输入范围或输出参数契约的调用', async t => {
   const rejectedArguments = [
     ['覆盖配置', ['--config', '.dependency-cruiser.mjs']],
@@ -140,7 +157,7 @@ test('网站专属规则阻止跨应用、服务反向依赖与越界 SDK 调用
 
   assert.ok(
     hasViolation(
-      'no-website-to-cloud-or-migration-source',
+      'no-website-to-cloud-source',
       'apps/website/lib/cloud-offender.ts',
     ),
   );

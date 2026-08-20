@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assertRetiredWebsiteScopePathsAbsent,
   assertRootManifestChange,
   classifyChangedPaths,
 } from './verify-website-scope.mjs';
@@ -109,6 +110,14 @@ test('阶段一只放行获批的 CloudBase 发布止血路径', () => {
       'tools/unapproved-cloudbase-tool.mjs',
     ],
   });
+});
+
+test('已退役迁移写入口即使仍为删除差异白名单也不得恢复到工作树', () => {
+  assert.throws(
+    () => assertRetiredWebsiteScopePathsAbsent('C:/workspace', path =>
+      path.endsWith('tools\\apply-cloudbase-migrations.mjs')),
+    /已退役路径不得恢复：tools\/apply-cloudbase-migrations\.mjs/u,
+  );
 });
 
 test('根 manifest 只允许增加阶段 0 脚本和 dependency-cruiser', () => {

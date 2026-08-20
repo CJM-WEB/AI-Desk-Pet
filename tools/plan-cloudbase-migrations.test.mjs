@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const cliPath = resolve('tools/plan-cloudbase-migrations.mjs');
-const migrationsPath = resolve('cloudbase/migrations');
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
+const cliPath = fileURLToPath(new URL('./plan-cloudbase-migrations.mjs', import.meta.url));
+const inventoryPath = fileURLToPath(new URL('./cloudbase-migration-inventory.mjs', import.meta.url));
+const migrationsPath = fileURLToPath(new URL('../cloudbase/migrations/', import.meta.url));
 
 /** 通过独立进程验证 CLI，避免测试进程掩盖模块加载产生的副作用。 */
-function run(args) {
+function run(args, cwd = repositoryRoot) {
   return spawnSync(process.execPath, [cliPath, ...args], {
+    cwd,
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -39,13 +43,49 @@ test('只接受一次 --dry-run 并稳定输出脱敏 JSON 计划', () => {
   );
 });
 
-test('dry-run 子进程不改写迁移目录', async () => {
-  const before = await stat(migrationsPath);
+/** 以相对路径排序保存迁移目录原始字节，精确检测内容与文件集变化。 */
+async function snapshotMigrationDirectory(directory, prefix = '') {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const snapshot = new Map();
+
+  for (const entry of entries) {
+    const relativePath = `${prefix}${entry.name}`;
+    const absolutePath = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      for (const [path, content] of await snapshotMigrationDirectory(absolutePath, `${relativePath}/`)) {
+        snapshot.set(path, content);
+      }
+    } else if (entry.isFile()) {
+      snapshot.set(relativePath, await readFile(absolutePath));
+    }
+  }
+
+  return snapshot;
+}
+
+test('dry-run 子进程不改写迁移目录中的任意原始字节', async () => {
+  const before = await snapshotMigrationDirectory(migrationsPath);
   const result = run(['--dry-run']);
-  const after = await stat(migrationsPath);
+  const after = await snapshotMigrationDirectory(migrationsPath);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(after.mtimeMs, before.mtimeMs);
+  assert.deepEqual(after, before);
+});
+
+test('CLI 从非仓库当前目录仍可运行', () => {
+  const result = run(['--dry-run'], fileURLToPath(new URL('../../', import.meta.url)));
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).mode, 'dry-run');
+});
+
+test('CLI 与 inventory 仅保留迁移读取能力', async () => {
+  const source = `${await readFile(cliPath, 'utf8')}\n${await readFile(inventoryPath, 'utf8')}`;
+
+  assert.doesNotMatch(
+    source,
+    /@cloudbase\/manager-node|process\.env|\bfetch\b|node:(?:http|https|net|child_process)|\b(?:writeFile|appendFile|rm|unlink|rename|mkdir|chmod|executePGSql|database)\b/u,
+  );
 });
 
 test('拒绝无参数、未知参数和重复 dry-run 参数', () => {

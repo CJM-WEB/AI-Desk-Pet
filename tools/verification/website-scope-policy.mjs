@@ -38,7 +38,13 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'tools/cloudbase-migration-inventory.test.mjs',
   'tools/plan-cloudbase-migrations.mjs',
   'tools/plan-cloudbase-migrations.test.mjs',
-  /** 仅为验证已批准的旧入口删除，不能再新增或恢复这两个文件。 */
+  /** 仅允许基线中已有的两个文件作为删除差异出现；恢复由退役不变量拒绝。 */
+  'tools/apply-cloudbase-migrations.mjs',
+  'tools/apply-cloudbase-migrations.test.mjs',
+]);
+
+/** 已退役入口即使保留删除差异白名单，也必须始终不存在于当前工作树。 */
+export const RETIRED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'tools/apply-cloudbase-migrations.mjs',
   'tools/apply-cloudbase-migrations.test.mjs',
 ]);

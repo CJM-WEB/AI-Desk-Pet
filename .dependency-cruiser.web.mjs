@@ -9,7 +9,6 @@ const WEB_RULE_NAMES = new Set([
   'no-undeclared-workspace-alias-character-runtime',
   'no-undeclared-workspace-alias-shared-types',
   'no-production-to-dev-dependency',
-  'no-migration-production-to-dev-dependency',
   'no-production-to-test-or-output',
   'no-orphan-production-module',
   'no-package-to-app-tool-or-test',
@@ -23,9 +22,8 @@ const WEB_RULE_NAMES = new Set([
   'no-relative-cross-workspace-import-tools-release',
   'shared-types-is-foundational',
   'no-internal-source-import-shared-types',
-  'no-website-to-cloud-or-migration-source',
-  'no-cloud-to-website-or-migration-source',
-  'no-migration-to-website-or-cloud-source',
+  'no-website-to-cloud-source',
+  'no-cloud-to-website-source',
   'cloud-services-stay-inward',
   'cloud-adapters-do-not-depend-on-services',
   'website-lib-does-not-import-ui',
@@ -33,7 +31,6 @@ const WEB_RULE_NAMES = new Set([
   'website-cloudbase-sdk-only-in-client-adapter',
   'cloudbase-node-sdk-only-in-runtime-adapter',
   'tencent-sdk-only-in-content-adapters',
-  'cloudbase-manager-sdk-only-in-migration-adapter',
   'website-features-do-not-import-liquid-glass'
 ]);
 

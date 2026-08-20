@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -9,6 +10,7 @@ import {
   ALLOWED_ROOT_SCRIPT_CHANGES,
   ALLOWED_WEBSITE_SCOPE_PATHS,
   FORBIDDEN_WEBSITE_SCOPE_PATHS,
+  RETIRED_WEBSITE_SCOPE_PATHS,
   WEBSITE_SCOPE_BASELINE,
 } from './website-scope-policy.mjs';
 
@@ -44,6 +46,16 @@ export function classifyChangedPaths(paths) {
   }
 
   return result;
+}
+
+/** 确认仅为删除基线白名单的退役入口没有被恢复到当前工作树。 */
+export function assertRetiredWebsiteScopePathsAbsent(root, fileExists = existsSync) {
+  const restoredPaths = RETIRED_WEBSITE_SCOPE_PATHS
+    .filter(path => fileExists(resolve(root, path)));
+
+  if (restoredPaths.length > 0) {
+    throw new Error(`已退役路径不得恢复：${restoredPaths.join(', ')}`);
+  }
 }
 
 /** 确认一个记录对象中的既有条目没有被删除或改写。 */
@@ -178,6 +190,12 @@ export async function verifyWebsiteScope() {
 
   try {
     await assertCurrentManifestChange();
+  } catch (error) {
+    failures.push(error.message);
+  }
+
+  try {
+    assertRetiredWebsiteScopePathsAbsent(repositoryRoot);
   } catch (error) {
     failures.push(error.message);
   }
