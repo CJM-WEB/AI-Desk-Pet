@@ -2,7 +2,8 @@
 
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { gsap } from 'gsap';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LiquidGlassHome } from '../components/home-experience/LiquidGlassHome';
 import { HomeExperience } from '../components/home-experience/HomeExperience';
@@ -20,6 +21,12 @@ function createCanvasContext() {
 
 function createWebGlContext() {
   const noop = vi.fn();
+  const viewport = vi.fn();
+  const uniform2f = vi.fn();
+  const uniform4fv = vi.fn();
+  const getUniformLocation = vi.fn((_program: WebGLProgram, name: string) => (
+    { name } as unknown as WebGLUniformLocation
+  ));
   const constants = new Set([
     'ARRAY_BUFFER', 'CLAMP_TO_EDGE', 'COMPILE_STATUS', 'FLOAT', 'FRAGMENT_SHADER',
     'LINEAR', 'LINK_STATUS', 'RGBA', 'STATIC_DRAW', 'TEXTURE_2D',
@@ -28,19 +35,23 @@ function createWebGlContext() {
     'TEXTURE6', 'TRIANGLES', 'UNPACK_FLIP_Y_WEBGL', 'UNSIGNED_BYTE', 'VERTEX_SHADER'
   ]);
   const objectMethods = new Set([
-    'createBuffer', 'createProgram', 'createShader', 'createTexture', 'getUniformLocation'
+    'createBuffer', 'createProgram', 'createShader', 'createTexture'
   ]);
   const successfulMethods = new Set(['getProgramParameter', 'getShaderParameter']);
   const noopMethods = new Set([
     'activeTexture', 'attachShader', 'bindBuffer', 'bindTexture', 'bufferData',
     'compileShader', 'deleteBuffer', 'deleteProgram', 'deleteShader', 'deleteTexture',
     'drawArrays', 'enableVertexAttribArray', 'linkProgram', 'pixelStorei', 'shaderSource',
-    'texImage2D', 'texParameteri', 'uniform1f', 'uniform1i', 'uniform2f', 'uniform2fv',
-    'uniform4fv', 'useProgram', 'vertexAttribPointer', 'viewport'
+    'texImage2D', 'texParameteri', 'uniform1f', 'uniform1i', 'uniform2fv',
+    'useProgram', 'vertexAttribPointer'
   ]);
-  return new Proxy({}, {
+  const context = new Proxy({}, {
     get: (_target, property) => {
       const name = String(property);
+      if (name === 'getUniformLocation') return getUniformLocation;
+      if (name === 'viewport') return viewport;
+      if (name === 'uniform2f') return uniform2f;
+      if (name === 'uniform4fv') return uniform4fv;
       if (constants.has(name)) return 1;
       if (objectMethods.has(name)) return () => ({});
       if (successfulMethods.has(name)) return () => true;
@@ -50,6 +61,7 @@ function createWebGlContext() {
       throw new Error(`测试 WebGL 替身未定义接口：${name}`);
     }
   }) as WebGLRenderingContext;
+  return { context, viewport, uniform2f, uniform4fv };
 }
 
 class FailedLogoImage extends EventTarget {
@@ -89,7 +101,7 @@ describe('磁吸 Logo 舞台', () => {
     const webGl = createWebGlContext();
     vi.stubGlobal('Image', FailedLogoImage);
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
-      .mockImplementation((type) => type === 'webgl' ? webGl : createCanvasContext());
+      .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
 
     render(<LiquidGlassHome active isPaused={false} reducedMotion={false} />);
 
@@ -103,5 +115,46 @@ describe('磁吸 Logo 舞台', () => {
     });
     const brandTitle = screen.getByText('AI PET');
     expect(brandTitle.parentElement?.getAttribute('aria-hidden')).toBe('false');
+  });
+
+  it('按性能比例建立缓冲区并把指针与点击写入 WebGL uniform', () => {
+    vi.stubGlobal('innerWidth', 1440); vi.stubGlobal('innerHeight', 900);
+    vi.stubGlobal('devicePixelRatio', 2);
+    const webGl = createWebGlContext();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockImplementation((type) => type === 'webgl' ? webGl.context : createCanvasContext());
+    vi.spyOn(gsap, 'quickTo').mockImplementation((target, property) => {
+      const setter = vi.fn((value: number) => {
+        Reflect.set(target as object, property, value);
+        return {} as gsap.core.Tween;
+      });
+      return Object.assign(setter, { tween: {} as gsap.core.Tween }) as ReturnType<typeof gsap.quickTo>;
+    });
+    let renderFrame: Parameters<typeof gsap.ticker.add>[0] | undefined;
+    vi.spyOn(gsap.ticker, 'add').mockImplementation((callback) => {
+      renderFrame = callback;
+      return callback;
+    });
+
+    render(<LiquidGlassHome active isPaused={false} reducedMotion={false} />);
+    const canvas = screen.getByLabelText('AI PET 互动液态玻璃画布');
+    expect(canvas).toHaveProperty('width', 1296);
+    expect(canvas).toHaveProperty('height', 810);
+    expect(webGl.viewport).toHaveBeenCalledWith(0, 0, 1296, 810);
+
+    fireEvent.pointerMove(window, { clientX: 360, clientY: 225 });
+    fireEvent.pointerDown(canvas, { clientX: 360, clientY: 225 });
+    expect(renderFrame).toBeDefined();
+    renderFrame?.(1, 16, 1, 0.016);
+    const pointerCall = webGl.uniform2f.mock.calls.find(([location]) => (
+      (location as unknown as { name: string }).name === 'u_pointer'
+    ));
+    expect(pointerCall?.slice(1)).toEqual([0.25, 0.75]);
+    const rippleCall = webGl.uniform4fv.mock.calls.find(([location]) => (
+      (location as unknown as { name: string }).name === 'u_ripples[0]'
+    ));
+    const rippleValues = Array.from(rippleCall?.[1] as Float32Array);
+    expect(rippleValues.slice(0, 3)).toEqual([0.25, 0.75, 0]);
+    expect(rippleValues[3]).toBeCloseTo(1.65, 5);
   });
 });

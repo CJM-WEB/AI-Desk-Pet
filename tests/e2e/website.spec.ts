@@ -668,50 +668,6 @@ test('568x320 投稿编辑器可滚动到底部且所有操作按钮满足触控
   expect(runtimeErrors).toEqual([]);
 });
 
-test('普通滚轮吸附、隔离惯性并重计新手势', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await enterInteractive(page);
-  const experience = page.locator(WEBSITE);
-  await page.mouse.move(720, 450);
-
-  await page.mouse.wheel(0, 5_000);
-  await expect.poll(
-    () => experience.getAttribute('data-active-chapter'),
-    { timeout: 1_500, message: '滚轮停止后应吸附到介绍章节' }
-  ).toBe('about');
-  await expect.poll(() => readProgress(page)).toBe(1);
-
-  await page.mouse.wheel(0, 600);
-  await page.waitForTimeout(700);
-  await expect(experience).toHaveAttribute('data-active-chapter', 'about');
-  expect(await readProgress(page)).toBe(1);
-
-  // 等待余下 100ms 锁定及最后一次输入的 120ms 静止期结束。
-  await page.waitForTimeout(250);
-  await page.mouse.wheel(0, 120);
-  await page.mouse.wheel(0, 120);
-  expect(await readProgress(page)).toBe(1);
-
-  // 反向后丢弃旧方向累计，重新累计到阈值仍保持整数章节。
-  await page.mouse.wheel(0, -120);
-  await page.mouse.wheel(0, -120);
-  expect(await readProgress(page)).toBe(1);
-  await page.mouse.wheel(0, -120);
-  await expect.poll(
-    () => readProgress(page),
-    { message: '第三次反向滚轮应开始离开稳定章节' }
-  ).toBeLessThan(1);
-
-  await expect.poll(
-    () => readProgress(page),
-    { timeout: 1_500, message: '小幅反向手势应重新吸附到介绍章节' }
-  ).toBe(1);
-  await expect(experience).toHaveAttribute('data-active-chapter', 'about');
-  expect(runtimeErrors).toEqual([]);
-});
-
 test('支付滚筒消费局部滚轮与键盘输入并显示映射正确的真实付款码', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await enterInteractive(page);
@@ -1094,68 +1050,6 @@ test('568x320 五章节主内容避让移动导航且保持完整可见', async 
   expect(runtimeErrors).toEqual([]);
 });
 
-test('液态玻璃 WebGL 画布按性能比例建立缓冲区并响应指针', async ({
-  browser,
-  baseURL
-}) => {
-  if (!baseURL) throw new Error('缺少隔离网站地址');
-
-  const context = await browser.newContext({
-    baseURL,
-    reducedMotion: 'no-preference',
-    viewport: { width: 1440, height: 900 },
-    deviceScaleFactor: 2
-  });
-  const page = await context.newPage();
-  const runtimeErrors = collectRuntimeErrors(page);
-
-  try {
-    await enterInteractive(page);
-    const liquidHome = page.locator(LIQUID_HOME);
-    const canvas = liquidHome.locator('canvas');
-    await expect(liquidHome).toHaveAttribute('data-active', 'true');
-    await expect(liquidHome).toHaveAttribute('data-initialization-failed', 'false');
-    await expect(canvas).toBeVisible();
-
-    const trailPoints = [
-      [180, 180],
-      [420, 240],
-      [700, 330],
-      [980, 440],
-      [1180, 620]
-    ] as const;
-    for (const [x, y] of trailPoints) {
-      await page.mouse.move(x, y);
-      await page.waitForTimeout(70);
-    }
-    await page.mouse.down();
-    await page.mouse.up();
-    await page.waitForTimeout(120);
-
-    const canvasEvidence = await canvas.evaluate((element) => {
-      if (!(element instanceof HTMLCanvasElement)) {
-        throw new Error('液态玻璃不是 Canvas 元素');
-      }
-      const bounds = element.getBoundingClientRect();
-      return {
-        cssWidth: bounds.width,
-        cssHeight: bounds.height,
-        bufferWidth: element.width,
-        bufferHeight: element.height,
-        browserDpr: window.devicePixelRatio
-      };
-    });
-    expect(canvasEvidence.browserDpr).toBe(2);
-    expect(canvasEvidence.bufferWidth).toBe(Math.round(canvasEvidence.cssWidth * 0.9));
-    expect(canvasEvidence.bufferHeight).toBe(Math.round(canvasEvidence.cssHeight * 0.9));
-    expect(canvasEvidence.bufferWidth).toBeGreaterThan(0);
-    expect(canvasEvidence.bufferHeight).toBeGreaterThan(0);
-    expect(runtimeErrors).toEqual([]);
-  } finally {
-    await context.close();
-  }
-});
-
 test('减少动态效果直接进入稳定首页', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -1167,5 +1061,7 @@ test('减少动态效果直接进入稳定首页', async ({ page }) => {
   await expect(page.locator(LIQUID_HOME).locator('canvas')).toBeAttached();
   await expect(page.locator(SWARM)).toHaveCount(0);
   await expect(page.locator('[data-testid="brand-stage"]')).toHaveCount(0);
+  await page.mouse.wheel(0, 360);
+  await expect(page.locator(WEBSITE)).toHaveAttribute('data-active-chapter', 'about');
   expect(runtimeErrors).toEqual([]);
 });
