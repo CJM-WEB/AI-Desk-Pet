@@ -3,6 +3,7 @@
 > 文档状态：已批准（用户于 2026-08-15 确认执行）
 > 日期：2026-08-15
 > 上位规格：[AI Pet 桌宠架构优化与恢复开发门设计](./2026-08-15-ai-pet-desktop-architecture-optimization-design.md)
+> 覆盖规格：[桌面架构优化减法收口设计](./2026-08-20-desktop-code-subtraction-design.md)；B1 输入映射以该规格的双分面码接口为准
 > 前置规格：[角色 Store 事务分面恢复设计](./2026-08-15-character-transaction-recovery-design.md)、[角色包导入 Journal 设计](./2026-08-15-character-import-journal-design.md)
 > 对应阶段：B3 恢复体验与降级
 
@@ -68,7 +69,7 @@ type CharacterRecoverySnapshotDto = Readonly<{
 
 ## 5. Main、IPC 与 Renderer 职责
 
-- `CharacterActions.getCharacterRecoverySnapshot()` 汇总 Store、Package 和 startup 结果并完成内部到公开 DTO 的白名单映射。
+- `CharacterActions.getCharacterRecoverySnapshot()` 汇总 Store、Package 和 startup 结果，并从 B1 的 `draftErrorCode`、`publishErrorCode` 完成内部到公开 DTO 的白名单映射。
 - `registerCharacterIpc()` 只接受空输入，通过固定通道返回严格结果。
 - Preload 只暴露 `getCharacterRecoverySnapshot()`，并再次以 Zod 校验 Main 返回值。
 - Pet 只展示活动 fallback；非活动问题不得替换当前宠物。
@@ -77,7 +78,7 @@ type CharacterRecoverySnapshotDto = Readonly<{
 
 ## 6. 稳定错误与建议
 
-draft blocked 映射为草稿保存与发布受限；publish blocked 映射为重新编译发布；both 显示两类能力；import invalid/ownership/evidence 失败映射为重新导入或打开工作室；deferred 说明将在后续访问或重启继续恢复。未知异常统一映射 `CHARACTER_OPERATION_FAILED`，不回显原文。
+B3 不读取或缓存 B1 的派生状态：`draftErrorCode` 为 `CHARACTER_DRAFT_RECOVERY_BLOCKED` 时映射 draft blocked，`publishErrorCode` 为 `CHARACTER_PUBLISH_RECOVERY_BLOCKED` 时映射 publish blocked，两者同时存在时映射 both，任一分面码为 `CHARACTER_RECOVERY_DEFERRED` 时映射 deferred。随后 draft blocked 映射为草稿保存与发布受限；publish blocked 映射为重新编译发布；both 显示两类能力；import invalid/ownership/evidence 失败映射为重新导入或打开工作室；deferred 说明将在后续访问或重启继续恢复。未知异常统一映射 `CHARACTER_OPERATION_FAILED`，不回显原文。
 
 ## 7. 测试与人工验收
 
@@ -87,4 +88,4 @@ draft blocked 映射为草稿保存与发布受限；publish blocked 映射为�
 
 ## 8. 旧路径删除条件
 
-新结构化快照贯穿 Actions、IPC、Preload、Pet 和 Workshop 且测试通过后，删除 `startupRecoveryErrorCode` 标量、`registerCharacterIpc()` 的 recovery callback、旧 `{errorCode}` Schema 和只服务旧单错误横幅的测试。不得删除 B1/B2 内部详细结果，也不得把公开 DTO 反向用作 journal 状态。
+新结构化快照贯穿 Actions、IPC、Preload、Pet 和 Workshop 且测试通过后，删除 `startupRecoveryErrorCode` 标量、`registerCharacterIpc()` 的 recovery callback、旧 `{errorCode}` Schema 和只服务旧单错误横幅的测试。不得删除 B1 的双分面码或 B2 内部详细结果，也不得把公开 DTO 反向用作 journal 状态。

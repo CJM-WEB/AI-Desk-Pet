@@ -1,28 +1,20 @@
-export type CharacterTransactionRecoveryKind =
-  | 'healthy'
-  | 'draft-recovery-blocked'
-  | 'publish-recovery-blocked'
-  | 'draft-and-publish-recovery-blocked';
-
-export type CharacterTransactionRecoveryErrorCode =
-  | 'CHARACTER_DRAFT_RECOVERY_BLOCKED'
-  | 'CHARACTER_PUBLISH_RECOVERY_BLOCKED'
-  | 'CHARACTER_RECOVERY_DEFERRED';
-
 export const MAX_RECOVERY_CHARACTERS = 256;
 export const RECOVERY_SOFT_BUDGET_MS = 2_000;
 
 export type CharacterTransactionRecoveryResult = Readonly<{
   characterId: string;
-  kind: CharacterTransactionRecoveryKind;
-  draftErrorCode: CharacterTransactionRecoveryErrorCode | null;
-  publishErrorCode: CharacterTransactionRecoveryErrorCode | null;
-  deferred: boolean;
+  draftErrorCode:
+    | 'CHARACTER_DRAFT_RECOVERY_BLOCKED'
+    | 'CHARACTER_RECOVERY_DEFERRED'
+    | null;
+  publishErrorCode:
+    | 'CHARACTER_PUBLISH_RECOVERY_BLOCKED'
+    | 'CHARACTER_RECOVERY_DEFERRED'
+    | null;
 }>;
 
 export type CharacterTransactionRecoveryReport = Readonly<{
   characters: readonly CharacterTransactionRecoveryResult[];
-  budgetExceeded: boolean;
 }>;
 
 export type CharacterRecoveryCandidate = Readonly<{
@@ -67,8 +59,6 @@ export class CharacterTransactionRecovery {
       recoveryCandidates,
       this.activeCharacterId()
     );
-    let budgetExceeded = false;
-
     if (activeIndex > 0) {
       const activeCandidate = recoveryCandidates[activeIndex];
       if (activeCandidate) {
@@ -82,7 +72,6 @@ export class CharacterTransactionRecovery {
         index >= MAX_RECOVERY_CHARACTERS ||
         (index > 0 && this.now() - startedAt >= RECOVERY_SOFT_BUDGET_MS)
       ) {
-        budgetExceeded = true;
         this.deferCandidates(recoveryCandidates.slice(index), results);
         break;
       }
@@ -96,8 +85,7 @@ export class CharacterTransactionRecovery {
     return {
       characters: candidates.map((candidate) =>
         results.get(candidate.characterId) ?? deferredResult(candidate.characterId)
-      ),
-      budgetExceeded
+      )
     };
   }
 
@@ -134,10 +122,8 @@ export class CharacterTransactionRecovery {
 
     return {
       characterId: candidate.characterId,
-      kind: recoveryKind(draftErrorCode, publishErrorCode),
       draftErrorCode,
-      publishErrorCode,
-      deferred: false
+      publishErrorCode
     };
   }
 
@@ -155,7 +141,11 @@ export class CharacterTransactionRecovery {
     }
   }
 
-  private assertAllowed(errorCode: CharacterTransactionRecoveryErrorCode | null): void {
+  private assertAllowed(
+    errorCode: CharacterTransactionRecoveryResult[
+      'draftErrorCode' | 'publishErrorCode'
+    ]
+  ): void {
     if (errorCode) {
       throw new Error(errorCode);
     }
@@ -174,10 +164,14 @@ function activeCandidateIndex(
   );
 }
 
-async function recoveryErrorCode(
+async function recoveryErrorCode<
+  ErrorCode extends
+    | 'CHARACTER_DRAFT_RECOVERY_BLOCKED'
+    | 'CHARACTER_PUBLISH_RECOVERY_BLOCKED'
+>(
   recover: () => Promise<void>,
-  errorCode: CharacterTransactionRecoveryErrorCode
-): Promise<CharacterTransactionRecoveryErrorCode | null> {
+  errorCode: ErrorCode
+): Promise<ErrorCode | null> {
   try {
     await recover();
     return null;
@@ -196,28 +190,10 @@ async function recoveryErrorCode(
   }
 }
 
-function recoveryKind(
-  draftErrorCode: CharacterTransactionRecoveryErrorCode | null,
-  publishErrorCode: CharacterTransactionRecoveryErrorCode | null
-): CharacterTransactionRecoveryKind {
-  if (draftErrorCode && publishErrorCode) {
-    return 'draft-and-publish-recovery-blocked';
-  }
-  if (draftErrorCode) {
-    return 'draft-recovery-blocked';
-  }
-  if (publishErrorCode) {
-    return 'publish-recovery-blocked';
-  }
-  return 'healthy';
-}
-
 function deferredResult(characterId: string): CharacterTransactionRecoveryResult {
   return {
     characterId,
-    kind: 'draft-and-publish-recovery-blocked',
     draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
-    publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
-    deferred: true
+    publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED'
   };
 }

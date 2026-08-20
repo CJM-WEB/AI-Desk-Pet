@@ -1803,13 +1803,11 @@ describe('CharacterStore', () => {
       characters: [{
         characterId: 'demo',
         draftErrorCode: null,
-        publishErrorCode: 'CHARACTER_PUBLISH_RECOVERY_BLOCKED',
-        deferred: false
+        publishErrorCode: 'CHARACTER_PUBLISH_RECOVERY_BLOCKED'
       }, {
         characterId: 'healthy',
         draftErrorCode: null,
-        publishErrorCode: null,
-        deferred: false
+        publishErrorCode: null
       }]
     });
     await expect(restartedStore.getRuntimeManifest('healthy'))
@@ -1855,16 +1853,9 @@ describe('CharacterStore', () => {
       expect(summaries.map(summary => summary.id)).toEqual(['healthy', 'target']);
       expect(targetResult).toEqual({
         characterId: 'target',
-        kind: scenario.draft
-          ? (scenario.publish
-              ? 'draft-and-publish-recovery-blocked'
-              : 'draft-recovery-blocked')
-          : 'publish-recovery-blocked',
         draftErrorCode: scenario.draft ? 'CHARACTER_DRAFT_RECOVERY_BLOCKED' : null,
-        publishErrorCode: scenario.publish ? 'CHARACTER_PUBLISH_RECOVERY_BLOCKED' : null,
-        deferred: false
+        publishErrorCode: scenario.publish ? 'CHARACTER_PUBLISH_RECOVERY_BLOCKED' : null
       });
-      expect(report.budgetExceeded).toBe(false);
       expect(JSON.stringify(report)).not.toContain(directory);
       await expect(access(healthyNext)).rejects.toThrow();
       if (scenario.draft) {
@@ -1949,22 +1940,6 @@ describe('CharacterStore', () => {
     await expect(restarted.getRuntimeManifest('healthy'))
       .resolves.toEqual(runtimeView(healthyRuntime.manifest));
     expect(await readFile(markerFile)).toEqual(markerBytes);
-  });
-
-  test('事务恢复协调：未发布角色的坏 publish 也必须显示为 broken', async () => {
-    const store = new CharacterStore(charactersDirectory);
-    await store.create({ id: 'demo', name: '演示角色' });
-    await writeFile(
-      join(charactersDirectory, 'demo', 'publish-transaction.json'),
-      Buffer.from('{"version":2')
-    );
-
-    const restarted = new CharacterStore(charactersDirectory);
-
-    await expect(restarted.list()).resolves.toMatchObject([{
-      id: 'demo',
-      completeness: 'broken'
-    }]);
   });
 
   test('事务恢复协调：坏草稿下 V1 草稿只做内存投影且不覆盖恢复证据', async () => {
@@ -2068,18 +2043,13 @@ describe('CharacterStore', () => {
     expect(restarted.getTransactionRecoveryReport()).toEqual({
       characters: [{
         characterId: 'first',
-        kind: 'draft-and-publish-recovery-blocked',
         draftErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
-        publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED',
-        deferred: true
+        publishErrorCode: 'CHARACTER_RECOVERY_DEFERRED'
       }, {
         characterId: 'second',
-        kind: 'healthy',
         draftErrorCode: null,
-        publishErrorCode: null,
-        deferred: false
-      }],
-      budgetExceeded: true
+        publishErrorCode: null
+      }]
     });
     expect(await readFile(deferredNext)).toEqual(deferredBytes);
   });
@@ -2109,18 +2079,13 @@ describe('CharacterStore', () => {
     expect(restarted.getTransactionRecoveryReport()).toEqual({
       characters: [{
         characterId: 'target',
-        kind: 'draft-recovery-blocked',
         draftErrorCode: 'CHARACTER_DRAFT_RECOVERY_BLOCKED',
-        publishErrorCode: null,
-        deferred: false
+        publishErrorCode: null
       }, {
         characterId: 'healthy',
-        kind: 'healthy',
         draftErrorCode: null,
-        publishErrorCode: null,
-        deferred: false
-      }],
-      budgetExceeded: false
+        publishErrorCode: null
+      }]
     });
     expect(JSON.stringify(restarted.getTransactionRecoveryReport()))
       .not.toContain('拒绝访问测试路径');
@@ -2154,28 +2119,6 @@ describe('CharacterStore', () => {
     expect(store.getTransactionRecoveryReport()).toEqual(previousReport);
     releaseRecovery();
     await expect(pending).rejects.toThrow('恢复程序错误');
-    expect(store.getTransactionRecoveryReport()).toEqual(previousReport);
-  });
-
-  test('事务恢复协调：tombstone 恢复异常保留上一完整报告', async () => {
-    let armed = false;
-    const tombstone = join(charactersDirectory, 'target.delete-tombstone');
-    const characterDirectory = join(charactersDirectory, 'target');
-    const store = new CharacterStore(charactersDirectory, {
-      async renamePath(source, destination) {
-        if (armed && source === tombstone && destination === characterDirectory) {
-          throw new TypeError('tombstone 程序错误');
-        }
-        await rename(source, destination);
-      }
-    });
-    await store.create({ id: 'target', name: '目标角色' });
-    await store.list();
-    const previousReport = store.getTransactionRecoveryReport();
-    await rename(characterDirectory, tombstone);
-    armed = true;
-
-    await expect(store.list()).rejects.toThrow('tombstone 程序错误');
     expect(store.getTransactionRecoveryReport()).toEqual(previousReport);
   });
 
@@ -2224,8 +2167,7 @@ describe('CharacterStore', () => {
     await writeFile(indexFile, `${JSON.stringify(index, null, 2)}\n`, 'utf8');
     await restarted.list();
     expect(restarted.getTransactionRecoveryReport()).toEqual({
-      characters: [],
-      budgetExceeded: false
+      characters: []
     });
 
     await unlink(indexFile);

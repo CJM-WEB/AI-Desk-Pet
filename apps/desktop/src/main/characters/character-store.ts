@@ -315,8 +315,7 @@ export class CharacterStore {
   private readonly transactionRecovery: CharacterTransactionRecovery;
   private recoveryActiveCharacterId: string | null = null;
   private transactionRecoveryReport: CharacterTransactionRecoveryReport = {
-    characters: [],
-    budgetExceeded: false
+    characters: []
   };
 
   constructor(

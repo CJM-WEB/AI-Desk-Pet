@@ -10,6 +10,8 @@
 
 **设计规格：** [角色 Store 事务分面恢复设计](../specs/2026-08-15-character-transaction-recovery-design.md)
 
+**覆盖规格：** [桌面架构优化减法收口设计](../specs/2026-08-20-desktop-code-subtraction-design.md)；B1 结果接口与测试 owner 以该规格为准。
+
 ## 全局约束
 
 - 活动角色优先；最多 256 个索引角色；2000ms 软预算只在角色之间检查。
@@ -36,13 +38,13 @@
 
 **接口：**
 
-- 产出：规格中定义的 `CharacterTransactionRecoveryKind`、`CharacterTransactionRecoveryResult`、`CharacterTransactionRecoveryReport`。
+- 产出：规格中定义的 `CharacterTransactionRecoveryResult`、`CharacterTransactionRecoveryReport`；结果只包含角色 ID 与两个分面错误码。
 - 产出：`recoverAll(candidates)`、`resultFor()`、`assertDraftSaveAllowed()`、`assertPublishAllowed()`、`assertRuntimeAllowed()`。
 - 构造依赖：`activeCharacterId: () => string | null`、`now: () => number`，生产默认 `Date.now`。
 
 - [ ] **步骤 1：写分面与继续执行 RED 测试**
 
-用 `vi.fn()` 建立三个 candidate：第一个 draft 抛错但 publish 成功，第二个 publish 抛错，第三个全部成功。断言结果依次为 `draft-recovery-blocked`、`publish-recovery-blocked`、`healthy`，且六个 closure 全部调用一次。再增加双失败用例，断言同角色两个 closure 都执行且结果为 `draft-and-publish-recovery-blocked`。
+用 `vi.fn()` 建立三个 candidate：第一个 draft 抛错但 publish 成功，第二个 publish 抛错，第三个全部成功。精确断言各角色的 `draftErrorCode` 与 `publishErrorCode`，且六个 closure 全部调用一次。双失败角色的两个 closure 都必须执行，并分别保留 draft 与 publish 稳定码。
 
 - [ ] **步骤 2：运行 RED 并确认因模块不存在而失败**
 
@@ -54,7 +56,7 @@ pnpm.cmd --filter @myself/desktop test -- character-transaction-recovery.test.ts
 
 - [ ] **步骤 3：实现最小分面协调器**
 
-按角色分别 `try/catch` draft 和 publish，记录两个 error code 后派生 kind；不得在一个 facet 失败时跳过另一个 facet，也不得把原始异常文本写入结果。
+按角色分别 `try/catch` draft 和 publish，只记录两个 error code；不得在一个 facet 失败时跳过另一个 facet，也不得把原始异常文本写入结果。
 
 - [ ] **步骤 4：写能力门 RED 测试**
 
@@ -85,11 +87,11 @@ pnpm.cmd --filter @myself/desktop test -- character-transaction-recovery.test.ts
 
 - 消费：Task 1 的 `recoverAll()`。
 - 产出：固定常量 `MAX_RECOVERY_CHARACTERS = 256`、`RECOVERY_SOFT_BUDGET_MS = 2_000`。
-- 产出：超限角色使用 `CHARACTER_RECOVERY_DEFERRED` 且 `deferred: true`。
+- 产出：超限角色的两个分面码均使用 `CHARACTER_RECOVERY_DEFERRED`；报告中存在该码即表示本轮触发预算。
 
 - [ ] **步骤 1：写排序与数量边界 RED 测试**
 
-输入顺序为 `other-a, active, other-b`，断言调用顺序为 `active, other-a, other-b`，报告顺序仍按输入稳定。构造 257 个 candidate，断言只执行 256 个完整角色，最后一个不调用任何 closure、标记 deferred、原 candidate 不受修改。
+输入顺序为 `other-a, active, other-b`，断言调用顺序为 `active, other-a, other-b`，报告顺序仍按输入稳定。构造 257 个 candidate，断言只执行 256 个完整角色，最后一个不调用任何 closure、两个分面码均为 `CHARACTER_RECOVERY_DEFERRED`，原 candidate 不受修改。
 
 - [ ] **步骤 2：写软时间预算 RED 测试**
 

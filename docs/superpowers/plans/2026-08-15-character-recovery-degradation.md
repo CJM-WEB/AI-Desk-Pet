@@ -10,6 +10,8 @@
 
 **设计规格：** [角色恢复公开反馈与降级设计](../specs/2026-08-15-character-recovery-degradation-design.md)
 
+**覆盖规格：** [桌面架构优化减法收口设计](../specs/2026-08-20-desktop-code-subtraction-design.md)；B1 输入映射以该规格的双分面码接口为准。
+
 **前置计划：** [B1 Store 事务分面恢复](./2026-08-15-character-transaction-recovery.md) → [B2 角色包导入 Journal](./2026-08-15-character-import-journal.md) → 本计划。
 
 ## 全局约束
@@ -68,7 +70,7 @@ pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts
 
 - [ ] **步骤 4：实现最小启动裁决**
 
-按活动角色 ID 查询 B1 分面；publish blocked 时跳过用户 runtime 并返回 fallback，draft blocked 仍校验健康 runtime。把 B2 issues 合并但不据此退出应用。未知内部异常只返回 `CHARACTER_OPERATION_FAILED`。
+按活动角色 ID 查询 B1 的 `draftErrorCode` 与 `publishErrorCode`；publish 分面码受阻时跳过用户 runtime 并返回 fallback，只有 draft 分面码受阻时仍校验健康 runtime。把 B2 issues 合并但不据此退出应用。未知内部异常只返回 `CHARACTER_OPERATION_FAILED`。
 
 - [ ] **步骤 5：改 Main 启动编排并运行 GREEN**
 
@@ -108,7 +110,7 @@ pnpm.cmd --filter @myself/desktop test -- character-startup.test.ts
 
 - [ ] **步骤 2：写映射 RED 测试**
 
-分别输入 draft、publish、both、import-invalid、ownership-mismatch、evidence-failed、deferred 内部结果，断言角色 ID、capabilities 和 suggestion 精确匹配规格。内部错误对象含私有路径 sentinel，序列化 DTO 后不得包含 sentinel。
+分别输入 B1 的 draft 分面码、publish 分面码、两码同时受阻、任一分面 deferred，以及 B2 的 import-invalid、ownership-mismatch、evidence-failed 内部结果，断言派生的公开错误、角色 ID、capabilities 和 suggestion 精确匹配规格。B3 不接收 B1 的替代布尔值或分类字段；内部错误对象含私有路径 sentinel，序列化 DTO 后不得包含 sentinel。
 
 - [ ] **步骤 3：运行 RED**
 

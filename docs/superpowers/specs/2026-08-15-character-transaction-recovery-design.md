@@ -3,6 +3,7 @@
 > 文档状态：已批准（用户于 2026-08-15 确认执行）
 > 日期：2026-08-15
 > 上位规格：[AI Pet 桌宠架构优化与恢复开发门设计](./2026-08-15-ai-pet-desktop-architecture-optimization-design.md)
+> 覆盖规格：[桌面架构优化减法收口设计](./2026-08-20-desktop-code-subtraction-design.md)；B1 结果接口与测试 owner 以该规格为准
 > 对应阶段：B1 `CharacterTransactionRecovery`
 
 ## 1. 目标
@@ -37,28 +38,20 @@
 新增 `apps/desktop/src/main/characters/character-transaction-recovery.ts`：
 
 ```ts
-export type CharacterTransactionRecoveryKind =
-  | 'healthy'
-  | 'draft-recovery-blocked'
-  | 'publish-recovery-blocked'
-  | 'draft-and-publish-recovery-blocked';
-
-export type CharacterTransactionRecoveryErrorCode =
-  | 'CHARACTER_DRAFT_RECOVERY_BLOCKED'
-  | 'CHARACTER_PUBLISH_RECOVERY_BLOCKED'
-  | 'CHARACTER_RECOVERY_DEFERRED';
-
 export type CharacterTransactionRecoveryResult = Readonly<{
   characterId: string;
-  kind: CharacterTransactionRecoveryKind;
-  draftErrorCode: CharacterTransactionRecoveryErrorCode | null;
-  publishErrorCode: CharacterTransactionRecoveryErrorCode | null;
-  deferred: boolean;
+  draftErrorCode:
+    | 'CHARACTER_DRAFT_RECOVERY_BLOCKED'
+    | 'CHARACTER_RECOVERY_DEFERRED'
+    | null;
+  publishErrorCode:
+    | 'CHARACTER_PUBLISH_RECOVERY_BLOCKED'
+    | 'CHARACTER_RECOVERY_DEFERRED'
+    | null;
 }>;
 
 export type CharacterTransactionRecoveryReport = Readonly<{
   characters: readonly CharacterTransactionRecoveryResult[];
-  budgetExceeded: boolean;
 }>;
 ```
 
@@ -77,20 +70,20 @@ assertRuntimeAllowed(characterId: string): void;
 
 ## 6. 分面规则
 
-| 结果 | 草稿读取 | 草稿保存 | 发布 | 运行读取/启用 |
-| --- | --- | --- | --- | --- |
-| `healthy` | 允许 | 允许 | 允许 | 允许 |
-| `draft-recovery-blocked` | 允许读取现存健康草稿 | 拒绝 | 拒绝 | 现存健康运行版本允许 |
-| `publish-recovery-blocked` | 允许 | 允许 | 拒绝 | 拒绝该角色 |
-| `draft-and-publish-recovery-blocked` | 允许读取现存健康草稿 | 拒绝 | 拒绝 | 拒绝该角色 |
+| `draftErrorCode` | `publishErrorCode` | 草稿读取 | 草稿保存 | 发布 | 运行读取/启用 |
+| --- | --- | --- | --- | --- | --- |
+| `null` | `null` | 允许 | 允许 | 允许 | 允许 |
+| `CHARACTER_DRAFT_RECOVERY_BLOCKED` | `null` | 允许读取现存健康草稿 | 拒绝 | 拒绝 | 现存健康运行版本允许 |
+| `null` | `CHARACTER_PUBLISH_RECOVERY_BLOCKED` | 允许 | 允许 | 拒绝 | 拒绝该角色 |
+| `CHARACTER_DRAFT_RECOVERY_BLOCKED` | `CHARACTER_PUBLISH_RECOVERY_BLOCKED` | 允许读取现存健康草稿 | 拒绝 | 拒绝 | 拒绝该角色 |
 
-draft 失败后仍必须尝试同角色 publish；一个角色失败后仍必须尝试后续角色。活动角色 publish 受阻只形成权威结果，是否切换官方默认角色由 B3 决定。
+draft 失败后仍必须尝试同角色 publish；一个角色失败后仍必须尝试后续角色。活动角色 publish 受阻只形成权威分面码，是否切换官方默认角色由 B3 决定。
 
 ## 7. 安全与失败处理
 
 - 损坏 marker 的原始字节不得被覆盖、规范化或删除。
 - 路径、Junction、权限和解析异常只归属相应角色与分面。
-- deferred 不是 healthy；其原文件保持不动，公开层只得到稳定码。
+- 任一分面码为 `CHARACTER_RECOVERY_DEFERRED` 即表示该角色 deferred；报告中存在此码即表示本轮触发数量或时间预算。其原文件保持不动，公开层只得到稳定码。
 - Store 公开写方法在覆盖证据前检查分面能力门。
 - 恢复结果留在 Electron Main；绝对路径、marker 正文和内部异常不进入 Renderer。
 
