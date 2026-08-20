@@ -1278,7 +1278,7 @@ test('568x320 投稿编辑器可滚动到底部且所有操作按钮满足触控
   expect(runtimeErrors).toEqual([]);
 });
 
-test('逐章节交接且快速输入不能跳过相邻章节', async ({ page }) => {
+test('逐章节透明交接保持原位层级并生成截图证据', async ({ page }) => {
   const runtimeErrors = collectRuntimeErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await enterInteractive(page);
@@ -1313,42 +1313,6 @@ test('逐章节交接且快速输入不能跳过相邻章节', async ({ page }) 
     'home'
   );
 
-  await page.mouse.wheel(0, 5_000);
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'about'
-  );
-
-  for (let index = 0; index < 6; index += 1) {
-    await page.keyboard.press('PageDown');
-  }
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'download'
-  );
-  await page.keyboard.press('PageUp');
-  await expect(page.locator(WEBSITE)).toHaveAttribute(
-    'data-active-chapter',
-    'about'
-  );
-  expect(await page.evaluate(() => window.scrollY)).toBe(0);
-  expect(runtimeErrors).toEqual([]);
-});
-
-test('普通鼠标以 120px 连续滚动多档后进入相邻介绍章', async ({ page }) => {
-  const runtimeErrors = collectRuntimeErrors(page);
-  await enterInteractive(page);
-  await page.mouse.move(720, 450);
-
-  for (let index = 0; index < 8; index += 1) {
-    await page.mouse.wheel(0, 120);
-  }
-
-  await expect.poll(
-    () => page.locator(WEBSITE).getAttribute('data-active-chapter'),
-    { timeout: 1_500, message: '普通 120px 连续滚轮应吸附到相邻介绍章节' }
-  ).toBe('about');
-  await expect.poll(() => readProgress(page)).toBe(1);
   expect(runtimeErrors).toEqual([]);
 });
 

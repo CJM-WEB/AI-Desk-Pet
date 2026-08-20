@@ -8,7 +8,7 @@
 
 **不适用范围：** 桌面端、Electron E2E、Agent、文件工具、角色运行时、生产部署及远端数据
 
-**退役说明：** 完整 E2E 在 15.6 分钟止损时为 `20 passed / 10 failed / 1 interrupted / 14 did not run`，测试级独立 Chromium fixture 未消除序列性 GPU stall。本规格由 `2026-08-15-website-e2e-cli-process-isolation-design.md` 替代。
+**退役说明：** 完整 E2E 在 15.6 分钟止损时为 `20 passed / 10 failed / 1 interrupted / 14 did not run`，测试级独立 Chromium fixture 未消除序列性 GPU stall。后继逐项 CLI 方案也已被真实验收证伪并退役；两个 fixture 文件于 2026-08-20 经用户二次批准后物理删除，不再存在后继隔离路径。
 
 ## 1. 背景与已证伪方案
 

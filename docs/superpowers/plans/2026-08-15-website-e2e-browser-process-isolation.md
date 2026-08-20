@@ -1,6 +1,6 @@
 # 网站 E2E 浏览器进程隔离实施计划
 
-> **执行状态：已停止。** Task 1 已提交；Task 2 的完整 E2E 在 15.6 分钟止损时为 `20 passed / 10 failed / 1 interrupted / 14 did not run`，且未提交。测试级独立 Chromium fixture 已证伪，后续由 `2026-08-15-website-e2e-cli-process-isolation-design.md` 替代；本计划 Task 3 不再执行。
+> **执行状态：已停止并完成清理。** Task 1 已提交；Task 2 的完整 E2E 在 15.6 分钟止损时为 `20 passed / 10 failed / 1 interrupted / 14 did not run`，且未提交。测试级独立 Chromium fixture 已证伪；后继逐项 CLI 方案也已证伪退役。两个 fixture 文件于 2026-08-20 经用户二次批准后物理删除，本计划 Task 3 不再执行。
 
 > **For Codex:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task.
 

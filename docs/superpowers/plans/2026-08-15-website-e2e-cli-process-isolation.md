@@ -1,8 +1,12 @@
 # Website E2E CLI Process Isolation Implementation Plan
 
+> **状态：已终止并退役。** 2026-08-20 正式 44 项运行在第 30 项被编排器的 90 秒外部预算中断；该测试原生运行产物为 `passed`，证明编排器与测试既有 180 秒契约冲突。用户已二次批准删除两套失败隔离机制。下列任务保留为历史执行记录，不得继续实施或作为当前入口。
+
+> **退役清理结果：** Tasks 3—4 取消；逐项 CLI 的实现与专用测试、自定义浏览器 fixture 与专用测试共四个文件已经删除。`test:e2e:website` 保持原生 Playwright 入口，正文中关于 CLI 提交、根脚本切换及“正式入口使用逐项 CLI”的步骤全部作废。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 网站只构建一次，并把当前全部 Playwright E2E 逐项放入独立 CLI 进程，在 15 分钟内得到可审计的完整汇总与退出码。
+**Goal（已退役）：** 网站只构建一次，并把当前全部 Playwright E2E 逐项放入独立 CLI 进程，在 15 分钟内得到可审计的完整汇总与退出码。
 
 **Architecture:** 新增一个无第三方依赖的 Node 编排器，使用 Playwright 1.61.1 官方 `--list` 发现测试、用单项 `--test-list` 顺序启动独立 CLI，并为每项分配独立产物目录。纯清单/参数契约与异步进程生命周期分两次 TDD 和审查；删除两条已证明重复或时序污染的断言路径后，只有直接运行编排器完成 44/44 才切换根脚本、删除已证伪 fixture 并运行完整网站链。
 

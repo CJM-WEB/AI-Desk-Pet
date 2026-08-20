@@ -16,6 +16,14 @@ export const ALLOWED_WEBSITE_SCOPE_PATHS = Object.freeze([
   'docs/superpowers/plans/2026-08-15-website-cloudbase-scanner-reliability.md',
   'docs/superpowers/plans/2026-08-15-website-http-contract-closure.md',
   'docs/superpowers/plans/2026-08-15-website-optimization-index.md',
+  'docs/superpowers/plans/2026-08-15-website-e2e-browser-process-isolation.md',
+  'docs/superpowers/plans/2026-08-15-website-e2e-cli-process-isolation.md',
+  'docs/superpowers/plans/2026-08-15-website-e2e-worker-isolation.md',
+  'docs/superpowers/specs/2026-08-15-website-e2e-browser-process-isolation-design.md',
+  'docs/superpowers/specs/2026-08-15-website-e2e-cli-process-isolation-design.md',
+  'docs/superpowers/specs/2026-08-15-website-e2e-worker-isolation-design.md',
+  'tests/e2e/website.spec.ts',
+  'tests/website-isolated-browser-fixture.ts',
 ]);
 
 /** 桌宠、Agent、角色及其根测试始终优先拒绝，即使未来误入白名单也不放行。 */

@@ -485,6 +485,8 @@ git commit -m "test: 增加网站分支范围守卫"
 
 ### Task 4: 建立快速门与完整 `verify:web-chain`
 
+> **实际状态：BLOCKED。** 快速门已通过，但完整门的官网 E2E 未通过；后续两套隔离机制均被证伪并删除。保持既有原生 Playwright 入口，当前不得把 Task 4 或 Phase 0 记为完成。
+
 **Files:**
 - Modify: `tools/verification/web-chain-catalog.mjs`
 - Create: `tools/verification/verify-web-chain.mjs`
