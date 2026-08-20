@@ -1,6 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { IpcMain, WebContents } from 'electron';
-import { AgentIpcAuthorization } from '../src/main/ipc/agent-ipc-authorization';
 import { registerAgentIpc } from '../src/main/ipc/register-ipc';
 import { ipcChannels } from '../src/shared/ipc-channels';
 
@@ -26,8 +25,8 @@ function createService() {
   };
 }
 
-function webContents(): WebContents {
-  return { isDestroyed: () => false } as WebContents;
+function webContents(isDestroyed = false): WebContents {
+  return { isDestroyed: () => isDestroyed } as WebContents;
 }
 
 function createAgentIpcFixture() {
@@ -35,8 +34,7 @@ function createAgentIpcFixture() {
   const service = createService();
   const currentChat = webContents();
   let current: WebContents | null = currentChat;
-  const authorization = new AgentIpcAuthorization(() => current);
-  registerAgentIpc(ipcMain, service, authorization);
+  registerAgentIpc(ipcMain, service, () => current);
   return {
     handlers,
     service,
@@ -185,6 +183,29 @@ describe('Agent IPC', () => {
         input === undefined
           ? fixture.handlers.get(channel)?.({ sender: other })
           : fixture.handlers.get(channel)?.({ sender: other }, input)
+      ))).rejects.toThrow('AGENT_IPC_SENDER_INVALID');
+    }
+
+    expect(fixture.service.submit).not.toHaveBeenCalled();
+    expect(fixture.service.hasReportedFailure).not.toHaveBeenCalled();
+    expect(fixture.service.cancelActive).not.toHaveBeenCalled();
+    expect(fixture.service.resolveFileAction).not.toHaveBeenCalled();
+    expect(fixture.service.resolveHistoryDisclosure).not.toHaveBeenCalled();
+    expect(fixture.service.resetConversation).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['当前 chat 不存在', null],
+    ['当前 chat WebContents 已销毁', webContents(true)]
+  ])('六个 Agent mutating handler 在%s时均失败且 service 零调用', async (_state, current) => {
+    const fixture = createAgentIpcFixture();
+    fixture.replaceChat(current);
+
+    for (const [channel, input] of agentMutatingInvocations) {
+      await expect(Promise.resolve().then(() => (
+        input === undefined
+          ? fixture.handlers.get(channel)?.({ sender: fixture.currentChat })
+          : fixture.handlers.get(channel)?.({ sender: fixture.currentChat }, input)
       ))).rejects.toThrow('AGENT_IPC_SENDER_INVALID');
     }
 

@@ -25,12 +25,6 @@ describe('Main 通用生命周期', () => {
     const beforeQuit = source.slice(source.indexOf("app.on('before-quit'"));
 
     expect(source).toContain('createMainConversationComposition({');
-    expect(source).toContain('new AgentIpcAuthorization(getCurrentChatWebContents)');
-    expect(source).toContain(
-      'registerAgentIpc(ipcMain, conversationIpcService, agentIpcAuthorization)'
-    );
-    expect(source).not.toContain('registerAgentIpc(ipcMain, conversationIpcService);');
-    expect(source).not.toContain('registerAgentIpc(ipcMain, agentService)');
     expect(source).not.toContain('activeAgentService');
     expect(source).toMatch(
       /beforeExplorerClose:\s*async \(\) => \{[\s\S]*await conversationComposition\.close\(\);[\s\S]*freezeAndFlushPetAlwaysOnTop/u

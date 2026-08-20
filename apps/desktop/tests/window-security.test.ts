@@ -245,16 +245,12 @@ describe('preload 白名单', () => {
     expect(main).not.toContain("'../preload/index.mjs'");
   });
 
-  it('Main 用动态当前 chat 授权器注册 Coordinator 入口', async () => {
+  it('Main 用动态当前 chat getter 注册 Coordinator 入口', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
-    expect(main).toContain('createMainConversationComposition({');
-    expect(main).toContain('new AgentIpcAuthorization(getCurrentChatWebContents)');
     expect(main).toContain(
-      'registerAgentIpc(ipcMain, conversationIpcService, agentIpcAuthorization)'
+      'registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents)'
     );
-    expect(main).not.toContain('registerAgentIpc(ipcMain, conversationIpcService);');
-    expect(main).not.toContain('registerAgentIpc(ipcMain, agentService)');
   });
 
   it('Main 由会话投影器独占 taskEvent 窗口投递', async () => {

@@ -43,7 +43,6 @@ import {
   registerSettingsIpc,
   registerWindowIpc
 } from './ipc/register-ipc';
-import { AgentIpcAuthorization } from './ipc/agent-ipc-authorization';
 import { CharacterActions } from './characters/character-actions';
 import { CharacterAssetService } from './characters/character-asset-service';
 import { CharacterBehaviorService } from './characters/character-behavior-service';
@@ -841,8 +840,7 @@ async function createApplicationWindows(
     ) => conversationCoordinator.resolveHistoryDisclosure(requestId, decision),
     resetConversation: () => conversationCoordinator.resetConversation()
   };
-  const agentIpcAuthorization = new AgentIpcAuthorization(getCurrentChatWebContents);
-  registerAgentIpc(ipcMain, conversationIpcService, agentIpcAuthorization);
+  registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents);
 
   const shutdownApplication = createMainShutdownTransaction({
     beforeExplorerClose: async () => {
