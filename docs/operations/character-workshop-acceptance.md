@@ -162,3 +162,19 @@ Task 3 的 E2E 变更为 +139/-54（净 +85），已从初稿净 +110 继续删�
 表中任务证据来自各 Task 忽略报告、ledger 与对应提交；Task 4 使用 Git numstat，而不是文件行计数。该表补充证据归属，不改变上方 `+823` 总账或完整 `verify:desktop` 失败事实。
 
 真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉与拖拽体验仍待用户人工确认。
+
+## 2026-08-21 第二轮测试表达减法验收（`957ec00`）
+
+本轮严格限定在五个既有测试文件内做表达减法，没有新增生产 seam、共享测试框架或依赖。Task 1 将 Electron fixture loader 深化为非空装载 owner，并在启动 Provider 前完成装载；Task 2 让启动入口复用既有 `recordingDependencies()`；Task 3 删除 Main 与 Preload 已由现有边界矩阵覆盖的重复恢复 Schema 样例；Task 4 复用既有 `preservedEvidence()` 读取两份 corrupt 证据。相对实施基线 `a11f59f`（与计划基线 `b16d542` 在五个任务文件上等价），五文件合计 `+22/-183`，净减 `161` 行：Task 1 `+14/-159`（净 `-145`）、Task 2 `+4/-7`（净 `-3`）、Task 3 `+3/-12`（净 `-9`）、Task 4 `+1/-5`（净 `-4`）。
+
+四组 mutation 均先按预期 RED 并已恢复生产代码零差异：fixture 路径改为不存在模块后直接报缺失模块；启动最终 `loadFinalIndex()` 的第二次读取被移除后顺序断言失败；Main 空输入解析与 Preload 返回 Schema 解析分别被绕过后各自边界断言失败；证据发布与 marker 完成顺序交换后 EEXIST、EACCES、ENOSPC 三项均因原 marker 被错误清理而失败。每个实现任务的独立复审均为 C0/I0/M0。
+
+最终代码上的定向聚合为 4 文件/140 项通过，shared-types 为 31/31，Desktop typecheck 退出 0，Desktop test 为 86 文件、1807 项通过、14 项跳过，security 20/20，integration 46/46。`verify:characters` 退出 0：character-runtime 221/221、character-assets 92/92、Desktop 1807/14、security 20/20、integration 46/46、Electron E2E 62/62；整条命令约 5.5 分钟，没有命令达到 15 分钟硬上限。
+
+Task 5 最终阶段没有单独重复运行 build、完整 Desktop E2E 与 `--list` 三条顶层命令。Task 1 已在提交 `14ae339` 的同一 E2E 文件最终实现上完成恢复后 build、完整 E2E 62/62 和清单 62 项；后续 Tasks 2–4 未修改 `tests/e2e/desktop.spec.ts`。最终 `957ec00` 的 `verify:characters` 又通过其内嵌 build 与完整 E2E 62/62 覆盖最终代码。上述来源分别登记，不把历史命令或脚本内嵌步骤写成 Task 5 独立顶层执行。
+
+`verify:desktop` 只执行一次并退出 1：workspace typecheck 通过，unit 阶段 108 文件通过、1 文件失败，2251 项通过、1 项失败、14 项跳过，后续 security、integration 与 Electron 阶段未由该命令执行。唯一失败是 `official-default-character.test.ts` 的“损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据”达到固定 5000ms 超时；按约束只做一次精确定向复现，该用例 1/1 通过、约 1.06 秒。本记录不把完整 `verify:desktop` 写成通过，也不以定向通过掩盖原失败。第一轮 `035fd96` 上的另一项 `verify:desktop` 并行波动仍按上节保留为历史事实。
+
+相对总门基线 `c7d951d`，`apps/desktop/tests` 为 `+1648/-825`（净 `+823`），`tests/e2e` 为 `+308/-469`（净 `-161`），合计 `+1956/-1294`（净 `+662`）。因此状态只能是：**第二轮安全表达减法完成，测试行数总门仍未达。**剩余正值继续登记为唯一 owner 债务，主要包括角色包导入 token、真实 Store 重启、竞态、证据发布/保留、256 项与 2000ms 预算；启动恢复顺序、fallback、最终 load 瞬时/持续失败与深冻结快照；Main/Preload Schema 双边界、Pet 异步顺序、Workshop StrictMode 与 RPC 失败脱敏；Desktop Electron 生命周期、安全诊断、窗口交互和两条角色恢复重启 E2E，以及既有减法规格列明的其余安全与跨进程证据。本轮不宣称债务归零、安全减法已耗尽或可以删除唯一 owner。
+
+最终静态检查确认 loader 调用点仍为 58 个，`if (!fixture.restart) return` 业务能力守卫保留，启动最终 load、完整共享 Schema 矩阵、Preload 代表非法返回、两份 corrupt 原字节断言与三类证据发布失败 owner 均仍存在；旧生产符号扫描零命中，`fallbackActive` 只在严格 Schema 负例保留。网站、CloudBase、scanner、网站 E2E 与配置保护路径在提交历史、工作树和暂存区均为零差异；`git diff --check b16d542..HEAD`、`git diff --check` 与 `git diff --cached --check` 均无输出。真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉和拖拽体验仍待用户人工确认。

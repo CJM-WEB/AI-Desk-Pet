@@ -1,6 +1,6 @@
 # AI Pet 桌面架构优化减法收口设计
 
-> 文档状态：`035fd96` 的最新门禁中 `verify:desktop` 单元阶段失败；测试与 E2E 行数门未满足，不得宣称全局减法完成
+> 文档状态：当前代码 `957ec00` 的 `verify:desktop` 单元阶段仍有一次既有 5 秒超时；测试与 E2E 总门为净增 `662` 行，仍未满足，不得宣称全局减法完成
 > 日期：2026-08-20
 > 上位规格：[AI Pet 桌宠架构优化与恢复开发门设计](./2026-08-15-ai-pet-desktop-architecture-optimization-design.md)
 > 适用范围：A1/A2/A3/B1 已实现内容的减法收口，以及 B2/B3 的实施约束
@@ -212,3 +212,15 @@ B3 E2E 最多保留两个重启场景：非活动 Store 坏 marker 与 Package �
 生产旧符号 `startupRecoveryErrorCode`、`loadCharacterStartupRecovery`、`fallbackActive`、`CharacterActions.*getCharacterRecoverySnapshot` 和 `export { characterRecoveryMessage }` 均为零命中；`fallbackActive` 仅在 `character-ipc.test.ts:48` 的严格 Schema 负例保留 1 个命中。Workshop StrictMode 单请求、RPC 失败通用文案与路径/token 脱敏、Pet RPC 失败不伪造完成 fallback 均仍有定向聚合证据。网站、CloudBase、scanner 与网站 E2E/配置保护路径在已提交、工作树和暂存区均为零差异，三项 `git diff --check` 均退出 0。
 
 Task 5 fix round 2 已由主任务独立复审通过，清除了此前局部 Renderer 页面发现闭包与全局 helper 重复的 Important；本次规格自核未发现新的 replace-don't-layer、旧路径残留或保护路径偏离。真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉和拖拽体验仍待用户人工确认。
+
+## 13. 2026-08-21 第二轮测试表达减法状态（`957ec00`）
+
+第二轮只在既有测试 owner 内做替换式收敛：非空 Electron fixture loader 替代 58 个调用点的 nullable 表达，启动入口复用既有依赖 factory，Main/Preload 删除同 seam 的重复 Schema 样例，包恢复测试复用既有证据读取 helper。没有新增生产 seam、共享测试框架、依赖或第二条运行路径。相对实施基线 `a11f59f`，五个任务文件 `+22/-183`，净减 `161` 行；四项 mutation 分别证明模块装载失败直接抛出、最终 load 第二次读取、Main/Preload 双边界解析和证据发布先于 marker 完成仍由保留测试拥有，恢复后生产文件零差异。四个任务的独立复审均为 C0/I0/M0。
+
+最终代码定向聚合 140/140、shared-types 31/31、Desktop typecheck、Desktop test（1807 通过、14 跳过）、security 20/20、integration 46/46 均通过。`verify:characters` 退出 0，含 character-runtime 221/221、character-assets 92/92、上述 Desktop/security/integration 结果和 Electron E2E 62/62。`verify:desktop` 唯一执行一次并在 unit 阶段退出 1：108 文件通过、1 文件失败，2251 项通过、1 项失败、14 项跳过；失败为既有官方默认角色损坏索引恢复用例达到 5000ms，随后唯一一次定向复现 1/1 约 1.06 秒通过。该定向结果不把完整门改写为通过；第 12 节第一轮的另一项并行波动也继续作为历史事实保留。所有顶层命令均低于 15 分钟硬上限。
+
+Task 5 最终阶段没有把 build、完整 Desktop E2E 和 `--list` 再各自作为独立顶层命令重复执行。对应证据来自 Task 1 在提交 `14ae339` 的同一 `tests/e2e/desktop.spec.ts` 最终实现上执行的恢复后 build 通过、完整 E2E 62/62 与清单 62 项；Tasks 2–4 未再修改 E2E 文件。最终 `957ec00` 上的 `verify:characters` 又通过脚本内嵌 build 与完整 E2E 62/62 覆盖了最终代码。这里不把脚本内嵌步骤或 Task 1 历史命令伪称为 Task 5 单独执行的顶层命令。
+
+相对 `c7d951d`，`apps/desktop/tests` 为 `+1648/-825`（净 `+823`），`tests/e2e` 为 `+308/-469`（净 `-161`），合计 `+1956/-1294`（净 `+662`）。**第二轮安全表达减法完成，但测试行数总门仍未满足，不能宣称全局减法完成。**剩余正值仍由角色包导入与恢复安全矩阵、启动恢复顺序和失败矩阵、Main/Preload 双边界、Pet/Workshop 异步与脱敏边界、Electron 生命周期与窗口交互、两条真实角色恢复重启 E2E 以及本规格既有唯一 owner 承担；本轮没有证明“安全减法已耗尽”，不得据此删除这些 owner。
+
+旧生产符号扫描为零命中；58 个 loader 调用点、可选 `restart` 业务守卫、最终 load 重试、完整共享 Schema 矩阵、Preload 代表非法值、两份证据原字节断言和三类证据发布失败 owner 均保留。受保护网站、CloudBase、scanner 与网站 E2E/配置路径在提交历史、工作树和暂存区零差异，三项 diff-check 无输出。真实 Windows 人工验收项继续保持待用户确认。
