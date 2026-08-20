@@ -40,13 +40,20 @@ test('网站 E2E 规格与正式测试保持在网站分支范围内', () => {
     'docs/superpowers/specs/2026-08-15-website-e2e-cli-process-isolation-design.md',
     'docs/superpowers/specs/2026-08-15-website-e2e-worker-isolation-design.md',
     'tests/e2e/website.spec.ts',
-    'tests/website-isolated-browser-fixture.ts',
   ];
 
   assert.deepEqual(classifyChangedPaths(websiteE2ePaths), {
     allowed: websiteE2ePaths,
     forbidden: [],
     outside: [],
+  });
+
+  assert.deepEqual(classifyChangedPaths([
+    'tests/website-isolated-browser-fixture.ts',
+  ]), {
+    allowed: [],
+    forbidden: [],
+    outside: ['tests/website-isolated-browser-fixture.ts'],
   });
 });
 
