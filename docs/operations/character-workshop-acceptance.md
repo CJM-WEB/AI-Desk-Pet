@@ -149,4 +149,16 @@ Task 3 的 E2E 变更为 +139/-54（净 +85），已从初稿净 +110 继续删�
 
 旧生产符号扫描为零命中；`fallbackActive` 只在 `character-ipc.test.ts:48` 的严格 Schema 负例出现一次。Workshop StrictMode 只读一次恢复快照且不写入、恢复快照 RPC 失败的通用文案/路径与 token 脱敏、Pet RPC 失败不伪造完成 fallback 均由本次定向聚合覆盖。网站、CloudBase、scanner、网站 E2E 与配置保护路径在提交、工作树及暂存区均为零差异；`git diff --check c7d951d..HEAD`、`git diff --check` 与 `git diff --cached --check` 均退出 0。Task 5 fix round 2 的独立复审已通过，先前关于重复 Renderer 页面发现 helper 的 Important 已清零。
 
+### Tasks 1–5 正式证据简表
+
+| Task | 提交区间与精确净值 | mutation RED | 最终 GREEN | 独立复审 |
+| --- | --- | --- | --- | --- |
+| 1 | `67ee510..4c78325`：`+55/-95`，净 `-40` | 将 `publicFallbackCode()` 的 `CHARACTER_RESOURCE_INTEGRITY_FAILED` 退化为 `CHARACTER_OPERATION_FAILED`；启动测试 18 项中 2 项按预期失败 | `character-startup` + `character-recovery`：2 文件/33 通过；Desktop typecheck 通过 | C0/I0 |
+| 2 | `4c78325..8283932`：`+83/-86`，净 `-3` | Preload 直接返回 IPC payload，使两类非法结果被错误接受；Pet 在空运行错误时清空启动 fallback，使“启动 fallback 先到”断言失败 | `character-ipc` + `preload-api` + `pet-view`：3 文件/69 通过；Desktop typecheck 通过 | C0/I0 |
+| 3 | `8283932..5d2b34d`：`+19/-38`，净 `-19` | 在 exclusive link 失败后 `catch` 并 `rename` 临时文件；final 被覆盖或意外出现，失败阶段断言按预期失败 | `atomic-file-coordinator`：1 文件/5 通过；Desktop typecheck 通过 | 主任务双审查 C0/I0/M0 |
+| 4 | `5d2b34d..2db5ed1`：`+160/-177`，净 `-17` | 将恢复循环的 owner token 改为错误 UUID；真实重启用例失败且半安装 `demo` 目录保留 | `character-package-service`：1 文件/71 通过；Desktop typecheck 通过 | C0/I0/M1（行计数差异；Git numstat `-17` 为准） |
+| 5 | `2db5ed1..035fd96`：`+103/-181`，净 `-78` | 无 mutation RED：仅收敛 E2E 页面发现 helper，报告未修改生产行为，不能伪造破坏点；先验绿为现有完整 E2E 62/62 | build 通过；定向 2/2 通过；完整 Desktop E2E 62/62 | fix round 2 后复审 C0/I0/M0 |
+
+表中任务证据来自各 Task 忽略报告、ledger 与对应提交；Task 4 使用 Git numstat，而不是文件行计数。该表补充证据归属，不改变上方 `+823` 总账或完整 `verify:desktop` 失败事实。
+
 真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉与拖拽体验仍待用户人工确认。
