@@ -33,6 +33,7 @@ import { CharacterStore } from '../src/main/characters/character-store';
 import * as atomicFileCoordinator from '../src/main/storage/atomic-file-coordinator';
 
 const fsMockState = vi.hoisted(() => ({
+  link: undefined as unknown as typeof fsPromises.link,
   open: undefined as unknown as typeof fsPromises.open,
   rm: undefined as unknown as typeof fsPromises.rm,
   rename: undefined as unknown as typeof fsPromises.rename
@@ -43,11 +44,13 @@ const atomicMockState = vi.hoisted(() => ({
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof fsPromises>();
+  fsMockState.link = actual.link;
   fsMockState.open = actual.open;
   fsMockState.rm = actual.rm;
   fsMockState.rename = actual.rename;
   return {
     ...actual,
+    link: vi.fn(actual.link),
     open: vi.fn(actual.open),
     rm: vi.fn(actual.rm),
     rename: vi.fn(actual.rename)
@@ -222,6 +225,7 @@ describe('角色包 Main 服务', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.mocked(fsPromises.link).mockReset().mockImplementation(fsMockState.link);
     vi.mocked(fsPromises.open).mockReset().mockImplementation(fsMockState.open);
     vi.mocked(fsPromises.rm).mockReset().mockImplementation(fsMockState.rm);
     vi.mocked(fsPromises.rename).mockReset().mockImplementation(fsMockState.rename);
@@ -1612,6 +1616,14 @@ describe('角色包 Main 服务', () => {
     expect(detached).toBeDefined();
     expect(await readFile(join(root, detached!))).toEqual(replacement);
     expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', transactionId);
+
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({
+        issues: [{
+          characterId: 'a-raced',
+          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+        }]
+      });
   });
 
   test.each([
@@ -1697,14 +1709,24 @@ describe('角色包 Main 服务', () => {
     await writeFile(rollbackMarker(root, 'a-broken'), brokenBytes);
     await writeFile(rollbackMarker(root, 'b-healthy'), markerV3('b-healthy', transactionId));
     const originalRm = fsMockState.rm;
+    let rejectCleanup = true;
     vi.mocked(fsPromises.rm).mockImplementation(async (...args) => {
-      if (String(args[0]).startsWith(
+      if (rejectCleanup && String(args[0]).startsWith(
         `${rollbackMarker(root, 'a-broken')}.complete-`
       )) {
+        rejectCleanup = false;
         throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
       }
       return originalRm(...args);
     });
+    const originalLink = fsMockState.link;
+    vi.mocked(fsPromises.link).mockImplementation(async (...args) => {
+      if (String(args[1]) === rollbackMarker(root, 'a-broken')) {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      }
+      await originalLink(...args);
+    });
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const store = new AbsentRollbackStore(root);
     const rollbackSpy = vi.spyOn(store, 'rollbackImportedCharacter');
 
@@ -1715,8 +1737,21 @@ describe('角色包 Main 服务', () => {
           errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
         }]
       });
-    expect(await readFile(rollbackMarker(root, 'a-broken'))).toEqual(brokenBytes);
+    await expect(access(rollbackMarker(root, 'a-broken'))).rejects.toThrow();
     expect(rollbackSpy).toHaveBeenCalledWith('b-healthy', transactionId);
+    expect(logSpy).toHaveBeenCalledWith('CHARACTER_IMPORT_RECOVERY_ITEM_FAILED');
+
+    await expect(new CharacterPackageService(root, { store }).initialize())
+      .resolves.toEqual({
+        issues: [{
+          characterId: 'a-broken',
+          errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
+        }]
+      });
+    expect((await readdir(root)).some(name => (
+      name.includes('.complete-') && name.endsWith('.tmp')
+    ))).toBe(false);
+    expect(await preservedEvidence(root, 'a-broken')).toEqual(brokenBytes);
   });
 
   test('活动角色 marker 先于稳定文件名顺序处理', async () => {

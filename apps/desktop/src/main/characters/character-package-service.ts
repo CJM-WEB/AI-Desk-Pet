@@ -68,6 +68,8 @@ const MAX_IMPORT_MARKER_BYTES = 4_096;
 const IMPORT_STAGING_PREFIX = 'ai-pet-character-package-';
 const ROLLBACK_MARKER_PATTERN =
   /^\.package-import-rollback-([a-z0-9][a-z0-9_-]{0,119})\.json$/u;
+const DETACHED_ROLLBACK_MARKER_PATTERN =
+  /^\.package-import-rollback-([a-z0-9][a-z0-9_-]{0,119})\.json(?:\.complete-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)+$/u;
 const packageImportQueues = new Map<string, Promise<void>>();
 
 const characterPackageImportMarkerV3Schema = z.object({
@@ -1455,15 +1457,20 @@ export class CharacterPackageService {
     const inventory: ImportRecoveryInventoryEntry[] = entries
       .filter(entry => (
         entry.isFile()
-        && entry.name.startsWith('.package-import-rollback-')
-        && entry.name.endsWith('.json')
-        && !entry.name.endsWith('.tmp')
-        && !entry.name.includes('.corrupt-')
+        && (
+          (
+            entry.name.startsWith('.package-import-rollback-')
+            && entry.name.endsWith('.json')
+            && !entry.name.includes('.corrupt-')
+          )
+          || DETACHED_ROLLBACK_MARKER_PATTERN.test(entry.name)
+        )
       ))
       .map(entry => ({
         marker: join(this.charactersDirectory, entry.name),
         name: entry.name,
         characterId: ROLLBACK_MARKER_PATTERN.exec(entry.name)?.[1]
+          ?? DETACHED_ROLLBACK_MARKER_PATTERN.exec(entry.name)?.[1]
       }))
       .sort((left, right) => {
         const leftActive = left.characterId === activeCharacterId;
@@ -1548,6 +1555,7 @@ export class CharacterPackageService {
         }
       } catch {
         if (item.characterId) {
+          console.error('CHARACTER_IMPORT_RECOVERY_ITEM_FAILED');
           issues.push({
             characterId: item.characterId,
             errorCode: 'CHARACTER_IMPORT_RECOVERY_BLOCKED'
