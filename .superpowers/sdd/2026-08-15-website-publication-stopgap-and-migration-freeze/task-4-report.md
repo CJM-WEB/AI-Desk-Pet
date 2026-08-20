@@ -39,3 +39,10 @@ git diff --check
 - `cloudbase/migrations/20260815000000_shared_package_publication_guard.sql`
 - `.superpowers/sdd/2026-08-15-website-publication-stopgap-and-migration-freeze/task-4-report.md`
 - 净新增 399 行：测试 155 行、前向迁移 203 行、报告 41 行；提交信息：`feat: 增加共享包发布数据库防线`。
+
+## 修复轮次 1
+
+- RED：数值形式的 `packageSizeBytes` 与 `submissionStatusVersion` 虽满足 PostgreSQL `jsonb ->>` 的文本比较语义，却被 MemoryRdb 的严格类型比较错误拒绝为 `P1003`。
+- GREEN：测试适配器仅将字符串或有限数值 JSON 标量转换为文本；缺失值、对象、数组、布尔值和非有限数值均不匹配。新增成功路径验证数值证据可将共享包发布。
+- 验证：`pnpm.cmd --filter @myself/cloudbase-api test -- cloudbase-postgres.test.ts` 通过（19 个测试文件、211 项测试）；`pnpm.cmd --filter @myself/cloudbase-api typecheck` 与 `git diff --check` 通过。
+- 提交：仅 `apps/cloudbase-api/tests/cloudbase-postgres.test.ts` 纳入 `test: 对齐数据库扫描证据语义`；本报告不纳入该修复提交。

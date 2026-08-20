@@ -30,3 +30,9 @@ git diff --check
 ```
 
 未执行真实浏览器人工验收；本次未修改服务、SQL、其他 UI 或桌宠模块。
+
+## 修复轮次 1
+
+- 新增完整八字段当前证据的真实 DOM 回归：共享包的“批准发布”按钮恢复可用，且不显示技术门禁原因。
+- 新增 suggestion 真实 DOM 回归：不依赖共享包扫描证据，填写理由后可提交批准动作。
+- 验证：`pnpm.cmd --filter @myself/website test -- admin-app.test.tsx` 通过（40 个测试文件、326 项测试）；`pnpm.cmd --filter @myself/website typecheck` 与 `git diff --check` 通过。
