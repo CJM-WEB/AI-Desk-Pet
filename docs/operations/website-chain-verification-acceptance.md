@@ -3,6 +3,7 @@
 > 日期：2026-08-20
 > 当前状态：网站自动化完整门通过；人工视觉验收待用户确认
 > 适用范围：网站业务链，不包含桌面端与正式部署
+> 环境：Windows；Node.js `v24.18.0`；pnpm `11.9.0`
 
 ## 1. 自动化职责
 
@@ -23,13 +24,21 @@
 | Task 4 修复轮 3 精确单项 | `pnpm.cmd exec playwright test --config tests/playwright.website.config.ts website.spec.ts:671` | 1/1；删除重复的尾部相邻章推进链后通过；测试耗时 5.4 秒 |
 | Task 4 修复轮 3 前 6 项锁定门 | `pnpm.cmd exec playwright test --config tests/playwright.website.config.ts website.spec.ts:515 website.spec.ts:534 website.spec.ts:558 website.spec.ts:579 website.spec.ts:591 website.spec.ts:671` | 6/6；总耗时 18.3 秒 |
 | 网站 E2E | `pnpm.cmd test:e2e:website` | 生产构建通过；16/16 通过；测试总耗时 51.1 秒 |
+| 网站链 runner 单元测试 | `node --test tools/verification/verify-web-chain.test.mjs` | 5/5 通过；覆盖 profile 展开、命令目录、失败短路、Windows `pnpm.cmd` 参数和非法参数 |
 | Task 4 修复轮 3 网站业务链快速门 | `pnpm.cmd verify:web-chain:fast` | 失败：首个 scope 步骤把本阶段已批准的网站生产、测试、规格与配置文件报告为白名单外路径；未进入后续步骤 |
 | 范围策略 TDD | `node --test tools/verification/verify-website-scope.test.mjs` | RED：6/7，通过项保持 CloudBase 为白名单外、桌宠为禁止；GREEN：7/7，耗时 77.8ms |
 | 网站范围守卫 | `pnpm.cmd verify:web-chain:scope` | 通过；约 1 秒；未放行 CloudBase、桌宠、根桌面测试或其他 packages |
 | 网站业务链快速门 | `pnpm.cmd verify:web-chain:fast` | 通过；约 75 秒；依赖审计为 0 error、8 个已批准历史 warning |
 | 网站业务链完整门 | `pnpm.cmd verify:web-chain` | 通过；约 112 秒；包含构建产物、生产构建及 16/16 网站 E2E |
+| 最终固定顺序：验证工具全测 | `node --test tools/verification/*.test.mjs` | 26/26 通过；退出 0 |
+| 最终固定顺序：网站依赖审计 | `pnpm.cmd deps:audit:web` | 退出 0；250 个模块、646 条依赖、0 个 error、8 个既有 warning |
+| 最终固定顺序：快速门 | `pnpm.cmd verify:web-chain:fast` | 退出 0；shared-types 23、website 323、cloudbase-api 193、package-scanner 64、release-tools 4 通过 |
+| 最终固定顺序：完整门 | `pnpm.cmd verify:web-chain` | 退出 0；CloudBase build、构建产物 2/2、构建工具 1/1、Scanner build、网站静态构建及网站 E2E 16/16 通过；E2E 耗时 53.9 秒 |
+| 最终固定顺序：独立范围守卫 | `node tools/verification/verify-website-scope.mjs` | 退出 0 |
+| 最终固定顺序：差异检查 | `git diff --check` | 退出 0 |
+| 最终固定顺序：工作树状态 | `git status --short --branch` | 仅列出本次五份目标文档；未执行 Git 写操作 |
 
-命令结果只在实际运行后更新；失败、超时或未运行不得记录为通过。
+上述失败条目保留为诊断历史，后续通过条目不覆盖其首次失败事实。命令结果只在实际运行后更新；失败、超时或未运行不得记录为通过。2026-08-20 的最终固定顺序复跑已经完成，以上结果为阶段 0 自动化验证的新鲜证据。
 
 ## 2. 人工视觉验收（待用户确认）
 

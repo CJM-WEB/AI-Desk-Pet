@@ -485,7 +485,7 @@ git commit -m "test: 增加网站分支范围守卫"
 
 ### Task 4: 建立快速门与完整 `verify:web-chain`
 
-> **实际状态：BLOCKED。** 快速门已通过，但完整门的官网 E2E 未通过；后续两套隔离机制均被证伪并删除。保持既有原生 Playwright 入口，当前不得把 Task 4 或 Phase 0 记为完成。
+> **实际状态：2026-08-20 已完成。** 既有隔离方案已删除，当前保持原生 Playwright 入口。实际证据：`node --test tools/verification/verify-web-chain.test.mjs` 为 5/5；范围守卫、快速门和完整门均退出 0；完整门中的网站 E2E 为 16/16。Task 5 的最终固定顺序复跑已另行记录；本结论不延伸为阶段 1 或正式部署通过。
 
 **Files:**
 - Modify: `tools/verification/web-chain-catalog.mjs`
@@ -497,7 +497,7 @@ git commit -m "test: 增加网站分支范围守卫"
 - Consumes: Tasks 1—3 的 catalog、ownership、scope 和 `deps:audit:web`。
 - Produces: `createWebChainSteps(profile: 'fast' | 'full'): readonly WebChainStep[]`、CLI `node tools/verification/verify-web-chain.mjs --profile fast|full`、根脚本 `verify:web-chain:fast` 与 `verify:web-chain`。
 
-- [ ] **Step 1: 写 profile 与失败短路 RED**
+- [x] **Step 1: 写 profile 与失败短路 RED**
 
 测试精确断言：
 
@@ -522,7 +522,7 @@ assert.doesNotMatch(JSON.stringify(createWebChainSteps('full')), /desktop|agent-
 
 为执行器注入 fake spawn：第二步返回 17 时，第三步不得执行，CLI 返回 17。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run:
 
@@ -532,7 +532,7 @@ node --test tools/verification/verify-web-chain.test.mjs
 
 Expected: FAIL，因为 runner 尚不存在。
 
-- [ ] **Step 3: 定义精确命令目录**
+- [x] **Step 3: 定义精确命令目录**
 
 catalog 中每步使用可执行文件和参数数组，不使用 shell 长字符串。关键映射：
 
@@ -557,7 +557,7 @@ catalog 中每步使用可执行文件和参数数组，不使用 shell 长字�
 
 `verification-tests` 运行 `node --test tools/verification/*.test.mjs` 时必须由 Node 侧先展开已排序文件列表，不把通配符交给 shell。`website-e2e` 已通过 `tests/build-website-export.mjs` 构建静态网站，因此本阶段不额外再执行一次 `website build`；阶段 5 再统一旧重复构建入口。
 
-- [ ] **Step 4: 实现 runner 与根脚本**
+- [x] **Step 4: 实现 runner 与根脚本**
 
 runner 开始每步前输出 `[web-chain] START <id>`，成功输出 `[web-chain] PASS <id>`，失败输出稳定的命令 ID 和退出码后立即结束。根 manifest 精确新增：
 
@@ -572,7 +572,7 @@ runner 开始每步前输出 `[web-chain] START <id>`，成功输出 `[web-chain
 
 不得让 `verify:web-chain` 调用 `pnpm typecheck`、`pnpm test`、`verify:desktop`、`verify:behavior` 或 `verify:characters`。
 
-- [ ] **Step 5: 运行 runner 单元 GREEN**
+- [x] **Step 5: 运行 runner 单元 GREEN**
 
 Run:
 
@@ -583,7 +583,7 @@ node --test tools/verification/*.test.mjs
 
 Expected: 全部 `node:test` 通过；测试证明失败短路和 desktop 命令缺失。
 
-- [ ] **Step 6: 运行快速网站链门**
+- [x] **Step 6: 运行快速网站链门**
 
 Run:
 
@@ -593,7 +593,7 @@ pnpm.cmd verify:web-chain:fast
 
 Expected: 退出 0；覆盖 shared-types、website、cloudbase-api（排除依赖 `dist` 的 `build-output.test.ts`）、package-scanner、release-tools 的 test/typecheck，迁移工具 `node:test`，网站依赖审查、归属和范围守卫；不执行构建、产物测试或 E2E。
 
-- [ ] **Step 7: 运行完整网站链门**
+- [x] **Step 7: 运行完整网站链门**
 
 Run:
 
@@ -605,7 +605,7 @@ Expected: 退出 0；在快速门基础上，CloudBase 三函数构建、构建�
 
 **删除条件:** 本阶段不删除 `verify:website`、`verify:cloudbase` 或现有构建脚本，因为尚未验证所有外部调用方已迁移；它们不再代表完整网站链门。阶段 5 在调用方清单明确后删除或改为唯一入口别名，不保留永久平行权威。
 
-- [ ] **Step 8: 获得用户 Git 写入授权后提交网站链门禁**
+- [x] **Step 8: 获得用户 Git 写入授权后提交网站链门禁**
 
 ```powershell
 git add package.json tools/verification/web-chain-catalog.mjs tools/verification/verify-web-chain.mjs tools/verification/verify-web-chain.test.mjs
@@ -616,6 +616,8 @@ git commit -m "test: 建立完整网站链验证门"
 
 ### Task 5: 写入使用说明与日期化验收记录
 
+> **实际状态：2026-08-20 已完成。** 已写入唯一入口说明和日期化验收记录；最终固定顺序复跑已由主控完成并记录实际结果。Git 写入已获授权，文档尚待本次独立提交。
+
 **Files:**
 - Create: `docs/operations/website-chain-verification.md`
 - Create: `docs/operations/website-chain-verification-acceptance.md`
@@ -624,7 +626,7 @@ git commit -m "test: 建立完整网站链验证门"
 - Consumes: Tasks 1—4 的真实命令输出。
 - Produces: 网站链当前门的人工入口说明和仅记录实际观察结果的验收证据。
 
-- [ ] **Step 1: 写文档契约 RED 检查**
+- [x] **Step 1: 协调复用已创建验收记录（RED 不适用）**
 
 先运行以下检查，确认文档尚不存在：
 
@@ -637,9 +639,9 @@ $existing = $required | Where-Object { Test-Path -LiteralPath $_ }
 if ($existing.Count -ne 0) { throw "RED 前不应已有阶段 0 文档：$($existing -join ', ')" }
 ```
 
-Expected: 命令退出 0；若文件已由其他任务创建，停止并协调，不覆盖。
+实际处理：`website-chain-verification-acceptance.md` 已由获批的网站 E2E 减法任务先创建，因此未虚构“文件不存在”的 RED 结果；已按本步骤要求协调复用既有验收记录，并新增本任务的唯一入口说明。
 
-- [ ] **Step 2: 编写唯一入口说明**
+- [x] **Step 2: 编写唯一入口说明**
 
 `website-chain-verification.md` 必须明确：
 
@@ -651,7 +653,7 @@ Expected: 命令退出 0；若文件已由其他任务创建，停止并协调�
 - CloudBase 真实数据库、Bucket、函数、Scanner 镜像、域名、CORS/CSP、OTP、告警、备份与发布均为“不在本次范围”；
 - 范围基线为 `0dab17de8863a7c726a5bb5fceff35a1713daad1`，变更需新计划批准。
 
-- [ ] **Step 3: 运行最终验证并填写验收记录**
+- [x] **Step 3: 运行最终验证并填写验收记录**
 
 按顺序实际执行：
 
@@ -665,9 +667,9 @@ git diff --check
 git status --short --branch
 ```
 
-`website-chain-verification-acceptance.md` 对每条命令记录日期 `2026-08-15`、Windows/Node/pnpm 版本、退出码、关键计数和实际结果。失败必须写“失败”，未运行必须写“未运行”；不得复制规格中的预期值冒充观察结果。
+`website-chain-verification-acceptance.md` 对每条命令记录实际执行日期（本次为 `2026-08-20`）、Windows/Node/pnpm 版本、退出码、关键计数和实际结果。失败必须写“失败”，未运行必须写“未运行”；不得复制规格中的预期值冒充观察结果。
 
-- [ ] **Step 4: 最终范围与删除复核**
+- [x] **Step 4: 最终范围与删除复核**
 
 Run:
 
@@ -692,12 +694,12 @@ git commit -m "docs: 记录网站链验证基线"
 
 ## 最终自检
 
-- [ ] 规格覆盖：阶段 0 的 dependency-cruiser 18.2.0、网站专属审查、测试归属、快速门、完整门、Scanner build、release-tools、根 `node:test`、网站 E2E、范围守卫和验收记录均有独立任务。
-- [ ] 类型与接口：`WEB_AUDIT_INPUTS`、`WEB_TEST_OWNERS`、`WEB_CHAIN_PROFILES`、`findTestOwners`、`classifyChangedPaths`、`assertRootManifestChange` 和 profile 名称在所有任务中一致。
-- [ ] 内容完整：所有步骤均给出精确命令、目标文件、断言和已定义函数，没有留空的实施决策。
-- [ ] 范围：计划没有创建全仓 `deps:audit`、`verify:all` 或 desktop 门，也没有修改桌宠目录、桌宠脚本和桌宠测试。
-- [ ] 删除纪律：阶段 0 只新增可信基线，不删除业务路径；旧验证入口的最终收敛有明确后续删除条件。
-- [ ] 外部边界：没有把本地测试、静态依赖或构建通过写成 CloudBase/生产上线通过。
+- [x] 规格覆盖：阶段 0 的 dependency-cruiser 18.2.0、网站专属审查、测试归属、快速门、完整门、Scanner build、release-tools、根 `node:test`、网站 E2E、范围守卫和验收记录均有独立任务。
+- [x] 类型与接口：`WEB_AUDIT_INPUTS`、`WEB_TEST_OWNERS`、`WEB_CHAIN_PROFILES`、`findTestOwners`、`classifyChangedPaths`、`assertRootManifestChange` 和 profile 名称在所有任务中一致。
+- [x] 内容完整：所有步骤均给出精确命令、目标文件、断言和已定义函数，没有留空的实施决策。
+- [x] 范围：计划没有创建全仓 `deps:audit`、`verify:all` 或 desktop 门，也没有修改桌宠目录、桌宠脚本和桌宠测试。
+- [x] 删除纪律：阶段 0 只新增可信基线，不删除业务路径；旧验证入口的最终收敛有明确后续删除条件。
+- [x] 外部边界：没有把本地测试、静态依赖或构建通过写成 CloudBase/生产上线通过。
 
 ## 执行交接
 

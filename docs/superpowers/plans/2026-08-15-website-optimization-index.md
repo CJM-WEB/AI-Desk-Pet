@@ -33,9 +33,9 @@
 - Consumes: 已批准设计规格和当前 `WebsiteExtension` 代码基线。
 - Produces: 可重复执行的 `verify:web-chain`、失败关闭的共享包发布链、可审计迁移器、统一 Scanner 协议、共享 HTTP 运行时契约。
 
-- [ ] **Step 1: 执行阶段 0 并保存证据**
+- [x] **Step 1: 执行阶段 0 并保存证据**
 
-严格执行 `2026-08-15-website-verification-foundation.md`；只有 `pnpm verify:web-chain`、依赖审计和边界检查全部通过才进入阶段 1。
+阶段 0 已完成，详见 `docs/operations/website-chain-verification.md` 与 `docs/operations/website-chain-verification-acceptance.md` 的最终固定顺序证据。阶段 1—3 仍未完成，普通网站功能开发资格尚未恢复，正式部署继续冻结。
 
 - [ ] **Step 2: 执行阶段 1 并确认止血门**
 
