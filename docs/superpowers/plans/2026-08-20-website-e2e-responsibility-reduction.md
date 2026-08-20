@@ -9,7 +9,7 @@
 ## 全局约束
 
 - 只修改本计划列出的网站测试、网站验证文档和必要的范围策略；不修改产品运行时代码。
-- 不新增 runner、fixture、依赖、worker、retry、timeout、跳过标记或第二条 E2E 入口。
+- 不新增 runner、fixture、依赖、worker、retry、timeout、跳过标记或第二条 E2E 入口。第 9 节 trace 截图减法已经验证失败并撤销，不得重试或继续关闭其他诊断内容。
 - 不触碰任何桌宠、Agent、文件工具、角色代码或测试。
 - 产品行为修复仍执行 RED → GREEN。本计划四项仅迁移既有测试证据，按获批规格采用“先观察等价特征测试 GREEN，再删除旧 E2E”的例外流程，不制造虚假失败。
 - 大量删除未获用户二次批准前不得执行。
@@ -49,12 +49,12 @@
 - Read: `package.json`
 - Read: `tools/verification/web-chain-catalog.mjs`
 
-1. 验证 Playwright 仍为 `fullyParallel: false`、`workers: 1`、`retries: 0`，没有超时变化。
-2. 运行 website 全部单元/组件测试和 typecheck。
-3. 后台运行 `pnpm.cmd test:e2e:website`，必须 16/16 通过；15 分钟止损。
-4. 运行 `verify:web-chain:fast`、`verify:web-chain`、`verify:web-chain:scope`。
-5. 使用 `rg` 确认已删除标题和孤儿 helper 零运行引用，使用 `git diff --check` 检查差异。
-6. 报告新增、复用、删除、保留理由和净行数；提交前请求独立代码审查。
+1. Trace 截图减法锁定序列仍失败，已按规格撤销；本计划验证状态为 BLOCKED。
+2. 验证 Playwright 仍为 `fullyParallel: false`、`workers: 1`、`retries: 0`，没有超时变化。
+3. 保留已经通过的 website 323 项测试、typecheck 与 16 项清单证据，不把完整 E2E 或完整网站链记为通过。
+4. 使用 `rg` 确认已删除标题和孤儿 helper 零运行引用，使用 `git diff --check` 检查差异。
+5. 报告新增、复用、删除、保留理由和净行数；提交前请求独立代码审查。
+6. 下一步另立网站 WebGL 运行职责规格；不得在本计划继续增加测试外围。
 
 ### Task 4：阶段 0 状态收敛
 
