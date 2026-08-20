@@ -35,6 +35,11 @@ function installAnimationFrameTimers() {
   return requestFrame;
 }
 
+const touch = (pointerId: number, clientY: number, isPrimary = true) => ({
+  clientY, isPrimary, pointerId,
+  pointerType: 'touch'
+});
+
 function ControllerHarness({
   staticFallback
 }: {
@@ -280,6 +285,34 @@ describe('官网章节控制器', () => {
     expect(state.dataset.phase).toBe('interactive');
     expect(state.dataset.index).toBe('1');
     expect(state.dataset.progress).toBe('1.0000');
+  });
+
+  it('多指触屏不会覆盖首个章节拖动手势', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    fireEvent.pointerDown(document.body, touch(41, 650));
+    fireEvent.pointerDown(document.body, touch(42, 500, false));
+    fireEvent.pointerUp(document.body, touch(42, 500, false));
+    fireEvent.pointerUp(document.body, touch(41, 100));
+
+    expect(state.dataset.index).toBe('1');
+  });
+
+  it('暂停期间结束的触屏不会锁死后续章节手势', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => createMediaQueryList(true)));
+    render(<ControllerHarness staticFallback={false} />);
+    const state = screen.getByTestId('controller-state');
+
+    fireEvent.pointerDown(document.body, touch(43, 640));
+    fireEvent.blur(window);
+    fireEvent.pointerUp(document.body, touch(43, 120));
+    fireEvent.focus(window);
+    fireEvent.pointerDown(document.body, touch(44, 640));
+    fireEvent.pointerUp(document.body, touch(44, 120));
+
+    expect(state.dataset.index).toBe('1');
   });
 
   it('隐藏暂停后进入静态回退会恢复导航并完整清理监听器', async () => {

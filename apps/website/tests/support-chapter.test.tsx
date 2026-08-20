@@ -228,6 +228,33 @@ describe('合并后的反馈与支持模块', () => {
     expect(await screen.findByText('投稿已收到，正在系统审核。')).toBeTruthy();
   });
 
+  it('放弃非空草稿需要确认并在放弃后恢复入口焦点', async () => {
+    render(<SupportChapter interactive repository={createRepository()} />);
+
+    const createButton = screen.getByRole('button', { name: '新建投稿' });
+    fireEvent.click(createButton);
+    fireEvent.click(createButton);
+    fireEvent.change(screen.getByLabelText('正文'), {
+      target: { value: '这是一条应受放弃确认保护的草稿。' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^取消$/ }));
+
+    const discardDialog = screen.getByRole('dialog', { name: '放弃未发布内容？' });
+    fireEvent.click(screen.getByTestId('discard-draft-backdrop'));
+    expect(screen.getByRole('dialog', { name: '放弃未发布内容？' })).toBe(discardDialog);
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑' }));
+    const content = screen.getByLabelText('正文') as HTMLTextAreaElement;
+    expect(content.value).toBe('这是一条应受放弃确认保护的草稿。');
+    expect(document.activeElement).toBe(content);
+
+    fireEvent.click(screen.getByRole('button', { name: '取消投稿' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认放弃' }));
+    await waitFor(() => {
+      expect(screen.queryAllByRole('dialog')).toHaveLength(0);
+      expect(document.activeElement).toBe(createButton);
+    });
+  });
+
   it('不可交互时六个入口全部禁用', () => {
     render(<SupportChapter interactive={false} repository={createRepository()} />);
     const buttons = screen.getAllByRole('button');

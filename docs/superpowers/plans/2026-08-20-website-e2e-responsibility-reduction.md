@@ -33,7 +33,7 @@
 **Files:**
 
 - Modify: `tests/e2e/website.spec.ts`
-- Modify: `docs/operations/website-chain-verification-acceptance.md`
+- Create: `docs/operations/website-chain-verification-acceptance.md`（复用 foundation Task 5 已规划的唯一验收入口）
 
 1. 按规格第 5 节逐项核对标题仍存在，并建立删除前清单证据。
 2. 使用 `apply_patch` 精确删除 24 个测试块，不使用脚本批量重写文件。
