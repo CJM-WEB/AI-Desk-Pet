@@ -38,7 +38,7 @@
 - 不拥有 `CharacterStore` 的 draft/publish transaction recovery、ZIP 路径安全、容量限制、source 安装、编译或发布规则。
 - 不改变正常角色导入的包格式、编辑器、播放器、启用流程或网站投稿链。
 - 不把 I/O fault injection、文件句柄、物理身份或内部恢复阶段扩散为公开产品接口。
-- 不承诺依靠 Node 文件操作抵御同一 Windows 用户下具有任意权限的恶意本机进程；本阶段只保证检测到身份变化时 fail closed。
+- 威胁模型只覆盖本进程导入队列，以及测试可复现的非恶意外部文件竞态；不承诺抵御同一 Windows 用户下具有任意权限、主动绕过检查的恶意本机进程。
 
 ## 4. 深模块与 owner 裁决
 
@@ -96,21 +96,21 @@ type CharacterPackageImportMarkerV3 = Readonly<{
 
 ### 5.3 legacy 与损坏证据
 
-- 候选 inventory 只接受当前角色根目录下 `.package-import-rollback-` 前缀和 `.json` 后缀的普通目录项，并排除临时文件与既有隔离证据；随后才以严格格式解析角色 ID。目录项名称本身不得作为路径片段越出角色根。
+- 候选 inventory 只接受当前角色根目录下严格以 `.package-import-rollback-<characterId>.json` 命名的普通目录项；`.tmp`、`.corrupt-*` 与内部移走后留下的 `.complete-*` 永远只是不可执行证据，不得进入恢复 inventory。目录项名称本身不得作为路径片段越出角色根。
 - v1、v2、空文件、半截 JSON、未知版本、Schema 不匹配和正文/文件名角色 ID 不一致均不得触发角色目录删除。
 - 能从严格 marker 文件名安全取得角色 ID 时，原字节不覆盖地隔离，并为该角色返回稳定 blocked 问题码。
 - 文件名也无法可靠给出角色 ID 时，只隔离并保留原字节，在 Main 记录固定诊断码 `CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED`；不伪造角色 ID，不把该项加入面向 Renderer 的问题列表。
 - 隔离目标必须使用唯一且排他的名称。只有原字节已经完整发布为证据、并再次确认 marker 路径仍指向读取时的同一普通文件后，才可移除原 marker。
-- 任一证据发布、身份复核或清理失败都保留原 marker，记录固定诊断码并视为 blocked；不得报告已恢复。
+- 证据发布或身份复核失败时保留正式 marker，记录固定诊断码并视为 blocked；不得报告已恢复。正式 marker 已原子移为 `.complete-*` 后，若单独清理失败但能用 hard link 排他恢复正式名，则由正式名支持下次重试；若清理与恢复正式名同时失败，只保留不可执行的 `.complete-*` 原字节证据并记录一次 `CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE`，不得把该证据重新执行，也不得为其生成角色 issue 或宣称下次可重试。
 
 ## 6. 恢复算法与安全不变量
 
 ### 6.1 调度与预算
 
-1. 读取全部 marker 候选后先形成有界 inventory；严格文件名能够解析的活动角色候选排在最前，其余候选按稳定文件名顺序排列，无归属候选也必须进入同一调度而不能绕过预算。
-2. 本轮最多开始处理 256 个 inventory 项。超过数量上限的 marker 保持原字节和原路径；可识别角色返回 deferred，无归属项只记录固定诊断码。
-3. 2000ms 是软预算，覆盖所有 inventory 项并只在两项之间检查；已经开始的单项恢复不得在中途打断。
-4. 达到预算后，未开始的 marker 保持原字节和原路径；可识别角色返回 deferred，无归属项只记录固定诊断码，下一次初始化或导入前继续处理。
+1. 读取全部严格候选后先排序：活动角色的正式 marker（若存在）排在最前，其余按稳定文件名顺序排列；随后只截取活动项加最多其余 255 项，若无活动项则截取前 256 项，形成本轮有界 inventory。
+2. 排序后第 257 项及以后不进入本轮 inventory，保持原字节和原路径；本轮不得读取或逐项处理它们，不得为其生成 issue 或逐项日志，只记录一次固定聚合诊断码 `CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED`。
+3. 2000ms 是软预算，只覆盖已经进入本轮的至多 256 个 inventory 项，并只在两项之间检查；已经开始的单项恢复不得在中途打断。
+4. 达到预算后，已入 inventory 但尚未开始的正式 marker 保持原字节和原路径；可识别角色返回 deferred，下一次初始化或导入前继续处理。`deferred` 不得用于第 257 项及以后。
 5. 每张 marker 有自己的错误隔离。单项解析、读取、隔离、回滚或清理失败不终止后续项。
 
 数量与时间预算只限制本轮恢复工作，不得被误用为“删除剩余 marker”或“整体初始化失败”。
@@ -182,7 +182,7 @@ type CharacterPackageRecoveryReport = Readonly<{
 
 - 角色根目录无法读取时，`CharacterPackageService` 在 Main 进程内只记录固定诊断码 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED`；`initialize()` 不伪造角色 issue，也不让该诊断细节跨进程。活动角色是否降级继续由 B1/B3 的运行版本校验决定。
 - 单项 blocked 只限制该角色的导入恢复，不阻断其他 marker、基础桌宠或普通文字聊天。
-- deferred 不是成功或错误吞并；marker 保持未触碰，后续运行继续恢复。
+- deferred 不是成功或错误吞并；它只表示已进入本轮 256 项 inventory、但因 2000ms 软预算尚未开始的正式 marker，原 marker 保持未触碰，后续运行继续恢复。
 - 新的导入在进入 saga 前仍先执行恢复；若目标角色存在 blocked marker，不得覆盖 marker 或目录，应以稳定错误结束该次导入。
 - 所有日志只写固定错误码和必要的脱敏角色 ID，不写 marker 正文、绝对路径、令牌、哈希或文件物理身份。
 
@@ -215,7 +215,7 @@ type CharacterPackageRecoveryReport = Readonly<{
 
 1. **RED：exclusive 文件原语。** 证明直接正式路径写入不满足完整排他发布；覆盖并发两个 writer 恰好一个成功、已有目标字节不变、write/sync/link 失败不出现正式半成品、临时文件尽力清理。
 2. **GREEN：最小原语。** 只实现 hard-link publish，不改变 `atomicWriteText()` replacement 语义。
-3. **RED：`CharacterPackageService.initialize()`。** 覆盖坏 marker 不阻断后续有效 v3、v1/v2 只隔离、无法归属不伪造 ID、所有权不匹配/活动角色不删除、marker 替换竞态不误清理、活动优先、256 与 2000ms 边界、报告最小化。
+3. **RED：`CharacterPackageService.initialize()`。** 覆盖坏 marker 不阻断后续有效 v3、v1/v2 只隔离、无法归属不伪造 ID、所有权不匹配/活动角色不删除、marker 替换竞态不误清理、`.complete-*` 不执行、清理双故障只留证据和固定诊断、活动优先、256 截断与 2000ms deferred 边界、报告最小化。
 4. **GREEN：原位恢复。** 在现有模块内实现最小逻辑，并把导入 catch 改为同一带令牌回滚。
 5. **REFACTOR：删除旧 owner。** 删除第 10 节清单和被新接口测试替代的旧测试；不叠加新旧矩阵。
 
@@ -227,9 +227,9 @@ type CharacterPackageRecoveryReport = Readonly<{
 
 - v3 marker 正文完整后才在最终路径可见，目标存在时永不覆盖。
 - v1/v2、空/截断/未知版本和无法归属 marker 均保留原始字节证据且不删除角色。
-- 一项 open/read/write/sync/link、证据冲突、权限、磁盘满、所有权变化或清理失败不阻断后续 marker。
+- 一项 open/read/write/sync/link、证据冲突、权限、磁盘满、所有权变化或清理失败不阻断后续 marker；`.complete-*` 不进入恢复 inventory，清理与正式名恢复双故障只留不可执行原字节证据和固定诊断。
 - 只有 token 与目录身份匹配的非活动角色可回滚；导入失败路径不调用普通删除。
-- 活动角色优先；最多 256 个；2000ms 只在角色间检查；deferred marker 字节不变。
+- 活动角色优先；排序后只取活动项加最多其余 255 项；第 257 项及以后不读取、不逐项 issue/log，只产生一次固定聚合诊断；2000ms 只在已入 inventory 的项目之间检查，deferred 仅用于其中尚未开始的 marker 且字节不变。
 - `initialize()` 只返回稳定排序的 `{ characterId, errorCode }`，无路径、正文、令牌、哈希、物理身份和可推导统计。
 - 旧 owner 与旧符号零正式引用，新增和删除行数按生产代码、测试分别记录；正式 owner 数不增加。
 - 定向测试、Desktop typecheck、`pnpm.cmd verify:desktop` 和 `pnpm.cmd verify:characters` 通过；涉及授权/日志/边界时追加 `pnpm.cmd test:security` 与 `pnpm.cmd test:integration`。
@@ -244,7 +244,7 @@ type CharacterPackageRecoveryReport = Readonly<{
 - 成功目标正文完整；
 - 不支持 hard link 或权限拒绝时 fail closed，不回退覆盖语义。
 
-自动化不能替代真实断电、进程强制终止和文件被外部程序替换的人工观察；没有证据时记录为“待用户人工确认”，不得写成通过。
+自动化不能替代真实断电、进程强制终止和非恶意外部程序竞态的人工观察；没有证据时记录为“待用户人工确认”，不得写成通过。同一 Windows 用户下主动绕过检查的恶意进程不在本阶段威胁模型内。
 
 ## 13. 停止条件与恢复方式
 

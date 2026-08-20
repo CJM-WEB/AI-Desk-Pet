@@ -91,4 +91,6 @@ B1 已删除 `CharacterTransactionRecoveryKind`、`kind`、`deferred`、`budgetE
 
 删除门确认 `CharacterImportJournal`、v4 正式 marker、旧 `CharacterOwnership`/摘要 helper、`preserveRollback()` 和 PackageService 的普通 `store.delete()` 均为零命中，Journal 文件不存在。`character-store.ts` 仍保留 owner 文件、活动角色保护以及移动前后身份复核。以 B2 计划提交 `6bae15f` 为基线，生产代码 +468/-271（净 +197），测试与 E2E +981/-57（净 +924）；本次 Task 4 自身只增加一个纵向 E2E，+87/-1。受保护的网站、CloudBase、scanner 与网站 E2E 路径零差异，`git diff --check` 退出 0。
 
-真实断电、强制终止、外部程序在恢复期间替换 marker，以及 B3 窗口提示可读性没有本次人工证据，状态均为“待用户人工确认”。
+终审进一步收紧了两项边界：`.complete-*` 只是不再执行的原字节证据；清理失败只有在正式 marker 排他恢复成功时才能由正式名支持下次重试，清理与恢复正式名双故障只允许固定诊断，不生成角色 issue。候选稳定排序后只取活动项加最多其余 255 项；第 257 项及以后保持不变且不逐项 issue/log，只记录一次聚合诊断；deferred 仅用于已入 256 项但因 2000ms 预算尚未开始的 marker。上述既有命令不作为这两项收紧边界的通过证据，须由后续定向测试与门禁重新验证。
+
+真实断电、强制终止、非恶意外部程序在恢复期间替换 marker，以及 B3 窗口提示可读性没有本次人工证据，状态均为“待用户人工确认”。同一 Windows 用户下主动绕过检查的恶意进程不在本阶段威胁模型内，不列为待验收承诺。

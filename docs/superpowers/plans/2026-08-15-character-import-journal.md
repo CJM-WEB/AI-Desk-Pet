@@ -18,7 +18,7 @@
 
 - 只修改桌面端角色恢复及其直接测试、验收记录；`apps/website`、`apps/cloudbase-api`、`apps/package-scanner` 与网站 E2E 零触碰。
 - 保留现有 v3 `{ version: 3, characterId, importTransactionId }` 磁盘语义；不得新增 v4、迁移器、`character-import-journal.ts`、`CharacterImportJournal` 或第二个恢复 owner。
-- 活动角色候选优先；一次最多开始 256 个 inventory 项；2000ms 软预算只在两项之间检查，已经开始的单项必须完成。
+- 候选稳定排序后只取活动角色正式 marker 加最多其余 255 项（无活动项时取前 256 项）；`.complete-*` 永不执行，第 257 项及以后不读取、不逐项 issue/log；2000ms 软预算只在已入 inventory 的项目之间检查，已经开始的单项必须完成。
 - legacy、坏 marker、权限失败、证据冲突和身份变化全部 fail closed；无当前 owner token 的 v1/v2 绝不删除角色目录。
 - Renderer、Preload、Provider、普通日志和 B3 报告不得接收 marker 文件名、绝对路径、正文、哈希、`importTransactionId`、`dev/ino`、句柄或隔离证据名。
 - 测试采用 replace-don't-layer：原子协调器拥有文件发布矩阵，Store 拥有 token/活动角色/身份边界，PackageService 拥有调度、隔离和最小报告矩阵，Electron E2E 只保留一条纵向证据。
@@ -354,7 +354,8 @@ expect(calls).toEqual([
 - `证据目标冲突或权限失败保留原 marker 且继续后续项`
 - `marker open 或 read 失败只 blocked 当前项且继续后续合法项`
 - `证据发布 ENOSPC 时保留原 marker 且继续后续合法项`
-- `证据发布后清理原 marker 失败时不报告恢复且继续后续项`
+- `证据发布后单独清理失败且正式名排他恢复成功时不报告恢复，只由正式 marker 支持下次重试`
+- `清理与恢复正式名同时失败时 complete 原字节证据不执行、不生成角色 issue，只记录 CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE`
 
 用 `Buffer.from('{"version":3')` 作为半截字节 sentinel；恢复后逐字节比较隔离证据，报告只断言：
 
@@ -383,7 +384,7 @@ expect(report.issues.every(Object.isFrozen)).toBe(true);
 在现有 `CharacterPackageServiceDependencies` 增加私有调度所需的 `recoveryNow?: () => number`，与 B1 既有时钟模式一致；它只作为 Main 构造依赖中的时钟 seam，不进入 Renderer、Preload、IPC 或产品方法。添加实际测试：
 
 - `活动角色 marker 先于稳定文件名顺序处理`
-- `第 257 个 inventory 项保持原字节并返回 deferred`
+- `排序后第 257 项及以后保持不变、不读取、不返回 issue 且只记录一次聚合诊断`
 - `达到 2000ms 软预算后只推迟未开始项`
 - `单项开始后即使越过预算也完成身份复核与恢复`
 
@@ -410,7 +411,7 @@ pnpm.cmd --filter @myself/desktop test -- character-package-service.test.ts
 
 - [ ] **Step 7：实现 v3 Schema、inventory 与有界读取**
 
-在 `character-package-service.ts` 内增加 `.strict()` 的 v3 Zod Schema、`MAX_IMPORT_RECOVERY_ENTRIES = 256`、`IMPORT_RECOVERY_BUDGET_MS = 2_000`、`MAX_IMPORT_MARKER_BYTES = 4_096`。inventory 只接收角色根直属普通目录项中 `.package-import-rollback-` 前缀与 `.json` 后缀候选，显式排除 `.tmp` 和 `.corrupt-` 证据；严格文件名可解析的活动角色排首位，其余按文件名稳定排序。
+在 `character-package-service.ts` 内增加 `.strict()` 的 v3 Zod Schema、`MAX_IMPORT_RECOVERY_ENTRIES = 256`、`IMPORT_RECOVERY_BUDGET_MS = 2_000`、`MAX_IMPORT_MARKER_BYTES = 4_096`。候选只接收角色根直属、严格以 `.package-import-rollback-<characterId>.json` 命名的普通目录项；显式排除 `.tmp`、`.corrupt-*` 和 `.complete-*` 证据。候选先把活动角色正式 marker 排首位，其余按文件名稳定排序，再截取活动项加最多其余 255 项；第 257 项及以后保持不变，不读取、不生成 issue 或逐项日志，只记录一次 `CHARACTER_IMPORT_RECOVERY_LIMIT_REACHED`。
 
 marker 必须通过 `open('r')` 后的句柄 `stat()` 验证普通文件，读取至多 `MAX_IMPORT_MARKER_BYTES + 1`，记录 `dev/ino/size` 并在隔离、回滚和清理前后复核。超限、链接、Junction、路径越界或身份变化统一 fail closed。
 
@@ -434,7 +435,7 @@ switch (result.kind) {
 }
 ```
 
-legacy、坏 JSON 和未知版本只调用同文件内的私有证据保留逻辑；证据正文通过 `atomicWriteFileExclusive()` 原样发布，随后复核原 marker 仍为读取时同一普通文件才移除。不可归属项只在 Main 内记录 `CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED`，扫描失败只记录 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED`，日志不拼接路径、文件名或正文。最终 issue 按角色 ID 稳定排序并按 blocked 高于 deferred 去重，使用 `Object.freeze()` 冻结每个 issue、issues 数组和 report 后一次性返回。
+legacy、坏 JSON 和未知版本只调用同文件内的私有证据保留逻辑；证据正文通过 `atomicWriteFileExclusive()` 原样发布，随后复核原 marker 仍为读取时同一普通文件才移除。`.complete-*` 永不进入 inventory；单独清理失败时只在 hard link 排他恢复正式名成功后允许正式 marker 下次重试，清理与恢复正式名双故障则保留不可执行原字节证据、记录一次 `CHARACTER_IMPORT_RECOVERY_DETACHED_EVIDENCE`，且不生成角色 issue。不可归属正式候选只在 Main 内记录 `CHARACTER_IMPORT_RECOVERY_UNATTRIBUTED`，扫描失败只记录 `CHARACTER_IMPORT_RECOVERY_SCAN_FAILED`，日志不拼接路径、文件名或正文。最终 issue 按角色 ID 稳定排序并按 blocked 高于 deferred 去重，使用 `Object.freeze()` 冻结每个 issue、issues 数组和 report 后一次性返回；deferred 只来自已入 inventory 但因 2000ms 预算尚未开始的项。
 
 - [ ] **Step 9：把正常导入失败改为同一安全回滚**
 
@@ -556,7 +557,7 @@ git diff --check
 
 - [ ] **Step 6：更新现有验收记录**
 
-在 `character-workshop-acceptance.md` 的 B2 小节记录日期、Windows 环境、每条实际命令、退出码、测试数量、耗时、生产/测试净行数与未覆盖项。真实断电、强制终止、外部程序替换、窗口提示可读性没有人工证据时必须写“待用户人工确认”。
+在 `character-workshop-acceptance.md` 的 B2 小节记录日期、Windows 环境、每条实际命令、退出码、测试数量、耗时、生产/测试净行数与未覆盖项。明确区分：`.complete-*` 永不执行；清理与正式名恢复双故障只留不可执行证据和固定诊断；第 257 项及以后没有逐项 issue/log；deferred 只由 2000ms 预算产生。真实断电、强制终止、非恶意外部程序竞态和窗口提示可读性没有人工证据时必须写“待用户人工确认”；同用户恶意进程不在本阶段威胁模型内，不得写成待验收承诺。
 
 - [ ] **Step 7：最终新鲜双审查**
 
