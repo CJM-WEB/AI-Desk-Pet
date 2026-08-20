@@ -256,12 +256,13 @@ pnpm.cmd --filter @myself/desktop typecheck
 ```powershell
 rg -n "startupRecoveryErrorCode" apps/desktop/src/main/index.ts
 rg -n "recoveryErrorCode\s*:\s*\(\)\s*=>|recoveryErrorCode\(\)" apps/desktop/src/main/index.ts apps/desktop/src/main/ipc/register-ipc.ts
-rg -n "kind: 'fallback'|kind: 'active'|remove\?:|errorCode: string \| null|fallbackActive|affectedCapabilities|suggestion|loadCharacterStartupRecovery" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/src/renderer/src/pet apps/desktop/tests/pet-view.test.tsx apps/desktop/tests/character-startup.test.ts
+rg -n "kind: 'fallback'|kind: 'active'|remove\?:|errorCode: string \| null|loadCharacterStartupRecovery" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/src/renderer/src/pet apps/desktop/tests/pet-view.test.tsx apps/desktop/tests/character-startup.test.ts
+rg -n "fallbackActive|affectedCapabilities|suggestion" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts
 rg -n "getCharacterRecoverySnapshot" apps/desktop/src/main/characters/character-actions.ts
 git diff --check
 ```
 
-预期：前四条零命中。扫描刻意不匹配 B1 内部合法的 `recoveryErrorCode` helper。规格审查核对 B2 硬前置、exact unions 和一致性顺序；质量审查核对无 Actions getter、动态 callback、第二通道、双轨或内部数据泄漏。
+预期：前五条零命中。测试中允许保留 `fallbackActive` 等额外字段作为严格 Schema 负例；扫描刻意不匹配 B1 内部合法的 `recoveryErrorCode` helper。规格审查核对 B2 硬前置、exact unions 和一致性顺序；质量审查核对无 Actions getter、动态 callback、第二通道、双轨或内部数据泄漏。
 
 - [ ] **步骤 9：提交**
 
@@ -345,13 +346,14 @@ pnpm.cmd --filter @myself/desktop typecheck
 - [ ] **步骤 7：删除门与双重审查**
 
 ```powershell
-rg -n "loadCharacterStartupRecovery|fallbackActive" apps/desktop/src apps/desktop/tests
+rg -n "loadCharacterStartupRecovery" apps/desktop/src apps/desktop/tests
+rg -n "fallbackActive" apps/desktop/src
 rg -n "recoverySnapshot|RecoveryIssue" apps/desktop/src/renderer/src/characters/store
 rg -n "affectedCapabilities|suggestion" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts
 git diff --check
 ```
 
-预期：三条零命中。规格审查确认 Pet/Workshop/Chat 职责；质量审查确认派生字段只在 `character-recovery.ts` 本地映射，Workshop Store 未成为第二 owner。
+预期：四条零命中；测试中允许保留 `fallbackActive` 严格 Schema 负例。规格审查确认 Pet/Workshop/Chat 职责；质量审查确认派生字段只在 `character-recovery.ts` 本地映射，Workshop Store 未成为第二 owner。
 
 - [ ] **步骤 8：提交**
 
@@ -408,7 +410,8 @@ pnpm.cmd exec playwright test --config tests/playwright.config.ts --grep "角色
 ```powershell
 rg -n "startupRecoveryErrorCode" apps/desktop/src/main/index.ts
 rg -n "recoveryErrorCode\s*:\s*\(\)\s*=>|recoveryErrorCode\(\)" apps/desktop/src/main/index.ts apps/desktop/src/main/ipc/register-ipc.ts
-rg -n "loadCharacterStartupRecovery|fallbackActive|CharacterActions\.getCharacterRecoverySnapshot" apps/desktop/src apps/desktop/tests tests/e2e
+rg -n "loadCharacterStartupRecovery|CharacterActions\.getCharacterRecoverySnapshot" apps/desktop/src apps/desktop/tests tests/e2e
+rg -n "fallbackActive" apps/desktop/src
 rg -n "affectedCapabilities|suggestion" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/shared/character-ipc.ts apps/desktop/src/shared/myself-api.ts
 $b3PlanBase = (git log -1 --format=%H -- docs/superpowers/plans/2026-08-15-character-recovery-degradation.md).Trim()
 git diff --name-only "$b3PlanBase" -- apps/website apps/cloudbase-api apps/package-scanner tests/e2e/website.spec.ts
