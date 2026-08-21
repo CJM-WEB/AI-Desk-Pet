@@ -18,7 +18,7 @@
 - 禁止提高 timeout、增加 retry、失败后自动重跑、使用 `skip`/`todo`、缩小正式门范围、降低断言、吞异常、mock 掉真实文件事务，或无证据降低 worker 来制造绿色。
 - 单条命令达到 15 分钟立即终止；从 Task 1 第一条压力命令开始，到 Task 2 根因裁决完成为止，总诊断预算为 60 分钟。最多三个 feedback seam、3–5 个假设、每个假设最多两个单变量 probe；达到任一预算立即终局。
 - 压力数据只使用临时目录和合成角色；报告不得记录完整绝对路径、文件正文、损坏 marker 原字节、owner token、哈希、API Key、Authorization 或 Provider 私有响应。路径统一写 `<REDACTED>`。
-- Vitest 原始 JSON、未脱敏 stdout/stderr 只能存在于随机临时文件；持久化 diagnostics 只允许脱敏 stdout/stderr、最小结构化 summary 和 metadata。未脱敏临时文件清理失败时该轮证据无效。
+- Vitest JSON 与未脱敏 stdout/stderr 只能存在于 runner 的有界内存；任何诊断模式都不得把未脱敏内容落盘。持久化 diagnostics 只允许脱敏 stdout/stderr、最小结构化 summary 和 metadata。
 - 所有 `[DEBUG-*]`、临时探针和 throwaway harness 必须在 Task 3 完成前删除；最终正式运行路径、日志契约和测试入口不得因诊断增加第二套 owner。
 - 不修改或运行网站业务。以下受保护路径相对实施基线、工作树和暂存区必须始终零差异：`apps/website`、`apps/cloudbase-api`、`apps/package-scanner`、`cloudbase`、`tests/e2e/website.spec.ts`、`tests/playwright.website.config.ts`。
 - 不 push、不 merge、不 rebase、不 reset。Git 写操作已获授权；有实质 tracked 变更的任务必须独立提交。证据型 Task 0、Task 1、Task 2、Task 5 不制造空提交，其独立复审以报告和固定 HEAD 为对象；这避免用无内容提交污染最终可执行树或使五门 HEAD 失效。
@@ -31,7 +31,9 @@
 | --- | --- | --- |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/baseline.md` | 固定实施基线、脚本、配置、失败事实、受保护路径和总账 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/implementation-baseline.txt` | 仅一行实施基线完整 hash，供后续命令机械读取 | ignored 执行证据，不提交 |
-| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1` | 预算前置检查、Vitest JSON 分类、脱敏和 native exit 保存 | ignored 临时执行工具，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.mjs` | `vitest`/`native` 两模式、有界内存、预算、进程树终止、脱敏与原子证据写入 | ignored 临时执行工具，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/test-diagnostic-runner.mjs` | runner 分类、脱敏、预算、argv、冲突与进程树 TDD 自测 | ignored 临时测试，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/runner-fixtures/` | argv recorder 与短超时父子进程 fixture | ignored 临时测试装配，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnostics/` | 按 episode/seam/round 保存不可覆盖的脱敏 stdout/stderr、summary 和 metadata | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/feedback-results.md` | 三个有限 feedback seam 的轮次、退出码、耗时和同症状统计 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/hypothesis-ledger.md` | 3–5 个假设、预测、单变量 probe、支持/排除结论和 60 分钟终局 | ignored 执行证据，不提交 |
@@ -98,50 +100,25 @@
 
   预期：当前清单为 20 个文件；总账为 `+1956/-1294`、净增 `662`；受保护路径无输出。最终 inventory 必须重新读取实际 HEAD，不能把 20 当作未来固定数量。
 
-- [ ] **Step 4：用 `apply_patch` 创建 ignored 脱敏结构化 runner**
+- [ ] **Step 4：固定 runner 接口与本地 CLI 事实**
 
-  创建 `run-diagnostic-round.ps1`，接口固定为：
+  Task R 将创建 runner；本步骤只固定接口：
 
-  ```powershell
-  param(
-    [ValidatePattern('^[a-z0-9-]+$')][string]$EpisodeId,
-    [ValidatePattern('^[a-z0-9-]+$')][string]$Seam,
-    [int]$Round,
-    [string]$StartedAtFile,
-    [string[]]$CommandArguments,
-    [switch]$SelfTest
-  )
+  ```text
+  node run-diagnostic-round.mjs --mode vitest --episode initial --seam 1-isolated --round 1 \
+    --started-at diagnosis-started-at.txt --target-id "官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据" -- \
+    node node_modules/vitest/vitest.mjs run --config apps/desktop/vitest.config.ts
+
+  node run-diagnostic-round.mjs --mode native --episode root-fix-verification --seam desktop-typecheck --round 1 \
+    --started-at root-fix-verification-started-at.txt -- \
+    node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json
   ```
 
-  `SelfTest` 分支先运行并直接退出；普通分支必须显式校验另外五个参数均已提供，不能依赖 PowerShell 默认空值继续执行。
+  本地只读确认 `node_modules/vitest/vitest.mjs` 与 `node_modules/typescript/bin/tsc` 存在；后续诊断统一直接运行这两个 Node CLI，不把 `.cmd` 交给 `spawn(shell:false)`。
 
-  runner 必须实现以下精确流程：
+  runner 的完整实现位于 Task R；此处只锁定外部契约：`spawn(..., {shell:false})`；stdout/stderr 各 10 MiB 有界内存；Vitest JSON 直接从 stdout 内存解析，不使用 `outputFile`，因此不存在未脱敏 raw 文件清理分支；每次 spawn 前计算 `remaining=min(900000, 3600000-elapsed)`；自身 timer 到期在 Windows 按精确 child PID 执行 `taskkill /PID ... /T /F` 并等待 close；全部 artifact 脱敏后以 `wx` 写入且 metadata 最后写。
 
-  1. 前缀固定为 `episode-$EpisodeId-seam-$Seam-round-{0:D2}`；目标持久化文件固定为 `.stdout.log`、`.stderr.log`、`.summary.json`、`.metadata.json`。写前对四个路径逐一 `Test-Path`；任一存在立即抛错。最终 artifact 统一用 `FileMode.CreateNew` 写入，禁止 `Set-Content` 或任何覆盖模式。
-  2. 读取 `StartedAtFile` 的 ISO 时间并计算 elapsed。`elapsed.TotalSeconds -ge 3600` 时不启动 pnpm，只以 `New-Item` 新建 metadata，状态写 `BUDGET_EXHAUSTED`、native exit 写 `null`、elapsed 写实测值，然后退出 124。
-  3. 所有临时文件名同样以 `episode-$EpisodeId-seam-$Seam-round-{0:D2}-raw-` 开头并追加随机 UUID。启动参数在原 `CommandArguments` 后追加 `--reporter=json` 和 `--outputFile=$rawJsonPath`。stdout、stderr 和 raw JSON 都只进入这些随机临时文件；命令结束后立即读入内存，保存 `$LASTEXITCODE`，不把未脱敏内容复制到 diagnostics。
-  4. `Redact()` 对内存字符串按长度从长到短、忽略大小写替换 workspace root、`[IO.Path]::GetTempPath()`、`$HOME`、`$env:USERPROFILE` 及本轮随机临时文件/目录为固定字面量 `<REDACTED>`。stdout、stderr、summary、metadata 的全部字符串字段（包括命令）均先脱敏，再写最终 artifact。
-  5. 解析 Vitest JSON 的 `testResults[].assertionResults[]`，只用完整 test ID `官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据` 查找目标自身。summary 只保存完整 ID、`status`、`duration`、失败类别和全局计数，不保存 `failureMessages`、文件绝对路径或原始 JSON。
-  6. 分类函数固定为：目标 `status='failed'` 且其自身 `failureMessages` 匹配 `Test timed out in 5000ms` 才是 `TARGET_FIXED_TIMEOUT`；目标通过但其他测试 5000ms、目标其他错误、目标缺失或 JSON 不可解析均为 `OTHER_FAILURE`；目标通过且 native exit 为 0 才是 `GREEN`。
-  7. 在 `finally` 中删除 raw JSON、raw stdout 和 raw stderr；删除失败时 metadata 写 `UNSANITIZED_CLEANUP_FAILED`，本轮不得作为诊断证据。最终再扫描四个持久化 artifact，不得出现 workspace root、系统临时目录或用户目录原文。
-
-  classifier 自检直接构造三个内存 fixture，不启动 Vitest：
-
-  ```powershell
-  $targetId = '官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据'
-  Assert-Classification -Name '目标 GREEN + 其他测试 5000ms' -Expected 'OTHER_FAILURE' -Assertions @(
-    @{ fullName = $targetId; status = 'passed'; failureMessages = @() },
-    @{ fullName = '其他测试'; status = 'failed'; failureMessages = @('Test timed out in 5000ms') }
-  ) -NativeExit 1
-  Assert-Classification -Name '目标自身 5000ms' -Expected 'TARGET_FIXED_TIMEOUT' -Assertions @(
-    @{ fullName = $targetId; status = 'failed'; failureMessages = @('Test timed out in 5000ms') }
-  ) -NativeExit 1
-  Assert-Classification -Name '目标其他错误' -Expected 'OTHER_FAILURE' -Assertions @(
-    @{ fullName = $targetId; status = 'failed'; failureMessages = @('expected 2 to be 3') }
-  ) -NativeExit 1
-  ```
-
-  实际诊断前运行 `pwsh -NoProfile -File .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 -SelfTest`，三项必须全部通过。每轮 native exit 由 runner 原样退出；执行工具仍在 15 分钟时负责终止该轮。
+  上述接口、分类与隐私约束由独立 Task R 以完整 Node 实现和自测落地；Task R 未 Ready 时不得进入 Task 1。
 
 - [ ] **Step 5：写入 baseline 报告并独立复审**
 
@@ -154,6 +131,438 @@
   `baseline.md` 必须逐字记录实施基线 hash、当前时间、分支、五个脚本展开值、Vitest worker 值、目标用例文件与标题、20 文件清单、逐文件 `numstat`、总账和保护路径结果。独立审查者复算总账并确认报告没有敏感绝对路径。
 
   完成门：事实、算术和脚本一致；Critical/Important 为零。该任务没有 tracked 变更，不创建空提交；报告记录进入 Task 1 时的同一 HEAD。
+
+---
+
+### Task R：以 TDD 实现独立诊断 runner 并复审为 Ready
+
+**文件：**
+- 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.mjs`
+- 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/test-diagnostic-runner.mjs`
+- 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/runner-fixtures/argv-child.mjs`
+- 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/runner-fixtures/tree-parent.mjs`
+- 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/runner-fixtures/tree-child.mjs`
+- 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/runner-review.md`
+
+**接口：**
+- `mode='vitest'` 时只追加 `--reporter=json`，从 stdout 内存缓冲解析 JSON；绝不使用 `outputFile`。
+- `mode='native'` 时 argv 原样传给子进程，不追加 Vitest 参数；Task 3 typecheck 必须使用此模式。
+- 子进程固定使用 `child_process.spawn(executable, args, { shell: false })`。诊断 CLI 以 `node node_modules/vitest/vitest.mjs ...` 或 `node node_modules/typescript/bin/tsc ...` 运行，不启动 `.cmd`。
+- stdout/stderr 各自最多保留 10 MiB；超限立即终止精确 child PID 的整个进程树，并把本轮分类为 `OTHER_FAILURE`。
+- ignored 文件也不靠“反正不提交”规避审查：Task R 生成文件清单、SHA-256 与完整内容 review package，独立审查 Critical/Important 为零并在 `runner-review.md` 写 `状态：Ready` 后，Task 1 才能启动。
+
+- [ ] **Step 1：先写 runner fixtures**
+
+  `argv-child.mjs` 完整内容：
+
+  ```js
+  process.stdout.write(JSON.stringify({ argv: process.argv.slice(2) }));
+  ```
+
+  `tree-child.mjs` 完整内容：
+
+  ```js
+  process.stdout.write(JSON.stringify({ childPid: process.pid, privatePath: process.env.USERPROFILE }) + '\n');
+  setInterval(() => {}, 1_000);
+  ```
+
+  `tree-parent.mjs` 完整内容：
+
+  ```js
+  import { spawn } from 'node:child_process';
+  import { fileURLToPath } from 'node:url';
+  import { dirname, join } from 'node:path';
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const child = spawn(process.execPath, [join(here, 'tree-child.mjs')], {
+    shell: false,
+    stdio: ['ignore', 'inherit', 'inherit']
+  });
+  process.stdout.write(JSON.stringify({ parentPid: process.pid, childPid: child.pid, privatePath: process.cwd() }) + '\n');
+  setInterval(() => {}, 1_000);
+  ```
+
+- [ ] **Step 2：先写失败自测并观察 RED**
+
+  `test-diagnostic-runner.mjs` 使用 `node:assert/strict`，必须先覆盖以下六组并因 runner 不存在而 RED：
+
+  1. 三分类 fixture：目标 GREEN + 其他测试 5000ms → `OTHER_FAILURE`；目标自身 5000ms → `TARGET_FIXED_TIMEOUT`；目标其他错误 → `OTHER_FAILURE`。
+  2. `redact()` 的结果不含 workspace、temp、HOME、USERPROFILE 或合成 Windows 绝对路径原文。
+  3. 同一 episode/seam/round 第二次写入因 `EEXIST` 拒绝，第一次 artifact 不变。
+  4. started-at 已超过 3600 秒时 metadata 为 `BUDGET_EXHAUSTED`，argv fixture 的 marker 不存在，证明没有 spawn。
+  5. `native` 模式运行 argv fixture，结果 argv 不含 `--reporter=json`。
+  6. 通过仅供导入自测的 `selfTestHardLimitMs=200` 启动 tree fixture；runner 超时后父、子 PID 都不存在，且只留下脱敏 artifact。
+
+  ```powershell
+  node .superpowers/sdd/2026-08-21-desktop-development-gate-closure/test-diagnostic-runner.mjs
+  ```
+
+  预期：RED，错误为无法导入 `run-diagnostic-round.mjs`；不得先创建空 runner 让错误变成无意义断言失败。
+
+- [ ] **Step 3：用 `apply_patch` 写入完整 runner 实现**
+
+  `run-diagnostic-round.mjs` 完整实现固定为：
+
+  ```js
+  import { spawn } from 'node:child_process';
+  import { once } from 'node:events';
+  import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+  import { homedir, tmpdir } from 'node:os';
+  import { basename, resolve } from 'node:path';
+  import { fileURLToPath } from 'node:url';
+
+  const BUFFER_LIMIT = 10 * 1024 * 1024;
+  const EPISODE_LIMIT_MS = 3_600_000;
+  const COMMAND_LIMIT_MS = 900_000;
+  const TARGET_ID = '官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据';
+  const SAFE_ID = /^[a-z0-9-]+$/u;
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  }
+
+  export function redact(value, workspaceRoot) {
+    let text = String(value ?? '');
+    const known = [workspaceRoot, tmpdir(), homedir(), process.env.HOME, process.env.USERPROFILE]
+      .filter(Boolean)
+      .flatMap(item => [String(item), String(item).replaceAll('\\', '/')])
+      .sort((left, right) => right.length - left.length);
+    for (const item of new Set(known)) {
+      text = text.replace(new RegExp(escapeRegExp(item), 'giu'), '<REDACTED>');
+    }
+    return text
+      .replace(/\b[A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*/gu, '<REDACTED>')
+      .replace(/\\\\[^\\\s]+\\[^\r\n"'<>|]*/gu, '<REDACTED>');
+  }
+
+  export function classifyVitest(report, targetId = TARGET_ID) {
+    const assertions = (report?.testResults ?? []).flatMap(result => result.assertionResults ?? []);
+    const target = assertions.find(assertion => assertion.fullName === targetId);
+    const otherTimedOut = assertions.some(assertion =>
+      assertion.fullName !== targetId
+      && (assertion.failureMessages ?? []).some(message => /Test timed out in 5000ms/u.test(message))
+    );
+    if (target?.status === 'failed'
+      && (target.failureMessages ?? []).some(message => /Test timed out in 5000ms/u.test(message))) {
+      return { classification: 'TARGET_FIXED_TIMEOUT', targetStatus: target.status };
+    }
+    if (target?.status === 'passed' && report?.success === true && !otherTimedOut) {
+      return { classification: 'GREEN', targetStatus: target.status };
+    }
+    return { classification: 'OTHER_FAILURE', targetStatus: target?.status ?? 'missing' };
+  }
+
+  function artifactPaths(artifactDir, episodeId, seam, round) {
+    if (!SAFE_ID.test(episodeId) || !SAFE_ID.test(seam) || !Number.isInteger(round) || round < 0) {
+      throw new Error('INVALID_ARTIFACT_ID');
+    }
+    const prefix = `episode-${episodeId}-seam-${seam}-round-${String(round).padStart(2, '0')}`;
+    return Object.fromEntries(['stdout', 'stderr', 'summary', 'metadata']
+      .map(kind => [kind, resolve(artifactDir, `${prefix}.${kind}.${kind === 'stdout' || kind === 'stderr' ? 'log' : 'json'}`)]));
+  }
+
+  async function ensureAbsent(paths) {
+    for (const path of Object.values(paths)) {
+      try {
+        await access(path);
+        throw Object.assign(new Error(`ARTIFACT_EXISTS:${basename(path)}`), { code: 'EEXIST' });
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+  }
+
+  async function writeArtifacts(paths, values) {
+    const created = [];
+    try {
+      for (const kind of ['stdout', 'stderr', 'summary', 'metadata']) {
+        await writeFile(paths[kind], values[kind], { encoding: 'utf8', flag: 'wx' });
+        created.push(paths[kind]);
+      }
+    } catch (error) {
+      await Promise.all(created.map(path => rm(path, { force: true })));
+      throw error;
+    }
+  }
+
+  function capture(stream, limit, onOverflow) {
+    const chunks = [];
+    let size = 0;
+    let overflow = false;
+    stream.on('data', chunk => {
+      if (overflow) return;
+      const buffer = Buffer.from(chunk);
+      const remaining = limit - size;
+      if (buffer.length > remaining) {
+        if (remaining > 0) chunks.push(buffer.subarray(0, remaining));
+        size = limit;
+        overflow = true;
+        void onOverflow();
+      } else {
+        chunks.push(buffer);
+        size += buffer.length;
+      }
+    });
+    return { text: () => Buffer.concat(chunks).toString('utf8'), overflow: () => overflow };
+  }
+
+  async function killTree(child) {
+    if (!child.pid || child.exitCode !== null) return;
+    if (process.platform === 'win32') {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        shell: false,
+        stdio: 'ignore'
+      });
+      const killerCode = await new Promise((resolveKill, rejectKill) => {
+        killer.once('error', rejectKill);
+        killer.once('close', code => resolveKill(code));
+      });
+      if (killerCode !== 0) {
+        child.kill('SIGKILL');
+        throw new Error(`TASKKILL_FAILED:${killerCode}`);
+      }
+    } else {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    }
+  }
+
+  export async function runRound(options) {
+    const {
+      mode, episodeId, seam, round, startedAtFile, executable, args,
+      targetId = TARGET_ID, workspaceRoot = process.cwd(),
+      artifactDir = resolve(workspaceRoot, '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnostics'),
+      selfTestHardLimitMs
+    } = options;
+    if (!['vitest', 'native'].includes(mode)) throw new Error('INVALID_MODE');
+    if (!executable || !Array.isArray(args)) throw new Error('INVALID_COMMAND');
+    if (selfTestHardLimitMs !== undefined && process.env.AI_PET_GATE_RUNNER_SELF_TEST !== '1') {
+      throw new Error('SELF_TEST_LIMIT_FORBIDDEN');
+    }
+    await mkdir(artifactDir, { recursive: true });
+    const paths = artifactPaths(artifactDir, episodeId, seam, round);
+    await ensureAbsent(paths);
+    const startedAt = Date.parse(await readFile(startedAtFile, 'utf8'));
+    if (!Number.isFinite(startedAt)) throw new Error('INVALID_STARTED_AT');
+    const elapsedMs = Date.now() - startedAt;
+    const remainingMs = Math.min(COMMAND_LIMIT_MS, EPISODE_LIMIT_MS - elapsedMs);
+    const timerMs = selfTestHardLimitMs === undefined
+      ? remainingMs
+      : Math.min(remainingMs, selfTestHardLimitMs);
+    const baseMetadata = { episodeId, seam, round, mode, elapsedMs };
+    if (remainingMs <= 0) {
+      const summary = { classification: 'BUDGET_EXHAUSTED', targetFullName: mode === 'vitest' ? targetId : null };
+      await writeArtifacts(paths, {
+        stdout: '', stderr: '', summary: JSON.stringify(summary),
+        metadata: JSON.stringify({ ...baseMetadata, status: 'BUDGET_EXHAUSTED', exitCode: null })
+      });
+      return { exitCode: 124, summary, paths, spawned: false };
+    }
+
+    const childArgs = mode === 'vitest' ? [...args, '--reporter=json'] : [...args];
+    const child = spawn(executable, childArgs, {
+      cwd: workspaceRoot,
+      shell: false,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let termination;
+    const terminate = () => (termination ??= killTree(child));
+    const stdout = capture(child.stdout, BUFFER_LIMIT, terminate);
+    const stderr = capture(child.stderr, BUFFER_LIMIT, terminate);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; void terminate(); }, timerMs);
+    let exitCode;
+    let signal;
+    try {
+      [exitCode, signal] = await Promise.race([
+        once(child, 'close'),
+        once(child, 'error').then(([error]) => { throw error; })
+      ]);
+    } finally {
+      clearTimeout(timer);
+      if (termination) await termination;
+    }
+
+    const rawStdout = stdout.text();
+    const rawStderr = stderr.text();
+    let summary;
+    if (mode === 'vitest') {
+      try {
+        const report = JSON.parse(rawStdout.replace(/^\uFEFF/u, ''));
+        summary = {
+          ...classifyVitest(report, targetId), targetFullName: targetId,
+          counts: {
+            total: report.numTotalTests, passed: report.numPassedTests,
+            failed: report.numFailedTests, pending: report.numPendingTests
+          }
+        };
+      } catch {
+        summary = { classification: 'OTHER_FAILURE', targetFullName: targetId, targetStatus: 'unparseable' };
+      }
+    } else {
+      summary = { classification: exitCode === 0 && !timedOut ? 'GREEN' : 'OTHER_FAILURE', targetFullName: null };
+    }
+    if (stdout.overflow() || stderr.overflow() || timedOut) summary.classification = 'OTHER_FAILURE';
+
+    const safeStdout = redact(rawStdout, workspaceRoot);
+    const safeStderr = redact(rawStderr, workspaceRoot);
+    const metadata = {
+      ...baseMetadata, status: timedOut ? 'TIMED_OUT' : 'FINISHED',
+      exitCode, signal, timedOut, stdoutOverflow: stdout.overflow(), stderrOverflow: stderr.overflow(),
+      command: [executable, ...childArgs].map(value => redact(value, workspaceRoot)),
+      stdout: basename(paths.stdout), stderr: basename(paths.stderr), summary: basename(paths.summary)
+    };
+    const safeSummary = redact(JSON.stringify(summary), workspaceRoot);
+    const safeMetadata = redact(JSON.stringify(metadata), workspaceRoot);
+    await writeArtifacts(paths, {
+      stdout: safeStdout, stderr: safeStderr, summary: safeSummary, metadata: safeMetadata
+    });
+    return { exitCode: timedOut ? 124 : (exitCode ?? 1), summary, paths, spawned: true };
+  }
+
+  function parseCli(argv) {
+    const separator = argv.indexOf('--');
+    if (separator < 0) throw new Error('MISSING_COMMAND_SEPARATOR');
+    const flags = argv.slice(0, separator);
+    const command = argv.slice(separator + 1);
+    const value = name => {
+      const index = flags.indexOf(name);
+      if (index < 0 || !flags[index + 1]) throw new Error(`MISSING_${name}`);
+      return flags[index + 1];
+    };
+    return {
+      mode: value('--mode'), episodeId: value('--episode'), seam: value('--seam'),
+      round: Number(value('--round')), startedAtFile: value('--started-at'),
+      targetId: flags.includes('--target-id') ? value('--target-id') : TARGET_ID,
+      executable: command[0], args: command.slice(1)
+    };
+  }
+
+  if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    runRound(parseCli(process.argv.slice(2)))
+      .then(result => { process.exitCode = result.exitCode; })
+      .catch(error => {
+        process.stderr.write(`${redact(error?.message ?? error, process.cwd())}\n`);
+        process.exitCode = 70;
+      });
+  }
+  ```
+
+- [ ] **Step 4：补全自测脚本并观察 GREEN**
+
+  `test-diagnostic-runner.mjs` 完整内容固定为：
+
+  ```js
+  import assert from 'node:assert/strict';
+  import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+  import { homedir, tmpdir } from 'node:os';
+  import { join } from 'node:path';
+  import { classifyVitest, redact, runRound } from './run-diagnostic-round.mjs';
+
+  const target = '官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据';
+  const root = await mkdtemp(join(tmpdir(), 'ai-pet-gate-runner-'));
+  const artifacts = join(root, 'artifacts');
+  const fixture = name => join(import.meta.dirname, 'runner-fixtures', name);
+  const report = (assertions, success) => ({ success, testResults: [{ assertionResults: assertions }] });
+  const assertion = (fullName, status, failureMessages = []) => ({ fullName, status, failureMessages });
+  const startedAt = async (name, ageMs = 0) => {
+    const file = join(root, name);
+    await writeFile(file, new Date(Date.now() - ageMs).toISOString(), { flag: 'wx' });
+    return file;
+  };
+  const exists = async path => access(path).then(() => true, () => false);
+  const isDead = pid => {
+    try { process.kill(pid, 0); return false; } catch (error) { return error?.code === 'ESRCH'; }
+  };
+
+  try {
+    assert.equal(classifyVitest(report([
+      assertion(target, 'passed'), assertion('其他测试', 'failed', ['Test timed out in 5000ms'])
+    ], false)).classification, 'OTHER_FAILURE');
+    assert.equal(classifyVitest(report([
+      assertion(target, 'failed', ['Test timed out in 5000ms'])
+    ], false)).classification, 'TARGET_FIXED_TIMEOUT');
+    assert.equal(classifyVitest(report([
+      assertion(target, 'failed', ['expected 2 to be 3'])
+    ], false)).classification, 'OTHER_FAILURE');
+
+    const privateValues = [root, tmpdir(), homedir(), process.env.USERPROFILE, 'C:\\Users\\Secret\\角色'].filter(Boolean);
+    const redacted = redact(privateValues.join('\n'), root);
+    for (const value of privateValues) assert.equal(redacted.includes(value), false);
+
+    const current = await startedAt('current.txt');
+    const argvRun = await runRound({
+      mode: 'native', episodeId: 'selftest', seam: 'argv', round: 1,
+      startedAtFile: current, executable: process.execPath,
+      args: [fixture('argv-child.mjs'), 'alpha'], workspaceRoot: root, artifactDir: artifacts
+    });
+    assert.equal(argvRun.exitCode, 0);
+    const argvOutput = JSON.parse(await readFile(argvRun.paths.stdout, 'utf8'));
+    assert.deepEqual(argvOutput.argv, ['alpha']);
+    assert.equal(argvOutput.argv.includes('--reporter=json'), false);
+    await assert.rejects(() => runRound({
+      mode: 'native', episodeId: 'selftest', seam: 'argv', round: 1,
+      startedAtFile: current, executable: process.execPath,
+      args: [fixture('argv-child.mjs')], workspaceRoot: root, artifactDir: artifacts
+    }), error => error?.code === 'EEXIST');
+    assert.deepEqual(JSON.parse(await readFile(argvRun.paths.stdout, 'utf8')).argv, ['alpha']);
+
+    const old = await startedAt('old.txt', 3_660_000);
+    const marker = join(root, 'must-not-spawn');
+    const budget = await runRound({
+      mode: 'native', episodeId: 'selftest', seam: 'budget', round: 1,
+      startedAtFile: old, executable: process.execPath,
+      args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`],
+      workspaceRoot: root, artifactDir: artifacts
+    });
+    assert.equal(budget.spawned, false);
+    assert.equal(budget.summary.classification, 'BUDGET_EXHAUSTED');
+    assert.equal(await exists(marker), false);
+
+    process.env.AI_PET_GATE_RUNNER_SELF_TEST = '1';
+    const tree = await runRound({
+      mode: 'native', episodeId: 'selftest', seam: 'tree', round: 1,
+      startedAtFile: current, executable: process.execPath,
+      args: [fixture('tree-parent.mjs')], workspaceRoot: root, artifactDir: artifacts,
+      selfTestHardLimitMs: 200
+    });
+    assert.equal(tree.exitCode, 124);
+    const treeOutput = await readFile(tree.paths.stdout, 'utf8');
+    const parentPid = Number(treeOutput.match(/"parentPid":(\d+)/u)?.[1]);
+    const childPids = [...treeOutput.matchAll(/"childPid":(\d+)/gu)].map(match => Number(match[1]));
+    assert.ok(parentPid > 0 && childPids.some(pid => pid > 0));
+    assert.equal(isDead(parentPid), true);
+    for (const pid of childPids) assert.equal(isDead(pid), true);
+
+    const artifactNames = await readdir(artifacts);
+    for (const name of artifactNames) {
+      const content = await readFile(join(artifacts, name), 'utf8');
+      for (const value of privateValues) assert.equal(content.includes(value), false, name);
+      assert.equal(/\b[A-Za-z]:\\/u.test(content), false, name);
+    }
+    process.stdout.write('runner self-test: 6/6 passed\n');
+  } finally {
+    delete process.env.AI_PET_GATE_RUNNER_SELF_TEST;
+    await rm(root, { recursive: true, force: true });
+  }
+  ```
+
+  ```powershell
+  node .superpowers/sdd/2026-08-21-desktop-development-gate-closure/test-diagnostic-runner.mjs
+  ```
+
+  预期：六组全部 GREEN；任一自测达到 15 分钟立即停止，runner 状态不得写 Ready。
+
+- [ ] **Step 5：生成 ignored review package 并独立复审**
+
+  ```powershell
+  Get-FileHash -Algorithm SHA256 .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.mjs .superpowers/sdd/2026-08-21-desktop-development-gate-closure/test-diagnostic-runner.mjs .superpowers/sdd/2026-08-21-desktop-development-gate-closure/runner-fixtures/*.mjs
+  node .superpowers/sdd/2026-08-21-desktop-development-gate-closure/test-diagnostic-runner.mjs
+  git check-ignore -v .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.mjs
+  git status --short
+  ```
+
+  review package 保存五个文件完整内容、hash、自测 stdout/native exit 和 ignored 证明。审查重点：`spawn shell:false`、10 MiB 上限、remaining 公式、Windows 精确 PID 树终止、await close、脱敏覆盖、`wx`/metadata 最后写、失败清理与六组测试真实性。Critical/Important 清零后在 `runner-review.md` 写 `状态：Ready`；本任务没有 tracked 变更，不提交。
 
 ---
 
@@ -170,7 +579,7 @@
 - 本轮可计数 RED 只指结构化 classifier 对目标完整 test ID 自身给出 `TARGET_FIXED_TIMEOUT`；其他测试 5000ms、目标其他错误、缺模块、JSON 缺失、人工 sleep 或人为缩短 timeout 均不算 RED。
 - seam 1 是单文件隔离基线，只测目标自身耗时和稳定性；即使 RED，也不得宣称复现了多文件并行负载根因。
 - seam 2 固定四文件集合：`official-default-character.test.ts`、`character-asset-service.test.ts`、`character-store.test.ts`、`character-package-service.test.ts`。后三者当前存在且分别包含 127、191、118 个真实文件操作匹配；Asset/Store 有既有 5000ms 超时记录。一次 Vitest 命令同时传入四个文件，使 `maxWorkers=4` 对多文件并行真实生效。
-- 每个 seam 固定输入、测试清单与五轮；每轮必须由 runner 保存脱敏 stdout/stderr、结构化 summary 和 metadata，未脱敏临时文件必须删除；汇总只能机械读取 summary/metadata，不得以人工转述替代。
+- 每个 seam 固定输入、测试清单与五轮；每轮必须由 runner 从有界内存保存脱敏 stdout/stderr、结构化 summary 和 metadata，任何未脱敏内容不得落盘；汇总只能机械读取 summary/metadata，不得以人工转述替代。
 - seam 2 或 seam 3 中第一个达到至少 `2/5 TARGET_FIXED_TIMEOUT` 的 seam 成为 `PRIMARY_FEEDBACK_SEAM`。一旦建立高复现并行 seam，停止更宽 seam，避免无价值压力；未执行的后续 seam 明确写“因前序已达 2/5 未执行”。
 
 - [ ] **Step 1：机械启动 60 分钟总预算**
@@ -187,16 +596,13 @@
 
   ```powershell
   1..5 | ForEach-Object {
-    & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
-      -EpisodeId 'initial' -Seam '1-isolated' -Round $_ `
-      -StartedAtFile '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt' `
-      -CommandArguments @(
-        '--dir', 'apps/desktop', 'exec', 'vitest', 'run',
-        '--config', 'vitest.config.ts',
-        'tests/official-default-character.test.ts',
-        '--maxWorkers=4', '-t',
-        '损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据'
-      )
+    node .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.mjs `
+      --mode vitest --episode initial --seam 1-isolated --round $_ `
+      --started-at .superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt `
+      --target-id '官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据' -- `
+      node node_modules/vitest/vitest.mjs run --config apps/desktop/vitest.config.ts `
+      tests/official-default-character.test.ts --maxWorkers=4 `
+      -t '损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据'
   }
   ```
 
@@ -222,17 +628,13 @@
 
   ```powershell
   1..5 | ForEach-Object {
-    & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
-      -EpisodeId 'initial' -Seam '2-four-files' -Round $_ `
-      -StartedAtFile '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt' `
-      -CommandArguments @(
-        '--dir', 'apps/desktop', 'exec', 'vitest', 'run',
-        '--config', 'vitest.config.ts', '--maxWorkers=4',
-        'tests/official-default-character.test.ts',
-        'tests/character-asset-service.test.ts',
-        'tests/character-store.test.ts',
-        'tests/character-package-service.test.ts'
-      )
+    node .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.mjs `
+      --mode vitest --episode initial --seam 2-four-files --round $_ `
+      --started-at .superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt `
+      --target-id '官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据' -- `
+      node node_modules/vitest/vitest.mjs run --config apps/desktop/vitest.config.ts --maxWorkers=4 `
+      tests/official-default-character.test.ts tests/character-asset-service.test.ts `
+      tests/character-store.test.ts tests/character-package-service.test.ts
   }
   ```
 
@@ -242,10 +644,11 @@
 
   ```powershell
   1..5 | ForEach-Object {
-    & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
-      -EpisodeId 'initial' -Seam '3-desktop-unit' -Round $_ `
-      -StartedAtFile '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt' `
-      -CommandArguments @('--dir', 'apps/desktop', 'exec', 'vitest', 'run', '--config', 'vitest.config.ts')
+    node .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.mjs `
+      --mode vitest --episode initial --seam 3-desktop-unit --round $_ `
+      --started-at .superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt `
+      --target-id '官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据' -- `
+      node node_modules/vitest/vitest.mjs run --config apps/desktop/vitest.config.ts
   }
   ```
 
@@ -304,12 +707,13 @@
         throw "持久化诊断 artifact 未脱敏：$($_.Name)"
       }
     }
+    if ($content -match '\b[A-Za-z]:\\') {
+      throw "持久化诊断 artifact 仍含 Windows 绝对路径：$($_.Name)"
+    }
   }
-  $rawLeftovers = Get-ChildItem ([IO.Path]::GetTempPath()) -Filter 'episode-*-seam-*-round-*-raw-*' -ErrorAction SilentlyContinue
-  if ($rawLeftovers.Count -gt 0) { throw '存在未删除的未脱敏临时诊断文件' }
   ```
 
-  审查者核对 classifier 三项自检、脱敏 stdout/stderr、结构化 summary 与 metadata，确认目标完整 ID、自身状态/错误、native exit 和统计一致；确认其他测试 5000ms 不会误算目标 RED、每轮启动前检查 episode 预算、文件拒绝覆盖、未脱敏临时 JSON/stdout/stderr 已删除。Critical/Important 清零后才进入 Task 2。该任务没有 tracked 变更，不创建空提交。
+  审查者核对 Task R Ready、classifier 三项自检、脱敏 stdout/stderr、结构化 summary 与 metadata，确认目标完整 ID、自身状态/错误、native exit 和统计一致；确认其他测试 5000ms 不会误算目标 RED、每轮启动前检查 episode 预算、文件拒绝覆盖，且实现中不存在未脱敏落盘路径。Critical/Important 清零后才进入 Task 2。该任务没有 tracked 变更，不创建空提交。
 
 ---
 
@@ -362,7 +766,7 @@
   | CPU/事件循环拥塞 | 主 seam、相同文件负载 | 只记录事件循环长任务或已识别同步阶段耗时 | 稳定长任务与超时同现，而等价 I/O 压力变化不解释结果 |
   | 共享状态/缓存泄漏 | 文件集合、4 workers、五轮 | 只改变固定执行顺序/固定 seed | 特定前序集合稳定改变目标耗时；清除错误 owner 后顺序影响消失 |
 
-  临时探针只能写阶段名、次数、耗时和失败类别，并带 `[DEBUG-DESKTOP-GATE]` 标识。每次 probe 前后机械记录诊断 elapsed；每轮必须复用 `run-diagnostic-round.ps1`，传入 `EpisodeId='initial'`、唯一 probe seam 名、递增 round 和同一 `diagnosis-started-at.txt`，由 runner 在启动前再次执行 3600 秒预算检查并保存脱敏结构化结果。每次 probe 后先把观察写入 ledger，再严格执行 brief 中的反向 `apply_patch`，并用其 DEBUG 清理扫描证明零残留；禁止保留不支持预测的防御性补丁。
+  临时探针只能写阶段名、次数、耗时和失败类别，并带 `[DEBUG-DESKTOP-GATE]` 标识。每次 probe 前后机械记录诊断 elapsed；每轮必须复用 `run-diagnostic-round.mjs --mode vitest`，传入 `episode=initial`、唯一 probe seam 名、递增 round 和同一 `diagnosis-started-at.txt`，由 runner 在 spawn 前再次计算 remaining 并保存脱敏结构化结果。每次 probe 后先把观察写入 ledger，再严格执行 brief 中的反向 `apply_patch`，并用其 DEBUG 清理扫描证明零残留；禁止保留不支持预测的防御性补丁。
 
 - [ ] **Step 4：worker 假设只允许通过严格双门**
 
@@ -423,6 +827,15 @@
 - [ ] **Step 4：观察 GREEN 并复验原始未缩小 feedback seam**
 
   新建且拒绝覆盖 `root-fix-verification-started-at.txt`，使用 `EpisodeId='root-fix-verification'` 和新的 seam 名依次运行 brief 的最小回归、原始未缩小 feedback seam及受影响 package typecheck。验证不复用 initial episode 的 artifact 名或 60 分钟 started-at；最小回归和原始 seam 均须 GREEN。worker 分支还须完整 Desktop unit 连续两次退出 0，并记录目标耗时、总耗时、worker 值和资源指标。
+
+  Desktop typecheck 固定使用 native mode，不得让 runner 追加 Vitest reporter：
+
+  ```powershell
+  node .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.mjs `
+    --mode native --episode root-fix-verification --seam desktop-typecheck --round 1 `
+    --started-at .superpowers/sdd/2026-08-21-desktop-development-gate-closure/root-fix-verification-started-at.txt -- `
+    node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json
+  ```
 
 - [ ] **Step 5：删除全部临时诊断并检查禁止项**
 
@@ -583,7 +996,7 @@
 
   只有失败仍是同一个 official-default 完整 test ID 的自身 5000ms，brief 才能引用 Task 1/2 的固定三 seam 和假设。若失败属于 security、integration、behavior、characters、Electron E2E、构建、类型检查或其他单元测试，必须按该失败域建立专属最小 seam 与假设，禁止套用角色恢复压力文件。brief 无法提供专属可证伪 seam 时直接关门并另立短规格。
 
-  Ready 后用 `New-Item` 创建全新的 `gate-failure-episode-started-at.txt`（已存在则拒绝）。Vitest 专属 seam 必须复用结构化 runner并传入该 started-at 文件；Playwright、构建或类型检查等非 Vitest 失败必须在 brief 中指定其原生结构化 reporter/exit 采集方式，并遵守相同的启动前 3600 秒预算检查、episode/seam/round 不覆盖命名、内存脱敏和未脱敏临时文件清理门。达到 3600 秒写 `BUDGET_EXHAUSTED` 且不启动。episode 仍受 3–5 假设、每假设最多两 probe、单命令 15 分钟和总计 60 分钟约束。
+  Ready 后用 `New-Item` 创建全新的 `gate-failure-episode-started-at.txt`（已存在则拒绝）。Vitest 专属 seam 必须复用结构化 runner并传入该 started-at 文件；Playwright、构建或类型检查等非 Vitest 失败必须在 brief 中指定其原生结构化 reporter/exit 采集方式，并遵守相同的启动前 3600 秒预算检查、episode/seam/round 不覆盖命名、有界内存脱敏和未脱敏内容零落盘门。达到 3600 秒写 `BUDGET_EXHAUSTED` 且不启动。episode 仍受 3–5 假设、每假设最多两 probe、单命令 15 分钟和总计 60 分钟约束。
 
   如果 60 分钟内未定位或未修复，立即结束，开发门保持关闭，并另立短规格记录新证据；不得启动第二个 episode。若修复涉及任何代码、测试、fixture、config、依赖、脚本或其他可执行变化，必须回到 Task 4：刷新全部 inventory/hunk/numstat，按 allowlist 提交，确认提交后对账一致，再写入新的 `final-executable-head.txt`。即使修复只改变测试，也不得跳过 Task 4。
 
