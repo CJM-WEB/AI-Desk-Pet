@@ -1514,19 +1514,34 @@
     if ($finalRound -notin @('1','2')) { throw 'finalGateRound 非法' }
     if (@($gateLines | Where-Object { $_ -eq "## Gate round $finalRound" }).Count -ne 1) { throw '最终轮 gate 段落标题非唯一' }
     if (@($gateLines | Where-Object { $_ -eq "gateRound=$finalRound" }).Count -ne 1) { throw '最终轮 gateRound 机器行非唯一' }
+    $scripts = @('verify:desktop','verify:characters','verify:behavior','test:security','test:integration')
     $successLine = "round${finalRound}.terminalGateStatus=SUCCESS"
-    $zeroLines = @('verify:desktop','verify:characters','verify:behavior','test:security','test:integration') |
-      ForEach-Object { "round${finalRound}.${_}=0" }
     $successCount = @($gateLines | Where-Object { $_ -eq $successLine }).Count
-    $zeroCounts = @($zeroLines | ForEach-Object {
-      $expectedLine = $_
-      @($gateLines | Where-Object { $_ -eq $expectedLine }).Count
-    })
+    $resultCounts = @{}
+    $zeroCounts = @()
+    foreach ($script in $scripts) {
+      $prefix = "round${finalRound}.$script="
+      $resultLines = @($gateLines | Where-Object { $_.StartsWith($prefix) })
+      if ($resultLines.Count -gt 1) { throw "最终轮同一脚本存在多个结果：$script" }
+      if ($resultLines.Count -eq 1 -and $resultLines[0] -notmatch ('^' + [regex]::Escape($prefix) + '-?\d+$')) { throw "最终轮脚本结果格式非法：$script" }
+      $resultCounts[$script] = $resultLines.Count
+      $zeroCounts += @($gateLines | Where-Object { $_ -eq "${prefix}0" }).Count
+    }
+    $finalPrefixedLines = @($gateLines | Where-Object { $_ -match "^round${finalRound}\." })
+    foreach ($line in $finalPrefixedLines) {
+      if ($line -eq $successLine) { continue }
+      $known = $false
+      foreach ($script in $scripts) {
+        if ($line -match ('^' + [regex]::Escape("round${finalRound}.$script=") + '-?\d+$')) { $known = $true; break }
+      }
+      if (-not $known) { throw "最终轮出现未知或格式非法的机器行：$line" }
+    }
     if ($terminalReason -eq 'FIVE_GATES_GREEN') {
-      if ($successCount -ne 1 -or @($zeroCounts | Where-Object { $_ -ne 1 }).Count -ne 0) { throw '成功分支最终轮机器行不完整或重复' }
+      if ($successCount -ne 1 -or @($resultCounts.Values | Where-Object { $_ -ne 1 }).Count -ne 0 -or @($zeroCounts | Where-Object { $_ -ne 1 }).Count -ne 0) { throw '成功分支最终轮机器行不完整或重复' }
     } else {
       if ($successCount -ne 0) { throw '失败分支最终轮含成功行' }
-      if (@($zeroCounts | Where-Object { $_ -eq 1 }).Count -eq 5) { throw '失败分支最终轮含五门全零组合' }
+      if (@($resultCounts.Values | Where-Object { $_ -eq 1 }).Count -eq 0) { throw '失败分支最终轮没有已执行脚本结果' }
+      if (@($zeroCounts | Where-Object { $_ -ge 1 }).Count -eq 5) { throw '失败分支最终轮含五门全零组合' }
     }
   }
   $diagnosticPaths = @(
@@ -1575,7 +1590,7 @@
   $diagnosticPaths
   ```
 
-  独立复审包必须用纯内存 `string[]` 对上述逐行判定做六个自测，不创建文件：最终轮 1 五门精确全零且唯一成功行应放行；`finalGateRound=2` 但只有 round1 绿色必须拒绝；重复 `finalGateRound` 或重复任一同轮机器行必须拒绝；`GATE_FAILURE` 最终轮含成功行必须拒绝；`GATE_FAILURE` 最终轮五条全零即使无成功行也必须拒绝；至少一门非零且无成功行的失败轮应保持 CLOSED。路径判定再覆盖合法 `$relativeRoot/diagnostics/x.summary.json`、合法 owner inventory，以及 `../x`、`C:/x`、`C:\x`、`\\server\share`、`/root/x` 六类拒绝样本。自测结果逐项写入 review，全部符合预测才可创建 pending。
+  Step 1 与 Step 5 completion 中的最终轮判定是同一份规范化判定，必须成对更新：先验证每个已执行脚本只有一条格式为 `roundN.<script>=<整数 exit>` 的结果，再判断成功/失败组合。独立复审包必须用纯内存 `string[]` 对这两处逐行判定运行同一组自测，不创建文件：最终轮 1 五门精确全零且唯一成功行应放行；`finalGateRound=2` 但只有 round1 绿色必须拒绝；重复 `finalGateRound` 或重复任一同轮机器行必须拒绝；`GATE_FAILURE` 五个精确零行计数为 `2,1,1,1,1` 必须因重复结果及“每项 count >= 1”同时拒绝；`GATE_FAILURE` 最终轮含成功行必须拒绝；`GATE_FAILURE` 最终轮五条全零即使无成功行也必须拒绝；至少一门非零且无成功行的失败轮应保持 CLOSED。路径判定再覆盖合法 `$relativeRoot/diagnostics/x.summary.json`、合法 owner inventory，以及 `../x`、`C:/x`、`C:\x`、`\\server\share`、`/root/x` 六类拒绝样本。自测结果逐项写入 review，全部符合预测才可创建 pending。
 
   按接口表逐项验证本 reason 的必须/禁止证据；`FIVE_GATES_GREEN` 还逐字核对成功行，`GATE_FAILURE` 核对成功行不存在。若 `closure-pending.md` 不存在，使用 `apply_patch` 创建，逐行写真实值：首行 `NOT_FINAL=true`、唯一 `TerminalReason=`、唯一且映射正确的 `ProducerTask=`、九行 `before=<相对工具路径>|present`、每个必须证据一行 `evidence=<相对路径>`、每个 `$diagnosticPaths` 一行 `diagnostic=<相对路径>`。禁止 wildcard、绝对路径、`System.Object[]` 或占位文字；创建后立即重跑本 Step 的 pending 分支，机械验证所有路径再进入 Step 2。
 
@@ -1814,13 +1829,49 @@
     if ($_ -notmatch '^(before|after)=(.+)\|(present|absent)$') { throw "completion before/after 格式非法：$_" }
     Assert-RepoRelativePath $Matches[2] 'completion before/after'
   }
-  $retained = @($finalLines | Where-Object { $_ -match '^(evidence|diagnostic)=' })
-  if ($retained.Count -eq 0) { throw 'completion 缺少 retained evidence' }
-  $retained | ForEach-Object {
-    $path = $_.Substring($_.IndexOf('=') + 1)
-    Assert-RepoRelativePath $path 'completion retained evidence'
-    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $path) -PathType Leaf)) { throw "completion retained evidence 不存在：$path" }
+  $requiredEvidence = @(
+    "$relativeRoot/terminal-closure-brief.md", "$relativeRoot/baseline.md", "$relativeRoot/implementation-baseline.txt",
+    "$relativeRoot/feedback-results.md", 'docs/operations/desktop-test-owner-inventory.md'
+  )
+  switch ($terminalReason) {
+    'NO_RED' { }
+    'NO_ROOT_CAUSE' { $requiredEvidence += @("$relativeRoot/hypothesis-probe-brief.md", "$relativeRoot/hypothesis-ledger.md") }
+    'GATE_FAILURE' {
+      $requiredEvidence += @(
+        "$relativeRoot/hypothesis-probe-brief.md", "$relativeRoot/hypothesis-ledger.md",
+        "$relativeRoot/root-cause-fix-brief.md", "$relativeRoot/root-cause-fix-files.txt",
+        "$relativeRoot/gate-report.md", "$relativeRoot/gate-failure-episode-brief.md", "$relativeRoot/final-executable-head.txt"
+      )
+    }
+    'FIVE_GATES_GREEN' {
+      $requiredEvidence += @(
+        "$relativeRoot/hypothesis-probe-brief.md", "$relativeRoot/hypothesis-ledger.md",
+        "$relativeRoot/root-cause-fix-brief.md", "$relativeRoot/root-cause-fix-files.txt",
+        "$relativeRoot/gate-report.md", "$relativeRoot/final-executable-head.txt"
+      )
+      if (Test-Path -LiteralPath "$root/gate-failure-episode-brief.md") { $requiredEvidence += "$relativeRoot/gate-failure-episode-brief.md" }
+    }
   }
+  $requiredEvidence = @($requiredEvidence | Sort-Object -Unique)
+  $finalEvidence = @($finalLines | Where-Object { $_ -match '^evidence=' } | ForEach-Object { $_.Substring('evidence='.Length) })
+  $finalEvidence | ForEach-Object {
+    Assert-RepoRelativePath $_ 'completion evidence'
+    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $_) -PathType Leaf)) { throw "completion evidence 不存在：$_" }
+  }
+  if ($finalEvidence.Count -ne $requiredEvidence.Count -or @(Compare-Object $requiredEvidence $finalEvidence).Count -ne 0) { throw 'completion evidence 与 TerminalReason 重建清单不一致' }
+  $diagnosticPaths = @(
+    Get-ChildItem "$root/diagnostics" -File |
+      Where-Object { $_.Name -match '\.(summary|metadata)\.json$' } |
+      Sort-Object Name |
+      ForEach-Object { $_.FullName.Substring($repoRoot.Length + 1).Replace('\','/') }
+  )
+  if (@($diagnosticPaths | Where-Object { $_ -match '\.summary\.json$' }).Count -eq 0 -or @($diagnosticPaths | Where-Object { $_ -match '\.metadata\.json$' }).Count -eq 0) { throw 'completion diagnostics 必须至少各有一个 summary 与 metadata' }
+  $finalDiagnostics = @($finalLines | Where-Object { $_ -match '^diagnostic=' } | ForEach-Object { $_.Substring('diagnostic='.Length) })
+  $finalDiagnostics | ForEach-Object {
+    Assert-RepoRelativePath $_ 'completion diagnostic'
+    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $_) -PathType Leaf)) { throw "completion diagnostic 不存在：$_" }
+  }
+  if ($finalDiagnostics.Count -ne $diagnosticPaths.Count -or @(Compare-Object $diagnosticPaths $finalDiagnostics).Count -ne 0) { throw 'completion diagnostics 与目录重枚举清单不一致' }
   if ($terminalReason -in @('GATE_FAILURE','FIVE_GATES_GREEN')) {
     $gateLines = Get-Content "$root/gate-report.md"
     $finalRoundLines = @($gateLines | Where-Object { $_ -match '^finalGateRound=' })
@@ -1829,17 +1880,34 @@
     if ($finalRound -notin @('1','2')) { throw 'completion 最终轮非法' }
     if (@($gateLines | Where-Object { $_ -eq "## Gate round $finalRound" }).Count -ne 1) { throw 'completion 最终轮段落标题非唯一' }
     if (@($gateLines | Where-Object { $_ -eq "gateRound=$finalRound" }).Count -ne 1) { throw 'completion gateRound 非唯一' }
+    $scripts = @('verify:desktop','verify:characters','verify:behavior','test:security','test:integration')
     $successLine = "round${finalRound}.terminalGateStatus=SUCCESS"
-    $zeroLines = @('verify:desktop','verify:characters','verify:behavior','test:security','test:integration') | ForEach-Object { "round${finalRound}.${_}=0" }
     $successCount = @($gateLines | Where-Object { $_ -eq $successLine }).Count
-    $zeroCounts = @($zeroLines | ForEach-Object {
-      $expectedLine = $_
-      @($gateLines | Where-Object { $_ -eq $expectedLine }).Count
-    })
+    $resultCounts = @{}
+    $zeroCounts = @()
+    foreach ($script in $scripts) {
+      $prefix = "round${finalRound}.$script="
+      $resultLines = @($gateLines | Where-Object { $_.StartsWith($prefix) })
+      if ($resultLines.Count -gt 1) { throw "completion 最终轮同一脚本存在多个结果：$script" }
+      if ($resultLines.Count -eq 1 -and $resultLines[0] -notmatch ('^' + [regex]::Escape($prefix) + '-?\d+$')) { throw "completion 最终轮脚本结果格式非法：$script" }
+      $resultCounts[$script] = $resultLines.Count
+      $zeroCounts += @($gateLines | Where-Object { $_ -eq "${prefix}0" }).Count
+    }
+    $finalPrefixedLines = @($gateLines | Where-Object { $_ -match "^round${finalRound}\." })
+    foreach ($line in $finalPrefixedLines) {
+      if ($line -eq $successLine) { continue }
+      $known = $false
+      foreach ($script in $scripts) {
+        if ($line -match ('^' + [regex]::Escape("round${finalRound}.$script=") + '-?\d+$')) { $known = $true; break }
+      }
+      if (-not $known) { throw "completion 最终轮出现未知或格式非法的机器行：$line" }
+    }
     if ($terminalReason -eq 'FIVE_GATES_GREEN') {
-      if ($successCount -ne 1 -or @($zeroCounts | Where-Object { $_ -ne 1 }).Count -ne 0) { throw 'completion 成功最终轮机器行不完整或重复' }
+      if ($successCount -ne 1 -or @($resultCounts.Values | Where-Object { $_ -ne 1 }).Count -ne 0 -or @($zeroCounts | Where-Object { $_ -ne 1 }).Count -ne 0) { throw 'completion 成功最终轮机器行不完整或重复' }
     } else {
-      if ($successCount -ne 0 -or @($zeroCounts | Where-Object { $_ -eq 1 }).Count -eq 5) { throw 'completion 失败最终轮含成功证据组合' }
+      if ($successCount -ne 0) { throw 'completion 失败最终轮含成功行' }
+      if (@($resultCounts.Values | Where-Object { $_ -eq 1 }).Count -eq 0) { throw 'completion 失败最终轮没有已执行脚本结果' }
+      if (@($zeroCounts | Where-Object { $_ -ge 1 }).Count -eq 5) { throw 'completion 失败最终轮含五门全零组合' }
     }
   }
   $implementationBaseline = (Get-Content "$root/implementation-baseline.txt" -Raw).Trim()
