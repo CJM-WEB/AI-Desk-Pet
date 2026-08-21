@@ -254,11 +254,12 @@
 - `Z2`：`rg -n "rollback marker 不得删除复用同一 ID 的新角色" apps/desktop/tests/character-package-service.test.ts`，预期退出码 `1`。
 - `Z3`：`rg -n "事务恢复协调：未发布角色的坏 publish|事务恢复协调：tombstone 恢复异常|恰好 256 个候选时完整恢复所有角色|空候选的新恢复轮次|空候选、空活动角色和未命中活动角色|CharacterTransactionRecoveryKind|budgetExceeded|\.deferred" apps/desktop/src/main/characters apps/desktop/tests/character-store.test.ts apps/desktop/tests/character-transaction-recovery.test.ts`，预期退出码 `1`。
 - `Z4`：`rg -n "validPowerShellActionEvent|validHistoryDisclosureEvent|completeChatEvents|applyCharacterBehavior.*character_carrying" apps/desktop/tests/conversation-event-projection.test.ts`，预期退出码 `1`。
-- `Z5`：`rg -n "new AgentIpcAuthorization|getCurrentChatWebContents\)\)|agentIpcAuthorization" apps/desktop/tests/main-lifecycle.test.ts apps/desktop/tests/window-security.test.ts`，预期退出码 `1`。
+- `Z5`：`rg -n "new AgentIpcAuthorization|getCurrentChatWebContents\)\)|agentIpcAuthorization|registerAgentIpc\(ipcMain, conversationIpcService\);|registerAgentIpc\(ipcMain, agentService\)" apps/desktop/tests/main-lifecycle.test.ts apps/desktop/tests/window-security.test.ts`，预期退出码 `1`；同时精确覆盖 H165 删除的两个旧负断言表达。
 - `Z6`：`rg -n "loadCharacterStartupRecovery|Renderer 就绪后读取启动恢复快照|启动恢复快照读取失败时映射" apps/desktop/tests/pet-view.test.tsx apps/desktop/src`，预期退出码 `1`。
-- `Z7`：`rg -n "Desktop Vitest 解析后固定使用四个文件 worker" apps/desktop/tests`，预期退出码 `1`。
+- `Z7` 路径证据：`rg --files apps/desktop/tests | rg "(^|/)vitest-worker-cap\.test\.ts$"`，预期管道退出码 `1`，精确证明 H161 删除的测试文件路径不存在。
+- `Z7` 内容证据：`rg -n "Desktop Vitest 解析后固定使用四个文件 worker" apps/desktop/tests`，预期退出码 `1`；路径与内容两项共同承接 H161 整文件删除。
 - `Z8`：`rg -n "只有当前聊天窗口能使用已知 actionId 确认文件动作" tests/e2e/desktop.spec.ts`，预期退出码 `1`。
-- `Z9`：`rg -n "稳定错误码提供中文说明和角色工作室修复入口" apps/desktop/tests/character-startup.test.ts`，预期退出码 `1`。
+- `Z9`：`rg -n "characterRecoveryMessage|稳定错误码提供中文说明和角色工作室修复入口" apps/desktop/tests/character-startup.test.ts`，预期退出码 `1`；同时精确覆盖 H065-b 删除的 import/符号和 H076-b 删除的旧标题。
 
 ### 6.5 逐 hunk 映射
 
