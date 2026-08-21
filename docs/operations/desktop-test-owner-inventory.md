@@ -256,7 +256,8 @@
 - `Z4`：`rg -n "validPowerShellActionEvent|validHistoryDisclosureEvent|completeChatEvents|applyCharacterBehavior.*character_carrying" apps/desktop/tests/conversation-event-projection.test.ts`，预期退出码 `1`。
 - `Z5`：`rg -n "new AgentIpcAuthorization|getCurrentChatWebContents\)\)|agentIpcAuthorization|registerAgentIpc\(ipcMain, conversationIpcService\);|registerAgentIpc\(ipcMain, agentService\)" apps/desktop/tests/main-lifecycle.test.ts apps/desktop/tests/window-security.test.ts`，预期退出码 `1`；同时精确覆盖 H165 删除的两个旧负断言表达。
 - `Z6`：`rg -n "loadCharacterStartupRecovery|Renderer 就绪后读取启动恢复快照|启动恢复快照读取失败时映射" apps/desktop/tests/pet-view.test.tsx apps/desktop/src`，预期退出码 `1`。
-- `Z7` 路径证据：`rg --files apps/desktop/tests | rg "(^|/)vitest-worker-cap\.test\.ts$"`，预期管道退出码 `1`，精确证明 H161 删除的测试文件路径不存在。
+- `Z7` 路径正控制：`rg --files apps/desktop/tests | rg '(^|[\\/])desktop-e2e-entry\.test\.ts$'`，预期管道退出码 `0`，证明该跨平台路径表达可命中现存测试文件。
+- `Z7` 路径证据：`rg --files apps/desktop/tests | rg '(^|[\\/])vitest-worker-cap\.test\.ts$'`，预期管道退出码 `1`，精确证明 H161 删除的测试文件路径不存在。
 - `Z7` 内容证据：`rg -n "Desktop Vitest 解析后固定使用四个文件 worker" apps/desktop/tests`，预期退出码 `1`；路径与内容两项共同承接 H161 整文件删除。
 - `Z8`：`rg -n "只有当前聊天窗口能使用已知 actionId 确认文件动作" tests/e2e/desktop.spec.ts`，预期退出码 `1`。
 - `Z9`：`rg -n "characterRecoveryMessage|稳定错误码提供中文说明和角色工作室修复入口" apps/desktop/tests/character-startup.test.ts`，预期退出码 `1`；同时精确覆盖 H065-b 删除的 import/符号和 H076-b 删除的旧标题。
