@@ -4,7 +4,7 @@
 
 **目标：** 在不放宽测试、不牺牲唯一安全证据且不触碰网站业务的前提下，根治 Desktop 并行负载下的 5000ms 超时，完成测试 owner 审计，并在同一个最终可执行树 HEAD 上通过五条质量门后正式恢复桌宠常规新功能开发。
 
-**架构：** 先固定事实基线，再依次使用最多三个有限 feedback seam 建立同症状 RED；诊断任务只产出可证伪根因和一份精确 fix brief，禁止提前猜测修复文件。根因修复与 owner 减法分别以最小提交落地；所有可执行变化停止后固定最终可执行树 HEAD，一次执行五条正式门，最后只允许一个纯验收文档后继提交。
+**架构：** 先固定事实基线，再依次使用最多三个有限 feedback seam 建立同症状 RED；诊断任务只产出可证伪根因和一份精确 fix brief，禁止提前猜测修复文件。根因修复与 owner 减法分别以最小提交落地；所有可执行变化停止后固定最终可执行树 HEAD，每个 HEAD 只执行一轮五门、全流程最多两轮，最后只允许一个纯验收文档后继提交。
 
 **技术栈：** TypeScript、Vitest 3、Electron、Playwright、pnpm 11、Windows PowerShell、Git。
 
@@ -18,6 +18,7 @@
 - 禁止提高 timeout、增加 retry、失败后自动重跑、使用 `skip`/`todo`、缩小正式门范围、降低断言、吞异常、mock 掉真实文件事务，或无证据降低 worker 来制造绿色。
 - 单条命令达到 15 分钟立即终止；从 Task 1 第一条压力命令开始，到 Task 2 根因裁决完成为止，总诊断预算为 60 分钟。最多三个 feedback seam、3–5 个假设、每个假设最多两个单变量 probe；达到任一预算立即终局。
 - 压力数据只使用临时目录和合成角色；报告不得记录完整绝对路径、文件正文、损坏 marker 原字节、owner token、哈希、API Key、Authorization 或 Provider 私有响应。路径统一写 `<REDACTED>`。
+- Vitest 原始 JSON、未脱敏 stdout/stderr 只能存在于随机临时文件；持久化 diagnostics 只允许脱敏 stdout/stderr、最小结构化 summary 和 metadata。未脱敏临时文件清理失败时该轮证据无效。
 - 所有 `[DEBUG-*]`、临时探针和 throwaway harness 必须在 Task 3 完成前删除；最终正式运行路径、日志契约和测试入口不得因诊断增加第二套 owner。
 - 不修改或运行网站业务。以下受保护路径相对实施基线、工作树和暂存区必须始终零差异：`apps/website`、`apps/cloudbase-api`、`apps/package-scanner`、`cloudbase`、`tests/e2e/website.spec.ts`、`tests/playwright.website.config.ts`。
 - 不 push、不 merge、不 rebase、不 reset。Git 写操作已获授权；有实质 tracked 变更的任务必须独立提交。证据型 Task 0、Task 1、Task 2、Task 5 不制造空提交，其独立复审以报告和固定 HEAD 为对象；这避免用无内容提交污染最终可执行树或使五门 HEAD 失效。
@@ -30,8 +31,8 @@
 | --- | --- | --- |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/baseline.md` | 固定实施基线、脚本、配置、失败事实、受保护路径和总账 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/implementation-baseline.txt` | 仅一行实施基线完整 hash，供后续命令机械读取 | ignored 执行证据，不提交 |
-| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1` | 保存每轮原始 stdout/stderr、native exit、耗时和命令元数据 | ignored 临时执行工具，不提交 |
-| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnostics/` | 按 seam/round 保存不可改写的原始输出和 JSON 元数据 | ignored 执行证据，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1` | 预算前置检查、Vitest JSON 分类、脱敏和 native exit 保存 | ignored 临时执行工具，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnostics/` | 按 episode/seam/round 保存不可覆盖的脱敏 stdout/stderr、summary 和 metadata | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/feedback-results.md` | 三个有限 feedback seam 的轮次、退出码、耗时和同症状统计 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/hypothesis-ledger.md` | 3–5 个假设、预测、单变量 probe、支持/排除结论和 60 分钟终局 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/hypothesis-probe-brief.md` | 每个假设插桩前固定精确文件、符号、单变量、命令、指标和清理补丁 | ignored 执行输入，不提交 |
@@ -40,6 +41,7 @@
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/owner-subtraction-files.txt` | 每行一个通过删除门且实际修改的 Task 4 路径；无安全减法时为空 | ignored 执行输入，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/final-executable-head.txt` | 仅一行 Task 5 最终可执行树完整 hash | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/gate-report.md` | 最终可执行树 HEAD、五门结果、路径保护、最终文档提交 hash 与差异证明 | ignored 执行证据，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/gate-failure-episode-brief.md` | 第一轮门失败后的唯一新诊断 episode 边界与专属 seam | ignored 执行输入，不提交 |
 | `docs/operations/desktop-test-owner-inventory.md` | 每个变更测试文件及有效 hunk/测试簇的唯一 owner 清单和逐文件 `numstat` 对账 | 永久审计事实，门禁前提交 |
 | `docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md` | 本次开发门规则与最终状态 | 仅 Task 6 纯验收文档后继更新 |
 | `docs/superpowers/specs/2026-08-20-desktop-code-subtraction-design.md` | 旧 worker 固定值和机械净负数门的准确替代关系 | 仅 Task 6 纯验收文档后继更新 |
@@ -96,42 +98,50 @@
 
   预期：当前清单为 20 个文件；总账为 `+1956/-1294`、净增 `662`；受保护路径无输出。最终 inventory 必须重新读取实际 HEAD，不能把 20 当作未来固定数量。
 
-- [ ] **Step 4：用 `apply_patch` 创建 ignored 原始日志 runner**
+- [ ] **Step 4：用 `apply_patch` 创建 ignored 脱敏结构化 runner**
 
-  创建 `run-diagnostic-round.ps1`，内容固定为：
+  创建 `run-diagnostic-round.ps1`，接口固定为：
 
   ```powershell
   param(
-    [Parameter(Mandatory = $true)][string]$Seam,
-    [Parameter(Mandatory = $true)][int]$Round,
-    [Parameter(Mandatory = $true)][string[]]$CommandArguments
+    [ValidatePattern('^[a-z0-9-]+$')][string]$EpisodeId,
+    [ValidatePattern('^[a-z0-9-]+$')][string]$Seam,
+    [int]$Round,
+    [string]$StartedAtFile,
+    [string[]]$CommandArguments,
+    [switch]$SelfTest
   )
-
-  $diagnostics = Join-Path $PSScriptRoot 'diagnostics'
-  New-Item -ItemType Directory -Force -Path $diagnostics | Out-Null
-  $prefix = 'seam-{0}-round-{1:D2}' -f $Seam, $Round
-  $stdout = Join-Path $diagnostics "$prefix.stdout.log"
-  $stderr = Join-Path $diagnostics "$prefix.stderr.log"
-  $metadata = Join-Path $diagnostics "$prefix.metadata.json"
-  $startedAt = [DateTimeOffset]::UtcNow
-  $timer = [System.Diagnostics.Stopwatch]::StartNew()
-  & pnpm.cmd @CommandArguments 1> $stdout 2> $stderr
-  $nativeExit = $LASTEXITCODE
-  $timer.Stop()
-  [ordered]@{
-    seam = $Seam
-    round = $Round
-    startedAt = $startedAt.ToString('O')
-    elapsedMs = $timer.ElapsedMilliseconds
-    exitCode = $nativeExit
-    command = @('pnpm.cmd') + $CommandArguments
-    stdout = [IO.Path]::GetFileName($stdout)
-    stderr = [IO.Path]::GetFileName($stderr)
-  } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $metadata
-  exit $nativeExit
   ```
 
-  runner 不解释结果，只保留原始输出和 pnpm native exit。每轮由调用方单独启动；执行工具在 15 分钟时负责终止该轮。
+  `SelfTest` 分支先运行并直接退出；普通分支必须显式校验另外五个参数均已提供，不能依赖 PowerShell 默认空值继续执行。
+
+  runner 必须实现以下精确流程：
+
+  1. 前缀固定为 `episode-$EpisodeId-seam-$Seam-round-{0:D2}`；目标持久化文件固定为 `.stdout.log`、`.stderr.log`、`.summary.json`、`.metadata.json`。写前对四个路径逐一 `Test-Path`；任一存在立即抛错。最终 artifact 统一用 `FileMode.CreateNew` 写入，禁止 `Set-Content` 或任何覆盖模式。
+  2. 读取 `StartedAtFile` 的 ISO 时间并计算 elapsed。`elapsed.TotalSeconds -ge 3600` 时不启动 pnpm，只以 `New-Item` 新建 metadata，状态写 `BUDGET_EXHAUSTED`、native exit 写 `null`、elapsed 写实测值，然后退出 124。
+  3. 所有临时文件名同样以 `episode-$EpisodeId-seam-$Seam-round-{0:D2}-raw-` 开头并追加随机 UUID。启动参数在原 `CommandArguments` 后追加 `--reporter=json` 和 `--outputFile=$rawJsonPath`。stdout、stderr 和 raw JSON 都只进入这些随机临时文件；命令结束后立即读入内存，保存 `$LASTEXITCODE`，不把未脱敏内容复制到 diagnostics。
+  4. `Redact()` 对内存字符串按长度从长到短、忽略大小写替换 workspace root、`[IO.Path]::GetTempPath()`、`$HOME`、`$env:USERPROFILE` 及本轮随机临时文件/目录为固定字面量 `<REDACTED>`。stdout、stderr、summary、metadata 的全部字符串字段（包括命令）均先脱敏，再写最终 artifact。
+  5. 解析 Vitest JSON 的 `testResults[].assertionResults[]`，只用完整 test ID `官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据` 查找目标自身。summary 只保存完整 ID、`status`、`duration`、失败类别和全局计数，不保存 `failureMessages`、文件绝对路径或原始 JSON。
+  6. 分类函数固定为：目标 `status='failed'` 且其自身 `failureMessages` 匹配 `Test timed out in 5000ms` 才是 `TARGET_FIXED_TIMEOUT`；目标通过但其他测试 5000ms、目标其他错误、目标缺失或 JSON 不可解析均为 `OTHER_FAILURE`；目标通过且 native exit 为 0 才是 `GREEN`。
+  7. 在 `finally` 中删除 raw JSON、raw stdout 和 raw stderr；删除失败时 metadata 写 `UNSANITIZED_CLEANUP_FAILED`，本轮不得作为诊断证据。最终再扫描四个持久化 artifact，不得出现 workspace root、系统临时目录或用户目录原文。
+
+  classifier 自检直接构造三个内存 fixture，不启动 Vitest：
+
+  ```powershell
+  $targetId = '官方默认角色安装 损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据'
+  Assert-Classification -Name '目标 GREEN + 其他测试 5000ms' -Expected 'OTHER_FAILURE' -Assertions @(
+    @{ fullName = $targetId; status = 'passed'; failureMessages = @() },
+    @{ fullName = '其他测试'; status = 'failed'; failureMessages = @('Test timed out in 5000ms') }
+  ) -NativeExit 1
+  Assert-Classification -Name '目标自身 5000ms' -Expected 'TARGET_FIXED_TIMEOUT' -Assertions @(
+    @{ fullName = $targetId; status = 'failed'; failureMessages = @('Test timed out in 5000ms') }
+  ) -NativeExit 1
+  Assert-Classification -Name '目标其他错误' -Expected 'OTHER_FAILURE' -Assertions @(
+    @{ fullName = $targetId; status = 'failed'; failureMessages = @('expected 2 to be 3') }
+  ) -NativeExit 1
+  ```
+
+  实际诊断前运行 `pwsh -NoProfile -File .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 -SelfTest`，三项必须全部通过。每轮 native exit 由 runner 原样退出；执行工具仍在 15 分钟时负责终止该轮。
 
 - [ ] **Step 5：写入 baseline 报告并独立复审**
 
@@ -157,16 +167,16 @@
 - 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/feedback-results.md`
 
 **接口：**
-- 同症状只指目标测试在真实 `CharacterStore`/官方默认角色恢复链中达到 5000ms 或同一被阻塞边界；其他断言失败、缺模块、人工 sleep 或人为缩短 timeout 均不算 RED。
+- 本轮可计数 RED 只指结构化 classifier 对目标完整 test ID 自身给出 `TARGET_FIXED_TIMEOUT`；其他测试 5000ms、目标其他错误、缺模块、JSON 缺失、人工 sleep 或人为缩短 timeout 均不算 RED。
 - seam 1 是单文件隔离基线，只测目标自身耗时和稳定性；即使 RED，也不得宣称复现了多文件并行负载根因。
 - seam 2 固定四文件集合：`official-default-character.test.ts`、`character-asset-service.test.ts`、`character-store.test.ts`、`character-package-service.test.ts`。后三者当前存在且分别包含 127、191、118 个真实文件操作匹配；Asset/Store 有既有 5000ms 超时记录。一次 Vitest 命令同时传入四个文件，使 `maxWorkers=4` 对多文件并行真实生效。
-- 每个 seam 固定输入、测试清单与五轮；每轮必须由 runner 保存原始 stdout/stderr 和 metadata，汇总只能机械读取这些文件，不得以人工转述替代。
-- seam 2 或 seam 3 中第一个达到至少 `2/5` 同症状 RED 的 seam 成为 `PRIMARY_FEEDBACK_SEAM`。一旦建立高复现并行 seam，停止更宽 seam，避免无价值压力；未执行的后续 seam 明确写“因前序已达 2/5 未执行”。
+- 每个 seam 固定输入、测试清单与五轮；每轮必须由 runner 保存脱敏 stdout/stderr、结构化 summary 和 metadata，未脱敏临时文件必须删除；汇总只能机械读取 summary/metadata，不得以人工转述替代。
+- seam 2 或 seam 3 中第一个达到至少 `2/5 TARGET_FIXED_TIMEOUT` 的 seam 成为 `PRIMARY_FEEDBACK_SEAM`。一旦建立高复现并行 seam，停止更宽 seam，避免无价值压力；未执行的后续 seam 明确写“因前序已达 2/5 未执行”。
 
 - [ ] **Step 1：机械启动 60 分钟总预算**
 
   ```powershell
-  [DateTimeOffset]::UtcNow.ToString('O') | Set-Content .superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt
+  New-Item -ItemType File -Path .superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt -Value ([DateTimeOffset]::UtcNow.ToString('O')) -ErrorAction Stop | Out-Null
   ```
 
   后续每个 seam/probe 开始前都用当前 UTC 减该值，写入 elapsed；达到 60 分钟立即停止，不依赖人工估算。
@@ -178,7 +188,9 @@
   ```powershell
   1..5 | ForEach-Object {
     & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
-      -Seam '1-isolated' -Round $_ -CommandArguments @(
+      -EpisodeId 'initial' -Seam '1-isolated' -Round $_ `
+      -StartedAtFile '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt' `
+      -CommandArguments @(
         '--dir', 'apps/desktop', 'exec', 'vitest', 'run',
         '--config', 'vitest.config.ts',
         'tests/official-default-character.test.ts',
@@ -211,7 +223,9 @@
   ```powershell
   1..5 | ForEach-Object {
     & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
-      -Seam '2-four-files' -Round $_ -CommandArguments @(
+      -EpisodeId 'initial' -Seam '2-four-files' -Round $_ `
+      -StartedAtFile '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt' `
+      -CommandArguments @(
         '--dir', 'apps/desktop', 'exec', 'vitest', 'run',
         '--config', 'vitest.config.ts', '--maxWorkers=4',
         'tests/official-default-character.test.ts',
@@ -222,57 +236,52 @@
   }
   ```
 
-  汇总必须逐轮从原始日志机械检索完整目标标题和 `Test timed out in 5000ms`/同一受阻边界文本，不能因为进程退出非零就自动算目标 RED。达到 `2/5` 后固定为主 seam；否则继续 seam 3。
+  汇总必须逐轮读取 JSON reporter 中完整 test ID 对应 assertion 的自身 `status`/`failureMessages` 分类结果，不能因为进程退出非零、其他测试超时或 stdout 出现 5000ms 就自动算目标 RED。达到 `2/5` 后固定为主 seam；否则继续 seam 3。
 
 - [ ] **Step 5：必要时运行 seam 3——Desktop unit 固定真实负载**
 
   ```powershell
   1..5 | ForEach-Object {
     & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
-      -Seam '3-desktop-unit' -Round $_ -CommandArguments @('--filter', '@myself/desktop', 'test')
+      -EpisodeId 'initial' -Seam '3-desktop-unit' -Round $_ `
+      -StartedAtFile '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt' `
+      -CommandArguments @('--dir', 'apps/desktop', 'exec', 'vitest', 'run', '--config', 'vitest.config.ts')
   }
   ```
 
   每轮必须单独判断目标用例是否为同症状失败；其他用例超时只作为相邻信号，不计入目标 RED。单轮接近 15 分钟立即终止整条 seam。
 
-- [ ] **Step 6：机械汇总原始证据并裁决红能力，不得先修**
+- [ ] **Step 6：机械汇总脱敏结构化证据并裁决红能力，不得先修**
 
-  对 `diagnostics/*.metadata.json` 逐个读取 metadata 指定的 stdout/stderr，生成汇总表，固定字段为：`seam`、`round`、`targetTitleSeen`、`fixed5000msSeen`、`sameBoundarySeen`、`classification`、`exitCode`、`elapsedMs`、`stdout`、`stderr`。`classification` 只能由原始文本规则得到 `TARGET_FIXED_TIMEOUT`、`TARGET_SAME_BOUNDARY`、`OTHER_FAILURE`、`GREEN` 四值之一；原始日志路径必须保留。
+  对 `diagnostics/*.metadata.json` 逐个读取同前缀 `.summary.json`，生成汇总表，固定字段为：`episodeId`、`seam`、`round`、`targetFullName`、`targetStatus`、`classification`、`exitCode`、`elapsedMs`、`stdout`、`stderr`、`summary`。不得重新从 stdout/stderr 猜测目标状态。
 
   ```powershell
   $diagnostics = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnostics'
-  $targetTitle = '损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据'
   $summary = Get-ChildItem $diagnostics -Filter '*.metadata.json' | Sort-Object Name | ForEach-Object {
     $metadata = Get-Content $_.FullName -Raw | ConvertFrom-Json
-    $stdoutPath = Join-Path $diagnostics $metadata.stdout
-    $stderrPath = Join-Path $diagnostics $metadata.stderr
-    $raw = ((Get-Content $stdoutPath -Raw), (Get-Content $stderrPath -Raw)) -join "`n"
-    $titleSeen = $raw.Contains($targetTitle)
-    $fixed = $titleSeen -and $raw.Contains('Test timed out in 5000ms')
-    $sameBoundary = $titleSeen -and ($raw -match '(?is)(timed out|timeout).{0,80}5000\s*ms')
-    $classification = if ($fixed) {
-      'TARGET_FIXED_TIMEOUT'
-    } elseif ($sameBoundary) {
-      'TARGET_SAME_BOUNDARY'
-    } elseif ([int]$metadata.exitCode -ne 0) {
-      'OTHER_FAILURE'
-    } else {
-      'GREEN'
-    }
+    if ($metadata.status -eq 'BUDGET_EXHAUSTED') { return $metadata }
+    $prefix = $_.Name -replace '\.metadata\.json$', ''
+    $summaryPath = Join-Path $diagnostics "$prefix.summary.json"
+    $structured = Get-Content $summaryPath -Raw | ConvertFrom-Json
     [pscustomobject]@{
+      episodeId = $metadata.episodeId
       seam = $metadata.seam
       round = [int]$metadata.round
-      targetTitleSeen = $titleSeen
-      fixed5000msSeen = $fixed
-      sameBoundarySeen = $sameBoundary
-      classification = $classification
+      targetFullName = $structured.targetFullName
+      targetStatus = $structured.targetStatus
+      classification = $structured.classification
       exitCode = [int]$metadata.exitCode
       elapsedMs = [long]$metadata.elapsedMs
-      stdout = $stdoutPath
-      stderr = $stderrPath
+      stdout = $metadata.stdout
+      stderr = $metadata.stderr
+      summary = [IO.Path]::GetFileName($summaryPath)
     }
   }
-  $summary | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 .superpowers/sdd/2026-08-21-desktop-development-gate-closure/feedback-summary.json
+  $aggregate = Join-Path $diagnostics 'episode-initial-seam-aggregate-round-00.summary.json'
+  if (Test-Path $aggregate) { throw '汇总文件已存在，禁止覆盖' }
+  $bytes = [Text.Encoding]::UTF8.GetBytes(($summary | ConvertTo-Json -Depth 3))
+  $stream = [IO.File]::Open($aggregate, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
   $summary | Format-Table -AutoSize
   ```
 
@@ -282,7 +291,25 @@
 
 - [ ] **Step 7：独立复审 feedback 证据**
 
-  审查者核对原始命令输出与报告统计，确认没有通过另一种失败、缩短 timeout、无关噪声或重复完整门伪造 RED。Critical/Important 清零后才进入 Task 2。该任务没有 tracked 变更，不创建空提交。
+  先机械执行隐私与清理门，不输出命中的敏感正文：
+
+  ```powershell
+  $diagnostics = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnostics'
+  $forbidden = @((Resolve-Path .).Path, [IO.Path]::GetTempPath(), $HOME, $env:USERPROFILE) |
+    Where-Object { $_ } | Sort-Object Length -Descending -Unique
+  Get-ChildItem $diagnostics -File | ForEach-Object {
+    $content = Get-Content $_.FullName -Raw
+    foreach ($value in $forbidden) {
+      if ($content.Contains($value, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "持久化诊断 artifact 未脱敏：$($_.Name)"
+      }
+    }
+  }
+  $rawLeftovers = Get-ChildItem ([IO.Path]::GetTempPath()) -Filter 'episode-*-seam-*-round-*-raw-*' -ErrorAction SilentlyContinue
+  if ($rawLeftovers.Count -gt 0) { throw '存在未删除的未脱敏临时诊断文件' }
+  ```
+
+  审查者核对 classifier 三项自检、脱敏 stdout/stderr、结构化 summary 与 metadata，确认目标完整 ID、自身状态/错误、native exit 和统计一致；确认其他测试 5000ms 不会误算目标 RED、每轮启动前检查 episode 预算、文件拒绝覆盖、未脱敏临时 JSON/stdout/stderr 已删除。Critical/Important 清零后才进入 Task 2。该任务没有 tracked 变更，不创建空提交。
 
 ---
 
@@ -335,7 +362,7 @@
   | CPU/事件循环拥塞 | 主 seam、相同文件负载 | 只记录事件循环长任务或已识别同步阶段耗时 | 稳定长任务与超时同现，而等价 I/O 压力变化不解释结果 |
   | 共享状态/缓存泄漏 | 文件集合、4 workers、五轮 | 只改变固定执行顺序/固定 seed | 特定前序集合稳定改变目标耗时；清除错误 owner 后顺序影响消失 |
 
-  临时探针只能写阶段名、次数、耗时和失败类别，并带 `[DEBUG-DESKTOP-GATE]` 标识。每次 probe 前后机械记录诊断 elapsed；每轮继续使用 `run-diagnostic-round.ps1` 保存原始输出、native exit 与耗时。每次 probe 后先把观察写入 ledger，再严格执行 brief 中的反向 `apply_patch`，并用其 DEBUG 清理扫描证明零残留；禁止保留不支持预测的防御性补丁。
+  临时探针只能写阶段名、次数、耗时和失败类别，并带 `[DEBUG-DESKTOP-GATE]` 标识。每次 probe 前后机械记录诊断 elapsed；每轮必须复用 `run-diagnostic-round.ps1`，传入 `EpisodeId='initial'`、唯一 probe seam 名、递增 round 和同一 `diagnosis-started-at.txt`，由 runner 在启动前再次执行 3600 秒预算检查并保存脱敏结构化结果。每次 probe 后先把观察写入 ledger，再严格执行 brief 中的反向 `apply_patch`，并用其 DEBUG 清理扫描证明零残留；禁止保留不支持预测的防御性补丁。
 
 - [ ] **Step 4：worker 假设只允许通过严格双门**
 
@@ -395,7 +422,7 @@
 
 - [ ] **Step 4：观察 GREEN 并复验原始未缩小 feedback seam**
 
-  依次运行 brief 的最小回归、原始主 feedback seam和受影响 package typecheck。最小回归和原始 seam 均须 GREEN；worker 分支还须完整 Desktop unit 连续两次退出 0，并记录目标耗时、总耗时、worker 值和资源指标。
+  新建且拒绝覆盖 `root-fix-verification-started-at.txt`，使用 `EpisodeId='root-fix-verification'` 和新的 seam 名依次运行 brief 的最小回归、原始未缩小 feedback seam及受影响 package typecheck。验证不复用 initial episode 的 artifact 名或 60 分钟 started-at；最小回归和原始 seam 均须 GREEN。worker 分支还须完整 Desktop unit 连续两次退出 0，并记录目标耗时、总耗时、worker 值和资源指标。
 
 - [ ] **Step 5：删除全部临时诊断并检查禁止项**
 
@@ -552,7 +579,11 @@
 
 - [ ] **Step 3：第一轮失败最多开启一个新的 60 分钟诊断 episode**
 
-  若任一门失败，先把状态写为“开发门仍关闭”，并在 gate report 机械记录 `gateRound=1`、失败命令、native exit、原始日志和失败阶段。只允许开启一次新的诊断 episode：复用 Task 1/2 的三 seam、3–5 假设、每假设最多两 probe、单命令 15 分钟和 episode 总计 60 分钟约束；episode 使用新的 `gate-failure-episode-started-at.txt` 机械计时。
+  若任一门失败，先把状态写为“开发门仍关闭”，并在 gate report 机械记录 `gateRound=1`、失败命令、native exit、脱敏日志和失败阶段。在执行任何诊断命令前创建 `gate-failure-episode-brief.md`，固定写入：失败域、失败测试完整 ID 或失败脚本阶段、可复现 seam、3–5 个候选假设、每个 probe 的精确命令/指标/预测/清理、60 分钟 started-at 文件和 `EpisodeId='gate-failure-1'`。由新鲜独立审查者确认 Critical/Important 为零并标记 `状态：Ready` 后，才允许启动这唯一一个新 episode。
+
+  只有失败仍是同一个 official-default 完整 test ID 的自身 5000ms，brief 才能引用 Task 1/2 的固定三 seam 和假设。若失败属于 security、integration、behavior、characters、Electron E2E、构建、类型检查或其他单元测试，必须按该失败域建立专属最小 seam 与假设，禁止套用角色恢复压力文件。brief 无法提供专属可证伪 seam 时直接关门并另立短规格。
+
+  Ready 后用 `New-Item` 创建全新的 `gate-failure-episode-started-at.txt`（已存在则拒绝）。Vitest 专属 seam 必须复用结构化 runner并传入该 started-at 文件；Playwright、构建或类型检查等非 Vitest 失败必须在 brief 中指定其原生结构化 reporter/exit 采集方式，并遵守相同的启动前 3600 秒预算检查、episode/seam/round 不覆盖命名、内存脱敏和未脱敏临时文件清理门。达到 3600 秒写 `BUDGET_EXHAUSTED` 且不启动。episode 仍受 3–5 假设、每假设最多两 probe、单命令 15 分钟和总计 60 分钟约束。
 
   如果 60 分钟内未定位或未修复，立即结束，开发门保持关闭，并另立短规格记录新证据；不得启动第二个 episode。若修复涉及任何代码、测试、fixture、config、依赖、脚本或其他可执行变化，必须回到 Task 4：刷新全部 inventory/hunk/numstat，按 allowlist 提交，确认提交后对账一致，再写入新的 `final-executable-head.txt`。即使修复只改变测试，也不得跳过 Task 4。
 
