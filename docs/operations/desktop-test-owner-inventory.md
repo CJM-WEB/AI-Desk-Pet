@@ -191,7 +191,350 @@
 - 疑似重复：Main 单元层拥有算法矩阵；E2E 仅拥有真实 Electron 生命周期、跨窗口和重启纵向证据。两条恢复场景已达规格上限，不按错误码横向扩张。
 - 旧路径与裁决：nullable fixture 表达、局部页面 helper 和独立票据场景已删除；现有 loader、可选 `restart` 业务守卫、生命周期/诊断/窗口场景及两条恢复 E2E 均保留。
 
-## 6. `numstat` 机械总账
+## 6. 逐零上下文 hunk 机械映射（259/259）
+
+### 6.1 编号与封闭规则
+
+- 原始 hunk ID 按 `git diff --unified=0 c7d951d..d2672b7 -- apps/desktop/tests tests/e2e` 的输出顺序固定为 `H001..H259`；提交 `d2672b7` 只增加本文，不改变测试差异，因此该区间与当前测试树相同。
+- 下表的“位置”逐字保存 Git hunk header；文件码解析为精确路径。每个原始 ID 必须出现一次；只有混合 hunk 使用 `-a/-b` 拆成两个有效簇，且不得同时保留无后缀行。
+- 分类字段只能是 `业务 owner`、`测试装配`、`已删旧路径`、`纯移动/格式` 之一。非业务项固定写“不适用”并指向承接业务测试；已删旧路径还必须引用下列可重复执行的零命中证据。
+- 本区共 259 个原始 ID、268 个有效簇；`tests/e2e/desktop.spec.ts` 精确占 `H166..H259` 共 94 个原始 hunk。
+
+### 6.2 文件码
+
+| 文件码 | 精确路径 |
+| --- | --- |
+| F01 | `apps/desktop/tests/agent-ipc-authorization.test.ts` |
+| F02 | `apps/desktop/tests/agent-ipc.test.ts` |
+| F03 | `apps/desktop/tests/atomic-file-coordinator.test.ts` |
+| F04 | `apps/desktop/tests/character-ipc.test.ts` |
+| F05 | `apps/desktop/tests/character-package-service.test.ts` |
+| F06 | `apps/desktop/tests/character-recovery.test.ts` |
+| F07 | `apps/desktop/tests/character-startup.test.ts` |
+| F08 | `apps/desktop/tests/character-store.test.ts` |
+| F09 | `apps/desktop/tests/character-transaction-recovery.test.ts` |
+| F10 | `apps/desktop/tests/character-workshop-close-renderer.test.tsx` |
+| F11 | `apps/desktop/tests/character-workshop-components.test.tsx` |
+| F12 | `apps/desktop/tests/conversation-event-projection.test.ts` |
+| F13 | `apps/desktop/tests/desktop-e2e-entry.test.ts` |
+| F14 | `apps/desktop/tests/main-lifecycle.test.ts` |
+| F15 | `apps/desktop/tests/official-default-character.test.ts` |
+| F16 | `apps/desktop/tests/pet-view.test.tsx` |
+| F17 | `apps/desktop/tests/preload-api.test.ts` |
+| F18 | `apps/desktop/tests/vitest-worker-cap.test.ts` |
+| F19 | `apps/desktop/tests/window-security.test.ts` |
+| F20 | `tests/e2e/desktop.spec.ts` |
+
+### 6.3 owner 码
+
+| owner | 不变量 | 公开 seam / 最低合理层 |
+| --- | --- | --- |
+| O01 | Agent IPC 六通道动态 sender 授权与组合根 | `registerAgentIpc` handlers / Main 装配 |
+| O02 | 完整排他文件发布 | `atomicWriteFileExclusive()` |
+| O03 | 恢复快照直接 Schema 与 Main handler | `characterRecoverySnapshotResultSchema.parse()` / `characterRecoverySnapshotGet` |
+| O04 | 角色包导入、v3 marker、恢复调度与证据 | `CharacterPackageService.importCharacter()` / `initialize()` |
+| O05 | Renderer 恢复展示映射 | `characterRecoveryPresentation()` / `characterRecoveryMessage()` |
+| O06 | 启动顺序、fallback、最终 load 与不可变快照 | `prepareCharacterStartup()` |
+| O07 | Store owner token、真实磁盘恢复和报告发布 | `CharacterStore` 公开 interface |
+| O08 | 分面恢复、256/2000ms 与轮次 fail-closed | `CharacterTransactionRecovery` 公开 interface |
+| O09 | Workshop 恢复提示、StrictMode 与关闭刷新 | `CharacterWorkshopView` 注入 interface / DOM |
+| O10 | 会话事件投影 | `ConversationEventProjection.publish()` |
+| O11 | Desktop E2E/worker 唯一入口契约 | 根脚本与最终解析配置 |
+| O12 | 损坏索引到官方默认角色的真实磁盘纵向链 | Store + startup + default installer |
+| O13 | Pet fallback、RPC 失败和乱序消费 | `PetView` 的 `MyselfApi` / DOM |
+| O14 | Preload 恢复快照白名单边界 | `window.myself.getCharacterRecoverySnapshot()` |
+| O15 | Main 动态 getter 唯一装配 | 组合根源码装配 seam |
+| O16 | Electron fixture、生命周期、诊断、窗口与既有纵向场景 | 构建后 Electron / Playwright |
+| O17 | 两条角色恢复重启纵向场景 | 真实 Electron / userData 重启 |
+| O18 | 多窗口事件最小化与非 chat 票据拒绝 | 真实 Electron 多窗口 |
+
+### 6.4 已删旧路径零命中证据
+
+- `Z1`：`rg -n "AgentIpcAuthorization|agent-ipc-authorization" apps/desktop/src apps/desktop/tests`，预期退出码 `1`。
+- `Z2`：`rg -n "rollback marker 不得删除复用同一 ID 的新角色" apps/desktop/tests/character-package-service.test.ts`，预期退出码 `1`。
+- `Z3`：`rg -n "事务恢复协调：未发布角色的坏 publish|事务恢复协调：tombstone 恢复异常|恰好 256 个候选时完整恢复所有角色|空候选的新恢复轮次|空候选、空活动角色和未命中活动角色|CharacterTransactionRecoveryKind|budgetExceeded|\.deferred" apps/desktop/src/main/characters apps/desktop/tests/character-store.test.ts apps/desktop/tests/character-transaction-recovery.test.ts`，预期退出码 `1`。
+- `Z4`：`rg -n "validPowerShellActionEvent|validHistoryDisclosureEvent|completeChatEvents|applyCharacterBehavior.*character_carrying" apps/desktop/tests/conversation-event-projection.test.ts`，预期退出码 `1`。
+- `Z5`：`rg -n "new AgentIpcAuthorization|getCurrentChatWebContents\)\)|agentIpcAuthorization" apps/desktop/tests/main-lifecycle.test.ts apps/desktop/tests/window-security.test.ts`，预期退出码 `1`。
+- `Z6`：`rg -n "loadCharacterStartupRecovery|Renderer 就绪后读取启动恢复快照|启动恢复快照读取失败时映射" apps/desktop/tests/pet-view.test.tsx apps/desktop/src`，预期退出码 `1`。
+- `Z7`：`rg -n "Desktop Vitest 解析后固定使用四个文件 worker" apps/desktop/tests`，预期退出码 `1`。
+- `Z8`：`rg -n "只有当前聊天窗口能使用已知 actionId 确认文件动作" tests/e2e/desktop.spec.ts`，预期退出码 `1`。
+- `Z9`：`rg -n "稳定错误码提供中文说明和角色工作室修复入口" apps/desktop/tests/character-startup.test.ts`，预期退出码 `1`。
+
+### 6.5 逐 hunk 映射
+
+| 有效簇 | 文件 | 精确 Git 位置 | 单一分类 | owner / 非业务承接 |
+| --- | --- | --- | --- | --- |
+| H001 | F01 | `@@ -1,57 +0,0 @@` | 已删旧路径 | 不适用；承接 O01；旧测试表达已由该 owner 替代；零命中 Z1。 |
+| H002 | F02 | `@@ -3 +2,0 @@ import type { IpcMain, WebContents } from 'electron';` | 已删旧路径 | 不适用；承接 O01；旧测试表达已由该 owner 替代；零命中 Z1。 |
+| H003 | F02 | `@@ -29,2 +28,2 @@ function createService() {` | 测试装配 | 不适用；承接 O01 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H004-a | F02 | `@@ -38,2 +37 @@ function createAgentIpcFixture() {` | 已删旧路径 | 不适用；承接 O01；删除浅授权对象注入；零命中 Z1。 |
+| H004-b | F02 | `@@ -38,2 +37 @@ function createAgentIpcFixture() {` | 测试装配 | 不适用；承接 O01 的业务测试；改为动态 current-chat getter 装配。 |
+| H005 | F02 | `@@ -198,0 +197,24 @@ describe('Agent IPC', () => {` | 业务 owner | 适用：O01；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H006 | F02 | `@@ -229,0 +252,2 @@ describe('Agent IPC', () => {` | 业务 owner | 适用：O01；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H007-a | F03 | `@@ -0,0 +1,96 @@` | 测试装配 | 不适用；承接 O02 的业务测试；新增真实文件 fault adapter 与临时目录装配。 |
+| H007-b | F03 | `@@ -0,0 +1,96 @@` | 业务 owner | 适用：O02；新增并发排他、原字节和 write/sync/link 失败矩阵。 |
+| H008 | F04 | `@@ -11,0 +12 @@ import {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H009 | F04 | `@@ -12,0 +14 @@ import {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H010 | F04 | `@@ -23 +25 @@ type CharacterRegistration = (` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H011-a | F04 | `@@ -25,0 +28,46 @@ type CharacterRegistration = (` | 测试装配 | 不适用；承接 O03 的业务测试；新增空恢复快照 fixture。 |
+| H011-b | F04 | `@@ -25,0 +28,46 @@ type CharacterRegistration = (` | 业务 owner | 适用：O03；新增恢复快照直接 Schema 的一正五负矩阵。 |
+| H012 | F04 | `@@ -164,0 +213,15 @@ function requireCharacterRegistration(): CharacterRegistration {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H013 | F04 | `@@ -185,3 +248 @@ describe('V2 角色 IPC 边界', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H014 | F04 | `@@ -221,2 +282 @@ describe('V2 角色 IPC 边界', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H015 | F04 | `@@ -234,2 +293,0 @@ describe('V2 角色 IPC 边界', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H016 | F04 | `@@ -252,2 +310 @@ describe('V2 角色 IPC 边界', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H017 | F04 | `@@ -255 +311,0 @@ describe('V2 角色 IPC 边界', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H018 | F04 | `@@ -290,2 +346 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H019 | F04 | `@@ -298,2 +352,0 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H020 | F04 | `@@ -319,3 +372 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H021 | F04 | `@@ -337,3 +388 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H022 | F04 | `@@ -371,3 +420 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H023 | F04 | `@@ -384,9 +431,7 @@ describe('角色白名单 IPC', () => {` | 业务 owner | 适用：O03；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H024 | F04 | `@@ -396,4 +441,2 @@ describe('角色白名单 IPC', () => {` | 业务 owner | 适用：O03；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H025 | F04 | `@@ -404,3 +447 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H026 | F04 | `@@ -426,4 +467 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H027 | F04 | `@@ -487,2 +525 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H028 | F04 | `@@ -494,2 +530,0 @@ describe('角色白名单 IPC', () => {` | 测试装配 | 不适用；承接 O03 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H029 | F05 | `@@ -12,0 +13 @@ import {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H030 | F05 | `@@ -24 +25 @@ import { ZipFile } from 'yazl';` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H031 | F05 | `@@ -31,0 +33,35 @@ import { CharacterStore } from '../src/main/characters/character-store';` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H032 | F05 | `@@ -36,0 +73,18 @@ const PNG_BYTES = Buffer.from(` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H033 | F05 | `@@ -181,0 +236,8 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H034 | F05 | `@@ -184,0 +247,40 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H035 | F05 | `@@ -200,0 +303,9 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H036 | F05 | `@@ -203,4 +314 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H037 | F05 | `@@ -303,3 +411 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H038 | F05 | `@@ -602,4 +708 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H039 | F05 | `@@ -777,3 +880 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H040 | F05 | `@@ -834,3 +935 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H041 | F05 | `@@ -859,3 +958 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H042 | F05 | `@@ -887,3 +984 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H043 | F05 | `@@ -914,3 +1009 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H044 | F05 | `@@ -984,3 +1077 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H045 | F05 | `@@ -1020,3 +1111 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H046 | F05 | `@@ -1048,3 +1137 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H047 | F05 | `@@ -1084 +1171 @@ describe('角色包 Main 服务', () => {` | 业务 owner | 适用：O04；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H048 | F05 | `@@ -1086,3 +1173 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H049 | F05 | `@@ -1095,2 +1180,5 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H050 | F05 | `@@ -1098,0 +1187,3 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H051 | F05 | `@@ -1105 +1196 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H052 | F05 | `@@ -1109 +1200,7 @@ describe('角色包 Main 服务', () => {` | 业务 owner | 适用：O04；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H053 | F05 | `@@ -1111,4 +1208,142 @@ describe('角色包 Main 服务', () => {` | 业务 owner | 适用：O04；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H054 | F05 | `@@ -1118,12 +1353,7 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H055 | F05 | `@@ -1130,0 +1361,19 @@ describe('角色包 Main 服务', () => {` | 业务 owner | 适用：O04；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H056 | F05 | `@@ -1132,2 +1381,2 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H057 | F05 | `@@ -1134,0 +1384,2 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H058 | F05 | `@@ -1136 +1387 @@ describe('角色包 Main 服务', () => {` | 业务 owner | 适用：O04；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H059 | F05 | `@@ -1138,6 +1389,445 @@ describe('角色包 Main 服务', () => {` | 业务 owner | 适用：O04；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H060 | F05 | `@@ -1148,3 +1838 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H061 | F05 | `@@ -1191,42 +1878,0 @@ describe('角色包 Main 服务', () => {` | 已删旧路径 | 不适用；承接 O04；旧测试表达已由该 owner 替代；零命中 Z2。 |
+| H062 | F05 | `@@ -1280,3 +1926 @@ describe('角色包 Main 服务', () => {` | 测试装配 | 不适用；承接 O04 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H063 | F06 | `@@ -4 +4,3 @@ import {` | 测试装配 | 不适用；承接 O05 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H064 | F06 | `@@ -38,0 +41,25 @@ describe('角色稳定错误反馈', () => {` | 业务 owner | 适用：O05；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H065-a | F07 | `@@ -4 +4 @@ import {` | 测试装配 | 不适用；承接 O06 的业务测试；切换为启动依赖 interface 类型。 |
+| H065-b | F07 | `@@ -4 +4 @@ import {` | 已删旧路径 | 不适用；承接 O05；删除启动文件内的旧展示 mapper import；零命中 Z9。 |
+| H066 | F07 | `@@ -6,0 +7,43 @@ import {` | 测试装配 | 不适用；承接 O06 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H067 | F07 | `@@ -8 +51 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H068 | F07 | `@@ -10,4 +53 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H069 | F07 | `@@ -18 +58,36 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H070 | F07 | `@@ -20,4 +95,12 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H071 | F07 | `@@ -24,0 +108,15 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H072 | F07 | `@@ -27,4 +125,2 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H073 | F07 | `@@ -32,3 +128,2 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H074 | F07 | `@@ -37,3 +132,17 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H075 | F07 | `@@ -41 +150,4 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H076-a | F07 | `@@ -44,11 +156,13 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；新增最终 Store load 瞬时失败重读 owner。 |
+| H076-b | F07 | `@@ -44,11 +156,13 @@ describe('角色启动恢复', () => {` | 已删旧路径 | 不适用；承接 O05；删除已迁移到展示 mapper 文件的旧测试；零命中 Z9。 |
+| H077 | F07 | `@@ -55,0 +170,35 @@ describe('角色启动恢复', () => {` | 业务 owner | 适用：O06；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H078 | F08 | `@@ -426 +426 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H079 | F08 | `@@ -429 +429 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H080 | F08 | `@@ -433,0 +434,55 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H081 | F08 | `@@ -450 +505 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H082 | F08 | `@@ -1806,2 +1861 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H083 | F08 | `@@ -1811,2 +1865 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H084 | F08 | `@@ -1858,5 +1910,0 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H085 | F08 | `@@ -1864,2 +1912 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H086 | F08 | `@@ -1867 +1913,0 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H087 | F08 | `@@ -1954,16 +1999,0 @@ describe('CharacterStore', () => {` | 已删旧路径 | 不适用；承接 O07；旧测试表达已由该 owner 替代；零命中 Z3。 |
+| H088 | F08 | `@@ -2071 +2100,0 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H089 | F08 | `@@ -2073,2 +2102 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H090 | F08 | `@@ -2077 +2104,0 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H091 | F08 | `@@ -2079,4 +2106,2 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H092 | F08 | `@@ -2112 +2136,0 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H093 | F08 | `@@ -2114,2 +2138 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H094 | F08 | `@@ -2118 +2140,0 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H095 | F08 | `@@ -2120,4 +2142,2 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H096 | F08 | `@@ -2160,22 +2179,0 @@ describe('CharacterStore', () => {` | 已删旧路径 | 不适用；承接 O07；旧测试表达已由该 owner 替代；零命中 Z3。 |
+| H097 | F08 | `@@ -2227,2 +2225 @@ describe('CharacterStore', () => {` | 业务 owner | 适用：O07；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H098 | F09 | `@@ -4,2 +3,0 @@ import {` | 测试装配 | 不适用；承接 O08 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H099 | F09 | `@@ -25,2 +23,2 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H100 | F09 | `@@ -29,3 +27,3 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H101 | F09 | `@@ -34,47 +32,2 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H102 | F09 | `@@ -82 +35 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H103 | F09 | `@@ -85,17 +38,2 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H104 | F09 | `@@ -103,20 +40,0 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H105 | F09 | `@@ -124,20 +42,6 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H106 | F09 | `@@ -145,6 +49,30 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H107 | F09 | `@@ -152,6 +80,43 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H108 | F09 | `@@ -177 +142 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H109 | F09 | `@@ -179,5 +144,8 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H110 | F09 | `@@ -189,6 +157 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H111 | F09 | `@@ -206,4 +169,4 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H112 | F09 | `@@ -213,38 +176,3 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H113 | F09 | `@@ -252,2 +180,6 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H114 | F09 | `@@ -257 +189 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H115 | F09 | `@@ -264 +196 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H116 | F09 | `@@ -275 +206,0 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H117 | F09 | `@@ -282,17 +213,9 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H118-a | F09 | `@@ -302,75 +225 @@ describe('CharacterTransactionRecovery', () => {` | 已删旧路径 | 不适用；承接 O08；删除独立 exact-256 与重复 active-priority 测试；零命中 Z3。 |
+| H118-b | F09 | `@@ -302,75 +225 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；以连续轮次聚合测试承接现行 interface。 |
+| H119 | F09 | `@@ -378,0 +228,5 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H120 | F09 | `@@ -388 +241,0 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H121 | F09 | `@@ -390,2 +243 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H122 | F09 | `@@ -399,8 +250,0 @@ describe('CharacterTransactionRecovery', () => {` | 已删旧路径 | 不适用；承接 O08；旧测试表达已由该 owner 替代；零命中 Z3。 |
+| H123 | F09 | `@@ -409,4 +253,2 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H124 | F09 | `@@ -414 +255,0 @@ describe('CharacterTransactionRecovery', () => {` | 已删旧路径 | 不适用；承接 O08；旧测试表达已由该 owner 替代；零命中 Z3。 |
+| H125-a | F09 | `@@ -416,13 +257,5 @@ describe('CharacterTransactionRecovery', () => {` | 已删旧路径 | 不适用；承接 O08；删除空活动/未命中活动重复矩阵；零命中 Z3。 |
+| H125-b | F09 | `@@ -416,13 +257,5 @@ describe('CharacterTransactionRecovery', () => {` | 业务 owner | 适用：O08；在连续轮次测试内保留空轮与 fail-closed 断言。 |
+| H126 | F09 | `@@ -430,13 +262,0 @@ describe('CharacterTransactionRecovery', () => {` | 已删旧路径 | 不适用；承接 O08；旧测试表达已由该 owner 替代；零命中 Z3。 |
+| H127 | F10 | `@@ -3 +3 @@` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H128 | F10 | `@@ -4,0 +5 @@ import { afterEach, describe, expect, test, vi } from 'vitest';` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H129 | F10 | `@@ -7 +7,0 @@ import type { CharacterSummaryDto } from '../src/shared/character-ipc';` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H130-a | F10 | `@@ -50,0 +51,89 @@ afterEach(() => {` | 测试装配 | 不适用；承接 O09 的业务测试；新增 Workshop API adapter。 |
+| H130-b | F10 | `@@ -50,0 +51,89 @@ afterEach(() => {` | 业务 owner | 适用：O09；新增 StrictMode 单请求、选择过滤与脱敏测试。 |
+| H131 | F10 | `@@ -60,6 +149 @@ describe('角色工作室 Renderer 关闭刷新', () => {` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H132 | F10 | `@@ -67,8 +150,0 @@ describe('角色工作室 Renderer 关闭刷新', () => {` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H133 | F10 | `@@ -79,18 +155 @@ describe('角色工作室 Renderer 关闭刷新', () => {` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H134 | F10 | `@@ -153 +212 @@ describe('角色工作室 Renderer 关闭刷新', () => {` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H135 | F10 | `@@ -155,2 +213,0 @@ describe('角色工作室 Renderer 关闭刷新', () => {` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H136 | F10 | `@@ -158,5 +214,0 @@ describe('角色工作室 Renderer 关闭刷新', () => {` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H137 | F10 | `@@ -164,23 +216 @@ describe('角色工作室 Renderer 关闭刷新', () => {` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H138 | F11 | `@@ -23 +23 @@ type CharacterWorkshopViewApi = CharacterWorkshopApi & Pick<` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H139 | F11 | `@@ -100 +100,5 @@ function apiDouble(): CharacterWorkshopViewApi {` | 测试装配 | 不适用；承接 O09 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H140 | F12 | `@@ -32,37 +31,0 @@ const validPendingFileActionEvent = {` | 已删旧路径 | 不适用；承接 O10；旧测试表达已由该 owner 替代；零命中 Z4。 |
+| H141 | F12 | `@@ -70 +33 @@ describe('ConversationEventProjection', () => {` | 业务 owner | 适用：O10；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H142 | F12 | `@@ -80,3 +43,4 @@ describe('ConversationEventProjection', () => {` | 业务 owner | 适用：O10；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H143 | F12 | `@@ -104,3 +68 @@ describe('ConversationEventProjection', () => {` | 业务 owner | 适用：O10；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H144 | F12 | `@@ -110,4 +71,0 @@ describe('ConversationEventProjection', () => {` | 已删旧路径 | 不适用；承接 O10；旧测试表达已由该 owner 替代；零命中 Z4。 |
+| H145 | F13 | `@@ -3,0 +4 @@ import { expect, test } from 'vitest';` | 测试装配 | 不适用；承接 O11 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H146 | F13 | `@@ -38 +39 @@ function requiredScript(scripts: Record<string, string>, name: string): string {` | 测试装配 | 不适用；承接 O11 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H147 | F13 | `@@ -78,0 +80,7 @@ test('每个 Desktop E2E spec 都由一个显式入口拥有且 verify:desktop ` | 业务 owner | 适用：O11；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H148 | F14 | `@@ -28,6 +27,0 @@ describe('Main 通用生命周期', () => {` | 已删旧路径 | 不适用；承接 O15；旧测试表达已由该 owner 替代；零命中 Z5。 |
+| H149 | F15 | `@@ -116,3 +116,13 @@ describe('官方默认角色安装', () => {` | 业务 owner | 适用：O12；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H150 | F16 | `@@ -3 +3 @@` | 测试装配 | 不适用；承接 O13 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H151 | F16 | `@@ -7 +7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';` | 测试装配 | 不适用；承接 O13 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H152 | F16 | `@@ -10 +9,0 @@ import {` | 已删旧路径 | 不适用；承接 O13；旧测试表达已由该 owner 替代；零命中 Z6。 |
+| H153 | F16 | `@@ -16,0 +16,27 @@ import type { PetInteractionController } from '../src/renderer/src/pet/pet-inter` | 测试装配 | 不适用；承接 O13 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H154 | F16 | `@@ -25,0 +52,2 @@ afterEach(() => {` | 测试装配 | 不适用；承接 O13 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H155 | F16 | `@@ -29,26 +56,0 @@ afterEach(() => {` | 已删旧路径 | 不适用；承接 O13；旧测试表达已由该 owner 替代；零命中 Z6。 |
+| H156 | F16 | `@@ -125 +127 @@ function createPetViewApi(): MyselfApi {` | 测试装配 | 不适用；承接 O13 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H157 | F16 | `@@ -132 +134,2 @@ function createPetViewApi(): MyselfApi {` | 测试装配 | 不适用；承接 O13 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H158 | F16 | `@@ -155,0 +159,11 @@ function installPetViewBrowserApi(api: MyselfApi): void {` | 测试装配 | 不适用；承接 O13 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H159 | F16 | `@@ -156,0 +171,70 @@ describe('桌宠像素交互接线', () => {` | 业务 owner | 适用：O13；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H160 | F17 | `@@ -85,0 +86,18 @@ describe('preload 公开 API', () => {` | 业务 owner | 适用：O14；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H161 | F18 | `@@ -1,14 +0,0 @@` | 已删旧路径 | 不适用；承接 O11；旧测试表达已由该 owner 替代；零命中 Z7。 |
+| H162 | F19 | `@@ -248 +248 @@ describe('preload 白名单', () => {` | 业务 owner | 适用：O15；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H163 | F19 | `@@ -251,2 +250,0 @@ describe('preload 白名单', () => {` | 已删旧路径 | 不适用；承接 O15；旧测试表达已由该 owner 替代；零命中 Z5。 |
+| H164 | F19 | `@@ -254 +252 @@ describe('preload 白名单', () => {` | 业务 owner | 适用：O15；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H165 | F19 | `@@ -256,2 +253,0 @@ describe('preload 白名单', () => {` | 已删旧路径 | 不适用；承接 O15；旧测试表达已由该 owner 替代；零命中 Z5。 |
+| H166 | F20 | `@@ -3 +3 @@ import { EventEmitter } from 'node:events';` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H167 | F20 | `@@ -9,0 +10 @@ import { expect, test, type Page } from '@playwright/test';` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H168 | F20 | `@@ -340,9 +341,36 @@ async function submitChatMessage(page: Page, text: string): Promise<void> {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H169 | F20 | `@@ -354,2 +381,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H170 | F20 | `@@ -402,2 +427,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H171 | F20 | `@@ -423,2 +446,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H172 | F20 | `@@ -471,2 +492,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H173 | F20 | `@@ -543,2 +562,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H174 | F20 | `@@ -589,2 +606,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H175 | F20 | `@@ -613,2 +628,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H176 | F20 | `@@ -656,2 +669,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H177 | F20 | `@@ -689,2 +700,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H178 | F20 | `@@ -726,2 +735,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H179 | F20 | `@@ -774,2 +781,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H180 | F20 | `@@ -813,2 +818,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H181 | F20 | `@@ -853,2 +856,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H182 | F20 | `@@ -913,2 +914,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H183 | F20 | `@@ -955,2 +954,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H184 | F20 | `@@ -989,2 +986,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H185 | F20 | `@@ -1029,2 +1024,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H186 | F20 | `@@ -1070,2 +1063,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H187 | F20 | `@@ -1103,2 +1094,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H188 | F20 | `@@ -1141,2 +1130,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H189 | F20 | `@@ -1175,2 +1162,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H190 | F20 | `@@ -1194,2 +1179,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H191 | F20 | `@@ -1231,2 +1214,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H192 | F20 | `@@ -1245,2 +1226,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H193 | F20 | `@@ -1299,2 +1278,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H194 | F20 | `@@ -1341,2 +1318,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H195 | F20 | `@@ -1371,2 +1346,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H196 | F20 | `@@ -1409,2 +1382,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H197 | F20 | `@@ -1443,2 +1414,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H198 | F20 | `@@ -1483,2 +1452,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H199 | F20 | `@@ -1512,2 +1479,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H200 | F20 | `@@ -1595,2 +1560,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H201 | F20 | `@@ -1643,2 +1606,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H202 | F20 | `@@ -1683,2 +1644,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H203 | F20 | `@@ -1753,2 +1712,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H204 | F20 | `@@ -1808,2 +1765,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H205 | F20 | `@@ -1852,2 +1807,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H206 | F20 | `@@ -1916,2 +1869,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H207 | F20 | `@@ -2004,2 +1955,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H208 | F20 | `@@ -2071,2 +2020,0 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H209 | F20 | `@@ -2144,2 +2091,0 @@ test.describe('真实 Electron CDP smoke', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H210 | F20 | `@@ -2153,11 +2099,3 @@ test.describe('真实 Electron CDP smoke', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H211 | F20 | `@@ -2211,2 +2148,0 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H212 | F20 | `@@ -2220,12 +2156 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H213-a | F20 | `@@ -2330,0 +2256,159 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {` | 测试装配 | 不适用；承接 O17 的业务测试；新增恢复 E2E 的 fixture/open/import helper。 |
+| H213-b | F20 | `@@ -2330,0 +2256,159 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {` | 业务 owner | 适用：O17；新增两条真实恢复重启 E2E。 |
+| H214 | F20 | `@@ -2335,2 +2418,0 @@ test.describe('真实角色工作室闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H215 | F20 | `@@ -2844,2 +2925,0 @@ test.describe('真实角色工作室闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H216 | F20 | `@@ -2908,2 +2987,0 @@ test.describe('自主行为最小闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H217 | F20 | `@@ -2938,0 +3017 @@ test.describe('自主行为最小闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H218 | F20 | `@@ -2953,6 +3031,0 @@ test.describe('自主行为最小闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H219 | F20 | `@@ -2965,9 +3037,0 @@ test.describe('自主行为最小闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H220 | F20 | `@@ -2975,3 +3039,7 @@ test.describe('自主行为最小闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H221 | F20 | `@@ -3171,2 +3238,0 @@ test.describe('Explorer 动态图层自动验收', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H222 | F20 | `@@ -3228,0 +3295 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H223 | F20 | `@@ -3299,6 +3365,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H224 | F20 | `@@ -3470,0 +3532 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H225 | F20 | `@@ -3522,6 +3583,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H226 | F20 | `@@ -3534,10 +3590,7 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H227 | F20 | `@@ -3571 +3624 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H228 | F20 | `@@ -3579 +3632 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H229 | F20 | `@@ -3598,0 +3652 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H230 | F20 | `@@ -3612,6 +3665,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H231 | F20 | `@@ -3624,11 +3672,7 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H232 | F20 | `@@ -3696,0 +3741 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H233 | F20 | `@@ -3762,7 +3806,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H234 | F20 | `@@ -3776,11 +3814,7 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H235 | F20 | `@@ -3930,0 +3965 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H236 | F20 | `@@ -3951,6 +3985,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H237 | F20 | `@@ -3963,11 +3992,7 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H238 | F20 | `@@ -4051,0 +4077 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H239 | F20 | `@@ -4077,6 +4102,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H240 | F20 | `@@ -4089,11 +4109,7 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H241 | F20 | `@@ -4179,0 +4196 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H242 | F20 | `@@ -4223,6 +4239,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H243 | F20 | `@@ -4237,9 +4247,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H244 | F20 | `@@ -4247,3 +4249,7 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H245 | F20 | `@@ -4493 +4499 @@ test.describe('真实 Provider 业务闭环', () => {` | 业务 owner | 适用：O18；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H246 | F20 | `@@ -4495,2 +4500,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O18 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H247 | F20 | `@@ -4508,0 +4513 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O18 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H248 | F20 | `@@ -4529,18 +4533,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O18 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H249 | F20 | `@@ -4554,3 +4541,3 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O18 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H250 | F20 | `@@ -4585 +4572 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O18 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H251 | F20 | `@@ -4614,2 +4601,36 @@ test.describe('真实 Provider 业务闭环', () => {` | 业务 owner | 适用：O18；该 hunk 的业务断言或场景归此唯一 owner。 |
+| H252 | F20 | `@@ -4697,144 +4717,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 已删旧路径 | 不适用；承接 O18；旧测试表达已由该 owner 替代；零命中 Z8。 |
+| H253 | F20 | `@@ -4844,2 +4720,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H254 | F20 | `@@ -5015,17 +4889,0 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H255 | F20 | `@@ -5055,4 +4913,4 @@ test.describe('真实 Provider 业务闭环', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H256 | F20 | `@@ -5234,2 +5091,0 @@ test.describe('真实桌宠位置重启恢复', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H257 | F20 | `@@ -5244,17 +5099,0 @@ test.describe('真实桌宠位置重启恢复', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H258 | F20 | `@@ -5263 +5102 @@ test.describe('真实桌宠位置重启恢复', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+| H259 | F20 | `@@ -5299 +5138 @@ test.describe('真实桌宠位置重启恢复', () => {` | 测试装配 | 不适用；承接 O16 的业务测试；仅调整 import、fixture、adapter、helper 或调用装配。 |
+
+
+## 7. `numstat` 机械总账
 
 下表取自 `git diff --numstat c7d951d..0ffc39c -- apps/desktop/tests tests/e2e`；删除文件的新增数为 0，新文件的删除数为 0。
 
