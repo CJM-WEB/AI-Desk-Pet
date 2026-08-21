@@ -30,8 +30,11 @@
 | --- | --- | --- |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/baseline.md` | 固定实施基线、脚本、配置、失败事实、受保护路径和总账 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/implementation-baseline.txt` | 仅一行实施基线完整 hash，供后续命令机械读取 | ignored 执行证据，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1` | 保存每轮原始 stdout/stderr、native exit、耗时和命令元数据 | ignored 临时执行工具，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnostics/` | 按 seam/round 保存不可改写的原始输出和 JSON 元数据 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/feedback-results.md` | 三个有限 feedback seam 的轮次、退出码、耗时和同症状统计 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/hypothesis-ledger.md` | 3–5 个假设、预测、单变量 probe、支持/排除结论和 60 分钟终局 | ignored 执行证据，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/hypothesis-probe-brief.md` | 每个假设插桩前固定精确文件、符号、单变量、命令、指标和清理补丁 | ignored 执行输入，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/root-cause-fix-brief.md` | 由诊断证据生成的唯一修复任务简报，固定具体修复与测试文件 | ignored 执行输入，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/root-cause-fix-files.txt` | 每行一个经复审的 Task 3 tracked 路径 | ignored 执行输入，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/owner-subtraction-files.txt` | 每行一个通过删除门且实际修改的 Task 4 路径；无安全减法时为空 | ignored 执行输入，不提交 |
@@ -93,7 +96,44 @@
 
   预期：当前清单为 20 个文件；总账为 `+1956/-1294`、净增 `662`；受保护路径无输出。最终 inventory 必须重新读取实际 HEAD，不能把 20 当作未来固定数量。
 
-- [ ] **Step 4：写入 baseline 报告并独立复审**
+- [ ] **Step 4：用 `apply_patch` 创建 ignored 原始日志 runner**
+
+  创建 `run-diagnostic-round.ps1`，内容固定为：
+
+  ```powershell
+  param(
+    [Parameter(Mandatory = $true)][string]$Seam,
+    [Parameter(Mandatory = $true)][int]$Round,
+    [Parameter(Mandatory = $true)][string[]]$CommandArguments
+  )
+
+  $diagnostics = Join-Path $PSScriptRoot 'diagnostics'
+  New-Item -ItemType Directory -Force -Path $diagnostics | Out-Null
+  $prefix = 'seam-{0}-round-{1:D2}' -f $Seam, $Round
+  $stdout = Join-Path $diagnostics "$prefix.stdout.log"
+  $stderr = Join-Path $diagnostics "$prefix.stderr.log"
+  $metadata = Join-Path $diagnostics "$prefix.metadata.json"
+  $startedAt = [DateTimeOffset]::UtcNow
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
+  & pnpm.cmd @CommandArguments 1> $stdout 2> $stderr
+  $nativeExit = $LASTEXITCODE
+  $timer.Stop()
+  [ordered]@{
+    seam = $Seam
+    round = $Round
+    startedAt = $startedAt.ToString('O')
+    elapsedMs = $timer.ElapsedMilliseconds
+    exitCode = $nativeExit
+    command = @('pnpm.cmd') + $CommandArguments
+    stdout = [IO.Path]::GetFileName($stdout)
+    stderr = [IO.Path]::GetFileName($stderr)
+  } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $metadata
+  exit $nativeExit
+  ```
+
+  runner 不解释结果，只保留原始输出和 pnpm native exit。每轮由调用方单独启动；执行工具在 15 分钟时负责终止该轮。
+
+- [ ] **Step 5：写入 baseline 报告并独立复审**
 
   先固定机器可读 hash：
 
@@ -118,63 +158,129 @@
 
 **接口：**
 - 同症状只指目标测试在真实 `CharacterStore`/官方默认角色恢复链中达到 5000ms 或同一被阻塞边界；其他断言失败、缺模块、人工 sleep 或人为缩短 timeout 均不算 RED。
-- 每个 seam 固定 `maxWorkers=4`、输入、测试清单与五轮；报告记录每轮退出码、目标状态、墙钟耗时、最高耗时和同症状次数。
-- 第一个达到至少 `2/5` 同症状 RED 的 seam 成为 `PRIMARY_FEEDBACK_SEAM`。一旦建立高复现 seam，停止更宽 seam，避免无价值压力；未执行的后续 seam 明确写“因前序已达 2/5 未执行”。
+- seam 1 是单文件隔离基线，只测目标自身耗时和稳定性；即使 RED，也不得宣称复现了多文件并行负载根因。
+- seam 2 固定四文件集合：`official-default-character.test.ts`、`character-asset-service.test.ts`、`character-store.test.ts`、`character-package-service.test.ts`。后三者当前存在且分别包含 127、191、118 个真实文件操作匹配；Asset/Store 有既有 5000ms 超时记录。一次 Vitest 命令同时传入四个文件，使 `maxWorkers=4` 对多文件并行真实生效。
+- 每个 seam 固定输入、测试清单与五轮；每轮必须由 runner 保存原始 stdout/stderr 和 metadata，汇总只能机械读取这些文件，不得以人工转述替代。
+- seam 2 或 seam 3 中第一个达到至少 `2/5` 同症状 RED 的 seam 成为 `PRIMARY_FEEDBACK_SEAM`。一旦建立高复现并行 seam，停止更宽 seam，避免无价值压力；未执行的后续 seam 明确写“因前序已达 2/5 未执行”。
 
-- [ ] **Step 1：启动 60 分钟总预算并运行 seam 1——目标用例压力循环**
+- [ ] **Step 1：机械启动 60 分钟总预算**
 
-  在 ignored 报告记录开始时间，然后执行五轮固定目标用例：
+  ```powershell
+  [DateTimeOffset]::UtcNow.ToString('O') | Set-Content .superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt
+  ```
+
+  后续每个 seam/probe 开始前都用当前 UTC 减该值，写入 elapsed；达到 60 分钟立即停止，不依赖人工估算。
+
+- [ ] **Step 2：运行 seam 1——单文件隔离基线**
+
+  执行五轮固定目标用例，每轮是独立 runner 进程：
 
   ```powershell
   1..5 | ForEach-Object {
-    $round = $_
-    $timer = [System.Diagnostics.Stopwatch]::StartNew()
-    pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/official-default-character.test.ts --maxWorkers=4 -t "损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据"
-    $code = $LASTEXITCODE
-    $timer.Stop()
-    "seam=1 round=$round exit=$code elapsedMs=$($timer.ElapsedMilliseconds)"
+    & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
+      -Seam '1-isolated' -Round $_ -CommandArguments @(
+        '--dir', 'apps/desktop', 'exec', 'vitest', 'run',
+        '--config', 'vitest.config.ts',
+        'tests/official-default-character.test.ts',
+        '--maxWorkers=4', '-t',
+        '损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据'
+      )
   }
   ```
 
-  不修改测试或生产实现。若 `2/5` 同症状 RED，固定为主 feedback seam 并跳到 Step 4；若只有 `1/5`，记录“有红能力但未达高复现”，继续 seam 2。
+  不修改测试或生产实现。结果只作为隔离基线；无论是否 RED，都继续 seam 2，因为单文件不能证明多文件 worker 压力。
 
-- [ ] **Step 2：必要时运行 seam 2——同文件真实文件系统恢复压力**
+- [ ] **Step 3：只读确认 seam 2 固定多文件集合**
+
+  ```powershell
+  $feedbackFiles = @(
+    'apps/desktop/tests/official-default-character.test.ts',
+    'apps/desktop/tests/character-asset-service.test.ts',
+    'apps/desktop/tests/character-store.test.ts',
+    'apps/desktop/tests/character-package-service.test.ts'
+  )
+  $feedbackFiles | ForEach-Object { if (-not (Test-Path $_)) { throw "缺少固定压力文件：$_" } }
+  rg -n "saveCompiled 首次写拒绝|事务恢复协调|5000ms|5 秒超时" docs/operations/character-workshop-acceptance.md
+  rg -c "mkdtemp|readFile|writeFile|readdir|rm\(|mkdir|rename|link\(" $feedbackFiles
+  ```
+
+  任一文件不存在或已不再包含真实文件事务时，停止并更新计划/规格；不得临时换入无关 CPU 或网络测试。
+
+- [ ] **Step 4：运行 seam 2——固定四文件并行压力**
 
   ```powershell
   1..5 | ForEach-Object {
-    $round = $_
-    $timer = [System.Diagnostics.Stopwatch]::StartNew()
-    pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/official-default-character.test.ts --maxWorkers=4
-    $code = $LASTEXITCODE
-    $timer.Stop()
-    "seam=2 round=$round exit=$code elapsedMs=$($timer.ElapsedMilliseconds)"
+    & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
+      -Seam '2-four-files' -Round $_ -CommandArguments @(
+        '--dir', 'apps/desktop', 'exec', 'vitest', 'run',
+        '--config', 'vitest.config.ts', '--maxWorkers=4',
+        'tests/official-default-character.test.ts',
+        'tests/character-asset-service.test.ts',
+        'tests/character-store.test.ts',
+        'tests/character-package-service.test.ts'
+      )
   }
   ```
 
-  这条 seam 只增加同文件的真实默认角色安装、消失目录、链接隔离和恢复记录写失败场景，不加入无关 CPU/网络噪声。达到 `2/5` 后停止；否则继续 seam 3。
+  汇总必须逐轮从原始日志机械检索完整目标标题和 `Test timed out in 5000ms`/同一受阻边界文本，不能因为进程退出非零就自动算目标 RED。达到 `2/5` 后固定为主 seam；否则继续 seam 3。
 
-- [ ] **Step 3：必要时运行 seam 3——Desktop unit 固定真实负载**
+- [ ] **Step 5：必要时运行 seam 3——Desktop unit 固定真实负载**
 
   ```powershell
   1..5 | ForEach-Object {
-    $round = $_
-    $timer = [System.Diagnostics.Stopwatch]::StartNew()
-    pnpm.cmd --filter @myself/desktop test
-    $code = $LASTEXITCODE
-    $timer.Stop()
-    "seam=3 round=$round exit=$code elapsedMs=$($timer.ElapsedMilliseconds)"
+    & .superpowers/sdd/2026-08-21-desktop-development-gate-closure/run-diagnostic-round.ps1 `
+      -Seam '3-desktop-unit' -Round $_ -CommandArguments @('--filter', '@myself/desktop', 'test')
   }
   ```
 
   每轮必须单独判断目标用例是否为同症状失败；其他用例超时只作为相邻信号，不计入目标 RED。单轮接近 15 分钟立即终止整条 seam。
 
-- [ ] **Step 4：裁决红能力，不得先修**
+- [ ] **Step 6：机械汇总原始证据并裁决红能力，不得先修**
+
+  对 `diagnostics/*.metadata.json` 逐个读取 metadata 指定的 stdout/stderr，生成汇总表，固定字段为：`seam`、`round`、`targetTitleSeen`、`fixed5000msSeen`、`sameBoundarySeen`、`classification`、`exitCode`、`elapsedMs`、`stdout`、`stderr`。`classification` 只能由原始文本规则得到 `TARGET_FIXED_TIMEOUT`、`TARGET_SAME_BOUNDARY`、`OTHER_FAILURE`、`GREEN` 四值之一；原始日志路径必须保留。
+
+  ```powershell
+  $diagnostics = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnostics'
+  $targetTitle = '损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据'
+  $summary = Get-ChildItem $diagnostics -Filter '*.metadata.json' | Sort-Object Name | ForEach-Object {
+    $metadata = Get-Content $_.FullName -Raw | ConvertFrom-Json
+    $stdoutPath = Join-Path $diagnostics $metadata.stdout
+    $stderrPath = Join-Path $diagnostics $metadata.stderr
+    $raw = ((Get-Content $stdoutPath -Raw), (Get-Content $stderrPath -Raw)) -join "`n"
+    $titleSeen = $raw.Contains($targetTitle)
+    $fixed = $titleSeen -and $raw.Contains('Test timed out in 5000ms')
+    $sameBoundary = $titleSeen -and ($raw -match '(?is)(timed out|timeout).{0,80}5000\s*ms')
+    $classification = if ($fixed) {
+      'TARGET_FIXED_TIMEOUT'
+    } elseif ($sameBoundary) {
+      'TARGET_SAME_BOUNDARY'
+    } elseif ([int]$metadata.exitCode -ne 0) {
+      'OTHER_FAILURE'
+    } else {
+      'GREEN'
+    }
+    [pscustomobject]@{
+      seam = $metadata.seam
+      round = [int]$metadata.round
+      targetTitleSeen = $titleSeen
+      fixed5000msSeen = $fixed
+      sameBoundarySeen = $sameBoundary
+      classification = $classification
+      exitCode = [int]$metadata.exitCode
+      elapsedMs = [long]$metadata.elapsedMs
+      stdout = $stdoutPath
+      stderr = $stderrPath
+    }
+  }
+  $summary | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 .superpowers/sdd/2026-08-21-desktop-development-gate-closure/feedback-summary.json
+  $summary | Format-Table -AutoSize
+  ```
 
   报告固定写入：三个 seam 的执行/未执行理由、各轮统计、主 seam 命令、复现率、最高耗时和脱敏失败类别。此时禁止修改 `apps/desktop/src`、Vitest 配置、测试 timeout、retry 或测试断言。
 
   若三个 seam 都未捕获同症状，或没有任何 seam 达到足以区分修复前后的稳定信号，Task 1 结论为“未建立合格 RED，开发门仍关闭”；停止超时代码修改，允许转去 Task 4 owner inventory，但不得进入 Task 2 根因修复链、Task 3、Task 5 或解锁版 Task 6。
 
-- [ ] **Step 5：独立复审 feedback 证据**
+- [ ] **Step 7：独立复审 feedback 证据**
 
   审查者核对原始命令输出与报告统计，确认没有通过另一种失败、缩短 timeout、无关噪声或重复完整门伪造 RED。Critical/Important 清零后才进入 Task 2。该任务没有 tracked 变更，不创建空提交。
 
@@ -185,10 +291,12 @@
 **文件：**
 - 读取：Task 1 主 feedback seam 涉及的测试与生产调用链
 - 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/hypothesis-ledger.md`
+- 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/hypothesis-probe-brief.md`
 - 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/root-cause-fix-brief.md`（仅根因成立时）
 
 **接口：**
 - `hypothesis-ledger.md` 只保留与 Task 1 证据相关的 3–5 项；每项包含预测、一个被改变变量、控制量、最多两条命令、观察值和“支持/排除/证据不足”。
+- `hypothesis-probe-brief.md` 是插桩授权边界；每个假设必须先固定精确文件、符号、单变量、完整命令、采集指标、预期支持/排除结果、反向 `apply_patch` 和 `[DEBUG-DESKTOP-GATE]` 清理扫描。独立审查标为 Ready 前禁止插桩或运行 probe。
 - `root-cause-fix-brief.md` 只有在一个假设的预测成立、竞争假设按其预测被排除且 60 分钟预算未耗尽时生成。
 - 若无法定位，终局是“开发门仍关闭”，不生成猜测性修复简报，不进入 Task 3。
 
@@ -202,7 +310,20 @@
 
   从下列候选中按 Task 1 证据选 3–5 项，不得自动认定任何一项为真：共享文件系统 I/O 竞争、同一事务重复磁盘工作、cleanup 与 worker 生命周期重叠、CPU/事件循环拥塞、进程级共享状态或缓存泄漏。
 
-- [ ] **Step 2：按固定 probe 矩阵做单变量测量**
+- [ ] **Step 2：先生成 hypothesis-probe-brief 并独立复审为 Ready**
+
+  对选出的每个假设先读取实际符号，再在 brief 写入一条完整 probe。禁止写“在相关函数加日志”这类模糊动作；必须能由另一智能体只读 brief 完成正向和反向 patch。每条 probe 同时写入 `diagnosis-started-at.txt` 的读取命令：
+
+  ```powershell
+  $startedAt = [DateTimeOffset]::Parse((Get-Content .superpowers/sdd/2026-08-21-desktop-development-gate-closure/diagnosis-started-at.txt -Raw).Trim())
+  $elapsed = [DateTimeOffset]::UtcNow - $startedAt
+  if ($elapsed.TotalMinutes -ge 60) { throw '超时诊断已达到 60 分钟终局' }
+  "diagnosisElapsedMs=$([long]$elapsed.TotalMilliseconds)"
+  ```
+
+  独立审查者逐项确认仅改变一个变量、指标能证伪预测、命令低于 15 分钟、反向补丁可恢复、隐私字段不输出。Critical/Important 清零并在 brief 写 `状态：Ready` 后才进入 Step 3。
+
+- [ ] **Step 3：按 Ready brief 的固定 probe 矩阵做单变量测量**
 
   每个已选假设最多从对应行执行两次；所有命令复用 Task 1 的固定输入和主 seam，只有“改变变量”不同：
 
@@ -214,9 +335,9 @@
   | CPU/事件循环拥塞 | 主 seam、相同文件负载 | 只记录事件循环长任务或已识别同步阶段耗时 | 稳定长任务与超时同现，而等价 I/O 压力变化不解释结果 |
   | 共享状态/缓存泄漏 | 文件集合、4 workers、五轮 | 只改变固定执行顺序/固定 seed | 特定前序集合稳定改变目标耗时；清除错误 owner 后顺序影响消失 |
 
-  临时探针只能写阶段名、次数、耗时和失败类别，并带 `[DEBUG-DESKTOP-GATE]` 标识。每次 probe 后先把观察写入 ledger；不支持预测的临时代码立即用反向 `apply_patch` 删除，禁止保留防御性补丁。
+  临时探针只能写阶段名、次数、耗时和失败类别，并带 `[DEBUG-DESKTOP-GATE]` 标识。每次 probe 前后机械记录诊断 elapsed；每轮继续使用 `run-diagnostic-round.ps1` 保存原始输出、native exit 与耗时。每次 probe 后先把观察写入 ledger，再严格执行 brief 中的反向 `apply_patch`，并用其 DEBUG 清理扫描证明零残留；禁止保留不支持预测的防御性补丁。
 
-- [ ] **Step 3：worker 假设只允许通过严格双门**
+- [ ] **Step 4：worker 假设只允许通过严格双门**
 
   只有 probe 已识别“随 worker 数变化的具体资源容量不变量”，并按各自预测排除 cleanup、共享状态、可消除重复工作及仍相关候选后，才可执行效果门：
 
@@ -228,13 +349,13 @@
 
   若 3 和 2 均为 5/5，简报只能选择 3；只有 2 达标才可选择 2；1 或串行永远不允许。仅有“更快”或“更绿”而没有资源不变量，不得修改 `maxWorkers: 4`，根因写“证据不足”，开发门保持关闭。
 
-- [ ] **Step 4：在 60 分钟硬预算内形成唯一根因裁决**
+- [ ] **Step 5：在 60 分钟硬预算内形成唯一根因裁决**
 
   根因成立必须同时满足：主 seam 已 RED；至少一个假设预测得到支持；竞争假设有排除证据；拟修复行为能在公开 seam 被先 RED 后 GREEN 观察。报告同时列出未支持假设，禁止在代码中留下对应补丁。
 
   若计时达到 60 分钟、五个假设均证据不足或竞争解释无法排除，立即删除全部临时探针，写明每个 seam、probe、已排除项和缺失证据，裁决“开发门仍关闭”；可继续 Task 4 审计，但不进入 Task 3、Task 5 或解锁版 Task 6。
 
-- [ ] **Step 5：生成无猜测的 root-cause-fix-brief 并独立复审**
+- [ ] **Step 6：生成无猜测的 root-cause-fix-brief 并独立复审**
 
   简报必须填入诊断已经确定的具体内容：根因陈述；证据表；唯一修复文件路径和符号；唯一测试文件、公开 seam 与测试标题；精确 RED 命令和预期失败原因；最小实现删除/修改范围；GREEN 命令；原始未缩小 feedback 命令；临时探针清理清单；受影响 typecheck/测试；worker 分支的资源不变量和 4/3/2 五轮数据（若适用）。同时把全部且仅有的 tracked 路径逐行写入 `root-cause-fix-files.txt`。任一字段无法由现有证据填写，就不生成简报和路径文件。
 
@@ -294,11 +415,13 @@
   $fixFiles = Get-Content .superpowers/sdd/2026-08-21-desktop-development-gate-closure/root-cause-fix-files.txt
   if ($fixFiles.Count -eq 0) { throw '修复路径清单为空，禁止提交' }
   git add -- $fixFiles
-  git diff --cached --name-only
+  $actualCached = @(git diff --cached --name-only)
+  if (@(Compare-Object $fixFiles $actualCached).Count -gt 0) { throw 'Task 3 commit allowlist 不一致' }
   git commit -m "fix(desktop): 根治并行恢复测试超时"
+  git status --short
   ```
 
-  暂存清单必须与已复审 brief 完全一致；不一致时取消提交并修正清单。提交后把精确 hash 写入 ignored 报告。
+  暂存清单必须与已复审 brief 完全一致；不一致时取消提交并修正清单。提交后不得有 tracked 残留，并把精确 hash 写入 ignored 报告。
 
 ---
 
@@ -310,13 +433,15 @@
 - 范围：`c7d951d..当前最终候选 HEAD` 下 `apps/desktop/tests` 与 `tests/e2e` 的全部实际变更文件
 
 **接口：**
+- Task 3 合法完成时，owner 审计从其提交 HEAD 开始；Task 2 以“根因未定位、开发门关闭”结束且没有 Task 3 时，先把当时 HEAD 写为 `OWNER_AUDIT_HEAD`，Task 4 仍可交付 owner 审计，但不得进入 Task 5 解锁门。Task 4 不依赖一个不存在的 Task 3 提交。
 - 每个变更文件至少一条 inventory 或可核验排除理由；每个有效 hunk/测试簇必须归类为 `业务 owner`、`测试装配`、`已删旧路径`、`纯移动/格式`。
 - 每条业务 owner 必须有公开 seam、最低合理测试层、RED 能力证据、疑似重复裁决和旧路径依赖结论。
 - 文件级 added/deleted 必须与 `git diff --numstat` 对账，所有文件求和必须等于 Git 总账。
 
-- [ ] **Step 1：在 Task 3 最终提交后重新生成真实文件清单和无上下文 hunk**
+- [ ] **Step 1：固定 OWNER_AUDIT_HEAD 并重新生成真实文件清单**
 
   ```powershell
+  git rev-parse HEAD | Set-Content .superpowers/sdd/2026-08-21-desktop-development-gate-closure/owner-audit-head.txt
   git diff --name-status c7d951d..HEAD -- apps/desktop/tests tests/e2e
   git diff --numstat c7d951d..HEAD -- apps/desktop/tests tests/e2e
   git diff --unified=0 c7d951d..HEAD -- apps/desktop/tests tests/e2e
@@ -335,7 +460,7 @@
 
   每组可由只读子智能体分别出报告，主智能体是 `desktop-test-owner-inventory.md` 的唯一 writer。
 
-- [ ] **Step 3：为每个测试簇填写完整字段并逐文件对账**
+- [ ] **Step 3：为每个测试簇填写完整字段并形成候选裁决**
 
   每条固定写入：路径与 hunk/标题定位、四类之一、不变量或装配目的、公开 seam/层级、RED 证据、相邻重复 owner、旧路径依赖、保留/合并/下移/替换/删除/排除裁决、文件级 numstat。必须逐项覆盖 owner token、真实 Store 重启、竞态、证据发布与保留、256/2000ms 边界、启动顺序、fallback、最终 load 两类失败、不可变快照、Main/Preload 双边界、Pet 顺序、Workshop StrictMode/脱敏、Electron 生命周期/诊断/窗口交互和两条恢复重启 E2E。
 
@@ -345,32 +470,46 @@
 
   新抽象必须同时减少 owner 数和总代码；少量行数不引入通用 helper。若没有候选完整通过删除门，Task 4 合法结果是“零安全删除”，不得为制造减法而改代码。
 
-- [ ] **Step 5：验证每组减法并复算总账**
+- [ ] **Step 5：验证每组减法并暂存候选实现**
 
-  每个实际减法组运行受影响层的最小测试、Desktop typecheck（涉及 Desktop TypeScript 时）和 `git diff --check`。随后执行：
+  每个实际减法组运行受影响层的最小测试、Desktop typecheck（涉及 Desktop TypeScript 时）和 `git diff --check`。把所有通过删除门且实际修改的路径逐行写入 `owner-subtraction-files.txt`，然后只暂存这些候选文件：
 
   ```powershell
-  git diff --numstat c7d951d..HEAD -- apps/desktop/tests tests/e2e
-  git diff --name-only c7d951d..HEAD -- apps/desktop/tests tests/e2e
+  $subtractionFiles = @(Get-Content .superpowers/sdd/2026-08-21-desktop-development-gate-closure/owner-subtraction-files.txt)
+  if ($subtractionFiles.Count -gt 0) { git add -- $subtractionFiles }
+  $actualCached = @(git diff --cached --name-only)
+  $unexpected = @(Compare-Object $subtractionFiles $actualCached)
+  if ($unexpected.Count -gt 0) { throw 'Task 4 暂存集合与安全减法 allowlist 不一致' }
+  ```
+
+  此时 inventory 尚未暂存，必须基于“基线 commit 与 cached 候选树”生成真实总账：
+
+  ```powershell
+  git diff --cached --numstat c7d951d -- apps/desktop/tests tests/e2e
+  git diff --cached --name-status c7d951d -- apps/desktop/tests tests/e2e
+  git diff --cached --unified=0 c7d951d -- apps/desktop/tests tests/e2e
   rg -n "startupRecoveryErrorCode|loadCharacterStartupRecovery|fallbackActive|CharacterActions.*getCharacterRecoverySnapshot|export \{ characterRecoveryMessage \}" apps/desktop/src packages
   git diff --check
   ```
 
-  `fallbackActive` 若仅存在于严格 Schema 负例，inventory 明确登记，不误报为生产旧 owner。最终净值如实记录，不宣称“安全减法已穷尽”。
+  用以上 cached 候选 diff 完成 `desktop-test-owner-inventory.md` 的最终逐文件/hunk 对账；`fallbackActive` 若仅存在于严格 Schema 负例，明确登记，不误报为生产旧 owner。最终净值如实记录，不宣称“安全减法已穷尽”。
 
 - [ ] **Step 6：独立复审并提交最终可执行树候选**
 
-  审查者逐文件抽查 hunk、RED 证据、分层和算术，并确认 Critical/Important 为零。把所有通过删除门且实际修改的路径逐行写入 `owner-subtraction-files.txt`；没有安全减法时保持空文件。提交 inventory 与该清单中的文件：
+  先暂存 inventory，再机械比较完整 allowlist；审查者针对 cached 候选 diff 逐文件抽查 hunk、RED 证据、分层和算术，并确认 Critical/Important 为零：
 
   ```powershell
   git add docs/operations/desktop-test-owner-inventory.md
   $subtractionFiles = @(Get-Content .superpowers/sdd/2026-08-21-desktop-development-gate-closure/owner-subtraction-files.txt)
-  if ($subtractionFiles.Count -gt 0) { git add -- $subtractionFiles }
-  git diff --cached --name-only
+  $expectedCached = @('docs/operations/desktop-test-owner-inventory.md') + $subtractionFiles
+  $actualCached = @(git diff --cached --name-only)
+  if (@(Compare-Object $expectedCached $actualCached).Count -gt 0) { throw 'Task 4 commit allowlist 不一致' }
   git commit -m "test(desktop): 收口唯一测试 owner"
+  git status --short
+  git diff --numstat c7d951d..HEAD -- apps/desktop/tests tests/e2e
   ```
 
-  提交后该 HEAD 只是“最终可执行树候选”；Task 5 前不得再有可执行差异。
+  提交后 `c7d951d..HEAD` 的逐文件和总 `numstat` 必须与 inventory 完全一致，且 `git status --short` 不得有 tracked 残留；否则修正文档/提交并重新复审。根因已修复时该 HEAD 才是“最终可执行树候选”；无 Task 3 时只交付 owner 审计与“开发门仍关闭”，不进入 Task 5。
 
 ---
 
@@ -383,6 +522,7 @@
 **接口：**
 - `FINAL_EXECUTABLE_HEAD` 是 Task 3 修复、Task 4 inventory/减法和门禁前计划均已提交，且工作树无可执行差异的精确 HEAD。
 - 五条顶层命令在该 HEAD 各执行一次且必须全部退出 0；历史绿色、内嵌相同步骤、定向绿色或另一 HEAD 不能替代。
+- 最终五门最多两轮：第一轮是本任务初次执行；若失败，最多允许一个新的、总计不超过 60 分钟的诊断 episode。只有该 episode 定位并修复根因、重新完成 Task 4 和固定新 HEAD 后，才允许第二轮；第二轮任一失败即开发门关闭并另立短规格。
 
 - [ ] **Step 1：固定最终可执行树 HEAD 并做门前静态检查**
 
@@ -398,7 +538,7 @@
 
   工作树不干净、保护路径有输出或临时诊断仍存在时不得开始五门。把精确 HEAD 写入 gate report，并记录“解锁交付窗口开始”。
 
-- [ ] **Step 2：依次执行五条正式门，每条一次、15 分钟硬停**
+- [ ] **Step 2：依次执行第一轮五条正式门，本轮每条一次、15 分钟硬停**
 
   ```powershell
   pnpm.cmd verify:desktop
@@ -408,11 +548,15 @@
   pnpm.cmd test:integration
   ```
 
-  每条记录开始/结束时间、退出码、阶段摘要和耗时。任一命令达到 15 分钟立即终止；任一退出非零立即停止剩余正式解锁流程，不重跑完整门碰运气。
+  每条记录开始/结束时间、退出码、阶段摘要和耗时。任一命令达到 15 分钟立即终止；任一退出非零立即停止本轮剩余正式门，不在同一 HEAD 重跑碰运气。
 
-- [ ] **Step 3：失败分支只建立新的最小反馈环**
+- [ ] **Step 3：第一轮失败最多开启一个新的 60 分钟诊断 episode**
 
-  若任一门失败，状态为“开发门仍关闭”。只对该失败按 Task 1/2 方法建立新的最小反馈环；修复后产生新的最终可执行树 HEAD，五条命令必须全部从第一条重新执行。不得把已通过的旧 HEAD 命令拼接为新 HEAD 的五门证据。
+  若任一门失败，先把状态写为“开发门仍关闭”，并在 gate report 机械记录 `gateRound=1`、失败命令、native exit、原始日志和失败阶段。只允许开启一次新的诊断 episode：复用 Task 1/2 的三 seam、3–5 假设、每假设最多两 probe、单命令 15 分钟和 episode 总计 60 分钟约束；episode 使用新的 `gate-failure-episode-started-at.txt` 机械计时。
+
+  如果 60 分钟内未定位或未修复，立即结束，开发门保持关闭，并另立短规格记录新证据；不得启动第二个 episode。若修复涉及任何代码、测试、fixture、config、依赖、脚本或其他可执行变化，必须回到 Task 4：刷新全部 inventory/hunk/numstat，按 allowlist 提交，确认提交后对账一致，再写入新的 `final-executable-head.txt`。即使修复只改变测试，也不得跳过 Task 4。
+
+  只有上述修复与 Task 4 全部完成，才允许在新 HEAD 从 `verify:desktop` 开始执行第二轮完整五门。第一轮已通过的命令不能拼接进第二轮。第二轮是绝对上限；任一失败即关门并另立短规格，不再诊断或重跑。
 
 - [ ] **Step 4：全绿后固定静态证据和最终总账**
 
@@ -477,7 +621,16 @@
 
   ```powershell
   git add docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md docs/superpowers/specs/2026-08-20-desktop-code-subtraction-design.md docs/operations/character-workshop-acceptance.md docs/superpowers/specs/2026-08-15-ai-pet-desktop-architecture-optimization-design.md
+  $expectedCached = @(
+    'docs/operations/character-workshop-acceptance.md',
+    'docs/superpowers/specs/2026-08-15-ai-pet-desktop-architecture-optimization-design.md',
+    'docs/superpowers/specs/2026-08-20-desktop-code-subtraction-design.md',
+    'docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md'
+  )
+  $actualCached = @(git diff --cached --name-only)
+  if (@(Compare-Object $expectedCached $actualCached).Count -gt 0) { throw 'Task 6 commit allowlist 不一致' }
   git commit -m "docs(desktop): 正式解锁常规功能开发"
+  git status --short
   ```
 
 - [ ] **Step 5：在 ignored 报告记录文档提交 hash 和可执行零差异**
