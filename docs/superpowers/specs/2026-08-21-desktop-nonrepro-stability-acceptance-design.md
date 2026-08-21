@@ -31,6 +31,10 @@
 2. 第 10 节第 1、2 项“必须先定位并修复根因”作为本次恢复常规开发的绝对前置条件；
 3. 原计划 `NO_RED` 分支禁止进入正式五门的路径约束。
 
+本例外还仅在本次固定候选与后续外部冻结的 `CONTROL_HEAD` 上，限域替代上位开发门规格第 7.1 节、第 7.3 节、第 9.1 节和第 10 节第 10 项关于“后继提交前只有旧规格内文档、后继文件数和 allowlist”的规则，并替代旧实施计划 Task 6 的四文件/旧 allowlist。新的唯一拓扑为：门前历史相对候选 HEAD 只有本规格与本计划两个新路径；成功后继只修改本规格和四份既有状态文档；最终相对候选 HEAD 共六个唯一文档路径。该替代不改变旧规格的可执行零差异、单次门、保护路径或人工待验要求。
+
+`9e88370ff4061eb91ac1f23184248628fa0edfd6` 只记录本规格/计划的首次提交历史，不是执行控制点。最终 `CONTROL_HEAD` 不预填到 tracked 文档中：本轮修订提交经过主控两份独立审查且均为 C0/I0 Ready 后，Task 0 才把当时真实 `git rev-parse HEAD` 完整 hash 以 CreateNew 方式写入 ignored `control-head.txt`，并在 ignored `control-review.md` 绑定被审查提交、两份 review package hash 与裁决。门前、每门前后和最终 review 的 tracked HEAD 必须与该外部冻结值逐字相等。
+
 除上述三点外，上位规格继续有效，特别是：C1–C10 触达规则、单一 owner、保护路径、Windows 人工待验、禁止永久双轨和后续功能按影响范围验证。
 
 ### 2.2 本规格不作出的结论
@@ -103,15 +107,19 @@ pnpm.cmd test:integration
 
 ## 5. 证据、隐私与执行方式
 
-本例外不创建 runner、fixture、脚本或其他临时工具。执行证据只保存在本计划专属 ignored 目录：
+本例外不创建 tracked runner、fixture、脚本或代码。执行证据与最小自测 fixture 只保存在本计划专属 ignored 目录或当次临时目录：
 
 ```text
 .superpowers/sdd/2026-08-21-desktop-nonrepro-stability-acceptance/
 ```
 
-允许的证据文件只有 `progress.md`、`baseline.md`、`gate-report.md`、`review.md` 和成功后的 `docs-successor-report.md`。报告只记录候选 hash、脚本展开值、开始/结束时间、耗时、exit/终止类别、保护路径计数和裁决；不得记录完整绝对路径、命令 stdout/stderr 正文、用户文件、token、hash 以外的私有标识、API Key 或 Authorization。
+正式证据固定包含 `control-head.txt`、`control-review.md`、`baseline.md`、每门各一份 start/final JSON、raw record hash manifest、机械汇总、独立 review 和成功后的 `docs-successor-report.md`。每门由单个自包含 PowerShell 7 block 启动并同步监督；spawn 后立即持久化 PID、进程启动时间与 session，final 由同一 block 从真实进程状态产生。两类记录均先在同目录唯一 temp 完整写入并 `Flush(true)`，关闭后以不覆盖的原子 rename 落到最终路径；残留 temp 只能经 schema 验证后恢复。final 的 exit 与 block native return 使用同一个不可外部传入的变量，禁止人工转录 exit、时间或终止类别。报告只记录候选/control hash、脚本展开值、开始/结束时间、耗时、native exit/终止类别、保护路径计数和裁决；不得记录完整绝对路径、命令 stdout/stderr 正文、用户文件、token、私有标识、API Key 或 Authorization。
 
-每条命令使用独立执行调用，单条达到 15 分钟即按精确进程树终止。不得用一条长命令包住五门，使外层执行超过 15 分钟而失去单门边界。
+start/final 记录和机械汇总分别计算 SHA-256；独立复审重算并绑定 raw manifest hash 与 summary hash。schema 必须验证 `finishedAt-startedAt` 与 `durationMs` 的误差上限、`durationMs < 900000`、native exit 与 final 记录一致、单次性和首失败停止。任何手工汇总、机器记录缺失或 hash 不一致均为 `CLOSED`。
+
+每条命令使用独立执行调用；block 从首行计时，所有 Git 子进程有界，pnpm 主等待、树终止和前后 guard 的总预算在 15 分钟内，并为执行工具硬停止预留清理时间。不得用一条长命令包住五门，使外层执行超过 15 分钟而失去单门边界。
+
+所有状态检查使用普通 `git status --short`，因此任何 non-ignored untracked 都会阻断；保护路径还必须用 `git ls-files --others --exclude-standard` 显式枚举 non-ignored untracked。旧 closure `baseline.md` 中五个脚本展开值必须与当前根 `package.json` 逐字相等。
 
 ## 6. 独立复审
 
@@ -138,6 +146,8 @@ Critical/Important 未清零时不得发布成功结论，也不得通过重跑�
 5. `2026-08-15-ai-pet-desktop-architecture-optimization-design.md`：只更新上位状态摘要和链接。
 
 该提交不得修改计划、`apps/`、`packages/`、`tests/`、根 `package.json`、锁文件、测试/构建配置或脚本。正式文档只记录固定候选可执行 HEAD，不回写承载自身的文档提交 hash；ignored `docs-successor-report.md` 在提交后记录实际文档提交 hash，并证明相对候选 HEAD 只有“本规格/计划首次提交 + 上述五份状态文档”的文档差异，`docs/` 之外为零。
+
+成功后继提交的直接 parent 必须等于 ignored `control-head.txt`，且 `git rev-list --count CONTROL_HEAD..HEAD` 必须等于 1。任何插入提交——包括额外 docs-only 提交——都使证据失效。相对固定候选 HEAD 的最终唯一文档路径固定为六个：本计划、本规格、旧开发门规格、旧减法规格、角色验收和上位架构状态。
 
 失败时不创建该后继提交；现有开发门保持 `CLOSED`，执行报告写明需另立规格。
 
