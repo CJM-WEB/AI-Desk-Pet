@@ -1435,6 +1435,7 @@
 
 **接口：**
 - `TerminalReason` 只能来自上游 `terminal-closure-brief.md` 的唯一行，枚举为 `NO_RED|NO_ROOT_CAUSE|GATE_FAILURE|FIVE_GATES_GREEN`；禁止根据 ignored 文件是否存在来猜分支。
+- `ProducerTask` 在 brief/pending/final 中都必须且只能出现一次并一致；`NO_RED|NO_ROOT_CAUSE` 只能映射 `Task4`，`GATE_FAILURE|FIVE_GATES_GREEN` 只能映射 `Task5`。
 - 四分支共同必须证据：`terminal-closure-brief.md`、`baseline.md`、`implementation-baseline.txt`、`feedback-results.md`、`docs/operations/desktop-test-owner-inventory.md`，以及 `diagnostics/` 下当时存在的全部 `.summary.json`/`.metadata.json` 相对路径。
 - `NO_RED`：禁止存在 `hypothesis-probe-brief.md`、`hypothesis-ledger.md`、`root-cause-fix-brief.md`、`root-cause-fix-files.txt`、`gate-report.md`、`gate-failure-episode-brief.md`、`final-executable-head.txt`。
 - `NO_ROOT_CAUSE`：额外必须 `hypothesis-probe-brief.md`、`hypothesis-ledger.md`；禁止存在 `root-cause-fix-brief.md`、`root-cause-fix-files.txt`、`gate-report.md`、`gate-failure-episode-brief.md`、`final-executable-head.txt`。
@@ -1447,52 +1448,60 @@
   重跑入口先只读检查三状态文件：pending 不存在而 final 与 Ready review 都存在时，说明 Task X 已完成，跳过 Step 1–3，直接执行 Step 4 的一致性验证；pending 不存在且 final/review 只存在其一时属于非法孤儿状态，停止且不得重建 pending、review 或覆盖 final。其他情况按下列检查继续。
 
   ```powershell
-  $root = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure'
+  Set-StrictMode -Version Latest
+  $ErrorActionPreference = 'Stop'
+  $repoRoot = (Get-Location).Path
+  $relativeRoot = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure'
+  $root = [IO.Path]::GetFullPath((Join-Path $repoRoot $relativeRoot))
   $reasonLines = @(Get-Content "$root/terminal-closure-brief.md" | Where-Object { $_ -match '^TerminalReason=' })
   if ($reasonLines.Count -ne 1) { throw 'terminal brief 必须且只能有一个 TerminalReason' }
   $terminalReason = $reasonLines[0].Substring('TerminalReason='.Length)
   if ($terminalReason -notin @('NO_RED','NO_ROOT_CAUSE','GATE_FAILURE','FIVE_GATES_GREEN')) { throw 'TerminalReason 非法' }
+  $producerLines = @(Get-Content "$root/terminal-closure-brief.md" | Where-Object { $_ -match '^ProducerTask=' })
+  if ($producerLines.Count -ne 1) { throw 'terminal brief 必须且只能有一个 ProducerTask' }
+  $expectedProducer = if ($terminalReason -in @('NO_RED','NO_ROOT_CAUSE')) { 'Task4' } else { 'Task5' }
+  if ($producerLines[0] -ne "ProducerTask=$expectedProducer") { throw 'TerminalReason 与 ProducerTask 映射错误' }
   $commonEvidence = @(
-    "$root/terminal-closure-brief.md", "$root/baseline.md", "$root/implementation-baseline.txt",
-    "$root/feedback-results.md", 'docs/operations/desktop-test-owner-inventory.md'
+    "$relativeRoot/terminal-closure-brief.md", "$relativeRoot/baseline.md", "$relativeRoot/implementation-baseline.txt",
+    "$relativeRoot/feedback-results.md", 'docs/operations/desktop-test-owner-inventory.md'
   )
   $requiredEvidence = @($commonEvidence)
   $forbiddenEvidence = @()
   switch ($terminalReason) {
     'NO_RED' {
       $forbiddenEvidence = @(
-        "$root/hypothesis-probe-brief.md", "$root/hypothesis-ledger.md",
-        "$root/root-cause-fix-brief.md", "$root/root-cause-fix-files.txt",
-        "$root/gate-report.md", "$root/gate-failure-episode-brief.md", "$root/final-executable-head.txt"
+        "$relativeRoot/hypothesis-probe-brief.md", "$relativeRoot/hypothesis-ledger.md",
+        "$relativeRoot/root-cause-fix-brief.md", "$relativeRoot/root-cause-fix-files.txt",
+        "$relativeRoot/gate-report.md", "$relativeRoot/gate-failure-episode-brief.md", "$relativeRoot/final-executable-head.txt"
       )
     }
     'NO_ROOT_CAUSE' {
-      $requiredEvidence += @("$root/hypothesis-probe-brief.md", "$root/hypothesis-ledger.md")
+      $requiredEvidence += @("$relativeRoot/hypothesis-probe-brief.md", "$relativeRoot/hypothesis-ledger.md")
       $forbiddenEvidence = @(
-        "$root/root-cause-fix-brief.md", "$root/root-cause-fix-files.txt",
-        "$root/gate-report.md", "$root/gate-failure-episode-brief.md", "$root/final-executable-head.txt"
+        "$relativeRoot/root-cause-fix-brief.md", "$relativeRoot/root-cause-fix-files.txt",
+        "$relativeRoot/gate-report.md", "$relativeRoot/gate-failure-episode-brief.md", "$relativeRoot/final-executable-head.txt"
       )
     }
     'GATE_FAILURE' {
       $requiredEvidence += @(
-        "$root/hypothesis-probe-brief.md", "$root/hypothesis-ledger.md",
-        "$root/root-cause-fix-brief.md", "$root/root-cause-fix-files.txt",
-        "$root/gate-report.md", "$root/gate-failure-episode-brief.md", "$root/final-executable-head.txt"
+        "$relativeRoot/hypothesis-probe-brief.md", "$relativeRoot/hypothesis-ledger.md",
+        "$relativeRoot/root-cause-fix-brief.md", "$relativeRoot/root-cause-fix-files.txt",
+        "$relativeRoot/gate-report.md", "$relativeRoot/gate-failure-episode-brief.md", "$relativeRoot/final-executable-head.txt"
       )
     }
     'FIVE_GATES_GREEN' {
       $requiredEvidence += @(
-        "$root/hypothesis-probe-brief.md", "$root/hypothesis-ledger.md",
-        "$root/root-cause-fix-brief.md", "$root/root-cause-fix-files.txt",
-        "$root/gate-report.md", "$root/final-executable-head.txt"
+        "$relativeRoot/hypothesis-probe-brief.md", "$relativeRoot/hypothesis-ledger.md",
+        "$relativeRoot/root-cause-fix-brief.md", "$relativeRoot/root-cause-fix-files.txt",
+        "$relativeRoot/gate-report.md", "$relativeRoot/final-executable-head.txt"
       )
       if (Test-Path -LiteralPath "$root/gate-failure-episode-brief.md") {
-        $requiredEvidence += "$root/gate-failure-episode-brief.md"
+        $requiredEvidence += "$relativeRoot/gate-failure-episode-brief.md"
       }
     }
   }
-  $requiredEvidence | ForEach-Object { if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "缺少必须证据：$_" } }
-  $forbiddenEvidence | ForEach-Object { if (Test-Path -LiteralPath $_) { throw "出现禁止证据：$_" } }
+  $requiredEvidence | ForEach-Object { if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $_) -PathType Leaf)) { throw "缺少必须证据：$_" } }
+  $forbiddenEvidence | ForEach-Object { if (Test-Path -LiteralPath (Join-Path $repoRoot $_)) { throw "出现禁止证据：$_" } }
   if ($terminalReason -in @('GATE_FAILURE','FIVE_GATES_GREEN')) {
     $gateReport = Get-Content "$root/gate-report.md" -Raw
     if ($terminalReason -eq 'GATE_FAILURE' -and $gateReport.Contains('terminalGateStatus=SUCCESS')) { throw '失败分支含成功标记' }
@@ -1505,7 +1514,7 @@
     Get-ChildItem "$root/diagnostics" -File |
       Where-Object { $_.Name -match '\.(summary|metadata)\.json$' } |
       Sort-Object Name |
-      ForEach-Object { $_.FullName.Substring((Get-Location).Path.Length + 1).Replace('\','/') }
+      ForEach-Object { $_.FullName.Substring($repoRoot.Length + 1).Replace('\','/') }
   )
   $summaryPathCount = @($diagnosticPaths | Where-Object { $_ -match '\.summary\.json$' }).Count
   $metadataPathCount = @($diagnosticPaths | Where-Object { $_ -match '\.metadata\.json$' }).Count
@@ -1514,16 +1523,19 @@
   }
   $requiredEvidence = @($requiredEvidence | Sort-Object -Unique)
   $toolPaths = @(
-    "$root/run-diagnostic-round.mjs", "$root/test-diagnostic-runner.mjs", "$root/runner-review.md",
-    "$root/runner-fixtures/argv-child.mjs", "$root/runner-fixtures/fake-vitest.mjs",
-    "$root/runner-fixtures/probe-child.mjs", "$root/runner-fixtures/output-overflow.mjs",
-    "$root/runner-fixtures/tree-child.mjs", "$root/runner-fixtures/tree-parent.mjs"
+    "$relativeRoot/run-diagnostic-round.mjs", "$relativeRoot/test-diagnostic-runner.mjs", "$relativeRoot/runner-review.md",
+    "$relativeRoot/runner-fixtures/argv-child.mjs", "$relativeRoot/runner-fixtures/fake-vitest.mjs",
+    "$relativeRoot/runner-fixtures/probe-child.mjs", "$relativeRoot/runner-fixtures/output-overflow.mjs",
+    "$relativeRoot/runner-fixtures/tree-child.mjs", "$relativeRoot/runner-fixtures/tree-parent.mjs"
   )
   $pendingPath = "$root/closure-pending.md"
   if (Test-Path -LiteralPath $pendingPath) {
     $pendingLines = Get-Content $pendingPath
     if (@($pendingLines | Where-Object { $_ -eq 'NOT_FINAL=true' }).Count -ne 1) { throw 'pending 缺少 NOT_FINAL 标记' }
-    if (@($pendingLines | Where-Object { $_ -eq "TerminalReason=$terminalReason" }).Count -ne 1) { throw 'pending reason 与 brief 不一致' }
+    $pendingReason = @($pendingLines | Where-Object { $_ -match '^TerminalReason=' })
+    $pendingProducer = @($pendingLines | Where-Object { $_ -match '^ProducerTask=' })
+    if ($pendingReason.Count -ne 1 -or $pendingReason[0] -ne $reasonLines[0]) { throw 'pending reason 非唯一或与 brief 不一致' }
+    if ($pendingProducer.Count -ne 1 -or $pendingProducer[0] -ne $producerLines[0]) { throw 'pending producer 非唯一或与 brief 不一致' }
     $pendingBefore = @($pendingLines | Where-Object { $_ -match '^before=' })
     $expectedBefore = @($toolPaths | ForEach-Object { "before=$_|present" })
     $pendingEvidence = @($pendingLines | Where-Object { $_ -match '^evidence=' } | ForEach-Object { $_.Substring('evidence='.Length) })
@@ -1532,13 +1544,13 @@
     if (@(Compare-Object $requiredEvidence $pendingEvidence).Count -ne 0) { throw 'pending evidence 清单不一致' }
     if (@(Compare-Object $diagnosticPaths $pendingDiagnostics).Count -ne 0) { throw 'pending diagnostics 清单不一致' }
   } else {
-    $toolPaths | ForEach-Object { if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "首次 pending 前工具缺失：$_" } }
+    $toolPaths | ForEach-Object { if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $_) -PathType Leaf)) { throw "首次 pending 前工具缺失：$_" } }
   }
   $requiredEvidence
   $diagnosticPaths
   ```
 
-  按接口表逐项用 `Test-Path -LiteralPath` 验证本 reason 的必须/禁止证据；`FIVE_GATES_GREEN` 还逐字核对成功行，`GATE_FAILURE` 核对成功行不存在。若 `closure-pending.md` 不存在，使用 `apply_patch` 创建，逐行写真实值：首行 `NOT_FINAL=true`、唯一 `TerminalReason=`、九行 `before=<相对工具路径>|present`、每个必须证据一行 `evidence=<相对路径>`、每个 `$diagnosticPaths` 一行 `diagnostic=<相对路径>`。禁止 wildcard、绝对路径、`System.Object[]` 或占位文字。
+  按接口表逐项验证本 reason 的必须/禁止证据；`FIVE_GATES_GREEN` 还逐字核对成功行，`GATE_FAILURE` 核对成功行不存在。若 `closure-pending.md` 不存在，使用 `apply_patch` 创建，逐行写真实值：首行 `NOT_FINAL=true`、唯一 `TerminalReason=`、唯一且映射正确的 `ProducerTask=`、九行 `before=<相对工具路径>|present`、每个必须证据一行 `evidence=<相对路径>`、每个 `$diagnosticPaths` 一行 `diagnostic=<相对路径>`。禁止 wildcard、绝对路径、`System.Object[]` 或占位文字。
 
   若 pending 已存在，先核对其中 `TerminalReason` 与 brief 完全一致、九条 before 完整、evidence/diagnostic 清单与当前分支及磁盘上的 diagnostics 完全一致，才允许 resume；reason 不一致时停止，不覆盖 pending。首次创建 pending 时九工具必须全 present；resume 时允许因上次中断而部分 absent。此文件明确是 `NOT_FINAL`，不能作为开发门结论。
 
@@ -1549,29 +1561,85 @@
 - [ ] **Step 3：验证全部 absent 后，用 `apply_patch` 创建扁平 final report**
 
   ```powershell
+  Set-StrictMode -Version Latest
+  $ErrorActionPreference = 'Stop'
+  $repoRoot = (Get-Location).Path
+  $relativeRoot = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure'
+  $root = [IO.Path]::GetFullPath((Join-Path $repoRoot $relativeRoot))
   $tools = @(
-    "$root/run-diagnostic-round.mjs", "$root/test-diagnostic-runner.mjs", "$root/runner-review.md",
-    "$root/runner-fixtures/argv-child.mjs", "$root/runner-fixtures/fake-vitest.mjs",
-    "$root/runner-fixtures/probe-child.mjs", "$root/runner-fixtures/output-overflow.mjs",
-    "$root/runner-fixtures/tree-child.mjs", "$root/runner-fixtures/tree-parent.mjs"
+    "$relativeRoot/run-diagnostic-round.mjs", "$relativeRoot/test-diagnostic-runner.mjs", "$relativeRoot/runner-review.md",
+    "$relativeRoot/runner-fixtures/argv-child.mjs", "$relativeRoot/runner-fixtures/fake-vitest.mjs",
+    "$relativeRoot/runner-fixtures/probe-child.mjs", "$relativeRoot/runner-fixtures/output-overflow.mjs",
+    "$relativeRoot/runner-fixtures/tree-child.mjs", "$relativeRoot/runner-fixtures/tree-parent.mjs"
   )
-  $tools | ForEach-Object { if (Test-Path -LiteralPath $_) { throw "临时工具仍存在：$_" } }
+  $tools | ForEach-Object { if (Test-Path -LiteralPath (Join-Path $repoRoot $_)) { throw "临时工具仍存在：$_" } }
+  $briefLines = Get-Content "$root/terminal-closure-brief.md"
+  $pendingLines = Get-Content "$root/closure-pending.md"
+  $briefReason = @($briefLines | Where-Object { $_ -match '^TerminalReason=' })
+  $briefProducer = @($briefLines | Where-Object { $_ -match '^ProducerTask=' })
+  if ($briefReason.Count -ne 1 -or $briefProducer.Count -ne 1) { throw 'terminal brief reason/producer 非唯一' }
+  $terminalReason = $briefReason[0].Substring('TerminalReason='.Length)
+  if ($terminalReason -notin @('NO_RED','NO_ROOT_CAUSE','GATE_FAILURE','FIVE_GATES_GREEN')) { throw 'terminal brief reason 非法' }
+  $expectedProducer = if ($terminalReason -in @('NO_RED','NO_ROOT_CAUSE')) { 'ProducerTask=Task4' } else { 'ProducerTask=Task5' }
+  if ($briefProducer[0] -ne $expectedProducer) { throw 'terminal brief reason/producer 映射错误' }
+  $pendingReason = @($pendingLines | Where-Object { $_ -match '^TerminalReason=' })
+  $pendingProducer = @($pendingLines | Where-Object { $_ -match '^ProducerTask=' })
+  if ($pendingReason.Count -ne 1 -or $pendingReason[0] -ne $briefReason[0]) { throw 'pending reason 非唯一或与 brief 不一致' }
+  if ($pendingProducer.Count -ne 1 -or $pendingProducer[0] -ne $briefProducer[0]) { throw 'pending producer 非唯一或与 brief 不一致' }
   $implementationBaseline = (Get-Content "$root/implementation-baseline.txt" -Raw).Trim()
   $protected = @('apps/website','apps/cloudbase-api','apps/package-scanner','cloudbase','tests/e2e/website.spec.ts','tests/playwright.website.config.ts')
-  if (@(git diff --name-only "$implementationBaseline..HEAD" -- $protected).Count -ne 0) { throw '实施区间保护路径有差异' }
-  if (@(git diff --name-only -- $protected).Count -ne 0) { throw '工作树保护路径有差异' }
-  if (@(git diff --cached --name-only -- $protected).Count -ne 0) { throw '暂存区保护路径有差异' }
-  if (@(git status --short --untracked-files=no).Count -ne 0) { throw '存在 tracked 差异' }
+  $intervalProtected = @(git diff --name-only "$implementationBaseline..HEAD" -- $protected)
+  if ($LASTEXITCODE -ne 0) { throw 'git interval protected diff 执行失败' }
+  if ($intervalProtected.Count -ne 0) { throw '实施区间保护路径有差异' }
+  $worktreeProtected = @(git diff --name-only -- $protected)
+  if ($LASTEXITCODE -ne 0) { throw 'git worktree protected diff 执行失败' }
+  if ($worktreeProtected.Count -ne 0) { throw '工作树保护路径有差异' }
+  $cachedProtected = @(git diff --cached --name-only -- $protected)
+  if ($LASTEXITCODE -ne 0) { throw 'git cached protected diff 执行失败' }
+  if ($cachedProtected.Count -ne 0) { throw '暂存区保护路径有差异' }
+  $trackedStatus = @(git status --short --untracked-files=no)
+  if ($LASTEXITCODE -ne 0) { throw 'git status 执行失败' }
+  if ($trackedStatus.Count -ne 0) { throw '存在 tracked 差异' }
   git diff --check
+  if ($LASTEXITCODE -ne 0) { throw 'git diff --check 失败' }
   ```
 
-  若 final 已存在，禁止覆盖；若九工具已全 absent、pending 存在而 final 缺失，这是合法中断恢复点，直接从 pending 的真实扁平行恢复创建 final。使用 `apply_patch` 创建 `closure-report.md`，逐行写：唯一 `TerminalReason=`；`TerminalStatus=SUCCESS` 仅对应 `FIVE_GATES_GREEN`，其余均为 `CLOSED`；原样复制九条 `before=`；写九条 `after=<相对工具路径>|absent`；原样复制每条 `evidence=`/`diagnostic=`；最后写 `protectedPathDifferences=0`、`trackedStatusEntries=0`、`diffCheck=PASS`。不得使用 PowerShell join、嵌套对象或动态报告生成。
+  若 final 已存在，禁止覆盖；若九工具已全 absent、pending 存在而 final 缺失，这是合法中断恢复点，直接从 pending 的真实扁平行恢复创建 final。使用 `apply_patch` 创建 `closure-report.md`，逐行写：唯一 `TerminalReason=`；唯一且与 brief/pending 映射一致的 `ProducerTask=`；`TerminalStatus=SUCCESS` 仅对应 `FIVE_GATES_GREEN`，其余均为 `CLOSED`；原样复制九条 `before=`；写九条 `after=<相对工具路径>|absent`；原样复制每条 `evidence=`/`diagnostic=`；最后写 `protectedPathDifferences=0`、`trackedStatusEntries=0`、`diffCheck=PASS`。不得使用 PowerShell join、嵌套对象或动态报告生成。
 
   创建后机械验证 pending 中每一条 before/evidence/diagnostic 都逐字存在于 final，九条 after 均存在；evidence/diagnostic 指向的文件仍存在；`evidence=` 不含九个已删工具；final 不含 `NOT_FINAL`、绝对路径或 `System.Object[]`：
 
   ```powershell
+  Set-StrictMode -Version Latest
+  $ErrorActionPreference = 'Stop'
+  $repoRoot = (Get-Location).Path
+  $relativeRoot = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure'
+  $root = [IO.Path]::GetFullPath((Join-Path $repoRoot $relativeRoot))
+  $briefLines = Get-Content "$root/terminal-closure-brief.md"
   $pendingLines = Get-Content "$root/closure-pending.md"
+  $finalLines = Get-Content "$root/closure-report.md"
   $finalText = Get-Content "$root/closure-report.md" -Raw
+  $briefReason = @($briefLines | Where-Object { $_ -match '^TerminalReason=' })
+  $pendingReason = @($pendingLines | Where-Object { $_ -match '^TerminalReason=' })
+  $finalReason = @($finalLines | Where-Object { $_ -match '^TerminalReason=' })
+  $briefProducer = @($briefLines | Where-Object { $_ -match '^ProducerTask=' })
+  $pendingProducer = @($pendingLines | Where-Object { $_ -match '^ProducerTask=' })
+  $finalProducer = @($finalLines | Where-Object { $_ -match '^ProducerTask=' })
+  if ($briefReason.Count -ne 1 -or $pendingReason.Count -ne 1 -or $finalReason.Count -ne 1) { throw 'brief/pending/final TerminalReason 非唯一' }
+  if ($briefProducer.Count -ne 1 -or $pendingProducer.Count -ne 1 -or $finalProducer.Count -ne 1) { throw 'brief/pending/final ProducerTask 非唯一' }
+  if ($briefReason[0] -ne $pendingReason[0] -or $briefReason[0] -ne $finalReason[0]) { throw 'brief/pending/final TerminalReason 不一致' }
+  if ($briefProducer[0] -ne $pendingProducer[0] -or $briefProducer[0] -ne $finalProducer[0]) { throw 'brief/pending/final ProducerTask 不一致' }
+  $terminalReason = $briefReason[0].Substring('TerminalReason='.Length)
+  if ($terminalReason -notin @('NO_RED','NO_ROOT_CAUSE','GATE_FAILURE','FIVE_GATES_GREEN')) { throw 'TerminalReason 非法' }
+  $expectedProducer = if ($terminalReason -in @('NO_RED','NO_ROOT_CAUSE')) { 'ProducerTask=Task4' } else { 'ProducerTask=Task5' }
+  if ($briefProducer[0] -ne $expectedProducer) { throw 'TerminalReason 与 ProducerTask 映射错误' }
+  $statusLines = @($finalLines | Where-Object { $_ -match '^TerminalStatus=' })
+  if ($statusLines.Count -ne 1) { throw 'final TerminalStatus 非唯一' }
+  $expectedStatus = if ($terminalReason -eq 'FIVE_GATES_GREEN') { 'TerminalStatus=SUCCESS' } else { 'TerminalStatus=CLOSED' }
+  if ($statusLines[0] -ne $expectedStatus) { throw 'TerminalReason 与 TerminalStatus 映射错误' }
+  if (@($pendingLines | Where-Object { $_ -eq 'NOT_FINAL=true' }).Count -ne 1) { throw 'pending NOT_FINAL 非唯一' }
+  @('protectedPathDifferences=0','trackedStatusEntries=0','diffCheck=PASS') | ForEach-Object {
+    if (@($finalLines | Where-Object { $_ -eq $PSItem }).Count -ne 1) { throw "final 固定尾行缺失或重复：$PSItem" }
+  }
   $pendingLines | Where-Object { $_ -match '^(before|evidence|diagnostic)=' } |
     ForEach-Object {
       & rg -F -x -- $_ "$root/closure-report.md" | Out-Null
@@ -1580,16 +1648,25 @@
   $retainedLines = @($pendingLines | Where-Object { $_ -match '^(evidence|diagnostic)=' })
   $retainedLines | ForEach-Object {
     $path = $_.Substring($_.IndexOf('=') + 1)
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "final 指向的保留证据不存在：$path" }
+    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $path) -PathType Leaf)) { throw "final 指向的保留证据不存在：$path" }
   }
+  $tools = @(
+    "$relativeRoot/run-diagnostic-round.mjs", "$relativeRoot/test-diagnostic-runner.mjs", "$relativeRoot/runner-review.md",
+    "$relativeRoot/runner-fixtures/argv-child.mjs", "$relativeRoot/runner-fixtures/fake-vitest.mjs",
+    "$relativeRoot/runner-fixtures/probe-child.mjs", "$relativeRoot/runner-fixtures/output-overflow.mjs",
+    "$relativeRoot/runner-fixtures/tree-child.mjs", "$relativeRoot/runner-fixtures/tree-parent.mjs"
+  )
   $tools | ForEach-Object {
-    $relative = $_.Replace('\','/')
+    $relative = $_
     & rg -F -x -- "after=$relative|absent" "$root/closure-report.md" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "final 缺少 after：$relative" }
     if (@($retainedLines | Where-Object { $_.EndsWith($relative) }).Count -ne 0) { throw "已删工具误入 evidence：$relative" }
   }
+  if (@($finalLines | Where-Object { $_ -match '^before=' }).Count -ne 9) { throw 'final before 行数不是 9' }
+  if (@($finalLines | Where-Object { $_ -match '^after=' }).Count -ne 9) { throw 'final after 行数不是 9' }
   if ($finalText -match 'System\.Object\[\]|NOT_FINAL|[A-Za-z]:\\') { throw 'final 含禁止内容' }
-  rg -n "^TerminalReason=|^TerminalStatus=|^before=|^after=|^evidence=|^diagnostic=|^protectedPathDifferences=0$|^trackedStatusEntries=0$|^diffCheck=PASS$" "$root/closure-report.md"
+  rg -n "^TerminalReason=|^ProducerTask=|^TerminalStatus=|^before=|^after=|^evidence=|^diagnostic=|^protectedPathDifferences=0$|^trackedStatusEntries=0$|^diffCheck=PASS$" "$root/closure-report.md"
+  if ($LASTEXITCODE -ne 0) { throw 'final rg 字段验证失败' }
   ```
 
 - [ ] **Step 4：final 独立复审 Ready 后删除 pending**
@@ -1597,14 +1674,45 @@
   独立审查者核对显式 reason、分支必须/禁止证据、diagnostics 全量、九条 before/after、保护路径、tracked status、无对象串和敏感字段；Critical/Important 清零后用 `apply_patch` 创建 `closure-review.md`，固定写 `状态：Ready`、同一 `TerminalReason`、`Critical=0`、`Important=0`。只有 final 与 Ready review 都存在且 reason 一致时，才用 `apply_patch` 删除 `closure-pending.md`。
 
   ```powershell
-  $briefReason = @(Get-Content "$root/terminal-closure-brief.md" | Where-Object { $_ -match '^TerminalReason=' })
-  if ($briefReason.Count -ne 1) { throw 'terminal brief reason 非唯一' }
-  $finalReason = @(Get-Content "$root/closure-report.md" | Where-Object { $_ -eq $briefReason[0] })
-  $reviewReason = @(Get-Content "$root/closure-review.md" | Where-Object { $_ -eq $briefReason[0] })
-  if ($finalReason.Count -ne 1 -or $reviewReason.Count -ne 1) { throw 'brief/final/review reason 不一致' }
-  if (@(Get-Content "$root/closure-review.md" | Where-Object { $_ -eq '状态：Ready' }).Count -ne 1) { throw 'closure review 未 Ready' }
-  if (@(Get-Content "$root/closure-review.md" | Where-Object { $_ -eq 'Critical=0' }).Count -ne 1) { throw 'closure review Critical 未清零' }
-  if (@(Get-Content "$root/closure-review.md" | Where-Object { $_ -eq 'Important=0' }).Count -ne 1) { throw 'closure review Important 未清零' }
+  Set-StrictMode -Version Latest
+  $ErrorActionPreference = 'Stop'
+  $repoRoot = (Get-Location).Path
+  $relativeRoot = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure'
+  $root = [IO.Path]::GetFullPath((Join-Path $repoRoot $relativeRoot))
+  $briefLines = Get-Content "$root/terminal-closure-brief.md"
+  $finalLines = Get-Content "$root/closure-report.md"
+  $reviewLines = Get-Content "$root/closure-review.md"
+  $briefReason = @($briefLines | Where-Object { $_ -match '^TerminalReason=' })
+  $briefProducer = @($briefLines | Where-Object { $_ -match '^ProducerTask=' })
+  $finalReason = @($finalLines | Where-Object { $_ -match '^TerminalReason=' })
+  $finalProducer = @($finalLines | Where-Object { $_ -match '^ProducerTask=' })
+  $reviewReason = @($reviewLines | Where-Object { $_ -match '^TerminalReason=' })
+  if ($briefReason.Count -ne 1 -or $finalReason.Count -ne 1 -or $reviewReason.Count -ne 1) { throw 'brief/final/review reason 非唯一' }
+  if ($briefProducer.Count -ne 1 -or $finalProducer.Count -ne 1) { throw 'brief/final producer 非唯一' }
+  if ($briefReason[0] -ne $finalReason[0] -or $briefReason[0] -ne $reviewReason[0]) { throw 'brief/final/review reason 不一致' }
+  if ($briefProducer[0] -ne $finalProducer[0]) { throw 'brief/final producer 不一致' }
+  $terminalReason = $briefReason[0].Substring('TerminalReason='.Length)
+  if ($terminalReason -notin @('NO_RED','NO_ROOT_CAUSE','GATE_FAILURE','FIVE_GATES_GREEN')) { throw 'TerminalReason 非法' }
+  $expectedProducer = if ($terminalReason -in @('NO_RED','NO_ROOT_CAUSE')) { 'ProducerTask=Task4' } else { 'ProducerTask=Task5' }
+  if ($briefProducer[0] -ne $expectedProducer) { throw 'reason/producer 映射错误' }
+  $statusLines = @($finalLines | Where-Object { $_ -match '^TerminalStatus=' })
+  if ($statusLines.Count -ne 1) { throw 'final status 非唯一' }
+  $expectedStatus = if ($terminalReason -eq 'FIVE_GATES_GREEN') { 'TerminalStatus=SUCCESS' } else { 'TerminalStatus=CLOSED' }
+  if ($statusLines[0] -ne $expectedStatus) { throw 'reason/status 映射错误' }
+  @('protectedPathDifferences=0','trackedStatusEntries=0','diffCheck=PASS') | ForEach-Object {
+    if (@($finalLines | Where-Object { $_ -eq $PSItem }).Count -ne 1) { throw "final 固定尾行缺失或重复：$PSItem" }
+  }
+  $pendingPath = "$root/closure-pending.md"
+  if (Test-Path -LiteralPath $pendingPath) {
+    $pendingLines = Get-Content $pendingPath
+    $pendingReason = @($pendingLines | Where-Object { $_ -match '^TerminalReason=' })
+    $pendingProducer = @($pendingLines | Where-Object { $_ -match '^ProducerTask=' })
+    if ($pendingReason.Count -ne 1 -or $pendingReason[0] -ne $briefReason[0]) { throw 'pending reason 非唯一或与 brief 不一致' }
+    if ($pendingProducer.Count -ne 1 -or $pendingProducer[0] -ne $briefProducer[0]) { throw 'pending producer 非唯一或与 brief 不一致' }
+  }
+  if (@($reviewLines | Where-Object { $_ -eq '状态：Ready' }).Count -ne 1) { throw 'closure review 未 Ready' }
+  if (@($reviewLines | Where-Object { $_ -eq 'Critical=0' }).Count -ne 1) { throw 'closure review Critical 未清零' }
+  if (@($reviewLines | Where-Object { $_ -eq 'Important=0' }).Count -ne 1) { throw 'closure review Important 未清零' }
   ```
 
   中断重跑规则：pending 存在则从 reason 一致性继续；工具部分 absent 则 Step 2 只删剩余项；工具全 absent/final 缺失则从 pending 创建 final；final 与 Ready review 已存在而 pending 仍在则只执行 pending 删除；pending 已不存在时只读验证 final/review 后完成。`NO_RED|NO_ROOT_CAUSE|GATE_FAILURE` 均交付“开发门仍关闭”并终止；只有 `FIVE_GATES_GREEN` 可进入 Task 6。Task X 不创建 Git commit。
