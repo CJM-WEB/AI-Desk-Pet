@@ -44,7 +44,10 @@
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/final-executable-head.txt` | 仅一行 Task 5 最终可执行树完整 hash | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/gate-report.md` | 最终可执行树 HEAD、五门结果、路径保护、最终文档提交 hash 与差异证明 | ignored 执行证据，不提交 |
 | `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/gate-failure-episode-brief.md` | 第一轮门失败后的唯一新诊断 episode 边界与专属 seam | ignored 执行输入，不提交 |
-| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/closure-report.md` | Task X 记录成功或早期关门终局、已保留证据与临时工具清理结果 | ignored 终局证据，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/terminal-closure-brief.md` | 上游终局任务显式传入唯一 `TerminalReason`，Task X 禁止自行推断 | ignored 执行输入，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/closure-pending.md` | Task X 删除工具前的可恢复快照，固定 reason、before、required evidence 与全部 diagnostics 路径 | ignored 临时终局状态，Ready 后删除 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/closure-report.md` | Task X 删除工具并复核后创建的扁平最终终局证据 | ignored 终局证据，不提交 |
+| `.superpowers/sdd/2026-08-21-desktop-development-gate-closure/closure-review.md` | 独立复审 Task X final report 并记录 `状态：Ready` | ignored 终局证据，不提交 |
 | `docs/operations/desktop-test-owner-inventory.md` | 每个变更测试文件及有效 hunk/测试簇的唯一 owner 清单和逐文件 `numstat` 对账 | 永久审计事实，门禁前提交 |
 | `docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md` | 本次开发门规则与最终状态 | 仅 Task 6 纯验收文档后继更新 |
 | `docs/superpowers/specs/2026-08-20-desktop-code-subtraction-design.md` | 旧 worker 固定值和机械净负数门的准确替代关系 | 仅 Task 6 纯验收文档后继更新 |
@@ -1073,7 +1076,7 @@
 
   报告固定写入：三个 seam 的执行/未执行理由、各轮统计、主 seam 命令、复现率、最高耗时和脱敏失败类别。此时禁止修改 `apps/desktop/src`、Vitest 配置、测试 timeout、retry 或测试断言。
 
-  若三个 seam 都未捕获同症状，或没有任何 seam 达到足以区分修复前后的稳定信号，Task 1 结论为“未建立合格 RED，开发门仍关闭”；停止超时代码修改，转去 Task 4 完成 owner inventory 后进入 Task X 关门分支，不得进入 Task 2 根因修复链、Task 3、Task 5 或 Task 6。
+  若三个 seam 都未捕获同症状，或没有任何 seam 达到足以区分修复前后的稳定信号，Task 1 结论为“未建立合格 RED，开发门仍关闭”；停止超时代码修改，转去 Task 4 完成 owner inventory。Task 4 复审完成后用 `apply_patch` 创建 `terminal-closure-brief.md`，内容固定为 `TerminalReason=NO_RED`、`ProducerTask=Task4`，再进入 Task X；不得进入 Task 2 根因修复链、Task 3、Task 5 或 Task 6。
 
 - [ ] **Step 7：独立复审 feedback 证据**
 
@@ -1181,7 +1184,7 @@
 
   根因成立必须同时满足：主 seam 已 RED；至少一个假设预测得到支持；竞争假设有排除证据；拟修复行为能在公开 seam 被先 RED 后 GREEN 观察。报告同时列出未支持假设，禁止在代码中留下对应补丁。
 
-  若计时达到 60 分钟、五个假设均证据不足或竞争解释无法排除，立即删除全部临时探针，写明每个 seam、probe、已排除项和缺失证据，裁决“开发门仍关闭”；转去 Task 4 审计后进入 Task X 关门分支，不进入 Task 3、Task 5 或 Task 6。
+  若计时达到 60 分钟、五个假设均证据不足或竞争解释无法排除，立即删除全部临时探针，写明每个 seam、probe、已排除项和缺失证据，裁决“开发门仍关闭”；转去 Task 4 审计。Task 4 复审完成后用 `apply_patch` 创建 `terminal-closure-brief.md`，内容固定为 `TerminalReason=NO_ROOT_CAUSE`、`ProducerTask=Task4`，再进入 Task X；不进入 Task 3、Task 5 或 Task 6。
 
 - [ ] **Step 6：生成无猜测的 root-cause-fix-brief 并独立复审**
 
@@ -1346,7 +1349,7 @@
   git diff --numstat c7d951d..HEAD -- apps/desktop/tests tests/e2e
   ```
 
-  提交后 `c7d951d..HEAD` 的逐文件和总 `numstat` 必须与 inventory 完全一致，且 `git status --short` 不得有 tracked 残留；否则修正文档/提交并重新复审。根因已修复时该 HEAD 才是“最终可执行树候选”；无 Task 3 时进入 Task X 关门分支，只交付 owner 审计与“开发门仍关闭”，不进入 Task 5。
+  提交后 `c7d951d..HEAD` 的逐文件和总 `numstat` 必须与 inventory 完全一致，且 `git status --short` 不得有 tracked 残留；否则修正文档/提交并重新复审。根因已修复时该 HEAD 才是“最终可执行树候选”；无 Task 3 时必须由上游失败分支在本任务复审后创建 `terminal-closure-brief.md`，再进入 Task X，只交付 owner 审计与“开发门仍关闭”，不进入 Task 5。
 
 ---
 
@@ -1395,9 +1398,9 @@
 
   Ready 后用 `New-Item` 创建全新的 `gate-failure-episode-started-at.txt`（已存在则拒绝）。Vitest 专属 seam 使用 runner 的 `vitest` mode；Playwright、构建、类型检查等非 Vitest 失败使用同一 runner 的 `native` mode，并在 brief 中指定可由 exit/spawn/termination 类别证伪的 seam。两种 mode 都遵守启动前 3600 秒预算检查、episode/seam/round 不覆盖命名、有界内存且 stdout/stderr 正文零落盘；达到 3600 秒写 `BUDGET_EXHAUSTED` 且不启动。episode 仍受 3–5 假设、每假设最多两 probe、单命令 15 分钟和总计 60 分钟约束。
 
-  如果 60 分钟内未定位或未修复，立即结束，开发门保持关闭，并另立短规格记录新证据；不得启动第二个 episode，随后进入 Task X 关门分支。若修复涉及任何代码、测试、fixture、config、依赖、脚本或其他可执行变化，必须回到 Task 4：刷新全部 inventory/hunk/numstat，按 allowlist 提交，确认提交后对账一致，再写入新的 `final-executable-head.txt`。即使修复只改变测试，也不得跳过 Task 4。
+  如果 60 分钟内未定位或未修复，立即结束，开发门保持关闭，并另立短规格记录新证据；不得启动第二个 episode。用 `apply_patch` 创建 `terminal-closure-brief.md`，内容固定为 `TerminalReason=GATE_FAILURE`、`ProducerTask=Task5`，随后进入 Task X。若修复涉及任何代码、测试、fixture、config、依赖、脚本或其他可执行变化，必须回到 Task 4：刷新全部 inventory/hunk/numstat，按 allowlist 提交，确认提交后对账一致，再写入新的 `final-executable-head.txt`。即使修复只改变测试，也不得跳过 Task 4。
 
-  只有上述修复与 Task 4 全部完成，才允许在新 HEAD 从 `verify:desktop` 开始执行第二轮完整五门。第一轮已通过的命令不能拼接进第二轮。第二轮是绝对上限；任一失败即关门并另立短规格，不再诊断或重跑，直接进入 Task X 关门分支。
+  只有上述修复与 Task 4 全部完成，才允许在新 HEAD 从 `verify:desktop` 开始执行第二轮完整五门。第一轮已通过的命令不能拼接进第二轮。第二轮是绝对上限；任一失败即关门并另立短规格，不再诊断或重跑；用 `apply_patch` 创建 `terminal-closure-brief.md`，固定写 `TerminalReason=GATE_FAILURE`、`ProducerTask=Task5`，再进入 Task X。
 
 - [ ] **Step 4：全绿后固定静态证据和最终总账**
 
@@ -1414,7 +1417,7 @@
 
 - [ ] **Step 5：独立复审五门报告**
 
-  审查者核对每条命令确实运行一次、HEAD 相同、退出 0、时间低于 15 分钟、无 retry/skip/timeout/无证据 worker 变化、inventory 总账一致、保护路径为零。Critical/Important 清零后才在 gate report 追加唯一机器行 `terminalGateStatus=SUCCESS` 并进入 Task X 成功分支；失败报告不得含此行。Task X 完成前不得进入 Task 6。
+  审查者核对每条命令确实运行一次、HEAD 相同、退出 0、时间低于 15 分钟、无 retry/skip/timeout/无证据 worker 变化、inventory 总账一致、保护路径为零。Critical/Important 清零后才在 gate report 追加唯一机器行 `terminalGateStatus=SUCCESS`，并用 `apply_patch` 创建 `terminal-closure-brief.md`，固定写 `TerminalReason=FIVE_GATES_GREEN`、`ProducerTask=Task5`；失败报告不得含成功行。随后进入 Task X，Task X 完成前不得进入 Task 6。
 
   Task 5 不创建 commit：任何提交都会改变 `FINAL_EXECUTABLE_HEAD`。gate report 记录同一 HEAD 并保持 ignored。
 
@@ -1423,153 +1426,194 @@
 ### Task X：统一收口成功或关门终局并删除 ignored 临时工具
 
 **文件：**
+- 读取：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/terminal-closure-brief.md`
+- 创建/删除：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/closure-pending.md`
 - 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/closure-report.md`
+- 创建：`.superpowers/sdd/2026-08-21-desktop-development-gate-closure/closure-review.md`
 - 删除：仅本任务列出的 ignored runner、selftest、fixtures 与 review package
-- 保留：截至终局已实际生成的最小 summary/metadata、feedback、ledger/brief、owner inventory、gate report
+- 保留：终局分支要求的全部 evidence，以及 `diagnostics/` 下全部 `.summary.json`/`.metadata.json`
 
 **接口：**
-- 成功分支只能在 Task 5 五门全绿且复审通过后进入，必须存在 `gate-report.md`。
-- 关门分支在 Task 1 无合格 RED、Task 2 无根因、或 Task 5 唯一失败 episode 结束时进入；它不要求不存在的后续证据，也不要求 `gate-report.md`，但必须保留截至最后已到达任务的全部证据。
-- `closure-report.md` 固定记录 `terminalStatus=SUCCESS|CLOSED`、`lastCompletedTask`、终局原因、证据文件相对路径清单、临时工具删除前/后清单、保护路径结果和 tracked status；不包含 stdout/stderr、绝对路径、正文、token 或 hash。
+- `TerminalReason` 只能来自上游 `terminal-closure-brief.md` 的唯一行，枚举为 `NO_RED|NO_ROOT_CAUSE|GATE_FAILURE|FIVE_GATES_GREEN`；禁止根据 ignored 文件是否存在来猜分支。
+- 四分支共同必须证据：`terminal-closure-brief.md`、`baseline.md`、`implementation-baseline.txt`、`feedback-results.md`、`docs/operations/desktop-test-owner-inventory.md`，以及 `diagnostics/` 下当时存在的全部 `.summary.json`/`.metadata.json` 相对路径。
+- `NO_RED`：禁止存在 `hypothesis-probe-brief.md`、`hypothesis-ledger.md`、`root-cause-fix-brief.md`、`root-cause-fix-files.txt`、`gate-report.md`、`gate-failure-episode-brief.md`、`final-executable-head.txt`。
+- `NO_ROOT_CAUSE`：额外必须 `hypothesis-probe-brief.md`、`hypothesis-ledger.md`；禁止存在 `root-cause-fix-brief.md`、`root-cause-fix-files.txt`、`gate-report.md`、`gate-failure-episode-brief.md`、`final-executable-head.txt`。
+- `GATE_FAILURE`：额外必须 `hypothesis-probe-brief.md`、`hypothesis-ledger.md`、`root-cause-fix-brief.md`、`root-cause-fix-files.txt`、`gate-report.md`、`gate-failure-episode-brief.md`、`final-executable-head.txt`；`gate-report.md` 禁止包含 `terminalGateStatus=SUCCESS`。
+- `FIVE_GATES_GREEN`：额外必须 `hypothesis-probe-brief.md`、`hypothesis-ledger.md`、`root-cause-fix-brief.md`、`root-cause-fix-files.txt`、`gate-report.md`、`final-executable-head.txt`；gate report 必须含 `terminalGateStatus=SUCCESS` 与五条 `<script>=0`。`gate-failure-episode-brief.md` 允许存在或不存在，因为首轮全绿和第二轮修复后全绿都合法。
+- pending/final 的 `evidence=` 清单只含保留证据与 diagnostics，不得把将删除的九个工具列为 evidence；工具只出现在 `before=`/`after=` 行。
 
-- [ ] **Step 1：执行同一个终局过程；报告必须最后 CreateNew**
+- [ ] **Step 1：验证显式 reason 和分支证据，再用 `apply_patch` 创建或恢复 pending**
 
-  以下是四个终局分支共用的唯一 PowerShell 过程。调用者只按已到达的控制流选择末尾四个调用之一；过程先在内存保存 `before`，验证分支证据、诊断证据、保护路径和 tracked status，再精确删除九个文件，验证 `after`，最后才以 `CreateNew` 创建正式 `closure-report.md`。删除前不得存在正式 closure report：
-
-  ```powershell
-  $closeEpisode = {
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = 'Stop'
-    $root = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure'
-    $reportPath = "$root/closure-report.md"
-    if (Test-Path -LiteralPath $reportPath) { throw 'closure report 已存在，禁止覆盖或删除前写报告' }
-    $temporaryTools = @(
-      "$root/run-diagnostic-round.mjs",
-      "$root/test-diagnostic-runner.mjs",
-      "$root/runner-review.md",
-      "$root/runner-fixtures/argv-child.mjs",
-      "$root/runner-fixtures/fake-vitest.mjs",
-      "$root/runner-fixtures/probe-child.mjs",
-      "$root/runner-fixtures/output-overflow.mjs",
-      "$root/runner-fixtures/tree-child.mjs",
-      "$root/runner-fixtures/tree-parent.mjs"
-    )
-    $requiredEvidence = [Collections.Generic.List[string]]::new()
-    @("$root/baseline.md", "$root/feedback-results.md", 'docs/operations/desktop-test-owner-inventory.md') |
-      ForEach-Object { $requiredEvidence.Add($_) }
-    $hasGateReport = Test-Path -LiteralPath "$root/gate-report.md"
-    $hasLedger = Test-Path -LiteralPath "$root/hypothesis-ledger.md"
-    $expectedGreenGates = @('verify:desktop=0', 'verify:characters=0', 'verify:behavior=0', 'test:security=0', 'test:integration=0')
-    if ($hasGateReport) {
-      $gateReport = Get-Content "$root/gate-report.md" -Raw
-      $allGreen = $gateReport.Contains('terminalGateStatus=SUCCESS') -and
-        @($expectedGreenGates | Where-Object { -not $gateReport.Contains($_) }).Count -eq 0
-      $TerminalStatus = if ($allGreen) { 'SUCCESS' } else { 'CLOSED' }
-      $LastCompletedTask = 'Task5'
-      $Reason = if ($allGreen) { 'FIVE_GATES_GREEN' } else { 'GATE_FAILURE' }
-    } elseif ($hasLedger) {
-      $TerminalStatus = 'CLOSED'
-      $LastCompletedTask = 'Task4'
-      $Reason = 'NO_ROOT_CAUSE'
-    } else {
-      $TerminalStatus = 'CLOSED'
-      $LastCompletedTask = 'Task4'
-      $Reason = 'NO_RED'
-    }
-    switch ($Reason) {
-      'NO_RED' {}
-      'NO_ROOT_CAUSE' {
-        $requiredEvidence.Add("$root/hypothesis-probe-brief.md")
-        $requiredEvidence.Add("$root/hypothesis-ledger.md")
-      }
-      'GATE_FAILURE' {
-        $requiredEvidence.Add("$root/gate-report.md")
-        $requiredEvidence.Add("$root/gate-failure-episode-brief.md")
-      }
-      'FIVE_GATES_GREEN' {
-        $requiredEvidence.Add("$root/gate-report.md")
-        $expectedGreenGates |
-          ForEach-Object { if (-not $gateReport.Contains($_)) { throw "五门成功证据缺失：$_" } }
-      }
-    }
-    $requiredEvidence | ForEach-Object { if (-not (Test-Path -LiteralPath $_)) { throw "缺少终局证据：$_" } }
-    $summaries = @(Get-ChildItem "$root/diagnostics" -Filter '*.summary.json')
-    $metadata = @(Get-ChildItem "$root/diagnostics" -Filter '*.metadata.json')
-    if ($summaries.Count -eq 0 -or $metadata.Count -eq 0) { throw '缺少最小诊断 summary/metadata' }
-    $before = @($temporaryTools | ForEach-Object {
-      if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "临时工具提前缺失：$_" }
-      "$_=present"
-    })
-    $trackedBefore = @(git status --short --untracked-files=no)
-    if ($trackedBefore.Count -ne 0) { throw '终局清理前存在 tracked 差异' }
-    $implementationBaseline = (Get-Content "$root/implementation-baseline.txt" -Raw).Trim()
-    $protected = @('apps/website', 'apps/cloudbase-api', 'apps/package-scanner', 'cloudbase', 'tests/e2e/website.spec.ts', 'tests/playwright.website.config.ts')
-    $protectedBefore = @(
-      git diff --name-only "$implementationBaseline..HEAD" -- $protected
-      git diff --name-only -- $protected
-      git diff --cached --name-only -- $protected
-    )
-    if ($protectedBefore.Count -ne 0) { throw '终局清理前保护路径存在差异' }
-    $temporaryTools | ForEach-Object { Remove-Item -LiteralPath $_ -Force -ErrorAction Stop }
-    $after = @($temporaryTools | ForEach-Object {
-      if (Test-Path -LiteralPath $_) { throw "临时工具删除失败：$_" }
-      "$_=absent"
-    })
-    $requiredEvidence | ForEach-Object { if (-not (Test-Path -LiteralPath $_)) { throw "终局证据被误删：$_" } }
-    $summaryCountAfter = @(Get-ChildItem "$root/diagnostics" -Filter '*.summary.json').Count
-    $metadataCountAfter = @(Get-ChildItem "$root/diagnostics" -Filter '*.metadata.json').Count
-    if ($summaryCountAfter -ne $summaries.Count -or $metadataCountAfter -ne $metadata.Count) {
-      throw '最小诊断证据数量变化'
-    }
-    $trackedAfter = @(git status --short --untracked-files=no)
-    $protectedAfter = @(
-      git diff --name-only "$implementationBaseline..HEAD" -- $protected
-      git diff --name-only -- $protected
-      git diff --cached --name-only -- $protected
-    )
-    if ($trackedAfter.Count -ne 0 -or $protectedAfter.Count -ne 0) { throw '终局清理后 tracked/保护路径校验失败' }
-    $report = @(
-      '# Desktop 开发门终局报告',
-      "terminalStatus=$TerminalStatus",
-      "lastCompletedTask=$LastCompletedTask",
-      "reason=$Reason",
-      'evidence:',
-      ($requiredEvidence | ForEach-Object { "- $_" }),
-      'temporaryToolsBefore:',
-      ($before | ForEach-Object { "- $_" }),
-      'temporaryToolsAfter:',
-      ($after | ForEach-Object { "- $_" }),
-      'protectedPathDifferences=0',
-      'trackedStatusEntries=0'
-    ) -join [Environment]::NewLine
-    $bytes = [Text.Encoding]::UTF8.GetBytes($report)
-    $stream = [IO.File]::Open($reportPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
-  }
-  & $closeEpisode
-  ```
-
-- [ ] **Step 2：报告创建后独立复审，不再修改报告**
+  重跑入口先只读检查三状态文件：pending 不存在而 final 与 Ready review 都存在时，说明 Task X 已完成，跳过 Step 1–3，直接执行 Step 4 的一致性验证；pending 不存在且 final/review 只存在其一时属于非法孤儿状态，停止且不得重建 pending、review 或覆盖 final。其他情况按下列检查继续。
 
   ```powershell
   $root = '.superpowers/sdd/2026-08-21-desktop-development-gate-closure'
-  Get-Content "$root/closure-report.md"
-  @(
+  $reasonLines = @(Get-Content "$root/terminal-closure-brief.md" | Where-Object { $_ -match '^TerminalReason=' })
+  if ($reasonLines.Count -ne 1) { throw 'terminal brief 必须且只能有一个 TerminalReason' }
+  $terminalReason = $reasonLines[0].Substring('TerminalReason='.Length)
+  if ($terminalReason -notin @('NO_RED','NO_ROOT_CAUSE','GATE_FAILURE','FIVE_GATES_GREEN')) { throw 'TerminalReason 非法' }
+  $commonEvidence = @(
+    "$root/terminal-closure-brief.md", "$root/baseline.md", "$root/implementation-baseline.txt",
+    "$root/feedback-results.md", 'docs/operations/desktop-test-owner-inventory.md'
+  )
+  $requiredEvidence = @($commonEvidence)
+  $forbiddenEvidence = @()
+  switch ($terminalReason) {
+    'NO_RED' {
+      $forbiddenEvidence = @(
+        "$root/hypothesis-probe-brief.md", "$root/hypothesis-ledger.md",
+        "$root/root-cause-fix-brief.md", "$root/root-cause-fix-files.txt",
+        "$root/gate-report.md", "$root/gate-failure-episode-brief.md", "$root/final-executable-head.txt"
+      )
+    }
+    'NO_ROOT_CAUSE' {
+      $requiredEvidence += @("$root/hypothesis-probe-brief.md", "$root/hypothesis-ledger.md")
+      $forbiddenEvidence = @(
+        "$root/root-cause-fix-brief.md", "$root/root-cause-fix-files.txt",
+        "$root/gate-report.md", "$root/gate-failure-episode-brief.md", "$root/final-executable-head.txt"
+      )
+    }
+    'GATE_FAILURE' {
+      $requiredEvidence += @(
+        "$root/hypothesis-probe-brief.md", "$root/hypothesis-ledger.md",
+        "$root/root-cause-fix-brief.md", "$root/root-cause-fix-files.txt",
+        "$root/gate-report.md", "$root/gate-failure-episode-brief.md", "$root/final-executable-head.txt"
+      )
+    }
+    'FIVE_GATES_GREEN' {
+      $requiredEvidence += @(
+        "$root/hypothesis-probe-brief.md", "$root/hypothesis-ledger.md",
+        "$root/root-cause-fix-brief.md", "$root/root-cause-fix-files.txt",
+        "$root/gate-report.md", "$root/final-executable-head.txt"
+      )
+      if (Test-Path -LiteralPath "$root/gate-failure-episode-brief.md") {
+        $requiredEvidence += "$root/gate-failure-episode-brief.md"
+      }
+    }
+  }
+  $requiredEvidence | ForEach-Object { if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "缺少必须证据：$_" } }
+  $forbiddenEvidence | ForEach-Object { if (Test-Path -LiteralPath $_) { throw "出现禁止证据：$_" } }
+  if ($terminalReason -in @('GATE_FAILURE','FIVE_GATES_GREEN')) {
+    $gateReport = Get-Content "$root/gate-report.md" -Raw
+    if ($terminalReason -eq 'GATE_FAILURE' -and $gateReport.Contains('terminalGateStatus=SUCCESS')) { throw '失败分支含成功标记' }
+    if ($terminalReason -eq 'FIVE_GATES_GREEN') {
+      @('terminalGateStatus=SUCCESS','verify:desktop=0','verify:characters=0','verify:behavior=0','test:security=0','test:integration=0') |
+        ForEach-Object { if (-not $gateReport.Contains($_)) { throw "成功分支缺少机器行：$_" } }
+    }
+  }
+  $diagnosticPaths = @(
+    Get-ChildItem "$root/diagnostics" -File |
+      Where-Object { $_.Name -match '\.(summary|metadata)\.json$' } |
+      Sort-Object Name |
+      ForEach-Object { $_.FullName.Substring((Get-Location).Path.Length + 1).Replace('\','/') }
+  )
+  $summaryPathCount = @($diagnosticPaths | Where-Object { $_ -match '\.summary\.json$' }).Count
+  $metadataPathCount = @($diagnosticPaths | Where-Object { $_ -match '\.metadata\.json$' }).Count
+  if ($summaryPathCount -eq 0 -or $metadataPathCount -eq 0) {
+    throw 'diagnostics 必须同时含 summary 与 metadata'
+  }
+  $requiredEvidence = @($requiredEvidence | Sort-Object -Unique)
+  $toolPaths = @(
     "$root/run-diagnostic-round.mjs", "$root/test-diagnostic-runner.mjs", "$root/runner-review.md",
     "$root/runner-fixtures/argv-child.mjs", "$root/runner-fixtures/fake-vitest.mjs",
     "$root/runner-fixtures/probe-child.mjs", "$root/runner-fixtures/output-overflow.mjs",
     "$root/runner-fixtures/tree-child.mjs", "$root/runner-fixtures/tree-parent.mjs"
-  ) | ForEach-Object { if (Test-Path -LiteralPath $_) { throw "临时工具仍存在：$_" } }
-  git status --short --untracked-files=no
+  )
+  $pendingPath = "$root/closure-pending.md"
+  if (Test-Path -LiteralPath $pendingPath) {
+    $pendingLines = Get-Content $pendingPath
+    if (@($pendingLines | Where-Object { $_ -eq 'NOT_FINAL=true' }).Count -ne 1) { throw 'pending 缺少 NOT_FINAL 标记' }
+    if (@($pendingLines | Where-Object { $_ -eq "TerminalReason=$terminalReason" }).Count -ne 1) { throw 'pending reason 与 brief 不一致' }
+    $pendingBefore = @($pendingLines | Where-Object { $_ -match '^before=' })
+    $expectedBefore = @($toolPaths | ForEach-Object { "before=$_|present" })
+    $pendingEvidence = @($pendingLines | Where-Object { $_ -match '^evidence=' } | ForEach-Object { $_.Substring('evidence='.Length) })
+    $pendingDiagnostics = @($pendingLines | Where-Object { $_ -match '^diagnostic=' } | ForEach-Object { $_.Substring('diagnostic='.Length) })
+    if (@(Compare-Object $expectedBefore $pendingBefore).Count -ne 0) { throw 'pending before 清单不一致' }
+    if (@(Compare-Object $requiredEvidence $pendingEvidence).Count -ne 0) { throw 'pending evidence 清单不一致' }
+    if (@(Compare-Object $diagnosticPaths $pendingDiagnostics).Count -ne 0) { throw 'pending diagnostics 清单不一致' }
+  } else {
+    $toolPaths | ForEach-Object { if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "首次 pending 前工具缺失：$_" } }
+  }
+  $requiredEvidence
+  $diagnosticPaths
   ```
 
-  独立审查者按 `terminalStatus` 核对分支证据、报告确实在工具删除和 after 校验之后创建、敏感字段零落盘、九个工具全不存在、保护路径和 tracked status；不得为了修报告覆盖或删除它。Critical/Important 清零后，`CLOSED` 分支交付“开发门仍关闭”并终止，`SUCCESS` 分支才进入 Task 6。Task X 不创建 commit。
+  按接口表逐项用 `Test-Path -LiteralPath` 验证本 reason 的必须/禁止证据；`FIVE_GATES_GREEN` 还逐字核对成功行，`GATE_FAILURE` 核对成功行不存在。若 `closure-pending.md` 不存在，使用 `apply_patch` 创建，逐行写真实值：首行 `NOT_FINAL=true`、唯一 `TerminalReason=`、九行 `before=<相对工具路径>|present`、每个必须证据一行 `evidence=<相对路径>`、每个 `$diagnosticPaths` 一行 `diagnostic=<相对路径>`。禁止 wildcard、绝对路径、`System.Object[]` 或占位文字。
+
+  若 pending 已存在，先核对其中 `TerminalReason` 与 brief 完全一致、九条 before 完整、evidence/diagnostic 清单与当前分支及磁盘上的 diagnostics 完全一致，才允许 resume；reason 不一致时停止，不覆盖 pending。首次创建 pending 时九工具必须全 present；resume 时允许因上次中断而部分 absent。此文件明确是 `NOT_FINAL`，不能作为开发门结论。
+
+- [ ] **Step 2：只用 `apply_patch` 精确删除仍存在的九个临时工具**
+
+  固定目标为 runner、selftest、runner review、`argv-child`、`fake-vitest`、`probe-child`、`output-overflow`、`tree-child`、`tree-parent`。逐项 `Test-Path -LiteralPath`；对仍存在的文件分别使用 `apply_patch` 删除，对已经 absent 的项记录为中断恢复并继续。不得使用 `Remove-Item`、Node/fs、递归删除、目录通配或脚本化删除。九个小文件属于用户已授权的本计划范围，不触发“大量删除”二次批准；不得扩大到其他 ignored evidence 或整个 fixtures 目录。
+
+- [ ] **Step 3：验证全部 absent 后，用 `apply_patch` 创建扁平 final report**
+
+  ```powershell
+  $tools = @(
+    "$root/run-diagnostic-round.mjs", "$root/test-diagnostic-runner.mjs", "$root/runner-review.md",
+    "$root/runner-fixtures/argv-child.mjs", "$root/runner-fixtures/fake-vitest.mjs",
+    "$root/runner-fixtures/probe-child.mjs", "$root/runner-fixtures/output-overflow.mjs",
+    "$root/runner-fixtures/tree-child.mjs", "$root/runner-fixtures/tree-parent.mjs"
+  )
+  $tools | ForEach-Object { if (Test-Path -LiteralPath $_) { throw "临时工具仍存在：$_" } }
+  $implementationBaseline = (Get-Content "$root/implementation-baseline.txt" -Raw).Trim()
+  $protected = @('apps/website','apps/cloudbase-api','apps/package-scanner','cloudbase','tests/e2e/website.spec.ts','tests/playwright.website.config.ts')
+  if (@(git diff --name-only "$implementationBaseline..HEAD" -- $protected).Count -ne 0) { throw '实施区间保护路径有差异' }
+  if (@(git diff --name-only -- $protected).Count -ne 0) { throw '工作树保护路径有差异' }
+  if (@(git diff --cached --name-only -- $protected).Count -ne 0) { throw '暂存区保护路径有差异' }
+  if (@(git status --short --untracked-files=no).Count -ne 0) { throw '存在 tracked 差异' }
+  git diff --check
+  ```
+
+  若 final 已存在，禁止覆盖；若九工具已全 absent、pending 存在而 final 缺失，这是合法中断恢复点，直接从 pending 的真实扁平行恢复创建 final。使用 `apply_patch` 创建 `closure-report.md`，逐行写：唯一 `TerminalReason=`；`TerminalStatus=SUCCESS` 仅对应 `FIVE_GATES_GREEN`，其余均为 `CLOSED`；原样复制九条 `before=`；写九条 `after=<相对工具路径>|absent`；原样复制每条 `evidence=`/`diagnostic=`；最后写 `protectedPathDifferences=0`、`trackedStatusEntries=0`、`diffCheck=PASS`。不得使用 PowerShell join、嵌套对象或动态报告生成。
+
+  创建后机械验证 pending 中每一条 before/evidence/diagnostic 都逐字存在于 final，九条 after 均存在；evidence/diagnostic 指向的文件仍存在；`evidence=` 不含九个已删工具；final 不含 `NOT_FINAL`、绝对路径或 `System.Object[]`：
+
+  ```powershell
+  $pendingLines = Get-Content "$root/closure-pending.md"
+  $finalText = Get-Content "$root/closure-report.md" -Raw
+  $pendingLines | Where-Object { $_ -match '^(before|evidence|diagnostic)=' } |
+    ForEach-Object {
+      & rg -F -x -- $_ "$root/closure-report.md" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "final 缺少 pending 行：$_" }
+    }
+  $retainedLines = @($pendingLines | Where-Object { $_ -match '^(evidence|diagnostic)=' })
+  $retainedLines | ForEach-Object {
+    $path = $_.Substring($_.IndexOf('=') + 1)
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "final 指向的保留证据不存在：$path" }
+  }
+  $tools | ForEach-Object {
+    $relative = $_.Replace('\','/')
+    & rg -F -x -- "after=$relative|absent" "$root/closure-report.md" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "final 缺少 after：$relative" }
+    if (@($retainedLines | Where-Object { $_.EndsWith($relative) }).Count -ne 0) { throw "已删工具误入 evidence：$relative" }
+  }
+  if ($finalText -match 'System\.Object\[\]|NOT_FINAL|[A-Za-z]:\\') { throw 'final 含禁止内容' }
+  rg -n "^TerminalReason=|^TerminalStatus=|^before=|^after=|^evidence=|^diagnostic=|^protectedPathDifferences=0$|^trackedStatusEntries=0$|^diffCheck=PASS$" "$root/closure-report.md"
+  ```
+
+- [ ] **Step 4：final 独立复审 Ready 后删除 pending**
+
+  独立审查者核对显式 reason、分支必须/禁止证据、diagnostics 全量、九条 before/after、保护路径、tracked status、无对象串和敏感字段；Critical/Important 清零后用 `apply_patch` 创建 `closure-review.md`，固定写 `状态：Ready`、同一 `TerminalReason`、`Critical=0`、`Important=0`。只有 final 与 Ready review 都存在且 reason 一致时，才用 `apply_patch` 删除 `closure-pending.md`。
+
+  ```powershell
+  $briefReason = @(Get-Content "$root/terminal-closure-brief.md" | Where-Object { $_ -match '^TerminalReason=' })
+  if ($briefReason.Count -ne 1) { throw 'terminal brief reason 非唯一' }
+  $finalReason = @(Get-Content "$root/closure-report.md" | Where-Object { $_ -eq $briefReason[0] })
+  $reviewReason = @(Get-Content "$root/closure-review.md" | Where-Object { $_ -eq $briefReason[0] })
+  if ($finalReason.Count -ne 1 -or $reviewReason.Count -ne 1) { throw 'brief/final/review reason 不一致' }
+  if (@(Get-Content "$root/closure-review.md" | Where-Object { $_ -eq '状态：Ready' }).Count -ne 1) { throw 'closure review 未 Ready' }
+  if (@(Get-Content "$root/closure-review.md" | Where-Object { $_ -eq 'Critical=0' }).Count -ne 1) { throw 'closure review Critical 未清零' }
+  if (@(Get-Content "$root/closure-review.md" | Where-Object { $_ -eq 'Important=0' }).Count -ne 1) { throw 'closure review Important 未清零' }
+  ```
+
+  中断重跑规则：pending 存在则从 reason 一致性继续；工具部分 absent 则 Step 2 只删剩余项；工具全 absent/final 缺失则从 pending 创建 final；final 与 Ready review 已存在而 pending 仍在则只执行 pending 删除；pending 已不存在时只读验证 final/review 后完成。`NO_RED|NO_ROOT_CAUSE|GATE_FAILURE` 均交付“开发门仍关闭”并终止；只有 `FIVE_GATES_GREEN` 可进入 Task 6。Task X 不创建 Git commit。
 
 ---
 
 ### Task 6：唯一纯验收文档后继提交并正式发布解锁结论
 
-**前置条件：** 只有 Task 5 五门全部退出 0、独立复审 Critical/Important 为零，且 Task X 的 `closure-report.md` 记录 `terminalStatus=SUCCESS`、九个 ignored 临时工具均已删除时执行。若 Task X 为 `CLOSED`、超时根因未定位、Task 3 未合法完成、inventory 未对账或五门任一失败，不进入本任务；状态保持“开发门仍关闭”。
+**前置条件：** 只有 Task 5 五门全部退出 0、独立复审 Critical/Important 为零，且 Task X 的 `closure-report.md` 记录 `TerminalReason=FIVE_GATES_GREEN`、`TerminalStatus=SUCCESS`，`closure-review.md` 为 Ready、`closure-pending.md` 已删除、九个 ignored 临时工具均 absent 时执行。若 reason 是其他枚举、pending 仍在、超时根因未定位、Task 3 未合法完成、inventory 未对账或五门任一失败，不进入本任务；状态保持“开发门仍关闭”。
 
 **文件：**
 - 修改：`docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md`
@@ -1639,7 +1683,7 @@
 - 根因修复先 RED 后 GREEN；原始未缩小 feedback seam GREEN；无 timeout、retry、skip、断言放宽或无证据 worker 降级。
 - `c7d951d..FINAL_EXECUTABLE_HEAD` 每个变更测试文件和有效 hunk/测试簇均已登记，逐文件 `numstat` 与 Git 总账完全一致；重复表达与旧路径已安全删除，唯一证据未降低。
 - 同一个 `FINAL_EXECUTABLE_HEAD` 上五条正式门均实际执行一次并退出 0，单条低于 15 分钟。
-- 受保护网站/云端路径在实施区间、工作树和暂存区零差异；`git diff --check` 通过；临时诊断零残留。
+- 受保护网站/云端路径在实施区间、工作树和暂存区零差异；`git diff --check` 通过；九个临时执行工具与 `closure-pending.md` 零残留，扁平 final/review 和最小 diagnostics 证据保留。
 - 唯一纯验收文档后继提交已同步四份事实源；ignored 报告记录实际文档提交 hash，并证明相对最终可执行树 HEAD 只有四份文档变化、可执行范围零差异。
 - Windows 窗口层级、焦点、布局、文案可读性、重启视觉、拖拽、托盘和资源释放保持“待用户人工确认”；只在后续功能直接触及时成为该功能的前置验收。
 
