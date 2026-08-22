@@ -7,10 +7,12 @@ import type {
 } from '@myself/agent-core';
 import { z } from 'zod';
 import {
+  assertResponseContractRequest,
   type FetchLike,
   type ProviderAdapterConfig,
   ProviderError,
   normalizeFetchError,
+  normalizeResponseContractText,
   readProviderJson
 } from './openai-provider';
 
@@ -78,7 +80,10 @@ function serializeTool(tool: ToolDefinition): Record<string, unknown> {
   };
 }
 
-function normalizeResponse(raw: unknown): ModelResponse {
+function normalizeResponse(
+  raw: unknown,
+  responseContract: ModelRequest['responseContract']
+): ModelResponse {
   const parsed = anthropicResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
 
@@ -87,10 +92,10 @@ function normalizeResponse(raw: unknown): ModelResponse {
   const toolBlocks = blocks.filter(block => block.type === 'tool_use');
 
   if (textBlocks.length === blocks.length) {
-    return {
-      type: 'text',
-      text: textBlocks.map(block => block.text).join('')
-    };
+    const text = textBlocks.map(block => block.text).join('');
+    return responseContract === undefined
+      ? { type: 'text', text }
+      : normalizeResponseContractText(text, responseContract);
   }
   if (toolBlocks.length === 1 && blocks.length === 1) {
     const tool = toolBlocks[0];
@@ -115,6 +120,7 @@ export class AnthropicProvider implements ModelProvider {
   ) {}
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
+    assertResponseContractRequest(request);
     const systemMessages = request.messages
       .filter(message => message.role === 'system')
       .map(message => message.content);
@@ -129,6 +135,15 @@ export class AnthropicProvider implements ModelProvider {
       tools: request.tools.map(serializeTool)
     };
     if (systemMessages.length > 0) body.system = systemMessages.join('\n\n');
+    if (request.responseContract !== undefined) {
+      body.output_config = {
+        format: {
+          type: 'json_schema',
+          name: request.responseContract.name,
+          schema: request.responseContract.jsonSchema
+        }
+      };
+    }
 
     let response: Response;
     try {
@@ -146,6 +161,6 @@ export class AnthropicProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
-    return normalizeResponse(await readProviderJson(response));
+    return normalizeResponse(await readProviderJson(response), request.responseContract);
   }
 }

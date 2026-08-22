@@ -2,6 +2,7 @@ import type {
   ModelProvider,
   ModelRequest,
   ModelResponse,
+  ModelResponseContract,
   ToolDefinition
 } from '@myself/agent-core';
 import { describe, expect, test, vi } from 'vitest';
@@ -13,6 +14,7 @@ import { AnthropicProvider } from '../src/main/providers/anthropic-provider';
 import { GeminiProvider } from '../src/main/providers/gemini-provider';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
+import { characterChatResponseJsonSchema } from '@myself/character-runtime';
 import {
   providerCatalog,
   toolRequestSchema,
@@ -69,6 +71,22 @@ const request: ModelRequest = {
   tools,
   toolChoice: 'auto',
   reasoningMode: 'provider_default'
+};
+
+const chatResponseContract: ModelResponseContract = {
+  type: 'json_object',
+  name: 'character_chat',
+  jsonSchema: characterChatResponseJsonSchema,
+  textField: 'text',
+  allowPlainTextFallback: true
+};
+
+const structuredChatRequest: ModelRequest = {
+  messages: [{ role: 'user', content: '向左走一点' }],
+  tools: [],
+  toolChoice: 'none',
+  reasoningMode: 'provider_default',
+  responseContract: chatResponseContract
 };
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -169,6 +187,55 @@ const chatProviderContractCases: ChatProviderContractCase[] = [
   }
 ];
 
+interface StructuredProviderCase extends ChatProviderContractCase {
+  assertRequestContract(body: Record<string, unknown>): void;
+}
+
+const structuredProviderCases: StructuredProviderCase[] = [
+  {
+    ...chatProviderContractCases[0]!,
+    name: 'OpenAI Compatible',
+    assertRequestContract(body) {
+      expect(body.response_format).toEqual({ type: 'json_object' });
+    }
+  },
+  {
+    ...chatProviderContractCases[0]!,
+    name: 'DeepSeek',
+    createProvider: fetchClient => new OpenAICompatibleProvider(
+      { ...adapterProfile, providerId: 'deepseek' },
+      async () => 'chat-contract-secret',
+      fetchClient
+    ),
+    assertRequestContract(body) {
+      expect(body.response_format).toEqual({ type: 'json_object' });
+    }
+  },
+  {
+    ...chatProviderContractCases[1]!,
+    name: 'Anthropic',
+    assertRequestContract(body) {
+      expect(body.output_config).toEqual({
+        format: {
+          type: 'json_schema',
+          name: 'character_chat',
+          schema: characterChatResponseJsonSchema
+        }
+      });
+    }
+  },
+  {
+    ...chatProviderContractCases[2]!,
+    name: 'Gemini',
+    assertRequestContract(body) {
+      expect(body.generationConfig).toEqual({
+        responseMimeType: 'application/json',
+        responseJsonSchema: characterChatResponseJsonSchema
+      });
+    }
+  }
+];
+
 describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
   test.each(chatProviderContractCases)(
     '$name 直接返回自然文本，且请求工具数组为空',
@@ -191,6 +258,100 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         unknown
       >;
       expect(contract.requestTools(body)).toEqual([]);
+    }
+  );
+
+  test.each(chatProviderContractCases)(
+    '$name 对合法 JSON 同时保留正文与严格行为计划',
+    async contract => {
+      const raw = JSON.stringify({
+        text: '我向左走一点。',
+        behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+      });
+      const adapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => jsonResponse(contract.textResponse(raw)))
+      ));
+
+      await expect(adapter.respond({
+        history: [],
+        text: '向左走一点',
+        signal: new AbortController().signal
+      })).resolves.toEqual({
+        text: '我向左走一点。',
+        behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+      });
+    }
+  );
+
+  test.each(chatProviderContractCases)(
+    '$name 在行为计划或情绪非法时仍保留正文',
+    async contract => {
+      const raw = JSON.stringify({
+        text: '正文仍然有效。',
+        behaviorPlan: { kind: 'none', emotion: 'excited' }
+      });
+      const adapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => jsonResponse(contract.textResponse(raw)))
+      ));
+
+      await expect(adapter.respond({
+        history: [],
+        text: '测试非法情绪',
+        signal: new AbortController().signal
+      })).resolves.toEqual({ text: '正文仍然有效。' });
+    }
+  );
+
+  test.each(chatProviderContractCases)(
+    '$name 对行为字段后的截断只恢复完整正文',
+    async contract => {
+      const raw = '{"text":"截断前的正文","behaviorPlan":{"kind":"move"';
+      const adapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => jsonResponse(contract.textResponse(raw)))
+      ));
+
+      await expect(adapter.respond({
+        history: [],
+        text: '测试截断',
+        signal: new AbortController().signal
+      })).resolves.toEqual({ text: '截断前的正文' });
+    }
+  );
+
+  test.each(chatProviderContractCases)(
+    '$name 保持普通纯文本兼容',
+    async contract => {
+      const adapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => jsonResponse(contract.textResponse('普通纯文本')))
+      ));
+
+      await expect(adapter.respond({
+        history: [],
+        text: '普通聊天',
+        signal: new AbortController().signal
+      })).resolves.toEqual({ text: '普通纯文本' });
+    }
+  );
+
+  test.each(chatProviderContractCases)(
+    '$name 拒绝无法恢复正文的空对象且不泄露响应',
+    async contract => {
+      const sensitiveRaw = '{"private":"不得泄露"}';
+      const adapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => jsonResponse(contract.textResponse(sensitiveRaw)))
+      ));
+
+      const error = await adapter.respond({
+        history: [],
+        text: '测试空对象',
+        signal: new AbortController().signal
+      }).catch(reason => reason);
+
+      expect(error).toMatchObject({
+        code: 'PROVIDER_MALFORMED_RESPONSE',
+        retryable: false
+      });
+      expectObservableErrorTextHidden(error, ['private', '不得泄露']);
     }
   );
 
@@ -237,6 +398,69 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         code: 'PROVIDER_TIMEOUT',
         retryable: true
       });
+    }
+  );
+});
+
+describe('结构化聊天响应协议映射', () => {
+  test.each(structuredProviderCases)(
+    '$name 映射无工具响应契约并解码正文',
+    async contract => {
+      const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(
+        contract.textResponse('{"text":"结构正文"}')
+      ));
+      const provider = contract.createProvider(fetchClient);
+
+      await expect(provider.respond(
+        structuredChatRequest,
+        new AbortController().signal
+      )).resolves.toEqual({
+        type: 'text',
+        text: '结构正文',
+        structured_output: { text: '结构正文' }
+      });
+
+      const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body)) as Record<
+        string,
+        unknown
+      >;
+      expect(contract.requestTools(body)).toEqual([]);
+      contract.assertRequestContract(body);
+    }
+  );
+
+  test.each(structuredProviderCases)(
+    '$name 在响应契约与工具请求冲突时不发起 fetch',
+    async contract => {
+      const fetchClient = vi.fn<FetchLike>();
+      const provider = contract.createProvider(fetchClient);
+
+      await expect(provider.respond({
+        ...structuredChatRequest,
+        tools,
+        toolChoice: 'auto'
+      }, new AbortController().signal)).rejects.toMatchObject({
+        code: 'PROVIDER_RESPONSE_CONTRACT_CONFLICT',
+        retryable: false
+      });
+      expect(fetchClient).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(structuredProviderCases)(
+    '$name 在响应契约与非 none toolChoice 冲突时不发起 fetch',
+    async contract => {
+      const fetchClient = vi.fn<FetchLike>();
+      const provider = contract.createProvider(fetchClient);
+
+      await expect(provider.respond({
+        ...structuredChatRequest,
+        toolChoice: 'auto'
+      }, new AbortController().signal)).rejects.toMatchObject({
+        code: 'PROVIDER_RESPONSE_CONTRACT_CONFLICT',
+        retryable: false
+      });
+      expect(fetchClient).not.toHaveBeenCalled();
     }
   );
 });
@@ -1531,6 +1755,8 @@ describe('ProviderRegistry', () => {
     'tool_choice',
     'stream',
     'max_tokens',
+    'response_format',
+    'output_config',
     'authorization',
     'x-api-key',
     'x-goog-api-key',

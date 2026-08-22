@@ -7,10 +7,12 @@ import type {
 } from '@myself/agent-core';
 import { z } from 'zod';
 import {
+  assertResponseContractRequest,
   type FetchLike,
   type ProviderAdapterConfig,
   ProviderError,
   normalizeFetchError,
+  normalizeResponseContractText,
   readProviderJson
 } from './openai-provider';
 
@@ -123,7 +125,8 @@ interface NormalizedGeminiResponse {
 
 function normalizeResponse(
   raw: unknown,
-  createFallbackRequestId: (toolName: string) => string
+  createFallbackRequestId: (toolName: string) => string,
+  responseContract: ModelRequest['responseContract']
 ): NormalizedGeminiResponse {
   const parsed = geminiResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
@@ -134,11 +137,11 @@ function normalizeResponse(
   const functionParts = parts.filter(part => 'functionCall' in part);
 
   if (textParts.length === parts.length) {
+    const text = textParts.map(part => part.text).join('');
     return {
-      response: {
-        type: 'text',
-        text: textParts.map(part => part.text).join('')
-      }
+      response: responseContract === undefined
+        ? { type: 'text', text }
+        : normalizeResponseContractText(text, responseContract)
     };
   }
   if (functionParts.length === 1 && parts.length === 1) {
@@ -177,6 +180,7 @@ export class GeminiProvider implements ModelProvider {
   ) {}
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
+    assertResponseContractRequest(request);
     const systemParts = request.messages
       .filter(message => message.role === 'system')
       .map(message => ({ text: message.content }));
@@ -190,6 +194,12 @@ export class GeminiProvider implements ModelProvider {
     };
     if (systemParts.length > 0) {
       body.systemInstruction = { parts: systemParts };
+    }
+    if (request.responseContract !== undefined) {
+      body.generationConfig = {
+        responseMimeType: 'application/json',
+        responseJsonSchema: request.responseContract.jsonSchema
+      };
     }
 
     let response: Response;
@@ -212,7 +222,8 @@ export class GeminiProvider implements ModelProvider {
 
     const normalized = normalizeResponse(
       await readProviderJson(response),
-      toolName => `gemini-call-${toolName}-${this.nextFallbackRequestId++}`
+      toolName => `gemini-call-${toolName}-${this.nextFallbackRequestId++}`,
+      request.responseContract
     );
     if (normalized.thoughtSignature) {
       this.thoughtSignatures.set(

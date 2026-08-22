@@ -23,6 +23,8 @@ const reservedAdditionalParameters = new Set([
   'tool_choice',
   'stream',
   'max_tokens',
+  'response_format',
+  'output_config',
   'generationconfig',
   'authorization',
   'x-api-key',

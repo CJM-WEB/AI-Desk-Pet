@@ -1,9 +1,11 @@
-import type {
-  ModelMessage,
-  ModelProvider,
-  ModelRequest,
-  ModelResponse,
-  ToolDefinition
+import {
+  decodeResponseContractText,
+  type ModelResponseContract,
+  type ModelMessage,
+  type ModelProvider,
+  type ModelRequest,
+  type ModelResponse,
+  type ToolDefinition
 } from '@myself/agent-core';
 import {
   characterEmotionLabelSchema,
@@ -137,7 +139,11 @@ function serializeMessage(
   return { role: message.role, content: message.content };
 }
 
-function normalizeResponse(raw: unknown, toolNameCodec: OpenAIToolNameCodec): ModelResponse {
+function normalizeResponse(
+  raw: unknown,
+  toolNameCodec: OpenAIToolNameCodec,
+  responseContract: ModelResponseContract | undefined
+): ModelResponse {
   const parsed = compatibleResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
 
@@ -180,10 +186,9 @@ function normalizeResponse(raw: unknown, toolNameCodec: OpenAIToolNameCodec): Mo
   if (typeof message.content !== 'string') {
     throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   }
-  const response: Extract<ModelResponse, { type: 'text' }> = {
-    type: 'text',
-    text: message.content
-  };
+  const response = responseContract === undefined
+    ? { type: 'text' as const, text: message.content }
+    : normalizeResponseContractText(message.content, responseContract);
   if (message.metadata?.emotion !== undefined) {
     const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
     if (!emotion.success) {
@@ -191,12 +196,43 @@ function normalizeResponse(raw: unknown, toolNameCodec: OpenAIToolNameCodec): Mo
     }
     response.emotion = emotion.data;
   }
-  // 仅使用 OpenAI-compatible message.metadata 这一既有结构化扩展边界。
-  const behaviorIntent = characterAgentBehaviorIntentSchema.safeParse(
-    message.metadata?.behaviorIntent
-  );
-  if (behaviorIntent.success) response.behaviorIntent = behaviorIntent.data;
+  if (responseContract === undefined) {
+    // 旧行为意图只服务能力任务；结构化聊天必须以无权限响应契约为唯一来源。
+    const behaviorIntent = characterAgentBehaviorIntentSchema.safeParse(
+      message.metadata?.behaviorIntent
+    );
+    if (behaviorIntent.success) response.behaviorIntent = behaviorIntent.data;
+  }
   return response;
+}
+
+/** 三类 Provider 共用同一正文降级规则，避免协议适配器各自实现不一致的恢复逻辑。 */
+export function normalizeResponseContractText(
+  raw: string,
+  contract: ModelResponseContract
+): Extract<ModelResponse, { type: 'text' }> {
+  const decoded = decodeResponseContractText(raw, contract);
+  if (decoded.kind === 'invalid') {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
+  if (decoded.kind === 'plain_text') {
+    return { type: 'text', text: decoded.text };
+  }
+  return {
+    type: 'text',
+    text: decoded.text,
+    structured_output: decoded.structured_output
+  };
+}
+
+/** 响应契约没有系统权限，也不得与工具调用复用同一次 Provider 请求。 */
+export function assertResponseContractRequest(request: ModelRequest): void {
+  if (
+    request.responseContract !== undefined
+    && (request.tools.length > 0 || request.toolChoice !== 'none')
+  ) {
+    throw new ProviderError('PROVIDER_RESPONSE_CONTRACT_CONFLICT', false);
+  }
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
@@ -211,6 +247,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly config: ProviderAdapterConfig;
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
+    assertResponseContractRequest(request);
     // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
     const toolChoice = resolveToolChoice(request);
     const toolNameCodec = createOpenAIToolNameCodec(codecDefinitions(request));
@@ -236,6 +273,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
           messages: request.messages.map(message => serializeMessage(message, toolNameCodec)),
           tools,
           tool_choice: toolChoice,
+          ...(request.responseContract === undefined
+            ? {}
+            : { response_format: { type: 'json_object' } }),
           ...(this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
             ? { thinking: { type: 'disabled' } }
             : {})
@@ -245,7 +285,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
-    return normalizeResponse(await readProviderJson(response), toolNameCodec);
+    return normalizeResponse(
+      await readProviderJson(response),
+      toolNameCodec,
+      request.responseContract
+    );
   }
 }
 

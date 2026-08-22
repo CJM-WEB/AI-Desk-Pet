@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { ModelRequest, ToolDefinition } from '@myself/agent-core';
+import { characterChatResponseJsonSchema } from '@myself/character-runtime';
 import {
   OpenAICompatibleProvider,
   ProviderError
@@ -130,6 +131,43 @@ describe('OpenAICompatibleProvider', () => {
         urgency: 50,
         explanation: '正在整理回应。'
       }
+    });
+  });
+
+  test('响应契约存在时忽略旧行为意图元数据', async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: '{"text":"结构正文"}',
+          metadata: {
+            behaviorIntent: {
+              stateIntent: { semantic: 'move' },
+              actionSemantic: 'move',
+              urgency: 100,
+              explanation: '结构化聊天不得沿用。'
+            }
+          }
+        }
+      }]
+    }));
+    const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
+
+    await expect(provider.respond({
+      messages: [{ role: 'user', content: '向左走' }],
+      tools: [],
+      toolChoice: 'none',
+      reasoningMode: 'provider_default',
+      responseContract: {
+        type: 'json_object',
+        name: 'character_chat',
+        jsonSchema: characterChatResponseJsonSchema,
+        textField: 'text',
+        allowPlainTextFallback: true
+      }
+    }, new AbortController().signal)).resolves.toEqual({
+      type: 'text',
+      text: '结构正文',
+      structured_output: { text: '结构正文' }
     });
   });
 

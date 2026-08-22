@@ -1,4 +1,5 @@
 import type { ModelProvider, ModelRequest, ModelResponse } from '@myself/agent-core';
+import { characterChatResponseJsonSchema } from '@myself/character-runtime';
 import { describe, expect, test, vi } from 'vitest';
 import { ProviderError } from '../src/main/providers/openai-provider';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
@@ -38,7 +39,14 @@ describe('ConversationChatAdapter', () => {
       ],
       tools: [],
       toolChoice: 'none',
-      reasoningMode: 'provider_default'
+      reasoningMode: 'provider_default',
+      responseContract: {
+        type: 'json_object',
+        name: 'character_chat',
+        jsonSchema: characterChatResponseJsonSchema,
+        textField: 'text',
+        allowPlainTextFallback: true
+      }
     });
     expect(取得请求(provider).messages[0]?.content).toContain('用户使用的语言');
     expect(取得请求(provider).messages[0]?.content).toContain('可见上下文');
@@ -64,6 +72,66 @@ describe('ConversationChatAdapter', () => {
       text: '  当然可以。\n\n```ts\nconst 宠物 = "你好";\n```\n',
       emotion: 'happy'
     });
+  });
+
+  test('只返回本地严格校验通过的行为计划', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '我向左走一点。',
+      structured_output: {
+        text: '我向左走一点。',
+        behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+      }
+    });
+    const adapter = new ConversationChatAdapter(provider);
+
+    await expect(adapter.respond({
+      history: [],
+      text: '向左走一点',
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      text: '我向左走一点。',
+      behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+    });
+  });
+
+  test('丢弃非法行为计划并保留正文与既有合法情绪', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '正文仍然可见。',
+      emotion: 'calm',
+      structured_output: {
+        text: '正文仍然可见。',
+        behaviorPlan: { kind: 'move', direction: 'outside', distance: 'near' }
+      }
+    });
+    const adapter = new ConversationChatAdapter(provider);
+
+    await expect(adapter.respond({
+      history: [],
+      text: '测试非法计划',
+      signal: new AbortController().signal
+    })).resolves.toEqual({ text: '正文仍然可见。', emotion: 'calm' });
+  });
+
+  test('普通聊天忽略旧 behaviorIntent 元数据', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '只保留正文。',
+      behaviorIntent: {
+        stateIntent: { semantic: 'move' },
+        actionSemantic: 'move',
+        urgency: 100,
+        explanation: '普通聊天不得消费旧意图。'
+      }
+    });
+    const adapter = new ConversationChatAdapter(provider);
+
+    await expect(adapter.respond({
+      history: [],
+      text: '普通聊天',
+      signal: new AbortController().signal
+    })).resolves.toEqual({ text: '只保留正文。' });
   });
 
   test.each([

@@ -1,5 +1,10 @@
 import type { ModelMessage, ModelProvider } from '@myself/agent-core';
 import type { CharacterEmotionLabel } from '@myself/shared-types';
+import {
+  characterBehaviorPlanSchema,
+  characterChatResponseJsonSchema,
+  type CharacterBehaviorPlan
+} from '@myself/character-runtime';
 import { ProviderError } from '../providers/openai-provider';
 
 const 聊天系统消息 = [
@@ -9,6 +14,13 @@ const 聊天系统消息 = [
   '直接给出正常文本回复，可按需要使用 Markdown。'
 ].join('');
 const 最大正文字符数 = 8_000;
+const 聊天响应契约 = {
+  type: 'json_object' as const,
+  name: 'character_chat' as const,
+  jsonSchema: characterChatResponseJsonSchema,
+  textField: 'text' as const,
+  allowPlainTextFallback: true as const
+};
 
 export interface ConversationChatInput {
   history: readonly ModelMessage[];
@@ -19,6 +31,7 @@ export interface ConversationChatInput {
 export type ConversationChatReply = Readonly<{
   text: string;
   emotion?: CharacterEmotionLabel;
+  behaviorPlan?: CharacterBehaviorPlan;
 }>;
 
 export class ConversationChatAdapter {
@@ -36,16 +49,44 @@ export class ConversationChatAdapter {
       ],
       tools: [],
       toolChoice: 'none',
-      reasoningMode: 'provider_default'
+      reasoningMode: 'provider_default',
+      responseContract: 聊天响应契约
     }, input.signal);
 
     if (response.type !== 'text' || !是合法正文(response.text)) {
       throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
     }
 
-    return response.emotion === undefined
-      ? { text: response.text }
-      : { text: response.text, emotion: response.emotion };
+    const reply: {
+      text: string;
+      emotion?: CharacterEmotionLabel;
+      behaviorPlan?: CharacterBehaviorPlan;
+    } = { text: response.text };
+    if (response.emotion !== undefined) reply.emotion = response.emotion;
+
+    // Provider 只恢复正文；行为计划必须再次经过本地角色契约校验。
+    const behaviorPlan = characterBehaviorPlanSchema.safeParse(
+      response.structured_output?.behaviorPlan
+    );
+    if (behaviorPlan.success) {
+      // Zod 可选字段类型包含显式 undefined；这里重建两类可选分支以保持公共契约不变量。
+      if (behaviorPlan.data.kind === 'none') {
+        reply.behaviorPlan = behaviorPlan.data.emotion === undefined
+          ? { kind: 'none' }
+          : { kind: 'none', emotion: behaviorPlan.data.emotion };
+      } else if (behaviorPlan.data.kind === 'play') {
+        reply.behaviorPlan = behaviorPlan.data.emotion === undefined
+          ? { kind: 'play', target: behaviorPlan.data.target }
+          : {
+              kind: 'play',
+              target: behaviorPlan.data.target,
+              emotion: behaviorPlan.data.emotion
+            };
+      } else {
+        reply.behaviorPlan = behaviorPlan.data;
+      }
+    }
+    return reply;
   }
 }
 
