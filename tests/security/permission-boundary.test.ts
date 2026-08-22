@@ -10,10 +10,11 @@ import {
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { AgentLoop, type ModelResponse } from '@myself/agent-core';
+import { AgentLoop, type ModelProvider, type ModelResponse } from '@myself/agent-core';
 import { FileToolService, type RecycleBinPort } from '@myself/file-tools';
 import { taskEventSchema, type TaskEvent, type ToolRequest } from '@myself/shared-types';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
+import { PowerShellTool } from '../../apps/desktop/src/main/agent/powershell-tool';
 import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
 import { PendingActionStore } from '../../apps/desktop/src/main/agent/pending-action-store';
 import {
@@ -29,6 +30,16 @@ import { ConversationChatAdapter } from
 import {
   createMainConversationComposition
 } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
+import type { ConversationBehaviorPort } from
+  '../../apps/desktop/src/main/characters/character-behavior-director';
+import { CharacterBehaviorDirector } from
+  '../../apps/desktop/src/main/characters/character-behavior-director';
+import {
+  BehaviorReflectionDiagnosticPort,
+  createBehaviorReflectionAdapter,
+  type BehaviorReflectionDiagnostic
+} from '../../apps/desktop/src/main/characters/behavior-reflection-adapter';
+import { McpManager } from '../../apps/desktop/src/main/mcp/mcp-manager';
 import {
   parseBridgeLine,
   serializeBridgeCommand
@@ -192,13 +203,19 @@ function securityProfile() {
 
 function conversationSecurityHarness(input: {
   chatText: string;
+  chatResponse?: ModelResponse;
   authorizedRootPath?: string | null;
+  behavior?: ConversationBehaviorPort;
 }) {
   const profile = securityProfile();
   const privacySessions = new PrivacySessionRegistry();
   privacySessions.register('security-conversation', { incognito: true });
   const events: TaskEvent[] = [];
-  const modelRequests: Array<{ tools: unknown[] }> = [];
+  const modelRequests: Array<{
+    tools: unknown[];
+    toolChoice: unknown;
+    responseContract: unknown;
+  }> = [];
   const readAuthorizedRootPath = vi.fn(async () => input.authorizedRootPath ?? null);
   const readPrivacySettings = vi.fn(async () => ({ dataCategories: { file: true } }));
   const createPathPolicy = vi.fn(() => ({ kind: 'path-policy' }));
@@ -225,11 +242,16 @@ function conversationSecurityHarness(input: {
     readPrivacySettings,
     createChatAdapter: () => new ConversationChatAdapter({
       async respond(request) {
-        modelRequests.push({ tools: request.tools });
-        return { type: 'text', text: input.chatText };
+        modelRequests.push({
+          tools: request.tools,
+          toolChoice: request.toolChoice,
+          responseContract: request.responseContract
+        });
+        return input.chatResponse ?? { type: 'text', text: input.chatText };
       }
     }),
     createAgentService,
+    behavior: input.behavior ?? securityBehaviorDouble(),
     emit: event => events.push(event)
   });
   return {
@@ -241,6 +263,72 @@ function conversationSecurityHarness(input: {
     readAuthorizedRootPath,
     readPrivacySettings
   };
+}
+
+function securityBehaviorDouble(
+  overrides: Partial<ConversationBehaviorPort> = {}
+): ConversationBehaviorPort {
+  return {
+    prepareUserPrompt: vi.fn(async text => ({
+      originalText: text,
+      capabilityText: text,
+      explicitDirective: null
+    })),
+    getChatContext: vi.fn(() => ({
+      character: {
+        characterName: '安全角色', semantics: ['idle'],
+        stateNames: [], actionNames: [], tags: []
+      },
+      runtime: {
+        moving: false, dragging: false, carrying: false, movementStopped: false
+      },
+      proactivityMode: 'assistive',
+      recentActions: []
+    })),
+    completeUserPrompt: vi.fn(),
+    handleTaskEvent: vi.fn(),
+    applyPlaybackFeedback: vi.fn(),
+    reset: vi.fn(),
+    close: vi.fn(async () => undefined),
+    ...overrides
+  };
+}
+
+function movementLockDirector() {
+  const saveMovementStopped = vi.fn<(stopped: boolean) => Promise<void>>();
+  const behavior = {
+    getPublicBehaviorCatalog: vi.fn(() => ({
+      characterName: '安全角色', semantics: ['idle'] as const,
+      stateNames: [], actionNames: [], tags: []
+    })),
+    getRecentPublicActions: vi.fn(() => []),
+    resolveBehaviorTarget: vi.fn(() => { throw new Error('CHARACTER_ACTION_UNAVAILABLE'); }),
+    isMovementBehaviorTarget: vi.fn(() => false),
+    requestDirectedBehavior: vi.fn(() => ({ kind: 'none' as const })),
+    requestProactiveBehavior: vi.fn(() => ({ kind: 'none' as const })),
+    isMovementAgentIntent: vi.fn(() => false),
+    handleAgentIntent: vi.fn(() => ({ kind: 'none' as const })),
+    handleTaskEvent: vi.fn(() => ({ kind: 'none' as const })),
+    applyPlaybackFeedback: vi.fn(),
+    advance: vi.fn(() => []),
+    handleActiveCharacterChanged: vi.fn(async () => undefined),
+    close: vi.fn()
+  };
+  const director = new CharacterBehaviorDirector({
+    behavior,
+    motion: {
+      getSnapshot: () => ({
+        revision: 0, timestampMs: 0, position: { x: 0, y: 0 }, target: null,
+        direction: 'right', moving: false, carrying: false
+      }),
+      requestIntent: vi.fn(),
+      stop: vi.fn()
+    },
+    initialGeneration: 'security-generation',
+    initialSettings: { movementStopped: false, proactivityMode: 'assistive' },
+    saveMovementStopped
+  });
+  return { director, saveMovementStopped };
 }
 
 describe('权限边界安全回归', () => {
@@ -260,12 +348,141 @@ describe('权限边界安全回归', () => {
     ))
       .resolves.toBeUndefined();
 
-    expect(harness.modelRequests).toEqual([{ tools: [] }]);
+    expect(harness.modelRequests).toEqual([{
+      tools: [],
+      toolChoice: 'none',
+      responseContract: expect.objectContaining({ type: 'json_object', name: 'character_chat' })
+    }]);
     expect(harness.readAuthorizedRootPath).not.toHaveBeenCalled();
     expect(harness.readPrivacySettings).not.toHaveBeenCalled();
     expect(harness.createAgentService).not.toHaveBeenCalled();
     expect(harness.createPathPolicy).not.toHaveBeenCalled();
     await harness.composition.close();
+  });
+
+  test('普通聊天与静默反思均为无工具请求且不触达文件、PowerShell 或 MCP runtime', async () => {
+    const fileRead = vi.spyOn(FileToolService.prototype, 'executeRead');
+    const filePreview = vi.spyOn(FileToolService.prototype, 'preview');
+    const powershellPreview = vi.spyOn(PowerShellTool.prototype, 'preview');
+    const mcpConnect = vi.spyOn(McpManager.prototype, 'connect');
+    const chat = conversationSecurityHarness({ chatText: '普通聊天安全回复' });
+    await chat.composition.coordinator.submit('只聊桌宠，不执行本地能力');
+
+    const reflectionRequests: Parameters<ModelProvider['respond']>[0][] = [];
+    const diagnostics = new BehaviorReflectionDiagnosticPort();
+    const reflection = createBehaviorReflectionAdapter({
+      createProvider: () => ({
+        async respond(request) {
+          reflectionRequests.push(request);
+          return { type: 'text', text: 'private-reflection', structured_output: {} };
+        }
+      }),
+      diagnostics
+    });
+    await reflection.reflect({
+      context: securityBehaviorDouble().getChatContext(),
+      signal: new AbortController().signal
+    });
+
+    expect(reflectionRequests).toHaveLength(1);
+    expect(reflectionRequests[0]).toMatchObject({
+      tools: [],
+      toolChoice: 'none',
+      responseContract: { type: 'json_object', name: 'character_chat' }
+    });
+    expect(chat.createAgentService).not.toHaveBeenCalled();
+    expect(fileRead).not.toHaveBeenCalled();
+    expect(filePreview).not.toHaveBeenCalled();
+    expect(powershellPreview).not.toHaveBeenCalled();
+    expect(mcpConnect).not.toHaveBeenCalled();
+    await reflection.close();
+    await chat.composition.close();
+  });
+
+  test.each(['stop_movement', 'resume_movement'] as const)(
+    'Provider 与反思建议 %s 均不能写入持久停止锁',
+    async kind => {
+      const chatLock = movementLockDirector();
+      const chat = conversationSecurityHarness({
+        chatText: '保留的普通回复',
+        chatResponse: {
+          type: 'text',
+          text: '保留的普通回复',
+          structured_output: { behaviorPlan: { kind } }
+        },
+        behavior: chatLock.director
+      });
+      await chat.composition.coordinator.submit('讨论桌宠活动状态');
+
+      const reflectionLock = movementLockDirector();
+      const diagnostics = new BehaviorReflectionDiagnosticPort();
+      const reflection = createBehaviorReflectionAdapter({
+        createProvider: () => ({
+          async respond() {
+            return {
+              type: 'text', text: 'private-reflection',
+              structured_output: { behaviorPlan: { kind } }
+            };
+          }
+        }),
+        diagnostics
+      });
+      const reflected = await reflection.reflect({
+        context: reflectionLock.director.getChatContext(),
+        signal: new AbortController().signal
+      });
+      if (reflected) reflectionLock.director.requestBehaviorPlan(reflected, 'reflection');
+
+      expect(chatLock.saveMovementStopped).not.toHaveBeenCalled();
+      expect(reflectionLock.saveMovementStopped).not.toHaveBeenCalled();
+      expect(reflected).toBeNull();
+      await reflection.close();
+      await chat.composition.close();
+    }
+  );
+
+  test('反思诊断只发布稳定白名单字段且不包含正文、路径、坐标或角色私有 ID', async () => {
+    const sentinels = {
+      text: `private-reflection-${crypto.randomUUID()}`,
+      path: `C:\\private-${crypto.randomUUID()}\\secret.txt`,
+      characterId: `private-character-${crypto.randomUUID()}`
+    };
+    const diagnostics = new BehaviorReflectionDiagnosticPort();
+    const events: BehaviorReflectionDiagnostic[] = [];
+    diagnostics.subscribe(event => events.push(event));
+    const reflection = createBehaviorReflectionAdapter({
+      createProvider: () => ({
+        async respond() {
+          return { type: 'text', text: sentinels.text, structured_output: {} };
+        }
+      }),
+      diagnostics,
+      now: () => 10
+    });
+
+    await reflection.reflect({
+      context: securityBehaviorDouble().getChatContext(),
+      signal: new AbortController().signal
+    });
+
+    expect(events).toEqual([
+      { code: 'BEHAVIOR_REFLECTION_STARTED', phase: 'started' },
+      {
+        code: 'BEHAVIOR_REFLECTION_DROPPED', phase: 'dropped',
+        durationMs: 0, reasonCode: 'NO_PLAN'
+      }
+    ]);
+    expect(JSON.stringify(events)).not.toContain(sentinels.text);
+    expect(JSON.stringify(events)).not.toContain(sentinels.path);
+    expect(JSON.stringify(events)).not.toContain(sentinels.characterId);
+    for (const event of events) {
+      expect(Object.keys(event).sort()).toEqual(
+        event.phase === 'started'
+          ? ['code', 'phase']
+          : ['code', 'durationMs', 'phase', 'reasonCode']
+      );
+    }
+    await reflection.close();
   });
 
   test('明确文件任务才读取授权且无授权稳定失败并不创建 Agent', async () => {

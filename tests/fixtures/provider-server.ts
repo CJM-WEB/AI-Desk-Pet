@@ -3,9 +3,13 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { ModelMessage, ModelRequest, ModelResponse } from '@myself/agent-core';
 
+export type ProviderInspectionRequest = ModelRequest & Readonly<{
+  toolChoiceWasExplicit: boolean;
+}>;
+
 export interface ProviderStep {
   response: ModelResponse;
-  inspect?: (request: ModelRequest) => void;
+  inspect?: (request: ProviderInspectionRequest) => void;
   gate?: ProviderResponseGate;
 }
 
@@ -101,7 +105,7 @@ export async function startProviderServer(
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
 
-    let parsed: ModelRequest;
+    let parsed: ProviderInspectionRequest;
     let rawRequest: unknown;
     try {
       rawRequest = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -212,10 +216,22 @@ function normalizeAssistantToolRequest(message: Record<string, unknown>) {
   };
 }
 
-function normalizeRequest(value: unknown): ModelRequest {
+function normalizeRequest(value: unknown): ProviderInspectionRequest {
   if (!isRecord(value) || !Array.isArray(value.messages) || !Array.isArray(value.tools)) {
     throw new Error('请求格式无效');
   }
+  const tools = value.tools as ModelRequest['tools'];
+  const rawToolChoice = value.tool_choice;
+  const toolChoiceWasExplicit = rawToolChoice !== undefined;
+  const toolChoice = rawToolChoice === undefined
+    ? tools.length === 0 ? 'none' : 'auto'
+    : rawToolChoice;
+  if (toolChoice !== 'auto' && toolChoice !== 'required' && toolChoice !== 'none') {
+    throw new Error('工具选择策略无效');
+  }
+  const reasoningMode = isRecord(value.thinking) && value.thinking.type === 'disabled'
+    ? 'disabled'
+    : 'provider_default';
   const messages = value.messages.map((message): ModelMessage => {
     if (!isRecord(message) || typeof message.role !== 'string') {
       throw new Error('消息格式无效');
@@ -246,7 +262,8 @@ function normalizeRequest(value: unknown): ModelRequest {
       content: typeof message.content === 'string' ? message.content : ''
     };
   });
-  return { messages, tools: value.tools as ModelRequest['tools'] };
+  // inspect 只观察本次请求契约；这些字段不进入去标识化持久摘要。
+  return { messages, tools, toolChoice, reasoningMode, toolChoiceWasExplicit };
 }
 
 function compatibleResponse(response: ModelResponse): unknown {
@@ -254,8 +271,11 @@ function compatibleResponse(response: ModelResponse): unknown {
     return {
       choices: [{
         message: {
-          content: response.text,
-          ...((response.emotion !== undefined || response.behaviorIntent !== undefined)
+          content: response.structured_output === undefined
+            ? response.text
+            : JSON.stringify({ text: response.text, ...response.structured_output }),
+          ...((response.structured_output === undefined
+            && (response.emotion !== undefined || response.behaviorIntent !== undefined))
             ? {
                 metadata: {
                   ...(response.emotion === undefined ? {} : { emotion: response.emotion }),

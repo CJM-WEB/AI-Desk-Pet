@@ -154,6 +154,7 @@ describe('preload 公开 API', () => {
       'openPetContextMenu',
       'getPetInteractionProbe',
       'getCharacterBehaviorProbe',
+      'getCharacterMotionDeltaProbe',
       'openChat',
       'openSettings',
       'openCharacterWorkshop',
@@ -285,6 +286,11 @@ describe('受限桌宠窗口交互 preload API', () => {
     await exposedApi?.openPetContextMenu();
     await exposedApi?.getPetInteractionProbe?.();
     await exposedApi?.getCharacterBehaviorProbe?.();
+    await expect(exposedApi?.getCharacterMotionDeltaProbe?.()).resolves.toEqual({
+      moved: false,
+      horizontal: 0,
+      vertical: 0
+    });
 
     expect(invoke).toHaveBeenNthCalledWith(
       1,
@@ -345,6 +351,35 @@ describe('受限桌宠窗口交互 preload API', () => {
       actionId: 'idle-main',
       playbackStatus: 'scheduled'
     });
+  });
+
+  test('运动差值探针以首个合法快照为基线且不公开绝对位置', async () => {
+    const motionListener = on.mock.calls.find(
+      ([channel]) => channel === ipcChannels.characterMotionEvent
+    )?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
+    expect(motionListener).toBeTypeOf('function');
+    motionListener?.({}, { type: 'snapshot', snapshot: {
+      revision: 1,
+      timestampMs: 100,
+      position: { x: 100, y: 200 },
+      target: { x: 100, y: 200 },
+      direction: 'right',
+      moving: false,
+      carrying: false
+    } });
+    motionListener?.({}, { type: 'snapshot', snapshot: {
+      revision: 2,
+      timestampMs: 200,
+      position: { x: 94, y: 212 },
+      target: { x: 94, y: 212 },
+      direction: 'left',
+      moving: false,
+      carrying: false
+    } });
+
+    const probe = await exposedApi?.getCharacterMotionDeltaProbe?.();
+    expect(probe).toEqual({ moved: true, horizontal: -6, vertical: 12 });
+    expect(Object.keys(probe ?? {}).sort()).toEqual(['horizontal', 'moved', 'vertical']);
   });
 
   test('当前令牌的终态不被延迟返回的 started 覆盖', async () => {

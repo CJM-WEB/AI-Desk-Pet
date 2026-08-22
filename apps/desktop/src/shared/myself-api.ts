@@ -24,6 +24,7 @@ import type {
   CharacterActionFeedbackInput,
   CharacterActionMilestoneInput,
   CharacterBehaviorProbe,
+  CharacterMotionDeltaProbe,
   CharacterMotionEvent,
   CharacterMotionSnapshot
 } from './character-motion-ipc';
@@ -133,6 +134,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   reportCharacterActionFeedback(input: CharacterActionFeedbackInput): Promise<void>;
   reportCharacterActionMilestone(input: CharacterActionMilestoneInput): Promise<void>;
   getCharacterBehaviorProbe?(): Promise<CharacterBehaviorProbe>;
+  getCharacterMotionDeltaProbe?(): Promise<CharacterMotionDeltaProbe>;
   openChat(): Promise<void>;
   openSettings(): Promise<void>;
   openCharacterWorkshop(): Promise<void>;

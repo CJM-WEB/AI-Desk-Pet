@@ -123,6 +123,29 @@ describe('ConversationChatAdapter', () => {
     });
   });
 
+  test('把 JSON Output 行为计划中的合法情绪投影为聊天情绪', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '今天真开心。',
+      structured_output: {
+        text: '今天真开心。',
+        behaviorPlan: { kind: 'none', emotion: 'happy' }
+      }
+    });
+    const adapter = new ConversationChatAdapter(provider);
+
+    await expect(adapter.respond({
+      history: [],
+      text: '我今天很开心',
+      behaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      text: '今天真开心。',
+      emotion: 'happy',
+      behaviorPlan: { kind: 'none', emotion: 'happy' }
+    });
+  });
+
   test('丢弃非法行为计划并保留正文与既有合法情绪', async () => {
     const provider = 响应为({
       type: 'text',

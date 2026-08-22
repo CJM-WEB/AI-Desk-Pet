@@ -224,6 +224,11 @@ export interface ElectronAppFixture {
     actionId: string | null;
     playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
   }>;
+  getCharacterMotionDeltaProbe(): Promise<{
+    moved: boolean;
+    horizontal: number;
+    vertical: number;
+  }>;
   getConversationProbe(): Promise<{
     phase: 'idle' | 'listening' | 'thinking' | 'awaiting_confirmation'
       | 'acting' | 'success' | 'error' | 'cancelled';
@@ -1361,6 +1366,34 @@ export async function createElectronAppFixture(
           || Object.keys(probe).length !== 5
         ) {
           throw new Error('ELECTRON_E2E_BEHAVIOR_PROBE_RESULT_INVALID');
+        }
+        return probe;
+      },
+      async getCharacterMotionDeltaProbe() {
+        if (!browser || !('contexts' in browser) || typeof browser.contexts !== 'function') {
+          throw new Error('ELECTRON_E2E_PROBE_BROWSER_UNAVAILABLE');
+        }
+        const petPage = browser.contexts()
+          .flatMap(context => context.pages())
+          .find(page => {
+            try {
+              return new URL(page.url()).searchParams.get('view') === 'pet';
+            } catch {
+              return false;
+            }
+          });
+        if (!petPage) throw new Error('ELECTRON_E2E_PROBE_PET_PAGE_UNAVAILABLE');
+        const probe = await petPage.evaluate(async () => (
+          window.myself.getCharacterMotionDeltaProbe?.()
+        ));
+        if (
+          !probe
+          || typeof probe.moved !== 'boolean'
+          || !Number.isFinite(probe.horizontal)
+          || !Number.isFinite(probe.vertical)
+          || Object.keys(probe).length !== 3
+        ) {
+          throw new Error('ELECTRON_E2E_MOTION_DELTA_PROBE_RESULT_INVALID');
         }
         return probe;
       },

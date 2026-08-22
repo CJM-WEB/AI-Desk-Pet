@@ -32,6 +32,91 @@ function requestStatusBeforeBodyEnds(
 }
 
 describe('脚本化 Provider 生命周期', () => {
+  test('inspect 可读取 tool_choice 且请求摘要不持久该字段', async () => {
+    let inspectedToolChoice: unknown;
+    let inspectedToolChoiceWasExplicit = false;
+    const provider = await startProviderServer([{
+      response: { type: 'text', text: '已收到' },
+      inspect: request => {
+        inspectedToolChoice = request.toolChoice;
+        inspectedToolChoiceWasExplicit = request.toolChoiceWasExplicit;
+      }
+    }]);
+
+    try {
+      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${provider.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'reflection-model',
+          messages: [{ role: 'user', content: '反思私密正文' }],
+          tools: [],
+          tool_choice: 'none',
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      expect(response.status).toBe(200);
+      expect(inspectedToolChoice).toBe('none');
+      expect(inspectedToolChoiceWasExplicit).toBe(true);
+      expect(provider.requests).toEqual([{
+        method: 'POST',
+        model: 'reflection-model',
+        messageRoleCounts: { system: 0, user: 1, assistant: 0, tool: 0 },
+        toolCount: 0
+      }]);
+      expect(JSON.stringify(provider.requests)).not.toMatch(/tool_choice|response_format|私密/iu);
+    } finally {
+      await provider.close();
+    }
+  });
+
+  test('结构化响应按真实 JSON Output 线格式返回且请求仍为零工具', async () => {
+    const provider = await startProviderServer([{
+      response: {
+        type: 'text',
+        text: '向左移动',
+        structured_output: {
+          text: '向左移动',
+          behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+        }
+      },
+      inspect: request => {
+        expect(request.tools).toEqual([]);
+      }
+    }]);
+
+    try {
+      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${provider.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'structured-model',
+          messages: [{ role: 'user', content: '向左一点' }],
+          tools: []
+        })
+      });
+      const payload = await response.json() as {
+        choices: Array<{ message: { content: string; metadata?: unknown } }>;
+      };
+      expect(JSON.parse(payload.choices[0]!.message.content)).toEqual({
+        text: '向左移动',
+        behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+      });
+      expect(payload.choices[0]!.message).not.toHaveProperty('metadata');
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      await provider.close();
+    }
+  });
+
   test('请求摘要只保留方法、模型、角色计数与工具计数', async () => {
     const provider = await startProviderServer([
       { response: { type: 'text', text: '已收到' } }

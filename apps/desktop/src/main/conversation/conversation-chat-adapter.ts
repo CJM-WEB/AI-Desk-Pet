@@ -79,6 +79,12 @@ export class ConversationChatAdapter {
       response.structured_output?.behaviorPlan
     );
     if (behaviorPlan.success) {
+      // JSON Output 把情绪收敛在行为计划内；继续投影既有情绪事件以兼容角色扩展状态。
+      if (reply.emotion === undefined
+        && (behaviorPlan.data.kind === 'none' || behaviorPlan.data.kind === 'play')
+        && behaviorPlan.data.emotion !== undefined) {
+        reply.emotion = behaviorPlan.data.emotion;
+      }
       // Zod 可选字段类型包含显式 undefined；这里重建两类可选分支以保持公共契约不变量。
       if (behaviorPlan.data.kind === 'none') {
         reply.behaviorPlan = behaviorPlan.data.emotion === undefined

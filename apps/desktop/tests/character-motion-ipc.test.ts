@@ -6,6 +6,7 @@ import { registerCharacterMotionIpc } from '../src/main/ipc/register-ipc';
 import {
   characterActionFeedbackInputSchema,
   characterActionMilestoneInputSchema,
+  characterMotionDeltaProbeSchema,
   characterMotionEventSchema
 } from '../src/shared/character-motion-ipc';
 
@@ -56,6 +57,32 @@ beforeEach(() => {
 });
 
 describe('角色运动严格 IPC', () => {
+  test('E2E 运动差值探针只接受去标识化相对字段', () => {
+    expect(characterMotionDeltaProbeSchema.parse({
+      moved: true,
+      horizontal: -24,
+      vertical: 12
+    })).toEqual({ moved: true, horizontal: -24, vertical: 12 });
+    expect(() => characterMotionDeltaProbeSchema.parse({
+      moved: true,
+      horizontal: -24,
+      vertical: 12,
+      position: { x: 100, y: 200 },
+      actionId: 'private-action',
+      playbackToken: 'private-token'
+    })).toThrow();
+    expect(() => characterMotionDeltaProbeSchema.parse({
+      moved: false,
+      horizontal: Number.POSITIVE_INFINITY,
+      vertical: 0
+    })).toThrow();
+    expect(() => characterMotionDeltaProbeSchema.parse({
+      moved: false,
+      horizontal: 1,
+      vertical: 0
+    })).toThrow();
+  });
+
   test('行为权威、行为动作与旧待机动作都只能携带严格白名单字段', () => {
     expect(characterMotionEventSchema.parse({
       type: 'behavior-authority',

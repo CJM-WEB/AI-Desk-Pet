@@ -574,21 +574,21 @@ export type BehaviorReflectionDiagnostic = Readonly<{
 }>;
 ```
 
-- [ ] **步骤 1：写调度、poll 与反思 RED**
+- [x] **步骤 1：写调度、poll 与反思 RED**
 
   用 fake timers 和固定 random 覆盖 20/60 秒、2/5 分钟：passive 无 timer，assistive 只候选原地动作，autonomous 候选原地动作或短距移动并可反思。单独断言每次 500ms poll 对 V1/V2 都不产生 idle/wander；唯一候选源是 Scheduler。任一 blocker 暂停并保存剩余时间，恢复不补跑；close Abort 反思并使迟到 Promise 无效。同 actionId 连续候选静默跳过并重排。
 
-- [ ] **步骤 2：写生产 Provider 工厂与安全 RED**
+- [x] **步骤 2：写生产 Provider 工厂与安全 RED**
 
   Reflection factory 只接收当前 Provider 工厂与去标识化 `ConversationBehaviorContext`，请求必须是 `tools: []`、`toolChoice: 'none'` 与 `responseContract`；依赖对象没有文件、PowerShell、MCP、history 或 message 端口，返回正文永不公开。失败退避 2/4/8/16/30 分钟。为 started/completed/dropped 分别写诊断 RED，逐项覆盖 `NO_PLAN`、`INVALID_PLAN`、`BLOCKED`、`ABORTED`、`PROVIDER_ERROR`、`STALE_GENERATION` 有限原因码，并断言其他字符串与额外字段被拒绝；payload 不能含正文、路径、坐标、角色私有 ID 或 Provider 原始输出。断言 index 创建一个 Scheduler、一个 Reflection Adapter 和会话专属输出可订阅的脱敏诊断端口；投影的聊天、拖拽、移动、文件任务、确认等待和 close 更新同一个 blockers 快照。
 
-- [ ] **步骤 3：运行 RED**
+- [x] **步骤 3：运行 RED**
 
   运行：`pnpm.cmd exec vitest run --project desktop apps/desktop/tests/character-proactivity-scheduler.test.ts apps/desktop/tests/behavior-reflection-adapter.test.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/tests/character-behavior-service.test.ts apps/desktop/tests/conversation-event-projection.test.ts apps/desktop/tests/main-lifecycle.test.ts`
 
   预期：FAIL，Scheduler、反思、500ms poll 收口或生产组合不存在。
 
-- [ ] **步骤 4：写最小 GREEN 并运行单元门**
+- [x] **步骤 4：写最小 GREEN 并运行单元门**
 
   Scheduler 只发布候选到期，Director 复用任务 3 Service 授权，绝不保存角色状态。反思只读取去标识化上下文，失败只影响下一次退避，并在每次尝试按时序发布白名单诊断；受控终端只订阅该诊断端口。原 `handleIdleDue()` 拆为无候选的 `advance()`；删除或收口旧 V1 `pollLegacyIdle()` 主动路径，避免两个调度器并存。
 
@@ -599,13 +599,13 @@ export type BehaviorReflectionDiagnostic = Readonly<{
 
   预期：PASS；fake timers 结束时无挂起 timer，V1/V2 均没有非 Scheduler 主动动作。
 
-- [ ] **步骤 5：启动桌宠三档验收并清理进程**
+- [x] **步骤 5：启动桌宠三档验收并清理进程**
 
   按“可见窗口会话与受限进程收口”启动本次开发会话。
 
   执行智能体通过可见窗口控制，分别在既有设置界面设为 passive、assistive、autonomous。passive 连续观察超过 60 秒无自主候选；assistive 观察最多三个 20–60 秒区间，只出现原地动作；autonomous 同样观察最多三个区间，记录原地或短距移动。持续空闲 2–5 分钟后，只读取本次会话的 `$stdoutLog`/`$stderrLog`，观察 `BEHAVIOR_REFLECTION_STARTED`，随后观察 `BEHAVIOR_REFLECTION_COMPLETED` 或带有限原因码的 `BEHAVIOR_REFLECTION_DROPPED`，以此证明静默反思真实发生且没有用户可见正文。聊天、拖拽、文件确认与“停下”期间计时必须暂停。关闭后复用“可见窗口会话与受限进程收口”的基线、父链验证、逐 PID 处理和精确临时日志清理流程。
 
-- [ ] **步骤 6：提交任务**
+- [x] **步骤 6：提交任务**
 
   ```powershell
   git add apps/desktop/src/main/characters/character-proactivity-scheduler.ts apps/desktop/tests/character-proactivity-scheduler.test.ts apps/desktop/src/main/characters/behavior-reflection-adapter.ts apps/desktop/tests/behavior-reflection-adapter.test.ts apps/desktop/src/main/characters/character-behavior-director.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/src/main/characters/character-behavior-service.ts apps/desktop/tests/character-behavior-service.test.ts apps/desktop/src/main/conversation/conversation-event-projection.ts apps/desktop/tests/conversation-event-projection.test.ts apps/desktop/src/main/index.ts apps/desktop/tests/main-lifecycle.test.ts
@@ -619,9 +619,18 @@ export type BehaviorReflectionDiagnostic = Readonly<{
 **文件：**
 
 - 修改：`apps/desktop/src/shared/character-motion-ipc.ts`
+- 修改：`apps/desktop/src/shared/myself-api.ts`
 - 修改：`apps/desktop/src/preload/index.ts`
 - 修改：`apps/desktop/tests/character-motion-ipc.test.ts`
+- 修改：`apps/desktop/tests/preload-api.test.ts`
+- 修改：`apps/desktop/tests/preload-production-boundary.test.ts`
+- 修改：`apps/desktop/src/main/conversation/conversation-chat-adapter.ts`
+- 修改：`apps/desktop/tests/conversation-chat-adapter.test.ts`
+- 修改：`apps/desktop/tests/character-workshop-close.test.ts`
+- 修改：`apps/desktop/tests/official-default-character.test.ts`
+- 修改：`tests/fixtures/electron-app.ts`
 - 修改：`tests/fixtures/provider-server.ts`
+- 修改：`tests/integration/provider-server.test.ts`
 - 修改：`tests/integration/desktop-agent.test.ts`
 - 修改：`tests/security/permission-boundary.test.ts`
 - 修改：`tests/e2e/desktop.spec.ts`
@@ -631,21 +640,22 @@ export type BehaviorReflectionDiagnostic = Readonly<{
 
 - 消费：任务 1–6 的已接线生产能力。
 - 产出：仅在 `--myself-e2e-probe` 下存在的去标识化运动 delta，以及最终安全/集成/E2E 证据。
-- E2E probe 只能在测试标志启用时注册；未带标志的生产 Preload 公开 API、IPC 通道和返回值保持不变。
+- 运动 delta probe 与既有测试专用播放探针并列，不替换后者。它只返回从本次 pet Renderer 收到首个合法运动快照起累计的 `{ moved, horizontal, vertical }`：`horizontal`、`vertical` 为有限相对 DIP 差值，`moved` 等价于任一差值非零；Renderer 重启即建立新基线。调用只读、不重置基线，E2E 在动作前后各读一次并比较差值，因此轮询不会消费状态。
+- E2E probe 只能在测试标志启用时注册；未带标志的生产 Preload 公开 API、IPC 通道和返回值保持不变。运动 delta 不得携带绝对位置、目标、时间戳、角色或动作 ID、播放令牌、路径或正文，也不得新增 Main 坐标写入口。
 
-- [ ] **步骤 1：写汇总安全与 E2E RED**
+- [x] **步骤 1：写汇总安全与 E2E RED**
 
   `desktop-agent.test.ts` 覆盖同次正文与标准/自定义动作、relative、region、缺动作、停止/恢复和跨 Provider 披露后上下文重读；`permission-boundary.test.ts` 断言 chat/reflection `tools=[]`，文件 runtime、PowerShellTool 与 MCP adapter 零调用，Provider/反思 stop/resume 零持久锁调用，并验证反思诊断只含白名单字段、不含正文/路径/坐标/私有 ID。E2E 使用 JSON Output fixture 覆盖四向/区域 delta、缺动作不 idle、停止跨重启、停止后聊天原地动作、三档差异、反思零工具和 close 后无迟到动作；位置只读 delta。
 
-- [ ] **步骤 2：运行 RED**
+- [x] **步骤 2：运行 RED**
 
   运行：`pnpm.cmd exec vitest run --config tests/vitest.config.ts tests/integration/desktop-agent.test.ts tests/security/permission-boundary.test.ts`
 
   预期：FAIL，缺完整纵向安全断言或 E2E probe；不在本步骤启动 Electron。
 
-- [ ] **步骤 3：写最小 GREEN 并运行非 GUI 门**
+- [x] **步骤 3：写最小 GREEN 并运行非 GUI 门**
 
-  probe 只返回 `{ moved, horizontal, vertical }`，不返回绝对位置。日志探针只允许稳定 code、阶段、布尔值、计数和耗时，禁止正文、绝对路径与绝对坐标。
+  运动 delta probe 只返回 `{ moved, horizontal, vertical }`，不返回绝对位置；既有测试专用播放探针继续只服务动作播放闭环断言。日志探针只允许稳定 code、阶段、布尔值、计数和耗时，禁止正文、绝对路径与绝对坐标。三档与反思 E2E 使用真实生产时钟，不新增缩短调度时间或强制触发反思的生产/测试 seam。
 
   ```powershell
   pnpm.cmd exec vitest run --config tests/vitest.config.ts tests/integration/desktop-agent.test.ts tests/security/permission-boundary.test.ts
@@ -659,7 +669,7 @@ export type BehaviorReflectionDiagnostic = Readonly<{
 
   预期：PASS；上述命令不启动 Electron/Playwright。
 
-- [ ] **步骤 4：运行两个完整终验门并检查残留进程**
+- [x] **步骤 4：运行两个完整终验门并检查残留进程**
 
   用户已允许两次完整 E2E；依次运行：
 
@@ -670,7 +680,7 @@ export type BehaviorReflectionDiagnostic = Readonly<{
 
   两者都会启动真实 Electron/Playwright，必须分别通过。每个命令都严格执行“命令前记录基线与启动时间 → 以受控会话启动并记录测试根 PID → 结束后枚举父链候选 → 列出证明字段后逐 PID 精确清理”；完成第一个完整流程后才启动下一条，不能在命令结束后补记基线。若出现 Windows 错误报告弹窗，记录时间与可见错误码后继续门禁。只有桌宠或测试进程实际崩溃、命令测试失败，或出现反复弹窗、系统无响应等系统不稳定迹象时，才停止后续 GUI 命令并转入诊断；未完成门禁不得写成通过。
 
-- [ ] **步骤 5：记录验收、差异检查与最终提交**
+- [x] **步骤 5：记录验收、差异检查与最终提交**
 
   `behavior-director-acceptance.md` 只在两个完整门禁都通过后记录真实日期、环境、命令、退出码、测试计数、每个里程碑观察与未覆盖项。Windows 窗口边界、跨显示器观感与动作自然度仍写“待用户人工确认”；明确本阶段只用窗口矩形，视觉包围盒/碰撞/贴边尚未完成。
 
@@ -683,7 +693,7 @@ export type BehaviorReflectionDiagnostic = Readonly<{
   预期：`git diff --check` 无输出；website 差异为空；证据断言至少命中新协议、实现、测试与验收记录。随后才可提交：
 
   ```powershell
-  git add apps/desktop/src/shared/character-motion-ipc.ts apps/desktop/src/preload/index.ts apps/desktop/tests/character-motion-ipc.test.ts tests/fixtures/provider-server.ts tests/integration/desktop-agent.test.ts tests/security/permission-boundary.test.ts tests/e2e/desktop.spec.ts docs/operations/behavior-director-acceptance.md
+  git add apps/desktop/src/main/conversation/conversation-chat-adapter.ts apps/desktop/src/preload/index.ts apps/desktop/src/shared/character-motion-ipc.ts apps/desktop/src/shared/myself-api.ts apps/desktop/tests/character-motion-ipc.test.ts apps/desktop/tests/character-workshop-close.test.ts apps/desktop/tests/conversation-chat-adapter.test.ts apps/desktop/tests/official-default-character.test.ts apps/desktop/tests/preload-api.test.ts apps/desktop/tests/preload-production-boundary.test.ts tests/e2e/desktop.spec.ts tests/fixtures/electron-app.ts tests/fixtures/provider-server.ts tests/integration/desktop-agent.test.ts tests/integration/provider-server.test.ts tests/security/permission-boundary.test.ts docs/operations/behavior-director-acceptance.md docs/superpowers/plans/2026-08-12-ai-pet-behavior-director.md
   git commit -m "feat: 完成桌宠行为导演终验"
   ```
 

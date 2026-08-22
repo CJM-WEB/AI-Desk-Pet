@@ -46,6 +46,7 @@ describe('生产 preload 探针边界', () => {
     expect(exposedApi).toBeDefined();
     expect(exposedApi).not.toHaveProperty('getPetInteractionProbe');
     expect(exposedApi).not.toHaveProperty('getCharacterBehaviorProbe');
+    expect(exposedApi).not.toHaveProperty('getCharacterMotionDeltaProbe');
     expect(exposedApi).toHaveProperty('reportCharacterActionMilestone');
     expect(exposedApi).not.toHaveProperty('getFileTaskTransactionSnapshot');
     expect(exposedApi).not.toHaveProperty('moveToRecycleBin');

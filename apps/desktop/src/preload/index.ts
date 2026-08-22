@@ -20,8 +20,10 @@ import type {
 import { characterRecoverySnapshotResultSchema } from '../shared/character-ipc';
 import {
   characterMotionEventSchema,
+  characterMotionDeltaProbeSchema,
   characterMotionSnapshotResultSchema,
   type CharacterBehaviorProbe,
+  type CharacterMotionDeltaProbe,
   type CharacterMotionEvent,
   type CharacterMotionSnapshot
 } from '../shared/character-motion-ipc';
@@ -42,20 +44,38 @@ let behaviorProbe: CharacterBehaviorProbe = {
   playbackStatus: null
 };
 let behaviorProbePlaybackToken: string | null = null;
+let motionProbeBaseline: { x: number; y: number } | null = null;
+let motionDeltaProbe: CharacterMotionDeltaProbe = {
+  moved: false,
+  horizontal: 0,
+  vertical: 0
+};
 
 if (e2eProbeEnabled) {
-  // preload 在 Main 初始化行为服务前监听，因此不会遗漏首个待机动作。
+  // preload 在 Main 初始化行为与运动服务前监听，测试探针不会遗漏首个合法事件。
   ipcRenderer.on(ipcChannels.characterMotionEvent, (_event, payload: unknown) => {
     const parsed = characterMotionEventSchema.safeParse(payload);
-    if (!parsed.success || parsed.data.type !== 'behavior-action') return;
-    behaviorProbePlaybackToken = parsed.data.playbackToken;
-    behaviorProbe = {
-      revision: parsed.data.revision,
-      primaryStateId: parsed.data.stateId,
-      modifierStateIds: [...(parsed.data.modifierStateIds ?? [])],
-      actionId: parsed.data.actionId,
-      playbackStatus: 'scheduled'
-    };
+    if (!parsed.success) return;
+    if (parsed.data.type === 'behavior-action') {
+      behaviorProbePlaybackToken = parsed.data.playbackToken;
+      behaviorProbe = {
+        revision: parsed.data.revision,
+        primaryStateId: parsed.data.stateId,
+        modifierStateIds: [...(parsed.data.modifierStateIds ?? [])],
+        actionId: parsed.data.actionId,
+        playbackStatus: 'scheduled'
+      };
+      return;
+    }
+    if (parsed.data.type !== 'snapshot') return;
+    motionProbeBaseline ??= { ...parsed.data.snapshot.position };
+    const horizontal = parsed.data.snapshot.position.x - motionProbeBaseline.x;
+    const vertical = parsed.data.snapshot.position.y - motionProbeBaseline.y;
+    motionDeltaProbe = characterMotionDeltaProbeSchema.parse({
+      moved: horizontal !== 0 || vertical !== 0,
+      horizontal,
+      vertical
+    });
   });
 }
 
@@ -262,7 +282,8 @@ const api: MyselfApi = {
         getPetInteractionProbe: async () => (
           ipcRenderer.invoke(ipcChannels.petInteractionProbeGet)
         ),
-        getCharacterBehaviorProbe: async () => structuredClone(behaviorProbe)
+        getCharacterBehaviorProbe: async () => structuredClone(behaviorProbe),
+        getCharacterMotionDeltaProbe: async () => structuredClone(motionDeltaProbe)
       }
     : {}),
   openChat: (): Promise<void> => ipcRenderer.invoke(ipcChannels.windowOpenChat),

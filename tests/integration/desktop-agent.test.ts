@@ -10,7 +10,12 @@ import {
   type ModelProvider,
   type ModelResponse
 } from '@myself/agent-core';
-import type { CharacterManifestV2 } from '@myself/character-runtime';
+import type {
+  BehaviorTarget,
+  CharacterBehaviorAuthorization,
+  CharacterManifestV2,
+  ResolvedBehaviorTarget
+} from '@myself/character-runtime';
 import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
 import { FileToolService } from '@myself/file-tools';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
@@ -34,6 +39,10 @@ import {
   createMainConversationComposition,
   type MainConversationAgentFactoryInput
 } from '../../apps/desktop/src/main/conversation/main-conversation-composition';
+import type { ConversationBehaviorPort } from
+  '../../apps/desktop/src/main/characters/character-behavior-director';
+import { CharacterBehaviorDirector } from
+  '../../apps/desktop/src/main/characters/character-behavior-director';
 import {
   createAuthorizedRoot,
   type AuthorizedRootFixture
@@ -506,9 +515,11 @@ const conversationCross = conversationProfile(
 );
 
 function conversationIntegrationHarness(input: {
-  responses: string[];
+  responses: Array<string | ModelResponse>;
   authorizedRootPath?: string | null;
   incognito?: boolean;
+  behavior?: ConversationBehaviorPort;
+  createChatAdapter?: () => ConversationChatAdapter;
 }) {
   const privacySessions = new PrivacySessionRegistry();
   privacySessions.register('integration-conversation', {
@@ -576,16 +587,20 @@ function conversationIntegrationHarness(input: {
     }),
     readAuthorizedRootPath,
     readPrivacySettings,
-    createChatAdapter: profile => new ConversationChatAdapter({
+    createChatAdapter: profile => input.createChatAdapter?.() ?? new ConversationChatAdapter({
       async respond(request) {
         chatRequests.push({ profileId: profile.id, request });
         const response = input.responses.shift();
         if (!response) throw new Error('聊天响应脚本已耗尽');
-        return { type: 'text', text: response };
+        return typeof response === 'string' ? { type: 'text', text: response } : response;
       }
     }),
     createAgentService,
-    emit: event => events.push(event)
+    behavior: input.behavior ?? conversationBehaviorDouble(),
+    emit: event => {
+      input.behavior?.handleTaskEvent(event);
+      events.push(event);
+    }
   });
   return {
     agentFactoryInputs,
@@ -600,6 +615,111 @@ function conversationIntegrationHarness(input: {
       chatProfileId = profileId;
     }
   };
+}
+
+function conversationBehaviorDouble(
+  overrides: Partial<ConversationBehaviorPort> = {}
+): ConversationBehaviorPort {
+  return {
+    prepareUserPrompt: vi.fn(async text => ({
+      originalText: text,
+      capabilityText: text,
+      explicitDirective: null
+    })),
+    getChatContext: vi.fn(() => ({
+      character: {
+        characterName: '集成角色',
+        semantics: ['idle', 'move', 'celebrate'],
+        stateNames: ['Agent 专注'],
+        actionNames: ['专注动作'],
+        tags: []
+      },
+      runtime: {
+        moving: false,
+        dragging: false,
+        carrying: false,
+        movementStopped: false
+      },
+      proactivityMode: 'assistive',
+      recentActions: []
+    })),
+    completeUserPrompt: vi.fn(),
+    handleTaskEvent: vi.fn(),
+    applyPlaybackFeedback: vi.fn(),
+    reset: vi.fn(),
+    close: vi.fn(async () => undefined),
+    ...overrides
+  };
+}
+
+/** B7 纵向用例只伪造既有 Service/Motion 端口，真实执行 Coordinator、Adapter 与 Director。 */
+function behaviorDirectorIntegrationFixture() {
+  let token = 0;
+  const notices: Array<{ code: string; message: string }> = [];
+  const behavior = {
+    getPublicBehaviorCatalog: vi.fn(() => ({
+      characterName: '集成角色',
+      semantics: ['idle', 'move', 'celebrate'] as const,
+      stateNames: ['Agent 专注'],
+      actionNames: ['专注动作'],
+      tags: []
+    })),
+    getRecentPublicActions: vi.fn(() => []),
+    resolveBehaviorTarget: vi.fn((target: BehaviorTarget): ResolvedBehaviorTarget => {
+      if (target.kind === 'semantic') return target;
+      if (target.kind === 'action_name' && target.name === '专注动作') {
+        return { kind: 'action', actionId: 'focus-action' };
+      }
+      throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+    }),
+    isMovementBehaviorTarget: vi.fn((target: ResolvedBehaviorTarget) => (
+      target.kind === 'semantic' && target.semantic === 'move'
+    )),
+    requestDirectedBehavior: vi.fn((target: ResolvedBehaviorTarget): CharacterBehaviorAuthorization => ({
+      kind: 'play',
+      actionId: target.kind === 'action'
+        ? target.actionId
+        : target.kind === 'state'
+          ? `${target.stateId}-action`
+          : `${target.semantic}-action`,
+      playbackToken: `integration-chat-token-${++token}`,
+      semantic: target.kind === 'semantic' ? target.semantic : 'think'
+    })),
+    requestProactiveBehavior: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
+    isMovementAgentIntent: vi.fn(() => false),
+    handleAgentIntent: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
+    handleTaskEvent: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
+    applyPlaybackFeedback: vi.fn(),
+    advance: vi.fn(() => []),
+    handleActiveCharacterChanged: vi.fn(async () => undefined),
+    close: vi.fn()
+  };
+  const motion = {
+    getSnapshot: vi.fn(() => ({
+      revision: 1,
+      timestampMs: 0,
+      position: { x: 0, y: 0 },
+      target: null,
+      direction: 'right' as const,
+      moving: false,
+      carrying: false
+    })),
+    requestIntent: vi.fn(),
+    stop: vi.fn()
+  };
+  const saveMovementStopped = vi.fn<(stopped: boolean) => Promise<void>>();
+  const director = new CharacterBehaviorDirector({
+    behavior,
+    motion,
+    initialGeneration: 'integration-chat-generation',
+    initialSettings: { movementStopped: false, proactivityMode: 'assistive' },
+    saveMovementStopped,
+    publishNotice: notice => notices.push(notice)
+  });
+  saveMovementStopped.mockImplementation(async stopped => {
+    director.applyBehaviorSettings({ movementStopped: stopped, proactivityMode: 'assistive' });
+  });
+  return { behavior, director, motion, notices, saveMovementStopped };
 }
 
 function latestDisclosureRequest(events: TaskEvent[]): string {
@@ -775,6 +895,176 @@ describe('桌面会话分流纵向集成', () => {
     expect(fixture.chatRequests[2]?.request.messages.slice(1)).toEqual([
       { role: 'user', content: '再次发送' }
     ]);
+    await fixture.composition.close();
+  });
+
+  test.each([
+    ['标准语义', { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' } }],
+    ['当前角色自定义动作名', { kind: 'play', target: { kind: 'action_name', name: '专注动作' } }]
+  ] as const)('同一次普通聊天 Provider 响应同时提交正文与%s', async (_label, behaviorPlan) => {
+    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const fixture = conversationIntegrationHarness({
+      responses: [{
+        type: 'text',
+        text: '正文与动作来自同一次响应',
+        structured_output: { behaviorPlan }
+      }],
+      behavior: behaviorFixture.director
+    });
+
+    await fixture.composition.coordinator.submit('请自然回应并配合动作');
+
+    expect(fixture.chatRequests).toHaveLength(1);
+    expect(fixture.chatRequests[0]?.request).toMatchObject({
+      tools: [],
+      toolChoice: 'none',
+      responseContract: { type: 'json_object', name: 'character_chat' }
+    });
+    expect(fixture.events).toContainEqual({
+      type: 'message', role: 'assistant', text: '正文与动作来自同一次响应'
+    });
+    expect(behaviorFixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
+    await fixture.composition.close();
+  });
+
+  test.each([
+    ['向左一点', { kind: 'relative', direction: 'left', distance: 'near' }],
+    ['去右下角', { kind: 'region', region: 'bottom_right' }]
+  ] as const)('明确移动“%s”在普通聊天 Provider 前取得动作授权并提交对象化运动', async (text, expectedIntent) => {
+    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const providerRespond = vi.fn(async (): Promise<ModelResponse> => ({
+      type: 'text', text: '移动指令已处理', structured_output: {}
+    }));
+    const fixture = conversationIntegrationHarness({
+      responses: [],
+      behavior: behaviorFixture.director,
+      createChatAdapter: () => new ConversationChatAdapter({ respond: providerRespond })
+    });
+
+    await fixture.composition.coordinator.submit(text);
+
+    expect(behaviorFixture.behavior.requestDirectedBehavior).toHaveBeenCalledWith(
+      { kind: 'semantic', semantic: 'move' },
+      { urgency: 100, systemForced: true }
+    );
+    expect(behaviorFixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith(expectedIntent);
+    expect(behaviorFixture.motion.requestIntent.mock.invocationCallOrder[0])
+      .toBeLessThan(providerRespond.mock.invocationCallOrder[0]!);
+    await fixture.composition.close();
+  });
+
+  test('Provider 建议不存在动作时保留正文、发布稳定提示且不以 idle 冒充', async () => {
+    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const fixture = conversationIntegrationHarness({
+      responses: [{
+        type: 'text',
+        text: '仍然保留的自然正文',
+        structured_output: {
+          behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '不存在动作' } }
+        }
+      }],
+      behavior: behaviorFixture.director
+    });
+
+    await fixture.composition.coordinator.submit('普通聊天');
+
+    expect(fixture.events).toContainEqual({
+      type: 'message', role: 'assistant', text: '仍然保留的自然正文'
+    });
+    expect(behaviorFixture.notices).toEqual([{
+      code: 'CHARACTER_ACTION_UNAVAILABLE',
+      message: '当前角色没有可播放的对应动作。'
+    }]);
+    expect(behaviorFixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+    await fixture.composition.close();
+  });
+
+  test.each([
+    ['停下', true],
+    ['恢复活动', false]
+  ] as const)('本地明确“%s”在 Provider 前持久化停止锁', async (text, stopped) => {
+    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const providerRespond = vi.fn(async (): Promise<ModelResponse> => ({
+      type: 'text', text: '普通回复', structured_output: {}
+    }));
+    const fixture = conversationIntegrationHarness({
+      responses: [],
+      behavior: behaviorFixture.director,
+      createChatAdapter: () => new ConversationChatAdapter({ respond: providerRespond })
+    });
+
+    await fixture.composition.coordinator.submit(text);
+
+    expect(behaviorFixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(stopped);
+    expect(behaviorFixture.saveMovementStopped.mock.invocationCallOrder[0])
+      .toBeLessThan(providerRespond.mock.invocationCallOrder[0]!);
+    await fixture.composition.close();
+  });
+
+  test('跨 Provider 披露确认后重新读取当前行为上下文而不复用确认前快照', async () => {
+    let movementStopped = false;
+    const behavior = conversationBehaviorDouble({
+      getChatContext: vi.fn(() => ({
+        character: {
+          characterName: '披露角色', semantics: ['idle'],
+          stateNames: [], actionNames: [], tags: []
+        },
+        runtime: {
+          moving: false, dragging: false, carrying: false, movementStopped
+        },
+        proactivityMode: 'assistive',
+        recentActions: []
+      }))
+    });
+    const fixture = conversationIntegrationHarness({
+      responses: ['来源回复', '跨 Provider 回复'],
+      behavior
+    });
+    await fixture.composition.coordinator.submit('来源消息');
+    fixture.setChatProfile(conversationCross.id);
+    await fixture.composition.coordinator.submit('目标消息');
+    movementStopped = true;
+
+    await fixture.composition.coordinator.resolveHistoryDisclosure(
+      latestDisclosureRequest(fixture.events),
+      'share_once'
+    );
+
+    expect(fixture.chatRequests[1]?.request.messages[0]?.content)
+      .toContain('"movementStopped":true');
+    expect(behavior.getChatContext).toHaveBeenCalledTimes(2);
+    await fixture.composition.close();
+  });
+
+  test('真实 OpenAI-compatible fixture 保留同次 JSON Output 的正文与行为计划', async () => {
+    const providerServer = await startProviderServer([{
+      response: {
+        type: 'text',
+        text: 'fixture 同次正文',
+        structured_output: {
+          behaviorPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' } }
+        }
+      }
+    }]);
+    servers.push(providerServer);
+    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    const provider = new OpenAICompatibleProvider({
+      providerId: 'openai-compatible',
+      modelId: 'behavior-json-model',
+      baseUrl: providerServer.baseUrl
+    }, async () => providerServer.apiKey);
+    const fixture = conversationIntegrationHarness({
+      responses: [],
+      behavior: behaviorFixture.director,
+      createChatAdapter: () => new ConversationChatAdapter(provider)
+    });
+
+    await fixture.composition.coordinator.submit('同次正文与动作');
+
+    expect(fixture.events).toContainEqual({
+      type: 'message', role: 'assistant', text: 'fixture 同次正文'
+    });
+    expect(behaviorFixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
     await fixture.composition.close();
   });
 

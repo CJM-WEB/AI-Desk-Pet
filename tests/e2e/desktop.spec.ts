@@ -26,6 +26,12 @@ type CharacterBehaviorProbe = {
   playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
 };
 
+type CharacterMotionDeltaProbe = {
+  moved: boolean;
+  horizontal: number;
+  vertical: number;
+};
+
 type ConversationE2eProbe = {
   phase: 'idle' | 'listening' | 'thinking' | 'awaiting_confirmation'
     | 'acting' | 'success' | 'error' | 'cancelled';
@@ -223,6 +229,7 @@ type ElectronFixtureModule = {
     }>>;
     getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
+    getCharacterMotionDeltaProbe(): Promise<CharacterMotionDeltaProbe>;
     getConversationProbe(): Promise<ConversationE2eProbe>;
     restart(): Promise<void>;
     dispose(): Promise<void>;
@@ -2994,6 +3001,584 @@ test.describe('真实角色工作室闭环', () => {
 });
 
 test.describe('自主行为最小闭环', () => {
+  /** 重启后只恢复 E2E Provider，不触碰被测的主动行为停止状态。 */
+  const restoreB7ProviderAfterRestart = async (
+    pet: Page,
+    input: { profileId: string; displayName: string; modelId: string; baseUrl: string; apiKey: string }
+  ): Promise<void> => {
+    await pet.evaluate(async ({ profileId, displayName, modelId, baseUrl, apiKey }) => {
+      await window.myself.saveProviderProfile({
+        profile: {
+          id: profileId,
+          displayName,
+          mode: 'custom',
+          protocol: 'openai-compatible',
+          baseUrl,
+          modelId,
+          additionalParameters: {},
+          capabilities: ['chat', 'tools']
+        },
+        secret: apiKey,
+        persistSecret: true
+      });
+      await window.myself.saveModelRoute({
+        primaryProfileId: profileId,
+        chatProfileId: profileId,
+        agentProfileId: profileId,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      });
+    }, input);
+  };
+
+  const b7MovementCases = [
+    { prompt: '向左一点', reply: '已向左移动', axis: 'horizontal', sign: -1 },
+    { prompt: '向上远一点', reply: '已向上移动', axis: 'vertical', sign: -1 },
+    {
+      prompt: '向右一点', reply: '已向右移动', axis: 'horizontal', sign: 1,
+      precondition: { prompt: '向左一点', reply: '右移前置已向左移动' }
+    },
+    {
+      prompt: '向下一点', reply: '已向下移动', axis: 'vertical', sign: 1,
+      precondition: { prompt: '向上远一点', reply: '下移前置已向上移动' }
+    },
+    { prompt: '去左上角', reply: '已移动到左上区域', axis: 'region', sign: -1 }
+  ] as const;
+
+  for (const movement of b7MovementCases) {
+    test(`B7 快速移动：JSON Output“${movement.prompt}”只通过累计 delta 证明真实方向`, async () => {
+      test.setTimeout(60_000);
+      const fixtureModule = await loadElectronFixtureModule();
+      const provider = await startProviderServer([
+        ...('precondition' in movement ? [{
+          response: {
+            type: 'text' as const,
+            text: movement.precondition.reply,
+            structured_output: {}
+          },
+          inspect: (request: Parameters<NonNullable<ProviderStep['inspect']>>[0]) => (
+            expect(request.tools).toEqual([])
+          )
+        }] : []),
+        {
+          response: { type: 'text', text: movement.reply, structured_output: {} },
+          inspect: request => expect(request.tools).toEqual([])
+        }
+      ]);
+      const fixture = await fixtureModule.createElectronAppFixture({
+        workspaceRoot: resolve(process.cwd()),
+        apiKey: provider.apiKey,
+        launchTimeoutMs: 15_000,
+        enableSoftwareRasterizer: true
+      });
+
+      try {
+        const pet = await waitForRendererPage(fixture, 'pet');
+        let chat = await waitForRendererPage(fixture, 'chat');
+        const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
+        expect(imported.kind).toBe('imported');
+        if (imported.kind !== 'imported') return;
+        await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
+          await window.myself.activateCharacter(characterId);
+          await window.myself.saveProviderProfile({
+            profile: {
+              id: 'behavior-b7-movement',
+              displayName: '行为导演 B7 移动 E2E',
+              mode: 'custom',
+              protocol: 'openai-compatible',
+              baseUrl,
+              modelId: 'behavior-b7-movement-model',
+              additionalParameters: {},
+              capabilities: ['chat', 'tools']
+            },
+            secret: apiKey,
+            persistSecret: true
+          });
+          await window.myself.saveModelRoute({
+            primaryProfileId: 'behavior-b7-movement',
+            chatProfileId: 'behavior-b7-movement',
+            agentProfileId: 'behavior-b7-movement',
+            visionProfileId: null,
+            fallbackProfileIds: [],
+            allowCrossProviderFallback: false
+          });
+          await window.myself.savePrivacySettings({
+            dataCategories: {
+              file: false, screenshot: false, clipboard: false, memory: false
+            },
+            longTermMemory: false,
+            proactivityMode: 'passive'
+          });
+          await window.myself.openChat();
+        }, {
+          characterId: imported.characterId,
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey
+        });
+        await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+        if ('precondition' in movement) {
+          await submitChatMessage(chat, movement.precondition.prompt);
+          await expect(chat.getByText(movement.precondition.reply)).toBeVisible();
+          await expect.poll(() => pet.evaluate(async () => (
+            await window.myself.getCharacterMotionSnapshot()
+          ).moving)).toBe(false);
+          await fixture.restart();
+          const restartedPet = await waitForRendererPage(fixture, 'pet', 15_000);
+          await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
+            .toMatchObject({
+              actionId: 'safe-idle-action',
+              playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+            });
+          await restoreB7ProviderAfterRestart(restartedPet, {
+            profileId: 'behavior-b7-movement',
+            displayName: '行为导演 B7 移动 E2E',
+            modelId: 'behavior-b7-movement-model',
+            baseUrl: provider.baseUrl,
+            apiKey: provider.apiKey
+          });
+          const restartedChat = await waitForRendererPage(fixture, 'chat', 15_000);
+          await restartedChat.evaluate(() => window.myself.openChat());
+          await expect.poll(() => restartedChat.evaluate(() => document.visibilityState))
+            .toBe('visible');
+          chat = restartedChat;
+        }
+        const before = await fixture.getCharacterMotionDeltaProbe();
+
+        await submitChatMessage(chat, movement.prompt);
+        await expect(chat.getByText(movement.reply)).toBeVisible();
+        await expect.poll(async () => {
+          const after = await fixture.getCharacterMotionDeltaProbe();
+          const horizontal = Math.sign(after.horizontal - before.horizontal);
+          const vertical = Math.sign(after.vertical - before.vertical);
+          return movement.axis === 'horizontal'
+            ? horizontal
+            : movement.axis === 'vertical'
+              ? vertical
+              : horizontal === movement.sign && vertical === movement.sign;
+        }).toBe(movement.axis === 'region' ? true : movement.sign);
+        provider.assertComplete();
+        expect(provider.inspectionErrors).toEqual([]);
+      } finally {
+        await fixture.dispose();
+        await provider.close();
+      }
+    });
+  }
+
+  test('B7 快速状态：缺动作不伪装 idle，停止跨重启且聊天原地动作保留', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    const provider = await startProviderServer([
+      {
+        response: { type: 'text', text: '缺失动作请求已安全处理', structured_output: {} }
+      },
+      {
+        response: { type: 'text', text: '停止状态已保存', structured_output: {} }
+      },
+      {
+        response: {
+          type: 'text',
+          text: '停止期间仍可挥手回应',
+          structured_output: {
+            behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: '停止期间移动请求已处理', structured_output: {} }
+      }
+    ]);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+
+    /** 每次重启后重新注册只保留公开 actionId 的测试观察器。 */
+    const observeBehaviorActions = async (pet: Page): Promise<void> => {
+      await pet.evaluate(() => {
+        const scope = globalThis as typeof globalThis & { __b7BehaviorActions?: string[] };
+        scope.__b7BehaviorActions = [];
+        window.myself.subscribeCharacterMotion(event => {
+          if (event.type === 'behavior-action') scope.__b7BehaviorActions?.push(event.actionId);
+        });
+      });
+    };
+    const behaviorActions = (pet: Page): Promise<string[]> => pet.evaluate(() => (
+      (globalThis as typeof globalThis & { __b7BehaviorActions?: string[] })
+        .__b7BehaviorActions?.slice() ?? []
+    ));
+    try {
+      let pet = await waitForRendererPage(fixture, 'pet');
+      let chat = await waitForRendererPage(fixture, 'chat');
+      await observeBehaviorActions(pet);
+      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
+      expect(imported.kind).toBe('imported');
+      if (imported.kind !== 'imported') return;
+      await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
+        await window.myself.activateCharacter(characterId);
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'behavior-b7-fast',
+            displayName: '行为导演 B7 快速 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'behavior-b7-fast-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: true
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'behavior-b7-fast',
+          chatProfileId: 'behavior-b7-fast',
+          agentProfileId: 'behavior-b7-fast',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: {
+            file: false,
+            screenshot: false,
+            clipboard: false,
+            memory: false
+          },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.openChat();
+      }, {
+        characterId: imported.characterId,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey
+      });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+      const missingActionOffset = (await behaviorActions(pet)).length;
+      await submitChatMessage(chat, '播放不存在动作');
+      await expect(chat.getByText('当前角色没有可播放的对应动作。')).toBeVisible();
+      await expect(chat.getByText('缺失动作请求已安全处理')).toBeVisible();
+      // 留出完整 IPC 与动画调度观察窗，防止迟到的 idle 回退被下一步重启掩盖。
+      await pet.waitForTimeout(2_000);
+      expect((await behaviorActions(pet)).slice(missingActionOffset))
+        .not.toContain('safe-idle-action');
+
+      await submitChatMessage(chat, '停下');
+      await expect(chat.getByText('停止状态已保存')).toBeVisible();
+      await fixture.restart();
+
+      pet = await waitForRendererPage(fixture, 'pet', 15_000);
+      chat = await waitForRendererPage(fixture, 'chat', 15_000);
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
+        .toMatchObject({
+          actionId: 'safe-idle-action',
+          playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+        });
+      await restoreB7ProviderAfterRestart(pet, {
+        profileId: 'behavior-b7-fast',
+        displayName: '行为导演 B7 快速 E2E',
+        modelId: 'behavior-b7-fast-model',
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey
+      });
+      await observeBehaviorActions(pet);
+      await pet.evaluate(() => window.myself.openChat());
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      await submitChatMessage(chat, '停止期间陪我聊聊');
+      await expect(chat.getByText('停止期间仍可挥手回应')).toBeVisible();
+      await expect.poll(() => behaviorActions(pet)).toContain('safe-wave-action');
+
+      const stoppedBaseline = await fixture.getCharacterMotionDeltaProbe();
+      await submitChatMessage(chat, '向左一点');
+      await expect(chat.getByText('停止期间移动请求已处理')).toBeVisible();
+      await pet.waitForTimeout(1_500);
+      const stoppedAfter = await fixture.getCharacterMotionDeltaProbe();
+      expect(stoppedAfter).toEqual(stoppedBaseline);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
+  test('B7 长时：三档主动性、阻塞暂停与反思 close-late 保持真实纵向边界', async () => {
+    test.skip(
+      process.env['AI_PET_LONG_BEHAVIOR_E2E'] !== '1',
+      '默认门禁不执行 9–12 分钟的真实墙钟主动行为链。'
+    );
+    test.setTimeout(13 * 60_000);
+    const blockerWindowMs = 62_000;
+    const localWindowMs = 75_000;
+    const fixtureModule = await loadElectronFixtureModule();
+    const chattingGate = createProviderResponseGate();
+    const reflectionGate = createProviderResponseGate();
+    const provider = await startProviderServer([
+      {
+        response: {
+          type: 'text',
+          text: '聊天阻塞已释放并挥手',
+          structured_output: {
+            behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
+          }
+        },
+        gate: chattingGate,
+        inspect: request => {
+          expect(request.tools).toEqual([]);
+          expect(request.toolChoice).toBe('none');
+          expect(request.toolChoiceWasExplicit).toBe(true);
+        }
+      },
+      {
+        response: toolResponse(
+          'b7-long-create',
+          'builtin.files.create_file',
+          { relativePath: 'b7-long-pending.txt', content: '不应落盘' }
+        )
+      },
+      {
+        response: {
+          type: 'text',
+          text: '迟到反思不应展示',
+          structured_output: {
+            behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
+          }
+        },
+        gate: reflectionGate,
+        inspect: request => {
+          expect(request.tools).toEqual([]);
+          expect(request.toolChoice).toBe('none');
+          expect(request.toolChoiceWasExplicit).toBe(true);
+        }
+      }
+    ]);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+
+    const observeBehaviorActions = async (pet: Page): Promise<void> => {
+      await pet.evaluate(() => {
+        const scope = globalThis as typeof globalThis & { __b7LongActions?: string[] };
+        scope.__b7LongActions = [];
+        window.myself.subscribeCharacterMotion(event => {
+          if (event.type === 'behavior-action') scope.__b7LongActions?.push(event.actionId);
+        });
+      });
+    };
+    const behaviorActions = (pet: Page): Promise<string[]> => pet.evaluate(() => (
+      (globalThis as typeof globalThis & { __b7LongActions?: string[] })
+        .__b7LongActions?.slice() ?? []
+    ));
+    const saveMode = async (
+      pet: Page,
+      mode: 'passive' | 'assistive' | 'autonomous'
+    ): Promise<void> => {
+      await pet.evaluate(async proactivityMode => {
+        await window.myself.savePrivacySettings({
+          dataCategories: {
+            file: true, screenshot: false, clipboard: false, memory: false
+          },
+          longTermMemory: false,
+          proactivityMode
+        });
+      }, mode);
+    };
+
+    try {
+      let pet = await waitForRendererPage(fixture, 'pet');
+      let chat = await waitForRendererPage(fixture, 'chat');
+      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
+      expect(imported.kind).toBe('imported');
+      if (imported.kind !== 'imported') return;
+      await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
+        await window.myself.activateCharacter(characterId);
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'behavior-b7-long',
+            displayName: '行为导演 B7 长时 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'behavior-b7-long-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: true
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'behavior-b7-long',
+          chatProfileId: 'behavior-b7-long',
+          agentProfileId: 'behavior-b7-long',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: {
+            file: true, screenshot: false, clipboard: false, memory: false
+          },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+        await window.myself.openChat();
+      }, {
+        characterId: imported.characterId,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey
+      });
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        actionId: 'safe-idle-action',
+        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+      });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+      await observeBehaviorActions(pet);
+
+      // passive 超过本地计时上限仍不产生主动动作或位移。
+      const passiveMotion = await fixture.getCharacterMotionDeltaProbe();
+      await pet.waitForTimeout(blockerWindowMs);
+      expect(await behaviorActions(pet)).toEqual([]);
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(passiveMotion);
+      expect(provider.requests).toEqual([]);
+
+      // chatting 持续超过本地计时上限，期间只允许已进入的可信聊天动作。
+      await saveMode(pet, 'assistive');
+      await submitChatMessage(chat, '请陪我聊一会再挥手');
+      await expect.poll(() => chattingGate.isWaiting()).toBe(true);
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        primaryStateId: 'thinking',
+        actionId: 'safe-think-action'
+      });
+      const chattingOffset = (await behaviorActions(pet)).length;
+      const chattingMotion = await fixture.getCharacterMotionDeltaProbe();
+      await pet.waitForTimeout(blockerWindowMs);
+      expect((await behaviorActions(pet)).slice(chattingOffset)).toEqual([]);
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(chattingMotion);
+      chattingGate.release();
+      await expect(chat.getByText('聊天阻塞已释放并挥手')).toBeVisible();
+      await expect.poll(() => behaviorActions(pet), { timeout: 15_000 })
+        .toContain('safe-wave-action');
+
+      // assistive 恢复后只播放原地 idle，不产生位移。
+      const assistiveOffset = (await behaviorActions(pet)).length;
+      const assistiveMotion = await fixture.getCharacterMotionDeltaProbe();
+      await expect.poll(async () => (
+        (await behaviorActions(pet)).slice(assistiveOffset)
+      ), { timeout: localWindowMs }).toContain('safe-idle-action');
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(assistiveMotion);
+
+      // 真实像素命中拖拽跨过 20 秒调度下限，但不触发 30 秒安全超时。
+      await saveMode(pet, 'autonomous');
+      const petShell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+      const dispatchPointer = async (
+        type: 'pointermove' | 'pointerdown' | 'pointerup',
+        point: { x: number; y: number },
+        buttons = 0
+      ): Promise<void> => {
+        await petShell.evaluate((element, input) => {
+          element.dispatchEvent(new PointerEvent(input.type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: input.point.x,
+            clientY: input.point.y,
+            button: 0,
+            buttons: input.buttons,
+            pointerId: 42
+          }));
+        }, { type, point, buttons });
+      };
+      let visiblePoint: { x: number; y: number } | undefined;
+      for (let y = 6; y < 220 && !visiblePoint; y += 8) {
+        for (let x = 6; x < 180; x += 8) {
+          const candidate = { x, y };
+          await dispatchPointer('pointermove', candidate);
+          if (!(await fixture.getPetInteractionProbe()).passthrough) {
+            visiblePoint = candidate;
+            break;
+          }
+        }
+      }
+      expect(visiblePoint, '应在导入角色渲染区域中命中可见像素').toBeDefined();
+      if (!visiblePoint) return;
+      await dispatchPointer('pointerdown', visiblePoint, 1);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+        passthrough: false,
+        dragging: true
+      });
+      const draggingMotion = await fixture.getCharacterMotionDeltaProbe();
+      await pet.waitForTimeout(25_000);
+      expect(await fixture.getPetInteractionProbe()).toEqual({
+        passthrough: false,
+        dragging: true
+      });
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(draggingMotion);
+      await dispatchPointer('pointerup', visiblePoint);
+      // 25 秒内动画帧可能令同一坐标变透明；释放后的穿透值应服从当前像素，
+      // 此处只验证调度器依赖的拖拽阻塞已经真实解除。
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+        dragging: false
+      });
+
+      // 文件确认卡使 Scheduler 继续暂停，取消后才恢复同一剩余时间。
+      await submitChatMessage(chat, '创建文件 b7-long-pending.txt');
+      const confirmation = chat.getByRole('region', {
+        name: '创建文件 b7-long-pending.txt'
+      });
+      await expect(confirmation).toBeVisible();
+      await expect.poll(() => fixture.getConversationProbe()).toMatchObject({
+        phase: 'awaiting_confirmation',
+        fileConfirmationVisible: true
+      });
+      const confirmationOffset = (await behaviorActions(pet)).length;
+      const confirmationMotion = await fixture.getCharacterMotionDeltaProbe();
+      await pet.waitForTimeout(blockerWindowMs);
+      await expect(confirmation).toBeVisible();
+      expect((await behaviorActions(pet)).slice(confirmationOffset)).toEqual([]);
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(confirmationMotion);
+      await confirmation.getByRole('button', { name: '先不创建' }).click();
+      await expect(confirmation).toHaveCount(0);
+
+      // 真实 2–5 分钟空闲后只有 autonomous 会发起零工具反思。
+      await expect.poll(() => reflectionGate.isWaiting(), { timeout: 5 * 60_000 + 5_000 })
+        .toBe(true);
+      expect(provider.inspectionErrors).toEqual([]);
+      expect(provider.requests.at(-1)).toMatchObject({ toolCount: 0 });
+
+      // 反思响应仍被 gate 阻塞时重启，新进程建立观察基线后才释放旧响应。
+      await fixture.restart();
+      pet = await waitForRendererPage(fixture, 'pet', 15_000);
+      chat = await waitForRendererPage(fixture, 'chat', 15_000);
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), { timeout: 15_000 })
+        .toMatchObject({
+          actionId: 'safe-idle-action',
+          playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+        });
+      await observeBehaviorActions(pet);
+      const restartedMotion = await fixture.getCharacterMotionDeltaProbe();
+      reflectionGate.release();
+      await provider.waitForCompletedResponses(3);
+      await pet.waitForTimeout(2_500);
+      expect(await behaviorActions(pet)).not.toContain('safe-wave-action');
+      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(restartedMotion);
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      chattingGate.release();
+      reflectionGate.release();
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
   test('E2E 只读探针观察默认角色待机播放', async () => {
     test.setTimeout(60_000);
     const fixtureModule = await loadElectronFixtureModule();
@@ -3037,7 +3622,9 @@ test.describe('自主行为最小闭环', () => {
         response: {
           type: 'text',
           text: '情绪标签已安全处理',
-          emotion: 'happy'
+          structured_output: {
+            behaviorPlan: { kind: 'none', emotion: 'happy' }
+          }
         }
       }
     ]);

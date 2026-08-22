@@ -75,3 +75,15 @@ export type CharacterBehaviorProbe = {
   actionId: string | null;
   playbackStatus: 'scheduled' | 'started' | 'completed' | 'interrupted' | 'failed' | null;
 };
+
+/** E2E 只读运动探针仅公开相对首帧的差值，不公开绝对屏幕位置。 */
+export const characterMotionDeltaProbeSchema = z.object({
+  moved: z.boolean(),
+  horizontal: finiteNumberSchema,
+  vertical: finiteNumberSchema
+}).strict().refine(
+  (value) => value.moved === (value.horizontal !== 0 || value.vertical !== 0),
+  { message: '运动差值状态不一致' }
+);
+
+export type CharacterMotionDeltaProbe = z.output<typeof characterMotionDeltaProbeSchema>;

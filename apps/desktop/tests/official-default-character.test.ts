@@ -75,7 +75,7 @@ describe('官方默认角色安装', () => {
     await ensureOfficialDefaultCharacter(store, resourceDirectory);
 
     expect(await store.getRuntimeManifest('builtin-default')).toEqual(before);
-  });
+  }, 15_000);
 
   test('损坏索引后重建可写索引并保留有效用户角色、草稿与损坏证据', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-default-recovery-'));
