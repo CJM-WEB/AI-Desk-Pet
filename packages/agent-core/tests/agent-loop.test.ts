@@ -1,6 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
 import { toolRequestSchema } from '@myself/shared-types';
 import { AgentLoop } from '../src/agent-loop';
+import {
+  CAPABILITY_CLARIFICATION_TOOL_NAME,
+  parseCapabilityClarificationRequest
+} from '../src/capability-clarification-tool';
 import type {
   AgentEvent,
   ModelProvider,
@@ -119,6 +123,17 @@ function context(provider: ModelProvider, signal = new AbortController().signal)
 }
 
 describe('AgentLoop', () => {
+  test.each([
+    {},
+    { question: '' },
+    { question: 'a'.repeat(1_001) },
+    { question: '请提供目标文件名', extra: true }
+  ])('澄清工具解析器拒绝不严格参数 %#', raw => {
+    expect(() => parseCapabilityClarificationRequest(raw)).toThrow(
+      'CAPABILITY_CLARIFICATION_INVALID'
+    );
+  });
+
   test('合法行为意图在助手消息之前发出', async () => {
     const intent = {
       stateIntent: { semantic: 'think' },
@@ -335,6 +350,12 @@ describe('AgentLoop', () => {
     ]);
     expect(provider.requests).toHaveLength(1);
     expect(provider.requests[0]?.tools).toEqual(tools);
+    expect(provider.requests[0]).toMatchObject({
+      toolChoice: 'auto',
+      reasoningMode: 'provider_default'
+    });
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
+      .not.toContain(CAPABILITY_CLARIFICATION_TOOL_NAME);
   });
 
   test('文件规划在首次真实工具结果前拒绝普通文本，并在第二次违约时返回稳定错误', async () => {
@@ -349,6 +370,12 @@ describe('AgentLoop', () => {
     });
 
     expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[0]).toMatchObject({
+      toolChoice: 'required',
+      reasoningMode: 'disabled'
+    });
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
+      .toContain(CAPABILITY_CLARIFICATION_TOOL_NAME);
     expect(provider.requests[1]?.tools).toEqual(provider.requests[0]?.tools);
     expect(JSON.stringify(provider.requests[1]?.messages)).not.toContain('我没有权限执行这个文件任务');
     expect(provider.requests[1]?.messages.at(-1)).toEqual(expect.objectContaining({
@@ -380,37 +407,6 @@ describe('AgentLoop', () => {
 
     expect(events).toContainEqual({ type: 'message', text: '命令已执行，详见输出。' });
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
-  });
-
-  test('后续真实工具成功可以覆盖较早失败并恢复 success 终态', async () => {
-    const provider = new ScriptedProvider([
-      readRequest('read-after-failure'),
-      { type: 'text', text: '第二次工具已成功。' }
-    ]);
-    const runtime = createToolRuntime();
-    runtime.executeRead = vi.fn(async () => ({ ok: true, content: '文件内容' }));
-    const runContext = {
-      ...context(provider),
-      toolRuntime: runtime,
-      protocol: 'capability_planner' as const
-    };
-    const loop = new AgentLoop();
-    const firstEvents = await collect(loop.run('先失败', {
-      ...runContext,
-      provider: new ScriptedProvider([{
-        type: 'tool_request',
-        request: {
-          requestId: 'failed-shell',
-          toolName: 'builtin.files.create_file',
-          arguments: { relativePath: 'result.txt' }
-        }
-      }])
-    }));
-    const request = firstEvents.find(event => event.type === 'write_request');
-    if (!request || request.type !== 'write_request') throw new Error('缺少待确认请求');
-    const resumeEvents = await collect(loop.resume(request.continuationToken, { ok: false }, runContext));
-
-    expect(resumeEvents.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
   test('第四轮确认恢复时以当前工具失败事实结束，且不把能力说成文件操作', async () => {
@@ -451,97 +447,89 @@ describe('AgentLoop', () => {
     ]);
   });
 
-  test('文件规划在首次真实工具结果前只公开严格 JSON 澄清问题', async () => {
+  test('文件规划在首次真实工具结果前只公开结构化澄清问题且不调用工具运行时', async () => {
     const provider = new ScriptedProvider([{
-      type: 'text',
-      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-1',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { question: '请提供目标文件名' }
+      }
     }]);
-    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+    const runtime = createToolRuntime();
+    const prepare = vi.spyOn(runtime, 'prepare');
+    const runContext = {
+      ...context(provider),
+      toolRuntime: runtime,
+      protocol: 'capability_planner' as const
+    };
 
     await expect(collectEvents(runContext)).resolves.toEqual([
       { type: 'phase', phase: 'thinking' },
       { type: 'message', text: '请提供目标文件名' },
       { type: 'phase', phase: 'success' }
     ]);
+    expect(prepare).not.toHaveBeenCalled();
   });
 
   test.each([
-    '请提供要删除的文件名',
-    '请说明要运行的脚本'
-  ])('文件规划允许真正缺少执行参数的澄清：%s', async question => {
+    { question: '', label: '空问题' },
+    { question: 'a'.repeat(1_001), label: '超长问题' },
+    { question: '请提供目标文件名', extra: true, label: '额外字段' },
+    { question: '请确认是否删除 empty 文件夹？', label: '执行确认' }
+  ])('文件规划拒绝无效的结构化澄清：$label', async ({ question, ...extra }) => {
     const provider = new ScriptedProvider([{
-      type: 'text',
-      text: JSON.stringify({ kind: 'clarification_required', question })
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-invalid-1',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { question, ...extra }
+      }
+    }, {
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-invalid-2',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { question, ...extra }
+      }
     }]);
-    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
-
-    await expect(collectEvents(runContext)).resolves.toContainEqual({
-      type: 'message',
-      text: question
-    });
-    expect(provider.requests).toHaveLength(1);
-  });
-
-  test.each([
-    '确定要删除吗？',
-    '你真的要删除吗？',
-    'Do you want me to delete it?',
-    '请确认是否删除 empty 文件夹？'
-  ])('文件规划拒绝模型自行索要执行确认：%s', async question => {
-    const confirmation = {
-      type: 'text' as const,
-      text: JSON.stringify({ kind: 'clarification_required', question })
+    const runtime = createToolRuntime();
+    const prepare = vi.spyOn(runtime, 'prepare');
+    const runContext = {
+      ...context(provider),
+      toolRuntime: runtime,
+      protocol: 'capability_planner' as const
     };
-    const provider = new ScriptedProvider([confirmation, confirmation]);
-    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
 
     await expect(collectEvents(runContext)).rejects.toMatchObject({
       code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
     });
     expect(provider.requests).toHaveLength(2);
+    expect(prepare).not.toHaveBeenCalled();
   });
 
-  test('文件规划把模型自行索要执行确认视为协议违约并仅修复一次', async () => {
+  test('文件规划把文本 JSON 澄清视为协议违约并仅修复一次', async () => {
     const provider = new ScriptedProvider([
       {
         type: 'text',
-        text: '{"kind":"clarification_required","question":"请确认是否删除 empty 文件夹？"}'
+        text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
       },
       {
-        type: 'tool_request',
-        request: {
-          requestId: 'delete-empty-1',
-          toolName: 'builtin.files.create_file',
-          arguments: { relativePath: 'result.txt' }
-        }
+        type: 'text',
+        text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
       }
     ]);
     const runContext = { ...context(provider), protocol: 'capability_planner' as const };
 
-    const events = await collectEvents(runContext);
+    await expect(collectEvents(runContext)).rejects.toMatchObject({
+      code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
+    });
 
     expect(provider.requests).toHaveLength(2);
     expect(provider.requests[1]?.messages.at(-1)).toEqual(expect.objectContaining({
       role: 'system',
-      content: expect.stringContaining('不得自行索要执行确认')
+      content: expect.stringContaining('CAPABILITY_PLAN_PROTOCOL_INVALID')
     }));
-    expect(events).not.toContainEqual({ type: 'message', text: '请确认是否删除 empty 文件夹？' });
-    expect(events).toContainEqual({ type: 'phase', phase: 'awaiting_confirmation' });
-    expect(events.at(-1)).toEqual(expect.objectContaining({ type: 'write_request' }));
-  });
-
-  test('文件规划连续两次自行索要执行确认时报告协议违约', async () => {
-    const confirmation = {
-      type: 'text' as const,
-      text: '{"kind":"clarification_required","question":"是否执行删除操作？"}'
-    };
-    const provider = new ScriptedProvider([confirmation, confirmation]);
-    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
-
-    await expect(collectEvents(runContext)).rejects.toMatchObject({
-      code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
-    });
-    expect(provider.requests).toHaveLength(2);
   });
 
   test('文件规划在修复请求等待期间中止后忽略迟到合法澄清', async () => {
@@ -558,8 +546,12 @@ describe('AgentLoop', () => {
     await vi.waitFor(() => expect(provider.requests).toHaveLength(2));
     controller.abort();
     provider.resolve(1, {
-      type: 'text',
-      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-aborted',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { question: '请提供目标文件名' }
+      }
     });
 
     await expect(running).resolves.toEqual([
@@ -601,6 +593,12 @@ describe('AgentLoop', () => {
       toolCallId: 'read-1',
       content: '{"content":"文件内容"}'
     });
+    expect(provider.requests[1]).toMatchObject({
+      toolChoice: 'auto',
+      reasoningMode: 'disabled'
+    });
+    expect(provider.requests[1]?.tools.map(tool => tool.function.name))
+      .not.toContain(CAPABILITY_CLARIFICATION_TOOL_NAME);
     expect(events.at(-2)).toEqual({ type: 'message', text: 'notes.txt 的内容已读取' });
   });
 
@@ -707,6 +705,11 @@ describe('AgentLoop', () => {
       toolCallId: 'write-1',
       content: '{"ok":true,"toolName":"create_file","targetRelativePath":"result.txt"}'
     });
+    expect(provider.requests[1]).toMatchObject({
+      tools: [],
+      toolChoice: 'none',
+      reasoningMode: 'provider_default'
+    });
     expect(resumed).toEqual([
       { type: 'phase', phase: 'thinking' },
       { type: 'message', text: 'result.txt 已创建' },
@@ -717,6 +720,43 @@ describe('AgentLoop', () => {
       { ok: true },
       runContext
     ))).rejects.toThrow('ACTION_EXPIRED');
+  });
+
+  test('写入结果续跑后拒绝模型再次调用工具，且不重复准备写入', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'write-once-1',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'write-once-2',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'again.txt' }
+        }
+      }
+    ]);
+    const runtime = createToolRuntime();
+    const prepare = vi.spyOn(runtime, 'prepare');
+    const runContext = { ...context(provider), toolRuntime: runtime };
+    const loop = new AgentLoop();
+    const paused = await collect(loop.run('创建 result.txt', runContext));
+    const writeEvent = paused.find(event => event.type === 'write_request');
+    if (!writeEvent || writeEvent.type !== 'write_request') throw new Error('缺少写请求事件');
+
+    await expect(collect(loop.resume(
+      writeEvent.continuationToken,
+      { ok: true, toolName: 'create_file', targetRelativePath: 'result.txt' },
+      runContext
+    ))).rejects.toThrow('AGENT_FINALIZATION_TOOL_REQUEST');
+
+    expect(provider.requests[1]).toMatchObject({ tools: [], toolChoice: 'none' });
+    expect(prepare).toHaveBeenCalledOnce();
   });
 
   test('丢弃继续令牌后不能恢复', async () => {

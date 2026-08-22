@@ -34,7 +34,9 @@ export class ConversationChatAdapter {
         ...input.history,
         { role: 'user', content: input.text }
       ],
-      tools: []
+      tools: [],
+      toolChoice: 'none',
+      reasoningMode: 'provider_default'
     }, input.signal);
 
     if (response.type !== 'text' || !是合法正文(response.text)) {

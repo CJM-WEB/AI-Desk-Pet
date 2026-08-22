@@ -66,7 +66,9 @@ const request: ModelRequest = {
     { role: 'system', content: '只返回必要内容。' },
     { role: 'user', content: '读取 notes.txt' }
   ],
-  tools
+  tools,
+  toolChoice: 'none',
+  reasoningMode: 'provider_default'
 };
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -813,6 +815,8 @@ describe('协议请求映射', () => {
 
     await provider.respond({
       tools,
+      toolChoice: 'none',
+      reasoningMode: 'provider_default',
       messages: [
         {
           role: 'assistant',
@@ -930,6 +934,8 @@ describe('协议请求映射', () => {
 
     await provider.respond({
       tools,
+      toolChoice: 'none',
+      reasoningMode: 'provider_default',
       messages: [
         ...request.messages,
         {
@@ -1011,6 +1017,8 @@ describe('协议请求映射', () => {
 
     await provider.respond({
       tools,
+      toolChoice: 'none',
+      reasoningMode: 'provider_default',
       messages: [
         ...request.messages,
         { role: 'assistant', content: '', toolRequest: firstToolRequest },

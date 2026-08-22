@@ -373,7 +373,9 @@ export class DesktopSettingsService {
           { role: 'system', content: '这是连接测试，只需返回简短文本。' },
           { role: 'user', content: '请回复“连接成功”。' }
         ],
-        tools: []
+        tools: [],
+        toolChoice: 'none',
+        reasoningMode: 'provider_default'
       }, AbortSignal.timeout(15_000));
       return result.type === 'text'
         ? { ok: true, message: '连接成功。' }

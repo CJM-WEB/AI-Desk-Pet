@@ -58,7 +58,9 @@ export function createSettingsActions(options: SettingsActionsOptions) {
             { role: 'system', content: '这是一次连接测试，只需返回简短文本。' },
             { role: 'user', content: '请回复“连接成功”。' }
           ],
-          tools: []
+          tools: [],
+          toolChoice: 'none',
+          reasoningMode: 'provider_default'
         }, AbortSignal.timeout(15_000));
         if (response.type !== 'text') {
           return { ok: false, message: '模型服务未返回文本，当前响应格式不兼容。' };

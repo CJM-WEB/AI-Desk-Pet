@@ -34,7 +34,9 @@ const tools: ToolDefinition[] = toolNames.map(name => ({
 
 const request: ModelRequest = {
   messages: [{ role: 'user', content: '读取 notes.txt' }],
-  tools
+  tools,
+  toolChoice: 'none',
+  reasoningMode: 'provider_default'
 };
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -197,6 +199,8 @@ describe('OpenAICompatibleProvider', () => {
     const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
     const historyRequest: ModelRequest = {
       tools,
+      toolChoice: 'none',
+      reasoningMode: 'provider_default',
       messages: [
         { role: 'user', content: '读取文件' },
         {

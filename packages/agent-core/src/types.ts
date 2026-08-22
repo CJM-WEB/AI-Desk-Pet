@@ -37,9 +37,14 @@ export interface ToolDefinition {
   };
 }
 
+export type ToolChoicePolicy = 'auto' | 'required' | 'none';
+export type ReasoningMode = 'provider_default' | 'disabled';
+
 export interface ModelRequest {
   messages: ModelMessage[];
   tools: ToolDefinition[];
+  toolChoice: ToolChoicePolicy;
+  reasoningMode: ReasoningMode;
 }
 
 export type ModelResponse =
@@ -50,11 +55,6 @@ export type ModelResponse =
       behaviorIntent?: CharacterAgentBehaviorIntent;
     }
   | { type: 'tool_request'; request: unknown };
-
-/** 能力任务在首个真实工具结果前仅允许的规划结果。 */
-export type CapabilityPlannerResult =
-  | Readonly<{ kind: 'tool_request'; request: ToolRequest }>
-  | Readonly<{ kind: 'clarification_required'; question: string }>;
 
 /** 控制单次运行对模型文本响应施加的协议，默认保留聊天兼容语义。 */
 export type AgentRunProtocol = 'default' | 'capability_planner';

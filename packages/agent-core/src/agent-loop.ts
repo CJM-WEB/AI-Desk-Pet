@@ -1,91 +1,52 @@
 import { randomUUID } from 'node:crypto';
 import { characterAgentBehaviorIntentSchema } from '@myself/character-runtime';
 import { characterEmotionLabelSchema } from '@myself/shared-types';
+import {
+  CAPABILITY_CLARIFICATION_TOOL_NAME,
+  capabilityClarificationToolDefinition,
+  isCapabilityClarificationExecutionConfirmation,
+  parseCapabilityClarificationRequest
+} from './capability-clarification-tool';
 import type {
   AgentEvent,
-  CapabilityPlannerResult,
   ModelMessage,
   PreparedToolRequest,
   RunContext
 } from './types';
-
-const CAPABILITY_PLANNER_QUESTION_MAX_LENGTH = 1_000;
 
 type ContinuationState = {
   messages: ModelMessage[];
   nextTurn: number;
   requestId: string;
   latestTrustedResultOk: boolean | undefined;
+  finalizationOnly: true;
 };
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
-/** 只接受可直接展示给用户的、无扩展字段的 JSON 澄清协议。 */
-function parseCapabilityPlannerClarification(text: string): Extract<
-  CapabilityPlannerResult,
-  { kind: 'clarification_required' }
-> | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (
-    typeof value !== 'object'
-    || value === null
-    || Array.isArray(value)
-    || Object.keys(value).length !== 2
-  ) return null;
-  const record = value as Record<string, unknown>;
-  if (
-    record.kind !== 'clarification_required'
-    || typeof record.question !== 'string'
-    || record.question.trim().length === 0
-    || record.question.length > CAPABILITY_PLANNER_QUESTION_MAX_LENGTH
-  ) return null;
-  if (!Object.hasOwn(record, 'kind') || !Object.hasOwn(record, 'question')) return null;
-  return { kind: 'clarification_required', question: record.question };
-}
-
-/** 缺少目标或命令时必须允许模型询问执行必需参数。 */
-function isMissingParameterQuestion(question: string): boolean {
-  const normalized = question.trim().toLowerCase();
-  const chineseRequest = /(?:提供|说明|告知|指定|选择|输入)/u.test(normalized);
-  const chineseParameter = /(?:哪个|哪一个|路径|文件名|目录名|命令|脚本|目标|内容|参数)/u.test(normalized);
-  const englishRequest = /\b(?:provide|specify|tell|choose|enter)\b/u.test(normalized);
-  const englishParameter = /\b(?:which|path|file|directory|command|script|target|content|argument)\b/u.test(normalized);
-  return (chineseRequest && chineseParameter) || (englishRequest && englishParameter);
-}
-
-/** 中文确认句必须同时包含确认主干与操作意图，避免误伤真正的参数澄清。 */
-function isChineseExecutionConfirmation(question: string): boolean {
-  const hasConfirmationStem = /(?:确认|确定|真的|是否|要不要|需不需要|同意)/u.test(question);
-  const hasOperationIntent = /(?:执行|删除|创建|修改|写入|运行|继续)/u.test(question);
-  return hasConfirmationStem && hasOperationIntent;
-}
-
-/** 英文确认句采用清晰词组判断，不依赖易碎的任意词距。 */
-function isEnglishExecutionConfirmation(question: string): boolean {
-  const normalized = question.toLowerCase();
-  const hasConfirmationStem = /\b(?:confirm|approve|sure|really|should|whether)\b/u.test(normalized)
-    || normalized.includes('do you want me to');
-  const hasOperationIntent = /\b(?:execute|run|delete|remove|create|write|modify|edit|proceed|continue)\b/u.test(normalized);
-  return hasConfirmationStem && hasOperationIntent;
-}
-
-/** 模型不能把宿主负责的执行确认伪装成“缺少参数”澄清。 */
-function isExecutionConfirmationQuestion(question: string): boolean {
-  if (isMissingParameterQuestion(question)) return false;
-  return isChineseExecutionConfirmation(question) || isEnglishExecutionConfirmation(question);
-}
-
 function capabilityPlanProtocolError(): Error {
   return Object.assign(new Error('CAPABILITY_PLAN_PROTOCOL_INVALID'), {
     code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
   });
+}
+
+function finalizationOnlyToolError(): Error {
+  return Object.assign(new Error('AGENT_FINALIZATION_TOOL_REQUEST'), {
+    code: 'AGENT_FINALIZATION_TOOL_REQUEST'
+  });
+}
+
+/** 澄清工具由 AgentLoop 消费，绝不进入具备本地能力的 ToolRuntime。 */
+function isCapabilityClarificationToolRequest(raw: unknown): raw is Readonly<{
+  toolName: typeof CAPABILITY_CLARIFICATION_TOOL_NAME;
+  arguments: unknown;
+}> {
+  return typeof raw === 'object'
+    && raw !== null
+    && !Array.isArray(raw)
+    && (raw as Record<string, unknown>).toolName === CAPABILITY_CLARIFICATION_TOOL_NAME;
 }
 
 export class AgentLoop {
@@ -96,7 +57,7 @@ export class AgentLoop {
       ...context.messages,
       { role: 'user' as const, content: userText }
     ];
-    yield* this.continueRun(messages, 0, context, false, undefined);
+    yield* this.continueRun(messages, 0, context, false, undefined, false);
   }
 
   async *resume(
@@ -124,7 +85,8 @@ export class AgentLoop {
       continuation.nextTurn,
       context,
       true,
-      latestTrustedResultOk
+      latestTrustedResultOk,
+      continuation.finalizationOnly
     );
   }
 
@@ -137,7 +99,8 @@ export class AgentLoop {
     startTurn: number,
     context: RunContext,
     hasTrustedToolResult: boolean,
-    latestTrustedResultOk: boolean | undefined
+    latestTrustedResultOk: boolean | undefined,
+    finalizationOnly: boolean
   ): AsyncGenerator<AgentEvent> {
     if (context.signal.aborted) {
       yield { type: 'phase', phase: 'cancelled' };
@@ -155,7 +118,20 @@ export class AgentLoop {
 
       let response;
       try {
-        response = await context.provider.respond({ messages, tools: context.tools }, context.signal);
+        const planning = context.protocol === 'capability_planner' && !hasTrustedToolResult;
+        const tools = finalizationOnly
+          ? []
+          : planning
+            ? [...context.tools, capabilityClarificationToolDefinition]
+            : context.tools;
+        response = await context.provider.respond({
+          messages,
+          tools,
+          toolChoice: finalizationOnly ? 'none' : planning ? 'required' : 'auto',
+          reasoningMode: context.protocol === 'capability_planner'
+            ? 'disabled'
+            : 'provider_default'
+        }, context.signal);
       } catch (error) {
         if (context.signal.aborted || isAbortError(error)) {
           yield { type: 'phase', phase: 'cancelled' };
@@ -172,20 +148,13 @@ export class AgentLoop {
 
       if (response.type === 'text') {
         if (context.protocol === 'capability_planner' && !hasTrustedToolResult) {
-          const clarification = parseCapabilityPlannerClarification(response.text);
-          if (!clarification || isExecutionConfirmationQuestion(clarification.question)) {
-            if (correctionUsed) throw capabilityPlanProtocolError();
-            correctionUsed = true;
-            // 该修复指令不改变本次 tools 或权限，仅要求重发受限协议结果。
-            messages.push({
-              role: 'system',
-              content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：参数齐全时必须立即调用当前提供的工具，不得自行索要执行确认；确认由宿主在工具调用后处理。只有缺失执行必需参数时，才能返回严格 JSON {"kind":"clarification_required","question":"非空问题"}。请仅修正一次。'
-            });
-            continue;
-          }
-          yield { type: 'message', text: clarification.question };
-          yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
-          return;
+          if (correctionUsed) throw capabilityPlanProtocolError();
+          correctionUsed = true;
+          messages.push({
+            role: 'system',
+            content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：能力规划必须调用当前提供的工具。缺少执行必需参数时，只能调用 builtin.capability.request_clarification；确认由宿主在工具调用后处理。请仅修正一次。'
+          });
+          continue;
         }
         if (response.emotion !== undefined) {
           const emotion = characterEmotionLabelSchema.safeParse(response.emotion);
@@ -204,6 +173,28 @@ export class AgentLoop {
         yield { type: 'message', text: response.text };
         yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
         return;
+      }
+
+      if (finalizationOnly) throw finalizationOnlyToolError();
+
+      if (isCapabilityClarificationToolRequest(response.request)) {
+        try {
+          const clarification = parseCapabilityClarificationRequest(response.request.arguments);
+          if (isCapabilityClarificationExecutionConfirmation(clarification.question)) {
+            throw new Error('CAPABILITY_CLARIFICATION_EXECUTION_CONFIRMATION');
+          }
+          yield { type: 'message', text: clarification.question };
+          yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
+          return;
+        } catch {
+          if (correctionUsed) throw capabilityPlanProtocolError();
+          correctionUsed = true;
+          messages.push({
+            role: 'system',
+            content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：澄清工具只能询问缺失的执行必需参数，参数必须是只含非空 question 的严格对象。确认由宿主在工具调用后处理。请仅修正一次。'
+          });
+          continue;
+        }
       }
 
       let prepared: PreparedToolRequest;
@@ -232,7 +223,8 @@ export class AgentLoop {
           messages: [...messages],
           nextTurn: turn + 1,
           requestId: prepared.request.requestId,
-          latestTrustedResultOk
+          latestTrustedResultOk,
+          finalizationOnly: true
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
         yield {
