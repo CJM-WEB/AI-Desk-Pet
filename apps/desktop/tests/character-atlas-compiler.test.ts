@@ -39,7 +39,10 @@ function createCanvasHarness(
   exportedBlob: Blob | null = new Blob([PNG_BYTES], { type: 'image/png' })
 ): CanvasHarness {
   const context: AtlasDrawContextLike = {
-    drawImage: vi.fn()
+    drawImage: vi.fn(),
+    getImageData: vi.fn((_x, _y, width, height) => ({
+      data: new Uint8ClampedArray(width * height * 4).fill(255)
+    }))
   };
   const canvas: AtlasCanvasLike = {
     width: 0,
@@ -143,7 +146,41 @@ describe('浏览器图集编译', () => {
     expect(result.sourceChecksums).toEqual({
       'idle-source': checksum(PNG_BYTES)
     });
+    expect(result.geometry).toEqual({
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 }
+    });
     expect(sourceBitmap.close).toHaveBeenCalledOnce();
+  });
+
+  test('只读取一次图集 Alpha 并联合不同帧的非透明范围', async () => {
+    const sourceBitmap = bitmap(4, 2);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => sourceBitmap));
+    const harness = createCanvasHarness();
+    const rgba = new Uint8ClampedArray(4 * 2 * 4);
+    // 两个 2×2 帧横向排布；首帧右上、次帧左下可见。
+    rgba[(1 * 4) + 3] = 255;
+    rgba[((1 * 4 + 2) * 4) + 3] = 255;
+    vi.mocked(harness.context.getImageData).mockReturnValue({ data: rgba });
+
+    const result = await compileAtlas({
+      atlasAssetId: 'alpha-atlas',
+      mimeType: 'image/png',
+      groundAnchor: { x: 0.5, y: 1 },
+      frames: [{
+        frameId: 'first', sourceAssetId: 'source', bytes: PNG_BYTES,
+        mimeType: 'image/png', sourceRect: { x: 0, y: 0, width: 2, height: 2 }
+      }, {
+        frameId: 'second', sourceAssetId: 'source', bytes: PNG_BYTES,
+        mimeType: 'image/png', sourceRect: { x: 2, y: 0, width: 2, height: 2 }
+      }]
+    }, harness.factory);
+
+    expect(harness.context.getImageData).toHaveBeenCalledOnce();
+    expect(result.geometry).toEqual({
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 }
+    });
   });
 
   test('不同尺寸单帧保持原始宽高绘制，不做拉伸', async () => {

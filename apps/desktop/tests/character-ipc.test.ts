@@ -119,7 +119,14 @@ function createDraftV2() {
 }
 
 function createManifestV2() {
-  return convertCharacterManifestV1ToV2(createLegacyManifestV1()).document;
+  const manifest = convertCharacterManifestV1ToV2(createLegacyManifestV1()).document;
+  const presentation = manifest.skins[0]!.presentations[0]!;
+  presentation.geometry = {
+    visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+    groundAnchor: { ...presentation.anchors.ground },
+    resourceRevision: manifest.resources[0]!.sha256
+  };
+  return manifest;
 }
 
 vi.mock('electron', () => ({
@@ -265,6 +272,14 @@ describe('V2 角色 IPC 边界', () => {
       manifest,
       resources: [{ assetId: 'atlas', bytes: new Uint8Array([1]) }]
     })).resolves.toEqual({ ok: true });
+    const missingGeometry = structuredClone(manifest);
+    delete missingGeometry.skins[0]!.presentations[0]!.geometry;
+    await expect(handlers.get(channel('characterPublish'))?.({}, {
+      characterId: 'demo',
+      draftRevision: '11111111-1111-4111-8111-111111111111',
+      manifest: missingGeometry,
+      resources: [{ assetId: 'atlas', bytes: new Uint8Array([1]) }]
+    })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
     await expect(handlers.get(channel('characterPublish'))?.({}, {
       characterId: 'demo',
       draftRevision: '11111111-1111-4111-8111-111111111111',

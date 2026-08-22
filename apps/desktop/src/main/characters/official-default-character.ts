@@ -8,6 +8,11 @@ import type {
 } from '@myself/character-runtime';
 import { V1_STATE_SEMANTICS } from '@myself/character-runtime';
 import type { CharacterStore } from './character-store';
+import {
+  finalizeCharacterManifestMigration,
+  prepareCharacterManifestMigration,
+  type CharacterGeometryMigrationDependencies
+} from './character-migrations';
 
 const DEFAULT_CHARACTER_ID = 'builtin-default';
 const DEFAULT_STATES: readonly CoreCharacterState[] = [
@@ -51,7 +56,10 @@ function presentation(state: CoreCharacterState, assetId: string) {
  */
 export async function ensureOfficialDefaultCharacter(
   store: CharacterStore,
-  resourceDirectory: string
+  resourceDirectory: string,
+  geometryMigration: CharacterGeometryMigrationDependencies = {
+    decodeAlpha: async () => { throw new Error('CHARACTER_RESOURCE_GEOMETRY_FALLBACK'); }
+  }
 ): Promise<void> {
   const existing = await store.list();
   if (!existing.some(character => character.id === DEFAULT_CHARACTER_ID)) {
@@ -144,13 +152,19 @@ export async function ensureOfficialDefaultCharacter(
       }))
     };
     await store.saveDraft(DEFAULT_CHARACTER_ID, draft);
+    const assets = Object.fromEntries(loaded.map(({ state, bytes }) => [
+      `${state}.png`,
+      bytes
+    ]));
+    const finalized = await finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(manifest),
+      assets,
+      geometryMigration
+    );
     await store.publishCompiled(
       DEFAULT_CHARACTER_ID,
-      manifest,
-      Object.fromEntries(loaded.map(({ state, bytes }) => [
-        `${state}.png`,
-        bytes
-      ]))
+      finalized.document,
+      assets
     );
   }
 

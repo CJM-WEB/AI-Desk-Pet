@@ -4,6 +4,7 @@ import {
   type CharacterManifestV1,
   characterDraftV2Schema,
   characterManifestV2Schema,
+  preparedCharacterManifestV2Schema,
   convertCharacterDraftV1ToV2,
   convertCharacterManifestV1ToV2
 } from '../src';
@@ -139,7 +140,8 @@ describe('V1 角色数据转换器', () => {
     expect(result.document.skins[0]?.presentations[0]?.frames[0]?.assetId)
       .toBe('idle-atlas');
     expect(result.document.resources).toEqual(createV1Manifest().resources);
-    expect(characterManifestV2Schema.parse(result.document)).toEqual(result.document);
+    expect(preparedCharacterManifestV2Schema.parse(result.document)).toEqual(result.document);
+    expect(() => characterManifestV2Schema.parse(result.document)).toThrow(/视觉几何/u);
   });
 
   test('V1 搬运动作只映射 carry 语义，不伪造精确任务提交帧', () => {
@@ -166,7 +168,8 @@ describe('V1 角色数据转换器', () => {
     expect(result.document.skins[0]?.semanticFallbacks).toEqual([]);
     expect(result.document.actions).toHaveLength(2);
     expect(result.document.resources).toEqual(source.resources);
-    expect(characterManifestV2Schema.parse(result.document)).toEqual(result.document);
+    expect(preparedCharacterManifestV2Schema.parse(result.document)).toEqual(result.document);
+    expect(() => characterManifestV2Schema.parse(result.document)).toThrow(/视觉几何/u);
   });
 
   test('按源顺序重命名重复动作并保持结果确定', () => {

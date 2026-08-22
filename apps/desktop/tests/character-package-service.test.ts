@@ -144,6 +144,11 @@ function runtime(characterId: string): {
   const presentation = manifest.skins[0]!.presentations[0]!;
   presentation.frames[0]!.id = 'carry-commit';
   presentation.commitFrameId = 'carry-commit';
+  presentation.geometry = {
+    visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+    groundAnchor: { ...presentation.anchors.ground },
+    resourceRevision: manifest.resources[0]!.sha256
+  };
   return {
     manifest,
     assets: legacy.assets
@@ -355,16 +360,111 @@ describe('角色包 Main 服务', () => {
     ]);
     const importedCharacters = join(testDirectory, 'legacy-imported');
     const store = new CharacterStore(importedCharacters);
+    const decodeAlpha = vi.fn(async () => ({
+      width: 1, height: 1, alpha: new Uint8Array([255])
+    }));
 
     const importedId = await new CharacterPackageService(importedCharacters, {
       store,
-      assetService: new CharacterAssetService(importedCharacters)
+      assetService: new CharacterAssetService(importedCharacters),
+      geometryMigration: { decodeAlpha }
     }).importCharacter(packagePath);
 
     expect(importedId).toBe('legacy');
     await expect(store.getDraft(importedId)).resolves.toMatchObject({ version: 2 });
     await expect(store.getPublishedManifest(importedId))
-      .resolves.toMatchObject({ version: 2 });
+      .resolves.toMatchObject({
+        version: 2,
+        skins: [{ presentations: [{ geometry: {
+          visualBounds: { x: 0, y: 0, width: 1, height: 1 }
+        } }] }]
+      });
+    expect(decodeAlpha).toHaveBeenCalledOnce();
+  });
+
+  test('旧包资源校验失败时不会进入 Alpha 解码', async () => {
+    const packagePath = join(testDirectory, 'legacy-resource-mismatch.zip');
+    const legacy = legacyRuntime('legacy-resource-mismatch');
+    await writeZip(packagePath, [
+      {
+        path: 'draft/draft.json',
+        bytes: JSON.stringify({
+          version: 1,
+          id: 'legacy-resource-mismatch',
+          name: '损坏旧角色',
+          states: legacy.manifest.states
+        })
+      },
+      {
+        path: 'compiled/manifest.json',
+        bytes: JSON.stringify({ ...legacy.manifest, name: '损坏旧角色' })
+      },
+      {
+        path: 'source/catalog.json',
+        bytes: JSON.stringify({
+          version: 1,
+          characterId: 'legacy-resource-mismatch',
+          sources: []
+        })
+      },
+      { path: 'compiled/atlas.png', bytes: Buffer.from([1, 2, 4]) }
+    ]);
+    const importedCharacters = join(testDirectory, 'legacy-resource-mismatch-imported');
+    const store = new CharacterStore(importedCharacters);
+    const decodeAlpha = vi.fn(async () => ({
+      width: 1, height: 1, alpha: new Uint8Array([255])
+    }));
+
+    await expect(new CharacterPackageService(importedCharacters, {
+      store,
+      assetService: new CharacterAssetService(importedCharacters),
+      geometryMigration: { decodeAlpha }
+    }).importCharacter(packagePath)).rejects.toThrow(
+      'CHARACTER_PACKAGE_RESOURCE_INVALID'
+    );
+    expect(decodeAlpha).not.toHaveBeenCalled();
+  });
+
+  test('旧包图片结构预检失败时不创建或发布角色', async () => {
+    const packagePath = join(testDirectory, 'legacy-structure-invalid.zip');
+    const legacy = legacyRuntime('legacy-structure-invalid');
+    await writeZip(packagePath, [
+      {
+        path: 'draft/draft.json',
+        bytes: JSON.stringify({
+          version: 1,
+          id: 'legacy-structure-invalid',
+          name: '结构损坏角色',
+          states: legacy.manifest.states
+        })
+      },
+      {
+        path: 'compiled/manifest.json',
+        bytes: JSON.stringify({ ...legacy.manifest, name: '结构损坏角色' })
+      },
+      {
+        path: 'source/catalog.json',
+        bytes: JSON.stringify({
+          version: 1,
+          characterId: 'legacy-structure-invalid',
+          sources: []
+        })
+      },
+      { path: 'compiled/atlas.png', bytes: legacy.assets['atlas.png']! }
+    ]);
+    const importedCharacters = join(testDirectory, 'legacy-structure-invalid-imported');
+    const store = new CharacterStore(importedCharacters);
+
+    await expect(new CharacterPackageService(importedCharacters, {
+      store,
+      assetService: new CharacterAssetService(importedCharacters),
+      geometryMigration: {
+        decodeAlpha: async () => {
+          throw new Error('CHARACTER_IMAGE_STRUCTURE_INVALID');
+        }
+      }
+    }).importCharacter(packagePath)).rejects.toThrow('CHARACTER_PACKAGE_INVALID');
+    await expect(store.list()).resolves.toEqual([]);
   });
 
   test.each([

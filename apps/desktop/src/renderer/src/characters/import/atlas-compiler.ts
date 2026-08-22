@@ -1,4 +1,8 @@
-import { planAtlas } from '@myself/character-assets';
+import {
+  computePresentationAlphaGeometry,
+  planAtlas,
+  type PresentationAlphaGeometry
+} from '@myself/character-assets';
 import {
   characterManifestV1Schema,
   type ActionFrame
@@ -21,6 +25,12 @@ export type AtlasDrawContextLike = {
     destinationWidth: number,
     destinationHeight: number
   ): void;
+  getImageData(
+    sourceX: number,
+    sourceY: number,
+    sourceWidth: number,
+    sourceHeight: number
+  ): { data: Uint8ClampedArray };
 };
 
 export type AtlasCanvasLike = {
@@ -57,6 +67,7 @@ export type CompileAtlasInput = {
   atlasAssetId: string;
   mimeType: CharacterImageMimeType;
   frames: readonly AtlasSourceFrame[];
+  groundAnchor?: { x: number; y: number };
   signal?: AbortSignal;
 };
 
@@ -67,6 +78,7 @@ export type CompiledAtlas = {
   height: number;
   frames: ActionFrame[];
   sourceChecksums: Record<string, string>;
+  geometry: PresentationAlphaGeometry;
 };
 
 type DecodedFrame = {
@@ -307,6 +319,24 @@ export async function compileAtlas(
       );
     }
 
+    const rgba = context.getImageData(0, 0, layout.width, layout.height).data;
+    if (rgba.length !== layout.width * layout.height * 4) {
+      throw new Error('CHARACTER_ATLAS_ALPHA_INVALID');
+    }
+    const geometry = computePresentationAlphaGeometry({
+      groundAnchor: input.groundAnchor ?? { x: 0.5, y: 1 },
+      frames: layout.placements.map(placement => {
+        const alpha = new Uint8Array(placement.rect.width * placement.rect.height);
+        for (let y = 0; y < placement.rect.height; y += 1) {
+          for (let x = 0; x < placement.rect.width; x += 1) {
+            const atlasPixel = (placement.rect.y + y) * layout.width + placement.rect.x + x;
+            alpha[y * placement.rect.width + x] = rgba[atlasPixel * 4 + 3]!;
+          }
+        }
+        return { width: placement.rect.width, height: placement.rect.height, alpha };
+      })
+    });
+
     throwIfAborted(input.signal);
     const bytes = await exportCanvas(canvas, input.mimeType);
     throwIfAborted(input.signal);
@@ -316,7 +346,8 @@ export async function compileAtlas(
       width: layout.width,
       height: layout.height,
       frames,
-      sourceChecksums
+      sourceChecksums,
+      geometry
     };
   } finally {
     // 成功、取消和异常都释放浏览器原生位图与临时画布内存。

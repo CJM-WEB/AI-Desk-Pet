@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { CharacterStore } from '../src/main/characters/character-store';
 import { ensureOfficialDefaultCharacter } from '../src/main/characters/official-default-character';
 import { prepareCharacterStartup } from '../src/main/characters/character-startup';
@@ -33,10 +33,16 @@ describe('官方默认角色安装', () => {
   test('从打包资源安装八个核心状态并设为活动角色', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-default-'));
     const store = new CharacterStore(join(temporaryDirectory, 'characters'));
+    const decodeAlpha = vi.fn(async () => ({
+      width: 1024,
+      height: 256,
+      alpha: new Uint8Array(1024 * 256).fill(255)
+    }));
 
     await ensureOfficialDefaultCharacter(
       store,
-      resourceDirectory
+      resourceDirectory,
+      { decodeAlpha }
     );
 
     const manifest = await store.getActive();
@@ -61,6 +67,7 @@ describe('官方默认角色安装', () => {
     expect(carrying?.frames.findIndex(frame => frame.id === carrying.commitFrameId))
       .toBe(2);
     expect(publishedManifest.skins[0]?.semanticFallbacks).toEqual([]);
+    expect(decodeAlpha).toHaveBeenCalledTimes(8);
     expect(publishedManifest.actions.map(action => action.semantic)).not.toEqual(
       expect.arrayContaining(['hide', 'emerge'])
     );

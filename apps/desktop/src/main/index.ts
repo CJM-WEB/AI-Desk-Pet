@@ -80,6 +80,7 @@ import {
 import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
 import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
+import { decodeNativeImageAlpha } from './characters/native-image-alpha-decoder';
 import {
   bindCharacterMotionWindow,
   CharacterMotionService,
@@ -368,11 +369,18 @@ async function createApplicationWindows(
     );
   });
   const charactersDirectory = join(storageDirectory, 'characters');
-  const characterStore = new CharacterStore(charactersDirectory);
+  const geometryMigration = {
+    decodeAlpha: decodeNativeImageAlpha,
+    reportDiagnostic: (code: 'CHARACTER_RESOURCE_GEOMETRY_FALLBACK') => {
+      console.warn(`角色视觉几何使用保守范围：${code}`);
+    }
+  };
+  const characterStore = new CharacterStore(charactersDirectory, { geometryMigration });
   const characterAssetService = new CharacterAssetService(charactersDirectory);
   const characterPackageService = new CharacterPackageService(charactersDirectory, {
     store: characterStore,
-    assetService: characterAssetService
+    assetService: characterAssetService,
+    geometryMigration
   });
   const characterActions = new CharacterActions({
     store: characterStore,
@@ -400,7 +408,11 @@ async function createApplicationWindows(
     },
     ensureOfficialDefaultCharacter: async () => {
       try {
-        await ensureOfficialDefaultCharacter(characterStore, defaultResources);
+        await ensureOfficialDefaultCharacter(
+          characterStore,
+          defaultResources,
+          geometryMigration
+        );
         return { activeCharacterId: 'builtin-default' };
       } catch {
         console.error('准备官方默认角色失败。', 'CHARACTER_DEFAULT_PREPARATION_FAILED');

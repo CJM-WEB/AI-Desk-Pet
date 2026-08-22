@@ -5,7 +5,8 @@ import type {
   CharacterIdentityV2,
   CharacterSkinV2,
   CharacterStateDefinitionV2,
-  DraftActionClip
+  DraftActionClip,
+  PresentationGeometryV2
 } from '@myself/character-runtime';
 import {
   characterManifestV2Schema,
@@ -90,12 +91,14 @@ export interface CharacterWorkshopDependencies {
   compileAction?(input: {
     atlasAssetId: string;
     frames: AtlasSourceFrame[];
+    groundAnchor: { x: number; y: number };
   }): Promise<{
     assetId: string;
     fileName: string;
     sha256: string;
     bytes: Uint8Array;
     frames: ActionFrame[];
+    geometry: Omit<PresentationGeometryV2, 'resourceRevision'>;
   }>;
 }
 
@@ -250,17 +253,20 @@ async function inspectBrowserImage(
 async function compileBrowserAction(input: {
   atlasAssetId: string;
   frames: AtlasSourceFrame[];
+  groundAnchor: { x: number; y: number };
 }): Promise<{
   assetId: string;
   fileName: string;
   sha256: string;
   bytes: Uint8Array;
   frames: ActionFrame[];
+  geometry: Omit<PresentationGeometryV2, 'resourceRevision'>;
 }> {
   const compiled = await compileAtlas({
     atlasAssetId: input.atlasAssetId,
     mimeType: 'image/png',
-    frames: input.frames
+    frames: input.frames,
+    groundAnchor: input.groundAnchor
   }, (width, height) => {
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -279,7 +285,8 @@ async function compileBrowserAction(input: {
     fileName: `${input.atlasAssetId}.png`,
     sha256,
     bytes: compiled.bytes,
-    frames: compiled.frames
+    frames: compiled.frames,
+    geometry: compiled.geometry
   };
 }
 
@@ -1483,13 +1490,17 @@ export function createCharacterWorkshopStore(
                     : { anchors: frame.anchors })
                 });
               }
-              // 相同帧输入共享一次编译；源素材读取同时由 sourceCache 跨表现去重。
-              const compilationKey = JSON.stringify(presentation.frames);
+              // 几何同时依赖帧与表现 ground；资源内容仍在编译后按摘要去重。
+              const compilationKey = JSON.stringify({
+                frames: presentation.frames,
+                groundAnchor: presentation.anchors.ground
+              });
               let compilation = compilationByFrames.get(compilationKey);
               if (!compilation) {
                 compilation = (dependencies.compileAction ?? compileBrowserAction)({
                   atlasAssetId,
-                  frames: sourceFrames
+                  frames: sourceFrames,
+                  groundAnchor: presentation.anchors.ground
                 });
                 compilationByFrames.set(compilationKey, compilation);
               }
@@ -1519,6 +1530,10 @@ export function createCharacterWorkshopStore(
                 ...(presentation.regions === undefined
                   ? {}
                   : { regions: presentation.regions }),
+                geometry: {
+                  ...compiled.geometry,
+                  resourceRevision: compiled.sha256
+                },
                 frames: compiled.frames.map(frame => ({
                   ...frame,
                   assetId: resourceAssetId

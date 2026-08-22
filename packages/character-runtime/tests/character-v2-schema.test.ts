@@ -11,6 +11,7 @@ import {
   anchorSetSchema,
   characterDraftV2Schema,
   characterManifestV2Schema,
+  preparedCharacterManifestV2Schema,
   characterResourceSchema,
   characterV2Completeness,
   interactionRegionSchema
@@ -115,8 +116,14 @@ function createCharacterDraftV2Fixture(): CharacterDraftV2 {
 
 /** 为草稿补齐发布所需资源字段。 */
 function createCharacterManifestV2Fixture(): CharacterManifestV2 {
+  const draft = createCharacterDraftV2Fixture();
+  draft.skins[0]!.presentations[0]!.geometry = {
+    visualBounds: { x: 0.1, y: 0.2, width: 0.8, height: 0.8 },
+    groundAnchor: { x: 0.5, y: 1 },
+    resourceRevision: RESOURCE_SHA_256.atlas
+  };
   return {
-    ...createCharacterDraftV2Fixture(),
+    ...draft,
     thumbnailAssetId: 'thumbnail-1',
     compilerVersion: 'compiler-2.0.0',
     resources: [
@@ -238,6 +245,76 @@ describe('角色包 V2 严格契约', () => {
     const draft = createCharacterDraftV2Fixture();
 
     expect(characterDraftV2Schema.parse(draft)).toEqual(draft);
+  });
+
+  test('正式清单要求不可拆分的表现几何并绑定所引用资源修订', () => {
+    const manifest = createCharacterManifestV2Fixture();
+    const presentation = manifest.skins[0]!.presentations[0]!;
+
+    const missing = structuredClone(manifest);
+    delete missing.skins[0]!.presentations[0]!.geometry;
+    expect(() => characterManifestV2Schema.parse(missing)).toThrow(/几何/u);
+
+    for (const geometry of [
+      { ...presentation.geometry!, visualBounds: { x: 0, y: 0, width: 0, height: 1 } },
+      { ...presentation.geometry!, visualBounds: { x: 0.5, y: 0, width: 0.6, height: 1 } },
+      { ...presentation.geometry!, groundAnchor: { x: Number.NaN, y: 1 } },
+      { ...presentation.geometry!, resourceRevision: RESOURCE_SHA_256.thumbnail }
+    ]) {
+      const invalid = structuredClone(manifest);
+      invalid.skins[0]!.presentations[0]!.geometry = geometry;
+      expect(() => characterManifestV2Schema.parse(invalid)).toThrow();
+    }
+  });
+
+  test.each([
+    {
+      name: '501 帧',
+      mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
+        const frame = manifest.skins[0]!.presentations[0]!.frames[0]!;
+        manifest.skins[0]!.presentations[0]!.frames = Array.from(
+          { length: 501 },
+          (_, index) => ({ ...frame, id: `frame-${index}` })
+        );
+      }
+    },
+    {
+      name: '单帧尺寸超过上限',
+      mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
+        manifest.skins[0]!.presentations[0]!.frames[0]!.width = 4097;
+      }
+    },
+    {
+      name: '累计帧面积超过画布预算',
+      mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
+        const frame = manifest.skins[0]!.presentations[0]!.frames[0]!;
+        manifest.skins[0]!.presentations[0]!.frames = [
+          { ...frame, id: 'frame-a', width: 4096, height: 4096 },
+          { ...frame, id: 'frame-b', width: 1, height: 1 }
+        ];
+      }
+    },
+    {
+      name: '空表现',
+      mutate(manifest: ReturnType<typeof createCharacterManifestV2Fixture>) {
+        const emptyPresentation = structuredClone(
+          manifest.skins[0]!.presentations[0]!
+        );
+        emptyPresentation.frames = [];
+        delete emptyPresentation.geometry;
+        manifest.skins.push({
+          ...structuredClone(manifest.skins[0]!),
+          id: 'winter',
+          presentations: [emptyPresentation]
+        });
+      }
+    }
+  ])('prepared 与正式清单均拒绝$name', ({ mutate }) => {
+    const manifest = createCharacterManifestV2Fixture();
+    mutate(manifest);
+
+    expect(() => preparedCharacterManifestV2Schema.parse(manifest)).toThrow();
+    expect(() => characterManifestV2Schema.parse(manifest)).toThrow();
   });
 
   test.each(['hide', 'emerge'])('草稿拒绝已退出标准动作集合的目录表现语义：%s', (semantic) => {

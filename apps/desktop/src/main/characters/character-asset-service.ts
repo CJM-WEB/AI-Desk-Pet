@@ -19,9 +19,13 @@ import {
   relative,
   resolve
 } from 'node:path';
-import { CHARACTER_RESOURCE_LIMITS } from '@myself/character-assets';
+import {
+  CHARACTER_RESOURCE_LIMITS,
+  parseCharacterImageMetadata,
+  type CharacterImageMimeType as SharedCharacterImageMimeType
+} from '@myself/character-assets';
 
-export type CharacterImageMimeType = 'image/png' | 'image/webp';
+export type CharacterImageMimeType = SharedCharacterImageMimeType;
 
 export type SourceCatalogEntry = {
   assetId: string;
@@ -153,9 +157,6 @@ const CHARACTER_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
 const COMPILED_ASSET_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,119}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/u;
-const PNG_SIGNATURE = new Uint8Array([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
-]);
 const SOURCE_CATALOG_FILE = 'catalog.json';
 const COMPILED_CATALOG_FILE = 'catalog.json';
 const SOURCE_TRANSACTION_DIRECTORY = '.source-import-transaction';
@@ -265,194 +266,23 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-function readUint32BigEndian(bytes: Uint8Array, offset: number): number {
-  return (
-    bytes[offset]! * 0x1000000
-    + bytes[offset + 1]! * 0x10000
-    + bytes[offset + 2]! * 0x100
-    + bytes[offset + 3]!
-  );
-}
-
-function readUint32LittleEndian(bytes: Uint8Array, offset: number): number {
-  return (
-    bytes[offset]!
-    + bytes[offset + 1]! * 0x100
-    + bytes[offset + 2]! * 0x10000
-    + bytes[offset + 3]! * 0x1000000
-  ) >>> 0;
-}
-
-function ascii(bytes: Uint8Array, offset: number, length: number): string {
-  return String.fromCharCode(...bytes.subarray(offset, offset + length));
-}
-
-function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function validPngStructure(bytes: Uint8Array): boolean {
-  if (
-    bytes.byteLength < 45
-    || !PNG_SIGNATURE.every((value, index) => bytes[index] === value)
-  ) {
-    return false;
-  }
-
-  let offset = PNG_SIGNATURE.byteLength;
-  let sawHeader = false;
-  let sawImageData = false;
-  let sawEnd = false;
-
-  while (offset + 12 <= bytes.byteLength) {
-    const dataLength = readUint32BigEndian(bytes, offset);
-    const typeOffset = offset + 4;
-    const dataOffset = offset + 8;
-    const dataEnd = dataOffset + dataLength;
-    const chunkEnd = dataEnd + 4;
-    if (dataEnd < dataOffset || chunkEnd > bytes.byteLength) return false;
-
-    const type = ascii(bytes, typeOffset, 4);
-    const expectedCrc = readUint32BigEndian(bytes, dataEnd);
-    if (crc32(bytes.subarray(typeOffset, dataEnd)) !== expectedCrc) return false;
-
-    if (!sawHeader) {
-      if (type !== 'IHDR' || dataLength !== 13) return false;
-      const width = readUint32BigEndian(bytes, dataOffset);
-      const height = readUint32BigEndian(bytes, dataOffset + 4);
-      if (
-        width < 1
-        || height < 1
-        || width > CHARACTER_RESOURCE_LIMITS.maxFrameDimension
-        || height > CHARACTER_RESOURCE_LIMITS.maxFrameDimension
-      ) {
-        return false;
-      }
-      sawHeader = true;
-    } else if (type === 'IHDR') {
-      return false;
-    }
-
-    if (type === 'IDAT') sawImageData = true;
-    if (type === 'IEND') {
-      if (dataLength !== 0 || chunkEnd !== bytes.byteLength) return false;
-      sawEnd = true;
-      break;
-    }
-    offset = chunkEnd;
-  }
-
-  return sawHeader && sawImageData && sawEnd;
-}
-
-function validWebpImageChunk(
-  bytes: Uint8Array,
-  type: string,
-  dataOffset: number,
-  dataLength: number
-): boolean {
-  if (type === 'VP8 ') {
-    if (
-      dataLength < 10
-      || bytes[dataOffset + 3] !== 0x9d
-      || bytes[dataOffset + 4] !== 0x01
-      || bytes[dataOffset + 5] !== 0x2a
-    ) {
-      return false;
-    }
-    const width = (bytes[dataOffset + 6]! + bytes[dataOffset + 7]! * 0x100) & 0x3fff;
-    const height = (bytes[dataOffset + 8]! + bytes[dataOffset + 9]! * 0x100) & 0x3fff;
-    return width > 0
-      && height > 0
-      && width <= CHARACTER_RESOURCE_LIMITS.maxFrameDimension
-      && height <= CHARACTER_RESOURCE_LIMITS.maxFrameDimension;
-  }
-  if (type === 'VP8L') {
-    if (dataLength < 5 || bytes[dataOffset] !== 0x2f) return false;
-    const packed = readUint32LittleEndian(bytes, dataOffset + 1);
-    const width = (packed & 0x3fff) + 1;
-    const height = ((packed >>> 14) & 0x3fff) + 1;
-    return width > 0
-      && height > 0
-      && width <= CHARACTER_RESOURCE_LIMITS.maxFrameDimension
-      && height <= CHARACTER_RESOURCE_LIMITS.maxFrameDimension;
-  }
-  if (type === 'VP8X') {
-    if (dataLength !== 10) return false;
-    const width = (
-      bytes[dataOffset + 4]!
-      + bytes[dataOffset + 5]! * 0x100
-      + bytes[dataOffset + 6]! * 0x10000
-    ) + 1;
-    const height = (
-      bytes[dataOffset + 7]!
-      + bytes[dataOffset + 8]! * 0x100
-      + bytes[dataOffset + 9]! * 0x10000
-    ) + 1;
-    return width > 0
-      && height > 0
-      && width <= CHARACTER_RESOURCE_LIMITS.maxFrameDimension
-      && height <= CHARACTER_RESOURCE_LIMITS.maxFrameDimension;
-  }
-  return false;
-}
-
-function validWebpStructure(bytes: Uint8Array): boolean {
-  if (
-    bytes.byteLength < 20
-    || ascii(bytes, 0, 4) !== 'RIFF'
-    || ascii(bytes, 8, 4) !== 'WEBP'
-    || readUint32LittleEndian(bytes, 4) + 8 !== bytes.byteLength
-  ) {
-    return false;
-  }
-
-  let offset = 12;
-  let sawExtendedHeader = false;
-  let sawImageChunk = false;
-  while (offset + 8 <= bytes.byteLength) {
-    const type = ascii(bytes, offset, 4);
-    const dataLength = readUint32LittleEndian(bytes, offset + 4);
-    const dataOffset = offset + 8;
-    const dataEnd = dataOffset + dataLength;
-    if (dataEnd < dataOffset || dataEnd > bytes.byteLength) return false;
-    if (type === 'VP8X') {
-      if (
-        sawExtendedHeader
-        || offset !== 12
-        || !validWebpImageChunk(bytes, type, dataOffset, dataLength)
-      ) {
-        return false;
-      }
-      sawExtendedHeader = true;
-    } else if (type === 'VP8 ' || type === 'VP8L') {
-      if (
-        sawImageChunk
-        || !validWebpImageChunk(bytes, type, dataOffset, dataLength)
-      ) {
-        return false;
-      }
-      sawImageChunk = true;
-    }
-    offset = dataEnd + (dataLength % 2 === 1 && dataEnd < bytes.byteLength ? 1 : 0);
-  }
-  return sawImageChunk && offset === bytes.byteLength;
-}
-
 function validImageStructure(
   bytes: Uint8Array,
   mimeType: CharacterImageMimeType
 ): boolean {
-  return mimeType === 'image/png'
-    ? validPngStructure(bytes)
-    : validWebpStructure(bytes);
+  try {
+    parseCharacterImageMetadata(bytes, mimeType);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function detectedImageMime(bytes: Uint8Array): CharacterImageMimeType | undefined {
+  for (const mimeType of ['image/png', 'image/webp'] as const) {
+    if (validImageStructure(bytes, mimeType)) return mimeType;
+  }
+  return undefined;
 }
 
 function validateCharacterId(characterId: string): void {
@@ -875,11 +705,7 @@ export class CharacterAssetService {
         | '.webp';
       const mimeType = mimeForExtension(extension)!;
       if (!validImageStructure(bytes, mimeType)) {
-        const signatureMime = validPngStructure(bytes)
-          ? 'image/png'
-          : validWebpStructure(bytes)
-            ? 'image/webp'
-            : undefined;
+        const signatureMime = detectedImageMime(bytes);
         throw characterError(signatureMime && signatureMime !== mimeType
           ? 'CHARACTER_SOURCE_SIGNATURE_INVALID'
           : 'CHARACTER_SOURCE_STRUCTURE_INVALID');

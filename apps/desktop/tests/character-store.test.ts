@@ -25,13 +25,15 @@ import {
   convertCharacterManifestV1ToV2,
   projectCharacterManifestV2ToLegacy
 } from '@myself/character-runtime';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import electronViteConfig from '../electron.vite.config';
 import desktopPackage from '../package.json';
 import { CharacterStore } from '../src/main/characters/character-store';
 import {
+  finalizeCharacterManifestMigration,
   migrateCharacterDocument,
-  migrateCharacterManifest
+  migrateCharacterManifest,
+  prepareCharacterManifestMigration
 } from '../src/main/characters/character-migrations';
 import { atomicWriteText } from '../src/main/storage/atomic-file-coordinator';
 
@@ -190,10 +192,26 @@ function createRuntime(
   assets: Readonly<Record<string, Uint8Array>>;
 } {
   const runtime = createRuntimeV1(id, name, atlasBytes, thumbnailBytes);
+  const manifest = attachTestGeometry(convertCharacterManifestV1ToV2(runtime.manifest).document);
   return {
-    manifest: convertCharacterManifestV1ToV2(runtime.manifest).document,
+    manifest,
     assets: runtime.assets
   };
+}
+
+function attachTestGeometry(manifest: CharacterManifestV2): CharacterManifestV2 {
+  const revisions = new Map(manifest.resources.map(resource => [resource.assetId, resource.sha256]));
+  for (const skin of manifest.skins) {
+    for (const presentation of skin.presentations) {
+      presentation.geometry = {
+        visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+        groundAnchor: { ...presentation.anchors.ground },
+        resourceRevision: [...new Set(presentation.frames.map(frame => revisions.get(frame.assetId)!))]
+          .sort().join('.')
+      };
+    }
+  }
+  return manifest;
 }
 
 function createCompleteRuntime(
@@ -225,7 +243,7 @@ function createCompleteRuntime(
     }))
   };
   return {
-    manifest: convertCharacterManifestV1ToV2(completeManifest).document,
+    manifest: attachTestGeometry(convertCharacterManifestV1ToV2(completeManifest).document),
     assets: runtime.assets
   };
 }
@@ -1537,13 +1555,278 @@ describe('CharacterStore', () => {
       .toThrow('CHARACTER_MIGRATION_FAILED');
   });
 
-  test('迁移器把版本一发布清单转换为版本二并拒绝未知版本', () => {
-    expect(migrateCharacterManifest(createRuntimeV1().manifest)).toMatchObject({
+  test('迁移器只准备版本一清单，资源校验后才生成严格视觉几何', async () => {
+    const runtime = createRuntimeV1();
+    const prepared = prepareCharacterManifestMigration(runtime.manifest);
+    expect(prepared).toMatchObject({
       sourceVersion: 1,
+      requiresPersistence: true,
       document: { version: 2, defaultSkinId: 'default' }
+    });
+    const finalized = await finalizeCharacterManifestMigration(prepared, runtime.assets, {
+      decodeAlpha: async () => ({
+        width: 32,
+        height: 32,
+        alpha: new Uint8Array(32 * 32).fill(255)
+      })
+    });
+    expect(finalized.document.skins[0]!.presentations[0]!.geometry).toEqual({
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 },
+      resourceRevision: runtime.manifest.resources[0]!.sha256
     });
     expect(() => migrateCharacterManifest({ version: 3 }))
       .toThrow('CHARACTER_VERSION_UNSUPPORTED');
+  });
+
+  test('旧 V2 已带不匹配资源修订时拒绝且不以重新解码覆盖', async () => {
+    const runtime = createRuntimeV1();
+    const stale = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    stale.skins[0]!.presentations[0]!.geometry = {
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 },
+      resourceRevision: 'f'.repeat(64)
+    };
+    const decodeAlpha = vi.fn();
+
+    await expect(finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(stale),
+      runtime.assets,
+      { decodeAlpha }
+    )).rejects.toThrow();
+    expect(decodeAlpha).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      name: 'V1 的 501 帧',
+      create() {
+        const runtime = createRuntimeV1();
+        const action = runtime.manifest.states[0]!.actions[0]!;
+        action.frames = Array.from(
+          { length: 501 },
+          (_, index) => ({ ...action.frames[0]!, x: index })
+        );
+        return runtime;
+      }
+    },
+    {
+      name: '旧 V2 的单帧超尺寸',
+      create() {
+        const runtime = createRuntimeV1();
+        const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+        manifest.skins[0]!.presentations[0]!.frames[0]!.width = 4097;
+        return { manifest, assets: runtime.assets };
+      }
+    },
+    {
+      name: '旧 V2 的累计帧面积超预算',
+      create() {
+        const runtime = createRuntimeV1();
+        const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+        const frame = manifest.skins[0]!.presentations[0]!.frames[0]!;
+        manifest.skins[0]!.presentations[0]!.frames = [
+          { ...frame, width: 4096, height: 4096 },
+          { ...frame, width: 1, height: 1 }
+        ];
+        return { manifest, assets: runtime.assets };
+      }
+    }
+  ])('$name 在解码前拒绝', async ({ create }) => {
+    const runtime = create();
+    const decodeAlpha = vi.fn();
+
+    await expect(Promise.resolve().then(async () => finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(runtime.manifest),
+      runtime.assets,
+      { decodeAlpha }
+    ))).rejects.toThrow();
+    expect(decodeAlpha).not.toHaveBeenCalled();
+  });
+
+  test('旧 V2 确定性删除非默认空表现后迁移其余可播放表现', async () => {
+    const runtime = createRuntimeV1();
+    const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    manifest.skins.push({
+      ...structuredClone(manifest.skins[0]!),
+      id: 'winter',
+      presentations: [{
+        ...structuredClone(manifest.skins[0]!.presentations[0]!),
+        frames: []
+      }]
+    });
+    const decodeAlpha = vi.fn(async () => ({
+      width: 32,
+      height: 32,
+      alpha: new Uint8Array(32 * 32).fill(255)
+    }));
+
+    const prepared = prepareCharacterManifestMigration(manifest);
+    expect(prepared.document.skins[1]!.presentations).toEqual([]);
+    await expect(finalizeCharacterManifestMigration(prepared, runtime.assets, {
+      decodeAlpha
+    })).resolves.toMatchObject({ document: { version: 2 } });
+    expect(decodeAlpha).toHaveBeenCalledOnce();
+  });
+
+  test('删除旧 V2 空表现后默认链不可播放时仍在解码前拒绝', async () => {
+    const runtime = createRuntimeV1();
+    const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    manifest.skins[0]!.presentations[0]!.frames = [];
+    const decodeAlpha = vi.fn();
+
+    await expect(Promise.resolve().then(async () => finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(manifest),
+      runtime.assets,
+      { decodeAlpha }
+    ))).rejects.toThrow('CHARACTER_MIGRATION_FAILED');
+    expect(decodeAlpha).not.toHaveBeenCalled();
+  });
+
+  test('多资源表现逐资源解码一次且不会同时持有多份解码结果', async () => {
+    const runtime = createRuntimeV1();
+    const secondBytes = new Uint8Array([7, 8, 9]);
+    runtime.manifest.resources.push({
+      assetId: 'atlas-second',
+      fileName: 'atlas-second.png',
+      sha256: checksum(secondBytes),
+      byteLength: secondBytes.byteLength
+    });
+    runtime.assets = {
+      ...runtime.assets,
+      'atlas-second.png': secondBytes
+    };
+    runtime.manifest.states[0]!.actions[0]!.frames = [{
+      assetId: 'atlas', x: 0, y: 0, width: 1, height: 1
+    }, {
+      assetId: 'atlas-second', x: 1, y: 0, width: 1, height: 1
+    }];
+    let activeDecodes = 0;
+    let maximumActiveDecodes = 0;
+    const decodeAlpha = vi.fn(async () => {
+      activeDecodes += 1;
+      maximumActiveDecodes = Math.max(maximumActiveDecodes, activeDecodes);
+      await Promise.resolve();
+      activeDecodes -= 1;
+      return {
+        width: 2,
+        height: 1,
+        alpha: new Uint8Array([255, 255])
+      };
+    });
+
+    const finalized = await finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(runtime.manifest),
+      runtime.assets,
+      { decodeAlpha }
+    );
+
+    expect(decodeAlpha).toHaveBeenCalledTimes(2);
+    expect(maximumActiveDecodes).toBe(1);
+    expect(finalized.document.skins[0]!.presentations[0]!.geometry)
+      .toMatchObject({ visualBounds: { x: 0, y: 0, width: 1, height: 1 } });
+  });
+
+  test('跨皮肤表现共用同一资源时整个文档只解码一次', async () => {
+    const runtime = createRuntimeV1();
+    const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    manifest.skins.push({
+      ...structuredClone(manifest.skins[0]!),
+      id: 'winter'
+    });
+    const decodeAlpha = vi.fn(async () => ({
+      width: 32,
+      height: 32,
+      alpha: new Uint8Array(32 * 32).fill(255)
+    }));
+
+    const finalized = await finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(manifest),
+      runtime.assets,
+      { decodeAlpha }
+    );
+
+    expect(decodeAlpha).toHaveBeenCalledOnce();
+    expect(finalized.document.skins.map(skin => skin.presentations[0]!.geometry))
+      .toHaveLength(2);
+  });
+
+  test('图片结构预检错误必须终止迁移且不得改写原清单', async () => {
+    const runtime = createRuntimeV1();
+    const original = structuredClone(runtime.manifest);
+    const reportDiagnostic = vi.fn();
+
+    await expect(finalizeCharacterManifestMigration(
+      prepareCharacterManifestMigration(runtime.manifest),
+      runtime.assets,
+      {
+        decodeAlpha: async () => {
+          throw new Error('CHARACTER_IMAGE_STRUCTURE_INVALID');
+        },
+        reportDiagnostic
+      }
+    )).rejects.toThrow('CHARACTER_IMAGE_STRUCTURE_INVALID');
+    expect(runtime.manifest).toEqual(original);
+    expect(reportDiagnostic).not.toHaveBeenCalled();
+  });
+
+  test('本地旧清单图片结构错误时不创建迁移备份或覆盖原文', async () => {
+    const store = new CharacterStore(charactersDirectory, {
+      geometryMigration: {
+        decodeAlpha: async () => {
+          throw new Error('CHARACTER_IMAGE_STRUCTURE_INVALID');
+        }
+      }
+    });
+    const runtime = createRuntimeV1();
+    await store.create({ id: 'demo', name: '演示角色' });
+    const compiled = join(charactersDirectory, 'demo', 'compiled');
+    await writeRuntimeDirectory(compiled, runtime);
+    const manifestFile = join(compiled, 'manifest.json');
+    const before = await readFile(manifestFile, 'utf8');
+
+    await expect(store.getPublishedManifest('demo')).rejects.toThrow();
+
+    expect(await readFile(manifestFile, 'utf8')).toBe(before);
+    await expect(access(join(charactersDirectory, 'demo', 'compiled.backup')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test.each([
+    {
+      name: '未知字段',
+      mutate(presentation: Record<string, unknown>) {
+        presentation.script = 'run.exe';
+      }
+    },
+    {
+      name: '非法锚点',
+      mutate(presentation: Record<string, unknown>) {
+        presentation.anchors = { ground: { x: 2, y: 1 } };
+      }
+    },
+    {
+      name: '未知动作引用',
+      mutate(presentation: Record<string, unknown>) {
+        presentation.actionId = 'missing-action';
+      }
+    }
+  ])('旧 V2 空表现含$name时拒绝而非删除掩盖', ({ mutate }) => {
+    const runtime = createRuntimeV1();
+    const manifest = convertCharacterManifestV1ToV2(runtime.manifest).document;
+    const empty = {
+      ...structuredClone(manifest.skins[0]!.presentations[0]!),
+      frames: []
+    } as unknown as Record<string, unknown>;
+    mutate(empty);
+    manifest.skins.push({
+      ...structuredClone(manifest.skins[0]!),
+      id: 'winter',
+      presentations: [empty as never]
+    });
+
+    expect(() => prepareCharacterManifestMigration(manifest))
+      .toThrow('CHARACTER_MIGRATION_FAILED');
   });
 
   test('首次读取版本一草稿原子安装版本二并保留一次恢复备份', async () => {
@@ -1567,7 +1850,13 @@ describe('CharacterStore', () => {
   });
 
   test('首次读取版本一清单原子安装版本二且运行接口仍返回版本一投影', async () => {
-    const store = new CharacterStore(charactersDirectory);
+    const store = new CharacterStore(charactersDirectory, {
+      geometryMigration: {
+        decodeAlpha: async () => ({
+          width: 32, height: 32, alpha: new Uint8Array(32 * 32).fill(255)
+        })
+      }
+    });
     const legacyRuntime = createRuntimeV1();
     await store.create({ id: 'demo', name: '演示角色' });
     await writeRuntimeDirectory(
@@ -1576,7 +1865,12 @@ describe('CharacterStore', () => {
     );
 
     await expect(store.getRuntimeManifest('demo')).resolves.toMatchObject({ version: 1 });
-    await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({ version: 2 });
+    await expect(store.getPublishedManifest('demo')).resolves.toMatchObject({
+      version: 2,
+      skins: [{ presentations: [{ geometry: {
+        visualBounds: { x: 0, y: 0, width: 1, height: 1 }
+      } }] }]
+    });
     expect(JSON.parse(await readFile(
       join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
       'utf8'
@@ -1601,8 +1895,17 @@ describe('CharacterStore', () => {
     const restarted = new CharacterStore(charactersDirectory, { writeText: writer.writeText });
     writer.arm();
 
+    const before = await readFile(
+      join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
+      'utf8'
+    );
+
     await expect(restarted.getPublishedManifest('demo'))
       .resolves.toMatchObject({ version: 2 });
+    expect(await readFile(
+      join(charactersDirectory, 'demo', 'compiled', 'manifest.json'),
+      'utf8'
+    )).toBe(before);
   });
 
   test('草稿迁移索引提交失败时恢复版本一原文并允许新实例重试', async () => {

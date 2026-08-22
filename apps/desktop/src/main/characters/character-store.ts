@@ -32,8 +32,11 @@ import { z } from 'zod';
 import { atomicWriteText } from '../storage/atomic-file-coordinator';
 import { characterError } from './character-errors';
 import {
+  finalizeCharacterManifestMigration,
   migrateCharacterDocument,
-  migrateCharacterManifest
+  migrateCharacterManifest,
+  prepareCharacterManifestMigration,
+  type CharacterGeometryMigrationDependencies
 } from './character-migrations';
 import {
   CharacterTransactionRecovery,
@@ -171,6 +174,7 @@ export type CharacterStoreDependencies = {
     characterId: string
   ) => Promise<void>;
   recoveryNow?: () => number;
+  geometryMigration?: CharacterGeometryMigrationDependencies;
 };
 
 export type CharacterIndexRecoveryResult = {
@@ -334,6 +338,7 @@ export class CharacterStore {
     CharacterStoreDependencies['onImportRollbackCheckpoint']
   >;
   private readonly transactionRecovery: CharacterTransactionRecovery;
+  private readonly geometryMigration: CharacterGeometryMigrationDependencies;
   private recoveryActiveCharacterId: string | null = null;
   private transactionRecoveryReport: CharacterTransactionRecoveryReport = {
     characters: []
@@ -352,6 +357,11 @@ export class CharacterStore {
       ?? (async () => undefined);
     this.onImportRollbackCheckpoint = dependencies.onImportRollbackCheckpoint
       ?? (async () => undefined);
+    this.geometryMigration = dependencies.geometryMigration ?? {
+      decodeAlpha: async () => {
+        throw characterError('CHARACTER_RESOURCE_INTEGRITY_FAILED');
+      }
+    };
     this.transactionRecovery = new CharacterTransactionRecovery({
       activeCharacterId: () => this.recoveryActiveCharacterId,
       ...(dependencies.recoveryNow === undefined
@@ -1241,7 +1251,7 @@ export class CharacterStore {
       this.compiledDirectory(characterId),
       characterId
     );
-    if (migrated.sourceVersion === 2) return migrated.document;
+    if (!migrated.requiresPersistence) return migrated.document;
     const recoveryResult = this.transactionRecovery.resultFor(characterId);
     if (
       recoveryResult.draftErrorCode !== null
@@ -1688,7 +1698,7 @@ export class CharacterStore {
     );
     let migrated: ReturnType<typeof migrateCharacterManifest>;
     try {
-      migrated = migrateCharacterManifest(JSON.parse(manifestBytes.toString('utf8')));
+      migrated = prepareCharacterManifestMigration(JSON.parse(manifestBytes.toString('utf8')));
     } catch (error) {
       if (
         error instanceof Error
@@ -1715,7 +1725,12 @@ export class CharacterStore {
       ));
     }
     this.validateAssets(migrated.document, assets);
-    return { ...migrated, assets };
+    const finalized = await finalizeCharacterManifestMigration(
+      migrated,
+      assets,
+      this.geometryMigration
+    );
+    return { ...finalized, assets };
   }
 
   private async readRuntimeAssetFrom(
@@ -1732,8 +1747,7 @@ export class CharacterStore {
       directoryIdentity,
       'runtime:manifest-after-open'
     );
-    const migrated = migrateCharacterManifest(JSON.parse(manifestBytes.toString('utf8')));
-    const manifest = migrated.document;
+    const manifest = characterManifestV2Schema.parse(JSON.parse(manifestBytes.toString('utf8')));
     if (manifest.id !== characterId) {
       throw characterError('CHARACTER_RUNTIME_UNAVAILABLE');
     }

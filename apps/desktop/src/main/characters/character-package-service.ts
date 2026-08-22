@@ -52,8 +52,10 @@ import { ZipFile } from 'yazl';
 import { z } from 'zod';
 import { CharacterAssetService } from './character-asset-service';
 import {
+  finalizeCharacterManifestMigration,
   migrateCharacterDocument,
-  migrateCharacterManifest
+  prepareCharacterManifestMigration,
+  type CharacterGeometryMigrationDependencies
 } from './character-migrations';
 import { CharacterStore } from './character-store';
 import { atomicWriteFileExclusive } from '../storage/atomic-file-coordinator';
@@ -124,6 +126,7 @@ export type CharacterPackageServiceDependencies = {
   store?: CharacterStore;
   assetService?: CharacterAssetService;
   recoveryNow?: () => number;
+  geometryMigration?: CharacterGeometryMigrationDependencies;
 };
 
 type ScannedEntry = {
@@ -1113,15 +1116,16 @@ function extractedPath(
 
 async function preparePackage(
   entries: readonly ScannedEntry[],
-  files: ExtractedFiles
+  files: ExtractedFiles,
+  geometryMigration: CharacterGeometryMigrationDependencies
 ): Promise<PreparedPackage> {
   let draftResult: ReturnType<typeof migrateCharacterDocument>;
-  let manifestResult: ReturnType<typeof migrateCharacterManifest>;
+  let manifestResult: ReturnType<typeof prepareCharacterManifestMigration>;
   try {
     draftResult = migrateCharacterDocument(
       await readJson(extractedPath(files, 'draft/draft.json'))
     );
-    manifestResult = migrateCharacterManifest(
+    manifestResult = prepareCharacterManifestMigration(
       await readJson(extractedPath(files, 'compiled/manifest.json'))
     );
   } catch {
@@ -1137,7 +1141,7 @@ async function preparePackage(
     throw packageError('CHARACTER_PACKAGE_INVALID');
   }
   const draft = draftResult.document;
-  const manifest = manifestResult.document;
+  let manifest = manifestResult.document;
   const sourceCatalog = sourceResult.data;
   const packageFiles = new Map<string, CharacterPackageFileMetadata>(
     entries
@@ -1162,6 +1166,14 @@ async function preparePackage(
     const bytes = await readRegularFile(
       extractedPath(files, path)
     );
+    const actualSha256 = sha256(bytes);
+    // Alpha 解码只接收已经由清单长度与摘要共同验证的可信资源。
+    if (
+      bytes.byteLength !== resource.byteLength
+      || actualSha256 !== resource.sha256
+    ) {
+      throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
+    }
     const lowerName = resource.fileName.toLocaleLowerCase('en-US');
     packageFiles.set(path, {
       path,
@@ -1172,11 +1184,20 @@ async function preparePackage(
             mime: lowerName.endsWith('.png')
               ? 'image/png' as const
               : 'image/webp' as const
-          }),
+      }),
       byteLength: bytes.byteLength,
-      sha256: sha256(bytes)
+      sha256: actualSha256
     });
     runtimeAssets[resource.fileName] = bytes;
+  }
+  try {
+    manifest = (await finalizeCharacterManifestMigration(
+      manifestResult,
+      runtimeAssets,
+      geometryMigration
+    )).document;
+  } catch {
+    throw packageError('CHARACTER_PACKAGE_INVALID');
   }
 
   for (const source of sourceCatalog.sources) {
@@ -1273,6 +1294,7 @@ export class CharacterPackageService {
   private readonly archiveFactory: () => ZipFile;
   private readonly packageLimits: CharacterPackageLimits;
   private readonly recoveryNow: () => number;
+  private readonly geometryMigration: CharacterGeometryMigrationDependencies;
 
   constructor(
     private readonly charactersDirectory: string,
@@ -1285,6 +1307,11 @@ export class CharacterPackageService {
     this.createId = dependencies.createId ?? randomUUID;
     this.archiveFactory = dependencies.archiveFactory ?? (() => new ZipFile());
     this.recoveryNow = dependencies.recoveryNow ?? Date.now;
+    this.geometryMigration = dependencies.geometryMigration ?? {
+      decodeAlpha: async () => {
+        throw packageError('CHARACTER_PACKAGE_RESOURCE_INVALID');
+      }
+    };
     this.packageLimits = {
       ...CHARACTER_PACKAGE_LIMITS,
       ...dependencies.packageLimits
@@ -1997,7 +2024,11 @@ export class CharacterPackageService {
         entries,
         this.dependencies.onCheckpoint
       );
-      const prepared = await preparePackage(entries, extractedFiles);
+      const prepared = await preparePackage(
+        entries,
+        extractedFiles,
+        this.geometryMigration
+      );
       await validateSourcesInIsolation(
         stagingDirectory,
         prepared,

@@ -10,17 +10,33 @@
 
 **Files:**
 
+- Create: `packages/character-assets/src/alpha-geometry.ts`
+- Create: `packages/character-assets/tests/alpha-geometry.test.ts`
+- Create: `packages/character-assets/src/image-metadata.ts`
+- Create: `packages/character-assets/tests/image-metadata.test.ts`
+- Modify: `packages/character-assets/src/index.ts`
+- Modify: `packages/character-assets/src/resource-limits.ts`
 - Modify: `packages/character-runtime/src/character-v2-schema.ts`
 - Modify: `packages/character-runtime/tests/character-v2-schema.test.ts`
 - Modify: `apps/desktop/src/renderer/src/characters/import/atlas-compiler.ts`
 - Modify: `apps/desktop/tests/character-atlas-compiler.test.ts`
+- Modify: `apps/desktop/src/renderer/src/characters/store/character-workshop-store.ts`
+- Modify: `apps/desktop/tests/character-workshop-store.test.ts`
 - Modify: `packages/character-runtime/tests/character-v1-converter.test.ts`
 - Modify: `packages/character-runtime/tests/character-v2-schema.test.ts`
 - Modify: `apps/desktop/src/main/characters/character-asset-service.ts`
 - Modify: `apps/desktop/src/main/characters/character-migrations.ts`
 - Modify: `apps/desktop/src/main/characters/character-store.ts`
+- Modify: `apps/desktop/src/main/characters/character-package-service.ts`
+- Modify: `apps/desktop/src/main/characters/official-default-character.ts`
+- Modify: `apps/desktop/src/main/index.ts`
+- Create: `apps/desktop/src/main/characters/native-image-alpha-decoder.ts`
+- Create: `apps/desktop/tests/native-image-alpha-decoder.test.ts`
 - Modify: `apps/desktop/tests/character-asset-service.test.ts`
 - Modify: `apps/desktop/tests/character-store.test.ts`
+- Modify: `apps/desktop/tests/character-package-service.test.ts`
+- Modify: `apps/desktop/tests/official-default-character.test.ts`
+- Modify: `apps/desktop/tests/character-ipc.test.ts`
 
 ```ts
 type PresentationGeometryV2 = Readonly<{
@@ -31,12 +47,15 @@ type PresentationGeometryV2 = Readonly<{
 // 均按当前表现画布归一化；包围盒覆盖全部帧非透明像素，锚点来自并校验现有 anchors.ground。
 ```
 
-- [ ] RED：透明边缘裁掉；多帧取联合而非当前帧；全透明资源失败；包围盒/groundAnchor 越界、NaN、零尺寸或资源 revision 不匹配时 schema 拒绝。
-- [ ] GREEN：atlas 编译时从已解码 alpha 数据单次累计；把 `visualBounds + groundAnchor + resourceRevision` 作为同一不可拆元数据保存，播放时不逐帧扫描。
-- [ ] RED/GREEN：V1/旧 V2 在可信导入时补齐；内置或既有角色绕过导入而首次加载时，由 `character-migrations` 在发布到运行态前原子生成并保存一次。生成失败使用经过 schema 验证的保守默认并报告资源错误，不保留运行双轨。
-- [ ] 运行 character-runtime 和 atlas 定向测试；提交 `feat: 编译角色动作视觉包围盒`。
+- [x] RED：共享纯函数按表现 ground 对齐各帧 Alpha；透明边缘裁掉；多帧取联合而非当前帧；全透明资源失败。包围盒/groundAnchor 越界、NaN、零尺寸或资源 revision 不匹配时严格 manifest 校验拒绝。
+- [x] GREEN：atlas 编译时复用 `character-assets` 的纯 Alpha 联合函数单次累计；`compileBrowserAction()` 和工作室正式 manifest 组装点必须把 `visualBounds + groundAnchor + resourceRevision` 作为同一不可拆元数据保存，播放时不逐帧扫描。草稿允许暂缺 geometry，正式 manifest 必须具备完整 geometry。
+- [x] RED/GREEN：V1/旧 V2 使用两阶段迁移。纯结构转换只产生不可运行的 prepared document；`CharacterStore`、角色包导入和内置角色安装必须在资源完整性校验后注入 `nativeImage` 解码器、复用同一纯 Alpha 函数补齐，再通过严格 manifest schema 并原子保存一次。任何运行读取只返回最终严格 document；不得让 optional geometry 成为长期运行双轨。生成失败使用经过 schema 验证的保守默认并发布稳定、无路径诊断。
+- [x] 安全收口：PNG/WebP 在进入 `nativeImage` 前复用共享结构与尺寸解析并核对解码尺寸；prepared/正式表现限制帧数、单帧尺寸和累计面积，可信迁移删除旧 V2 空表现且不修补默认播放链；Alpha 联合使用 stride 累计器按资源串行解码，禁止全局解码缓存、并行解码和逐帧裁切副本形成峰值路径。
+- [x] 运行 character-runtime 和 atlas 定向测试；提交 `feat: 编译角色动作视觉包围盒`。
 
 ## Task 2（G2）：建立 Main 几何权威
+
+> 类型收口：G1 的正式 schema 已在运行时强制 `geometry`，但静态 `CharacterManifestV2` 仍因 V1 converter 同时承担 prepared 文档而保持 optional。G2 应先拆出 `PreparedCharacterManifestV2`，迁移 converter、behavior 测试夹具与 legacy projection 后，再把正式类型改为 required；不得以类型断言掩盖阶段差异。
 
 **Files:**
 
@@ -89,8 +108,12 @@ type StoredPetPlacement = Readonly<{
 **Files:**
 
 - Modify: `apps/desktop/src/shared/pet-window-interaction.ts`
+- Modify: `apps/desktop/src/shared/ipc-channels.ts`
+- Modify: `apps/desktop/src/shared/myself-api.ts`
 - Modify: `apps/desktop/src/main/ipc/register-ipc.ts`
 - Modify: `apps/desktop/src/preload/index.ts`
+- Modify: `apps/desktop/src/renderer/src/pet/pet-interaction-controller.ts`
+- Modify: `apps/desktop/src/renderer/src/pet/PetView.tsx`
 - Modify: `apps/desktop/src/renderer/src/characters/player/CharacterPlayer.tsx`
 - Modify: `apps/desktop/src/renderer/src/characters/player/pixi-character-player.ts`
 - Modify: `apps/desktop/src/main/index.ts`

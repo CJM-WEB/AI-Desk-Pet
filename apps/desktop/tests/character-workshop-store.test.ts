@@ -16,6 +16,11 @@ import {
   type CharacterWorkshopDependencies
 } from '../src/renderer/src/characters/store/character-workshop-store';
 
+const TEST_COMPILED_GEOMETRY = {
+  visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+  groundAnchor: { x: 0.5, y: 1 }
+} as const;
+
 function draft(
   id: string,
   name: string,
@@ -1362,6 +1367,10 @@ describe('角色工作室 Zustand 状态层', () => {
       fileName: `${input.atlasAssetId}.png`,
       sha256: input.atlasAssetId.endsWith('-1') ? 'a'.repeat(64) : 'b'.repeat(64),
       bytes: new Uint8Array([9]),
+      geometry: {
+        visualBounds: { x: 0.25, y: 0.1, width: 0.5, height: 0.9 },
+        groundAnchor: { x: 0.5, y: 1 }
+      },
       frames: input.frames.map((frame, index) => ({
         id: frame.frameId,
         assetId: input.atlasAssetId,
@@ -1388,7 +1397,12 @@ describe('角色工作室 Zustand 状态层', () => {
       skins: [{
         id: 'default',
         presentations: [{
-          actionId: 'idle-main', fps: 8, commitFrameId: 'carry-commit'
+          actionId: 'idle-main', fps: 8, commitFrameId: 'carry-commit',
+          geometry: {
+            visualBounds: { x: 0.25, y: 0.1, width: 0.5, height: 0.9 },
+            groundAnchor: { x: 0.5, y: 1 },
+            resourceRevision: 'a'.repeat(64)
+          }
         }]
       }, {
         id: 'winter',
@@ -1396,6 +1410,62 @@ describe('角色工作室 Zustand 状态层', () => {
       }]
     });
     expect(() => characterManifestV2Schema.parse(input.manifest)).not.toThrow();
+  });
+
+  test('相同帧但不同 groundAnchor 分别编译且仍按资源摘要去重', async () => {
+    const sourceAssetId = '123e4567-e89b-42d3-a456-426614174000';
+    const loadedDraft = draft('default', 'AI Pet 默认角色');
+    const grounds = [{ x: 0.5, y: 1 }, { x: 0.4, y: 0.9 }];
+    for (const [index, skin] of loadedDraft.skins.entries()) {
+      skin.presentations = [{
+        actionId: 'idle-main',
+        fps: 8,
+        anchors: { ground: grounds[index]! },
+        frames: [{ assetId: sourceAssetId, x: 0, y: 0, width: 1, height: 1 }]
+      }];
+    }
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(
+      async () => undefined
+    );
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft),
+      publishCharacter,
+      readCharacterSource: vi.fn(async () => new Uint8Array([
+        0x89, 0x50, 0x4e, 0x47
+      ]))
+    });
+    const compileAction = vi.fn<NonNullable<
+      CharacterWorkshopDependencies['compileAction']
+    >>(async input => ({
+      assetId: input.atlasAssetId,
+      fileName: `${input.atlasAssetId}.png`,
+      sha256: 'd'.repeat(64),
+      bytes: new Uint8Array([7]),
+      geometry: {
+        visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+        groundAnchor: input.groundAnchor
+      },
+      frames: [{
+        assetId: input.atlasAssetId,
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1
+      }]
+    }));
+    const store = createCharacterWorkshopStore(api, { compileAction });
+    await store.getState().load();
+
+    await store.getState().compileAndPublish();
+
+    expect(compileAction).toHaveBeenCalledTimes(2);
+    expect(publishCharacter).toHaveBeenCalledOnce();
+    const [input] = publishCharacter.mock.calls[0]!;
+    expect(input.resources).toHaveLength(1);
+    expect(input.manifest.resources).toHaveLength(1);
+    expect(input.manifest.skins.map(skin => (
+      skin.presentations[0]!.geometry?.groundAnchor
+    ))).toEqual(grounds);
   });
 
   test('默认皮肤的默认状态回退链不可播放时以稳定码阻止发布', async () => {
@@ -1452,6 +1522,7 @@ describe('角色工作室 Zustand 状态层', () => {
         fileName: `${input.atlasAssetId}.png`,
         sha256: 'c'.repeat(64),
         bytes: new Uint8Array([7]),
+        geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
     });
@@ -1520,6 +1591,7 @@ describe('角色工作室 Zustand 状态层', () => {
         fileName: `${input.atlasAssetId}.png`,
         sha256: 'd'.repeat(64),
         bytes: new Uint8Array([5]),
+        geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
     });
@@ -1609,6 +1681,7 @@ describe('角色工作室 Zustand 状态层', () => {
         fileName: `${input.atlasAssetId}.png`,
         sha256: 'b'.repeat(64),
         bytes: new Uint8Array([9]),
+        geometry: TEST_COMPILED_GEOMETRY,
         frames: input.frames.map(frame => ({
           assetId: input.atlasAssetId,
           x: 0,
@@ -1657,6 +1730,7 @@ describe('角色工作室 Zustand 状态层', () => {
         fileName: `${input.atlasAssetId}.png`,
         sha256: 'b'.repeat(64),
         bytes: new Uint8Array([9]),
+        geometry: TEST_COMPILED_GEOMETRY,
         frames: input.frames.map(frame => ({
           assetId: input.atlasAssetId,
           x: 0,
@@ -1699,6 +1773,7 @@ describe('角色工作室 Zustand 状态层', () => {
       fileName: `${input.atlasAssetId}.png`,
       sha256: '3'.repeat(64),
       bytes: new Uint8Array([9]),
+      geometry: TEST_COMPILED_GEOMETRY,
       frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
     }));
     const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
@@ -1757,6 +1832,7 @@ describe('角色工作室 Zustand 状态层', () => {
       fileName: string;
       sha256: string;
       bytes: Uint8Array;
+      geometry: typeof TEST_COMPILED_GEOMETRY;
       frames: CharacterDraftV2['skins'][number]['presentations'][number]['frames'];
     }>();
     const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
@@ -1777,6 +1853,7 @@ describe('角色工作室 Zustand 状态层', () => {
       fileName: 'atlas-1-1.png',
       sha256: 'e'.repeat(64),
       bytes: new Uint8Array([9]),
+      geometry: TEST_COMPILED_GEOMETRY,
       frames: [{ assetId: 'atlas-1-1', x: 0, y: 0, width: 1, height: 1 }]
     });
     await compiling;
@@ -1796,6 +1873,7 @@ describe('角色工作室 Zustand 状态层', () => {
       fileName: string;
       sha256: string;
       bytes: Uint8Array;
+      geometry: typeof TEST_COMPILED_GEOMETRY;
       frames: CharacterDraftV2['skins'][number]['presentations'][number]['frames'];
     }>();
     const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
@@ -1816,6 +1894,7 @@ describe('角色工作室 Zustand 状态层', () => {
       fileName: 'atlas-1-1.png',
       sha256: 'f'.repeat(64),
       bytes: new Uint8Array([9]),
+      geometry: TEST_COMPILED_GEOMETRY,
       frames: [{ assetId: 'atlas-1-1', x: 0, y: 0, width: 1, height: 1 }]
     });
     await Promise.all([first, second]);
@@ -1844,6 +1923,7 @@ describe('角色工作室 Zustand 状态层', () => {
         fileName: `${input.atlasAssetId}.png`,
         sha256: '4'.repeat(64),
         bytes: new Uint8Array([9]),
+        geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
     });
@@ -1904,6 +1984,7 @@ describe('角色工作室 Zustand 状态层', () => {
         fileName: `${input.atlasAssetId}.png`,
         sha256: '5'.repeat(64),
         bytes: new Uint8Array([9]),
+        geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
     });
@@ -1946,6 +2027,7 @@ describe('角色工作室 Zustand 状态层', () => {
         fileName: `${input.atlasAssetId}.png`,
         sha256: '6'.repeat(64),
         bytes: new Uint8Array([9]),
+        geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
     });
@@ -1999,6 +2081,7 @@ describe('角色工作室 Zustand 状态层', () => {
         fileName: `${input.atlasAssetId}.png`,
         sha256: '1'.repeat(64),
         bytes: new Uint8Array([9]),
+        geometry: TEST_COMPILED_GEOMETRY,
         frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
       })
     });
@@ -2023,6 +2106,7 @@ describe('角色工作室 Zustand 状态层', () => {
       fileName: `${input.atlasAssetId}.png`,
       sha256: '2'.repeat(64),
       bytes: new Uint8Array([9]),
+      geometry: TEST_COMPILED_GEOMETRY,
       frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
     }));
     const { api } = apiDouble({
