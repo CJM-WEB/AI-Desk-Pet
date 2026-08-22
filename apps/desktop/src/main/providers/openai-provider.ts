@@ -10,6 +10,10 @@ import {
 } from '@myself/shared-types';
 import { characterAgentBehaviorIntentSchema } from '@myself/character-runtime';
 import { z } from 'zod';
+import {
+  createOpenAIToolNameCodec,
+  type OpenAIToolNameCodec
+} from './openai-tool-name-codec';
 
 export type FetchLike = (
   input: string | URL | Request,
@@ -21,6 +25,7 @@ export type AdditionalParameterValue = string | number | boolean;
 export interface ProviderAdapterConfig {
   baseUrl: string;
   modelId: string;
+  providerId?: string;
   additionalParameters?: Record<string, AdditionalParameterValue>;
 }
 
@@ -103,7 +108,10 @@ export async function readProviderJson(response: Response): Promise<unknown> {
   }
 }
 
-function serializeMessage(message: ModelMessage): Record<string, unknown> {
+function serializeMessage(
+  message: ModelMessage,
+  toolNameCodec: OpenAIToolNameCodec
+): Record<string, unknown> {
   if (message.role === 'tool') {
     return {
       role: 'tool',
@@ -119,7 +127,7 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
         id: message.toolRequest.requestId,
         type: 'function',
         function: {
-          name: message.toolRequest.toolName,
+          name: toolNameCodec.encode(message.toolRequest.toolName),
           arguments: JSON.stringify(message.toolRequest.arguments)
         }
       }]
@@ -128,7 +136,7 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
   return { role: message.role, content: message.content };
 }
 
-function normalizeResponse(raw: unknown): ModelResponse {
+function normalizeResponse(raw: unknown, toolNameCodec: OpenAIToolNameCodec): ModelResponse {
   const parsed = compatibleResponseSchema.safeParse(raw);
   if (!parsed.success) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
 
@@ -148,15 +156,22 @@ function normalizeResponse(raw: unknown): ModelResponse {
   if (toolCall) {
     try {
       const argumentsValue = toolArgumentsSchema.parse(JSON.parse(toolCall.function.arguments));
+      let toolName: string;
+      try {
+        toolName = toolNameCodec.decode(toolCall.function.name);
+      } catch {
+        throw new ProviderError('PROVIDER_UNKNOWN_TOOL_CALL', false);
+      }
       return {
         type: 'tool_request',
         request: {
           requestId: toolCall.id,
-          toolName: toolCall.function.name,
+          toolName,
           arguments: argumentsValue
         }
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
       throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
     }
   }
@@ -195,6 +210,20 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly config: ProviderAdapterConfig;
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
+    // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
+    const toolNameCodec = createOpenAIToolNameCodec(request.tools);
+    const tools = request.tools.map(definition => ({
+      ...definition,
+      function: {
+        ...definition.function,
+        name: toolNameCodec.encode(definition.function.name)
+      }
+    }));
+    const toolChoice = request.tools.length === 0
+      ? 'none'
+      : request.toolChoice === 'required'
+        ? 'required'
+        : 'auto';
     let response: Response;
     try {
       response = await this.fetchClient(chatCompletionsUrl(this.config.baseUrl), {
@@ -207,14 +236,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
         body: JSON.stringify({
           ...this.config.additionalParameters,
           model: this.config.modelId,
-          messages: request.messages.map(serializeMessage),
-          tools: request.tools
+          messages: request.messages.map(message => serializeMessage(message, toolNameCodec)),
+          tools,
+          tool_choice: toolChoice,
+          ...(this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
+            ? { thinking: { type: 'disabled' } }
+            : {})
         })
       });
     } catch (error) {
       normalizeFetchError(error, signal);
     }
 
-    return normalizeResponse(await readProviderJson(response));
+    return normalizeResponse(await readProviderJson(response), toolNameCodec);
   }
 }

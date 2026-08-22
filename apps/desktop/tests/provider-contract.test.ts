@@ -102,6 +102,7 @@ interface ChatProviderContractCase {
   createProvider(fetchClient: FetchLike): ModelProvider;
   textResponse(text: string): unknown;
   toolResponse: unknown;
+  expectedToolResponseErrorCode?: string;
   requestTools(body: Record<string, unknown>): unknown;
 }
 
@@ -126,6 +127,7 @@ const chatProviderContractCases: ChatProviderContractCase[] = [
         }
       }]
     },
+    expectedToolResponseErrorCode: 'PROVIDER_UNKNOWN_TOOL_CALL',
     requestTools: body => body.tools
   },
   {
@@ -204,7 +206,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         text: '调用工具',
         signal: new AbortController().signal
       })).rejects.toMatchObject({
-        code: 'PROVIDER_MALFORMED_RESPONSE',
+        code: contract.expectedToolResponseErrorCode ?? 'PROVIDER_MALFORMED_RESPONSE',
         retryable: false
       });
     }
@@ -769,6 +771,233 @@ verifyProviderContract({
 });
 
 describe('协议请求映射', () => {
+  test('OpenAI Compatible 编码工具别名、传递 required 并还原响应内部名', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetchClient = vi.fn<FetchLike>(async (_input, init) => {
+      const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      body = requestBody;
+      const providerName = ((requestBody.tools as Array<{
+        function: { name: string };
+      }>)[0]?.function.name);
+      return jsonResponse({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: 'delete-file-1',
+              type: 'function',
+              function: {
+                name: providerName,
+                arguments: '{"relativePath":"old.txt"}'
+              }
+            }]
+          }
+        }]
+      });
+    });
+    const provider = new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'secret',
+      fetchClient
+    );
+    const deleteTool: ToolDefinition = {
+      type: 'function',
+      function: {
+        name: 'builtin.files.delete_file',
+        description: '删除文件',
+        parameters: { type: 'object' }
+      }
+    };
+
+    await expect(provider.respond({
+      ...request,
+      tools: [deleteTool],
+      toolChoice: 'required'
+    }, new AbortController().signal)).resolves.toEqual({
+      type: 'tool_request',
+      request: {
+        requestId: 'delete-file-1',
+        toolName: 'builtin.files.delete_file',
+        arguments: { relativePath: 'old.txt' }
+      }
+    });
+
+    expect(body?.tools).toEqual([expect.objectContaining({
+      function: expect.objectContaining({
+        name: expect.stringMatching(/^[A-Za-z0-9_-]{1,64}$/u)
+      })
+    })]);
+    expect((body?.tools as Array<{ function: { name: string } }>)[0]?.function.name)
+      .not.toContain('.');
+    expect(body?.tool_choice).toBe('required');
+  });
+
+  test('OpenAI Compatible 拒绝未知 Provider 工具别名', async () => {
+    const provider = new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'secret',
+      vi.fn(async () => jsonResponse({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: 'unknown-tool-1',
+              type: 'function',
+              function: { name: 'unknown_provider_tool', arguments: '{}' }
+            }]
+          }
+        }]
+      }))
+    );
+
+    await expect(provider.respond({
+      ...request,
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'builtin.files.delete_file',
+          description: '删除文件',
+          parameters: { type: 'object' }
+        }
+      }],
+      toolChoice: 'required'
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_UNKNOWN_TOOL_CALL',
+      retryable: false
+    });
+  });
+
+  test('DeepSeek 禁用推理覆盖附加 thinking 参数且预设路径保留 providerId', async () => {
+    const additionalParameters = {
+      thinking: { type: 'enabled' }
+    } as unknown as Record<string, string | number | boolean>;
+    const directFetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const directProvider = new OpenAICompatibleProvider({
+      ...adapterProfile,
+      providerId: 'deepseek',
+      additionalParameters
+    }, async () => 'secret', directFetchClient);
+    const presetFetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const presetProfile: ProviderProfileV2 = {
+      id: 'deepseek-reasoning-profile',
+      displayName: 'DeepSeek',
+      mode: 'preset',
+      providerId: 'deepseek',
+      modelId: 'deepseek-v4-flash',
+      hasStoredSecret: true
+    };
+    const presetProvider = new ProviderRegistry(providerCatalog).create(
+      presetProfile,
+      async () => 'secret',
+      presetFetchClient
+    );
+
+    await directProvider.respond({
+      ...request,
+      reasoningMode: 'disabled'
+    }, new AbortController().signal);
+    await presetProvider.respond({
+      ...request,
+      reasoningMode: 'disabled'
+    }, new AbortController().signal);
+
+    expect(JSON.parse(String(directFetchClient.mock.calls[0]?.[1]?.body))).toMatchObject({
+      thinking: { type: 'disabled' }
+    });
+    expect(JSON.parse(String(presetFetchClient.mock.calls[0]?.[1]?.body))).toMatchObject({
+      thinking: { type: 'disabled' }
+    });
+  });
+
+  test('仅 DeepSeek 的 disabled 推理模式注入 thinking', async () => {
+    const openAIFetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const deepSeekDefaultFetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const openAIProvider = new OpenAICompatibleProvider({
+      ...adapterProfile,
+      providerId: 'openai'
+    }, async () => 'secret', openAIFetchClient);
+    const deepSeekProvider = new OpenAICompatibleProvider({
+      ...adapterProfile,
+      providerId: 'deepseek'
+    }, async () => 'secret', deepSeekDefaultFetchClient);
+
+    await openAIProvider.respond({ ...request, reasoningMode: 'disabled' }, new AbortController().signal);
+    await deepSeekProvider.respond({
+      ...request,
+      reasoningMode: 'provider_default'
+    }, new AbortController().signal);
+
+    expect(JSON.parse(String(openAIFetchClient.mock.calls[0]?.[1]?.body))).not
+      .toHaveProperty('thinking');
+    expect(JSON.parse(String(deepSeekDefaultFetchClient.mock.calls[0]?.[1]?.body))).not
+      .toHaveProperty('thinking');
+  });
+
+  test('OpenAI Compatible 续传时保留同一工具别名、调用 ID 与工具结果正文', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const provider = new OpenAICompatibleProvider(
+      adapterProfile,
+      async () => 'secret',
+      fetchClient
+    );
+
+    await provider.respond({
+      ...request,
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'builtin.files.delete_file',
+          description: '删除文件',
+          parameters: { type: 'object' }
+        }
+      }],
+      toolChoice: 'auto',
+      messages: [{
+        role: 'assistant',
+        content: '',
+        toolRequest: {
+          requestId: 'delete-file-history-1',
+          toolName: 'builtin.files.delete_file',
+          arguments: { relativePath: 'old.txt' }
+        }
+      }, {
+        role: 'tool',
+        toolCallId: 'delete-file-history-1',
+        content: '{"deleted":"old.txt"}'
+      }]
+    }, new AbortController().signal);
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    const providerName = body.tools[0].function.name;
+    expect(body.messages).toEqual([{
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'delete-file-history-1',
+        type: 'function',
+        function: {
+          name: providerName,
+          arguments: '{"relativePath":"old.txt"}'
+        }
+      }]
+    }, {
+      role: 'tool',
+      tool_call_id: 'delete-file-history-1',
+      content: '{"deleted":"old.txt"}'
+    }]);
+    expect(providerName).not.toContain('.');
+  });
+
   test('Anthropic 使用专用认证头并映射 system、消息和工具 Schema', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       content: [{ type: 'text', text: '完成' }]

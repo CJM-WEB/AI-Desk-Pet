@@ -65,7 +65,8 @@ function resolveProfile(
     protocol: entry.protocol,
     config: {
       baseUrl: entry.baseUrl,
-      modelId: profile.modelId
+      modelId: profile.modelId,
+      providerId: entry.providerId
     }
   };
 }

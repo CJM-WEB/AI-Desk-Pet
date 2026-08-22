@@ -833,7 +833,7 @@ describe('AgentService', () => {
               id: 'read-1',
               type: 'function',
               function: {
-                name: 'builtin.files.list_files',
+                name: 'builtin__files__list_files',
                 arguments: '{"relativePath":"."}'
               }
             }]

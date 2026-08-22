@@ -69,7 +69,8 @@ describe('OpenAICompatibleProvider', () => {
     expect(JSON.parse(String(init?.body))).toEqual({
       model: 'example-model',
       messages: [{ role: 'user', content: '读取 notes.txt' }],
-      tools
+      tools,
+      tool_choice: 'auto'
     });
   });
 
