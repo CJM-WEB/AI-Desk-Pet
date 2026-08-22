@@ -303,19 +303,19 @@ export interface ConversationBehaviorPort {
 }
 ```
 
-- [ ] **步骤 1：写清单解析 RED**
+- [x] **步骤 1：写清单解析 RED**
 
   断言标准语义、`agentInferable` 状态名称、动作名称和标签可解析；NFKC 与不区分大小写匹配稳定；未知或多项同名/同标签返回 `CHARACTER_ACTION_UNAVAILABLE`；模型永远拿不到 stateId/actionId。缺少当前皮肤 presentation 的动作不得成为成功结果。
 
-- [ ] **步骤 2：写 Director/Service RED**
+- [x] **步骤 2：写 Director/Service RED**
 
   覆盖优先级“关闭/安全与停止锁 → 当前明确指令 → 可信任务/拖拽 → 聊天计划 → 反思 → 本地 idle”。断言 Director 只把解析后的私有目标交给 Service；Service 仍通过 Engine 硬约束、表现解析、冷却、重复抑制和播放令牌授权。对明确/聊天来源不可用动作发布固定 `{ code:'CHARACTER_ACTION_UNAVAILABLE', message:'当前角色没有可播放的对应动作。' }`，不发布 idle；反思/本地来源静默跳过。
 
-- [ ] **步骤 3：写 success 排队 RED**
+- [x] **步骤 3：写 success 排队 RED**
 
   `completeUserPrompt()` 先保存聊天计划；随后可信 success 若排程了动作，计划等待该 playbackToken 的 completed/interrupted/failed；success 无可播放动作时立即提交计划。旧 generation、角色切换、reset 与 close 均丢弃待提交计划。
 
-- [ ] **步骤 4：运行 RED**
+- [x] **步骤 4：运行 RED**
 
   分别运行以下命令，确认失败源于本任务尚未存在的 resolver、Director 或定向授权接口：
 
@@ -326,11 +326,11 @@ export interface ConversationBehaviorPort {
 
   预期：FAIL，新 resolver、Director 与定向授权接口不存在。
 
-- [ ] **步骤 5：写最小 GREEN**
+- [x] **步骤 5：写最小 GREEN**
 
   给现有 Engine 增加 `dispatchDirected()`，内部复用 `authorizeCharacterBehaviorAction()`/`selectCharacterBehaviorAction()` 与同一 schedule；不要复制 state/schedule。给 Service 增加 `getPublicBehaviorCatalog()` 与 `requestDirectedBehavior()`，返回同步授权结果并继续通过现有 `publish()` 发 Renderer 事件。Director 只保存来源、generation、停止锁与待提交 token，不保存第二份角色状态。
 
-- [ ] **步骤 6：运行 GREEN**
+- [x] **步骤 6：运行 GREEN**
 
   依次运行以下命令，均须通过：
 
@@ -343,7 +343,7 @@ export interface ConversationBehaviorPort {
 
   预期：PASS；既有搬运、任务阶段、V1 fallback 与播放反馈用例不回归。
 
-- [ ] **步骤 7：提交任务**
+- [x] **步骤 7：提交任务**
 
   ```powershell
   git add packages/character-runtime/src/behavior-target-resolver.ts packages/character-runtime/tests/behavior-target-resolver.test.ts packages/character-runtime/src/character-behavior-engine.ts packages/character-runtime/src/behavior-action-selector.ts packages/character-runtime/src/index.ts packages/character-runtime/tests/character-behavior-engine.test.ts packages/character-runtime/tests/behavior-action-selector.test.ts apps/desktop/src/main/characters/character-behavior-director.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/src/main/characters/character-behavior-service.ts apps/desktop/tests/character-behavior-service.test.ts
