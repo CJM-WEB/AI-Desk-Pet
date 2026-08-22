@@ -820,7 +820,7 @@ async function createApplicationWindows(
           createPowerShellTool: () => new PowerShellTool()
         }),
         emit,
-        emitBehaviorIntent: intent => characterBehavior.handleAgentIntent(intent),
+        emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent),
         taskCarry: {
           beginTaskCarry: () => characterBehavior.beginTaskCarry(),
           endTaskCarry: () => characterBehavior.endTaskCarry()

@@ -1,5 +1,6 @@
 import type {
   BehaviorTarget,
+  CharacterAgentBehaviorIntent,
   CharacterBehaviorAuthorization,
   CharacterBehaviorPlan,
   CharacterPlaybackFeedback,
@@ -19,6 +20,8 @@ const NONE: CharacterBehaviorAuthorization = { kind: 'none' };
 function createFixture() {
   let taskAuthorization: CharacterBehaviorAuthorization = NONE;
   let directedAuthorization: CharacterBehaviorAuthorization = NONE;
+  let agentAuthorization: CharacterBehaviorAuthorization = NONE;
+  let releasedTokens: readonly string[] = [];
   const targetByName = new Map<string, ResolvedBehaviorTarget>([
     ['挥手', { kind: 'action', actionId: 'wave-action' }],
     ['庆祝', { kind: 'action', actionId: 'celebrate-action' }],
@@ -42,8 +45,14 @@ function createFixture() {
         : target.kind === 'action' && target.actionId === 'move-action'
     )),
     requestDirectedBehavior: vi.fn(() => directedAuthorization),
+    isMovementAgentIntent: vi.fn((intent: CharacterAgentBehaviorIntent) => (
+      intent.actionSemantic === 'move'
+      || intent.stateIntent !== null && 'semantic' in intent.stateIntent
+        && intent.stateIntent.semantic === 'move'
+    )),
+    handleAgentIntent: vi.fn(() => agentAuthorization),
     getRecentPublicActions: vi.fn(() => ['挥手']),
-    handleIdleDue: vi.fn(),
+    handleIdleDue: vi.fn(() => releasedTokens),
     handleTaskEvent: vi.fn((
       _event: TaskEvent,
       options?: Readonly<{ allowPlayback?: boolean }>
@@ -78,7 +87,9 @@ function createFixture() {
     motion,
     notices,
     setTaskAuthorization: (value: CharacterBehaviorAuthorization) => { taskAuthorization = value; },
-    setDirectedAuthorization: (value: CharacterBehaviorAuthorization) => { directedAuthorization = value; }
+    setDirectedAuthorization: (value: CharacterBehaviorAuthorization) => { directedAuthorization = value; },
+    setAgentAuthorization: (value: CharacterBehaviorAuthorization) => { agentAuthorization = value; },
+    setReleasedTokens: (value: readonly string[]) => { releasedTokens = value; }
   };
 }
 
@@ -125,20 +136,59 @@ describe('Main 角色行为 Director', () => {
     }]);
   });
 
-  test('停止立即撤销运动并拦截旧 500ms 主动入口，恢复后沿用同一入口', async () => {
+  test('停止立即撤销运动并只拦截旧 500ms 候选，仍推进令牌清理', async () => {
     const fixture = createFixture();
     fixture.director.handleIdleDue();
-    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledOnce();
+    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledExactlyOnceWith({ allowCandidate: true });
 
     await fixture.director.prepareUserPrompt('停下');
     fixture.director.handleIdleDue();
 
     expect(fixture.motion.stop).toHaveBeenCalledOnce();
-    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledOnce();
+    expect(fixture.behavior.handleIdleDue).toHaveBeenNthCalledWith(2, { allowCandidate: false });
 
     await fixture.director.prepareUserPrompt('恢复活动');
     fixture.director.handleIdleDue();
-    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledTimes(2);
+    expect(fixture.behavior.handleIdleDue).toHaveBeenNthCalledWith(3, { allowCandidate: true });
+  });
+
+  test('旧能力任务意图经 Director 授权且 move 只产生一次受控运动意图', () => {
+    const fixture = createFixture();
+    fixture.setAgentAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'agent-move-token', semantic: 'move'
+    });
+    const intent: CharacterAgentBehaviorIntent = {
+      stateIntent: { semantic: 'move' }, actionSemantic: 'move', urgency: 80,
+      explanation: '能力任务完成后移动'
+    };
+
+    expect(fixture.director.handleAgentBehaviorIntent(intent)).toMatchObject({
+      kind: 'play', playbackToken: 'agent-move-token', semantic: 'move'
+    });
+
+    expect(fixture.behavior.handleAgentIntent).toHaveBeenCalledExactlyOnceWith(intent);
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'wander', scope: 'work_area'
+    });
+  });
+
+  test('停止锁与显式动作优先级都阻止旧能力任务的 move 意图', async () => {
+    const intent: CharacterAgentBehaviorIntent = {
+      stateIntent: { semantic: 'move' }, actionSemantic: 'move', urgency: 80,
+      explanation: '旧能力任务移动'
+    };
+    const stopped = createFixture();
+    await stopped.director.prepareUserPrompt('停下');
+    expect(stopped.director.handleAgentBehaviorIntent(intent)).toEqual(NONE);
+    expect(stopped.behavior.handleAgentIntent).not.toHaveBeenCalled();
+
+    const explicit = createFixture();
+    explicit.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'explicit-token', semantic: 'celebrate'
+    });
+    explicit.director.requestBehaviorPlan(play('挥手'), 'explicit');
+    expect(explicit.director.handleAgentBehaviorIntent(intent)).toEqual(NONE);
+    expect(explicit.behavior.handleAgentIntent).not.toHaveBeenCalled();
   });
 
   test('聊天移动计划只有在 move 动作授权后才请求对应运动且不重复 wander', () => {
@@ -195,7 +245,8 @@ describe('Main 角色行为 Director', () => {
         actionNames: [],
         tags: []
       },
-      runtime: { movementStopped: false }
+      runtime: { movementStopped: false },
+      recentActions: []
     });
   });
 
@@ -328,6 +379,47 @@ describe('Main 角色行为 Director', () => {
       { kind: 'action', actionId: 'wave-action' },
       { urgency: 80, systemForced: true }
     );
+  });
+
+  test('success 动作无 Renderer 反馈时由轮询过期令牌并释放待提交计划', () => {
+    const fixture = createFixture();
+    fixture.setTaskAuthorization({
+      kind: 'play', actionId: 'celebrate-action', playbackToken: 'success-token', semantic: 'celebrate'
+    });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'chat-token', semantic: 'celebrate'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手')
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    fixture.setReleasedTokens(['success-token']);
+
+    fixture.director.handleIdleDue();
+
+    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
+      { kind: 'action', actionId: 'wave-action' },
+      { urgency: 80, systemForced: true }
+    );
+  });
+
+  test('停止后轮询仍释放过期显式动作，恢复后可接受新动作', async () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'expired-token', semantic: 'celebrate'
+    });
+    fixture.director.requestBehaviorPlan(play('挥手'), 'explicit');
+    await fixture.director.prepareUserPrompt('停下');
+    fixture.setReleasedTokens(['expired-token']);
+    fixture.director.handleIdleDue();
+    await fixture.director.prepareUserPrompt('恢复活动');
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'celebrate-action', playbackToken: 'new-token', semantic: 'celebrate'
+    });
+
+    expect(fixture.director.requestBehaviorPlan(play('庆祝'), 'chat')).toMatchObject({
+      kind: 'play', playbackToken: 'new-token'
+    });
   });
 
   test('success 没有排出可播放动作时立即提交聊天计划', () => {

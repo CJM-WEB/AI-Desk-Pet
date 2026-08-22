@@ -165,6 +165,15 @@ export class CharacterBehaviorService {
     )));
   }
 
+  /** Director 在提交旧能力任务前预检 move，避免停止锁外产生播放或运动副作用。 */
+  isMovementAgentIntent(intent: CharacterAgentBehaviorIntent): boolean {
+    if (intent.actionSemantic === 'move') return true;
+    const stateIntent = intent.stateIntent;
+    if (!stateIntent) return false;
+    if ('semantic' in stateIntent) return stateIntent.semantic === 'move';
+    return this.isMovementBehaviorTarget({ kind: 'state', stateId: stateIntent.stateId });
+  }
+
   /** 定向请求仍经现有 Engine 的硬约束、调度器与令牌授权，不直接发布动作 ID。 */
   requestDirectedBehavior(
     target: ResolvedBehaviorTarget,
@@ -177,7 +186,7 @@ export class CharacterBehaviorService {
       urgency: options.urgency ?? 0,
       systemForced: options.systemForced ?? false
     });
-    return this.publish(decision, null, false);
+    return this.publish(decision);
   }
 
   /**
@@ -287,13 +296,13 @@ export class CharacterBehaviorService {
     return this.dispatchTaskSignal(this.taskContextSignal, allowPlayback);
   }
 
-  handleAgentIntent(intent: CharacterAgentBehaviorIntent): void {
-    if (this.closed || this.transitioning || !this.engine) return;
+  handleAgentIntent(intent: CharacterAgentBehaviorIntent): CharacterBehaviorAuthorization {
+    if (this.closed || this.transitioning || !this.engine) return NO_BEHAVIOR_AUTHORIZATION;
     const now = this.now();
     // Agent 意图在思考结束后参与决策；先撤销本地思考事实，仍由引擎校验可推断状态。
     this.deactivateTaskSignal(now);
     this.taskContextSignal = null;
-    this.dispatch({ type: 'task', phase: 'start', occurredAtMs: now }, intent);
+    return this.dispatch({ type: 'task', phase: 'start', occurredAtMs: now }, intent);
   }
 
   handleMovement(snapshot: CharacterMotionSnapshot): void {
@@ -319,19 +328,28 @@ export class CharacterBehaviorService {
     this.dispatch({ type: 'user-interaction', occurredAtMs: now });
   }
 
-  handleIdleDue(): void {
-    if (this.closed) return;
-    if (!this.transitioning && this.engine) this.publish(this.engine.advance());
-    if (this.transitioning || this.taskIdleBlocked || this.carryIdleBlocked || this.moving) return;
+  handleIdleDue(
+    options: Readonly<{ allowCandidate?: boolean }> = {}
+  ): readonly string[] {
+    if (this.closed) return [];
+    const expiredTokens = this.advanceBehaviorSchedule();
+    if (options.allowCandidate === false) return expiredTokens;
+    if (this.transitioning || this.taskIdleBlocked || this.carryIdleBlocked || this.moving) {
+      return expiredTokens;
+    }
     const now = this.now();
-    if (now < this.nextIdleAt) return;
+    if (now < this.nextIdleAt) return expiredTokens;
     this.nextIdleAt = now + this.idleIntervalMs;
 
     if (this.engine) {
-      this.dispatch({ type: 'idle-due', occurredAtMs: now });
-      return;
+      const authorization = this.dispatch({ type: 'idle-due', occurredAtMs: now });
+      if (authorization.kind === 'play' && authorization.semantic === 'move') {
+        this.options.motion.requestIntent({ kind: 'wander', scope: 'work_area' });
+      }
+      return expiredTokens;
     }
     this.pollLegacyIdle();
+    return expiredTokens;
   }
 
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void {
@@ -391,6 +409,7 @@ export class CharacterBehaviorService {
     const revision = ++this.loadRevision;
     // 已结束任务的结果只属于旧角色；切换期间新到达的事件仍会由 captureTaskContext 接管。
     if (replacing) {
+      this.recentPublicActions.splice(0);
       this.carrying = false;
       this.carryIdleBlocked = false;
       if (this.taskContextSignal?.type === 'task') this.taskContextSignal = null;
@@ -584,8 +603,7 @@ export class CharacterBehaviorService {
   /** 只把已通过调度器的 play effect 转为 Main 播放事件。 */
   private publish(
     decision: CharacterBehaviorDecision,
-    commitFrameId: string | null = null,
-    requestMovementIntent = true
+    commitFrameId: string | null = null
   ): CharacterBehaviorAuthorization {
     let authorization: CharacterBehaviorAuthorization = decision.diagnosticCodes.includes(
       'CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE'
@@ -606,9 +624,6 @@ export class CharacterBehaviorService {
       const action = this.manifest?.actions.find(
         candidate => candidate.id === effect.action.actionId
       );
-      if (requestMovementIntent && action?.semantic === 'move') {
-        this.options.motion.requestIntent({ kind: 'wander', scope: 'work_area' });
-      }
       if (action) {
         authorization = {
           kind: 'play',
@@ -620,6 +635,16 @@ export class CharacterBehaviorService {
       this.emit(event);
     }
     return authorization;
+  }
+
+  /** 把 Engine 的时间截止转换为 Director 可消费的最小令牌释放事实。 */
+  private advanceBehaviorSchedule(): readonly string[] {
+    if (this.transitioning || !this.engine) return [];
+    const previousToken = this.engine.snapshot().schedule.current?.playbackToken ?? null;
+    const decision = this.engine.advance();
+    this.publish(decision);
+    const currentToken = decision.snapshot.schedule.current?.playbackToken ?? null;
+    return previousToken !== null && previousToken !== currentToken ? [previousToken] : [];
   }
 
   private pollLegacyIdle(): void {

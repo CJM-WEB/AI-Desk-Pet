@@ -58,10 +58,11 @@ type BehaviorService = {
     event: TaskEvent,
     options?: Readonly<{ allowPlayback?: boolean }>
   ): CharacterBehaviorAuthorization;
-  handleAgentIntent(intent: CharacterAgentBehaviorIntent): void;
+  isMovementAgentIntent(intent: CharacterAgentBehaviorIntent): boolean;
+  handleAgentIntent(intent: CharacterAgentBehaviorIntent): CharacterBehaviorAuthorization;
   handleMovement(snapshot: CharacterMotionSnapshot): void;
   handleUserInteraction(): void;
-  handleIdleDue(): void;
+  handleIdleDue(options?: Readonly<{ allowCandidate?: boolean }>): readonly string[];
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void;
   handleActiveCharacterChanged(): Promise<void>;
   subscribe(listener: (event: BehaviorPlaybackEvent) => void): () => void;
@@ -381,7 +382,7 @@ describe('Main 角色行为权威服务', () => {
     expect(events).toEqual([]);
   });
 
-  test('定向 move 只授权动画而不触发旧 wander，非定向任务路径保持不变', async () => {
+  test('定向与旧 Agent move 都只返回动画授权，不可绕过 Director 触发 wander', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
     const events: BehaviorPlaybackEvent[] = [];
@@ -403,15 +404,16 @@ describe('Main 角色行为权威服务', () => {
     expect(events).toEqual([expect.objectContaining({ actionId: 'move-action' })]);
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
 
-    service.handleAgentIntent({
+    const agentAuthorization = service.handleAgentIntent({
       stateIntent: { semantic: 'move' },
       actionSemantic: 'move',
       urgency: 100,
       explanation: '旧非定向任务移动'
     });
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
-      kind: 'wander', scope: 'work_area'
+    expect(agentAuthorization).toMatchObject({
+      kind: 'play', actionId: 'move-action', semantic: 'move'
     });
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
 
   test('禁止可信阶段播放时仍更新任务事实，后续 success 可正常接管', async () => {
@@ -966,21 +968,18 @@ describe('Main 角色行为权威服务', () => {
     expect(fixture.motion.applyTaskEvent).toHaveBeenCalledTimes(2);
   });
 
-  test('move 语义只在引擎真正排程后请求封闭 wander 意图', async () => {
+  test('旧 Agent 的私有 stateId move 可在无调度副作用时被 Director 预检', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
     await service.initialize();
 
-    service.handleAgentIntent({
-      stateIntent: { semantic: 'move' },
-      actionSemantic: 'move',
+    expect(service.isMovementAgentIntent({
+      stateIntent: { stateId: 'move-state' },
+      actionSemantic: null,
       urgency: 80,
       explanation: '需要在桌面上漫步'
-    });
-
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
-      kind: 'wander', scope: 'work_area'
-    });
+    })).toBe(true);
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
 
   test('播放反馈由当前引擎令牌单次鉴权', async () => {
@@ -1023,7 +1022,9 @@ describe('Main 角色行为权威服务', () => {
     });
 
     fixture.setNow(100);
-    service.handleIdleDue();
+    const expiredTokens = service.handleIdleDue();
+
+    expect(expiredTokens).toEqual(['behavior-token-1']);
 
     expect(() => service.applyPlaybackFeedback({
       playbackToken: 'behavior-token-1',
@@ -1060,7 +1061,9 @@ describe('Main 角色行为权威服务', () => {
     });
 
     fixture.setNow(50);
-    service.handleIdleDue();
+    const expiredTokens = service.handleIdleDue({ allowCandidate: false });
+
+    expect(expiredTokens).toEqual(['behavior-token-1']);
 
     expect(() => service.applyPlaybackFeedback({
       playbackToken: 'behavior-token-1',
@@ -1123,12 +1126,18 @@ describe('Main 角色行为权威服务', () => {
     const events: BehaviorPlaybackEvent[] = [];
     service.subscribe(event => events.push(event));
     await service.initialize();
+    service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-1', actionId: 'idle-action',
+      status: 'started', occurredAtMs: 1
+    });
+    expect(service.getRecentPublicActions()).toEqual(['idle 动作']);
     events.splice(0);
     fixture.motion.requestIntent.mockClear();
     const pendingManifest = deferred<CharacterManifestV2>();
     fixture.store.getActiveManifestV2.mockReturnValueOnce(pendingManifest.promise);
 
     const switching = service.handleActiveCharacterChanged();
+    expect(service.getRecentPublicActions()).toEqual([]);
     expect(() => service.applyPlaybackFeedback({
       playbackToken: 'behavior-token-1',
       actionId: 'idle-action',
@@ -1185,9 +1194,7 @@ describe('Main 角色行为权威服务', () => {
       actionId: 'move-action',
       playbackToken: 'behavior-token-2'
     }]);
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
-      kind: 'wander', scope: 'work_area'
-    });
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
 
   test('V2 读取失败时错误脱敏且仅使用 V1 待机兼容路径', async () => {

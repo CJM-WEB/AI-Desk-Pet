@@ -1,6 +1,7 @@
 import type {
   CharacterBehaviorAuthorization,
   CharacterBehaviorPlan,
+  CharacterAgentBehaviorIntent,
   CharacterPlaybackFeedback,
   MoveDirection,
   MoveDistance,
@@ -75,7 +76,9 @@ type BehaviorServicePort = Pick<
   | 'getRecentPublicActions'
   | 'resolveBehaviorTarget'
   | 'isMovementBehaviorTarget'
+  | 'isMovementAgentIntent'
   | 'requestDirectedBehavior'
+  | 'handleAgentIntent'
   | 'handleTaskEvent'
   | 'applyPlaybackFeedback'
   | 'handleIdleDue'
@@ -160,6 +163,7 @@ export class CharacterBehaviorDirector {
   getChatContext(): ConversationBehaviorContext {
     const motion = this.options.motion.getSnapshot();
     let character: PublicBehaviorCatalog;
+    let catalogAvailable = true;
     try {
       character = this.options.behavior.getPublicBehaviorCatalog();
     } catch (error) {
@@ -172,6 +176,7 @@ export class CharacterBehaviorDirector {
         actionNames: [],
         tags: []
       };
+      catalogAvailable = false;
     }
     return {
       character,
@@ -182,7 +187,7 @@ export class CharacterBehaviorDirector {
         movementStopped: this.movementStopped
       },
       proactivityMode: 'assistive',
-      recentActions: this.options.behavior.getRecentPublicActions()
+      recentActions: catalogAvailable ? this.options.behavior.getRecentPublicActions() : []
     };
   }
 
@@ -227,6 +232,19 @@ export class CharacterBehaviorDirector {
       return;
     }
     this.commitPendingChatPlan();
+  }
+
+  /** 兼容能力任务的高层意图仍先经过显式优先级与停止锁，再生成唯一运动意图。 */
+  handleAgentBehaviorIntent(intent: CharacterAgentBehaviorIntent): CharacterBehaviorAuthorization {
+    if (this.closed || this.active?.source === 'explicit') return NONE;
+    if (this.movementStopped && this.options.behavior.isMovementAgentIntent(intent)) return NONE;
+    const authorization = this.options.behavior.handleAgentIntent(intent);
+    if (authorization.kind !== 'play') return authorization;
+    this.active = { source: 'trusted-task', playbackToken: authorization.playbackToken };
+    if (authorization.semantic === 'move') {
+      this.options.motion.requestIntent({ kind: 'wander', scope: 'work_area' });
+    }
+    return authorization;
   }
 
   /** 只有 success 的真实终态令牌可以释放其后排队的聊天行为。 */
@@ -289,8 +307,11 @@ export class CharacterBehaviorDirector {
 
   /** 任务 4 先把原 500ms 主动入口纳入同一停止锁；任务 6 再替换候选时钟。 */
   handleIdleDue(): void {
-    if (this.closed || this.movementStopped) return;
-    this.options.behavior.handleIdleDue();
+    if (this.closed) return;
+    const expiredTokens = this.options.behavior.handleIdleDue({
+      allowCandidate: !this.movementStopped
+    });
+    for (const playbackToken of expiredTokens) this.releasePlaybackToken(playbackToken);
   }
 
   /** 拖拽事实只参与优先级阻塞，不在 Director 内复制运动或角色状态。 */
@@ -346,6 +367,13 @@ export class CharacterBehaviorDirector {
   private clearPendingChat(): void {
     this.pendingChatPlan = null;
     this.pendingSuccessToken = null;
+  }
+
+  private releasePlaybackToken(playbackToken: string): void {
+    if (this.active?.playbackToken === playbackToken) this.active = null;
+    if (this.pendingSuccessToken !== playbackToken) return;
+    this.pendingSuccessToken = null;
+    this.commitPendingChatPlan();
   }
 
   private publishUnavailableNotice(): void {
