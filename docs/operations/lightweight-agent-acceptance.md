@@ -86,7 +86,8 @@
 - `pnpm.cmd --filter @myself/desktop test`：退出 0，1823 条通过、14 条跳过。
 - `pnpm.cmd test:security`：退出 0，20/20 通过。
 - `pnpm.cmd test:integration`：退出 0，50/50 通过。
-- `git diff --check`：退出 0。
+- `pnpm.cmd verify:desktop`：在实现提交 `a25cc10` 上仅运行一次并退出 0；workspace typecheck 覆盖 10/11 个存在脚本的项目，单元测试 2279 条通过、14 条跳过，安全测试 20/20、集成测试 50/50，生产构建与 preload 外部依赖校验通过，Electron E2E 62/62 通过。
+- `git diff --check 03b3efc..a25cc10`：退出 0，未产生诊断输出；该范围覆盖桌宠开发解锁基线之后至本轮实现提交的全部差异。
 
 ### 未覆盖项
 

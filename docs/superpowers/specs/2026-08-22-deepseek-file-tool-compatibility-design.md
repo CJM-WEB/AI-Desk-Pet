@@ -168,7 +168,7 @@ Provider 只序列化自身支持的策略。DeepSeek/OpenAI-compatible 映射�
 - 无工具可用却要求 `required`：在 Provider 调用前返回稳定内部错误，不发送畸形请求。
 - 工具别名冲突：组合阶段失败，不启动能力任务。
 - 未知响应别名：返回 `PROVIDER_UNKNOWN_TOOL_CALL`，不进入 ToolRegistry。
-- 澄清工具使用旧 `{ question }`、未知枚举或额外字段：返回 `CAPABILITY_CLARIFICATION_INVALID`，不公开模型正文。
+- 澄清工具使用旧 `{ question }`、未知枚举或额外字段：解析器内部返回 `CAPABILITY_CLARIFICATION_INVALID`，不公开模型正文；`AgentLoop` 首次遇到该错误时只追加一次协议修复请求，连续无效时对外以 `CAPABILITY_PLAN_PROTOCOL_INVALID` 结束。
 - DeepSeek 返回文字而非必需工具调用：保留一次协议修复；连续违约返回 `CAPABILITY_PLAN_PROTOCOL_INVALID`。
 - 工具参数非法：保留一次 `INVALID_TOOL_REQUEST` 修复；第二次失败。
 - 确认、授权、会话 generation 或目标身份变化：沿用现有 `ACTION_EXPIRED`/冲突错误。
