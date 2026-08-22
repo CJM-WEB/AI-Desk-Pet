@@ -18,9 +18,11 @@ import type {
   CharacterDraftV1,
   CharacterDraftV2,
   CharacterManifestV1,
-  CharacterManifestV2
+  CharacterManifestV2,
+  PreparedCharacterManifestV2
 } from '@myself/character-runtime';
 import {
+  characterManifestV2Schema,
   convertCharacterDraftV1ToV2,
   convertCharacterManifestV1ToV2,
   projectCharacterManifestV2ToLegacy
@@ -199,7 +201,7 @@ function createRuntime(
   };
 }
 
-function attachTestGeometry(manifest: CharacterManifestV2): CharacterManifestV2 {
+function attachTestGeometry(manifest: PreparedCharacterManifestV2): CharacterManifestV2 {
   const revisions = new Map(manifest.resources.map(resource => [resource.assetId, resource.sha256]));
   for (const skin of manifest.skins) {
     for (const presentation of skin.presentations) {
@@ -211,7 +213,7 @@ function attachTestGeometry(manifest: CharacterManifestV2): CharacterManifestV2 
       };
     }
   }
-  return manifest;
+  return characterManifestV2Schema.parse(manifest);
 }
 
 function createCompleteRuntime(

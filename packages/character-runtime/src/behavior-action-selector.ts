@@ -1,7 +1,7 @@
 import type {
   CharacterActionDefinitionV2,
-  CharacterActionPresentationV2,
-  CharacterManifestV2
+  CharacterManifestV2,
+  PublishedCharacterActionPresentationV2
 } from './character-v2-schema';
 import type { CharacterBehaviorStateSnapshot } from './behavior-contracts';
 import type { ResolvedBehaviorTarget } from './behavior-target-resolver';
@@ -33,7 +33,7 @@ export type CharacterBehaviorActionSelectionInput = {
 export type CharacterBehaviorActionSelection = {
   actionId: string;
   stateId: string;
-  presentation: CharacterActionPresentationV2;
+  presentation: PublishedCharacterActionPresentationV2;
   reason: 'semantic' | 'state-preference' | 'default-fallback';
 };
 
@@ -42,7 +42,7 @@ const ACTION_UNAVAILABLE = 'CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE';
 type ActionCandidate = {
   action: CharacterActionDefinitionV2;
   stateId: string;
-  presentation: CharacterActionPresentationV2;
+  presentation: PublishedCharacterActionPresentationV2;
 };
 
 /** 按主状态优先、修饰状态快照顺序收集动作归属，避免共享动作的归属随机变化。 */

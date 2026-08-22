@@ -8,7 +8,8 @@ import {
   convertCharacterDraftV1ToV2,
   convertCharacterManifestV1ToV2,
   type CharacterDraftV2,
-  type CharacterManifestV2
+  type CharacterManifestV2,
+  type PreparedCharacterManifestV2
 } from '@myself/character-runtime';
 import {
   createPresentationAlphaGeometryAccumulator,
@@ -35,9 +36,14 @@ export type CharacterGeometryMigrationDependencies = Readonly<{
   reportDiagnostic?(code: 'CHARACTER_RESOURCE_GEOMETRY_FALLBACK'): void;
 }>;
 
-export type PreparedCharacterManifestMigration = CharacterMigrationResult<CharacterManifestV2> & {
-  requiresPersistence: boolean;
-};
+/** 准备态以持久化标记区分；无需迁移的分支已经是可运行正式清单。 */
+export type PreparedCharacterManifestMigration =
+  | (CharacterMigrationResult<CharacterManifestV2> & { requiresPersistence: false })
+  | (CharacterMigrationResult<PreparedCharacterManifestV2> & { requiresPersistence: true });
+
+/** 资源校验与几何补齐完成后只允许返回正式清单。 */
+export type FinalizedCharacterManifestMigration =
+  CharacterMigrationResult<CharacterManifestV2> & { requiresPersistence: boolean };
 
 function sourceVersion(raw: unknown): 1 | 2 {
   if (typeof raw !== 'object' || raw === null || !('version' in raw)) {
@@ -108,8 +114,8 @@ export function prepareCharacterManifestMigration(
 export const migrateCharacterManifest = prepareCharacterManifestMigration;
 
 function resourceRevision(
-  presentation: CharacterManifestV2['skins'][number]['presentations'][number],
-  manifest: CharacterManifestV2
+  presentation: PreparedCharacterManifestV2['skins'][number]['presentations'][number],
+  manifest: PreparedCharacterManifestV2
 ): string {
   const resources = new Map(manifest.resources.map(resource => [resource.assetId, resource]));
   return [...new Set(presentation.frames.map(frame => resources.get(frame.assetId)!.sha256))]
@@ -127,11 +133,11 @@ export async function finalizeCharacterManifestMigration(
   prepared: PreparedCharacterManifestMigration,
   assets: Readonly<Record<string, Uint8Array>>,
   dependencies: CharacterGeometryMigrationDependencies
-): Promise<PreparedCharacterManifestMigration> {
+): Promise<FinalizedCharacterManifestMigration> {
   if (!prepared.requiresPersistence) return prepared;
   const document = structuredClone(prepared.document);
   const resources = new Map(document.resources.map(resource => [resource.assetId, resource]));
-  type Presentation = CharacterManifestV2['skins'][number]['presentations'][number];
+  type Presentation = PreparedCharacterManifestV2['skins'][number]['presentations'][number];
   type Work = {
     presentation: Presentation;
     revision: string;

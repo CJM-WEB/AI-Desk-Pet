@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { finished } from 'node:stream/promises';
 import {
+  characterManifestV2Schema,
   convertCharacterManifestV1ToV2,
   type CharacterManifestV1,
   type CharacterManifestV2
@@ -150,7 +151,7 @@ function runtime(characterId: string): {
     resourceRevision: manifest.resources[0]!.sha256
   };
   return {
-    manifest,
+    manifest: characterManifestV2Schema.parse(manifest),
     assets: legacy.assets
   };
 }

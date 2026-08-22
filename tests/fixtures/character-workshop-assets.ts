@@ -236,7 +236,14 @@ export async function materializeCharacterWorkshopFixtures(
       id: 'default',
       name: '默认皮肤',
       presentations: [
-        ...actions.map(item => presentation(item.id, 'atlas'))
+        ...actions.map(item => ({
+          ...presentation(item.id, 'atlas'),
+          geometry: {
+            visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+            groundAnchor: { x: 0.5, y: 1 },
+            resourceRevision: sha256(bytes)
+          }
+        }))
       ],
       semanticFallbacks: []
     }],

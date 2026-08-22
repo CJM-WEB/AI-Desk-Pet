@@ -26,6 +26,7 @@ import {
   type CharacterDraftV2,
   type CharacterManifestV1,
   type CharacterManifestV2,
+  type PreparedCharacterManifestV2,
   type CharacterV2CompletenessIssue
 } from '@myself/character-runtime';
 import { z } from 'zod';
@@ -34,9 +35,10 @@ import { characterError } from './character-errors';
 import {
   finalizeCharacterManifestMigration,
   migrateCharacterDocument,
-  migrateCharacterManifest,
   prepareCharacterManifestMigration,
-  type CharacterGeometryMigrationDependencies
+  type CharacterGeometryMigrationDependencies,
+  type FinalizedCharacterManifestMigration,
+  type PreparedCharacterManifestMigration
 } from './character-migrations';
 import {
   CharacterTransactionRecovery,
@@ -1648,7 +1650,7 @@ export class CharacterStore {
   }
 
   private validateAssets(
-    manifest: CharacterManifestV2,
+    manifest: PreparedCharacterManifestV2,
     assets: Readonly<Record<string, Uint8Array>>
   ): void {
     const expectedFiles = new Set(manifest.resources.map(resource => resource.fileName));
@@ -1684,7 +1686,7 @@ export class CharacterStore {
   private async readPublishedFrom(
     directory: string,
     characterId: string
-  ): Promise<ReturnType<typeof migrateCharacterManifest> & {
+  ): Promise<FinalizedCharacterManifestMigration & {
     assets: Readonly<Record<string, Uint8Array>>;
   }> {
     await this.assertSafePath(directory);
@@ -1696,7 +1698,7 @@ export class CharacterStore {
       directoryIdentity,
       'runtime:manifest-after-open'
     );
-    let migrated: ReturnType<typeof migrateCharacterManifest>;
+    let migrated: PreparedCharacterManifestMigration;
     try {
       migrated = prepareCharacterManifestMigration(JSON.parse(manifestBytes.toString('utf8')));
     } catch (error) {

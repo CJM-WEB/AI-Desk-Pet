@@ -72,7 +72,12 @@ function 创建清单(options: {
     actionId: action.id,
     fps: 20,
     frames: [{ assetId: `${action.id}-asset`, x: 0, y: 0, width: 1, height: 1 }],
-    anchors: { ground: { x: 0.5, y: 1 } }
+    anchors: { ground: { x: 0.5, y: 1 } },
+    geometry: {
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 },
+      resourceRevision: 'a'.repeat(64)
+    }
   }));
   const assetIds = new Set([
     'thumbnail',
@@ -137,7 +142,12 @@ function 创建六语义清单(id = 'six-semantics'): CharacterManifestV2 {
         { assetId: `${action.id}-second`, x: 0, y: 0, width: 1, height: 1 }
       ]
       : [{ assetId: `${action.id}-asset`, x: 0, y: 0, width: 1, height: 1 }],
-    anchors: { ground: { x: 0.5, y: 1 } }
+    anchors: { ground: { x: 0.5, y: 1 } },
+    geometry: {
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 },
+      resourceRevision: 'a'.repeat(64)
+    }
   }));
 
   return 创建清单({ id, states, actions, presentations, defaultStateId: 'idle-state' });
@@ -161,7 +171,12 @@ function 创建搬运清单(id = 'carry-character', commitFrameId: string | null
         actionId: idle.id,
         fps: 20,
         frames: [{ id: 'idle-frame', assetId: 'idle-asset', x: 0, y: 0, width: 1, height: 1 }],
-        anchors: { ground: { x: 0.5, y: 1 } }
+        anchors: { ground: { x: 0.5, y: 1 } },
+        geometry: {
+          visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+          groundAnchor: { x: 0.5, y: 1 },
+          resourceRevision: 'a'.repeat(64)
+        }
       },
       {
         actionId: carry.id,
@@ -171,6 +186,11 @@ function 创建搬运清单(id = 'carry-character', commitFrameId: string | null
           { id: 'carry-commit', assetId: 'carry-asset', x: 1, y: 0, width: 1, height: 1 }
         ],
         anchors: { ground: { x: 0.5, y: 1 } },
+        geometry: {
+          visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+          groundAnchor: { x: 0.5, y: 1 },
+          resourceRevision: 'a'.repeat(64)
+        },
         ...(commitFrameId === null ? {} : { commitFrameId })
       }
     ],

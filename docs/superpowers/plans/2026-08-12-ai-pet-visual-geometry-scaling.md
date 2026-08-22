@@ -53,9 +53,39 @@ type PresentationGeometryV2 = Readonly<{
 - [x] 安全收口：PNG/WebP 在进入 `nativeImage` 前复用共享结构与尺寸解析并核对解码尺寸；prepared/正式表现限制帧数、单帧尺寸和累计面积，可信迁移删除旧 V2 空表现且不修补默认播放链；Alpha 联合使用 stride 累计器按资源串行解码，禁止全局解码缓存、并行解码和逐帧裁切副本形成峰值路径。
 - [x] 运行 character-runtime 和 atlas 定向测试；提交 `feat: 编译角色动作视觉包围盒`。
 
-## Task 2（G2）：建立 Main 几何权威
+## Task 2a（G2a）：收口准备态与正式清单静态类型
 
-> 类型收口：G1 的正式 schema 已在运行时强制 `geometry`，但静态 `CharacterManifestV2` 仍因 V1 converter 同时承担 prepared 文档而保持 optional。G2 应先拆出 `PreparedCharacterManifestV2`，迁移 converter、behavior 测试夹具与 legacy projection 后，再把正式类型改为 required；不得以类型断言掩盖阶段差异。
+**Files:**
+
+- Modify: `packages/character-runtime/src/character-v2-schema.ts`
+- Modify: `packages/character-runtime/src/character-v1-converter.ts`
+- Modify: `packages/character-runtime/src/character-presentation-resolver.ts`
+- Modify: `packages/character-runtime/src/behavior-action-selector.ts`
+- Modify: `packages/character-runtime/tests/character-v2-schema.test.ts`
+- Modify: `packages/character-runtime/tests/behavior-action-selector.test.ts`
+- Modify: `packages/character-runtime/tests/behavior-scheduler.test.ts`
+- Modify: `packages/character-runtime/tests/behavior-target-resolver.test.ts`
+- Modify: `packages/character-runtime/tests/character-behavior-engine.test.ts`
+- Modify: `packages/character-runtime/tests/legacy-runtime-projection.test.ts`
+- Modify: `apps/desktop/src/main/characters/character-migrations.ts`
+- Modify: `apps/desktop/src/main/characters/character-store.ts`
+- Modify: `apps/desktop/src/main/characters/character-package-service.ts`
+- Modify: `apps/desktop/src/main/characters/official-default-character.ts`
+- Modify: `apps/desktop/tests/character-behavior-service.test.ts`
+- Modify: `apps/desktop/tests/character-package-service.test.ts`
+- Modify: `apps/desktop/tests/character-store.test.ts`
+- Modify: `apps/desktop/tests/character-ipc.test.ts`
+- Modify: `apps/desktop/tests/character-workshop-store.test.ts`
+- Modify: `tests/integration/desktop-agent.test.ts`
+- Modify: `tests/fixtures/character-compile-process.mjs`
+- Modify: `tests/fixtures/character-workshop-assets.ts`
+
+- [x] RED：类型断言证明正式 `CharacterManifestV2` 的 `geometry` 必填，`PreparedCharacterManifestV2` 仍可缺失。
+- [x] GREEN：V1 converter 只返回 Prepared；迁移结果用 `requiresPersistence` 判别准备态与正式态，且 `characterManifestV2Schema.parse()` 是唯一类型提升点。
+- [x] GREEN：Store、Package 和内置角色在资源校验前只持有 Prepared；behavior 与 legacy projection 仍只接受正式清单，resolver 与选择结果保留 Published 表现的必填几何。
+- [x] 验收：character-runtime 与 desktop 相关定向测试、typecheck 及 integration 通过，无 `as CharacterManifestV2` 掩盖；behavior 单元与集成清单均由严格 Schema 自证。同时补齐 G1 遗漏的编译子进程 Canvas Alpha double，保持真实几何编译链可验收。
+
+## Task 2（G2）：建立 Main 几何权威
 
 **Files:**
 

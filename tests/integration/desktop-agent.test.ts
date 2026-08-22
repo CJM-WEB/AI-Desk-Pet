@@ -16,6 +16,7 @@ import type {
   CharacterManifestV2,
   ResolvedBehaviorTarget
 } from '@myself/character-runtime';
+import { characterManifestV2Schema } from '../../packages/character-runtime/src/character-v2-schema';
 import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
 import { FileToolService } from '@myself/file-tools';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
@@ -351,11 +352,11 @@ function createBehaviorManifest(): CharacterManifestV2 {
     id: 'focus-action',
     name: '专注动作'
   });
-  return {
+  return characterManifestV2Schema.parse({
     version: 2,
     id: 'integration-behavior-v2',
     name: '集成行为角色',
-    thumbnailAssetId: 'thumbnail',
+    thumbnailAssetId: 'atlas',
     compilerVersion: 'task-9',
     identity: {
       description: '自主行为闭环集成角色', background: '固定测试夹具', traits: [],
@@ -373,14 +374,19 @@ function createBehaviorManifest(): CharacterManifestV2 {
         actionId: action.id,
         fps: 8,
         frames: [{ assetId: 'atlas', x: 0, y: 0, width: 1, height: 1 }],
-        anchors: { ground: { x: 0.5, y: 1 } }
+        anchors: { ground: { x: 0.5, y: 1 } },
+        geometry: {
+          visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+          groundAnchor: { x: 0.5, y: 1 },
+          resourceRevision: 'a'.repeat(64)
+        }
       })),
       semanticFallbacks: []
     }],
     resources: [{
       assetId: 'atlas', fileName: 'atlas.png', sha256: 'a'.repeat(64), byteLength: 1
     }]
-  };
+  });
 }
 
 function compatibleToolCall(
@@ -1264,6 +1270,12 @@ describe('桌面会话分流纵向集成', () => {
 });
 
 describe('桌面 Agent 真实服务集成', () => {
+  test('行为集成清单经严格 Schema 自证', () => {
+    const manifest = createBehaviorManifest();
+
+    expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
+  });
+
   test('DeepSeek 外部别名删除空目录时确认前无副作用且确认后只进入一次隔离回收站', async () => {
     const recycledName = '.recycled-deepseek-empty';
     let recycledPath = '';

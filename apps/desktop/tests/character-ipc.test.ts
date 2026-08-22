@@ -1,5 +1,6 @@
 import type { IpcMain } from 'electron';
 import {
+  characterManifestV2Schema,
   convertCharacterDraftV1ToV2,
   convertCharacterManifestV1ToV2,
   type CharacterDraftV1,
@@ -126,7 +127,7 @@ function createManifestV2() {
     groundAnchor: { ...presentation.anchors.ground },
     resourceRevision: manifest.resources[0]!.sha256
   };
-  return manifest;
+  return characterManifestV2Schema.parse(manifest);
 }
 
 vi.mock('electron', () => ({
@@ -273,7 +274,7 @@ describe('V2 角色 IPC 边界', () => {
       resources: [{ assetId: 'atlas', bytes: new Uint8Array([1]) }]
     })).resolves.toEqual({ ok: true });
     const missingGeometry = structuredClone(manifest);
-    delete missingGeometry.skins[0]!.presentations[0]!.geometry;
+    Reflect.deleteProperty(missingGeometry.skins[0]!.presentations[0]!, 'geometry');
     await expect(handlers.get(channel('characterPublish'))?.({}, {
       characterId: 'demo',
       draftRevision: '11111111-1111-4111-8111-111111111111',

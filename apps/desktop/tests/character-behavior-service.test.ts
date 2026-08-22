@@ -138,6 +138,11 @@ function createManifest(id = 'first'): CharacterManifestV2 {
           ]
           : [{ assetId: `${semantic}-asset`, x: 0, y: 0, width: 1, height: 1 }],
         anchors: { ground: { x: 0.5, y: 1 } },
+        geometry: {
+          visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+          groundAnchor: { x: 0.5, y: 1 },
+          resourceRevision: 'a'.repeat(64)
+        },
         ...(semantic === 'carry' ? { commitFrameId: 'carry-commit' } : {})
       })),
       semanticFallbacks: []
@@ -241,7 +246,12 @@ function createResultSignalSensitiveManifest(
     actionId,
     fps: 20,
     frames: [{ assetId: `${actionId}-asset`, x: 0, y: 0, width: 1, height: 1 }],
-    anchors: { ground: { x: 0.5, y: 1 } }
+    anchors: { ground: { x: 0.5, y: 1 } },
+    geometry: {
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 },
+      resourceRevision: 'a'.repeat(64)
+    }
   });
   manifest.resources.push({
     assetId: `${actionId}-asset`,

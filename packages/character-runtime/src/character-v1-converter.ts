@@ -6,7 +6,7 @@ import type {
   CharacterActionDefinitionV2,
   CharacterActionPresentationV2,
   CharacterDraftV2,
-  CharacterManifestV2,
+  PreparedCharacterManifestV2,
   CharacterStateDefinitionV2
 } from './character-v2-schema';
 
@@ -273,9 +273,9 @@ export function convertCharacterDraftV1ToV2(
 /** 将 V1 发布清单转换为不会复制素材文件的确定性 V2 清单。 */
 export function convertCharacterManifestV1ToV2(
   input: CharacterManifestV1
-): CharacterV1ConversionResult<CharacterManifestV2> {
+): CharacterV1ConversionResult<PreparedCharacterManifestV2> {
   const result = convertDocument(input);
-  const document: CharacterManifestV2 = {
+  const document: PreparedCharacterManifestV2 = {
     ...result.document,
     thumbnailAssetId: input.thumbnailAssetId,
     compilerVersion: input.compilerVersion,

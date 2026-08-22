@@ -1,19 +1,27 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, expectTypeOf, test } from 'vitest';
 import {
   type CharacterActionDefinitionV2,
   type CharacterBehaviorActionSelectionInput,
   type CharacterBehaviorStateSnapshot,
   type CharacterManifestV2,
+  type PresentationGeometryV2,
   type CharacterStateDefinitionV2,
+  characterManifestV2Schema,
   selectDirectedCharacterBehaviorAction,
   selectCharacterBehaviorAction
 } from '../src';
+
+const TEST_RESOURCE_SHA = 'a'.repeat(64);
 
 /** 创建只包含动作选择所需字段的有效 V2 清单。 */
 function createManifest(overrides: Partial<CharacterManifestV2> = {}): CharacterManifestV2 {
   const actions = overrides.actions ?? [createAction('idle-action', 'idle')];
   const states = overrides.states ?? [createState('idle-state', 'primary', ['idle-action'])];
   const defaultStateId = overrides.defaultStateId ?? 'idle-state';
+  const skins = overrides.skins ?? [createSkin('default-skin', actions.map((action) => action.id))];
+  const frameAssetIds = [...new Set(skins.flatMap(skin => (
+    skin.presentations.flatMap(presentation => presentation.frames.map(frame => frame.assetId))
+  )))];
 
   return {
     version: 2,
@@ -27,12 +35,25 @@ function createManifest(overrides: Partial<CharacterManifestV2> = {}): Character
     },
     defaultSkinId: 'default-skin',
     defaultStateId,
-    skins: [createSkin('default-skin', actions.map((action) => action.id))],
+    skins,
     states,
     actions,
-    resources: [{ assetId: 'thumbnail', fileName: 'thumbnail.png', sha256: 'a'.repeat(64), byteLength: 1 }],
-    ...overrides
+    ...overrides,
+    resources: overrides.resources ?? [
+      { assetId: 'thumbnail', fileName: 'thumbnail.png', sha256: TEST_RESOURCE_SHA, byteLength: 1 },
+      ...frameAssetIds.map(assetId => ({
+        assetId,
+        fileName: `${assetId}.png`,
+        sha256: TEST_RESOURCE_SHA,
+        byteLength: 1
+      }))
+    ]
   };
+}
+
+/** 严格解析普通夹具，与故意构造不可播状态的选择测试分开。 */
+function createStrictManifest(): CharacterManifestV2 {
+  return characterManifestV2Schema.parse(createManifest());
 }
 
 /** 创建可按测试覆盖字段的动作定义。 */
@@ -97,7 +118,12 @@ function createSkin(
       actionId,
       fps: 12,
       frames: [{ assetId: `${assetPrefix}-${actionId}`, x: 0, y: 0, width: 1, height: 1 }],
-      anchors: { ground: { x: 0.5, y: 1 } }
+      anchors: { ground: { x: 0.5, y: 1 } },
+      geometry: {
+        visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+        groundAnchor: { x: 0.5, y: 1 },
+        resourceRevision: TEST_RESOURCE_SHA
+      }
     }))
   };
 }
@@ -129,6 +155,18 @@ function createInput(
 }
 
 describe('V2 行为动作选择器', () => {
+  test('正式清单的选择结果保留必填视觉几何类型', () => {
+    const selection = selectCharacterBehaviorAction(createInput(createStrictManifest()));
+
+    expectTypeOf(selection.presentation.geometry).toEqualTypeOf<PresentationGeometryV2>();
+  });
+
+  test('动作选择夹具是经严格 Schema 自证的正式清单', () => {
+    const manifest = createStrictManifest();
+
+    expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
+  });
+
   test('私有定向目标仍经过状态、方向、冷却、重复抑制与表现硬约束', () => {
     const directed = createAction('directed-action', 'celebrate', {
       direction: 'right',
@@ -205,9 +243,13 @@ describe('V2 行为动作选择器', () => {
       defaultStateId: 'active-state',
       states: [
         createState('active-state', 'primary', actions.filter((action) => action.id !== 'not-referenced').map((action) => action.id)),
+        createState('other-state', 'primary', []),
+        createState('missing-modifier', 'modifier', []),
         createState('focus-modifier', 'modifier', [])
       ]
     });
+
+    expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
 
     expect(selectCharacterBehaviorAction(createInput(manifest, {
       state: { revision: 1, primaryStateId: 'active-state', modifierStateIds: ['focus-modifier'], activeSignals: [], desiredActionSemantic: 'speak' }

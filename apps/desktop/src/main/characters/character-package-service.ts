@@ -1141,7 +1141,6 @@ async function preparePackage(
     throw packageError('CHARACTER_PACKAGE_INVALID');
   }
   const draft = draftResult.document;
-  let manifest = manifestResult.document;
   const sourceCatalog = sourceResult.data;
   const packageFiles = new Map<string, CharacterPackageFileMetadata>(
     entries
@@ -1161,7 +1160,7 @@ async function preparePackage(
   );
 
   const runtimeAssets: Record<string, Uint8Array> = {};
-  for (const resource of manifest.resources) {
+  for (const resource of manifestResult.document.resources) {
     const path = `compiled/${resource.fileName}`;
     const bytes = await readRegularFile(
       extractedPath(files, path)
@@ -1190,6 +1189,7 @@ async function preparePackage(
     });
     runtimeAssets[resource.fileName] = bytes;
   }
+  let manifest: CharacterManifestV2;
   try {
     manifest = (await finalizeCharacterManifestMigration(
       manifestResult,

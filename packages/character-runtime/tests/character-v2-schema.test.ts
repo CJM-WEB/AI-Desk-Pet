@@ -1,10 +1,12 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, expectTypeOf, test } from 'vitest';
 import {
   type ActionFrame,
   type AnchorSet,
   type CharacterActionPresentationV2,
   type CharacterDraftV2,
   type CharacterManifestV2,
+  type PreparedCharacterManifestV2,
+  type PresentationGeometryV2,
   type CharacterResource,
   type InteractionRegion,
   actionFrameSchema,
@@ -122,7 +124,7 @@ function createCharacterManifestV2Fixture(): CharacterManifestV2 {
     groundAnchor: { x: 0.5, y: 1 },
     resourceRevision: RESOURCE_SHA_256.atlas
   };
-  return {
+  return characterManifestV2Schema.parse({
     ...draft,
     thumbnailAssetId: 'thumbnail-1',
     compilerVersion: 'compiler-2.0.0',
@@ -140,7 +142,7 @@ function createCharacterManifestV2Fixture(): CharacterManifestV2 {
         byteLength: 4096
       }
     ]
-  };
+  });
 }
 
 /** 构造动作失败回退循环。 */
@@ -186,6 +188,13 @@ function withoutPlayableDefault<T extends CharacterDraftV2>(draft: T): T {
 }
 
 describe('角色包 V2 严格契约', () => {
+  test('正式清单与迁移准备态在静态类型上区分表现几何', () => {
+    expectTypeOf<CharacterManifestV2['skins'][number]['presentations'][number]['geometry']>()
+      .toEqualTypeOf<PresentationGeometryV2>();
+    expectTypeOf<PreparedCharacterManifestV2['skins'][number]['presentations'][number]['geometry']>()
+      .toEqualTypeOf<PresentationGeometryV2 | undefined>();
+  });
+
   test('表现提交帧必须引用同一表现内的唯一稳定帧标识', () => {
     const draft = createCharacterDraftV2Fixture();
     const presentation = draft.skins[0]!.presentations[0]!;
@@ -252,7 +261,7 @@ describe('角色包 V2 严格契约', () => {
     const presentation = manifest.skins[0]!.presentations[0]!;
 
     const missing = structuredClone(manifest);
-    delete missing.skins[0]!.presentations[0]!.geometry;
+    Reflect.deleteProperty(missing.skins[0]!.presentations[0]!, 'geometry');
     expect(() => characterManifestV2Schema.parse(missing)).toThrow(/几何/u);
 
     for (const geometry of [
@@ -301,7 +310,6 @@ describe('角色包 V2 严格契约', () => {
           manifest.skins[0]!.presentations[0]!
         );
         emptyPresentation.frames = [];
-        delete emptyPresentation.geometry;
         manifest.skins.push({
           ...structuredClone(manifest.skins[0]!),
           id: 'winter',

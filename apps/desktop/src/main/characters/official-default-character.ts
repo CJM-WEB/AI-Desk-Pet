@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   CharacterDraftV2,
-  CharacterManifestV2,
+  PreparedCharacterManifestV2,
   CoreCharacterState
 } from '@myself/character-runtime';
 import { V1_STATE_SEMANTICS } from '@myself/character-runtime';
@@ -140,7 +140,7 @@ export async function ensureOfficialDefaultCharacter(
         }))
       ]
     };
-    const manifest: CharacterManifestV2 = {
+    const manifest: PreparedCharacterManifestV2 = {
       ...draft,
       thumbnailAssetId: 'idle-atlas',
       compilerVersion: 'official-default-v2',

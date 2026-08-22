@@ -29,6 +29,11 @@ function createManifest(): CharacterManifestV2 {
       presentations: ['rest-action', 'listen-fallback', 'rain-action'].map((actionId) => ({
         actionId, fps: 12, frames: [{ assetId: 'atlas', x: 0, y: 0, width: 64, height: 64 }],
         anchors: { ground: { x: 0.5, y: 1 } },
+        geometry: {
+          visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+          groundAnchor: { x: 0.5, y: 1 },
+          resourceRevision: SHA_256
+        },
         regions: { click: { x: 0, y: 0, width: 1, height: 1 } }
       }))
     }],
@@ -119,7 +124,12 @@ describe('旧播放器投影', () => {
         semanticFallbacks: [{ semantic: 'listen', actionId: fallbackId }],
         presentations: ['rest-action', fallbackId, 'rain-action'].map((actionId) => ({
           actionId, fps: 12, frames: [{ assetId: 'atlas', x: 0, y: 0, width: 64, height: 64 }],
-          anchors: { ground: { x: 0.5, y: 1 } }
+          anchors: { ground: { x: 0.5, y: 1 } },
+          geometry: {
+            visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+            groundAnchor: { x: 0.5, y: 1 },
+            resourceRevision: SHA_256
+          }
         }))
       }],
       actions: [...base.actions, action(fallbackId, 'listen', 1, 'never')]

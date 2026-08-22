@@ -136,7 +136,7 @@ export const presentationGeometryV2Schema = z.object({
   visualBounds: normalizedBoundsSchema,
   groundAnchor: normalizedPointSchema,
   resourceRevision: z.string().regex(/^[a-f0-9]{64}(?:\.[a-f0-9]{64})*$/u)
-}).strict();
+}, { required_error: '正式表现必须包含完整视觉几何。' }).strict();
 
 const actionPresentationFields = {
   actionId: safeIdentifierSchema,
@@ -199,7 +199,7 @@ const legacyActionPresentationSchema = z.object({
 const publishedActionPresentationSchema = z.object({
   ...actionPresentationFields,
   frames: publishedPresentationFramesSchema,
-  geometry: presentationGeometryV2Schema.optional()
+  geometry: presentationGeometryV2Schema
 }).strict();
 
 const semanticFallbackSchema = z.object({
@@ -569,6 +569,8 @@ export type CharacterSkinV2 = z.output<typeof skinSchema>;
 export type CharacterStateDefinitionV2 = z.output<typeof stateDefinitionSchema>;
 export type CharacterActionDefinitionV2 = z.output<typeof actionDefinitionSchema>;
 export type CharacterActionPresentationV2 = z.output<typeof actionPresentationSchema>;
+export type PublishedCharacterActionPresentationV2 = z.output<typeof publishedActionPresentationSchema>;
 export type PresentationGeometryV2 = z.output<typeof presentationGeometryV2Schema>;
 export type CharacterDraftV2 = z.output<typeof characterDraftV2Schema>;
+export type PreparedCharacterManifestV2 = z.output<typeof preparedCharacterManifestV2Schema>;
 export type CharacterManifestV2 = z.output<typeof characterManifestV2Schema>;

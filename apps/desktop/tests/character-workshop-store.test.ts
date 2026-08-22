@@ -145,7 +145,12 @@ function publishInput(characterId: string): CharacterPublishInput {
             y: 0,
             width: 1,
             height: 1
-          }]
+          }],
+          geometry: {
+            visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+            groundAnchor: { x: 0.5, y: 1 },
+            resourceRevision: 'a'.repeat(64)
+          }
         }]
       }]
     },
