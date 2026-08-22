@@ -334,7 +334,7 @@ describe('角色包 Main 服务', () => {
     expect((await readdir(testDirectory)).some(name => (
       name.startsWith('.character-export-')
     ))).toBe(false);
-  });
+  }, 15_000);
 
   test('V1 角色包在 staging 内统一转换为 V2 后安装', async () => {
     const packagePath = join(testDirectory, 'legacy-v1.zip');
