@@ -1,10 +1,150 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import type { ProviderProfileV2 } from '@myself/shared-types';
 import { afterEach, describe, expect, test } from 'vitest';
-import { SettingsStore } from '../src/main/storage/settings-store';
+import {
+  SettingsStore,
+  type McpServerSettings
+} from '../src/main/storage/settings-store';
 
 const temporaryDirectories: string[] = [];
+
+const mcpSettingsFixture: readonly McpServerSettings[] = [
+  {
+    id: 'remote-tools',
+    enabled: true,
+    transport: {
+      type: 'http',
+      url: 'https://mcp.example.com',
+      secretNames: ['Authorization']
+    },
+    tools: {
+      search: {
+        enabled: true,
+        readOnly: true,
+        description: '搜索',
+        definitionFingerprint: 'a'.repeat(64),
+        trustedReadFingerprint: 'b'.repeat(64)
+      }
+    }
+  },
+  {
+    id: 'local-tools',
+    enabled: false,
+    transport: {
+      type: 'stdio',
+      command: 'node.exe',
+      args: ['server.js', '--stdio'],
+      cwd: 'D:\\mcp-tools',
+      secretNames: ['TOKEN'],
+      inheritEnv: ['PATH']
+    },
+    tools: {
+      echo: {
+        enabled: false,
+        readOnly: true,
+        description: '回显'
+      }
+    }
+  }
+];
+
+const providerProfile: ProviderProfileV2 = {
+  id: 'provider-main',
+  displayName: '主 Provider',
+  mode: 'custom' as const,
+  protocol: 'openai-compatible' as const,
+  baseUrl: 'https://api.example.com/v1',
+  modelId: 'tools-model',
+  additionalParameters: {},
+  capabilities: ['chat', 'tools'],
+  hasStoredSecret: false
+};
+
+type NonMcpMutationCase = Readonly<{
+  methodName: string;
+  prepare?: (store: SettingsStore) => Promise<void>;
+  mutate: (store: SettingsStore) => Promise<void>;
+}>;
+
+/**
+ * 此矩阵锁定 SettingsStore 共享文件的全部普通原子写入口；新增入口必须显式证明
+ * 不会在重写 settings.json 时丢失保留的 MCP 数据。
+ */
+const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
+  {
+    methodName: 'saveProviderProfile',
+    mutate: store => store.saveProviderProfile(providerProfile)
+  },
+  {
+    methodName: 'saveModelRoute',
+    prepare: store => store.saveProviderProfile(providerProfile),
+    mutate: store => store.saveModelRoute({
+      primaryProfileId: 'provider-main',
+      chatProfileId: 'provider-main',
+      agentProfileId: 'provider-main',
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    })
+  },
+  {
+    methodName: 'deleteProviderProfile',
+    prepare: store => store.saveProviderProfile(providerProfile),
+    mutate: store => store.deleteProviderProfile('provider-main')
+  },
+  {
+    methodName: 'savePrivacySettings',
+    mutate: store => store.savePrivacySettings({
+      dataCategories: {
+        file: true,
+        screenshot: false,
+        clipboard: true,
+        memory: false
+      },
+      longTermMemory: false,
+      proactivityMode: 'passive'
+    })
+  },
+  {
+    methodName: 'savePetAlwaysOnTop',
+    mutate: store => store.savePetAlwaysOnTop(true)
+  },
+  {
+    methodName: 'revokeAuthorizedRoot',
+    prepare: store => store.saveAuthorizedRoot({
+      id: 'root-before-revoke',
+      displayName: '授权目录',
+      pathHint: 'D:\\…\\project',
+      absolutePath: 'D:\\private\\project'
+    }),
+    mutate: store => store.revokeAuthorizedRoot()
+  },
+  {
+    methodName: 'saveProviderMetadata',
+    mutate: store => store.saveProviderMetadata({
+      id: 'legacy-provider',
+      displayName: '兼容 Provider',
+      baseUrl: 'https://legacy.example.com/v1',
+      model: 'legacy-model'
+    })
+  },
+  {
+    methodName: 'saveAuthorizedRoot',
+    mutate: store => store.saveAuthorizedRoot({
+      id: 'root-main',
+      displayName: '授权目录',
+      pathHint: 'D:\\…\\project',
+      absolutePath: 'D:\\private\\project'
+    })
+  },
+  {
+    methodName: 'savePetPosition',
+    mutate: store => store.savePetPosition({ x: 320, y: 240 })
+  }
+];
 
 async function createStore(hasStoredSecret = false) {
   const directory = await mkdtemp(join(tmpdir(), 'myself-settings-'));
@@ -24,6 +164,76 @@ afterEach(async () => {
 });
 
 describe('SettingsStore', () => {
+  test.each(nonMcpMutationCases)(
+    '$methodName 原子重写共享设置时完整保留 MCP 配置',
+    async ({ prepare, mutate }) => {
+      const { store } = await createStore();
+      for (const settings of mcpSettingsFixture) {
+        await store.saveMcpServerSettings(settings);
+      }
+      await prepare?.(store);
+
+      await mutate(store);
+
+      await expect(store.getMcpServerSettings()).resolves.toEqual([
+        {
+          id: 'remote-tools',
+          enabled: true,
+          transport: {
+            type: 'http',
+            url: 'https://mcp.example.com',
+            secretNames: ['Authorization']
+          },
+          tools: {
+            search: {
+              enabled: true,
+              readOnly: true,
+              description: '搜索',
+              definitionFingerprint: 'a'.repeat(64),
+              trustedReadFingerprint: 'b'.repeat(64)
+            }
+          }
+        },
+        {
+          id: 'local-tools',
+          enabled: false,
+          transport: {
+            type: 'stdio',
+            command: 'node.exe',
+            args: ['server.js', '--stdio'],
+            cwd: 'D:\\mcp-tools',
+            secretNames: ['TOKEN'],
+            inheritEnv: ['PATH']
+          },
+          tools: {
+            echo: {
+              enabled: false,
+              readOnly: true,
+              description: '回显'
+            }
+          }
+        }
+      ]);
+    }
+  );
+
+  test('普通原子写入口矩阵与 SettingsStore 生产方法保持完整对应', async () => {
+    const source = await readFile(
+      fileURLToPath(new URL('../src/main/storage/settings-store.ts', import.meta.url)),
+      'utf8'
+    );
+    const productionMethods = [...source.matchAll(
+      /^  ([A-Za-z][A-Za-z0-9]*)\([^)]*\): Promise<void> \{([\s\S]*?)^  \}/gmu
+    )]
+      .filter(match => match[2]?.includes('atomicWrite(this.file, settings)'))
+      .map(match => match[1]!)
+      .filter(name => !['saveMcpServerSettings', 'deleteMcpServerSettings'].includes(name))
+      .sort();
+    const matrixMethods = nonMcpMutationCases.map(item => item.methodName).sort();
+
+    expect(productionMethods).toEqual(matrixMethods);
+  });
+
   test('首次读取返回版本化的安全默认值', async () => {
     const { store } = await createStore();
 
@@ -263,6 +473,7 @@ describe('SettingsStore', () => {
       pathHint: 'D:\\…\\project',
       absolutePath: 'D:\\private\\project'
     });
+    await store.saveMcpServerSettings(mcpSettingsFixture[0]!);
 
     await store.clearAll();
 
@@ -274,5 +485,6 @@ describe('SettingsStore', () => {
       fileDisclosureAccepted: false
     });
     await expect(store.getAuthorizedRootPath()).resolves.toBeNull();
+    await expect(store.getMcpServerSettings()).resolves.toEqual([]);
   });
 });

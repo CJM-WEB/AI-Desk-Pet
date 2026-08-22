@@ -107,16 +107,26 @@ describe('按档案隔离的密钥库', () => {
   });
 
   test('清除单个档案不会清除其他档案，全部清除才移除所有密钥', async () => {
-    const { store } = await 创建密钥库();
-    await store.save('alpha', 'sk-alpha', true);
-    await store.save('beta', 'sk-beta', false);
+    const { file, store } = await 创建密钥库();
+    const providerSlotFile = 槽文件路径(file, 'provider-main');
+    const mcpSlotFile = 槽文件路径(file, 'mcp:remote-tools');
+    await store.save('provider-main', 'provider-secret', true);
+    await store.save('mcp:remote-tools', 'mcp-secret', true);
+    const beforeMcpSlot = await readFile(mcpSlotFile);
 
-    await store.clear('alpha');
-    await expect(store.hasStoredSecret('alpha')).resolves.toBe(false);
-    await expect(store.readForProviderCall('beta')).resolves.toBe('sk-beta');
+    await store.clear('provider-main');
 
+    const afterMcpSlot = await readFile(mcpSlotFile);
+    expect(afterMcpSlot.equals(beforeMcpSlot)).toBe(true);
+    await expect(store.readForProviderCall('provider-main')).rejects.toThrow('SECRET_NOT_FOUND');
+    await expect(store.readForProviderCall('mcp:remote-tools')).resolves.toBe('mcp-secret');
+
+    await store.save('provider-main', 'provider-secret-restored', true);
+    await expect(readFile(providerSlotFile)).resolves.toBeInstanceOf(Buffer);
+    await expect(readFile(mcpSlotFile)).resolves.toBeInstanceOf(Buffer);
     await store.clearAll();
-    await expect(store.hasStoredSecret('beta')).resolves.toBe(false);
+    await expect(readFile(providerSlotFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(mcpSlotFile)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   test('默认档案首次读取时原子迁移旧密钥文件，且不写入明文', async () => {
@@ -194,13 +204,13 @@ describe('密钥 IPC 边界', () => {
     });
     await handlers.get(ipcChannels.settingsClearLocalData)?.({}, {
       scope: 'secret',
-      profileId: 'alpha'
+      profileId: 'provider-main'
     });
-    await handlers.get(ipcChannels.settingsClearLocalData)?.({}, { scope: 'all' });
 
     expect(secrets.save).toHaveBeenCalledWith('alpha', 'sk-ipc-secret', true);
-    expect(secrets.clear).toHaveBeenCalledWith('alpha');
-    expect(secrets.clearAll).toHaveBeenCalledOnce();
+    expect(secrets.clear).toHaveBeenCalledWith('provider-main');
+    expect(secrets.clearAll).not.toHaveBeenCalled();
+    expect(settings.clearAll).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain('sk-ipc-secret');
   });
 });

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -10,6 +10,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
 import { createOpenAIToolNameCodec } from
   '../../apps/desktop/src/main/providers/openai-tool-name-codec';
+import { SettingsStore } from '../../apps/desktop/src/main/storage/settings-store';
 import {
   createProviderResponseGate,
   startProviderServer,
@@ -4928,6 +4929,20 @@ test.describe('真实 Provider 业务闭环', () => {
       const settingsPage = await waitForRendererPage(fixture, 'settings');
       captureRendererDiagnostics(rendererPages(fixture));
 
+      const apiKeys = new Set(await settingsPage.evaluate(() => Object.keys(window.myself)));
+      const removedMcpKeys = [
+        'upsertMcpServer',
+        'confirmMcpLaunch',
+        'testMcpServer',
+        'setMcpServerEnabled',
+        'setMcpToolEnabled',
+        'authorizeMcpToolReadOnly',
+        'revokeMcpToolReadOnly',
+        'deleteMcpServer'
+      ] as const;
+      for (const key of removedMcpKeys) expect(apiKeys.has(key)).toBe(false);
+      expect(removedMcpKeys.filter(key => apiKeys.has(key))).toEqual([]);
+
       await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
       await petPage.evaluate(() => window.myself.openChat());
       await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
@@ -5095,6 +5110,185 @@ test.describe('真实 Provider 业务闭环', () => {
       throw primaryError;
     }
     if (supplementalErrors[0]) throw supplementalErrors[0];
+  });
+
+  test('MCP 正式链在普通聊天与只读文件任务的重启周期保持保留数据原始字节不变', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    const provider = await startProviderServer([
+      {
+        response: { type: 'text', text: '你好呀，我在。' },
+        inspect: request => {
+          if (request.tools.length !== 0) {
+            throw new Error('普通聊天不得获得工具');
+          }
+        }
+      },
+      {
+        response: toolResponse(
+          'mcp-lifecycle-list-root',
+          'builtin.files.list_files',
+          { relativePath: '.' }
+        ),
+        inspect: request => {
+          const names = request.tools.map(tool => tool.function.name);
+          if (names.some(name => name.startsWith('mcp__'))) {
+            throw new Error('只读文件任务不得获得 MCP 工具');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: '只读目录已列出。' },
+        inspect: request => {
+          const result = lastToolResult(request) as { toolName?: string };
+          if (result.toolName !== 'list_files') {
+            throw new Error('只读文件任务未返回 list_files 结果');
+          }
+        }
+      }
+    ]);
+    let restartCount = 0;
+    let baselineSettingsBuffer: Buffer | undefined;
+    let baselineMcpSecretBuffer: Buffer | undefined;
+    let baselinePetPosition: { x: number; y: number } | undefined;
+    let fixture: AppFixture;
+    try {
+      fixture = await fixtureModule.createElectronAppFixture({
+        workspaceRoot: resolve(process.cwd()),
+        apiKey: provider.apiKey,
+        launchTimeoutMs: 15_000,
+        beforeRestart: async directories => {
+          restartCount += 1;
+          const settingsFile = join(directories.userDataDirectory, 'settings.json');
+          const secretFile = join(directories.userDataDirectory, 'provider-secret.bin');
+          const profilesDirectory = `${secretFile}.profiles`;
+          const providerSlotFile = join(
+            profilesDirectory,
+            `${createHash('sha256').update('provider-main').digest('hex')}.bin`
+          );
+          const mcpSecretSlotFile = join(
+            profilesDirectory,
+            `${createHash('sha256').update('mcp:remote-tools').digest('hex')}.bin`
+          );
+
+          if (restartCount === 1) {
+            if (!baselinePetPosition) throw new Error('缺少首次退出前的桌宠坐标');
+            const settings = new SettingsStore(settingsFile, async () => false);
+            await settings.savePetPosition(baselinePetPosition);
+            await settings.saveMcpServerSettings({
+              id: 'remote-tools',
+              enabled: true,
+              transport: {
+                type: 'http',
+                url: 'https://mcp.example.com',
+                secretNames: ['Authorization']
+              },
+              tools: {
+                search: {
+                  enabled: true,
+                  readOnly: true,
+                  description: '搜索'
+                }
+              }
+            });
+            await mkdir(profilesDirectory, { recursive: true });
+            await cp(providerSlotFile, mcpSecretSlotFile);
+            baselineSettingsBuffer = await readFile(settingsFile);
+            baselineMcpSecretBuffer = await readFile(mcpSecretSlotFile);
+          } else if (restartCount === 2) {
+            if (!baselineSettingsBuffer || !baselineMcpSecretBuffer) {
+              throw new Error('缺少首次重启的 MCP 原始字节基线');
+            }
+            const afterSettingsBuffer = await readFile(settingsFile);
+            const afterMcpSecretBuffer = await readFile(mcpSecretSlotFile);
+            expect(afterSettingsBuffer.equals(baselineSettingsBuffer)).toBe(true);
+            expect(afterMcpSecretBuffer.equals(baselineMcpSecretBuffer)).toBe(true);
+          }
+        }
+      });
+    } catch (error) {
+      await provider.close();
+      throw error;
+    }
+
+    try {
+      await mkdir(join(fixture.authorizedRootDirectory, 'docs'), { recursive: true });
+      const petPage = await waitForRendererPage(fixture, 'pet');
+      await petPage.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'provider-main',
+            displayName: 'MCP 生命周期 Provider',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'mcp-lifecycle-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: true
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'provider-main',
+          chatProfileId: 'provider-main',
+          agentProfileId: 'provider-main',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: {
+            file: true,
+            screenshot: false,
+            clipboard: false,
+            memory: false
+          },
+          longTermMemory: false,
+          proactivityMode: 'assistive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+
+      // 首次配置阶段允许普通位置落盘；基线建立后不再调用任何设置 mutator。
+      baselinePetPosition = await petPage.evaluate(() => ({
+        x: window.screenX,
+        y: window.screenY
+      }));
+      const firstPetClosed = petPage.waitForEvent('close');
+      await petPage.evaluate(() => {
+        void window.myself.quit();
+      });
+      await firstPetClosed;
+      await fixture.restart();
+      const restartedPetPage = await waitForRendererPage(fixture, 'pet');
+      const chatPage = await waitForRendererPage(fixture, 'chat');
+      await restartedPetPage.evaluate(() => window.myself.openChat());
+      await expect.poll(() => chatPage.evaluate(() => document.visibilityState)).toBe('visible');
+
+      await submitChatMessage(chatPage, '你好呀');
+      await expect.poll(() => provider.requests.length).toBe(1);
+      expect(provider.inspectionErrors).toEqual([]);
+      await expect(chatPage.getByText('你好呀，我在。', { exact: true })).toBeVisible();
+      await submitChatMessage(chatPage, '列出当前目录');
+      await expect(chatPage.getByText('只读目录已列出。', { exact: true })).toBeVisible();
+
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      const secondPetClosed = restartedPetPage.waitForEvent('close');
+      await restartedPetPage.evaluate(() => {
+        void window.myself.quit();
+      });
+      await secondPetClosed;
+      await fixture.restart();
+      expect(restartCount).toBe(2);
+    } finally {
+      try {
+        await fixture.dispose();
+      } finally {
+        await provider.close();
+      }
+    }
   });
 });
 

@@ -60,7 +60,7 @@
 ### 未验证与后续安全项
 
 - 待用户人工确认：真实 DeepSeek API 网络调用、真实 DeepSeek 账号/模型响应、真实 Windows 回收站可恢复性，以及 `pnpm.cmd --filter @myself/desktop dev` 下的窗口人工操作。本轮自动测试不得替代这些观察。
-- 未通过“正式 preload 不出现 MCP API”这一项：正式 preload 仍存在既有 MCP 方法。本兼容子项目没有新增或启用 MCP，且运行时能力与正式 UI 入口保持关闭；删除既有 preload/MyselfApi/IPC/Renderer 共享契约须由紧随其后的独立 SDD 安全子项目处理。
+- 当时“正式 preload 仍存在 MCP API”的结论已由本文后续“桌面端 MCP 正式运行链清理自动验收”替代；该独立安全子项目现已提供正式 preload 逐键缺失与生产产物边界证据。
 - 计划文件列表偏差：为恢复既有安全和 E2E 门禁，额外最小修改 `tests/security/permission-boundary.test.ts` 与 `tests/e2e/desktop.spec.ts` 的 Provider fixture/协议边界断言；未修改生产代码或权限策略。
 
 ## 2026-08-22 结构化澄清枚举协议第二轮验收
@@ -92,4 +92,39 @@
 ### 未覆盖项
 
 - 本轮没有再次调用真实 DeepSeek API，也没有代替用户执行 Windows 窗口与真实回收站人工观察；这些项目继续标记为“待用户人工确认”。
-- 本轮不处理 MCP、角色行为、缩放、拖拽或工作台一致性；既有 MCP preload 契约问题仍按上节记录进入独立安全子项目。
+- 本轮不处理 MCP、角色行为、缩放、拖拽或工作台一致性；其中 MCP preload 契约的后续处理状态以本文下一节独立安全子项目验收为准。
+
+## 2026-08-22 桌面端 MCP 正式运行链清理自动验收
+
+### 环境、基线与范围
+
+- 环境：Windows 隔离 worktree；Task 5 起始提交为 `0a15009a1fa2dba42a255ba37162d5bb0df6acc0`。
+- 本轮只补充持久化、Electron 产品边界和最终验收证据；未修改 SettingsStore、拖拽、角色行为、桌宠缩放、碰撞体积、文件能力、Provider 协议或角色工作台生产代码。
+- 保留 `apps/desktop/src/main/mcp`、内部 MCP 单元测试、测试 Server、SettingsStore 的 MCP schema/data 和本机已有 MCP 数据；正式 API、Preload、IPC、Renderer、Main、Agent、生产依赖与 bundle 入口继续保持删除状态。
+
+### Characterization 与测试夹具修正
+
+- 持久化生产实现没有出现有效 RED。首次定向测试为 49/50，通过项已证明普通 mutator 保留 MCP 数据；唯一失败来自测试读取源文件时把 `apps/desktop` 重复拼接，改用 `import.meta.url` 定位后通过。该失败不是产品缺陷，因此没有为制造 RED 修改生产代码。
+- 生命周期 E2E 首次沿用强制重启时，第二进程的 `safeStorage.decryptStringAsync` 报出密文解密失败并被归一化为 `PROVIDER_NETWORK_ERROR`；改用同步解密同样失败且实验已回退。根因是旧夹具未保证 safeStorage 后端正常关闭，不是 MCP 产品链 RED。测试改为每次重启前调用正式 `window.myself.quit()` 并等待桌宠窗口关闭，Provider 密钥随后可正常恢复。
+- 正式退出修正后，首次完整 `settings.json` Buffer 比较只观察到正常生命周期写入 `petPosition`。夹具随后在第一进程退出后，用保留的 SettingsStore 写入退出前捕获的精确坐标，再预置 MCP 数据并建立原始 Buffer 基线；基线建立后第二进程只执行普通聊天和只读 `list_files`，不调用设置 mutator。第二次重启时完整 `settings.json` 与 MCP Secret 原始 Buffer 均逐字节相等，未 parse 或重序列化。
+
+### 定向证据
+
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/settings-store.test.ts tests/multi-provider-settings-store.test.ts tests/settings-ipc.test.ts tests/provider-secret-vault.test.ts`：退出 0，4 个文件、50/50 通过。
+- 普通 SettingsStore 原子写入口采用表驱动矩阵覆盖 9 个方法，并由源码完整性守卫锁定新增入口；两条 MCP 配置在每次写后逻辑深度相等。单 Provider 密钥清除前后直接比较 `mcp:remote-tools` 槽文件 Buffer；全量清除前确认 Provider 与 MCP 两槽存在，清除后两槽均为 `ENOENT`。
+- `pnpm.cmd --filter @myself/desktop build`：退出 0；生产构建、preload 外部依赖校验和 MCP 生产边界校验通过。
+- 定向 Playwright `--list` 精确列出 4 条：两个设置页尺寸、正式白名单业务闭环和 MCP 生命周期。相同 4 条实际执行退出 0，4/4 通过。
+- 正式 preload 的 `Object.keys(window.myself)` 对 8 个旧 MCP key 逐键不存在且交集为空；720×620 与 640×520 设置页导航均精确为“模型、隐私、本地数据”，不存在“工具”按钮和“MCP 服务”文案；普通聊天工具表为空，只读文件任务工具表不含 `mcp__` 前缀且真实返回 `list_files` 结果。
+- `pnpm.cmd test:security`：退出 0，20/20 通过。`pnpm.cmd test:integration`：退出 0，50/50 通过。
+- 对 `apps/desktop/out/main`、`out/preload`、`out/renderer` 执行规格中的精确禁止标记扫描：退出 1 且无输出，表示没有命中；对 SettingsStore 与其测试执行保留项扫描：退出 0，仍可定位 MCP schema 和 get/save/delete 持久化入口。
+
+### 完整门禁状态
+
+- 第一次 `pnpm.cmd verify:desktop`：退出 1。workspace typecheck 通过；单元测试 2315/2317 通过，两个与本轮无关的角色测试分别在 5000ms 超时：默认角色“已有可用默认角色时不重写其运行版本”和角色包“V2 导出直接读取正式草稿与发布清单”，前者清理阶段另报 `ENOTEMPTY`。脚本因此在单元测试阶段停止，本次调用没有继续执行安全、集成、构建和完整 Electron E2E；这些后续边界已按上一节单独验证。
+- 第二次、提交前最终 `pnpm.cmd verify:desktop`：退出 0。workspace typecheck 覆盖 10/11 个存在脚本的项目；单元测试 112 个文件、2317/2317 通过；安全测试 20/20、集成测试 50/50；生产构建、preload 外部依赖校验和 MCP 生产边界校验通过；Electron E2E 63/63 通过。重跑没有放宽测试超时，也没有修改角色代码；第一次失败仍保留在上一条作为真实历史。
+
+### 人工待确认与安装包边界
+
+- 待用户人工确认：`pnpm.cmd --filter @myself/desktop dev` 下的真实 Windows 设置页与聊天交互，以及正式退出后不存在 MCP 子进程。自动测试没有声称动态证明“零 HTTP/零子进程”。
+- 本轮没有构建安装包；干净环境安装、运行、退出和卸载后的生产依赖与进程观察均为“待正式打包阶段确认”，不得视为已通过。
+- 真实 DeepSeek API、真实 Windows 回收站和其他既有人工项仍按前文保持“待用户人工确认”。

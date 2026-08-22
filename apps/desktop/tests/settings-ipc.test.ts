@@ -131,9 +131,14 @@ describe('设置 IPC', () => {
     const lifecycle = { onProviderChanged: vi.fn(() => undefined) };
     registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
 
-    await handlers.get(ipcChannels.settingsClearLocalData)?.({}, { scope: 'secret' });
+    await handlers.get(ipcChannels.settingsClearLocalData)?.({}, {
+      scope: 'secret',
+      profileId: 'provider-main'
+    });
 
-    expect(secrets.clear).toHaveBeenCalledWith('default');
+    expect(secrets.clear).toHaveBeenCalledWith('provider-main');
+    expect(secrets.clearAll).not.toHaveBeenCalled();
+    expect(settings.clearAll).not.toHaveBeenCalled();
     expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
   });
 
