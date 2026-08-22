@@ -5,6 +5,7 @@ import type {
 } from '@myself/shared-types';
 import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import type { ProviderProfileV2 } from '@myself/shared-types';
+import type { ModelResponseContract } from './response-contract';
 
 export type ModelRequestKind = 'chat' | 'agent' | 'vision';
 
@@ -45,6 +46,7 @@ export interface ModelRequest {
   tools: ToolDefinition[];
   toolChoice: ToolChoicePolicy;
   reasoningMode: ReasoningMode;
+  responseContract?: ModelResponseContract;
 }
 
 export type ModelResponse =
@@ -53,6 +55,7 @@ export type ModelResponse =
       text: string;
       emotion?: CharacterEmotionLabel;
       behaviorIntent?: CharacterAgentBehaviorIntent;
+      structured_output?: Record<string, unknown>;
     }
   | { type: 'tool_request'; request: unknown };
 

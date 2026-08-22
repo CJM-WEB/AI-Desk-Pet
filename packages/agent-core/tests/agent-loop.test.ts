@@ -395,6 +395,24 @@ describe('AgentLoop', () => {
       .not.toContain(CAPABILITY_CLARIFICATION_TOOL_NAME);
   });
 
+  test('带无权限结构化输出的文本响应不会进入工具运行时', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'text',
+      text: '我来散步啦',
+      structured_output: { text: '我来散步啦', behaviorPlan: { kind: 'move' } }
+    }]);
+    const runContext = context(provider);
+    const prepare = vi.spyOn(runContext.toolRuntime, 'prepare');
+
+    await expect(collectEvents(runContext)).resolves.toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'message', text: '我来散步啦' },
+      { type: 'phase', phase: 'success' }
+    ]);
+
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
   test('文件规划在首次真实工具结果前拒绝普通文本，并在第二次违约时返回稳定错误', async () => {
     const provider = new ScriptedProvider([
       { type: 'text', text: '我没有权限执行这个文件任务' },
