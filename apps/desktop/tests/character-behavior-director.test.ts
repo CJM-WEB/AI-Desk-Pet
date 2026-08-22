@@ -21,7 +21,8 @@ function createFixture() {
   let directedAuthorization: CharacterBehaviorAuthorization = NONE;
   const targetByName = new Map<string, ResolvedBehaviorTarget>([
     ['挥手', { kind: 'action', actionId: 'wave-action' }],
-    ['庆祝', { kind: 'action', actionId: 'celebrate-action' }]
+    ['庆祝', { kind: 'action', actionId: 'celebrate-action' }],
+    ['移动', { kind: 'action', actionId: 'move-action' }]
   ]);
   const behavior = {
     getPublicBehaviorCatalog: vi.fn((): PublicBehaviorCatalog => ({
@@ -34,8 +35,16 @@ function createFixture() {
       if (!resolved) throw new Error('CHARACTER_ACTION_UNAVAILABLE');
       return resolved;
     }),
+    isMovementBehaviorTarget: vi.fn((target: ResolvedBehaviorTarget) => (
+      target.kind === 'semantic'
+        ? target.semantic === 'move'
+        : target.kind === 'action' && target.actionId === 'move-action'
+    )),
     requestDirectedBehavior: vi.fn(() => directedAuthorization),
-    handleTaskEvent: vi.fn((_event: TaskEvent) => taskAuthorization),
+    handleTaskEvent: vi.fn((
+      _event: TaskEvent,
+      options?: Readonly<{ allowPlayback?: boolean }>
+    ) => options?.allowPlayback === false ? NONE : taskAuthorization),
     applyPlaybackFeedback: vi.fn((_feedback: CharacterPlaybackFeedback) => undefined),
     handleActiveCharacterChanged: vi.fn(async () => undefined),
     close: vi.fn(() => undefined)
@@ -60,6 +69,79 @@ function play(name: string): CharacterBehaviorPlan {
 }
 
 describe('Main 角色行为 Director', () => {
+  test('同轮本地 stop 指令后忽略 Provider resume，解析后的 move 动作仍受停止锁拦截', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: { kind: 'stop_movement' },
+      providerPlan: { kind: 'resume_movement' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.director.requestBehaviorPlan(play('移动'), 'explicit')).toEqual(NONE);
+    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
+      kind: 'action_name', name: '移动'
+    });
+    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+  });
+
+  test('反思 stop 不会写停止锁，后续 move 计划仍可授权', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    fixture.director.requestBehaviorPlan({ kind: 'stop_movement' }, 'reflection');
+
+    expect(fixture.director.requestBehaviorPlan(play('移动'), 'reflection')).toMatchObject({
+      kind: 'play', semantic: 'move'
+    });
+  });
+
+  test('反思 resume 不能解除本地停止锁', () => {
+    const fixture = createFixture();
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: { kind: 'stop_movement' },
+      providerPlan: null
+    });
+
+    fixture.director.requestBehaviorPlan({ kind: 'resume_movement' }, 'reflection');
+
+    expect(fixture.director.requestBehaviorPlan(play('移动'), 'explicit')).toEqual(NONE);
+    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+  });
+
+  test('explicit 动作活跃时 thinking、listening 与 dragging 只更新可信事实而不抢播放', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'explicit-token', semantic: 'celebrate'
+    });
+    fixture.setTaskAuthorization({
+      kind: 'play', actionId: 'think-action', playbackToken: 'task-token', semantic: 'think'
+    });
+    fixture.director.requestBehaviorPlan(play('挥手'), 'explicit');
+    fixture.director.setDragging(true);
+
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'listening' });
+
+    expect(fixture.behavior.handleTaskEvent).toHaveBeenNthCalledWith(
+      1,
+      { type: 'phase', phase: 'thinking' },
+      { allowPlayback: false }
+    );
+    expect(fixture.behavior.handleTaskEvent).toHaveBeenNthCalledWith(
+      2,
+      { type: 'phase', phase: 'listening' },
+      { allowPlayback: false }
+    );
+    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledTimes(1);
+  });
+
   test('关闭、安全停止锁、明确指令、可信任务、聊天、反思和本地待机按固定优先级仲裁', async () => {
     const fixture = createFixture();
     fixture.setTaskAuthorization({

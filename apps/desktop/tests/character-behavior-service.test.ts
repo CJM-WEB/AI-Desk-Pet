@@ -48,11 +48,15 @@ type BehaviorService = {
   endTaskCarry(): void;
   getPublicBehaviorCatalog(): PublicBehaviorCatalog;
   resolveBehaviorTarget(target: BehaviorTarget): ResolvedBehaviorTarget;
+  isMovementBehaviorTarget(target: ResolvedBehaviorTarget): boolean;
   requestDirectedBehavior(target: ResolvedBehaviorTarget, options?: {
     urgency?: number;
     systemForced?: boolean;
   }): CharacterBehaviorAuthorization;
-  handleTaskEvent(event: TaskEvent): CharacterBehaviorAuthorization;
+  handleTaskEvent(
+    event: TaskEvent,
+    options?: Readonly<{ allowPlayback?: boolean }>
+  ): CharacterBehaviorAuthorization;
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void;
   handleMovement(snapshot: CharacterMotionSnapshot): void;
   handleUserInteraction(): void;
@@ -66,6 +70,7 @@ type BehaviorService = {
 type BehaviorServiceConstructor = new (options: Record<string, unknown>) => BehaviorService;
 
 const SEMANTICS = ['idle', 'listen', 'think', 'move', 'carry', 'celebrate', 'fail'] as const;
+const NONE_BEHAVIOR_AUTHORIZATION: CharacterBehaviorAuthorization = { kind: 'none' };
 
 function createManifest(id = 'first'): CharacterManifestV2 {
   return {
@@ -364,6 +369,60 @@ describe('Main 角色行为权威服务', () => {
       diagnosticCode: 'CHARACTER_ACTION_UNAVAILABLE'
     });
     expect(events).toEqual([]);
+  });
+
+  test('定向 move 只授权动画而不触发旧 wander，非定向任务路径保持不变', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+    fixture.motion.requestIntent.mockClear();
+    const target = service.resolveBehaviorTarget({ kind: 'action_name', name: 'move 动作' });
+
+    const authorization = service.requestDirectedBehavior(target, {
+      urgency: 100,
+      systemForced: true
+    });
+
+    expect(service.isMovementBehaviorTarget(target)).toBe(true);
+    expect(authorization).toMatchObject({
+      kind: 'play', actionId: 'move-action', semantic: 'move'
+    });
+    expect(events).toEqual([expect.objectContaining({ actionId: 'move-action' })]);
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+
+    service.handleAgentIntent({
+      stateIntent: { semantic: 'move' },
+      actionSemantic: 'move',
+      urgency: 100,
+      explanation: '旧非定向任务移动'
+    });
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith('wander');
+  });
+
+  test('禁止可信阶段播放时仍更新任务事实，后续 success 可正常接管', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+
+    const authorization = service.handleTaskEvent(
+      { type: 'phase', phase: 'thinking' },
+      { allowPlayback: false }
+    );
+
+    expect(authorization).toEqual(NONE_BEHAVIOR_AUTHORIZATION);
+    expect(events).toEqual([]);
+    expect(fixture.motion.applyTaskEvent).toHaveBeenCalledWith({
+      type: 'phase', phase: 'thinking'
+    });
+
+    service.handleTaskEvent({ type: 'phase', phase: 'success' });
+    expect(events.at(-1)).toMatchObject({ actionId: 'celebrate-action' });
   });
 
   test('开始任务搬运返回当前皮肤的精确授权并只发布同一个真实动作', async () => {

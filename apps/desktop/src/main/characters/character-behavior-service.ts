@@ -77,6 +77,16 @@ export type CharacterBehaviorServiceOptions = {
 const DEFAULT_IDLE_INTERVAL_MS = 10_000;
 const NO_BEHAVIOR_AUTHORIZATION: CharacterBehaviorAuthorization = { kind: 'none' };
 
+/** 统一给 Service 与 Director 派生可信任务是否阻塞低优先级行为。 */
+export function characterTaskRuntimeBlock(event: TaskEvent): boolean | null {
+  if (event.type === 'pending_action') return true;
+  if (event.type !== 'phase') return null;
+  return event.phase === 'listening'
+    || event.phase === 'thinking'
+    || event.phase === 'awaiting_confirmation'
+    || event.phase === 'acting';
+}
+
 /** Main 独占角色行为决策、调度令牌和运动意图的生产权。 */
 export class CharacterBehaviorService {
   private readonly now: () => number;
@@ -136,6 +146,19 @@ export class CharacterBehaviorService {
     );
   }
 
+  /** 在不创建调度副作用的前提下判断私有目标是否可能授权 move 语义。 */
+  isMovementBehaviorTarget(target: ResolvedBehaviorTarget): boolean {
+    if (this.closed || this.transitioning || !this.manifest) return false;
+    if (target.kind === 'semantic') return target.semantic === 'move';
+    if (target.kind === 'action') {
+      return this.manifest.actions.find(action => action.id === target.actionId)?.semantic === 'move';
+    }
+    const state = this.manifest.states.find(candidate => candidate.id === target.stateId);
+    return Boolean(state?.actionIds.some(actionId => (
+      this.manifest?.actions.find(action => action.id === actionId)?.semantic === 'move'
+    )));
+  }
+
   /** 定向请求仍经现有 Engine 的硬约束、调度器与令牌授权，不直接发布动作 ID。 */
   requestDirectedBehavior(
     target: ResolvedBehaviorTarget,
@@ -148,7 +171,7 @@ export class CharacterBehaviorService {
       urgency: options.urgency ?? 0,
       systemForced: options.systemForced ?? false
     });
-    return this.publish(decision);
+    return this.publish(decision, null, false);
   }
 
   /**
@@ -198,55 +221,64 @@ export class CharacterBehaviorService {
     }));
   }
 
-  handleTaskEvent(event: TaskEvent): CharacterBehaviorAuthorization {
+  handleTaskEvent(
+    event: TaskEvent,
+    options: Readonly<{ allowPlayback?: boolean }> = {}
+  ): CharacterBehaviorAuthorization {
     if (this.closed) return NO_BEHAVIOR_AUTHORIZATION;
     this.options.motion.applyTaskEvent(event);
     const now = this.now();
+    const allowPlayback = options.allowPlayback ?? true;
+    const runtimeBlock = characterTaskRuntimeBlock(event);
+    if (runtimeBlock !== null) this.taskIdleBlocked = runtimeBlock;
     if (this.transitioning) {
       this.captureTaskContext(event, now);
       return NO_BEHAVIOR_AUTHORIZATION;
     }
     if (event.type === 'pending_action') {
-      this.taskIdleBlocked = true;
       return NO_BEHAVIOR_AUTHORIZATION;
     }
     if (event.type !== 'phase') return NO_BEHAVIOR_AUTHORIZATION;
 
     if (event.phase === 'idle' || event.phase === 'cancelled') {
       this.taskContextSignal = null;
-      this.deactivateTaskSignal(now);
-      this.taskIdleBlocked = false;
+      this.deactivateTaskSignal(now, allowPlayback);
       this.nextIdleAt = now + this.idleIntervalMs;
-      this.restoreDefaultPlayback(now);
+      if (allowPlayback) {
+        this.restoreDefaultPlayback(now);
+      } else {
+        this.applySignalOnly({ type: 'idle-due', occurredAtMs: now });
+      }
       return NO_BEHAVIOR_AUTHORIZATION;
     }
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
       this.taskContextSignal = null;
-      this.deactivateTaskSignal(now);
-      this.taskIdleBlocked = true;
+      this.deactivateTaskSignal(now, allowPlayback);
       return NO_BEHAVIOR_AUTHORIZATION;
     }
 
-    this.taskIdleBlocked = event.phase === 'listening' || event.phase === 'thinking';
     this.nextIdleAt = now + this.idleIntervalMs;
     if (event.phase === 'listening' || event.phase === 'thinking') {
-      this.deactivateTaskSignal(now);
+      this.deactivateTaskSignal(now, allowPlayback);
       this.activeTaskSignal = event.phase;
       this.taskContextSignal = {
         type: event.phase,
         active: true,
         occurredAtMs: now
       };
-      return this.dispatch({ type: event.phase, active: true, occurredAtMs: now });
+      return this.dispatchTaskSignal(
+        { type: event.phase, active: true, occurredAtMs: now },
+        allowPlayback
+      );
     }
 
-    this.deactivateTaskSignal(now);
+    this.deactivateTaskSignal(now, allowPlayback);
     this.taskContextSignal = {
       type: 'task',
       phase: event.phase === 'success' ? 'success' : 'failure',
       occurredAtMs: now
     };
-    return this.dispatch(this.taskContextSignal);
+    return this.dispatchTaskSignal(this.taskContextSignal, allowPlayback);
   }
 
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void {
@@ -430,25 +462,19 @@ export class CharacterBehaviorService {
 
   /** 切换窗口内只记录最新可信任务事实，不允许旧引擎消费任何边沿。 */
   private captureTaskContext(event: TaskEvent, occurredAtMs: number): void {
-    if (event.type === 'pending_action') {
-      this.taskIdleBlocked = true;
-      return;
-    }
+    if (event.type === 'pending_action') return;
     if (event.type !== 'phase') return;
     if (event.phase === 'idle' || event.phase === 'cancelled') {
       this.activeTaskSignal = null;
       this.taskContextSignal = null;
-      this.taskIdleBlocked = false;
       this.nextIdleAt = occurredAtMs + this.idleIntervalMs;
       return;
     }
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
       this.activeTaskSignal = null;
       this.taskContextSignal = null;
-      this.taskIdleBlocked = true;
       return;
     }
-    this.taskIdleBlocked = event.phase === 'listening' || event.phase === 'thinking';
     this.nextIdleAt = occurredAtMs + this.idleIntervalMs;
     if (event.phase === 'listening' || event.phase === 'thinking') {
       this.activeTaskSignal = event.phase;
@@ -477,16 +503,22 @@ export class CharacterBehaviorService {
     return signals;
   }
 
-  private deactivateTaskSignal(occurredAtMs: number): void {
+  private deactivateTaskSignal(occurredAtMs: number, allowPlayback = true): void {
     const activeTaskSignal = this.activeTaskSignal;
     this.activeTaskSignal = null;
     if (!activeTaskSignal || !this.engine || this.transitioning) return;
 
-    // 停用也可能重排动作，必须同步发布，避免内部令牌领先于播放器。
-    this.publish(this.engine.dispatch({
-      signal: { type: activeTaskSignal, active: false, occurredAtMs },
-      direction: this.direction
-    }));
+    const signal: CharacterBehaviorSignal = {
+      type: activeTaskSignal,
+      active: false,
+      occurredAtMs
+    };
+    if (allowPlayback) {
+      // 停用也可能重排动作，必须同步发布，避免内部令牌领先于播放器。
+      this.publish(this.engine.dispatch({ signal, direction: this.direction }));
+    } else {
+      this.engine.applySignalOnly({ signal, direction: this.direction });
+    }
   }
 
   private restoreDefaultPlayback(occurredAtMs: number): void {
@@ -521,6 +553,20 @@ export class CharacterBehaviorService {
       direction: this.direction,
       ...(agentIntent === undefined ? {} : { agentIntent })
     }));
+  }
+
+  private dispatchTaskSignal(
+    signal: CharacterBehaviorSignal,
+    allowPlayback: boolean
+  ): CharacterBehaviorAuthorization {
+    if (allowPlayback) return this.dispatch(signal);
+    this.applySignalOnly(signal);
+    return NO_BEHAVIOR_AUTHORIZATION;
+  }
+
+  private applySignalOnly(signal: CharacterBehaviorSignal): void {
+    if (!this.engine || this.transitioning) return;
+    this.engine.applySignalOnly({ signal, direction: this.direction });
   }
 
   /** 只把已通过调度器的 play effect 转为 Main 播放事件。 */

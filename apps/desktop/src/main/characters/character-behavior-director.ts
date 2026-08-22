@@ -8,7 +8,10 @@ import type {
   ScreenRegion
 } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
-import type { CharacterBehaviorService } from './character-behavior-service';
+import {
+  characterTaskRuntimeBlock,
+  type CharacterBehaviorService
+} from './character-behavior-service';
 
 export type CharacterMotionIntent =
   | Readonly<{ kind: 'wander'; scope: 'short' | 'work_area' }>
@@ -67,6 +70,7 @@ type BehaviorServicePort = Pick<
   CharacterBehaviorService,
   | 'getPublicBehaviorCatalog'
   | 'resolveBehaviorTarget'
+  | 'isMovementBehaviorTarget'
   | 'requestDirectedBehavior'
   | 'handleTaskEvent'
   | 'applyPlaybackFeedback'
@@ -138,9 +142,12 @@ export class CharacterBehaviorDirector {
   handleTaskEvent(event: TaskEvent): void {
     if (this.closed) return;
     this.updateTrustedBlock(event);
-    // 新可信阶段已由 Service 原子处理，旧阶段令牌不能继续占用 Director 来源优先级。
+    const explicitPlaybackActive = this.active?.source === 'explicit';
+    // 新可信阶段已由 Service 原子处理，旧可信阶段令牌不能继续占用来源优先级。
     if (this.active?.source === 'trusted-task') this.active = null;
-    const authorization = this.options.behavior.handleTaskEvent(event);
+    const authorization = this.options.behavior.handleTaskEvent(event, {
+      allowPlayback: !explicitPlaybackActive
+    });
     if (authorization.kind === 'play') {
       this.active = { source: 'trusted-task', playbackToken: authorization.playbackToken };
     }
@@ -153,6 +160,10 @@ export class CharacterBehaviorDirector {
     if (event.phase !== 'success' || !this.pendingChatPlan) return;
     if (authorization.kind === 'play') {
       this.pendingSuccessToken = authorization.playbackToken;
+      return;
+    }
+    if (this.active?.source === 'explicit') {
+      this.pendingSuccessToken = this.active.playbackToken;
       return;
     }
     this.commitPendingChatPlan();
@@ -175,18 +186,14 @@ export class CharacterBehaviorDirector {
     source: BehaviorPlanSource
   ): CharacterBehaviorAuthorization {
     if (!this.canRequest(plan, source)) return NONE;
-    if (plan.kind === 'stop_movement') {
-      this.movementStopped = true;
-      return NONE;
-    }
-    if (plan.kind === 'resume_movement') {
-      this.movementStopped = false;
-      return NONE;
-    }
+    if (plan.kind === 'stop_movement' || plan.kind === 'resume_movement') return NONE;
     if (plan.kind !== 'play') return NONE;
 
     try {
       const target = this.options.behavior.resolveBehaviorTarget(plan.target);
+      if (this.movementStopped && this.options.behavior.isMovementBehaviorTarget(target)) {
+        return NONE;
+      }
       const authorization = this.options.behavior.requestDirectedBehavior(
         target,
         SOURCE_OPTIONS[source]
@@ -244,15 +251,8 @@ export class CharacterBehaviorDirector {
   }
 
   private updateTrustedBlock(event: TaskEvent): void {
-    if (event.type === 'pending_action') {
-      this.trustedRuntimeBlocked = true;
-      return;
-    }
-    if (event.type !== 'phase') return;
-    this.trustedRuntimeBlocked = event.phase === 'listening'
-      || event.phase === 'thinking'
-      || event.phase === 'awaiting_confirmation'
-      || event.phase === 'acting';
+    const runtimeBlock = characterTaskRuntimeBlock(event);
+    if (runtimeBlock !== null) this.trustedRuntimeBlocked = runtimeBlock;
   }
 
   private commitPendingChatPlan(): void {

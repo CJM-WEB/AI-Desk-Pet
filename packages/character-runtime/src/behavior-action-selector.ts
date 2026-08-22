@@ -150,6 +150,26 @@ function isRepeatSuppressed(
   return lastStartedAtMs !== undefined && input.nowMs - lastStartedAtMs < action.repeatSuppressionMs;
 }
 
+type ActionHardConstraintOptions = Readonly<{
+  state?: CharacterBehaviorStateSnapshot;
+  respectRepeatSuppression?: boolean;
+  requireCurrentSkinPresentation?: boolean;
+}>;
+
+/** 普通、定向与单动作授权共用同一组状态、方向、时间与表现硬约束。 */
+function satisfiesActionHardConstraints(
+  action: CharacterActionDefinitionV2,
+  input: CharacterBehaviorActionSelectionInput,
+  options: ActionHardConstraintOptions = {}
+): boolean {
+  return matchesStateConstraints(action, options.state ?? input.state)
+    && matchesDirection(action, input.direction)
+    && !isCoolingDown(action, input)
+    && (options.respectRepeatSuppression !== true || !isRepeatSuppressed(action, input))
+    && (options.requireCurrentSkinPresentation !== true
+      || hasCurrentSkinPresentation(input, action.id));
+}
+
 /** 以注入随机源在正偏好权重中选择一个候选。 */
 function selectWeightedCandidate(
   candidates: readonly ActionCandidate[],
@@ -183,12 +203,10 @@ function eligibleCandidates(
 
   return referencedActions(input.manifest, state, stateIds).flatMap(({ actionId, stateId }) => {
     const action = actionsById.get(actionId);
-    if (!action || !matchesStateConstraints(action, state) || !matchesDirection(action, input.direction)) {
-      return [];
-    }
+    if (!action || !satisfiesActionHardConstraints(action, input, { state })) return [];
 
     const resolved = resolveCharacterPresentation(input.manifest, input.skinId, action.id);
-    if (!resolved || isCoolingDown(action, input)) return [];
+    if (!resolved) return [];
 
     return [{ action, stateId, presentation: resolved.presentation }];
   });
@@ -231,14 +249,10 @@ function eligibleDirectedCandidates(
   const actionsById = new Map(input.manifest.actions.map(action => [action.id, action]));
   return references.flatMap(({ actionId, stateId }) => {
     const action = actionsById.get(actionId);
-    if (
-      !action
-      || !matchesStateConstraints(action, input.state)
-      || !matchesDirection(action, input.direction)
-      || isCoolingDown(action, input)
-      || isRepeatSuppressed(action, input)
-      || !hasCurrentSkinPresentation(input, action.id)
-    ) return [];
+    if (!action || !satisfiesActionHardConstraints(action, input, {
+      respectRepeatSuppression: true,
+      requireCurrentSkinPresentation: true
+    })) return [];
 
     const resolved = resolveCharacterPresentation(input.manifest, input.skinId, action.id);
     return resolved ? [{ action, stateId, presentation: resolved.presentation }] : [];
@@ -332,22 +346,14 @@ export function selectDirectedCharacterBehaviorAction(
 export function authorizeCharacterBehaviorAction(
   input: CharacterBehaviorActionSelectionInput,
   actionId: string,
-  options: Readonly<{
-    respectRepeatSuppression?: boolean;
-    requireCurrentSkinPresentation?: boolean;
-  }> = {}
+  options: Omit<ActionHardConstraintOptions, 'state'> = {}
 ): CharacterBehaviorActionSelection {
   const action = input.manifest.actions.find((candidate) => candidate.id === actionId);
   const state = input.manifest.states.find((candidate) => candidate.actionIds.includes(actionId));
   if (
     !action
     || !state
-    || !matchesStateConstraints(action, input.state)
-    || !matchesDirection(action, input.direction)
-    || isCoolingDown(action, input)
-    || (options.respectRepeatSuppression === true && isRepeatSuppressed(action, input))
-    || (options.requireCurrentSkinPresentation === true
-      && !hasCurrentSkinPresentation(input, action.id))
+    || !satisfiesActionHardConstraints(action, input, options)
   ) {
     throw new Error(ACTION_UNAVAILABLE);
   }

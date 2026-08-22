@@ -197,6 +197,16 @@ export class CharacterBehaviorEngine {
     });
   }
 
+  /** 只吸收可信上下文事实，不选择动作、不修改调度或创建播放令牌。 */
+  applySignalOnly(input: {
+    signal: CharacterBehaviorSignal;
+    agentIntent?: CharacterAgentBehaviorIntent;
+    direction: 'left' | 'right';
+  }): void {
+    this.lastDirection = input.direction;
+    this.applySignal(input.signal, input.agentIntent);
+  }
+
   /** 只同步方向事实，不产生新动作或调度令牌。 */
   updateDirection(direction: 'left' | 'right'): void {
     this.lastDirection = direction;
