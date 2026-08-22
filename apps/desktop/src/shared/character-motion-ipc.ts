@@ -50,6 +50,24 @@ export const characterActionFeedbackInputSchema = z.object({
   actionId: characterMotionIdentifierSchema,
   status: z.enum(['started', 'completed', 'interrupted', 'failed'])
 }).strict();
+
+const characterMotionRectangleSchema = z.object({
+  x: finiteNumberSchema,
+  y: finiteNumberSchema,
+  width: finiteNumberSchema.positive(),
+  height: finiteNumberSchema.positive()
+}).strict().refine(
+  rectangle => Number.isFinite(rectangle.x + rectangle.width)
+    && Number.isFinite(rectangle.y + rectangle.height),
+  { message: '矩形边界必须是有限数值' }
+);
+
+/** Renderer 只接收窗口局部渲染数据，Main 的身份、资源和全局放置信息不得越过 IPC。 */
+export const petGeometryRenderViewSchema = z.object({
+  revision: z.number().int().safe().nonnegative(),
+  scale: finiteNumberSchema.min(0.5).max(2),
+  visualBoundsInWindowDip: characterMotionRectangleSchema
+}).strict();
 export const characterActionMilestoneInputSchema = z.object({
   playbackToken: characterPlaybackTokenSchema,
   actionId: characterMotionIdentifierSchema,
@@ -59,6 +77,7 @@ export const characterActionMilestoneInputSchema = z.object({
 
 export type CharacterMotionPoint = z.output<typeof characterMotionPointSchema>;
 export type CharacterMotionSnapshot = z.output<typeof characterMotionSnapshotSchema>;
+export type PetGeometryRenderView = z.output<typeof petGeometryRenderViewSchema>;
 export type CharacterMotionEvent = z.output<typeof characterMotionEventSchema>;
 export type CharacterActionFeedbackInput = z.output<
   typeof characterActionFeedbackInputSchema

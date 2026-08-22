@@ -194,7 +194,9 @@ type CharacterBehaviorPlan =
 
 ### 8.1 动作视觉包围盒
 
-角色编译流程为每个动作计算全部帧非透明像素的最小联合矩形，并与脚底锚点、资源修订一起保存。运行时将主动作、修饰状态和可见覆盖物合并为稳定视觉包围盒；动作播放期间不逐帧改变，切换动作或缩放时才更新。
+角色编译流程为每个动作计算全部帧非透明像素的最小联合矩形，并与脚底锚点、资源修订一起保存。当前正式播放器每次只渲染一个可见主表现；`modifierStateIds` 只参与动作筛选，不进入几何权威输入，也不是独立可见图层，当前没有 overlay 播放协议，因此本阶段不能宣称修饰表现或覆盖物已经接入。几何模块保留按共同脚底锚点联合多个可见表现的纯函数 seam；该 seam 只接收已经转换到共同脚底 DIP 坐标系的矩形，不能直接联合不同画布的归一化几何。生产输入长度固定为 1；未来只有在角色契约和播放器真实支持多层后才能扩大。
+
+动作播放期间的帧切换不重新扫描 Alpha，也不改变稳定视觉包围盒。角色、动作、方向、缩放、播放器 viewport 尺寸或真实可见表现集合变化时才建立新的几何形状版本。
 
 旧角色缺少包围盒时在导入或首次加载时生成一次并迁移，不长期保留固定 180×220 与新几何双轨。
 
@@ -213,6 +215,18 @@ type PetGeometrySnapshot = Readonly<{
 ```
 
 Main 校验有限数值、正尺寸、缩放范围、角色身份和资源修订。过期或非法数据拒绝，并回退到已验证默认几何。
+
+完整 `PetGeometrySnapshot` 只存在于 Main。Renderer 后续只允许报告经过严格 schema 校验的 window-local viewport 矩形；该矩形是已经应用缩放后的实际画布范围，Main 不得再乘一次持久 `scale`。Renderer 不得报告全局坐标、最终视觉包围盒、脚底全局坐标、角色 ID 或资源哈希。Main 从严格 `CharacterManifestV2`、已授权 action、资源 revision、方向、`BrowserWindow` bounds 和 Electron display 数据自行计算 `footAnchorDip` 与 `visualBoundsInWindowDip`。Renderer 只接收去全局坐标的渲染视图。
+
+`revision` 只表示几何形状版本。角色、动作、方向、缩放、viewport 尺寸或真实可见表现集合变化时单调自增；窗口移动、viewport 在窗口内的 offset 变化和 display placement 更新不自增。若未来需要对位置广播排序，使用独立 `placementRevision`，不得复用几何 revision。
+
+权威接口拆为低频 `updateShape` 与廉价 `updatePlacement`。`updateShape` 才能解析严格 Manifest，并验证动作、资源、方向、scale 和实际 viewport size 后创建 pending 共同脚底 DIP 形状；它不接收 `frameIndex`，也不得由逐帧通知调用。pending 不得修改已提交角色、动作 revision 绑定或快照。`updatePlacement` 只接收 `baseRevision`、同尺寸 window-local viewport、窗口 bounds 和 display，按 revision 选择 pending 或 active 缓存且不解析 Manifest；pending placement 全部验证并成功生成快照后，才原子提交 active 元数据与快照并清除 pending。pending placement 失败后旧 active revision 仍可继续 placement，显式 `discardPendingShape()` 可幂等回滚 pending 且不影响 active。缺少形状、revision 不等或 viewport 尺寸变化均稳定拒绝并保留最后有效快照。
+
+形状 revision 以已签发 revision 单调递增；丢弃或替换不同 pending 不能复用旧 revision。与 active 或 pending 形状键相同的候选复用原 revision，保证同 revision 只表达同一几何形状。
+
+同一角色的同一 action revision 必须绑定同一皮肤、动作和资源修订；更小 revision 或同 revision 的绑定冲突稳定拒绝。方向来自独立运动快照，不属于 action revision 的绑定字段。Main 显式切换活动角色时重置 action revision 基线，但几何形状 revision 继续单调递增。窗口必须与声明的 display 工作区存在正面积相交，负坐标显示器按同一全局 DIP 规则计算；所有派生点和矩形在提交前再次校验有限数值与正尺寸。
+
+几何 authority 只在角色、动作、方向、scale、viewport 或 placement 边界调用；逐帧通知不得调用它。输入 revision 以及 Renderer 可见的几何 revision 必须是非负安全整数。所有矩形除字段本身有限且尺寸为正外，右边界与下边界也必须保持有限。
 
 ### 8.3 滚轮缩放
 

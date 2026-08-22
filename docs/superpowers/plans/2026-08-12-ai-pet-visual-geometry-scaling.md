@@ -4,7 +4,7 @@
 
 **Goal:** 以动作全部可见像素联合包围盒和脚底锚点替代固定透明窗口边界，实现像素命中滚轮缩放、贴边运动与按角色持久化。
 
-**Architecture:** 角色编译阶段生成稳定视觉元数据；Renderer 只报告经过 schema 限制的当前表现几何和滚轮档位；Main `PetVisualGeometry` 校验并持有不可变快照，运动、位置恢复和窗口布局只能消费该快照。
+**Architecture:** 角色编译阶段生成稳定视觉元数据；Renderer 后续只报告经过 schema 限制的 window-local viewport 矩形和滚轮档位，不报告最终几何或全局坐标；Main 从严格 Manifest、已授权动作、资源修订、方向、BrowserWindow 和 display 数据计算并持有不可变 `PetVisualGeometry` 快照，运动、位置恢复和窗口布局只能消费该快照。
 
 ## Task 1（G1）：为角色表现生成稳定视觉包围盒
 
@@ -85,7 +85,7 @@ type PresentationGeometryV2 = Readonly<{
 - [x] GREEN：Store、Package 和内置角色在资源校验前只持有 Prepared；behavior 与 legacy projection 仍只接受正式清单，resolver 与选择结果保留 Published 表现的必填几何。
 - [x] 验收：character-runtime 与 desktop 相关定向测试、typecheck 及 integration 通过，无 `as CharacterManifestV2` 掩盖；behavior 单元与集成清单均由严格 Schema 自证。同时补齐 G1 遗漏的编译子进程 Canvas Alpha double，保持真实几何编译链可验收。
 
-## Task 2（G2）：建立 Main 几何权威
+## Task 2b（G2b）：建立 Main 私有几何权威纯模块
 
 **Files:**
 
@@ -106,10 +106,13 @@ type PetGeometrySnapshot = Readonly<{
 }>;
 ```
 
-- [ ] RED：有限数值、正尺寸、50%–200%、角色/资源 revision、单调 revision；过期/伪造/错误角色拒绝。
-- [ ] RED：主表现、modifier 和可见 overlay 取联合；动作内帧切换不改 revision，动作/overlay/scale 切换才更新。
-- [ ] GREEN：快照始终 structuredClone/freeze；非法更新保持最后已验证快照并返回稳定错误码。
-- [ ] 提交 `feat: 建立桌宠视觉几何权威`。
+- [x] RED：有限数值、正尺寸、50%–200%、严格角色/action/resource revision、方向和单调几何 revision；同角色同 action revision 绑定 skin/action/resource，过期、绑定冲突、伪造、错误角色、未知动作和资源修订不匹配均返回稳定错误码；显式换角色只重置 action revision 基线。
+- [x] RED：当前正式播放器只有一个可见主表现，`modifierStateIds` 只筛选动作且不进入几何输入，生产可见表现集合长度固定为 1；纯矩形联合 seam 只接收已转换到共同脚底 DIP 坐标系的矩形并支持多输入，但不得以合成测试宣称 overlay 已接入。
+- [x] RED：逐帧通知不进入几何输入；角色、动作、direction、scale、viewport size 或真实可见表现集合变化才自增。窗口移动、viewport offset 和 display placement 更新不改变几何 revision；未来如需位置排序另设 `placementRevision`。
+- [x] RED：完整 `PetGeometrySnapshot` 只在 Main 内可见；共享 IPC schema 只允许去全局坐标视图，拒绝 `characterId`、资源 hash、`displayId`、全局 foot anchor、全局 window bounds 和最终全局视觉 bounds。
+- [x] GREEN：低频 `updateShape` 从严格 Manifest presentation、action/resource revision、direction、scale 和实际 window-local viewport size 计算 pending 共同脚底 DIP 形状，不修改 active 元数据或快照；廉价 `updatePlacement` 只收 `baseRevision`、同尺寸 viewport、BrowserWindow bounds 和 display，按 revision 选择 pending/active 且不解析 Manifest。pending placement 全部成功后才原子提交 active 与快照；失败后旧 active 仍可 placement，`discardPendingShape()` 幂等回滚 pending。viewport 是已应用缩放的实际窗口局部矩形；窗口与 display 工作区必须正面积相交。
+- [x] GREEN：快照始终 structuredClone 并深层 freeze；矩形字段、右/下边界与最终派生几何均验证有限数值和正尺寸，非法 shape/placement 保持最后已验证快照并返回稳定错误码。Authority 不接收逐帧通知；revision 使用安全整数。G2b 只交付纯模块与契约测试，不注册 IPC、不接 Main 生命周期，也不宣称运行链已经启用。
+- [x] 提交 `feat: 建立桌宠视觉几何权威`。
 
 ## Task 3（G3）：按角色持久缩放和脚底锚点位置
 
@@ -155,8 +158,9 @@ type StoredPetPlacement = Readonly<{
 - Modify: `apps/desktop/tests/main-lifecycle.test.ts`
 
 - [ ] RED：只有现有 alpha hit 为 true 且指针悬浮时，wheel 才提交 `step:-1|1`；每格 10%，50%/200% 封顶；透明区域和聊天窗口滚轮不缩放。
+- [ ] RED：Renderer 只可提交严格 window-local viewport 矩形；Main 绑定当前正式角色和动作后自行计算几何，拒绝 Renderer 提交角色 ID、资源 hash、全局坐标或最终 bounds。
 - [ ] RED：缩放前后脚底全局 DIP 不变；窗口 bounds、Pixi canvas 和几何 revision 原子提交；失败回滚到旧快照。
-- [ ] GREEN：Renderer 只传档位，不传比例、坐标、characterId；Main 根据活动角色和当前快照计算，保存成功后广播新几何。
+- [ ] GREEN：G4 负责 viewport 与滚轮 IPC、Preload、Renderer 和 Main 生命周期接线；Renderer 滚轮只传档位，不传比例、全局坐标或 characterId，Main 保存成功后只广播去全局坐标的几何渲染视图。
 - [ ] 运行 pet interaction、preload、CharacterPlayer 和 Main lifecycle 测试；提交 `feat: 支持桌宠像素命中滚轮缩放`。
 
 ## Task 5（G5）：运动和屏幕边界改用可见包围盒
@@ -170,7 +174,7 @@ type StoredPetPlacement = Readonly<{
 
 - [ ] RED：50%、100%、200% 下可见矩形能贴工作区四边；透明窗口留白允许越界；可见像素绝不越界。
 - [ ] RED：动作切换导致包围盒变化时保持脚底锚点，必要时最小位移回到可见区；跨显示器选择依据脚底/目标区域而非透明窗口中心。
-- [ ] GREEN：`constrainTarget` 只消费 `PetGeometrySnapshot`；删除固定 window size 作为运动权威的代码，保留 BrowserWindow bounds 仅为布局结果。
+- [ ] GREEN：G5 首次把 G2b Main 私有快照接入运动边界；`constrainTarget` 只消费 `PetGeometrySnapshot`，删除固定 window size 作为运动权威的代码，保留 BrowserWindow bounds 仅为布局结果。
 - [ ] 提交 `fix: 以可见角色范围约束桌宠运动`。
 
 ## Task 6（G6）：视觉几何纵向验收

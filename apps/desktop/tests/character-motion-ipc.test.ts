@@ -6,6 +6,7 @@ import { registerCharacterMotionIpc } from '../src/main/ipc/register-ipc';
 import {
   characterActionFeedbackInputSchema,
   characterActionMilestoneInputSchema,
+  petGeometryRenderViewSchema,
   characterMotionDeltaProbeSchema,
   characterMotionEventSchema
 } from '../src/shared/character-motion-ipc';
@@ -57,6 +58,45 @@ beforeEach(() => {
 });
 
 describe('角色运动严格 IPC', () => {
+  test('视觉几何渲染视图只接受窗口内去全局坐标字段', () => {
+    expect(petGeometryRenderViewSchema.parse({
+      revision: 2,
+      scale: 1.2,
+      visualBoundsInWindowDip: { x: 10, y: 20, width: 80, height: 120 }
+    })).toEqual({
+      revision: 2,
+      scale: 1.2,
+      visualBoundsInWindowDip: { x: 10, y: 20, width: 80, height: 120 }
+    });
+    expect(() => petGeometryRenderViewSchema.parse({
+      revision: Number.MAX_SAFE_INTEGER + 1,
+      scale: 1,
+      visualBoundsInWindowDip: { x: 0, y: 0, width: 1, height: 1 }
+    })).toThrow();
+    expect(() => petGeometryRenderViewSchema.parse({
+      revision: 1,
+      scale: 1,
+      visualBoundsInWindowDip: {
+        x: Number.MAX_VALUE, y: 0, width: Number.MAX_VALUE, height: 1
+      }
+    })).toThrow();
+    for (const privateField of [
+      { characterId: 'private-character' },
+      { resourceRevision: 'a'.repeat(64) },
+      { displayId: 'display-1' },
+      { footAnchorDip: { x: 300, y: 400 } },
+      { windowBoundsDip: { x: 300, y: 200, width: 180, height: 220 } },
+      { globalVisualBoundsDip: { x: 310, y: 220, width: 80, height: 120 } }
+    ]) {
+      expect(() => petGeometryRenderViewSchema.parse({
+        revision: 2,
+        scale: 1.2,
+        visualBoundsInWindowDip: { x: 10, y: 20, width: 80, height: 120 },
+        ...privateField
+      })).toThrow();
+    }
+  });
+
   test('E2E 运动差值探针只接受去标识化相对字段', () => {
     expect(characterMotionDeltaProbeSchema.parse({
       moved: true,
