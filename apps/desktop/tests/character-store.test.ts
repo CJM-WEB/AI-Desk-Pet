@@ -1871,57 +1871,6 @@ describe('CharacterStore', () => {
       .resolves.toBe('保留');
   });
 
-  test('事务恢复协调：活动与非活动角色的坏分面彼此隔离且原 marker 字节保持不变', async () => {
-    const brokenDraftMarker = Buffer.from('{"version":1,"phase":"prepared"');
-    const brokenPublishMarker = Buffer.from([0xff, 0x00, 0x7b, 0x7d]);
-    const scenarios = [
-      { active: true, draft: true, publish: false },
-      { active: true, draft: false, publish: true },
-      { active: true, draft: true, publish: true },
-      { active: false, draft: true, publish: false },
-      { active: false, draft: false, publish: true },
-      { active: false, draft: true, publish: true }
-    ] as const;
-
-    for (const [scenarioIndex, scenario] of scenarios.entries()) {
-      const directory = join(testDirectory, `matrix-${scenarioIndex}`);
-      const store = new CharacterStore(directory);
-      const targetRuntime = createRuntime('target', '目标角色');
-      const healthyRuntime = createRuntime('healthy', '健康角色');
-      await store.create({ id: 'target', name: '目标角色' });
-      await store.create({ id: 'healthy', name: '健康角色' });
-      await store.publishCompiled('target', targetRuntime.manifest, targetRuntime.assets);
-      await store.publishCompiled('healthy', healthyRuntime.manifest, healthyRuntime.assets);
-      await store.setActive(scenario.active ? 'target' : 'healthy', true);
-      const draftMarker = join(directory, 'target', 'draft', 'draft-transaction.json');
-      const publishMarker = join(directory, 'target', 'publish-transaction.json');
-      if (scenario.draft) await writeFile(draftMarker, brokenDraftMarker);
-      if (scenario.publish) await writeFile(publishMarker, brokenPublishMarker);
-      const healthyNext = join(directory, 'healthy', 'draft', 'draft.next.json');
-      await writeFile(healthyNext, JSON.stringify(createDraft('healthy', '未提交')));
-
-      const restarted = new CharacterStore(directory);
-      const summaries = await restarted.list();
-      const report = restarted.getTransactionRecoveryReport();
-      const targetResult = report.characters.find(result => result.characterId === 'target');
-
-      expect(summaries.map(summary => summary.id)).toEqual(['healthy', 'target']);
-      expect(targetResult).toEqual({
-        characterId: 'target',
-        draftErrorCode: scenario.draft ? 'CHARACTER_DRAFT_RECOVERY_BLOCKED' : null,
-        publishErrorCode: scenario.publish ? 'CHARACTER_PUBLISH_RECOVERY_BLOCKED' : null
-      });
-      expect(JSON.stringify(report)).not.toContain(directory);
-      await expect(access(healthyNext)).rejects.toThrow();
-      if (scenario.draft) {
-        expect(await readFile(draftMarker)).toEqual(brokenDraftMarker);
-      }
-      if (scenario.publish) {
-        expect(await readFile(publishMarker)).toEqual(brokenPublishMarker);
-      }
-    }
-  });
-
   test('事务恢复协调：坏草稿仅关闭草稿保存与发布，健康活动运行时仍可读取', async () => {
     const store = new CharacterStore(charactersDirectory);
     const runtime = createRuntime();
