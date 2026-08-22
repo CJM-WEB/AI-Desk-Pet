@@ -403,21 +403,21 @@ $devRootPid = $devSession.Id
 - 产出：任务 3 已定义类型的解析、真实上下文填充与对象化运动执行；上下文只包含公开角色清单、运行态布尔值、主动性档位和最近动作，不含路径、正文、token 或 actionId。
 - 生产接线：任务 4 即创建唯一的 Service/Motion/Director 实例，Coordinator 在 capability router 与 Provider 前调用 `prepareUserPrompt()`，投影与播放反馈先交 Director；任务 5、6 只向同一实例补充设置和调度依赖，绝不建立第二条运行路径。
 
-- [ ] **步骤 1：写 Gate、运动和接线 RED**
+- [x] **步骤 1：写 Gate、运动和接线 RED**
 
   覆盖“停下/别走了/恢复活动/可以动了/向左一点/往上远一点/去右下角/走一走”和等价英文命令；“停下并删除 old.txt”必须保留 `capabilityText === '删除 old.txt'`；“别移动这个文件”、讨论、引用和代码块返回 null。`relative` 使用当前窗口轴尺寸 `0.5/1/2` 倍，`region` 使用当前显示器 workArea，所有目标经 `constrainTarget()` 钳制且接口没有 x/y。断言 Coordinator 在分流前 await Gate，local move 在创建 Provider 前完成授权；普通聊天在披露确认后重新读取 Director 的 `getChatContext()`，以必填 `behaviorContext` 构造 JSON 系统消息，不能复用确认前快照。
 
-- [ ] **步骤 2：写 Director、Projection 与 Main RED**
+- [x] **步骤 2：写 Director、Projection 与 Main RED**
 
   断言 `main-conversation-composition.ts` 给 Coordinator 注入同一个端口，`ConversationEventProjection` 与播放反馈 IPC 先交 Director 再委托 Service，`index.ts` 只有一组 Service/Motion/Director。move 授权为 none 时不调用 `requestIntent()` 且发布 `CHARACTER_ACTION_UNAVAILABLE`；授权为 play 才请求 relative/region/wander。任务 4 的停止锁仅为内存初始 `false`，聊天/模型计划的 `stop_movement` 与 `resume_movement` 不得改变该锁；持久化入口留给任务 5。额外断言现有 500ms idle 来源先调用 Director 的旧主动授权门：锁为 false 时保持 V2 idle/V1 wander 既有行为，锁为 true 时不派发 idle、不调用 `pollLegacyIdle()`、不请求 wander，且不新增第二份状态。
 
-- [ ] **步骤 3：运行 RED**
+- [x] **步骤 3：运行 RED**
 
   运行：`pnpm.cmd exec vitest run --project desktop apps/desktop/tests/explicit-character-behavior-gate.test.ts apps/desktop/tests/character-motion-controller.test.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/tests/conversation-chat-adapter.test.ts apps/desktop/tests/conversation-coordinator.test.ts apps/desktop/tests/main-conversation-composition.test.ts apps/desktop/tests/conversation-event-projection.test.ts apps/desktop/tests/main-lifecycle.test.ts`
 
   预期：FAIL，缺少 Gate、对象化运动、必填上下文或唯一生产组合；失败不得来自既有无关测试。
 
-- [ ] **步骤 4：写最小 GREEN 并运行单元门**
+- [x] **步骤 4：写最小 GREEN 并运行单元门**
 
   Gate 只解析命令式首句并屏蔽引号/代码；Coordinator 保留原始用户文本。Director 先请求动作授权再请求 MotionService，停止先取消当前目标。现有 500ms poll 在进入 V1/V2 idle 候选前必须经过同一个 Director 授权门，未停止时保留旧行为，停止时拦截旧主动动作。任务 2 的 Adapter 此时才要求 `behaviorContext`，系统消息必须包含小写 `json`、精确对象示例与公开清单；Provider 调用仍只有一次且 `tools: []`。不得增加视觉包围盒、碰撞、缩放或 Renderer 坐标写入。
 
@@ -428,7 +428,7 @@ $devRootPid = $devSession.Id
 
   预期：PASS；测试明确使用“窗口矩形保守边界”，不声称视觉贴边完成。
 
-- [ ] **步骤 5：启动桌宠受控验收并清理进程**
+- [x] **步骤 5：启动桌宠受控验收并清理进程**
 
   按“可见窗口会话与受限进程收口”启动本次开发会话。
 
@@ -436,7 +436,7 @@ $devRootPid = $devSession.Id
 
   预期：验收项按观察记录；候选清单和清理方式可追溯，且不影响基线或其他 Electron/Node 进程。
 
-- [ ] **步骤 6：提交任务**
+- [x] **步骤 6：提交任务**
 
   ```powershell
   git add apps/desktop/src/main/conversation/explicit-character-behavior-gate.ts apps/desktop/tests/explicit-character-behavior-gate.test.ts apps/desktop/src/main/characters/character-behavior-director.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/src/main/characters/character-motion-service.ts apps/desktop/tests/character-motion-controller.test.ts apps/desktop/src/main/characters/character-behavior-service.ts apps/desktop/tests/character-behavior-service.test.ts apps/desktop/src/main/conversation/conversation-chat-adapter.ts apps/desktop/tests/conversation-chat-adapter.test.ts apps/desktop/src/main/conversation/conversation-coordinator.ts apps/desktop/tests/conversation-coordinator.test.ts apps/desktop/src/main/conversation/main-conversation-composition.ts apps/desktop/tests/main-conversation-composition.test.ts apps/desktop/src/main/conversation/conversation-event-projection.ts apps/desktop/tests/conversation-event-projection.test.ts apps/desktop/src/main/index.ts apps/desktop/tests/main-lifecycle.test.ts

@@ -489,7 +489,134 @@ describe('事件驱动角色行为引擎', () => {
     }]);
   });
 
-  test('advance 在启动确认截止点清除未开始令牌，并拒绝迟到反馈', () => {
+  test('同角色替换未开始令牌后幂等接收旧 started 与 interrupted', () => {
+    let now = 0;
+    const engine = 创建引擎(创建六语义清单(), { now: () => now });
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: now }, direction: 'right' });
+    now = 1;
+    const replaced = engine.dispatch({
+      signal: { type: 'thinking', active: true, occurredAtMs: now },
+      direction: 'right'
+    });
+    const nextSchedule = replaced.snapshot.schedule;
+
+    now = 2;
+    expect(engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: now
+    })).toMatchObject({
+      snapshot: { schedule: nextSchedule },
+      effects: [{ type: 'none' }],
+      diagnosticCodes: []
+    });
+    now = 3;
+    expect(engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'interrupted',
+      occurredAtMs: now
+    }).snapshot.schedule).toEqual(nextSchedule);
+    expect(engine.snapshot().schedule).toEqual(nextSchedule);
+  });
+
+  test('Main 权威替换旧令牌后幂等接收旧 interrupted 且不改变新动作', () => {
+    let now = 0;
+    const engine = 创建引擎(创建六语义清单(), { now: () => now });
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 1 }, direction: 'right' });
+    now = 10;
+    engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: 10
+    });
+    now = 20;
+    const replaced = engine.dispatch({
+      signal: { type: 'thinking', active: true, occurredAtMs: now },
+      direction: 'right'
+    });
+    const nextSchedule = replaced.snapshot.schedule;
+    const staleInterrupted = {
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'interrupted' as const,
+      occurredAtMs: 22
+    };
+
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: 21
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    expect(engine.applyFeedback(staleInterrupted)).toMatchObject({
+      snapshot: { schedule: nextSchedule },
+      effects: [{ type: 'none' }],
+      diagnosticCodes: []
+    });
+    expect(engine.applyFeedback(staleInterrupted).snapshot.schedule).toEqual(nextSchedule);
+    expect(engine.snapshot().schedule.current).toMatchObject({
+      playbackToken: 'token-2',
+      actionId: 'think-action'
+    });
+  });
+
+  test.each([
+    ['未知令牌', 'interrupted', 'unknown-token', 'idle-action'],
+    ['错误动作', 'interrupted', 'token-1', 'think-action'],
+    ['迟到 completed', 'completed', 'token-1', 'idle-action'],
+    ['迟到 failed', 'failed', 'token-1', 'idle-action']
+  ] as const)('Main 退役账本仍拒绝%s反馈', (_name, status, playbackToken, actionId) => {
+    let now = 0;
+    const engine = 创建引擎(创建六语义清单(), { now: () => now });
+    engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 0 }, direction: 'right' });
+    now = 10;
+    engine.dispatch({
+      signal: { type: 'thinking', active: true, occurredAtMs: now },
+      direction: 'right'
+    });
+    const current = engine.snapshot().schedule;
+    now = 20;
+
+    expect(() => engine.applyFeedback({
+      playbackToken,
+      actionId,
+      status,
+      occurredAtMs: 20
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    expect(engine.snapshot().schedule).toEqual(current);
+  });
+
+  test('Main 退役账本仅保留最新八个旧播放实例', () => {
+    let now = 0;
+    const engine = 创建引擎(创建六语义清单(), { now: () => now });
+    for (let index = 0; index < 10; index += 1) {
+      now = index;
+      engine.dispatch({
+        signal: { type: 'idle-due', occurredAtMs: now },
+        direction: 'right'
+      });
+    }
+    now = 10;
+
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'interrupted',
+      occurredAtMs: now
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-2',
+      actionId: 'idle-action',
+      status: 'interrupted',
+      occurredAtMs: now
+    })).not.toThrow();
+    expect(engine.snapshot().schedule.current?.playbackToken).toBe('token-10');
+  });
+
+  test('advance 清除未开始令牌后仅幂等接收迟到 interrupted', () => {
     let now = 0;
     const engine = 创建引擎(创建六语义清单(), {
       now: () => now,
@@ -501,18 +628,37 @@ describe('事件驱动角色行为引擎', () => {
     expect(engine.advance().snapshot.schedule.current?.playbackToken).toBe('token-1');
     now = 100;
     expect(engine.advance().snapshot.schedule.current).toBeNull();
+    now = 101;
     expect(() => engine.applyFeedback({
       playbackToken: 'token-1',
       actionId: 'idle-action',
       status: 'started',
       occurredAtMs: 101
     })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    const next = engine.dispatch({
+      signal: { type: 'thinking', active: true, occurredAtMs: now },
+      direction: 'right'
+    });
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: now
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'interrupted',
+      occurredAtMs: 102
+    })).not.toThrow();
+    expect(engine.snapshot().schedule).toEqual(next.snapshot.schedule);
   });
 
   test('advance 在已开始动作没有终态反馈时按播放截止时间完成归档', () => {
     let now = 0;
     const engine = 创建引擎(创建六语义清单(), { now: () => now });
     engine.dispatch({ signal: { type: 'idle-due', occurredAtMs: 0 }, direction: 'right' });
+    now = 10;
     engine.applyFeedback({
       playbackToken: 'token-1',
       actionId: 'idle-action',
@@ -531,6 +677,28 @@ describe('事件驱动角色行为引擎', () => {
       startedAtMs: 10,
       finishedAtMs: 330,
       outcome: 'completed'
+    });
+    now = 331;
+    const next = engine.dispatch({
+      signal: { type: 'thinking', active: true, occurredAtMs: now },
+      direction: 'right'
+    });
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'started',
+      occurredAtMs: now
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-1',
+      actionId: 'idle-action',
+      status: 'interrupted',
+      occurredAtMs: now
+    })).not.toThrow();
+    expect(engine.snapshot().schedule).toEqual(next.snapshot.schedule);
+    expect(engine.snapshot().schedule.current).toMatchObject({
+      playbackToken: 'token-2',
+      actionId: 'think-action'
     });
   });
 
@@ -760,6 +928,22 @@ describe('事件驱动角色行为引擎', () => {
       schedule: { revision: 1, history: [], current: { actionId: 'new-left-idle', playbackToken: 'token-3' } }
     });
     expect(replaced.diagnosticCodes).toEqual(['CHARACTER_BEHAVIOR_CHARACTER_REPLACED']);
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-2',
+      actionId: 'old-idle',
+      status: 'started',
+      occurredAtMs: 1_001
+    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+    expect(() => engine.applyFeedback({
+      playbackToken: 'token-2',
+      actionId: 'old-idle',
+      status: 'interrupted',
+      occurredAtMs: 1_001
+    })).not.toThrow();
+    expect(engine.snapshot().schedule.current).toMatchObject({
+      actionId: 'new-left-idle',
+      playbackToken: 'token-3'
+    });
   });
 
   test('切换后的默认动作不可用时仍中断旧画面并追加动作不可用诊断', () => {

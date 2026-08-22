@@ -27,6 +27,10 @@ export type ExplicitBehaviorDirective =
   | Readonly<{ kind: 'stop_movement' }>
   | Readonly<{ kind: 'resume_movement' }>
   | Readonly<{
+      kind: 'play';
+      target: Readonly<{ kind: 'action_name'; name: string }>;
+    }>
+  | Readonly<{
       kind: 'move';
       motion: Exclude<CharacterMotionIntent, { kind: 'return-visible' }>;
     }>;
@@ -156,6 +160,8 @@ export class CharacterBehaviorDirector {
       this.applyExplicitMovementLock(false);
     } else if (directive?.kind === 'move') {
       this.requestMotionBehavior(directive.motion, 'explicit');
+    } else if (directive?.kind === 'play') {
+      this.requestBehaviorPlan({ kind: 'play', target: directive.target }, 'explicit');
     }
     return prepared;
   }

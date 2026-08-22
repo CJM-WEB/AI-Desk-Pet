@@ -103,6 +103,18 @@ function parseChinese(text: string): ParsedDirective | null {
     };
   }
 
+  const play = /^(?:请)?(?:做一个|播放|表演)\s*(.{1,120}?)\s*动作/u.exec(text);
+  const actionName = play?.[1] ? validExplicitActionName(play[1]) : null;
+  if (play && actionName) {
+    return {
+      consumed: play[0].length,
+      directive: {
+        kind: 'play',
+        target: { kind: 'action_name', name: actionName }
+      }
+    };
+  }
+
   const wander = /^(?:请)?(?:走一走|走走|散散步|到处走走)/u.exec(text);
   return wander
     ? {
@@ -150,6 +162,18 @@ function parseEnglish(text: string): ParsedDirective | null {
     };
   }
 
+  const play = /^(?:please\s+)?(?:(?:play|perform)\s+|do\s+(?:an?\s+)?)(.{1,120}?)\s+(?:animation|action)/iu.exec(text);
+  const actionName = play?.[1] ? validExplicitActionName(play[1]) : null;
+  if (play && actionName) {
+    return {
+      consumed: play[0].length,
+      directive: {
+        kind: 'play',
+        target: { kind: 'action_name', name: actionName }
+      }
+    };
+  }
+
   const wander = /^(?:please\s+)?(?:walk|move)\s+around/iu.exec(text);
   return wander
     ? {
@@ -157,6 +181,14 @@ function parseEnglish(text: string): ParsedDirective | null {
         directive: { kind: 'move', motion: { kind: 'wander', scope: 'short' } }
       }
     : null;
+}
+
+/** 动作命令只接收公开短名称，拒绝引用边界、代码和任何路径形态。 */
+function validExplicitActionName(value: string): string | null {
+  const name = value.trim();
+  if (!name || Array.from(name).length > 120) return null;
+  if (/[\\/`'"“”‘’「」『』<>]/u.test(name) || /^[a-z]:/iu.test(name)) return null;
+  return name;
 }
 
 function remainingCapabilityText(original: string, consumed: number): string {

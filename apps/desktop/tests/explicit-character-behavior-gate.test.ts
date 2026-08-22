@@ -33,6 +33,54 @@ describe('显式桌宠行为 Gate', () => {
       capabilityText: 'delete old.txt',
       explicitDirective: { kind: 'stop_movement' }
     });
+    expect(parseExplicitCharacterBehavior('请播放挥手动作然后删除 old.txt')).toEqual({
+      capabilityText: '删除 old.txt',
+      explicitDirective: {
+        kind: 'play',
+        target: { kind: 'action_name', name: '挥手' }
+      }
+    });
+  });
+
+  test.each([
+    ['请做一个后空翻动作', '后空翻'],
+    ['请播放挥手动作', '挥手'],
+    ['请表演庆祝动作', '庆祝'],
+    ['please play wave animation', 'wave'],
+    ['perform celebrate action', 'celebrate']
+  ] as const)('动作终止词限定的命令“%s”解析为精确动作名并保留原文', (text, name) => {
+    expect(parseExplicitCharacterBehavior(text)).toEqual({
+      capabilityText: text,
+      explicitDirective: {
+        kind: 'play',
+        target: { kind: 'action_name', name }
+      }
+    });
+  });
+
+  test('动作名长度按 Unicode 字符而非 UTF-16 码元计算', () => {
+    const name = '跃'.repeat(119) + '✨';
+    const text = `请播放${name}动作`;
+    expect(parseExplicitCharacterBehavior(text)).toEqual({
+      capabilityText: text,
+      explicitDirective: { kind: 'play', target: { kind: 'action_name', name } }
+    });
+  });
+
+  test.each([
+    '请做一个动作',
+    '请做一个文件',
+    '请做一个发布计划',
+    '请播放 C:/pet/wave.png 动作',
+    '请播放 assets\\wave 动作',
+    '请播放“挥手”动作',
+    '请讨论播放挥手动作',
+    `请播放${'✨'.repeat(121)}动作`,
+    'please play animation',
+    'please play assets/wave animation',
+    'discuss playing wave animation'
+  ])('空名、非动作命令、讨论、路径或非法名称“%s”不取得播放权限', text => {
+    expect(parseExplicitCharacterBehavior(text)).toBeNull();
   });
 
   test.each([

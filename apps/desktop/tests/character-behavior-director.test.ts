@@ -136,6 +136,47 @@ describe('Main 角色行为 Director', () => {
     }]);
   });
 
+  test('明确动作命令在 Provider 前直接请求精确动作且不请求运动', async () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'wave-token', semantic: 'celebrate'
+    });
+
+    await expect(fixture.director.prepareUserPrompt('请播放挥手动作')).resolves.toEqual({
+      originalText: '请播放挥手动作',
+      capabilityText: '请播放挥手动作',
+      explicitDirective: {
+        kind: 'play',
+        target: { kind: 'action_name', name: '挥手' }
+      }
+    });
+
+    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledExactlyOnceWith({
+      kind: 'action_name', name: '挥手'
+    });
+    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
+      { kind: 'action', actionId: 'wave-action' },
+      { urgency: 100, systemForced: true }
+    );
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  });
+
+  test('明确动作不存在时在 Provider 前发布稳定提示且不播放待机冒充', async () => {
+    const fixture = createFixture();
+
+    await fixture.director.prepareUserPrompt('请做一个后空翻动作');
+
+    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledExactlyOnceWith({
+      kind: 'action_name', name: '后空翻'
+    });
+    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+    expect(fixture.notices).toEqual([{
+      code: 'CHARACTER_ACTION_UNAVAILABLE',
+      message: '当前角色没有可播放的对应动作。'
+    }]);
+  });
+
   test('停止立即撤销运动并只拦截旧 500ms 候选，仍推进令牌清理', async () => {
     const fixture = createFixture();
     fixture.director.handleIdleDue();

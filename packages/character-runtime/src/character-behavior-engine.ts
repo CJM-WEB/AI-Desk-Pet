@@ -16,7 +16,8 @@ import type { ResolvedBehaviorTarget } from './behavior-target-resolver';
 import {
   reduceCharacterActionSchedule,
   type CharacterBehaviorSchedule,
-  type CharacterScheduleEffect
+  type CharacterScheduleEffect,
+  type CharacterScheduledAction
 } from './behavior-scheduler';
 import {
   createInitialBehaviorState,
@@ -57,7 +58,18 @@ type CharacterBehaviorEngineOptions = {
 
 const NONE_EFFECT: CharacterScheduleEffect = { type: 'none' };
 const DEFAULT_START_CONFIRMATION_TIMEOUT_MS = 30_000;
+const MAX_RETIRED_PLAYBACK_GRANTS = 8;
 const EMPTY_SCHEDULE = (): CharacterBehaviorSchedule => ({ revision: 0, current: null, history: [] });
+
+type RetiredPlaybackReason = 'schedule-replacement' | 'expiry' | 'character-replacement';
+
+type RetiredPlaybackGrant = Pick<
+  CharacterPlaybackFeedback,
+  'playbackToken' | 'actionId'
+> & {
+  reason: RetiredPlaybackReason;
+  allowLateStarted: boolean;
+};
 
 /** 只将动作选择器的稳定“无表现”错误转换为公开诊断。 */
 function isActionUnavailable(error: unknown): boolean {
@@ -114,6 +126,7 @@ export class CharacterBehaviorEngine {
   private lastDirection: 'left' | 'right' = 'right';
   private currentSelection: CharacterBehaviorActionSelection | null = null;
   private actionRecencyById: Record<string, CharacterActionRecency> = {};
+  private retiredPlaybackGrants: RetiredPlaybackGrant[] = [];
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly createPlaybackToken: () => string;
@@ -214,6 +227,9 @@ export class CharacterBehaviorEngine {
 
   /** 授权 Renderer 反馈；配置回退必须再次通过选择器硬约束并生成新令牌。 */
   applyFeedback(feedback: CharacterPlaybackFeedback): CharacterBehaviorDecision {
+    if (this.acceptsRetiredPlaybackFeedback(feedback)) {
+      return this.decision([NONE_EFFECT], []);
+    }
     const nowMs = this.now();
     const previous = this.schedule.current;
     const result = reduceCharacterActionSchedule(this.schedule, {
@@ -278,6 +294,9 @@ export class CharacterBehaviorEngine {
       nowMs: this.now()
     }, this.manifest.actions);
     this.schedule = result.schedule;
+    if (previous && !this.schedule.current) {
+      this.rememberRetiredPlayback(previous, 'expiry');
+    }
     if (previous?.startedAtMs !== null && previous && !this.schedule.current) {
       this.recordActionFinished(
         previous.actionId,
@@ -297,6 +316,7 @@ export class CharacterBehaviorEngine {
   ): CharacterBehaviorDecision {
     const effects: CharacterBehaviorDecisionEffect[] = [];
     const current = this.schedule.current;
+    this.retiredPlaybackGrants = [];
     if (current && this.currentSelection) {
       const interrupted = reduceCharacterActionSchedule(this.schedule, {
         type: 'schedule',
@@ -309,7 +329,10 @@ export class CharacterBehaviorEngine {
         systemForced: true
       }, this.manifest.actions);
       const interruptEffect = interrupted.effects.find((effect) => effect.type === 'interrupt');
-      if (interruptEffect) effects.push({ ...interruptEffect, actionId: current.actionId });
+      if (interruptEffect) {
+        this.rememberRetiredPlayback(current, 'character-replacement');
+        effects.push({ ...interruptEffect, actionId: current.actionId });
+      }
     }
 
     this.manifest = manifest;
@@ -423,6 +446,9 @@ export class CharacterBehaviorEngine {
       systemForced: input.systemForced
     }, this.manifest.actions);
     this.schedule = result.schedule;
+    if (previous && this.schedule.current?.playbackToken !== previous.playbackToken) {
+      this.rememberRetiredPlayback(previous, 'schedule-replacement');
+    }
     if (
       previous?.startedAtMs !== null
       && previous?.startedAtMs !== undefined
@@ -459,6 +485,37 @@ export class CharacterBehaviorEngine {
       latestStartedAtMs: previous.latestStartedAtMs,
       latestFinishedAtMs: Math.max(previous.latestFinishedAtMs ?? -Infinity, finishedAtMs)
     };
+  }
+
+  /**
+   * 只记住 Main 明确退役的旧播放实例；只有同角色替换尚未确认开始的实例允许迟到 started，
+   * 所有退役原因均只对精确 interrupted 幂等收敛，且账本容量固定。
+   */
+  private rememberRetiredPlayback(
+    action: CharacterScheduledAction,
+    reason: RetiredPlaybackReason
+  ): void {
+    this.retiredPlaybackGrants = [
+      ...this.retiredPlaybackGrants.filter((candidate) => (
+        candidate.playbackToken !== action.playbackToken || candidate.actionId !== action.actionId
+      )),
+      {
+        playbackToken: action.playbackToken,
+        actionId: action.actionId,
+        reason,
+        allowLateStarted: reason === 'schedule-replacement' && action.startedAtMs === null
+      }
+    ].slice(-MAX_RETIRED_PLAYBACK_GRANTS);
+  }
+
+  /** 退役反馈只做无副作用收敛，不把迟到消息应用到当前调度。 */
+  private acceptsRetiredPlaybackFeedback(feedback: CharacterPlaybackFeedback): boolean {
+    const grant = this.retiredPlaybackGrants.find((candidate) => (
+      candidate.playbackToken === feedback.playbackToken && candidate.actionId === feedback.actionId
+    ));
+    if (!grant) return false;
+    return feedback.status === 'interrupted'
+      || (feedback.status === 'started' && grant.allowLateStarted);
   }
 
   /** 统一创建不可反向修改内部状态的公开决策。 */
