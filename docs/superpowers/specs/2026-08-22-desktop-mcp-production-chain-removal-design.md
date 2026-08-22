@@ -108,7 +108,7 @@ apps/desktop/tests/mcp-manager.test.ts
   -> tests/fixtures/mcp-*-test-server.ts
 ```
 
-`createTrustedMcpRiskResolver` 属于 MCP Adapter 的内部风险逻辑，从 `DesktopSettingsService` 迁入 `src/main/mcp/mcp-risk-resolver.ts`，并由 MCP 内部测试直接覆盖。这样设置服务不再为保留测试承担 SDK 类型依赖。
+`createTrustedMcpRiskResolver` 属于 MCP Adapter 的内部风险逻辑，从 `DesktopSettingsService` 迁入现有 `src/main/mcp/mcp-tool-adapter.ts`，并由 MCP 内部测试直接覆盖。这样不新增单用途模块，设置服务也不再为保留测试承担 SDK 类型依赖。
 
 ## 分层减法
 
@@ -122,8 +122,7 @@ apps/desktop/tests/mcp-manager.test.ts
 
 ### 共享 API、Preload 与 IPC
 
-- 从 `SettingsDashboardDto` 删除 `mcpServers`；
-- 从 `MyselfApi` 删除 8 个 MCP 方法及其输入、输出 DTO；
+- 第一阶段只从 `MyselfApi` 删除 8 个 MCP 方法，从 Preload 与 IPC 删除相同调用面；`McpServerInput`、MCP DTO 和 `SettingsDashboardDto.mcpServers` 暂时保留，使该中间提交不要求提前拆开 `DesktopSettingsService`；
 - 从 Preload 删除相关类型导入、方法与 `ipcRenderer.invoke`；
 - 从 `ipcChannels` 删除 8 个 `settings:mcp-*` channel；
 - 从 `registerAdvancedSettingsIpc` 删除 MCP Schema、服务接口成员和 8 个 handler；
@@ -132,6 +131,7 @@ apps/desktop/tests/mcp-manager.test.ts
 ### Main 服务与会话
 
 - `DesktopSettingsServiceOptions` 不再接收 `mcpStore` 或 `mcpManager`；
+- 在同一中间提交中从 `SettingsDashboardDto` 删除 `mcpServers`，删除 MCP DTO、输入类型、Dashboard 投影与全部消费者 fixture，避免共享契约先于服务实现进入不可编译状态；
 - 设置服务删除 MCP 初始化、Dashboard 投影、状态、配置、连接、授权、执行和关闭代码；
 - `close()` 继续注销隐私会话，但不再关闭不存在的 Manager；
 - `main/index.ts` 删除 MCP Store/Manager 导入、实例化、风险解析注入、初始化接线和退出所有权；
@@ -142,6 +142,7 @@ apps/desktop/tests/mcp-manager.test.ts
 
 - `@modelcontextprotocol/sdk` 从 `dependencies` 移到 `devDependencies`，版本保持 `1.29.0`；
 - 更新 `pnpm-lock.yaml` 的 desktop importer 分类；
+- `electron.vite.config.ts` 的 Main `externalizeDeps.include` 显式包含 `@modelcontextprotocol/sdk`；这只用于 fail-closed 检测：若正式 Main 仍残留 SDK import，产物必须保留可扫描的包名并让门禁失败，不代表恢复生产依赖或允许运行时加载；
 - 正式构建完成后执行精确标记扫描；
 - 不删除 `tldts` 等仍被非 MCP 生产模块使用的依赖。
 
@@ -156,23 +157,23 @@ apps/desktop/tests/mcp-manager.test.ts
 - SecretStore 中既有 `mcp:<serverId>` 数据；
 - 用户磁盘上的既有 MCP 设置、密钥和启动确认指纹。
 
-### 禁止的专用访问
+### 第一层：无设置变更的生命周期字节不变
 
-正式启动、设置 Dashboard、普通设置保存、会话准备、聊天、文件任务与应用关闭不得调用 MCP 专用 getter、save、delete、Secret 读取或清理方法。不存在静默迁移、禁用标记写入或后台格式修复。
+正式启动、设置 Dashboard、会话准备、普通聊天、文件任务与应用关闭不得调用 MCP 专用 getter、save、delete、Secret 读取或清理方法。不存在静默迁移、禁用标记写入或后台格式修复。隔离 `userData` 在上述无设置变更流程前后，MCP 设置文件片段与 `mcp:remote-tools` Secret 必须逐字节不变。
 
-### 共享设置原子重写
+### 第二层：普通设置原子重写逻辑保留
 
 `mcpServers` 与 Provider、隐私、置顶等普通设置位于同一个 `settings.json`。普通设置保存会加载完整对象并原子重写共享文件，因此不要求文件字节完全不变；它必须保证重写前后的 `mcpServers` 逻辑值深度相等，包括未知顺序之外的全部已建模字段，不得丢失、归零或规范化为另一组内容。
 
 SettingsStore 为格式兼容保留的 MCP schema 和专用访问器可能随 SettingsStore 留在 Main bundle，但正式生产代码不得调用这些访问器。它们与 `mcpServers` 字段同属“持久化格式保留”例外，不代表 Manager、连接、工具执行或设置入口被打包；生产门禁只检查下文列出的运行时标记。
 
-应使用 characterization 测试覆盖 Provider、模型路由、隐私、置顶与授权根等普通写入，证明它们保留既有 `mcpServers`。这类整体原子写不是 MCP 专用读写。
+characterization 矩阵必须覆盖 SettingsStore 现有的全部非 MCP `atomicWrite` mutator，包括 Provider 新旧格式保存、Provider 删除、模型路由、Provider metadata、隐私、置顶、授权根保存与撤销、桌宠位置，以及实际代码中其他非 MCP 原子写入口。每项都证明完整 `mcpServers` 逻辑值保持一致；新增 mutator 时也必须进入该矩阵。这类整体原子写不是 MCP 专用读写。
 
-### 用户明确清除全部本地数据
+### 第三层：用户明确清除全部本地数据
 
 用户明确选择“清除全部本地数据”时，`SettingsStore.clearAll()` 和 `SecretStore.clearAll()` 继续清除全部设置与 Secret，其中包括 MCP 数据。这是全局清除语义，不属于 MCP 专用删除，也不得为 MCP 增加例外保留。
 
-仅清除某个 Provider Secret 时不得影响 `mcp:*` Secret；该语义继续由既有 SecretStore 与 IPC 测试约束。
+Secret characterization 使用普通 Provider ID 与 `mcp:remote-tools` 两个独立条目：清除普通 Provider 只删除前者并逐字节保留后者；`SecretStore.clearAll()` 明确清除二者。
 
 ## 安全与隐私
 
@@ -203,6 +204,8 @@ SettingsStore 为格式兼容保留的 MCP schema 和专用访问器可能随 Se
 
 生产 bundle 若出现任一禁止标记，构建必须失败并报告“产物类型 + 标记名称”，不得输出整段 bundle。实现者先定位残留 import 或调用点，不扩大扫描为任意 `mcp` 字符串。
 
+Main 构建显式 externalize SDK 是检测手段而非豁免：残留 import 必须以 `@modelcontextprotocol/sdk` 明文留在 bundle 并触发失败。配置测试同时锁定该 externalization 和 SDK 仅位于 `devDependencies`；任何人不得通过移除 externalization、改写包名或把 SDK 移回生产依赖制造假绿。
+
 ## 兼容与迁移
 
 - 这是有意的仓库内接口删除：旧 `MyselfApi` MCP 方法、Dashboard 字段和 IPC channel 不提供弃用别名。
@@ -228,8 +231,7 @@ SettingsStore 为格式兼容保留的 MCP schema 和专用访问器可能随 Se
 
 - `apps/desktop/src/main/mcp/mcp-manager.ts`
 - `apps/desktop/src/main/mcp/mcp-server-store.ts`
-- `apps/desktop/src/main/mcp/mcp-tool-adapter.ts`
-- 新的内部 `apps/desktop/src/main/mcp/mcp-risk-resolver.ts`
+- `apps/desktop/src/main/mcp/mcp-tool-adapter.ts`，包括迁入的风险解析器
 - `apps/desktop/tests/mcp-manager.test.ts`
 - `apps/desktop/tests/fixtures/mcp-test-server.ts`
 - `apps/desktop/tests/fixtures/mcp-http-test-server.ts`
@@ -243,23 +245,23 @@ SettingsStore 为格式兼容保留的 MCP schema 和专用访问器可能随 Se
 
 实施必须先证明以下现状：
 
-1. `SettingsView` 仍接受 `tools` 与 `mcpActions`，Renderer 测试仍可构造 MCP 设置 UI。
+1. Renderer 组件契约仍接受 `tools` 与 `mcpActions`，生产 bundle 与 E2E 仍能观察到 MCP 设置残留；源码正则只作为定位辅助，不作为主验收证据。
 2. `Object.keys(window.myself)` 仍包含 8 个 MCP 方法。
 3. `registerAdvancedSettingsIpc` 仍注册 8 个 `settings:mcp-*` handler。
 4. `DesktopSettingsServiceOptions` 和 Main 启动仍需要 Manager/Store，能力任务快照仍含 `enabledReadTools`。
-5. `@modelcontextprotocol/sdk` 仍在生产依赖，当前生产 bundle 仍含精确禁止标记。
+5. `@modelcontextprotocol/sdk` 仍在生产依赖，当前生产 bundle 仍含精确禁止标记；verifier 的 RED 使用可执行 no-op scaffold，使干净 fixture 通过、脏 fixture 因未被拒绝而失败。
 
 RED 失败必须来自目标入口仍存在；导入错误、测试夹具错误或无关断言失败不算有效证据。
 
 ### 定向自动测试
 
-- Renderer：精确三标签、无 MCP Props/文案/组件、共享 CSS 无回归。
-- API/Preload/IPC：公开键精确列表无 MCP；8 个旧 channel 均无 handler。
+- Renderer：组件类型契约精确三标签、无 MCP Props/文案/组件，typecheck、生产 bundle 和 Electron E2E 共同作为主证据；源码正则只辅助定位，共享 CSS 与 Explorer 生产边界无回归。
+- API/Preload/IPC：8 个公开键逐键不存在且与实际键集合交集为空；8 个旧 channel 均无 handler。
 - Main：设置服务无 MCP Options/方法；会话快照无未消费工具 seam；Manager 内部测试继续通过。
-- 持久化：普通设置原子重写前后 `mcpServers` 深度相等；`clearAll` 明确清除 MCP 数据。
+- 持久化：无设置变更的启动/聊天/文件任务/关闭前后 MCP 设置与 Secret 字节不变；全部非 MCP 原子写入口逻辑保留完整 `mcpServers`；单 Provider Secret 清除保留 `mcp:remote-tools`；`clearAll` 明确清除二者。
 - 生产构建：Main、Preload、Renderer 不含规定的正式入口标记。
 - 安全与集成：普通聊天、文件工具、PowerShell、权限和配置失效语义无回归。
-- Electron E2E：设置页无入口，`window.myself` 无 MCP key，Provider 工具表无 MCP 工具。
+- Electron E2E：设置页无入口，`window.myself` 对 8 个 MCP key 逐键不存在且交集为空，Provider 工具表无 MCP 工具；定向执行前用 `--list` 证明布局用例、正式白名单纵向用例和隔离 `userData` 生命周期用例均被匹配。
 
 ### 精确生产门禁
 
@@ -279,13 +281,14 @@ RED 失败必须来自目标入口仍存在；导入错误、测试夹具错误�
 
 - `SettingsTab` 精确为三类，正式 Renderer 不导入或渲染 MCP 设置组件。
 - `SettingsDashboardDto` 与 `MyselfApi` 不含 MCP 字段和方法。
-- 正式 preload 的公开键列表不含 8 个 MCP 方法。
+- 正式 preload 的 8 个 MCP 公开键逐键不存在，旧键集合与实际键集合交集为空。
 - 正式 IPC channel 表和 handler Map 不含 8 个 `settings:mcp-*` 入口。
 - Main 启动、会话、设置与退出代码不导入、实例化或调用 MCP Manager/Store。
 - 正式 Agent 工具表不含 MCP 工具，且不存在未消费的 `enabledReadTools` seam。
 - SDK 版本 `1.29.0` 只位于 desktop `devDependencies`；生产构建和精确 bundle 门禁通过。
+- Main externalization 显式包含 SDK，残留 import 会保留包名并 fail-closed；该配置没有恢复生产依赖。
 - MCP Manager、Store、Adapter、测试 Server 和 SettingsStore MCP 测试继续通过。
-- 普通设置写入逻辑保留 `mcpServers`；全量本地数据清除仍清除 MCP 设置与 Secret。
+- 隔离 `userData` 的无设置变更 E2E 证明启动、聊天、文件任务与关闭前后 MCP 设置和 `mcp:remote-tools` Secret 字节不变；全部非 MCP 原子写逻辑保留 `mcpServers`；全量本地数据清除仍清除 MCP 设置与 Secret。
 - `pnpm.cmd verify:desktop`、`git diff --check` 和固定范围差异检查通过。
 
 ### 人工验收边界

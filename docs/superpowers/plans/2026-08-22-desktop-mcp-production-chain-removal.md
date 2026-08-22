@@ -23,6 +23,7 @@
 - 中文文档、测试名称与结构性注释使用中文；代码标识符与协议字段保留英文。
 - 每个任务先运行定向测试，再运行该任务影响范围的回归；最终执行 `pnpm.cmd verify:desktop`。
 - 每个任务独立提交；禁止夹带其他任务或用户已有改动。
+- 本线程用户已明确授权本计划内的 Git 写入和逐任务提交，无需再次逐项确认；若用户撤回授权，立即停止后续提交并保留当前工作区供用户决定。
 
 ---
 
@@ -37,15 +38,23 @@
 - Modify: `apps/desktop/tests/multi-provider-settings.test.tsx`
 - Modify: `apps/desktop/tests/renderer-components.test.tsx`
 - Modify: `apps/desktop/tests/settings-toast.dom.test.tsx`
+- Test: `apps/desktop/tests/explorer-layer-production-boundary.test.ts`
 
 **Interfaces:**
 
-- Consumes: 当前 `SettingsDashboardDto` 暂时仍含 `mcpServers`；Task 1 不改共享 API。
+- Consumes: 当前 `SettingsDashboardDto` 暂时仍含 `mcpServers`；Task 1 不改共享 API，并将该字段保留到 Task 3 与服务实现一次收口。
 - Produces: `SettingsTab = 'models' | 'privacy' | 'local'`；`SettingsWorkspaceProps` 不含 `mcpActions`；Renderer 不再导入或渲染 `McpSettings`。
 
 - [ ] **Step 1: 写 Renderer 物理删除失败测试**
 
-创建 `renderer-mcp-production-boundary.test.ts`，从仓库源文件验证正式 Renderer 图：
+先在 `multi-provider-settings.test.tsx` 增加类型契约：
+
+```ts
+expectTypeOf<'tools'>().not.toMatchTypeOf<SettingsTab>();
+expectTypeOf<SettingsWorkspaceProps>().not.toHaveProperty('mcpActions');
+```
+
+该断言配合 `pnpm.cmd --filter @myself/desktop typecheck` 是 Task 1 的主 RED。另创建 `renderer-mcp-production-boundary.test.ts` 作为源码定位辅助，只检查 MCP 专属标记和组件文件：
 
 ```ts
 import { access, readFile } from 'node:fs/promises';
@@ -64,23 +73,23 @@ describe('Renderer MCP 正式生产边界', () => {
   test('设置入口不再引用 MCP 组件、回调或恒假能力开关', async () => {
     const source = await readFile(settingsViewUrl, 'utf8');
     expect(source).not.toMatch(/McpSettings|mcpActions|McpLaunch|desktopRuntimeCapabilities/u);
-    expect(source).not.toMatch(/['"]tools['"]/u);
     await expect(access(mcpSettingsUrl)).rejects.toThrow();
   });
 });
 ```
 
-该测试只约束正式入口文件，不扫描保留的 Main 内部模块。
+该辅助测试只约束正式入口文件，不扫描保留的 Main 内部模块，也不把通用 `tools` 文案当作 MCP 证据。最终主证据由组件契约、typecheck、Task 4 bundle 和 Task 5 E2E 共同构成。
 
 - [ ] **Step 2: 运行测试确认 RED**
 
 Run:
 
 ```powershell
+pnpm.cmd --filter @myself/desktop typecheck
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/renderer-mcp-production-boundary.test.ts
 ```
 
-Expected: FAIL，失败明确显示 `SettingsView.tsx` 仍含 MCP import/Props/标签，且 `McpSettings.tsx` 仍存在。
+Expected: typecheck 因 `SettingsTab` 仍接纳 `tools` 或 Props 仍含 `mcpActions` 而失败；辅助测试同时显示 MCP import/Props 和 `McpSettings.tsx` 仍存在。不得只以源码正则失败作为 RED。
 
 - [ ] **Step 3: 将设置工作区收敛为三类标签**
 
@@ -110,7 +119,7 @@ export function availableSettingsTabs(): readonly SettingsTab[] {
 - 删除 `McpSettings` 渲染分支；
 - 删除 `launchSummary` 状态和整段 `mcpActions` 回调；
 - `onTabChange` 直接 `setActiveTab(tab)`；
-- 暂时保留 `emptyDashboard.mcpServers: []`，由 Task 2 随共享 DTO 一起删除。
+- 暂时保留 `emptyDashboard.mcpServers: []`，由 Task 3 随共享 DTO 与服务实现一起删除。
 
 - [ ] **Step 4: 删除 MCP 组件和专用样式**
 
@@ -149,10 +158,11 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts `
   tests/multi-provider-settings.test.tsx `
   tests/renderer-components.test.tsx `
   tests/settings-toast.dom.test.tsx
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/explorer-layer-production-boundary.test.ts
 pnpm.cmd --filter @myself/desktop typecheck
 ```
 
-Expected: PASS；类型检查不再需要 `mcpActions`，Renderer 边界测试证明组件文件和正式 import 已删除。
+Expected: PASS；类型检查不再需要 `mcpActions`，Renderer 辅助边界证明组件文件和正式 import 已删除，Explorer 生产边界无回归。
 
 - [ ] **Step 7: 检查 Task 1 删除范围**
 
@@ -185,15 +195,11 @@ git commit -m "refactor(desktop): 删除 MCP Renderer 路径"
 - Modify: `apps/desktop/tests/preload-production-boundary.test.ts`
 - Modify: `apps/desktop/tests/preload-api.test.ts`
 - Modify: `apps/desktop/tests/advanced-settings-ipc.test.ts`
-- Modify: `apps/desktop/tests/multi-provider-settings.test.tsx`
-- Modify: `apps/desktop/tests/renderer-components.test.tsx`
-- Modify: `apps/desktop/tests/settings-toast.dom.test.tsx`
-- Modify: `apps/desktop/tests/desktop-settings-service.test.ts`
 
 **Interfaces:**
 
 - Consumes: Task 1 已删除 Renderer 的 `mcpActions` 和 `tools` 分支。
-- Produces: `SettingsDashboardDto` 不含 `mcpServers`；`MyselfApi` 与正式 preload 不含 8 个 MCP 方法；`ipcChannels` 和 `registerAdvancedSettingsIpc` 不含 8 个 MCP channel/handler。
+- Produces: `MyselfApi` 与正式 preload 不含 8 个 MCP 方法；`ipcChannels` 和 `registerAdvancedSettingsIpc` 不含 8 个 MCP channel/handler。MCP DTO、`SettingsDashboardDto.mcpServers`、Dashboard fixture 与 `DesktopSettingsService` 暂时不变，留给 Task 3 单次收口。
 
 - [ ] **Step 1: 为正式 Preload 与 IPC 写失败断言**
 
@@ -212,9 +218,9 @@ const removedMcpKeys = [
 ] as const;
 
 test('生产 preload 不公开 MCP 方法', () => {
-  expect(Object.keys(exposedApi ?? {})).not.toEqual(
-    expect.arrayContaining([...removedMcpKeys])
-  );
+  const apiKeys = new Set(Object.keys(exposedApi ?? {}));
+  for (const key of removedMcpKeys) expect(apiKeys.has(key)).toBe(false);
+  expect(removedMcpKeys.filter(key => apiKeys.has(key))).toEqual([]);
 });
 ```
 
@@ -247,19 +253,15 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts `
 
 Expected: FAIL；公开 API 仍有 8 个方法，handler Map 仍有 8 个旧 channel。
 
-- [ ] **Step 3: 删除共享 DTO、方法与 channel**
+- [ ] **Step 3: 删除共享调用方法与 channel**
 
-在 `myself-api.ts` 删除：
-
-- `McpToolDto`、`McpServerDto`、`McpServerInput`、`McpLaunchSummaryDto`；
-- `SettingsDashboardDto.mcpServers`；
-- `MyselfApi` 的 8 个 MCP 方法。
+在 `myself-api.ts` 只删除 `MyselfApi` 的 8 个 MCP 方法。保留 `McpToolDto`、`McpServerDto`、`McpServerInput`、`McpLaunchSummaryDto` 与 `SettingsDashboardDto.mcpServers`，因为 Task 2 中的 `DesktopSettingsService` 仍编译并返回这些类型；Task 3 将在删除服务实现时同步删除它们。
 
 在 `ipc-channels.ts` 删除 `settingsMcpUpsert` 至 `settingsMcpDelete` 的 8 个成员，不保留别名或注释占位。
 
 - [ ] **Step 4: 删除正式 Preload 转发**
 
-在 `preload/index.ts` 删除 `McpServerInput` 类型导入和 8 个方法实现。保持其余 API 的既有顺序；`preload-api.test.ts` 的公开键精确列表同步删除这 8 项，并从“高级设置固定白名单”测试删除 MCP 正向调用与调用序号断言。
+在 `preload/index.ts` 删除不再使用的 `McpServerInput` 类型导入和 8 个方法实现。保持其余 API 的既有顺序；`preload-api.test.ts` 的公开键精确列表同步删除这 8 项，并从“高级设置固定白名单”测试删除 MCP 正向调用与调用序号断言。公开键缺失断言逐键检查，不能用 `not.arrayContaining()` 只证明“并非八项全部同时存在”。
 
 - [ ] **Step 5: 删除高级设置 IPC 的 MCP Schema 与 handler**
 
@@ -271,19 +273,9 @@ Expected: FAIL；公开 API 仍有 8 个方法，handler Map 仍有 8 个旧 cha
 
 在 `advanced-settings-ipc.test.ts` 删除旧 MCP 成功转发测试和 service mock 方法，只保留“handler 不注册”的产品边界测试及其他高级设置覆盖。
 
-- [ ] **Step 6: 同步 Dashboard 消费者和 fixture**
+- [ ] **Step 6: 验证 Task 2 中间提交契约仍自洽**
 
-从以下 fixture 删除 `mcpServers`：
-
-```text
-apps/desktop/src/renderer/src/settings/SettingsView.tsx
-apps/desktop/tests/multi-provider-settings.test.tsx
-apps/desktop/tests/renderer-components.test.tsx
-apps/desktop/tests/settings-toast.dom.test.tsx
-apps/desktop/tests/desktop-settings-service.test.ts
-```
-
-`DesktopSettingsService.getDashboard()` 的字段删除留在 Task 3；Task 2 期间应在同一任务内最小删除该返回对象的 `mcpServers` 属性以恢复共享契约编译，但不改其他 MCP 服务职责。Task 3 再删除完整 Main 运行路径。
+确认 `SettingsDashboardDto.mcpServers`、MCP DTO、Renderer Dashboard fixture 与 `DesktopSettingsService.getDashboard()` 均保持原状。Task 2 的唯一共享契约变化是 `MyselfApi` 删除 8 个调用方法；不允许为了便利提前拆掉 Dashboard 数据面。
 
 - [ ] **Step 7: 运行共享边界定向回归**
 
@@ -293,20 +285,16 @@ Run:
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts `
   tests/preload-production-boundary.test.ts `
   tests/preload-api.test.ts `
-  tests/advanced-settings-ipc.test.ts `
-  tests/multi-provider-settings.test.tsx `
-  tests/renderer-components.test.tsx `
-  tests/settings-toast.dom.test.tsx `
-  tests/desktop-settings-service.test.ts
+  tests/advanced-settings-ipc.test.ts
 pnpm.cmd --filter @myself/desktop typecheck
 ```
 
-Expected: PASS；公开键与 handler Map 无 MCP，全部 Dashboard fixture 与新 DTO 一致。
+Expected: PASS；公开键逐项无 MCP、handler Map 无旧 channel，且保留的 MCP DTO/Dashboard/服务路径使 Task 2 提交独立 typecheck 通过。
 
 - [ ] **Step 8: 提交 Task 2**
 
 ```powershell
-git add apps/desktop/src/shared/myself-api.ts apps/desktop/src/shared/ipc-channels.ts apps/desktop/src/preload/index.ts apps/desktop/src/main/ipc/register-ipc.ts apps/desktop/src/renderer/src/settings/SettingsView.tsx apps/desktop/tests/preload-production-boundary.test.ts apps/desktop/tests/preload-api.test.ts apps/desktop/tests/advanced-settings-ipc.test.ts apps/desktop/tests/multi-provider-settings.test.tsx apps/desktop/tests/renderer-components.test.tsx apps/desktop/tests/settings-toast.dom.test.tsx apps/desktop/tests/desktop-settings-service.test.ts
+git add apps/desktop/src/shared/myself-api.ts apps/desktop/src/shared/ipc-channels.ts apps/desktop/src/preload/index.ts apps/desktop/src/main/ipc/register-ipc.ts apps/desktop/tests/preload-production-boundary.test.ts apps/desktop/tests/preload-api.test.ts apps/desktop/tests/advanced-settings-ipc.test.ts
 git commit -m "refactor(desktop): 删除 MCP 公开接口"
 ```
 
@@ -316,22 +304,28 @@ git commit -m "refactor(desktop): 删除 MCP 公开接口"
 
 **Files:**
 
-- Create: `apps/desktop/src/main/mcp/mcp-risk-resolver.ts`
+- Modify: `apps/desktop/src/main/mcp/mcp-tool-adapter.ts`
+- Modify: `apps/desktop/src/shared/myself-api.ts`
 - Modify: `apps/desktop/src/main/settings/desktop-settings-service.ts`
 - Modify: `apps/desktop/src/main/conversation/main-conversation-composition.ts`
 - Modify: `apps/desktop/src/main/index.ts`
+- Modify: `apps/desktop/src/renderer/src/settings/SettingsView.tsx`
 - Delete: `apps/desktop/src/shared/desktop-runtime-capabilities.ts`
 - Modify: `apps/desktop/tests/desktop-settings-service.test.ts`
 - Modify: `apps/desktop/tests/mcp-manager.test.ts`
 - Modify: `apps/desktop/tests/main-conversation-composition.test.ts`
 - Modify: `apps/desktop/tests/conversation-coordinator.test.ts`
+- Modify: `apps/desktop/tests/multi-provider-settings.test.tsx`
+- Modify: `apps/desktop/tests/renderer-components.test.tsx`
+- Modify: `apps/desktop/tests/settings-toast.dom.test.tsx`
+- Modify: `apps/desktop/tests/main-lifecycle.test.ts`
 - Modify: `tests/integration/desktop-agent.test.ts`
 - Modify: `tests/security/permission-boundary.test.ts`
 
 **Interfaces:**
 
-- Consumes: Task 2 的 `SettingsDashboardDto`、`MyselfApi` 与 `AdvancedSettingsIpcService` 已无 MCP。
-- Produces: `DesktopSettingsServiceOptions` 只含普通设置、Secret、Provider、隐私会话、置顶回调；`MainConversationAgentSnapshot<TPrivacy>` 不含 `enabledReadTools`；正式 Main 不实例化 MCP。
+- Consumes: Task 2 的 `MyselfApi` 和 `AdvancedSettingsIpcService` 已无 MCP 调用方法，但 `SettingsDashboardDto.mcpServers` 与 MCP DTO 仍保留。
+- Produces: MCP DTO 与 `SettingsDashboardDto.mcpServers` 在删除服务投影时同步消失；`DesktopSettingsServiceOptions` 只含普通设置、Secret、Provider、隐私会话、置顶回调；`MainConversationAgentSnapshot<TPrivacy>` 不含 `enabledReadTools`；正式 Main 不实例化 MCP。
 
 - [ ] **Step 1: 写 Main 生产图失败测试**
 
@@ -340,7 +334,7 @@ git commit -m "refactor(desktop): 删除 MCP 公开接口"
 ```ts
 test('正式设置服务依赖不含 MCP Manager 或 Store', () => {
   const optionKeys = Object.keys(createFixture().options);
-  expect(optionKeys).not.toEqual(expect.arrayContaining(['mcpStore', 'mcpManager']));
+  for (const key of ['mcpStore', 'mcpManager']) expect(optionKeys).not.toContain(key);
 });
 ```
 
@@ -358,6 +352,8 @@ expect(harness.factoryInputs[0]?.snapshot).toEqual({
 expect(harness.options).not.toHaveProperty('readEnabledReadTools');
 ```
 
+在 `main-lifecycle.test.ts` 增加正式生命周期断言：启动依赖与清理注册表不构造、初始化或关闭 `McpManager` / `McpServerStore`。该测试必须复用现有 Main 依赖注入或源码 wiring fixture，不新增正式探针。
+
 - [ ] **Step 2: 运行 Main 目标测试确认 RED**
 
 Run:
@@ -365,20 +361,19 @@ Run:
 ```powershell
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts `
   tests/desktop-settings-service.test.ts `
-  tests/main-conversation-composition.test.ts
+  tests/main-conversation-composition.test.ts `
+  tests/main-lifecycle.test.ts
 ```
 
-Expected: FAIL；设置服务 fixture 仍需要 Manager/Store，会话快照仍含 `enabledReadTools`。
+Expected: FAIL；设置服务 fixture 仍需要 Manager/Store，会话快照仍含 `enabledReadTools`，Main 生命周期仍构造或关闭 MCP 实例。
 
 - [ ] **Step 3: 将风险解析器归入 MCP 内部模块**
 
-创建 `mcp-risk-resolver.ts`：
+把风险解析器迁入现有 `mcp-tool-adapter.ts`：
 
 ```ts
 import type { ToolRisk } from '@myself/agent-core';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { mcpToolDefinitionFingerprint } from './mcp-tool-adapter';
-
 export type TrustedMcpFingerprintLookup = (
   serverId: string,
   toolName: string
@@ -396,7 +391,7 @@ export function createTrustedMcpRiskResolver(
 }
 ```
 
-把 `desktop-settings-service.test.ts` 中两条风险解析测试迁到 `mcp-manager.test.ts`，从新内部文件导入。删除设置服务对 SDK 类型与 Adapter 的 import。
+函数与同文件既有 `mcpToolDefinitionFingerprint()` 共同维护，不新增 `mcp-risk-resolver.ts`。把 `desktop-settings-service.test.ts` 中两条风险解析测试迁到 `mcp-manager.test.ts`，从 `mcp-tool-adapter.ts` 导入。删除设置服务对 SDK 类型与 Adapter 的 import。
 
 - [ ] **Step 4: 删除 DesktopSettingsService 的 MCP 职责**
 
@@ -411,6 +406,8 @@ export function createTrustedMcpRiskResolver(
 - `close()` 中的 Manager close，只保留隐私会话注销与已有非 MCP 清理。
 
 删除 `desktop-settings-service.test.ts` 中只验证 MCP 启用、恒假守卫、空 Dashboard 和 Manager close 的测试；保留 Provider、隐私、置顶、授权根、配置失效和失败恢复测试。
+
+在同一步从 `myself-api.ts` 删除 `McpToolDto`、`McpServerDto`、`McpServerInput`、`McpLaunchSummaryDto` 与 `SettingsDashboardDto.mcpServers`；从 `SettingsView.emptyDashboard` 及 `multi-provider-settings.test.tsx`、`renderer-components.test.tsx`、`settings-toast.dom.test.tsx`、`desktop-settings-service.test.ts` 的 Dashboard fixture 删除 `mcpServers`。共享 DTO、服务返回对象和所有直接消费者必须在这个提交中一次完成，不能留下不可编译的中间状态。
 
 - [ ] **Step 5: 删除 Main 启动与退出接线**
 
@@ -450,6 +447,10 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts `
   tests/desktop-settings-service.test.ts `
   tests/main-conversation-composition.test.ts `
   tests/conversation-coordinator.test.ts `
+  tests/main-lifecycle.test.ts `
+  tests/multi-provider-settings.test.tsx `
+  tests/renderer-components.test.tsx `
+  tests/settings-toast.dom.test.tsx `
   tests/mcp-manager.test.ts
 pnpm.cmd exec vitest run --config tests/vitest.config.ts `
   tests/security/permission-boundary.test.ts `
@@ -478,7 +479,7 @@ Expected: 无输出。该查询不包含 `apps/desktop/src/main/mcp`、持久化
 - [ ] **Step 9: 提交 Task 3**
 
 ```powershell
-git add apps/desktop/src/main/mcp/mcp-risk-resolver.ts apps/desktop/src/main/settings/desktop-settings-service.ts apps/desktop/src/main/conversation/main-conversation-composition.ts apps/desktop/src/main/index.ts apps/desktop/src/shared/desktop-runtime-capabilities.ts apps/desktop/tests/desktop-settings-service.test.ts apps/desktop/tests/mcp-manager.test.ts apps/desktop/tests/main-conversation-composition.test.ts apps/desktop/tests/conversation-coordinator.test.ts tests/integration/desktop-agent.test.ts tests/security/permission-boundary.test.ts
+git add apps/desktop/src/main/mcp/mcp-tool-adapter.ts apps/desktop/src/shared/myself-api.ts apps/desktop/src/main/settings/desktop-settings-service.ts apps/desktop/src/main/conversation/main-conversation-composition.ts apps/desktop/src/main/index.ts apps/desktop/src/renderer/src/settings/SettingsView.tsx apps/desktop/src/shared/desktop-runtime-capabilities.ts apps/desktop/tests/desktop-settings-service.test.ts apps/desktop/tests/mcp-manager.test.ts apps/desktop/tests/main-conversation-composition.test.ts apps/desktop/tests/conversation-coordinator.test.ts apps/desktop/tests/multi-provider-settings.test.tsx apps/desktop/tests/renderer-components.test.tsx apps/desktop/tests/settings-toast.dom.test.tsx apps/desktop/tests/main-lifecycle.test.ts tests/integration/desktop-agent.test.ts tests/security/permission-boundary.test.ts
 git commit -m "refactor(desktop): 删除 MCP Main 运行链"
 ```
 
@@ -490,6 +491,7 @@ git commit -m "refactor(desktop): 删除 MCP Main 运行链"
 
 - Modify: `apps/desktop/package.json`
 - Modify: `pnpm-lock.yaml`
+- Modify: `apps/desktop/electron.vite.config.ts`
 - Create: `apps/desktop/scripts/verify-production-mcp-boundary.mjs`
 - Create: `apps/desktop/tests/production-mcp-boundary.test.ts`
 - Modify: `apps/desktop/tests/package-config.test.ts`
@@ -497,9 +499,9 @@ git commit -m "refactor(desktop): 删除 MCP Main 运行链"
 **Interfaces:**
 
 - Consumes: Task 1 至 Task 3 已从正式源码依赖图删除 MCP import 与入口。
-- Produces: `pnpm.cmd --filter @myself/desktop build` 在现有 preload 校验后追加精确 MCP 产物校验；SDK 仅为开发依赖。
+- Produces: `pnpm.cmd --filter @myself/desktop build` 在现有 preload 校验后追加精确 MCP 产物校验；SDK 仅为开发依赖；Main 显式 externalize SDK，使任何残留 import 保留可扫描包名并 fail-closed。
 
-- [ ] **Step 1: 写依赖分类与构建门禁失败测试**
+- [ ] **Step 1: 写依赖分类、构建脚本与 externalization 失败测试**
 
 在 `package-config.test.ts` 读取 desktop `package.json` 并增加：
 
@@ -509,30 +511,59 @@ expect(pkg.devDependencies?.['@modelcontextprotocol/sdk']).toBe('1.29.0');
 expect(pkg.scripts.build).toContain('verify-production-mcp-boundary.mjs');
 ```
 
-创建 `production-mcp-boundary.test.ts`，在临时目录写入 Main、Preload、Renderer 三类假 bundle，通过 `execFile(process.execPath, [script, root])` 验证：
+同一测试读取 `electron.vite.config.ts`，定位 `main.build.externalizeDeps` 配置段并断言明确包含：
 
 ```ts
-await expect(runVerifier(cleanFixture)).resolves.toMatchObject({ code: 0 });
-await expect(runVerifier(mainSdkFixture)).rejects.toMatchObject({ code: 1 });
-await expect(runVerifier(preloadMethodFixture)).rejects.toMatchObject({ code: 1 });
-await expect(runVerifier(rendererUiFixture)).rejects.toMatchObject({ code: 1 });
+expect(mainExternalizeSection).toContain("include: ['@modelcontextprotocol/sdk']");
 ```
 
-失败输出只断言包含产物类型和标记名，不包含整段假 bundle。
+断言说明中明确：externalization 是让残留 import 在 bundle 中保持包名的 fail-closed 检测手段，不是恢复生产依赖。
 
 - [ ] **Step 2: 运行配置测试确认 RED**
 
 Run:
 
 ```powershell
-pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/package-config.test.ts tests/production-mcp-boundary.test.ts
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/package-config.test.ts
 ```
 
-Expected: FAIL；SDK 仍是生产依赖、构建脚本没有门禁、校验脚本尚不存在。
+Expected: FAIL；SDK 仍是生产依赖、构建脚本没有门禁、Main 也未显式 externalize SDK。该 RED 与 verifier 行为 RED 分开记录。
 
-- [ ] **Step 3: 实现精确产物校验脚本**
+- [ ] **Step 3: 创建可执行 no-op verifier scaffold 并确认行为 RED**
 
-创建 `verify-production-mcp-boundary.mjs`，允许第一个 CLI 参数覆盖产物根，默认使用 `apps/desktop/out`。固定规则如下：
+先创建能正常执行、接收产物根参数但不拒绝任何内容的 `verify-production-mcp-boundary.mjs`：
+
+```js
+import { access } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+
+const outputRoot = resolve(
+  process.argv[2] ?? fileURLToPath(new URL('../out', import.meta.url))
+);
+await access(outputRoot);
+```
+
+创建 `production-mcp-boundary.test.ts`，在临时目录写入 clean fixture，并对规则表中的每个 Main、Preload、Renderer 标记分别生成单标记脏 fixture，通过 `execFile(process.execPath, [script, root])` 验证：
+
+```ts
+await expect(runVerifier(cleanFixture)).resolves.toMatchObject({ code: 0 });
+for (const fixture of dirtyFixtures) {
+  await expect(runVerifier(fixture.root)).rejects.toMatchObject({ code: 1 });
+}
+```
+
+Run:
+
+```powershell
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/production-mcp-boundary.test.ts
+```
+
+Expected: clean fixture PASS；每个单标记脏 fixture 都因 no-op scaffold 错误返回 0 而 FAIL。导入失败或脚本不存在不算 RED。
+
+- [ ] **Step 4: 实现精确产物校验规则并确认 GREEN**
+
+扩展 scaffold，允许第一个 CLI 参数覆盖产物根，默认使用 `apps/desktop/out`。固定规则如下：
 
 ```js
 const rules = {
@@ -568,7 +599,32 @@ out/renderer
 
 只扫描普通文件；命中时输出 `MCP_PRODUCTION_BOUNDARY_FAILED <kind> <marker>` 并设 `process.exitCode = 1`。不打印文件正文、整段 bundle 或任意用户数据。
 
-- [ ] **Step 4: 移动依赖并接入构建**
+Run:
+
+```powershell
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/production-mcp-boundary.test.ts
+```
+
+Expected: PASS；clean 为 0，每个规则标记的脏 fixture 均为 1，失败输出只包含产物类型和标记名。
+
+- [ ] **Step 5: 配置 fail-closed externalization、移动依赖并接入构建**
+
+在 `electron.vite.config.ts` 的 Main 配置增加：
+
+```ts
+externalizeDeps: {
+  include: ['@modelcontextprotocol/sdk'],
+  exclude: [
+    '@myself/agent-core',
+    '@myself/character-assets',
+    '@myself/character-runtime',
+    '@myself/file-tools',
+    '@myself/shared-types'
+  ]
+}
+```
+
+该配置必须配结构性中文注释：SDK 已从正式图删除；显式 externalize 只为让未来残留 import 保留包名并被门禁拒绝，不能被解释为运行时允许列表。
 
 在 `apps/desktop/package.json`：
 
@@ -588,7 +644,7 @@ pnpm.cmd install --lockfile-only
 
 Expected: `pnpm-lock.yaml` 的 desktop importer 将 SDK 从 `dependencies` 移到 `devDependencies`，版本不变。
 
-- [ ] **Step 5: 运行脚本测试与真实生产构建**
+- [ ] **Step 6: 运行配置、脚本测试与真实生产构建**
 
 Run:
 
@@ -599,7 +655,7 @@ pnpm.cmd --filter @myself/desktop build
 
 Expected: PASS；真实 Main、Preload、Renderer 产物不含规则表中的禁止标记。
 
-- [ ] **Step 6: 确认保留的内部模块仍可编译和测试**
+- [ ] **Step 7: 确认保留的内部模块仍可编译和测试**
 
 Run:
 
@@ -610,10 +666,10 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/mcp-
 
 Expected: PASS；devDependency 足以支撑 TypeScript 与保留模块测试，SettingsStore 格式未删除。
 
-- [ ] **Step 7: 提交 Task 4**
+- [ ] **Step 8: 提交 Task 4**
 
 ```powershell
-git add apps/desktop/package.json pnpm-lock.yaml apps/desktop/scripts/verify-production-mcp-boundary.mjs apps/desktop/tests/production-mcp-boundary.test.ts apps/desktop/tests/package-config.test.ts
+git add apps/desktop/package.json pnpm-lock.yaml apps/desktop/electron.vite.config.ts apps/desktop/scripts/verify-production-mcp-boundary.mjs apps/desktop/tests/production-mcp-boundary.test.ts apps/desktop/tests/package-config.test.ts
 git commit -m "build(desktop): 阻止 MCP 进入生产产物"
 ```
 
@@ -625,52 +681,68 @@ git commit -m "build(desktop): 阻止 MCP 进入生产产物"
 
 - Modify: `apps/desktop/tests/settings-store.test.ts`
 - Modify: `apps/desktop/tests/multi-provider-settings-store.test.ts`
+- Modify: `apps/desktop/tests/provider-secret-vault.test.ts`
+- Modify: `apps/desktop/tests/settings-ipc.test.ts`
 - Modify: `tests/e2e/desktop.spec.ts`
 - Modify: `tests/e2e/desktop-settings-layout.spec.ts`
+- Modify if needed: `tests/fixtures/electron-app.ts`
 - Modify: `docs/operations/lightweight-agent-acceptance.md`
 
 **Interfaces:**
 
 - Consumes: Task 1 至 Task 4 的单一正式路径与构建门禁。
-- Produces: 普通设置重写保留 MCP 数据、全量清除例外、真实 Electron API/UI/Agent 边界和完整质量门禁的当前证据。
+- Produces: 无设置变更生命周期的 MCP 设置/Secret 字节不变证据、全部非 MCP 原子写的逻辑保留矩阵、全量清除例外、真实 Electron API/UI/Agent 边界和完整质量门禁的当前证据。
 
-- [ ] **Step 1: 先写共享设置保留 characterization 测试**
+- [ ] **Step 1: 写全部非 MCP atomicWrite mutator 的保留矩阵**
 
-在 `settings-store.test.ts` 预置一条完整 `mcpServers`，依次执行普通设置写入并在每次后读取完整隔离文件：
-
-```ts
-const preservedMcpServers = [mcpServerFixture()];
-
-await store.savePrivacySettings(nextPrivacy);
-expect(await store.getMcpServerSettings()).toEqual(preservedMcpServers);
-
-await store.savePetAlwaysOnTop(true);
-expect(await store.getMcpServerSettings()).toEqual(preservedMcpServers);
-
-await store.saveAuthorizedRoot(rootFixture);
-expect(await store.getMcpServerSettings()).toEqual(preservedMcpServers);
-```
-
-在 `multi-provider-settings-store.test.ts` 覆盖：
+在 `settings-store.test.ts` 预置一条含 transport、tools、指纹和启用状态的完整 `mcpServers` fixture。每项 case 使用全新的隔离 Store，执行后读取 MCP 设置并深度比较：
 
 ```ts
-await store.saveProviderProfile(profileFixture);
-await store.saveModelRoute(routeFixture);
-expect(await store.getMcpServerSettings()).toEqual(preservedMcpServers);
+test.each([
+  ['saveProviderProfile', store => store.saveProviderProfile(profileFixture)],
+  ['saveModelRoute', store => store.saveModelRoute(routeFixture)],
+  ['deleteProviderProfile', store => store.deleteProviderProfile('secondary')],
+  ['savePrivacySettings', store => store.savePrivacySettings(privacyFixture)],
+  ['savePetAlwaysOnTop', store => store.savePetAlwaysOnTop(true)],
+  ['revokeAuthorizedRoot', store => store.revokeAuthorizedRoot()],
+  ['saveProviderMetadata', store => store.saveProviderMetadata(legacyProviderFixture)],
+  ['saveAuthorizedRoot', store => store.saveAuthorizedRoot(rootFixture)],
+  ['savePetPosition', store => store.savePetPosition({ x: 10, y: 20 })]
+])('%s 原子重写逻辑保留完整 MCP 设置', async (_name, mutate) => {
+  const { store, preservedMcpServers } = await createSeededStore();
+  await mutate(store);
+  expect(await store.getMcpServerSettings()).toEqual(preservedMcpServers);
+});
 ```
 
-测试比较逻辑结构，不比较整个 `settings.json` 字节。
+`createSeededStore()` 必须为 `deleteProviderProfile` 预置可删除且不破坏路由的次要档案，为模型路由预置合法 tools 档案。若 `multi-provider-settings-store.test.ts` 已有更合适的 Provider fixture，可把 Provider 新格式保存、删除和路由三项放在该文件，但矩阵必须覆盖上述全部实际非 MCP `atomicWrite` mutator。旧 Provider 兼容入口 `saveProviderMetadata` 必须单独覆盖。
 
-- [ ] **Step 2: 明确全量清除例外**
+同时增加静态完整性断言：从 `settings-store.ts` 提取所有调用 `atomicWrite(this.file, settings)` 的公开非 MCP 方法名，与测试矩阵名称集合精确相等；以后新增普通 mutator 会使测试失败。排除 `saveMcpServerSettings`、`deleteMcpServerSettings` 和具有明确清除语义的 `clearAll`。逻辑结构比较不要求整个 `settings.json` 字节不变。
 
-补足或收紧现有 `clearAll` 测试：
+- [ ] **Step 2: 明确 Secret 单项清除与全量清除语义**
+
+在 `provider-secret-vault.test.ts` 使用普通 Provider ID `provider-main` 与 MCP Secret ID `mcp:remote-tools`：
+
+```ts
+await store.save('provider-main', 'provider-secret', true);
+await store.save('mcp:remote-tools', 'mcp-secret', true);
+
+await store.clear('provider-main');
+await expect(store.readForProviderCall('provider-main')).rejects.toThrow();
+await expect(store.readForProviderCall('mcp:remote-tools')).resolves.toBe('mcp-secret');
+
+await store.clearAll();
+await expect(store.readForProviderCall('mcp:remote-tools')).rejects.toThrow();
+```
+
+在 `settings-store.test.ts` 明确 Settings 全量清除：
 
 ```ts
 await store.clearAll();
 expect(await store.getMcpServerSettings()).toEqual([]);
 ```
 
-同时保留 IPC/SecretStore 既有测试，证明 `scope: 'all'` 会调用 `settings.clearAll()` 和 `secrets.clearAll()`，而单 Provider Secret 清除不调用全量清除。
+在 `settings-ipc.test.ts` 证明 `scope: 'secret', profileId: 'provider-main'` 只调用 `secrets.clear('provider-main')`，不调用 `clearAll()`；`scope: 'all'` 同时调用 `settings.clearAll()` 与 `secrets.clearAll()`。
 
 - [ ] **Step 3: 运行持久化测试并判定结果**
 
@@ -684,15 +756,36 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts `
   tests/provider-secret-vault.test.ts
 ```
 
-Expected: PASS。若新 characterization 失败，先修复普通写入丢失 `mcpServers` 的最小原因；不得新增 MCP 专用迁移、启动读取或特殊清理。
+Expected: PASS。若 characterization 失败，先修复普通写入丢失 `mcpServers` 或 Secret 清除越界的最小原因；不得新增 MCP 专用迁移、启动读取或特殊清理。
 
-- [ ] **Step 4: 增加 Electron 正式 API 边界断言**
+- [ ] **Step 4: 增加隔离 userData 生命周期字节快照 E2E**
 
-在 `desktop.spec.ts` 的正式 preload 上下文中读取：
+在 `desktop.spec.ts` 复用隔离 `userDataDirectory` 启动夹具；仅当当前夹具不能预置和回读设置/Secret 文件时，最小扩展 `tests/fixtures/electron-app.ts`，不向正式 preload 增加探针。
+
+启动前预置有效 V2 `settings.json`，其中 `mcpServers` 使用 `remote-tools` 完整 fixture；预置对应 Secret ID `mcp:remote-tools`。测试侧生成：
 
 ```ts
-const apiKeys = await settingsWindow.evaluate(() => Object.keys(window.myself));
-expect(apiKeys).not.toEqual(expect.arrayContaining([
+const beforeMcpSettingsBytes = Buffer.from(JSON.stringify(beforeSettings.mcpServers));
+const beforeMcpSecretBytes = await readFile(mcpSecretFile);
+```
+
+依次执行：启动应用、发送普通聊天“你好呀”、完成一项隔离授权根内的只读文件任务、关闭应用。关闭后从磁盘重新读取并生成同一快照：
+
+```ts
+expect(Buffer.from(JSON.stringify(afterSettings.mcpServers)))
+  .toEqual(beforeMcpSettingsBytes);
+expect(await readFile(mcpSecretFile)).toEqual(beforeMcpSecretBytes);
+```
+
+这里比较 MCP 设置字段的序列化字节与 MCP Secret 文件字节；允许同一 `settings.json` 中非 MCP 字段因正常窗口生命周期变化。测试还断言日志或进程探针没有 MCP 连接、HTTP 请求或子进程启动。测试代码不得打印 Secret、命令、URL 或 userData 路径。
+
+- [ ] **Step 5: 增加 Electron 正式 API 边界断言**
+
+在 `desktop.spec.ts` 的正式 preload 上下文逐键检查：
+
+```ts
+const apiKeys = new Set(await settingsWindow.evaluate(() => Object.keys(window.myself)));
+const removedMcpKeys = [
   'upsertMcpServer',
   'confirmMcpLaunch',
   'testMcpServer',
@@ -701,12 +794,14 @@ expect(apiKeys).not.toEqual(expect.arrayContaining([
   'authorizeMcpToolReadOnly',
   'revokeMcpToolReadOnly',
   'deleteMcpServer'
-]));
+] as const;
+for (const key of removedMcpKeys) expect(apiKeys.has(key)).toBe(false);
+expect(removedMcpKeys.filter(key => apiKeys.has(key))).toEqual([]);
 ```
 
-保留已有 Provider 工具名称不含 `mcp__` 的断言。不要向正式 preload 新增探针；复用现有窗口发现与 E2E 参数。
+保留已有 Provider 工具名称不含 `mcp__` 的断言。不能使用 `not.arrayContaining()` 只证明“八项没有全部同时出现”。不要向正式 preload 新增探针。
 
-- [ ] **Step 5: 收紧设置页三标签 E2E**
+- [ ] **Step 6: 收紧设置页三标签 E2E**
 
 在 `desktop-settings-layout.spec.ts` 的 720×620 与 640×520 两条用例中，把“入口不可见”收紧为：
 
@@ -717,21 +812,26 @@ expect(apiKeys).not.toEqual(expect.arrayContaining([
 
 所有等待使用 Playwright locator 或 `expect.poll()`；不增加固定休眠。
 
-- [ ] **Step 6: 运行目标 Electron E2E**
+- [ ] **Step 7: 先列出并运行两个目标 E2E 集合**
 
 Run:
 
 ```powershell
+pnpm.cmd exec playwright test --config tests/playwright.config.ts `
+  tests/e2e/desktop.spec.ts `
+  tests/e2e/desktop-settings-layout.spec.ts `
+  --grep "MCP|通过正式白名单完成设置、文件操作与聊天窗口状态" `
+  --list
 pnpm.cmd --filter @myself/desktop build
 pnpm.cmd exec playwright test --config tests/playwright.config.ts `
   tests/e2e/desktop.spec.ts `
   tests/e2e/desktop-settings-layout.spec.ts `
-  --grep "MCP|设置页"
+  --grep "MCP|通过正式白名单完成设置、文件操作与聊天窗口状态"
 ```
 
-Expected: PASS；正式 preload 无 MCP key，设置页精确三标签，Agent 工具表无 MCP。若现有测试标题不匹配 grep，先使用 `--list` 确认标题，再按精确标题运行；不得把零匹配写为通过。
+Expected: `--list` 同时列出两条布局标题（标题含 MCP）、“通过正式白名单完成设置、文件操作与聊天窗口状态”和新增隔离 userData 生命周期用例；实际运行全部 PASS。若新增用例标题未含 MCP，先把标题改为含“MCP 正式链”再执行。零匹配或只匹配布局不得写为通过。
 
-- [ ] **Step 7: 执行完整桌面门禁**
+- [ ] **Step 8: 执行完整桌面门禁**
 
 Run:
 
@@ -741,12 +841,12 @@ pnpm.cmd verify:desktop
 
 Expected: 全仓 typecheck、单元、安全、集成、生产构建、精确 MCP bundle 门禁和全部 Electron E2E 退出 0。记录实际通过/跳过数量，不预填数字。
 
-- [ ] **Step 8: 检查保留项、删除项和越界修改**
+- [ ] **Step 9: 检查保留项、删除项和越界修改**
 
 Run:
 
 ```powershell
-rg -n "@modelcontextprotocol/sdk|McpManager|MCP_MODULE_DISABLED|settings:mcp-|upsertMcpServer" `
+rg -n "@modelcontextprotocol/sdk|McpManager|McpServerStore|MCP_MODULE_DISABLED|settings:mcp-|upsertMcpServer" `
   apps/desktop/out/main `
   apps/desktop/out/preload `
   apps/desktop/out/renderer
@@ -765,7 +865,7 @@ Expected:
 - `src/main/mcp` 与内部测试仍存在；
 - 差异不含拖拽、角色、缩放、文件能力或角色工作台实现。
 
-- [ ] **Step 9: 更新验收记录**
+- [ ] **Step 10: 更新验收记录**
 
 在 `docs/operations/lightweight-agent-acceptance.md` 新增“2026-08-22 MCP 正式运行链清理验收”小节，只记录本轮实际执行结果：
 
@@ -773,26 +873,26 @@ Expected:
 - 每条 RED 的真实失败原因；
 - 定向测试、持久化测试、构建门禁与 `verify:desktop` 的命令、退出码和数量；
 - 自动证明的 API、IPC、Main、Agent、依赖与 bundle 边界；
-- 保留的源码、测试和持久化语义；
+- 保留的源码、测试和三层持久化证据：无设置变更字节不变、普通 mutator 逻辑保留、全量清除例外；
 - 开发态 Windows 人工观察结果；若未执行则明确“待用户人工确认”；
 - 安装包未构建，明确“待正式打包阶段确认”，不得写成通过。
 
 同步修正同文档旧的“正式 preload 仍存在 MCP 方法”未完成项，改为指向本轮实际证据，避免两个有效结论冲突。
 
-- [ ] **Step 10: 提交 Task 5**
+- [ ] **Step 11: 提交 Task 5**
 
 ```powershell
-git add apps/desktop/tests/settings-store.test.ts apps/desktop/tests/multi-provider-settings-store.test.ts tests/e2e/desktop.spec.ts tests/e2e/desktop-settings-layout.spec.ts docs/operations/lightweight-agent-acceptance.md
+git add apps/desktop/tests/settings-store.test.ts apps/desktop/tests/multi-provider-settings-store.test.ts apps/desktop/tests/provider-secret-vault.test.ts apps/desktop/tests/settings-ipc.test.ts tests/e2e/desktop.spec.ts tests/e2e/desktop-settings-layout.spec.ts tests/fixtures/electron-app.ts docs/operations/lightweight-agent-acceptance.md
 git commit -m "test(desktop): 验收 MCP 正式链清理"
 ```
 
-- [ ] **Step 11: 请求最终代码审查**
+- [ ] **Step 12: 请求最终代码审查**
 
 使用 `requesting-code-review` 对本计划起始提交到 Task 5 HEAD 的固定范围复审：
 
 - 规格覆盖：正式 API/Preload/IPC/Renderer/Main/Agent/依赖/bundle 是否全部删除；
 - 保留边界：`src/main/mcp`、内部测试和持久化 schema/data 是否保留；
-- 持久化：普通原子重写是否逻辑保留 `mcpServers`，全量清除例外是否准确；
+- 持久化：三层证据是否分别覆盖无设置变更字节不变、全部普通 mutator 逻辑保留和全量清除例外；
 - 减法收口：是否仍有恒假开关、空回调、弃用别名或第二条正式路径；
 - 测试事实：验收记录是否只声明实际运行和观察到的结果；
 - 越界：是否夹带拖拽、角色、缩放、文件能力、Provider 或工作台改动。
