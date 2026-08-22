@@ -31,6 +31,24 @@ describe('无权限响应协议解码', () => {
     )).toEqual({ kind: 'structured', text: '保留正文', structured_output: { text: '保留正文' } });
   });
 
+  test('截断 JSON 只有嵌套 text 时不恢复正文', () => {
+    expect(decodeResponseContractText(
+      '{"behaviorPlan":{"text":"不应恢复"},',
+      contract
+    )).toEqual({ kind: 'invalid' });
+  });
+
+  test('嵌套 text 在前时仍恢复完整的顶层正文', () => {
+    expect(decodeResponseContractText(
+      '{"behaviorPlan":{"text":"嵌套正文"},"text":"顶层正文","behaviorPlan":',
+      contract
+    )).toEqual({
+      kind: 'structured',
+      text: '顶层正文',
+      structured_output: { text: '顶层正文' }
+    });
+  });
+
   test('普通纯文本走有界兼容分支', () => {
     expect(decodeResponseContractText('普通纯文本', contract)).toEqual({
       kind: 'plain_text',

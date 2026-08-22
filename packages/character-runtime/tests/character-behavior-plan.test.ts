@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  characterChatResponseJsonSchema,
   characterBehaviorPlanSchema,
   publicBehaviorCatalogSchema
 } from '../src/character-behavior-plan';
@@ -51,5 +52,63 @@ describe('角色行为计划协议', () => {
       absolutePath: 'C:\\Users\\Administrator\\secret',
       capabilityRef: 'builtin.files.delete_file'
     }).success).toBe(false);
+  });
+
+  test('聊天 JSON Schema 与合法的 none、play 计划同构', () => {
+    expect(characterBehaviorPlanSchema.safeParse({ kind: 'none', emotion: 'calm' }).success).toBe(true);
+    expect(characterBehaviorPlanSchema.safeParse({
+      kind: 'play',
+      target: { kind: 'tag', tag: 'gentle' },
+      emotion: 'happy'
+    }).success).toBe(true);
+
+    const behaviorPlan = (characterChatResponseJsonSchema.properties as Record<string, unknown>)['behaviorPlan'] as {
+      oneOf: Array<Record<string, unknown>>;
+    };
+    const kindOf = (plan: Record<string, unknown>) => (
+      (plan.properties as Record<string, { const?: string }> | undefined)?.['kind']?.const
+    );
+    const none = behaviorPlan.oneOf.find(plan => kindOf(plan) === 'none');
+    const play = behaviorPlan.oneOf.find(plan => kindOf(plan) === 'play');
+    if (!none || !play) throw new Error('缺少 none 或 play JSON Schema 分支');
+
+    expect(none).toMatchObject({
+      additionalProperties: false,
+      properties: { emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] } }
+    });
+    expect(play).toMatchObject({
+      additionalProperties: false,
+      properties: {
+        emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] },
+        target: { oneOf: expect.any(Array) }
+      }
+    });
+    expect((play.properties as Record<string, { oneOf?: unknown[] }> | undefined)?.['target']?.oneOf)
+      .toHaveLength(4);
+  });
+
+  test('聊天 JSON Schema 不声明越权 target 字段，并对每个 target 分支严格封闭', () => {
+    const behaviorPlan = (characterChatResponseJsonSchema.properties as Record<string, unknown>)['behaviorPlan'] as {
+      oneOf: Array<{ properties: Record<string, unknown> }>;
+    };
+    const play = behaviorPlan.oneOf.find(plan => (plan.properties['kind'] as { const?: string }).const === 'play');
+    if (!play) throw new Error('缺少 play JSON Schema 分支');
+    const targets = (play.properties['target'] as { oneOf: Array<Record<string, unknown>> }).oneOf;
+
+    expect(targets).toHaveLength(4);
+    for (const target of targets) {
+      expect(target).toMatchObject({ additionalProperties: false });
+      expect(Object.keys((target.properties ?? {}) as Record<string, unknown>)).not.toEqual(
+        expect.arrayContaining(['actionId', 'toolName', 'x', 'y'])
+      );
+    }
+    expect(targets.map(target => target.required).sort()).toEqual([
+      ['kind', 'name'],
+      ['kind', 'name'],
+      ['kind', 'semantic'],
+      ['kind', 'tag']
+    ]);
+    expect(targets.map(target => (target.properties as Record<string, { const?: string }>)['kind']?.const).sort())
+      .toEqual(['action_name', 'semantic', 'state_name', 'tag']);
   });
 });

@@ -90,8 +90,64 @@ export const characterChatResponseJsonSchema = deepFreeze({
     text: { type: 'string', minLength: 1, maxLength: 4_000 },
     behaviorPlan: {
       oneOf: [
-        { type: 'object', additionalProperties: false, required: ['kind'], properties: { kind: { const: 'none' } } },
-        { type: 'object', additionalProperties: false, required: ['kind', 'target'], properties: { kind: { const: 'play' }, target: { type: 'object' } } },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['kind'],
+          properties: {
+            kind: { const: 'none' },
+            emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] }
+          }
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['kind', 'target'],
+          properties: {
+            kind: { const: 'play' },
+            emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] },
+            target: {
+              oneOf: [
+                {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['kind', 'semantic'],
+                  properties: {
+                    kind: { const: 'semantic' },
+                    semantic: { enum: STANDARD_CHARACTER_SEMANTICS }
+                  }
+                },
+                {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['kind', 'name'],
+                  properties: {
+                    kind: { const: 'state_name' },
+                    name: { type: 'string', minLength: 1, maxLength: 120, pattern: '^(?!.*[\\\\/])(?![A-Za-z]:).+$' }
+                  }
+                },
+                {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['kind', 'name'],
+                  properties: {
+                    kind: { const: 'action_name' },
+                    name: { type: 'string', minLength: 1, maxLength: 120, pattern: '^(?!.*[\\\\/])(?![A-Za-z]:).+$' }
+                  }
+                },
+                {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['kind', 'tag'],
+                  properties: {
+                    kind: { const: 'tag' },
+                    tag: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,119}$' }
+                  }
+                }
+              ]
+            }
+          }
+        },
         { type: 'object', additionalProperties: false, required: ['kind', 'direction', 'distance'], properties: { kind: { const: 'move' }, direction: { enum: ['left', 'right', 'up', 'down'] }, distance: { enum: ['near', 'medium', 'far'] } } },
         { type: 'object', additionalProperties: false, required: ['kind', 'region'], properties: { kind: { const: 'move_region' }, region: { enum: ['left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] } } },
         { type: 'object', additionalProperties: false, required: ['kind'], properties: { kind: { const: 'stop_movement' } } },
