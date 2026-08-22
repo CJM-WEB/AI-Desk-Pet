@@ -35,7 +35,7 @@ const tools: ToolDefinition[] = toolNames.map(name => ({
 const request: ModelRequest = {
   messages: [{ role: 'user', content: '读取 notes.txt' }],
   tools,
-  toolChoice: 'none',
+  toolChoice: 'auto',
   reasoningMode: 'provider_default'
 };
 
@@ -133,6 +133,129 @@ describe('OpenAICompatibleProvider', () => {
     });
   });
 
+  test.each([
+    ['非空工具表的 auto', tools, 'auto'],
+    ['非空工具表的 required', tools, 'required'],
+    ['空工具表的 none', [] as ToolDefinition[], 'none']
+  ] as const)('原样序列化合法的 tool_choice：%s', async (_name, requestTools, toolChoice) => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
+
+    await provider.respond({
+      ...request,
+      tools: requestTools,
+      toolChoice
+    }, new AbortController().signal);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      tools: requestTools,
+      tool_choice: toolChoice
+    });
+  });
+
+  test.each([
+    ['空工具表 required', [] as ToolDefinition[], 'required'],
+    ['非空工具表 none', tools, 'none']
+  ] as const)('在 fetch 前拒绝非法的 tool_choice：%s', async (_name, requestTools, toolChoice) => {
+    const fetchMock = vi.fn<FetchLike>();
+    const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
+
+    await expect(provider.respond({
+      ...request,
+      tools: requestTools,
+      toolChoice
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_TOOL_CHOICE_INVALID',
+      retryable: false
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('空工具表续传前一轮工具调用时复用工具别名并生成总结', async () => {
+    const deleteTool: ToolDefinition = {
+      type: 'function',
+      function: {
+        name: 'builtin.files.delete_file',
+        description: '删除文件',
+        parameters: { type: 'object' }
+      }
+    };
+    const fetchMock = vi.fn<FetchLike>()
+      .mockImplementationOnce(async (_input, init) => {
+        const body = JSON.parse(String(init?.body));
+        return jsonResponse({
+          choices: [{
+            message: {
+              content: null,
+              tool_calls: [{
+                id: 'delete-history-1',
+                type: 'function',
+                function: {
+                  name: body.tools[0].function.name,
+                  arguments: '{"relativePath":"old.txt"}'
+                }
+              }]
+            }
+          }]
+        });
+      })
+      .mockImplementationOnce(async () => jsonResponse({
+        choices: [{ message: { content: '删除完成' } }]
+      }));
+    const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
+
+    const toolResponse = await provider.respond({
+      ...request,
+      tools: [deleteTool],
+      toolChoice: 'required'
+    }, new AbortController().signal);
+    if (toolResponse.type !== 'tool_request') throw new Error('预期工具调用');
+
+    await expect(provider.respond({
+      ...request,
+      tools: [],
+      toolChoice: 'none',
+      messages: [{
+        role: 'assistant',
+        content: '',
+        toolRequest: toolResponse.request as {
+          requestId: string;
+          toolName: 'builtin.files.delete_file';
+          arguments: { relativePath: string };
+        }
+      }, {
+        role: 'tool',
+        toolCallId: 'delete-history-1',
+        content: '{"deleted":"old.txt"}'
+      }]
+    }, new AbortController().signal)).resolves.toEqual({
+      type: 'text',
+      text: '删除完成'
+    });
+
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(secondBody).toMatchObject({ tools: [], tool_choice: 'none' });
+    expect(secondBody.messages).toEqual([{
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        id: 'delete-history-1',
+        type: 'function',
+        function: {
+          name: firstBody.tools[0].function.name,
+          arguments: '{"relativePath":"old.txt"}'
+        }
+      }]
+    }, {
+      role: 'tool',
+      tool_call_id: 'delete-history-1',
+      content: '{"deleted":"old.txt"}'
+    }]);
+  });
+
   test('丢弃非法行为意图元数据并保留文本响应', async () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{
@@ -200,7 +323,7 @@ describe('OpenAICompatibleProvider', () => {
     const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
     const historyRequest: ModelRequest = {
       tools,
-      toolChoice: 'none',
+      toolChoice: 'auto',
       reasoningMode: 'provider_default',
       messages: [
         { role: 'user', content: '读取文件' },

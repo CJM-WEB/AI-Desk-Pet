@@ -2,7 +2,8 @@ import type {
   ModelMessage,
   ModelProvider,
   ModelRequest,
-  ModelResponse
+  ModelResponse,
+  ToolDefinition
 } from '@myself/agent-core';
 import {
   characterEmotionLabelSchema,
@@ -211,7 +212,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
-    const toolNameCodec = createOpenAIToolNameCodec(request.tools);
+    const toolChoice = resolveToolChoice(request);
+    const toolNameCodec = createOpenAIToolNameCodec(codecDefinitions(request));
     const tools = request.tools.map(definition => ({
       ...definition,
       function: {
@@ -219,11 +221,6 @@ export class OpenAICompatibleProvider implements ModelProvider {
         name: toolNameCodec.encode(definition.function.name)
       }
     }));
-    const toolChoice = request.tools.length === 0
-      ? 'none'
-      : request.toolChoice === 'required'
-        ? 'required'
-        : 'auto';
     let response: Response;
     try {
       response = await this.fetchClient(chatCompletionsUrl(this.config.baseUrl), {
@@ -250,4 +247,32 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     return normalizeResponse(await readProviderJson(response), toolNameCodec);
   }
+}
+
+function resolveToolChoice(request: ModelRequest): ModelRequest['toolChoice'] {
+  if (request.tools.length === 0 && request.toolChoice !== 'none') {
+    throw new ProviderError('PROVIDER_TOOL_CHOICE_INVALID', false);
+  }
+  if (request.tools.length > 0 && request.toolChoice === 'none') {
+    throw new ProviderError('PROVIDER_TOOL_CHOICE_INVALID', false);
+  }
+  return request.toolChoice;
+}
+
+function codecDefinitions(request: ModelRequest): ToolDefinition[] {
+  return [
+    ...request.tools,
+    ...request.messages.flatMap(message => (
+      message.role === 'assistant' && message.toolRequest
+        ? [{
+            type: 'function' as const,
+            function: {
+              name: message.toolRequest.toolName,
+              description: '',
+              parameters: {}
+            }
+          }]
+        : []
+    ))
+  ];
 }

@@ -67,7 +67,7 @@ const request: ModelRequest = {
     { role: 'user', content: '读取 notes.txt' }
   ],
   tools,
-  toolChoice: 'none',
+  toolChoice: 'auto',
   reasoningMode: 'provider_default'
 };
 
