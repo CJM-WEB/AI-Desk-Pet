@@ -93,6 +93,19 @@ function transformAnthropicSchemaNode(schema: unknown): unknown {
   if (!isRecord(schema)) return schema;
 
   const transformed: Record<string, unknown> = {};
+  if (isRecord(schema.$defs)) {
+    transformed.$defs = Object.fromEntries(
+      Object.entries(schema.$defs).map(([name, definition]) => [
+        name,
+        transformAnthropicSchemaNode(definition)
+      ])
+    );
+  }
+  // Anthropic 的引用节点只保留引用及已递归转换的定义，避免透传不支持的兄弟约束。
+  if (typeof schema.$ref === 'string') {
+    transformed.$ref = schema.$ref;
+    return transformed;
+  }
   const union = Array.isArray(schema.anyOf)
     ? schema.anyOf
     : Array.isArray(schema.oneOf) ? schema.oneOf : undefined;

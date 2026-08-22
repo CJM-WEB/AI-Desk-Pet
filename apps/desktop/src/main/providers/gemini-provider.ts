@@ -123,6 +123,21 @@ function transformGeminiSchemaNode(schema: unknown): unknown {
   if (!isRecord(schema)) return schema;
 
   const transformed: Record<string, unknown> = {};
+  if (typeof schema.$id === 'string') transformed.$id = schema.$id;
+  if (typeof schema.$anchor === 'string') transformed.$anchor = schema.$anchor;
+  if (isRecord(schema.$defs)) {
+    transformed.$defs = Object.fromEntries(
+      Object.entries(schema.$defs).map(([name, definition]) => [
+        name,
+        transformGeminiSchemaNode(definition)
+      ])
+    );
+  }
+  // 引用节点保留 Gemini 支持的标识，但不携带当前转换器已排除的约束字段。
+  if (typeof schema.$ref === 'string') {
+    transformed.$ref = schema.$ref;
+    return transformed;
+  }
   const union = Array.isArray(schema.anyOf)
     ? schema.anyOf
     : Array.isArray(schema.oneOf) ? schema.oneOf : undefined;

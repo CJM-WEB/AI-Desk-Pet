@@ -522,6 +522,92 @@ describe('结构化聊天响应协议映射', () => {
     });
   });
 
+  test('Anthropic Provider Schema 转换器保留 $defs 与非空 $ref 节点', () => {
+    const schema = {
+      $defs: {
+        entry: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name'],
+          properties: {
+            name: { type: 'string', minLength: 1, pattern: '^.+$' }
+          }
+        }
+      },
+      type: 'object',
+      additionalProperties: false,
+      required: ['entry'],
+      properties: {
+        entry: { $ref: '#/$defs/entry', pattern: '不得保留' }
+      }
+    };
+    const before = structuredClone(schema);
+
+    expect(toAnthropicResponseJsonSchema(schema)).toEqual({
+      $defs: {
+        entry: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name'],
+          properties: { name: { type: 'string' } }
+        }
+      },
+      type: 'object',
+      additionalProperties: false,
+      required: ['entry'],
+      properties: { entry: { $ref: '#/$defs/entry' } }
+    });
+    expect(schema).toEqual(before);
+  });
+
+  test('Gemini Provider Schema 转换器递归保留引用标识并清理定义约束', () => {
+    const schema = {
+      $id: 'https://example.com/pet.schema.json',
+      $anchor: 'pet',
+      $defs: {
+        entry: {
+          $anchor: 'entry',
+          type: 'object',
+          additionalProperties: false,
+          required: ['kind', 'name'],
+          properties: {
+            kind: { const: 'none' },
+            name: { type: 'string', maxLength: 40, pattern: '^.+$' }
+          }
+        }
+      },
+      type: 'object',
+      additionalProperties: false,
+      required: ['entry'],
+      properties: {
+        entry: { $ref: '#/$defs/entry', minLength: 1 }
+      }
+    };
+    const before = structuredClone(schema);
+
+    expect(toGeminiResponseJsonSchema(schema)).toEqual({
+      $id: 'https://example.com/pet.schema.json',
+      $anchor: 'pet',
+      $defs: {
+        entry: {
+          $anchor: 'entry',
+          type: 'object',
+          additionalProperties: false,
+          required: ['kind', 'name'],
+          properties: {
+            kind: { type: 'string', enum: ['none'] },
+            name: { type: 'string' }
+          }
+        }
+      },
+      type: 'object',
+      additionalProperties: false,
+      required: ['entry'],
+      properties: { entry: { $ref: '#/$defs/entry' } }
+    });
+    expect(schema).toEqual(before);
+  });
+
   test.each(structuredProviderCases)(
     '$name 映射无工具响应契约并解码正文',
     async contract => {
