@@ -12,13 +12,15 @@
 
 - 适用规格：`docs/superpowers/specs/2026-08-21-desktop-nonrepro-stability-acceptance-design.md`。
 - 可执行基线固定为 `55bd05898dca055cc4ed239e82072e30f1848de3`；`GATE_HEAD` 在本轮两文档提交并复审后从真实 `git rev-parse HEAD` 冻结。
+- 下文 `GATE_HEAD` 只表示 Task 0 Step 4 已冻结的 40 位完整常量。每次新的 `exec_command` 都必须把该完整 hash 直接嵌入命令参数，禁止依赖跨调用 PowerShell 变量，也不得从后来变化的 HEAD 重新推导。
 - 15/15 三 seam GREEN 不是根因修复。成功只能写“稳定性准入通过，已知偶发超时根因未定位”。
 - owner inventory 保留 `+1956/-1294`、净增 `662`，本轮不继续硬删。
 - 五门每条只启动一次；不 retry、不补跑、不提高 timeout、不 skip、不降低 worker、不修改代码、测试、配置、依赖或脚本。
-- 单条命令最多 15 分钟。持续 session 每次轮询间隔不超过 60 秒；使用工具等待时间与最大间隔计算保守耗时上界，达到上限立即 `Ctrl-C`，无法取得最终退出码也按 `CLOSED`。
+- 单条命令最多 15 分钟。持续 session 的全部 `write_stdin` 均固定 `yield_time_ms=30000` 并立即连续调用；使用工具等待时间与每次固定增加 30 秒计算保守耗时上界，达到上限立即 `Ctrl-C`，无法取得最终退出码也按 `CLOSED`。
 - 从第一门开始到第五门结束或首失败结束，主控不得主动修改文件，tracked/non-ignored 内容不得变化；正式脚本自身产生的 ignored 构建与测试输出允许存在，但不能作为通过证据。
 - 不修改或运行网站、CloudBase、包扫描器和网站 E2E。
 - 任何失败都没有成功文档后继，也不得通过重跑修补证据。
+- 用户已明确授权本任务所需的本地 `git add` 与 `git commit`，执行时无需重复询问；授权不包含 push、merge、rebase、reset 或远端写操作。
 
 ## Task 0：提交并冻结门禁 HEAD
 
@@ -37,7 +39,7 @@
 
 - [ ] **Step 3：独立复审并提交**
 
-  两份独立审查都必须为 C0/I0 Ready。只提交这两份文档；不执行正式门。提交后普通 `git status --short` 必须为空。
+  两份独立审查都必须为 C0/I0 Ready。只提交这两份文档；不执行正式门。提交后 `git status --short --untracked-files=all` 和全局 `git ls-files --others --exclude-standard` 必须均为空。
 
 - [ ] **Step 4：冻结 `GATE_HEAD`**
 
@@ -56,13 +58,14 @@
 
 - [ ] **Step 2：执行统一守卫**
 
-  依次运行以下只读检查：
+  依次运行以下只读检查；每门前、每门取得最终退出码后都原样重复：
 
   - `git branch --show-current`：必须精确等于 `AgentCoreExtension`；
   - `git rev-parse HEAD`：完整输出必须等于 `GATE_HEAD`；
-  - `git status --short`：必须无输出；
-  - `git diff --name-only 55bd05898dca055cc4ed239e82072e30f1848de3..HEAD -- . ':(exclude)docs/**'`：必须无输出；
-  - `git diff --name-only 55bd05898dca055cc4ed239e82072e30f1848de3..HEAD -- apps/website apps/cloudbase-api apps/package-scanner cloudbase tests/e2e/website.spec.ts tests/playwright.website.config.ts`：必须无输出。
+  - `git status --short --untracked-files=all` 与全局 `git ls-files --others --exclude-standard`：必须均无输出；
+  - 将 Task 0 Step 4 的 40 位 hash 作为字面量，与基线 `55bd05898dca055cc4ed239e82072e30f1848de3` 及中间两个点直接组成 revision range；对 `docs` 执行 `git diff --name-only`，结果与本规格、本计划两路径分别排序后 `Compare-Object`，必须无输出；
+  - 使用同一个 40 位字面量对 `.` 加 `:(exclude)docs/**` 执行 `git diff --name-only`：必须无输出；
+  - 对固定保护路径分别运行基线到该 40 位字面量的历史 `git diff --name-only`、工作树 `git diff --name-only -- apps/website apps/cloudbase-api apps/package-scanner cloudbase tests/e2e/website.spec.ts tests/playwright.website.config.ts`、暂存区 `git diff --cached --name-only -- apps/website apps/cloudbase-api apps/package-scanner cloudbase tests/e2e/website.spec.ts tests/playwright.website.config.ts` 和 untracked `git ls-files --others --exclude-standard -- apps/website apps/cloudbase-api apps/package-scanner cloudbase tests/e2e/website.spec.ts tests/playwright.website.config.ts`：四项必须均无输出。
 
   任一检查失败即 `CLOSED`，不启动正式门。
 
@@ -82,7 +85,7 @@
 
 - [ ] **Step 1：门前守卫**
 
-  重新执行 Task 1 Step 2 的五项只读检查。全部成立才继续。
+  重新执行 Task 1 Step 2 的全部只读检查。全部成立才继续。
 
 - [ ] **Step 2：启动当前门一次**
 
@@ -90,17 +93,17 @@
 
 - [ ] **Step 3：有界观察**
 
-  若返回持续 session，使用 `write_stdin` 轮询，任意两次工具调用之间不超过 60 秒。令保守上界为“初始调用和全部 `write_stdin` 返回的 `wall_time_seconds` 之和，加 `write_stdin` 调用次数乘 60 秒”。每次新等待前再为下一次最多 60 秒的调用间隔预留预算，`yield_time_ms` 取 60000 与“900 秒减当前保守上界再减 60 秒”中的较小正值；没有正值时立即发送 `Ctrl-C`。仍无法取得最终返回时使用执行 session 的终止能力；能力不可用也按 `CLOSED`。
+  若返回持续 session，主控立即使用 `write_stdin` 继续轮询，全部 `yield_time_ms` 固定为 30000。令保守上界为“初始调用和全部 `write_stdin` 返回的 `wall_time_seconds` 之和，加 `write_stdin` 调用次数乘 30 秒”；每次新 poll 前若“当前保守上界 + 60 秒”达到或超过 900 秒，就立即发送 `Ctrl-C`，不再等待。
 
 - [ ] **Step 4：读取真实结果**
 
-  只读取工具返回的最终 `exit_code` 和每次 `wall_time_seconds`，按 Step 3 计算保守上界。缺少最终退出码、非零、保守上界达到或超过 900 秒、session 丢失、执行中断或结果含义不明确，都立即 `CLOSED`，停止后续门且不重跑。
+  只读取工具返回的最终 `exit_code` 和每次 `wall_time_seconds`，按 Step 3 计算保守上界。非零或保守上界达到 900 秒即 `CLOSED`。若 `Ctrl-C` 后仍缺少最终退出码，或发生 session 丢失、执行中断、结果含义不明确，立即 `CLOSED` 并停止所有文件写入、Git/守卫和后续命令，等待人工清理；不得写 ignored 报告，也不得重跑。
 
 - [ ] **Step 5：门后守卫**
 
-  当前 session 已取得最终返回时，无论退出码是否为零，都再次执行 Task 1 Step 2 的五项只读检查；任一不成立同样记为 `CLOSED`。只有全部守卫成立、当前门 `exit_code=0` 且保守耗时上界小于 900 秒，才进入下一门。若 session 丢失或终止后仍无法证明命令已经结束，门后守卫记为“不可取得”，直接 `CLOSED`，不得在可能仍写文件的进程旁启动后续命令。
+  当前 session 已取得最终返回时，无论退出码是否为零，都再次执行 Task 1 Step 2 的全部只读检查；任一不成立同样记为 `CLOSED`。只有全部守卫成立、当前门 `exit_code=0` 且保守耗时上界小于 900 秒，才进入下一门。若 session 丢失或终止后仍无法证明命令已经结束，门后守卫记为“不可取得”，直接 `CLOSED`，不得在可能仍写文件的进程旁启动后续命令。
 
-五门全部满足时进入 Task 3 的完整复审路径；任一门 `CLOSED` 时也进入 Task 3，但只执行失败报告并结束，不执行 PASS 复审或 Task 4。
+第一门前先确认 `.superpowers/sdd/2026-08-21-desktop-nonrepro-stability-acceptance-gate-report.md` 不存在；存在即 `CLOSED`，不得覆盖。五门全部满足时进入 Task 3；门以明确最终退出码失败且确认命令已结束时，只创建失败报告后结束。命令终态不明时遵守 Step 4 的完全停手规则，不进入 Task 3。
 
 ## Task 3：镜像报告与独立裁决
 
@@ -108,13 +111,13 @@
 
 - 创建：`.superpowers/sdd/2026-08-21-desktop-nonrepro-stability-acceptance-gate-report.md`（ignored，不提交；父目录已存在）
 
-- [ ] **Step 1：用 `apply_patch` 创建最小报告**
+- [ ] **Step 1：失败时创建最小报告；成功时延后**
 
-  报告只逐项抄录 `GATE_HEAD`、可执行基线、实际启动门的序号/命令/每次工具 `wall_time_seconds`/保守耗时上界/最终 `exit_code`、门前后守卫、首失败或五门全零、`+662` 和“根因未定位”。不写 stdout/stderr 正文，不自行推断退出码。失败路径创建报告后立即结束。
+  只有命令已明确结束的失败路径才用 `apply_patch` 创建报告，逐项抄录 `GATE_HEAD`、可执行基线、实际启动门、工具耗时、保守上界、最终 `exit_code`、守卫、`+662` 和“根因未定位”，随后结束。五门全绿时不创建报告，直接进入独立复审。
 
 - [ ] **Step 2：新鲜独立复审**
 
-  审查者必须直接读取本 Codex 任务的完整工具调用记录、ignored 报告和当前 HEAD，核对顺序、单次性、每次轮询间隔、五个最终退出码/耗时、每门前后守卫以及报告一致性。审查者无法读取完整工具记录，或存在任何 Critical/Important，均裁决 `CLOSED`，不能重跑正式门。
+  审查者必须直接读取本 Codex 任务的完整工具调用记录和当前 HEAD，核对顺序、单次性、轮询、五个最终退出码/耗时和每门前后守卫。审查者无法读取完整工具记录，或存在任何 Critical/Important，均裁决 `CLOSED`，不能重跑正式门。
 
 - [ ] **Step 3：形成唯一裁决**
 
@@ -136,10 +139,14 @@
 
 - [ ] **Step 2：复核唯一纯文档差异**
 
-  运行 `$expected=@('docs/operations/character-workshop-acceptance.md','docs/superpowers/specs/2026-08-15-ai-pet-desktop-architecture-optimization-design.md','docs/superpowers/specs/2026-08-20-desktop-code-subtraction-design.md','docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md','docs/superpowers/specs/2026-08-21-desktop-nonrepro-stability-acceptance-design.md')|Sort-Object;$actual=@(git diff --name-only)|Sort-Object;if($LASTEXITCODE-ne0-or@(Compare-Object $expected $actual).Count-ne0){throw '后继范围'}`。随后确认 `git status --short` 不出现其他路径，相对 `GATE_HEAD` 的 `docs/` 外差异为零，且 `git diff --check` 退出 0。路径按无序集合比较。
+  运行 `$expected=@('docs/operations/character-workshop-acceptance.md','docs/superpowers/specs/2026-08-15-ai-pet-desktop-architecture-optimization-design.md','docs/superpowers/specs/2026-08-20-desktop-code-subtraction-design.md','docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md','docs/superpowers/specs/2026-08-21-desktop-nonrepro-stability-acceptance-design.md')|Sort-Object;$actual=@(git diff --name-only)|Sort-Object;if($LASTEXITCODE-ne0-or@(Compare-Object $expected $actual).Count-ne0){throw '后继范围'}`。随后确认 `git status --short --untracked-files=all` 与全局 `git ls-files --others --exclude-standard` 不出现其他路径，相对 `GATE_HEAD` 的 `docs/` 外差异为零，且 `git diff --check` 退出 0。路径按无序集合比较。
 
 - [ ] **Step 3：独立文档复审并提交一次**
 
-  独立审查 C0/I0 Ready 后，只创建一个纯文档后继提交。该提交的直接 parent 必须为 `GATE_HEAD`；提交后 `git branch --show-current` 仍须精确等于 `AgentCoreExtension`。随后交付窗口关闭，发布“稳定性准入通过，已知偶发超时根因未定位；桌宠可以继续常规新功能开发”。
+  独立审查 C0/I0 Ready 后，只创建一个纯文档后继提交。提交后机械确认：`git rev-parse HEAD^` 等于 Task 0 冻结 hash；将同一 40 位字面量直接嵌入 `git rev-list --count` 和 `git diff`，确认到 HEAD 的提交数为 1、路径无序集合精确为上述五份文档；可执行基线到 HEAD 的路径无序集合精确为本计划、本规格和四份既有状态文档共六项；分支仍为 `AgentCoreExtension`；`git status --short --untracked-files=all` 与全局 untracked 为空；`docs/` 外和保护路径历史/工作树/cached/untracked 四态为零。任一失败都不得发布成功。
+
+- [ ] **Step 4：只镜像实际后继 HEAD**
+
+  机械核验全部成立后，才用 `apply_patch` 创建 ignored 成功报告，写入工具事实与实际 `git rev-parse HEAD`；不得预填或预测 successor HEAD。随后交付窗口关闭，发布“稳定性准入通过，已知偶发超时根因未定位；桌宠可以继续常规新功能开发”。
 
 若 Task 0–3 任一步为 `CLOSED`，不得执行 Task 4，也不得创建失败后继提交。

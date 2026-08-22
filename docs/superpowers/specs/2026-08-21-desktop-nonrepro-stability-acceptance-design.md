@@ -24,7 +24,8 @@
 1. 上位规格第 5.1 节“没有 RED 必须保持开发门关闭”的本次终局；
 2. 上位规格第 10 节第 1、2 项“必须先定位并修复根因”作为本次准入的绝对前置条件；
 3. 原计划 `NO_RED` 分支禁止进入正式五门的路径；
-4. 上位规格与旧计划中和本例外提交拓扑、最终文档 allowlist 冲突的条款。
+4. 上位规格第 7.1 节、第 7.3 节、第 9.1 节和第 10 节第 10 项中与本例外提交拓扑冲突的规则；
+5. 旧实施计划 Task 6 的四文件 allowlist。
 
 此前为本例外设计的自制 worker、supervisor、validator、fixture、hash manifest、ACK、PID/StartTime 恢复、原子 JSON schema 和相关自测全部退役，不实施、不修补，也不作为准入证据。仓库不新增 runner、脚本、fixture、依赖或测试。
 
@@ -46,9 +47,9 @@
 
 1. `git branch --show-current` 精确等于 `AgentCoreExtension`；
 2. 当前完整 HEAD 与 `GATE_HEAD` 逐字一致；
-3. 普通 `git status --short` 无输出；
-4. 相对 `55bd05898dca055cc4ed239e82072e30f1848de3`，`docs/` 之外无 tracked 差异；
-5. 下列保护路径相对该基线无差异：`apps/website`、`apps/cloudbase-api`、`apps/package-scanner`、`cloudbase`、`tests/e2e/website.spec.ts`、`tests/playwright.website.config.ts`。
+3. `git status --short --untracked-files=all` 无输出，全局 `git ls-files --others --exclude-standard` 也无输出；
+4. `55bd05898dca055cc4ed239e82072e30f1848de3..GATE_HEAD` 在 `docs/` 内的路径无序集合精确为本规格与本计划两份文档，`docs/` 之外无 tracked 差异；
+5. 下列保护路径在基线到 `GATE_HEAD` 的历史差异、工作树、暂存区和 non-ignored untracked 四态均为零：`apps/website`、`apps/cloudbase-api`、`apps/package-scanner`、`cloudbase`、`tests/e2e/website.spec.ts`、`tests/playwright.website.config.ts`。
 
 任一守卫不成立，立即裁决 `CLOSED`。从第一门开始到第五门结束或首个失败结束之间，主控不得主动修改文件，tracked 与 non-ignored 内容不得变化。正式脚本自身产生的 ignored 构建、测试输出属于允许的运行副作用，但不得作为通过证据；ignored 报告只能在门阶段结束后创建。
 
@@ -58,7 +59,7 @@
 
 Codex `exec_command` 和其持续 session 返回的真实 `exit_code`、`wall_time_seconds` 是命令是否完成、退出状态和耗时的唯一原始证据。命令直接结束时使用该次返回值；进入持续 session 时，必须保留初始调用与后续全部 `write_stdin` 返回的 `wall_time_seconds`，任何一次都不能省略。命令正文、人工转述、ignored 报告和子智能体总结都不能替代工具返回。
 
-正式命令使用 `tty:true`，初始 `exec_command` 的 `yield_time_ms` 固定为 30000。若命令返回持续 session，主控使用 `write_stdin` 轮询，任意两次工具调用之间的间隔不得超过 60 秒。为覆盖工具调用之间未计入返回值的时间，本门使用保守上界：`全部工具返回的 wall_time_seconds 之和 + write_stdin 调用次数 × 60 秒`。每次新的 `write_stdin` 等待前，必须为下一次最多 60 秒的调用间隔预留预算，其 `yield_time_ms` 不得超过 60000，也不得超过 `900 秒 - 当前保守上界 - 60 秒` 的剩余毫秒；剩余值不大于 0 时立即发送 `Ctrl-C`。发送后若未得到最终返回，则使用当前执行 session 提供的终止能力结束；若该能力不可用或无法取得最终 `exit_code`，裁决 `CLOSED`。达到保守 15 分钟上界、session 丢失、执行中断或工具状态含义不明确，同样立即 `CLOSED`，且不重跑。
+正式命令使用 `tty:true`，初始 `exec_command` 与全部 `write_stdin` 的 `yield_time_ms` 均固定为 30000；工具返回持续 session 后，主控立即发起下一次 poll。为避免推导平台调用间隔，本门保守耗时上界固定为：`全部工具返回的 wall_time_seconds 之和 + write_stdin 调用次数 × 30 秒`。每次新 poll 前先检查“当前保守上界 + 60 秒”；达到或超过 900 秒就不再等待，立即发送 `Ctrl-C`。若 `Ctrl-C` 后仍未取得最终 `exit_code`，立即裁决 `CLOSED`，并停止本任务的一切文件写入、Git/守卫和后续命令，等待人工清理；不得创建报告。session 丢失、执行中断或工具状态含义不明确同样按此路径处理，且不重跑。
 
 ### 5.2 固定顺序
 
@@ -74,25 +75,25 @@ Codex `exec_command` 和其持续 session 返回的真实 `exit_code`、`wall_ti
 
 ## 6. 最小镜像报告
 
-门阶段结束后，主控可以仅用 `apply_patch` 创建 ignored `.superpowers/sdd/2026-08-21-desktop-nonrepro-stability-acceptance-gate-report.md`。其父目录已存在，因此不需要创建目录或辅助文件。报告只镜像本次 Codex 任务工具返回中的：
+第一门启动前，ignored `.superpowers/sdd/2026-08-21-desktop-nonrepro-stability-acceptance-gate-report.md` 必须不存在；存在即 `CLOSED`，不得覆盖。门以明确最终退出码失败时，主控可以在确认命令已经结束后仅用 `apply_patch` 创建失败报告。五门全绿时先不创建报告，待成功文档后继实际提交并完成机械核验后再创建成功报告。其父目录已存在，因此不需要创建目录或辅助文件。报告只镜像本次 Codex 任务工具返回中的：
 
 - `GATE_HEAD` 与可执行基线；
 - 每个实际启动门的固定序号、命令、`exit_code` 和 `wall_time_seconds`；
 - 每门前后守卫结果；
-- 首个失败类别或五门全零；
+- 首个失败类别，或五门全零与实际成功后继 HEAD；
 - `+662` 账本和“根因未定位”。
 
-该报告不是原始证据，不保存 stdout/stderr 正文、完整绝对路径、用户文件、token、API Key、Authorization 或 Provider 私有内容。报告与工具返回不一致、遗漏中断或自行推导退出码时，裁决 `CLOSED`。
+该报告不是原始证据，不保存 stdout/stderr 正文、完整绝对路径、用户文件、token、API Key、Authorization 或 Provider 私有内容。成功报告只能镜像已经存在并通过核验的实际后继 HEAD，不能预填或预测；失败报告不写 successor 字段。报告与工具返回不一致、遗漏中断或自行推导退出码时，裁决 `CLOSED`。
 
 ## 7. 独立复审与裁决
 
-五门全零后，由未执行命令的新鲜独立审查者只读检查本 Codex 任务的工具调用记录、ignored 报告和当前 HEAD。审查者必须确认：
+五门全零后，由未执行命令的新鲜独立审查者只读检查本 Codex 任务的工具调用记录和当前 HEAD；成功报告此时尚不存在。审查者必须确认：
 
 - 五门确实按固定顺序各启动一次；
 - 每门存在工具返回的最终 `exit_code=0`，且由全部工具 `wall_time_seconds` 与调用次数计算的保守耗时上界小于 900 秒；
 - 轮询间隔不超过 60 秒，没有 retry 或第二次启动；
 - 每门前后 HEAD、普通 status、非 docs 差异和保护路径守卫均成立；
-- 报告只是准确镜像，结论仍保留“根因未定位”和 `+662`。
+- 成功限语仍保留“根因未定位”和 `+662`。
 
 审查者无法读取完整工具记录、发现事实不一致，或 Critical/Important 不为零，都裁决 `CLOSED`。不得为了修复证据或审查问题重跑正式门。
 
@@ -104,7 +105,9 @@ Codex `exec_command` 和其持续 session 返回的真实 `exit_code`、`wall_ti
 
 ## 8. 成功后的唯一后继
 
-`PASS` 后只允许一个纯文档后继提交，同步本规格、旧开发门规格、旧减法规格、角色验收和上位架构状态。正式文档记录 `GATE_HEAD`、五门真实结果、`+662` 和固定限语，不写“已修复”。该后继不得修改计划、应用代码、包、测试、配置、依赖、锁文件或脚本；提交后仍须确认分支为 `AgentCoreExtension`。
+`PASS` 后只允许一个纯文档后继提交，同步本规格、旧开发门规格、旧减法规格、角色验收和上位架构状态。正式文档记录 `GATE_HEAD`、五门真实结果、`+662` 和固定限语，不写“已修复”。该后继不得修改计划、应用代码、包、测试、配置、依赖、锁文件或脚本。
+
+提交后必须机械确认：直接 parent 等于 `GATE_HEAD`；`GATE_HEAD..HEAD` 提交数为 1、路径无序集合精确为上述五份后继文档；可执行基线到 HEAD 的路径无序集合精确为本计划、本规格及四份既有状态文档，共六个唯一文档路径；分支仍为 `AgentCoreExtension`；普通 status 与全局 non-ignored untracked 均为空；`docs/` 外和保护路径历史/工作树/cached/untracked 四态仍为零。全部成立后才用 `apply_patch` 创建成功报告，并只镜像实际 successor HEAD。
 
 失败时没有后继提交；开发门保持 `CLOSED`，后续处理必须另立规格。
 
