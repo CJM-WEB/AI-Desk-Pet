@@ -4,6 +4,7 @@ import { characterEmotionLabelSchema } from '@myself/shared-types';
 import {
   CAPABILITY_CLARIFICATION_TOOL_NAME,
   capabilityClarificationToolDefinition,
+  hasCapabilityClarificationMissingParameterSignal,
   isCapabilityClarificationExecutionConfirmation,
   parseCapabilityClarificationRequest
 } from './capability-clarification-tool';
@@ -152,7 +153,7 @@ export class AgentLoop {
           correctionUsed = true;
           messages.push({
             role: 'system',
-            content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：能力规划必须调用当前提供的工具。缺少执行必需参数时，只能调用 builtin.capability.request_clarification；确认由宿主在工具调用后处理。请仅修正一次。'
+            content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：能力规划必须调用当前提供的工具。缺少执行必需参数时，只能调用当前提供的无权限结构化澄清工具；确认由宿主在工具调用后处理。请仅修正一次。'
           });
           continue;
         }
@@ -181,7 +182,10 @@ export class AgentLoop {
         if (!planning) throw new Error('AGENT_INVALID_TOOL_REQUEST');
         try {
           const clarification = parseCapabilityClarificationRequest(response.request.arguments);
-          if (isCapabilityClarificationExecutionConfirmation(clarification.question)) {
+          if (
+            isCapabilityClarificationExecutionConfirmation(clarification.question)
+            || !hasCapabilityClarificationMissingParameterSignal(clarification.question)
+          ) {
             throw new Error('CAPABILITY_CLARIFICATION_EXECUTION_CONFIRMATION');
           }
           yield { type: 'message', text: clarification.question };

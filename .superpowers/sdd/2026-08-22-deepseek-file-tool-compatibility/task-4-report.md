@@ -41,7 +41,7 @@
 | `pnpm.cmd test:security` | 退出 0；20/20 通过 |
 | `pnpm.cmd test:integration` | 退出 0；50/50 通过 |
 | `pnpm.cmd verify:desktop` | 最终退出 0；typecheck、2270 单元（14 跳过）、20 安全、50 集成、生产构建、preload 外部依赖校验和 62 Electron E2E 全部通过 |
-| `git diff --check` | 退出 0；仅输出工作区现有 LF→CRLF 提示，无空白错误 |
+| `git diff --check 03b3efc..HEAD` | 终审清理并提交后退出 0；无输出，固定范围内无空白错误 |
 
 ## 未验证项
 

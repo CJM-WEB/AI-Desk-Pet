@@ -1461,6 +1461,47 @@ describe('桌面 Agent 真实服务集成', () => {
     expectProviderExchange(fixture.providerServer, 3);
   });
 
+  test('真实 OpenAI-compatible 修复轮不泄露内部澄清名并使用当轮外部别名', async () => {
+    const clarificationResponse: ModelResponse = {
+      type: 'tool_request',
+      request: {
+        requestId: 'repair-with-provider-alias',
+        toolName: '由当轮请求替换',
+        arguments: { question: '请提供目标文件名。' }
+      }
+    };
+    const fixture = await harness([
+      { response: { type: 'text', text: '请补充信息。' } },
+      {
+        response: clarificationResponse,
+        inspect: request => {
+          const providerDefinition = request.tools.find(tool => (
+            tool.function.description.includes('澄清')
+          ));
+          if (!providerDefinition) throw new Error('缺少结构化澄清工具');
+          const responseRequest = clarificationResponse.request as { toolName: string };
+          responseRequest.toolName = providerDefinition.function.name;
+          const systemMessage = request.messages.at(-1);
+          expect(systemMessage).toMatchObject({ role: 'system' });
+          if (!systemMessage || systemMessage.role !== 'system') {
+            throw new Error('缺少协议修复系统消息');
+          }
+          expect(systemMessage.content).not.toContain(
+            'builtin.capability.request_clarification'
+          );
+        }
+      }
+    ]);
+
+    await fixture.service.submitFileTask({ text: '帮我创建一个文件', visibleHistory: [] });
+
+    expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
+      type: 'message', role: 'assistant', text: '请提供目标文件名。'
+    }]);
+    expect(fixture.providerServer.inspectionErrors).toEqual([]);
+    expectProviderExchange(fixture.providerServer, 2);
+  });
+
   test('模型删除确认被宿主修复为正式确认卡且不进入聊天正文', async () => {
     const modelConfirmation = '请确认是否删除当前目录下的 empty 文件夹？';
     const fixture = await harness([

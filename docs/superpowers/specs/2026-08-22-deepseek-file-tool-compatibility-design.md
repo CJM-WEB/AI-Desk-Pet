@@ -1,7 +1,7 @@
 # DeepSeek 文件工具兼容性设计
 
-**日期：** 2026-08-22  
-**状态：** 用户已授权按推荐方案自主实施  
+**日期：** 2026-08-22
+**状态：** 用户已授权按推荐方案自主实施
 **范围：** 仅 Desktop 的 DeepSeek/OpenAI-compatible 文件能力规划边界
 
 ## 1. 背景与现状证据
@@ -47,7 +47,7 @@
 
 在现有 OpenAI-compatible Provider 内完成工具名编码、响应名解码和工具选择策略序列化。内部状态机、权限策略和文件实现保持不变。
 
-优点：修改面最小；故障修复位于真实断点；不会形成第二套权限系统。  
+优点：修改面最小；故障修复位于真实断点；不会形成第二套权限系统。
 代价：需要维护一个严格、可测试的 Provider 工具名映射。
 
 ### 4.2 不采用：所有 Provider 共用的大型重构
@@ -87,7 +87,7 @@ interface ProviderToolNameCodec {
 首版使用固定、可逆、无碰撞映射，例如：
 
 ```text
-builtin.files.delete_file ↔ builtin_files_delete_file
+builtin.files.delete_file ↔ builtin__files__delete_file
 ```
 
 不采用运行时简单替换后直接信任结果。构造 Codec 时必须验证：
@@ -107,7 +107,7 @@ type CapabilityClarificationRequest = Readonly<{
 }>;
 ```
 
-其内部名固定为 `builtin.capability.request_clarification`，Provider 别名固定为合法名称 `builtin_capability_request_clarification`。`AgentLoop` 在 `ToolRuntime` 之前识别并严格校验该请求：问题必须非空、不超过 1000 字符，并且不能是“是否确认执行”一类宿主确认。合法请求只公开一条问题并结束本轮，不生成 `pending_action`，也不接触文件系统。
+其内部名固定为 `builtin.capability.request_clarification`，Provider 别名固定为合法名称 `builtin__capability__request_clarification`。Codec 固定把每个 `.` 编码为 `__`。`AgentLoop` 在 `ToolRuntime` 之前识别并严格校验该请求：问题必须非空、不超过 1000 字符，包含缺失执行参数的语义线索，并且不能是广义 yes/no 执行确认。合法请求只公开一条问题并结束本轮，不生成 `pending_action`，也不接触文件系统。
 
 新路径通过后删除旧的文本 JSON `clarification_required` 解析器及只服务该协议的测试，避免同时保留“文本澄清”和“工具澄清”两条正式路径。
 

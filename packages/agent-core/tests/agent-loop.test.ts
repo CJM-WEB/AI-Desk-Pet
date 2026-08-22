@@ -3,6 +3,7 @@ import { toolRequestSchema } from '@myself/shared-types';
 import { AgentLoop } from '../src/agent-loop';
 import {
   CAPABILITY_CLARIFICATION_TOOL_NAME,
+  isCapabilityClarificationExecutionConfirmation,
   parseCapabilityClarificationRequest
 } from '../src/capability-clarification-tool';
 import type {
@@ -123,6 +124,12 @@ function context(provider: ModelProvider, signal = new AbortController().signal)
 }
 
 describe('AgentLoop', () => {
+  test('中文执行确认问句允许尾随空白', () => {
+    expect(isCapabilityClarificationExecutionConfirmation(
+      '删除 empty 文件夹吗？  '
+    )).toBe(true);
+  });
+
   test.each([
     {},
     { question: '' },
@@ -447,13 +454,18 @@ describe('AgentLoop', () => {
     ]);
   });
 
-  test('文件规划在首次真实工具结果前只公开结构化澄清问题且不调用工具运行时', async () => {
+  test.each([
+    '请提供目标文件名',
+    '请问目标目录路径是什么？',
+    'Which file should I create?',
+    'Where should I create the file?'
+  ])('文件规划只公开包含缺失执行参数线索的结构化澄清：%s', async question => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',
       request: {
         requestId: 'clarify-1',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question: '请提供目标文件名' }
+        arguments: { question }
       }
     }]);
     const runtime = createToolRuntime();
@@ -466,7 +478,7 @@ describe('AgentLoop', () => {
 
     await expect(collectEvents(runContext)).resolves.toEqual([
       { type: 'phase', phase: 'thinking' },
-      { type: 'message', text: '请提供目标文件名' },
+      { type: 'message', text: question },
       { type: 'phase', phase: 'success' }
     ]);
     expect(prepare).not.toHaveBeenCalled();
@@ -476,7 +488,13 @@ describe('AgentLoop', () => {
     { question: '', label: '空问题' },
     { question: 'a'.repeat(1_001), label: '超长问题' },
     { question: '请提供目标文件名', extra: true, label: '额外字段' },
-    { question: '请确认是否删除指定的目标文件？', label: '执行确认' }
+    { question: '请确认是否删除指定的目标文件？', label: '显式执行确认' },
+    { question: '可以删除 empty 文件夹吗？', label: '可以式执行确认' },
+    { question: '删除 empty 文件夹吗？  ', label: '问句尾空白执行确认' },
+    { question: '是否移除 empty 文件夹？', label: '是否式执行确认' },
+    { question: 'Can I delete the empty folder?', label: '英文 can 执行确认' },
+    { question: 'Should I remove the empty folder?', label: '英文 should 执行确认' },
+    { question: '你喜欢什么颜色？', label: '与缺参无关的问题' }
   ])('文件规划拒绝无效的结构化澄清：$label', async ({ question, label: _label, ...extra }) => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',
