@@ -116,7 +116,30 @@ describe('设置 IPC', () => {
     })).resolves.toEqual(publicSettings(false));
   });
 
-  test('清除 secret 范围会删除密钥并返回公开设置', async () => {
+  test('清除 secret 范围省略档案标识时删除默认密钥并返回公开设置', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const settings = {
+      getPublic: vi.fn(async () => publicSettings(false)),
+      saveProviderMetadata: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
+    };
+    const secrets = {
+      save: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined),
+      clearAll: vi.fn(async () => undefined)
+    };
+    const lifecycle = { onProviderChanged: vi.fn(() => undefined) };
+    registerSettingsIpc(ipcMain, settings, secrets, lifecycle);
+
+    await handlers.get(ipcChannels.settingsClearLocalData)?.({}, { scope: 'secret' });
+
+    expect(secrets.clear).toHaveBeenCalledWith('default');
+    expect(secrets.clearAll).not.toHaveBeenCalled();
+    expect(settings.clearAll).not.toHaveBeenCalled();
+    expect(lifecycle.onProviderChanged).toHaveBeenCalledOnce();
+  });
+
+  test('清除 secret 范围显式指定档案时只删除精确密钥', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const settings = {
       getPublic: vi.fn(async () => publicSettings(false)),

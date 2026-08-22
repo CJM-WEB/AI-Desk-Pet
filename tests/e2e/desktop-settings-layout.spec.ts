@@ -18,6 +18,16 @@ async function waitForSettingsPage(pages: () => Page[]): Promise<Page> {
   return page;
 }
 
+async function assertMcpSettingsEntryAbsent(page: Page): Promise<void> {
+  await expect.poll(() => (
+    page.locator('.settings-tabs').getByRole('button').allTextContents()
+  )).toEqual(['模型', '隐私', '本地数据']);
+  await expect(page.getByRole('button', { name: '工具' })).toHaveCount(0);
+  await expect(page.getByText('MCP 服务', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('服务 ID')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '添加服务' })).toHaveCount(0);
+}
+
 async function assertNoHorizontalOverflow(page: Page): Promise<void> {
   const result = await page.evaluate(() => {
     const viewportWidth = document.documentElement.clientWidth;
@@ -159,13 +169,7 @@ test('720x620 默认尺寸下设置页无横向溢出且 MCP 入口不可见', a
     settingsPage.setDefaultTimeout(8_000);
     await settingsPage.setViewportSize({ width: 720, height: 620 });
     try {
-      await expect.poll(() => (
-        settingsPage.locator('.settings-tabs').getByRole('button').allTextContents()
-      )).toEqual(['模型', '隐私', '本地数据']);
-      await expect(settingsPage.getByRole('button', { name: '工具' })).toHaveCount(0);
-      await expect(settingsPage.getByText('MCP 服务', { exact: true })).toHaveCount(0);
-      await expect(settingsPage.getByLabel('服务 ID')).toHaveCount(0);
-      await expect(settingsPage.getByRole('button', { name: '添加服务' })).toHaveCount(0);
+      await assertMcpSettingsEntryAbsent(settingsPage);
 
       for (const tab of ['模型', '隐私', '本地数据']) {
         await settingsPage.getByRole('button', { name: tab }).click();
@@ -199,13 +203,7 @@ test('640x520 最小尺寸下设置页无文字或控件重叠且 MCP 入口不�
     settingsPage.setDefaultTimeout(8_000);
     await settingsPage.setViewportSize({ width: 640, height: 520 });
     try {
-      await expect.poll(() => (
-        settingsPage.locator('.settings-tabs').getByRole('button').allTextContents()
-      )).toEqual(['模型', '隐私', '本地数据']);
-      await expect(settingsPage.getByRole('button', { name: '工具' })).toHaveCount(0);
-      await expect(settingsPage.getByText('MCP 服务', { exact: true })).toHaveCount(0);
-      await expect(settingsPage.getByLabel('服务 ID')).toHaveCount(0);
-      await expect(settingsPage.getByRole('button', { name: '添加服务' })).toHaveCount(0);
+      await assertMcpSettingsEntryAbsent(settingsPage);
 
       for (const tab of ['模型', '隐私', '本地数据']) {
         await settingsPage.getByRole('button', { name: tab }).click();

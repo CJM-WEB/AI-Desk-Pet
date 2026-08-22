@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { ProviderProfileV2 } from '@myself/shared-types';
+import ts from 'typescript';
 import { afterEach, describe, expect, test } from 'vitest';
 import {
   SettingsStore,
@@ -63,11 +64,81 @@ const providerProfile: ProviderProfileV2 = {
   hasStoredSecret: false
 };
 
+const secondaryProviderProfile: ProviderProfileV2 = {
+  ...providerProfile,
+  id: 'provider-secondary',
+  displayName: '备用 Provider'
+};
+
 type NonMcpMutationCase = Readonly<{
   methodName: string;
   prepare?: (store: SettingsStore) => Promise<void>;
   mutate: (store: SettingsStore) => Promise<void>;
+  verify?: (store: SettingsStore) => Promise<void>;
 }>;
+
+type AtomicWriteMethods = Readonly<{
+  settingsRewriteMethods: readonly string[];
+  otherSettingsFileWriteMethods: readonly string[];
+}>;
+
+/**
+ * 使用 TypeScript AST 锁定 SettingsStore 对共享设置文件的真实写调用，避免方法签名、
+ * async 修饰符或复杂参数格式变化绕过完整性守卫。
+ */
+function collectAtomicWriteMethods(source: string): AtomicWriteMethods {
+  const sourceFile = ts.createSourceFile(
+    'settings-store.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  const settingsRewriteMethods = new Set<string>();
+  const otherSettingsFileWriteMethods = new Set<string>();
+  const isAtomicWrite = (expression: ts.LeftHandSideExpression): boolean => (
+    ts.isIdentifier(expression) && expression.text === 'atomicWrite'
+  ) || (
+    ts.isPropertyAccessExpression(expression)
+    && expression.expression.kind === ts.SyntaxKind.ThisKeyword
+    && expression.name.text === 'atomicWrite'
+  );
+  const isSettingsFile = (expression: ts.Expression | undefined): boolean => (
+    expression !== undefined
+    && ts.isPropertyAccessExpression(expression)
+    && expression.expression.kind === ts.SyntaxKind.ThisKeyword
+    && expression.name.text === 'file'
+  );
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isClassDeclaration(statement) || statement.name?.text !== 'SettingsStore') continue;
+    for (const member of statement.members) {
+      if (!ts.isMethodDeclaration(member) || !member.body || !ts.isIdentifier(member.name)) continue;
+      const methodName = member.name.text;
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node)
+          && isAtomicWrite(node.expression)
+          && isSettingsFile(node.arguments[0])
+        ) {
+          const value = node.arguments[1];
+          if (value && ts.isIdentifier(value) && value.text === 'settings') {
+            settingsRewriteMethods.add(methodName);
+          } else {
+            otherSettingsFileWriteMethods.add(methodName);
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(member.body);
+    }
+  }
+
+  return {
+    settingsRewriteMethods: [...settingsRewriteMethods].sort(),
+    otherSettingsFileWriteMethods: [...otherSettingsFileWriteMethods].sort()
+  };
+}
 
 /**
  * 此矩阵锁定 SettingsStore 共享文件的全部普通原子写入口；新增入口必须显式证明
@@ -92,8 +163,31 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
   },
   {
     methodName: 'deleteProviderProfile',
-    prepare: store => store.saveProviderProfile(providerProfile),
-    mutate: store => store.deleteProviderProfile('provider-main')
+    prepare: async store => {
+      await store.saveProviderProfile(providerProfile);
+      await store.saveProviderProfile(secondaryProviderProfile);
+      await store.saveModelRoute({
+        primaryProfileId: 'provider-main',
+        chatProfileId: 'provider-main',
+        agentProfileId: 'provider-main',
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      });
+    },
+    mutate: store => store.deleteProviderProfile('provider-secondary'),
+    verify: async store => {
+      const snapshot = await store.getProviderSettings();
+      expect(snapshot.profiles.map(profile => profile.id)).toEqual(['provider-main']);
+      expect(snapshot.route).toEqual({
+        primaryProfileId: 'provider-main',
+        chatProfileId: 'provider-main',
+        agentProfileId: 'provider-main',
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      });
+    }
   },
   {
     methodName: 'savePrivacySettings',
@@ -166,7 +260,7 @@ afterEach(async () => {
 describe('SettingsStore', () => {
   test.each(nonMcpMutationCases)(
     '$methodName 原子重写共享设置时完整保留 MCP 配置',
-    async ({ prepare, mutate }) => {
+    async ({ prepare, mutate, verify }) => {
       const { store } = await createStore();
       for (const settings of mcpSettingsFixture) {
         await store.saveMcpServerSettings(settings);
@@ -175,45 +269,8 @@ describe('SettingsStore', () => {
 
       await mutate(store);
 
-      await expect(store.getMcpServerSettings()).resolves.toEqual([
-        {
-          id: 'remote-tools',
-          enabled: true,
-          transport: {
-            type: 'http',
-            url: 'https://mcp.example.com',
-            secretNames: ['Authorization']
-          },
-          tools: {
-            search: {
-              enabled: true,
-              readOnly: true,
-              description: '搜索',
-              definitionFingerprint: 'a'.repeat(64),
-              trustedReadFingerprint: 'b'.repeat(64)
-            }
-          }
-        },
-        {
-          id: 'local-tools',
-          enabled: false,
-          transport: {
-            type: 'stdio',
-            command: 'node.exe',
-            args: ['server.js', '--stdio'],
-            cwd: 'D:\\mcp-tools',
-            secretNames: ['TOKEN'],
-            inheritEnv: ['PATH']
-          },
-          tools: {
-            echo: {
-              enabled: false,
-              readOnly: true,
-              description: '回显'
-            }
-          }
-        }
-      ]);
+      await expect(store.getMcpServerSettings()).resolves.toEqual(mcpSettingsFixture);
+      await verify?.(store);
     }
   );
 
@@ -222,16 +279,35 @@ describe('SettingsStore', () => {
       fileURLToPath(new URL('../src/main/storage/settings-store.ts', import.meta.url)),
       'utf8'
     );
-    const productionMethods = [...source.matchAll(
-      /^  ([A-Za-z][A-Za-z0-9]*)\([^)]*\): Promise<void> \{([\s\S]*?)^  \}/gmu
-    )]
-      .filter(match => match[2]?.includes('atomicWrite(this.file, settings)'))
-      .map(match => match[1]!)
-      .filter(name => !['saveMcpServerSettings', 'deleteMcpServerSettings'].includes(name))
-      .sort();
+    const writes = collectAtomicWriteMethods(source);
+    const mcpMethods = ['deleteMcpServerSettings', 'saveMcpServerSettings'];
+    const productionMethods = writes.settingsRewriteMethods.filter(
+      name => !mcpMethods.includes(name)
+    );
     const matrixMethods = nonMcpMutationCases.map(item => item.methodName).sort();
 
     expect(productionMethods).toEqual(matrixMethods);
+    expect(writes.settingsRewriteMethods.filter(name => mcpMethods.includes(name))).toEqual(
+      mcpMethods
+    );
+    expect(writes.settingsRewriteMethods).toEqual([...matrixMethods, ...mcpMethods].sort());
+    expect(writes.otherSettingsFileWriteMethods).toEqual(['clearAll', 'load']);
+  });
+
+  test('完整性守卫识别 async 与复杂参数的方法', () => {
+    const source = `
+export class SettingsStore {
+  async futureMutation(
+    { value }: Readonly<{ value: string }>
+  ): Promise<void> {
+    const settings = { value };
+    await atomicWrite(this.file, settings);
+  }
+}`;
+    expect(collectAtomicWriteMethods(source)).toEqual({
+      settingsRewriteMethods: ['futureMutation'],
+      otherSettingsFileWriteMethods: []
+    });
   });
 
   test('首次读取返回版本化的安全默认值', async () => {

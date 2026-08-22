@@ -4929,7 +4929,9 @@ test.describe('真实 Provider 业务闭环', () => {
       const settingsPage = await waitForRendererPage(fixture, 'settings');
       captureRendererDiagnostics(rendererPages(fixture));
 
-      const apiKeys = new Set(await settingsPage.evaluate(() => Object.keys(window.myself)));
+      const apiMemberNames = new Set(
+        await settingsPage.evaluate(() => Object.keys(window.myself))
+      );
       const removedMcpKeys = [
         'upsertMcpServer',
         'confirmMcpLaunch',
@@ -4940,8 +4942,8 @@ test.describe('真实 Provider 业务闭环', () => {
         'revokeMcpToolReadOnly',
         'deleteMcpServer'
       ] as const;
-      for (const key of removedMcpKeys) expect(apiKeys.has(key)).toBe(false);
-      expect(removedMcpKeys.filter(key => apiKeys.has(key))).toEqual([]);
+      for (const key of removedMcpKeys) expect(apiMemberNames.has(key)).toBe(false);
+      expect(removedMcpKeys.filter(key => apiMemberNames.has(key))).toEqual([]);
 
       await expect(petPage.getByRole('main', { name: 'AI Pet 桌宠' })).toBeVisible();
       await petPage.evaluate(() => window.myself.openChat());

@@ -99,6 +99,7 @@
 ### 环境、基线与范围
 
 - 环境：Windows 隔离 worktree；Task 5 起始提交为 `0a15009a1fa2dba42a255ba37162d5bb0df6acc0`。
+- Task 5 首轮实现提交：`0c8529287d22b67d031b8c1134db16b0eb907aa9`（`test(desktop): 验收 MCP 正式链清理`）。
 - 本轮只补充持久化、Electron 产品边界和最终验收证据；未修改 SettingsStore、拖拽、角色行为、桌宠缩放、碰撞体积、文件能力、Provider 协议或角色工作台生产代码。
 - 保留 `apps/desktop/src/main/mcp`、内部 MCP 单元测试、测试 Server、SettingsStore 的 MCP schema/data 和本机已有 MCP 数据；正式 API、Preload、IPC、Renderer、Main、Agent、生产依赖与 bundle 入口继续保持删除状态。
 
@@ -110,10 +111,10 @@
 
 ### 定向证据
 
-- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/settings-store.test.ts tests/multi-provider-settings-store.test.ts tests/settings-ipc.test.ts tests/provider-secret-vault.test.ts`：退出 0，4 个文件、50/50 通过。
-- 普通 SettingsStore 原子写入口采用表驱动矩阵覆盖 9 个方法，并由源码完整性守卫锁定新增入口；两条 MCP 配置在每次写后逻辑深度相等。单 Provider 密钥清除前后直接比较 `mcp:remote-tools` 槽文件 Buffer；全量清除前确认 Provider 与 MCP 两槽存在，清除后两槽均为 `ENOENT`。
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/settings-store.test.ts tests/multi-provider-settings-store.test.ts tests/settings-ipc.test.ts tests/provider-secret-vault.test.ts`：首轮退出 0，4 个文件、50/50 通过；复审修正后退出 0，4 个文件、52/52 通过。
+- 普通 SettingsStore 原子写入口采用表驱动矩阵覆盖 9 个方法；TypeScript AST 完整性守卫精确区分 9 个非 MCP mutator、2 个 MCP 专用 mutator，以及 `load` 迁移和 `clearAll` 全量重置语义。两条 MCP 配置在每次写后逻辑深度相等；删除场景保留主 Provider 与有效路由，只删除备用 Provider。单 Provider 密钥清除前后直接比较 `mcp:remote-tools` 槽文件 Buffer；全量清除前确认 Provider 与 MCP 两槽存在，清除后两槽均为 `ENOENT`，同时确认会话密钥也被清除。IPC 同时覆盖省略档案标识回退 `default` 与显式 `provider-main` 精确清除。
 - `pnpm.cmd --filter @myself/desktop build`：退出 0；生产构建、preload 外部依赖校验和 MCP 生产边界校验通过。
-- 定向 Playwright `--list` 精确列出 4 条：两个设置页尺寸、正式白名单业务闭环和 MCP 生命周期。相同 4 条实际执行退出 0，4/4 通过。
+- `node node_modules/@playwright/test/cli.js test --config tests/playwright.config.ts tests/e2e/desktop.spec.ts tests/e2e/desktop-settings-layout.spec.ts --grep "MCP|设置页|通过正式白名单完成设置、文件操作与聊天窗口状态" --list`：退出 0，精确列出两个设置页尺寸、正式白名单业务闭环和 MCP 生命周期共 4 条；去掉 `--list` 后实际执行退出 0，4/4 通过。原计划的 `pnpm.cmd exec playwright` 形式会让 Windows `.cmd` 二次解释 grep 管道符，因此计划已同步为这个可原样复现的仓库 CLI 命令。
 - 正式 preload 的 `Object.keys(window.myself)` 对 8 个旧 MCP key 逐键不存在且交集为空；720×620 与 640×520 设置页导航均精确为“模型、隐私、本地数据”，不存在“工具”按钮和“MCP 服务”文案；普通聊天工具表为空，只读文件任务工具表不含 `mcp__` 前缀且真实返回 `list_files` 结果。
 - `pnpm.cmd test:security`：退出 0，20/20 通过。`pnpm.cmd test:integration`：退出 0，50/50 通过。
 - 对 `apps/desktop/out/main`、`out/preload`、`out/renderer` 执行规格中的精确禁止标记扫描：退出 1 且无输出，表示没有命中；对 SettingsStore 与其测试执行保留项扫描：退出 0，仍可定位 MCP schema 和 get/save/delete 持久化入口。
@@ -122,6 +123,7 @@
 
 - 第一次 `pnpm.cmd verify:desktop`：退出 1。workspace typecheck 通过；单元测试 2315/2317 通过，两个与本轮无关的角色测试分别在 5000ms 超时：默认角色“已有可用默认角色时不重写其运行版本”和角色包“V2 导出直接读取正式草稿与发布清单”，前者清理阶段另报 `ENOTEMPTY`。脚本因此在单元测试阶段停止，本次调用没有继续执行安全、集成、构建和完整 Electron E2E；这些后续边界已按上一节单独验证。
 - 第二次、提交前最终 `pnpm.cmd verify:desktop`：退出 0。workspace typecheck 覆盖 10/11 个存在脚本的项目；单元测试 112 个文件、2317/2317 通过；安全测试 20/20、集成测试 50/50；生产构建、preload 外部依赖校验和 MCP 生产边界校验通过；Electron E2E 63/63 通过。重跑没有放宽测试超时，也没有修改角色代码；第一次失败仍保留在上一条作为真实历史。
+- 复审修正轮最终 `pnpm.cmd verify:desktop`：退出 0。workspace typecheck 覆盖 10/11 个存在脚本的项目；单元测试 112 个文件、2319/2319 通过；安全测试 20/20、集成测试 50/50；生产构建、preload 外部依赖校验和 MCP 生产边界校验通过；Electron E2E 63/63 通过。本轮仍未修改角色或其他生产代码，也未放宽超时。
 
 ### 人工待确认与安装包边界
 

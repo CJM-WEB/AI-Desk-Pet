@@ -809,7 +809,7 @@ if (restartCount === 1) {
 在 `desktop.spec.ts` 的正式 preload 上下文逐键检查：
 
 ```ts
-const apiKeys = new Set(await settingsWindow.evaluate(() => Object.keys(window.myself)));
+const apiMemberNames = new Set(await settingsWindow.evaluate(() => Object.keys(window.myself)));
 const removedMcpKeys = [
   'upsertMcpServer',
   'confirmMcpLaunch',
@@ -820,8 +820,8 @@ const removedMcpKeys = [
   'revokeMcpToolReadOnly',
   'deleteMcpServer'
 ] as const;
-for (const key of removedMcpKeys) expect(apiKeys.has(key)).toBe(false);
-expect(removedMcpKeys.filter(key => apiKeys.has(key))).toEqual([]);
+for (const key of removedMcpKeys) expect(apiMemberNames.has(key)).toBe(false);
+expect(removedMcpKeys.filter(key => apiMemberNames.has(key))).toEqual([]);
 ```
 
 保留已有 Provider 工具名称不含 `mcp__` 的断言。不能使用 `not.arrayContaining()` 只证明“八项没有全部同时出现”。不要向正式 preload 新增探针。
@@ -842,19 +842,21 @@ expect(removedMcpKeys.filter(key => apiKeys.has(key))).toEqual([]);
 Run:
 
 ```powershell
-pnpm.cmd exec playwright test --config tests/playwright.config.ts `
+node node_modules/@playwright/test/cli.js test --config tests/playwright.config.ts `
   tests/e2e/desktop.spec.ts `
   tests/e2e/desktop-settings-layout.spec.ts `
-  --grep "MCP|通过正式白名单完成设置、文件操作与聊天窗口状态" `
+  --grep "MCP|设置页|通过正式白名单完成设置、文件操作与聊天窗口状态" `
   --list
 pnpm.cmd --filter @myself/desktop build
-pnpm.cmd exec playwright test --config tests/playwright.config.ts `
+node node_modules/@playwright/test/cli.js test --config tests/playwright.config.ts `
   tests/e2e/desktop.spec.ts `
   tests/e2e/desktop-settings-layout.spec.ts `
-  --grep "MCP|通过正式白名单完成设置、文件操作与聊天窗口状态"
+  --grep "MCP|设置页|通过正式白名单完成设置、文件操作与聊天窗口状态"
 ```
 
 Expected: `--list` 同时列出两条布局标题（标题含 MCP）、“通过正式白名单完成设置、文件操作与聊天窗口状态”和新增隔离 userData 生命周期用例；实际运行全部 PASS。若新增用例标题未含 MCP，先把标题改为含“MCP 正式链”再执行。零匹配或只匹配布局不得写为通过。
+
+Windows PowerShell 直接调用 `pnpm.cmd exec playwright` 时，grep 中的管道符可能被 `.cmd` 二次解释；这里固定调用仓库已安装的 Playwright CLI，确保上述命令可原样复现并把 grep 作为单一参数传入。
 
 - [ ] **Step 8: 执行完整桌面门禁**
 
