@@ -17,7 +17,13 @@ import {
 const NONE: CharacterBehaviorAuthorization = { kind: 'none' };
 
 /** 构造只记录 Director 边界调用的同步行为服务端口。 */
-function createFixture() {
+function createFixture(initialSettings: Readonly<{
+  movementStopped: boolean;
+  proactivityMode: 'passive' | 'assistive' | 'autonomous';
+}> = {
+  movementStopped: false,
+  proactivityMode: 'assistive' as const
+}) {
   let taskAuthorization: CharacterBehaviorAuthorization = NONE;
   let directedAuthorization: CharacterBehaviorAuthorization = NONE;
   let agentAuthorization: CharacterBehaviorAuthorization = NONE;
@@ -75,17 +81,27 @@ function createFixture() {
     stop: vi.fn()
   };
   const notices: CharacterBehaviorNotice[] = [];
+  const saveMovementStopped = vi.fn<(stopped: boolean) => Promise<void>>();
   const director = new CharacterBehaviorDirector({
     behavior,
     motion,
     initialGeneration: 'generation-1',
+    initialSettings,
+    saveMovementStopped,
     publishNotice: notice => notices.push(notice)
+  });
+  saveMovementStopped.mockImplementation(async movementStopped => {
+    director.applyBehaviorSettings({
+      movementStopped,
+      proactivityMode: initialSettings.proactivityMode
+    });
   });
   return {
     behavior,
     director,
     motion,
     notices,
+    saveMovementStopped,
     setTaskAuthorization: (value: CharacterBehaviorAuthorization) => { taskAuthorization = value; },
     setDirectedAuthorization: (value: CharacterBehaviorAuthorization) => { directedAuthorization = value; },
     setAgentAuthorization: (value: CharacterBehaviorAuthorization) => { agentAuthorization = value; },
@@ -98,6 +114,50 @@ function play(name: string): CharacterBehaviorPlan {
 }
 
 describe('Main 角色行为 Director', () => {
+  test('启动快照初始化同一 Director 的停止锁与主动性档位', () => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+
+    fixture.director.handleIdleDue();
+    fixture.director.handleAgentBehaviorIntent({
+      stateIntent: { semantic: 'move' },
+      actionSemantic: 'move',
+      urgency: 20,
+      explanation: '旧 V1 待机游走'
+    });
+
+    expect(fixture.director.getChatContext()).toMatchObject({
+      runtime: { movementStopped: true },
+      proactivityMode: 'autonomous'
+    });
+    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledExactlyOnceWith({
+      allowCandidate: false
+    });
+    expect(fixture.behavior.handleAgentIntent).not.toHaveBeenCalled();
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  });
+
+  test('只有本地 Gate 的停止与恢复会持久化，并在成功快照应用后更新锁', async () => {
+    const fixture = createFixture();
+
+    await fixture.director.prepareUserPrompt('停下');
+    await fixture.director.prepareUserPrompt('恢复活动');
+
+    expect(fixture.saveMovementStopped).toHaveBeenNthCalledWith(1, true);
+    expect(fixture.saveMovementStopped).toHaveBeenNthCalledWith(2, false);
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+    expect(fixture.director.getChatContext().runtime.movementStopped).toBe(false);
+  });
+
+  test('本地 Gate 停止落盘失败时不修改运动或停止锁', async () => {
+    const fixture = createFixture();
+    fixture.saveMovementStopped.mockRejectedValueOnce(new Error('WRITE_FAILED'));
+
+    await expect(fixture.director.prepareUserPrompt('停下')).rejects.toThrow('WRITE_FAILED');
+
+    expect(fixture.motion.stop).not.toHaveBeenCalled();
+    expect(fixture.director.getChatContext().runtime.movementStopped).toBe(false);
+  });
+
   test('显式移动先取得 move 动作授权再产生唯一对象化运动意图', async () => {
     const fixture = createFixture();
     fixture.setDirectedAuthorization({
@@ -291,14 +351,15 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
-  test('同轮本地 stop 指令后忽略 Provider resume，解析后的 move 动作仍受停止锁拦截', () => {
+  test('同轮本地 stop 指令后忽略 Provider resume，解析后的 move 动作仍受停止锁拦截', async () => {
     const fixture = createFixture();
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
     });
+    const prepared = await fixture.director.prepareUserPrompt('停下');
     fixture.director.completeUserPrompt({
       generation: 'generation-1',
-      explicitDirective: { kind: 'stop_movement' },
+      explicitDirective: prepared.explicitDirective,
       providerPlan: { kind: 'resume_movement' }
     });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
@@ -308,6 +369,7 @@ describe('Main 角色行为 Director', () => {
       kind: 'action_name', name: '移动'
     });
     expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+    expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   test('反思 stop 不会写停止锁，后续 move 计划仍可授权', () => {
@@ -321,13 +383,33 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.director.requestBehaviorPlan(play('移动'), 'reflection')).toMatchObject({
       kind: 'play', semantic: 'move'
     });
+    expect(fixture.saveMovementStopped).not.toHaveBeenCalled();
   });
 
-  test('反思 resume 不能解除本地停止锁', () => {
-    const fixture = createFixture();
+  test.each([
+    [{ movementStopped: false, proactivityMode: 'assistive' as const }, { kind: 'stop_movement' as const }, false],
+    [{ movementStopped: true, proactivityMode: 'assistive' as const }, { kind: 'resume_movement' as const }, true]
+  ])('Provider %j 不持久化也不改变停止锁', (initialSettings, providerPlan, expected) => {
+    const fixture = createFixture(initialSettings);
+
     fixture.director.completeUserPrompt({
       generation: 'generation-1',
-      explicitDirective: { kind: 'stop_movement' },
+      explicitDirective: null,
+      providerPlan
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.saveMovementStopped).not.toHaveBeenCalled();
+    expect(fixture.motion.stop).not.toHaveBeenCalled();
+    expect(fixture.director.getChatContext().runtime.movementStopped).toBe(expected);
+  });
+
+  test('反思 resume 不能解除本地停止锁', async () => {
+    const fixture = createFixture();
+    const prepared = await fixture.director.prepareUserPrompt('停下');
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: prepared.explicitDirective,
       providerPlan: null
     });
 
@@ -335,6 +417,7 @@ describe('Main 角色行为 Director', () => {
 
     expect(fixture.director.requestBehaviorPlan(play('移动'), 'explicit')).toEqual(NONE);
     expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+    expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   test('explicit 动作活跃时 thinking、listening 与 dragging 只更新可信事实而不抢播放', () => {

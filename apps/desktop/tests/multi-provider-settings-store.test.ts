@@ -213,21 +213,107 @@ describe('多 Provider 设置持久化', () => {
     });
   });
 
-  test('隐私策略默认辅助模式且各数据类别可独立保存', async () => {
+  test('新建与清空设置默认自主模式且未停止', async () => {
     const store = await createStore();
 
-    await expect(store.getPrivacySettings()).resolves.toEqual({
-      dataCategories: {
-        file: false,
-        screenshot: false,
-        clipboard: false,
-        memory: false
-      },
-      longTermMemory: false,
-      proactivityMode: 'assistive'
+    await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
+      movementStopped: false,
+      proactivityMode: 'autonomous'
     });
 
-    await store.savePrivacySettings({
+    await store.saveMovementStopped(true);
+    await store.clearAll();
+    await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
+      movementStopped: false,
+      proactivityMode: 'autonomous'
+    });
+  });
+
+  test('旧 V1 与缺失 privacy 的 V2 保留辅助模式并补齐未停止', async () => {
+    const fixtures = [
+      {
+        version: 1,
+        provider: null,
+        authorizedRoot: null,
+        petPosition: null,
+        fileDisclosureAccepted: false
+      },
+      {
+        version: 2,
+        providerProfiles: [],
+        modelRoute: {
+          primaryProfileId: null, chatProfileId: null, agentProfileId: null,
+          visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+        },
+        authorizedRoot: null,
+        petPosition: null,
+        fileDisclosureAccepted: false
+      }
+    ];
+
+    for (const [index, stored] of fixtures.entries()) {
+      const directory = await mkdtemp(join(tmpdir(), `myself-behavior-migration-${index}-`));
+      temporaryDirectories.push(directory);
+      const file = join(directory, 'settings.json');
+      await writeFile(file, JSON.stringify(stored), 'utf8');
+
+      await expect(
+        new SettingsStore(file, async () => false).getCharacterBehaviorSettings()
+      ).resolves.toEqual({ movementStopped: false, proactivityMode: 'assistive' });
+    }
+  });
+
+  test.each(['passive', 'assistive', 'autonomous'] as const)(
+    '已有主动性档位 %s 原样保留且缺失停止字段补 false',
+    async proactivityMode => {
+      const directory = await mkdtemp(join(tmpdir(), 'myself-behavior-mode-'));
+      temporaryDirectories.push(directory);
+      const file = join(directory, 'settings.json');
+      await writeFile(file, JSON.stringify({
+        version: 2,
+        providerProfiles: [],
+        modelRoute: {
+          primaryProfileId: null, chatProfileId: null, agentProfileId: null,
+          visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+        },
+        authorizedRoot: null,
+        petPosition: null,
+        fileDisclosureAccepted: false,
+        privacy: {
+          dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+          longTermMemory: false,
+          proactivityMode
+        }
+      }), 'utf8');
+
+      await expect(
+        new SettingsStore(file, async () => false).getCharacterBehaviorSettings()
+      ).resolves.toEqual({ movementStopped: false, proactivityMode });
+    }
+  );
+
+  test('停止与恢复在重建 Store 后保留并返回冻结完整快照', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'myself-movement-stopped-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.json');
+    const store = new SettingsStore(file, async () => false);
+
+    const stopped = await store.saveMovementStopped(true);
+    expect(stopped).toEqual({ movementStopped: true, proactivityMode: 'autonomous' });
+    expect(Object.isFrozen(stopped)).toBe(true);
+    await expect(
+      new SettingsStore(file, async () => false).getCharacterBehaviorSettings()
+    ).resolves.toEqual(stopped);
+
+    const resumed = await new SettingsStore(file, async () => false).saveMovementStopped(false);
+    expect(resumed).toEqual({ movementStopped: false, proactivityMode: 'autonomous' });
+    expect(Object.isFrozen(resumed)).toBe(true);
+  });
+
+  test('隐私策略各数据类别可独立保存并返回完整行为快照', async () => {
+    const store = await createStore();
+
+    const snapshot = await store.savePrivacySettings({
       dataCategories: {
         file: true,
         screenshot: false,
@@ -248,6 +334,9 @@ describe('多 Provider 设置持久化', () => {
       longTermMemory: true,
       proactivityMode: 'passive'
     });
+
+    expect(snapshot).toEqual({ movementStopped: false, proactivityMode: 'passive' });
+    expect(Object.isFrozen(snapshot)).toBe(true);
   });
 
   test('旧版隐私设置缺少桌宠置顶字段时迁移为关闭且可持久化', async () => {

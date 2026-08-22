@@ -26,6 +26,13 @@ function providerSnapshot() {
 
 function createFixture() {
   let storedPetAlwaysOnTop = false;
+  let behaviorSettings: {
+    movementStopped: boolean;
+    proactivityMode: 'passive' | 'assistive' | 'autonomous';
+  } = {
+    movementStopped: false,
+    proactivityMode: 'assistive' as const
+  };
   const settings = {
     getProviderSettings: vi.fn(async () => providerSnapshot()),
     saveProviderProfile: vi.fn(async () => undefined),
@@ -41,7 +48,16 @@ function createFixture() {
       longTermMemory: false,
       proactivityMode: 'assistive' as const
     })),
-    savePrivacySettings: vi.fn(async () => undefined),
+    savePrivacySettings: vi.fn(async (input: {
+      proactivityMode: 'passive' | 'assistive' | 'autonomous';
+    }) => {
+      behaviorSettings = { ...behaviorSettings, proactivityMode: input.proactivityMode };
+      return Object.freeze({ ...behaviorSettings });
+    }),
+    saveMovementStopped: vi.fn(async (movementStopped: boolean) => {
+      behaviorSettings = { ...behaviorSettings, movementStopped };
+      return Object.freeze({ ...behaviorSettings });
+    }),
     getPetAlwaysOnTop: vi.fn(async () => storedPetAlwaysOnTop),
     savePetAlwaysOnTop: vi.fn(async (enabled: boolean) => {
       storedPetAlwaysOnTop = enabled;
@@ -75,13 +91,15 @@ function createFixture() {
   const applyPetAlwaysOnTop = vi.fn<(enabled: boolean) => Promise<void>>(
     async () => undefined
   );
+  const applyCharacterBehaviorSettings = vi.fn();
   const options = {
     settings,
     secrets,
     providers,
     privacySessions,
     sessionId: 'desktop-session',
-    applyPetAlwaysOnTop
+    applyPetAlwaysOnTop,
+    applyCharacterBehaviorSettings
   };
   const service = new DesktopSettingsService(options);
   return {
@@ -92,6 +110,7 @@ function createFixture() {
     providers,
     privacySessions,
     applyPetAlwaysOnTop,
+    applyCharacterBehaviorSettings,
     readStoredPetAlwaysOnTop: () => storedPetAlwaysOnTop,
     setStoredPetAlwaysOnTop: (enabled: boolean) => { storedPetAlwaysOnTop = enabled; }
   };
@@ -115,6 +134,58 @@ describe('DesktopSettingsService', () => {
     expect(fixture.settings.savePetAlwaysOnTop).toHaveBeenCalledExactlyOnceWith(true);
     expect(dashboard).toHaveProperty('petAlwaysOnTop', true);
     expect(fixture.settings.savePrivacySettings).not.toHaveBeenCalled();
+  });
+
+  test('隐私档位成功原子落盘后才把完整快照通知行为 Director', async () => {
+    const fixture = createFixture();
+
+    await fixture.service.savePrivacySettings({
+      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      longTermMemory: false,
+      proactivityMode: 'passive'
+    });
+
+    expect(fixture.applyCharacterBehaviorSettings).toHaveBeenCalledExactlyOnceWith({
+      movementStopped: false,
+      proactivityMode: 'passive'
+    });
+    expect(fixture.settings.savePrivacySettings.mock.invocationCallOrder[0])
+      .toBeLessThan(fixture.applyCharacterBehaviorSettings.mock.invocationCallOrder[0]!);
+  });
+
+  test('本地 Gate 保存停止状态成功后才通知同一行为快照 sink', async () => {
+    const fixture = createFixture();
+
+    await fixture.service.saveMovementStopped(true);
+
+    expect(fixture.applyCharacterBehaviorSettings).toHaveBeenCalledExactlyOnceWith({
+      movementStopped: true,
+      proactivityMode: 'assistive'
+    });
+    expect(fixture.settings.saveMovementStopped.mock.invocationCallOrder[0])
+      .toBeLessThan(fixture.applyCharacterBehaviorSettings.mock.invocationCallOrder[0]!);
+  });
+
+  test('停止状态落盘失败时不通知行为快照 sink', async () => {
+    const fixture = createFixture();
+    fixture.settings.saveMovementStopped.mockRejectedValueOnce(new Error('WRITE_FAILED'));
+
+    await expect(fixture.service.saveMovementStopped(true)).rejects.toThrow('WRITE_FAILED');
+
+    expect(fixture.applyCharacterBehaviorSettings).not.toHaveBeenCalled();
+  });
+
+  test('隐私档位落盘失败时不通知行为快照 sink', async () => {
+    const fixture = createFixture();
+    fixture.settings.savePrivacySettings.mockRejectedValueOnce(new Error('WRITE_FAILED'));
+
+    await expect(fixture.service.savePrivacySettings({
+      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      longTermMemory: false,
+      proactivityMode: 'autonomous'
+    })).rejects.toThrow('WRITE_FAILED');
+
+    expect(fixture.applyCharacterBehaviorSettings).not.toHaveBeenCalled();
   });
 
   test('运行态应用失败时恢复旧窗口与动态图层且不写磁盘', async () => {
@@ -247,7 +318,7 @@ describe('DesktopSettingsService', () => {
         memory: false
       },
       longTermMemory: false,
-      proactivity: false
+      proactivity: true
     });
   });
 

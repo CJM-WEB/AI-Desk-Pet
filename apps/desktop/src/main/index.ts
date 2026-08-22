@@ -417,6 +417,7 @@ async function createApplicationWindows(
     join(storageDirectory, 'settings.json'),
     profileId => secrets.hasStoredSecret(profileId)
   );
+  const characterBehaviorSettings = await settingsStore.getCharacterBehaviorSettings();
   await restorePetLayerPreference({
     read: () => settingsStore.getPetAlwaysOnTop(),
     apply: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled),
@@ -430,7 +431,8 @@ async function createApplicationWindows(
     providers: providerRegistry,
     privacySessions,
     sessionId: 'desktop-session',
-    applyPetAlwaysOnTop: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled)
+    applyPetAlwaysOnTop: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled),
+    applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)
   });
   startupCleanup.add(() => desktopSettingsService.close());
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -475,6 +477,8 @@ async function createApplicationWindows(
     behavior: characterBehavior,
     motion: characterMotion,
     initialGeneration: 'startup',
+    initialSettings: characterBehaviorSettings,
+    saveMovementStopped: stopped => desktopSettingsService.saveMovementStopped(stopped),
     publishNotice: notice => publishCharacterBehaviorNotice(notice)
   });
   const characterSwitching = createCharacterActivationCoordinator({

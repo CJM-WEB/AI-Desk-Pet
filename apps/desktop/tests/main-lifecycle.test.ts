@@ -52,6 +52,18 @@ describe('Main 通用生命周期', () => {
     expect(source).not.toContain('applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)');
   });
 
+  test('生产启动先读取完整行为快照初始化唯一 Director 并接通设置 sink', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const readIndex = source.indexOf('await settingsStore.getCharacterBehaviorSettings()');
+    const directorIndex = source.indexOf('new CharacterBehaviorDirector({');
+
+    expect(readIndex).toBeGreaterThan(-1);
+    expect(readIndex).toBeLessThan(directorIndex);
+    expect(source).toContain('initialSettings: characterBehaviorSettings');
+    expect(source).toContain('saveMovementStopped: stopped => desktopSettingsService.saveMovementStopped(stopped)');
+    expect(source).toContain('applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)');
+  });
+
   test('正式生命周期不构造、初始化或关闭 MCP 运行实例', async () => {
     const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 

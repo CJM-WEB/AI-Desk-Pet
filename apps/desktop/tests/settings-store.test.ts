@@ -73,7 +73,7 @@ const secondaryProviderProfile: ProviderProfileV2 = {
 type NonMcpMutationCase = Readonly<{
   methodName: string;
   prepare?: (store: SettingsStore) => Promise<void>;
-  mutate: (store: SettingsStore) => Promise<void>;
+  mutate: (store: SettingsStore) => Promise<unknown>;
   verify?: (store: SettingsStore) => Promise<void>;
 }>;
 
@@ -201,6 +201,10 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
       longTermMemory: false,
       proactivityMode: 'passive'
     })
+  },
+  {
+    methodName: 'saveMovementStopped',
+    mutate: store => store.saveMovementStopped(true)
   },
   {
     methodName: 'savePetAlwaysOnTop',

@@ -91,6 +91,7 @@ const storedSettingsV2Schema = z.object({
   fileDisclosureAccepted: z.boolean(),
   petAlwaysOnTop: z.boolean().optional(),
   privacy: privacySettingsSchema.optional(),
+  movementStopped: z.boolean().optional(),
   mcpServers: z.array(mcpServerSettingsSchema).optional()
 }).strict();
 
@@ -104,6 +105,11 @@ export interface ProviderSettingsSnapshot {
   profiles: ProviderProfileV2[];
   route: ModelRouteConfig;
 }
+
+export type CharacterBehaviorSettingsSnapshot = Readonly<{
+  movementStopped: boolean;
+  proactivityMode: PrivacySettings['proactivityMode'];
+}>;
 
 function emptyModelRoute(): ModelRouteConfig {
   return {
@@ -126,6 +132,7 @@ function defaultSettings(): StoredSettings {
     fileDisclosureAccepted: false,
     petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
+    movementStopped: false,
     mcpServers: []
   };
 }
@@ -139,8 +146,22 @@ function defaultPrivacySettings(): PrivacySettings {
       memory: false
     },
     longTermMemory: false,
+    proactivityMode: 'autonomous'
+  };
+}
+
+function legacyPrivacySettings(): PrivacySettings {
+  return {
+    ...defaultPrivacySettings(),
     proactivityMode: 'assistive'
   };
+}
+
+function behaviorSettingsSnapshot(settings: StoredSettings): CharacterBehaviorSettingsSnapshot {
+  return Object.freeze({
+    movementStopped: settings.movementStopped ?? false,
+    proactivityMode: (settings.privacy ?? legacyPrivacySettings()).proactivityMode
+  });
 }
 
 function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
@@ -149,7 +170,8 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
       ...defaultSettings(),
       authorizedRoot: settings.authorizedRoot,
       petPosition: settings.petPosition,
-      fileDisclosureAccepted: settings.fileDisclosureAccepted
+      fileDisclosureAccepted: settings.fileDisclosureAccepted,
+      privacy: legacyPrivacySettings()
     };
   }
 
@@ -173,7 +195,8 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
     petPosition: settings.petPosition,
     fileDisclosureAccepted: settings.fileDisclosureAccepted,
     petAlwaysOnTop: false,
-    privacy: defaultPrivacySettings(),
+    privacy: legacyPrivacySettings(),
+    movementStopped: false,
     mcpServers: []
   };
 }
@@ -299,7 +322,8 @@ export class SettingsStore {
       return {
         ...v2.data,
         petAlwaysOnTop: v2.data.petAlwaysOnTop ?? false,
-        privacy: v2.data.privacy ?? defaultPrivacySettings(),
+        privacy: v2.data.privacy ?? legacyPrivacySettings(),
+        movementStopped: v2.data.movementStopped ?? false,
         mcpServers: v2.data.mcpServers ?? []
       };
     }
@@ -401,12 +425,27 @@ export class SettingsStore {
     ));
   }
 
-  savePrivacySettings(input: PrivacySettings): Promise<void> {
-    return this.enqueueWrite(async () => {
+  async getCharacterBehaviorSettings(): Promise<CharacterBehaviorSettingsSnapshot> {
+    return this.enqueue(async () => behaviorSettingsSnapshot(await this.load()));
+  }
+
+  savePrivacySettings(input: PrivacySettings): Promise<CharacterBehaviorSettingsSnapshot> {
+    return this.enqueue(async () => {
       const privacy = privacySettingsSchema.parse(input);
       const settings = await this.load();
       settings.privacy = privacy;
       await atomicWrite(this.file, settings);
+      return behaviorSettingsSnapshot(settings);
+    });
+  }
+
+  saveMovementStopped(input: boolean): Promise<CharacterBehaviorSettingsSnapshot> {
+    return this.enqueue(async () => {
+      const movementStopped = z.boolean().parse(input);
+      const settings = await this.load();
+      settings.movementStopped = movementStopped;
+      await atomicWrite(this.file, settings);
+      return behaviorSettingsSnapshot(settings);
     });
   }
 

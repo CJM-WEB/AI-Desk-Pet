@@ -77,6 +77,21 @@ describe('高级设置白名单 IPC', () => {
     expect(service.savePrivacySettings).not.toHaveBeenCalled();
   });
 
+  test('隐私保存负载拒绝混入停止锁，不向 Renderer 暴露写入通道', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = serviceDouble();
+    registerAdvancedSettingsIpc(ipcMain, service);
+
+    await expect(handlers.get(ipcChannels.settingsPrivacySave)?.({}, {
+      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      longTermMemory: false,
+      proactivityMode: 'assistive',
+      movementStopped: true
+    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    expect(service.savePrivacySettings).not.toHaveBeenCalled();
+    expect(Object.values(ipcChannels).some(channel => channel.includes('movement-stopped'))).toBe(false);
+  });
+
   test('保存 Provider 档案时严格校验并仅把密钥交给 Main 服务', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = serviceDouble();

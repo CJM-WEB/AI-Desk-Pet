@@ -10,7 +10,10 @@ import type {
   SettingsDashboardDto
 } from '../../shared/myself-api';
 import type { PrivacySessionRegistry } from '../agent/disclosure-policy';
-import type { PrivacySettings } from '../storage/settings-store';
+import type {
+  CharacterBehaviorSettingsSnapshot,
+  PrivacySettings
+} from '../storage/settings-store';
 import type { SecretSnapshot } from '../storage/secret-store';
 
 interface SettingsAccess {
@@ -22,7 +25,8 @@ interface SettingsAccess {
   deleteProviderProfile(profileId: string): Promise<void>;
   saveModelRoute(route: ModelRouteConfig): Promise<void>;
   getPrivacySettings(): Promise<PrivacySettings>;
-  savePrivacySettings(settings: PrivacySettings): Promise<void>;
+  savePrivacySettings(settings: PrivacySettings): Promise<CharacterBehaviorSettingsSnapshot>;
+  saveMovementStopped(stopped: boolean): Promise<CharacterBehaviorSettingsSnapshot>;
   getPetAlwaysOnTop(): Promise<boolean>;
   savePetAlwaysOnTop(enabled: boolean): Promise<void>;
   getPublic(): Promise<{
@@ -53,6 +57,7 @@ export interface DesktopSettingsServiceOptions {
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
   applyPetAlwaysOnTop(enabled: boolean): Promise<void> | void;
+  applyCharacterBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void;
 }
 
 export class DesktopSettingsService {
@@ -82,7 +87,7 @@ export class DesktopSettingsService {
           memory: false
         },
         longTermMemory: false,
-        proactivity: false
+        proactivity: true
       },
       petAlwaysOnTop,
       authorizedRoot: publicSettings.authorizedRoot
@@ -196,8 +201,15 @@ export class DesktopSettingsService {
   }
 
   async savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto> {
-    await this.options.settings.savePrivacySettings(input);
+    const snapshot = await this.options.settings.savePrivacySettings(input);
+    this.options.applyCharacterBehaviorSettings(snapshot);
     return this.getDashboard();
+  }
+
+  /** 此入口只供 Main 本地 Gate 使用，Renderer 不获得停止锁写权。 */
+  async saveMovementStopped(stopped: boolean): Promise<void> {
+    const snapshot = await this.options.settings.saveMovementStopped(stopped);
+    this.options.applyCharacterBehaviorSettings(snapshot);
   }
 
   /** 先提交运行态再落盘；任一步失败都把窗口层级恢复到旧值。 */

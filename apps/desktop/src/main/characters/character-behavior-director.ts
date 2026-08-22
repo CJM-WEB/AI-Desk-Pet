@@ -16,6 +16,7 @@ import {
 import type { CharacterMotionService } from './character-motion-service';
 import { parseExplicitCharacterBehavior } from
   '../conversation/explicit-character-behavior-gate';
+import type { CharacterBehaviorSettingsSnapshot } from '../storage/settings-store';
 
 export type CharacterMotionIntent =
   | Readonly<{ kind: 'wander'; scope: 'short' | 'work_area' }>
@@ -99,6 +100,8 @@ type CharacterBehaviorDirectorOptions = Readonly<{
   behavior: BehaviorServicePort;
   motion: MotionServicePort;
   initialGeneration: string;
+  initialSettings: CharacterBehaviorSettingsSnapshot;
+  saveMovementStopped(stopped: boolean): Promise<void>;
   publishNotice?: (notice: CharacterBehaviorNotice) => void;
 }>;
 
@@ -132,7 +135,8 @@ const ACTION_UNAVAILABLE_NOTICE: CharacterBehaviorNotice = {
  */
 export class CharacterBehaviorDirector {
   private generation: string;
-  private movementStopped = false;
+  private movementStopped: boolean;
+  private proactivityMode: CharacterBehaviorSettingsSnapshot['proactivityMode'];
   private trustedRuntimeBlocked = false;
   private dragging = false;
   private closed = false;
@@ -142,6 +146,8 @@ export class CharacterBehaviorDirector {
 
   constructor(private readonly options: CharacterBehaviorDirectorOptions) {
     this.generation = options.initialGeneration;
+    this.movementStopped = options.initialSettings.movementStopped;
+    this.proactivityMode = options.initialSettings.proactivityMode;
   }
 
   /** Gate 在能力路由与 Provider 前执行，本地明确移动仍须先通过动作授权。 */
@@ -155,9 +161,9 @@ export class CharacterBehaviorDirector {
     };
     const directive = prepared.explicitDirective;
     if (directive?.kind === 'stop_movement') {
-      this.applyExplicitMovementLock(true);
+      await this.options.saveMovementStopped(true);
     } else if (directive?.kind === 'resume_movement') {
-      this.applyExplicitMovementLock(false);
+      await this.options.saveMovementStopped(false);
     } else if (directive?.kind === 'move') {
       this.requestMotionBehavior(directive.motion, 'explicit');
     } else if (directive?.kind === 'play') {
@@ -192,7 +198,7 @@ export class CharacterBehaviorDirector {
         carrying: motion.carrying,
         movementStopped: this.movementStopped
       },
-      proactivityMode: 'assistive',
+      proactivityMode: this.proactivityMode,
       recentActions: catalogAvailable ? this.options.behavior.getRecentPublicActions() : []
     };
   }
@@ -203,8 +209,6 @@ export class CharacterBehaviorDirector {
     providerPlan: CharacterBehaviorPlan | null;
   }>): void {
     if (this.closed || input.generation !== this.generation) return;
-    if (input.explicitDirective?.kind === 'stop_movement') this.applyExplicitMovementLock(true);
-    if (input.explicitDirective?.kind === 'resume_movement') this.applyExplicitMovementLock(false);
     this.pendingChatPlan = input.providerPlan?.kind === 'none' ? null : input.providerPlan;
     this.pendingSuccessToken = null;
   }
@@ -325,6 +329,15 @@ export class CharacterBehaviorDirector {
     if (!this.closed) this.dragging = active;
   }
 
+  /** 只接收 Store 成功落盘后的完整快照，避免运行态与磁盘分叉。 */
+  applyBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void {
+    if (this.closed) return;
+    const shouldStopMotion = !this.movementStopped && snapshot.movementStopped;
+    this.movementStopped = snapshot.movementStopped;
+    this.proactivityMode = snapshot.proactivityMode;
+    if (shouldStopMotion) this.options.motion.stop();
+  }
+
   async handleActiveCharacterChanged(): Promise<void> {
     if (this.closed) return;
     this.clearPendingChat();
@@ -401,9 +414,4 @@ export class CharacterBehaviorDirector {
     return this.requestBehaviorPlan(plan, source);
   }
 
-  private applyExplicitMovementLock(stopped: boolean): void {
-    if (this.movementStopped === stopped) return;
-    this.movementStopped = stopped;
-    if (stopped) this.options.motion.stop();
-  }
 }
