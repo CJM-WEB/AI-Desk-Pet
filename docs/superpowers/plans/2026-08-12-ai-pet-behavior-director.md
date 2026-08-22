@@ -476,21 +476,21 @@ export type CharacterBehaviorSettingsSnapshot = Readonly<{
 }>;
 ```
 
-- [ ] **步骤 1：写迁移与权限 RED**
+- [x] **步骤 1：写迁移与权限 RED**
 
   新建或清空设置默认 `autonomous/false`；既有 V1 与缺失 `privacy` 的 V2 都保留 `assistive`，已有明确 passive/assistive/autonomous 原样保留，缺 `movementStopped` 一律补 false。stop 保存后重建 Store 为 true，resume 后为 false。分别构造 local Gate、Provider plan 与反思 plan，断言只有 Gate 调用 `saveMovementStopped()`；后两者零 Store、零锁、零运动副作用。将持久快照 true 应用到任务 4 的同一 Director 后，原 500ms idle、V2 idle 和 V1 wander 都被旧主动授权门挡住；恢复 false 后才恢复任务 4 的既有未停止行为。
 
-- [ ] **步骤 2：扩展 AST/MCP 与生产接线 RED**
+- [x] **步骤 2：扩展 AST/MCP 与生产接线 RED**
 
   把 `saveMovementStopped` 加入 `nonMcpMutationCases`。写入 HTTP 与 stdio MCP fixture 后运行每个普通写入口，断言 `getMcpServerSettings()` 深相等；AST 枚举与 `atomicWrite(this.file, settings)` 一一对应。断言 `index.ts` 在创建 Director 后先读取 `getCharacterBehaviorSettings()`，成功落盘后才经 DesktopSettingsService/IPC 把完整快照通知同一 Director；失败时 Provider、运动和锁均不变。
 
-- [ ] **步骤 3：运行 RED**
+- [x] **步骤 3：运行 RED**
 
   运行：`pnpm.cmd exec vitest run --project desktop apps/desktop/tests/settings-store.test.ts apps/desktop/tests/multi-provider-settings-store.test.ts apps/desktop/tests/desktop-settings-service.test.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/tests/main-conversation-composition.test.ts apps/desktop/tests/advanced-settings-ipc.test.ts apps/desktop/tests/main-lifecycle.test.ts`
 
   预期：FAIL，缺迁移分支、锁写权限或生产设置接线；失败不得来自其他模块。
 
-- [ ] **步骤 4：写最小 GREEN 并运行单元门**
+- [x] **步骤 4：写最小 GREEN 并运行单元门**
 
   `movementStopped` 位于 V2 根对象并作为 optional 迁移字段；`privacy` 保持原结构。`saveMovementStopped()` 与 `savePrivacySettings()` 在同一队列内原子写入并返回冻结完整快照。DesktopSettingsService 仅在 await 成功后调用 Director sink，并启用既有三档 UI；启动时用 Store 快照初始化同一个 Director。锁为 true 时该 Director 的旧主动授权门同时拦截原 idle 和 V1 wander，直至本地 Gate 成功恢复。
 
@@ -501,13 +501,13 @@ export type CharacterBehaviorSettingsSnapshot = Readonly<{
 
   预期：PASS；AST 与 MCP 两类 fixture 保真，Provider/反思无权写停止锁。
 
-- [ ] **步骤 5：启动桌宠重启验收并清理进程**
+- [x] **步骤 5：启动桌宠重启验收并清理进程**
 
   按“可见窗口会话与受限进程收口”启动本次开发会话。
 
   执行智能体通过可见窗口控制输入“停下”，确认包含原 idle/V1 wander 在内的自主或空间移动均被挡住；关闭开发会话、按上述流程处理候选后重启，确认仍停止；输入“恢复活动”，确认锁解除且后续允许移动，并记录观察。每次关闭都复用“可见窗口会话与受限进程收口”的基线、父链验证和逐 PID 处理流程。
 
-- [ ] **步骤 6：提交任务**
+- [x] **步骤 6：提交任务**
 
   ```powershell
   git add apps/desktop/src/main/storage/settings-store.ts apps/desktop/tests/settings-store.test.ts apps/desktop/tests/multi-provider-settings-store.test.ts apps/desktop/src/main/settings/desktop-settings-service.ts apps/desktop/tests/desktop-settings-service.test.ts apps/desktop/src/main/characters/character-behavior-director.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/src/main/conversation/main-conversation-composition.ts apps/desktop/tests/main-conversation-composition.test.ts apps/desktop/src/main/ipc/register-ipc.ts apps/desktop/tests/advanced-settings-ipc.test.ts apps/desktop/src/main/index.ts apps/desktop/tests/main-lifecycle.test.ts
