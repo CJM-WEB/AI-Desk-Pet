@@ -4,6 +4,8 @@ export default defineConfig({
   main: {
     build: {
       externalizeDeps: {
+        // SDK 已从正式运行图删除；显式外置只为让未来残留 import 保留包名并触发生产门禁。
+        include: ['@modelcontextprotocol/sdk'],
         exclude: [
           '@myself/agent-core',
           '@myself/character-assets',

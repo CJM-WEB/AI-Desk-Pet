@@ -8,7 +8,7 @@
   "scripts": {
     "postinstall": "install-electron",
     "dev": "electron-vite dev",
-    "build": "electron-vite build && node scripts/verify-preload-bundle.mjs",
+    "build": "electron-vite build && node scripts/verify-preload-bundle.mjs && node scripts/verify-production-mcp-boundary.mjs",
     "package:win": "pnpm build && electron-builder --win nsis --x64 --config electron-builder.yml",
     "preview": "electron-vite preview",
     "test": "vitest run --config vitest.config.ts",
@@ -22,7 +22,6 @@
     "validate:explorer-candidate:accuracy-core": "pnpm validate:explorer-layer:build && node scripts/run-explorer-window-layer-validation.mjs electron accuracy-core"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
     "@myself/agent-core": "workspace:*",
     "@myself/character-assets": "workspace:*",
     "@myself/character-runtime": "workspace:*",
@@ -39,6 +38,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

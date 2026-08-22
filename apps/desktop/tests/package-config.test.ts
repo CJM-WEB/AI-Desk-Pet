@@ -87,3 +87,28 @@ describe('electron-builder 配置', () => {
     expect(bridgeSetup).not.toMatch(/userData|authorized|habitat|characters/iu);
   });
 });
+
+describe('MCP 正式产物构建边界', () => {
+  test('SDK 不属于桌面端生产依赖', () => {
+    expect(packageJson.dependencies).not.toHaveProperty('@modelcontextprotocol/sdk');
+  });
+
+  test('保留的 MCP 内部模块使用固定版本开发依赖', () => {
+    expect(packageJson.devDependencies).toHaveProperty('@modelcontextprotocol/sdk', '1.29.0');
+  });
+
+  test('桌面构建会执行 MCP 正式产物校验器', () => {
+    expect(packageJson.scripts.build).toContain('verify-production-mcp-boundary.mjs');
+  });
+
+  test('Main 显式保留 SDK 包名供 fail-closed 门禁检测', async () => {
+    const configText = await readFile(new URL('../electron.vite.config.ts', import.meta.url), 'utf8');
+    const mainStart = configText.indexOf('main:');
+    const preloadStart = configText.indexOf('preload:', mainStart);
+    const mainExternalizeSection = configText.slice(mainStart, preloadStart);
+
+    expect(mainStart).toBeGreaterThanOrEqual(0);
+    expect(preloadStart).toBeGreaterThan(mainStart);
+    expect(mainExternalizeSection).toContain("include: ['@modelcontextprotocol/sdk']");
+  });
+});
