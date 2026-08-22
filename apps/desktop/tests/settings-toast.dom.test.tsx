@@ -48,18 +48,6 @@ function workspace(
       onTabChange={vi.fn()}
       onClose={vi.fn()}
       providerActions={{ onSave: vi.fn(), onTest: vi.fn(), onRouteSave: vi.fn(), onDelete: vi.fn() }}
-      mcpActions={{
-        launchSummary: null,
-        onCancelLaunch: vi.fn(),
-        onUpsert: vi.fn(),
-        onConfirmLaunch: vi.fn(),
-        onTest: vi.fn(),
-        onToggleServer: vi.fn(),
-        onToggleTool: vi.fn(),
-        onAuthorizeReadOnly: vi.fn(),
-        onRevokeReadOnly: vi.fn(),
-        onDelete: vi.fn()
-      }}
       privacyActions={{
         incognito: false,
         onSave: vi.fn(),

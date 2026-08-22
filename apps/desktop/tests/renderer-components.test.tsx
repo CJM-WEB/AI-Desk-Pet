@@ -706,18 +706,6 @@ describe('Renderer 可见组件', () => {
           onRouteSave: vi.fn(),
           onDelete: vi.fn()
         }}
-        mcpActions={{
-          launchSummary: null,
-          onCancelLaunch: vi.fn(),
-          onUpsert: vi.fn(),
-          onConfirmLaunch: vi.fn(),
-          onTest: vi.fn(),
-          onToggleServer: vi.fn(),
-          onToggleTool: vi.fn(),
-          onAuthorizeReadOnly: vi.fn(),
-          onRevokeReadOnly: vi.fn(),
-          onDelete: vi.fn()
-        }}
         privacyActions={{
           incognito: false,
           onSave: vi.fn(),

@@ -773,8 +773,7 @@ textarea {
 }
 
 .settings-shell .settings-header button,
-.icon-actions button,
-.server-actions > button {
+.icon-actions button {
   display: inline-grid;
   width: 44px;
   height: 44px;
@@ -804,7 +803,7 @@ textarea {
   z-index: 2;
   top: 58px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 0 18px;
   border-bottom: 1px solid #dce1e5;
   background: #ffffff;
@@ -918,8 +917,7 @@ textarea {
   background: #f0f2f3;
 }
 
-.label-with-icon,
-.safety-inline {
+.label-with-icon {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -960,7 +958,6 @@ textarea {
 }
 
 .form-footer,
-.server-actions,
 .root-actions {
   display: flex;
   align-items: center;
@@ -970,8 +967,7 @@ textarea {
 }
 
 .compact-toggle,
-.permission-row,
-.tool-row {
+.permission-row {
   display: flex;
   min-height: 44px;
   align-items: center;
@@ -982,8 +978,7 @@ textarea {
 }
 
 .compact-toggle input,
-.permission-row input,
-.tool-row input {
+.permission-row input {
   width: 18px;
   height: 18px;
   flex: 0 0 auto;
@@ -1021,15 +1016,12 @@ textarea {
 }
 
 .profile-list,
-.mcp-list,
-.permission-list,
-.tool-list {
+.permission-list {
   display: grid;
   gap: 8px;
 }
 
 .profile-row,
-.mcp-server,
 .authorized-root {
   min-width: 0;
   border: 1px solid #e0e4e7;
@@ -1039,7 +1031,6 @@ textarea {
 }
 
 .profile-row,
-.mcp-server > header,
 .authorized-root {
   display: flex;
   align-items: center;
@@ -1048,7 +1039,6 @@ textarea {
 }
 
 .profile-row > div:first-child,
-.server-title > div,
 .authorized-root > div:first-child {
   display: grid;
   min-width: 0;
@@ -1056,14 +1046,12 @@ textarea {
 }
 
 .profile-row strong,
-.server-title strong,
 .authorized-root strong {
   color: #263039;
   font-size: 12px;
 }
 
 .profile-row span,
-.server-title span,
 .authorized-root span {
   overflow: hidden;
   color: #6b7882;
@@ -1072,8 +1060,7 @@ textarea {
   white-space: nowrap;
 }
 
-.icon-actions,
-.server-title {
+.icon-actions {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1113,109 +1100,23 @@ textarea {
   background: #e8f3ec;
 }
 
-.mcp-server {
-  display: grid;
-  gap: 8px;
-}
-
-.server-actions {
-  margin: 0;
-}
-
-.status-label {
-  flex: 0 0 auto;
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.status-connected {
-  color: #287449;
-}
-
-.status-error {
-  color: #a33b35;
-}
-
-.status-disconnected {
-  color: #6a7781;
-}
-
-.tool-row,
 .permission-row {
   justify-content: space-between;
   border-top: 1px solid #e4e7e9;
   padding: 7px 2px 0;
 }
 
-.tool-row > span,
 .permission-row > span {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.tool-row small,
 .permission-row small {
   color: #73808a;
   font-size: 10px;
   font-weight: 400;
   line-height: 1.45;
-}
-
-.tool-trust-actions {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-}
-
-.tool-trust-actions button {
-  width: 44px;
-  min-width: 44px;
-  padding: 0;
-}
-
-.safety-inline {
-  margin: 10px 0 0;
-  color: #8c4b1e;
-  font-size: 11px;
-}
-
-.mcp-form {
-  margin-top: 12px;
-}
-
-.launch-confirmation {
-  border: 1px solid #d0aa78;
-  border-radius: 8px;
-  padding: 14px;
-  background: #fffaf2;
-}
-
-.launch-confirmation dl {
-  display: grid;
-  gap: 6px;
-  margin: 0 0 12px;
-}
-
-.launch-confirmation dl > div {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  gap: 8px;
-}
-
-.launch-confirmation dt {
-  color: #687681;
-  font-size: 10px;
-}
-
-.launch-confirmation dd {
-  min-width: 0;
-  margin: 0;
-  color: #263039;
-  font-family: Consolas, monospace;
-  font-size: 10px;
-  overflow-wrap: anywhere;
 }
 
 .dialog-actions {

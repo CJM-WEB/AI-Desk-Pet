@@ -2,15 +2,15 @@
 
 import { renderToStaticMarkup } from 'react-dom/server';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, test, vi } from 'vitest';
 import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import { ProviderSettings } from '../src/renderer/src/settings/ProviderSettings';
-import { McpSettings } from '../src/renderer/src/settings/McpSettings';
 import { PrivacySettings } from '../src/renderer/src/settings/PrivacySettings';
 import {
   availableSettingsTabs,
-  resolveSettingsTab,
-  SettingsWorkspace
+  SettingsWorkspace,
+  type SettingsTab,
+  type SettingsWorkspaceProps
 } from '../src/renderer/src/settings/SettingsView';
 
 const dashboard: SettingsDashboardDto = {
@@ -127,6 +127,11 @@ const dashboard: SettingsDashboardDto = {
 afterEach(cleanup);
 
 describe('多 Provider 设置组件', () => {
+  test('设置工作区不再公开工具标签或 MCP 操作 Props', () => {
+    expectTypeOf<'tools'>().not.toMatchTypeOf<SettingsTab>();
+    expectTypeOf<SettingsWorkspaceProps>().not.toHaveProperty('mcpActions');
+  });
+
   test('普通模式聚焦 Provider、Model 和 API Key，高级字段折叠', () => {
     const markup = renderToStaticMarkup(
       <ProviderSettings
@@ -268,71 +273,6 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('会把必要上下文发送给另一家提供商');
   });
 
-  test('MCP 展示状态、逐工具开关和未授权工具的确认入口', () => {
-    const markup = renderToStaticMarkup(
-      <McpSettings
-        servers={dashboard.mcpServers}
-        busy={false}
-        launchSummary={null}
-        onCancelLaunch={vi.fn()}
-        onUpsert={vi.fn()}
-        onConfirmLaunch={vi.fn()}
-        onTest={vi.fn()}
-        onToggleServer={vi.fn()}
-        onToggleTool={vi.fn()}
-        onAuthorizeReadOnly={vi.fn()}
-        onRevokeReadOnly={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('已连接');
-    expect(markup).toContain('read-note');
-    expect(markup).toContain('delete-note');
-    expect(markup).toContain('只有经本机逐工具确认的只读工具才可启用');
-    expect(markup).toContain('aria-label="授权 delete-note 为只读"');
-    expect(markup).toContain('aria-label="撤销 read-note 只读授权"');
-    expect(markup).toMatch(/aria-label="delete-note 工具开关"[^>]*>/u);
-    expect(markup).not.toMatch(/aria-label="delete-note 工具开关"[^>]*disabled=""/u);
-    expect(markup).not.toContain('private-token');
-  });
-
-  test('stdio 启动摘要明确展示命令、参数、目录和环境变量名', () => {
-    const markup = renderToStaticMarkup(
-      <McpSettings
-        servers={[]}
-        busy={false}
-        launchSummary={{
-          serverId: 'local',
-          command: 'C:\\tools\\mcp.exe',
-          args: ['--stdio'],
-          cwd: 'C:\\workspace',
-          explicitEnvNames: ['TOKEN'],
-          inheritedEnvNames: [],
-          fingerprint: 'fingerprint'
-        }}
-        onCancelLaunch={vi.fn()}
-        onUpsert={vi.fn()}
-        onConfirmLaunch={vi.fn()}
-        onTest={vi.fn()}
-        onToggleServer={vi.fn()}
-        onToggleTool={vi.fn()}
-        onAuthorizeReadOnly={vi.fn()}
-        onRevokeReadOnly={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
-
-    expect(markup).toContain('确认启动本地服务');
-    expect(markup).toContain('C:\\tools\\mcp.exe');
-    expect(markup).toContain('--stdio');
-    expect(markup).toContain('C:\\workspace');
-    expect(markup).toContain('TOKEN');
-    expect(markup).toContain('aria-modal="true"');
-    expect(markup).toContain('取消');
-    expect(markup).not.toContain('fingerprint');
-  });
-
   test('隐私类别独立开关、主动性分段控件和权限撤销均可访问', () => {
     const onPetAlwaysOnTopChange = vi.fn();
     const markup = renderToStaticMarkup(
@@ -382,14 +322,13 @@ describe('多 Provider 设置组件', () => {
     expect(onPetAlwaysOnTopChange).toHaveBeenCalledExactlyOnceWith(true);
   });
 
-  test('MCP 禁用时设置导航不公开工具页且旧 tools 状态回退到模型档案', () => {
+  test('设置导航只公开三个现行分类', () => {
     expect(availableSettingsTabs()).toEqual(['models', 'privacy', 'local']);
-    expect(resolveSettingsTab('tools')).toBe('models');
 
     const markup = renderToStaticMarkup(
       <SettingsWorkspace
         dashboard={dashboard}
-        activeTab="tools"
+        activeTab="models"
         busy={false}
         notice={null}
         onDismissNotice={vi.fn()}
@@ -399,18 +338,6 @@ describe('多 Provider 设置组件', () => {
           onSave: vi.fn(),
           onTest: vi.fn(),
           onRouteSave: vi.fn(),
-          onDelete: vi.fn()
-        }}
-        mcpActions={{
-          launchSummary: null,
-          onCancelLaunch: vi.fn(),
-          onUpsert: vi.fn(),
-          onConfirmLaunch: vi.fn(),
-          onTest: vi.fn(),
-          onToggleServer: vi.fn(),
-          onToggleTool: vi.fn(),
-          onAuthorizeReadOnly: vi.fn(),
-          onRevokeReadOnly: vi.fn(),
           onDelete: vi.fn()
         }}
         privacyActions={{
@@ -427,7 +354,7 @@ describe('多 Provider 设置组件', () => {
     );
 
     expect(markup).toContain('模型档案');
-    expect(markup).not.toContain('MCP 服务');
+    expect(markup).not.toContain('工具');
   });
 
   test('角色工作室入口保留可见文案并使用专属布局职责', () => {
@@ -444,18 +371,6 @@ describe('多 Provider 设置组件', () => {
           onSave: vi.fn(),
           onTest: vi.fn(),
           onRouteSave: vi.fn(),
-          onDelete: vi.fn()
-        }}
-        mcpActions={{
-          launchSummary: null,
-          onCancelLaunch: vi.fn(),
-          onUpsert: vi.fn(),
-          onConfirmLaunch: vi.fn(),
-          onTest: vi.fn(),
-          onToggleServer: vi.fn(),
-          onToggleTool: vi.fn(),
-          onAuthorizeReadOnly: vi.fn(),
-          onRevokeReadOnly: vi.fn(),
           onDelete: vi.fn()
         }}
         privacyActions={{

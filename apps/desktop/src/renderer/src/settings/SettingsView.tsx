@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Box, Database, ShieldCheck, Wrench, X } from 'lucide-react';
+import { Bot, Box, Database, ShieldCheck, X } from 'lucide-react';
 import type {
-  McpServerInput,
   MyselfApi,
   PrivacySettingsDto,
   SaveProviderProfileInput,
@@ -9,18 +8,13 @@ import type {
 } from '../../../shared/myself-api';
 import type { LocalDataScope } from '../../../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
-import { desktopRuntimeCapabilities } from '../../../shared/desktop-runtime-capabilities';
 import { ProviderSettings } from './ProviderSettings';
-import {
-  McpSettings,
-  type McpLaunchConfirmation
-} from './McpSettings';
 import { PrivacySettings } from './PrivacySettings';
 import {
   TransientToastLayer,
   type TransientToast
 } from '../components/TransientToastLayer';
-export type SettingsTab = 'models' | 'tools' | 'privacy' | 'local';
+export type SettingsTab = 'models' | 'privacy' | 'local';
 type Notice = TransientToast | null;
 type NoticePayload = Omit<TransientToast, 'id'>;
 
@@ -74,18 +68,6 @@ export interface SettingsWorkspaceProps {
     onRouteSave(route: ModelRouteConfig): void;
     onDelete(profileId: string): void;
   };
-  mcpActions: {
-    launchSummary: McpLaunchConfirmation | null;
-    onCancelLaunch(): void;
-    onUpsert(input: McpServerInput): void;
-    onConfirmLaunch(serverId: string, fingerprint: string): void;
-    onTest(serverId: string): void;
-    onToggleServer(serverId: string, enabled: boolean): void;
-    onToggleTool(serverId: string, toolName: string, enabled: boolean): void;
-    onAuthorizeReadOnly(serverId: string, toolName: string): void;
-    onRevokeReadOnly(serverId: string, toolName: string): void;
-    onDelete(serverId: string): void;
-  };
   privacyActions: {
     incognito: boolean;
     onSave(input: PrivacySettingsDto): void;
@@ -100,24 +82,16 @@ export interface SettingsWorkspaceProps {
 
 const tabs = [
   ['models', '模型', Bot],
-  ['tools', '工具', Wrench],
   ['privacy', '隐私', ShieldCheck],
   ['local', '本地数据', Database]
 ] as const;
 
 export function availableSettingsTabs(): readonly SettingsTab[] {
-  return tabs
-    .filter(([id]) => id !== 'tools' || desktopRuntimeCapabilities.mcp)
-    .map(([id]) => id);
-}
-
-export function resolveSettingsTab(tab: SettingsTab): SettingsTab {
-  return tab === 'tools' && !desktopRuntimeCapabilities.mcp ? 'models' : tab;
+  return tabs.map(([id]) => id);
 }
 
 export function SettingsWorkspace(props: SettingsWorkspaceProps) {
-  const activeTab = resolveSettingsTab(props.activeTab);
-  const visibleTabs = tabs.filter(([id]) => availableSettingsTabs().includes(id));
+  const activeTab = props.activeTab;
 
   return (
     <main className="settings-shell">
@@ -143,7 +117,7 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
         ariaLabel="设置提示"
       />
       <nav className="settings-tabs" aria-label="设置分类">
-        {visibleTabs.map(([id, label, Icon]) => (
+        {tabs.map(([id, label, Icon]) => (
           <button
             key={id}
             type="button"
@@ -159,13 +133,6 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
           dashboard={props.dashboard}
           busy={props.busy}
           {...props.providerActions}
-        />
-      ) : null}
-      {activeTab === 'tools' && desktopRuntimeCapabilities.mcp ? (
-        <McpSettings
-          servers={props.dashboard.mcpServers}
-          busy={props.busy}
-          {...props.mcpActions}
         />
       ) : null}
       {activeTab === 'privacy' ? (
@@ -200,7 +167,6 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('models');
   const [busy, setBusy] = useState(false);
   const [incognito, setIncognito] = useState(false);
-  const [launchSummary, setLaunchSummary] = useState<McpLaunchConfirmation | null>(null);
   const noticeSequence = useRef(0);
   const [notice, setNotice] = useState<Notice>({
     id: 'settings-toast-0',
@@ -267,7 +233,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       busy={busy}
       notice={notice}
       onDismissNotice={dismissNotice}
-      onTabChange={tab => setActiveTab(resolveSettingsTab(tab))}
+      onTabChange={setActiveTab}
       onClose={() => window.close()}
       providerActions={{
         onSave: input => void run(() => api.saveProviderProfile(input), '模型档案已保存。'),
@@ -283,59 +249,6 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
         onDelete: profileId => void run(
           () => api.deleteProviderProfile(profileId),
           '模型档案已删除。'
-        )
-      }}
-      mcpActions={{
-        launchSummary,
-        onCancelLaunch: () => {
-          setLaunchSummary(null);
-          showNotice({ tone: 'info', text: '已取消启动 MCP 服务。' });
-        },
-        onUpsert: input => void run(async () => {
-          const result = await api.upsertMcpServer(input);
-          if (result.kind === 'confirmation_required') {
-            setLaunchSummary({ serverId: input.id, ...result.summary });
-            return {
-              notice: {
-                tone: 'info' as const,
-                text: '请核对启动摘要；确认前服务不会启动。'
-              }
-            };
-          }
-          setLaunchSummary(null);
-          return result.dashboard;
-        }, 'MCP 配置已保存。'),
-        onConfirmLaunch: (serverId, fingerprint) => void run(async () => {
-          const result = await api.confirmMcpLaunch(serverId, fingerprint);
-          setLaunchSummary(null);
-          return result;
-        }, '启动边界已确认。'),
-        onTest: serverId => void run(async () => {
-          const result = await api.testMcpServer(serverId);
-          return {
-            dashboard: await api.getSettingsDashboard(),
-            notice: { tone: result.ok ? 'success' : 'error', text: result.message }
-          };
-        }, 'MCP 连接测试完成。'),
-        onToggleServer: (serverId, enabled) => void run(
-          () => api.setMcpServerEnabled(serverId, enabled),
-          '服务状态已更新。'
-        ),
-        onToggleTool: (serverId, toolName, enabled) => void run(
-          () => api.setMcpToolEnabled(serverId, toolName, enabled),
-          '工具状态已更新。'
-        ),
-        onAuthorizeReadOnly: (serverId, toolName) => void run(
-          () => api.authorizeMcpToolReadOnly(serverId, toolName),
-          '本地只读授权已保存，工具已启用。'
-        ),
-        onRevokeReadOnly: (serverId, toolName) => void run(
-          () => api.revokeMcpToolReadOnly(serverId, toolName),
-          '本地只读授权已撤销，工具已禁用。'
-        ),
-        onDelete: serverId => void run(
-          () => api.deleteMcpServer(serverId),
-          'MCP 服务已删除。'
         )
       }}
       privacyActions={{
