@@ -159,7 +159,7 @@ apps/desktop/tests/mcp-manager.test.ts
 
 ### 第一层：无设置变更的生命周期字节不变
 
-正式启动、设置 Dashboard、会话准备、普通聊天、文件任务与应用关闭不得调用 MCP 专用 getter、save、delete、Secret 读取或清理方法。不存在静默迁移、禁用标记写入或后台格式修复。隔离 `userData` 在上述无设置变更流程前后，MCP 设置文件片段与 `mcp:remote-tools` Secret 必须逐字节不变。
+正式启动、设置 Dashboard、会话准备、普通聊天、文件任务与应用关闭不得调用 MCP 专用 getter、save、delete、Secret 读取或清理方法。不存在静默迁移、禁用标记写入或后台格式修复。完成首次 Provider/授权配置后，在旧进程已经关闭的 restart 回调中预置 MCP 数据并读取整个 `settings.json` 与 `mcp:remote-tools` Secret 槽的原始 Buffer；下一次启动只执行普通聊天和只读文件任务，再在第二个 restart 回调中读取相同两个完整 Buffer。两次必须分别 `Buffer.equals()`，不解析、不重新序列化，也不允许用“非 MCP 字段可以变化”放宽第一层证据。
 
 ### 第二层：普通设置原子重写逻辑保留
 
@@ -173,13 +173,13 @@ characterization 矩阵必须覆盖 SettingsStore 现有的全部非 MCP `atomic
 
 用户明确选择“清除全部本地数据”时，`SettingsStore.clearAll()` 和 `SecretStore.clearAll()` 继续清除全部设置与 Secret，其中包括 MCP 数据。这是全局清除语义，不属于 MCP 专用删除，也不得为 MCP 增加例外保留。
 
-Secret characterization 使用普通 Provider ID 与 `mcp:remote-tools` 两个独立条目：清除普通 Provider 只删除前者并逐字节保留后者；`SecretStore.clearAll()` 明确清除二者。
+Secret characterization 使用普通 Provider ID 与 `mcp:remote-tools` 两个独立条目：清除普通 Provider 前后直接读取并比较 `mcp:remote-tools` 槽文件的原始 Buffer；明文读取相等只能作为辅助。`SecretStore.clearAll()` 明确清除两个槽。
 
 ## 安全与隐私
 
 - 所有四类 Renderer 共用的正式 preload 不再暴露 MCP 系统能力表面。
 - Main 不注册 MCP IPC，Renderer 即使构造旧 channel 字符串也没有正式 handler 可达。
-- Main 不实例化 Manager，因此应用启动、普通聊天、文件任务和退出均不能启动 MCP 子进程或建立 HTTP 连接。
+- Task 3 的 Main 正式生产图测试与 Task 4 的真实 bundle 门禁共同证明 Manager、SDK 与连接入口不可达。本轮不新增 MCP HTTP 命中计数器或子进程哨兵，也不把普通日志无匹配冒充动态零连接证据。
 - 正式 Agent 工具集合继续由现有受控文件与 PowerShell链决定；不得从保留源码动态发现或注册 `mcp.*` 工具。
 - 保留数据不进入 Dashboard、Renderer、普通日志、Provider 请求或公开事件。
 - 生产边界测试使用公开键、handler Map 与 bundle 精确标记，不读取或输出用户的 MCP 设置、URL、命令、密钥或路径。
@@ -258,7 +258,7 @@ RED 失败必须来自目标入口仍存在；导入错误、测试夹具错误�
 - Renderer：组件类型契约精确三标签、无 MCP Props/文案/组件，typecheck、生产 bundle 和 Electron E2E 共同作为主证据；源码正则只辅助定位，共享 CSS 与 Explorer 生产边界无回归。
 - API/Preload/IPC：8 个公开键逐键不存在且与实际键集合交集为空；8 个旧 channel 均无 handler。
 - Main：设置服务无 MCP Options/方法；会话快照无未消费工具 seam；Manager 内部测试继续通过。
-- 持久化：无设置变更的启动/聊天/文件任务/关闭前后 MCP 设置与 Secret 字节不变；全部非 MCP 原子写入口逻辑保留完整 `mcpServers`；单 Provider Secret 清除保留 `mcp:remote-tools`；`clearAll` 明确清除二者。
+- 持久化第一层：restart 回调中直接比较无设置变更的启动/聊天/只读文件任务/关闭前后整个 `settings.json` 与 MCP Secret 槽原始 Buffer；第二层：全部非 MCP 原子写入口逻辑保留完整 `mcpServers`；第三层：单 Provider Secret 清除逐字节保留 `mcp:remote-tools` 槽，`clearAll` 明确清除全部设置与两个 Secret 槽。
 - 生产构建：Main、Preload、Renderer 不含规定的正式入口标记。
 - 安全与集成：普通聊天、文件工具、PowerShell、权限和配置失效语义无回归。
 - Electron E2E：设置页无入口，`window.myself` 对 8 个 MCP key 逐键不存在且交集为空，Provider 工具表无 MCP 工具；定向执行前用 `--list` 证明布局用例、正式白名单纵向用例和隔离 `userData` 生命周期用例均被匹配。
@@ -288,7 +288,7 @@ RED 失败必须来自目标入口仍存在；导入错误、测试夹具错误�
 - SDK 版本 `1.29.0` 只位于 desktop `devDependencies`；生产构建和精确 bundle 门禁通过。
 - Main externalization 显式包含 SDK，残留 import 会保留包名并 fail-closed；该配置没有恢复生产依赖。
 - MCP Manager、Store、Adapter、测试 Server 和 SettingsStore MCP 测试继续通过。
-- 隔离 `userData` 的无设置变更 E2E 证明启动、聊天、文件任务与关闭前后 MCP 设置和 `mcp:remote-tools` Secret 字节不变；全部非 MCP 原子写逻辑保留 `mcpServers`；全量本地数据清除仍清除 MCP 设置与 Secret。
+- 隔离 `userData` 的无设置变更 E2E 在两次 restart 回调中证明启动、聊天、只读文件任务与关闭前后整个 `settings.json` 和 `mcp:remote-tools` Secret 槽原始 Buffer 完全相等；全部非 MCP 原子写逻辑保留 `mcpServers`；全量本地数据清除仍清除 MCP 设置与 Secret。
 - `pnpm.cmd verify:desktop`、`git diff --check` 和固定范围差异检查通过。
 
 ### 人工验收边界
@@ -298,7 +298,7 @@ RED 失败必须来自目标入口仍存在；导入错误、测试夹具错误�
 1. 桌宠、聊天、设置和角色工作台正常打开。
 2. 设置页只有“模型”“隐私”“本地数据”三类入口，不出现“工具”或 MCP 表单。
 3. 普通聊天和一项受控文件任务仍可进入各自现有流程。
-4. 退出应用后没有新出现的 MCP 子进程。
+4. 退出应用后人工观察没有新出现的 MCP 子进程；当前没有自动进程哨兵，此项未观察时必须标记“待用户人工确认”。
 
 当前不生成安装包，因此“干净环境安装包不携带 MCP SDK”标记为待正式打包阶段人工确认，不能由本轮生产 bundle 结果冒充通过。
 

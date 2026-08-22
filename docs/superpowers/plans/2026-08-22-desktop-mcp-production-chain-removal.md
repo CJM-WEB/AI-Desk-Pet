@@ -685,7 +685,7 @@ git commit -m "build(desktop): 阻止 MCP 进入生产产物"
 - Modify: `apps/desktop/tests/settings-ipc.test.ts`
 - Modify: `tests/e2e/desktop.spec.ts`
 - Modify: `tests/e2e/desktop-settings-layout.spec.ts`
-- Modify if needed: `tests/fixtures/electron-app.ts`
+- Reference: `tests/fixtures/electron-app.ts`
 - Modify: `docs/operations/lightweight-agent-acceptance.md`
 
 **Interfaces:**
@@ -726,14 +726,23 @@ test.each([
 ```ts
 await store.save('provider-main', 'provider-secret', true);
 await store.save('mcp:remote-tools', 'mcp-secret', true);
+const mcpSlotFile = join(
+  `${file}.profiles`,
+  `${createHash('sha256').update('mcp:remote-tools').digest('hex')}.bin`
+);
+const beforeMcpSlot = await readFile(mcpSlotFile);
 
 await store.clear('provider-main');
+const afterMcpSlot = await readFile(mcpSlotFile);
+expect(afterMcpSlot.equals(beforeMcpSlot)).toBe(true);
 await expect(store.readForProviderCall('provider-main')).rejects.toThrow();
 await expect(store.readForProviderCall('mcp:remote-tools')).resolves.toBe('mcp-secret');
 
 await store.clearAll();
 await expect(store.readForProviderCall('mcp:remote-tools')).rejects.toThrow();
 ```
+
+原始槽文件 Buffer 相等是单项清除不影响 MCP Secret 的主证据；最后一条明文读取相等只作为辅助。`clearAll()` 后还要断言普通 Provider 槽和 MCP 槽文件都不存在。
 
 在 `settings-store.test.ts` 明确 Settings 全量清除：
 
@@ -758,26 +767,34 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts `
 
 Expected: PASS。若 characterization 失败，先修复普通写入丢失 `mcpServers` 或 Secret 清除越界的最小原因；不得新增 MCP 专用迁移、启动读取或特殊清理。
 
-- [ ] **Step 4: 增加隔离 userData 生命周期字节快照 E2E**
+- [ ] **Step 4: 用现有 restart 钩子增加完整文件字节快照 E2E**
 
-在 `desktop.spec.ts` 复用隔离 `userDataDirectory` 启动夹具；仅当当前夹具不能预置和回读设置/Secret 文件时，最小扩展 `tests/fixtures/electron-app.ts`，不向正式 preload 增加探针。
+在 `desktop.spec.ts` 直接复用现有 `createElectronAppFixture({ beforeRestart })` 与 `fixture.restart()`；不修改正式 preload，也不新增 E2E 进程、网络或文件探针。现有 `restart()` 已保证先 `cleanupCurrentProcess()`，再调用 `beforeRestart(directories)`，最后启动新进程。
 
-启动前预置有效 V2 `settings.json`，其中 `mcpServers` 使用 `remote-tools` 完整 fixture；预置对应 Secret ID `mcp:remote-tools`。测试侧生成：
+测试使用 restart 序号执行以下严格顺序：
+
+1. 首次启动正常完成 Provider 档案、模型路由、文件隐私授权和授权根配置；该阶段允许正常设置写入。
+2. 调用第一次 `fixture.restart()`。第一次 `beforeRestart` 回调发生在旧进程关闭后：用保留的 `SettingsStore.saveMcpServerSettings(remoteToolsFixture)` 预置 MCP 设置；从已保存的普通 Provider Secret 槽复制一份合法加密 Buffer 到 `mcp:remote-tools` 槽。预置完成后立即读取整个 `settings.json` 和整个 MCP Secret 槽为基线 Buffer。测试代码不自行解析或重新序列化设置文件。
+3. 第二次启动只发送普通聊天“你好呀”和一个隔离授权根内的只读文件任务。不得打开设置、保存隐私、改变授权根、移动桌宠、执行写文件或调用任何其他普通设置 mutator。
+4. 调用第二次 `fixture.restart()`。第二次 `beforeRestart` 回调同样发生在旧进程关闭后：直接读取整个 `settings.json` 与整个 `mcp:remote-tools` 槽原始 Buffer，并与基线比较。
+
+回调中的核心证据为：
 
 ```ts
-const beforeMcpSettingsBytes = Buffer.from(JSON.stringify(beforeSettings.mcpServers));
-const beforeMcpSecretBytes = await readFile(mcpSecretFile);
+if (restartCount === 1) {
+  beforeSettingsBuffer = await readFile(settingsFile);
+  beforeMcpSecretBuffer = await readFile(mcpSecretSlotFile);
+} else if (restartCount === 2) {
+  const afterSettingsBuffer = await readFile(settingsFile);
+  const afterMcpSecretBuffer = await readFile(mcpSecretSlotFile);
+  expect(afterSettingsBuffer.equals(beforeSettingsBuffer)).toBe(true);
+  expect(afterMcpSecretBuffer.equals(beforeMcpSecretBuffer)).toBe(true);
+}
 ```
 
-依次执行：启动应用、发送普通聊天“你好呀”、完成一项隔离授权根内的只读文件任务、关闭应用。关闭后从磁盘重新读取并生成同一快照：
+禁止 `JSON.parse()`、`JSON.stringify()` 或只比较 `mcpServers` 字段；整个 `settings.json` 不允许任何非 MCP 字段变化。`dispose()` 会删除隔离 `userData`，因此两份基线读取、最终读取和 `Buffer.equals()` 必须全部在相应 `beforeRestart` 回调中完成；不能在 `dispose()` 之后补做断言。第二次 restart 会继续启动第三个进程，断言完成后只负责安全 `dispose()`。
 
-```ts
-expect(Buffer.from(JSON.stringify(afterSettings.mcpServers)))
-  .toEqual(beforeMcpSettingsBytes);
-expect(await readFile(mcpSecretFile)).toEqual(beforeMcpSecretBytes);
-```
-
-这里比较 MCP 设置字段的序列化字节与 MCP Secret 文件字节；允许同一 `settings.json` 中非 MCP 字段因正常窗口生命周期变化。测试还断言日志或进程探针没有 MCP 连接、HTTP 请求或子进程启动。测试代码不得打印 Secret、命令、URL 或 userData 路径。
+本 E2E 不声明动态证明“零 MCP HTTP 请求”或“零 MCP 子进程”，因为当前没有可复用的明确命中计数器或进程哨兵。不可达性由 Task 3 Main 正式生产图与 Task 4 真实 bundle 门禁证明；退出后的子进程观察继续标记为待人工确认，不为本项新增检测机制。
 
 - [ ] **Step 5: 增加 Electron 正式 API 边界断言**
 
@@ -882,7 +899,7 @@ Expected:
 - [ ] **Step 11: 提交 Task 5**
 
 ```powershell
-git add apps/desktop/tests/settings-store.test.ts apps/desktop/tests/multi-provider-settings-store.test.ts apps/desktop/tests/provider-secret-vault.test.ts apps/desktop/tests/settings-ipc.test.ts tests/e2e/desktop.spec.ts tests/e2e/desktop-settings-layout.spec.ts tests/fixtures/electron-app.ts docs/operations/lightweight-agent-acceptance.md
+git add apps/desktop/tests/settings-store.test.ts apps/desktop/tests/multi-provider-settings-store.test.ts apps/desktop/tests/provider-secret-vault.test.ts apps/desktop/tests/settings-ipc.test.ts tests/e2e/desktop.spec.ts tests/e2e/desktop-settings-layout.spec.ts docs/operations/lightweight-agent-acceptance.md
 git commit -m "test(desktop): 验收 MCP 正式链清理"
 ```
 
