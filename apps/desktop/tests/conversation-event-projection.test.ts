@@ -46,6 +46,25 @@ describe('ConversationEventProjection', () => {
     expect(pet.send).not.toHaveBeenCalled();
   });
 
+  test('同一 Director 先更新 blockers 再向窗口投影事件', () => {
+    const order: string[] = [];
+    const chat = target();
+    const pet = target();
+    chat.send.mockImplementation(() => { order.push('chat'); });
+    pet.send.mockImplementation(() => { order.push('pet'); });
+    const projection = new ConversationEventProjection({
+      getChatTarget: () => chat,
+      getPetTarget: () => pet,
+      behavior: {
+        handleTaskEvent: vi.fn(() => { order.push('blockers'); })
+      }
+    });
+
+    projection.publish({ type: 'phase', phase: 'thinking' });
+
+    expect(order).toEqual(['blockers', 'chat', 'pet']);
+  });
+
   test('pet 只接收严格 phase，且不接收票据、命令、正文或披露请求', () => {
     const chat = target();
     const pet = target();

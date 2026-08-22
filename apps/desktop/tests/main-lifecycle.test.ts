@@ -44,12 +44,24 @@ describe('Main 通用生命周期', () => {
     expect(source.match(/new CharacterBehaviorDirector\(/gu)).toHaveLength(1);
     expect(source).toContain('behavior: characterBehaviorDirector');
     expect(source).toContain('characterBehaviorDirector.applyPlaybackFeedback({');
-    expect(source).toContain('characterBehaviorDirector.handleIdleDue();');
+    expect(source).toContain('characterBehaviorDirector.advance();');
     expect(source).toContain('characterBehaviorDirector.setDragging(true);');
     expect(source).toContain('characterBehaviorDirector.setDragging(false);');
     expect(source).toContain('emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent)');
     expect(source).not.toContain('emitBehaviorIntent: intent => characterBehavior.handleAgentIntent(intent)');
     expect(source).not.toContain('applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)');
+  });
+
+  test('生产组合只构造一个主动调度器、反思适配器和会话脱敏诊断端口', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source.match(/new CharacterProactivityScheduler\(/gu)).toHaveLength(1);
+    expect(source.match(/createBehaviorReflectionAdapter\(/gu)).toHaveLength(1);
+    expect(source.match(/new BehaviorReflectionDiagnosticPort\(/gu)).toHaveLength(1);
+    expect(source).toContain('return createChatProvider(selection.profile);');
+    expect(source).toContain('new ConversationChatAdapter(createChatProvider(profile))');
+    expect(source).not.toContain('pollLegacyIdle');
+    expect(source).not.toContain('handleIdleDue');
   });
 
   test('生产启动先读取完整行为快照初始化唯一 Director 并接通设置 sink', async () => {

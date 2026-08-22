@@ -34,12 +34,6 @@ export type CharacterBehaviorPlaybackEvent =
       actionId: string;
       playbackToken: string;
       commitFrameId?: string;
-    }
-  | {
-      type: 'idle-action';
-      revision: number;
-      actionId: string;
-      playbackToken: string;
     };
 
 export type CharacterTaskCarryGrant = Readonly<{
@@ -58,9 +52,6 @@ type CharacterBehaviorMotionPort = Pick<
   | 'getSnapshot'
   | 'requestIntent'
   | 'applyTaskEvent'
-  | 'pollIdle'
-  | 'issueIdlePlayback'
-  | 'confirmIdlePlayback'
 >;
 
 export type CharacterBehaviorServiceOptions = {
@@ -69,12 +60,10 @@ export type CharacterBehaviorServiceOptions = {
   now?: () => number;
   random?: () => number;
   createPlaybackToken?: () => string;
-  idleIntervalMs?: number;
   playbackStartTimeoutMs?: number;
   reportError?: (code: 'CHARACTER_BEHAVIOR_V2_UNAVAILABLE') => void;
 };
 
-const DEFAULT_IDLE_INTERVAL_MS = 10_000;
 const NO_BEHAVIOR_AUTHORIZATION: CharacterBehaviorAuthorization = { kind: 'none' };
 
 /** 统一给 Service 与 Director 派生可信任务是否阻塞低优先级行为。 */
@@ -92,22 +81,17 @@ export class CharacterBehaviorService {
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly createPlaybackToken: () => string;
-  private readonly idleIntervalMs: number;
   private readonly listeners = new Set<(event: CharacterBehaviorPlaybackEvent) => void>();
   private readonly recentPublicActions: string[] = [];
-  private readonly legacyTokens = new Map<string, { actionId: string; characterId: string }>();
   private engine: CharacterBehaviorEngine | null = null;
   private manifest: CharacterManifestV2 | null = null;
   private legacyManifest: CharacterManifestV1 | null = null;
   private direction: 'left' | 'right' = 'right';
   private moving = false;
   private carrying = false;
-  private taskIdleBlocked = false;
-  private carryIdleBlocked = false;
   private transitioning = false;
   private activeTaskSignal: 'listening' | 'thinking' | null = null;
   private taskContextSignal: CharacterBehaviorSignal | null = null;
-  private nextIdleAt: number;
   private closed = false;
   private loadRevision = 0;
 
@@ -115,8 +99,6 @@ export class CharacterBehaviorService {
     this.now = options.now ?? performance.now.bind(performance);
     this.random = options.random ?? Math.random;
     this.createPlaybackToken = options.createPlaybackToken ?? randomUUID;
-    this.idleIntervalMs = options.idleIntervalMs ?? DEFAULT_IDLE_INTERVAL_MS;
-    this.nextIdleAt = this.now() + this.idleIntervalMs;
   }
 
   async initialize(): Promise<void> {
@@ -218,7 +200,6 @@ export class CharacterBehaviorService {
       commitFrameId: resolved.presentation.commitFrameId ?? null
     };
     this.carrying = true;
-    this.carryIdleBlocked = true;
     this.publish(decision, grant.commitFrameId);
     return grant;
   }
@@ -227,9 +208,7 @@ export class CharacterBehaviorService {
   endTaskCarry(): void {
     if (this.closed || this.transitioning || !this.engine || !this.carrying) return;
     this.carrying = false;
-    this.carryIdleBlocked = false;
     const now = this.now();
-    this.nextIdleAt = now + this.idleIntervalMs;
     this.publish(this.engine.dispatch({
       signal: { type: 'carrying', active: false, occurredAtMs: now },
       direction: this.direction
@@ -244,8 +223,6 @@ export class CharacterBehaviorService {
     this.options.motion.applyTaskEvent(event);
     const now = this.now();
     const allowPlayback = options.allowPlayback ?? true;
-    const runtimeBlock = characterTaskRuntimeBlock(event);
-    if (runtimeBlock !== null) this.taskIdleBlocked = runtimeBlock;
     if (this.transitioning) {
       this.captureTaskContext(event, now);
       return NO_BEHAVIOR_AUTHORIZATION;
@@ -258,7 +235,6 @@ export class CharacterBehaviorService {
     if (event.phase === 'idle' || event.phase === 'cancelled') {
       this.taskContextSignal = null;
       this.deactivateTaskSignal(now, allowPlayback);
-      this.nextIdleAt = now + this.idleIntervalMs;
       if (allowPlayback) {
         this.restoreDefaultPlayback(now);
       } else {
@@ -272,7 +248,6 @@ export class CharacterBehaviorService {
       return NO_BEHAVIOR_AUTHORIZATION;
     }
 
-    this.nextIdleAt = now + this.idleIntervalMs;
     if (event.phase === 'listening' || event.phase === 'thinking') {
       this.deactivateTaskSignal(now, allowPlayback);
       this.activeTaskSignal = event.phase;
@@ -312,7 +287,6 @@ export class CharacterBehaviorService {
     if (snapshot.moving === this.moving) return;
     this.moving = snapshot.moving;
     const now = this.now();
-    this.nextIdleAt = now + this.idleIntervalMs;
     if (this.transitioning) return;
     this.dispatch({
       type: 'movement',
@@ -324,32 +298,13 @@ export class CharacterBehaviorService {
   handleUserInteraction(): void {
     if (this.closed) return;
     const now = this.now();
-    this.nextIdleAt = now + this.idleIntervalMs;
     this.dispatch({ type: 'user-interaction', occurredAtMs: now });
   }
 
-  handleIdleDue(
-    options: Readonly<{ allowCandidate?: boolean }> = {}
-  ): readonly string[] {
+  /** 500ms poll 仅推进 V2 播放超时，不再生产 idle 或 wander 候选。 */
+  advance(): readonly string[] {
     if (this.closed) return [];
-    const expiredTokens = this.advanceBehaviorSchedule();
-    if (options.allowCandidate === false) return expiredTokens;
-    if (this.transitioning || this.taskIdleBlocked || this.carryIdleBlocked || this.moving) {
-      return expiredTokens;
-    }
-    const now = this.now();
-    if (now < this.nextIdleAt) return expiredTokens;
-    this.nextIdleAt = now + this.idleIntervalMs;
-
-    if (this.engine) {
-      const authorization = this.dispatch({ type: 'idle-due', occurredAtMs: now });
-      if (authorization.kind === 'play' && authorization.semantic === 'move') {
-        this.options.motion.requestIntent({ kind: 'wander', scope: 'work_area' });
-      }
-      return expiredTokens;
-    }
-    this.pollLegacyIdle();
-    return expiredTokens;
+    return this.advanceBehaviorSchedule();
   }
 
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void {
@@ -361,18 +316,7 @@ export class CharacterBehaviorService {
       this.publish(decision);
       return;
     }
-    const pending = this.legacyTokens.get(feedback.playbackToken);
-    if (!pending || pending.actionId !== feedback.actionId) {
-      throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
-    }
-    if (feedback.status !== 'started') return;
-    this.options.motion.confirmIdlePlayback({
-      playbackToken: feedback.playbackToken,
-      actionId: feedback.actionId,
-      characterId: pending.characterId
-    });
-    this.recordPublicAction(feedback.actionId);
-    this.legacyTokens.delete(feedback.playbackToken);
+    throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
   }
 
   handleActiveCharacterChanged(): Promise<void> {
@@ -397,9 +341,6 @@ export class CharacterBehaviorService {
     this.activeTaskSignal = null;
     this.taskContextSignal = null;
     this.carrying = false;
-    this.taskIdleBlocked = false;
-    this.carryIdleBlocked = false;
-    this.legacyTokens.clear();
     this.recentPublicActions.splice(0);
     this.listeners.clear();
   }
@@ -411,7 +352,6 @@ export class CharacterBehaviorService {
     if (replacing) {
       this.recentPublicActions.splice(0);
       this.carrying = false;
-      this.carryIdleBlocked = false;
       if (this.taskContextSignal?.type === 'task') this.taskContextSignal = null;
     }
     this.transitioning = true;
@@ -450,12 +390,10 @@ export class CharacterBehaviorService {
       // 候选角色完整就绪后再一次性提交，切换窗口内旧引擎始终不可决策。
       this.manifest = manifest;
       this.legacyManifest = null;
-      this.legacyTokens.clear();
       this.recentPublicActions.splice(0);
       this.engine = nextEngine;
       this.transitioning = false;
       this.publish(decision);
-      this.nextIdleAt = this.now() + this.idleIntervalMs;
     } catch {
       if (this.closed || revision !== this.loadRevision) return;
       this.options.reportError?.('CHARACTER_BEHAVIOR_V2_UNAVAILABLE');
@@ -471,10 +409,8 @@ export class CharacterBehaviorService {
       this.engine = null;
       this.manifest = null;
       this.legacyManifest = legacyManifest;
-      this.legacyTokens.clear();
       this.recentPublicActions.splice(0);
       this.transitioning = false;
-      this.nextIdleAt = this.now() + this.idleIntervalMs;
       this.emit({
         type: 'behavior-authority',
         characterId: legacyManifest.id,
@@ -485,7 +421,6 @@ export class CharacterBehaviorService {
       this.engine = null;
       this.manifest = null;
       this.legacyManifest = null;
-      this.legacyTokens.clear();
       this.recentPublicActions.splice(0);
       this.transitioning = false;
     }
@@ -498,7 +433,6 @@ export class CharacterBehaviorService {
     if (event.phase === 'idle' || event.phase === 'cancelled') {
       this.activeTaskSignal = null;
       this.taskContextSignal = null;
-      this.nextIdleAt = occurredAtMs + this.idleIntervalMs;
       return;
     }
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
@@ -506,7 +440,6 @@ export class CharacterBehaviorService {
       this.taskContextSignal = null;
       return;
     }
-    this.nextIdleAt = occurredAtMs + this.idleIntervalMs;
     if (event.phase === 'listening' || event.phase === 'thinking') {
       this.activeTaskSignal = event.phase;
       this.taskContextSignal = {
@@ -645,30 +578,6 @@ export class CharacterBehaviorService {
     this.publish(decision);
     const currentToken = decision.snapshot.schedule.current?.playbackToken ?? null;
     return previousToken !== null && previousToken !== currentToken ? [previousToken] : [];
-  }
-
-  private pollLegacyIdle(): void {
-    const manifest = this.legacyManifest;
-    if (!manifest) return;
-    const selection = this.options.motion.pollIdle(manifest, this.direction, this.random);
-    if (!selection) return;
-    this.options.motion.requestIntent({ kind: 'wander', scope: 'work_area' });
-    const snapshot = this.options.motion.getSnapshot();
-    const playbackToken = this.options.motion.issueIdlePlayback({
-      actionId: selection.action.id,
-      characterId: manifest.id,
-      revision: snapshot.revision
-    });
-    this.legacyTokens.set(playbackToken, {
-      actionId: selection.action.id,
-      characterId: manifest.id
-    });
-    this.emit({
-      type: 'idle-action',
-      revision: snapshot.revision,
-      actionId: selection.action.id,
-      playbackToken
-    });
   }
 
   private emit(event: CharacterBehaviorPlaybackEvent): void {

@@ -54,6 +54,16 @@ export type ConversationBehaviorContext = Readonly<{
   recentActions: readonly string[];
 }>;
 
+export type CharacterActivityBlockers = Readonly<{
+  chatting: boolean;
+  dragging: boolean;
+  moving: boolean;
+  capabilityTask: boolean;
+  awaitingConfirmation: boolean;
+  movementStopped: boolean;
+  closed: boolean;
+}>;
+
 export interface ConversationBehaviorPort {
   prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt>;
   getChatContext(): ConversationBehaviorContext;
@@ -86,7 +96,7 @@ type BehaviorServicePort = Pick<
   | 'handleAgentIntent'
   | 'handleTaskEvent'
   | 'applyPlaybackFeedback'
-  | 'handleIdleDue'
+  | 'advance'
   | 'handleActiveCharacterChanged'
   | 'close'
 >;
@@ -138,11 +148,15 @@ export class CharacterBehaviorDirector {
   private movementStopped: boolean;
   private proactivityMode: CharacterBehaviorSettingsSnapshot['proactivityMode'];
   private trustedRuntimeBlocked = false;
+  private chatting = false;
+  private capabilityTask = false;
+  private awaitingConfirmation = false;
   private dragging = false;
   private closed = false;
   private pendingChatPlan: CharacterBehaviorPlan | null = null;
   private pendingSuccessToken: string | null = null;
   private active: Readonly<{ source: ActiveBehaviorSource; playbackToken: string }> | null = null;
+  private readonly activityListeners = new Set<() => void>();
 
   constructor(private readonly options: CharacterBehaviorDirectorOptions) {
     this.generation = options.initialGeneration;
@@ -203,6 +217,25 @@ export class CharacterBehaviorDirector {
     };
   }
 
+  /** Scheduler 只读取同一 Director 聚合的布尔事实，不获得正文、路径或私有角色标识。 */
+  getActivityBlockers(): CharacterActivityBlockers {
+    return {
+      chatting: this.chatting,
+      dragging: this.dragging,
+      moving: this.options.motion.getSnapshot().moving,
+      capabilityTask: this.capabilityTask,
+      awaitingConfirmation: this.awaitingConfirmation,
+      movementStopped: this.movementStopped,
+      closed: this.closed
+    };
+  }
+
+  subscribeActivityBlockers(listener: () => void): () => void {
+    if (this.closed) return () => undefined;
+    this.activityListeners.add(listener);
+    return () => this.activityListeners.delete(listener);
+  }
+
   completeUserPrompt(input: Readonly<{
     generation: string;
     explicitDirective: ExplicitBehaviorDirective | null;
@@ -221,6 +254,7 @@ export class CharacterBehaviorDirector {
   handleTaskEvent(event: TaskEvent): void {
     if (this.closed) return;
     this.updateTrustedBlock(event);
+    this.updateActivityFromTaskEvent(event);
     const explicitPlaybackActive = this.active?.source === 'explicit';
     // 新可信阶段已由 Service 原子处理，旧可信阶段令牌不能继续占用来源优先级。
     if (this.active?.source === 'trusted-task') this.active = null;
@@ -319,18 +353,23 @@ export class CharacterBehaviorDirector {
     }
   }
 
-  /** 任务 4 先把原 500ms 主动入口纳入同一停止锁；任务 6 再替换候选时钟。 */
-  handleIdleDue(): void {
+  /** 原 500ms poll 只推进既有引擎超时，主动候选由唯一 Scheduler 负责。 */
+  advance(): void {
     if (this.closed) return;
-    const expiredTokens = this.options.behavior.handleIdleDue({
-      allowCandidate: !this.movementStopped
-    });
+    const expiredTokens = this.options.behavior.advance();
     for (const playbackToken of expiredTokens) this.releasePlaybackToken(playbackToken);
   }
 
   /** 拖拽事实只参与优先级阻塞，不在 Director 内复制运动或角色状态。 */
   setDragging(active: boolean): void {
-    if (!this.closed) this.dragging = active;
+    if (this.closed || this.dragging === active) return;
+    this.dragging = active;
+    this.publishActivityChanged();
+  }
+
+  /** Motion 仍独占运动状态；该通知只使 Scheduler 重新读取同一快照。 */
+  refreshActivityBlockers(): void {
+    if (!this.closed) this.publishActivityChanged();
   }
 
   /** 只接收 Store 成功落盘后的完整快照，避免运行态与磁盘分叉。 */
@@ -340,6 +379,7 @@ export class CharacterBehaviorDirector {
     this.movementStopped = snapshot.movementStopped;
     this.proactivityMode = snapshot.proactivityMode;
     if (shouldStopMotion) this.options.motion.stop();
+    this.publishActivityChanged();
   }
 
   async handleActiveCharacterChanged(): Promise<void> {
@@ -355,12 +395,18 @@ export class CharacterBehaviorDirector {
     this.clearPendingChat();
     this.active = null;
     this.trustedRuntimeBlocked = false;
+    this.chatting = false;
+    this.capabilityTask = false;
+    this.awaitingConfirmation = false;
     this.dragging = false;
+    this.publishActivityChanged();
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.publishActivityChanged();
+    this.activityListeners.clear();
     this.clearPendingChat();
     this.active = null;
     this.options.behavior.close();
@@ -379,6 +425,31 @@ export class CharacterBehaviorDirector {
   private updateTrustedBlock(event: TaskEvent): void {
     const runtimeBlock = characterTaskRuntimeBlock(event);
     if (runtimeBlock !== null) this.trustedRuntimeBlocked = runtimeBlock;
+  }
+
+  private updateActivityFromTaskEvent(event: TaskEvent): void {
+    if (event.type === 'pending_action') {
+      this.chatting = false;
+      this.capabilityTask = true;
+      this.awaitingConfirmation = true;
+      this.publishActivityChanged();
+      return;
+    }
+    if (event.type !== 'phase') return;
+    this.chatting = event.phase === 'listening' || event.phase === 'thinking';
+    this.awaitingConfirmation = event.phase === 'awaiting_confirmation';
+    this.capabilityTask = this.awaitingConfirmation || event.phase === 'acting';
+    this.publishActivityChanged();
+  }
+
+  private publishActivityChanged(): void {
+    for (const listener of [...this.activityListeners]) {
+      try {
+        listener();
+      } catch {
+        // Scheduler 观察失败不得改变可信任务或角色动作裁决。
+      }
+    }
   }
 
   private commitPendingChatPlan(): void {

@@ -1,9 +1,13 @@
 import { createHash } from 'node:crypto';
 import { access, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { AgentLoop } from '@myself/agent-core';
+import { AgentLoop, ModelRouter } from '@myself/agent-core';
 import { FileToolService, PathPolicy } from '@myself/file-tools';
-import { providerCatalog, type TaskEvent } from '@myself/shared-types';
+import {
+  providerCatalog,
+  type ProviderProfileV2,
+  type TaskEvent
+} from '@myself/shared-types';
 import {
   app,
   BrowserWindow,
@@ -50,6 +54,12 @@ import {
   CharacterBehaviorDirector,
   type CharacterBehaviorNotice
 } from './characters/character-behavior-director';
+import {
+  BehaviorReflectionDiagnosticPort,
+  createBehaviorReflectionAdapter
+} from './characters/behavior-reflection-adapter';
+import { CharacterProactivityScheduler } from
+  './characters/character-proactivity-scheduler';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
 import { ExplorerSpaceClient, buildExplorerBridgeSpawnSpec } from
@@ -424,6 +434,10 @@ async function createApplicationWindows(
     reportError: code => console.error('恢复桌宠图层偏好失败。', code)
   });
   const providerRegistry = new ProviderRegistry(providerCatalog);
+  const createChatProvider = (profile: ProviderProfileV2) => providerRegistry.create(
+    profile,
+    () => secrets.readForProviderCall(profile.id)
+  );
   const privacySessions = new PrivacySessionRegistry();
   const desktopSettingsService = new DesktopSettingsService({
     settings: settingsStore,
@@ -481,6 +495,33 @@ async function createApplicationWindows(
     saveMovementStopped: stopped => desktopSettingsService.saveMovementStopped(stopped),
     publishNotice: notice => publishCharacterBehaviorNotice(notice)
   });
+  const behaviorReflectionDiagnostics = new BehaviorReflectionDiagnosticPort();
+  const releaseBehaviorReflectionDiagnostics = behaviorReflectionDiagnostics.subscribe(event => {
+    console.info(event.code, JSON.stringify(event));
+  });
+  const behaviorReflection = createBehaviorReflectionAdapter({
+    createProvider: async () => {
+      const providerSettings = await settingsStore.getProviderSettings();
+      const selection = new ModelRouter({
+        profiles: providerSettings.profiles,
+        route: providerSettings.route,
+        catalog: [...providerCatalog]
+      }).select('chat', {
+        allowedCrossProviderProfileIds: providerSettings.route.allowCrossProviderFallback
+          ? new Set(providerSettings.route.fallbackProfileIds)
+          : new Set()
+      });
+      if (!selection.profile.hasStoredSecret) {
+        throw new Error('BEHAVIOR_REFLECTION_PROVIDER_UNAVAILABLE');
+      }
+      return createChatProvider(selection.profile);
+    },
+    diagnostics: behaviorReflectionDiagnostics
+  });
+  const characterProactivityScheduler = new CharacterProactivityScheduler({
+    director: characterBehaviorDirector,
+    reflection: behaviorReflection
+  });
   const characterSwitching = createCharacterActivationCoordinator({
     activateInStore: activateCharacterInStore,
     reloadBehavior: () => characterBehaviorDirector.handleActiveCharacterChanged()
@@ -534,6 +575,7 @@ async function createApplicationWindows(
   });
   const releaseMotionEvents = characterMotion.subscribe(snapshot => {
     characterBehavior.handleMovement(snapshot);
+    characterBehaviorDirector.refreshActivityBlockers();
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, {
         type: 'snapshot',
@@ -549,7 +591,7 @@ async function createApplicationWindows(
   const motionRuntime = startCharacterMotionTimers({
     tick: () => characterMotion.tick(),
     poll: () => {
-      characterBehaviorDirector.handleIdleDue();
+      characterBehaviorDirector.advance();
       activeCapabilityTaskAdapter?.advanceFileTaskTransaction();
     },
     isDestroyed: () => pet.isDestroyed(),
@@ -572,6 +614,9 @@ async function createApplicationWindows(
     motionRuntime.destroy();
     releaseMotionEvents();
     releaseBehaviorEvents();
+    void characterProactivityScheduler.close();
+    releaseBehaviorReflectionDiagnostics();
+    behaviorReflectionDiagnostics.close();
     void characterBehaviorDirector.close();
     releaseMotionWindowEvents();
   };
@@ -780,10 +825,7 @@ async function createApplicationWindows(
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
     behavior: characterBehaviorDirector,
-    createChatAdapter: profile => new ConversationChatAdapter(providerRegistry.create(
-      profile,
-      () => secrets.readForProviderCall(profile.id)
-    )),
+    createChatAdapter: profile => new ConversationChatAdapter(createChatProvider(profile)),
     createAgentService: ({
       snapshot,
       generation,

@@ -26,6 +26,7 @@ export class ConversationEventProjection {
   publish(rawEvent: unknown): TaskEvent {
     const event = taskEventSchema.parse(rawEvent);
 
+    // 投影与 Scheduler 复用同一个 Director；任务 phase 同步更新唯一 blockers 快照。
     this.options.behavior.handleTaskEvent(event);
     this.send('chat', this.options.getChatTarget(), event);
     if (event.type === 'phase') {

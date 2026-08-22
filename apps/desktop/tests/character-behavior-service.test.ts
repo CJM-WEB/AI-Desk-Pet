@@ -22,12 +22,6 @@ type BehaviorPlaybackEvent =
       playbackToken: string;
     }
   | {
-      type: 'idle-action';
-      revision: number;
-      actionId: string;
-      playbackToken: string;
-    }
-  | {
       type: 'behavior-authority';
       characterId: string;
       mode: 'legacy-v1';
@@ -62,7 +56,7 @@ type BehaviorService = {
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): CharacterBehaviorAuthorization;
   handleMovement(snapshot: CharacterMotionSnapshot): void;
   handleUserInteraction(): void;
-  handleIdleDue(options?: Readonly<{ allowCandidate?: boolean }>): readonly string[];
+  advance(): readonly string[];
   applyPlaybackFeedback(feedback: CharacterPlaybackFeedback): void;
   handleActiveCharacterChanged(): Promise<void>;
   subscribe(listener: (event: BehaviorPlaybackEvent) => void): () => void;
@@ -291,10 +285,7 @@ function createFixture(overrides: {
   const motion = {
     getSnapshot: vi.fn(() => structuredClone(currentSnapshot)),
     requestIntent: vi.fn(),
-    applyTaskEvent: vi.fn(),
-    pollIdle: vi.fn(() => null),
-    issueIdlePlayback: vi.fn(() => 'legacy-token-1'),
-    confirmIdlePlayback: vi.fn()
+    applyTaskEvent: vi.fn()
   };
   const reportError = vi.fn();
   return {
@@ -309,7 +300,6 @@ function createFixture(overrides: {
       now: () => now,
       random: () => 0,
       createPlaybackToken: overrides.createPlaybackToken ?? tokenFactory(),
-      idleIntervalMs: 1_000,
       reportError
     }
   };
@@ -509,7 +499,7 @@ describe('Main 角色行为权威服务', () => {
     events.splice(0);
 
     fixture.setNow(10_000);
-    service.handleIdleDue();
+    service.advance();
     service.handleMovement(snapshot(true));
     service.handleAgentIntent({
       stateIntent: { semantic: 'idle' },
@@ -582,10 +572,9 @@ describe('Main 角色行为权威服务', () => {
     events.splice(0);
     fixture.setNow(1_000);
 
-    service.handleIdleDue();
+    service.advance();
 
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ type: 'behavior-action', actionId: 'idle-action' });
+    expect(events).toEqual([]);
   });
 
   test.each([
@@ -638,7 +627,7 @@ describe('Main 角色行为权威服务', () => {
     events.splice(0);
     fixture.setNow(1_000);
 
-    service.handleIdleDue();
+    service.advance();
     expect(events).toEqual([]);
 
     service.handleTaskEvent({ type: 'phase', phase: 'idle' });
@@ -917,7 +906,7 @@ describe('Main 角色行为权威服务', () => {
     expect(events[0]).toMatchObject({ actionId: 'move-action' });
   });
 
-  test('用户交互只产生本地信号并重新计算空闲期限', async () => {
+  test('用户交互只产生本地信号，后续轮询不再生成主动候选', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
     const events: BehaviorPlaybackEvent[] = [];
@@ -928,15 +917,15 @@ describe('Main 角色行为权威服务', () => {
     fixture.setNow(900);
     service.handleUserInteraction();
     fixture.setNow(1_000);
-    service.handleIdleDue();
+    service.advance();
 
     expect(events).toHaveLength(1);
     fixture.setNow(1_900);
-    service.handleIdleDue();
-    expect(events).toHaveLength(2);
+    service.advance();
+    expect(events).toHaveLength(1);
   });
 
-  test('pending_action 和 acting 阻止随机待机且不产生动作', async () => {
+  test('pending_action 和 acting 期间的轮询只推进引擎且不产生候选', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);
     const events: BehaviorPlaybackEvent[] = [];
@@ -960,9 +949,9 @@ describe('Main 角色行为权威服务', () => {
       }
     });
     fixture.setNow(10_000);
-    service.handleIdleDue();
+    service.advance();
     service.handleTaskEvent({ type: 'phase', phase: 'acting' });
-    service.handleIdleDue();
+    service.advance();
 
     expect(events).toEqual([]);
     expect(fixture.motion.applyTaskEvent).toHaveBeenCalledTimes(2);
@@ -1022,7 +1011,7 @@ describe('Main 角色行为权威服务', () => {
     });
 
     fixture.setNow(100);
-    const expiredTokens = service.handleIdleDue();
+    const expiredTokens = service.advance();
 
     expect(expiredTokens).toEqual(['behavior-token-1']);
 
@@ -1061,7 +1050,7 @@ describe('Main 角色行为权威服务', () => {
     });
 
     fixture.setNow(50);
-    const expiredTokens = service.handleIdleDue({ allowCandidate: false });
+    const expiredTokens = service.advance();
 
     expect(expiredTokens).toEqual(['behavior-token-1']);
 
@@ -1208,7 +1197,6 @@ describe('Main 角色行为权威服务', () => {
 
     expect(fixture.reportError).toHaveBeenCalledWith('CHARACTER_BEHAVIOR_V2_UNAVAILABLE');
     expect(JSON.stringify(fixture.reportError.mock.calls)).not.toContain('private');
-    expect(fixture.motion.pollIdle).not.toHaveBeenCalled();
     expect(events).toEqual([{
       type: 'behavior-authority',
       characterId: 'legacy',
@@ -1217,20 +1205,21 @@ describe('Main 角色行为权威服务', () => {
   });
 
   test.each(['completed', 'interrupted', 'failed'] as const)(
-    'V1 兼容路径拒绝伪造令牌的 %s 反馈',
+    'V1 兼容路径的轮询不产生动作并拒绝伪造令牌的 %s 反馈',
     async status => {
       const fixture = createFixture({
         getV2: async () => { throw new Error('V2_UNAVAILABLE'); }
       });
-      fixture.motion.pollIdle.mockReturnValue({
-        stateId: 'idle',
-        action: createLegacyManifest().states[0]!.actions[0]!,
-        reason: 'matched'
-      } as never);
       const service = new Constructor(fixture.options);
+      const events: BehaviorPlaybackEvent[] = [];
+      service.subscribe(event => events.push(event));
       await service.initialize();
+      events.splice(0);
       fixture.setNow(1_000);
-      service.handleIdleDue();
+      service.advance();
+
+      expect(events).toEqual([]);
+      expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
 
       expect(() => service.applyPlaybackFeedback({
         playbackToken: 'forged-token',
@@ -1289,7 +1278,7 @@ describe('Main 角色行为权威服务', () => {
     service.close();
     service.handleUserInteraction();
     service.handleMovement(snapshot(true));
-    service.handleIdleDue();
+    service.advance();
 
     expect(listener).not.toHaveBeenCalled();
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();

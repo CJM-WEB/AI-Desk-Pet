@@ -58,7 +58,7 @@ function createFixture(initialSettings: Readonly<{
     )),
     handleAgentIntent: vi.fn(() => agentAuthorization),
     getRecentPublicActions: vi.fn(() => ['挥手']),
-    handleIdleDue: vi.fn(() => releasedTokens),
+    advance: vi.fn(() => releasedTokens),
     handleTaskEvent: vi.fn((
       _event: TaskEvent,
       options?: Readonly<{ allowPlayback?: boolean }>
@@ -117,7 +117,7 @@ describe('Main 角色行为 Director', () => {
   test('启动快照初始化同一 Director 的停止锁与主动性档位', () => {
     const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
 
-    fixture.director.handleIdleDue();
+    fixture.director.advance();
     fixture.director.handleAgentBehaviorIntent({
       stateIntent: { semantic: 'move' },
       actionSemantic: 'move',
@@ -129,9 +129,7 @@ describe('Main 角色行为 Director', () => {
       runtime: { movementStopped: true },
       proactivityMode: 'autonomous'
     });
-    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledExactlyOnceWith({
-      allowCandidate: false
-    });
+    expect(fixture.behavior.advance).toHaveBeenCalledOnce();
     expect(fixture.behavior.handleAgentIntent).not.toHaveBeenCalled();
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
@@ -237,20 +235,20 @@ describe('Main 角色行为 Director', () => {
     }]);
   });
 
-  test('停止立即撤销运动并只拦截旧 500ms 候选，仍推进令牌清理', async () => {
+  test('停止立即撤销运动且 500ms poll 始终只推进令牌清理', async () => {
     const fixture = createFixture();
-    fixture.director.handleIdleDue();
-    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledExactlyOnceWith({ allowCandidate: true });
+    fixture.director.advance();
+    expect(fixture.behavior.advance).toHaveBeenCalledOnce();
 
     await fixture.director.prepareUserPrompt('停下');
-    fixture.director.handleIdleDue();
+    fixture.director.advance();
 
     expect(fixture.motion.stop).toHaveBeenCalledOnce();
-    expect(fixture.behavior.handleIdleDue).toHaveBeenNthCalledWith(2, { allowCandidate: false });
+    expect(fixture.behavior.advance).toHaveBeenCalledTimes(2);
 
     await fixture.director.prepareUserPrompt('恢复活动');
-    fixture.director.handleIdleDue();
-    expect(fixture.behavior.handleIdleDue).toHaveBeenNthCalledWith(3, { allowCandidate: true });
+    fixture.director.advance();
+    expect(fixture.behavior.advance).toHaveBeenCalledTimes(3);
   });
 
   test('旧能力任务意图经 Director 授权且 move 只产生一次受控运动意图', () => {
@@ -330,6 +328,59 @@ describe('Main 角色行为 Director', () => {
     expect(JSON.stringify(fixture.director.getChatContext())).not.toMatch(
       /actionId|playbackToken|[A-Z]:\\/u
     );
+  });
+
+  test('聊天、拖拽、移动、文件任务、确认等待和 close 更新同一 blockers 快照', async () => {
+    const fixture = createFixture();
+    fixture.motion.getSnapshot.mockReturnValue({
+      revision: 2,
+      timestampMs: 10,
+      position: { x: 20, y: 30 },
+      target: { x: 20, y: 30 },
+      direction: 'right',
+      moving: false,
+      carrying: false
+    });
+    const observed: unknown[] = [];
+    fixture.director.subscribeActivityBlockers(() => {
+      observed.push(fixture.director.getActivityBlockers());
+    });
+
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
+    fixture.director.setDragging(true);
+    fixture.motion.getSnapshot.mockReturnValue({
+      ...fixture.motion.getSnapshot(),
+      target: { x: 40, y: 30 },
+      moving: true
+    });
+    fixture.director.refreshActivityBlockers();
+    fixture.director.handleTaskEvent({
+      type: 'pending_action',
+      action: {
+        category: 'file',
+        actionId: 'pending-1',
+        conversationId: 'conversation-1',
+        risk: 'write',
+        operation: 'create_file',
+        summary: '等待确认',
+        targetRelativePath: 'safe.txt',
+        contentCharacters: 0,
+        contentPreview: null,
+        contentPreviewSuppressedReason: null,
+        previewTruncated: false,
+        createdAt: '2026-08-23T00:00:00.000Z',
+        expiresAt: '2026-08-23T00:05:00.000Z'
+      }
+    });
+    await fixture.director.close();
+
+    expect(observed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ chatting: true }),
+      expect.objectContaining({ dragging: true }),
+      expect.objectContaining({ moving: true }),
+      expect.objectContaining({ capabilityTask: true, awaitingConfirmation: true }),
+      expect.objectContaining({ closed: true })
+    ]));
   });
 
   test('角色清单切换或兼容态暂不可用时仍保留普通聊天的空公开上下文', () => {
@@ -558,7 +609,7 @@ describe('Main 角色行为 Director', () => {
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     fixture.setReleasedTokens(['success-token']);
 
-    fixture.director.handleIdleDue();
+    fixture.director.advance();
 
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
       { kind: 'action', actionId: 'wave-action' },
@@ -574,7 +625,7 @@ describe('Main 角色行为 Director', () => {
     fixture.director.requestBehaviorPlan(play('挥手'), 'explicit');
     await fixture.director.prepareUserPrompt('停下');
     fixture.setReleasedTokens(['expired-token']);
-    fixture.director.handleIdleDue();
+    fixture.director.advance();
     await fixture.director.prepareUserPrompt('恢复活动');
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'celebrate-action', playbackToken: 'new-token', semantic: 'celebrate'
