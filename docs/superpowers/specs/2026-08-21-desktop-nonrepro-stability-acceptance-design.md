@@ -25,7 +25,9 @@
 2. 上位规格第 10 节第 1、2 项“必须先定位并修复根因”作为本次准入的绝对前置条件；
 3. 原计划 `NO_RED` 分支禁止进入正式五门的路径；
 4. 上位规格第 7.1 节、第 7.3 节、第 9.1 节和第 10 节第 10 项中与本例外提交拓扑冲突的规则；
-5. 旧实施计划 Task 6 的四文件 allowlist。
+5. 旧实施计划 `docs/superpowers/plans/2026-08-21-desktop-development-gate-closure.md` Task 6 的四文件 allowlist；本例外以五文件成功后继精确取代它。
+
+旧 Task 6 四项逐一为：`docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md`、`docs/superpowers/specs/2026-08-20-desktop-code-subtraction-design.md`、`docs/operations/character-workshop-acceptance.md`、`docs/superpowers/specs/2026-08-15-ai-pet-desktop-architecture-optimization-design.md`。新五项是在这四项之外增加本规格 `docs/superpowers/specs/2026-08-21-desktop-nonrepro-stability-acceptance-design.md`；计划文件不进入成功后继。
 
 此前为本例外设计的自制 worker、supervisor、validator、fixture、hash manifest、ACK、PID/StartTime 恢复、原子 JSON schema 和相关自测全部退役，不实施、不修补，也不作为准入证据。仓库不新增 runner、脚本、fixture、依赖或测试。
 
@@ -59,7 +61,7 @@
 
 Codex `exec_command` 和其持续 session 返回的真实 `exit_code`、`wall_time_seconds` 是命令是否完成、退出状态和耗时的唯一原始证据。命令直接结束时使用该次返回值；进入持续 session 时，必须保留初始调用与后续全部 `write_stdin` 返回的 `wall_time_seconds`，任何一次都不能省略。命令正文、人工转述、ignored 报告和子智能体总结都不能替代工具返回。
 
-正式命令使用 `tty:true`，初始 `exec_command` 与全部 `write_stdin` 的 `yield_time_ms` 均固定为 30000；工具返回持续 session 后，主控立即发起下一次 poll。为避免推导平台调用间隔，本门保守耗时上界固定为：`全部工具返回的 wall_time_seconds 之和 + write_stdin 调用次数 × 30 秒`。每次新 poll 前先检查“当前保守上界 + 60 秒”；达到或超过 900 秒就不再等待，立即发送 `Ctrl-C`。若 `Ctrl-C` 后仍未取得最终 `exit_code`，立即裁决 `CLOSED`，并停止本任务的一切文件写入、Git/守卫和后续命令，等待人工清理；不得创建报告。session 丢失、执行中断或工具状态含义不明确同样按此路径处理，且不重跑。
+正式命令使用 `tty:true`，初始 `exec_command` 与全部 `write_stdin` 的 `yield_time_ms` 均固定为 30000；工具返回持续 session 后，主控立即发起下一次 poll。为避免推导平台调用间隔，本门保守耗时上界固定为：`全部工具返回的 wall_time_seconds 之和 + write_stdin 调用次数 × 30 秒`。每次新 poll 前先检查“当前保守上界 + 60 秒”；达到或超过 900 秒就不再等待，立即发送 `Ctrl-C`。任何发送 `Ctrl-C` 的动作都会当场、永久把本门锁定为 `CLOSED`；之后取得的 `exit_code` 即使为 0，也只证明命令已经结束、可据此决定是否执行门后守卫和失败报告，绝不能恢复为 `PASS`。若 `Ctrl-C` 后仍未取得最终 `exit_code`，停止本任务的一切文件写入、Git/守卫和后续命令，等待人工清理，不得创建报告。session 丢失、执行中断或工具状态含义不明确同样按此路径处理，且不重跑。
 
 ### 5.2 固定顺序
 
@@ -71,7 +73,7 @@ Codex `exec_command` 和其持续 session 返回的真实 `exit_code`、`wall_ti
 4. `pnpm.cmd test:security`
 5. `pnpm.cmd test:integration`
 
-只有前一门取得最终 `exit_code=0`、上述保守耗时上界小于 900 秒，并通过门后只读守卫，才可启动下一门。任一非零退出、超时、终止、session 丢失、缺少最终退出码或守卫失败，都在首个失败处停止；不 retry、不补跑、不拼接历史绿色。
+只有前一门从未发送 `Ctrl-C`、取得最终 `exit_code=0`、上述保守耗时上界小于 900 秒，并通过门后只读守卫，才可启动下一门。任一非零退出、超时、终止、session 丢失、缺少最终退出码或守卫失败，都在首个失败处停止；不 retry、不补跑、不拼接历史绿色。
 
 ## 6. 最小镜像报告
 
@@ -91,6 +93,7 @@ Codex `exec_command` 和其持续 session 返回的真实 `exit_code`、`wall_ti
 
 - 五门确实按固定顺序各启动一次；
 - 每门存在工具返回的最终 `exit_code=0`，且由全部工具 `wall_time_seconds` 与调用次数计算的保守耗时上界小于 900 秒；
+- 五门均从未发送 `Ctrl-C`；
 - 轮询间隔不超过 60 秒，没有 retry 或第二次启动；
 - 每门前后 HEAD、普通 status、非 docs 差异和保护路径守卫均成立；
 - 成功限语仍保留“根因未定位”和 `+662`。
@@ -108,6 +111,8 @@ Codex `exec_command` 和其持续 session 返回的真实 `exit_code`、`wall_ti
 `PASS` 后只允许一个纯文档后继提交，同步本规格、旧开发门规格、旧减法规格、角色验收和上位架构状态。正式文档记录 `GATE_HEAD`、五门真实结果、`+662` 和固定限语，不写“已修复”。该后继不得修改计划、应用代码、包、测试、配置、依赖、锁文件或脚本。
 
 提交后必须机械确认：直接 parent 等于 `GATE_HEAD`；`GATE_HEAD..HEAD` 提交数为 1、路径无序集合精确为上述五份后继文档；可执行基线到 HEAD 的路径无序集合精确为本计划、本规格及四份既有状态文档，共六个唯一文档路径；分支仍为 `AgentCoreExtension`；普通 status 与全局 non-ignored untracked 均为空；`docs/` 外和保护路径历史/工作树/cached/untracked 四态仍为零。全部成立后才用 `apply_patch` 创建成功报告，并只镜像实际 successor HEAD。
+
+本地 Git 写授权的事实来源是用户当前会话原话：“审阅完毕，可以采用子智能体执行任务，并批准你安装以及git写操作无需再向我确认”。本规格只据此允许本任务所需的本地 `git add` 与 `git commit`，不扩展到 push、merge、rebase、reset 或远端写操作。
 
 失败时没有后继提交；开发门保持 `CLOSED`，后续处理必须另立规格。
 

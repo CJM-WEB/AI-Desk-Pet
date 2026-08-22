@@ -20,7 +20,8 @@
 - 从第一门开始到第五门结束或首失败结束，主控不得主动修改文件，tracked/non-ignored 内容不得变化；正式脚本自身产生的 ignored 构建与测试输出允许存在，但不能作为通过证据。
 - 不修改或运行网站、CloudBase、包扫描器和网站 E2E。
 - 任何失败都没有成功文档后继，也不得通过重跑修补证据。
-- 用户已明确授权本任务所需的本地 `git add` 与 `git commit`，执行时无需重复询问；授权不包含 push、merge、rebase、reset 或远端写操作。
+- Git 授权的精确事实来源是用户当前会话原话：“审阅完毕，可以采用子智能体执行任务，并批准你安装以及git写操作无需再向我确认”。执行者可据此直接进行本任务所需的本地 `git add` 与 `git commit`，无需重复询问；授权不包含 push、merge、rebase、reset 或远端写操作。
+- 覆盖来源是旧计划 `docs/superpowers/plans/2026-08-21-desktop-development-gate-closure.md` Task 6。旧四项是 `docs/superpowers/specs/2026-08-21-desktop-development-gate-closure-design.md`、`docs/superpowers/specs/2026-08-20-desktop-code-subtraction-design.md`、`docs/operations/character-workshop-acceptance.md`、`docs/superpowers/specs/2026-08-15-ai-pet-desktop-architecture-optimization-design.md`；本例外把它精确替换为“本规格 + 旧四项”的五文件成功后继，计划文件不进入后继。
 
 ## Task 0：提交并冻结门禁 HEAD
 
@@ -93,15 +94,15 @@
 
 - [ ] **Step 3：有界观察**
 
-  若返回持续 session，主控立即使用 `write_stdin` 继续轮询，全部 `yield_time_ms` 固定为 30000。令保守上界为“初始调用和全部 `write_stdin` 返回的 `wall_time_seconds` 之和，加 `write_stdin` 调用次数乘 30 秒”；每次新 poll 前若“当前保守上界 + 60 秒”达到或超过 900 秒，就立即发送 `Ctrl-C`，不再等待。
+  若返回持续 session，主控立即使用 `write_stdin` 继续轮询，全部 `yield_time_ms` 固定为 30000。令保守上界为“初始调用和全部 `write_stdin` 返回的 `wall_time_seconds` 之和，加 `write_stdin` 调用次数乘 30 秒”；每次新 poll 前若“当前保守上界 + 60 秒”达到或超过 900 秒，就立即发送 `Ctrl-C`，并在发送当场永久锁定当前门为 `CLOSED`。
 
 - [ ] **Step 4：读取真实结果**
 
-  只读取工具返回的最终 `exit_code` 和每次 `wall_time_seconds`，按 Step 3 计算保守上界。非零或保守上界达到 900 秒即 `CLOSED`。若 `Ctrl-C` 后仍缺少最终退出码，或发生 session 丢失、执行中断、结果含义不明确，立即 `CLOSED` 并停止所有文件写入、Git/守卫和后续命令，等待人工清理；不得写 ignored 报告，也不得重跑。
+  只读取工具返回的最终 `exit_code` 和每次 `wall_time_seconds`，按 Step 3 计算保守上界。非零或保守上界达到 900 秒即 `CLOSED`。只要发送过 `Ctrl-C`，之后的最终 `exit_code` 即使为 0，也只证明命令已结束、可以继续门后守卫和失败报告，绝不能撤销 `CLOSED` 或进入下一门。若 `Ctrl-C` 后仍缺少最终退出码，或发生 session 丢失、执行中断、结果含义不明确，立即停止所有文件写入、Git/守卫和后续命令，等待人工清理；不得写 ignored 报告，也不得重跑。
 
 - [ ] **Step 5：门后守卫**
 
-  当前 session 已取得最终返回时，无论退出码是否为零，都再次执行 Task 1 Step 2 的全部只读检查；任一不成立同样记为 `CLOSED`。只有全部守卫成立、当前门 `exit_code=0` 且保守耗时上界小于 900 秒，才进入下一门。若 session 丢失或终止后仍无法证明命令已经结束，门后守卫记为“不可取得”，直接 `CLOSED`，不得在可能仍写文件的进程旁启动后续命令。
+  当前 session 已取得最终返回时，无论退出码是否为零，都再次执行 Task 1 Step 2 的全部只读检查；任一不成立同样记为 `CLOSED`。只有当前门从未发送 `Ctrl-C`、全部守卫成立、`exit_code=0` 且保守耗时上界小于 900 秒，才进入下一门。若 session 丢失或终止后仍无法证明命令已经结束，门后守卫记为“不可取得”，直接 `CLOSED`，不得在可能仍写文件的进程旁启动后续命令。
 
 第一门前先确认 `.superpowers/sdd/2026-08-21-desktop-nonrepro-stability-acceptance-gate-report.md` 不存在；存在即 `CLOSED`，不得覆盖。五门全部满足时进入 Task 3；门以明确最终退出码失败且确认命令已结束时，只创建失败报告后结束。命令终态不明时遵守 Step 4 的完全停手规则，不进入 Task 3。
 
@@ -121,7 +122,7 @@
 
 - [ ] **Step 3：形成唯一裁决**
 
-  五门均 `exit_code=0`、每门保守耗时上界均小于 900 秒、全部守卫通过且独立复审 C0/I0 Ready 时，裁决 `PASS`，结论逐字为“稳定性准入通过，已知偶发超时根因未定位”。其他任何组合都是 `CLOSED`。
+  五门均从未发送 `Ctrl-C`、均 `exit_code=0`、每门保守耗时上界均小于 900 秒、全部守卫通过且独立复审 C0/I0 Ready 时，裁决 `PASS`，结论逐字为“稳定性准入通过，已知偶发超时根因未定位”。其他任何组合都是 `CLOSED`。
 
 ## Task 4：仅 PASS 后同步正式状态
 
