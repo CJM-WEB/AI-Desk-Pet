@@ -1,5 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
-import { AgentLoop } from '@myself/agent-core';
+import {
+  AgentLoop,
+  CAPABILITY_CLARIFICATION_TOOL_NAME
+} from '@myself/agent-core';
 import type {
   ModelMessage,
   ModelProvider,
@@ -334,7 +337,7 @@ describe('AgentService', () => {
     });
   });
 
-  test('失败 PowerShell 续跑出第二次确认时保留会话所有权，后续成功可确认', async () => {
+  test('失败 PowerShell 续跑后拒绝模型再次请求工具', async () => {
     const provider = new ScriptedProvider([
       {
         type: 'tool_request',
@@ -362,30 +365,18 @@ describe('AgentService', () => {
       generation: 'generation-1',
       expiresAtMs: Date.now() + 60_000
     });
-    const secondAction = Object.freeze({ ...firstAction, command: 'Get-Date' });
-    const preview = vi.fn((input: { command: string }) => (
-      input.command === 'Get-ChildItem' ? firstAction : secondAction
-    ));
-    const execute = vi.fn()
-      .mockResolvedValueOnce(powerShellResult(false))
-      .mockResolvedValueOnce(powerShellResult(true));
+    const preview = vi.fn(() => firstAction);
+    const execute = vi.fn().mockResolvedValueOnce(powerShellResult(false));
     const { events, service } = createPowerShellHarness(provider, { preview, execute });
 
     await service.submitFileTask({ text: '运行命令', visibleHistory: [] });
     const firstPending = events.find(event => event.type === 'pending_action');
     if (!firstPending || firstPending.type !== 'pending_action') throw new Error('缺少首次确认');
-    await service.confirm(firstPending.action.actionId);
-    const secondPending = events.filter(event => event.type === 'pending_action').at(-1);
-    if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少第二次确认');
-    await service.confirm(secondPending.action.actionId);
+    await expect(service.confirm(firstPending.action.actionId))
+      .rejects.toThrow('AGENT_FINALIZATION_TOOL_REQUEST');
 
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(events).toContainEqual({
-      type: 'message',
-      role: 'assistant',
-      text: '第二个命令已成功。'
-    });
-    expect(phases(events).at(-1)).toBe('success');
+    expect(execute).toHaveBeenCalledOnce();
+    expect(phases(events).at(-1)).toBe('error');
   });
 
   test('失败 PowerShell 的模型总结失败只发布中性能力结果，绝不伪称文件成功', async () => {
@@ -552,10 +543,14 @@ describe('AgentService', () => {
     expect(session.messages).toEqual([]);
   });
 
-  test('文件任务在首次工具前公开严格 JSON 所表达的澄清问题', async () => {
+  test('文件任务在首次工具前公开结构化澄清工具所表达的问题', async () => {
     const { events, service } = createHarness(new ScriptedProvider([{
-      type: 'text',
-      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-target-1',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { question: '请提供目标文件名' }
+      }
     }]));
 
     await service.submitFileTask({ text: '创建文件', visibleHistory: [] });
@@ -571,8 +566,12 @@ describe('AgentService', () => {
     const modelConfirmation = '请确认是否删除当前目录下的 empty 文件夹？';
     const provider = new ScriptedProvider([
       {
-        type: 'text',
-        text: JSON.stringify({ kind: 'clarification_required', question: modelConfirmation })
+        type: 'tool_request',
+        request: {
+          requestId: 'clarify-confirmation-1',
+          toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+          arguments: { question: modelConfirmation }
+        }
       },
       {
         type: 'tool_request',
@@ -583,8 +582,12 @@ describe('AgentService', () => {
         }
       },
       {
-        type: 'text',
-        text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+        type: 'tool_request',
+        request: {
+          requestId: 'clarify-target-2',
+          toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+          arguments: { question: '请提供目标文件名' }
+        }
       }
     ]);
     const harness = createHarness(provider, {
@@ -632,8 +635,12 @@ describe('AgentService', () => {
     await vi.waitFor(() => expect(provider.requests).toHaveLength(2));
     const resetting = service.resetForNewConversation();
     provider.resolve(1, {
-      type: 'text',
-      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-reset-1',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { question: '请提供目标文件名' }
+      }
     });
     await Promise.all([submitting, resetting]);
 
@@ -651,8 +658,12 @@ describe('AgentService', () => {
     await vi.waitFor(() => expect(provider.requests).toHaveLength(2));
     service.cancelActive();
     provider.resolve(1, {
-      type: 'text',
-      text: '{"kind":"clarification_required","question":"请提供目标文件名"}'
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-cancel-1',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { question: '请提供目标文件名' }
+      }
     });
     await submitting;
 
@@ -735,8 +746,12 @@ describe('AgentService', () => {
   test('首次等待前复制可见历史，调用方后续篡改不改变模型输入', async () => {
     const sessionGate = deferred();
     const provider = new ScriptedProvider([{
-      type: 'text',
-      text: '{"kind":"clarification_required","question":"请补充目标文件名"}'
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-history-1',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { question: '请补充目标文件名' }
+      }
     }]);
     const harness = createHarness(
       provider,

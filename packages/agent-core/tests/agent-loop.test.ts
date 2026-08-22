@@ -476,8 +476,8 @@ describe('AgentLoop', () => {
     { question: '', label: '空问题' },
     { question: 'a'.repeat(1_001), label: '超长问题' },
     { question: '请提供目标文件名', extra: true, label: '额外字段' },
-    { question: '请确认是否删除 empty 文件夹？', label: '执行确认' }
-  ])('文件规划拒绝无效的结构化澄清：$label', async ({ question, ...extra }) => {
+    { question: '请确认是否删除指定的目标文件？', label: '执行确认' }
+  ])('文件规划拒绝无效的结构化澄清：$label', async ({ question, label: _label, ...extra }) => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',
       request: {

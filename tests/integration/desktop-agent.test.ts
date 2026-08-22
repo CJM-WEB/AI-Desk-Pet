@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   AgentLoop,
+  CAPABILITY_CLARIFICATION_TOOL_NAME,
   type ModelProvider,
   type ModelResponse
 } from '@myself/agent-core';
@@ -1069,11 +1070,14 @@ describe('桌面 Agent 真实服务集成', () => {
     });
   });
 
-  test('只通过五个允许工具列出授权目录', async () => {
+  test('能力规划通过五个文件工具和结构化澄清工具列出授权目录', async () => {
     const fixture = await harness([
       {
         response: toolCall('list-1', 'builtin.files.list_files', { relativePath: '.' }),
-        inspect: request => expect(request.tools.map(tool => tool.function.name)).toEqual(toolNames)
+        inspect: request => expect(request.tools.map(tool => tool.function.name)).toEqual([
+          ...toolNames,
+          CAPABILITY_CLARIFICATION_TOOL_NAME
+        ])
       },
       {
         response: { type: 'text', text: '目录已列出' },
@@ -1179,7 +1183,10 @@ describe('桌面 Agent 真实服务集成', () => {
           relativePath: 'repaired.txt', content: '已修复\n'
         }),
         inspect: request => {
-          expect(request.tools.map(tool => tool.function.name)).toEqual(toolNames);
+          expect(request.tools.map(tool => tool.function.name)).toEqual([
+            ...toolNames,
+            CAPABILITY_CLARIFICATION_TOOL_NAME
+          ]);
           expect(request.messages.at(-1)).toMatchObject({
             role: 'system', content: expect.stringContaining('CAPABILITY_PLAN_PROTOCOL_INVALID')
           });
@@ -1199,10 +1206,11 @@ describe('桌面 Agent 真实服务集成', () => {
     const modelConfirmation = '请确认是否删除当前目录下的 empty 文件夹？';
     const fixture = await harness([
       {
-        response: {
-          type: 'text',
-          text: JSON.stringify({ kind: 'clarification_required', question: modelConfirmation })
-        }
+        response: toolCall(
+          'clarify-confirmation-1',
+          CAPABILITY_CLARIFICATION_TOOL_NAME,
+          { question: modelConfirmation }
+        )
       },
       {
         response: toolCall(
@@ -1213,7 +1221,7 @@ describe('桌面 Agent 真实服务集成', () => {
         inspect: request => {
           expect(request.messages.at(-1)).toMatchObject({
             role: 'system',
-            content: expect.stringContaining('不得自行索要执行确认')
+            content: expect.stringContaining('CAPABILITY_PLAN_PROTOCOL_INVALID')
           });
         }
       },
