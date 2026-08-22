@@ -209,7 +209,11 @@ export class CharacterBehaviorDirector {
     providerPlan: CharacterBehaviorPlan | null;
   }>): void {
     if (this.closed || input.generation !== this.generation) return;
-    this.pendingChatPlan = input.providerPlan?.kind === 'none' ? null : input.providerPlan;
+    this.pendingChatPlan = input.providerPlan === null || (
+      input.providerPlan.kind === 'none'
+      || input.providerPlan.kind === 'stop_movement'
+      || input.providerPlan.kind === 'resume_movement'
+    ) ? null : input.providerPlan;
     this.pendingSuccessToken = null;
   }
 

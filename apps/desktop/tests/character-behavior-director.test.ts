@@ -404,6 +404,45 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.director.getChatContext().runtime.movementStopped).toBe(expected);
   });
 
+  test.each([
+    { kind: 'stop_movement' as const },
+    { kind: 'resume_movement' as const }
+  ])('Provider %j 不能在 success 令牌迟到时留在待提交槽阻塞低优先级候选', providerPlan => {
+    const fixture = createFixture();
+    fixture.setTaskAuthorization({
+      kind: 'play', actionId: 'success-action', playbackToken: 'success-token', semantic: 'celebrate'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    // 显式动作抢占迟到的 success 令牌，终态后只剩待提交槽可能阻塞候选。
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'explicit-token', semantic: 'celebrate'
+    });
+    fixture.director.requestBehaviorPlan(play('挥手'), 'explicit');
+    fixture.director.applyPlaybackFeedback({
+      actionId: 'wave-action',
+      playbackToken: 'explicit-token',
+      status: 'completed',
+      occurredAtMs: 100
+    });
+
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'celebrate-action', playbackToken: 'reflection-token', semantic: 'celebrate'
+    });
+    expect(fixture.director.requestBehaviorPlan(play('庆祝'), 'reflection')).toMatchObject({
+      kind: 'play', playbackToken: 'reflection-token'
+    });
+    expect(fixture.saveMovementStopped).not.toHaveBeenCalled();
+    expect(fixture.motion.stop).not.toHaveBeenCalled();
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+    expect(fixture.director.getChatContext().runtime.movementStopped).toBe(false);
+  });
+
   test('反思 resume 不能解除本地停止锁', async () => {
     const fixture = createFixture();
     const prepared = await fixture.director.prepareUserPrompt('停下');
