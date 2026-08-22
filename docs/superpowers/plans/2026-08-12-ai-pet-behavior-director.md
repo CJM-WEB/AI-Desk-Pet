@@ -184,29 +184,29 @@ export type ConversationChatReply = Readonly<{
 }>;
 ```
 
-- [ ] **步骤 1：写三类 Provider RED**
+- [x] **步骤 1：写三类 Provider RED**
 
   在 `provider-contract.test.ts` 为三类 Provider 发出 `responseContract` 聊天请求并断言 `tools` 为空。OpenAI-compatible 与 DeepSeek 请求体必须精确含 `response_format: { type: 'json_object' }`；Anthropic 含 `output_config.format.type === 'json_schema'`；Gemini 含 `generationConfig.responseMimeType === 'application/json'` 和 `responseJsonSchema`。再断言 contract 与非空 tools/非 none toolChoice 冲突时 fetch 前返回 `PROVIDER_RESPONSE_CONTRACT_CONFLICT`。
 
-- [ ] **步骤 2：写正文保留 RED**
+- [x] **步骤 2：写正文保留 RED**
 
   覆盖合法 JSON、非法 `behaviorPlan`、非法 emotion、行为字段后的截断、普通纯文本兼容和空对象。预期均保留完整合法 `text`，只丢行为/情绪；无法恢复正文才返回 `PROVIDER_MALFORMED_RESPONSE`，且错误不含原始正文。
 
-- [ ] **步骤 3：写 ChatAdapter 解码 RED**
+- [x] **步骤 3：写 ChatAdapter 解码 RED**
 
   断言单次 `provider.respond()`、`responseContract` 存在、`tools: []`、`toolChoice: 'none'`；`structured_output.behaviorPlan` 合法时返回，非法时只返回正文。额外构造 `behaviorIntent`，断言普通聊天忽略它。本任务不要求 `ConversationChatInput` 携带 `behaviorContext`，也不把角色清单或运行态写入系统消息。
 
-- [ ] **步骤 4：运行 RED**
+- [x] **步骤 4：运行 RED**
 
   运行：`pnpm.cmd exec vitest run --project desktop apps/desktop/tests/provider-contract.test.ts apps/desktop/tests/openai-provider.test.ts apps/desktop/tests/conversation-chat-adapter.test.ts`
 
   预期：FAIL，现有 Provider 未序列化 `responseContract`，ChatAdapter 尚未解码计划。
 
-- [ ] **步骤 5：写最小 GREEN**
+- [x] **步骤 5：写最小 GREEN**
 
   三个 Provider 在有 contract 时调用任务 1 解码器；无 contract 时保持既有自然文本/工具协议。`OpenAICompatibleProvider` 仅在 `request.responseContract === undefined` 时兼容解析 `message.metadata.behaviorIntent`，从而保留能力任务而切断普通聊天依赖。ChatAdapter 只处理已解码的正文、emotion 与 plan；任务 4 在 Director 上下文可用后再将必填 `behaviorContext` 与动态 JSON 系统消息接入。`provider-registry.ts` 把 `response_format` 与 `output_config` 加入保留参数集合，防止自定义参数覆盖宿主契约。
 
-- [ ] **步骤 6：运行 GREEN 与静态旧路径检查**
+- [x] **步骤 6：运行 GREEN 与静态旧路径检查**
 
   前两条命令须通过；第三条是反向断言，只有不存在普通聊天旧 intent 依赖时才成功：
 
@@ -218,7 +218,7 @@ export type ConversationChatReply = Readonly<{
 
   预期：测试与 typecheck PASS；反向断言无输出。Provider/Agent 能力任务文件中的旧 intent 命中不属于删除范围。
 
-- [ ] **步骤 7：提交任务**
+- [x] **步骤 7：提交任务**
 
   ```powershell
   git add apps/desktop/src/main/conversation/conversation-chat-adapter.ts apps/desktop/tests/conversation-chat-adapter.test.ts apps/desktop/src/main/providers/openai-provider.ts apps/desktop/src/main/providers/anthropic-provider.ts apps/desktop/src/main/providers/gemini-provider.ts apps/desktop/src/main/providers/provider-registry.ts apps/desktop/tests/openai-provider.test.ts apps/desktop/tests/provider-contract.test.ts
