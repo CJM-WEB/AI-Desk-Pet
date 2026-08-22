@@ -1,4 +1,8 @@
-import { execFile } from 'node:child_process';
+import {
+  execFile,
+  spawn,
+  type ChildProcessWithoutNullStreams
+} from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +13,21 @@ import { afterEach, describe, expect, test } from 'vitest';
 const execFileAsync = promisify(execFile);
 const verifier = fileURLToPath(new URL('../scripts/verify-production-mcp-boundary.mjs', import.meta.url));
 const temporaryRoots: string[] = [];
+const fileLockScript = String.raw`
+$path = [Environment]::GetEnvironmentVariable('AI_PET_TEST_LOCK_FILE', 'Process')
+$stream = [System.IO.File]::Open(
+  $path,
+  [System.IO.FileMode]::Open,
+  [System.IO.FileAccess]::ReadWrite,
+  [System.IO.FileShare]::None
+)
+try {
+  [Console]::Out.WriteLine('LOCKED')
+  [Console]::Out.Flush()
+  [Console]::In.ReadLine() | Out-Null
+} finally {
+  $stream.Dispose()
+}`;
 
 const forbiddenMarkers = [
   ['main', '@modelcontextprotocol/sdk'],
@@ -42,6 +61,84 @@ async function createOutputFixture(): Promise<string> {
 async function runVerifier(root: string) {
   const result = await execFileAsync(process.execPath, [verifier, root]);
   return { code: 0, stdout: result.stdout, stderr: result.stderr };
+}
+
+async function waitForLockedSignal(child: ChildProcessWithoutNullStreams): Promise<void> {
+  await new Promise<void>((resolveLocked, rejectLocked) => {
+    let stdout = '';
+    const timeout = setTimeout(() => finish(new Error('FILE_LOCK_SIGNAL_TIMEOUT')), 5_000);
+    const onData = (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+      if (stdout.split(/\r?\n/u).includes('LOCKED')) finish();
+    };
+    const onExit = () => finish(new Error('FILE_LOCK_PROCESS_EXITED'));
+    const onError = () => finish(new Error('FILE_LOCK_PROCESS_FAILED'));
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      child.stdout.off('data', onData);
+      child.off('exit', onExit);
+      child.off('error', onError);
+      if (error === undefined) resolveLocked();
+      else rejectLocked(error);
+    };
+    child.stdout.on('data', onData);
+    child.once('exit', onExit);
+    child.once('error', onError);
+  });
+}
+
+async function waitForProcessExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number
+): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise<boolean>(resolveExit => {
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    const onExit = () => finish(true);
+    const finish = (exited: boolean) => {
+      clearTimeout(timeout);
+      child.off('exit', onExit);
+      resolveExit(exited);
+    };
+    child.once('exit', onExit);
+  });
+}
+
+async function stopFileLock(child: ChildProcessWithoutNullStreams | undefined): Promise<void> {
+  if (child === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  child.stdin.end('RELEASE\n');
+  if (await waitForProcessExit(child, 2_000)) return;
+  child.kill();
+  if (!await waitForProcessExit(child, 2_000)) throw new Error('FILE_LOCK_PROCESS_EXIT_TIMEOUT');
+}
+
+async function lockFileExclusively(file: string): Promise<ChildProcessWithoutNullStreams> {
+  const powershell = join(
+    process.env.WINDIR!,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe'
+  );
+  const child = spawn(powershell, [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    fileLockScript
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    env: { ...process.env, AI_PET_TEST_LOCK_FILE: file }
+  });
+  child.stderr.resume();
+  try {
+    await waitForLockedSignal(child);
+    return child;
+  } catch (error) {
+    await stopFileLock(child);
+    throw error;
+  }
 }
 
 afterEach(async () => {
@@ -120,4 +217,26 @@ describe('MCP 正式产物边界校验器', () => {
       stderr: 'MCP_PRODUCTION_BOUNDARY_FAILED renderer MCP 服务\n'
     });
   });
+
+  test.skipIf(process.platform !== 'win32')(
+    '普通产物读取失败时脱敏并 fail-closed',
+    async () => {
+      const root = await createOutputFixture();
+      const lockedFile = join(root, 'main', 'locked.js');
+      await writeFile(lockedFile, 'const feature = "chat";', 'utf8');
+      let fileLock: ChildProcessWithoutNullStreams | undefined;
+
+      try {
+        fileLock = await lockFileExclusively(lockedFile);
+        await expect(runVerifier(root)).rejects.toMatchObject({
+          code: 1,
+          stdout: '',
+          stderr: 'MCP_PRODUCTION_BOUNDARY_FAILED main IO_ERROR\n'
+        });
+      } finally {
+        await stopFileLock(fileLock);
+      }
+    },
+    10_000
+  );
 });
