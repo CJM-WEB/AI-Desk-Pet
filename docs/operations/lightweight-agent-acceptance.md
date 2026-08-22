@@ -103,7 +103,16 @@
 - 本轮只补充持久化、Electron 产品边界和最终验收证据；未修改 SettingsStore、拖拽、角色行为、桌宠缩放、碰撞体积、文件能力、Provider 协议或角色工作台生产代码。
 - 保留 `apps/desktop/src/main/mcp`、内部 MCP 单元测试、测试 Server、SettingsStore 的 MCP schema/data 和本机已有 MCP 数据；正式 API、Preload、IPC、Renderer、Main、Agent、生产依赖与 bundle 入口继续保持删除状态。
 
-### Characterization 与测试夹具修正
+### Task 1—4 可追溯 RED 证据（历史补记）
+
+以下记录仅补入各任务报告已经记载的命令、退出码与失败原因，不以当前工作区重跑替代历史 TDD 证据。
+
+- Task 1（来源：`.superpowers/sdd/2026-08-22-desktop-mcp-production-chain-removal/task-1-report.md`）：`pnpm.cmd --filter @myself/desktop typecheck` 退出码 `2`，新增类型契约因 `SettingsTab` 仍含 `tools`、`SettingsWorkspaceProps` 仍含 `mcpActions` 失败；`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/renderer-mcp-production-boundary.test.ts` 退出码 `1`，`SettingsView.tsx` 仍命中 `McpSettings`、`mcpActions`、`McpLaunch` 与 `desktopRuntimeCapabilities`。
+- Task 2（来源：`.superpowers/sdd/2026-08-22-desktop-mcp-production-chain-removal/task-2-report.md`）：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/preload-production-boundary.test.ts tests/advanced-settings-ipc.test.ts` 退出码 `1`，12 项中 2 项失败；旧 `upsertMcpServer` 等公开键仍存在，且 `settings:mcp-upsert` 等 handler 仍注册。
+- Task 3（来源：`.superpowers/sdd/2026-08-22-desktop-mcp-production-chain-removal/task-3-report.md`）：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/desktop-settings-service.test.ts tests/main-conversation-composition.test.ts tests/main-lifecycle.test.ts` 退出码 `1`，3 个目标文件各有 1 条失败、共 3 条失败；设置服务 fixture 仍含 `mcpStore` / `mcpManager`，会话快照仍含 `enabledReadTools`，Main 仍构造 `McpServerStore` / `McpManager`。
+- Task 4（来源：`.superpowers/sdd/2026-08-22-desktop-mcp-production-chain-removal/task-4-report.md`）：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/package-config.test.ts` 退出码 `1`，8 项中 4 项失败，分别证明 SDK 仍在 `dependencies`、未在 `devDependencies`、构建未串联 verifier、Main 未显式 externalize SDK。有效 verifier RED 为 `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/production-mcp-boundary.test.ts`，退出码 `1`：clean fixture 通过，17 个单标记 dirty fixture 因可执行 no-op verifier 错误返回 `0` 而失败。此前由 Windows `URL.pathname` 引起的 `MODULE_NOT_FOUND` 已在任务报告中明确标为无效 RED，不作为实施证据。
+
+### 特征化测试与测试夹具修正
 
 - 持久化生产实现没有出现有效 RED。首次定向测试为 49/50，通过项已证明普通 mutator 保留 MCP 数据；唯一失败来自测试读取源文件时把 `apps/desktop` 重复拼接，改用 `import.meta.url` 定位后通过。该失败不是产品缺陷，因此没有为制造 RED 修改生产代码。
 - 生命周期 E2E 首次沿用强制重启时，第二进程的 `safeStorage.decryptStringAsync` 报出密文解密失败并被归一化为 `PROVIDER_NETWORK_ERROR`；改用同步解密同样失败且实验已回退。根因是旧夹具未保证 safeStorage 后端正常关闭，不是 MCP 产品链 RED。测试改为每次重启前调用正式 `window.myself.quit()` 并等待桌宠窗口关闭，Provider 密钥随后可正常恢复。
