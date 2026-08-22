@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename } from 'node:fs/promises';
+import { mkdir, open, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import {
@@ -12,6 +12,7 @@ import {
   type PublicSettings,
   type StoredProviderProfileV2
 } from '@myself/shared-types';
+import { characterIdSchema } from '../../shared/character-ipc';
 
 const providerMetadataSchema = z.object({
   id: z.string().min(1),
@@ -28,8 +29,69 @@ const authorizedRootSchema = z.object({
 }).strict();
 
 const petPositionSchema = z.object({
-  x: z.number(),
-  y: z.number()
+  x: z.number().finite(),
+  y: z.number().finite()
+}).strict();
+
+const PET_PLACEMENT_LIMIT = 256;
+const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
+const petPlacementScaleSchema = z.number().finite().transform(value => (
+  Math.min(2, Math.max(0.5, value))
+));
+
+/** Main 私有的按角色持久位置；不得通过 Renderer 设置契约暴露全局坐标。 */
+export const storedPetPlacementSchema = z.object({
+  characterId: characterIdSchema,
+  scale: petPlacementScaleSchema,
+  footAnchorDip: petPositionSchema,
+  displayId: z.string().trim().min(1).max(256)
+}).strict();
+export type StoredPetPlacement = Readonly<z.infer<typeof storedPetPlacementSchema>>;
+
+export type PetPlacementStateSnapshot =
+  | Readonly<{
+    kind: 'pending-legacy';
+    windowPosition: Readonly<PetPositionInput>;
+  }>
+  | Readonly<{
+    kind: 'ready';
+    placement: StoredPetPlacement | null;
+  }>;
+
+const storedPetPlacementsSchema = z.array(storedPetPlacementSchema)
+  .max(PET_PLACEMENT_LIMIT)
+  .superRefine((placements, context) => {
+    const characterIds = new Set<string>();
+    placements.forEach((placement, index) => {
+      if (characterIds.has(placement.characterId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'PET_PLACEMENT_CHARACTER_DUPLICATE',
+          path: [index, 'characterId']
+        });
+      }
+      characterIds.add(placement.characterId);
+    });
+  });
+
+const pendingLegacyPetPlacementStateSchema = z.object({
+  kind: z.literal('pending-legacy'),
+  windowPosition: petPositionSchema
+}).strict();
+
+const readyPetPlacementStateSchema = z.object({
+  kind: z.literal('ready'),
+  placements: storedPetPlacementsSchema
+}).strict();
+
+const petPlacementStateSchema = z.discriminatedUnion('kind', [
+  pendingLegacyPetPlacementStateSchema,
+  readyPetPlacementStateSchema
+]);
+
+const petPlacementMigrationCommitSchema = z.object({
+  expectedWindowPosition: petPositionSchema,
+  placement: storedPetPlacementSchema
 }).strict();
 
 export const privacySettingsSchema = z.object({
@@ -95,11 +157,42 @@ const storedSettingsV2Schema = z.object({
   mcpServers: z.array(mcpServerSettingsSchema).optional()
 }).strict();
 
+const storedSettingsV3Shape = {
+  version: z.literal(3),
+  providerProfiles: z.array(storedProviderProfileV2Schema),
+  modelRoute: modelRouteConfigSchema,
+  authorizedRoot: authorizedRootSchema.nullable(),
+  petPlacementState: petPlacementStateSchema,
+  fileDisclosureAccepted: z.boolean(),
+  petAlwaysOnTop: z.boolean(),
+  privacy: privacySettingsSchema,
+  movementStopped: z.boolean(),
+  mcpServers: z.array(mcpServerSettingsSchema)
+};
+
+const storedSettingsV3Schema = z.object(storedSettingsV3Shape).strict();
+
+// 只放宽 ready 集合的单条内容，用于隔离损坏 placement 后保住其余设置。
+const recoverableStoredSettingsV3Schema = z.object({
+  ...storedSettingsV3Shape,
+  petPlacementState: z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('pending-legacy'),
+      windowPosition: z.unknown()
+    }).strict(),
+    z.object({
+      kind: z.literal('ready'),
+      placements: z.array(z.unknown())
+    }).strict()
+  ])
+}).strict();
+
 type ProviderMetadataInput = z.input<typeof providerMetadataSchema> & Record<string, unknown>;
 type AuthorizedRootInput = z.input<typeof authorizedRootSchema>;
 type PetPositionInput = z.input<typeof petPositionSchema>;
 type StoredSettingsV1 = z.infer<typeof storedSettingsV1Schema>;
-type StoredSettings = z.infer<typeof storedSettingsV2Schema>;
+type StoredSettingsV2 = z.infer<typeof storedSettingsV2Schema>;
+type StoredSettings = z.infer<typeof storedSettingsV3Schema>;
 
 export interface ProviderSettingsSnapshot {
   profiles: ProviderProfileV2[];
@@ -124,11 +217,11 @@ function emptyModelRoute(): ModelRouteConfig {
 
 function defaultSettings(): StoredSettings {
   return {
-    version: 2,
+    version: 3,
     providerProfiles: [],
     modelRoute: emptyModelRoute(),
     authorizedRoot: null,
-    petPosition: null,
+    petPlacementState: { kind: 'ready', placements: [] },
     fileDisclosureAccepted: false,
     petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
@@ -169,7 +262,7 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
     return {
       ...defaultSettings(),
       authorizedRoot: settings.authorizedRoot,
-      petPosition: settings.petPosition,
+      petPlacementState: legacyPetPlacementState(settings.petPosition),
       fileDisclosureAccepted: settings.fileDisclosureAccepted,
       privacy: legacyPrivacySettings()
     };
@@ -185,20 +278,41 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
     additionalParameters: {}
   };
   return {
-    version: 2,
+    version: 3,
     providerProfiles: [profile],
     modelRoute: {
       ...emptyModelRoute(),
       primaryProfileId: profile.id
     },
     authorizedRoot: settings.authorizedRoot,
-    petPosition: settings.petPosition,
+    petPlacementState: legacyPetPlacementState(settings.petPosition),
     fileDisclosureAccepted: settings.fileDisclosureAccepted,
     petAlwaysOnTop: false,
     privacy: legacyPrivacySettings(),
     movementStopped: false,
     mcpServers: []
   };
+}
+
+function legacyPetPlacementState(position: PetPositionInput | null): StoredSettings['petPlacementState'] {
+  return position === null
+    ? { kind: 'ready', placements: [] }
+    : { kind: 'pending-legacy', windowPosition: petPositionSchema.parse(position) };
+}
+
+function migrateV2Settings(settings: StoredSettingsV2): StoredSettings {
+  return storedSettingsV3Schema.parse({
+    version: 3,
+    providerProfiles: settings.providerProfiles,
+    modelRoute: settings.modelRoute,
+    authorizedRoot: settings.authorizedRoot,
+    petPlacementState: legacyPetPlacementState(settings.petPosition),
+    fileDisclosureAccepted: settings.fileDisclosureAccepted,
+    petAlwaysOnTop: settings.petAlwaysOnTop ?? false,
+    privacy: settings.privacy ?? legacyPrivacySettings(),
+    movementStopped: settings.movementStopped ?? false,
+    mcpServers: settings.mcpServers ?? []
+  });
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -220,6 +334,107 @@ async function atomicWrite(file: string, value: StoredSettings): Promise<void> {
 
 function settingsError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
+}
+
+/** 设置文件先按字节上限有界读取，避免超限内容进入 JSON 解析或占用无界内存。 */
+async function readBoundedSettingsFile(file: string): Promise<string> {
+  const handle = await open(file, 'r');
+  try {
+    const metadata = await handle.stat();
+    if (metadata.size > SETTINGS_FILE_MAX_BYTES) {
+      throw settingsError('SETTINGS_FILE_TOO_LARGE');
+    }
+    const buffer = Buffer.allocUnsafe(SETTINGS_FILE_MAX_BYTES + 1);
+    let totalBytes = 0;
+    while (totalBytes <= SETTINGS_FILE_MAX_BYTES) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        totalBytes,
+        buffer.length - totalBytes,
+        null
+      );
+      if (bytesRead === 0) break;
+      totalBytes += bytesRead;
+    }
+    if (totalBytes > SETTINGS_FILE_MAX_BYTES) {
+      throw settingsError('SETTINGS_FILE_TOO_LARGE');
+    }
+    return buffer.subarray(0, totalBytes).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+function clonePlacement(placement: StoredPetPlacement): StoredPetPlacement {
+  return Object.freeze({
+    ...placement,
+    footAnchorDip: Object.freeze({ ...placement.footAnchorDip })
+  });
+}
+
+function cloneWindowPosition(position: PetPositionInput): Readonly<PetPositionInput> {
+  return Object.freeze({ ...position });
+}
+
+function sanitizeRecoverableV3(raw: unknown): StoredSettings | null {
+  if (raw && typeof raw === 'object') {
+    const state = (raw as { petPlacementState?: unknown }).petPlacementState;
+    if (state && typeof state === 'object') {
+      const ready = state as { kind?: unknown; placements?: unknown };
+      if (
+        ready.kind === 'ready'
+        && Array.isArray(ready.placements)
+        && ready.placements.length > PET_PLACEMENT_LIMIT
+      ) return null;
+    }
+  }
+  const recoverable = recoverableStoredSettingsV3Schema.safeParse(raw);
+  if (!recoverable.success) return null;
+  if (recoverable.data.petPlacementState.kind === 'pending-legacy') {
+    return storedSettingsV3Schema.parse({
+      ...recoverable.data,
+      petPlacementState: { kind: 'ready', placements: [] }
+    });
+  }
+  const placements = new Map<string, StoredPetPlacement>();
+  for (const candidate of recoverable.data.petPlacementState.placements) {
+    const parsed = storedPetPlacementSchema.safeParse(candidate);
+    if (!parsed.success) continue;
+    // 后出现的同角色条目覆盖旧条目，清理后集合始终唯一且有界。
+    placements.delete(parsed.data.characterId);
+    placements.set(parsed.data.characterId, parsed.data);
+    if (placements.size >= PET_PLACEMENT_LIMIT) break;
+  }
+  return storedSettingsV3Schema.parse({
+    ...recoverable.data,
+    petPlacementState: { kind: 'ready', placements: [...placements.values()] }
+  });
+}
+
+type OversizedReadyPlacementRecovery = Readonly<{
+  detected: boolean;
+  settings: StoredSettings | null;
+}>;
+
+/** 只读取判别字段与数组长度；超限数组绝不先交给严格或 recoverable schema 深遍历。 */
+function recoverOversizedReadyPlacements(raw: unknown): OversizedReadyPlacementRecovery {
+  if (!raw || typeof raw !== 'object') return { detected: false, settings: null };
+  const state = Reflect.get(raw, 'petPlacementState');
+  if (!state || typeof state !== 'object' || Reflect.get(state, 'kind') !== 'ready') {
+    return { detected: false, settings: null };
+  }
+  const placements = Reflect.get(state, 'placements');
+  if (!Array.isArray(placements) || placements.length <= PET_PLACEMENT_LIMIT) {
+    return { detected: false, settings: null };
+  }
+  const sanitized = storedSettingsV3Schema.safeParse({
+    ...(raw as Record<string, unknown>),
+    petPlacementState: { kind: 'ready', placements: [] }
+  });
+  return {
+    detected: true,
+    settings: sanitized.success ? sanitized.data : null
+  };
 }
 
 function storedProfile(profile: ProviderProfileV2): StoredProviderProfileV2 {
@@ -311,21 +526,38 @@ export class SettingsStore {
   private async load(): Promise<StoredSettings> {
     let raw: unknown;
     try {
-      raw = JSON.parse(await readFile(this.file, 'utf8')) as unknown;
+      raw = JSON.parse(await readBoundedSettingsFile(this.file)) as unknown;
     } catch (error) {
       if (isMissingFile(error)) return defaultSettings();
       return this.quarantineCorruptFile();
     }
 
+    const oversizedReady = recoverOversizedReadyPlacements(raw);
+    if (oversizedReady.detected) {
+      if (!oversizedReady.settings) return this.quarantineCorruptFile();
+      await atomicWrite(this.file, oversizedReady.settings);
+      return oversizedReady.settings;
+    }
+
+    const v3 = storedSettingsV3Schema.safeParse(raw);
+    if (v3.success) {
+      if (JSON.stringify(v3.data) !== JSON.stringify(raw)) {
+        await atomicWrite(this.file, v3.data);
+      }
+      return v3.data;
+    }
+
+    const recoveredV3 = sanitizeRecoverableV3(raw);
+    if (recoveredV3) {
+      await atomicWrite(this.file, recoveredV3);
+      return recoveredV3;
+    }
+
     const v2 = storedSettingsV2Schema.safeParse(raw);
     if (v2.success) {
-      return {
-        ...v2.data,
-        petAlwaysOnTop: v2.data.petAlwaysOnTop ?? false,
-        privacy: v2.data.privacy ?? legacyPrivacySettings(),
-        movementStopped: v2.data.movementStopped ?? false,
-        mcpServers: v2.data.mcpServers ?? []
-      };
+      const migrated = migrateV2Settings(v2.data);
+      await atomicWrite(this.file, migrated);
+      return migrated;
     }
 
     const v1 = storedSettingsV1Schema.safeParse(raw);
@@ -509,7 +741,10 @@ export class SettingsStore {
           displayName: settings.authorizedRoot.displayName,
           pathHint: settings.authorizedRoot.pathHint
         },
-        petPosition: settings.petPosition,
+        // 仅供 G4 接线前旧 Main 恢复窗口左上角；ready placement 不向 Renderer 暴露。
+        petPosition: settings.petPlacementState.kind === 'pending-legacy'
+          ? settings.petPlacementState.windowPosition
+          : null,
         fileDisclosureAccepted: settings.fileDisclosureAccepted
       };
     });
@@ -552,8 +787,80 @@ export class SettingsStore {
 
   savePetPosition(input: PetPositionInput): Promise<void> {
     return this.enqueueWrite(async () => {
+      const windowPosition = petPositionSchema.parse(input);
       const settings = await this.load();
-      settings.petPosition = petPositionSchema.parse(input);
+      // 仅供 G4 接线前旧窗口控制器使用；正式新路径只调用 savePetPlacement。
+      if (
+        settings.petPlacementState.kind === 'ready'
+        && settings.petPlacementState.placements.length > 0
+      ) return;
+      settings.petPlacementState = {
+        kind: 'pending-legacy',
+        windowPosition
+      };
+      await atomicWrite(this.file, settings);
+    });
+  }
+
+  savePetPlacement(input: StoredPetPlacement): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const placement = storedPetPlacementSchema.parse(input);
+      const settings = await this.load();
+      if (settings.petPlacementState.kind !== 'ready') {
+        throw settingsError('PET_PLACEMENT_MIGRATION_REQUIRED');
+      }
+      const existing = settings.petPlacementState.placements.some(
+        candidate => candidate.characterId === placement.characterId
+      );
+      if (!existing && settings.petPlacementState.placements.length >= PET_PLACEMENT_LIMIT) {
+        throw settingsError('PET_PLACEMENT_CAPACITY_REACHED');
+      }
+      const placements = settings.petPlacementState.placements.filter(
+        candidate => candidate.characterId !== placement.characterId
+      );
+      settings.petPlacementState = readyPetPlacementStateSchema.parse({
+        kind: 'ready',
+        placements: [...placements, placement]
+      });
+      await atomicWrite(this.file, settings);
+    });
+  }
+
+  getPetPlacementState(characterId: string): Promise<PetPlacementStateSnapshot> {
+    return this.enqueue(async () => {
+      const parsedCharacterId = characterIdSchema.parse(characterId);
+      const settings = await this.load();
+      if (settings.petPlacementState.kind === 'pending-legacy') {
+        return Object.freeze({
+          kind: 'pending-legacy',
+          windowPosition: cloneWindowPosition(settings.petPlacementState.windowPosition)
+        });
+      }
+      const placement = settings.petPlacementState.placements.find(
+        candidate => candidate.characterId === parsedCharacterId
+      );
+      return Object.freeze({
+        kind: 'ready',
+        placement: placement ? clonePlacement(placement) : null
+      });
+    });
+  }
+
+  commitPetPlacementMigration(input: unknown): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const commit = petPlacementMigrationCommitSchema.parse(input);
+      const settings = await this.load();
+      if (
+        settings.petPlacementState.kind !== 'pending-legacy'
+        || settings.petPlacementState.windowPosition.x !== commit.expectedWindowPosition.x
+        || settings.petPlacementState.windowPosition.y !== commit.expectedWindowPosition.y
+      ) {
+        throw settingsError('PET_PLACEMENT_MIGRATION_STALE');
+      }
+      settings.petPlacementState = {
+        kind: 'ready',
+        placements: [commit.placement]
+      };
       await atomicWrite(this.file, settings);
     });
   }

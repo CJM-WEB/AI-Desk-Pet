@@ -208,17 +208,20 @@ function fitPresentation(
   };
 }
 
-type CachedShape = Readonly<{
+/** 仅供 Main 布局事务预演；不进入 IPC，也不包含任何全局坐标。 */
+export type PetShapeLayout = Readonly<{
   revision: number;
   characterId: string;
   scale: number;
   viewportSizeDip: Readonly<{ width: number; height: number }>;
-  footOffsetDip: Point;
+  /** 相对 viewport 左上角；G4 还需叠加 viewportInWindowDip offset 才是窗口内脚底。 */
+  footOffsetInViewportDip: Point;
+  /** 相对脚底原点，用于按真实可见范围钳制而不是按透明窗口钳制。 */
   visualBoundsFromFootDip: Rectangle;
 }>;
 
 type ShapeState = Readonly<{
-  shape: CachedShape;
+  shape: PetShapeLayout;
   shapeKey: string;
   actionRevision: number;
   actionBinding: string;
@@ -239,6 +242,17 @@ export class PetVisualGeometryAuthority {
 
   getSnapshot(): PetGeometrySnapshot | null {
     return this.snapshot ? cloneAndFreeze(this.snapshot) as PetGeometrySnapshot : null;
+  }
+
+  /** 按 revision 只读当前局部形状，供 G4 在提交 placement 前计算窗口布局。 */
+  getShapeLayout(revision: number): PetShapeLayout | null {
+    if (!revisionSchema.safeParse(revision).success) return null;
+    const state = this.pending?.shape.revision === revision
+      ? this.pending
+      : this.active?.shape.revision === revision
+        ? this.active
+        : null;
+    return state ? cloneAndFreeze(state.shape) as PetShapeLayout : null;
   }
 
   /** 只在角色、动作、方向、scale 或 viewport 尺寸边界调用，不接收逐帧通知。 */
@@ -346,16 +360,16 @@ export class PetVisualGeometryAuthority {
     if (!revisionSchema.safeParse(revision).success) {
       return failure('PET_GEOMETRY_COMPUTATION_INVALID');
     }
-    const nextShape: CachedShape = {
+    const nextShape: PetShapeLayout = {
       revision,
       characterId: manifest.id,
       scale: scale.data,
       viewportSizeDip: viewportSize.data,
-      footOffsetDip: fit.groundInWindow,
+      footOffsetInViewportDip: fit.groundInWindow,
       visualBoundsFromFootDip: relativeBounds
     };
     if (
-      !finitePoint(nextShape.footOffsetDip)
+      !finitePoint(nextShape.footOffsetInViewportDip)
       || !validRectangle(nextShape.visualBoundsFromFootDip)
     ) return failure('PET_GEOMETRY_COMPUTATION_INVALID');
 
@@ -419,8 +433,8 @@ export class PetVisualGeometryAuthority {
     ) return failure('PET_GEOMETRY_DISPLAY_INVALID');
 
     const footInWindow = {
-      x: viewport.data.x + shape.footOffsetDip.x,
-      y: viewport.data.y + shape.footOffsetDip.y
+      x: viewport.data.x + shape.footOffsetInViewportDip.x,
+      y: viewport.data.y + shape.footOffsetInViewportDip.y
     };
     const nextSnapshot: PetGeometrySnapshot = {
       revision: shape.revision,

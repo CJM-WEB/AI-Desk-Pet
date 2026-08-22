@@ -132,6 +132,14 @@ describe('Main 私有桌宠视觉几何权威', () => {
       viewportSizeDip: { width: 100, height: 100 }
     });
     expect(shape).toEqual({ ok: true, revision: 1 });
+    expect(authority.getShapeLayout(1)).toEqual({
+      revision: 1,
+      characterId: 'pet-a',
+      scale: 1,
+      viewportSizeDip: { width: 100, height: 100 },
+      footOffsetInViewportDip: { x: 50, y: 90 },
+      visualBoundsFromFootDip: { x: -30, y: -80, width: 60, height: 80 }
+    });
     expect(authority.updatePlacement({
       baseRevision: 0,
       viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 },
@@ -150,7 +158,10 @@ describe('Main 私有桌宠视觉几何权威', () => {
       viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 },
       windowBoundsDip: { x: 300, y: 200, width: 180, height: 220 },
       display: { id: 'display-1', workAreaDip: { x: 0, y: 0, width: 1920, height: 1040 } }
-    })).toMatchObject({ ok: true, snapshot: { revision: 1 } });
+    })).toMatchObject({
+      ok: true,
+      snapshot: { revision: 1, footAnchorDip: { x: 370, y: 300 } }
+    });
   });
 
   test('pending placement 失败不污染 active，旧 revision 和动作绑定仍可继续使用', () => {
@@ -206,6 +217,73 @@ describe('Main 私有桌宠视觉几何权威', () => {
       actionRevision: 4, resourceRevision: REVISION_A, direction: 'right', scale: 1.5,
       viewportSizeDip: { width: 100, height: 100 }
     })).toEqual({ ok: true, revision: 3 });
+  });
+
+  test('G4 可在提交 placement 前读取 pending 形状且失败丢弃后保留旧 active', () => {
+    const authority = new ProductionPetVisualGeometryAuthority('pet-a');
+    const activeShape = authority.updateShape({
+      manifest: manifest(), skinId: 'default-skin', actionId: 'idle-action',
+      actionRevision: 3, resourceRevision: REVISION_A, direction: 'right', scale: 1,
+      viewportSizeDip: { width: 100, height: 100 }
+    });
+    expect(activeShape).toEqual({ ok: true, revision: 1 });
+    expect(authority.updatePlacement({
+      baseRevision: 1,
+      viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 },
+      windowBoundsDip: { x: 300, y: 200, width: 180, height: 220 },
+      display: { id: 'display-1', workAreaDip: { x: 0, y: 0, width: 1920, height: 1040 } }
+    })).toMatchObject({ ok: true, snapshot: { revision: 1 } });
+    const committed = authority.getSnapshot();
+
+    const pendingShape = authority.updateShape({
+      manifest: manifest(), skinId: 'default-skin', actionId: 'move-action',
+      actionRevision: 4, resourceRevision: REVISION_B, direction: 'left', scale: 1.5,
+      viewportSizeDip: { width: 150, height: 120 }
+    });
+    expect(pendingShape).toEqual({ ok: true, revision: 2 });
+    const layout = authority.getShapeLayout(2);
+    expect(layout).toMatchObject({
+      revision: 2,
+      characterId: 'pet-a',
+      scale: 1.5,
+      viewportSizeDip: { width: 150, height: 120 },
+      footOffsetInViewportDip: { x: 75, y: 114 },
+      visualBoundsFromFootDip: { y: -90, width: 84, height: 90 }
+    });
+    expect(layout?.visualBoundsFromFootDip.x).toBeCloseTo(-48);
+    expect(Object.isFrozen(layout)).toBe(true);
+    expect(Object.isFrozen(layout?.footOffsetInViewportDip)).toBe(true);
+    expect(Object.isFrozen(layout?.viewportSizeDip)).toBe(true);
+    expect(Object.isFrozen(layout?.visualBoundsFromFootDip)).toBe(true);
+    expect(authority.getShapeLayout(2)).not.toBe(layout);
+    expect(authority.getShapeLayout(1)?.revision).toBe(1);
+    expect(authority.getSnapshot()).toEqual(committed);
+
+    expect(authority.updatePlacement({
+      baseRevision: 2,
+      viewportInWindowDip: { x: 10, y: 10, width: 150, height: 120 },
+      windowBoundsDip: { x: 300, y: 200, width: 180, height: 220 },
+      display: { id: 'wrong-display', workAreaDip: { x: -1920, y: 0, width: 1920, height: 1040 } }
+    })).toEqual({ ok: false, code: 'PET_GEOMETRY_DISPLAY_INVALID' });
+    authority.discardPendingShape();
+
+    expect(authority.getShapeLayout(2)).toBeNull();
+    expect(authority.getShapeLayout(1)).toEqual({
+      revision: 1,
+      characterId: 'pet-a',
+      scale: 1,
+      viewportSizeDip: { width: 100, height: 100 },
+      footOffsetInViewportDip: { x: 50, y: 90 },
+      visualBoundsFromFootDip: { x: -30, y: -80, width: 60, height: 80 }
+    });
+    expect(authority.getShapeLayout(999)).toBeNull();
+    expect(authority.getSnapshot()).toEqual(committed);
+    expect(authority.updatePlacement({
+      baseRevision: 1,
+      viewportInWindowDip: { x: 30, y: 20, width: 100, height: 100 },
+      windowBoundsDip: { x: 360, y: 240, width: 180, height: 220 },
+      display: { id: 'display-1', workAreaDip: { x: 0, y: 0, width: 1920, height: 1040 } }
+    })).toMatchObject({ ok: true, snapshot: { revision: 1, windowBoundsDip: { x: 360 } } });
   });
 
   test('从正式清单的当前单一表现计算窗口内视觉矩形和全局脚底锚点', () => {

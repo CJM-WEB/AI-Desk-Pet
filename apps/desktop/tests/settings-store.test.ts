@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { ProviderProfileV2 } from '@myself/shared-types';
 import ts from 'typescript';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   SettingsStore,
   type McpServerSettings
@@ -241,6 +241,28 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
   {
     methodName: 'savePetPosition',
     mutate: store => store.savePetPosition({ x: 320, y: 240 })
+  },
+  {
+    methodName: 'savePetPlacement',
+    mutate: store => store.savePetPlacement({
+      characterId: 'pet-a',
+      scale: 1,
+      footAnchorDip: { x: 410, y: 460 },
+      displayId: 'display-1'
+    })
+  },
+  {
+    methodName: 'commitPetPlacementMigration',
+    prepare: store => store.savePetPosition({ x: 320, y: 240 }),
+    mutate: store => store.commitPetPlacementMigration({
+      expectedWindowPosition: { x: 320, y: 240 },
+      placement: {
+        characterId: 'pet-a',
+        scale: 1,
+        footAnchorDip: { x: 410, y: 420 },
+        displayId: 'display-1'
+      }
+    })
   }
 ];
 
@@ -339,7 +361,7 @@ export class SettingsStore {
     });
 
     const serialized = await readFile(file, 'utf8');
-    expect(serialized).toContain('"version": 2');
+    expect(serialized).toContain('"version": 3');
     expect(serialized).not.toContain(fixtureSecret);
     await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
       provider: {
@@ -566,5 +588,540 @@ export class SettingsStore {
     });
     await expect(store.getAuthorizedRootPath()).resolves.toBeNull();
     await expect(store.getMcpServerSettings()).resolves.toEqual([]);
+  });
+
+  test('按角色独立保存 placement，并把有限 scale 钳制到支持范围', async () => {
+    const { file, store } = await createStore();
+    await store.savePetPlacement({
+      characterId: 'pet-a',
+      scale: 0.1,
+      footAnchorDip: { x: -320, y: 240 },
+      displayId: 'display-left'
+    });
+    await store.savePetPlacement({
+      characterId: 'pet-b',
+      scale: 4,
+      footAnchorDip: { x: 1320, y: 740 },
+      displayId: 'display-main'
+    });
+
+    const petAState = await store.getPetPlacementState('pet-a');
+    expect(petAState).toEqual({
+      kind: 'ready',
+      placement: {
+        characterId: 'pet-a',
+        scale: 0.5,
+        footAnchorDip: { x: -320, y: 240 },
+        displayId: 'display-left'
+      }
+    });
+    expect(Object.isFrozen(petAState)).toBe(true);
+    expect(petAState.kind === 'ready' && Object.isFrozen(petAState.placement)).toBe(true);
+    expect(petAState.kind === 'ready' && petAState.placement !== null
+      && Object.isFrozen(petAState.placement.footAnchorDip)).toBe(true);
+    await expect(new SettingsStore(file, async () => false)
+      .getPetPlacementState('pet-b')).resolves.toEqual({
+      kind: 'ready',
+      placement: {
+        characterId: 'pet-b',
+        scale: 2,
+        footAnchorDip: { x: 1320, y: 740 },
+        displayId: 'display-main'
+      }
+    });
+    await expect(store.getPetPlacementState('pet-c')).resolves.toEqual({
+      kind: 'ready',
+      placement: null
+    });
+  });
+
+  test('V2 旧位置只解析一次并原子迁移为不含 windowPosition 的 ready V3', async () => {
+    const { file, store } = await createStore();
+    await writeFile(file, JSON.stringify({
+      version: 2,
+      providerProfiles: [],
+      modelRoute: {
+        primaryProfileId: null,
+        chatProfileId: null,
+        agentProfileId: null,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPosition: { x: -500, y: 120 },
+      fileDisclosureAccepted: true,
+      petAlwaysOnTop: true,
+      privacy: {
+        dataCategories: { file: true, screenshot: false, clipboard: true, memory: false },
+        longTermMemory: false,
+        proactivityMode: 'passive'
+      },
+      movementStopped: true,
+      mcpServers: mcpSettingsFixture
+    }), 'utf8');
+    const pendingState = await store.getPetPlacementState('pet-a');
+    expect(pendingState).toEqual({
+      kind: 'pending-legacy',
+      windowPosition: { x: -500, y: 120 }
+    });
+    expect(Object.isFrozen(pendingState)).toBe(true);
+    expect(pendingState.kind === 'pending-legacy'
+      && Object.isFrozen(pendingState.windowPosition)).toBe(true);
+    await expect(store.getPetPlacementState('pet-a')).resolves.toEqual({
+      kind: 'pending-legacy',
+      windowPosition: { x: -500, y: 120 }
+    });
+    await store.commitPetPlacementMigration({
+      expectedWindowPosition: { x: -500, y: 120 },
+      placement: {
+        characterId: 'pet-a',
+        scale: 1,
+        footAnchorDip: { x: -410, y: 300 },
+        displayId: 'display-left'
+      }
+    });
+    await expect(store.getPetPlacementState('pet-a')).resolves.toMatchObject({
+      kind: 'ready',
+      placement: { characterId: 'pet-a' }
+    });
+
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+    expect(persisted).toMatchObject({
+      version: 3,
+      petPlacementState: {
+        kind: 'ready',
+        placements: [{ characterId: 'pet-a', scale: 1 }]
+      },
+      fileDisclosureAccepted: true,
+      petAlwaysOnTop: true,
+      privacy: { proactivityMode: 'passive' },
+      movementStopped: true,
+      mcpServers: mcpSettingsFixture
+    });
+    expect(JSON.stringify(persisted)).not.toContain('windowPosition');
+    expect(persisted).not.toHaveProperty('petPosition');
+  });
+
+  test('CAS 期望坐标过期时稳定拒绝且保持 pending', async () => {
+    const { file, store } = await createStore();
+    await writeFile(file, JSON.stringify({
+      version: 2,
+      providerProfiles: [],
+      modelRoute: {
+        primaryProfileId: null,
+        chatProfileId: null,
+        agentProfileId: null,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPosition: { x: 20, y: 30 },
+      fileDisclosureAccepted: false
+    }), 'utf8');
+
+    await expect(store.commitPetPlacementMigration({
+      expectedWindowPosition: { x: 21, y: 30 },
+      placement: {
+        characterId: 'pet-a', scale: 1,
+        footAnchorDip: { x: 110, y: 210 }, displayId: 'display-main'
+      }
+    })).rejects.toMatchObject({ code: 'PET_PLACEMENT_MIGRATION_STALE' });
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+      version: 3,
+      petPlacementState: {
+        kind: 'pending-legacy',
+        windowPosition: { x: 20, y: 30 }
+      }
+    });
+
+    await expect(store.getPetPlacementState('pet-a')).resolves.toEqual({
+      kind: 'pending-legacy', windowPosition: { x: 20, y: 30 }
+    });
+  });
+
+  test('savePetPlacement 遇到 pending 时稳定拒绝且只能由 CAS 完成迁移', async () => {
+    const { file, store } = await createStore();
+    await store.savePetPosition({ x: 40, y: 50 });
+    await expect(store.savePetPlacement({
+      characterId: 'pet-a',
+      scale: 1,
+      footAnchorDip: { x: 130, y: 230 },
+      displayId: 'display-main'
+    })).rejects.toMatchObject({ code: 'PET_PLACEMENT_MIGRATION_REQUIRED' });
+
+    const persisted = JSON.parse(await readFile(file, 'utf8'));
+    expect(persisted.petPlacementState).toEqual({
+      kind: 'pending-legacy',
+      windowPosition: { x: 40, y: 50 }
+    });
+  });
+
+  test('V3 单条损坏 placement 被清理且保留 Provider、隐私、主动性和 MCP', async () => {
+    const { file, store } = await createStore(true);
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      providerProfiles: [{
+        id: 'provider-main',
+        displayName: 'Provider Main',
+        mode: 'custom',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        modelId: 'example-model',
+        additionalParameters: {}
+      }],
+      modelRoute: {
+        primaryProfileId: 'provider-main',
+        chatProfileId: null,
+        agentProfileId: null,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPlacementState: {
+        kind: 'ready',
+        placements: [
+          {
+            characterId: 'pet-a', scale: 1,
+            footAnchorDip: { x: 100, y: 200 }, displayId: 'display-main'
+          },
+          {
+            characterId: '../bad', scale: 'huge',
+            footAnchorDip: { x: 'bad', y: 0 }, displayId: ''
+          }
+        ]
+      },
+      fileDisclosureAccepted: true,
+      petAlwaysOnTop: true,
+      privacy: {
+        dataCategories: { file: true, screenshot: true, clipboard: false, memory: false },
+        longTermMemory: false,
+        proactivityMode: 'assistive'
+      },
+      movementStopped: true,
+      mcpServers: mcpSettingsFixture
+    }), 'utf8');
+
+    await expect(store.getPetPlacementState('pet-a')).resolves.toMatchObject({
+      kind: 'ready', placement: { characterId: 'pet-a' }
+    });
+    await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
+      movementStopped: true,
+      proactivityMode: 'assistive'
+    });
+    await expect(store.getProviderSettings()).resolves.toMatchObject({
+      profiles: [expect.objectContaining({ id: 'provider-main' })]
+    });
+    await expect(store.getMcpServerSettings()).resolves.toEqual(mcpSettingsFixture);
+    const persisted = JSON.parse(await readFile(file, 'utf8'));
+    expect(persisted.petPlacementState.placements).toEqual([
+      expect.objectContaining({ characterId: 'pet-a' })
+    ]);
+    expect(persisted.privacy.proactivityMode).toBe('assistive');
+    expect(persisted.movementStopped).toBe(true);
+  });
+
+  test('旧 savePetPosition 不得把非空 ready 的 A/B placements 降级为 pending', async () => {
+    const { file, store } = await createStore();
+    await store.savePetPlacement({
+      characterId: 'pet-a', scale: 1,
+      footAnchorDip: { x: 100, y: 200 }, displayId: 'display-main'
+    });
+    await store.savePetPlacement({
+      characterId: 'pet-b', scale: 1.5,
+      footAnchorDip: { x: -300, y: 400 }, displayId: 'display-left'
+    });
+
+    await store.savePetPosition({ x: 900, y: 800 });
+
+    const persisted = JSON.parse(await readFile(file, 'utf8'));
+    expect(persisted.petPlacementState).toEqual({
+      kind: 'ready',
+      placements: [
+        expect.objectContaining({ characterId: 'pet-a' }),
+        expect.objectContaining({ characterId: 'pet-b' })
+      ]
+    });
+  });
+
+  test('resolve 生成 ready 后迟到的旧 savePetPosition 不得擦除已迁移 placement', async () => {
+    const { file, store } = await createStore();
+    await store.savePetPosition({ x: 20, y: 30 });
+    await store.commitPetPlacementMigration({
+      expectedWindowPosition: { x: 20, y: 30 },
+      placement: {
+        characterId: 'pet-a', scale: 1,
+        footAnchorDip: { x: 110, y: 210 }, displayId: 'display-main'
+      }
+    });
+
+    await store.savePetPosition({ x: 800, y: 700 });
+
+    expect(JSON.parse(await readFile(file, 'utf8')).petPlacementState).toEqual({
+      kind: 'ready',
+      placements: [{
+        characterId: 'pet-a', scale: 1,
+        footAnchorDip: { x: 110, y: 210 }, displayId: 'display-main'
+      }]
+    });
+  });
+
+  test('ready 空集合仍允许 G4 前旧 savePetPosition 写入 pending 兼容状态', async () => {
+    const { file, store } = await createStore();
+
+    await store.savePetPosition({ x: -40, y: 50 });
+
+    expect(JSON.parse(await readFile(file, 'utf8')).petPlacementState).toEqual({
+      kind: 'pending-legacy',
+      windowPosition: { x: -40, y: 50 }
+    });
+  });
+
+  test('ready 原始数组超过 256 条时只清空 placement 并保留其余严格 V3 设置', async () => {
+    const { directory, file, store } = await createStore();
+    const placements = Array.from({ length: 257 }, (_, index) => ({
+      characterId: `pet-${index}`,
+      scale: 1,
+      footAnchorDip: { x: index, y: index },
+      displayId: 'display-main'
+    }));
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      providerProfiles: [{
+        id: 'provider-main', displayName: 'Provider Main', mode: 'custom',
+        protocol: 'openai-compatible', baseUrl: 'https://api.example.com/v1',
+        modelId: 'example-model', additionalParameters: {}
+      }],
+      modelRoute: {
+        primaryProfileId: 'provider-main', chatProfileId: null, agentProfileId: null,
+        visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPlacementState: { kind: 'ready', placements },
+      fileDisclosureAccepted: true,
+      petAlwaysOnTop: true,
+      privacy: {
+        dataCategories: { file: true, screenshot: false, clipboard: true, memory: false },
+        longTermMemory: false,
+        proactivityMode: 'passive'
+      },
+      movementStopped: true,
+      mcpServers: mcpSettingsFixture
+    }), 'utf8');
+
+    await expect(store.getPetPlacementState('pet-0')).resolves.toEqual({
+      kind: 'ready', placement: null
+    });
+    await expect(store.getProviderSettings()).resolves.toMatchObject({
+      profiles: [expect.objectContaining({ id: 'provider-main' })]
+    });
+    await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
+      movementStopped: true,
+      proactivityMode: 'passive'
+    });
+    await expect(store.getMcpServerSettings()).resolves.toEqual(mcpSettingsFixture);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+      petPlacementState: { kind: 'ready', placements: [] },
+      privacy: { proactivityMode: 'passive' },
+      movementStopped: true,
+      mcpServers: mcpSettingsFixture
+    });
+    expect((await readdir(directory)).some(name => name.startsWith('settings.json.corrupt-')))
+      .toBe(false);
+  });
+
+  test('超过 1 MiB 的设置文件在 JSON 解析前隔离并恢复安全默认值', async () => {
+    const { directory, file, store } = await createStore();
+    await writeFile(file, `{"padding":"${'x'.repeat(1024 * 1024)}"}`, 'utf8');
+    const parse = vi.spyOn(JSON, 'parse');
+
+    try {
+      await expect(store.getPetPlacementState('pet-a')).resolves.toEqual({
+        kind: 'ready', placement: null
+      });
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+    expect((await readdir(directory)).some(name => name.startsWith('settings.json.corrupt-')))
+      .toBe(true);
+  });
+
+  test('ready 已满 256 条时允许更新已有角色但稳定拒绝新增角色', async () => {
+    const { file, store } = await createStore();
+    const placements = Array.from({ length: 256 }, (_, index) => ({
+      characterId: `pet-${index}`,
+      scale: 1,
+      footAnchorDip: { x: index, y: index },
+      displayId: 'display-main'
+    }));
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      providerProfiles: [],
+      modelRoute: {
+        primaryProfileId: null, chatProfileId: null, agentProfileId: null,
+        visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPlacementState: { kind: 'ready', placements },
+      fileDisclosureAccepted: false,
+      petAlwaysOnTop: false,
+      privacy: {
+        dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+        longTermMemory: false,
+        proactivityMode: 'autonomous'
+      },
+      movementStopped: false,
+      mcpServers: []
+    }), 'utf8');
+
+    await expect(store.savePetPlacement({
+      characterId: 'pet-0', scale: 1.5,
+      footAnchorDip: { x: 500, y: 600 }, displayId: 'display-main'
+    })).resolves.toBeUndefined();
+    await expect(store.getPetPlacementState('pet-0')).resolves.toMatchObject({
+      kind: 'ready',
+      placement: { characterId: 'pet-0', scale: 1.5, footAnchorDip: { x: 500, y: 600 } }
+    });
+
+    await expect(store.savePetPlacement({
+      characterId: 'pet-new', scale: 1,
+      footAnchorDip: { x: 10, y: 20 }, displayId: 'display-main'
+    })).rejects.toMatchObject({ code: 'PET_PLACEMENT_CAPACITY_REACHED' });
+    expect((JSON.parse(await readFile(file, 'utf8')).petPlacementState.placements as unknown[]))
+      .toHaveLength(256);
+  });
+
+  test('损坏 pending 只重置 placement 并保留 Provider、隐私、主动性和 MCP', async () => {
+    const { directory, file, store } = await createStore(true);
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      providerProfiles: [{
+        id: 'provider-main', displayName: 'Provider Main', mode: 'custom',
+        protocol: 'openai-compatible', baseUrl: 'https://api.example.com/v1',
+        modelId: 'example-model', additionalParameters: {}
+      }],
+      modelRoute: {
+        primaryProfileId: 'provider-main', chatProfileId: null, agentProfileId: null,
+        visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPlacementState: {
+        kind: 'pending-legacy',
+        windowPosition: { x: 'broken', y: 20 }
+      },
+      fileDisclosureAccepted: true,
+      petAlwaysOnTop: true,
+      privacy: {
+        dataCategories: { file: true, screenshot: false, clipboard: true, memory: false },
+        longTermMemory: false,
+        proactivityMode: 'passive'
+      },
+      movementStopped: true,
+      mcpServers: mcpSettingsFixture
+    }), 'utf8');
+
+    await expect(store.getPetPlacementState('pet-a')).resolves.toEqual({
+      kind: 'ready', placement: null
+    });
+    const persisted = JSON.parse(await readFile(file, 'utf8'));
+    expect(persisted).toMatchObject({
+      providerProfiles: [expect.objectContaining({ id: 'provider-main' })],
+      petPlacementState: { kind: 'ready', placements: [] },
+      privacy: { proactivityMode: 'passive' },
+      movementStopped: true,
+      mcpServers: mcpSettingsFixture
+    });
+    expect((await readdir(directory)).some(name => name.startsWith('settings.json.corrupt-')))
+      .toBe(false);
+  });
+
+  test('pending 转 ready 最终原子写失败时保持 pending 并可重试', async () => {
+    const { file, store } = await createStore();
+    await store.savePetPosition({ x: 20, y: 30 });
+    const temporaryFile = `${file}.tmp`;
+    await mkdir(temporaryFile, { recursive: true });
+    const commit = () => store.commitPetPlacementMigration({
+      expectedWindowPosition: { x: 20, y: 30 },
+      placement: {
+        characterId: 'pet-a', scale: 1,
+        footAnchorDip: { x: 110, y: 210 }, displayId: 'display-main'
+      }
+    });
+
+    await expect(commit()).rejects.toBeDefined();
+    expect(JSON.parse(await readFile(file, 'utf8')).petPlacementState).toEqual({
+      kind: 'pending-legacy',
+      windowPosition: { x: 20, y: 30 }
+    });
+    await rm(temporaryFile, { recursive: true, force: true });
+    await expect(commit()).resolves.toBeUndefined();
+    await expect(store.getPetPlacementState('pet-a')).resolves.toMatchObject({
+      kind: 'ready', placement: { characterId: 'pet-a' }
+    });
+  });
+
+  test('V1 非空位置迁移为 pending 且保留旧 Provider', async () => {
+    const { file, store } = await createStore(true);
+    await writeFile(file, JSON.stringify({
+      version: 1,
+      provider: {
+        id: 'legacy-provider', displayName: '旧 Provider',
+        baseUrl: 'https://legacy.example.com/v1', model: 'legacy-model'
+      },
+      authorizedRoot: null,
+      petPosition: { x: -500, y: 120 },
+      fileDisclosureAccepted: true
+    }), 'utf8');
+
+    await expect(store.getPublic()).resolves.toMatchObject({
+      provider: { id: 'legacy-provider' },
+      petPosition: { x: -500, y: 120 }
+    });
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+      version: 3,
+      petPlacementState: {
+        kind: 'pending-legacy',
+        windowPosition: { x: -500, y: 120 }
+      },
+      privacy: { proactivityMode: 'assistive' },
+      movementStopped: false
+    });
+  });
+
+  test('V2 缺失 optional 设置迁移时补旧用户默认且不覆盖 Provider', async () => {
+    const { file, store } = await createStore(true);
+    await writeFile(file, JSON.stringify({
+      version: 2,
+      providerProfiles: [{
+        id: 'provider-main', displayName: 'Provider Main', mode: 'custom',
+        protocol: 'openai-compatible', baseUrl: 'https://api.example.com/v1',
+        modelId: 'example-model', additionalParameters: {}
+      }],
+      modelRoute: {
+        primaryProfileId: 'provider-main', chatProfileId: null, agentProfileId: null,
+        visionProfileId: null, fallbackProfileIds: [], allowCrossProviderFallback: false
+      },
+      authorizedRoot: null,
+      petPosition: null,
+      fileDisclosureAccepted: true
+    }), 'utf8');
+
+    await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
+      movementStopped: false,
+      proactivityMode: 'assistive'
+    });
+    const persisted = JSON.parse(await readFile(file, 'utf8'));
+    expect(persisted).toMatchObject({
+      version: 3,
+      providerProfiles: [expect.objectContaining({ id: 'provider-main' })],
+      petPlacementState: { kind: 'ready', placements: [] },
+      petAlwaysOnTop: false,
+      privacy: { proactivityMode: 'assistive' },
+      movementStopped: false,
+      mcpServers: []
+    });
   });
 });
