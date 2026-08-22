@@ -35,7 +35,7 @@
 
 `9e88370ff4061eb91ac1f23184248628fa0edfd6` 只记录本规格/计划的首次提交历史，不是执行控制点。最终 `CONTROL_HEAD` 不预填到 tracked 文档中：本轮修订提交经过主控两份独立审查且均为 C0/I0 Ready 后，Task 0 才把当时真实 `git rev-parse HEAD` 完整 hash 以 CreateNew 方式写入 ignored `control-head.txt`，并在 ignored `control-review.md` 绑定被审查提交、两份 review package hash 与裁决。门前、每门前后和最终 review 的 tracked HEAD 必须与该外部冻结值逐字相等。
 
-除上述三点外，上位规格继续有效，特别是：C1–C10 触达规则、单一 owner、保护路径、Windows 人工待验、禁止永久双轨和后续功能按影响范围验证。
+除上述全部限域替代外，上位规格继续有效，特别是：C1–C10 触达规则、单一 owner、保护路径、Windows 人工待验、禁止永久双轨和后续功能按影响范围验证。本节已经逐项列出的第 5.1 节、第 7.1 节、第 7.3 节、第 9.1 节、第 10 节第 1、2、10 项、原计划 `NO_RED` 分支和旧 Task 6 allowlist 替代，在本固定候选与外部冻结 `CONTROL_HEAD` 范围内均不会因“上位规格继续有效”而重新生效。
 
 ### 2.2 本规格不作出的结论
 
@@ -113,7 +113,7 @@ pnpm.cmd test:integration
 .superpowers/sdd/2026-08-21-desktop-nonrepro-stability-acceptance/
 ```
 
-正式证据固定包含 `control-head.txt`、`control-review.md`、`baseline.md`、每门各一份 start/final JSON、raw record hash manifest、机械汇总、独立 review 和成功后的 `docs-successor-report.md`。每门由单个自包含 PowerShell 7 block 启动并同步监督；spawn 后立即持久化 PID、进程启动时间与 session，final 由同一 block 从真实进程状态产生。两类记录均先在同目录唯一 temp 完整写入并 `Flush(true)`，关闭后以不覆盖的原子 rename 落到最终路径；残留 temp 只能经 schema 验证后恢复。final 的 exit 与 block native return 使用同一个不可外部传入的变量，禁止人工转录 exit、时间或终止类别。报告只记录候选/control hash、脚本展开值、开始/结束时间、耗时、native exit/终止类别、保护路径计数和裁决；不得记录完整绝对路径、命令 stdout/stderr 正文、用户文件、token、私有标识、API Key 或 Authorization。
+正式证据固定包含 `control-head.txt`、`control-review.md`、`baseline.md`、每门各一份 `outer-start`、`start`、`worker-result`、authoritative `final` 和 `outer-ack` JSON、raw record hash manifest、机械汇总、独立 review 和成功后的 `docs-successor-report.md`。每门由单个自包含 PowerShell 7 supervisor block 启动 gate worker；worker 只负责启动并观察 pnpm、写原始 start/result，supervisor 必须实际观察 worker native exit、关闭进程句柄、核对 worker raw 后，才可写 authoritative final 和 outer ACK。五类记录均先在同目录唯一 temp 完整写入并 `Flush(true)`，关闭后以不覆盖的原子 rename 落到最终路径；残留 temp 在恢复前必须按已记录的 PID 与 StartTime 有界清理同身份进程，无法终止时保持 `TERMINATION_FAILURE`。validator 只有在 ACK、worker raw、final 的 hash 与 observed exit 一致，且不存在任何仍存活的同身份进程时才可判绿；worker raw 即使为绿色，缺 ACK 也必须拒绝。报告只记录候选/control hash、脚本展开值、开始/结束时间、耗时、native exit/终止类别、保护路径计数和裁决；不得记录完整绝对路径、命令 stdout/stderr 正文、用户文件、token、私有标识、API Key 或 Authorization。
 
 start/final 记录和机械汇总分别计算 SHA-256；独立复审重算并绑定 raw manifest hash 与 summary hash。schema 必须验证 `finishedAt-startedAt` 与 `durationMs` 的误差上限、`durationMs < 900000`、native exit 与 final 记录一致、单次性和首失败停止。任何手工汇总、机器记录缺失或 hash 不一致均为 `CLOSED`。
 
