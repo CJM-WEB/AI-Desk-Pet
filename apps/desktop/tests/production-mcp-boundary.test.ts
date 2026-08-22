@@ -13,6 +13,11 @@ import { afterEach, describe, expect, test } from 'vitest';
 const execFileAsync = promisify(execFile);
 const verifier = fileURLToPath(new URL('../scripts/verify-production-mcp-boundary.mjs', import.meta.url));
 const temporaryRoots: string[] = [];
+/**
+ * Windows 读取失败夹具通过环境变量传递路径，避免命令行转义与公开参数泄露；只有
+ * FileShare.None 成功并 flush 固定 LOCKED 信号后才启动 verifier。测试 finally 会先
+ * 请求正常关闭，再按有界时限强制终止并等待退出，确保独占句柄和子进程均不残留。
+ */
 const fileLockScript = String.raw`
 $path = [Environment]::GetEnvironmentVariable('AI_PET_TEST_LOCK_FILE', 'Process')
 $stream = [System.IO.File]::Open(
