@@ -111,4 +111,22 @@ describe('角色行为计划协议', () => {
     expect(targets.map(target => (target.properties as Record<string, { const?: string }>)['kind']?.const).sort())
       .toEqual(['action_name', 'semantic', 'state_name', 'tag']);
   });
+
+  test('聊天 JSON Schema 的名称规则拒绝全空白且允许合法 Unicode 名称', () => {
+    const behaviorPlan = (characterChatResponseJsonSchema.properties as Record<string, unknown>)['behaviorPlan'] as {
+      oneOf: Array<{ properties: Record<string, unknown> }>;
+    };
+    const play = behaviorPlan.oneOf.find(plan => (plan.properties['kind'] as { const?: string }).const === 'play');
+    if (!play) throw new Error('缺少 play JSON Schema 分支');
+    const actionTarget = ((play.properties['target'] as { oneOf: Array<{ properties: Record<string, unknown> }> }).oneOf)
+      .find(target => (target.properties['kind'] as { const?: string }).const === 'action_name');
+    if (!actionTarget) throw new Error('缺少 action_name JSON Schema 分支');
+    const pattern = (actionTarget.properties['name'] as { pattern: string }).pattern;
+
+    expect(characterBehaviorPlanSchema.safeParse({
+      kind: 'play', target: { kind: 'action_name', name: '   ' }
+    }).success).toBe(false);
+    expect(new RegExp(pattern, 'u').test('   ')).toBe(false);
+    expect(new RegExp(pattern, 'u').test('挥手✨')).toBe(true);
+  });
 });

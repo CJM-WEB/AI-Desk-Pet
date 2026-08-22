@@ -123,7 +123,7 @@ export const characterChatResponseJsonSchema = deepFreeze({
                   required: ['kind', 'name'],
                   properties: {
                     kind: { const: 'state_name' },
-                    name: { type: 'string', minLength: 1, maxLength: 120, pattern: '^(?!.*[\\\\/])(?![A-Za-z]:).+$' }
+                    name: { type: 'string', minLength: 1, maxLength: 120, pattern: '^(?!\\s*$)(?!.*[\\\\/])(?![A-Za-z]:).+$' }
                   }
                 },
                 {
@@ -132,7 +132,7 @@ export const characterChatResponseJsonSchema = deepFreeze({
                   required: ['kind', 'name'],
                   properties: {
                     kind: { const: 'action_name' },
-                    name: { type: 'string', minLength: 1, maxLength: 120, pattern: '^(?!.*[\\\\/])(?![A-Za-z]:).+$' }
+                    name: { type: 'string', minLength: 1, maxLength: 120, pattern: '^(?!\\s*$)(?!.*[\\\\/])(?![A-Za-z]:).+$' }
                   }
                 },
                 {

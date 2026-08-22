@@ -49,6 +49,21 @@ describe('无权限响应协议解码', () => {
     });
   });
 
+  test('完整 JSON 允许原始长度较大但解码正文未超限的 Unicode 转义', () => {
+    const expectedText = '中'.repeat(4_000);
+    const raw = `{"text":"${'\\u4e2d'.repeat(4_000)}"}`;
+    const result = decodeResponseContractText(raw, contract);
+
+    expect(raw.length).toBeGreaterThan(16_384);
+    expect(result).toMatchObject({ kind: 'structured', text: expectedText });
+  });
+
+  test('超出截断扫描上限的响应仍拒绝恢复正文', () => {
+    const raw = `{"text":"保留正文","behaviorPlan":{"padding":"${'x'.repeat(65_536)}`;
+
+    expect(decodeResponseContractText(raw, contract)).toEqual({ kind: 'invalid' });
+  });
+
   test('普通纯文本走有界兼容分支', () => {
     expect(decodeResponseContractText('普通纯文本', contract)).toEqual({
       kind: 'plain_text',

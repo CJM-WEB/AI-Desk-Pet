@@ -12,7 +12,8 @@ export type ResponseContractDecodeResult =
   | Readonly<{ kind: 'invalid' }>;
 
 const MAX_RESPONSE_TEXT_LENGTH = 4_000;
-const MAX_RESPONSE_CONTRACT_LENGTH = 16_384;
+/** 4,000 个字符最坏可编码为约 24 KiB；仅截断恢复限制在 64 KiB。 */
+const MAX_TRUNCATED_RESPONSE_CONTRACT_LENGTH = 64 * 1024;
 
 function validText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_RESPONSE_TEXT_LENGTH;
@@ -112,7 +113,7 @@ export function decodeResponseContractText(
   contract: ModelResponseContract
 ): ResponseContractDecodeResult {
   const trimmed = raw.trim();
-  if (!trimmed || raw.length > MAX_RESPONSE_CONTRACT_LENGTH) return { kind: 'invalid' };
+  if (!trimmed) return { kind: 'invalid' };
 
   if (trimmed.startsWith('{')) {
     try {
@@ -125,6 +126,7 @@ export function decodeResponseContractText(
         }
       }
     } catch {
+      if (trimmed.length > MAX_TRUNCATED_RESPONSE_CONTRACT_LENGTH) return { kind: 'invalid' };
       const text = extractTopLevelText(trimmed, contract.textField);
       if (text !== null) {
         return { kind: 'structured', text, structured_output: { [contract.textField]: text } };
