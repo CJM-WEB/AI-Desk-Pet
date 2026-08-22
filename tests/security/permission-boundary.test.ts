@@ -20,6 +20,8 @@ import {
   createBuiltinFileToolRegistry
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
+import { createOpenAIToolNameCodec } from
+  '../../apps/desktop/src/main/providers/openai-tool-name-codec';
 import { PrivacySessionRegistry } from
   '../../apps/desktop/src/main/agent/disclosure-policy';
 import { ConversationChatAdapter } from
@@ -54,6 +56,9 @@ const toolNames = [
   'builtin.files.apply_patch',
   'builtin.files.delete_file'
 ] as const;
+const providerToolNameCodec = createOpenAIToolNameCodec(
+  createBuiltinFileToolRegistry().definitions()
+);
 
 const roots: AuthorizedRootFixture[] = [];
 const servers: ProviderServerFixture[] = [];
@@ -77,7 +82,11 @@ function toolCall(
 ): ModelResponse {
   return {
     type: 'tool_request',
-    request: { requestId, toolName, arguments: arguments_ }
+    request: {
+      requestId,
+      toolName: providerToolNameCodec.encode(toolName),
+      arguments: arguments_
+    }
   };
 }
 

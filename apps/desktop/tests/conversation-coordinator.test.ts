@@ -13,6 +13,7 @@ import {
 import { ConversationDisclosureAdapter } from '../src/main/conversation/conversation-disclosure-adapter';
 import { ConversationHistory } from '../src/main/conversation/conversation-history';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
+import { desktopRuntimeCapabilities } from '../src/shared/desktop-runtime-capabilities';
 
 interface ProviderScript {
   requests: ModelRequest[];
@@ -217,7 +218,7 @@ function errorCode(error: unknown): unknown {
 }
 
 describe('ConversationCoordinator', () => {
-  test.each(['你好', '聊天呀', '我想和你聊天', '帮我整理一下'])(
+  test.each(['你好', '你好呀', '聊天呀', '我想和你聊天', '帮我整理一下'])(
     '默认聊天“%s”只创建聊天目标且不触碰文件端口',
     async text => {
       const script = scriptedProvider({ type: 'text', text: '自然回复' });
@@ -233,8 +234,14 @@ describe('ConversationCoordinator', () => {
       expect(harness.factoryCallCount()).toBe(1);
       expect(harness.fileTasks.preparedGenerations).toEqual([]);
       expect(harness.fileTasks.submissions).toEqual([]);
+      expect(script.requests).toHaveLength(1);
+      expect(script.requests[0]).toMatchObject({ tools: [], toolChoice: 'none' });
     }
   );
+
+  test('本兼容闭环保持 MCP runtimeSupport 关闭', () => {
+    expect(desktopRuntimeCapabilities.mcp).toBe(false);
+  });
 
   test.each(['读取 a.txt', '列出当前文件夹'])(
     '明确文件请求“%s”只进入文件链且不创建聊天目标',

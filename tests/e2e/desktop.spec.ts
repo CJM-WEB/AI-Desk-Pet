@@ -8,6 +8,8 @@ import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
+import { createOpenAIToolNameCodec } from
+  '../../apps/desktop/src/main/providers/openai-tool-name-codec';
 import {
   createProviderResponseGate,
   startProviderServer,
@@ -260,13 +262,18 @@ function emitFakeExit(process: FakeElectronProcess | FakeCommandProcess, code: n
   process.emit('exit', code, null);
 }
 
-type JourneyToolName =
-  | 'list_files'
-  | 'create_file'
-  | 'apply_patch'
-  | 'delete_file'
-  | 'builtin.files.delete_file'
-  | 'builtin.powershell.run';
+const journeyToolNames = [
+  'builtin.files.list_files',
+  'builtin.files.create_file',
+  'builtin.files.apply_patch',
+  'builtin.files.delete_file',
+  'builtin.powershell.run'
+] as const;
+type JourneyToolName = (typeof journeyToolNames)[number];
+const journeyToolNameCodec = createOpenAIToolNameCodec(journeyToolNames.map(name => ({
+  type: 'function' as const,
+  function: { name, description: '', parameters: {} }
+})));
 
 function runtimeDiagnosticKey(): string {
   return `myself-e2e-${randomBytes(24).toString('hex')}`;
@@ -279,7 +286,11 @@ function toolResponse(
 ): ProviderStep['response'] {
   return {
     type: 'tool_request',
-    request: { requestId, toolName, arguments: arguments_ }
+    request: {
+      requestId,
+      toolName: journeyToolNameCodec.encode(toolName),
+      arguments: arguments_
+    }
   };
 }
 
@@ -4739,14 +4750,14 @@ test.describe('真实 Provider 业务闭环', () => {
           const names = request.tools.map(
             (tool: { function: { name: string } }) => tool.function.name
           );
-          const mcpToolNames = names.filter(name => name.startsWith('mcp.'));
+          const mcpToolNames = names.filter(name => name.startsWith('mcp__'));
 
           if (mcpToolNames.length > 0) {
             throw new Error('MCP 禁用时不得向 Provider 暴露 mcp.* 工具');
           }
           if (
-            !names.includes('builtin.files.list_files')
-            || !names.includes('builtin.files.create_file')
+            !names.includes('builtin__files__list_files')
+            || !names.includes('builtin__files__create_file')
           ) {
             throw new Error('Provider 未收到正式文件工具白名单');
           }
@@ -4817,8 +4828,10 @@ test.describe('真实 Provider 业务闭环', () => {
           const names = request.tools.map(
             (tool: { function: { name: string } }) => tool.function.name
           );
-          if (names.length !== 1 || names[0] !== 'builtin.powershell.run') {
-            throw new Error('PowerShell 会话未隔离为唯一工具白名单');
+          if (names.length !== 2
+            || names[0] !== 'builtin__powershell__run'
+            || names[1] !== 'builtin__capability__request_clarification') {
+            throw new Error(`PowerShell 会话工具白名单不符合预期：${JSON.stringify(names)}`);
           }
         }
       },

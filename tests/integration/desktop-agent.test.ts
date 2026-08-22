@@ -22,6 +22,8 @@ import {
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { PowerShellTool } from '../../apps/desktop/src/main/agent/powershell-tool';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
+import { createOpenAIToolNameCodec } from
+  '../../apps/desktop/src/main/providers/openai-tool-name-codec';
 import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
 import { CharacterMotionService } from '../../apps/desktop/src/main/characters/character-motion-service';
 import { PrivacySessionRegistry } from
@@ -56,6 +58,14 @@ const internalToolNames = [
   'apply_patch',
   'delete_file'
 ] as const;
+const providerToolNameCodec = createOpenAIToolNameCodec([
+  ...toolNames,
+  'builtin.powershell.run',
+  CAPABILITY_CLARIFICATION_TOOL_NAME
+].map(name => ({
+  type: 'function' as const,
+  function: { name, description: '', parameters: {} }
+})));
 
 const roots: AuthorizedRootFixture[] = [];
 const servers: ProviderServerFixture[] = [];
@@ -162,12 +172,18 @@ function expectProviderExchange(
 
 function toolCall(
   requestId: string,
-  toolName: (typeof toolNames)[number] | 'builtin.powershell.run',
+  toolName: (typeof toolNames)[number]
+    | 'builtin.powershell.run'
+    | typeof CAPABILITY_CLARIFICATION_TOOL_NAME,
   arguments_: Record<string, unknown>
 ): ModelResponse {
   return {
     type: 'tool_request',
-    request: { requestId, toolName, arguments: arguments_ }
+    request: {
+      requestId,
+      toolName: providerToolNameCodec.encode(toolName),
+      arguments: arguments_
+    }
   };
 }
 
@@ -356,6 +372,100 @@ function createBehaviorManifest(): CharacterManifestV2 {
       assetId: 'atlas', fileName: 'atlas.png', sha256: 'a'.repeat(64), byteLength: 1
     }]
   };
+}
+
+function compatibleToolCall(
+  requestId: string,
+  providerToolName: string,
+  arguments_: Record<string, unknown>
+): unknown {
+  return {
+    choices: [{
+      message: {
+        content: null,
+        tool_calls: [{
+          id: requestId,
+          type: 'function',
+          function: {
+            name: providerToolName,
+            arguments: JSON.stringify(arguments_)
+          }
+        }]
+      }
+    }]
+  };
+}
+
+function compatibleText(text: string): unknown {
+  return { choices: [{ message: { content: text } }] };
+}
+
+/**
+ * 直接驱动正式 OpenAI-compatible Adapter 与真实文件服务，只隔离远端 HTTP 和系统回收站。
+ * 响应 fixture 保留 DeepSeek 实际使用的 message.tool_calls 线格式。
+ */
+async function deepSeekHarness(input: {
+  responses: unknown[];
+  fileDisclosureAllowed?: boolean;
+  moveToRecycleBin?: (absolutePath: string) => Promise<void>;
+}) {
+  const authorized = await createAuthorizedRoot();
+  roots.push(authorized);
+  const responses = [...input.responses];
+  const requestBodies: Array<Record<string, unknown>> = [];
+  const apiKey = 'deepseek-integration-secret';
+  const fetchClient = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    const response = responses.shift();
+    if (response === undefined) throw new Error('DeepSeek 响应脚本已耗尽');
+    return new Response(JSON.stringify(response), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  });
+  const provider = new OpenAICompatibleProvider({
+    baseUrl: 'https://api.deepseek.com/v1',
+    modelId: 'deepseek-v4-flash',
+    providerId: 'deepseek'
+  }, async () => apiKey, fetchClient);
+  const loop = new AgentLoop();
+  const pending = new PendingActionStore({
+    onDiscard: execution => loop.discard(execution.continuationToken)
+  });
+  const events: TaskEvent[] = [];
+  rendererEventStreams.push({ events, authorizedRoot: authorized.root, apiKey });
+  const registry = createBuiltinFileToolRegistry();
+  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
+  const fileTools = new FileToolService(authorized.policy, {
+    moveToRecycleBin: input.moveToRecycleBin ?? (async () => undefined)
+  });
+  const service = new AgentService({
+    loop,
+    pending,
+    createSession: async () => ({
+      taskKind: 'file' as const,
+      provider,
+      fileTools,
+      fileDisclosureAllowed: input.fileDisclosureAllowed ?? true,
+      tools: (input.fileDisclosureAllowed ?? true) ? registry.definitions() : [],
+      toolRuntime: {
+        prepare: raw => registry.prepare(raw, permissionPolicy),
+        executeRead: request => fileTools.executeRead(request)
+      },
+      messages: []
+    }),
+    emit: event => events.push(event),
+    taskCarry: {
+      beginTaskCarry: () => ({
+        playbackToken: 'deepseek-carry-token',
+        actionId: 'deepseek-carry-action',
+        commitFrameId: 'deepseek-commit-frame'
+      }),
+      endTaskCarry: () => undefined
+    },
+    createConversationId: () => 'conversation-deepseek-integration'
+  });
+  return { authorized, events, fetchClient, requestBodies, responses, service };
 }
 
 function scriptedProvider(responses: ModelResponse[]): ModelProvider {
@@ -681,7 +791,7 @@ describe('桌面会话分流纵向集成', () => {
           command: "Write-Output 'integration-stdout'; [Console]::Error.Write('integration-stderr'); exit 0"
         }),
         inspect: request => expect(request.tools.map(tool => tool.function.name))
-          .toEqual(['builtin.powershell.run'])
+          .toEqual(['builtin__powershell__run'])
       },
       {
         response: { type: 'text', text: 'PowerShell 已完成' },
@@ -870,6 +980,147 @@ describe('桌面会话分流纵向集成', () => {
 });
 
 describe('桌面 Agent 真实服务集成', () => {
+  test('DeepSeek 外部别名删除空目录时确认前无副作用且确认后只进入一次隔离回收站', async () => {
+    const recycledName = '.recycled-deepseek-empty';
+    let recycledPath = '';
+    const recycle = vi.fn(async (absolutePath: string) => {
+      recycledPath = join(absolutePath, '..', recycledName);
+      await rename(absolutePath, recycledPath);
+    });
+    const fixture = await deepSeekHarness({
+      responses: [
+        compatibleToolCall(
+          'deepseek-delete-empty',
+          'builtin__files__delete_file',
+          { relativePath: 'empty' }
+        ),
+        compatibleText('empty 已移入回收站')
+      ],
+      moveToRecycleBin: recycle
+    });
+    const source = join(fixture.authorized.root, 'empty');
+    await mkdir(source);
+
+    await fixture.service.submitFileTask({
+      text: '帮我把当前目录下的empty文件夹删除了',
+      visibleHistory: []
+    });
+
+    expect(fixture.events.filter(event => (
+      event.type === 'pending_action' || event.type === 'message'
+    )).map(event => event.type)).toEqual(['pending_action']);
+    await expect(lstat(source)).resolves.toBeDefined();
+    expect(recycle).not.toHaveBeenCalled();
+    expect(fixture.requestBodies[0]).toMatchObject({
+      model: 'deepseek-v4-flash',
+      tool_choice: 'required',
+      thinking: { type: 'disabled' }
+    });
+    expect((fixture.requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
+      tool => tool.function.name
+    )).toContain('builtin__files__delete_file');
+
+    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await Promise.resolve();
+    expect(fixture.service.onPlaybackStarted(
+      'deepseek-carry-token',
+      'deepseek-carry-action'
+    )).toBe(true);
+    expect(fixture.service.onCommitFrame(
+      'deepseek-carry-token',
+      'deepseek-carry-action',
+      'deepseek-commit-frame'
+    )).toBe(true);
+    await confirming;
+
+    expect(recycle).toHaveBeenCalledOnce();
+    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(lstat(recycledPath)).resolves.toBeDefined();
+    expect(fixture.fetchClient).toHaveBeenCalledTimes(2);
+    expect(fixture.responses).toHaveLength(0);
+    expect(fixture.requestBodies[1]).toMatchObject({ tools: [], tool_choice: 'none' });
+    expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
+      type: 'message', role: 'assistant', text: 'empty 已移入回收站'
+    }]);
+  });
+
+  test('DeepSeek 外部别名创建文件显示确认且独占创建拒绝覆盖同名目标', async () => {
+    const fixture = await deepSeekHarness({
+      responses: [
+        compatibleToolCall(
+          'deepseek-create-file',
+          'builtin__files__create_file',
+          { relativePath: 'created.txt', content: 'DeepSeek 受控正文\n' }
+        ),
+        compatibleText('created.txt 已创建'),
+        compatibleToolCall(
+          'deepseek-create-duplicate',
+          'builtin__files__create_file',
+          { relativePath: 'created.txt', content: '不得覆盖\n' }
+        )
+      ]
+    });
+    const target = join(fixture.authorized.root, 'created.txt');
+
+    await fixture.service.submitFileTask({ text: '创建 created.txt', visibleHistory: [] });
+    expect(pendingAction(fixture.events)).toMatchObject({
+      operation: 'create_file',
+      targetRelativePath: 'created.txt'
+    });
+    await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await fixture.service.confirm(pendingAction(fixture.events).actionId);
+    await expect(readFile(target, 'utf8')).resolves.toBe('DeepSeek 受控正文\n');
+    await expect(fixture.service.submitFileTask({
+      text: '再次创建 created.txt',
+      visibleHistory: []
+    })).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+
+    await expect(readFile(target, 'utf8')).resolves.toBe('DeepSeek 受控正文\n');
+    expect(fixture.events.filter(event => event.type === 'pending_action')).toHaveLength(1);
+    expect(fixture.fetchClient).toHaveBeenCalledTimes(3);
+  });
+
+  test('DeepSeek 结构化澄清只公开一个问题且不产生确认或文件副作用', async () => {
+    const fixture = await deepSeekHarness({
+      responses: [compatibleToolCall(
+        'deepseek-clarification',
+        'builtin__capability__request_clarification',
+        { question: '请告诉我要创建的文件名。' }
+      )]
+    });
+    const before = await readdir(fixture.authorized.root, { recursive: true });
+
+    await fixture.service.submitFileTask({ text: '帮我创建一个文件', visibleHistory: [] });
+
+    expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
+      type: 'message', role: 'assistant', text: '请告诉我要创建的文件名。'
+    }]);
+    expect(fixture.events.some(event => event.type === 'pending_action')).toBe(false);
+    await expect(readdir(fixture.authorized.root, { recursive: true })).resolves.toEqual(before);
+    expect(fixture.fetchClient).toHaveBeenCalledOnce();
+  });
+
+  test('文件数据授权关闭时 DeepSeek 只能收到结构化澄清工具且文件系统不变', async () => {
+    const fixture = await deepSeekHarness({
+      fileDisclosureAllowed: false,
+      responses: [compatibleToolCall(
+        'deepseek-file-disclosure-disabled',
+        'builtin__capability__request_clarification',
+        { question: '请先开启文件数据授权。' }
+      )]
+    });
+    const before = await readdir(fixture.authorized.root, { recursive: true });
+
+    await fixture.service.submitFileTask({ text: '创建 private.txt', visibleHistory: [] });
+
+    expect((fixture.requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
+      tool => tool.function.name
+    )).toEqual(['builtin__capability__request_clarification']);
+    expect(fixture.events.some(event => event.type === 'pending_action')).toBe(false);
+    await expect(readdir(fixture.authorized.root, { recursive: true })).resolves.toEqual(before);
+  });
+
   test('自主行为最小闭环按可信事件组合 Agent、Main 行为与窗口运动', async () => {
     let now = 0;
     let bounds = { x: 10, y: 20, width: 256, height: 256 };
@@ -1075,8 +1326,12 @@ describe('桌面 Agent 真实服务集成', () => {
       {
         response: toolCall('list-1', 'builtin.files.list_files', { relativePath: '.' }),
         inspect: request => expect(request.tools.map(tool => tool.function.name)).toEqual([
-          ...toolNames,
-          CAPABILITY_CLARIFICATION_TOOL_NAME
+          'builtin__files__list_files',
+          'builtin__files__read_file',
+          'builtin__files__create_file',
+          'builtin__files__apply_patch',
+          'builtin__files__delete_file',
+          'builtin__capability__request_clarification'
         ])
       },
       {
@@ -1184,8 +1439,12 @@ describe('桌面 Agent 真实服务集成', () => {
         }),
         inspect: request => {
           expect(request.tools.map(tool => tool.function.name)).toEqual([
-            ...toolNames,
-            CAPABILITY_CLARIFICATION_TOOL_NAME
+            'builtin__files__list_files',
+            'builtin__files__read_file',
+            'builtin__files__create_file',
+            'builtin__files__apply_patch',
+            'builtin__files__delete_file',
+            'builtin__capability__request_clarification'
           ]);
           expect(request.messages.at(-1)).toMatchObject({
             role: 'system', content: expect.stringContaining('CAPABILITY_PLAN_PROTOCOL_INVALID')
