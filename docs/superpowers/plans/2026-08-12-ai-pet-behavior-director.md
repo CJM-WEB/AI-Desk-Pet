@@ -102,27 +102,27 @@ export type ModelResponseContract = Readonly<{
 }>;
 ```
 
-- [ ] **步骤 1：写严格协议 RED**
+- [x] **步骤 1：写严格协议 RED**
 
   在 `character-behavior-plan.test.ts` 构造合法六类计划；逐项断言 actionId、`x/y`、工具名、绝对路径、未知枚举、额外字段、空名称和超长名称被拒绝。断言公开清单只有角色名称、语义、状态/动作名称与标签，没有 id、路径或能力引用。
 
-- [ ] **步骤 2：运行 RED 并确认失败原因**
+- [x] **步骤 2：运行 RED 并确认失败原因**
 
   运行：`pnpm.cmd exec vitest run --project character-runtime packages/character-runtime/tests/character-behavior-plan.test.ts`
 
   预期：FAIL，模块 `character-behavior-plan.ts` 或导出不存在；不能是既有测试失败。
 
-- [ ] **步骤 3：写响应协议与解码 RED**
+- [x] **步骤 3：写响应协议与解码 RED**
 
   在 `response-contract.test.ts` 固定以下四个输入：合法对象返回正文与 `structured_output`；`{"text":"保留正文","behaviorPlan":` 只恢复完整闭合的正文；`普通纯文本` 走有界兼容；`{}`、空白和无法恢复正文的 JSON 返回 `invalid`。在 `agent-loop.test.ts` 让 Provider 返回带 `structured_output` 的文本响应，断言只产生 message/phase，`ToolRuntime.prepare()` 未调用，旧 `behaviorIntent` 用例保持不变。
 
-- [ ] **步骤 4：运行 agent-core RED**
+- [x] **步骤 4：运行 agent-core RED**
 
   运行：`pnpm.cmd exec vitest run --project agent-core packages/agent-core/tests/response-contract.test.ts packages/agent-core/tests/agent-loop.test.ts`
 
   预期：FAIL，缺少 `responseContract`、`structured_output` 或解码函数；既有能力任务行为意图用例仍应编译。
 
-- [ ] **步骤 5：写最小 GREEN**
+- [x] **步骤 5：写最小 GREEN**
 
   使用 `.strict()` Zod 联合和冻结的 JSON Schema 常量；`decodeResponseContractText(raw, contract)` 只返回以下封闭结果，不解释行为字段：
 
@@ -135,7 +135,7 @@ export type ModelResponseContract = Readonly<{
 
   在 `ModelRequest` 增加可选 `responseContract`，在文本 `ModelResponse` 增加可选 `structured_output`；不修改 `ToolDefinition`、`ToolRuntime` 或 `RunContext.tools`。
 
-- [ ] **步骤 6：运行 GREEN 与类型检查**
+- [x] **步骤 6：运行 GREEN 与类型检查**
 
   依次运行以下命令，均须通过：
 
@@ -148,7 +148,7 @@ export type ModelResponseContract = Readonly<{
 
   预期：PASS；旧能力任务 `behavior_intent` 用例仍通过。
 
-- [ ] **步骤 7：提交任务**
+- [x] **步骤 7：提交任务**
 
   ```powershell
   git add packages/character-runtime/src/character-behavior-plan.ts packages/character-runtime/tests/character-behavior-plan.test.ts packages/character-runtime/src/index.ts packages/agent-core/src/response-contract.ts packages/agent-core/tests/response-contract.test.ts packages/agent-core/src/types.ts packages/agent-core/src/index.ts packages/agent-core/tests/agent-loop.test.ts
