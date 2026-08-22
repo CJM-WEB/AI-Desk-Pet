@@ -19,7 +19,6 @@ const dashboard: SettingsDashboardDto = {
     fallbackProfileIds: [],
     allowCrossProviderFallback: false
   },
-  mcpServers: [],
   privacy: {
     dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
     longTermMemory: false,

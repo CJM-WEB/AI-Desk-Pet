@@ -63,8 +63,7 @@ function agentDouble(overrides: Record<string, unknown> = {}) {
 function baseOptions(input: {
   chatResponse?: ModelResponse | Promise<ModelResponse>;
   createAgent?: (factory: MainConversationAgentFactoryInput<
-    { dataCategories: { file: boolean } },
-    { name: string }
+    { dataCategories: { file: boolean } }
   >) => ReturnType<typeof agentDouble>;
 } = {}) {
   const privacySessions = new PrivacySessionRegistry();
@@ -84,16 +83,12 @@ function baseOptions(input: {
   const readAuthorizedRootPath = vi.fn(async () => 'D:\\authorized');
   const privacySettings = { dataCategories: { file: true } };
   const readPrivacySettings = vi.fn(async () => privacySettings);
-  const enabledReadTools = [{ name: 'safe-read' }];
-  const readEnabledReadTools = vi.fn(async () => enabledReadTools);
   const factoryInputs: Array<MainConversationAgentFactoryInput<
-    typeof privacySettings,
-    { name: string }
+    typeof privacySettings
   >> = [];
   const createdAgentProfiles: string[] = [];
   const createAgentService = vi.fn((factoryInput: MainConversationAgentFactoryInput<
-    typeof privacySettings,
-    { name: string }
+    typeof privacySettings
   >) => {
     factoryInputs.push(factoryInput);
     createdAgentProfiles.push(factoryInput.primaryProfile.id);
@@ -101,14 +96,13 @@ function baseOptions(input: {
     return input.createAgent?.(factoryInput) ?? agentDouble();
   });
   const events: TaskEvent[] = [];
-  const composition = createMainConversationComposition({
+  const options = {
     catalog: [],
     privacySessions,
     sessionId: 'desktop-session',
     readProviderSettings,
     readAuthorizedRootPath,
     readPrivacySettings,
-    readEnabledReadTools,
     createChatAdapter: () => new ConversationChatAdapter(providerWith(
       input.chatResponse ?? {
         type: 'text',
@@ -116,18 +110,18 @@ function baseOptions(input: {
       }
     )),
     createAgentService,
-    emit: event => events.push(event)
-  });
+    emit: (event: TaskEvent) => events.push(event)
+  };
+  const composition = createMainConversationComposition(options);
   return {
     composition,
     createdAgentProfiles,
-    enabledReadTools,
     events,
     factoryInputs,
+    options,
     privacySettings,
     providerSettings,
     readAuthorizedRootPath,
-    readEnabledReadTools,
     readPrivacySettings,
     readProviderSettings
   };
@@ -142,7 +136,6 @@ describe('Main 会话组合模块', () => {
     expect(harness.readProviderSettings).toHaveBeenCalledOnce();
     expect(harness.readAuthorizedRootPath).not.toHaveBeenCalled();
     expect(harness.readPrivacySettings).not.toHaveBeenCalled();
-    expect(harness.readEnabledReadTools).not.toHaveBeenCalled();
     expect(harness.factoryInputs).toHaveLength(0);
     await harness.composition.close();
   });
@@ -159,12 +152,13 @@ describe('Main 会话组合模块', () => {
     });
     expect(harness.createdAgentProfiles).toEqual(['primary', 'same-fallback']);
     expect(harness.createdAgentProfiles).not.toContain('cross-fallback');
-    expect(harness.factoryInputs[0]?.snapshot.providerSettings)
-      .toBe(harness.providerSettings);
-    expect(harness.factoryInputs[0]?.snapshot.privacySettings)
-      .toBe(harness.privacySettings);
-    expect(harness.factoryInputs[0]?.snapshot.enabledReadTools)
-      .toBe(harness.enabledReadTools);
+    expect(harness.factoryInputs[0]?.snapshot).toEqual({
+      providerSettings: harness.providerSettings,
+      authorizedRootPath: 'D:\\authorized',
+      taskKind: 'file',
+      privacySettings: harness.privacySettings
+    });
+    expect(harness.options).not.toHaveProperty('readEnabledReadTools');
     await harness.composition.close();
   });
 

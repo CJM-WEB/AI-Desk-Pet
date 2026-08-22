@@ -36,6 +36,15 @@ describe('Main 通用生命周期', () => {
     );
   });
 
+  test('正式生命周期不构造、初始化或关闭 MCP 运行实例', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source).not.toContain('new McpServerStore(');
+    expect(source).not.toContain('new McpManager(');
+    expect(source).not.toContain('desktopSettingsService.initialize()');
+    expect(source).not.toContain('mcpManager.close()');
+  });
+
   test('窗口关闭同步触发会话封口且异步失败只稳定报告一次', async () => {
     let rejectClose!: (error: Error) => void;
     const pendingClose = new Promise<void>((_resolve, reject) => { rejectClose = reject; });

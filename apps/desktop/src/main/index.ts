@@ -75,18 +75,13 @@ import {
   CharacterMotionService,
   startCharacterMotionTimers
 } from './characters/character-motion-service';
-import { McpManager } from './mcp/mcp-manager';
-import { McpServerStore } from './mcp/mcp-server-store';
 import { OpenAICompatibleProvider } from './providers/openai-provider';
 import { ProviderRegistry } from './providers/provider-registry';
 import { ipcChannels } from '../shared/ipc-channels';
 import { SecretStore } from './storage/secret-store';
 import { SettingsStore } from './storage/settings-store';
 import { createSettingsActions } from './settings/settings-actions';
-import {
-  createTrustedMcpRiskResolver,
-  DesktopSettingsService,
-} from './settings/desktop-settings-service';
+import { DesktopSettingsService } from './settings/desktop-settings-service';
 import {
   createPetPositionController,
   restorePetPosition
@@ -424,25 +419,15 @@ async function createApplicationWindows(
     reportError: code => console.error('恢复桌宠图层偏好失败。', code)
   });
   const providerRegistry = new ProviderRegistry(providerCatalog);
-  const mcpStore = new McpServerStore();
-  const mcpManager = new McpManager({
-    store: mcpStore,
-    riskResolver: createTrustedMcpRiskResolver((serverId, toolName) => (
-      mcpStore.get(serverId)?.capabilities.tools[toolName]?.trustedReadFingerprint
-    ))
-  });
   const privacySessions = new PrivacySessionRegistry();
   const desktopSettingsService = new DesktopSettingsService({
     settings: settingsStore,
     secrets,
     providers: providerRegistry,
-    mcpStore,
-    mcpManager,
     privacySessions,
     sessionId: 'desktop-session',
     applyPetAlwaysOnTop: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled)
   });
-  await desktopSettingsService.initialize();
   startupCleanup.add(() => desktopSettingsService.close());
   const primaryDisplay = screen.getPrimaryDisplay();
   const workAreas = [
@@ -767,7 +752,6 @@ async function createApplicationWindows(
     readProviderSettings: () => settingsStore.getProviderSettings(),
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
-    readEnabledReadTools: () => desktopSettingsService.enabledReadToolRegistrations(),
     createChatAdapter: profile => new ConversationChatAdapter(providerRegistry.create(
       profile,
       () => secrets.readForProviderCall(profile.id)

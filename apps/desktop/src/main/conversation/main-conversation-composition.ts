@@ -24,16 +24,15 @@ import {
 } from './capability-task-adapter';
 import type { CapabilityTaskKind } from './conversation-coordinator';
 
-export type MainConversationAgentSnapshot<TPrivacy, TReadTool> = Readonly<{
+export type MainConversationAgentSnapshot<TPrivacy> = Readonly<{
   taskKind: CapabilityTaskKind;
   providerSettings: ProviderSettingsSnapshot;
   authorizedRootPath: string;
   privacySettings: TPrivacy;
-  enabledReadTools: readonly TReadTool[];
 }>;
 
-export interface MainConversationAgentFactoryInput<TPrivacy, TReadTool> {
-  snapshot: MainConversationAgentSnapshot<TPrivacy, TReadTool>;
+export interface MainConversationAgentFactoryInput<TPrivacy> {
+  snapshot: MainConversationAgentSnapshot<TPrivacy>;
   generation: string;
   selection: ModelSelection;
   primaryProfile: ProviderProfileV2;
@@ -41,17 +40,16 @@ export interface MainConversationAgentFactoryInput<TPrivacy, TReadTool> {
   emit(event: TaskEvent): void;
 }
 
-export interface MainConversationCompositionOptions<TPrivacy, TReadTool> {
+export interface MainConversationCompositionOptions<TPrivacy> {
   catalog: readonly ProviderCatalogEntry[];
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
   readProviderSettings(): Promise<ProviderSettingsSnapshot>;
   readAuthorizedRootPath(): Promise<string | null>;
   readPrivacySettings(): Promise<TPrivacy>;
-  readEnabledReadTools(): Promise<readonly TReadTool[]>;
   createChatAdapter(profile: ProviderProfileV2): ConversationChatAdapter;
   createAgentService(
-    input: MainConversationAgentFactoryInput<TPrivacy, TReadTool>
+    input: MainConversationAgentFactoryInput<TPrivacy>
   ): CapabilityTaskAgentPort;
   emit(event: TaskEvent): void;
 }
@@ -67,8 +65,8 @@ export interface MainConversationComposition {
  * Main 会话深模块统一持有路由、披露、文件目标快照和关闭所有权。
  * Electron 平台层只需提供设置读取与 Provider/File Agent 构造适配器。
  */
-export function createMainConversationComposition<TPrivacy, TReadTool>(
-  options: MainConversationCompositionOptions<TPrivacy, TReadTool>
+export function createMainConversationComposition<TPrivacy>(
+  options: MainConversationCompositionOptions<TPrivacy>
 ): MainConversationComposition {
   const disclosureTargets = new Map<string, string>();
   const disclosurePolicy = new DisclosurePolicy({
@@ -76,7 +74,7 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
     resolveProfileProvider: profileId => disclosureTargets.get(profileId) ?? null,
     resolveCurrentSourceProvider: () => null
   });
-  let preparedAgentSnapshot: MainConversationAgentSnapshot<TPrivacy, TReadTool> | null = null;
+  let preparedAgentSnapshot: MainConversationAgentSnapshot<TPrivacy> | null = null;
   let activeAgentRootPath: string | null = null;
   let closePromise: Promise<void> | null = null;
 
@@ -115,12 +113,11 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
   };
 
   const getAuthorizedRootPath = async (taskKind: CapabilityTaskKind): Promise<string | null> => {
-    const [providerSettings, authorizedRootPath, privacySettings, enabledReadTools] =
+    const [providerSettings, authorizedRootPath, privacySettings] =
       await Promise.all([
         options.readProviderSettings(),
         options.readAuthorizedRootPath(),
-        options.readPrivacySettings(),
-        options.readEnabledReadTools()
+        options.readPrivacySettings()
       ]);
     preparedAgentSnapshot = authorizedRootPath === null
       ? null
@@ -128,8 +125,7 @@ export function createMainConversationComposition<TPrivacy, TReadTool>(
           providerSettings,
           authorizedRootPath,
           taskKind,
-          privacySettings,
-          enabledReadTools
+          privacySettings
         });
     if (activeAgentRootPath !== null && activeAgentRootPath !== authorizedRootPath) return null;
     return authorizedRootPath;

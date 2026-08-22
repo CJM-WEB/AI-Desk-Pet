@@ -62,30 +62,10 @@ export interface PrivacyRuntimeSupportDto {
   proactivity: boolean;
 }
 
-export interface McpToolDto {
-  name: string;
-  description: string;
-  enabled: boolean;
-  readOnly: boolean;
-}
-
-export interface McpServerDto {
-  id: string;
-  enabled: boolean;
-  status: 'disconnected' | 'connected' | 'error';
-  transport: {
-    type: 'stdio' | 'http';
-    summary: string;
-    secretNames: string[];
-  };
-  tools: McpToolDto[];
-}
-
 export interface SettingsDashboardDto {
   catalog: ProviderCatalogEntry[];
   profiles: ProviderProfileV2[];
   route: ModelRouteConfig;
-  mcpServers: McpServerDto[];
   privacy: PrivacySettingsDto;
   privacyRuntimeSupport: PrivacyRuntimeSupportDto;
   petAlwaysOnTop: boolean;
@@ -96,34 +76,6 @@ export interface SaveProviderProfileInput {
   profile: StoredProviderProfileV2;
   secret?: string;
   persistSecret: boolean;
-}
-
-export type McpServerInput = {
-  id: string;
-  enabled: boolean;
-  transport:
-    | {
-      type: 'stdio';
-      command: string;
-      args?: string[];
-      cwd?: string;
-      env?: Record<string, string>;
-      inheritEnv?: string[];
-    }
-    | {
-      type: 'http';
-      url: string;
-      headers?: Record<string, string>;
-    };
-};
-
-export interface McpLaunchSummaryDto {
-  command: string;
-  args: string[];
-  cwd: string;
-  explicitEnvNames: string[];
-  inheritedEnvNames: string[];
-  fingerprint: string;
 }
 
 export interface MyselfApi extends PetWindowInteractionApi {

@@ -670,7 +670,6 @@ describe('Renderer 可见组件', () => {
             fallbackProfileIds: [],
             allowCrossProviderFallback: false
           },
-          mcpServers: [],
           privacy: {
             dataCategories: {
               file: false,

@@ -533,15 +533,12 @@ function conversationIntegrationHarness(input: {
     visibleHistory: readonly unknown[];
   }> = [];
   const agentFactoryInputs: Array<MainConversationAgentFactoryInput<
-    { dataCategories: { file: boolean } },
-    { name: string }
+    { dataCategories: { file: boolean } }
   >> = [];
   const readAuthorizedRootPath = vi.fn(async () => input.authorizedRootPath ?? null);
   const readPrivacySettings = vi.fn(async () => ({ dataCategories: { file: true } }));
-  const readEnabledReadTools = vi.fn(async () => [{ name: 'read_text_file' }]);
   const createAgentService = vi.fn((factoryInput: MainConversationAgentFactoryInput<
-    { dataCategories: { file: boolean } },
-    { name: string }
+    { dataCategories: { file: boolean } }
   >) => {
     agentFactoryInputs.push(factoryInput);
     return {
@@ -579,7 +576,6 @@ function conversationIntegrationHarness(input: {
     }),
     readAuthorizedRootPath,
     readPrivacySettings,
-    readEnabledReadTools,
     createChatAdapter: profile => new ConversationChatAdapter({
       async respond(request) {
         chatRequests.push({ profileId: profile.id, request });
@@ -599,7 +595,6 @@ function conversationIntegrationHarness(input: {
     events,
     fileSubmissions,
     readAuthorizedRootPath,
-    readEnabledReadTools,
     readPrivacySettings,
     setChatProfile(profileId: string) {
       chatProfileId = profileId;
@@ -638,7 +633,6 @@ describe('桌面会话分流纵向集成', () => {
     ]);
     expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
     expect(fixture.readPrivacySettings).not.toHaveBeenCalled();
-    expect(fixture.readEnabledReadTools).not.toHaveBeenCalled();
     expect(fixture.createAgentService).not.toHaveBeenCalled();
     await fixture.composition.close();
   });

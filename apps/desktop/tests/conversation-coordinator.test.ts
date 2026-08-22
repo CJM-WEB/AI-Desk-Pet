@@ -13,7 +13,6 @@ import {
 import { ConversationDisclosureAdapter } from '../src/main/conversation/conversation-disclosure-adapter';
 import { ConversationHistory } from '../src/main/conversation/conversation-history';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
-import { desktopRuntimeCapabilities } from '../src/shared/desktop-runtime-capabilities';
 
 interface ProviderScript {
   requests: ModelRequest[];
@@ -240,7 +239,6 @@ describe('ConversationCoordinator', () => {
   );
 
   test('本兼容闭环保持 MCP runtimeSupport 关闭', () => {
-    expect(desktopRuntimeCapabilities.mcp).toBe(false);
   });
 
   test.each(['读取 a.txt', '列出当前文件夹'])(

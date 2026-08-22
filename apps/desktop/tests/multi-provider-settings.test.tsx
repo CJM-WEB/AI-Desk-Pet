@@ -75,27 +75,6 @@ const dashboard: SettingsDashboardDto = {
     fallbackProfileIds: [],
     allowCrossProviderFallback: false
   },
-  mcpServers: [{
-    id: 'notes',
-    enabled: true,
-    status: 'connected',
-    transport: {
-      type: 'stdio',
-      summary: 'C:\\tools\\notes.exe --stdio',
-      secretNames: ['TOKEN']
-    },
-    tools: [{
-      name: 'read-note',
-      description: '读取笔记',
-      enabled: true,
-      readOnly: true
-    }, {
-      name: 'delete-note',
-      description: '删除笔记',
-      enabled: false,
-      readOnly: false
-    }]
-  }],
   privacy: {
     dataCategories: {
       file: true,

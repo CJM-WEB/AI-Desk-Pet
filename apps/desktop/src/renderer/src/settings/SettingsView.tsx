@@ -29,7 +29,6 @@ const emptyDashboard: SettingsDashboardDto = {
     fallbackProfileIds: [],
     allowCrossProviderFallback: false
   },
-  mcpServers: [],
   privacy: {
     dataCategories: {
       file: false,

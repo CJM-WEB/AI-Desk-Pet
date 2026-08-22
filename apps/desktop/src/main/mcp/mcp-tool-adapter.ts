@@ -3,6 +3,7 @@ import type { ToolRisk } from '@myself/agent-core';
 import { toolNameSchema } from '@myself/shared-types';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import type { JsonSchemaType } from '@modelcontextprotocol/sdk/validation';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { ToolRegistration } from '../agent/tool-registry';
 
@@ -39,6 +40,22 @@ function canonicalJson(value: unknown): string {
  */
 export function mcpToolDefinitionFingerprint(tool: McpToolDescriptor): string {
   return createHash('sha256').update(canonicalJson(tool)).digest('hex');
+}
+
+export type TrustedMcpFingerprintLookup = (
+  serverId: string,
+  toolName: string
+) => string | undefined;
+
+/** 该解析器只服务保留的 MCP 内部适配器测试，不进入正式设置或 Agent 图。 */
+export function createTrustedMcpRiskResolver(
+  trustedFingerprint: TrustedMcpFingerprintLookup
+): (serverId: string, tool: Tool) => ToolRisk {
+  return (serverId, tool) => (
+    trustedFingerprint(serverId, tool.name) === mcpToolDefinitionFingerprint(tool)
+      ? 'read'
+      : 'recoverable'
+  );
 }
 
 export interface AdaptMcpToolOptions {
