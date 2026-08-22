@@ -30,6 +30,7 @@ function createFixture() {
       stateNames: ['开心'], actionNames: ['挥手', '庆祝'], tags: []
     })),
     resolveBehaviorTarget: vi.fn((target: BehaviorTarget): ResolvedBehaviorTarget => {
+      if (target.kind === 'semantic') return { kind: 'semantic', semantic: target.semantic };
       const name = target.kind === 'action_name' ? target.name : '';
       const resolved = targetByName.get(name);
       if (!resolved) throw new Error('CHARACTER_ACTION_UNAVAILABLE');
@@ -41,6 +42,8 @@ function createFixture() {
         : target.kind === 'action' && target.actionId === 'move-action'
     )),
     requestDirectedBehavior: vi.fn(() => directedAuthorization),
+    getRecentPublicActions: vi.fn(() => ['挥手']),
+    handleIdleDue: vi.fn(),
     handleTaskEvent: vi.fn((
       _event: TaskEvent,
       options?: Readonly<{ allowPlayback?: boolean }>
@@ -49,15 +52,30 @@ function createFixture() {
     handleActiveCharacterChanged: vi.fn(async () => undefined),
     close: vi.fn(() => undefined)
   };
+  const motion = {
+    getSnapshot: vi.fn(() => ({
+      revision: 2,
+      timestampMs: 10,
+      position: { x: 20, y: 30 },
+      target: { x: 40, y: 30 },
+      direction: 'right' as const,
+      moving: true,
+      carrying: false
+    })),
+    requestIntent: vi.fn(),
+    stop: vi.fn()
+  };
   const notices: CharacterBehaviorNotice[] = [];
   const director = new CharacterBehaviorDirector({
     behavior,
+    motion,
     initialGeneration: 'generation-1',
     publishNotice: notice => notices.push(notice)
   });
   return {
     behavior,
     director,
+    motion,
     notices,
     setTaskAuthorization: (value: CharacterBehaviorAuthorization) => { taskAuthorization = value; },
     setDirectedAuthorization: (value: CharacterBehaviorAuthorization) => { directedAuthorization = value; }
@@ -69,6 +87,118 @@ function play(name: string): CharacterBehaviorPlan {
 }
 
 describe('Main 角色行为 Director', () => {
+  test('显式移动先取得 move 动作授权再产生唯一对象化运动意图', async () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    await expect(fixture.director.prepareUserPrompt('向左一点')).resolves.toEqual({
+      originalText: '向左一点',
+      capabilityText: '向左一点',
+      explicitDirective: {
+        kind: 'move',
+        motion: { kind: 'relative', direction: 'left', distance: 'near' }
+      }
+    });
+
+    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
+      { kind: 'semantic', semantic: 'move' },
+      { urgency: 100, systemForced: true }
+    );
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'relative', direction: 'left', distance: 'near'
+    });
+    expect(fixture.behavior.requestDirectedBehavior.mock.invocationCallOrder[0])
+      .toBeLessThan(fixture.motion.requestIntent.mock.invocationCallOrder[0]!);
+  });
+
+  test('显式移动未取得播放授权时不移动并发布稳定提示', async () => {
+    const fixture = createFixture();
+
+    await fixture.director.prepareUserPrompt('去右下角');
+
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+    expect(fixture.notices).toEqual([{
+      code: 'CHARACTER_ACTION_UNAVAILABLE',
+      message: '当前角色没有可播放的对应动作。'
+    }]);
+  });
+
+  test('停止立即撤销运动并拦截旧 500ms 主动入口，恢复后沿用同一入口', async () => {
+    const fixture = createFixture();
+    fixture.director.handleIdleDue();
+    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledOnce();
+
+    await fixture.director.prepareUserPrompt('停下');
+    fixture.director.handleIdleDue();
+
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledOnce();
+
+    await fixture.director.prepareUserPrompt('恢复活动');
+    fixture.director.handleIdleDue();
+    expect(fixture.behavior.handleIdleDue).toHaveBeenCalledTimes(2);
+  });
+
+  test('聊天移动计划只有在 move 动作授权后才请求对应运动且不重复 wander', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan: { kind: 'move_region', region: 'bottom_right' }
+    });
+
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'region', region: 'bottom_right'
+    });
+  });
+
+  test('公开聊天上下文只包含清单、运行布尔、档位和公开近期动作', () => {
+    const fixture = createFixture();
+
+    expect(fixture.director.getChatContext()).toEqual({
+      character: {
+        characterName: '测试角色', semantics: ['idle', 'celebrate'],
+        stateNames: ['开心'], actionNames: ['挥手', '庆祝'], tags: []
+      },
+      runtime: {
+        moving: true,
+        dragging: false,
+        carrying: false,
+        movementStopped: false
+      },
+      proactivityMode: 'assistive',
+      recentActions: ['挥手']
+    });
+    expect(JSON.stringify(fixture.director.getChatContext())).not.toMatch(
+      /actionId|playbackToken|[A-Z]:\\/u
+    );
+  });
+
+  test('角色清单切换或兼容态暂不可用时仍保留普通聊天的空公开上下文', () => {
+    const fixture = createFixture();
+    fixture.behavior.getPublicBehaviorCatalog.mockImplementation(() => {
+      throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+    });
+
+    expect(fixture.director.getChatContext()).toMatchObject({
+      character: {
+        characterName: '当前角色',
+        semantics: [],
+        stateNames: [],
+        actionNames: [],
+        tags: []
+      },
+      runtime: { movementStopped: false }
+    });
+  });
+
   test('同轮本地 stop 指令后忽略 Provider resume，解析后的 move 动作仍受停止锁拦截', () => {
     const fixture = createFixture();
     fixture.setDirectedAuthorization({

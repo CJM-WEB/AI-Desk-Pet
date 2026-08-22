@@ -69,6 +69,24 @@ const tools: ToolDefinition[] = [{
   }
 }];
 
+const providerBehaviorContext = {
+  character: {
+    characterName: '契约测试角色',
+    semantics: ['idle', 'move'] as const,
+    stateNames: [],
+    actionNames: ['散步'],
+    tags: []
+  },
+  runtime: {
+    moving: false,
+    dragging: false,
+    carrying: false,
+    movementStopped: false
+  },
+  proactivityMode: 'assistive' as const,
+  recentActions: []
+};
+
 const request: ModelRequest = {
   messages: [
     { role: 'system', content: '只返回必要内容。' },
@@ -263,6 +281,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
       await expect(adapter.respond({
         history: [],
         text: '请给出示例',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).resolves.toEqual({
         text: '  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n'
@@ -290,6 +309,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
       await expect(adapter.respond({
         history: [],
         text: '向左走一点',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).resolves.toEqual({
         text: '我向左走一点。',
@@ -312,6 +332,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
       await expect(adapter.respond({
         history: [],
         text: '测试非法情绪',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).resolves.toEqual({ text: '正文仍然有效。' });
     }
@@ -328,6 +349,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
       await expect(adapter.respond({
         history: [],
         text: '测试截断',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).resolves.toEqual({ text: '截断前的正文' });
     }
@@ -343,6 +365,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
       await expect(adapter.respond({
         history: [],
         text: '普通聊天',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).resolves.toEqual({ text: '普通纯文本' });
     }
@@ -359,6 +382,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
       const error = await adapter.respond({
         history: [],
         text: '测试空对象',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       }).catch(reason => reason);
 
@@ -380,6 +404,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
       await expect(adapter.respond({
         history: [],
         text: '调用工具',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).rejects.toMatchObject({
         code: contract.expectedToolResponseErrorCode ?? 'PROVIDER_MALFORMED_RESPONSE',
@@ -403,11 +428,13 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
       await expect(abortAdapter.respond({
         history: [],
         text: '取消',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).rejects.toBe(abortError);
       await expect(timeoutAdapter.respond({
         history: [],
         text: '超时',
+        behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).rejects.toMatchObject({
         code: 'PROVIDER_TIMEOUT',
@@ -1870,6 +1897,7 @@ describe('ProviderRegistry', () => {
     await expect(adapter.respond({
       history: [],
       text: '给出 Markdown 示例',
+      behaviorContext: providerBehaviorContext,
       signal: new AbortController().signal
     })).resolves.toEqual({
       text: '  **自然回复**\n\n```ts\n你好();\n```\n'

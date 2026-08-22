@@ -36,6 +36,20 @@ describe('Main 通用生命周期', () => {
     );
   });
 
+  test('生产组合根只构造一组行为 Service、Motion 与 Director 且所有入口先经过 Director', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source.match(/new CharacterMotionService\(/gu)).toHaveLength(1);
+    expect(source.match(/new CharacterBehaviorService\(/gu)).toHaveLength(1);
+    expect(source.match(/new CharacterBehaviorDirector\(/gu)).toHaveLength(1);
+    expect(source).toContain('behavior: characterBehaviorDirector');
+    expect(source).toContain('characterBehaviorDirector.applyPlaybackFeedback({');
+    expect(source).toContain('characterBehaviorDirector.handleIdleDue();');
+    expect(source).toContain('characterBehaviorDirector.setDragging(true);');
+    expect(source).toContain('characterBehaviorDirector.setDragging(false);');
+    expect(source).not.toContain('applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)');
+  });
+
   test('正式生命周期不构造、初始化或关闭 MCP 运行实例', async () => {
     const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 

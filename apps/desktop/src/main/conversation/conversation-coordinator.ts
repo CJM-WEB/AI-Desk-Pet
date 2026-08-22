@@ -7,6 +7,10 @@ import type {
 import type { ConversationDisclosureAdapter } from './conversation-disclosure-adapter';
 import type { ConversationHistory } from './conversation-history';
 import type { ConversationChatAdapter } from './conversation-chat-adapter';
+import type {
+  ConversationBehaviorPort,
+  ExplicitBehaviorDirective
+} from '../characters/character-behavior-director';
 import { capabilityIntentRouter } from './capability-intent-router';
 import {
   isPublicFileTaskErrorCode,
@@ -55,6 +59,7 @@ export interface ConversationCoordinatorOptions {
   chatTurnFactory: ChatTurnFactory;
   disclosureAdapter: ConversationDisclosureAdapter;
   capabilityTasks: ConversationCapabilityTaskPort;
+  behavior: ConversationBehaviorPort;
   emit(event: TaskEvent): void;
   createId?: () => string;
 }
@@ -71,6 +76,8 @@ type ConversationState =
 
 interface TurnContext {
   text: string;
+  capabilityText: string;
+  explicitDirective: ExplicitBehaviorDirective | null;
   generation: string;
   controller: AbortController;
 }
@@ -114,6 +121,7 @@ export class ConversationCoordinator {
   constructor(private readonly options: ConversationCoordinatorOptions) {
     this.createId = options.createId ?? randomUUID;
     this.generation = this.createId();
+    this.options.behavior.reset(this.generation);
     this.unsubscribeCapabilityEvents = options.capabilityTasks.onEvent((event, generation) => {
       this.handleCapabilityEvent(event, generation);
     });
@@ -137,6 +145,8 @@ export class ConversationCoordinator {
 
     const context: TurnContext = {
       text: normalized,
+      capabilityText: normalized,
+      explicitDirective: null,
       generation: this.generation,
       controller: new AbortController()
     };
@@ -153,8 +163,13 @@ export class ConversationCoordinator {
       this.options.emit({ type: 'phase', phase: 'thinking' });
       if (!this.isRunning(context)) return;
 
+      const prepared = await this.options.behavior.prepareUserPrompt(normalized);
+      if (!this.isRunning(context)) return;
+      context.capabilityText = prepared.capabilityText;
+      context.explicitDirective = prepared.explicitDirective;
+
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
-      const intent = capabilityIntentRouter.route(normalized);
+      const intent = capabilityIntentRouter.route(context.capabilityText);
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
         if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
           throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
@@ -389,6 +404,11 @@ export class ConversationCoordinator {
       failures.push(error);
     }
     try {
+      this.options.behavior.reset(nextGeneration);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
       this.options.history.clear();
     } catch (error) {
       failures.push(error);
@@ -437,6 +457,11 @@ export class ConversationCoordinator {
       } catch (error) {
         failures.push(error);
       }
+      try {
+        await this.options.behavior.close();
+      } catch (error) {
+        failures.push(error);
+      }
       if (failures.length > 0) throw publicError(failures[0]);
     });
     this.closePromise = closing;
@@ -454,7 +479,14 @@ export class ConversationCoordinator {
     const reply = await adapter.respond({
       history: visibleHistory,
       text: context.text,
+      behaviorContext: this.options.behavior.getChatContext(),
       signal: context.controller.signal
+    });
+    if (!this.isRunning(context)) return;
+    this.options.behavior.completeUserPrompt({
+      generation: context.generation,
+      explicitDirective: context.explicitDirective,
+      providerPlan: reply.behaviorPlan ?? null
     });
     if (!this.isRunning(context)) return;
     this.options.emit({ type: 'message', role: 'assistant', text: reply.text });
@@ -565,7 +597,7 @@ export class ConversationCoordinator {
     this.state = { kind: 'running_capability_task', generation: context.generation, taskKind };
     try {
       await this.options.capabilityTasks.submit({
-        text: context.text,
+        text: context.capabilityText,
         visibleHistory,
         generation: context.generation,
         taskKind

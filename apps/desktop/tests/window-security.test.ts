@@ -260,10 +260,8 @@ describe('preload 白名单', () => {
       'const conversationEventProjection = new ConversationEventProjection({'
     );
     expect(main).toContain('const validated = conversationEventProjection.publish(event);');
-    expect(main).toContain(
-      'applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)'
-    );
-    expect(main.match(/characterBehavior\.handleTaskEvent\(event\)/gu)).toHaveLength(1);
+    expect(main).toContain('behavior: characterBehaviorDirector');
+    expect(main).not.toContain('characterBehavior.handleTaskEvent(event)');
     expect(main).not.toContain(
       'for (const window of [pet, chat, settings, characterWorkshopWindows.getCurrent()])'
     );

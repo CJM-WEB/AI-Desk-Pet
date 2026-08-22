@@ -94,6 +94,7 @@ export class CharacterBehaviorService {
   private readonly createPlaybackToken: () => string;
   private readonly idleIntervalMs: number;
   private readonly listeners = new Set<(event: CharacterBehaviorPlaybackEvent) => void>();
+  private readonly recentPublicActions: string[] = [];
   private readonly legacyTokens = new Map<string, { actionId: string; characterId: string }>();
   private engine: CharacterBehaviorEngine | null = null;
   private manifest: CharacterManifestV2 | null = null;
@@ -132,6 +133,11 @@ export class CharacterBehaviorService {
       throw new Error('CHARACTER_ACTION_UNAVAILABLE');
     }
     return createPublicBehaviorCatalog(this.manifest, this.engine?.snapshot().skinId ?? this.manifest.defaultSkinId);
+  }
+
+  /** 只公开已收到 started 反馈的动作名称，不暴露动作 ID 或播放令牌。 */
+  getRecentPublicActions(): readonly string[] {
+    return [...this.recentPublicActions];
   }
 
   /** 在 Main 私有清单内把模型可见名称解析为唯一私有目标。 */
@@ -333,6 +339,7 @@ export class CharacterBehaviorService {
     if (this.transitioning) throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
     if (this.engine) {
       const decision = this.engine.applyFeedback(feedback);
+      if (feedback.status === 'started') this.recordPublicAction(feedback.actionId);
       this.publish(decision);
       return;
     }
@@ -346,6 +353,7 @@ export class CharacterBehaviorService {
       actionId: feedback.actionId,
       characterId: pending.characterId
     });
+    this.recordPublicAction(feedback.actionId);
     this.legacyTokens.delete(feedback.playbackToken);
   }
 
@@ -374,6 +382,7 @@ export class CharacterBehaviorService {
     this.taskIdleBlocked = false;
     this.carryIdleBlocked = false;
     this.legacyTokens.clear();
+    this.recentPublicActions.splice(0);
     this.listeners.clear();
   }
 
@@ -423,6 +432,7 @@ export class CharacterBehaviorService {
       this.manifest = manifest;
       this.legacyManifest = null;
       this.legacyTokens.clear();
+      this.recentPublicActions.splice(0);
       this.engine = nextEngine;
       this.transitioning = false;
       this.publish(decision);
@@ -443,6 +453,7 @@ export class CharacterBehaviorService {
       this.manifest = null;
       this.legacyManifest = legacyManifest;
       this.legacyTokens.clear();
+      this.recentPublicActions.splice(0);
       this.transitioning = false;
       this.nextIdleAt = this.now() + this.idleIntervalMs;
       this.emit({
@@ -456,6 +467,7 @@ export class CharacterBehaviorService {
       this.manifest = null;
       this.legacyManifest = null;
       this.legacyTokens.clear();
+      this.recentPublicActions.splice(0);
       this.transitioning = false;
     }
   }
@@ -595,7 +607,7 @@ export class CharacterBehaviorService {
         candidate => candidate.id === effect.action.actionId
       );
       if (requestMovementIntent && action?.semantic === 'move') {
-        this.options.motion.requestIntent('wander');
+        this.options.motion.requestIntent({ kind: 'wander', scope: 'work_area' });
       }
       if (action) {
         authorization = {
@@ -615,7 +627,7 @@ export class CharacterBehaviorService {
     if (!manifest) return;
     const selection = this.options.motion.pollIdle(manifest, this.direction, this.random);
     if (!selection) return;
-    this.options.motion.requestIntent('wander');
+    this.options.motion.requestIntent({ kind: 'wander', scope: 'work_area' });
     const snapshot = this.options.motion.getSnapshot();
     const playbackToken = this.options.motion.issueIdlePlayback({
       actionId: selection.action.id,
@@ -642,5 +654,15 @@ export class CharacterBehaviorService {
         // 单个播放观察者失败不得改变 Main 已提交的行为决策。
       }
     }
+  }
+
+  private recordPublicAction(actionId: string): void {
+    const actionName = this.manifest?.actions.find(action => action.id === actionId)?.name
+      ?? this.legacyManifest?.states
+        .flatMap(state => state.actions)
+        .find(action => action.id === actionId)?.name;
+    if (!actionName || this.recentPublicActions.at(-1) === actionName) return;
+    this.recentPublicActions.push(actionName);
+    if (this.recentPublicActions.length > 4) this.recentPublicActions.shift();
   }
 }

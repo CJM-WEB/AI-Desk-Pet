@@ -12,6 +12,34 @@ import {
   createMainConversationComposition,
   type MainConversationAgentFactoryInput
 } from '../src/main/conversation/main-conversation-composition';
+import type { ConversationBehaviorPort } from
+  '../src/main/characters/character-behavior-director';
+
+function behaviorDouble(): ConversationBehaviorPort {
+  return {
+    prepareUserPrompt: vi.fn(async text => ({
+      originalText: text,
+      capabilityText: text,
+      explicitDirective: null
+    })),
+    getChatContext: vi.fn(() => ({
+      character: {
+        characterName: '测试角色', semantics: ['idle'] as const,
+        stateNames: [], actionNames: [], tags: []
+      },
+      runtime: {
+        moving: false, dragging: false, carrying: false, movementStopped: false
+      },
+      proactivityMode: 'assistive' as const,
+      recentActions: []
+    })),
+    completeUserPrompt: vi.fn(),
+    handleTaskEvent: vi.fn(),
+    applyPlaybackFeedback: vi.fn(),
+    reset: vi.fn(),
+    close: vi.fn(async () => undefined)
+  };
+}
 
 function profile(id: string, baseUrl: string): ProviderProfileV2 {
   return {
@@ -96,6 +124,7 @@ function baseOptions(input: {
     return input.createAgent?.(factoryInput) ?? agentDouble();
   });
   const events: TaskEvent[] = [];
+  const behavior = behaviorDouble();
   const options = {
     catalog: [],
     privacySessions,
@@ -110,11 +139,13 @@ function baseOptions(input: {
       }
     )),
     createAgentService,
+    behavior,
     emit: (event: TaskEvent) => events.push(event)
   };
   const composition = createMainConversationComposition(options);
   return {
     composition,
+    behavior,
     createdAgentProfiles,
     events,
     factoryInputs,
@@ -137,7 +168,15 @@ describe('Main 会话组合模块', () => {
     expect(harness.readAuthorizedRootPath).not.toHaveBeenCalled();
     expect(harness.readPrivacySettings).not.toHaveBeenCalled();
     expect(harness.factoryInputs).toHaveLength(0);
+    expect(harness.behavior.prepareUserPrompt).toHaveBeenCalledExactlyOnceWith('你好');
+    expect(harness.behavior.getChatContext).toHaveBeenCalledOnce();
+    expect(harness.behavior.completeUserPrompt).toHaveBeenCalledExactlyOnceWith({
+      generation: expect.any(String),
+      explicitDirective: null,
+      providerPlan: null
+    });
     await harness.composition.close();
+    expect(harness.behavior.close).toHaveBeenCalledOnce();
   });
 
   test('文件 Agent 与元数据消费同一设置快照并只创建同源 fallback', async () => {

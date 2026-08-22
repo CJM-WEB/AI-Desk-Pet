@@ -46,6 +46,10 @@ import {
 import { CharacterActions } from './characters/character-actions';
 import { CharacterAssetService } from './characters/character-asset-service';
 import { CharacterBehaviorService } from './characters/character-behavior-service';
+import {
+  CharacterBehaviorDirector,
+  type CharacterBehaviorNotice
+} from './characters/character-behavior-director';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
 import { ExplorerSpaceClient, buildExplorerBridgeSpawnSpec } from
@@ -466,9 +470,16 @@ async function createApplicationWindows(
     motion: characterMotion,
     reportError: reportCharacterBehaviorError
   });
+  let publishCharacterBehaviorNotice = (_notice: CharacterBehaviorNotice): void => undefined;
+  const characterBehaviorDirector = new CharacterBehaviorDirector({
+    behavior: characterBehavior,
+    motion: characterMotion,
+    initialGeneration: 'startup',
+    publishNotice: notice => publishCharacterBehaviorNotice(notice)
+  });
   const characterSwitching = createCharacterActivationCoordinator({
     activateInStore: activateCharacterInStore,
-    reloadBehavior: () => characterBehavior.handleActiveCharacterChanged()
+    reloadBehavior: () => characterBehaviorDirector.handleActiveCharacterChanged()
   });
   characterActions.activateCharacter = (characterId, confirmIncomplete) => (
     characterSwitching.activate(characterId, confirmIncomplete)
@@ -482,8 +493,15 @@ async function createApplicationWindows(
         activeCapabilityTaskAdapter?.invalidateFileTaskPlaybackGrant();
         characterBehavior.handleUserInteraction();
         characterMotion.beginUserMove();
+        characterBehaviorDirector.setDragging(true);
       },
-      endUserMove: () => characterMotion.endUserMove()
+      endUserMove: () => {
+        try {
+          characterMotion.endUserMove();
+        } finally {
+          characterBehaviorDirector.setDragging(false);
+        }
+      }
     }
   });
   const releasePetWindowInteraction = bindPetWindowInteractionLifecycle(
@@ -494,7 +512,7 @@ async function createApplicationWindows(
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),
     applyPlaybackFeedback: feedback => {
-      characterBehavior.applyPlaybackFeedback({
+      characterBehaviorDirector.applyPlaybackFeedback({
         ...feedback,
         occurredAtMs: performance.now()
       });
@@ -527,7 +545,7 @@ async function createApplicationWindows(
   const motionRuntime = startCharacterMotionTimers({
     tick: () => characterMotion.tick(),
     poll: () => {
-      characterBehavior.handleIdleDue();
+      characterBehaviorDirector.handleIdleDue();
       activeCapabilityTaskAdapter?.advanceFileTaskTransaction();
     },
     isDestroyed: () => pet.isDestroyed(),
@@ -550,7 +568,7 @@ async function createApplicationWindows(
     motionRuntime.destroy();
     releaseMotionEvents();
     releaseBehaviorEvents();
-    characterBehavior.close();
+    void characterBehaviorDirector.close();
     releaseMotionWindowEvents();
   };
   startupCleanup.add(releaseCharacterRuntime);
@@ -733,7 +751,7 @@ async function createApplicationWindows(
     getPetTarget: () => (
       pet.isDestroyed() || pet.webContents.isDestroyed() ? null : pet.webContents
     ),
-    applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event),
+    behavior: characterBehaviorDirector,
     reportDeliveryFailure: target => console.error(
       '投递会话公开事件失败。',
       target === 'chat'
@@ -745,6 +763,11 @@ async function createApplicationWindows(
     const validated = conversationEventProjection.publish(event);
     if (validated.type === 'error') reportedSubmitErrorCode = validated.code;
   };
+  publishCharacterBehaviorNotice = notice => emitConversationEvent({
+    type: 'error',
+    code: notice.code,
+    message: notice.message
+  });
   const conversationComposition = createMainConversationComposition({
     catalog: providerCatalog,
     privacySessions,
@@ -752,6 +775,7 @@ async function createApplicationWindows(
     readProviderSettings: () => settingsStore.getProviderSettings(),
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
+    behavior: characterBehaviorDirector,
     createChatAdapter: profile => new ConversationChatAdapter(providerRegistry.create(
       profile,
       () => secrets.readForProviderCall(profile.id)

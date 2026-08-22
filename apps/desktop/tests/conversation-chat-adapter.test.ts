@@ -4,6 +4,24 @@ import { describe, expect, test, vi } from 'vitest';
 import { ProviderError } from '../src/main/providers/openai-provider';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 
+const behaviorContext = {
+  character: {
+    characterName: '小橘',
+    semantics: ['idle', 'move', 'celebrate'] as const,
+    stateNames: ['开心'],
+    actionNames: ['挥手'],
+    tags: ['friendly']
+  },
+  runtime: {
+    moving: false,
+    dragging: false,
+    carrying: false,
+    movementStopped: false
+  },
+  proactivityMode: 'assistive' as const,
+  recentActions: ['挥手']
+};
+
 function 响应为(response: ModelResponse): ModelProvider {
   return {
     respond: vi.fn(async () => response)
@@ -25,6 +43,7 @@ describe('ConversationChatAdapter', () => {
     await expect(adapter.respond({
       history,
       text: '这一轮问题',
+      behaviorContext,
       signal: new AbortController().signal
     })).resolves.toEqual({ text: '你好！' });
 
@@ -51,6 +70,10 @@ describe('ConversationChatAdapter', () => {
     expect(取得请求(provider).messages[0]?.content).toContain('用户使用的语言');
     expect(取得请求(provider).messages[0]?.content).toContain('可见上下文');
     expect(取得请求(provider).messages[0]?.content).toContain('尚未执行的文件操作');
+    expect(取得请求(provider).messages[0]?.content).toContain('"characterName":"小橘"');
+    expect(取得请求(provider).messages[0]?.content).toContain('"movementStopped":false');
+    expect(取得请求(provider).messages[0]?.content).toContain('"proactivityMode":"assistive"');
+    expect(取得请求(provider).messages[0]?.content).toContain('"recentActions":["挥手"]');
     expect(取得请求(provider).messages[0]?.content).toContain('json');
     expect(取得请求(provider).messages[0]?.content).toContain(
       '{"text":"我会陪着你。","behaviorPlan":{"kind":"none","emotion":"calm"}}'
@@ -70,6 +93,7 @@ describe('ConversationChatAdapter', () => {
     await expect(adapter.respond({
       history: [],
       text: '给我一个例子',
+      behaviorContext,
       signal: new AbortController().signal
     })).resolves.toEqual({
       text: '  当然可以。\n\n```ts\nconst 宠物 = "你好";\n```\n',
@@ -91,6 +115,7 @@ describe('ConversationChatAdapter', () => {
     await expect(adapter.respond({
       history: [],
       text: '向左走一点',
+      behaviorContext,
       signal: new AbortController().signal
     })).resolves.toEqual({
       text: '我向左走一点。',
@@ -113,6 +138,7 @@ describe('ConversationChatAdapter', () => {
     await expect(adapter.respond({
       history: [],
       text: '测试非法计划',
+      behaviorContext,
       signal: new AbortController().signal
     })).resolves.toEqual({ text: '正文仍然可见。', emotion: 'calm' });
   });
@@ -133,6 +159,7 @@ describe('ConversationChatAdapter', () => {
     await expect(adapter.respond({
       history: [],
       text: '普通聊天',
+      behaviorContext,
       signal: new AbortController().signal
     })).resolves.toEqual({ text: '只保留正文。' });
   });
@@ -147,6 +174,7 @@ describe('ConversationChatAdapter', () => {
     const error = await adapter.respond({
       history: [],
       text: '测试输入',
+      behaviorContext,
       signal: new AbortController().signal
     }).catch(reason => reason);
 
@@ -171,6 +199,7 @@ describe('ConversationChatAdapter', () => {
     const error = await adapter.respond({
       history: [],
       text: '测试输入',
+      behaviorContext,
       signal: new AbortController().signal
     }).catch(reason => reason);
 
@@ -194,11 +223,13 @@ describe('ConversationChatAdapter', () => {
     await expect(new ConversationChatAdapter(abortProvider).respond({
       history: [],
       text: '取消',
+      behaviorContext,
       signal: new AbortController().signal
     })).rejects.toBe(abortError);
     await expect(new ConversationChatAdapter(timeoutProvider).respond({
       history: [],
       text: '超时',
+      behaviorContext,
       signal: new AbortController().signal
     })).rejects.toBe(timeoutError);
   });

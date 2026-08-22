@@ -33,27 +33,27 @@ describe('ConversationEventProjection', () => {
   test('pending_action 完整进入聊天窗口与主进程行为，且不投递给宠物窗口', () => {
     const chat = target();
     const pet = target();
-    const applyCharacterBehavior = vi.fn();
+    const behavior = { handleTaskEvent: vi.fn() };
     const projection = new ConversationEventProjection({
       getChatTarget: () => chat,
       getPetTarget: () => pet,
-      applyCharacterBehavior
+      behavior
     });
 
     expect(projection.publish(validPendingFileActionEvent)).toEqual(validPendingFileActionEvent);
     expect(chat.send).toHaveBeenCalledWith(ipcChannels.taskEvent, validPendingFileActionEvent);
-    expect(applyCharacterBehavior).toHaveBeenCalledWith(validPendingFileActionEvent);
+    expect(behavior.handleTaskEvent).toHaveBeenCalledWith(validPendingFileActionEvent);
     expect(pet.send).not.toHaveBeenCalled();
   });
 
   test('pet 只接收严格 phase，且不接收票据、命令、正文或披露请求', () => {
     const chat = target();
     const pet = target();
-    const applyCharacterBehavior = vi.fn();
+    const behavior = { handleTaskEvent: vi.fn() };
     const projection = new ConversationEventProjection({
       getChatTarget: () => chat,
       getPetTarget: () => pet,
-      applyCharacterBehavior
+      behavior
     });
     const phase = { type: 'phase', phase: 'awaiting_confirmation' } as const;
 
@@ -68,17 +68,17 @@ describe('ConversationEventProjection', () => {
     projection.publish(validPendingFileActionEvent);
 
     expect(pet.send).not.toHaveBeenCalled();
-    expect(applyCharacterBehavior).toHaveBeenCalledWith(validPendingFileActionEvent);
+    expect(behavior.handleTaskEvent).toHaveBeenCalledWith(validPendingFileActionEvent);
   });
 
   test('无效事件会在任何副作用前失败', () => {
     const chat = target();
     const pet = target();
-    const applyCharacterBehavior = vi.fn();
+    const behavior = { handleTaskEvent: vi.fn() };
     const projection = new ConversationEventProjection({
       getChatTarget: () => chat,
       getPetTarget: () => pet,
-      applyCharacterBehavior
+      behavior
     });
 
     expect(() => projection.publish({ type: 'phase', phase: 'thinking', actionId: 'leak' }))
@@ -87,7 +87,7 @@ describe('ConversationEventProjection', () => {
       type: 'pending_action',
       action: { category: 'file', operation: 'create_file' }
     })).toThrow();
-    expect(applyCharacterBehavior).not.toHaveBeenCalled();
+    expect(behavior.handleTaskEvent).not.toHaveBeenCalled();
     expect(chat.send).not.toHaveBeenCalled();
     expect(pet.send).not.toHaveBeenCalled();
   });
@@ -97,7 +97,7 @@ describe('ConversationEventProjection', () => {
     const projection = new ConversationEventProjection({
       getChatTarget: () => destroyedChat,
       getPetTarget: () => null,
-      applyCharacterBehavior: vi.fn()
+      behavior: { handleTaskEvent: vi.fn() }
     });
 
     projection.publish({ type: 'phase', phase: 'thinking' });
@@ -114,7 +114,7 @@ describe('ConversationEventProjection', () => {
     const projection = new ConversationEventProjection({
       getChatTarget: () => chat,
       getPetTarget: () => pet,
-      applyCharacterBehavior: vi.fn(),
+      behavior: { handleTaskEvent: vi.fn() },
       reportDeliveryFailure
     });
     const phase: TaskEvent = { type: 'phase', phase: 'thinking' };
@@ -141,7 +141,7 @@ describe('ConversationEventProjection', () => {
       const projection = new ConversationEventProjection({
         getChatTarget: () => chat,
         getPetTarget: () => pet,
-        applyCharacterBehavior: vi.fn(),
+        behavior: { handleTaskEvent: vi.fn() },
         reportDeliveryFailure
       });
       const phase: TaskEvent = { type: 'phase', phase: 'thinking' };

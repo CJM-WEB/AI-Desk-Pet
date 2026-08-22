@@ -2,13 +2,15 @@ import type { TaskEvent } from '@myself/shared-types';
 import { taskEventSchema } from '@myself/shared-types';
 import type { WebContents } from 'electron';
 import { ipcChannels } from '../../shared/ipc-channels';
+import type { ConversationBehaviorPort } from
+  '../characters/character-behavior-director';
 
 type TaskEventTarget = Pick<WebContents, 'isDestroyed' | 'send'>;
 
 type ConversationEventProjectionOptions = Readonly<{
   getChatTarget(): TaskEventTarget | null;
   getPetTarget(): TaskEventTarget | null;
-  applyCharacterBehavior(event: TaskEvent): void;
+  behavior: Pick<ConversationBehaviorPort, 'handleTaskEvent'>;
   reportDeliveryFailure?(target: 'chat' | 'pet'): void;
 }>;
 
@@ -24,7 +26,7 @@ export class ConversationEventProjection {
   publish(rawEvent: unknown): TaskEvent {
     const event = taskEventSchema.parse(rawEvent);
 
-    this.options.applyCharacterBehavior(event);
+    this.options.behavior.handleTaskEvent(event);
     this.send('chat', this.options.getChatTarget(), event);
     if (event.type === 'phase') {
       this.send('pet', this.options.getPetTarget(), {

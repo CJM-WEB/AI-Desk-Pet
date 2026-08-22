@@ -12,6 +12,9 @@ import {
   characterTaskRuntimeBlock,
   type CharacterBehaviorService
 } from './character-behavior-service';
+import type { CharacterMotionService } from './character-motion-service';
+import { parseExplicitCharacterBehavior } from
+  '../conversation/explicit-character-behavior-gate';
 
 export type CharacterMotionIntent =
   | Readonly<{ kind: 'wander'; scope: 'short' | 'work_area' }>
@@ -69,17 +72,25 @@ export type BehaviorPlanSource = 'explicit' | 'chat' | 'reflection' | 'local-idl
 type BehaviorServicePort = Pick<
   CharacterBehaviorService,
   | 'getPublicBehaviorCatalog'
+  | 'getRecentPublicActions'
   | 'resolveBehaviorTarget'
   | 'isMovementBehaviorTarget'
   | 'requestDirectedBehavior'
   | 'handleTaskEvent'
   | 'applyPlaybackFeedback'
+  | 'handleIdleDue'
   | 'handleActiveCharacterChanged'
   | 'close'
 >;
 
+type MotionServicePort = Pick<
+  CharacterMotionService,
+  'getSnapshot' | 'requestIntent' | 'stop'
+>;
+
 type CharacterBehaviorDirectorOptions = Readonly<{
   behavior: BehaviorServicePort;
+  motion: MotionServicePort;
   initialGeneration: string;
   publishNotice?: (notice: CharacterBehaviorNotice) => void;
 }>;
@@ -126,14 +137,63 @@ export class CharacterBehaviorDirector {
     this.generation = options.initialGeneration;
   }
 
+  /** Gate 在能力路由与 Provider 前执行，本地明确移动仍须先通过动作授权。 */
+  async prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt> {
+    const originalText = text.trim();
+    const parsed = parseExplicitCharacterBehavior(originalText);
+    const prepared: PreparedBehaviorPrompt = {
+      originalText,
+      capabilityText: parsed?.capabilityText ?? originalText,
+      explicitDirective: parsed?.explicitDirective ?? null
+    };
+    const directive = prepared.explicitDirective;
+    if (directive?.kind === 'stop_movement') {
+      this.applyExplicitMovementLock(true);
+    } else if (directive?.kind === 'resume_movement') {
+      this.applyExplicitMovementLock(false);
+    } else if (directive?.kind === 'move') {
+      this.requestMotionBehavior(directive.motion, 'explicit');
+    }
+    return prepared;
+  }
+
+  getChatContext(): ConversationBehaviorContext {
+    const motion = this.options.motion.getSnapshot();
+    let character: PublicBehaviorCatalog;
+    try {
+      character = this.options.behavior.getPublicBehaviorCatalog();
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'CHARACTER_ACTION_UNAVAILABLE') throw error;
+      // 角色切换与 V1 兼容态不得阻断普通聊天，也不向模型泄露旧私有清单。
+      character = {
+        characterName: '当前角色',
+        semantics: [],
+        stateNames: [],
+        actionNames: [],
+        tags: []
+      };
+    }
+    return {
+      character,
+      runtime: {
+        moving: motion.moving,
+        dragging: this.dragging,
+        carrying: motion.carrying,
+        movementStopped: this.movementStopped
+      },
+      proactivityMode: 'assistive',
+      recentActions: this.options.behavior.getRecentPublicActions()
+    };
+  }
+
   completeUserPrompt(input: Readonly<{
     generation: string;
     explicitDirective: ExplicitBehaviorDirective | null;
     providerPlan: CharacterBehaviorPlan | null;
   }>): void {
     if (this.closed || input.generation !== this.generation) return;
-    if (input.explicitDirective?.kind === 'stop_movement') this.movementStopped = true;
-    if (input.explicitDirective?.kind === 'resume_movement') this.movementStopped = false;
+    if (input.explicitDirective?.kind === 'stop_movement') this.applyExplicitMovementLock(true);
+    if (input.explicitDirective?.kind === 'resume_movement') this.applyExplicitMovementLock(false);
     this.pendingChatPlan = input.providerPlan?.kind === 'none' ? null : input.providerPlan;
     this.pendingSuccessToken = null;
   }
@@ -187,19 +247,35 @@ export class CharacterBehaviorDirector {
   ): CharacterBehaviorAuthorization {
     if (!this.canRequest(plan, source)) return NONE;
     if (plan.kind === 'stop_movement' || plan.kind === 'resume_movement') return NONE;
-    if (plan.kind !== 'play') return NONE;
+
+    const motion = plan.kind === 'move'
+      ? { kind: 'relative', direction: plan.direction, distance: plan.distance } as const
+      : plan.kind === 'move_region'
+        ? { kind: 'region', region: plan.region } as const
+        : null;
+    const target = plan.kind === 'play'
+      ? plan.target
+      : motion
+        ? { kind: 'semantic', semantic: 'move' } as const
+        : null;
+    if (!target) return NONE;
 
     try {
-      const target = this.options.behavior.resolveBehaviorTarget(plan.target);
-      if (this.movementStopped && this.options.behavior.isMovementBehaviorTarget(target)) {
+      const resolvedTarget = this.options.behavior.resolveBehaviorTarget(target);
+      if (this.movementStopped && this.options.behavior.isMovementBehaviorTarget(resolvedTarget)) {
         return NONE;
       }
       const authorization = this.options.behavior.requestDirectedBehavior(
-        target,
+        resolvedTarget,
         SOURCE_OPTIONS[source]
       );
       if (authorization.kind === 'play') {
         this.active = { source, playbackToken: authorization.playbackToken };
+        if (authorization.semantic === 'move') {
+          this.options.motion.requestIntent(
+            motion ?? { kind: 'wander', scope: 'short' }
+          );
+        }
       } else if (source === 'explicit' || source === 'chat') {
         this.publishUnavailableNotice();
       }
@@ -209,6 +285,12 @@ export class CharacterBehaviorDirector {
       if (source === 'explicit' || source === 'chat') this.publishUnavailableNotice();
       return { kind: 'none', diagnosticCode: 'CHARACTER_ACTION_UNAVAILABLE' };
     }
+  }
+
+  /** 任务 4 先把原 500ms 主动入口纳入同一停止锁；任务 6 再替换候选时钟。 */
+  handleIdleDue(): void {
+    if (this.closed || this.movementStopped) return;
+    this.options.behavior.handleIdleDue();
   }
 
   /** 拖拽事实只参与优先级阻塞，不在 Director 内复制运动或角色状态。 */
@@ -268,5 +350,26 @@ export class CharacterBehaviorDirector {
 
   private publishUnavailableNotice(): void {
     this.options.publishNotice?.(ACTION_UNAVAILABLE_NOTICE);
+  }
+
+  private requestMotionBehavior(
+    motion: Exclude<CharacterMotionIntent, { kind: 'return-visible' }>,
+    source: BehaviorPlanSource
+  ): CharacterBehaviorAuthorization {
+    const plan: CharacterBehaviorPlan = motion.kind === 'relative'
+      ? { kind: 'move', direction: motion.direction, distance: motion.distance }
+      : motion.kind === 'region'
+        ? { kind: 'move_region', region: motion.region }
+        : {
+            kind: 'play',
+            target: { kind: 'semantic', semantic: 'move' }
+          };
+    return this.requestBehaviorPlan(plan, source);
+  }
+
+  private applyExplicitMovementLock(stopped: boolean): void {
+    if (this.movementStopped === stopped) return;
+    this.movementStopped = stopped;
+    if (stopped) this.options.motion.stop();
   }
 }

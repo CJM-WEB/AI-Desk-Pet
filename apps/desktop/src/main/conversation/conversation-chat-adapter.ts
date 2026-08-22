@@ -6,14 +6,17 @@ import {
   type CharacterBehaviorPlan
 } from '@myself/character-runtime';
 import { ProviderError } from '../providers/openai-provider';
+import type { ConversationBehaviorContext } from
+  '../characters/character-behavior-director';
 
-const 聊天系统消息 = [
+const 聊天系统消息前缀 = [
   '你是一只 AI 桌宠，请自然、直接地回复用户。',
   '优先使用用户使用的语言，并结合可见上下文作答。',
   '不要声称已执行任何尚未执行的文件操作。',
   '直接给出正常文本回复，可按需要使用 Markdown。',
   '请只返回 json 对象，不要添加对象外文字。',
-  '格式示例：{"text":"我会陪着你。","behaviorPlan":{"kind":"none","emotion":"calm"}}'
+  '格式示例：{"text":"我会陪着你。","behaviorPlan":{"kind":"none","emotion":"calm"}}',
+  '以下是 Main 提供的当前公开行为上下文，只能从清单中建议动作：'
 ].join('');
 const 最大正文字符数 = 8_000;
 const 聊天响应契约 = {
@@ -27,6 +30,7 @@ const 聊天响应契约 = {
 export interface ConversationChatInput {
   history: readonly ModelMessage[];
   text: string;
+  behaviorContext: ConversationBehaviorContext;
   signal: AbortSignal;
 }
 
@@ -45,7 +49,7 @@ export class ConversationChatAdapter {
   async respond(input: ConversationChatInput): Promise<ConversationChatReply> {
     const response = await this.provider.respond({
       messages: [
-        { role: 'system', content: 聊天系统消息 },
+        { role: 'system', content: 构建聊天系统消息(input.behaviorContext) },
         ...input.history,
         { role: 'user', content: input.text }
       ],
@@ -90,6 +94,10 @@ export class ConversationChatAdapter {
     }
     return reply;
   }
+}
+
+function 构建聊天系统消息(context: ConversationBehaviorContext): string {
+  return `${聊天系统消息前缀}${JSON.stringify(context)}`;
 }
 
 /** 仅校验响应边界，保留合法正文的原始空白与 Markdown。 */

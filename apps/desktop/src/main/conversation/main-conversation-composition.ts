@@ -23,6 +23,8 @@ import {
   type CapabilityTaskAgentPort
 } from './capability-task-adapter';
 import type { CapabilityTaskKind } from './conversation-coordinator';
+import type { ConversationBehaviorPort } from
+  '../characters/character-behavior-director';
 
 export type MainConversationAgentSnapshot<TPrivacy> = Readonly<{
   taskKind: CapabilityTaskKind;
@@ -51,6 +53,7 @@ export interface MainConversationCompositionOptions<TPrivacy> {
   createAgentService(
     input: MainConversationAgentFactoryInput<TPrivacy>
   ): CapabilityTaskAgentPort;
+  behavior: ConversationBehaviorPort;
   emit(event: TaskEvent): void;
 }
 
@@ -177,6 +180,7 @@ export function createMainConversationComposition<TPrivacy>(
       disclosurePolicy
     }),
     capabilityTasks,
+    behavior: options.behavior,
     emit: options.emit
   });
 

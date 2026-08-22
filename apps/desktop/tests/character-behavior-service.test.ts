@@ -47,6 +47,7 @@ type BehaviorService = {
   beginTaskCarry(): { playbackToken: string; actionId: string; commitFrameId: string | null };
   endTaskCarry(): void;
   getPublicBehaviorCatalog(): PublicBehaviorCatalog;
+  getRecentPublicActions(): readonly string[];
   resolveBehaviorTarget(target: BehaviorTarget): ResolvedBehaviorTarget;
   isMovementBehaviorTarget(target: ResolvedBehaviorTarget): boolean;
   requestDirectedBehavior(target: ResolvedBehaviorTarget, options?: {
@@ -349,6 +350,15 @@ describe('Main 角色行为权威服务', () => {
       actionId: 'celebrate-action',
       playbackToken: 'behavior-token-2'
     })]);
+    expect(service.getRecentPublicActions()).toEqual([]);
+    service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-2',
+      actionId: 'celebrate-action',
+      status: 'started',
+      occurredAtMs: 1
+    });
+    expect(service.getRecentPublicActions()).toEqual(['celebrate 动作']);
+    expect(JSON.stringify(service.getRecentPublicActions())).not.toContain('celebrate-action');
   });
 
   test('定向动作不可用时不发布待机冒充结果', async () => {
@@ -399,7 +409,9 @@ describe('Main 角色行为权威服务', () => {
       urgency: 100,
       explanation: '旧非定向任务移动'
     });
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith('wander');
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'wander', scope: 'work_area'
+    });
   });
 
   test('禁止可信阶段播放时仍更新任务事实，后续 success 可正常接管', async () => {
@@ -966,7 +978,9 @@ describe('Main 角色行为权威服务', () => {
       explanation: '需要在桌面上漫步'
     });
 
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith('wander');
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'wander', scope: 'work_area'
+    });
   });
 
   test('播放反馈由当前引擎令牌单次鉴权', async () => {
@@ -1171,7 +1185,9 @@ describe('Main 角色行为权威服务', () => {
       actionId: 'move-action',
       playbackToken: 'behavior-token-2'
     }]);
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith('wander');
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'wander', scope: 'work_area'
+    });
   });
 
   test('V2 读取失败时错误脱敏且仅使用 V1 待机兼容路径', async () => {

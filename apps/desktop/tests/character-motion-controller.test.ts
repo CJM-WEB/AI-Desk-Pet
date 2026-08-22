@@ -268,6 +268,60 @@ describe('Renderer 角色运动控制器', () => {
 });
 
 describe('Main 角色运动服务', () => {
+  test('对象化相对移动按当前窗口轴尺寸换算并经工作区钳制', () => {
+    let bounds = { x: 400, y: 300, width: 200, height: 100 };
+    const service = new CharacterMotionService({
+      window: {
+        getBounds: () => bounds,
+        setPosition: (x, y) => { bounds = { ...bounds, x, y }; }
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_000, height: 800 }],
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'relative', direction: 'left', distance: 'near' });
+    expect(service.tick().target).toEqual({ x: 300, y: 300 });
+    service.requestIntent({ kind: 'relative', direction: 'up', distance: 'far' });
+    expect(service.tick().target).toEqual({ x: 400, y: 100 });
+    service.requestIntent({ kind: 'relative', direction: 'right', distance: 'far' });
+    expect(service.tick().target).toEqual({ x: 800, y: 300 });
+  });
+
+  test('对象化区域移动只接受区域名并使用当前显示器工作区', () => {
+    const service = new CharacterMotionService({
+      window: {
+        getBounds: () => ({ x: 1_100, y: 200, width: 200, height: 100 }),
+        setPosition: vi.fn()
+      },
+      getWorkAreas: () => [
+        { x: 0, y: 0, width: 1_000, height: 800 },
+        { x: 1_000, y: 100, width: 800, height: 600 }
+      ],
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'region', region: 'bottom_right' });
+
+    expect(service.tick().target).toEqual({ x: 1_600, y: 600 });
+  });
+
+  test('短距闲逛保持在窗口尺度范围内且停止会立即撤销旧目标', () => {
+    const service = new CharacterMotionService({
+      window: {
+        getBounds: () => ({ x: 400, y: 300, width: 200, height: 100 }),
+        setPosition: vi.fn()
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 1_000, height: 800 }],
+      random: () => 1,
+      now: () => 0
+    });
+
+    service.requestIntent({ kind: 'wander', scope: 'short' });
+    expect(service.tick().target).toEqual({ x: 600, y: 400 });
+    service.stop();
+    expect(service.tick().target).toEqual({ x: 400, y: 300 });
+  });
+
   test('桌宠右键菜单只保留受限 IPC 入口并复用同一弹出回调', () => {
     const source = readFileSync(
       new URL('../src/main/index.ts', import.meta.url),

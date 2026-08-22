@@ -11,6 +11,7 @@ import type {
 } from '../../shared/character-motion-ipc';
 import type { TaskEvent } from '@myself/shared-types';
 import { advanceMotion } from '../../shared/character-motion-math';
+import type { CharacterMotionIntent } from './character-behavior-director';
 
 type WindowBounds = Rectangle;
 
@@ -31,9 +32,12 @@ export type CharacterMotionServiceOptions = {
   createPlaybackToken?: () => string;
   playbackTokenTtlMs?: number;
 };
-export type CharacterMotionIntent = 'wander' | 'return-visible';
-
 const DEFAULT_SPEED = 160;
+const RELATIVE_DISTANCE_FACTOR = Object.freeze({
+  near: 0.5,
+  medium: 1,
+  far: 2
+} as const);
 
 function integerPosition(point: CharacterMotionPoint): CharacterMotionPoint {
   return { x: Math.round(point.x), y: Math.round(point.y) };
@@ -320,22 +324,67 @@ export class CharacterMotionService {
     return result;
   }
 
+  /** 对象化意图不接受绝对坐标，所有目标继续经过同一窗口矩形边界钳制。 */
   requestIntent(intent: CharacterMotionIntent): void {
     const bounds = this.options.window.getBounds();
     const areas = this.availableMovementRegions();
     const area = containingWorkArea({ x: bounds.x, y: bounds.y }, areas) ?? areas[0];
     if (!area) return;
-    if (intent === 'return-visible') {
+    if (intent.kind === 'return-visible') {
       this.moveTo({ x: area.x, y: area.y });
       return;
     }
+    if (intent.kind === 'relative') {
+      const factor = RELATIVE_DISTANCE_FACTOR[intent.distance];
+      const horizontal = intent.direction === 'left' || intent.direction === 'right';
+      const distance = (horizontal ? bounds.width : bounds.height) * factor;
+      const offset = intent.direction === 'left' || intent.direction === 'up'
+        ? -distance
+        : distance;
+      this.moveTo({
+        x: horizontal ? bounds.x + offset : bounds.x,
+        y: horizontal ? bounds.y : bounds.y + offset
+      });
+      return;
+    }
+    if (intent.kind === 'region') {
+      const maximumX = Math.max(area.x, area.x + area.width - bounds.width);
+      const maximumY = Math.max(area.y, area.y + area.height - bounds.height);
+      this.moveTo({
+        x: intent.region.includes('left')
+          ? area.x
+          : intent.region.includes('right')
+            ? maximumX
+            : bounds.x,
+        y: intent.region.includes('top')
+          ? area.y
+          : intent.region.includes('bottom')
+            ? maximumY
+            : bounds.y
+      });
+      return;
+    }
     const random = this.options.random ?? Math.random;
+    if (intent.scope === 'short') {
+      this.moveTo({
+        x: bounds.x + (random() * 2 - 1) * bounds.width,
+        y: bounds.y + (random() * 2 - 1) * bounds.height
+      });
+      return;
+    }
     const maximumX = Math.max(area.x, area.x + area.width - bounds.width);
     const maximumY = Math.max(area.y, area.y + area.height - bounds.height);
     this.moveTo({
       x: area.x + (maximumX - area.x) * random(),
       y: area.y + (maximumY - area.y) * random()
     });
+  }
+
+  /** 停止只撤销当前空间目标，不重置窗口、角色状态或播放调度。 */
+  stop(): void {
+    const bounds = this.options.window.getBounds();
+    this.target = { x: bounds.x, y: bounds.y };
+    this.speed = DEFAULT_SPEED;
   }
 
   private availableMovementRegions(): readonly Rectangle[] {

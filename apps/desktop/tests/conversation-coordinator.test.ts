@@ -13,6 +13,45 @@ import {
 import { ConversationDisclosureAdapter } from '../src/main/conversation/conversation-disclosure-adapter';
 import { ConversationHistory } from '../src/main/conversation/conversation-history';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
+import type { ConversationBehaviorPort } from
+  '../src/main/characters/character-behavior-director';
+
+const behaviorContext = {
+  character: {
+    characterName: '测试角色',
+    semantics: ['idle', 'move'] as const,
+    stateNames: [],
+    actionNames: ['散步'],
+    tags: []
+  },
+  runtime: {
+    moving: false,
+    dragging: false,
+    carrying: false,
+    movementStopped: false
+  },
+  proactivityMode: 'assistive' as const,
+  recentActions: []
+};
+
+function behaviorPortDouble(
+  overrides: Partial<ConversationBehaviorPort> = {}
+): ConversationBehaviorPort {
+  return {
+    prepareUserPrompt: vi.fn(async text => ({
+      originalText: text,
+      capabilityText: text,
+      explicitDirective: null
+    })),
+    getChatContext: vi.fn(() => behaviorContext),
+    completeUserPrompt: vi.fn(),
+    handleTaskEvent: vi.fn(),
+    applyPlaybackFeedback: vi.fn(),
+    reset: vi.fn(),
+    close: vi.fn(async () => undefined),
+    ...overrides
+  };
+}
 
 interface ProviderScript {
   requests: ModelRequest[];
@@ -146,6 +185,7 @@ function createHarness(scripts: Array<{
 }>, options: {
   factoryError?: Error;
   fileTasks?: CapturingCapabilityTasks;
+  behavior?: ConversationBehaviorPort;
   onEmit?: (event: TaskEvent, coordinator: ConversationCoordinator) => void;
 } = {}) {
   const history = new ConversationHistory();
@@ -167,6 +207,7 @@ function createHarness(scripts: Array<{
   });
   let factoryIndex = 0;
   let factoryCalls = 0;
+  const behavior = options.behavior ?? behaviorPortDouble();
   const chatTurnFactory: ChatTurnFactory = {
     async create() {
       factoryCalls += 1;
@@ -188,6 +229,7 @@ function createHarness(scripts: Array<{
     chatTurnFactory,
     disclosureAdapter,
     capabilityTasks: fileTasks,
+    behavior,
     emit: event => {
       events.push(event);
       options.onEmit?.(event, coordinator);
@@ -198,6 +240,7 @@ function createHarness(scripts: Array<{
     coordinator,
     disclosureAdapter,
     events,
+    behavior,
     fileTasks,
     history,
     factoryCallCount: () => factoryCalls
@@ -217,6 +260,77 @@ function errorCode(error: unknown): unknown {
 }
 
 describe('ConversationCoordinator', () => {
+  test('在能力分流与 Provider 创建前等待显式 Gate，并只把剩余能力文本交给文件链', async () => {
+    const release = deferredVoid();
+    const behavior = behaviorPortDouble({
+      prepareUserPrompt: vi.fn(async (text: string) => {
+        await release.promise;
+        return {
+          originalText: text,
+          capabilityText: '删除 old.txt',
+          explicitDirective: { kind: 'stop_movement' as const }
+        };
+      })
+    });
+    const harness = createHarness([], { behavior });
+    const pending = harness.coordinator.submit('停下并删除 old.txt');
+    await Promise.resolve();
+
+    expect(harness.fileTasks.preparedGenerations).toEqual([]);
+    expect(harness.factoryCallCount()).toBe(0);
+    release.resolve();
+    await pending;
+
+    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
+      text: '删除 old.txt'
+    })]);
+    expect(harness.events).toContainEqual({
+      type: 'message', role: 'user', text: '停下并删除 old.txt'
+    });
+  });
+
+  test('普通聊天在披露确认后重新读取必填行为上下文并提交同轮计划', async () => {
+    const first = scriptedProvider({ type: 'text', text: '第一轮回复' });
+    const second = scriptedProvider({
+      type: 'text',
+      text: '开始散步',
+      structured_output: {
+        text: '开始散步',
+        behaviorPlan: { kind: 'move', direction: 'right', distance: 'near' }
+      }
+    });
+    let mode: 'assistive' | 'autonomous' = 'assistive';
+    const behavior = behaviorPortDouble({
+      getChatContext: vi.fn(() => ({ ...behaviorContext, proactivityMode: mode }))
+    });
+    const harness = createHarness([
+      {
+        profileId: 'profile-openai', providerIdentity: 'openai',
+        providerName: 'OpenAI', script: first
+      },
+      {
+        profileId: 'profile-anthropic', providerIdentity: 'anthropic',
+        providerName: 'Anthropic', script: second
+      }
+    ], { behavior });
+    await harness.coordinator.submit('第一轮');
+    await harness.coordinator.submit('第二轮');
+
+    expect(second.requests).toEqual([]);
+    mode = 'autonomous';
+    await harness.coordinator.resolveHistoryDisclosure('request-2', 'share_once');
+
+    expect(second.requests[0]?.messages[0]?.content).toContain(
+      '"proactivityMode":"autonomous"'
+    );
+    expect(behavior.getChatContext).toHaveBeenCalledTimes(2);
+    expect(behavior.completeUserPrompt).toHaveBeenLastCalledWith({
+      generation: 'generation-current',
+      explicitDirective: null,
+      providerPlan: { kind: 'move', direction: 'right', distance: 'near' }
+    });
+  });
+
   test.each(['你好', '你好呀', '聊天呀', '我想和你聊天', '帮我整理一下'])(
     '默认聊天“%s”只创建聊天目标且不触碰文件端口',
     async text => {
