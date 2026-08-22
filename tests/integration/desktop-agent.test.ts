@@ -1081,12 +1081,12 @@ describe('桌面 Agent 真实服务集成', () => {
     expect(fixture.fetchClient).toHaveBeenCalledTimes(3);
   });
 
-  test('DeepSeek 结构化澄清只公开一个问题且不产生确认或文件副作用', async () => {
+  test('DeepSeek 结构化澄清只公开宿主固定文案且不产生确认或文件副作用', async () => {
     const fixture = await deepSeekHarness({
       responses: [compatibleToolCall(
         'deepseek-clarification',
         'builtin__capability__request_clarification',
-        { question: '请告诉我要创建的文件名。' }
+        { missingField: 'target_path' }
       )]
     });
     const before = await readdir(fixture.authorized.root, { recursive: true });
@@ -1094,7 +1094,7 @@ describe('桌面 Agent 真实服务集成', () => {
     await fixture.service.submitFileTask({ text: '帮我创建一个文件', visibleHistory: [] });
 
     expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
-      type: 'message', role: 'assistant', text: '请告诉我要创建的文件名。'
+      type: 'message', role: 'assistant', text: '请提供目标文件或目录的相对路径。'
     }]);
     expect(fixture.events.some(event => event.type === 'pending_action')).toBe(false);
     await expect(readdir(fixture.authorized.root, { recursive: true })).resolves.toEqual(before);
@@ -1107,7 +1107,7 @@ describe('桌面 Agent 真实服务集成', () => {
       responses: [compatibleToolCall(
         'deepseek-file-disclosure-disabled',
         'builtin__capability__request_clarification',
-        { question: '请先开启文件数据授权。' }
+        { missingField: 'file_data_authorization' }
       )]
     });
     const before = await readdir(fixture.authorized.root, { recursive: true });
@@ -1117,6 +1117,9 @@ describe('桌面 Agent 真实服务集成', () => {
     expect((fixture.requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
       tool => tool.function.name
     )).toEqual(['builtin__capability__request_clarification']);
+    expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
+      type: 'message', role: 'assistant', text: '请先开启文件数据授权。'
+    }]);
     expect(fixture.events.some(event => event.type === 'pending_action')).toBe(false);
     await expect(readdir(fixture.authorized.root, { recursive: true })).resolves.toEqual(before);
   });
@@ -1467,7 +1470,7 @@ describe('桌面 Agent 真实服务集成', () => {
       request: {
         requestId: 'repair-with-provider-alias',
         toolName: '由当轮请求替换',
-        arguments: { question: '请提供目标文件名。' }
+        arguments: { missingField: 'target_path' }
       }
     };
     const fixture = await harness([
@@ -1496,72 +1499,10 @@ describe('桌面 Agent 真实服务集成', () => {
     await fixture.service.submitFileTask({ text: '帮我创建一个文件', visibleHistory: [] });
 
     expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
-      type: 'message', role: 'assistant', text: '请提供目标文件名。'
+      type: 'message', role: 'assistant', text: '请提供目标文件或目录的相对路径。'
     }]);
     expect(fixture.providerServer.inspectionErrors).toEqual([]);
     expectProviderExchange(fixture.providerServer, 2);
-  });
-
-  test('模型删除确认被宿主修复为正式确认卡且不进入聊天正文', async () => {
-    const modelConfirmation = '请确认是否删除当前目录下的 empty 文件夹？';
-    const fixture = await harness([
-      {
-        response: toolCall(
-          'clarify-confirmation-1',
-          CAPABILITY_CLARIFICATION_TOOL_NAME,
-          { question: modelConfirmation }
-        )
-      },
-      {
-        response: toolCall(
-          'repair-delete-empty',
-          'builtin.files.delete_file',
-          { relativePath: 'empty' }
-        ),
-        inspect: request => {
-          expect(request.messages.at(-1)).toMatchObject({
-            role: 'system',
-            content: expect.stringContaining('CAPABILITY_PLAN_PROTOCOL_INVALID')
-          });
-        }
-      },
-      { response: { type: 'text', text: 'empty 已移入回收站' } }
-    ]);
-    const source = join(fixture.authorized.root, 'empty');
-    const recycled = join(fixture.authorized.root, '.recycled-empty-confirmation');
-    await mkdir(source);
-    const recycle = vi.fn((absolutePath: string) => rename(absolutePath, recycled));
-    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
-      moveToRecycleBin: recycle
-    });
-
-    await fixture.service.submitFileTask({
-      text: '帮我把当前目录下的empty文件夹删除了',
-      visibleHistory: []
-    });
-
-    expect(JSON.stringify(fixture.events)).not.toContain(modelConfirmation);
-    expect(pendingAction(fixture.events)).toMatchObject({
-      operation: 'delete_file',
-      targetRelativePath: 'empty'
-    });
-    const confirming = fixture.service.confirm(pendingAction(fixture.events).actionId);
-    await Promise.resolve();
-    expect(fixture.service.onPlaybackStarted(
-      'integration-carry-token',
-      'integration-carry-action'
-    )).toBe(true);
-    expect(fixture.service.onCommitFrame(
-      'integration-carry-token',
-      'integration-carry-action',
-      'integration-commit-frame'
-    )).toBe(true);
-    await confirming;
-
-    expect(recycle).toHaveBeenCalledOnce();
-    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(lstat(recycled)).resolves.toBeDefined();
-    expectProviderExchange(fixture.providerServer, 3);
   });
 
   test('连续口头伪成功在一次修复后稳定报 CAPABILITY_PLAN_PROTOCOL_INVALID', async () => {

@@ -4,8 +4,7 @@ import { characterEmotionLabelSchema } from '@myself/shared-types';
 import {
   CAPABILITY_CLARIFICATION_TOOL_NAME,
   capabilityClarificationToolDefinition,
-  hasCapabilityClarificationMissingParameterSignal,
-  isCapabilityClarificationExecutionConfirmation,
+  getCapabilityClarificationMessage,
   parseCapabilityClarificationRequest
 } from './capability-clarification-tool';
 import type {
@@ -182,13 +181,10 @@ export class AgentLoop {
         if (!planning) throw new Error('AGENT_INVALID_TOOL_REQUEST');
         try {
           const clarification = parseCapabilityClarificationRequest(response.request.arguments);
-          if (
-            isCapabilityClarificationExecutionConfirmation(clarification.question)
-            || !hasCapabilityClarificationMissingParameterSignal(clarification.question)
-          ) {
-            throw new Error('CAPABILITY_CLARIFICATION_EXECUTION_CONFIRMATION');
-          }
-          yield { type: 'message', text: clarification.question };
+          yield {
+            type: 'message',
+            text: getCapabilityClarificationMessage(clarification.missingField)
+          };
           yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
           return;
         } catch {
@@ -196,7 +192,7 @@ export class AgentLoop {
           correctionUsed = true;
           messages.push({
             role: 'system',
-            content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：澄清工具只能询问缺失的执行必需参数，参数必须是只含非空 question 的严格对象。确认由宿主在工具调用后处理。请仅修正一次。'
+            content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：澄清工具参数必须是只含 missingField 的严格对象，并从当前 Schema 的固定枚举中选择一个缺失字段。确认和公开文案均由宿主处理。请仅修正一次。'
           });
           continue;
         }

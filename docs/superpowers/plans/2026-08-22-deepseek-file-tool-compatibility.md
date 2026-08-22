@@ -8,6 +8,8 @@
 
 **Tech Stack:** TypeScript、Zod、Vitest、Electron、DeepSeek OpenAI-compatible Chat Completion、现有 `@myself/agent-core` 与 `packages/file-tools`。
 
+**2026-08-22 第二轮复审：** 第一轮 `{ question }` + 关键词识别由本计划中的 `missingField` 枚举协议替代；公开文案一律由宿主固定映射生成，旧自由文本参数及其正则不再保留。
+
 ## Global Constraints
 
 - 设计基线：`docs/superpowers/specs/2026-08-22-deepseek-file-tool-compatibility-design.md`。
@@ -129,7 +131,15 @@ export const capabilityClarificationToolDefinition: ToolDefinition;
 
 export function parseCapabilityClarificationRequest(
   raw: unknown
-): Readonly<{ question: string }>;
+): Readonly<{
+  missingField:
+    | 'target_path'
+    | 'content'
+    | 'patch'
+    | 'command'
+    | 'working_directory'
+    | 'file_data_authorization';
+}>;
 ```
 
 `ModelRequest` 新增必填字段：
@@ -164,12 +174,12 @@ expect(provider.requests[0]?.tools.map(tool => tool.function.name))
   request: {
     requestId: 'clarify-1',
     toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-    arguments: { question: '请提供目标文件名' }
+    arguments: { missingField: 'target_path' }
   }
 }
 ```
 
-期望只产生一条公开问题和 `success`，不调用 `ToolRuntime.prepare`。空问题、1001 字符问题、额外字段，以及“请确认是否删除 empty 文件夹”均稳定失败。把原来成功接受文本 JSON `clarification_required` 的测试改为期望协议违约；保留连续两次普通文本失败断言。
+期望只产生宿主固定文案“请提供目标文件或目录的相对路径。”和 `success`，不调用 `ToolRuntime.prepare`。六个合法枚举必须逐项覆盖；任意旧 `{ question }`（包括缺参问题、执行确认和缺参陈述）、未知枚举与额外字段均稳定失败。把原来成功接受文本 JSON `clarification_required` 的测试改为期望协议违约；保留连续两次普通文本失败断言。
 
 - [ ] **Step 3: 写读后/写后策略 RED**
 
@@ -189,7 +199,7 @@ Expected: FAIL，缺少新类型、模块和阶段策略。
 
 - [ ] **Step 5: 写最小 GREEN 并删除旧路径**
 
-实现 `capability-clarification-tool.ts` 的严格对象解析和执行确认识别。`AgentLoop` 每次调用 Provider 前按以下规则构造请求：
+实现 `capability-clarification-tool.ts` 的严格枚举对象解析和宿主固定文案映射，删除自由文本确认/缺参正则。`AgentLoop` 每次调用 Provider 前按以下规则构造请求：
 
 ```ts
 const planning = context.protocol === 'capability_planner' && !hasTrustedToolResult;
@@ -335,7 +345,7 @@ git commit -m "fix(desktop): 兼容 DeepSeek 文件工具调用"
 
 - [ ] **Step 2: 写创建文件与澄清纵向 RED**
 
-创建场景返回 `create_file` 工具调用并显示确认卡；确认后文件存在且同名目标拒绝覆盖。缺少目标的场景调用结构化澄清工具，只公开一条问题，不产生 `pending_action` 或文件副作用。
+创建场景返回 `create_file` 工具调用并显示确认卡；确认后文件存在且同名目标拒绝覆盖。缺少目标的场景调用结构化澄清工具并只返回 `{ missingField:'target_path' }`，由宿主公开固定文案，不产生 `pending_action` 或文件副作用。
 
 - [ ] **Step 3: 写普通聊天和授权边界 RED**
 

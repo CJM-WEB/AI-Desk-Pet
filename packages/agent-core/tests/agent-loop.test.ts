@@ -3,7 +3,6 @@ import { toolRequestSchema } from '@myself/shared-types';
 import { AgentLoop } from '../src/agent-loop';
 import {
   CAPABILITY_CLARIFICATION_TOOL_NAME,
-  isCapabilityClarificationExecutionConfirmation,
   parseCapabilityClarificationRequest
 } from '../src/capability-clarification-tool';
 import type {
@@ -124,21 +123,52 @@ function context(provider: ModelProvider, signal = new AbortController().signal)
 }
 
 describe('AgentLoop', () => {
-  test('中文执行确认问句允许尾随空白', () => {
-    expect(isCapabilityClarificationExecutionConfirmation(
-      '删除 empty 文件夹吗？  '
-    )).toBe(true);
-  });
-
   test.each([
     {},
-    { question: '' },
-    { question: 'a'.repeat(1_001) },
-    { question: '请提供目标文件名', extra: true }
+    { missingField: 'unknown' },
+    { missingField: 'target_path', extra: true },
+    { question: '请提供目标文件名' },
+    { question: '请确认是否删除 empty 文件夹？' },
+    { question: '目标文件名尚未提供。' }
   ])('澄清工具解析器拒绝不严格参数 %#', raw => {
     expect(() => parseCapabilityClarificationRequest(raw)).toThrow(
       'CAPABILITY_CLARIFICATION_INVALID'
     );
+  });
+
+  test('能力规划向 Provider 下发仅含 missingField 枚举的严格澄清 Schema', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'clarification-schema',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { missingField: 'target_path' }
+      }
+    }]);
+
+    await collectEvents({
+      ...context(provider),
+      protocol: 'capability_planner'
+    });
+
+    expect(provider.requests[0]?.tools.at(-1)?.function.parameters).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['missingField'],
+      properties: {
+        missingField: {
+          type: 'string',
+          enum: [
+            'target_path',
+            'content',
+            'patch',
+            'command',
+            'working_directory',
+            'file_data_authorization'
+          ]
+        }
+      }
+    });
   });
 
   test('合法行为意图在助手消息之前发出', async () => {
@@ -455,17 +485,19 @@ describe('AgentLoop', () => {
   });
 
   test.each([
-    '请提供目标文件名',
-    '请问目标目录路径是什么？',
-    'Which file should I create?',
-    'Where should I create the file?'
-  ])('文件规划只公开包含缺失执行参数线索的结构化澄清：%s', async question => {
+    ['target_path', '请提供目标文件或目录的相对路径。'],
+    ['content', '请提供要写入的文件内容。'],
+    ['patch', '请提供要应用的补丁内容。'],
+    ['command', '请提供要执行的 PowerShell 命令。'],
+    ['working_directory', '请提供要使用的工作目录。'],
+    ['file_data_authorization', '请先开启文件数据授权。']
+  ] as const)('文件规划按缺失字段 %s 公开宿主固定文案', async (missingField, message) => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',
       request: {
         requestId: 'clarify-1',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question }
+        arguments: { missingField }
       }
     }]);
     const runtime = createToolRuntime();
@@ -478,37 +510,32 @@ describe('AgentLoop', () => {
 
     await expect(collectEvents(runContext)).resolves.toEqual([
       { type: 'phase', phase: 'thinking' },
-      { type: 'message', text: question },
+      { type: 'message', text: message },
       { type: 'phase', phase: 'success' }
     ]);
     expect(prepare).not.toHaveBeenCalled();
   });
 
   test.each([
-    { question: '', label: '空问题' },
-    { question: 'a'.repeat(1_001), label: '超长问题' },
-    { question: '请提供目标文件名', extra: true, label: '额外字段' },
-    { question: '请确认是否删除指定的目标文件？', label: '显式执行确认' },
-    { question: '可以删除 empty 文件夹吗？', label: '可以式执行确认' },
-    { question: '删除 empty 文件夹吗？  ', label: '问句尾空白执行确认' },
-    { question: '是否移除 empty 文件夹？', label: '是否式执行确认' },
-    { question: 'Can I delete the empty folder?', label: '英文 can 执行确认' },
-    { question: 'Should I remove the empty folder?', label: '英文 should 执行确认' },
-    { question: '你喜欢什么颜色？', label: '与缺参无关的问题' }
-  ])('文件规划拒绝无效的结构化澄清：$label', async ({ question, label: _label, ...extra }) => {
+    { question: '请提供目标文件名', label: '旧自然语言缺参' },
+    { question: '请确认是否删除指定的目标文件？', label: '旧执行确认' },
+    { question: '目标文件名尚未提供。', label: '旧缺参陈述' },
+    { missingField: 'unknown', label: '未知字段枚举' },
+    { missingField: 'target_path', extra: true, label: '额外字段' }
+  ])('文件规划拒绝旧对象或无效枚举：$label', async ({ label: _label, ...arguments_ }) => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',
       request: {
         requestId: 'clarify-invalid-1',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question, ...extra }
+        arguments: arguments_
       }
     }, {
       type: 'tool_request',
       request: {
         requestId: 'clarify-invalid-2',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question, ...extra }
+        arguments: arguments_
       }
     }]);
     const runtime = createToolRuntime();
@@ -568,7 +595,7 @@ describe('AgentLoop', () => {
       request: {
         requestId: 'clarify-aborted',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question: '请提供目标文件名' }
+        arguments: { missingField: 'target_path' }
       }
     });
 
@@ -628,7 +655,7 @@ describe('AgentLoop', () => {
         request: {
           requestId: 'clarify-after-read',
           toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-          arguments: { question: '请提供目标文件名' }
+          arguments: { missingField: 'target_path' }
         }
       }
     ]);

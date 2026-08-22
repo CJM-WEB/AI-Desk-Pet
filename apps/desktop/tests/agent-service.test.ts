@@ -543,13 +543,13 @@ describe('AgentService', () => {
     expect(session.messages).toEqual([]);
   });
 
-  test('文件任务在首次工具前公开结构化澄清工具所表达的问题', async () => {
+  test('文件任务在首次工具前按缺失字段公开宿主固定文案', async () => {
     const { events, service } = createHarness(new ScriptedProvider([{
       type: 'tool_request',
       request: {
         requestId: 'clarify-target-1',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question: '请提供目标文件名' }
+        arguments: { missingField: 'target_path' }
       }
     }]));
 
@@ -557,22 +557,13 @@ describe('AgentService', () => {
 
     expect(events).toEqual([
       { type: 'phase', phase: 'thinking' },
-      { type: 'message', role: 'assistant', text: '请提供目标文件名' },
+      { type: 'message', role: 'assistant', text: '请提供目标文件或目录的相对路径。' },
       { type: 'phase', phase: 'success' }
     ]);
   });
 
   test('等待确认时新文字任务会替换旧卡且不能冒充 actionId 确认', async () => {
-    const modelConfirmation = '请确认是否删除当前目录下的 empty 文件夹？';
     const provider = new ScriptedProvider([
-      {
-        type: 'tool_request',
-        request: {
-          requestId: 'clarify-confirmation-1',
-          toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-          arguments: { question: modelConfirmation }
-        }
-      },
       {
         type: 'tool_request',
         request: {
@@ -586,7 +577,7 @@ describe('AgentService', () => {
         request: {
           requestId: 'clarify-target-2',
           toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-          arguments: { question: '请提供目标文件名' }
+          arguments: { missingField: 'target_path' }
         }
       }
     ]);
@@ -604,7 +595,6 @@ describe('AgentService', () => {
       visibleHistory: []
     });
 
-    expect(JSON.stringify(harness.events)).not.toContain(modelConfirmation);
     const pendingEvent = harness.events.at(-1);
     expect(pendingEvent).toEqual({
       type: 'pending_action',
@@ -621,7 +611,7 @@ describe('AgentService', () => {
     });
     await expect(harness.service.confirm(pendingEvent.action.actionId))
       .rejects.toThrow('ACTION_EXPIRED');
-    expect(provider.requests).toHaveLength(3);
+    expect(provider.requests).toHaveLength(2);
     expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
   });
 
@@ -639,7 +629,7 @@ describe('AgentService', () => {
       request: {
         requestId: 'clarify-reset-1',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question: '请提供目标文件名' }
+        arguments: { missingField: 'target_path' }
       }
     });
     await Promise.all([submitting, resetting]);
@@ -662,7 +652,7 @@ describe('AgentService', () => {
       request: {
         requestId: 'clarify-cancel-1',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question: '请提供目标文件名' }
+        arguments: { missingField: 'target_path' }
       }
     });
     await submitting;
@@ -750,7 +740,7 @@ describe('AgentService', () => {
       request: {
         requestId: 'clarify-history-1',
         toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
-        arguments: { question: '请补充目标文件名' }
+        arguments: { missingField: 'target_path' }
       }
     }]);
     const harness = createHarness(

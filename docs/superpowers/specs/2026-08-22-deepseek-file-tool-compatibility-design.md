@@ -103,13 +103,19 @@ builtin.files.delete_file ↔ builtin__files__delete_file
 
 ```ts
 type CapabilityClarificationRequest = Readonly<{
-  question: string;
+  missingField:
+    | 'target_path'
+    | 'content'
+    | 'patch'
+    | 'command'
+    | 'working_directory'
+    | 'file_data_authorization';
 }>;
 ```
 
-其内部名固定为 `builtin.capability.request_clarification`，Provider 别名固定为合法名称 `builtin__capability__request_clarification`。Codec 固定把每个 `.` 编码为 `__`。`AgentLoop` 在 `ToolRuntime` 之前识别并严格校验该请求：问题必须非空、不超过 1000 字符，包含缺失执行参数的语义线索，并且不能是广义 yes/no 执行确认。合法请求只公开一条问题并结束本轮，不生成 `pending_action`，也不接触文件系统。
+其内部名固定为 `builtin.capability.request_clarification`，Provider 别名固定为合法名称 `builtin__capability__request_clarification`。Codec 固定把每个 `.` 编码为 `__`。Schema 使用 `additionalProperties:false`，只要求 `missingField`，且值必须来自上述固定枚举。`AgentLoop` 在 `ToolRuntime` 之前识别该请求，并仅按枚举从宿主固定中文映射生成公开文案；Provider 不能提供或影响公开问题。合法请求一次只公开一个缺失字段的提示并结束本轮，不生成 `pending_action`，也不接触文件系统。
 
-新路径通过后删除旧的文本 JSON `clarification_required` 解析器及只服务该协议的测试，避免同时保留“文本澄清”和“工具澄清”两条正式路径。
+2026-08-22 第二轮复审认定 `{ question: string }` 与关键词判定存在稳定漏拒和误拒，因此本枚举协议替代第一轮自由文本参数。新路径通过后删除旧文本 JSON `clarification_required` 解析器、`{ question }` 参数、缺参/确认关键词正则及只服务旧协议的测试，避免保留双轨。
 
 ### 5.3 工具选择策略
 
@@ -162,7 +168,7 @@ Provider 只序列化自身支持的策略。DeepSeek/OpenAI-compatible 映射�
 - 无工具可用却要求 `required`：在 Provider 调用前返回稳定内部错误，不发送畸形请求。
 - 工具别名冲突：组合阶段失败，不启动能力任务。
 - 未知响应别名：返回 `PROVIDER_UNKNOWN_TOOL_CALL`，不进入 ToolRegistry。
-- 澄清工具问题为空、超长或伪装宿主确认：返回 `CAPABILITY_CLARIFICATION_INVALID`，不公开模型正文。
+- 澄清工具使用旧 `{ question }`、未知枚举或额外字段：返回 `CAPABILITY_CLARIFICATION_INVALID`，不公开模型正文。
 - DeepSeek 返回文字而非必需工具调用：保留一次协议修复；连续违约返回 `CAPABILITY_PLAN_PROTOCOL_INVALID`。
 - 工具参数非法：保留一次 `INVALID_TOOL_REQUEST` 修复；第二次失败。
 - 确认、授权、会话 generation 或目标身份变化：沿用现有 `ACTION_EXPIRED`/冲突错误。
@@ -188,7 +194,7 @@ Provider 只序列化自身支持的策略。DeepSeek/OpenAI-compatible 映射�
 - RED：首次真实结果前请求策略为 `required`。
 - RED：只读结果后允许 `auto` 继续规划。
 - RED：写结果后工具表为空且策略为 `none`，不能重复删除或创建。
-- RED：真正缺失参数必须通过澄清工具公开问题；空问题、超长问题和执行确认问题拒绝。
+- RED：六个合法 `missingField` 枚举分别产生宿主固定文案；任意旧 `{ question }`、未知枚举和额外字段拒绝。
 - RED：模型自行索要确认仍被拦截；确认只能来自宿主卡片。
 - RED：旧文本 JSON `clarification_required` 不再作为正式成功路径。
 
@@ -229,6 +235,6 @@ git diff --check
 2. 完整删除请求不再公开模型文字确认，而是显示宿主生成的删除确认卡。
 3. 用户确认后空目录由现有回收站端口处理，可恢复；取消时不执行。
 4. 完整创建请求显示创建确认卡，同名目标不覆盖。
-5. 参数缺失时只通过结构化澄清工具提出一条必要问题，不伪造确认。
+5. 参数缺失时只通过结构化澄清工具提交一个 `missingField` 枚举，公开文案由宿主固定生成，不能伪造确认。
 6. 普通聊天、其他 Provider 和文件安全边界没有回归。
 7. MCP 运行时、Agent 和 Renderer 入口继续禁用。

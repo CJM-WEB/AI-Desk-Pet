@@ -62,3 +62,33 @@
 - 待用户人工确认：真实 DeepSeek API 网络调用、真实 DeepSeek 账号/模型响应、真实 Windows 回收站可恢复性，以及 `pnpm.cmd --filter @myself/desktop dev` 下的窗口人工操作。本轮自动测试不得替代这些观察。
 - 未通过“正式 preload 不出现 MCP API”这一项：正式 preload 仍存在既有 MCP 方法。本兼容子项目没有新增或启用 MCP，且运行时能力与正式 UI 入口保持关闭；删除既有 preload/MyselfApi/IPC/Renderer 共享契约须由紧随其后的独立 SDD 安全子项目处理。
 - 计划文件列表偏差：为恢复既有安全和 E2E 门禁，额外最小修改 `tests/security/permission-boundary.test.ts` 与 `tests/e2e/desktop.spec.ts` 的 Provider fixture/协议边界断言；未修改生产代码或权限策略。
+
+## 2026-08-22 结构化澄清枚举协议第二轮验收
+
+### 替代范围
+
+- 第一轮 `{ question: string }` 与确认/缺参关键词判定已由 `missingField` 六值枚举替代；Provider 不再决定公开文案。
+- `AgentLoop` 在进入 `ToolRuntime` 前解析严格对象，并根据宿主固定中文映射公开一条提示；旧 `{ question }`、未知枚举和额外字段均拒绝。
+- DeepSeek 与真实 OpenAI-compatible 修复轮夹具只返回 `missingField`；只服务旧模型确认自由文本协议的集成用例已删除。
+
+### RED 与 GREEN 证据
+
+- RED：`pnpm.cmd exec vitest run --config packages/agent-core/vitest.config.ts packages/agent-core/tests/agent-loop.test.ts` 退出 1，46 条中 35 通过、11 失败。失败明确覆盖 5 条旧 `{ question }` 拒绝断言（解析器 3 条、AgentLoop 2 条）和 6 个合法枚举宿主文案映射。
+- GREEN：同一定向命令最终退出 0，47/47 通过；新增严格 Schema 边界断言确认 `additionalProperties:false`、唯一必填字段 `missingField` 与六值 enum。
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/agent-service.test.ts tests/provider-contract.test.ts`：退出 0，139/139 通过。
+- `pnpm.cmd exec vitest run --config tests/vitest.config.ts tests/integration/desktop-agent.test.ts`：退出 0，38/38 通过。
+
+### 阶段门禁
+
+- `pnpm.cmd --filter @myself/agent-core test`：退出 0，60/60 通过。
+- `pnpm.cmd --filter @myself/agent-core typecheck`：退出 0。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出 0。
+- `pnpm.cmd --filter @myself/desktop test`：退出 0，1823 条通过、14 条跳过。
+- `pnpm.cmd test:security`：退出 0，20/20 通过。
+- `pnpm.cmd test:integration`：退出 0，50/50 通过。
+- `git diff --check`：退出 0。
+
+### 未覆盖项
+
+- 本轮没有再次调用真实 DeepSeek API，也没有代替用户执行 Windows 窗口与真实回收站人工观察；这些项目继续标记为“待用户人工确认”。
+- 本轮不处理 MCP、角色行为、缩放、拖拽或工作台一致性；既有 MCP preload 契约问题仍按上节记录进入独立安全子项目。
