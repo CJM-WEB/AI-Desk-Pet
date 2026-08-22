@@ -1,9 +1,3 @@
-import {
-  selectCharacterAction,
-  type ActionSelectionInput,
-  type ActionSelectionResult,
-  type CharacterManifestV1
-} from '@myself/character-runtime';
 import type { Rectangle } from 'electron';
 import type {
   CharacterMotionPoint,
@@ -25,12 +19,7 @@ export type CharacterMotionServiceOptions = {
   getWorkAreas(): readonly Rectangle[];
   now?: () => number;
   maxDeltaMs?: number;
-  idleIntervalMs?: number;
-  recentActionLimit?: number;
-  selectAction?: (input: ActionSelectionInput) => ActionSelectionResult;
   random?: () => number;
-  createPlaybackToken?: () => string;
-  playbackTokenTtlMs?: number;
 };
 const DEFAULT_SPEED = 160;
 const RELATIVE_DISTANCE_FACTOR = Object.freeze({
@@ -59,39 +48,23 @@ function containingWorkArea(
 export class CharacterMotionService {
   private readonly now: () => number;
   private readonly maxDeltaMs: number;
-  private readonly idleIntervalMs: number;
-  private readonly recentActionLimit: number;
-  private readonly selectAction: (input: ActionSelectionInput) => ActionSelectionResult;
   private readonly listeners = new Set<(snapshot: CharacterMotionSnapshot) => void>();
-  private readonly recentActionIds: string[] = [];
   private target: CharacterMotionPoint;
   private speed = DEFAULT_SPEED;
   private lastTickMs: number;
-  private nextIdleAt: number;
-  private idleAllowedAt = 0;
   private revision = 0;
   private direction: 'left' | 'right' = 'right';
   private carrying = false;
   private latestSnapshot: CharacterMotionSnapshot;
   private readonly expectedProgrammaticPositions: CharacterMotionPoint[] = [];
-  private readonly pendingPlaybackTokens = new Map<string, {
-    actionId: string;
-    characterId: string;
-    revision: number;
-    expiresAt: number;
-  }>();
   private userMoving = false;
 
   constructor(private readonly options: CharacterMotionServiceOptions) {
     this.now = options.now ?? performance.now.bind(performance);
     this.maxDeltaMs = options.maxDeltaMs ?? 100;
-    this.idleIntervalMs = options.idleIntervalMs ?? 10_000;
-    this.recentActionLimit = options.recentActionLimit ?? 4;
-    this.selectAction = options.selectAction ?? selectCharacterAction;
     const bounds = options.window.getBounds();
     this.target = { x: bounds.x, y: bounds.y };
     this.lastTickMs = this.now();
-    this.nextIdleAt = this.lastTickMs + this.idleIntervalMs;
     this.latestSnapshot = {
       revision: 0,
       timestampMs: this.lastTickMs,
@@ -214,46 +187,6 @@ export class CharacterMotionService {
     this.userMoving = false;
   }
 
-  issueIdlePlayback(input: {
-    actionId: string;
-    characterId: string;
-    revision: number;
-  }): string {
-    const now = Math.max(this.lastTickMs, this.now());
-    this.purgePlaybackTokens(now);
-    const token = (this.options.createPlaybackToken ?? randomUUID)();
-    this.pendingPlaybackTokens.set(token, {
-      ...input,
-      expiresAt: now + (this.options.playbackTokenTtlMs ?? 30_000)
-    });
-    return token;
-  }
-
-  confirmIdlePlayback(input: {
-    playbackToken: string;
-    actionId: string;
-    characterId: string;
-  }): void {
-    const now = Math.max(this.lastTickMs, this.now());
-    this.purgePlaybackTokens(now);
-    const pending = this.pendingPlaybackTokens.get(input.playbackToken);
-    if (pending) this.pendingPlaybackTokens.delete(input.playbackToken);
-    if (
-      !pending
-      || pending.actionId !== input.actionId
-      || pending.characterId !== input.characterId
-    ) {
-      throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
-    }
-    this.recordPlayedAction(input.actionId);
-  }
-
-  private purgePlaybackTokens(now: number): void {
-    for (const [token, pending] of this.pendingPlaybackTokens) {
-      if (pending.expiresAt < now) this.pendingPlaybackTokens.delete(token);
-    }
-  }
-
   subscribe(listener: (snapshot: CharacterMotionSnapshot) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -274,54 +207,11 @@ export class CharacterMotionService {
     for (const listener of [...this.listeners]) listener(this.latestSnapshot);
   }
 
-  recordPlayedAction(actionId: string): void {
-    if (!actionId) return;
-    if (this.recentActionIds.at(-1) === actionId) return;
-    this.recentActionIds.push(actionId);
-    if (this.recentActionIds.length > this.recentActionLimit) {
-      this.recentActionIds.splice(0, this.recentActionIds.length - this.recentActionLimit);
-    }
-  }
-
   /** 只消费可信任务事件类型，不读取 message/error 文案推导结果。 */
   applyTaskEvent(event: TaskEvent): void {
-    const now = Math.max(this.lastTickMs, this.now());
     if (event.type === 'character_carrying') {
       this.setCarrying(event.carrying);
-      return;
     }
-    if (event.type === 'phase') {
-      if (event.phase === 'idle' || event.phase === 'cancelled') {
-        this.idleAllowedAt = now;
-      } else if (event.phase === 'success' || event.phase === 'error') {
-        this.idleAllowedAt = now + 1_500;
-      } else {
-        this.idleAllowedAt = Number.POSITIVE_INFINITY;
-      }
-      this.nextIdleAt = now + this.idleIntervalMs;
-    }
-    if (event.type === 'pending_action') {
-      this.idleAllowedAt = Number.POSITIVE_INFINITY;
-      this.nextIdleAt = now + this.idleIntervalMs;
-    }
-  }
-
-  pollIdle(
-    manifest: CharacterManifestV1,
-    direction: 'left' | 'right',
-    random: () => number
-  ): ActionSelectionResult | null {
-    const now = this.now();
-    if (now < this.nextIdleAt || now < this.idleAllowedAt) return null;
-    this.nextIdleAt = now + this.idleIntervalMs;
-    const result = this.selectAction({
-      manifest,
-      stateId: 'idle',
-      direction,
-      recentActionIds: [...this.recentActionIds],
-      random
-    });
-    return result;
   }
 
   /** 对象化意图不接受绝对坐标，所有目标继续经过同一窗口矩形边界钳制。 */
@@ -461,4 +351,3 @@ export function startCharacterMotionTimers(options: {
   const idleTimer = setInterval(() => guard(options.poll), options.idleIntervalMs);
   return { destroy: stop };
 }
-import { randomUUID } from 'node:crypto';

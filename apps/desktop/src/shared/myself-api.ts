@@ -130,7 +130,6 @@ export interface MyselfApi extends PetWindowInteractionApi {
   subscribeCharacterEvents(listener: (event: CharacterEvent) => void): () => void;
   getCharacterMotionSnapshot(): Promise<CharacterMotionSnapshot>;
   subscribeCharacterMotion(listener: (event: CharacterMotionEvent) => void): () => void;
-  reportCharacterActionPlayed(playbackToken: string, actionId: string): Promise<void>;
   reportCharacterActionFeedback(input: CharacterActionFeedbackInput): Promise<void>;
   reportCharacterActionMilestone(input: CharacterActionMilestoneInput): Promise<void>;
   getCharacterBehaviorProbe?(): Promise<CharacterBehaviorProbe>;

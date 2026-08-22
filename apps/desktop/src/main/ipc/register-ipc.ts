@@ -40,7 +40,6 @@ import {
   characterActionFeedbackInputSchema,
   characterActionMilestoneInputSchema,
   characterMotionEmptyInputSchema,
-  characterActionPlayedInputSchema,
   characterMotionSnapshotResultSchema,
   type CharacterActionFeedbackInput,
   type CharacterActionMilestoneInput,
@@ -596,23 +595,16 @@ export function registerCharacterMotionIpc(
   );
   replaceHandler(
     ipcMain,
-    ipcChannels.characterActionPlayed,
+    ipcChannels.characterActionFeedback,
     async (event, raw) => {
       if (event.sender !== petWebContents) {
         throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
       }
-      const report = parseCharacterInput(
-        z.union([
-          characterActionFeedbackInputSchema,
-          characterActionPlayedInputSchema
-        ]),
-        raw
-      );
+      const report = parseCharacterInput(characterActionFeedbackInputSchema, raw);
       await service.applyPlaybackFeedback({
-        ...report,
-        status: 'status' in report ? report.status : 'started'
+        ...report
       });
-      const status = 'status' in report ? report.status : 'started';
+      const status = report.status;
       if (status === 'started') {
         transactionObserver?.onPlaybackStarted(report.playbackToken, report.actionId);
       } else {

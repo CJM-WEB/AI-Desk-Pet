@@ -48,6 +48,10 @@ type BehaviorService = {
     urgency?: number;
     systemForced?: boolean;
   }): CharacterBehaviorAuthorization;
+  requestProactiveBehavior(target: BehaviorTarget, options?: {
+    urgency?: number;
+    allowMovement?: boolean;
+  }): CharacterBehaviorAuthorization;
   handleTaskEvent(
     event: TaskEvent,
     options?: Readonly<{ allowPlayback?: boolean }>
@@ -370,6 +374,43 @@ describe('Main 角色行为权威服务', () => {
       diagnosticCode: 'CHARACTER_ACTION_UNAVAILABLE'
     });
     expect(events).toEqual([]);
+  });
+
+  test('主动预检按 Engine 实际 actionId 抑制连续重复，其他动作后可再次授权', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+
+    expect(service.requestProactiveBehavior({ kind: 'semantic', semantic: 'celebrate' }))
+      .toMatchObject({ kind: 'play', actionId: 'celebrate-action' });
+    expect(service.requestProactiveBehavior({ kind: 'action_name', name: 'celebrate 动作' }))
+      .toEqual({ kind: 'none' });
+    expect(events.filter(event => event.type === 'behavior-action')).toHaveLength(1);
+    expect(service.requestProactiveBehavior({ kind: 'semantic', semantic: 'idle' }))
+      .toMatchObject({ kind: 'play', actionId: 'idle-action' });
+    expect(service.requestProactiveBehavior({ kind: 'semantic', semantic: 'celebrate' }))
+      .toMatchObject({ kind: 'play', actionId: 'celebrate-action' });
+  });
+
+  test('V1 fallback 通过统一 behavior-action 正向授权本地 idle，且拒绝连续重复', async () => {
+    const fixture = createFixture({ getV2: async () => Promise.reject(new Error('V2 unavailable')) });
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+
+    expect(service.requestProactiveBehavior({ kind: 'semantic', semantic: 'idle' }))
+      .toMatchObject({ kind: 'play', actionId: 'legacy-idle', semantic: 'idle' });
+    expect(events).toEqual([expect.objectContaining({
+      type: 'behavior-action', stateId: 'idle', actionId: 'legacy-idle'
+    })]);
+    expect(service.requestProactiveBehavior({ kind: 'semantic', semantic: 'idle' }))
+      .toEqual({ kind: 'none' });
+    expect(events).toHaveLength(1);
   });
 
   test('定向与旧 Agent move 都只返回动画授权，不可绕过 Director 触发 wander', async () => {

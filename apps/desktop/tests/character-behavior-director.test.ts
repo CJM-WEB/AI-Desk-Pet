@@ -51,6 +51,11 @@ function createFixture(initialSettings: Readonly<{
         : target.kind === 'action' && target.actionId === 'move-action'
     )),
     requestDirectedBehavior: vi.fn(() => directedAuthorization),
+    requestProactiveBehavior: vi.fn((target: BehaviorTarget, options?: { allowMovement?: boolean }) => (
+      target.kind === 'action_name' && target.name === '移动' && options?.allowMovement !== true
+        ? NONE
+        : directedAuthorization
+    )),
     isMovementAgentIntent: vi.fn((intent: CharacterAgentBehaviorIntent) => (
       intent.actionSemantic === 'move'
       || intent.stateIntent !== null && 'semantic' in intent.stateIntent
@@ -423,7 +428,7 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(true);
   });
 
-  test('反思 stop 不会写停止锁，后续 move 计划仍可授权', () => {
+  test('反思 stop 与隐含移动 play 都不会写停止锁或进入动作链', () => {
     const fixture = createFixture();
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
@@ -431,9 +436,7 @@ describe('Main 角色行为 Director', () => {
 
     fixture.director.requestBehaviorPlan({ kind: 'stop_movement' }, 'reflection');
 
-    expect(fixture.director.requestBehaviorPlan(play('移动'), 'reflection')).toMatchObject({
-      kind: 'play', semantic: 'move'
-    });
+    expect(fixture.director.requestBehaviorPlan(play('移动'), 'reflection')).toEqual(NONE);
     expect(fixture.saveMovementStopped).not.toHaveBeenCalled();
   });
 

@@ -507,7 +507,6 @@ describe('角色播放器组件', () => {
       };
     });
     const reportCharacterActionFeedback = vi.fn(async () => undefined);
-    const reportCharacterActionPlayed = vi.fn(async () => undefined);
     const api = {
       getCharacterRuntimeSnapshot: vi.fn()
         .mockResolvedValueOnce({
@@ -537,7 +536,6 @@ describe('角色播放器组件', () => {
         return vi.fn();
       }),
       reportCharacterActionFeedback,
-      reportCharacterActionPlayed
     } as unknown as MyselfApi;
     const rendered = render(
       <CharacterPlayer
@@ -565,11 +563,10 @@ describe('角色播放器组件', () => {
       players,
       rendered,
       reportCharacterActionFeedback,
-      reportCharacterActionPlayed
     };
   }
 
-  test('V1 回退待机动作在投影切换期间排队，并只在新投影提交后播放', async () => {
+  test('V1 回退统一行为动作在投影切换期间排队，并只在新投影提交后播放', async () => {
     const fixture = refreshRaceFixture('old-action', 'new-action');
     await waitFor(() => expect(fixture.players[0]!.load).toHaveBeenCalledOnce());
     act(() => fixture.characterEvent({
@@ -579,8 +576,10 @@ describe('角色播放器组件', () => {
     await waitFor(() => expect(fixture.api.getCharacterRuntimeSnapshot).toHaveBeenCalledTimes(2));
 
     act(() => fixture.motion({
-      type: 'idle-action',
+      type: 'behavior-action',
       revision: 2,
+      stateId: 'idle',
+      modifierStateIds: [],
       actionId: 'idle',
       playbackToken: 'legacy-token-loading'
     }));
@@ -598,13 +597,12 @@ describe('角色播放器组件', () => {
     }));
 
     expect(fixture.players[0]!.play).not.toHaveBeenCalled();
-    expect(fixture.reportCharacterActionPlayed).not.toHaveBeenCalled();
+    expect(fixture.reportCharacterActionFeedback).not.toHaveBeenCalled();
 
     await act(async () => fixture.commitNewProjection());
-    await waitFor(() => expect(fixture.reportCharacterActionPlayed).toHaveBeenCalledWith(
-      'legacy-token-loading',
-      'idle'
-    ));
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'legacy-token-loading', actionId: 'idle', status: 'started'
+    }));
     expect(fixture.players[1]!.play).toHaveBeenCalledOnce();
     expect(fixture.players[1]!.play.mock.calls[0]?.[0].action.id).toBe('idle');
     fixture.rendered.unmount();

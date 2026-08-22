@@ -218,11 +218,8 @@ const api: MyselfApi = {
     ipcRenderer.on(ipcChannels.characterMotionEvent, handler);
     return () => ipcRenderer.removeListener(ipcChannels.characterMotionEvent, handler);
   },
-  reportCharacterActionPlayed: async (playbackToken, actionId) => {
-    await ipcRenderer.invoke(ipcChannels.characterActionPlayed, { playbackToken, actionId });
-  },
   reportCharacterActionFeedback: async input => {
-    await ipcRenderer.invoke(ipcChannels.characterActionPlayed, {
+    await ipcRenderer.invoke(ipcChannels.characterActionFeedback, {
       playbackToken: input.playbackToken,
       actionId: input.actionId,
       status: input.status

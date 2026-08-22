@@ -93,6 +93,7 @@ type BehaviorServicePort = Pick<
   | 'isMovementBehaviorTarget'
   | 'isMovementAgentIntent'
   | 'requestDirectedBehavior'
+  | 'requestProactiveBehavior'
   | 'handleAgentIntent'
   | 'handleTaskEvent'
   | 'applyPlaybackFeedback'
@@ -157,6 +158,7 @@ export class CharacterBehaviorDirector {
   private pendingSuccessToken: string | null = null;
   private active: Readonly<{ source: ActiveBehaviorSource; playbackToken: string }> | null = null;
   private readonly activityListeners = new Set<() => void>();
+  private behaviorLifecycleGeneration = 0;
 
   constructor(private readonly options: CharacterBehaviorDirectorOptions) {
     this.generation = options.initialGeneration;
@@ -234,6 +236,17 @@ export class CharacterBehaviorDirector {
     if (this.closed) return () => undefined;
     this.activityListeners.add(listener);
     return () => this.activityListeners.delete(listener);
+  }
+
+  getBehaviorLifecycleGeneration(): number {
+    return this.behaviorLifecycleGeneration;
+  }
+
+  /** Provider、授权根或高级配置切换可立即使在途反思失效。 */
+  invalidateBehaviorLifecycle(): void {
+    if (this.closed) return;
+    this.behaviorLifecycleGeneration += 1;
+    this.publishActivityChanged();
   }
 
   completeUserPrompt(input: Readonly<{
@@ -327,6 +340,21 @@ export class CharacterBehaviorDirector {
     if (!target) return NONE;
 
     try {
+      if (source === 'reflection' || source === 'local-idle') {
+        if (plan.kind === 'move' && plan.distance !== 'near') return NONE;
+        if (plan.kind !== 'play' && plan.kind !== 'move') return NONE;
+        const authorization = this.options.behavior.requestProactiveBehavior(target, {
+          urgency: SOURCE_OPTIONS[source].urgency,
+          allowMovement: motion !== null
+        });
+        if (authorization.kind === 'play') {
+          this.active = { source, playbackToken: authorization.playbackToken };
+          if (authorization.semantic === 'move' && motion) {
+            this.options.motion.requestIntent(motion);
+          }
+        }
+        return authorization;
+      }
       const resolvedTarget = this.options.behavior.resolveBehaviorTarget(target);
       if (this.movementStopped && this.options.behavior.isMovementBehaviorTarget(resolvedTarget)) {
         return NONE;
@@ -377,13 +405,16 @@ export class CharacterBehaviorDirector {
     if (this.closed) return;
     const shouldStopMotion = !this.movementStopped && snapshot.movementStopped;
     this.movementStopped = snapshot.movementStopped;
+    const modeChanged = this.proactivityMode !== snapshot.proactivityMode;
     this.proactivityMode = snapshot.proactivityMode;
+    if (modeChanged) this.behaviorLifecycleGeneration += 1;
     if (shouldStopMotion) this.options.motion.stop();
     this.publishActivityChanged();
   }
 
   async handleActiveCharacterChanged(): Promise<void> {
     if (this.closed) return;
+    this.invalidateBehaviorLifecycle();
     this.clearPendingChat();
     this.active = null;
     await this.options.behavior.handleActiveCharacterChanged();
@@ -392,6 +423,7 @@ export class CharacterBehaviorDirector {
   reset(generation: string): void {
     if (this.closed) return;
     this.generation = generation;
+    this.behaviorLifecycleGeneration += 1;
     this.clearPendingChat();
     this.active = null;
     this.trustedRuntimeBlocked = false;

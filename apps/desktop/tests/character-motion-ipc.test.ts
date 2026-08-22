@@ -81,17 +81,6 @@ describe('角色运动严格 IPC', () => {
       actionId: 'thinking-loop',
       playbackToken: 'behavior-token-2'
     });
-    expect(characterMotionEventSchema.parse({
-      type: 'idle-action',
-      revision: 1,
-      actionId: 'idle-a',
-      playbackToken: 'legacy-token-1'
-    })).toEqual({
-      type: 'idle-action',
-      revision: 1,
-      actionId: 'idle-a',
-      playbackToken: 'legacy-token-1'
-    });
     expect(() => characterMotionEventSchema.parse({
       type: 'behavior-action',
       revision: 2,
@@ -176,10 +165,11 @@ describe('角色运动严格 IPC', () => {
       code: 'CHARACTER_OPERATION_FAILED'
     });
 
-    const report = handlers.get(ipcChannels.characterActionPlayed);
+    const report = handlers.get(ipcChannels.characterActionFeedback);
     await expect(report?.({ sender: petSender }, {
       playbackToken: 'opaque-token',
-      actionId: 'idle-a'
+      actionId: 'idle-a',
+      status: 'started'
     })).resolves.toEqual({ ok: true });
     expect(service.applyPlaybackFeedback).toHaveBeenCalledWith({
       playbackToken: 'opaque-token',
@@ -225,11 +215,13 @@ describe('角色运动严格 IPC', () => {
     })).rejects.toThrow('CHARACTER_PLAYBACK_SENDER_INVALID');
     await expect(report?.({ sender: { id: 2 } }, {
       playbackToken: 'opaque-token',
-      actionId: 'idle-a'
+      actionId: 'idle-a',
+      status: 'started'
     })).rejects.toThrow('CHARACTER_PLAYBACK_SENDER_INVALID');
     await expect(report?.({ sender: petSender }, {
       playbackToken: 'opaque-token',
       actionId: 'idle-a',
+      status: 'started',
       path: 'C:\\private'
     })).rejects.toMatchObject({ code: 'CHARACTER_INPUT_INVALID' });
 

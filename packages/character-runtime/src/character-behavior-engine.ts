@@ -127,6 +127,7 @@ export class CharacterBehaviorEngine {
   private currentSelection: CharacterBehaviorActionSelection | null = null;
   private actionRecencyById: Record<string, CharacterActionRecency> = {};
   private retiredPlaybackGrants: RetiredPlaybackGrant[] = [];
+  private lastScheduledActionId: string | null = null;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly createPlaybackToken: () => string;
@@ -210,6 +211,23 @@ export class CharacterBehaviorEngine {
     });
   }
 
+  /** 主动来源在创建令牌前按引擎真实动作身份抑制连续重复。 */
+  dispatchProactiveDirected(input: {
+    target: ResolvedBehaviorTarget;
+    direction: 'left' | 'right';
+    urgency: number;
+  }): CharacterBehaviorDecision {
+    this.lastDirection = input.direction;
+    return this.selectAndSchedule({
+      direction: input.direction,
+      nowMs: this.now(),
+      urgency: input.urgency,
+      systemForced: false,
+      directedTarget: input.target,
+      suppressConsecutiveAction: true
+    });
+  }
+
   /** 只吸收可信上下文事实，不选择动作、不修改调度或创建播放令牌。 */
   applySignalOnly(input: {
     signal: CharacterBehaviorSignal;
@@ -281,6 +299,7 @@ export class CharacterBehaviorEngine {
       }, this.manifest.actions);
       this.schedule = fallback.schedule;
       this.currentSelection = selection;
+      this.lastScheduledActionId = selection.actionId;
       return this.decision(fallback.effects, []);
     }
     return this.decision(result.effects, []);
@@ -342,6 +361,7 @@ export class CharacterBehaviorEngine {
     this.schedule = EMPTY_SCHEDULE();
     this.currentSelection = null;
     this.actionRecencyById = {};
+    this.lastScheduledActionId = null;
     for (const signal of contextSignals) this.applySignal(signal);
 
     const next = this.selectAndSchedule({
@@ -396,6 +416,7 @@ export class CharacterBehaviorEngine {
       systemForced: boolean;
       requiredActionSemantic?: CharacterStandardSemantic;
       directedTarget?: ResolvedBehaviorTarget;
+      suppressConsecutiveAction?: boolean;
     },
     diagnosticCodes: CharacterBehaviorDiagnosticCode[] = []
   ): CharacterBehaviorDecision {
@@ -433,6 +454,10 @@ export class CharacterBehaviorEngine {
       ]);
     }
 
+    if (input.suppressConsecutiveAction && selection.actionId === this.lastScheduledActionId) {
+      return this.decision([NONE_EFFECT], diagnosticCodes);
+    }
+
     const playbackToken = this.createPlaybackToken();
     const previous = this.schedule.current;
     const result = reduceCharacterActionSchedule(this.schedule, {
@@ -458,6 +483,7 @@ export class CharacterBehaviorEngine {
     }
     if (this.schedule.current?.playbackToken === playbackToken) {
       this.currentSelection = selection;
+      this.lastScheduledActionId = selection.actionId;
     }
     const effects = result.effects.map((effect): CharacterBehaviorDecisionEffect => (
       effect.type === 'interrupt' && previous

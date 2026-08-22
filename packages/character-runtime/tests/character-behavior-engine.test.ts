@@ -232,6 +232,21 @@ describe('事件驱动角色行为引擎', () => {
     expect(decision.diagnosticCodes).toEqual(['CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']);
   });
 
+  test('主动定向按真实 actionId 抑制连续重复，其他动作与换角会重置相邻关系', () => {
+    const engine = 创建引擎(创建六语义清单());
+    const proactive = (actionId: string) => engine.dispatchProactiveDirected({
+      target: { kind: 'action', actionId }, direction: 'right', urgency: 10
+    });
+
+    expect(proactive('celebrate-action').effects[0]?.type).toBe('play');
+    expect(proactive('celebrate-action').effects).toEqual([{ type: 'none' }]);
+    expect(proactive('idle-action').effects.some(effect => effect.type === 'play')).toBe(true);
+    expect(proactive('celebrate-action').effects.some(effect => effect.type === 'play')).toBe(true);
+
+    engine.replaceCharacter(创建六语义清单('replacement'), 'default-skin');
+    expect(proactive('celebrate-action').effects.some(effect => effect.type === 'play')).toBe(true);
+  });
+
   test('Main 搬运事实通过现有选择与调度链生成真实播放令牌', () => {
     const engine = 创建引擎(创建搬运清单());
 

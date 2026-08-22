@@ -34,12 +34,6 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
     mode: z.literal('legacy-v1')
   }).strict(),
   z.object({
-    type: z.literal('idle-action'),
-    revision: z.number().int().nonnegative(),
-    actionId: characterMotionIdentifierSchema,
-    playbackToken: characterPlaybackTokenSchema
-  }).strict(),
-  z.object({
     type: z.literal('behavior-action'),
     revision: z.number().int().nonnegative(),
     stateId: characterMotionIdentifierSchema,
@@ -51,10 +45,6 @@ export const characterMotionEventSchema = z.discriminatedUnion('type', [
 ]);
 
 export const characterMotionEmptyInputSchema = z.object({}).strict();
-export const characterActionPlayedInputSchema = z.object({
-  playbackToken: characterPlaybackTokenSchema,
-  actionId: characterMotionIdentifierSchema
-}).strict();
 export const characterActionFeedbackInputSchema = z.object({
   playbackToken: characterPlaybackTokenSchema,
   actionId: characterMotionIdentifierSchema,

@@ -92,7 +92,7 @@ type BehaviorPlaybackTokenState = 'active' | 'terminal';
 type BehaviorActionEvent = Extract<CharacterMotionEvent, { type: 'behavior-action' }>;
 type PlaybackActionEvent = Extract<
   CharacterMotionEvent,
-  { type: 'behavior-action' | 'idle-action' }
+  { type: 'behavior-action' }
 >;
 type CharacterProjectionStatus = 'loading' | 'ready' | 'unavailable';
 
@@ -625,32 +625,8 @@ export function CharacterPlayer({
         );
       }
     };
-    /** V1 待机事件只在兼容权威模式内消费，不得反向夺取 V2 权威。 */
-    const consumeLegacyIdleAction = (
-      event: Extract<PlaybackActionEvent, { type: 'idle-action' }>
-    ): void => {
-      const player = activePlayerRef.current;
-      const snapshot = activeSnapshotRef.current;
-      const playback = playbackRef.current;
-      if (!player || !snapshot || playback.stateId !== 'idle') return;
-      const action = snapshot.manifest.states
-        .find(state => state.id === 'idle')
-        ?.actions.find(candidate => candidate.id === event.actionId);
-      if (!action) return;
-      player.play({
-        stateId: 'idle',
-        action,
-        reason: 'matched'
-      }, playback.motionMode);
-      reportPlayedAction(api, event.playbackToken, action.id);
-      onIdleTrigger?.();
-    };
     const consumePlaybackAction = (event: PlaybackActionEvent): void => {
-      if (event.type === 'behavior-action') {
-        consumeBehaviorAction(event);
-        return;
-      }
-      consumeLegacyIdleAction(event);
+      consumeBehaviorAction(event);
     };
     playbackActionConsumerRef.current = consumePlaybackAction;
     flushPendingPlaybackAction(
@@ -688,16 +664,9 @@ export function CharacterPlayer({
       if (event.revision <= actionRevisionRef.current) return;
       actionRevisionRef.current = event.revision;
 
-      behaviorAuthorityModeRef.current = event.type === 'behavior-action'
-        ? 'main-v2'
-        : 'legacy-v1';
-      if (event.type === 'behavior-action') {
-        behaviorAuthorityCharacterIdRef.current = null;
-      }
-      if (
-        event.type === 'behavior-action'
-        && !beginBehaviorPlaybackToken(behaviorPlaybackTokensRef, event.playbackToken)
-      ) return;
+      behaviorAuthorityModeRef.current = 'main-v2';
+      behaviorAuthorityCharacterIdRef.current = null;
+      if (!beginBehaviorPlaybackToken(behaviorPlaybackTokensRef, event.playbackToken)) return;
       if (projectionStatusRef.current === 'unavailable') {
         if (event.type === 'behavior-action') {
           settleBehaviorPlaybackToken(api, behaviorPlaybackTokensRef, {
@@ -783,17 +752,6 @@ function createPlayerHitTestPort(
       }
     }
   };
-}
-
-function reportPlayedAction(
-  api: MyselfApi,
-  playbackToken: string,
-  actionId: string
-): void {
-  if (typeof api.reportCharacterActionPlayed !== 'function') return;
-  void api.reportCharacterActionPlayed(playbackToken, actionId).catch(() => {
-    // 播放回报失败不影响当前画面，Main 会拒绝未知动作标识。
-  });
 }
 
 export type CharacterBehaviorAuthorityMode = 'main-v2' | 'legacy-v1';

@@ -3,6 +3,7 @@ import {
   CharacterBehaviorEngine,
   createPublicBehaviorCatalog,
   resolveBehaviorTarget,
+  selectCharacterAction,
   type BehaviorTarget,
   type CharacterAgentBehaviorIntent,
   type CharacterBehaviorAuthorization,
@@ -94,6 +95,9 @@ export class CharacterBehaviorService {
   private taskContextSignal: CharacterBehaviorSignal | null = null;
   private closed = false;
   private loadRevision = 0;
+  private legacyPlaybackRevision = 0;
+  private legacyLastScheduledActionId: string | null = null;
+  private legacyPlaybackGrant: Readonly<{ playbackToken: string; actionId: string }> | null = null;
 
   constructor(private readonly options: CharacterBehaviorServiceOptions) {
     this.now = options.now ?? performance.now.bind(performance);
@@ -169,6 +173,71 @@ export class CharacterBehaviorService {
       systemForced: options.systemForced ?? false
     });
     return this.publish(decision);
+  }
+
+  /** Scheduler 候选在 Service/Engine 的真实 actionId 上预检，V1/V2 共用 behavior-action 协议。 */
+  requestProactiveBehavior(
+    target: BehaviorTarget,
+    options: Readonly<{ urgency?: number; allowMovement?: boolean }> = {}
+  ): CharacterBehaviorAuthorization {
+    if (this.closed || this.transitioning) return NO_BEHAVIOR_AUTHORIZATION;
+    if (this.engine && this.manifest) {
+      let resolved: ResolvedBehaviorTarget;
+      try {
+        resolved = this.resolveBehaviorTarget(target);
+      } catch {
+        return NO_BEHAVIOR_AUTHORIZATION;
+      }
+      if (!options.allowMovement && this.isMovementBehaviorTarget(resolved)) {
+        return NO_BEHAVIOR_AUTHORIZATION;
+      }
+      return this.publish(this.engine.dispatchProactiveDirected({
+        target: resolved,
+        direction: this.direction,
+        urgency: options.urgency ?? 0
+      }));
+    }
+    if (!this.legacyManifest) return NO_BEHAVIOR_AUTHORIZATION;
+
+    const stateId = target.kind === 'semantic'
+      ? target.semantic === 'idle'
+        ? 'idle'
+        : target.semantic === 'move' && options.allowMovement
+          ? 'moving'
+          : null
+      : null;
+    if (!stateId) return NO_BEHAVIOR_AUTHORIZATION;
+    try {
+      const selected = selectCharacterAction({
+        manifest: this.legacyManifest,
+        stateId,
+        direction: this.direction,
+        recentActionIds: [],
+        random: this.random
+      });
+      if (selected.stateId !== stateId || selected.action.id === this.legacyLastScheduledActionId) {
+        return NO_BEHAVIOR_AUTHORIZATION;
+      }
+      const playbackToken = this.createPlaybackToken();
+      this.legacyLastScheduledActionId = selected.action.id;
+      this.legacyPlaybackGrant = { playbackToken, actionId: selected.action.id };
+      this.emit({
+        type: 'behavior-action',
+        revision: ++this.legacyPlaybackRevision,
+        stateId: selected.stateId,
+        modifierStateIds: [],
+        actionId: selected.action.id,
+        playbackToken
+      });
+      return {
+        kind: 'play',
+        actionId: selected.action.id,
+        playbackToken,
+        semantic: selected.stateId === 'moving' ? 'move' : 'idle'
+      };
+    } catch {
+      return NO_BEHAVIOR_AUTHORIZATION;
+    }
   }
 
   /**
@@ -316,6 +385,13 @@ export class CharacterBehaviorService {
       this.publish(decision);
       return;
     }
+    if (
+      this.legacyPlaybackGrant?.playbackToken === feedback.playbackToken
+      && this.legacyPlaybackGrant.actionId === feedback.actionId
+    ) {
+      if (feedback.status !== 'started') this.legacyPlaybackGrant = null;
+      return;
+    }
     throw new Error('CHARACTER_PLAYBACK_UNAUTHORIZED');
   }
 
@@ -342,6 +418,8 @@ export class CharacterBehaviorService {
     this.taskContextSignal = null;
     this.carrying = false;
     this.recentPublicActions.splice(0);
+    this.legacyPlaybackGrant = null;
+    this.legacyLastScheduledActionId = null;
     this.listeners.clear();
   }
 
@@ -352,6 +430,8 @@ export class CharacterBehaviorService {
     if (replacing) {
       this.recentPublicActions.splice(0);
       this.carrying = false;
+      this.legacyPlaybackGrant = null;
+      this.legacyLastScheduledActionId = null;
       if (this.taskContextSignal?.type === 'task') this.taskContextSignal = null;
     }
     this.transitioning = true;
@@ -409,6 +489,8 @@ export class CharacterBehaviorService {
       this.engine = null;
       this.manifest = null;
       this.legacyManifest = legacyManifest;
+      this.legacyPlaybackGrant = null;
+      this.legacyLastScheduledActionId = null;
       this.recentPublicActions.splice(0);
       this.transitioning = false;
       this.emit({

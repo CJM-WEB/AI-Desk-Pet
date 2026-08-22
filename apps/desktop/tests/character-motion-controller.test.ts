@@ -356,46 +356,6 @@ describe('Main 角色运动服务', () => {
     expect(snapshot.target).toEqual({ x: 220, y: 180 });
   });
 
-  test('待机间隔未到不选择，到达后只选择一次并传入最近 N 个动作', () => {
-    let now = 0;
-    const selectAction = vi.fn((input: Parameters<typeof import('@myself/character-runtime').selectCharacterAction>[0]) => ({
-      stateId: 'idle' as const,
-      action: manifest.states[0]!.actions[0]!,
-      reason: 'matched' as const,
-    }));
-    const service = new CharacterMotionService({
-      window: {
-        getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
-        setPosition: vi.fn()
-      },
-      getWorkAreas: () => [{ x: 0, y: 0, width: 400, height: 400 }],
-      now: () => now,
-      idleIntervalMs: 1_000,
-      recentActionLimit: 2,
-      selectAction
-    });
-    service.recordPlayedAction('old-a');
-    service.recordPlayedAction('old-b');
-    service.recordPlayedAction('old-c');
-
-    expect(service.pollIdle(manifest, 'right', () => 0)).toBeNull();
-    now = 999;
-    expect(service.pollIdle(manifest, 'right', () => 0)).toBeNull();
-    now = 1_000;
-    expect(service.pollIdle(manifest, 'right', () => 0)?.action.id).toBe('idle-a');
-    expect(service.pollIdle(manifest, 'right', () => 0)).toBeNull();
-    expect(selectAction).toHaveBeenCalledOnce();
-    expect(selectAction.mock.calls[0]?.[0].recentActionIds).toEqual(['old-b', 'old-c']);
-    now = 2_000;
-    service.pollIdle(manifest, 'right', () => 0);
-    expect(selectAction.mock.calls[1]?.[0].recentActionIds).toEqual(['old-b', 'old-c']);
-    service.recordPlayedAction('idle-a');
-    service.recordPlayedAction('idle-a');
-    now = 3_000;
-    service.pollIdle(manifest, 'right', () => 0);
-    expect(selectAction.mock.calls[2]?.[0].recentActionIds).toEqual(['old-c', 'idle-a']);
-  });
-
   test('快照订阅可清理且每次修订只广播一次', () => {
     let now = 0;
     const service = new CharacterMotionService({
@@ -665,63 +625,6 @@ describe('Main 角色运动服务', () => {
     expect(service.getSnapshot().timestampMs).toBe(100);
   });
 
-  test('idle 播放令牌绑定角色和动作且只能消费一次', () => {
-    let now = 1_000;
-    const service = new CharacterMotionService({
-      window: {
-        getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
-        setPosition: vi.fn()
-      },
-      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
-      now: () => now,
-      createPlaybackToken: () => 'opaque-token'
-    });
-    const token = service.issueIdlePlayback({
-      actionId: 'idle-a',
-      characterId: 'demo',
-      revision: 3
-    });
-
-    expect(() => service.confirmIdlePlayback({
-      playbackToken: token,
-      actionId: 'idle-b',
-      characterId: 'demo'
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-    expect(() => service.confirmIdlePlayback({
-      playbackToken: token,
-      actionId: 'idle-a',
-      characterId: 'demo'
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-
-    const validToken = service.issueIdlePlayback({
-      actionId: 'idle-a',
-      characterId: 'demo',
-      revision: 4
-    });
-    service.confirmIdlePlayback({
-      playbackToken: validToken,
-      actionId: 'idle-a',
-      characterId: 'demo'
-    });
-    expect(() => service.confirmIdlePlayback({
-      playbackToken: validToken,
-      actionId: 'idle-a',
-      characterId: 'demo'
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-
-    const expired = service.issueIdlePlayback({
-      actionId: 'idle-a',
-      characterId: 'demo',
-      revision: 5
-    });
-    now += 31_000;
-    expect(() => service.confirmIdlePlayback({
-      playbackToken: expired,
-      actionId: 'idle-a',
-      characterId: 'demo'
-    })).toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
-  });
-
   test('可信 Main 搬运标志进入权威快照并可关闭', () => {
     const service = new CharacterMotionService({
       window: {
@@ -765,25 +668,6 @@ describe('Main 角色运动服务', () => {
     service.tick();
     now = 50;
     expect(service.tick().timestampMs).toBe(100);
-  });
-
-  test('任务活动期间不选择 idle 且不污染最近动作', () => {
-    let now = 0;
-    const selectAction = vi.fn();
-    const service = new CharacterMotionService({
-      window: {
-        getBounds: () => ({ x: 0, y: 0, width: 180, height: 220 }),
-        setPosition: vi.fn()
-      },
-      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
-      now: () => now,
-      idleIntervalMs: 100,
-      selectAction
-    });
-    service.applyTaskEvent({ type: 'phase', phase: 'acting' });
-    now = 10_000;
-    expect(service.pollIdle(manifest, 'right', () => 0)).toBeNull();
-    expect(selectAction).not.toHaveBeenCalled();
   });
 
   test('窗口销毁后清理定时器且不再 tick 或 poll', () => {

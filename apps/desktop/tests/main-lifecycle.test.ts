@@ -32,7 +32,7 @@ describe('Main 通用生命周期', () => {
     expect(beforeQuit).not.toContain('cancelActive()');
     expect(source).toContain('conversationClose.close();');
     expect(source).toMatch(
-      /const releaseCharacterRuntime = \(\): void => \{[\s\S]*conversationClose\.close\(\);[\s\S]*activeCapabilityTaskAdapter = null;/u
+      /const releaseCharacterRuntime = async \(\): Promise<void> => \{[\s\S]*conversationClose\.close\(\);[\s\S]*activeCapabilityTaskAdapter = null;/u
     );
   });
 
@@ -44,7 +44,7 @@ describe('Main 通用生命周期', () => {
     expect(source.match(/new CharacterBehaviorDirector\(/gu)).toHaveLength(1);
     expect(source).toContain('behavior: characterBehaviorDirector');
     expect(source).toContain('characterBehaviorDirector.applyPlaybackFeedback({');
-    expect(source).toContain('characterBehaviorDirector.advance();');
+    expect(source).toContain('advanceBehavior: () => characterBehaviorDirector.advance()');
     expect(source).toContain('characterBehaviorDirector.setDragging(true);');
     expect(source).toContain('characterBehaviorDirector.setDragging(false);');
     expect(source).toContain('emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent)');
@@ -55,13 +55,11 @@ describe('Main 通用生命周期', () => {
   test('生产组合只构造一个主动调度器、反思适配器和会话脱敏诊断端口', async () => {
     const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
-    expect(source.match(/new CharacterProactivityScheduler\(/gu)).toHaveLength(1);
-    expect(source.match(/createBehaviorReflectionAdapter\(/gu)).toHaveLength(1);
-    expect(source.match(/new BehaviorReflectionDiagnosticPort\(/gu)).toHaveLength(1);
+    expect(source.match(/createCharacterProactivityRuntime\(/gu)).toHaveLength(1);
+    expect(source).toContain('characterProactivityRuntime.start();');
+    expect(source).toContain('startupCleanup.add(() => characterProactivityRuntime.close());');
     expect(source).toContain('return createChatProvider(selection.profile);');
     expect(source).toContain('new ConversationChatAdapter(createChatProvider(profile))');
-    expect(source).not.toContain('pollLegacyIdle');
-    expect(source).not.toContain('handleIdleDue');
   });
 
   test('生产启动先读取完整行为快照初始化唯一 Director 并接通设置 sink', async () => {

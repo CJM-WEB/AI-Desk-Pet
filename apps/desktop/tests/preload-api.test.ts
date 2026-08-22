@@ -146,7 +146,6 @@ describe('preload 公开 API', () => {
       'subscribeCharacterEvents',
       'getCharacterMotionSnapshot',
       'subscribeCharacterMotion',
-      'reportCharacterActionPlayed',
       'reportCharacterActionFeedback',
       'reportCharacterActionMilestone',
       'setPetMousePassthrough',
@@ -272,7 +271,7 @@ describe('受限桌宠窗口交互 preload API', () => {
       path: 'C:\\private'
     } as never);
 
-    expect(invoke).toHaveBeenCalledWith(ipcChannels.characterActionPlayed, {
+    expect(invoke).toHaveBeenCalledWith(ipcChannels.characterActionFeedback, {
       playbackToken: 'behavior-token-2',
       actionId: 'thinking-loop',
       status: 'completed'

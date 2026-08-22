@@ -54,12 +54,8 @@ import {
   CharacterBehaviorDirector,
   type CharacterBehaviorNotice
 } from './characters/character-behavior-director';
-import {
-  BehaviorReflectionDiagnosticPort,
-  createBehaviorReflectionAdapter
-} from './characters/behavior-reflection-adapter';
-import { CharacterProactivityScheduler } from
-  './characters/character-proactivity-scheduler';
+import { createCharacterProactivityRuntime } from
+  './characters/character-proactivity-runtime';
 import { CharacterPackageService } from './characters/character-package-service';
 import { CharacterStore } from './characters/character-store';
 import { ExplorerSpaceClient, buildExplorerBridgeSpawnSpec } from
@@ -495,11 +491,8 @@ async function createApplicationWindows(
     saveMovementStopped: stopped => desktopSettingsService.saveMovementStopped(stopped),
     publishNotice: notice => publishCharacterBehaviorNotice(notice)
   });
-  const behaviorReflectionDiagnostics = new BehaviorReflectionDiagnosticPort();
-  const releaseBehaviorReflectionDiagnostics = behaviorReflectionDiagnostics.subscribe(event => {
-    console.info(event.code, JSON.stringify(event));
-  });
-  const behaviorReflection = createBehaviorReflectionAdapter({
+  const characterProactivityRuntime = createCharacterProactivityRuntime({
+    director: characterBehaviorDirector,
     createProvider: async () => {
       const providerSettings = await settingsStore.getProviderSettings();
       const selection = new ModelRouter({
@@ -516,12 +509,12 @@ async function createApplicationWindows(
       }
       return createChatProvider(selection.profile);
     },
-    diagnostics: behaviorReflectionDiagnostics
+    publishDiagnostic: event => console.info(event.code, JSON.stringify(event)),
+    advanceBehavior: () => characterBehaviorDirector.advance(),
+    advanceFileTaskTransaction: () => activeCapabilityTaskAdapter?.advanceFileTaskTransaction()
   });
-  const characterProactivityScheduler = new CharacterProactivityScheduler({
-    director: characterBehaviorDirector,
-    reflection: behaviorReflection
-  });
+  // 组合创建后立即进入启动清理栈；Service 初始化前 Scheduler 尚未 start。
+  startupCleanup.add(() => characterProactivityRuntime.close());
   const characterSwitching = createCharacterActivationCoordinator({
     activateInStore: activateCharacterInStore,
     reloadBehavior: () => characterBehaviorDirector.handleActiveCharacterChanged()
@@ -590,10 +583,7 @@ async function createApplicationWindows(
   });
   const motionRuntime = startCharacterMotionTimers({
     tick: () => characterMotion.tick(),
-    poll: () => {
-      characterBehaviorDirector.advance();
-      activeCapabilityTaskAdapter?.advanceFileTaskTransaction();
-    },
+    poll: () => characterProactivityRuntime.poll(),
     isDestroyed: () => pet.isDestroyed(),
     tickIntervalMs: 50,
     idleIntervalMs: 500
@@ -605,7 +595,7 @@ async function createApplicationWindows(
     )
   });
   let characterRuntimeReleased = false;
-  const releaseCharacterRuntime = (): void => {
+  const releaseCharacterRuntime = async (): Promise<void> => {
     if (characterRuntimeReleased) return;
     characterRuntimeReleased = true;
     conversationClose.close();
@@ -614,14 +604,12 @@ async function createApplicationWindows(
     motionRuntime.destroy();
     releaseMotionEvents();
     releaseBehaviorEvents();
-    void characterProactivityScheduler.close();
-    releaseBehaviorReflectionDiagnostics();
-    behaviorReflectionDiagnostics.close();
-    void characterBehaviorDirector.close();
+    await characterProactivityRuntime.close();
+    await characterBehaviorDirector.close();
     releaseMotionWindowEvents();
   };
   startupCleanup.add(releaseCharacterRuntime);
-  pet.once('closed', releaseCharacterRuntime);
+  pet.once('closed', () => { void releaseCharacterRuntime(); });
   const hideOnClose = (window: BrowserWindow): void => {
     window.on('close', event => {
       if (isQuitting) return;
@@ -924,7 +912,7 @@ async function createApplicationWindows(
     bridge: explorerPort,
     position: petPositionController,
     services: [
-      () => workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()),
+      async () => { await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()); },
       () => desktopSettingsService.close(),
       releaseCharacterRuntime
     ]
@@ -946,6 +934,7 @@ async function createApplicationWindows(
     }
   });
   const resetForConfigurationChange = (): void => {
+    characterProactivityRuntime.invalidate();
     void conversationComposition.resetForConfigurationChange().catch(error => {
       const code = error instanceof Error && 'code' in error ? error.code : 'UNKNOWN';
       console.error('配置变更后的会话清理失败。', code);
@@ -966,6 +955,7 @@ async function createApplicationWindows(
     ensureCharacterWorkshopWindow()
   ]);
   await characterBehavior.initialize();
+  characterProactivityRuntime.start();
   await explorerComposition.start();
   if (!applicationQuit.activateNormal(shutdownApplication)) return;
   startupCleanup.dismiss();
