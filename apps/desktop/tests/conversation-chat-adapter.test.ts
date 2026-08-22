@@ -36,7 +36,9 @@ describe('ConversationChatAdapter', () => {
         ...history,
         { role: 'user', content: '这一轮问题' }
       ],
-      tools: []
+      tools: [],
+      toolChoice: 'none',
+      reasoningMode: 'provider_default'
     });
     expect(取得请求(provider).messages[0]?.content).toContain('用户使用的语言');
     expect(取得请求(provider).messages[0]?.content).toContain('可见上下文');

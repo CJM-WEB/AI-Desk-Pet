@@ -116,14 +116,14 @@ export class AgentLoop {
         return;
       }
 
+      const planning = context.protocol === 'capability_planner' && !hasTrustedToolResult;
+      const tools = finalizationOnly
+        ? []
+        : planning
+          ? [...context.tools, capabilityClarificationToolDefinition]
+          : context.tools;
       let response;
       try {
-        const planning = context.protocol === 'capability_planner' && !hasTrustedToolResult;
-        const tools = finalizationOnly
-          ? []
-          : planning
-            ? [...context.tools, capabilityClarificationToolDefinition]
-            : context.tools;
         response = await context.provider.respond({
           messages,
           tools,
@@ -178,6 +178,7 @@ export class AgentLoop {
       if (finalizationOnly) throw finalizationOnlyToolError();
 
       if (isCapabilityClarificationToolRequest(response.request)) {
+        if (!planning) throw new Error('AGENT_INVALID_TOOL_REQUEST');
         try {
           const clarification = parseCapabilityClarificationRequest(response.request.arguments);
           if (isCapabilityClarificationExecutionConfirmation(clarification.question)) {

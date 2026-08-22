@@ -602,6 +602,30 @@ describe('AgentLoop', () => {
     expect(events.at(-2)).toEqual({ type: 'message', text: 'notes.txt 的内容已读取' });
   });
 
+  test('读后拒绝未下发的澄清工具且不交给工具运行时', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-before-invalid-clarification'),
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'clarify-after-read',
+          toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+          arguments: { question: '请提供目标文件名' }
+        }
+      }
+    ]);
+    const runtime = createToolRuntime();
+    const prepare = vi.spyOn(runtime, 'prepare');
+    const runContext = {
+      ...context(provider),
+      toolRuntime: runtime,
+      protocol: 'capability_planner' as const
+    };
+
+    await expect(collectEvents(runContext)).rejects.toThrow('AGENT_INVALID_TOOL_REQUEST');
+    expect(prepare).toHaveBeenCalledOnce();
+  });
+
   test('写工具请求暂停并返回只用于 Main 的继续令牌', async () => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',

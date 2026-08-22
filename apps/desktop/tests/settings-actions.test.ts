@@ -41,7 +41,9 @@ describe('设置主进程动作', () => {
         { role: 'system', content: '这是一次连接测试，只需返回简短文本。' },
         { role: 'user', content: '请回复“连接成功”。' }
       ],
-      tools: []
+      tools: [],
+      toolChoice: 'none',
+      reasoningMode: 'provider_default'
     }, expect.any(AbortSignal));
   });
 
