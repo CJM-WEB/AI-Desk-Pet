@@ -79,4 +79,45 @@ describe('MCP 正式产物边界校验器', () => {
       stderr: 'MCP_PRODUCTION_BOUNDARY_FAILED main McpManager\n'
     });
   });
+
+  test('产物根不可访问时脱敏并 fail-closed', async () => {
+    const root = await createOutputFixture();
+    await rm(root, { recursive: true, force: true });
+
+    await expect(runVerifier(root)).rejects.toMatchObject({
+      code: 1,
+      stdout: '',
+      stderr: 'MCP_PRODUCTION_BOUNDARY_FAILED root IO_ERROR\n'
+    });
+  });
+
+  test.each(['main', 'preload', 'renderer'] as const)(
+    '%s 产物目录不可访问时脱敏并 fail-closed',
+    async kind => {
+      const root = await createOutputFixture();
+      await rm(join(root, kind), { recursive: true, force: true });
+
+      await expect(runVerifier(root)).rejects.toMatchObject({
+        code: 1,
+        stdout: '',
+        stderr: `MCP_PRODUCTION_BOUNDARY_FAILED ${kind} IO_ERROR\n`
+      });
+    }
+  );
+
+  test('二进制噪声中的 UTF-8 禁止标记仍会被拒绝', async () => {
+    const root = await createOutputFixture();
+    const source = Buffer.concat([
+      Buffer.from([0xff, 0xfe, 0x00]),
+      Buffer.from('MCP 服务', 'utf8'),
+      Buffer.from([0x80, 0x81])
+    ]);
+    await writeFile(join(root, 'renderer', 'chunk.bin'), source);
+
+    await expect(runVerifier(root)).rejects.toMatchObject({
+      code: 1,
+      stdout: '',
+      stderr: 'MCP_PRODUCTION_BOUNDARY_FAILED renderer MCP 服务\n'
+    });
+  });
 });
