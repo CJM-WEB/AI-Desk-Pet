@@ -238,9 +238,6 @@ describe('ConversationCoordinator', () => {
     }
   );
 
-  test('本兼容闭环保持 MCP runtimeSupport 关闭', () => {
-  });
-
   test.each(['读取 a.txt', '列出当前文件夹'])(
     '明确文件请求“%s”只进入文件链且不创建聊天目标',
     async text => {
