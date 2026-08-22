@@ -247,42 +247,6 @@ const profileSaveSchema = z.object({
 }).strict();
 const profileIdSchema = z.object({ profileId: identifierSchema }).strict();
 const routeSaveSchema = z.object({ route: modelRouteConfigSchema }).strict();
-const serverIdSchema = z.object({ serverId: identifierSchema }).strict();
-const stdioTransportSchema = z.object({
-  type: z.literal('stdio'),
-  command: z.string().min(1),
-  args: z.array(z.string()).optional(),
-  cwd: z.string().min(1).optional(),
-  env: z.record(z.string().min(1), z.string()).optional(),
-  inheritEnv: z.array(z.string().min(1)).optional()
-}).strict();
-const httpTransportSchema = z.object({
-  type: z.literal('http'),
-  url: providerUrlSchema,
-  headers: z.record(z.string().min(1), z.string()).optional()
-}).strict();
-const mcpUpsertSchema = z.object({
-  id: identifierSchema,
-  enabled: z.boolean(),
-  transport: z.discriminatedUnion('type', [stdioTransportSchema, httpTransportSchema])
-}).strict();
-const mcpConfirmationSchema = z.object({
-  serverId: identifierSchema,
-  fingerprint: z.string().min(1).max(256)
-}).strict();
-const serverToggleSchema = z.object({
-  serverId: identifierSchema,
-  enabled: z.boolean()
-}).strict();
-const toolToggleSchema = z.object({
-  serverId: identifierSchema,
-  toolName: identifierSchema,
-  enabled: z.boolean()
-}).strict();
-const toolAuthorizationSchema = z.object({
-  serverId: identifierSchema,
-  toolName: identifierSchema
-}).strict();
 const incognitoSchema = z.object({ incognito: z.boolean() }).strict();
 const petAlwaysOnTopSaveSchema = z.object({ enabled: z.boolean() }).strict();
 
@@ -292,14 +256,6 @@ export interface AdvancedSettingsIpcService {
   deleteProviderProfile(profileId: string): Promise<unknown>;
   saveModelRoute(route: z.infer<typeof modelRouteConfigSchema>): Promise<unknown>;
   testProviderProfile(profileId: string): Promise<unknown>;
-  upsertMcpServer(input: z.infer<typeof mcpUpsertSchema>): Promise<unknown>;
-  confirmMcpLaunch(serverId: string, fingerprint: string): Promise<unknown>;
-  testMcpServer(serverId: string): Promise<unknown>;
-  setMcpServerEnabled(serverId: string, enabled: boolean): Promise<unknown>;
-  setMcpToolEnabled(serverId: string, toolName: string, enabled: boolean): Promise<unknown>;
-  authorizeMcpToolReadOnly(serverId: string, toolName: string): Promise<unknown>;
-  revokeMcpToolReadOnly(serverId: string, toolName: string): Promise<unknown>;
-  deleteMcpServer(serverId: string): Promise<unknown>;
   savePrivacySettings(input: z.infer<typeof privacySettingsSchema>): Promise<unknown>;
   savePetAlwaysOnTop(enabled: boolean): Promise<unknown>;
   setIncognitoSession(incognito: boolean): Promise<unknown>;
@@ -349,38 +305,6 @@ export function registerAdvancedSettingsIpc(
   replaceHandler(ipcMain, ipcChannels.settingsRouteSave, async (_event, raw) => {
     const { route } = parseInput(routeSaveSchema, raw);
     return changed(() => service.saveModelRoute(route));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpUpsert, async (_event, raw) => {
-    const input = parseInput(mcpUpsertSchema, raw);
-    return changed(() => service.upsertMcpServer(input));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpConfirmLaunch, async (_event, raw) => {
-    const { serverId, fingerprint } = parseInput(mcpConfirmationSchema, raw);
-    return changed(() => service.confirmMcpLaunch(serverId, fingerprint));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpTest, async (_event, raw) => {
-    const { serverId } = parseInput(serverIdSchema, raw);
-    return service.testMcpServer(serverId);
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpServerToggle, async (_event, raw) => {
-    const { serverId, enabled } = parseInput(serverToggleSchema, raw);
-    return changed(() => service.setMcpServerEnabled(serverId, enabled));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpToolToggle, async (_event, raw) => {
-    const { serverId, toolName, enabled } = parseInput(toolToggleSchema, raw);
-    return changed(() => service.setMcpToolEnabled(serverId, toolName, enabled));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpToolAuthorizeRead, async (_event, raw) => {
-    const { serverId, toolName } = parseInput(toolAuthorizationSchema, raw);
-    return changed(() => service.authorizeMcpToolReadOnly(serverId, toolName));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpToolRevokeRead, async (_event, raw) => {
-    const { serverId, toolName } = parseInput(toolAuthorizationSchema, raw);
-    return changed(() => service.revokeMcpToolReadOnly(serverId, toolName));
-  });
-  replaceHandler(ipcMain, ipcChannels.settingsMcpDelete, async (_event, raw) => {
-    const { serverId } = parseInput(serverIdSchema, raw);
-    return changed(() => service.deleteMcpServer(serverId));
   });
   replaceHandler(ipcMain, ipcChannels.settingsPrivacySave, async (_event, raw) => {
     const input = parseInput(privacySettingsSchema, raw);

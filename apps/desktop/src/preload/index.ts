@@ -27,7 +27,6 @@ import {
 } from '../shared/character-motion-ipc';
 import type {
   LocalDataScope,
-  McpServerInput,
   MyselfApi,
   PrivacySettingsDto,
   SaveProviderProfileInput
@@ -88,30 +87,6 @@ const api: MyselfApi = {
   ),
   saveModelRoute: (route: ModelRouteConfig) => (
     ipcRenderer.invoke(ipcChannels.settingsRouteSave, { route })
-  ),
-  upsertMcpServer: (input: McpServerInput) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpUpsert, input)
-  ),
-  confirmMcpLaunch: (serverId: string, fingerprint: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpConfirmLaunch, { serverId, fingerprint })
-  ),
-  testMcpServer: (serverId: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpTest, { serverId })
-  ),
-  setMcpServerEnabled: (serverId: string, enabled: boolean) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpServerToggle, { serverId, enabled })
-  ),
-  setMcpToolEnabled: (serverId: string, toolName: string, enabled: boolean) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpToolToggle, { serverId, toolName, enabled })
-  ),
-  authorizeMcpToolReadOnly: (serverId: string, toolName: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpToolAuthorizeRead, { serverId, toolName })
-  ),
-  revokeMcpToolReadOnly: (serverId: string, toolName: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpToolRevokeRead, { serverId, toolName })
-  ),
-  deleteMcpServer: (serverId: string) => (
-    ipcRenderer.invoke(ipcChannels.settingsMcpDelete, { serverId })
   ),
   savePrivacySettings: (input: PrivacySettingsDto) => (
     ipcRenderer.invoke(ipcChannels.settingsPrivacySave, input)

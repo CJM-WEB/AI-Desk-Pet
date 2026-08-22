@@ -21,27 +21,6 @@ function serviceDouble() {
     deleteProviderProfile: vi.fn(async () => ({ marker: 'deleted' })),
     saveModelRoute: vi.fn(async () => ({ marker: 'route' })),
     testProviderProfile: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
-    upsertMcpServer: vi.fn(async (): Promise<
-      | { kind: 'saved' }
-      | {
-        kind: 'confirmation_required';
-        summary: {
-          command: string;
-          args: string[];
-          cwd: string;
-          explicitEnvNames: string[];
-          inheritedEnvNames: string[];
-          fingerprint: string;
-        };
-      }
-    > => ({ kind: 'saved' })),
-    confirmMcpLaunch: vi.fn(async () => ({ marker: 'confirmed' })),
-    testMcpServer: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
-    setMcpServerEnabled: vi.fn(async () => ({ marker: 'server-toggle' })),
-    setMcpToolEnabled: vi.fn(async () => ({ marker: 'tool-toggle' })),
-    authorizeMcpToolReadOnly: vi.fn(async () => ({ marker: 'tool-authorized' })),
-    revokeMcpToolReadOnly: vi.fn(async () => ({ marker: 'tool-revoked' })),
-    deleteMcpServer: vi.fn(async () => ({ marker: 'mcp-deleted' })),
     savePrivacySettings: vi.fn(async () => ({ marker: 'privacy' })),
     savePetAlwaysOnTop: vi.fn(async () => ({ marker: 'topmost' })),
     setIncognitoSession: vi.fn(async () => ({ incognito: true })),
@@ -50,6 +29,25 @@ function serviceDouble() {
 }
 
 describe('高级设置白名单 IPC', () => {
+  test('不注册 MCP 高级设置 handler', () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = serviceDouble();
+    registerAdvancedSettingsIpc(ipcMain, service);
+    const removedChannels = [
+      'settings:mcp-upsert',
+      'settings:mcp-confirm-launch',
+      'settings:mcp-test',
+      'settings:mcp-server-toggle',
+      'settings:mcp-tool-toggle',
+      'settings:mcp-tool-authorize-read',
+      'settings:mcp-tool-revoke-read',
+      'settings:mcp-delete'
+    ];
+
+    for (const channel of removedChannels) expect(handlers.has(channel)).toBe(false);
+    expect(removedChannels.filter(channel => handlers.has(channel))).toEqual([]);
+  });
+
   test('桌宠置顶使用独立严格布尔通道', async () => {
     const { handlers, ipcMain } = createIpcMain();
     const service = serviceDouble();
@@ -151,63 +149,4 @@ describe('高级设置白名单 IPC', () => {
     expect(service.saveProviderProfile).not.toHaveBeenCalled();
   });
 
-  test('stdio MCP 先返回启动摘要，确认指纹后才允许测试连接', async () => {
-    const { handlers, ipcMain } = createIpcMain();
-    const service = serviceDouble();
-    service.upsertMcpServer.mockResolvedValueOnce({
-      kind: 'confirmation_required',
-      summary: {
-        command: 'C:\\tools\\mcp.exe',
-        args: ['--stdio'],
-        cwd: 'C:\\work',
-        explicitEnvNames: ['TOKEN'],
-        inheritedEnvNames: [],
-        fingerprint: 'fingerprint-1'
-      }
-    });
-    registerAdvancedSettingsIpc(ipcMain, service);
-
-    const saved = await handlers.get(ipcChannels.settingsMcpUpsert)?.({}, {
-      id: 'local-tools',
-      enabled: true,
-      transport: {
-        type: 'stdio',
-        command: 'C:\\tools\\mcp.exe',
-        args: ['--stdio'],
-        cwd: 'C:\\work',
-        env: { TOKEN: 'secret-token' },
-        inheritEnv: []
-      }
-    });
-    expect(saved).toMatchObject({ kind: 'confirmation_required' });
-    expect(service.testMcpServer).not.toHaveBeenCalled();
-
-    await handlers.get(ipcChannels.settingsMcpConfirmLaunch)?.({}, {
-      serverId: 'local-tools',
-      fingerprint: 'fingerprint-1'
-    });
-    expect(service.confirmMcpLaunch).toHaveBeenCalledWith(
-      'local-tools',
-      'fingerprint-1'
-    );
-  });
-
-  test('MCP 本地只读授权使用严格 serverId/toolName 白名单输入', async () => {
-    const { handlers, ipcMain } = createIpcMain();
-    const service = serviceDouble();
-    registerAdvancedSettingsIpc(ipcMain, service);
-
-    await handlers.get(ipcChannels.settingsMcpToolAuthorizeRead)?.({}, {
-      serverId: 'local-tools',
-      toolName: 'echo'
-    });
-    expect(service.authorizeMcpToolReadOnly).toHaveBeenCalledWith('local-tools', 'echo');
-
-    await expect(handlers.get(ipcChannels.settingsMcpToolRevokeRead)?.({}, {
-      serverId: 'local-tools',
-      toolName: 'echo',
-      injected: true
-    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
-    expect(service.revokeMcpToolReadOnly).not.toHaveBeenCalled();
-  });
 });

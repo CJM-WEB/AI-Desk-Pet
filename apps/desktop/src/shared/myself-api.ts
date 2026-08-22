@@ -138,27 +138,6 @@ export interface MyselfApi extends PetWindowInteractionApi {
   deleteProviderProfile(profileId: string): Promise<SettingsDashboardDto>;
   testProviderProfile(profileId: string): Promise<{ ok: boolean; message: string }>;
   saveModelRoute(route: ModelRouteConfig): Promise<SettingsDashboardDto>;
-  upsertMcpServer(input: McpServerInput): Promise<
-    | { kind: 'saved'; dashboard: SettingsDashboardDto }
-    | { kind: 'confirmation_required'; summary: McpLaunchSummaryDto }
-  >;
-  confirmMcpLaunch(serverId: string, fingerprint: string): Promise<SettingsDashboardDto>;
-  testMcpServer(serverId: string): Promise<{ ok: boolean; message: string }>;
-  setMcpServerEnabled(serverId: string, enabled: boolean): Promise<SettingsDashboardDto>;
-  setMcpToolEnabled(
-    serverId: string,
-    toolName: string,
-    enabled: boolean
-  ): Promise<SettingsDashboardDto>;
-  authorizeMcpToolReadOnly(
-    serverId: string,
-    toolName: string
-  ): Promise<SettingsDashboardDto>;
-  revokeMcpToolReadOnly(
-    serverId: string,
-    toolName: string
-  ): Promise<SettingsDashboardDto>;
-  deleteMcpServer(serverId: string): Promise<SettingsDashboardDto>;
   savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto>;
   savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto>;
   setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }>;

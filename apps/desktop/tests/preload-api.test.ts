@@ -51,8 +51,6 @@ describe('preload 清除本地数据转发', () => {
     });
     await exposedApi?.setIncognitoSession(true);
     await exposedApi?.savePetAlwaysOnTop(true);
-    await exposedApi?.authorizeMcpToolReadOnly('local-tools', 'echo');
-    await exposedApi?.revokeMcpToolReadOnly('local-tools', 'echo');
 
     expect(invoke).toHaveBeenNthCalledWith(1, ipcChannels.settingsDashboardGet);
     expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.settingsRouteSave, {
@@ -70,14 +68,6 @@ describe('preload 清除本地数据转发', () => {
     });
     expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.settingsPetAlwaysOnTopSave, {
       enabled: true
-    });
-    expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.settingsMcpToolAuthorizeRead, {
-      serverId: 'local-tools',
-      toolName: 'echo'
-    });
-    expect(invoke).toHaveBeenNthCalledWith(6, ipcChannels.settingsMcpToolRevokeRead, {
-      serverId: 'local-tools',
-      toolName: 'echo'
     });
   });
 });
@@ -126,14 +116,6 @@ describe('preload 公开 API', () => {
       'deleteProviderProfile',
       'testProviderProfile',
       'saveModelRoute',
-      'upsertMcpServer',
-      'confirmMcpLaunch',
-      'testMcpServer',
-      'setMcpServerEnabled',
-      'setMcpToolEnabled',
-      'authorizeMcpToolReadOnly',
-      'revokeMcpToolReadOnly',
-      'deleteMcpServer',
       'savePrivacySettings',
       'savePetAlwaysOnTop',
       'setIncognitoSession',

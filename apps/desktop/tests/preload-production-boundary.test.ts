@@ -25,6 +25,23 @@ afterAll(() => {
 });
 
 describe('生产 preload 探针边界', () => {
+  test('生产 preload 不公开 MCP 方法', () => {
+    const apiKeys = new Set(Object.keys(exposedApi ?? {}));
+    const removedMcpKeys = [
+      'upsertMcpServer',
+      'confirmMcpLaunch',
+      'testMcpServer',
+      'setMcpServerEnabled',
+      'setMcpToolEnabled',
+      'authorizeMcpToolReadOnly',
+      'revokeMcpToolReadOnly',
+      'deleteMcpServer'
+    ];
+
+    for (const key of removedMcpKeys) expect(apiKeys.has(key)).toBe(false);
+    expect(removedMcpKeys.filter(key => apiKeys.has(key))).toEqual([]);
+  });
+
   test('缺少 E2E 固定参数时不暴露桌宠交互探针', () => {
     expect(exposedApi).toBeDefined();
     expect(exposedApi).not.toHaveProperty('getPetInteractionProbe');
