@@ -178,3 +178,11 @@ Task 5 最终阶段没有单独重复运行 build、完整 Desktop E2E 与 `--li
 相对总门基线 `c7d951d`，`apps/desktop/tests` 为 `+1648/-825`（净 `+823`），`tests/e2e` 为 `+308/-469`（净 `-161`），合计 `+1956/-1294`（净 `+662`）。因此状态只能是：**第二轮安全表达减法完成，测试行数总门仍未达。**剩余正值继续登记为唯一 owner 债务，主要包括角色包导入 token、真实 Store 重启、竞态、证据发布/保留、256 项与 2000ms 预算；启动恢复顺序、fallback、最终 load 瞬时/持续失败与深冻结快照；Main/Preload Schema 双边界、Pet 异步顺序、Workshop StrictMode 与 RPC 失败脱敏；Desktop Electron 生命周期、安全诊断、窗口交互和两条角色恢复重启 E2E，以及既有减法规格列明的其余安全与跨进程证据。本轮不宣称债务归零、安全减法已耗尽或可以删除唯一 owner。
 
 最终静态检查确认 loader 调用点仍为 58 个，`if (!fixture.restart) return` 业务能力守卫保留，启动最终 load、完整共享 Schema 矩阵、Preload 代表非法返回、两份 corrupt 原字节断言与三类证据发布失败 owner 均仍存在；旧生产符号扫描零命中，`fallbackActive` 只在严格 Schema 负例保留。网站、CloudBase、scanner、网站 E2E 与配置保护路径在提交历史、工作树和暂存区均为零差异；`git diff --check b16d542..HEAD`、`git diff --check` 与 `git diff --cached --check` 均无输出。真实 Windows 窗口层级、焦点、布局、文案可读性、重启视觉和拖拽体验仍待用户人工确认。
+
+## 2026-08-22 恢复开发门最终验收（`0c541f3`）
+
+上一回合的 Store 六场景重复磁盘矩阵在 5000ms 超时后，按既有减法规格删除 51 行；没有新增生产代码或放宽测试。最终可执行树上 `verify:desktop`、`verify:characters`、`verify:behavior`、`test:security`、`test:integration` 依次退出 0，工具墙钟分别为 328.5、303.3、289.5、2.9、6.4 秒；其中 Desktop 单元为 109/109 文件、2251 项通过、14 项跳过，安全 20/20、集成 46/46、Electron E2E 62/62。独立证据复审为 C0/I0/M0 Ready，自动化恢复开发门已通过。
+
+测试总账更新为 `+1955/-1344`、净增 `611`，网站、CloudBase、scanner 与网站 E2E 四态零差异。真实 Windows 窗口层级、鼠标拖拽、系统托盘、干净环境安装卸载仍为“待用户人工确认”，不把自动化通过改写成人工观察通过。
+
+稳定性准入通过，已知偶发超时根因未定位；本次验收不宣称更早的偶发超时已经找到统一根因。

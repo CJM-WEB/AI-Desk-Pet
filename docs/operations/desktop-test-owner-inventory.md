@@ -2,15 +2,15 @@
 
 ## 1. 审计范围与裁决
 
-- 审计日期：2026-08-21。
+- 审计日期：2026-08-21；2026-08-22 完成一次补充减法复核。
 - 比较基线：`c7d951d`。
-- `OWNER_AUDIT_HEAD`：`0ffc39c9589c3c67612c4d6fb52cd7374d81c7f9`。
+- `OWNER_AUDIT_HEAD`：`0c541f33a56bb47b49635f4ecf605b30eb50b370`。
 - 审计路径：`apps/desktop/tests`、`tests/e2e`。
 - Task 1 终局：三个获批 feedback seam 共 15 轮均为 GREEN，未建立合格 RED；未进入 Task 2、Task 3、Task 5 或 Task 6。本文只审计现有 owner，不把该历史绿色改写为开发门通过。
 - 分类口径：`业务 owner` 直接经过公开 seam 观察业务不变量；`测试装配` 只构造或复用测试 adapter；`已删旧路径` 表示行为已由更深 interface 的 owner 替代；`纯移动/格式` 不改变测试表达。
 - 层级口径：优先在深模块的公开 interface 建立最低合理 owner。Main、Preload、Renderer 和真实 Electron 是不同可信 seam；跨 seam 的安全证据不互相替代。
 - RED 口径：下表的“RED 能力”只记录已存在的历史 RED、已记录 mutation 或可核验的最小破坏敏感点；本文没有伪称重新执行 mutation。
-- 最终裁决：`零安全删除`。所有疑似重复均已在既有减法提交中替换，或仍是安全、竞态、持久化、严格跨进程边界、异步顺序、真实 Electron 生命周期的唯一 owner。不存在同时满足“精确替代 owner + 替代 seam 能捕获回归 + 非唯一关键证据”的新候选，故 `owner-subtraction-files.txt` 为空。
+- 最终裁决：原审计为`零安全删除`；2026-08-22 的真实门禁 RED 暴露 `CharacterStore` 六场景磁盘矩阵仍与纯协调器 owner 重复，因此在 `0c541f3` 删除该 51 行用例。独立复审确认其余安全、竞态、持久化、跨进程和真实 Electron owner 均继续保留。
 
 ## 2. Agent、IPC 与窗口边界
 
@@ -91,11 +91,12 @@
 - 疑似重复：原语错误矩阵在 atomic owner；Store 只拥有 owner token/活动角色/物理身份；E2E 只保留恢复重启纵向场景。
 - 旧路径与裁决：旧普通删除回滚、v1/v2 执行式恢复及重复 helper 已删除；安全/竞态/持久化 owner 全部保留。
 
-### `apps/desktop/tests/character-store.test.ts`（`+68/-71`）
+### `apps/desktop/tests/character-store.test.ts`（`+67/-121`）
 
 - hunk/测试簇 A：不存在角色为 absent、活动角色即使 token 匹配也不删、checkpoint 后另一 Store 激活仍保留所有权、目录替换为 ownership-mismatch（约 416–511 行，`业务 owner`）。
 - hunk/测试簇 B：真实坏 draft/publish marker、健康 runtime gate、V1 draft/compiled 字节不变、deferred 文件不触碰、Junction/EACCES、report 原子发布、显式 delete、索引集合清理（约 1859–2228 行，`业务 owner`）。
 - hunk/测试簇 C：删除 `deferred`/`budgetExceeded` 断言、未发布坏 publish 与 tombstone 重复场景（`已删旧路径`）。
+- 补充减法：删除 active/non-active × bad draft/bad publish/both 的六场景完整磁盘排列；分面矩阵继续由 `character-transaction-recovery.test.ts` 拥有，Store 保留两条真实坏 marker 纵向证据。
 - 不变量/seam/层级：公开 seam 是 `CharacterStore` 的创建、带 token 回滚、`list()`/runtime/write gates 与 recovery report；真实磁盘 Store 集成层是持久化、重启和 Junction 的最低合理层。
 - RED 能力：`6bf8126` 的活动角色竞态修复与 B1 历史 RED；去掉 token/活动复核、移动前后身份、原字节保留或 report 原子提交会让相应真实磁盘断言失败。
 - 疑似重复：纯 256/2000ms 算法由 `character-transaction-recovery.test.ts` 拥有；PackageService 只拥有 package marker saga。
@@ -191,14 +192,16 @@
 - 疑似重复：Main 单元层拥有算法矩阵；E2E 仅拥有真实 Electron 生命周期、跨窗口和重启纵向证据。两条恢复场景已达规格上限，不按错误码横向扩张。
 - 旧路径与裁决：nullable fixture 表达、局部页面 helper 和独立票据场景已删除；现有 loader、可选 `restart` 业务守卫、生命周期/诊断/窗口场景及两条恢复 E2E 均保留。
 
-## 6. 逐零上下文 hunk 机械映射（259/259）
+## 6. 逐零上下文 hunk 机械映射（历史基座 259/259 + 当前减法增量 1/1）
 
 ### 6.1 编号与封闭规则
 
-- 原始 hunk ID 按 `git diff --unified=0 c7d951d..d2672b7 -- apps/desktop/tests tests/e2e` 的输出顺序固定为 `H001..H259`；提交 `d2672b7` 只增加本文，不改变测试差异，因此该区间与当前测试树相同。
+- 原始 hunk ID 按 `git diff --unified=0 c7d951d..d2672b7 -- apps/desktop/tests tests/e2e` 的输出顺序固定为 `H001..H259`，作为不可变历史审计基座。当前树 `0c541f3` 相对该基座只有 `character-store.test.ts` 的 `0/-51` 单一减法增量；不再声称历史 raw hunk 编号与当前 257 个 raw hunk 一一相同。
 - 下表的“位置”逐字保存 Git hunk header；文件码解析为精确路径。每个原始 ID 必须出现一次；只有混合 hunk 使用 `-a/-b` 拆成两个有效簇，且不得同时保留无后缀行。
 - 分类字段只能是 `业务 owner`、`测试装配`、`已删旧路径`、`纯移动/格式` 之一。非业务项固定写“不适用”并指向承接业务测试；已删旧路径还必须引用下列可重复执行的零命中证据。
-- 本区共 259 个原始 ID、268 个有效簇；`tests/e2e/desktop.spec.ts` 精确占 `H166..H259` 共 94 个原始 hunk。
+- 历史基座共 259 个原始 ID、268 个有效簇；`tests/e2e/desktop.spec.ts` 精确占 `H166..H259` 共 94 个原始 hunk。机械复核 `c7d951d..0c541f3` 为 257 个 raw hunk，其中 F08 从 20 个降为 18 个；当前 owner 覆盖由本历史基座与下述唯一减法增量共同表达。
+
+- 当前减法增量 `S001`：`git diff --unified=0 d2672b7..0c541f3 -- apps/desktop/tests/character-store.test.ts` 精确为 `@@ -1874,51 +1873,0 @@ describe('CharacterStore', () => {`；分类为`已删旧路径`，由 O08 的纯协调器矩阵与 O07 的真实 Store 纵向边界共同承接。增量命令 `git diff --numstat d2672b7..0c541f3 -- apps/desktop/tests/character-store.test.ts` 精确为 `0/51`。
 
 ### 6.2 文件码
 
@@ -538,7 +541,7 @@
 
 ## 7. `numstat` 机械总账
 
-下表取自 `git diff --numstat c7d951d..0ffc39c -- apps/desktop/tests tests/e2e`；删除文件的新增数为 0，新文件的删除数为 0。
+下表取自 `git diff --numstat c7d951d..0c541f3 -- apps/desktop/tests tests/e2e`；删除文件的新增数为 0，新文件的删除数为 0。
 
 | 路径 | 新增 | 删除 | 净值 |
 | --- | ---: | ---: | ---: |
@@ -549,7 +552,7 @@
 | `apps/desktop/tests/character-package-service.test.ts` | 761 | 117 | +644 |
 | `apps/desktop/tests/character-recovery.test.ts` | 28 | 1 | +27 |
 | `apps/desktop/tests/character-startup.test.ts` | 182 | 33 | +149 |
-| `apps/desktop/tests/character-store.test.ts` | 68 | 71 | -3 |
+| `apps/desktop/tests/character-store.test.ts` | 67 | 121 | -54 |
 | `apps/desktop/tests/character-transaction-recovery.test.ts` | 137 | 317 | -180 |
 | `apps/desktop/tests/character-workshop-close-renderer.test.tsx` | 95 | 65 | +30 |
 | `apps/desktop/tests/character-workshop-components.test.tsx` | 6 | 2 | +4 |
@@ -562,8 +565,8 @@
 | `apps/desktop/tests/vitest-worker-cap.test.ts` | 0 | 14 | -14 |
 | `apps/desktop/tests/window-security.test.ts` | 2 | 6 | -4 |
 | `tests/e2e/desktop.spec.ts` | 308 | 469 | -161 |
-| `apps/desktop/tests` 小计 | 1648 | 825 | +823 |
+| `apps/desktop/tests` 小计 | 1647 | 875 | +772 |
 | `tests/e2e` 小计 | 308 | 469 | -161 |
-| **Git 总账** | **1956** | **1294** | **+662** |
+| **Git 总账** | **1955** | **1344** | **+611** |
 
-逐文件求和：新增 `1648 + 308 = 1956`，删除 `825 + 469 = 1294`，净值 `1956 - 1294 = +662`，与 Git 总账一致。本文如实记录“零安全删除”，不宣称安全减法已经穷尽；后续若要继续删除，必须以新的精确替代 owner、公开 seam 和 RED/mutation 证据重新通过删除门。
+逐文件求和：新增 `1647 + 308 = 1955`，删除 `875 + 469 = 1344`，净值 `1955 - 1344 = +611`，与 Git 总账一致。相对上一账本继续净减 51 行；本文不宣称安全减法已经穷尽，后续删除仍必须具有精确替代 owner、公开 seam 和 RED/mutation 证据。
