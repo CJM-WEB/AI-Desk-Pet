@@ -730,6 +730,10 @@ const mcpSlotFile = join(
   `${file}.profiles`,
   `${createHash('sha256').update('mcp:remote-tools').digest('hex')}.bin`
 );
+const providerSlotFile = join(
+  `${file}.profiles`,
+  `${createHash('sha256').update('provider-main').digest('hex')}.bin`
+);
 const beforeMcpSlot = await readFile(mcpSlotFile);
 
 await store.clear('provider-main');
@@ -738,8 +742,12 @@ expect(afterMcpSlot.equals(beforeMcpSlot)).toBe(true);
 await expect(store.readForProviderCall('provider-main')).rejects.toThrow();
 await expect(store.readForProviderCall('mcp:remote-tools')).resolves.toBe('mcp-secret');
 
+await store.save('provider-main', 'provider-secret-restored', true);
+await expect(readFile(providerSlotFile)).resolves.toBeInstanceOf(Buffer);
+await expect(readFile(mcpSlotFile)).resolves.toBeInstanceOf(Buffer);
 await store.clearAll();
-await expect(store.readForProviderCall('mcp:remote-tools')).rejects.toThrow();
+await expect(readFile(providerSlotFile)).rejects.toMatchObject({ code: 'ENOENT' });
+await expect(readFile(mcpSlotFile)).rejects.toMatchObject({ code: 'ENOENT' });
 ```
 
 原始槽文件 Buffer 相等是单项清除不影响 MCP Secret 的主证据；最后一条明文读取相等只作为辅助。`clearAll()` 后还要断言普通 Provider 槽和 MCP 槽文件都不存在。
