@@ -5,6 +5,7 @@ import {
   type CharacterBehaviorStateSnapshot,
   type CharacterManifestV2,
   type CharacterStateDefinitionV2,
+  selectDirectedCharacterBehaviorAction,
   selectCharacterBehaviorAction
 } from '../src';
 
@@ -128,6 +129,68 @@ function createInput(
 }
 
 describe('V2 行为动作选择器', () => {
+  test('私有定向目标仍经过状态、方向、冷却、重复抑制与表现硬约束', () => {
+    const directed = createAction('directed-action', 'celebrate', {
+      direction: 'right',
+      cooldownMs: 500,
+      repeatSuppressionMs: 500
+    });
+    const manifest = createManifest({
+      actions: [createAction('idle-action', 'idle'), directed],
+      states: [
+        createState('active-state', 'primary', ['idle-action']),
+        createState('directed-state', 'primary', ['directed-action'])
+      ],
+      defaultStateId: 'active-state',
+      skins: [createSkin('default-skin', ['idle-action', 'directed-action'])]
+    });
+
+    expect(selectDirectedCharacterBehaviorAction(
+      createInput(manifest),
+      { kind: 'state', stateId: 'directed-state' }
+    )).toMatchObject({ actionId: 'directed-action', stateId: 'directed-state' });
+
+    const constrained = createInput(manifest, {
+      actionRecencyById: {
+        'directed-action': { latestStartedAtMs: 800, latestFinishedAtMs: 900 }
+      }
+    });
+    expect(() => selectDirectedCharacterBehaviorAction(
+      constrained,
+      { kind: 'action', actionId: 'directed-action' }
+    )).toThrow('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
+  });
+
+  test('语义定向不会用默认待机动作冒充缺失的目标语义', () => {
+    const manifest = createManifest({
+      actions: [createAction('idle-action', 'idle')],
+      states: [createState('active-state', 'primary', ['idle-action'])],
+      defaultStateId: 'active-state'
+    });
+
+    expect(() => selectDirectedCharacterBehaviorAction(
+      createInput(manifest),
+      { kind: 'semantic', semantic: 'celebrate' }
+    )).toThrow('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
+  });
+
+  test('定向动作缺少当前皮肤精确表现时不借默认状态表现冒充成功', () => {
+    const manifest = createManifest({
+      actions: [
+        createAction('idle-action', 'idle'),
+        createAction('hidden-action', 'celebrate')
+      ],
+      states: [createState('active-state', 'primary', ['idle-action', 'hidden-action'])],
+      defaultStateId: 'active-state',
+      skins: [createSkin('default-skin', ['idle-action'])]
+    });
+
+    expect(() => selectDirectedCharacterBehaviorAction(
+      createInput(manifest),
+      { kind: 'action', actionId: 'hidden-action' }
+    )).toThrow('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
+  });
+
   test('硬状态约束会排除高偏好动作，只有当前状态引用的合格动作可以入选', () => {
     const actions = [
       createAction('allowed-blocked', 'speak', { preference: 100, allowedPrimaryStateIds: ['other-state'] }),

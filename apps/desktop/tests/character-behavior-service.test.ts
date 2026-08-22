@@ -1,8 +1,12 @@
 import type {
+  BehaviorTarget,
   CharacterAgentBehaviorIntent,
+  CharacterBehaviorAuthorization,
   CharacterManifestV1,
   CharacterManifestV2,
-  CharacterPlaybackFeedback
+  CharacterPlaybackFeedback,
+  PublicBehaviorCatalog,
+  ResolvedBehaviorTarget
 } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -42,7 +46,13 @@ type BehaviorService = {
   initialize(): Promise<void>;
   beginTaskCarry(): { playbackToken: string; actionId: string; commitFrameId: string | null };
   endTaskCarry(): void;
-  handleTaskEvent(event: TaskEvent): void;
+  getPublicBehaviorCatalog(): PublicBehaviorCatalog;
+  resolveBehaviorTarget(target: BehaviorTarget): ResolvedBehaviorTarget;
+  requestDirectedBehavior(target: ResolvedBehaviorTarget, options?: {
+    urgency?: number;
+    systemForced?: boolean;
+  }): CharacterBehaviorAuthorization;
+  handleTaskEvent(event: TaskEvent): CharacterBehaviorAuthorization;
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void;
   handleMovement(snapshot: CharacterMotionSnapshot): void;
   handleUserInteraction(): void;
@@ -303,6 +313,57 @@ describe('Main 角色行为权威服务', () => {
 
   beforeEach(async () => {
     Constructor = await loadConstructor();
+  });
+
+  test('公开清单与定向请求之间只传递已解析私有目标', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+
+    const catalog = service.getPublicBehaviorCatalog();
+    const target = service.resolveBehaviorTarget({ kind: 'action_name', name: 'celebrate 动作' });
+    const authorization = service.requestDirectedBehavior(target, {
+      urgency: 80,
+      systemForced: true
+    });
+
+    expect(catalog.characterName).toBe('first 角色');
+    expect(JSON.stringify(catalog)).not.toContain('celebrate-action');
+    expect(target).toEqual({ kind: 'action', actionId: 'celebrate-action' });
+    expect(authorization).toEqual({
+      kind: 'play',
+      actionId: 'celebrate-action',
+      playbackToken: 'behavior-token-2',
+      semantic: 'celebrate'
+    });
+    expect(events).toEqual([expect.objectContaining({
+      type: 'behavior-action',
+      actionId: 'celebrate-action',
+      playbackToken: 'behavior-token-2'
+    })]);
+  });
+
+  test('定向动作不可用时不发布待机冒充结果', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    events.splice(0);
+
+    const authorization = service.requestDirectedBehavior({
+      kind: 'action',
+      actionId: 'missing-action'
+    }, { urgency: 80, systemForced: true });
+
+    expect(authorization).toEqual({
+      kind: 'none',
+      diagnosticCode: 'CHARACTER_ACTION_UNAVAILABLE'
+    });
+    expect(events).toEqual([]);
   });
 
   test('开始任务搬运返回当前皮肤的精确授权并只发布同一个真实动作', async () => {

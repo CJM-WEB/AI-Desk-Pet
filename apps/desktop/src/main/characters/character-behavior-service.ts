@@ -1,12 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import {
   CharacterBehaviorEngine,
+  createPublicBehaviorCatalog,
+  resolveBehaviorTarget,
+  type BehaviorTarget,
   type CharacterAgentBehaviorIntent,
+  type CharacterBehaviorAuthorization,
   type CharacterBehaviorDecision,
   type CharacterBehaviorSignal,
   type CharacterManifestV1,
   type CharacterManifestV2,
   type CharacterPlaybackFeedback,
+  type PublicBehaviorCatalog,
+  type ResolvedBehaviorTarget,
   resolveCharacterPresentation
 } from '@myself/character-runtime';
 import type { TaskEvent } from '@myself/shared-types';
@@ -69,6 +75,7 @@ export type CharacterBehaviorServiceOptions = {
 };
 
 const DEFAULT_IDLE_INTERVAL_MS = 10_000;
+const NO_BEHAVIOR_AUTHORIZATION: CharacterBehaviorAuthorization = { kind: 'none' };
 
 /** Main 独占角色行为决策、调度令牌和运动意图的生产权。 */
 export class CharacterBehaviorService {
@@ -107,6 +114,41 @@ export class CharacterBehaviorService {
     this.direction = snapshot.direction;
     this.moving = snapshot.moving;
     await this.loadActiveCharacter(false);
+  }
+
+  /** 返回当前 V2 角色可播放的公开能力；初始化、切换和兼容态均不泄露旧清单。 */
+  getPublicBehaviorCatalog(): PublicBehaviorCatalog {
+    if (this.closed || this.transitioning || !this.manifest) {
+      throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+    }
+    return createPublicBehaviorCatalog(this.manifest, this.engine?.snapshot().skinId ?? this.manifest.defaultSkinId);
+  }
+
+  /** 在 Main 私有清单内把模型可见名称解析为唯一私有目标。 */
+  resolveBehaviorTarget(target: BehaviorTarget): ResolvedBehaviorTarget {
+    if (this.closed || this.transitioning || !this.manifest) {
+      throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+    }
+    return resolveBehaviorTarget(
+      this.manifest,
+      this.engine?.snapshot().skinId ?? this.manifest.defaultSkinId,
+      target
+    );
+  }
+
+  /** 定向请求仍经现有 Engine 的硬约束、调度器与令牌授权，不直接发布动作 ID。 */
+  requestDirectedBehavior(
+    target: ResolvedBehaviorTarget,
+    options: Readonly<{ urgency?: number; systemForced?: boolean }> = {}
+  ): CharacterBehaviorAuthorization {
+    if (this.closed || this.transitioning || !this.engine) return NO_BEHAVIOR_AUTHORIZATION;
+    const decision = this.engine.dispatchDirected({
+      target,
+      direction: this.direction,
+      urgency: options.urgency ?? 0,
+      systemForced: options.systemForced ?? false
+    });
+    return this.publish(decision);
   }
 
   /**
@@ -156,19 +198,19 @@ export class CharacterBehaviorService {
     }));
   }
 
-  handleTaskEvent(event: TaskEvent): void {
-    if (this.closed) return;
+  handleTaskEvent(event: TaskEvent): CharacterBehaviorAuthorization {
+    if (this.closed) return NO_BEHAVIOR_AUTHORIZATION;
     this.options.motion.applyTaskEvent(event);
     const now = this.now();
     if (this.transitioning) {
       this.captureTaskContext(event, now);
-      return;
+      return NO_BEHAVIOR_AUTHORIZATION;
     }
     if (event.type === 'pending_action') {
       this.taskIdleBlocked = true;
-      return;
+      return NO_BEHAVIOR_AUTHORIZATION;
     }
-    if (event.type !== 'phase') return;
+    if (event.type !== 'phase') return NO_BEHAVIOR_AUTHORIZATION;
 
     if (event.phase === 'idle' || event.phase === 'cancelled') {
       this.taskContextSignal = null;
@@ -176,13 +218,13 @@ export class CharacterBehaviorService {
       this.taskIdleBlocked = false;
       this.nextIdleAt = now + this.idleIntervalMs;
       this.restoreDefaultPlayback(now);
-      return;
+      return NO_BEHAVIOR_AUTHORIZATION;
     }
     if (event.phase === 'awaiting_confirmation' || event.phase === 'acting') {
       this.taskContextSignal = null;
       this.deactivateTaskSignal(now);
       this.taskIdleBlocked = true;
-      return;
+      return NO_BEHAVIOR_AUTHORIZATION;
     }
 
     this.taskIdleBlocked = event.phase === 'listening' || event.phase === 'thinking';
@@ -195,8 +237,7 @@ export class CharacterBehaviorService {
         active: true,
         occurredAtMs: now
       };
-      this.dispatch({ type: event.phase, active: true, occurredAtMs: now });
-      return;
+      return this.dispatch({ type: event.phase, active: true, occurredAtMs: now });
     }
 
     this.deactivateTaskSignal(now);
@@ -205,7 +246,7 @@ export class CharacterBehaviorService {
       phase: event.phase === 'success' ? 'success' : 'failure',
       occurredAtMs: now
     };
-    this.dispatch(this.taskContextSignal);
+    return this.dispatch(this.taskContextSignal);
   }
 
   handleAgentIntent(intent: CharacterAgentBehaviorIntent): void {
@@ -473,9 +514,9 @@ export class CharacterBehaviorService {
   private dispatch(
     signal: CharacterBehaviorSignal,
     agentIntent?: CharacterAgentBehaviorIntent
-  ): void {
-    if (!this.engine || this.transitioning) return;
-    this.publish(this.engine.dispatch({
+  ): CharacterBehaviorAuthorization {
+    if (!this.engine || this.transitioning) return NO_BEHAVIOR_AUTHORIZATION;
+    return this.publish(this.engine.dispatch({
       signal,
       direction: this.direction,
       ...(agentIntent === undefined ? {} : { agentIntent })
@@ -487,7 +528,12 @@ export class CharacterBehaviorService {
     decision: CharacterBehaviorDecision,
     commitFrameId: string | null = null,
     requestMovementIntent = true
-  ): void {
+  ): CharacterBehaviorAuthorization {
+    let authorization: CharacterBehaviorAuthorization = decision.diagnosticCodes.includes(
+      'CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE'
+    )
+      ? { kind: 'none', diagnosticCode: 'CHARACTER_ACTION_UNAVAILABLE' }
+      : NO_BEHAVIOR_AUTHORIZATION;
     for (const effect of decision.effects) {
       if (effect.type !== 'play') continue;
       const event: CharacterBehaviorPlaybackEvent = {
@@ -505,8 +551,17 @@ export class CharacterBehaviorService {
       if (requestMovementIntent && action?.semantic === 'move') {
         this.options.motion.requestIntent('wander');
       }
+      if (action) {
+        authorization = {
+          kind: 'play',
+          actionId: effect.action.actionId,
+          playbackToken: effect.action.playbackToken,
+          semantic: action.semantic
+        };
+      }
       this.emit(event);
     }
+    return authorization;
   }
 
   private pollLegacyIdle(): void {

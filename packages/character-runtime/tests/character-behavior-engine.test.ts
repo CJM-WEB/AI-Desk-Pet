@@ -199,6 +199,39 @@ function 创建引擎(
 }
 
 describe('事件驱动角色行为引擎', () => {
+  test('定向授权复用同一调度器并返回真实动作与播放令牌', () => {
+    const engine = 创建引擎(创建六语义清单());
+
+    const decision = engine.dispatchDirected({
+      target: { kind: 'action', actionId: 'celebrate-action' },
+      direction: 'right',
+      urgency: 80,
+      systemForced: true
+    });
+
+    expect(decision.snapshot.state.primaryStateId).toBe('idle-state');
+    expect(decision.snapshot.schedule.current).toMatchObject({
+      actionId: 'celebrate-action',
+      playbackToken: 'token-1'
+    });
+    expect(decision.effects).toEqual([{ type: 'play', action: decision.snapshot.schedule.current }]);
+  });
+
+  test('定向目标不可用时不生成待机令牌并返回稳定诊断', () => {
+    const engine = 创建引擎(创建六语义清单());
+
+    const decision = engine.dispatchDirected({
+      target: { kind: 'action', actionId: 'missing-action' },
+      direction: 'right',
+      urgency: 80,
+      systemForced: true
+    });
+
+    expect(decision.effects).toEqual([{ type: 'none' }]);
+    expect(decision.snapshot.schedule.current).toBeNull();
+    expect(decision.diagnosticCodes).toEqual(['CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']);
+  });
+
   test('Main 搬运事实通过现有选择与调度链生成真实播放令牌', () => {
     const engine = 创建引擎(创建搬运清单());
 

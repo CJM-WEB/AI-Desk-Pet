@@ -12,3 +12,4 @@ export * from './behavior-action-selector';
 export * from './behavior-scheduler';
 export * from './character-behavior-engine';
 export * from './character-behavior-plan';
+export * from './behavior-target-resolver';

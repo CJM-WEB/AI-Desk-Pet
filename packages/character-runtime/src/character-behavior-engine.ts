@@ -7,10 +7,12 @@ import type {
 } from './behavior-contracts';
 import {
   authorizeCharacterBehaviorAction,
+  selectDirectedCharacterBehaviorAction,
   selectCharacterBehaviorAction,
   type CharacterActionRecency,
   type CharacterBehaviorActionSelection
 } from './behavior-action-selector';
+import type { ResolvedBehaviorTarget } from './behavior-target-resolver';
 import {
   reduceCharacterActionSchedule,
   type CharacterBehaviorSchedule,
@@ -175,6 +177,23 @@ export class CharacterBehaviorEngine {
       nowMs: this.now(),
       urgency: systemForced ? 100 : 0,
       systemForced
+    });
+  }
+
+  /** 对已解析私有目标执行同一套选择、冷却、调度和播放令牌授权。 */
+  dispatchDirected(input: {
+    target: ResolvedBehaviorTarget;
+    direction: 'left' | 'right';
+    urgency: number;
+    systemForced: boolean;
+  }): CharacterBehaviorDecision {
+    this.lastDirection = input.direction;
+    return this.selectAndSchedule({
+      direction: input.direction,
+      nowMs: this.now(),
+      urgency: input.urgency,
+      systemForced: input.systemForced,
+      directedTarget: input.target
     });
   }
 
@@ -343,12 +362,13 @@ export class CharacterBehaviorEngine {
       urgency: number;
       systemForced: boolean;
       requiredActionSemantic?: CharacterStandardSemantic;
+      directedTarget?: ResolvedBehaviorTarget;
     },
     diagnosticCodes: CharacterBehaviorDiagnosticCode[] = []
   ): CharacterBehaviorDecision {
     let selection: CharacterBehaviorActionSelection;
     try {
-      selection = selectCharacterBehaviorAction({
+      const selectionInput = {
         manifest: this.manifest,
         skinId: this.skinId,
         state: this.state,
@@ -357,7 +377,10 @@ export class CharacterBehaviorEngine {
         history: this.schedule.history,
         actionRecencyById: this.actionRecencyById,
         random: this.random
-      });
+      };
+      selection = input.directedTarget
+        ? selectDirectedCharacterBehaviorAction(selectionInput, input.directedTarget)
+        : selectCharacterBehaviorAction(selectionInput);
     } catch (error) {
       if (!isActionUnavailable(error)) throw error;
       return this.decision(

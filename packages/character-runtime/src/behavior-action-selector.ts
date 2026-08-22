@@ -4,6 +4,7 @@ import type {
   CharacterManifestV2
 } from './character-v2-schema';
 import type { CharacterBehaviorStateSnapshot } from './behavior-contracts';
+import type { ResolvedBehaviorTarget } from './behavior-target-resolver';
 import { resolveCharacterPresentation } from './character-presentation-resolver';
 
 export type CharacterActionHistoryEntry = {
@@ -89,6 +90,18 @@ function matchesDirection(
   direction: CharacterBehaviorActionSelectionInput['direction']
 ): boolean {
   return action.direction === 'any' || action.direction === direction;
+}
+
+/** 定向能力只承诺当前皮肤的精确表现，不能把普通默认回退伪装成目标动作。 */
+function hasCurrentSkinPresentation(
+  input: CharacterBehaviorActionSelectionInput,
+  actionId: string
+): boolean {
+  return Boolean(input.manifest.skins
+    .find(skin => skin.id === input.skinId)
+    ?.presentations.some(presentation => (
+      presentation.actionId === actionId && presentation.frames.length > 0
+    )));
 }
 
 /** 取得指定逻辑动作最近一次用于冷却的结束时间；未结束时使用开始时间。 */
@@ -181,6 +194,57 @@ function eligibleCandidates(
   });
 }
 
+/** 按显式私有目标收集逻辑动作归属，仍由当前引擎状态执行全部硬约束。 */
+function directedActionReferences(
+  input: CharacterBehaviorActionSelectionInput,
+  target: Exclude<ResolvedBehaviorTarget, { kind: 'action' }>
+): Array<{ actionId: string; stateId: string }> {
+  if (target.kind === 'state') {
+    const state = input.manifest.states.find(candidate => candidate.id === target.stateId);
+    return state?.actionIds.map(actionId => ({ actionId, stateId: state.id })) ?? [];
+  }
+
+  const stateOrder = [
+    input.state.primaryStateId,
+    ...input.state.modifierStateIds,
+    ...input.manifest.states.map(state => state.id)
+  ];
+  const seenActionIds = new Set<string>();
+  const actionsById = new Map(input.manifest.actions.map(action => [action.id, action]));
+  return stateOrder.flatMap(stateId => {
+    const state = input.manifest.states.find(candidate => candidate.id === stateId);
+    if (!state) return [];
+    return state.actionIds.flatMap(actionId => {
+      const action = actionsById.get(actionId);
+      if (!action || action.semantic !== target.semantic || seenActionIds.has(actionId)) return [];
+      seenActionIds.add(actionId);
+      return [{ actionId, stateId }];
+    });
+  });
+}
+
+/** 对给定动作归属应用与普通选择相同的状态、方向、冷却和表现约束。 */
+function eligibleDirectedCandidates(
+  input: CharacterBehaviorActionSelectionInput,
+  references: readonly { actionId: string; stateId: string }[]
+): ActionCandidate[] {
+  const actionsById = new Map(input.manifest.actions.map(action => [action.id, action]));
+  return references.flatMap(({ actionId, stateId }) => {
+    const action = actionsById.get(actionId);
+    if (
+      !action
+      || !matchesStateConstraints(action, input.state)
+      || !matchesDirection(action, input.direction)
+      || isCoolingDown(action, input)
+      || isRepeatSuppressed(action, input)
+      || !hasCurrentSkinPresentation(input, action.id)
+    ) return [];
+
+    const resolved = resolveCharacterPresentation(input.manifest, input.skinId, action.id);
+    return resolved ? [{ action, stateId, presentation: resolved.presentation }] : [];
+  });
+}
+
 /** 先剔除可替代的重复动作，再按语义与偏好选出一个候选。 */
 function selectFromStateContext(
   input: CharacterBehaviorActionSelectionInput,
@@ -239,10 +303,39 @@ export function selectCharacterBehaviorAction(
   return { ...fallback, stateId: defaultState.id, reason: 'default-fallback' };
 }
 
+/** 为已解析私有目标选择唯一可授权动作，不允许默认待机回退冒充定向结果。 */
+export function selectDirectedCharacterBehaviorAction(
+  input: CharacterBehaviorActionSelectionInput,
+  target: ResolvedBehaviorTarget
+): CharacterBehaviorActionSelection {
+  if (target.kind === 'action') {
+    return authorizeCharacterBehaviorAction(input, target.actionId, {
+      respectRepeatSuppression: true,
+      requireCurrentSkinPresentation: true
+    });
+  }
+
+  const candidate = selectWeightedCandidate(
+    eligibleDirectedCandidates(input, directedActionReferences(input, target)),
+    input.random
+  );
+  if (!candidate) throw new Error(ACTION_UNAVAILABLE);
+  return {
+    actionId: candidate.action.id,
+    stateId: candidate.stateId,
+    presentation: candidate.presentation,
+    reason: target.kind === 'semantic' ? 'semantic' : 'state-preference'
+  };
+}
+
 /** 按配置 ID 重新授权回退动作，并复用状态、方向、冷却与表现硬约束。 */
 export function authorizeCharacterBehaviorAction(
   input: CharacterBehaviorActionSelectionInput,
-  actionId: string
+  actionId: string,
+  options: Readonly<{
+    respectRepeatSuppression?: boolean;
+    requireCurrentSkinPresentation?: boolean;
+  }> = {}
 ): CharacterBehaviorActionSelection {
   const action = input.manifest.actions.find((candidate) => candidate.id === actionId);
   const state = input.manifest.states.find((candidate) => candidate.actionIds.includes(actionId));
@@ -252,6 +345,9 @@ export function authorizeCharacterBehaviorAction(
     || !matchesStateConstraints(action, input.state)
     || !matchesDirection(action, input.direction)
     || isCoolingDown(action, input)
+    || (options.respectRepeatSuppression === true && isRepeatSuppressed(action, input))
+    || (options.requireCurrentSkinPresentation === true
+      && !hasCurrentSkinPresentation(input, action.id))
   ) {
     throw new Error(ACTION_UNAVAILABLE);
   }
