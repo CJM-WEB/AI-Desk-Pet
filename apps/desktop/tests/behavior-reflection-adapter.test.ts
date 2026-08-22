@@ -115,19 +115,24 @@ describe('BehaviorReflectionAdapter', () => {
 
     let resolve!: (value: ModelResponse) => void;
     const late = provider(new Promise<ModelResponse>(done => { resolve = done; }));
+    const noPlan = provider({ type: 'text', text: 'private', structured_output: {} });
+    let providerCall = 0;
     const stale = createBehaviorReflectionAdapter({
-      createProvider: () => late.current, diagnostics, now: () => 0
+      createProvider: () => providerCall++ === 0 ? late.current : noPlan.current,
+      diagnostics,
+      now: () => 0
     });
     const pending = stale.reflect({ context, signal: new AbortController().signal });
-    await stale.close();
+    await stale.reflect({ context, signal: new AbortController().signal });
     resolve({
       type: 'text', text: 'private-late',
       structured_output: { behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '眨眼' } } }
     });
     await expect(pending).resolves.toBeNull();
+    await stale.close();
 
     expect(events.filter(event => event.phase === 'dropped').map(event => event.reasonCode))
-      .toEqual(['BLOCKED', 'ABORTED', 'STALE_GENERATION']);
+      .toEqual(['BLOCKED', 'ABORTED', 'STALE_GENERATION', 'NO_PLAN']);
   });
 
   test('completed 仅带 hadPlan 与 durationMs；端口拒绝未知原因和额外字段', async () => {
@@ -176,18 +181,57 @@ describe('BehaviorReflectionAdapter', () => {
 
     const pending = adapter.reflect({ context, signal: new AbortController().signal });
     const closing = adapter.close();
+    await expect(Promise.race([
+      closing.then(() => 'closed'),
+      new Promise<string>(done => setTimeout(() => done('timeout'), 25))
+    ])).resolves.toBe('closed');
     resolveProvider({ respond });
 
     await expect(pending).resolves.toBeNull();
-    await closing;
     expect(respond).not.toHaveBeenCalled();
     expect(events).toEqual([
       { code: 'BEHAVIOR_REFLECTION_STARTED', phase: 'started' },
       {
         code: 'BEHAVIOR_REFLECTION_DROPPED', phase: 'dropped', durationMs: 0,
-        reasonCode: 'STALE_GENERATION'
+        reasonCode: 'ABORTED'
       }
     ]);
+  });
+
+  test('Provider respond 永不 settle 时 close 有界并同步发布唯一 ABORTED 终端', async () => {
+    let resolveResponse!: (value: ModelResponse) => void;
+    const respond = vi.fn(() => new Promise<ModelResponse>(done => { resolveResponse = done; }));
+    const diagnostics = new BehaviorReflectionDiagnosticPort();
+    const events: BehaviorReflectionDiagnostic[] = [];
+    diagnostics.subscribe(event => events.push(event));
+    const adapter = createBehaviorReflectionAdapter({
+      createProvider: () => ({ respond }), diagnostics, now: () => 0
+    });
+    const pending = adapter.reflect({ context, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce());
+
+    const closeResult = await Promise.race([
+      adapter.close().then(() => 'closed'),
+      new Promise<string>(done => setTimeout(() => done('timeout'), 25))
+    ]);
+
+    expect(closeResult).toBe('closed');
+    expect(events).toEqual([
+      { code: 'BEHAVIOR_REFLECTION_STARTED', phase: 'started' },
+      {
+        code: 'BEHAVIOR_REFLECTION_DROPPED', phase: 'dropped', durationMs: 0,
+        reasonCode: 'ABORTED'
+      }
+    ]);
+    await expect(pending).resolves.toBeNull();
+    resolveResponse({
+      type: 'text', text: 'late-private',
+      structured_output: {
+        behaviorPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'idle' } }
+      }
+    });
+    await Promise.resolve();
+    expect(events).toHaveLength(2);
   });
 
   test.each([

@@ -664,7 +664,6 @@ export function CharacterPlayer({
       if (event.revision <= actionRevisionRef.current) return;
       actionRevisionRef.current = event.revision;
 
-      behaviorAuthorityModeRef.current = 'main-v2';
       behaviorAuthorityCharacterIdRef.current = null;
       if (!beginBehaviorPlaybackToken(behaviorPlaybackTokensRef, event.playbackToken)) return;
       if (projectionStatusRef.current === 'unavailable') {

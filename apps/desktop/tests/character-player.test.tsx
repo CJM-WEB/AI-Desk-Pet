@@ -378,6 +378,18 @@ describe('角色播放器组件', () => {
         loop: false
       }]
     });
+    for (const stateId of ['listening', 'success'] as const) {
+      currentManifest.states.push({
+        id: stateId,
+        kind: 'core',
+        actions: [{
+          ...currentManifest.states[0]!.actions[0]!,
+          id: `${stateId}-once`,
+          name: `${stateId} once`,
+          loop: false
+        }]
+      });
+    }
     let motionListener: ((event: CharacterMotionEvent) => void) | undefined;
     let characterListener: ((event: {
       type: 'active-character-changed';
@@ -441,7 +453,7 @@ describe('角色播放器组件', () => {
     } as unknown as MyselfApi;
     const createPlayer = async () => player;
     const loadBundle = async () => bundle('character-a');
-    const renderPlayer = (stateId: 'idle' | 'thinking') => (
+    const renderPlayer = (stateId: 'idle' | 'listening' | 'thinking' | 'success') => (
       <CharacterPlayer
         stateId={stateId}
         motionMode="animated"
@@ -461,7 +473,9 @@ describe('角色播放器组件', () => {
       frame: (frameId: string | null) => frameListener?.(frameId),
       motion: (event: CharacterMotionEvent) => motionListener?.(event),
       player,
-      rerenderState: (stateId: 'idle' | 'thinking') => rendered.rerender(renderPlayer(stateId)),
+      rerenderState: (stateId: 'idle' | 'listening' | 'thinking' | 'success') => (
+        rendered.rerender(renderPlayer(stateId))
+      ),
       rendered,
       reportCharacterActionFeedback,
       reportCharacterActionMilestone
@@ -605,6 +619,29 @@ describe('角色播放器组件', () => {
     }));
     expect(fixture.players[1]!.play).toHaveBeenCalledOnce();
     expect(fixture.players[1]!.play.mock.calls[0]?.[0].action.id).toBe('idle');
+    fixture.rendered.unmount();
+  });
+
+  test('V1 统一 behavior-action 播放后仍保留本地状态动画权威', async () => {
+    const fixture = behaviorFixture({ behaviorAuthorityMode: 'legacy-v1' });
+    await waitFor(() => expect(fixture.player.load).toHaveBeenCalledOnce());
+    fixture.player.play.mockClear();
+
+    act(() => fixture.motion({
+      type: 'behavior-action', revision: 2, stateId: 'idle', modifierStateIds: [],
+      actionId: 'idle', playbackToken: 'legacy-scheduler-token'
+    }));
+    await waitFor(() => expect(fixture.reportCharacterActionFeedback).toHaveBeenCalledWith({
+      playbackToken: 'legacy-scheduler-token', actionId: 'idle', status: 'started'
+    }));
+
+    for (const stateId of ['listening', 'thinking', 'success'] as const) {
+      act(() => fixture.rerenderState(stateId));
+      await waitFor(() => expect(fixture.player.play).toHaveBeenCalledWith(
+        expect.objectContaining({ action: expect.objectContaining({ id: `${stateId}-once` }) }),
+        'animated'
+      ));
+    }
     fixture.rendered.unmount();
   });
 

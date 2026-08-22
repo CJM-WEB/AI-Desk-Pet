@@ -736,6 +736,23 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.behavior.close).toHaveBeenCalledTimes(1);
   });
 
+  test('角色切换读取完成后再次通知同一 Scheduler 重新读取新目录', async () => {
+    const fixture = createFixture();
+    let resolve!: () => void;
+    fixture.behavior.handleActiveCharacterChanged.mockImplementationOnce(() => (
+      new Promise<undefined>(done => { resolve = () => done(undefined); })
+    ));
+    const changed = vi.fn();
+    fixture.director.subscribeActivityBlockers(changed);
+
+    const switching = fixture.director.handleActiveCharacterChanged();
+    expect(changed).toHaveBeenCalledTimes(1);
+    resolve();
+    await switching;
+
+    expect(changed).toHaveBeenCalledTimes(2);
+  });
+
   test.each(['explicit', 'chat'] as const)(
     '%s 来源动作不可用时发布固定提示且不请求待机替代',
     source => {

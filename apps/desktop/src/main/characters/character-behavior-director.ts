@@ -418,6 +418,7 @@ export class CharacterBehaviorDirector {
     this.clearPendingChat();
     this.active = null;
     await this.options.behavior.handleActiveCharacterChanged();
+    this.invalidateBehaviorLifecycle();
   }
 
   reset(generation: string): void {

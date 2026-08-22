@@ -90,17 +90,40 @@ export function createBehaviorReflectionAdapter(
   const lifecycleAbort = new AbortController();
   let generation = 0;
   let closed = false;
-  const inFlight = new Set<Promise<CharacterBehaviorPlan | null>>();
+  type ActiveReflection = {
+    generation: number;
+    startedAt: number;
+    terminal: boolean;
+    cancel(): void;
+  };
+  const inFlight = new Set<ActiveReflection>();
 
   return {
     reflect(input): Promise<CharacterBehaviorPlan | null> {
-      const pending = runReflection(input);
-      inFlight.add(pending);
-      void pending.then(
-        () => inFlight.delete(pending),
-        () => inFlight.delete(pending)
+      const startedAt = now();
+      const currentGeneration = ++generation;
+      let cancel!: () => void;
+      const cancelled = new Promise<CharacterBehaviorPlan | null>(done => {
+        cancel = () => done(null);
+      });
+      const active: ActiveReflection = {
+        generation: currentGeneration,
+        startedAt,
+        terminal: false,
+        cancel
+      };
+      inFlight.add(active);
+      options.diagnostics.publish({
+        code: 'BEHAVIOR_REFLECTION_STARTED',
+        phase: 'started'
+      });
+      const operation = runReflection(input, active);
+      const result = Promise.race([operation, cancelled]);
+      void result.then(
+        () => inFlight.delete(active),
+        () => inFlight.delete(active)
       );
-      return pending;
+      return result;
     },
 
     async close(): Promise<void> {
@@ -108,40 +131,41 @@ export function createBehaviorReflectionAdapter(
         closed = true;
         generation += 1;
         lifecycleAbort.abort();
+        for (const active of [...inFlight]) {
+          publishDropped(active, 'ABORTED');
+          active.cancel();
+        }
       }
-      await Promise.allSettled([...inFlight]);
     }
   };
 
   async function runReflection(input: Readonly<{
     context: ConversationBehaviorContext;
     signal: AbortSignal;
-  }>): Promise<CharacterBehaviorPlan | null> {
-      const startedAt = now();
-      const currentGeneration = ++generation;
-      options.diagnostics.publish({
-        code: 'BEHAVIOR_REFLECTION_STARTED',
-        phase: 'started'
-      });
-
+  }>, active: ActiveReflection): Promise<CharacterBehaviorPlan | null> {
       if (isContextBlocked(input.context)) {
-        publishDropped('BLOCKED', startedAt);
+        publishDropped(active, 'BLOCKED');
         return null;
       }
       if (closed || input.signal.aborted || lifecycleAbort.signal.aborted) {
-        publishDropped('ABORTED', startedAt);
+        publishDropped(active, 'ABORTED');
         return null;
       }
 
       const signal = AbortSignal.any([input.signal, lifecycleAbort.signal]);
+      const cancelOnAbort = (): void => {
+        publishDropped(active, 'ABORTED');
+        active.cancel();
+      };
+      signal.addEventListener('abort', cancelOnAbort, { once: true });
       try {
         const provider = await options.createProvider();
-        if (currentGeneration !== generation) {
-          publishDropped('STALE_GENERATION', startedAt);
+        if (active.generation !== generation) {
+          publishDropped(active, 'STALE_GENERATION');
           return null;
         }
         if (signal.aborted) {
-          publishDropped('ABORTED', startedAt);
+          publishDropped(active, 'ABORTED');
           return null;
         }
         const response = await provider.respond({
@@ -155,42 +179,37 @@ export function createBehaviorReflectionAdapter(
           responseContract: characterChatResponseContract
         }, signal);
 
-        if (currentGeneration !== generation) {
-          publishDropped('STALE_GENERATION', startedAt);
+        if (active.generation !== generation) {
+          publishDropped(active, 'STALE_GENERATION');
           return null;
         }
         if (signal.aborted) {
-          publishDropped('ABORTED', startedAt);
+          publishDropped(active, 'ABORTED');
           return null;
         }
         if (response.type !== 'text') {
-          publishDropped('INVALID_PLAN', startedAt);
+          publishDropped(active, 'INVALID_PLAN');
           return null;
         }
         const rawPlan = response.structured_output?.behaviorPlan;
         if (rawPlan === undefined) {
-          publishDropped('NO_PLAN', startedAt);
+          publishDropped(active, 'NO_PLAN');
           return null;
         }
         const parsed = characterBehaviorPlanSchema.safeParse(rawPlan);
         if (!parsed.success) {
-          publishDropped('INVALID_PLAN', startedAt);
+          publishDropped(active, 'INVALID_PLAN');
           return null;
         }
         if (parsed.data.kind === 'none') {
-          publishDropped('NO_PLAN', startedAt);
+          publishDropped(active, 'NO_PLAN');
           return null;
         }
         if (!isExecutableReflectionPlan(parsed.data)) {
-          publishDropped('INVALID_PLAN', startedAt);
+          publishDropped(active, 'INVALID_PLAN');
           return null;
         }
-        options.diagnostics.publish({
-          code: 'BEHAVIOR_REFLECTION_COMPLETED',
-          phase: 'completed',
-          hadPlan: true,
-          durationMs: elapsed(startedAt)
-        });
+        publishCompleted(active);
         if (parsed.data.kind === 'play') {
           return parsed.data.emotion === undefined
             ? { kind: 'play', target: parsed.data.target }
@@ -202,27 +221,42 @@ export function createBehaviorReflectionAdapter(
         }
         return parsed.data;
       } catch {
-        if (currentGeneration !== generation) {
-          publishDropped('STALE_GENERATION', startedAt);
+        if (active.generation !== generation) {
+          publishDropped(active, 'STALE_GENERATION');
           return null;
         }
         if (signal.aborted) {
-          publishDropped('ABORTED', startedAt);
+          publishDropped(active, 'ABORTED');
           return null;
         }
-        publishDropped('PROVIDER_ERROR', startedAt);
+        publishDropped(active, 'PROVIDER_ERROR');
         throw new Error('BEHAVIOR_REFLECTION_PROVIDER_ERROR');
+      } finally {
+        signal.removeEventListener('abort', cancelOnAbort);
       }
   }
 
+  function publishCompleted(active: ActiveReflection): void {
+    if (active.terminal) return;
+    active.terminal = true;
+    options.diagnostics.publish({
+          code: 'BEHAVIOR_REFLECTION_COMPLETED',
+          phase: 'completed',
+          hadPlan: true,
+          durationMs: elapsed(active.startedAt)
+        });
+  }
+
   function publishDropped(
-    reasonCode: Extract<BehaviorReflectionDiagnostic, { phase: 'dropped' }>['reasonCode'],
-    startedAt: number
+    active: ActiveReflection,
+    reasonCode: Extract<BehaviorReflectionDiagnostic, { phase: 'dropped' }>['reasonCode']
   ): void {
+    if (active.terminal) return;
+    active.terminal = true;
     options.diagnostics.publish({
       code: 'BEHAVIOR_REFLECTION_DROPPED',
       phase: 'dropped',
-      durationMs: elapsed(startedAt),
+      durationMs: elapsed(active.startedAt),
       reasonCode
     });
   }

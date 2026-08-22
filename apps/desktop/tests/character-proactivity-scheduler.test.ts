@@ -47,6 +47,7 @@ function fixture(options: Readonly<{
   let mode = options.mode ?? 'assistive';
   let listener = (): void => undefined;
   let lifecycleGeneration = 0;
+  let catalogAvailable = !options.emptyCatalog;
   const submit = vi.fn<(
     plan: CharacterBehaviorPlan,
     source: 'local-idle' | 'reflection'
@@ -63,7 +64,7 @@ function fixture(options: Readonly<{
   const director = {
     getChatContext: vi.fn(() => ({
       ...context,
-      ...(options.emptyCatalog ? {
+      ...(!catalogAvailable ? {
         character: { ...context.character, semantics: [], stateNames: [], actionNames: [], tags: [] }
       } : {}),
       proactivityMode: mode
@@ -98,6 +99,13 @@ function fixture(options: Readonly<{
     invalidateLifecycle() {
       lifecycleGeneration += 1;
       listener();
+    },
+    setCatalogAvailable(value: boolean, notify = true) {
+      catalogAvailable = value;
+      if (notify) {
+        lifecycleGeneration += 1;
+        listener();
+      }
     }
   };
 }
@@ -161,6 +169,35 @@ describe('CharacterProactivityScheduler', () => {
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     expect(current.reflection.reflect).not.toHaveBeenCalled();
     await current.scheduler.close();
+  });
+
+  test('V1→V2 readiness 通知后开始反思，V2→V1 在回调前复核目录并停止 Provider', async () => {
+    vi.useFakeTimers();
+    const fromV1 = fixture({ mode: 'autonomous', emptyCatalog: true });
+    fromV1.setCatalogAvailable(true);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(fromV1.reflection.reflect).toHaveBeenCalledOnce();
+    await fromV1.scheduler.close();
+
+    const toV1 = fixture({ mode: 'autonomous' });
+    toV1.setCatalogAvailable(false, false);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(toV1.reflection.reflect).not.toHaveBeenCalled();
+    await toV1.scheduler.close();
+
+    let resolve!: (value: CharacterBehaviorPlan | null) => void;
+    const inFlight = fixture({
+      mode: 'autonomous',
+      reflect: () => new Promise(done => { resolve = done; })
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+    const signal = inFlight.reflection.reflect.mock.calls[0]![0].signal;
+    inFlight.setCatalogAvailable(false);
+    expect(signal.aborted).toBe(true);
+    resolve({ kind: 'play', target: { kind: 'semantic', semantic: 'idle' } });
+    await Promise.resolve();
+    expect(inFlight.reflection.reflect).toHaveBeenCalledOnce();
+    await inFlight.scheduler.close();
   });
 
   test.each(Object.keys(unblocked) as Array<keyof CharacterActivityBlockers>)(

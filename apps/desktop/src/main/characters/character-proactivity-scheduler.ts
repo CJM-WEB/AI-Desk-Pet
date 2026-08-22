@@ -148,6 +148,8 @@ export class CharacterProactivityScheduler {
 
   private async runReflection(): Promise<void> {
     if (this.closed || this.mode !== 'autonomous') return;
+    const context = this.options.director.getChatContext();
+    if (!hasReflectableCatalog(context)) return;
     if (hasBlocker(this.options.director.getActivityBlockers())) {
       this.reflectionTimer.remaining = this.randomDelay(REFLECTION_MIN_MS, REFLECTION_MAX_MS);
       return;
@@ -157,13 +159,14 @@ export class CharacterProactivityScheduler {
     this.reflectionAbort = abort;
     try {
       const plan = await this.options.reflection.reflect({
-        context: this.options.director.getChatContext(),
+        context,
         signal: abort.signal
       });
       if (
         this.closed
         || abort.signal.aborted
         || this.options.director.getChatContext().proactivityMode !== 'autonomous'
+        || !hasReflectableCatalog(this.options.director.getChatContext())
         || this.options.director.getBehaviorLifecycleGeneration() !== reflectionGeneration
       ) return;
       this.reflectionFailures = 0;
