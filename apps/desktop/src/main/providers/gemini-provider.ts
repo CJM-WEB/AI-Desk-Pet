@@ -115,6 +115,64 @@ function serializeTool(tool: ToolDefinition): Record<string, unknown> {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function transformGeminiSchemaNode(schema: unknown): unknown {
+  if (!isRecord(schema)) return schema;
+
+  const transformed: Record<string, unknown> = {};
+  const union = Array.isArray(schema.anyOf)
+    ? schema.anyOf
+    : Array.isArray(schema.oneOf) ? schema.oneOf : undefined;
+  if (union !== undefined) transformed.anyOf = union.map(transformGeminiSchemaNode);
+
+  const stringConst = typeof schema.const === 'string' ? schema.const : undefined;
+  const inferredType = stringConst !== undefined
+    || (Array.isArray(schema.enum) && schema.enum.every(value => typeof value === 'string'))
+    ? 'string'
+    : undefined;
+  const type = typeof schema.type === 'string' ? schema.type : inferredType;
+  if (type !== undefined) transformed.type = type;
+  if (stringConst !== undefined) transformed.enum = [stringConst];
+  else if (Array.isArray(schema.enum)) transformed.enum = [...schema.enum];
+  if (typeof schema.title === 'string') transformed.title = schema.title;
+  if (typeof schema.description === 'string') transformed.description = schema.description;
+
+  if (type === 'object') {
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    transformed.properties = Object.fromEntries(
+      Object.entries(properties).map(([name, child]) => [
+        name,
+        transformGeminiSchemaNode(child)
+      ])
+    );
+    transformed.additionalProperties = false;
+    if (Array.isArray(schema.required)) transformed.required = [...schema.required];
+  } else if (type === 'array') {
+    if ('items' in schema) transformed.items = transformGeminiSchemaNode(schema.items);
+    if (Array.isArray(schema.prefixItems)) {
+      transformed.prefixItems = schema.prefixItems.map(transformGeminiSchemaNode);
+    }
+    if (typeof schema.minItems === 'number') transformed.minItems = schema.minItems;
+    if (typeof schema.maxItems === 'number') transformed.maxItems = schema.maxItems;
+  } else if (type === 'string') {
+    if (typeof schema.format === 'string') transformed.format = schema.format;
+  } else if (type === 'number' || type === 'integer') {
+    if (typeof schema.minimum === 'number') transformed.minimum = schema.minimum;
+    if (typeof schema.maximum === 'number') transformed.maximum = schema.maximum;
+  }
+  return transformed;
+}
+
+/** 仅生成 Gemini legacy 结构化输出支持的 Schema 子集；本地仍校验原始契约。 */
+export function toGeminiResponseJsonSchema(
+  schema: Readonly<Record<string, unknown>>
+): Record<string, unknown> {
+  return transformGeminiSchemaNode(schema) as Record<string, unknown>;
+}
+
 interface NormalizedGeminiResponse {
   response: ModelResponse;
   thoughtSignature?: {
@@ -198,7 +256,7 @@ export class GeminiProvider implements ModelProvider {
     if (request.responseContract !== undefined) {
       body.generationConfig = {
         responseMimeType: 'application/json',
-        responseJsonSchema: request.responseContract.jsonSchema
+        responseJsonSchema: toGeminiResponseJsonSchema(request.responseContract.jsonSchema)
       };
     }
 

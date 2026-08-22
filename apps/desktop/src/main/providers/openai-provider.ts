@@ -189,15 +189,15 @@ function normalizeResponse(
   const response = responseContract === undefined
     ? { type: 'text' as const, text: message.content }
     : normalizeResponseContractText(message.content, responseContract);
-  if (message.metadata?.emotion !== undefined) {
-    const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
-    if (!emotion.success) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-    }
-    response.emotion = emotion.data;
-  }
   if (responseContract === undefined) {
-    // 旧行为意图只服务能力任务；结构化聊天必须以无权限响应契约为唯一来源。
+    if (message.metadata?.emotion !== undefined) {
+      const emotion = characterEmotionLabelSchema.safeParse(message.metadata.emotion);
+      if (!emotion.success) {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      response.emotion = emotion.data;
+    }
+    // 旧元数据只服务无响应契约的能力任务；结构化聊天以正文契约为唯一来源。
     const behaviorIntent = characterAgentBehaviorIntentSchema.safeParse(
       message.metadata?.behaviorIntent
     );

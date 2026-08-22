@@ -80,6 +80,71 @@ function serializeTool(tool: ToolDefinition): Record<string, unknown> {
   };
 }
 
+const anthropicStringFormats = new Set([
+  'date-time', 'time', 'date', 'duration', 'email',
+  'hostname', 'uri', 'ipv4', 'ipv6', 'uuid'
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function transformAnthropicSchemaNode(schema: unknown): unknown {
+  if (!isRecord(schema)) return schema;
+
+  const transformed: Record<string, unknown> = {};
+  const union = Array.isArray(schema.anyOf)
+    ? schema.anyOf
+    : Array.isArray(schema.oneOf) ? schema.oneOf : undefined;
+  if (union !== undefined) {
+    transformed.anyOf = union.map(transformAnthropicSchemaNode);
+  } else if (Array.isArray(schema.allOf)) {
+    transformed.allOf = schema.allOf.map(transformAnthropicSchemaNode);
+  }
+
+  const inferredType = typeof schema.const === 'string'
+    || (Array.isArray(schema.enum) && schema.enum.every(value => typeof value === 'string'))
+    ? 'string'
+    : undefined;
+  const type = typeof schema.type === 'string' ? schema.type : inferredType;
+  if (type !== undefined) transformed.type = type;
+  if (Array.isArray(schema.enum)) transformed.enum = [...schema.enum];
+  if ('const' in schema) transformed.const = schema.const;
+  if (typeof schema.title === 'string') transformed.title = schema.title;
+  if (typeof schema.description === 'string') transformed.description = schema.description;
+
+  if (type === 'object') {
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    transformed.properties = Object.fromEntries(
+      Object.entries(properties).map(([name, child]) => [
+        name,
+        transformAnthropicSchemaNode(child)
+      ])
+    );
+    transformed.additionalProperties = false;
+    if (Array.isArray(schema.required)) transformed.required = [...schema.required];
+  } else if (type === 'array') {
+    if ('items' in schema) transformed.items = transformAnthropicSchemaNode(schema.items);
+    if (schema.minItems === 0 || schema.minItems === 1) {
+      transformed.minItems = schema.minItems;
+    }
+  } else if (
+    type === 'string'
+    && typeof schema.format === 'string'
+    && anthropicStringFormats.has(schema.format)
+  ) {
+    transformed.format = schema.format;
+  }
+  return transformed;
+}
+
+/** 仅生成 Anthropic 结构化输出支持的 Schema 子集；原始 Schema 留给本地严格校验。 */
+export function toAnthropicResponseJsonSchema(
+  schema: Readonly<Record<string, unknown>>
+): Record<string, unknown> {
+  return transformAnthropicSchemaNode(schema) as Record<string, unknown>;
+}
+
 function normalizeResponse(
   raw: unknown,
   responseContract: ModelRequest['responseContract']
@@ -139,8 +204,7 @@ export class AnthropicProvider implements ModelProvider {
       body.output_config = {
         format: {
           type: 'json_schema',
-          name: request.responseContract.name,
-          schema: request.responseContract.jsonSchema
+          schema: toAnthropicResponseJsonSchema(request.responseContract.jsonSchema)
         }
       };
     }

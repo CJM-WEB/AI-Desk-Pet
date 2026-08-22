@@ -51,7 +51,10 @@ describe('ConversationChatAdapter', () => {
     expect(取得请求(provider).messages[0]?.content).toContain('用户使用的语言');
     expect(取得请求(provider).messages[0]?.content).toContain('可见上下文');
     expect(取得请求(provider).messages[0]?.content).toContain('尚未执行的文件操作');
-    expect(取得请求(provider).messages[0]?.content).not.toContain('JSON');
+    expect(取得请求(provider).messages[0]?.content).toContain('json');
+    expect(取得请求(provider).messages[0]?.content).toContain(
+      '{"text":"我会陪着你。","behaviorPlan":{"kind":"none","emotion":"calm"}}'
+    );
     expect(取得请求(provider).messages[0]?.content).not.toContain('路由字段');
     expect(取得请求(provider).messages[0]?.content).not.toContain('禁止 Markdown');
   });

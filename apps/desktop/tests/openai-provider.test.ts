@@ -172,6 +172,39 @@ describe('OpenAICompatibleProvider', () => {
   });
 
   test.each([
+    ['合法旧情绪', 'happy'],
+    ['非法旧情绪', 'outside']
+  ])('响应契约存在时忽略%s并保留结构化正文', async (_名称, metadataEmotion) => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: '{"text":"结构正文"}',
+          metadata: { emotion: metadataEmotion }
+        }
+      }]
+    }));
+    const provider = new OpenAICompatibleProvider(profile, async () => 'secret', fetchMock);
+
+    await expect(provider.respond({
+      messages: [{ role: 'user', content: '普通聊天' }],
+      tools: [],
+      toolChoice: 'none',
+      reasoningMode: 'provider_default',
+      responseContract: {
+        type: 'json_object',
+        name: 'character_chat',
+        jsonSchema: characterChatResponseJsonSchema,
+        textField: 'text',
+        allowPlainTextFallback: true
+      }
+    }, new AbortController().signal)).resolves.toEqual({
+      type: 'text',
+      text: '结构正文',
+      structured_output: { text: '结构正文' }
+    });
+  });
+
+  test.each([
     ['非空工具表的 auto', tools, 'auto'],
     ['非空工具表的 required', tools, 'required'],
     ['空工具表的 none', [] as ToolDefinition[], 'none']

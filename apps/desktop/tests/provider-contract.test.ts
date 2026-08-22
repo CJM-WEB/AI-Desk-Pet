@@ -10,8 +10,14 @@ import {
   OpenAICompatibleProvider,
   ProviderError
 } from '../src/main/providers/openai-provider';
-import { AnthropicProvider } from '../src/main/providers/anthropic-provider';
-import { GeminiProvider } from '../src/main/providers/gemini-provider';
+import {
+  AnthropicProvider,
+  toAnthropicResponseJsonSchema
+} from '../src/main/providers/anthropic-provider';
+import {
+  GeminiProvider,
+  toGeminiResponseJsonSchema
+} from '../src/main/providers/gemini-provider';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import { characterChatResponseJsonSchema } from '@myself/character-runtime';
@@ -215,23 +221,32 @@ const structuredProviderCases: StructuredProviderCase[] = [
     ...chatProviderContractCases[1]!,
     name: 'Anthropic',
     assertRequestContract(body) {
-      expect(body.output_config).toEqual({
-        format: {
-          type: 'json_schema',
-          name: 'character_chat',
-          schema: characterChatResponseJsonSchema
-        }
-      });
+      const outputConfig = body.output_config as {
+        format: { type: string; schema: Record<string, unknown>; name?: string };
+      };
+      expect(outputConfig.format.type).toBe('json_schema');
+      expect(outputConfig.format.name).toBeUndefined();
+      const serializedSchema = JSON.stringify(outputConfig.format.schema);
+      expect(serializedSchema).toContain('"anyOf"');
+      expect(serializedSchema).toContain('"const"');
+      expect(serializedSchema).not.toMatch(/"(?:oneOf|minLength|maxLength|pattern)"/u);
     }
   },
   {
     ...chatProviderContractCases[2]!,
     name: 'Gemini',
     assertRequestContract(body) {
-      expect(body.generationConfig).toEqual({
-        responseMimeType: 'application/json',
-        responseJsonSchema: characterChatResponseJsonSchema
-      });
+      const generationConfig = body.generationConfig as {
+        responseMimeType: string;
+        responseJsonSchema: Record<string, unknown>;
+      };
+      expect(generationConfig.responseMimeType).toBe('application/json');
+      const serializedSchema = JSON.stringify(generationConfig.responseJsonSchema);
+      expect(serializedSchema).toContain('"anyOf"');
+      expect(serializedSchema).toContain('"enum"');
+      expect(serializedSchema).not.toMatch(
+        /"(?:oneOf|const|minLength|maxLength|pattern)"/u
+      );
     }
   }
 ];
@@ -403,6 +418,110 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
 });
 
 describe('结构化聊天响应协议映射', () => {
+  const constrainedSchemaFixture = {
+    type: 'object',
+    minProperties: 1,
+    additionalProperties: false,
+    required: ['text', 'plan'],
+    properties: {
+      text: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 40,
+        pattern: '^.+$'
+      },
+      plan: {
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['kind'],
+            properties: { kind: { const: 'none' } }
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['kind', 'name'],
+            properties: {
+              kind: { const: 'play' },
+              name: { type: 'string', pattern: '^[a-z]+$' }
+            }
+          }
+        ]
+      }
+    }
+  };
+
+  test('Anthropic Provider Schema 转换器递归删除约束并规范联合类型', () => {
+    const before = structuredClone(constrainedSchemaFixture);
+    const transformed = toAnthropicResponseJsonSchema(constrainedSchemaFixture);
+
+    expect(transformed).not.toBe(constrainedSchemaFixture);
+    expect(constrainedSchemaFixture).toEqual(before);
+    expect(transformed).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['text', 'plan'],
+      properties: {
+        text: { type: 'string' },
+        plan: {
+          anyOf: [
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['kind'],
+              properties: { kind: { type: 'string', const: 'none' } }
+            },
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['kind', 'name'],
+              properties: {
+                kind: { type: 'string', const: 'play' },
+                name: { type: 'string' }
+              }
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  test('Gemini Provider Schema 转换器递归删除约束并把字符串 const 转为 enum', () => {
+    const before = structuredClone(constrainedSchemaFixture);
+    const transformed = toGeminiResponseJsonSchema(constrainedSchemaFixture);
+
+    expect(transformed).not.toBe(constrainedSchemaFixture);
+    expect(constrainedSchemaFixture).toEqual(before);
+    expect(transformed).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['text', 'plan'],
+      properties: {
+        text: { type: 'string' },
+        plan: {
+          anyOf: [
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['kind'],
+              properties: { kind: { type: 'string', enum: ['none'] } }
+            },
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['kind', 'name'],
+              properties: {
+                kind: { type: 'string', enum: ['play'] },
+                name: { type: 'string' }
+              }
+            }
+          ]
+        }
+      }
+    });
+  });
+
   test.each(structuredProviderCases)(
     '$name 映射无工具响应契约并解码正文',
     async contract => {
