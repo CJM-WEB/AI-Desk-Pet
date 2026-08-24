@@ -331,6 +331,39 @@ describe('共享 Pixi 角色动作场景', () => {
     }
   );
 
+  test.each([
+    ['right', false, { x: 0.2, y: 0.4 }],
+    ['left', false, { x: 0.8, y: 0.4 }],
+    ['right', true, { x: 0.8, y: 0.4 }],
+    ['left', true, { x: 0.2, y: 0.4 }]
+  ] as const)(
+    '附着物锚点按运动方向 %s 与素材反转 %s 的有效画面方向定位',
+    (direction, mirrorX, expectedAnchor) => {
+      const scene: PixiCharacterScene = {
+        loadAssets: vi.fn().mockResolvedValue(undefined),
+        clear: vi.fn(),
+        showAction: vi.fn(),
+        getCurrentFrame: vi.fn().mockReturnValue(null),
+        subscribeFrame: vi.fn(() => vi.fn()),
+        destroy: vi.fn()
+      };
+      const publishedAction: ActionClip = {
+        ...manifest().states[0]!.actions[0]!,
+        mirrorX,
+        anchors: {
+          ...manifest().states[0]!.actions[0]!.anchors,
+          carry: { x: 0.2, y: 0.4 }
+        }
+      };
+      const player = new PixiCharacterPlayer(scene);
+
+      player.setDirection(direction);
+      player.play({ stateId: 'idle', action: publishedAction, reason: 'matched' }, 'animated');
+
+      expect(player.getAnchor('carry')).toEqual(expectedAnchor);
+    }
+  );
+
   test('加载阶段缺失动作帧资源时保持原有失败语义', async () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),

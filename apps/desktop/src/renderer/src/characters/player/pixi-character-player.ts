@@ -203,7 +203,9 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       ? action.frames[currentFrame.frameIndex]?.anchors?.[name]
       : undefined;
     const anchor = frameAnchor ?? action.anchors[name] ?? null;
-    return anchor ? resolveDirectionalAnchor(anchor, this.direction) : null;
+    return anchor
+      ? resolveDirectionalAnchor(anchor, resolveEffectiveDirection(action, this.direction))
+      : null;
   }
 
   getFrameBounds() {
@@ -313,7 +315,7 @@ function resolvePublishedPlaybackOptions(
   frameIndex?: number
 ): Parameters<PixiCharacterScene['showAction']>[1] {
   return {
-    direction: action.mirrorX ? flipDirection(motionDirection) : motionDirection,
+    direction: resolveEffectiveDirection(action, motionDirection),
     motionMode,
     ...(frameIndex === undefined ? {} : { frameIndex }),
     speed: action.playbackRate ?? 1,
@@ -321,8 +323,12 @@ function resolvePublishedPlaybackOptions(
   };
 }
 
-function flipDirection(direction: 'left' | 'right'): 'left' | 'right' {
-  return direction === 'left' ? 'right' : 'left';
+function resolveEffectiveDirection(
+  action: Pick<ActionClip, 'mirrorX'>,
+  motionDirection: 'left' | 'right'
+): 'left' | 'right' {
+  if (!action.mirrorX) return motionDirection;
+  return motionDirection === 'left' ? 'right' : 'left';
 }
 
 type PixiModule = typeof import('pixi.js');
