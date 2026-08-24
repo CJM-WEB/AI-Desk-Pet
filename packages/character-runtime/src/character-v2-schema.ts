@@ -141,6 +141,8 @@ export const presentationGeometryV2Schema = z.object({
 const actionPresentationFields = {
   actionId: safeIdentifierSchema,
   fps: finiteNumberSchema.min(1).max(60),
+  playbackRate: finiteNumberSchema.min(0.25).max(2).optional(),
+  mirrorX: z.boolean().optional(),
   anchors: anchorSetSchema,
   commitFrameId: safeIdentifierSchema.optional(),
   regions: z.object({

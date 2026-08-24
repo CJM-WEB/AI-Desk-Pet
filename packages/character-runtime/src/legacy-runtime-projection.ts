@@ -92,6 +92,8 @@ function projectAction(
     id,
     name: resolved.action.name,
     fps: resolved.presentation.fps,
+    playbackRate: resolved.presentation.playbackRate,
+    mirrorX: resolved.presentation.mirrorX,
     loop: resolved.action.loopPolicy !== 'never',
     weight: resolved.action.preference,
     direction: resolved.action.direction,

@@ -152,6 +152,8 @@ const actionClipFields = {
   id: safeIdentifierSchema,
   name: z.string().trim().min(1).max(120),
   fps: finiteNumberSchema.min(1).max(60),
+  playbackRate: finiteNumberSchema.min(0.25).max(2).optional(),
+  mirrorX: z.boolean().optional(),
   loop: z.boolean(),
   weight: finiteNumberSchema.positive().max(100),
   direction: z.enum(['left', 'right', 'any']).optional(),

@@ -250,6 +250,42 @@ describe('角色包 V2 严格契约', () => {
     expect(resource.assetId).toBe('atlas-1');
   });
 
+  test.each([0.25, 2])('V2 表现接受边界内的播放速率：%s', (playbackRate) => {
+    const draft = createCharacterDraftV2Fixture();
+    draft.skins[0]!.presentations[0]!.playbackRate = playbackRate;
+
+    expect(characterDraftV2Schema.parse(draft).skins[0]!.presentations[0]!.playbackRate)
+      .toBe(playbackRate);
+  });
+
+  test('V2 表现允许省略播放参数', () => {
+    const draft = createCharacterDraftV2Fixture();
+
+    expect(characterDraftV2Schema.parse(draft).skins[0]!.presentations[0]!.playbackRate)
+      .toBeUndefined();
+  });
+
+  test.each([true, false])('V2 表现接受布尔镜像值：%s', (mirrorX) => {
+    const draft = createCharacterDraftV2Fixture();
+    draft.skins[0]!.presentations[0]!.mirrorX = mirrorX;
+
+    expect(characterDraftV2Schema.parse(draft).skins[0]!.presentations[0]!.mirrorX).toBe(mirrorX);
+  });
+
+  test.each(['true', 1, null])('V2 表现拒绝非布尔镜像值：%s', (mirrorX) => {
+    const draft = createCharacterDraftV2Fixture();
+    (draft.skins[0]!.presentations[0]! as Record<string, unknown>).mirrorX = mirrorX;
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
+  test.each([0.24, 2.01, Number.NaN])('V2 表现拒绝越界或非有限播放速率：%s', (playbackRate) => {
+    const draft = createCharacterDraftV2Fixture();
+    draft.skins[0]!.presentations[0]!.playbackRate = playbackRate;
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
   test('草稿接受合法的 V2 纯数据结构', () => {
     const draft = createCharacterDraftV2Fixture();
 

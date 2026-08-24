@@ -114,6 +114,27 @@ describe('旧播放器投影', () => {
     expect(characterManifestV1Schema.parse(projected)).toEqual(projected);
   });
 
+  test('投影保留显式播放参数', () => {
+    const manifest = createManifest();
+    manifest.skins[0]!.presentations[0]!.playbackRate = 1.5;
+    manifest.skins[0]!.presentations[0]!.mirrorX = true;
+
+    const projected = projectCharacterManifestV2ToLegacy(manifest);
+    const clip = projected.states.find((state) => state.id === 'idle')?.actions[0];
+
+    expect(clip).toMatchObject({ playbackRate: 1.5, mirrorX: true });
+    expect(characterManifestV1Schema.parse(projected)).toEqual(projected);
+  });
+
+  test('省略播放参数的投影仍可由旧播放器契约解析', () => {
+    const projected = projectCharacterManifestV2ToLegacy(createManifest());
+    const clip = projected.states.find((state) => state.id === 'idle')?.actions[0];
+
+    expect(clip?.playbackRate).toBeUndefined();
+    expect(clip?.mirrorX).toBeUndefined();
+    expect(characterManifestV1Schema.parse(projected)).toEqual(projected);
+  });
+
   test('为重复的最大长度回退动作 ID 预留冲突后缀长度', () => {
     const fallbackId = 'a'.repeat(120);
     const base = createManifest();
