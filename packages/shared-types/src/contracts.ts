@@ -242,10 +242,6 @@ export const publicSettingsSchema = z.object({
     displayName: z.string().min(1),
     pathHint: z.string().min(1)
   }).strict().nullable(),
-  petPosition: z.object({
-    x: z.number(),
-    y: z.number()
-  }).strict().nullable(),
   fileDisclosureAccepted: z.boolean()
 }).strict();
 export type PublicSettings = z.infer<typeof publicSettingsSchema>;

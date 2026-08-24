@@ -152,6 +152,9 @@ describe('preload 公开 API', () => {
       'beginPetDrag',
       'endPetDrag',
       'openPetContextMenu',
+      'commitPetViewport',
+      'stepPetScale',
+      'onPetGeometryRender',
       'getPetInteractionProbe',
       'getCharacterBehaviorProbe',
       'getCharacterMotionDeltaProbe',
@@ -308,6 +311,36 @@ describe('受限桌宠窗口交互 preload API', () => {
       actionId: null,
       playbackStatus: null
     });
+  });
+
+  test('几何 API 只转发窗口局部 viewport、单一档位并校验 Main 渲染事件', async () => {
+    await exposedApi?.commitPetViewport?.({
+      viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 }
+    });
+    await exposedApi?.stepPetScale?.({ step: -1 });
+    const listener = vi.fn();
+    const unsubscribe = exposedApi?.onPetGeometryRender?.(listener);
+    const registration = on.mock.calls.find(call => call[0] === ipcChannels.petGeometryRender);
+    const handler = registration?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
+
+    expect(invoke).toHaveBeenNthCalledWith(1, ipcChannels.petViewportCommit, {
+      viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 }
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.petScaleStep, { step: -1 });
+    handler?.({}, {
+      revision: 3,
+      scale: 1.1,
+      visualBoundsInWindowDip: { x: 30, y: 20, width: 60, height: 80 }
+    });
+    handler?.({}, {
+      revision: 3,
+      scale: 1.1,
+      visualBoundsInWindowDip: { x: 30, y: 20, width: 60, height: 80 },
+      globalFootAnchor: { x: 300, y: 400 }
+    });
+    expect(listener).toHaveBeenCalledOnce();
+    unsubscribe?.();
+    expect(removeListener).toHaveBeenCalledWith(ipcChannels.petGeometryRender, handler);
   });
 
   test('行为探针保留修饰状态且不让旧令牌反馈污染新调度', async () => {

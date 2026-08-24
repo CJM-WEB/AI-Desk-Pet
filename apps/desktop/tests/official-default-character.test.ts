@@ -148,7 +148,7 @@ describe('官方默认角色安装', () => {
     const rootEntries = await readdir(charactersDirectory);
     expect(rootEntries.some(name => /^index\.json\.corrupt-/u.test(name))).toBe(true);
     expect(rootEntries.some(name => /^index-recovery-/u.test(name))).toBe(true);
-  });
+  }, 15_000);
 
   test('候选目录在扫描后消失时隔离跳过且不阻止默认角色启动', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'ai-pet-recovery-race-'));

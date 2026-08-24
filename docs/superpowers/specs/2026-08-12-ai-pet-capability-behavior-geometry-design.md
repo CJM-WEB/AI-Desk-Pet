@@ -238,6 +238,12 @@ G4 在提交窗口 placement 前可按 revision 读取 Main 私有、去全局�
 - 缩放按角色持久化，重启恢复。
 - 屏幕边界只约束可见包围盒，透明窗口留白可以越出工作区。
 
+G4 的跨进程协议固定为三条：Renderer invoke `pet-window:viewport-commit`，负载仅含严格的 `viewportInWindowDip`；Renderer invoke `pet-window:scale-step`，负载仅含 `step: -1 | 1`；Main 通过 `pet-window:geometry-render` 单向发布既有去全局坐标渲染视图。viewport invoke 同时作为 BrowserWindow resize 后的 ack，不增加第四条协议，Main 最多等待 2000ms。
+
+Main 以单 FIFO 串行窗口布局。每次事务先捕获旧窗口、几何 authority 和行为绑定 generation，再建立 pending shape、读取局部 shape layout、设置候选窗口、等待匹配 viewport ack、提交 placement，最后执行 pending legacy CAS 或 ready placement 保存；成功后才 best-effort 广播渲染视图。任一步失败都恢复旧 authority、旧窗口并等待旧 viewport ack，不广播成功。authority 已签发的 shape revision 保持单调，不因回滚复用。
+
+缩放内部只使用 5–20 的整数 tick，公开 scale 为 `tick / 10`。首次实际 viewport 与当时已提交 scale 形成 canonical base；目标 viewport 按 canonical base 计算并四舍五入，保留固定窗口 inset，窗口原点从持久的全局脚底锚点反算，单轴量化误差不超过 0.5 DIP 且不得累积。事务中滚轮只累计最新目标 tick；拖拽或运动活动时延后布局；行为绑定 generation 变化使在途事务失效并回滚。Main 通过私有行为绑定读取正式 manifest、skin、action revision、resource revision 与 direction，身份绝不来自 Renderer。
+
 自动运动、边缘钳制、位置恢复和拖拽全部使用视觉包围盒与脚底锚点，不再使用固定窗口矩形。
 
 ## 9. 拖拽状态机

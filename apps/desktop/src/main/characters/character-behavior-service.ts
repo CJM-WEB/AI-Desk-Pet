@@ -43,6 +43,16 @@ export type CharacterTaskCarryGrant = Readonly<{
   commitFrameId: string | null;
 }>;
 
+export type CharacterGeometryBinding = Readonly<{
+  generation: number;
+  manifest: CharacterManifestV2;
+  skinId: string;
+  actionId: string;
+  actionRevision: number;
+  resourceRevision: string;
+  direction: 'left' | 'right';
+}>;
+
 type CharacterBehaviorStorePort = Pick<
   CharacterStore,
   'getActiveManifestV2' | 'getActive'
@@ -98,6 +108,8 @@ export class CharacterBehaviorService {
   private legacyPlaybackRevision = 0;
   private legacyLastScheduledActionId: string | null = null;
   private legacyPlaybackGrant: Readonly<{ playbackToken: string; actionId: string }> | null = null;
+  private geometryBindingKey: string | null = null;
+  private geometryBindingGeneration = 0;
 
   constructor(private readonly options: CharacterBehaviorServiceOptions) {
     this.now = options.now ?? performance.now.bind(performance);
@@ -124,6 +136,48 @@ export class CharacterBehaviorService {
   /** 只公开已收到 started 反馈的动作名称，不暴露动作 ID 或播放令牌。 */
   getRecentPublicActions(): readonly string[] {
     return [...this.recentPublicActions];
+  }
+
+  /** Main 私有几何绑定从正式清单与当前调度快照派生，Renderer 无法提交身份。 */
+  getGeometryBinding(): CharacterGeometryBinding | null {
+    if (this.closed || this.transitioning || !this.manifest || !this.engine) return null;
+    const snapshot = this.engine.snapshot();
+    const current = snapshot.schedule.current;
+    if (!current) return null;
+    const skin = this.manifest.skins.find(candidate => candidate.id === snapshot.skinId);
+    const presentation = skin?.presentations.find(candidate => candidate.actionId === current.actionId);
+    if (!skin || !presentation) return null;
+    const revisions = new Map(this.manifest.resources.map(resource => [
+      resource.assetId,
+      resource.sha256
+    ]));
+    const resourceRevision = [...new Set(
+      presentation.frames.map(frame => revisions.get(frame.assetId)).filter(
+        (revision): revision is string => typeof revision === 'string'
+      )
+    )].sort().join('.');
+    if (!resourceRevision || resourceRevision !== presentation.geometry.resourceRevision) return null;
+    const key = JSON.stringify([
+      this.manifest.id,
+      skin.id,
+      current.actionId,
+      snapshot.schedule.revision,
+      resourceRevision,
+      this.direction
+    ]);
+    if (key !== this.geometryBindingKey) {
+      this.geometryBindingKey = key;
+      this.geometryBindingGeneration += 1;
+    }
+    return Object.freeze({
+      generation: this.geometryBindingGeneration,
+      manifest: this.manifest,
+      skinId: skin.id,
+      actionId: current.actionId,
+      actionRevision: snapshot.schedule.revision,
+      resourceRevision,
+      direction: this.direction
+    });
   }
 
   /** 在 Main 私有清单内把模型可见名称解析为唯一私有目标。 */

@@ -63,11 +63,11 @@ textarea {
 }
 
 .pet-shell {
+  width: 100%;
+  height: 100%;
   position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
-  width: 180px;
-  height: 220px;
   max-width: 100%;
   max-height: 100%;
   padding: 18px 12px 10px;

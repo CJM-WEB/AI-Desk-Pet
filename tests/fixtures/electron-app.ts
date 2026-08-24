@@ -360,6 +360,17 @@ export interface MainE2eState {
     activationRevision: number;
     errorRevision: number;
   };
+  geometry: {
+    revision: number;
+    scaleTick: number;
+    settled: boolean;
+    viewportInWindowDip: { x: number; y: number; width: number; height: number };
+    footOffsetInViewportDip: { x: number; y: number };
+    windowSizeDip: { width: number; height: number };
+    settingsPlacementMatchesAuthority: boolean;
+    actualWindowBoundsMatchAuthority: boolean;
+    actualOriginMatchesFootOffset: boolean;
+  } | null;
 }
 
 const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
@@ -1276,6 +1287,45 @@ export async function createElectronAppFixture(
           join(directories.userDataDirectory, 'main-e2e-state.json'),
           'utf8'
         )) as MainE2eState;
+        const geometry = parsed.geometry;
+        const finiteXy = (candidate: unknown): candidate is { x: number; y: number } => (
+          Boolean(candidate)
+          && typeof candidate === 'object'
+          && Number.isFinite(Reflect.get(candidate, 'x'))
+          && Number.isFinite(Reflect.get(candidate, 'y'))
+        );
+        const validPoint = (candidate: unknown): candidate is { x: number; y: number } => (
+          finiteXy(candidate) && Object.keys(candidate).length === 2
+        );
+        const validRectangle = (candidate: unknown): boolean => (
+          finiteXy(candidate)
+          && Number.isFinite(Reflect.get(candidate, 'width'))
+          && Reflect.get(candidate, 'width') > 0
+          && Number.isFinite(Reflect.get(candidate, 'height'))
+          && Reflect.get(candidate, 'height') > 0
+          && Object.keys(candidate).length === 4
+        );
+        const validGeometry = geometry === null || Boolean(
+          geometry
+          && Object.keys(geometry).length === 9
+          && Number.isSafeInteger(geometry.revision)
+          && geometry.revision > 0
+          && Number.isSafeInteger(geometry.scaleTick)
+          && geometry.scaleTick >= 5
+          && geometry.scaleTick <= 20
+          && typeof geometry.settled === 'boolean'
+          && validRectangle(geometry.viewportInWindowDip)
+          && validPoint(geometry.footOffsetInViewportDip)
+          && geometry.windowSizeDip
+          && Number.isFinite(geometry.windowSizeDip.width)
+          && geometry.windowSizeDip.width > 0
+          && Number.isFinite(geometry.windowSizeDip.height)
+          && geometry.windowSizeDip.height > 0
+          && Object.keys(geometry.windowSizeDip).length === 2
+          && typeof geometry.settingsPlacementMatchesAuthority === 'boolean'
+          && typeof geometry.actualWindowBoundsMatchAuthority === 'boolean'
+          && typeof geometry.actualOriginMatchesFootOffset === 'boolean'
+        );
         if (
           !Number.isSafeInteger(parsed.revision)
           || parsed.revision <= 0
@@ -1297,6 +1347,7 @@ export async function createElectronAppFixture(
           || parsed.layer.activationRevision < 0
           || !Number.isSafeInteger(parsed.layer.errorRevision)
           || parsed.layer.errorRevision < 0
+          || !validGeometry
         ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
         return parsed;
       },

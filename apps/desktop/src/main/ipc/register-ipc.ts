@@ -35,7 +35,13 @@ import {
   type CharacterWorkshopSourceDto
 } from '../../shared/character-ipc';
 import type { CharacterDraftV2 } from '@myself/character-runtime';
-import { petMousePassthroughInputSchema } from '../../shared/pet-window-interaction';
+import {
+  petMousePassthroughInputSchema,
+  petScaleStepInputSchema,
+  petViewportCommitInputSchema,
+  type PetScaleStepInput,
+  type PetViewportCommitInput
+} from '../../shared/pet-window-interaction';
 import {
   characterActionFeedbackInputSchema,
   characterActionMilestoneInputSchema,
@@ -667,7 +673,13 @@ export function registerPetWindowInteractionIpc(
   controller: PetWindowInteractionControllerActions,
   petWebContents: WebContents,
   openContextMenu: () => unknown,
-  options: { enableE2eProbe?: boolean } = {}
+  options: {
+    enableE2eProbe?: boolean;
+    geometry?: {
+      commitViewport(input: PetViewportCommitInput): Promise<void> | void;
+      stepScale(input: PetScaleStepInput): Promise<void> | void;
+    };
+  } = {}
 ): void {
   replaceHandler(
     ipcMain,
@@ -699,6 +711,22 @@ export function registerPetWindowInteractionIpc(
     assertNoPetInteractionInput(args);
     await openContextMenu();
   });
+  if (options.geometry) {
+    replaceHandler(ipcMain, ipcChannels.petViewportCommit, async (event, ...args) => {
+      assertPetWindowSender(event, petWebContents);
+      if (args.length !== 1) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+      const parsed = petViewportCommitInputSchema.safeParse(args[0]);
+      if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+      await options.geometry!.commitViewport(parsed.data);
+    });
+    replaceHandler(ipcMain, ipcChannels.petScaleStep, async (event, ...args) => {
+      assertPetWindowSender(event, petWebContents);
+      if (args.length !== 1) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+      const parsed = petScaleStepInputSchema.safeParse(args[0]);
+      if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+      await options.geometry!.stepScale(parsed.data);
+    });
+  }
   if (options.enableE2eProbe) {
     replaceHandler(
       ipcMain,

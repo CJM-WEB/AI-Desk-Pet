@@ -219,6 +219,87 @@ describe('Main 私有桌宠视觉几何权威', () => {
     })).toEqual({ ok: true, revision: 3 });
   });
 
+  test('placement 事务提交后仍可回滚到旧 active 快照，成功收口后旧 token 失效', () => {
+    const authority = new ProductionPetVisualGeometryAuthority('pet-a');
+    const firstShape = authority.updateShape({
+      manifest: manifest(), skinId: 'default-skin', actionId: 'idle-action',
+      actionRevision: 3, resourceRevision: REVISION_A, direction: 'right', scale: 1,
+      viewportSizeDip: { width: 100, height: 100 }
+    });
+    if (!firstShape.ok) throw new Error('测试前置条件要求 shape 成功');
+    const first = authority.updatePlacement({
+      baseRevision: firstShape.revision,
+      viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 },
+      windowBoundsDip: { x: 300, y: 200, width: 180, height: 220 },
+      display: { id: 'display-1', workAreaDip: { x: 0, y: 0, width: 1920, height: 1040 } }
+    });
+    if (!first.ok) throw new Error('测试前置条件要求 placement 成功');
+
+    const secondShape = authority.updateShape({
+      manifest: manifest(), skinId: 'default-skin', actionId: 'idle-action',
+      actionRevision: 4, resourceRevision: REVISION_A, direction: 'right', scale: 1.1,
+      viewportSizeDip: { width: 110, height: 110 }
+    });
+    if (!secondShape.ok) throw new Error('测试前置条件要求新 shape 成功');
+    const prepared = authority.preparePlacement({
+      baseRevision: secondShape.revision,
+      viewportInWindowDip: { x: 20, y: 10, width: 110, height: 110 },
+      windowBoundsDip: { x: 295, y: 191, width: 198, height: 242 },
+      display: { id: 'display-1', workAreaDip: { x: 0, y: 0, width: 1920, height: 1040 } }
+    });
+    if (!prepared.ok) throw new Error('测试前置条件要求预演成功');
+    expect(authority.getSnapshot()).toEqual(first.snapshot);
+    expect(authority.commitPreparedPlacement({
+      token: prepared.token,
+      baseRevision: secondShape.revision
+    })).toMatchObject({ ok: true, snapshot: { revision: secondShape.revision, scale: 1.1 } });
+    expect(authority.commitPreparedPlacement({
+      token: prepared.token,
+      baseRevision: secondShape.revision
+    })).toEqual({ ok: false, code: 'PET_GEOMETRY_TRANSACTION_ALREADY_COMMITTED' });
+    expect(authority.rollbackPreparedPlacement({
+      token: prepared.token,
+      baseRevision: secondShape.revision
+    })).toEqual({ ok: true });
+    expect(authority.getSnapshot()).toEqual(first.snapshot);
+    expect(authority.commitPreparedPlacement({
+      token: prepared.token,
+      baseRevision: secondShape.revision
+    })).toEqual({ ok: false, code: 'PET_GEOMETRY_TRANSACTION_STALE' });
+
+    expect(authority.getShapeLayout(secondShape.revision)).toBeNull();
+    const retryShape = authority.updateShape({
+      manifest: manifest(), skinId: 'default-skin', actionId: 'idle-action',
+      actionRevision: 4, resourceRevision: REVISION_A, direction: 'right', scale: 1.1,
+      viewportSizeDip: { width: 110, height: 110 }
+    });
+    expect(retryShape).toEqual({ ok: true, revision: 3 });
+    if (!retryShape.ok) throw new Error('测试前置条件要求重试 shape 成功');
+    const retry = authority.preparePlacement({
+      baseRevision: retryShape.revision,
+      viewportInWindowDip: { x: 20, y: 10, width: 110, height: 110 },
+      windowBoundsDip: { x: 295, y: 191, width: 198, height: 242 },
+      display: { id: 'display-1', workAreaDip: { x: 0, y: 0, width: 1920, height: 1040 } }
+    });
+    if (!retry.ok) throw new Error('测试前置条件要求重试预演成功');
+    expect(authority.commitPreparedPlacement({
+      token: retry.token,
+      baseRevision: firstShape.revision
+    })).toEqual({ ok: false, code: 'PET_GEOMETRY_TRANSACTION_REVISION_MISMATCH' });
+    expect(authority.commitPreparedPlacement({
+      token: retry.token,
+      baseRevision: retryShape.revision
+    }).ok).toBe(true);
+    expect(authority.discardPreparedPlacement({
+      token: retry.token,
+      baseRevision: retryShape.revision
+    })).toEqual({ ok: true });
+    expect(authority.rollbackPreparedPlacement({
+      token: retry.token,
+      baseRevision: retryShape.revision
+    })).toEqual({ ok: false, code: 'PET_GEOMETRY_TRANSACTION_STALE' });
+  });
+
   test('G4 可在提交 placement 前读取 pending 形状且失败丢弃后保留旧 active', () => {
     const authority = new ProductionPetVisualGeometryAuthority('pet-a');
     const activeShape = authority.updateShape({

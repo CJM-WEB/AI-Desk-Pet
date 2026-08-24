@@ -59,6 +59,12 @@ const agentMutatingInvocations = [
 ] as const;
 
 describe('Agent IPC', () => {
+  test('聊天 IPC 注册不获得桌宠 viewport 或缩放通道', () => {
+    const { handlers } = createAgentIpcFixture();
+    expect(handlers.has(ipcChannels.petViewportCommit)).toBe(false);
+    expect(handlers.has(ipcChannels.petScaleStep)).toBe(false);
+  });
+
   test('聊天输入通过严格 Schema 后才交给会话协调器', async () => {
     const { handlers, service, currentEvent } = createAgentIpcFixture();
 

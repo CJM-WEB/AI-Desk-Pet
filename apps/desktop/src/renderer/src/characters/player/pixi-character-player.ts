@@ -26,6 +26,7 @@ export interface CharacterPlayerPort {
   subscribePlaybackLifecycle?(
     listener: (event: CharacterPlaybackLifecycleEvent) => void
   ): () => void;
+  resize?(width: number, height: number): void;
   destroy(): void;
 }
 
@@ -267,6 +268,12 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
   private notifyHitRegion(): void {
     if (this.destroyed) return;
     for (const listener of this.hitRegionListeners) listener();
+  }
+
+  resize(width: number, height: number): void {
+    if (this.destroyed || isLegacyScene(this.scene)) return;
+    this.scene.resize?.(width, height);
+    this.notifyHitRegion();
   }
 
   private notifyFrame(): void {

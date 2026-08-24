@@ -28,7 +28,12 @@ import type {
   CharacterMotionEvent,
   CharacterMotionSnapshot
 } from './character-motion-ipc';
-import type { PetWindowInteractionApi } from './pet-window-interaction';
+import type {
+  PetWindowInteractionApi,
+  PetScaleStepInput,
+  PetViewportCommitInput
+} from './pet-window-interaction';
+import type { PetGeometryRenderView } from './character-motion-ipc';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 
@@ -80,6 +85,9 @@ export interface SaveProviderProfileInput {
 }
 
 export interface MyselfApi extends PetWindowInteractionApi {
+  commitPetViewport(input: PetViewportCommitInput): Promise<void>;
+  stepPetScale(input: PetScaleStepInput): Promise<void>;
+  onPetGeometryRender(listener: (view: PetGeometryRenderView) => void): () => void;
   getStatus(): Promise<{ version: string; ready: boolean }>;
   getSettings(): Promise<PublicSettings>;
   saveProvider(input: SaveProviderInput): Promise<PublicSettings>;

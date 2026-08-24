@@ -35,7 +35,11 @@ export type PetGeometryErrorCode =
   | 'PET_GEOMETRY_COMPUTATION_INVALID'
   | 'PET_GEOMETRY_SHAPE_MISSING'
   | 'PET_GEOMETRY_BASE_REVISION_STALE'
-  | 'PET_GEOMETRY_VIEWPORT_SIZE_MISMATCH';
+  | 'PET_GEOMETRY_VIEWPORT_SIZE_MISMATCH'
+  | 'PET_GEOMETRY_TRANSACTION_ACTIVE'
+  | 'PET_GEOMETRY_TRANSACTION_STALE'
+  | 'PET_GEOMETRY_TRANSACTION_REVISION_MISMATCH'
+  | 'PET_GEOMETRY_TRANSACTION_ALREADY_COMMITTED';
 
 export type PetGeometryUpdateResult =
   | Readonly<{ ok: true; snapshot: PetGeometrySnapshot }>
@@ -43,6 +47,14 @@ export type PetGeometryUpdateResult =
 
 export type PetGeometryShapeUpdateResult =
   | Readonly<{ ok: true; revision: number }>
+  | Readonly<{ ok: false; code: PetGeometryErrorCode }>;
+
+export type PetGeometryPlacementPrepareResult =
+  | Readonly<{ ok: true; token: string; snapshot: PetGeometrySnapshot }>
+  | Readonly<{ ok: false; code: PetGeometryErrorCode }>;
+
+export type PetGeometryTransactionResult =
+  | Readonly<{ ok: true; snapshot?: PetGeometrySnapshot }>
   | Readonly<{ ok: false; code: PetGeometryErrorCode }>;
 
 type VisibleGeometry = Pick<PresentationGeometryV2, 'visualBounds' | 'groundAnchor'>;
@@ -62,6 +74,10 @@ const placementInputSchema = z.object({
   viewportInWindowDip: z.unknown(),
   windowBoundsDip: z.unknown(),
   display: z.unknown()
+}).strict();
+const placementTransactionInputSchema = z.object({
+  token: z.string().regex(/^pet-geometry-transaction-[1-9][0-9]*$/u),
+  baseRevision: z.number().int().safe().nonnegative()
 }).strict();
 const identifierSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,119}$/u);
 const revisionSchema = z.number().int().safe().nonnegative();
@@ -227,12 +243,32 @@ type ShapeState = Readonly<{
   actionBinding: string;
 }>;
 
+type PlacementTransaction = {
+  token: string;
+  baseRevision: number;
+  phase: 'prepared' | 'committed';
+  selected: ShapeState;
+  nextSnapshot: PetGeometrySnapshot;
+  previousActive: ShapeState | null;
+  previousPending: ShapeState | null;
+  previousSnapshot: PetGeometrySnapshot | null;
+  previousCharacterId: string;
+};
+
+type ShapeRollbackBaseline = Pick<
+  PlacementTransaction,
+  'previousActive' | 'previousPending' | 'previousSnapshot' | 'previousCharacterId'
+>;
+
 /** Main 内的纯几何权威；G2b 不负责注册 IPC 或绑定窗口生命周期。 */
 export class PetVisualGeometryAuthority {
   private snapshot: PetGeometrySnapshot | null = null;
   private active: ShapeState | null = null;
   private pending: ShapeState | null = null;
   private lastIssuedShapeRevision = 0;
+  private placementTransaction: PlacementTransaction | null = null;
+  private shapeRollbackBaseline: ShapeRollbackBaseline | null = null;
+  private lastPlacementTransactionId = 0;
 
   constructor(private initialCharacterId: string) {
     if (!identifierSchema.safeParse(initialCharacterId).success) {
@@ -380,6 +416,12 @@ export class PetVisualGeometryAuthority {
       && actionBinding === this.active.actionBinding
     ) return Object.freeze({ ok: true, revision });
 
+    this.shapeRollbackBaseline ??= {
+      previousActive: this.active,
+      previousPending: this.pending,
+      previousSnapshot: this.snapshot,
+      previousCharacterId: this.initialCharacterId
+    };
     this.lastIssuedShapeRevision = Math.max(this.lastIssuedShapeRevision, revision);
     this.pending = cloneAndFreeze({
       shape: nextShape,
@@ -392,11 +434,15 @@ export class PetVisualGeometryAuthority {
 
   /** G4 原子窗口布局失败时显式丢弃未提交形状；重复调用不影响 active。 */
   discardPendingShape(): void {
-    this.pending = null;
+    this.pending = this.shapeRollbackBaseline?.previousPending ?? null;
+    this.shapeRollbackBaseline = null;
   }
 
-  /** 高频 placement 更新只消费缓存形状与窗口数据，不解析 Manifest。 */
-  updatePlacement(candidate: unknown): PetGeometryUpdateResult {
+  /**
+   * 预演 placement 只生成候选快照，不提交 active；窗口与持久化事务可在此后安全失败。
+   */
+  preparePlacement(candidate: unknown): PetGeometryPlacementPrepareResult {
+    if (this.placementTransaction) return failure('PET_GEOMETRY_TRANSACTION_ACTIVE');
     const envelope = placementInputSchema.safeParse(candidate);
     if (!envelope.success) return failure('PET_GEOMETRY_INPUT_INVALID');
     if (!this.active && !this.pending) return failure('PET_GEOMETRY_SHAPE_MISSING');
@@ -458,12 +504,99 @@ export class PetVisualGeometryAuthority {
       || !validRectangle(nextSnapshot.visualBoundsInWindowDip)
       || !validRectangle(nextSnapshot.windowBoundsDip)
     ) return failure('PET_GEOMETRY_COMPUTATION_INVALID');
-    if (selected === this.pending) {
-      this.active = this.pending;
-      this.pending = null;
-      this.initialCharacterId = selected.shape.characterId;
+    const transactionId = this.lastPlacementTransactionId + 1;
+    if (!Number.isSafeInteger(transactionId)) {
+      return failure('PET_GEOMETRY_COMPUTATION_INVALID');
     }
-    this.snapshot = cloneAndFreeze(nextSnapshot) as PetGeometrySnapshot;
+    this.lastPlacementTransactionId = transactionId;
+    const frozenSnapshot = cloneAndFreeze(nextSnapshot) as PetGeometrySnapshot;
+    const token = `pet-geometry-transaction-${transactionId}`;
+    const rollback = this.shapeRollbackBaseline ?? {
+      previousActive: this.active,
+      previousPending: this.pending,
+      previousSnapshot: this.snapshot,
+      previousCharacterId: this.initialCharacterId
+    };
+    this.placementTransaction = {
+      token,
+      baseRevision: shape.revision,
+      phase: 'prepared',
+      selected,
+      nextSnapshot: frozenSnapshot,
+      ...rollback
+    };
+    return Object.freeze({ ok: true, token, snapshot: cloneAndFreeze(frozenSnapshot) });
+  }
+
+  /** token 与 revision 同时绑定，避免异步落盘期间把候选提交到另一形状。 */
+  commitPreparedPlacement(candidate: unknown): PetGeometryTransactionResult {
+    const input = placementTransactionInputSchema.safeParse(candidate);
+    if (!input.success) return failure('PET_GEOMETRY_INPUT_INVALID');
+    const transaction = this.placementTransaction;
+    if (!transaction || input.data.token !== transaction.token) {
+      return failure('PET_GEOMETRY_TRANSACTION_STALE');
+    }
+    if (input.data.baseRevision !== transaction.baseRevision) {
+      return failure('PET_GEOMETRY_TRANSACTION_REVISION_MISMATCH');
+    }
+    if (transaction.phase === 'committed') {
+      return failure('PET_GEOMETRY_TRANSACTION_ALREADY_COMMITTED');
+    }
+    this.active = transaction.selected;
+    if (this.pending === transaction.selected) this.pending = null;
+    this.initialCharacterId = transaction.selected.shape.characterId;
+    this.snapshot = transaction.nextSnapshot;
+    transaction.phase = 'committed';
     return Object.freeze({ ok: true, snapshot: this.getSnapshot()! });
+  }
+
+  /** 事务无论是否已 commit 均可回滚；旧 active、pending 与 revision 快照整体恢复。 */
+  rollbackPreparedPlacement(candidate: unknown): PetGeometryTransactionResult {
+    const input = placementTransactionInputSchema.safeParse(candidate);
+    if (!input.success) return failure('PET_GEOMETRY_INPUT_INVALID');
+    const transaction = this.placementTransaction;
+    if (!transaction || input.data.token !== transaction.token) {
+      return failure('PET_GEOMETRY_TRANSACTION_STALE');
+    }
+    if (input.data.baseRevision !== transaction.baseRevision) {
+      return failure('PET_GEOMETRY_TRANSACTION_REVISION_MISMATCH');
+    }
+    this.active = transaction.previousActive;
+    this.pending = transaction.previousPending;
+    this.snapshot = transaction.previousSnapshot;
+    this.initialCharacterId = transaction.previousCharacterId;
+    this.placementTransaction = null;
+    this.shapeRollbackBaseline = null;
+    return Object.freeze({ ok: true });
+  }
+
+  /** 成功事务收口后仅销毁回滚证据，正式快照保持不变。 */
+  discardPreparedPlacement(candidate: unknown): PetGeometryTransactionResult {
+    const input = placementTransactionInputSchema.safeParse(candidate);
+    if (!input.success) return failure('PET_GEOMETRY_INPUT_INVALID');
+    const transaction = this.placementTransaction;
+    if (!transaction || input.data.token !== transaction.token) {
+      return failure('PET_GEOMETRY_TRANSACTION_STALE');
+    }
+    if (input.data.baseRevision !== transaction.baseRevision) {
+      return failure('PET_GEOMETRY_TRANSACTION_REVISION_MISMATCH');
+    }
+    this.placementTransaction = null;
+    this.shapeRollbackBaseline = null;
+    return Object.freeze({ ok: true });
+  }
+
+  /** 兼容既有调用者的同步便捷入口，内部仍走同一事务权威。 */
+  updatePlacement(candidate: unknown): PetGeometryUpdateResult {
+    const prepared = this.preparePlacement(candidate);
+    if (!prepared.ok) return prepared;
+    const transaction = { token: prepared.token, baseRevision: prepared.snapshot.revision };
+    const committed = this.commitPreparedPlacement(transaction);
+    if (!committed.ok || !committed.snapshot) {
+      this.rollbackPreparedPlacement(transaction);
+      return committed as PetGeometryUpdateResult;
+    }
+    this.discardPreparedPlacement(transaction);
+    return Object.freeze({ ok: true, snapshot: committed.snapshot });
   }
 }

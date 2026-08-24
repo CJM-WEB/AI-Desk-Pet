@@ -172,8 +172,17 @@ export class CharacterMotionService {
     for (const listener of [...this.listeners]) listener(this.latestSnapshot);
   }
 
-  /** Windows 的 will-move 只代表用户手动移动，立即撤销所有自动运动所有权。 */
-  beginUserMove(): void {
+  /**
+   * Windows 也可能为 setBounds 发出 will-move；命中预登记目标时仍属于程序化移动。
+   * 真正用户拖动没有匹配目标，才撤销自动运动所有权。
+   */
+  beginUserMove(nextPosition?: CharacterMotionPoint): void {
+    if (
+      nextPosition
+      && this.expectedProgrammaticPositions.some(expected => (
+        Math.round(nextPosition.x) === expected.x && Math.round(nextPosition.y) === expected.y
+      ))
+    ) return;
     this.userMoving = true;
     this.expectedProgrammaticPositions.splice(0);
     const bounds = this.options.window.getBounds();
@@ -212,6 +221,47 @@ export class CharacterMotionService {
     if (event.type === 'character_carrying') {
       this.setCarrying(event.carrying);
     }
+  }
+
+  /** 几何 FIFO 只查询拖动占用，不接触 Renderer 身份或全局坐标。 */
+  isUserMoving(): boolean {
+    return this.userMoving;
+  }
+
+  /** 几何事务在调用 BrowserWindow.setBounds 前登记目标，避免 moved 被误判为用户接管。 */
+  expectProgrammaticPosition(point: CharacterMotionPoint): () => void {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      throw new Error('CHARACTER_MOTION_INPUT_INVALID');
+    }
+    const position = integerPosition(point);
+    const previousTarget = { ...this.target };
+    let rebasedTarget = false;
+    if (
+      !this.latestSnapshot.moving
+      && this.target.x === this.latestSnapshot.position.x
+      && this.target.y === this.latestSnapshot.position.y
+    ) {
+      // 隐藏 BrowserWindow 可能不发 move/moved，静止 target 必须在 setBounds 前同步。
+      this.target = position;
+      rebasedTarget = true;
+    }
+    this.expectedProgrammaticPositions.push(position);
+    if (this.expectedProgrammaticPositions.length > 64) {
+      this.expectedProgrammaticPositions.shift();
+    }
+    return () => {
+      const expectedIndex = this.expectedProgrammaticPositions.indexOf(position);
+      // 已由窗口消息消费的预期位置不是失败残留，不能反向撤销已发生的移动。
+      if (expectedIndex < 0) return;
+      this.expectedProgrammaticPositions.splice(expectedIndex, 1);
+      if (
+        rebasedTarget
+        && this.target.x === position.x
+        && this.target.y === position.y
+      ) {
+        this.target = previousTarget;
+      }
+    };
   }
 
   /** 对象化意图不接受绝对坐标，所有目标继续经过同一窗口矩形边界钳制。 */
@@ -303,8 +353,14 @@ export class CharacterMotionService {
 }
 
 type MotionWindowEvents = CharacterMotionWindow & {
-  on(name: 'will-move' | 'move' | 'moved', listener: () => void): void;
-  removeListener(name: 'will-move' | 'move' | 'moved', listener: () => void): void;
+  on(
+    name: 'will-move' | 'move' | 'moved',
+    listener: (event?: unknown, newBounds?: Rectangle) => void
+  ): void;
+  removeListener(
+    name: 'will-move' | 'move' | 'moved',
+    listener: (event?: unknown, newBounds?: Rectangle) => void
+  ): void;
 };
 
 /** 统一生产窗口事件接线，确保 Windows 用户拖拽先于 move/moved 接管。 */
@@ -312,7 +368,9 @@ export function bindCharacterMotionWindow(
   window: MotionWindowEvents,
   service: Pick<CharacterMotionService, 'beginUserMove' | 'handleWindowMoved' | 'endUserMove'>
 ): () => void {
-  const onWillMove = (): void => service.beginUserMove();
+  const onWillMove = (_event?: unknown, newBounds?: Rectangle): void => (
+    service.beginUserMove(newBounds ? { x: newBounds.x, y: newBounds.y } : undefined)
+  );
   const onMove = (): void => service.handleWindowMoved();
   const onMoved = (): void => service.endUserMove();
   window.on('will-move', onWillMove);

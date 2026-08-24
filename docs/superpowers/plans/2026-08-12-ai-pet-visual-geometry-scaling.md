@@ -30,6 +30,16 @@
 - Modify: `apps/desktop/src/main/characters/character-package-service.ts`
 - Modify: `apps/desktop/src/main/characters/official-default-character.ts`
 - Modify: `apps/desktop/src/main/index.ts`
+- Modify: `apps/desktop/src/main/characters/pet-visual-geometry.ts`
+- Modify: `apps/desktop/tests/pet-visual-geometry.test.ts`
+- Modify: `apps/desktop/src/main/characters/character-behavior-service.ts`
+- Modify: `apps/desktop/tests/character-behavior-service.test.ts`
+- Create: `apps/desktop/src/main/windows/pet-geometry-coordinator.ts`
+- Create: `apps/desktop/tests/pet-geometry-coordinator.test.ts`
+- Modify: `apps/desktop/src/renderer/src/styles.css`
+- Modify: `apps/desktop/tests/pet-interaction-controller.test.ts`
+- Modify: `apps/desktop/tests/pet-view.test.tsx`
+- Modify: `apps/desktop/tests/pet-window-interaction-controller.test.ts`
 - Create: `apps/desktop/src/main/characters/native-image-alpha-decoder.ts`
 - Create: `apps/desktop/tests/native-image-alpha-decoder.test.ts`
 - Modify: `apps/desktop/tests/character-asset-service.test.ts`
@@ -161,12 +171,16 @@ type StoredPetPlacement = Readonly<{
 - Modify: `apps/desktop/tests/pixi-character-player.test.ts`
 - Modify: `apps/desktop/tests/main-lifecycle.test.ts`
 
-- [ ] RED：只有现有 alpha hit 为 true 且指针悬浮时，wheel 才提交 `step:-1|1`；每格 10%，50%/200% 封顶；透明区域和聊天窗口滚轮不缩放。
-- [ ] RED：Renderer 只可提交严格 window-local viewport 矩形；Main 绑定当前正式角色和动作后自行计算几何，拒绝 Renderer 提交角色 ID、资源 hash、全局坐标或最终 bounds。
-- [ ] RED：V3 pending legacy 只在首次真实几何提交后转换；转换失败保留 pending 与旧窗口位置，成功后 PublicSettings/Settings IPC 不再包含任何桌面全局位置。
-- [ ] RED：缩放前后脚底全局 DIP 不变；窗口 bounds、Pixi canvas 和几何 revision 原子提交；失败回滚到旧快照。
-- [ ] GREEN：G4 负责 viewport 与滚轮 IPC、Preload、Renderer 和 Main 生命周期接线；Renderer 滚轮只传档位，不传比例、全局坐标或 characterId，Main 保存成功后只广播去全局坐标的几何渲染视图；删除 `savePetPosition`、`restorePetPosition` 与 PublicSettings `petPosition` 旧运行路径，只保留 V3 ready placements。
-- [ ] 运行 pet interaction、preload、CharacterPlayer 和 Main lifecycle 测试；提交 `feat: 支持桌宠像素命中滚轮缩放`。
+> 文件清单补缝：G2b 基线只有立即提交的 `updatePlacement`，缺少本任务原子布局失败时恢复旧 active 快照所需的事务 seam；G4 在同一几何权威中最小补充 prepare/commit/rollback/discard，不建立第二套权威。
+>
+> 协议补缝：G4 使用 `pet-window:viewport-commit`、`pet-window:scale-step` 两条 invoke 和 `pet-window:geometry-render` 单向事件；viewport invoke 同时作为 resize ack，Main 最多等待 2000ms。Main 以单 FIFO 串行布局，缩放使用 5–20 整数 tick，首次实际 viewport 与已提交 scale 构成 canonical base；Renderer 不提供身份、资源、全局坐标或最终 bounds。为验证真实 owner，补入交互控制器、PetView、Main 窗口 IPC、行为绑定与独立原子布局协调器测试。
+
+- [x] RED：只有现有 alpha hit 为 true 且指针悬浮时，wheel 才提交 `step:-1|1`；每格 10%，50%/200% 封顶；透明区域和聊天窗口滚轮不缩放。
+- [x] RED：Renderer 只可提交严格 window-local viewport 矩形；Main 绑定当前正式角色和动作后自行计算几何，拒绝 Renderer 提交角色 ID、资源 hash、全局坐标或最终 bounds。
+- [x] RED：V3 pending legacy 只在首次真实几何提交后转换；转换失败保留 pending 与旧窗口位置，成功后 PublicSettings/Settings IPC 不再包含任何桌面全局位置。
+- [x] RED：缩放前后脚底全局 DIP 不变；窗口 bounds、Pixi canvas 和几何 revision 原子提交；失败回滚到旧快照。
+- [x] GREEN：G4 负责 viewport 与滚轮 IPC、Preload、Renderer 和 Main 生命周期接线；Renderer 滚轮只传档位，不传比例、全局坐标或 characterId，Main 保存成功后只广播去全局坐标的几何渲染视图；删除 `savePetPosition`、`restorePetPosition` 与 PublicSettings `petPosition` 旧运行路径，只保留 V3 ready placements。
+- [x] 运行 pet interaction、preload、CharacterPlayer 和 Main lifecycle 测试；提交 `feat: 支持桌宠像素命中滚轮缩放`。
 
 ## Task 5（G5）：运动和屏幕边界改用可见包围盒
 

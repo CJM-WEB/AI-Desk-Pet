@@ -220,6 +220,17 @@ type ElectronFixtureModule = {
         activationRevision: number;
         errorRevision: number;
       };
+      geometry: {
+        revision: number;
+        scaleTick: number;
+        settled: boolean;
+        viewportInWindowDip: { x: number; y: number; width: number; height: number };
+        footOffsetInViewportDip: { x: number; y: number };
+        windowSizeDip: { width: number; height: number };
+        settingsPlacementMatchesAuthority: boolean;
+        actualWindowBoundsMatchAuthority: boolean;
+        actualOriginMatchesFootOffset: boolean;
+      } | null;
     }>;
     getMainDescendantProcesses(): Promise<Array<{
       processId: number;
@@ -2557,6 +2568,28 @@ test.describe('真实角色工作室闭环', () => {
       await expect(page.getByLabel('ground X')).toHaveValue('0.45');
       await expect(page.getByLabel('ground Y')).toHaveValue('0.95');
     };
+    const selectIdleAction = async (
+      page: Page,
+      actionName: RegExp,
+      step: string
+    ): Promise<void> => {
+      const stateList = page.getByRole('list', { name: '状态与动作列表' });
+      const idleState = stateList.locator(':scope > li').filter({
+        has: page.getByRole('button', { name: /^待机/u })
+      }).first();
+      const idleStateButton = idleState.getByRole('button', { name: /^待机/u }).first();
+      await idleStateButton.click();
+      await expect(idleStateButton, `E2E 步骤“${step}”未选中待机状态`)
+        .toHaveAttribute('aria-pressed', 'true');
+
+      const actionButton = idleState.getByRole('list', { name: '待机动作' })
+        .getByRole('button', { name: actionName });
+      await expect(actionButton, `E2E 步骤“${step}”的待机动作不可见`)
+        .toBeVisible();
+      await expect(actionButton, `E2E 步骤“${step}”的待机动作不可操作`)
+        .toBeEnabled();
+      await actionButton.click();
+    };
     const openWorkshop = async (
       appFixture: AppFixture,
       phase: string
@@ -2679,8 +2712,7 @@ test.describe('真实角色工作室闭环', () => {
       await workshop.getByRole('button', { name: '应用到当前动作' }).click();
       await expect(workshop.getByText('精灵图网格已应用到当前动作。')).toBeVisible();
       await closeWorkshopToast(workshop, '精灵图网格已应用到当前动作。');
-      await workshop.getByRole('button', { name: /^待机/ }).click();
-      await workshop.getByRole('button', { name: /^动作 1/ }).click();
+      await selectIdleAction(workshop, /^动作 1/u, '初始启动：恢复待机精确表现');
       await expectExactIdlePresentation(workshop);
       await workshop.getByRole('button', { name: '编译并发布' }).click();
       await expect(workshop.getByText('运行版本已编译并发布。')).toBeVisible();
@@ -2787,8 +2819,7 @@ test.describe('真实角色工作室闭环', () => {
       await recoveredWinterSkin.getByRole('button', { name: /冬装/ }).click();
       await expect(workshop.getByLabel('皮肤说明'))
         .toHaveValue('适合冬日桌面的保暖外观');
-      await workshop.getByRole('button', { name: /^待机/ }).click();
-      await workshop.getByRole('button', { name: /^冬日待机/ }).click();
+      await selectIdleAction(workshop, /^冬日待机/u, '重启恢复：选择待机动作');
       await expect(workshop.getByLabel('已导入素材')).toContainText('idle.png');
       await expect(workshop.getByLabel('动作名称'))
         .toHaveValue('冬日待机', { timeout: 15_000 });
@@ -2857,8 +2888,7 @@ test.describe('真实角色工作室闭环', () => {
       await importedWinterSkin.getByRole('button', { name: /冬装/ }).click();
       await expect(workshop.getByLabel('皮肤说明'))
         .toHaveValue('适合冬日桌面的保暖外观');
-      await workshop.getByRole('button', { name: /^待机/ }).click();
-      await workshop.getByRole('button', { name: /^动作 1/ }).click();
+      await selectIdleAction(workshop, /^动作 1/u, '隔离导入：选择待机动作');
       await expect(workshop.getByText('当前使用：当前皮肤精确表现')).toBeVisible();
       await expectExactIdlePresentation(workshop);
       const characterList = workshop.getByRole('list', { name: '角色列表' });
@@ -5739,7 +5769,6 @@ test.describe('真实 Provider 业务闭环', () => {
     let restartCount = 0;
     let baselineSettingsBuffer: Buffer | undefined;
     let baselineMcpSecretBuffer: Buffer | undefined;
-    let baselinePetPosition: { x: number; y: number } | undefined;
     let fixture: AppFixture;
     try {
       fixture = await fixtureModule.createElectronAppFixture({
@@ -5761,9 +5790,8 @@ test.describe('真实 Provider 业务闭环', () => {
           );
 
           if (restartCount === 1) {
-            if (!baselinePetPosition) throw new Error('缺少首次退出前的桌宠坐标');
             const settings = new SettingsStore(settingsFile, async () => false);
-            await settings.savePetPosition(baselinePetPosition);
+            await settings.getPetPlacementState('builtin-default');
             await settings.saveMcpServerSettings({
               id: 'remote-tools',
               enabled: true,
@@ -5839,11 +5867,7 @@ test.describe('真实 Provider 业务闭环', () => {
         await window.myself.chooseAuthorizedRoot();
       }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
 
-      // 首次配置阶段允许普通位置落盘；基线建立后不再调用任何设置 mutator。
-      baselinePetPosition = await petPage.evaluate(() => ({
-        x: window.screenX,
-        y: window.screenY
-      }));
+      // 首次配置阶段允许正式 coordinator 落盘 V3 placement；基线建立后不再改写几何。
       const firstPetClosed = petPage.waitForEvent('close');
       await petPage.evaluate(() => {
         void window.myself.quit();
@@ -5885,21 +5909,63 @@ test.describe('真实桌宠位置重启恢复', () => {
   test('移动并等待持久化后使用同一 userData 重启恢复位置', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
-
+    type Placement = Readonly<{
+      characterId: string;
+      scale: number;
+      footAnchorDip: Readonly<{ x: number; y: number }>;
+      displayId: string;
+    }>;
+    const readPlacementAt = async (directory: string): Promise<Placement | null> => {
+      try {
+        const settings = JSON.parse(
+          await readFile(join(directory, 'settings.json'), 'utf8')
+        ) as {
+          petPlacementState?: {
+            kind?: string;
+            placements?: Placement[];
+          };
+        };
+        const state = settings.petPlacementState;
+        if (state?.kind !== 'ready') {
+          return null;
+        }
+        const placement = state.placements?.find(
+          candidate => candidate.characterId === 'builtin-default'
+        );
+        return placement ?? null;
+      } catch {
+        return null;
+      }
+    };
+    let savedPlacementAfterShutdown: Placement | null = null;
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: runtimeDiagnosticKey(),
-      launchTimeoutMs: 15_000
+      launchTimeoutMs: 15_000,
+      beforeRestart: async directories => {
+        savedPlacementAfterShutdown = await readPlacementAt(directories.userDataDirectory);
+      }
     });
     const userDataDirectory = fixture.userDataDirectory;
     const authorizedRootDirectory = fixture.authorizedRootDirectory;
+    const readPlacement = (): Promise<Placement | null> => readPlacementAt(userDataDirectory);
 
     try {
       const petPage = await waitForRendererPage(fixture, 'pet');
-      const originalPosition = await petPage.evaluate(() => ({
-        x: window.screenX,
-        y: window.screenY
-      }));
+      // G4 的 player ready 早于 Main 事务落盘；先等初始位置可见，再模拟真实用户移动。
+      await expect(petPage.locator('.character-player')).toHaveAttribute(
+        'data-status',
+        'ready',
+        { timeout: 20_000 }
+      );
+      await expect.poll(readPlacement, { timeout: 20_000 }).not.toBeNull();
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
+        settled: true,
+        settingsPlacementMatchesAuthority: true,
+        actualWindowBoundsMatchAuthority: true,
+        actualOriginMatchesFootOffset: true
+      });
+      const initialPlacement = await readPlacement();
       await petPage.evaluate(({ offsetX, offsetY }) => {
         const currentScreen = window.screen as Screen & {
           availLeft?: number;
@@ -5918,26 +5984,39 @@ test.describe('真实桌宠位置重启恢复', () => {
         window.moveTo(targetX, targetY);
       }, { offsetX: 64, offsetY: 48 });
       await expect.poll(async () => {
-        const current = await petPage.evaluate(() => ({
-          x: window.screenX,
-          y: window.screenY
-        }));
-        return current.x !== originalPosition.x || current.y !== originalPosition.y;
-      }).toBe(true);
-      const savedPosition = await petPage.evaluate(() => ({
-        x: window.screenX,
-        y: window.screenY
-      }));
-      await petPage.waitForTimeout(500);
-
+        const current = await readPlacement();
+        return current !== null && JSON.stringify(current) !== JSON.stringify(initialPlacement);
+      }, { timeout: 20_000 }).toBe(true);
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
+        settingsPlacementMatchesAuthority: true,
+        actualWindowBoundsMatchAuthority: true
+      });
+      const petClosed = petPage.waitForEvent('close');
+      await petPage.evaluate(() => {
+        void window.myself.quit();
+      });
+      await petClosed;
       await fixture.restart();
+      expect(savedPlacementAfterShutdown).not.toBeNull();
       const restartedPetPage = await waitForRendererPage(fixture, 'pet');
-      const restoredPosition = await restartedPetPage.evaluate(() => ({
-        x: window.screenX,
-        y: window.screenY
-      }));
-      expect(Math.abs(restoredPosition.x - savedPosition.x)).toBeLessThanOrEqual(1);
-      expect(Math.abs(restoredPosition.y - savedPosition.y)).toBeLessThanOrEqual(1);
+      await expect(restartedPetPage.locator('.character-player')).toHaveAttribute(
+        'data-status',
+        'ready',
+        { timeout: 20_000 }
+      );
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry, {
+        timeout: 15_000
+      }).toMatchObject({
+        settled: true,
+        settingsPlacementMatchesAuthority: true,
+        actualWindowBoundsMatchAuthority: true,
+        actualOriginMatchesFootOffset: true
+      });
+      const restoredPlacement = await readPlacement();
+      expect(restoredPlacement?.footAnchorDip.x).toBe(savedPlacementAfterShutdown?.footAnchorDip.x);
+      expect(restoredPlacement?.footAnchorDip.y).toBe(savedPlacementAfterShutdown?.footAnchorDip.y);
+      expect(restoredPlacement?.scale).toBe(savedPlacementAfterShutdown?.scale);
+      expect(restoredPlacement?.displayId).toBe(savedPlacementAfterShutdown?.displayId);
 
       const diagnostics = fixture.logs.join('\n');
       expect(diagnostics).not.toMatch(/myself-e2e-[a-f0-9]{48}/u);

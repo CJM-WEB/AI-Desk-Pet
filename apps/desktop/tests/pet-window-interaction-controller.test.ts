@@ -347,6 +347,48 @@ describe('受限桌宠窗口交互 IPC', () => {
     }
   });
 
+  test('viewport 与 scale 只接受 pet sender 的严格窗口局部矩形和单档输入', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const petSender = { isDestroyed: () => false };
+    const geometry = {
+      commitViewport: vi.fn().mockResolvedValue(undefined),
+      stepScale: vi.fn().mockResolvedValue(undefined)
+    };
+    registerPetWindowInteractionIpc(
+      ipcMain,
+      { setPassthrough: vi.fn(), beginDrag: vi.fn(), endDrag: vi.fn(), dispose: vi.fn() },
+      petSender as never,
+      vi.fn(),
+      { geometry }
+    );
+    const viewport = handlers.get(ipcChannels.petViewportCommit);
+    const scale = handlers.get(ipcChannels.petScaleStep);
+    const local = { viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 } };
+
+    await expect(viewport?.({ sender: petSender }, local)).resolves.toBeUndefined();
+    await expect(scale?.({ sender: petSender }, { step: 1 })).resolves.toBeUndefined();
+    expect(geometry.commitViewport).toHaveBeenCalledWith(local);
+    expect(geometry.stepScale).toHaveBeenCalledWith({ step: 1 });
+    for (const payload of [
+      { ...local, characterId: 'pet-a' },
+      { ...local, globalX: 300 },
+      { viewportInWindowDip: { ...local.viewportInWindowDip, width: 0 } },
+      { viewportInWindowDip: { ...local.viewportInWindowDip, right: 120 } }
+    ]) {
+      await expect(viewport?.({ sender: petSender }, payload)).rejects.toThrow(
+        'PET_WINDOW_INTERACTION_INPUT_INVALID'
+      );
+    }
+    for (const payload of [{ step: 0 }, { step: 2 }, { step: 1, scale: 1.1 }]) {
+      await expect(scale?.({ sender: petSender }, payload)).rejects.toThrow(
+        'PET_WINDOW_INTERACTION_INPUT_INVALID'
+      );
+    }
+    await expect(viewport?.({ sender: {} }, local)).rejects.toThrow(
+      'PET_WINDOW_INTERACTION_SENDER_INVALID'
+    );
+  });
+
   test('E2E 探针仅在显式启用时注册，且拒绝输入和非桌宠 sender', async () => {
     const enabled = createIpcMain();
     const disabled = createIpcMain();

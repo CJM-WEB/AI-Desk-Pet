@@ -741,10 +741,6 @@ export class SettingsStore {
           displayName: settings.authorizedRoot.displayName,
           pathHint: settings.authorizedRoot.pathHint
         },
-        // 仅供 G4 接线前旧 Main 恢复窗口左上角；ready placement 不向 Renderer 暴露。
-        petPosition: settings.petPlacementState.kind === 'pending-legacy'
-          ? settings.petPlacementState.windowPosition
-          : null,
         fileDisclosureAccepted: settings.fileDisclosureAccepted
       };
     });
@@ -781,23 +777,6 @@ export class SettingsStore {
     return this.enqueueWrite(async () => {
       const settings = await this.load();
       settings.authorizedRoot = authorizedRootSchema.parse(input);
-      await atomicWrite(this.file, settings);
-    });
-  }
-
-  savePetPosition(input: PetPositionInput): Promise<void> {
-    return this.enqueueWrite(async () => {
-      const windowPosition = petPositionSchema.parse(input);
-      const settings = await this.load();
-      // 仅供 G4 接线前旧窗口控制器使用；正式新路径只调用 savePetPlacement。
-      if (
-        settings.petPlacementState.kind === 'ready'
-        && settings.petPlacementState.placements.length > 0
-      ) return;
-      settings.petPlacementState = {
-        kind: 'pending-legacy',
-        windowPosition
-      };
       await atomicWrite(this.file, settings);
     });
   }

@@ -35,12 +35,16 @@ function createFixture() {
     setPetMousePassthrough: vi.fn().mockResolvedValue(undefined),
     beginPetDrag: vi.fn().mockResolvedValue(undefined),
     endPetDrag: vi.fn().mockResolvedValue(undefined),
-    openPetContextMenu: vi.fn().mockResolvedValue(undefined)
+    openPetContextMenu: vi.fn().mockResolvedValue(undefined),
+    commitPetViewport: vi.fn().mockResolvedValue(undefined),
+    stepPetScale: vi.fn().mockResolvedValue(undefined),
+    onPetGeometryRender: vi.fn(() => () => undefined)
   };
   let hit = false;
   let notify = () => undefined;
   const unsubscribe = vi.fn();
   const port: CharacterHitTestPort = {
+    kind: 'alpha',
     hitTest: vi.fn(() => hit),
     subscribe: vi.fn(listener => {
       notify = listener;
@@ -249,6 +253,24 @@ describe('Renderer 桌宠交互状态机', () => {
     fixture.setHit(true);
     fixture.controller.handleContextMenu();
     expect(fixture.api.openPetContextMenu).toHaveBeenCalledOnce();
+  });
+
+  test('wheel 只在当前悬浮点命中 Alpha 时提交单一档位且离开后失效', () => {
+    const fixture = createFixture();
+    fixture.controller.setHitTestPort(fixture.port);
+    fixture.controller.handlePointerMove({ x: 6, y: 7 });
+
+    expect(fixture.controller.handleWheel({ deltaY: -120 })).toBe(false);
+    fixture.setHit(true);
+    expect(fixture.controller.handleWheel({ deltaY: -120 })).toBe(true);
+    expect(fixture.api.stepPetScale).toHaveBeenLastCalledWith({ step: 1 });
+    expect(fixture.controller.handleWheel({ deltaY: 120 })).toBe(true);
+    expect(fixture.api.stepPetScale).toHaveBeenLastCalledWith({ step: -1 });
+    expect(fixture.controller.handleWheel({ deltaY: 0 })).toBe(false);
+
+    fixture.controller.handlePointerLeave();
+    expect(fixture.controller.handleWheel({ deltaY: -120 })).toBe(false);
+    expect(fixture.api.stepPetScale).toHaveBeenCalledTimes(2);
   });
 
   test('异步关闭穿透失败后重试安全穿透且吞掉拒绝', async () => {

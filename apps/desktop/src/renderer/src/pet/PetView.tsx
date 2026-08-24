@@ -237,6 +237,12 @@ export function PetView({
           y: event.clientY
         });
       }}
+      onPointerLeave={() => interactionControllerRef.current?.handlePointerLeave()}
+      onWheel={event => {
+        if (interactionControllerRef.current?.handleWheel({ deltaY: event.deltaY })) {
+          event.preventDefault();
+        }
+      }}
       onPointerDown={event => {
         interactionControllerRef.current?.handlePointerMove({
           x: event.clientX,

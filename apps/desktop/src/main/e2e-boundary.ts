@@ -28,6 +28,49 @@ export interface MainE2eBoundaryOptions {
 }
 
 /**
+ * 周期性 E2E 观测只保留一个在途发布和一个最新待发布信号，
+ * 慢磁盘不会把读写任务按定时器频率无界排队。
+ */
+export function createCoalescedAsyncPublisher(operation: () => Promise<void>): {
+  publish(): Promise<void>;
+  close(): Promise<void>;
+} {
+  let active: Promise<void> | null = null;
+  let pending = false;
+  let closing = false;
+
+  const publish = (): Promise<void> => {
+    if (closing) return active ?? Promise.resolve();
+    if (active) {
+      pending = true;
+      return active;
+    }
+    const drain = async (): Promise<void> => {
+      do {
+        pending = false;
+        try {
+          await operation();
+        } catch {
+          // E2E 状态是轮询观测而非业务事实；临时写盘失败由后续信号重试，不能阻断关闭。
+        }
+      } while (pending);
+    };
+    active = drain().finally(() => {
+      active = null;
+    });
+    return active;
+  };
+
+  return {
+    publish,
+    async close() {
+      closing = true;
+      await active;
+    }
+  };
+}
+
+/**
  * E2E 仅在 Main 内替代固定桥接进程，不提供 Renderer 控制面，也不产生真实 Explorer 事件。
  */
 export function createMainE2eExplorerBridge(options: {

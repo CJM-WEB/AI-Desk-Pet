@@ -448,6 +448,68 @@ describe('Main 角色运动服务', () => {
     expect(setPosition).toHaveBeenNthCalledWith(2, 20, 0);
   });
 
+  test('几何协调器可预登记 setBounds 的程序化位置且不会夺走既有运动目标', () => {
+    let now = 0;
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const service = new CharacterMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => now
+    });
+    service.moveTo({ x: 400, y: 0 }, 100);
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+    (service.beginUserMove as unknown as (point: { x: number; y: number }) => void)({
+      x: 40,
+      y: 30
+    });
+    bounds = { ...bounds, x: 40, y: 30 };
+    service.handleWindowMoved();
+
+    now = 100;
+    service.tick();
+    expect(service.getSnapshot().target).toEqual({ x: 400, y: 0 });
+    expect(() => service.expectProgrammaticPosition({ x: Number.NaN, y: 0 }))
+      .toThrow('CHARACTER_MOTION_INPUT_INVALID');
+  });
+
+  test('静止窗口的程序化布局同步 motion target，后续 tick 不拉回旧位置', () => {
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const setPosition = vi.fn();
+    const service = new CharacterMotionService({
+      window: { getBounds: () => bounds, setPosition },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 100
+    });
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+    service.beginUserMove({ x: 40, y: 30 });
+    bounds = { ...bounds, x: 40, y: 30 };
+    service.handleWindowMoved();
+
+    expect(service.tick()).toMatchObject({
+      position: { x: 40, y: 30 },
+      target: { x: 40, y: 30 },
+      moving: false
+    });
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
+  test('隐藏窗口 setBounds 未发 move 事件时，预登记布局仍阻止首 tick 拉回', () => {
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const setPosition = vi.fn();
+    const service = new CharacterMotionService({
+      window: { getBounds: () => bounds, setPosition },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 100
+    });
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+    bounds = { ...bounds, x: 40, y: 30 };
+
+    expect(service.tick()).toMatchObject({
+      position: { x: 40, y: 30 }, target: { x: 40, y: 30 }, moving: false
+    });
+    expect(setPosition).not.toHaveBeenCalled();
+  });
+
   test('积压的程序化 moved 以 20→10 真正乱序确认时不会覆盖运动目标', () => {
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };

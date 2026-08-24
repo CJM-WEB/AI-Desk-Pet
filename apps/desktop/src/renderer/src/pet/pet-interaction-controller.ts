@@ -4,6 +4,7 @@ import {
 } from '../../../shared/pet-window-interaction';
 
 export type CharacterHitTestPort = {
+  kind?: 'alpha' | 'fallback';
   hitTest(point: { x: number; y: number }): boolean;
   subscribe(listener: () => void): () => void;
 };
@@ -20,6 +21,7 @@ export function createElementBoundsHitTestPort(
   element: HTMLElement
 ): CharacterHitTestPort {
   return {
+    kind: 'fallback',
     hitTest(point) {
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
       if (!element.isConnected || element.hidden) return false;
@@ -176,6 +178,25 @@ export class PetInteractionController {
     if (this.disposed) return;
     this.latestPoint = { ...point };
     this.refreshPassthrough();
+  }
+
+  handlePointerLeave(): void {
+    if (this.disposed || this.activePointerId !== null) return;
+    this.latestPoint = null;
+    this.refreshPassthrough();
+  }
+
+  /** wheel 只消费正式 Alpha 命中；Renderer 永远只提交一个离散档位。 */
+  handleWheel(event: Pick<WheelEvent, 'deltaY'>): boolean {
+    if (
+      this.disposed
+      || event.deltaY === 0
+      || this.hitTestPort?.kind !== 'alpha'
+      || !this.isCurrentPointHit()
+      || typeof this.api.stepPetScale !== 'function'
+    ) return false;
+    void this.api.stepPetScale({ step: event.deltaY < 0 ? 1 : -1 }).catch(() => undefined);
+    return true;
   }
 
   handlePointerDown(

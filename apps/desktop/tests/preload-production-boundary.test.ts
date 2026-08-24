@@ -53,6 +53,9 @@ describe('生产 preload 探针边界', () => {
     expect(exposedApi).not.toHaveProperty('getVerifiedWriteAction');
     expect(exposedApi).not.toHaveProperty('getAuthorizedRootPath');
     expect(exposedApi).not.toHaveProperty('getE2eRecycleBinProbe');
+    expect(exposedApi).toHaveProperty('commitPetViewport');
+    expect(exposedApi).toHaveProperty('stepPetScale');
+    expect(exposedApi).toHaveProperty('onPetGeometryRender');
   });
 
   test('生产 API 不暴露目录绝对路径、句柄、私有身份、桥状态或 fake 控制', () => {
@@ -83,5 +86,6 @@ describe('生产 preload 探针边界', () => {
     expect(apiKeys.join('\n')).not.toMatch(
       /absolutePath|hwnd|privateIdentity|bridgeState|injectExplorer|crashExplorer|HabitatE2e/iu
     );
+    expect(apiKeys.join('\n')).not.toMatch(/globalPosition|windowBounds|characterId|resourceHash/iu);
   });
 });

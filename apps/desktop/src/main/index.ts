@@ -34,6 +34,7 @@ import { ConversationEventProjection } from
 import { createMainConversationComposition } from
   './conversation/main-conversation-composition';
 import {
+  createCoalescedAsyncPublisher,
   createMainE2eExplorerBridge,
   createMainE2eExplorerLayer,
   resolveMainE2eBoundary
@@ -81,6 +82,7 @@ import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
 import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
 import { decodeNativeImageAlpha } from './characters/native-image-alpha-decoder';
+import { PetVisualGeometryAuthority } from './characters/pet-visual-geometry';
 import {
   bindCharacterMotionWindow,
   CharacterMotionService,
@@ -93,10 +95,7 @@ import { SecretStore } from './storage/secret-store';
 import { SettingsStore } from './storage/settings-store';
 import { createSettingsActions } from './settings/settings-actions';
 import { DesktopSettingsService } from './settings/desktop-settings-service';
-import {
-  createPetPositionController,
-  restorePetPosition
-} from './windows/pet-position';
+import { PetGeometryCoordinator } from './windows/pet-geometry-coordinator';
 import {
   bindPetWindowInteractionLifecycle,
   createCharacterWorkshopWindow,
@@ -276,26 +275,28 @@ async function createApplicationWindows(
   let e2eStateRevision = 0;
   let processedExplorerEventRevision = 0;
   let processedExplorerEvent: string | null = null;
-  let e2eStateWrite = Promise.resolve();
-  const publishMainE2eState = (): Promise<void> => {
-    if (!e2eBoundary || !e2eExplorer) return Promise.resolve();
+  let inspectPetGeometryForE2e = async (): Promise<object | null> => null;
+  const e2eStatePublisher = createCoalescedAsyncPublisher(async () => {
+    if (!e2eBoundary || !e2eExplorer) return;
     e2eStateRevision += 1;
+    const revision = e2eStateRevision;
+    const staged = `${e2eBoundary.mainStateFile}.tmp`;
     const state = {
-      revision: e2eStateRevision,
+      revision,
       petWindowVisible: pet.isVisible(),
       petWindowAlwaysOnTop: pet.isAlwaysOnTop(),
       processedExplorerEventRevision,
       processedExplorerEvent,
       bridge: e2eExplorer.inspection(),
-      layer: e2eExplorerLayer!.inspection()
+      layer: e2eExplorerLayer!.inspection(),
+      geometry: await inspectPetGeometryForE2e().catch(() => null)
     };
-    const staged = `${e2eBoundary.mainStateFile}.tmp`;
-    const write = e2eStateWrite.then(async () => {
-      await writeFile(staged, `${JSON.stringify(state)}\n`, 'utf8');
-      await rename(staged, e2eBoundary.mainStateFile);
-    });
-    e2eStateWrite = write.catch(() => undefined);
-    return write;
+    await writeFile(staged, `${JSON.stringify(state)}\n`, 'utf8');
+    await rename(staged, e2eBoundary.mainStateFile);
+  });
+  const publishMainE2eState = (): Promise<void> => {
+    if (!e2eBoundary || !e2eExplorer) return Promise.resolve();
+    return e2eStatePublisher.publish();
   };
   const completeMainE2eObservation = (observation: object): void => {
     const completed = e2eExplorer?.completeObservation(observation);
@@ -310,7 +311,7 @@ async function createApplicationWindows(
   e2eStateTimer?.unref?.();
   startupCleanup.add(async () => {
     if (e2eStateTimer !== undefined) clearInterval(e2eStateTimer);
-    await e2eStateWrite;
+    await e2eStatePublisher.close();
   });
   const explorerResourceRoot = app.isPackaged
     ? process.resourcesPath
@@ -457,29 +458,12 @@ async function createApplicationWindows(
     applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)
   });
   startupCleanup.add(() => desktopSettingsService.close());
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const workAreas = [
-    primaryDisplay.workArea,
-    ...screen.getAllDisplays()
-      .filter(display => display.id !== primaryDisplay.id)
-      .map(display => display.workArea)
-  ];
-  const petBounds = pet.getBounds();
-  // 桌宠只持久化普通桌面坐标，Explorer 图层调整不改变位置模型。
-  const petPosition = restorePetPosition(
-    (await settingsStore.getPublic()).petPosition,
-    { width: petBounds.width, height: petBounds.height },
-    workAreas
-  );
-  pet.setPosition(petPosition.x, petPosition.y);
-  const reportPetPositionError = (error: unknown): void => {
-    console.error('保存桌宠位置失败。', error);
-  };
-  const petPositionController = createPetPositionController({
-    window: pet,
-    savePosition: position => settingsStore.savePetPosition(position),
-    onError: reportPetPositionError
-  });
+  const activeGeometryManifest = await characterStore.getActiveManifestV2();
+  const startupPlacement = await settingsStore.getPetPlacementState(activeGeometryManifest.id);
+  if (startupPlacement.kind === 'pending-legacy') {
+    // pending 只在 Main 私下恢复旧窗口左上角；首次真实 viewport 成功后才 CAS 清除。
+    pet.setPosition(startupPlacement.windowPosition.x, startupPlacement.windowPosition.y);
+  }
   const characterMotion = new CharacterMotionService({
     window: pet,
     getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea)
@@ -493,6 +477,85 @@ async function createApplicationWindows(
     store: characterStore,
     motion: characterMotion,
     reportError: reportCharacterBehaviorError
+  });
+  const petGeometryAuthority = new PetVisualGeometryAuthority(activeGeometryManifest.id);
+  const petGeometry = new PetGeometryCoordinator({
+    window: pet,
+    authority: petGeometryAuthority,
+    settings: settingsStore,
+    getGeometryBinding: () => characterBehavior.getGeometryBinding(),
+    displays: () => screen.getAllDisplays().map(display => ({
+      id: String(display.id),
+      workAreaDip: display.workArea
+    })),
+    primaryDisplayId: () => String(screen.getPrimaryDisplay().id),
+    publishRenderView: view => {
+      if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
+        pet.webContents.send(ipcChannels.petGeometryRender, view);
+      }
+    },
+    expectProgrammaticPosition: point => characterMotion.expectProgrammaticPosition(point),
+    isLayoutBlocked: () => (
+      characterMotion.getSnapshot().moving || characterMotion.isUserMoving()
+    ),
+    isUserMoving: () => characterMotion.isUserMoving()
+  });
+  if (e2eBoundary) {
+    inspectPetGeometryForE2e = async () => {
+      const relative = petGeometry.inspectRelativeGeometry();
+      const snapshot = petGeometryAuthority.getSnapshot();
+      if (!relative || !snapshot || relative.revision !== snapshot.revision || pet.isDestroyed()) {
+        return null;
+      }
+      const state = await settingsStore.getPetPlacementState(snapshot.characterId);
+      const currentSnapshot = petGeometryAuthority.getSnapshot();
+      const currentRelative = petGeometry.inspectRelativeGeometry();
+      if (
+        !currentSnapshot
+        || !currentRelative
+        || currentSnapshot.characterId !== snapshot.characterId
+        || currentSnapshot.revision !== snapshot.revision
+        || currentRelative.revision !== relative.revision
+      ) return null;
+      const actualBounds = pet.getBounds();
+      const footOffsetInWindowDip = {
+        x: currentRelative.viewportInWindowDip.x + currentRelative.footOffsetInViewportDip.x,
+        y: currentRelative.viewportInWindowDip.y + currentRelative.footOffsetInViewportDip.y
+      };
+      const placement = state.kind === 'ready' ? state.placement : null;
+      return {
+        revision: currentRelative.revision,
+        scaleTick: currentRelative.scaleTick,
+        settled: currentRelative.settled,
+        viewportInWindowDip: currentRelative.viewportInWindowDip,
+        footOffsetInViewportDip: currentRelative.footOffsetInViewportDip,
+        windowSizeDip: { width: actualBounds.width, height: actualBounds.height },
+        settingsPlacementMatchesAuthority: Boolean(placement
+          && placement.characterId === currentSnapshot.characterId
+          && placement.scale === currentSnapshot.scale
+          && placement.displayId === currentSnapshot.displayId
+          && placement.footAnchorDip.x === currentSnapshot.footAnchorDip.x
+          && placement.footAnchorDip.y === currentSnapshot.footAnchorDip.y),
+        actualWindowBoundsMatchAuthority: actualBounds.x === currentSnapshot.windowBoundsDip.x
+          && actualBounds.y === currentSnapshot.windowBoundsDip.y
+          && actualBounds.width === currentSnapshot.windowBoundsDip.width
+          && actualBounds.height === currentSnapshot.windowBoundsDip.height,
+        actualOriginMatchesFootOffset:
+          actualBounds.x === currentSnapshot.footAnchorDip.x - footOffsetInWindowDip.x
+          && actualBounds.y === currentSnapshot.footAnchorDip.y - footOffsetInWindowDip.y
+      };
+    };
+  }
+  const persistMovedPetGeometry = (): void => {
+    petGeometry.handleWindowMoved();
+    // moved 的其他监听器会在本轮结束拖动；微任务随后消费期间保留的缩放 tick。
+    queueMicrotask(() => { void petGeometry.resumePendingLayout().catch(() => undefined); });
+  };
+  pet.on('move', persistMovedPetGeometry);
+  pet.on('moved', persistMovedPetGeometry);
+  startupCleanup.add(() => {
+    pet.removeListener('move', persistMovedPetGeometry);
+    pet.removeListener('moved', persistMovedPetGeometry);
   });
   let publishCharacterBehaviorNotice = (_notice: CharacterBehaviorNotice): void => undefined;
   const characterBehaviorDirector = new CharacterBehaviorDirector({
@@ -589,12 +652,19 @@ async function createApplicationWindows(
     }
   });
   const releaseBehaviorEvents = characterBehavior.subscribe(event => {
+    void petGeometry.refreshBinding().catch(() => undefined);
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, event);
     }
   });
   const motionRuntime = startCharacterMotionTimers({
-    tick: () => characterMotion.tick(),
+    tick: () => {
+      if (petGeometry.isLayoutInFlight()) return;
+      const snapshot = characterMotion.tick();
+      if (!snapshot.moving) {
+        void petGeometry.resumePendingLayout().catch(() => undefined);
+      }
+    },
     poll: () => characterProactivityRuntime.poll(),
     isDestroyed: () => pet.isDestroyed(),
     tickIntervalMs: 50,
@@ -729,7 +799,13 @@ async function createApplicationWindows(
     petWindowInteraction,
     pet.webContents,
     openPetContextMenu,
-    { enableE2eProbe: Boolean(e2eBoundary) }
+    {
+      enableE2eProbe: Boolean(e2eBoundary),
+      geometry: {
+        commitViewport: input => petGeometry.commitViewport(input),
+        stepScale: input => petGeometry.stepScale(input)
+      }
+    }
   );
   characterActions.subscribeCharacterEvents(event => {
     if (event.type === 'active-character-changed') {
@@ -922,7 +998,7 @@ async function createApplicationWindows(
     },
     coordinator: explorerCoordinator,
     bridge: explorerPort,
-    position: petPositionController,
+    position: petGeometry,
     services: [
       async () => { await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()); },
       () => desktopSettingsService.close(),
@@ -967,6 +1043,7 @@ async function createApplicationWindows(
     ensureCharacterWorkshopWindow()
   ]);
   await characterBehavior.initialize();
+  await petGeometry.initialize();
   characterProactivityRuntime.start();
   await explorerComposition.start();
   if (!applicationQuit.activateNormal(shutdownApplication)) return;

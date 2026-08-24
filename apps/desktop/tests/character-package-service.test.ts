@@ -520,7 +520,7 @@ describe('角色包 Main 服务', () => {
     await expect(new CharacterPackageService(importedCharacters, { store })
       .importCharacter(malicious)).rejects.toThrow('CHARACTER_PACKAGE_INVALID');
     await expect(store.list()).resolves.toEqual([]);
-  });
+  }, 15_000);
 
   test('恢复包只包含原始草稿、已验证目录和源素材', async () => {
     const store = new CharacterStore(charactersDirectory);

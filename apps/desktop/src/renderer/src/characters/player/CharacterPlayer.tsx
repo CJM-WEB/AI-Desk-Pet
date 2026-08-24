@@ -124,6 +124,7 @@ export function CharacterPlayer({
 }: CharacterPlayerProps) {
   const hostRef = useRef<HTMLSpanElement>(null);
   const activePlayerRef = useRef<CharacterPlayerPort | null>(null);
+  const activeStageRef = useRef<HTMLElement | null>(null);
   const activeSnapshotRef = useRef<CharacterRuntimeSnapshot | null>(null);
   const activeBehaviorPlaybackRef = useRef<ActiveBehaviorPlayback | null>(null);
   const behaviorPlaybackTokensRef = useRef(new Map<string, BehaviorPlaybackTokenState>());
@@ -156,6 +157,16 @@ export function CharacterPlayer({
     random
   };
 
+  const commitActiveViewport = (): void => {
+    const player = activePlayerRef.current;
+    const stage = activeStageRef.current;
+    if (!player || !stage || typeof api.commitPetViewport !== 'function') return;
+    const viewportInWindowDip = roundedWindowLocalRectangle(stage);
+    if (!viewportInWindowDip) return;
+    player.resize?.(viewportInWindowDip.width, viewportInWindowDip.height);
+    void api.commitPetViewport({ viewportInWindowDip }).catch(() => undefined);
+  };
+
   useEffect(() => {
     const previousOwner = hitTestPortOwnerRef.current;
     if (previousOwner && previousOwner !== onHitTestPortChange) {
@@ -176,6 +187,22 @@ export function CharacterPlayer({
     document.addEventListener('visibilitychange', updateVisibility);
     return () => document.removeEventListener('visibilitychange', updateVisibility);
   }, []);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(commitActiveViewport);
+    observer?.observe(host);
+    window.addEventListener('resize', commitActiveViewport);
+    const unsubscribe = api.onPetGeometryRender?.(() => commitActiveViewport());
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', commitActiveViewport);
+      unsubscribe?.();
+    };
+  }, [api]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -307,6 +334,7 @@ export function CharacterPlayer({
 
         const previous = activePlayerRef.current;
         activePlayerRef.current = candidate;
+        activeStageRef.current = staging;
         activeSnapshotRef.current = snapshot;
         projectionStatusRef.current = 'ready';
         flushPendingPlaybackAction(
@@ -327,6 +355,7 @@ export function CharacterPlayer({
           createPlayerHitTestPort(candidate, staging)
         );
         setStatus('ready');
+        commitActiveViewport();
         if (forceReload) onRuntimeError?.(null);
       } catch (error) {
         // 候选资源属于本次局部事务，即使修订已过期也必须立即释放。
@@ -419,6 +448,7 @@ export function CharacterPlayer({
       candidates.clear();
       if (activePlayerRef.current) destroyPlayerOnce(activePlayerRef.current);
       activePlayerRef.current = null;
+      activeStageRef.current = null;
       activeSnapshotRef.current = null;
       host.replaceChildren();
     };
@@ -723,6 +753,48 @@ export function CharacterPlayer({
   );
 }
 
+/** Renderer 只提交四边量化后的窗口局部整数矩形，不推导全局位置。 */
+export function roundedWindowLocalRectangle(element: HTMLElement): {
+  x: number; y: number; width: number; height: number;
+} | null {
+  try {
+    const bounds = element.getBoundingClientRect();
+    const layoutOrigin = windowLocalLayoutOrigin(element);
+    const unroundedLeft = layoutOrigin?.x ?? bounds.left;
+    const unroundedTop = layoutOrigin?.y ?? bounds.top;
+    const left = Math.round(unroundedLeft);
+    const top = Math.round(unroundedTop);
+    const right = Math.round(unroundedLeft + bounds.width);
+    const bottom = Math.round(unroundedTop + bounds.height);
+    if (
+      ![left, top, right, bottom].every(Number.isSafeInteger)
+      || left < 0 || top < 0 || right <= left || bottom <= top
+    ) return null;
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  } catch {
+    return null;
+  }
+}
+
+/** offset 布局链不包含运动表现 transform，与窗口客户区坐标保持同一语义。 */
+function windowLocalLayoutOrigin(
+  element: HTMLElement
+): Readonly<{ x: number; y: number }> | null {
+  if (!element.offsetParent) return null;
+  let x = 0;
+  let y = 0;
+  let current: HTMLElement | null = element;
+  while (current) {
+    x += current.offsetLeft;
+    y += current.offsetTop;
+    const parent: Element | null = current.offsetParent;
+    current = parent instanceof HTMLElement ? parent : null;
+  }
+  const scrollX = Number.isFinite(window.scrollX) ? window.scrollX : 0;
+  const scrollY = Number.isFinite(window.scrollY) ? window.scrollY : 0;
+  return { x: x - scrollX, y: y - scrollY };
+}
+
 /**
  * 将浏览器客户区坐标转换为正式播放器容器局部坐标，并复用逐帧命中订阅。
  */
@@ -731,6 +803,7 @@ function createPlayerHitTestPort(
   container: HTMLElement
 ): CharacterHitTestPort {
   return {
+    kind: 'alpha',
     hitTest(point) {
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
       try {

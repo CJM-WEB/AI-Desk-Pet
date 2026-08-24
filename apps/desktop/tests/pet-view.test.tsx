@@ -122,6 +122,29 @@ describe('桌宠锚点视觉消费者', () => {
   });
 });
 
+test('PetView 把 wheel 与 pointerleave 交给同一交互控制器', () => {
+  const api = createPetViewApi();
+  installPetViewBrowserApi(api);
+  const handleWheel = vi.fn(() => true);
+  const handlePointerLeave = vi.fn();
+  const controller = {
+    setHitTestPort: vi.fn(), handlePointerMove: vi.fn(), handlePointerDown: vi.fn(),
+    handlePointerUp: vi.fn(), handlePointerCancel: vi.fn(), handleContextMenu: vi.fn(),
+    handleWheel, handlePointerLeave, dispose: vi.fn()
+  } as unknown as PetInteractionController;
+  const { container } = render(
+    <PetView createInteractionController={() => controller} />
+  );
+  const shell = container.querySelector<HTMLElement>('.pet-shell');
+  if (!shell) throw new Error('测试要求桌宠 shell 存在');
+
+  fireEvent.wheel(shell, { deltaY: -120 });
+  fireEvent.pointerLeave(shell);
+
+  expect(handleWheel).toHaveBeenCalledWith({ deltaY: -120 });
+  expect(handlePointerLeave).toHaveBeenCalledOnce();
+});
+
 function createPetViewApi(): MyselfApi {
   return {
     getCharacterRecoverySnapshot: vi.fn(async () => EMPTY_RECOVERY_SNAPSHOT),

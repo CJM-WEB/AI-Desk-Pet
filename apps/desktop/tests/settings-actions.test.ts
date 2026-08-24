@@ -13,7 +13,6 @@ function configuredSettings() {
       hasStoredSecret: true
     },
     authorizedRoot: null,
-    petPosition: null,
     fileDisclosureAccepted: false
   };
 }

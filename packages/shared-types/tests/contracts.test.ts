@@ -1,11 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import {
   pendingActionSchema,
+  publicSettingsSchema,
   providerProfileV2Schema,
   taskEventSchema,
   toolNameSchema,
   toolRequestSchema
 } from '../src/contracts';
+
+describe('publicSettingsSchema', () => {
+  it('公开设置不接受桌面全局位置', () => {
+    const settings = {
+      version: 1 as const,
+      provider: null,
+      authorizedRoot: null,
+      fileDisclosureAccepted: false
+    };
+    expect(publicSettingsSchema.parse(settings)).toEqual(settings);
+    expect(() => publicSettingsSchema.parse({
+      ...settings,
+      petPosition: { x: 300, y: 200 }
+    })).toThrow();
+  });
+});
 
 describe('toolRequestSchema', () => {
   it('接受合法命名空间工具名称', () => {

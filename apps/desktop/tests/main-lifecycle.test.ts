@@ -83,6 +83,24 @@ describe('Main 通用生命周期', () => {
     expect(source).not.toContain('mcpManager.close()');
   });
 
+  test('视觉几何只接入一套 Main 权威并删除 PublicSettings 旧位置运行路径', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+
+    expect(source.match(/new PetVisualGeometryAuthority\(/gu)).toHaveLength(1);
+    expect(source.match(/new PetGeometryCoordinator\(/gu)).toHaveLength(1);
+    expect(source).toContain('commitViewport: input => petGeometry.commitViewport');
+    expect(source).toContain('stepScale: input => petGeometry.stepScale');
+    expect(source).toContain('await petGeometry.initialize();');
+    expect(source).toContain("pet.on('move', persistMovedPetGeometry);");
+    expect(source).toContain("pet.on('moved', persistMovedPetGeometry);");
+    expect(source).toContain("pet.removeListener('move', persistMovedPetGeometry);");
+    expect(source).toContain("pet.removeListener('moved', persistMovedPetGeometry);");
+    expect(source).not.toContain('restorePetPosition(');
+    expect(source).not.toContain('createPetPositionController(');
+    expect(source).not.toContain('getPublic()).petPosition');
+    expect(source).not.toContain('settingsStore.savePetPosition');
+  });
+
   test('窗口关闭同步触发会话封口且异步失败只稳定报告一次', async () => {
     let rejectClose!: (error: Error) => void;
     const pendingClose = new Promise<void>((_resolve, reject) => { rejectClose = reject; });

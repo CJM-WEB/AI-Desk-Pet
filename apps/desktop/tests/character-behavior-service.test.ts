@@ -42,6 +42,15 @@ type BehaviorService = {
   endTaskCarry(): void;
   getPublicBehaviorCatalog(): PublicBehaviorCatalog;
   getRecentPublicActions(): readonly string[];
+  getGeometryBinding(): {
+    generation: number;
+    manifest: CharacterManifestV2;
+    skinId: string;
+    actionId: string;
+    actionRevision: number;
+    resourceRevision: string;
+    direction: 'left' | 'right';
+  } | null;
   resolveBehaviorTarget(target: BehaviorTarget): ResolvedBehaviorTarget;
   isMovementBehaviorTarget(target: ResolvedBehaviorTarget): boolean;
   requestDirectedBehavior(target: ResolvedBehaviorTarget, options?: {
@@ -324,6 +333,25 @@ describe('Main 角色行为权威服务', () => {
 
   beforeEach(async () => {
     Constructor = await loadConstructor();
+  });
+
+  test('几何绑定只来自当前正式行为权威并随方向变化推进 generation', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    await service.initialize();
+
+    const first = service.getGeometryBinding();
+    expect(first).toMatchObject({
+      generation: 1,
+      skinId: 'default-skin',
+      actionId: 'idle-action',
+      resourceRevision: 'a'.repeat(64),
+      direction: 'right'
+    });
+    expect(first?.manifest.id).toBe('first');
+    const current = fixture.motion.getSnapshot();
+    service.handleMovement({ ...current, direction: 'left', revision: current.revision + 1 });
+    expect(service.getGeometryBinding()).toMatchObject({ generation: 2, direction: 'left' });
   });
 
   test('公开清单与定向请求之间只传递已解析私有目标', async () => {

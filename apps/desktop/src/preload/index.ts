@@ -22,6 +22,7 @@ import {
   characterMotionEventSchema,
   characterMotionDeltaProbeSchema,
   characterMotionSnapshotResultSchema,
+  petGeometryRenderViewSchema,
   type CharacterBehaviorProbe,
   type CharacterMotionDeltaProbe,
   type CharacterMotionEvent,
@@ -276,6 +277,20 @@ const api: MyselfApi = {
   },
   openPetContextMenu: async () => {
     await ipcRenderer.invoke(ipcChannels.petContextMenuOpen);
+  },
+  commitPetViewport: async input => {
+    await ipcRenderer.invoke(ipcChannels.petViewportCommit, input);
+  },
+  stepPetScale: async input => {
+    await ipcRenderer.invoke(ipcChannels.petScaleStep, input);
+  },
+  onPetGeometryRender: listener => {
+    const handler = (_event: unknown, payload: unknown): void => {
+      const parsed = petGeometryRenderViewSchema.safeParse(payload);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(ipcChannels.petGeometryRender, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.petGeometryRender, handler);
   },
   ...(e2eProbeEnabled
     ? {

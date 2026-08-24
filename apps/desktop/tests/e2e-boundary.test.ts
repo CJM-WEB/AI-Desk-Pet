@@ -5,6 +5,12 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 type BoundaryModule = {
+  createCoalescedAsyncPublisher(
+    operation: () => Promise<void>
+  ): {
+    publish(): Promise<void>;
+    close(): Promise<void>;
+  };
   resolveMainE2eBoundary(options: {
     appIsPackaged: boolean;
     env: NodeJS.ProcessEnv;
@@ -32,6 +38,70 @@ type BoundaryModule = {
     close(): Promise<void>;
   };
 };
+
+test('E2E 状态刷新在慢读盘期间只合并一次最新发布', async () => {
+  const boundary = await loadBoundaryModule();
+  if (!boundary) return;
+  let releaseFirst!: () => void;
+  const first = new Promise<void>(resolveFirst => {
+    releaseFirst = resolveFirst;
+  });
+  let calls = 0;
+  const publisher = boundary.createCoalescedAsyncPublisher(async () => {
+    calls += 1;
+    if (calls === 1) await first;
+  });
+
+  const initial = publisher.publish();
+  const repeated = Array.from({ length: 50 }, () => publisher.publish());
+  await Promise.resolve();
+  expect(calls).toBe(1);
+
+  releaseFirst();
+  await Promise.all([initial, ...repeated]);
+  expect(calls).toBe(2);
+  await publisher.close();
+});
+
+test('E2E 状态发布临时失败后不阻断显式重试或关闭', async () => {
+  const boundary = await loadBoundaryModule();
+  if (!boundary) return;
+  let calls = 0;
+  const publisher = boundary.createCoalescedAsyncPublisher(async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('WRITE_FAILED');
+  });
+
+  await expect(publisher.publish()).resolves.toBeUndefined();
+  await expect(publisher.publish()).resolves.toBeUndefined();
+  expect(calls).toBe(2);
+  await expect(publisher.close()).resolves.toBeUndefined();
+});
+
+test('E2E 状态发布首轮失败时仍处理在途期间合并的最新信号', async () => {
+  const boundary = await loadBoundaryModule();
+  if (!boundary) return;
+  let releaseFirst!: () => void;
+  const first = new Promise<void>(resolveFirst => {
+    releaseFirst = resolveFirst;
+  });
+  let calls = 0;
+  const publisher = boundary.createCoalescedAsyncPublisher(async () => {
+    calls += 1;
+    if (calls === 1) {
+      await first;
+      throw new Error('WRITE_FAILED');
+    }
+  });
+
+  const initial = publisher.publish();
+  const latest = publisher.publish();
+  releaseFirst();
+
+  await expect(Promise.all([initial, latest])).resolves.toEqual([undefined, undefined]);
+  expect(calls).toBe(2);
+  await expect(publisher.close()).resolves.toBeUndefined();
+});
 
 async function loadBoundaryModule(): Promise<BoundaryModule | null> {
   try {

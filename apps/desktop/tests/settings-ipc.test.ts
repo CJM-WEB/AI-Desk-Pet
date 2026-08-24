@@ -25,7 +25,6 @@ function publicSettings(hasStoredSecret: boolean) {
       hasStoredSecret
     },
     authorizedRoot: null,
-    petPosition: null,
     fileDisclosureAccepted: false
   };
 }

@@ -1107,28 +1107,35 @@ describe('真实草稿预览', () => {
       preview: previewState({ playing: true }),
       onFrameChange
     });
-    const view = render(<DraftCharacterPreview {...props} />);
+    let updatePreview: ((
+      updater: (current: PreviewState) => PreviewState
+    ) => void) | null = null;
+    function ControlledPreview() {
+      const [preview, setPreview] = useState(props.preview);
+      updatePreview = updater => setPreview(updater);
+      return <DraftCharacterPreview
+        {...props}
+        preview={preview}
+        onFrameChange={frameIndex => {
+          onFrameChange(frameIndex);
+          setPreview(previous => ({ ...previous, frameIndex }));
+        }}
+      />;
+    }
+
+    render(<ControlledPreview />);
     await screen.findByText('预览已就绪');
+    const beforeSync = vi.mocked(current.scene.showAction).mock.calls.length;
     current.setFrame(1);
     act(() => current.emitFrame());
     expect(onFrameChange).toHaveBeenCalledWith(1);
-    const beforeSync = vi.mocked(current.scene.showAction).mock.calls.length;
-
-    view.rerender(<DraftCharacterPreview
-      {...props}
-      preview={previewState({ playing: true, frameIndex: 1 })}
-    />);
     expect(current.scene.showAction).toHaveBeenCalledTimes(beforeSync);
 
-    view.rerender(<DraftCharacterPreview
-      {...props}
-      preview={previewState({
-        playing: true,
-        frameIndex: 1,
-        direction: 'left',
-        speed: 1.5
-      })}
-    />);
+    act(() => updatePreview?.(previous => ({
+      ...previous,
+      direction: 'left',
+      speed: 1.5
+    })));
     expect(current.scene.showAction).toHaveBeenLastCalledWith(
       idleAction,
       expect.objectContaining({ frameIndex: 1, direction: 'left', speed: 1.5 })

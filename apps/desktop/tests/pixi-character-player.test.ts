@@ -66,10 +66,23 @@ describe('共享 Pixi 角色动作场景', () => {
         complete = listener;
         return unsubscribeComplete;
       }),
+      resize: vi.fn(),
       destroy: vi.fn()
     };
     return { complete: () => complete?.(), scene, unsubscribeComplete };
   }
+
+  test('播放器 resize 复用正式 Pixi 场景并刷新命中区域', () => {
+    const fixture = lifecycleScene();
+    const player = new PixiCharacterPlayer(fixture.scene);
+    const hitRegionChanged = vi.fn();
+    player.subscribeHitRegion(hitRegionChanged);
+
+    player.resize(200, 160);
+
+    expect(fixture.scene.resize).toHaveBeenCalledWith(200, 160);
+    expect(hitRegionChanged).toHaveBeenCalledOnce();
+  });
 
   test('非循环动作自然结束时只报告一次 completed', () => {
     const fixture = lifecycleScene();

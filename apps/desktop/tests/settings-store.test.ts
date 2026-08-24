@@ -72,8 +72,8 @@ const secondaryProviderProfile: ProviderProfileV2 = {
 
 type NonMcpMutationCase = Readonly<{
   methodName: string;
-  prepare?: (store: SettingsStore) => Promise<void>;
-  mutate: (store: SettingsStore) => Promise<unknown>;
+  prepare?: (store: SettingsStore, file: string) => Promise<void>;
+  mutate: (store: SettingsStore, file: string) => Promise<unknown>;
   verify?: (store: SettingsStore) => Promise<void>;
 }>;
 
@@ -239,10 +239,6 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
     })
   },
   {
-    methodName: 'savePetPosition',
-    mutate: store => store.savePetPosition({ x: 320, y: 240 })
-  },
-  {
     methodName: 'savePetPlacement',
     mutate: store => store.savePetPlacement({
       characterId: 'pet-a',
@@ -253,7 +249,7 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
   },
   {
     methodName: 'commitPetPlacementMigration',
-    prepare: store => store.savePetPosition({ x: 320, y: 240 }),
+    prepare: async (_store, file) => writeLegacyV2Position(file, { x: 320, y: 240 }),
     mutate: store => store.commitPetPlacementMigration({
       expectedWindowPosition: { x: 320, y: 240 },
       placement: {
@@ -277,6 +273,29 @@ async function createStore(hasStoredSecret = false) {
   };
 }
 
+/** 兼容迁移测试只构造历史磁盘格式，不重新暴露已退役的运行时写入口。 */
+async function writeLegacyV2Position(
+  file: string,
+  petPosition: Readonly<{ x: number; y: number }>
+): Promise<void> {
+  await writeFile(file, JSON.stringify({
+    version: 2,
+    providerProfiles: [],
+    modelRoute: {
+      primaryProfileId: null,
+      chatProfileId: null,
+      agentProfileId: null,
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    },
+    authorizedRoot: null,
+    petPosition,
+    fileDisclosureAccepted: false,
+    mcpServers: mcpSettingsFixture
+  }), 'utf8');
+}
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(directory => (
     rm(directory, { recursive: true, force: true })
@@ -287,13 +306,13 @@ describe('SettingsStore', () => {
   test.each(nonMcpMutationCases)(
     '$methodName 原子重写共享设置时完整保留 MCP 配置',
     async ({ prepare, mutate, verify }) => {
-      const { store } = await createStore();
+      const { file, store } = await createStore();
       for (const settings of mcpSettingsFixture) {
         await store.saveMcpServerSettings(settings);
       }
-      await prepare?.(store);
+      await prepare?.(store, file);
 
-      await mutate(store);
+      await mutate(store, file);
 
       await expect(store.getMcpServerSettings()).resolves.toEqual(mcpSettingsFixture);
       await verify?.(store);
@@ -343,7 +362,6 @@ export class SettingsStore {
       version: 1,
       provider: null,
       authorizedRoot: null,
-      petPosition: null,
       fileDisclosureAccepted: false
     });
   });
@@ -394,63 +412,6 @@ export class SettingsStore {
     await expect(store.getAuthorizedRootPath()).resolves.toBe('D:\\private\\project');
   });
 
-  test('保存桌宠位置时保留其他设置', async () => {
-    const { store } = await createStore(true);
-    await store.saveProviderMetadata({
-      id: 'default',
-      displayName: '示例服务',
-      baseUrl: 'https://api.example.com/v1',
-      model: 'example-model'
-    });
-
-    await store.savePetPosition({ x: 320, y: 240 });
-
-    await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
-      provider: expect.objectContaining({ id: 'default' }),
-      petPosition: { x: 320, y: 240 }
-    }));
-  });
-
-  test('并发保存提供商与桌宠位置时不会丢失任一字段', async () => {
-    const { store } = await createStore(true);
-    await store.clearAll();
-
-    await Promise.all([
-      store.saveProviderMetadata({
-        id: 'default',
-        displayName: '示例服务',
-        baseUrl: 'https://api.example.com/v1',
-        model: 'example-model'
-      }),
-      store.savePetPosition({ x: 640, y: 480 })
-    ]);
-
-    await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
-      provider: expect.objectContaining({ id: 'default' }),
-      petPosition: { x: 640, y: 480 }
-    }));
-  });
-
-  test('并发保存授权目录与桌宠位置时不会丢失任一字段', async () => {
-    const { store } = await createStore();
-    await store.clearAll();
-
-    await Promise.all([
-      store.saveAuthorizedRoot({
-        id: 'root-1',
-        displayName: '工作目录',
-        pathHint: 'D:\\…\\project',
-        absolutePath: 'D:\\private\\project'
-      }),
-      store.savePetPosition({ x: 720, y: 540 })
-    ]);
-
-    await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
-      authorizedRoot: expect.objectContaining({ id: 'root-1' }),
-      petPosition: { x: 720, y: 540 }
-    }));
-  });
-
   test('保存后紧接清除不会复活已清除的数据', async () => {
     const { store } = await createStore(true);
 
@@ -467,7 +428,6 @@ export class SettingsStore {
       version: 1,
       provider: null,
       authorizedRoot: null,
-      petPosition: null,
       fileDisclosureAccepted: false
     });
   });
@@ -477,7 +437,10 @@ export class SettingsStore {
     const temporaryFile = `${file}.tmp`;
     await mkdir(temporaryFile, { recursive: true });
 
-    await expect(store.savePetPosition({ x: 10, y: 20 })).rejects.toBeDefined();
+    await expect(store.savePetPlacement({
+      characterId: 'pet-a', scale: 1,
+      footAnchorDip: { x: 10, y: 20 }, displayId: 'display-main'
+    })).rejects.toBeDefined();
     await rm(temporaryFile, { recursive: true, force: true });
 
     await expect(store.saveProviderMetadata({
@@ -487,8 +450,7 @@ export class SettingsStore {
       model: 'example-model'
     })).resolves.toBeUndefined();
     await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
-      provider: expect.objectContaining({ id: 'default' }),
-      petPosition: null
+      provider: expect.objectContaining({ id: 'default' })
     }));
   });
 
@@ -583,7 +545,6 @@ export class SettingsStore {
       version: 1,
       provider: null,
       authorizedRoot: null,
-      petPosition: null,
       fileDisclosureAccepted: false
     });
     await expect(store.getAuthorizedRootPath()).resolves.toBeNull();
@@ -743,7 +704,7 @@ export class SettingsStore {
 
   test('savePetPlacement 遇到 pending 时稳定拒绝且只能由 CAS 完成迁移', async () => {
     const { file, store } = await createStore();
-    await store.savePetPosition({ x: 40, y: 50 });
+    await writeLegacyV2Position(file, { x: 40, y: 50 });
     await expect(store.savePetPlacement({
       characterId: 'pet-a',
       scale: 1,
@@ -821,62 +782,6 @@ export class SettingsStore {
     ]);
     expect(persisted.privacy.proactivityMode).toBe('assistive');
     expect(persisted.movementStopped).toBe(true);
-  });
-
-  test('旧 savePetPosition 不得把非空 ready 的 A/B placements 降级为 pending', async () => {
-    const { file, store } = await createStore();
-    await store.savePetPlacement({
-      characterId: 'pet-a', scale: 1,
-      footAnchorDip: { x: 100, y: 200 }, displayId: 'display-main'
-    });
-    await store.savePetPlacement({
-      characterId: 'pet-b', scale: 1.5,
-      footAnchorDip: { x: -300, y: 400 }, displayId: 'display-left'
-    });
-
-    await store.savePetPosition({ x: 900, y: 800 });
-
-    const persisted = JSON.parse(await readFile(file, 'utf8'));
-    expect(persisted.petPlacementState).toEqual({
-      kind: 'ready',
-      placements: [
-        expect.objectContaining({ characterId: 'pet-a' }),
-        expect.objectContaining({ characterId: 'pet-b' })
-      ]
-    });
-  });
-
-  test('resolve 生成 ready 后迟到的旧 savePetPosition 不得擦除已迁移 placement', async () => {
-    const { file, store } = await createStore();
-    await store.savePetPosition({ x: 20, y: 30 });
-    await store.commitPetPlacementMigration({
-      expectedWindowPosition: { x: 20, y: 30 },
-      placement: {
-        characterId: 'pet-a', scale: 1,
-        footAnchorDip: { x: 110, y: 210 }, displayId: 'display-main'
-      }
-    });
-
-    await store.savePetPosition({ x: 800, y: 700 });
-
-    expect(JSON.parse(await readFile(file, 'utf8')).petPlacementState).toEqual({
-      kind: 'ready',
-      placements: [{
-        characterId: 'pet-a', scale: 1,
-        footAnchorDip: { x: 110, y: 210 }, displayId: 'display-main'
-      }]
-    });
-  });
-
-  test('ready 空集合仍允许 G4 前旧 savePetPosition 写入 pending 兼容状态', async () => {
-    const { file, store } = await createStore();
-
-    await store.savePetPosition({ x: -40, y: 50 });
-
-    expect(JSON.parse(await readFile(file, 'utf8')).petPlacementState).toEqual({
-      kind: 'pending-legacy',
-      windowPosition: { x: -40, y: 50 }
-    });
   });
 
   test('ready 原始数组超过 256 条时只清空 placement 并保留其余严格 V3 设置', async () => {
@@ -1040,7 +945,7 @@ export class SettingsStore {
 
   test('pending 转 ready 最终原子写失败时保持 pending 并可重试', async () => {
     const { file, store } = await createStore();
-    await store.savePetPosition({ x: 20, y: 30 });
+    await writeLegacyV2Position(file, { x: 20, y: 30 });
     const temporaryFile = `${file}.tmp`;
     await mkdir(temporaryFile, { recursive: true });
     const commit = () => store.commitPetPlacementMigration({
@@ -1052,9 +957,10 @@ export class SettingsStore {
     });
 
     await expect(commit()).rejects.toBeDefined();
-    expect(JSON.parse(await readFile(file, 'utf8')).petPlacementState).toEqual({
-      kind: 'pending-legacy',
-      windowPosition: { x: 20, y: 30 }
+    // 首次 V2→V3 原子重写失败时，历史文件本身仍完整保留待迁移坐标。
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
+      version: 2,
+      petPosition: { x: 20, y: 30 }
     });
     await rm(temporaryFile, { recursive: true, force: true });
     await expect(commit()).resolves.toBeUndefined();
@@ -1077,8 +983,10 @@ export class SettingsStore {
     }), 'utf8');
 
     await expect(store.getPublic()).resolves.toMatchObject({
-      provider: { id: 'legacy-provider' },
-      petPosition: { x: -500, y: 120 }
+      provider: { id: 'legacy-provider' }
+    });
+    await expect(store.getPetPlacementState('pet-a')).resolves.toEqual({
+      kind: 'pending-legacy', windowPosition: { x: -500, y: 120 }
     });
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
       version: 3,

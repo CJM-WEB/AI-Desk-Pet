@@ -21,6 +21,7 @@ import {
 import {
   CharacterPlayer,
   createRuntimeAssetLoader,
+  roundedWindowLocalRectangle,
   type CharacterPlayerPortFactory
 } from '../src/renderer/src/characters/player/CharacterPlayer';
 import type { MyselfApi } from '../src/shared/myself-api';
@@ -81,6 +82,47 @@ function deferred<T>() {
   });
   return { promise, reject, resolve };
 }
+
+test('viewport 按四边分别量化为窗口局部整数矩形', () => {
+  const element = document.createElement('span');
+  vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+    x: 10.4, y: 20.6, left: 10.4, top: 20.6,
+    right: 111.6, bottom: 221.4, width: 101.2, height: 200.8,
+    toJSON: () => undefined
+  });
+
+  expect(roundedWindowLocalRectangle(element)).toEqual({
+    x: 10, y: 21, width: 102, height: 200
+  });
+});
+
+test('运动视觉 transform 不改写 viewport 的窗口局部布局位置', () => {
+  const host = document.createElement('span');
+  const stage = document.createElement('span');
+  host.appendChild(stage);
+  document.body.appendChild(host);
+  host.style.transform = 'translate(5px, 6px)';
+  Object.defineProperties(host, {
+    offsetLeft: { configurable: true, value: 12 },
+    offsetTop: { configurable: true, value: 18 },
+    offsetParent: { configurable: true, value: document.body }
+  });
+  Object.defineProperties(stage, {
+    offsetLeft: { configurable: true, value: 0 },
+    offsetTop: { configurable: true, value: 0 },
+    offsetParent: { configurable: true, value: host }
+  });
+  vi.spyOn(stage, 'getBoundingClientRect').mockReturnValue({
+    x: 17, y: 24, left: 17, top: 24,
+    right: 117, bottom: 104, width: 100, height: 80,
+    toJSON: () => undefined
+  });
+
+  expect(roundedWindowLocalRectangle(stage)).toEqual({
+    x: 12, y: 18, width: 100, height: 80
+  });
+  host.remove();
+});
 
 /** 统一补齐播放器端口新增的命中区域能力，避免测试夹具偏离真实接口。 */
 function characterPlayerHitRegionFixture() {
