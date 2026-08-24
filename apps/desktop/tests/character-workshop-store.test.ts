@@ -1051,6 +1051,33 @@ describe('角色工作室 Zustand 状态层', () => {
       .toEqual(inherited);
   });
 
+  test('当前皮肤动作保存播放参数，回退首次编辑只克隆为当前皮肤覆盖', async () => {
+    const loadedDraft = playableDraft('default', '默认角色');
+    loadedDraft.skins[0]!.presentations[0]!.playbackRate = 0.75;
+    loadedDraft.skins[0]!.presentations[0]!.mirrorX = false;
+    const inherited = structuredClone(loadedDraft.skins[0]!.presentations[0]!);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => loadedDraft)
+    });
+    const store = createCharacterWorkshopStore(api);
+    await store.getState().load();
+    store.getState().selectSkin('winter');
+    store.getState().selectAction('idle-main');
+
+    store.getState().updateCurrentAction({ playbackRate: 1.5, mirrorX: true });
+
+    const next = store.getState().draft!;
+    expect(next.skins.find(skin => skin.id === 'winter')?.presentations).toEqual([{
+      ...inherited,
+      actionId: 'idle-main',
+      playbackRate: 1.5,
+      mirrorX: true
+    }]);
+    expect(next.skins.find(skin => skin.id === 'default')?.presentations[0])
+      .toEqual(inherited);
+    expect(store.getState().draftStatus).toBe('dirty');
+  });
+
   test('更新方法忽略 patch.id，移除当前状态的 actionIds 后选择安全降级', async () => {
     const api = apiDouble().api;
     const store = createCharacterWorkshopStore(api);
@@ -1338,6 +1365,8 @@ describe('角色工作室 Zustand 状态层', () => {
     loadedDraft.skins[0]!.presentations = [{
       actionId: 'idle-main',
       fps: 8,
+      playbackRate: 1.5,
+      mirrorX: true,
       commitFrameId: 'carry-commit',
       anchors: { ground: { x: 0.5, y: 1 } },
       frames: [{
@@ -1347,6 +1376,8 @@ describe('角色工作室 Zustand 状态层', () => {
     loadedDraft.skins[1]!.presentations = [{
       actionId: 'idle-main',
       fps: 12,
+      playbackRate: 0.75,
+      mirrorX: false,
       anchors: { ground: { x: 0.5, y: 1 } },
       frames: [{ assetId: sourceAssetId, x: 1, y: 0, width: 1, height: 1 }]
     }, {
@@ -1402,7 +1433,8 @@ describe('角色工作室 Zustand 状态层', () => {
       skins: [{
         id: 'default',
         presentations: [{
-          actionId: 'idle-main', fps: 8, commitFrameId: 'carry-commit',
+          actionId: 'idle-main', fps: 8, playbackRate: 1.5, mirrorX: true,
+          commitFrameId: 'carry-commit',
           geometry: {
             visualBounds: { x: 0.25, y: 0.1, width: 0.5, height: 0.9 },
             groundAnchor: { x: 0.5, y: 1 },
@@ -1411,7 +1443,9 @@ describe('角色工作室 Zustand 状态层', () => {
         }]
       }, {
         id: 'winter',
-        presentations: [{ actionId: 'idle-main', fps: 12 }]
+        presentations: [{
+          actionId: 'idle-main', fps: 12, playbackRate: 0.75, mirrorX: false
+        }]
       }]
     });
     expect(() => characterManifestV2Schema.parse(input.manifest)).not.toThrow();

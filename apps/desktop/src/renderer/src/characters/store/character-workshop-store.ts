@@ -1523,6 +1523,12 @@ export function createCharacterWorkshopStore(
               presentations.push({
                 actionId: presentation.actionId,
                 fps: presentation.fps,
+                ...(presentation.playbackRate === undefined
+                  ? {}
+                  : { playbackRate: presentation.playbackRate }),
+                ...(presentation.mirrorX === undefined
+                  ? {}
+                  : { mirrorX: presentation.mirrorX }),
                 anchors: presentation.anchors,
                 ...(presentation.commitFrameId === undefined
                   ? {}
@@ -1606,6 +1612,8 @@ export function createCharacterWorkshopStore(
         const {
           frames,
           fps,
+          playbackRate,
+          mirrorX,
           anchors,
           regions,
           name,
@@ -1622,6 +1630,8 @@ export function createCharacterWorkshopStore(
         if (
           frames === undefined
           && fps === undefined
+          && playbackRate === undefined
+          && mirrorX === undefined
           && anchors === undefined
           && regions === undefined
         ) {
@@ -1659,6 +1669,8 @@ export function createCharacterWorkshopStore(
             ) delete presentation.commitFrameId;
           }
           if (fps !== undefined) presentation.fps = fps;
+          if (playbackRate !== undefined) presentation.playbackRate = playbackRate;
+          if (mirrorX !== undefined) presentation.mirrorX = mirrorX;
           if (anchors !== undefined) presentation.anchors = anchors;
           if (regions !== undefined) presentation.regions = regions;
         });

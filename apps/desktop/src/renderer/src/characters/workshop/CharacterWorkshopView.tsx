@@ -105,7 +105,13 @@ function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
     name: requestedAction.name,
     loop: requestedAction.loopPolicy !== 'never',
     weight: requestedAction.preference,
-    direction: requestedAction.direction
+    direction: requestedAction.direction,
+    ...(resolved.presentation.playbackRate === undefined
+      ? {}
+      : { playbackRate: resolved.presentation.playbackRate }),
+    ...(resolved.presentation.mirrorX === undefined
+      ? {}
+      : { mirrorX: resolved.presentation.mirrorX })
   } : projected;
 }
 
@@ -162,7 +168,9 @@ export function previewAtActionStart(
       ...normalizePreviewState(preview, frames.length),
       playing: false,
       frameIndex: frames.length > 0 ? 0 : -1,
-      loop: action?.loop ?? preview.loop
+      loop: action?.loop ?? preview.loop,
+      speed: action?.playbackRate ?? 1,
+      direction: action?.mirrorX ? 'left' : 'right'
     },
     selectedFrameId: frames[0]?.id ?? null
   };
@@ -172,9 +180,10 @@ export function previewActionIdentity(
   characterId: string | null,
   draftId: string | null,
   stateId: string | null,
-  actionId: string | null
+  actionId: string | null,
+  skinId: string | null = null
 ): string {
-  return JSON.stringify([characterId, draftId, stateId, actionId]);
+  return JSON.stringify([characterId, draftId, stateId, actionId, skinId]);
 }
 
 function draftStatusLabel(state: CharacterWorkshopState): string {
@@ -287,7 +296,8 @@ export function CharacterWorkshopWorkspace(
       state.selectedCharacterId,
       state.draft?.id ?? null,
       state.selectedStateId,
-      action.id
+      action.id,
+      state.selectedSkinId
     )
     : null;
 
@@ -719,6 +729,17 @@ export function CharacterWorkshopWorkspace(
               disabled={busy}
               onChange={next => {
                 setPreview(next);
+                const presentationPatch = {
+                  ...(next.speed === preview.speed
+                    ? {}
+                    : { playbackRate: next.speed }),
+                  ...(next.direction === preview.direction
+                    ? {}
+                    : { mirrorX: next.direction === 'left' })
+                };
+                if (Object.keys(presentationPatch).length > 0) {
+                  state.updateCurrentAction(presentationPatch);
+                }
                 const nextFrame = action
                   ? ensureStableFrameIds(action.frames)[next.frameIndex]
                   : null;
