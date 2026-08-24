@@ -37,7 +37,7 @@
 | `pnpm.cmd --filter @myself/character-runtime test` | 15 个文件，288 项通过，0 失败 |
 | `pnpm.cmd --filter @myself/character-assets test` | 6 个文件，99 项通过，0 失败 |
 | `pnpm.cmd --filter @myself/desktop typecheck` | 通过 |
-| `pnpm.cmd --filter @myself/desktop test` | 97 个文件，2230 项通过，0 失败 |
+| `pnpm.cmd --filter @myself/desktop test` | 97 个文件，2233 项通过，0 失败 |
 | `pnpm.cmd test:security` | 24 项通过，0 失败 |
 | `pnpm.cmd test:integration` | 67 项通过，0 失败 |
 | 桌面生产构建与 preload/MCP 边界校验 | 通过 |
@@ -50,6 +50,7 @@
 - 正式契约审查提出 1 项 P2 测试缺口，补充旧 `ActionClip` 非法值直接测试后复审清零。
 - 工作台持久化审查：P0、P1、P2 均为 0。
 - 播放器审查提出 1 项 P1 锚点方向问题，完成 TDD 修复后复审清零。
+- 最终全链审查提出 2 项 P2 转换职责与皮肤身份测试问题，完成 TDD 收口后限定复审 P0、P1、P2 均为 0。
 
 ## 待用户人工确认
 
