@@ -1,5 +1,9 @@
 import type { Rectangle } from 'electron';
-import { type Point, type WindowSize } from './window-manager';
+import {
+  clampAnchorToVisualWorkArea,
+  type Point,
+  type WindowSize
+} from './window-manager';
 import {
   storedPetPlacementSchema,
   type StoredPetPlacement
@@ -140,25 +144,12 @@ function clampFootAnchor(
   display: PetDisplayDescription,
   edgeMarginDip = 0
 ): Point | null {
-  const visual = geometry.visualBoundsFromFootDip;
-  const displayRight = display.workAreaDip.x + display.workAreaDip.width;
-  const displayBottom = display.workAreaDip.y + display.workAreaDip.height;
-  const visualRight = visual.x + visual.width;
-  const visualBottom = visual.y + visual.height;
-  const minimumX = display.workAreaDip.x - visual.x + edgeMarginDip;
-  const minimumY = display.workAreaDip.y - visual.y + edgeMarginDip;
-  const rawMaximumX = displayRight - visualRight - edgeMarginDip;
-  const rawMaximumY = displayBottom - visualBottom - edgeMarginDip;
-  if (![
-    displayRight, displayBottom, visualRight, visualBottom,
-    minimumX, minimumY, rawMaximumX, rawMaximumY
-  ].every(Number.isFinite)) return null;
-  if (rawMaximumX < minimumX || rawMaximumY < minimumY) return null;
-  const clamped = {
-    x: Math.min(rawMaximumX, Math.max(minimumX, footAnchorDip.x)),
-    y: Math.min(rawMaximumY, Math.max(minimumY, footAnchorDip.y))
-  };
-  return finitePoint(clamped) ? clamped : null;
+  return clampAnchorToVisualWorkArea({
+    anchorDip: footAnchorDip,
+    visualBoundsFromAnchorDip: geometry.visualBoundsFromFootDip,
+    workAreaDip: display.workAreaDip,
+    edgeMarginDip
+  });
 }
 
 function defaultPlacement(

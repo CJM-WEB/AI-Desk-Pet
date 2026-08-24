@@ -16,6 +16,10 @@ import {
   SettingsStore,
   storedPetPlacementSchema
 } from '../src/main/storage/settings-store';
+import {
+  clampAnchorToVisualWorkArea,
+  clampIntegerWindowPositionToVisualWorkArea
+} from '../src/main/windows/window-manager';
 
 function expectSchemaValidSuccess(result: PetPlacementResult): PetPlacementResult & { ok: true } {
   expect(result.ok).toBe(true);
@@ -128,6 +132,61 @@ class FakePetWindow {
 }
 
 afterEach(() => vi.useRealTimers());
+
+describe('可见矩形边界纯函数', () => {
+  const workAreaDip = { x: 0, y: 0, width: 1000, height: 800 };
+
+  test.each([
+    [0.5, { x: 990, y: 799.25 }],
+    [1, { x: 980, y: 799.25 }],
+    [2, { x: 960, y: 799.25 }]
+  ] as const)('%s 倍缩放只按可见矩形连续夹取脚底锚点', (scale, expected) => {
+    expect(clampAnchorToVisualWorkArea({
+      anchorDip: { x: 999.75, y: 799.25 },
+      visualBoundsFromAnchorDip: {
+        x: -20 * scale,
+        y: -40 * scale,
+        width: 40 * scale,
+        height: 40 * scale
+      },
+      workAreaDip
+    })).toEqual(expected);
+  });
+
+  test('动作可见包围盒变化时保持脚底，只有越界轴执行最小位移', () => {
+    expect(clampAnchorToVisualWorkArea({
+      anchorDip: { x: 950, y: 400 },
+      visualBoundsFromAnchorDip: { x: -80, y: -160, width: 200, height: 160 },
+      workAreaDip
+    })).toEqual({ x: 880, y: 400 });
+    expect(clampAnchorToVisualWorkArea({
+      anchorDip: { x: 500, y: 400 },
+      visualBoundsFromAnchorDip: { x: -80, y: -160, width: 200, height: 160 },
+      workAreaDip
+    })).toEqual({ x: 500, y: 400 });
+  });
+
+  test('整数窗口原点对小数右下边界向内量化，避免可见像素溢出', () => {
+    expect(clampIntegerWindowPositionToVisualWorkArea({
+      windowPositionDip: { x: 20.6, y: 30.4 },
+      visualBoundsInWindowDip: { x: 10.2, y: 5.4, width: 70.3, height: 65.1 },
+      workAreaDip: { x: 0, y: 0, width: 100, height: 100 }
+    })).toEqual({ x: 19, y: 29 });
+  });
+
+  test('非法矩形或可见矩形大于工作区时明确失败', () => {
+    expect(clampAnchorToVisualWorkArea({
+      anchorDip: { x: 10, y: 10 },
+      visualBoundsFromAnchorDip: { x: 0, y: 0, width: 101, height: 20 },
+      workAreaDip: { x: 0, y: 0, width: 100, height: 100 }
+    })).toBeNull();
+    expect(clampIntegerWindowPositionToVisualWorkArea({
+      windowPositionDip: { x: 10, y: 10 },
+      visualBoundsInWindowDip: { x: 0, y: 0, width: Number.NaN, height: 20 },
+      workAreaDip: { x: 0, y: 0, width: 100, height: 100 }
+    })).toBeNull();
+  });
+});
 
 describe('按角色脚底锚点恢复', () => {
   const primary = {

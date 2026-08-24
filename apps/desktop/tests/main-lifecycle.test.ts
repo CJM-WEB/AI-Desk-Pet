@@ -88,6 +88,8 @@ describe('Main 通用生命周期', () => {
 
     expect(source.match(/new PetVisualGeometryAuthority\(/gu)).toHaveLength(1);
     expect(source.match(/new PetGeometryCoordinator\(/gu)).toHaveLength(1);
+    expect(source).toContain('const getPetGeometrySnapshot = () =>');
+    expect(source.match(/getGeometrySnapshot: getPetGeometrySnapshot/gu)).toHaveLength(2);
     expect(source).toContain('commitViewport: input => petGeometry.commitViewport');
     expect(source).toContain('stepScale: input => petGeometry.stepScale');
     expect(source).toContain('await petGeometry.initialize();');

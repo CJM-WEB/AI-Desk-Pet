@@ -188,13 +188,26 @@ type StoredPetPlacement = Readonly<{
 
 - Modify: `apps/desktop/src/main/characters/character-motion-service.ts`
 - Modify: `apps/desktop/src/main/windows/window-manager.ts`
+- Modify: `apps/desktop/src/main/windows/pet-position.ts`
+- Modify: `apps/desktop/src/main/windows/pet-window-interaction-controller.ts`
+- Modify: `apps/desktop/src/main/windows/pet-geometry-coordinator.ts`
+- Modify: `apps/desktop/src/main/index.ts`
 - Modify: `apps/desktop/tests/character-motion-controller.test.ts`
 - Modify: `apps/desktop/tests/pet-position.test.ts`
+- Modify: `apps/desktop/tests/pet-window-interaction-controller.test.ts`
+- Modify: `apps/desktop/tests/pet-geometry-coordinator.test.ts`
 
-- [ ] RED：50%、100%、200% 下可见矩形能贴工作区四边；透明窗口留白允许越界；可见像素绝不越界。
-- [ ] RED：动作切换导致包围盒变化时保持脚底锚点，必要时最小位移回到可见区；跨显示器选择依据脚底/目标区域而非透明窗口中心。
-- [ ] GREEN：G5 首次把 G2b Main 私有快照接入运动边界；`constrainTarget` 只消费 `PetGeometrySnapshot`，删除固定 window size 作为运动权威的代码，保留 BrowserWindow bounds 仅为布局结果。
-- [ ] 提交 `fix: 以可见角色范围约束桌宠运动`。
+> 文件清单补缝：只读调查确认用户拖拽虽使用“起点 + 光标总位移”而不存在逐帧累加，但边界仍调用固定窗口尺寸钳制；若只改自动运动，透明留白仍会让手动拖拽在右/下边提前停止。G5 因而让运动与拖拽共同复用一套 Main 私有的“脚底锚点 + 可见包围盒”约束，不扩展 Renderer 或 IPC 坐标权限。
+>
+> 事务补缝：动作与方向几何在自动运动期间发生变化时，旧 `isLayoutInFlight()` 只覆盖 viewport waiter，无法阻止持久化中的 motion tick；旧 layout blocker 又会把新动作形状延后到运动结束。G5 将 in-flight 扩为整个几何 FIFO，只允许 binding 在自动运动期间进入该 FIFO，真实用户拖拽期间仍冻结；普通缩放和 viewport settle 继续等待运动结束。
+
+- [x] RED：50%、100%、200% 下可见矩形能贴工作区四边；透明窗口留白允许越界；可见像素绝不越界。
+- [x] RED：小数可见边界在 Windows 整数窗口坐标上向内量化，贴右/下边不允许出现最多 0.5 DIP 的舍入溢出；视觉矩形大于工作区时稳定拒绝而不伪装成已约束。
+- [x] RED：动作切换导致包围盒变化时保持脚底锚点，必要时最小位移回到可见区；跨显示器选择依据脚底/目标区域而非透明窗口中心。
+- [x] RED：手动拖拽在 50% 与 200% 下也以可见矩形贴四边，保留负坐标副屏与“起点 + 总位移”既有语义。
+- [x] RED：无 viewport waiter 但几何 FIFO 仍在持久化时暂停 motion tick；自动运动期间允许动作/方向 binding 原子提交，真实拖拽期间仍只保留最终 binding；布局改变窗口原点时活动运动目标按同一差值重基。
+- [x] GREEN：G5 首次把 G2b Main 私有快照接入运动与拖拽边界；`constrainTarget` 只消费 `PetGeometrySnapshot`，删除固定 window size 作为正式运动权威的代码，保留 BrowserWindow bounds 仅为布局结果，并让位置恢复复用同一纯约束数学。
+- [x] 提交 `fix: 以可见角色范围约束桌宠运动`。
 
 ## Task 6（G6）：视觉几何纵向验收
 

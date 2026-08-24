@@ -18,10 +18,15 @@ function createIpcMain() {
   };
 }
 
-function createControllerFixture() {
+function createControllerFixture(options: {
+  bounds?: { x: number; y: number; width: number; height: number };
+  visualBoundsInWindowDip?: { x: number; y: number; width: number; height: number };
+} = {}) {
   let destroyed = false;
   let cursor = { x: 100, y: 100 };
-  let bounds = { x: 20, y: 30, width: 180, height: 220 };
+  let bounds = options.bounds ?? { x: 20, y: 30, width: 180, height: 220 };
+  const visualBoundsInWindowDip = options.visualBoundsInWindowDip
+    ?? { x: 20, y: 20, width: 140, height: 180 };
   let workAreas = [
     { x: 0, y: 0, width: 400, height: 400 }
   ];
@@ -40,6 +45,15 @@ function createControllerFixture() {
       setIgnoreMouseEvents,
       isDestroyed: () => destroyed
     },
+    getGeometrySnapshot: () => ({
+      revision: 1,
+      characterId: 'character-a',
+      scale: 1,
+      footAnchorDip: { x: bounds.x + 90, y: bounds.y + 200 },
+      visualBoundsInWindowDip,
+      windowBoundsDip: bounds,
+      displayId: 'primary'
+    }),
     screen: {
       getCursorScreenPoint: () => cursor,
       getDisplayNearestPoint: (point: { x: number; y: number }) => ({
@@ -114,7 +128,7 @@ describe('Main 桌宠窗口交互控制器', () => {
 
     expect(fixture.motion.beginUserMove).toHaveBeenCalledOnce();
     expect(fixture.setIgnoreMouseEvents).toHaveBeenLastCalledWith(false);
-    expect(fixture.setPosition).toHaveBeenCalledWith(220, 50);
+    expect(fixture.setPosition).toHaveBeenCalledWith(240, 50);
     fixture.controller.endDrag('released');
     expect(fixture.motion.endUserMove).toHaveBeenCalledOnce();
   });
@@ -127,7 +141,7 @@ describe('Main 桌宠窗口交互控制器', () => {
 
     vi.advanceTimersByTime(16);
 
-    expect(fixture.setPosition).toHaveBeenCalledWith(40, 180);
+    expect(fixture.setPosition).toHaveBeenCalledWith(40, 200);
   });
 
   test('跨到负坐标显示器时按光标最近工作区逐轴钳制', () => {
@@ -142,7 +156,47 @@ describe('Main 桌宠窗口交互控制器', () => {
 
     vi.advanceTimersByTime(16);
 
-    expect(fixture.setPosition).toHaveBeenCalledWith(-500, -20);
+    expect(fixture.setPosition).toHaveBeenCalledWith(-520, -20);
+  });
+
+  test.each([
+    {
+      scale: '50%',
+      bounds: { x: 10, y: 10, width: 90, height: 110 },
+      visual: { x: 10, y: 10, width: 70, height: 90 },
+      expected: { x: 320, y: 300 }
+    },
+    {
+      scale: '200%',
+      bounds: { x: 10, y: 10, width: 360, height: 440 },
+      visual: { x: 40, y: 40, width: 280, height: 360 },
+      expected: { x: 80, y: 0 }
+    }
+  ])('$scale 拖到右下边时只约束可见像素并允许透明窗口越界', value => {
+    vi.useFakeTimers();
+    const fixture = createControllerFixture({
+      bounds: value.bounds,
+      visualBoundsInWindowDip: value.visual
+    });
+    fixture.controller.beginDrag();
+    fixture.setCursor({ x: 1_000, y: 1_000 });
+
+    vi.advanceTimersByTime(16);
+
+    expect(fixture.setPosition).toHaveBeenCalledWith(value.expected.x, value.expected.y);
+  });
+
+  test('小数视觉边界在右下角向内量化，绝不因四舍五入越界', () => {
+    vi.useFakeTimers();
+    const fixture = createControllerFixture({
+      visualBoundsInWindowDip: { x: 20.25, y: 20.25, width: 140.25, height: 180.25 }
+    });
+    fixture.controller.beginDrag();
+    fixture.setCursor({ x: 1_000, y: 1_000 });
+
+    vi.advanceTimersByTime(16);
+
+    expect(fixture.setPosition).toHaveBeenCalledWith(239, 199);
   });
 
   test('拖拽结束恢复最后已知命中状态，期间命中更新不会打断拖拽', () => {

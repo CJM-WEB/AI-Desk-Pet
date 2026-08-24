@@ -15,6 +15,7 @@ import type {
   StoredPetPlacement
 } from '../storage/settings-store';
 import { migrateLegacyPetPosition, restorePetPlacement } from './pet-position';
+import { clampIntegerWindowPositionToVisualWorkArea } from './window-manager';
 
 const MIN_SCALE_TICK = 5;
 const MAX_SCALE_TICK = 20;
@@ -77,6 +78,8 @@ export type PetGeometryRelativeInspection = Readonly<{
  */
 export class PetGeometryCoordinator {
   private queue = Promise.resolve();
+  /** 覆盖排队、执行与持久化的完整 FIFO 生命周期，不以 viewport waiter 代替事务事实。 */
+  private pendingOperations = 0;
   private drainPromise: Promise<void> | null = null;
   private cachedViewport: PetViewportCommitInput['viewportInWindowDip'] | null = null;
   private canonical: CanonicalViewport | null = null;
@@ -137,9 +140,12 @@ export class PetGeometryCoordinator {
 
   /** 拖拽或自动运动释放后消费此前保留的最终 tick，不丢失用户滚轮意图。 */
   resumePendingLayout(): Promise<void> {
+    const layoutBlocked = this.options.isLayoutBlocked?.() ?? false;
+    const canRefreshBindingDuringMotion = this.bindingDirty
+      && this.options.isUserMoving?.() === false;
     if (
       this.frozen
-      || this.options.isLayoutBlocked?.()
+      || (layoutBlocked && !canRefreshBindingDuringMotion)
       || (
         !this.viewportDirty && !this.placementDirty && !this.bindingDirty
         && this.committedTick === this.requestedTick
@@ -167,7 +173,10 @@ export class PetGeometryCoordinator {
       return Promise.resolve();
     }
     this.bindingDirty = true;
-    if (this.options.isLayoutBlocked?.()) return Promise.resolve();
+    if (
+      this.options.isLayoutBlocked?.()
+      && this.options.isUserMoving?.() !== false
+    ) return Promise.resolve();
     return this.resumePendingLayout();
   }
 
@@ -204,11 +213,17 @@ export class PetGeometryCoordinator {
 
   /** viewport/placement 收敛优先于缩放，确保 wheel 以最终拖拽脚底为起点。 */
   private async drainPendingLayout(ignoreBlocked: boolean): Promise<void> {
-    while (ignoreBlocked || !this.options.isLayoutBlocked?.()) {
-      if (this.bindingDirty) {
+    while (true) {
+      const layoutBlocked = this.options.isLayoutBlocked?.() ?? false;
+      // 自动运动只允许最新动作 shape 经同一 FIFO 提交；真实拖拽仍封锁全部布局。
+      if (
+        this.bindingDirty
+        && (ignoreBlocked || !layoutBlocked || this.options.isUserMoving?.() === false)
+      ) {
         await this.applyPendingBinding();
         continue;
       }
+      if (!ignoreBlocked && layoutBlocked) return;
       if (this.viewportDirty || this.placementDirty) {
         await this.settleViewportAndPlacement();
         continue;
@@ -273,7 +288,7 @@ export class PetGeometryCoordinator {
     const preservedFoot = restoreIdealFoot
       ?? restoreTarget?.footAnchorDip
       ?? oldSnapshot.footAnchorDip;
-    const candidateBounds = adoptCurrentWindow
+    let candidateBounds = adoptCurrentWindow
       ? oldBounds
       : {
           x: preservedFoot.x - footOffset.x,
@@ -284,10 +299,20 @@ export class PetGeometryCoordinator {
     const candidateFoot = adoptCurrentWindow
       ? { x: candidateBounds.x + footOffset.x, y: candidateBounds.y + footOffset.y }
       : preservedFoot;
+    const visualBoundsInWindowDip = visualBoundsInWindow(
+      footOffset,
+      layout.visualBoundsFromFootDip
+    );
     const display = this.requireDisplayForPlacement(
       candidateBounds,
       candidateFoot,
-      oldSnapshot.displayId
+      oldSnapshot.displayId,
+      visualBoundsInWindowDip
+    );
+    candidateBounds = constrainBoundsToVisualWorkArea(
+      candidateBounds,
+      visualBoundsInWindowDip,
+      display.workAreaDip
     );
     const prepared = this.options.authority.preparePlacement({
       baseRevision: shape.revision,
@@ -317,7 +342,7 @@ export class PetGeometryCoordinator {
           const actualDisplay = this.requireDisplayForPlacement(actualBounds, {
             x: actualBounds.x + footOffset.x,
             y: actualBounds.y + footOffset.y
-          }, display.id);
+          }, display.id, visualBoundsInWindowDip);
           const actualPrepared = this.options.authority.preparePlacement({
             baseRevision: actualShape.revision,
             viewportInWindowDip: viewport,
@@ -382,7 +407,10 @@ export class PetGeometryCoordinator {
     const display = this.requireDisplayForPlacement(bounds, {
       x: bounds.x + footOffset.x,
       y: bounds.y + footOffset.y
-    }, snapshot.displayId);
+    }, snapshot.displayId, visualBoundsInWindow(
+      footOffset,
+      layout.visualBoundsFromFootDip
+    ));
     const prepared = this.options.authority.preparePlacement({
       baseRevision: snapshot.revision,
       viewportInWindowDip: viewport,
@@ -404,7 +432,7 @@ export class PetGeometryCoordinator {
   }
 
   isLayoutInFlight(): boolean {
-    return this.waiter !== null;
+    return this.pendingOperations > 0 || this.waiter !== null;
   }
 
   /**
@@ -432,9 +460,13 @@ export class PetGeometryCoordinator {
   }
 
   private enqueue(operation: () => Promise<void>): Promise<void> {
+    this.pendingOperations += 1;
     const running = this.queue.then(operation);
-    this.queue = running.catch(() => undefined);
-    return running;
+    const tracked = running.finally(() => {
+      this.pendingOperations -= 1;
+    });
+    this.queue = tracked.catch(() => undefined);
+    return tracked;
   }
 
   private async initializeFromViewport(
@@ -502,10 +534,20 @@ export class PetGeometryCoordinator {
           height: expectedViewport.height + this.canonical!.insetTop + this.canonical!.insetBottom
         }
       );
+      const expectedVisualBoundsInWindowDip = visualBoundsInWindow(
+        footOffsetInWindow(expectedViewport, expectedLayout.footOffsetInViewportDip),
+        expectedLayout.visualBoundsFromFootDip
+      );
       let display = this.requireDisplayForPlacement(
         targetBounds,
         scaleDesiredFoot,
-        oldSnapshot.displayId
+        oldSnapshot.displayId,
+        expectedVisualBoundsInWindowDip
+      );
+      targetBounds = constrainBoundsToVisualWorkArea(
+        targetBounds,
+        expectedVisualBoundsInWindowDip,
+        display.workAreaDip
       );
       const expectedPrepared = this.options.authority.preparePlacement({
         baseRevision: expectedShape.revision,
@@ -532,11 +574,20 @@ export class PetGeometryCoordinator {
         transaction = null;
         const actualShape = this.updateShape(binding, tick, actualViewport);
         const actualLayout = this.requireShapeLayout(actualShape.revision);
-        const correctedBounds = boundsForFoot(
+        let correctedBounds = boundsForFoot(
           scaleDesiredFoot,
           actualViewport,
           actualLayout.footOffsetInViewportDip,
           { width: targetBounds.width, height: targetBounds.height }
+        );
+        const actualVisualBoundsInWindowDip = visualBoundsInWindow(
+          footOffsetInWindow(actualViewport, actualLayout.footOffsetInViewportDip),
+          actualLayout.visualBoundsFromFootDip
+        );
+        correctedBounds = constrainBoundsToVisualWorkArea(
+          correctedBounds,
+          actualVisualBoundsInWindowDip,
+          display.workAreaDip
         );
         const actualPrepared = this.options.authority.preparePlacement({
           baseRevision: actualShape.revision,
@@ -572,7 +623,8 @@ export class PetGeometryCoordinator {
             x: finalBounds.x + finalFootOffset.x,
             y: finalBounds.y + finalFootOffset.y
           },
-          oldSnapshot.displayId
+          oldSnapshot.displayId,
+          visualBoundsInWindow(finalFootOffset, finalLayout.visualBoundsFromFootDip)
         );
         const finalPrepared = this.options.authority.preparePlacement({
           baseRevision: finalShape.revision,
@@ -646,6 +698,29 @@ export class PetGeometryCoordinator {
     const oldSnapshot = this.options.authority.getSnapshot();
     const oldReadyRestoreTarget = this.readyRestoreTarget;
     const oldReadyRestoreIdealFoot = this.readyRestoreIdealFoot;
+    const preserveCurrentWindowFoot = Boolean(
+      oldSnapshot
+      && oldSnapshot.characterId === binding.manifest.id
+      && this.options.isUserMoving?.() === false
+      && (
+        oldBounds.x !== oldSnapshot.windowBoundsDip.x
+        || oldBounds.y !== oldSnapshot.windowBoundsDip.y
+      )
+    );
+    const movingWindowFoot = preserveCurrentWindowFoot && oldSnapshot
+      ? {
+          x: oldBounds.x + oldSnapshot.footAnchorDip.x - oldSnapshot.windowBoundsDip.x,
+          y: oldBounds.y + oldSnapshot.footAnchorDip.y - oldSnapshot.windowBoundsDip.y
+        }
+      : null;
+    const movingDisplayId = movingWindowFoot && oldSnapshot
+      ? this.requireDisplayForPlacement(
+          oldBounds,
+          movingWindowFoot,
+          oldSnapshot.displayId,
+          oldSnapshot.visualBoundsInWindowDip
+        ).id
+      : oldSnapshot?.displayId;
     const hasReadyRestoreSource = state.kind === 'ready'
       && oldSnapshot?.characterId !== binding.manifest.id
       && state.placement?.characterId === binding.manifest.id;
@@ -696,8 +771,8 @@ export class PetGeometryCoordinator {
         ? {
             characterId: binding.manifest.id,
             scale: tick / 10,
-            footAnchorDip: oldSnapshot.footAnchorDip,
-            displayId: oldSnapshot.displayId
+            footAnchorDip: movingWindowFoot ?? oldSnapshot.footAnchorDip,
+            displayId: movingDisplayId ?? oldSnapshot.displayId
           }
         : state.placement?.characterId === binding.manifest.id
           ? { ...state.placement, scale: tick / 10 }
@@ -718,7 +793,7 @@ export class PetGeometryCoordinator {
       placement = restored.placement;
       windowPosition = restored.windowPosition;
     }
-    const candidateBounds = {
+    let candidateBounds = {
       x: windowPosition.x,
       y: windowPosition.y,
       width: windowSize.width,
@@ -727,6 +802,15 @@ export class PetGeometryCoordinator {
     const display = displays.find(item => item.id === placement.displayId)
       ?? displays.find(item => item.id === this.options.primaryDisplayId());
     if (!display) throw new Error('PET_GEOMETRY_DISPLAY_INVALID');
+    const visualBoundsInWindowDip = visualBoundsInWindow(
+      footOffset,
+      layout.visualBoundsFromFootDip
+    );
+    candidateBounds = constrainBoundsToVisualWorkArea(
+      candidateBounds,
+      visualBoundsInWindowDip,
+      display.workAreaDip
+    );
     const prepared = this.options.authority.preparePlacement({
       baseRevision: shape.revision,
       viewportInWindowDip: viewport,
@@ -757,7 +841,7 @@ export class PetGeometryCoordinator {
           const actualDisplay = this.requireDisplayForPlacement(actualBounds, {
             x: actualBounds.x + footOffset.x,
             y: actualBounds.y + footOffset.y
-          }, display.id);
+          }, display.id, visualBoundsInWindowDip);
           const actualPrepared = this.options.authority.preparePlacement({
             baseRevision: actualShape.revision,
             viewportInWindowDip: viewport,
@@ -849,24 +933,30 @@ export class PetGeometryCoordinator {
   private requireDisplayForPlacement(
     bounds: Rectangle,
     footAnchorDip: Readonly<{ x: number; y: number }>,
-    preferredId: string
+    preferredId: string,
+    visualBoundsInWindowDip: Rectangle
   ) {
     const displays = this.options.displays();
-    const containingFoot = displays.filter(display => pointInside(
-      footAnchorDip,
-      display.workAreaDip
+    const globalVisualBounds = {
+      ...visualBoundsInWindowDip,
+      x: bounds.x + visualBoundsInWindowDip.x,
+      y: bounds.y + visualBoundsInWindowDip.y
+    };
+    const ranked = displays.map((display, index) => ({
+      display,
+      index,
+      containsFoot: pointInside(footAnchorDip, display.workAreaDip),
+      visualArea: rectangleIntersectionArea(globalVisualBounds, display.workAreaDip),
+      distance: pointDistanceToRectangle(footAnchorDip, display.workAreaDip)
+    })).sort((left, right) => (
+      Number(right.containsFoot) - Number(left.containsFoot)
+      || right.visualArea - left.visualArea
+      || left.distance - right.distance
+      || Number(right.display.id === preferredId) - Number(left.display.id === preferredId)
+      || left.index - right.index
     ));
-    const candidates = containingFoot.length > 0 ? containingFoot : displays;
-    let selected = candidates.find(display => display.id === preferredId) ?? candidates[0];
-    let selectedArea = selected ? rectangleIntersectionArea(bounds, selected.workAreaDip) : 0;
-    for (const display of candidates) {
-      const area = rectangleIntersectionArea(bounds, display.workAreaDip);
-      if (area > selectedArea) {
-        selected = display;
-        selectedArea = area;
-      }
-    }
-    if (!selected || selectedArea <= 0) throw new Error('PET_GEOMETRY_DISPLAY_INVALID');
+    const selected = ranked[0]?.display;
+    if (!selected) throw new Error('PET_GEOMETRY_DISPLAY_INVALID');
     return selected;
   }
 
@@ -1037,6 +1127,43 @@ function footOffsetInWindow(
   };
 }
 
+function visualBoundsInWindow(
+  footOffset: Readonly<{ x: number; y: number }>,
+  visualBoundsFromFoot: Rectangle
+): Rectangle {
+  return {
+    x: footOffset.x + visualBoundsFromFoot.x,
+    y: footOffset.y + visualBoundsFromFoot.y,
+    width: visualBoundsFromFoot.width,
+    height: visualBoundsFromFoot.height
+  };
+}
+
+/** 所有几何布局统一向可见区内侧量化，拒绝无合法整数窗口原点的形状。 */
+function constrainBoundsToVisualWorkArea(
+  bounds: Rectangle,
+  visualBoundsInWindowDip: Rectangle,
+  workAreaDip: Rectangle
+): Rectangle {
+  const roundedVisualLeft = Math.round(bounds.x) + visualBoundsInWindowDip.x;
+  const roundedVisualTop = Math.round(bounds.y) + visualBoundsInWindowDip.y;
+  const roundedVisualRight = roundedVisualLeft + visualBoundsInWindowDip.width;
+  const roundedVisualBottom = roundedVisualTop + visualBoundsInWindowDip.height;
+  if (
+    roundedVisualLeft >= workAreaDip.x
+    && roundedVisualTop >= workAreaDip.y
+    && roundedVisualRight <= workAreaDip.x + workAreaDip.width
+    && roundedVisualBottom <= workAreaDip.y + workAreaDip.height
+  ) return bounds;
+  const position = clampIntegerWindowPositionToVisualWorkArea({
+    windowPositionDip: bounds,
+    visualBoundsInWindowDip,
+    workAreaDip
+  });
+  if (!position) throw new Error('PET_GEOMETRY_DISPLAY_INVALID');
+  return { ...bounds, ...position };
+}
+
 function boundsForFoot(
   footAnchorDip: Readonly<{ x: number; y: number }>,
   viewport: Rectangle,
@@ -1086,4 +1213,21 @@ function rectangleIntersectionArea(left: Rectangle, right: Rectangle): number {
   );
   const area = width * height;
   return Number.isFinite(area) ? area : 0;
+}
+
+function pointDistanceToRectangle(
+  point: Readonly<{ x: number; y: number }>,
+  rectangle: Rectangle
+): number {
+  const dx = Math.max(
+    rectangle.x - point.x,
+    0,
+    point.x - (rectangle.x + rectangle.width)
+  );
+  const dy = Math.max(
+    rectangle.y - point.y,
+    0,
+    point.y - (rectangle.y + rectangle.height)
+  );
+  return dx * dx + dy * dy;
 }

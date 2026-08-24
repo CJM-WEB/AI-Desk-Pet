@@ -6,6 +6,8 @@ import type {
 import type { TaskEvent } from '@myself/shared-types';
 import { advanceMotion } from '../../shared/character-motion-math';
 import type { CharacterMotionIntent } from './character-behavior-director';
+import type { PetGeometrySnapshot } from './pet-visual-geometry';
+import { clampIntegerWindowPositionToVisualWorkArea } from '../windows/window-manager';
 
 type WindowBounds = Rectangle;
 
@@ -16,7 +18,8 @@ export type CharacterMotionWindow = {
 
 export type CharacterMotionServiceOptions = {
   window: CharacterMotionWindow;
-  getWorkAreas(): readonly Rectangle[];
+  getDisplays(): readonly Readonly<{ id: string; workAreaDip: Rectangle }>[];
+  getGeometrySnapshot(): PetGeometrySnapshot | null;
   now?: () => number;
   maxDeltaMs?: number;
   random?: () => number;
@@ -32,16 +35,53 @@ function integerPosition(point: CharacterMotionPoint): CharacterMotionPoint {
   return { x: Math.round(point.x), y: Math.round(point.y) };
 }
 
-function containingWorkArea(
+function workAreaContainsPoint(
   point: CharacterMotionPoint,
-  workAreas: readonly Rectangle[]
-): Rectangle | undefined {
-  return workAreas.find(area => (
-    point.x >= area.x
+  area: Rectangle
+): boolean {
+  return point.x >= area.x
     && point.y >= area.y
-    && point.x <= area.x + area.width
-    && point.y <= area.y + area.height
-  )) ?? workAreas[0];
+    && point.x < area.x + area.width
+    && point.y < area.y + area.height;
+}
+
+function intersectionArea(left: Rectangle, right: Rectangle): number {
+  const width = Math.max(0, Math.min(left.x + left.width, right.x + right.width)
+    - Math.max(left.x, right.x));
+  const height = Math.max(0, Math.min(left.y + left.height, right.y + right.height)
+    - Math.max(left.y, right.y));
+  return width * height;
+}
+
+function distanceToRectangle(point: CharacterMotionPoint, rectangle: Rectangle): number {
+  const dx = Math.max(rectangle.x - point.x, 0, point.x - (rectangle.x + rectangle.width));
+  const dy = Math.max(rectangle.y - point.y, 0, point.y - (rectangle.y + rectangle.height));
+  return dx * dx + dy * dy;
+}
+
+/** 统一按脚底命中、可见交集、脚底距离与稳定平局顺序选屏。 */
+function selectDisplayForGeometry<T extends Readonly<{
+  id: string;
+  workAreaDip: Rectangle;
+}>>(
+  foot: CharacterMotionPoint,
+  visual: Rectangle,
+  displays: readonly T[],
+  preferredId: string
+): T | undefined {
+  const ranked = displays.map((display, index) => ({
+    display,
+    index,
+    containsFoot: workAreaContainsPoint(foot, display.workAreaDip),
+    intersection: intersectionArea(visual, display.workAreaDip),
+    distance: distanceToRectangle(foot, display.workAreaDip),
+    preferred: display.id === preferredId
+  }));
+  return ranked.sort((left, right) => Number(right.containsFoot) - Number(left.containsFoot)
+      || right.intersection - left.intersection
+      || left.distance - right.distance
+      || Number(right.preferred) - Number(left.preferred)
+      || left.index - right.index)[0]?.display;
 }
 
 /** Main 是窗口坐标与运动时钟的唯一权威。 */
@@ -86,7 +126,9 @@ export class CharacterMotionService {
       throw new Error('CHARACTER_MOTION_INPUT_INVALID');
     }
     const bounds = this.options.window.getBounds();
-    this.target = this.constrainTarget(target, bounds);
+    const geometry = this.options.getGeometrySnapshot();
+    const constrained = geometry ? this.constrainTarget(target, geometry) : null;
+    this.target = constrained ?? { x: bounds.x, y: bounds.y };
     if (this.target.x !== bounds.x) {
       this.direction = this.target.x < bounds.x ? 'left' : 'right';
     }
@@ -112,6 +154,25 @@ export class CharacterMotionService {
       for (const listener of [...this.listeners]) listener(this.latestSnapshot);
       return structuredClone(this.latestSnapshot);
     }
+    const geometry = this.options.getGeometrySnapshot();
+    const constrainedTarget = geometry ? this.constrainTarget(this.target, geometry) : null;
+    if (!geometry || !constrainedTarget) {
+      const position = { x: bounds.x, y: bounds.y };
+      this.target = position;
+      this.lastTickMs = now;
+      this.latestSnapshot = {
+        revision: ++this.revision,
+        timestampMs: now,
+        position,
+        target: { ...position },
+        direction: this.direction,
+        moving: false,
+        carrying: this.carrying
+      };
+      for (const listener of [...this.listeners]) listener(this.latestSnapshot);
+      return structuredClone(this.latestSnapshot);
+    }
+    this.target = constrainedTarget;
     const next = advanceMotion({
       current: { x: bounds.x, y: bounds.y },
       target: this.target,
@@ -234,17 +295,14 @@ export class CharacterMotionService {
       throw new Error('CHARACTER_MOTION_INPUT_INVALID');
     }
     const position = integerPosition(point);
+    const bounds = this.options.window.getBounds();
     const previousTarget = { ...this.target };
-    let rebasedTarget = false;
-    if (
-      !this.latestSnapshot.moving
-      && this.target.x === this.latestSnapshot.position.x
-      && this.target.y === this.latestSnapshot.position.y
-    ) {
-      // 隐藏 BrowserWindow 可能不发 move/moved，静止 target 必须在 setBounds 前同步。
-      this.target = position;
-      rebasedTarget = true;
-    }
+    const delta = { x: position.x - bounds.x, y: position.y - bounds.y };
+    // 布局改变窗口原点时，静止目标跟随新原点，活动目标以同一差值重基。
+    this.target = this.target.x === bounds.x && this.target.y === bounds.y
+      ? position
+      : { x: this.target.x + delta.x, y: this.target.y + delta.y };
+    const rebasedTarget = { ...this.target };
     this.expectedProgrammaticPositions.push(position);
     if (this.expectedProgrammaticPositions.length > 64) {
       this.expectedProgrammaticPositions.shift();
@@ -255,29 +313,49 @@ export class CharacterMotionService {
       if (expectedIndex < 0) return;
       this.expectedProgrammaticPositions.splice(expectedIndex, 1);
       if (
-        rebasedTarget
-        && this.target.x === position.x
-        && this.target.y === position.y
+        this.target.x === rebasedTarget.x
+        && this.target.y === rebasedTarget.y
       ) {
         this.target = previousTarget;
       }
     };
   }
 
-  /** 对象化意图不接受绝对坐标，所有目标继续经过同一窗口矩形边界钳制。 */
+  /** 对象化意图不接受绝对坐标，距离与边界只消费 Main 可见几何快照。 */
   requestIntent(intent: CharacterMotionIntent): void {
     const bounds = this.options.window.getBounds();
-    const areas = this.availableMovementRegions();
-    const area = containingWorkArea({ x: bounds.x, y: bounds.y }, areas) ?? areas[0];
-    if (!area) return;
+    const geometry = this.options.getGeometrySnapshot();
+    if (!geometry) {
+      this.target = { x: bounds.x, y: bounds.y };
+      return;
+    }
+    const displays = this.options.getDisplays();
+    const footOffset = this.footOffsetInWindow(geometry);
+    if (!footOffset) return;
+    const currentFoot = { x: bounds.x + footOffset.x, y: bounds.y + footOffset.y };
+    const currentVisual = {
+      x: bounds.x + geometry.visualBoundsInWindowDip.x,
+      y: bounds.y + geometry.visualBoundsInWindowDip.y,
+      width: geometry.visualBoundsInWindowDip.width,
+      height: geometry.visualBoundsInWindowDip.height
+    };
+    const display = selectDisplayForGeometry(
+      currentFoot,
+      currentVisual,
+      displays,
+      geometry.displayId
+    );
+    if (!display) return;
+    const area = display.workAreaDip;
+    const visual = geometry.visualBoundsInWindowDip;
     if (intent.kind === 'return-visible') {
-      this.moveTo({ x: area.x, y: area.y });
+      this.moveTo({ x: bounds.x, y: bounds.y });
       return;
     }
     if (intent.kind === 'relative') {
       const factor = RELATIVE_DISTANCE_FACTOR[intent.distance];
       const horizontal = intent.direction === 'left' || intent.direction === 'right';
-      const distance = (horizontal ? bounds.width : bounds.height) * factor;
+      const distance = (horizontal ? visual.width : visual.height) * factor;
       const offset = intent.direction === 'left' || intent.direction === 'up'
         ? -distance
         : distance;
@@ -288,18 +366,16 @@ export class CharacterMotionService {
       return;
     }
     if (intent.kind === 'region') {
-      const maximumX = Math.max(area.x, area.x + area.width - bounds.width);
-      const maximumY = Math.max(area.y, area.y + area.height - bounds.height);
       this.moveTo({
         x: intent.region.includes('left')
-          ? area.x
+          ? area.x - visual.x
           : intent.region.includes('right')
-            ? maximumX
+            ? area.x + area.width - visual.x - visual.width
             : bounds.x,
         y: intent.region.includes('top')
-          ? area.y
+          ? area.y - visual.y
           : intent.region.includes('bottom')
-            ? maximumY
+            ? area.y + area.height - visual.y - visual.height
             : bounds.y
       });
       return;
@@ -307,16 +383,18 @@ export class CharacterMotionService {
     const random = this.options.random ?? Math.random;
     if (intent.scope === 'short') {
       this.moveTo({
-        x: bounds.x + (random() * 2 - 1) * bounds.width,
-        y: bounds.y + (random() * 2 - 1) * bounds.height
+        x: bounds.x + (random() * 2 - 1) * visual.width,
+        y: bounds.y + (random() * 2 - 1) * visual.height
       });
       return;
     }
-    const maximumX = Math.max(area.x, area.x + area.width - bounds.width);
-    const maximumY = Math.max(area.y, area.y + area.height - bounds.height);
+    const minimumX = area.x - visual.x;
+    const minimumY = area.y - visual.y;
+    const maximumX = area.x + area.width - visual.x - visual.width;
+    const maximumY = area.y + area.height - visual.y - visual.height;
     this.moveTo({
-      x: area.x + (maximumX - area.x) * random(),
-      y: area.y + (maximumY - area.y) * random()
+      x: minimumX + (maximumX - minimumX) * random(),
+      y: minimumY + (maximumY - minimumY) * random()
     });
   }
 
@@ -327,27 +405,42 @@ export class CharacterMotionService {
     this.speed = DEFAULT_SPEED;
   }
 
-  private availableMovementRegions(): readonly Rectangle[] {
-    return this.options.getWorkAreas();
+  private footOffsetInWindow(
+    geometry: PetGeometrySnapshot
+  ): CharacterMotionPoint | null {
+    const offset = {
+      x: geometry.footAnchorDip.x - geometry.windowBoundsDip.x,
+      y: geometry.footAnchorDip.y - geometry.windowBoundsDip.y
+    };
+    return Number.isFinite(offset.x) && Number.isFinite(offset.y) ? offset : null;
   }
 
   private constrainTarget(
     target: CharacterMotionPoint,
-    bounds: WindowBounds
-  ): CharacterMotionPoint {
-    const areas = this.availableMovementRegions();
-    const area = containingWorkArea(target, areas);
-    if (!area) return { x: bounds.x, y: bounds.y };
-    return {
-      x: Math.min(
-        Math.max(area.x, area.x + area.width - bounds.width),
-        Math.max(area.x, target.x)
-      ),
-      y: Math.min(
-        Math.max(area.y, area.y + area.height - bounds.height),
-        Math.max(area.y, target.y)
-      )
+    geometry: PetGeometrySnapshot
+  ): CharacterMotionPoint | null {
+    const displays = this.options.getDisplays();
+    const footOffset = this.footOffsetInWindow(geometry);
+    if (!footOffset || displays.length === 0) return null;
+    const targetFoot = { x: target.x + footOffset.x, y: target.y + footOffset.y };
+    const targetVisual = {
+      x: target.x + geometry.visualBoundsInWindowDip.x,
+      y: target.y + geometry.visualBoundsInWindowDip.y,
+      width: geometry.visualBoundsInWindowDip.width,
+      height: geometry.visualBoundsInWindowDip.height
     };
+    const display = selectDisplayForGeometry(
+      targetFoot,
+      targetVisual,
+      displays,
+      geometry.displayId
+    );
+    if (!display) return null;
+    return clampIntegerWindowPositionToVisualWorkArea({
+      windowPositionDip: target,
+      visualBoundsInWindowDip: geometry.visualBoundsInWindowDip,
+      workAreaDip: display.workAreaDip
+    });
   }
 
 }

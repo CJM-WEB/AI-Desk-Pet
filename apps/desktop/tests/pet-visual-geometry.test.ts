@@ -2,6 +2,7 @@ import { characterManifestV2Schema, type CharacterManifestV2 } from '@myself/cha
 import { describe, expect, test } from 'vitest';
 import {
   PetVisualGeometryAuthority as ProductionPetVisualGeometryAuthority,
+  createConservativePetGeometrySnapshot,
   type PetGeometryUpdateResult,
   unionVisiblePresentationBounds
 } from '../src/main/characters/pet-visual-geometry';
@@ -12,6 +13,37 @@ import {
 
 const REVISION_A = 'a'.repeat(64);
 const REVISION_B = 'b'.repeat(64);
+
+describe('启动期保守默认几何', () => {
+  test('以实际窗口全范围构造 Main 私有默认包围盒', () => {
+    expect(createConservativePetGeometrySnapshot({
+      characterId: 'pet-a',
+      windowBoundsDip: { x: -20, y: 30, width: 180, height: 220 },
+      displayId: 'display-2'
+    })).toEqual({
+      revision: 0,
+      characterId: 'pet-a',
+      scale: 1,
+      footAnchorDip: { x: 70, y: 250 },
+      visualBoundsInWindowDip: { x: 0, y: 0, width: 180, height: 220 },
+      windowBoundsDip: { x: -20, y: 30, width: 180, height: 220 },
+      displayId: 'display-2'
+    });
+  });
+
+  test('拒绝非法身份、显示器或实际窗口而不产生猜测几何', () => {
+    expect(createConservativePetGeometrySnapshot({
+      characterId: '',
+      windowBoundsDip: { x: 0, y: 0, width: 180, height: 220 },
+      displayId: 'display-1'
+    })).toBeNull();
+    expect(createConservativePetGeometrySnapshot({
+      characterId: 'pet-a',
+      windowBoundsDip: { x: 0, y: 0, width: Number.NaN, height: 220 },
+      displayId: 'display-1'
+    })).toBeNull();
+  });
+});
 
 function manifest(id = 'pet-a'): CharacterManifestV2 {
   return characterManifestV2Schema.parse({

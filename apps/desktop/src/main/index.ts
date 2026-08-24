@@ -82,7 +82,10 @@ import { prepareCharacterStartup } from './characters/character-startup';
 import { createE2eCharacterDialogAdapter } from './characters/e2e-character-dialogs';
 import { ensureOfficialDefaultCharacter } from './characters/official-default-character';
 import { decodeNativeImageAlpha } from './characters/native-image-alpha-decoder';
-import { PetVisualGeometryAuthority } from './characters/pet-visual-geometry';
+import {
+  createConservativePetGeometrySnapshot,
+  PetVisualGeometryAuthority
+} from './characters/pet-visual-geometry';
 import {
   bindCharacterMotionWindow,
   CharacterMotionService,
@@ -464,9 +467,32 @@ async function createApplicationWindows(
     // pending 只在 Main 私下恢复旧窗口左上角；首次真实 viewport 成功后才 CAS 清除。
     pet.setPosition(startupPlacement.windowPosition.x, startupPlacement.windowPosition.y);
   }
+  const petGeometryAuthority = new PetVisualGeometryAuthority(activeGeometryManifest.id);
+  const getPetGeometrySnapshot = () => {
+    const committed = petGeometryAuthority.getSnapshot();
+    if (committed) return committed;
+    try {
+      const bounds = pet.getBounds();
+      const display = screen.getDisplayNearestPoint({
+        x: bounds.x + bounds.width / 2,
+        y: bounds.y + bounds.height
+      });
+      return createConservativePetGeometrySnapshot({
+        characterId: activeGeometryManifest.id,
+        windowBoundsDip: bounds,
+        displayId: String(display.id)
+      });
+    } catch {
+      return null;
+    }
+  };
   const characterMotion = new CharacterMotionService({
     window: pet,
-    getWorkAreas: () => screen.getAllDisplays().map(display => display.workArea)
+    getDisplays: () => screen.getAllDisplays().map(display => ({
+      id: String(display.id),
+      workAreaDip: display.workArea
+    })),
+    getGeometrySnapshot: getPetGeometrySnapshot
   });
   const reportCharacterBehaviorError = (
     code: 'CHARACTER_BEHAVIOR_V2_UNAVAILABLE'
@@ -478,7 +504,6 @@ async function createApplicationWindows(
     motion: characterMotion,
     reportError: reportCharacterBehaviorError
   });
-  const petGeometryAuthority = new PetVisualGeometryAuthority(activeGeometryManifest.id);
   const petGeometry = new PetGeometryCoordinator({
     window: pet,
     authority: petGeometryAuthority,
@@ -600,6 +625,7 @@ async function createApplicationWindows(
   let refreshTray = async (): Promise<void> => undefined;
   const petWindowInteraction = new PetWindowInteractionController({
     window: pet,
+    getGeometrySnapshot: getPetGeometrySnapshot,
     screen,
     motion: {
       beginUserMove: () => {
@@ -643,6 +669,8 @@ async function createApplicationWindows(
   });
   const releaseMotionEvents = characterMotion.subscribe(snapshot => {
     characterBehavior.handleMovement(snapshot);
+    // 方向可能在 moving 布尔不变时改变；几何 binding 仍须进入 Main FIFO。
+    void petGeometry.refreshBinding().catch(() => undefined);
     characterBehaviorDirector.refreshActivityBlockers();
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, {

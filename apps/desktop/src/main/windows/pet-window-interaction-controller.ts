@@ -3,7 +3,8 @@ import {
   PET_DRAG_TIMEOUT_MS,
   type PetInteractionProbe
 } from '../../shared/pet-window-interaction';
-import { clampPositionToWorkArea } from './window-manager';
+import type { PetGeometrySnapshot } from '../characters/pet-visual-geometry';
+import { clampIntegerWindowPositionToVisualWorkArea } from './window-manager';
 
 type PetInteractionWindow = {
   getBounds(): Rectangle;
@@ -26,6 +27,7 @@ type PetInteractionMotion = {
 
 export type PetWindowInteractionControllerOptions = {
   window: PetInteractionWindow;
+  getGeometrySnapshot(): PetGeometrySnapshot | null;
   screen: PetInteractionScreen;
   motion: PetInteractionMotion;
 };
@@ -33,6 +35,7 @@ export type PetWindowInteractionControllerOptions = {
 type DragSession = {
   initialCursor: { x: number; y: number };
   initialBounds: Rectangle;
+  visualBoundsInWindowDip: Rectangle;
   interval?: ReturnType<typeof setInterval>;
   timeout?: ReturnType<typeof setTimeout>;
 };
@@ -67,13 +70,16 @@ export class PetWindowInteractionController {
     try {
       const initialCursor = this.options.screen.getCursorScreenPoint();
       const initialBounds = this.options.window.getBounds();
+      const geometry = this.options.getGeometrySnapshot();
+      if (!geometry) return;
       this.options.motion.beginUserMove();
       motionStarted = true;
       this.applyPassthrough(false);
 
       const session: DragSession = {
         initialCursor,
-        initialBounds
+        initialBounds,
+        visualBoundsInWindowDip: { ...geometry.visualBoundsInWindowDip }
       };
       this.dragSession = session;
       session.interval = setInterval(() => this.updateDrag(session), 16);
@@ -149,17 +155,18 @@ export class PetWindowInteractionController {
     }
     try {
       const cursor = this.options.screen.getCursorScreenPoint();
-      const next = clampPositionToWorkArea(
-        {
-          x: session.initialBounds.x + cursor.x - session.initialCursor.x,
-          y: session.initialBounds.y + cursor.y - session.initialCursor.y
+      const next = clampIntegerWindowPositionToVisualWorkArea({
+        windowPositionDip: {
+          x: Math.round(session.initialBounds.x + cursor.x - session.initialCursor.x),
+          y: Math.round(session.initialBounds.y + cursor.y - session.initialCursor.y)
         },
-        {
-          width: session.initialBounds.width,
-          height: session.initialBounds.height
-        },
-        this.options.screen.getDisplayNearestPoint(cursor).workArea
-      );
+        visualBoundsInWindowDip: session.visualBoundsInWindowDip,
+        workAreaDip: this.options.screen.getDisplayNearestPoint(cursor).workArea
+      });
+      if (!next) {
+        this.endDrag('cancelled');
+        return;
+      }
       this.options.window.setPosition(next.x, next.y);
     } catch {
       this.lastKnownPassthrough = undefined;

@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   chatWindowOptions,
   bindPetWindowInteractionLifecycle,
-  clampPositionToVisibleWorkArea,
   petWindowOptions,
   secureWebPreferences,
   settingsWindowOptions
@@ -200,29 +199,6 @@ describe('桌宠交互控制器生命周期', () => {
 
     expect(controller.dispose).toHaveBeenCalledOnce();
     expect(controller.endDrag).not.toHaveBeenCalled();
-  });
-});
-
-describe('桌宠位置恢复', () => {
-  const workAreas = [
-    { x: 0, y: 0, width: 1920, height: 1040 },
-    { x: 1920, y: -200, width: 1280, height: 1024 }
-  ];
-
-  it('保留仍然完全可见的位置', () => {
-    expect(clampPositionToVisibleWorkArea(
-      { x: 2000, y: 100 },
-      { width: 180, height: 220 },
-      workAreas
-    )).toEqual({ x: 2000, y: 100 });
-  });
-
-  it('把不可见位置收敛到主显示器工作区右下角', () => {
-    expect(clampPositionToVisibleWorkArea(
-      { x: 5000, y: 5000 },
-      { width: 180, height: 220 },
-      workAreas
-    )).toEqual({ x: 1724, y: 804 });
   });
 });
 

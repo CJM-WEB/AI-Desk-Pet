@@ -129,6 +129,40 @@ function validRectangle(rectangle: Rectangle): boolean {
     && Number.isFinite(rectangle.y + rectangle.height);
 }
 
+/**
+ * 首次真实 viewport 提交前，以实际窗口全范围提供短暂的保守视觉几何。
+ * 正式快照一旦可用即完全替代它，不保留固定尺寸双轨。
+ */
+export function createConservativePetGeometrySnapshot(input: Readonly<{
+  characterId: string;
+  windowBoundsDip: Rectangle;
+  displayId: string;
+}>): PetGeometrySnapshot | null {
+  if (
+    input.characterId.trim().length === 0
+    || input.displayId.trim().length === 0
+    || !validRectangle(input.windowBoundsDip)
+  ) return null;
+  const snapshot: PetGeometrySnapshot = {
+    revision: 0,
+    characterId: input.characterId,
+    scale: 1,
+    footAnchorDip: {
+      x: input.windowBoundsDip.x + input.windowBoundsDip.width / 2,
+      y: input.windowBoundsDip.y + input.windowBoundsDip.height
+    },
+    visualBoundsInWindowDip: {
+      x: 0,
+      y: 0,
+      width: input.windowBoundsDip.width,
+      height: input.windowBoundsDip.height
+    },
+    windowBoundsDip: { ...input.windowBoundsDip },
+    displayId: input.displayId
+  };
+  return cloneAndFreeze(snapshot) as PetGeometrySnapshot;
+}
+
 function viewportFitsWindow(viewport: Rectangle, window: Rectangle): boolean {
   return validRectangle(viewport)
     && viewport.x >= 0

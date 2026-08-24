@@ -1432,7 +1432,19 @@ describe('桌面 Agent 真实服务集成', () => {
           positions.push({ x, y });
         }
       },
-      getWorkAreas: () => [{ x: 0, y: 0, width: 1_024, height: 768 }],
+      getDisplays: () => [{
+        id: 'integration-display',
+        workAreaDip: { x: 0, y: 0, width: 1_024, height: 768 }
+      }],
+      getGeometrySnapshot: () => ({
+        revision: 1,
+        characterId: 'integration-character',
+        scale: 1,
+        footAnchorDip: { x: bounds.x + 128, y: bounds.y + 256 },
+        visualBoundsInWindowDip: { x: 0, y: 0, width: 256, height: 256 },
+        windowBoundsDip: bounds,
+        displayId: 'integration-display'
+      }),
       now: () => now,
       random: () => 0.75
     });
