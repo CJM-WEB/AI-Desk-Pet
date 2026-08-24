@@ -105,13 +105,7 @@ function currentAction(state: CharacterWorkshopState): DraftActionClip | null {
     name: requestedAction.name,
     loop: requestedAction.loopPolicy !== 'never',
     weight: requestedAction.preference,
-    direction: requestedAction.direction,
-    ...(resolved.presentation.playbackRate === undefined
-      ? {}
-      : { playbackRate: resolved.presentation.playbackRate }),
-    ...(resolved.presentation.mirrorX === undefined
-      ? {}
-      : { mirrorX: resolved.presentation.mirrorX })
+    direction: requestedAction.direction
   } : projected;
 }
 
@@ -181,7 +175,7 @@ export function previewActionIdentity(
   draftId: string | null,
   stateId: string | null,
   actionId: string | null,
-  skinId: string | null = null
+  skinId: string | null
 ): string {
   return JSON.stringify([characterId, draftId, stateId, actionId, skinId]);
 }

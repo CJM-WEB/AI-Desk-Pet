@@ -73,6 +73,12 @@ export function draftActionFromResolvedPresentation(
     ...(resolved.presentation.regions
       ? { regions: resolved.presentation.regions }
       : {}),
+    ...(resolved.presentation.playbackRate === undefined
+      ? {}
+      : { playbackRate: resolved.presentation.playbackRate }),
+    ...(resolved.presentation.mirrorX === undefined
+      ? {}
+      : { mirrorX: resolved.presentation.mirrorX }),
     frames: resolved.presentation.frames
   };
 }

@@ -165,8 +165,18 @@ function pointerEvent(
 
 describe('预览组件帧数同步', () => {
   test('跨角色复用相同状态动作标识时仍形成新的预览身份', () => {
-    expect(previewActionIdentity('nova', 'nova', 'idle', 'idle-main'))
-      .not.toBe(previewActionIdentity('luna', 'luna', 'idle', 'idle-main'));
+    expect(previewActionIdentity('nova', 'nova', 'idle', 'idle-main', 'default'))
+      .not.toBe(previewActionIdentity('luna', 'luna', 'idle', 'idle-main', 'default'));
+  });
+
+  test('仅切换皮肤也形成新的预览身份', () => {
+    expect(previewActionIdentity('nova', 'nova', 'idle', 'idle-main', 'default'))
+      .not.toBe(previewActionIdentity('nova', 'nova', 'idle', 'idle-main', 'winter'));
+  });
+
+  test('预览身份调用必须显式携带皮肤标识', () => {
+    // @ts-expect-error 预览身份必须携带皮肤标识。
+    previewActionIdentity('nova', 'nova', 'idle', 'idle-main');
   });
 
   test('切换到帧数相同的新动作时预览与时间轴都回到首帧', () => {

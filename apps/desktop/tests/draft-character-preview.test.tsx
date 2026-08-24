@@ -15,6 +15,7 @@ import type {
   CharacterStateId,
   DraftActionClip
 } from '@myself/character-runtime';
+import { resolveCharacterPresentation } from '@myself/character-runtime';
 import type {
   CharacterWorkshopApi,
   CharacterWorkshopState
@@ -27,7 +28,8 @@ import {
   type PreviewState
 } from '../src/renderer/src/characters/workshop/PreviewControls';
 import {
-  DraftCharacterPreview
+  DraftCharacterPreview,
+  draftActionFromResolvedPresentation
 } from '../src/renderer/src/characters/workshop/DraftCharacterPreview';
 import {
   CharacterWorkshopWorkspace
@@ -500,6 +502,21 @@ function previewProps(
     ...overrides
   };
 }
+
+describe('解析表现到预览动作的转换', () => {
+  test('保真复制皮肤动作的倍速与水平反转', () => {
+    const draft = draftWith();
+    const presentation = draft.skins[0]!.presentations[0]!;
+    presentation.playbackRate = 1.5;
+    presentation.mirrorX = true;
+    const resolved = resolveCharacterPresentation(draft, 'default', 'idle-main');
+
+    expect(draftActionFromResolvedPresentation(resolved!)).toMatchObject({
+      playbackRate: 1.5,
+      mirrorX: true
+    });
+  });
+});
 
 function sceneDouble() {
   let currentFrame: ReturnType<PixiCharacterScene['getCurrentFrame']> = null;
