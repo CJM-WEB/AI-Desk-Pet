@@ -85,6 +85,14 @@ export class PetGeometryCoordinator {
   private canonical: CanonicalViewport | null = null;
   private committedTick = 10;
   private requestedTick = 10;
+  private scaleRequestRevision = 0;
+  private scaleRequestOffset = 0;
+  /** 同一目标角色失败重试复用首次切换基线，避免事务期间的 wheel 被归入旧角色。 */
+  private pendingCharacterScaleRequest: Readonly<{
+    characterId: string;
+    revision: number;
+    offset: number;
+  }> | null = null;
   private waiter: ViewportWaiter | null = null;
   private initialized = false;
   private committedBindingGeneration: number | null = null;
@@ -133,6 +141,8 @@ export class PetGeometryCoordinator {
   }
 
   stepScale(input: PetScaleStepInput): Promise<void> {
+    this.scaleRequestRevision += 1;
+    this.scaleRequestOffset += input.step;
     this.requestedTick = clampTick(this.requestedTick + input.step);
     if (this.frozen || this.options.isLayoutBlocked?.()) return Promise.resolve();
     return this.resumePendingLayout();
@@ -173,6 +183,19 @@ export class PetGeometryCoordinator {
       return Promise.resolve();
     }
     this.bindingDirty = true;
+    const snapshot = this.options.authority.getSnapshot();
+    if (
+      this.initialized
+      && snapshot?.characterId !== available.manifest.id
+      && this.pendingCharacterScaleRequest?.characterId !== available.manifest.id
+    ) {
+      // 角色激活即建立 wheel 归属基线；即使拖拽阻塞，随后输入也属于目标角色。
+      this.pendingCharacterScaleRequest = {
+        characterId: available.manifest.id,
+        revision: this.scaleRequestRevision,
+        offset: this.scaleRequestOffset
+      };
+    }
     if (
       this.options.isLayoutBlocked?.()
       && this.options.isUserMoving?.() !== false
@@ -971,9 +994,68 @@ export class PetGeometryCoordinator {
       if (!this.initialized) {
         await this.initializeFromViewport(this.cachedViewport!);
       } else {
-        const viewport = viewportForTick(this.canonical!, this.committedTick);
+        const snapshot = this.options.authority.getSnapshot();
+        const characterChanged = snapshot?.characterId !== binding.manifest.id;
+        if (!characterChanged) this.pendingCharacterScaleRequest = null;
+        const switchRequest = characterChanged
+          ? this.pendingCharacterScaleRequest?.characterId === binding.manifest.id
+            ? this.pendingCharacterScaleRequest
+            : {
+                characterId: binding.manifest.id,
+                revision: this.scaleRequestRevision,
+                offset: this.scaleRequestOffset
+              }
+          : null;
+        if (switchRequest && switchRequest !== this.pendingCharacterScaleRequest) {
+          this.pendingCharacterScaleRequest = switchRequest;
+        }
         const state = await this.options.settings.getPetPlacementState(binding.manifest.id);
-        await this.applyLayout(this.committedTick, viewport, state);
+        const currentBinding = this.options.getGeometryBinding();
+        if (!currentBinding || currentBinding.generation !== binding.generation) {
+          // 异步状态只属于捕获它的 generation；换绑后由 FIFO 下一轮读取最新角色。
+          this.bindingDirty = Boolean(
+            currentBinding
+            && currentBinding.generation !== this.committedBindingGeneration
+          );
+          return;
+        }
+        const tick = characterChanged
+          ? clampTick(Math.round((
+              state.kind === 'ready'
+              && state.placement?.characterId === binding.manifest.id
+                ? state.placement.scale
+                : 1
+            ) * 10))
+          : this.committedTick;
+        const viewport = viewportForTick(this.canonical!, tick);
+        await this.applyLayout(tick, viewport, state);
+        const bindingAfterLayout = this.options.getGeometryBinding();
+        const bindingStillCurrent = Boolean(
+          bindingAfterLayout
+          && bindingAfterLayout.generation === binding.generation
+        );
+        if (characterChanged) {
+          this.committedTick = tick;
+          if (
+            bindingStillCurrent
+            && switchRequest
+            && this.pendingCharacterScaleRequest === switchRequest
+          ) {
+            const postSwitchOffset = this.scaleRequestRevision >= switchRequest.revision
+              ? this.scaleRequestOffset - switchRequest.offset
+              : 0;
+            // 只清理当前事务自己的基线；后续角色的 wheel 归属不可被旧保存覆盖。
+            this.requestedTick = clampTick(tick + postSwitchOffset);
+            this.pendingCharacterScaleRequest = null;
+          }
+        }
+        if (!bindingStillCurrent) {
+          this.bindingDirty = Boolean(
+            bindingAfterLayout
+            && bindingAfterLayout.generation !== this.committedBindingGeneration
+          );
+          return;
+        }
       }
     } catch (error) {
       this.bindingDirty = true;

@@ -1361,6 +1361,354 @@ describe('G4 viewport settle 补充状态机', () => {
     }));
   });
 
+  test('旧角色 50% 切换到无 placement 新角色时恢复默认 100% 而不继承旧 tick', async () => {
+    let binding: CharacterGeometryBinding = {
+      generation: 1, manifest: realManifest(), skinId: 'default-skin',
+      actionId: 'idle-action', actionRevision: 3,
+      resourceRevision: RESOURCE_REVISION, direction: 'right'
+    };
+    const value = realAuthorityFixture({
+      getBinding: () => binding,
+      getPetPlacementState: vi.fn(async (characterId: string) => ({
+        kind: 'ready' as const,
+        placement: characterId === 'pet-a' ? {
+          characterId: 'pet-a', scale: 1,
+          footAnchorDip: { x: 399, y: 387.2 }, displayId: 'display-1'
+        } : null
+      }))
+    });
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+    for (let step = 0; step < 5; step += 1) {
+      await value.coordinator.stepScale({ step: -1 });
+    }
+    expect(value.authority.getSnapshot()).toMatchObject({ characterId: 'pet-a', scale: 0.5 });
+    value.savePetPlacement.mockClear();
+    binding = {
+      ...binding,
+      generation: 2,
+      manifest: realManifest(0.5, 'pet-b'),
+      actionRevision: 4
+    };
+
+    await value.coordinator.refreshBinding();
+
+    expect(value.authority.getSnapshot()).toMatchObject({ characterId: 'pet-b', scale: 1 });
+    expect(value.coordinator.inspectRelativeGeometry()?.scaleTick).toBe(10);
+    expect(value.savePetPlacement).toHaveBeenLastCalledWith(expect.objectContaining({
+      characterId: 'pet-b', scale: 1
+    }));
+  });
+
+  test('角色切换到已有 placement 时恢复目标角色自身 scale', async () => {
+    let binding: CharacterGeometryBinding = {
+      generation: 1, manifest: realManifest(), skinId: 'default-skin',
+      actionId: 'idle-action', actionRevision: 3,
+      resourceRevision: RESOURCE_REVISION, direction: 'right'
+    };
+    const petBPlacement = {
+      characterId: 'pet-b', scale: 1.3,
+      footAnchorDip: { x: 800, y: 600 }, displayId: 'display-1'
+    };
+    const value = realAuthorityFixture({
+      getBinding: () => binding,
+      getPetPlacementState: vi.fn(async (characterId: string) => ({
+        kind: 'ready' as const,
+        placement: characterId === 'pet-b' ? petBPlacement : {
+          characterId: 'pet-a', scale: 1,
+          footAnchorDip: { x: 399, y: 387.2 }, displayId: 'display-1'
+        }
+      }))
+    });
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+    binding = {
+      ...binding,
+      generation: 2,
+      manifest: realManifest(0.5, 'pet-b'),
+      actionRevision: 4
+    };
+
+    await value.coordinator.refreshBinding();
+
+    expect(value.authority.getSnapshot()).toMatchObject({
+      characterId: 'pet-b', scale: 1.3, footAnchorDip: petBPlacement.footAnchorDip
+    });
+    expect(value.coordinator.inspectRelativeGeometry()?.scaleTick).toBe(13);
+  });
+
+  test('激活 B 后拖拽阻塞期的 wheel 在释放后仍归属 B', async () => {
+    let blocked = false;
+    let userMoving = false;
+    let binding: CharacterGeometryBinding = {
+      generation: 1, manifest: realManifest(), skinId: 'default-skin',
+      actionId: 'idle-action', actionRevision: 3,
+      resourceRevision: RESOURCE_REVISION, direction: 'right'
+    };
+    const value = realAuthorityFixture({
+      blocked: () => blocked,
+      userMoving: () => userMoving,
+      getBinding: () => binding,
+      getPetPlacementState: vi.fn(async (characterId: string) => ({
+        kind: 'ready' as const,
+        placement: characterId === 'pet-b' ? {
+          characterId: 'pet-b', scale: 1.3,
+          footAnchorDip: { x: 800, y: 600 }, displayId: 'display-1'
+        } : {
+          characterId: 'pet-a', scale: 1,
+          footAnchorDip: { x: 399, y: 387.2 }, displayId: 'display-1'
+        }
+      }))
+    });
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+    blocked = true;
+    userMoving = true;
+    binding = {
+      ...binding, generation: 2, manifest: realManifest(0.5, 'pet-b'), actionRevision: 4
+    };
+    await value.coordinator.refreshBinding();
+
+    await value.coordinator.stepScale({ step: 1 });
+    userMoving = false;
+    blocked = false;
+    await value.coordinator.resumePendingLayout();
+
+    expect(value.authority.getSnapshot()).toMatchObject({ characterId: 'pet-b', scale: 1.4 });
+    expect(value.coordinator.inspectRelativeGeometry()?.scaleTick).toBe(14);
+  });
+
+  test('B 状态读取在途切换 C 时丢弃 B 结果并保留 C 的 wheel', async () => {
+    type ReadyState = Readonly<{
+      kind: 'ready';
+      placement: Readonly<{
+        characterId: string;
+        scale: number;
+        footAnchorDip: Readonly<{ x: number; y: number }>;
+        displayId: string;
+      }>;
+    }>;
+    let resolveBState!: (state: ReadyState) => void;
+    const pendingBState = new Promise<ReadyState>(resolve => { resolveBState = resolve; });
+    let markBRequested!: () => void;
+    const bRequested = new Promise<void>(resolve => { markBRequested = resolve; });
+    let binding: CharacterGeometryBinding = {
+      generation: 1, manifest: realManifest(), skinId: 'default-skin',
+      actionId: 'idle-action', actionRevision: 3,
+      resourceRevision: RESOURCE_REVISION, direction: 'right'
+    };
+    const getPetPlacementState = vi.fn(async (characterId: string) => {
+      if (characterId === 'pet-b') {
+        markBRequested();
+        return pendingBState;
+      }
+      return {
+        kind: 'ready' as const,
+        placement: {
+          characterId,
+          scale: characterId === 'pet-c' ? 1.3 : 1,
+          footAnchorDip: characterId === 'pet-c'
+            ? { x: 900, y: 650 }
+            : { x: 399, y: 387.2 },
+          displayId: 'display-1'
+        }
+      };
+    });
+    const value = realAuthorityFixture({
+      getBinding: () => binding,
+      getPetPlacementState
+    });
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+    binding = {
+      ...binding, generation: 2, manifest: realManifest(0.5, 'pet-b'), actionRevision: 4
+    };
+    const switchingFromB = value.coordinator.refreshBinding();
+    await bRequested;
+
+    binding = {
+      ...binding, generation: 3, manifest: realManifest(0.5, 'pet-c'), actionRevision: 5
+    };
+    const switchingToC = value.coordinator.refreshBinding();
+    const cWheel = value.coordinator.stepScale({ step: 1 });
+    resolveBState({
+      kind: 'ready',
+      placement: {
+        characterId: 'pet-b', scale: 0.5,
+        footAnchorDip: { x: 200, y: 300 }, displayId: 'display-1'
+      }
+    });
+
+    await Promise.all([switchingFromB, switchingToC, cWheel]);
+
+    expect(getPetPlacementState.mock.calls.map(([characterId]) => characterId))
+      .toEqual(['pet-a', 'pet-b', 'pet-c']);
+    expect(value.authority.getSnapshot()).toMatchObject({
+      characterId: 'pet-c', scale: 1.4, footAnchorDip: { x: 900, y: 650 }
+    });
+    expect(value.coordinator.inspectRelativeGeometry()?.scaleTick).toBe(14);
+  });
+
+  test('B 已提交但保存在途时切换 C 不清理 C 的 wheel 归属', async () => {
+    let resolveBSave!: () => void;
+    const pendingBSave = new Promise<void>(resolve => { resolveBSave = resolve; });
+    let markBSaveStarted!: () => void;
+    const bSaveStarted = new Promise<void>(resolve => { markBSaveStarted = resolve; });
+    let binding: CharacterGeometryBinding = {
+      generation: 1, manifest: realManifest(), skinId: 'default-skin',
+      actionId: 'idle-action', actionRevision: 3,
+      resourceRevision: RESOURCE_REVISION, direction: 'right'
+    };
+    const getPetPlacementState = vi.fn(async (characterId: string) => ({
+      kind: 'ready' as const,
+      placement: {
+        characterId,
+        scale: characterId === 'pet-b' ? 0.8 : characterId === 'pet-c' ? 1.3 : 1,
+        footAnchorDip: characterId === 'pet-c'
+          ? { x: 900, y: 650 }
+          : { x: 399, y: 387.2 },
+        displayId: 'display-1'
+      }
+    }));
+    const savePetPlacement = vi.fn(async (placement: Readonly<{ characterId: string }>) => {
+      if (placement.characterId !== 'pet-b') return;
+      markBSaveStarted();
+      await pendingBSave;
+    });
+    const value = realAuthorityFixture({
+      getBinding: () => binding,
+      getPetPlacementState,
+      savePetPlacement
+    });
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+    binding = {
+      ...binding, generation: 2, manifest: realManifest(0.5, 'pet-b'), actionRevision: 4
+    };
+    const switchingToB = value.coordinator.refreshBinding();
+    await bSaveStarted;
+    expect(value.authority.getSnapshot()).toMatchObject({ characterId: 'pet-b', scale: 0.8 });
+
+    binding = {
+      ...binding, generation: 3, manifest: realManifest(0.5, 'pet-c'), actionRevision: 5
+    };
+    const switchingToC = value.coordinator.refreshBinding();
+    const cWheel = value.coordinator.stepScale({ step: 1 });
+    resolveBSave();
+
+    await Promise.all([switchingToB, switchingToC, cWheel]);
+
+    expect(getPetPlacementState.mock.calls.map(([characterId]) => characterId))
+      .toEqual(['pet-a', 'pet-b', 'pet-c']);
+    expect(value.authority.getSnapshot()).toMatchObject({
+      characterId: 'pet-c', scale: 1.4, footAnchorDip: { x: 900, y: 650 }
+    });
+    expect(value.coordinator.inspectRelativeGeometry()?.scaleTick).toBe(14);
+  });
+
+  test('角色切换读取状态期间的新 wheel 只叠加到目标角色基准', async () => {
+    let blocked = false;
+    let binding: CharacterGeometryBinding = {
+      generation: 1, manifest: realManifest(), skinId: 'default-skin',
+      actionId: 'idle-action', actionRevision: 3,
+      resourceRevision: RESOURCE_REVISION, direction: 'right'
+    };
+    let releasePetBState!: () => void;
+    const petBStateGate = new Promise<void>(resolve => { releasePetBState = resolve; });
+    const getPetPlacementState = vi.fn(async (characterId: string) => {
+      if (characterId === 'pet-b') await petBStateGate;
+      return {
+        kind: 'ready' as const,
+        placement: characterId === 'pet-a' ? {
+          characterId: 'pet-a', scale: 1,
+          footAnchorDip: { x: 399, y: 387.2 }, displayId: 'display-1'
+        } : null
+      };
+    });
+    const value = realAuthorityFixture({
+      blocked: () => blocked,
+      userMoving: () => false,
+      getBinding: () => binding,
+      getPetPlacementState
+    });
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+    for (let step = 0; step < 5; step += 1) await value.coordinator.stepScale({ step: -1 });
+    blocked = true;
+    await value.coordinator.stepScale({ step: 1 });
+    binding = {
+      ...binding, generation: 2, manifest: realManifest(0.5, 'pet-b'), actionRevision: 4
+    };
+    const switching = value.coordinator.refreshBinding();
+    await vi.waitFor(() => expect(getPetPlacementState).toHaveBeenCalledWith('pet-b'));
+
+    void value.coordinator.stepScale({ step: 1 });
+    releasePetBState();
+    await switching;
+    blocked = false;
+    await value.coordinator.resumePendingLayout();
+
+    expect(value.authority.getSnapshot()).toMatchObject({ characterId: 'pet-b', scale: 1.1 });
+    expect(value.coordinator.inspectRelativeGeometry()?.scaleTick).toBe(11);
+  });
+
+  test('角色切换保存失败后重试仍保留事务期间及回滚后的新 wheel', async () => {
+    let blocked = false;
+    let binding: CharacterGeometryBinding = {
+      generation: 1, manifest: realManifest(), skinId: 'default-skin',
+      actionId: 'idle-action', actionRevision: 3,
+      resourceRevision: RESOURCE_REVISION, direction: 'right'
+    };
+    let rejectSwitchSave!: (error: Error) => void;
+    const switchSaveGate = new Promise<void>((_resolve, reject) => {
+      rejectSwitchSave = reject;
+    });
+    const savePetPlacement = vi.fn().mockResolvedValue(undefined);
+    const value = realAuthorityFixture({
+      blocked: () => blocked,
+      userMoving: () => false,
+      getBinding: () => binding,
+      getPetPlacementState: vi.fn(async (characterId: string) => ({
+        kind: 'ready' as const,
+        placement: characterId === 'pet-a' ? {
+          characterId: 'pet-a', scale: 1,
+          footAnchorDip: { x: 399, y: 387.2 }, displayId: 'display-1'
+        } : null
+      })),
+      savePetPlacement
+    });
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+    for (let step = 0; step < 5; step += 1) await value.coordinator.stepScale({ step: -1 });
+    blocked = true;
+    savePetPlacement.mockImplementationOnce(() => switchSaveGate);
+    const saveCallsBeforeSwitch = savePetPlacement.mock.calls.length;
+    binding = {
+      ...binding, generation: 2, manifest: realManifest(0.5, 'pet-b'), actionRevision: 4
+    };
+    const switching = value.coordinator.refreshBinding();
+    await vi.waitFor(() => expect(savePetPlacement).toHaveBeenCalledTimes(saveCallsBeforeSwitch + 1));
+    const duringFailure = value.coordinator.stepScale({ step: 1 });
+    rejectSwitchSave(new Error('WRITE_FAILED'));
+    await expect(switching).rejects.toThrow('WRITE_FAILED');
+    await duringFailure;
+
+    const afterRollback = value.coordinator.stepScale({ step: 1 });
+    await afterRollback;
+    blocked = false;
+    await value.coordinator.resumePendingLayout();
+
+    expect(value.authority.getSnapshot()).toMatchObject({ characterId: 'pet-b', scale: 1.2 });
+    expect(value.coordinator.inspectRelativeGeometry()?.scaleTick).toBe(12);
+  });
+
   test('角色切换 ready placement 遇一次 bounds 量化且无 viewport 事件时自行 settled', async () => {
     let binding: CharacterGeometryBinding = {
       generation: 1, manifest: realManifest(), skinId: 'default-skin',

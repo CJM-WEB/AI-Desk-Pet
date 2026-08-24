@@ -527,47 +527,61 @@ async function createApplicationWindows(
   });
   if (e2eBoundary) {
     inspectPetGeometryForE2e = async () => {
+      if (petGeometry.isLayoutInFlight()) return null;
       const relative = petGeometry.inspectRelativeGeometry();
       const snapshot = petGeometryAuthority.getSnapshot();
-      if (!relative || !snapshot || relative.revision !== snapshot.revision || pet.isDestroyed()) {
+      if (
+        !relative
+        || !relative.settled
+        || !snapshot
+        || relative.revision !== snapshot.revision
+        || pet.isDestroyed()
+      ) {
         return null;
       }
-      const state = await settingsStore.getPetPlacementState(snapshot.characterId);
+      const actualBounds = pet.getBounds();
       const currentSnapshot = petGeometryAuthority.getSnapshot();
       const currentRelative = petGeometry.inspectRelativeGeometry();
       if (
-        !currentSnapshot
+        petGeometry.isLayoutInFlight()
+        || !currentSnapshot
         || !currentRelative
+        || !currentRelative.settled
         || currentSnapshot.characterId !== snapshot.characterId
         || currentSnapshot.revision !== snapshot.revision
         || currentRelative.revision !== relative.revision
+        || currentRelative.revision !== currentSnapshot.revision
+        || actualBounds.width !== currentSnapshot.windowBoundsDip.width
+        || actualBounds.height !== currentSnapshot.windowBoundsDip.height
       ) return null;
-      const actualBounds = pet.getBounds();
-      const footOffsetInWindowDip = {
-        x: currentRelative.viewportInWindowDip.x + currentRelative.footOffsetInViewportDip.x,
-        y: currentRelative.viewportInWindowDip.y + currentRelative.footOffsetInViewportDip.y
+      if (actualBounds.width <= 0 || actualBounds.height <= 0) return null;
+      const visual = currentSnapshot.visualBoundsInWindowDip;
+      const globalVisual = {
+        x: actualBounds.x + visual.x,
+        y: actualBounds.y + visual.y,
+        width: visual.width,
+        height: visual.height
       };
-      const placement = state.kind === 'ready' ? state.placement : null;
+      const boundsEpsilonDip = 1e-6;
+      const outOfBounds = !screen.getAllDisplays().some(display => (
+        globalVisual.x >= display.workArea.x - boundsEpsilonDip
+        && globalVisual.y >= display.workArea.y - boundsEpsilonDip
+        && globalVisual.x + globalVisual.width <= display.workArea.x + display.workArea.width + boundsEpsilonDip
+        && globalVisual.y + globalVisual.height <= display.workArea.y + display.workArea.height + boundsEpsilonDip
+      ));
+      const ratio = (value: number, size: number): number => (
+        Number((value / size).toFixed(6))
+      );
       return {
         revision: currentRelative.revision,
         scaleTick: currentRelative.scaleTick,
-        settled: currentRelative.settled,
-        viewportInWindowDip: currentRelative.viewportInWindowDip,
-        footOffsetInViewportDip: currentRelative.footOffsetInViewportDip,
-        windowSizeDip: { width: actualBounds.width, height: actualBounds.height },
-        settingsPlacementMatchesAuthority: Boolean(placement
-          && placement.characterId === currentSnapshot.characterId
-          && placement.scale === currentSnapshot.scale
-          && placement.displayId === currentSnapshot.displayId
-          && placement.footAnchorDip.x === currentSnapshot.footAnchorDip.x
-          && placement.footAnchorDip.y === currentSnapshot.footAnchorDip.y),
-        actualWindowBoundsMatchAuthority: actualBounds.x === currentSnapshot.windowBoundsDip.x
-          && actualBounds.y === currentSnapshot.windowBoundsDip.y
-          && actualBounds.width === currentSnapshot.windowBoundsDip.width
-          && actualBounds.height === currentSnapshot.windowBoundsDip.height,
-        actualOriginMatchesFootOffset:
-          actualBounds.x === currentSnapshot.footAnchorDip.x - footOffsetInWindowDip.x
-          && actualBounds.y === currentSnapshot.footAnchorDip.y - footOffsetInWindowDip.y
+        visualBoundsInWindowRatio: {
+          x: ratio(visual.x, actualBounds.width),
+          y: ratio(visual.y, actualBounds.height),
+          width: ratio(visual.width, actualBounds.width),
+          height: ratio(visual.height, actualBounds.height)
+        },
+        outOfBounds
       };
     };
   }

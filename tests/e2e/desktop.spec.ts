@@ -223,13 +223,8 @@ type ElectronFixtureModule = {
       geometry: {
         revision: number;
         scaleTick: number;
-        settled: boolean;
-        viewportInWindowDip: { x: number; y: number; width: number; height: number };
-        footOffsetInViewportDip: { x: number; y: number };
-        windowSizeDip: { width: number; height: number };
-        settingsPlacementMatchesAuthority: boolean;
-        actualWindowBoundsMatchAuthority: boolean;
-        actualOriginMatchesFootOffset: boolean;
+        visualBoundsInWindowRatio: { x: number; y: number; width: number; height: number };
+        outOfBounds: boolean;
       } | null;
     }>;
     getMainDescendantProcesses(): Promise<Array<{
@@ -376,6 +371,73 @@ async function loadElectronFixtureModule(): Promise<ElectronFixtureModule> {
 }
 
 type AppFixture = Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+
+type PetPlacementForE2e = Readonly<{
+  characterId: string;
+  scale: number;
+  footAnchorDip: Readonly<{ x: number; y: number }>;
+  displayId: string;
+}>;
+
+/** 在 Renderer 内组合真实窗口、Canvas 与当前动作，只向测试进程返回脚底一致布尔值。 */
+async function renderedFootMatchesPlacement(
+  page: Page,
+  placement: PetPlacementForE2e,
+  expectedActionId?: string
+): Promise<boolean> {
+  return page.evaluate(async input => {
+    const [runtime, motion, behavior] = await Promise.all([
+      window.myself.getCharacterRuntimeSnapshot(),
+      window.myself.getCharacterMotionSnapshot(),
+      window.myself.getCharacterBehaviorProbe?.()
+    ]);
+    const actionId = input.expectedActionId ?? behavior?.actionId;
+    const action = runtime?.manifest.states
+      .flatMap(state => state.actions)
+      .find(candidate => candidate.id === actionId);
+    const canvas = document.querySelector<HTMLCanvasElement>(
+      '.character-player-host canvas'
+    );
+    if (!action || !canvas || action.frames.length === 0) return false;
+
+    const canvasBounds = canvas.getBoundingClientRect();
+    const sourceWidth = Math.max(1, ...action.frames.map(frame => frame.width));
+    const sourceHeight = Math.max(1, ...action.frames.map(frame => frame.height));
+    const fitScale = Math.min(
+      canvasBounds.width / sourceWidth,
+      canvasBounds.height / sourceHeight
+    );
+    const fittedWidth = sourceWidth * fitScale;
+    const fittedHeight = sourceHeight * fitScale;
+    const ground = motion.direction === 'left'
+      ? { x: 1 - action.anchors.ground.x, y: action.anchors.ground.y }
+      : action.anchors.ground;
+    const clamp = (value: number, minimum: number, maximum: number): number => (
+      Math.min(maximum, Math.max(minimum, value))
+    );
+    const groundInCanvas = {
+      x: clamp(
+        canvasBounds.width / 2,
+        fittedWidth * ground.x,
+        canvasBounds.width - fittedWidth * (1 - ground.x)
+      ),
+      y: clamp(
+        canvasBounds.height,
+        fittedHeight * ground.y,
+        canvasBounds.height - fittedHeight * (1 - ground.y)
+      )
+    };
+    const toleranceDip = 1.1;
+    return Math.abs(
+      window.screenX + canvasBounds.left + groundInCanvas.x - input.footAnchorDip.x
+    ) <= toleranceDip && Math.abs(
+      window.screenY + canvasBounds.top + groundInCanvas.y - input.footAnchorDip.y
+    ) <= toleranceDip;
+  }, {
+    footAnchorDip: placement.footAnchorDip,
+    expectedActionId
+  });
+}
 
 /** 统一从当前 Electron 生命周期中查找 Renderer，避免旧窗口被重启后的场景复用。 */
 function rendererPages(fixture: AppFixture): Page[] {
@@ -2279,6 +2341,558 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       await pet.keyboard.press('Escape');
     } finally {
       await fixture.dispose();
+    }
+  });
+});
+
+test.describe('视觉几何与滚轮缩放', () => {
+  type Placement = PetPlacementForE2e;
+  type GeometryProbe = NonNullable<Awaited<ReturnType<AppFixture['getMainE2eState']>>['geometry']>;
+  type PointRatio = Readonly<{ x: number; y: number }>;
+  type WorkAreaEdge = 'left' | 'right' | 'top' | 'bottom';
+
+  const createGeometryFixture = async (apiKey: string): Promise<AppFixture> => (
+    (await loadElectronFixtureModule()).createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    })
+  );
+
+  const waitForReadyPet = async (
+    fixture: AppFixture,
+    timeout = 20_000
+  ): Promise<Page> => {
+    const pet = await waitForRendererPage(fixture, 'pet', timeout);
+    await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready', {
+      timeout
+    });
+    return pet;
+  };
+
+  const configureGeometryProvider = async (
+    pet: Page,
+    input: Readonly<{ baseUrl: string; apiKey: string; openChat: boolean }>
+  ): Promise<void> => {
+    await pet.evaluate(async ({ baseUrl, apiKey, openChat }) => {
+      await window.myself.saveProviderProfile({
+        profile: {
+          id: 'visual-geometry-e2e', displayName: '视觉几何 E2E', mode: 'custom',
+          protocol: 'openai-compatible', baseUrl, modelId: 'visual-geometry-model',
+          additionalParameters: {}, capabilities: ['chat', 'tools']
+        },
+        secret: apiKey,
+        persistSecret: true
+      });
+      await window.myself.saveModelRoute({
+        primaryProfileId: 'visual-geometry-e2e',
+        chatProfileId: 'visual-geometry-e2e',
+        agentProfileId: 'visual-geometry-e2e',
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      });
+      await window.myself.savePrivacySettings({
+        dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+        longTermMemory: false,
+        proactivityMode: 'passive'
+      });
+      if (openChat) await window.myself.openChat();
+    }, input);
+  };
+
+  const readPlacement = async (
+    userDataDirectory: string,
+    characterId: string
+  ): Promise<Placement | null> => {
+    try {
+      const settings = JSON.parse(
+        await readFile(join(userDataDirectory, 'settings.json'), 'utf8')
+      ) as {
+        petPlacementState?: {
+          kind?: string;
+          placements?: Placement[];
+        };
+      };
+      if (settings.petPlacementState?.kind !== 'ready') return null;
+      return settings.petPlacementState.placements?.find(
+        placement => placement.characterId === characterId
+      ) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const sameFoot = (left: Placement | null, right: Placement | null): boolean => Boolean(
+    left && right
+    && left.footAnchorDip.x === right.footAnchorDip.x
+    && left.footAnchorDip.y === right.footAnchorDip.y
+  );
+
+  const waitForGeometry = async (fixture: AppFixture): Promise<GeometryProbe> => {
+    await expect.poll(async () => (await fixture.getMainE2eState()).geometry).not.toBeNull();
+    const geometry = (await fixture.getMainE2eState()).geometry;
+    if (!geometry) throw new Error('缺少视觉几何 E2E 探针');
+    return geometry;
+  };
+
+  const movePetToWorkAreaCenter = async (
+    fixture: AppFixture,
+    pet: Page,
+    characterId: string
+  ): Promise<Placement> => {
+    const before = await readPlacement(fixture.userDataDirectory, characterId);
+    await pet.evaluate(() => {
+      const currentScreen = window.screen as Screen & { availLeft?: number; availTop?: number };
+      const availableLeft = currentScreen.availLeft ?? 0;
+      const availableTop = currentScreen.availTop ?? 0;
+      window.moveTo(
+        Math.round(availableLeft + (currentScreen.availWidth - window.outerWidth) / 2),
+        Math.round(availableTop + (currentScreen.availHeight - window.outerHeight) / 2)
+      );
+    });
+    await expect.poll(async () => {
+      const current = await readPlacement(fixture.userDataDirectory, characterId);
+      return Boolean(current && (!before || !sameFoot(current, before)));
+    }).toBe(true);
+    await expect.poll(async () => (
+      await fixture.getMainE2eState()
+    ).geometry?.outOfBounds).toBe(false);
+    const centered = await readPlacement(fixture.userDataDirectory, characterId);
+    if (!centered) throw new Error('桌宠移动到工作区中心后没有持久脚底');
+    return centered;
+  };
+
+  /** 复用正式 alpha hit，不从 Canvas 或几何摘要猜测可见像素。 */
+  const findVisiblePointRatio = async (
+    fixture: AppFixture,
+    pet: Page
+  ): Promise<PointRatio> => {
+    const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+    await shell.evaluate(element => {
+      element.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 1,
+        clientY: 1,
+        pointerId: 61
+      }));
+    });
+    await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+      passthrough: true
+    });
+    const viewport = await shell.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    const candidates: Array<{ x: number; y: number }> = [];
+    for (let y = 6; y < viewport.height; y += 8) {
+      for (let x = 6; x < viewport.width; x += 8) candidates.push({ x, y });
+    }
+    candidates.sort((left, right) => (
+      Math.hypot(left.x - viewport.width / 2, left.y - viewport.height / 2)
+      - Math.hypot(right.x - viewport.width / 2, right.y - viewport.height / 2)
+    ));
+    for (const { x, y } of candidates) {
+      await shell.evaluate((element, point) => {
+        element.dispatchEvent(new PointerEvent('pointermove', {
+          bubbles: true,
+          cancelable: true,
+          clientX: point.x,
+          clientY: point.y,
+          pointerId: 61
+        }));
+      }, { x, y });
+      // 穿透 IPC 跨 Renderer/Main 串行确认，不能把上一候选的迟到状态归给当前像素。
+      await pet.waitForTimeout(50);
+      if (!(await fixture.getPetInteractionProbe()).passthrough) {
+        return { x: x / viewport.width, y: y / viewport.height };
+      }
+    }
+    throw new Error('官方默认角色没有可供滚轮验收的 alpha 命中像素');
+  };
+
+  const hoverVisiblePoint = async (
+    fixture: AppFixture,
+    pet: Page,
+    ratio: PointRatio
+  ): Promise<void> => {
+    const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+    const point = await shell.evaluate((element, normalized) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        x: Math.max(1, Math.min(rect.width - 1, rect.width * normalized.x)),
+        y: Math.max(1, Math.min(rect.height - 1, rect.height * normalized.y))
+      };
+    }, ratio);
+    await shell.evaluate((element, current) => {
+      element.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true,
+        cancelable: true,
+        clientX: current.x,
+        clientY: current.y,
+        pointerId: 61
+      }));
+    }, point);
+    await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+      passthrough: false
+    });
+    await pet.mouse.move(point.x, point.y);
+    await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+      passthrough: false
+    });
+  };
+
+  const wheelToTick = async (input: Readonly<{
+    fixture: AppFixture;
+    pet: Page;
+    characterId: string;
+    baselineFoot: Placement;
+    targetTick: number;
+    wheelMode?: 'mouse' | 'preload';
+  }>): Promise<void> => {
+    let geometry = await waitForGeometry(input.fixture);
+    const step = input.targetTick > geometry.scaleTick ? 1 : -1;
+    while (geometry.scaleTick !== input.targetTick) {
+      const expectedTick = geometry.scaleTick + step;
+      const currentPointRatio = await findVisiblePointRatio(input.fixture, input.pet);
+      await hoverVisiblePoint(input.fixture, input.pet, currentPointRatio);
+      const deltaY = step > 0 ? -100 : 100;
+      if (input.wheelMode === 'preload') {
+        await input.pet.evaluate(scaleStep => window.myself.stepPetScale({
+          step: scaleStep
+        }), step);
+      } else {
+        await input.pet.mouse.wheel(0, deltaY);
+      }
+      // 状态文件按 20ms 发布；等待当前窗口事务结束，避免读取跨 revision 的中间帧。
+      await input.pet.waitForTimeout(100);
+      await expect.poll(async () => (
+        await input.fixture.getMainE2eState()
+      ).geometry?.scaleTick).toBe(expectedTick);
+      await expect.poll(async () => (
+        await readPlacement(input.fixture.userDataDirectory, input.characterId)
+      )?.scale).toBe(expectedTick / 10);
+      const placement = await readPlacement(
+        input.fixture.userDataDirectory,
+        input.characterId
+      );
+      expect(sameFoot(placement, input.baselineFoot)).toBe(true);
+      geometry = await waitForGeometry(input.fixture);
+      expect(geometry.outOfBounds).toBe(false);
+      // 四字段 Main 探针先于 Renderer 新 Canvas/alpha port 的下一帧可用，逐格验收需等真实画面接棒。
+      await input.pet.waitForTimeout(250);
+    }
+  };
+
+  /** 只把全局窗口事实留在 Renderer 内组合，测试进程仅接收贴边布尔。 */
+  const touchesWorkAreaEdge = async (
+    pet: Page,
+    geometry: GeometryProbe,
+    edge: WorkAreaEdge
+  ): Promise<boolean> => pet.evaluate(({ visual, targetEdge }) => {
+    const currentScreen = window.screen as Screen & { availLeft?: number; availTop?: number };
+    const availableLeft = currentScreen.availLeft ?? 0;
+    const availableTop = currentScreen.availTop ?? 0;
+    const availableRight = availableLeft + currentScreen.availWidth;
+    const availableBottom = availableTop + currentScreen.availHeight;
+    const visualLeft = window.screenX + visual.x * window.outerWidth;
+    const visualTop = window.screenY + visual.y * window.outerHeight;
+    const visualRight = visualLeft + visual.width * window.outerWidth;
+    const visualBottom = visualTop + visual.height * window.outerHeight;
+    const toleranceDip = 1.1;
+    if (targetEdge === 'left') return Math.abs(visualLeft - availableLeft) <= toleranceDip;
+    if (targetEdge === 'right') return Math.abs(visualRight - availableRight) <= toleranceDip;
+    if (targetEdge === 'top') return Math.abs(visualTop - availableTop) <= toleranceDip;
+    return Math.abs(visualBottom - availableBottom) <= toleranceDip;
+  }, {
+    visual: geometry.visualBoundsInWindowRatio,
+    targetEdge: edge
+  });
+
+  test('视觉几何与滚轮缩放：alpha 命中真实 wheel 后在 50%–200% 封顶并保持脚底', async () => {
+    test.setTimeout(180_000);
+    const fixture = await createGeometryFixture(runtimeDiagnosticKey());
+    try {
+      const pet = await waitForReadyPet(fixture);
+      await expect.poll(async () => readPlacement(
+        fixture.userDataDirectory,
+        'builtin-default'
+      )).not.toBeNull();
+      const baseline = await movePetToWorkAreaCenter(fixture, pet, 'builtin-default');
+      const initialGeometry = await waitForGeometry(fixture);
+      expect(initialGeometry).toMatchObject({ scaleTick: 10, outOfBounds: false });
+
+      const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+      await shell.evaluate(element => {
+        element.dispatchEvent(new PointerEvent('pointermove', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 1,
+          clientY: 1,
+          pointerId: 61
+        }));
+      });
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+        passthrough: true
+      });
+      await pet.mouse.move(1, 1);
+      await pet.mouse.wheel(0, -100);
+      await pet.waitForTimeout(300);
+      expect((await waitForGeometry(fixture)).scaleTick).toBe(10);
+
+      await wheelToTick({
+        fixture,
+        pet,
+        characterId: 'builtin-default',
+        baselineFoot: baseline,
+        targetTick: 11
+      });
+      await wheelToTick({
+        fixture,
+        pet,
+        characterId: 'builtin-default',
+        baselineFoot: baseline,
+        targetTick: 20,
+        wheelMode: 'preload'
+      });
+      const maximum = await waitForGeometry(fixture);
+      await pet.evaluate(() => window.myself.stepPetScale({ step: 1 }));
+      await pet.waitForTimeout(300);
+      expect(await waitForGeometry(fixture)).toMatchObject({
+        revision: maximum.revision,
+        scaleTick: 20,
+        outOfBounds: false
+      });
+
+      await wheelToTick({
+        fixture,
+        pet,
+        characterId: 'builtin-default',
+        baselineFoot: baseline,
+        targetTick: 5,
+        wheelMode: 'preload'
+      });
+      const minimum = await waitForGeometry(fixture);
+      await pet.evaluate(() => window.myself.stepPetScale({ step: -1 }));
+      await pet.waitForTimeout(300);
+      expect(await waitForGeometry(fixture)).toMatchObject({
+        revision: minimum.revision,
+        scaleTick: 5,
+        outOfBounds: false
+      });
+      expect(sameFoot(
+        await readPlacement(fixture.userDataDirectory, 'builtin-default'),
+        baseline
+      )).toBe(true);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test('视觉几何与滚轮缩放：两个角色分别持久化 scale 并跨 restart 恢复', async () => {
+    test.setTimeout(180_000);
+    const fixture = await createGeometryFixture(runtimeDiagnosticKey());
+    try {
+      let pet = await waitForReadyPet(fixture);
+      const builtinBaseline = await readPlacement(fixture.userDataDirectory, 'builtin-default');
+      if (!builtinBaseline) throw new Error('缺少官方默认角色初始位置');
+      await wheelToTick({
+        fixture,
+        pet,
+        characterId: 'builtin-default',
+        baselineFoot: builtinBaseline,
+        targetTick: 5,
+        wheelMode: 'react-event'
+      });
+
+      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
+      expect(imported.kind).toBe('imported');
+      if (imported.kind !== 'imported') return;
+      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), imported.characterId);
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry?.scaleTick).toBe(10);
+      const importedBaseline = await movePetToWorkAreaCenter(
+        fixture,
+        pet,
+        imported.characterId
+      );
+      await wheelToTick({
+        fixture,
+        pet,
+        characterId: imported.characterId,
+        baselineFoot: importedBaseline,
+        targetTick: 13,
+        wheelMode: 'react-event'
+      });
+
+      await pet.evaluate(() => window.myself.activateCharacter('builtin-default'));
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry?.scaleTick).toBe(5);
+      await fixture.restart();
+      pet = await waitForReadyPet(fixture);
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
+        scaleTick: 5,
+        outOfBounds: false
+      });
+
+      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), imported.characterId);
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
+        scaleTick: 13,
+        outOfBounds: false
+      });
+      await fixture.restart();
+      pet = await waitForReadyPet(fixture);
+      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
+        scaleTick: 13,
+        outOfBounds: false
+      });
+      expect((await readPlacement(
+        fixture.userDataDirectory,
+        'builtin-default'
+      ))?.scale).toBe(0.5);
+      expect((await readPlacement(
+        fixture.userDataDirectory,
+        imported.characterId
+      ))?.scale).toBe(1.3);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test('视觉几何与滚轮缩放：官方动作切换保持持久脚底且四边 region 终点贴边', async () => {
+    test.setTimeout(180_000);
+    const provider = await startProviderServer([
+      {
+        response: {
+          type: 'text',
+          text: '庆祝动作已播放',
+          structured_output: {
+            behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: 'success' } }
+          }
+        }
+      },
+      ...[
+        ['已到左边', {}],
+        ['已到右边', {}],
+        ['已到上边', {}],
+        ['已到下边', {}]
+      ].map(([text, structured_output]) => ({
+        response: { type: 'text' as const, text: String(text), structured_output }
+      }))
+    ]);
+    const fixture = await createGeometryFixture(provider.apiKey);
+    try {
+      let pet = await waitForReadyPet(fixture);
+      let chat = await waitForRendererPage(fixture, 'chat');
+      await configureGeometryProvider(pet, {
+        baseUrl: provider.baseUrl, apiKey: provider.apiKey, openChat: true
+      });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      const baselinePlacement = await movePetToWorkAreaCenter(
+        fixture,
+        pet,
+        'builtin-default'
+      );
+      const baselineGeometry = await waitForGeometry(fixture);
+      const sampledSameFoot: boolean[] = [];
+      const sampledRenderedFoot: boolean[] = [];
+      const sampledOutOfBounds: boolean[] = [];
+      let sampling = true;
+      const sampler = (async (): Promise<void> => {
+        while (sampling) {
+          const placement = await readPlacement(fixture.userDataDirectory, 'builtin-default');
+          if (placement) {
+            sampledSameFoot.push(sameFoot(placement, baselinePlacement));
+            sampledRenderedFoot.push(await renderedFootMatchesPlacement(pet, placement));
+          }
+          const geometry = (await fixture.getMainE2eState()).geometry;
+          if (geometry) sampledOutOfBounds.push(geometry.outOfBounds);
+          await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 20));
+        }
+      })();
+      try {
+        await submitChatMessage(chat, '庆祝一下');
+        await expect(chat.getByText('庆祝动作已播放')).toBeVisible();
+        await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+          actionId: 'success-main',
+          playbackStatus: expect.stringMatching(/^(started|completed)$/u)
+        });
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).geometry?.revision).toBeGreaterThan(baselineGeometry.revision);
+        await pet.waitForTimeout(300);
+      } finally {
+        sampling = false;
+        await sampler;
+      }
+      expect(sampledSameFoot.length).toBeGreaterThan(0);
+      expect(sampledSameFoot.every(Boolean)).toBe(true);
+      expect(sampledRenderedFoot.length).toBeGreaterThan(0);
+      expect(sampledRenderedFoot.every(Boolean)).toBe(true);
+      expect(sampledOutOfBounds.length).toBeGreaterThan(0);
+      expect(sampledOutOfBounds.every(value => !value)).toBe(true);
+      await expect.poll(() => renderedFootMatchesPlacement(
+        pet,
+        baselinePlacement,
+        'success-main'
+      )).toBe(true);
+
+      // success-main 按角色契约持续到被打断；重启同一隔离 userData 后再独立验收四边运动。
+      await fixture.restart();
+      pet = await waitForReadyPet(fixture);
+      chat = await waitForRendererPage(fixture, 'chat', 15_000);
+      await configureGeometryProvider(pet, {
+        baseUrl: provider.baseUrl, apiKey: provider.apiKey, openChat: false
+      });
+      const movableCharacter = await pet.evaluate(async () => window.myself.importCharacterPackage());
+      expect(movableCharacter.kind).toBe('imported');
+      if (movableCharacter.kind !== 'imported') return;
+      await pet.evaluate(
+        characterId => window.myself.activateCharacter(characterId),
+        movableCharacter.characterId
+      );
+      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+        actionId: 'safe-idle-action'
+      });
+      await pet.evaluate(() => window.myself.openChat());
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      const edgeCases = [
+        { prompt: '去左边', reply: '已到左边', edge: 'left' },
+        { prompt: '去右边', reply: '已到右边', edge: 'right' },
+        { prompt: '去上边', reply: '已到上边', edge: 'top' },
+        { prompt: '去下边', reply: '已到下边', edge: 'bottom' }
+      ] as const;
+      for (const edgeCase of edgeCases) {
+        await test.step(`移动到${edgeCase.edge}边界`, async () => {
+          await movePetToWorkAreaCenter(fixture, pet, movableCharacter.characterId);
+          const beforeMotion = await fixture.getCharacterMotionDeltaProbe();
+          await submitChatMessage(chat, edgeCase.prompt);
+          await expect(chat.getByText(edgeCase.reply)).toBeVisible();
+          await expect.poll(async () => {
+            const afterMotion = await fixture.getCharacterMotionDeltaProbe();
+            return afterMotion.moved && (
+              afterMotion.horizontal !== beforeMotion.horizontal
+              || afterMotion.vertical !== beforeMotion.vertical
+            );
+          }).toBe(true);
+          await expect.poll(() => pet.evaluate(async () => (
+            await window.myself.getCharacterMotionSnapshot()
+          ).moving), { timeout: 30_000 }).toBe(false);
+          await expect.poll(async () => {
+            const geometry = await waitForGeometry(fixture);
+            if (geometry.outOfBounds) return false;
+            return touchesWorkAreaEdge(pet, geometry, edgeCase.edge);
+          }, { timeout: 15_000 }).toBe(true);
+          expect((await waitForGeometry(fixture)).outOfBounds).toBe(false);
+        });
+      }
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+    } finally {
+      await fixture.dispose();
+      await provider.close();
     }
   });
 });
@@ -5909,12 +6523,7 @@ test.describe('真实桌宠位置重启恢复', () => {
   test('移动并等待持久化后使用同一 userData 重启恢复位置', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
-    type Placement = Readonly<{
-      characterId: string;
-      scale: number;
-      footAnchorDip: Readonly<{ x: number; y: number }>;
-      displayId: string;
-    }>;
+    type Placement = PetPlacementForE2e;
     const readPlacementAt = async (directory: string): Promise<Placement | null> => {
       try {
         const settings = JSON.parse(
@@ -5937,6 +6546,20 @@ test.describe('真实桌宠位置重启恢复', () => {
         return null;
       }
     };
+    const sameFoot = (left: Placement | null, right: Placement | null): boolean => Boolean(
+      left && right
+      && left.footAnchorDip.x === right.footAnchorDip.x
+      && left.footAnchorDip.y === right.footAnchorDip.y
+    );
+    const sameScale = (left: Placement | null, right: Placement | null): boolean => Boolean(
+      left && right && left.scale === right.scale
+    );
+    const sameDisplay = (left: Placement | null, right: Placement | null): boolean => Boolean(
+      left && right && left.displayId === right.displayId
+    );
+    const placementChanged = (left: Placement | null, right: Placement | null): boolean => Boolean(
+      left && right && !sameFoot(left, right)
+    );
     let savedPlacementAfterShutdown: Placement | null = null;
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
@@ -5960,10 +6583,8 @@ test.describe('真实桌宠位置重启恢复', () => {
       );
       await expect.poll(readPlacement, { timeout: 20_000 }).not.toBeNull();
       await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
-        settled: true,
-        settingsPlacementMatchesAuthority: true,
-        actualWindowBoundsMatchAuthority: true,
-        actualOriginMatchesFootOffset: true
+        scaleTick: 10,
+        outOfBounds: false
       });
       const initialPlacement = await readPlacement();
       await petPage.evaluate(({ offsetX, offsetY }) => {
@@ -5985,19 +6606,24 @@ test.describe('真实桌宠位置重启恢复', () => {
       }, { offsetX: 64, offsetY: 48 });
       await expect.poll(async () => {
         const current = await readPlacement();
-        return current !== null && JSON.stringify(current) !== JSON.stringify(initialPlacement);
+        return placementChanged(initialPlacement, current);
       }, { timeout: 20_000 }).toBe(true);
       await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
-        settingsPlacementMatchesAuthority: true,
-        actualWindowBoundsMatchAuthority: true
+        outOfBounds: false
       });
+      const movedPlacement = await readPlacement();
+      if (!movedPlacement) throw new Error('用户移动后缺少持久位置');
+      await expect.poll(() => renderedFootMatchesPlacement(
+        petPage,
+        movedPlacement
+      )).toBe(true);
       const petClosed = petPage.waitForEvent('close');
       await petPage.evaluate(() => {
         void window.myself.quit();
       });
       await petClosed;
       await fixture.restart();
-      expect(savedPlacementAfterShutdown).not.toBeNull();
+      expect(Boolean(savedPlacementAfterShutdown)).toBe(true);
       const restartedPetPage = await waitForRendererPage(fixture, 'pet');
       await expect(restartedPetPage.locator('.character-player')).toHaveAttribute(
         'data-status',
@@ -6007,16 +6633,18 @@ test.describe('真实桌宠位置重启恢复', () => {
       await expect.poll(async () => (await fixture.getMainE2eState()).geometry, {
         timeout: 15_000
       }).toMatchObject({
-        settled: true,
-        settingsPlacementMatchesAuthority: true,
-        actualWindowBoundsMatchAuthority: true,
-        actualOriginMatchesFootOffset: true
+        scaleTick: 10,
+        outOfBounds: false
       });
       const restoredPlacement = await readPlacement();
-      expect(restoredPlacement?.footAnchorDip.x).toBe(savedPlacementAfterShutdown?.footAnchorDip.x);
-      expect(restoredPlacement?.footAnchorDip.y).toBe(savedPlacementAfterShutdown?.footAnchorDip.y);
-      expect(restoredPlacement?.scale).toBe(savedPlacementAfterShutdown?.scale);
-      expect(restoredPlacement?.displayId).toBe(savedPlacementAfterShutdown?.displayId);
+      expect(sameFoot(restoredPlacement, savedPlacementAfterShutdown)).toBe(true);
+      expect(sameScale(restoredPlacement, savedPlacementAfterShutdown)).toBe(true);
+      expect(sameDisplay(restoredPlacement, savedPlacementAfterShutdown)).toBe(true);
+      if (!savedPlacementAfterShutdown) throw new Error('重启前缺少持久位置');
+      await expect.poll(() => renderedFootMatchesPlacement(
+        restartedPetPage,
+        savedPlacementAfterShutdown
+      )).toBe(true);
 
       const diagnostics = fixture.logs.join('\n');
       expect(diagnostics).not.toMatch(/myself-e2e-[a-f0-9]{48}/u);

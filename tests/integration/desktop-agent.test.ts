@@ -53,6 +53,59 @@ import {
   type ProviderServerFixture,
   type ProviderStep
 } from '../fixtures/provider-server';
+import { parseMainE2eState } from '../fixtures/electron-app';
+
+const strictGeometryState = () => ({
+  revision: 1,
+  petWindowVisible: true,
+  petWindowAlwaysOnTop: true,
+  processedExplorerEventRevision: 0,
+  processedExplorerEvent: null,
+  bridge: { state: 'ready', observing: true, polling: true, eventRevision: 1 },
+  layer: { status: 'active', activationRevision: 1, errorRevision: 0 },
+  geometry: {
+    revision: 2,
+    scaleTick: 10,
+    visualBoundsInWindowRatio: { x: 0.1, y: 0.2, width: 0.7, height: 0.75 },
+    outOfBounds: false
+  }
+});
+
+describe('E2E 几何探针最小披露边界', () => {
+  test('只接受严格四字段几何摘要', () => {
+    expect(parseMainE2eState(strictGeometryState()).geometry).toEqual(
+      strictGeometryState().geometry
+    );
+  });
+
+  test('拒绝旧九字段几何契约', () => {
+    const state = strictGeometryState();
+    state.geometry = {
+      revision: 2,
+      scaleTick: 10,
+      settled: true,
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 },
+      footOffsetInViewportDip: { x: 79, y: 174 },
+      windowSizeDip: { width: 180, height: 220 },
+      settingsPlacementMatchesAuthority: true,
+      actualWindowBoundsMatchAuthority: true,
+      actualOriginMatchesFootOffset: true
+    } as unknown as typeof state.geometry;
+
+    expect(() => parseMainE2eState(state)).toThrow('ELECTRON_E2E_MAIN_STATE_INVALID');
+  });
+
+  test.each([
+    ['footAnchorDip', { x: 390, y: 400 }],
+    ['windowBoundsDip', { x: 300, y: 200, width: 180, height: 220 }],
+    ['displayId', 'display-1']
+  ] as const)('拒绝额外敏感字段 %s', (field, value) => {
+    const state = strictGeometryState();
+    Object.assign(state.geometry, { [field]: value });
+
+    expect(() => parseMainE2eState(state)).toThrow('ELECTRON_E2E_MAIN_STATE_INVALID');
+  });
+});
 
 const toolNames = [
   'builtin.files.list_files',

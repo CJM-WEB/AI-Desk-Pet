@@ -213,13 +213,20 @@ type StoredPetPlacement = Readonly<{
 
 **Files:**
 
+- Modify: `apps/desktop/src/main/index.ts`
+- Modify: `apps/desktop/src/main/windows/pet-geometry-coordinator.ts`
+- Modify: `apps/desktop/tests/e2e-boundary.test.ts`
+- Modify: `apps/desktop/tests/pet-geometry-coordinator.test.ts`
 - Modify: `tests/e2e/desktop.spec.ts`
 - Modify: `tests/fixtures/electron-app.ts`
+- Modify: `tests/integration/desktop-agent.test.ts`
 - Create: `docs/operations/pet-visual-geometry-acceptance.md`
 
-- [ ] E2E 覆盖 alpha 命中滚轮、50/200 封顶、脚底稳定、角色切换持久、四边贴边、动作切换无抖动。
-- [ ] 测试探针只返回 scale 档位、几何 revision、可见矩形相对窗口的归一化摘要和“是否越界”布尔值，不返回屏幕绝对坐标。
-- [ ] 运行阶段固定门和命名 Electron 场景；提交 `test: 验收桌宠视觉几何与缩放`。
+- [x] E2E 覆盖 alpha 命中滚轮、50/200 封顶、脚底持续稳定、角色切换持久和四边贴边；动作切换的逐帧主观抖动保留人工目视验收，不由离散探针越界证明。
+- [x] 测试探针只返回 scale 档位、几何 revision、可见矩形相对窗口的归一化摘要和“是否越界”布尔值，不返回屏幕绝对坐标。
+- [x] 运行阶段固定门和命名 Electron 场景；提交 `test: 验收桌宠视觉几何与缩放`。
+
+实施中的 RED 证据补充：角色切换测试先复现了新角色错误继承旧角色缩放档位；并发测试随后复现了角色切换事务期间滚轮请求丢失。最小实现统一以目标角色的已保存档位或默认 `1.0` 为基线，并按请求 revision 保留切换期间的新滚轮偏移。
 
 ## 阶段命令
 

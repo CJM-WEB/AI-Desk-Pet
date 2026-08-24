@@ -413,4 +413,44 @@ describe('Main E2E 安全边界', () => {
       /MYSELF_E2E|E2E_USER_DATA|E2E_AUTHORIZED_ROOT|E2E_RECYCLE_BIN|FAKE_EXPLORER/u
     );
   });
+
+  test('几何探针只发布已收敛且与实际窗口尺寸一致的同一 revision 快照', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const probeStart = main.indexOf('inspectPetGeometryForE2e = async () => {');
+    const probeEnd = main.indexOf('const persistMovedPetGeometry', probeStart);
+    const probe = main.slice(probeStart, probeEnd);
+    const boundsReadIndex = probe.indexOf('const actualBounds = pet.getBounds();');
+
+    expect(probeStart).toBeGreaterThanOrEqual(0);
+    expect(probeEnd).toBeGreaterThan(probeStart);
+    expect(probe).toContain('petGeometry.isLayoutInFlight()');
+    expect(probe).toContain('!relative.settled');
+    expect(boundsReadIndex).toBeGreaterThanOrEqual(0);
+    expect(probe.lastIndexOf('petGeometryAuthority.getSnapshot()')).toBeGreaterThan(
+      boundsReadIndex
+    );
+    expect(probe.lastIndexOf('petGeometry.inspectRelativeGeometry()')).toBeGreaterThan(
+      boundsReadIndex
+    );
+    expect(probe).toContain('!currentRelative.settled');
+    expect(probe).toContain('actualBounds.width !== currentSnapshot.windowBoundsDip.width');
+    expect(probe).toContain('actualBounds.height !== currentSnapshot.windowBoundsDip.height');
+  });
+
+  test('几何探针仅以 1e-6 数值容差判断可见矩形是否越界', async () => {
+    const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const probeStart = main.indexOf('inspectPetGeometryForE2e = async () => {');
+    const probeEnd = main.indexOf('const persistMovedPetGeometry', probeStart);
+    const probe = main.slice(probeStart, probeEnd);
+
+    expect(probe).toContain('const boundsEpsilonDip = 1e-6;');
+    expect(probe).toContain('globalVisual.x >= display.workArea.x - boundsEpsilonDip');
+    expect(probe).toContain('globalVisual.y >= display.workArea.y - boundsEpsilonDip');
+    expect(probe).toContain(
+      'globalVisual.x + globalVisual.width <= display.workArea.x + display.workArea.width + boundsEpsilonDip'
+    );
+    expect(probe).toContain(
+      'globalVisual.y + globalVisual.height <= display.workArea.y + display.workArea.height + boundsEpsilonDip'
+    );
+  });
 });

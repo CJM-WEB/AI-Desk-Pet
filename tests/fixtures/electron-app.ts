@@ -363,13 +363,8 @@ export interface MainE2eState {
   geometry: {
     revision: number;
     scaleTick: number;
-    settled: boolean;
-    viewportInWindowDip: { x: number; y: number; width: number; height: number };
-    footOffsetInViewportDip: { x: number; y: number };
-    windowSizeDip: { width: number; height: number };
-    settingsPlacementMatchesAuthority: boolean;
-    actualWindowBoundsMatchAuthority: boolean;
-    actualOriginMatchesFootOffset: boolean;
+    visualBoundsInWindowRatio: { x: number; y: number; width: number; height: number };
+    outOfBounds: boolean;
   } | null;
 }
 
@@ -383,6 +378,72 @@ const MAIN_E2E_EXPLORER_EVENTS = new Set<MainE2eExplorerEvent>([
   'blurred',
   'crash'
 ]);
+
+function isObject(candidate: unknown): candidate is Record<string, unknown> {
+  return Boolean(candidate) && typeof candidate === 'object' && !Array.isArray(candidate);
+}
+
+function validNormalizedVisualBounds(candidate: unknown): boolean {
+  if (!isObject(candidate) || Object.keys(candidate).length !== 4) return false;
+  const x = candidate.x;
+  const y = candidate.y;
+  const width = candidate.width;
+  const height = candidate.height;
+  if (
+    !Number.isFinite(x) || !Number.isFinite(y)
+    || !Number.isFinite(width) || !Number.isFinite(height)
+  ) return false;
+  const values = { x: Number(x), y: Number(y), width: Number(width), height: Number(height) };
+  return values.x >= 0
+    && values.y >= 0
+    && values.width > 0
+    && values.height > 0
+    && values.x + values.width <= 1.000001
+    && values.y + values.height <= 1.000001;
+}
+
+/** E2E 状态文件是测试进程唯一入口；几何字段按最小披露契约精确拒绝扩展。 */
+export function parseMainE2eState(candidate: unknown): MainE2eState {
+  if (!isObject(candidate)) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
+  const bridge = candidate.bridge;
+  const layer = candidate.layer;
+  const geometry = candidate.geometry;
+  const validGeometry = geometry === null || Boolean(
+    isObject(geometry)
+    && Object.keys(geometry).length === 4
+    && Number.isSafeInteger(geometry.revision)
+    && Number(geometry.revision) > 0
+    && Number.isSafeInteger(geometry.scaleTick)
+    && Number(geometry.scaleTick) >= 5
+    && Number(geometry.scaleTick) <= 20
+    && validNormalizedVisualBounds(geometry.visualBoundsInWindowRatio)
+    && typeof geometry.outOfBounds === 'boolean'
+  );
+  if (
+    !Number.isSafeInteger(candidate.revision)
+    || Number(candidate.revision) <= 0
+    || typeof candidate.petWindowVisible !== 'boolean'
+    || typeof candidate.petWindowAlwaysOnTop !== 'boolean'
+    || !Number.isSafeInteger(candidate.processedExplorerEventRevision)
+    || Number(candidate.processedExplorerEventRevision) < 0
+    || (candidate.processedExplorerEvent !== null
+      && !MAIN_E2E_EXPLORER_EVENTS.has(candidate.processedExplorerEvent as MainE2eExplorerEvent))
+    || !isObject(bridge)
+    || !new Set(['idle', 'ready', 'failed', 'closed']).has(String(bridge.state))
+    || typeof bridge.observing !== 'boolean'
+    || typeof bridge.polling !== 'boolean'
+    || !Number.isSafeInteger(bridge.eventRevision)
+    || Number(bridge.eventRevision) < 0
+    || !isObject(layer)
+    || !new Set(['idle', 'active', 'failed', 'closed']).has(String(layer.status))
+    || !Number.isSafeInteger(layer.activationRevision)
+    || Number(layer.activationRevision) < 0
+    || !Number.isSafeInteger(layer.errorRevision)
+    || Number(layer.errorRevision) < 0
+    || !validGeometry
+  ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
+  return candidate as unknown as MainE2eState;
+}
 
 /** fixture 只追加固定无参数令牌，禁止把路径、HWND 或任意命令写入 Main。 */
 export async function writeMainE2eExplorerEvent(
@@ -1283,73 +1344,10 @@ export async function createElectronAppFixture(
         event
       ),
       async getMainE2eState() {
-        const parsed = JSON.parse(await readFile(
+        return parseMainE2eState(JSON.parse(await readFile(
           join(directories.userDataDirectory, 'main-e2e-state.json'),
           'utf8'
-        )) as MainE2eState;
-        const geometry = parsed.geometry;
-        const finiteXy = (candidate: unknown): candidate is { x: number; y: number } => (
-          Boolean(candidate)
-          && typeof candidate === 'object'
-          && Number.isFinite(Reflect.get(candidate, 'x'))
-          && Number.isFinite(Reflect.get(candidate, 'y'))
-        );
-        const validPoint = (candidate: unknown): candidate is { x: number; y: number } => (
-          finiteXy(candidate) && Object.keys(candidate).length === 2
-        );
-        const validRectangle = (candidate: unknown): boolean => (
-          finiteXy(candidate)
-          && Number.isFinite(Reflect.get(candidate, 'width'))
-          && Reflect.get(candidate, 'width') > 0
-          && Number.isFinite(Reflect.get(candidate, 'height'))
-          && Reflect.get(candidate, 'height') > 0
-          && Object.keys(candidate).length === 4
-        );
-        const validGeometry = geometry === null || Boolean(
-          geometry
-          && Object.keys(geometry).length === 9
-          && Number.isSafeInteger(geometry.revision)
-          && geometry.revision > 0
-          && Number.isSafeInteger(geometry.scaleTick)
-          && geometry.scaleTick >= 5
-          && geometry.scaleTick <= 20
-          && typeof geometry.settled === 'boolean'
-          && validRectangle(geometry.viewportInWindowDip)
-          && validPoint(geometry.footOffsetInViewportDip)
-          && geometry.windowSizeDip
-          && Number.isFinite(geometry.windowSizeDip.width)
-          && geometry.windowSizeDip.width > 0
-          && Number.isFinite(geometry.windowSizeDip.height)
-          && geometry.windowSizeDip.height > 0
-          && Object.keys(geometry.windowSizeDip).length === 2
-          && typeof geometry.settingsPlacementMatchesAuthority === 'boolean'
-          && typeof geometry.actualWindowBoundsMatchAuthority === 'boolean'
-          && typeof geometry.actualOriginMatchesFootOffset === 'boolean'
-        );
-        if (
-          !Number.isSafeInteger(parsed.revision)
-          || parsed.revision <= 0
-          || typeof parsed.petWindowVisible !== 'boolean'
-          || typeof parsed.petWindowAlwaysOnTop !== 'boolean'
-          || !Number.isSafeInteger(parsed.processedExplorerEventRevision)
-          || parsed.processedExplorerEventRevision < 0
-          || (parsed.processedExplorerEvent !== null
-            && !MAIN_E2E_EXPLORER_EVENTS.has(parsed.processedExplorerEvent))
-          || !parsed.bridge
-          || !new Set(['idle', 'ready', 'failed', 'closed']).has(parsed.bridge.state)
-          || typeof parsed.bridge.observing !== 'boolean'
-          || typeof parsed.bridge.polling !== 'boolean'
-          || !Number.isSafeInteger(parsed.bridge.eventRevision)
-          || parsed.bridge.eventRevision < 0
-          || !parsed.layer
-          || !new Set(['idle', 'active', 'failed', 'closed']).has(parsed.layer.status)
-          || !Number.isSafeInteger(parsed.layer.activationRevision)
-          || parsed.layer.activationRevision < 0
-          || !Number.isSafeInteger(parsed.layer.errorRevision)
-          || parsed.layer.errorRevision < 0
-          || !validGeometry
-        ) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
-        return parsed;
+        )));
       },
       getMainDescendantProcesses() {
         const processId = child?.pid;
