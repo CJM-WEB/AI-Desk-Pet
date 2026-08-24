@@ -151,12 +151,10 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       if (isLegacyScene(this.scene)) {
         this.scene.show(selection, motionMode);
       } else {
-        this.scene.showAction(selection.action, {
-          direction: this.direction,
-          motionMode,
-          speed: 1,
-          loop: selection.action.loop
-        });
+        this.scene.showAction(
+          selection.action,
+          resolvePublishedPlaybackOptions(selection.action, this.direction, motionMode)
+        );
         this.notifyHitRegion();
         // AnimatedSprite 首帧可能不会触发 onFrameChange，展示成功后显式发布当前稳定帧。
         this.notifyFrame();
@@ -179,13 +177,15 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     if (!changed || !this.activePlayback || !this.currentSelection || !this.currentMotionMode) return;
     const frameIndex = this.scene.getCurrentFrame()?.frameIndex;
     try {
-      this.scene.showAction(this.currentSelection.action, {
-        direction,
-        motionMode: this.currentMotionMode,
-        ...(frameIndex === undefined ? {} : { frameIndex }),
-        speed: 1,
-        loop: this.currentSelection.action.loop
-      });
+      this.scene.showAction(
+        this.currentSelection.action,
+        resolvePublishedPlaybackOptions(
+          this.currentSelection.action,
+          direction,
+          this.currentMotionMode,
+          frameIndex
+        )
+      );
       this.notifyHitRegion();
     } catch (error) {
       // 方向重建失败即终结当前播放；播放器仍保留调用方提交的新方向。
@@ -301,6 +301,28 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
     };
     for (const listener of this.playbackLifecycleListeners) listener(event);
   }
+}
+
+/**
+ * 正式播放入口统一在此解析发布表现，避免首次播放与方向重建出现不同的画面语义。
+ */
+function resolvePublishedPlaybackOptions(
+  action: ActionClip,
+  motionDirection: 'left' | 'right',
+  motionMode: CharacterMotionMode,
+  frameIndex?: number
+): Parameters<PixiCharacterScene['showAction']>[1] {
+  return {
+    direction: action.mirrorX ? flipDirection(motionDirection) : motionDirection,
+    motionMode,
+    ...(frameIndex === undefined ? {} : { frameIndex }),
+    speed: action.playbackRate ?? 1,
+    loop: action.loop
+  };
+}
+
+function flipDirection(direction: 'left' | 'right'): 'left' | 'right' {
+  return direction === 'left' ? 'right' : 'left';
 }
 
 type PixiModule = typeof import('pixi.js');

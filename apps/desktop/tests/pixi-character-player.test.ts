@@ -260,7 +260,7 @@ describe('共享 Pixi 角色动作场景', () => {
     expect(notify).toHaveBeenCalledTimes(4);
   });
 
-  test('播放器只将动作帧白名单 Blob URL 映射给共享场景并展示动作', async () => {
+  test('播放器只将动作帧白名单 Blob URL 映射给共享场景，缺失发布倍速时使用默认值', async () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
       clear: vi.fn(),
@@ -296,6 +296,41 @@ describe('共享 Pixi 角色动作场景', () => {
     });
   });
 
+  test.each([
+    ['right', false, 'right'],
+    ['left', false, 'left'],
+    ['right', true, 'left'],
+    ['left', true, 'right']
+  ] as const)(
+    '首次播放将运动方向 %s 与素材反转 %s 裁决为有效方向 %s',
+    (direction, mirrorX, effectiveDirection) => {
+      const scene: PixiCharacterScene = {
+        loadAssets: vi.fn().mockResolvedValue(undefined),
+        clear: vi.fn(),
+        showAction: vi.fn(),
+        getCurrentFrame: vi.fn().mockReturnValue(null),
+        subscribeFrame: vi.fn(() => vi.fn()),
+        destroy: vi.fn()
+      };
+      const publishedAction: ActionClip = {
+        ...manifest().states[0]!.actions[0]!,
+        playbackRate: 1.5,
+        mirrorX
+      };
+      const player = new PixiCharacterPlayer(scene);
+
+      player.setDirection(direction);
+      player.play({ stateId: 'idle', action: publishedAction, reason: 'matched' }, 'animated');
+
+      expect(scene.showAction).toHaveBeenCalledWith(publishedAction, {
+        direction: effectiveDirection,
+        motionMode: 'animated',
+        speed: 1.5,
+        loop: true
+      });
+    }
+  );
+
   test('加载阶段缺失动作帧资源时保持原有失败语义', async () => {
     const scene: PixiCharacterScene = {
       loadAssets: vi.fn().mockResolvedValue(undefined),
@@ -329,9 +364,14 @@ describe('共享 Pixi 角色动作场景', () => {
       destroy: vi.fn()
     };
     const currentManifest = manifest();
+    const publishedAction: ActionClip = {
+      ...currentManifest.states[0]!.actions[0]!,
+      playbackRate: 1.5,
+      mirrorX: true
+    };
     const selection: ActionSelectionResult = {
       stateId: 'idle',
-      action: currentManifest.states[0]!.actions[0]!,
+      action: publishedAction,
       reason: 'matched'
     };
     const player = new PixiCharacterPlayer(scene);
@@ -340,9 +380,9 @@ describe('共享 Pixi 角色动作场景', () => {
     player.setDirection('left');
 
     expect(scene.showAction).toHaveBeenLastCalledWith(selection.action, {
-      direction: 'left',
+      direction: 'right',
       motionMode: 'animated',
-      speed: 1,
+      speed: 1.5,
       loop: true
     });
   });
