@@ -9,6 +9,7 @@ import {
   SettingsStore,
   type McpServerSettings
 } from '../src/main/storage/settings-store';
+import { localModelPublicStatusSchema } from '../src/shared/local-model-ipc';
 
 const temporaryDirectories: string[] = [];
 
@@ -211,6 +212,10 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
     mutate: store => store.savePetAlwaysOnTop(true)
   },
   {
+    methodName: 'saveLocalModelEnabled',
+    mutate: store => store.saveLocalModelEnabled(false)
+  },
+  {
     methodName: 'revokeAuthorizedRoot',
     prepare: store => store.saveAuthorizedRoot({
       id: 'root-before-revoke',
@@ -303,6 +308,22 @@ afterEach(async () => {
 });
 
 describe('SettingsStore', () => {
+  test('本地模型公开状态拒绝未声明字段', () => {
+    expect(localModelPublicStatusSchema.parse({
+      enabled: true,
+      phase: 'ready',
+      backend: 'vulkan',
+      reasonCode: null
+    })).toEqual(expect.objectContaining({ phase: 'ready' }));
+    expect(() => localModelPublicStatusSchema.parse({
+      enabled: true,
+      phase: 'ready',
+      backend: 'vulkan',
+      reasonCode: null,
+      port: 61234
+    })).toThrow();
+  });
+
   test.each(nonMcpMutationCases)(
     '$methodName 原子重写共享设置时完整保留 MCP 配置',
     async ({ prepare, mutate, verify }) => {
@@ -379,7 +400,7 @@ export class SettingsStore {
     });
 
     const serialized = await readFile(file, 'utf8');
-    expect(serialized).toContain('"version": 3');
+    expect(serialized).toContain('"version": 4');
     expect(serialized).not.toContain(fixtureSecret);
     await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
       provider: {
@@ -596,6 +617,184 @@ export class SettingsStore {
     });
   });
 
+  test('本地模型开关默认开启，保存关闭后重启仍保持关闭', async () => {
+    const { file, store } = await createStore();
+
+    await expect(store.getLocalModelSettings()).resolves.toEqual({ enabled: true });
+    await expect(store.saveLocalModelEnabled(false)).resolves.toBeUndefined();
+    await expect(
+      new SettingsStore(file, async () => false).getLocalModelSettings()
+    ).resolves.toEqual({ enabled: false });
+  });
+
+  test.each([
+    {
+      name: 'V1',
+      stored: {
+        version: 1,
+        provider: {
+          id: 'legacy-provider',
+          displayName: '旧 Provider',
+          baseUrl: 'https://legacy.example.com/v1',
+          model: 'legacy-model'
+        },
+        authorizedRoot: {
+          id: 'legacy-root',
+          displayName: '旧目录',
+          pathHint: 'D:\\…\\legacy',
+          absolutePath: 'D:\\private\\legacy'
+        },
+        petPosition: { x: 12, y: 34 },
+        fileDisclosureAccepted: true
+      },
+      expected: {
+        route: {
+          primaryProfileId: 'legacy-provider',
+          chatProfileId: null,
+          agentProfileId: null,
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        },
+        placement: { kind: 'pending-legacy', windowPosition: { x: 12, y: 34 } },
+        privacy: { movementStopped: false, proactivityMode: 'assistive' },
+        mcpServers: []
+      }
+    },
+    {
+      name: 'V2',
+      stored: {
+        version: 2,
+        providerProfiles: [{
+          id: 'provider-main',
+          displayName: '主 Provider',
+          mode: 'custom',
+          protocol: 'openai-compatible',
+          baseUrl: 'https://api.example.com/v1',
+          modelId: 'tools-model',
+          additionalParameters: {},
+          capabilities: ['chat', 'tools']
+        }],
+        modelRoute: {
+          primaryProfileId: 'provider-main',
+          chatProfileId: 'provider-main',
+          agentProfileId: 'provider-main',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        },
+        authorizedRoot: null,
+        petPosition: { x: 56, y: 78 },
+        fileDisclosureAccepted: true,
+        petAlwaysOnTop: true,
+        privacy: {
+          dataCategories: { file: true, screenshot: false, clipboard: true, memory: false },
+          longTermMemory: true,
+          proactivityMode: 'passive'
+        },
+        movementStopped: true,
+        mcpServers: mcpSettingsFixture
+      },
+      expected: {
+        route: {
+          primaryProfileId: 'provider-main',
+          chatProfileId: 'provider-main',
+          agentProfileId: 'provider-main',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        },
+        placement: { kind: 'pending-legacy', windowPosition: { x: 56, y: 78 } },
+        privacy: { movementStopped: true, proactivityMode: 'passive' },
+        mcpServers: mcpSettingsFixture
+      }
+    },
+    {
+      name: 'V3',
+      stored: {
+        version: 3,
+        providerProfiles: [{
+          id: 'provider-main',
+          displayName: '主 Provider',
+          mode: 'custom',
+          protocol: 'openai-compatible',
+          baseUrl: 'https://api.example.com/v1',
+          modelId: 'tools-model',
+          additionalParameters: {},
+          capabilities: ['chat', 'tools']
+        }],
+        modelRoute: {
+          primaryProfileId: 'provider-main',
+          chatProfileId: 'provider-main',
+          agentProfileId: 'provider-main',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        },
+        authorizedRoot: null,
+        petPlacementState: {
+          kind: 'ready',
+          placements: [{
+            characterId: 'pet-a',
+            scale: 1,
+            footAnchorDip: { x: 90, y: 120 },
+            displayId: 'display-main'
+          }]
+        },
+        fileDisclosureAccepted: true,
+        petAlwaysOnTop: true,
+        privacy: {
+          dataCategories: { file: true, screenshot: false, clipboard: true, memory: false },
+          longTermMemory: true,
+          proactivityMode: 'passive'
+        },
+        movementStopped: true,
+        mcpServers: mcpSettingsFixture
+      },
+      expected: {
+        route: {
+          primaryProfileId: 'provider-main',
+          chatProfileId: 'provider-main',
+          agentProfileId: 'provider-main',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        },
+        placement: {
+          kind: 'ready',
+          placement: {
+            characterId: 'pet-a',
+            scale: 1,
+            footAnchorDip: { x: 90, y: 120 },
+            displayId: 'display-main'
+          }
+        },
+        privacy: { movementStopped: true, proactivityMode: 'passive' },
+        mcpServers: mcpSettingsFixture
+      }
+    }
+  ])('迁移 $name 时保留既有设置并注入本地模型默认开关', async ({ stored, expected }) => {
+    const { file, store } = await createStore();
+    await writeFile(file, JSON.stringify(stored), 'utf8');
+
+    await expect(store.getLocalModelSettings()).resolves.toEqual({ enabled: true });
+    await expect(store.getProviderSettings()).resolves.toMatchObject({
+      profiles: [expect.objectContaining({ id: expected.route.primaryProfileId })],
+      route: expected.route
+    });
+    await expect(store.getPetPlacementState('pet-a')).resolves.toEqual(expected.placement);
+    await expect(store.getCharacterBehaviorSettings()).resolves.toEqual(expected.privacy);
+    await expect(store.getMcpServerSettings()).resolves.toEqual(expected.mcpServers);
+    await expect(store.getPetAlwaysOnTop()).resolves.toBe(stored.version === 1 ? false : true);
+    await expect(store.getPublic()).resolves.toMatchObject({
+      fileDisclosureAccepted: true,
+      authorizedRoot: stored.version === 1
+        ? { id: 'legacy-root', displayName: '旧目录', pathHint: 'D:\\…\\legacy' }
+        : null
+    });
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 4');
+  });
+
   test('V2 旧位置只解析一次并原子迁移为不含 windowPosition 的 ready V3', async () => {
     const { file, store } = await createStore();
     await writeFile(file, JSON.stringify({
@@ -649,7 +848,7 @@ export class SettingsStore {
 
     const persisted = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
     expect(persisted).toMatchObject({
-      version: 3,
+      version: 4,
       petPlacementState: {
         kind: 'ready',
         placements: [{ characterId: 'pet-a', scale: 1 }]
@@ -690,7 +889,7 @@ export class SettingsStore {
       }
     })).rejects.toMatchObject({ code: 'PET_PLACEMENT_MIGRATION_STALE' });
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
-      version: 3,
+      version: 4,
       petPlacementState: {
         kind: 'pending-legacy',
         windowPosition: { x: 20, y: 30 }
@@ -989,7 +1188,7 @@ export class SettingsStore {
       kind: 'pending-legacy', windowPosition: { x: -500, y: 120 }
     });
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
-      version: 3,
+      version: 4,
       petPlacementState: {
         kind: 'pending-legacy',
         windowPosition: { x: -500, y: 120 }
@@ -1023,7 +1222,7 @@ export class SettingsStore {
     });
     const persisted = JSON.parse(await readFile(file, 'utf8'));
     expect(persisted).toMatchObject({
-      version: 3,
+      version: 4,
       providerProfiles: [expect.objectContaining({ id: 'provider-main' })],
       petPlacementState: { kind: 'ready', placements: [] },
       petAlwaysOnTop: false,

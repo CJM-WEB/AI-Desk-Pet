@@ -13,6 +13,7 @@ import {
   type StoredProviderProfileV2
 } from '@myself/shared-types';
 import { characterIdSchema } from '../../shared/character-ipc';
+import type { LocalModelSettings } from '../../shared/local-model-ipc';
 
 const providerMetadataSchema = z.object({
   id: z.string().min(1),
@@ -173,9 +174,35 @@ const storedSettingsV3Shape = {
 
 const storedSettingsV3Schema = z.object(storedSettingsV3Shape).strict();
 
+const localModelSettingsSchema = z.object({
+  enabled: z.boolean()
+}).strict();
+
+const storedSettingsV4Shape = {
+  ...storedSettingsV3Shape,
+  version: z.literal(4),
+  localModel: localModelSettingsSchema
+};
+
+const storedSettingsV4Schema = z.object(storedSettingsV4Shape).strict();
+
 // 只放宽 ready 集合的单条内容，用于隔离损坏 placement 后保住其余设置。
 const recoverableStoredSettingsV3Schema = z.object({
   ...storedSettingsV3Shape,
+  petPlacementState: z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('pending-legacy'),
+      windowPosition: z.unknown()
+    }).strict(),
+    z.object({
+      kind: z.literal('ready'),
+      placements: z.array(z.unknown())
+    }).strict()
+  ])
+}).strict();
+
+const recoverableStoredSettingsV4Schema = z.object({
+  ...storedSettingsV4Shape,
   petPlacementState: z.discriminatedUnion('kind', [
     z.object({
       kind: z.literal('pending-legacy'),
@@ -193,7 +220,8 @@ type AuthorizedRootInput = z.input<typeof authorizedRootSchema>;
 type PetPositionInput = z.input<typeof petPositionSchema>;
 type StoredSettingsV1 = z.infer<typeof storedSettingsV1Schema>;
 type StoredSettingsV2 = z.infer<typeof storedSettingsV2Schema>;
-type StoredSettings = z.infer<typeof storedSettingsV3Schema>;
+type StoredSettingsV3 = z.infer<typeof storedSettingsV3Schema>;
+type StoredSettings = z.infer<typeof storedSettingsV4Schema>;
 
 export interface ProviderSettingsSnapshot {
   profiles: ProviderProfileV2[];
@@ -218,7 +246,7 @@ function emptyModelRoute(): ModelRouteConfig {
 
 function defaultSettings(): StoredSettings {
   return {
-    version: 3,
+    version: 4,
     providerProfiles: [],
     modelRoute: emptyModelRoute(),
     authorizedRoot: null,
@@ -227,7 +255,8 @@ function defaultSettings(): StoredSettings {
     petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
     movementStopped: false,
-    mcpServers: []
+    mcpServers: [],
+    localModel: { enabled: true }
   };
 }
 
@@ -328,7 +357,7 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
     additionalParameters: {}
   };
   return {
-    version: 3,
+    ...defaultSettings(),
     providerProfiles: [profile],
     modelRoute: {
       ...emptyModelRoute(),
@@ -351,8 +380,8 @@ function legacyPetPlacementState(position: PetPositionInput | null): StoredSetti
 }
 
 function migrateV2Settings(settings: StoredSettingsV2): StoredSettings {
-  return storedSettingsV3Schema.parse({
-    version: 3,
+  return storedSettingsV4Schema.parse({
+    ...defaultSettings(),
     providerProfiles: settings.providerProfiles,
     modelRoute: settings.modelRoute,
     authorizedRoot: settings.authorizedRoot,
@@ -362,6 +391,22 @@ function migrateV2Settings(settings: StoredSettingsV2): StoredSettings {
     privacy: settings.privacy ?? legacyPrivacySettings(),
     movementStopped: settings.movementStopped ?? false,
     mcpServers: settings.mcpServers ?? []
+  });
+}
+
+function migrateV3Settings(settings: StoredSettingsV3): StoredSettings {
+  return storedSettingsV4Schema.parse({
+    ...settings,
+    ...defaultSettings(),
+    providerProfiles: settings.providerProfiles,
+    modelRoute: settings.modelRoute,
+    authorizedRoot: settings.authorizedRoot,
+    petPlacementState: settings.petPlacementState,
+    fileDisclosureAccepted: settings.fileDisclosureAccepted,
+    petAlwaysOnTop: settings.petAlwaysOnTop,
+    privacy: settings.privacy,
+    movementStopped: settings.movementStopped,
+    mcpServers: settings.mcpServers
   });
 }
 
@@ -426,7 +471,7 @@ function cloneWindowPosition(position: PetPositionInput): Readonly<PetPositionIn
   return Object.freeze({ ...position });
 }
 
-function sanitizeRecoverableV3(raw: unknown): StoredSettings | null {
+function sanitizeRecoverableV3(raw: unknown): StoredSettingsV3 | null {
   if (raw && typeof raw === 'object') {
     const state = (raw as { petPlacementState?: unknown }).petPlacementState;
     if (state && typeof state === 'object') {
@@ -477,14 +522,53 @@ function recoverOversizedReadyPlacements(raw: unknown): OversizedReadyPlacementR
   if (!Array.isArray(placements) || placements.length <= PET_PLACEMENT_LIMIT) {
     return { detected: false, settings: null };
   }
-  const sanitized = storedSettingsV3Schema.safeParse({
+  const candidate = {
     ...(raw as Record<string, unknown>),
     petPlacementState: { kind: 'ready', placements: [] }
-  });
+  };
+  const sanitized = storedSettingsV4Schema.safeParse(candidate);
+  if (sanitized.success) {
+    return { detected: true, settings: sanitized.data };
+  }
+  const legacy = storedSettingsV3Schema.safeParse(candidate);
   return {
     detected: true,
-    settings: sanitized.success ? sanitized.data : null
+    settings: legacy.success ? migrateV3Settings(legacy.data) : null
   };
+}
+
+function sanitizeRecoverableV4(raw: unknown): StoredSettings | null {
+  if (raw && typeof raw === 'object') {
+    const state = (raw as { petPlacementState?: unknown }).petPlacementState;
+    if (state && typeof state === 'object') {
+      const ready = state as { kind?: unknown; placements?: unknown };
+      if (
+        ready.kind === 'ready'
+        && Array.isArray(ready.placements)
+        && ready.placements.length > PET_PLACEMENT_LIMIT
+      ) return null;
+    }
+  }
+  const recoverable = recoverableStoredSettingsV4Schema.safeParse(raw);
+  if (!recoverable.success) return null;
+  if (recoverable.data.petPlacementState.kind === 'pending-legacy') {
+    return storedSettingsV4Schema.parse({
+      ...recoverable.data,
+      petPlacementState: { kind: 'ready', placements: [] }
+    });
+  }
+  const placements = new Map<string, StoredPetPlacement>();
+  for (const candidate of recoverable.data.petPlacementState.placements) {
+    const parsed = storedPetPlacementSchema.safeParse(candidate);
+    if (!parsed.success) continue;
+    placements.delete(parsed.data.characterId);
+    placements.set(parsed.data.characterId, parsed.data);
+    if (placements.size >= PET_PLACEMENT_LIMIT) break;
+  }
+  return storedSettingsV4Schema.parse({
+    ...recoverable.data,
+    petPlacementState: { kind: 'ready', placements: [...placements.values()] }
+  });
 }
 
 function storedProfile(profile: ProviderProfileV2): StoredProviderProfileV2 {
@@ -591,18 +675,32 @@ export class SettingsStore {
       return oversizedReady.settings;
     }
 
+    const v4 = storedSettingsV4Schema.safeParse(raw);
+    if (v4.success) {
+      if (retiredZen.changed || JSON.stringify(v4.data) !== JSON.stringify(raw)) {
+        await atomicWrite(this.file, v4.data);
+      }
+      return v4.data;
+    }
+
+    const recoveredV4 = sanitizeRecoverableV4(raw);
+    if (recoveredV4) {
+      await atomicWrite(this.file, recoveredV4);
+      return recoveredV4;
+    }
+
     const v3 = storedSettingsV3Schema.safeParse(raw);
     if (v3.success) {
-      if (retiredZen.changed || JSON.stringify(v3.data) !== JSON.stringify(raw)) {
-        await atomicWrite(this.file, v3.data);
-      }
-      return v3.data;
+      const migrated = migrateV3Settings(v3.data);
+      await atomicWrite(this.file, migrated);
+      return migrated;
     }
 
     const recoveredV3 = sanitizeRecoverableV3(raw);
     if (recoveredV3) {
-      await atomicWrite(this.file, recoveredV3);
-      return recoveredV3;
+      const migrated = migrateV3Settings(recoveredV3);
+      await atomicWrite(this.file, migrated);
+      return migrated;
     }
 
     const v2 = storedSettingsV2Schema.safeParse(raw);
@@ -711,6 +809,18 @@ export class SettingsStore {
 
   async getCharacterBehaviorSettings(): Promise<CharacterBehaviorSettingsSnapshot> {
     return this.enqueue(async () => behaviorSettingsSnapshot(await this.load()));
+  }
+
+  async getLocalModelSettings(): Promise<LocalModelSettings> {
+    return this.enqueue(async () => structuredClone((await this.load()).localModel));
+  }
+
+  saveLocalModelEnabled(enabled: boolean): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const settings = await this.load();
+      settings.localModel.enabled = z.boolean().parse(enabled);
+      await atomicWrite(this.file, settings);
+    });
   }
 
   savePrivacySettings(input: PrivacySettings): Promise<CharacterBehaviorSettingsSnapshot> {
