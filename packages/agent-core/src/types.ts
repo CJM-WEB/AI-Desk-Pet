@@ -71,7 +71,6 @@ export type FilePlanningOperation =
   | 'grep_files'
   | 'create_file'
   | 'create_directory'
-  | 'copy_file'
   | 'apply_patch'
   | 'edit_file'
   | 'delete_file'

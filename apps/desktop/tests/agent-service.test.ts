@@ -304,58 +304,6 @@ function createPowerShellHarness(
 }
 
 describe('AgentService', () => {
-  test('复制规划只公开 copy_file 并生成独立确认卡', async () => {
-    const provider = new ScriptedProvider([
-      {
-        type: 'tool_request',
-        request: {
-          requestId: 'copy-1',
-          toolName: 'builtin.files.copy_file',
-          arguments: {
-            sourceRelativePath: 'docs/source.txt',
-            targetDirectoryRelativePath: 'archive'
-          }
-        }
-      },
-      { type: 'text', text: 'source.txt 已复制' }
-    ]);
-    const copyAction: VerifiedWriteAction = Object.freeze({
-      operation: 'copy_file',
-      authorizationGeneration: 0,
-      sourceRelativePath: 'docs/source.txt',
-      targetDirectoryRelativePath: 'archive',
-      targetRelativePath: 'archive/source.txt'
-    });
-    const { events, fileTools, service } = createHarness(provider, {
-      preview: vi.fn(async () => copyAction)
-    }, false);
-
-    await service.submitFileTask({
-      text: '把 docs/source.txt 复制到 archive 文件夹',
-      visibleHistory: [],
-      planningHint: { operation: 'copy_file' }
-    });
-
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
-      'builtin.files.copy_file',
-      CAPABILITY_CLARIFICATION_TOOL_NAME
-    ]);
-    const pending = events.find(event => event.type === 'pending_action');
-    expect(pending).toMatchObject({
-      type: 'pending_action',
-      action: {
-        operation: 'copy_file',
-        sourceRelativePath: 'docs/source.txt',
-        targetRelativePath: 'archive/source.txt'
-      }
-    });
-    if (!pending || pending.type !== 'pending_action') throw new Error('缺少复制确认卡');
-    await service.confirm(pending.action.actionId);
-
-    expect(fileTools.executeWrite).toHaveBeenCalledOnce();
-    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
-  });
-
   test('移动规划只公开 move_file，确认后只以 Main 结果恢复总结', async () => {
     const provider = new ScriptedProvider([
       moveResponse(),

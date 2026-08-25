@@ -16,6 +16,7 @@ export type ExplicitShellEvidence = Readonly<{
 export type CapabilityIntent =
   | Readonly<{ kind: 'chat'; behaviorHint: ExplicitBehaviorHint | null }>
   | Readonly<{ kind: 'file_task'; evidence: ExplicitFileEvidence }>
+  | Readonly<{ kind: 'unsupported_file_operation'; operation: 'copy_file' }>
   | Readonly<{ kind: 'powershell_task'; evidence: ExplicitShellEvidence }>;
 
 export interface CapabilityIntentRouter {
@@ -26,6 +27,10 @@ const chatIntent: CapabilityIntent = Object.freeze({ kind: 'chat', behaviorHint:
 const fileTaskIntent: CapabilityIntent = Object.freeze({
   kind: 'file_task',
   evidence: Object.freeze({ kind: 'explicit_file_operation' })
+});
+const unsupportedCopyIntent: CapabilityIntent = Object.freeze({
+  kind: 'unsupported_file_operation',
+  operation: 'copy_file'
 });
 const powershellTaskIntent: CapabilityIntent = Object.freeze({
   kind: 'powershell_task',
@@ -485,7 +490,6 @@ function filePlanningOperation(text: string): FilePlanningOperation | null {
   if (/(?:读取|\bread\b)/iu.test(text)) return 'read_file';
   if (/(?:创建|新建|\bcreate\b)/iu.test(text)) return 'create_file';
   if (/(?:修改|替换|写入|\b(?:modify|replace|write)\b)/iu.test(text)) return 'edit_file';
-  if (/(?:复制|\bcopy\b)/iu.test(text)) return 'copy_file';
   if (/(?:移动|\bmove\b)/iu.test(text)) return 'move_file';
   return null;
 }
@@ -519,7 +523,10 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
     if (hasEmbeddedShellExecution(normalizedText)) return chatIntent;
     const shellIntent = shellExecutionIntent(normalizedText);
     if (shellIntent !== null) return shellIntent;
-    return this.fileIntentGate(normalizedText) ? fileTaskIntent : chatIntent;
+    if (!this.fileIntentGate(normalizedText)) return chatIntent;
+    // OpenCode 的复制依赖 Shell；本项目不把该副作用降级给模型口头处理。
+    if (/(?:复制|\bcopy\b)/iu.test(normalizedText)) return unsupportedCopyIntent;
+    return fileTaskIntent;
   }
 }
 

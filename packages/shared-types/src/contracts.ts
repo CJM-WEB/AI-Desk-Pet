@@ -84,10 +84,6 @@ export type PendingAction =
       operation: 'create_directory';
     }>
   | Readonly<PendingFileActionBase & {
-      operation: 'copy_file';
-      sourceRelativePath: string;
-    }>
-  | Readonly<PendingFileActionBase & {
       operation: 'apply_patch';
       addedLines: number;
       removedLines: number;
@@ -143,10 +139,6 @@ export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
   }).strict(),
   pendingFileActionBaseSchema.extend({
     operation: z.literal('create_directory')
-  }).strict(),
-  pendingFileActionBaseSchema.extend({
-    operation: z.literal('copy_file'),
-    sourceRelativePath: z.string().min(1)
   }).strict(),
   pendingFileActionBaseSchema.extend({
     operation: z.literal('apply_patch'),

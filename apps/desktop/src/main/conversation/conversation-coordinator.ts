@@ -203,6 +203,9 @@ export class ConversationCoordinator {
 
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
       const intent = capabilityIntentRouter.route(context.capabilityText);
+      if (intent.kind === 'unsupported_file_operation') {
+        throw publicErrorForCode('FILE_COPY_UNSUPPORTED');
+      }
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
         if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
           throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
@@ -792,6 +795,7 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     CONVERSATION_CLOSED: '当前会话已经关闭。',
     DISCLOSURE_REQUEST_EXPIRED: '历史披露确认已失效，请重新提交消息。',
     FILE_TARGET_MISMATCH: '文件授权目录或模型配置已经变化，请重新提交完整文件请求。',
+    FILE_COPY_UNSUPPORTED: '暂不支持复制文件；可以改用移动文件，或先创建目标文件再写入内容。',
     POWERSHELL_BACKGROUND_UNSUPPORTED: '暂不支持后台 PowerShell 任务，请改为前台执行。',
     PROVIDER_AUTHENTICATION_FAILED: '模型服务身份认证失败，请检查 API Key。',
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',

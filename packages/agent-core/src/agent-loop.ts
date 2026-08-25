@@ -30,7 +30,6 @@ type ContinuationState = {
 const MUTATION_TOOL_NAMES = new Set<string>([
   'create_file',
   'create_directory',
-  'copy_file',
   'apply_patch',
   'edit_file',
   'delete_file',
@@ -375,5 +374,6 @@ function nextTrustedResultState(
     return { latestOk: currentOk, mutationFailurePending: !currentOk };
   }
   if (mutationFailurePending) return { latestOk: false, mutationFailurePending: true };
-  return { latestOk: currentOk ?? previousOk, mutationFailurePending: false };
+  // 生产只读工具以成功返回值表示完成，不强制携带 ok；异常已在调用边界转换为 ok=false。
+  return { latestOk: currentOk ?? true, mutationFailurePending: false };
 }

@@ -18,8 +18,6 @@ function actionLabels(action: PendingAction): { confirm: string; cancel: string 
       return { confirm: '确认创建文件', cancel: '先不创建' };
     case 'create_directory':
       return { confirm: '确认创建目录', cancel: '先不创建' };
-    case 'copy_file':
-      return { confirm: '确认复制文件', cancel: '先不复制' };
     case 'apply_patch':
       return { confirm: '确认应用补丁', cancel: '先不修改' };
     case 'delete_file':
@@ -39,8 +37,6 @@ function safetyMessage(action: PendingAction): string {
       return '不会覆盖已有文件；执行前还会再次检查。';
     case 'create_directory':
       return '只创建当前目录；不会递归创建父目录，执行前还会再次检查。';
-    case 'copy_file':
-      return '只复制普通文件到已有目录；不会覆盖已有文件，执行前还会再次检查。';
     case 'apply_patch':
       return '仅修改已有文件；执行前还会再次进行冲突校验。';
     case 'delete_file':
@@ -73,7 +69,7 @@ export function ConfirmationCard({ action, busy, onConfirm, onCancel }: Confirma
           <span>运行方式：前台非交互执行</span>
           <pre>{action.command}</pre>
         </div>
-      ) : action.operation === 'move_file' || action.operation === 'copy_file' ? (
+      ) : action.operation === 'move_file' ? (
         <div className="confirmation-details">
           <span>源文件</span>
           <code>{action.sourceRelativePath}</code>

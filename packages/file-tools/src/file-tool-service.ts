@@ -81,13 +81,6 @@ export type VerifiedWriteAction =
       previewTruncated: boolean;
     }>
   | Readonly<{
-      operation: 'copy_file';
-      authorizationGeneration: number;
-      sourceRelativePath: string;
-      targetDirectoryRelativePath: string;
-      targetRelativePath: string;
-    }>
-  | Readonly<{
       operation: 'delete_file';
       authorizationGeneration: number;
       targetRelativePath: string;
@@ -113,14 +106,6 @@ type InternalWriteAction =
     }
   | { operation: 'apply_patch'; targetRelativePath: string; baseSha256: string; result: string }
   | {
-      operation: 'copy_file';
-      sourceRelativePath: string;
-      targetDirectoryRelativePath: string;
-      targetRelativePath: string;
-      expectedSourceIdentity: DeleteIdentity;
-      expectedTargetDirectoryIdentity: DirectoryIdentity;
-    }
-  | {
       operation: 'delete_file';
       targetRelativePath: string;
       targetType: 'file' | 'empty_directory';
@@ -137,8 +122,6 @@ type InternalWriteAction =
 
 type WritableFileHandle = Readonly<{
   stat(options: { bigint: true }): Promise<Readonly<{ dev: bigint; ino: bigint }>>;
-  read?(buffer: Buffer, offset: number, length: number, position: null): Promise<Readonly<{ bytesRead: number }>>;
-  write?(buffer: Buffer, offset: number, length: number, position: null): Promise<Readonly<{ bytesWritten: number }>>;
   writeFile(content: string, encoding: BufferEncoding): Promise<void>;
   close(): Promise<void>;
 }>;
@@ -587,149 +570,6 @@ async function removeOwnedFile(path: string, identity: string, operations: FileT
   }
 }
 
-/**
- * 排他创建已经证明目标原本不存在；身份读取失败时仍要立即回滚本次创建，避免失败占住正式目标。
- * 已取得身份时继续使用实体比较，防止清理竞争方后来替换的同名文件。
- */
-async function removeExclusivelyCreatedFile(
-  path: string,
-  identity: string | null,
-  operations: FileToolFileOperations
-): Promise<void> {
-  if (identity !== null) {
-    await removeOwnedFile(path, identity, operations);
-    return;
-  }
-  try {
-    await operations.unlink(path);
-  } catch {
-    // 清理属于尽力行为，原始句柄错误优先返回。
-  }
-}
-
-/** 打开正式目标后再次绑定授权路径、父目录与目标句柄实体，阻断检查后的 Junction 替换。 */
-async function assertCopyTargetAuthorized(
-  policy: PathPolicy,
-  targetDirectoryRelativePath: string,
-  targetRelativePath: string,
-  expectedTargetDirectoryIdentity: DirectoryIdentity,
-  targetIdentity: string
-): Promise<void> {
-  const targetDirectory = await policy.resolveExisting(targetDirectoryRelativePath);
-  const currentDirectoryIdentity = await captureMoveTargetDirectory(targetDirectory);
-  if (
-    currentDirectoryIdentity.device !== expectedTargetDirectoryIdentity.device
-    || currentDirectoryIdentity.inode !== expectedTargetDirectoryIdentity.inode
-  ) {
-    throw new FileToolError('ENTRY_CHANGED', '目标目录在复制期间发生变化，请重新确认');
-  }
-  const resolvedTarget = await policy.resolveExisting(targetRelativePath);
-  const currentTarget = await lstat(resolvedTarget, { bigint: true });
-  if (!currentTarget.isFile() || ownedFileIdentity(currentTarget) !== targetIdentity) {
-    throw new FileToolError('ENTRY_CHANGED', '复制目标在写入期间发生变化，请重新确认');
-  }
-}
-
-/**
- * 源与目标都通过已打开句柄复制，目标以 wx 排他创建；失败只清理本次创建且身份仍一致的目标。
- * 复制前后再次核对源路径身份，使确认后的替换或复制期间修改按 CAS 失败关闭。
- */
-async function copyFileWithCas(
-  source: string,
-  target: string,
-  expectedSourceIdentity: DeleteIdentity,
-  operations: FileToolFileOperations,
-  targetAuthorization: Readonly<{
-    policy: PathPolicy;
-    targetDirectoryRelativePath: string;
-    targetRelativePath: string;
-    expectedTargetDirectoryIdentity: DirectoryIdentity;
-  }>
-): Promise<void> {
-  const sourceHandle = await operations.open(source, 'r');
-  let targetHandle: WritableFileHandle | null = null;
-  let targetIdentity: string | null = null;
-  let failure: unknown;
-  try {
-    const openedSource = await sourceHandle.stat({ bigint: true });
-    if (
-      openedSource.dev !== expectedSourceIdentity.device
-      || openedSource.ino !== expectedSourceIdentity.inode
-      || sourceHandle.read === undefined
-    ) {
-      throw new FileToolError('ENTRY_CHANGED', '源文件在打开期间发生变化');
-    }
-    try {
-      targetHandle = await operations.open(target, 'wx');
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
-        throw new FileToolError('TARGET_EXISTS', '目标已经存在');
-      }
-      throw error;
-    }
-    targetIdentity = ownedFileIdentity(await targetHandle.stat({ bigint: true }));
-    if (targetHandle.write === undefined) throw new Error('FILE_COPY_HANDLE_UNSUPPORTED');
-    await assertCopyTargetAuthorized(
-      targetAuthorization.policy,
-      targetAuthorization.targetDirectoryRelativePath,
-      targetAuthorization.targetRelativePath,
-      targetAuthorization.expectedTargetDirectoryIdentity,
-      targetIdentity
-    );
-    const buffer = Buffer.allocUnsafe(64 * 1024);
-    while (true) {
-      const { bytesRead } = await sourceHandle.read(buffer, 0, buffer.length, null);
-      if (bytesRead === 0) break;
-      let written = 0;
-      while (written < bytesRead) {
-        const result = await targetHandle.write(buffer, written, bytesRead - written, null);
-        if (result.bytesWritten <= 0) throw new Error('FILE_COPY_WRITE_STALLED');
-        written += result.bytesWritten;
-      }
-    }
-    const currentSource = await captureMoveSource(source);
-    if (!hasSameDeleteIdentity(expectedSourceIdentity, currentSource)) {
-      throw new FileToolError('ENTRY_CHANGED', '源文件在复制期间发生变化，请重新确认');
-    }
-    await assertCopyTargetAuthorized(
-      targetAuthorization.policy,
-      targetAuthorization.targetDirectoryRelativePath,
-      targetAuthorization.targetRelativePath,
-      targetAuthorization.expectedTargetDirectoryIdentity,
-      targetIdentity
-    );
-  } catch (error) {
-    failure = error;
-  }
-  try {
-    await targetHandle?.close();
-  } catch (error) {
-    failure ??= error;
-  }
-  try {
-    await sourceHandle.close();
-  } catch (error) {
-    failure ??= error;
-  }
-  if (failure === undefined && targetIdentity !== null) {
-    try {
-      await assertCopyTargetAuthorized(
-        targetAuthorization.policy,
-        targetAuthorization.targetDirectoryRelativePath,
-        targetAuthorization.targetRelativePath,
-        targetAuthorization.expectedTargetDirectoryIdentity,
-        targetIdentity
-      );
-    } catch (error) {
-      failure = error;
-    }
-  }
-  if (failure !== undefined) {
-    if (targetHandle !== null) await removeExclusivelyCreatedFile(target, targetIdentity, operations);
-    throw failure;
-  }
-}
-
 /** 完整处理写入与关闭失败，并返回本次新建实体的身份。 */
 async function writeNewFile(path: string, content: string, operations: FileToolFileOperations): Promise<string> {
   const handle = await operations.open(path, 'wx');
@@ -914,40 +754,6 @@ export class FileToolService {
         this.#issuedActions.set(action, { operation: 'apply_patch', targetRelativePath: action.targetRelativePath, baseSha256: sha256(base), result });
         return action;
       }
-      if (request.toolName === 'copy_file') {
-        const arguments_ = toolArguments.copy_file.parse(request.arguments);
-        const sourceRelativePath = normalizeRelativePathForResult(arguments_.sourceRelativePath);
-        const targetDirectoryRelativePath = normalizeRelativePathForResult(
-          arguments_.targetDirectoryRelativePath
-        );
-        if (sourceRelativePath === '.') {
-          throw new FileToolError('PATH_INVALID', '源文件不能是授权根目录');
-        }
-        const source = await this.policy.resolveExisting(arguments_.sourceRelativePath);
-        const targetDirectory = await this.policy.resolveExisting(arguments_.targetDirectoryRelativePath);
-        const expectedSourceIdentity = await captureMoveSource(source);
-        const expectedTargetDirectoryIdentity = await captureMoveTargetDirectory(targetDirectory);
-        const targetRelativePath = normalizeRelativePathForResult(
-          posix.join(targetDirectoryRelativePath, basename(source))
-        );
-        await assertMoveTargetMissing(join(targetDirectory, basename(source)));
-        const action = Object.freeze({
-          operation: 'copy_file' as const,
-          authorizationGeneration,
-          sourceRelativePath,
-          targetDirectoryRelativePath,
-          targetRelativePath
-        });
-        this.#issuedActions.set(action, {
-          operation: 'copy_file',
-          sourceRelativePath,
-          targetDirectoryRelativePath,
-          targetRelativePath,
-          expectedSourceIdentity,
-          expectedTargetDirectoryIdentity
-        });
-        return action;
-      }
       if (request.toolName === 'delete_file') {
         const arguments_ = toolArguments.delete_file.parse(request.arguments);
         const targetRelativePath = normalizeRelativePathForResult(arguments_.relativePath);
@@ -1035,30 +841,6 @@ export class FileToolService {
           throw new FileToolError('ENTRY_CHANGED', '文件在确认后已经发生变化，请重新确认');
         }
         await replaceAtomically(target, internal.result, this.fileOperations);
-        return;
-      }
-      if (internal.operation === 'copy_file') {
-        const source = await this.policy.resolveExisting(internal.sourceRelativePath);
-        const targetDirectory = await this.policy.resolveExisting(internal.targetDirectoryRelativePath);
-        const currentSourceIdentity = await captureMoveSource(source);
-        const currentTargetDirectoryIdentity = await captureMoveTargetDirectory(targetDirectory);
-        if (!hasSameDeleteIdentity(internal.expectedSourceIdentity, currentSourceIdentity)
-          || currentTargetDirectoryIdentity.device !== internal.expectedTargetDirectoryIdentity.device
-          || currentTargetDirectoryIdentity.inode !== internal.expectedTargetDirectoryIdentity.inode) {
-          throw new FileToolError('ENTRY_CHANGED', '源文件或目标目录在确认后已经发生变化，请重新确认');
-        }
-        const target = join(targetDirectory, basename(source));
-        await assertMoveTargetMissing(target);
-        await copyFileWithCas(source, target, internal.expectedSourceIdentity, this.fileOperations, {
-          policy: this.policy,
-          targetDirectoryRelativePath: internal.targetDirectoryRelativePath,
-          targetRelativePath: internal.targetRelativePath,
-          expectedTargetDirectoryIdentity: internal.expectedTargetDirectoryIdentity
-        });
-        const finalSourceIdentity = await captureMoveSource(source);
-        if (!hasSameDeleteIdentity(internal.expectedSourceIdentity, finalSourceIdentity)) {
-          throw new FileToolError('ENTRY_CHANGED', '源文件在复制期间发生变化，请重新确认');
-        }
         return;
       }
       if (internal.operation === 'move_file') {

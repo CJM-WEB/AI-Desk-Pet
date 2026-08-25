@@ -92,6 +92,8 @@ OpenCode 固定参考版本为 `2a6be0a03b93a6734070e10a6c3b56863475f214`，MIT�
 
 不迁移 OpenCode 的覆盖写、绝对路径、外部目录、永久删除、Shell、格式化器、LSP、快照或插件副作用。新增或修改工具继续复用现有 `PathPolicy`、确认续跑、授权 generation 与 Main 执行结果。若复制实质代码，文件头或第三方 notices 保留 OpenCode MIT 版权与固定提交来源。
 
+OpenCode 没有独立的文件复制工具，复制由其 Shell 能力完成。本项目不引入 Shell，也不保留自行实现的 `copy_file`：在 Windows/Node 的普通文件句柄模型下，目标文件可能在打开后被重命名到授权根外，句柄仍会继续写入；事后身份复核只能发现问题，无法保证回滚被移走的实体。该入口因此按减法原则整链删除，避免对不满足现有 TOCTOU 安全边界的能力作虚假承诺。明确复制请求仍由 Main 识别并返回稳定的“不支持复制”错误，不得降级给普通聊天模型口头处理。授权根内的精确移动继续由现有受控工具承担。
+
 ### 4.6 隐私设置减法
 
 从公开 Settings DTO、Store schema/default、Dashboard support、Renderer state 和 Privacy UI 删除 screenshot/clipboard。SettingsStore 在严格解析前只剥离旧数据中的两个字段并原子回写，保留 file、memory 和其他配置。底层通用披露策略类型暂保留，因为它不代表已接入捕获功能且仍服务跨 Provider 安全测试。

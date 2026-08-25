@@ -447,6 +447,22 @@ describe('ConversationCoordinator', () => {
     expect(harness.fileTasks.submissions).toEqual([]);
   });
 
+  test('复制文件请求由宿主稳定拒绝且不交给模型伪称成功', async () => {
+    const harness = createHarness([]);
+
+    await expect(harness.coordinator.submit('把 report.md 复制到 archive 目录')).rejects.toSatisfy(
+      error => errorCode(error) === 'FILE_COPY_UNSUPPORTED'
+    );
+
+    expect(harness.factoryCallCount()).toBe(0);
+    expect(harness.fileTasks.submissions).toEqual([]);
+    expect(harness.events).toContainEqual({
+      type: 'error',
+      code: 'FILE_COPY_UNSUPPORTED',
+      message: '暂不支持复制文件；可以改用移动文件，或先创建目标文件再写入内容。'
+    });
+  });
+
   test('文件目标准备期间取消会释放文件 owner，并允许下一次文件请求立即进入准备', async () => {
     const fileTasks = new CapturingCapabilityTasks();
     const barrier = deferredVoid();

@@ -77,7 +77,6 @@ const filePlanningToolNames = Object.freeze({
   grep_files: 'builtin.files.grep_files',
   create_file: 'builtin.files.create_file',
   create_directory: 'builtin.files.create_directory',
-  copy_file: 'builtin.files.copy_file',
   apply_patch: 'builtin.files.apply_patch',
   edit_file: 'builtin.files.edit_file',
   delete_file: 'builtin.files.delete_file',
@@ -87,7 +86,6 @@ const filePlanningToolNames = Object.freeze({
 const controlledWriteOperations = new Set<FileWriteOperation>([
   'create_file',
   'create_directory',
-  'copy_file',
   'apply_patch',
   'edit_file',
   'delete_file',
@@ -258,7 +256,6 @@ function actionSummary(action: VerifiedWriteAction): string {
   switch (action.operation) {
     case 'create_file': return `创建文件 ${action.targetRelativePath}`;
     case 'create_directory': return `创建目录 ${action.targetRelativePath}`;
-    case 'copy_file': return `复制文件 ${action.sourceRelativePath} 到 ${action.targetRelativePath}`;
     case 'apply_patch': return `修改文件 ${action.targetRelativePath}`;
     case 'delete_file': return `${action.targetType === 'empty_directory' ? '删除目录' : '删除文件'} ${action.targetRelativePath}`;
     case 'move_file': return `移动文件 ${action.sourceRelativePath} 到 ${action.targetRelativePath}`;
@@ -817,11 +814,6 @@ function pendingActionDraft(
       previewTruncated: fileAction.previewTruncated
     };
     case 'create_directory': return { ...common, operation: 'create_directory' };
-    case 'copy_file': return {
-      ...common,
-      operation: 'copy_file',
-      sourceRelativePath: fileAction.sourceRelativePath
-    };
     case 'apply_patch': return { ...common, operation: 'apply_patch', addedLines: fileAction.addedLines, removedLines: fileAction.removedLines, diffPreview: fileAction.diffPreview, previewTruncated: fileAction.previewTruncated };
     case 'delete_file': return { ...common, operation: 'delete_file', targetType: fileAction.targetType };
     case 'move_file': return {

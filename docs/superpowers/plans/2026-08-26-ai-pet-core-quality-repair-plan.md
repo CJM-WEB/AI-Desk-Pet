@@ -61,10 +61,11 @@
 
 文件：`packages/file-tools`、工具注册、共享契约与测试；参考 OpenCode 固定提交中的 read/glob/grep/core edit。
 
-1. RED：分页、BOM/CRLF、二进制、Glob/Grep、截断、唯一 edit/replaceAll、copy/精确 move，以及所有越界/链接/目标冲突/确认后变化。
+1. RED：分页、BOM/CRLF、二进制、Glob/Grep、截断、唯一 edit/replaceAll、精确 move，以及所有越界/链接/目标冲突/确认后变化。
 2. GREEN：扩展 `executeRead/preview/executeWrite`，只公开相对路径；精确编辑采用 CAS，不启用低阈值模糊自动替换。
 3. 来源：若复制实质代码，新增第三方声明与 MIT notice；若独立适配实现，在规格与注释记录参考来源。
 4. 完成标准：确认前零副作用，失败不留临时文件，不覆盖、不永久删除。
+5. 减法结论：不提供 OpenCode 不存在的独立 `copy_file`。其 Shell 复制不能迁入；本轮试制入口因无法满足 Windows 句柄被移出授权根时的 TOCTOU 回滚不变量而整链删除。Router 仍识别明确复制请求并由 Main 稳定拒绝，不允许降级聊天或伪称成功。
 
 ## 任务 8：OpenCode 风格多步 Agent 编排
 
@@ -79,6 +80,6 @@
 
 1. 分别运行定向测试和 package typecheck。
 2. 运行 `pnpm.cmd test:security`、`pnpm.cmd test:integration`、`pnpm.cmd verify:desktop`、`pnpm.cmd verify:behavior`。
-3. 运行真实隔离目录 E2E，证明创建、读取、检索、编辑、复制/移动、回收站删除和多步确认的真实副作用。
+3. 运行真实隔离目录 E2E，证明创建、读取、检索、编辑、移动、回收站删除和多步确认的真实副作用。
 4. 并行执行规格审查与代码质量审查；修复后运行 `git diff --check`。
 5. 按切片提交；最终报告自动证据、待人工拖拽验收与剩余风险。

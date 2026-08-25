@@ -7,13 +7,13 @@ import {
 
 function expectIntentKind(
   text: string,
-  kind: 'chat' | 'file_task' | 'powershell_task'
+  kind: 'chat' | 'file_task' | 'powershell_task' | 'unsupported_file_operation'
 ): void {
   const intent = capabilityIntentRouter.route(text);
   expect(intent.kind).toBe(kind);
   if (intent.kind === 'chat') {
     expect(intent.behaviorHint).toBeNull();
-  } else {
+  } else if (intent.kind !== 'unsupported_file_operation') {
     expect(intent.evidence).toBeDefined();
   }
 }
@@ -26,11 +26,14 @@ describe('能力意图路由器', () => {
     ['在文件内容中搜索 needle', 'grep_files'],
     ['按文件名匹配 **/*.ts', 'glob_files'],
     ['把 notes.txt 中的旧文本替换为新文本', 'edit_file'],
-    ['把 docs/source.txt 复制到 archive 文件夹', 'copy_file'],
     ['把 success.txt 移动到回收站', 'delete_file'],
     ['把 docs/source.txt 移动到 archive 文件夹', 'move_file']
   ] as const)('文件 Router 只生成操作类别提示，不解释文件名：%s', (text, operation) => {
     expect(createFilePlanningHint(text)).toEqual({ operation });
+  });
+
+  test('复制请求不再生成已退役的 copy_file 规划提示', () => {
+    expect(createFilePlanningHint('把 docs/source.txt 复制到 archive 文件夹')).toBeNull();
   });
 
   test('创建并写入正文只规划 create_file', () => {
@@ -104,7 +107,6 @@ describe('能力意图路由器', () => {
     '删除当前文件夹里的 a.txt',
     '把 report.md 重命名为 archive.md',
     'WRITE ./notes.md',
-    'Copy a.txt to b.txt',
     'move ./drafts to 当前目录',
     'Search 授权目录',
     '整理当前目录中的文件',
@@ -168,10 +170,16 @@ describe('能力意图路由器', () => {
     'read ./report.md',
     'read file report.md',
     'rename report.md to archive.md',
-    'copy report.md to archive.md',
     'move report.md to archive.md'
   ])('显式本地限定或强文件结构使“%s”进入文件任务', text => {
     expectIntentKind(text, 'file_task');
+  });
+
+  test.each([
+    'copy report.md to archive.md',
+    '把 report.md 复制到 archive 目录'
+  ])('已退役复制能力由宿主识别为不支持且不进入聊天', text => {
+    expectIntentKind(text, 'unsupported_file_operation');
   });
 
   test.each([

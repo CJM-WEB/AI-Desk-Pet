@@ -968,6 +968,26 @@ describe('AgentLoop', () => {
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
+  test('只读失败后生产只读结果没有 ok 字段时恢复真实成功', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-missing-without-ok'),
+      readRequest('read-fixed-without-ok'),
+      { type: 'text', text: '已读取正确文件' }
+    ]);
+    const runtime = createToolRuntime();
+    vi.spyOn(runtime, 'executeRead')
+      .mockRejectedValueOnce(Object.assign(new Error('不存在'), { code: 'ENTRY_NOT_FOUND' }))
+      .mockResolvedValueOnce({ toolName: 'read_file', content: '正文' });
+
+    const events = await collect(new AgentLoop().run('读取文件', {
+      ...context(provider),
+      toolRuntime: runtime
+    }));
+
+    expect(events).toContainEqual({ type: 'message', text: '已读取正确文件' });
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
   test('失败工具结果后的模型口头成功不得公开且只显示宿主稳定失败说明', async () => {
     const provider = new ScriptedProvider([
       readRequest('read-failed'),

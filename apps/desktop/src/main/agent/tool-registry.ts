@@ -178,21 +178,6 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
 
   registry.register({
     definition: definition(
-      'builtin.files.copy_file',
-      '将授权根内的一个普通文件复制到另一个已存在目录，需要用户确认。',
-      toolJsonSchemas.copy_file
-    ),
-    argumentsSchema: toolArguments.copy_file,
-    executionToolName: 'copy_file',
-    risk: 'recoverable',
-    enabled: true,
-    auditSummary: arguments_ => (
-      `复制文件 ${displayRelativePath(arguments_['sourceRelativePath'])} 到 ${displayRelativePath(arguments_['targetDirectoryRelativePath'])}`
-    )
-  });
-
-  registry.register({
-    definition: definition(
       'builtin.files.move_file',
       '将授权根内的一个普通文件移动到另一个已存在目录，需要用户确认。',
       toolJsonSchemas.move_file

@@ -206,7 +206,6 @@ describe('内置文件工具注册', () => {
       'builtin.files.glob_files',
       'builtin.files.grep_files',
       'builtin.files.create_file',
-      'builtin.files.copy_file',
       'builtin.files.move_file',
       'builtin.files.create_directory',
       'builtin.files.apply_patch',
@@ -248,7 +247,6 @@ describe('内置文件工具注册', () => {
       'builtin.files.glob_files',
       'builtin.files.grep_files',
       'builtin.files.create_file',
-      'builtin.files.copy_file',
       'builtin.files.move_file',
       'builtin.files.create_directory',
       'builtin.files.apply_patch',
@@ -265,7 +263,7 @@ describe('内置文件工具注册', () => {
     })).toThrow('TOOL_REGISTRY_SEALED');
   });
 
-  test('十一个公开工具精确映射到内部动作和本地风险', () => {
+  test('十个公开工具精确映射到内部动作和本地风险', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
     const cases = [
@@ -274,7 +272,6 @@ describe('内置文件工具注册', () => {
       ['builtin.files.glob_files', 'glob_files', 'read', { relativePath: '.', pattern: '**/*.ts', maxResults: 100 }],
       ['builtin.files.grep_files', 'grep_files', 'read', { relativePath: '.', pattern: 'needle', include: '**/*', caseSensitive: true, maxResults: 100 }],
       ['builtin.files.create_file', 'create_file', 'recoverable', { relativePath: 'new.txt', content: '正文' }],
-      ['builtin.files.copy_file', 'copy_file', 'recoverable', { sourceRelativePath: 'old.txt', targetDirectoryRelativePath: 'archive' }],
       ['builtin.files.move_file', 'move_file', 'recoverable', { sourceRelativePath: 'old.txt', targetDirectoryRelativePath: 'archive' }],
       ['builtin.files.create_directory', 'create_directory', 'recoverable', { relativePath: 'abc' }],
       ['builtin.files.apply_patch', 'apply_patch', 'recoverable', { relativePath: 'new.txt', patch: '@@ -1 +1 @@\n-a\n+b\n' }],
@@ -347,10 +344,7 @@ describe('内置文件工具注册', () => {
       sourceRelativePath: { minLength: 1, maxLength: 1024 },
       targetDirectoryRelativePath: { minLength: 1, maxLength: 1024 }
     });
-    expect(parameters('builtin.files.copy_file').properties).toMatchObject({
-      sourceRelativePath: { minLength: 1, maxLength: 1024 },
-      targetDirectoryRelativePath: { minLength: 1, maxLength: 1024 }
-    });
+    expect(definitions.some(item => item.function.name === 'builtin.files.copy_file')).toBe(false);
   });
 
   test('审计摘要不包含模型提供的绝对路径', () => {
