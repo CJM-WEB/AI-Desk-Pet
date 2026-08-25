@@ -275,6 +275,31 @@ describe('LocalModelRuntime', () => {
     ]));
   });
 
+  test('首选 Vulkan 硬件加载失败后尝试下一硬件候选而非直接回退 CPU', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess(
+      {
+        stdout: [
+          'Vulkan0: Intel(R) Iris(R) Xe Graphics',
+          'Vulkan2: NVIDIA GeForce RTX 5060 Laptop GPU'
+        ].join('\n'),
+        exitCode: 0
+      },
+      { stderr: 'preferred device load failed', exitCode: 1, pid: 5051 },
+      { pid: 5052 }
+    );
+    port.queuePorts(43123, 43124);
+    port.queueHealth(new Error('connection reset'), { status: 200, body: { status: 'ok' } });
+    const { runtime } = await createRuntime(port);
+
+    await runtime.start();
+
+    expect(runtime.getStatus()).toMatchObject({ phase: 'ready', backend: 'vulkan' });
+    expect(port.spawnInputs[1]?.args).toEqual(expect.arrayContaining(['--device', 'Vulkan2']));
+    expect(port.spawnInputs[2]?.args).toEqual(expect.arrayContaining(['--device', 'Vulkan0']));
+    expect(port.spawnInputs).toHaveLength(3);
+  });
+
   test('Vulkan 只有集成显卡时仍使用该硬件设备', async () => {
     const port = new FakeLocalModelProcessPort();
     port.queueProcess({

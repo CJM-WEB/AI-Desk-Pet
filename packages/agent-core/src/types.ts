@@ -47,6 +47,8 @@ export interface ModelRequest {
   toolChoice: ToolChoicePolicy;
   reasoningMode: ReasoningMode;
   responseContract?: ModelResponseContract;
+  /** 仅投影已经完整解码的可见正文；最终事实仍以 respond 的完整返回值为准。 */
+  onTextDelta?: (delta: string) => void;
 }
 
 export type ModelResponse =

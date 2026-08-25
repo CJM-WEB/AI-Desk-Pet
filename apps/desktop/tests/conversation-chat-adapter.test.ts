@@ -64,7 +64,8 @@ describe('ConversationChatAdapter', () => {
         name: 'character_chat',
         jsonSchema: characterChatResponseJsonSchema,
         textField: 'text',
-        allowPlainTextFallback: true
+        allowPlainTextFallback: true,
+        validateStructuredOutput: expect.any(Function)
       }
     });
     expect(取得请求(provider).messages[0]?.content).toContain('用户使用的语言');

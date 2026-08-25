@@ -177,6 +177,67 @@ describe('Renderer 任务视图状态', () => {
     expect(store.getState().messages.at(-1)?.text).toBe('消息 104');
   });
 
+  test('流式消息在同一条记录原位追加并由 commit 校正最终正文', () => {
+    const store = createTaskStore();
+    store.getState().apply({ type: 'assistant_message_start', turnId: 'turn-1' });
+    store.getState().apply({ type: 'assistant_message_delta', turnId: 'turn-1', delta: '草' });
+    store.getState().apply({ type: 'assistant_message_delta', turnId: 'turn-1', delta: '稿' });
+
+    expect(store.getState().messages).toEqual([{
+      id: 'assistant-stream-turn-1', role: 'assistant', text: '草稿'
+    }]);
+
+    store.getState().apply({
+      type: 'assistant_message_commit', turnId: 'turn-1', text: '最终正文'
+    });
+    expect(store.getState().messages).toEqual([{
+      id: 'assistant-stream-turn-1', role: 'assistant', text: '最终正文'
+    }]);
+  });
+
+  test('错误、取消与 reset 清除未 commit 草稿并忽略未知 turnId 的迟到事件', () => {
+    for (const terminal of ['error', 'cancelled'] as const) {
+      const store = createTaskStore();
+      store.getState().apply({ type: 'assistant_message_start', turnId: `turn-${terminal}` });
+      store.getState().apply({
+        type: 'assistant_message_delta', turnId: `turn-${terminal}`, delta: '未完成'
+      });
+      store.getState().apply({ type: 'phase', phase: terminal });
+      expect(store.getState().messages).toEqual([]);
+      store.getState().apply({
+        type: 'assistant_message_delta', turnId: `turn-${terminal}`, delta: '迟到'
+      });
+      store.getState().apply({
+        type: 'assistant_message_commit', turnId: `turn-${terminal}`, text: '迟到完成'
+      });
+      expect(store.getState().messages).toEqual([]);
+    }
+
+    const resetStore = createTaskStore();
+    resetStore.getState().apply({ type: 'assistant_message_start', turnId: 'turn-reset' });
+    resetStore.getState().apply({ type: 'conversation_reset', generation: 'generation-next' });
+    resetStore.getState().apply({
+      type: 'assistant_message_delta', turnId: 'turn-reset', delta: '迟到'
+    });
+    expect(resetStore.getState().messages).toEqual([]);
+  });
+
+  test('多条合法 delta 累计超过正文预算时 fail-close 并拒绝同 turn 迟到 commit', () => {
+    const store = createTaskStore();
+    store.getState().apply({ type: 'assistant_message_start', turnId: 'turn-budget' });
+    store.getState().apply({
+      type: 'assistant_message_delta', turnId: 'turn-budget', delta: 'a'.repeat(3_000)
+    });
+    store.getState().apply({
+      type: 'assistant_message_delta', turnId: 'turn-budget', delta: 'b'.repeat(2_000)
+    });
+    store.getState().apply({
+      type: 'assistant_message_commit', turnId: 'turn-budget', text: '不应恢复'
+    });
+
+    expect(store.getState().messages).toEqual([]);
+  });
+
   test('待确认动作在成功、错误或取消终止阶段被清除', () => {
     const action = {
       category: 'file' as const,

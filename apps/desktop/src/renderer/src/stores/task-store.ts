@@ -4,7 +4,13 @@ import {
   type CharacterStateRequest,
   type CharacterStateSnapshot
 } from '@myself/character-runtime';
-import type { PendingAction, TaskEvent, TaskPhase } from '@myself/shared-types';
+import {
+  ASSISTANT_STREAM_TEXT_MAX_CHARACTERS,
+  ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS,
+  type PendingAction,
+  type TaskEvent,
+  type TaskPhase
+} from '@myself/shared-types';
 import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import {
@@ -59,6 +65,9 @@ export function createTaskStore(): StoreApi<TaskViewState> {
   let transientTimer: ReturnType<typeof setTimeout> | null = null;
   let extensionController = new ExtensionTriggerController([]);
   let pendingEmotionRequest: CharacterStateRequest | null = null;
+  let activeAssistantStreamTurnId: string | null = null;
+
+  const streamMessageId = (turnId: string): string => `assistant-stream-${turnId}`;
 
   const clearTransientTimer = (): void => {
     if (transientTimer !== null) clearTimeout(transientTimer);
@@ -127,6 +136,59 @@ export function createTaskStore(): StoreApi<TaskViewState> {
       });
     },
     apply: event => {
+      if (event.type === 'assistant_message_start') {
+        if (event.turnId.length > ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS) return;
+        const previousId = activeAssistantStreamTurnId === null
+          ? null
+          : streamMessageId(activeAssistantStreamTurnId);
+        activeAssistantStreamTurnId = event.turnId;
+        const message: TaskViewMessage = {
+          id: streamMessageId(event.turnId),
+          role: 'assistant',
+          text: ''
+        };
+        set(state => ({
+          messages: [
+            ...state.messages.filter(item => item.id !== previousId && item.id !== message.id),
+            message
+          ].slice(-MAX_MESSAGES)
+        }));
+        return;
+      }
+      if (event.type === 'assistant_message_delta') {
+        if (activeAssistantStreamTurnId !== event.turnId) return;
+        const id = streamMessageId(event.turnId);
+        const current = get().messages.find(message => message.id === id);
+        if (
+          current === undefined
+          || current.text.length + event.delta.length > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS
+        ) {
+          activeAssistantStreamTurnId = null;
+          set(state => ({ messages: state.messages.filter(message => message.id !== id) }));
+          return;
+        }
+        set(state => ({
+          messages: state.messages.map(message => message.id === id
+            ? { ...message, text: `${message.text}${event.delta}` }
+            : message)
+        }));
+        return;
+      }
+      if (event.type === 'assistant_message_commit') {
+        if (activeAssistantStreamTurnId !== event.turnId) return;
+        activeAssistantStreamTurnId = null;
+        const id = streamMessageId(event.turnId);
+        if (event.text.length > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) {
+          set(state => ({ messages: state.messages.filter(message => message.id !== id) }));
+          return;
+        }
+        set(state => ({
+          messages: state.messages.map(message => message.id === id
+            ? { ...message, text: event.text }
+            : message)
+        }));
+        return;
+      }
       if (event.type === 'message') {
         const message: TaskViewMessage = {
           id: `message-${++nextMessageId}`,
@@ -172,6 +234,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         // reset 事件是 Renderer 清空当前会话状态的唯一事实来源。
         clearTransientTimer();
         pendingEmotionRequest = null;
+        activeAssistantStreamTurnId = null;
         set(state => ({
           conversationRevision: state.conversationRevision + 1,
           phase: 'idle',
@@ -184,6 +247,10 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         return;
       }
       if (event.type === 'error') {
+        const activeStreamId = activeAssistantStreamTurnId === null
+          ? null
+          : streamMessageId(activeAssistantStreamTurnId);
+        activeAssistantStreamTurnId = null;
         const message: TaskViewMessage = {
           id: `message-${++nextMessageId}`,
           role: 'error',
@@ -192,7 +259,10 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           ...(event.nextAction ? { nextAction: event.nextAction } : {})
         };
         set(state => ({
-          messages: [...state.messages, message].slice(-MAX_MESSAGES),
+          messages: [
+            ...state.messages.filter(item => item.id !== activeStreamId),
+            message
+          ].slice(-MAX_MESSAGES),
           ...(state.resolvingHistoryDisclosureRequestId
             && state.pendingHistoryDisclosure?.requestId
               === state.resolvingHistoryDisclosureRequestId
@@ -219,6 +289,10 @@ export function createTaskStore(): StoreApi<TaskViewState> {
 
       clearTransientTimer();
       const phase = event.phase;
+      const activeStreamId = terminalPhase(phase) && activeAssistantStreamTurnId !== null
+        ? streamMessageId(activeAssistantStreamTurnId)
+        : null;
+      if (terminalPhase(phase)) activeAssistantStreamTurnId = null;
       if (phase === 'thinking') pendingEmotionRequest = null;
       const resolvingDisclosureFailed = phase === 'error'
         && get().resolvingHistoryDisclosureRequestId !== null
@@ -226,6 +300,9 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           === get().resolvingHistoryDisclosureRequestId;
       set({
         phase,
+        ...(activeStreamId === null
+          ? {}
+          : { messages: get().messages.filter(message => message.id !== activeStreamId) }),
         characterState: reduceCharacterState(get().characterState, {
           type: 'task',
           phase

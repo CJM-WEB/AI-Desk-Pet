@@ -503,6 +503,74 @@ describe('ConversationCoordinator', () => {
     expect(fileTasks.submissions).toEqual([]);
   });
 
+  test('模型增量按同一 turnId 发布 start/delta/commit 且最终历史只使用完整正文', async () => {
+    const requests: ModelRequest[] = [];
+    const script: ProviderScript = {
+      requests,
+      signals: [],
+      provider: {
+        async respond(request, signal) {
+          requests.push(request);
+          script.signals.push(signal);
+          request.onTextDelta?.('你');
+          request.onTextDelta?.('好');
+          return { type: 'text', text: '你好' };
+        }
+      }
+    };
+    const { coordinator, events, history } = createHarness([{
+      profileId: 'profile-local',
+      providerIdentity: 'local',
+      providerName: '本地模型',
+      script
+    }]);
+
+    await coordinator.submit('测试流式');
+
+    const streamEvents = events.filter(event => event.type.startsWith('assistant_message_'));
+    expect(streamEvents).toEqual([
+      { type: 'assistant_message_start', turnId: 'assistant-1' },
+      { type: 'assistant_message_delta', turnId: 'assistant-1', delta: '你' },
+      { type: 'assistant_message_delta', turnId: 'assistant-1', delta: '好' },
+      { type: 'assistant_message_commit', turnId: 'assistant-1', text: '你好' }
+    ]);
+    expect(events).not.toContainEqual({ type: 'message', role: 'assistant', text: '你好' });
+    expect(history.turns()[0]?.assistantText).toBe('你好');
+  });
+
+  test('取消后丢弃不服从 AbortSignal 的迟到增量与 commit', async () => {
+    let emitLateDelta: (() => void) | undefined;
+    const script = deferredProvider();
+    script.provider.respond = async (request, signal) => {
+      script.requests.push(request);
+      script.signals.push(signal);
+      request.onTextDelta?.('草稿');
+      emitLateDelta = () => request.onTextDelta?.('迟到');
+      return new Promise<ModelResponse>(resolve => {
+        script.resolve = resolve;
+      });
+    };
+    const { coordinator, events } = createHarness([{
+      profileId: 'profile-local', providerIdentity: 'local',
+      providerName: '本地模型', script
+    }]);
+    const pending = coordinator.submit('取消流式');
+    await vi.waitFor(() => expect(emitLateDelta).toBeTypeOf('function'));
+
+    coordinator.cancelActive();
+    emitLateDelta?.();
+    script.resolve({ type: 'text', text: '草稿迟到' });
+    await pending;
+
+    expect(events).toContainEqual({
+      type: 'assistant_message_delta', turnId: 'assistant-1', delta: '草稿'
+    });
+    expect(JSON.stringify(events)).not.toContain('迟到');
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: 'assistant_message_commit'
+    }));
+  });
+
   test('自然文本回复形成完整历史回合且不调用文件端口', async () => {
     const script = scriptedProvider({
       type: 'text',

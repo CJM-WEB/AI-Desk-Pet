@@ -289,24 +289,26 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
       if (this.#backendPreference !== 'cpu-only') {
         this.#publish(true, 'loading', 'vulkan', null);
         backend = 'vulkan';
-        const device = await this.#probeVulkan(manifest, generation, controller.signal);
-        if (device !== undefined) {
+        const devices = await this.#probeVulkan(manifest, generation, controller.signal);
+        let lastVulkanError: unknown;
+        for (const device of devices) {
           try {
             await this.#startBackend(manifest, 'vulkan', generation, controller.signal, device);
             return;
           } catch (error) {
             const code = runtimeCode(error);
             if (
-              this.#backendPreference === 'vulkan-only'
-              || isAbortError(error)
+              isAbortError(error)
               || code === 'PORT_CONFLICT'
               || code === 'PROCESS_CLEANUP_FAILED'
             ) {
               throw error;
             }
+            lastVulkanError = error;
           }
         }
         if (this.#backendPreference === 'vulkan-only') {
+          if (lastVulkanError !== undefined) throw lastVulkanError;
           throw new LocalModelRuntimeError('VULKAN_UNAVAILABLE');
         }
       }
@@ -360,7 +362,7 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     manifest: ValidatedLocalModelManifest,
     generation: string,
     signal: AbortSignal
-  ): Promise<string | undefined> {
+  ): Promise<readonly string[]> {
     let child: LocalModelChildProcess;
     try {
       child = this.#processPort.spawn({
@@ -372,7 +374,7 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
         windowsHide: true
       });
     } catch {
-      return undefined;
+      return [];
     }
     const output = new BoundedTail(MAX_OUTPUT_BYTES);
     const active: ActiveProcess = {
@@ -396,12 +398,12 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     try {
       const exitCode = await waitForProcess(child, signal, this.#loadTimeoutMs);
       if (this.#active === active) this.#active = null;
-      if (exitCode !== 0) return undefined;
-      return selectVulkanDevice(output.value);
+      if (exitCode !== 0) return [];
+      return selectVulkanDevices(output.value);
     } catch (error) {
       await this.#terminateActive(active);
       if (isAbortError(error)) throw error;
-      return undefined;
+      return [];
     } finally {
       child.stdout.off('data', onStdout);
       child.stderr.off('data', onStderr);
@@ -821,7 +823,7 @@ const integratedVulkanDevicePattern = /(?:\bintel\b|\biris\b|\bradeon(?:\(tm\))?
  * `--list-devices` 的序号只表示枚举顺序，不能代表性能。
  * 解析所有唯一硬件设备后优先明确独显；未知硬件仍优先于已知集显，平局按序号稳定选择。
  */
-function selectVulkanDevice(output: string): string | undefined {
+function selectVulkanDevices(output: string): readonly string[] {
   const unique = new Map<string, VulkanDeviceCandidate>();
   for (const line of output.split(/\r?\n/u)) {
     // 保留旧运行时只输出设备 ID 的兼容格式；存在名称时再参与硬件分类。
@@ -849,7 +851,7 @@ function selectVulkanDevice(output: string): string | undefined {
   }
   return [...unique.values()].sort((left, right) => (
     right.preference - left.preference || left.ordinal - right.ordinal
-  ))[0]?.id;
+  )).map(candidate => candidate.id);
 }
 
 function runtimeCode(error: unknown): LocalModelReasonCode | undefined {

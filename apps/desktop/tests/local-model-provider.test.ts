@@ -58,7 +58,14 @@ const structuredRequest: ModelRequest = {
     name: 'character_chat',
     jsonSchema: characterResponseSchema,
     textField: 'text',
-    allowPlainTextFallback: true
+    allowPlainTextFallback: true,
+    validateStructuredOutput: value => (
+      typeof value === 'object'
+      && value !== null
+      && typeof Reflect.get(value, 'text') === 'string'
+      && typeof Reflect.get(value, 'activity') === 'string'
+      && typeof Reflect.get(value, 'status') === 'string'
+    )
   }
 };
 
@@ -66,6 +73,29 @@ function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
     headers: { 'content-type': 'application/json' }
+  });
+}
+
+function sseResponse(contentChunks: readonly string[]): Response {
+  const encoder = new TextEncoder();
+  const events = contentChunks.map(content => (
+    `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
+  )).concat('data: [DONE]\n\n');
+  return new Response(new ReadableStream({
+    start(controller) {
+      // 故意把 UTF-8 与 SSE 边界拆散，证明传输层不依赖网络分片形状。
+      const bytes = encoder.encode(events.join(''));
+      for (let offset = 0; offset < bytes.length; offset += 3) {
+        controller.enqueue(bytes.slice(offset, offset + 3));
+      }
+      controller.close();
+    }
+  }), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+function rawSseResponse(events: readonly string[]): Response {
+  return new Response(events.join(''), {
+    headers: { 'content-type': 'text/event-stream' }
   });
 }
 
@@ -178,9 +208,267 @@ describe('LocalModelProvider', () => {
     });
   });
 
+  test('本地无工具结构化聊天使用 SSE 且只增量公开顶层 text 的完整解码字符', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      '{"activity":"不可见-canary","text":"你\\uD83D',
+      '\\uDC3E好\\n世',
+      '界","status":"idle"}'
+    ]));
+    const deltas: string[] = [];
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: delta => deltas.push(delta)
+    }, new AbortController().signal)).resolves.toMatchObject({
+      type: 'text',
+      text: '你🐾好\n世界',
+      structured_output: { activity: '不可见-canary', status: 'idle' }
+    });
+
+    expect(deltas.join('')).toBe('你🐾好\n世界');
+    expect(JSON.stringify(deltas)).not.toContain('不可见-canary');
+    expect(JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body))).toMatchObject({
+      stream: true
+    });
+  });
+
+  test('带工具请求即使提供增量接收器也保持非流式', async () => {
+    const onTextDelta = vi.fn();
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await provider.respond({ ...request, onTextDelta }, new AbortController().signal);
+
+    expect(JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body))).toMatchObject({
+      stream: false
+    });
+    expect(onTextDelta).not.toHaveBeenCalled();
+  });
+
+  test('SSE 期间 generation 变化后拒绝迟到增量与最终响应', async () => {
+    let currentConnection = connection;
+    const deltas: string[] = [];
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      '{"text":"第一段',
+      '第二段","activity":"陪伴","status":"idle"}'
+    ]));
+    const provider = new LocalModelProvider(
+      readyPort(() => currentConnection),
+      fetchClient
+    );
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: delta => {
+        deltas.push(delta);
+        currentConnection = { ...connection, generation: 'generation-2' };
+      }
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'LOCAL_MODEL_CONNECTION_STALE',
+      retryable: false
+    });
+
+    expect(deltas).toEqual(['第一段']);
+  });
+
+  test('SSE 被 Abort 后不再发布后续增量', async () => {
+    const controller = new AbortController();
+    const deltas: string[] = [];
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      '{"text":"第一段',
+      '第二段","activity":"陪伴","status":"idle"}'
+    ]));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: delta => {
+        deltas.push(delta);
+        controller.abort();
+      }
+    }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(deltas).toEqual(['第一段']);
+  });
+
+  test('跨 SSE chunk 的 think 标签在任何前缀公开前稳定拒绝', async () => {
+    const deltas: string[] = [];
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      '{"text":"<thi',
+      'nk>内部推理</think>","activity":"陪伴","status":"idle"}'
+    ]));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: delta => deltas.push(delta)
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'LOCAL_MODEL_REASONING_LEAK',
+      retryable: false
+    });
+
+    expect(deltas).toEqual([]);
+  });
+
+  test('SSE 缺少 DONE 终态时即使正文完整也 fail-close', async () => {
+    const content = JSON.stringify({ text: '未终止', activity: '陪伴', status: 'idle' });
+    const fetchClient = vi.fn<FetchLike>(async () => rawSseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
+    ]));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: vi.fn()
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+    });
+  });
+
+  test.each([
+    ['DONE 后普通数据', [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' }) } }] })}\n\n`,
+      'data: [DONE]\n\n',
+      'data: {not-json-tail}\n\n'
+    ]],
+    ['重复 DONE', [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' }) } }] })}\n\n`,
+      'data: [DONE]\n\n',
+      'data: [DONE]\n\n'
+    ]]
+  ] as const)('%s 不污染首个终态结果', async (_name, events) => {
+    const deltas: string[] = [];
+    const provider = new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => rawSseResponse(events))
+    );
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: delta => deltas.push(delta)
+    }, new AbortController().signal)).resolves.toMatchObject({
+      type: 'text', text: '保留'
+    });
+    expect(deltas.join('')).toBe('保留');
+  });
+
+  test('SSE 在最终校验前拒绝超过正文预算的累计投影', async () => {
+    const deltas: string[] = [];
+    const provider = new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => sseResponse([
+        JSON.stringify({ text: 'x'.repeat(4_001), activity: '陪伴', status: 'idle' })
+      ]))
+    );
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: delta => deltas.push(delta)
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+    });
+    expect(deltas).toEqual([]);
+  });
+
+  test('SSE 单事件与累计结构化内容具有固定上限', async () => {
+    const content = `${JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' })}${' '.repeat(300_000)}`;
+    const provider = new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => rawSseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
+        'data: [DONE]\n\n'
+      ]))
+    );
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: vi.fn()
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+    });
+  });
+
+  test('SSE 多事件累计内容超过结构化 JSON 预算时 fail-close', async () => {
+    const first = JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' });
+    const provider = new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => sseResponse([first, ' '.repeat(40_000), ' '.repeat(30_000)]))
+    );
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: vi.fn()
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+    });
+  });
+
+  test('SSE 单事件 data 行数量具有固定上限', async () => {
+    const content = JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' });
+    const data = JSON.stringify({ choices: [{ delta: { content } }] });
+    const provider = new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => rawSseResponse([
+        `data: ${data}\n`,
+        ...Array.from({ length: 1_024 }, () => 'data:  \n'),
+        '\n',
+        'data: [DONE]\n\n'
+      ]))
+    );
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: vi.fn()
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+    });
+  });
+
+  test('SSE 忽略行也计入固定传输预算', async () => {
+    const content = JSON.stringify({ text: '保留', activity: '陪伴', status: 'idle' });
+    const ignored = `: ${'x'.repeat(1_000)}\n`;
+    const provider = new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => rawSseResponse([
+        ...Array.from({ length: 530 }, () => ignored),
+        `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
+        'data: [DONE]\n\n'
+      ]))
+    );
+
+    await expect(provider.respond({
+      ...structuredRequest,
+      onTextDelta: vi.fn()
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE', retryable: false
+    });
+  });
+
   test('结构化聊天不把纯文本降级当作角色控制成功', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{ message: { content: '我会保持安静。' } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond(
+      structuredRequest,
+      new AbortController().signal
+    )).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      retryable: false
+    });
+  });
+
+  test('结构化聊天拒绝必填键齐全但字段类型不符合可执行契约的响应', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({ text: '好的。', activity: 42, status: 'idle' })
+        }
+      }]
     }));
     const provider = new LocalModelProvider(readyPort(), fetchClient);
 

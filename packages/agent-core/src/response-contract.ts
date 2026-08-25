@@ -4,6 +4,8 @@ export type ModelResponseContract = Readonly<{
   jsonSchema: Readonly<Record<string, unknown>>;
   textField: 'text';
   allowPlainTextFallback: true;
+  /** Main 注入的可执行校验器不进入 Provider JSON；用于复核服务端 Schema 的真实输出。 */
+  validateStructuredOutput?: (value: unknown) => boolean;
 }>;
 
 export type ResponseContractDecodeResult =

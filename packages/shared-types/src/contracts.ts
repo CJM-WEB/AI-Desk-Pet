@@ -260,6 +260,10 @@ export const publicSettingsSchema = z.object({
 }).strict();
 export type PublicSettings = z.infer<typeof publicSettingsSchema>;
 
+/** 流式事件只承载本地角色正文；固定预算阻止 IPC 小分片绕过累计输出上限。 */
+export const ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS = 128;
+export const ASSISTANT_STREAM_TEXT_MAX_CHARACTERS = 4_000;
+
 export const taskEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('phase'),
@@ -269,6 +273,20 @@ export const taskEventSchema = z.discriminatedUnion('type', [
     type: z.literal('message'),
     role: z.enum(['user', 'assistant']),
     text: z.string()
+  }).strict(),
+  z.object({
+    type: z.literal('assistant_message_start'),
+    turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS)
+  }).strict(),
+  z.object({
+    type: z.literal('assistant_message_delta'),
+    turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS),
+    delta: z.string().min(1).max(ASSISTANT_STREAM_TEXT_MAX_CHARACTERS)
+  }).strict(),
+  z.object({
+    type: z.literal('assistant_message_commit'),
+    turnId: z.string().min(1).max(ASSISTANT_STREAM_TURN_ID_MAX_CHARACTERS),
+    text: z.string().max(ASSISTANT_STREAM_TEXT_MAX_CHARACTERS)
   }).strict(),
   z.object({
     type: z.literal('pending_action'),

@@ -126,6 +126,7 @@ interface ActiveCapabilityTurn {
 }
 
 export class ConversationCoordinator {
+  private assistantTurnSequence = 0;
   private state: ConversationState = { kind: 'idle' };
   private readonly createId: () => string;
   private generation: string;
@@ -514,11 +515,22 @@ export class ConversationCoordinator {
     visibleHistory: readonly ModelMessage[]
   ): Promise<void> {
     if (!this.isRunning(context)) return;
+    const turnId = `assistant-${++this.assistantTurnSequence}`;
+    let streamStarted = false;
     const reply = await adapter.respond({
       history: visibleHistory,
       text: context.text,
       behaviorContext: this.options.behavior.getChatContext(),
-      signal: context.controller.signal
+      signal: context.controller.signal,
+      onTextDelta: delta => {
+        if (delta.length === 0 || !this.isRunning(context)) return;
+        if (!streamStarted) {
+          this.options.emit({ type: 'assistant_message_start', turnId });
+          streamStarted = true;
+        }
+        if (!this.isRunning(context)) return;
+        this.options.emit({ type: 'assistant_message_delta', turnId, delta });
+      }
     });
     if (!this.isRunning(context)) return;
     await this.options.behavior.completeUserPrompt({
@@ -530,7 +542,9 @@ export class ConversationCoordinator {
       ...(reply.status === undefined ? {} : { status: reply.status })
     });
     if (!this.isRunning(context)) return;
-    this.options.emit({ type: 'message', role: 'assistant', text: reply.text });
+    this.options.emit(streamStarted
+      ? { type: 'assistant_message_commit', turnId, text: reply.text }
+      : { type: 'message', role: 'assistant', text: reply.text });
     if (!this.isRunning(context)) return;
     if (reply.emotion !== undefined) {
       this.options.emit({ type: 'character_emotion', label: reply.emotion });

@@ -75,7 +75,29 @@ const server = createServer(async (request, response) => {
           }
         }]
       }
-    : { content: '本地模型 fixture 回复' };
+    : {
+        content: JSON.stringify({
+          text: '本地模型 fixture 回复',
+          activity: '安静陪伴',
+          status: 'idle',
+          motionPlan: {
+            mode: 'none', durationSeconds: null, target: 'current', distance: 'none'
+          },
+          behaviorPlan: { kind: 'none' }
+        })
+      };
+  if (body.stream === true && !wantsStaleFile) {
+    response.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache'
+    });
+    const midpoint = Math.floor(message.content.length / 2);
+    for (const content of [message.content.slice(0, midpoint), message.content.slice(midpoint)]) {
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+    }
+    response.end('data: [DONE]\n\n');
+    return;
+  }
   response.writeHead(200, { 'content-type': 'application/json' });
   response.end(JSON.stringify({
     choices: [{ message }],

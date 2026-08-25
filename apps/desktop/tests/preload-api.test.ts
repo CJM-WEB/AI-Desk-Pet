@@ -220,6 +220,9 @@ describe('TaskEvent preload 运行时边界', () => {
 
   test.each([
     { type: 'phase', phase: 'thinking' },
+    { type: 'assistant_message_start', turnId: 'turn-1' },
+    { type: 'assistant_message_delta', turnId: 'turn-1', delta: '你好' },
+    { type: 'assistant_message_commit', turnId: 'turn-1', text: '你好' },
     validPendingActionEvent
   ])('合法 TaskEvent 解析后只通知一次监听者', event => {
     const listener = vi.fn();
@@ -234,6 +237,12 @@ describe('TaskEvent preload 运行时边界', () => {
 
   test.each([
     { type: 'unknown' },
+    { type: 'assistant_message_delta', turnId: '', delta: '你好' },
+    { type: 'assistant_message_delta', turnId: 'turn-1', delta: '' },
+    { type: 'assistant_message_start', turnId: 't'.repeat(129) },
+    { type: 'assistant_message_delta', turnId: 'turn-1', delta: 'x'.repeat(4_001) },
+    { type: 'assistant_message_commit', turnId: 'turn-1', text: 'x'.repeat(4_001) },
+    { type: 'assistant_message_commit', turnId: 'turn-1', text: '你好', secret: true },
     { type: 'phase', phase: 'thinking', unexpected: true },
     { type: 'pending_action', action: { category: 'file' } },
     {

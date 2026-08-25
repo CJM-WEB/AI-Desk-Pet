@@ -1,8 +1,9 @@
-import type { ModelMessage, ModelProvider } from '@myself/agent-core';
+import type { ModelMessage, ModelProvider, ModelResponseContract } from '@myself/agent-core';
 import type { CharacterEmotionLabel } from '@myself/shared-types';
 import {
   characterBehaviorPlanSchema,
   characterBehaviorDescriptorSchema,
+  characterChatResponseSchema,
   characterChatResponseJsonSchema,
   motionPlanSchema,
   type CharacterBehaviorPlan,
@@ -33,12 +34,13 @@ const 聊天系统消息前缀 = [
   '以下是 Main 提供的当前公开行为上下文，只能从清单中建议动作：'
 ].join('');
 const 最大正文字符数 = 8_000;
-export const characterChatResponseContract = {
+export const characterChatResponseContract: ModelResponseContract = {
   type: 'json_object' as const,
   name: 'character_chat' as const,
   jsonSchema: characterChatResponseJsonSchema,
   textField: 'text' as const,
-  allowPlainTextFallback: true as const
+  allowPlainTextFallback: true as const,
+  validateStructuredOutput: value => characterChatResponseSchema.safeParse(value).success
 };
 
 export interface ConversationChatInput {
@@ -46,6 +48,7 @@ export interface ConversationChatInput {
   text: string;
   behaviorContext: ConversationBehaviorContext;
   signal: AbortSignal;
+  onTextDelta?: (delta: string) => void;
 }
 
 export type ConversationChatReply = Readonly<{
@@ -73,7 +76,8 @@ export class ConversationChatAdapter {
       tools: [],
       toolChoice: 'none',
       reasoningMode: 'provider_default',
-      responseContract: characterChatResponseContract
+      responseContract: characterChatResponseContract,
+      ...(input.onTextDelta === undefined ? {} : { onTextDelta: input.onTextDelta })
     }, input.signal);
 
     if (response.type !== 'text' || !是合法正文(response.text)) {

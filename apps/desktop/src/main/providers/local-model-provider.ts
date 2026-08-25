@@ -65,9 +65,14 @@ function createRequestPolicy(
   generation: string,
   request: ModelRequest
 ): OpenAIRequestPolicy {
+  const streamVisibleText = request.responseContract !== undefined
+    && request.tools.length === 0
+    && request.toolChoice === 'none'
+    && request.onTextDelta !== undefined;
   return {
     body: {
       ...localRequestBody,
+      stream: streamVisibleText,
       ...(request.toolChoice === 'required' ? { temperature: 0 } : {}),
       // 锁定的 llama.cpp 支持在 json_object 中附带 Schema；只约束本地结构化回合。
       ...(request.responseContract === undefined
@@ -79,6 +84,20 @@ function createRequestPolicy(
             }
           })
     },
+    responseMode: streamVisibleText ? 'sse' : 'json',
+    ...(streamVisibleText
+      ? {
+          onTextDelta: (delta: string): void => {
+            assertCurrentGeneration(connectionPort, generation);
+            request.onTextDelta?.(delta);
+          },
+          validateProjectedText: (text: string): void => {
+            if (/<\/?think(?:\s[^>]*)?>/iu.test(text)) {
+              throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);
+            }
+          }
+        }
+      : {}),
     validateResponse(raw: unknown): void {
       assertCurrentGeneration(connectionPort, generation);
       assertNoReasoningLeak(raw);
@@ -94,6 +113,12 @@ function assertStructuredResponse(
   const contract = request.responseContract;
   if (contract === undefined) return;
   if (response.type !== 'text' || response.structured_output === undefined) {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
+  if (
+    contract.validateStructuredOutput !== undefined
+    && !contract.validateStructuredOutput(response.structured_output)
+  ) {
     throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   }
   const required = contract.jsonSchema['required'];

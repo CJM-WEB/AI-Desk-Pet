@@ -109,6 +109,15 @@ export const publicBehaviorCatalogSchema = z.object({
   }).strict()).max(1_536).optional()
 }).strict();
 
+/** 可执行契约与发送给模型的 JSON Schema 成对维护，Main 以它复核模型真实输出。 */
+export const characterChatResponseSchema = z.object({
+  text: z.string().min(1).max(4_000),
+  activity: characterBehaviorDescriptorSchema,
+  status: characterBehaviorDescriptorSchema,
+  motionPlan: motionPlanSchema,
+  behaviorPlan: characterBehaviorPlanSchema
+}).strict();
+
 function deepFreeze<T>(value: T): Readonly<T> {
   if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) deepFreeze(child);
