@@ -7,7 +7,9 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   AgentLoop,
   CAPABILITY_CLARIFICATION_TOOL_NAME,
+  ModelRouter,
   type ModelProvider,
+  type ModelSelection,
   type ModelResponse
 } from '@myself/agent-core';
 import type {
@@ -29,6 +31,7 @@ import {
 import { PowerShellTool } from '../../apps/desktop/src/main/agent/powershell-tool';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
 import { LocalModelProvider } from '../../apps/desktop/src/main/providers/local-model-provider';
+import { ProviderRegistry } from '../../apps/desktop/src/main/providers/provider-registry';
 import { createOpenAIToolNameCodec } from
   '../../apps/desktop/src/main/providers/openai-tool-name-codec';
 import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
@@ -58,6 +61,12 @@ import {
 } from '../fixtures/provider-server';
 import { parseMainE2eState } from '../fixtures/electron-app';
 import { startLocalModelServer } from '../fixtures/local-model-server';
+import {
+  BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY,
+  createLocalModelRoutingSnapshot
+} from '../../apps/desktop/src/main/local-model/local-model-route';
+import type { ProviderSettingsSnapshot } from
+  '../../apps/desktop/src/main/storage/settings-store';
 
 const strictGeometryState = () => ({
   revision: 1,
@@ -524,17 +533,14 @@ async function deepSeekHarness(input: {
  */
 async function localModelFileHarness(input: {
   steps: ProviderStep[];
+  cloudSteps?: ProviderStep[];
   moveToRecycleBin(absolutePath: string): Promise<void>;
 }) {
   const authorized = await createAuthorizedRoot();
   roots.push(authorized);
   const localServer = await startLocalModelServer(input.steps);
-  const cloudServer = await startProviderServer([]);
+  const cloudServer = await startProviderServer(input.cloudSteps ?? []);
   servers.push(localServer, cloudServer);
-  const loop = new AgentLoop();
-  const pending = new PendingActionStore({
-    onDiscard: execution => loop.discard(execution.continuationToken)
-  });
   const events: TaskEvent[] = [];
   rendererEventStreams.push({
     events,
@@ -546,27 +552,86 @@ async function localModelFileHarness(input: {
   const fileTools = new FileToolService(authorized.policy, {
     moveToRecycleBin: input.moveToRecycleBin
   });
-  const provider = new LocalModelProvider(localServer.connectionPort);
-  const service = new AgentService({
-    loop,
-    pending,
-    createSession: async () => ({
-      taskKind: 'file' as const,
-      provider,
-      fallbackProviders: [],
-      fileTools,
-      fileDisclosureAllowed: true,
-      tools: registry.definitions(),
-      toolRuntime: {
-        prepare: raw => registry.prepare(raw, permissionPolicy),
-        executeRead: request => fileTools.executeRead(request)
-      },
-      messages: []
-    }),
-    emit: event => events.push(event),
-    createConversationId: () => 'conversation-local-model-integration'
+  const cloudProfile = (id: string): ProviderProfileV2 => ({
+    id,
+    displayName: id,
+    modelId: 'cloud-fixture',
+    hasStoredSecret: true,
+    mode: 'custom',
+    protocol: 'openai-compatible',
+    baseUrl: cloudServer.baseUrl,
+    additionalParameters: {},
+    capabilities: ['chat', 'tools']
   });
-  return { authorized, cloudServer, events, localServer, service };
+  const cloudSnapshot: ProviderSettingsSnapshot = {
+    profiles: [cloudProfile('cloud-primary'), cloudProfile('cloud-fallback')],
+    route: {
+      primaryProfileId: 'cloud-primary',
+      chatProfileId: 'cloud-primary',
+      agentProfileId: 'cloud-primary',
+      visionProfileId: null,
+      fallbackProfileIds: ['cloud-fallback'],
+      allowCrossProviderFallback: false
+    }
+  };
+  const localSnapshot = createLocalModelRoutingSnapshot(cloudSnapshot, true);
+  const providerRegistry = new ProviderRegistry(
+    [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
+    () => new LocalModelProvider(localServer.connectionPort)
+  );
+  const selectRoute = (
+    snapshot: ProviderSettingsSnapshot,
+    allowedCrossProviderProfileIds = new Set<string>()
+  ): ModelSelection => new ModelRouter({
+    profiles: snapshot.profiles,
+    route: snapshot.route,
+    catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY]
+  }).select('agent', { allowedCrossProviderProfileIds });
+  const createRoutedService = (
+    snapshot: ProviderSettingsSnapshot,
+    allowedCrossProviderProfileIds = new Set<string>()
+  ): AgentService => {
+    const loop = new AgentLoop();
+    const pending = new PendingActionStore({
+      onDiscard: execution => loop.discard(execution.continuationToken)
+    });
+    const selection = selectRoute(snapshot, allowedCrossProviderProfileIds);
+    const createProvider = (profile: ProviderProfileV2) => providerRegistry.create(
+      profile,
+      async () => cloudServer.apiKey
+    );
+    return new AgentService({
+      loop,
+      pending,
+      createSession: async () => ({
+        taskKind: 'file' as const,
+        provider: createProvider(selection.profile),
+        fallbackProviders: selection.fallbackProfiles.map(createProvider),
+        fileTools,
+        fileDisclosureAllowed: true,
+        tools: registry.definitions(),
+        toolRuntime: {
+          prepare: raw => registry.prepare(raw, permissionPolicy),
+          executeRead: request => fileTools.executeRead(request)
+        },
+        messages: []
+      }),
+      emit: event => events.push(event),
+      createConversationId: () => 'conversation-local-model-integration'
+    });
+  };
+  return {
+    authorized,
+    cloudServer,
+    cloudSnapshot,
+    cloudSelection: selectRoute(cloudSnapshot),
+    createRoutedService,
+    events,
+    localServer,
+    localSnapshot,
+    localSelection: selectRoute(localSnapshot),
+    service: createRoutedService(localSnapshot)
+  };
 }
 
 function scriptedProvider(responses: ModelResponse[]): ModelProvider {
@@ -1544,6 +1609,12 @@ describe('桌面 Agent 真实服务集成', () => {
     const movedPath = join(fixture.authorized.root, 'archive', '资料.txt');
     await mkdir(join(fixture.authorized.root, 'archive'));
 
+    expect(fixture.cloudSelection.profile.id).toBe('cloud-primary');
+    expect(fixture.cloudSelection.fallbackProfiles.map(profile => profile.id))
+      .toEqual(['cloud-fallback']);
+    expect(fixture.localSelection.profile.id).toBe('builtin-local');
+    expect(fixture.localSelection.fallbackProfiles).toEqual([]);
+
     await fixture.service.submitFileTask({
       text: '请创建资料.txt并写入本地模型正文',
       visibleHistory: [],
@@ -1592,6 +1663,54 @@ describe('桌面 Agent 真实服务集成', () => {
       { type: 'message', role: 'assistant', text: '资料.txt 已移动' },
       { type: 'message', role: 'assistant', text: '资料.txt 已移入回收站' }
     ]);
+  });
+
+  test('移除本地路由覆盖会让同一真实 ModelRouter 链访问云 Provider', async () => {
+    const fixture = await localModelFileHarness({
+      steps: [],
+      cloudSteps: [{
+        response: toolCall('cloud-create', 'builtin.files.create_file', {
+          relativePath: '云路由.txt', content: '不应由本地覆盖访问'
+        })
+      }],
+      moveToRecycleBin: async () => undefined
+    });
+
+    await fixture.createRoutedService(fixture.cloudSnapshot).submitFileTask({
+      text: '创建云路由.txt',
+      visibleHistory: [],
+      planningHint: { operation: 'create_file' }
+    });
+
+    expect(fixture.localServer.requests).toHaveLength(0);
+    expect(fixture.cloudServer.requests).toHaveLength(1);
+  });
+
+  test('移除本地路由的 fallback 禁令会使本地失败后访问云 Provider', async () => {
+    const fixture = await localModelFileHarness({
+      steps: [],
+      cloudSteps: [{
+        response: toolCall('cloud-fallback-create', 'builtin.files.create_file', {
+          relativePath: '云回退.txt', content: '不应跨 Provider 回退'
+        })
+      }],
+      moveToRecycleBin: async () => undefined
+    });
+    const mutatedSnapshot = structuredClone(fixture.localSnapshot);
+    mutatedSnapshot.route.fallbackProfileIds = ['cloud-primary'];
+    mutatedSnapshot.route.allowCrossProviderFallback = true;
+
+    await fixture.createRoutedService(
+      mutatedSnapshot,
+      new Set(['cloud-primary'])
+    ).submitFileTask({
+      text: '创建云回退.txt',
+      visibleHistory: [],
+      planningHint: { operation: 'create_file' }
+    });
+
+    expect(fixture.localServer.requests).toHaveLength(2);
+    expect(fixture.cloudServer.requests).toHaveLength(1);
   });
 
   test('DeepSeek 外部别名删除空目录时确认前无副作用且确认后只进入一次隔离回收站', async () => {

@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, test } from 'vitest';
+import ts from 'typescript';
 import packageJson from '../package.json';
 
 const execFileAsync = promisify(execFile);
@@ -75,6 +77,26 @@ describe('electron-builder 配置', () => {
     expect(verifierIndex).toBeGreaterThanOrEqual(0);
     expect(builderIndex).toBeGreaterThan(verifierIndex);
     expect(packageJson.scripts.build).not.toMatch(/stage:local-model|stage-local-model/iu);
+  });
+
+  test('生产 Main 静态依赖图与构建产物门禁不包含本地模型测试 Runtime 或 fixture', () => {
+    const entry = fileURLToPath(new URL('../src/main/index.ts', import.meta.url));
+    const program = ts.createProgram({
+      rootNames: [entry],
+      options: {
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        target: ts.ScriptTarget.ES2022,
+        skipLibCheck: true
+      }
+    });
+    const productionFiles = program.getSourceFiles()
+      .map(source => source.fileName.replaceAll('\\', '/'))
+      .filter(file => !file.includes('/node_modules/'));
+
+    expect(productionFiles.some(file => file.includes('/tests/fixtures/'))).toBe(false);
+    expect(productionFiles.some(file => file.endsWith('/local-model-e2e-runtime.ts'))).toBe(false);
+    expect(packageJson.scripts.build).toContain('verify-production-local-model-boundary.mjs');
   });
 
   test('固定发行文本在 Windows checkout 保持 LF 以稳定 manifest 哈希', async () => {

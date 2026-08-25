@@ -3,7 +3,9 @@ import { readFile, stat } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { ExplorerSnapshot } from './explorer/explorer-space-protocol';
+import type { LocalModelRuntimeOptions } from './local-model/local-model-runtime';
 
 type ExplorerSnapshotFacts<T> = T extends ExplorerSnapshot
   ? Omit<T, 'version' | 'type' | 'nonce' | 'sequence'>
@@ -20,12 +22,31 @@ export interface MainE2eBoundary {
   maliciousCharacterPackage: string;
   characterExportDestination: string;
   localModelFixture?: {
-    scriptPath: string;
-    readyFile: string;
-    pidFile: string;
-    token: string;
-    stderrCanary: string;
+    modulePath: string;
+    configPath: string;
   };
+}
+
+/** 动态测试装配只返回正式 Runtime 构造参数；fixture 源码不会进入 Main 静态依赖图。 */
+export async function loadMainE2eLocalModelRuntimeOptions(
+  fixture: NonNullable<MainE2eBoundary['localModelFixture']>
+): Promise<LocalModelRuntimeOptions> {
+  const loaded = await import(pathToFileURL(fixture.modulePath).href) as Record<string, unknown>;
+  const factory = loaded['createLocalModelRuntimeOptions'];
+  if (typeof factory !== 'function') throw new Error('LOCAL_MODEL_E2E_FACTORY_INVALID');
+  const options = await factory(fixture.configPath) as unknown;
+  if (
+    typeof options !== 'object'
+    || options === null
+    || typeof Reflect.get(options, 'root') !== 'string'
+    || typeof Reflect.get(options, 'applicationVersion') !== 'string'
+    || typeof Reflect.get(options, 'cachePath') !== 'string'
+    || typeof Reflect.get(options, 'tokenRoot') !== 'string'
+    || typeof Reflect.get(options, 'processPort') !== 'object'
+  ) {
+    throw new Error('LOCAL_MODEL_E2E_OPTIONS_INVALID');
+  }
+  return options as LocalModelRuntimeOptions;
 }
 
 export interface MainE2eBoundaryOptions {
@@ -381,11 +402,8 @@ export function resolveMainE2eBoundary(
   const rawSafePackage = options.env['MYSELF_E2E_SAFE_CHARACTER_PACKAGE'];
   const rawMaliciousPackage = options.env['MYSELF_E2E_MALICIOUS_CHARACTER_PACKAGE'];
   const rawExportDestination = options.env['MYSELF_E2E_CHARACTER_EXPORT'];
-  const rawLocalModelScript = options.env['MYSELF_E2E_LOCAL_MODEL_SCRIPT'];
-  const rawLocalModelReadyFile = options.env['MYSELF_E2E_LOCAL_MODEL_READY_FILE'];
-  const rawLocalModelPidFile = options.env['MYSELF_E2E_LOCAL_MODEL_PID_FILE'];
-  const rawLocalModelToken = options.env['MYSELF_E2E_LOCAL_MODEL_TOKEN'];
-  const rawLocalModelStderrCanary = options.env['MYSELF_E2E_LOCAL_MODEL_STDERR_CANARY'];
+  const rawLocalModelOptionsModule = options.env['MYSELF_E2E_LOCAL_MODEL_OPTIONS_MODULE'];
+  const rawLocalModelConfig = options.env['MYSELF_E2E_LOCAL_MODEL_CONFIG'];
   if (
     !rawUserData
     || !rawAuthorizedRoot
@@ -440,10 +458,6 @@ export function resolveMainE2eBoundary(
       ? target
       : null;
   };
-  const resolveTemporaryFileOrNew = (candidate: string): string | null => (
-    existsSync(candidate) ? resolveTemporaryFile(candidate) : resolveNewTemporaryFile(candidate)
-  );
-
   const userDataDirectory = resolveTemporaryChild(rawUserData);
   const authorizedRootDirectory = resolveTemporaryChild(rawAuthorizedRoot);
   const recycleBinDirectory = resolveTemporaryChild(rawRecycleBin);
@@ -467,32 +481,16 @@ export function resolveMainE2eBoundary(
     characterAssetsDirectory
   ]).size !== 4) return null;
   const hasAnyLocalModelFixtureValue = Boolean(
-    rawLocalModelScript
-    || rawLocalModelReadyFile
-    || rawLocalModelPidFile
-    || rawLocalModelToken
-    || rawLocalModelStderrCanary
+    rawLocalModelOptionsModule
+    || rawLocalModelConfig
   );
   let localModelFixture: MainE2eBoundary['localModelFixture'];
   if (hasAnyLocalModelFixtureValue) {
-    if (
-      !rawLocalModelScript
-      || !rawLocalModelReadyFile
-      || !rawLocalModelPidFile
-      || !rawLocalModelToken
-      || !rawLocalModelStderrCanary
-    ) return null;
-    const scriptPath = resolveTemporaryFile(rawLocalModelScript);
-    const readyFile = resolveTemporaryFileOrNew(rawLocalModelReadyFile);
-    const pidFile = resolveTemporaryFileOrNew(rawLocalModelPidFile);
-    if (!scriptPath || !readyFile || !pidFile) return null;
-    localModelFixture = {
-      scriptPath,
-      readyFile,
-      pidFile,
-      token: rawLocalModelToken,
-      stderrCanary: rawLocalModelStderrCanary
-    };
+    if (!rawLocalModelOptionsModule || !rawLocalModelConfig) return null;
+    const modulePath = resolveTemporaryFile(rawLocalModelOptionsModule);
+    const configPath = resolveTemporaryFile(rawLocalModelConfig);
+    if (!modulePath || !configPath) return null;
+    localModelFixture = { modulePath, configPath };
   }
 
   return {

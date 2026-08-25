@@ -97,6 +97,10 @@ type ElectronFixtureModule = {
     resetStreams(): void;
     dispose(): void;
   };
+  createCompleteLogCanaryTracker(maxBytes: number): {
+    capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
+    inspect(canaries: readonly string[]): readonly boolean[];
+  };
   probeWindowsProcess(
     processId: number,
     options?: {
@@ -151,7 +155,6 @@ type ElectronFixtureModule = {
     additionalSecrets?: readonly string[];
     logSentinels?: readonly string[];
     enableLocalModelFixture?: boolean;
-    localModelToken?: string;
     localModelStderrCanary?: string;
     launchTimeoutMs?: number;
     operationTimeoutMs?: number;
@@ -244,9 +247,25 @@ type ElectronFixtureModule = {
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
     getCharacterMotionDeltaProbe(): Promise<CharacterMotionDeltaProbe>;
     getConversationProbe(): Promise<ConversationE2eProbe>;
+    markLocalModelValidationReady(): Promise<void>;
     markLocalModelReady(): Promise<void>;
-    getLocalModelFixtureProcessId(): Promise<number>;
+    getLocalModelFixtureEvidence(): Promise<{
+      processId: number;
+      port: number;
+      token: string;
+      fixtureScriptPath: string;
+      modelPath: string;
+      requestedRuntimePath: string;
+      actualRuntimePath: string;
+      resourceRoot: string;
+      tokenFilePath: string;
+      stderrCanary: string;
+      requestedSpawnOptions: { shell: false; windowsHide: true };
+      actualSpawnOptions: { shell: false; windowsHide: true };
+    }>;
+    inspectCapturedLogCanaries(canaries: readonly string[]): readonly boolean[];
     restart(): Promise<void>;
+    closeApplicationForInspection(): Promise<void>;
     dispose(): Promise<void>;
   }>;
 };
@@ -832,6 +851,18 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
         ...afterDispose.sentinels
       ].every(value => typeof value === 'boolean')
     }).toEqual({ snapshot: true, sentinels: true, booleans: true });
+  });
+
+  test('动态 canary 检查覆盖最早日志且捕获溢出时失败关闭', async () => {
+    const fixture = await loadElectronFixtureModule();
+    const canary = 'dynamic-token-discovered-after-process-start';
+    const complete = fixture.createCompleteLogCanaryTracker(128);
+    complete.capture('stderr', canary);
+    complete.capture('stdout', 'x'.repeat(80));
+    expect(complete.inspect([canary])).toEqual([true]);
+
+    complete.capture('stdout', 'y'.repeat(80));
+    expect(() => complete.inspect([canary])).toThrow('RAW_LOG_CAPTURE_LIMIT_EXCEEDED');
   });
 
   test('自然退出宽限期内 child 退出时不启动任何强制清理', async () => {
@@ -4243,7 +4274,6 @@ test.describe('真实 Provider 业务闭环', () => {
   test('内置本地模型在真实 Electron 中经历加载、CPU 就绪、云路由恢复与退出清理', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
-    const localToken = 'token-canary-local-electron';
     const stderrCanary = 'stderr-canary-local-electron';
     const localPrompt = '本地模型窗口生命周期问候';
     const localReply = '本地模型 fixture 回复';
@@ -4251,7 +4281,6 @@ test.describe('真实 Provider 业务闭环', () => {
     const cloudPrompt = '关闭本地模型后回复我';
     const cloudReply = '云端路由已恢复';
     const logSentinels = [
-      localToken,
       stderrCanary,
       localPrompt,
       localReply,
@@ -4273,10 +4302,8 @@ test.describe('真实 Provider 业务闭环', () => {
       fixture = await fixtureModule.createElectronAppFixture({
         workspaceRoot: resolve(process.cwd()),
         apiKey: cloud.apiKey,
-        additionalSecrets: [localToken],
         logSentinels,
         enableLocalModelFixture: true,
-        localModelToken: localToken,
         localModelStderrCanary: stderrCanary,
         launchTimeoutMs: 15_000,
         enableSoftwareRasterizer: true
@@ -4286,6 +4313,13 @@ test.describe('真实 Provider 业务闭环', () => {
       throw error;
     }
     let finalLocalProcessId: number | undefined;
+    let finalTokenFilePath = '';
+    let firstLocalProcessId: number | undefined;
+    let firstTokenFilePath = '';
+    const rendererDiagnostics: string[] = [];
+    const publicLocalModelSnapshots: unknown[] = [];
+    const connectionCanaries: string[] = [];
+    let privateCanaries: string[] = [];
     try {
       await expect.poll(() => Boolean(
         rendererPage(fixture, 'pet')
@@ -4296,6 +4330,10 @@ test.describe('真实 Provider 业务闭环', () => {
       const chat = rendererPage(fixture, 'chat');
       let settings = rendererPage(fixture, 'settings');
       if (!pet || !chat || !settings) throw new Error('本地模型 E2E 缺少首屏窗口');
+      for (const page of [pet, chat, settings]) {
+        page.on('console', message => rendererDiagnostics.push(message.text()));
+        page.on('pageerror', error => rendererDiagnostics.push(error.message));
+      }
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -4334,13 +4372,34 @@ test.describe('真实 Provider 业务闭环', () => {
       }, { baseUrl: cloud.baseUrl, apiKey: cloud.apiKey });
       await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
 
+      await expect(settings.getByText('正在检查资源', { exact: true })).toBeVisible();
       await expect(chat.getByText('本地模型加载中，暂时不能发送消息。', { exact: true }))
         .toBeVisible();
       await expect(chat.getByRole('button', { name: '发送给 AI Pet' })).toBeDisabled();
       expect(cloud.requests).toHaveLength(0);
 
+      await fixture.markLocalModelValidationReady();
+      await expect(settings.getByText('本地模型加载中', { exact: true })).toBeVisible();
       await fixture.markLocalModelReady();
       await expect(chat.getByText('CPU 兼容模式', { exact: true })).toBeVisible();
+      const firstEvidence = await fixture.getLocalModelFixtureEvidence();
+      firstLocalProcessId = firstEvidence.processId;
+      firstTokenFilePath = firstEvidence.tokenFilePath;
+      expect(firstEvidence.requestedSpawnOptions).toEqual({ shell: false, windowsHide: true });
+      expect(firstEvidence.actualSpawnOptions).toEqual({ shell: false, windowsHide: true });
+      connectionCanaries.push(
+        firstEvidence.token,
+        String(firstEvidence.port),
+        firstEvidence.fixtureScriptPath,
+        firstEvidence.modelPath,
+        firstEvidence.requestedRuntimePath,
+        firstEvidence.actualRuntimePath,
+        firstEvidence.resourceRoot,
+        firstEvidence.tokenFilePath
+      );
+      publicLocalModelSnapshots.push(await settings.evaluate(async () => (
+        await window.myself.getSettingsDashboard()
+      ).localModel));
       await submitChatMessage(chat, localPrompt);
       await expect(chat.getByText(localReply, { exact: true })).toBeVisible();
       expect(cloud.requests).toHaveLength(0);
@@ -4362,9 +4421,17 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect(settings.getByText('已关闭', { exact: true }).first()).toBeVisible();
       await expect(localSwitch).toBeEnabled();
       await expect(localSwitch).not.toBeChecked();
+      publicLocalModelSnapshots.push(await settings.evaluate(async () => (
+        await window.myself.getSettingsDashboard()
+      ).localModel));
       await expect(pendingCard).toHaveCount(0);
       await expect(lstat(join(fixture.authorizedRootDirectory, 'switch-stale.txt')))
         .rejects.toMatchObject({ code: 'ENOENT' });
+      if (!firstLocalProcessId) throw new Error('缺少首次本地 fixture PID');
+      await expect(fixtureModule.probeWindowsProcess(firstLocalProcessId)).resolves.toEqual({
+        status: 'absent'
+      });
+      await expect(lstat(firstTokenFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
       await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
 
       await submitChatMessage(chat, cloudPrompt);
@@ -4383,7 +4450,41 @@ test.describe('真实 Provider 业务闭环', () => {
       await reopenedSwitch.click();
       await expect(reopenedSwitch).toBeChecked();
       await expect(settings.getByText('CPU 兼容模式', { exact: true })).toBeVisible();
-      finalLocalProcessId = await fixture.getLocalModelFixtureProcessId();
+      const finalEvidence = await fixture.getLocalModelFixtureEvidence();
+      finalLocalProcessId = finalEvidence.processId;
+      finalTokenFilePath = finalEvidence.tokenFilePath;
+      connectionCanaries.push(
+        finalEvidence.token,
+        String(finalEvidence.port),
+        finalEvidence.fixtureScriptPath,
+        finalEvidence.modelPath,
+        finalEvidence.requestedRuntimePath,
+        finalEvidence.actualRuntimePath,
+        finalEvidence.resourceRoot,
+        finalEvidence.tokenFilePath
+      );
+      publicLocalModelSnapshots.push(await settings.evaluate(async () => (
+        await window.myself.getSettingsDashboard()
+      ).localModel));
+
+      privateCanaries = [...new Set([
+        ...connectionCanaries,
+        stderrCanary,
+        localPrompt,
+        localReply,
+        pendingPrompt,
+        cloudPrompt,
+        cloudReply,
+        'body-canary-local-electron'
+      ])];
+      expect(fixture.inspectCapturedLogCanaries(privateCanaries))
+        .toEqual(privateCanaries.map(() => false));
+      const rendererArtifact = rendererDiagnostics.join('\n');
+      const statusArtifact = JSON.stringify(publicLocalModelSnapshots);
+      for (const canary of privateCanaries) {
+        expect(rendererArtifact).not.toContain(canary);
+        expect(statusArtifact).not.toContain(canary);
+      }
 
       expect(fixture.capturedLogEvidence).toEqual({
         apiKey: false,
@@ -4391,6 +4492,16 @@ test.describe('真实 Provider 业务闭环', () => {
         authorizationHeader: false,
         sentinels: logSentinels.map(() => false)
       });
+
+      await settings.evaluate(async () => window.myself.quit());
+      await fixture.closeApplicationForInspection();
+      if (!finalLocalProcessId) throw new Error('缺少退出前本地 fixture PID');
+      await expect(fixtureModule.probeWindowsProcess(finalLocalProcessId)).resolves.toEqual({
+        status: 'absent'
+      });
+      await expect(lstat(finalTokenFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(fixture.inspectCapturedLogCanaries(privateCanaries))
+        .toEqual(privateCanaries.map(() => false));
     } finally {
       try {
         await fixture.dispose();
@@ -4398,10 +4509,6 @@ test.describe('真实 Provider 业务闭环', () => {
         await cloud.close();
       }
     }
-    if (!finalLocalProcessId) throw new Error('缺少退出前本地 fixture PID');
-    await expect(fixtureModule.probeWindowsProcess(finalLocalProcessId)).resolves.toEqual({
-      status: 'absent'
-    });
   });
 
   test('默认聊天与设置浮层提示', async () => {

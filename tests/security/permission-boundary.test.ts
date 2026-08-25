@@ -1,6 +1,7 @@
 import {
   appendFile,
   lstat,
+  mkdtemp,
   mkdir,
   readFile,
   rename,
@@ -9,6 +10,7 @@ import {
   writeFile
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AgentLoop, type ModelResponse } from '@myself/agent-core';
 import { FileToolService, type RecycleBinPort } from '@myself/file-tools';
@@ -338,8 +340,37 @@ describe('权限边界安全回归', () => {
 
     expect(scan).toEqual({
       forbiddenDependencies: [],
-      unsafeShellAssignments: []
+      unsafeSpawnOptions: []
     });
+  });
+
+  test('语义扫描会穿透导入并识别 shorthand 与后续赋值形成的最终危险 spawn 参数', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'myself-local-model-scan-'));
+    const entryPath = join(fixtureRoot, 'entry.ts');
+    const dependencyPath = join(fixtureRoot, 'unsafe.ts');
+    try {
+      await writeFile(entryPath, "import './unsafe';\n", 'utf8');
+      await writeFile(dependencyPath, [
+        "import { spawn as startProcess } from 'node:child_process';",
+        'export const authRoot = new Map<string, string>();',
+        'const shell = false;',
+        'const windowsHide = true;',
+        'const options = { shell, windowsHide };',
+        'options.shell = true;',
+        "startProcess('fixture', [], options);"
+      ].join('\n'), 'utf8');
+
+      const scan = await scanLocalModelCapabilityBoundary([entryPath]);
+
+      expect(scan.forbiddenDependencies).toEqual([
+        expect.stringContaining('unsafe.ts:authRoot')
+      ]);
+      expect(scan.unsafeSpawnOptions).toEqual([
+        expect.stringContaining('unsafe.ts:7')
+      ]);
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   test('本地模型公开状态、Provider 错误与普通日志不泄露连接和正文 canary', async () => {

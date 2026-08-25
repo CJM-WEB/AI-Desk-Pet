@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
@@ -6,14 +6,27 @@ const options = Object.fromEntries(process.argv.slice(2).map(argument => {
   return [argument.slice(2, separator), argument.slice(separator + 1)];
 }));
 const port = Number(options.port);
-const token = options.token;
+const mode = options.mode;
+const tokenFile = options['token-file'];
 const readyFile = options['ready-file'];
 const stderrCanary = options['stderr-canary'];
-if (!Number.isSafeInteger(port) || port <= 0 || !token || !readyFile || !stderrCanary) {
+if (mode === 'probe' && stderrCanary) {
+  process.stderr.write(stderrCanary);
+  process.exit(1);
+}
+if (
+  mode !== 'server'
+  || !Number.isSafeInteger(port)
+  || port <= 0
+  || !tokenFile
+  || !readyFile
+  || !stderrCanary
+) {
   process.exitCode = 2;
   throw new Error('LOCAL_MODEL_E2E_ARGUMENTS_INVALID');
 }
 
+const token = readFileSync(tokenFile, 'utf8');
 process.stderr.write(stderrCanary);
 
 const server = createServer(async (request, response) => {

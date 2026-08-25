@@ -1,11 +1,12 @@
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { appendFile, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { chromium, type Browser } from '@playwright/test';
 import { materializeCharacterWorkshopFixtures } from './character-workshop-assets';
@@ -23,11 +24,8 @@ export interface ElectronLaunchPlanOptions {
   parentEnvironment?: NodeJS.ProcessEnv;
   enableSoftwareRasterizer?: boolean;
   localModelFixture?: {
-    scriptPath: string;
-    readyFile: string;
-    pidFile: string;
-    token: string;
-    stderrCanary: string;
+    modulePath: string;
+    configPath: string;
   };
 }
 
@@ -88,11 +86,8 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
         : {}),
       ...(options.localModelFixture
         ? {
-            MYSELF_E2E_LOCAL_MODEL_SCRIPT: options.localModelFixture.scriptPath,
-            MYSELF_E2E_LOCAL_MODEL_READY_FILE: options.localModelFixture.readyFile,
-            MYSELF_E2E_LOCAL_MODEL_PID_FILE: options.localModelFixture.pidFile,
-            MYSELF_E2E_LOCAL_MODEL_TOKEN: options.localModelFixture.token,
-            MYSELF_E2E_LOCAL_MODEL_STDERR_CANARY: options.localModelFixture.stderrCanary
+            MYSELF_E2E_LOCAL_MODEL_OPTIONS_MODULE: options.localModelFixture.modulePath,
+            MYSELF_E2E_LOCAL_MODEL_CONFIG: options.localModelFixture.configPath
           }
         : {})
     }
@@ -256,10 +251,28 @@ export interface ElectronAppFixture {
     historyDisclosureVisible: boolean;
     fileConfirmationVisible: boolean;
   }>;
+  markLocalModelValidationReady(): Promise<void>;
   markLocalModelReady(): Promise<void>;
-  getLocalModelFixtureProcessId(): Promise<number>;
+  getLocalModelFixtureEvidence(): Promise<LocalModelFixtureEvidence>;
+  inspectCapturedLogCanaries(canaries: readonly string[]): readonly boolean[];
   restart(): Promise<void>;
+  closeApplicationForInspection(): Promise<void>;
   dispose(): Promise<void>;
+}
+
+export interface LocalModelFixtureEvidence {
+  processId: number;
+  port: number;
+  token: string;
+  fixtureScriptPath: string;
+  modelPath: string;
+  requestedRuntimePath: string;
+  actualRuntimePath: string;
+  resourceRoot: string;
+  tokenFilePath: string;
+  stderrCanary: string;
+  requestedSpawnOptions: { shell: false; windowsHide: true };
+  actualSpawnOptions: { shell: false; windowsHide: true };
 }
 
 export interface CapturedLogEvidenceTracker {
@@ -267,6 +280,44 @@ export interface CapturedLogEvidenceTracker {
   snapshot(): ElectronAppFixture['capturedLogEvidence'];
   resetStreams(): void;
   dispose(): void;
+}
+
+export interface CompleteLogCanaryTracker {
+  capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
+  inspect(canaries: readonly string[]): readonly boolean[];
+}
+
+/**
+ * 动态 canary 在进程启动后才可得，因此保留有界的完整原始流；一旦超限就失败关闭，
+ * 绝不以滚动尾部冒充全生命周期证据。
+ */
+export function createCompleteLogCanaryTracker(maxBytes: number): CompleteLogCanaryTracker {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error('RAW_LOG_CAPTURE_LIMIT_INVALID');
+  }
+  const chunks: Record<'stdout' | 'stderr', Buffer[]> = { stdout: [], stderr: [] };
+  let capturedBytes = 0;
+  let overflowed = false;
+  return {
+    capture(source, chunk) {
+      const bytes = Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk, 'utf8');
+      if (capturedBytes + bytes.byteLength > maxBytes) {
+        overflowed = true;
+        return;
+      }
+      capturedBytes += bytes.byteLength;
+      chunks[source].push(bytes);
+    },
+    inspect(canaries) {
+      if (canaries.some(canary => canary.length === 0)) throw new Error('EMPTY_LOG_SENTINEL');
+      if (overflowed) throw new Error('RAW_LOG_CAPTURE_LIMIT_EXCEEDED');
+      const streams = [
+        Buffer.concat(chunks.stdout).toString('utf8'),
+        Buffer.concat(chunks.stderr).toString('utf8')
+      ];
+      return Object.freeze(canaries.map(canary => streams.some(stream => stream.includes(canary))));
+    }
+  };
 }
 
 /** 仅累计原始日志中的布尔泄漏证据，不保留完整正文。 */
@@ -351,7 +402,6 @@ export interface CreateElectronAppFixtureOptions {
   operationTimeoutMs?: number;
   enableSoftwareRasterizer?: boolean;
   enableLocalModelFixture?: boolean;
-  localModelToken?: string;
   localModelStderrCanary?: string;
   prepareUserData?(directories: ElectronTemporaryDirectories): Promise<void>;
   beforeRestart?(directories: ElectronTemporaryDirectories): Promise<void>;
@@ -1066,6 +1116,142 @@ const defaultDependencies: ElectronAppDependencies = {
   })
 };
 
+type MaterializedLocalModelFixture = ElectronLaunchPlanOptions['localModelFixture'] & {
+  validationReadyFile: string;
+  readyFile: string;
+  evidenceFile: string;
+};
+
+const localModelFixtureContents = {
+  cpuExe: 'fixture-cpu-runtime',
+  cpuDll: 'fixture-cpu-dll',
+  vulkanExe: 'fixture-vulkan-runtime',
+  vulkanDll: 'fixture-vulkan-dll',
+  model: 'fixture-small-gguf',
+  runtimeLicense: 'fixture-runtime-license',
+  modelLicense: 'fixture-model-license',
+  notices: 'fixture-third-party-notices'
+} as const;
+
+function localModelFixtureSha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+async function materializeLocalModelRuntimeFixture(input: {
+  workspaceRoot: string;
+  baseDirectory: string;
+  stderrCanary: string;
+}): Promise<MaterializedLocalModelFixture> {
+  const modulePath = join(input.baseDirectory, 'local-model-runtime-options.mjs');
+  const serverScriptPath = join(input.baseDirectory, 'fake-local-model-process.mjs');
+  const configPath = join(input.baseDirectory, 'local-model-runtime-config.json');
+  const root = join(input.baseDirectory, 'local-model-resources');
+  const cachePath = join(input.baseDirectory, 'local-model-cache.json');
+  const tokenRoot = join(input.baseDirectory, 'local-model-tokens');
+  const validationReadyFile = join(input.baseDirectory, 'local-model-validation-ready');
+  const readyFile = join(input.baseDirectory, 'local-model-ready');
+  const evidenceFile = join(input.baseDirectory, 'local-model-evidence.json');
+  await Promise.all([
+    copyFile(
+      resolve(input.workspaceRoot, 'tests/fixtures/local-model-runtime-options.mjs'),
+      modulePath
+    ),
+    copyFile(
+      resolve(input.workspaceRoot, 'tests/fixtures/fake-local-model-process.mjs'),
+      serverScriptPath
+    )
+  ]);
+  const writeResource = async (relativePath: string, content: string): Promise<void> => {
+    const path = join(root, ...relativePath.split('/'));
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, 'utf8');
+  };
+  const entry = (path: string, content: string) => ({
+    path,
+    size: Buffer.byteLength(content),
+    sha256: localModelFixtureSha256(content)
+  });
+  const runtimeRevision = 'b95502ba9aa0eb73a2f4fc8878d7fbe6a847a0b9';
+  const modelRevision = '851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a';
+  const quantizationRevision = 'e87f176479d0855a907a41277aca2f8ee7a09523';
+  const modelFileName = 'Qwen3.5-4B-Q4_K_M.gguf';
+  const releasePolicy = {
+    schemaVersion: 1,
+    platform: 'win32',
+    arch: 'x64',
+    runtimeRevision,
+    model: {
+      id: 'ai-pet-local',
+      sourceRepository: 'Qwen/Qwen3.5-4B',
+      sourceRevision: modelRevision,
+      quantizationRepository: 'unsloth/Qwen3.5-4B-GGUF',
+      quantizationRevision,
+      fileName: modelFileName,
+      size: Buffer.byteLength(localModelFixtureContents.model),
+      sha256: localModelFixtureSha256(localModelFixtureContents.model)
+    }
+  } as const;
+  const manifest = {
+    schemaVersion: 1,
+    platform: 'win32',
+    arch: 'x64',
+    notices: entry('THIRD-PARTY-NOTICES.txt', localModelFixtureContents.notices),
+    runtime: {
+      revision: runtimeRevision,
+      license: entry('licenses/llama.cpp-LICENSE.txt', localModelFixtureContents.runtimeLicense),
+      backends: {
+        cpu: {
+          executable: 'payload/cpu/llama-server.exe',
+          files: [
+            entry('payload/cpu/llama-server.exe', localModelFixtureContents.cpuExe),
+            entry('payload/cpu/ggml-cpu.dll', localModelFixtureContents.cpuDll)
+          ]
+        },
+        vulkan: {
+          executable: 'payload/vulkan/llama-server.exe',
+          files: [
+            entry('payload/vulkan/llama-server.exe', localModelFixtureContents.vulkanExe),
+            entry('payload/vulkan/ggml-vulkan.dll', localModelFixtureContents.vulkanDll)
+          ]
+        }
+      }
+    },
+    model: {
+      id: releasePolicy.model.id,
+      sourceRepository: releasePolicy.model.sourceRepository,
+      sourceRevision: modelRevision,
+      quantizationRepository: releasePolicy.model.quantizationRepository,
+      quantizationRevision,
+      file: entry(`payload/model/${modelFileName}`, localModelFixtureContents.model),
+      license: entry('licenses/Qwen3.5-4B-LICENSE.txt', localModelFixtureContents.modelLicense)
+    }
+  };
+  await Promise.all([
+    writeResource('payload/cpu/llama-server.exe', localModelFixtureContents.cpuExe),
+    writeResource('payload/cpu/ggml-cpu.dll', localModelFixtureContents.cpuDll),
+    writeResource('payload/vulkan/llama-server.exe', localModelFixtureContents.vulkanExe),
+    writeResource('payload/vulkan/ggml-vulkan.dll', localModelFixtureContents.vulkanDll),
+    writeResource(`payload/model/${modelFileName}`, localModelFixtureContents.model),
+    writeResource('licenses/llama.cpp-LICENSE.txt', localModelFixtureContents.runtimeLicense),
+    writeResource('licenses/Qwen3.5-4B-LICENSE.txt', localModelFixtureContents.modelLicense),
+    writeResource('THIRD-PARTY-NOTICES.txt', localModelFixtureContents.notices)
+  ]);
+  await writeFile(join(root, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+  await writeFile(configPath, JSON.stringify({
+    root,
+    applicationVersion: 'local-model-e2e',
+    cachePath,
+    tokenRoot,
+    releasePolicy,
+    serverScriptPath,
+    validationReadyFile,
+    readyFile,
+    evidenceFile,
+    stderrCanary: input.stderrCanary
+  }), 'utf8');
+  return { modulePath, configPath, validationReadyFile, readyFile, evidenceFile };
+}
+
 /**
  * 启动构建后的项目 Electron 并连接 Renderer CDP；任一失败路径都执行同一清理流程。
  */
@@ -1095,25 +1281,18 @@ export async function createElectronAppFixture(
         directories.exportsDirectory!
       );
   const localModelFixture = options.enableLocalModelFixture
-    ? {
-        scriptPath: join(directories.baseDirectory, 'fake-local-model-process.mjs'),
-        readyFile: join(directories.baseDirectory, 'local-model-ready'),
-        pidFile: join(directories.baseDirectory, 'local-model-pid'),
-        token: options.localModelToken ?? '',
+    ? await materializeLocalModelRuntimeFixture({
+        workspaceRoot: options.workspaceRoot,
+        baseDirectory: directories.baseDirectory,
         stderrCanary: options.localModelStderrCanary ?? ''
-      }
+      })
     : undefined;
-  if (localModelFixture) {
-    if (!localModelFixture.token || !localModelFixture.stderrCanary) {
-      throw new Error('LOCAL_MODEL_E2E_FIXTURE_OPTIONS_INVALID');
-    }
-    await copyFile(
-      resolve(options.workspaceRoot, 'tests/fixtures/fake-local-model-process.mjs'),
-      localModelFixture.scriptPath
-    );
+  if (localModelFixture && !options.localModelStderrCanary) {
+    throw new Error('LOCAL_MODEL_E2E_FIXTURE_OPTIONS_INVALID');
   }
   await options.prepareUserData?.(directories);
   const capturedChunks: string[] = [];
+  const completeLogCanaryTracker = createCompleteLogCanaryTracker(16 * 1024 * 1024);
   const capturedLogEvidenceTracker = createCapturedLogEvidenceTracker({
     apiKey: options.apiKey,
     authorizedRootDirectory: directories.authorizedRootDirectory,
@@ -1133,6 +1312,7 @@ export async function createElectronAppFixture(
 
   const capture = (source: 'stdout' | 'stderr', chunk: string | Buffer): void => {
     capturedLogEvidenceTracker.capture(source, chunk);
+    completeLogCanaryTracker.capture(source, chunk);
     capturedChunks.push(String(chunk).slice(0, 4_000));
     if (capturedChunks.length > 100) capturedChunks.shift();
   };
@@ -1272,7 +1452,9 @@ export async function createElectronAppFixture(
       ...characterFixtures,
       parentEnvironment: globalThis.process.env,
       enableSoftwareRasterizer: options.enableSoftwareRasterizer,
-      localModelFixture
+      localModelFixture: localModelFixture
+        ? { modulePath: localModelFixture.modulePath, configPath: localModelFixture.configPath }
+        : undefined
     });
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;
@@ -1538,17 +1720,31 @@ export async function createElectronAppFixture(
         }
         return probe as Awaited<ReturnType<ElectronAppFixture['getConversationProbe']>>;
       },
+      async markLocalModelValidationReady() {
+        if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
+        await writeFile(localModelFixture.validationReadyFile, 'ready\n', 'utf8');
+      },
       async markLocalModelReady() {
         if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
         await writeFile(localModelFixture.readyFile, 'ready\n', 'utf8');
       },
-      async getLocalModelFixtureProcessId() {
+      async getLocalModelFixtureEvidence() {
         if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
-        const processId = Number((await readFile(localModelFixture.pidFile, 'utf8')).trim());
-        if (!Number.isSafeInteger(processId) || processId <= 0) {
-          throw new Error('LOCAL_MODEL_E2E_PROCESS_PID_INVALID');
+        const evidence = JSON.parse(await readFile(localModelFixture.evidenceFile, 'utf8')) as unknown;
+        if (
+          typeof evidence !== 'object'
+          || evidence === null
+          || !Number.isSafeInteger(Reflect.get(evidence, 'processId'))
+          || !Number.isSafeInteger(Reflect.get(evidence, 'port'))
+          || typeof Reflect.get(evidence, 'token') !== 'string'
+          || Object.keys(evidence).length !== 12
+        ) {
+          throw new Error('LOCAL_MODEL_E2E_EVIDENCE_INVALID');
         }
-        return processId;
+        return evidence as LocalModelFixtureEvidence;
+      },
+      inspectCapturedLogCanaries(canaries) {
+        return completeLogCanaryTracker.inspect(canaries);
       },
       async restart() {
         if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
@@ -1565,6 +1761,23 @@ export async function createElectronAppFixture(
             throw aggregatePrimaryWithCleanup(primaryError, cleanupError);
           }
           throw primaryError;
+        }
+      },
+      async closeApplicationForInspection() {
+        if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');
+        const currentChild = child;
+        const currentBrowser = browser;
+        if (!currentChild) throw new Error('ELECTRON_PROCESS_NOT_RUNNING');
+        if (!await waitForProcessExit(currentChild, operationTimeoutMs)) {
+          throw new Error('ELECTRON_APPLICATION_QUIT_TIMEOUT');
+        }
+        if (child === currentChild) {
+          child = null;
+          plan = null;
+        }
+        if (currentBrowser) {
+          await currentBrowser.close();
+          if (browser === currentBrowser) browser = null;
         }
       },
       dispose

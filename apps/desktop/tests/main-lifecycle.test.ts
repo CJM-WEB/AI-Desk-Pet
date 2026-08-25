@@ -58,7 +58,10 @@ describe('Main 通用生命周期', () => {
     const backgroundStart = source.indexOf('void localModelService.start()');
     const startupCleanup = source.indexOf('startupCleanup.add(() => localModelService.close())');
 
-    expect(source).toContain('new LocalModelRuntime({');
+    expect(source.match(/new LocalModelRuntime\(/gu)).toHaveLength(1);
+    expect(source).toContain('new LocalModelRuntime(localModelRuntimeOptions)');
+    expect(source).not.toContain('class MainE2eLocalModelRuntime');
+    expect(source).not.toContain('new MainE2eLocalModelRuntime');
     expect(source).toContain('new LocalModelProvider(localModelRuntime)');
     expect(source).toMatch(
       /initialEnabled:\s*e2eBoundary\s*\?\s*e2eBoundary\.localModelFixture !== undefined\s*:\s*localModelSettings\.enabled/u
