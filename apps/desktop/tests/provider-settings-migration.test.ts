@@ -188,7 +188,7 @@ describe('模型目录与设置迁移', () => {
       modelRoute: unknown;
     };
     expect(migrated).toMatchObject({
-      version: 3,
+      version: 4,
       providerProfiles: [{
         id: 'legacy-provider',
         displayName: '旧服务',
@@ -206,7 +206,8 @@ describe('模型目录与设置迁移', () => {
         fallbackProfileIds: [],
         allowCrossProviderFallback: false
       },
-      petPlacementState: { kind: 'ready', placements: [] }
+      petPlacementState: { kind: 'ready', placements: [] },
+      localModel: { enabled: true }
     });
     expect(migrated.providerProfiles).toEqual([{
       id: 'legacy-provider',
@@ -238,7 +239,7 @@ describe('模型目录与设置迁移', () => {
 
     expect(first.provider).toEqual(expect.objectContaining({ id: 'legacy-provider' }));
     expect(second.provider).toEqual(expect.objectContaining({ id: 'legacy-provider' }));
-    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 3');
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 4');
   });
 
   test('迁移写入失败时保留原 v1 文件', async () => {
