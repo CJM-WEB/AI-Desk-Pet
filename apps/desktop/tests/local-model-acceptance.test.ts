@@ -181,6 +181,8 @@ describe('真实本地模型验收脚本', () => {
     expect(source).toContain('new ProviderRegistry(');
     expect(source).toContain('createMainConversationComposition(');
     expect(source).toContain('coordinator.resolveFileAction(');
+    expect(source).toContain("event.code === 'RECYCLE_BIN_FAILED'");
+    expect(source).toContain("findFinalAssistantText(failureEvents) !== '本地能力操作失败，未完成请求。'");
     expect(source).not.toContain("from 'node:child_process'");
     expect(source).not.toContain("from 'node:net'");
     expect(source).not.toContain('processPort:');

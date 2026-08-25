@@ -597,10 +597,16 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
       || normalizedRelativePath(failureAction.targetRelativePath) !== 'acceptance-failure.txt'
     ) throw acceptanceError('FAILURE_TOOL_CALL_MISSING');
     await access(join(authorizedRoot, 'acceptance-failure.txt'));
-    await composition.coordinator.resolveFileAction(failureAction.actionId, 'confirm').then(
-      () => { throw acceptanceError('CONTROLLED_TOOL_FAILURE_MISSING'); },
-      () => undefined
-    );
+    const failureResolutionStart = events.length;
+    await composition.coordinator.resolveFileAction(failureAction.actionId, 'confirm');
+    const failureEvents = events.slice(failureResolutionStart);
+    if (
+      !failureEvents.some(event => event.type === 'error' && event.code === 'RECYCLE_BIN_FAILED')
+      || findFinalAssistantText(failureEvents) !== '本地能力操作失败，未完成请求。'
+      || !failureEvents.some(event => event.type === 'phase' && event.phase === 'error')
+    ) {
+      throw acceptanceError('CONTROLLED_TOOL_FAILURE_MISSING');
+    }
     await access(join(authorizedRoot, 'acceptance-failure.txt'));
 
     await composition.resetForConfigurationChange();
