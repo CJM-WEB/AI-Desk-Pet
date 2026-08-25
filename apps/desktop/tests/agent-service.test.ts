@@ -1866,9 +1866,61 @@ describe('AgentService', () => {
 
     expect(fileTools.executeWrite).toHaveBeenCalledOnce();
     expect(provider.requests).toHaveLength(1);
+    expect(events.at(-2)).toEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '已完成以下文件操作：docs/first.txt。其余文件操作已取消，未执行。'
+    });
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
     await expect(service.confirm(secondPending.action.actionId)).rejects.toThrow('ACTION_EXPIRED');
     expect(fileTools.executeWrite).toHaveBeenCalledOnce();
+  });
+
+  test('多文件补丁后续项失败时公开已完成相对路径和未执行事实', async () => {
+    const provider = new ScriptedProvider([
+      writeResponse('builtin.files.apply_patch'),
+      { type: 'text', text: '两个文件均已修改' }
+    ]);
+    const patchAction = (targetRelativePath: string): VerifiedWriteAction => Object.freeze({
+      operation: 'apply_patch' as const,
+      authorizationGeneration: 0,
+      targetRelativePath,
+      addedLines: 1,
+      removedLines: 1,
+      diffPreview: '-old\n+new',
+      previewTruncated: false
+    });
+    let executions = 0;
+    const overrides = {
+      previewMany: vi.fn(async () => [
+        patchAction('docs/first.txt'),
+        patchAction('docs/second.txt')
+      ]),
+      executeWrite: vi.fn(async () => {
+        executions += 1;
+        if (executions === 2) throw new FileToolError('ENTRY_CHANGED', '第二个文件已变化');
+      })
+    } as Partial<AgentFileTools> & {
+      previewMany: (request: unknown) => Promise<readonly VerifiedWriteAction[]>;
+    };
+    const { events, service } = createHarness(provider, overrides);
+
+    await service.submitFileTask({ text: '同时修改两个文件', visibleHistory: [] });
+    const firstPending = events.find(event => event.type === 'pending_action');
+    if (!firstPending || firstPending.type !== 'pending_action') throw new Error('缺少第一张确认卡');
+    await service.confirm(firstPending.action.actionId);
+    const pendingEvents = events.filter(event => event.type === 'pending_action');
+    const secondPending = pendingEvents[1];
+    if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少第二张确认卡');
+
+    await service.confirm(secondPending.action.actionId);
+
+    expect(events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: '已完成以下文件操作：docs/first.txt。当前文件操作失败，其余文件操作未执行。'
+    });
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
   test('本地写入成功但总结失败时明确区分结果', async () => {

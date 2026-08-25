@@ -355,6 +355,33 @@ describe('FileToolService.executeRead', () => {
     expect(replacedAfterValidation).toBe(true);
   });
 
+  it('read_file 在句柄打开后原文件被原地改写时拒绝返回混合快照', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    temporaryRoots.push(root);
+    await mkdir(join(root, 'docs'));
+    const target = join(root, 'docs', 'changing.txt');
+    await writeFile(target, 'before', 'utf8');
+    const policy = await PathPolicy.create(root);
+    const resolveExisting = policy.resolveExisting.bind(policy);
+    let resolutions = 0;
+    policy.resolveExisting = async relativePath => {
+      const resolved = await resolveExisting(relativePath);
+      if (relativePath.replaceAll('\\', '/') === 'docs/changing.txt') {
+        resolutions += 1;
+        if (resolutions === 2) await writeFile(target, 'after with a different size', 'utf8');
+      }
+      return resolved;
+    };
+    const service = new FileToolService(policy);
+
+    await expect(service.executeRead({
+      requestId: 'read-in-place-change',
+      toolName: 'read_file',
+      arguments: { relativePath: 'docs/changing.txt', startLine: 1, lineCount: 10 }
+    })).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    expect(resolutions).toBe(2);
+  });
+
   it('glob_files 的访问预算统计不匹配条目，不能靠海量噪声绕过上限', async () => {
     const { service, root } = await fixtureService();
     const batchSize = 100;
@@ -586,6 +613,134 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
     await expect(lstat(join(root, 'archive', 'changing.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(source, 'utf8')).resolves.toBe('changed while copying');
+  });
+
+  it('copy_file 在目标句柄打开后目录被替换成 Junction 时拒绝根外写入', async ({ skip }) => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-outside-'));
+    temporaryRoots.push(root, outside);
+    await mkdir(join(root, 'docs'));
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '不得写到根外', 'utf8');
+    let replaced = false;
+    const fileOperations = {
+      open: async (path: string, flags: string) => {
+        if (flags === 'wx' && !replaced) {
+          await rm(join(root, 'target'), { recursive: true });
+          try {
+            await symlink(outside, join(root, 'target'), 'junction');
+          } catch (error) {
+            if (error instanceof Error && 'code' in error
+              && ((error as NodeJS.ErrnoException).code === 'EPERM'
+                || (error as NodeJS.ErrnoException).code === 'EACCES')) {
+              skip(`当前系统不允许创建测试 Junction：${String((error as NodeJS.ErrnoException).code)}`);
+            }
+            throw error;
+          }
+          replaced = true;
+        }
+        return await open(path, flags);
+      },
+      rename,
+      unlink,
+      mkdir
+    };
+    const service = new FileToolService(await PathPolicy.create(root), undefined, undefined, fileOperations);
+    const action = await service.preview({
+      requestId: 'copy-target-junction-race',
+      toolName: 'copy_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'LINK_NOT_ALLOWED' });
+    expect(replaced).toBe(true);
+    await expect(lstat(join(outside, 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('copy_file 在新建目标句柄无法取得身份时关闭句柄并清理自有目标', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    temporaryRoots.push(root);
+    await mkdir(join(root, 'docs'));
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '正文', 'utf8');
+    let targetClosed = false;
+    const fileOperations = {
+      open: async (path: string, flags: string) => {
+        const handle = await open(path, flags);
+        if (flags !== 'wx') return handle;
+        return {
+          stat: async (_options: { bigint: true }) => { throw new Error('注入目标 stat 失败'); },
+          read: (buffer: Buffer, offset: number, length: number, position: null) => (
+            handle.read(buffer, offset, length, position)
+          ),
+          write: (buffer: Buffer, offset: number, length: number, position: null) => (
+            handle.write(buffer, offset, length, position)
+          ),
+          writeFile: (content: string, encoding: BufferEncoding) => handle.writeFile(content, encoding),
+          close: async () => {
+            targetClosed = true;
+            await handle.close();
+          }
+        };
+      },
+      rename,
+      unlink,
+      mkdir
+    };
+    const service = new FileToolService(await PathPolicy.create(root), undefined, undefined, fileOperations);
+    const action = await service.preview({
+      requestId: 'copy-target-stat-failure',
+      toolName: 'copy_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toBeInstanceOf(Error);
+    expect(targetClosed).toBe(true);
+    await expect(lstat(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('copy_file 在目标句柄关闭时同名路径被替换后拒绝发布成功', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    temporaryRoots.push(root);
+    await mkdir(join(root, 'docs'));
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '复制正文', 'utf8');
+    const target = join(root, 'target', 'source.txt');
+    const movedOwnedTarget = join(root, 'target', 'source.owned.txt');
+    const fileOperations = {
+      open: async (path: string, flags: string) => {
+        const handle = await open(path, flags);
+        if (flags !== 'wx') return handle;
+        return {
+          stat: (options: { bigint: true }) => handle.stat(options),
+          read: (buffer: Buffer, offset: number, length: number, position: null) => (
+            handle.read(buffer, offset, length, position)
+          ),
+          write: (buffer: Buffer, offset: number, length: number, position: null) => (
+            handle.write(buffer, offset, length, position)
+          ),
+          writeFile: (content: string, encoding: BufferEncoding) => handle.writeFile(content, encoding),
+          close: async () => {
+            await handle.close();
+            await rename(target, movedOwnedTarget);
+            await writeFile(target, '竞争方正文', 'utf8');
+          }
+        };
+      },
+      rename,
+      unlink,
+      mkdir
+    };
+    const service = new FileToolService(await PathPolicy.create(root), undefined, undefined, fileOperations);
+    const action = await service.preview({
+      requestId: 'copy-target-replaced-on-close',
+      toolName: 'copy_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(readFile(target, 'utf8')).resolves.toBe('竞争方正文');
+    await expect(readFile(movedOwnedTarget, 'utf8')).resolves.toBe('复制正文');
   });
 
   it('move_file 允许把子目录中的文件移动到授权根目录', async () => {

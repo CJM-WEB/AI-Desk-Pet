@@ -236,6 +236,15 @@ async function readAuthorizedFile(policy: PathPolicy, relativePath: string): Pro
     if (offset > MAX_TEXT_FILE_BYTES) {
       throw new FileToolError('ENTRY_TYPE_UNSUPPORTED', '文本文件超过 1 MiB 限制');
     }
+    const finalIdentity = await handle.stat({ bigint: true });
+    if (
+      openedIdentity.dev !== finalIdentity.dev
+      || openedIdentity.ino !== finalIdentity.ino
+      || openedIdentity.size !== finalIdentity.size
+      || openedIdentity.mtimeNs !== finalIdentity.mtimeNs
+    ) {
+      throw new FileToolError('ENTRY_CHANGED', '文件在读取期间发生变化');
+    }
     return buffer.subarray(0, offset);
   } finally {
     await handle.close();
@@ -579,6 +588,49 @@ async function removeOwnedFile(path: string, identity: string, operations: FileT
 }
 
 /**
+ * 排他创建已经证明目标原本不存在；身份读取失败时仍要立即回滚本次创建，避免失败占住正式目标。
+ * 已取得身份时继续使用实体比较，防止清理竞争方后来替换的同名文件。
+ */
+async function removeExclusivelyCreatedFile(
+  path: string,
+  identity: string | null,
+  operations: FileToolFileOperations
+): Promise<void> {
+  if (identity !== null) {
+    await removeOwnedFile(path, identity, operations);
+    return;
+  }
+  try {
+    await operations.unlink(path);
+  } catch {
+    // 清理属于尽力行为，原始句柄错误优先返回。
+  }
+}
+
+/** 打开正式目标后再次绑定授权路径、父目录与目标句柄实体，阻断检查后的 Junction 替换。 */
+async function assertCopyTargetAuthorized(
+  policy: PathPolicy,
+  targetDirectoryRelativePath: string,
+  targetRelativePath: string,
+  expectedTargetDirectoryIdentity: DirectoryIdentity,
+  targetIdentity: string
+): Promise<void> {
+  const targetDirectory = await policy.resolveExisting(targetDirectoryRelativePath);
+  const currentDirectoryIdentity = await captureMoveTargetDirectory(targetDirectory);
+  if (
+    currentDirectoryIdentity.device !== expectedTargetDirectoryIdentity.device
+    || currentDirectoryIdentity.inode !== expectedTargetDirectoryIdentity.inode
+  ) {
+    throw new FileToolError('ENTRY_CHANGED', '目标目录在复制期间发生变化，请重新确认');
+  }
+  const resolvedTarget = await policy.resolveExisting(targetRelativePath);
+  const currentTarget = await lstat(resolvedTarget, { bigint: true });
+  if (!currentTarget.isFile() || ownedFileIdentity(currentTarget) !== targetIdentity) {
+    throw new FileToolError('ENTRY_CHANGED', '复制目标在写入期间发生变化，请重新确认');
+  }
+}
+
+/**
  * 源与目标都通过已打开句柄复制，目标以 wx 排他创建；失败只清理本次创建且身份仍一致的目标。
  * 复制前后再次核对源路径身份，使确认后的替换或复制期间修改按 CAS 失败关闭。
  */
@@ -586,7 +638,13 @@ async function copyFileWithCas(
   source: string,
   target: string,
   expectedSourceIdentity: DeleteIdentity,
-  operations: FileToolFileOperations
+  operations: FileToolFileOperations,
+  targetAuthorization: Readonly<{
+    policy: PathPolicy;
+    targetDirectoryRelativePath: string;
+    targetRelativePath: string;
+    expectedTargetDirectoryIdentity: DirectoryIdentity;
+  }>
 ): Promise<void> {
   const sourceHandle = await operations.open(source, 'r');
   let targetHandle: WritableFileHandle | null = null;
@@ -611,6 +669,13 @@ async function copyFileWithCas(
     }
     targetIdentity = ownedFileIdentity(await targetHandle.stat({ bigint: true }));
     if (targetHandle.write === undefined) throw new Error('FILE_COPY_HANDLE_UNSUPPORTED');
+    await assertCopyTargetAuthorized(
+      targetAuthorization.policy,
+      targetAuthorization.targetDirectoryRelativePath,
+      targetAuthorization.targetRelativePath,
+      targetAuthorization.expectedTargetDirectoryIdentity,
+      targetIdentity
+    );
     const buffer = Buffer.allocUnsafe(64 * 1024);
     while (true) {
       const { bytesRead } = await sourceHandle.read(buffer, 0, buffer.length, null);
@@ -626,6 +691,13 @@ async function copyFileWithCas(
     if (!hasSameDeleteIdentity(expectedSourceIdentity, currentSource)) {
       throw new FileToolError('ENTRY_CHANGED', '源文件在复制期间发生变化，请重新确认');
     }
+    await assertCopyTargetAuthorized(
+      targetAuthorization.policy,
+      targetAuthorization.targetDirectoryRelativePath,
+      targetAuthorization.targetRelativePath,
+      targetAuthorization.expectedTargetDirectoryIdentity,
+      targetIdentity
+    );
   } catch (error) {
     failure = error;
   }
@@ -639,8 +711,21 @@ async function copyFileWithCas(
   } catch (error) {
     failure ??= error;
   }
+  if (failure === undefined && targetIdentity !== null) {
+    try {
+      await assertCopyTargetAuthorized(
+        targetAuthorization.policy,
+        targetAuthorization.targetDirectoryRelativePath,
+        targetAuthorization.targetRelativePath,
+        targetAuthorization.expectedTargetDirectoryIdentity,
+        targetIdentity
+      );
+    } catch (error) {
+      failure = error;
+    }
+  }
   if (failure !== undefined) {
-    if (targetIdentity !== null) await removeOwnedFile(target, targetIdentity, operations);
+    if (targetHandle !== null) await removeExclusivelyCreatedFile(target, targetIdentity, operations);
     throw failure;
   }
 }
@@ -964,7 +1049,12 @@ export class FileToolService {
         }
         const target = join(targetDirectory, basename(source));
         await assertMoveTargetMissing(target);
-        await copyFileWithCas(source, target, internal.expectedSourceIdentity, this.fileOperations);
+        await copyFileWithCas(source, target, internal.expectedSourceIdentity, this.fileOperations, {
+          policy: this.policy,
+          targetDirectoryRelativePath: internal.targetDirectoryRelativePath,
+          targetRelativePath: internal.targetRelativePath,
+          expectedTargetDirectoryIdentity: internal.expectedTargetDirectoryIdentity
+        });
         const finalSourceIdentity = await captureMoveSource(source);
         if (!hasSameDeleteIdentity(internal.expectedSourceIdentity, finalSourceIdentity)) {
           throw new FileToolError('ENTRY_CHANGED', '源文件在复制期间发生变化，请重新确认');

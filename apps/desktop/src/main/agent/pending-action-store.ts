@@ -87,13 +87,14 @@ export class PendingActionStore {
     return item.privateExecution;
   }
 
-  cancel(actionId: string): void {
+  cancel(actionId: string): PendingExecution {
     if (!this.current || this.current.publicAction.actionId !== actionId) {
       throw new Error('ACTION_EXPIRED');
     }
     const item = this.current;
     this.current = null;
     this.onDiscard(item.privateExecution, 'action_cancelled');
+    return item.privateExecution;
   }
 
   clear(reason: PendingActionClearReason): void {

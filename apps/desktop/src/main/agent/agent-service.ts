@@ -239,6 +239,17 @@ function capabilityResultOk(result: unknown): boolean {
     && (result as Record<string, unknown>)['ok'] === true;
 }
 
+/** 多文件任务不是事务；宿主必须明确公开已落盘的相对路径，不能让取消或失败掩盖部分成功。 */
+function partialFileCompletionMessage(
+  completedTargetRelativePaths: readonly string[],
+  outcome: 'cancelled' | 'failed'
+): string {
+  const completed = completedTargetRelativePaths.join('、');
+  return outcome === 'cancelled'
+    ? `已完成以下文件操作：${completed}。其余文件操作已取消，未执行。`
+    : `已完成以下文件操作：${completed}。当前文件操作失败，其余文件操作未执行。`;
+}
+
 function assertNever(value: never): never {
   throw new Error(`未处理的能力操作：${String(value)}`);
 }
@@ -420,6 +431,13 @@ export class AgentService {
           ...(result as Record<string, unknown>),
           completedTargetRelativePaths
         };
+        if (!currentCapabilitySucceeded) {
+          this.publish({
+            type: 'message',
+            role: 'assistant',
+            text: partialFileCompletionMessage(execution.completedTargetRelativePaths ?? [], 'failed')
+          }, owner);
+        }
       }
       capabilityResult = {
         kind: execution.verifiedAction.category,
@@ -467,9 +485,16 @@ export class AgentService {
 
   cancelAction(actionId: string): void {
     try {
-      this.pending.cancel(actionId);
+      const execution = this.pending.cancel(actionId);
       this.pendingSession = null;
       const owner = this.taskOwner;
+      if ((execution.completedTargetRelativePaths?.length ?? 0) > 0) {
+        this.publish({
+          type: 'message',
+          role: 'assistant',
+          text: partialFileCompletionMessage(execution.completedTargetRelativePaths ?? [], 'cancelled')
+        }, owner);
+      }
       this.publish({ type: 'phase', phase: 'cancelled' }, owner);
       if (this.taskOwner === owner && this.pendingSession === null) this.taskOwner = null;
       if (this.taskOwner === null) this.activePlanningHint = undefined;
