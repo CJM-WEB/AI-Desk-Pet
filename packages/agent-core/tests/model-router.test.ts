@@ -314,4 +314,46 @@ describe('ModelRouter', () => {
       'MODEL_CAPABILITY_REQUIRED'
     );
   });
+
+  test('内置 preset 档案仅允许聊天和工具路由', () => {
+    const localProfile: ProviderProfileV2 = {
+      id: 'builtin-local',
+      displayName: '内置本地模型',
+      mode: 'preset',
+      providerId: 'builtin-local',
+      modelId: 'builtin-local',
+      capabilities: ['chat', 'tools'],
+      hasStoredSecret: false
+    };
+    const localCatalog: ProviderCatalogEntry = {
+      catalogVersion: 1,
+      providerId: 'builtin-local',
+      displayName: '内置本地模型',
+      protocol: 'openai-compatible',
+      baseUrl: 'http://127.0.0.1:0',
+      modelDiscoveryUrl: null,
+      models: [{
+        modelId: 'builtin-local',
+        displayName: '内置本地模型',
+        capabilities: ['chat', 'tools']
+      }],
+      apiKeyHelpUrl: 'https://local-model.invalid/',
+      requestLimits: {},
+      compatibilityNotes: []
+    };
+    const router = new ModelRouter({
+      profiles: [localProfile],
+      route: 路由({
+        primaryProfileId: 'builtin-local',
+        chatProfileId: 'builtin-local',
+        agentProfileId: 'builtin-local',
+        visionProfileId: 'builtin-local'
+      }),
+      catalog: [localCatalog]
+    });
+
+    expect(router.select('chat', 空披露).fallbackProfiles).toEqual([]);
+    expect(router.select('agent', 空披露).fallbackProfiles).toEqual([]);
+    expect(() => router.select('vision', 空披露)).toThrow('MODEL_CAPABILITY_REQUIRED');
+  });
 });
