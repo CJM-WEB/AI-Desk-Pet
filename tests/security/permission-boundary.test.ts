@@ -21,6 +21,8 @@ import {
   createBuiltinFileToolRegistry
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
+import { LocalModelProvider } from '../../apps/desktop/src/main/providers/local-model-provider';
+import { LocalModelRuntime } from '../../apps/desktop/src/main/local-model/local-model-runtime';
 import { createOpenAIToolNameCodec } from
   '../../apps/desktop/src/main/providers/openai-tool-name-codec';
 import { PrivacySessionRegistry } from
@@ -54,6 +56,7 @@ import {
   type ProviderScript,
   type ProviderServerFixture
 } from '../fixtures/provider-server';
+import { scanLocalModelCapabilityBoundary } from '../fixtures/local-model-security-scan';
 
 const toolNames = [
   'builtin.files.list_files',
@@ -327,6 +330,72 @@ function movementLockDirector() {
 }
 
 describe('权限边界安全回归', () => {
+  test('本地 Runtime 与 Provider 的依赖图不持有文件、PowerShell、授权根或 shell 执行能力', async () => {
+    const scan = await scanLocalModelCapabilityBoundary([
+      join(process.cwd(), 'apps/desktop/src/main/local-model/local-model-runtime.ts'),
+      join(process.cwd(), 'apps/desktop/src/main/providers/local-model-provider.ts')
+    ]);
+
+    expect(scan).toEqual({
+      forbiddenDependencies: [],
+      unsafeShellAssignments: []
+    });
+  });
+
+  test('本地模型公开状态、Provider 错误与普通日志不泄露连接和正文 canary', async () => {
+    const canaries = [
+      'token-canary-local-security',
+      '43191',
+      'C:\\private-root-canary\\authorized',
+      'prompt-canary-local-security',
+      'body-canary-local-security',
+      'stderr-canary-local-security'
+    ] as const;
+    const [token, port, authorizedRoot, prompt, body, stderr] = canaries;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const provider = new LocalModelProvider({
+      getReadyConnection: () => ({
+        generation: 'security-generation',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        token,
+        modelId: 'ai-pet-local'
+      })
+    }, async () => new Response(JSON.stringify({
+      error: { message: `${body}|${stderr}|${authorizedRoot}` }
+    }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' }
+    }));
+    const providerError = await provider.respond({
+      messages: [{ role: 'user', content: prompt }],
+      tools: [],
+      toolChoice: 'none',
+      reasoningMode: 'disabled'
+    }, new AbortController().signal).catch(error => error as unknown);
+    const statuses: unknown[] = [];
+    const runtime = new LocalModelRuntime({
+      root: authorizedRoot,
+      applicationVersion: 'security-fixture',
+      cachePath: join(authorizedRoot, 'cache.json'),
+      tokenRoot: join(authorizedRoot, 'tokens')
+    });
+    runtime.subscribe(status => statuses.push(status));
+    const runtimeError = await runtime.start().catch(error => error as unknown);
+
+    const publicArtifacts = JSON.stringify({
+      statuses,
+      runtimeStatus: runtime.getStatus(),
+      providerError: providerError instanceof Error
+        ? { name: providerError.name, message: providerError.message }
+        : providerError,
+      runtimeError: runtimeError instanceof Error
+        ? { name: runtimeError.name, message: runtimeError.message }
+        : runtimeError,
+      logs: consoleError.mock.calls
+    });
+    for (const canary of canaries) expect(publicArtifacts).not.toContain(canary);
+  });
+
   test('普通聊天及其正文命令不读取任何文件或 PowerShell 能力依赖', async () => {
     const harness = conversationSecurityHarness({
       chatText: '普通聊天已完成'

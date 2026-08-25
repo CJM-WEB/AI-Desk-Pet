@@ -150,6 +150,9 @@ type ElectronFixtureModule = {
     apiKey: string;
     additionalSecrets?: readonly string[];
     logSentinels?: readonly string[];
+    enableLocalModelFixture?: boolean;
+    localModelToken?: string;
+    localModelStderrCanary?: string;
     launchTimeoutMs?: number;
     operationTimeoutMs?: number;
     prepareUserData?(directories: {
@@ -241,6 +244,8 @@ type ElectronFixtureModule = {
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
     getCharacterMotionDeltaProbe(): Promise<CharacterMotionDeltaProbe>;
     getConversationProbe(): Promise<ConversationE2eProbe>;
+    markLocalModelReady(): Promise<void>;
+    getLocalModelFixtureProcessId(): Promise<number>;
     restart(): Promise<void>;
     dispose(): Promise<void>;
   }>;
@@ -451,6 +456,7 @@ function rendererPages(fixture: AppFixture): Page[] {
 
 function rendererPage(fixture: AppFixture, view: string): Page | undefined {
   return rendererPages(fixture).find(page => {
+    if (page.isClosed()) return false;
     try {
       return new URL(page.url()).searchParams.get('view') === view;
     } catch {
@@ -4234,6 +4240,170 @@ test.describe('Explorer 动态图层自动验收', () => {
 });
 
 test.describe('真实 Provider 业务闭环', () => {
+  test('内置本地模型在真实 Electron 中经历加载、CPU 就绪、云路由恢复与退出清理', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    const localToken = 'token-canary-local-electron';
+    const stderrCanary = 'stderr-canary-local-electron';
+    const localPrompt = '本地模型窗口生命周期问候';
+    const localReply = '本地模型 fixture 回复';
+    const pendingPrompt = '请创建 switch-stale.txt';
+    const cloudPrompt = '关闭本地模型后回复我';
+    const cloudReply = '云端路由已恢复';
+    const logSentinels = [
+      localToken,
+      stderrCanary,
+      localPrompt,
+      localReply,
+      pendingPrompt,
+      cloudPrompt,
+      cloudReply,
+      'body-canary-local-electron'
+    ];
+    const cloud = await startProviderServer([{
+      response: { type: 'text', text: cloudReply },
+      inspect: request => {
+        if (request.messages.at(-1)?.content !== cloudPrompt) {
+          throw new Error('关闭本地模型后没有恢复持久化云路由');
+        }
+      }
+    }]);
+    let fixture: Awaited<ReturnType<ElectronFixtureModule['createElectronAppFixture']>>;
+    try {
+      fixture = await fixtureModule.createElectronAppFixture({
+        workspaceRoot: resolve(process.cwd()),
+        apiKey: cloud.apiKey,
+        additionalSecrets: [localToken],
+        logSentinels,
+        enableLocalModelFixture: true,
+        localModelToken: localToken,
+        localModelStderrCanary: stderrCanary,
+        launchTimeoutMs: 15_000,
+        enableSoftwareRasterizer: true
+      });
+    } catch (error) {
+      await cloud.close();
+      throw error;
+    }
+    let finalLocalProcessId: number | undefined;
+    try {
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet')
+        && rendererPage(fixture, 'chat')
+        && rendererPage(fixture, 'settings')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      const chat = rendererPage(fixture, 'chat');
+      let settings = rendererPage(fixture, 'settings');
+      if (!pet || !chat || !settings) throw new Error('本地模型 E2E 缺少首屏窗口');
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'local-model-cloud-route',
+            displayName: '本地模型关闭后的云路由',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'local-model-cloud-fixture',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'local-model-cloud-route',
+          chatProfileId: 'local-model-cloud-route',
+          agentProfileId: 'local-model-cloud-route',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: {
+            file: true,
+            screenshot: false,
+            clipboard: false,
+            memory: false
+          },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+        await window.myself.openChat();
+      }, { baseUrl: cloud.baseUrl, apiKey: cloud.apiKey });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      await expect(chat.getByText('本地模型加载中，暂时不能发送消息。', { exact: true }))
+        .toBeVisible();
+      await expect(chat.getByRole('button', { name: '发送给 AI Pet' })).toBeDisabled();
+      expect(cloud.requests).toHaveLength(0);
+
+      await fixture.markLocalModelReady();
+      await expect(chat.getByText('CPU 兼容模式', { exact: true })).toBeVisible();
+      await submitChatMessage(chat, localPrompt);
+      await expect(chat.getByText(localReply, { exact: true })).toBeVisible();
+      expect(cloud.requests).toHaveLength(0);
+
+      await submitChatMessage(chat, pendingPrompt);
+      const pendingCard = chat.getByRole('region', { name: '创建文件 switch-stale.txt' });
+      await expect(pendingCard).toBeVisible();
+      await expect(lstat(join(fixture.authorizedRootDirectory, 'switch-stale.txt')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+
+      await chat.getByRole('button', { name: '设置' }).click();
+      await expect.poll(() => Boolean(rendererPage(fixture, 'settings'))).toBe(true);
+      settings = rendererPage(fixture, 'settings');
+      if (!settings) throw new Error('缺少本地模型设置窗口');
+      await expect.poll(() => settings.evaluate(() => document.visibilityState)).toBe('visible');
+      const localSwitch = settings.getByRole('switch', { name: '启用内置本地模型' });
+      await expect(localSwitch).toBeChecked();
+      await localSwitch.uncheck();
+      await expect(settings.getByText('已关闭', { exact: true }).first()).toBeVisible();
+      await expect(localSwitch).toBeEnabled();
+      await expect(localSwitch).not.toBeChecked();
+      await expect(pendingCard).toHaveCount(0);
+      await expect(lstat(join(fixture.authorizedRootDirectory, 'switch-stale.txt')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+      await settings.getByRole('button', { name: '关闭设置', exact: true }).click();
+
+      await submitChatMessage(chat, cloudPrompt);
+      await expect(chat.getByText(cloudReply, { exact: true })).toBeVisible();
+      expect(cloud.requests).toHaveLength(1);
+      cloud.assertComplete();
+      expect(cloud.inspectionErrors).toEqual([]);
+
+      await chat.getByRole('button', { name: '设置' }).click();
+      await expect.poll(() => Boolean(rendererPage(fixture, 'settings'))).toBe(true);
+      settings = rendererPage(fixture, 'settings');
+      if (!settings) throw new Error('重新打开后缺少本地模型设置窗口');
+      await expect.poll(() => settings!.evaluate(() => document.visibilityState)).toBe('visible');
+      const reopenedSwitch = settings.getByRole('switch', { name: '启用内置本地模型' });
+      await expect(reopenedSwitch).not.toBeChecked();
+      await reopenedSwitch.click();
+      await expect(reopenedSwitch).toBeChecked();
+      await expect(settings.getByText('CPU 兼容模式', { exact: true })).toBeVisible();
+      finalLocalProcessId = await fixture.getLocalModelFixtureProcessId();
+
+      expect(fixture.capturedLogEvidence).toEqual({
+        apiKey: false,
+        authorizedRoot: false,
+        authorizationHeader: false,
+        sentinels: logSentinels.map(() => false)
+      });
+    } finally {
+      try {
+        await fixture.dispose();
+      } finally {
+        await cloud.close();
+      }
+    }
+    if (!finalLocalProcessId) throw new Error('缺少退出前本地 fixture PID');
+    await expect(fixtureModule.probeWindowsProcess(finalLocalProcessId)).resolves.toEqual({
+      status: 'absent'
+    });
+  });
+
   test('默认聊天与设置浮层提示', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();

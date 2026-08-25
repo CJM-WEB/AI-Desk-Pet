@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { appendFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
@@ -22,6 +22,13 @@ export interface ElectronLaunchPlanOptions {
   characterExportDestination?: string;
   parentEnvironment?: NodeJS.ProcessEnv;
   enableSoftwareRasterizer?: boolean;
+  localModelFixture?: {
+    scriptPath: string;
+    readyFile: string;
+    pidFile: string;
+    token: string;
+    stderrCanary: string;
+  };
 }
 
 export interface ElectronLaunchPlan {
@@ -78,6 +85,15 @@ export function createElectronLaunchPlan(options: ElectronLaunchPlanOptions): El
         : {}),
       ...(options.characterExportDestination
         ? { MYSELF_E2E_CHARACTER_EXPORT: options.characterExportDestination }
+        : {}),
+      ...(options.localModelFixture
+        ? {
+            MYSELF_E2E_LOCAL_MODEL_SCRIPT: options.localModelFixture.scriptPath,
+            MYSELF_E2E_LOCAL_MODEL_READY_FILE: options.localModelFixture.readyFile,
+            MYSELF_E2E_LOCAL_MODEL_PID_FILE: options.localModelFixture.pidFile,
+            MYSELF_E2E_LOCAL_MODEL_TOKEN: options.localModelFixture.token,
+            MYSELF_E2E_LOCAL_MODEL_STDERR_CANARY: options.localModelFixture.stderrCanary
+          }
         : {})
     }
   };
@@ -240,6 +256,8 @@ export interface ElectronAppFixture {
     historyDisclosureVisible: boolean;
     fileConfirmationVisible: boolean;
   }>;
+  markLocalModelReady(): Promise<void>;
+  getLocalModelFixtureProcessId(): Promise<number>;
   restart(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -332,6 +350,9 @@ export interface CreateElectronAppFixtureOptions {
   launchTimeoutMs?: number;
   operationTimeoutMs?: number;
   enableSoftwareRasterizer?: boolean;
+  enableLocalModelFixture?: boolean;
+  localModelToken?: string;
+  localModelStderrCanary?: string;
   prepareUserData?(directories: ElectronTemporaryDirectories): Promise<void>;
   beforeRestart?(directories: ElectronTemporaryDirectories): Promise<void>;
   dependencies?: ElectronAppDependencies;
@@ -1073,6 +1094,24 @@ export async function createElectronAppFixture(
         directories.packagesDirectory!,
         directories.exportsDirectory!
       );
+  const localModelFixture = options.enableLocalModelFixture
+    ? {
+        scriptPath: join(directories.baseDirectory, 'fake-local-model-process.mjs'),
+        readyFile: join(directories.baseDirectory, 'local-model-ready'),
+        pidFile: join(directories.baseDirectory, 'local-model-pid'),
+        token: options.localModelToken ?? '',
+        stderrCanary: options.localModelStderrCanary ?? ''
+      }
+    : undefined;
+  if (localModelFixture) {
+    if (!localModelFixture.token || !localModelFixture.stderrCanary) {
+      throw new Error('LOCAL_MODEL_E2E_FIXTURE_OPTIONS_INVALID');
+    }
+    await copyFile(
+      resolve(options.workspaceRoot, 'tests/fixtures/fake-local-model-process.mjs'),
+      localModelFixture.scriptPath
+    );
+  }
   await options.prepareUserData?.(directories);
   const capturedChunks: string[] = [];
   const capturedLogEvidenceTracker = createCapturedLogEvidenceTracker({
@@ -1232,7 +1271,8 @@ export async function createElectronAppFixture(
       recycleBinDirectory: directories.recycleBinDirectory,
       ...characterFixtures,
       parentEnvironment: globalThis.process.env,
-      enableSoftwareRasterizer: options.enableSoftwareRasterizer
+      enableSoftwareRasterizer: options.enableSoftwareRasterizer,
+      localModelFixture
     });
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;
@@ -1497,6 +1537,18 @@ export async function createElectronAppFixture(
           throw new Error('ELECTRON_E2E_CONVERSATION_PROBE_RESULT_INVALID');
         }
         return probe as Awaited<ReturnType<ElectronAppFixture['getConversationProbe']>>;
+      },
+      async markLocalModelReady() {
+        if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
+        await writeFile(localModelFixture.readyFile, 'ready\n', 'utf8');
+      },
+      async getLocalModelFixtureProcessId() {
+        if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
+        const processId = Number((await readFile(localModelFixture.pidFile, 'utf8')).trim());
+        if (!Number.isSafeInteger(processId) || processId <= 0) {
+          throw new Error('LOCAL_MODEL_E2E_PROCESS_PID_INVALID');
+        }
+        return processId;
       },
       async restart() {
         if (disposeStarted) throw new Error('ELECTRON_FIXTURE_DISPOSED');

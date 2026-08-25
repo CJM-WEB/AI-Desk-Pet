@@ -60,8 +60,8 @@ describe('Main 通用生命周期', () => {
 
     expect(source).toContain('new LocalModelRuntime({');
     expect(source).toContain('new LocalModelProvider(localModelRuntime)');
-    expect(source).toContain(
-      'initialEnabled: e2eBoundary ? false : localModelSettings.enabled'
+    expect(source).toMatch(
+      /initialEnabled:\s*e2eBoundary\s*\?\s*e2eBoundary\.localModelFixture !== undefined\s*:\s*localModelSettings\.enabled/u
     );
     expect(source).toContain('readProviderSettings: () => localModelService.providerSettingsSnapshot()');
     expect(source).toContain('assertProviderReady: profile => assertProviderReady(');

@@ -95,6 +95,7 @@ import { OpenAICompatibleProvider } from './providers/openai-provider';
 import { LocalModelProvider } from './providers/local-model-provider';
 import { ProviderRegistry } from './providers/provider-registry';
 import { LocalModelRuntime } from './local-model/local-model-runtime';
+import { MainE2eLocalModelRuntime } from './local-model/local-model-e2e-runtime';
 import { LocalModelService } from './local-model/local-model-service';
 import { BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY } from './local-model/local-model-route';
 import { ipcChannels } from '../shared/ipc-channels';
@@ -448,14 +449,16 @@ async function createApplicationWindows(
     join(storageDirectory, 'settings.json'),
     profileId => secrets.hasStoredSecret(profileId)
   );
-  const localModelRuntime = new LocalModelRuntime({
-    root: app.isPackaged
-      ? join(process.resourcesPath, 'local-model')
-      : join(__dirname, '../../resources/local-model'),
-    applicationVersion: app.getVersion(),
-    cachePath: join(storageDirectory, 'local-model-validation-cache.json'),
-    tokenRoot: join(app.getPath('temp'), 'ai-pet-local-model')
-  });
+  const localModelRuntime = e2eBoundary?.localModelFixture
+    ? new MainE2eLocalModelRuntime(e2eBoundary.localModelFixture)
+    : new LocalModelRuntime({
+        root: app.isPackaged
+          ? join(process.resourcesPath, 'local-model')
+          : join(__dirname, '../../resources/local-model'),
+        applicationVersion: app.getVersion(),
+        cachePath: join(storageDirectory, 'local-model-validation-cache.json'),
+        tokenRoot: join(app.getPath('temp'), 'ai-pet-local-model')
+      });
   let resetLocalModelConversation: (() => Promise<void>) | null = null;
   let localModelStatus: LocalModelPublicStatus = localModelRuntime.getStatus();
   // 状态投影在 Main 完成严格校验；Renderer 永远不接触端口、令牌、路径、PID 或原始 stderr。
@@ -469,8 +472,10 @@ async function createApplicationWindows(
   };
   const localModelSettings = await settingsStore.getLocalModelSettings();
   const localModelService = new LocalModelService({
-    // 既有 E2E 使用脚本化云 Provider；本地 Runtime 纵向夹具由后续专用边界显式启用。
-    initialEnabled: e2eBoundary ? false : localModelSettings.enabled,
+    // 既有 E2E 继续使用云 Provider；只有专用本地夹具显式开启内存路由。
+    initialEnabled: e2eBoundary
+      ? e2eBoundary.localModelFixture !== undefined
+      : localModelSettings.enabled,
     runtime: localModelRuntime,
     readCloudProviderSettings: () => settingsStore.getProviderSettings(),
     saveEnabled: enabled => settingsStore.saveLocalModelEnabled(enabled),

@@ -28,6 +28,7 @@ import {
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { PowerShellTool } from '../../apps/desktop/src/main/agent/powershell-tool';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
+import { LocalModelProvider } from '../../apps/desktop/src/main/providers/local-model-provider';
 import { createOpenAIToolNameCodec } from
   '../../apps/desktop/src/main/providers/openai-tool-name-codec';
 import { CharacterBehaviorService } from '../../apps/desktop/src/main/characters/character-behavior-service';
@@ -56,6 +57,7 @@ import {
   type ProviderStep
 } from '../fixtures/provider-server';
 import { parseMainE2eState } from '../fixtures/electron-app';
+import { startLocalModelServer } from '../fixtures/local-model-server';
 
 const strictGeometryState = () => ({
   revision: 1,
@@ -515,6 +517,56 @@ async function deepSeekHarness(input: {
     createConversationId: () => 'conversation-deepseek-integration'
   });
   return { authorized, events, fetchClient, requestBodies, responses, service };
+}
+
+/**
+ * 本地模型纵向夹具只替代固定推理进程：HTTP、Provider codec、AgentLoop、确认与文件工具均为正式实现。
+ */
+async function localModelFileHarness(input: {
+  steps: ProviderStep[];
+  moveToRecycleBin(absolutePath: string): Promise<void>;
+}) {
+  const authorized = await createAuthorizedRoot();
+  roots.push(authorized);
+  const localServer = await startLocalModelServer(input.steps);
+  const cloudServer = await startProviderServer([]);
+  servers.push(localServer, cloudServer);
+  const loop = new AgentLoop();
+  const pending = new PendingActionStore({
+    onDiscard: execution => loop.discard(execution.continuationToken)
+  });
+  const events: TaskEvent[] = [];
+  rendererEventStreams.push({
+    events,
+    authorizedRoot: authorized.root,
+    apiKey: localServer.apiKey
+  });
+  const registry = createBuiltinFileToolRegistry();
+  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
+  const fileTools = new FileToolService(authorized.policy, {
+    moveToRecycleBin: input.moveToRecycleBin
+  });
+  const provider = new LocalModelProvider(localServer.connectionPort);
+  const service = new AgentService({
+    loop,
+    pending,
+    createSession: async () => ({
+      taskKind: 'file' as const,
+      provider,
+      fallbackProviders: [],
+      fileTools,
+      fileDisclosureAllowed: true,
+      tools: registry.definitions(),
+      toolRuntime: {
+        prepare: raw => registry.prepare(raw, permissionPolicy),
+        executeRead: request => fileTools.executeRead(request)
+      },
+      messages: []
+    }),
+    emit: event => events.push(event),
+    createConversationId: () => 'conversation-local-model-integration'
+  });
+  return { authorized, cloudServer, events, localServer, service };
 }
 
 function scriptedProvider(responses: ModelResponse[]): ModelProvider {
@@ -1431,6 +1483,115 @@ describe('桌面 Agent 真实服务集成', () => {
     const manifest = createBehaviorManifest();
 
     expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
+  });
+
+  test('内置本地模型经真实环回协议完成创建、移动、删除与工具结果总结且云调用为零', async () => {
+    const expectedToolResult = (
+      request: Parameters<NonNullable<ProviderStep['inspect']>>[0],
+      toolName: 'create_file' | 'move_file' | 'delete_file',
+      targetRelativePath: string
+    ): void => {
+      const message = request.messages.at(-1);
+      if (!message || message.role !== 'tool') throw new Error('缺少本地工具结果回填');
+      expect(JSON.parse(message.content)).toEqual({
+        ok: true,
+        toolName,
+        targetRelativePath
+      });
+      expect(request.tools).toEqual([]);
+      expect(request.toolChoice).toBe('none');
+    };
+    let recycledPath = '';
+    const fixture = await localModelFileHarness({
+      steps: [
+        {
+          response: toolCall('local-create', 'builtin.files.create_file', {
+            relativePath: '资料.txt', content: '本地模型正文\n'
+          }),
+          inspect: request => {
+            expect(request.reasoningMode).toBe('disabled');
+            expect(request.localPolicyWasForced).toBe(true);
+            expect(request.toolChoice).toBe('required');
+          }
+        },
+        {
+          response: { type: 'text', text: '资料.txt 已创建' },
+          inspect: request => expectedToolResult(request, 'create_file', '资料.txt')
+        },
+        {
+          response: toolCall('local-move', 'builtin.files.move_file', {
+            sourceRelativePath: '资料.txt', targetDirectoryRelativePath: 'archive'
+          })
+        },
+        {
+          response: { type: 'text', text: '资料.txt 已移动' },
+          inspect: request => expectedToolResult(request, 'move_file', 'archive/资料.txt')
+        },
+        {
+          response: toolCall('local-delete', 'builtin.files.delete_file', {
+            relativePath: 'archive/资料.txt'
+          })
+        },
+        {
+          response: { type: 'text', text: '资料.txt 已移入回收站' },
+          inspect: request => expectedToolResult(request, 'delete_file', 'archive/资料.txt')
+        }
+      ],
+      moveToRecycleBin: async absolutePath => rename(absolutePath, recycledPath)
+    });
+    recycledPath = join(fixture.authorized.base, 'recycled-local-model.txt');
+    const createdPath = join(fixture.authorized.root, '资料.txt');
+    const movedPath = join(fixture.authorized.root, 'archive', '资料.txt');
+    await mkdir(join(fixture.authorized.root, 'archive'));
+
+    await fixture.service.submitFileTask({
+      text: '请创建资料.txt并写入本地模型正文',
+      visibleHistory: [],
+      planningHint: { operation: 'create_file' }
+    });
+    const createAction = fixture.events.filter(event => event.type === 'pending_action').at(-1);
+    if (!createAction || createAction.type !== 'pending_action') throw new Error('缺少创建确认卡');
+    await expect(lstat(createdPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fixture.service.confirm(createAction.action.actionId);
+    await expect(readFile(createdPath, 'utf8')).resolves.toBe('本地模型正文\n');
+
+    await fixture.service.submitFileTask({
+      text: '把资料.txt移动到archive目录',
+      visibleHistory: [],
+      planningHint: { operation: 'move_file' }
+    });
+    const moveAction = fixture.events.filter(event => event.type === 'pending_action').at(-1);
+    if (!moveAction || moveAction.type !== 'pending_action') throw new Error('缺少移动确认卡');
+    await expect(lstat(createdPath)).resolves.toBeDefined();
+    await expect(lstat(movedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fixture.service.confirm(moveAction.action.actionId);
+    await expect(lstat(createdPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(movedPath, 'utf8')).resolves.toBe('本地模型正文\n');
+
+    await fixture.service.submitFileTask({
+      text: '删除archive目录里的资料.txt',
+      visibleHistory: [],
+      planningHint: { operation: 'delete_file' }
+    });
+    const deleteAction = fixture.events.filter(event => event.type === 'pending_action').at(-1);
+    if (!deleteAction || deleteAction.type !== 'pending_action') throw new Error('缺少删除确认卡');
+    await expect(lstat(movedPath)).resolves.toBeDefined();
+    await expect(lstat(recycledPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fixture.service.confirm(deleteAction.action.actionId);
+    await expect(lstat(movedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(recycledPath, 'utf8')).resolves.toBe('本地模型正文\n');
+
+    expect(fixture.localServer.requests).toHaveLength(6);
+    expect(fixture.localServer.requests.every(request => request.model === 'ai-pet-local')).toBe(true);
+    expect(fixture.localServer.inspectionErrors).toEqual([]);
+    fixture.localServer.assertComplete();
+    expect(fixture.cloudServer.requests).toHaveLength(0);
+    fixture.cloudServer.assertComplete();
+    expect(fixture.events.filter(event => event.type === 'message')).toEqual([
+      { type: 'message', role: 'assistant', text: '资料.txt 已创建' },
+      { type: 'message', role: 'assistant', text: '资料.txt 已移动' },
+      { type: 'message', role: 'assistant', text: '资料.txt 已移入回收站' }
+    ]);
   });
 
   test('DeepSeek 外部别名删除空目录时确认前无副作用且确认后只进入一次隔离回收站', async () => {

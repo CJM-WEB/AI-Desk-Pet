@@ -19,6 +19,13 @@ export interface MainE2eBoundary {
   safeCharacterPackage: string;
   maliciousCharacterPackage: string;
   characterExportDestination: string;
+  localModelFixture?: {
+    scriptPath: string;
+    readyFile: string;
+    pidFile: string;
+    token: string;
+    stderrCanary: string;
+  };
 }
 
 export interface MainE2eBoundaryOptions {
@@ -374,6 +381,11 @@ export function resolveMainE2eBoundary(
   const rawSafePackage = options.env['MYSELF_E2E_SAFE_CHARACTER_PACKAGE'];
   const rawMaliciousPackage = options.env['MYSELF_E2E_MALICIOUS_CHARACTER_PACKAGE'];
   const rawExportDestination = options.env['MYSELF_E2E_CHARACTER_EXPORT'];
+  const rawLocalModelScript = options.env['MYSELF_E2E_LOCAL_MODEL_SCRIPT'];
+  const rawLocalModelReadyFile = options.env['MYSELF_E2E_LOCAL_MODEL_READY_FILE'];
+  const rawLocalModelPidFile = options.env['MYSELF_E2E_LOCAL_MODEL_PID_FILE'];
+  const rawLocalModelToken = options.env['MYSELF_E2E_LOCAL_MODEL_TOKEN'];
+  const rawLocalModelStderrCanary = options.env['MYSELF_E2E_LOCAL_MODEL_STDERR_CANARY'];
   if (
     !rawUserData
     || !rawAuthorizedRoot
@@ -428,6 +440,9 @@ export function resolveMainE2eBoundary(
       ? target
       : null;
   };
+  const resolveTemporaryFileOrNew = (candidate: string): string | null => (
+    existsSync(candidate) ? resolveTemporaryFile(candidate) : resolveNewTemporaryFile(candidate)
+  );
 
   const userDataDirectory = resolveTemporaryChild(rawUserData);
   const authorizedRootDirectory = resolveTemporaryChild(rawAuthorizedRoot);
@@ -451,6 +466,34 @@ export function resolveMainE2eBoundary(
     recycleBinDirectory,
     characterAssetsDirectory
   ]).size !== 4) return null;
+  const hasAnyLocalModelFixtureValue = Boolean(
+    rawLocalModelScript
+    || rawLocalModelReadyFile
+    || rawLocalModelPidFile
+    || rawLocalModelToken
+    || rawLocalModelStderrCanary
+  );
+  let localModelFixture: MainE2eBoundary['localModelFixture'];
+  if (hasAnyLocalModelFixtureValue) {
+    if (
+      !rawLocalModelScript
+      || !rawLocalModelReadyFile
+      || !rawLocalModelPidFile
+      || !rawLocalModelToken
+      || !rawLocalModelStderrCanary
+    ) return null;
+    const scriptPath = resolveTemporaryFile(rawLocalModelScript);
+    const readyFile = resolveTemporaryFileOrNew(rawLocalModelReadyFile);
+    const pidFile = resolveTemporaryFileOrNew(rawLocalModelPidFile);
+    if (!scriptPath || !readyFile || !pidFile) return null;
+    localModelFixture = {
+      scriptPath,
+      readyFile,
+      pidFile,
+      token: rawLocalModelToken,
+      stderrCanary: rawLocalModelStderrCanary
+    };
+  }
 
   return {
     userDataDirectory,
@@ -461,6 +504,7 @@ export function resolveMainE2eBoundary(
     characterAssetsDirectory,
     safeCharacterPackage,
     maliciousCharacterPackage,
-    characterExportDestination
+    characterExportDestination,
+    ...(localModelFixture ? { localModelFixture } : {})
   };
 }

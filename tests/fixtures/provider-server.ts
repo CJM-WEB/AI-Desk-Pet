@@ -5,6 +5,7 @@ import type { ModelMessage, ModelRequest, ModelResponse } from '@myself/agent-co
 
 export type ProviderInspectionRequest = ModelRequest & Readonly<{
   toolChoiceWasExplicit: boolean;
+  localPolicyWasForced: boolean;
 }>;
 
 export interface ProviderStep {
@@ -229,7 +230,15 @@ function normalizeRequest(value: unknown): ProviderInspectionRequest {
   if (toolChoice !== 'auto' && toolChoice !== 'required' && toolChoice !== 'none') {
     throw new Error('工具选择策略无效');
   }
-  const reasoningMode = isRecord(value.thinking) && value.thinking.type === 'disabled'
+  const localPolicyWasForced = value.stream === false
+    && value.reasoning_effort === 'none'
+    && isRecord(value.chat_template_kwargs)
+    && value.chat_template_kwargs.enable_thinking === false
+    && value.parallel_tool_calls === false
+    && value.parse_tool_calls === true;
+  const reasoningMode = (
+    isRecord(value.thinking) && value.thinking.type === 'disabled'
+  ) || localPolicyWasForced
     ? 'disabled'
     : 'provider_default';
   const messages = value.messages.map((message): ModelMessage => {
@@ -263,7 +272,14 @@ function normalizeRequest(value: unknown): ProviderInspectionRequest {
     };
   });
   // inspect 只观察本次请求契约；这些字段不进入去标识化持久摘要。
-  return { messages, tools, toolChoice, reasoningMode, toolChoiceWasExplicit };
+  return {
+    messages,
+    tools,
+    toolChoice,
+    reasoningMode,
+    toolChoiceWasExplicit,
+    localPolicyWasForced
+  };
 }
 
 function compatibleResponse(response: ModelResponse): unknown {

@@ -28,6 +28,12 @@ async function assertMcpSettingsEntryAbsent(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: '添加服务' })).toHaveCount(0);
 }
 
+async function assertLocalModelCardVisible(page: Page): Promise<void> {
+  await expect(page.getByRole('heading', { name: '内置本地模型' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: '启用内置本地模型' })).toHaveCount(1);
+  await expect(page.getByText('Qwen3.5-4B · 无需 API Key', { exact: true })).toBeVisible();
+}
+
 async function assertNoHorizontalOverflow(page: Page): Promise<void> {
   const result = await page.evaluate(() => {
     const viewportWidth = document.documentElement.clientWidth;
@@ -170,6 +176,7 @@ test('720x620 默认尺寸下设置页无横向溢出且 MCP 入口不可见', a
     await settingsPage.setViewportSize({ width: 720, height: 620 });
     try {
       await assertMcpSettingsEntryAbsent(settingsPage);
+      await assertLocalModelCardVisible(settingsPage);
 
       for (const tab of ['模型', '隐私', '本地数据']) {
         await settingsPage.getByRole('button', { name: tab }).click();
@@ -204,6 +211,7 @@ test('640x520 最小尺寸下设置页无文字或控件重叠且 MCP 入口不�
     await settingsPage.setViewportSize({ width: 640, height: 520 });
     try {
       await assertMcpSettingsEntryAbsent(settingsPage);
+      await assertLocalModelCardVisible(settingsPage);
 
       for (const tab of ['模型', '隐私', '本地数据']) {
         await settingsPage.getByRole('button', { name: tab }).click();
