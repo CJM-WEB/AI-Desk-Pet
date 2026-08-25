@@ -315,6 +315,7 @@ const journeyToolNames = [
   'builtin.files.create_file',
   'builtin.files.move_file',
   'builtin.files.apply_patch',
+  'builtin.files.edit_file',
   'builtin.files.delete_file',
   'builtin.powershell.run'
 ] as const;
@@ -5950,9 +5951,11 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: toolResponse('patch-file', 'builtin.files.apply_patch', {
+        response: toolResponse('edit-file', 'builtin.files.edit_file', {
           relativePath: 'created.txt',
-          patch: '@@ -1,1 +1,1 @@\n-task6-file-body-sentinel\n+patched content\n'
+          oldString: 'task6-file-body-sentinel\n',
+          newString: 'patched content\n',
+          replaceAll: false
         })
       },
       {
@@ -5962,9 +5965,9 @@ test.describe('真实 Provider 业务闭环', () => {
             toolName?: string;
             targetRelativePath?: string;
           };
-          if (result.toolName !== 'apply_patch'
+          if (result.toolName !== 'edit_file'
             || result.targetRelativePath !== 'created.txt') {
-            throw new Error('补丁结果不符合脚本预期');
+            throw new Error('精确编辑结果不符合脚本预期');
           }
         }
       },
