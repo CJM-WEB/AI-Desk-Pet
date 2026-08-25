@@ -1019,6 +1019,26 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await expect(readFile(join(root, 'docs', 'patch.txt'), 'utf8')).resolves.toBe('after\n');
   });
 
+  it('previewMany 保留带相对路径的单文件 hunk 补丁兼容入口', async () => {
+    const { service, root } = await fixtureService();
+    await writeFile(join(root, 'docs', 'legacy.txt'), 'before\n', 'utf8');
+
+    const actions = await service.previewMany({
+      requestId: 'patch-single-hunk',
+      toolName: 'apply_patch',
+      arguments: {
+        relativePath: 'docs/legacy.txt',
+        patch: '@@ -1,1 +1,1 @@\n-before\n+after\n'
+      }
+    });
+
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      operation: 'apply_patch',
+      targetRelativePath: 'docs/legacy.txt'
+    });
+  });
+
   it('apply_patch 多文件请求拆成逐文件独立动作并分别复核基础内容', async () => {
     const { service, root } = await fixtureService();
     await writeFile(join(root, 'docs', 'first.txt'), 'first old\n', 'utf8');

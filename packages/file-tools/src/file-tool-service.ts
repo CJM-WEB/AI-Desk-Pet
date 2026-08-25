@@ -626,17 +626,23 @@ export class FileToolService {
       const parsed = parsePatch(arguments_.patch);
       if (parsed.length === 0) throw new FileToolError('PATH_INVALID', '补丁至少包含一个文件变更');
       if (parsed.length === 1) {
-        const inferredRelativePath = relativePathFromPatchFile(parsed[0]!);
-        if (
-          arguments_.relativePath !== undefined
-          && normalizeRelativePathForResult(arguments_.relativePath) !== inferredRelativePath
-        ) {
-          throw new FileToolError('PATH_INVALID', '补丁文件头与目标相对路径不一致');
+        const parsedFile = parsed[0]!;
+        let targetRelativePath = arguments_.relativePath;
+        // 旧单文件契约只含 hunk，没有文件头；显式相对路径仍是唯一目标权威。
+        if (typeof parsedFile.oldFileName === 'string' && typeof parsedFile.newFileName === 'string') {
+          const inferredRelativePath = relativePathFromPatchFile(parsedFile);
+          if (
+            targetRelativePath !== undefined
+            && normalizeRelativePathForResult(targetRelativePath) !== inferredRelativePath
+          ) {
+            throw new FileToolError('PATH_INVALID', '补丁文件头与目标相对路径不一致');
+          }
+          targetRelativePath ??= inferredRelativePath;
         }
         return [await this.preview({
           ...request,
           arguments: {
-            relativePath: arguments_.relativePath ?? inferredRelativePath,
+            ...(targetRelativePath === undefined ? {} : { relativePath: targetRelativePath }),
             patch: arguments_.patch
           }
         })];
