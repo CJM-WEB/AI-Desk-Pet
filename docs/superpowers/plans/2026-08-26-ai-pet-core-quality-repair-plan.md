@@ -2,6 +2,8 @@
 
 > 规格：`docs/superpowers/specs/2026-08-26-ai-pet-core-quality-repair-design.md`
 
+状态：已完成；证据见 `docs/operations/2026-08-26-ai-pet-core-quality-repair-acceptance.md`
+
 ## 实施原则
 
 - 所有行为变更先 RED，再最小 GREEN，最后删除被替代旧路径。
