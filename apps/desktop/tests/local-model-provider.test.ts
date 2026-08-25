@@ -105,20 +105,64 @@ describe('LocalModelProvider', () => {
   });
 
   test.each([
-    ['reasoning_content', {
-      choices: [{ message: { content: '不得返回', reasoning_content: '内部推理' } }]
-    }],
-    ['think 标签', {
-      choices: [{ message: { content: '<think>内部推理</think>最终答案' } }]
-    }]
-  ])('稳定拒绝%s泄漏', async (_name, rawResponse) => {
+    ['字符串', 'reasoning-canary-string'],
+    ['空字符串', ''],
+    ['null', null],
+    ['数字', 0],
+    ['对象', { detail: 'reasoning-canary-object' }]
+  ])('reasoning_content 字段存在且值为%s时稳定拒绝', async (_name, reasoningContent) => {
+    const contentCanary = `content-canary-${_name}`;
+    const rawResponse = {
+      choices: [{
+        message: {
+          content: contentCanary,
+          reasoning_content: reasoningContent
+        }
+      }]
+    };
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(rawResponse));
     const provider = new LocalModelProvider(readyPort(), fetchClient);
 
-    await expect(provider.respond(request, new AbortController().signal)).rejects.toMatchObject({
+    const error = await provider.respond(request, new AbortController().signal)
+      .catch(reason => reason as unknown);
+    expect(error).toMatchObject({
       code: 'LOCAL_MODEL_REASONING_LEAK',
       retryable: false
     });
+    const observableError = error as Error;
+    expect(String(error)).not.toContain(contentCanary);
+    expect(observableError.message).not.toContain(contentCanary);
+    expect(observableError.stack ?? '').not.toContain(contentCanary);
+    expect(JSON.stringify(error)).not.toContain('reasoning-canary');
+  });
+
+  test('reasoning_content 字段不存在时接受普通文本', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '普通正文' } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond(request, new AbortController().signal)).resolves.toEqual({
+      type: 'text',
+      text: '普通正文'
+    });
+  });
+
+  test('稳定拒绝 think 标签且错误不泄露正文', async () => {
+    const contentCanary = '<think>reasoning-canary-think</think>最终答案';
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: contentCanary } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    const error = await provider.respond(request, new AbortController().signal)
+      .catch(reason => reason as unknown);
+    expect(error).toMatchObject({
+      code: 'LOCAL_MODEL_REASONING_LEAK',
+      retryable: false
+    });
+    expect(String(error)).not.toContain(contentCanary);
+    expect(JSON.stringify(error)).not.toContain('reasoning-canary-think');
   });
 
   test('Runtime 未 ready 时不发送请求', async () => {

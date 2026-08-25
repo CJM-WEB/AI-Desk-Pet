@@ -50,10 +50,9 @@ function assertNoReasoningLeak(raw: unknown): void {
     if (typeof choice !== 'object' || choice === null) continue;
     const message = Reflect.get(choice, 'message');
     if (typeof message !== 'object' || message === null) continue;
-    const reasoningContent = Reflect.get(message, 'reasoning_content');
     const content = Reflect.get(message, 'content');
     if (
-      (typeof reasoningContent === 'string' && reasoningContent.trim().length > 0)
+      Object.prototype.hasOwnProperty.call(message, 'reasoning_content')
       || (typeof content === 'string' && /<\/?think(?:\s[^>]*)?>/iu.test(content))
     ) {
       throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);

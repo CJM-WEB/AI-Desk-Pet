@@ -12,7 +12,7 @@ import {
   OpenAICompatibleProvider,
   ProviderError
 } from './openai-provider';
-import { BUILTIN_LOCAL_PROFILE_ID } from '../local-model/local-model-route';
+import { isBuiltinLocalProviderProfile } from '../local-model/local-model-route';
 
 export type BuiltinLocalProviderFactory = () => ModelProvider;
 
@@ -87,7 +87,7 @@ export class ProviderRegistry {
     getSecret: () => Promise<string>,
     fetchClient?: FetchLike
   ): ModelProvider {
-    if (profile.mode === 'preset' && profile.providerId === BUILTIN_LOCAL_PROFILE_ID) {
+    if (isBuiltinLocalProviderProfile(profile)) {
       if (!this.builtinLocalProviderFactory) {
         throw new ProviderError('LOCAL_MODEL_PROVIDER_FACTORY_NOT_CONFIGURED', false);
       }

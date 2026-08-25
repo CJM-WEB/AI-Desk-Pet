@@ -1806,24 +1806,57 @@ describe('协议请求映射', () => {
 });
 
 describe('ProviderRegistry', () => {
+  const builtinLocalProfile: ProviderProfileV2 = {
+    id: BUILTIN_LOCAL_PROFILE_ID,
+    displayName: '内置本地模型',
+    mode: 'preset',
+    providerId: BUILTIN_LOCAL_PROFILE_ID,
+    modelId: BUILTIN_LOCAL_PROFILE_ID,
+    capabilities: ['chat', 'tools'],
+    hasStoredSecret: false
+  };
+
   test('仅固定 builtin-local 档案使用 Main 注入 factory', () => {
     const localProvider = {
       respond: vi.fn<ModelProvider['respond']>()
     } satisfies ModelProvider;
     const localFactory = vi.fn(() => localProvider);
     const registry = new ProviderRegistry(providerCatalog, localFactory);
-    const profile: ProviderProfileV2 = {
+    expect(registry.create(builtinLocalProfile, async () => '不得读取')).toBe(localProvider);
+    expect(localFactory).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ['id', { ...builtinLocalProfile, id: '伪造档案' }],
+    ['providerId', { ...builtinLocalProfile, providerId: 'openai' }],
+    ['mode', {
       id: BUILTIN_LOCAL_PROFILE_ID,
       displayName: '内置本地模型',
-      mode: 'preset',
-      providerId: BUILTIN_LOCAL_PROFILE_ID,
+      mode: 'custom',
+      protocol: 'openai-compatible',
+      baseUrl: 'https://custom.example.com/v1',
       modelId: BUILTIN_LOCAL_PROFILE_ID,
+      additionalParameters: {},
       capabilities: ['chat', 'tools'],
       hasStoredSecret: false
-    };
+    }],
+    ['modelId', { ...builtinLocalProfile, modelId: '伪造模型' }],
+    ['capabilities', { ...builtinLocalProfile, capabilities: ['chat', 'vision'] }],
+    ['hasStoredSecret', { ...builtinLocalProfile, hasStoredSecret: true }]
+  ] satisfies Array<[string, ProviderProfileV2]>)('伪造 builtin-local 的 %s 时不调用 factory', (
+    _field,
+    profile
+  ) => {
+    const localFactory = vi.fn<() => ModelProvider>();
+    const registry = new ProviderRegistry(providerCatalog, localFactory);
 
-    expect(registry.create(profile, async () => '不得读取')).toBe(localProvider);
-    expect(localFactory).toHaveBeenCalledOnce();
+    try {
+      registry.create(profile, async () => 'secret');
+    } catch {
+      // 非公开预置档案可由既有目录校验拒绝；本测试只验证不能越过固定身份边界。
+    }
+
+    expect(localFactory).not.toHaveBeenCalled();
   });
 
   test('注入本地 factory 后现有 Provider 仍按目录协议创建', () => {

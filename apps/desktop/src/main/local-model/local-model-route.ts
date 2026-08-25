@@ -25,7 +25,7 @@ export const BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY: ProviderCatalogEntry = {
   compatibilityNotes: ['内置本地模型仅支持聊天和工具调用。']
 };
 
-const builtinLocalProfile: ProviderProfileV2 = {
+const builtinLocalProfile = {
   id: BUILTIN_LOCAL_PROFILE_ID,
   displayName: '内置本地模型',
   mode: 'preset',
@@ -33,7 +33,22 @@ const builtinLocalProfile: ProviderProfileV2 = {
   modelId: BUILTIN_LOCAL_PROFILE_ID,
   capabilities: ['chat', 'tools'],
   hasStoredSecret: false
-};
+} satisfies ProviderProfileV2;
+
+/** 只有与 Main 固定档案逐字段一致的对象才能取得内置本地 Provider factory。 */
+export function isBuiltinLocalProviderProfile(profile: ProviderProfileV2): boolean {
+  if (profile.mode !== 'preset' || profile.capabilities === undefined) return false;
+  return Object.keys(profile).length === Object.keys(builtinLocalProfile).length
+    && profile.id === builtinLocalProfile.id
+    && profile.displayName === builtinLocalProfile.displayName
+    && profile.providerId === builtinLocalProfile.providerId
+    && profile.modelId === builtinLocalProfile.modelId
+    && profile.hasStoredSecret === builtinLocalProfile.hasStoredSecret
+    && profile.capabilities.length === builtinLocalProfile.capabilities.length
+    && profile.capabilities.every((capability, index) => (
+      capability === builtinLocalProfile.capabilities[index]
+    ));
+}
 
 const builtinLocalRoute: ModelRouteConfig = {
   primaryProfileId: BUILTIN_LOCAL_PROFILE_ID,
