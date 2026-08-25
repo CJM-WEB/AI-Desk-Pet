@@ -264,7 +264,7 @@ describe('多 Provider 设置持久化', () => {
       allowCrossProviderFallback: false
     };
     const privacy = {
-      dataCategories: { file: true, screenshot: false, clipboard: true, memory: false },
+      dataCategories: { file: true, memory: false },
       longTermMemory: true,
       proactivityMode: 'passive' as const
     };
@@ -400,14 +400,12 @@ describe('多 Provider 设置持久化', () => {
     expect(Object.isFrozen(resumed)).toBe(true);
   });
 
-  test('隐私策略各数据类别可独立保存并返回完整行为快照', async () => {
+  test('隐私策略各现行数据类别可独立保存并返回完整行为快照', async () => {
     const store = await createStore();
 
     const snapshot = await store.savePrivacySettings({
       dataCategories: {
         file: true,
-        screenshot: false,
-        clipboard: true,
         memory: false
       },
       longTermMemory: true,
@@ -417,8 +415,6 @@ describe('多 Provider 设置持久化', () => {
     await expect(store.getPrivacySettings()).resolves.toEqual({
       dataCategories: {
         file: true,
-        screenshot: false,
-        clipboard: true,
         memory: false
       },
       longTermMemory: true,

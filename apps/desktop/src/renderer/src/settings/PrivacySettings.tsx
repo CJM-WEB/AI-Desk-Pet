@@ -22,8 +22,6 @@ export interface PrivacySettingsProps {
 
 const categoryLabels = {
   file: ['文件', '仅在明确任务中发送所需文件内容'],
-  screenshot: ['截图', '允许发送当前任务需要的屏幕图像'],
-  clipboard: ['剪贴板', '允许读取并发送当前剪贴板内容'],
   memory: ['长期记忆', '允许模型请求使用本地长期记忆']
 } as const;
 

@@ -146,7 +146,7 @@ test('固定默认尺寸下 wheel 不再交给桌宠交互控制器', () => {
   expect(handleWheel).not.toHaveBeenCalled();
 });
 
-test('拖拽会话期间向角色播放器传递 static 动画模式', () => {
+test('拖拽会话期间保持原动画模式且备用呼吸不改变尺寸', () => {
   const api = createPetViewApi();
   installPetViewBrowserApi(api);
   let options: PetInteractionControllerOptions | undefined;
@@ -164,9 +164,16 @@ test('拖拽会话期间向角色播放器传递 static 动画模式', () => {
 
   expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('animated');
   act(() => options?.onDragStart?.(1));
-  expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('static');
+  expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('animated');
   act(() => options?.onDragEnd?.());
   expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('animated');
+
+  const styles = readFileSync(
+    resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
+    'utf8'
+  );
+  const breathe = /@keyframes companion-breathe\s*\{([\s\S]*?)\n\}/u.exec(styles)?.[1] ?? '';
+  expect(breathe).not.toContain('scale(');
 });
 
 

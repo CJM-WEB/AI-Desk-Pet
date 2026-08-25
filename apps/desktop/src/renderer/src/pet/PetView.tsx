@@ -119,8 +119,6 @@ export function PetView({
     moving: false,
     carrying: false
   });
-  const [dragging, setDragging] = useState(false);
-  const presentationMotionMode: CharacterMotionMode = dragging ? 'static' : motionMode;
   const [startupFallbackError, setStartupFallbackError] = useState<string | null>(null);
   const [playerRuntimeError, setPlayerRuntimeError] = useState<string | null>(null);
   const runtimeError = startupFallbackError ?? playerRuntimeError;
@@ -185,7 +183,6 @@ export function PetView({
   useEffect(() => {
     const interactionController = createInteractionController(window.myself, {
       onDragStart: pointerId => {
-        setDragging(true);
         const shell = shellRef.current;
         if (!shell || typeof shell.setPointerCapture !== 'function') return;
         try {
@@ -196,7 +193,6 @@ export function PetView({
         }
       },
       onDragEnd: () => {
-        setDragging(false);
         const captured = capturedPointerRef.current;
         capturedPointerRef.current = null;
         if (
@@ -287,7 +283,7 @@ export function PetView({
       <div className="pet-character-surface">
         <CharacterPlayer
           stateId={characterState}
-          motionMode={presentationMotionMode}
+          motionMode={motionMode}
           behaviorAuthorityMode="main-v2"
           onExtensionDefinitionsChange={handleExtensionDefinitions}
           onIdleTrigger={triggerIdle}
@@ -298,7 +294,7 @@ export function PetView({
           fallback={(
             <PetCharacter
               state={fallbackState}
-              motionMode={presentationMotionMode}
+              motionMode={motionMode}
               elementRef={handleFallbackElement}
             />
           )}

@@ -99,8 +99,6 @@ const petPlacementMigrationCommitSchema = z.object({
 export const privacySettingsSchema = z.object({
   dataCategories: z.object({
     file: z.boolean(),
-    screenshot: z.boolean(),
-    clipboard: z.boolean(),
     memory: z.boolean()
   }).strict(),
   longTermMemory: z.boolean(),
@@ -264,8 +262,6 @@ function defaultPrivacySettings(): PrivacySettings {
   return {
     dataCategories: {
       file: false,
-      screenshot: false,
-      clipboard: false,
       memory: false
     },
     longTermMemory: false,
@@ -318,6 +314,27 @@ function retireZenProviderSettings(raw: unknown): { changed: boolean; settings: 
         && profile.providerId === RETIRED_ZEN_PROVIDER_ID
       )),
       modelRoute
+    }
+  };
+}
+
+/** 历史占位从未接入采集运行时；严格解析前只移除两个退役键并保留其余隐私选择。 */
+function retireUnusedPrivacyPlaceholders(raw: unknown): { changed: boolean; settings: unknown } {
+  if (!isRecord(raw) || !isRecord(raw.privacy) || !isRecord(raw.privacy.dataCategories)) {
+    return { changed: false, settings: raw };
+  }
+  const categories = raw.privacy.dataCategories;
+  const changed = Object.hasOwn(categories, 'screenshot') || Object.hasOwn(categories, 'clipboard');
+  if (!changed) return { changed: false, settings: raw };
+  const { screenshot: _screenshot, clipboard: _clipboard, ...retainedCategories } = categories;
+  return {
+    changed: true,
+    settings: {
+      ...raw,
+      privacy: {
+        ...raw.privacy,
+        dataCategories: retainedCategories
+      }
     }
   };
 }
@@ -667,6 +684,8 @@ export class SettingsStore {
     }
     const retiredZen = retireZenProviderSettings(raw);
     raw = retiredZen.settings;
+    const retiredPrivacy = retireUnusedPrivacyPlaceholders(raw);
+    raw = retiredPrivacy.settings;
 
     const oversizedReady = recoverOversizedReadyPlacements(raw);
     if (oversizedReady.detected) {
@@ -677,7 +696,7 @@ export class SettingsStore {
 
     const v4 = storedSettingsV4Schema.safeParse(raw);
     if (v4.success) {
-      if (retiredZen.changed || JSON.stringify(v4.data) !== JSON.stringify(raw)) {
+      if (retiredZen.changed || retiredPrivacy.changed || JSON.stringify(v4.data) !== JSON.stringify(raw)) {
         await atomicWrite(this.file, v4.data);
       }
       return v4.data;

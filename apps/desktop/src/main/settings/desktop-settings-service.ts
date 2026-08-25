@@ -94,8 +94,6 @@ export class DesktopSettingsService {
       privacyRuntimeSupport: {
         dataCategories: {
           file: true,
-          screenshot: false,
-          clipboard: false,
           memory: false
         },
         longTermMemory: false,

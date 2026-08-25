@@ -126,7 +126,7 @@ function parseChinese(text: string): ParsedDirective | null {
     };
   }
 
-  const wander = /^(?:请你?|你能)?(?:移动一下|移动|跑一跑|跑步|走一走|走走|散散步|到处走走|运动|动|跑)(?:吗)?/u.exec(text);
+  const wander = /^(?:请你?|你能|你)?(?:开始运动|活动一下|移动一下|运动一下|跑一跑|跑一下|动一下|移动|跑步|走一走|走走|散散步|到处走走|运动|动|跑)(?:吗)?/u.exec(text);
   return wander
     ? {
         consumed: wander[0].length,

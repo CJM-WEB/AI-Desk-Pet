@@ -195,8 +195,6 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
     mutate: store => store.savePrivacySettings({
       dataCategories: {
         file: true,
-        screenshot: false,
-        clipboard: true,
         memory: false
       },
       longTermMemory: false,
@@ -1231,4 +1229,24 @@ export class SettingsStore {
       mcpServers: []
     });
   });
+});
+
+test('加载旧设置时移除截图与剪贴板隐私占位并保留其余设置', async () => {
+  const { file, store } = await createStore();
+  await store.savePetAlwaysOnTop(true);
+  const legacy = JSON.parse(await readFile(file, 'utf8'));
+  legacy.privacy.dataCategories.file = true;
+  legacy.privacy.dataCategories.memory = false;
+  legacy.privacy.dataCategories.screenshot = true;
+  legacy.privacy.dataCategories.clipboard = true;
+  await writeFile(file, JSON.stringify(legacy), 'utf8');
+
+  await expect(store.getPrivacySettings()).resolves.toMatchObject({
+    dataCategories: { file: true, memory: false },
+    longTermMemory: false,
+    proactivityMode: 'autonomous'
+  });
+  const persisted = JSON.parse(await readFile(file, 'utf8'));
+  expect(persisted.petAlwaysOnTop).toBe(true);
+  expect(persisted.privacy.dataCategories).toEqual({ file: true, memory: false });
 });

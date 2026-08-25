@@ -48,8 +48,6 @@ export interface SaveProviderInput {
 export interface PrivacySettingsDto {
   dataCategories: {
     file: boolean;
-    screenshot: boolean;
-    clipboard: boolean;
     memory: boolean;
   };
   longTermMemory: boolean;
@@ -59,8 +57,6 @@ export interface PrivacySettingsDto {
 export interface PrivacyRuntimeSupportDto {
   dataCategories: {
     file: boolean;
-    screenshot: boolean;
-    clipboard: boolean;
     memory: boolean;
   };
   longTermMemory: boolean;

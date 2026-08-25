@@ -20,12 +20,12 @@ function dashboardWithLocalModel(localModel: LocalModelPublicStatus): SettingsDa
       allowCrossProviderFallback: false
     },
     privacy: {
-      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      dataCategories: { file: false, memory: false },
       longTermMemory: false,
       proactivityMode: 'assistive'
     },
     privacyRuntimeSupport: {
-      dataCategories: { file: true, screenshot: false, clipboard: false, memory: false },
+      dataCategories: { file: true, memory: false },
       longTermMemory: false,
       proactivity: false
     },

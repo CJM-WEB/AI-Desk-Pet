@@ -183,7 +183,7 @@ describe('DesktopSettingsService', () => {
     const fixture = createFixture();
 
     await fixture.service.savePrivacySettings({
-      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      dataCategories: { file: false, memory: false },
       longTermMemory: false,
       proactivityMode: 'passive'
     });
@@ -223,7 +223,7 @@ describe('DesktopSettingsService', () => {
     fixture.settings.savePrivacySettings.mockRejectedValueOnce(new Error('WRITE_FAILED'));
 
     await expect(fixture.service.savePrivacySettings({
-      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      dataCategories: { file: false, memory: false },
       longTermMemory: false,
       proactivityMode: 'autonomous'
     })).rejects.toThrow('WRITE_FAILED');
@@ -356,8 +356,6 @@ describe('DesktopSettingsService', () => {
     expect((await fixture.service.getDashboard()).privacyRuntimeSupport).toEqual({
       dataCategories: {
         file: true,
-        screenshot: false,
-        clipboard: false,
         memory: false
       },
       longTermMemory: false,

@@ -80,8 +80,6 @@ const dashboard: SettingsDashboardDto = {
   privacy: {
     dataCategories: {
       file: true,
-      screenshot: false,
-      clipboard: false,
       memory: false
     },
     longTermMemory: false,
@@ -90,8 +88,6 @@ const dashboard: SettingsDashboardDto = {
   privacyRuntimeSupport: {
     dataCategories: {
       file: true,
-      screenshot: false,
-      clipboard: false,
       memory: false
     },
     longTermMemory: false,
@@ -381,8 +377,8 @@ describe('多 Provider 设置组件', () => {
     );
 
     expect(markup).toContain('文件');
-    expect(markup).toContain('截图');
-    expect(markup).toContain('剪贴板');
+    expect(markup).not.toContain('截图');
+    expect(markup).not.toContain('剪贴板');
     expect(markup).toContain('长期记忆');
     expect(markup).toContain('被动');
     expect(markup).toContain('辅助');

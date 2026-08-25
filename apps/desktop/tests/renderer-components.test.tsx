@@ -17,6 +17,7 @@ import {
   availableSettingsTabs,
   SettingsWorkspace
 } from '../src/renderer/src/settings/SettingsView';
+import { PrivacySettings } from '../src/renderer/src/settings/PrivacySettings';
 import { mountTaskEventsIfAvailable } from '../src/renderer/src/App';
 
 type ClickableElement = {
@@ -703,8 +704,6 @@ describe('Renderer 可见组件', () => {
           privacy: {
             dataCategories: {
               file: false,
-              screenshot: false,
-              clipboard: false,
               memory: false
             },
             longTermMemory: false,
@@ -713,8 +712,6 @@ describe('Renderer 可见组件', () => {
           privacyRuntimeSupport: {
             dataCategories: {
               file: true,
-              screenshot: false,
-              clipboard: false,
               memory: false
             },
             longTermMemory: false,
@@ -760,6 +757,36 @@ describe('Renderer 可见组件', () => {
     expect(markup).not.toContain('notice-success');
     expect(markup).not.toContain('transient-toast-layer');
     expect(availableSettingsTabs()).not.toContain('tools');
+  });
+
+  test('隐私设置不再展示尚未接入的截图与剪贴板授权占位', () => {
+    const markup = renderToStaticMarkup(
+      <PrivacySettings
+        privacy={{
+          dataCategories: { file: false, memory: false },
+          longTermMemory: false,
+          proactivityMode: 'assistive'
+        } as never}
+        runtimeSupport={{
+          dataCategories: { file: true, memory: false },
+          longTermMemory: false,
+          proactivity: false
+        } as never}
+        authorizedRoot={null}
+        busy={false}
+        incognito={false}
+        petAlwaysOnTop={false}
+        onSave={vi.fn()}
+        onPetAlwaysOnTopChange={vi.fn()}
+        onIncognitoChange={vi.fn()}
+        onChooseRoot={vi.fn()}
+        onRevokeRoot={vi.fn()}
+      />
+    );
+
+    expect(markup).not.toContain('截图数据授权');
+    expect(markup).not.toContain('剪贴板数据授权');
+    expect(markup).toContain('文件数据授权');
   });
 });
 

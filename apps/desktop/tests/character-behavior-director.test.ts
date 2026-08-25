@@ -305,6 +305,85 @@ describe('Main 角色行为 Director', () => {
     }
   );
 
+  test.each([
+    { mode: 'once' as const, continuous: false },
+    { mode: 'continuous' as const, continuous: true }
+  ])('停止锁下当前用户轮次的 Schema $mode 计划先落盘解锁再运动', async ({ mode, continuous }) => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan: null,
+      motionPlan: {
+        mode,
+        durationSeconds: null,
+        target: 'random_work_area',
+        distance: 'medium'
+      }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(false);
+    expect(fixture.motion.requestIntent).toHaveBeenCalledOnce();
+    expect(fixture.director.getDiagnosticSnapshot().continuousMovementRequested)
+      .toBe(continuous);
+  });
+
+  test('Schema 移动计划解锁落盘失败时不保留待执行动作', async () => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.saveMovementStopped.mockRejectedValueOnce(new Error('WRITE_FAILED'));
+
+    await expect(fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan: null,
+      motionPlan: {
+        mode: 'once', durationSeconds: null, target: 'random_work_area', distance: 'medium'
+      }
+    })).rejects.toThrow('WRITE_FAILED');
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+  });
+
+  test('Schema none 与纯行为候选不解除停止锁', async () => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan: { kind: 'none' },
+      motionPlan: { mode: 'none', durationSeconds: null, target: 'current', distance: 'none' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.saveMovementStopped).not.toHaveBeenCalled();
+    expect(fixture.director.getChatContext().runtime.movementStopped).toBe(true);
+  });
+
+  test('move→stop→move 不等待旧显式播放令牌结束', async () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    await fixture.director.prepareUserPrompt('动');
+    await fixture.director.prepareUserPrompt('停下');
+    await fixture.director.prepareUserPrompt('动');
+
+    expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(2);
+    expect(fixture.saveMovementStopped.mock.calls.map(([value]) => value))
+      .toEqual([true, false]);
+  });
+
   test('持续计划到达后复用 MotionService 请求下一随机工作区目标，停止后不再续行', () => {
     const fixture = createFixture();
     fixture.setDirectedAuthorization({

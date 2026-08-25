@@ -308,6 +308,35 @@ describe('Renderer 角色运动控制器', () => {
     }
     expect(controller.advance(1_600).position.x).toBe(160);
   });
+
+  test('用户拖拽的非运动权威快照立即清零表现残差', () => {
+    const controller = new CharacterMotionController({
+      position: { x: 0, y: 0 },
+      speed: 100,
+      maxResidualPx: 48
+    });
+    controller.accept({
+      revision: 1,
+      timestampMs: 0,
+      position: { x: 0, y: 0 },
+      target: { x: 300, y: 0 },
+      direction: 'right',
+      moving: true,
+      carrying: false
+    });
+    controller.advance(0);
+    controller.accept({
+      revision: 2,
+      timestampMs: 50,
+      position: { x: 180, y: 90 },
+      target: { x: 180, y: 90 },
+      direction: 'right',
+      moving: false,
+      carrying: false
+    });
+
+    expect(controller.advance(16).position).toEqual({ x: 180, y: 90 });
+  });
 });
 describe('Main 角色运动服务', () => {
   const geometrySnapshot = (input: {
