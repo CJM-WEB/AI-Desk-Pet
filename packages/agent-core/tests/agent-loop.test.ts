@@ -511,7 +511,8 @@ describe('AgentLoop', () => {
       status: 'failed'
     }, runContext));
 
-    expect(events).toContainEqual({ type: 'message', text: '命令已执行，详见输出。' });
+    expect(events).not.toContainEqual({ type: 'message', text: '命令已执行，详见输出。' });
+    expect(events).toContainEqual({ type: 'message', text: '本地能力操作失败，未完成请求。' });
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
@@ -967,7 +968,7 @@ describe('AgentLoop', () => {
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
-  test('失败工具结果后的模型口头成功不能覆盖本地失败终态', async () => {
+  test('失败工具结果后的模型口头成功不得公开且只显示宿主稳定失败说明', async () => {
     const provider = new ScriptedProvider([
       readRequest('read-failed'),
       { type: 'text', text: '文件读取成功' }
@@ -982,7 +983,8 @@ describe('AgentLoop', () => {
       toolRuntime: runtime
     }));
 
-    expect(events).toContainEqual({ type: 'message', text: '文件读取成功' });
+    expect(events).not.toContainEqual({ type: 'message', text: '文件读取成功' });
+    expect(events).toContainEqual({ type: 'message', text: '本地能力操作失败，未完成请求。' });
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 

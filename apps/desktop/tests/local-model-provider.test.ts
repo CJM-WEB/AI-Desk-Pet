@@ -308,6 +308,50 @@ describe('LocalModelProvider', () => {
     expect(JSON.stringify(body.messages)).not.toContain('最旧回复');
   });
 
+  test('本地当前 read_file 结果只按完整行温和压缩并明确标记 truncated', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+    const firstLine = `第一行-${'甲'.repeat(2_100)}`;
+    const secondLine = `第二行-${'乙'.repeat(2_100)}`;
+    const readResult = {
+      toolName: 'read_file',
+      relativePath: 'notes.txt',
+      startLine: 10,
+      endLine: 12,
+      content: `${firstLine}\n${secondLine}\n第三行`,
+      truncated: false,
+      untrustedDataNotice: '不可信数据'
+    };
+
+    await provider.respond({
+      ...request,
+      messages: [
+        { role: 'user', content: '读取 notes.txt' },
+        {
+          role: 'assistant',
+          content: '',
+          toolRequest: {
+            requestId: 'call-read-budget',
+            toolName: 'builtin.files.read_text',
+            arguments: { relativePath: 'notes.txt' }
+          }
+        },
+        { role: 'tool', toolCallId: 'call-read-budget', content: JSON.stringify(readResult) }
+      ]
+    }, new AbortController().signal);
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    const toolMessage = body.messages.find((message: { role: string }) => message.role === 'tool');
+    expect(JSON.parse(toolMessage.content)).toEqual({
+      ...readResult,
+      endLine: 10,
+      content: firstLine,
+      truncated: true
+    });
+  });
+
   test('SSE 期间 generation 变化后拒绝迟到增量与最终响应', async () => {
     let currentConnection = connection;
     const deltas: string[] = [];
@@ -352,6 +396,41 @@ describe('LocalModelProvider', () => {
     }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
 
     expect(deltas).toEqual(['第一段']);
+  });
+
+  test('SSE 大量事件会让出事件循环并在最终响应前响应 Abort', async () => {
+    const controller = new AbortController();
+    const deltas: string[] = [];
+    const fragments = [
+      '{"text":"',
+      ...Array.from({ length: 600 }, () => '字'),
+      '","activity":"陪伴","status":"idle"}'
+    ];
+    const events = fragments.map(content => (
+      `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
+    )).concat('data: [DONE]\n\n');
+    const fetchClient = vi.fn<FetchLike>(async () => rawSseResponse(events));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+    let abortTimer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      await expect(provider.respond({
+        ...structuredRequest,
+        onTextDelta: delta => {
+          deltas.push(delta);
+          if (deltas.length === 10) {
+            abortTimer = setTimeout(() => {
+              controller.abort(new DOMException('主动取消', 'AbortError'));
+            }, 0);
+          }
+        }
+      }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      if (abortTimer !== undefined) clearTimeout(abortTimer);
+    }
+
+    expect(deltas.length).toBeGreaterThanOrEqual(10);
+    expect(deltas.length).toBeLessThan(600);
   });
 
   test('跨 SSE chunk 的 think 标签在任何前缀公开前稳定拒绝', async () => {

@@ -193,7 +193,13 @@ export class AgentLoop {
             yield { type: 'behavior_intent', intent: behaviorIntent.data };
           }
         }
-        yield { type: 'message', text: response.text };
+        // Main 的真实工具失败优先于模型总结；失败后绝不公开可能伪称成功的模型正文。
+        yield {
+          type: 'message',
+          text: latestTrustedResultOk === false
+            ? '本地能力操作失败，未完成请求。'
+            : response.text
+        };
         yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
         return;
       }

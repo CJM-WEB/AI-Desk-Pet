@@ -31,6 +31,61 @@ const localRequestBody = {
 
 const LOCAL_INPUT_TOKEN_BUDGET = 6_400;
 const CONSERVATIVE_UTF8_BYTES_PER_TOKEN = 3;
+const LOCAL_READ_RESULT_CHARACTER_BUDGET = 4_000;
+
+function boundLocalReadResult(content: string): Readonly<{ content: string; lineCount: number }> {
+  if (content.length <= LOCAL_READ_RESULT_CHARACTER_BUDGET) {
+    return { content, lineCount: content.length === 0 ? 0 : content.split('\n').length };
+  }
+  const lines = content.split('\n');
+  const retained: string[] = [];
+  let characters = 0;
+  for (const line of lines) {
+    const nextCharacters = characters + (retained.length === 0 ? 0 : 1) + line.length;
+    if (nextCharacters > LOCAL_READ_RESULT_CHARACTER_BUDGET) break;
+    retained.push(line);
+    characters = nextCharacters;
+  }
+  return { content: retained.join('\n'), lineCount: retained.length };
+}
+
+/** 仅本地请求压缩当前读取结果；云 Provider 与 FileToolService 的公开上限保持不变。 */
+function applyLocalToolResultBudget(messages: ModelRequest['messages']): ModelRequest['messages'] {
+  let changed = false;
+  const bounded = messages.map(message => {
+    if (message.role !== 'tool') return message;
+    let result: unknown;
+    try {
+      result = JSON.parse(message.content);
+    } catch {
+      return message;
+    }
+    if (
+      typeof result !== 'object'
+      || result === null
+      || Array.isArray(result)
+      || Reflect.get(result, 'toolName') !== 'read_file'
+      || typeof Reflect.get(result, 'content') !== 'string'
+    ) return message;
+    const originalContent = Reflect.get(result, 'content') as string;
+    const next = boundLocalReadResult(originalContent);
+    if (next.content === originalContent) return message;
+    const startLine = Reflect.get(result, 'startLine');
+    changed = true;
+    return {
+      ...message,
+      content: JSON.stringify({
+        ...result,
+        content: next.content,
+        ...(Number.isSafeInteger(startLine)
+          ? { endLine: (startLine as number) + next.lineCount - 1 }
+          : {}),
+        truncated: true
+      })
+    };
+  });
+  return changed ? bounded : messages;
+}
 
 function estimateInputTokens(request: ModelRequest, messages: readonly ModelRequest['messages'][number][]): number {
   const serialized = JSON.stringify({
@@ -46,11 +101,17 @@ function estimateInputTokens(request: ModelRequest, messages: readonly ModelRequ
  * 受保护内容自身超预算时仍完整发送，不以截断用户正文换取表面达标。
  */
 function applyLocalContextBudget(request: ModelRequest): ModelRequest {
-  if (estimateInputTokens(request, request.messages) <= LOCAL_INPUT_TOKEN_BUDGET) return request;
+  const locallyBoundedMessages = applyLocalToolResultBudget(request.messages);
+  const boundedRequest = locallyBoundedMessages === request.messages
+    ? request
+    : { ...request, messages: locallyBoundedMessages };
+  if (estimateInputTokens(boundedRequest, locallyBoundedMessages) <= LOCAL_INPUT_TOKEN_BUDGET) {
+    return boundedRequest;
+  }
 
   const groups: number[][] = [];
   let currentGroup: number[] | null = null;
-  request.messages.forEach((message, index) => {
+  locallyBoundedMessages.forEach((message, index) => {
     if (message.role === 'system') return;
     if (message.role === 'user') {
       if (currentGroup !== null) groups.push(currentGroup);
@@ -65,11 +126,11 @@ function applyLocalContextBudget(request: ModelRequest): ModelRequest {
   // 最后组包含当前用户及本轮工具链；倒数第二组是最近完整历史回合。
   const removableGroups = groups.slice(0, Math.max(0, groups.length - 2));
   const removed = new Set<number>();
-  let messages = request.messages;
+  let messages = locallyBoundedMessages;
   for (const group of removableGroups) {
-    if (estimateInputTokens(request, messages) <= LOCAL_INPUT_TOKEN_BUDGET) break;
+    if (estimateInputTokens(boundedRequest, messages) <= LOCAL_INPUT_TOKEN_BUDGET) break;
     group.forEach(index => removed.add(index));
-    messages = request.messages.filter((_message, index) => !removed.has(index));
+    messages = locallyBoundedMessages.filter((_message, index) => !removed.has(index));
   }
   return messages === request.messages ? request : { ...request, messages };
 }
@@ -114,6 +175,7 @@ function createRequestPolicy(
     && request.tools.length === 0
     && request.toolChoice === 'none'
     && request.onTextDelta !== undefined;
+  let reasoningTagTail = '';
   return {
     body: {
       ...localRequestBody,
@@ -136,10 +198,13 @@ function createRequestPolicy(
             assertCurrentGeneration(connectionPort, generation);
             request.onTextDelta?.(delta);
           },
-          validateProjectedText: (text: string): void => {
-            if (/<\/?think(?:\s[^>]*)?>/iu.test(text)) {
+          validateProjectedText: (delta: string): void => {
+            const candidate = reasoningTagTail + delta;
+            if (/<\/?think(?:\s|>)/iu.test(candidate)) {
               throw new ProviderError('LOCAL_MODEL_REASONING_LEAK', false);
             }
+            // 最长危险前缀是 `</think`；固定尾窗即可识别跨事件标签且保持线性。
+            reasoningTagTail = candidate.slice(-7);
           }
         }
       : {}),

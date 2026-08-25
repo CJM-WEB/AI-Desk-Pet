@@ -215,167 +215,217 @@ function normalizeResponse(
   return response;
 }
 
-type ParsedJsonString = Readonly<{ value: string; end: number }>;
-
 const MAX_STREAM_CONTENT_CHARACTERS = 64 * 1024;
 const MAX_SSE_EVENT_CHARACTERS = 256 * 1024;
 const MAX_SSE_TRANSPORT_CHARACTERS = 512 * 1024;
 const MAX_SSE_EVENT_DATA_LINES = 1_024;
+const SSE_YIELD_EVERY_EVENTS = 32;
 
-function 跳过空白(source: string, start: number): number {
-  let index = start;
-  while (/\s/u.test(source[index] ?? '')) index += 1;
-  return index;
+type ProjectorPhase =
+  | 'root'
+  | 'key_or_end'
+  | 'key'
+  | 'colon'
+  | 'value'
+  | 'skip_string'
+  | 'skip_complex'
+  | 'skip_primitive'
+  | 'comma_or_end'
+  | 'target_string'
+  | 'done';
+
+/** 持久化游标保证每个结构化响应字符最多扫描一次，避免逐 delta 从头解析形成 O(n²)。 */
+class IncrementalTopLevelTextProjector {
+  private index = 0;
+  private phase: ProjectorPhase = 'root';
+  private keyCharacters: string[] = [];
+  private keyEscaped = false;
+  private currentKey = '';
+  private skipEscaped = false;
+  private skipInString = false;
+  private skipClosers: string[] = [];
+
+  constructor(private readonly field: string) {}
+
+  project(source: string): string {
+    const projection: string[] = [];
+    while (this.index < source.length) {
+      const character = source[this.index]!;
+      if (this.phase === 'root') {
+        if (/\s/u.test(character)) { this.index += 1; continue; }
+        if (character !== '{') this.malformed();
+        this.index += 1;
+        this.phase = 'key_or_end';
+        continue;
+      }
+      if (this.phase === 'key_or_end') {
+        if (/\s/u.test(character)) { this.index += 1; continue; }
+        if (character === '}') { this.index += 1; this.phase = 'done'; continue; }
+        if (character !== '"') this.malformed();
+        this.keyCharacters = ['"'];
+        this.keyEscaped = false;
+        this.index += 1;
+        this.phase = 'key';
+        continue;
+      }
+      if (this.phase === 'key') {
+        this.keyCharacters.push(character);
+        this.index += 1;
+        if (this.keyEscaped) { this.keyEscaped = false; continue; }
+        if (character === '\\') { this.keyEscaped = true; continue; }
+        if (character !== '"') continue;
+        try {
+          this.currentKey = JSON.parse(this.keyCharacters.join('')) as string;
+        } catch {
+          this.malformed();
+        }
+        this.keyCharacters = [];
+        this.phase = 'colon';
+        continue;
+      }
+      if (this.phase === 'colon') {
+        if (/\s/u.test(character)) { this.index += 1; continue; }
+        if (character !== ':') this.malformed();
+        this.index += 1;
+        this.phase = 'value';
+        continue;
+      }
+      if (this.phase === 'value') {
+        if (/\s/u.test(character)) { this.index += 1; continue; }
+        if (this.currentKey === this.field) {
+          if (character !== '"') this.malformed();
+          this.index += 1;
+          this.phase = 'target_string';
+          continue;
+        }
+        if (character === '"') {
+          this.index += 1;
+          this.skipEscaped = false;
+          this.phase = 'skip_string';
+          continue;
+        }
+        if (character === '{' || character === '[') {
+          this.skipClosers = [character === '{' ? '}' : ']'];
+          this.skipInString = false;
+          this.skipEscaped = false;
+          this.index += 1;
+          this.phase = 'skip_complex';
+          continue;
+        }
+        this.phase = 'skip_primitive';
+        continue;
+      }
+      if (this.phase === 'skip_string') {
+        this.index += 1;
+        if (this.skipEscaped) { this.skipEscaped = false; continue; }
+        if (character === '\\') { this.skipEscaped = true; continue; }
+        if (character === '"') this.phase = 'comma_or_end';
+        continue;
+      }
+      if (this.phase === 'skip_complex') {
+        this.index += 1;
+        if (this.skipInString) {
+          if (this.skipEscaped) this.skipEscaped = false;
+          else if (character === '\\') this.skipEscaped = true;
+          else if (character === '"') this.skipInString = false;
+          continue;
+        }
+        if (character === '"') { this.skipInString = true; continue; }
+        if (character === '{' || character === '[') {
+          this.skipClosers.push(character === '{' ? '}' : ']');
+          continue;
+        }
+        if (character === '}' || character === ']') {
+          if (this.skipClosers.pop() !== character) this.malformed();
+          if (this.skipClosers.length === 0) this.phase = 'comma_or_end';
+        }
+        continue;
+      }
+      if (this.phase === 'skip_primitive') {
+        if (character === ',') { this.index += 1; this.phase = 'key_or_end'; continue; }
+        if (character === '}') { this.index += 1; this.phase = 'done'; continue; }
+        this.index += 1;
+        continue;
+      }
+      if (this.phase === 'comma_or_end') {
+        if (/\s/u.test(character)) { this.index += 1; continue; }
+        if (character === ',') { this.index += 1; this.phase = 'key_or_end'; continue; }
+        if (character === '}') { this.index += 1; this.phase = 'done'; continue; }
+        this.malformed();
+      }
+      if (this.phase === 'target_string') {
+        if (character === '"') { this.index += 1; this.phase = 'comma_or_end'; continue; }
+        if (character !== '\\') {
+          const codePoint = source.codePointAt(this.index);
+          if (codePoint === undefined) break;
+          const decoded = String.fromCodePoint(codePoint);
+          if (decoded.length === 2 && this.index + 1 >= source.length) break;
+          if (codePoint < 0x20) this.malformed();
+          projection.push(decoded);
+          this.index += decoded.length;
+          continue;
+        }
+        const escape = source[this.index + 1];
+        if (escape === undefined) break;
+        const simpleEscapes: Readonly<Record<string, string>> = {
+          '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t'
+        };
+        if (escape !== 'u') {
+          const decoded = simpleEscapes[escape];
+          if (decoded === undefined) this.malformed();
+          projection.push(decoded);
+          this.index += 2;
+          continue;
+        }
+        const hex = source.slice(this.index + 2, this.index + 6);
+        if (hex.length < 4) break;
+        if (!/^[0-9a-f]{4}$/iu.test(hex)) this.malformed();
+        const unit = Number.parseInt(hex, 16);
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+          const lowPrefix = source.slice(this.index + 6, this.index + 8);
+          const lowHex = source.slice(this.index + 8, this.index + 12);
+          if (lowPrefix.length < 2 || lowHex.length < 4) break;
+          if (lowPrefix !== '\\u' || !/^[0-9a-f]{4}$/iu.test(lowHex)) this.malformed();
+          const low = Number.parseInt(lowHex, 16);
+          if (low < 0xdc00 || low > 0xdfff) this.malformed();
+          projection.push(String.fromCodePoint(0x10000 + ((unit - 0xd800) << 10) + low - 0xdc00));
+          this.index += 12;
+          continue;
+        }
+        projection.push(String.fromCharCode(unit));
+        this.index += 6;
+        continue;
+      }
+      if (this.phase === 'done') {
+        if (!/\s/u.test(character)) this.malformed();
+        this.index += 1;
+      }
+    }
+    return projection.join('');
+  }
+
+  private malformed(): never {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
 }
 
-function 读取完整Json字符串(source: string, start: number): ParsedJsonString | null {
-  if (source[start] !== '"') return null;
-  let escaped = false;
-  for (let index = start + 1; index < source.length; index += 1) {
-    const character = source[index];
-    if (escaped) {
-      escaped = false;
-      continue;
+function splitVisibleProjection(held: string, delta: string): Readonly<{ visible: string; held: string }> {
+  const candidate = held + delta;
+  const normalized = candidate.toLocaleLowerCase();
+  let heldCharacters = 0;
+  for (const forbiddenPrefix of ['<think', '</think']) {
+    for (let length = 1; length <= forbiddenPrefix.length; length += 1) {
+      if (normalized.endsWith(forbiddenPrefix.slice(0, length))) {
+        heldCharacters = Math.max(heldCharacters, length);
+      }
     }
-    if (character === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (character !== '"') continue;
-    try {
-      return {
-        value: JSON.parse(source.slice(start, index + 1)) as string,
-        end: index + 1
+  }
+  return heldCharacters === 0
+    ? { visible: candidate, held: '' }
+    : {
+        visible: candidate.slice(0, -heldCharacters),
+        held: candidate.slice(-heldCharacters)
       };
-    } catch {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-    }
-  }
-  return null;
-}
-
-function 跳过完整Json值(source: string, start: number): number | null {
-  const first = source[start];
-  if (first === undefined) return null;
-  if (first === '"') return 读取完整Json字符串(source, start)?.end ?? null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < source.length; index += 1) {
-    const character = source[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      continue;
-    }
-    if (character === '{' || character === '[') depth += 1;
-    else if (character === '}' || character === ']') {
-      if (depth === 0) return index;
-      depth -= 1;
-      if (depth === 0) return index + 1;
-    }
-    if (depth === 0 && (character === ',' || character === '}')) {
-      const value = source.slice(start, index).trim();
-      try {
-        JSON.parse(value);
-        return index;
-      } catch {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-      }
-    }
-  }
-  return null;
-}
-
-function 查找顶层字段值(source: string, field: string): number | null {
-  let index = 跳过空白(source, 0);
-  if (source[index] !== '{') return null;
-  index += 1;
-  while (index < source.length) {
-    index = 跳过空白(source, index);
-    if (source[index] === '}') return null;
-    const key = 读取完整Json字符串(source, index);
-    if (key === null) return null;
-    index = 跳过空白(source, key.end);
-    if (source[index] !== ':') return null;
-    index = 跳过空白(source, index + 1);
-    if (key.value === field) return index;
-    const valueEnd = 跳过完整Json值(source, index);
-    if (valueEnd === null) return null;
-    index = 跳过空白(source, valueEnd);
-    if (source[index] !== ',') return null;
-    index += 1;
-  }
-  return null;
-}
-
-function 解码部分Json字符串(source: string, start: number): string {
-  if (source[start] !== '"') return '';
-  let result = '';
-  for (let index = start + 1; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === '"') return result;
-    if (character !== '\\') {
-      const codePoint = source.codePointAt(index);
-      if (codePoint === undefined) return result;
-      const decoded = String.fromCodePoint(codePoint);
-      if (decoded.length === 2 && index + 1 >= source.length) return result;
-      if (codePoint < 0x20) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-      result += decoded;
-      index += decoded.length - 1;
-      continue;
-    }
-
-    const escape = source[index + 1];
-    if (escape === undefined) return result;
-    const simpleEscapes: Readonly<Record<string, string>> = {
-      '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t'
-    };
-    if (escape !== 'u') {
-      const decoded = simpleEscapes[escape];
-      if (decoded === undefined) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-      result += decoded;
-      index += 1;
-      continue;
-    }
-
-    const hex = source.slice(index + 2, index + 6);
-    if (hex.length < 4) return result;
-    if (!/^[0-9a-f]{4}$/iu.test(hex)) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-    }
-    const unit = Number.parseInt(hex, 16);
-    if (unit >= 0xd800 && unit <= 0xdbff) {
-      const lowPrefix = source.slice(index + 6, index + 8);
-      const lowHex = source.slice(index + 8, index + 12);
-      if (lowPrefix.length < 2 || lowHex.length < 4) return result;
-      if (lowPrefix !== '\\u' || !/^[0-9a-f]{4}$/iu.test(lowHex)) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-      }
-      const low = Number.parseInt(lowHex, 16);
-      if (low < 0xdc00 || low > 0xdfff) {
-        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-      }
-      result += String.fromCodePoint(0x10000 + ((unit - 0xd800) << 10) + low - 0xdc00);
-      index += 11;
-      continue;
-    }
-    result += String.fromCharCode(unit);
-    index += 5;
-  }
-  return result;
-}
-
-/** 只从结构化 JSON 的顶层正文属性提取稳定前缀，隐藏控制字段与未完成 escape。 */
-function 投影顶层正文(source: string, field: string): string {
-  const start = 查找顶层字段值(source, field);
-  return start === null ? '' : 解码部分Json字符串(source, start);
 }
 
 function 抛出已取消(signal: AbortSignal): void {
@@ -401,9 +451,13 @@ async function readProviderSse(
   let eventCharacters = 0;
   let transportCharacters = 0;
   let content = '';
-  let projected = '';
-  let emittedCharacters = 0;
+  let projectedCharacters = 0;
+  let heldProjection = '';
   let streamDone = false;
+  let dispatchedEvents = 0;
+  const projector = request.responseContract === undefined
+    ? null
+    : new IncrementalTopLevelTextProjector(request.responseContract.textField);
 
   const dispatch = (): void => {
     if (eventData.length === 0) return;
@@ -446,32 +500,26 @@ async function readProviderSse(
       throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
     }
     content += fragment;
-    const nextProjected = request.responseContract === undefined
-      ? content
-      : 投影顶层正文(content, request.responseContract.textField);
-    if (!nextProjected.startsWith(projected)) {
+    const projectionDelta = projector === null ? fragment : projector.project(content);
+    projectedCharacters += projectionDelta.length;
+    if (projectedCharacters > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) {
       throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
     }
-    if (nextProjected.length > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) {
-      throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-    }
-    projected = nextProjected;
-    validateProjectedText?.(projected);
-    // 未闭合标签先暂存，避免跨 chunk 的 <think> 在识别完整前泄露标签前缀。
-    const lastOpenTag = projected.lastIndexOf('<');
-    const lastCloseTag = projected.lastIndexOf('>');
-    const safeCharacters = lastOpenTag > lastCloseTag ? lastOpenTag : projected.length;
-    const visibleDelta = projected.slice(emittedCharacters, safeCharacters);
-    emittedCharacters = safeCharacters;
-    if (visibleDelta.length > 0) {
+    validateProjectedText?.(projectionDelta);
+    // 只暂存可能组成 think 标签的固定长度后缀；普通正文不做累计重扫。
+    const split = splitVisibleProjection(heldProjection, projectionDelta);
+    heldProjection = split.held;
+    if (split.visible.length > 0) {
       抛出已取消(signal);
-      onTextDelta?.(visibleDelta);
+      onTextDelta?.(split.visible);
     }
   };
 
-  const acceptLine = (line: string): void => {
+  const acceptLine = (line: string): boolean => {
     if (line === '') {
+      const hasEvent = eventData.length > 0;
       dispatch();
+      return hasEvent;
     } else if (line.startsWith('data:')) {
       const value = line.slice(5).replace(/^ /u, '');
       if (
@@ -483,9 +531,10 @@ async function readProviderSse(
       eventData.push(value);
       eventCharacters += value.length;
     }
+    return false;
   };
 
-  const acceptText = (text: string): void => {
+  const acceptText = async (text: string): Promise<void> => {
     let offset = 0;
     while (!streamDone && offset < text.length) {
       const newline = text.indexOf('\n', offset);
@@ -503,7 +552,14 @@ async function readProviderSse(
       const line = lineBuffer.replace(/\r$/u, '');
       lineBuffer = '';
       offset = newline + 1;
-      acceptLine(line);
+      if (acceptLine(line)) {
+        dispatchedEvents += 1;
+        if (dispatchedEvents % SSE_YIELD_EVERY_EVENTS === 0) {
+          // 单个网络块也可能包含大量事件；周期性让步使定时 Abort 不被同步解析饿死。
+          await new Promise<void>(resolve => setTimeout(resolve, 0));
+          抛出已取消(signal);
+        }
+      }
     }
   };
 
@@ -517,14 +573,14 @@ async function readProviderSse(
         normalizeFetchError(error, signal);
       }
       if (chunk.done) break;
-      acceptText(decoder.decode(chunk.value, { stream: true }));
+      await acceptText(decoder.decode(chunk.value, { stream: true }));
       if (streamDone) {
         await reader.cancel().catch(() => undefined);
         break;
       }
     }
     if (!streamDone) {
-      acceptText(decoder.decode());
+      await acceptText(decoder.decode());
       if (lineBuffer.length > 0) {
         const finalLine = lineBuffer;
         lineBuffer = '';
