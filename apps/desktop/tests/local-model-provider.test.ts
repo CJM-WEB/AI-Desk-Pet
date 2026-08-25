@@ -104,6 +104,29 @@ describe('LocalModelProvider', () => {
     });
   });
 
+  test('仅 required 工具规划固定 temperature 0，auto 与 none 保持现有采样策略', async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchClient = vi.fn<FetchLike>(async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return jsonResponse({ choices: [{ message: { content: '完成' } }] });
+    });
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await provider.respond({ ...request, toolChoice: 'required' }, new AbortController().signal);
+    await provider.respond(request, new AbortController().signal);
+    await provider.respond({
+      ...request,
+      tools: [],
+      toolChoice: 'none'
+    }, new AbortController().signal);
+
+    expect(requestBodies[0]).toMatchObject({ tool_choice: 'required', temperature: 0 });
+    expect(requestBodies[1]).toMatchObject({ tool_choice: 'auto' });
+    expect(requestBodies[1]).not.toHaveProperty('temperature');
+    expect(requestBodies[2]).toMatchObject({ tool_choice: 'none' });
+    expect(requestBodies[2]).not.toHaveProperty('temperature');
+  });
+
   test.each([
     ['字符串', 'reasoning-canary-string'],
     ['空字符串', ''],

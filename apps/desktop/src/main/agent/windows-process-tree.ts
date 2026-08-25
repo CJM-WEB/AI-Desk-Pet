@@ -25,6 +25,7 @@ export type ExactPidTerminationResult = Readonly<{
 
 /**
  * Main 的 Windows 进程树终止只接受当前 child 记录里的精确 PID，不支持进程名或命令行匹配。
+ * 破坏操作只交给 taskkill /T：若先单杀主进程，taskkill 会因 PID 消失误报失败且无法再证明子树退出。
  * 调用方可选择是否等待 child 自身 close：Runtime 必须严格等待，PowerShell 保持既有尽力清理语义。
  */
 export function terminateExactPidProcessTree(options: {
@@ -61,11 +62,6 @@ export function terminateExactPidProcessTree(options: {
     if (options.waitForChildExit) {
       options.child.once('close', onChildExit);
       options.child.once('error', onChildError);
-    }
-    try {
-      options.child.kill('SIGTERM');
-    } catch {
-      // 精确 PID 的树终止仍可能完成，不能因直接 kill 失败改用模糊匹配。
     }
     const pid = options.child.pid;
     if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) {

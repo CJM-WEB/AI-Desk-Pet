@@ -78,6 +78,8 @@ const englishCopulaTokenPattern = /^(?:am|is|are|was|were|be|been|being)$/u;
 const englishAuxiliaryTokenPattern = /^(?:do|does|did|can|could|would|will|shall|should|may|might|must|has|have|had)$/u;
 const englishQuestionWordTokenPattern = /^(?:what|why|how|when|where|who|whom|whose|which)$/u;
 const embeddedFileContentPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)\s*([\s\S]*)$/iu;
+const missingTargetPathPattern = /(?:(?:没有|尚未|未|没)\s*(?:提供|填写|指定)|(?:缺少|缺失))[^。！？!?\n]{0,16}(?:目标)?(?:相对)?路径/iu;
+const clarifiedTargetMarker = '补充信息(覆盖此前缺失字段):';
 
 function getHostPart(candidate: string): string {
   const pathSeparatorIndex = candidate.search(/[\\/]/u);
@@ -490,7 +492,12 @@ export function createFilePlanningHint(prompt: string): FilePlanningHint | null 
   const normalizedText = prompt.normalize('NFKC').trim();
   const operation = filePlanningOperation(normalizedText);
   if (operation === null) return null;
-  return Object.freeze({ operation });
+  return Object.freeze({
+    operation,
+    ...(missingTargetPathPattern.test(normalizedText) && !normalizedText.includes(clarifiedTargetMarker)
+      ? { missingField: 'target_path' as const }
+      : {})
+  });
 }
 
 export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {

@@ -72,6 +72,7 @@ function availablePort() {
 /** 仅由未打包 E2E 动态加载；返回正式 Runtime 的既有构造 seam。 */
 export function createLocalModelRuntimeOptions(configPath) {
   const config = parseConfig(configPath);
+  const spawnedProcesses = new Map();
   const processPort = {
     spawn(input) {
       const probe = input.args.includes('--list-devices');
@@ -93,6 +94,12 @@ export function createLocalModelRuntimeOptions(configPath) {
         stdio: ['ignore', 'pipe', 'pipe']
       };
       const child = spawn(process.execPath, actualArgs, actualOptions);
+      if (Number.isSafeInteger(child.pid) && child.pid > 0) {
+        spawnedProcesses.set(child.pid, child);
+        child.once('close', () => {
+          if (spawnedProcesses.get(child.pid) === child) spawnedProcesses.delete(child.pid);
+        });
+      }
       if (!probe) {
         const port = Number(argumentValue(input.args, '--port'));
         const tokenFilePath = argumentValue(input.args, '--api-key-file');
@@ -128,8 +135,10 @@ export function createLocalModelRuntimeOptions(configPath) {
     },
     sleep,
     randomBytes,
-    async killTree() {
-      // fixture server 没有后代；正式 Runtime 已先向精确 child 发 SIGTERM 并等待 close。
+    async killTree(pid) {
+      // fixture server 没有后代；该 seam 模拟正式 taskkill 对精确 PID 的树终止语义。
+      const child = spawnedProcesses.get(pid);
+      if (child) child.kill('SIGTERM');
     }
   };
   return {

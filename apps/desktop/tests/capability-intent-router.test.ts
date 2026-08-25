@@ -32,6 +32,12 @@ describe('能力意图路由器', () => {
   test('创建并写入正文只规划 create_file', () => {
     expect(createFilePlanningHint('创建 result.txt 并写入正文')).toEqual({ operation: 'create_file' });
   });
+
+  test('明确声明目标路径缺失时规划只允许请求结构化澄清', () => {
+    expect(createFilePlanningHint(
+      '删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。'
+    )).toEqual({ operation: 'delete_file', missingField: 'target_path' });
+  });
   test.each([
     '你好',
     '聊聊天吧',
@@ -57,6 +63,8 @@ describe('能力意图路由器', () => {
     '把“删除 a.txt”这句话翻译成英文',
     'read https://example.com/manual.pdf',
     '关于 a.txt 的删除操作',
+    '目标路径是 acceptance-clarification.txt。',
+    '目标相对路径是 acceptance-clarification.txt。',
     'Can you please frobnicate a.txt?'
   ])('缺少文件任务正向证据时将“%s”归为普通聊天', text => {
     expectIntentKind(text, 'chat');
@@ -108,7 +116,9 @@ describe('能力意图路由器', () => {
     '列出 .\\drafts',
     '读取 pyproject.toml',
     '读取 不要删除.txt',
-    'read report.v2.txt'
+    'read report.v2.txt',
+    '删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。',
+    '请删除授权目录中的某个文件。'
   ])('明确请求实际操作文件实体时将“%s”归为文件任务', text => {
     expectIntentKind(text, 'file_task');
   });

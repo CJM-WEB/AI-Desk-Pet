@@ -293,7 +293,7 @@ Run: `pnpm.cmd --filter @myself/desktop typecheck`
 
 Expected: PASS；公开状态 JSON 不含 fixture 的端口、Token、路径、PID 或 stderr 标记。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```powershell
 git add apps/desktop/src/main/local-model apps/desktop/tests/local-model-manifest.test.ts apps/desktop/tests/local-model-runtime.test.ts apps/desktop/tests/fixtures/fake-llama-server.ts
@@ -550,40 +550,64 @@ git commit -m "test(desktop): 验收本地模型安全工具闭环"
 ### Task 10: 真实 Qwen CPU/Vulkan 工具调用与最终验收
 
 **Files:**
+- Modify: `apps/desktop/src/main/local-model/local-model-runtime.ts`
+- Modify: `apps/desktop/src/main/providers/local-model-provider.ts`
+- Modify: `apps/desktop/src/main/agent/powershell-tool.ts`
+- Modify: `apps/desktop/src/main/agent/windows-process-tree.ts`
+- Modify: `apps/desktop/src/main/agent/agent-service.ts`
+- Modify: `apps/desktop/src/main/conversation/capability-intent-router.ts`
+- Modify: `apps/desktop/src/main/conversation/conversation-coordinator.ts`
+- Modify: `packages/agent-core/src/types.ts`
+- Modify: `apps/desktop/scripts/stage-local-model.mjs`
+- Modify: `apps/desktop/tsconfig.json`
+- Test: `apps/desktop/tests/local-model-runtime.test.ts`
+- Test: `apps/desktop/tests/local-model-provider.test.ts`
+- Test: `apps/desktop/tests/powershell-tool.test.ts`
+- Test: `apps/desktop/tests/windows-process-tree.test.ts`
+- Test: `apps/desktop/tests/agent-service.test.ts`
+- Test: `apps/desktop/tests/capability-intent-router.test.ts`
+- Test: `apps/desktop/tests/conversation-coordinator.test.ts`
+- Test: `apps/desktop/tests/local-model-assets.test.ts`
+- Modify: `apps/desktop/tests/fixtures/fake-llama-server.ts`
+- Modify: `tests/fixtures/local-model-runtime-options.mjs`
+- Create: `apps/desktop/scripts/local-model-acceptance-runner.ts`
 - Create: `apps/desktop/scripts/run-local-model-acceptance.mjs`
+- Create: `apps/desktop/scripts/run-local-model-acceptance.d.mts`
+- Test: `apps/desktop/tests/local-model-acceptance.test.ts`
 - Create: `docs/operations/2026-08-25-built-in-local-model-acceptance.md`
 - Modify: `docs/operations/lightweight-agent-acceptance.md`
+- Modify: `docs/superpowers/plans/2026-08-25-ai-pet-built-in-local-model.md`
 - Modify: `apps/desktop/resources/local-model/manifest.json`（只写入本次自建产物实际 SHA）
 
 **Interfaces:**
 - Consumes: 固定 GGUF、CPU/Vulkan runtime 和完整应用链。
 - Produces: 去标识化 acceptance JSON 与中文验收记录。
 
-- [ ] **Step 1: 执行固定资源暂存**
+- [x] **Step 1: 执行固定资源暂存**
 
 Run: `pnpm.cmd --filter @myself/desktop stage:local-model`
 
 Expected: 固定模型下载/复用后 SHA 匹配；CPU/Vulkan 从固定 commit 构建；payload 仅含 allowlist 文件。
 
-- [ ] **Step 2: 运行资源校验**
+- [x] **Step 2: 运行资源校验**
 
 Run: `pnpm.cmd --filter @myself/desktop verify:local-model-assets`
 
 Expected: PASS，并输出 runtime 文件哈希清单；不得输出模型绝对路径。
 
-- [ ] **Step 3: 运行 CPU 真实模型 RED/GREEN 探针**
+- [x] **Step 3: 运行 CPU 真实模型 RED/GREEN 探针**
 
 Run: `node apps/desktop/scripts/run-local-model-acceptance.mjs --backend cpu`
 
-验收必须通过：中文普通聊天、无 reasoning、创建文件 tool_call、确认后真实落盘、工具结果回填后真实总结、取消恢复。失败时保留稳定错误码并修复最小协议/版本问题后重跑，不允许关键词模拟工具。
+验收必须通过：生产 `LocalModelRuntime` 的 CPU-only 后端、中文普通聊天、无 reasoning、创建/移动/删除工具调用、中文相对路径、缺目标澄清、用户拒绝、确认前无副作用、确认后真实文件结果、工具失败后恢复、工具结果回填后真实总结、Provider Abort 后恢复、本地开启期间云调用为零，以及关闭本地后云路由真实恢复。完整探针使用十五分钟整体 deadline，超时先取消正式会话，再等待 Service/Runtime 清理。失败时保留稳定错误码并修复最小协议/版本问题后重跑，不允许关键词模拟工具。
 
-- [ ] **Step 4: 运行 Vulkan 真实模型探针**
+- [x] **Step 4: 运行 Vulkan 真实模型探针**
 
 Run: `node apps/desktop/scripts/run-local-model-acceptance.mjs --backend vulkan`
 
-Expected: 有 Vulkan 设备时同 CPU 验收；无设备时稳定记录 `VULKAN_UNAVAILABLE` 并验证应用 CPU 兼容模式，不把该机器写成 Vulkan 通过。
+Expected: 生产 `LocalModelRuntime` 的 Vulkan-only 后端有设备时完成同 CPU 验收并由 Main 私有布尔诊断证明非零 GPU offload；无设备、启动失败或 offload 缺失时稳定失败，禁止 CPU fallback。
 
-- [ ] **Step 5: 运行最终自动门禁**
+- [x] **Step 5: 运行最终自动门禁**
 
 Run: `pnpm.cmd verify:desktop`
 
@@ -593,14 +617,14 @@ Run: `git diff --check`
 
 Expected: 全部 PASS；真实模型记录与 mock/fixture 结果分开。
 
-- [ ] **Step 6: 更新验收记录**
+- [x] **Step 6: 更新验收记录**
 
 只记录实际命令、退出码、backend、phase、工具名、本地副作用布尔值和未覆盖人工项；不记录 Prompt、文件正文、绝对路径、Token 或原始日志。
 
 - [ ] **Step 7: 提交**
 
 ```powershell
-git add apps/desktop/scripts/run-local-model-acceptance.mjs apps/desktop/resources/local-model/manifest.json docs/operations/2026-08-25-built-in-local-model-acceptance.md docs/operations/lightweight-agent-acceptance.md
+git add packages/agent-core/src/types.ts apps/desktop/src/main/local-model/local-model-runtime.ts apps/desktop/src/main/providers/local-model-provider.ts apps/desktop/src/main/agent/agent-service.ts apps/desktop/src/main/agent/powershell-tool.ts apps/desktop/src/main/agent/windows-process-tree.ts apps/desktop/src/main/conversation/capability-intent-router.ts apps/desktop/src/main/conversation/conversation-coordinator.ts apps/desktop/scripts/stage-local-model.mjs apps/desktop/tsconfig.json apps/desktop/tests/agent-service.test.ts apps/desktop/tests/capability-intent-router.test.ts apps/desktop/tests/conversation-coordinator.test.ts apps/desktop/tests/local-model-runtime.test.ts apps/desktop/tests/local-model-provider.test.ts apps/desktop/tests/powershell-tool.test.ts apps/desktop/tests/windows-process-tree.test.ts apps/desktop/tests/local-model-assets.test.ts apps/desktop/tests/fixtures/fake-llama-server.ts tests/fixtures/local-model-runtime-options.mjs apps/desktop/scripts/local-model-acceptance-runner.ts apps/desktop/scripts/run-local-model-acceptance.mjs apps/desktop/scripts/run-local-model-acceptance.d.mts apps/desktop/tests/local-model-acceptance.test.ts apps/desktop/resources/local-model/manifest.json docs/operations/2026-08-25-built-in-local-model-acceptance.md docs/operations/lightweight-agent-acceptance.md docs/superpowers/plans/2026-08-25-ai-pet-built-in-local-model.md
 git commit -m "test(desktop): 记录内置本地模型验收"
 ```
 

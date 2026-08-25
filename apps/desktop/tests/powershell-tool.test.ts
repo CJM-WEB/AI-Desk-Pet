@@ -267,7 +267,7 @@ describe('PowerShellTool', () => {
       const abortRun = abortFixture.tool.execute(preview(abortFixture.tool), abortController.signal);
       abortController.abort();
       await expect(abortRun).resolves.toMatchObject({ status: 'cancelled', timeoutKind: null });
-      expect(abortFixture.child.kill).toHaveBeenCalledTimes(1);
+      expect(abortFixture.child.kill).not.toHaveBeenCalled();
       expect(abortFixture.processPort.killTree).toHaveBeenCalledWith(4242);
       abortFixture.child.writeStdout('late');
       abortFixture.child.finish(0);
@@ -276,7 +276,7 @@ describe('PowerShellTool', () => {
       const idleRun = idleFixture.tool.execute(preview(idleFixture.tool), new AbortController().signal);
       await vi.advanceTimersByTimeAsync(60_000);
       await expect(idleRun).resolves.toMatchObject({ status: 'timed_out', timeoutKind: 'idle' });
-      expect(idleFixture.child.kill).toHaveBeenCalledTimes(1);
+      expect(idleFixture.child.kill).not.toHaveBeenCalled();
 
       const totalFixture = createFixture();
       const totalRun = totalFixture.tool.execute(preview(totalFixture.tool), new AbortController().signal);
@@ -288,7 +288,7 @@ describe('PowerShellTool', () => {
       totalFixture.child.writeStdout('activity');
       await vi.advanceTimersByTimeAsync(10_000);
       await expect(totalRun).resolves.toMatchObject({ status: 'timed_out', timeoutKind: 'total' });
-      expect(totalFixture.child.kill).toHaveBeenCalledTimes(1);
+      expect(totalFixture.child.kill).not.toHaveBeenCalled();
 
       const closeFixture = createFixture();
       const closeRun = closeFixture.tool.execute(preview(closeFixture.tool), new AbortController().signal);
@@ -297,7 +297,7 @@ describe('PowerShellTool', () => {
       expect(secondClose).toBe(firstClose);
       await firstClose;
       await expect(closeRun).resolves.toMatchObject({ status: 'cancelled', timeoutKind: null });
-      expect(closeFixture.child.kill).toHaveBeenCalledTimes(1);
+      expect(closeFixture.child.kill).not.toHaveBeenCalled();
       closeFixture.child.writeStderr('late');
       closeFixture.child.finish(1);
       await flush();
@@ -307,7 +307,7 @@ describe('PowerShellTool', () => {
   });
 
   test.each(['abort', 'idle', 'total', 'close'] as const)(
-    'taskkill 清理永不返回时，%s 仍在有界等待后收敛',
+    'taskkill 清理永不返回时，%s 的精确兜底等待真实 close 后再收敛',
     async reason => {
       vi.useFakeTimers();
       try {
@@ -336,16 +336,49 @@ describe('PowerShellTool', () => {
         await flush();
         expect(settled).toBe(false);
         await vi.advanceTimersByTimeAsync(100);
+        expect(settled).toBe(false);
+        expect(fixture.child.kill).toHaveBeenCalledWith('SIGKILL');
+
+        fixture.child.finish(null);
+        await expect(run).resolves.toMatchObject({ status: 'failed', timeoutKind: null });
         expect(settled).toBe(true);
-        await expect(run).resolves.toMatchObject({
-          status: reason === 'abort' || reason === 'close' ? 'cancelled' : 'timed_out'
-        });
         if (close !== undefined) await expect(close).resolves.toBeUndefined();
       } finally {
         vi.useRealTimers();
       }
     }
   );
+
+  test('精确兜底后仍未观察到 close 时保留运行槽，close 以稳定清理失败拒绝', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const fixture = createFixture({
+        cleanupTimeoutMs: 100,
+        killTree: async () => { throw new Error('fixture taskkill failed'); }
+      });
+      const run = fixture.tool.execute(preview(fixture.tool), controller.signal);
+      controller.abort();
+
+      await flush();
+      expect(fixture.child.kill).toHaveBeenCalledWith('SIGKILL');
+      let runSettled = false;
+      void run.then(() => { runSettled = true; });
+      await vi.advanceTimersByTimeAsync(99);
+      expect(runSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(run).resolves.toMatchObject({ status: 'failed', timeoutKind: null });
+
+      const nextAction = preview(fixture.tool, 'Get-Date');
+      expect(() => fixture.tool.execute(nextAction, new AbortController().signal))
+        .toThrow('POWERSHELL_RUN_ACTIVE');
+
+      await expect(fixture.tool.close()).rejects.toThrow('PROCESS_CLEANUP_FAILED');
+      expect(() => preview(fixture.tool)).toThrow('POWERSHELL_TOOL_CLOSED');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   test.each(['abort', 'idle'] as const)(
     '%s 已进入挂起清理后 close 等待同一次运行完成',

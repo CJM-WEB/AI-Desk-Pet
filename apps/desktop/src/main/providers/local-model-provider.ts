@@ -62,10 +62,13 @@ function assertNoReasoningLeak(raw: unknown): void {
 
 function createRequestPolicy(
   connectionPort: LocalModelConnectionPort,
-  generation: string
+  generation: string,
+  toolChoice: ModelRequest['toolChoice']
 ): OpenAIRequestPolicy {
   return {
-    body: localRequestBody,
+    body: toolChoice === 'required'
+      ? { ...localRequestBody, temperature: 0 }
+      : localRequestBody,
     validateResponse(raw: unknown): void {
       assertCurrentGeneration(connectionPort, generation);
       assertNoReasoningLeak(raw);
@@ -92,7 +95,7 @@ export class LocalModelProvider implements ModelProvider {
         return connection.token;
       },
       this.fetchClient,
-      createRequestPolicy(this.connectionPort, connection.generation)
+      createRequestPolicy(this.connectionPort, connection.generation, request.toolChoice)
     );
     try {
       return await provider.respond({ ...request, reasoningMode: 'disabled' }, signal);

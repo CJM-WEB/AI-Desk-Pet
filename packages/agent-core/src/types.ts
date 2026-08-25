@@ -77,6 +77,7 @@ export type FileWriteOperation = Exclude<FilePlanningOperation, 'list_files' | '
 /** 文件规划提示只能收窄模型工具面，不能携带授权或本地执行结果。 */
 export type FilePlanningHint = Readonly<{
   operation: FilePlanningOperation;
+  missingField?: 'target_path';
 }>;
 
 export interface ModelProvider {

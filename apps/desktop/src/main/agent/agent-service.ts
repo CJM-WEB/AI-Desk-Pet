@@ -512,7 +512,9 @@ export class AgentService {
     const expectedWriteOperation = plannedOperation !== undefined && isControlledWriteOperation(plannedOperation)
       ? plannedOperation
       : undefined;
-    const tools = session.taskKind === 'file' && !session.fileDisclosureAllowed
+    const tools = planningHint?.missingField === 'target_path'
+      ? []
+      : session.taskKind === 'file' && !session.fileDisclosureAllowed
       ? session.tools.filter(tool => (
         expectedWriteOperation !== undefined
         && tool.function.name === plannedToolName

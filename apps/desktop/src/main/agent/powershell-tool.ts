@@ -173,6 +173,10 @@ export class PowerShellTool {
       let finishPromise: Promise<void> | undefined;
       let idleTimeout: ReturnType<typeof setTimeout> | undefined;
       let totalTimeout: ReturnType<typeof setTimeout> | undefined;
+      let resolveChildClosed!: () => void;
+      const childClosed = new Promise<void>((resolveChildClose) => {
+        resolveChildClosed = resolveChildClose;
+      });
 
       const clearTimers = (): void => {
         if (idleTimeout !== undefined) clearTimeout(idleTimeout);
@@ -195,11 +199,15 @@ export class PowerShellTool {
         clearTimers();
         signal.removeEventListener('abort', onAbort);
         finishPromise = (async () => {
-          if (terminate) await terminateProcess(this.#processPort, child, this.#cleanupTimeoutMs);
-          if (this.#active?.child === child) this.#active = null;
+          const cleanup = terminate
+            ? await terminateProcess(this.#processPort, child, childClosed, this.#cleanupTimeoutMs)
+            : { resultTrusted: true, releaseRun: true };
+          const finalStatus = cleanup.resultTrusted ? status : 'failed';
+          const finalTimeoutKind = cleanup.resultTrusted ? timeoutKind : null;
+          if (cleanup.releaseRun && this.#active?.child === child) this.#active = null;
           resolve(createResult(
-            status,
-            timeoutKind,
+            finalStatus,
+            finalTimeoutKind,
             exitCode,
             stdout,
             stderr,
@@ -232,12 +240,11 @@ export class PowerShellTool {
       child.stderr.setEncoding?.('utf8');
       child.stdout.on('data', (chunk: Buffer | string) => append(String(chunk), 'stdout'));
       child.stderr.on('data', (chunk: Buffer | string) => append(String(chunk), 'stderr'));
-      child.once('close', (exitCode: number | null) => void finish(
-        exitCode === 0 ? 'succeeded' : 'failed',
-        null,
-        exitCode,
-        false
-      ));
+      child.once('close', (exitCode: number | null) => {
+        resolveChildClosed();
+        if (settled && this.#active?.child === child) this.#active = null;
+        void finish(exitCode === 0 ? 'succeeded' : 'failed', null, exitCode, false);
+      });
       child.once('error', () => void finish('failed', null, null, true));
       signal.addEventListener('abort', onAbort, { once: true });
       armIdleTimeout();
@@ -248,9 +255,15 @@ export class PowerShellTool {
   close(): Promise<void> {
     if (this.#closePromise !== undefined) return this.#closePromise;
     this.#closed = true;
-    this.#closePromise = this.#active === null
+    const active = this.#active;
+    this.#closePromise = active === null
       ? Promise.resolve()
-      : this.#active.finish('cancelled', null, null, true);
+      : (async () => {
+          await active.finish('cancelled', null, null, true);
+          if (this.#active?.child === active.child) {
+            throw new Error('PROCESS_CLEANUP_FAILED');
+          }
+        })();
     return this.#closePromise;
   }
 
@@ -341,13 +354,39 @@ function createResult(
 async function terminateProcess(
   processPort: ProcessPort,
   child: RunningProcess,
+  childClosed: Promise<void>,
   cleanupTimeoutMs: number
-): Promise<void> {
-  await terminateExactPidProcessTree({
+): Promise<Readonly<{ resultTrusted: boolean; releaseRun: boolean }>> {
+  const result = await terminateExactPidProcessTree({
     child,
     processTreePort: processPort,
     cleanupTimeoutMs,
     waitForChildExit: false
+  });
+  if (result.ok) return { resultTrusted: true, releaseRun: true };
+  try {
+    // 树终止无法证明时只对原 child 做精确兜底；结果仍降为 failed，运行槽只由真实 close 释放。
+    child.kill('SIGKILL');
+  } catch {
+    // 失败事实由返回值统一进入 ToolResult，不回显系统异常或路径。
+  }
+  return {
+    resultTrusted: false,
+    releaseRun: await waitForChildClose(childClosed, cleanupTimeoutMs)
+  };
+}
+
+function waitForChildClose(childClosed: Promise<void>, timeoutMs: number): Promise<boolean> {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (closed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(closed);
+    };
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    void childClosed.then(() => finish(true));
   });
 }
 

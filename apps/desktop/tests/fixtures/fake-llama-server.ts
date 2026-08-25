@@ -37,6 +37,10 @@ export class FakeLlamaProcess extends EventEmitter implements LocalModelChildPro
     return true;
   }
 
+  terminateTree(): void {
+    if (this.closeOnKill) queueMicrotask(() => this.finish(null));
+  }
+
   finish(exitCode: number | null): void {
     this.emit('close', exitCode);
   }
@@ -109,5 +113,6 @@ export class FakeLocalModelProcessPort implements LocalModelProcessPort {
 
   async killTree(pid: number): Promise<void> {
     this.killedPids.push(pid);
+    this.processes.find(process => process.pid === pid)?.terminateTree();
   }
 }

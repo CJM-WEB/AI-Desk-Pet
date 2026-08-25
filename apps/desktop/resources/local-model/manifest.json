@@ -17,11 +17,98 @@
     "backends": {
       "cpu": {
         "executable": "payload/runtime/cpu/llama-server.exe",
-        "files": []
+        "files": [
+          {
+            "path": "payload/runtime/cpu/ggml-base.dll",
+            "size": 666112,
+            "sha256": "3d771baa835d4bd1d3cedffc383fefb250c643b25683b52f55e1350767b52e9d"
+          },
+          {
+            "path": "payload/runtime/cpu/ggml-cpu.dll",
+            "size": 928256,
+            "sha256": "f8eb0ecb6b2a85773f48e3291bd6648e131a090f44b34b3d6e1b8f558ab16bbb"
+          },
+          {
+            "path": "payload/runtime/cpu/ggml.dll",
+            "size": 68608,
+            "sha256": "61d9267650e63cd160676d23217c7ca8188bf3e7112d80c186cc9892aa932639"
+          },
+          {
+            "path": "payload/runtime/cpu/llama-common.dll",
+            "size": 9642496,
+            "sha256": "a190ca8b5a462663c75819cdb0ac48afe90f7c5de7ac18e8865388cd96b513e4"
+          },
+          {
+            "path": "payload/runtime/cpu/llama-server-impl.dll",
+            "size": 4340736,
+            "sha256": "0ce58edfe8acd51e03c820d0bedf360c5e029667cdecadc72e38007b7cb846da"
+          },
+          {
+            "path": "payload/runtime/cpu/llama-server.exe",
+            "size": 10240,
+            "sha256": "7b1ce463a694f3669e818dd878ce4a6ed6d6678d86e3d62d04458981df6a53d6"
+          },
+          {
+            "path": "payload/runtime/cpu/llama.dll",
+            "size": 2471424,
+            "sha256": "369bfbd447259effc06a8a028b2d940e2402a99b56b2dcc24a78c8ca9236ffdc"
+          },
+          {
+            "path": "payload/runtime/cpu/mtmd.dll",
+            "size": 2384384,
+            "sha256": "6bfd7b5a50afcf8cfe7336326c33d173f67e86793f7572f99003125583fbb63c"
+          }
+        ]
       },
       "vulkan": {
         "executable": "payload/runtime/vulkan/llama-server.exe",
-        "files": []
+        "files": [
+          {
+            "path": "payload/runtime/vulkan/ggml-base.dll",
+            "size": 666112,
+            "sha256": "69cc3e3af0dccddda5fbe159cfd75310d6295557fa1be7ac5198a3a61e640d10"
+          },
+          {
+            "path": "payload/runtime/vulkan/ggml-cpu.dll",
+            "size": 928256,
+            "sha256": "a993f8ec605557d08f9037414630e34720d7d072607176e04301031f83f897e9"
+          },
+          {
+            "path": "payload/runtime/vulkan/ggml-vulkan.dll",
+            "size": 54346240,
+            "sha256": "581fa5fc27f578588d47bbb8dbefe6c5302e47a4acb59006d38d25aa0d28fc9a"
+          },
+          {
+            "path": "payload/runtime/vulkan/ggml.dll",
+            "size": 68608,
+            "sha256": "ff06739a4a3c05e32eb6e6f77dec735963e4744d9562f4f95eb7c4b40360dbd2"
+          },
+          {
+            "path": "payload/runtime/vulkan/llama-common.dll",
+            "size": 9642496,
+            "sha256": "4ca85578e1ef6fe8eb8eeefed9e6a0ab5b152e8013c5bd65521f87e87a4269d1"
+          },
+          {
+            "path": "payload/runtime/vulkan/llama-server-impl.dll",
+            "size": 4340736,
+            "sha256": "87b418043f26b3879753d00a02aaeb8b845aa19ff4b06abb613079a3d278da3d"
+          },
+          {
+            "path": "payload/runtime/vulkan/llama-server.exe",
+            "size": 10240,
+            "sha256": "3e6790771b9f5d5b5eeba037d39a5e2001e6e7d6a3ec221ff2e71b65f3715167"
+          },
+          {
+            "path": "payload/runtime/vulkan/llama.dll",
+            "size": 2471424,
+            "sha256": "f6bdcb2c2a07336c80814dc8588e7f58a21238a99f5db2e36a9f17b86bd8fb1f"
+          },
+          {
+            "path": "payload/runtime/vulkan/mtmd.dll",
+            "size": 2384384,
+            "sha256": "7be9184350faafa6f5c4544e69c13811c9917bfe0fe5f2225a1c803b8037dee9"
+          }
+        ]
       }
     }
   },

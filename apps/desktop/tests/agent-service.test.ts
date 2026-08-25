@@ -635,6 +635,28 @@ describe('AgentService', () => {
     ]);
   });
 
+  test('宿主已确认目标路径缺失时只向模型公告结构化澄清工具', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'clarify-target-only-1',
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { missingField: 'target_path' }
+      }
+    }]);
+    const { service } = createHarness(provider);
+
+    await service.submitFileTask({
+      text: '删除一个文件，但我还没有提供目标路径。',
+      visibleHistory: [],
+      planningHint: { operation: 'delete_file', missingField: 'target_path' }
+    });
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      CAPABILITY_CLARIFICATION_TOOL_NAME
+    ]);
+  });
+
   test('等待确认时新文字任务会替换旧卡且不能冒充 actionId 确认', async () => {
     const provider = new ScriptedProvider([
       {

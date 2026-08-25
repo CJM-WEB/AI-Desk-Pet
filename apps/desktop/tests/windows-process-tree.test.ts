@@ -51,4 +51,21 @@ describe('Windows 精确 PID 进程树清理', () => {
       vi.useRealTimers();
     }
   });
+
+  test('树终止器独占破坏操作，避免主进程先退出使 taskkill 误报失败', async () => {
+    const child = new FakeChild();
+    const termination = terminateExactPidProcessTree({
+      child,
+      processTreePort: {
+        killTree: async () => {
+          child.emit('close', 0);
+        }
+      },
+      cleanupTimeoutMs: 100,
+      waitForChildExit: true
+    });
+
+    await expect(termination).resolves.toEqual({ ok: true });
+    expect(child.kill).not.toHaveBeenCalled();
+  });
 });

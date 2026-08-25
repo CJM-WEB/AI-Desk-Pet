@@ -49,7 +49,7 @@ async function stageLocalModel() {
       cpu: await buildAndStageBackend(sourceRoot, workRoot, stagedResourceRoot, 'cpu', false),
       vulkan: await buildAndStageBackend(sourceRoot, workRoot, stagedResourceRoot, 'vulkan', true)
     };
-    const modelEntry = await stageFixedModel(stagedResourceRoot);
+    const modelEntry = await stageFixedModel(stagedResourceRoot, RESOURCE_ROOT);
     await writeStagedManifest(stagedResourceRoot, backends, modelEntry);
     await verifyLocalModelAssets(stagedResourceRoot);
     await replaceStagedResourceRoot(RESOURCE_ROOT, stagedResourceRoot);
@@ -132,27 +132,39 @@ async function buildAndStageBackend(sourceRoot, workRoot, stagedResourceRoot, ba
     .map(name => createManifestEntry(join(targetRoot, name), `payload/runtime/${backend}/${name}`)));
 }
 
-async function stageFixedModel(stagedResourceRoot) {
+async function stageFixedModel(stagedResourceRoot, currentResourceRoot) {
   const modelRoot = join(stagedResourceRoot, 'payload', 'model');
   const target = join(modelRoot, MODEL.fileName);
   await mkdir(modelRoot, { recursive: true });
-  if (await isOrdinaryFile(target)) {
-    const existing = await createManifestEntry(target, `payload/model/${MODEL.fileName}`);
-    if (existing.size !== MODEL.size || existing.sha256 !== MODEL.sha256) {
-      throw new Error('EXISTING_MODEL_MISMATCH');
-    }
-    return existing;
-  }
+  const relativePath = `payload/model/${MODEL.fileName}`;
+  const reused = await reuseFixedModelFile({
+    source: join(currentResourceRoot, ...relativePath.split('/')),
+    target,
+    relativePath,
+    expectedSize: MODEL.size,
+    expectedSha256: MODEL.sha256
+  });
+  if (reused !== null) return reused;
 
   return downloadFixedModelFile({
     url: MODEL_URL,
     target,
-    relativePath: `payload/model/${MODEL.fileName}`,
+    relativePath,
     expectedSize: MODEL.size,
     expectedSha256: MODEL.sha256,
     timeoutMs: MODEL_DOWNLOAD_TIMEOUT_MS,
     fetchImpl: fetch
   });
+}
+
+/** 仅复用已通过固定 size/SHA 校验的普通文件；候选根仍会在提交前再次做全量哈希校验。 */
+export async function reuseFixedModelFile(options) {
+  if (!await isOrdinaryFile(options.source)) return null;
+  const existing = await createManifestEntry(options.source, options.relativePath);
+  if (existing.size !== options.expectedSize || existing.sha256 !== options.expectedSha256) return null;
+  await mkdir(dirname(options.target), { recursive: true });
+  await copyFile(options.source, options.target);
+  return existing;
 }
 
 /** 下载过程中同时计数与哈希；超时、外部取消或首个超限块都会销毁流并清理 partial。 */
@@ -284,7 +296,7 @@ export async function replaceStagedResourceRoot(currentRoot, stagedRoot, options
     await renamePath(current, backupRoot);
     try {
       // 第二次 rename 是 commit point；此前失败回滚，之后清理失败不能重解释资源切换结果。
-      await renamePath(staged, current);
+      await commitStagedRootWithRetry(staged, current, renamePath, options);
     } catch (error) {
       await renamePath(backupRoot, current);
       throw error;
@@ -309,6 +321,28 @@ export async function replaceStagedResourceRoot(currentRoot, stagedRoot, options
   }
   if (transactionError !== undefined) throw transactionError;
   return result;
+}
+
+/** Windows Defender 等扫描器可能短暂占用刚校验的大文件；只对 commit rename 的瞬时占用做有界重试。 */
+async function commitStagedRootWithRetry(staged, current, renamePath, options) {
+  const attempts = options.commitRenameAttempts ?? 20;
+  if (!Number.isSafeInteger(attempts) || attempts < 1) throw new Error('COMMIT_RENAME_ATTEMPTS_INVALID');
+  const waitBeforeRetry = options.waitBeforeCommitRetry
+    ?? (attempt => new Promise(resolveWait => setTimeout(resolveWait, Math.min(1_000, attempt * 100))));
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await renamePath(staged, current);
+      return;
+    } catch (error) {
+      if (!isTransientWindowsRenameError(error) || attempt === attempts) throw error;
+      await waitBeforeRetry(attempt);
+    }
+  }
+}
+
+function isTransientWindowsRenameError(error) {
+  if (typeof error !== 'object' || error === null) return false;
+  return ['EPERM', 'EACCES', 'EBUSY'].includes(String(Reflect.get(error, 'code')));
 }
 
 /** 预制非空所有权目录后原子发布；锁存在即稳定 BUSY，不猜测进程存活性或自动删 stale 锁。 */

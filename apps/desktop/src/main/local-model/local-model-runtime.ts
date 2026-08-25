@@ -67,6 +67,10 @@ export interface LocalModelRuntimeOptions {
   applicationVersion: string;
   cachePath: string;
   tokenRoot: string;
+  /** 仅供 Main 验收选择固定后端；正式产品默认 automatic 并保持 Vulkan→CPU。 */
+  backendPreference?: 'automatic' | 'cpu-only' | 'vulkan-only';
+  /** 验收只接收非零 GPU offload 布尔事实，原始进程输出仍封闭在 Runtime。 */
+  acceptanceDiagnostics?: Readonly<{ onVulkanOffloadObserved(): void }>;
   releasePolicy?: LocalModelReleasePolicy;
   processPort?: LocalModelProcessPort;
   healthPollIntervalMs?: number;
@@ -95,7 +99,8 @@ interface TokenFile {
 
 const DEFAULT_HEALTH_POLL_INTERVAL_MS = 250;
 const DEFAULT_LOAD_TIMEOUT_MS = 5 * 60_000;
-const DEFAULT_CLEANUP_TIMEOUT_MS = 2_000;
+// 真实 Vulkan 后端卸载大模型时 child close 可能晚于 taskkill 返回；保持有界但覆盖实测退出延迟。
+const DEFAULT_CLEANUP_TIMEOUT_MS = 15_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_PORT_ATTEMPTS = 3;
 const ENVIRONMENT_KEYS = ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP'] as const;
@@ -114,6 +119,7 @@ export class LocalModelRuntimeError extends Error {
 export class LocalModelRuntime implements LocalModelConnectionPort {
   readonly #options: LocalModelRuntimeOptions;
   readonly #processPort: LocalModelProcessPort;
+  readonly #backendPreference: NonNullable<LocalModelRuntimeOptions['backendPreference']>;
   readonly #healthPollIntervalMs: number;
   readonly #loadTimeoutMs: number;
   readonly #cleanupTimeoutMs: number;
@@ -135,6 +141,7 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
   constructor(options: LocalModelRuntimeOptions) {
     this.#options = options;
     this.#processPort = options.processPort ?? createNodeProcessPort();
+    this.#backendPreference = options.backendPreference ?? 'automatic';
     this.#healthPollIntervalMs = requirePositive(
       options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS,
       'HEALTH_POLL_INTERVAL'
@@ -279,16 +286,28 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
       );
       throwIfAborted(controller.signal);
 
-      this.#publish(true, 'loading', 'vulkan', null);
-      backend = 'vulkan';
-      const device = await this.#probeVulkan(manifest, generation, controller.signal);
-      if (device !== undefined) {
-        try {
-          await this.#startBackend(manifest, 'vulkan', generation, controller.signal, device);
-          return;
-        } catch (error) {
-          const code = runtimeCode(error);
-          if (isAbortError(error) || code === 'PORT_CONFLICT' || code === 'PROCESS_CLEANUP_FAILED') throw error;
+      if (this.#backendPreference !== 'cpu-only') {
+        this.#publish(true, 'loading', 'vulkan', null);
+        backend = 'vulkan';
+        const device = await this.#probeVulkan(manifest, generation, controller.signal);
+        if (device !== undefined) {
+          try {
+            await this.#startBackend(manifest, 'vulkan', generation, controller.signal, device);
+            return;
+          } catch (error) {
+            const code = runtimeCode(error);
+            if (
+              this.#backendPreference === 'vulkan-only'
+              || isAbortError(error)
+              || code === 'PORT_CONFLICT'
+              || code === 'PROCESS_CLEANUP_FAILED'
+            ) {
+              throw error;
+            }
+          }
+        }
+        if (this.#backendPreference === 'vulkan-only') {
+          throw new LocalModelRuntimeError('VULKAN_UNAVAILABLE');
         }
       }
 
@@ -448,6 +467,9 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
       '--reasoning', 'off',
       '--api-key-file', tokenFile.path,
       '--offline',
+      ...(backend === 'vulkan' && this.#options.acceptanceDiagnostics !== undefined
+        ? ['--verbose']
+        : []),
       '--no-ui',
       '--no-slots',
       '--no-cors-credentials',
@@ -479,8 +501,25 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     };
     child.stdout.setEncoding?.('utf8');
     child.stderr.setEncoding?.('utf8');
-    child.stdout.on('data', (chunk: Buffer | string) => active.stdout.append(String(chunk)));
-    child.stderr.on('data', (chunk: Buffer | string) => active.stderr.append(String(chunk)));
+    let vulkanOffloadReported = false;
+    const append = (tail: BoundedTail, chunk: Buffer | string): void => {
+      tail.append(String(chunk));
+      if (
+        backend !== 'vulkan'
+        || vulkanOffloadReported
+        || !hasVulkanOffloadEvidence(`${active.stdout.value}\n${active.stderr.value}`)
+      ) {
+        return;
+      }
+      vulkanOffloadReported = true;
+      try {
+        this.#options.acceptanceDiagnostics?.onVulkanOffloadObserved();
+      } catch {
+        // 验收观察者不能获得 Runtime 生命周期控制权，也不能使生产进程失败。
+      }
+    };
+    child.stdout.on('data', (chunk: Buffer | string) => append(active.stdout, chunk));
+    child.stderr.on('data', (chunk: Buffer | string) => append(active.stderr, chunk));
     child.once('close', () => { active.exited = true; });
     return active;
   }
@@ -761,6 +800,11 @@ function isStrictHealthyBody(body: unknown): boolean {
 
 function isPortConflict(stderr: string): boolean {
   return /address\s+already\s+in\s+use|EADDRINUSE|bind\s+failed/iu.test(stderr);
+}
+
+function hasVulkanOffloadEvidence(output: string): boolean {
+  const match = /offloaded\s+(\d+)\/(\d+)\s+layers\s+to\s+GPU/iu.exec(output);
+  return match !== null && Number(match[1]) > 0;
 }
 
 function runtimeCode(error: unknown): LocalModelReasonCode | undefined {

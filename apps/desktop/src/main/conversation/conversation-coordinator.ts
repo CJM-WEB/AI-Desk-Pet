@@ -192,7 +192,8 @@ export class ConversationCoordinator {
         && capabilityIntentRouter.route(context.capabilityText).kind === 'chat'
       ) {
         this.pendingFileContinuation = null;
-        context.capabilityText = `${continuation.capabilityText}\n${context.capabilityText}`;
+        // 小模型需要明确后续路径覆盖先前缺失字段，避免把两轮文本误判为互相矛盾。
+        context.capabilityText = `${continuation.capabilityText}\n补充信息（覆盖此前缺失字段）：${context.capabilityText}`;
         context.continuationTarget = continuation.target;
       } else if (continuation !== null) {
         // 续接只接受紧邻的下一条有效路径；普通聊天或新能力请求都明确放弃旧澄清。

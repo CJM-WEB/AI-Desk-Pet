@@ -6,6 +6,7 @@
 - `pnpm.cmd test:integration`：使用临时授权根验证 `list_files`、`read_file`、`create_file`、`apply_patch`、`delete_file` 的真实结果、确认、冲突、取消与回收站失败。
 - PowerShell 集成用例只运行 `Write-Output`、标准错误写入和 `exit 0`，确认卡后校验真实 stdout、stderr 与退出码。
 - `pnpm.cmd test:e2e:desktop`：验证 Electron 中的设置、普通聊天、文件确认、回收站和进程清理；夹具仅保留去标识化的泄露布尔证据。
+- 内置本地模型的 CPU/Vulkan 真实验收结果见 [`2026-08-25-built-in-local-model-acceptance.md`](./2026-08-25-built-in-local-model-acceptance.md)。
 
 ## 人工验收步骤
 
@@ -163,3 +164,10 @@
 
 - 门禁过程中真实发现并修正了普通聊天测试遗漏 `motionPlan:null`、文件/PowerShell E2E 白名单旧预期，以及动态 Alpha 帧造成的滚轮测试过度断言。最终返修另以 RED 证明 `behaviorPlan:none`、只读工具过宽和同轮运动计划自竞争，并完成最小修复。两项 5000ms 单元超时、一次工作室提示超时和一次四边运动超时均先保留失败事实，隔离复现通过后再重跑对应完整门禁；未放宽业务断言。
 - 自动化使用本机 HTTP 兼容 Provider fixture，不代表真实 DeepSeek v4-flash 网络、账号与模型输出已通过。真实 Windows 回收站 UI/可恢复性、开发模式肉眼交互、干净安装卸载仍待用户人工确认；本轮没有制作安装包。
+
+## 2026-08-26 内置本地模型生产链验收补充
+
+- 真实验收 runner 复用生产 `LocalModelRuntime`、`LocalModelService`、Provider 路由、Main 会话组合、`AgentLoop` 与 `FileToolService`，不再维护第二套进程启动、health、Token、参数或清理实现。
+- 本轮自动化确认 `required` 工具规划固定 `temperature: 0`；普通聊天和 `auto` 工具选择保持既有请求体，不新增 Renderer 可控采样参数，也未引入 seed。
+- 真实矩阵契约包括创建、移动、删除、中文相对路径、缺目标澄清、用户拒绝、受控工具失败后恢复、Provider 取消后恢复、本地启用期间零云调用与关闭后云路由恢复。整体 deadline 超时后先取消活动会话并等待正式 Runtime 清理。
+- Desktop 定向测试 120/120、AgentLoop 50/50、FileToolService 46/46、重复目标集成用例 1/1 及 Desktop typecheck 均退出 `0`。真实 GGUF 生产链 CPU/Vulkan 尚未在这轮代码上重跑，结果仍以 `2026-08-25-built-in-local-model-acceptance.md` 为准，不把 fixture 证据写成真实模型通过。

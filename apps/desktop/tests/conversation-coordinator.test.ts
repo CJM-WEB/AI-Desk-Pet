@@ -290,6 +290,23 @@ describe('ConversationCoordinator', () => {
     })]);
   });
 
+  test('结构化澄清后的紧邻路径以覆盖缺失字段的语义续接文件任务', async () => {
+    const fileTasks = new CapturingCapabilityTasks();
+    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
+    const harness = createHarness([], { fileTasks });
+
+    await harness.coordinator.submit('删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。');
+    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    fileTasks.nextOutcome = { kind: 'completed', acted: false };
+    await harness.coordinator.submit('目标相对路径是 acceptance-clarification.txt。');
+
+    expect(fileTasks.submissions[1]?.text).toBe(
+      '删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。\n'
+      + '补充信息（覆盖此前缺失字段）：目标相对路径是 acceptance-clarification.txt。'
+    );
+    expect(fileTasks.submissions[1]?.planningHint).toEqual({ operation: 'delete_file' });
+  });
+
   test('在能力分流与 Provider 创建前等待显式 Gate，并只把剩余能力文本交给文件链', async () => {
     const release = deferredVoid();
     const behavior = behaviorPortDouble({

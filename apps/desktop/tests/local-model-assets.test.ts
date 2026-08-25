@@ -115,6 +115,13 @@ async function loadVerifier(): Promise<{
 }
 
 async function loadStager(): Promise<{
+  reuseFixedModelFile: (options: {
+    source: string;
+    target: string;
+    relativePath: string;
+    expectedSize: number;
+    expectedSha256: string;
+  }) => Promise<ManifestFile | null>;
   downloadFixedModelFile: (options: {
     url: string;
     target: string;
@@ -136,6 +143,8 @@ async function loadStager(): Promise<{
       renamePath?: typeof rename;
       removePath?: typeof rm;
       onWarning?: (code: string) => void;
+      commitRenameAttempts?: number;
+      waitBeforeCommitRetry?: (attempt: number) => Promise<void>;
       lockOperations?: {
         writeOwner?: (path: string, metadata: string) => Promise<void>;
         publishCandidate?: (candidateRoot: string, lockRoot: string) => Promise<void>;
@@ -485,6 +494,47 @@ describe('本地模型发行资源暂存事务', () => {
     await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  test('现有固定模型匹配 size/SHA 时复制到候选根而不重新下载', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-model-reuse-')));
+    temporaryDirectories.push(workspace);
+    const source = join(workspace, 'current', 'model.gguf');
+    const target = join(workspace, 'partial', 'model.gguf');
+    await writeResource(join(workspace, 'current'), 'model.gguf', 'data');
+    const { reuseFixedModelFile } = await loadStager();
+
+    await expect(reuseFixedModelFile({
+      source,
+      target,
+      relativePath: 'payload/model/model.gguf',
+      expectedSize: 4,
+      expectedSha256: sha256('data')
+    })).resolves.toEqual({
+      path: 'payload/model/model.gguf',
+      size: 4,
+      sha256: sha256('data')
+    });
+
+    await expect(readFile(target, 'utf8')).resolves.toBe('data');
+  });
+
+  test('现有模型哈希不匹配时不复制并允许调用方转入固定下载', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-model-reuse-mismatch-')));
+    temporaryDirectories.push(workspace);
+    const source = join(workspace, 'current', 'model.gguf');
+    const target = join(workspace, 'partial', 'model.gguf');
+    await writeResource(join(workspace, 'current'), 'model.gguf', 'wrong');
+    const { reuseFixedModelFile } = await loadStager();
+
+    await expect(reuseFixedModelFile({
+      source,
+      target,
+      relativePath: 'payload/model/model.gguf',
+      expectedSize: 4,
+      expectedSha256: sha256('data')
+    })).resolves.toBeNull();
+    await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   test('下载字节超过固定 size 时立即中止未结束流并删除 partial', async () => {
     const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-download-oversize-')));
     temporaryDirectories.push(workspace);
@@ -602,6 +652,52 @@ describe('本地模型发行资源暂存事务', () => {
 
     await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('new');
     expect(await readdir(workspace)).toEqual(['local-model']);
+  });
+
+  test('Windows 扫描器短暂占用目标时有界重试 commit rename', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-retry-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const stagedRoot = join(workspace, 'local-model.partial');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(stagedRoot, 'marker.txt', 'new');
+    let commitAttempts = 0;
+    const waited: number[] = [];
+    const renameWithTransientBusy: typeof rename = async (from, to) => {
+      if (from === stagedRoot && commitAttempts++ < 2) {
+        throw Object.assign(new Error('fixture transient scanner lock'), { code: 'EPERM' });
+      }
+      await rename(from, to);
+    };
+    const { replaceStagedResourceRoot } = await loadStager();
+
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      renamePath: renameWithTransientBusy,
+      commitRenameAttempts: 3,
+      waitBeforeCommitRetry: async attempt => { waited.push(attempt); }
+    })).resolves.toEqual({ warningCode: null });
+
+    expect(commitAttempts).toBe(3);
+    expect(waited).toEqual([1, 2]);
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('new');
+  });
+
+  test('拒绝无效的 commit rename 重试次数并恢复旧资源', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-invalid-retry-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const stagedRoot = join(workspace, 'local-model.partial');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(stagedRoot, 'marker.txt', 'new');
+    const { replaceStagedResourceRoot } = await loadStager();
+
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      commitRenameAttempts: 0
+    })).rejects.toThrow('COMMIT_RENAME_ATTEMPTS_INVALID');
+
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
   });
 
   test('切换 staging 根失败时恢复旧资源且不留下备份根', async () => {

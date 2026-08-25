@@ -116,8 +116,11 @@ async function createResourceFixture(): Promise<{ root: string; tokenRoot: strin
 async function createRuntime(
   processPort: FakeLocalModelProcessPort,
   overrides: {
+    acceptanceDiagnostics?: { onVulkanOffloadObserved(): void };
+    backendPreference?: 'automatic' | 'cpu-only' | 'vulkan-only';
     loadTimeoutMs?: number;
     cleanupTimeoutMs?: number;
+    useDefaultCleanupTimeout?: boolean;
     manifestHashFile?: (path: string, signal: AbortSignal) => Promise<string>;
     tokenFilePort?: LocalModelTokenFilePort;
   } = {}
@@ -133,11 +136,19 @@ async function createRuntime(
       tokenRoot: fixture.tokenRoot,
       releasePolicy,
       processPort,
+      ...(overrides.acceptanceDiagnostics === undefined
+        ? {}
+        : { acceptanceDiagnostics: overrides.acceptanceDiagnostics }),
+      ...(overrides.backendPreference === undefined
+        ? {}
+        : { backendPreference: overrides.backendPreference }),
       ...(overrides.manifestHashFile === undefined ? {} : { manifestHashFile: overrides.manifestHashFile }),
       ...(overrides.tokenFilePort === undefined ? {} : { tokenFilePort: overrides.tokenFilePort }),
       healthPollIntervalMs: 1,
       loadTimeoutMs: overrides.loadTimeoutMs ?? 100,
-      cleanupTimeoutMs: overrides.cleanupTimeoutMs ?? 100
+      ...(overrides.useDefaultCleanupTimeout === true
+        ? {}
+        : { cleanupTimeoutMs: overrides.cleanupTimeoutMs ?? 100 })
     })
   };
 }
@@ -240,6 +251,29 @@ describe('LocalModelRuntime', () => {
     });
   });
 
+  test('验收诊断只以 Main 私有布尔回调报告 Vulkan 非零 offload', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess(
+      { stdout: 'Vulkan0: Fixture GPU\n', exitCode: 0 },
+      { stderr: 'load_tensors: offloaded 33/33 layers to GPU\n' }
+    );
+    port.queuePorts(43123);
+    port.queueHealth({ status: 200, body: { status: 'ok' } });
+    const onVulkanOffloadObserved = vi.fn();
+    const { runtime } = await createRuntime(port, {
+      backendPreference: 'vulkan-only',
+      acceptanceDiagnostics: { onVulkanOffloadObserved }
+    });
+
+    await runtime.start();
+
+    expect(onVulkanOffloadObserved).toHaveBeenCalledOnce();
+    expect(port.spawnInputs[1]?.args).toContain('--verbose');
+    expect(Object.keys(runtime.getStatus()).sort()).toEqual([
+      'backend', 'enabled', 'phase', 'reasonCode'
+    ]);
+  });
+
   test('Vulkan 探针失败后仅启动 CPU 兼容模式', async () => {
     const port = new FakeLocalModelProcessPort();
     queueCpuReady(port);
@@ -251,6 +285,54 @@ describe('LocalModelRuntime', () => {
     expect(port.spawnInputs[1]?.args).toEqual(expect.arrayContaining([
       '--device', 'none', '--gpu-layers', '0', '--reasoning', 'off'
     ]));
+  });
+
+  test('cpu-only 跳过 Vulkan 探针并直接启动 CPU', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({});
+    port.queuePorts(43124);
+    port.queueHealth({ status: 200, body: { status: 'ok' } });
+    const { runtime } = await createRuntime(port, { backendPreference: 'cpu-only' });
+
+    await runtime.start();
+
+    expect(runtime.getStatus()).toMatchObject({ phase: 'ready', backend: 'cpu' });
+    expect(port.spawnInputs).toHaveLength(1);
+    expect(port.spawnInputs[0]?.args).toEqual(expect.arrayContaining([
+      '--device', 'none', '--gpu-layers', '0'
+    ]));
+    expect(port.spawnInputs[0]?.args).not.toEqual(['--list-devices']);
+  });
+
+  test('vulkan-only 探针无设备时稳定失败且禁止 CPU fallback', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({ stderr: 'Vulkan unavailable', exitCode: 1 });
+    const { runtime } = await createRuntime(port, { backendPreference: 'vulkan-only' });
+
+    await expect(runtime.start()).rejects.toMatchObject({ code: 'VULKAN_UNAVAILABLE' });
+
+    expect(port.spawnInputs).toHaveLength(1);
+    expect(runtime.getStatus()).toEqual({
+      enabled: true, phase: 'faulted', backend: 'vulkan', reasonCode: 'VULKAN_UNAVAILABLE'
+    });
+  });
+
+  test('vulkan-only server 启动失败时保留稳定错误且禁止 CPU fallback', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess(
+      { stdout: 'Vulkan0: Fixture GPU\n', exitCode: 0 },
+      { stderr: 'model load failed', exitCode: 1 }
+    );
+    port.queuePorts(43125);
+    port.queueHealth(new Error('connection reset'));
+    const { runtime } = await createRuntime(port, { backendPreference: 'vulkan-only' });
+
+    await expect(runtime.start()).rejects.toMatchObject({ code: 'PROCESS_CRASHED' });
+
+    expect(port.spawnInputs).toHaveLength(2);
+    expect(runtime.getStatus()).toEqual({
+      enabled: true, phase: 'faulted', backend: 'vulkan', reasonCode: 'PROCESS_CRASHED'
+    });
   });
 
   test('Vulkan server 加载失败自然退出后不再操作旧 PID，并以 CPU ready', async () => {
@@ -543,6 +625,23 @@ describe('LocalModelRuntime', () => {
     await expectMissing(String(tokenFile));
     expect(runtime.getStatus()).toEqual({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
   });
+
+  test('默认清理窗口允许 Vulkan child 在旧 2 秒上限之后正常退出', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({ stdout: 'Vulkan0\n', exitCode: 0 }, { closeOnKill: false, pid: 5621 });
+    port.queuePorts(44320);
+    port.queueHealth({ status: 200, body: { status: 'ok' } });
+    const { runtime } = await createRuntime(port, { useDefaultCleanupTimeout: true });
+    await runtime.start();
+
+    const stopping = runtime.stop();
+    await vi.waitFor(() => expect(port.killedPids).toContain(5621));
+    await new Promise(resolve => setTimeout(resolve, 2_100));
+    port.processes[1]?.finish(null);
+
+    await expect(stopping).resolves.toBeUndefined();
+    expect(runtime.getStatus()).toEqual({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
+  }, 5_000);
 
   test('托管 child 永不 close 时保留精确进程与 Token，并发布可重试清理失败', async () => {
     const port = new FakeLocalModelProcessPort();
