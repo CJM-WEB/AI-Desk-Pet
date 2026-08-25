@@ -61,13 +61,13 @@ const quotePairs = new Map<string, string>([
   ['“', '”'],
   ['‘', '’']
 ]);
-const fileOperationPattern = /(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理|\b(?:read|list|create|write|modify|rename|copy|move|delete|search|organize)\b)/giu;
+const fileOperationPattern = /(?:读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理|\b(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b)/giu;
 const strongFileOperationPattern = /(?:重命名|复制|移动|\b(?:rename|copy|move)\b)/giu;
-const chineseDirectExecutionPattern = /^(?:(?:那|那么)\s*)?(?:在[^，,。！？!?]*(?:中|里|下)\s*)?(?:(?:你能(?:不能)?\s*(?:帮我)?|请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理)/u;
-const chineseReorderedExecutionPattern = /^(?:(?:请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:把|将).+(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理)/u;
-const englishDirectExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:read|list|create|write|modify|rename|copy|move|delete|search|organize)\b/iu;
+const chineseDirectExecutionPattern = /^(?:(?:那|那么)\s*)?(?:在[^，,。！？!?]*(?:中|里|下)\s*)?(?:(?:你能(?:不能)?\s*(?:帮我)?|请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:按文件名匹配|读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理)/u;
+const chineseReorderedExecutionPattern = /^(?:(?:请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:把|将).+(?:读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理)/u;
+const englishDirectExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b/iu;
 const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:please\s+)?([a-z]+)\b/iu;
-const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|什么意思|是什么(?:意思|功能)?|翻译|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b)/iu;
+const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|什么意思|是什么(?:意思|功能)?|翻译|示例|例子|举例|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b|example\b)/iu;
 const negationPattern = /(?:不要|别|无需|do\s+not|don't)/iu;
 const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
 const chineseExplicitPowerShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;

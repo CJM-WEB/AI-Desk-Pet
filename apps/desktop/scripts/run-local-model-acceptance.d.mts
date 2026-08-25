@@ -1,6 +1,8 @@
 export type AcceptanceBackend = 'cpu' | 'vulkan';
 
 export interface AcceptanceChecks {
+  discreteGpu: boolean;
+  fullGpuOffload: boolean;
   chineseChat: boolean;
   reasoningDisabled: boolean;
   toolCall: boolean;
@@ -11,6 +13,10 @@ export interface AcceptanceChecks {
   cloudCallsZero: boolean;
   cloudRouteRestored: boolean;
   createOperation: boolean;
+  readOperation: boolean;
+  globOperation: boolean;
+  grepOperation: boolean;
+  editOperation: boolean;
   moveOperation: boolean;
   deleteOperation: boolean;
   chineseRelativePath: boolean;

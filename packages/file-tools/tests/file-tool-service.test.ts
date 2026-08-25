@@ -1039,6 +1039,20 @@ describe('FileToolService.preview 与 executeWrite', () => {
     });
   });
 
+  it.each([
+    '--- other.txt\n@@ -1,1 +1,1 @@\n-before\n+after\n',
+    '+++ other.txt\n@@ -1,1 +1,1 @@\n-before\n+after\n'
+  ])('previewMany 拒绝只有单侧文件头的畸形补丁', async patch => {
+    const { service, root } = await fixtureService();
+    await writeFile(join(root, 'docs', 'target.txt'), 'before\n', 'utf8');
+
+    await expect(service.previewMany({
+      requestId: 'patch-partial-header',
+      toolName: 'apply_patch',
+      arguments: { relativePath: 'docs/target.txt', patch }
+    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+  });
+
   it('apply_patch 多文件请求拆成逐文件独立动作并分别复核基础内容', async () => {
     const { service, root } = await fixtureService();
     await writeFile(join(root, 'docs', 'first.txt'), 'first old\n', 'utf8');

@@ -112,6 +112,10 @@ describe('能力意图路由器', () => {
     '整理当前目录中的文件',
     '删除 docs/guide',
     '读取 README',
+    '按文件名匹配 **/*.ts',
+    'glob ./docs/*.md',
+    '把 notes.txt 中的旧文本替换为新文本',
+    'replace old with new in ./notes.txt',
     '在当前目录中删除 a.txt',
     'delete permission.txt',
     'delete will.txt',
@@ -184,7 +188,9 @@ describe('能力意图路由器', () => {
 
   test.each([
     'Rename is different from copy when comparing example.com and archive.com',
-    '重命名和复制有什么区别，例如 example.com 和 archive.com'
+    '重命名和复制有什么区别，例如 example.com 和 archive.com',
+    'Copy report.md to archive.md is a common example.',
+    '把 report.md 复制到 archive 目录只是一个例子'
   ])('讨论双目标操作“%s”不构成源到目标的文件结构', text => {
     expectIntentKind(text, 'chat');
   });

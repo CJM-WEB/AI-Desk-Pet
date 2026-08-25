@@ -368,8 +368,9 @@ function nextTrustedResultState(
 ): Readonly<{ latestOk: boolean | undefined; mutationFailurePending: boolean }> {
   const currentOk = trustedResultOk(result);
   if (MUTATION_TOOL_NAMES.has(toolName)) {
+    if (mutationFailurePending) return { latestOk: false, mutationFailurePending: true };
     if (currentOk === undefined) {
-      return { latestOk: mutationFailurePending ? false : previousOk, mutationFailurePending };
+      return { latestOk: previousOk, mutationFailurePending: false };
     }
     return { latestOk: currentOk, mutationFailurePending: !currentOk };
   }

@@ -516,6 +516,49 @@ describe('AgentLoop', () => {
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
+  test('写操作失败后另一写操作成功也不能清除本轮失败事实', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'write-failed',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'first.txt' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'write-succeeded',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'second.txt' }
+        }
+      },
+      { type: 'text', text: '全部写入成功。' }
+    ]);
+    const loop = new AgentLoop();
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    const first = await collect(loop.run('连续写入', runContext));
+    const firstRequest = first.find(event => event.type === 'write_request');
+    if (!firstRequest || firstRequest.type !== 'write_request') throw new Error('缺少首次确认');
+    const second = await collect(loop.resume(firstRequest.continuationToken, {
+      ok: false,
+      toolName: 'create_file',
+      code: 'TARGET_EXISTS'
+    }, runContext));
+    const secondRequest = second.find(event => event.type === 'write_request');
+    if (!secondRequest || secondRequest.type !== 'write_request') throw new Error('缺少第二次确认');
+    const finalEvents = await collect(loop.resume(secondRequest.continuationToken, {
+      ok: true,
+      toolName: 'create_file'
+    }, runContext));
+
+    expect(finalEvents).not.toContainEqual({ type: 'message', text: '全部写入成功。' });
+    expect(finalEvents).toContainEqual({ type: 'message', text: '本地能力操作失败，未完成请求。' });
+    expect(finalEvents.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+  });
+
   test('第四轮确认恢复时以当前工具失败事实结束，且不把能力说成文件操作', async () => {
     const provider = new ScriptedProvider([
       readRequest('read-1'),

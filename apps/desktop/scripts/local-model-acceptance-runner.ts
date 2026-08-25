@@ -4,7 +4,7 @@ import { basename, join } from 'node:path';
 
 import { AgentLoop } from '@myself/agent-core';
 import { FileToolService, PathPolicy } from '@myself/file-tools';
-import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
+import type { ProviderProfileV2, TaskEvent, ToolRequest } from '@myself/shared-types';
 import { AgentService } from '../src/main/agent/agent-service';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import { createMainAgentSession } from '../src/main/agent/main-agent-session-factory';
@@ -32,6 +32,8 @@ interface AcceptanceInput {
 }
 
 interface Checks {
+  discreteGpu: boolean;
+  fullGpuOffload: boolean;
   chineseChat: boolean;
   reasoningDisabled: boolean;
   toolCall: boolean;
@@ -42,6 +44,10 @@ interface Checks {
   cloudCallsZero: boolean;
   cloudRouteRestored: boolean;
   createOperation: boolean;
+  readOperation: boolean;
+  globOperation: boolean;
+  grepOperation: boolean;
+  editOperation: boolean;
   moveOperation: boolean;
   deleteOperation: boolean;
   chineseRelativePath: boolean;
@@ -282,7 +288,11 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
   const recycleRoot = join(temporaryRoot, 'recycle');
   await mkdir(authorizedRoot, { recursive: true });
   await mkdir(recycleRoot, { recursive: true });
-  let vulkanOffloadObserved = false;
+  let vulkanObservation: Readonly<{
+    deviceClass: 'discrete' | 'integrated' | 'unknown';
+    offloadedLayers: number;
+    totalLayers: number;
+  }> | null = null;
   const runtime = new LocalModelRuntime({
     root: input.resourceRoot,
     applicationVersion: input.applicationVersion,
@@ -290,7 +300,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     tokenRoot: join(temporaryRoot, 'tokens'),
     backendPreference: input.requestedBackend === 'cpu' ? 'cpu-only' : 'vulkan-only',
     acceptanceDiagnostics: {
-      onVulkanOffloadObserved: () => { vulkanOffloadObserved = true; }
+      onVulkanOffloadObserved: observation => { vulkanObservation = observation; }
     }
   });
   const localProvider = new LocalModelProvider(runtime);
@@ -303,6 +313,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
   let cloudSecretCalls = 0;
   let enabled = true;
   let recycleSequence = 0;
+  const observedReadTools = new Set<string>();
   let composition: MainConversationComposition | undefined;
   const localModelService = new LocalModelService({
     initialEnabled: true,
@@ -352,9 +363,9 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
           fileDisclosureAllowed: snapshot.privacySettings.dataCategories.file,
           provider: createProvider(primaryProfile),
           fallbackProviders: fallbackProfiles.map(createProvider),
-          createFileTools: async () => new FileToolService(
-            await PathPolicy.create(snapshot.authorizedRootPath),
-            {
+          createFileTools: async () => {
+            const fileTools = new FileToolService(
+              await PathPolicy.create(snapshot.authorizedRootPath), {
               moveToRecycleBin: async absolutePath => {
                 if (basename(absolutePath) === 'acceptance-failure.txt') {
                   throw acceptanceError('FIXTURE_RECYCLE_FAILED');
@@ -362,8 +373,15 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
                 recycleSequence += 1;
                 await rename(absolutePath, join(recycleRoot, `${recycleSequence}.recycled`));
               }
-            }
-          ),
+            });
+            const executeRead = fileTools.executeRead.bind(fileTools);
+            fileTools.executeRead = async (request: ToolRequest) => {
+              const result = await executeRead(request);
+              observedReadTools.add(request.toolName);
+              return result;
+            };
+            return fileTools;
+          },
           createPowerShellTool: () => { throw acceptanceError('TOOL_UNKNOWN'); }
         }),
         emit,
@@ -403,12 +421,20 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
         try {
         await localModelService.start();
     if (input.requestedBackend === 'vulkan') {
-      await waitForVulkanOffload(() => vulkanOffloadObserved);
+      await waitForVulkanOffload(() => vulkanObservation !== null);
+      if (vulkanObservation?.deviceClass !== 'discrete') {
+        throw acceptanceError('DISCRETE_GPU_NOT_SELECTED');
+      }
+      if (vulkanObservation.offloadedLayers !== vulkanObservation.totalLayers) {
+        throw acceptanceError('GPU_OFFLOAD_INCOMPLETE');
+      }
     }
     const activeBackend = runtime.getStatus().backend;
     if (activeBackend !== input.requestedBackend) throw acceptanceError('BACKEND_MISMATCH');
 
     const checks: Checks = {
+      discreteGpu: input.requestedBackend === 'vulkan',
+      fullGpuOffload: input.requestedBackend === 'vulkan',
       chineseChat: false,
       reasoningDisabled: false,
       toolCall: false,
@@ -419,6 +445,10 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
       cloudCallsZero: false,
       cloudRouteRestored: false,
       createOperation: false,
+      readOperation: false,
+      globOperation: false,
+      grepOperation: false,
+      editOperation: false,
       moveOperation: false,
       deleteOperation: false,
       chineseRelativePath: false,
@@ -431,7 +461,11 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     const chatEventStart = events.length;
     await composition.coordinator.submit('只用简短中文回答：你好。');
     const chatMessage = findFinalAssistantText(events.slice(chatEventStart));
-    if (chatMessage === undefined || !containsChinese(chatMessage)) {
+    if (
+      chatMessage === undefined
+      || !containsChinese(chatMessage)
+      || /<think>|<\/think>|reasoning_content/iu.test(chatMessage)
+    ) {
       throw acceptanceError('CHINESE_CHAT_FAILED');
     }
     checks.chineseChat = true;
@@ -538,6 +572,47 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
       throw acceptanceError('CHINESE_PATH_SIDE_EFFECT_FAILED');
     }
     checks.chineseRelativePath = true;
+
+    await composition.resetForConfigurationChange();
+    acceptanceStage = 'READ';
+    await composition.coordinator.submit(
+      '读取相对路径 资料/中文记录.txt 的正文。路径齐全，请立即调用读取文件工具。'
+    );
+    if (!observedReadTools.has('read_file')) throw acceptanceError('READ_TOOL_CALL_MISSING');
+    checks.readOperation = true;
+
+    await composition.resetForConfigurationChange();
+    acceptanceStage = 'GLOB';
+    await composition.coordinator.submit(
+      '按文件名匹配 资料/*.txt。模式齐全，请立即调用文件名匹配工具。'
+    );
+    if (!observedReadTools.has('glob_files')) throw acceptanceError('GLOB_TOOL_CALL_MISSING');
+    checks.globOperation = true;
+
+    await composition.resetForConfigurationChange();
+    acceptanceStage = 'GREP';
+    await composition.coordinator.submit(
+      '在文件内容中搜索“你好”。查询齐全，请立即调用内容搜索工具。'
+    );
+    if (!observedReadTools.has('grep_files')) throw acceptanceError('GREP_TOOL_CALL_MISSING');
+    checks.grepOperation = true;
+
+    await composition.resetForConfigurationChange();
+    acceptanceStage = 'EDIT';
+    const editEventStart = events.length;
+    await composition.coordinator.submit(
+      '把相对路径 资料/中文记录.txt 中唯一的“你好”精确替换为“您好”。路径、旧文本和新文本齐全，请立即调用精确编辑文件工具。'
+    );
+    const editAction = findPendingAction(events.slice(editEventStart));
+    if (
+      editAction.operation !== 'apply_patch'
+      || normalizedRelativePath(editAction.targetRelativePath) !== '资料/中文记录.txt'
+    ) throw acceptanceError('EDIT_TOOL_CALL_MISSING');
+    await composition.coordinator.resolveFileAction(editAction.actionId, 'confirm');
+    if (await readFile(chineseTarget, 'utf8') !== '您好') {
+      throw acceptanceError('EDIT_SIDE_EFFECT_FAILED');
+    }
+    checks.editOperation = true;
 
     await composition.resetForConfigurationChange();
     acceptanceStage = 'CLARIFICATION';

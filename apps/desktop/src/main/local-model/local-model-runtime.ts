@@ -69,8 +69,14 @@ export interface LocalModelRuntimeOptions {
   tokenRoot: string;
   /** 仅供 Main 验收选择固定后端；正式产品默认 automatic 并保持 Vulkan→CPU。 */
   backendPreference?: 'automatic' | 'cpu-only' | 'vulkan-only';
-  /** 验收只接收非零 GPU offload 布尔事实，原始进程输出仍封闭在 Runtime。 */
-  acceptanceDiagnostics?: Readonly<{ onVulkanOffloadObserved(): void }>;
+  /** 验收只接收脱敏设备类别与层数事实，原始设备名、ID 和进程输出仍封闭在 Runtime。 */
+  acceptanceDiagnostics?: Readonly<{
+    onVulkanOffloadObserved(observation: Readonly<{
+      deviceClass: VulkanDeviceClass;
+      offloadedLayers: number;
+      totalLayers: number;
+    }>): void;
+  }>;
   releasePolicy?: LocalModelReleasePolicy;
   processPort?: LocalModelProcessPort;
   healthPollIntervalMs?: number;
@@ -362,7 +368,7 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     manifest: ValidatedLocalModelManifest,
     generation: string,
     signal: AbortSignal
-  ): Promise<readonly string[]> {
+  ): Promise<readonly VulkanDeviceCandidate[]> {
     let child: LocalModelChildProcess;
     try {
       child = this.#processPort.spawn({
@@ -415,7 +421,7 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     backend: LocalModelBackend,
     generation: string,
     signal: AbortSignal,
-    vulkanDevice?: string
+    vulkanDevice?: VulkanDeviceCandidate
   ): Promise<void> {
     for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt += 1) {
       throwIfAborted(signal);
@@ -454,7 +460,7 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     backend: LocalModelBackend,
     generation: string,
     port: number,
-    vulkanDevice?: string
+    vulkanDevice?: VulkanDeviceCandidate
   ): ActiveProcess {
     const runtime = manifest.backends[backend];
     const tokenFile = requireTokenFile(this.#tokenFile);
@@ -477,7 +483,7 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
       '--no-cors-credentials',
       ...(backend === 'cpu'
         ? ['--device', 'none', '--gpu-layers', '0']
-        : ['--device', requireVulkanDevice(vulkanDevice), '--gpu-layers', 'all'])
+        : ['--device', requireVulkanDevice(vulkanDevice?.id), '--gpu-layers', 'all'])
     ];
     let child: LocalModelChildProcess;
     try {
@@ -506,16 +512,20 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     let vulkanOffloadReported = false;
     const append = (tail: BoundedTail, chunk: Buffer | string): void => {
       tail.append(String(chunk));
+      const offload = parseVulkanOffloadEvidence(`${active.stdout.value}\n${active.stderr.value}`);
       if (
         backend !== 'vulkan'
         || vulkanOffloadReported
-        || !hasVulkanOffloadEvidence(`${active.stdout.value}\n${active.stderr.value}`)
+        || offload === null
       ) {
         return;
       }
       vulkanOffloadReported = true;
       try {
-        this.#options.acceptanceDiagnostics?.onVulkanOffloadObserved();
+        this.#options.acceptanceDiagnostics?.onVulkanOffloadObserved({
+          deviceClass: vulkanDevice?.deviceClass ?? 'unknown',
+          ...offload
+        });
       } catch {
         // 验收观察者不能获得 Runtime 生命周期控制权，也不能使生产进程失败。
       }
@@ -804,15 +814,29 @@ function isPortConflict(stderr: string): boolean {
   return /address\s+already\s+in\s+use|EADDRINUSE|bind\s+failed/iu.test(stderr);
 }
 
-function hasVulkanOffloadEvidence(output: string): boolean {
+function parseVulkanOffloadEvidence(output: string): Readonly<{
+  offloadedLayers: number;
+  totalLayers: number;
+}> | null {
   const match = /offloaded\s+(\d+)\/(\d+)\s+layers\s+to\s+GPU/iu.exec(output);
-  return match !== null && Number(match[1]) > 0;
+  if (match === null) return null;
+  const offloadedLayers = Number(match[1]);
+  const totalLayers = Number(match[2]);
+  return Number.isSafeInteger(offloadedLayers)
+    && Number.isSafeInteger(totalLayers)
+    && offloadedLayers > 0
+    && totalLayers > 0
+    && offloadedLayers <= totalLayers
+    ? { offloadedLayers, totalLayers }
+    : null;
 }
 
+type VulkanDeviceClass = 'discrete' | 'integrated' | 'unknown';
 type VulkanDeviceCandidate = Readonly<{
   id: string;
   ordinal: number;
   preference: number;
+  deviceClass: VulkanDeviceClass;
 }>;
 
 const softwareVulkanDevicePattern = /(?:llvmpipe|lavapipe|swiftshader|software\s+renderer|microsoft\s+basic\s+render)/iu;
@@ -823,7 +847,7 @@ const integratedVulkanDevicePattern = /(?:\bintel\b|\biris\b|\bradeon(?:\(tm\))?
  * `--list-devices` 的序号只表示枚举顺序，不能代表性能。
  * 解析所有唯一硬件设备后优先明确独显；未知硬件仍优先于已知集显，平局按序号稳定选择。
  */
-function selectVulkanDevices(output: string): readonly string[] {
+function selectVulkanDevices(output: string): readonly VulkanDeviceCandidate[] {
   const unique = new Map<string, VulkanDeviceCandidate>();
   for (const line of output.split(/\r?\n/u)) {
     // 保留旧运行时只输出设备 ID 的兼容格式；存在名称时再参与硬件分类。
@@ -839,19 +863,25 @@ function selectVulkanDevices(output: string): readonly string[] {
     ) {
       continue;
     }
+    const deviceClass: VulkanDeviceClass = discreteVulkanDevicePattern.test(name)
+      ? 'discrete'
+      : integratedVulkanDevicePattern.test(name)
+        ? 'integrated'
+        : 'unknown';
     unique.set(id, {
       id,
       ordinal,
-      preference: discreteVulkanDevicePattern.test(name)
+      deviceClass,
+      preference: deviceClass === 'discrete'
         ? 3
-        : integratedVulkanDevicePattern.test(name)
+        : deviceClass === 'integrated'
           ? 1
           : 2
     });
   }
   return [...unique.values()].sort((left, right) => (
     right.preference - left.preference || left.ordinal - right.ordinal
-  )).map(candidate => candidate.id);
+  ));
 }
 
 function runtimeCode(error: unknown): LocalModelReasonCode | undefined {

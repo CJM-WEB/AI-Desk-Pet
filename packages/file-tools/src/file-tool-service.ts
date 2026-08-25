@@ -629,7 +629,12 @@ export class FileToolService {
         const parsedFile = parsed[0]!;
         let targetRelativePath = arguments_.relativePath;
         // 旧单文件契约只含 hunk，没有文件头；显式相对路径仍是唯一目标权威。
-        if (typeof parsedFile.oldFileName === 'string' && typeof parsedFile.newFileName === 'string') {
+        const hasOldFileName = typeof parsedFile.oldFileName === 'string';
+        const hasNewFileName = typeof parsedFile.newFileName === 'string';
+        if (hasOldFileName !== hasNewFileName) {
+          throw new FileToolError('PATH_INVALID', '补丁文件头必须成对出现');
+        }
+        if (hasOldFileName && hasNewFileName) {
           const inferredRelativePath = relativePathFromPatchFile(parsedFile);
           if (
             targetRelativePath !== undefined

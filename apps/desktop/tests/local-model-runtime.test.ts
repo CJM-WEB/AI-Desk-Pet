@@ -336,10 +336,10 @@ describe('LocalModelRuntime', () => {
     ]));
   });
 
-  test('验收诊断只以 Main 私有布尔回调报告 Vulkan 非零 offload', async () => {
+  test('验收诊断只以 Main 私有脱敏回调报告设备类别与 Vulkan offload 层数', async () => {
     const port = new FakeLocalModelProcessPort();
     port.queueProcess(
-      { stdout: 'Vulkan0: Fixture GPU\n', exitCode: 0 },
+      { stdout: 'Vulkan0: NVIDIA GeForce RTX 5060 Laptop GPU\n', exitCode: 0 },
       { stderr: 'load_tensors: offloaded 33/33 layers to GPU\n' }
     );
     port.queuePorts(43123);
@@ -352,7 +352,11 @@ describe('LocalModelRuntime', () => {
 
     await runtime.start();
 
-    expect(onVulkanOffloadObserved).toHaveBeenCalledOnce();
+    expect(onVulkanOffloadObserved).toHaveBeenCalledExactlyOnceWith({
+      deviceClass: 'discrete',
+      offloadedLayers: 33,
+      totalLayers: 33
+    });
     expect(port.spawnInputs[1]?.args).toContain('--verbose');
     expect(Object.keys(runtime.getStatus()).sort()).toEqual([
       'backend', 'enabled', 'phase', 'reasonCode'
