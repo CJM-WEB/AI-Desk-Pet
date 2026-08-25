@@ -229,6 +229,96 @@ describe('多 Provider 设置持久化', () => {
     });
   });
 
+  test('V3 迁移为 V4 时完整保留现行多档案、路由、位置、隐私、停止锁与 MCP', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'myself-v3-local-model-migration-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.json');
+    const providerProfiles = [
+      {
+        id: 'cloud-primary',
+        displayName: '云端主模型',
+        mode: 'custom',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        modelId: 'primary-tools-vision',
+        additionalParameters: {},
+        capabilities: ['chat', 'tools', 'vision']
+      },
+      {
+        id: 'cloud-fallback',
+        displayName: '云端备用模型',
+        mode: 'custom',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        modelId: 'fallback-chat',
+        additionalParameters: {},
+        capabilities: ['chat']
+      }
+    ];
+    const modelRoute = {
+      primaryProfileId: 'cloud-primary',
+      chatProfileId: 'cloud-primary',
+      agentProfileId: 'cloud-primary',
+      visionProfileId: 'cloud-primary',
+      fallbackProfileIds: ['cloud-fallback'],
+      allowCrossProviderFallback: false
+    };
+    const privacy = {
+      dataCategories: { file: true, screenshot: false, clipboard: true, memory: false },
+      longTermMemory: true,
+      proactivityMode: 'passive' as const
+    };
+    const mcpServers = [{
+      id: 'remote-tools',
+      enabled: true,
+      transport: {
+        type: 'http' as const,
+        url: 'https://mcp.example.com',
+        secretNames: ['Authorization']
+      },
+      tools: {
+        search: { enabled: true, readOnly: true, description: '搜索' }
+      }
+    }];
+    const placement = {
+      characterId: 'pet-a',
+      scale: 1.25,
+      footAnchorDip: { x: 640, y: 480 },
+      displayId: 'display-main'
+    };
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      providerProfiles,
+      modelRoute,
+      authorizedRoot: null,
+      petPlacementState: { kind: 'ready', placements: [placement] },
+      fileDisclosureAccepted: true,
+      petAlwaysOnTop: true,
+      privacy,
+      movementStopped: true,
+      mcpServers
+    }), 'utf8');
+
+    const store = new SettingsStore(file, async () => false);
+
+    await expect(store.getLocalModelSettings()).resolves.toEqual({ enabled: true });
+    await expect(store.getProviderSettings()).resolves.toEqual({
+      profiles: providerProfiles.map(profile => ({ ...profile, hasStoredSecret: false })),
+      route: modelRoute
+    });
+    await expect(store.getPetPlacementState('pet-a')).resolves.toEqual({
+      kind: 'ready',
+      placement
+    });
+    await expect(store.getPrivacySettings()).resolves.toEqual(privacy);
+    await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
+      movementStopped: true,
+      proactivityMode: 'passive'
+    });
+    await expect(store.getMcpServerSettings()).resolves.toEqual(mcpServers);
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 4');
+  });
+
   test('旧 V1 与缺失 privacy 的 V2 保留辅助模式并补齐未停止', async () => {
     const fixtures = [
       {

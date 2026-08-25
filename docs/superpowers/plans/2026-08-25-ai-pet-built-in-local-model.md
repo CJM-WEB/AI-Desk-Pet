@@ -4,7 +4,7 @@
 
 **Goal:** 为 Windows x64 AI Pet 增加默认开启、随安装包分发、强制非思考且可通过现有安全链调用真实工具的 Qwen3.5-4B 本地模型。
 
-**Architecture:** Electron Main 私有的 `LocalModelRuntime` 托管固定 llama.cpp 子进程，`LocalModelProvider` 复用现有 OpenAI-compatible 协议，`LocalModelService` 用内存档案和路由覆盖接入既有 `ModelRouter`。云端 Provider 设置始终原样持久化；本地模型关闭时自然恢复，不创建第二套 Agent、工具或权限系统。
+**Architecture:** Electron Main 私有的 `LocalModelRuntime` 托管固定 llama.cpp 子进程，`LocalModelProvider` 复用现有 OpenAI-compatible 协议，`LocalModelService` 用内存档案和路由覆盖接入既有 `ModelRouter`。现行未退役云端 Provider 设置始终原样持久化；既有 Zen 退役迁移继续清理 Zen 档案与路由引用；本地模型关闭时自然恢复，不创建第二套 Agent、工具或权限系统。
 
 **Tech Stack:** Electron 43、React 19、TypeScript 5.9、Zod 3、Vitest 3、Playwright 1.61、Node `child_process`/`crypto`/`fs`、llama.cpp `b10516`、Qwen3.5-4B Q4_K_M GGUF。
 
@@ -88,7 +88,7 @@ expect(() => localModelPublicStatusSchema.parse({
 
 - [ ] **Step 2: 写 V1/V2/V3 → V4 迁移 RED**
 
-断言每个旧版本迁移后 `localModel.enabled === true`，并逐字段保留 Provider 档案、云路由、MCP 数据、角色位置、隐私与停止锁；保存 false 后重启仍为 false。
+断言每个旧版本迁移后 `localModel.enabled === true`，并逐字段保留所有现行未退役 Provider 档案、云路由、MCP 数据、角色位置、隐私与停止锁；既有 Zen 退役迁移仍清理 Zen 档案及其路由引用；保存 false 后重启仍为 false。
 
 - [ ] **Step 3: 运行 RED**
 
@@ -111,7 +111,7 @@ export const localModelPublicStatusSchema = z.object({
 }).strict();
 ```
 
-V4 在 V3 shape 基础上增加 `localModel: { enabled: boolean }`；所有迁移通过 `defaultSettings()` 注入 true，不修改 `providerProfiles` 与 `modelRoute`。
+V4 在 V3 shape 基础上增加 `localModel: { enabled: boolean }`；所有迁移通过 `defaultSettings()` 注入 true，并完整保留现行未退役的 `providerProfiles` 与 `modelRoute`；既有 Zen 退役迁移继续在版本迁移前清理 Zen 档案及其路由引用。
 
 - [ ] **Step 5: 运行 GREEN 与 typecheck**
 

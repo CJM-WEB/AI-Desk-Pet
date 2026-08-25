@@ -31,6 +31,7 @@
 ### 3.1 默认启用与路由
 
 - SettingsStore 新版本增加 `localModel.enabled`，新安装与旧版本迁移的默认值均为 `true`。
+- 设置迁移完整保留所有现行未退役 Provider 及其路由；既有 Zen 退役迁移继续优先清理 Zen 档案和路由引用。
 - 本地模型开启时，Main 只在内存中注入不可编辑的内置 Provider 档案和临时路由覆盖；持久化的云端档案与 `modelRoute` 不变。
 - 临时路由把 `primary`、`chat`、`agent` 和 `vision` 都指向内置档案，清空备用模型并关闭跨 Provider 回退。
 - 内置档案只声明 `chat`、`tools`；因此聊天和 Agent 可用，视觉因能力不满足而失败，绝不调用云端视觉档案。
@@ -253,7 +254,7 @@ CPU 增加 `--device none --gpu-layers 0`。Vulkan 先通过 `--list-devices` �
 
 ### 11.1 单元与契约测试
 
-- SettingsStore 迁移默认开启且完整保留 Provider、路由、MCP 持久化数据、角色和隐私设置。
+- SettingsStore 迁移默认开启且完整保留现行未退役 Provider 及路由、MCP 持久化数据、角色和隐私设置；已退役 Zen 继续按既有迁移清理。
 - 本地路由覆盖是纯函数；关闭后原路由逐字段相等，开启时无 fallback、无云调用、视觉拒绝。
 - Runtime 覆盖 manifest、哈希、端口竞争、Vulkan 成功、Vulkan 到 CPU、双失败、取消、崩溃、重复 start/stop/close 和日志脱敏。
 - Provider 覆盖文本、`tool_calls`、历史续传、响应契约、取消、generation 失效、非思考与 Runtime 未就绪。
