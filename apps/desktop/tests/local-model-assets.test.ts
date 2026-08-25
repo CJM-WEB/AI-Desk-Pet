@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -147,6 +147,14 @@ async function writeResource(root: string, path: string, content: string): Promi
   const target = join(root, ...path.split('/'));
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, content, 'utf8');
+}
+
+async function readStageLockSnapshot(lockRoot: string): Promise<Record<string, string>> {
+  const entries = (await readdir(lockRoot)).sort();
+  return Object.fromEntries(await Promise.all(entries.map(async name => [
+    name,
+    await readFile(join(lockRoot, name), 'utf8')
+  ])));
 }
 
 function entry(path: string, content: string): ManifestFile {
@@ -350,6 +358,26 @@ describe('本地模型发行资源暂存事务', () => {
     await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
   });
 
+  test('resources 父目录是 Junction 时在写锁前拒绝且不触及目标目录', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-parent-junction-')));
+    temporaryDirectories.push(workspace);
+    const targetParent = join(workspace, 'junction-target');
+    const linkedParent = join(workspace, 'linked-resources');
+    const currentRoot = join(linkedParent, 'local-model');
+    const stagedRoot = join(linkedParent, 'local-model.partial');
+    await writeResource(join(targetParent, 'local-model'), 'marker.txt', 'old');
+    await writeResource(join(targetParent, 'local-model.partial'), 'marker.txt', 'new');
+    await symlink(targetParent, linkedParent, 'junction');
+    const { replaceStagedResourceRoot } = await loadStager();
+
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, {
+      expectedCurrentRoot: currentRoot
+    })).rejects.toThrow('STAGE_TRANSACTION_PATH_INVALID');
+
+    expect((await readdir(targetParent)).sort()).toEqual(['local-model', 'local-model.partial']);
+    await expect(readFile(join(targetParent, 'local-model', 'marker.txt'), 'utf8')).resolves.toBe('old');
+  });
+
   test('模型下载 stall 时超时 Abort 并删除 partial', async () => {
     const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-download-stall-')));
     temporaryDirectories.push(workspace);
@@ -528,6 +556,136 @@ describe('本地模型发行资源暂存事务', () => {
     await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
     await expect(readFile(join(stagedRoot, 'marker.txt'), 'utf8')).resolves.toBe('new');
     expect((await readdir(workspace)).sort()).toEqual(['local-model', 'local-model.partial']);
+  });
+
+  test('第一事务持有 rollback 备份时第二事务稳定 BUSY 且不能删除备份', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-lock-rollback-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const firstStagedRoot = join(workspace, 'local-model.partial-first');
+    const secondStagedRoot = join(workspace, 'local-model.partial-second');
+    const backupRoot = join(workspace, 'local-model.previous');
+    const lockPath = join(workspace, 'local-model.stage.lock');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(firstStagedRoot, 'marker.txt', 'first');
+    await writeResource(secondStagedRoot, 'marker.txt', 'second');
+    let enterCommitRename!: () => void;
+    let releaseCommitRename!: () => void;
+    const commitRenameEntered = new Promise<void>(resolve => { enterCommitRename = resolve; });
+    const commitRenameReleased = new Promise<void>(resolve => { releaseCommitRename = resolve; });
+    const { replaceStagedResourceRoot } = await loadStager();
+    const failAfterInterleave: typeof rename = async (from, to) => {
+      if (from === firstStagedRoot) {
+        enterCommitRename();
+        await commitRenameReleased;
+        throw new Error('fixture commit rename failed');
+      }
+      await rename(from, to);
+    };
+    const first = replaceStagedResourceRoot(currentRoot, firstStagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      renamePath: failAfterInterleave
+    });
+    await commitRenameEntered;
+    const firstLockSnapshot = await readStageLockSnapshot(lockPath);
+
+    await expect(replaceStagedResourceRoot(currentRoot, secondStagedRoot, {
+      expectedCurrentRoot: currentRoot
+    })).rejects.toThrow('STAGE_TRANSACTION_BUSY');
+    await expect(readFile(join(backupRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
+    await expect(readStageLockSnapshot(lockPath)).resolves.toEqual(firstLockSnapshot);
+
+    releaseCommitRename();
+    await expect(first).rejects.toThrow('fixture commit rename failed');
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
+    await expect(readFile(join(secondStagedRoot, 'marker.txt'), 'utf8')).resolves.toBe('second');
+    await expect(readFile(backupRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('第一事务提交后清理备份期间第二事务稳定 BUSY 且不能抢先清理', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-lock-cleanup-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const firstStagedRoot = join(workspace, 'local-model.partial-first');
+    const secondStagedRoot = join(workspace, 'local-model.partial-second');
+    const backupRoot = join(workspace, 'local-model.previous');
+    const lockPath = join(workspace, 'local-model.stage.lock');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(firstStagedRoot, 'marker.txt', 'first');
+    await writeResource(secondStagedRoot, 'marker.txt', 'second');
+    let enterCleanup!: () => void;
+    let releaseCleanup!: () => void;
+    const cleanupEntered = new Promise<void>(resolve => { enterCleanup = resolve; });
+    const cleanupReleased = new Promise<void>(resolve => { releaseCleanup = resolve; });
+    const { replaceStagedResourceRoot } = await loadStager();
+    const pauseBackupCleanup: typeof rm = async (path, options) => {
+      if (path === backupRoot) {
+        enterCleanup();
+        await cleanupReleased;
+      }
+      await rm(path, options);
+    };
+    const first = replaceStagedResourceRoot(currentRoot, firstStagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      removePath: pauseBackupCleanup
+    });
+    await cleanupEntered;
+    const firstLockSnapshot = await readStageLockSnapshot(lockPath);
+
+    await expect(replaceStagedResourceRoot(currentRoot, secondStagedRoot, {
+      expectedCurrentRoot: currentRoot
+    })).rejects.toThrow('STAGE_TRANSACTION_BUSY');
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('first');
+    await expect(readFile(join(backupRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
+    await expect(readStageLockSnapshot(lockPath)).resolves.toEqual(firstLockSnapshot);
+
+    releaseCleanup();
+    await expect(first).resolves.toEqual({ warningCode: null });
+    await expect(readFile(join(secondStagedRoot, 'marker.txt'), 'utf8')).resolves.toBe('second');
+    await expect(readFile(backupRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('事务失败且锁根被替换为 Junction 时告警且不删除根外 owner', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-lock-warning-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const stagedRoot = join(workspace, 'local-model.partial');
+    const lockPath = join(workspace, 'local-model.stage.lock');
+    const displacedLockPath = join(workspace, 'local-model.stage.lock.displaced');
+    const foreignRoot = join(workspace, 'foreign-lock-target');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(stagedRoot, 'marker.txt', 'new');
+    const warnings: string[] = [];
+    const { replaceStagedResourceRoot } = await loadStager();
+    const failAfterLockReplacement: typeof rename = async (from, to) => {
+      if (from === stagedRoot) {
+        const [ownerFileName] = await readdir(lockPath);
+        if (ownerFileName === undefined) throw new Error('fixture owner missing');
+        const ownerMetadata = await readFile(join(lockPath, ownerFileName), 'utf8');
+        await rename(lockPath, displacedLockPath);
+        await mkdir(foreignRoot);
+        await writeFile(join(foreignRoot, ownerFileName), ownerMetadata, 'utf8');
+        await symlink(foreignRoot, lockPath, 'junction');
+        throw new Error('fixture commit rename failed');
+      }
+      await rename(from, to);
+    };
+
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      renamePath: failAfterLockReplacement,
+      onWarning: code => warnings.push(code)
+    })).rejects.toThrow('fixture commit rename failed');
+
+    expect(warnings).toEqual(['STAGE_TRANSACTION_LOCK_CLEANUP_PENDING']);
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
+    const [foreignOwnerFileName] = await readdir(foreignRoot);
+    if (foreignOwnerFileName === undefined) throw new Error('fixture foreign owner missing');
+    await expect(readFile(join(foreignRoot, foreignOwnerFileName), 'utf8')).resolves.toContain(
+      '"schemaVersion":1'
+    );
   });
 
   test('commit 后备份删除失败只告警，下一次事务先清旧备份再安全切换', async () => {

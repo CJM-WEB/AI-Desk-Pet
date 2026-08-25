@@ -22,6 +22,8 @@
 - 内存 Web Stream 分别模拟永久 stall 与首块超限且不结束；加入一小时下载 timeout、Abort、流式字节上限与同步 SHA 后转绿。
 - 注入 commit 后备份删除失败，旧实现错误报失败；明确第二次 rename 为 commit point 后改为告警，并验证下一次事务先安全清理固定备份再切换。
 
+fix round 2 新增两个并发交错 RED：第一事务分别暂停在 commit rename 前和 commit 后备份清理中；旧实现中第二事务会返回 `ENOENT` 或直接抢先完成切换。加入跨进程排他锁后，第二事务均稳定返回 `STAGE_TRANSACTION_BUSY`，且第一事务的 backup、rollback 和提交后清理不受破坏。
+
 ## 实现
 
 - 固定 Qwen3.5-4B 原模型/量化 revision、GGUF 文件名、2,740,937,888 bytes 与 SHA-256。
@@ -31,6 +33,7 @@
 - verifier 使用固定生产策略校验发行身份、revision、模型、许可证与来源说明，并对 manifest 与磁盘普通文件执行双向精确 allowlist、大小和流式 SHA-256 校验；拒绝路径逃逸、链接、额外 EXE、RPC、mmproj、第二模型和未列文件。
 - verifier 与 runtime 复用 Main 私有的单一只读发行 identity；许可证和 notices 的 manifest 条目及磁盘原始字节必须同时等于 policy 的固定大小和 SHA，不进行 CRLF 规范化放行。
 - 资源根第二次 rename 是事务 commit point；commit 后旧备份删除失败只发布稳定警告，下次事务在真实 `resources/local-model` 父目录内校验唯一普通目录备份后先清理，不累积多份大 payload。
+- 资源切换先验证固定 `resources/local-model` 父目录是非链接且真实路径一致的普通目录，再预制带随机 owner 文件的非空锁目录并以 rename 原子发布；持锁后再次验证父目录。锁覆盖 backup 检查、commit、rollback 和提交后清理，Windows 的 `EEXIST`、`ENOTEMPTY`、`EPERM` 发布冲突统一为稳定 `STAGE_TRANSACTION_BUSY`。释放前严格复核锁根不是 Junction、真实路径一致、仅含本事务 owner 且元数据匹配；之后只删除本事务 owner，再复核空普通目录并执行非递归 `rmdir`。锁根被替换或出现其他 owner 时只告警，不会递归清理或跟随重解析点删除根外文件。由于仅凭 PID/时间无法在 Windows 上可靠证明持有者已失活，脚本不自动删除 stale 锁，需维护者核验 owner 元数据后人工清理。
 - manifest 新增固定 `THIRD-PARTY-NOTICES.txt` 条目，既有运行期严格 Schema 与 allowlist 同步识别；许可证只保留 Task 8 既定文件名，不保留旧别名。
 - Git 仅忽略 `apps/desktop/resources/local-model/payload/`；三个发行文本固定 `eol=lf`，manifest、许可证、notices 和脚本均进入版本库。
 - `electron-builder.extraResources` 将完整 `resources/local-model` 复制到 `local-model`；`package:win` 在 build/electron-builder 前执行 verifier；普通 `build` 不执行暂存或下载。
@@ -41,7 +44,7 @@
 
 ```text
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/package-config.test.ts tests/local-model-assets.test.ts
-通过：2 files，34 tests
+通过：2 files，38 tests
 
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/local-model-manifest.test.ts tests/local-model-runtime.test.ts
 通过：2 files，42 tests
@@ -68,8 +71,15 @@ fix round 1 消除了原报告中“打包 verifier 与运行期身份重复”�
 
 fix round 1 独立复审未发现 Critical 或 Important。复审提出的两个 Minor 测试缺口也已补齐：调用方 Abort、成功多块下载/原子改名，以及 identity 顶层和嵌套对象深冻结均有直接断言。
 
+fix round 2 针对并发 stage 的 Important 增加两个真实文件系统交错测试，直接证明非持锁事务不能检查或清理第一事务的固定 backup，也不能破坏 rollback。
+
+fix round 2 复审进一步覆盖“事务失败且锁所有权异常”的组合失败：脚本先发布 `STAGE_TRANSACTION_LOCK_CLEANUP_PENDING` 再保留原事务错误，并保留无法确认所有权的锁目录供人工核验；mutation 回退告警顺序时新增测试稳定失败。
+
+Windows 路径安全另以两个 Junction 用例验证：父目录为 Junction 时在任何锁写入前拒绝；事务中 fixed lock 被替换为 Junction 时只告警，根外 owner 文件保持不变。移除写锁前父目录校验的 mutation 会在 Junction 目标残留锁目录，测试稳定失败。
+
 ## 未执行项
 
 - 未下载固定 2.55 GiB GGUF，未把小 fixture 结果描述为真实模型通过。
 - 未执行真实 llama.cpp CPU/Vulkan 构建、实际 DLL 依赖验收、安装包体积或干净安装卸载。
+- 锁协议防止正常 stage 进程互删，并拒绝测试覆盖的 Junction 替换；具备父目录写权限的外部进程若在最终校验与 owner `unlink` 之间主动替换路径，纯 Node `fs` 没有 `unlinkat` 或 Windows 目录句柄原子删除接口可证明绝对免疫。该场景不属于正常 stage 协议，若需抵御需另行引入原生 Windows 锁/文件句柄能力。
 - RED 期间导入旧 stage 脚本曾触发固定 llama.cpp commit 的浅 fetch，随后因环境无 `cmake` 终止；临时目录已清理，未下载 GGUF，也未记录为 Task 10 验收证据。重构后的模块导入不再执行暂存编排。

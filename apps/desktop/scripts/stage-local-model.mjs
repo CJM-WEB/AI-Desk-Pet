@@ -1,16 +1,19 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import {
   copyFile,
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   realpath,
   rename,
   rm,
+  rmdir,
   stat,
+  unlink,
   writeFile
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -31,6 +34,7 @@ const MODEL = BUILTIN_LOCAL_MODEL_ASSET_POLICY.model;
 const MODEL_URL = `https://huggingface.co/${MODEL.quantizationRepository}/resolve/${MODEL.quantizationRevision}/${MODEL.fileName}?download=true`;
 const MODEL_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1_000;
 const RESOURCE_ROOT = fileURLToPath(new URL('../resources/local-model', import.meta.url));
+const STAGE_TRANSACTION_LOCK_NAME = 'local-model.stage.lock';
 
 /** 维护者暂存入口没有 URL、revision 或输出目录参数，所有发行身份都来自仓库固定常量。 */
 async function stageLocalModel() {
@@ -243,7 +247,7 @@ async function writeStagedManifest(stagedResourceRoot, backends, modelEntry) {
   await rename(partial, manifestPath);
 }
 
-/** 第二次 rename 是 commit point；此前失败回滚，之后清理失败只告警并由下次事务重试。 */
+/** 排他锁覆盖备份检查、commit/rollback 和提交后清理，确保固定 backup 始终只有一个事务所有。 */
 export async function replaceStagedResourceRoot(currentRoot, stagedRoot, options = {}) {
   const current = resolve(currentRoot);
   const staged = resolve(stagedRoot);
@@ -257,38 +261,135 @@ export async function replaceStagedResourceRoot(currentRoot, stagedRoot, options
   ) {
     throw new Error('STAGE_TRANSACTION_PATH_INVALID');
   }
-  await assertOrdinaryDirectory(current);
-  await assertOrdinaryDirectory(staged);
+  // 锁本身也是写入；必须先拒绝 resources 父目录 Junction，持锁后再复核以收窄检查窗口。
+  await assertOrdinaryDirectory(parent);
   const backupRoot = join(parent, 'local-model.previous');
   const renamePath = options.renamePath ?? rename;
   const removePath = options.removePath ?? rm;
   const onWarning = options.onWarning ?? (code => console.warn(code));
+  const transactionLock = await acquireStageTransactionLock(parent);
+  let result;
+  let transactionError;
 
-  // 删除范围在上方已收窄为 resources 父目录内唯一固定备份名；旧备份必须先清理才能开始新事务。
-  if (await pathExists(backupRoot)) {
-    await assertOrdinaryDirectory(backupRoot);
-    await removePath(backupRoot, { recursive: true, force: false });
-    if (await pathExists(backupRoot)) throw new Error('STAGE_BACKUP_CLEANUP_FAILED');
-  }
-  await renamePath(current, backupRoot);
   try {
-    await renamePath(staged, current);
+    await assertOrdinaryDirectory(parent);
+    await assertOrdinaryDirectory(current);
+    await assertOrdinaryDirectory(staged);
+    // 删除范围已收窄为同一父目录内的唯一固定备份名，且只有持锁事务可以检查或删除它。
+    if (await pathExists(backupRoot)) {
+      await assertOrdinaryDirectory(backupRoot);
+      await removePath(backupRoot, { recursive: true, force: false });
+      if (await pathExists(backupRoot)) throw new Error('STAGE_BACKUP_CLEANUP_FAILED');
+    }
+    await renamePath(current, backupRoot);
+    try {
+      // 第二次 rename 是 commit point；此前失败回滚，之后清理失败不能重解释资源切换结果。
+      await renamePath(staged, current);
+    } catch (error) {
+      await renamePath(backupRoot, current);
+      throw error;
+    }
+    try {
+      await removePath(backupRoot, { recursive: true, force: false });
+      if (await pathExists(backupRoot)) throw new Error('STAGE_BACKUP_CLEANUP_FAILED');
+      result = { warningCode: null };
+    } catch {
+      const warningCode = 'STAGE_BACKUP_CLEANUP_PENDING';
+      emitWarning(onWarning, warningCode);
+      result = { warningCode };
+    }
   } catch (error) {
-    await renamePath(backupRoot, current);
+    transactionError = error;
+  }
+
+  const lockWarning = await transactionLock.release();
+  if (lockWarning !== null) {
+    emitWarning(onWarning, lockWarning);
+    if (result?.warningCode === null || result === undefined) result = { warningCode: lockWarning };
+  }
+  if (transactionError !== undefined) throw transactionError;
+  return result;
+}
+
+/** 预制非空所有权目录后原子发布；锁存在即稳定 BUSY，不猜测进程存活性或自动删 stale 锁。 */
+async function acquireStageTransactionLock(parent) {
+  const lockRoot = join(parent, STAGE_TRANSACTION_LOCK_NAME);
+  const token = randomUUID();
+  const candidateRoot = join(parent, `${STAGE_TRANSACTION_LOCK_NAME}.candidate-${process.pid}-${token}`);
+  const ownerFileName = `owner-${token}.json`;
+  const candidateOwnerPath = join(candidateRoot, ownerFileName);
+  const metadata = `${JSON.stringify({
+    schemaVersion: 1,
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+    token
+  })}\n`;
+  let ownerHandle;
+  let candidateCreated = false;
+  try {
+    await mkdir(candidateRoot);
+    candidateCreated = true;
+    ownerHandle = await open(candidateOwnerPath, 'wx', 0o600);
+    await ownerHandle.writeFile(metadata, 'utf8');
+    await ownerHandle.sync();
+    await ownerHandle.close();
+    ownerHandle = undefined;
+    // fixed lock 始终以非空目录出现；rename 是唯一发布点，已有目录不会被覆盖。
+    await rename(candidateRoot, lockRoot);
+  } catch (error) {
+    await ownerHandle?.close().catch(() => {});
+    if (candidateCreated) {
+      await unlink(candidateOwnerPath).catch(() => {});
+      await rmdir(candidateRoot).catch(() => {});
+    }
+    if (isStageLockCollision(error)) {
+      throw new Error('STAGE_TRANSACTION_BUSY');
+    }
     throw error;
   }
-  try {
-    await removePath(backupRoot, { recursive: true, force: false });
-    if (await pathExists(backupRoot)) throw new Error('STAGE_BACKUP_CLEANUP_FAILED');
-    return { warningCode: null };
-  } catch {
-    const warningCode = 'STAGE_BACKUP_CLEANUP_PENDING';
-    try {
-      onWarning(warningCode);
-    } catch {
-      // commit point 已越过，观察端口失败不能把成功切换重新解释为失败。
+
+  return {
+    async release() {
+      let warningCode = null;
+      let ownerRemoved = false;
+      try {
+        await assertOrdinaryDirectory(lockRoot);
+        const entries = await readdir(lockRoot);
+        if (entries.length !== 1 || entries[0] !== ownerFileName) throw new Error('STAGE_LOCK_OWNER_MISMATCH');
+        if (await readFile(join(lockRoot, ownerFileName), 'utf8') !== metadata) {
+          throw new Error('STAGE_LOCK_OWNER_MISMATCH');
+        }
+        // 严格拒绝 Junction 且 owner 精确匹配后，才删除本事务随机命名的所有权文件。
+        await unlink(join(lockRoot, ownerFileName));
+        ownerRemoved = true;
+      } catch {
+        warningCode = 'STAGE_TRANSACTION_LOCK_CLEANUP_PENDING';
+      }
+      if (ownerRemoved) {
+        try {
+          await assertOrdinaryDirectory(lockRoot);
+          if ((await readdir(lockRoot)).length !== 0) throw new Error('STAGE_LOCK_OWNER_MISMATCH');
+          // 另一 owner 存在时非递归 rmdir 必然失败，绝不递归删除或清空他人活跃锁。
+          await rmdir(lockRoot);
+        } catch {
+          warningCode = 'STAGE_TRANSACTION_LOCK_CLEANUP_PENDING';
+        }
+      }
+      return warningCode;
     }
-    return { warningCode };
+  };
+}
+
+function isStageLockCollision(error) {
+  if (typeof error !== 'object' || error === null) return false;
+  return ['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(String(Reflect.get(error, 'code')));
+}
+
+function emitWarning(onWarning, warningCode) {
+  try {
+    onWarning(warningCode);
+  } catch {
+    // commit point 后观察端口失败不能把成功切换重新解释为失败。
   }
 }
 
