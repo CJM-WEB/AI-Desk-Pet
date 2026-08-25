@@ -221,7 +221,7 @@ export class CharacterBehaviorDirector {
     };
     const directive = prepared.explicitDirective;
     if (directive?.kind === 'stop_movement') {
-      await this.options.saveMovementStopped(true);
+      await this.persistMovementStop();
     } else if (directive?.kind === 'resume_movement') {
       await this.options.saveMovementStopped(false);
     } else if (directive?.kind === 'continuous_movement') {
@@ -344,7 +344,7 @@ export class CharacterBehaviorDirector {
     const plan = providerPlan?.kind === 'none' ? fallbackPlan : providerPlan ?? fallbackPlan;
     const providerMotionPlan = input.explicitDirective === null ? input.motionPlan ?? null : null;
     if (providerMotionPlan?.mode === 'stop') {
-      await this.options.saveMovementStopped(true);
+      await this.persistMovementStop();
     }
     // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
     if (this.closed || input.generation !== this.generation) return;
@@ -595,6 +595,15 @@ export class CharacterBehaviorDirector {
     if (source !== 'explicit' && (this.trustedRuntimeBlocked || this.dragging)) return false;
     if (source === 'local-idle' && this.pendingChatPlan) return false;
     return !this.active || SOURCE_PRIORITY[source] > SOURCE_PRIORITY[this.active.source];
+  }
+
+  /** true→true 没有设置边沿时也必须终止本轮临时运动；失败保存仍保持零动作变更。 */
+  private async persistMovementStop(): Promise<void> {
+    const wasAlreadyStopped = this.movementStopped;
+    await this.options.saveMovementStopped(true);
+    if (!wasAlreadyStopped) return;
+    this.stopContinuousMotion();
+    if (this.active?.semantic === 'move') this.active = null;
   }
 
   private updateTrustedBlock(event: TaskEvent): void {

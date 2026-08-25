@@ -346,6 +346,24 @@ describe('Main 角色行为 Director', () => {
       .toEqual([true]);
   });
 
+  test('自主锁已停止时临时 continuous 后再次 stop 仍立即终止当前 Motion', async () => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    await fixture.director.prepareUserPrompt('保持运动');
+    await fixture.director.prepareUserPrompt('停下');
+
+    expect(fixture.motion.requestIntent).toHaveBeenCalledOnce();
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      autonomousMovementAllowed: false,
+      continuousMovementRequested: false
+    });
+    expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
   test('持续计划到达后复用 MotionService 请求下一随机工作区目标，停止后不再续行', () => {
     const fixture = createFixture();
     fixture.setDirectedAuthorization({
