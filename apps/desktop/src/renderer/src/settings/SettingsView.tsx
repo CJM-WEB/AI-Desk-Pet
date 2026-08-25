@@ -176,6 +176,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('models');
   const [busy, setBusy] = useState(false);
   const [incognito, setIncognito] = useState(false);
+  const mounted = useRef(true);
   const noticeSequence = useRef(0);
   const latestLocalModelStatus = useRef<LocalModelPublicStatus | null>(null);
   const [notice, setNotice] = useState<Notice>({
@@ -202,6 +203,14 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
       localModel: latestLocalModelStatus.current ?? next.localModel
     });
   };
+
+  /** run 的异步续体只能在当前设置窗口仍挂载时更新 Renderer 状态。 */
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -239,6 +248,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
     setBusy(true);
     try {
       const result = await operation();
+      if (!mounted.current) return;
       if (result && 'catalog' in result) {
         applyDashboard(result);
         showNotice({ tone: 'success', text: success });
@@ -247,9 +257,10 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
         showNotice(result?.notice ?? { tone: 'success', text: success });
       }
     } catch {
+      if (!mounted.current) return;
       showNotice({ tone: 'error', text: '操作未完成，请检查输入后重试。' });
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 

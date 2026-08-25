@@ -85,3 +85,33 @@ git diff --check
 
 - 未新增 IPC、未改动 SDD ledger，也未涉及 Task 8。
 - 未运行真实 Runtime 与真实 Electron 窗口人工验收；该限制与原报告相同，仍待后续任务或用户人工确认。
+
+---
+
+## 修复轮 2（2026-08-25）
+
+### RED 证据
+
+为 `run()` 的成功与失败异步续体新增两条卸载时序测试：实际执行“发起保存 → 卸载组件 → resolve/reject”，并精确断言续体必须经过 mounted 生命周期守卫。初始执行：
+
+```powershell
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/settings-toast.dom.test.tsx tests/chat-panel.test.tsx
+```
+
+结果为新增 2 项预期失败：`await operation()` 后、`catch` 内和 `finally` 内均缺少 mounted 守卫；其余 14 项通过。
+
+### 修复内容
+
+- SettingsView 新增组件级 `mounted` ref，并在挂载 effect 清理时失效。
+- `run()` 在成功返回后和失败捕获后立即退出已卸载的组件；finally 仅在仍挂载时重置 `busy`。因此卸载后的 resolve/reject 不会继续执行 `applyDashboard`、`showNotice` 或 `setBusy`。
+
+### 验证结果
+
+```powershell
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/settings-toast.dom.test.tsx tests/chat-panel.test.tsx
+pnpm.cmd --dir apps/desktop typecheck
+pnpm.cmd --dir apps/desktop build
+git diff --check
+```
+
+结果：定向 2 个文件共 16 项通过；类型检查通过；生产构建、Preload/MCP 边界校验通过；`git diff --check` 无空白错误。构建仍有第三方 `lucide-react` 既有 `"use client"` 提示，退出码为 0。

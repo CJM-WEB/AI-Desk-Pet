@@ -40,6 +40,11 @@ const dashboard: SettingsDashboardDto = {
   authorizedRoot: null
 };
 
+const settingsViewSource = readFileSync(
+  resolve(import.meta.dirname, '../src/renderer/src/settings/SettingsView.tsx'),
+  'utf8'
+);
+
 function workspace(
   notice: Parameters<typeof SettingsWorkspace>[0]['notice'],
   onDismissNotice = vi.fn()
@@ -74,6 +79,62 @@ afterEach(() => {
 });
 
 describe('设置页瞬时提示', () => {
+  test('组件卸载后 resolve 不会继续应用 dashboard、提示或 busy 状态', async () => {
+    let resolveSave: ((result: SettingsDashboardDto) => void) | undefined;
+    const api = {
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboard),
+      saveProviderProfile: vi.fn(() => new Promise<SettingsDashboardDto>(resolve => {
+        resolveSave = resolve;
+      }))
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const view = render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    view.unmount();
+    await act(async () => {
+      resolveSave?.(dashboard);
+      await Promise.resolve();
+    });
+
+    expect(consoleError).not.toHaveBeenCalled();
+    const runSource = settingsViewSource.slice(
+      settingsViewSource.indexOf('const run = async'),
+      settingsViewSource.indexOf('return (\n    <SettingsWorkspace')
+    );
+
+    expect(runSource).toMatch(/const result = await operation\(\);\s*if \(!mounted\.current\) return;/s);
+    expect(runSource).toMatch(/applyDashboard\(result\);\s*showNotice/s);
+  });
+
+  test('组件卸载后 reject 与 finally 不会继续提示或重置 busy 状态', async () => {
+    let rejectSave: ((reason?: unknown) => void) | undefined;
+    const api = {
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboard),
+      saveProviderProfile: vi.fn(() => new Promise<SettingsDashboardDto>((_resolve, reject) => {
+        rejectSave = reject;
+      }))
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const view = render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    view.unmount();
+    await act(async () => {
+      rejectSave?.(new Error('请求失败'));
+      await Promise.resolve();
+    });
+
+    expect(consoleError).not.toHaveBeenCalled();
+    const runSource = settingsViewSource.slice(
+      settingsViewSource.indexOf('const run = async'),
+      settingsViewSource.indexOf('return (\n    <SettingsWorkspace')
+    );
+
+    expect(runSource).toMatch(/catch \{\s*if \(!mounted\.current\) return;\s*showNotice/s);
+    expect(runSource).toMatch(/finally \{\s*if \(mounted\.current\) setBusy\(false\);\s*\}/s);
+  });
+
   test('操作等待期间收到的最新本地模型事件不会被延迟 dashboard 响应覆盖', async () => {
     let statusListener: ((status: LocalModelPublicStatus) => void) | undefined;
     let resolveSave: ((result: SettingsDashboardDto) => void) | undefined;
