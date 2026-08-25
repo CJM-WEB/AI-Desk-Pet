@@ -136,6 +136,10 @@ async function loadStager(): Promise<{
       renamePath?: typeof rename;
       removePath?: typeof rm;
       onWarning?: (code: string) => void;
+      lockOperations?: {
+        writeOwner?: (path: string, metadata: string) => Promise<void>;
+        publishCandidate?: (candidateRoot: string, lockRoot: string) => Promise<void>;
+      };
     }
   ) => Promise<{ warningCode: string | null }>;
 }> {
@@ -376,6 +380,73 @@ describe('本地模型发行资源暂存事务', () => {
 
     expect((await readdir(targetParent)).sort()).toEqual(['local-model', 'local-model.partial']);
     await expect(readFile(join(targetParent, 'local-model', 'marker.txt'), 'utf8')).resolves.toBe('old');
+  });
+
+  test('owner 写入 EPERM 且 fixed lock 不存在时保留原错误并清理候选', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-owner-error-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const stagedRoot = join(workspace, 'local-model.partial');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(stagedRoot, 'marker.txt', 'new');
+    const ownerError = Object.assign(new Error('fixture owner write denied'), { code: 'EPERM' });
+    const { replaceStagedResourceRoot } = await loadStager();
+
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      lockOperations: {
+        writeOwner: async () => { throw ownerError; }
+      }
+    })).rejects.toBe(ownerError);
+
+    expect((await readdir(workspace)).sort()).toEqual(['local-model', 'local-model.partial']);
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
+  });
+
+  test('发布 rename 返回 EPERM 且 fixed lock 不存在时保留原错误', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-publish-error-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const stagedRoot = join(workspace, 'local-model.partial');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(stagedRoot, 'marker.txt', 'new');
+    const publishError = Object.assign(new Error('fixture publish denied'), { code: 'EPERM' });
+    const { replaceStagedResourceRoot } = await loadStager();
+
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      lockOperations: {
+        publishCandidate: async () => { throw publishError; }
+      }
+    })).rejects.toBe(publishError);
+
+    expect((await readdir(workspace)).sort()).toEqual(['local-model', 'local-model.partial']);
+  });
+
+  test('发布 rename 返回 EPERM 且 fixed lock 已存在时稳定返回 BUSY', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-publish-busy-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const stagedRoot = join(workspace, 'local-model.partial');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(stagedRoot, 'marker.txt', 'new');
+    const { replaceStagedResourceRoot } = await loadStager();
+
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      lockOperations: {
+        publishCandidate: async (_candidateRoot, lockRoot) => {
+          await mkdir(lockRoot);
+          throw Object.assign(new Error('fixture Windows collision'), { code: 'EPERM' });
+        }
+      }
+    })).rejects.toThrow('STAGE_TRANSACTION_BUSY');
+
+    expect((await readdir(workspace)).sort()).toEqual([
+      'local-model',
+      'local-model.partial',
+      'local-model.stage.lock'
+    ]);
   });
 
   test('模型下载 stall 时超时 Abort 并删除 partial', async () => {

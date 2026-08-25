@@ -33,7 +33,7 @@ fix round 2 新增两个并发交错 RED：第一事务分别暂停在 commit re
 - verifier 使用固定生产策略校验发行身份、revision、模型、许可证与来源说明，并对 manifest 与磁盘普通文件执行双向精确 allowlist、大小和流式 SHA-256 校验；拒绝路径逃逸、链接、额外 EXE、RPC、mmproj、第二模型和未列文件。
 - verifier 与 runtime 复用 Main 私有的单一只读发行 identity；许可证和 notices 的 manifest 条目及磁盘原始字节必须同时等于 policy 的固定大小和 SHA，不进行 CRLF 规范化放行。
 - 资源根第二次 rename 是事务 commit point；commit 后旧备份删除失败只发布稳定警告，下次事务在真实 `resources/local-model` 父目录内校验唯一普通目录备份后先清理，不累积多份大 payload。
-- 资源切换先验证固定 `resources/local-model` 父目录是非链接且真实路径一致的普通目录，再预制带随机 owner 文件的非空锁目录并以 rename 原子发布；持锁后再次验证父目录。锁覆盖 backup 检查、commit、rollback 和提交后清理，Windows 的 `EEXIST`、`ENOTEMPTY`、`EPERM` 发布冲突统一为稳定 `STAGE_TRANSACTION_BUSY`。释放前严格复核锁根不是 Junction、真实路径一致、仅含本事务 owner 且元数据匹配；之后只删除本事务 owner，再复核空普通目录并执行非递归 `rmdir`。锁根被替换或出现其他 owner 时只告警，不会递归清理或跟随重解析点删除根外文件。由于仅凭 PID/时间无法在 Windows 上可靠证明持有者已失活，脚本不自动删除 stale 锁，需维护者核验 owner 元数据后人工清理。
+- 资源切换先验证固定 `resources/local-model` 父目录是非链接且真实路径一致的普通目录，再预制带随机 owner 文件的非空锁目录并以 rename 原子发布；持锁后再次验证父目录。锁覆盖 backup 检查、commit、rollback 和提交后清理；发布阶段的 `EEXIST`、`ENOTEMPTY` 归一化为稳定 `STAGE_TRANSACTION_BUSY`，Windows `EPERM` 仅在 `lstat` 证明 fixed lock 普通目录确实存在时归一化。释放前严格复核锁根不是 Junction、真实路径一致、仅含本事务 owner 且元数据匹配；之后只删除本事务 owner，再复核空普通目录并执行非递归 `rmdir`。锁根被替换或出现其他 owner 时只告警，不会递归清理或跟随重解析点删除根外文件。由于仅凭 PID/时间无法在 Windows 上可靠证明持有者已失活，脚本不自动删除 stale 锁，需维护者核验 owner 元数据后人工清理。
 - manifest 新增固定 `THIRD-PARTY-NOTICES.txt` 条目，既有运行期严格 Schema 与 allowlist 同步识别；许可证只保留 Task 8 既定文件名，不保留旧别名。
 - Git 仅忽略 `apps/desktop/resources/local-model/payload/`；三个发行文本固定 `eol=lf`，manifest、许可证、notices 和脚本均进入版本库。
 - `electron-builder.extraResources` 将完整 `resources/local-model` 复制到 `local-model`；`package:win` 在 build/electron-builder 前执行 verifier；普通 `build` 不执行暂存或下载。
@@ -44,7 +44,7 @@ fix round 2 新增两个并发交错 RED：第一事务分别暂停在 commit re
 
 ```text
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/package-config.test.ts tests/local-model-assets.test.ts
-通过：2 files，38 tests
+通过：2 files，41 tests
 
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/local-model-manifest.test.ts tests/local-model-runtime.test.ts
 通过：2 files，42 tests
@@ -76,6 +76,8 @@ fix round 2 针对并发 stage 的 Important 增加两个真实文件系统交�
 fix round 2 复审进一步覆盖“事务失败且锁所有权异常”的组合失败：脚本先发布 `STAGE_TRANSACTION_LOCK_CLEANUP_PENDING` 再保留原事务错误，并保留无法确认所有权的锁目录供人工核验；mutation 回退告警顺序时新增测试稳定失败。
 
 Windows 路径安全另以两个 Junction 用例验证：父目录为 Junction 时在任何锁写入前拒绝；事务中 fixed lock 被替换为 Junction 时只告警，根外 owner 文件保持不变。移除写锁前父目录校验的 mutation 会在 Junction 目标残留锁目录，测试稳定失败。
+
+fix round 3 将候选目录准备与原子发布拆成两个错误边界：candidate `mkdir`、owner `open/write/sync/close` 的错误原样传播并清理本事务候选；只有 `rename(candidateRoot, lockRoot)` 发布阶段的冲突才可能映射 BUSY。三个注入测试分别覆盖 owner 写 `EPERM`、无锁发布 `EPERM` 和有锁发布 `EPERM`；将发布 `EPERM` 无条件映射 BUSY 的 mutation 会使无锁用例稳定失败。
 
 ## 未执行项
 

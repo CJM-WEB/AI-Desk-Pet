@@ -267,7 +267,7 @@ export async function replaceStagedResourceRoot(currentRoot, stagedRoot, options
   const renamePath = options.renamePath ?? rename;
   const removePath = options.removePath ?? rm;
   const onWarning = options.onWarning ?? (code => console.warn(code));
-  const transactionLock = await acquireStageTransactionLock(parent);
+  const transactionLock = await acquireStageTransactionLock(parent, options.lockOperations);
   let result;
   let transactionError;
 
@@ -312,7 +312,7 @@ export async function replaceStagedResourceRoot(currentRoot, stagedRoot, options
 }
 
 /** 预制非空所有权目录后原子发布；锁存在即稳定 BUSY，不猜测进程存活性或自动删 stale 锁。 */
-async function acquireStageTransactionLock(parent) {
+async function acquireStageTransactionLock(parent, operations = {}) {
   const lockRoot = join(parent, STAGE_TRANSACTION_LOCK_NAME);
   const token = randomUUID();
   const candidateRoot = join(parent, `${STAGE_TRANSACTION_LOCK_NAME}.candidate-${process.pid}-${token}`);
@@ -324,25 +324,26 @@ async function acquireStageTransactionLock(parent) {
     acquiredAt: new Date().toISOString(),
     token
   })}\n`;
-  let ownerHandle;
   let candidateCreated = false;
   try {
     await mkdir(candidateRoot);
     candidateCreated = true;
-    ownerHandle = await open(candidateOwnerPath, 'wx', 0o600);
-    await ownerHandle.writeFile(metadata, 'utf8');
-    await ownerHandle.sync();
-    await ownerHandle.close();
-    ownerHandle = undefined;
-    // fixed lock 始终以非空目录出现；rename 是唯一发布点，已有目录不会被覆盖。
-    await rename(candidateRoot, lockRoot);
+    await (operations.writeOwner ?? writeStageLockOwner)(candidateOwnerPath, metadata);
   } catch (error) {
-    await ownerHandle?.close().catch(() => {});
     if (candidateCreated) {
       await unlink(candidateOwnerPath).catch(() => {});
       await rmdir(candidateRoot).catch(() => {});
     }
-    if (isStageLockCollision(error)) {
+    throw error;
+  }
+
+  try {
+    // fixed lock 始终以非空目录出现；rename 是唯一发布点，只有此处的真实冲突才属于 BUSY。
+    await (operations.publishCandidate ?? rename)(candidateRoot, lockRoot);
+  } catch (error) {
+    await unlink(candidateOwnerPath).catch(() => {});
+    await rmdir(candidateRoot).catch(() => {});
+    if (await isStageLockCollision(error, lockRoot)) {
       throw new Error('STAGE_TRANSACTION_BUSY');
     }
     throw error;
@@ -380,9 +381,27 @@ async function acquireStageTransactionLock(parent) {
   };
 }
 
-function isStageLockCollision(error) {
+async function writeStageLockOwner(path, metadata) {
+  const handle = await open(path, 'wx', 0o600);
+  try {
+    await handle.writeFile(metadata, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function isStageLockCollision(error, lockRoot) {
   if (typeof error !== 'object' || error === null) return false;
-  return ['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(String(Reflect.get(error, 'code')));
+  const code = String(Reflect.get(error, 'code'));
+  if (code === 'EEXIST' || code === 'ENOTEMPTY') return true;
+  if (code !== 'EPERM') return false;
+  try {
+    const metadata = await lstat(lockRoot);
+    return metadata.isDirectory() && !metadata.isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 function emitWarning(onWarning, warningCode) {
