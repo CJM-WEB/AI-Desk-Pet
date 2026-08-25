@@ -24,6 +24,7 @@ type ContinuationState = {
   toolName: string;
   previousTrustedResultOk: boolean | undefined;
   mutationFailurePending: boolean;
+  mutationFailureToolName: string | null;
   expectedWriteOperation: FileWriteOperation | undefined;
 };
 
@@ -87,6 +88,7 @@ export class AgentLoop {
       false,
       undefined,
       false,
+      null,
       context.capabilityPlanning?.expectedWriteOperation
     );
   }
@@ -108,6 +110,7 @@ export class AgentLoop {
     const trustedState = nextTrustedResultState(
       continuation.previousTrustedResultOk,
       continuation.mutationFailurePending,
+      continuation.mutationFailureToolName,
       continuation.toolName,
       toolResult
     );
@@ -128,6 +131,7 @@ export class AgentLoop {
       true,
       latestTrustedResultOk,
       trustedState.mutationFailurePending,
+      trustedState.mutationFailureToolName,
       undefined
     );
   }
@@ -143,6 +147,7 @@ export class AgentLoop {
     hasTrustedToolResult: boolean,
     latestTrustedResultOk: boolean | undefined,
     mutationFailurePending: boolean,
+    mutationFailureToolName: string | null,
     expectedWriteOperation: FileWriteOperation | undefined
   ): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     if (context.signal.aborted) {
@@ -301,6 +306,7 @@ export class AgentLoop {
           toolName: prepared.executionRequest.toolName,
           previousTrustedResultOk: latestTrustedResultOk,
           mutationFailurePending,
+          mutationFailureToolName,
           expectedWriteOperation
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
@@ -341,11 +347,13 @@ export class AgentLoop {
       const trustedState = nextTrustedResultState(
         latestTrustedResultOk,
         mutationFailurePending,
+        mutationFailureToolName,
         prepared.executionRequest.toolName,
         result
       );
       latestTrustedResultOk = trustedState.latestOk;
       mutationFailurePending = trustedState.mutationFailurePending;
+      mutationFailureToolName = trustedState.mutationFailureToolName;
     }
 
     throw new Error('AGENT_MAX_TURNS');
@@ -363,18 +371,34 @@ function trustedResultOk(result: unknown): boolean | undefined {
 function nextTrustedResultState(
   previousOk: boolean | undefined,
   mutationFailurePending: boolean,
+  mutationFailureToolName: string | null,
   toolName: string,
   result: unknown
-): Readonly<{ latestOk: boolean | undefined; mutationFailurePending: boolean }> {
+): Readonly<{
+  latestOk: boolean | undefined;
+  mutationFailurePending: boolean;
+  mutationFailureToolName: string | null;
+}> {
   const currentOk = trustedResultOk(result);
   if (MUTATION_TOOL_NAMES.has(toolName)) {
-    if (mutationFailurePending) return { latestOk: false, mutationFailurePending: true };
-    if (currentOk === undefined) {
-      return { latestOk: previousOk, mutationFailurePending: false };
+    if (mutationFailurePending) {
+      if (currentOk === true && mutationFailureToolName === toolName) {
+        return { latestOk: true, mutationFailurePending: false, mutationFailureToolName: null };
+      }
+      return { latestOk: false, mutationFailurePending: true, mutationFailureToolName };
     }
-    return { latestOk: currentOk, mutationFailurePending: !currentOk };
+    if (currentOk === undefined) {
+      return { latestOk: previousOk, mutationFailurePending: false, mutationFailureToolName: null };
+    }
+    return {
+      latestOk: currentOk,
+      mutationFailurePending: !currentOk,
+      mutationFailureToolName: currentOk ? null : toolName
+    };
   }
-  if (mutationFailurePending) return { latestOk: false, mutationFailurePending: true };
+  if (mutationFailurePending) {
+    return { latestOk: false, mutationFailurePending: true, mutationFailureToolName };
+  }
   // 生产只读工具以成功返回值表示完成，不强制携带 ok；异常已在调用边界转换为 ok=false。
-  return { latestOk: currentOk ?? true, mutationFailurePending: false };
+  return { latestOk: currentOk ?? true, mutationFailurePending: false, mutationFailureToolName: null };
 }

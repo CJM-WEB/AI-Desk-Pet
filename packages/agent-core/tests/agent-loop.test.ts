@@ -530,8 +530,8 @@ describe('AgentLoop', () => {
         type: 'tool_request',
         request: {
           requestId: 'write-succeeded',
-          toolName: 'builtin.files.create_file',
-          arguments: { relativePath: 'second.txt' }
+          toolName: 'builtin.files.move_file',
+          arguments: { sourceRelativePath: 'first.txt', targetDirectoryRelativePath: 'archive' }
         }
       },
       { type: 'text', text: '全部写入成功。' }
@@ -551,7 +551,7 @@ describe('AgentLoop', () => {
     if (!secondRequest || secondRequest.type !== 'write_request') throw new Error('缺少第二次确认');
     const finalEvents = await collect(loop.resume(secondRequest.continuationToken, {
       ok: true,
-      toolName: 'create_file'
+      toolName: 'move_file'
     }, runContext));
 
     expect(finalEvents).not.toContainEqual({ type: 'message', text: '全部写入成功。' });
