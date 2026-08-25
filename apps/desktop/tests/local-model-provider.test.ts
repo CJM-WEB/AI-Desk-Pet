@@ -248,6 +248,66 @@ describe('LocalModelProvider', () => {
     expect(onTextDelta).not.toHaveBeenCalled();
   });
 
+  test('本地输入超预算时只删除最旧完整回合并保留最近回合与当前用户', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+    const messages: ModelRequest['messages'] = [
+      { role: 'system', content: '固定系统消息' },
+      { role: 'user', content: `最旧用户-${'旧'.repeat(7_000)}` },
+      { role: 'assistant', content: `最旧回复-${'答'.repeat(7_000)}` },
+      { role: 'user', content: '最近用户' },
+      { role: 'assistant', content: '最近回复' },
+      { role: 'user', content: '当前用户输入' }
+    ];
+
+    await provider.respond({ ...request, messages }, new AbortController().signal);
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    expect(body.messages).toEqual([
+      { role: 'system', content: '固定系统消息' },
+      { role: 'user', content: '最近用户' },
+      { role: 'assistant', content: '最近回复' },
+      { role: 'user', content: '当前用户输入' }
+    ]);
+  });
+
+  test('本地预算不截断超长当前用户，也不拆散最近 assistant-tool 与 tool 结果', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+    const currentUser = `当前-${'保'.repeat(20_000)}`;
+    const toolRequest = {
+      requestId: 'call-budget',
+      toolName: 'builtin.files.read_text' as const,
+      arguments: { relativePath: 'notes.txt' }
+    };
+    const messages: ModelRequest['messages'] = [
+      { role: 'system', content: '固定系统消息' },
+      { role: 'user', content: `最旧-${'旧'.repeat(7_000)}` },
+      { role: 'assistant', content: `最旧回复-${'答'.repeat(7_000)}` },
+      { role: 'user', content: '最近工具回合' },
+      { role: 'assistant', content: '', toolRequest },
+      { role: 'tool', toolCallId: 'call-budget', content: '{"ok":true}' },
+      { role: 'assistant', content: '工具结果总结' },
+      { role: 'user', content: currentUser }
+    ];
+
+    await provider.respond({ ...request, messages }, new AbortController().signal);
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    expect(body.messages.at(-1)).toEqual({ role: 'user', content: currentUser });
+    expect(body.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', tool_calls: [expect.objectContaining({
+        id: 'call-budget'
+      })] }),
+      { role: 'tool', tool_call_id: 'call-budget', content: '{"ok":true}' }
+    ]));
+    expect(JSON.stringify(body.messages)).not.toContain('最旧回复');
+  });
+
   test('SSE 期间 generation 变化后拒绝迟到增量与最终响应', async () => {
     let currentConnection = connection;
     const deltas: string[] = [];

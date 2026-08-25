@@ -206,6 +206,44 @@ describe('ConversationChatAdapter', () => {
     expect(characterChatResponseJsonSchema.properties).toHaveProperty('status');
   });
 
+  test('行为 candidates 存在时序列化上下文不重复发送可推导的名称与标签聚合', async () => {
+    const provider = 响应为({ type: 'text', text: '好的' });
+    const adapter = new ConversationChatAdapter(provider);
+    const candidate = {
+      kind: 'action_name' as const,
+      name: '自定义巡游',
+      semantic: 'move',
+      tags: ['locomotion', 'friendly']
+    };
+
+    await adapter.respond({
+      history: [],
+      text: '走一走',
+      behaviorContext: {
+        ...behaviorContext,
+        character: {
+          ...behaviorContext.character,
+          stateNames: ['自定义待机'],
+          actionNames: ['自定义巡游'],
+          tags: ['locomotion', 'friendly'],
+          candidates: [candidate]
+        }
+      },
+      signal: new AbortController().signal
+    });
+
+    const system = 取得请求(provider).messages[0]?.content ?? '';
+    const contextStart = system.lastIndexOf('{"character":');
+    expect(contextStart).toBeGreaterThanOrEqual(0);
+    const serializedContext = JSON.parse(system.slice(contextStart)) as {
+      character: Record<string, unknown>;
+    };
+    expect(serializedContext.character.candidates).toEqual([candidate]);
+    expect(serializedContext.character).not.toHaveProperty('stateNames');
+    expect(serializedContext.character).not.toHaveProperty('actionNames');
+    expect(serializedContext.character).not.toHaveProperty('tags');
+  });
+
   test('把 JSON Output 行为计划中的合法情绪投影为聊天情绪', async () => {
     const provider = 响应为({
       type: 'text',

@@ -137,7 +137,18 @@ export class ConversationChatAdapter {
 }
 
 function 构建聊天系统消息(context: ConversationBehaviorContext): string {
-  return `${聊天系统消息前缀}${JSON.stringify(context)}`;
+  const candidates = context.character.candidates;
+  if (!candidates?.length) return `${聊天系统消息前缀}${JSON.stringify(context)}`;
+  const compactContext = {
+    ...context,
+    character: {
+      characterName: context.character.characterName,
+      semantics: context.character.semantics,
+      candidates
+    }
+  };
+  // candidates 已逐项携带 kind/name/semantic/tags；只省略可推导的聚合字段，候选对象原样保留。
+  return `${聊天系统消息前缀}${JSON.stringify(compactContext)}`;
 }
 
 /** 仅校验响应边界，保留合法正文的原始空白与 Markdown。 */

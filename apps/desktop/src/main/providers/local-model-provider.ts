@@ -29,6 +29,51 @@ const localRequestBody = {
   parse_tool_calls: true
 } as const;
 
+const LOCAL_INPUT_TOKEN_BUDGET = 6_400;
+const CONSERVATIVE_UTF8_BYTES_PER_TOKEN = 3;
+
+function estimateInputTokens(request: ModelRequest, messages: readonly ModelRequest['messages'][number][]): number {
+  const serialized = JSON.stringify({
+    messages,
+    tools: request.tools,
+    responseSchema: request.responseContract?.jsonSchema ?? null
+  });
+  return Math.ceil(Buffer.byteLength(serialized, 'utf8') / CONSERVATIVE_UTF8_BYTES_PER_TOKEN);
+}
+
+/**
+ * 本地 8192 上下文只从最早完整回合开始删除；系统、当前用户、最近完整回合与工具链保持原样。
+ * 受保护内容自身超预算时仍完整发送，不以截断用户正文换取表面达标。
+ */
+function applyLocalContextBudget(request: ModelRequest): ModelRequest {
+  if (estimateInputTokens(request, request.messages) <= LOCAL_INPUT_TOKEN_BUDGET) return request;
+
+  const groups: number[][] = [];
+  let currentGroup: number[] | null = null;
+  request.messages.forEach((message, index) => {
+    if (message.role === 'system') return;
+    if (message.role === 'user') {
+      if (currentGroup !== null) groups.push(currentGroup);
+      currentGroup = [index];
+      return;
+    }
+    currentGroup ??= [];
+    currentGroup.push(index);
+  });
+  if (currentGroup !== null) groups.push(currentGroup);
+
+  // 最后组包含当前用户及本轮工具链；倒数第二组是最近完整历史回合。
+  const removableGroups = groups.slice(0, Math.max(0, groups.length - 2));
+  const removed = new Set<number>();
+  let messages = request.messages;
+  for (const group of removableGroups) {
+    if (estimateInputTokens(request, messages) <= LOCAL_INPUT_TOKEN_BUDGET) break;
+    group.forEach(index => removed.add(index));
+    messages = request.messages.filter((_message, index) => !removed.has(index));
+  }
+  return messages === request.messages ? request : { ...request, messages };
+}
+
 function assertCurrentGeneration(
   connectionPort: LocalModelConnectionPort,
   generation: string
@@ -141,6 +186,7 @@ export class LocalModelProvider implements ModelProvider {
   ) {}
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
+    const budgetedRequest = applyLocalContextBudget(request);
     const connection = this.connectionPort.getReadyConnection();
     const provider = new OpenAICompatibleProvider(
       {
@@ -152,11 +198,14 @@ export class LocalModelProvider implements ModelProvider {
         return connection.token;
       },
       this.fetchClient,
-      createRequestPolicy(this.connectionPort, connection.generation, request)
+      createRequestPolicy(this.connectionPort, connection.generation, budgetedRequest)
     );
     try {
-      const response = await provider.respond({ ...request, reasoningMode: 'disabled' }, signal);
-      assertStructuredResponse(request, response);
+      const response = await provider.respond({
+        ...budgetedRequest,
+        reasoningMode: 'disabled'
+      }, signal);
+      assertStructuredResponse(budgetedRequest, response);
       return response;
     } catch (error) {
       assertCurrentGeneration(this.connectionPort, connection.generation);
