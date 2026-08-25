@@ -12,6 +12,9 @@ import {
   OpenAICompatibleProvider,
   ProviderError
 } from './openai-provider';
+import { BUILTIN_LOCAL_PROFILE_ID } from '../local-model/local-model-route';
+
+export type BuiltinLocalProviderFactory = () => ModelProvider;
 
 const reservedAdditionalParameters = new Set([
   'model',
@@ -74,13 +77,23 @@ function resolveProfile(
 }
 
 export class ProviderRegistry {
-  constructor(private readonly catalog: readonly ProviderCatalogEntry[]) {}
+  constructor(
+    private readonly catalog: readonly ProviderCatalogEntry[],
+    private readonly builtinLocalProviderFactory?: BuiltinLocalProviderFactory
+  ) {}
 
   create(
     profile: ProviderProfileV2,
     getSecret: () => Promise<string>,
     fetchClient?: FetchLike
   ): ModelProvider {
+    if (profile.mode === 'preset' && profile.providerId === BUILTIN_LOCAL_PROFILE_ID) {
+      if (!this.builtinLocalProviderFactory) {
+        throw new ProviderError('LOCAL_MODEL_PROVIDER_FACTORY_NOT_CONFIGURED', false);
+      }
+      return this.builtinLocalProviderFactory();
+    }
+
     const { protocol, config } = resolveProfile(profile, this.catalog);
 
     if (protocol === 'anthropic') {

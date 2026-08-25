@@ -34,6 +34,11 @@ export interface ProviderAdapterConfig {
 
 type OpenAICompatibleConfig = ProviderAdapterConfig | ProviderProfile;
 
+export interface OpenAIRequestPolicy {
+  body: Readonly<Record<string, unknown>>;
+  validateResponse(raw: unknown): void;
+}
+
 const compatibleResponseSchema = z.object({
   choices: z.array(z.object({
     message: z.object({
@@ -239,7 +244,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
   constructor(
     config: OpenAICompatibleConfig,
     private readonly getSecret: () => Promise<string>,
-    private readonly fetchClient: FetchLike = fetch
+    private readonly fetchClient: FetchLike = fetch,
+    private readonly requestPolicy?: OpenAIRequestPolicy
   ) {
     this.config = resolveOpenAIConfig(config);
   }
@@ -278,15 +284,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
             : { response_format: { type: 'json_object' } }),
           ...(this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
             ? { thinking: { type: 'disabled' } }
-            : {})
+            : {}),
+          ...this.requestPolicy?.body
         })
       });
     } catch (error) {
+      if (this.requestPolicy !== undefined && error instanceof ProviderError) throw error;
       normalizeFetchError(error, signal);
     }
 
+    const rawResponse = await readProviderJson(response);
+    this.requestPolicy?.validateResponse(rawResponse);
     return normalizeResponse(
-      await readProviderJson(response),
+      rawResponse,
       toolNameCodec,
       request.responseContract
     );

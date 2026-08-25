@@ -19,6 +19,7 @@ import {
   toGeminiResponseJsonSchema
 } from '../src/main/providers/gemini-provider';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
+import { BUILTIN_LOCAL_PROFILE_ID } from '../src/main/local-model/local-model-route';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import { characterChatResponseJsonSchema } from '@myself/character-runtime';
 import {
@@ -1805,6 +1806,43 @@ describe('协议请求映射', () => {
 });
 
 describe('ProviderRegistry', () => {
+  test('仅固定 builtin-local 档案使用 Main 注入 factory', () => {
+    const localProvider = {
+      respond: vi.fn<ModelProvider['respond']>()
+    } satisfies ModelProvider;
+    const localFactory = vi.fn(() => localProvider);
+    const registry = new ProviderRegistry(providerCatalog, localFactory);
+    const profile: ProviderProfileV2 = {
+      id: BUILTIN_LOCAL_PROFILE_ID,
+      displayName: '内置本地模型',
+      mode: 'preset',
+      providerId: BUILTIN_LOCAL_PROFILE_ID,
+      modelId: BUILTIN_LOCAL_PROFILE_ID,
+      capabilities: ['chat', 'tools'],
+      hasStoredSecret: false
+    };
+
+    expect(registry.create(profile, async () => '不得读取')).toBe(localProvider);
+    expect(localFactory).toHaveBeenCalledOnce();
+  });
+
+  test('注入本地 factory 后现有 Provider 仍按目录协议创建', () => {
+    const localFactory = vi.fn<() => ModelProvider>();
+    const registry = new ProviderRegistry(providerCatalog, localFactory);
+    const profile: ProviderProfileV2 = {
+      id: 'openai-profile',
+      displayName: 'OpenAI',
+      mode: 'preset',
+      providerId: 'openai',
+      modelId: 'gpt-4.1-mini',
+      hasStoredSecret: true
+    };
+
+    expect(registry.create(profile, async () => 'secret'))
+      .toBeInstanceOf(OpenAICompatibleProvider);
+    expect(localFactory).not.toHaveBeenCalled();
+  });
+
   test.each([
     ['anthropic', AnthropicProvider],
     ['gemini', GeminiProvider],
