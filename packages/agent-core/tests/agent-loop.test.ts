@@ -559,6 +559,154 @@ describe('AgentLoop', () => {
     expect(finalEvents.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
+  test('同一写工具改参重试成功可以修复单一失败', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'create-conflicted',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'occupied.txt' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'create-retried',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'available.txt' }
+        }
+      },
+      { type: 'text', text: '已改用可用路径创建文件。' }
+    ]);
+    const loop = new AgentLoop();
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    const first = await collect(loop.run('创建文件', runContext));
+    const firstRequest = first.find(event => event.type === 'write_request');
+    if (!firstRequest || firstRequest.type !== 'write_request') throw new Error('缺少首次确认');
+    const second = await collect(loop.resume(firstRequest.continuationToken, {
+      ok: false,
+      toolName: 'create_file',
+      code: 'TARGET_EXISTS'
+    }, runContext));
+    const secondRequest = second.find(event => event.type === 'write_request');
+    if (!secondRequest || secondRequest.type !== 'write_request') throw new Error('缺少重试确认');
+
+    const finalEvents = await collect(loop.resume(secondRequest.continuationToken, {
+      ok: true,
+      toolName: 'create_file',
+      targetRelativePath: 'available.txt'
+    }, runContext));
+
+    expect(finalEvents).toContainEqual({ type: 'message', text: '已改用可用路径创建文件。' });
+    expect(finalEvents.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test('创建成功后移动成功保持合法多步骤链为成功', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'create-before-move',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'move-created-file',
+          toolName: 'builtin.files.move_file',
+          arguments: { sourceRelativePath: 'result.txt', targetDirectoryRelativePath: 'archive' }
+        }
+      },
+      { type: 'text', text: '文件已创建并移动。' }
+    ]);
+    const loop = new AgentLoop();
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    const first = await collect(loop.run('创建并移动文件', runContext));
+    const createRequest = first.find(event => event.type === 'write_request');
+    if (!createRequest || createRequest.type !== 'write_request') throw new Error('缺少创建确认');
+    const second = await collect(loop.resume(createRequest.continuationToken, {
+      ok: true,
+      toolName: 'create_file',
+      targetRelativePath: 'result.txt'
+    }, runContext));
+    const moveRequest = second.find(event => event.type === 'write_request');
+    if (!moveRequest || moveRequest.type !== 'write_request') throw new Error('缺少移动确认');
+
+    const finalEvents = await collect(loop.resume(moveRequest.continuationToken, {
+      ok: true,
+      toolName: 'move_file',
+      targetRelativePath: 'archive/result.txt'
+    }, runContext));
+
+    expect(finalEvents).toContainEqual({ type: 'message', text: '文件已创建并移动。' });
+    expect(finalEvents.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test('创建失败后不同写工具失败会永久打断同工具恢复资格', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'create-failed-before-interruption',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'occupied.txt' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'move-failed-interruption',
+          toolName: 'builtin.files.move_file',
+          arguments: { sourceRelativePath: 'missing.txt', targetDirectoryRelativePath: 'archive' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'create-succeeded-too-late',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'available.txt' }
+        }
+      },
+      { type: 'text', text: '全部操作都成功。' }
+    ]);
+    const loop = new AgentLoop();
+    const runContext = { ...context(provider), protocol: 'capability_planner' as const };
+
+    const first = await collect(loop.run('连续处理文件', runContext));
+    const createFailureRequest = first.find(event => event.type === 'write_request');
+    if (!createFailureRequest || createFailureRequest.type !== 'write_request') throw new Error('缺少创建确认');
+    const second = await collect(loop.resume(createFailureRequest.continuationToken, {
+      ok: false,
+      toolName: 'create_file',
+      code: 'TARGET_EXISTS'
+    }, runContext));
+    const moveFailureRequest = second.find(event => event.type === 'write_request');
+    if (!moveFailureRequest || moveFailureRequest.type !== 'write_request') throw new Error('缺少移动确认');
+    const third = await collect(loop.resume(moveFailureRequest.continuationToken, {
+      ok: false,
+      toolName: 'move_file',
+      code: 'ENTRY_NOT_FOUND'
+    }, runContext));
+    const createSuccessRequest = third.find(event => event.type === 'write_request');
+    if (!createSuccessRequest || createSuccessRequest.type !== 'write_request') throw new Error('缺少再次创建确认');
+
+    const finalEvents = await collect(loop.resume(createSuccessRequest.continuationToken, {
+      ok: true,
+      toolName: 'create_file',
+      targetRelativePath: 'available.txt'
+    }, runContext));
+
+    expect(finalEvents).not.toContainEqual({ type: 'message', text: '全部操作都成功。' });
+    expect(finalEvents).toContainEqual({ type: 'message', text: '本地能力操作失败，未完成请求。' });
+    expect(finalEvents.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+  });
+
   test('第四轮确认恢复时以当前工具失败事实结束，且不把能力说成文件操作', async () => {
     const provider = new ScriptedProvider([
       readRequest('read-1'),

@@ -382,6 +382,10 @@ function nextTrustedResultState(
   const currentOk = trustedResultOk(result);
   if (MUTATION_TOOL_NAMES.has(toolName)) {
     if (mutationFailurePending) {
+      // 不同 mutation 已形成第二个独立事实，单一同工具重试不再足以证明本轮全部恢复。
+      if (mutationFailureToolName !== null && mutationFailureToolName !== toolName) {
+        return { latestOk: false, mutationFailurePending: true, mutationFailureToolName: null };
+      }
       if (currentOk === true && mutationFailureToolName === toolName) {
         return { latestOk: true, mutationFailurePending: false, mutationFailureToolName: null };
       }
