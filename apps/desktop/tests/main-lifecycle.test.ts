@@ -52,6 +52,26 @@ describe('Main 通用生命周期', () => {
     expect(source).not.toContain('applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)');
   });
 
+  test('生产组合在窗口加载后后台启动本地 Runtime，并把 factory、路由和退出清理接入 Main', async () => {
+    const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const windowsReady = source.indexOf('await Promise.all([\n    loadRenderer(pet');
+    const backgroundStart = source.indexOf('void localModelService.start()');
+    const startupCleanup = source.indexOf('startupCleanup.add(() => localModelService.close())');
+
+    expect(source).toContain('new LocalModelRuntime({');
+    expect(source).toContain('new LocalModelProvider(localModelRuntime)');
+    expect(source).toContain(
+      'initialEnabled: e2eBoundary ? false : localModelSettings.enabled'
+    );
+    expect(source).toContain('readProviderSettings: () => localModelService.providerSettingsSnapshot()');
+    expect(source).toContain('assertProviderReady: profile => assertProviderReady(');
+    expect(windowsReady).toBeGreaterThan(-1);
+    expect(backgroundStart).toBeGreaterThan(windowsReady);
+    expect(startupCleanup).toBeGreaterThan(-1);
+    expect(startupCleanup).toBeLessThan(backgroundStart);
+    expect(source).toMatch(/services:\s*\[[\s\S]*\(\) => localModelService\.close\(\)/u);
+  });
+
   test('生产组合只构造一个主动调度器且不再创建 Provider 反思链', async () => {
     const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 

@@ -48,6 +48,7 @@ export interface MainConversationCompositionOptions<TPrivacy> {
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
   readProviderSettings(): Promise<ProviderSettingsSnapshot>;
+  assertProviderReady?(profile: ProviderProfileV2): void;
   readAuthorizedRootPath(): Promise<string | null>;
   readPrivacySettings(): Promise<TPrivacy>;
   createChatAdapter(profile: ProviderProfileV2): ConversationChatAdapter;
@@ -81,8 +82,9 @@ export function createMainConversationComposition<TPrivacy>(
   let preparedAgentSnapshot: MainConversationAgentSnapshot<TPrivacy> | null = null;
   let activeAgentRootPath: string | null = null;
   let closePromise: Promise<void> | null = null;
-
-  const canCallProvider = (profile: ProviderProfileV2): boolean => profile.hasStoredSecret;
+  const assertProviderReady = options.assertProviderReady ?? (profile => {
+    if (!profile.hasStoredSecret) throw settingsIncompleteError();
+  });
 
   const select = (
     providerSettings: ProviderSettingsSnapshot,
@@ -108,7 +110,7 @@ export function createMainConversationComposition<TPrivacy>(
     const providerSettings = await options.readProviderSettings();
     const selection = select(providerSettings, 'chat');
     const profile = selection.profile;
-    if (!canCallProvider(profile)) throw settingsIncompleteError();
+    assertProviderReady(profile);
     rememberTarget(selection);
     return {
       adapter: options.createChatAdapter(profile),
@@ -147,7 +149,7 @@ export function createMainConversationComposition<TPrivacy>(
     if (!snapshot) throw settingsIncompleteError();
     const selection = select(snapshot.providerSettings, 'agent');
     const primaryProfile = selection.profile;
-    if (!canCallProvider(primaryProfile)) throw settingsIncompleteError();
+    assertProviderReady(primaryProfile);
     const fallbackProfiles = sameProviderAgentFallbacks(
       snapshot.providerSettings,
       selection,

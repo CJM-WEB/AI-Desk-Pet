@@ -784,6 +784,10 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     PROVIDER_SERVER_ERROR: '模型服务发生错误，请稍后重试。',
     PROVIDER_TIMEOUT: '模型请求超时。',
     SETTINGS_INCOMPLETE: '请先完成模型服务设置。',
+    LOCAL_MODEL_LOADING: '本地模型正在加载，请稍后重试。',
+    LOCAL_MODEL_FAULTED: '本地模型启动失败，请前往设置查看。',
+    LOCAL_MODEL_DISABLED: '内置本地模型已关闭。',
+    LOCAL_MODEL_SWITCHING: '本地模型正在切换，请稍后重试。',
     AGENT_INTERNAL_ERROR: '任务执行失败，请重试。'
 });
 

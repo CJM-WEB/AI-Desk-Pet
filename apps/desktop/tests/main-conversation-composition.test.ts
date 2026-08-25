@@ -14,6 +14,12 @@ import {
 } from '../src/main/conversation/main-conversation-composition';
 import type { ConversationBehaviorPort } from
   '../src/main/characters/character-behavior-director';
+import {
+  BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY,
+  createLocalModelRoutingSnapshot
+} from '../src/main/local-model/local-model-route';
+import { assertProviderReady } from '../src/main/settings/session-preflight';
+import type { ProviderSettingsSnapshot } from '../src/main/storage/settings-store';
 
 function behaviorDouble(): ConversationBehaviorPort {
   return {
@@ -58,6 +64,20 @@ function profile(id: string, baseUrl: string): ProviderProfileV2 {
 const primary = profile('primary', 'https://same.example/v1');
 const sameProviderFallback = profile('same-fallback', 'https://same.example/v1/');
 const crossProviderFallback = profile('cross-fallback', 'https://cross.example/v1');
+const localReadinessCases = [
+  ['loading', 'LOCAL_MODEL_LOADING'],
+  ['faulted', 'LOCAL_MODEL_FAULTED'],
+  ['disabled', 'LOCAL_MODEL_DISABLED']
+] as const;
+
+function localStatus(phase: typeof localReadinessCases[number][0]) {
+  return {
+    enabled: phase !== 'disabled',
+    phase,
+    backend: null,
+    reasonCode: phase === 'faulted' ? 'CPU_START_FAILED' as const : null
+  };
+}
 
 function providerWith(response: ModelResponse | Promise<ModelResponse>): ModelProvider {
   return {
@@ -85,13 +105,15 @@ function agentDouble(overrides: Record<string, unknown> = {}) {
 
 function baseOptions(input: {
   chatResponse?: ModelResponse | Promise<ModelResponse>;
+  assertProviderReady?: (profile: ProviderProfileV2) => void;
+  catalog?: typeof providerCatalog;
   createAgent?: (factory: MainConversationAgentFactoryInput<
     { dataCategories: { file: boolean } }
   >) => ReturnType<typeof agentDouble>;
 } = {}) {
   const privacySessions = new PrivacySessionRegistry();
   privacySessions.register('desktop-session', { incognito: false });
-  const providerSettings = {
+  const providerSettings: ProviderSettingsSnapshot = {
     profiles: [primary, sameProviderFallback, crossProviderFallback],
     route: {
       primaryProfileId: primary.id,
@@ -121,12 +143,17 @@ function baseOptions(input: {
   const events: TaskEvent[] = [];
   const behavior = behaviorDouble();
   const options = {
-    catalog: [],
+    catalog: input.catalog ?? [],
     privacySessions,
     sessionId: 'desktop-session',
     readProviderSettings,
     readAuthorizedRootPath,
     readPrivacySettings,
+    assertProviderReady: input.assertProviderReady ?? (profile => {
+      if (!profile.hasStoredSecret) throw Object.assign(new Error('SETTINGS_INCOMPLETE'), {
+        code: 'SETTINGS_INCOMPLETE'
+      });
+    }),
     createChatAdapter: () => new ConversationChatAdapter(providerWith(
       input.chatResponse ?? {
         type: 'text',
@@ -221,6 +248,88 @@ describe('Main 会话组合模块', () => {
       .resolves.toMatchObject({ profileId: 'primary' });
 
     expect(harness.factoryInputs).toHaveLength(2);
+    await harness.composition.close();
+  });
+
+  test.each(localReadinessCases)('本地档案处于 %s 时抛出稳定就绪错误且不要求 Secret', (phase, code) => {
+    const localProfile = createLocalModelRoutingSnapshot(
+      { profiles: [primary], route: {
+        primaryProfileId: primary.id,
+        chatProfileId: primary.id,
+        agentProfileId: primary.id,
+        visionProfileId: null,
+        fallbackProfileIds: [],
+        allowCrossProviderFallback: false
+      } },
+      true
+    ).profiles.at(-1)!;
+
+    expect(localProfile.hasStoredSecret).toBe(false);
+    expect(() => assertProviderReady(localProfile, localStatus(phase)))
+      .toThrowError(expect.objectContaining({ code }));
+  });
+
+  test.each(localReadinessCases)('本地 %s 就绪错误穿过会话公开边界后仍保持稳定代码', async (phase, code) => {
+    const harness = baseOptions({
+      catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
+      assertProviderReady: profile => assertProviderReady(profile, localStatus(phase))
+    });
+    harness.readProviderSettings.mockResolvedValue(
+      createLocalModelRoutingSnapshot(harness.providerSettings, true)
+    );
+
+    await expect(harness.composition.coordinator.submit('本地聊天'))
+      .rejects.toMatchObject({ code });
+    await harness.composition.close();
+  });
+
+  test.each(localReadinessCases)('本地 Agent 在 %s 时也拒绝创建且保持稳定代码', async (phase, code) => {
+    const harness = baseOptions({
+      catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
+      assertProviderReady: profile => assertProviderReady(profile, localStatus(phase))
+    });
+    harness.readProviderSettings.mockResolvedValue(
+      createLocalModelRoutingSnapshot(harness.providerSettings, true)
+    );
+
+    await expect(harness.composition.capabilityTasks.prepareTarget({
+      generation: 'generation-local-not-ready',
+      taskKind: 'file'
+    })).rejects.toMatchObject({ code });
+    expect(harness.factoryInputs).toHaveLength(0);
+    await harness.composition.close();
+  });
+
+  test('本地 Runtime ready 时无 Secret 也可进入会话，云档案仍要求 Secret', async () => {
+    const harness = baseOptions({
+      catalog: [BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY],
+      assertProviderReady: profile => assertProviderReady(profile, {
+        enabled: true,
+        phase: 'ready',
+        backend: 'cpu',
+        reasonCode: null
+      })
+    });
+    harness.readProviderSettings.mockResolvedValue(
+      createLocalModelRoutingSnapshot(harness.providerSettings, true)
+    );
+
+    await expect(harness.composition.coordinator.submit('本地聊天')).resolves.toBeUndefined();
+    await expect(harness.composition.capabilityTasks.prepareTarget({
+      generation: 'generation-local-ready',
+      taskKind: 'file'
+    })).resolves.toMatchObject({ profileId: 'builtin-local' });
+    expect(harness.factoryInputs[0]?.primaryProfile).toMatchObject({
+      id: 'builtin-local',
+      hasStoredSecret: false
+    });
+
+    expect(() => assertProviderReady({ ...primary, hasStoredSecret: false }, {
+      enabled: true,
+      phase: 'ready',
+      backend: 'cpu',
+      reasonCode: null
+    })).toThrowError(expect.objectContaining({ code: 'SETTINGS_INCOMPLETE' }));
     await harness.composition.close();
   });
 

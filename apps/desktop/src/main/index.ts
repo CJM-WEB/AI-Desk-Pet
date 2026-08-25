@@ -92,12 +92,17 @@ import {
   startCharacterMotionTimers
 } from './characters/character-motion-service';
 import { OpenAICompatibleProvider } from './providers/openai-provider';
+import { LocalModelProvider } from './providers/local-model-provider';
 import { ProviderRegistry } from './providers/provider-registry';
+import { LocalModelRuntime } from './local-model/local-model-runtime';
+import { LocalModelService } from './local-model/local-model-service';
+import { BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY } from './local-model/local-model-route';
 import { ipcChannels } from '../shared/ipc-channels';
 import { SecretStore } from './storage/secret-store';
 import { SettingsStore } from './storage/settings-store';
 import { createSettingsActions } from './settings/settings-actions';
 import { DesktopSettingsService } from './settings/desktop-settings-service';
+import { assertProviderReady } from './settings/session-preflight';
 import { PetGeometryCoordinator } from './windows/pet-geometry-coordinator';
 import {
   bindPetWindowInteractionLifecycle,
@@ -439,13 +444,42 @@ async function createApplicationWindows(
     join(storageDirectory, 'settings.json'),
     profileId => secrets.hasStoredSecret(profileId)
   );
+  const localModelRuntime = new LocalModelRuntime({
+    root: app.isPackaged
+      ? join(process.resourcesPath, 'local-model')
+      : join(__dirname, '../../resources/local-model'),
+    applicationVersion: app.getVersion(),
+    cachePath: join(storageDirectory, 'local-model-validation-cache.json'),
+    tokenRoot: join(app.getPath('temp'), 'ai-pet-local-model')
+  });
+  let resetLocalModelConversation: (() => Promise<void>) | null = null;
+  let localModelStatus = localModelRuntime.getStatus();
+  const localModelSettings = await settingsStore.getLocalModelSettings();
+  const localModelService = new LocalModelService({
+    // 既有 E2E 使用脚本化云 Provider；本地 Runtime 纵向夹具由后续专用边界显式启用。
+    initialEnabled: e2eBoundary ? false : localModelSettings.enabled,
+    runtime: localModelRuntime,
+    readCloudProviderSettings: () => settingsStore.getProviderSettings(),
+    saveEnabled: enabled => settingsStore.saveLocalModelEnabled(enabled),
+    resetForConfigurationChange: () => {
+      if (!resetLocalModelConversation) throw new Error('LOCAL_MODEL_CONVERSATION_NOT_READY');
+      return resetLocalModelConversation();
+    },
+    // Runtime 只向 Main 发布白名单状态；后续 IPC 只能从该公开快照继续投影。
+    publishStatus: status => { localModelStatus = status; }
+  });
+  startupCleanup.add(() => localModelService.close());
   const characterBehaviorSettings = await settingsStore.getCharacterBehaviorSettings();
   await restorePetLayerPreference({
     read: () => settingsStore.getPetAlwaysOnTop(),
     apply: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled),
     reportError: code => console.error('恢复桌宠图层偏好失败。', code)
   });
-  const providerRegistry = new ProviderRegistry(providerCatalog);
+  const mainProviderCatalog = [...providerCatalog, BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY];
+  const providerRegistry = new ProviderRegistry(
+    mainProviderCatalog,
+    () => new LocalModelProvider(localModelRuntime)
+  );
   const createChatProvider = (profile: ProviderProfileV2) => providerRegistry.create(
     profile,
     () => secrets.readForProviderCall(profile.id)
@@ -903,10 +937,11 @@ async function createApplicationWindows(
     message: notice.message
   });
   const conversationComposition = createMainConversationComposition({
-    catalog: providerCatalog,
+    catalog: mainProviderCatalog,
     privacySessions,
     sessionId,
-    readProviderSettings: () => settingsStore.getProviderSettings(),
+    readProviderSettings: () => localModelService.providerSettingsSnapshot(),
+    assertProviderReady: profile => assertProviderReady(profile, localModelStatus),
     readAuthorizedRootPath: () => settingsStore.getAuthorizedRootPath(),
     readPrivacySettings: () => settingsStore.getPrivacySettings(),
     behavior: characterBehaviorDirector,
@@ -960,6 +995,10 @@ async function createApplicationWindows(
   activeCapabilityTaskAdapter = conversationComposition.capabilityTasks;
   conversationClose.activate(() => conversationComposition.close());
   startupCleanup.add(() => conversationComposition.close());
+  resetLocalModelConversation = async () => {
+    characterProactivityRuntime.invalidate();
+    await conversationComposition.resetForConfigurationChange();
+  };
   const conversationIpcService = {
     submit: async (text: string): Promise<void> => {
       reportedSubmitErrorCode = null;
@@ -1007,6 +1046,7 @@ async function createApplicationWindows(
     services: [
       async () => { await workshopCloseHandshake.flush(characterWorkshopWindows.getCurrent()); },
       () => desktopSettingsService.close(),
+      () => localModelService.close(),
       releaseCharacterRuntime
     ]
   });
@@ -1027,8 +1067,7 @@ async function createApplicationWindows(
     }
   });
   const resetForConfigurationChange = (): void => {
-    characterProactivityRuntime.invalidate();
-    void conversationComposition.resetForConfigurationChange().catch(error => {
+    void resetLocalModelConversation?.().catch(error => {
       const code = error instanceof Error && 'code' in error ? error.code : 'UNKNOWN';
       console.error('配置变更后的会话清理失败。', code);
     });
@@ -1047,6 +1086,12 @@ async function createApplicationWindows(
     loadRenderer(settings, 'settings'),
     ensureCharacterWorkshopWindow()
   ]);
+  void localModelService.start().catch(error => {
+    const code = error instanceof Error && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : 'LOCAL_MODEL_START_FAILED';
+    console.error('内置本地模型后台启动失败。', code);
+  });
   await characterBehavior.initialize();
   await petGeometry.initialize();
   characterProactivityRuntime.start();
