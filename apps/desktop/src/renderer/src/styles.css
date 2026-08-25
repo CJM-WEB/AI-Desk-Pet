@@ -838,6 +838,51 @@ textarea {
   box-shadow: none;
 }
 
+/* 本地模型状态使用文字、图标无关的状态与操作，避免只靠颜色传达运行能力。 */
+.local-model-card {
+  display: grid;
+  gap: 8px;
+}
+
+.local-model-card .pane-heading {
+  margin-bottom: 0;
+}
+
+.local-model-status,
+.local-model-fault p,
+.local-model-chat-notice {
+  margin: 0;
+  color: #35414b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.local-model-fault,
+.local-model-chat-notice {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e4d0ce;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #fff7f5;
+}
+
+.local-model-fault .quiet-button {
+  justify-self: start;
+}
+
+.local-model-chat-notice {
+  width: 100%;
+  border-color: rgba(203, 135, 64, 0.38);
+  background: #fff8eb;
+}
+
+.local-model-chat-fault {
+  border-color: rgba(166, 81, 75, 0.35);
+  background: #fff1ed;
+}
+
 .pane-heading {
   display: flex;
   min-width: 0;

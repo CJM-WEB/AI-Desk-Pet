@@ -8,6 +8,7 @@ import type {
 } from '../../../shared/myself-api';
 import type { LocalDataScope } from '../../../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
+import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
 import { ProviderSettings } from './ProviderSettings';
 import { PrivacySettings } from './PrivacySettings';
 import {
@@ -73,6 +74,7 @@ export interface SettingsWorkspaceProps {
     onRouteSave(route: ModelRouteConfig): void;
     onDelete(profileId: string): void;
   };
+  onLocalModelEnabledChange?: ((enabled: boolean) => void) | undefined;
   privacyActions: {
     incognito: boolean;
     onSave(input: PrivacySettingsDto): void;
@@ -137,6 +139,8 @@ export function SettingsWorkspace(props: SettingsWorkspaceProps) {
         <ProviderSettings
           dashboard={props.dashboard}
           busy={props.busy}
+          localModel={props.dashboard.localModel}
+          onLocalModelEnabledChange={props.onLocalModelEnabledChange}
           {...props.providerActions}
         />
       ) : null}
@@ -193,16 +197,25 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   useEffect(() => {
     let active = true;
     const initialLoadOwner = noticeSequence.current;
+    let latestLocalModelStatus: LocalModelPublicStatus | null = null;
+    const unsubscribe = api.onLocalModelStatus?.(status => {
+      if (!active) return;
+      latestLocalModelStatus = status;
+      setDashboard(current => ({ ...current, localModel: status }));
+    });
     void api.getSettingsDashboard().then(result => {
       if (!active || noticeSequence.current !== initialLoadOwner) return;
-      setDashboard(result);
+      setDashboard({ ...result, localModel: latestLocalModelStatus ?? result.localModel });
       dismissNotice('settings-toast-0');
     }).catch(() => {
       if (active && noticeSequence.current === initialLoadOwner) {
         showNotice({ tone: 'error', text: '无法读取设置，请重新打开窗口。' });
       }
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
   }, [api]);
 
   const run = async (
@@ -256,6 +269,10 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
           '模型档案已删除。'
         )
       }}
+      onLocalModelEnabledChange={enabled => void run(
+        () => api.setLocalModelEnabled(enabled),
+        enabled ? '内置本地模型已开启。' : '内置本地模型已关闭。'
+      )}
       privacyActions={{
         incognito,
         onSave: input => void run(() => api.savePrivacySettings(input), '隐私设置已保存。'),

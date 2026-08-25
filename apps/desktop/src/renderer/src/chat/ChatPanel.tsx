@@ -1,5 +1,7 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { HistoryDisclosureDecision, TaskPhase } from '@myself/shared-types';
+import type { MyselfApi } from '../../../shared/myself-api';
+import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
 import { ConfirmationCard } from './ConfirmationCard';
 import { HistoryDisclosureCard } from './HistoryDisclosureCard';
 import { taskStore, useTaskStore } from '../stores/task-store';
@@ -17,6 +19,29 @@ const phaseLabels: Record<TaskPhase, string> = {
 
 function canStop(phase: TaskPhase): boolean {
   return phase === 'listening' || phase === 'thinking' || phase === 'acting';
+}
+
+const initialLocalModelStatus: LocalModelPublicStatus = {
+  enabled: false,
+  phase: 'disabled',
+  backend: null,
+  reasonCode: null
+};
+
+function localModelReasonText(reasonCode: LocalModelPublicStatus['reasonCode']): string {
+  const reasons: Record<NonNullable<LocalModelPublicStatus['reasonCode']>, string> = {
+    RESOURCE_MISSING: '内置资源缺失',
+    RESOURCE_HASH_MISMATCH: '内置资源校验失败',
+    RUNTIME_INCOMPATIBLE: '运行时不兼容',
+    VULKAN_UNAVAILABLE: 'Vulkan 不可用',
+    CPU_START_FAILED: 'CPU 兼容模式启动失败',
+    MODEL_LOAD_TIMEOUT: '模型加载超时',
+    PORT_CONFLICT: '本地端口冲突',
+    PROCESS_CRASHED: '本地模型进程意外退出',
+    PROTOCOL_INCOMPATIBLE: '本地模型协议不兼容',
+    PROCESS_CLEANUP_FAILED: '本地模型进程清理失败'
+  };
+  return reasonCode ? reasons[reasonCode] : '本地模型启动失败';
 }
 
 type RevisionOwner = Readonly<{ revision: number; token: symbol }>;
@@ -38,13 +63,14 @@ export function ChatCloseButton() {
   );
 }
 
-export function ChatPanel() {
+export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
   const conversationRevision = useTaskStore(state => state.conversationRevision);
   const phase = useTaskStore(state => state.phase);
   const messages = useTaskStore(state => state.messages);
   const pendingAction = useTaskStore(state => state.pendingAction);
   const pendingHistoryDisclosure = useTaskStore(state => state.pendingHistoryDisclosure);
   const [text, setText] = useState('');
+  const [localModelStatus, setLocalModelStatus] = useState(initialLocalModelStatus);
   const [actionBusyOwner, setActionBusyOwner] = useState<RevisionOwner | null>(null);
   const [disclosureBusyOwner, setDisclosureBusyOwner] = useState<DisclosureOwner | null>(null);
   const [resetBusyOwner, setResetBusyOwner] = useState<RevisionOwner | null>(null);
@@ -65,7 +91,9 @@ export function ChatPanel() {
     ? interactionErrorState.message
     : null;
   const anyInteractionBusy = actionBusy || disclosureBusy !== null || resetBusy;
+  const localModelBlocking = localModelStatus.enabled && localModelStatus.phase !== 'ready';
   const submitDisabled = canStop(phase)
+    || localModelBlocking
     || Boolean(pendingAction)
     || Boolean(pendingHistoryDisclosure)
     || anyInteractionBusy;
@@ -82,6 +110,17 @@ export function ChatPanel() {
       || resetOwner.current?.revision === revision;
   };
 
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = api.onLocalModelStatus?.(status => {
+      if (active) setLocalModelStatus(status);
+    });
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [api]);
+
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
     const normalized = text.trim();
@@ -94,7 +133,7 @@ export function ChatPanel() {
     setText('');
     taskStore.getState().beginListening();
     try {
-      await window.myself.submitMessage(normalized);
+      await api.submitMessage(normalized);
     } catch {
       if (isCurrentOwner(owner, submitOwner.current)
         && taskStore.getState().phase !== 'error') {
@@ -120,7 +159,7 @@ export function ChatPanel() {
     setActionBusyOwner(owner);
     setInteractionErrorState(null);
     try {
-      await window.myself.confirmAction(pendingAction.actionId);
+      await api.confirmAction(pendingAction.actionId);
     } catch {
       if (isCurrentOwner(owner, actionOwner.current)) {
         setInteractionErrorState({
@@ -146,7 +185,7 @@ export function ChatPanel() {
     setActionBusyOwner(owner);
     setInteractionErrorState(null);
     try {
-      await window.myself.cancelAction(pendingAction.actionId);
+      await api.cancelAction(pendingAction.actionId);
     } catch {
       if (isCurrentOwner(owner, actionOwner.current)) {
         setInteractionErrorState({
@@ -177,7 +216,7 @@ export function ChatPanel() {
     setDisclosureBusyOwner(owner);
     setInteractionErrorState(null);
     try {
-      await window.myself.resolveHistoryDisclosure(disclosure.requestId, decision);
+      await api.resolveHistoryDisclosure(disclosure.requestId, decision);
       if (isCurrentOwner(owner, disclosureOwner.current)) {
         taskStore.getState().completeHistoryDisclosure(disclosure.requestId);
       }
@@ -210,7 +249,7 @@ export function ChatPanel() {
     setResetBusyOwner(owner);
     setInteractionErrorState(null);
     try {
-      await window.myself.resetConversation();
+      await api.resetConversation();
     } catch {
       if (isCurrentOwner(owner, resetOwner.current)) {
         setInteractionErrorState({
@@ -242,7 +281,7 @@ export function ChatPanel() {
           >
             {resetBusy ? '正在新建…' : '新对话'}
           </button>
-          <button type="button" onClick={() => void window.myself.openSettings()}>设置</button>
+          <button type="button" onClick={() => void api.openSettings()}>设置</button>
           <ChatCloseButton />
         </div>
       </header>
@@ -259,7 +298,7 @@ export function ChatPanel() {
             <p>{message.text}</p>
             {message.nextAction ? <small>下一步：{message.nextAction}</small> : null}
             {message.code === 'FILE_AUTHORIZATION_REQUIRED' ? (
-              <button className="quiet-button" type="button" onClick={() => void window.myself.openSettings()}>
+              <button className="quiet-button" type="button" onClick={() => void api.openSettings()}>
                 打开设置
               </button>
             ) : null}
@@ -270,6 +309,25 @@ export function ChatPanel() {
             {interactionError}
           </p>
         ) : null}
+        {localModelStatus.enabled && localModelStatus.phase !== 'ready' ? (
+          localModelStatus.phase === 'faulted' ? (
+            <div className="local-model-chat-notice local-model-chat-fault" role="alert">
+              <p>本地模型暂不可用：{localModelReasonText(localModelStatus.reasonCode)}。</p>
+              <p>视觉暂不可用。</p>
+              <button className="quiet-button" type="button" onClick={() => void api.openSettings()}>
+                打开模型设置
+              </button>
+            </div>
+          ) : (
+            <p className="local-model-chat-notice" role="status" aria-live="polite">
+              {localModelStatus.phase === 'stopping' ? '本地模型正在停止' : '本地模型加载中'}，暂时不能发送消息。
+            </p>
+          )
+        ) : null}
+        {localModelStatus.enabled && localModelStatus.phase === 'ready'
+          && localModelStatus.backend === 'cpu' ? (
+            <p className="local-model-chat-notice" role="status">CPU 兼容模式</p>
+          ) : null}
         {pendingHistoryDisclosure ? (
           <HistoryDisclosureCard
             disclosure={pendingHistoryDisclosure}
@@ -309,7 +367,7 @@ export function ChatPanel() {
               className="stop-button"
               type="button"
               disabled={Boolean(pendingHistoryDisclosure) || anyInteractionBusy}
-              onClick={() => void window.myself.cancelTask()}
+              onClick={() => void api.cancelTask()}
             >
               停止当前任务
             </button>

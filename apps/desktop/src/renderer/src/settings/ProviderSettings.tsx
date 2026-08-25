@@ -9,10 +9,14 @@ import type {
   SaveProviderProfileInput,
   SettingsDashboardDto
 } from '../../../shared/myself-api';
+import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
+import { LocalModelSettingsCard } from './LocalModelSettingsCard';
 
 export interface ProviderSettingsProps {
   dashboard: SettingsDashboardDto;
   busy: boolean;
+  localModel?: LocalModelPublicStatus;
+  onLocalModelEnabledChange?: ((enabled: boolean) => void) | undefined;
   onSave(input: SaveProviderProfileInput): void;
   onTest(profileId: string): void;
   onRouteSave(route: ModelRouteConfig): void;
@@ -129,6 +133,13 @@ export function ProviderSettings(props: ProviderSettingsProps) {
 
   return (
     <div className="settings-pane provider-settings">
+      {props.localModel ? (
+        <LocalModelSettingsCard
+          status={props.localModel}
+          busy={props.busy}
+          onEnabledChange={props.onLocalModelEnabledChange}
+        />
+      ) : null}
       <section className="settings-band" aria-labelledby="provider-heading">
         <div className="pane-heading">
           <div>

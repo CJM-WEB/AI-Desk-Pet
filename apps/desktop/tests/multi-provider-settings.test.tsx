@@ -140,6 +140,108 @@ describe('多 Provider 设置组件', () => {
     expect(markup).toContain('tools');
   });
 
+  test('模型页在云档案之前展示默认开启的内置本地模型状态卡', () => {
+    render(
+      <SettingsWorkspace
+        dashboard={dashboard}
+        activeTab="models"
+        busy={false}
+        notice={null}
+        onDismissNotice={vi.fn()}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        providerActions={{
+          onSave: vi.fn(),
+          onTest: vi.fn(),
+          onRouteSave: vi.fn(),
+          onDelete: vi.fn()
+        }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
+      />
+    );
+
+    expect((screen.getByRole('switch', { name: '启用内置本地模型' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/无需 API Key/u)).toBeTruthy();
+    expect(screen.getByText('本地模型加载中')).toBeTruthy();
+    expect(screen.getByLabelText('API Key')).toBeTruthy();
+  });
+
+  test('本地模型卡用文字区分 CPU 兼容模式与故障原因', () => {
+    const cpuDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      localModel: {
+        enabled: true,
+        phase: 'ready',
+        backend: 'cpu',
+        reasonCode: null
+      }
+    };
+    const { rerender } = render(
+      <SettingsWorkspace
+        dashboard={cpuDashboard}
+        activeTab="models"
+        busy={false}
+        notice={null}
+        onDismissNotice={vi.fn()}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        providerActions={{ onSave: vi.fn(), onTest: vi.fn(), onRouteSave: vi.fn(), onDelete: vi.fn() }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
+      />
+    );
+    expect(screen.getByText('CPU 兼容模式')).toBeTruthy();
+
+    rerender(
+      <SettingsWorkspace
+        dashboard={{
+          ...cpuDashboard,
+          localModel: {
+            enabled: true,
+            phase: 'faulted',
+            backend: null,
+            reasonCode: 'MODEL_LOAD_TIMEOUT'
+          }
+        }}
+        activeTab="models"
+        busy={false}
+        notice={null}
+        onDismissNotice={vi.fn()}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        providerActions={{ onSave: vi.fn(), onTest: vi.fn(), onRouteSave: vi.fn(), onDelete: vi.fn() }}
+        privacyActions={{
+          incognito: false,
+          onSave: vi.fn(),
+          onPetAlwaysOnTopChange: vi.fn(),
+          onIncognitoChange: vi.fn(),
+          onChooseRoot: vi.fn(),
+          onRevokeRoot: vi.fn()
+        }}
+        onClear={vi.fn()}
+        onOpenCharacterWorkshop={vi.fn()}
+      />
+    );
+    expect(screen.getByRole('alert').textContent).toContain('模型加载超时');
+  });
+
   test('预置模型输入提示可直接填写服务商公布的模型 ID', () => {
     render(
       <ProviderSettings
