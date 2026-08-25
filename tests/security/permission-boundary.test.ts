@@ -373,6 +373,83 @@ describe('权限边界安全回归', () => {
     }
   });
 
+  test('无法证明为不可变安全字面量的 namespace、spread、assign 与条件赋值均判为危险', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'myself-local-model-mutations-'));
+    const fixtures = {
+      'namespace-spawn.ts': [
+        "import * as childProcess from 'node:child_process';",
+        "childProcess.spawn('fixture', [], { shell: true, windowsHide: true });"
+      ],
+      'namespace-exec.ts': [
+        "import * as childProcess from 'node:child_process';",
+        "childProcess.exec('fixture', { windowsHide: true });"
+      ],
+      'namespace-alias.ts': [
+        "import * as childProcess from 'node:child_process';",
+        'const launch = childProcess.spawn;',
+        "launch('fixture', [], { shell: true, windowsHide: true });"
+      ],
+      'namespace-object-alias.ts': [
+        "import * as childProcess from 'node:child_process';",
+        'const processApi = childProcess;',
+        "processApi.spawn('fixture', [], { shell: true, windowsHide: true });"
+      ],
+      'dynamic-method.ts': [
+        "import * as childProcess from 'node:child_process';",
+        "declare const method: 'spawn';",
+        "childProcess[method]('fixture', [], { shell: false, windowsHide: true });"
+      ],
+      'conditional-call-alias.ts': [
+        "import * as childProcess from 'node:child_process';",
+        'declare const condition: boolean;',
+        'const launch = condition ? childProcess.spawn : childProcess.exec;',
+        "launch('fixture', [], { shell: false, windowsHide: true });"
+      ],
+      'spread.ts': [
+        "import { spawn } from 'node:child_process';",
+        'declare const untrusted: { shell?: boolean };',
+        "spawn('fixture', [], { shell: false, windowsHide: true, ...untrusted });"
+      ],
+      'object-assign.ts': [
+        "import { spawn } from 'node:child_process';",
+        'declare const untrusted: { shell?: boolean };',
+        'const options = { shell: false, windowsHide: true };',
+        'Object.assign(options, untrusted);',
+        "spawn('fixture', [], options);"
+      ],
+      'conditional-assignment.ts': [
+        "import { spawn } from 'node:child_process';",
+        'declare const condition: boolean;',
+        'const options = { shell: true, windowsHide: false };',
+        'if (condition) { options.shell = false; options.windowsHide = true; }',
+        "spawn('fixture', [], options);"
+      ]
+    } as const;
+    try {
+      const paths = await Promise.all(Object.entries(fixtures).map(async ([name, lines]) => {
+        const path = join(fixtureRoot, name);
+        await writeFile(path, lines.join('\n'), 'utf8');
+        return path;
+      }));
+
+      const scan = await scanLocalModelCapabilityBoundary(paths);
+
+      expect(scan.unsafeSpawnOptions).toEqual([
+        'conditional-assignment.ts:5',
+        'conditional-call-alias.ts:4',
+        'dynamic-method.ts:3',
+        'namespace-alias.ts:3',
+        'namespace-exec.ts:2',
+        'namespace-object-alias.ts:3',
+        'namespace-spawn.ts:2',
+        'object-assign.ts:5',
+        'spread.ts:3'
+      ]);
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   test('本地模型公开状态、Provider 错误与普通日志不泄露连接和正文 canary', async () => {
     const canaries = [
       'token-canary-local-security',

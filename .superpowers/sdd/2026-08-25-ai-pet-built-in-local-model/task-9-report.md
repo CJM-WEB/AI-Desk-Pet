@@ -118,3 +118,37 @@ git diff --check
 - `git diff --check`：无空白错误；Windows 工作区仅显示 LF / CRLF 提示。
 
 Round 1 所有单点均在十五分钟内取得可判定结果；最长完整 Electron 门禁约 5.7 分钟。真实 GGUF、真实 Vulkan 性能、安装卸载和人工视觉验收仍不在本任务自动化通过范围。
+
+## Round 2 审查修复
+
+### child_process 语义扫描失败关闭
+
+安全扫描器先由九个 mutation 证明旧实现会漏报或无法证明安全：namespace `spawn`、namespace `exec`、namespace property 别名、namespace 对象别名、动态 computed method、条件调用别名、带不可信 spread 的表面安全字面量、`Object.assign` 后续污染，以及只在条件分支中改成安全值的可变 options。新增三类调用目标 mutation 在旧扫描器下均稳定漏报，形成 RED。
+
+GREEN 后，扫描器从 TypeScript Program / type checker 建立 `node:child_process` 导入符号绑定，识别 named import、namespace property、namespace 对象别名、静态 element access、变量别名与条件表达式。动态 element access 与无法证明为纯 `spawn` 的条件调用均失败关闭；`exec` 一律违规。`spawn` 只有第三参数是调用点内联对象、没有 spread、shorthand、计算属性、重复键或间接状态，且 type checker 同时证明 `shell` 为字面量 `false`、`windowsHide` 为字面量 `true` 时才通过。变量 options、`Object.assign`、条件赋值与其他无法证明的形态均失败关闭。
+
+### 关闭后完整诊断与 fixture 路径
+
+Electron fixture 现在向测试返回整个临时根以及 module、config、fake server、resource root、cache、token root、validation marker、ready marker、evidence 文件的完整路径集合。整个临时根本身也是 canary，因此其下任何未逐项列出的私有路径泄漏同样会被捕获。
+
+本地模型 E2E 在关闭前和正式退出后分别重新序列化并扫描：Main 完整原始 stdout/stderr、脱敏日志数组、Renderer console/pageerror 数组、公开本地模型状态快照以及固定流式泄漏证据。退出仍由 Renderer 正式 `quit` IPC 触发；fixture 在进程启动时预先登记 `close` 观察，Main shutdown transaction 自然退出后必须等到 `close`，即 stdout/stderr 已完成排空，才允许关闭后重新序列化与扫描。fixture 全程保留临时根；PID、Token 文件与所有关闭后诊断验证完成后，`dispose` 才删除 fixture 根。
+
+### Round 2 验证结果
+
+最终实际执行：
+
+```powershell
+pnpm.cmd test:security
+pnpm.cmd exec playwright test --config tests/playwright.config.ts --grep "内置本地模型在真实 Electron"
+pnpm.cmd verify:desktop
+git diff --check
+```
+
+结果：
+
+- 安全套件：1 file，27 tests，通过；九类 mutation 均被判为危险。
+- 正式 Runtime Electron 定向复验：1 test，通过。
+- `verify:desktop`：全 workspace TypeScript 检查通过；单元套件 131 files、2966 tests 通过；安全 27 tests 通过；集成 73 tests 通过；真实 Electron 74 tests 通过，既有 B7 长时用例 1 test 按配置跳过；退出码为 0。首次完整运行曾有 1 个无关角色工作室用例等待发布文案超时；该用例定向复验 1/1 通过，随后完整门禁复跑全绿，未修改角色代码。
+- 所有单点均在十五分钟内取得可判定结果；完整 Electron 门禁约 5.8 分钟。
+
+Round 2 未修改生产 Runtime、Provider 或 Renderer 权限边界，也未修改 SDD ledger。真实 GGUF、Vulkan 性能、安装卸载与人工视觉仍维持既有未验收状态。

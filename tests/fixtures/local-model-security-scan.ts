@@ -30,156 +30,160 @@ function resolvedSymbol(checker: ts.TypeChecker, node: ts.Node): ts.Symbol | und
   return symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 }
 
-function symbolComesFromChildProcessSpawn(
-  checker: ts.TypeChecker,
-  symbol: ts.Symbol | undefined
-): boolean {
-  if (!symbol) return false;
-  return symbol.getName() === 'spawn'
-    && (symbol.declarations ?? []).some(declaration => (
-      /(?:^|[\\/])child_process\.d\.ts$/u.test(declaration.getSourceFile().fileName)
-    ));
+type ChildProcessCallKind = 'spawn' | 'exec' | 'namespace';
+
+function childProcessBindings(
+  sources: readonly ts.SourceFile[],
+  checker: ts.TypeChecker
+): ReadonlyMap<ts.Symbol, ChildProcessCallKind> {
+  const bindings = new Map<ts.Symbol, ChildProcessCallKind>();
+  for (const source of sources) {
+    for (const statement of source.statements) {
+      if (
+        !ts.isImportDeclaration(statement)
+        || !ts.isStringLiteral(statement.moduleSpecifier)
+        || !['node:child_process', 'child_process'].includes(statement.moduleSpecifier.text)
+      ) continue;
+      const clause = statement.importClause;
+      if (!clause?.namedBindings) continue;
+      if (ts.isNamespaceImport(clause.namedBindings)) {
+        const symbol = checker.getSymbolAtLocation(clause.namedBindings.name);
+        if (symbol) bindings.set(symbol, 'namespace');
+        continue;
+      }
+      for (const element of clause.namedBindings.elements) {
+        const importedName = element.propertyName?.text ?? element.name.text;
+        if (importedName !== 'spawn' && importedName !== 'exec') continue;
+        const symbol = checker.getSymbolAtLocation(element.name);
+        if (symbol) bindings.set(symbol, importedName);
+      }
+    }
+  }
+  return bindings;
 }
 
-function expressionCanCallChildProcessSpawn(
-  checker: ts.TypeChecker,
+function isChildProcessNamespace(
   expression: ts.Expression,
+  checker: ts.TypeChecker,
+  bindings: ReadonlyMap<ts.Symbol, ChildProcessCallKind>,
   visited = new Set<ts.Symbol>()
 ): boolean {
-  if (ts.isParenthesizedExpression(expression)) {
-    return expressionCanCallChildProcessSpawn(checker, expression.expression, visited);
-  }
-  if (ts.isBinaryExpression(expression)) {
-    return expressionCanCallChildProcessSpawn(checker, expression.left, visited)
-      || expressionCanCallChildProcessSpawn(checker, expression.right, visited);
-  }
+  if (
+    ts.isParenthesizedExpression(expression)
+    || ts.isAsExpression(expression)
+    || ts.isSatisfiesExpression(expression)
+  ) return isChildProcessNamespace(expression.expression, checker, bindings, visited);
   if (!ts.isIdentifier(expression)) return false;
-  const direct = checker.getSymbolAtLocation(expression);
-  const resolved = resolvedSymbol(checker, expression);
-  if (symbolComesFromChildProcessSpawn(checker, resolved)) return true;
-  if (!direct || visited.has(direct)) return false;
-  visited.add(direct);
-  return (direct.declarations ?? []).some(declaration => (
+  const symbol = checker.getSymbolAtLocation(expression);
+  if (!symbol || visited.has(symbol)) return false;
+  if (bindings.get(symbol) === 'namespace') return true;
+  visited.add(symbol);
+  return (symbol.declarations ?? []).some(declaration => (
     ts.isVariableDeclaration(declaration)
     && declaration.initializer !== undefined
-    && expressionCanCallChildProcessSpawn(checker, declaration.initializer, visited)
+    && isChildProcessNamespace(declaration.initializer, checker, bindings, visited)
   ));
 }
 
-function symbolInitializer(symbol: ts.Symbol): ts.Expression | undefined {
+function childProcessCallKind(
+  expression: ts.Expression,
+  checker: ts.TypeChecker,
+  bindings: ReadonlyMap<ts.Symbol, ChildProcessCallKind>,
+  visited = new Set<ts.Symbol>()
+): Exclude<ChildProcessCallKind, 'namespace'> | undefined {
+  if (
+    ts.isParenthesizedExpression(expression)
+    || ts.isAsExpression(expression)
+    || ts.isSatisfiesExpression(expression)
+  ) return childProcessCallKind(expression.expression, checker, bindings, visited);
+  if (ts.isPropertyAccessExpression(expression)) {
+    if (isChildProcessNamespace(expression.expression, checker, bindings)) {
+      return expression.name.text === 'spawn' ? 'spawn' : 'exec';
+    }
+    return undefined;
+  }
+  if (ts.isElementAccessExpression(expression)) {
+    if (!isChildProcessNamespace(expression.expression, checker, bindings)) return undefined;
+    return ts.isStringLiteral(expression.argumentExpression)
+      && expression.argumentExpression.text === 'spawn'
+      ? 'spawn'
+      : 'exec';
+  }
+  if (ts.isConditionalExpression(expression)) {
+    const whenTrue = childProcessCallKind(expression.whenTrue, checker, bindings, new Set(visited));
+    const whenFalse = childProcessCallKind(expression.whenFalse, checker, bindings, new Set(visited));
+    if (!whenTrue && !whenFalse) return undefined;
+    return whenTrue === 'spawn' && whenFalse === 'spawn' ? 'spawn' : 'exec';
+  }
+  if (ts.isBinaryExpression(expression)) {
+    const left = childProcessCallKind(expression.left, checker, bindings, new Set(visited));
+    const right = childProcessCallKind(expression.right, checker, bindings, new Set(visited));
+    if (!left && !right) return undefined;
+    return left === 'spawn' && right === 'spawn' ? 'spawn' : 'exec';
+  }
+  if (!ts.isIdentifier(expression)) return undefined;
+  const symbol = checker.getSymbolAtLocation(expression);
+  if (!symbol || visited.has(symbol)) return undefined;
+  const direct = bindings.get(symbol);
+  if (direct === 'spawn' || direct === 'exec') return direct;
+  visited.add(symbol);
   for (const declaration of symbol.declarations ?? []) {
     if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
-      return declaration.initializer;
+      const alias = childProcessCallKind(declaration.initializer, checker, bindings, visited);
+      if (alias) return alias;
     }
   }
   return undefined;
 }
 
-function latestWholeAssignment(
-  source: ts.SourceFile,
-  checker: ts.TypeChecker,
-  symbol: ts.Symbol,
-  before: number
-): ts.Expression | undefined {
-  let latest: ts.BinaryExpression | undefined;
-  const visit = (node: ts.Node): void => {
-    if (node.getStart(source) >= before) return;
-    if (
-      ts.isBinaryExpression(node)
-      && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-      && ts.isIdentifier(node.left)
-      && checker.getSymbolAtLocation(node.left) === symbol
-      && (!latest || node.getStart(source) > latest.getStart(source))
-    ) latest = node;
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return latest?.right;
-}
-
-function resolveBoolean(
-  expression: ts.Expression,
-  source: ts.SourceFile,
-  checker: ts.TypeChecker,
-  before: number,
-  visited = new Set<ts.Symbol>()
-): boolean | undefined {
-  if (expression.kind === ts.SyntaxKind.TrueKeyword) return true;
-  if (expression.kind === ts.SyntaxKind.FalseKeyword) return false;
+function unwrapLiteralExpression(expression: ts.Expression): ts.Expression {
   if (
     ts.isParenthesizedExpression(expression)
     || ts.isAsExpression(expression)
     || ts.isSatisfiesExpression(expression)
-  ) return resolveBoolean(expression.expression, source, checker, before, visited);
-  if (!ts.isIdentifier(expression)) return undefined;
-  const symbol = checker.getSymbolAtLocation(expression);
-  if (!symbol || visited.has(symbol)) return undefined;
-  visited.add(symbol);
-  const value = latestWholeAssignment(source, checker, symbol, before)
-    ?? symbolInitializer(symbol);
-  return value ? resolveBoolean(value, source, checker, before, visited) : undefined;
+  ) return unwrapLiteralExpression(expression.expression);
+  return expression;
 }
 
-function objectExpressionAtCall(
-  expression: ts.Expression,
-  source: ts.SourceFile,
-  checker: ts.TypeChecker,
-  before: number
-): { object: ts.ObjectLiteralExpression; symbol?: ts.Symbol } | undefined {
-  if (ts.isObjectLiteralExpression(expression)) return { object: expression };
-  if (!ts.isIdentifier(expression)) return undefined;
-  const symbol = checker.getSymbolAtLocation(expression);
-  if (!symbol) return undefined;
-  const assigned = latestWholeAssignment(source, checker, symbol, before)
-    ?? symbolInitializer(symbol);
-  if (!assigned) return undefined;
-  const resolved = objectExpressionAtCall(assigned, source, checker, before);
-  return resolved ? { ...resolved, symbol } : undefined;
-}
-
-function propertyBooleanAtCall(
-  options: { object: ts.ObjectLiteralExpression; symbol?: ts.Symbol },
-  name: 'shell' | 'windowsHide',
-  source: ts.SourceFile,
-  checker: ts.TypeChecker,
-  before: number
-): boolean | undefined {
-  let value: ts.Expression | undefined;
-  for (const property of options.object.properties) {
-    const propertyName = property.name
-      && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))
-      ? property.name.text
-      : undefined;
-    if (propertyName !== name) continue;
-    if (ts.isPropertyAssignment(property)) value = property.initializer;
-    if (ts.isShorthandPropertyAssignment(property)) {
-      const shorthand = checker.getShorthandAssignmentValueSymbol(property);
-      value = shorthand ? symbolInitializer(shorthand) : undefined;
+/** 只有调用点不可变的内联安全字面量可通过；任何间接状态或动态合并均失败关闭。 */
+function hasProvablySafeSpawnOptions(
+  expression: ts.Expression | undefined,
+  checker: ts.TypeChecker
+): boolean {
+  if (!expression) return false;
+  const literal = unwrapLiteralExpression(expression);
+  if (!ts.isObjectLiteralExpression(literal)) return false;
+  let shellSafe = false;
+  let windowsHidden = false;
+  const seen = new Set<string>();
+  for (const property of literal.properties) {
+    if (!ts.isPropertyAssignment(property)) return false;
+    if (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name)) return false;
+    const name = property.name.text;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    const value = unwrapLiteralExpression(property.initializer);
+    if (name === 'shell') {
+      if (
+        value.kind !== ts.SyntaxKind.FalseKeyword
+        || checker.typeToString(checker.getTypeAtLocation(value)) !== 'false'
+      ) return false;
+      shellSafe = true;
+    }
+    if (name === 'windowsHide') {
+      if (
+        value.kind !== ts.SyntaxKind.TrueKeyword
+        || checker.typeToString(checker.getTypeAtLocation(value)) !== 'true'
+      ) return false;
+      windowsHidden = true;
     }
   }
-  if (options.symbol) {
-    let latest: ts.BinaryExpression | undefined;
-    const visit = (node: ts.Node): void => {
-      if (node.getStart(source) >= before) return;
-      if (
-        ts.isBinaryExpression(node)
-        && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        && ts.isPropertyAccessExpression(node.left)
-        && node.left.name.text === name
-        && checker.getSymbolAtLocation(node.left.expression) === options.symbol
-        && (!latest || node.getStart(source) > latest.getStart(source))
-      ) latest = node;
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-    if (latest) value = latest.right;
-  }
-  return value ? resolveBoolean(value, source, checker, before) : undefined;
+  return shellSafe && windowsHidden;
 }
 
 /**
- * 以正式入口建立 TypeScript 语义图，再检查传递依赖与最终 child_process.spawn 参数。
- * 未能静态证明 shell:false、windowsHide:true 的调用按不安全处理。
+ * 以正式入口建立 TypeScript 语义图，再检查传递依赖与 child_process 调用。
+ * exec 固定违规；spawn 未能证明为内联不可变安全字面量时按不安全处理。
  */
 export async function scanLocalModelCapabilityBoundary(
   files: readonly string[]
@@ -191,6 +195,7 @@ export async function scanLocalModelCapabilityBoundary(
   const sources = program.getSourceFiles().filter(source => (
     !source.isDeclarationFile && !/[\\/]node_modules[\\/]/u.test(source.fileName)
   ));
+  const processBindings = childProcessBindings(sources, checker);
 
   for (const source of sources) {
     const visit = (node: ts.Node): void => {
@@ -217,18 +222,11 @@ export async function scanLocalModelCapabilityBoundary(
           || declarationFiles.some(file => forbiddenDependency.test(file))
         ) forbiddenDependencies.add(`${basename(source.fileName)}:${node.text}`);
       }
-      if (
-        ts.isCallExpression(node)
-        && expressionCanCallChildProcessSpawn(checker, node.expression)
-      ) {
-        const optionsExpression = node.arguments[2];
-        const options = optionsExpression
-          ? objectExpressionAtCall(optionsExpression, source, checker, node.getStart(source))
-          : undefined;
-        const safe = options
-          && propertyBooleanAtCall(options, 'shell', source, checker, node.getStart(source)) === false
-          && propertyBooleanAtCall(options, 'windowsHide', source, checker, node.getStart(source)) === true;
-        if (!safe) {
+      if (ts.isCallExpression(node)) {
+        const callKind = childProcessCallKind(node.expression, checker, processBindings);
+        const safe = callKind === 'spawn'
+          && hasProvablySafeSpawnOptions(node.arguments[2], checker);
+        if (callKind && !safe) {
           const location = source.getLineAndCharacterOfPosition(node.getStart(source));
           unsafeSpawnOptions.add(`${basename(source.fileName)}:${location.line + 1}`);
         }

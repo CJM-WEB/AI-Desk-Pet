@@ -82,6 +82,7 @@ type ElectronFixtureModule = {
     intervalMs?: number;
     probe?: (endpoint: string) => Promise<boolean>;
   }): Promise<void>;
+  observeElectronProcessStreamsClosed(process: EventEmitter): Promise<void>;
   createCapturedLogEvidenceTracker(input: Readonly<{
     apiKey: string;
     authorizedRootDirectory: string;
@@ -249,6 +250,7 @@ type ElectronFixtureModule = {
     getConversationProbe(): Promise<ConversationE2eProbe>;
     markLocalModelValidationReady(): Promise<void>;
     markLocalModelReady(): Promise<void>;
+    getLocalModelFixturePrivatePaths(): readonly string[];
     getLocalModelFixtureEvidence(): Promise<{
       processId: number;
       port: number;
@@ -562,6 +564,22 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
       probe: async () => false
     })).rejects.toThrow('CDP_READY_TIMEOUT');
     expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  test('应用退出检查在 exit 后继续等待 stdio close', async () => {
+    const fixture = await loadElectronFixtureModule();
+    const process = new EventEmitter();
+    let closed = false;
+    const observed = fixture.observeElectronProcessStreamsClosed(process)
+      .then(() => { closed = true; });
+
+    process.emit('exit', 0, null);
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    process.emit('close', 0, null);
+    await observed;
+    expect(closed).toBe(true);
   });
 
   test('捕获日志时清除 API Key、Authorization Header 和授权根绝对路径', async () => {
@@ -4377,6 +4395,7 @@ test.describe('真实 Provider 业务闭环', () => {
         .toBeVisible();
       await expect(chat.getByRole('button', { name: '发送给 AI Pet' })).toBeDisabled();
       expect(cloud.requests).toHaveLength(0);
+      connectionCanaries.push(...fixture.getLocalModelFixturePrivatePaths());
 
       await fixture.markLocalModelValidationReady();
       await expect(settings.getByText('本地模型加载中', { exact: true })).toBeVisible();
@@ -4477,21 +4496,25 @@ test.describe('真实 Provider 业务闭环', () => {
         cloudReply,
         'body-canary-local-electron'
       ])];
-      expect(fixture.inspectCapturedLogCanaries(privateCanaries))
-        .toEqual(privateCanaries.map(() => false));
-      const rendererArtifact = rendererDiagnostics.join('\n');
-      const statusArtifact = JSON.stringify(publicLocalModelSnapshots);
-      for (const canary of privateCanaries) {
-        expect(rendererArtifact).not.toContain(canary);
-        expect(statusArtifact).not.toContain(canary);
-      }
-
-      expect(fixture.capturedLogEvidence).toEqual({
-        apiKey: false,
-        authorizedRoot: false,
-        authorizationHeader: false,
-        sentinels: logSentinels.map(() => false)
-      });
+      const assertNoPrivateArtifacts = (): void => {
+        expect(fixture.inspectCapturedLogCanaries(privateCanaries))
+          .toEqual(privateCanaries.map(() => false));
+        const artifacts = [
+          JSON.stringify(rendererDiagnostics),
+          JSON.stringify(publicLocalModelSnapshots),
+          JSON.stringify(fixture.logs)
+        ];
+        for (const canary of privateCanaries) {
+          for (const artifact of artifacts) expect(artifact).not.toContain(canary);
+        }
+        expect(fixture.capturedLogEvidence).toEqual({
+          apiKey: false,
+          authorizedRoot: false,
+          authorizationHeader: false,
+          sentinels: logSentinels.map(() => false)
+        });
+      };
+      assertNoPrivateArtifacts();
 
       await settings.evaluate(async () => window.myself.quit());
       await fixture.closeApplicationForInspection();
@@ -4500,8 +4523,8 @@ test.describe('真实 Provider 业务闭环', () => {
         status: 'absent'
       });
       await expect(lstat(finalTokenFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(fixture.inspectCapturedLogCanaries(privateCanaries))
-        .toEqual(privateCanaries.map(() => false));
+      // 关闭期间可能产生新的 console/pageerror/log；自然退出后重新序列化全部诊断。
+      assertNoPrivateArtifacts();
     } finally {
       try {
         await fixture.dispose();

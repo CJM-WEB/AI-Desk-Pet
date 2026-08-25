@@ -253,6 +253,7 @@ export interface ElectronAppFixture {
   }>;
   markLocalModelValidationReady(): Promise<void>;
   markLocalModelReady(): Promise<void>;
+  getLocalModelFixturePrivatePaths(): readonly string[];
   getLocalModelFixtureEvidence(): Promise<LocalModelFixtureEvidence>;
   inspectCapturedLogCanaries(canaries: readonly string[]): readonly boolean[];
   restart(): Promise<void>;
@@ -661,6 +662,13 @@ async function waitForProcessExit(
       return;
     }
     timeout = setTimeout(() => finish(hasProcessExited(process)), timeoutMs);
+  });
+}
+
+/** child_process 的 close 事件发生在 exit 之后且 stdio 已关闭，用于封存完整日志证据。 */
+export function observeElectronProcessStreamsClosed(process: EventEmitter): Promise<void> {
+  return new Promise<void>(resolveClosed => {
+    process.once('close', () => resolveClosed());
   });
 }
 
@@ -1117,6 +1125,10 @@ const defaultDependencies: ElectronAppDependencies = {
 };
 
 type MaterializedLocalModelFixture = ElectronLaunchPlanOptions['localModelFixture'] & {
+  serverScriptPath: string;
+  root: string;
+  cachePath: string;
+  tokenRoot: string;
   validationReadyFile: string;
   readyFile: string;
   evidenceFile: string;
@@ -1249,7 +1261,17 @@ async function materializeLocalModelRuntimeFixture(input: {
     evidenceFile,
     stderrCanary: input.stderrCanary
   }), 'utf8');
-  return { modulePath, configPath, validationReadyFile, readyFile, evidenceFile };
+  return {
+    modulePath,
+    configPath,
+    serverScriptPath,
+    root,
+    cachePath,
+    tokenRoot,
+    validationReadyFile,
+    readyFile,
+    evidenceFile
+  };
 }
 
 /**
@@ -1299,6 +1321,10 @@ export async function createElectronAppFixture(
     sentinels: options.logSentinels ?? []
   });
   let child: SpawnedElectronProcess | null = null;
+  let childStreamsClosed: Readonly<{
+    process: SpawnedElectronProcess;
+    completion: Promise<void>;
+  }> | null = null;
   let browser: Pick<Browser, 'close'> | null = null;
   let plan: ElectronLaunchPlan | null = null;
   let disposed = false;
@@ -1425,6 +1451,7 @@ export async function createElectronAppFixture(
         if (child === currentChild) {
           child = null;
           plan = null;
+          childStreamsClosed = null;
         }
       } catch (error) {
         cleanupErrors.push(error as Error);
@@ -1459,6 +1486,10 @@ export async function createElectronAppFixture(
     const nextChild = dependencies.spawnProcess(nextPlan);
     plan = nextPlan;
     child = nextChild;
+    childStreamsClosed = {
+      process: nextChild,
+      completion: observeElectronProcessStreamsClosed(nextChild)
+    };
     nextChild.stdout?.on('data', chunk => {
       if (currentLogStreamEpoch === logStreamEpoch) capture('stdout', chunk);
     });
@@ -1728,6 +1759,21 @@ export async function createElectronAppFixture(
         if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
         await writeFile(localModelFixture.readyFile, 'ready\n', 'utf8');
       },
+      getLocalModelFixturePrivatePaths() {
+        if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
+        return Object.freeze([
+          directories.baseDirectory,
+          localModelFixture.modulePath,
+          localModelFixture.configPath,
+          localModelFixture.serverScriptPath,
+          localModelFixture.root,
+          localModelFixture.cachePath,
+          localModelFixture.tokenRoot,
+          localModelFixture.validationReadyFile,
+          localModelFixture.readyFile,
+          localModelFixture.evidenceFile
+        ]);
+      },
       async getLocalModelFixtureEvidence() {
         if (!localModelFixture) throw new Error('LOCAL_MODEL_E2E_FIXTURE_UNAVAILABLE');
         const evidence = JSON.parse(await readFile(localModelFixture.evidenceFile, 'utf8')) as unknown;
@@ -1768,12 +1814,19 @@ export async function createElectronAppFixture(
         const currentChild = child;
         const currentBrowser = browser;
         if (!currentChild) throw new Error('ELECTRON_PROCESS_NOT_RUNNING');
-        if (!await waitForProcessExit(currentChild, operationTimeoutMs)) {
-          throw new Error('ELECTRON_APPLICATION_QUIT_TIMEOUT');
+        const streamsClosed = childStreamsClosed;
+        if (!streamsClosed || streamsClosed.process !== currentChild) {
+          throw new Error('ELECTRON_PROCESS_CLOSE_OBSERVER_MISSING');
         }
+        await runStage(
+          'wait_application_streams_closed',
+          () => streamsClosed.completion,
+          operationTimeoutMs
+        );
         if (child === currentChild) {
           child = null;
           plan = null;
+          childStreamsClosed = null;
         }
         if (currentBrowser) {
           await currentBrowser.close();
