@@ -8,12 +8,30 @@ import {
   parseAcceptanceArguments
 } from '../scripts/run-local-model-acceptance.mjs';
 import {
+  findFinalAssistantText,
   runAcceptanceLifecycle,
   runAcceptanceWithDeadline
 } from '../scripts/local-model-acceptance-runner';
 const execFileAsync = promisify(execFile);
 
 describe('真实本地模型验收脚本', () => {
+  test('聊天验收只接受 message 或 commit 的最终正文并忽略流式 delta', () => {
+    expect(findFinalAssistantText([
+      { type: 'message', role: 'assistant', text: '兼容正文' }
+    ])).toBe('兼容正文');
+    expect(findFinalAssistantText([
+      { type: 'assistant_message_start', turnId: 'turn-1' },
+      { type: 'assistant_message_delta', turnId: 'turn-1', delta: '流式片段' },
+      { type: 'assistant_message_commit', turnId: 'turn-1', text: '流式最终正文' }
+    ])).toBe('流式最终正文');
+    expect(findFinalAssistantText([
+      { type: 'assistant_message_delta', turnId: 'turn-2', delta: '不能作为最终正文' }
+    ])).toBeUndefined();
+    expect(findFinalAssistantText([
+      { type: 'message', role: 'user', text: '用户正文' }
+    ])).toBeUndefined();
+  });
+
   test('只接受显式 CPU 或 Vulkan 后端', () => {
     expect(parseAcceptanceArguments(['--backend', 'cpu'])).toEqual({ backend: 'cpu' });
     expect(parseAcceptanceArguments(['--backend=vulkan'])).toEqual({ backend: 'vulkan' });

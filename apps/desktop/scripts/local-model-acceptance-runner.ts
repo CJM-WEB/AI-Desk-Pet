@@ -79,6 +79,16 @@ function normalizedRelativePath(value: string): string {
   return value.replace(/\\/gu, '/');
 }
 
+/** 验收只采信已提交的助手正文；流式 start/delta 不能单独证明一轮成功。 */
+export function findFinalAssistantText(events: readonly TaskEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type === 'assistant_message_commit') return event.text;
+    if (event?.type === 'message' && event.role === 'assistant') return event.text;
+  }
+  return undefined;
+}
+
 function findPendingAction(events: readonly TaskEvent[]) {
   const event = events.find(candidate => candidate.type === 'pending_action');
   if (event?.type !== 'pending_action') {
@@ -87,7 +97,7 @@ function findPendingAction(events: readonly TaskEvent[]) {
     if (events.some(candidate => candidate.type === 'history_disclosure_required')) {
       throw acceptanceError('HISTORY_DISCLOSURE_REQUIRED');
     }
-    if (events.some(candidate => candidate.type === 'message' && candidate.role === 'assistant')) {
+    if (findFinalAssistantText(events) !== undefined) {
       throw acceptanceError('MODEL_TEXT_INSTEAD_OF_TOOL');
     }
     throw acceptanceError('TOOL_CALL_MISSING');
@@ -420,10 +430,8 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     acceptanceStage = 'CHAT';
     const chatEventStart = events.length;
     await composition.coordinator.submit('只用简短中文回答：你好。');
-    const chatMessage = events.slice(chatEventStart).find(event => (
-      event.type === 'message' && event.role === 'assistant'
-    ));
-    if (chatMessage?.type !== 'message' || !containsChinese(chatMessage.text)) {
+    const chatMessage = findFinalAssistantText(events.slice(chatEventStart));
+    if (chatMessage === undefined || !containsChinese(chatMessage)) {
       throw acceptanceError('CHINESE_CHAT_FAILED');
     }
     checks.chineseChat = true;
@@ -467,9 +475,9 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     }
     checks.fileSideEffect = true;
     checks.createOperation = true;
-    checks.toolResultSummary = events.slice(confirmEventStart).some(event => (
-      event.type === 'message' && event.role === 'assistant' && event.text.trim().length > 0
-    ));
+    checks.toolResultSummary = (
+      findFinalAssistantText(events.slice(confirmEventStart))?.trim().length ?? 0
+    ) > 0;
     if (!checks.toolResultSummary) throw acceptanceError('TOOL_RESULT_SUMMARY_FAILED');
 
     await mkdir(join(authorizedRoot, '目标目录'));
@@ -538,11 +546,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     const clarificationEvents = events.slice(clarificationEventStart);
     if (
       clarificationEvents.some(event => event.type === 'pending_action')
-      || !clarificationEvents.some(event => (
-        event.type === 'message'
-        && event.role === 'assistant'
-        && event.text === '请提供目标文件或目录的相对路径。'
-      ))
+      || findFinalAssistantText(clarificationEvents) !== '请提供目标文件或目录的相对路径。'
     ) {
       throw acceptanceError('CLARIFICATION_FAILED');
     }
