@@ -1,4 +1,5 @@
 import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
+import { localModelReasonText } from '../local-model-status';
 
 export interface LocalModelSettingsCardProps {
   status: LocalModelPublicStatus;
@@ -13,22 +14,6 @@ function statusText(status: LocalModelPublicStatus): string {
   if (status.phase === 'stopping') return '正在停止本地模型';
   if (status.phase === 'faulted') return '本地模型启动失败';
   return status.backend === 'cpu' ? 'CPU 兼容模式' : 'Vulkan 已就绪';
-}
-
-function reasonText(reasonCode: LocalModelPublicStatus['reasonCode']): string {
-  const reasons: Record<NonNullable<LocalModelPublicStatus['reasonCode']>, string> = {
-    RESOURCE_MISSING: '内置资源缺失',
-    RESOURCE_HASH_MISMATCH: '内置资源校验失败',
-    RUNTIME_INCOMPATIBLE: '运行时不兼容',
-    VULKAN_UNAVAILABLE: 'Vulkan 不可用',
-    CPU_START_FAILED: 'CPU 兼容模式启动失败',
-    MODEL_LOAD_TIMEOUT: '模型加载超时',
-    PORT_CONFLICT: '本地端口冲突',
-    PROCESS_CRASHED: '本地模型进程意外退出',
-    PROTOCOL_INCOMPATIBLE: '本地模型协议不兼容',
-    PROCESS_CLEANUP_FAILED: '本地模型进程清理失败'
-  };
-  return reasonCode ? reasons[reasonCode] : '本地模型启动失败';
 }
 
 /** 本地模型卡只展示公开状态，并保持云端档案表单独立可编辑。 */
@@ -64,7 +49,7 @@ export function LocalModelSettingsCard({
       ) : null}
       {status.phase === 'faulted' ? (
         <div className="local-model-fault" role="alert">
-          <p>原因：{reasonText(status.reasonCode)}</p>
+          <p>原因：{localModelReasonText(status.reasonCode)}</p>
           <button
             className="quiet-button"
             type="button"

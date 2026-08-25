@@ -4,7 +4,36 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatPanel } from '../src/renderer/src/chat/ChatPanel';
 import { taskStore } from '../src/renderer/src/stores/task-store';
+import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import type { LocalModelPublicStatus } from '../src/shared/local-model-ipc';
+
+function dashboardWithLocalModel(localModel: LocalModelPublicStatus): SettingsDashboardDto {
+  return {
+    catalog: [],
+    profiles: [],
+    route: {
+      primaryProfileId: null,
+      chatProfileId: null,
+      agentProfileId: null,
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    },
+    privacy: {
+      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      longTermMemory: false,
+      proactivityMode: 'assistive'
+    },
+    privacyRuntimeSupport: {
+      dataCategories: { file: true, screenshot: false, clipboard: false, memory: false },
+      longTermMemory: false,
+      proactivity: false
+    },
+    petAlwaysOnTop: false,
+    localModel,
+    authorizedRoot: null
+  };
+}
 
 afterEach(() => {
   cleanup();
@@ -13,6 +42,64 @@ afterEach(() => {
 });
 
 describe('聊天面板本地模型状态', () => {
+  test('首次状态事件前，Dashboard 的 loading 快照会禁发并给出文字反馈', async () => {
+    const api = {
+      submitMessage: vi.fn().mockResolvedValue(undefined),
+      cancelTask: vi.fn().mockResolvedValue(undefined),
+      confirmAction: vi.fn().mockResolvedValue(undefined),
+      cancelAction: vi.fn().mockResolvedValue(undefined),
+      resetConversation: vi.fn().mockResolvedValue(undefined),
+      resolveHistoryDisclosure: vi.fn().mockResolvedValue(undefined),
+      openSettings: vi.fn().mockResolvedValue(undefined),
+      hideChat: vi.fn().mockResolvedValue(undefined),
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboardWithLocalModel({
+        enabled: true,
+        phase: 'loading',
+        backend: null,
+        reasonCode: null
+      })),
+      onLocalModelStatus: vi.fn(() => vi.fn())
+    };
+    render(<ChatPanel api={api as never} />);
+
+    fireEvent.change(screen.getByRole('textbox', { name: '和我说点什么' }), {
+      target: { value: '你好' }
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByRole('status').textContent).toContain('本地模型加载中');
+    expect((screen.getByRole('button', { name: '发送给 AI Pet' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test('首次状态事件前，Dashboard 的 faulted 快照会禁发并给出故障原因', async () => {
+    const api = {
+      submitMessage: vi.fn().mockResolvedValue(undefined),
+      cancelTask: vi.fn().mockResolvedValue(undefined),
+      confirmAction: vi.fn().mockResolvedValue(undefined),
+      cancelAction: vi.fn().mockResolvedValue(undefined),
+      resetConversation: vi.fn().mockResolvedValue(undefined),
+      resolveHistoryDisclosure: vi.fn().mockResolvedValue(undefined),
+      openSettings: vi.fn().mockResolvedValue(undefined),
+      hideChat: vi.fn().mockResolvedValue(undefined),
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboardWithLocalModel({
+        enabled: true,
+        phase: 'faulted',
+        backend: null,
+        reasonCode: 'VULKAN_UNAVAILABLE'
+      })),
+      onLocalModelStatus: vi.fn(() => vi.fn())
+    };
+    render(<ChatPanel api={api as never} />);
+
+    fireEvent.change(screen.getByRole('textbox', { name: '和我说点什么' }), {
+      target: { value: '你好' }
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByRole('alert').textContent).toContain('Vulkan 不可用');
+    expect((screen.getByRole('button', { name: '发送给 AI Pet' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   test('加载时禁发，ready 后恢复发送，并在卸载时精确取消订阅', () => {
     let statusListener: ((status: LocalModelPublicStatus) => void) | undefined;
     const unsubscribe = vi.fn();

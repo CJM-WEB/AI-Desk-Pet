@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { HistoryDisclosureDecision, TaskPhase } from '@myself/shared-types';
 import type { MyselfApi } from '../../../shared/myself-api';
 import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
+import { localModelReasonText } from '../local-model-status';
 import { ConfirmationCard } from './ConfirmationCard';
 import { HistoryDisclosureCard } from './HistoryDisclosureCard';
 import { taskStore, useTaskStore } from '../stores/task-store';
@@ -27,22 +28,6 @@ const initialLocalModelStatus: LocalModelPublicStatus = {
   backend: null,
   reasonCode: null
 };
-
-function localModelReasonText(reasonCode: LocalModelPublicStatus['reasonCode']): string {
-  const reasons: Record<NonNullable<LocalModelPublicStatus['reasonCode']>, string> = {
-    RESOURCE_MISSING: '内置资源缺失',
-    RESOURCE_HASH_MISMATCH: '内置资源校验失败',
-    RUNTIME_INCOMPATIBLE: '运行时不兼容',
-    VULKAN_UNAVAILABLE: 'Vulkan 不可用',
-    CPU_START_FAILED: 'CPU 兼容模式启动失败',
-    MODEL_LOAD_TIMEOUT: '模型加载超时',
-    PORT_CONFLICT: '本地端口冲突',
-    PROCESS_CRASHED: '本地模型进程意外退出',
-    PROTOCOL_INCOMPATIBLE: '本地模型协议不兼容',
-    PROCESS_CLEANUP_FAILED: '本地模型进程清理失败'
-  };
-  return reasonCode ? reasons[reasonCode] : '本地模型启动失败';
-}
 
 type RevisionOwner = Readonly<{ revision: number; token: symbol }>;
 type DisclosureOwner = RevisionOwner & Readonly<{
@@ -112,9 +97,15 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
 
   useEffect(() => {
     let active = true;
+    let receivedStatusEvent = false;
     const unsubscribe = api.onLocalModelStatus?.(status => {
+      receivedStatusEvent = true;
       if (active) setLocalModelStatus(status);
     });
+    // 订阅先于快照，避免异步 Dashboard 返回覆盖更晚的状态事件。
+    void api.getSettingsDashboard?.().then(dashboard => {
+      if (active && !receivedStatusEvent) setLocalModelStatus(dashboard.localModel);
+    }).catch(() => undefined);
     return () => {
       active = false;
       unsubscribe?.();

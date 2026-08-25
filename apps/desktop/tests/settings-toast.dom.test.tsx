@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { SettingsDashboardDto } from '../src/shared/myself-api';
 import { SettingsView, SettingsWorkspace } from '../src/renderer/src/settings/SettingsView';
+import type { LocalModelPublicStatus } from '../src/shared/local-model-ipc';
 
 const dashboard: SettingsDashboardDto = {
   catalog: [],
@@ -73,6 +74,46 @@ afterEach(() => {
 });
 
 describe('设置页瞬时提示', () => {
+  test('操作等待期间收到的最新本地模型事件不会被延迟 dashboard 响应覆盖', async () => {
+    let statusListener: ((status: LocalModelPublicStatus) => void) | undefined;
+    let resolveSave: ((result: SettingsDashboardDto) => void) | undefined;
+    const staleDashboard: SettingsDashboardDto = {
+      ...dashboard,
+      localModel: {
+        enabled: true,
+        phase: 'loading',
+        backend: null,
+        reasonCode: null
+      }
+    };
+    const api = {
+      getSettingsDashboard: vi.fn().mockResolvedValue(dashboard),
+      onLocalModelStatus: vi.fn((listener: (status: LocalModelPublicStatus) => void) => {
+        statusListener = listener;
+        return vi.fn();
+      }),
+      saveProviderProfile: vi.fn(() => new Promise<SettingsDashboardDto>(resolve => {
+        resolveSave = resolve;
+      }))
+    };
+    render(<SettingsView api={api as never} />);
+    await act(async () => { await Promise.resolve(); });
+
+    fireEvent.click(screen.getByRole('button', { name: '保存档案' }));
+    act(() => statusListener?.({
+      enabled: true,
+      phase: 'ready',
+      backend: 'vulkan',
+      reasonCode: null
+    }));
+    await act(async () => {
+      resolveSave?.(staleDashboard);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Vulkan 已就绪')).toBeTruthy();
+  });
+
   test('陈旧的初始读取不会覆盖后完成操作的 dashboard 或 success 提示', async () => {
     let rejectInitialDashboard: ((reason?: unknown) => void) | undefined;
     const newerDashboard: SettingsDashboardDto = {

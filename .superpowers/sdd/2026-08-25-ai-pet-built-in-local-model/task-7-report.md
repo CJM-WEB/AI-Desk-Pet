@@ -48,3 +48,40 @@ git diff --check
 ## 未覆盖项与风险
 
 - 未运行真实 GGUF、CPU/Vulkan Runtime 或真实 Electron 窗口尺寸人工验收；这些仍由后续资源集成与 Task 9 / 用户人工确认覆盖。
+
+---
+
+## 修复轮 1（2026-08-25）
+
+### RED 证据
+
+先新增 Dashboard 初始快照和异步交错时序测试，再执行：
+
+```powershell
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/chat-panel.test.tsx tests/settings-toast.dom.test.tsx
+```
+
+结果为 3 项预期失败：ChatPanel 在首次状态事件前未消费 Dashboard 的 `loading` 与 `faulted` 快照；SettingsView 的延迟保存响应以旧 `loading` 覆盖了操作期间事件推送的 `ready/Vulkan` 状态。其余 11 项通过。
+
+### 修复内容
+
+- ChatPanel 复用既有 `getSettingsDashboard()`，先订阅状态事件、后读取初始 Dashboard；快照只在尚未收到事件时生效，因此 Renderer 重载后的加载与故障状态会在首个事件前以文字反馈并禁用发送。
+- SettingsView 用 ref 持有最新公开状态，并让初始读取与 `run()` 的两条 Dashboard 写入路径统一通过合并入口，避免任何延迟响应回退已经到达的状态事件。
+- 抽取 Renderer 共享只读故障原因 formatter，移除聊天和设置卡中的重复中文映射。
+
+### 验证结果
+
+```powershell
+pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/chat-panel.test.tsx tests/settings-toast.dom.test.tsx
+pnpm.cmd --dir apps/desktop typecheck
+pnpm.cmd --dir apps/desktop test
+pnpm.cmd --dir apps/desktop build
+git diff --check
+```
+
+结果：定向 2 个文件共 14 项通过；类型检查通过；完整 Desktop 套件 102 个测试文件、2355 项测试通过；生产构建、Preload/MCP 边界校验通过；`git diff --check` 无空白错误。构建仍有第三方 `lucide-react` 既有 `"use client"` 提示，退出码为 0。
+
+### 范围与剩余风险
+
+- 未新增 IPC、未改动 SDD ledger，也未涉及 Task 8。
+- 未运行真实 Runtime 与真实 Electron 窗口人工验收；该限制与原报告相同，仍待后续任务或用户人工确认。

@@ -177,6 +177,7 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
   const [busy, setBusy] = useState(false);
   const [incognito, setIncognito] = useState(false);
   const noticeSequence = useRef(0);
+  const latestLocalModelStatus = useRef<LocalModelPublicStatus | null>(null);
   const [notice, setNotice] = useState<Notice>({
     id: 'settings-toast-0',
     tone: 'info',
@@ -194,18 +195,26 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
     setNotice(current => current?.id === id ? null : current);
   };
 
+  /** 所有 Dashboard 快照都以订阅到的最新公开状态为准，防止异步响应回退状态机。 */
+  const applyDashboard = (next: SettingsDashboardDto): void => {
+    setDashboard({
+      ...next,
+      localModel: latestLocalModelStatus.current ?? next.localModel
+    });
+  };
+
   useEffect(() => {
     let active = true;
     const initialLoadOwner = noticeSequence.current;
-    let latestLocalModelStatus: LocalModelPublicStatus | null = null;
+    latestLocalModelStatus.current = null;
     const unsubscribe = api.onLocalModelStatus?.(status => {
       if (!active) return;
-      latestLocalModelStatus = status;
+      latestLocalModelStatus.current = status;
       setDashboard(current => ({ ...current, localModel: status }));
     });
     void api.getSettingsDashboard().then(result => {
       if (!active || noticeSequence.current !== initialLoadOwner) return;
-      setDashboard({ ...result, localModel: latestLocalModelStatus ?? result.localModel });
+      applyDashboard(result);
       dismissNotice('settings-toast-0');
     }).catch(() => {
       if (active && noticeSequence.current === initialLoadOwner) {
@@ -231,10 +240,10 @@ export function SettingsView({ api = window.myself }: { api?: MyselfApi }) {
     try {
       const result = await operation();
       if (result && 'catalog' in result) {
-        setDashboard(result);
+        applyDashboard(result);
         showNotice({ tone: 'success', text: success });
       } else {
-        if (result?.dashboard) setDashboard(result.dashboard);
+        if (result?.dashboard) applyDashboard(result.dashboard);
         showNotice(result?.notice ?? { tone: 'success', text: success });
       }
     } catch {
