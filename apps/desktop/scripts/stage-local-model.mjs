@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
@@ -15,7 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
@@ -28,6 +29,7 @@ const LLAMA_REPOSITORY = 'https://github.com/ggml-org/llama.cpp.git';
 const LLAMA_COMMIT = BUILTIN_LOCAL_MODEL_ASSET_POLICY.runtimeRevision;
 const MODEL = BUILTIN_LOCAL_MODEL_ASSET_POLICY.model;
 const MODEL_URL = `https://huggingface.co/${MODEL.quantizationRepository}/resolve/${MODEL.quantizationRevision}/${MODEL.fileName}?download=true`;
+const MODEL_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1_000;
 const RESOURCE_ROOT = fileURLToPath(new URL('../resources/local-model', import.meta.url));
 
 /** 维护者暂存入口没有 URL、revision 或输出目录参数，所有发行身份都来自仓库固定常量。 */
@@ -129,7 +131,6 @@ async function buildAndStageBackend(sourceRoot, workRoot, stagedResourceRoot, ba
 async function stageFixedModel(stagedResourceRoot) {
   const modelRoot = join(stagedResourceRoot, 'payload', 'model');
   const target = join(modelRoot, MODEL.fileName);
-  const partial = `${target}.partial`;
   await mkdir(modelRoot, { recursive: true });
   if (await isOrdinaryFile(target)) {
     const existing = await createManifestEntry(target, `payload/model/${MODEL.fileName}`);
@@ -139,20 +140,74 @@ async function stageFixedModel(stagedResourceRoot) {
     return existing;
   }
 
+  return downloadFixedModelFile({
+    url: MODEL_URL,
+    target,
+    relativePath: `payload/model/${MODEL.fileName}`,
+    expectedSize: MODEL.size,
+    expectedSha256: MODEL.sha256,
+    timeoutMs: MODEL_DOWNLOAD_TIMEOUT_MS,
+    fetchImpl: fetch
+  });
+}
+
+/** 下载过程中同时计数与哈希；超时、外部取消或首个超限块都会销毁流并清理 partial。 */
+export async function downloadFixedModelFile(options) {
+  const partial = `${options.target}.partial`;
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(
+    options.signal?.reason ?? new DOMException('操作已取消', 'AbortError')
+  );
+  if (options.signal?.aborted) abortFromCaller();
+  else options.signal?.addEventListener('abort', abortFromCaller, { once: true });
+  const timeout = setTimeout(
+    () => controller.abort(new Error('MODEL_DOWNLOAD_TIMEOUT')),
+    options.timeoutMs
+  );
+  timeout.unref?.();
+
+  await mkdir(dirname(options.target), { recursive: true });
   await rm(partial, { force: true });
+  let byteCount = 0;
+  const hash = createHash('sha256');
+  const limiter = new Transform({
+    transform(chunk, _encoding, callback) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      byteCount += bytes.byteLength;
+      if (byteCount > options.expectedSize) {
+        callback(new Error('MODEL_DOWNLOAD_OVERSIZE'));
+        return;
+      }
+      hash.update(bytes);
+      callback(null, bytes);
+    }
+  });
+
   try {
-    const response = await fetch(MODEL_URL, { redirect: 'follow' });
+    const response = await options.fetchImpl(options.url, {
+      redirect: 'follow',
+      signal: controller.signal
+    });
     if (!response.ok || response.body === null) throw new Error('MODEL_DOWNLOAD_FAILED');
-    await pipeline(Readable.fromWeb(response.body), createWriteStream(partial, { flags: 'wx' }));
-    const entry = await createManifestEntry(partial, `payload/model/${MODEL.fileName}`);
-    if (entry.size !== MODEL.size || entry.sha256 !== MODEL.sha256) {
+    await pipeline(
+      Readable.fromWeb(response.body),
+      limiter,
+      createWriteStream(partial, { flags: 'wx' }),
+      { signal: controller.signal }
+    );
+    const sha256 = hash.digest('hex');
+    if (byteCount !== options.expectedSize || sha256 !== options.expectedSha256) {
       throw new Error('MODEL_DOWNLOAD_MISMATCH');
     }
-    await rename(partial, target);
-    return entry;
+    await rename(partial, options.target);
+    return { path: options.relativePath, size: byteCount, sha256 };
   } catch (error) {
     await rm(partial, { force: true });
+    if (controller.signal.aborted) throw controller.signal.reason;
     throw error;
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', abortFromCaller);
   }
 }
 
@@ -188,18 +243,53 @@ async function writeStagedManifest(stagedResourceRoot, backends, modelEntry) {
   await rename(partial, manifestPath);
 }
 
-/** 完整 staging 根已通过 verifier 后才切换；第二次 rename 失败会把旧根恢复。 */
-export async function replaceStagedResourceRoot(currentRoot, stagedRoot, renamePath = rename) {
-  const backupRoot = `${currentRoot}.previous-${process.pid}`;
-  if (await pathExists(backupRoot)) throw new Error('STAGE_BACKUP_ALREADY_EXISTS');
-  await renamePath(currentRoot, backupRoot);
+/** 第二次 rename 是 commit point；此前失败回滚，之后清理失败只告警并由下次事务重试。 */
+export async function replaceStagedResourceRoot(currentRoot, stagedRoot, options = {}) {
+  const current = resolve(currentRoot);
+  const staged = resolve(stagedRoot);
+  const expectedCurrent = resolve(options.expectedCurrentRoot ?? RESOURCE_ROOT);
+  const parent = dirname(current);
+  if (
+    current !== expectedCurrent
+    || basename(current) !== 'local-model'
+    || dirname(staged) !== parent
+    || !basename(staged).startsWith('local-model.partial')
+  ) {
+    throw new Error('STAGE_TRANSACTION_PATH_INVALID');
+  }
+  await assertOrdinaryDirectory(current);
+  await assertOrdinaryDirectory(staged);
+  const backupRoot = join(parent, 'local-model.previous');
+  const renamePath = options.renamePath ?? rename;
+  const removePath = options.removePath ?? rm;
+  const onWarning = options.onWarning ?? (code => console.warn(code));
+
+  // 删除范围在上方已收窄为 resources 父目录内唯一固定备份名；旧备份必须先清理才能开始新事务。
+  if (await pathExists(backupRoot)) {
+    await assertOrdinaryDirectory(backupRoot);
+    await removePath(backupRoot, { recursive: true, force: false });
+    if (await pathExists(backupRoot)) throw new Error('STAGE_BACKUP_CLEANUP_FAILED');
+  }
+  await renamePath(current, backupRoot);
   try {
-    await renamePath(stagedRoot, currentRoot);
+    await renamePath(staged, current);
   } catch (error) {
-    await renamePath(backupRoot, currentRoot);
+    await renamePath(backupRoot, current);
     throw error;
   }
-  await rm(backupRoot, { recursive: true, force: true });
+  try {
+    await removePath(backupRoot, { recursive: true, force: false });
+    if (await pathExists(backupRoot)) throw new Error('STAGE_BACKUP_CLEANUP_FAILED');
+    return { warningCode: null };
+  } catch {
+    const warningCode = 'STAGE_BACKUP_CLEANUP_PENDING';
+    try {
+      onWarning(warningCode);
+    } catch {
+      // commit point 已越过，观察端口失败不能把成功切换重新解释为失败。
+    }
+    return { warningCode };
+  }
 }
 
 async function createManifestEntry(path, relativePath) {
@@ -231,6 +321,16 @@ async function pathExists(path) {
   } catch (error) {
     if (typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT') return false;
     throw error;
+  }
+}
+
+async function assertOrdinaryDirectory(path) {
+  const metadata = await lstat(path);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error('STAGE_TRANSACTION_PATH_INVALID');
+  }
+  if (resolve(await realpath(path)) !== resolve(path)) {
+    throw new Error('STAGE_TRANSACTION_PATH_INVALID');
   }
 }
 

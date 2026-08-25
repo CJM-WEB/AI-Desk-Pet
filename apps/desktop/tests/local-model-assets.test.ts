@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, test } from 'vitest';
 
+import { BUILTIN_LOCAL_MODEL_RELEASE } from '../src/main/local-model/local-model-manifest';
+
 interface ManifestFile {
   path: string;
   size: number;
@@ -48,9 +50,9 @@ interface FixturePolicy {
     sha256: string;
   };
   documents: {
-    runtimeLicense: { path: string; sha256: string };
-    modelLicense: { path: string; sha256: string };
-    notices: { path: string; sha256: string };
+    runtimeLicense: { path: string; size: number; sha256: string };
+    modelLicense: { path: string; size: number; sha256: string };
+    notices: { path: string; size: number; sha256: string };
   };
 }
 
@@ -63,7 +65,7 @@ const contents = {
   model: 'fixture-small-model',
   runtimeLicense: 'fixture-mit-license',
   modelLicense: 'fixture-apache-license',
-  notices: 'fixture-notices-with-fixed-sources'
+  notices: 'fixture-notices\nwith-fixed-sources'
 } as const;
 
 function sha256(content: string): string {
@@ -88,20 +90,24 @@ const fixturePolicy: FixturePolicy = {
   documents: {
     runtimeLicense: {
       path: 'licenses/llama.cpp-LICENSE.txt',
+      size: Buffer.byteLength(contents.runtimeLicense),
       sha256: sha256(contents.runtimeLicense)
     },
     modelLicense: {
       path: 'licenses/Qwen3.5-4B-LICENSE.txt',
+      size: Buffer.byteLength(contents.modelLicense),
       sha256: sha256(contents.modelLicense)
     },
     notices: {
       path: 'THIRD-PARTY-NOTICES.txt',
+      size: Buffer.byteLength(contents.notices),
       sha256: sha256(contents.notices)
     }
   }
 };
 
 async function loadVerifier(): Promise<{
+  BUILTIN_LOCAL_MODEL_ASSET_POLICY: FixturePolicy;
   verifyLocalModelAssets: (root: string, policy: FixturePolicy) => Promise<void>;
 }> {
   const moduleUrl = new URL('../scripts/verify-local-model-assets.mjs', import.meta.url);
@@ -109,11 +115,29 @@ async function loadVerifier(): Promise<{
 }
 
 async function loadStager(): Promise<{
+  downloadFixedModelFile: (options: {
+    url: string;
+    target: string;
+    relativePath: string;
+    expectedSize: number;
+    expectedSha256: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    fetchImpl: (
+      input: string,
+      init: { redirect: 'follow'; signal: AbortSignal }
+    ) => Promise<{ ok: boolean; body: ReadableStream<Uint8Array> | null }>;
+  }) => Promise<ManifestFile>;
   replaceStagedResourceRoot: (
     currentRoot: string,
     stagedRoot: string,
-    renamePath?: typeof rename
-  ) => Promise<void>;
+    options?: {
+      expectedCurrentRoot?: string;
+      renamePath?: typeof rename;
+      removePath?: typeof rm;
+      onWarning?: (code: string) => void;
+    }
+  ) => Promise<{ warningCode: string | null }>;
 }> {
   const moduleUrl = new URL('../scripts/stage-local-model.mjs', import.meta.url);
   return import(moduleUrl.href);
@@ -248,6 +272,60 @@ describe('本地模型发行资源 verifier', () => {
     await expect(verifyLocalModelAssets(fixture.root, fixturePolicy)).rejects.toThrow();
   });
 
+  test('发行文本改为 CRLF 并同步改写 manifest 时仍按原始字节拒绝', async () => {
+    const fixture = await createFixture(async (manifest, root) => {
+      const path = fixturePolicy.documents.notices.path;
+      const crlfNotices = contents.notices.replace(/\n/gu, '\r\n');
+      await writeResource(root, path, crlfNotices);
+      manifest.notices = entry(path, crlfNotices);
+    });
+    const { verifyLocalModelAssets } = await loadVerifier();
+
+    await expect(verifyLocalModelAssets(fixture.root, fixturePolicy)).rejects.toThrow(
+      'DOCUMENT_IDENTITY_MISMATCH'
+    );
+  });
+
+  test('verifier 与 runtime 复用同一个生产发行 identity', async () => {
+    const identityModuleUrl = new URL(
+      '../src/main/local-model/local-model-release-identity.mjs',
+      import.meta.url
+    );
+    const { BUILTIN_LOCAL_MODEL_RELEASE_IDENTITY } = await import(identityModuleUrl.href);
+    const { BUILTIN_LOCAL_MODEL_ASSET_POLICY } = await loadVerifier();
+
+    expect(BUILTIN_LOCAL_MODEL_ASSET_POLICY).toBe(BUILTIN_LOCAL_MODEL_RELEASE_IDENTITY);
+    expect(BUILTIN_LOCAL_MODEL_RELEASE).toBe(BUILTIN_LOCAL_MODEL_RELEASE_IDENTITY);
+    expect(Object.isFrozen(BUILTIN_LOCAL_MODEL_RELEASE_IDENTITY)).toBe(true);
+    expect(Object.isFrozen(BUILTIN_LOCAL_MODEL_RELEASE_IDENTITY.model)).toBe(true);
+    expect(Object.isFrozen(BUILTIN_LOCAL_MODEL_RELEASE_IDENTITY.documents)).toBe(true);
+    for (const document of Object.values(BUILTIN_LOCAL_MODEL_RELEASE_IDENTITY.documents)) {
+      expect(Object.isFrozen(document)).toBe(true);
+    }
+  });
+
+  test('生产 manifest 与发行文本原始字节逐项匹配单一 policy', async () => {
+    const root = new URL('../resources/local-model/', import.meta.url);
+    const manifest = JSON.parse(await readFile(new URL('manifest.json', root), 'utf8')) as FixtureManifest;
+    const identityModuleUrl = new URL(
+      '../src/main/local-model/local-model-release-identity.mjs',
+      import.meta.url
+    );
+    const { BUILTIN_LOCAL_MODEL_RELEASE_IDENTITY: policy } = await import(identityModuleUrl.href);
+    const documents = [
+      [manifest.runtime.license, policy.documents.runtimeLicense],
+      [manifest.model.license, policy.documents.modelLicense],
+      [manifest.notices, policy.documents.notices]
+    ] as const;
+
+    for (const [manifestEntry, expected] of documents) {
+      const bytes = await readFile(new URL(expected.path, root));
+      expect(manifestEntry).toEqual(expected);
+      expect(bytes.byteLength).toBe(expected.size);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(expected.sha256);
+    }
+  });
+
   test('测试使用小型模型 fixture', async () => {
     const fixture = await createFixture();
     const model = await readFile(join(fixture.root, 'payload/model', fixturePolicy.model.fileName));
@@ -257,6 +335,161 @@ describe('本地模型发行资源 verifier', () => {
 });
 
 describe('本地模型发行资源暂存事务', () => {
+  test('默认事务拒绝删除非固定 resources/local-model 根', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-safety-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const stagedRoot = join(workspace, 'local-model.partial');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(stagedRoot, 'marker.txt', 'new');
+    const { replaceStagedResourceRoot } = await loadStager();
+
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot)).rejects.toThrow(
+      'STAGE_TRANSACTION_PATH_INVALID'
+    );
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
+  });
+
+  test('模型下载 stall 时超时 Abort 并删除 partial', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-download-stall-')));
+    temporaryDirectories.push(workspace);
+    const target = join(workspace, 'model.gguf');
+    let requestSignal: AbortSignal | undefined;
+    const fetchImpl = async (
+      _input: string,
+      init: { redirect: 'follow'; signal: AbortSignal }
+    ): Promise<{ ok: boolean; body: ReadableStream<Uint8Array> }> => {
+      requestSignal = init.signal;
+      return {
+        ok: true,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+          }
+        })
+      };
+    };
+    const { downloadFixedModelFile } = await loadStager();
+
+    await expect(downloadFixedModelFile({
+      url: 'https://fixed.invalid/model.gguf',
+      target,
+      relativePath: 'payload/model/model.gguf',
+      expectedSize: 4,
+      expectedSha256: sha256('data'),
+      timeoutMs: 20,
+      fetchImpl
+    })).rejects.toThrow('MODEL_DOWNLOAD_TIMEOUT');
+
+    expect(requestSignal?.aborted).toBe(true);
+    await expect(readFile(`${target}.partial`)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('下载字节超过固定 size 时立即中止未结束流并删除 partial', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-download-oversize-')));
+    temporaryDirectories.push(workspace);
+    const target = join(workspace, 'model.gguf');
+    const fetchImpl = async (): Promise<{ ok: boolean; body: ReadableStream<Uint8Array> }> => ({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(Buffer.from('12345', 'utf8'));
+          // 故意不 close；实现必须在首块超限时立即销毁流水线，不能等待流结束或 timeout。
+        }
+      })
+    });
+    const { downloadFixedModelFile } = await loadStager();
+
+    await expect(downloadFixedModelFile({
+      url: 'https://fixed.invalid/model.gguf',
+      target,
+      relativePath: 'payload/model/model.gguf',
+      expectedSize: 4,
+      expectedSha256: sha256('1234'),
+      timeoutMs: 1_000,
+      fetchImpl
+    })).rejects.toThrow('MODEL_DOWNLOAD_OVERSIZE');
+
+    await expect(readFile(`${target}.partial`)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('调用方 Abort 会中止 stall 下载并清理 partial', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-download-abort-')));
+    temporaryDirectories.push(workspace);
+    const target = join(workspace, 'model.gguf');
+    const caller = new AbortController();
+    let notifyRequestStarted!: () => void;
+    const requestStarted = new Promise<void>(resolve => { notifyRequestStarted = resolve; });
+    const fetchImpl = async (
+      _input: string,
+      init: { redirect: 'follow'; signal: AbortSignal }
+    ): Promise<{ ok: boolean; body: ReadableStream<Uint8Array> }> => {
+      notifyRequestStarted();
+      return {
+        ok: true,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+          }
+        })
+      };
+    };
+    const { downloadFixedModelFile } = await loadStager();
+    const downloading = downloadFixedModelFile({
+      url: 'https://fixed.invalid/model.gguf',
+      target,
+      relativePath: 'payload/model/model.gguf',
+      expectedSize: 4,
+      expectedSha256: sha256('data'),
+      timeoutMs: 1_000,
+      signal: caller.signal,
+      fetchImpl
+    });
+    await requestStarted;
+
+    caller.abort(new Error('fixture caller abort'));
+
+    await expect(downloading).rejects.toThrow('fixture caller abort');
+    await expect(readFile(`${target}.partial`)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('多块下载精确匹配 size/SHA 后原子改名并返回 manifest 条目', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-download-success-')));
+    temporaryDirectories.push(workspace);
+    const target = join(workspace, 'model.gguf');
+    const fetchImpl = async (): Promise<{ ok: boolean; body: ReadableStream<Uint8Array> }> => ({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(Buffer.from('da', 'utf8'));
+          controller.enqueue(Buffer.from('ta', 'utf8'));
+          controller.close();
+        }
+      })
+    });
+    const { downloadFixedModelFile } = await loadStager();
+
+    await expect(downloadFixedModelFile({
+      url: 'https://fixed.invalid/model.gguf',
+      target,
+      relativePath: 'payload/model/model.gguf',
+      expectedSize: 4,
+      expectedSha256: sha256('data'),
+      timeoutMs: 1_000,
+      fetchImpl
+    })).resolves.toEqual({
+      path: 'payload/model/model.gguf',
+      size: 4,
+      sha256: sha256('data')
+    });
+
+    await expect(readFile(target, 'utf8')).resolves.toBe('data');
+    await expect(readFile(`${target}.partial`)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   test('完整 staging 根准备完成后整体替换旧资源根', async () => {
     const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-swap-')));
     temporaryDirectories.push(workspace);
@@ -266,7 +499,7 @@ describe('本地模型发行资源暂存事务', () => {
     await writeResource(stagedRoot, 'marker.txt', 'new');
     const { replaceStagedResourceRoot } = await loadStager();
 
-    await replaceStagedResourceRoot(currentRoot, stagedRoot);
+    await replaceStagedResourceRoot(currentRoot, stagedRoot, { expectedCurrentRoot: currentRoot });
 
     await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('new');
     expect(await readdir(workspace)).toEqual(['local-model']);
@@ -285,12 +518,49 @@ describe('本地模型发行资源暂存事务', () => {
       await rename(from, to);
     };
 
-    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, failStagedMove)).rejects.toThrow(
+    await expect(replaceStagedResourceRoot(currentRoot, stagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      renamePath: failStagedMove
+    })).rejects.toThrow(
       'fixture staged move failed'
     );
 
     await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
     await expect(readFile(join(stagedRoot, 'marker.txt'), 'utf8')).resolves.toBe('new');
     expect((await readdir(workspace)).sort()).toEqual(['local-model', 'local-model.partial']);
+  });
+
+  test('commit 后备份删除失败只告警，下一次事务先清旧备份再安全切换', async () => {
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), 'ai-pet-local-stage-cleanup-')));
+    temporaryDirectories.push(workspace);
+    const currentRoot = join(workspace, 'local-model');
+    const firstStagedRoot = join(workspace, 'local-model.partial-first');
+    const secondStagedRoot = join(workspace, 'local-model.partial-second');
+    const backupRoot = join(workspace, 'local-model.previous');
+    await writeResource(currentRoot, 'marker.txt', 'old');
+    await writeResource(firstStagedRoot, 'marker.txt', 'new');
+    const warnings: string[] = [];
+    const failBackupCleanup: typeof rm = async path => {
+      if (path === backupRoot) throw new Error('fixture backup cleanup denied');
+    };
+    const { replaceStagedResourceRoot } = await loadStager();
+
+    await expect(replaceStagedResourceRoot(currentRoot, firstStagedRoot, {
+      expectedCurrentRoot: currentRoot,
+      removePath: failBackupCleanup,
+      onWarning: code => warnings.push(code)
+    })).resolves.toEqual({ warningCode: 'STAGE_BACKUP_CLEANUP_PENDING' });
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('new');
+    await expect(readFile(join(backupRoot, 'marker.txt'), 'utf8')).resolves.toBe('old');
+    expect(warnings).toEqual(['STAGE_BACKUP_CLEANUP_PENDING']);
+
+    await writeResource(secondStagedRoot, 'marker.txt', 'newest');
+    await expect(replaceStagedResourceRoot(currentRoot, secondStagedRoot, {
+      expectedCurrentRoot: currentRoot
+    })).resolves.toEqual({
+      warningCode: null
+    });
+    await expect(readFile(join(currentRoot, 'marker.txt'), 'utf8')).resolves.toBe('newest');
+    expect(await readdir(workspace)).toEqual(['local-model']);
   });
 });
