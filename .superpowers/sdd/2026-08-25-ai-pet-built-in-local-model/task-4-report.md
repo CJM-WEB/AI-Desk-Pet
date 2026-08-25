@@ -33,6 +33,7 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/loca
 - 首个 stop 清理期间排队的 start，即使第二次 stop 复用同一 Promise，也必须同步失效，不能在 stop 完成后复活。
 - taskkill 非零退出码和 child `error` 不能伪装精确 PID 子树已退出；只有 taskkill 成功且 child `close` 才满足 Runtime 严格清理。
 - stop 等待 start 时遇到 `PROCESS_CLEANUP_FAILED` 不得在同一次 stop 内自动重试并掩盖首次失败。
+- Vulkan probe 自身的 `error` 事件也不能把 active 标为 exited；原实现会跳过 killTree/close 等待并错误继续 CPU 降级。
 
 ## 实现摘要
 
@@ -55,19 +56,20 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/loca
 - `start()` 在接受调用的同步栈内建立取消控制器与 lifecycle epoch；同 tick stop 可直接使启动失效，停止后不会倒退到 validating。
 - stop、Abort、timeout、崩溃与 close 通过 Main 共享的精确 PID helper 清理；PowerShell 与 Runtime 共用同一个 `taskkill.exe /PID <child.pid> /T /F` 端口，绝不按进程名匹配。
 - Runtime 只有在精确进程树请求和 child 退出均确认后才删除 Token；超时或失败发布脱敏的 `PROCESS_CLEANUP_FAILED`，保留 active/Token 供后续 stop/close 重试，不发布伪成功 disabled。
+- probe 的 exited 事实只由 `close` 建立；单独 `error` 会调用共享精确 PID killTree 并严格等待 close，清理失败时保留跟踪且禁止 CPU 降级。
 - Token 删除只忽略 ENOENT；unlink/rmdir 真实失败均保留清理记录，已删除文件但目录删除失败的部分状态也可安全重试。
 - `close` 与 `stop` 幂等；并发 close 共享同一清理，失败后的 close 可重试，close 后已排队的 start 也会在执行前再次拒绝。
 - stdout/stderr 分别只保留 64 KiB 环形尾缓冲；公开状态始终重新构造为四个白名单字段，订阅者异常被隔离且不会写日志。
 
 ## 验证结果
 
-fix round 1 最终 fresh 验证：
+fix round 2 最终 fresh 验证：
 
 ```powershell
 pnpm.cmd exec vitest run --config apps/desktop/vitest.config.ts apps/desktop/tests/local-model-manifest.test.ts apps/desktop/tests/local-model-runtime.test.ts apps/desktop/tests/powershell-tool.test.ts apps/desktop/tests/windows-process-tree.test.ts
 ```
 
-结果：4 个测试文件、77 项测试全部通过，其中包含 Task 4 manifest/Runtime、共享精确 PID helper 与受影响的 PowerShell 测试。
+结果：4 个测试文件、78 项测试全部通过，其中包含 Task 4 manifest/Runtime、共享精确 PID helper 与受影响的 PowerShell 测试。
 
 ```powershell
 pnpm.cmd --filter @myself/desktop typecheck

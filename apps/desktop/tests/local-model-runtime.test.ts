@@ -399,6 +399,29 @@ describe('LocalModelRuntime', () => {
     expect(port.killedPids).toEqual([5151]);
   });
 
+  test('Vulkan 探针 error 但未 close 时仍严格清理精确 PID，不伪装退出或降级 CPU', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({ closeOnKill: false, pid: 5161 });
+    const { runtime, tokenRoot } = await createRuntime(port, { cleanupTimeoutMs: 20 });
+
+    const starting = runtime.start();
+    await vi.waitFor(() => expect(port.processes).toHaveLength(1));
+    port.processes[0]?.emit('error', new Error('fixture probe error without close'));
+
+    await expect(starting).rejects.toMatchObject({ code: 'PROCESS_CLEANUP_FAILED' });
+    const [sessionDirectory] = await readdir(tokenRoot);
+    const tokenFile = join(tokenRoot, String(sessionDirectory), 'api-key.txt');
+    expect(port.killedPids).toEqual([5161]);
+    await expect(access(tokenFile)).resolves.toBeUndefined();
+    expect(runtime.getStatus()).toEqual({
+      enabled: false, phase: 'faulted', backend: 'vulkan', reasonCode: 'PROCESS_CLEANUP_FAILED'
+    });
+
+    port.processes[0]?.finish(null);
+    await runtime.stop();
+    await expectMissing(tokenFile);
+  });
+
   test('CPU 模型加载超过边界时间后清理进程并进入 faulted', async () => {
     const port = new FakeLocalModelProcessPort();
     port.queueProcess({ stderr: 'no Vulkan', exitCode: 1 }, { pid: 5401 });

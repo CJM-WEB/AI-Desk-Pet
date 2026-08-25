@@ -366,8 +366,8 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
       exited: false
     };
     this.#active = active;
+    // 只有 close 能证明 probe 已退出；error 仍必须走精确 PID 树清理并等待 close。
     child.once('close', () => { active.exited = true; });
-    child.once('error', () => { active.exited = true; });
     child.stdout.setEncoding?.('utf8');
     child.stderr.setEncoding?.('utf8');
     const onStdout = (chunk: Buffer | string): void => output.append(String(chunk));
