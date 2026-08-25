@@ -52,13 +52,13 @@ describe('Main 通用生命周期', () => {
     expect(source).not.toContain('applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)');
   });
 
-  test('生产组合只构造一个主动调度器、反思适配器和会话脱敏诊断端口', async () => {
+  test('生产组合只构造一个主动调度器且不再创建 Provider 反思链', async () => {
     const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
     expect(source.match(/createCharacterProactivityRuntime\(/gu)).toHaveLength(1);
     expect(source).toContain('characterProactivityRuntime.start();');
     expect(source).toContain('startupCleanup.add(() => characterProactivityRuntime.close());');
-    expect(source).toContain('return createChatProvider(selection.profile);');
+    expect(source).not.toContain('BEHAVIOR_REFLECTION');
     expect(source).toContain('new ConversationChatAdapter(createChatProvider(profile))');
   });
 
@@ -91,7 +91,7 @@ describe('Main 通用生命周期', () => {
     expect(source).toContain('const getPetGeometrySnapshot = () =>');
     expect(source.match(/getGeometrySnapshot: getPetGeometrySnapshot/gu)).toHaveLength(2);
     expect(source).toContain('commitViewport: input => petGeometry.commitViewport');
-    expect(source).toContain('stepScale: input => petGeometry.stepScale');
+    expect(source).not.toContain('stepScale: input => petGeometry.stepScale');
     expect(source).toContain('await petGeometry.initialize();');
     expect(source).toContain("pet.on('move', persistMovedPetGeometry);");
     expect(source).toContain("pet.on('moved', persistMovedPetGeometry);");

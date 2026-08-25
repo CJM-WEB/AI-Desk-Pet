@@ -119,6 +119,8 @@ export function PetView({
     moving: false,
     carrying: false
   });
+  const [dragging, setDragging] = useState(false);
+  const presentationMotionMode: CharacterMotionMode = dragging ? 'static' : motionMode;
   const [startupFallbackError, setStartupFallbackError] = useState<string | null>(null);
   const [playerRuntimeError, setPlayerRuntimeError] = useState<string | null>(null);
   const runtimeError = startupFallbackError ?? playerRuntimeError;
@@ -183,6 +185,7 @@ export function PetView({
   useEffect(() => {
     const interactionController = createInteractionController(window.myself, {
       onDragStart: pointerId => {
+        setDragging(true);
         const shell = shellRef.current;
         if (!shell || typeof shell.setPointerCapture !== 'function') return;
         try {
@@ -193,6 +196,7 @@ export function PetView({
         }
       },
       onDragEnd: () => {
+        setDragging(false);
         const captured = capturedPointerRef.current;
         capturedPointerRef.current = null;
         if (
@@ -238,11 +242,18 @@ export function PetView({
         });
       }}
       onPointerLeave={() => interactionControllerRef.current?.handlePointerLeave()}
-      onWheel={event => {
-        if (interactionControllerRef.current?.handleWheel({ deltaY: event.deltaY })) {
-          event.preventDefault();
+      // Windows 透明窗口 forward 保证的是 mouse 消息，复用既有命中控制器保持单一状态机。
+      onMouseMove={event => {
+        const hit = interactionControllerRef.current?.handlePointerMove({
+          x: event.clientX,
+          y: event.clientY
+        });
+        if (hit) {
+          void window.myself.recordPetInteractionProbeEvent?.('mouse_hit')
+            .catch(() => undefined);
         }
       }}
+      onMouseLeave={() => interactionControllerRef.current?.handlePointerLeave()}
       onPointerDown={event => {
         interactionControllerRef.current?.handlePointerMove({
           x: event.clientX,
@@ -273,11 +284,10 @@ export function PetView({
         interactionControllerRef.current?.handleContextMenu();
       }}
     >
-      <div className="pet-drag-hint" aria-hidden="true">拖动我</div>
       <div className="pet-character-surface">
         <CharacterPlayer
           stateId={characterState}
-          motionMode={motionMode}
+          motionMode={presentationMotionMode}
           behaviorAuthorityMode="main-v2"
           onExtensionDefinitionsChange={handleExtensionDefinitions}
           onIdleTrigger={triggerIdle}
@@ -288,7 +298,7 @@ export function PetView({
           fallback={(
             <PetCharacter
               state={fallbackState}
-              motionMode={motionMode}
+              motionMode={presentationMotionMode}
               elementRef={handleFallbackElement}
             />
           )}

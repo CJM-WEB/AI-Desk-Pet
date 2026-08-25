@@ -81,11 +81,6 @@ type ActiveBehaviorPlayback = {
   player: CharacterPlayerPort;
   playerPlaybackId: number | null;
   terminal: boolean;
-  commitFrameId: string | null;
-  commitFrameReached: boolean;
-  startedAccepted: boolean;
-  milestoneReported: boolean;
-  unsubscribeFrame: (() => void) | null;
 };
 
 type BehaviorPlaybackTokenState = 'active' | 'terminal';
@@ -473,7 +468,11 @@ export function CharacterPlayer({
       // 方向重建失败已由播放器收敛生命周期，本轮属性同步不再抢播。
       return;
     }
-    if (behaviorAuthorityModeRef.current !== 'legacy-v1') return;
+    if (behaviorAuthorityMode !== 'legacy-v1') {
+      // Main-v2 既可能携带动作令牌，也可能只下发基础/循环权威动作；两者都必须冻结。
+      player.setMotionMode?.(effectiveMotionMode);
+      return;
+    }
     const selection = selectCharacterAction({
       manifest: snapshot.manifest,
       stateId,
@@ -482,7 +481,7 @@ export function CharacterPlayer({
       random
     });
     player.play(selection, effectiveMotionMode);
-  }, [effectiveMotionMode, random, runtimeDirection, stateId]);
+  }, [behaviorAuthorityMode, effectiveMotionMode, random, runtimeDirection, stateId]);
 
   useEffect(() => {
     if (
@@ -592,45 +591,10 @@ export function CharacterPlayer({
         actionId: event.actionId,
         player,
         playerPlaybackId: null,
-        terminal: false,
-        commitFrameId: event.commitFrameId ?? null,
-        commitFrameReached: false,
-        startedAccepted: false,
-        milestoneReported: false,
-        unsubscribeFrame: null
+        terminal: false
       };
       activeBehaviorPlaybackRef.current = current;
       try {
-        const reportCommitMilestoneIfReady = (): void => {
-          if (
-            activeBehaviorPlaybackRef.current !== current
-            || current.terminal
-            || !current.startedAccepted
-            || !current.commitFrameReached
-            || current.milestoneReported
-            || current.commitFrameId === null
-          ) return;
-          // 本地先封口，确保循环帧、方向重建和投影刷新都不能重复提交。
-          current.milestoneReported = true;
-          void api.reportCharacterActionMilestone({
-            playbackToken: current.playbackToken,
-            actionId: current.actionId,
-            kind: 'commit-frame',
-            frameId: current.commitFrameId
-          }).catch(() => undefined);
-        };
-        if (current.commitFrameId && player.subscribeFrame) {
-          current.unsubscribeFrame = player.subscribeFrame(frameId => {
-            if (
-              activeBehaviorPlaybackRef.current !== current
-              || current.terminal
-              || frameId === null
-              || frameId !== current.commitFrameId
-            ) return;
-            current.commitFrameReached = true;
-            reportCommitMilestoneIfReady();
-          });
-        }
         const playbackId = player.play({
           stateId: state.id,
           action,
@@ -641,10 +605,6 @@ export function CharacterPlayer({
           playbackToken: current.playbackToken,
           actionId: current.actionId,
           status: 'started'
-        }).then(accepted => {
-          if (!accepted || activeBehaviorPlaybackRef.current !== current || current.terminal) return;
-          current.startedAccepted = true;
-          reportCommitMilestoneIfReady();
         });
       } catch {
         finishBehaviorPlayback(
@@ -849,8 +809,6 @@ function finishBehaviorPlayback(
   const playback = playbackRef.current;
   if (!playback || playback.terminal) return;
   playback.terminal = true;
-  playback.unsubscribeFrame?.();
-  playback.unsubscribeFrame = null;
   settleBehaviorPlaybackToken(api, tokenStatesRef, {
     playbackToken: playback.playbackToken,
     actionId: playback.actionId,

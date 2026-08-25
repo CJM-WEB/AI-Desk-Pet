@@ -81,6 +81,17 @@ describe('PendingAction 契约', () => {
     expect(create).toMatchObject({ category: 'file', operation: 'create_file' });
     expect(pendingActionSchema.parse({
       category: 'file',
+      actionId: 'act-dir',
+      conversationId: 'conv-1',
+      risk: 'write',
+      operation: 'create_directory',
+      summary: '创建目录 abc',
+      targetRelativePath: 'abc',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      expiresAt: '2026-07-20T00:02:00.000Z'
+    })).toMatchObject({ operation: 'create_directory', targetRelativePath: 'abc' });
+    expect(pendingActionSchema.parse({
+      category: 'file',
       actionId: 'act-2',
       conversationId: 'conv-1',
       risk: 'write',
@@ -106,6 +117,22 @@ describe('PendingAction 契约', () => {
       createdAt: '2026-07-20T00:00:00.000Z',
       expiresAt: '2026-07-20T00:02:00.000Z'
     })).toMatchObject({ operation: 'delete_file', targetType: 'file' });
+    expect(pendingActionSchema.parse({
+      category: 'file',
+      actionId: 'act-move',
+      conversationId: 'conv-1',
+      risk: 'write',
+      operation: 'move_file',
+      summary: '移动 docs/source.txt 到 archive/source.txt',
+      sourceRelativePath: 'docs/source.txt',
+      targetRelativePath: 'archive/source.txt',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      expiresAt: '2026-07-20T00:02:00.000Z'
+    })).toMatchObject({
+      operation: 'move_file',
+      sourceRelativePath: 'docs/source.txt',
+      targetRelativePath: 'archive/source.txt'
+    });
     expect(pendingActionSchema.parse({
       category: 'powershell',
       actionId: 'act-4',

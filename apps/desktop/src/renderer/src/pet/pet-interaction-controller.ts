@@ -145,6 +145,11 @@ export class PetInteractionController {
   private unsubscribeHitRegion: (() => void) | null = null;
   private latestPoint: { x: number; y: number } | null = null;
   private activePointerId: number | null = null;
+  private dragStarted = false;
+  private dragStarting = false;
+  private dragStartQueued = false;
+  private dragSessionEpoch = 0;
+  private unsettledDragStarts = 0;
   private dragTimeout: ReturnType<typeof setTimeout> | null = null;
   private desiredPassthrough = true;
   private confirmedPassthrough: boolean | undefined;
@@ -174,29 +179,16 @@ export class PetInteractionController {
     this.refreshPassthrough();
   }
 
-  handlePointerMove(point: { x: number; y: number }): void {
-    if (this.disposed) return;
+  handlePointerMove(point: { x: number; y: number }): boolean {
+    if (this.disposed) return false;
     this.latestPoint = { ...point };
-    this.refreshPassthrough();
+    return this.refreshPassthrough();
   }
 
   handlePointerLeave(): void {
     if (this.disposed || this.activePointerId !== null) return;
     this.latestPoint = null;
     this.refreshPassthrough();
-  }
-
-  /** wheel 只消费正式 Alpha 命中；Renderer 永远只提交一个离散档位。 */
-  handleWheel(event: Pick<WheelEvent, 'deltaY'>): boolean {
-    if (
-      this.disposed
-      || event.deltaY === 0
-      || this.hitTestPort?.kind !== 'alpha'
-      || !this.isCurrentPointHit()
-      || typeof this.api.stepPetScale !== 'function'
-    ) return false;
-    void this.api.stepPetScale({ step: event.deltaY < 0 ? 1 : -1 }).catch(() => undefined);
-    return true;
   }
 
   handlePointerDown(
@@ -211,27 +203,26 @@ export class PetInteractionController {
       return;
     }
     this.activePointerId = event.pointerId;
+    this.dragStarted = false;
+    this.dragStarting = false;
+    this.dragStartQueued = false;
+    this.dragSessionEpoch += 1;
     this.options.onDragStart?.(event.pointerId);
     this.requestPassthrough(false);
+    // 命中按下即建立 Main 拖拽会话，Renderer 仍不传递任何屏幕坐标。
+    this.startDrag(event.pointerId);
     this.dragTimeout = setTimeout(
-      () => this.finishDrag(true),
+      () => this.finishPointerSession(true),
       PET_DRAG_TIMEOUT_MS
     );
-    void this.api.beginPetDrag().catch(() => {
-      if (this.disposed || this.activePointerId !== event.pointerId) return;
-      this.activePointerId = null;
-      this.clearDragTimeout();
-      this.options.onDragEnd?.();
-      this.requestPassthrough(true);
-    });
   }
 
   handlePointerUp(): void {
-    this.finishDrag();
+    this.finishPointerSession();
   }
 
   handlePointerCancel(): void {
-    this.finishDrag();
+    this.finishPointerSession();
   }
 
   handleContextMenu(): void {
@@ -244,27 +235,38 @@ export class PetInteractionController {
   dispose(): void {
     if (this.disposed) return;
     const hadActiveDrag = this.activePointerId !== null;
+    const dragStarted = this.dragStarted;
     this.disposed = true;
     this.activePointerId = null;
+    this.dragStarted = false;
+    this.dragStarting = false;
+    this.dragStartQueued = false;
     this.clearDragTimeout();
     this.unsubscribeHitRegion?.();
     this.unsubscribeHitRegion = null;
     this.hitTestPort = null;
     if (hadActiveDrag) {
       this.options.onDragEnd?.();
-      void this.api.endPetDrag().catch(() => undefined);
+      if (dragStarted) void this.api.endPetDrag().catch(() => undefined);
     }
     this.requestPassthrough(true, true);
   }
 
-  private finishDrag(forceSafePassthrough = false): void {
+  /** 候选与真实拖动共用清理路径，只有已启动 Main 拖动才发送 end。 */
+  private finishPointerSession(forceSafePassthrough = false): void {
     if (this.disposed || this.activePointerId === null) return;
+    const dragStarted = this.dragStarted;
     this.activePointerId = null;
+    this.dragStarted = false;
+    this.dragStarting = false;
+    this.dragStartQueued = false;
     this.clearDragTimeout();
     this.options.onDragEnd?.();
-    void this.api.endPetDrag().catch(() => {
-      this.requestPassthrough(true);
-    });
+    if (dragStarted) {
+      void this.api.endPetDrag().catch(() => {
+        this.requestPassthrough(true);
+      });
+    }
     if (forceSafePassthrough) {
       this.requestPassthrough(true);
     } else {
@@ -278,15 +280,73 @@ export class PetInteractionController {
     this.dragTimeout = null;
   }
 
-  private refreshPassthrough(): void {
-    if (this.disposed || this.activePointerId !== null) return;
-    this.requestPassthrough(!this.isCurrentPointHit());
+  private startDrag(pointerId: number): void {
+    if (
+      this.disposed
+      || this.activePointerId !== pointerId
+      || this.dragStarted
+      || this.dragStarting
+    ) return;
+    if (this.unsettledDragStarts > 0) {
+      this.dragStartQueued = true;
+      return;
+    }
+
+    const epoch = this.dragSessionEpoch;
+    this.dragStarting = true;
+    this.unsettledDragStarts += 1;
+    void this.api.beginPetDrag().then(async () => {
+      const stillCurrent = !this.disposed
+        && this.activePointerId === pointerId
+        && this.dragSessionEpoch === epoch
+        && this.dragStarting;
+      if (stillCurrent) {
+        this.dragStarting = false;
+        this.dragStarted = true;
+        return;
+      }
+      // 松手早于异步 begin 完成时必须串行补发 end，不能遗留 Main 拖动态。
+      await this.api.endPetDrag().catch(() => {
+        this.requestPassthrough(true);
+      });
+    }).catch(() => {
+      if (
+        this.disposed
+        || this.activePointerId !== pointerId
+        || this.dragSessionEpoch !== epoch
+        || !this.dragStarting
+      ) return;
+      this.dragStarting = false;
+      this.finishPointerSession(true);
+    }).finally(() => {
+      this.unsettledDragStarts -= 1;
+      if (
+        !this.disposed
+        && this.activePointerId !== null
+        && this.dragStartQueued
+      ) {
+        const queuedPointerId = this.activePointerId;
+        this.dragStartQueued = false;
+        this.startDrag(queuedPointerId);
+      }
+    });
+  }
+
+  private refreshPassthrough(): boolean {
+    if (this.disposed) return false;
+    const hit = this.isCurrentPointHit();
+    if (this.activePointerId === null) this.requestPassthrough(!hit);
+    return hit;
   }
 
   private isCurrentPointHit(): boolean {
-    if (!this.latestPoint || !this.hitTestPort) return false;
+    return this.latestPoint ? this.isPointHit(this.latestPoint) : false;
+  }
+
+  private isPointHit(point: { x: number; y: number }): boolean {
+    if (!this.hitTestPort) return false;
     try {
-      return this.hitTestPort.hitTest(this.latestPoint);
+      return this.hitTestPort.hitTest(point);
     } catch {
       return false;
     }

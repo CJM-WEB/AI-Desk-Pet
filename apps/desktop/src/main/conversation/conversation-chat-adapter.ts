@@ -2,8 +2,11 @@ import type { ModelMessage, ModelProvider } from '@myself/agent-core';
 import type { CharacterEmotionLabel } from '@myself/shared-types';
 import {
   characterBehaviorPlanSchema,
+  characterBehaviorDescriptorSchema,
   characterChatResponseJsonSchema,
-  type CharacterBehaviorPlan
+  motionPlanSchema,
+  type CharacterBehaviorPlan,
+  type MotionPlan
 } from '@myself/character-runtime';
 import { ProviderError } from '../providers/openai-provider';
 import type { ConversationBehaviorContext } from
@@ -11,7 +14,14 @@ import type { ConversationBehaviorContext } from
 
 export const characterJsonOutputInstructions = [
   '请只返回 json 对象，不要添加对象外文字。',
-  '格式示例：{"text":"我会陪着你。","behaviorPlan":{"kind":"none","emotion":"calm"}}'
+  '每轮必须提供仅供 Main 使用的 activity 与 status，它们绝不显示给用户。',
+  'behaviorPlan 每轮必填：有匹配候选时原样复制 candidates 中的 kind 与 name；没有匹配候选时返回 kind=none，绝不编造目录外名称。',
+  'motionPlan 每轮必填且只控制表现：停止不动用 stop；只移动一次用 once；保持、一会儿或持续运动用 continuous；不移动用 none。',
+  'durationSeconds 只在用户给出运动时长时填写 1–600；持续到明确停止或没有时长时为 null。',
+  'target 只能是 current、random_work_area 或公开屏幕区域，绝不提供坐标；distance 按用户语义选择 none、near、medium、far。',
+  '示例“停止不动”：motionPlan={"mode":"stop","durationSeconds":null,"target":"current","distance":"none"}。',
+  '示例“跑远一点”：motionPlan={"mode":"once","durationSeconds":null,"target":"random_work_area","distance":"far"}。',
+  '格式示例：{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","motionPlan":{"mode":"none","durationSeconds":null,"target":"current","distance":"none"},"behaviorPlan":{"kind":"none","emotion":"calm"}}'
 ].join('');
 
 const 聊天系统消息前缀 = [
@@ -42,6 +52,9 @@ export type ConversationChatReply = Readonly<{
   text: string;
   emotion?: CharacterEmotionLabel;
   behaviorPlan?: CharacterBehaviorPlan;
+  motionPlan?: MotionPlan;
+  activity?: string;
+  status?: string;
 }>;
 
 export class ConversationChatAdapter {
@@ -71,8 +84,21 @@ export class ConversationChatAdapter {
       text: string;
       emotion?: CharacterEmotionLabel;
       behaviorPlan?: CharacterBehaviorPlan;
+      motionPlan?: MotionPlan;
+      activity?: string;
+      status?: string;
     } = { text: response.text };
     if (response.emotion !== undefined) reply.emotion = response.emotion;
+    const activity = characterBehaviorDescriptorSchema.safeParse(
+      response.structured_output?.activity
+    );
+    const status = characterBehaviorDescriptorSchema.safeParse(
+      response.structured_output?.status
+    );
+    if (activity.success) reply.activity = activity.data;
+    if (status.success) reply.status = status.data;
+    const motionPlan = motionPlanSchema.safeParse(response.structured_output?.motionPlan);
+    if (motionPlan.success) reply.motionPlan = motionPlan.data;
 
     // Provider 只恢复正文；行为计划必须再次经过本地角色契约校验。
     const behaviorPlan = characterBehaviorPlanSchema.safeParse(

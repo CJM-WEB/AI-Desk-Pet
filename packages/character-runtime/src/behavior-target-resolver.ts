@@ -1,4 +1,4 @@
-import type { BehaviorTarget, PublicBehaviorCatalog } from './character-behavior-plan';
+import type { BehaviorTarget, MotionPlan, PublicBehaviorCatalog } from './character-behavior-plan';
 import type { CharacterStandardSemantic } from './behavior-contracts';
 import {
   STANDARD_CHARACTER_SEMANTICS,
@@ -29,6 +29,17 @@ function normalizePublicValue(value: string): string {
   return value.normalize('NFKC').trim().toLowerCase();
 }
 
+/** 公开描述只用名称、语义和标签排序；目录非空时稳定选取最高分候选。 */
+function similarity(query: string, candidate: string): number {
+  if (!query || !candidate) return 0;
+  if (query === candidate) return 1;
+  if (query.includes(candidate) || candidate.includes(query)) return 0.8;
+  const queryCharacters = new Set(query);
+  const candidateCharacters = new Set(candidate);
+  const shared = [...queryCharacters].filter(value => candidateCharacters.has(value)).length;
+  return shared / Math.max(queryCharacters.size, candidateCharacters.size);
+}
+
 function playableActionIds(manifest: CharacterManifestV2, skinId: string): Set<string> {
   const skin = manifest.skins.find(candidate => candidate.id === skinId);
   return new Set(skin?.presentations.flatMap(presentation => (
@@ -44,6 +55,11 @@ function uniqueValues(values: readonly string[]): string[] {
     normalized.add(key);
     return true;
   });
+}
+
+/** 自定义状态语义以公开值输出，避免向模型暴露内部判别结构。 */
+function publicSemantic(semantic: CharacterManifestV2['states'][number]['semantic']): string {
+  return typeof semantic === 'string' ? semantic : semantic.value;
 }
 
 /** 生成仅含可播放公开能力的模型清单，绝不包含 stateId 或 actionId。 */
@@ -68,8 +84,93 @@ export function createPublicBehaviorCatalog(
     tags: uniqueValues([
       ...states.flatMap(state => state.tags),
       ...actions.flatMap(action => action.tags)
-    ])
+    ]),
+    candidates: [
+      ...states.map(state => ({
+        kind: 'state_name' as const,
+        name: state.name,
+        semantic: publicSemantic(state.semantic),
+        tags: [...state.tags]
+      })),
+      ...actions.map(action => ({
+        kind: 'action_name' as const,
+        name: action.name,
+        semantic: action.semantic,
+        tags: [...action.tags]
+      }))
+    ]
   };
+}
+
+/**
+ * 模型隐藏 activity/status 只能命中当前角色、当前皮肤的公开候选。
+ * 目录顺序负责稳定平局；选中后仍须经私有清单精确验证。
+ */
+export function selectPublicBehaviorTarget(
+  catalog: PublicBehaviorCatalog,
+  activity: string | undefined,
+  status: string | undefined,
+  motionPlan?: MotionPlan | null
+): BehaviorTarget {
+  const motionDescriptors = motionPlan?.mode === 'stop'
+    ? ['idle', '静止', '待机']
+    : motionPlan?.mode === 'once' || motionPlan?.mode === 'continuous'
+      ? ['move', '移动', '运动', motionPlan.target, motionPlan.distance]
+      : [];
+  const queries = [activity, status, ...motionDescriptors]
+    .filter((value): value is string => typeof value === 'string')
+    .map(normalizePublicValue);
+  if (queries.length === 0 || !catalog.candidates?.length) {
+    return { kind: 'semantic', semantic: 'idle' };
+  }
+  const motionQueries = motionDescriptors.map(normalizePublicValue);
+  const descriptionQueries = [activity, status]
+    .filter((value): value is string => typeof value === 'string')
+    .map(normalizePublicValue);
+  type PublicCandidate = NonNullable<PublicBehaviorCatalog['candidates']>[number];
+  const scoreCandidate = (candidate: PublicCandidate, inputs: string[]) => (
+    inputs.length === 0 ? 0 : Math.max(
+      ...inputs.flatMap(query => [
+        similarity(query, normalizePublicValue(candidate.name)),
+        similarity(query, normalizePublicValue(candidate.semantic)),
+        ...candidate.tags.map(tag => similarity(query, normalizePublicValue(tag)))
+      ])
+    )
+  );
+  const scored = catalog.candidates.map(candidate => ({
+    candidate,
+    // 明确运动计划优先限定身体状态，activity/status 再负责同类候选间的细分。
+    score: scoreCandidate(candidate, motionQueries) * 2
+      + scoreCandidate(candidate, descriptionQueries)
+  })).sort((left, right) => right.score - left.score);
+  const best = scored[0];
+  if (!best) {
+    return { kind: 'semantic', semantic: 'idle' };
+  }
+  return best.candidate.kind === 'state_name'
+    ? { kind: 'state_name', name: best.candidate.name }
+    : { kind: 'action_name', name: best.candidate.name };
+}
+
+/** Main 只接受当前公开目录中已有的模型目标，目录外名称不能进入私有解析器。 */
+export function isPublicBehaviorTarget(
+  catalog: PublicBehaviorCatalog,
+  target: BehaviorTarget
+): boolean {
+  if (target.kind === 'semantic') return catalog.semantics.includes(target.semantic);
+  if (target.kind === 'tag') {
+    const normalizedTag = normalizePublicValue(target.tag);
+    if (!catalog.candidates) {
+      return catalog.tags.some(tag => normalizePublicValue(tag) === normalizedTag);
+    }
+    // 标签可能被用户同时分配给多个动作；只有唯一命中才可作为精确 Provider 计划。
+    return catalog.candidates.filter(candidate => (
+      candidate.tags.some(tag => normalizePublicValue(tag) === normalizedTag)
+    )).length === 1;
+  }
+  return (catalog.candidates?.filter(candidate => (
+    candidate.kind === target.kind && normalizePublicValue(candidate.name) === normalizePublicValue(target.name)
+  )).length ?? 0) === 1;
 }
 
 /** 解析唯一公开目标；未知、歧义和当前皮肤不可播放统一返回稳定能力错误。 */

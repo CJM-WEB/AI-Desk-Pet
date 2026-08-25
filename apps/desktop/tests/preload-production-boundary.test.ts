@@ -45,17 +45,22 @@ describe('生产 preload 探针边界', () => {
   test('缺少 E2E 固定参数时不暴露桌宠交互探针', () => {
     expect(exposedApi).toBeDefined();
     expect(exposedApi).not.toHaveProperty('getPetInteractionProbe');
+    expect(exposedApi).not.toHaveProperty('recordPetInteractionProbeEvent');
     expect(exposedApi).not.toHaveProperty('getCharacterBehaviorProbe');
     expect(exposedApi).not.toHaveProperty('getCharacterMotionDeltaProbe');
-    expect(exposedApi).toHaveProperty('reportCharacterActionMilestone');
+    expect(exposedApi).not.toHaveProperty('reportCharacterActionMilestone');
     expect(exposedApi).not.toHaveProperty('getFileTaskTransactionSnapshot');
     expect(exposedApi).not.toHaveProperty('moveToRecycleBin');
     expect(exposedApi).not.toHaveProperty('getVerifiedWriteAction');
     expect(exposedApi).not.toHaveProperty('getAuthorizedRootPath');
     expect(exposedApi).not.toHaveProperty('getE2eRecycleBinProbe');
     expect(exposedApi).toHaveProperty('commitPetViewport');
-    expect(exposedApi).toHaveProperty('stepPetScale');
     expect(exposedApi).toHaveProperty('onPetGeometryRender');
+  });
+
+  test('固定默认尺寸不再向 Renderer 暴露缩放能力', () => {
+    expect(exposedApi).toBeDefined();
+    expect(exposedApi).not.toHaveProperty('stepPetScale');
   });
 
   test('生产 API 不暴露目录绝对路径、句柄、私有身份、桥状态或 fake 控制', () => {

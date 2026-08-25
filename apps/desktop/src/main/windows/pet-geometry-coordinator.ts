@@ -5,7 +5,6 @@ import {
   petGeometryRenderViewSchema
 } from '../../shared/character-motion-ipc';
 import type {
-  PetScaleStepInput,
   PetViewportCommitInput
 } from '../../shared/pet-window-interaction';
 import type { PetVisualGeometryAuthority } from '../characters/pet-visual-geometry';
@@ -17,9 +16,7 @@ import type {
 import { migrateLegacyPetPosition, restorePetPlacement } from './pet-position';
 import { clampIntegerWindowPositionToVisualWorkArea } from './window-manager';
 
-const MIN_SCALE_TICK = 5;
-const MAX_SCALE_TICK = 20;
-const VIEWPORT_ACK_TIMEOUT_MS = 2_000;
+const DEFAULT_SCALE_TICK = 10;
 
 type BoundsWindow = {
   getBounds(): Rectangle;
@@ -56,15 +53,6 @@ type CanonicalViewport = Readonly<{
   insetBottom: number;
 }>;
 
-type ViewportWaiter = {
-  kind: 'scale-ack' | 'rollback-ack';
-  expected: PetViewportCommitInput['viewportInWindowDip'];
-  previous: PetViewportCommitInput['viewportInWindowDip'] | null;
-  resolve(viewport: PetViewportCommitInput['viewportInWindowDip']): void;
-  reject(error: Error): void;
-  timer: ReturnType<typeof setTimeout>;
-};
-
 export type PetGeometryRelativeInspection = Readonly<{
   revision: number;
   scaleTick: number;
@@ -78,22 +66,12 @@ export type PetGeometryRelativeInspection = Readonly<{
  */
 export class PetGeometryCoordinator {
   private queue = Promise.resolve();
-  /** 覆盖排队、执行与持久化的完整 FIFO 生命周期，不以 viewport waiter 代替事务事实。 */
+  /** 覆盖排队、执行与持久化的完整 FIFO 生命周期。 */
   private pendingOperations = 0;
   private drainPromise: Promise<void> | null = null;
   private cachedViewport: PetViewportCommitInput['viewportInWindowDip'] | null = null;
   private canonical: CanonicalViewport | null = null;
-  private committedTick = 10;
-  private requestedTick = 10;
-  private scaleRequestRevision = 0;
-  private scaleRequestOffset = 0;
-  /** 同一目标角色失败重试复用首次切换基线，避免事务期间的 wheel 被归入旧角色。 */
-  private pendingCharacterScaleRequest: Readonly<{
-    characterId: string;
-    revision: number;
-    offset: number;
-  }> | null = null;
-  private waiter: ViewportWaiter | null = null;
+  private committedTick = DEFAULT_SCALE_TICK;
   private initialized = false;
   private committedBindingGeneration: number | null = null;
   private frozen = false;
@@ -110,18 +88,6 @@ export class PetGeometryCoordinator {
 
   commitViewport(input: PetViewportCommitInput): Promise<void> {
     const viewport = structuredClone(input.viewportInWindowDip);
-    const waiter = this.waiter;
-    if (waiter) {
-      const matches = waiter.kind === 'rollback-ack'
-        ? sameViewport(waiter.expected, viewport)
-        : !waiter.previous || !sameViewport(waiter.previous, viewport);
-      if (!matches) return Promise.resolve();
-      this.waiter = null;
-      this.clearTimer(waiter.timer);
-      this.cachedViewport = viewport;
-      waiter.resolve(viewport);
-      return Promise.resolve();
-    }
     const previous = this.cachedViewport;
     this.cachedViewport = viewport;
     if (!this.initialized) {
@@ -140,15 +106,7 @@ export class PetGeometryCoordinator {
     return this.resumePendingLayout();
   }
 
-  stepScale(input: PetScaleStepInput): Promise<void> {
-    this.scaleRequestRevision += 1;
-    this.scaleRequestOffset += input.step;
-    this.requestedTick = clampTick(this.requestedTick + input.step);
-    if (this.frozen || this.options.isLayoutBlocked?.()) return Promise.resolve();
-    return this.resumePendingLayout();
-  }
-
-  /** 拖拽或自动运动释放后消费此前保留的最终 tick，不丢失用户滚轮意图。 */
+  /** 拖拽或自动运动释放后收敛待处理的视口、位置与角色绑定。 */
   resumePendingLayout(): Promise<void> {
     const layoutBlocked = this.options.isLayoutBlocked?.() ?? false;
     const canRefreshBindingDuringMotion = this.bindingDirty
@@ -158,7 +116,6 @@ export class PetGeometryCoordinator {
       || (layoutBlocked && !canRefreshBindingDuringMotion)
       || (
         !this.viewportDirty && !this.placementDirty && !this.bindingDirty
-        && this.committedTick === this.requestedTick
       )
     ) return Promise.resolve();
     if (this.drainPromise) return this.drainPromise;
@@ -185,18 +142,6 @@ export class PetGeometryCoordinator {
     this.bindingDirty = true;
     const snapshot = this.options.authority.getSnapshot();
     if (
-      this.initialized
-      && snapshot?.characterId !== available.manifest.id
-      && this.pendingCharacterScaleRequest?.characterId !== available.manifest.id
-    ) {
-      // 角色激活即建立 wheel 归属基线；即使拖拽阻塞，随后输入也属于目标角色。
-      this.pendingCharacterScaleRequest = {
-        characterId: available.manifest.id,
-        revision: this.scaleRequestRevision,
-        offset: this.scaleRequestOffset
-      };
-    }
-    if (
       this.options.isLayoutBlocked?.()
       && this.options.isUserMoving?.() !== false
     ) return Promise.resolve();
@@ -204,7 +149,7 @@ export class PetGeometryCoordinator {
   }
 
   handleWindowMoved(): void {
-    if (this.frozen || !this.initialized || this.waiter) return;
+    if (this.frozen || !this.initialized) return;
     const userMoving = this.options.isUserMoving?.() ?? true;
     if (this.readyRestoreTarget && !userMoving) return;
     const layoutBlocked = this.options.isLayoutBlocked?.() ?? false;
@@ -234,7 +179,7 @@ export class PetGeometryCoordinator {
     await this.queue;
   }
 
-  /** viewport/placement 收敛优先于缩放，确保 wheel 以最终拖拽脚底为起点。 */
+  /** 视口、位置与角色绑定全部通过同一 FIFO 收敛。 */
   private async drainPendingLayout(ignoreBlocked: boolean): Promise<void> {
     while (true) {
       const layoutBlocked = this.options.isLayoutBlocked?.() ?? false;
@@ -249,10 +194,6 @@ export class PetGeometryCoordinator {
       if (!ignoreBlocked && layoutBlocked) return;
       if (this.viewportDirty || this.placementDirty) {
         await this.settleViewportAndPlacement();
-        continue;
-      }
-      if (this.committedTick !== this.requestedTick) {
-        await this.applyScale(this.requestedTick);
         continue;
       }
       return;
@@ -281,7 +222,7 @@ export class PetGeometryCoordinator {
   }
 
   /**
-   * 非缩放 settle 只改 shape key；有 placementDirty 时采纳当前窗口，
+   * 固定尺寸 settle 只改 shape key；有 placementDirty 时采纳当前窗口，
    * 否则保留已提交脚底并仅校正原点。
    */
   private async settleViewportAndPlacement(): Promise<void> {
@@ -455,7 +396,7 @@ export class PetGeometryCoordinator {
   }
 
   isLayoutInFlight(): boolean {
-    return this.pendingOperations > 0 || this.waiter !== null;
+    return this.pendingOperations > 0;
   }
 
   /**
@@ -470,12 +411,10 @@ export class PetGeometryCoordinator {
       revision: snapshot.revision,
       scaleTick: this.committedTick,
       settled: this.initialized
-        && this.waiter === null
         && !this.viewportDirty
         && !this.placementDirty
         && !this.bindingDirty
         && this.readyRestoreSatisfied()
-        && this.committedTick === this.requestedTick
         && this.activeShapeMatches(viewport),
       viewportInWindowDip: Object.freeze({ ...viewport }),
       footOffsetInViewportDip: Object.freeze({ ...layout.footOffsetInViewportDip })
@@ -498,10 +437,8 @@ export class PetGeometryCoordinator {
     if (this.initialized || this.frozen) return;
     const binding = this.requireBinding();
     const state = await this.options.settings.getPetPlacementState(binding.manifest.id);
-    const scale = state.kind === 'ready' && state.placement?.characterId === binding.manifest.id
-      ? state.placement.scale
-      : 1;
-    const tick = clampTick(Math.round(scale * 10));
+    // 历史位置仍可读取脚底与屏幕信息，但运行时尺寸固定为 100%。
+    const tick = DEFAULT_SCALE_TICK;
     const oldCanonical = this.canonical;
     this.canonical = canonicalViewport(viewport, tick, this.options.window.getBounds());
     try {
@@ -509,7 +446,6 @@ export class PetGeometryCoordinator {
       const snapshot = this.options.authority.getSnapshot();
       if (snapshot) this.canonical = canonicalViewport(viewport, tick, snapshot.windowBoundsDip);
       this.committedTick = tick;
-      this.requestedTick = tick;
     this.initialized = true;
       const latestViewport = this.cachedViewport;
       if (latestViewport && (
@@ -521,191 +457,6 @@ export class PetGeometryCoordinator {
       }
     } catch (error) {
       this.canonical = oldCanonical;
-      throw error;
-    }
-  }
-
-  private async applyScale(tick: number): Promise<void> {
-    if (!this.initialized || !this.canonical) {
-      if (!this.cachedViewport) return;
-      await this.initializeFromViewport(this.cachedViewport);
-      if (!this.initialized) return;
-    }
-    const binding = this.requireBinding();
-    const expectedViewport = viewportForTick(this.canonical!, tick);
-    const oldBounds = this.options.window.getBounds();
-    const oldViewport = this.cachedViewport;
-    const oldCanonical = this.canonical;
-    const oldSnapshot = this.options.authority.getSnapshot();
-    const oldReadyRestoreTarget = this.readyRestoreTarget;
-    const oldReadyRestoreIdealFoot = this.readyRestoreIdealFoot;
-    if (!oldSnapshot || !oldViewport) return;
-    const scaleDesiredFoot = oldReadyRestoreTarget
-      ? oldReadyRestoreIdealFoot ?? oldReadyRestoreTarget.footAnchorDip
-      : oldSnapshot.footAnchorDip;
-    let transaction: Readonly<{ token: string; baseRevision: number }> | null = null;
-    let targetBounds = oldBounds;
-    try {
-      const expectedShape = this.updateShape(binding, tick, expectedViewport);
-      const expectedLayout = this.requireShapeLayout(expectedShape.revision);
-      targetBounds = boundsForFoot(
-        scaleDesiredFoot,
-        expectedViewport,
-        expectedLayout.footOffsetInViewportDip,
-        {
-          width: expectedViewport.width + this.canonical!.insetLeft + this.canonical!.insetRight,
-          height: expectedViewport.height + this.canonical!.insetTop + this.canonical!.insetBottom
-        }
-      );
-      const expectedVisualBoundsInWindowDip = visualBoundsInWindow(
-        footOffsetInWindow(expectedViewport, expectedLayout.footOffsetInViewportDip),
-        expectedLayout.visualBoundsFromFootDip
-      );
-      let display = this.requireDisplayForPlacement(
-        targetBounds,
-        scaleDesiredFoot,
-        oldSnapshot.displayId,
-        expectedVisualBoundsInWindowDip
-      );
-      targetBounds = constrainBoundsToVisualWorkArea(
-        targetBounds,
-        expectedVisualBoundsInWindowDip,
-        display.workAreaDip
-      );
-      const expectedPrepared = this.options.authority.preparePlacement({
-        baseRevision: expectedShape.revision,
-        viewportInWindowDip: expectedViewport,
-        windowBoundsDip: targetBounds,
-        display
-      });
-      if (!expectedPrepared.ok) {
-        this.options.authority.discardPendingShape();
-        throw new Error(expectedPrepared.code);
-      }
-      transaction = { token: expectedPrepared.token, baseRevision: expectedShape.revision };
-      const actualViewport = sameBounds(oldBounds, targetBounds)
-        ? expectedViewport
-        : await this.setBoundsAndWait(
-            targetBounds,
-            'scale-ack',
-            expectedViewport,
-            oldViewport
-          );
-
-      if (!sameViewport(actualViewport, expectedViewport)) {
-        this.options.authority.rollbackPreparedPlacement(transaction);
-        transaction = null;
-        const actualShape = this.updateShape(binding, tick, actualViewport);
-        const actualLayout = this.requireShapeLayout(actualShape.revision);
-        let correctedBounds = boundsForFoot(
-          scaleDesiredFoot,
-          actualViewport,
-          actualLayout.footOffsetInViewportDip,
-          { width: targetBounds.width, height: targetBounds.height }
-        );
-        const actualVisualBoundsInWindowDip = visualBoundsInWindow(
-          footOffsetInWindow(actualViewport, actualLayout.footOffsetInViewportDip),
-          actualLayout.visualBoundsFromFootDip
-        );
-        correctedBounds = constrainBoundsToVisualWorkArea(
-          correctedBounds,
-          actualVisualBoundsInWindowDip,
-          display.workAreaDip
-        );
-        const actualPrepared = this.options.authority.preparePlacement({
-          baseRevision: actualShape.revision,
-          viewportInWindowDip: actualViewport,
-          windowBoundsDip: correctedBounds,
-          display
-        });
-        if (!actualPrepared.ok) {
-          this.options.authority.discardPendingShape();
-          throw new Error(actualPrepared.code);
-        }
-        transaction = { token: actualPrepared.token, baseRevision: actualShape.revision };
-        if (!sameBounds(targetBounds, correctedBounds)) {
-          this.setCoordinatorBounds(correctedBounds);
-          targetBounds = correctedBounds;
-        }
-      }
-
-      const finalBounds = this.options.window.getBounds();
-      if (!sameBounds(finalBounds, targetBounds)) {
-        this.options.authority.rollbackPreparedPlacement(transaction);
-        transaction = null;
-        const finalViewport = this.cachedViewport!;
-        const finalShape = this.updateShape(binding, tick, finalViewport);
-        const finalLayout = this.requireShapeLayout(finalShape.revision);
-        const finalFootOffset = footOffsetInWindow(
-          finalViewport,
-          finalLayout.footOffsetInViewportDip
-        );
-        display = this.requireDisplayForPlacement(
-          finalBounds,
-          {
-            x: finalBounds.x + finalFootOffset.x,
-            y: finalBounds.y + finalFootOffset.y
-          },
-          oldSnapshot.displayId,
-          visualBoundsInWindow(finalFootOffset, finalLayout.visualBoundsFromFootDip)
-        );
-        const finalPrepared = this.options.authority.preparePlacement({
-          baseRevision: finalShape.revision,
-          viewportInWindowDip: finalViewport,
-          windowBoundsDip: finalBounds,
-          display
-        });
-        if (!finalPrepared.ok) {
-          this.options.authority.discardPendingShape();
-          throw new Error(finalPrepared.code);
-        }
-        transaction = { token: finalPrepared.token, baseRevision: finalShape.revision };
-        targetBounds = finalBounds;
-      }
-
-      const committed = this.commitPrepared(transaction, binding.generation);
-      const nextReadyRestoreTarget = oldReadyRestoreTarget
-        && oldReadyRestoreTarget.characterId === committed.characterId
-        ? {
-            ...oldReadyRestoreTarget,
-            scale: committed.scale,
-            displayId: committed.displayId
-          }
-        : null;
-      if (
-        nextReadyRestoreTarget
-        && !samePoint(nextReadyRestoreTarget.footAnchorDip, committed.footAnchorDip)
-      ) {
-        await this.options.settings.savePetPlacement(nextReadyRestoreTarget);
-      } else {
-        await this.saveSnapshot(committed);
-      }
-      this.options.authority.discardPreparedPlacement(transaction);
-      transaction = null;
-      this.readyRestoreTarget = nextReadyRestoreTarget;
-      this.readyRestoreIdealFoot = nextReadyRestoreTarget
-        ? scaleDesiredFoot
-        : null;
-      if (nextReadyRestoreTarget && !this.readyRestoreSatisfied()) {
-        this.viewportDirty = true;
-      }
-      this.committedBindingGeneration = binding.generation;
-      this.committedTick = tick;
-      this.publish(committed);
-    } catch (error) {
-      this.readyRestoreTarget = oldReadyRestoreTarget;
-      this.readyRestoreIdealFoot = oldReadyRestoreIdealFoot;
-      if (transaction) this.options.authority.rollbackPreparedPlacement(transaction);
-      else this.options.authority.discardPendingShape();
-      this.canonical = oldCanonical;
-      this.cachedViewport = oldViewport;
-      if (!this.options.window.isDestroyed()) {
-        if (!sameBounds(this.options.window.getBounds(), oldBounds)) {
-          await this.setBoundsAndWait(oldBounds, 'rollback-ack', oldViewport, null)
-            .catch(() => undefined);
-          this.cachedViewport = oldViewport;
-        }
-      }
       throw error;
     }
   }
@@ -996,19 +747,6 @@ export class PetGeometryCoordinator {
       } else {
         const snapshot = this.options.authority.getSnapshot();
         const characterChanged = snapshot?.characterId !== binding.manifest.id;
-        if (!characterChanged) this.pendingCharacterScaleRequest = null;
-        const switchRequest = characterChanged
-          ? this.pendingCharacterScaleRequest?.characterId === binding.manifest.id
-            ? this.pendingCharacterScaleRequest
-            : {
-                characterId: binding.manifest.id,
-                revision: this.scaleRequestRevision,
-                offset: this.scaleRequestOffset
-              }
-          : null;
-        if (switchRequest && switchRequest !== this.pendingCharacterScaleRequest) {
-          this.pendingCharacterScaleRequest = switchRequest;
-        }
         const state = await this.options.settings.getPetPlacementState(binding.manifest.id);
         const currentBinding = this.options.getGeometryBinding();
         if (!currentBinding || currentBinding.generation !== binding.generation) {
@@ -1019,14 +757,7 @@ export class PetGeometryCoordinator {
           );
           return;
         }
-        const tick = characterChanged
-          ? clampTick(Math.round((
-              state.kind === 'ready'
-              && state.placement?.characterId === binding.manifest.id
-                ? state.placement.scale
-                : 1
-            ) * 10))
-          : this.committedTick;
+        const tick = DEFAULT_SCALE_TICK;
         const viewport = viewportForTick(this.canonical!, tick);
         await this.applyLayout(tick, viewport, state);
         const bindingAfterLayout = this.options.getGeometryBinding();
@@ -1036,18 +767,6 @@ export class PetGeometryCoordinator {
         );
         if (characterChanged) {
           this.committedTick = tick;
-          if (
-            bindingStillCurrent
-            && switchRequest
-            && this.pendingCharacterScaleRequest === switchRequest
-          ) {
-            const postSwitchOffset = this.scaleRequestRevision >= switchRequest.revision
-              ? this.scaleRequestOffset - switchRequest.offset
-              : 0;
-            // 只清理当前事务自己的基线；后续角色的 wheel 归属不可被旧保存覆盖。
-            this.requestedTick = clampTick(tick + postSwitchOffset);
-            this.pendingCharacterScaleRequest = null;
-          }
         }
         if (!bindingStillCurrent) {
           this.bindingDirty = Boolean(
@@ -1092,26 +811,6 @@ export class PetGeometryCoordinator {
     });
   }
 
-  private setBoundsAndWait(
-    bounds: Rectangle,
-    kind: ViewportWaiter['kind'],
-    expected: PetViewportCommitInput['viewportInWindowDip'],
-    previous: PetViewportCommitInput['viewportInWindowDip'] | null
-  ): Promise<PetViewportCommitInput['viewportInWindowDip']> {
-    const acknowledged = this.waitForViewport(kind, expected, previous);
-    try {
-      this.setCoordinatorBounds(bounds);
-    } catch (error) {
-      const waiter = this.waiter;
-      if (waiter) {
-        this.waiter = null;
-        this.clearTimer(waiter.timer);
-      }
-      throw error;
-    }
-    return acknowledged;
-  }
-
   private setCoordinatorBounds(bounds: Rectangle): void {
     const cancelExpectation = this.options.expectProgrammaticPosition({
       x: bounds.x,
@@ -1125,28 +824,9 @@ export class PetGeometryCoordinator {
     }
   }
 
-  private waitForViewport(
-    kind: ViewportWaiter['kind'],
-    expected: PetViewportCommitInput['viewportInWindowDip'],
-    previous: PetViewportCommitInput['viewportInWindowDip'] | null
-  ): Promise<PetViewportCommitInput['viewportInWindowDip']> {
-    return new Promise((resolve, reject) => {
-      const schedule = this.options.setTimeout ?? globalThis.setTimeout;
-      const timer = schedule(() => {
-        if (this.waiter?.timer === timer) this.waiter = null;
-        reject(new Error('PET_GEOMETRY_VIEWPORT_ACK_TIMEOUT'));
-      }, VIEWPORT_ACK_TIMEOUT_MS);
-      this.waiter = { kind, expected, previous, resolve, reject, timer };
-    });
-  }
-
   private clearTimer(timer: ReturnType<typeof setTimeout>): void {
     (this.options.clearTimeout ?? globalThis.clearTimeout)(timer);
   }
-}
-
-function clampTick(tick: number): number {
-  return Math.min(MAX_SCALE_TICK, Math.max(MIN_SCALE_TICK, tick));
 }
 
 function canonicalViewport(

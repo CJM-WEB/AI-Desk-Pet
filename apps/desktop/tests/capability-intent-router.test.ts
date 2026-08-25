@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   capabilityIntentRouter,
+  createFilePlanningHint,
   DefaultCapabilityIntentRouter
 } from '../src/main/conversation/capability-intent-router';
 
@@ -18,6 +19,19 @@ function expectIntentKind(
 }
 
 describe('能力意图路由器', () => {
+  test.each([
+    ['把当前指定目录下的empty文件夹删除了', 'delete_file'],
+    ['那在当前目录下创建一个名为abc的文件夹', 'create_directory'],
+    ['读取 README', 'read_file'],
+    ['把 success.txt 移动到回收站', 'delete_file'],
+    ['把 docs/source.txt 移动到 archive 文件夹', 'move_file']
+  ] as const)('文件 Router 只生成操作类别提示，不解释文件名：%s', (text, operation) => {
+    expect(createFilePlanningHint(text)).toEqual({ operation });
+  });
+
+  test('创建并写入正文只规划 create_file', () => {
+    expect(createFilePlanningHint('创建 result.txt 并写入正文')).toEqual({ operation: 'create_file' });
+  });
   test.each([
     '你好',
     '聊聊天吧',

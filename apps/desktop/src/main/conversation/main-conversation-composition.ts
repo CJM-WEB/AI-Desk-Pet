@@ -2,6 +2,7 @@ import {
   ModelRouter,
   type ModelSelection
 } from '@myself/agent-core';
+import { createHash } from 'node:crypto';
 import type {
   ProviderCatalogEntry,
   ProviderProfileV2,
@@ -81,6 +82,8 @@ export function createMainConversationComposition<TPrivacy>(
   let activeAgentRootPath: string | null = null;
   let closePromise: Promise<void> | null = null;
 
+  const canCallProvider = (profile: ProviderProfileV2): boolean => profile.hasStoredSecret;
+
   const select = (
     providerSettings: ProviderSettingsSnapshot,
     requestKind: 'chat' | 'agent'
@@ -105,7 +108,7 @@ export function createMainConversationComposition<TPrivacy>(
     const providerSettings = await options.readProviderSettings();
     const selection = select(providerSettings, 'chat');
     const profile = selection.profile;
-    if (!profile.hasStoredSecret) throw settingsIncompleteError();
+    if (!canCallProvider(profile)) throw settingsIncompleteError();
     rememberTarget(selection);
     return {
       adapter: options.createChatAdapter(profile),
@@ -144,7 +147,7 @@ export function createMainConversationComposition<TPrivacy>(
     if (!snapshot) throw settingsIncompleteError();
     const selection = select(snapshot.providerSettings, 'agent');
     const primaryProfile = selection.profile;
-    if (!primaryProfile.hasStoredSecret) throw settingsIncompleteError();
+    if (!canCallProvider(primaryProfile)) throw settingsIncompleteError();
     const fallbackProfiles = sameProviderAgentFallbacks(
       snapshot.providerSettings,
       selection,
@@ -163,7 +166,12 @@ export function createMainConversationComposition<TPrivacy>(
       }),
       profileId: selection.disclosureTarget.profileId,
       providerIdentity: selection.disclosureTarget.providerIdentity,
-      providerName: primaryProfile.displayName
+      providerName: primaryProfile.displayName,
+      capabilityRevision: createHash('sha256').update(JSON.stringify({
+        taskKind: snapshot.taskKind,
+        authorizedRootPath: snapshot.authorizedRootPath,
+        providerSettings: snapshot.providerSettings
+      })).digest('hex')
     };
   };
 

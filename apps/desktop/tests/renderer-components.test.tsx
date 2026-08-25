@@ -597,6 +597,36 @@ describe('Renderer 可见组件', () => {
     expect(markup).not.toContain('delete_file');
   });
 
+  test('移动确认卡同时显示源文件和最终目标位置', () => {
+    const markup = renderToStaticMarkup(
+      <ConfirmationCard
+        action={{
+          actionId: 'action-move',
+          conversationId: 'conversation-1',
+          risk: 'write',
+          category: 'file',
+          operation: 'move_file',
+          summary: '移动 docs/source.txt 到 archive/source.txt',
+          sourceRelativePath: 'docs/source.txt',
+          targetRelativePath: 'archive/source.txt',
+          createdAt: '2026-08-25T12:00:00.000Z',
+          expiresAt: '2026-08-25T12:02:00.000Z'
+        }}
+        busy={false}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(markup).toContain('源文件');
+    expect(markup).toContain('docs/source.txt');
+    expect(markup).toContain('目标位置');
+    expect(markup).toContain('archive/source.txt');
+    expect(markup).toContain('确认移动文件');
+    expect(markup).toContain('先不移动');
+    expect(markup).toContain('不会覆盖已有文件');
+  });
+
   test('补丁确认卡不依赖 summary 关键字并展示增删行与预览', () => {
     const markup = renderToStaticMarkup(
       <ConfirmationCard
@@ -728,14 +758,13 @@ describe('Renderer 可见组件', () => {
 });
 
 describe('桌宠播放器接入', () => {
-  test('左键表面只保留拖动提示并以正式角色播放器作为视觉主体', () => {
+  test('左键表面以正式角色播放器作为视觉主体', () => {
     vi.stubGlobal('window', {
       myself: {},
       matchMedia: vi.fn()
     });
     try {
       const markup = renderToStaticMarkup(<PetView />);
-      expect(markup).toContain('pet-drag-hint');
       expect(markup).toContain('character-player');
       expect(markup).not.toContain('class="pet-character"');
       expect(markup).not.toContain('打开与 AI Pet 的聊天');

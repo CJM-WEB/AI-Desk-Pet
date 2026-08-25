@@ -587,7 +587,7 @@ async function createApplicationWindows(
   }
   const persistMovedPetGeometry = (): void => {
     petGeometry.handleWindowMoved();
-    // moved 的其他监听器会在本轮结束拖动；微任务随后消费期间保留的缩放 tick。
+    // moved 的其他监听器会在本轮结束拖动；微任务随后收敛视口与持久位置。
     queueMicrotask(() => { void petGeometry.resumePendingLayout().catch(() => undefined); });
   };
   pet.on('move', persistMovedPetGeometry);
@@ -607,25 +607,7 @@ async function createApplicationWindows(
   });
   const characterProactivityRuntime = createCharacterProactivityRuntime({
     director: characterBehaviorDirector,
-    createProvider: async () => {
-      const providerSettings = await settingsStore.getProviderSettings();
-      const selection = new ModelRouter({
-        profiles: providerSettings.profiles,
-        route: providerSettings.route,
-        catalog: [...providerCatalog]
-      }).select('chat', {
-        allowedCrossProviderProfileIds: providerSettings.route.allowCrossProviderFallback
-          ? new Set(providerSettings.route.fallbackProfileIds)
-          : new Set()
-      });
-      if (!selection.profile.hasStoredSecret) {
-        throw new Error('BEHAVIOR_REFLECTION_PROVIDER_UNAVAILABLE');
-      }
-      return createChatProvider(selection.profile);
-    },
-    publishDiagnostic: event => console.info(event.code, JSON.stringify(event)),
-    advanceBehavior: () => characterBehaviorDirector.advance(),
-    advanceFileTaskTransaction: () => activeCapabilityTaskAdapter?.advanceFileTaskTransaction()
+    advanceBehavior: () => characterBehaviorDirector.advance()
   });
   // 组合创建后立即进入启动清理栈；Service 初始化前 Scheduler 尚未 start。
   startupCleanup.add(() => characterProactivityRuntime.close());
@@ -643,7 +625,6 @@ async function createApplicationWindows(
     screen,
     motion: {
       beginUserMove: () => {
-        activeCapabilityTaskAdapter?.invalidateFileTaskPlaybackGrant();
         characterBehavior.handleUserInteraction();
         characterMotion.beginUserMove();
         characterBehaviorDirector.setDragging(true);
@@ -670,22 +651,12 @@ async function createApplicationWindows(
         occurredAtMs: performance.now()
       });
     }
-  }, pet.webContents, {
-    onPlaybackStarted: (playbackToken, actionId) => (
-      activeCapabilityTaskAdapter?.onPlaybackStarted(playbackToken, actionId) ?? false
-    ),
-    onPlaybackTerminal: (playbackToken, actionId, terminal) => (
-      activeCapabilityTaskAdapter?.onPlaybackTerminal(playbackToken, actionId, terminal) ?? false
-    ),
-    onCommitFrame: (playbackToken, actionId, frameId) => (
-      activeCapabilityTaskAdapter?.onCommitFrame(playbackToken, actionId, frameId) ?? false
-    )
-  });
+  }, pet.webContents);
   const releaseMotionEvents = characterMotion.subscribe(snapshot => {
     characterBehavior.handleMovement(snapshot);
     // 方向可能在 moving 布尔不变时改变；几何 binding 仍须进入 Main FIFO。
     void petGeometry.refreshBinding().catch(() => undefined);
-    characterBehaviorDirector.refreshActivityBlockers();
+    characterBehaviorDirector.handleMotionSnapshot(snapshot);
     if (!pet.isDestroyed() && !pet.webContents.isDestroyed()) {
       pet.webContents.send(ipcChannels.characterMotionEvent, {
         type: 'snapshot',
@@ -844,15 +815,11 @@ async function createApplicationWindows(
     {
       enableE2eProbe: Boolean(e2eBoundary),
       geometry: {
-        commitViewport: input => petGeometry.commitViewport(input),
-        stepScale: input => petGeometry.stepScale(input)
+        commitViewport: input => petGeometry.commitViewport(input)
       }
     }
   );
   characterActions.subscribeCharacterEvents(event => {
-    if (event.type === 'active-character-changed') {
-      activeCapabilityTaskAdapter?.invalidateFileTaskPlaybackGrant();
-    }
     broadcastCharacterEvent(
       [pet, chat, settings, characterWorkshopWindows.getCurrent()],
       ipcChannels.characterEvent,
@@ -984,11 +951,7 @@ async function createApplicationWindows(
           createPowerShellTool: () => new PowerShellTool()
         }),
         emit,
-        emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent),
-        taskCarry: {
-          beginTaskCarry: () => characterBehavior.beginTaskCarry(),
-          endTaskCarry: () => characterBehavior.endTaskCarry()
-        }
+        emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent)
       });
     },
     emit: emitConversationEvent

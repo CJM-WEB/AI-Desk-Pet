@@ -62,6 +62,23 @@ export type ModelResponse =
 /** 控制单次运行对模型文本响应施加的协议，默认保留聊天兼容语义。 */
 export type AgentRunProtocol = 'default' | 'capability_planner';
 
+export type FilePlanningOperation =
+  | 'list_files'
+  | 'read_file'
+  | 'create_file'
+  | 'create_directory'
+  | 'apply_patch'
+  | 'delete_file'
+  | 'move_file';
+
+/** 写操作只有对应的 Main 本地成功结果才允许模型进入最终总结。 */
+export type FileWriteOperation = Exclude<FilePlanningOperation, 'list_files' | 'read_file'>;
+
+/** 文件规划提示只能收窄模型工具面，不能携带授权或本地执行结果。 */
+export type FilePlanningHint = Readonly<{
+  operation: FilePlanningOperation;
+}>;
+
 export interface ModelProvider {
   respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse>;
 }
@@ -89,7 +106,17 @@ export interface RunContext {
   toolRuntime: ToolRuntime;
   signal: AbortSignal;
   protocol?: AgentRunProtocol;
+  capabilityPlanning?: Readonly<{
+    allowClarification: boolean;
+    expectedWriteOperation?: FileWriteOperation;
+  }>;
 }
+
+/** 仅 Main 消费的运行终态，不作为 Renderer 事件公开。 */
+export type AgentRunOutcome = Readonly<{
+  kind: 'clarification';
+  missingField: import('./capability-clarification-tool').CapabilityClarificationMissingField;
+}> | undefined;
 
 export type AgentEvent =
   | { type: 'phase'; phase: 'thinking' | 'acting' | 'awaiting_confirmation' | 'success' | 'error' | 'cancelled' }

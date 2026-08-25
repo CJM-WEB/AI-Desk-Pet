@@ -329,6 +329,16 @@ describe('Main 角色运动服务', () => {
     displayId: input.displayId ?? 'primary'
   });
 
+  test('仅随机远行进入 24 DIP 容差即停止，不强求精确到达目标点', () => {
+    expect(advanceMotion({
+      current: { x: 100, y: 100 },
+      target: { x: 120, y: 110 },
+      speed: 160,
+      deltaMs: 50,
+      arrivalToleranceDip: 24
+    })).toEqual({ position: { x: 100, y: 100 }, arrived: true });
+  });
+
   test.each([
     { scale: 0.5, visual: { x: 60, y: 70, width: 50, height: 60 } },
     { scale: 1, visual: { x: 40, y: 45, width: 100, height: 120 } },
@@ -383,12 +393,38 @@ describe('Main 角色运动服务', () => {
       now: () => 0
     } as unknown as ConstructorParameters<typeof CharacterMotionService>[0]);
 
-    service.requestIntent({ kind: 'relative', direction: 'left', distance: 'near' });
+    expect(service.requestIntent({ kind: 'relative', direction: 'left', distance: 'near' }))
+      .toMatchObject({ target: { x: 370, y: 300 }, moving: true });
     expect(service.tick().target).toEqual({ x: 370, y: 300 });
     service.requestIntent({ kind: 'relative', direction: 'down', distance: 'far' });
     expect(service.tick().target).toEqual({ x: 400, y: 460 });
     service.requestIntent({ kind: 'wander', scope: 'work_area' });
     expect(service.tick().target).toEqual({ x: 860, y: 660 });
+  });
+
+  test('远距随机连续落在近点时改选当前单屏最远可达点', () => {
+    const bounds = { x: 400, y: 300, width: 300, height: 260 };
+    const randomValues = [
+      480 / 940, 360 / 720,
+      480 / 940, 360 / 720,
+      480 / 940, 360 / 720
+    ];
+    const service = createMotionService({
+      window: { getBounds: () => bounds, setPosition: vi.fn() },
+      getDisplays: () => [{
+        id: 'primary', workAreaDip: { x: 0, y: 0, width: 1_000, height: 800 }
+      }],
+      getGeometrySnapshot: () => geometrySnapshot({
+        window: bounds,
+        visual: { x: 80, y: 60, width: 60, height: 80 }
+      }),
+      random: () => randomValues.shift() ?? 0.5,
+      now: () => 0
+    });
+
+    expect(service.requestIntent({
+      kind: 'wander', scope: 'work_area', distance: 'far'
+    })).toMatchObject({ target: { x: -80, y: -60 }, moving: true });
   });
 
   test('负坐标多屏依脚底选当前屏，目标脚底进入相邻屏时切换约束', () => {

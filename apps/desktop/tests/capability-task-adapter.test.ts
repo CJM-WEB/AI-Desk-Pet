@@ -9,11 +9,6 @@ type AgentDouble = {
   cancelActive: ReturnType<typeof vi.fn>;
   confirm: ReturnType<typeof vi.fn>;
   cancelAction: ReturnType<typeof vi.fn>;
-  onPlaybackStarted: ReturnType<typeof vi.fn>;
-  onPlaybackTerminal: ReturnType<typeof vi.fn>;
-  onCommitFrame: ReturnType<typeof vi.fn>;
-  advanceFileTaskTransaction: ReturnType<typeof vi.fn>;
-  invalidateFileTaskPlaybackGrant: ReturnType<typeof vi.fn>;
   resetForNewConversation: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
 };
@@ -49,11 +44,6 @@ function createAgentDouble(
     cancelActive: vi.fn(),
     confirm: vi.fn(async () => undefined),
     cancelAction: vi.fn(),
-    onPlaybackStarted: vi.fn(() => true),
-    onPlaybackTerminal: vi.fn(() => true),
-    onCommitFrame: vi.fn(() => true),
-    advanceFileTaskTransaction: vi.fn(() => true),
-    invalidateFileTaskPlaybackGrant: vi.fn(() => true),
     resetForNewConversation: vi.fn(async () => undefined),
     close: vi.fn()
   };
@@ -80,6 +70,7 @@ type 提交参数契约 = 断言类型<类型完全一致<
     visibleHistory: readonly ModelMessage[];
     generation: string;
     taskKind: 'file' | 'powershell';
+    planningHint?: import('@myself/agent-core').FilePlanningHint;
   }
 >>;
 
@@ -92,10 +83,12 @@ function preparedAgent(
     profileId: string;
     providerIdentity: string;
     providerName: string;
+    capabilityRevision: string;
   } = {
     profileId: 'profile-agent',
     providerIdentity: 'openai',
-    providerName: 'OpenAI Agent'
+    providerName: 'OpenAI Agent',
+    capabilityRevision: 'revision-agent'
   }
 ) {
   return { service: asAgentService(agent), ...target };
@@ -445,7 +438,7 @@ describe('CapabilityTaskAdapter', () => {
     })).resolves.toBeUndefined();
   });
 
-  test('确认、取消和动画授权反馈只转交给当前 Adapter 持有的 Agent', async () => {
+  test('确认与取消只转交给当前 Adapter 持有的 Agent', async () => {
     let emitAgentEvent!: (event: TaskEvent) => void;
     const agent = createAgentDouble(async () => {
       emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
@@ -464,11 +457,6 @@ describe('CapabilityTaskAdapter', () => {
       taskKind: 'file'
     });
 
-    expect(adapter.onPlaybackStarted('token', 'action')).toBe(true);
-    expect(adapter.onPlaybackTerminal('token', 'action', 'completed')).toBe(true);
-    expect(adapter.onCommitFrame('token', 'action', 'frame')).toBe(true);
-    expect(adapter.advanceFileTaskTransaction()).toBe(true);
-    expect(adapter.invalidateFileTaskPlaybackGrant()).toBe(true);
     await adapter.resolveAction('pending-action', 'confirm');
     await submitPrepared(adapter, {
       text: '取消删除',
@@ -478,15 +466,6 @@ describe('CapabilityTaskAdapter', () => {
     });
     await adapter.resolveAction('cancel-action', 'cancel');
 
-    expect(agent.onPlaybackStarted).toHaveBeenCalledExactlyOnceWith('token', 'action');
-    expect(agent.onPlaybackTerminal).toHaveBeenCalledExactlyOnceWith(
-      'token',
-      'action',
-      'completed'
-    );
-    expect(agent.onCommitFrame).toHaveBeenCalledExactlyOnceWith('token', 'action', 'frame');
-    expect(agent.advanceFileTaskTransaction).toHaveBeenCalledOnce();
-    expect(agent.invalidateFileTaskPlaybackGrant).toHaveBeenCalledOnce();
     expect(agent.confirm).toHaveBeenCalledExactlyOnceWith('pending-action');
     expect(agent.cancelAction).toHaveBeenCalledExactlyOnceWith('cancel-action');
   });
@@ -618,12 +597,14 @@ describe('CapabilityTaskAdapter', () => {
       preparedAgent(agentA, {
         profileId: 'profile-a',
         providerIdentity: 'provider-a',
-        providerName: 'Provider A'
+        providerName: 'Provider A',
+        capabilityRevision: 'revision-a'
       }),
       preparedAgent(agentB, {
         profileId: 'profile-b',
         providerIdentity: 'provider-b',
-        providerName: 'Provider B'
+        providerName: 'Provider B',
+        capabilityRevision: 'revision-b'
       })
     ];
     const adapter = new CapabilityTaskAdapter({
@@ -642,7 +623,8 @@ describe('CapabilityTaskAdapter', () => {
     expect(target).toEqual({
       profileId: 'profile-a',
       providerIdentity: 'provider-a',
-      providerName: 'Provider A'
+      providerName: 'Provider A',
+      capabilityRevision: 'revision-a'
     });
     expect(agentA.submitFileTask).toHaveBeenCalledOnce();
     expect(agentB.submitFileTask).not.toHaveBeenCalled();

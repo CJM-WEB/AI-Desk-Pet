@@ -12,7 +12,10 @@ import {
 } from '../src/renderer/src/pet/PetView';
 import type { MyselfApi } from '../src/shared/myself-api';
 import { taskStore } from '../src/renderer/src/stores/task-store';
-import type { PetInteractionController } from '../src/renderer/src/pet/pet-interaction-controller';
+import type {
+  PetInteractionController,
+  PetInteractionControllerOptions
+} from '../src/renderer/src/pet/pet-interaction-controller';
 import type { CharacterRecoveryFallbackErrorCode } from '../src/shared/character-ipc';
 
 const playerDouble = vi.hoisted(() => ({
@@ -122,15 +125,15 @@ describe('桌宠锚点视觉消费者', () => {
   });
 });
 
-test('PetView 把 wheel 与 pointerleave 交给同一交互控制器', () => {
+
+test('固定默认尺寸下 wheel 不再交给桌宠交互控制器', () => {
   const api = createPetViewApi();
   installPetViewBrowserApi(api);
   const handleWheel = vi.fn(() => true);
-  const handlePointerLeave = vi.fn();
   const controller = {
     setHitTestPort: vi.fn(), handlePointerMove: vi.fn(), handlePointerDown: vi.fn(),
     handlePointerUp: vi.fn(), handlePointerCancel: vi.fn(), handleContextMenu: vi.fn(),
-    handleWheel, handlePointerLeave, dispose: vi.fn()
+    handleWheel, handlePointerLeave: vi.fn(), dispose: vi.fn()
   } as unknown as PetInteractionController;
   const { container } = render(
     <PetView createInteractionController={() => controller} />
@@ -138,12 +141,34 @@ test('PetView 把 wheel 与 pointerleave 交给同一交互控制器', () => {
   const shell = container.querySelector<HTMLElement>('.pet-shell');
   if (!shell) throw new Error('测试要求桌宠 shell 存在');
 
-  fireEvent.wheel(shell, { deltaY: -120 });
-  fireEvent.pointerLeave(shell);
+  fireEvent.wheel(shell, { clientX: 37, clientY: 52, deltaY: -120 });
 
-  expect(handleWheel).toHaveBeenCalledWith({ deltaY: -120 });
-  expect(handlePointerLeave).toHaveBeenCalledOnce();
+  expect(handleWheel).not.toHaveBeenCalled();
 });
+
+test('拖拽会话期间向角色播放器传递 static 动画模式', () => {
+  const api = createPetViewApi();
+  installPetViewBrowserApi(api);
+  let options: PetInteractionControllerOptions | undefined;
+  const controller = {
+    setHitTestPort: vi.fn(), handlePointerMove: vi.fn(), handlePointerDown: vi.fn(),
+    handlePointerUp: vi.fn(), handlePointerCancel: vi.fn(), handleContextMenu: vi.fn(),
+    handlePointerLeave: vi.fn(), dispose: vi.fn()
+  } as unknown as PetInteractionController;
+  const { container } = render(
+    <PetView createInteractionController={(_api, nextOptions) => {
+      options = nextOptions;
+      return controller;
+    }} />
+  );
+
+  expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('animated');
+  act(() => options?.onDragStart?.(1));
+  expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('static');
+  act(() => options?.onDragEnd?.());
+  expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('animated');
+});
+
 
 function createPetViewApi(): MyselfApi {
   return {
@@ -154,6 +179,7 @@ function createPetViewApi(): MyselfApi {
     beginPetDrag: vi.fn().mockResolvedValue(undefined),
     endPetDrag: vi.fn().mockResolvedValue(undefined),
     openPetContextMenu: vi.fn().mockResolvedValue(undefined),
+    recordPetInteractionProbeEvent: vi.fn().mockResolvedValue(undefined),
     openChat: vi.fn().mockResolvedValue(undefined),
     openCharacterWorkshop: vi.fn().mockResolvedValue(undefined)
   } as unknown as MyselfApi;
@@ -352,6 +378,7 @@ describe('桌宠像素交互接线', () => {
       pointerId: 7,
       button: 0
     });
+    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 7 });
     fireEvent.click(fallback);
     fireEvent.doubleClick(fallback);
 
@@ -361,7 +388,7 @@ describe('桌宠像素交互接线', () => {
     expect(triggerCharacterPointer).not.toHaveBeenCalled();
 
     fireEvent.pointerUp(shell, { pointerId: 7, button: 0 });
-    expect(api.endPetDrag).toHaveBeenCalledOnce();
+    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledOnce());
     expect(releasePointerCapture).toHaveBeenCalledWith(7);
 
     fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 8 });
@@ -371,8 +398,9 @@ describe('桌宠像素交互接线', () => {
       pointerId: 8,
       button: 0
     });
+    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 8 });
     fireEvent.pointerCancel(shell, { pointerId: 8 });
-    expect(api.endPetDrag).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledTimes(2));
     expect(releasePointerCapture).toHaveBeenCalledWith(8);
 
     fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 9 });
@@ -382,8 +410,9 @@ describe('桌宠像素交互接线', () => {
       pointerId: 9,
       button: 0
     });
+    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 9 });
     fireEvent.lostPointerCapture(shell, { pointerId: 9 });
-    expect(api.endPetDrag).toHaveBeenCalledTimes(3);
+    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledTimes(3));
     expect(releasePointerCapture).toHaveBeenCalledWith(9);
   });
 
@@ -451,9 +480,10 @@ describe('桌宠像素交互接线', () => {
       pointerId: 2,
       button: 0
     });
+    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 2 });
 
     fireEvent.blur(window);
-    expect(api.endPetDrag).toHaveBeenCalledOnce();
+    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledOnce());
     fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 3 });
     fireEvent.pointerDown(shell, {
       clientX: 20,
@@ -461,9 +491,10 @@ describe('桌宠像素交互接线', () => {
       pointerId: 3,
       button: 0
     });
+    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 3 });
     result.unmount();
 
-    expect(api.endPetDrag).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledTimes(2));
     expect(setPointerCapture).toHaveBeenCalledTimes(2);
     expect(releasePointerCapture).toHaveBeenCalledTimes(2);
     await waitFor(() => {

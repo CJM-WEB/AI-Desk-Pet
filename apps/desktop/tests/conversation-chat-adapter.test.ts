@@ -76,7 +76,7 @@ describe('ConversationChatAdapter', () => {
     expect(取得请求(provider).messages[0]?.content).toContain('"recentActions":["挥手"]');
     expect(取得请求(provider).messages[0]?.content).toContain('json');
     expect(取得请求(provider).messages[0]?.content).toContain(
-      '{"text":"我会陪着你。","behaviorPlan":{"kind":"none","emotion":"calm"}}'
+      '{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","motionPlan":{"mode":"none","durationSeconds":null,"target":"current","distance":"none"},"behaviorPlan":{"kind":"none","emotion":"calm"}}'
     );
     expect(取得请求(provider).messages[0]?.content).not.toContain('路由字段');
     expect(取得请求(provider).messages[0]?.content).not.toContain('禁止 Markdown');
@@ -121,6 +121,88 @@ describe('ConversationChatAdapter', () => {
       text: '我向左走一点。',
       behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
     });
+  });
+
+  test('只把本地严格校验通过的隐藏 motionPlan 交给 Main', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '我会继续走。',
+      structured_output: {
+        text: '我会继续走。',
+        motionPlan: {
+          mode: 'continuous', durationSeconds: 20, target: 'random_work_area', distance: 'far'
+        },
+        behaviorPlan: { kind: 'none' }
+      }
+    });
+
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [], text: '继续活动', behaviorContext, signal: new AbortController().signal
+    })).resolves.toEqual({
+      text: '我会继续走。',
+      motionPlan: {
+        mode: 'continuous', durationSeconds: 20, target: 'random_work_area', distance: 'far'
+      },
+      behaviorPlan: { kind: 'none' }
+    });
+  });
+
+  test('忽略非法隐藏 motionPlan 但保留可见正文', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '正文仍然可见。',
+      structured_output: {
+        text: '正文仍然可见。',
+        motionPlan: {
+          mode: 'continuous', durationSeconds: 601, target: { x: 1, y: 2 }, distance: 'far'
+        }
+      }
+    });
+
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [], text: '测试', behaviorContext, signal: new AbortController().signal
+    })).resolves.toEqual({ text: '正文仍然可见。' });
+  });
+
+  test('隐藏 activity/status 仅随回复交给 Main，不出现在可见正文', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '我来活动一下。',
+      structured_output: {
+        text: '我来活动一下。',
+        activity: '轻快移动',
+        status: 'move'
+      }
+    });
+
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [], text: '请你移动', behaviorContext, signal: new AbortController().signal
+    })).resolves.toEqual({
+      text: '我来活动一下。', activity: '轻快移动', status: 'move'
+    });
+  });
+
+  test('隐藏 activity/status 在本地裁剪空白并丢弃空值或超长值', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '正文保持可用。',
+      structured_output: {
+        activity: '  轻快移动  ',
+        status: '跑'.repeat(121)
+      }
+    });
+
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [], text: '请你移动', behaviorContext, signal: new AbortController().signal
+    })).resolves.toEqual({ text: '正文保持可用。', activity: '轻快移动' });
+  });
+
+  test('JSON 契约要求隐藏 activity/status，且不把它们作为可见文本字段', () => {
+    expect(characterChatResponseJsonSchema.required).toEqual(
+      expect.arrayContaining(['text', 'activity', 'status'])
+    );
+    expect(characterChatResponseJsonSchema.properties).toHaveProperty('activity');
+    expect(characterChatResponseJsonSchema.properties).toHaveProperty('status');
   });
 
   test('把 JSON Output 行为计划中的合法情绪投影为聊天情绪', async () => {

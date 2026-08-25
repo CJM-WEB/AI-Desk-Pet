@@ -1,4 +1,5 @@
 import { parse } from 'tldts';
+import type { FilePlanningHint, FilePlanningOperation } from '@myself/agent-core';
 
 /** C1 不授予行为权限；后续阶段只能显式扩展这个封闭联合。 */
 export type ExplicitBehaviorHint = never;
@@ -57,7 +58,7 @@ const quotePairs = new Map<string, string>([
 ]);
 const fileOperationPattern = /(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理|\b(?:read|list|create|write|modify|rename|copy|move|delete|search|organize)\b)/giu;
 const strongFileOperationPattern = /(?:重命名|复制|移动|\b(?:rename|copy|move)\b)/giu;
-const chineseDirectExecutionPattern = /^(?:在[^，,。！？!?]*(?:中|里)\s*)?(?:(?:你能(?:不能)?\s*(?:帮我)?|请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理)/u;
+const chineseDirectExecutionPattern = /^(?:(?:那|那么)\s*)?(?:在[^，,。！？!?]*(?:中|里|下)\s*)?(?:(?:你能(?:不能)?\s*(?:帮我)?|请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理)/u;
 const chineseReorderedExecutionPattern = /^(?:(?:请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:把|将).+(?:读取|列出|创建|写入|修改|重命名|复制|移动|删除|搜索|整理)/u;
 const englishDirectExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:read|list|create|write|modify|rename|copy|move|delete|search|organize)\b/iu;
 const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:please\s+)?([a-z]+)\b/iu;
@@ -463,6 +464,33 @@ function hasExplicitFileIntent(normalizedText: string): boolean {
   return localObjectScan.hasLocalObject
     && requestedOperationRanges.length > 0
     && hasExecutionStructure(unquotedText, objectRanges, operationRanges);
+}
+
+/** 操作类别只用于收窄本轮工具，不扩展 Router 已经判定的文件权限。 */
+function filePlanningOperation(text: string): FilePlanningOperation | null {
+  if (/(?:创建|新建).{0,24}(?:文件夹|目录)|\b(?:create|make)\b.{0,24}\b(?:folder|directory)\b/iu.test(text)) {
+    return 'create_directory';
+  }
+  // “移动到回收站”是可恢复删除语义，必须先于普通文件移动收窄到删除工具。
+  if (/(?:回收站|recycle\s+bin)/iu.test(text)
+    && /(?:删除|移动|移入|\b(?:delete|move)\b)/iu.test(text)) {
+    return 'delete_file';
+  }
+  if (/(?:删除|\bdelete\b)/iu.test(text)) return 'delete_file';
+  if (/(?:列出|\blist\b)/iu.test(text)) return 'list_files';
+  if (/(?:读取|\bread\b)/iu.test(text)) return 'read_file';
+  if (/(?:创建|新建|\bcreate\b)/iu.test(text)) return 'create_file';
+  if (/(?:修改|写入|\b(?:modify|write)\b)/iu.test(text)) return 'apply_patch';
+  if (/(?:移动|\bmove\b)/iu.test(text)) return 'move_file';
+  return null;
+}
+
+/** Main 将该提示传入 Agent；提示不含绝对路径、授权根或执行结论。 */
+export function createFilePlanningHint(prompt: string): FilePlanningHint | null {
+  const normalizedText = prompt.normalize('NFKC').trim();
+  const operation = filePlanningOperation(normalizedText);
+  if (operation === null) return null;
+  return Object.freeze({ operation });
 }
 
 export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {

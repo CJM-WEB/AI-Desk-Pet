@@ -63,8 +63,11 @@ type ParsedDirective = Readonly<{
 }>;
 
 function parseChinese(text: string): ParsedDirective | null {
-  const stop = /^(?:请)?(?:停下|别走了|不要走了|别动了|不要动了)/u.exec(text);
+  const stop = /^(?:请)?(?:你)?(?:停下|停止不动|别走了|不要走了|别动了|不要动了|静止不动|保持静止|不要再动|别乱跑)/u.exec(text);
   if (stop) return { consumed: stop[0].length, directive: { kind: 'stop_movement' } };
+
+  const continuous = /^(?:请)?(?:保持运动|一直走|继续跑)/u.exec(text);
+  if (continuous) return { consumed: continuous[0].length, directive: { kind: 'continuous_movement' } };
 
   const resume = /^(?:请)?(?:恢复活动|恢复移动|可以动了|继续活动|继续走)/u.exec(text);
   if (resume) return { consumed: resume[0].length, directive: { kind: 'resume_movement' } };
@@ -115,7 +118,15 @@ function parseChinese(text: string): ParsedDirective | null {
     };
   }
 
-  const wander = /^(?:请)?(?:走一走|走走|散散步|到处走走)/u.exec(text);
+  const farWander = /^(?:请你?|你能)?(?:跑|走|移动)(?:得)?(?:远一点|远些)/u.exec(text);
+  if (farWander) {
+    return {
+      consumed: farWander[0].length,
+      directive: { kind: 'move', motion: { kind: 'wander', scope: 'work_area', distance: 'far' } }
+    };
+  }
+
+  const wander = /^(?:请你?|你能)?(?:移动一下|移动|跑一跑|跑步|走一走|走走|散散步|到处走走|运动|动|跑)(?:吗)?/u.exec(text);
   return wander
     ? {
         consumed: wander[0].length,

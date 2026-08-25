@@ -1,6 +1,7 @@
 import type { Rectangle } from 'electron';
 import {
   PET_DRAG_TIMEOUT_MS,
+  type PetInteractionProbeEvent,
   type PetInteractionProbe
 } from '../../shared/pet-window-interaction';
 import type { PetGeometrySnapshot } from '../characters/pet-visual-geometry';
@@ -47,6 +48,9 @@ export class PetWindowInteractionController {
   private disposed = false;
   private lastKnownPassthrough: boolean | undefined;
   private dragSession: DragSession | undefined;
+  private readonly probeCounts = {
+    mouseMoveHitCount: 0
+  };
 
   constructor(private readonly options: PetWindowInteractionControllerOptions) {
     this.setPassthrough(true);
@@ -82,6 +86,9 @@ export class PetWindowInteractionController {
         visualBoundsInWindowDip: { ...geometry.visualBoundsInWindowDip }
       };
       this.dragSession = session;
+      // 会话建立后立即以 Main 自己的系统光标同步一次，避免首帧等待轮询。
+      this.updateDrag(session);
+      if (this.dragSession !== session) return;
       session.interval = setInterval(() => this.updateDrag(session), 16);
       session.timeout = setTimeout(
         () => this.endDrag('timeout'),
@@ -143,8 +150,18 @@ export class PetWindowInteractionController {
   getProbe(): PetInteractionProbe {
     return {
       passthrough: this.lastKnownPassthrough ?? true,
-      dragging: Boolean(this.dragSession)
+      dragging: Boolean(this.dragSession),
+      ...this.probeCounts
     };
+  }
+
+  /** 计数只表达失败链阶段，不保存输入内容、坐标或本地状态。 */
+  recordProbeEvent(_event: PetInteractionProbeEvent): void {
+    const key = 'mouseMoveHitCount';
+    this.probeCounts[key] = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      this.probeCounts[key] + 1
+    );
   }
 
   private updateDrag(session: DragSession): void {
@@ -167,6 +184,8 @@ export class PetWindowInteractionController {
         this.endDrag('cancelled');
         return;
       }
+      const currentBounds = this.options.window.getBounds();
+      if (currentBounds.x === next.x && currentBounds.y === next.y) return;
       this.options.window.setPosition(next.x, next.y);
     } catch {
       this.lastKnownPassthrough = undefined;

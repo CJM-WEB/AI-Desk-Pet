@@ -1,5 +1,4 @@
-import type { CharacterBehaviorPlan, MoveDirection } from '@myself/character-runtime';
-import type { BehaviorReflectionAdapter } from './behavior-reflection-adapter';
+import type { CharacterBehaviorPlan } from '@myself/character-runtime';
 import type {
   CharacterActivityBlockers,
   CharacterBehaviorDirector,
@@ -17,7 +16,6 @@ type SchedulerDirectorPort = Pick<
 
 type CharacterProactivitySchedulerOptions = Readonly<{
   director: SchedulerDirectorPort;
-  reflection: BehaviorReflectionAdapter;
   random?: () => number;
   now?: () => number;
 }>;
@@ -28,24 +26,18 @@ type TimerSlot = {
   remaining: number | null;
 };
 
-const LOCAL_MIN_MS = 20_000;
-const LOCAL_MAX_MS = 60_000;
-const REFLECTION_MIN_MS = 2 * 60_000;
-const REFLECTION_MAX_MS = 5 * 60_000;
-const REFLECTION_BACKOFF_MS = [2, 4, 8, 16, 30].map(minutes => minutes * 60_000);
-const MOVE_DIRECTIONS: readonly MoveDirection[] = ['left', 'right', 'up', 'down'];
+const LOCAL_MIN_MS = 10_000;
+const LOCAL_MAX_MS = 30_000;
 
 /** 唯一主动时钟只向 Director 提交到期候选，不保存角色或运动状态。 */
 export class CharacterProactivityScheduler {
   private readonly random: () => number;
   private readonly now: () => number;
   private readonly local: TimerSlot = { timer: null, deadline: null, remaining: null };
-  private readonly reflectionTimer: TimerSlot = { timer: null, deadline: null, remaining: null };
   private readonly unsubscribe: () => void;
   private mode: ConversationBehaviorContext['proactivityMode'];
   private lifecycleGeneration: number;
-  private reflectionFailures = 0;
-  private reflectionAbort: AbortController | null = null;
+  private autonomousMovementAllowed: boolean;
   private started = false;
   private closed = false;
 
@@ -54,6 +46,7 @@ export class CharacterProactivityScheduler {
     this.now = options.now ?? performance.now.bind(performance);
     this.mode = options.director.getChatContext().proactivityMode;
     this.lifecycleGeneration = options.director.getBehaviorLifecycleGeneration();
+    this.autonomousMovementAllowed = options.director.getActivityBlockers().autonomousMovementAllowed !== false;
     this.unsubscribe = options.director.subscribeActivityBlockers(() => this.reconcile());
   }
 
@@ -71,10 +64,6 @@ export class CharacterProactivityScheduler {
     this.closed = true;
     this.unsubscribe();
     this.clear(this.local, false);
-    this.clear(this.reflectionTimer, false);
-    this.reflectionAbort?.abort();
-    this.reflectionAbort = null;
-    await this.options.reflection.close();
   }
 
   private reconcile(): void {
@@ -82,41 +71,37 @@ export class CharacterProactivityScheduler {
     const nextMode = this.options.director.getChatContext().proactivityMode;
     const nextGeneration = this.options.director.getBehaviorLifecycleGeneration();
     if (nextMode !== this.mode || nextGeneration !== this.lifecycleGeneration) {
-      this.reflectionAbort?.abort();
       this.mode = nextMode;
       this.lifecycleGeneration = nextGeneration;
       this.clear(this.local, false);
-      this.clear(this.reflectionTimer, false);
       this.local.remaining = null;
-      this.reflectionTimer.remaining = null;
-      this.reflectionFailures = 0;
     }
 
-    const blocked = hasBlocker(this.options.director.getActivityBlockers());
+    const blockers = this.options.director.getActivityBlockers();
+    const nextAutonomousMovementAllowed = blockers.autonomousMovementAllowed !== false;
+    if (!nextAutonomousMovementAllowed) {
+      this.autonomousMovementAllowed = false;
+      this.clear(this.local, false);
+      this.local.remaining = null;
+      return;
+    }
+    if (!this.autonomousMovementAllowed) {
+      this.autonomousMovementAllowed = true;
+      this.clear(this.local, false);
+      this.local.remaining = null;
+    }
+    const blocked = hasBlocker(blockers);
     if (this.mode === 'passive') {
       this.clear(this.local, false);
-      this.clear(this.reflectionTimer, false);
       this.local.remaining = null;
-      this.reflectionTimer.remaining = null;
       return;
     }
     if (blocked) {
       this.clear(this.local, true);
-      this.clear(this.reflectionTimer, true);
-      this.reflectionAbort?.abort();
       return;
     }
 
     this.armLocal(this.local.remaining ?? this.randomDelay(LOCAL_MIN_MS, LOCAL_MAX_MS));
-    if (this.mode === 'autonomous' && hasReflectableCatalog(this.options.director.getChatContext())) {
-      this.armReflection(
-        this.reflectionTimer.remaining
-        ?? this.randomDelay(REFLECTION_MIN_MS, REFLECTION_MAX_MS)
-      );
-    } else {
-      this.clear(this.reflectionTimer, false);
-      this.reflectionTimer.remaining = null;
-    }
   }
 
   private armLocal(delay: number): void {
@@ -135,61 +120,9 @@ export class CharacterProactivityScheduler {
     }, delay);
   }
 
-  private armReflection(delay: number): void {
-    if (this.reflectionTimer.timer !== null || this.closed || this.mode !== 'autonomous') return;
-    this.reflectionTimer.remaining = null;
-    this.reflectionTimer.deadline = this.now() + delay;
-    this.reflectionTimer.timer = setTimeout(() => {
-      this.reflectionTimer.timer = null;
-      this.reflectionTimer.deadline = null;
-      void this.runReflection();
-    }, delay);
-  }
-
-  private async runReflection(): Promise<void> {
-    if (this.closed || this.mode !== 'autonomous') return;
-    const context = this.options.director.getChatContext();
-    if (!hasReflectableCatalog(context)) return;
-    if (hasBlocker(this.options.director.getActivityBlockers())) {
-      this.reflectionTimer.remaining = this.randomDelay(REFLECTION_MIN_MS, REFLECTION_MAX_MS);
-      return;
-    }
-    const abort = new AbortController();
-    const reflectionGeneration = this.lifecycleGeneration;
-    this.reflectionAbort = abort;
-    try {
-      const plan = await this.options.reflection.reflect({
-        context,
-        signal: abort.signal
-      });
-      if (
-        this.closed
-        || abort.signal.aborted
-        || this.options.director.getChatContext().proactivityMode !== 'autonomous'
-        || !hasReflectableCatalog(this.options.director.getChatContext())
-        || this.options.director.getBehaviorLifecycleGeneration() !== reflectionGeneration
-      ) return;
-      this.reflectionFailures = 0;
-      if (plan) this.submitCandidate(plan, 'reflection');
-      this.armReflection(this.randomDelay(REFLECTION_MIN_MS, REFLECTION_MAX_MS));
-    } catch {
-      if (this.closed || abort.signal.aborted) return;
-      const backoff = REFLECTION_BACKOFF_MS[
-        Math.min(this.reflectionFailures, REFLECTION_BACKOFF_MS.length - 1)
-      ]!;
-      this.reflectionFailures += 1;
-      this.armReflection(backoff);
-    } finally {
-      if (this.reflectionAbort === abort) this.reflectionAbort = null;
-    }
-  }
-
   private createLocalCandidate(): CharacterBehaviorPlan {
-    if (this.mode === 'autonomous' && this.random() >= 0.5) {
-      const direction = MOVE_DIRECTIONS[
-        Math.min(MOVE_DIRECTIONS.length - 1, Math.floor(this.random() * MOVE_DIRECTIONS.length))
-      ]!;
-      return { kind: 'move', direction, distance: 'near' };
+    if (this.mode === 'autonomous') {
+      return { kind: 'play', target: { kind: 'semantic', semantic: 'move' } };
     }
     // assistive 永远只请求 idle 语义，避免公开 action name 隐含 move 时产生位移。
     return { kind: 'play', target: { kind: 'semantic', semantic: 'idle' } };
@@ -197,7 +130,7 @@ export class CharacterProactivityScheduler {
 
   private submitCandidate(
     plan: CharacterBehaviorPlan,
-    source: 'local-idle' | 'reflection'
+    source: 'local-idle'
   ): void {
     this.options.director.requestBehaviorPlan(plan, source);
   }
@@ -219,11 +152,8 @@ export class CharacterProactivityScheduler {
 }
 
 function hasBlocker(blockers: CharacterActivityBlockers): boolean {
-  return Object.values(blockers).some(Boolean);
-}
-
-function hasReflectableCatalog(context: ConversationBehaviorContext): boolean {
-  return context.character.semantics.length > 0
-    || context.character.stateNames.length > 0
-    || context.character.actionNames.length > 0;
+  if (blockers.autonomousMovementAllowed === false) return true;
+  return Object.entries(blockers).some(([key, value]) => (
+    key !== 'autonomousMovementAllowed' && value
+  ));
 }

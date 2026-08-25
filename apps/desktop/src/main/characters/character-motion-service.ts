@@ -25,6 +25,9 @@ export type CharacterMotionServiceOptions = {
   random?: () => number;
 };
 const DEFAULT_SPEED = 160;
+const RANDOM_WANDER_ARRIVAL_TOLERANCE_DIP = 24;
+const FAR_WANDER_MINIMUM_RATIO = 0.6;
+const FAR_WANDER_SAMPLE_ATTEMPTS = 3;
 const RELATIVE_DISTANCE_FACTOR = Object.freeze({
   near: 0.5,
   medium: 1,
@@ -59,6 +62,44 @@ function distanceToRectangle(point: CharacterMotionPoint, rectangle: Rectangle):
   return dx * dx + dy * dy;
 }
 
+function squaredDistance(left: CharacterMotionPoint, right: CharacterMotionPoint): number {
+  const dx = left.x - right.x;
+  const dy = left.y - right.y;
+  return dx * dx + dy * dy;
+}
+
+/** 远距目标只在当前单屏可达矩形中采样；反复命中近点时确定性选择最远角。 */
+function sampleFarWorkAreaTarget(input: Readonly<{
+  current: CharacterMotionPoint;
+  minimumX: number;
+  minimumY: number;
+  maximumX: number;
+  maximumY: number;
+  random: () => number;
+}>): CharacterMotionPoint {
+  const corners = [
+    { x: input.minimumX, y: input.minimumY },
+    { x: input.maximumX, y: input.minimumY },
+    { x: input.minimumX, y: input.maximumY },
+    { x: input.maximumX, y: input.maximumY }
+  ];
+  const farthest = corners.reduce((best, candidate) => (
+    squaredDistance(input.current, candidate) > squaredDistance(input.current, best)
+      ? candidate
+      : best
+  ));
+  const minimumSquaredDistance = squaredDistance(input.current, farthest)
+    * FAR_WANDER_MINIMUM_RATIO * FAR_WANDER_MINIMUM_RATIO;
+  for (let attempt = 0; attempt < FAR_WANDER_SAMPLE_ATTEMPTS; attempt += 1) {
+    const candidate = {
+      x: input.minimumX + (input.maximumX - input.minimumX) * input.random(),
+      y: input.minimumY + (input.maximumY - input.minimumY) * input.random()
+    };
+    if (squaredDistance(input.current, candidate) >= minimumSquaredDistance) return candidate;
+  }
+  return farthest;
+}
+
 /** 统一按脚底命中、可见交集、脚底距离与稳定平局顺序选屏。 */
 function selectDisplayForGeometry<T extends Readonly<{
   id: string;
@@ -91,6 +132,7 @@ export class CharacterMotionService {
   private readonly listeners = new Set<(snapshot: CharacterMotionSnapshot) => void>();
   private target: CharacterMotionPoint;
   private speed = DEFAULT_SPEED;
+  private arrivalToleranceDip = 0;
   private lastTickMs: number;
   private revision = 0;
   private direction: 'left' | 'right' = 'right';
@@ -116,12 +158,14 @@ export class CharacterMotionService {
     };
   }
 
-  moveTo(target: CharacterMotionPoint, speed = DEFAULT_SPEED): void {
+  moveTo(target: CharacterMotionPoint, speed = DEFAULT_SPEED, arrivalToleranceDip = 0): void {
     if (
       !Number.isFinite(target.x)
       || !Number.isFinite(target.y)
       || !Number.isFinite(speed)
       || speed < 0
+      || !Number.isFinite(arrivalToleranceDip)
+      || arrivalToleranceDip < 0
     ) {
       throw new Error('CHARACTER_MOTION_INPUT_INVALID');
     }
@@ -133,6 +177,7 @@ export class CharacterMotionService {
       this.direction = this.target.x < bounds.x ? 'left' : 'right';
     }
     this.speed = speed;
+    this.arrivalToleranceDip = arrivalToleranceDip;
   }
 
   tick(): CharacterMotionSnapshot {
@@ -178,7 +223,8 @@ export class CharacterMotionService {
       target: this.target,
       speed: this.speed,
       deltaMs: Math.max(0, now - this.lastTickMs),
-      maxDeltaMs: this.maxDeltaMs
+      maxDeltaMs: this.maxDeltaMs,
+      arrivalToleranceDip: this.arrivalToleranceDip
     });
     const position = integerPosition(next.position);
     if (position.x !== bounds.x || position.y !== bounds.y) {
@@ -322,16 +368,16 @@ export class CharacterMotionService {
   }
 
   /** 对象化意图不接受绝对坐标，距离与边界只消费 Main 可见几何快照。 */
-  requestIntent(intent: CharacterMotionIntent): void {
+  requestIntent(intent: CharacterMotionIntent): CharacterMotionSnapshot | null {
     const bounds = this.options.window.getBounds();
     const geometry = this.options.getGeometrySnapshot();
     if (!geometry) {
       this.target = { x: bounds.x, y: bounds.y };
-      return;
+      return null;
     }
     const displays = this.options.getDisplays();
     const footOffset = this.footOffsetInWindow(geometry);
-    if (!footOffset) return;
+    if (!footOffset) return null;
     const currentFoot = { x: bounds.x + footOffset.x, y: bounds.y + footOffset.y };
     const currentVisual = {
       x: bounds.x + geometry.visualBoundsInWindowDip.x,
@@ -345,12 +391,12 @@ export class CharacterMotionService {
       displays,
       geometry.displayId
     );
-    if (!display) return;
+    if (!display) return null;
     const area = display.workAreaDip;
     const visual = geometry.visualBoundsInWindowDip;
     if (intent.kind === 'return-visible') {
       this.moveTo({ x: bounds.x, y: bounds.y });
-      return;
+      return this.tick();
     }
     if (intent.kind === 'relative') {
       const factor = RELATIVE_DISTANCE_FACTOR[intent.distance];
@@ -363,7 +409,7 @@ export class CharacterMotionService {
         x: horizontal ? bounds.x + offset : bounds.x,
         y: horizontal ? bounds.y : bounds.y + offset
       });
-      return;
+      return this.tick();
     }
     if (intent.kind === 'region') {
       this.moveTo({
@@ -376,9 +422,9 @@ export class CharacterMotionService {
           ? area.y - visual.y
           : intent.region.includes('bottom')
             ? area.y + area.height - visual.y - visual.height
-            : bounds.y
+        : bounds.y
       });
-      return;
+      return this.tick();
     }
     const random = this.options.random ?? Math.random;
     if (intent.scope === 'short') {
@@ -386,16 +432,27 @@ export class CharacterMotionService {
         x: bounds.x + (random() * 2 - 1) * visual.width,
         y: bounds.y + (random() * 2 - 1) * visual.height
       });
-      return;
+      return this.tick();
     }
     const minimumX = area.x - visual.x;
     const minimumY = area.y - visual.y;
     const maximumX = area.x + area.width - visual.x - visual.width;
     const maximumY = area.y + area.height - visual.y - visual.height;
-    this.moveTo({
-      x: minimumX + (maximumX - minimumX) * random(),
-      y: minimumY + (maximumY - minimumY) * random()
-    });
+    const target = intent.distance === 'far'
+      ? sampleFarWorkAreaTarget({
+          current: { x: bounds.x, y: bounds.y },
+          minimumX,
+          minimumY,
+          maximumX,
+          maximumY,
+          random
+        })
+      : {
+          x: minimumX + (maximumX - minimumX) * random(),
+          y: minimumY + (maximumY - minimumY) * random()
+        };
+    this.moveTo(target, DEFAULT_SPEED, RANDOM_WANDER_ARRIVAL_TOLERANCE_DIP);
+    return this.tick();
   }
 
   /** 停止只撤销当前空间目标，不重置窗口、角色状态或播放调度。 */
@@ -403,6 +460,7 @@ export class CharacterMotionService {
     const bounds = this.options.window.getBounds();
     this.target = { x: bounds.x, y: bounds.y };
     this.speed = DEFAULT_SPEED;
+    this.arrivalToleranceDip = 0;
   }
 
   private footOffsetInWindow(

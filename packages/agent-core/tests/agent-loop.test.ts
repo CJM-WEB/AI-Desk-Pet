@@ -21,7 +21,7 @@ const toolNames = [
   'builtin.files.read_text',
   'builtin.files.create_file',
   'builtin.files.create_directory',
-  'builtin.files.rename_entry'
+  'builtin.files.move_file'
 ] as const;
 
 const tools: ToolDefinition[] = toolNames.map(name => ({
@@ -87,12 +87,12 @@ function createToolRuntime(): ToolRuntime {
     'builtin.files.read_text': 'read_text_file',
     'builtin.files.create_file': 'create_file',
     'builtin.files.create_directory': 'create_directory',
-    'builtin.files.rename_entry': 'rename_entry'
+    'builtin.files.move_file': 'move_file'
   };
   const recoverable = new Set([
     'builtin.files.create_file',
     'builtin.files.create_directory',
-    'builtin.files.rename_entry'
+    'builtin.files.move_file'
   ]);
   return {
     prepare(raw): PreparedToolRequest {
@@ -123,6 +123,27 @@ function context(provider: ModelProvider, signal = new AbortController().signal)
 }
 
 describe('AgentLoop', () => {
+  test('移动规划拒绝未公告的只读工具与其后的口头成功', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('fake-move-read'),
+      { type: 'text', text: 'source.txt 已移动' }
+    ]);
+    const moveTool = tools.find(tool => tool.function.name === 'builtin.files.move_file');
+    if (!moveTool) throw new Error('缺少移动工具夹具');
+
+    await expect(collectEvents({
+      ...context(provider),
+      tools: [moveTool],
+      protocol: 'capability_planner',
+      capabilityPlanning: {
+        allowClarification: true,
+        expectedWriteOperation: 'move_file'
+      }
+    })).rejects.toThrow('CAPABILITY_PLAN_PROTOCOL_INVALID');
+
+    expect(provider.requests).toHaveLength(2);
+  });
+
   test.each([
     {},
     { missingField: 'unknown' },
@@ -169,6 +190,30 @@ describe('AgentLoop', () => {
         }
       }
     });
+  });
+
+  test('目标参数完整时能力规划不向 Provider 暴露澄清工具', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'complete-target',
+        toolName: 'builtin.files.create_file',
+        arguments: { relativePath: 'complete.txt' }
+      }
+    }]);
+
+    await collectEvents({
+      ...context(provider),
+      protocol: 'capability_planner',
+      capabilityPlanning: { allowClarification: false }
+    } as RunContext);
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual(toolNames);
+    expect(provider.requests[0]?.tools).not.toContainEqual(
+      expect.objectContaining({
+        function: expect.objectContaining({ name: CAPABILITY_CLARIFICATION_TOOL_NAME })
+      })
+    );
   });
 
   test('合法行为意图在助手消息之前发出', async () => {
@@ -279,7 +324,7 @@ describe('AgentLoop', () => {
     const runContext = {
       messages: [],
       provider,
-      tools: [],
+      tools: tools.filter(tool => tool.function.name === 'builtin.files.read_text'),
       toolRuntime: { prepare, executeRead },
       signal: new AbortController().signal
     } as unknown as RunContext;
@@ -319,7 +364,7 @@ describe('AgentLoop', () => {
     const runContext = {
       messages: [],
       provider,
-      tools: [],
+      tools: tools.filter(tool => tool.function.name === 'builtin.files.create_file'),
       toolRuntime: { prepare: vi.fn(() => prepared), executeRead },
       signal: new AbortController().signal
     } as unknown as RunContext;
@@ -350,7 +395,10 @@ describe('AgentLoop', () => {
     const runContext = {
       messages: [],
       provider,
-      tools: [],
+      tools: [{
+        type: 'function',
+        function: { name: 'mcp.system.delete', description: '拒绝的测试工具', parameters: { type: 'object' } }
+      }],
       toolRuntime: {
         prepare: vi.fn(() => ({
           request: {

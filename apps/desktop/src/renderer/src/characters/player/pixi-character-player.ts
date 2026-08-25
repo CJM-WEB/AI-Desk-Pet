@@ -17,6 +17,7 @@ import {
 export interface CharacterPlayerPort {
   load(manifest: CharacterManifestV1, assets: CharacterAssetBundle): Promise<void>;
   play(selection: ActionSelectionResult, motionMode: CharacterMotionMode): number | void;
+  setMotionMode?(motionMode: CharacterMotionMode): void;
   setDirection(direction: 'left' | 'right'): void;
   getAnchor(name: keyof AnchorSet): AnchorPoint | null;
   getFrameBounds?(): { x: number; y: number; width: number; height: number } | null;
@@ -189,6 +190,35 @@ export class PixiCharacterPlayer implements CharacterPlayerPort {
       this.notifyHitRegion();
     } catch (error) {
       // 方向重建失败即终结当前播放；播放器仍保留调用方提交的新方向。
+      this.finishActivePlayback('failed');
+      throw error;
+    }
+  }
+
+  /** 切换静态播放时复用当前动作与帧，避免拖拽打断 Main 已裁决的播放令牌。 */
+  setMotionMode(motionMode: CharacterMotionMode): void {
+    if (
+      this.destroyed
+      || isLegacyScene(this.scene)
+      || this.currentMotionMode === motionMode
+      || !this.activePlayback
+      || !this.currentSelection
+    ) return;
+    const frameIndex = this.scene.getCurrentFrame()?.frameIndex;
+    this.currentMotionMode = motionMode;
+    try {
+      this.scene.showAction(
+        this.currentSelection.action,
+        resolvePublishedPlaybackOptions(
+          this.currentSelection.action,
+          this.direction,
+          motionMode,
+          frameIndex
+        )
+      );
+      this.notifyHitRegion();
+      this.notifyFrame();
+    } catch (error) {
       this.finishActivePlayback('failed');
       throw error;
     }

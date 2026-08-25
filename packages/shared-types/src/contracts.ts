@@ -81,6 +81,9 @@ export type PendingAction =
       previewTruncated: boolean;
     }>
   | Readonly<PendingFileActionBase & {
+      operation: 'create_directory';
+    }>
+  | Readonly<PendingFileActionBase & {
       operation: 'apply_patch';
       addedLines: number;
       removedLines: number;
@@ -90,6 +93,10 @@ export type PendingAction =
   | Readonly<PendingFileActionBase & {
       operation: 'delete_file';
       targetType: 'file' | 'empty_directory';
+    }>
+  | Readonly<PendingFileActionBase & {
+      operation: 'move_file';
+      sourceRelativePath: string;
     }>
   | Readonly<{
       category: 'powershell';
@@ -131,6 +138,9 @@ export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
     previewTruncated: z.boolean()
   }).strict(),
   pendingFileActionBaseSchema.extend({
+    operation: z.literal('create_directory')
+  }).strict(),
+  pendingFileActionBaseSchema.extend({
     operation: z.literal('apply_patch'),
     addedLines: z.number().int().min(0),
     removedLines: z.number().int().min(0),
@@ -140,6 +150,10 @@ export const pendingActionSchema: z.ZodType<PendingAction> = z.union([
   pendingFileActionBaseSchema.extend({
     operation: z.literal('delete_file'),
     targetType: z.enum(['file', 'empty_directory'])
+  }).strict(),
+  pendingFileActionBaseSchema.extend({
+    operation: z.literal('move_file'),
+    sourceRelativePath: z.string().min(1)
   }).strict(),
   z.object({
     category: z.literal('powershell'),

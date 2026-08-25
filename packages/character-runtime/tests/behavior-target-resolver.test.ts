@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'vitest';
 import {
   createPublicBehaviorCatalog,
+  isPublicBehaviorTarget,
+  selectPublicBehaviorTarget,
   resolveBehaviorTarget,
-  type CharacterManifestV2
+  type CharacterManifestV2,
+  type PublicBehaviorCatalog
 } from '../src';
 
 /** 构造同时包含标准语义、公开名称、标签和不可公开状态的最小角色清单。 */
@@ -90,7 +93,14 @@ describe('公开行为目标解析器', () => {
       semantics: ['idle', 'celebrate'],
       stateNames: ['待机', 'ＣＨＥＥＲ'],
       actionNames: ['待机动作', '挥手', '跳舞'],
-      tags: ['calm', 'joy', 'greet', 'dance']
+      tags: ['calm', 'joy', 'greet', 'dance'],
+      candidates: [
+        { kind: 'state_name', name: '待机', semantic: 'idle', tags: ['calm'] },
+        { kind: 'state_name', name: 'ＣＨＥＥＲ', semantic: 'celebrate', tags: ['joy'] },
+        { kind: 'action_name', name: '待机动作', semantic: 'idle', tags: ['calm'] },
+        { kind: 'action_name', name: '挥手', semantic: 'celebrate', tags: ['greet'] },
+        { kind: 'action_name', name: '跳舞', semantic: 'celebrate', tags: ['dance'] }
+      ]
     });
     expect(JSON.stringify(catalog)).not.toMatch(/(?:idle-state|wave-action|hidden)/u);
   });
@@ -110,6 +120,38 @@ describe('公开行为目标解析器', () => {
       'default-skin',
       { kind: 'state_name', name: 'CHEER' }
     )).toEqual({ kind: 'state', stateId: 'happy-state' });
+  });
+
+  test('隐藏描述从当前皮肤公开候选选择最高相似动作，名称无需相同', () => {
+    const catalog = createPublicBehaviorCatalog(createManifest(), 'default-skin');
+
+    expect(selectPublicBehaviorTarget(catalog, '我想 dance 一段', '欢快 dance'))
+      .toEqual({ kind: 'action_name', name: '跳舞' });
+  });
+
+  test('运动计划参与公开候选排序并优先命中用户自定义移动动作', () => {
+    const catalog: PublicBehaviorCatalog = {
+      characterName: '运动角色', semantics: ['idle', 'move'],
+      stateNames: [], actionNames: ['安静等待', '巡游四方'], tags: ['still', 'locomotion'],
+      candidates: [
+        { kind: 'action_name' as const, name: '安静等待', semantic: 'idle', tags: ['still'] },
+        { kind: 'action_name' as const, name: '巡游四方', semantic: 'move', tags: ['locomotion'] }
+      ]
+    };
+
+    expect(selectPublicBehaviorTarget(
+      catalog,
+      '开始行动',
+      '保持活跃',
+      { mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'far' }
+    )).toEqual({ kind: 'action_name', name: '巡游四方' });
+  });
+
+  test('候选非空时低相关描述仍按稳定顺序选择当前目录首个最高分项', () => {
+    const catalog = createPublicBehaviorCatalog(createManifest(), 'default-skin');
+
+    expect(selectPublicBehaviorTarget(catalog, '完全无关的内容', '未知状态'))
+      .toEqual({ kind: 'state_name', name: '待机' });
   });
 
   test.each([
@@ -137,5 +179,9 @@ describe('公开行为目标解析器', () => {
       'default-skin',
       { kind: 'tag', tag: 'greet' }
     )).toThrow('CHARACTER_ACTION_UNAVAILABLE');
+
+    const catalog = createPublicBehaviorCatalog(manifest, 'default-skin');
+    expect(isPublicBehaviorTarget(catalog, { kind: 'action_name', name: '挥手' })).toBe(false);
+    expect(isPublicBehaviorTarget(catalog, { kind: 'tag', tag: 'greet' })).toBe(false);
   });
 });

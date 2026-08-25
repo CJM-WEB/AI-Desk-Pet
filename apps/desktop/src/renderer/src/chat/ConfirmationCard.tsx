@@ -16,10 +16,14 @@ function actionLabels(action: PendingAction): { confirm: string; cancel: string 
   switch (action.operation) {
     case 'create_file':
       return { confirm: '确认创建文件', cancel: '先不创建' };
+    case 'create_directory':
+      return { confirm: '确认创建目录', cancel: '先不创建' };
     case 'apply_patch':
       return { confirm: '确认应用补丁', cancel: '先不修改' };
     case 'delete_file':
       return { confirm: '确认删除', cancel: '先不删除' };
+    case 'move_file':
+      return { confirm: '确认移动文件', cancel: '先不移动' };
     case 'powershell':
       return { confirm: '确认运行命令', cancel: '先不运行' };
     default:
@@ -31,10 +35,14 @@ function safetyMessage(action: PendingAction): string {
   switch (action.operation) {
     case 'create_file':
       return '不会覆盖已有文件；执行前还会再次检查。';
+    case 'create_directory':
+      return '只创建当前目录；不会递归创建父目录，执行前还会再次检查。';
     case 'apply_patch':
       return '仅修改已有文件；执行前还会再次进行冲突校验。';
     case 'delete_file':
       return '将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。';
+    case 'move_file':
+      return '只移动普通文件到已有目录；不会覆盖已有文件，执行前还会再次检查。';
     case 'powershell':
       return '以当前 Windows 用户权限在前台非交互执行；这不是安全沙箱。请确认完整命令和工作目录。';
     default:
@@ -60,6 +68,13 @@ export function ConfirmationCard({ action, busy, onConfirm, onCancel }: Confirma
           <span>工作目录：{action.workingDirectoryLabel}</span>
           <span>运行方式：前台非交互执行</span>
           <pre>{action.command}</pre>
+        </div>
+      ) : action.operation === 'move_file' ? (
+        <div className="confirmation-details">
+          <span>源文件</span>
+          <code>{action.sourceRelativePath}</code>
+          <span>目标位置</span>
+          <code>{action.targetRelativePath}</code>
         </div>
       ) : (
         <div className="path-row">

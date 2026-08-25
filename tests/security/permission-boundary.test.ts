@@ -10,7 +10,7 @@ import {
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { AgentLoop, type ModelProvider, type ModelResponse } from '@myself/agent-core';
+import { AgentLoop, type ModelResponse } from '@myself/agent-core';
 import { FileToolService, type RecycleBinPort } from '@myself/file-tools';
 import { taskEventSchema, type TaskEvent, type ToolRequest } from '@myself/shared-types';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
@@ -34,11 +34,6 @@ import type { ConversationBehaviorPort } from
   '../../apps/desktop/src/main/characters/character-behavior-director';
 import { CharacterBehaviorDirector } from
   '../../apps/desktop/src/main/characters/character-behavior-director';
-import {
-  BehaviorReflectionDiagnosticPort,
-  createBehaviorReflectionAdapter,
-  type BehaviorReflectionDiagnostic
-} from '../../apps/desktop/src/main/characters/behavior-reflection-adapter';
 import { McpManager } from '../../apps/desktop/src/main/mcp/mcp-manager';
 import {
   parseBridgeLine,
@@ -360,7 +355,7 @@ describe('权限边界安全回归', () => {
     await harness.composition.close();
   });
 
-  test('普通聊天与静默反思均为无工具请求且不触达文件、PowerShell 或 MCP runtime', async () => {
+  test('普通聊天为无工具请求且不触达文件、PowerShell 或 MCP runtime', async () => {
     const fileRead = vi.spyOn(FileToolService.prototype, 'executeRead');
     const filePreview = vi.spyOn(FileToolService.prototype, 'preview');
     const powershellPreview = vi.spyOn(PowerShellTool.prototype, 'preview');
@@ -368,24 +363,8 @@ describe('权限边界安全回归', () => {
     const chat = conversationSecurityHarness({ chatText: '普通聊天安全回复' });
     await chat.composition.coordinator.submit('只聊桌宠，不执行本地能力');
 
-    const reflectionRequests: Parameters<ModelProvider['respond']>[0][] = [];
-    const diagnostics = new BehaviorReflectionDiagnosticPort();
-    const reflection = createBehaviorReflectionAdapter({
-      createProvider: () => ({
-        async respond(request) {
-          reflectionRequests.push(request);
-          return { type: 'text', text: 'private-reflection', structured_output: {} };
-        }
-      }),
-      diagnostics
-    });
-    await reflection.reflect({
-      context: securityBehaviorDouble().getChatContext(),
-      signal: new AbortController().signal
-    });
-
-    expect(reflectionRequests).toHaveLength(1);
-    expect(reflectionRequests[0]).toMatchObject({
+    expect(chat.modelRequests).toHaveLength(1);
+    expect(chat.modelRequests[0]).toMatchObject({
       tools: [],
       toolChoice: 'none',
       responseContract: { type: 'json_object', name: 'character_chat' }
@@ -395,12 +374,11 @@ describe('权限边界安全回归', () => {
     expect(filePreview).not.toHaveBeenCalled();
     expect(powershellPreview).not.toHaveBeenCalled();
     expect(mcpConnect).not.toHaveBeenCalled();
-    await reflection.close();
     await chat.composition.close();
   });
 
   test.each(['stop_movement', 'resume_movement'] as const)(
-    'Provider 与反思建议 %s 均不能写入持久停止锁',
+    'Provider 建议 %s 不能写入持久停止锁',
     async kind => {
       const chatLock = movementLockDirector();
       const chat = conversationSecurityHarness({
@@ -414,76 +392,10 @@ describe('权限边界安全回归', () => {
       });
       await chat.composition.coordinator.submit('讨论桌宠活动状态');
 
-      const reflectionLock = movementLockDirector();
-      const diagnostics = new BehaviorReflectionDiagnosticPort();
-      const reflection = createBehaviorReflectionAdapter({
-        createProvider: () => ({
-          async respond() {
-            return {
-              type: 'text', text: 'private-reflection',
-              structured_output: { behaviorPlan: { kind } }
-            };
-          }
-        }),
-        diagnostics
-      });
-      const reflected = await reflection.reflect({
-        context: reflectionLock.director.getChatContext(),
-        signal: new AbortController().signal
-      });
-      if (reflected) reflectionLock.director.requestBehaviorPlan(reflected, 'reflection');
-
       expect(chatLock.saveMovementStopped).not.toHaveBeenCalled();
-      expect(reflectionLock.saveMovementStopped).not.toHaveBeenCalled();
-      expect(reflected).toBeNull();
-      await reflection.close();
       await chat.composition.close();
     }
   );
-
-  test('反思诊断只发布稳定白名单字段且不包含正文、路径、坐标或角色私有 ID', async () => {
-    const sentinels = {
-      text: `private-reflection-${crypto.randomUUID()}`,
-      path: `C:\\private-${crypto.randomUUID()}\\secret.txt`,
-      characterId: `private-character-${crypto.randomUUID()}`
-    };
-    const diagnostics = new BehaviorReflectionDiagnosticPort();
-    const events: BehaviorReflectionDiagnostic[] = [];
-    diagnostics.subscribe(event => events.push(event));
-    const reflection = createBehaviorReflectionAdapter({
-      createProvider: () => ({
-        async respond() {
-          return { type: 'text', text: sentinels.text, structured_output: {} };
-        }
-      }),
-      diagnostics,
-      now: () => 10
-    });
-
-    await reflection.reflect({
-      context: securityBehaviorDouble().getChatContext(),
-      signal: new AbortController().signal
-    });
-
-    expect(events).toEqual([
-      { code: 'BEHAVIOR_REFLECTION_STARTED', phase: 'started' },
-      {
-        code: 'BEHAVIOR_REFLECTION_DROPPED', phase: 'dropped',
-        durationMs: 0, reasonCode: 'NO_PLAN'
-      }
-    ]);
-    expect(JSON.stringify(events)).not.toContain(sentinels.text);
-    expect(JSON.stringify(events)).not.toContain(sentinels.path);
-    expect(JSON.stringify(events)).not.toContain(sentinels.characterId);
-    for (const event of events) {
-      expect(Object.keys(event).sort()).toEqual(
-        event.phase === 'started'
-          ? ['code', 'phase']
-          : ['code', 'durationMs', 'phase', 'reasonCode']
-      );
-    }
-    await reflection.close();
-  });
 
   test('明确文件任务才读取授权且无授权稳定失败并不创建 Agent', async () => {
     const harness = conversationSecurityHarness({
@@ -612,6 +524,8 @@ describe('权限边界安全回归', () => {
       'builtin.files.list_files',
       'builtin.files.read_file',
       'builtin.files.create_file',
+      'builtin.files.move_file',
+      'builtin.files.create_directory',
       'builtin.files.apply_patch',
       'builtin.files.delete_file'
     ]);

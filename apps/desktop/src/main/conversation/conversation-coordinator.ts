@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ModelMessage } from '@myself/agent-core';
+import type { FilePlanningHint, ModelMessage } from '@myself/agent-core';
 import type {
   HistoryDisclosureDecision,
   TaskEvent
@@ -11,7 +11,11 @@ import type {
   ConversationBehaviorPort,
   ExplicitBehaviorDirective
 } from '../characters/character-behavior-director';
-import { capabilityIntentRouter } from './capability-intent-router';
+import type { AgentFileTaskOutcome } from '../agent/agent-service';
+import {
+  capabilityIntentRouter,
+  createFilePlanningHint
+} from './capability-intent-router';
 import {
   isPublicFileTaskErrorCode,
   publicFileTaskErrorDetails
@@ -34,6 +38,8 @@ export type PreparedCapabilityTarget = Readonly<{
   profileId: string;
   providerIdentity: string;
   providerName: string;
+  /** Main 内部能力快照指纹，绑定授权根与完整 Provider 设置。 */
+  capabilityRevision: string;
 }>;
 
 export interface ConversationCapabilityTaskPort {
@@ -47,7 +53,8 @@ export interface ConversationCapabilityTaskPort {
     visibleHistory: readonly ModelMessage[];
     generation: string;
     taskKind: CapabilityTaskKind;
-  }): Promise<void>;
+    planningHint?: FilePlanningHint;
+  }): Promise<AgentFileTaskOutcome>;
   cancelActive(): void;
   resolveAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
   resetForNewConversation(): Promise<void>;
@@ -80,7 +87,15 @@ interface TurnContext {
   explicitDirective: ExplicitBehaviorDirective | null;
   generation: string;
   controller: AbortController;
+  planningHint?: FilePlanningHint;
+  continuationTarget?: PreparedCapabilityTarget;
 }
+
+type PendingFileContinuation = Readonly<{
+  generation: string;
+  capabilityText: string;
+  target: PreparedCapabilityTarget;
+}>;
 
 interface PendingChatDisclosure extends TurnContext {
   kind: 'chat_reply';
@@ -106,7 +121,8 @@ interface ActiveCapabilityTurn {
   taskKind: CapabilityTaskKind;
   target: PreparedCapabilityTarget;
   assistantText: string | null;
-  terminalPhase: 'error' | 'cancelled' | null;
+  terminalPhase: 'success' | 'error' | 'cancelled' | null;
+  outcomeReady: boolean;
 }
 
 export class ConversationCoordinator {
@@ -116,6 +132,7 @@ export class ConversationCoordinator {
   private readonly unsubscribeCapabilityEvents: () => void;
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
   private activeCapabilityTurn: ActiveCapabilityTurn | null = null;
+  private pendingFileContinuation: PendingFileContinuation | null = null;
   private closePromise: Promise<void> | null = null;
 
   constructor(private readonly options: ConversationCoordinatorOptions) {
@@ -168,6 +185,20 @@ export class ConversationCoordinator {
       context.capabilityText = prepared.capabilityText;
       context.explicitDirective = prepared.explicitDirective;
 
+      const continuation = this.pendingFileContinuation;
+      if (
+        continuation?.generation === context.generation
+        && context.capabilityText.trim().length > 0
+        && capabilityIntentRouter.route(context.capabilityText).kind === 'chat'
+      ) {
+        this.pendingFileContinuation = null;
+        context.capabilityText = `${continuation.capabilityText}\n${context.capabilityText}`;
+        context.continuationTarget = continuation.target;
+      } else if (continuation !== null) {
+        // 续接只接受紧邻的下一条有效路径；普通聊天或新能力请求都明确放弃旧澄清。
+        this.pendingFileContinuation = null;
+      }
+
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
       const intent = capabilityIntentRouter.route(context.capabilityText);
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
@@ -175,6 +206,10 @@ export class ConversationCoordinator {
           throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
         }
         const taskKind: CapabilityTaskKind = intent.kind === 'file_task' ? 'file' : 'powershell';
+        if (taskKind === 'file') {
+          const planningHint = createFilePlanningHint(context.capabilityText);
+          if (planningHint !== null) context.planningHint = planningHint;
+        }
         this.state = {
           kind: 'preparing_capability_task',
           generation: context.generation,
@@ -386,6 +421,7 @@ export class ConversationCoordinator {
     this.state = resettingState;
     this.pendingDisclosure = null;
     this.activeCapabilityTurn = null;
+    this.pendingFileContinuation = null;
 
     const failures: unknown[] = [];
     try {
@@ -436,6 +472,7 @@ export class ConversationCoordinator {
     this.state = { kind: 'closed' };
     this.pendingDisclosure = null;
     this.activeCapabilityTurn = null;
+    this.pendingFileContinuation = null;
     const closing = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
       for (const cleanup of [
@@ -483,10 +520,13 @@ export class ConversationCoordinator {
       signal: context.controller.signal
     });
     if (!this.isRunning(context)) return;
-    this.options.behavior.completeUserPrompt({
+    await this.options.behavior.completeUserPrompt({
       generation: context.generation,
       explicitDirective: context.explicitDirective,
-      providerPlan: reply.behaviorPlan ?? null
+      providerPlan: reply.behaviorPlan ?? null,
+      motionPlan: reply.motionPlan ?? null,
+      ...(reply.activity === undefined ? {} : { activity: reply.activity }),
+      ...(reply.status === undefined ? {} : { status: reply.status })
     });
     if (!this.isRunning(context)) return;
     this.options.emit({ type: 'message', role: 'assistant', text: reply.text });
@@ -544,6 +584,16 @@ export class ConversationCoordinator {
       throw publicFileError(error);
     }
     if (!this.isRunning(context)) return;
+    if (
+      context.continuationTarget !== undefined
+      && (
+        target.profileId !== context.continuationTarget.profileId
+        || target.providerIdentity !== context.continuationTarget.providerIdentity
+        || target.capabilityRevision !== context.continuationTarget.capabilityRevision
+      )
+    ) {
+      throw publicErrorForCode('FILE_TARGET_MISMATCH');
+    }
     const requestId = this.createId();
     const disclosure = this.options.disclosureAdapter.prepare({
       requestId,
@@ -591,17 +641,39 @@ export class ConversationCoordinator {
       taskKind,
       target,
       assistantText: null,
-      terminalPhase: null
+      terminalPhase: null,
+      outcomeReady: false
     };
     this.activeCapabilityTurn = active;
     this.state = { kind: 'running_capability_task', generation: context.generation, taskKind };
     try {
-      await this.options.capabilityTasks.submit({
+      const submission = {
         text: context.capabilityText,
         visibleHistory,
         generation: context.generation,
-        taskKind
-      });
+        taskKind,
+        ...(context.planningHint === undefined ? {} : { planningHint: context.planningHint })
+      };
+      const outcome = await this.options.capabilityTasks.submit(submission);
+      if (
+        taskKind === 'file'
+        && outcome.kind === 'clarification'
+        && outcome.missingField === 'target_path'
+        && outcome.acted === false
+        && context.generation === this.generation
+      ) {
+        this.pendingFileContinuation = Object.freeze({
+          generation: context.generation,
+          capabilityText: context.capabilityText,
+          target
+        });
+      }
+      active.outcomeReady = true;
+      if (active.terminalPhase === 'success' && this.activeCapabilityTurn === active) {
+        this.activeCapabilityTurn = null;
+        this.state = { kind: 'idle' };
+        this.options.emit({ type: 'phase', phase: 'success' });
+      }
     } catch (error) {
       if (active.generation !== this.generation || this.isClosed()) return;
       const normalized = publicFileError(error);
@@ -643,6 +715,9 @@ export class ConversationCoordinator {
             providerIdentity: active.target.providerIdentity
           });
         }
+        active.terminalPhase = 'success';
+        // outcome（尤其 target_path 澄清）先由 submit 返回并提交，再公开 idle/success。
+        if (!active.outcomeReady) return;
         this.activeCapabilityTurn = null;
         this.state = { kind: 'idle' };
       }
@@ -701,6 +776,7 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
     CONVERSATION_CLOSED: '当前会话已经关闭。',
     DISCLOSURE_REQUEST_EXPIRED: '历史披露确认已失效，请重新提交消息。',
+    FILE_TARGET_MISMATCH: '文件授权目录或模型配置已经变化，请重新提交完整文件请求。',
     POWERSHELL_BACKGROUND_UNSUPPORTED: '暂不支持后台 PowerShell 任务，请改为前台执行。',
     PROVIDER_AUTHENTICATION_FAILED: '模型服务身份认证失败，请检查 API Key。',
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',
@@ -756,5 +832,6 @@ function publicErrorForCode(code: string): Error & { code: string; nextAction?: 
   const fileError = publicFileTaskErrorDetails(code);
   if (fileError !== null) return Object.assign(new Error(fileError.message), { code, ...fileError });
   const normalizedCode = Object.hasOwn(公开错误消息, code) ? code : 'AGENT_INTERNAL_ERROR';
-  return Object.assign(new Error(公开错误消息[normalizedCode]!), { code: normalizedCode });
+  const message = 公开错误消息[normalizedCode]!;
+  return Object.assign(new Error(message), { code: normalizedCode });
 }

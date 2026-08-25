@@ -3,7 +3,7 @@ import type {
   ModelRequest,
   ModelResponse
 } from '@myself/agent-core';
-import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
+import { providerCatalog, type ProviderProfileV2, type TaskEvent } from '@myself/shared-types';
 import { describe, expect, test, vi } from 'vitest';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import { ConversationChatAdapter } from
@@ -73,15 +73,10 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
 
 function agentDouble(overrides: Record<string, unknown> = {}) {
   return {
-    submitFileTask: vi.fn(async () => undefined),
+    submitFileTask: vi.fn(async () => ({ kind: 'completed', acted: false } as const)),
     cancelActive: vi.fn(),
     confirm: vi.fn(async () => undefined),
     cancelAction: vi.fn(),
-    onPlaybackStarted: vi.fn(() => true),
-    onPlaybackTerminal: vi.fn(() => true),
-    onCommitFrame: vi.fn(() => true),
-    advanceFileTaskTransaction: vi.fn(() => true),
-    invalidateFileTaskPlaybackGrant: vi.fn(() => true),
     resetForNewConversation: vi.fn(async () => undefined),
     close: vi.fn(),
     ...overrides
@@ -173,6 +168,7 @@ describe('Main 会话组合模块', () => {
     expect(harness.behavior.completeUserPrompt).toHaveBeenCalledExactlyOnceWith({
       generation: expect.any(String),
       explicitDirective: null,
+      motionPlan: null,
       providerPlan: null
     });
     await harness.composition.close();
@@ -187,7 +183,8 @@ describe('Main 会话组合模块', () => {
     expect(target).toEqual({
       profileId: 'primary',
       providerIdentity: 'custom:openai-compatible:https://same.example/v1',
-      providerName: 'primary'
+      providerName: 'primary',
+      capabilityRevision: expect.any(String)
     });
     expect(harness.createdAgentProfiles).toEqual(['primary', 'same-fallback']);
     expect(harness.createdAgentProfiles).not.toContain('cross-fallback');

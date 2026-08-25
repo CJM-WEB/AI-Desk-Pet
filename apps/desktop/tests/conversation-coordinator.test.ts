@@ -15,6 +15,7 @@ import { ConversationHistory } from '../src/main/conversation/conversation-histo
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import type { ConversationBehaviorPort } from
   '../src/main/characters/character-behavior-director';
+import type { AgentFileTaskOutcome } from '../src/main/agent/agent-service';
 
 const behaviorContext = {
   character: {
@@ -72,14 +73,17 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
   closeBarrier: Promise<void> | null = null;
   prepareBarrier: Promise<void> | null = null;
   cancelCalls = 0;
+  nextOutcome: AgentFileTaskOutcome = { kind: 'completed', acted: false };
   target: {
     profileId: string;
     providerIdentity: string;
     providerName: string;
+    capabilityRevision: string;
   } = Object.freeze({
     profileId: 'profile-agent',
     providerIdentity: 'openai',
-    providerName: 'OpenAI Agent'
+    providerName: 'OpenAI Agent',
+    capabilityRevision: 'revision-agent'
   });
   private listener: Parameters<ConversationCapabilityTaskPort['onEvent']>[0] | null = null;
 
@@ -92,8 +96,9 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
     };
   }
 
-  async submit(input: Parameters<ConversationCapabilityTaskPort['submit']>[0]): Promise<void> {
+  async submit(input: Parameters<ConversationCapabilityTaskPort['submit']>[0]): Promise<AgentFileTaskOutcome> {
     this.submissions.push(input);
+    return this.nextOutcome;
   }
 
   async prepareTarget(input: { generation: string; taskKind: 'file' | 'powershell' }) {
@@ -260,6 +265,31 @@ function errorCode(error: unknown): unknown {
 }
 
 describe('ConversationCoordinator', () => {
+  test('截图删除原句生成完整 delete_file 规划提示且不允许无根据澄清', async () => {
+    const harness = createHarness([]);
+
+    await harness.coordinator.submit('把当前指定目录下的empty文件夹删除了');
+
+    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
+      text: '把当前指定目录下的empty文件夹删除了',
+      planningHint: {
+        operation: 'delete_file'
+      }
+    })]);
+  });
+
+  test('截图创建目录原句生成完整 create_directory 规划提示', async () => {
+    const harness = createHarness([]);
+
+    await harness.coordinator.submit('那在当前目录下创建一个名为abc的文件夹');
+
+    expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
+      planningHint: {
+        operation: 'create_directory'
+      }
+    })]);
+  });
+
   test('在能力分流与 Provider 创建前等待显式 Gate，并只把剩余能力文本交给文件链', async () => {
     const release = deferredVoid();
     const behavior = behaviorPortDouble({
@@ -296,6 +326,8 @@ describe('ConversationCoordinator', () => {
       text: '开始散步',
       structured_output: {
         text: '开始散步',
+        activity: '轻快走动',
+        status: 'move',
         behaviorPlan: { kind: 'move', direction: 'right', distance: 'near' }
       }
     });
@@ -327,7 +359,10 @@ describe('ConversationCoordinator', () => {
     expect(behavior.completeUserPrompt).toHaveBeenLastCalledWith({
       generation: 'generation-current',
       explicitDirective: null,
-      providerPlan: { kind: 'move', direction: 'right', distance: 'near' }
+      activity: '轻快走动',
+      status: 'move',
+      providerPlan: { kind: 'move', direction: 'right', distance: 'near' },
+      motionPlan: null
     });
   });
 
@@ -361,12 +396,12 @@ describe('ConversationCoordinator', () => {
 
       expect(harness.factoryCallCount()).toBe(0);
       expect(harness.fileTasks.preparedGenerations).toEqual(['generation-current']);
-      expect(harness.fileTasks.submissions).toEqual([{
+      expect(harness.fileTasks.submissions).toEqual([expect.objectContaining({
         text,
         visibleHistory: [],
         generation: 'generation-current',
         taskKind: 'file'
-      }]);
+      })]);
     }
   );
 
@@ -1150,7 +1185,7 @@ describe('ConversationCoordinator', () => {
     fileTasks.submit = async input => {
       fileTasks.submissions.push(input);
       submissionCount += 1;
-      if (submissionCount !== 1) return;
+      if (submissionCount !== 1) return { kind: 'completed', acted: false };
       fileTasks.publish({
         type: 'error',
         code: 'PATH_INVALID',
@@ -1252,6 +1287,7 @@ describe('ConversationCoordinator', () => {
           }
         }, input.generation);
         fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
+        return { kind: 'completed', acted: true };
       };
       fileTasks.resolveAction = async () => {
         fileTasks.publish({ type: 'error', code, message, nextAction }, 'generation-current');
@@ -1283,7 +1319,8 @@ describe('ConversationCoordinator', () => {
     harness.fileTasks.target = Object.freeze({
       profileId: 'profile-anthropic-agent',
       providerIdentity: 'anthropic',
-      providerName: 'Anthropic Agent'
+      providerName: 'Anthropic Agent',
+      capabilityRevision: 'revision-anthropic'
     });
     harness.history.append({
       userText: '旧问题',
@@ -1368,7 +1405,8 @@ describe('ConversationCoordinator', () => {
     harness.fileTasks.target = Object.freeze({
       profileId: 'profile-anthropic-agent',
       providerIdentity: 'anthropic',
-      providerName: 'Anthropic Agent'
+      providerName: 'Anthropic Agent',
+      capabilityRevision: 'revision-anthropic'
     });
     harness.history.append({
       userText: '旧问题',
@@ -1408,6 +1446,7 @@ describe('ConversationCoordinator', () => {
         }
       }, input.generation);
       fileTasks.publish({ type: 'phase', phase: 'awaiting_confirmation' }, input.generation);
+      return { kind: 'completed', acted: true };
     };
     const harness = createHarness([], { fileTasks });
 

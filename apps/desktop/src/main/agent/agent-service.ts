@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import type {
   AgentEvent,
   AgentLoop,
+  AgentRunOutcome,
+  FilePlanningHint,
+  FilePlanningOperation,
+  FileWriteOperation,
   ModelMessage,
   ModelProvider,
   RunContext,
@@ -10,7 +14,7 @@ import type {
 } from '@myself/agent-core';
 import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import type { ToolRequest, TaskEvent } from '@myself/shared-types';
-import type { VerifiedWriteAction } from '@myself/file-tools';
+import { type VerifiedWriteAction } from '@myself/file-tools';
 import type {
   PowerShellRunResult,
   PowerShellTool,
@@ -21,11 +25,6 @@ import type {
   PendingActionDraft,
   PendingActionStore
 } from './pending-action-store';
-import {
-  FileTaskTransactionCoordinator,
-  type FileTaskPlaybackTerminal,
-  type FileTaskResult
-} from './file-task-transaction-coordinator';
 import {
   isPublicFileTaskErrorCode,
   publicFileTaskErrorDetails
@@ -66,16 +65,34 @@ export type AgentSession = AgentSessionBase & (
 export interface AgentFileTaskSubmission {
   text: string;
   visibleHistory: readonly ModelMessage[];
+  planningHint?: FilePlanningHint;
 }
 
-export interface AgentTaskCarryPort {
-  beginTaskCarry(): Readonly<{
-    playbackToken: string;
-    actionId: string;
-    commitFrameId: string | null;
-  }>;
-  endTaskCarry(): void;
+const filePlanningToolNames = Object.freeze({
+  list_files: 'builtin.files.list_files',
+  read_file: 'builtin.files.read_file',
+  create_file: 'builtin.files.create_file',
+  create_directory: 'builtin.files.create_directory',
+  apply_patch: 'builtin.files.apply_patch',
+  delete_file: 'builtin.files.delete_file',
+  move_file: 'builtin.files.move_file'
+} satisfies Readonly<Record<FilePlanningOperation, string>>);
+
+const controlledWriteOperations = new Set<FileWriteOperation>([
+  'create_file',
+  'create_directory',
+  'apply_patch',
+  'delete_file',
+  'move_file'
+]);
+
+function isControlledWriteOperation(operation: FilePlanningOperation): operation is FileWriteOperation {
+  return controlledWriteOperations.has(operation as FileWriteOperation);
 }
+
+export type AgentFileTaskOutcome =
+  | Readonly<{ kind: 'clarification'; missingField: NonNullable<AgentRunOutcome>['missingField']; acted: false }>
+  | Readonly<{ kind: 'completed'; acted: boolean }>;
 
 export interface AgentServiceOptions {
   loop: AgentLoop;
@@ -83,18 +100,14 @@ export interface AgentServiceOptions {
   createSession(signal?: AbortSignal): Promise<AgentSession>;
   emit(event: TaskEvent): void;
   emitBehaviorIntent?(intent: CharacterAgentBehaviorIntent): void;
-  taskCarry?: AgentTaskCarryPort;
   createConversationId?: () => string;
 }
 
-type ActiveFileTask = {
-  action: VerifiedWriteAction;
-  session: AgentSession;
-  resolveResult(result: FileTaskResult): void;
-  executionErrorCode: string | null;
-};
-
 type CapabilityExecution = import('./pending-action-store').PendingExecution;
+
+function fileDisclosureDenied(): Error & { code: 'FILE_DISCLOSURE_DENIED' } {
+  return Object.assign(new Error('FILE_DISCLOSURE_DENIED'), { code: 'FILE_DISCLOSURE_DENIED' as const });
+}
 
 function errorCode(error: unknown): string {
   if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
@@ -222,8 +235,10 @@ function assertNever(value: never): never {
 function actionSummary(action: VerifiedWriteAction): string {
   switch (action.operation) {
     case 'create_file': return `创建文件 ${action.targetRelativePath}`;
+    case 'create_directory': return `创建目录 ${action.targetRelativePath}`;
     case 'apply_patch': return `修改文件 ${action.targetRelativePath}`;
-    case 'delete_file': return `删除文件 ${action.targetRelativePath}`;
+    case 'delete_file': return `${action.targetType === 'empty_directory' ? '删除目录' : '删除文件'} ${action.targetRelativePath}`;
+    case 'move_file': return `移动文件 ${action.sourceRelativePath} 到 ${action.targetRelativePath}`;
     default: return assertNever(action);
   }
 }
@@ -237,10 +252,7 @@ export class AgentService {
     | ((intent: CharacterAgentBehaviorIntent) => void)
     | undefined;
   private readonly createConversationId: () => string;
-  private readonly taskCarry: AgentTaskCarryPort | undefined;
-  private readonly fileTaskCoordinator: FileTaskTransactionCoordinator;
   private activeController: AbortController | null = null;
-  private activeFileTask: ActiveFileTask | null = null;
   private pendingSession: AgentSession | null = null;
   private activeSession: AgentSession | null = null;
   private taskOwner: symbol | null = null;
@@ -263,15 +275,10 @@ export class AgentService {
     this.createSession = options.createSession;
     this.emit = options.emit;
     this.emitBehaviorIntent = options.emitBehaviorIntent;
-    this.taskCarry = options.taskCarry;
     this.createConversationId = options.createConversationId ?? randomUUID;
-    this.fileTaskCoordinator = new FileTaskTransactionCoordinator({
-      execute: action => this.executeFileTask(action),
-      reportResult: result => this.activeFileTask?.resolveResult(result)
-    });
   }
 
-  async submitFileTask(input: AgentFileTaskSubmission): Promise<void> {
+  async submitFileTask(input: AgentFileTaskSubmission): Promise<AgentFileTaskOutcome> {
     const normalized = typeof input?.text === 'string' ? input.text.trim() : '';
     const visibleHistory = snapshotVisibleHistory(input?.visibleHistory);
     if (
@@ -294,10 +301,10 @@ export class AgentService {
       const session = await this.createSession(controller.signal);
       this.activeSession = session;
       if (visibleHistory.length > 0) this.historyBoundSessions.add(session);
-      await this.forward(
+      return await this.forward(
         this.loop.run(
           normalized,
-          this.runContext(session, controller.signal, visibleHistory)
+          this.runContext(session, controller.signal, visibleHistory, input.planningHint)
         ),
         session,
         owner
@@ -316,7 +323,6 @@ export class AgentService {
 
   cancelActive(): void {
     if (this.activeController) {
-      this.fileTaskCoordinator.cancel();
       this.activeController.abort();
       return;
     }
@@ -350,25 +356,6 @@ export class AgentService {
 
     const controller = new AbortController();
     this.activeController = controller;
-    const isDeleteFile = execution.verifiedAction.category === 'file'
-      && execution.verifiedAction.action.operation === 'delete_file';
-    if (isDeleteFile) {
-      try {
-        return await this.confirmDeleteFile(
-          execution as CapabilityExecution & {
-            verifiedAction: Readonly<{ category: 'file'; action: VerifiedWriteAction }>;
-          },
-          session,
-          controller,
-          owner
-        );
-      } finally {
-        if (this.taskOwner === owner && this.pendingSession === null) {
-          this.taskOwner = null;
-          this.activeSession = null;
-        }
-      }
-    }
     let capabilityResult: { kind: 'file' | 'powershell'; ok: boolean } | null = null;
     try {
       this.publish({ type: 'phase', phase: 'acting' }, owner);
@@ -423,7 +410,7 @@ export class AgentService {
       this.pendingSession = null;
       const owner = this.taskOwner;
       this.publish({ type: 'phase', phase: 'cancelled' }, owner);
-        if (this.taskOwner === owner && this.pendingSession === null) this.taskOwner = null;
+      if (this.taskOwner === owner && this.pendingSession === null) this.taskOwner = null;
     } catch (error) {
       this.emitFailure(error);
       throw error;
@@ -431,7 +418,6 @@ export class AgentService {
   }
 
   clearPending(reason: PendingActionClearReason): void {
-    this.fileTaskCoordinator.cancel();
     this.pending.clear(reason);
     this.pendingSession = null;
     this.activeSession = null;
@@ -449,7 +435,6 @@ export class AgentService {
     this.activeSession = null;
     const failures: unknown[] = [];
     for (const cleanup of [
-      () => this.fileTaskCoordinator.cancel(),
       () => this.pending.clear('task_cancelled'),
       () => controller?.abort()
     ]) {
@@ -465,41 +450,11 @@ export class AgentService {
     if (failures.length > 0) throw failures[0];
   }
 
-  /** 接收 Renderer 已由行为服务认证的播放开始反馈。 */
-  onPlaybackStarted(playbackToken: string, actionId: string): boolean {
-    return this.fileTaskCoordinator.onPlaybackStarted(playbackToken, actionId);
-  }
-
-  /** 接收 Renderer 已由行为服务认证的终止反馈。 */
-  onPlaybackTerminal(
-    playbackToken: string,
-    actionId: string,
-    terminal: FileTaskPlaybackTerminal
-  ): boolean {
-    return this.fileTaskCoordinator.onPlaybackTerminal(playbackToken, actionId, terminal);
-  }
-
-  /** 消费严格匹配当前授权的提交帧；返回值供 IPC 拒绝伪造或重复里程碑。 */
-  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean {
-    return this.fileTaskCoordinator.onCommitFrame(playbackToken, actionId, frameId);
-  }
-
-  /** 由 Main 的短周期轮询推进开始与提交超时。 */
-  advanceFileTaskTransaction(): boolean {
-    return this.fileTaskCoordinator.advance();
-  }
-
-  /** 角色切换或用户交互使旧播放令牌失效时，同步撤销尚未提交的文件能力。 */
-  invalidateFileTaskPlaybackGrant(): boolean {
-    return this.fileTaskCoordinator.cancel('playback_interrupted');
-  }
-
   /** 应用退出或桌宠窗口关闭时撤销尚未提交的文件能力。 */
   async close(): Promise<void> {
     this.taskOwner = null;
     const session = this.activeSession;
     const irreversible = this.irreversibleExecution?.promise ?? null;
-    this.fileTaskCoordinator.close();
     this.pending.clear('application_exit');
     this.pendingSession = null;
     this.activeSession = null;
@@ -515,118 +470,7 @@ export class AgentService {
     throw error;
   }
 
-  private async confirmDeleteFile(
-    execution: CapabilityExecution & { verifiedAction: Readonly<{ category: 'file'; action: VerifiedWriteAction }> },
-    session: AgentSession,
-    controller: AbortController,
-    owner: symbol
-  ): Promise<void> {
-    const taskCarry = this.taskCarry;
-    if (!taskCarry) {
-      this.loop.discard(execution.continuationToken);
-      const error = Object.assign(new Error('FILE_TASK_PLAYBACK_UNAVAILABLE'), {
-        code: 'FILE_TASK_PLAYBACK_UNAVAILABLE'
-      });
-      this.emitFailure(error, owner);
-      if (this.activeController === controller) this.activeController = null;
-      throw error;
-    }
-
-    let resolveResult!: (result: FileTaskResult) => void;
-    const resultPromise = new Promise<FileTaskResult>(resolve => {
-      resolveResult = resolve;
-    });
-    const activeTask: ActiveFileTask = {
-      action: execution.verifiedAction.action,
-      session,
-      resolveResult,
-      executionErrorCode: null
-    };
-    this.activeFileTask = activeTask;
-    let writeCompleted = false;
-    let carryStarted = false;
-    let carryingPublished = true;
-    try {
-      this.publish({ type: 'phase', phase: 'acting' }, owner);
-      this.assertTaskOwned(owner, controller.signal);
-      this.publish({ type: 'character_carrying', carrying: true }, owner);
-      this.assertTaskOwned(owner, controller.signal);
-      this.assertFileDisclosureAllowed(session);
-      this.assertTaskOwned(owner, controller.signal);
-      const grant = taskCarry.beginTaskCarry();
-      carryStarted = true;
-      this.assertTaskOwned(owner, controller.signal);
-      this.fileTaskCoordinator.begin(execution.verifiedAction.action, grant);
-      const result = await resultPromise;
-      if (result.status !== 'succeeded') {
-        throw this.fileTaskResultError(result, activeTask.executionErrorCode);
-      }
-      writeCompleted = true;
-      taskCarry.endTaskCarry();
-      carryStarted = false;
-      this.publish({ type: 'character_carrying', carrying: false }, owner);
-      carryingPublished = false;
-      await this.forward(
-        this.loop.resume(
-          execution.continuationToken,
-          writeResult(execution.verifiedAction.action),
-          this.runContext(session, controller.signal)
-        ),
-        session,
-        owner
-      );
-    } catch (error) {
-      if (!writeCompleted && this.fileTaskCoordinator.snapshot().state === 'waiting-playback') {
-        this.fileTaskCoordinator.cancel();
-      }
-      if (!writeCompleted && this.fileTaskCoordinator.snapshot().state === 'waiting-commit') {
-        this.fileTaskCoordinator.cancel();
-      }
-      if (!writeCompleted && this.activeFileTask === activeTask) {
-        // beginTaskCarry 或授权校验失败时协调器尚未接管续跑令牌。
-        this.loop.discard(execution.continuationToken);
-      }
-      if (writeCompleted) {
-        this.publish({
-          type: 'error',
-          code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
-          message: '本地文件操作已成功，但模型总结失败。',
-          nextAction: '可以查看文件结果，或稍后重新请求总结。'
-        }, owner);
-        this.publish({ type: 'phase', phase: 'success' }, owner);
-      } else {
-        this.emitFailure(error, owner);
-      }
-      throw error;
-    } finally {
-      if (carryStarted) taskCarry.endTaskCarry();
-      if (carryingPublished) {
-        this.publish({ type: 'character_carrying', carrying: false }, owner);
-      }
-      if (this.activeFileTask === activeTask) this.activeFileTask = null;
-      if (this.activeController === controller) this.activeController = null;
-    }
-  }
-
-  private async executeFileTask(action: VerifiedWriteAction): Promise<void> {
-    const activeTask = this.activeFileTask;
-    if (!activeTask || activeTask.action !== action) {
-      throw new Error('FILE_TASK_TRANSACTION_MISMATCH');
-    }
-    const irreversible = this.beginIrreversibleExecution();
-    try {
-      if (activeTask.session.taskKind !== 'file') throw new Error('FILE_TASK_TRANSACTION_MISMATCH');
-      await activeTask.session.fileTools.executeWrite(action);
-    } catch (error) {
-      const code = errorCode(error);
-      activeTask.executionErrorCode = isPublicFileTaskErrorCode(code) ? code : null;
-      throw error;
-    } finally {
-      this.finishIrreversibleExecution(irreversible);
-    }
-  }
-
-  /** 普通文件写入与 PowerShell 共用确认续跑，删除仍由专属回收站事务协调。 */
+  /** 所有文件写入在 Main 消费确认后统一提交，角色表现不拥有文件提交权。 */
   private async executeCapability(
     execution: CapabilityExecution,
     session: AgentSession,
@@ -642,13 +486,12 @@ export class AgentService {
       }
       if (session.taskKind !== 'file') throw new Error('ACTION_EXPIRED');
       this.assertTaskOwned(owner, signal);
-      this.assertFileDisclosureAllowed(session);
-      this.publish({ type: 'character_carrying', carrying: true }, owner);
+      this.publishFileFeedback({ type: 'character_carrying', carrying: true }, owner);
       try {
         this.assertTaskOwned(owner, signal);
         await session.fileTools.executeWrite(execution.verifiedAction.action);
       } finally {
-        this.publish({ type: 'character_carrying', carrying: false }, owner);
+        this.publishFileFeedback({ type: 'character_carrying', carrying: false }, owner);
       }
       return writeResult(execution.verifiedAction.action);
     } finally {
@@ -656,54 +499,79 @@ export class AgentService {
     }
   }
 
-  private fileTaskResultError(result: FileTaskResult, executionErrorCode: string | null): Error {
-    if (result.status === 'succeeded') {
-      return Object.assign(new Error('FILE_TASK_RESULT_INVALID'), {
-        code: 'FILE_TASK_RESULT_INVALID'
-      });
-    }
-    if (result.status === 'failed') {
-      const code = executionErrorCode ?? 'FILE_TASK_EXECUTION_FAILED';
-      return Object.assign(new Error(code), { code });
-    }
-    const code = result.reason === 'user_cancelled'
-      ? 'FILE_TASK_USER_CANCELLED'
-      : result.reason === 'playback_start_timeout' || result.reason === 'commit_timeout'
-        ? 'FILE_TASK_PLAYBACK_TIMEOUT'
-        : 'FILE_TASK_PLAYBACK_CANCELLED';
-    return Object.assign(new Error(code), { code });
-  }
-
   private runContext(
     session: AgentSession,
     signal: AbortSignal,
-    visibleHistory: readonly ModelMessage[] = []
+    visibleHistory: readonly ModelMessage[] = [],
+    planningHint?: FilePlanningHint
   ): RunContext {
+    const plannedOperation = planningHint?.operation;
+    const plannedToolName = plannedOperation === undefined
+      ? null
+      : filePlanningToolNames[plannedOperation];
+    const expectedWriteOperation = plannedOperation !== undefined && isControlledWriteOperation(plannedOperation)
+      ? plannedOperation
+      : undefined;
+    const tools = session.taskKind === 'file' && !session.fileDisclosureAllowed
+      ? session.tools.filter(tool => (
+        expectedWriteOperation !== undefined
+        && tool.function.name === plannedToolName
+      ))
+      : plannedToolName === null
+        ? session.tools
+        : session.tools.filter(tool => tool.function.name === plannedToolName);
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
       messages: [...session.messages, ...visibleHistory],
       provider: this.historyBoundSessions.has(session)
         ? providerWithOneRetry(session.provider)
         : providerWithFallback(session.provider, session.fallbackProviders ?? []),
-      tools: session.tools,
-      toolRuntime: session.toolRuntime,
+      tools,
+      toolRuntime: {
+        prepare: raw => {
+          const prepared = session.toolRuntime.prepare(raw);
+          if (!tools.some(tool => tool.function.name === prepared.request.toolName)) {
+            throw Object.assign(new Error('TOOL_UNKNOWN'), { code: 'TOOL_UNKNOWN' });
+          }
+          return prepared;
+        },
+        executeRead: request => {
+          if (session.taskKind === 'file' && !session.fileDisclosureAllowed) {
+            return Promise.reject(fileDisclosureDenied());
+          }
+          return session.toolRuntime.executeRead(request);
+        }
+      },
       signal,
       // 能力任务显式启用首个真实工具结果前的受限规划协议；聊天默认不受影响。
-      protocol: 'capability_planner'
+      protocol: 'capability_planner',
+      capabilityPlanning: {
+        allowClarification: session.taskKind === 'file',
+        ...(expectedWriteOperation === undefined ? {} : { expectedWriteOperation })
+      }
     };
   }
 
   private async forward(
-    stream: AsyncGenerator<AgentEvent>,
+    stream: AsyncGenerator<AgentEvent, AgentRunOutcome>,
     session: AgentSession,
     owner: symbol
-  ): Promise<void> {
-    for await (const event of stream) {
+  ): Promise<AgentFileTaskOutcome> {
+    let acted = false;
+    while (true) {
+      const next = await stream.next();
+      if (next.done) {
+        return next.value?.kind === 'clarification'
+          ? { kind: 'clarification', missingField: next.value.missingField, acted: false }
+          : { kind: 'completed', acted };
+      }
+      const event = next.value;
       if (this.taskOwner !== owner) {
         if (event.type === 'write_request') this.loop.discard(event.continuationToken);
-        return;
+        return { kind: 'completed', acted };
       }
       if (event.type === 'phase') {
+        if (event.phase === 'acting') acted = true;
         this.publish(event, owner);
         continue;
       }
@@ -720,10 +588,11 @@ export class AgentService {
         continue;
       }
       try {
+        acted = true;
         const execution = await this.previewCapability(event.executionRequest, session);
         if (this.taskOwner !== owner) {
           this.loop.discard(event.continuationToken);
-          return;
+          return { kind: 'completed', acted };
         }
         const publicAction = this.pending.issue(pendingActionDraft(
           execution.verifiedAction,
@@ -770,8 +639,20 @@ export class AgentService {
       };
     }
     if (session.taskKind !== 'file') throw new Error('TOOL_UNKNOWN');
-    this.assertFileDisclosureAllowed(session);
-    return { verifiedAction: { category: 'file', action: await session.fileTools.preview(request) } };
+    const action = await session.fileTools.preview(request);
+    return { verifiedAction: { category: 'file', action } };
+  }
+
+  /** 角色反馈属于尽力表现；投影或角色异常不能阻断已经确认的 Main 文件执行。 */
+  private publishFileFeedback(
+    event: Extract<TaskEvent, { type: 'character_carrying' }>,
+    owner: symbol
+  ): void {
+    try {
+      this.publish(event, owner);
+    } catch {
+      // 文件结果只由 executeWrite 决定，表现层失败不得改写本地能力事实。
+    }
   }
 
   private publish(event: TaskEvent, owner?: symbol | null): void {
@@ -796,13 +677,6 @@ export class AgentService {
     if (this.irreversibleExecution === execution) this.irreversibleExecution = null;
   }
 
-  private assertFileDisclosureAllowed(session: AgentSession): void {
-    if (session.taskKind !== 'file') throw new Error('FILE_DISCLOSURE_DENIED');
-    if (session.fileDisclosureAllowed) return;
-    throw Object.assign(new Error('FILE_DISCLOSURE_DENIED'), {
-      code: 'FILE_DISCLOSURE_DENIED'
-    });
-  }
 
   private assertTaskOwned(owner: symbol, signal: AbortSignal): void {
     if (this.taskOwner === owner && !signal.aborted) return;
@@ -839,8 +713,14 @@ function pendingActionDraft(
       contentPreviewSuppressedReason: fileAction.contentPreviewSuppressedReason,
       previewTruncated: fileAction.previewTruncated
     };
+    case 'create_directory': return { ...common, operation: 'create_directory' };
     case 'apply_patch': return { ...common, operation: 'apply_patch', addedLines: fileAction.addedLines, removedLines: fileAction.removedLines, diffPreview: fileAction.diffPreview, previewTruncated: fileAction.previewTruncated };
     case 'delete_file': return { ...common, operation: 'delete_file', targetType: fileAction.targetType };
+    case 'move_file': return {
+      ...common,
+      operation: 'move_file',
+      sourceRelativePath: fileAction.sourceRelativePath
+    };
     default: return assertNever(fileAction);
   }
 }

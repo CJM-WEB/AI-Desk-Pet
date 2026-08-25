@@ -20,10 +20,12 @@ function createIpcMain() {
 
 function createControllerFixture(options: {
   bounds?: { x: number; y: number; width: number; height: number };
+  cursorReads?: readonly { x: number; y: number }[];
   visualBoundsInWindowDip?: { x: number; y: number; width: number; height: number };
 } = {}) {
   let destroyed = false;
   let cursor = { x: 100, y: 100 };
+  let cursorReadIndex = 0;
   let bounds = options.bounds ?? { x: 20, y: 30, width: 180, height: 220 };
   const visualBoundsInWindowDip = options.visualBoundsInWindowDip
     ?? { x: 20, y: 20, width: 140, height: 180 };
@@ -55,7 +57,11 @@ function createControllerFixture(options: {
       displayId: 'primary'
     }),
     screen: {
-      getCursorScreenPoint: () => cursor,
+      getCursorScreenPoint: () => {
+        const scripted = options.cursorReads?.[cursorReadIndex];
+        cursorReadIndex += 1;
+        return scripted ?? cursor;
+      },
       getDisplayNearestPoint: (point: { x: number; y: number }) => ({
         workArea: workAreas.find(candidate => (
           point.x >= candidate.x
@@ -84,23 +90,30 @@ afterEach(() => {
 });
 
 describe('Main 桌宠窗口交互控制器', () => {
-  test('只读探针仅返回穿透和拖拽两个布尔状态', () => {
+  test('只读探针只返回穿透、拖拽与无敏感信息的命中计数', () => {
     vi.useFakeTimers();
     const fixture = createControllerFixture();
 
     expect(fixture.controller.getProbe()).toEqual({
       passthrough: true,
-      dragging: false
+      dragging: false,
+      mouseMoveHitCount: 0
     });
+    const recordProbeEvent = (fixture.controller as unknown as {
+      recordProbeEvent?(event: string): void;
+    }).recordProbeEvent;
+    recordProbeEvent?.call(fixture.controller, 'mouse_hit');
     fixture.controller.setPassthrough(false);
     fixture.controller.beginDrag();
     expect(fixture.controller.getProbe()).toEqual({
       passthrough: false,
-      dragging: true
+      dragging: true,
+      mouseMoveHitCount: 1
     });
     fixture.controller.endDrag('released');
     expect(Object.keys(fixture.controller.getProbe()).sort()).toEqual([
       'dragging',
+      'mouseMoveHitCount',
       'passthrough'
     ]);
   });
@@ -131,6 +144,27 @@ describe('Main 桌宠窗口交互控制器', () => {
     expect(fixture.setPosition).toHaveBeenCalledWith(240, 50);
     fixture.controller.endDrag('released');
     expect(fixture.motion.endUserMove).toHaveBeenCalledOnce();
+  });
+
+  test('建立拖拽会话当轮同步最新系统光标位置', () => {
+    const fixture = createControllerFixture({
+      cursorReads: [{ x: 100, y: 100 }, { x: 160, y: 130 }]
+    });
+
+    fixture.controller.beginDrag();
+
+    expect(fixture.setPosition).toHaveBeenCalledWith(80, 60);
+    fixture.controller.endDrag('released');
+  });
+
+  test('拖动目标未变时不重复写入窗口位置', () => {
+    vi.useFakeTimers();
+    const fixture = createControllerFixture();
+
+    fixture.controller.beginDrag();
+    vi.advanceTimersByTime(160);
+
+    expect(fixture.setPosition).not.toHaveBeenCalled();
   });
 
   test('纵向越界时只钳制 y 轴，不把窗口跳到右下角', () => {
@@ -259,7 +293,8 @@ describe('Main 桌宠窗口交互控制器', () => {
     expect(timedOut.motion.endUserMove).toHaveBeenCalledOnce();
     expect(timedOut.controller.getProbe()).toEqual({
       passthrough: true,
-      dragging: false
+      dragging: false,
+      mouseMoveHitCount: 0
     });
     expect(timedOut.setIgnoreMouseEvents).toHaveBeenLastCalledWith(
       true,
@@ -284,7 +319,8 @@ describe('Main 桌宠窗口交互控制器', () => {
 
     expect(fixture.controller.getProbe()).toEqual({
       passthrough: true,
-      dragging: false
+      dragging: false,
+      mouseMoveHitCount: 0
     });
     expect(fixture.setIgnoreMouseEvents).toHaveBeenLastCalledWith(
       true,
@@ -401,46 +437,19 @@ describe('受限桌宠窗口交互 IPC', () => {
     }
   });
 
-  test('viewport 与 scale 只接受 pet sender 的严格窗口局部矩形和单档输入', async () => {
+
+  test('固定默认尺寸不注册缩放 IPC', () => {
     const { handlers, ipcMain } = createIpcMain();
     const petSender = { isDestroyed: () => false };
-    const geometry = {
-      commitViewport: vi.fn().mockResolvedValue(undefined),
-      stepScale: vi.fn().mockResolvedValue(undefined)
-    };
     registerPetWindowInteractionIpc(
       ipcMain,
       { setPassthrough: vi.fn(), beginDrag: vi.fn(), endDrag: vi.fn(), dispose: vi.fn() },
       petSender as never,
       vi.fn(),
-      { geometry }
+      { geometry: { commitViewport: vi.fn().mockResolvedValue(undefined) } }
     );
-    const viewport = handlers.get(ipcChannels.petViewportCommit);
-    const scale = handlers.get(ipcChannels.petScaleStep);
-    const local = { viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 } };
 
-    await expect(viewport?.({ sender: petSender }, local)).resolves.toBeUndefined();
-    await expect(scale?.({ sender: petSender }, { step: 1 })).resolves.toBeUndefined();
-    expect(geometry.commitViewport).toHaveBeenCalledWith(local);
-    expect(geometry.stepScale).toHaveBeenCalledWith({ step: 1 });
-    for (const payload of [
-      { ...local, characterId: 'pet-a' },
-      { ...local, globalX: 300 },
-      { viewportInWindowDip: { ...local.viewportInWindowDip, width: 0 } },
-      { viewportInWindowDip: { ...local.viewportInWindowDip, right: 120 } }
-    ]) {
-      await expect(viewport?.({ sender: petSender }, payload)).rejects.toThrow(
-        'PET_WINDOW_INTERACTION_INPUT_INVALID'
-      );
-    }
-    for (const payload of [{ step: 0 }, { step: 2 }, { step: 1, scale: 1.1 }]) {
-      await expect(scale?.({ sender: petSender }, payload)).rejects.toThrow(
-        'PET_WINDOW_INTERACTION_INPUT_INVALID'
-      );
-    }
-    await expect(viewport?.({ sender: {} }, local)).rejects.toThrow(
-      'PET_WINDOW_INTERACTION_SENDER_INVALID'
-    );
+    expect(handlers.has('pet-window:scale-step')).toBe(false);
   });
 
   test('E2E 探针仅在显式启用时注册，且拒绝输入和非桌宠 sender', async () => {
@@ -452,7 +461,12 @@ describe('受限桌宠窗口交互 IPC', () => {
       beginDrag: vi.fn(),
       endDrag: vi.fn(),
       dispose: vi.fn(),
-      getProbe: vi.fn(() => ({ passthrough: true, dragging: false }))
+      getProbe: vi.fn(() => ({
+        passthrough: true,
+        dragging: false,
+        mouseMoveHitCount: 0
+      })),
+      recordProbeEvent: vi.fn()
     };
     registerPetWindowInteractionIpc(
       enabled.ipcMain,
@@ -469,10 +483,32 @@ describe('受限桌宠窗口交互 IPC', () => {
     );
 
     const probe = enabled.handlers.get(ipcChannels.petInteractionProbeGet);
+    const record = enabled.handlers.get('pet-window:e2e-interaction-probe-record');
     await expect(probe?.({ sender: petSender })).resolves.toEqual({
       passthrough: true,
-      dragging: false
+      dragging: false,
+      mouseMoveHitCount: 0
     });
+    expect(record).toBeTypeOf('function');
+    await expect(record?.({ sender: petSender }, 'mouse_hit')).resolves.toBeUndefined();
+    expect(controller.recordProbeEvent.mock.calls).toEqual([['mouse_hit']]);
+    for (const payload of [
+      'wheel_arrived',
+      'scale_ipc_submitted',
+      { event: 'mouse_hit' },
+      'mouse_hit',
+      { x: 1 }
+    ]) {
+      const args = payload === 'mouse_hit'
+        ? [payload, 'extra']
+        : [payload];
+      await expect(record?.({ sender: petSender }, ...args)).rejects.toThrow(
+        'PET_WINDOW_INTERACTION_INPUT_INVALID'
+      );
+    }
+    await expect(record?.({ sender: {} }, 'mouse_hit')).rejects.toThrow(
+      'PET_WINDOW_INTERACTION_SENDER_INVALID'
+    );
     await expect(probe?.({ sender: petSender }, { x: 1 })).rejects.toThrow(
       'PET_WINDOW_INTERACTION_INPUT_INVALID'
     );
@@ -480,7 +516,9 @@ describe('受限桌宠窗口交互 IPC', () => {
       probe?.({ sender: { isDestroyed: () => false } })
     ).rejects.toThrow('PET_WINDOW_INTERACTION_SENDER_INVALID');
     expect(disabled.handlers.has(ipcChannels.petInteractionProbeGet)).toBe(false);
+    expect(disabled.handlers.has('pet-window:e2e-interaction-probe-record')).toBe(false);
   });
+
 
   test('失效 pet sender 会被所有 handler 拒绝', async () => {
     const { handlers, ipcMain } = createIpcMain();

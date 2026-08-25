@@ -78,6 +78,12 @@ async function assertNoLinks(rootReal: string, normalized: string): Promise<void
     if (information.isSymbolicLink()) {
       throw new FileToolError('LINK_NOT_ALLOWED', '不允许通过符号链接或 Junction 访问文件');
     }
+    // Windows 的 Junction 在部分 Node 版本中不会由 lstat 标记为符号链接；
+    // 词法路径与 realpath 偏离同样说明本段已跳转，必须失败关闭。
+    const resolvedCursor = await realpath(cursor);
+    if (normalize(resolvedCursor).toLocaleLowerCase() !== normalize(cursor).toLocaleLowerCase()) {
+      throw new FileToolError('LINK_NOT_ALLOWED', '不允许通过符号链接或 Junction 访问文件');
+    }
   }
 }
 

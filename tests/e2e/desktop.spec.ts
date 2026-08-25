@@ -233,7 +233,11 @@ type ElectronFixtureModule = {
       powershell: boolean;
       explorerBridge: boolean;
     }>>;
-    getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
+    getPetInteractionProbe(): Promise<{
+      passthrough: boolean;
+      dragging: boolean;
+      mouseMoveHitCount: number;
+    }>;
     getCharacterBehaviorProbe(): Promise<CharacterBehaviorProbe>;
     getCharacterMotionDeltaProbe(): Promise<CharacterMotionDeltaProbe>;
     getConversationProbe(): Promise<ConversationE2eProbe>;
@@ -279,6 +283,7 @@ function emitFakeExit(process: FakeElectronProcess | FakeCommandProcess, code: n
 const journeyToolNames = [
   'builtin.files.list_files',
   'builtin.files.create_file',
+  'builtin.files.move_file',
   'builtin.files.apply_patch',
   'builtin.files.delete_file',
   'builtin.powershell.run'
@@ -2278,7 +2283,7 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
 
       const transparent = { x: 1, y: 1 };
       await dispatchPointer('pointermove', transparent);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: true,
         dragging: false
       });
@@ -2287,7 +2292,7 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       await dispatchPointer('pointerdown', transparent, 0, 1);
       await dispatchPointer('pointerup', transparent);
       await dispatchPointer('contextmenu', transparent, 2);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: true,
         dragging: false
       });
@@ -2311,22 +2316,56 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       await expect(pet.getByRole('button', {
         name: '打开与 AI Pet 的聊天'
       })).toHaveCount(0);
+      await pet.mouse.move(visible.x, visible.y);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+        passthrough: false,
+        dragging: false
+      });
+      const holdWindowSize = await pet.evaluate(() => ({
+        width: window.outerWidth,
+        height: window.outerHeight
+      }));
+      await pet.mouse.down();
+      await pet.waitForTimeout(300);
+      expect(await fixture.getPetInteractionProbe()).toMatchObject({
+        passthrough: false,
+        dragging: true
+      });
+      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
+        .toEqual(holdWindowSize);
+      await pet.mouse.up();
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+        dragging: false
+      });
+      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
+        .toEqual(holdWindowSize);
+
       await dispatchPointer('pointermove', visible);
+      const dragWindowSize = await pet.evaluate(() => ({
+        width: window.outerWidth,
+        height: window.outerHeight
+      }));
       await dispatchPointer('pointerdown', visible, 0, 1);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: false,
         dragging: true
       });
+      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
+        .toEqual(dragWindowSize);
       await dispatchPointer('pointermove', transparent, 0, 1);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: false,
         dragging: true
       });
+      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
+        .toEqual(dragWindowSize);
       await dispatchPointer('pointerup', transparent);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: true,
         dragging: false
       });
+      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
+        .toEqual(dragWindowSize);
 
       await dispatchPointer('pointermove', visible);
       await dispatchPointer('pointerdown', visible, 0, 1);
@@ -2345,7 +2384,29 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
   });
 });
 
-test.describe('视觉几何与滚轮缩放', () => {
+test.describe('固定尺寸视觉几何', () => {
+  test('桌宠滚轮输入不改变 Main 档位或持久化默认尺寸', async () => {
+    const fixture = await createGeometryFixture(runtimeDiagnosticKey());
+    try {
+      const pet = await waitForReadyPet(fixture);
+      const before = await waitForGeometry(fixture);
+      const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+      const bounds = await shell.boundingBox();
+      if (!bounds) throw new Error('桌宠窗口不可见');
+
+      await pet.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      await pet.mouse.wheel(0, -600);
+      await pet.waitForTimeout(300);
+
+      const after = await waitForGeometry(fixture);
+      const placement = await readPlacement(fixture.userDataDirectory, 'builtin-default');
+      expect(before.scaleTick).toBe(10);
+      expect(after.scaleTick).toBe(10);
+      expect(placement?.scale).toBe(1);
+    } finally {
+      await fixture.dispose();
+    }
+  });
   type Placement = PetPlacementForE2e;
   type GeometryProbe = NonNullable<Awaited<ReturnType<AppFixture['getMainE2eState']>>['geometry']>;
   type PointRatio = Readonly<{ x: number; y: number }>;
@@ -2470,15 +2531,7 @@ test.describe('视觉几何与滚轮缩放', () => {
     pet: Page
   ): Promise<PointRatio> => {
     const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
-    await shell.evaluate(element => {
-      element.dispatchEvent(new PointerEvent('pointermove', {
-        bubbles: true,
-        cancelable: true,
-        clientX: 1,
-        clientY: 1,
-        pointerId: 61
-      }));
-    });
+    await pet.mouse.move(1, 1);
     await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
       passthrough: true
     });
@@ -2495,15 +2548,7 @@ test.describe('视觉几何与滚轮缩放', () => {
       - Math.hypot(right.x - viewport.width / 2, right.y - viewport.height / 2)
     ));
     for (const { x, y } of candidates) {
-      await shell.evaluate((element, point) => {
-        element.dispatchEvent(new PointerEvent('pointermove', {
-          bubbles: true,
-          cancelable: true,
-          clientX: point.x,
-          clientY: point.y,
-          pointerId: 61
-        }));
-      }, { x, y });
+      await pet.mouse.move(x, y);
       // 穿透 IPC 跨 Renderer/Main 串行确认，不能把上一候选的迟到状态归给当前像素。
       await pet.waitForTimeout(50);
       if (!(await fixture.getPetInteractionProbe()).passthrough) {
@@ -2526,65 +2571,12 @@ test.describe('视觉几何与滚轮缩放', () => {
         y: Math.max(1, Math.min(rect.height - 1, rect.height * normalized.y))
       };
     }, ratio);
-    await shell.evaluate((element, current) => {
-      element.dispatchEvent(new PointerEvent('pointermove', {
-        bubbles: true,
-        cancelable: true,
-        clientX: current.x,
-        clientY: current.y,
-        pointerId: 61
-      }));
-    }, point);
-    await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-      passthrough: false
-    });
     await pet.mouse.move(point.x, point.y);
     await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
       passthrough: false
     });
   };
 
-  const wheelToTick = async (input: Readonly<{
-    fixture: AppFixture;
-    pet: Page;
-    characterId: string;
-    baselineFoot: Placement;
-    targetTick: number;
-    wheelMode?: 'mouse' | 'preload';
-  }>): Promise<void> => {
-    let geometry = await waitForGeometry(input.fixture);
-    const step = input.targetTick > geometry.scaleTick ? 1 : -1;
-    while (geometry.scaleTick !== input.targetTick) {
-      const expectedTick = geometry.scaleTick + step;
-      const currentPointRatio = await findVisiblePointRatio(input.fixture, input.pet);
-      await hoverVisiblePoint(input.fixture, input.pet, currentPointRatio);
-      const deltaY = step > 0 ? -100 : 100;
-      if (input.wheelMode === 'preload') {
-        await input.pet.evaluate(scaleStep => window.myself.stepPetScale({
-          step: scaleStep
-        }), step);
-      } else {
-        await input.pet.mouse.wheel(0, deltaY);
-      }
-      // 状态文件按 20ms 发布；等待当前窗口事务结束，避免读取跨 revision 的中间帧。
-      await input.pet.waitForTimeout(100);
-      await expect.poll(async () => (
-        await input.fixture.getMainE2eState()
-      ).geometry?.scaleTick).toBe(expectedTick);
-      await expect.poll(async () => (
-        await readPlacement(input.fixture.userDataDirectory, input.characterId)
-      )?.scale).toBe(expectedTick / 10);
-      const placement = await readPlacement(
-        input.fixture.userDataDirectory,
-        input.characterId
-      );
-      expect(sameFoot(placement, input.baselineFoot)).toBe(true);
-      geometry = await waitForGeometry(input.fixture);
-      expect(geometry.outOfBounds).toBe(false);
-      // 四字段 Main 探针先于 Renderer 新 Canvas/alpha port 的下一帧可用，逐格验收需等真实画面接棒。
-      await input.pet.waitForTimeout(250);
-    }
-  };
 
   /** 只把全局窗口事实留在 Renderer 内组合，测试进程仅接收贴边布尔。 */
   const touchesWorkAreaEdge = async (
@@ -2611,290 +2603,9 @@ test.describe('视觉几何与滚轮缩放', () => {
     targetEdge: edge
   });
 
-  test('视觉几何与滚轮缩放：alpha 命中真实 wheel 后在 50%–200% 封顶并保持脚底', async () => {
-    test.setTimeout(180_000);
-    const fixture = await createGeometryFixture(runtimeDiagnosticKey());
-    try {
-      const pet = await waitForReadyPet(fixture);
-      await expect.poll(async () => readPlacement(
-        fixture.userDataDirectory,
-        'builtin-default'
-      )).not.toBeNull();
-      const baseline = await movePetToWorkAreaCenter(fixture, pet, 'builtin-default');
-      const initialGeometry = await waitForGeometry(fixture);
-      expect(initialGeometry).toMatchObject({ scaleTick: 10, outOfBounds: false });
 
-      const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
-      await shell.evaluate(element => {
-        element.dispatchEvent(new PointerEvent('pointermove', {
-          bubbles: true,
-          cancelable: true,
-          clientX: 1,
-          clientY: 1,
-          pointerId: 61
-        }));
-      });
-      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-        passthrough: true
-      });
-      await pet.mouse.move(1, 1);
-      await pet.mouse.wheel(0, -100);
-      await pet.waitForTimeout(300);
-      expect((await waitForGeometry(fixture)).scaleTick).toBe(10);
 
-      await wheelToTick({
-        fixture,
-        pet,
-        characterId: 'builtin-default',
-        baselineFoot: baseline,
-        targetTick: 11
-      });
-      await wheelToTick({
-        fixture,
-        pet,
-        characterId: 'builtin-default',
-        baselineFoot: baseline,
-        targetTick: 20,
-        wheelMode: 'preload'
-      });
-      const maximum = await waitForGeometry(fixture);
-      await pet.evaluate(() => window.myself.stepPetScale({ step: 1 }));
-      await pet.waitForTimeout(300);
-      expect(await waitForGeometry(fixture)).toMatchObject({
-        revision: maximum.revision,
-        scaleTick: 20,
-        outOfBounds: false
-      });
 
-      await wheelToTick({
-        fixture,
-        pet,
-        characterId: 'builtin-default',
-        baselineFoot: baseline,
-        targetTick: 5,
-        wheelMode: 'preload'
-      });
-      const minimum = await waitForGeometry(fixture);
-      await pet.evaluate(() => window.myself.stepPetScale({ step: -1 }));
-      await pet.waitForTimeout(300);
-      expect(await waitForGeometry(fixture)).toMatchObject({
-        revision: minimum.revision,
-        scaleTick: 5,
-        outOfBounds: false
-      });
-      expect(sameFoot(
-        await readPlacement(fixture.userDataDirectory, 'builtin-default'),
-        baseline
-      )).toBe(true);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
-  test('视觉几何与滚轮缩放：两个角色分别持久化 scale 并跨 restart 恢复', async () => {
-    test.setTimeout(180_000);
-    const fixture = await createGeometryFixture(runtimeDiagnosticKey());
-    try {
-      let pet = await waitForReadyPet(fixture);
-      const builtinBaseline = await readPlacement(fixture.userDataDirectory, 'builtin-default');
-      if (!builtinBaseline) throw new Error('缺少官方默认角色初始位置');
-      await wheelToTick({
-        fixture,
-        pet,
-        characterId: 'builtin-default',
-        baselineFoot: builtinBaseline,
-        targetTick: 5,
-        wheelMode: 'react-event'
-      });
-
-      const imported = await pet.evaluate(async () => window.myself.importCharacterPackage());
-      expect(imported.kind).toBe('imported');
-      if (imported.kind !== 'imported') return;
-      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), imported.characterId);
-      await expect.poll(async () => (await fixture.getMainE2eState()).geometry?.scaleTick).toBe(10);
-      const importedBaseline = await movePetToWorkAreaCenter(
-        fixture,
-        pet,
-        imported.characterId
-      );
-      await wheelToTick({
-        fixture,
-        pet,
-        characterId: imported.characterId,
-        baselineFoot: importedBaseline,
-        targetTick: 13,
-        wheelMode: 'react-event'
-      });
-
-      await pet.evaluate(() => window.myself.activateCharacter('builtin-default'));
-      await expect.poll(async () => (await fixture.getMainE2eState()).geometry?.scaleTick).toBe(5);
-      await fixture.restart();
-      pet = await waitForReadyPet(fixture);
-      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
-        scaleTick: 5,
-        outOfBounds: false
-      });
-
-      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), imported.characterId);
-      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
-        scaleTick: 13,
-        outOfBounds: false
-      });
-      await fixture.restart();
-      pet = await waitForReadyPet(fixture);
-      await expect.poll(async () => (await fixture.getMainE2eState()).geometry).toMatchObject({
-        scaleTick: 13,
-        outOfBounds: false
-      });
-      expect((await readPlacement(
-        fixture.userDataDirectory,
-        'builtin-default'
-      ))?.scale).toBe(0.5);
-      expect((await readPlacement(
-        fixture.userDataDirectory,
-        imported.characterId
-      ))?.scale).toBe(1.3);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
-  test('视觉几何与滚轮缩放：官方动作切换保持持久脚底且四边 region 终点贴边', async () => {
-    test.setTimeout(180_000);
-    const provider = await startProviderServer([
-      {
-        response: {
-          type: 'text',
-          text: '庆祝动作已播放',
-          structured_output: {
-            behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: 'success' } }
-          }
-        }
-      },
-      ...[
-        ['已到左边', {}],
-        ['已到右边', {}],
-        ['已到上边', {}],
-        ['已到下边', {}]
-      ].map(([text, structured_output]) => ({
-        response: { type: 'text' as const, text: String(text), structured_output }
-      }))
-    ]);
-    const fixture = await createGeometryFixture(provider.apiKey);
-    try {
-      let pet = await waitForReadyPet(fixture);
-      let chat = await waitForRendererPage(fixture, 'chat');
-      await configureGeometryProvider(pet, {
-        baseUrl: provider.baseUrl, apiKey: provider.apiKey, openChat: true
-      });
-      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
-
-      const baselinePlacement = await movePetToWorkAreaCenter(
-        fixture,
-        pet,
-        'builtin-default'
-      );
-      const baselineGeometry = await waitForGeometry(fixture);
-      const sampledSameFoot: boolean[] = [];
-      const sampledRenderedFoot: boolean[] = [];
-      const sampledOutOfBounds: boolean[] = [];
-      let sampling = true;
-      const sampler = (async (): Promise<void> => {
-        while (sampling) {
-          const placement = await readPlacement(fixture.userDataDirectory, 'builtin-default');
-          if (placement) {
-            sampledSameFoot.push(sameFoot(placement, baselinePlacement));
-            sampledRenderedFoot.push(await renderedFootMatchesPlacement(pet, placement));
-          }
-          const geometry = (await fixture.getMainE2eState()).geometry;
-          if (geometry) sampledOutOfBounds.push(geometry.outOfBounds);
-          await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 20));
-        }
-      })();
-      try {
-        await submitChatMessage(chat, '庆祝一下');
-        await expect(chat.getByText('庆祝动作已播放')).toBeVisible();
-        await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-          actionId: 'success-main',
-          playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-        });
-        await expect.poll(async () => (
-          await fixture.getMainE2eState()
-        ).geometry?.revision).toBeGreaterThan(baselineGeometry.revision);
-        await pet.waitForTimeout(300);
-      } finally {
-        sampling = false;
-        await sampler;
-      }
-      expect(sampledSameFoot.length).toBeGreaterThan(0);
-      expect(sampledSameFoot.every(Boolean)).toBe(true);
-      expect(sampledRenderedFoot.length).toBeGreaterThan(0);
-      expect(sampledRenderedFoot.every(Boolean)).toBe(true);
-      expect(sampledOutOfBounds.length).toBeGreaterThan(0);
-      expect(sampledOutOfBounds.every(value => !value)).toBe(true);
-      await expect.poll(() => renderedFootMatchesPlacement(
-        pet,
-        baselinePlacement,
-        'success-main'
-      )).toBe(true);
-
-      // success-main 按角色契约持续到被打断；重启同一隔离 userData 后再独立验收四边运动。
-      await fixture.restart();
-      pet = await waitForReadyPet(fixture);
-      chat = await waitForRendererPage(fixture, 'chat', 15_000);
-      await configureGeometryProvider(pet, {
-        baseUrl: provider.baseUrl, apiKey: provider.apiKey, openChat: false
-      });
-      const movableCharacter = await pet.evaluate(async () => window.myself.importCharacterPackage());
-      expect(movableCharacter.kind).toBe('imported');
-      if (movableCharacter.kind !== 'imported') return;
-      await pet.evaluate(
-        characterId => window.myself.activateCharacter(characterId),
-        movableCharacter.characterId
-      );
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        actionId: 'safe-idle-action'
-      });
-      await pet.evaluate(() => window.myself.openChat());
-      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
-
-      const edgeCases = [
-        { prompt: '去左边', reply: '已到左边', edge: 'left' },
-        { prompt: '去右边', reply: '已到右边', edge: 'right' },
-        { prompt: '去上边', reply: '已到上边', edge: 'top' },
-        { prompt: '去下边', reply: '已到下边', edge: 'bottom' }
-      ] as const;
-      for (const edgeCase of edgeCases) {
-        await test.step(`移动到${edgeCase.edge}边界`, async () => {
-          await movePetToWorkAreaCenter(fixture, pet, movableCharacter.characterId);
-          const beforeMotion = await fixture.getCharacterMotionDeltaProbe();
-          await submitChatMessage(chat, edgeCase.prompt);
-          await expect(chat.getByText(edgeCase.reply)).toBeVisible();
-          await expect.poll(async () => {
-            const afterMotion = await fixture.getCharacterMotionDeltaProbe();
-            return afterMotion.moved && (
-              afterMotion.horizontal !== beforeMotion.horizontal
-              || afterMotion.vertical !== beforeMotion.vertical
-            );
-          }).toBe(true);
-          await expect.poll(() => pet.evaluate(async () => (
-            await window.myself.getCharacterMotionSnapshot()
-          ).moving), { timeout: 30_000 }).toBe(false);
-          await expect.poll(async () => {
-            const geometry = await waitForGeometry(fixture);
-            if (geometry.outOfBounds) return false;
-            return touchesWorkAreaEdge(pet, geometry, edgeCase.edge);
-          }, { timeout: 15_000 }).toBe(true);
-          expect((await waitForGeometry(fixture)).outOfBounds).toBe(false);
-        });
-      }
-      provider.assertComplete();
-      expect(provider.inspectionErrors).toEqual([]);
-    } finally {
-      await fixture.dispose();
-      await provider.close();
-    }
-  });
 });
 
 test.describe('角色恢复', () => {
@@ -3810,7 +3521,7 @@ test.describe('自主行为最小闭环', () => {
     });
   }
 
-  test('B7 快速状态：缺动作不伪装 idle，停止跨重启且聊天原地动作保留', async () => {
+  test('B7 快速状态：缺动作不伪装 idle，停止跨重启且显式移动会解除停止', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
@@ -3942,7 +3653,9 @@ test.describe('自主行为最小闭环', () => {
       await expect(chat.getByText('停止期间移动请求已处理')).toBeVisible();
       await pet.waitForTimeout(1_500);
       const stoppedAfter = await fixture.getCharacterMotionDeltaProbe();
-      expect(stoppedAfter).toEqual(stoppedBaseline);
+      expect(stoppedAfter.horizontal).toBeLessThan(stoppedBaseline.horizontal);
+      expect(stoppedAfter.vertical).toBe(stoppedBaseline.vertical);
+      expect(stoppedAfter.moved).toBe(true);
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
     } finally {
@@ -3951,7 +3664,7 @@ test.describe('自主行为最小闭环', () => {
     }
   });
 
-  test('B7 长时：三档主动性、阻塞暂停与反思 close-late 保持真实纵向边界', async () => {
+  test('B7 长时：三档主动性、阻塞暂停与重启清理保持真实纵向边界', async () => {
     test.skip(
       process.env['AI_PET_LONG_BEHAVIOR_E2E'] !== '1',
       '默认门禁不执行 9–12 分钟的真实墙钟主动行为链。'
@@ -3961,7 +3674,6 @@ test.describe('自主行为最小闭环', () => {
     const localWindowMs = 75_000;
     const fixtureModule = await loadElectronFixtureModule();
     const chattingGate = createProviderResponseGate();
-    const reflectionGate = createProviderResponseGate();
     const provider = await startProviderServer([
       {
         response: {
@@ -3984,21 +3696,6 @@ test.describe('自主行为最小闭环', () => {
           'builtin.files.create_file',
           { relativePath: 'b7-long-pending.txt', content: '不应落盘' }
         )
-      },
-      {
-        response: {
-          type: 'text',
-          text: '迟到反思不应展示',
-          structured_output: {
-            behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
-          }
-        },
-        gate: reflectionGate,
-        inspect: request => {
-          expect(request.tools).toEqual([]);
-          expect(request.toolChoice).toBe('none');
-          expect(request.toolChoiceWasExplicit).toBe(true);
-        }
       }
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
@@ -4153,19 +3850,24 @@ test.describe('自主行为最小闭环', () => {
       }
       expect(visiblePoint, '应在导入角色渲染区域中命中可见像素').toBeDefined();
       if (!visiblePoint) return;
+      const dragPoint = {
+        x: visiblePoint.x <= 174 ? visiblePoint.x + 5 : visiblePoint.x - 5,
+        y: visiblePoint.y
+      };
       await dispatchPointer('pointerdown', visiblePoint, 1);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toEqual({
+      await dispatchPointer('pointermove', dragPoint, 1);
+      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: false,
         dragging: true
       });
       const draggingMotion = await fixture.getCharacterMotionDeltaProbe();
       await pet.waitForTimeout(25_000);
-      expect(await fixture.getPetInteractionProbe()).toEqual({
+      expect(await fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: false,
         dragging: true
       });
       expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(draggingMotion);
-      await dispatchPointer('pointerup', visiblePoint);
+      await dispatchPointer('pointerup', dragPoint);
       // 25 秒内动画帧可能令同一坐标变透明；释放后的穿透值应服从当前像素，
       // 此处只验证调度器依赖的拖拽阻塞已经真实解除。
       await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
@@ -4191,13 +3893,15 @@ test.describe('自主行为最小闭环', () => {
       await confirmation.getByRole('button', { name: '先不创建' }).click();
       await expect(confirmation).toHaveCount(0);
 
-      // 真实 2–5 分钟空闲后只有 autonomous 会发起零工具反思。
-      await expect.poll(() => reflectionGate.isWaiting(), { timeout: 5 * 60_000 + 5_000 })
-        .toBe(true);
-      expect(provider.inspectionErrors).toEqual([]);
-      expect(provider.requests.at(-1)).toMatchObject({ toolCount: 0 });
+      // autonomous 解除阻塞后在 10–30 秒内发起当前单屏随机移动。
+      const autonomousOffset = (await behaviorActions(pet)).length;
+      const autonomousMotion = await fixture.getCharacterMotionDeltaProbe();
+      await expect.poll(async () => (
+        (await behaviorActions(pet)).slice(autonomousOffset)
+      ), { timeout: localWindowMs }).toContain('safe-move-action');
+      expect(await fixture.getCharacterMotionDeltaProbe()).not.toEqual(autonomousMotion);
 
-      // 反思响应仍被 gate 阻塞时重启，新进程建立观察基线后才释放旧响应。
+      // 重启后旧主动周期失效，新进程从 idle 建立基线。
       await fixture.restart();
       pet = await waitForRendererPage(fixture, 'pet', 15_000);
       chat = await waitForRendererPage(fixture, 'chat', 15_000);
@@ -4208,8 +3912,6 @@ test.describe('自主行为最小闭环', () => {
         });
       await observeBehaviorActions(pet);
       const restartedMotion = await fixture.getCharacterMotionDeltaProbe();
-      reflectionGate.release();
-      await provider.waitForCompletedResponses(3);
       await pet.waitForTimeout(2_500);
       expect(await behaviorActions(pet)).not.toContain('safe-wave-action');
       expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(restartedMotion);
@@ -4217,7 +3919,6 @@ test.describe('自主行为最小闭环', () => {
       expect(provider.inspectionErrors).toEqual([]);
     } finally {
       chattingGate.release();
-      reflectionGate.release();
       await fixture.dispose();
       await provider.close();
     }
@@ -5434,7 +5135,7 @@ test.describe('真实 Provider 业务闭环', () => {
     }
   });
 
-  test('回收站搬运闭环只在提交帧后写入隔离适配器并安全处理中断与失败', async () => {
+  test('默认无搬运动作角色确认后立即执行真实回收站删除', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
@@ -5457,27 +5158,6 @@ test.describe('真实 Provider 业务闭环', () => {
             || result.targetRelativePath !== 'success.txt'
           ) throw new Error('回收站结果不符合脚本预期');
         }
-      },
-      {
-        response: toolResponse(
-          'recycle-switch',
-          'builtin.files.delete_file',
-          { relativePath: 'switch.txt' }
-        )
-      },
-      {
-        response: toolResponse(
-          'recycle-drag',
-          'builtin.files.delete_file',
-          { relativePath: 'drag.txt' }
-        )
-      },
-      {
-        response: toolResponse(
-          'recycle-failure',
-          'builtin.files.delete_file',
-          { relativePath: 'failure.txt' }
-        )
       }
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
@@ -5496,29 +5176,7 @@ test.describe('真实 Provider 业务闭环', () => {
       if (!pet) throw new Error('缺少 pet Renderer');
       const chat = rendererPage(fixture, 'chat');
       if (!chat) throw new Error('缺少 chat Renderer');
-      await pet.evaluate(() => {
-        const scope = globalThis as typeof globalThis & {
-          __recycleCarryEvents?: Array<{
-            playbackToken: string;
-            actionId: string;
-            commitFrameId: string | null;
-          }>;
-        };
-        scope.__recycleCarryEvents = [];
-        window.myself.subscribeCharacterMotion(event => {
-          if (event.type !== 'behavior-action' || event.stateId !== 'carrying') return;
-          scope.__recycleCarryEvents?.push({
-            playbackToken: event.playbackToken,
-            actionId: event.actionId,
-            commitFrameId: event.commitFrameId ?? null
-          });
-        });
-      });
-      const imported = await pet.evaluate(() => window.myself.importCharacterPackage());
-      expect(imported.kind).toBe('imported');
-      if (imported.kind !== 'imported') return;
-      await pet.evaluate(async ({ characterId, baseUrl, apiKey }) => {
-        await window.myself.activateCharacter(characterId);
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
             id: 'recycle-e2e',
@@ -5553,186 +5211,135 @@ test.describe('真实 Provider 业务闭环', () => {
         });
         await window.myself.chooseAuthorizedRoot();
         await window.myself.openChat();
-      }, {
-        characterId: imported.characterId,
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey
-      });
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
       await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
 
-      const carryEventCount = async (): Promise<number> => pet.evaluate(() => (
-        (globalThis as typeof globalThis & { __recycleCarryEvents?: unknown[] })
-          .__recycleCarryEvents?.length ?? 0
-      ));
-      const waitForCarry = async (offset: number) => {
-        await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
-          intervals: [10, 20, 50, 100]
-        }).toMatchObject({
-          primaryStateId: 'carrying',
-          actionId: 'safe-carry-action',
-          playbackStatus: 'started'
-        });
-        return pet.evaluate(index => {
-          const events = (globalThis as typeof globalThis & {
-            __recycleCarryEvents?: Array<{
-              playbackToken: string;
-              actionId: string;
-              commitFrameId: string | null;
-            }>;
-          }).__recycleCarryEvents ?? [];
-          const event = events[index];
-          if (!event) throw new Error('缺少搬运授权事件');
-          return event;
-        }, offset);
-      };
-      const beginRecycle = async (fileName: string): Promise<{
-        source: string;
-        carryOffset: number;
-      }> => {
-        const source = join(fixture.authorizedRootDirectory, fileName);
-        await writeFile(source, `${fileName} 内容`, 'utf8');
-        const carryOffset = await carryEventCount();
-        await submitChatMessage(chat, `把 ${fileName} 移动到回收站`);
-        const card = chat.getByRole('region', { name: `删除文件 ${fileName}` });
-        await expect(card).toBeVisible();
-        await expect(card.getByText(fileName, { exact: true })).toBeVisible();
-        await expect(card.getByText('将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。'))
-          .toBeVisible();
-        expect(await pathExistsForAssertion(source)).toBe(true);
-        await card.getByRole('button', { name: '确认删除' }).click();
-        return { source, carryOffset };
-      };
-
-      const success = await beginRecycle('success.txt');
-      const successGrant = await waitForCarry(success.carryOffset);
-      expect(await pathExistsForAssertion(success.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual([]);
-      await pet.evaluate(async grant => {
-        for (const candidate of [
-          { ...grant, playbackToken: 'forged-token', kind: 'commit-frame' as const },
-          { ...grant, actionId: 'cross-character-action', kind: 'commit-frame' as const },
-          { ...grant, commitFrameId: 'stale-frame', kind: 'commit-frame' as const }
-        ]) {
-          try {
-            await window.myself.reportCharacterActionMilestone({
-              playbackToken: candidate.playbackToken,
-              actionId: candidate.actionId,
-              kind: candidate.kind,
-              frameId: candidate.commitFrameId ?? 'missing-frame'
-            });
-          } catch {
-            // 伪造反馈必须由 Main 拒绝；测试只观察拒绝后无文件副作用。
-          }
-        }
-      }, successGrant);
-      expect(await pathExistsForAssertion(success.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual([]);
-      await expect.poll(() => pathExistsForAssertion(success.source)).toBe(false);
+      const source = join(fixture.authorizedRootDirectory, 'success.txt');
+      await writeFile(source, 'success.txt 内容', 'utf8');
+      await submitChatMessage(chat, '把 success.txt 移动到回收站');
+      const card = chat.getByRole('region', { name: '删除文件 success.txt' });
+      await expect(card).toBeVisible();
+      await expect(card.getByText('success.txt', { exact: true })).toBeVisible();
+      await expect(card.getByText('将移入 Windows 回收站，可从回收站恢复；执行前还会再次检查。'))
+        .toBeVisible();
+      expect(await pathExistsForAssertion(source)).toBe(true);
+      await card.getByRole('button', { name: '确认删除' }).click();
+      await expect.poll(() => pathExistsForAssertion(source)).toBe(false);
       await expect(chat.getByText('success.txt 已移入回收站。')).toBeVisible();
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'success',
-        actionId: 'safe-celebrate-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
       expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
         .toEqual(['.attempt-1']);
-      await pet.evaluate(async grant => {
-        try {
-          await window.myself.reportCharacterActionMilestone({
-            playbackToken: grant.playbackToken,
-            actionId: grant.actionId,
-            kind: 'commit-frame',
-            frameId: grant.commitFrameId ?? 'missing-frame'
-          });
-        } catch {
-          // 已完成事务的重复里程碑必须被拒绝。
-        }
-      }, successGrant);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual(['.attempt-1']);
-
-      const switched = await beginRecycle('switch.txt');
-      const switchedGrant = await waitForCarry(switched.carryOffset);
-      await pet.evaluate(async oldGrant => {
-        try {
-          await window.myself.reportCharacterActionMilestone({
-            playbackToken: oldGrant.playbackToken,
-            actionId: oldGrant.actionId,
-            kind: 'commit-frame',
-            frameId: oldGrant.commitFrameId ?? 'missing-frame'
-          });
-        } catch {
-          // 上一事务真实授权不得提交当前事务。
-        }
-      }, successGrant);
-      expect(await pathExistsForAssertion(switched.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toHaveLength(1);
-      const characters = await pet.evaluate(() => window.myself.listCharacters());
-      const builtin = characters.find(character => character.id === 'builtin-default');
-      if (!builtin) throw new Error('缺少内置角色');
-      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), builtin.id);
-      await expect(chat.getByText('搬运动画未完成，文件未被移动。')).toBeVisible();
-      await pet.evaluate(async oldGrant => {
-        try {
-          await window.myself.reportCharacterActionMilestone({
-            playbackToken: oldGrant.playbackToken,
-            actionId: oldGrant.actionId,
-            kind: 'commit-frame',
-            frameId: oldGrant.commitFrameId ?? 'missing-frame'
-          });
-        } catch {
-          // 角色切换后原角色真实授权必须立即失效。
-        }
-      }, switchedGrant);
-      expect(await pathExistsForAssertion(switched.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toHaveLength(1);
-
-      await pet.evaluate(characterId => window.myself.activateCharacter(characterId), imported.characterId);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'idle',
-        actionId: 'safe-idle-action',
-        playbackStatus: 'started'
-      });
-      const dragged = await beginRecycle('drag.txt');
-      await waitForCarry(dragged.carryOffset);
-      await pet.evaluate(async () => {
-        await window.myself.beginPetDrag();
-        await window.myself.endPetDrag();
-      });
-      await expect(chat.getByText('搬运动画未完成，文件未被移动。')).toHaveCount(2);
-      expect(await pathExistsForAssertion(dragged.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toHaveLength(1);
-
-      await writeFile(join(recycleBinDirectory, '.force-failure'), '', 'utf8');
-      const failed = await beginRecycle('failure.txt');
-      await waitForCarry(failed.carryOffset);
-      await expect(chat.getByText('无法将目标移入 Windows 回收站，原目标仍保留。')).toBeVisible({
-        timeout: 10_000
-      });
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
-        primaryStateId: 'error',
-        actionId: 'safe-fail-action',
-        playbackStatus: expect.stringMatching(/^(started|completed)$/u)
-      });
-      expect(await pathExistsForAssertion(failed.source)).toBe(true);
-      expect((await readdir(recycleBinDirectory)).filter(name => name.startsWith('.attempt-')))
-        .toEqual(['.attempt-1', '.attempt-2']);
-
       provider.assertComplete();
-      expect(provider.requests).toHaveLength(5);
+      expect(provider.requests).toHaveLength(2);
       expect(provider.inspectionErrors).toEqual([]);
       const captured = fixture.logs.join('\n');
       expect(captured).not.toContain(fixture.authorizedRootDirectory);
       expect(captured).not.toContain(recycleBinDirectory);
-      // 四条事务分别使用唯一正文哨兵，确保成功、中断和失败路径都不会记录文件内容。
-      for (const fileName of ['success.txt', 'switch.txt', 'drag.txt', 'failure.txt']) {
-        expect(captured).not.toContain(`${fileName} 内容`);
+      expect(captured).not.toContain('success.txt 内容');
+    } finally {
+      await fixture.dispose();
+      await provider.close();
+    }
+  });
+
+  test('文件移动确认前无副作用，确认后在真实授权根保留内容并移除源文件', async () => {
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    const provider = await startProviderServer([
+      {
+        response: toolResponse(
+          'move-file-success',
+          'builtin.files.move_file',
+          { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'archive' }
+        ),
+        inspect: request => {
+          const names = request.tools.map(tool => tool.function.name);
+          if (names.length !== 2
+            || names[0] !== 'builtin__files__move_file'
+            || names[1] !== 'builtin__capability__request_clarification') {
+            throw new Error('移动规划没有只公开 move_file 工具面');
+          }
+        }
+      },
+      {
+        response: { type: 'text', text: '文件已移动到 archive/source.txt。' },
+        inspect: request => {
+          const result = lastToolResult(request) as { toolName?: string; targetRelativePath?: string };
+          if (result.toolName !== 'move_file' || result.targetRelativePath !== 'archive/source.txt') {
+            throw new Error('移动结果不符合脚本预期');
+          }
+        }
       }
+    ]);
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: provider.apiKey,
+      launchTimeoutMs: 15_000,
+      enableSoftwareRasterizer: true
+    });
+    try {
+      await expect.poll(() => Boolean(
+        rendererPage(fixture, 'pet') && rendererPage(fixture, 'chat')
+      )).toBe(true);
+      const pet = rendererPage(fixture, 'pet');
+      const chat = rendererPage(fixture, 'chat');
+      if (!pet || !chat) throw new Error('缺少桌宠或聊天 Renderer');
+      await pet.evaluate(async ({ baseUrl, apiKey }) => {
+        await window.myself.saveProviderProfile({
+          profile: {
+            id: 'move-file-e2e',
+            displayName: '文件移动 E2E',
+            mode: 'custom',
+            protocol: 'openai-compatible',
+            baseUrl,
+            modelId: 'move-file-e2e-model',
+            additionalParameters: {},
+            capabilities: ['chat', 'tools']
+          },
+          secret: apiKey,
+          persistSecret: false
+        });
+        await window.myself.saveModelRoute({
+          primaryProfileId: 'move-file-e2e',
+          chatProfileId: 'move-file-e2e',
+          agentProfileId: 'move-file-e2e',
+          visionProfileId: null,
+          fallbackProfileIds: [],
+          allowCrossProviderFallback: false
+        });
+        await window.myself.savePrivacySettings({
+          dataCategories: { file: true, screenshot: false, clipboard: false, memory: false },
+          longTermMemory: false,
+          proactivityMode: 'passive'
+        });
+        await window.myself.chooseAuthorizedRoot();
+        await window.myself.openChat();
+      }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
+      await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
+
+      const source = join(fixture.authorizedRootDirectory, 'docs', 'source.txt');
+      const target = join(fixture.authorizedRootDirectory, 'archive', 'source.txt');
+      await mkdir(join(fixture.authorizedRootDirectory, 'docs'), { recursive: true });
+      await mkdir(join(fixture.authorizedRootDirectory, 'archive'), { recursive: true });
+      await writeFile(source, '移动 E2E 正文', 'utf8');
+
+      await submitChatMessage(chat, '把 docs/source.txt 移动到 archive 文件夹');
+      const card = chat.getByRole('region', { name: '移动文件 docs/source.txt 到 archive/source.txt' });
+      await expect(card).toBeVisible();
+      await expect(card.getByText('docs/source.txt', { exact: true })).toBeVisible();
+      await expect(card.getByText('archive/source.txt', { exact: true })).toBeVisible();
+      expect(await pathExistsForAssertion(source)).toBe(true);
+      expect(await pathExistsForAssertion(target)).toBe(false);
+
+      await card.getByRole('button', { name: '确认移动文件' }).click();
+      await expect.poll(() => pathExistsForAssertion(source)).toBe(false);
+      await expect.poll(() => pathExistsForAssertion(target)).toBe(true);
+      expect(await readTextForAssertion(target)).toBe('移动 E2E 正文');
+      await expect(chat.getByText('文件已移动到 archive/source.txt。')).toBeVisible();
+      provider.assertComplete();
+      expect(provider.inspectionErrors).toEqual([]);
+      const captured = fixture.logs.join('\n');
+      expect(captured).not.toContain(fixture.authorizedRootDirectory);
+      expect(captured).not.toContain('移动 E2E 正文');
     } finally {
       await fixture.dispose();
       await provider.close();
@@ -5988,10 +5595,11 @@ test.describe('真实 Provider 业务闭环', () => {
             throw new Error('MCP 禁用时不得向 Provider 暴露 mcp.* 工具');
           }
           if (
-            !names.includes('builtin__files__list_files')
-            || !names.includes('builtin__files__create_file')
+            names.length !== 2
+            || names[0] !== 'builtin__files__list_files'
+            || names[1] !== 'builtin__capability__request_clarification'
           ) {
-            throw new Error('Provider 未收到正式文件工具白名单');
+            throw new Error('Provider 未收到按本轮操作收窄的正式文件工具白名单');
           }
         }
       },
@@ -6060,9 +5668,8 @@ test.describe('真实 Provider 业务闭环', () => {
           const names = request.tools.map(
             (tool: { function: { name: string } }) => tool.function.name
           );
-          if (names.length !== 2
-            || names[0] !== 'builtin__powershell__run'
-            || names[1] !== 'builtin__capability__request_clarification') {
+          if (names.length !== 1
+            || names[0] !== 'builtin__powershell__run') {
             throw new Error(`PowerShell 会话工具白名单不符合预期：${JSON.stringify(names)}`);
           }
         }

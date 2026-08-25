@@ -108,6 +108,7 @@ function createFixture() {
     settings,
     secrets,
     providers,
+    provider,
     privacySessions,
     applyPetAlwaysOnTop,
     applyCharacterBehaviorSettings,

@@ -68,22 +68,12 @@ export const petGeometryRenderViewSchema = z.object({
   scale: finiteNumberSchema.min(0.5).max(2),
   visualBoundsInWindowDip: characterMotionRectangleSchema
 }).strict();
-export const characterActionMilestoneInputSchema = z.object({
-  playbackToken: characterPlaybackTokenSchema,
-  actionId: characterMotionIdentifierSchema,
-  kind: z.literal('commit-frame'),
-  frameId: characterMotionIdentifierSchema
-}).strict();
-
 export type CharacterMotionPoint = z.output<typeof characterMotionPointSchema>;
 export type CharacterMotionSnapshot = z.output<typeof characterMotionSnapshotSchema>;
 export type PetGeometryRenderView = z.output<typeof petGeometryRenderViewSchema>;
 export type CharacterMotionEvent = z.output<typeof characterMotionEventSchema>;
 export type CharacterActionFeedbackInput = z.output<
   typeof characterActionFeedbackInputSchema
->;
-export type CharacterActionMilestoneInput = z.output<
-  typeof characterActionMilestoneInputSchema
 >;
 
 /** E2E 只读行为探针不包含播放令牌、素材标识或本地环境信息。 */

@@ -258,14 +258,6 @@ const api: MyselfApi = {
       behaviorProbe = { ...behaviorProbe, playbackStatus: input.status };
     }
   },
-  reportCharacterActionMilestone: async input => {
-    await ipcRenderer.invoke(ipcChannels.characterActionMilestone, {
-      playbackToken: input.playbackToken,
-      actionId: input.actionId,
-      kind: input.kind,
-      frameId: input.frameId
-    });
-  },
   setPetMousePassthrough: async ignore => {
     await ipcRenderer.invoke(ipcChannels.petMousePassthroughSet, { ignore });
   },
@@ -281,9 +273,6 @@ const api: MyselfApi = {
   commitPetViewport: async input => {
     await ipcRenderer.invoke(ipcChannels.petViewportCommit, input);
   },
-  stepPetScale: async input => {
-    await ipcRenderer.invoke(ipcChannels.petScaleStep, input);
-  },
   onPetGeometryRender: listener => {
     const handler = (_event: unknown, payload: unknown): void => {
       const parsed = petGeometryRenderViewSchema.safeParse(payload);
@@ -294,6 +283,9 @@ const api: MyselfApi = {
   },
   ...(e2eProbeEnabled
     ? {
+        recordPetInteractionProbeEvent: async event => {
+          await ipcRenderer.invoke(ipcChannels.petInteractionProbeRecord, event);
+        },
         getPetInteractionProbe: async () => (
           ipcRenderer.invoke(ipcChannels.petInteractionProbeGet)
         ),

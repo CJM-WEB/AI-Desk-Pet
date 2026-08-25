@@ -6,6 +6,12 @@ describe('显式桌宠行为 Gate', () => {
   test.each([
     ['停下', { kind: 'stop_movement' }],
     ['别走了', { kind: 'stop_movement' }],
+    ['静止不动', { kind: 'stop_movement' }],
+    ['保持静止', { kind: 'stop_movement' }],
+    ['不要再动', { kind: 'stop_movement' }],
+    ['别乱跑', { kind: 'stop_movement' }],
+    ['停止不动', { kind: 'stop_movement' }],
+    ['你停止不动', { kind: 'stop_movement' }],
     ['stop moving', { kind: 'stop_movement' }],
     ['恢复活动', { kind: 'resume_movement' }],
     ['可以动了', { kind: 'resume_movement' }],
@@ -15,7 +21,17 @@ describe('显式桌宠行为 Gate', () => {
     ['move right a little', { kind: 'move', motion: { kind: 'relative', direction: 'right', distance: 'near' } }],
     ['去右下角', { kind: 'move', motion: { kind: 'region', region: 'bottom_right' } }],
     ['go to the top left', { kind: 'move', motion: { kind: 'region', region: 'top_left' } }],
+    ['请你移动', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
+    ['动', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
+    ['运动', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
+    ['跑', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
+    ['移动一下', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
+    ['跑一跑', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
     ['走一走', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
+    ['保持运动', { kind: 'continuous_movement' }],
+    ['一直走', { kind: 'continuous_movement' }],
+    ['继续跑', { kind: 'continuous_movement' }],
+    ['跑远一点', { kind: 'move', motion: { kind: 'wander', scope: 'work_area', distance: 'far' } }],
     ['walk around', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }]
   ] as const)('只解析命令式首句“%s”', (text, explicitDirective) => {
     expect(parseExplicitCharacterBehavior(text)).toEqual({

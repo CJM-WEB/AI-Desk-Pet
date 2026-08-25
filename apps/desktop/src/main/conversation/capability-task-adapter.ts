@@ -1,7 +1,6 @@
-import type { ModelMessage } from '@myself/agent-core';
+import type { FilePlanningHint, ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
-import type { AgentFileTaskSubmission } from '../agent/agent-service';
-import type { FileTaskPlaybackTerminal } from '../agent/file-task-transaction-coordinator';
+import type { AgentFileTaskOutcome, AgentFileTaskSubmission } from '../agent/agent-service';
 import type {
   CapabilityTaskKind,
   ConversationCapabilityTaskPort,
@@ -9,21 +8,12 @@ import type {
 } from './conversation-coordinator';
 
 export interface CapabilityTaskAgentPort {
-  submitFileTask(input: AgentFileTaskSubmission): Promise<void>;
+  submitFileTask(input: AgentFileTaskSubmission): Promise<AgentFileTaskOutcome>;
   cancelActive(): void;
   confirm(actionId: string): Promise<void>;
   cancelAction(actionId: string): void;
   resetForNewConversation(): Promise<void>;
   close(): void;
-  onPlaybackStarted(playbackToken: string, actionId: string): boolean;
-  onPlaybackTerminal(
-    playbackToken: string,
-    actionId: string,
-    terminal: FileTaskPlaybackTerminal
-  ): boolean;
-  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean;
-  advanceFileTaskTransaction(): boolean;
-  invalidateFileTaskPlaybackGrant(): boolean;
 }
 
 export type PreparedAgentTarget = PreparedCapabilityTarget & Readonly<{
@@ -130,7 +120,8 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     visibleHistory: readonly ModelMessage[];
     generation: string;
     taskKind: CapabilityTaskKind;
-  }): Promise<void> {
+    planningHint?: FilePlanningHint;
+  }): Promise<AgentFileTaskOutcome> {
     this.assertAvailable();
     const prepared = this.active;
     if (
@@ -161,9 +152,10 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       this.assertOwned(owner);
       const submission: AgentFileTaskSubmission = {
         text: input.text,
-        visibleHistory: input.visibleHistory
+        visibleHistory: input.visibleHistory,
+        ...(input.planningHint === undefined ? {} : { planningHint: input.planningHint })
       };
-      await ownedAgent.service.submitFileTask(submission);
+      return await ownedAgent.service.submitFileTask(submission);
     } finally {
       if (this.inFlightOwner === owner) this.inFlightOwner = null;
       const active = this.active;
@@ -256,30 +248,6 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     return closing;
   }
 
-  onPlaybackStarted(playbackToken: string, actionId: string): boolean {
-    return this.agent?.service.onPlaybackStarted(playbackToken, actionId) ?? false;
-  }
-
-  onPlaybackTerminal(
-    playbackToken: string,
-    actionId: string,
-    terminal: FileTaskPlaybackTerminal
-  ): boolean {
-    return this.agent?.service.onPlaybackTerminal(playbackToken, actionId, terminal) ?? false;
-  }
-
-  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean {
-    return this.agent?.service.onCommitFrame(playbackToken, actionId, frameId) ?? false;
-  }
-
-  advanceFileTaskTransaction(): boolean {
-    return this.agent?.service.advanceFileTaskTransaction() ?? false;
-  }
-
-  invalidateFileTaskPlaybackGrant(): boolean {
-    return this.agent?.service.invalidateFileTaskPlaybackGrant() ?? false;
-  }
-
   private createOwnedAgent(
     submissionOwner: symbol,
     generation: string,
@@ -302,6 +270,8 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
         || prepared.providerIdentity.length === 0
         || typeof prepared.providerName !== 'string'
         || prepared.providerName.length === 0
+        || typeof prepared.capabilityRevision !== 'string'
+        || prepared.capabilityRevision.length === 0
       ) {
         throw adapterError('FILE_TARGET_INVALID');
       }
@@ -314,7 +284,8 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     const target = Object.freeze({
       profileId: prepared.profileId,
       providerIdentity: prepared.providerIdentity,
-      providerName: prepared.providerName
+      providerName: prepared.providerName,
+      capabilityRevision: prepared.capabilityRevision
     });
     const owned = { service, owner, target };
     this.agent = owned;

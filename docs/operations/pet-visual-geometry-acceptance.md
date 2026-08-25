@@ -1,5 +1,7 @@
 # 桌宠视觉几何与缩放验收记录
 
+> **现行状态（2026-08-25）：** 本文以下滚轮缩放结果仅是历史证据，已被 `docs/superpowers/specs/2026-08-25-ai-pet-file-behavior-scale-free-model-repair-design.md` 替代。现行桌宠固定为 100%，不再注册 wheel 缩放、preload 缩放 API 或 Main 缩放 IPC；旧持久化 scale 只作兼容输入并归一为 1.0。
+
 ## 验收环境
 
 - 测试日期：2026-08-24（Asia/Shanghai）。

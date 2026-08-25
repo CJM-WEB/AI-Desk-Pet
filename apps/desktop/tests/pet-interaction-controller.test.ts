@@ -37,7 +37,7 @@ function createFixture() {
     endPetDrag: vi.fn().mockResolvedValue(undefined),
     openPetContextMenu: vi.fn().mockResolvedValue(undefined),
     commitPetViewport: vi.fn().mockResolvedValue(undefined),
-    stepPetScale: vi.fn().mockResolvedValue(undefined),
+    recordPetInteractionProbeEvent: vi.fn().mockResolvedValue(undefined),
     onPetGeometryRender: vi.fn(() => () => undefined)
   };
   let hit = false;
@@ -169,6 +169,39 @@ describe('Renderer 桌宠交互状态机', () => {
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
 
+  test('离开恢复安全穿透，活动指针期间不清空当前命中', async () => {
+    const fixture = createFixture();
+    fixture.setHit(true);
+    fixture.controller.setHitTestPort(fixture.port);
+    fixture.controller.handlePointerMove({ x: 12, y: 18 });
+    await flushPromises();
+    expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(false);
+
+    fixture.controller.handlePointerLeave();
+    await flushPromises();
+    expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
+
+    fixture.controller.handlePointerMove({ x: 12, y: 18 });
+    fixture.controller.handlePointerDown({ button: 0, pointerId: 7 });
+    fixture.controller.handlePointerLeave();
+    await flushPromises();
+    expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(false);
+  });
+
+  test('同坐标的连续悬浮刷新只提交一次可见穿透状态', async () => {
+    const fixture = createFixture();
+    fixture.setHit(true);
+    fixture.controller.setHitTestPort(fixture.port);
+
+    fixture.controller.handlePointerMove({ x: 12, y: 18 });
+    fixture.controller.handlePointerMove({ x: 12, y: 18 });
+    await flushPromises();
+
+    expect(vi.mocked(fixture.api.setPetMousePassthrough).mock.calls.filter(
+      ([passthrough]) => passthrough === false
+    )).toHaveLength(1);
+  });
+
   test('命中异常安全穿透且替换端口取消旧订阅', () => {
     const fixture = createFixture();
     fixture.controller.setHitTestPort(fixture.port);
@@ -184,7 +217,7 @@ describe('Renderer 桌宠交互状态机', () => {
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
 
-  test('仅当前可见像素上的左键开始拖拽并锁定到释放', async () => {
+  test('命中像素的左键按下同轮请求拖拽并锁定到释放', async () => {
     const fixture = createFixture();
     fixture.setHit(true);
     fixture.controller.setHitTestPort(fixture.port);
@@ -197,6 +230,7 @@ describe('Renderer 桌宠交互状态机', () => {
 
     fixture.setHit(false);
     fixture.controller.handlePointerMove({ x: 100, y: 110 });
+    expect(fixture.api.beginPetDrag).toHaveBeenCalledOnce();
     fixture.notifyFrame();
     fixture.controller.setHitTestPort(null);
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(false);
@@ -208,7 +242,7 @@ describe('Renderer 桌宠交互状态机', () => {
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
 
-  test('透明像素不拖拽且 cancel 幂等结束活动会话', () => {
+  test('透明像素不拖拽且 cancel 幂等结束活动会话', async () => {
     const fixture = createFixture();
     fixture.controller.setHitTestPort(fixture.port);
     fixture.controller.handlePointerMove({ x: 8, y: 9 });
@@ -218,9 +252,11 @@ describe('Renderer 桌宠交互状态机', () => {
     fixture.setHit(true);
     fixture.notifyFrame();
     fixture.controller.handlePointerDown({ button: 0, pointerId: 2 });
+    fixture.controller.handlePointerMove({ x: 13, y: 14 });
     fixture.setHit(false);
     fixture.controller.handlePointerCancel();
     fixture.controller.handlePointerCancel();
+    await flushPromises();
     expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
     expect(fixture.api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
   });
@@ -234,6 +270,7 @@ describe('Renderer 桌宠交互状态机', () => {
     await flushPromises();
 
     fixture.controller.handlePointerDown({ button: 0, pointerId: 2 });
+    fixture.controller.handlePointerMove({ x: 13, y: 14 });
     vi.advanceTimersByTime(30_000);
     await flushPromises();
 
@@ -255,22 +292,83 @@ describe('Renderer 桌宠交互状态机', () => {
     expect(fixture.api.openPetContextMenu).toHaveBeenCalledOnce();
   });
 
-  test('wheel 只在当前悬浮点命中 Alpha 时提交单一档位且离开后失效', () => {
+
+
+  test('命中像素的静止长按保持已启动的拖拽会话', async () => {
+    vi.useFakeTimers();
     const fixture = createFixture();
-    fixture.controller.setHitTestPort(fixture.port);
-    fixture.controller.handlePointerMove({ x: 6, y: 7 });
-
-    expect(fixture.controller.handleWheel({ deltaY: -120 })).toBe(false);
     fixture.setHit(true);
-    expect(fixture.controller.handleWheel({ deltaY: -120 })).toBe(true);
-    expect(fixture.api.stepPetScale).toHaveBeenLastCalledWith({ step: 1 });
-    expect(fixture.controller.handleWheel({ deltaY: 120 })).toBe(true);
-    expect(fixture.api.stepPetScale).toHaveBeenLastCalledWith({ step: -1 });
-    expect(fixture.controller.handleWheel({ deltaY: 0 })).toBe(false);
+    fixture.controller.setHitTestPort(fixture.port);
+    fixture.controller.handlePointerMove({ x: 20, y: 30 });
 
-    fixture.controller.handlePointerLeave();
-    expect(fixture.controller.handleWheel({ deltaY: -120 })).toBe(false);
-    expect(fixture.api.stepPetScale).toHaveBeenCalledTimes(2);
+    fixture.controller.handlePointerDown({ button: 0, pointerId: 5 });
+    vi.advanceTimersByTime(1_000);
+    fixture.controller.handlePointerUp();
+    await flushPromises();
+
+    expect(fixture.api.beginPetDrag).toHaveBeenCalledOnce();
+    expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
+    expect(fixture.api.recordPetInteractionProbeEvent).not.toHaveBeenCalled();
+  });
+
+  test('已命中按下后续移动不重复启动拖拽', async () => {
+    const fixture = createFixture();
+    fixture.setHit(true);
+    fixture.controller.setHitTestPort(fixture.port);
+    fixture.controller.handlePointerMove({ x: 20, y: 30 });
+    fixture.controller.handlePointerDown({ button: 0, pointerId: 5 });
+
+    fixture.controller.handlePointerMove({ x: 24, y: 30 });
+    expect(fixture.api.beginPetDrag).toHaveBeenCalledOnce();
+    fixture.controller.handlePointerMove({ x: 24.1, y: 30 });
+    fixture.controller.handlePointerMove({ x: 40, y: 50 });
+
+    expect(fixture.api.beginPetDrag).toHaveBeenCalledOnce();
+    fixture.controller.handlePointerUp();
+    await flushPromises();
+    expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
+  });
+
+  test('松手早于 begin 完成时在 begin 成功后串行补发 end', async () => {
+    const fixture = createFixture();
+    const beginning = deferred<void>();
+    vi.mocked(fixture.api.beginPetDrag).mockReturnValueOnce(beginning.promise);
+    fixture.setHit(true);
+    fixture.controller.setHitTestPort(fixture.port);
+    fixture.controller.handlePointerMove({ x: 10, y: 10 });
+    fixture.controller.handlePointerDown({ button: 0, pointerId: 5 });
+    fixture.controller.handlePointerMove({ x: 20, y: 10 });
+
+    fixture.controller.handlePointerUp();
+    expect(fixture.api.endPetDrag).not.toHaveBeenCalled();
+    beginning.resolve(undefined);
+    await flushPromises();
+
+    expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
+  });
+
+  test('旧 begin 拒绝不会终止复用相同 pointerId 的新会话', async () => {
+    const fixture = createFixture();
+    const oldBeginning = deferred<void>();
+    vi.mocked(fixture.api.beginPetDrag)
+      .mockReturnValueOnce(oldBeginning.promise)
+      .mockResolvedValueOnce(undefined);
+    fixture.setHit(true);
+    fixture.controller.setHitTestPort(fixture.port);
+    fixture.controller.handlePointerMove({ x: 10, y: 10 });
+    fixture.controller.handlePointerDown({ button: 0, pointerId: 5 });
+    fixture.controller.handlePointerMove({ x: 20, y: 10 });
+    fixture.controller.handlePointerUp();
+
+    fixture.controller.handlePointerDown({ button: 0, pointerId: 5 });
+    fixture.controller.handlePointerMove({ x: 30, y: 10 });
+    oldBeginning.reject(new Error('OLD_BEGIN_FAILED'));
+    await flushPromises();
+
+    expect(fixture.api.beginPetDrag).toHaveBeenCalledTimes(2);
+    fixture.controller.handlePointerUp();
+    await flushPromises();
+    expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();
   });
 
   test('异步关闭穿透失败后重试安全穿透且吞掉拒绝', async () => {
@@ -385,13 +483,15 @@ describe('Renderer 桌宠交互状态机', () => {
     expect(setPetMousePassthrough).toHaveBeenCalledTimes(6);
   });
 
-  test('dispose 取消订阅、结束拖拽并让后续事件无副作用', () => {
+  test('dispose 取消订阅、结束拖拽并让后续事件无副作用', async () => {
     const fixture = createFixture();
     fixture.setHit(true);
     fixture.controller.setHitTestPort(fixture.port);
     fixture.controller.handlePointerMove({ x: 10, y: 10 });
     fixture.controller.handlePointerDown({ button: 0, pointerId: 3 });
+    fixture.controller.handlePointerMove({ x: 15, y: 10 });
     fixture.controller.dispose();
+    await flushPromises();
 
     expect(fixture.unsubscribe).toHaveBeenCalledOnce();
     expect(fixture.api.endPetDrag).toHaveBeenCalledOnce();

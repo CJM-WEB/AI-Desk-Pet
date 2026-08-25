@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 describe('模型目录与设置迁移', () => {
-  test('内置目录包含稳定的十个提供商和精确模型能力顺序', () => {
+  test('内置目录保留原十项 Provider，并拒绝已退役的匿名访问字段', () => {
     expect(providerCatalog.map(entry => entry.providerId)).toEqual([
       'openai',
       'anthropic',
@@ -58,9 +58,12 @@ describe('模型目录与设置迁移', () => {
 
     for (const entry of providerCatalog) {
       expect(providerCatalogEntrySchema.safeParse(entry).success).toBe(true);
+      expect(entry).not.toHaveProperty('credentialMode');
       expect(entry.catalogVersion).toBe(1);
       expect(entry.models).toHaveLength(1);
-      expect(entry.models[0]?.capabilities).toEqual(expectedCapabilities[entry.providerId]);
+      for (const model of entry.models) {
+        expect(model.capabilities).toEqual(expectedCapabilities[entry.providerId]);
+      }
     }
   });
 
@@ -76,6 +79,59 @@ describe('模型目录与设置迁移', () => {
 
     expect(providerProfileV2Schema.parse(profile)).toEqual(profile);
     expect(providerProfileV2Schema.safeParse({ ...profile, secret: 'never-store-me' }).success).toBe(false);
+    expect(providerProfileV2Schema.safeParse({
+      ...profile,
+      anonymousAccessConsent: true
+    }).success).toBe(false);
+  });
+
+  test('加载旧 Zen 设置时只退役 Zen 档案并清理其路由引用', async () => {
+    const { file, store } = await createStore();
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      providerProfiles: [{
+        id: 'zen-free', displayName: 'Zen 匿名免费试用', mode: 'preset',
+        providerId: 'opencode-zen-anonymous', modelId: 'big-pickle', anonymousAccessConsent: true
+      }, {
+        id: 'deepseek-main', displayName: 'DeepSeek 主档案', mode: 'preset',
+        providerId: 'deepseek', modelId: 'deepseek-v4-flash'
+      }],
+      modelRoute: {
+        primaryProfileId: 'zen-free', chatProfileId: 'zen-free', agentProfileId: 'deepseek-main',
+        visionProfileId: 'zen-free', fallbackProfileIds: ['zen-free', 'deepseek-main'],
+        allowCrossProviderFallback: true
+      },
+      authorizedRoot: null,
+      petPlacementState: { kind: 'ready', placements: [] },
+      fileDisclosureAccepted: true,
+      petAlwaysOnTop: true,
+      privacy: {
+        dataCategories: { file: true, screenshot: false, clipboard: false, memory: false },
+        longTermMemory: false, proactivityMode: 'assistive'
+      },
+      movementStopped: true,
+      mcpServers: []
+    }), 'utf8');
+
+    await expect(store.getProviderSettings()).resolves.toMatchObject({
+      profiles: [expect.objectContaining({ id: 'deepseek-main', providerId: 'deepseek' })],
+      route: {
+        primaryProfileId: null, chatProfileId: null, agentProfileId: 'deepseek-main',
+        visionProfileId: null, fallbackProfileIds: ['deepseek-main'], allowCrossProviderFallback: true
+      }
+    });
+    const migrated = JSON.parse(await readFile(file, 'utf8')) as {
+      providerProfiles: Array<{ id: string }>;
+      petAlwaysOnTop: boolean;
+      movementStopped: boolean;
+      privacy: unknown;
+    };
+    expect(migrated.providerProfiles).toEqual([expect.objectContaining({ id: 'deepseek-main' })]);
+    expect(migrated).toMatchObject({
+      petAlwaysOnTop: true,
+      movementStopped: true,
+      privacy: { longTermMemory: false, proactivityMode: 'assistive' }
+    });
   });
 
   test('高级自定义档案只接受扁平附加参数', () => {

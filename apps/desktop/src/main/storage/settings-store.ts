@@ -35,6 +35,7 @@ const petPositionSchema = z.object({
 
 const PET_PLACEMENT_LIMIT = 256;
 const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
+const RETIRED_ZEN_PROVIDER_ID = 'opencode-zen-anonymous';
 const petPlacementScaleSchema = z.number().finite().transform(value => (
   Math.min(2, Math.max(0.5, value))
 ));
@@ -240,6 +241,55 @@ function defaultPrivacySettings(): PrivacySettings {
     },
     longTermMemory: false,
     proactivityMode: 'autonomous'
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** 严格解析前只移除已退役 Zen 档案，保留可继续使用的其他历史设置。 */
+function retireZenProviderSettings(raw: unknown): { changed: boolean; settings: unknown } {
+  if (!isRecord(raw) || !Array.isArray(raw.providerProfiles)) {
+    return { changed: false, settings: raw };
+  }
+  const retiredIds = new Set(raw.providerProfiles.flatMap(profile => (
+    isRecord(profile)
+    && profile.mode === 'preset'
+    && profile.providerId === RETIRED_ZEN_PROVIDER_ID
+    && typeof profile.id === 'string'
+      ? [profile.id]
+      : []
+  )));
+  if (retiredIds.size === 0) return { changed: false, settings: raw };
+
+  const modelRoute = isRecord(raw.modelRoute)
+    ? {
+      ...raw.modelRoute,
+      primaryProfileId: retiredIds.has(raw.modelRoute.primaryProfileId as string)
+        ? null : raw.modelRoute.primaryProfileId,
+      chatProfileId: retiredIds.has(raw.modelRoute.chatProfileId as string)
+        ? null : raw.modelRoute.chatProfileId,
+      agentProfileId: retiredIds.has(raw.modelRoute.agentProfileId as string)
+        ? null : raw.modelRoute.agentProfileId,
+      visionProfileId: retiredIds.has(raw.modelRoute.visionProfileId as string)
+        ? null : raw.modelRoute.visionProfileId,
+      fallbackProfileIds: Array.isArray(raw.modelRoute.fallbackProfileIds)
+        ? raw.modelRoute.fallbackProfileIds.filter(id => !retiredIds.has(id as string))
+        : raw.modelRoute.fallbackProfileIds
+    }
+    : raw.modelRoute;
+  return {
+    changed: true,
+    settings: {
+      ...raw,
+      providerProfiles: raw.providerProfiles.filter(profile => !(
+        isRecord(profile)
+        && profile.mode === 'preset'
+        && profile.providerId === RETIRED_ZEN_PROVIDER_ID
+      )),
+      modelRoute
+    }
   };
 }
 
@@ -531,6 +581,8 @@ export class SettingsStore {
       if (isMissingFile(error)) return defaultSettings();
       return this.quarantineCorruptFile();
     }
+    const retiredZen = retireZenProviderSettings(raw);
+    raw = retiredZen.settings;
 
     const oversizedReady = recoverOversizedReadyPlacements(raw);
     if (oversizedReady.detected) {
@@ -541,7 +593,7 @@ export class SettingsStore {
 
     const v3 = storedSettingsV3Schema.safeParse(raw);
     if (v3.success) {
-      if (JSON.stringify(v3.data) !== JSON.stringify(raw)) {
+      if (retiredZen.changed || JSON.stringify(v3.data) !== JSON.stringify(raw)) {
         await atomicWrite(this.file, v3.data);
       }
       return v3.data;

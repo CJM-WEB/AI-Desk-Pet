@@ -6,6 +6,15 @@
 
 **Architecture:** Main 每次拖拽冻结 `PetGeometrySnapshot` 并创建 epoch；每帧都以初始全局 DIP 光标和初始脚底锚点计算总位移，钳制可见矩形后反推透明窗口原点。拖拽期间只有控制器能写窗口位置。
 
+## 外部参考与复用边界
+
+- `alvinunreal/openpets` 固定提交 `a77d3747caab0337934959980c68f60e0d3c615c`（MIT）：只参考“初始全局指针 + 初始窗口位置 + 总差值”和拖拽期暂停自动运动的时序；不复制其固定窗口矩形边界。
+- `duzexu/desktop-pet` 固定提交 `f4b735b84cb44baf4bc495ee7d9537af38f263f0`（GPL-3.0）：只参考连续拖拽回归场景，不复制代码。
+- `coglabss/deskcat` 固定提交 `b5718472223bdb23d01abf92dae7bbd8d7de39b1`（MIT；素材另有许可边界）：只参考纯数学边界测试，不引入其框架或素材。
+- 坐标与事件语义以 Electron 官方 `BrowserWindow`/`screen` 文档为事实来源；`screen.getCursorScreenPoint()` 返回 DIP，禁止自行乘除 `scaleFactor`。
+
+本阶段优先复用仓库既有 Main 拖拽控制器、Motion 所有权和 Electron fixture。外部项目不作为新运行依赖，也不引入第二套窗口/渲染框架。
+
 ## Task 1（D1）：建立不触边的真实漂移 RED
 
 **Files:**

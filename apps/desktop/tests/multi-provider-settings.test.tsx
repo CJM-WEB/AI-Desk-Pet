@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, expectTypeOf, test, vi } from 'vitest';
@@ -299,6 +301,18 @@ describe('多 Provider 设置组件', () => {
     );
     fireEvent.click(screen.getByRole('checkbox', { name: '桌宠始终置顶' }));
     expect(onPetAlwaysOnTopChange).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  test('设置 UI 不保留匿名模型的专属状态或文案', async () => {
+    const desktopRoot = process.cwd().replaceAll('\\', '/').endsWith('/apps/desktop')
+      ? process.cwd()
+      : join(process.cwd(), 'apps/desktop');
+    const source = await readFile(
+      join(desktopRoot, 'src/renderer/src/settings/ProviderSettings.tsx'),
+      'utf8'
+    );
+
+    expect(source).not.toMatch(/anonymous|OpenCode Zen|匿名试用/u);
   });
 
   test('设置导航只公开三个现行分类', () => {

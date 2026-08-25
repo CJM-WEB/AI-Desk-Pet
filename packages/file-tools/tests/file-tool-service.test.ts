@@ -24,28 +24,48 @@ const temporaryRoots: string[] = [];
 /** 为每个用例隔离授权根目录，避免文件系统状态互相影响。 */
 async function fixtureService(
   recycleBinPort?: RecycleBinPort,
-  getAuthorizationGeneration?: () => number
+  getAuthorizationGeneration?: () => number,
+  renameOperation?: (source: string, destination: string) => Promise<void>
 ): Promise<{ service: FileToolService; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
   temporaryRoots.push(root);
   await mkdir(join(root, 'docs'));
-  return { service: new FileToolService(await PathPolicy.create(root), recycleBinPort, getAuthorizationGeneration), root };
+  const fileOperations = renameOperation === undefined
+    ? undefined
+    : { open, rename: renameOperation, unlink, mkdir };
+  return {
+    service: new FileToolService(
+      await PathPolicy.create(root),
+      recycleBinPort,
+      getAuthorizationGeneration,
+      fileOperations
+    ),
+    root
+  };
 }
 
 afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
-describe('五个工具 schema', () => {
-  it('只公开五个严格参数 schema，且旧工具名称不存在', () => {
+describe('七个工具 schema', () => {
+  it('只公开七个严格参数 schema，且旧工具名称不存在', () => {
     expect(Object.keys(toolArguments).sort()).toEqual([
       'apply_patch',
+      'create_directory',
       'create_file',
       'delete_file',
       'list_files',
+      'move_file',
       'read_file'
     ]);
     expect(() => toolArguments.create_file.parse({ relativePath: 'a.txt', extra: true })).toThrow();
+    expect(() => toolArguments.create_directory.parse({ relativePath: 'abc', recursive: true })).toThrow();
+    expect(() => toolArguments.move_file.parse({
+      sourceRelativePath: 'source.txt',
+      targetDirectoryRelativePath: 'target',
+      overwrite: true
+    })).toThrow();
     expect((toolArguments as Record<string, unknown>)['copy_entry']).toBeUndefined();
   });
 });
@@ -184,6 +204,270 @@ describe('FileToolService.executeRead', () => {
 });
 
 describe('FileToolService.preview 与 executeWrite', () => {
+  it('move_file 确认前不移动，确认后以源 basename 原子移入目标目录', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '移动正文', 'utf8');
+
+    const action = await service.preview({
+      requestId: 'move-file',
+      toolName: 'move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: 'target'
+      }
+    });
+
+    expect(action).toMatchObject({
+      operation: 'move_file',
+      sourceRelativePath: 'docs/source.txt',
+      targetRelativePath: 'target/source.txt'
+    });
+    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('移动正文');
+    await expect(lstat(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await service.executeWrite(action);
+
+    await expect(lstat(join(root, 'docs', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(root, 'target', 'source.txt'), 'utf8')).resolves.toBe('移动正文');
+  });
+
+  it('move_file 允许把子目录中的文件移动到授权根目录', async () => {
+    const { service, root } = await fixtureService();
+    await writeFile(join(root, 'docs', 'source.txt'), '根目录目标', 'utf8');
+
+    const action = await service.preview({
+      requestId: 'move-to-root',
+      toolName: 'move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: '.'
+      }
+    });
+
+    expect(action).toMatchObject({
+      operation: 'move_file',
+      sourceRelativePath: 'docs/source.txt',
+      targetRelativePath: 'source.txt'
+    });
+    await service.executeWrite(action);
+    await expect(readFile(join(root, 'source.txt'), 'utf8')).resolves.toBe('根目录目标');
+    await expect(lstat(join(root, 'docs', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('move_file 拒绝覆盖、源或目标目录确认后变化，且不产生移动副作用', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '源内容', 'utf8');
+    await writeFile(join(root, 'target', 'source.txt'), '既有目标', 'utf8');
+
+    await expect(service.preview({
+      requestId: 'move-overwrite',
+      toolName: 'move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: 'target'
+      }
+    })).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('源内容');
+
+    await unlink(join(root, 'target', 'source.txt'));
+    const action = await service.preview({
+      requestId: 'move-race',
+      toolName: 'move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: 'target'
+      }
+    });
+    await rm(join(root, 'target'), { recursive: true });
+    await mkdir(join(root, 'target'));
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('源内容');
+    await expect(lstat(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('move_file 在授权 generation 变化后过期且不能重放', async () => {
+    let generation = 1;
+    const { service, root } = await fixtureService(undefined, () => generation);
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '仍在源处', 'utf8');
+    const action = await service.preview({
+      requestId: 'move-expired',
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    generation = 2;
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('仍在源处');
+    await expect(lstat(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('move_file 在确认后源路径被替换时拒绝执行', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '原始内容', 'utf8');
+    const action = await service.preview({
+      requestId: 'move-source-replaced',
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+    await unlink(join(root, 'docs', 'source.txt'));
+    await writeFile(join(root, 'docs', 'source.txt'), '替换内容', 'utf8');
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('替换内容');
+    await expect(lstat(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('move_file 在 rename 返回后目标被替换时拒绝发布成功', async () => {
+    const { service, root } = await fixtureService(undefined, undefined, async (source, target) => {
+      await rename(source, target);
+      await unlink(target);
+      await writeFile(target, '竞争替换内容', 'utf8');
+    });
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '原始内容', 'utf8');
+    const action = await service.preview({
+      requestId: 'move-target-replaced-after-rename',
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'MOVE_RESULT_UNCERTAIN' });
+    await expect(lstat(join(root, 'docs', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(root, 'target', 'source.txt'), 'utf8')).resolves.toBe('竞争替换内容');
+  });
+
+  it('move_file 在 rename 返回但源仍存在时拒绝发布成功', async () => {
+    const { service, root } = await fixtureService(undefined, undefined, async (source, target) => {
+      await writeFile(target, await readFile(source, 'utf8'), 'utf8');
+    });
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '原始内容', 'utf8');
+    const action = await service.preview({
+      requestId: 'move-source-remains-after-rename',
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'MOVE_RESULT_UNCERTAIN' });
+    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('原始内容');
+    await expect(readFile(join(root, 'target', 'source.txt'), 'utf8')).resolves.toBe('原始内容');
+  });
+
+  it.each([
+    ['EEXIST', 'TARGET_EXISTS', async () => undefined],
+    ['EPERM', 'PERMISSION_DENIED', async () => undefined],
+    ['EPERM', 'TARGET_EXISTS', async (_root: string, target: string) => writeFile(target, '竞争目标', 'utf8')],
+    ['EACCES', 'PERMISSION_DENIED', async () => undefined],
+    ['EXDEV', 'CROSS_VOLUME_UNSUPPORTED', async () => undefined]
+  ] as const)('move_file 将 Windows %s rename 失败映射为 %s', async (errnoCode, expectedCode, beforeFailure) => {
+    let rootForFailure = '';
+    const { service, root } = await fixtureService(undefined, undefined, async (_source, target) => {
+      await beforeFailure(rootForFailure, target);
+      throw Object.assign(new Error(errnoCode), { code: errnoCode });
+    });
+    rootForFailure = root;
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '原始内容', 'utf8');
+    const action = await service.preview({
+      requestId: `move-errno-${errnoCode}-${expectedCode}`,
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: expectedCode });
+    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('原始内容');
+  });
+
+  it('create_directory 逐次确认后只创建一个父目录已存在的相对目录', async () => {
+    const { service, root } = await fixtureService();
+    const action = await service.preview({
+      requestId: 'create-directory',
+      toolName: 'create_directory',
+      arguments: { relativePath: 'docs/abc' }
+    });
+
+    expect(action).toEqual({
+      operation: 'create_directory',
+      authorizationGeneration: 0,
+      targetRelativePath: 'docs/abc'
+    });
+    await expect(lstat(join(root, 'docs', 'abc'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await service.executeWrite(action);
+    await expect(lstat(join(root, 'docs', 'abc'))).resolves.toMatchObject({});
+  });
+
+  it('create_directory 拒绝目标冲突、越界、缺失父目录和链接父目录', async ({ skip }) => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'docs', 'existing'));
+    await expect(service.preview({
+      requestId: 'create-directory-existing',
+      toolName: 'create_directory',
+      arguments: { relativePath: 'docs/existing' }
+    })).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+    await expect(service.preview({
+      requestId: 'create-directory-outside',
+      toolName: 'create_directory',
+      arguments: { relativePath: '../outside' }
+    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+    await expect(service.preview({
+      requestId: 'create-directory-missing-parent',
+      toolName: 'create_directory',
+      arguments: { relativePath: 'missing/child' }
+    })).rejects.toMatchObject({ code: 'ENTRY_NOT_FOUND' });
+
+    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-outside-'));
+    temporaryRoots.push(outside);
+    try {
+      await symlink(outside, join(root, 'docs', 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && ((error as NodeJS.ErrnoException).code === 'EPERM' || (error as NodeJS.ErrnoException).code === 'EACCES')) {
+        skip(`当前系统不允许创建测试 Junction：${String((error as NodeJS.ErrnoException).code)}`);
+        return;
+      }
+      throw error;
+    }
+    await expect(service.preview({
+      requestId: 'create-directory-link-parent',
+      toolName: 'create_directory',
+      arguments: { relativePath: 'docs/outside-link/child' }
+    })).rejects.toMatchObject({ code: 'LINK_NOT_ALLOWED' });
+  });
+
+  it('create_directory 确认后复核 generation、父目录与目标冲突', async () => {
+    let generation = 1;
+    const { service, root } = await fixtureService(undefined, () => generation);
+    const expired = await service.preview({
+      requestId: 'create-directory-generation',
+      toolName: 'create_directory',
+      arguments: { relativePath: 'docs/generation' }
+    });
+    generation = 2;
+    await expect(service.executeWrite(expired)).rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+
+    const conflict = await service.preview({
+      requestId: 'create-directory-race',
+      toolName: 'create_directory',
+      arguments: { relativePath: 'docs/race' }
+    });
+    await mkdir(join(root, 'docs', 'race'));
+    await expect(service.executeWrite(conflict)).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+
+    const changedParent = await service.preview({
+      requestId: 'create-directory-parent-race',
+      toolName: 'create_directory',
+      arguments: { relativePath: 'docs/parent-race' }
+    });
+    await rm(join(root, 'docs'), { recursive: true });
+    await mkdir(join(root, 'docs'));
+    await expect(service.executeWrite(changedParent)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+  });
+
   it('create_file 只在私有动作保存正文并以排他方式创建', async () => {
     const { service, root } = await fixtureService();
     const action = await service.preview({

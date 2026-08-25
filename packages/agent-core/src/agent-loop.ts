@@ -9,6 +9,8 @@ import {
 } from './capability-clarification-tool';
 import type {
   AgentEvent,
+  AgentRunOutcome,
+  FileWriteOperation,
   ModelMessage,
   PreparedToolRequest,
   RunContext
@@ -19,6 +21,7 @@ type ContinuationState = {
   nextTurn: number;
   requestId: string;
   latestTrustedResultOk: boolean | undefined;
+  expectedWriteOperation: FileWriteOperation | undefined;
   finalizationOnly: true;
 };
 
@@ -49,22 +52,44 @@ function isCapabilityClarificationToolRequest(raw: unknown): raw is Readonly<{
     && (raw as Record<string, unknown>).toolName === CAPABILITY_CLARIFICATION_TOOL_NAME;
 }
 
+function requestedToolName(raw: unknown): string | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const toolName = (raw as Record<string, unknown>)['toolName'];
+  return typeof toolName === 'string' ? toolName : null;
+}
+
+function isExpectedWriteResult(result: unknown, expectedOperation: FileWriteOperation): boolean {
+  return typeof result === 'object'
+    && result !== null
+    && !Array.isArray(result)
+    && (result as Record<string, unknown>)['ok'] === true
+    && (result as Record<string, unknown>)['toolName'] === expectedOperation;
+}
+
 export class AgentLoop {
   private readonly continuations = new Map<string, ContinuationState>();
 
-  async *run(userText: string, context: RunContext): AsyncGenerator<AgentEvent> {
+  async *run(userText: string, context: RunContext): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     const messages = [
       ...context.messages,
       { role: 'user' as const, content: userText }
     ];
-    yield* this.continueRun(messages, 0, context, false, undefined, false);
+    return yield* this.continueRun(
+      messages,
+      0,
+      context,
+      false,
+      undefined,
+      false,
+      context.capabilityPlanning?.expectedWriteOperation
+    );
   }
 
   async *resume(
     continuationToken: string,
     toolResult: unknown,
     context: RunContext
-  ): AsyncGenerator<AgentEvent> {
+  ): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     const continuation = this.continuations.get(continuationToken);
     if (!continuation) throw new Error('ACTION_EXPIRED');
     this.continuations.delete(continuationToken);
@@ -75,18 +100,23 @@ export class AgentLoop {
       content: JSON.stringify(toolResult)
     });
     const latestTrustedResultOk = trustedResultOk(toolResult);
+    if (continuation.expectedWriteOperation !== undefined
+      && !isExpectedWriteResult(toolResult, continuation.expectedWriteOperation)) {
+      throw capabilityPlanProtocolError();
+    }
     if (continuation.nextTurn >= 4) {
       yield { type: 'message', text: '本地能力操作已结束；已达到模型响应轮次上限。' };
       yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
       return;
     }
-    yield* this.continueRun(
+    return yield* this.continueRun(
       continuation.messages,
       continuation.nextTurn,
       context,
       true,
       latestTrustedResultOk,
-      continuation.finalizationOnly
+      continuation.finalizationOnly,
+      continuation.expectedWriteOperation
     );
   }
 
@@ -100,8 +130,9 @@ export class AgentLoop {
     context: RunContext,
     hasTrustedToolResult: boolean,
     latestTrustedResultOk: boolean | undefined,
-    finalizationOnly: boolean
-  ): AsyncGenerator<AgentEvent> {
+    finalizationOnly: boolean,
+    expectedWriteOperation: FileWriteOperation | undefined
+  ): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     if (context.signal.aborted) {
       yield { type: 'phase', phase: 'cancelled' };
       return;
@@ -117,10 +148,13 @@ export class AgentLoop {
       }
 
       const planning = context.protocol === 'capability_planner' && !hasTrustedToolResult;
+      const allowClarification = context.capabilityPlanning?.allowClarification !== false;
       const tools = finalizationOnly
         ? []
         : planning
-          ? [...context.tools, capabilityClarificationToolDefinition]
+          ? allowClarification
+            ? [...context.tools, capabilityClarificationToolDefinition]
+            : context.tools
           : context.tools;
       let response;
       try {
@@ -178,7 +212,7 @@ export class AgentLoop {
       if (finalizationOnly) throw finalizationOnlyToolError();
 
       if (isCapabilityClarificationToolRequest(response.request)) {
-        if (!planning) throw new Error('AGENT_INVALID_TOOL_REQUEST');
+        if (!planning || !allowClarification) throw new Error('AGENT_INVALID_TOOL_REQUEST');
         try {
           const clarification = parseCapabilityClarificationRequest(response.request.arguments);
           yield {
@@ -186,7 +220,7 @@ export class AgentLoop {
             text: getCapabilityClarificationMessage(clarification.missingField)
           };
           yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
-          return;
+          return { kind: 'clarification', missingField: clarification.missingField };
         } catch {
           if (correctionUsed) throw capabilityPlanProtocolError();
           correctionUsed = true;
@@ -196,6 +230,21 @@ export class AgentLoop {
           });
           continue;
         }
+      }
+
+      // 运行时不得信任 ToolRuntime 的宽松实现；模型请求必须来自本轮实际公告的工具表。
+      const requestedName = requestedToolName(response.request);
+      if (requestedName === null || !tools.some(tool => tool.function.name === requestedName)) {
+        if (correctionUsed) {
+          if (expectedWriteOperation !== undefined) throw capabilityPlanProtocolError();
+          throw new Error('AGENT_INVALID_TOOL_REQUEST');
+        }
+        correctionUsed = true;
+        messages.push({
+          role: 'system',
+          content: 'INVALID_TOOL_REQUEST：只能调用当前已提供的工具。请修正一次。'
+        });
+        continue;
       }
 
       let prepared: PreparedToolRequest;
@@ -219,12 +268,23 @@ export class AgentLoop {
         );
       }
       if (prepared.decision === 'confirm') {
+        if (expectedWriteOperation !== undefined
+          && prepared.executionRequest.toolName !== expectedWriteOperation) {
+          if (correctionUsed) throw capabilityPlanProtocolError();
+          correctionUsed = true;
+          messages.push({
+            role: 'system',
+            content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：本轮写任务必须调用与请求一致的受控写工具。请修正一次。'
+          });
+          continue;
+        }
         const continuationToken = `continue_${randomUUID()}`;
         this.continuations.set(continuationToken, {
           messages: [...messages],
           nextTurn: turn + 1,
           requestId: prepared.request.requestId,
           latestTrustedResultOk,
+          expectedWriteOperation,
           finalizationOnly: true
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
@@ -237,6 +297,16 @@ export class AgentLoop {
           continuationToken
         };
         return;
+      }
+
+      if (expectedWriteOperation !== undefined) {
+        if (correctionUsed) throw capabilityPlanProtocolError();
+        correctionUsed = true;
+        messages.push({
+          role: 'system',
+          content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：本轮写任务必须先调用与请求一致的受控写工具。请修正一次。'
+        });
+        continue;
       }
 
       yield { type: 'phase', phase: 'acting' };

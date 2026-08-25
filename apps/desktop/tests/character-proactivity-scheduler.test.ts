@@ -36,37 +36,21 @@ const unblocked: CharacterActivityBlockers = {
 function fixture(options: Readonly<{
   mode?: ConversationBehaviorContext['proactivityMode'];
   random?: () => number;
-  reflect?: (input: Readonly<{
-    context: ConversationBehaviorContext;
-    signal: AbortSignal;
-  }>) => Promise<CharacterBehaviorPlan | null>;
   start?: boolean;
-  emptyCatalog?: boolean;
 }> = {}) {
   let blockers = { ...unblocked };
   let mode = options.mode ?? 'assistive';
   let listener = (): void => undefined;
   let lifecycleGeneration = 0;
-  let catalogAvailable = !options.emptyCatalog;
   const submit = vi.fn<(
     plan: CharacterBehaviorPlan,
-    source: 'local-idle' | 'reflection'
+    source: 'local-idle'
   ) => CharacterBehaviorAuthorization>(() => ({
     kind: 'play', actionId: 'blink-action', playbackToken: 'token', semantic: 'idle'
   }));
-  const reflection = {
-    reflect: vi.fn<(input: Readonly<{
-      context: ConversationBehaviorContext;
-      signal: AbortSignal;
-    }>) => Promise<CharacterBehaviorPlan | null>>(options.reflect ?? (async () => null)),
-    close: vi.fn(async () => undefined)
-  };
   const director = {
     getChatContext: vi.fn(() => ({
       ...context,
-      ...(!catalogAvailable ? {
-        character: { ...context.character, semantics: [], stateNames: [], actionNames: [], tags: [] }
-      } : {}),
       proactivityMode: mode
     })),
     getActivityBlockers: vi.fn(() => ({ ...blockers })),
@@ -79,17 +63,19 @@ function fixture(options: Readonly<{
   };
   const scheduler = new CharacterProactivityScheduler({
     director,
-    reflection,
     random: options.random ?? (() => 0)
   });
   if (options.start !== false) scheduler.start();
   return {
     director,
-    reflection,
     scheduler,
     submit,
     setBlocker(key: keyof CharacterActivityBlockers, value: boolean) {
       blockers = { ...blockers, [key]: value };
+      listener();
+    },
+    setAutonomousMovementAllowed(value: boolean) {
+      blockers = { ...blockers, autonomousMovementAllowed: value };
       listener();
     },
     setMode(value: ConversationBehaviorContext['proactivityMode']) {
@@ -99,13 +85,6 @@ function fixture(options: Readonly<{
     invalidateLifecycle() {
       lifecycleGeneration += 1;
       listener();
-    },
-    setCatalogAvailable(value: boolean, notify = true) {
-      catalogAvailable = value;
-      if (notify) {
-        lifecycleGeneration += 1;
-        listener();
-      }
     }
   };
 }
@@ -123,14 +102,14 @@ describe('CharacterProactivityScheduler', () => {
     expect(vi.getTimerCount()).toBe(1);
     await current.scheduler.close();
   });
-  test('passive 不创建主动计时器，assistive 在 20/60 秒边界只提交原地候选', async () => {
+  test('passive 不创建主动计时器，assistive 在 10/30 秒边界只提交原地候选', async () => {
     vi.useFakeTimers();
     const passive = fixture({ mode: 'passive' });
     expect(vi.getTimerCount()).toBe(0);
     await passive.scheduler.close();
 
     const minimum = fixture({ random: () => 0 });
-    await vi.advanceTimersByTimeAsync(19_999);
+    await vi.advanceTimersByTimeAsync(9_999);
     expect(minimum.submit).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(minimum.submit).toHaveBeenCalledWith({
@@ -139,7 +118,7 @@ describe('CharacterProactivityScheduler', () => {
     await minimum.scheduler.close();
 
     const maximum = fixture({ random: () => 1 });
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(29_999);
     expect(maximum.submit).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(maximum.submit.mock.calls[0]?.[0]).not.toMatchObject({ kind: 'move' });
@@ -147,57 +126,17 @@ describe('CharacterProactivityScheduler', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  test('autonomous 在 20–60 秒产生原地或短距移动，并在 2–5 分钟触发反思', async () => {
+  test('autonomous 在每次 10–30 秒到期后都提交当前单屏随机移动', async () => {
     vi.useFakeTimers();
-    const values = [0, 1, 1, 0];
+    const values = [0, 0];
     const current = fixture({ mode: 'autonomous', random: () => values.shift() ?? 0 });
 
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(current.submit.mock.calls[0]?.[0]).toMatchObject({
-      kind: 'move', distance: 'near'
-    });
-    await vi.advanceTimersByTimeAsync(280_000);
-    expect(current.reflection.reflect).toHaveBeenCalledOnce();
-
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(current.submit).toHaveBeenCalledWith({
+      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
+    }, 'local-idle');
     await current.scheduler.close();
     expect(vi.getTimerCount()).toBe(0);
-  });
-
-  test('公开行为目录为空时不 arm 反思，避免持续消耗 Provider', async () => {
-    vi.useFakeTimers();
-    const current = fixture({ mode: 'autonomous', emptyCatalog: true });
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
-    expect(current.reflection.reflect).not.toHaveBeenCalled();
-    await current.scheduler.close();
-  });
-
-  test('V1→V2 readiness 通知后开始反思，V2→V1 在回调前复核目录并停止 Provider', async () => {
-    vi.useFakeTimers();
-    const fromV1 = fixture({ mode: 'autonomous', emptyCatalog: true });
-    fromV1.setCatalogAvailable(true);
-    await vi.advanceTimersByTimeAsync(120_000);
-    expect(fromV1.reflection.reflect).toHaveBeenCalledOnce();
-    await fromV1.scheduler.close();
-
-    const toV1 = fixture({ mode: 'autonomous' });
-    toV1.setCatalogAvailable(false, false);
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
-    expect(toV1.reflection.reflect).not.toHaveBeenCalled();
-    await toV1.scheduler.close();
-
-    let resolve!: (value: CharacterBehaviorPlan | null) => void;
-    const inFlight = fixture({
-      mode: 'autonomous',
-      reflect: () => new Promise(done => { resolve = done; })
-    });
-    await vi.advanceTimersByTimeAsync(120_000);
-    const signal = inFlight.reflection.reflect.mock.calls[0]![0].signal;
-    inFlight.setCatalogAvailable(false);
-    expect(signal.aborted).toBe(true);
-    resolve({ kind: 'play', target: { kind: 'semantic', semantic: 'idle' } });
-    await Promise.resolve();
-    expect(inFlight.reflection.reflect).toHaveBeenCalledOnce();
-    await inFlight.scheduler.close();
   });
 
   test.each(Object.keys(unblocked) as Array<keyof CharacterActivityBlockers>)(
@@ -205,13 +144,13 @@ describe('CharacterProactivityScheduler', () => {
     async key => {
       vi.useFakeTimers();
       const current = fixture();
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(5_000);
       current.setBlocker(key, true);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(current.submit).not.toHaveBeenCalled();
 
       current.setBlocker(key, false);
-      await vi.advanceTimersByTimeAsync(9_999);
+      await vi.advanceTimersByTimeAsync(4_999);
       expect(current.submit).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(current.submit).toHaveBeenCalledOnce();
@@ -219,88 +158,58 @@ describe('CharacterProactivityScheduler', () => {
     }
   );
 
+  test('自主移动许可关闭后跨 30 秒不会提交候选，重新开启后恢复独立随机周期', async () => {
+    vi.useFakeTimers();
+    const current = fixture({ mode: 'autonomous', random: () => 0 });
+
+    current.setAutonomousMovementAllowed(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(current.submit).not.toHaveBeenCalled();
+    current.setAutonomousMovementAllowed(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(current.submit).toHaveBeenCalledOnce();
+    await current.scheduler.close();
+  });
+
+  test('停止锁在已消耗部分周期后丢弃剩余时间，恢复时重新等待完整随机周期', async () => {
+    vi.useFakeTimers();
+    const current = fixture({ mode: 'autonomous', random: () => 0 });
+
+    await vi.advanceTimersByTimeAsync(9_000);
+    current.setAutonomousMovementAllowed(false);
+    await vi.advanceTimersByTimeAsync(30_000);
+    current.setAutonomousMovementAllowed(true);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(current.submit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(current.submit).toHaveBeenCalledOnce();
+    await current.scheduler.close();
+  });
+
   test('Scheduler 不复制 actionId 状态，连续候选都交给唯一 Service 预检', async () => {
     vi.useFakeTimers();
     const current = fixture();
 
-    await vi.advanceTimersByTimeAsync(20_000);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10_000);
 
     expect(current.submit).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(1);
     await current.scheduler.close();
   });
 
-  test.each(['passive', 'assistive'] as const)(
-    '在途反思切换为 %s 时 abort，迟到计划不得提交',
-    async mode => {
-      vi.useFakeTimers();
-      let resolve!: (value: CharacterBehaviorPlan) => void;
-      const current = fixture({
-        mode: 'autonomous',
-        reflect: () => new Promise(done => { resolve = done; })
-      });
-      await vi.advanceTimersByTimeAsync(120_000);
-      const signal = current.reflection.reflect.mock.calls[0]![0].signal;
-      current.submit.mockClear();
-      current.setMode(mode);
-      expect(signal.aborted).toBe(true);
-      resolve({ kind: 'play', target: { kind: 'semantic', semantic: 'idle' } });
-      await Promise.resolve();
-      expect(current.submit).not.toHaveBeenCalled();
-      await current.scheduler.close();
-    }
-  );
-
-  test('在途反思 lifecycle generation 变化时 abort 且结果失效', async () => {
+  test('模式或生命周期变化会废弃旧计时并重新抽取 10–30 秒', async () => {
     vi.useFakeTimers();
-    let resolve!: (value: CharacterBehaviorPlan) => void;
-    const current = fixture({
-      mode: 'autonomous',
-      reflect: () => new Promise(done => { resolve = done; })
-    });
-    await vi.advanceTimersByTimeAsync(120_000);
-    const signal = current.reflection.reflect.mock.calls[0]![0].signal;
-    current.submit.mockClear();
+    const current = fixture({ mode: 'autonomous', random: () => 0 });
+    await vi.advanceTimersByTimeAsync(9_000);
     current.invalidateLifecycle();
-    expect(signal.aborted).toBe(true);
-    resolve({ kind: 'play', target: { kind: 'semantic', semantic: 'idle' } });
-    await Promise.resolve();
     expect(current.submit).not.toHaveBeenCalled();
-    await current.scheduler.close();
-  });
-
-  test('反思失败按 2/4/8/16/30 分钟退避', async () => {
-    vi.useFakeTimers();
-    const current = fixture({
-      mode: 'autonomous',
-      reflect: async () => { throw new Error('BEHAVIOR_REFLECTION_PROVIDER_ERROR'); }
-    });
-
-    await vi.advanceTimersByTimeAsync(120_000);
-    expect(current.reflection.reflect).toHaveBeenCalledTimes(1);
-    for (const [index, delay] of [2, 4, 8, 16, 30].entries()) {
-      await vi.advanceTimersByTimeAsync(delay * 60_000);
-      expect(current.reflection.reflect).toHaveBeenCalledTimes(index + 2);
-    }
-    await current.scheduler.close();
-  });
-
-  test('close 中止进行中的反思并使迟到结果无效', async () => {
-    vi.useFakeTimers();
-    let resolve!: (value: null) => void;
-    const pending = new Promise<null>(done => { resolve = done; });
-    const current = fixture({ mode: 'autonomous', reflect: () => pending });
-
-    await vi.advanceTimersByTimeAsync(120_000);
-    const signal = current.reflection.reflect.mock.calls[0]![0].signal;
-    current.submit.mockClear();
-    await current.scheduler.close();
-    expect(signal.aborted).toBe(true);
-    resolve(null);
-    await Promise.resolve();
-
+    await vi.advanceTimersByTimeAsync(9_999);
     expect(current.submit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(current.submit).toHaveBeenCalledOnce();
+    current.setMode('passive');
     expect(vi.getTimerCount()).toBe(0);
+    await current.scheduler.close();
   });
 });

@@ -216,7 +216,11 @@ export interface ElectronAppFixture {
   sendExplorerEvent(event: MainE2eExplorerEvent): Promise<void>;
   getMainE2eState(): Promise<MainE2eState>;
   getMainDescendantProcesses(): Promise<ElectronDescendantProcess[]>;
-  getPetInteractionProbe(): Promise<{ passthrough: boolean; dragging: boolean }>;
+  getPetInteractionProbe(): Promise<{
+    passthrough: boolean;
+    dragging: boolean;
+    mouseMoveHitCount: number;
+  }>;
   getCharacterBehaviorProbe(): Promise<{
     revision: number;
     primaryStateId: string;
@@ -1377,7 +1381,10 @@ export async function createElectronAppFixture(
           !probe
           || typeof probe.passthrough !== 'boolean'
           || typeof probe.dragging !== 'boolean'
-          || Object.keys(probe).length !== 2
+          || ![
+            probe.mouseMoveHitCount
+          ].every(value => Number.isSafeInteger(value) && value >= 0)
+          || Object.keys(probe).length !== 3
         ) {
           throw new Error('ELECTRON_E2E_PROBE_RESULT_INVALID');
         }

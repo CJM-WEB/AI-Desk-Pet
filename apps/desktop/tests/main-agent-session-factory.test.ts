@@ -52,7 +52,7 @@ describe('Main 能力会话工厂', () => {
     expect(prepared.executionRequest.toolName).toBe('powershell');
   });
 
-  test('文件会话只注册五个文件工具且不构造 PowerShell', async () => {
+  test('文件会话只注册七个文件工具且不构造 PowerShell', async () => {
     const options = input('file');
 
     const session = await createMainAgentSession(options);
@@ -60,13 +60,37 @@ describe('Main 能力会话工厂', () => {
     expect(session.taskKind).toBe('file');
     expect(session.tools.map(tool => tool.function.name).sort()).toEqual([
       'builtin.files.apply_patch',
+      'builtin.files.create_directory',
       'builtin.files.create_file',
       'builtin.files.delete_file',
       'builtin.files.list_files',
+      'builtin.files.move_file',
       'builtin.files.read_file'
     ]);
     expect(options.createFileTools).toHaveBeenCalledOnce();
     expect(options.createPowerShellTool).not.toHaveBeenCalled();
+  });
+
+  test('文件数据未授权时仍保留 Main 内部文件注册表，但拒绝读取文件数据', async () => {
+    const options = { ...input('file'), fileDisclosureAllowed: false };
+
+    const session = await createMainAgentSession(options);
+
+    expect(session.tools.map(tool => tool.function.name).sort()).toEqual([
+      'builtin.files.apply_patch',
+      'builtin.files.create_directory',
+      'builtin.files.create_file',
+      'builtin.files.delete_file',
+      'builtin.files.list_files',
+      'builtin.files.move_file',
+      'builtin.files.read_file'
+    ]);
+    await expect(session.toolRuntime.executeRead({
+      requestId: 'read-private-file',
+      toolName: 'read_file',
+      arguments: { relativePath: 'private.txt' }
+    })).rejects.toMatchObject({ code: 'FILE_DISCLOSURE_DENIED' });
+    expect(fileTools.executeRead).not.toHaveBeenCalled();
   });
 
   test('文件会话保持仅可确认的可恢复写入策略', async () => {
@@ -80,6 +104,22 @@ describe('Main 能力会话工厂', () => {
 
     expect(prepared.decision).toBe('confirm');
     expect(prepared.executionRequest.toolName).toBe('create_file');
+
+    const directory = session.toolRuntime.prepare({
+      requestId: 'directory-1',
+      toolName: 'builtin.files.create_directory',
+      arguments: { relativePath: 'abc' }
+    });
+    expect(directory.decision).toBe('confirm');
+    expect(directory.executionRequest.toolName).toBe('create_directory');
+
+    const move = session.toolRuntime.prepare({
+      requestId: 'move-1',
+      toolName: 'builtin.files.move_file',
+      arguments: { sourceRelativePath: 'note.txt', targetDirectoryRelativePath: 'archive' }
+    });
+    expect(move.decision).toBe('confirm');
+    expect(move.executionRequest.toolName).toBe('move_file');
   });
 
   test.each(['file', 'powershell'] as const)(

@@ -139,3 +139,27 @@
 - 待用户人工确认：`pnpm.cmd --filter @myself/desktop dev` 下的真实 Windows 设置页与聊天交互，以及正式退出后不存在 MCP 子进程。自动测试没有声称动态证明“零 HTTP/零子进程”。
 - 本轮没有构建安装包；干净环境安装、运行、退出和卸载后的生产依赖与进程观察均为“待正式打包阶段确认”，不得视为已通过。
 - 真实 DeepSeek API、真实 Windows 回收站和其他既有人工项仍按前文保持“待用户人工确认”。
+
+## 2026-08-25 OpenCode 模式文件闭环与三项核心交互修复验收
+
+> 本节记录较早实现快照，不能证明随后“Main 直接确认执行、固定尺寸、四字段行为计划、Zen 匿名模型”改动后的最终状态。现行结果统一记录在 `docs/operations/2026-08-25-ai-pet-core-repair-acceptance.md`；下列计数不得复用为新代码证据。
+
+### 文件能力实现边界
+
+- 本轮参考 OpenCode 固定提交 `2a6be0a03b93a6734070e10a6c3b56863475f214` 的结构化工具模式：模型只返回 Schema 约束的相对路径与工具参数，Electron Main 负责授权根、路径裁决、逐次确认、真实执行和结果回传；没有引入 OpenCode 的 shell、权限框架或绝对路径模型。
+- 删除了自然语言路径提取与目标许可的旧实现。文件隐私分类关闭时，明确写请求只获得 Router 当前 operation 精确对应的一项受控写工具与结构化澄清；只读请求只有澄清工具，PowerShell 与 MCP 不会因此获得权限。
+- 自动纵向测试从用户输入开始，经 Router、Coordinator、真实 OpenAI-compatible HTTP `message.tool_calls` 解码、AgentService、FileToolService、确认，再检查隔离临时目录中的真实文件副作用；没有向内部直接注入工具响应来冒充 Provider。
+- 正式白名单 Electron 闭环验证 `list_files + request_clarification` 的文件规划面，以及只含 `powershell.run` 的 PowerShell 面；MCP 正式入口继续保持禁用。
+
+### 最终自动门禁
+
+- `pnpm.cmd typecheck`、`pnpm.cmd test:security`、`pnpm.cmd test:integration`：均退出 0；安全 23/23、集成 71/71。
+- `pnpm.cmd verify:desktop`：最终代码退出 0；单元 2846/2846、安全 23/23、集成 71/71、正式构建通过，Electron E2E 73 通过、1 条既有长时场景按配置跳过、0 失败。
+- `pnpm.cmd verify:behavior`：最终代码退出 0；character-runtime 302/302、agent-core 72/72、Desktop 2286/2286、安全 23/23、集成 71/71，Electron E2E 73 通过、1 跳过、0 失败。
+- `pnpm.cmd verify:characters`：本轮完整回归曾退出 0；其后最终改动只涉及 Desktop Director 的同轮运动授权复用，最终状态由上述 `verify:desktop` 与 `verify:behavior` 再次覆盖，不把较早命令冒充为最终代码重跑。
+- 全局 `git diff --check` 退出 0；只有 Windows LF/CRLF 提示，没有 whitespace error。
+
+### 历史失败与未验证项
+
+- 门禁过程中真实发现并修正了普通聊天测试遗漏 `motionPlan:null`、文件/PowerShell E2E 白名单旧预期，以及动态 Alpha 帧造成的滚轮测试过度断言。最终返修另以 RED 证明 `behaviorPlan:none`、只读工具过宽和同轮运动计划自竞争，并完成最小修复。两项 5000ms 单元超时、一次工作室提示超时和一次四边运动超时均先保留失败事实，隔离复现通过后再重跑对应完整门禁；未放宽业务断言。
+- 自动化使用本机 HTTP 兼容 Provider fixture，不代表真实 DeepSeek v4-flash 网络、账号与模型输出已通过。真实 Windows 回收站 UI/可恢复性、开发模式肉眼交互、干净安装卸载仍待用户人工确认；本轮没有制作安装包。

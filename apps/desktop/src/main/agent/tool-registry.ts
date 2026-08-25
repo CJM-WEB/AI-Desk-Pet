@@ -152,6 +152,34 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
 
   registry.register({
     definition: definition(
+      'builtin.files.move_file',
+      '将授权根内的一个普通文件移动到另一个已存在目录，需要用户确认。',
+      toolJsonSchemas.move_file
+    ),
+    argumentsSchema: toolArguments.move_file,
+    executionToolName: 'move_file',
+    risk: 'recoverable',
+    enabled: true,
+    auditSummary: arguments_ => (
+      `移动文件 ${displayRelativePath(arguments_['sourceRelativePath'])} 到 ${displayRelativePath(arguments_['targetDirectoryRelativePath'])}`
+    )
+  });
+
+  registry.register({
+    definition: definition(
+      'builtin.files.create_directory',
+      '创建一个父目录已经存在的相对目录，需要用户确认。',
+      toolJsonSchemas.create_directory
+    ),
+    argumentsSchema: toolArguments.create_directory,
+    executionToolName: 'create_directory',
+    risk: 'recoverable',
+    enabled: true,
+    auditSummary: arguments_ => `创建目录 ${displayRelativePath(arguments_['relativePath'])}`
+  });
+
+  registry.register({
+    definition: definition(
       'builtin.files.apply_patch',
       '向单个文件应用补丁，需要用户确认。',
       toolJsonSchemas.apply_patch
@@ -207,13 +235,11 @@ export function createBuiltinPowerShellToolRegistry(): ToolRegistry {
   return registry;
 }
 
-/**
- * 按当前会话的数据授权构建工具表，避免把未授权能力暴露给模型。
- */
+/** 文件数据授权由任务上下文收窄模型可见面，Main 始终保留完整文件注册表供本地核验。 */
 export function createSessionToolRegistry(input: {
   taskKind: 'file' | 'powershell';
   fileDisclosureAllowed: boolean;
 }): ToolRegistry {
   if (input.taskKind === 'powershell') return createBuiltinPowerShellToolRegistry().seal();
-  return input.fileDisclosureAllowed ? createBuiltinFileToolRegistry().seal() : new ToolRegistry().seal();
+  return createBuiltinFileToolRegistry().seal();
 }

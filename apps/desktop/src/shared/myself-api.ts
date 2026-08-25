@@ -22,7 +22,6 @@ import type {
 } from './character-ipc';
 import type {
   CharacterActionFeedbackInput,
-  CharacterActionMilestoneInput,
   CharacterBehaviorProbe,
   CharacterMotionDeltaProbe,
   CharacterMotionEvent,
@@ -30,7 +29,6 @@ import type {
 } from './character-motion-ipc';
 import type {
   PetWindowInteractionApi,
-  PetScaleStepInput,
   PetViewportCommitInput
 } from './pet-window-interaction';
 import type { PetGeometryRenderView } from './character-motion-ipc';
@@ -86,7 +84,6 @@ export interface SaveProviderProfileInput {
 
 export interface MyselfApi extends PetWindowInteractionApi {
   commitPetViewport(input: PetViewportCommitInput): Promise<void>;
-  stepPetScale(input: PetScaleStepInput): Promise<void>;
   onPetGeometryRender(listener: (view: PetGeometryRenderView) => void): () => void;
   getStatus(): Promise<{ version: string; ready: boolean }>;
   getSettings(): Promise<PublicSettings>;
@@ -140,7 +137,6 @@ export interface MyselfApi extends PetWindowInteractionApi {
   getCharacterMotionSnapshot(): Promise<CharacterMotionSnapshot>;
   subscribeCharacterMotion(listener: (event: CharacterMotionEvent) => void): () => void;
   reportCharacterActionFeedback(input: CharacterActionFeedbackInput): Promise<void>;
-  reportCharacterActionMilestone(input: CharacterActionMilestoneInput): Promise<void>;
   getCharacterBehaviorProbe?(): Promise<CharacterBehaviorProbe>;
   getCharacterMotionDeltaProbe?(): Promise<CharacterMotionDeltaProbe>;
   openChat(): Promise<void>;

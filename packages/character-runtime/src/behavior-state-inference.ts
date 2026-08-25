@@ -32,7 +32,7 @@ function signalSemantic(signal: CharacterBehaviorSignal): CharacterStandardSeman
     case 'conversation-start': return 'listen';
     case 'listening': return signal.active ? 'listen' : null;
     case 'thinking': return signal.active ? 'think' : null;
-    case 'movement': return signal.active ? 'move' : null;
+    case 'movement': return signal.active ? 'move' : 'idle';
     case 'carrying': return signal.active ? 'carry' : null;
     case 'task': return signal.phase === 'success' ? 'celebrate' : signal.phase === 'failure' ? 'fail' : null;
     case 'user-interaction': return null;

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelRouteConfig, ProviderProfileV2 } from '@myself/shared-types';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { SettingsStore } from '../src/main/storage/settings-store';
 
 const temporaryDirectories: string[] = [];

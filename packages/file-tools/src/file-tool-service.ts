@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, open, opendir, rename, unlink } from 'node:fs/promises';
-import { dirname, join, posix } from 'node:path';
+import { lstat, mkdir, open, opendir, rename, unlink } from 'node:fs/promises';
+import { basename, dirname, join, posix } from 'node:path';
 import type { ToolRequest } from '@myself/shared-types';
 import { applyPatch, parsePatch } from 'diff';
 import { ZodError } from 'zod';
@@ -46,6 +46,11 @@ export type VerifiedWriteAction =
       previewTruncated: boolean;
     }>
   | Readonly<{
+      operation: 'create_directory';
+      authorizationGeneration: number;
+      targetRelativePath: string;
+    }>
+  | Readonly<{
       operation: 'apply_patch';
       authorizationGeneration: number;
       targetRelativePath: string;
@@ -59,18 +64,39 @@ export type VerifiedWriteAction =
       authorizationGeneration: number;
       targetRelativePath: string;
       targetType: 'file' | 'empty_directory';
+    }>
+  | Readonly<{
+      operation: 'move_file';
+      authorizationGeneration: number;
+      sourceRelativePath: string;
+      targetDirectoryRelativePath: string;
+      targetRelativePath: string;
     }>;
 
 type DeleteIdentity = Readonly<{ device: bigint; inode: bigint; size: bigint; modifiedAtNs: bigint }>;
+type DirectoryIdentity = Readonly<{ device: bigint; inode: bigint }>;
 
 type InternalWriteAction =
   | { operation: 'create_file'; targetRelativePath: string; content: string }
+  | {
+      operation: 'create_directory';
+      targetRelativePath: string;
+      expectedParentIdentity: DirectoryIdentity;
+    }
   | { operation: 'apply_patch'; targetRelativePath: string; baseSha256: string; result: string }
   | {
       operation: 'delete_file';
       targetRelativePath: string;
       targetType: 'file' | 'empty_directory';
       expectedIdentity: DeleteIdentity;
+    }
+  | {
+      operation: 'move_file';
+      sourceRelativePath: string;
+      targetDirectoryRelativePath: string;
+      targetRelativePath: string;
+      expectedSourceIdentity: DeleteIdentity;
+      expectedTargetDirectoryIdentity: DirectoryIdentity;
     };
 
 type WritableFileHandle = Readonly<{
@@ -83,12 +109,14 @@ type FileToolFileOperations = Readonly<{
   open(path: string, flags: string): Promise<WritableFileHandle>;
   rename(source: string, destination: string): Promise<void>;
   unlink(path: string): Promise<void>;
+  mkdir?(path: string): Promise<void>;
 }>;
 
 const nodeFileOperations: FileToolFileOperations = {
   open: async (path, flags) => open(path, flags),
   rename,
-  unlink
+  unlink,
+  mkdir
 };
 
 function normalizeRelativePathForResult(input: string): string {
@@ -101,6 +129,8 @@ function toFileToolError(error: unknown, fallbackMessage: string): FileToolError
   if (error instanceof Error && 'code' in error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENOTDIR') return new FileToolError('ENTRY_NOT_FOUND', '条目不存在');
+    if (code === 'EEXIST') return new FileToolError('TARGET_EXISTS', '目标已经存在');
+    if (code === 'EXDEV') return new FileToolError('CROSS_VOLUME_UNSUPPORTED', '不支持跨卷移动');
     if (code === 'EACCES' || code === 'EPERM') return new FileToolError('PERMISSION_DENIED', '没有权限执行文件操作');
   }
   return new FileToolError('PATH_INVALID', fallbackMessage);
@@ -210,6 +240,89 @@ async function captureDeleteTarget(absolutePath: string): Promise<DeleteIdentity
   return { device: information.dev, inode: information.ino, size: information.size, modifiedAtNs: information.mtimeNs, targetType };
 }
 
+/** 移动只接受普通文件；链接、目录和特殊实体都在预览与提交时失败关闭。 */
+async function captureMoveSource(absolutePath: string): Promise<DeleteIdentity> {
+  const information = await lstat(absolutePath, { bigint: true });
+  if (information.isSymbolicLink()) throw new FileToolError('LINK_NOT_ALLOWED', '不允许移动符号链接或 Junction');
+  if (!information.isFile()) throw new FileToolError('ENTRY_TYPE_UNSUPPORTED', '只允许移动普通文件');
+  return {
+    device: information.dev,
+    inode: information.ino,
+    size: information.size,
+    modifiedAtNs: information.mtimeNs
+  };
+}
+
+/** 目标目录身份用于阻断确认期间目录替换；目标始终沿用源文件名。 */
+async function captureMoveTargetDirectory(absolutePath: string): Promise<DirectoryIdentity> {
+  const information = await lstat(absolutePath, { bigint: true });
+  if (information.isSymbolicLink()) throw new FileToolError('LINK_NOT_ALLOWED', '不允许通过符号链接或 Junction 移动文件');
+  if (!information.isDirectory()) throw new FileToolError('ENTRY_TYPE_UNSUPPORTED', '移动目标必须是已存在目录');
+  return { device: information.dev, inode: information.ino };
+}
+
+/** 确认与提交之间仍必须拒绝目标出现，避免 rename 覆盖既有文件。 */
+async function assertMoveTargetMissing(absolutePath: string): Promise<void> {
+  try {
+    await lstat(absolutePath);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
+    throw error;
+  }
+  throw new FileToolError('TARGET_EXISTS', '目标已经存在');
+}
+
+/**
+ * Node 的 rename 不提供跨平台的“不覆盖”原子选项。提交前后二次探测只能缩小竞态；
+ * 若 Windows 在竞态中以 EPERM 拒绝既有目标，也必须作为失败返回，绝不续报移动成功。
+ */
+async function renameMoveWithoutOverwrite(
+  operations: FileToolFileOperations,
+  source: string,
+  target: string
+): Promise<void> {
+  try {
+    await operations.rename(source, target);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') throw new FileToolError('TARGET_EXISTS', '目标已经存在');
+      if (code === 'EPERM') {
+        await assertMoveTargetMissing(target);
+      }
+    }
+    throw error;
+  }
+}
+
+/** rename 返回不等于结果可信：必须确认源已消失，且目标仍是预览时同一普通文件。 */
+async function assertMoveResult(
+  source: string,
+  target: string,
+  expectedSourceIdentity: DeleteIdentity
+): Promise<void> {
+  try {
+    await lstat(source);
+    throw new FileToolError('MOVE_RESULT_UNCERTAIN', '移动执行后源文件仍存在，结果无法确认');
+  } catch (error) {
+    if (error instanceof FileToolError) throw error;
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      // 源路径消失后才继续核验目标身份。
+    } else {
+      throw new FileToolError('MOVE_RESULT_UNCERTAIN', '移动执行后无法确认源文件状态');
+    }
+  }
+  try {
+    const targetIdentity = await captureMoveSource(target);
+    if (!hasSameDeleteIdentity(expectedSourceIdentity, targetIdentity)) {
+      throw new FileToolError('MOVE_RESULT_UNCERTAIN', '移动执行后目标文件身份不一致');
+    }
+  } catch (error) {
+    if (error instanceof FileToolError && error.code === 'MOVE_RESULT_UNCERTAIN') throw error;
+    throw new FileToolError('MOVE_RESULT_UNCERTAIN', '移动执行后无法确认目标文件状态');
+  }
+}
+
 function hasSameDeleteIdentity(
   expected: DeleteIdentity,
   current: DeleteIdentity
@@ -298,6 +411,25 @@ export class FileToolService {
         this.#issuedActions.set(action, { operation: 'create_file', targetRelativePath: action.targetRelativePath, content: arguments_.content });
         return action;
       }
+      if (request.toolName === 'create_directory') {
+        const arguments_ = toolArguments.create_directory.parse(request.arguments);
+        const target = await this.policy.resolveTarget(arguments_.relativePath);
+        const parentInformation = await lstat(dirname(target), { bigint: true });
+        const action = Object.freeze({
+          operation: 'create_directory' as const,
+          authorizationGeneration,
+          targetRelativePath: normalizeRelativePathForResult(arguments_.relativePath)
+        });
+        this.#issuedActions.set(action, {
+          operation: 'create_directory',
+          targetRelativePath: action.targetRelativePath,
+          expectedParentIdentity: {
+            device: parentInformation.dev,
+            inode: parentInformation.ino
+          }
+        });
+        return action;
+      }
       if (request.toolName === 'apply_patch') {
         const arguments_ = toolArguments.apply_patch.parse(request.arguments);
         const parsed = parsePatch(arguments_.patch);
@@ -334,6 +466,40 @@ export class FileToolService {
         this.#issuedActions.set(action, { operation: 'delete_file', targetRelativePath, targetType, expectedIdentity });
         return action;
       }
+      if (request.toolName === 'move_file') {
+        const arguments_ = toolArguments.move_file.parse(request.arguments);
+        const sourceRelativePath = normalizeRelativePathForResult(arguments_.sourceRelativePath);
+        const targetDirectoryRelativePath = normalizeRelativePathForResult(
+          arguments_.targetDirectoryRelativePath
+        );
+        if (sourceRelativePath === '.') {
+          throw new FileToolError('PATH_INVALID', '源文件不能是授权根目录');
+        }
+        const source = await this.policy.resolveExisting(arguments_.sourceRelativePath);
+        const targetDirectory = await this.policy.resolveExisting(arguments_.targetDirectoryRelativePath);
+        const expectedSourceIdentity = await captureMoveSource(source);
+        const expectedTargetDirectoryIdentity = await captureMoveTargetDirectory(targetDirectory);
+        const targetRelativePath = normalizeRelativePathForResult(
+          posix.join(targetDirectoryRelativePath, basename(source))
+        );
+        await assertMoveTargetMissing(join(targetDirectory, basename(source)));
+        const action = Object.freeze({
+          operation: 'move_file' as const,
+          authorizationGeneration,
+          sourceRelativePath,
+          targetDirectoryRelativePath,
+          targetRelativePath
+        });
+        this.#issuedActions.set(action, {
+          operation: 'move_file',
+          sourceRelativePath,
+          targetDirectoryRelativePath,
+          targetRelativePath,
+          expectedSourceIdentity,
+          expectedTargetDirectoryIdentity
+        });
+        return action;
+      }
       throw new FileToolError('PATH_INVALID', '只读工具不能生成待确认写动作');
     } catch (error) {
       throw toFileToolError(error, '无法生成写操作预览');
@@ -354,12 +520,40 @@ export class FileToolService {
         await writeNewFile(target, internal.content, this.fileOperations);
         return;
       }
+      if (internal.operation === 'create_directory') {
+        const target = await this.policy.resolveTarget(internal.targetRelativePath);
+        const parentInformation = await lstat(dirname(target), { bigint: true });
+        if (
+          parentInformation.dev !== internal.expectedParentIdentity.device
+          || parentInformation.ino !== internal.expectedParentIdentity.inode
+        ) {
+          throw new FileToolError('ENTRY_CHANGED', '父目录在确认后已经发生变化，请重新确认');
+        }
+        await (this.fileOperations.mkdir ?? mkdir)(target);
+        return;
+      }
       if (internal.operation === 'apply_patch') {
         const target = await this.policy.resolveExisting(internal.targetRelativePath);
         if (sha256(decodeUtf8(await readBoundedFile(target))) !== internal.baseSha256) {
           throw new FileToolError('ENTRY_CHANGED', '文件在确认后已经发生变化，请重新确认');
         }
         await replaceAtomically(target, internal.result, this.fileOperations);
+        return;
+      }
+      if (internal.operation === 'move_file') {
+        const source = await this.policy.resolveExisting(internal.sourceRelativePath);
+        const targetDirectory = await this.policy.resolveExisting(internal.targetDirectoryRelativePath);
+        const currentSourceIdentity = await captureMoveSource(source);
+        const currentTargetDirectoryIdentity = await captureMoveTargetDirectory(targetDirectory);
+        if (!hasSameDeleteIdentity(internal.expectedSourceIdentity, currentSourceIdentity)
+          || currentTargetDirectoryIdentity.device !== internal.expectedTargetDirectoryIdentity.device
+          || currentTargetDirectoryIdentity.inode !== internal.expectedTargetDirectoryIdentity.inode) {
+          throw new FileToolError('ENTRY_CHANGED', '源文件或目标目录在确认后已经发生变化，请重新确认');
+        }
+        const target = join(targetDirectory, basename(source));
+        await assertMoveTargetMissing(target);
+        await renameMoveWithoutOverwrite(this.fileOperations, source, target);
+        await assertMoveResult(source, target, internal.expectedSourceIdentity);
         return;
       }
       const target = await this.policy.resolveExisting(internal.targetRelativePath);

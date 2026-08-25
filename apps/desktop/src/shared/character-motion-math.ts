@@ -13,6 +13,7 @@ export type MotionAdvanceInput = {
   speed: number;
   deltaMs: number;
   maxDeltaMs?: number;
+  arrivalToleranceDip?: number;
   bounds?: MotionBounds;
 };
 
@@ -70,7 +71,14 @@ export function advanceMotion(input: MotionAdvanceInput): MotionAdvanceResult {
   const dy = target.y - current.y;
   const distance = Math.hypot(dx, dy);
   const travel = input.speed * Math.min(input.deltaMs, maxDeltaMs) / 1_000;
-  if (distance === 0 || travel >= distance) {
+  const arrivalToleranceDip = input.arrivalToleranceDip ?? 0;
+  if (!Number.isFinite(arrivalToleranceDip) || arrivalToleranceDip < 0) {
+    throw new Error('CHARACTER_MOTION_INPUT_INVALID');
+  }
+  if (distance <= arrivalToleranceDip) {
+    return { position: current, arrived: true };
+  }
+  if (travel >= distance) {
     return { position: target, arrived: true };
   }
   if (travel === 0) return { position: current, arrived: false };

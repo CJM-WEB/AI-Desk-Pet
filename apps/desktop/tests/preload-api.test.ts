@@ -147,14 +147,13 @@ describe('preload 公开 API', () => {
       'getCharacterMotionSnapshot',
       'subscribeCharacterMotion',
       'reportCharacterActionFeedback',
-      'reportCharacterActionMilestone',
       'setPetMousePassthrough',
       'beginPetDrag',
       'endPetDrag',
       'openPetContextMenu',
       'commitPetViewport',
-      'stepPetScale',
       'onPetGeometryRender',
+      'recordPetInteractionProbeEvent',
       'getPetInteractionProbe',
       'getCharacterBehaviorProbe',
       'getCharacterMotionDeltaProbe',
@@ -287,6 +286,7 @@ describe('受限桌宠窗口交互 preload API', () => {
     await exposedApi?.beginPetDrag();
     await exposedApi?.endPetDrag();
     await exposedApi?.openPetContextMenu();
+    await exposedApi?.recordPetInteractionProbeEvent?.('mouse_hit');
     await exposedApi?.getPetInteractionProbe?.();
     await exposedApi?.getCharacterBehaviorProbe?.();
     await expect(exposedApi?.getCharacterMotionDeltaProbe?.()).resolves.toEqual({
@@ -303,7 +303,12 @@ describe('受限桌宠窗口交互 preload API', () => {
     expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.petDragBegin);
     expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.petDragEnd);
     expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.petContextMenuOpen);
-    expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.petInteractionProbeGet);
+    expect(invoke).toHaveBeenNthCalledWith(
+      5,
+      'pet-window:e2e-interaction-probe-record',
+      'mouse_hit'
+    );
+    expect(invoke).toHaveBeenNthCalledWith(6, ipcChannels.petInteractionProbeGet);
     expect(await exposedApi?.getCharacterBehaviorProbe?.()).toEqual({
       revision: 0,
       primaryStateId: '',
@@ -313,11 +318,10 @@ describe('受限桌宠窗口交互 preload API', () => {
     });
   });
 
-  test('几何 API 只转发窗口局部 viewport、单一档位并校验 Main 渲染事件', async () => {
+  test('几何 API 只转发窗口局部 viewport 并校验 Main 渲染事件', async () => {
     await exposedApi?.commitPetViewport?.({
       viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 }
     });
-    await exposedApi?.stepPetScale?.({ step: -1 });
     const listener = vi.fn();
     const unsubscribe = exposedApi?.onPetGeometryRender?.(listener);
     const registration = on.mock.calls.find(call => call[0] === ipcChannels.petGeometryRender);
@@ -326,7 +330,6 @@ describe('受限桌宠窗口交互 preload API', () => {
     expect(invoke).toHaveBeenNthCalledWith(1, ipcChannels.petViewportCommit, {
       viewportInWindowDip: { x: 20, y: 10, width: 100, height: 100 }
     });
-    expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.petScaleStep, { step: -1 });
     handler?.({}, {
       revision: 3,
       scale: 1.1,
@@ -448,25 +451,5 @@ describe('受限桌宠窗口交互 preload API', () => {
     await started;
 
     expect((await exposedApi?.getCharacterBehaviorProbe?.())?.playbackStatus).toBe('completed');
-  });
-});
-
-describe('角色动作提交帧 preload API', () => {
-  test('只转发严格里程碑字段', async () => {
-    await exposedApi?.reportCharacterActionMilestone({
-      playbackToken: 'behavior-token-2',
-      actionId: 'carry-action',
-      kind: 'commit-frame',
-      frameId: 'carry-commit',
-      path: 'C:\\private',
-      confirmationId: 'secret'
-    } as never);
-
-    expect(invoke).toHaveBeenCalledWith(ipcChannels.characterActionMilestone, {
-      playbackToken: 'behavior-token-2',
-      actionId: 'carry-action',
-      kind: 'commit-frame',
-      frameId: 'carry-commit'
-    });
   });
 });

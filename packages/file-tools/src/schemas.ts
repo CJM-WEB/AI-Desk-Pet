@@ -25,12 +25,19 @@ export const toolArguments = {
     relativePath: relativePathSchema,
     content: z.string().default('')
   }).strict(),
+  create_directory: z.object({
+    relativePath: relativePathSchema
+  }).strict(),
   apply_patch: z.object({
     relativePath: relativePathSchema,
     patch: z.string().min(1).max(fileToolLimits.patchMaxLength)
   }).strict(),
   delete_file: z.object({
     relativePath: relativePathSchema
+  }).strict(),
+  move_file: z.object({
+    sourceRelativePath: relativePathSchema,
+    targetDirectoryRelativePath: relativePathSchema
   }).strict()
 } as const;
 
@@ -64,6 +71,14 @@ export const toolJsonSchemas = {
     required: ['relativePath'],
     additionalProperties: false
   },
+  create_directory: {
+    type: 'object',
+    properties: {
+      relativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength }
+    },
+    required: ['relativePath'],
+    additionalProperties: false
+  },
   apply_patch: {
     type: 'object',
     properties: {
@@ -77,6 +92,15 @@ export const toolJsonSchemas = {
     type: 'object',
     properties: { relativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength } },
     required: ['relativePath'],
+    additionalProperties: false
+  },
+  move_file: {
+    type: 'object',
+    required: ['sourceRelativePath', 'targetDirectoryRelativePath'],
+    properties: {
+      sourceRelativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength },
+      targetDirectoryRelativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength }
+    },
     additionalProperties: false
   }
 } as const;

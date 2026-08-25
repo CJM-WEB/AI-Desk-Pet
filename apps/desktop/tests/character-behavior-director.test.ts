@@ -13,6 +13,9 @@ import {
   CharacterBehaviorDirector,
   type CharacterBehaviorNotice
 } from '../src/main/characters/character-behavior-director';
+import { CharacterMotionService } from '../src/main/characters/character-motion-service';
+import { CharacterProactivityScheduler } from
+  '../src/main/characters/character-proactivity-scheduler';
 
 const NONE: CharacterBehaviorAuthorization = { kind: 'none' };
 
@@ -23,11 +26,21 @@ function createFixture(initialSettings: Readonly<{
 }> = {
   movementStopped: false,
   proactivityMode: 'assistive' as const
-}) {
+}, now?: () => number) {
   let taskAuthorization: CharacterBehaviorAuthorization = NONE;
   let directedAuthorization: CharacterBehaviorAuthorization = NONE;
   let agentAuthorization: CharacterBehaviorAuthorization = NONE;
   let releasedTokens: readonly string[] = [];
+  let motionSnapshot = {
+    revision: 2,
+    timestampMs: 10,
+    position: { x: 20, y: 30 },
+    target: { x: 40, y: 30 },
+    direction: 'right' as const,
+    moving: true,
+    carrying: false
+  };
+  let plannedTargets = [{ x: 40, y: 30 }, { x: 60, y: 30 }];
   const targetByName = new Map<string, ResolvedBehaviorTarget>([
     ['挥手', { kind: 'action', actionId: 'wave-action' }],
     ['庆祝', { kind: 'action', actionId: 'celebrate-action' }],
@@ -36,7 +49,12 @@ function createFixture(initialSettings: Readonly<{
   const behavior = {
     getPublicBehaviorCatalog: vi.fn((): PublicBehaviorCatalog => ({
       characterName: '测试角色', semantics: ['idle', 'celebrate'],
-      stateNames: ['开心'], actionNames: ['挥手', '庆祝'], tags: []
+      stateNames: ['开心'], actionNames: ['挥手', '庆祝'], tags: [],
+      candidates: [
+        { kind: 'state_name', name: '开心', semantic: 'celebrate', tags: [] },
+        { kind: 'action_name', name: '挥手', semantic: 'celebrate', tags: [] },
+        { kind: 'action_name', name: '庆祝', semantic: 'celebrate', tags: ['dance'] }
+      ]
     })),
     resolveBehaviorTarget: vi.fn((target: BehaviorTarget): ResolvedBehaviorTarget => {
       if (target.kind === 'semantic') return { kind: 'semantic', semantic: target.semantic };
@@ -52,7 +70,9 @@ function createFixture(initialSettings: Readonly<{
     )),
     requestDirectedBehavior: vi.fn(() => directedAuthorization),
     requestProactiveBehavior: vi.fn((target: BehaviorTarget, options?: { allowMovement?: boolean }) => (
-      target.kind === 'action_name' && target.name === '移动' && options?.allowMovement !== true
+      ((target.kind === 'action_name' && target.name === '移动')
+        || (target.kind === 'semantic' && target.semantic === 'move'))
+      && options?.allowMovement !== true
         ? NONE
         : directedAuthorization
     )),
@@ -74,15 +94,19 @@ function createFixture(initialSettings: Readonly<{
   };
   const motion = {
     getSnapshot: vi.fn(() => ({
-      revision: 2,
-      timestampMs: 10,
-      position: { x: 20, y: 30 },
-      target: { x: 40, y: 30 },
-      direction: 'right' as const,
-      moving: true,
-      carrying: false
+      ...motionSnapshot,
+      position: { ...motionSnapshot.position },
+      target: { ...motionSnapshot.target }
     })),
-    requestIntent: vi.fn(),
+    requestIntent: vi.fn(() => {
+      const target = plannedTargets.shift() ?? motionSnapshot.target;
+      motionSnapshot = { ...motionSnapshot, target: { ...target } };
+      return {
+        ...motionSnapshot,
+        position: { ...motionSnapshot.position },
+        target: { ...motionSnapshot.target }
+      };
+    }),
     stop: vi.fn()
   };
   const notices: CharacterBehaviorNotice[] = [];
@@ -93,6 +117,7 @@ function createFixture(initialSettings: Readonly<{
     initialGeneration: 'generation-1',
     initialSettings,
     saveMovementStopped,
+    now,
     publishNotice: notice => notices.push(notice)
   });
   saveMovementStopped.mockImplementation(async movementStopped => {
@@ -110,7 +135,65 @@ function createFixture(initialSettings: Readonly<{
     setTaskAuthorization: (value: CharacterBehaviorAuthorization) => { taskAuthorization = value; },
     setDirectedAuthorization: (value: CharacterBehaviorAuthorization) => { directedAuthorization = value; },
     setAgentAuthorization: (value: CharacterBehaviorAuthorization) => { agentAuthorization = value; },
-    setReleasedTokens: (value: readonly string[]) => { releasedTokens = value; }
+    setReleasedTokens: (value: readonly string[]) => { releasedTokens = value; },
+    setPlannedTargets: (value: Array<{ x: number; y: number }>) => { plannedTargets = value; },
+    setMotionSnapshot: (value: typeof motionSnapshot) => { motionSnapshot = value; }
+  };
+}
+
+/** 使用真实 MotionService 产生快照，避免以手工 moving 边沿掩盖连续状态机。 */
+function createRealMotionFixture(input: Readonly<{
+  position?: Readonly<{ x: number; y: number }>;
+  random?: readonly number[];
+}> = {}) {
+  const base = createFixture();
+  let now = 0;
+  let bounds = {
+    x: input.position?.x ?? 100,
+    y: input.position?.y ?? 100,
+    width: 100,
+    height: 100
+  };
+  const randomValues = [...(input.random ?? [0.8, 0.8])];
+  const motion = new CharacterMotionService({
+    window: {
+      getBounds: () => bounds,
+      setPosition: (x, y) => { bounds = { ...bounds, x, y }; }
+    },
+    getDisplays: () => [{
+      id: 'test-display', workAreaDip: { x: 0, y: 0, width: 1_000, height: 800 }
+    }],
+    getGeometrySnapshot: () => ({
+      revision: 1,
+      characterId: 'test-character',
+      scale: 1,
+      footAnchorDip: { x: bounds.x + 50, y: bounds.y + 100 },
+      visualBoundsInWindowDip: { x: 0, y: 0, width: 100, height: 100 },
+      windowBoundsDip: bounds,
+      displayId: 'test-display'
+    }),
+    random: () => randomValues.shift() ?? 0.8,
+    now: () => now,
+    maxDeltaMs: 10_000
+  });
+  const director = new CharacterBehaviorDirector({
+    behavior: base.behavior,
+    motion,
+    initialGeneration: 'generation-1',
+    initialSettings: { movementStopped: false, proactivityMode: 'assistive' },
+    saveMovementStopped: async stopped => {
+      director.applyBehaviorSettings({ movementStopped: stopped, proactivityMode: 'assistive' });
+    },
+    now: () => now
+  });
+  return {
+    ...base,
+    director,
+    motion,
+    tick: (elapsedMs: number) => {
+      now += elapsedMs;
+      return motion.tick();
+    }
   };
 }
 
@@ -139,7 +222,402 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
 
-  test('只有本地 Gate 的停止与恢复会持久化，并在成功快照应用后更新锁', async () => {
+  test('诊断快照把初始 movementStopped 映射为独立自主移动许可', () => {
+    const running = createFixture();
+    const stopped = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+
+    expect(running.director.getDiagnosticSnapshot()).toMatchObject({
+      autonomousMovementAllowed: true,
+      continuousMovementRequested: false
+    });
+    expect(stopped.director.getDiagnosticSnapshot()).toMatchObject({
+      autonomousMovementAllowed: false,
+      continuousMovementRequested: false
+    });
+  });
+
+  test('停止成功落盘后锁住自主移动、清除持续请求并停止当前 Motion', async () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    await fixture.director.prepareUserPrompt('静止不动');
+
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      autonomousMovementAllowed: false,
+      continuousMovementRequested: false,
+      currentTargetType: null
+    });
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+  });
+
+  test('resume 只解除自主移动锁，不自动发起新的 Motion', async () => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+
+    await fixture.director.prepareUserPrompt('恢复活动');
+
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      autonomousMovementAllowed: true,
+      continuousMovementRequested: false
+    });
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['动', { kind: 'wander', scope: 'short' }],
+    ['运动', { kind: 'wander', scope: 'short' }],
+    ['跑', { kind: 'wander', scope: 'short' }],
+    ['跑一跑', { kind: 'wander', scope: 'short' }],
+    ['保持运动', { kind: 'wander', scope: 'work_area', distance: 'medium' }]
+  ] as const)('停止锁下明确命令“%s”落盘恢复后立即请求对应运动', async (text, motion) => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    await fixture.director.prepareUserPrompt(text);
+
+    expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(false);
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith(motion);
+    expect(fixture.saveMovementStopped.mock.invocationCallOrder[0])
+      .toBeLessThan(fixture.motion.requestIntent.mock.invocationCallOrder[0]!);
+  });
+
+  test.each(['动', '保持运动'] as const)(
+    '停止锁下明确命令“%s”恢复落盘失败时不请求 Motion',
+    async text => {
+      const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+      fixture.setDirectedAuthorization({
+        kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+      });
+      fixture.saveMovementStopped.mockRejectedValueOnce(new Error('WRITE_FAILED'));
+
+      await expect(fixture.director.prepareUserPrompt(text)).rejects.toThrow('WRITE_FAILED');
+
+      expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+      expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+      expect(fixture.director.getChatContext().runtime.movementStopped).toBe(true);
+    }
+  );
+
+  test('持续计划到达后复用 MotionService 请求下一随机工作区目标，停止后不再续行', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: false });
+
+    expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(2);
+    expect(fixture.motion.requestIntent).toHaveBeenNthCalledWith(1, {
+      kind: 'wander', scope: 'work_area', distance: 'medium'
+    });
+    expect(fixture.motion.requestIntent).toHaveBeenNthCalledWith(2, {
+      kind: 'wander', scope: 'work_area', distance: 'medium'
+    });
+    fixture.director.applyBehaviorSettings({ movementStopped: true, proactivityMode: 'assistive' });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: false });
+    expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    ['current', { x: 100, y: 100 }, [0.8, 0.8]],
+    ['bottom_right', { x: 900, y: 700 }, [0.8, 0.8]],
+    ['random_work_area', { x: 100, y: 100 }, [0.12, 0.12, 0.8, 0.8]]
+  ] as const)(
+    '连续计划 %s 初始未形成运动时立即以真实 MotionService 快照重采样',
+    async (target, position, random) => {
+      const fixture = createRealMotionFixture({ position, random });
+      const requestIntent = vi.spyOn(fixture.motion, 'requestIntent');
+      fixture.setDirectedAuthorization({
+        kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+      });
+
+      await fixture.director.completeUserPrompt({
+        generation: 'generation-1', explicitDirective: null, providerPlan: null,
+        motionPlan: { mode: 'continuous', durationSeconds: null, target, distance: 'medium' }
+      });
+      fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+      expect(requestIntent).toHaveBeenCalledTimes(2);
+      expect(fixture.motion.getSnapshot().moving).toBe(true);
+      expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+        continuousMovementRequested: true,
+        continuationDeadlineActive: false
+      });
+    }
+  );
+
+  test('连续计划的后续随机近点以真实静止快照重采样，不会在无时限状态挂起', async () => {
+    const fixture = createRealMotionFixture({
+      random: [0.8, 0.8, 0.8, 0.8, 0.6, 0.6]
+    });
+    const requestIntent = vi.spyOn(fixture.motion, 'requestIntent');
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: null, target: 'current', distance: 'none' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    const arrived = fixture.tick(10_000);
+    expect(arrived.moving).toBe(false);
+    fixture.director.handleMotionSnapshot(arrived);
+
+    expect(requestIntent).toHaveBeenCalledTimes(4);
+    expect(fixture.motion.getSnapshot().moving).toBe(true);
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      continuousMovementRequested: true,
+      continuationDeadlineActive: false
+    });
+  });
+
+  test.each([
+    ['拖拽', (fixture: ReturnType<typeof createRealMotionFixture>) => fixture.director.setDragging(true)],
+    ['可信任务', (fixture: ReturnType<typeof createRealMotionFixture>) => fixture.director.handleTaskEvent({
+      type: 'phase', phase: 'thinking'
+    })],
+    ['确认任务', (fixture: ReturnType<typeof createRealMotionFixture>) => fixture.director.handleTaskEvent({
+      type: 'phase', phase: 'awaiting_confirmation'
+    })],
+    ['能力执行', (fixture: ReturnType<typeof createRealMotionFixture>) => fixture.director.handleTaskEvent({
+      type: 'phase', phase: 'acting'
+    })],
+    ['更高优先级播放', (fixture: ReturnType<typeof createRealMotionFixture>) => {
+      fixture.setDirectedAuthorization({
+        kind: 'play', actionId: 'wave-action', playbackToken: 'wave-token', semantic: 'celebrate'
+      });
+      fixture.director.requestBehaviorPlan(play('挥手'), 'explicit');
+    }]
+  ] as const)('连续窗口尚未到达时进入%s立即停止真实 Motion', async (_name, enterBlocker) => {
+    const fixture = createRealMotionFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    const moving = fixture.tick(1);
+    expect(moving.moving).toBe(true);
+    fixture.director.handleMotionSnapshot(moving);
+
+    enterBlocker(fixture);
+
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      continuousMovementRequested: false,
+      currentTargetType: null,
+      continuationDeadlineActive: false
+    });
+    expect(fixture.tick(1).moving).toBe(false);
+  });
+
+  test.each([
+    ['reset', async (fixture: ReturnType<typeof createRealMotionFixture>) => fixture.director.reset('generation-2')],
+    ['角色切换', async (fixture: ReturnType<typeof createRealMotionFixture>) => {
+      await fixture.director.handleActiveCharacterChanged();
+    }],
+    ['close', async (fixture: ReturnType<typeof createRealMotionFixture>) => fixture.director.close()]
+  ] as const)('连续窗口尚未到达时 %s 立即清理真实 Motion', async (_name, clear) => {
+    const fixture = createRealMotionFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    expect(fixture.tick(1).moving).toBe(true);
+
+    await clear(fixture);
+
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      continuousMovementRequested: false,
+      currentTargetType: null,
+      continuationDeadlineActive: false
+    });
+    expect(fixture.tick(1).moving).toBe(false);
+  });
+
+  test.each([
+    ['random_work_area', { kind: 'wander', scope: 'work_area', distance: 'medium' }],
+    ['bottom_right', { kind: 'region', region: 'bottom_right' }],
+    ['current', { kind: 'return-visible' }]
+  ] as const)('连续计划 %s 的续行选择不同实际目标且不复用固定 intent', (target, firstIntent) => {
+    const fixture = createFixture();
+    fixture.setPlannedTargets([
+      { x: 40, y: 30 },
+      { x: 40, y: 30 },
+      { x: 60, y: 30 }
+    ]);
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: null, target, distance: 'medium' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    const firstTarget = { x: 40, y: 30 };
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: false });
+
+    expect(fixture.motion.requestIntent).toHaveBeenNthCalledWith(1, firstIntent);
+    expect(fixture.motion.requestIntent).toHaveBeenNthCalledWith(2, {
+      kind: 'wander', scope: 'work_area', distance: 'medium'
+    });
+    expect(fixture.motion.getSnapshot().target).not.toEqual(firstTarget);
+  });
+
+  test('连续计划三次重采样仍未得到新空间目标时安全终止', () => {
+    const fixture = createFixture();
+    fixture.setPlannedTargets([
+      { x: 40, y: 30 },
+      { x: 40, y: 30 },
+      { x: 40, y: 30 },
+      { x: 40, y: 30 }
+    ]);
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: false });
+
+    expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(4);
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      continuousMovementRequested: false,
+      currentTargetType: null,
+      continuationDeadlineActive: false
+    });
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ['拖拽', (fixture: ReturnType<typeof createFixture>) => fixture.director.setDragging(true)],
+    ['可信任务确认', (fixture: ReturnType<typeof createFixture>) => fixture.director.handleTaskEvent({
+      type: 'phase', phase: 'awaiting_confirmation'
+    })],
+    ['更高优先级播放', (fixture: ReturnType<typeof createFixture>) => {
+      fixture.setDirectedAuthorization({
+        kind: 'play', actionId: 'wave-action', playbackToken: 'wave-token', semantic: 'celebrate'
+      });
+      fixture.director.requestBehaviorPlan(play('挥手'), 'explicit');
+    }]
+  ] as const)('连续运动在%s到达时安全终止且不绕过 Director blocker', (_名称, block) => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
+    block(fixture);
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: false });
+
+    expect(fixture.motion.requestIntent).toHaveBeenCalledOnce();
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      continuousMovementRequested: false,
+      currentTargetType: null,
+      continuationDeadlineActive: false
+    });
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+  });
+
+  test.each(['reset', '角色切换', 'close'] as const)(
+    '%s 清除连续请求、截止和当前目标并停止 Motion',
+    async operation => {
+      const fixture = createFixture();
+      fixture.setDirectedAuthorization({
+        kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+      });
+      fixture.director.completeUserPrompt({
+        generation: 'generation-1', explicitDirective: null, providerPlan: null,
+        motionPlan: { mode: 'continuous', durationSeconds: 30, target: 'random_work_area', distance: 'medium' }
+      });
+      fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+      if (operation === 'reset') fixture.director.reset('generation-2');
+      else if (operation === '角色切换') await fixture.director.handleActiveCharacterChanged();
+      else await fixture.director.close();
+
+      expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+        continuousMovementRequested: false,
+        currentTargetType: null,
+        continuationDeadlineActive: false
+      });
+      expect(fixture.motion.stop).toHaveBeenCalledOnce();
+    }
+  );
+
+  test('持续计划在 Main 单调时钟到期后清除请求并停止 Motion', () => {
+    let now = 0;
+    const fixture = createFixture(undefined, () => now);
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'continuous', durationSeconds: 1, target: 'random_work_area', distance: 'medium' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    now = 1_000;
+    fixture.director.advance();
+
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      continuousMovementRequested: false,
+      continuationDeadlineActive: false
+    });
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+  });
+
+  test('一次性计划到达后回到 idle 且不保留当前目标', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'once', durationSeconds: null, target: 'bottom_right', distance: 'far' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      continuousMovementRequested: false,
+      currentTargetType: 'bottom_right'
+    });
+
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: true });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: false });
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      continuousMovementRequested: false,
+      currentTargetType: null
+    });
+    expect(fixture.motion.requestIntent).toHaveBeenCalledOnce();
+  });
+
+  test('本地 Gate 的停止与恢复会持久化，并在成功快照应用后更新锁', async () => {
     const fixture = createFixture();
 
     await fixture.director.prepareUserPrompt('停下');
@@ -149,6 +627,37 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.saveMovementStopped).toHaveBeenNthCalledWith(2, false);
     expect(fixture.motion.stop).toHaveBeenCalledOnce();
     expect(fixture.director.getChatContext().runtime.movementStopped).toBe(false);
+  });
+
+  test('Provider motionPlan.stop 也等待成功落盘后锁住自主移动', async () => {
+    const fixture = createFixture();
+
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'stop', durationSeconds: null, target: 'current', distance: 'none' }
+    });
+
+    expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(true);
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      autonomousMovementAllowed: false,
+      continuousMovementRequested: false
+    });
+  });
+
+  test('Provider motionPlan.stop 落盘失败时不提前修改停止锁', async () => {
+    const fixture = createFixture();
+    fixture.saveMovementStopped.mockRejectedValueOnce(new Error('WRITE_FAILED'));
+
+    await expect(fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: null,
+      motionPlan: { mode: 'stop', durationSeconds: null, target: 'current', distance: 'none' }
+    })).rejects.toThrow('WRITE_FAILED');
+
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      autonomousMovementAllowed: true,
+      continuousMovementRequested: false
+    });
+    expect(fixture.motion.stop).not.toHaveBeenCalled();
   });
 
   test('本地 Gate 停止落盘失败时不修改运动或停止锁', async () => {
@@ -185,6 +694,23 @@ describe('Main 角色行为 Director', () => {
     });
     expect(fixture.behavior.requestDirectedBehavior.mock.invocationCallOrder[0])
       .toBeLessThan(fixture.motion.requestIntent.mock.invocationCallOrder[0]!);
+  });
+
+  test('“跑远一点”从显式 Gate 到 Motion 意图始终保留 far 且只提交一次', async () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    const prepared = await fixture.director.prepareUserPrompt('跑远一点');
+
+    expect(prepared.explicitDirective).toEqual({
+      kind: 'move',
+      motion: { kind: 'wander', scope: 'work_area', distance: 'far' }
+    });
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'wander', scope: 'work_area', distance: 'far'
+    });
   });
 
   test('显式移动未取得播放授权时不移动并发布稳定提示', async () => {
@@ -276,6 +802,25 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
+  test('autonomous 的本地 move 候选取得移动授权并发起当前单屏 wander', () => {
+    const fixture = createFixture({ movementStopped: false, proactivityMode: 'autonomous' });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'local-move-token', semantic: 'move'
+    });
+
+    expect(fixture.director.requestBehaviorPlan({
+      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
+    }, 'local-idle')).toMatchObject({ kind: 'play', semantic: 'move' });
+
+    expect(fixture.behavior.requestProactiveBehavior).toHaveBeenCalledWith(
+      { kind: 'semantic', semantic: 'move' },
+      { urgency: 10, allowMovement: true }
+    );
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'wander', scope: 'work_area'
+    });
+  });
+
   test('停止锁与显式动作优先级都阻止旧能力任务的 move 意图', async () => {
     const intent: CharacterAgentBehaviorIntent = {
       stateIntent: { semantic: 'move' }, actionSemantic: 'move', urgency: 80,
@@ -313,19 +858,120 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
+  test('聊天隐藏描述只选择当前公开目录中的最高相似动作', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'celebrate-action', playbackToken: 'dance-token', semantic: 'celebrate'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan: { kind: 'play', target: { kind: 'action_name', name: '目录外动作' } },
+      activity: '来一段 dance',
+      status: 'dance'
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
+      kind: 'action_name', name: '庆祝'
+    });
+  });
+
+  test('Provider 返回 none 时仍按隐藏描述与运动计划选择最高相似动作', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'celebrate-action', playbackToken: 'dance-token', semantic: 'celebrate'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan: { kind: 'none' },
+      motionPlan: { mode: 'none', durationSeconds: null, target: 'current', distance: 'none' },
+      activity: '来一段 dance',
+      status: '欢快 dance'
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
+      kind: 'action_name', name: '庆祝'
+    });
+  });
+
+  test.each([
+    ['once', false],
+    ['continuous', true]
+  ] as const)('同轮自定义移动动作与 %s 计划共用一次授权并实际提交运动', (mode, continuous) => {
+    const fixture = createFixture();
+    fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
+      characterName: '测试角色', semantics: ['idle', 'move'],
+      stateNames: [], actionNames: ['巡游四方'], tags: ['locomotion'],
+      candidates: [
+        { kind: 'action_name', name: '巡游四方', semantic: 'move', tags: ['locomotion'] }
+      ]
+    });
+    fixture.behavior.resolveBehaviorTarget.mockReturnValue({
+      kind: 'action', actionId: 'move-action'
+    });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null, providerPlan: { kind: 'none' },
+      motionPlan: { mode, durationSeconds: null, target: 'bottom_right', distance: 'far' },
+      activity: '开始巡游', status: '保持运动'
+    });
+
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledExactlyOnceWith({
+      kind: 'action_name', name: '巡游四方'
+    });
+    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'region', region: 'bottom_right'
+    });
+    expect(fixture.director.getDiagnosticSnapshot().continuousMovementRequested).toBe(continuous);
+  });
+
+  test('Provider 精确命中当前自定义动作时优先于隐藏描述的相似回退', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'wave-token', semantic: 'celebrate'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } },
+      activity: '来一段 dance',
+      status: 'dance'
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
+      kind: 'action_name', name: '挥手'
+    });
+  });
+
   test('公开聊天上下文只包含清单、运行布尔、档位和公开近期动作', () => {
     const fixture = createFixture();
 
     expect(fixture.director.getChatContext()).toEqual({
       character: {
         characterName: '测试角色', semantics: ['idle', 'celebrate'],
-        stateNames: ['开心'], actionNames: ['挥手', '庆祝'], tags: []
+        stateNames: ['开心'], actionNames: ['挥手', '庆祝'], tags: [],
+        candidates: [
+          { kind: 'state_name', name: '开心', semantic: 'celebrate', tags: [] },
+          { kind: 'action_name', name: '挥手', semantic: 'celebrate', tags: [] },
+          { kind: 'action_name', name: '庆祝', semantic: 'celebrate', tags: ['dance'] }
+        ]
       },
       runtime: {
         moving: true,
         dragging: false,
         carrying: false,
-        movementStopped: false
+        movementStopped: false,
+        autonomousMovementAllowed: true,
+        continuousMovementRequested: false
       },
       proactivityMode: 'assistive',
       recentActions: ['挥手']
@@ -428,16 +1074,48 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(true);
   });
 
-  test('反思 stop 与隐含移动 play 都不会写停止锁或进入动作链', () => {
-    const fixture = createFixture();
+  test('停止锁在 Director 内拒绝 local-idle 的 move 语义并且不请求位移', () => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
     });
 
-    fixture.director.requestBehaviorPlan({ kind: 'stop_movement' }, 'reflection');
+    expect(fixture.director.requestBehaviorPlan({
+      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
+    }, 'local-idle')).toEqual(NONE);
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  });
 
-    expect(fixture.director.requestBehaviorPlan(play('移动'), 'reflection')).toEqual(NONE);
-    expect(fixture.saveMovementStopped).not.toHaveBeenCalled();
+  test('“停止不动”持久关闭自主移动且推进三十秒仍无本地移动候选', async () => {
+    vi.useFakeTimers();
+    const fixture = createFixture({ movementStopped: false, proactivityMode: 'autonomous' });
+    fixture.setMotionSnapshot({
+      revision: 3,
+      timestampMs: 20,
+      position: { x: 20, y: 30 },
+      target: { x: 20, y: 30 },
+      direction: 'right',
+      moving: false,
+      carrying: false
+    });
+    const scheduler = new CharacterProactivityScheduler({
+      director: fixture.director,
+      random: () => 0
+    });
+    try {
+      await fixture.director.prepareUserPrompt('停止不动');
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+        autonomousMovementAllowed: false,
+        moving: false
+      });
+      expect(fixture.behavior.requestProactiveBehavior).not.toHaveBeenCalled();
+    } finally {
+      await scheduler.close();
+      vi.useRealTimers();
+    }
   });
 
   test.each([
@@ -486,31 +1164,15 @@ describe('Main 角色行为 Director', () => {
     });
 
     fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'celebrate-action', playbackToken: 'reflection-token', semantic: 'celebrate'
+      kind: 'play', actionId: 'celebrate-action', playbackToken: 'idle-token', semantic: 'celebrate'
     });
-    expect(fixture.director.requestBehaviorPlan(play('庆祝'), 'reflection')).toMatchObject({
-      kind: 'play', playbackToken: 'reflection-token'
+    expect(fixture.director.requestBehaviorPlan(play('庆祝'), 'local-idle')).toMatchObject({
+      kind: 'play', playbackToken: 'idle-token'
     });
     expect(fixture.saveMovementStopped).not.toHaveBeenCalled();
     expect(fixture.motion.stop).not.toHaveBeenCalled();
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
     expect(fixture.director.getChatContext().runtime.movementStopped).toBe(false);
-  });
-
-  test('反思 resume 不能解除本地停止锁', async () => {
-    const fixture = createFixture();
-    const prepared = await fixture.director.prepareUserPrompt('停下');
-    fixture.director.completeUserPrompt({
-      generation: 'generation-1',
-      explicitDirective: prepared.explicitDirective,
-      providerPlan: null
-    });
-
-    fixture.director.requestBehaviorPlan({ kind: 'resume_movement' }, 'reflection');
-
-    expect(fixture.director.requestBehaviorPlan(play('移动'), 'explicit')).toEqual(NONE);
-    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
-    expect(fixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   test('explicit 动作活跃时 thinking、listening 与 dragging 只更新可信事实而不抢播放', () => {
@@ -540,7 +1202,7 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledTimes(1);
   });
 
-  test('关闭、安全停止锁、明确指令、可信任务、聊天、反思和本地待机按固定优先级仲裁', async () => {
+  test('关闭、安全停止锁、明确指令、可信任务、聊天和本地待机按固定优先级仲裁', async () => {
     const fixture = createFixture();
     fixture.setTaskAuthorization({
       kind: 'play', actionId: 'celebrate-action', playbackToken: 'task-token', semantic: 'celebrate'
@@ -555,7 +1217,6 @@ describe('Main 角色行为 Director', () => {
       providerPlan: { kind: 'move', direction: 'right', distance: 'near' }
     });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'thinking' });
-    expect(fixture.director.requestBehaviorPlan(play('挥手'), 'reflection')).toEqual(NONE);
     expect(fixture.director.requestBehaviorPlan(play('挥手'), 'local-idle')).toEqual(NONE);
 
     expect(fixture.director.requestBehaviorPlan(play('挥手'), 'explicit')).toMatchObject({
@@ -776,14 +1437,11 @@ describe('Main 角色行为 Director', () => {
     }
   );
 
-  test.each(['reflection', 'local-idle'] as const)(
-    '%s 来源动作不可用时静默跳过',
-    source => {
-      const fixture = createFixture();
+  test('本地待机来源动作不可用时静默跳过', () => {
+    const fixture = createFixture();
 
-      fixture.director.requestBehaviorPlan(play('不存在'), source);
+    fixture.director.requestBehaviorPlan(play('不存在'), 'local-idle');
 
-      expect(fixture.notices).toEqual([]);
-    }
-  );
+    expect(fixture.notices).toEqual([]);
+  });
 });

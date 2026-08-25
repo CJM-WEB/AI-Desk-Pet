@@ -37,18 +37,18 @@ import {
 import type { CharacterDraftV2 } from '@myself/character-runtime';
 import {
   petMousePassthroughInputSchema,
-  petScaleStepInputSchema,
+  petInteractionProbeRecordEventSchema,
+  petInteractionProbeSchema,
   petViewportCommitInputSchema,
-  type PetScaleStepInput,
+  type PetInteractionProbe,
+  type PetInteractionProbeEvent,
   type PetViewportCommitInput
 } from '../../shared/pet-window-interaction';
 import {
   characterActionFeedbackInputSchema,
-  characterActionMilestoneInputSchema,
   characterMotionEmptyInputSchema,
   characterMotionSnapshotResultSchema,
   type CharacterActionFeedbackInput,
-  type CharacterActionMilestoneInput,
   type CharacterMotionSnapshot
 } from '../../shared/character-motion-ipc';
 
@@ -376,16 +376,6 @@ export interface CharacterMotionIpcService {
   applyPlaybackFeedback(feedback: CharacterActionFeedbackInput): void | Promise<void>;
 }
 
-export interface CharacterActionTransactionObserver {
-  onPlaybackStarted(playbackToken: string, actionId: string): boolean | void;
-  onPlaybackTerminal(
-    playbackToken: string,
-    actionId: string,
-    terminal: Exclude<CharacterActionFeedbackInput['status'], 'started'>
-  ): boolean | void;
-  onCommitFrame(playbackToken: string, actionId: string, frameId: string): boolean;
-}
-
 function characterInputError(): Error & { code: string } {
   return Object.assign(new Error('CHARACTER_INPUT_INVALID'), {
     code: 'CHARACTER_INPUT_INVALID'
@@ -586,8 +576,7 @@ export function registerCharacterIpc(
 export function registerCharacterMotionIpc(
   ipcMain: IpcMain,
   service: CharacterMotionIpcService,
-  petWebContents: WebContents,
-  transactionObserver?: CharacterActionTransactionObserver
+  petWebContents: WebContents
 ): void {
   replaceHandler(
     ipcMain,
@@ -610,35 +599,6 @@ export function registerCharacterMotionIpc(
       await service.applyPlaybackFeedback({
         ...report
       });
-      const status = report.status;
-      if (status === 'started') {
-        transactionObserver?.onPlaybackStarted(report.playbackToken, report.actionId);
-      } else {
-        transactionObserver?.onPlaybackTerminal(report.playbackToken, report.actionId, status);
-      }
-      return { ok: true };
-    }
-  );
-  replaceHandler(
-    ipcMain,
-    ipcChannels.characterActionMilestone,
-    async (event, raw) => {
-      if (event.sender !== petWebContents) {
-        throw new Error('CHARACTER_PLAYBACK_SENDER_INVALID');
-      }
-      const milestone: CharacterActionMilestoneInput = parseCharacterInput(
-        characterActionMilestoneInputSchema,
-        raw
-      );
-      if (!transactionObserver) {
-        throw new Error('CHARACTER_ACTION_MILESTONE_UNAVAILABLE');
-      }
-      const accepted = transactionObserver.onCommitFrame(
-        milestone.playbackToken,
-        milestone.actionId,
-        milestone.frameId
-      );
-      if (!accepted) throw new Error('CHARACTER_ACTION_MILESTONE_REJECTED');
       return { ok: true };
     }
   );
@@ -649,7 +609,8 @@ type PetWindowInteractionControllerActions = {
   beginDrag(): void;
   endDrag(reason: 'released' | 'cancelled' | 'timeout' | 'disposed'): void;
   dispose(): void;
-  getProbe?(): { passthrough: boolean; dragging: boolean };
+  getProbe?(): PetInteractionProbe;
+  recordProbeEvent?(event: PetInteractionProbeEvent): void;
 };
 
 function assertPetWindowSender(
@@ -677,7 +638,6 @@ export function registerPetWindowInteractionIpc(
     enableE2eProbe?: boolean;
     geometry?: {
       commitViewport(input: PetViewportCommitInput): Promise<void> | void;
-      stepScale(input: PetScaleStepInput): Promise<void> | void;
     };
   } = {}
 ): void {
@@ -719,15 +679,19 @@ export function registerPetWindowInteractionIpc(
       if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
       await options.geometry!.commitViewport(parsed.data);
     });
-    replaceHandler(ipcMain, ipcChannels.petScaleStep, async (event, ...args) => {
-      assertPetWindowSender(event, petWebContents);
-      if (args.length !== 1) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
-      const parsed = petScaleStepInputSchema.safeParse(args[0]);
-      if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
-      await options.geometry!.stepScale(parsed.data);
-    });
   }
   if (options.enableE2eProbe) {
+    replaceHandler(
+      ipcMain,
+      ipcChannels.petInteractionProbeRecord,
+      async (event, ...args) => {
+        assertPetWindowSender(event, petWebContents);
+        if (args.length !== 1) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+        const parsed = petInteractionProbeRecordEventSchema.safeParse(args[0]);
+        if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_INPUT_INVALID');
+        controller.recordProbeEvent?.(parsed.data);
+      }
+    );
     replaceHandler(
       ipcMain,
       ipcChannels.petInteractionProbeGet,
@@ -736,10 +700,9 @@ export function registerPetWindowInteractionIpc(
         assertNoPetInteractionInput(args);
         const probe = controller.getProbe?.();
         if (!probe) throw new Error('PET_WINDOW_INTERACTION_PROBE_UNAVAILABLE');
-        return {
-          passthrough: Boolean(probe.passthrough),
-          dragging: Boolean(probe.dragging)
-        };
+        const parsed = petInteractionProbeSchema.safeParse(probe);
+        if (!parsed.success) throw new Error('PET_WINDOW_INTERACTION_PROBE_UNAVAILABLE');
+        return parsed.data;
       }
     );
   }

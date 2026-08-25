@@ -195,11 +195,20 @@ describe('ToolRegistry', () => {
 });
 
 describe('内置文件工具注册', () => {
-  test('文件分类未授权时会话不注册任何 builtin 文件工具', () => {
-    expect(createSessionToolRegistry({ taskKind: 'file', fileDisclosureAllowed: false }).definitions()).toEqual([]);
-    expect(createSessionToolRegistry({ taskKind: 'file', fileDisclosureAllowed: true }).definitions().map(
-      definition => definition.function.name
-    )).toContain('builtin.files.list_files');
+  test('文件分类未授权时 Main 保留完整注册表，Provider 工具面由 AgentService 收窄', () => {
+    const definitions = createSessionToolRegistry({
+      taskKind: 'file', fileDisclosureAllowed: false
+    }).definitions();
+
+    expect(definitions.map(definition => definition.function.name)).toEqual([
+      'builtin.files.list_files',
+      'builtin.files.read_file',
+      'builtin.files.create_file',
+      'builtin.files.move_file',
+      'builtin.files.create_directory',
+      'builtin.files.apply_patch',
+      'builtin.files.delete_file'
+    ]);
   });
 
   test('PowerShell 任务只暴露前台命令工具，不混入文件能力', () => {
@@ -233,6 +242,8 @@ describe('内置文件工具注册', () => {
       'builtin.files.list_files',
       'builtin.files.read_file',
       'builtin.files.create_file',
+      'builtin.files.move_file',
+      'builtin.files.create_directory',
       'builtin.files.apply_patch',
       'builtin.files.delete_file'
     ]);
@@ -246,13 +257,15 @@ describe('内置文件工具注册', () => {
     })).toThrow('TOOL_REGISTRY_SEALED');
   });
 
-  test('五个公开工具精确映射到内部动作和本地风险', () => {
+  test('七个公开工具精确映射到内部动作和本地风险', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
     const cases = [
       ['builtin.files.list_files', 'list_files', 'read', { relativePath: '.', maxDepth: 1, maxResults: 100 }],
       ['builtin.files.read_file', 'read_file', 'read', { relativePath: 'notes.txt', startLine: 1, lineCount: 200 }],
       ['builtin.files.create_file', 'create_file', 'recoverable', { relativePath: 'new.txt', content: '正文' }],
+      ['builtin.files.move_file', 'move_file', 'recoverable', { sourceRelativePath: 'old.txt', targetDirectoryRelativePath: 'archive' }],
+      ['builtin.files.create_directory', 'create_directory', 'recoverable', { relativePath: 'abc' }],
       ['builtin.files.apply_patch', 'apply_patch', 'recoverable', { relativePath: 'new.txt', patch: '@@ -1 +1 @@\n-a\n+b\n' }],
       ['builtin.files.delete_file', 'delete_file', 'recoverable', { relativePath: 'old.txt' }]
     ] as const;
@@ -305,6 +318,10 @@ describe('内置文件工具注册', () => {
     expect(parameters('builtin.files.apply_patch').properties).toMatchObject({
       relativePath: { minLength: 1, maxLength: 1024 },
       patch: { minLength: 1, maxLength: 262_144 }
+    });
+    expect(parameters('builtin.files.move_file').properties).toMatchObject({
+      sourceRelativePath: { minLength: 1, maxLength: 1024 },
+      targetDirectoryRelativePath: { minLength: 1, maxLength: 1024 }
     });
   });
 

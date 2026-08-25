@@ -124,6 +124,41 @@ function recycleAction(): VerifiedWriteAction {
   });
 }
 
+function deleteResponse(): ModelResponse {
+  return {
+    type: 'tool_request',
+    request: {
+      requestId: 'delete-1',
+      toolName: 'builtin.files.delete_file',
+      arguments: { relativePath: 'archive/old.txt' }
+    }
+  };
+}
+
+function moveResponse(requestId = 'move-1'): ModelResponse {
+  return {
+    type: 'tool_request',
+    request: {
+      requestId,
+      toolName: 'builtin.files.move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: 'archive'
+      }
+    }
+  };
+}
+
+function moveAction(): VerifiedWriteAction {
+  return Object.freeze({
+    operation: 'move_file' as const,
+    authorizationGeneration: 0,
+    sourceRelativePath: 'docs/source.txt',
+    targetDirectoryRelativePath: 'archive',
+    targetRelativePath: 'archive/source.txt'
+  });
+}
+
 function createHarness(
   provider: ModelProvider,
   fileOverrides: Partial<AgentFileTools> = {},
@@ -159,18 +194,6 @@ function createHarness(
   const pending = new PendingActionStore({
     onDiscard: execution => loop.discard(execution.continuationToken)
   });
-  const taskCarry = {
-    beginTaskCarry: vi.fn<() => {
-      playbackToken: string;
-      actionId: string;
-      commitFrameId: string | null;
-    }>(() => ({
-      playbackToken: 'carry-token-1',
-      actionId: 'carry-action-1',
-      commitFrameId: 'carry-frame-1'
-    })),
-    endTaskCarry: vi.fn()
-  };
   const createSession = vi.fn(async () => (
     createSessionOverride ? createSessionOverride(session) : session
   ));
@@ -183,7 +206,6 @@ function createHarness(
       onEmit?.(event);
     },
     ...(emitBehaviorIntent === undefined ? {} : { emitBehaviorIntent }),
-    taskCarry,
     createConversationId: () => 'conversation-1'
   });
   return {
@@ -194,8 +216,7 @@ function createHarness(
     pending,
     provider,
     service,
-    session,
-    taskCarry
+    session
   };
 }
 
@@ -283,6 +304,58 @@ function createPowerShellHarness(
 }
 
 describe('AgentService', () => {
+  test('移动规划只公开 move_file，确认后只以 Main 结果恢复总结', async () => {
+    const provider = new ScriptedProvider([
+      moveResponse(),
+      { type: 'text', text: 'source.txt 已移动' }
+    ]);
+    const { events, fileTools, service } = createHarness(provider, {
+      preview: vi.fn(async () => moveAction())
+    });
+
+    await service.submitFileTask({
+      text: '把 docs/source.txt 移动到 archive 文件夹',
+      visibleHistory: [],
+      planningHint: { operation: 'move_file' }
+    });
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      'builtin.files.move_file',
+      CAPABILITY_CLARIFICATION_TOOL_NAME
+    ]);
+    const pending = events.find(event => event.type === 'pending_action');
+    if (!pending || pending.type !== 'pending_action') throw new Error('缺少移动确认卡');
+    expect(pending.action).toMatchObject({
+      operation: 'move_file',
+      sourceRelativePath: 'docs/source.txt',
+      targetRelativePath: 'archive/source.txt'
+    });
+
+    await service.confirm(pending.action.actionId);
+
+    expect(fileTools.executeWrite).toHaveBeenCalledExactlyOnceWith(moveAction());
+    expect(events).toContainEqual({ type: 'message', role: 'assistant', text: 'source.txt 已移动' });
+  });
+
+  test('移动规划不会接受 list_files 后的口头成功', async () => {
+    const provider = new ScriptedProvider([
+      readResponse('fake-move-read'),
+      { type: 'text', text: 'source.txt 已移动' }
+    ]);
+    const { events, fileTools, service } = createHarness(provider);
+
+    await expect(service.submitFileTask({
+      text: '把 docs/source.txt 移动到 archive 文件夹',
+      visibleHistory: [],
+      planningHint: { operation: 'move_file' }
+    })).rejects.toThrow('CAPABILITY_PLAN_PROTOCOL_INVALID');
+
+    expect(fileTools.executeRead).not.toHaveBeenCalled();
+    expect(events).not.toContainEqual({
+      type: 'message', role: 'assistant', text: 'source.txt 已移动'
+    });
+  });
+
   test('reset 等待前台 PowerShell 执行收敛且丢弃迟到结果', async () => {
     const execution = deferred<ReturnType<typeof powerShellResult>>();
     const execute = vi.fn(() => execution.promise);
@@ -592,8 +665,17 @@ describe('AgentService', () => {
 
     await harness.service.submitFileTask({
       text: '帮我把当前目录下的empty文件夹删除了',
-      visibleHistory: []
+      visibleHistory: [],
+      planningHint: {
+        operation: 'delete_file'
+      }
     });
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      'builtin.files.delete_file', CAPABILITY_CLARIFICATION_TOOL_NAME
+    ]);
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
+      .toContain(CAPABILITY_CLARIFICATION_TOOL_NAME);
 
     const pendingEvent = harness.events.at(-1);
     expect(pendingEvent).toEqual({
@@ -613,6 +695,56 @@ describe('AgentService', () => {
       .rejects.toThrow('ACTION_EXPIRED');
     expect(provider.requests).toHaveLength(2);
     expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
+  });
+
+  test('创建 abc 文件夹只调用 create_directory 并生成专用确认卡', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'create-directory-1',
+          toolName: 'builtin.files.create_directory',
+          arguments: { relativePath: 'abc' }
+        }
+      },
+      { type: 'text', text: '目录创建完成' }
+    ]);
+    const directoryAction = Object.freeze({
+      operation: 'create_directory' as const,
+      authorizationGeneration: 0,
+      targetRelativePath: 'abc'
+    });
+    const harness = createHarness(provider, {
+      preview: vi.fn(async () => directoryAction)
+    });
+
+    await harness.service.submitFileTask({
+      text: '在当前目录下创建一个名为abc的文件夹',
+      visibleHistory: [],
+      planningHint: {
+        operation: 'create_directory'
+      }
+    });
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      'builtin.files.create_directory', CAPABILITY_CLARIFICATION_TOOL_NAME
+    ]);
+    const pendingEvent = harness.events.at(-1);
+    expect(pendingEvent).toEqual({
+      type: 'pending_action',
+      action: expect.objectContaining({
+        operation: 'create_directory',
+        summary: '创建目录 abc',
+        targetRelativePath: 'abc'
+      })
+    });
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少创建目录确认卡');
+    await harness.service.confirm(pendingEvent.action.actionId);
+    expect(harness.fileTools.executeWrite).toHaveBeenCalledWith(directoryAction);
+    expect(harness.events).toContainEqual({
+      type: 'message', role: 'assistant', text: '目录创建完成'
+    });
+    expect(phases(harness.events).at(-1)).toBe('success');
   });
 
   test('重置后迟到的协议修复响应不公开消息也不写入会话历史', async () => {
@@ -918,22 +1050,156 @@ describe('AgentService', () => {
     expect(fallback.requests).toEqual([]);
   });
 
-  test('文件分类未授权时拒绝历史写请求进入预览和执行', async () => {
-    const { events, fileTools, service } = createHarness(
-      new ScriptedProvider([writeResponse()]),
-      {},
-      false
-    );
+  test('文件分类未授权但精确创建目录许可仍经过预览、确认和本地写入', async () => {
+    const directoryAction = Object.freeze({
+      operation: 'create_directory' as const,
+      authorizationGeneration: 0,
+      targetRelativePath: 'private-directory'
+    });
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'private-directory-create',
+          toolName: 'builtin.files.create_directory',
+          arguments: { relativePath: 'private-directory' }
+        }
+      },
+      { type: 'text', text: '目录已创建' }
+    ]);
+    const { events, fileTools, service } = createHarness(provider, {
+      preview: vi.fn(async () => directoryAction)
+    }, false);
 
-    await expect(service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] })).rejects.toThrow(
-      'FILE_DISCLOSURE_DENIED'
-    );
+    await service.submitFileTask({
+      text: '创建 private-directory 目录',
+      visibleHistory: [],
+      planningHint: {
+        operation: 'create_directory'
+      }
+    });
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      'builtin.files.create_directory',
+      CAPABILITY_CLARIFICATION_TOOL_NAME
+    ]);
+    expect(fileTools.preview).toHaveBeenCalledWith({
+      requestId: 'private-directory-create',
+      toolName: 'create_directory',
+      arguments: { relativePath: 'private-directory' }
+    });
+    const action = events.find(event => event.type === 'pending_action');
+    if (!action || action.type !== 'pending_action') throw new Error('缺少目录确认卡');
+
+    await service.confirm(action.action.actionId);
+
+    expect(fileTools.executeWrite).toHaveBeenCalledWith(directoryAction);
+    expect(events).toContainEqual({ type: 'message', role: 'assistant', text: '目录已创建' });
+  });
+
+  test.each([
+    ['只读操作', {
+      operation: 'list_files'
+    }, readResponse()],
+    ['读取工具', { operation: 'list_files' }, readResponse()]
+  ] as const)('文件分类未授权时%s保持失败关闭', async (_name, planningHint, response) => {
+    const provider = new ScriptedProvider([response, response]);
+    const { fileTools, service } = createHarness(provider, {}, false);
+
+    await expect(service.submitFileTask({
+      text: '执行受限文件操作',
+      visibleHistory: [],
+      ...(planningHint === undefined ? {} : { planningHint })
+    })).rejects.toThrow('AGENT_INVALID_TOOL_REQUEST');
+
     expect(fileTools.preview).not.toHaveBeenCalled();
     expect(fileTools.executeWrite).not.toHaveBeenCalled();
-    expect(events.at(-2)).toEqual(expect.objectContaining({
-      type: 'error',
-      code: 'FILE_DISCLOSURE_DENIED'
-    }));
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).not.toContain(
+      'builtin.files.list_files'
+    );
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      CAPABILITY_CLARIFICATION_TOOL_NAME
+    ]);
+  });
+
+  test('文件分类未授权时下一任务取消旧确认后可使用新的结构化写请求', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'first-directory',
+          toolName: 'builtin.files.create_directory',
+          arguments: { relativePath: 'first-directory' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'second-directory',
+          toolName: 'builtin.files.create_directory',
+          arguments: { relativePath: 'second-directory' }
+        }
+      },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'second-directory-retry',
+          toolName: 'builtin.files.create_directory',
+          arguments: { relativePath: 'second-directory' }
+        }
+      }
+    ]);
+    const { events, fileTools, service } = createHarness(provider, {
+      preview: vi.fn(async () => Object.freeze({
+        operation: 'create_directory' as const,
+        authorizationGeneration: 0,
+        targetRelativePath: 'first-directory'
+      }))
+    }, false);
+
+    await service.submitFileTask({
+      text: '创建 first-directory',
+      visibleHistory: [],
+      planningHint: {
+        operation: 'create_directory'
+      }
+    });
+    const first = events.find(event => event.type === 'pending_action');
+    if (!first || first.type !== 'pending_action') throw new Error('缺少首个确认卡');
+    service.cancelAction(first.action.actionId);
+
+    await service.submitFileTask({
+      text: '创建 second-directory',
+      visibleHistory: [],
+      planningHint: { operation: 'create_directory' }
+    });
+
+    expect(fileTools.preview).toHaveBeenCalledTimes(2);
+    expect(fileTools.executeWrite).not.toHaveBeenCalled();
+  });
+
+  test('文件分类未授权时取消会隔离迟到的明确创建响应', async () => {
+    const provider = new DeferredProvider();
+    const { fileTools, service } = createHarness(provider, {}, false);
+    const submitting = service.submitFileTask({
+      text: '创建 private-directory', visibleHistory: [],
+      planningHint: {
+        operation: 'create_directory'
+      }
+    });
+    await vi.waitFor(() => expect(provider.requests).toHaveLength(1));
+    service.cancelActive();
+    provider.resolve({
+      type: 'tool_request',
+      request: {
+        requestId: 'late-private-directory', toolName: 'builtin.files.create_directory',
+        arguments: { relativePath: 'private-directory' }
+      }
+    });
+
+    await submitting;
+    expect(fileTools.preview).not.toHaveBeenCalled();
+    expect(fileTools.executeWrite).not.toHaveBeenCalled();
   });
 
   test('列目录成功后生成最终助手消息和 success', async () => {
@@ -1025,69 +1291,41 @@ describe('AgentService', () => {
     expect(fileTools.executeWrite).toHaveBeenCalledOnce();
   });
 
-  test('回收站确认等待匹配的开始与提交帧后才执行并恢复总结', async () => {
+  test('当前角色没有搬运动作且角色反馈异常时删除确认仍立即执行并恢复模型总结', async () => {
     const provider = new ScriptedProvider([
-      writeResponse(),
+      deleteResponse(),
       { type: 'text', text: 'old.txt 已移入回收站' }
     ]);
-    const harness = createHarness(provider, {
-      preview: vi.fn(async () => recycleAction())
-    });
+    const harness = createHarness(
+      provider,
+      { preview: vi.fn(async () => recycleAction()) },
+      true,
+      [],
+      event => {
+        if (event.type === 'character_carrying') throw new Error('角色反馈端口不可用');
+      }
+    );
     await harness.service.submitFileTask({ text: '把 old.txt 移入回收站', visibleHistory: [] });
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
-    const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
-    expect(harness.service.onPlaybackStarted('wrong-token', 'carry-action-1')).toBe(false);
-    expect(harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1')).toBe(true);
-    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
-    expect(harness.service.onCommitFrame(
-      'carry-token-1',
-      'carry-action-1',
-      'carry-frame-1'
-    )).toBe(true);
-    await confirming;
+    await harness.service.confirm(pendingEvent.action.actionId);
 
     expect(harness.fileTools.executeWrite).toHaveBeenCalledExactlyOnceWith(recycleAction());
-    expect(harness.taskCarry.beginTaskCarry).toHaveBeenCalledOnce();
-    expect(harness.taskCarry.endTaskCarry).toHaveBeenCalledOnce();
-    expect(phases(harness.events)).toEqual([
-      'thinking',
-      'awaiting_confirmation',
-      'acting',
-      'thinking',
-      'success'
-    ]);
-  });
-
-  test('回收站无提交帧时由匹配的 started 提交且只执行一次', async () => {
-    const harness = createHarness(
-      new ScriptedProvider([writeResponse(), { type: 'text', text: '已完成' }]),
-      { preview: vi.fn(async () => recycleAction()) }
-    );
-    harness.taskCarry.beginTaskCarry.mockReturnValue({
-      playbackToken: 'carry-token-1',
-      actionId: 'carry-action-1',
-      commitFrameId: null
+    expect(harness.events).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      text: 'old.txt 已移入回收站'
     });
-    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
-    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
-    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
-
-    const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-    expect(harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1')).toBe(true);
-    expect(harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1')).toBe(false);
-    await confirming;
-
-    expect(harness.fileTools.executeWrite).toHaveBeenCalledOnce();
+    expect(harness.events).not.toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'AGENT_INTERNAL_ERROR'
+    }));
   });
 
   test('回收站端口失败保留 RECYCLE_BIN_FAILED 并发布稳定下一步建议', async () => {
     const harness = createHarness(
-      new ScriptedProvider([writeResponse()]),
+      new ScriptedProvider([deleteResponse()]),
       {
         preview: vi.fn(async () => recycleAction()),
         executeWrite: vi.fn(async () => {
@@ -1099,12 +1337,9 @@ describe('AgentService', () => {
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
-    const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
-    harness.service.onCommitFrame('carry-token-1', 'carry-action-1', 'carry-frame-1');
-
-    await expect(confirming).rejects.toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
+    await expect(harness.service.confirm(pendingEvent.action.actionId))
+      .rejects.toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
+    expect(harness.fileTools.executeWrite).toHaveBeenCalledExactlyOnceWith(recycleAction());
     expect(harness.events.filter(event => event.type === 'error')).toEqual([{
       type: 'error',
       code: 'RECYCLE_BIN_FAILED',
@@ -1113,137 +1348,6 @@ describe('AgentService', () => {
     }]);
     expect(JSON.stringify(harness.events)).not.toContain('private');
     expect(phases(harness.events).filter(phase => phase === 'error')).toHaveLength(1);
-  });
-
-  test('回收站提交前取消会丢弃续跑且永不执行文件动作', async () => {
-    const harness = createHarness(
-      new ScriptedProvider([writeResponse()]),
-      { preview: vi.fn(async () => recycleAction()) }
-    );
-    const discard = vi.spyOn(harness.loop, 'discard');
-    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
-    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
-    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
-
-    const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-    harness.service.cancelActive();
-    await expect(confirming).rejects.toThrow('FILE_TASK_USER_CANCELLED');
-
-    expect(discard).toHaveBeenCalledOnce();
-    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
-    expect(harness.taskCarry.endTaskCarry).toHaveBeenCalledOnce();
-    expect(harness.service.onCommitFrame(
-      'carry-token-1',
-      'carry-action-1',
-      'carry-frame-1'
-    )).toBe(false);
-  });
-
-  test('回收站提交前收到匹配的播放终止会撤销提交权', async () => {
-    const harness = createHarness(
-      new ScriptedProvider([writeResponse()]),
-      { preview: vi.fn(async () => recycleAction()) }
-    );
-    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
-    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
-    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
-
-    const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
-    expect(harness.service.onPlaybackTerminal(
-      'carry-token-1',
-      'carry-action-1',
-      'interrupted'
-    )).toBe(true);
-    await expect(confirming).rejects.toThrow('FILE_TASK_PLAYBACK_CANCELLED');
-
-    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
-    expect(harness.service.onCommitFrame(
-      'carry-token-1',
-      'carry-action-1',
-      'carry-frame-1'
-    )).toBe(false);
-  });
-
-  test('角色切换或用户交互使播放授权失效后旧提交帧不能写文件', async () => {
-    const harness = createHarness(
-      new ScriptedProvider([writeResponse()]),
-      { preview: vi.fn(async () => recycleAction()) }
-    );
-    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
-    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
-    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
-
-    const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
-    expect(harness.service.invalidateFileTaskPlaybackGrant()).toBe(true);
-    await expect(confirming).rejects.toThrow('FILE_TASK_PLAYBACK_CANCELLED');
-
-    expect(harness.service.onCommitFrame(
-      'carry-token-1',
-      'carry-action-1',
-      'carry-frame-1'
-    )).toBe(false);
-    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
-  });
-
-  test('回收站等待播放超时由 Main 轮询推进并撤销提交权', async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createHarness(
-        new ScriptedProvider([writeResponse()]),
-        { preview: vi.fn(async () => recycleAction()) }
-      );
-      await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
-      const pendingEvent = harness.events.find(event => event.type === 'pending_action');
-      if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
-
-      const confirming = harness.service.confirm(pendingEvent.action.actionId);
-      await Promise.resolve();
-      vi.advanceTimersByTime(30_001);
-      expect(harness.service.advanceFileTaskTransaction()).toBe(true);
-      await expect(confirming).rejects.toThrow('FILE_TASK_PLAYBACK_TIMEOUT');
-
-      expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
-      expect(harness.service.onPlaybackStarted(
-        'carry-token-1',
-        'carry-action-1'
-      )).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  test('回收站本地成功但模型总结失败时警告且保持 success 终态', async () => {
-    const summaryError = Object.assign(new Error('provider failed'), {
-      code: 'PROVIDER_SERVER_ERROR',
-      retryable: false
-    });
-    const harness = createHarness(
-      new ScriptedProvider([writeResponse(), summaryError]),
-      { preview: vi.fn(async () => recycleAction()) }
-    );
-    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
-    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
-    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
-
-    const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
-    harness.service.onCommitFrame('carry-token-1', 'carry-action-1', 'carry-frame-1');
-    await expect(confirming).rejects.toThrow('provider failed');
-
-    expect(harness.events).toContainEqual({
-      type: 'error',
-      code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
-      message: '本地文件操作已成功，但模型总结失败。',
-      nextAction: '可以查看文件结果，或稍后重新请求总结。'
-    });
-    expect(phases(harness.events)).not.toContain('error');
-    expect(phases(harness.events).at(-1)).toBe('success');
   });
 
   test('取消进行中的 Provider 调用会进入 cancelled', async () => {
@@ -1307,32 +1411,6 @@ describe('AgentService', () => {
     expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
   });
 
-  test('reset 在动画提交前撤销事务并等待确认流程真实收敛', async () => {
-    const harness = createHarness(
-      new ScriptedProvider([writeResponse()]),
-      { preview: vi.fn(async () => recycleAction()) }
-    );
-    const discard = vi.spyOn(harness.loop, 'discard');
-    await harness.service.submitFileTask({ text: '移入回收站', visibleHistory: [] });
-    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
-    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
-    const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-
-    await (harness.service as unknown as {
-      resetForNewConversation(): Promise<void>;
-    }).resetForNewConversation();
-
-    await expect(confirming).rejects.toThrow('FILE_TASK_USER_CANCELLED');
-    expect(discard).toHaveBeenCalledOnce();
-    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
-    expect(harness.service.onCommitFrame(
-      'carry-token-1',
-      'carry-action-1',
-      'carry-frame-1'
-    )).toBe(false);
-  });
-
   test.each(['acting', 'carrying'] as const)(
     '普通写在 %s 事件监听器同步 reset 后不得越过不可逆写边界',
     async resetAt => {
@@ -1374,7 +1452,7 @@ describe('AgentService', () => {
   test('reset 遇到不可逆执行时等待真实结果，但屏蔽旧总结和终态事件', async () => {
     const execution = deferred();
     const harness = createHarness(
-      new ScriptedProvider([writeResponse(), { type: 'text', text: '旧总结不得公开' }]),
+      new ScriptedProvider([deleteResponse(), { type: 'text', text: '旧总结不得公开' }]),
       {
         preview: vi.fn(async () => recycleAction()),
         executeWrite: vi.fn(() => execution.promise)
@@ -1384,9 +1462,6 @@ describe('AgentService', () => {
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
     const confirming = harness.service.confirm(pendingEvent.action.actionId);
-    await Promise.resolve();
-    harness.service.onPlaybackStarted('carry-token-1', 'carry-action-1');
-    harness.service.onCommitFrame('carry-token-1', 'carry-action-1', 'carry-frame-1');
     await vi.waitFor(() => expect(harness.fileTools.executeWrite).toHaveBeenCalledOnce());
 
     let resetSettled = false;
