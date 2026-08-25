@@ -988,6 +988,37 @@ describe('AgentLoop', () => {
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
+  test('写操作失败后无 ok 的成功读取不能清除失败事实或恢复模型伪成功', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'write-failed',
+        toolName: 'builtin.files.create_file',
+        arguments: { relativePath: 'result.txt' }
+      }
+    }, readRequest('inspect-after-failure'), { type: 'text', text: '文件已成功创建' }]);
+    const runtime = createToolRuntime();
+    vi.spyOn(runtime, 'executeRead').mockResolvedValueOnce({
+      toolName: 'read_file',
+      content: '当前内容'
+    });
+    const loop = new AgentLoop();
+    const runContext = { ...context(provider), toolRuntime: runtime };
+    const paused = await collect(loop.run('创建文件', runContext));
+    const write = paused.find(event => event.type === 'write_request');
+    if (!write || write.type !== 'write_request') throw new Error('缺少写确认请求');
+
+    const events = await collect(loop.resume(write.continuationToken, {
+      ok: false,
+      toolName: 'create_file',
+      code: 'TARGET_EXISTS'
+    }, runContext));
+
+    expect(events).not.toContainEqual({ type: 'message', text: '文件已成功创建' });
+    expect(events).toContainEqual({ type: 'message', text: '本地能力操作失败，未完成请求。' });
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+  });
+
   test('丢弃继续令牌后不能恢复', async () => {
     const provider = new ScriptedProvider([{
       type: 'tool_request',

@@ -21,8 +21,22 @@ type ContinuationState = {
   messages: ModelMessage[];
   nextTurn: number;
   requestId: string;
+  toolName: string;
+  previousTrustedResultOk: boolean | undefined;
+  mutationFailurePending: boolean;
   expectedWriteOperation: FileWriteOperation | undefined;
 };
+
+const MUTATION_TOOL_NAMES = new Set<string>([
+  'create_file',
+  'create_directory',
+  'copy_file',
+  'apply_patch',
+  'edit_file',
+  'delete_file',
+  'move_file',
+  'powershell'
+]);
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
@@ -73,6 +87,7 @@ export class AgentLoop {
       context,
       false,
       undefined,
+      false,
       context.capabilityPlanning?.expectedWriteOperation
     );
   }
@@ -91,7 +106,13 @@ export class AgentLoop {
       toolCallId: continuation.requestId,
       content: JSON.stringify(toolResult)
     });
-    const latestTrustedResultOk = trustedResultOk(toolResult);
+    const trustedState = nextTrustedResultState(
+      continuation.previousTrustedResultOk,
+      continuation.mutationFailurePending,
+      continuation.toolName,
+      toolResult
+    );
+    const latestTrustedResultOk = trustedState.latestOk;
     if (continuation.expectedWriteOperation !== undefined
       && !isExpectedWriteResult(toolResult, continuation.expectedWriteOperation)) {
       throw capabilityPlanProtocolError();
@@ -107,6 +128,7 @@ export class AgentLoop {
       context,
       true,
       latestTrustedResultOk,
+      trustedState.mutationFailurePending,
       undefined
     );
   }
@@ -121,6 +143,7 @@ export class AgentLoop {
     context: RunContext,
     hasTrustedToolResult: boolean,
     latestTrustedResultOk: boolean | undefined,
+    mutationFailurePending: boolean,
     expectedWriteOperation: FileWriteOperation | undefined
   ): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     if (context.signal.aborted) {
@@ -276,6 +299,9 @@ export class AgentLoop {
           messages: [...messages],
           nextTurn: turn + 1,
           requestId: prepared.request.requestId,
+          toolName: prepared.executionRequest.toolName,
+          previousTrustedResultOk: latestTrustedResultOk,
+          mutationFailurePending,
           expectedWriteOperation
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
@@ -313,7 +339,14 @@ export class AgentLoop {
         content: JSON.stringify(result)
       });
       hasTrustedToolResult = true;
-      latestTrustedResultOk = trustedResultOk(result);
+      const trustedState = nextTrustedResultState(
+        latestTrustedResultOk,
+        mutationFailurePending,
+        prepared.executionRequest.toolName,
+        result
+      );
+      latestTrustedResultOk = trustedState.latestOk;
+      mutationFailurePending = trustedState.mutationFailurePending;
     }
 
     throw new Error('AGENT_MAX_TURNS');
@@ -325,4 +358,22 @@ function trustedResultOk(result: unknown): boolean | undefined {
   if (typeof result !== 'object' || result === null || Array.isArray(result)) return undefined;
   const ok = (result as Record<string, unknown>)['ok'];
   return typeof ok === 'boolean' ? ok : undefined;
+}
+
+/** mutation 失败保持粘性；只读结果仍保留自身失败语义，但不能替 mutation 宣告恢复。 */
+function nextTrustedResultState(
+  previousOk: boolean | undefined,
+  mutationFailurePending: boolean,
+  toolName: string,
+  result: unknown
+): Readonly<{ latestOk: boolean | undefined; mutationFailurePending: boolean }> {
+  const currentOk = trustedResultOk(result);
+  if (MUTATION_TOOL_NAMES.has(toolName)) {
+    if (currentOk === undefined) {
+      return { latestOk: mutationFailurePending ? false : previousOk, mutationFailurePending };
+    }
+    return { latestOk: currentOk, mutationFailurePending: !currentOk };
+  }
+  if (mutationFailurePending) return { latestOk: false, mutationFailurePending: true };
+  return { latestOk: currentOk ?? previousOk, mutationFailurePending: false };
 }

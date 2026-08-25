@@ -352,6 +352,36 @@ describe('LocalModelProvider', () => {
     });
   });
 
+  test('本地 read_file 首行超过预算时仍保留明确截断的一行和有效行号', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '完成' } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+    const oversizedLine = `长行-${'甲'.repeat(5_000)}`;
+
+    await provider.respond({
+      ...request,
+      messages: [{
+        role: 'tool',
+        toolCallId: 'long-read',
+        content: JSON.stringify({
+          toolName: 'read_file',
+          relativePath: 'minified.json',
+          startLine: 7,
+          endLine: 7,
+          content: oversizedLine,
+          truncated: false
+        })
+      }]
+    }, new AbortController().signal);
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    const bounded = JSON.parse(body.messages[0].content);
+    expect(bounded.content).toHaveLength(4_000);
+    expect(bounded.content).toBe(oversizedLine.slice(0, 4_000));
+    expect(bounded).toMatchObject({ startLine: 7, endLine: 7, truncated: true });
+  });
+
   test('SSE 期间 generation 变化后拒绝迟到增量与最终响应', async () => {
     let currentConnection = connection;
     const deltas: string[] = [];

@@ -214,7 +214,6 @@ export class CharacterBehaviorDirector {
   async prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt> {
     const originalText = text.trim();
     const parsed = parseExplicitCharacterBehavior(originalText);
-    const promptGeneration = this.generation;
     const prepared: PreparedBehaviorPrompt = {
       originalText,
       capabilityText: parsed?.capabilityText ?? originalText,
@@ -226,13 +225,11 @@ export class CharacterBehaviorDirector {
     } else if (directive?.kind === 'resume_movement') {
       await this.options.saveMovementStopped(false);
     } else if (directive?.kind === 'continuous_movement') {
-      if (await this.resumeExplicitMovementIfStopped(promptGeneration)) this.requestMotionPlan({
+      this.requestMotionPlan({
         mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium'
       }, 'explicit');
     } else if (directive?.kind === 'move') {
-      if (await this.resumeExplicitMovementIfStopped(promptGeneration)) {
-        this.requestMotionBehavior(directive.motion, 'explicit');
-      }
+      this.requestMotionBehavior(directive.motion, 'explicit');
     } else if (directive?.kind === 'play') {
       this.requestBehaviorPlan({ kind: 'play', target: directive.target }, 'explicit');
     }
@@ -348,10 +345,6 @@ export class CharacterBehaviorDirector {
     const providerMotionPlan = input.explicitDirective === null ? input.motionPlan ?? null : null;
     if (providerMotionPlan?.mode === 'stop') {
       await this.options.saveMovementStopped(true);
-    } else if ((providerMotionPlan?.mode === 'once' || providerMotionPlan?.mode === 'continuous')
-      && this.movementStopped) {
-      // Schema 是 Provider 对自然语言的结构化结论，必须与本地明确恢复指令走同一条持久化门禁。
-      await this.options.saveMovementStopped(false);
     }
     // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
     if (this.closed || input.generation !== this.generation) return;
@@ -480,9 +473,6 @@ export class CharacterBehaviorDirector {
         return authorization;
       }
       const resolvedTarget = this.options.behavior.resolveBehaviorTarget(target);
-      if (!this.autonomousMovementAllowed && this.options.behavior.isMovementBehaviorTarget(resolvedTarget)) {
-        return NONE;
-      }
       const authorization = this.options.behavior.requestDirectedBehavior(
         resolvedTarget,
         SOURCE_OPTIONS[source]
@@ -602,18 +592,9 @@ export class CharacterBehaviorDirector {
 
   private canRequest(plan: CharacterBehaviorPlan, source: BehaviorPlanSource): boolean {
     if (this.closed) return false;
-    if (!this.autonomousMovementAllowed && (
-      plan.kind === 'move' || plan.kind === 'move_region'
-    )) return false;
     if (source !== 'explicit' && (this.trustedRuntimeBlocked || this.dragging)) return false;
     if (source === 'local-idle' && this.pendingChatPlan) return false;
     return !this.active || SOURCE_PRIORITY[source] > SOURCE_PRIORITY[this.active.source];
-  }
-
-  /** 明确运动命令落盘后须仍属于原会话，避免 reset 或 close 期间的旧请求复活运动。 */
-  private async resumeExplicitMovementIfStopped(expectedGeneration: string): Promise<boolean> {
-    if (this.movementStopped) await this.options.saveMovementStopped(false);
-    return !this.closed && expectedGeneration === this.generation;
   }
 
   private updateTrustedBlock(event: TaskEvent): void {
@@ -713,7 +694,6 @@ export class CharacterBehaviorDirector {
     }
     const reusesSameTurnMove = chatAuthorization.kind === 'play'
       && chatAuthorization.semantic === 'move';
-    if (!this.autonomousMovementAllowed) return;
     // 同轮相似动作已经通过完整授权，只跳过它与自身 active 的优先级竞争；可信阻塞仍失败关闭。
     if (reusesSameTurnMove) {
       if (this.closed || this.trustedRuntimeBlocked || this.dragging) return;
@@ -819,7 +799,6 @@ export class CharacterBehaviorDirector {
   /** 连续到达不得穿透拖拽、可信任务、确认或更高优先级播放。 */
   private hasContinuousBlocker(): boolean {
     return this.closed
-      || !this.autonomousMovementAllowed
       || this.dragging
       || this.trustedRuntimeBlocked
       || this.capabilityTask

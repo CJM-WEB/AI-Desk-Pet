@@ -42,7 +42,13 @@ function boundLocalReadResult(content: string): Readonly<{ content: string; line
   let characters = 0;
   for (const line of lines) {
     const nextCharacters = characters + (retained.length === 0 ? 0 : 1) + line.length;
-    if (nextCharacters > LOCAL_READ_RESULT_CHARACTER_BUDGET) break;
+    if (nextCharacters > LOCAL_READ_RESULT_CHARACTER_BUDGET) {
+      // 首行本身超限时仍保留一行的明确字符截断，避免把非空文件伪装成零行。
+      if (retained.length === 0) {
+        retained.push(line.slice(0, LOCAL_READ_RESULT_CHARACTER_BUDGET));
+      }
+      break;
+    }
     retained.push(line);
     characters = nextCharacters;
   }
