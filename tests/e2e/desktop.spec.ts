@@ -102,6 +102,10 @@ type ElectronFixtureModule = {
     capture(source: 'stdout' | 'stderr', chunk: string | Buffer): void;
     inspect(canaries: readonly string[]): readonly boolean[];
   };
+  inspectPrivateArtifactCanaries(
+    artifacts: readonly unknown[],
+    canaries: readonly string[]
+  ): readonly boolean[];
   probeWindowsProcess(
     processId: number,
     options?: {
@@ -881,6 +885,26 @@ test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
 
     complete.capture('stdout', 'y'.repeat(80));
     expect(() => complete.inspect([canary])).toThrow('RAW_LOG_CAPTURE_LIMIT_EXCEEDED');
+  });
+
+  test('原始对象递归扫描能识别 JSON 转义 Windows 路径与 file URL 路径', async () => {
+    const fixture = await loadElectronFixtureModule();
+    const jsonPath = 'C:\\Private\\LocalModel\\json-runtime.exe';
+    const fileUrlPath = 'C:\\Private\\Local Model\\url-runtime.exe';
+    const artifacts = [{
+      main: { rawJsonLog: JSON.stringify({ path: jsonPath }) },
+      renderer: [{ status: 'file:///c:/private/local%20model/url-runtime.exe' }]
+    }];
+
+    expect(fixture.inspectPrivateArtifactCanaries(
+      artifacts,
+      [jsonPath, fileUrlPath, 'not-present-canary']
+    )).toEqual([true, true, false]);
+
+    const mainRawLogs = fixture.createCompleteLogCanaryTracker(4_096);
+    mainRawLogs.capture('stdout', JSON.stringify({ path: jsonPath }));
+    mainRawLogs.capture('stderr', 'file:///c:/private/local%20model/url-runtime.exe');
+    expect(mainRawLogs.inspect([jsonPath, fileUrlPath])).toEqual([true, true]);
   });
 
   test('自然退出宽限期内 child 退出时不启动任何强制清理', async () => {
@@ -4500,13 +4524,12 @@ test.describe('真实 Provider 业务闭环', () => {
         expect(fixture.inspectCapturedLogCanaries(privateCanaries))
           .toEqual(privateCanaries.map(() => false));
         const artifacts = [
-          JSON.stringify(rendererDiagnostics),
-          JSON.stringify(publicLocalModelSnapshots),
-          JSON.stringify(fixture.logs)
+          rendererDiagnostics,
+          publicLocalModelSnapshots,
+          fixture.logs
         ];
-        for (const canary of privateCanaries) {
-          for (const artifact of artifacts) expect(artifact).not.toContain(canary);
-        }
+        expect(fixtureModule.inspectPrivateArtifactCanaries(artifacts, privateCanaries))
+          .toEqual(privateCanaries.map(() => false));
         expect(fixture.capturedLogEvidence).toEqual({
           apiKey: false,
           authorizedRoot: false,

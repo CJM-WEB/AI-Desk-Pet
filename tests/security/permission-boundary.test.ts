@@ -450,6 +450,53 @@ describe('权限边界安全回归', () => {
     }
   });
 
+  test('跨本地 re-export 与后续赋值的 child_process alias 仍失败关闭', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'myself-local-model-reexports-'));
+    const fixtures = {
+      'bridge.ts': ["export { spawn as launch } from 'node:child_process';"],
+      'bridge-consumer.ts': [
+        "import { launch } from './bridge';",
+        "launch('fixture', [], { shell: true, windowsHide: true });"
+      ],
+      'assignment-alias.ts': [
+        "import { spawn } from 'node:child_process';",
+        'let launch;',
+        'launch = spawn;',
+        "launch('fixture', [], { shell: true, windowsHide: true });"
+      ],
+      'bridge-one.ts': ["export { spawn as firstLaunch } from 'node:child_process';"],
+      'bridge-two.ts': ["export { firstLaunch as launch } from './bridge-one';"],
+      'bridge-two-consumer.ts': [
+        "import { launch } from './bridge-two';",
+        "launch('fixture', [], { shell: true, windowsHide: true });"
+      ],
+      'safe-inline.ts': [
+        "import { spawn } from 'node:child_process';",
+        "spawn('fixture', [], { shell: false, windowsHide: true });"
+      ]
+    } as const;
+    try {
+      await Promise.all(Object.entries(fixtures).map(async ([name, lines]) => {
+        await writeFile(join(fixtureRoot, name), lines.join('\n'), 'utf8');
+      }));
+
+      const scan = await scanLocalModelCapabilityBoundary([
+        join(fixtureRoot, 'bridge-consumer.ts'),
+        join(fixtureRoot, 'assignment-alias.ts'),
+        join(fixtureRoot, 'bridge-two-consumer.ts'),
+        join(fixtureRoot, 'safe-inline.ts')
+      ]);
+
+      expect(scan.unsafeSpawnOptions).toEqual([
+        'assignment-alias.ts:4',
+        'bridge-consumer.ts:2',
+        'bridge-two-consumer.ts:2'
+      ]);
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   test('本地模型公开状态、Provider 错误与普通日志不泄露连接和正文 canary', async () => {
     const canaries = [
       'token-canary-local-security',

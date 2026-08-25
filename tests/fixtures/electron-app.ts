@@ -288,6 +288,52 @@ export interface CompleteLogCanaryTracker {
   inspect(canaries: readonly string[]): readonly boolean[];
 }
 
+function normalizedPrivateArtifact(value: string): string {
+  let normalized = value.normalize('NFC')
+    .replace(/\\u([0-9a-f]{4})/giu, (_match, hex: string) => (
+      String.fromCharCode(Number.parseInt(hex, 16))
+    ))
+    .replace(/(?:%[0-9a-f]{2})+/giu, encoded => {
+      try {
+        return decodeURIComponent(encoded);
+      } catch {
+        return encoded;
+      }
+    })
+    .replace(/\\\//gu, '/');
+  while (normalized.includes('\\\\')) normalized = normalized.replace(/\\\\/gu, '\\');
+  normalized = normalized.replace(/\\/gu, '/').toLocaleLowerCase('en-US');
+  return normalized.replace(/file:\/{2,}(?=[a-z]:\/)/gu, '');
+}
+
+/** 递归检查原始诊断字符串叶节点，编码和路径表现变化不能绕过泄漏证据。 */
+export function inspectPrivateArtifactCanaries(
+  artifacts: readonly unknown[],
+  canaries: readonly string[]
+): readonly boolean[] {
+  if (canaries.some(canary => canary.length === 0)) throw new Error('EMPTY_LOG_SENTINEL');
+  const leaves: string[] = [];
+  const visited = new WeakSet<object>();
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      leaves.push(normalizedPrivateArtifact(value));
+      return;
+    }
+    if (!value || typeof value !== 'object' || visited.has(value)) return;
+    visited.add(value);
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    Object.values(value).forEach(visit);
+  };
+  artifacts.forEach(visit);
+  return Object.freeze(canaries.map(canary => {
+    const normalizedCanary = normalizedPrivateArtifact(canary);
+    return leaves.some(leaf => leaf.includes(normalizedCanary));
+  }));
+}
+
 /**
  * 动态 canary 在进程启动后才可得，因此保留有界的完整原始流；一旦超限就失败关闭，
  * 绝不以滚动尾部冒充全生命周期证据。
@@ -316,7 +362,7 @@ export function createCompleteLogCanaryTracker(maxBytes: number): CompleteLogCan
         Buffer.concat(chunks.stdout).toString('utf8'),
         Buffer.concat(chunks.stderr).toString('utf8')
       ];
-      return Object.freeze(canaries.map(canary => streams.some(stream => stream.includes(canary))));
+      return inspectPrivateArtifactCanaries(streams, canaries);
     }
   };
 }

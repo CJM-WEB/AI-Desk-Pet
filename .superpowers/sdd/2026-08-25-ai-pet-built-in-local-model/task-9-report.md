@@ -152,3 +152,38 @@ git diff --check
 - 所有单点均在十五分钟内取得可判定结果；完整 Electron 门禁约 5.8 分钟。
 
 Round 2 未修改生产 Runtime、Provider 或 Renderer 权限边界，也未修改 SDD ledger。真实 GGUF、Vulkan 性能、安装卸载与人工视觉仍维持既有未验收状态。
+
+## Round 3 残余修复
+
+### 跨模块与后续赋值 alias
+
+新增三个 mutation：本地 `bridge.ts` 把 `spawn` re-export 为 `launch`、两层本地 re-export 后调用，以及 `let launch; launch = spawn` 后调用。旧扫描器对三项均返回空结果，形成稳定 RED；同一 fixture 中的直接安全内联 `spawn` 保持不报错。
+
+GREEN 后保留 Round 2 的语法级失败关闭优先级；语法绑定无法识别时，TypeScript TypeChecker 通过 resolved signature 追溯到 Node `child_process.d.ts` 的 `spawn` / `exec` 原始声明。仅对当前源码中调用前最后一次直接赋值补充受限追踪，以覆盖 TypeChecker 不保留调用签名的流赋值 alias；没有扩大为不相关的泛用静态分析。
+
+### 原始对象与编码变体泄漏扫描
+
+Renderer console/pageerror、公开状态和脱敏日志不再先 `JSON.stringify` 后做精确子串搜索；测试夹具递归遍历原始对象的字符串叶节点，并对叶值和 canary 同时规范化 Unicode、JSON 反斜杠、URL 百分号编码、Windows 路径分隔符、file URL 以及 Windows 大小写。循环对象通过身份集合有界终止。
+
+mutation 分别把 `C:\\...` 路径放入真实 JSON 日志字符串，并把含空格的 Windows 路径编码为 `file:///C:/.../Local%20Model/...` 放入 Renderer 状态；旧 Main 完整原始流检查返回两项 `false`，形成 RED。GREEN 后，16 MiB 有界 Main stdout/stderr 完整流与 Renderer/status/log 原始对象共用同一规范化匹配器；关闭前后仍分别重新扫描全部动态 canary。
+
+### Round 3 验证结果
+
+最终实际执行：
+
+```powershell
+pnpm.cmd test:security
+pnpm.cmd exec playwright test --config tests/playwright.config.ts --grep "内置本地模型在真实 Electron"
+pnpm.cmd verify:desktop
+git diff --check
+```
+
+结果：
+
+- 安全套件：1 file，28 tests，通过；单层/两层 re-export 与后续赋值 alias mutation 均被判为危险，直接安全内联仍通过。
+- 正式 Runtime Electron 定向复验：1 test，通过；原始对象和 Main 原始流路径编码 mutation：1 test，通过。
+- `verify:desktop`：全 workspace TypeScript 检查通过；单元套件 131 files、2966 tests 通过；安全 28 tests 通过；集成 73 tests 通过；真实 Electron 75 tests 通过，既有 B7 长时用例 1 test 按配置跳过；退出码为 0。
+- 首次完整门禁曾有 1 个无关白名单闭环用例在关闭设置窗口时遇到页面已关闭；该用例定向复验 1/1 通过，随后仅一次完整复跑全绿，未修改不相关代码。
+- 所有单点均在十五分钟内取得可判定结果；完整 Electron 门禁约 5.6 分钟。
+
+Round 3 未修改生产 Runtime、Provider、Renderer 权限边界或 SDD ledger。真实 GGUF、Vulkan 性能、安装卸载与人工视觉仍维持既有未验收状态。

@@ -136,6 +136,51 @@ function childProcessCallKind(
   return undefined;
 }
 
+/** 跨本地 re-export 或流赋值时，以最终调用签名追溯 Node child_process 声明。 */
+function childProcessSignatureKind(
+  call: ts.CallExpression,
+  checker: ts.TypeChecker
+): Exclude<ChildProcessCallKind, 'namespace'> | undefined {
+  const declaration = checker.getResolvedSignature(call)?.declaration;
+  if (
+    !declaration
+    || !/(?:^|[\\/])child_process\.d\.ts$/u.test(declaration.getSourceFile().fileName)
+  ) return undefined;
+  const name = declaration.name && ts.isIdentifier(declaration.name)
+    ? declaration.name.text
+    : undefined;
+  return name === 'spawn' || name === 'exec' ? name : undefined;
+}
+
+/** 覆盖 `let alias; alias = spawn` 这类 TypeChecker 不保留 resolved signature 的流赋值。 */
+function assignedChildProcessCallKind(
+  call: ts.CallExpression,
+  source: ts.SourceFile,
+  checker: ts.TypeChecker,
+  bindings: ReadonlyMap<ts.Symbol, ChildProcessCallKind>
+): Exclude<ChildProcessCallKind, 'namespace'> | undefined {
+  const expression = unwrapLiteralExpression(call.expression);
+  if (!ts.isIdentifier(expression)) return undefined;
+  const symbol = checker.getSymbolAtLocation(expression);
+  if (!symbol) return undefined;
+  let latest: ts.BinaryExpression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (node.getStart(source) >= call.getStart(source)) return;
+    if (
+      ts.isBinaryExpression(node)
+      && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && ts.isIdentifier(node.left)
+      && checker.getSymbolAtLocation(node.left) === symbol
+      && (!latest || node.getStart(source) > latest.getStart(source))
+    ) latest = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return latest
+    ? childProcessCallKind(latest.right, checker, bindings)
+    : undefined;
+}
+
 function unwrapLiteralExpression(expression: ts.Expression): ts.Expression {
   if (
     ts.isParenthesizedExpression(expression)
@@ -223,7 +268,9 @@ export async function scanLocalModelCapabilityBoundary(
         ) forbiddenDependencies.add(`${basename(source.fileName)}:${node.text}`);
       }
       if (ts.isCallExpression(node)) {
-        const callKind = childProcessCallKind(node.expression, checker, processBindings);
+        const callKind = childProcessCallKind(node.expression, checker, processBindings)
+          ?? assignedChildProcessCallKind(node, source, checker, processBindings)
+          ?? childProcessSignatureKind(node, checker);
         const safe = callKind === 'spawn'
           && hasProvablySafeSpawnOptions(node.arguments[2], checker);
         if (callKind && !safe) {
