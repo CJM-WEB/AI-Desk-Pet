@@ -203,10 +203,13 @@ describe('内置文件工具注册', () => {
     expect(definitions.map(definition => definition.function.name)).toEqual([
       'builtin.files.list_files',
       'builtin.files.read_file',
+      'builtin.files.glob_files',
+      'builtin.files.grep_files',
       'builtin.files.create_file',
       'builtin.files.move_file',
       'builtin.files.create_directory',
       'builtin.files.apply_patch',
+      'builtin.files.edit_file',
       'builtin.files.delete_file'
     ]);
   });
@@ -241,10 +244,13 @@ describe('内置文件工具注册', () => {
     expect(registry.definitions().map(item => item.function.name)).toEqual([
       'builtin.files.list_files',
       'builtin.files.read_file',
+      'builtin.files.glob_files',
+      'builtin.files.grep_files',
       'builtin.files.create_file',
       'builtin.files.move_file',
       'builtin.files.create_directory',
       'builtin.files.apply_patch',
+      'builtin.files.edit_file',
       'builtin.files.delete_file'
     ]);
     expect(() => registry.register({
@@ -257,16 +263,19 @@ describe('内置文件工具注册', () => {
     })).toThrow('TOOL_REGISTRY_SEALED');
   });
 
-  test('七个公开工具精确映射到内部动作和本地风险', () => {
+  test('十个公开工具精确映射到内部动作和本地风险', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });
     const cases = [
       ['builtin.files.list_files', 'list_files', 'read', { relativePath: '.', maxDepth: 1, maxResults: 100 }],
       ['builtin.files.read_file', 'read_file', 'read', { relativePath: 'notes.txt', startLine: 1, lineCount: 200 }],
+      ['builtin.files.glob_files', 'glob_files', 'read', { relativePath: '.', pattern: '**/*.ts', maxResults: 100 }],
+      ['builtin.files.grep_files', 'grep_files', 'read', { relativePath: '.', pattern: 'needle', include: '**/*', caseSensitive: true, maxResults: 100 }],
       ['builtin.files.create_file', 'create_file', 'recoverable', { relativePath: 'new.txt', content: '正文' }],
       ['builtin.files.move_file', 'move_file', 'recoverable', { sourceRelativePath: 'old.txt', targetDirectoryRelativePath: 'archive' }],
       ['builtin.files.create_directory', 'create_directory', 'recoverable', { relativePath: 'abc' }],
       ['builtin.files.apply_patch', 'apply_patch', 'recoverable', { relativePath: 'new.txt', patch: '@@ -1 +1 @@\n-a\n+b\n' }],
+      ['builtin.files.edit_file', 'edit_file', 'recoverable', { relativePath: 'new.txt', oldString: 'a', newString: 'b', replaceAll: false }],
       ['builtin.files.delete_file', 'delete_file', 'recoverable', { relativePath: 'old.txt' }]
     ] as const;
 
@@ -318,6 +327,18 @@ describe('内置文件工具注册', () => {
     expect(parameters('builtin.files.apply_patch').properties).toMatchObject({
       relativePath: { minLength: 1, maxLength: 1024 },
       patch: { minLength: 1, maxLength: 262_144 }
+    });
+    expect(parameters('builtin.files.glob_files').properties).toMatchObject({
+      pattern: { minLength: 1, maxLength: 256 },
+      maxResults: { minimum: 1, maximum: 200 }
+    });
+    expect(parameters('builtin.files.grep_files').properties).toMatchObject({
+      pattern: { minLength: 1, maxLength: 256 },
+      maxResults: { minimum: 1, maximum: 200 }
+    });
+    expect(parameters('builtin.files.edit_file').properties).toMatchObject({
+      oldString: { minLength: 1, maxLength: 262_144 },
+      newString: { maxLength: 262_144 }
     });
     expect(parameters('builtin.files.move_file').properties).toMatchObject({
       sourceRelativePath: { minLength: 1, maxLength: 1024 },

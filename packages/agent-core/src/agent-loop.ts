@@ -7,6 +7,7 @@ import {
   getCapabilityClarificationMessage,
   parseCapabilityClarificationRequest
 } from './capability-clarification-tool';
+import { createToolFailureResult } from './tool-result';
 import type {
   AgentEvent,
   AgentRunOutcome,
@@ -20,9 +21,7 @@ type ContinuationState = {
   messages: ModelMessage[];
   nextTurn: number;
   requestId: string;
-  latestTrustedResultOk: boolean | undefined;
   expectedWriteOperation: FileWriteOperation | undefined;
-  finalizationOnly: true;
 };
 
 function isAbortError(error: unknown): boolean {
@@ -32,12 +31,6 @@ function isAbortError(error: unknown): boolean {
 function capabilityPlanProtocolError(): Error {
   return Object.assign(new Error('CAPABILITY_PLAN_PROTOCOL_INVALID'), {
     code: 'CAPABILITY_PLAN_PROTOCOL_INVALID'
-  });
-}
-
-function finalizationOnlyToolError(): Error {
-  return Object.assign(new Error('AGENT_FINALIZATION_TOOL_REQUEST'), {
-    code: 'AGENT_FINALIZATION_TOOL_REQUEST'
   });
 }
 
@@ -62,7 +55,7 @@ function isExpectedWriteResult(result: unknown, expectedOperation: FileWriteOper
   return typeof result === 'object'
     && result !== null
     && !Array.isArray(result)
-    && (result as Record<string, unknown>)['ok'] === true
+    && typeof (result as Record<string, unknown>)['ok'] === 'boolean'
     && (result as Record<string, unknown>)['toolName'] === expectedOperation;
 }
 
@@ -80,7 +73,6 @@ export class AgentLoop {
       context,
       false,
       undefined,
-      false,
       context.capabilityPlanning?.expectedWriteOperation
     );
   }
@@ -115,8 +107,7 @@ export class AgentLoop {
       context,
       true,
       latestTrustedResultOk,
-      continuation.finalizationOnly,
-      continuation.expectedWriteOperation
+      undefined
     );
   }
 
@@ -130,7 +121,6 @@ export class AgentLoop {
     context: RunContext,
     hasTrustedToolResult: boolean,
     latestTrustedResultOk: boolean | undefined,
-    finalizationOnly: boolean,
     expectedWriteOperation: FileWriteOperation | undefined
   ): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     if (context.signal.aborted) {
@@ -149,19 +139,18 @@ export class AgentLoop {
 
       const planning = context.protocol === 'capability_planner' && !hasTrustedToolResult;
       const allowClarification = context.capabilityPlanning?.allowClarification !== false;
-      const tools = finalizationOnly
-        ? []
-        : planning
-          ? allowClarification
-            ? [...context.tools, capabilityClarificationToolDefinition]
-            : context.tools
-          : context.tools;
+      const planningTools = context.capabilityPlanning?.planningTools ?? context.tools;
+      const tools = planning
+        ? allowClarification
+          ? [...planningTools, capabilityClarificationToolDefinition]
+          : [...planningTools]
+        : context.tools;
       let response;
       try {
         response = await context.provider.respond({
           messages,
           tools,
-          toolChoice: finalizationOnly ? 'none' : planning ? 'required' : 'auto',
+          toolChoice: planning ? 'required' : 'auto',
           reasoningMode: context.protocol === 'capability_planner'
             ? 'disabled'
             : 'provider_default'
@@ -208,8 +197,6 @@ export class AgentLoop {
         yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
         return;
       }
-
-      if (finalizationOnly) throw finalizationOnlyToolError();
 
       if (isCapabilityClarificationToolRequest(response.request)) {
         if (!planning || !allowClarification) throw new Error('AGENT_INVALID_TOOL_REQUEST');
@@ -283,9 +270,7 @@ export class AgentLoop {
           messages: [...messages],
           nextTurn: turn + 1,
           requestId: prepared.request.requestId,
-          latestTrustedResultOk,
-          expectedWriteOperation,
-          finalizationOnly: true
+          expectedWriteOperation
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
         yield {
@@ -310,7 +295,12 @@ export class AgentLoop {
       }
 
       yield { type: 'phase', phase: 'acting' };
-      const result = await context.toolRuntime.executeRead(prepared.executionRequest);
+      let result: unknown;
+      try {
+        result = await context.toolRuntime.executeRead(prepared.executionRequest);
+      } catch (error) {
+        result = createToolFailureResult(prepared.executionRequest.toolName, error);
+      }
       messages.push({
         role: 'tool',
         toolCallId: prepared.request.requestId,

@@ -747,10 +747,13 @@ describe('权限边界安全回归', () => {
     expect(definitions.map(definition => definition.function.name)).toEqual([
       'builtin.files.list_files',
       'builtin.files.read_file',
+      'builtin.files.glob_files',
+      'builtin.files.grep_files',
       'builtin.files.create_file',
       'builtin.files.move_file',
       'builtin.files.create_directory',
       'builtin.files.apply_patch',
+      'builtin.files.edit_file',
       'builtin.files.delete_file'
     ]);
     expect(JSON.stringify(definitions)).not.toMatch(

@@ -12,6 +12,7 @@ import type {
   ToolDefinition,
   ToolRuntime
 } from '@myself/agent-core';
+import { createToolFailureResult } from '@myself/agent-core';
 import type { CharacterAgentBehaviorIntent } from '@myself/character-runtime';
 import type { ToolRequest, TaskEvent } from '@myself/shared-types';
 import { type VerifiedWriteAction } from '@myself/file-tools';
@@ -71,9 +72,12 @@ export interface AgentFileTaskSubmission {
 const filePlanningToolNames = Object.freeze({
   list_files: 'builtin.files.list_files',
   read_file: 'builtin.files.read_file',
+  glob_files: 'builtin.files.glob_files',
+  grep_files: 'builtin.files.grep_files',
   create_file: 'builtin.files.create_file',
   create_directory: 'builtin.files.create_directory',
   apply_patch: 'builtin.files.apply_patch',
+  edit_file: 'builtin.files.edit_file',
   delete_file: 'builtin.files.delete_file',
   move_file: 'builtin.files.move_file'
 } satisfies Readonly<Record<FilePlanningOperation, string>>);
@@ -82,6 +86,7 @@ const controlledWriteOperations = new Set<FileWriteOperation>([
   'create_file',
   'create_directory',
   'apply_patch',
+  'edit_file',
   'delete_file',
   'move_file'
 ]);
@@ -213,10 +218,10 @@ function snapshotVisibleHistory(value: unknown): readonly ModelMessage[] | null 
   return Object.freeze(snapshot);
 }
 
-function writeResult(action: VerifiedWriteAction): Record<string, unknown> {
+function writeResult(action: VerifiedWriteAction, resultToolName: string): Record<string, unknown> {
   return {
     ok: true,
-    toolName: action.operation,
+    toolName: resultToolName,
     targetRelativePath: action.targetRelativePath
   };
 }
@@ -255,6 +260,7 @@ export class AgentService {
   private activeController: AbortController | null = null;
   private pendingSession: AgentSession | null = null;
   private activeSession: AgentSession | null = null;
+  private activePlanningHint: FilePlanningHint | undefined;
   private taskOwner: symbol | null = null;
   private irreversibleExecution: {
     promise: Promise<void>;
@@ -295,6 +301,7 @@ export class AgentService {
 
     const owner = Symbol('agent-file-task');
     this.taskOwner = owner;
+    this.activePlanningHint = input.planningHint;
     const controller = new AbortController();
     this.activeController = controller;
     try {
@@ -317,6 +324,7 @@ export class AgentService {
       if (this.taskOwner === owner && this.pendingSession === null) {
         this.taskOwner = null;
         this.activeSession = null;
+        this.activePlanningHint = undefined;
       }
     }
   }
@@ -360,7 +368,16 @@ export class AgentService {
     try {
       this.publish({ type: 'phase', phase: 'acting' }, owner);
       this.assertTaskOwned(owner, controller.signal);
-      const result = await this.executeCapability(execution, session, controller.signal, owner);
+      let result: unknown;
+      try {
+        result = await this.executeCapability(execution, session, controller.signal, owner);
+      } catch (error) {
+        // 任务失效与用户取消不是可修复的工具参数失败，绝不能借失败回注恢复旧会话。
+        if (controller.signal.aborted || this.taskOwner !== owner) throw error;
+        result = createToolFailureResult(execution.resultToolName, error);
+        // 公开错误沿用 Main 的稳定脱敏文案；模型只接收无正文的修复码。
+        this.publish(publicErrorEvent(error), owner);
+      }
       capabilityResult = {
         kind: execution.verifiedAction.category,
         ok: capabilityResultOk(result)
@@ -369,7 +386,7 @@ export class AgentService {
         this.loop.resume(
           execution.continuationToken,
           result,
-          this.runContext(session, controller.signal)
+          this.runContext(session, controller.signal, [], this.activePlanningHint)
         ),
         session,
         owner
@@ -400,6 +417,7 @@ export class AgentService {
       if (this.taskOwner === owner && this.pendingSession === null) {
         this.taskOwner = null;
         this.activeSession = null;
+        this.activePlanningHint = undefined;
       }
     }
   }
@@ -411,6 +429,7 @@ export class AgentService {
       const owner = this.taskOwner;
       this.publish({ type: 'phase', phase: 'cancelled' }, owner);
       if (this.taskOwner === owner && this.pendingSession === null) this.taskOwner = null;
+      if (this.taskOwner === null) this.activePlanningHint = undefined;
     } catch (error) {
       this.emitFailure(error);
       throw error;
@@ -421,6 +440,7 @@ export class AgentService {
     this.pending.clear(reason);
     this.pendingSession = null;
     this.activeSession = null;
+    this.activePlanningHint = undefined;
   }
 
   /**
@@ -433,6 +453,7 @@ export class AgentService {
     const session = this.activeSession;
     this.pendingSession = null;
     this.activeSession = null;
+    this.activePlanningHint = undefined;
     const failures: unknown[] = [];
     for (const cleanup of [
       () => this.pending.clear('task_cancelled'),
@@ -458,6 +479,7 @@ export class AgentService {
     this.pending.clear('application_exit');
     this.pendingSession = null;
     this.activeSession = null;
+    this.activePlanningHint = undefined;
     this.activeController?.abort();
     if (irreversible) await irreversible;
     if (session?.taskKind === 'powershell') await session.powershell.close();
@@ -493,7 +515,7 @@ export class AgentService {
       } finally {
         this.publishFileFeedback({ type: 'character_carrying', carrying: false }, owner);
       }
-      return writeResult(execution.verifiedAction.action);
+      return writeResult(execution.verifiedAction.action, execution.resultToolName);
     } finally {
       this.finishIrreversibleExecution(irreversible);
     }
@@ -512,7 +534,7 @@ export class AgentService {
     const expectedWriteOperation = plannedOperation !== undefined && isControlledWriteOperation(plannedOperation)
       ? plannedOperation
       : undefined;
-    const tools = planningHint?.missingField === 'target_path'
+    const planningTools = planningHint?.missingField === 'target_path'
       ? []
       : session.taskKind === 'file' && !session.fileDisclosureAllowed
       ? session.tools.filter(tool => (
@@ -522,6 +544,10 @@ export class AgentService {
       : plannedToolName === null
         ? session.tools
         : session.tools.filter(tool => tool.function.name === plannedToolName);
+    // 文件披露已允许时，规划提示只收窄首轮；真实工具结果后恢复完整工具面以支持多步任务。
+    const tools = session.taskKind === 'file' && session.fileDisclosureAllowed
+      ? session.tools
+      : planningTools;
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
       messages: [...session.messages, ...visibleHistory],
@@ -549,6 +575,7 @@ export class AgentService {
       protocol: 'capability_planner',
       capabilityPlanning: {
         allowClarification: session.taskKind === 'file',
+        planningTools,
         ...(expectedWriteOperation === undefined ? {} : { expectedWriteOperation })
       }
     };
@@ -601,7 +628,8 @@ export class AgentService {
           this.createConversationId()
         ), {
           verifiedAction: execution.verifiedAction,
-          continuationToken: event.continuationToken
+          continuationToken: event.continuationToken,
+          resultToolName: event.executionRequest.toolName
         });
         this.pendingSession = session;
         this.publish({ type: 'pending_action', action: publicAction }, owner);

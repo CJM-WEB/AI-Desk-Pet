@@ -23,6 +23,9 @@ describe('能力意图路由器', () => {
     ['把当前指定目录下的empty文件夹删除了', 'delete_file'],
     ['那在当前目录下创建一个名为abc的文件夹', 'create_directory'],
     ['读取 README', 'read_file'],
+    ['在文件内容中搜索 needle', 'grep_files'],
+    ['按文件名匹配 **/*.ts', 'glob_files'],
+    ['把 notes.txt 中的旧文本替换为新文本', 'edit_file'],
     ['把 success.txt 移动到回收站', 'delete_file'],
     ['把 docs/source.txt 移动到 archive 文件夹', 'move_file']
   ] as const)('文件 Router 只生成操作类别提示，不解释文件名：%s', (text, operation) => {

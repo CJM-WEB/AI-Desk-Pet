@@ -19,6 +19,7 @@ import type {
 const toolNames = [
   'builtin.files.list_directory',
   'builtin.files.read_text',
+  'builtin.files.edit_file',
   'builtin.files.create_file',
   'builtin.files.create_directory',
   'builtin.files.move_file'
@@ -85,12 +86,14 @@ function createToolRuntime(): ToolRuntime {
   const executionNames: Record<string, string> = {
     'builtin.files.list_directory': 'list_directory',
     'builtin.files.read_text': 'read_text_file',
+    'builtin.files.edit_file': 'edit_file',
     'builtin.files.create_file': 'create_file',
     'builtin.files.create_directory': 'create_directory',
     'builtin.files.move_file': 'move_file'
   };
   const recoverable = new Set([
     'builtin.files.create_file',
+    'builtin.files.edit_file',
     'builtin.files.create_directory',
     'builtin.files.move_file'
   ]);
@@ -841,8 +844,8 @@ describe('AgentLoop', () => {
       content: '{"ok":true,"toolName":"create_file","targetRelativePath":"result.txt"}'
     });
     expect(provider.requests[1]).toMatchObject({
-      tools: [],
-      toolChoice: 'none',
+      tools,
+      toolChoice: 'auto',
       reasoningMode: 'provider_default'
     });
     expect(resumed).toEqual([
@@ -857,7 +860,7 @@ describe('AgentLoop', () => {
     ))).rejects.toThrow('ACTION_EXPIRED');
   });
 
-  test('写入结果续跑后拒绝模型再次调用工具，且不重复准备写入', async () => {
+  test('写入结果续跑后恢复工具面，并允许第二个写操作逐次确认', async () => {
     const provider = new ScriptedProvider([
       {
         type: 'tool_request',
@@ -871,8 +874,8 @@ describe('AgentLoop', () => {
         type: 'tool_request',
         request: {
           requestId: 'write-once-2',
-          toolName: 'builtin.files.create_file',
-          arguments: { relativePath: 'again.txt' }
+          toolName: 'builtin.files.move_file',
+          arguments: { sourceRelativePath: 'result.txt', targetDirectoryRelativePath: 'archive' }
         }
       }
     ]);
@@ -884,14 +887,103 @@ describe('AgentLoop', () => {
     const writeEvent = paused.find(event => event.type === 'write_request');
     if (!writeEvent || writeEvent.type !== 'write_request') throw new Error('缺少写请求事件');
 
-    await expect(collect(loop.resume(
+    const resumed = await collect(loop.resume(
       writeEvent.continuationToken,
       { ok: true, toolName: 'create_file', targetRelativePath: 'result.txt' },
       runContext
-    ))).rejects.toThrow('AGENT_FINALIZATION_TOOL_REQUEST');
+    ));
 
-    expect(provider.requests[1]).toMatchObject({ tools: [], toolChoice: 'none' });
-    expect(prepare).toHaveBeenCalledOnce();
+    expect(provider.requests[1]).toMatchObject({ toolChoice: 'auto' });
+    expect(provider.requests[1]!.tools).toHaveLength(tools.length);
+    expect(resumed).toContainEqual(expect.objectContaining({
+      type: 'write_request',
+      executionRequest: expect.objectContaining({ toolName: 'move_file' })
+    }));
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
+  test('read→edit→确认→read 在同一有界轨迹中完成', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-before'),
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'edit-middle',
+          toolName: 'builtin.files.edit_file',
+          arguments: { relativePath: 'notes.txt', oldString: '旧', newString: '新' }
+        }
+      },
+      readRequest('read-after'),
+      { type: 'text', text: '已验证修改结果' }
+    ]);
+    const runtime = createToolRuntime();
+    const executeRead = vi.spyOn(runtime, 'executeRead')
+      .mockResolvedValueOnce({ ok: true, toolName: 'read_file', content: '旧' })
+      .mockResolvedValueOnce({ ok: true, toolName: 'read_file', content: '新' });
+    const runContext = { ...context(provider), toolRuntime: runtime };
+    const loop = new AgentLoop();
+
+    const first = await collect(loop.run('读取、修改并复核 notes.txt', runContext));
+    const edit = first.find(event => event.type === 'write_request');
+    if (!edit || edit.type !== 'write_request') throw new Error('缺少编辑确认');
+    const resumed = await collect(loop.resume(edit.continuationToken, {
+      ok: true,
+      toolName: 'edit_file',
+      targetRelativePath: 'notes.txt'
+    }, runContext));
+
+    expect(executeRead).toHaveBeenCalledTimes(2);
+    expect(provider.requests).toHaveLength(4);
+    expect(provider.requests[2]).toMatchObject({ toolChoice: 'auto' });
+    expect(resumed).toContainEqual({ type: 'message', text: '已验证修改结果' });
+    expect(resumed.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test('只读工具失败以安全结构回注，模型可改参后继续且不泄露错误正文', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-missing'),
+      readRequest('read-fixed'),
+      { type: 'text', text: '已读取正确文件' }
+    ]);
+    const runtime = createToolRuntime();
+    const executeRead = vi.spyOn(runtime, 'executeRead')
+      .mockRejectedValueOnce(Object.assign(new Error('C:\\secret\\missing.txt 不存在'), {
+        code: 'ENTRY_NOT_FOUND'
+      }))
+      .mockResolvedValueOnce({ ok: true, toolName: 'read_file', content: '正文' });
+
+    const events = await collect(new AgentLoop().run('读取文件', {
+      ...context(provider),
+      toolRuntime: runtime
+    }));
+
+    expect(provider.requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'read-missing',
+      content: '{"ok":false,"toolName":"read_text_file","code":"ENTRY_NOT_FOUND"}'
+    });
+    expect(JSON.stringify(provider.requests[1])).not.toContain('secret');
+    expect(executeRead).toHaveBeenCalledTimes(2);
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test('失败工具结果后的模型口头成功不能覆盖本地失败终态', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('read-failed'),
+      { type: 'text', text: '文件读取成功' }
+    ]);
+    const runtime = createToolRuntime();
+    vi.spyOn(runtime, 'executeRead').mockRejectedValueOnce(
+      Object.assign(new Error('敏感错误正文'), { code: 'ENTRY_NOT_FOUND' })
+    );
+
+    const events = await collect(new AgentLoop().run('读取文件', {
+      ...context(provider),
+      toolRuntime: runtime
+    }));
+
+    expect(events).toContainEqual({ type: 'message', text: '文件读取成功' });
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
   test('丢弃继续令牌后不能恢复', async () => {

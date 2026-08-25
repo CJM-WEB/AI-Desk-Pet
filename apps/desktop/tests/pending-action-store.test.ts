@@ -35,7 +35,8 @@ function privateAction(targetRelativePath = 'result.txt'): VerifiedWriteAction {
 function pendingExecution(targetRelativePath = 'result.txt'): PendingExecution {
   return {
     verifiedAction: { category: 'file', action: privateAction(targetRelativePath) },
-    continuationToken: `continue_${targetRelativePath}`
+    continuationToken: `continue_${targetRelativePath}`,
+    resultToolName: 'create_file'
   };
 }
 

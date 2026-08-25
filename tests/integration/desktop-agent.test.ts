@@ -8,6 +8,7 @@ import {
   AgentLoop,
   CAPABILITY_CLARIFICATION_TOOL_NAME,
   ModelRouter,
+  type ModelMessage,
   type ModelProvider,
   type ModelSelection,
   type ModelResponse
@@ -1563,8 +1564,8 @@ describe('桌面 Agent 真实服务集成', () => {
         toolName,
         targetRelativePath
       });
-      expect(request.tools).toEqual([]);
-      expect(request.toolChoice).toBe('none');
+      expect(request.tools).toHaveLength(10);
+      expect(request.toolChoice).toBe('auto');
     };
     let recycledPath = '';
     const fixture = await localModelFileHarness({
@@ -1760,7 +1761,8 @@ describe('桌面 Agent 真实服务集成', () => {
     await expect(lstat(recycledPath)).resolves.toBeDefined();
     expect(fixture.fetchClient).toHaveBeenCalledTimes(2);
     expect(fixture.responses).toHaveLength(0);
-    expect(fixture.requestBodies[1]).toMatchObject({ tools: [], tool_choice: 'none' });
+    expect(fixture.requestBodies[1]).toMatchObject({ tool_choice: 'auto' });
+    expect(fixture.requestBodies[1]?.tools).toHaveLength(10);
     expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
       type: 'message', role: 'assistant', text: 'empty 已移入回收站'
     }]);
@@ -2177,17 +2179,20 @@ describe('桌面 Agent 真实服务集成', () => {
     });
   });
 
-  test('能力规划通过七个文件工具和结构化澄清工具列出授权目录', async () => {
+  test('能力规划通过十个文件工具和结构化澄清工具列出授权目录', async () => {
     const fixture = await harness([
       {
         response: toolCall('list-1', 'builtin.files.list_files', { relativePath: '.' }),
         inspect: request => expect(request.tools.map(tool => tool.function.name)).toEqual([
           'builtin__files__list_files',
           'builtin__files__read_file',
+          'builtin__files__glob_files',
+          'builtin__files__grep_files',
           'builtin__files__create_file',
           'builtin__files__move_file',
           'builtin__files__create_directory',
           'builtin__files__apply_patch',
+          'builtin__files__edit_file',
           'builtin__files__delete_file',
           'builtin__capability__request_clarification'
         ])
@@ -2299,9 +2304,13 @@ describe('桌面 Agent 真实服务集成', () => {
           expect(request.tools.map(tool => tool.function.name)).toEqual([
             'builtin__files__list_files',
             'builtin__files__read_file',
+            'builtin__files__glob_files',
+            'builtin__files__grep_files',
             'builtin__files__create_file',
             'builtin__files__move_file',
+            'builtin__files__create_directory',
             'builtin__files__apply_patch',
+            'builtin__files__edit_file',
             'builtin__files__delete_file',
             'builtin__capability__request_clarification'
           ]);
@@ -2474,6 +2483,11 @@ describe('桌面 Agent 真实服务集成', () => {
         'builtin.files.delete_file',
         { relativePath: 'docs/failure.txt' }
       )
+    }, {
+      response: { type: 'text', text: '回收站操作失败' },
+      inspect: request => expect(JSON.parse(
+        (request.messages.at(-1) as Extract<ModelMessage, { role: 'tool' }>).content
+      )).toEqual({ ok: false, toolName: 'delete_file', code: 'RECYCLE_BIN_FAILED' })
     }]);
     const source = join(fixture.authorized.root, 'docs', 'failure.txt');
     await writeFile(source, '保留内容', 'utf8');
@@ -2489,14 +2503,14 @@ describe('桌面 Agent 真实服务集成', () => {
       text: '把 docs/failure.txt 移入回收站',
       visibleHistory: []
     });
-    await expect(fixture.service.confirm(pendingAction(fixture.events).actionId))
-      .rejects.toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
+    await fixture.service.confirm(pendingAction(fixture.events).actionId);
     expect(recycleCalls).toBe(1);
     await expect(readFile(source, 'utf8')).resolves.toBe('保留内容');
     expect(fixture.events.filter(event => (
       event.type === 'error' && event.code === 'RECYCLE_BIN_FAILED'
     ))).toHaveLength(1);
-    expectProviderExchange(fixture.providerServer, 1);
+    expectProviderExchange(fixture.providerServer, 2);
+    expect(fixture.events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 
   test('生产组合根只通过 Electron shell.trashItem 注入回收站端口', async () => {
@@ -2561,6 +2575,11 @@ describe('桌面 Agent 真实服务集成', () => {
         relativePath: 'docs/conflict.txt',
         patch: '@@ -1,1 +1,1 @@\n-before\n+after\n'
       })
+    }, {
+      response: { type: 'text', text: '补丁未应用' },
+      inspect: request => expect(JSON.parse(
+        (request.messages.at(-1) as Extract<ModelMessage, { role: 'tool' }>).content
+      )).toEqual({ ok: false, toolName: 'apply_patch', code: 'ENTRY_CHANGED' })
     }]);
     const target = join(fixture.authorized.root, 'docs', 'conflict.txt');
     await writeFile(target, 'before\n', 'utf8');
@@ -2568,8 +2587,7 @@ describe('桌面 Agent 真实服务集成', () => {
     await fixture.service.submitFileTask({ text: '修改 docs/conflict.txt', visibleHistory: [] });
     await writeFile(target, 'external\n', 'utf8');
 
-    await expect(fixture.service.confirm(pendingAction(fixture.events).actionId))
-      .rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await fixture.service.confirm(pendingAction(fixture.events).actionId);
     await expect(readFile(target, 'utf8')).resolves.toBe('external\n');
     expect(fixture.events).toContainEqual(expect.objectContaining({
       type: 'error', code: 'ENTRY_CHANGED'

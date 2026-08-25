@@ -67,14 +67,22 @@ export type AgentRunProtocol = 'default' | 'capability_planner';
 export type FilePlanningOperation =
   | 'list_files'
   | 'read_file'
+  | 'glob_files'
+  | 'grep_files'
   | 'create_file'
   | 'create_directory'
   | 'apply_patch'
+  | 'edit_file'
   | 'delete_file'
   | 'move_file';
 
+export type FileReadOperation = Extract<
+  FilePlanningOperation,
+  'list_files' | 'read_file' | 'glob_files' | 'grep_files'
+>;
+
 /** 写操作只有对应的 Main 本地成功结果才允许模型进入最终总结。 */
-export type FileWriteOperation = Exclude<FilePlanningOperation, 'list_files' | 'read_file'>;
+export type FileWriteOperation = Exclude<FilePlanningOperation, FileReadOperation>;
 
 /** 文件规划提示只能收窄模型工具面，不能携带授权或本地执行结果。 */
 export type FilePlanningHint = Readonly<{
@@ -112,6 +120,8 @@ export interface RunContext {
   capabilityPlanning?: Readonly<{
     allowClarification: boolean;
     expectedWriteOperation?: FileWriteOperation;
+    /** 只收窄首个能力规划轮次；真实工具结果后恢复 RunContext.tools。 */
+    planningTools?: readonly ToolDefinition[];
   }>;
 }
 

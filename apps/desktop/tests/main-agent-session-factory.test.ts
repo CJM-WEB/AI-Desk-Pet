@@ -52,7 +52,7 @@ describe('Main 能力会话工厂', () => {
     expect(prepared.executionRequest.toolName).toBe('powershell');
   });
 
-  test('文件会话只注册七个文件工具且不构造 PowerShell', async () => {
+  test('文件会话只注册十个文件工具且不构造 PowerShell', async () => {
     const options = input('file');
 
     const session = await createMainAgentSession(options);
@@ -63,6 +63,9 @@ describe('Main 能力会话工厂', () => {
       'builtin.files.create_directory',
       'builtin.files.create_file',
       'builtin.files.delete_file',
+      'builtin.files.edit_file',
+      'builtin.files.glob_files',
+      'builtin.files.grep_files',
       'builtin.files.list_files',
       'builtin.files.move_file',
       'builtin.files.read_file'
@@ -81,6 +84,9 @@ describe('Main 能力会话工厂', () => {
       'builtin.files.create_directory',
       'builtin.files.create_file',
       'builtin.files.delete_file',
+      'builtin.files.edit_file',
+      'builtin.files.glob_files',
+      'builtin.files.grep_files',
       'builtin.files.list_files',
       'builtin.files.move_file',
       'builtin.files.read_file'
@@ -120,6 +126,14 @@ describe('Main 能力会话工厂', () => {
     });
     expect(move.decision).toBe('confirm');
     expect(move.executionRequest.toolName).toBe('move_file');
+
+    const edit = session.toolRuntime.prepare({
+      requestId: 'edit-1',
+      toolName: 'builtin.files.edit_file',
+      arguments: { relativePath: 'note.txt', oldString: '旧', newString: '新' }
+    });
+    expect(edit.decision).toBe('confirm');
+    expect(edit.executionRequest.toolName).toBe('edit_file');
   });
 
   test.each(['file', 'powershell'] as const)(

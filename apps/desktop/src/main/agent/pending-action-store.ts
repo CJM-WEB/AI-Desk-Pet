@@ -26,6 +26,8 @@ export type VerifiedCapabilityAction =
 export type PendingExecution = Readonly<{
   verifiedAction: VerifiedCapabilityAction;
   continuationToken: string;
+  /** Main 私有真实工具名；edit_file 可复用 apply_patch 公开确认卡而不混淆回注事实。 */
+  resultToolName: string;
 }>;
 
 /** 对联合类型逐分支省略由存储层签发的字段，避免抹平动作专属摘要。 */

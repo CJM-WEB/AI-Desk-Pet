@@ -139,6 +139,32 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
 
   registry.register({
     definition: definition(
+      'builtin.files.glob_files',
+      '按文件名模式检索授权根目录内的普通文件。',
+      toolJsonSchemas.glob_files
+    ),
+    argumentsSchema: toolArguments.glob_files,
+    executionToolName: 'glob_files',
+    risk: 'read',
+    enabled: true,
+    auditSummary: arguments_ => `检索文件 ${displayRelativePath(arguments_['relativePath'])}`
+  });
+
+  registry.register({
+    definition: definition(
+      'builtin.files.grep_files',
+      '按文字内容检索授权根目录内的 UTF-8 文本文件。',
+      toolJsonSchemas.grep_files
+    ),
+    argumentsSchema: toolArguments.grep_files,
+    executionToolName: 'grep_files',
+    risk: 'read',
+    enabled: true,
+    auditSummary: arguments_ => `搜索内容 ${displayRelativePath(arguments_['relativePath'])}`
+  });
+
+  registry.register({
+    definition: definition(
       'builtin.files.create_file',
       '创建文件，需要用户确认。',
       toolJsonSchemas.create_file
@@ -189,6 +215,19 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
     risk: 'recoverable',
     enabled: true,
     auditSummary: arguments_ => `应用补丁 ${displayRelativePath(arguments_['relativePath'])}`
+  });
+
+  registry.register({
+    definition: definition(
+      'builtin.files.edit_file',
+      '在单个 UTF-8 文本文件中执行精确替换，需要用户确认。',
+      toolJsonSchemas.edit_file
+    ),
+    argumentsSchema: toolArguments.edit_file,
+    executionToolName: 'edit_file',
+    risk: 'recoverable',
+    enabled: true,
+    auditSummary: arguments_ => `修改文件 ${displayRelativePath(arguments_['relativePath'])}`
   });
 
   registry.register({

@@ -410,7 +410,7 @@ describe('AgentService', () => {
     });
   });
 
-  test('失败 PowerShell 续跑后拒绝模型再次请求工具', async () => {
+  test('失败 PowerShell 续跑后允许第二个命令进入独立确认', async () => {
     const provider = new ScriptedProvider([
       {
         type: 'tool_request',
@@ -445,11 +445,11 @@ describe('AgentService', () => {
     await service.submitFileTask({ text: '运行命令', visibleHistory: [] });
     const firstPending = events.find(event => event.type === 'pending_action');
     if (!firstPending || firstPending.type !== 'pending_action') throw new Error('缺少首次确认');
-    await expect(service.confirm(firstPending.action.actionId))
-      .rejects.toThrow('AGENT_FINALIZATION_TOOL_REQUEST');
+    await service.confirm(firstPending.action.actionId);
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(phases(events).at(-1)).toBe('error');
+    expect(events.filter(event => event.type === 'pending_action')).toHaveLength(2);
+    expect(phases(events).at(-1)).toBe('awaiting_confirmation');
   });
 
   test('失败 PowerShell 的模型总结失败只发布中性能力结果，绝不伪称文件成功', async () => {
@@ -1313,6 +1313,51 @@ describe('AgentService', () => {
     expect(fileTools.executeWrite).toHaveBeenCalledOnce();
   });
 
+  test('edit_file 复用 apply_patch 确认卡，但向模型回注真实工具名', async () => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: 'edit-1',
+        toolName: 'builtin.files.edit_file',
+        arguments: {
+          relativePath: 'result.txt',
+          oldString: '旧文本',
+          newString: '新文本'
+        }
+      }
+    }, { type: 'text', text: 'result.txt 已修改' }]);
+    const editAction: VerifiedWriteAction = Object.freeze({
+      operation: 'apply_patch',
+      authorizationGeneration: 0,
+      targetRelativePath: 'result.txt',
+      addedLines: 1,
+      removedLines: 1,
+      diffPreview: '-旧文本\n+新文本',
+      previewTruncated: false
+    });
+    const harness = createHarness(provider, {
+      preview: vi.fn(async () => editAction)
+    });
+
+    await harness.service.submitFileTask({
+      text: '替换 result.txt 中的文本',
+      visibleHistory: [],
+      planningHint: { operation: 'edit_file' }
+    });
+    const pendingEvent = harness.events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少编辑确认卡');
+    expect(pendingEvent.action.operation).toBe('apply_patch');
+
+    await harness.service.confirm(pendingEvent.action.actionId);
+
+    expect(provider.requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'edit-1',
+      content: '{"ok":true,"toolName":"edit_file","targetRelativePath":"result.txt"}'
+    });
+    expect(harness.fileTools.executeWrite).toHaveBeenCalledExactlyOnceWith(editAction);
+  });
+
   test('当前角色没有搬运动作且角色反馈异常时删除确认仍立即执行并恢复模型总结', async () => {
     const provider = new ScriptedProvider([
       deleteResponse(),
@@ -1347,7 +1392,7 @@ describe('AgentService', () => {
 
   test('回收站端口失败保留 RECYCLE_BIN_FAILED 并发布稳定下一步建议', async () => {
     const harness = createHarness(
-      new ScriptedProvider([deleteResponse()]),
+      new ScriptedProvider([deleteResponse(), { type: 'text', text: '未能移入回收站' }]),
       {
         preview: vi.fn(async () => recycleAction()),
         executeWrite: vi.fn(async () => {
@@ -1359,8 +1404,7 @@ describe('AgentService', () => {
     const pendingEvent = harness.events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
-    await expect(harness.service.confirm(pendingEvent.action.actionId))
-      .rejects.toMatchObject({ code: 'RECYCLE_BIN_FAILED' });
+    await harness.service.confirm(pendingEvent.action.actionId);
     expect(harness.fileTools.executeWrite).toHaveBeenCalledExactlyOnceWith(recycleAction());
     expect(harness.events.filter(event => event.type === 'error')).toEqual([{
       type: 'error',
@@ -1602,23 +1646,51 @@ describe('AgentService', () => {
     }
   );
 
-  test('目标冲突不会恢复模型且产生 error 终止阶段', async () => {
-    const provider = new ScriptedProvider([writeResponse()]);
+  test('目标冲突安全回注后允许模型改参并通过第二张确认完成', async () => {
+    const provider = new ScriptedProvider([
+      writeResponse(),
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'write-2',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'result-2.txt', content: '正文' }
+        }
+      },
+      { type: 'text', text: 'result-2.txt 已创建' }
+    ]);
+    const secondAction = Object.freeze({
+      ...verifiedAction(),
+      targetRelativePath: 'result-2.txt'
+    });
     const { events, fileTools, service } = createHarness(provider, {
-      executeWrite: vi.fn(async () => {
-        throw new FileToolError('TARGET_EXISTS', '目标已经存在');
-      })
+      preview: vi.fn()
+        .mockResolvedValueOnce(verifiedAction())
+        .mockResolvedValueOnce(secondAction),
+      executeWrite: vi.fn()
+        .mockRejectedValueOnce(new FileToolError('TARGET_EXISTS', 'C:\\private\\result.txt'))
+        .mockResolvedValueOnce(undefined)
     });
     await service.submitFileTask({ text: '创建 result.txt', visibleHistory: [] });
     const pendingEvent = events.find(event => event.type === 'pending_action');
     if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少确认事件');
 
-    await expect(service.confirm(pendingEvent.action.actionId)).rejects.toThrow('目标已经存在');
+    await service.confirm(pendingEvent.action.actionId);
+    const pendingEvents = events.filter(event => event.type === 'pending_action');
+    expect(pendingEvents).toHaveLength(2);
+    const secondPending = pendingEvents[1];
+    if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少第二张确认卡');
+    await service.confirm(secondPending.action.actionId);
 
-    expect(fileTools.executeWrite).toHaveBeenCalledOnce();
-    expect(provider.requests).toHaveLength(1);
-    expect(events.at(-2)).toEqual(expect.objectContaining({ type: 'error', code: 'TARGET_EXISTS' }));
-    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+    expect(fileTools.executeWrite).toHaveBeenCalledTimes(2);
+    expect(provider.requests).toHaveLength(3);
+    expect(JSON.stringify(provider.requests[1])).not.toContain('private');
+    expect(provider.requests[1]?.messages.at(-1)).toEqual(expect.objectContaining({
+      role: 'tool',
+      content: '{"ok":false,"toolName":"create_file","code":"TARGET_EXISTS"}'
+    }));
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', code: 'TARGET_EXISTS' }));
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
   test('本地写入成功但总结失败时明确区分结果', async () => {
