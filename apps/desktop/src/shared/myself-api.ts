@@ -32,6 +32,7 @@ import type {
   PetViewportCommitInput
 } from './pet-window-interaction';
 import type { PetGeometryRenderView } from './character-motion-ipc';
+import type { LocalModelPublicStatus } from './local-model-ipc';
 
 export type LocalDataScope = 'conversation' | 'audit' | 'secret' | 'all';
 
@@ -73,6 +74,7 @@ export interface SettingsDashboardDto {
   privacy: PrivacySettingsDto;
   privacyRuntimeSupport: PrivacyRuntimeSupportDto;
   petAlwaysOnTop: boolean;
+  localModel: LocalModelPublicStatus;
   authorizedRoot: PublicSettings['authorizedRoot'];
 }
 
@@ -98,6 +100,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
   saveModelRoute(route: ModelRouteConfig): Promise<SettingsDashboardDto>;
   savePrivacySettings(input: PrivacySettingsDto): Promise<SettingsDashboardDto>;
   savePetAlwaysOnTop(enabled: boolean): Promise<SettingsDashboardDto>;
+  setLocalModelEnabled(enabled: boolean): Promise<SettingsDashboardDto>;
   setIncognitoSession(incognito: boolean): Promise<{ incognito: boolean }>;
   revokeAuthorizedRoot(): Promise<SettingsDashboardDto>;
   submitMessage(text: string): Promise<void>;
@@ -110,6 +113,7 @@ export interface MyselfApi extends PetWindowInteractionApi {
     decision: HistoryDisclosureDecision
   ): Promise<void>;
   onTaskEvent(listener: (event: TaskEvent) => void): () => void;
+  onLocalModelStatus(listener: (status: LocalModelPublicStatus) => void): () => void;
   listCharacters(): Promise<CharacterSummaryDto[]>;
   createCharacter(input: CharacterCreateInput): Promise<CharacterDraftV2>;
   duplicateCharacter(characterId: string): Promise<CharacterDraftV2>;

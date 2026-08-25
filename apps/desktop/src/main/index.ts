@@ -98,6 +98,10 @@ import { LocalModelRuntime } from './local-model/local-model-runtime';
 import { LocalModelService } from './local-model/local-model-service';
 import { BUILTIN_LOCAL_PROVIDER_CATALOG_ENTRY } from './local-model/local-model-route';
 import { ipcChannels } from '../shared/ipc-channels';
+import {
+  localModelPublicStatusSchema,
+  type LocalModelPublicStatus
+} from '../shared/local-model-ipc';
 import { SecretStore } from './storage/secret-store';
 import { SettingsStore } from './storage/settings-store';
 import { createSettingsActions } from './settings/settings-actions';
@@ -453,7 +457,16 @@ async function createApplicationWindows(
     tokenRoot: join(app.getPath('temp'), 'ai-pet-local-model')
   });
   let resetLocalModelConversation: (() => Promise<void>) | null = null;
-  let localModelStatus = localModelRuntime.getStatus();
+  let localModelStatus: LocalModelPublicStatus = localModelRuntime.getStatus();
+  // 状态投影在 Main 完成严格校验；Renderer 永远不接触端口、令牌、路径、PID 或原始 stderr。
+  const publishLocalModelStatus = (status: LocalModelPublicStatus): void => {
+    localModelStatus = localModelPublicStatusSchema.parse(status);
+    for (const window of [chat, settings]) {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send(ipcChannels.localModelStatus, localModelStatus);
+      }
+    }
+  };
   const localModelSettings = await settingsStore.getLocalModelSettings();
   const localModelService = new LocalModelService({
     // 既有 E2E 使用脚本化云 Provider；本地 Runtime 纵向夹具由后续专用边界显式启用。
@@ -465,8 +478,7 @@ async function createApplicationWindows(
       if (!resetLocalModelConversation) throw new Error('LOCAL_MODEL_CONVERSATION_NOT_READY');
       return resetLocalModelConversation();
     },
-    // Runtime 只向 Main 发布白名单状态；后续 IPC 只能从该公开快照继续投影。
-    publishStatus: status => { localModelStatus = status; }
+    publishStatus: publishLocalModelStatus
   });
   startupCleanup.add(() => localModelService.close());
   const characterBehaviorSettings = await settingsStore.getCharacterBehaviorSettings();
@@ -491,6 +503,10 @@ async function createApplicationWindows(
     providers: providerRegistry,
     privacySessions,
     sessionId: 'desktop-session',
+    localModel: {
+      getStatus: () => localModelStatus,
+      setEnabled: enabled => localModelService.setEnabled(enabled)
+    },
     applyPetAlwaysOnTop: enabled => explorerCoordinator.setPetAlwaysOnTop(enabled),
     applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)
   });

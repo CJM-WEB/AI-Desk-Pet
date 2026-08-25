@@ -15,6 +15,10 @@ import type {
   PrivacySettings
 } from '../storage/settings-store';
 import type { SecretSnapshot } from '../storage/secret-store';
+import {
+  localModelPublicStatusSchema,
+  type LocalModelPublicStatus
+} from '../../shared/local-model-ipc';
 
 interface SettingsAccess {
   getProviderSettings(): Promise<{
@@ -50,12 +54,19 @@ interface ProviderAccess {
   ): ModelProvider;
 }
 
+/** 设置服务只拥有公开状态与切换动作，私有连接和 Runtime 生命周期留在 Main。 */
+interface LocalModelSettingsAccess {
+  getStatus(): LocalModelPublicStatus;
+  setEnabled(enabled: boolean): Promise<void>;
+}
+
 export interface DesktopSettingsServiceOptions {
   settings: SettingsAccess;
   secrets: SecretAccess;
   providers: ProviderAccess;
   privacySessions: PrivacySessionRegistry;
   sessionId: string;
+  localModel: LocalModelSettingsAccess;
   applyPetAlwaysOnTop(enabled: boolean): Promise<void> | void;
   applyCharacterBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void;
 }
@@ -68,11 +79,12 @@ export class DesktopSettingsService {
   constructor(private readonly options: DesktopSettingsServiceOptions) {}
 
   async getDashboard(): Promise<SettingsDashboardDto> {
-    const [providerSettings, privacy, publicSettings, petAlwaysOnTop] = await Promise.all([
+    const [providerSettings, privacy, publicSettings, petAlwaysOnTop, localModel] = await Promise.all([
       this.options.settings.getProviderSettings(),
       this.options.settings.getPrivacySettings(),
       this.options.settings.getPublic(),
-      this.options.settings.getPetAlwaysOnTop()
+      this.options.settings.getPetAlwaysOnTop(),
+      Promise.resolve(this.options.localModel.getStatus())
     ]);
     return {
       catalog: structuredClone(providerCatalog),
@@ -90,6 +102,8 @@ export class DesktopSettingsService {
         proactivity: true
       },
       petAlwaysOnTop,
+      // 在跨进程边界再次执行严格白名单校验，禁止未来接线把 Runtime 私有字段带入 Dashboard。
+      localModel: localModelPublicStatusSchema.parse(localModel),
       authorizedRoot: publicSettings.authorizedRoot
     };
   }
@@ -166,6 +180,11 @@ export class DesktopSettingsService {
 
   async saveModelRoute(route: ModelRouteConfig): Promise<SettingsDashboardDto> {
     await this.options.settings.saveModelRoute(route);
+    return this.getDashboard();
+  }
+
+  async setLocalModelEnabled(enabled: boolean): Promise<SettingsDashboardDto> {
+    await this.options.localModel.setEnabled(enabled);
     return this.getDashboard();
   }
 

@@ -50,6 +50,12 @@ const emptyDashboard: SettingsDashboardDto = {
     proactivity: false
   },
   petAlwaysOnTop: false,
+  localModel: {
+    enabled: true,
+    phase: 'loading',
+    backend: null,
+    reasonCode: null
+  },
   authorizedRoot: null
 };
 

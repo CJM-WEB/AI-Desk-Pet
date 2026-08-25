@@ -98,6 +98,12 @@ const dashboard: SettingsDashboardDto = {
     proactivity: false
   },
   petAlwaysOnTop: false,
+  localModel: {
+    enabled: true,
+    phase: 'loading',
+    backend: null,
+    reasonCode: null
+  },
   authorizedRoot: {
     id: 'root-1',
     displayName: 'workspace',

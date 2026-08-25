@@ -51,6 +51,7 @@ describe('preload 清除本地数据转发', () => {
     });
     await exposedApi?.setIncognitoSession(true);
     await exposedApi?.savePetAlwaysOnTop(true);
+    await exposedApi?.setLocalModelEnabled(true);
 
     expect(invoke).toHaveBeenNthCalledWith(1, ipcChannels.settingsDashboardGet);
     expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.settingsRouteSave, {
@@ -67,6 +68,9 @@ describe('preload 清除本地数据转发', () => {
       incognito: true
     });
     expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.settingsPetAlwaysOnTopSave, {
+      enabled: true
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, ipcChannels.settingsLocalModelEnabledSet, {
       enabled: true
     });
   });
@@ -118,6 +122,7 @@ describe('preload 公开 API', () => {
       'saveModelRoute',
       'savePrivacySettings',
       'savePetAlwaysOnTop',
+      'setLocalModelEnabled',
       'setIncognitoSession',
       'revokeAuthorizedRoot',
       'submitMessage',
@@ -127,6 +132,7 @@ describe('preload 公开 API', () => {
       'resetConversation',
       'resolveHistoryDisclosure',
       'onTaskEvent',
+      'onLocalModelStatus',
       'listCharacters',
       'createCharacter',
       'duplicateCharacter',

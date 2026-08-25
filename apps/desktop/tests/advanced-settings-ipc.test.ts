@@ -23,6 +23,7 @@ function serviceDouble() {
     testProviderProfile: vi.fn(async () => ({ ok: true, message: '连接成功。' })),
     savePrivacySettings: vi.fn(async () => ({ marker: 'privacy' })),
     savePetAlwaysOnTop: vi.fn(async () => ({ marker: 'topmost' })),
+    setLocalModelEnabled: vi.fn(async () => ({ marker: 'local-model' })),
     setIncognitoSession: vi.fn(async () => ({ incognito: true })),
     revokeAuthorizedRoot: vi.fn(async () => ({ marker: 'root-revoked' }))
   };
@@ -61,6 +62,28 @@ describe('高级设置白名单 IPC', () => {
       enabled: true,
       injected: 'forbidden'
     })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+  });
+
+  test('本地模型开关只接受严格布尔负载且不重复触发通用配置重置', async () => {
+    const { handlers, ipcMain } = createIpcMain();
+    const service = serviceDouble();
+    const lifecycle = { onConfigurationChanged: vi.fn() };
+    registerAdvancedSettingsIpc(ipcMain, service, lifecycle);
+
+    await expect(handlers.get(ipcChannels.settingsLocalModelEnabledSet)?.({}, {
+      enabled: true
+    })).resolves.toEqual({ marker: 'local-model' });
+    expect(service.setLocalModelEnabled).toHaveBeenCalledExactlyOnceWith(true);
+    expect(lifecycle.onConfigurationChanged).not.toHaveBeenCalled();
+
+    await expect(handlers.get(ipcChannels.settingsLocalModelEnabledSet)?.({}, {
+      enabled: false,
+      injected: 'forbidden'
+    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    await expect(handlers.get(ipcChannels.settingsLocalModelEnabledSet)?.({}, {
+      enabled: 'true'
+    })).rejects.toMatchObject({ code: 'SETTINGS_INPUT_INVALID' });
+    expect(service.setLocalModelEnabled).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   test('隐私保存负载拒绝混入桌宠窗口偏好', async () => {

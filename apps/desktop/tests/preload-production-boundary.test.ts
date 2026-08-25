@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test, vi } from 'vitest';
+import { ipcRenderer } from 'electron';
 import type { MyselfApi } from '../src/shared/myself-api';
 
 let exposedApi: MyselfApi | undefined;
@@ -92,5 +93,33 @@ describe('生产 preload 探针边界', () => {
       /absolutePath|hwnd|privateIdentity|bridgeState|injectExplorer|crashExplorer|HabitatE2e/iu
     );
     expect(apiKeys.join('\n')).not.toMatch(/globalPosition|windowBounds|characterId|resourceHash/iu);
+  });
+
+  test('本地模型状态事件仅转发严格公开状态并精确移除监听器', () => {
+    const listener = vi.fn();
+    const unsubscribe = exposedApi?.onLocalModelStatus(listener);
+    const subscription = vi.mocked(ipcRenderer.on).mock.calls.at(-1);
+    const handler = subscription?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
+    const status = {
+      enabled: true,
+      phase: 'ready' as const,
+      backend: 'vulkan' as const,
+      reasonCode: null
+    };
+
+    expect(subscription?.[0]).toBe('local-model:status');
+    handler?.({}, status);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(status);
+
+    for (const privateField of ['port', 'token', 'path', 'pid', 'stderr']) {
+      expect(() => handler?.({}, { ...status, [privateField]: 'private' })).toThrow();
+    }
+    expect(listener).toHaveBeenCalledExactlyOnceWith(status);
+
+    unsubscribe?.();
+    expect(ipcRenderer.removeListener).toHaveBeenLastCalledWith(
+      'local-model:status',
+      handler
+    );
   });
 });

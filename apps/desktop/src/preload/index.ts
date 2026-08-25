@@ -35,6 +35,10 @@ import type {
   SaveProviderProfileInput
 } from '../shared/myself-api';
 import type { ModelRouteConfig } from '@myself/shared-types';
+import {
+  localModelPublicStatusSchema,
+  type LocalModelPublicStatus
+} from '../shared/local-model-ipc';
 
 const e2eProbeEnabled = process.argv.includes('--myself-e2e-probe');
 let behaviorProbe: CharacterBehaviorProbe = {
@@ -115,6 +119,9 @@ const api: MyselfApi = {
   savePetAlwaysOnTop: (enabled: boolean) => (
     ipcRenderer.invoke(ipcChannels.settingsPetAlwaysOnTopSave, { enabled })
   ),
+  setLocalModelEnabled: (enabled: boolean) => (
+    ipcRenderer.invoke(ipcChannels.settingsLocalModelEnabledSet, { enabled })
+  ),
   setIncognitoSession: (incognito: boolean) => (
     ipcRenderer.invoke(ipcChannels.settingsIncognitoSet, { incognito })
   ),
@@ -144,6 +151,13 @@ const api: MyselfApi = {
     };
     ipcRenderer.on(ipcChannels.taskEvent, handler);
     return () => ipcRenderer.removeListener(ipcChannels.taskEvent, handler);
+  },
+  onLocalModelStatus: (listener: (status: LocalModelPublicStatus) => void) => {
+    const handler = (_event: unknown, payload: unknown): void => {
+      listener(localModelPublicStatusSchema.parse(payload));
+    };
+    ipcRenderer.on(ipcChannels.localModelStatus, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.localModelStatus, handler);
   },
   listCharacters: async (): Promise<CharacterSummaryDto[]> => {
     const result = await ipcRenderer.invoke(ipcChannels.characterList, {});

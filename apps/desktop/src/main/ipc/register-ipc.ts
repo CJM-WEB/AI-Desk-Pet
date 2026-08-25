@@ -254,6 +254,7 @@ const profileIdSchema = z.object({ profileId: identifierSchema }).strict();
 const routeSaveSchema = z.object({ route: modelRouteConfigSchema }).strict();
 const incognitoSchema = z.object({ incognito: z.boolean() }).strict();
 const petAlwaysOnTopSaveSchema = z.object({ enabled: z.boolean() }).strict();
+const localModelEnabledSetSchema = z.object({ enabled: z.boolean() }).strict();
 
 export interface AdvancedSettingsIpcService {
   getDashboard(): Promise<unknown>;
@@ -263,6 +264,7 @@ export interface AdvancedSettingsIpcService {
   testProviderProfile(profileId: string): Promise<unknown>;
   savePrivacySettings(input: z.infer<typeof privacySettingsSchema>): Promise<unknown>;
   savePetAlwaysOnTop(enabled: boolean): Promise<unknown>;
+  setLocalModelEnabled(enabled: boolean): Promise<unknown>;
   setIncognitoSession(incognito: boolean): Promise<unknown>;
   revokeAuthorizedRoot(): Promise<unknown>;
 }
@@ -318,6 +320,10 @@ export function registerAdvancedSettingsIpc(
   replaceHandler(ipcMain, ipcChannels.settingsPetAlwaysOnTopSave, async (_event, raw) => {
     const { enabled } = parseInput(petAlwaysOnTopSaveSchema, raw);
     return service.savePetAlwaysOnTop(enabled);
+  });
+  replaceHandler(ipcMain, ipcChannels.settingsLocalModelEnabledSet, async (_event, raw) => {
+    const { enabled } = parseInput(localModelEnabledSetSchema, raw);
+    return service.setLocalModelEnabled(enabled);
   });
   replaceHandler(ipcMain, ipcChannels.settingsIncognitoSet, async (_event, raw) => {
     const { incognito } = parseInput(incognitoSchema, raw);

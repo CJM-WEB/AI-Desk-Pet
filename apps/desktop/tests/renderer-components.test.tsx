@@ -721,6 +721,12 @@ describe('Renderer 可见组件', () => {
             proactivity: false
           },
           petAlwaysOnTop: false,
+          localModel: {
+            enabled: true,
+            phase: 'loading',
+            backend: null,
+            reasonCode: null
+          },
           authorizedRoot: null
         }}
         activeTab="local"

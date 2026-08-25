@@ -2,6 +2,7 @@ import type { ModelProvider } from '@myself/agent-core';
 import { describe, expect, test, vi } from 'vitest';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import { DesktopSettingsService } from '../src/main/settings/desktop-settings-service';
+import type { LocalModelPublicStatus } from '../src/shared/local-model-ipc';
 
 function providerSnapshot() {
   return {
@@ -92,12 +93,23 @@ function createFixture() {
     async () => undefined
   );
   const applyCharacterBehaviorSettings = vi.fn();
+  const localModelStatus: LocalModelPublicStatus = {
+    enabled: true,
+    phase: 'ready',
+    backend: 'vulkan',
+    reasonCode: null
+  };
+  const localModel = {
+    getStatus: vi.fn(() => localModelStatus),
+    setEnabled: vi.fn(async () => undefined)
+  };
   const options = {
     settings,
     secrets,
     providers,
     privacySessions,
     sessionId: 'desktop-session',
+    localModel,
     applyPetAlwaysOnTop,
     applyCharacterBehaviorSettings
   };
@@ -112,6 +124,7 @@ function createFixture() {
     privacySessions,
     applyPetAlwaysOnTop,
     applyCharacterBehaviorSettings,
+    localModel,
     readStoredPetAlwaysOnTop: () => storedPetAlwaysOnTop,
     setStoredPetAlwaysOnTop: (enabled: boolean) => { storedPetAlwaysOnTop = enabled; }
   };
@@ -124,6 +137,35 @@ describe('DesktopSettingsService', () => {
     for (const key of ['mcpStore', 'mcpManager']) {
       expect(optionKeys).not.toContain(key);
     }
+  });
+
+  test('本地模型设置边界只接收公开状态与开关动作', async () => {
+    const fixture = createFixture();
+
+    const dashboard = await fixture.service.setLocalModelEnabled(false);
+
+    expect(fixture.localModel.setEnabled).toHaveBeenCalledExactlyOnceWith(false);
+    expect(dashboard.localModel).toEqual({
+      enabled: true,
+      phase: 'ready',
+      backend: 'vulkan',
+      reasonCode: null
+    });
+    expect(Object.keys(fixture.options.localModel)).toEqual(['getStatus', 'setEnabled']);
+    expect(JSON.stringify(dashboard.localModel)).not.toMatch(/port|token|path|pid|stderr/iu);
+  });
+
+  test('Dashboard 严格拒绝混入本地模型私有连接字段的状态', async () => {
+    const fixture = createFixture();
+    fixture.localModel.getStatus.mockReturnValueOnce({
+      enabled: true,
+      phase: 'ready',
+      backend: 'cpu',
+      reasonCode: null,
+      port: 43123
+    } as unknown as LocalModelPublicStatus);
+
+    await expect(fixture.service.getDashboard()).rejects.toThrow();
   });
 
   test('独立保存桌宠置顶偏好并立即应用运行态', async () => {
