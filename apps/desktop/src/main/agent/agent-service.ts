@@ -36,6 +36,7 @@ const MAX_USER_TEXT_LENGTH = 4_000;
 export interface AgentFileTools {
   executeRead(request: ToolRequest): Promise<unknown>;
   preview(request: ToolRequest): Promise<VerifiedWriteAction>;
+  previewMany?(request: ToolRequest): Promise<readonly VerifiedWriteAction[]>;
   executeWrite(action: VerifiedWriteAction): Promise<void>;
 }
 
@@ -76,6 +77,7 @@ const filePlanningToolNames = Object.freeze({
   grep_files: 'builtin.files.grep_files',
   create_file: 'builtin.files.create_file',
   create_directory: 'builtin.files.create_directory',
+  copy_file: 'builtin.files.copy_file',
   apply_patch: 'builtin.files.apply_patch',
   edit_file: 'builtin.files.edit_file',
   delete_file: 'builtin.files.delete_file',
@@ -85,11 +87,15 @@ const filePlanningToolNames = Object.freeze({
 const controlledWriteOperations = new Set<FileWriteOperation>([
   'create_file',
   'create_directory',
+  'copy_file',
   'apply_patch',
   'edit_file',
   'delete_file',
   'move_file'
 ]);
+const controlledWriteToolNames = new Set<string>(
+  [...controlledWriteOperations].map(operation => filePlanningToolNames[operation])
+);
 
 function isControlledWriteOperation(operation: FilePlanningOperation): operation is FileWriteOperation {
   return controlledWriteOperations.has(operation as FileWriteOperation);
@@ -241,6 +247,7 @@ function actionSummary(action: VerifiedWriteAction): string {
   switch (action.operation) {
     case 'create_file': return `创建文件 ${action.targetRelativePath}`;
     case 'create_directory': return `创建目录 ${action.targetRelativePath}`;
+    case 'copy_file': return `复制文件 ${action.sourceRelativePath} 到 ${action.targetRelativePath}`;
     case 'apply_patch': return `修改文件 ${action.targetRelativePath}`;
     case 'delete_file': return `${action.targetType === 'empty_directory' ? '删除目录' : '删除文件'} ${action.targetRelativePath}`;
     case 'move_file': return `移动文件 ${action.sourceRelativePath} 到 ${action.targetRelativePath}`;
@@ -377,6 +384,42 @@ export class AgentService {
         result = createToolFailureResult(execution.resultToolName, error);
         // 公开错误沿用 Main 的稳定脱敏文案；模型只接收无正文的修复码。
         this.publish(publicErrorEvent(error), owner);
+      }
+      const currentCapabilitySucceeded = capabilityResultOk(result);
+      const completedTargetRelativePaths = execution.verifiedAction.category === 'file'
+        ? [
+            ...(execution.completedTargetRelativePaths ?? []),
+            ...(currentCapabilitySucceeded
+              ? [execution.verifiedAction.action.targetRelativePath]
+              : [])
+          ]
+        : [];
+      if (
+        currentCapabilitySucceeded
+        && execution.remainingVerifiedActions?.length
+      ) {
+        const [nextAction, ...remainingVerifiedActions] = execution.remainingVerifiedActions;
+        if (!nextAction) throw new Error('ACTION_EXPIRED');
+        const publicAction = this.pending.issue(pendingActionDraft(
+          nextAction,
+          this.createConversationId()
+        ), {
+          verifiedAction: nextAction,
+          continuationToken: execution.continuationToken,
+          resultToolName: execution.resultToolName,
+          remainingVerifiedActions,
+          completedTargetRelativePaths
+        });
+        this.pendingSession = session;
+        this.publish({ type: 'phase', phase: 'awaiting_confirmation' }, owner);
+        this.publish({ type: 'pending_action', action: publicAction }, owner);
+        return;
+      }
+      if ((execution.completedTargetRelativePaths?.length ?? 0) > 0) {
+        result = {
+          ...(result as Record<string, unknown>),
+          completedTargetRelativePaths
+        };
       }
       capabilityResult = {
         kind: execution.verifiedAction.category,
@@ -544,10 +587,12 @@ export class AgentService {
       : plannedToolName === null
         ? session.tools
         : session.tools.filter(tool => tool.function.name === plannedToolName);
-    // 文件披露已允许时，规划提示只收窄首轮；真实工具结果后恢复完整工具面以支持多步任务。
+    // 未授权正文披露时，纯写任务续跑只恢复逐次确认的 mutation；读取/检索始终保持关闭。
     const tools = session.taskKind === 'file' && session.fileDisclosureAllowed
       ? session.tools
-      : planningTools;
+      : session.taskKind === 'file' && expectedWriteOperation !== undefined
+        ? session.tools.filter(tool => controlledWriteToolNames.has(tool.function.name))
+        : planningTools;
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
       messages: [...session.messages, ...visibleHistory],
@@ -618,18 +663,21 @@ export class AgentService {
       }
       try {
         acted = true;
-        const execution = await this.previewCapability(event.executionRequest, session);
+        const executions = await this.previewCapabilities(event.executionRequest, session);
         if (this.taskOwner !== owner) {
           this.loop.discard(event.continuationToken);
           return { kind: 'completed', acted };
         }
+        const [firstExecution, ...remainingVerifiedActions] = executions;
+        if (!firstExecution) throw new Error('TOOL_ARGUMENTS_INVALID');
         const publicAction = this.pending.issue(pendingActionDraft(
-          execution.verifiedAction,
+          firstExecution,
           this.createConversationId()
         ), {
-          verifiedAction: execution.verifiedAction,
+          verifiedAction: firstExecution,
           continuationToken: event.continuationToken,
-          resultToolName: event.executionRequest.toolName
+          resultToolName: event.executionRequest.toolName,
+          remainingVerifiedActions
         });
         this.pendingSession = session;
         this.publish({ type: 'pending_action', action: publicAction }, owner);
@@ -648,16 +696,15 @@ export class AgentService {
     this.publish({ type: 'phase', phase: 'error' }, owner);
   }
 
-  private async previewCapability(
+  private async previewCapabilities(
     request: ToolRequest,
     session: AgentSession
-  ): Promise<Readonly<{ verifiedAction: import('./pending-action-store').VerifiedCapabilityAction }>> {
+  ): Promise<readonly import('./pending-action-store').VerifiedCapabilityAction[]> {
     if (request.toolName === 'powershell') {
       if (session.taskKind !== 'powershell') throw new Error('TOOL_UNKNOWN');
       const command = request.arguments['command'];
       if (typeof command !== 'string') throw new Error('TOOL_ARGUMENTS_INVALID');
-      return {
-        verifiedAction: {
+      return [{
           category: 'powershell',
           action: session.powershell.preview({
             command,
@@ -665,12 +712,13 @@ export class AgentService {
             workingDirectoryLabel: session.workingDirectoryLabel,
             generation: session.generation
           })
-        }
-      };
+      }];
     }
     if (session.taskKind !== 'file') throw new Error('TOOL_UNKNOWN');
-    const action = await session.fileTools.preview(request);
-    return { verifiedAction: { category: 'file', action } };
+    const actions = session.fileTools.previewMany === undefined
+      ? [await session.fileTools.preview(request)]
+      : await session.fileTools.previewMany(request);
+    return actions.map(action => ({ category: 'file' as const, action }));
   }
 
   /** 角色反馈属于尽力表现；投影或角色异常不能阻断已经确认的 Main 文件执行。 */
@@ -744,6 +792,11 @@ function pendingActionDraft(
       previewTruncated: fileAction.previewTruncated
     };
     case 'create_directory': return { ...common, operation: 'create_directory' };
+    case 'copy_file': return {
+      ...common,
+      operation: 'copy_file',
+      sourceRelativePath: fileAction.sourceRelativePath
+    };
     case 'apply_patch': return { ...common, operation: 'apply_patch', addedLines: fileAction.addedLines, removedLines: fileAction.removedLines, diffPreview: fileAction.diffPreview, previewTruncated: fileAction.previewTruncated };
     case 'delete_file': return { ...common, operation: 'delete_file', targetType: fileAction.targetType };
     case 'move_file': return {

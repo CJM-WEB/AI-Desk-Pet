@@ -485,6 +485,7 @@ function filePlanningOperation(text: string): FilePlanningOperation | null {
   if (/(?:读取|\bread\b)/iu.test(text)) return 'read_file';
   if (/(?:创建|新建|\bcreate\b)/iu.test(text)) return 'create_file';
   if (/(?:修改|替换|写入|\b(?:modify|replace|write)\b)/iu.test(text)) return 'edit_file';
+  if (/(?:复制|\bcopy\b)/iu.test(text)) return 'copy_file';
   if (/(?:移动|\bmove\b)/iu.test(text)) return 'move_file';
   return null;
 }

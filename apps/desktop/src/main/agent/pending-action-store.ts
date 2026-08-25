@@ -28,6 +28,9 @@ export type PendingExecution = Readonly<{
   continuationToken: string;
   /** Main 私有真实工具名；edit_file 可复用 apply_patch 公开确认卡而不混淆回注事实。 */
   resultToolName: string;
+  /** 多文件补丁只在 Main 内排队；每项仍由 PendingActionStore 单独签发和消费。 */
+  remainingVerifiedActions?: readonly VerifiedCapabilityAction[];
+  completedTargetRelativePaths?: readonly string[];
 }>;
 
 /** 对联合类型逐分支省略由存储层签发的字段，避免抹平动作专属摘要。 */

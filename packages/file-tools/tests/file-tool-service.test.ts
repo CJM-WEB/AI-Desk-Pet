@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createTwoFilesPatch } from 'diff';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileToolService } from '../src/file-tool-service';
 import { PathPolicy } from '../src/path-policy';
@@ -52,6 +53,7 @@ describe('文件工具 schema', () => {
   it('查询与精确编辑参数保持严格，且旧工具名称不存在', () => {
     expect(Object.keys(toolArguments).sort()).toEqual([
       'apply_patch',
+      'copy_file',
       'create_directory',
       'create_file',
       'delete_file',
@@ -310,6 +312,73 @@ describe('FileToolService.executeRead', () => {
     expect(replaced).toBe(true);
   });
 
+  it('grep_files 在路径校验返回后再遭链接替换时仍拒绝读取根外正文', async ({ skip }) => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    const outside = await mkdtemp(join(tmpdir(), 'myself-file-tools-outside-'));
+    temporaryRoots.push(root, outside);
+    await mkdir(join(root, 'docs'), { recursive: true });
+    await writeFile(join(root, 'docs', 'victim.txt'), 'inside', 'utf8');
+    await writeFile(join(outside, 'outside.txt'), 'outside secret', 'utf8');
+    const policy = await PathPolicy.create(root);
+    const resolveExisting = policy.resolveExisting.bind(policy);
+    let replacedAfterValidation = false;
+    let victimResolutions = 0;
+    policy.resolveExisting = async relativePath => {
+      const resolved = await resolveExisting(relativePath);
+      if (relativePath.replaceAll('\\', '/') === 'docs/victim.txt') {
+        victimResolutions += 1;
+        if (!replacedAfterValidation && victimResolutions === 2) {
+          try {
+            await unlink(join(root, 'docs', 'victim.txt'));
+            await symlink(join(outside, 'outside.txt'), join(root, 'docs', 'victim.txt'), 'file');
+          } catch (error) {
+            if (error instanceof Error && 'code' in error
+              && ((error as NodeJS.ErrnoException).code === 'EPERM'
+                || (error as NodeJS.ErrnoException).code === 'EACCES')) {
+              skip(`当前系统不允许创建测试链接：${String((error as NodeJS.ErrnoException).code)}`);
+              return resolved;
+            }
+            throw error;
+          }
+          replacedAfterValidation = true;
+        }
+      }
+      return resolved;
+    };
+    const service = new FileToolService(policy);
+
+    await expect(service.executeRead({
+      requestId: 'grep-post-validation-race',
+      toolName: 'grep_files',
+      arguments: { relativePath: 'docs', pattern: 'outside', include: '**/*.txt' }
+    })).rejects.toMatchObject({ code: 'LINK_NOT_ALLOWED' });
+    expect(replacedAfterValidation).toBe(true);
+  });
+
+  it('glob_files 的访问预算统计不匹配条目，不能靠海量噪声绕过上限', async () => {
+    const { service, root } = await fixtureService();
+    const batchSize = 100;
+    for (let start = 0; start < 5_000; start += batchSize) {
+      await Promise.all(Array.from({ length: batchSize }, (_value, offset) => (
+        writeFile(join(root, 'docs', `noise-${String(start + offset).padStart(4, '0')}.txt`), '', 'utf8')
+      )));
+    }
+    await writeFile(join(root, 'docs', 'z-target.match'), '', 'utf8');
+
+    const result = await service.executeRead({
+      requestId: 'glob-visited-entry-budget',
+      toolName: 'glob_files',
+      arguments: { relativePath: 'docs', pattern: '*.match', maxResults: 10 }
+    });
+
+    expect(result).toEqual({
+      toolName: 'glob_files',
+      relativePath: 'docs',
+      paths: [],
+      truncated: true
+    });
+  }, 20_000);
+
   it('grep_files 对匹配行返回相对路径与行号，并以完整匹配为单位截断', async () => {
     const { service, root } = await fixtureService();
     await writeFile(join(root, 'docs', 'b.txt'), 'none\nneedle second\n', 'utf8');
@@ -404,6 +473,119 @@ describe('FileToolService.preview 与 executeWrite', () => {
 
     await expect(lstat(join(root, 'docs', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(join(root, 'target', 'source.txt'), 'utf8')).resolves.toBe('移动正文');
+  });
+
+  it('copy_file 确认前无副作用，确认后以源 basename 排他复制普通文件', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.bin'), Buffer.from([0, 1, 2, 3]));
+
+    const action = await service.preview({
+      requestId: 'copy-file',
+      toolName: 'copy_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.bin',
+        targetDirectoryRelativePath: 'target'
+      }
+    });
+
+    expect(action).toEqual({
+      operation: 'copy_file',
+      authorizationGeneration: 0,
+      sourceRelativePath: 'docs/source.bin',
+      targetDirectoryRelativePath: 'target',
+      targetRelativePath: 'target/source.bin'
+    });
+    await expect(readFile(join(root, 'target', 'source.bin'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await service.executeWrite(action);
+
+    await expect(readFile(join(root, 'docs', 'source.bin'))).resolves.toEqual(Buffer.from([0, 1, 2, 3]));
+    await expect(readFile(join(root, 'target', 'source.bin'))).resolves.toEqual(Buffer.from([0, 1, 2, 3]));
+  });
+
+  it('copy_file 在确认后源变化或目标出现时失败关闭且不覆盖', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), 'preview', 'utf8');
+    const changedSourceAction = await service.preview({
+      requestId: 'copy-source-changed',
+      toolName: 'copy_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: 'target'
+      }
+    });
+    await writeFile(join(root, 'docs', 'source.txt'), 'changed', 'utf8');
+
+    await expect(service.executeWrite(changedSourceAction)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(readFile(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await writeFile(join(root, 'docs', 'source.txt'), 'stable', 'utf8');
+    const targetRaceAction = await service.preview({
+      requestId: 'copy-target-race',
+      toolName: 'copy_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: 'target'
+      }
+    });
+    await writeFile(join(root, 'target', 'source.txt'), 'competitor', 'utf8');
+
+    await expect(service.executeWrite(targetRaceAction)).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+    await expect(readFile(join(root, 'target', 'source.txt'), 'utf8')).resolves.toBe('competitor');
+  });
+
+  it('copy_file 在复制期间源内容变化时失败并只清理本次排他创建的目标', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
+    temporaryRoots.push(root);
+    await mkdir(join(root, 'docs'));
+    await mkdir(join(root, 'archive'));
+    const source = join(root, 'docs', 'changing.txt');
+    await writeFile(source, 'original content', 'utf8');
+    let changed = false;
+    const fileOperations = {
+      open: async (path: string, flags: string) => {
+        const handle = await open(path, flags);
+        return {
+          stat: (options: { bigint: true }) => handle.stat(options),
+          read: async (buffer: Buffer, offset: number, length: number, position: null) => {
+            const result = await handle.read(buffer, offset, length, position);
+            if (!changed && flags === 'r' && result.bytesRead > 0) {
+              changed = true;
+              await writeFile(source, 'changed while copying', 'utf8');
+            }
+            return result;
+          },
+          write: (buffer: Buffer, offset: number, length: number, position: null) => (
+            handle.write(buffer, offset, length, position)
+          ),
+          writeFile: (content: string, encoding: BufferEncoding) => handle.writeFile(content, encoding),
+          close: () => handle.close()
+        };
+      },
+      rename,
+      unlink,
+      mkdir
+    };
+    const service = new FileToolService(
+      await PathPolicy.create(root),
+      undefined,
+      undefined,
+      fileOperations
+    );
+    const action = await service.preview({
+      requestId: 'copy-changing-source',
+      toolName: 'copy_file',
+      arguments: {
+        sourceRelativePath: 'docs/changing.txt',
+        targetDirectoryRelativePath: 'archive'
+      }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(lstat(join(root, 'archive', 'changing.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(source, 'utf8')).resolves.toBe('changed while copying');
   });
 
   it('move_file 允许把子目录中的文件移动到授权根目录', async () => {
@@ -818,6 +1000,55 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await expect(readFile(target, 'utf8')).resolves.toBe('changed\nchanged\n');
   });
 
+  it('edit_file 在精确匹配缺失时只采用唯一的逐行缩进纠错候选', async () => {
+    const { service, root } = await fixtureService();
+    await writeFile(
+      join(root, 'docs', 'indented.ts'),
+      'function demo() {\n  const before = 1;\n  return before;\n}\n',
+      'utf8'
+    );
+
+    const action = await service.preview({
+      requestId: 'edit-unique-line-trimmed',
+      toolName: 'edit_file',
+      arguments: {
+        relativePath: 'docs/indented.ts',
+        oldString: 'const before = 1;\nreturn before;',
+        newString: 'const after = 2;\nreturn after;'
+      }
+    });
+
+    expect(action).toMatchObject({
+      operation: 'apply_patch',
+      targetRelativePath: 'docs/indented.ts'
+    });
+    expect(action.operation === 'apply_patch' ? action.diffPreview : '').toContain('const before = 1;');
+    await service.executeWrite(action);
+    await expect(readFile(join(root, 'docs', 'indented.ts'), 'utf8')).resolves.toBe(
+      'function demo() {\n  const after = 2;\n  return after;\n}\n'
+    );
+  });
+
+  it('edit_file 的逐行纠错候选不唯一时拒绝猜测', async () => {
+    const { service, root } = await fixtureService();
+    await writeFile(
+      join(root, 'docs', 'ambiguous.txt'),
+      '  alpha\n  beta\nseparator\n    alpha\n    beta\n',
+      'utf8'
+    );
+
+    await expect(service.preview({
+      requestId: 'edit-ambiguous-line-trimmed',
+      toolName: 'edit_file',
+      arguments: {
+        relativePath: 'docs/ambiguous.txt',
+        oldString: 'alpha\nbeta',
+        newString: 'changed'
+      }
+    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+    await expect(readFile(join(root, 'docs', 'ambiguous.txt'), 'utf8')).resolves.toContain('separator');
+  });
+
   it('edit_file 对不存在文本与相同替换内容失败关闭', async () => {
     const { service, root } = await fixtureService();
     await writeFile(join(root, 'docs', 'exact.txt'), 'actual\n', 'utf8');
@@ -872,6 +1103,35 @@ describe('FileToolService.preview 与 executeWrite', () => {
     expect(action.diffPreview).toContain('-before');
     await service.executeWrite(action);
     await expect(readFile(join(root, 'docs', 'patch.txt'), 'utf8')).resolves.toBe('after\n');
+  });
+
+  it('apply_patch 多文件请求拆成逐文件独立动作并分别复核基础内容', async () => {
+    const { service, root } = await fixtureService();
+    await writeFile(join(root, 'docs', 'first.txt'), 'first old\n', 'utf8');
+    await writeFile(join(root, 'docs', 'second.txt'), 'second old\n', 'utf8');
+    const patch = [
+      createTwoFilesPatch('docs/first.txt', 'docs/first.txt', 'first old\n', 'first new\n'),
+      createTwoFilesPatch('docs/second.txt', 'docs/second.txt', 'second old\n', 'second new\n')
+    ].join('\n');
+
+    const actions = await service.previewMany({
+      requestId: 'patch-many',
+      toolName: 'apply_patch',
+      arguments: { patch }
+    });
+
+    expect(actions.map(action => action.targetRelativePath)).toEqual([
+      'docs/first.txt',
+      'docs/second.txt'
+    ]);
+    await expect(readFile(join(root, 'docs', 'first.txt'), 'utf8')).resolves.toBe('first old\n');
+    await service.executeWrite(actions[0]!);
+    await expect(readFile(join(root, 'docs', 'first.txt'), 'utf8')).resolves.toBe('first new\n');
+    await expect(readFile(join(root, 'docs', 'second.txt'), 'utf8')).resolves.toBe('second old\n');
+
+    await writeFile(join(root, 'docs', 'second.txt'), 'competitor\n', 'utf8');
+    await expect(service.executeWrite(actions[1]!)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(readFile(join(root, 'docs', 'second.txt'), 'utf8')).resolves.toBe('competitor\n');
   });
 
   it('apply_patch 拒绝不匹配补丁和预览后的基础内容变化', async () => {

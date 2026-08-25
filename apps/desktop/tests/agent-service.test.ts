@@ -304,6 +304,58 @@ function createPowerShellHarness(
 }
 
 describe('AgentService', () => {
+  test('复制规划只公开 copy_file 并生成独立确认卡', async () => {
+    const provider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'copy-1',
+          toolName: 'builtin.files.copy_file',
+          arguments: {
+            sourceRelativePath: 'docs/source.txt',
+            targetDirectoryRelativePath: 'archive'
+          }
+        }
+      },
+      { type: 'text', text: 'source.txt 已复制' }
+    ]);
+    const copyAction: VerifiedWriteAction = Object.freeze({
+      operation: 'copy_file',
+      authorizationGeneration: 0,
+      sourceRelativePath: 'docs/source.txt',
+      targetDirectoryRelativePath: 'archive',
+      targetRelativePath: 'archive/source.txt'
+    });
+    const { events, fileTools, service } = createHarness(provider, {
+      preview: vi.fn(async () => copyAction)
+    }, false);
+
+    await service.submitFileTask({
+      text: '把 docs/source.txt 复制到 archive 文件夹',
+      visibleHistory: [],
+      planningHint: { operation: 'copy_file' }
+    });
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      'builtin.files.copy_file',
+      CAPABILITY_CLARIFICATION_TOOL_NAME
+    ]);
+    const pending = events.find(event => event.type === 'pending_action');
+    expect(pending).toMatchObject({
+      type: 'pending_action',
+      action: {
+        operation: 'copy_file',
+        sourceRelativePath: 'docs/source.txt',
+        targetRelativePath: 'archive/source.txt'
+      }
+    });
+    if (!pending || pending.type !== 'pending_action') throw new Error('缺少复制确认卡');
+    await service.confirm(pending.action.actionId);
+
+    expect(fileTools.executeWrite).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
   test('移动规划只公开 move_file，确认后只以 Main 结果恢复总结', async () => {
     const provider = new ScriptedProvider([
       moveResponse(),
@@ -1691,6 +1743,132 @@ describe('AgentService', () => {
     }));
     expect(events).toContainEqual(expect.objectContaining({ type: 'error', code: 'TARGET_EXISTS' }));
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test('未授权文件正文披露时仍允许纯写多步任务逐次确认，但不恢复读取工具', async () => {
+    const provider = new ScriptedProvider([
+      writeResponse(),
+      moveResponse(),
+      { type: 'text', text: '文件已创建并移动' }
+    ]);
+    const { events, fileTools, service } = createHarness(provider, {
+      preview: vi.fn()
+        .mockResolvedValueOnce(verifiedAction())
+        .mockResolvedValueOnce(moveAction())
+    }, false);
+
+    await service.submitFileTask({
+      text: '创建 result.txt 后移动到 archive 文件夹',
+      visibleHistory: [],
+      planningHint: { operation: 'create_file' }
+    });
+    const firstPending = events.find(event => event.type === 'pending_action');
+    if (!firstPending || firstPending.type !== 'pending_action') throw new Error('缺少第一张确认卡');
+    await service.confirm(firstPending.action.actionId);
+
+    const pendingEvents = events.filter(event => event.type === 'pending_action');
+    expect(pendingEvents).toHaveLength(2);
+    expect(provider.requests[1]?.tools.map(tool => tool.function.name)).toEqual(expect.arrayContaining([
+      'builtin.files.create_file',
+      'builtin.files.move_file',
+      'builtin.files.edit_file'
+    ]));
+    expect(provider.requests[1]?.tools.map(tool => tool.function.name)).not.toEqual(expect.arrayContaining([
+      'builtin.files.list_files',
+      'builtin.files.read_file',
+      'builtin.files.glob_files',
+      'builtin.files.grep_files'
+    ]));
+    const secondPending = pendingEvents[1];
+    if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少第二张确认卡');
+    await service.confirm(secondPending.action.actionId);
+
+    expect(fileTools.executeWrite).toHaveBeenCalledTimes(2);
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test('单次多文件补丁请求由 Main 拆成逐文件确认且全部确认后才续跑模型', async () => {
+    const provider = new ScriptedProvider([
+      writeResponse('builtin.files.apply_patch'),
+      { type: 'text', text: '两个文件均已修改' }
+    ]);
+    const firstAction = Object.freeze({
+      operation: 'apply_patch' as const,
+      authorizationGeneration: 0,
+      targetRelativePath: 'docs/first.txt',
+      addedLines: 1,
+      removedLines: 1,
+      diffPreview: '-first old\n+first new',
+      previewTruncated: false
+    });
+    const secondAction = Object.freeze({
+      ...firstAction,
+      targetRelativePath: 'docs/second.txt',
+      diffPreview: '-second old\n+second new'
+    });
+    const overrides = {
+      previewMany: vi.fn(async () => [firstAction, secondAction])
+    } as Partial<AgentFileTools> & {
+      previewMany: (request: unknown) => Promise<readonly VerifiedWriteAction[]>;
+    };
+    const { events, fileTools, service } = createHarness(provider, overrides);
+
+    await service.submitFileTask({ text: '同时修改两个文件', visibleHistory: [] });
+    const firstPending = events.find(event => event.type === 'pending_action');
+    if (!firstPending || firstPending.type !== 'pending_action') throw new Error('缺少第一张确认卡');
+    expect(firstPending.action).toMatchObject({ targetRelativePath: 'docs/first.txt' });
+
+    await service.confirm(firstPending.action.actionId);
+    expect(fileTools.executeWrite).toHaveBeenCalledTimes(1);
+    expect(provider.requests).toHaveLength(1);
+    const pendingEvents = events.filter(event => event.type === 'pending_action');
+    expect(pendingEvents).toHaveLength(2);
+    const secondPending = pendingEvents[1];
+    if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少第二张确认卡');
+    expect(secondPending.action).toMatchObject({ targetRelativePath: 'docs/second.txt' });
+
+    await service.confirm(secondPending.action.actionId);
+    expect(fileTools.executeWrite).toHaveBeenCalledTimes(2);
+    expect(provider.requests).toHaveLength(2);
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test('多文件补丁取消后续确认时保留已执行事实但绝不执行或续跑余项', async () => {
+    const provider = new ScriptedProvider([writeResponse('builtin.files.apply_patch')]);
+    const patchAction = (targetRelativePath: string): VerifiedWriteAction => Object.freeze({
+      operation: 'apply_patch' as const,
+      authorizationGeneration: 0,
+      targetRelativePath,
+      addedLines: 1,
+      removedLines: 1,
+      diffPreview: '-old\n+new',
+      previewTruncated: false
+    });
+    const overrides = {
+      previewMany: vi.fn(async () => [
+        patchAction('docs/first.txt'),
+        patchAction('docs/second.txt')
+      ])
+    } as Partial<AgentFileTools> & {
+      previewMany: (request: unknown) => Promise<readonly VerifiedWriteAction[]>;
+    };
+    const { events, fileTools, service } = createHarness(provider, overrides);
+
+    await service.submitFileTask({ text: '同时修改两个文件', visibleHistory: [] });
+    const firstPending = events.find(event => event.type === 'pending_action');
+    if (!firstPending || firstPending.type !== 'pending_action') throw new Error('缺少第一张确认卡');
+    await service.confirm(firstPending.action.actionId);
+    const pendingEvents = events.filter(event => event.type === 'pending_action');
+    const secondPending = pendingEvents[1];
+    if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少第二张确认卡');
+
+    service.cancelAction(secondPending.action.actionId);
+
+    expect(fileTools.executeWrite).toHaveBeenCalledOnce();
+    expect(provider.requests).toHaveLength(1);
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'cancelled' });
+    await expect(service.confirm(secondPending.action.actionId)).rejects.toThrow('ACTION_EXPIRED');
+    expect(fileTools.executeWrite).toHaveBeenCalledOnce();
   });
 
   test('本地写入成功但总结失败时明确区分结果', async () => {

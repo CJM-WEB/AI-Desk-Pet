@@ -178,6 +178,21 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
 
   registry.register({
     definition: definition(
+      'builtin.files.copy_file',
+      '将授权根内的一个普通文件复制到另一个已存在目录，需要用户确认。',
+      toolJsonSchemas.copy_file
+    ),
+    argumentsSchema: toolArguments.copy_file,
+    executionToolName: 'copy_file',
+    risk: 'recoverable',
+    enabled: true,
+    auditSummary: arguments_ => (
+      `复制文件 ${displayRelativePath(arguments_['sourceRelativePath'])} 到 ${displayRelativePath(arguments_['targetDirectoryRelativePath'])}`
+    )
+  });
+
+  registry.register({
+    definition: definition(
       'builtin.files.move_file',
       '将授权根内的一个普通文件移动到另一个已存在目录，需要用户确认。',
       toolJsonSchemas.move_file
@@ -207,14 +222,16 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
   registry.register({
     definition: definition(
       'builtin.files.apply_patch',
-      '向单个文件应用补丁，需要用户确认。',
+      '应用带完整文件头的统一补丁；可包含多个现有文件，每个文件都需要单独确认。',
       toolJsonSchemas.apply_patch
     ),
     argumentsSchema: toolArguments.apply_patch,
     executionToolName: 'apply_patch',
     risk: 'recoverable',
     enabled: true,
-    auditSummary: arguments_ => `应用补丁 ${displayRelativePath(arguments_['relativePath'])}`
+    auditSummary: arguments_ => arguments_['relativePath'] === undefined
+      ? '应用多文件补丁（逐文件确认）'
+      : `应用补丁 ${displayRelativePath(arguments_['relativePath'])}`
   });
 
   registry.register({

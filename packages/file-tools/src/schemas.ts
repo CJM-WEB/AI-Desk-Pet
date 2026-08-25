@@ -51,8 +51,12 @@ export const toolArguments = {
   create_directory: z.object({
     relativePath: relativePathSchema
   }).strict(),
+  copy_file: z.object({
+    sourceRelativePath: relativePathSchema,
+    targetDirectoryRelativePath: relativePathSchema
+  }).strict(),
   apply_patch: z.object({
-    relativePath: relativePathSchema,
+    relativePath: relativePathSchema.optional(),
     patch: z.string().min(1).max(fileToolLimits.patchMaxLength)
   }).strict(),
   edit_file: z.object({
@@ -130,13 +134,22 @@ export const toolJsonSchemas = {
     required: ['relativePath'],
     additionalProperties: false
   },
+  copy_file: {
+    type: 'object',
+    required: ['sourceRelativePath', 'targetDirectoryRelativePath'],
+    properties: {
+      sourceRelativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength },
+      targetDirectoryRelativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength }
+    },
+    additionalProperties: false
+  },
   apply_patch: {
     type: 'object',
     properties: {
       relativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength },
       patch: { type: 'string', minLength: 1, maxLength: fileToolLimits.patchMaxLength }
     },
-    required: ['relativePath', 'patch'],
+    required: ['patch'],
     additionalProperties: false
   },
   edit_file: {

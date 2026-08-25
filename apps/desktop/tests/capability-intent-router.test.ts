@@ -26,6 +26,7 @@ describe('能力意图路由器', () => {
     ['在文件内容中搜索 needle', 'grep_files'],
     ['按文件名匹配 **/*.ts', 'glob_files'],
     ['把 notes.txt 中的旧文本替换为新文本', 'edit_file'],
+    ['把 docs/source.txt 复制到 archive 文件夹', 'copy_file'],
     ['把 success.txt 移动到回收站', 'delete_file'],
     ['把 docs/source.txt 移动到 archive 文件夹', 'move_file']
   ] as const)('文件 Router 只生成操作类别提示，不解释文件名：%s', (text, operation) => {
