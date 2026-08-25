@@ -251,6 +251,66 @@ describe('LocalModelRuntime', () => {
     });
   });
 
+  test('Vulkan 探针解析全部设备并确定性优先独立显卡', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({
+      stdout: [
+        'Vulkan0: Intel(R) RaptorLake-S Mobile Graphics Controller',
+        'Vulkan1: llvmpipe (LLVM software renderer)',
+        'malformed device line',
+        'Vulkan2: NVIDIA GeForce RTX 5060 Laptop GPU',
+        'Vulkan2: duplicate entry must not change selection'
+      ].join('\n'),
+      exitCode: 0
+    }, {});
+    port.queuePorts(43123);
+    port.queueHealth({ status: 200, body: { status: 'ok' } });
+    const { runtime } = await createRuntime(port);
+
+    await runtime.start();
+
+    expect(runtime.getStatus()).toMatchObject({ phase: 'ready', backend: 'vulkan' });
+    expect(port.spawnInputs[1]?.args).toEqual(expect.arrayContaining([
+      '--device', 'Vulkan2', '--gpu-layers', 'all'
+    ]));
+  });
+
+  test('Vulkan 只有集成显卡时仍使用该硬件设备', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({
+      stdout: 'Vulkan4: Intel(R) Iris(R) Xe Graphics\n',
+      exitCode: 0
+    }, {});
+    port.queuePorts(43123);
+    port.queueHealth({ status: 200, body: { status: 'ok' } });
+    const { runtime } = await createRuntime(port);
+
+    await runtime.start();
+
+    expect(port.spawnInputs[1]?.args).toEqual(expect.arrayContaining([
+      '--device', 'Vulkan4', '--gpu-layers', 'all'
+    ]));
+  });
+
+  test('Vulkan 探针只有软件设备或无效行时回退 CPU', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({
+      stdout: 'Vulkan0: Microsoft Basic Render Driver\nVulkan1: llvmpipe\ninvalid',
+      exitCode: 0
+    }, {});
+    port.queueProcess({});
+    port.queuePorts(43124);
+    port.queueHealth({ status: 200, body: { status: 'ok' } });
+    const { runtime } = await createRuntime(port);
+
+    await runtime.start();
+
+    expect(runtime.getStatus()).toMatchObject({ phase: 'ready', backend: 'cpu' });
+    expect(port.spawnInputs[1]?.args).toEqual(expect.arrayContaining([
+      '--device', 'none', '--gpu-layers', '0'
+    ]));
+  });
+
   test('验收诊断只以 Main 私有布尔回调报告 Vulkan 非零 offload', async () => {
     const port = new FakeLocalModelProcessPort();
     port.queueProcess(

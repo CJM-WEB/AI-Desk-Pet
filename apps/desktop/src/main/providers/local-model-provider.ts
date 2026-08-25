@@ -63,17 +63,49 @@ function assertNoReasoningLeak(raw: unknown): void {
 function createRequestPolicy(
   connectionPort: LocalModelConnectionPort,
   generation: string,
-  toolChoice: ModelRequest['toolChoice']
+  request: ModelRequest
 ): OpenAIRequestPolicy {
   return {
-    body: toolChoice === 'required'
-      ? { ...localRequestBody, temperature: 0 }
-      : localRequestBody,
+    body: {
+      ...localRequestBody,
+      ...(request.toolChoice === 'required' ? { temperature: 0 } : {}),
+      // 锁定的 llama.cpp 支持在 json_object 中附带 Schema；只约束本地结构化回合。
+      ...(request.responseContract === undefined
+        ? {}
+        : {
+            response_format: {
+              type: 'json_object',
+              schema: request.responseContract.jsonSchema
+            }
+          })
+    },
     validateResponse(raw: unknown): void {
       assertCurrentGeneration(connectionPort, generation);
       assertNoReasoningLeak(raw);
     }
   };
+}
+
+/** 本地角色控制不接受纯文本降级；必填字段缺失时也不能发布无控制数据的成功响应。 */
+function assertStructuredResponse(
+  request: ModelRequest,
+  response: ModelResponse
+): void {
+  const contract = request.responseContract;
+  if (contract === undefined) return;
+  if (response.type !== 'text' || response.structured_output === undefined) {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
+  const required = contract.jsonSchema['required'];
+  if (
+    Array.isArray(required)
+    && required.some(field => (
+      typeof field !== 'string'
+      || !Object.prototype.hasOwnProperty.call(response.structured_output, field)
+    ))
+  ) {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
 }
 
 /** 本地模型只复用 OpenAI 传输协议；连接有效性与非思考约束始终由 Main 强制。 */
@@ -95,10 +127,12 @@ export class LocalModelProvider implements ModelProvider {
         return connection.token;
       },
       this.fetchClient,
-      createRequestPolicy(this.connectionPort, connection.generation, request.toolChoice)
+      createRequestPolicy(this.connectionPort, connection.generation, request)
     );
     try {
-      return await provider.respond({ ...request, reasoningMode: 'disabled' }, signal);
+      const response = await provider.respond({ ...request, reasoningMode: 'disabled' }, signal);
+      assertStructuredResponse(request, response);
+      return response;
     } catch (error) {
       assertCurrentGeneration(this.connectionPort, connection.generation);
       throw error;

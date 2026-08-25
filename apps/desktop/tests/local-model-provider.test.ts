@@ -37,6 +37,31 @@ const request: ModelRequest = {
   reasoningMode: 'provider_default'
 };
 
+const characterResponseSchema = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  required: ['text', 'activity', 'status'],
+  properties: {
+    text: { type: 'string' },
+    activity: { type: 'string' },
+    status: { type: 'string' }
+  }
+});
+
+const structuredRequest: ModelRequest = {
+  messages: [{ role: 'user', content: '保持安静陪伴' }],
+  tools: [],
+  toolChoice: 'none',
+  reasoningMode: 'provider_default',
+  responseContract: {
+    type: 'json_object',
+    name: 'character_chat',
+    jsonSchema: characterResponseSchema,
+    textField: 'text',
+    allowPlainTextFallback: true
+  }
+};
+
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -125,6 +150,47 @@ describe('LocalModelProvider', () => {
     expect(requestBodies[1]).not.toHaveProperty('temperature');
     expect(requestBodies[2]).toMatchObject({ tool_choice: 'none' });
     expect(requestBodies[2]).not.toHaveProperty('temperature');
+  });
+
+  test('结构化聊天把响应契约作为 llama.cpp JSON Schema 约束发送', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({ text: '好的。', activity: '安静陪伴', status: 'idle' })
+        }
+      }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond(
+      structuredRequest,
+      new AbortController().signal
+    )).resolves.toMatchObject({
+      type: 'text',
+      text: '好的。',
+      structured_output: { activity: '安静陪伴', status: 'idle' }
+    });
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    expect(body.response_format).toEqual({
+      type: 'json_object',
+      schema: characterResponseSchema
+    });
+  });
+
+  test('结构化聊天不把纯文本降级当作角色控制成功', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '我会保持安静。' } }]
+    }));
+    const provider = new LocalModelProvider(readyPort(), fetchClient);
+
+    await expect(provider.respond(
+      structuredRequest,
+      new AbortController().signal
+    )).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      retryable: false
+    });
   });
 
   test.each([

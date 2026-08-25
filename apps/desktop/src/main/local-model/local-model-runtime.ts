@@ -397,7 +397,7 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
       const exitCode = await waitForProcess(child, signal, this.#loadTimeoutMs);
       if (this.#active === active) this.#active = null;
       if (exitCode !== 0) return undefined;
-      return /\b(Vulkan\d+)\b/u.exec(output.value)?.[1];
+      return selectVulkanDevice(output.value);
     } catch (error) {
       await this.#terminateActive(active);
       if (isAbortError(error)) throw error;
@@ -805,6 +805,51 @@ function isPortConflict(stderr: string): boolean {
 function hasVulkanOffloadEvidence(output: string): boolean {
   const match = /offloaded\s+(\d+)\/(\d+)\s+layers\s+to\s+GPU/iu.exec(output);
   return match !== null && Number(match[1]) > 0;
+}
+
+type VulkanDeviceCandidate = Readonly<{
+  id: string;
+  ordinal: number;
+  preference: number;
+}>;
+
+const softwareVulkanDevicePattern = /(?:llvmpipe|lavapipe|swiftshader|software\s+renderer|microsoft\s+basic\s+render)/iu;
+const discreteVulkanDevicePattern = /(?:\bnvidia\b|\bgeforce\b|\bquadro\b|\btesla\b|\bradeon\s+(?:rx|pro)\b|\bamd\s+instinct\b|\bintel(?:\(r\))?\s+arc\b)/iu;
+const integratedVulkanDevicePattern = /(?:\bintel\b|\biris\b|\bradeon(?:\(tm\))?\s+graphics\b|\bvega\b)/iu;
+
+/**
+ * `--list-devices` 的序号只表示枚举顺序，不能代表性能。
+ * 解析所有唯一硬件设备后优先明确独显；未知硬件仍优先于已知集显，平局按序号稳定选择。
+ */
+function selectVulkanDevice(output: string): string | undefined {
+  const unique = new Map<string, VulkanDeviceCandidate>();
+  for (const line of output.split(/\r?\n/u)) {
+    // 保留旧运行时只输出设备 ID 的兼容格式；存在名称时再参与硬件分类。
+    const match = /^\s*(Vulkan(\d+))(?:\s*:\s*(\S[\s\S]*?))?\s*$/u.exec(line);
+    const id = match?.[1];
+    const ordinal = Number(match?.[2]);
+    const name = match?.[3] ?? '';
+    if (
+      id === undefined
+      || !Number.isSafeInteger(ordinal)
+      || unique.has(id)
+      || softwareVulkanDevicePattern.test(name)
+    ) {
+      continue;
+    }
+    unique.set(id, {
+      id,
+      ordinal,
+      preference: discreteVulkanDevicePattern.test(name)
+        ? 3
+        : integratedVulkanDevicePattern.test(name)
+          ? 1
+          : 2
+    });
+  }
+  return [...unique.values()].sort((left, right) => (
+    right.preference - left.preference || left.ordinal - right.ordinal
+  ))[0]?.id;
 }
 
 function runtimeCode(error: unknown): LocalModelReasonCode | undefined {
