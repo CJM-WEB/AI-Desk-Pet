@@ -52,7 +52,7 @@ describe('Main 能力会话工厂', () => {
     expect(prepared.executionRequest.toolName).toBe('powershell');
   });
 
-  test('文件会话只注册十个文件工具且不构造 PowerShell', async () => {
+  test('文件会话只注册十一个文件工具且不构造 PowerShell', async () => {
     const options = input('file');
 
     const session = await createMainAgentSession(options);
@@ -60,6 +60,7 @@ describe('Main 能力会话工厂', () => {
     expect(session.taskKind).toBe('file');
     expect(session.tools.map(tool => tool.function.name).sort()).toEqual([
       'builtin.files.apply_patch',
+      'builtin.files.copy_file',
       'builtin.files.create_directory',
       'builtin.files.create_file',
       'builtin.files.delete_file',
@@ -81,6 +82,7 @@ describe('Main 能力会话工厂', () => {
 
     expect(session.tools.map(tool => tool.function.name).sort()).toEqual([
       'builtin.files.apply_patch',
+      'builtin.files.copy_file',
       'builtin.files.create_directory',
       'builtin.files.create_file',
       'builtin.files.delete_file',
