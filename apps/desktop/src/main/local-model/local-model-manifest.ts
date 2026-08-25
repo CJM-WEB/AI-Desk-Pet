@@ -97,8 +97,11 @@ export interface ValidateLocalModelManifestOptions {
   applicationVersion: string;
   cachePath: string;
   releasePolicy?: LocalModelReleasePolicy;
-  hashFile?: (path: string) => Promise<string>;
+  signal?: AbortSignal;
+  hashFile?: LocalModelHashFile;
 }
+
+export type LocalModelHashFile = (path: string, signal: AbortSignal) => Promise<string>;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 const manifestFileSchema = z.object({
@@ -174,17 +177,22 @@ export async function validateLocalModelManifest(
 ): Promise<ValidatedLocalModelManifest> {
   const policy = options.releasePolicy ?? BUILTIN_LOCAL_MODEL_RELEASE;
   const hashFile = options.hashFile ?? sha256File;
+  const signal = options.signal ?? new AbortController().signal;
   let root: string;
   let manifest: LocalModelManifestDocument;
   try {
+    throwIfAborted(signal);
     root = await realpath(options.root);
+    throwIfAborted(signal);
     const manifestPath = resolve(root, 'manifest.json');
     const manifestStats = await stat(manifestPath);
     if (!manifestStats.isFile() || manifestStats.size > 256 * 1024) {
       throw new LocalModelManifestError('RUNTIME_INCOMPATIBLE');
     }
     manifest = manifestSchema.parse(JSON.parse(await readFile(manifestPath, 'utf8')));
+    throwIfAborted(signal);
   } catch (error) {
+    if (isAbortError(error)) throw error;
     if (error instanceof LocalModelManifestError) throw error;
     if (isMissingFileError(error)) throw new LocalModelManifestError('RESOURCE_MISSING');
     throw new LocalModelManifestError('RUNTIME_INCOMPATIBLE');
@@ -194,21 +202,23 @@ export async function validateLocalModelManifest(
   const entries = collectEntries(manifest);
   const resolvedEntries = new Map<string, string>();
   for (const entry of entries) {
+    throwIfAborted(signal);
     if (resolvedEntries.has(entry.path)) throw new LocalModelManifestError('RUNTIME_INCOMPATIBLE');
     resolvedEntries.set(entry.path, await resolveManifestFile(root, entry.path));
   }
   assertExecutableListed(manifest.runtime.backends.cpu);
   assertExecutableListed(manifest.runtime.backends.vulkan);
-  await assertExactAllowlist(root, new Set(['manifest.json', ...resolvedEntries.keys()]));
+  await assertExactAllowlist(root, new Set(['manifest.json', ...resolvedEntries.keys()]), signal);
 
   for (const entry of entries) {
+    throwIfAborted(signal);
     const file = resolvedEntries.get(entry.path);
     if (file === undefined) throw new LocalModelManifestError('RUNTIME_INCOMPATIBLE');
     const fileStats = await stat(file);
     if (fileStats.size !== entry.size) throw new LocalModelManifestError('RESOURCE_HASH_MISMATCH');
     if (entry === manifest.model.file) {
-      await verifyModelHash(options, file, entry, fileStats, hashFile);
-    } else if (await hashFile(file) !== entry.sha256) {
+      await verifyModelHash(options, file, entry, fileStats, hashFile, signal);
+    } else if (await hashFile(file, signal) !== entry.sha256) {
       throw new LocalModelManifestError('RESOURCE_HASH_MISMATCH');
     }
   }
@@ -307,22 +317,33 @@ function assertWithinRoot(root: string, candidate: string): void {
   throw new LocalModelManifestError('RUNTIME_INCOMPATIBLE');
 }
 
-async function assertExactAllowlist(root: string, allowlist: ReadonlySet<string>): Promise<void> {
+async function assertExactAllowlist(
+  root: string,
+  allowlist: ReadonlySet<string>,
+  signal: AbortSignal
+): Promise<void> {
   const actual = new Set<string>();
-  await walkFiles(root, '', actual);
+  await walkFiles(root, '', actual, signal);
   if (actual.size !== allowlist.size || [...actual].some(path => !allowlist.has(path))) {
     throw new LocalModelManifestError('RUNTIME_INCOMPATIBLE');
   }
 }
 
-async function walkFiles(root: string, relativeDirectory: string, result: Set<string>): Promise<void> {
+async function walkFiles(
+  root: string,
+  relativeDirectory: string,
+  result: Set<string>,
+  signal: AbortSignal
+): Promise<void> {
+  throwIfAborted(signal);
   const directory = relativeDirectory === '' ? root : resolve(root, ...relativeDirectory.split('/'));
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
+    throwIfAborted(signal);
     const relativePath = relativeDirectory === '' ? entry.name : `${relativeDirectory}/${entry.name}`;
     if (entry.isSymbolicLink()) throw new LocalModelManifestError('RUNTIME_INCOMPATIBLE');
     if (entry.isDirectory()) {
-      await walkFiles(root, relativePath, result);
+      await walkFiles(root, relativePath, result, signal);
     } else if (entry.isFile()) {
       result.add(relativePath);
     } else {
@@ -336,7 +357,8 @@ async function verifyModelHash(
   file: string,
   entry: LocalModelManifestFile,
   fileStats: Stats,
-  hashFile: (path: string) => Promise<string>
+  hashFile: LocalModelHashFile,
+  signal: AbortSignal
 ): Promise<void> {
   const expectedCache: ModelHashCache = {
     applicationVersion: options.applicationVersion,
@@ -348,16 +370,21 @@ async function verifyModelHash(
     ino: fileStats.ino,
     sha256: entry.sha256
   };
-  const cached = await readModelCache(options.cachePath);
+  const cached = await readModelCache(options.cachePath, signal);
   if (cached !== undefined && cacheMatches(cached, expectedCache)) return;
-  if (await hashFile(file) !== entry.sha256) throw new LocalModelManifestError('RESOURCE_HASH_MISMATCH');
-  await writeModelCache(options.cachePath, expectedCache);
+  if (await hashFile(file, signal) !== entry.sha256) throw new LocalModelManifestError('RESOURCE_HASH_MISMATCH');
+  throwIfAborted(signal);
+  await writeModelCache(options.cachePath, expectedCache, signal);
 }
 
-async function readModelCache(path: string): Promise<ModelHashCache | undefined> {
+async function readModelCache(path: string, signal: AbortSignal): Promise<ModelHashCache | undefined> {
   try {
-    return cacheSchema.parse(JSON.parse(await readFile(path, 'utf8')));
-  } catch {
+    throwIfAborted(signal);
+    const source = await readFile(path, 'utf8');
+    throwIfAborted(signal);
+    return cacheSchema.parse(JSON.parse(source));
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     return undefined;
   }
 }
@@ -366,28 +393,59 @@ function cacheMatches(left: ModelHashCache, right: ModelHashCache): boolean {
   return Object.keys(right).every(key => left[key as keyof ModelHashCache] === right[key as keyof ModelHashCache]);
 }
 
-async function writeModelCache(path: string, cache: ModelHashCache): Promise<void> {
+async function writeModelCache(path: string, cache: ModelHashCache, signal: AbortSignal): Promise<void> {
   const temporaryPath = `${path}.${process.pid}.tmp`;
   try {
+    throwIfAborted(signal);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(temporaryPath, JSON.stringify(cache), { encoding: 'utf8', mode: 0o600 });
+    throwIfAborted(signal);
     await rename(temporaryPath, path);
-  } catch {
+  } catch (error) {
     // 缓存失败不能改变已经完成的资源校验事实。
     await unlink(temporaryPath).catch(() => undefined);
+    if (isAbortError(error)) throw error;
   }
 }
 
-function sha256File(path: string): Promise<string> {
+/** 大型 GGUF 只做流式哈希；取消会主动销毁文件流，避免继续读取 2.55 GiB payload。 */
+function sha256File(path: string, signal: AbortSignal): Promise<string> {
   return new Promise((resolveHash, reject) => {
     const hash = createHash('sha256');
     const stream = createReadStream(path);
+    let settled = false;
+    const finish = (error?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      if (error === undefined) resolveHash(hash.digest('hex'));
+      else reject(error);
+    };
+    const onAbort = (): void => {
+      const error = createAbortError();
+      stream.destroy(error);
+      finish(error);
+    };
     stream.on('data', chunk => hash.update(chunk));
-    stream.once('error', reject);
-    stream.once('end', () => resolveHash(hash.digest('hex')));
+    stream.once('error', finish);
+    stream.once('end', () => finish());
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
   });
 }
 
 function isMissingFileError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT';
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'name') === 'AbortError';
+}
+
+function createAbortError(): Error {
+  return new DOMException('操作已取消', 'AbortError');
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw createAbortError();
 }

@@ -211,7 +211,7 @@ describe('validateLocalModelManifest', () => {
 
   test('模型缓存仅在应用版本和文件元数据均匹配时复用，否则重新计算完整 SHA', async () => {
     const fixture = await createFixture();
-    const hashFile = vi.fn(async (path: string) => {
+    const hashFile = vi.fn(async (path: string, _signal: AbortSignal) => {
       const content = await readFile(path);
       return createHash('sha256').update(content).digest('hex');
     });
@@ -234,5 +234,35 @@ describe('validateLocalModelManifest', () => {
     await expect(validateLocalModelManifest({ ...options, applicationVersion: '1.0.1' }))
       .rejects.toMatchObject({ reasonCode: 'RESOURCE_HASH_MISMATCH' });
     expect(hashFile.mock.calls.filter(([path]) => String(path).endsWith('.gguf'))).toHaveLength(3);
+  });
+
+  test('验证阶段 Abort 会传入哈希端口并中止阻塞中的 GGUF 完整哈希', async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    let notifyHashStarted!: () => void;
+    const hashStarted = new Promise<void>(resolve => { notifyHashStarted = resolve; });
+    const hashFile = vi.fn(async (path: string, signal: AbortSignal): Promise<string> => {
+      if (!path.endsWith('.gguf')) {
+        return createHash('sha256').update(await readFile(path)).digest('hex');
+      }
+      notifyHashStarted();
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+
+    const validation = validateLocalModelManifest({
+      root: fixture.root,
+      applicationVersion: '1.0.0',
+      cachePath: fixture.cachePath,
+      releasePolicy: policy,
+      hashFile,
+      signal: controller.signal
+    });
+    await hashStarted;
+    controller.abort();
+
+    await expect(validation).rejects.toMatchObject({ name: 'AbortError' });
+    expect(hashFile.mock.calls.some(([path, signal]) => path.endsWith('.gguf') && signal.aborted)).toBe(true);
   });
 });

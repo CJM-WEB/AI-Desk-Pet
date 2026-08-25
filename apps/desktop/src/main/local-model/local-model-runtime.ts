@@ -5,11 +5,17 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 
 import type { LocalModelPublicStatus } from '../../shared/local-model-ipc';
+import {
+  createNodeWindowsProcessTreePort,
+  terminateExactPidProcessTree,
+  type WindowsProcessTreePort
+} from '../agent/windows-process-tree';
 import type { LocalModelConnection, LocalModelConnectionPort } from '../providers/local-model-provider';
 import {
   BUILTIN_LOCAL_MODEL_RELEASE,
   LocalModelManifestError,
   validateLocalModelManifest,
+  type LocalModelHashFile,
   type LocalModelReleasePolicy,
   type ValidatedLocalModelManifest
 } from './local-model-manifest';
@@ -43,13 +49,17 @@ export interface LocalModelHealthResult {
 }
 
 /** 外部副作用集中在可替换端口，测试不启动真实 llama-server 或占用真实端口。 */
-export interface LocalModelProcessPort {
+export interface LocalModelProcessPort extends WindowsProcessTreePort {
   spawn(input: LocalModelSpawnInput): LocalModelChildProcess;
   findAvailablePort(): Promise<number>;
   getHealth(url: string, signal: AbortSignal): Promise<LocalModelHealthResult>;
   sleep(milliseconds: number, signal: AbortSignal): Promise<void>;
   randomBytes(size: number): Buffer;
-  killTree(pid: number): Promise<void>;
+}
+
+export interface LocalModelTokenFilePort {
+  unlink(path: string): Promise<void>;
+  rmdir(path: string): Promise<void>;
 }
 
 export interface LocalModelRuntimeOptions {
@@ -63,6 +73,8 @@ export interface LocalModelRuntimeOptions {
   loadTimeoutMs?: number;
   cleanupTimeoutMs?: number;
   environment?: NodeJS.ProcessEnv;
+  manifestHashFile?: LocalModelHashFile;
+  tokenFilePort?: LocalModelTokenFilePort;
 }
 
 interface ActiveProcess {
@@ -105,9 +117,11 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
   readonly #healthPollIntervalMs: number;
   readonly #loadTimeoutMs: number;
   readonly #cleanupTimeoutMs: number;
+  readonly #tokenFilePort: LocalModelTokenFilePort;
   readonly #listeners = new Set<(status: LocalModelPublicStatus) => void>();
   #status: LocalModelPublicStatus = createStatus(false, 'disabled', null, null);
   #generation = 0;
+  #lifecycleEpoch = 0;
   #connection: LocalModelConnection | null = null;
   #active: ActiveProcess | null = null;
   #tokenFile: TokenFile | null = null;
@@ -130,20 +144,31 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
       options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS,
       'CLEANUP_TIMEOUT'
     );
+    this.#tokenFilePort = options.tokenFilePort ?? { unlink, rmdir };
   }
 
   start(signal?: AbortSignal): Promise<void> {
     if (this.#closed) throw new Error('LOCAL_MODEL_RUNTIME_CLOSED');
     if (this.#status.phase === 'ready') return Promise.resolve();
     if (this.#startPromise !== undefined) return this.#startPromise;
+    // 接受 start 的同一同步调用栈就建立取消能力，确保紧随其后的 stop 不会漏过验证阶段。
+    const controller = new AbortController();
+    const epoch = ++this.#lifecycleEpoch;
+    const onAbort = (): void => controller.abort(createAbortError());
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted === true) controller.abort(createAbortError());
+    this.#startAbort = controller;
     const barriers = [this.#stopPromise, this.#crashCleanup].filter(
       (barrier): barrier is Promise<void> => barrier !== undefined
     );
     const operation = Promise.all(barriers).then(() => {
       if (this.#closed) throw new Error('LOCAL_MODEL_RUNTIME_CLOSED');
-      return this.#runStart(signal);
+      if (epoch !== this.#lifecycleEpoch || controller.signal.aborted) throw createAbortError();
+      return this.#prepareStart(controller);
     });
     const tracked = operation.finally(() => {
+      signal?.removeEventListener('abort', onAbort);
+      if (this.#startAbort === controller) this.#startAbort = null;
       if (this.#startPromise === tracked) this.#startPromise = undefined;
     });
     this.#startPromise = tracked;
@@ -151,17 +176,39 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
   }
 
   stop(): Promise<void> {
-    if (this.#stopPromise !== undefined) return this.#stopPromise;
+    if (this.#stopPromise !== undefined) {
+      // stop Promise 可复用，但复用期间新排队的 start 仍必须在同步栈内失效。
+      this.#lifecycleEpoch += 1;
+      this.#startAbort?.abort(createAbortError());
+      return this.#stopPromise;
+    }
     if (this.#status.phase === 'disabled' && this.#startPromise === undefined) return Promise.resolve();
+    this.#lifecycleEpoch += 1;
     this.#publish(false, 'stopping', this.#status.backend, null);
     this.#startAbort?.abort(createAbortError());
     const start = this.#startPromise;
+    const backend = this.#status.backend;
     const operation = (async () => {
-      if (start !== undefined) await start.catch(() => undefined);
+      if (start !== undefined) {
+        try {
+          await start;
+        } catch (error) {
+          if (runtimeCode(error) === 'PROCESS_CLEANUP_FAILED') {
+            this.#invalidateConnection();
+            this.#publish(false, 'faulted', backend, 'PROCESS_CLEANUP_FAILED');
+            throw new LocalModelRuntimeError('PROCESS_CLEANUP_FAILED');
+          }
+        }
+      }
       if (this.#crashCleanup !== undefined) await this.#crashCleanup;
-      await this.#cleanupActive();
       this.#invalidateConnection();
-      this.#publish(false, 'disabled', null, null);
+      try {
+        await this.#cleanupActive();
+        this.#publish(false, 'disabled', null, null);
+      } catch {
+        this.#publish(false, 'faulted', backend, 'PROCESS_CLEANUP_FAILED');
+        throw new LocalModelRuntimeError('PROCESS_CLEANUP_FAILED');
+      }
     })();
     const tracked = operation.finally(() => {
       if (this.#stopPromise === tracked) this.#stopPromise = undefined;
@@ -173,8 +220,13 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
   close(): Promise<void> {
     if (this.#closePromise !== undefined) return this.#closePromise;
     this.#closed = true;
-    this.#closePromise = this.stop();
-    return this.#closePromise;
+    const operation = this.stop();
+    const tracked = operation.catch(error => {
+      if (this.#closePromise === tracked) this.#closePromise = undefined;
+      throw error;
+    });
+    this.#closePromise = tracked;
+    return tracked;
   }
 
   getStatus(): LocalModelPublicStatus {
@@ -193,12 +245,20 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     return this.#connection;
   }
 
-  async #runStart(signal?: AbortSignal): Promise<void> {
-    const controller = new AbortController();
-    this.#startAbort = controller;
-    const onAbort = (): void => controller.abort(createAbortError());
-    signal?.addEventListener('abort', onAbort, { once: true });
-    if (signal?.aborted === true) controller.abort(createAbortError());
+  async #prepareStart(controller: AbortController): Promise<void> {
+    if (this.#active !== null || this.#tokenFile !== null) {
+      try {
+        await this.#cleanupActive();
+      } catch {
+        this.#publish(false, 'faulted', this.#status.backend, 'PROCESS_CLEANUP_FAILED');
+        throw new LocalModelRuntimeError('PROCESS_CLEANUP_FAILED');
+      }
+    }
+    throwIfAborted(controller.signal);
+    await this.#runStart(controller);
+  }
+
+  async #runStart(controller: AbortController): Promise<void> {
     const generation = `local-model-${++this.#generation}`;
     let backend: LocalModelBackend | null = null;
     try {
@@ -208,7 +268,9 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
         root: this.#options.root,
         applicationVersion: this.#options.applicationVersion,
         cachePath: this.#options.cachePath,
-        releasePolicy: this.#options.releasePolicy ?? BUILTIN_LOCAL_MODEL_RELEASE
+        releasePolicy: this.#options.releasePolicy ?? BUILTIN_LOCAL_MODEL_RELEASE,
+        ...(this.#options.manifestHashFile === undefined ? {} : { hashFile: this.#options.manifestHashFile }),
+        signal: controller.signal
       });
       throwIfAborted(controller.signal);
       this.#tokenFile = await createTokenFile(
@@ -225,7 +287,8 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
           await this.#startBackend(manifest, 'vulkan', generation, controller.signal, device);
           return;
         } catch (error) {
-          if (isAbortError(error) || runtimeCode(error) === 'PORT_CONFLICT') throw error;
+          const code = runtimeCode(error);
+          if (isAbortError(error) || code === 'PORT_CONFLICT' || code === 'PROCESS_CLEANUP_FAILED') throw error;
         }
       }
 
@@ -235,27 +298,42 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
         await this.#startBackend(manifest, 'cpu', generation, controller.signal);
       } catch (error) {
         const code = runtimeCode(error);
-        if (isAbortError(error) || code === 'PORT_CONFLICT' || code === 'MODEL_LOAD_TIMEOUT' || code === 'PROTOCOL_INCOMPATIBLE') {
+        if (
+          isAbortError(error)
+          || code === 'PORT_CONFLICT'
+          || code === 'MODEL_LOAD_TIMEOUT'
+          || code === 'PROTOCOL_INCOMPATIBLE'
+          || code === 'PROCESS_CLEANUP_FAILED'
+        ) {
           throw error;
         }
         throw new LocalModelRuntimeError('CPU_START_FAILED');
       }
     } catch (error) {
       const aborted = isAbortError(error) || controller.signal.aborted;
-      if (aborted) this.#publish(false, 'stopping', backend, null);
-      await this.#cleanupActive();
+      const stopOwnsStatus = aborted && this.#stopPromise !== undefined;
+      if (aborted && !stopOwnsStatus) this.#publish(false, 'stopping', backend, null);
+      if (runtimeCode(error) === 'PROCESS_CLEANUP_FAILED') {
+        this.#invalidateConnection();
+        this.#publish(false, 'faulted', backend, 'PROCESS_CLEANUP_FAILED');
+        throw new LocalModelRuntimeError('PROCESS_CLEANUP_FAILED');
+      }
+      try {
+        await this.#cleanupActive();
+      } catch {
+        this.#invalidateConnection();
+        this.#publish(false, 'faulted', backend, 'PROCESS_CLEANUP_FAILED');
+        throw new LocalModelRuntimeError('PROCESS_CLEANUP_FAILED');
+      }
       this.#invalidateConnection();
       if (aborted) {
-        this.#publish(false, 'disabled', null, null);
+        if (!stopOwnsStatus) this.#publish(false, 'disabled', null, null);
         throw createAbortError();
       }
       const code = error instanceof LocalModelManifestError ? error.reasonCode : runtimeCode(error);
       const reasonCode = code ?? 'RUNTIME_INCOMPATIBLE';
       this.#publish(true, 'faulted', backend, reasonCode);
       throw new LocalModelRuntimeError(reasonCode);
-    } finally {
-      signal?.removeEventListener('abort', onAbort);
-      if (this.#startAbort === controller) this.#startAbort = null;
     }
   }
 
@@ -278,21 +356,36 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
       return undefined;
     }
     const output = new BoundedTail(MAX_OUTPUT_BYTES);
+    const active: ActiveProcess = {
+      child,
+      backend: 'vulkan',
+      generation,
+      abortController: new AbortController(),
+      stdout: output,
+      stderr: new BoundedTail(MAX_OUTPUT_BYTES),
+      exited: false
+    };
+    this.#active = active;
+    child.once('close', () => { active.exited = true; });
+    child.once('error', () => { active.exited = true; });
     child.stdout.setEncoding?.('utf8');
     child.stderr.setEncoding?.('utf8');
     const onStdout = (chunk: Buffer | string): void => output.append(String(chunk));
+    const onStderr = (chunk: Buffer | string): void => active.stderr.append(String(chunk));
     child.stdout.on('data', onStdout);
+    child.stderr.on('data', onStderr);
     try {
       const exitCode = await waitForProcess(child, signal, this.#loadTimeoutMs);
+      if (this.#active === active) this.#active = null;
       if (exitCode !== 0) return undefined;
       return /\b(Vulkan\d+)\b/u.exec(output.value)?.[1];
     } catch (error) {
-      await terminateProcess(this.#processPort, child, this.#cleanupTimeoutMs, false);
+      await this.#terminateActive(active);
       if (isAbortError(error)) throw error;
       return undefined;
     } finally {
       child.stdout.off('data', onStdout);
-      void generation;
+      child.stderr.off('data', onStderr);
     }
   }
 
@@ -459,8 +552,9 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
     const onCrash = (): void => {
       if (this.#active !== active || this.#status.phase !== 'ready') return;
       this.#invalidateConnection();
-      const tokenFile = this.#takeTokenFile();
-      const cleanup = this.#terminateActive(active).finally(() => this.#deleteTokenFile(tokenFile));
+      const cleanup = this.#cleanupActive().catch(() => {
+        this.#publish(false, 'faulted', active.backend, 'PROCESS_CLEANUP_FAILED');
+      });
       const tracked = cleanup.finally(() => {
         if (this.#crashCleanup === tracked) this.#crashCleanup = undefined;
       });
@@ -474,25 +568,36 @@ export class LocalModelRuntime implements LocalModelConnectionPort {
   async #cleanupActive(): Promise<void> {
     const active = this.#active;
     if (active !== null) await this.#terminateActive(active);
-    await this.#deleteTokenFile(this.#takeTokenFile());
+    await this.#deleteTokenFile();
   }
 
   async #terminateActive(active: ActiveProcess): Promise<void> {
-    if (this.#active === active) this.#active = null;
     active.abortController.abort(createAbortError());
-    await terminateProcess(this.#processPort, active.child, this.#cleanupTimeoutMs, active.exited);
+    const result = await terminateExactPidProcessTree({
+      child: active.child,
+      processTreePort: this.#processPort,
+      cleanupTimeoutMs: this.#cleanupTimeoutMs,
+      alreadyExited: active.exited,
+      waitForChildExit: true
+    });
+    if (!result.ok) throw new LocalModelRuntimeError('PROCESS_CLEANUP_FAILED');
+    if (this.#active === active) this.#active = null;
   }
 
-  #takeTokenFile(): TokenFile | null {
+  async #deleteTokenFile(): Promise<void> {
     const tokenFile = this.#tokenFile;
-    this.#tokenFile = null;
-    return tokenFile;
-  }
-
-  async #deleteTokenFile(tokenFile: TokenFile | null): Promise<void> {
     if (tokenFile === null) return;
-    await unlink(tokenFile.path).catch(() => undefined);
-    await rmdir(tokenFile.directory).catch(() => undefined);
+    try {
+      await this.#tokenFilePort.unlink(tokenFile.path);
+    } catch (error) {
+      if (!isMissingFileError(error)) throw new LocalModelRuntimeError('PROCESS_CLEANUP_FAILED');
+    }
+    try {
+      await this.#tokenFilePort.rmdir(tokenFile.directory);
+    } catch (error) {
+      if (!isMissingFileError(error)) throw new LocalModelRuntimeError('PROCESS_CLEANUP_FAILED');
+    }
+    if (this.#tokenFile === tokenFile) this.#tokenFile = null;
   }
 
   #invalidateConnection(): void {
@@ -556,6 +661,7 @@ async function createTokenFile(tokenRoot: string, token: string): Promise<TokenF
 
 function createNodeProcessPort(): LocalModelProcessPort {
   return {
+    ...createNodeWindowsProcessTreePort(),
     spawn(input): LocalModelChildProcess {
       return spawn(input.file, [...input.args], {
         cwd: input.cwd,
@@ -608,23 +714,6 @@ function createNodeProcessPort(): LocalModelProcessPort {
     },
     randomBytes(size): Buffer {
       return Buffer.from(crypto.getRandomValues(new Uint8Array(size)));
-    },
-    killTree(pid): Promise<void> {
-      return new Promise(resolveKill => {
-        let taskkill: LocalModelChildProcess;
-        try {
-          taskkill = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
-            shell: false,
-            windowsHide: true,
-            stdio: 'ignore'
-          }) as unknown as LocalModelChildProcess;
-        } catch {
-          resolveKill();
-          return;
-        }
-        taskkill.once('error', () => resolveKill());
-        taskkill.once('close', () => resolveKill());
-      });
     }
   };
 }
@@ -663,57 +752,6 @@ function waitForProcess(
   });
 }
 
-async function terminateProcess(
-  processPort: LocalModelProcessPort,
-  child: LocalModelChildProcess,
-  cleanupTimeoutMs: number,
-  alreadyExited: boolean
-): Promise<void> {
-  if (alreadyExited) return;
-  const childExit = waitForChildExit(child);
-  try {
-    child.kill('SIGTERM');
-  } catch {
-    // 直接终止失败后仍按记录的精确 PID 清理子进程树。
-  }
-  let treeExit = Promise.resolve();
-  if (child.pid !== undefined) {
-    try {
-      treeExit = processPort.killTree(child.pid).catch(() => undefined);
-    } catch {
-      // 同步启动 taskkill 失败后仍等待 child 自身退出或清理超时。
-    }
-  }
-  await boundedCleanup(Promise.all([treeExit, childExit]).then(() => undefined), cleanupTimeoutMs);
-}
-
-function waitForChildExit(child: LocalModelChildProcess): Promise<void> {
-  return new Promise(resolveExit => {
-    const finish = (): void => {
-      child.off('close', finish);
-      child.off('error', finish);
-      resolveExit();
-    };
-    child.once('close', finish);
-    child.once('error', finish);
-  });
-}
-
-/** taskkill 只针对本次记录 PID；失败或挂起不能阻塞退出状态收敛。 */
-function boundedCleanup(cleanup: Promise<void>, timeoutMs: number): Promise<void> {
-  return new Promise(resolveCleanup => {
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolveCleanup();
-    };
-    const timeout = setTimeout(finish, timeoutMs);
-    void cleanup.then(finish, finish);
-  });
-}
-
 function isStrictHealthyBody(body: unknown): boolean {
   return typeof body === 'object'
     && body !== null
@@ -735,6 +773,10 @@ function createAbortError(): DOMException {
 
 function isAbortError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && Reflect.get(error, 'name') === 'AbortError';
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT';
 }
 
 function throwIfAborted(signal: AbortSignal): void {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -9,7 +9,10 @@ import type {
   LocalModelManifestDocument,
   LocalModelReleasePolicy
 } from '../src/main/local-model/local-model-manifest';
-import { LocalModelRuntime } from '../src/main/local-model/local-model-runtime';
+import {
+  LocalModelRuntime,
+  type LocalModelTokenFilePort
+} from '../src/main/local-model/local-model-runtime';
 import {
   FakeLocalModelProcessPort,
   type FakeProcessScenario
@@ -110,11 +113,17 @@ async function createResourceFixture(): Promise<{ root: string; tokenRoot: strin
 
 async function createRuntime(
   processPort: FakeLocalModelProcessPort,
-  overrides: { loadTimeoutMs?: number; cleanupTimeoutMs?: number } = {}
-): Promise<{ runtime: LocalModelRuntime; root: string }> {
+  overrides: {
+    loadTimeoutMs?: number;
+    cleanupTimeoutMs?: number;
+    manifestHashFile?: (path: string, signal: AbortSignal) => Promise<string>;
+    tokenFilePort?: LocalModelTokenFilePort;
+  } = {}
+): Promise<{ runtime: LocalModelRuntime; root: string; tokenRoot: string }> {
   const fixture = await createResourceFixture();
   return {
     root: fixture.root,
+    tokenRoot: fixture.tokenRoot,
     runtime: new LocalModelRuntime({
       root: fixture.root,
       applicationVersion: '1.0.0',
@@ -122,6 +131,8 @@ async function createRuntime(
       tokenRoot: fixture.tokenRoot,
       releasePolicy,
       processPort,
+      ...(overrides.manifestHashFile === undefined ? {} : { manifestHashFile: overrides.manifestHashFile }),
+      ...(overrides.tokenFilePort === undefined ? {} : { tokenFilePort: overrides.tokenFilePort }),
       healthPollIntervalMs: 1,
       loadTimeoutMs: overrides.loadTimeoutMs ?? 100,
       cleanupTimeoutMs: overrides.cleanupTimeoutMs ?? 100
@@ -157,6 +168,48 @@ afterEach(async () => {
 });
 
 describe('LocalModelRuntime', () => {
+  test('同 tick start→stop 会取消已接受启动且停止后不再进入 validating', async () => {
+    const port = new FakeLocalModelProcessPort();
+    const { runtime } = await createRuntime(port);
+    const phases: string[] = [];
+    runtime.subscribe(status => phases.push(status.phase));
+
+    const starting = runtime.start();
+    const stopping = runtime.stop();
+
+    await expect(starting).rejects.toMatchObject({ name: 'AbortError' });
+    await stopping;
+    expect(phases).toEqual(['stopping', 'disabled']);
+    expect(port.spawnInputs).toHaveLength(0);
+  });
+
+  test('stop 会中止 validating 阶段阻塞中的 manifest 哈希且不创建进程', async () => {
+    const port = new FakeLocalModelProcessPort();
+    let notifyHashStarted!: () => void;
+    const hashStarted = new Promise<void>(resolve => { notifyHashStarted = resolve; });
+    const manifestHashFile = async (path: string, signal: AbortSignal): Promise<string> => {
+      if (!path.endsWith('.gguf')) {
+        return createHash('sha256').update(await readFile(path)).digest('hex');
+      }
+      notifyHashStarted();
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    };
+    const { runtime } = await createRuntime(port, { manifestHashFile });
+    const phases: string[] = [];
+    runtime.subscribe(status => phases.push(status.phase));
+
+    const starting = runtime.start();
+    await hashStarted;
+    const stopping = runtime.stop();
+
+    await expect(starting).rejects.toMatchObject({ name: 'AbortError' });
+    await stopping;
+    expect(phases).toEqual(['validating', 'stopping', 'disabled']);
+    expect(port.spawnInputs).toHaveLength(0);
+  });
+
   test('Vulkan 探针解析真实设备并以固定安全 argv 进入 ready', async () => {
     const port = new FakeLocalModelProcessPort();
     queueVulkanReady(port, true);
@@ -214,6 +267,27 @@ describe('LocalModelRuntime', () => {
     expect(runtime.getStatus()).toMatchObject({ phase: 'ready', backend: 'cpu' });
     expect(port.killedPids).not.toContain(5101);
     expect(port.spawnInputs[2]?.args).toEqual(expect.arrayContaining(['--device', 'none']));
+  });
+
+  test('Vulkan server 加载失败但无法终止时不覆盖精确进程记录或降级 CPU', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess(
+      { stdout: 'Vulkan1: Fixture GPU\n', exitCode: 0 },
+      { closeOnKill: false, pid: 5111 }
+    );
+    port.queuePorts(43126);
+    port.queueHealth({ status: 400, body: { status: 'bad' } });
+    const { runtime } = await createRuntime(port, { cleanupTimeoutMs: 20 });
+
+    await expect(runtime.start()).rejects.toMatchObject({ code: 'PROCESS_CLEANUP_FAILED' });
+    expect(port.spawnInputs).toHaveLength(2);
+    expect(runtime.getStatus()).toEqual({
+      enabled: false, phase: 'faulted', backend: 'vulkan', reasonCode: 'PROCESS_CLEANUP_FAILED'
+    });
+
+    port.processes[1]?.finish(null);
+    await runtime.stop();
+    expect(port.killedPids).toEqual([5111]);
   });
 
   test('Vulkan 与 CPU 双失败后进入 faulted 且不循环重启', async () => {
@@ -304,6 +378,25 @@ describe('LocalModelRuntime', () => {
 
     expect(runtime.getStatus()).toMatchObject({ phase: 'ready', backend: 'cpu' });
     expect(port.killedPids).toContain(5351);
+  });
+
+  test('Vulkan 探针终止超时也会保留精确进程与 Token 供 stop 重试', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({ closeOnKill: false, pid: 5151 });
+    const { runtime, tokenRoot } = await createRuntime(port, { loadTimeoutMs: 20, cleanupTimeoutMs: 20 });
+
+    await expect(runtime.start()).rejects.toMatchObject({ code: 'PROCESS_CLEANUP_FAILED' });
+    const [sessionDirectory] = await readdir(tokenRoot);
+    const tokenFile = join(tokenRoot, String(sessionDirectory), 'api-key.txt');
+    await expect(access(tokenFile)).resolves.toBeUndefined();
+    expect(runtime.getStatus()).toEqual({
+      enabled: false, phase: 'faulted', backend: 'vulkan', reasonCode: 'PROCESS_CLEANUP_FAILED'
+    });
+
+    port.processes[0]?.finish(null);
+    await runtime.stop();
+    await expectMissing(tokenFile);
+    expect(port.killedPids).toEqual([5151]);
   });
 
   test('CPU 模型加载超过边界时间后清理进程并进入 faulted', async () => {
@@ -426,6 +519,93 @@ describe('LocalModelRuntime', () => {
     expect(runtime.getStatus()).toEqual({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
   });
 
+  test('托管 child 永不 close 时保留精确进程与 Token，并发布可重试清理失败', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({ stdout: 'Vulkan0\n', exitCode: 0 }, { closeOnKill: false, pid: 5651 });
+    port.queuePorts(44350);
+    port.queueHealth({ status: 200, body: { status: 'ok' } });
+    const { runtime } = await createRuntime(port, { cleanupTimeoutMs: 20 });
+    await runtime.start();
+    const tokenFile = String(port.spawnInputs[1]?.args[port.spawnInputs[1].args.indexOf('--api-key-file') + 1]);
+
+    await expect(runtime.stop()).rejects.toMatchObject({ code: 'PROCESS_CLEANUP_FAILED' });
+    await expect(access(tokenFile)).resolves.toBeUndefined();
+    expect(runtime.getStatus()).toEqual({
+      enabled: false, phase: 'faulted', backend: 'vulkan', reasonCode: 'PROCESS_CLEANUP_FAILED'
+    });
+
+    port.processes[1]?.finish(null);
+    await runtime.stop();
+    await expectMissing(tokenFile);
+    expect(port.killedPids).toEqual([5651]);
+    expect(runtime.getStatus()).toEqual({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
+  });
+
+  test.each(['unlink', 'rmdir'] as const)('Token %s 真实失败不会伪装 disabled，后续 stop 可重试清理', async operation => {
+    const port = new FakeLocalModelProcessPort();
+    queueVulkanReady(port);
+    let failed = false;
+    const tokenFilePort: LocalModelTokenFilePort = {
+      async unlink(path): Promise<void> {
+        if (operation === 'unlink' && !failed) {
+          failed = true;
+          throw Object.assign(new Error('fixture unlink denied'), { code: 'EPERM' });
+        }
+        await unlink(path);
+      },
+      async rmdir(path): Promise<void> {
+        if (operation === 'rmdir' && !failed) {
+          failed = true;
+          throw Object.assign(new Error('fixture rmdir denied'), { code: 'EPERM' });
+        }
+        await rmdir(path);
+      }
+    };
+    const { runtime } = await createRuntime(port, { tokenFilePort });
+    await runtime.start();
+    const tokenFile = String(port.spawnInputs[1]?.args[port.spawnInputs[1].args.indexOf('--api-key-file') + 1]);
+
+    await expect(runtime.stop()).rejects.toMatchObject({ code: 'PROCESS_CLEANUP_FAILED' });
+    expect(runtime.getStatus()).toEqual({
+      enabled: false, phase: 'faulted', backend: 'vulkan', reasonCode: 'PROCESS_CLEANUP_FAILED'
+    });
+    if (operation === 'unlink') await expect(access(tokenFile)).resolves.toBeUndefined();
+    else await expectMissing(tokenFile);
+
+    await runtime.stop();
+    await expectMissing(tokenFile);
+    expect(runtime.getStatus()).toEqual({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
+  });
+
+  test('close 清理失败时并发调用幂等，后续 close 可重试保留的 Token', async () => {
+    const port = new FakeLocalModelProcessPort();
+    queueVulkanReady(port);
+    let failUnlink = true;
+    const tokenFilePort: LocalModelTokenFilePort = {
+      async unlink(path): Promise<void> {
+        if (failUnlink) {
+          failUnlink = false;
+          throw Object.assign(new Error('fixture unlink denied'), { code: 'EPERM' });
+        }
+        await unlink(path);
+      },
+      rmdir
+    };
+    const { runtime } = await createRuntime(port, { tokenFilePort });
+    await runtime.start();
+    const tokenFile = String(port.spawnInputs[1]?.args[port.spawnInputs[1].args.indexOf('--api-key-file') + 1]);
+
+    const firstClose = runtime.close();
+    const secondClose = runtime.close();
+    expect(secondClose).toBe(firstClose);
+    await expect(firstClose).rejects.toMatchObject({ code: 'PROCESS_CLEANUP_FAILED' });
+    await expect(access(tokenFile)).resolves.toBeUndefined();
+
+    await runtime.close();
+    await expectMissing(tokenFile);
+    expect(runtime.getStatus()).toEqual({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
+  });
+
   test('stop 期间排队的 start 在 close 后不能复活 Runtime', async () => {
     const port = new FakeLocalModelProcessPort();
     port.queueProcess({ stdout: 'Vulkan0\n', exitCode: 0 }, { closeOnKill: false, pid: 5701 });
@@ -444,6 +624,55 @@ describe('LocalModelRuntime', () => {
     await expect(queuedStart).rejects.toThrow('LOCAL_MODEL_RUNTIME_CLOSED');
     expect(port.spawnInputs).toHaveLength(2);
     expect(runtime.getStatus()).toEqual({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
+  });
+
+  test('复用中的 stop 也会使其后排队的 start 失效，完成后 Runtime 不复活', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({ stdout: 'Vulkan0\n', exitCode: 0 }, { closeOnKill: false, pid: 5751 });
+    port.queuePorts(44450);
+    port.queueHealth({ status: 200, body: { status: 'ok' } });
+    const { runtime } = await createRuntime(port);
+    await runtime.start();
+
+    const firstStop = runtime.stop();
+    const queuedStart = runtime.start();
+    const secondStop = runtime.stop();
+    expect(secondStop).toBe(firstStop);
+    port.processes[1]?.finish(null);
+
+    await firstStop;
+    await expect(queuedStart).rejects.toMatchObject({ name: 'AbortError' });
+    expect(port.spawnInputs).toHaveLength(2);
+    expect(runtime.getStatus()).toEqual({ enabled: false, phase: 'disabled', backend: null, reasonCode: null });
+  });
+
+  test('stop 等待 start 时遇到首次 Token 清理失败会暴露失败并保留后续重试', async () => {
+    const port = new FakeLocalModelProcessPort();
+    port.queueProcess({ stderr: 'no Vulkan', exitCode: 1 }, { pid: 5761 });
+    port.queuePorts(44460);
+    let failUnlink = true;
+    const tokenFilePort: LocalModelTokenFilePort = {
+      async unlink(path): Promise<void> {
+        if (failUnlink) {
+          failUnlink = false;
+          throw Object.assign(new Error('fixture unlink denied'), { code: 'EPERM' });
+        }
+        await unlink(path);
+      },
+      rmdir
+    };
+    const { runtime } = await createRuntime(port, { tokenFilePort });
+    const starting = runtime.start();
+    await vi.waitFor(() => expect(port.spawnInputs).toHaveLength(2));
+    const tokenFile = String(port.spawnInputs[1]?.args[port.spawnInputs[1].args.indexOf('--api-key-file') + 1]);
+
+    await expect(runtime.stop()).rejects.toMatchObject({ code: 'PROCESS_CLEANUP_FAILED' });
+    await expect(starting).rejects.toMatchObject({ code: 'PROCESS_CLEANUP_FAILED' });
+    await expect(access(tokenFile)).resolves.toBeUndefined();
+    expect(runtime.getStatus()).toMatchObject({ phase: 'faulted', reasonCode: 'PROCESS_CLEANUP_FAILED' });
+
+    await runtime.stop();
+    await expectMissing(tokenFile);
   });
 
   test('旧进程 error 清理延迟时不会删除重试 generation 的新 Token', async () => {

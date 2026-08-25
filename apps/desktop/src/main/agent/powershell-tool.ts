@@ -3,6 +3,12 @@ import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { win32 } from 'node:path';
 
+import {
+  createNodeWindowsProcessTreePort,
+  terminateExactPidProcessTree,
+  type WindowsProcessTreePort
+} from './windows-process-tree';
+
 export type VerifiedPowerShellAction = Readonly<{
   kind: 'powershell';
   command: string;
@@ -37,7 +43,7 @@ interface RunningProcess extends EventEmitter {
 }
 
 /** 进程端口只为本模块隔离 Node 子进程细节，测试通过替身驱动所有运行分支。 */
-interface ProcessPort {
+interface ProcessPort extends WindowsProcessTreePort {
   spawn(input: {
     file: 'powershell.exe';
     args: readonly string[];
@@ -268,6 +274,7 @@ export class PowerShellTool {
 
 function createNodeProcessPort(): ProcessPort {
   return {
+    ...createNodeWindowsProcessTreePort(),
     spawn(input): RunningProcess {
       return spawn(input.file, [...input.args], {
         cwd: input.cwd,
@@ -276,23 +283,6 @@ function createNodeProcessPort(): ProcessPort {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe']
       }) as unknown as RunningProcess;
-    },
-    killTree(pid): Promise<void> {
-      return new Promise((resolve) => {
-        let taskkill: RunningProcess;
-        try {
-          taskkill = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
-            shell: false,
-            windowsHide: true,
-            stdio: 'ignore'
-          }) as unknown as RunningProcess;
-        } catch {
-          resolve();
-          return;
-        }
-        taskkill.once('error', () => resolve());
-        taskkill.once('close', () => resolve());
-      });
     }
   };
 }
@@ -353,31 +343,11 @@ async function terminateProcess(
   child: RunningProcess,
   cleanupTimeoutMs: number
 ): Promise<void> {
-  try {
-    child.kill('SIGTERM');
-  } catch {
-    // 直接终止失败时仍继续尽力清理可见 pid 的子树。
-  }
-  if (child.pid === undefined) return;
-  try {
-    await awaitCleanup(processPort.killTree(child.pid), cleanupTimeoutMs);
-  } catch {
-    // taskkill 仅是尽力清理，不影响已确定的取消或超时事实。
-  }
-}
-
-/** taskkill 是尽力清理；任何挂起或失败都不能阻塞取消、超时与关闭的最终事实。 */
-function awaitCleanup(cleanup: Promise<void>, timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve();
-    };
-    const timeout = setTimeout(finish, timeoutMs);
-    void cleanup.then(finish, finish);
+  await terminateExactPidProcessTree({
+    child,
+    processTreePort: processPort,
+    cleanupTimeoutMs,
+    waitForChildExit: false
   });
 }
 
