@@ -2337,6 +2337,10 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
         'ready',
         { timeout: 20_000 }
       );
+      // Renderer ready 早于 Main 几何事务收敛；拖拽不变量必须从稳定窗口尺寸开始取样。
+      await expect.poll(async () => (
+        await fixture.getMainE2eState()
+      ).geometry).not.toBeNull();
       const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
       const dispatchPointer = async (
         type: 'pointermove' | 'pointerdown' | 'pointerup' | 'contextmenu',
@@ -2534,7 +2538,7 @@ test.describe('固定尺寸视觉几何', () => {
         allowCrossProviderFallback: false
       });
       await window.myself.savePrivacySettings({
-        dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+        dataCategories: { file: false, memory: false },
         longTermMemory: false,
         proactivityMode: 'passive'
       });
@@ -3539,7 +3543,7 @@ test.describe('自主行为最小闭环', () => {
           });
           await window.myself.savePrivacySettings({
             dataCategories: {
-              file: false, screenshot: false, clipboard: false, memory: false
+              file: false, memory: false
             },
             longTermMemory: false,
             proactivityMode: 'passive'
@@ -3678,8 +3682,6 @@ test.describe('自主行为最小闭环', () => {
         await window.myself.savePrivacySettings({
           dataCategories: {
             file: false,
-            screenshot: false,
-            clipboard: false,
             memory: false
           },
           longTermMemory: false,
@@ -3804,7 +3806,7 @@ test.describe('自主行为最小闭环', () => {
       await pet.evaluate(async proactivityMode => {
         await window.myself.savePrivacySettings({
           dataCategories: {
-            file: true, screenshot: false, clipboard: false, memory: false
+            file: true, memory: false
           },
           longTermMemory: false,
           proactivityMode
@@ -3844,7 +3846,7 @@ test.describe('自主行为最小闭环', () => {
         });
         await window.myself.savePrivacySettings({
           dataCategories: {
-            file: true, screenshot: false, clipboard: false, memory: false
+            file: true, memory: false
           },
           longTermMemory: false,
           proactivityMode: 'passive'
@@ -4402,8 +4404,6 @@ test.describe('真实 Provider 业务闭环', () => {
         await window.myself.savePrivacySettings({
           dataCategories: {
             file: true,
-            screenshot: false,
-            clipboard: false,
             memory: false
           },
           longTermMemory: false,
@@ -5113,8 +5113,6 @@ test.describe('真实 Provider 业务闭环', () => {
         await window.myself.savePrivacySettings({
           dataCategories: {
             file: true,
-            screenshot: false,
-            clipboard: false,
             memory: false
           },
           longTermMemory: false,
@@ -5406,8 +5404,6 @@ test.describe('真实 Provider 业务闭环', () => {
         await window.myself.savePrivacySettings({
           dataCategories: {
             file: true,
-            screenshot: false,
-            clipboard: false,
             memory: false
           },
           longTermMemory: false,
@@ -5525,8 +5521,6 @@ test.describe('真实 Provider 业务闭环', () => {
         await window.myself.savePrivacySettings({
           dataCategories: {
             file: true,
-            screenshot: false,
-            clipboard: false,
             memory: false
           },
           longTermMemory: false,
@@ -5630,7 +5624,7 @@ test.describe('真实 Provider 业务闭环', () => {
           allowCrossProviderFallback: false
         });
         await window.myself.savePrivacySettings({
-          dataCategories: { file: true, screenshot: false, clipboard: false, memory: false },
+          dataCategories: { file: true, memory: false },
           longTermMemory: false,
           proactivityMode: 'passive'
         });
@@ -6401,8 +6395,6 @@ test.describe('真实 Provider 业务闭环', () => {
         await window.myself.savePrivacySettings({
           dataCategories: {
             file: true,
-            screenshot: false,
-            clipboard: false,
             memory: false
           },
           longTermMemory: false,
