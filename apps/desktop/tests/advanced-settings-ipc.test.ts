@@ -92,7 +92,7 @@ describe('高级设置白名单 IPC', () => {
     registerAdvancedSettingsIpc(ipcMain, service);
 
     await expect(handlers.get(ipcChannels.settingsPrivacySave)?.({}, {
-      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      dataCategories: { file: false, memory: false },
       longTermMemory: false,
       proactivityMode: 'assistive',
       petAlwaysOnTop: true
@@ -106,7 +106,7 @@ describe('高级设置白名单 IPC', () => {
     registerAdvancedSettingsIpc(ipcMain, service);
 
     await expect(handlers.get(ipcChannels.settingsPrivacySave)?.({}, {
-      dataCategories: { file: false, screenshot: false, clipboard: false, memory: false },
+      dataCategories: { file: false, memory: false },
       longTermMemory: false,
       proactivityMode: 'assistive',
       movementStopped: true

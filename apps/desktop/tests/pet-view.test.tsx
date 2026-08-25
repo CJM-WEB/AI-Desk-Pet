@@ -146,7 +146,7 @@ test('固定默认尺寸下 wheel 不再交给桌宠交互控制器', () => {
   expect(handleWheel).not.toHaveBeenCalled();
 });
 
-test('拖拽会话期间保持原动画模式且备用呼吸不改变尺寸', () => {
+test('拖拽会话期间保持原动画模式且所有备用动画不改变尺寸', () => {
   const api = createPetViewApi();
   installPetViewBrowserApi(api);
   let options: PetInteractionControllerOptions | undefined;
@@ -172,8 +172,14 @@ test('拖拽会话期间保持原动画模式且备用呼吸不改变尺寸', ()
     resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
     'utf8'
   );
-  const breathe = /@keyframes companion-breathe\s*\{([\s\S]*?)\n\}/u.exec(styles)?.[1] ?? '';
-  expect(breathe).not.toContain('scale(');
+  const fallbackKeyframes = [...styles.matchAll(
+    /@keyframes\s+(companion-[\w-]+)\s*\{([\s\S]*?)\n\}/gu
+  )];
+  expect(fallbackKeyframes.length).toBeGreaterThan(0);
+  expect(fallbackKeyframes.map(([, name, body]) => ({ name, body })))
+    .not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ body: expect.stringContaining('scale(') })
+    ]));
 });
 
 

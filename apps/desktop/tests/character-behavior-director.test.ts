@@ -306,6 +306,46 @@ describe('Main 角色行为 Director', () => {
   );
 
   test.each([
+    ['动', 'reset', async (fixture: ReturnType<typeof createFixture>) => {
+      fixture.director.reset('generation-2');
+    }],
+    ['动', 'close', async (fixture: ReturnType<typeof createFixture>) => {
+      await fixture.director.close();
+    }],
+    ['保持运动', 'reset', async (fixture: ReturnType<typeof createFixture>) => {
+      fixture.director.reset('generation-2');
+    }],
+    ['保持运动', 'close', async (fixture: ReturnType<typeof createFixture>) => {
+      await fixture.director.close();
+    }]
+  ] as const)(
+    '明确命令“%s”解锁保存悬空期间 %s 后旧轮不得请求 Motion',
+    async (text, _name, invalidate) => {
+      const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+      let releaseSave: (() => void) | undefined;
+      fixture.setDirectedAuthorization({
+        kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+      });
+      fixture.saveMovementStopped.mockImplementationOnce(async movementStopped => {
+        await new Promise<void>(resolve => { releaseSave = resolve; });
+        fixture.director.applyBehaviorSettings({
+          movementStopped,
+          proactivityMode: 'autonomous'
+        });
+      });
+
+      const preparation = fixture.director.prepareUserPrompt(text);
+      await vi.waitFor(() => expect(releaseSave).toBeTypeOf('function'));
+      await invalidate(fixture);
+      releaseSave?.();
+      await preparation;
+
+      expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+      expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
     { mode: 'once' as const, continuous: false },
     { mode: 'continuous' as const, continuous: true }
   ])('停止锁下当前用户轮次的 Schema $mode 计划先落盘解锁再运动', async ({ mode, continuous }) => {

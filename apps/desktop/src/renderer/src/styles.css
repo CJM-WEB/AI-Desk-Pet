@@ -250,9 +250,8 @@ textarea {
 }
 
 @keyframes companion-celebrate {
-  0% { transform: translateY(0) scale(1); }
-  55% { transform: translateY(-10px) scale(1.04); }
-  100% { transform: translateY(0) scale(1); }
+  0%, 100% { transform: translateY(0); }
+  55% { transform: translateY(-10px); }
 }
 
 @keyframes companion-sorry {

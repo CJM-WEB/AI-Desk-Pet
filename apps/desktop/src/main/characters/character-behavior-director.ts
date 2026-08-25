@@ -214,6 +214,7 @@ export class CharacterBehaviorDirector {
   async prepareUserPrompt(text: string): Promise<PreparedBehaviorPrompt> {
     const originalText = text.trim();
     const parsed = parseExplicitCharacterBehavior(originalText);
+    const promptGeneration = this.generation;
     const prepared: PreparedBehaviorPrompt = {
       originalText,
       capabilityText: parsed?.capabilityText ?? originalText,
@@ -225,13 +226,13 @@ export class CharacterBehaviorDirector {
     } else if (directive?.kind === 'resume_movement') {
       await this.options.saveMovementStopped(false);
     } else if (directive?.kind === 'continuous_movement') {
-      await this.resumeExplicitMovementIfStopped();
-      this.requestMotionPlan({
+      if (await this.resumeExplicitMovementIfStopped(promptGeneration)) this.requestMotionPlan({
         mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium'
       }, 'explicit');
     } else if (directive?.kind === 'move') {
-      await this.resumeExplicitMovementIfStopped();
-      this.requestMotionBehavior(directive.motion, 'explicit');
+      if (await this.resumeExplicitMovementIfStopped(promptGeneration)) {
+        this.requestMotionBehavior(directive.motion, 'explicit');
+      }
     } else if (directive?.kind === 'play') {
       this.requestBehaviorPlan({ kind: 'play', target: directive.target }, 'explicit');
     }
@@ -609,9 +610,10 @@ export class CharacterBehaviorDirector {
     return !this.active || SOURCE_PRIORITY[source] > SOURCE_PRIORITY[this.active.source];
   }
 
-  /** 明确运动命令只有在停止锁成功落盘并同步回 Director 后才能进入既有运动链。 */
-  private async resumeExplicitMovementIfStopped(): Promise<void> {
+  /** 明确运动命令落盘后须仍属于原会话，避免 reset 或 close 期间的旧请求复活运动。 */
+  private async resumeExplicitMovementIfStopped(expectedGeneration: string): Promise<boolean> {
     if (this.movementStopped) await this.options.saveMovementStopped(false);
+    return !this.closed && expectedGeneration === this.generation;
   }
 
   private updateTrustedBlock(event: TaskEvent): void {
