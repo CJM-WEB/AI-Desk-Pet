@@ -5,10 +5,21 @@ export const fileToolLimits = {
   listMaxDepth: 4,
   listMaxResults: 200,
   readMaxLineCount: 500,
+  searchPatternMaxLength: 256,
+  searchMaxResults: 200,
   patchMaxLength: 262_144
 } as const;
 
 export const relativePathSchema = z.string().min(1).max(fileToolLimits.relativePathMaxLength);
+
+const searchPatternSchema = z.string()
+  .min(1)
+  .max(fileToolLimits.searchPatternMaxLength)
+  .refine(value => (
+    !value.includes('\0')
+    && !value.split(/[\\/]+/u).includes('..')
+    && !/^(?:[a-zA-Z]:|[\\/]{1,2})/u.test(value)
+  ), '搜索模式必须位于授权根内');
 
 export const toolArguments = {
   list_files: z.object({
@@ -21,6 +32,18 @@ export const toolArguments = {
     startLine: z.number().int().min(1).default(1),
     lineCount: z.number().int().min(1).max(fileToolLimits.readMaxLineCount).default(200)
   }).strict(),
+  glob_files: z.object({
+    relativePath: relativePathSchema.default('.'),
+    pattern: searchPatternSchema,
+    maxResults: z.number().int().min(1).max(fileToolLimits.searchMaxResults).default(100)
+  }).strict(),
+  grep_files: z.object({
+    relativePath: relativePathSchema.default('.'),
+    pattern: z.string().min(1).max(fileToolLimits.searchPatternMaxLength),
+    include: searchPatternSchema.default('**/*'),
+    caseSensitive: z.boolean().default(true),
+    maxResults: z.number().int().min(1).max(fileToolLimits.searchMaxResults).default(100)
+  }).strict(),
   create_file: z.object({
     relativePath: relativePathSchema,
     content: z.string().default('')
@@ -31,6 +54,12 @@ export const toolArguments = {
   apply_patch: z.object({
     relativePath: relativePathSchema,
     patch: z.string().min(1).max(fileToolLimits.patchMaxLength)
+  }).strict(),
+  edit_file: z.object({
+    relativePath: relativePathSchema,
+    oldString: z.string().min(1).max(fileToolLimits.patchMaxLength),
+    newString: z.string().max(fileToolLimits.patchMaxLength),
+    replaceAll: z.boolean().default(false)
   }).strict(),
   delete_file: z.object({
     relativePath: relativePathSchema
@@ -62,6 +91,28 @@ export const toolJsonSchemas = {
     required: ['relativePath'],
     additionalProperties: false
   },
+  glob_files: {
+    type: 'object',
+    properties: {
+      relativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength, default: '.' },
+      pattern: { type: 'string', minLength: 1, maxLength: fileToolLimits.searchPatternMaxLength },
+      maxResults: { type: 'integer', minimum: 1, maximum: fileToolLimits.searchMaxResults, default: 100 }
+    },
+    required: ['pattern'],
+    additionalProperties: false
+  },
+  grep_files: {
+    type: 'object',
+    properties: {
+      relativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength, default: '.' },
+      pattern: { type: 'string', minLength: 1, maxLength: fileToolLimits.searchPatternMaxLength },
+      include: { type: 'string', minLength: 1, maxLength: fileToolLimits.searchPatternMaxLength, default: '**/*' },
+      caseSensitive: { type: 'boolean', default: true },
+      maxResults: { type: 'integer', minimum: 1, maximum: fileToolLimits.searchMaxResults, default: 100 }
+    },
+    required: ['pattern'],
+    additionalProperties: false
+  },
   create_file: {
     type: 'object',
     properties: {
@@ -86,6 +137,17 @@ export const toolJsonSchemas = {
       patch: { type: 'string', minLength: 1, maxLength: fileToolLimits.patchMaxLength }
     },
     required: ['relativePath', 'patch'],
+    additionalProperties: false
+  },
+  edit_file: {
+    type: 'object',
+    properties: {
+      relativePath: { type: 'string', minLength: 1, maxLength: fileToolLimits.relativePathMaxLength },
+      oldString: { type: 'string', minLength: 1, maxLength: fileToolLimits.patchMaxLength },
+      newString: { type: 'string', maxLength: fileToolLimits.patchMaxLength },
+      replaceAll: { type: 'boolean', default: false }
+    },
+    required: ['relativePath', 'oldString', 'newString'],
     additionalProperties: false
   },
   delete_file: {
