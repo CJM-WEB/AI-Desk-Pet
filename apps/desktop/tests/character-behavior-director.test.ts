@@ -354,6 +354,43 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ['reset', async (fixture: ReturnType<typeof createFixture>) => {
+      fixture.director.reset('generation-2');
+    }],
+    ['close', async (fixture: ReturnType<typeof createFixture>) => {
+      await fixture.director.close();
+    }]
+  ] as const)('Schema 移动解锁保存悬空期间 %s 后旧轮不得复活 pending', async (_name, invalidate) => {
+    const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
+    let releaseSave: (() => void) | undefined;
+    fixture.saveMovementStopped.mockImplementationOnce(async movementStopped => {
+      await new Promise<void>(resolve => { releaseSave = resolve; });
+      fixture.director.applyBehaviorSettings({
+        movementStopped,
+        proactivityMode: 'autonomous'
+      });
+    });
+
+    const completion = fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: null,
+      providerPlan: null,
+      motionPlan: {
+        mode: 'once', durationSeconds: null, target: 'random_work_area', distance: 'medium'
+      }
+    });
+    await vi.waitFor(() => expect(releaseSave).toBeTypeOf('function'));
+    await invalidate(fixture);
+    releaseSave?.();
+    await completion;
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(Reflect.get(fixture.director, 'pendingMotionPlan')).toBeNull();
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+  });
+
   test('Schema none 与纯行为候选不解除停止锁', async () => {
     const fixture = createFixture({ movementStopped: true, proactivityMode: 'autonomous' });
 

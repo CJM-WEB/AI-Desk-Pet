@@ -352,6 +352,8 @@ export class CharacterBehaviorDirector {
       // Schema 是 Provider 对自然语言的结构化结论，必须与本地明确恢复指令走同一条持久化门禁。
       await this.options.saveMovementStopped(false);
     }
+    // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
+    if (this.closed || input.generation !== this.generation) return;
     this.pendingChatPlan = plan === null || (plan.kind === 'play' && catalog === null)
       || plan.kind === 'stop_movement' || plan.kind === 'resume_movement' ? null : plan;
     this.pendingMotionPlan = providerMotionPlan?.mode === 'stop' ? null : providerMotionPlan;
