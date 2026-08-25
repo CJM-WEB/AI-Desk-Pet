@@ -15,6 +15,8 @@ extraResources:
     to: windows/explorer-space-shell-tab-helper.cs
   - from: resources/windows/explorer-space-integrity.json
     to: windows/explorer-space-integrity.json
+  - from: resources/local-model
+    to: local-model
 asar: true
 win:
   target:

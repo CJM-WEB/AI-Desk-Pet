@@ -24,7 +24,7 @@ const modelRevision = '851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a';
 const quantizationRevision = 'e87f176479d0855a907a41277aca2f8ee7a09523';
 const fileContents = {
   cpuExe: 'cpu-exe', cpuDll: 'cpu-dll', vulkanExe: 'vulkan-exe', vulkanDll: 'vulkan-dll',
-  model: 'small-gguf', runtimeLicense: 'mit', modelLicense: 'apache'
+  model: 'small-gguf', runtimeLicense: 'mit', modelLicense: 'apache', notices: 'third-party-notices'
 } as const;
 
 function sha256(value: string): string {
@@ -70,9 +70,10 @@ async function createResourceFixture(): Promise<{ root: string; tokenRoot: strin
     schemaVersion: 1,
     platform: 'win32',
     arch: 'x64',
+    notices: entry('THIRD-PARTY-NOTICES.txt', fileContents.notices),
     runtime: {
       revision: runtimeRevision,
-      license: entry('licenses/llama.cpp-MIT.txt', fileContents.runtimeLicense),
+      license: entry('licenses/llama.cpp-LICENSE.txt', fileContents.runtimeLicense),
       backends: {
         cpu: {
           executable: 'payload/cpu/llama-server.exe',
@@ -97,7 +98,7 @@ async function createResourceFixture(): Promise<{ root: string; tokenRoot: strin
       quantizationRepository: releasePolicy.model.quantizationRepository,
       quantizationRevision,
       file: entry(`payload/model/${releasePolicy.model.fileName}`, fileContents.model),
-      license: entry('licenses/Qwen3.5-4B-Apache-2.0.txt', fileContents.modelLicense)
+      license: entry('licenses/Qwen3.5-4B-LICENSE.txt', fileContents.modelLicense)
     }
   };
   await writeResource(root, 'payload/cpu/llama-server.exe', fileContents.cpuExe);
@@ -105,8 +106,9 @@ async function createResourceFixture(): Promise<{ root: string; tokenRoot: strin
   await writeResource(root, 'payload/vulkan/llama-server.exe', fileContents.vulkanExe);
   await writeResource(root, 'payload/vulkan/ggml-vulkan.dll', fileContents.vulkanDll);
   await writeResource(root, `payload/model/${releasePolicy.model.fileName}`, fileContents.model);
-  await writeResource(root, 'licenses/llama.cpp-MIT.txt', fileContents.runtimeLicense);
-  await writeResource(root, 'licenses/Qwen3.5-4B-Apache-2.0.txt', fileContents.modelLicense);
+  await writeResource(root, 'licenses/llama.cpp-LICENSE.txt', fileContents.runtimeLicense);
+  await writeResource(root, 'licenses/Qwen3.5-4B-LICENSE.txt', fileContents.modelLicense);
+  await writeResource(root, 'THIRD-PARTY-NOTICES.txt', fileContents.notices);
   await writeFile(join(root, 'manifest.json'), JSON.stringify(manifest), 'utf8');
   return { root, tokenRoot, cachePath: join(workspace, 'model-cache.json') };
 }

@@ -1,6 +1,10 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { describe, expect, test } from 'vitest';
 import packageJson from '../package.json';
+
+const execFileAsync = promisify(execFile);
 
 function readScalarBlock(text: string, key: string): string {
   const match = new RegExp(`^${key}:\\s*([^\\r\\n]+)`, 'mu').exec(text);
@@ -47,14 +51,44 @@ describe('electron-builder 配置', () => {
     expect(nsisConfig).toContain('deleteAppDataOnUninstall: false');
 
     const extraResources = readSection(configText, 'extraResources');
-    expect(extraResources.match(/^\s*- from:/gmu)).toHaveLength(3);
-    expect(extraResources).toContain('- from: resources/windows/explorer-space-bridge.ps1');
-    expect(extraResources).toContain('- from: resources/windows/explorer-space-shell-tab-helper.cs');
-    expect(extraResources).toContain('- from: resources/windows/explorer-space-integrity.json');
+    expect([...extraResources.matchAll(/^\s*- from:\s*(.+)$/gmu)].map(match => match[1]?.trim())).toEqual([
+      'resources/windows/explorer-space-bridge.ps1',
+      'resources/windows/explorer-space-shell-tab-helper.cs',
+      'resources/windows/explorer-space-integrity.json',
+      'resources/local-model'
+    ]);
+    expect(extraResources).toContain('- from: resources/local-model\n    to: local-model');
     expect(extraResources).not.toMatch(/userData|authorized|habitat|characters/iu);
 
     const files = readSection(configText, 'files');
     expect(files).toContain('- resources/characters/default/**/*');
+  });
+
+  test('Windows 打包先校验固定本地模型资源且普通构建不触发暂存', () => {
+    const packageWindows = packageJson.scripts['package:win'];
+
+    expect(packageJson.scripts['stage:local-model']).toBe('node scripts/stage-local-model.mjs');
+    expect(packageJson.scripts['verify:local-model-assets'])
+      .toBe('node scripts/verify-local-model-assets.mjs');
+    const verifierIndex = packageWindows.indexOf('pnpm verify:local-model-assets');
+    const builderIndex = packageWindows.indexOf('electron-builder');
+    expect(verifierIndex).toBeGreaterThanOrEqual(0);
+    expect(builderIndex).toBeGreaterThan(verifierIndex);
+    expect(packageJson.scripts.build).not.toMatch(/stage:local-model|stage-local-model/iu);
+  });
+
+  test('固定发行文本在 Windows checkout 保持 LF 以稳定 manifest 哈希', async () => {
+    const repositoryRoot = new URL('../../..', import.meta.url);
+    const paths = [
+      'apps/desktop/resources/local-model/THIRD-PARTY-NOTICES.txt',
+      'apps/desktop/resources/local-model/licenses/llama.cpp-LICENSE.txt',
+      'apps/desktop/resources/local-model/licenses/Qwen3.5-4B-LICENSE.txt'
+    ];
+    const { stdout } = await execFileAsync('git', ['check-attr', 'eol', '--', ...paths], {
+      cwd: repositoryRoot
+    });
+
+    expect(stdout.trim().split(/\r?\n/u)).toEqual(paths.map(path => `${path}: eol: lf`));
   });
 
   test('Windows 图标包含 256 像素资源', async () => {

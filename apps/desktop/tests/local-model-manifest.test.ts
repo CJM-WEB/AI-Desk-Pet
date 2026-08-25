@@ -27,7 +27,8 @@ const contents = {
   vulkanDll: 'fixture-vulkan-library',
   model: 'fixture-small-gguf',
   runtimeLicense: 'fixture-mit-license',
-  modelLicense: 'fixture-apache-license'
+  modelLicense: 'fixture-apache-license',
+  notices: 'fixture-third-party-notices'
 } as const;
 
 const policy: LocalModelReleasePolicy = {
@@ -62,10 +63,15 @@ async function createFixture(
     schemaVersion: 1,
     platform: 'win32',
     arch: 'x64',
+    notices: {
+      path: 'THIRD-PARTY-NOTICES.txt',
+      size: Buffer.byteLength(contents.notices),
+      sha256: sha256(contents.notices)
+    },
     runtime: {
       revision: runtimeRevision,
       license: {
-        path: 'licenses/llama.cpp-MIT.txt',
+        path: 'licenses/llama.cpp-LICENSE.txt',
         size: Buffer.byteLength(contents.runtimeLicense),
         sha256: sha256(contents.runtimeLicense)
       },
@@ -114,7 +120,7 @@ async function createFixture(
         sha256: policy.model.sha256
       },
       license: {
-        path: 'licenses/Qwen3.5-4B-Apache-2.0.txt',
+        path: 'licenses/Qwen3.5-4B-LICENSE.txt',
         size: Buffer.byteLength(contents.modelLicense),
         sha256: sha256(contents.modelLicense)
       }
@@ -126,8 +132,9 @@ async function createFixture(
   await writeResource(root, 'payload/vulkan/llama-server.exe', contents.vulkanExe);
   await writeResource(root, 'payload/vulkan/ggml-vulkan.dll', contents.vulkanDll);
   await writeResource(root, `payload/model/${policy.model.fileName}`, contents.model);
-  await writeResource(root, 'licenses/llama.cpp-MIT.txt', contents.runtimeLicense);
-  await writeResource(root, 'licenses/Qwen3.5-4B-Apache-2.0.txt', contents.modelLicense);
+  await writeResource(root, 'licenses/llama.cpp-LICENSE.txt', contents.runtimeLicense);
+  await writeResource(root, 'licenses/Qwen3.5-4B-LICENSE.txt', contents.modelLicense);
+  await writeResource(root, 'THIRD-PARTY-NOTICES.txt', contents.notices);
   await writeFile(join(root, 'manifest.json'), JSON.stringify(manifest), 'utf8');
   return { root, cachePath: join(dirname(root), `${root.split(/[\\/]/u).at(-1)}.cache.json`), manifest };
 }

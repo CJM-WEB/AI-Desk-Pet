@@ -1,0 +1,19 @@
+AI Pet 内置本地模型第三方声明
+
+1. llama.cpp
+   - 项目：https://github.com/ggml-org/llama.cpp
+   - Release：b10516
+   - 固定 commit：b95502ba9aa0eb73a2f4fc8878d7fbe6a847a0b9
+   - 许可证：MIT（见 licenses/llama.cpp-LICENSE.txt）
+   - 发行构建：Windows x64 CPU/Vulkan；GGML_RPC=OFF；GGML_OPENMP=OFF；仅包含 llama-server 与其实际 DLL 依赖。
+
+2. Qwen3.5-4B
+   - 原模型：https://huggingface.co/Qwen/Qwen3.5-4B
+   - 原模型固定 revision：851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
+   - 量化仓库：https://huggingface.co/unsloth/Qwen3.5-4B-GGUF
+   - 量化固定 revision：e87f176479d0855a907a41277aca2f8ee7a09523
+   - 文件：Qwen3.5-4B-Q4_K_M.gguf
+   - SHA-256：00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
+   - 许可证：Apache License 2.0（见 licenses/Qwen3.5-4B-LICENSE.txt）
+
+量化仓库未提供独立许可证文件；本发行物随附原模型在上述固定 revision 的许可证文本。首版只分发纯文本 GGUF，不包含 mmproj 或第二模型。

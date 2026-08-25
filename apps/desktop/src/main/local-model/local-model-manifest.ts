@@ -35,6 +35,7 @@ export interface LocalModelManifestDocument {
   schemaVersion: number;
   platform: string;
   arch: string;
+  notices: LocalModelManifestFile;
   runtime: {
     revision: string;
     license: LocalModelManifestFile;
@@ -117,6 +118,7 @@ const manifestSchema = z.object({
   schemaVersion: z.number().int(),
   platform: z.string(),
   arch: z.string(),
+  notices: manifestFileSchema,
   runtime: z.object({
     revision: z.string().min(1),
     license: manifestFileSchema,
@@ -270,6 +272,7 @@ function assertReleaseIdentity(
 
 function collectEntries(manifest: LocalModelManifestDocument): LocalModelManifestFile[] {
   return [
+    manifest.notices,
     manifest.runtime.license,
     ...manifest.runtime.backends.cpu.files,
     ...manifest.runtime.backends.vulkan.files,
