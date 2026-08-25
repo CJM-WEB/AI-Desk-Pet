@@ -6186,7 +6186,8 @@ test.describe('真实 Provider 业务闭环', () => {
       const failurePowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
       await expect(failurePowerShellCard).toBeVisible();
       await failurePowerShellCard.getByRole('button', { name: '确认运行命令' }).click();
-      await expect(chatPage.getByText('命令失败。')).toBeVisible();
+      // 真实工具失败必须覆盖模型自定义总结，避免模型用任意正文改写本地失败事实。
+      await expect(chatPage.getByText('本地能力操作失败，未完成请求。')).toBeVisible();
       await expect.poll(() => fixture.getConversationProbe()).toMatchObject({ phase: 'error' });
 
       await submitChatMessage(chatPage, '运行 Write-Output should-not-run');
