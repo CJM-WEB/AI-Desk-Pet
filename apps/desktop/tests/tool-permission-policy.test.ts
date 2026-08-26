@@ -196,9 +196,7 @@ describe('ToolRegistry', () => {
 
 describe('内置文件工具注册', () => {
   test('文件分类未授权时 Main 保留完整注册表，Provider 工具面由 AgentService 收窄', () => {
-    const definitions = createSessionToolRegistry({
-      taskKind: 'file', fileDisclosureAllowed: false
-    }).definitions();
+    const definitions = createSessionToolRegistry().definitions();
 
     expect(definitions.map(definition => definition.function.name)).toEqual([
       'builtin.files.list_files',
@@ -216,10 +214,7 @@ describe('内置文件工具注册', () => {
   });
 
   test('PowerShell 首选任务仍使用统一注册表并由 AgentService 收窄首轮工具', () => {
-    const registry = createSessionToolRegistry({
-      taskKind: 'powershell',
-      fileDisclosureAllowed: true
-    });
+    const registry = createSessionToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: true });
 
     expect(registry.definitions().map(item => item.function.name)).toEqual(expect.arrayContaining([
@@ -237,10 +232,7 @@ describe('内置文件工具注册', () => {
   });
 
   test('能力会话注册表签发后拒绝追加 MCP 读取工具', () => {
-    const registry = createSessionToolRegistry({
-      taskKind: 'file',
-      fileDisclosureAllowed: true
-    });
+    const registry = createSessionToolRegistry();
 
     expect(registry.definitions().map(item => item.function.name)).toEqual([
       'builtin.files.list_files',

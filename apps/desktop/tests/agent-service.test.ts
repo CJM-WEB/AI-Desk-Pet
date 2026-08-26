@@ -20,8 +20,7 @@ import {
 import { PermissionPolicy } from '../src/main/agent/permission-policy';
 import { PendingActionStore } from '../src/main/agent/pending-action-store';
 import { OpenAICompatibleProvider } from '../src/main/providers/openai-provider';
-import { createBuiltinFileToolRegistry } from '../src/main/agent/tool-registry';
-import { createBuiltinPowerShellToolRegistry } from '../src/main/agent/tool-registry';
+import { createBuiltinAgentToolRegistry } from '../src/main/agent/tool-registry';
 import type { PowerShellTool, VerifiedPowerShellAction } from '../src/main/agent/powershell-tool';
 import { createTaskStore } from '../src/renderer/src/stores/task-store';
 
@@ -188,14 +187,19 @@ function createHarness(
     executeWrite: vi.fn(async () => undefined),
     ...fileOverrides
   };
-  const registry = createBuiltinFileToolRegistry();
+  const registry = createBuiltinAgentToolRegistry();
   const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
   const session: AgentSession = {
-    taskKind: 'file',
+    taskKind: 'agent',
+    initialCapability: 'file',
     provider,
     fallbackProviders,
     fileTools,
     fileDisclosureAllowed,
+    powershell: { close: vi.fn(async () => undefined) } as PowerShellTool,
+    workingDirectory: 'C:\\workspace',
+    workingDirectoryLabel: '工作区',
+    generation: 'generation-1',
     tools: registry.definitions(),
     toolRuntime: {
       prepare: raw => registry.prepare(raw, permissionPolicy),
@@ -290,10 +294,18 @@ function createPowerShellHarness(
   const pending = new PendingActionStore({
     onDiscard: execution => loop.discard(execution.continuationToken)
   });
-  const registry = createBuiltinPowerShellToolRegistry();
+  const registry = createBuiltinAgentToolRegistry();
+  const fileTools: AgentFileTools = {
+    executeRead: vi.fn(),
+    preview: vi.fn(),
+    executeWrite: vi.fn()
+  };
   const session: AgentSession = {
-    taskKind: 'powershell',
+    taskKind: 'agent',
+    initialCapability: 'powershell',
     provider,
+    fileTools,
+    fileDisclosureAllowed: true,
     powershell: { close: vi.fn(async () => undefined), ...powershell } as PowerShellTool,
     workingDirectory: 'C:\\workspace',
     workingDirectoryLabel: '工作区',
@@ -312,10 +324,36 @@ function createPowerShellHarness(
     emit: event => events.push(event),
     createConversationId: () => 'conversation-1'
   });
-  return { events, service };
+  return { events, provider, service };
 }
 
 describe('AgentService', () => {
+  test('PowerShell 首轮仅公告命令工具，首个可信结果后恢复完整组合工具面', async () => {
+    const provider = new ScriptedProvider([
+      shellRequest(),
+      { type: 'text', text: '命令执行完毕' }
+    ]);
+    const powershell = {
+      preview: vi.fn(() => powerShellAction()),
+      execute: vi.fn(async () => powerShellResult(true))
+    };
+    const { events, service } = createPowerShellHarness(provider, powershell);
+
+    await service.submitFileTask({ text: '运行 Get-ChildItem', visibleHistory: [] });
+    const pendingEvent = events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少 PowerShell 确认');
+    await service.confirm(pendingEvent.action.actionId);
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      'builtin.powershell.run'
+    ]);
+    expect(provider.requests[1]?.tools.map(tool => tool.function.name)).toEqual(expect.arrayContaining([
+      'builtin.powershell.run',
+      'builtin.files.read_file',
+      'builtin.files.create_file'
+    ]));
+  });
+
   test('移动规划只公开 move_file，确认后只以 Main 结果恢复总结', async () => {
     const provider = new ScriptedProvider([
       moveResponse(),
@@ -568,10 +606,18 @@ describe('AgentService', () => {
       onDiscard: execution => loop.discard(execution.continuationToken)
     });
     const events: TaskEvent[] = [];
-    const registry = createBuiltinPowerShellToolRegistry();
+    const registry = createBuiltinAgentToolRegistry();
+    const fileTools: AgentFileTools = {
+      executeRead: vi.fn(),
+      preview: vi.fn(),
+      executeWrite: vi.fn()
+    };
     const session: AgentSession = {
-      taskKind: 'powershell',
+      taskKind: 'agent',
+      initialCapability: 'powershell',
       provider,
+      fileTools,
+      fileDisclosureAllowed: true,
       powershell: { preview, execute } as unknown as PowerShellTool,
       workingDirectory: 'C:\\workspace',
       workingDirectoryLabel: '工作区',

@@ -46,30 +46,19 @@ interface AgentSessionBase {
   tools: ToolDefinition[];
   toolRuntime: ToolRuntime;
   messages: ModelMessage[];
-  /** 正式会话同时拥有两类端口；可选性仅保留测试夹具与旧快照兼容。 */
-  fileTools?: AgentFileTools;
-  fileDisclosureAllowed?: boolean;
-  powershell?: PowerShellTool;
-  workingDirectory?: string;
-  workingDirectoryLabel?: string;
-  generation?: string;
+  fileTools: AgentFileTools;
+  fileDisclosureAllowed: boolean;
+  powershell: PowerShellTool;
+  workingDirectory: string;
+  workingDirectoryLabel: string;
+  generation: string;
 }
 
-/** 会话只拥有当前能力任务的执行端口，避免跨任务暴露工具。 */
-export type AgentSession = AgentSessionBase & (
-  | Readonly<{
-      taskKind: 'file';
-      fileTools: AgentFileTools;
-      fileDisclosureAllowed: boolean;
-    }>
-  | Readonly<{
-      taskKind: 'powershell';
-      powershell: PowerShellTool;
-      workingDirectory: string;
-      workingDirectoryLabel: string;
-      generation: string;
-    }>
-);
+/** 单一 Agent 会话持有完整执行端口；initialCapability 只收窄首轮规划面。 */
+export type AgentSession = AgentSessionBase & Readonly<{
+  taskKind: 'agent';
+  initialCapability: 'file' | 'powershell';
+}>;
 
 export interface AgentFileTaskSubmission {
   text: string;
@@ -579,12 +568,10 @@ export class AgentService {
     const irreversible = this.beginIrreversibleExecution();
     try {
       if (execution.verifiedAction.category === 'powershell') {
-        if (!session.powershell) throw new Error('ACTION_EXPIRED');
         this.assertTaskOwned(owner, signal);
         return await session.powershell.execute(execution.verifiedAction.action, signal);
       }
       this.assertTaskOwned(owner, signal);
-      if (!session.fileTools) throw new Error('ACTION_EXPIRED');
       this.publishFileFeedback({ type: 'character_carrying', carrying: true }, owner);
       try {
         this.assertTaskOwned(owner, signal);
@@ -613,9 +600,9 @@ export class AgentService {
       : undefined;
     const planningTools = planningHint?.missingField === 'target_path'
       ? []
-      : session.taskKind === 'powershell'
+      : session.initialCapability === 'powershell'
         ? session.tools.filter(tool => tool.function.name === 'builtin.powershell.run')
-      : session.taskKind === 'file' && !session.fileDisclosureAllowed
+      : !session.fileDisclosureAllowed
       ? expectedWriteOperation !== undefined
         ? session.tools.filter(tool => tool.function.name === plannedToolName)
         : plannedToolName !== null
@@ -625,9 +612,9 @@ export class AgentService {
         ? session.tools
         : session.tools.filter(tool => tool.function.name === plannedToolName);
     // 未授权正文披露时，纯写任务续跑只恢复逐次确认的 mutation；读取/检索始终保持关闭。
-    const tools = session.taskKind === 'file' && session.fileDisclosureAllowed
+    const tools = session.fileDisclosureAllowed
       ? session.tools
-      : session.taskKind === 'file' && expectedWriteOperation !== undefined
+      : expectedWriteOperation !== undefined
         ? session.tools.filter(tool => mutationPlanningToolNames.has(tool.function.name))
         : planningTools;
     return {
@@ -646,7 +633,7 @@ export class AgentService {
           return prepared;
         },
         executeRead: request => {
-          if (session.taskKind === 'file' && !session.fileDisclosureAllowed) {
+          if (!session.fileDisclosureAllowed && request.toolName !== 'powershell') {
             return Promise.reject(fileDisclosureDenied());
           }
           return session.toolRuntime.executeRead(request);
@@ -656,7 +643,7 @@ export class AgentService {
       // 能力任务显式启用首个真实工具结果前的受限规划协议；聊天默认不受影响。
       protocol: 'capability_planner',
       capabilityPlanning: {
-        allowClarification: session.taskKind === 'file',
+        allowClarification: session.initialCapability === 'file',
         planningTools,
         ...(expectedWriteOperation === undefined ? {} : { expectedWriteOperation })
       }

@@ -28,6 +28,7 @@ type ContinuationState = {
   expectedWriteOperation: FileWriteOperation | undefined;
   lastToolSignature: string | null;
   repeatedToolCalls: number;
+  correctionUsed: boolean;
 };
 
 const MAX_AGENT_TURNS = 4;
@@ -114,7 +115,8 @@ export class AgentLoop {
       null,
       context.capabilityPlanning?.expectedWriteOperation,
       null,
-      0
+      0,
+      false
     );
   }
 
@@ -159,7 +161,8 @@ export class AgentLoop {
       trustedState.mutationFailureToolName,
       undefined,
       continuation.lastToolSignature,
-      continuation.repeatedToolCalls
+      continuation.repeatedToolCalls,
+      continuation.correctionUsed
     );
   }
 
@@ -177,14 +180,14 @@ export class AgentLoop {
     mutationFailureToolName: string | null,
     expectedWriteOperation: FileWriteOperation | undefined,
     lastToolSignature: string | null,
-    repeatedToolCalls: number
+    repeatedToolCalls: number,
+    correctionUsed: boolean
   ): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     if (context.signal.aborted) {
       yield { type: 'phase', phase: 'cancelled' };
       return;
     }
 
-    let correctionUsed = false;
     yield { type: 'phase', phase: 'thinking' };
 
     for (let turn = startTurn; turn < MAX_AGENT_TURNS; turn += 1) {
@@ -346,7 +349,8 @@ export class AgentLoop {
           mutationFailureToolName,
           expectedWriteOperation,
           lastToolSignature,
-          repeatedToolCalls
+          repeatedToolCalls,
+          correctionUsed
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
         yield {

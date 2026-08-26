@@ -1004,7 +1004,7 @@ async function createApplicationWindows(
         loop,
         pending: pendingActions,
         createSession: () => createMainAgentSession({
-          taskKind: snapshot.taskKind,
+          initialCapability: snapshot.taskKind,
           authorizedRootPath: snapshot.authorizedRootPath,
           generation,
           fileDisclosureAllowed: snapshot.privacySettings.dataCategories.file,

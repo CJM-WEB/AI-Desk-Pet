@@ -6,7 +6,7 @@ import { PowerShellTool } from './powershell-tool';
 import { createSessionToolRegistry } from './tool-registry';
 
 export interface MainAgentSessionFactoryInput {
-  taskKind: 'file' | 'powershell';
+  initialCapability: 'file' | 'powershell';
   authorizedRootPath: string;
   generation: string;
   fileDisclosureAllowed: boolean;
@@ -16,14 +16,11 @@ export interface MainAgentSessionFactoryInput {
   createPowerShellTool(): PowerShellTool;
 }
 
-/** 组合根按任务种类构造唯一可见能力，依赖由 Main 注入以隔离 Electron 平台细节。 */
+/** 构造统一能力会话；首轮只公开初始能力，可信工具结果后可组合文件与命令工具。 */
 export async function createMainAgentSession(
   input: MainAgentSessionFactoryInput
 ): Promise<AgentSession> {
-  const registry = createSessionToolRegistry({
-    taskKind: input.taskKind,
-    fileDisclosureAllowed: input.fileDisclosureAllowed
-  });
+  const registry = createSessionToolRegistry();
   const permissionPolicy = new PermissionPolicy({ highRiskEnabled: true });
   const messages: ModelMessage[] = [{
     role: 'system',
@@ -64,7 +61,9 @@ export async function createMainAgentSession(
           }))
     }
   };
-  return input.taskKind === 'powershell'
-    ? { ...unified, taskKind: 'powershell' as const }
-    : { ...unified, taskKind: 'file' as const };
+  return {
+    ...unified,
+    taskKind: 'agent',
+    initialCapability: input.initialCapability
+  };
 }

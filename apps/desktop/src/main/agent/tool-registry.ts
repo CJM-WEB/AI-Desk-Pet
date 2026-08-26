@@ -290,11 +290,7 @@ export function createBuiltinAgentToolRegistry(): ToolRegistry {
   return registry;
 }
 
-/** 文件数据授权由任务上下文收窄模型可见面，Main 始终保留完整文件注册表供本地核验。 */
-export function createSessionToolRegistry(input: {
-  taskKind: 'file' | 'powershell';
-  fileDisclosureAllowed: boolean;
-}): ToolRegistry {
-  void input;
+/** Main 签发唯一组合注册表；首轮能力收窄由 AgentService 的任务上下文负责。 */
+export function createSessionToolRegistry(): ToolRegistry {
   return createBuiltinAgentToolRegistry().seal();
 }

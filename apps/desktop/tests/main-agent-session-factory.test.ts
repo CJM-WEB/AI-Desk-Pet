@@ -14,9 +14,9 @@ const fileTools: AgentFileTools = {
   executeWrite: vi.fn()
 };
 
-function input(taskKind: 'file' | 'powershell') {
+function input(initialCapability: 'file' | 'powershell') {
   return {
-    taskKind,
+    initialCapability,
     authorizedRootPath: 'D:\\authorized',
     generation: 'generation-1',
     fileDisclosureAllowed: true,
@@ -33,7 +33,7 @@ describe('Main 能力会话工厂', () => {
 
     const session = await createMainAgentSession(options);
 
-    expect(session.taskKind).toBe('powershell');
+    expect(session).toMatchObject({ taskKind: 'agent', initialCapability: 'powershell' });
     expect(session.tools.map(tool => tool.function.name)).toEqual(expect.arrayContaining([
       'builtin.powershell.run',
       'builtin.files.create_file',
@@ -61,7 +61,7 @@ describe('Main 能力会话工厂', () => {
 
     const session = await createMainAgentSession(options);
 
-    expect(session.taskKind).toBe('file');
+    expect(session).toMatchObject({ taskKind: 'agent', initialCapability: 'file' });
     expect(session.tools.map(tool => tool.function.name).sort()).toEqual([
       'builtin.files.apply_patch',
       'builtin.files.create_directory',

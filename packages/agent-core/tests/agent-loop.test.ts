@@ -1040,6 +1040,38 @@ describe('AgentLoop', () => {
     expect(provider.requests).toHaveLength(2);
   });
 
+  test('确认续接不会重置整项任务仅有一次的参数修复额度', async () => {
+    const invalid = (requestId: string) => ({
+      type: 'tool_request' as const,
+      request: { requestId, toolName: 'delete_everything', arguments: {} }
+    });
+    const provider = new ScriptedProvider([
+      invalid('bad-before-confirmation'),
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'create-after-repair',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'result.txt' }
+        }
+      },
+      invalid('bad-after-confirmation'),
+      { type: 'text', text: '不应获得第二次修复机会' }
+    ]);
+    const runContext = context(provider);
+    const loop = new AgentLoop();
+    const paused = await collect(loop.run('创建 result.txt', runContext));
+    const write = paused.find(event => event.type === 'write_request');
+    if (!write || write.type !== 'write_request') throw new Error('缺少写确认请求');
+
+    await expect(collect(loop.resume(write.continuationToken, {
+      ok: true,
+      toolName: 'create_file',
+      targetRelativePath: 'result.txt'
+    }, runContext))).rejects.toThrow('AGENT_INVALID_TOOL_REQUEST');
+    expect(provider.requests).toHaveLength(3);
+  });
+
   test('最多请求四次模型响应且绝不发起第五次', async () => {
     const provider = new ScriptedProvider([
       ...['1', '2', '3', '4'].map(index => ({

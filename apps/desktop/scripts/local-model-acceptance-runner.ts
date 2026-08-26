@@ -357,7 +357,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
         loop,
         pending,
         createSession: () => createMainAgentSession({
-          taskKind: snapshot.taskKind,
+          initialCapability: snapshot.taskKind,
           authorizedRootPath: snapshot.authorizedRootPath,
           generation,
           fileDisclosureAllowed: snapshot.privacySettings.dataCategories.file,

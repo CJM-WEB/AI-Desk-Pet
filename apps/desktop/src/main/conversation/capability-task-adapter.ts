@@ -28,7 +28,7 @@ export interface CapabilityTaskAdapterOptions {
     emit: (event: TaskEvent) => void;
   }): PreparedAgentTarget;
   /** 仅创建 Provider/授权根指纹，不得构造 Agent 或公告工具。 */
-  createTargetSnapshot?(input: {
+  createTargetSnapshot(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
   }): PreparedCapabilityTarget;
@@ -116,9 +116,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
         throw adapterError('FILE_AUTHORIZATION_REQUIRED');
       }
-      const target = this.options.createTargetSnapshot === undefined
-        ? this.createOwnedAgent(owner, input.generation, input.taskKind).target
-        : this.options.createTargetSnapshot(input);
+      const target = this.options.createTargetSnapshot(input);
       this.assertOwned(owner);
       this.active.target = target;
       return target;

@@ -3,6 +3,7 @@ import type { ModelMessage } from '@myself/agent-core';
 import type { TaskEvent } from '@myself/shared-types';
 import type { AgentService } from '../src/main/agent/agent-service';
 import { CapabilityTaskAdapter } from '../src/main/conversation/capability-task-adapter';
+import type { CapabilityTaskAdapterOptions } from '../src/main/conversation/capability-task-adapter';
 
 type AgentDouble = {
   submitFileTask: ReturnType<typeof vi.fn>;
@@ -94,6 +95,24 @@ function preparedAgent(
   return { service: asAgentService(agent), ...target };
 }
 
+const defaultTargetSnapshot = Object.freeze({
+  profileId: 'profile-agent',
+  providerIdentity: 'openai',
+  providerName: 'OpenAI Agent',
+  capabilityRevision: 'revision-agent'
+});
+
+/** 测试默认显式提供无 Agent 的能力快照，个别目标绑定用例可覆盖它。 */
+function createAdapter(
+  options: Omit<CapabilityTaskAdapterOptions, 'createTargetSnapshot'>
+    & Partial<Pick<CapabilityTaskAdapterOptions, 'createTargetSnapshot'>>
+): CapabilityTaskAdapter {
+  return new CapabilityTaskAdapter({
+    ...options,
+    createTargetSnapshot: options.createTargetSnapshot ?? (() => defaultTargetSnapshot)
+  });
+}
+
 async function submitPrepared(
   adapter: CapabilityTaskAdapter,
   input: {
@@ -112,7 +131,7 @@ describe('CapabilityTaskAdapter', () => {
     const agent = createAgentDouble();
     const target = preparedAgent(agent);
     const createAgentTarget = vi.fn(() => target);
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createTargetSnapshot: vi.fn(() => {
         const { service: _service, ...snapshot } = target;
@@ -130,7 +149,7 @@ describe('CapabilityTaskAdapter', () => {
 
   test('没有授权根时抛出稳定错误且不创建 Agent', async () => {
     const createAgentTarget = vi.fn();
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => null),
       createAgentTarget
     });
@@ -146,7 +165,7 @@ describe('CapabilityTaskAdapter', () => {
     let authorizationCalls = 0;
     const agent = createAgentDouble();
     const createAgentTarget = vi.fn(() => preparedAgent(agent));
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => {
         authorizationCalls += 1;
         if (authorizationCalls === 1) await authorization.promise;
@@ -180,7 +199,7 @@ describe('CapabilityTaskAdapter', () => {
     const newAgent = createAgentDouble();
     const agents = [oldAgent, newAgent];
     const createAgentTarget = vi.fn(() => preparedAgent(agents.shift()!));
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget
     });
@@ -213,7 +232,7 @@ describe('CapabilityTaskAdapter', () => {
       const cleanup = deferred();
       const oldAgent = createAgentDouble();
       oldAgent.resetForNewConversation.mockImplementation(() => cleanup.promise);
-      const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
         getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
         createAgentTarget: () => preparedAgent(oldAgent)
       });
@@ -251,7 +270,7 @@ describe('CapabilityTaskAdapter', () => {
       emitAgentEvent({ type: 'message', role: 'assistant', text: '目录为空' });
       emitAgentEvent({ type: 'phase', phase: 'success' });
     });
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
@@ -298,7 +317,7 @@ describe('CapabilityTaskAdapter', () => {
         throw codedError('FILE_AUTHORIZATION_REQUIRED');
       }
     });
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath,
       createAgentTarget: () => preparedAgent(agent)
     });
@@ -321,7 +340,7 @@ describe('CapabilityTaskAdapter', () => {
       attempt += 1;
       if (attempt === 1) throw codedError('FILE_DISCLOSURE_DENIED');
     });
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => preparedAgent(agent)
     });
@@ -347,7 +366,7 @@ describe('CapabilityTaskAdapter', () => {
     const pending = deferred();
     let emitAgentEvent!: (event: TaskEvent) => void;
     const agent = createAgentDouble(() => pending.promise);
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
@@ -385,7 +404,7 @@ describe('CapabilityTaskAdapter', () => {
       attempts += 1;
       if (attempts === 1) await pending.promise;
     });
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => preparedAgent(agent)
     });
@@ -420,7 +439,7 @@ describe('CapabilityTaskAdapter', () => {
       emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
     agent.confirm.mockImplementation(() => confirmation.promise);
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
@@ -463,7 +482,7 @@ describe('CapabilityTaskAdapter', () => {
     const agent = createAgentDouble(async () => {
       emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
     });
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
@@ -499,7 +518,7 @@ describe('CapabilityTaskAdapter', () => {
       throw new Error('close cleanup failed');
     });
     let adapter!: CapabilityTaskAdapter;
-    adapter = new CapabilityTaskAdapter({
+    adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => {
         void adapter.resetForNewConversation();
@@ -518,7 +537,7 @@ describe('CapabilityTaskAdapter', () => {
   test('工厂同步 close 后不安装或提交刚创建的 Agent', async () => {
     const agent = createAgentDouble();
     let adapter!: CapabilityTaskAdapter;
-    adapter = new CapabilityTaskAdapter({
+    adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => {
         adapter.close();
@@ -537,7 +556,7 @@ describe('CapabilityTaskAdapter', () => {
   test('close 后拒绝新任务并隔离旧 Agent 事件', async () => {
     let emitAgentEvent!: (event: TaskEvent) => void;
     const agent = createAgentDouble();
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: ({ emit }) => {
         emitAgentEvent = emit;
@@ -570,7 +589,7 @@ describe('CapabilityTaskAdapter', () => {
     const barrier = deferred();
     const agent = createAgentDouble();
     agent.resetForNewConversation.mockImplementation(() => barrier.promise);
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => preparedAgent(agent)
     });
@@ -592,7 +611,7 @@ describe('CapabilityTaskAdapter', () => {
   test('close 不等待仅悬挂的可撤销 Provider 请求', async () => {
     const provider = deferred();
     const agent = createAgentDouble(() => provider.promise);
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: () => preparedAgent(agent)
     });
@@ -627,10 +646,14 @@ describe('CapabilityTaskAdapter', () => {
         capabilityRevision: 'revision-b'
       })
     ];
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createTargetSnapshot: vi.fn(() => {
+        const { service: _service, ...snapshot } = targets[0]!;
+        return snapshot;
+      }),
       createAgentTarget: vi.fn(() => targets.shift()!)
-    } as never);
+    });
 
     const target = await adapter.prepareTarget({ generation: 'g-bound', taskKind: 'file' });
     await adapter.submit({
@@ -661,7 +684,7 @@ describe('CapabilityTaskAdapter', () => {
       newEmit({ type: 'phase', phase: 'success' });
     });
     let created = 0;
-    const adapter = new CapabilityTaskAdapter({
+    const adapter = createAdapter({
       getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
       createAgentTarget: vi.fn(({ emit }: { emit: (event: TaskEvent) => void }) => {
         created += 1;
