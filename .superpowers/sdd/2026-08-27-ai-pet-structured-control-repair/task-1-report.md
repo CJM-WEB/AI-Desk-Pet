@@ -184,3 +184,19 @@
 - 否定、引用、代码、嵌入式文件正文和不合法的显式 PowerShell 请求返回 `chat + modelEscalation: blocked`，后续模型建议不能绕过 Main 的确定性拒绝。
 - 结构化澄清只接受 Main 生成的精确 `补充信息(覆盖此前缺失字段):` 标记续接原任务，不把普通路径陈述提升为文件任务。
 - 运动控制契约和 Gate 保持既有实现，定向 82 项全部通过；未修改 Provider、Coordinator、Agent 执行器、Scheduler、IPC 或 Renderer。
+
+## 修复轮 5/5：不可伪造澄清续接与确定性拒绝边界
+
+### RED 证据
+
+- 命令：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts`
+- 退出码：`1`。
+- 结果：227 项中 217 项通过、10 项失败。
+- 预期失败覆盖：两种普通用户伪造补充标记会直接进入文件任务；专用受信续接入口不存在；`你不能帮我`、`我不想让你`、`千万不要`、引用翻译、转述引用、四空格缩进和 `~~~` 围栏没有全部返回 blocked。
+
+### GREEN 证据
+
+- 同一 Router 命令：227/227 通过。
+- 普通 `route()` 不再识别任何补充标记；`routeTrustedFileContinuation()` 是 Coordinator 持有澄清状态时使用的专用内部入口。
+- 四空格缩进在 `trim()` 前判定，避免预处理移除代码证据；反引号与波浪线围栏、确定性否定和引用包裹均返回 `modelEscalation: blocked`。
+- Coordinator 正由任务 2 实现者在其现有改动中接入专用入口，避免并发修改同一文件；本提交不包含任务 2 授权链文件。

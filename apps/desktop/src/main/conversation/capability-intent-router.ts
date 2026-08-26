@@ -24,6 +24,7 @@ export type CapabilityIntent =
 
 export interface CapabilityIntentRouter {
   route(prompt: string): CapabilityIntent;
+  routeTrustedFileContinuation(): Extract<CapabilityIntent, { kind: 'file_task' }>;
 }
 
 const chatIntent: CapabilityIntent = Object.freeze({
@@ -32,7 +33,7 @@ const chatIntent: CapabilityIntent = Object.freeze({
 const blockedChatIntent: CapabilityIntent = Object.freeze({
   kind: 'chat', behaviorHint: null, modelEscalation: 'blocked'
 });
-const fileTaskIntent: CapabilityIntent = Object.freeze({
+const fileTaskIntent: Extract<CapabilityIntent, { kind: 'file_task' }> = Object.freeze({
   kind: 'file_task',
   evidence: Object.freeze({ kind: 'explicit_file_operation' })
 });
@@ -55,9 +56,11 @@ const quotePairs = new Map<string, string>([
 ]);
 const fileOperationPattern = /(?:按文件名匹配|读取|列出|创建|新建|写入|修改|替换|重命名|复制|移动|删除|搜索|查找|匹配|整理|\b(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b)/giu;
 const localObjectPattern = /(?:\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|(?:[^\s“”"'（）()<>\\/，,。！？!?；;]+[\\/])+[^\s“”"'（）()<>\\/，,。！？!?；;]+|[^\s“”"'（）()<>\\/，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件夹|文件|目录)|授权目录|回收站|文件夹|文件|目录)/giu;
-const quotedOrCodePrefixPattern = /^(?:>|[`'"“”‘’])/u;
+const quotedOrCodePrefixPattern = /^(?:>|[`'"“”‘’]|~~~)/u;
 const explicitReferencePrefixPattern = /^(?:引用|翻译|read\s+the\s+phrase\b)/iu;
-const explicitNegationPrefixPattern = /^(?:(?:请你?|麻烦你?|你能(?:不能)?帮我|可以帮我|帮我)\s*)?(?:不要|不用|不必|无需|不需要|别|(?:please\s+)?(?:do\s+not|don't)\b)/iu;
+const explicitNegationPrefixPattern = /^(?:我不想让你|你不能帮我|千万(?:不要|不用|不必|无需|不需要|别)|(?:(?:请你?|麻烦你?|你(?:能不能|能)帮我|可以帮我|帮我)\s*)?(?:不要|不用|不必|无需|不需要|别|(?:please\s+)?(?:do\s+not|don't)\b))/iu;
+const quotedReferenceEnvelopePattern = /^(?:(?:把|将)[^\n]{0,40}[“”‘’"'][^\n]{1,240}[“”‘’"'][^\n]{0,40}翻译|[^\n]{0,40}说\s*[：:][^\n]{0,20}[“”‘’"'])/u;
+const indentedOrFencedCodePattern = /^(?: {4}|\t|```|~~~)/u;
 const chineseRequestPrefixPattern = /^(?:(?:那|那么)\s*)?(?:请你?帮我|请你?|你能(?:不能)?帮我|可以帮我|麻烦你?帮我|麻烦你?|帮我|给我)?\s*/u;
 const englishRequestPrefixPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?/iu;
 const chineseLocationPrefixPattern = /^(?:在)?(?:当前(?:文件夹|文件|目录)|授权目录)(?:中|里|下)?(?:帮我)?/u;
@@ -65,7 +68,6 @@ const chineseClarificationPattern = /^(?:请你?|帮我)?\s*(?:删除|修改|移
 const embeddedFileContentPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)\s*([\s\S]*)$/iu;
 const missingTargetPathPattern = /(?:(?:没有|尚未|未|没)\s*(?:提供|填写|指定)|(?:缺少|缺失))[^。！？!?\n]{0,16}(?:目标)?(?:相对)?路径/iu;
 const clarifiedTargetMarker = '补充信息(覆盖此前缺失字段):';
-const clarifiedTaskContinuationPattern = /^[^\n]{1,500}\n补充信息\(覆盖此前缺失字段\):\s*目标(?:相对)?路径是\s*[^\n]{1,260}$/u;
 
 const chineseExplicitPowerShellPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
 const englishExplicitPowerShellPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run|execute)\s+powershell\s+([\s\S]+)$/iu;
@@ -156,6 +158,7 @@ function hasClosedTermination(text: string, objects: readonly TextRange[]): bool
 }
 
 function hasClosedChineseShape(text: string, objects: readonly TextRange[]): boolean {
+  if (text.includes('\n')) return false;
   if (chineseClarificationPattern.test(text)) return true;
   const prefix = chineseRequestPrefixPattern.exec(text)?.[0] ?? '';
   const core = text.slice(prefix.length);
@@ -187,6 +190,7 @@ function hasClosedChineseShape(text: string, objects: readonly TextRange[]): boo
 }
 
 function hasClosedEnglishShape(text: string, objects: readonly TextRange[]): boolean {
+  if (text.includes('\n')) return false;
   const prefix = englishRequestPrefixPattern.exec(text)?.[0] ?? '';
   const core = text.slice(prefix.length);
   const operation = fileOperationPattern.exec(core);
@@ -203,7 +207,6 @@ function hasClosedEnglishShape(text: string, objects: readonly TextRange[]): boo
  * 不再维护知识、咨询或可行性词表来模拟自然语言理解。
  */
 function hasExplicitFileIntent(text: string): boolean {
-  if (clarifiedTaskContinuationPattern.test(text)) return true;
   if (!text || quotedOrCodePrefixPattern.test(text)
     || explicitReferencePrefixPattern.test(text)
     || explicitNegationPrefixPattern.test(text)) return false;
@@ -275,6 +278,7 @@ function blocksModelEscalation(text: string): boolean {
   return quotedOrCodePrefixPattern.test(text)
     || explicitReferencePrefixPattern.test(text)
     || explicitNegationPrefixPattern.test(text)
+    || quotedReferenceEnvelopePattern.test(text)
     || embeddedFileContentPattern.test(text);
 }
 
@@ -307,7 +311,9 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
 
   /** 只有封闭直接命令可跳过任务级授权；其他文本保守回落普通聊天。 */
   route(prompt: string): CapabilityIntent {
-    const text = prompt.normalize('NFKC').trim().toLocaleLowerCase();
+    const normalizedPrompt = prompt.normalize('NFKC');
+    if (indentedOrFencedCodePattern.test(normalizedPrompt)) return blockedChatIntent;
+    const text = normalizedPrompt.trim().toLocaleLowerCase();
     const explicitShell = explicitPowerShellIntent(text);
     if (explicitShell !== undefined) return explicitShell;
     if (hasEmbeddedShellExecution(text)) return blockedChatIntent;
@@ -317,6 +323,11 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
       return blocksModelEscalation(text) ? blockedChatIntent : chatIntent;
     }
     if (/(?:复制|\bcopy\b)/iu.test(text)) return unsupportedCopyIntent;
+    return fileTaskIntent;
+  }
+
+  /** 仅供 Coordinator 在持有同代澄清状态时恢复文件任务，不解析任何用户可伪造标记。 */
+  routeTrustedFileContinuation(): Extract<CapabilityIntent, { kind: 'file_task' }> {
     return fileTaskIntent;
   }
 }
