@@ -41,7 +41,7 @@
 
 - 产出 `CapabilityControlPlan = {kind:'chat'} | {kind:'agent_task', preferredTool: AgentPlanningTool | null}`。
 - 产出 `MovementControlPlan = {kind:'keep'} | {kind:'set_mode',mode:0|1|2} | {kind:'move_once',target,distance}`。
-- `CapabilityIntentRouter.route()` 保持 Main 的同步安全入口，但文件正向证据不再依赖礼貌词、地点和操作的固定排列。
+- `CapabilityIntentRouter.route()` 保持 Main 的同步高置信入口；只覆盖封闭直接命令语法和确定性拒绝，不承担开放世界语义分类。
 - `parseExplicitCharacterBehavior()` 输出的准备结果增加规范化 `movementControl`，不再用 stop/resume 行为动画类型写持久状态。
 
 - [ ] **步骤 1：添加控制 Schema 与截图原句 RED 测试**
@@ -71,7 +71,7 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capa
 
 - [ ] **步骤 3：实现最小契约与与语序无关的正向证据组合**
 
-本地 Gate 只组合操作词、本地对象、执行请求和拒绝证据；不得使用无界 `.*`。明确映射 stop→0、continuous→1、intermittent/resume→2、一次移动→`move_once`。
+本地 Gate 使用封闭直接命令语法覆盖截图原句和现有正例；删除不断扩张的开放式知识/否定/咨询词表，不得使用无界 `.*`。未命中直接语法的文本留给任务 2 的严格模型控制计划。明确映射 stop→0、continuous→1、intermittent/resume→2、一次移动→`move_once`。
 
 - [ ] **步骤 4：运行 GREEN、typecheck 与差异检查**
 
@@ -104,12 +104,18 @@ git commit -m "feat(control): 统一桌宠能力与运动控制契约"
 - 修改：`apps/desktop/src/main/conversation/capability-task-adapter.ts`
 - 修改：`apps/desktop/src/main/conversation/conversation-chat-adapter.ts`
 - 修改：`apps/desktop/src/main/conversation/conversation-coordinator.ts`
+- 修改：`apps/desktop/src/shared/myself-api.ts`
+- 修改：`apps/desktop/src/shared/ipc-channels.ts`
+- 修改：`apps/desktop/src/preload/index.ts`
+- 修改：`apps/desktop/src/renderer/src/chat/ChatPanel.tsx`
 - 修改：`packages/agent-core/src/agent-loop.ts`
 - 修改：`packages/agent-core/src/types.ts`
 - 测试：`apps/desktop/tests/tool-registry.test.ts`
 - 测试：`apps/desktop/tests/agent-service.test.ts`
 - 测试：`apps/desktop/tests/conversation-chat-adapter.test.ts`
 - 测试：`apps/desktop/tests/conversation-coordinator.test.ts`
+- 测试：`apps/desktop/tests/preload-api.test.ts`
+- 测试：`apps/desktop/tests/chat-panel.test.tsx`
 - 测试：`packages/agent-core/tests/agent-loop.test.ts`
 - 测试：`tests/integration/desktop-agent.test.ts`
 
@@ -120,6 +126,7 @@ git commit -m "feat(control): 统一桌宠能力与运动控制契约"
 - 首轮使用 `preferredTool` 与澄清工具；第一次可信结果后可使用完整 Session 工具表。
 - `AgentLoop` 最大轮数改为命名常量，允许多步任务；连续三次同工具同参数返回 `AGENT_REPEATED_TOOL_CALL`。
 - 聊天结构化响应解析 `CapabilityControlPlan`；只有本地拒绝证据未命中时，`agent_task` 建议才能重新进入能力准备阶段。该补充分流不得先公开模型的口头执行结论。
+- 仅由模型识别的 `agent_task` 先发布一次任务级授权卡；确认前不得创建 Agent Session、公告工具、读取文件或启动进程。任务授权绑定 generation、Provider、授权根和请求摘要；确认后才进入统一 Agent，后续写入/删除/PowerShell仍逐次确认。
 
 - [ ] **步骤 1：添加真实入口与多步任务 RED 测试**
 
@@ -134,7 +141,7 @@ git commit -m "feat(control): 统一桌宠能力与运动控制契约"
 ```
 
 断言截图原句不创建聊天 Adapter；首轮工具被正确收窄；确认前无副作用；确认后真实落盘；第一次结果后可调用另一类工具；复制走完整 PowerShell 确认。
-对最后一条模糊但明确执行的请求，聊天结构化计划返回 `agent_task` 后进入 Agent；否定、引用或知识讨论即使模型建议执行也必须被 Main 拒绝。
+对最后一条模糊但明确执行的请求，聊天结构化计划返回 `agent_task` 后先出现任务级授权；确认前 Agent factory、文件端口和 PowerShell spawn 均为零，确认后才进入 Agent。否定、引用或代码块即使模型建议执行也必须被 Main 拒绝。
 
 - [ ] **步骤 2：添加参数修复和重复调用 RED 测试**
 
