@@ -212,7 +212,11 @@ export async function readStructuredTextSse(
     const delta = projector.project(content);
     projectedCharacters += delta.length;
     if (projectedCharacters > ASSISTANT_STREAM_TEXT_MAX_CHARACTERS) options.malformed();
-    if (delta.length > 0) options.request.onTextDelta?.(delta);
+    if (delta.length > 0) {
+      // 最终 JSON 契约仍会在流末复核；此处只公开已投影的正文，并在回调前拒绝迟到事件。
+      throwIfAborted(options.signal);
+      options.request.onTextDelta?.(delta);
+    }
     if (result.done === true) done = true;
   };
 

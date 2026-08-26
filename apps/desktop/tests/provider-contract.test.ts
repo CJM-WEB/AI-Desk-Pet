@@ -82,7 +82,7 @@ const providerBehaviorContext = {
     moving: false,
     dragging: false,
     carrying: false,
-    movementStopped: false
+    movementMode: 2 as const
   },
   proactivityMode: 'assistive' as const,
   recentActions: []
@@ -426,6 +426,137 @@ describe('三协议云端普通聊天流式契约', () => {
       expect(onTextDelta).not.toHaveBeenCalled();
     }
   );
+
+  test('OpenAI Compatible 在事件可读后取消时不公开迟到增量', async () => {
+    const abortReason = new DOMException('测试取消', 'AbortError');
+    let releaseFirstAbortCheck: (() => void) | undefined;
+    const firstAbortCheck = new Promise<void>(resolve => { releaseFirstAbortCheck = resolve; });
+    let firstCheckPending = true;
+    let cancelled = false;
+    const signal = {
+      get aborted() {
+        if (firstCheckPending) {
+          firstCheckPending = false;
+          releaseFirstAbortCheck?.();
+          return false;
+        }
+        return cancelled;
+      },
+      reason: abortReason
+    } as AbortSignal;
+    const encoded = new TextEncoder().encode(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '{"text":"迟到"}' } }] })}\n\n`
+    );
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await firstAbortCheck;
+        controller.enqueue(encoded);
+        // 模拟 reader.read 返回与同步事件投影之间抵达的取消。
+        cancelled = true;
+        controller.close();
+      }
+    });
+    const fetchClient = vi.fn<FetchLike>(async () => new Response(body, {
+      headers: { 'content-type': 'text/event-stream' }
+    }));
+    const onTextDelta = vi.fn();
+
+    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta
+    }, signal)).rejects.toBe(abortReason);
+
+    expect(onTextDelta).not.toHaveBeenCalled();
+  });
+
+  test('Gemini 只公开非 thought 的 text Part，忽略不可见 Part', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      JSON.stringify({
+        candidates: [{
+          content: {
+            parts: [
+              { thought: true, text: '不可见推理' },
+              { functionCall: { name: 'unused', args: {} } },
+              { text: '{"text":"公开","status":"idle"}' }
+            ]
+          },
+          finishReason: 'STOP'
+        }]
+      })
+    ]));
+    const deltas: string[] = [];
+
+    await expect(chatProviderContractCases[2]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta: delta => deltas.push(delta)
+    }, new AbortController().signal)).resolves.toMatchObject({
+      type: 'text',
+      text: '公开'
+    });
+
+    expect(deltas.join('')).toBe('公开');
+    expect(JSON.stringify(deltas)).not.toContain('不可见推理');
+  });
+
+  test('Gemini 拒绝同一流式 Part 混合正文和函数调用', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      JSON.stringify({
+        candidates: [{
+          content: {
+            parts: [{
+              text: '{"text":"不得公开","status":"idle"}',
+              functionCall: { name: 'unused', args: {} }
+            }]
+          },
+          finishReason: 'STOP'
+        }]
+      })
+    ]));
+
+    await expect(chatProviderContractCases[2]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta: vi.fn()
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE'
+    });
+  });
+
+  test('OpenAI Compatible 对 application/json;charset 回退为缓冲 JSON', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => new Response(JSON.stringify(
+      chatProviderContractCases[0]!.textResponse('{"text":"兼容回退","status":"idle"}')
+    ), {
+      headers: { 'content-type': 'application/json; charset=utf-8' }
+    }));
+    const onTextDelta = vi.fn();
+
+    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta
+    }, new AbortController().signal)).resolves.toMatchObject({
+      type: 'text',
+      text: '兼容回退'
+    });
+
+    expect(onTextDelta).not.toHaveBeenCalled();
+  });
+
+  test('OpenAI Compatible 终态前已经公开的 text 在最终 JSON 无效时不冒充成功', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      JSON.stringify({ choices: [{ delta: { content: '{"text":"可见但未提交"' } }] }),
+      JSON.stringify({ choices: [{ delta: { content: ',"text":123}' } }] }),
+      '[DONE]'
+    ]));
+    const deltas: string[] = [];
+
+    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta: delta => deltas.push(delta)
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE'
+    });
+
+    expect(deltas.join('')).toBe('可见但未提交');
+  });
 
   test('OpenAI Compatible 把 SSE 读取异常归一为可重试网络错误', async () => {
     const body = new ReadableStream<Uint8Array>({

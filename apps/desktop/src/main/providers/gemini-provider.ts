@@ -353,10 +353,11 @@ async function readGeminiStructuredSse(
       if (!Array.isArray(parts)) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
       let fragment = '';
       for (const part of parts) {
-        if (typeof part !== 'object' || part === null || typeof Reflect.get(part, 'text') !== 'string') {
-          throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-        }
-        fragment += Reflect.get(part, 'text') as string;
+        if (typeof part !== 'object' || part === null) continue;
+        // Gemini 的 Part 可以携带思考、函数等非可见数据；普通聊天流只累积非 thought 的显式正文。
+        if (Reflect.get(part, 'thought') === true) continue;
+        const text = Reflect.get(part, 'text');
+        if (typeof text === 'string') fragment += text;
       }
       return {
         fragment,
