@@ -42,6 +42,7 @@
 - 产出 `CapabilityControlPlan = {kind:'chat'} | {kind:'agent_task', preferredTool: AgentPlanningTool | null}`。
 - 产出 `MovementControlPlan = {kind:'keep'} | {kind:'set_mode',mode:0|1|2} | {kind:'move_once',target,distance}`。
 - `CapabilityIntentRouter.route()` 保持 Main 的同步高置信入口；只覆盖封闭直接命令语法和确定性拒绝，不承担开放世界语义分类。
+- Router 的 `chat` 结果必须区分 `modelEscalation: allowed | blocked`；引用、代码块、显式否定和嵌入式命令讨论为 `blocked`，普通未命中为 `allowed`。
 - `parseExplicitCharacterBehavior()` 输出的准备结果增加规范化 `movementControl`，不再用 stop/resume 行为动画类型写持久状态。
 
 - [ ] **步骤 1：添加控制 Schema 与截图原句 RED 测试**
@@ -104,18 +105,32 @@ git commit -m "feat(control): 统一桌宠能力与运动控制契约"
 - 修改：`apps/desktop/src/main/conversation/capability-task-adapter.ts`
 - 修改：`apps/desktop/src/main/conversation/conversation-chat-adapter.ts`
 - 修改：`apps/desktop/src/main/conversation/conversation-coordinator.ts`
+- 修改：`apps/desktop/src/main/conversation/main-conversation-composition.ts`
+- 修改：`apps/desktop/src/main/agent/main-agent-session-factory.ts`
+- 修改：`apps/desktop/src/main/agent/agent-service.ts`
+- 修改：`apps/desktop/src/main/ipc/register-ipc.ts`
+- 修改：`apps/desktop/src/main/index.ts`
 - 修改：`apps/desktop/src/shared/myself-api.ts`
 - 修改：`apps/desktop/src/shared/ipc-channels.ts`
 - 修改：`apps/desktop/src/preload/index.ts`
+- 修改：`apps/desktop/src/renderer/src/stores/task-store.ts`
 - 修改：`apps/desktop/src/renderer/src/chat/ChatPanel.tsx`
+- 新增：独立的任务级授权卡组件
 - 修改：`packages/agent-core/src/agent-loop.ts`
 - 修改：`packages/agent-core/src/types.ts`
+- 修改：`packages/shared-types/src/contracts.ts`
 - 测试：`apps/desktop/tests/tool-registry.test.ts`
 - 测试：`apps/desktop/tests/agent-service.test.ts`
 - 测试：`apps/desktop/tests/conversation-chat-adapter.test.ts`
 - 测试：`apps/desktop/tests/conversation-coordinator.test.ts`
 - 测试：`apps/desktop/tests/preload-api.test.ts`
-- 测试：`apps/desktop/tests/chat-panel.test.tsx`
+- 测试：`apps/desktop/tests/agent-ipc.test.ts`
+- 测试：`apps/desktop/tests/capability-task-adapter.test.ts`
+- 测试：`apps/desktop/tests/main-conversation-composition.test.ts`
+- 测试：`apps/desktop/tests/main-agent-session-factory.test.ts`
+- 测试：`apps/desktop/tests/renderer-task-store.test.ts`
+- 测试：`apps/desktop/tests/renderer-components.test.tsx`
+- 测试：`packages/shared-types/tests/contracts.test.ts`
 - 测试：`packages/agent-core/tests/agent-loop.test.ts`
 - 测试：`tests/integration/desktop-agent.test.ts`
 
@@ -127,6 +142,7 @@ git commit -m "feat(control): 统一桌宠能力与运动控制契约"
 - `AgentLoop` 最大轮数改为命名常量，允许多步任务；连续三次同工具同参数返回 `AGENT_REPEATED_TOOL_CALL`。
 - 聊天结构化响应解析 `CapabilityControlPlan`；只有本地拒绝证据未命中时，`agent_task` 建议才能重新进入能力准备阶段。该补充分流不得先公开模型的口头执行结论。
 - 仅由模型识别的 `agent_task` 先发布一次任务级授权卡；确认前不得创建 Agent Session、公告工具、读取文件或启动进程。任务授权绑定 generation、Provider、授权根和请求摘要；确认后才进入统一 Agent，后续写入/删除/PowerShell仍逐次确认。
+- 任务级授权使用独立事件、IPC、Main 私有状态与 Renderer 卡片，不伪造已有 `PendingAction`；`prepareTarget()` 必须拆成无 Agent 创建的能力快照准备与确认后的 Agent 激活。
 
 - [ ] **步骤 1：添加真实入口与多步任务 RED 测试**
 
