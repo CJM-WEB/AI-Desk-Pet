@@ -208,10 +208,12 @@ export class ConversationCoordinator {
       context.explicitDirective = prepared.explicitDirective;
 
       const continuation = this.pendingFileContinuation;
+      const continuationIntent = capabilityIntentRouter.route(context.capabilityText);
       if (
         continuation?.generation === context.generation
         && context.capabilityText.trim().length > 0
-        && capabilityIntentRouter.route(context.capabilityText).kind === 'chat'
+        && continuationIntent.kind === 'chat'
+        && continuationIntent.modelEscalation === 'allowed'
       ) {
         this.pendingFileContinuation = null;
         // 小模型需要明确后续路径覆盖先前缺失字段，避免把两轮文本误判为互相矛盾。
@@ -224,7 +226,7 @@ export class ConversationCoordinator {
 
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
       const intent = context.continuationTarget === undefined
-        ? capabilityIntentRouter.route(context.capabilityText)
+        ? continuationIntent
         : capabilityIntentRouter.routeTrustedFileContinuation();
       if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
       if (intent.kind === 'unsupported_file_operation') {

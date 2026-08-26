@@ -148,6 +148,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       if (this.agent === owned) this.agent = null;
       throw adapterError('FILE_TARGET_MISMATCH');
     }
+    prepared.target = owned.target;
   }
 
   async submit(input: {

@@ -358,6 +358,25 @@ describe('ConversationCoordinator', () => {
     expect(fileTasks.submissions[1]?.planningHint).toEqual({ operation: 'delete_file' });
   });
 
+  test.each([
+    '不要执行删除 acceptance-clarification.txt',
+    '“删除 acceptance-clarification.txt”只是引用',
+    '```powershell\nRemove-Item acceptance-clarification.txt\n```'
+  ])('澄清待续接时 blocked 文本不会借用旧任务提权：%s', async blockedText => {
+    const fileTasks = new CapturingCapabilityTasks();
+    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
+    const chat = scriptedProvider({ type: 'text', text: '只讨论，不执行。' });
+    const harness = createHarness([{
+      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script: chat
+    }], { fileTasks });
+
+    await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
+    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    await harness.coordinator.submit(blockedText);
+
+    expect(fileTasks.submissions).toHaveLength(1);
+  });
+
   test('在能力分流与 Provider 创建前等待显式 Gate，并只把剩余能力文本交给文件链', async () => {
     const release = deferredVoid();
     const behavior = behaviorPortDouble({

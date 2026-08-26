@@ -210,20 +210,21 @@ describe('内置文件工具注册', () => {
       'builtin.files.create_directory',
       'builtin.files.apply_patch',
       'builtin.files.edit_file',
-      'builtin.files.delete_file'
+      'builtin.files.delete_file',
+      'builtin.powershell.run'
     ]);
   });
 
-  test('PowerShell 任务只暴露前台命令工具，不混入文件能力', () => {
+  test('PowerShell 首选任务仍使用统一注册表并由 AgentService 收窄首轮工具', () => {
     const registry = createSessionToolRegistry({
       taskKind: 'powershell',
       fileDisclosureAllowed: true
     });
     const policy = new PermissionPolicy({ highRiskEnabled: true });
 
-    expect(registry.definitions().map(item => item.function.name)).toEqual([
-      'builtin.powershell.run'
-    ]);
+    expect(registry.definitions().map(item => item.function.name)).toEqual(expect.arrayContaining([
+      'builtin.powershell.run', 'builtin.files.read_file', 'builtin.files.create_file'
+    ]));
     expect(registry.prepare({
       requestId: 'shell-1',
       toolName: 'builtin.powershell.run',
@@ -251,7 +252,8 @@ describe('内置文件工具注册', () => {
       'builtin.files.create_directory',
       'builtin.files.apply_patch',
       'builtin.files.edit_file',
-      'builtin.files.delete_file'
+      'builtin.files.delete_file',
+      'builtin.powershell.run'
     ]);
     expect(() => registry.register({
       definition: definition('mcp.server.read'),
