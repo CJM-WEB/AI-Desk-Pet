@@ -280,7 +280,7 @@ function securityBehaviorDouble(
         stateNames: [], actionNames: [], tags: []
       },
       runtime: {
-        moving: false, dragging: false, carrying: false, movementStopped: false
+        moving: false, dragging: false, carrying: false, movementMode: 2
       },
       proactivityMode: 'assistive',
       recentActions: []
@@ -295,7 +295,7 @@ function securityBehaviorDouble(
 }
 
 function movementLockDirector() {
-  const saveMovementStopped = vi.fn<(stopped: boolean) => Promise<void>>();
+  const saveMovementMode = vi.fn<(mode: 0 | 1 | 2) => Promise<void>>();
   const behavior = {
     getPublicBehaviorCatalog: vi.fn(() => ({
       characterName: '安全角色', semantics: ['idle'] as const,
@@ -325,10 +325,10 @@ function movementLockDirector() {
       stop: vi.fn()
     },
     initialGeneration: 'security-generation',
-    initialSettings: { movementStopped: false, proactivityMode: 'assistive' },
-    saveMovementStopped
+    initialSettings: { movementMode: 2, proactivityMode: 'assistive' },
+    saveMovementMode
   });
-  return { director, saveMovementStopped };
+  return { director, saveMovementMode };
 }
 
 describe('权限边界安全回归', () => {
@@ -601,9 +601,12 @@ describe('权限边界安全回归', () => {
     await chat.composition.close();
   });
 
-  test.each(['stop_movement', 'resume_movement'] as const)(
-    'Provider 建议 %s 不能写入持久停止锁',
-    async kind => {
+  test.each([
+    ['stop_movement', 0],
+    ['resume_movement', 2]
+  ] as const)(
+    'Provider 严格结构化计划 %s 只能持久化为运动模式 %i',
+    async (kind, expectedMode) => {
       const chatLock = movementLockDirector();
       const chat = conversationSecurityHarness({
         chatText: '保留的普通回复',
@@ -616,7 +619,7 @@ describe('权限边界安全回归', () => {
       });
       await chat.composition.coordinator.submit('讨论桌宠活动状态');
 
-      expect(chatLock.saveMovementStopped).not.toHaveBeenCalled();
+      expect(chatLock.saveMovementMode).toHaveBeenCalledExactlyOnceWith(expectedMode);
       await chat.composition.close();
     }
   );
