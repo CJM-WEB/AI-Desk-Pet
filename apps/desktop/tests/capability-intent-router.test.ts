@@ -239,6 +239,7 @@ describe('能力意图路由器', () => {
 
   test.each([
     'Never delete a.txt',
+    'Please never delete a.txt',
     '\n    读取 a.txt',
     '下面是示例：\n```text\n删除 a.txt\n```',
     '下面是示例：\n~~~text\n删除 a.txt\n~~~'

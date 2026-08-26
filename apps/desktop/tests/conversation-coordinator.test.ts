@@ -360,19 +360,24 @@ describe('ConversationCoordinator', () => {
 
   test.each([
     '不要执行删除 acceptance-clarification.txt',
+    'Please never delete acceptance-clarification.txt',
     '“删除 acceptance-clarification.txt”只是引用',
     '```powershell\nRemove-Item acceptance-clarification.txt\n```'
   ])('澄清待续接时 blocked 文本不会借用旧任务提权：%s', async blockedText => {
     const fileTasks = new CapturingCapabilityTasks();
     fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
     const chat = scriptedProvider({ type: 'text', text: '只讨论，不执行。' });
-    const harness = createHarness([{
-      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script: chat
-    }], { fileTasks });
+    const harness = createHarness([1, 2].map(index => ({
+      profileId: `chat-profile-${index}`,
+      providerIdentity: 'openai',
+      providerName: 'Chat',
+      script: chat
+    })), { fileTasks });
 
     await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
     fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
     await harness.coordinator.submit(blockedText);
+    await harness.coordinator.submit('目标相对路径是 should-not-continue.txt。');
 
     expect(fileTasks.submissions).toHaveLength(1);
   });

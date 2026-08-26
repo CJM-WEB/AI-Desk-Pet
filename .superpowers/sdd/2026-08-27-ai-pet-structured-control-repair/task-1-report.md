@@ -216,3 +216,16 @@
 - Router 在 `trim()` 前按整段行结构识别缩进代码和两类围栏，不再依赖整段文本的首字符。
 - 英文句首 `never` 纳入明确否定边界并返回 `chat + modelEscalation: blocked`；未新增开放式知识、咨询或可行性词表。
 - 本轮只修改 Router、Router 测试和本报告；未触碰任务 2 的 Coordinator 或授权实现。
+
+## 第三次复审补充：英文礼貌否定续接
+
+### RED 证据
+
+- Router 与 Coordinator 定向测试共 301 项，299 项通过、2 项失败。
+- `Please never delete a.txt` 被错误标为 `chat + allowed`；存在文件澄清待续接时，该文本会借用受信入口进入文件任务。
+
+### GREEN 证据
+
+- Router 与 Coordinator 定向测试：301/301 通过。
+- 英文 `never` 只新增单层可选 `please` 礼貌前缀；既有 `please do not` 与 `please don't` 边界保持不变。
+- Coordinator 纵向测试确认 blocked 文本不会产生第二次文件提交，并且后续普通路径文本也不能恢复已清理的 pending continuation。
