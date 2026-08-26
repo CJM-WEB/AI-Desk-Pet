@@ -45,8 +45,8 @@ describe('Main 通用生命周期', () => {
     expect(source).toContain('behavior: characterBehaviorDirector');
     expect(source).toContain('characterBehaviorDirector.applyPlaybackFeedback({');
     expect(source).toContain('advanceBehavior: () => characterBehaviorDirector.advance()');
-    expect(source).toContain('characterBehaviorDirector.setDragging(true);');
-    expect(source).toContain('characterBehaviorDirector.setDragging(false);');
+    expect(source).toContain('characterBehaviorDirector.setDragging(true)');
+    expect(source).toContain('characterBehaviorDirector.setDragging(false)');
     expect(source).toContain('emitBehaviorIntent: intent => characterBehaviorDirector.handleAgentBehaviorIntent(intent)');
     expect(source).not.toContain('emitBehaviorIntent: intent => characterBehavior.handleAgentIntent(intent)');
     expect(source).not.toContain('applyCharacterBehavior: event => characterBehavior.handleTaskEvent(event)');
@@ -93,7 +93,7 @@ describe('Main 通用生命周期', () => {
     expect(readIndex).toBeGreaterThan(-1);
     expect(readIndex).toBeLessThan(directorIndex);
     expect(source).toContain('initialSettings: characterBehaviorSettings');
-    expect(source).toContain('saveMovementStopped: stopped => desktopSettingsService.saveMovementStopped(stopped)');
+    expect(source).toContain('saveMovementMode: mode => desktopSettingsService.saveMovementMode(mode)');
     expect(source).toContain('applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)');
   });
 
@@ -112,7 +112,7 @@ describe('Main 通用生命周期', () => {
     expect(source.match(/new PetVisualGeometryAuthority\(/gu)).toHaveLength(1);
     expect(source.match(/new PetGeometryCoordinator\(/gu)).toHaveLength(1);
     expect(source).toContain('const getPetGeometrySnapshot = () =>');
-    expect(source.match(/getGeometrySnapshot: getPetGeometrySnapshot/gu)).toHaveLength(2);
+    expect(source.match(/getGeometrySnapshot: getPetGeometrySnapshot/gu)).toHaveLength(1);
     expect(source).toContain('commitViewport: input => petGeometry.commitViewport');
     expect(source).not.toContain('stepScale: input => petGeometry.stepScale');
     expect(source).toContain('await petGeometry.initialize();');

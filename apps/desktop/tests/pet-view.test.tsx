@@ -13,8 +13,7 @@ import {
 import type { MyselfApi } from '../src/shared/myself-api';
 import { taskStore } from '../src/renderer/src/stores/task-store';
 import type {
-  PetInteractionController,
-  PetInteractionControllerOptions
+  PetInteractionController
 } from '../src/renderer/src/pet/pet-interaction-controller';
 import type { CharacterRecoveryFallbackErrorCode } from '../src/shared/character-ipc';
 
@@ -146,26 +145,18 @@ test('固定默认尺寸下 wheel 不再交给桌宠交互控制器', () => {
   expect(handleWheel).not.toHaveBeenCalled();
 });
 
-test('拖拽会话期间保持原动画模式且所有备用动画不改变尺寸', () => {
+test('原生拖拽表面保持原动画模式且所有备用动画不改变尺寸', () => {
   const api = createPetViewApi();
   installPetViewBrowserApi(api);
-  let options: PetInteractionControllerOptions | undefined;
   const controller = {
     setHitTestPort: vi.fn(), handlePointerMove: vi.fn(), handlePointerDown: vi.fn(),
     handlePointerUp: vi.fn(), handlePointerCancel: vi.fn(), handleContextMenu: vi.fn(),
     handlePointerLeave: vi.fn(), dispose: vi.fn()
   } as unknown as PetInteractionController;
   const { container } = render(
-    <PetView createInteractionController={(_api, nextOptions) => {
-      options = nextOptions;
-      return controller;
-    }} />
+    <PetView createInteractionController={() => controller} />
   );
 
-  expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('animated');
-  act(() => options?.onDragStart?.(1));
-  expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('animated');
-  act(() => options?.onDragEnd?.());
   expect(container.querySelector('.pet-character')?.getAttribute('data-motion')).toBe('animated');
 
   const styles = readFileSync(
@@ -189,9 +180,6 @@ function createPetViewApi(): MyselfApi {
     getCharacterRuntimeSnapshot: vi.fn(async () => null),
     subscribeCharacterEvents: vi.fn(() => vi.fn()),
     setPetMousePassthrough: vi.fn().mockResolvedValue(undefined),
-    beginPetDrag: vi.fn().mockResolvedValue(undefined),
-    endPetDrag: vi.fn().mockResolvedValue(undefined),
-    openPetContextMenu: vi.fn().mockResolvedValue(undefined),
     recordPetInteractionProbeEvent: vi.fn().mockResolvedValue(undefined),
     openChat: vi.fn().mockResolvedValue(undefined),
     openCharacterWorkshop: vi.fn().mockResolvedValue(undefined)
@@ -341,7 +329,7 @@ describe('桌宠像素交互接线', () => {
     expect(instances[1]?.dispose).toHaveBeenCalledOnce();
   });
 
-  test('桌宠容器使用普通 DOM 且不再保留旧按钮与整窗拖拽区域', () => {
+  test('角色表面使用原生拖拽且恢复控件保持 no-drag', () => {
     const css = readFileSync(
       resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
       'utf8'
@@ -349,10 +337,13 @@ describe('桌宠像素交互接线', () => {
 
     expect(css).not.toMatch(/\.pet-open-chat\b/u);
     expect(css).not.toMatch(/\.pet-shell\s*\{[^}]*-webkit-app-region:\s*drag/su);
-    expect(css).toMatch(/\.pet-character-surface\s*\{[^}]*width:\s*100%;/su);
+    expect(css).toMatch(
+      /\.pet-character-surface\s*\{[^}]*-webkit-app-region:\s*drag;/su
+    );
+    expect(css).toMatch(/\.pet-runtime-recovery\s*\{[^}]*-webkit-app-region:\s*no-drag;/su);
   });
 
-  test('备用角色可见区域左键只拖拽，释放后清理 capture 且不聊天或触发扩展', async () => {
+  test('备用角色可见区域不再启动 Renderer 自定义拖拽', async () => {
     const api = createPetViewApi();
     installPetViewBrowserApi(api);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -380,136 +371,24 @@ describe('桌宠像素交互接线', () => {
       toJSON: () => ({})
     });
     const shell = result.container.querySelector<HTMLElement>('.pet-shell')!;
-    const setPointerCapture = vi.fn();
-    const releasePointerCapture = vi.fn();
-    Object.assign(shell, { setPointerCapture, releasePointerCapture });
-
     fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 7 });
-    fireEvent.pointerDown(shell, {
-      clientX: 20,
-      clientY: 30,
-      pointerId: 7,
-      button: 0
-    });
-    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 7 });
+    fireEvent.pointerDown(shell, { clientX: 20, clientY: 30, pointerId: 7, button: 0 });
     fireEvent.click(fallback);
     fireEvent.doubleClick(fallback);
 
-    expect(api.beginPetDrag).toHaveBeenCalledOnce();
-    expect(setPointerCapture).toHaveBeenCalledWith(7);
+    expect(result.container.querySelector('.pet-character-surface')).not.toBeNull();
     expect(api.openChat).not.toHaveBeenCalled();
     expect(triggerCharacterPointer).not.toHaveBeenCalled();
-
-    fireEvent.pointerUp(shell, { pointerId: 7, button: 0 });
-    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledOnce());
-    expect(releasePointerCapture).toHaveBeenCalledWith(7);
-
-    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 8 });
-    fireEvent.pointerDown(shell, {
-      clientX: 20,
-      clientY: 30,
-      pointerId: 8,
-      button: 0
-    });
-    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 8 });
-    fireEvent.pointerCancel(shell, { pointerId: 8 });
-    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledTimes(2));
-    expect(releasePointerCapture).toHaveBeenCalledWith(8);
-
-    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 9 });
-    fireEvent.pointerDown(shell, {
-      clientX: 20,
-      clientY: 30,
-      pointerId: 9,
-      button: 0
-    });
-    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 9 });
-    fireEvent.lostPointerCapture(shell, { pointerId: 9 });
-    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledTimes(3));
-    expect(releasePointerCapture).toHaveBeenCalledWith(9);
   });
 
-  test('右键先更新坐标，只在备用角色命中时阻止默认菜单并调用单一受限入口', async () => {
+  test('卸载时释放命中控制器并恢复安全穿透', async () => {
     const api = createPetViewApi();
     installPetViewBrowserApi(api);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const result = render(<PetView />);
-    const fallback = await waitFor(() => {
-      const element = result.container.querySelector<HTMLElement>('.pet-character');
-      expect(element).not.toBeNull();
-      return element!;
-    });
-    vi.spyOn(fallback, 'getBoundingClientRect').mockReturnValue({
-      x: 10,
-      y: 20,
-      left: 10,
-      top: 20,
-      right: 110,
-      bottom: 140,
-      width: 100,
-      height: 120,
-      toJSON: () => ({})
-    });
-    const shell = result.container.querySelector<HTMLElement>('.pet-shell')!;
-
-    expect(fireEvent.contextMenu(shell, { clientX: 150, clientY: 180 })).toBe(false);
-    expect(api.openPetContextMenu).not.toHaveBeenCalled();
-    expect(fireEvent.contextMenu(shell, { clientX: 20, clientY: 30 })).toBe(false);
-    expect(api.openPetContextMenu).toHaveBeenCalledOnce();
-  });
-
-  test('blur 与卸载幂等结束拖拽并释放订阅后的事件副作用', async () => {
-    const api = createPetViewApi();
-    installPetViewBrowserApi(api);
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const result = render(<PetView />);
-    const fallback = await waitFor(() => {
-      const element = result.container.querySelector<HTMLElement>('.pet-character');
-      expect(element).not.toBeNull();
-      return element!;
-    });
-    vi.spyOn(fallback, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 0,
-      left: 0,
-      top: 0,
-      right: 100,
-      bottom: 100,
-      width: 100,
-      height: 100,
-      toJSON: () => ({})
-    });
-    const shell = result.container.querySelector<HTMLElement>('.pet-shell')!;
-    const setPointerCapture = vi.fn();
-    const releasePointerCapture = vi.fn();
-    Object.assign(shell, {
-      setPointerCapture,
-      releasePointerCapture
-    });
-    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 2 });
-    fireEvent.pointerDown(shell, {
-      clientX: 20,
-      clientY: 30,
-      pointerId: 2,
-      button: 0
-    });
-    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 2 });
-
-    fireEvent.blur(window);
-    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledOnce());
-    fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 3 });
-    fireEvent.pointerDown(shell, {
-      clientX: 20,
-      clientY: 30,
-      pointerId: 3,
-      button: 0
-    });
-    fireEvent.pointerMove(shell, { clientX: 25, clientY: 35, pointerId: 3 });
+    await waitFor(() => expect(result.container.querySelector('.pet-character')).not.toBeNull());
     result.unmount();
 
-    await waitFor(() => expect(api.endPetDrag).toHaveBeenCalledTimes(2));
-    expect(setPointerCapture).toHaveBeenCalledTimes(2);
-    expect(releasePointerCapture).toHaveBeenCalledTimes(2);
     await waitFor(() => {
       expect(api.setPetMousePassthrough).toHaveBeenLastCalledWith(true);
     });

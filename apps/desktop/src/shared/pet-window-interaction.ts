@@ -1,9 +1,6 @@
 import { z } from 'zod';
 import type { PetGeometryRenderView } from './character-motion-ipc';
 
-/** Main 与 Renderer 共用同一拖拽兜底时限，避免任一侧永久持有会话。 */
-export const PET_DRAG_TIMEOUT_MS = 30_000;
-
 /** Renderer 只能声明当前区域是否需要鼠标穿透。 */
 export const petMousePassthroughInputSchema = z.object({
   ignore: z.boolean()
@@ -40,9 +37,6 @@ export type PetInteractionProbeEvent = PetInteractionProbeRecordEvent;
 
 export interface PetWindowInteractionApi {
   setPetMousePassthrough(ignore: boolean): Promise<void>;
-  beginPetDrag(): Promise<void>;
-  endPetDrag(): Promise<void>;
-  openPetContextMenu(): Promise<void>;
   commitPetViewport?(input: PetViewportCommitInput): Promise<void>;
   onPetGeometryRender?(listener: (view: PetGeometryRenderView) => void): () => void;
   recordPetInteractionProbeEvent?(event: PetInteractionProbeRecordEvent): Promise<void>;

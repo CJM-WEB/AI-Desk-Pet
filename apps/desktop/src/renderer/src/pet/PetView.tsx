@@ -101,10 +101,6 @@ export function PetView({
   const triggerIdle = useTaskStore(state => state.triggerCharacterIdle);
   const applyCharacterMotion = useTaskStore(state => state.applyCharacterMotion);
   const shellRef = useRef<HTMLElement>(null);
-  const capturedPointerRef = useRef<{
-    pointerId: number;
-    element: HTMLElement;
-  } | null>(null);
   const formalHitTestPortRef = useRef<CharacterHitTestPort | null>(null);
   const fallbackElementRef = useRef<HTMLSpanElement | null>(null);
   const interactionControllerRef = useRef<PetInteractionController | null>(null);
@@ -160,12 +156,10 @@ export function PetView({
   const syncHitTestPort = useCallback((): void => {
     const formalPort = formalHitTestPortRef.current;
     const fallbackElement = fallbackElementRef.current;
-    interactionControllerRef.current?.setHitTestPort(
-      formalPort
-      ?? (fallbackElement
-        ? createElementBoundsHitTestPort(fallbackElement)
-        : null)
-    );
+    const characterPort = formalPort ?? (fallbackElement
+      ? createElementBoundsHitTestPort(fallbackElement)
+      : null);
+    interactionControllerRef.current?.setHitTestPort(characterPort);
   }, []);
   const handleHitTestPortChange = useCallback((
     port: CharacterHitTestPort | null
@@ -181,39 +175,10 @@ export function PetView({
   }, [syncHitTestPort]);
 
   useEffect(() => {
-    const interactionController = createInteractionController(window.myself, {
-      onDragStart: pointerId => {
-        const shell = shellRef.current;
-        if (!shell || typeof shell.setPointerCapture !== 'function') return;
-        try {
-          shell.setPointerCapture(pointerId);
-          capturedPointerRef.current = { pointerId, element: shell };
-        } catch {
-          capturedPointerRef.current = null;
-        }
-      },
-      onDragEnd: () => {
-        const captured = capturedPointerRef.current;
-        capturedPointerRef.current = null;
-        if (
-          !captured
-          || typeof captured.element.releasePointerCapture !== 'function'
-        ) {
-          return;
-        }
-        try {
-          captured.element.releasePointerCapture(captured.pointerId);
-        } catch {
-          // capture 可能已由平台隐式释放，清理保持幂等。
-        }
-      }
-    });
+    const interactionController = createInteractionController(window.myself, {});
     interactionControllerRef.current = interactionController;
     syncHitTestPort();
-    const cancelDrag = (): void => interactionController.handlePointerCancel();
-    window.addEventListener('blur', cancelDrag);
     return () => {
-      window.removeEventListener('blur', cancelDrag);
       interactionController.dispose();
       if (interactionControllerRef.current === interactionController) {
         interactionControllerRef.current = null;
@@ -250,35 +215,6 @@ export function PetView({
         }
       }}
       onMouseLeave={() => interactionControllerRef.current?.handlePointerLeave()}
-      onPointerDown={event => {
-        interactionControllerRef.current?.handlePointerMove({
-          x: event.clientX,
-          y: event.clientY
-        });
-        interactionControllerRef.current?.handlePointerDown({
-          button: event.button,
-          pointerId: event.pointerId
-        });
-      }}
-      onPointerUp={event => {
-        interactionControllerRef.current?.handlePointerMove({
-          x: event.clientX,
-          y: event.clientY
-        });
-        interactionControllerRef.current?.handlePointerUp();
-      }}
-      onPointerCancel={() => interactionControllerRef.current?.handlePointerCancel()}
-      onLostPointerCapture={() => (
-        interactionControllerRef.current?.handlePointerCancel()
-      )}
-      onContextMenu={event => {
-        event.preventDefault();
-        interactionControllerRef.current?.handlePointerMove({
-          x: event.clientX,
-          y: event.clientY
-        });
-        interactionControllerRef.current?.handleContextMenu();
-      }}
     >
       <div className="pet-character-surface">
         <CharacterPlayer

@@ -165,7 +165,6 @@ type PetWebContentsTransientEvent =
 
 type PetWindowInteractionLifecycleController = {
   setPassthrough(ignore: boolean): void;
-  endDrag(reason: 'cancelled'): void;
   dispose(): void;
 };
 
@@ -189,7 +188,6 @@ export function bindPetWindowInteractionLifecycle(
   };
   const failOpen = (): void => {
     if (released) return;
-    controller.endDrag('cancelled');
     controller.setPassthrough(true);
   };
   controller.setPassthrough(true);

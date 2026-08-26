@@ -275,15 +275,6 @@ const api: MyselfApi = {
   setPetMousePassthrough: async ignore => {
     await ipcRenderer.invoke(ipcChannels.petMousePassthroughSet, { ignore });
   },
-  beginPetDrag: async () => {
-    await ipcRenderer.invoke(ipcChannels.petDragBegin);
-  },
-  endPetDrag: async () => {
-    await ipcRenderer.invoke(ipcChannels.petDragEnd);
-  },
-  openPetContextMenu: async () => {
-    await ipcRenderer.invoke(ipcChannels.petContextMenuOpen);
-  },
   commitPetViewport: async input => {
     await ipcRenderer.invoke(ipcChannels.petViewportCommit, input);
   },

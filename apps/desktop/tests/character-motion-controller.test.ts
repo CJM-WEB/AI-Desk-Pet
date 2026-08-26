@@ -655,17 +655,15 @@ describe('Main 角色运动服务', () => {
     expect(service.tick().target).toEqual({ x: 400, y: 300 });
   });
 
-  test('桌宠右键菜单只保留受限 IPC 入口并复用同一弹出回调', () => {
+  test('桌宠右键菜单不扩大像素命中且只保留 Main 原生尽力入口', () => {
     const source = readFileSync(
       new URL('../src/main/index.ts', import.meta.url),
       'utf8'
     );
 
-    expect(source).not.toContain("pet.webContents.on('context-menu'");
+    expect(source).toContain("pet.webContents.on('context-menu', openPetContextMenu)");
     expect(source.match(/registerPetWindowInteractionIpc\(/gu)).toHaveLength(1);
-    expect(source).toMatch(
-      /registerPetWindowInteractionIpc\(\s*ipcMain,\s*petWindowInteraction,\s*pet\.webContents,\s*openPetContextMenu/u
-    );
+    expect(source).not.toContain('petContextMenuOpen:');
   });
 
   test('窗口真实位置由 Main 推进并受工作区边界约束', () => {
@@ -929,6 +927,7 @@ describe('Main 角色运动服务', () => {
   });
 
   test('生产窗口接线使用 will-move 开始接管并由 move/moved 同步位置', () => {
+    vi.useFakeTimers();
     const listeners = new Map<string, Array<() => void>>();
     const window = {
       on: vi.fn((name: string, listener: () => void) => {
@@ -951,6 +950,10 @@ describe('Main 角色运动服务', () => {
 
     expect(service.beginUserMove).toHaveBeenCalledOnce();
     expect(service.handleWindowMoved).toHaveBeenCalledOnce();
+    expect(service.endUserMove).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(249);
+    expect(service.endUserMove).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
     expect(service.endUserMove).toHaveBeenCalledOnce();
     release();
     expect(window.removeListener).toHaveBeenCalledTimes(3);
@@ -996,6 +999,7 @@ describe('Main 角色运动服务', () => {
   });
 
   test('真实接线的 will-move→move→moved 完整序列由用户位置接管', () => {
+    vi.useFakeTimers();
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };
     const listeners = new Map<string, Set<() => void>>();
@@ -1031,6 +1035,7 @@ describe('Main 角色运动服务', () => {
     emit('move');
     bounds = { ...bounds, x: 140, y: 90 };
     emit('moved');
+    vi.advanceTimersByTime(250);
 
     expect(service.getSnapshot()).toMatchObject({
       position: { x: 140, y: 90 },
@@ -1039,6 +1044,61 @@ describe('Main 角色运动服务', () => {
     });
     now = 100;
     expect(service.tick().position).toEqual({ x: 140, y: 90 });
+    release();
+  });
+
+  test('控制器拖拽 owner 不被每帧原生 moved 提前释放', () => {
+    vi.useFakeTimers();
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const listeners = new Map<string, Set<(event?: unknown, next?: typeof bounds) => void>>();
+    const emit = (name: string, next?: typeof bounds): void => {
+      for (const listener of listeners.get(name) ?? []) listener(undefined, next);
+    };
+    const window = {
+      getBounds: () => bounds,
+      setPosition: (x: number, y: number) => {
+        const next = { ...bounds, x, y };
+        emit('will-move', next);
+        bounds = next;
+        emit('move');
+        emit('moved');
+      },
+      on: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        listeners.get(name)?.delete(listener);
+      }
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 2_000, height: 1_200 }],
+      now: () => 0
+    });
+    const release = bindCharacterMotionWindow(window, service);
+    const ownedMotion = service as unknown as {
+      beginUserMove(next?: { x: number; y: number }, source?: 'controller' | 'native'): void;
+      endUserMove(source?: 'controller' | 'native'): void;
+    };
+
+    ownedMotion.beginUserMove(undefined, 'controller');
+    for (let index = 1; index <= 100; index += 1) {
+      window.setPosition(index, index);
+      expect(service.isUserMoving()).toBe(true);
+      expect(bounds).toMatchObject({ width: 180, height: 220 });
+    }
+    ownedMotion.endUserMove('controller');
+    vi.advanceTimersByTime(250);
+
+    expect(service.isUserMoving()).toBe(false);
     release();
   });
 

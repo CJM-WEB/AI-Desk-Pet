@@ -100,6 +100,8 @@ textarea {
 }
 
 .pet-character-surface {
+  /* 可见像素解除窗口穿透后，由 Windows 原生拖拽移动窗口，避免 JS 轮询改写尺寸。 */
+  -webkit-app-region: drag;
   align-self: stretch;
   justify-self: stretch;
   width: 100%;

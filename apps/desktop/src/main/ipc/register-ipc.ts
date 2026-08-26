@@ -612,8 +612,6 @@ export function registerCharacterMotionIpc(
 
 type PetWindowInteractionControllerActions = {
   setPassthrough(ignore: boolean): void;
-  beginDrag(): void;
-  endDrag(reason: 'released' | 'cancelled' | 'timeout' | 'disposed'): void;
   dispose(): void;
   getProbe?(): PetInteractionProbe;
   recordProbeEvent?(event: PetInteractionProbeEvent): void;
@@ -639,7 +637,6 @@ export function registerPetWindowInteractionIpc(
   ipcMain: IpcMain,
   controller: PetWindowInteractionControllerActions,
   petWebContents: WebContents,
-  openContextMenu: () => unknown,
   options: {
     enableE2eProbe?: boolean;
     geometry?: {
@@ -662,21 +659,6 @@ export function registerPetWindowInteractionIpc(
       controller.setPassthrough(parsed.data.ignore);
     }
   );
-  replaceHandler(ipcMain, ipcChannels.petDragBegin, async (event, ...args) => {
-    assertPetWindowSender(event, petWebContents);
-    assertNoPetInteractionInput(args);
-    controller.beginDrag();
-  });
-  replaceHandler(ipcMain, ipcChannels.petDragEnd, async (event, ...args) => {
-    assertPetWindowSender(event, petWebContents);
-    assertNoPetInteractionInput(args);
-    controller.endDrag('released');
-  });
-  replaceHandler(ipcMain, ipcChannels.petContextMenuOpen, async (event, ...args) => {
-    assertPetWindowSender(event, petWebContents);
-    assertNoPetInteractionInput(args);
-    await openContextMenu();
-  });
   if (options.geometry) {
     replaceHandler(ipcMain, ipcChannels.petViewportCommit, async (event, ...args) => {
       assertPetWindowSender(event, petWebContents);

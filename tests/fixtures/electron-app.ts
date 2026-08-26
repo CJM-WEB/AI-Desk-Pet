@@ -467,8 +467,14 @@ export type MainE2eExplorerEvent =
 
 export interface MainE2eState {
   revision: number;
+  buildIdentity: {
+    commitShortHash: string;
+    buildRootCategory: 'primary_checkout' | 'linked_worktree' | 'source_archive';
+  };
   petWindowVisible: boolean;
   petWindowAlwaysOnTop: boolean;
+  petWindowBoundsDip: { x: number; y: number; width: number; height: number };
+  petNativeDragging: boolean;
   processedExplorerEventRevision: number;
   processedExplorerEvent: MainE2eExplorerEvent | null;
   bridge: {
@@ -524,12 +530,24 @@ function validNormalizedVisualBounds(candidate: unknown): boolean {
     && values.y + values.height <= 1.000001;
 }
 
-/** E2E 状态文件是测试进程唯一入口；几何字段按最小披露契约精确拒绝扩展。 */
+/** E2E 状态文件是测试进程唯一入口；构建身份与几何字段均按最小披露契约拒绝扩展。 */
 export function parseMainE2eState(candidate: unknown): MainE2eState {
   if (!isObject(candidate)) throw new Error('ELECTRON_E2E_MAIN_STATE_INVALID');
+  const buildIdentity = candidate.buildIdentity;
   const bridge = candidate.bridge;
   const layer = candidate.layer;
   const geometry = candidate.geometry;
+  const petWindowBoundsDip = candidate.petWindowBoundsDip;
+  const validPetWindowBounds = Boolean(
+    isObject(petWindowBoundsDip)
+    && Object.keys(petWindowBoundsDip).length === 4
+    && Number.isSafeInteger(petWindowBoundsDip.x)
+    && Number.isSafeInteger(petWindowBoundsDip.y)
+    && Number.isSafeInteger(petWindowBoundsDip.width)
+    && Number(petWindowBoundsDip.width) > 0
+    && Number.isSafeInteger(petWindowBoundsDip.height)
+    && Number(petWindowBoundsDip.height) > 0
+  );
   const validGeometry = geometry === null || Boolean(
     isObject(geometry)
     && Object.keys(geometry).length === 4
@@ -544,8 +562,17 @@ export function parseMainE2eState(candidate: unknown): MainE2eState {
   if (
     !Number.isSafeInteger(candidate.revision)
     || Number(candidate.revision) <= 0
+    || !isObject(buildIdentity)
+    || Object.keys(buildIdentity).length !== 2
+    || typeof buildIdentity.commitShortHash !== 'string'
+    || !/^[0-9a-f]{12}$/u.test(buildIdentity.commitShortHash)
+    || !new Set(['primary_checkout', 'linked_worktree', 'source_archive']).has(
+      String(buildIdentity.buildRootCategory)
+    )
     || typeof candidate.petWindowVisible !== 'boolean'
     || typeof candidate.petWindowAlwaysOnTop !== 'boolean'
+    || !validPetWindowBounds
+    || typeof candidate.petNativeDragging !== 'boolean'
     || !Number.isSafeInteger(candidate.processedExplorerEventRevision)
     || Number(candidate.processedExplorerEventRevision) < 0
     || (candidate.processedExplorerEvent !== null

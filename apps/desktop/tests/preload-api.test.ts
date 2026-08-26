@@ -154,9 +154,6 @@ describe('preload 公开 API', () => {
       'subscribeCharacterMotion',
       'reportCharacterActionFeedback',
       'setPetMousePassthrough',
-      'beginPetDrag',
-      'endPetDrag',
-      'openPetContextMenu',
       'commitPetViewport',
       'onPetGeometryRender',
       'recordPetInteractionProbeEvent',
@@ -298,9 +295,6 @@ describe('受限桌宠窗口交互 preload API', () => {
 
   test('固定命令与只读探针只映射到固定通道和固定负载', async () => {
     await exposedApi?.setPetMousePassthrough(true);
-    await exposedApi?.beginPetDrag();
-    await exposedApi?.endPetDrag();
-    await exposedApi?.openPetContextMenu();
     await exposedApi?.recordPetInteractionProbeEvent?.('mouse_hit');
     await exposedApi?.getPetInteractionProbe?.();
     await exposedApi?.getCharacterBehaviorProbe?.();
@@ -315,15 +309,12 @@ describe('受限桌宠窗口交互 preload API', () => {
       ipcChannels.petMousePassthroughSet,
       { ignore: true }
     );
-    expect(invoke).toHaveBeenNthCalledWith(2, ipcChannels.petDragBegin);
-    expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.petDragEnd);
-    expect(invoke).toHaveBeenNthCalledWith(4, ipcChannels.petContextMenuOpen);
     expect(invoke).toHaveBeenNthCalledWith(
-      5,
+      2,
       'pet-window:e2e-interaction-probe-record',
       'mouse_hit'
     );
-    expect(invoke).toHaveBeenNthCalledWith(6, ipcChannels.petInteractionProbeGet);
+    expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.petInteractionProbeGet);
     expect(await exposedApi?.getCharacterBehaviorProbe?.()).toEqual({
       revision: 0,
       primaryStateId: '',

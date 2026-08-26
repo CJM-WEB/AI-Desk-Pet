@@ -103,7 +103,6 @@ describe('桌宠交互控制器生命周期', () => {
     };
     const controller = {
       setPassthrough: vi.fn(),
-      endDrag: vi.fn(),
       dispose: vi.fn()
     };
 
@@ -117,7 +116,7 @@ describe('桌宠交互控制器生命周期', () => {
   it.each([
     'render-process-gone',
     'will-navigate'
-  ] as const)('webContents %s 时只结束拖拽并失败开放，仍允许后续 Renderer', event => {
+  ] as const)('webContents %s 时失败开放，仍允许后续 Renderer', event => {
     const windowListeners = new Map<string, () => void>();
     const webContentsListeners = new Map<string, () => void>();
     const webContents = {
@@ -142,14 +141,12 @@ describe('桌宠交互控制器生命周期', () => {
     };
     const controller = {
       setPassthrough: vi.fn(),
-      endDrag: vi.fn(),
       dispose: vi.fn()
     };
 
     const release = bindPetWindowInteractionLifecycle(window, controller);
     webContentsListeners.get(event)?.();
 
-    expect(controller.endDrag).toHaveBeenCalledWith('cancelled');
     expect(controller.setPassthrough).toHaveBeenLastCalledWith(true);
     expect(controller.dispose).not.toHaveBeenCalled();
 
@@ -189,7 +186,6 @@ describe('桌宠交互控制器生命周期', () => {
     };
     const controller = {
       setPassthrough: vi.fn(),
-      endDrag: vi.fn(),
       dispose: vi.fn()
     };
 
@@ -198,7 +194,6 @@ describe('桌宠交互控制器生命周期', () => {
     release();
 
     expect(controller.dispose).toHaveBeenCalledOnce();
-    expect(controller.endDrag).not.toHaveBeenCalled();
   });
 });
 
@@ -244,7 +239,7 @@ describe('preload 白名单', () => {
     expect(main).not.toContain('ipcChannels.taskEvent');
   });
 
-  it('在 pet 生命周期内唯一创建交互控制器并复用现有菜单弹出回调', async () => {
+  it('在 pet 生命周期内唯一创建交互控制器且菜单不扩大 Renderer 命中', async () => {
     const main = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
     expect(main.match(/new PetWindowInteractionController\(/gu)).toHaveLength(1);
@@ -252,6 +247,6 @@ describe('preload 白名单', () => {
       /bindPetWindowInteractionLifecycle\(\s*pet,\s*petWindowInteraction\s*\)/u
     );
     expect(main).toContain('registerPetWindowInteractionIpc(');
-    expect(main).toContain('const openPetContextMenu = () =>');
+    expect(main).toContain("pet.webContents.on('context-menu', openPetContextMenu)");
   });
 });

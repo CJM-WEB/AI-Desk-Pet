@@ -71,10 +71,16 @@ import type { ProviderSettingsSnapshot } from
 
 const strictGeometryState = () => ({
   revision: 1,
+  buildIdentity: {
+    commitShortHash: '0123456789ab',
+    buildRootCategory: 'linked_worktree'
+  },
   petWindowVisible: true,
   petWindowAlwaysOnTop: true,
   processedExplorerEventRevision: 0,
   processedExplorerEvent: null,
+  petWindowBoundsDip: { x: 300, y: 200, width: 180, height: 220 },
+  petNativeDragging: false,
   bridge: { state: 'ready', observing: true, polling: true, eventRevision: 1 },
   layer: { status: 'active', activationRevision: 1, errorRevision: 0 },
   geometry: {
@@ -86,6 +92,37 @@ const strictGeometryState = () => ({
 });
 
 describe('E2E 几何探针最小披露边界', () => {
+  test.each([
+    ['非短哈希', { commitShortHash: 'not-a-commit', buildRootCategory: 'linked_worktree' }],
+    ['未知构建根类别', {
+      commitShortHash: '0123456789ab', buildRootCategory: 'C:\\private\\checkout'
+    }],
+    ['额外构建路径', {
+      commitShortHash: '0123456789ab',
+      buildRootCategory: 'linked_worktree',
+      buildRootPath: 'C:\\private\\checkout'
+    }]
+  ] as const)('拒绝构建身份中的%s', (_name, buildIdentity) => {
+    const state = { ...strictGeometryState(), buildIdentity };
+
+    expect(() => parseMainE2eState(state)).toThrow('ELECTRON_E2E_MAIN_STATE_INVALID');
+  });
+
+  test('只接受四个有限整数构成的桌宠窗口边界', () => {
+    expect(parseMainE2eState(strictGeometryState()).petWindowBoundsDip).toEqual({
+      x: 300,
+      y: 200,
+      width: 180,
+      height: 220
+    });
+
+    const state = strictGeometryState();
+    state.petWindowBoundsDip = { ...state.petWindowBoundsDip, path: '禁止披露' } as unknown as (
+      typeof state.petWindowBoundsDip
+    );
+    expect(() => parseMainE2eState(state)).toThrow('ELECTRON_E2E_MAIN_STATE_INVALID');
+  });
+
   test('只接受严格四字段几何摘要', () => {
     expect(parseMainE2eState(strictGeometryState()).geometry).toEqual(
       strictGeometryState().geometry
@@ -124,19 +161,25 @@ describe('E2E 几何探针最小披露边界', () => {
 const toolNames = [
   'builtin.files.list_files',
   'builtin.files.read_file',
+  'builtin.files.glob_files',
+  'builtin.files.grep_files',
   'builtin.files.create_file',
   'builtin.files.move_file',
   'builtin.files.create_directory',
   'builtin.files.apply_patch',
+  'builtin.files.edit_file',
   'builtin.files.delete_file'
 ] as const;
 const internalToolNames = [
   'list_files',
   'read_file',
+  'glob_files',
+  'grep_files',
   'create_file',
   'move_file',
   'create_directory',
   'apply_patch',
+  'edit_file',
   'delete_file'
 ] as const;
 const providerToolNameCodec = createOpenAIToolNameCodec([
@@ -803,7 +846,7 @@ function conversationBehaviorDouble(
         moving: false,
         dragging: false,
         carrying: false,
-        movementStopped: false
+        movementMode: 2
       },
       proactivityMode: 'assistive',
       recentActions: []
@@ -884,19 +927,19 @@ function behaviorDirectorIntegrationFixture() {
     })),
     stop: vi.fn()
   };
-  const saveMovementStopped = vi.fn<(stopped: boolean) => Promise<void>>();
+  const saveMovementMode = vi.fn<(mode: 0 | 1 | 2) => Promise<void>>();
   const director = new CharacterBehaviorDirector({
     behavior,
     motion,
     initialGeneration: 'integration-chat-generation',
-    initialSettings: { movementStopped: false, proactivityMode: 'assistive' },
-    saveMovementStopped,
+    initialSettings: { movementMode: 2, proactivityMode: 'assistive' },
+    saveMovementMode,
     publishNotice: notice => notices.push(notice)
   });
-  saveMovementStopped.mockImplementation(async stopped => {
-    director.applyBehaviorSettings({ movementStopped: stopped, proactivityMode: 'assistive' });
+  saveMovementMode.mockImplementation(async movementMode => {
+    director.applyBehaviorSettings({ movementMode, proactivityMode: 'assistive' });
   });
-  return { behavior, director, motion, notices, saveMovementStopped };
+  return { behavior, director, motion, notices, saveMovementMode };
 }
 
 function latestDisclosureRequest(events: TaskEvent[]): string {
@@ -1217,9 +1260,9 @@ describe('桌面会话分流纵向集成', () => {
   });
 
   test.each([
-    ['停下', true],
-    ['恢复活动', false]
-  ] as const)('本地明确“%s”在 Provider 前持久化停止锁', async (text, stopped) => {
+    ['停下', 0],
+    ['恢复活动', 2]
+  ] as const)('本地明确“%s”在 Provider 前持久化运动模式', async (text, movementMode) => {
     const behaviorFixture = behaviorDirectorIntegrationFixture();
     const providerRespond = vi.fn(async (): Promise<ModelResponse> => ({
       type: 'text', text: '普通回复', structured_output: {}
@@ -1232,8 +1275,8 @@ describe('桌面会话分流纵向集成', () => {
 
     await fixture.composition.coordinator.submit(text);
 
-    expect(behaviorFixture.saveMovementStopped).toHaveBeenCalledExactlyOnceWith(stopped);
-    expect(behaviorFixture.saveMovementStopped.mock.invocationCallOrder[0])
+    expect(behaviorFixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(movementMode);
+    expect(behaviorFixture.saveMovementMode.mock.invocationCallOrder[0])
       .toBeLessThan(providerRespond.mock.invocationCallOrder[0]!);
     await fixture.composition.close();
   });
@@ -1259,8 +1302,8 @@ describe('桌面会话分流纵向集成', () => {
 
     await fixture.composition.coordinator.submit('请陪我活动一会');
     expect(behaviorFixture.director.getDiagnosticSnapshot()).toMatchObject({
-      autonomousMovementAllowed: true,
-      continuousMovementRequested: true,
+      movementMode: 1,
+      continuousTargetType: 'random_work_area',
       currentTargetType: 'random_work_area'
     });
     behaviorFixture.director.handleMotionSnapshot({
@@ -1275,15 +1318,15 @@ describe('桌面会话分流纵向集成', () => {
 
     await behaviorFixture.director.prepareUserPrompt('别乱跑');
     expect(behaviorFixture.director.getDiagnosticSnapshot()).toMatchObject({
-      autonomousMovementAllowed: false,
-      continuousMovementRequested: false,
+      movementMode: 0,
+      continuousTargetType: null,
       currentTargetType: null
     });
     await fixture.composition.close();
   });
 
   test('跨 Provider 披露确认后重新读取当前行为上下文而不复用确认前快照', async () => {
-    let movementStopped = false;
+    let movementMode: 0 | 2 = 2;
     const behavior = conversationBehaviorDouble({
       getChatContext: vi.fn(() => ({
         character: {
@@ -1291,7 +1334,7 @@ describe('桌面会话分流纵向集成', () => {
           stateNames: [], actionNames: [], tags: []
         },
         runtime: {
-          moving: false, dragging: false, carrying: false, movementStopped
+          moving: false, dragging: false, carrying: false, movementMode
         },
         proactivityMode: 'assistive',
         recentActions: []
@@ -1304,7 +1347,7 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.coordinator.submit('来源消息');
     fixture.setChatProfile(conversationCross.id);
     await fixture.composition.coordinator.submit('目标消息');
-    movementStopped = true;
+    movementMode = 0;
 
     await fixture.composition.coordinator.resolveHistoryDisclosure(
       latestDisclosureRequest(fixture.events),
@@ -1312,7 +1355,7 @@ describe('桌面会话分流纵向集成', () => {
     );
 
     expect(fixture.chatRequests[1]?.request.messages[0]?.content)
-      .toContain('"movementStopped":true');
+      .toContain('"movementMode":0');
     expect(behavior.getChatContext).toHaveBeenCalledTimes(2);
     await fixture.composition.close();
   });
@@ -1549,6 +1592,180 @@ describe('桌面 Agent 真实服务集成', () => {
     const manifest = createBehaviorManifest();
 
     expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
+  });
+
+  test('隔离授权根逐项验证七工具副作用且失败任务后新建任务仍成功', async () => {
+    const expectToolResult = (
+      request: Parameters<NonNullable<ProviderStep['inspect']>>[0],
+      toolName: string,
+      ok?: boolean
+    ): Record<string, unknown> => {
+      const message = request.messages.at(-1);
+      if (!message || message.role !== 'tool') throw new Error('缺少真实工具结果');
+      const result = JSON.parse(message.content) as Record<string, unknown>;
+      expect(result).toMatchObject({
+        toolName,
+        ...(ok === undefined ? {} : { ok })
+      });
+      if (ok !== false) expect(result).not.toMatchObject({ ok: false });
+      return result;
+    };
+    const fixture = await harness([
+      {
+        response: toolCall('race-create', 'builtin.files.create_file', {
+          relativePath: 'race.txt', content: '工具不得覆盖'
+        })
+      },
+      {
+        response: { type: 'text', text: '竞态任务失败' },
+        inspect: request => expectToolResult(request, 'create_file', false)
+      },
+      {
+        response: toolCall('create-seven', 'builtin.files.create_file', {
+          relativePath: 'journey.txt', content: '初始内容\n'
+        })
+      },
+      {
+        response: { type: 'text', text: '创建完成' },
+        inspect: request => expectToolResult(request, 'create_file', true)
+      },
+      {
+        response: toolCall('read-seven', 'builtin.files.read_file', {
+          relativePath: 'journey.txt'
+        })
+      },
+      {
+        response: { type: 'text', text: '读取完成' },
+        inspect: request => {
+          expect(expectToolResult(request, 'read_file')).toMatchObject({
+            relativePath: 'journey.txt',
+            content: '初始内容\n',
+            startLine: 1
+          });
+        }
+      },
+      {
+        response: toolCall('glob-seven', 'builtin.files.glob_files', {
+          relativePath: '.', pattern: '**/*.txt'
+        })
+      },
+      {
+        response: { type: 'text', text: '文件名检索完成' },
+        inspect: request => {
+          const result = expectToolResult(request, 'glob_files');
+          expect(result.paths).toEqual(expect.arrayContaining(['journey.txt']));
+        }
+      },
+      {
+        response: toolCall('grep-seven', 'builtin.files.grep_files', {
+          relativePath: '.', pattern: '初始内容', include: '**/*.txt'
+        })
+      },
+      {
+        response: { type: 'text', text: '正文检索完成' },
+        inspect: request => {
+          const result = expectToolResult(request, 'grep_files');
+          expect(result.matches).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+              relativePath: 'journey.txt', lineNumber: 1, lineText: '初始内容'
+            })
+          ]));
+        }
+      },
+      {
+        response: toolCall('edit-seven', 'builtin.files.edit_file', {
+          relativePath: 'journey.txt', oldString: '初始内容', newString: '更新内容'
+        })
+      },
+      {
+        response: { type: 'text', text: '编辑完成' },
+        inspect: request => expectToolResult(request, 'edit_file', true)
+      },
+      {
+        response: toolCall('move-seven', 'builtin.files.move_file', {
+          sourceRelativePath: 'journey.txt', targetDirectoryRelativePath: 'archive'
+        })
+      },
+      {
+        response: { type: 'text', text: '移动完成' },
+        inspect: request => expectToolResult(request, 'move_file', true)
+      },
+      {
+        response: toolCall('delete-seven', 'builtin.files.delete_file', {
+          relativePath: 'archive/journey.txt'
+        })
+      },
+      {
+        response: { type: 'text', text: '删除完成' },
+        inspect: request => expectToolResult(request, 'delete_file', true)
+      }
+    ]);
+    const racePath = join(fixture.authorized.root, 'race.txt');
+    const createdPath = join(fixture.authorized.root, 'journey.txt');
+    const movedPath = join(fixture.authorized.root, 'archive', 'journey.txt');
+    const recycledPath = join(fixture.authorized.base, 'recycled-journey.txt');
+    await mkdir(join(fixture.authorized.root, 'archive'));
+    fixture.authorized.fileTools = new FileToolService(fixture.authorized.policy, {
+      moveToRecycleBin: async absolutePath => rename(absolutePath, recycledPath)
+    });
+    const latestPending = (): Extract<TaskEvent, { type: 'pending_action' }>['action'] => {
+      const event = fixture.events.filter(candidate => candidate.type === 'pending_action').at(-1);
+      if (!event || event.type !== 'pending_action') throw new Error('缺少最新确认卡');
+      return event.action;
+    };
+
+    await fixture.service.submitFileTask({
+      text: '创建 race.txt', visibleHistory: [], planningHint: { operation: 'create_file' }
+    });
+    await expect(lstat(racePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await writeFile(racePath, '外部内容', 'utf8');
+    await fixture.service.confirm(latestPending().actionId);
+    await expect(readFile(racePath, 'utf8')).resolves.toBe('外部内容');
+
+    await fixture.service.submitFileTask({
+      text: '创建 journey.txt', visibleHistory: [], planningHint: { operation: 'create_file' }
+    });
+    await expect(lstat(createdPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fixture.service.confirm(latestPending().actionId);
+    await expect(readFile(createdPath, 'utf8')).resolves.toBe('初始内容\n');
+
+    await fixture.service.submitFileTask({
+      text: '读取 journey.txt', visibleHistory: [], planningHint: { operation: 'read_file' }
+    });
+    await fixture.service.submitFileTask({
+      text: '检索 txt 文件', visibleHistory: [], planningHint: { operation: 'glob_files' }
+    });
+    await fixture.service.submitFileTask({
+      text: '搜索初始内容', visibleHistory: [], planningHint: { operation: 'grep_files' }
+    });
+
+    await fixture.service.submitFileTask({
+      text: '编辑 journey.txt', visibleHistory: [], planningHint: { operation: 'edit_file' }
+    });
+    await expect(readFile(createdPath, 'utf8')).resolves.toBe('初始内容\n');
+    await fixture.service.confirm(latestPending().actionId);
+    await expect(readFile(createdPath, 'utf8')).resolves.toBe('更新内容\n');
+
+    await fixture.service.submitFileTask({
+      text: '移动 journey.txt', visibleHistory: [], planningHint: { operation: 'move_file' }
+    });
+    await expect(lstat(createdPath)).resolves.toBeDefined();
+    await expect(lstat(movedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fixture.service.confirm(latestPending().actionId);
+    await expect(lstat(createdPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(movedPath, 'utf8')).resolves.toBe('更新内容\n');
+
+    await fixture.service.submitFileTask({
+      text: '删除移动后的文件', visibleHistory: [], planningHint: { operation: 'delete_file' }
+    });
+    await expect(lstat(recycledPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fixture.service.confirm(latestPending().actionId);
+    await expect(lstat(movedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(recycledPath, 'utf8')).resolves.toBe('更新内容\n');
+
+    expect(fixture.providerServer.inspectionErrors).toEqual([]);
+    expectProviderExchange(fixture.providerServer, 16);
+    fixture.providerServer.assertComplete();
   });
 
   test('内置本地模型经真实环回协议完成创建、移动、删除与工具结果总结且云调用为零', async () => {
@@ -2086,8 +2303,8 @@ describe('桌面 Agent 真实服务集成', () => {
       behavior,
       motion,
       initialGeneration: 'integration-autonomous',
-      initialSettings: { movementStopped: false, proactivityMode: 'autonomous' },
-      saveMovementStopped: async () => undefined
+      initialSettings: { movementMode: 2, proactivityMode: 'autonomous' },
+      saveMovementMode: async () => undefined
     });
     expect(autonomousDirector.requestBehaviorPlan({
       kind: 'play', target: { kind: 'semantic', semantic: 'move' }

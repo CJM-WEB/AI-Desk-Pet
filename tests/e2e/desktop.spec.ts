@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -6,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { expect, test, type Page } from '@playwright/test';
 import { CharacterStore } from '../../apps/desktop/src/main/characters/character-store';
 import { createOpenAIToolNameCodec } from
@@ -17,6 +19,65 @@ import {
   type ProviderStep
 } from '../fixtures/provider-server';
 import { snapshotCharacterPersistence } from '../fixtures/character-storage-snapshot';
+
+const execFileAsync = promisify(execFile);
+const WINDOWS_CURSOR_INTEROP = String.raw`
+using System;
+using System.Runtime.InteropServices;
+public static class MyselfCursorInterop {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct Point { public int X; public int Y; }
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(
+    uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+  [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
+}`;
+
+type WindowsCursorSnapshot = Readonly<{ x: number; y: number; dpi: number }>;
+
+/** E2E 只调用固定 Win32 光标 API，并由用例 finally 恢复进入测试前的位置。 */
+async function readWindowsCursor(): Promise<WindowsCursorSnapshot> {
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+$point = [MyselfCursorInterop+Point]::new()
+if (-not [MyselfCursorInterop]::GetCursorPos([ref]$point)) { exit 2 }
+$dpi = [MyselfCursorInterop]::GetDpiForSystem()
+[Console]::Out.Write("$($point.X),$($point.Y),$dpi")`;
+  const { stdout } = await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+  const match = /^(-?\d+),(-?\d+),(\d+)$/u.exec(stdout.trim());
+  if (!match) throw new Error('WINDOWS_CURSOR_PROBE_INVALID');
+  return { x: Number(match[1]), y: Number(match[2]), dpi: Number(match[3]) };
+}
+
+async function setWindowsCursor(point: Readonly<{ x: number; y: number }>): Promise<void> {
+  const x = Math.round(point.x);
+  const y = Math.round(point.y);
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+if (-not [MyselfCursorInterop]::SetCursorPos(${x}, ${y})) { exit 2 }`;
+  await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+}
+
+async function setWindowsLeftButton(down: boolean): Promise<void> {
+  const flag = down ? '0x0002' : '0x0004';
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+[MyselfCursorInterop]::mouse_event(${flag}, 0, 0, 0, [UIntPtr]::Zero)`;
+  await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+}
 
 type CharacterBehaviorProbe = {
   revision: number;
@@ -216,8 +277,14 @@ type ElectronFixtureModule = {
     ): Promise<void>;
     getMainE2eState(): Promise<{
       revision: number;
+      buildIdentity: {
+        commitShortHash: string;
+        buildRootCategory: 'primary_checkout' | 'linked_worktree' | 'source_archive';
+      };
       petWindowVisible: boolean;
       petWindowAlwaysOnTop: boolean;
+      petWindowBoundsDip: { x: number; y: number; width: number; height: number };
+      petNativeDragging: boolean;
       processedExplorerEventRevision: number;
       processedExplorerEvent: string | null;
       bridge: {
@@ -506,6 +573,44 @@ async function waitForRendererPage(
 }
 
 test.describe('直接启动 Electron 的 CDP 夹具边界', () => {
+  test('实际启动的 Main 回报当前提交与非路径构建根类别', async () => {
+    test.setTimeout(60_000);
+    const workspaceRoot = resolve(process.cwd());
+    const [{ stdout: commitOutput }, { stdout: gitDirectoryOutput }, {
+      stdout: commonDirectoryOutput
+    }] = await Promise.all([
+      execFileAsync('git', ['-C', workspaceRoot, 'rev-parse', '--short=12', 'HEAD'], {
+        windowsHide: true, encoding: 'utf8'
+      }),
+      execFileAsync('git', ['-C', workspaceRoot, 'rev-parse', '--path-format=absolute', '--git-dir'], {
+        windowsHide: true, encoding: 'utf8'
+      }),
+      execFileAsync('git', [
+        '-C', workspaceRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir'
+      ], { windowsHide: true, encoding: 'utf8' })
+    ]);
+    const expected = {
+      commitShortHash: commitOutput.trim(),
+      buildRootCategory: gitDirectoryOutput.trim() === commonDirectoryOutput.trim()
+        ? 'primary_checkout' as const
+        : 'linked_worktree' as const
+    };
+    const fixtureModule = await loadElectronFixtureModule();
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot,
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000
+    });
+    try {
+      await waitForRendererPage(fixture, 'pet', 15_000);
+      await expect.poll(async () => (await fixture.getMainE2eState()).buildIdentity)
+        .toEqual(expected);
+      expect(JSON.stringify(await fixture.getMainE2eState())).not.toContain(workspaceRoot);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   test('使用项目精确 Electron 路径、构建入口、随机回环 CDP 参数和隔离环境', async () => {
     const fixture = await loadElectronFixtureModule();
 
@@ -2320,7 +2425,7 @@ test.describe('真实 Electron CDP smoke', () => {
 });
 
 test.describe('真实桌宠像素命中与左键拖拽', () => {
-  test('像素命中探针保持透明穿透、可见拖拽和左键无聊天副作用', async () => {
+  test('像素命中探针保持透明穿透且不建立 Renderer 拖拽会话', async () => {
     test.setTimeout(120_000);
     const fixtureModule = await loadElectronFixtureModule();
 
@@ -2338,54 +2443,32 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
         'ready',
         { timeout: 20_000 }
       );
-      // Renderer ready 早于 Main 几何事务收敛；拖拽不变量必须从稳定窗口尺寸开始取样。
-      await expect.poll(async () => (
-        await fixture.getMainE2eState()
-      ).geometry).not.toBeNull();
       const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
       const dispatchPointer = async (
-        type: 'pointermove' | 'pointerdown' | 'pointerup' | 'contextmenu',
-        point: { x: number; y: number },
-        button = 0,
-        buttons = 0
+        point: { x: number; y: number }
       ): Promise<void> => {
         await shell.evaluate((element, input) => {
-          const EventConstructor = input.type === 'contextmenu'
-            ? MouseEvent
-            : PointerEvent;
-          element.dispatchEvent(new EventConstructor(input.type, {
+          element.dispatchEvent(new PointerEvent('pointermove', {
             bubbles: true,
             cancelable: true,
-            clientX: input.point.x,
-            clientY: input.point.y,
-            button: input.button,
-            buttons: input.buttons,
-            ...(input.type === 'contextmenu' ? {} : { pointerId: 41 })
+            clientX: input.x,
+            clientY: input.y,
+            pointerId: 41
           }));
-        }, { type, point, button, buttons });
+        }, point);
       };
 
       const transparent = { x: 1, y: 1 };
-      await dispatchPointer('pointermove', transparent);
+      await dispatchPointer(transparent);
       await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: true,
         dragging: false
       });
-      await dispatchPointer('pointerdown', transparent, 0, 1);
-      await dispatchPointer('pointerup', transparent);
-      await dispatchPointer('pointerdown', transparent, 0, 1);
-      await dispatchPointer('pointerup', transparent);
-      await dispatchPointer('contextmenu', transparent, 2);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-        passthrough: true,
-        dragging: false
-      });
-
       let visible: { x: number; y: number } | undefined;
       for (let y = 6; y < 220 && !visible; y += 8) {
         for (let x = 6; x < 180; x += 8) {
           const candidate = { x, y };
-          await dispatchPointer('pointermove', candidate);
+          await dispatchPointer(candidate);
           const probe = await fixture.getPetInteractionProbe();
           if (!probe.passthrough) {
             visible = candidate;
@@ -2396,72 +2479,14 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       expect(visible, '应在官方默认角色渲染区域中命中可见像素').toBeDefined();
       if (!visible) return;
 
-      const initialState = await shell.getAttribute('data-character-state');
       await expect(pet.getByRole('button', {
         name: '打开与 AI Pet 的聊天'
       })).toHaveCount(0);
-      await pet.mouse.move(visible.x, visible.y);
+      await dispatchPointer(visible);
       await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
         passthrough: false,
         dragging: false
       });
-      const holdWindowSize = await pet.evaluate(() => ({
-        width: window.outerWidth,
-        height: window.outerHeight
-      }));
-      await pet.mouse.down();
-      await pet.waitForTimeout(300);
-      expect(await fixture.getPetInteractionProbe()).toMatchObject({
-        passthrough: false,
-        dragging: true
-      });
-      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
-        .toEqual(holdWindowSize);
-      await pet.mouse.up();
-      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-        dragging: false
-      });
-      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
-        .toEqual(holdWindowSize);
-
-      await dispatchPointer('pointermove', visible);
-      const dragWindowSize = await pet.evaluate(() => ({
-        width: window.outerWidth,
-        height: window.outerHeight
-      }));
-      await dispatchPointer('pointerdown', visible, 0, 1);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-        passthrough: false,
-        dragging: true
-      });
-      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
-        .toEqual(dragWindowSize);
-      await dispatchPointer('pointermove', transparent, 0, 1);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-        passthrough: false,
-        dragging: true
-      });
-      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
-        .toEqual(dragWindowSize);
-      await dispatchPointer('pointerup', transparent);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-        passthrough: true,
-        dragging: false
-      });
-      expect(await pet.evaluate(() => ({ width: window.outerWidth, height: window.outerHeight })))
-        .toEqual(dragWindowSize);
-
-      await dispatchPointer('pointermove', visible);
-      await dispatchPointer('pointerdown', visible, 0, 1);
-      await dispatchPointer('pointerup', visible);
-      await dispatchPointer('pointerdown', visible, 0, 1);
-      await dispatchPointer('pointerup', visible);
-      await expect(shell).toHaveAttribute(
-        'data-character-state',
-        initialState ?? 'idle'
-      );
-      await dispatchPointer('contextmenu', visible, 2);
-      await pet.keyboard.press('Escape');
     } finally {
       await fixture.dispose();
     }
@@ -2846,6 +2871,179 @@ test.describe('角色恢复', () => {
       await submitChatMessage(chat, '活动角色降级后继续聊天');
       await expect(chat.getByText('请先完成模型服务设置。')).toBeVisible();
     } finally {
+      await fixture.dispose();
+    }
+  });
+
+});
+
+test.describe('真实桌宠像素命中与左键拖拽', () => {
+  test('Win32 系统光标连续拖拽三轮时 Main 位置跟随且尺寸恒定', async () => {
+    test.skip(process.platform !== 'win32', '该验收只验证 Windows 原生系统光标链。');
+    test.setTimeout(120_000);
+    const fixtureModule = await loadElectronFixtureModule();
+    const originalCursor = await readWindowsCursor();
+    const fixture = await fixtureModule.createElectronAppFixture({
+      workspaceRoot: resolve(process.cwd()),
+      apiKey: runtimeDiagnosticKey(),
+      launchTimeoutMs: 15_000
+    });
+    try {
+      const pet = await waitForRendererPage(fixture, 'pet');
+      await pet.emulateMedia({ reducedMotion: 'reduce' });
+      const shell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
+      await expect(pet.locator('.character-player')).toHaveAttribute(
+        'data-status', 'ready', { timeout: 20_000 }
+      );
+      await expect.poll(async () => (
+        await fixture.getMainE2eState()
+      ).petWindowBoundsDip, { timeout: 20_000 }).toMatchObject({
+        width: expect.any(Number),
+        height: expect.any(Number)
+      });
+      const dispatchPointerMove = async (point: { x: number; y: number }): Promise<void> => {
+        await shell.evaluate((element, value) => {
+          element.dispatchEvent(new PointerEvent('pointermove', {
+            bubbles: true,
+            cancelable: true,
+            clientX: value.x,
+            clientY: value.y,
+            pointerId: 73
+          }));
+        }, point);
+      };
+      let visible: { x: number; y: number } | undefined;
+      for (let y = 6; y < 220 && !visible; y += 8) {
+        for (let x = 6; x < 180; x += 8) {
+          if (x >= 140 && y >= 178) continue;
+          const candidate = { x, y };
+          await dispatchPointerMove(candidate);
+          if (!(await fixture.getPetInteractionProbe()).passthrough) {
+            visible = candidate;
+            break;
+          }
+        }
+      }
+      expect(visible, '应找到可由真实左键按住的可见像素').toBeDefined();
+      if (!visible) return;
+
+      const measureRenderer = () => pet.evaluate(() => {
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          '.character-player-host canvas'
+        );
+        const rect = canvas?.getBoundingClientRect();
+        return {
+          width: window.outerWidth,
+          height: window.outerHeight,
+          canvas: rect ? { width: rect.width, height: rect.height } : null
+        };
+      });
+
+      const mainSizeBaseline = (await fixture.getMainE2eState()).petWindowBoundsDip;
+      const rendererSizeBaseline = await measureRenderer();
+      const mainSizeSamples = new Set<string>([
+        `${mainSizeBaseline.width}x${mainSizeBaseline.height}`
+      ]);
+      const rendererSizeSamples = new Set<string>([[
+        rendererSizeBaseline.width,
+        rendererSizeBaseline.height,
+        rendererSizeBaseline.canvas?.width ?? 'null',
+        rendererSizeBaseline.canvas?.height ?? 'null'
+      ].join('x')]);
+      for (let round = 0; round < 3; round += 1) {
+        let roundVisible = visible;
+        for (let y = 6; y < 220; y += 8) {
+          for (let x = 6; x < 180; x += 8) {
+            if (x >= 140 && y >= 178) continue;
+            const candidate = { x, y };
+            await dispatchPointerMove(candidate);
+            if (!(await fixture.getPetInteractionProbe()).passthrough) {
+              roundVisible = candidate;
+              break;
+            }
+          }
+          if (!(await fixture.getPetInteractionProbe()).passthrough) break;
+        }
+        const mainBeforeHover = (await fixture.getMainE2eState()).petWindowBoundsDip;
+        await setWindowsCursor({
+          x: Math.round((mainBeforeHover.x + roundVisible.x) * originalCursor.dpi / 96),
+          y: Math.round((mainBeforeHover.y + roundVisible.y) * originalCursor.dpi / 96)
+        });
+        await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+          passthrough: false,
+          dragging: false
+        });
+        const cursorAtStart = await readWindowsCursor();
+        const mainAtStart = (await fixture.getMainE2eState()).petWindowBoundsDip;
+        mainSizeSamples.add(`${mainAtStart.width}x${mainAtStart.height}`);
+        expect(mainAtStart).toMatchObject({
+          width: mainSizeBaseline.width,
+          height: mainSizeBaseline.height
+        });
+        const rendererAtStart = await measureRenderer();
+        rendererSizeSamples.add([
+          rendererAtStart.width,
+          rendererAtStart.height,
+          rendererAtStart.canvas?.width ?? 'null',
+          rendererAtStart.canvas?.height ?? 'null'
+        ].join('x'));
+        expect(rendererAtStart).toEqual(rendererSizeBaseline);
+        const available = await pet.evaluate(() => ({
+          left: (window.screen as Screen & { availLeft?: number }).availLeft ?? 0,
+          width: window.screen.availWidth
+        }));
+        const direction = mainAtStart.x < available.left + available.width / 2 ? 1 : -1;
+        await setWindowsLeftButton(true);
+        expect(await fixture.getPetInteractionProbe()).toMatchObject({ dragging: false });
+
+        for (let step = 1; step <= 20; step += 1) {
+          const physicalDelta = Math.round(step * cursorAtStart.dpi / 96);
+          const expectedDipDelta = Math.round(physicalDelta * 96 / cursorAtStart.dpi);
+          await setWindowsCursor({
+            x: cursorAtStart.x + direction * physicalDelta,
+            y: cursorAtStart.y
+          });
+          await expect.poll(async () => Math.abs(
+            (await fixture.getMainE2eState()).petWindowBoundsDip.x
+            - (mainAtStart.x + direction * expectedDipDelta)
+          ), { timeout: 3_000 }).toBeLessThanOrEqual(1);
+          expect(await fixture.getPetInteractionProbe()).toMatchObject({ dragging: false });
+          const mainState = await fixture.getMainE2eState();
+          const mainCurrent = mainState.petWindowBoundsDip;
+          mainSizeSamples.add(`${mainCurrent.width}x${mainCurrent.height}`);
+          expect(mainCurrent).toMatchObject({
+            y: mainAtStart.y,
+            width: mainSizeBaseline.width,
+            height: mainSizeBaseline.height
+          });
+          const rendererCurrent = await measureRenderer();
+          rendererSizeSamples.add([
+            rendererCurrent.width,
+            rendererCurrent.height,
+            rendererCurrent.canvas?.width ?? 'null',
+            rendererCurrent.canvas?.height ?? 'null'
+          ].join('x'));
+          expect(rendererCurrent).toEqual(rendererSizeBaseline);
+        }
+        await setWindowsLeftButton(false);
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).petNativeDragging).toBe(false);
+        await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
+          dragging: false
+        });
+        const mainAfterRelease = (await fixture.getMainE2eState()).petWindowBoundsDip;
+        mainSizeSamples.add(`${mainAfterRelease.width}x${mainAfterRelease.height}`);
+        expect(mainAfterRelease).toMatchObject({
+          width: mainSizeBaseline.width,
+          height: mainSizeBaseline.height
+        });
+      }
+      expect(mainSizeSamples.size, '三轮真实拖拽期间 Main 尺寸集合必须唯一').toBe(1);
+      expect(rendererSizeSamples.size, '三轮真实拖拽期间 Renderer 尺寸集合必须唯一').toBe(1);
+    } finally {
+      await setWindowsLeftButton(false).catch(() => undefined);
+      await setWindowsCursor(originalCursor).catch(() => undefined);
       await fixture.dispose();
     }
   });
@@ -3899,62 +4097,8 @@ test.describe('自主行为最小闭环', () => {
       ), { timeout: localWindowMs }).toContain('safe-idle-action');
       expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(assistiveMotion);
 
-      // 真实像素命中拖拽跨过 20 秒调度下限，但不触发 30 秒安全超时。
+      // 原生拖拽 blocker 由 Main 事件 owner 与 Director 单元测试覆盖；本用例不伪造 Renderer 拖拽。
       await saveMode(pet, 'autonomous');
-      const petShell = pet.getByRole('main', { name: 'AI Pet 桌宠' });
-      const dispatchPointer = async (
-        type: 'pointermove' | 'pointerdown' | 'pointerup',
-        point: { x: number; y: number },
-        buttons = 0
-      ): Promise<void> => {
-        await petShell.evaluate((element, input) => {
-          element.dispatchEvent(new PointerEvent(input.type, {
-            bubbles: true,
-            cancelable: true,
-            clientX: input.point.x,
-            clientY: input.point.y,
-            button: 0,
-            buttons: input.buttons,
-            pointerId: 42
-          }));
-        }, { type, point, buttons });
-      };
-      let visiblePoint: { x: number; y: number } | undefined;
-      for (let y = 6; y < 220 && !visiblePoint; y += 8) {
-        for (let x = 6; x < 180; x += 8) {
-          const candidate = { x, y };
-          await dispatchPointer('pointermove', candidate);
-          if (!(await fixture.getPetInteractionProbe()).passthrough) {
-            visiblePoint = candidate;
-            break;
-          }
-        }
-      }
-      expect(visiblePoint, '应在导入角色渲染区域中命中可见像素').toBeDefined();
-      if (!visiblePoint) return;
-      const dragPoint = {
-        x: visiblePoint.x <= 174 ? visiblePoint.x + 5 : visiblePoint.x - 5,
-        y: visiblePoint.y
-      };
-      await dispatchPointer('pointerdown', visiblePoint, 1);
-      await dispatchPointer('pointermove', dragPoint, 1);
-      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-        passthrough: false,
-        dragging: true
-      });
-      const draggingMotion = await fixture.getCharacterMotionDeltaProbe();
-      await pet.waitForTimeout(25_000);
-      expect(await fixture.getPetInteractionProbe()).toMatchObject({
-        passthrough: false,
-        dragging: true
-      });
-      expect(await fixture.getCharacterMotionDeltaProbe()).toEqual(draggingMotion);
-      await dispatchPointer('pointerup', dragPoint);
-      // 25 秒内动画帧可能令同一坐标变透明；释放后的穿透值应服从当前像素，
-      // 此处只验证调度器依赖的拖拽阻塞已经真实解除。
-      await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
-        dragging: false
-      });
 
       // 文件确认卡使 Scheduler 继续暂停，取消后才恢复同一剩余时间。
       await submitChatMessage(chat, '创建文件 b7-long-pending.txt');
@@ -4103,26 +4247,6 @@ test.describe('自主行为最小闭环', () => {
         playbackStatus: 'started'
       });
 
-      const idleProbe = await fixture.getCharacterBehaviorProbe();
-      await pet.evaluate(async () => {
-        await window.myself.beginPetDrag();
-        await window.myself.endPetDrag();
-      });
-      await expect.poll(async () => {
-        const probe = await fixture.getCharacterBehaviorProbe();
-        return {
-          revisionAdvanced: probe.revision > idleProbe.revision,
-          primaryStateId: probe.primaryStateId,
-          actionId: probe.actionId,
-          playbackStatus: probe.playbackStatus
-        };
-      }).toEqual({
-        revisionAdvanced: true,
-        primaryStateId: 'idle',
-        actionId: 'safe-idle-action',
-        playbackStatus: 'started'
-      });
-
       await pet.evaluate(async ({ baseUrl, apiKey }) => {
         await window.myself.saveProviderProfile({
           profile: {
@@ -4227,15 +4351,6 @@ test.describe('自主行为最小闭环', () => {
         actionId: 'safe-fail-action',
         playbackStatus: expect.stringMatching(/^(started|completed)$/u)
       });
-
-      // 角色切换断言使用静止前置条件，避免仍在进行的 wander 被合法继承为移动语义。
-      await pet.evaluate(async () => {
-        await window.myself.beginPetDrag();
-        await window.myself.endPetDrag();
-      });
-      await expect.poll(() => pet.evaluate(async () => (
-        await window.myself.getCharacterMotionSnapshot()
-      ).moving)).toBe(false);
 
       const characters = await pet.evaluate(() => window.myself.listCharacters());
       const builtin = characters.find(character => character.id === 'builtin-default');

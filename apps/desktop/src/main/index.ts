@@ -22,6 +22,11 @@ import {
   type MenuItemConstructorOptions,
   type WebContents
 } from 'electron';
+
+declare const __MYSELF_BUILD_IDENTITY__: Readonly<{
+  commitShortHash: string;
+  buildRootCategory: 'primary_checkout' | 'linked_worktree' | 'source_archive';
+}>;
 import { AgentService } from './agent/agent-service';
 import { PendingActionStore } from './agent/pending-action-store';
 import { createMainAgentSession } from './agent/main-agent-session-factory';
@@ -289,6 +294,7 @@ async function createApplicationWindows(
   let processedExplorerEventRevision = 0;
   let processedExplorerEvent: string | null = null;
   let inspectPetGeometryForE2e = async (): Promise<object | null> => null;
+  let inspectPetNativeDraggingForE2e = (): boolean => false;
   const e2eStatePublisher = createCoalescedAsyncPublisher(async () => {
     if (!e2eBoundary || !e2eExplorer) return;
     e2eStateRevision += 1;
@@ -296,8 +302,13 @@ async function createApplicationWindows(
     const staged = `${e2eBoundary.mainStateFile}.tmp`;
     const state = {
       revision,
+      // 构建身份由 Vite 在编译期注入，禁止从运行目录反推或公开绝对路径。
+      buildIdentity: __MYSELF_BUILD_IDENTITY__,
       petWindowVisible: pet.isVisible(),
       petWindowAlwaysOnTop: pet.isAlwaysOnTop(),
+      // 仅向隔离 E2E 状态文件公开数值边界，用于区分 Main 尺寸事实与 Chromium DPI 取整。
+      petWindowBoundsDip: pet.getBounds(),
+      petNativeDragging: inspectPetNativeDraggingForE2e(),
       processedExplorerEventRevision,
       processedExplorerEvent,
       bridge: e2eExplorer.inspection(),
@@ -550,6 +561,7 @@ async function createApplicationWindows(
     })),
     getGeometrySnapshot: getPetGeometrySnapshot
   });
+  inspectPetNativeDraggingForE2e = () => characterMotion.isUserMoving();
   const reportCharacterBehaviorError = (
     code: 'CHARACTER_BEHAVIOR_V2_UNAVAILABLE'
   ): void => {
@@ -658,7 +670,7 @@ async function createApplicationWindows(
     motion: characterMotion,
     initialGeneration: 'startup',
     initialSettings: characterBehaviorSettings,
-    saveMovementStopped: stopped => desktopSettingsService.saveMovementStopped(stopped),
+    saveMovementMode: mode => desktopSettingsService.saveMovementMode(mode),
     publishNotice: notice => publishCharacterBehaviorNotice(notice)
   });
   const characterProactivityRuntime = createCharacterProactivityRuntime({
@@ -676,29 +688,19 @@ async function createApplicationWindows(
   );
   let refreshTray = async (): Promise<void> => undefined;
   const petWindowInteraction = new PetWindowInteractionController({
-    window: pet,
-    getGeometrySnapshot: getPetGeometrySnapshot,
-    screen,
-    motion: {
-      beginUserMove: () => {
-        characterBehavior.handleUserInteraction();
-        characterMotion.beginUserMove();
-        characterBehaviorDirector.setDragging(true);
-      },
-      endUserMove: () => {
-        try {
-          characterMotion.endUserMove();
-        } finally {
-          characterBehaviorDirector.setDragging(false);
-        }
-      }
-    }
+    window: pet
   });
   const releasePetWindowInteraction = bindPetWindowInteractionLifecycle(
     pet,
     petWindowInteraction
   );
-  const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion);
+  const releaseMotionWindowEvents = bindCharacterMotionWindow(pet, characterMotion, {
+    onUserMoveStarted: () => {
+      characterBehavior.handleUserInteraction();
+      characterBehaviorDirector.setDragging(true);
+    },
+    onUserMoveEnded: () => characterBehaviorDirector.setDragging(false)
+  });
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),
     applyPlaybackFeedback: feedback => {
@@ -862,12 +864,17 @@ async function createApplicationWindows(
   });
   refreshTray = () => trayRefreshController.refresh();
   tray.on('double-click', () => void windowCommands.showChat());
-  const openPetContextMenu = () => tray?.popUpContextMenu(contextMenu);
+  const openPetContextMenu = (): void => {
+    tray?.popUpContextMenu(contextMenu);
+  };
+  pet.webContents.on('context-menu', openPetContextMenu);
+  startupCleanup.add(() => {
+    pet.webContents.removeListener('context-menu', openPetContextMenu);
+  });
   registerPetWindowInteractionIpc(
     ipcMain,
     petWindowInteraction,
     pet.webContents,
-    openPetContextMenu,
     {
       enableE2eProbe: Boolean(e2eBoundary),
       geometry: {
