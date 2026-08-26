@@ -619,7 +619,9 @@ describe('权限边界安全回归', () => {
       });
       await chat.composition.coordinator.submit('讨论桌宠活动状态');
 
-      expect(chatLock.saveMovementMode).toHaveBeenCalledExactlyOnceWith(expectedMode);
+      expect(chatLock.saveMovementMode).toHaveBeenCalledExactlyOnceWith(
+        expectedMode, expect.any(Function)
+      );
       await chat.composition.close();
     }
   );

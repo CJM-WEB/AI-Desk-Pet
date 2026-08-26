@@ -306,6 +306,9 @@ export class ConversationCoordinator {
   }
 
   cancelActive(): void {
+    if (this.state.kind !== 'idle' && this.state.kind !== 'resetting' && this.state.kind !== 'closed') {
+      this.options.behavior.cancelActive();
+    }
     if (this.state.kind === 'awaiting_capability_authorization') {
       this.pendingCapabilityAuthorization = null;
       this.options.capabilityTasks.cancelActive();

@@ -400,6 +400,19 @@ describe('多 Provider 设置持久化', () => {
     expect(Object.isFrozen(resumed)).toBe(true);
   });
 
+  test('失效运动轮次不会进入持久化队列写入设置', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'myself-movement-cancelled-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.json');
+    const store = new SettingsStore(file, async () => false);
+
+    await expect(store.saveMovementMode(0, () => false)).resolves.toBeNull();
+    await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
+      movementMode: 2,
+      proactivityMode: 'autonomous'
+    });
+  });
+
   test('隐私策略各现行数据类别可独立保存并返回完整行为快照', async () => {
     const store = await createStore();
 

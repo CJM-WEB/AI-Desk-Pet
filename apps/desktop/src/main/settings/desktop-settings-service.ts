@@ -31,7 +31,10 @@ interface SettingsAccess {
   saveModelRoute(route: ModelRouteConfig): Promise<void>;
   getPrivacySettings(): Promise<PrivacySettings>;
   savePrivacySettings(settings: PrivacySettings): Promise<CharacterBehaviorSettingsSnapshot>;
-  saveMovementMode(mode: CharacterMovementMode): Promise<CharacterBehaviorSettingsSnapshot>;
+  saveMovementMode(
+    mode: CharacterMovementMode,
+    isCurrent?: () => boolean
+  ): Promise<CharacterBehaviorSettingsSnapshot | null>;
   getPetAlwaysOnTop(): Promise<boolean>;
   savePetAlwaysOnTop(enabled: boolean): Promise<void>;
   getPublic(): Promise<{
@@ -225,8 +228,9 @@ export class DesktopSettingsService {
   }
 
   /** 此入口只供 Main 本地 Gate 使用，Renderer 不获得停止锁写权。 */
-  async saveMovementMode(mode: CharacterMovementMode): Promise<void> {
-    const snapshot = await this.options.settings.saveMovementMode(mode);
+  async saveMovementMode(mode: CharacterMovementMode, isCurrent = () => true): Promise<void> {
+    const snapshot = await this.options.settings.saveMovementMode(mode, isCurrent);
+    if (snapshot === null || !isCurrent()) return;
     this.options.applyCharacterBehaviorSettings(snapshot);
   }
 

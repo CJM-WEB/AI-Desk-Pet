@@ -80,10 +80,9 @@ const server = createServer(async (request, response) => {
           text: '本地模型 fixture 回复',
           activity: '安静陪伴',
           status: 'idle',
-          motionPlan: {
-            mode: 'none', durationSeconds: null, target: 'current', distance: 'none'
-          },
-          behaviorPlan: { kind: 'none' }
+          movementControl: { kind: 'keep' },
+          behaviorPlan: { kind: 'none' },
+          capabilityPlan: { kind: 'chat' }
         })
       };
   if (body.stream === true && !wantsStaleFile) {

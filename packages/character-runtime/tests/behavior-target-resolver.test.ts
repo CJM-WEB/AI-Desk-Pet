@@ -129,7 +129,11 @@ describe('公开行为目标解析器', () => {
       .toEqual({ kind: 'action_name', name: '跳舞' });
   });
 
-  test('运动计划参与公开候选排序并优先命中用户自定义移动动作', () => {
+  test.each([
+    { kind: 'set_mode', mode: 1 },
+    { kind: 'set_mode', mode: 2 },
+    { kind: 'move_once', target: 'random_work_area', distance: 'far' }
+  ] as const)('运动控制 %o 参与公开候选排序并优先命中用户自定义移动动作', movementControl => {
     const catalog: PublicBehaviorCatalog = {
       characterName: '运动角色', semantics: ['idle', 'move'],
       stateNames: [], actionNames: ['安静等待', '巡游四方'], tags: ['still', 'locomotion'],
@@ -143,7 +147,7 @@ describe('公开行为目标解析器', () => {
       catalog,
       '开始行动',
       '保持活跃',
-      { mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'far' }
+      movementControl
     )).toEqual({ kind: 'action_name', name: '巡游四方' });
   });
 

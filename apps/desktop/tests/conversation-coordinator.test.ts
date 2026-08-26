@@ -48,6 +48,7 @@ function behaviorPortDouble(
     completeUserPrompt: vi.fn(),
     handleTaskEvent: vi.fn(),
     applyPlaybackFeedback: vi.fn(),
+    cancelActive: vi.fn(),
     reset: vi.fn(),
     close: vi.fn(async () => undefined),
     ...overrides
@@ -676,7 +677,7 @@ describe('ConversationCoordinator', () => {
         }
       }
     };
-    const { coordinator, events, history } = createHarness([{
+    const { coordinator, events, history, behavior } = createHarness([{
       profileId: 'profile-local',
       providerIdentity: 'local',
       providerName: '本地模型',
@@ -953,7 +954,7 @@ describe('ConversationCoordinator', () => {
 
   test('取消后忽略不服从 AbortSignal 的旧模型响应', async () => {
     const script = deferredProvider();
-    const { coordinator, events, history } = createHarness([{
+    const { coordinator, events, history, behavior } = createHarness([{
       profileId: 'profile-openai',
       providerIdentity: 'openai',
       providerName: 'OpenAI',
@@ -968,6 +969,7 @@ describe('ConversationCoordinator', () => {
     await pending;
 
     expect(history.turns()).toEqual([]);
+    expect(behavior.cancelActive).toHaveBeenCalledOnce();
     expect(events).not.toContainEqual({ type: 'message', role: 'assistant', text: '旧回复' });
     expect(phases(events)).toEqual(['listening', 'thinking', 'cancelled']);
   });

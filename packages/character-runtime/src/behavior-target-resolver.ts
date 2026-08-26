@@ -1,4 +1,8 @@
-import type { BehaviorTarget, MotionPlan, PublicBehaviorCatalog } from './character-behavior-plan';
+import type {
+  BehaviorTarget,
+  MovementControlPlan,
+  PublicBehaviorCatalog
+} from './character-behavior-plan';
 import type { CharacterStandardSemantic } from './behavior-contracts';
 import {
   STANDARD_CHARACTER_SEMANTICS,
@@ -110,12 +114,17 @@ export function selectPublicBehaviorTarget(
   catalog: PublicBehaviorCatalog,
   activity: string | undefined,
   status: string | undefined,
-  motionPlan?: MotionPlan | null
+  movementControl?: MovementControlPlan | null
 ): BehaviorTarget {
-  const motionDescriptors = motionPlan?.mode === 'stop'
+  const motionDescriptors = movementControl?.kind === 'set_mode' && movementControl.mode === 0
     ? ['idle', '静止', '待机']
-    : motionPlan?.mode === 'once' || motionPlan?.mode === 'continuous'
-      ? ['move', '移动', '运动', motionPlan.target, motionPlan.distance]
+    : movementControl?.kind === 'set_mode' && movementControl.mode > 0
+      ? ['move', 'run', 'walk', '移动', '运动', '跑步', '走动']
+      : movementControl?.kind === 'move_once'
+        ? [
+            'move', 'run', 'walk', '移动', '运动', '跑步', '走动',
+            movementControl.target, movementControl.distance
+          ]
       : [];
   const queries = [activity, status, ...motionDescriptors]
     .filter((value): value is string => typeof value === 'string')

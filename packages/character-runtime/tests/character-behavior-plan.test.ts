@@ -4,7 +4,6 @@ import {
   characterChatResponseSchema,
   characterBehaviorPlanSchema,
   movementControlPlanSchema,
-  motionPlanSchema,
   publicBehaviorCatalogSchema
 } from '../src/character-behavior-plan';
 
@@ -153,27 +152,6 @@ describe('角色行为计划协议', () => {
     }).success).toBe(false);
     expect(new RegExp(pattern, 'u').test('   ')).toBe(false);
     expect(new RegExp(pattern, 'u').test('挥手✨')).toBe(true);
-  });
-
-  test.each([
-    { mode: 'none', durationSeconds: null, target: 'current', distance: 'none' },
-    { mode: 'stop', durationSeconds: null, target: 'current', distance: 'none' },
-    { mode: 'once', durationSeconds: 1, target: 'random_work_area', distance: 'near' },
-    { mode: 'continuous', durationSeconds: 600, target: 'bottom_right', distance: 'far' }
-  ])('接受受限 motionPlan %#', motionPlan => {
-    expect(motionPlanSchema.safeParse(motionPlan).success).toBe(true);
-  });
-
-  test.each([
-    { mode: 'continuous', durationSeconds: 0, target: 'random_work_area', distance: 'medium' },
-    { mode: 'continuous', durationSeconds: 601, target: 'random_work_area', distance: 'medium' },
-    { mode: 'continuous', durationSeconds: 1.5, target: 'random_work_area', distance: 'medium' },
-    { mode: 'once', durationSeconds: null, target: { x: 1, y: 2 }, distance: 'far' },
-    { mode: 'once', durationSeconds: 1, target: 'outside', distance: 'far' },
-    { mode: 'stop', durationSeconds: null, target: 'current', distance: 'none', extra: true },
-    { mode: 'once', durationSeconds: null, target: 'random_work_area', distance: 'exact_pixels' }
-  ])('拒绝越界或包含坐标的 motionPlan %#', motionPlan => {
-    expect(motionPlanSchema.safeParse(motionPlan).success).toBe(false);
   });
 
   test('聊天 JSON Schema 只用严格 movementControl 承载运动策略', () => {

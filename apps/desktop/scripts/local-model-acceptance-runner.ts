@@ -137,6 +137,7 @@ function behaviorPort(): ConversationBehaviorPort {
     completeUserPrompt: async () => undefined,
     handleTaskEvent: () => undefined,
     applyPlaybackFeedback: () => undefined,
+    cancelActive: () => undefined,
     reset: () => undefined,
     close: async () => undefined
   };

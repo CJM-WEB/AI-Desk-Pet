@@ -93,7 +93,9 @@ describe('Main 通用生命周期', () => {
     expect(readIndex).toBeGreaterThan(-1);
     expect(readIndex).toBeLessThan(directorIndex);
     expect(source).toContain('initialSettings: characterBehaviorSettings');
-    expect(source).toContain('saveMovementMode: mode => desktopSettingsService.saveMovementMode(mode)');
+    expect(source).toContain(
+      'saveMovementMode: (mode, isCurrent) => desktopSettingsService.saveMovementMode(mode, isCurrent)',
+    );
     expect(source).toContain('applyCharacterBehaviorSettings: snapshot => characterBehaviorDirector.applyBehaviorSettings(snapshot)');
   });
 

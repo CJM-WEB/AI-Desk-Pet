@@ -26,14 +26,6 @@ export type MovementControlPlan =
       distance: MoveDistance;
     }>;
 
-/** 隐藏运动建议只允许公开目标类别，Main 不接收像素坐标。 */
-export type MotionPlan = Readonly<{
-  mode: 'none' | 'stop' | 'once' | 'continuous';
-  durationSeconds: number | null;
-  target: 'current' | 'random_work_area' | ScreenRegion;
-  distance: 'none' | 'near' | 'medium' | 'far';
-}>;
-
 export type CharacterBehaviorPlan =
   | Readonly<{ kind: 'none'; emotion?: CharacterEmotionLabel }>
   | Readonly<{ kind: 'play'; target: BehaviorTarget; emotion?: CharacterEmotionLabel }>
@@ -119,17 +111,6 @@ export const movementControlPlanSchema = z.discriminatedUnion('kind', [
     distance: z.enum(['near', 'medium', 'far'])
   }).strict()
 ]);
-
-export const motionPlanSchema = z.object({
-  mode: z.enum(['none', 'stop', 'once', 'continuous']),
-  durationSeconds: z.number().int().min(1).max(600).nullable(),
-  target: z.enum([
-    'current', 'random_work_area',
-    'left', 'right', 'top', 'bottom',
-    'top_left', 'top_right', 'bottom_left', 'bottom_right'
-  ]),
-  distance: z.enum(['none', 'near', 'medium', 'far'])
-}).strict();
 
 export const publicBehaviorCatalogSchema = z.object({
   characterName: publicNameSchema,

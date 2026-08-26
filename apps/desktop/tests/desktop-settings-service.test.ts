@@ -218,6 +218,19 @@ describe('DesktopSettingsService', () => {
     expect(fixture.applyCharacterBehaviorSettings).not.toHaveBeenCalled();
   });
 
+  test('运动轮次在落盘返回前失效时不应用迟到行为快照', async () => {
+    const fixture = createFixture();
+    let current = true;
+    fixture.settings.saveMovementMode.mockImplementationOnce(async movementMode => {
+      current = false;
+      return { movementMode, proactivityMode: 'assistive' };
+    });
+
+    await fixture.service.saveMovementMode(1, () => current);
+
+    expect(fixture.applyCharacterBehaviorSettings).not.toHaveBeenCalled();
+  });
+
   test('隐私档位落盘失败时不通知行为快照 sink', async () => {
     const fixture = createFixture();
     fixture.settings.savePrivacySettings.mockRejectedValueOnce(new Error('WRITE_FAILED'));

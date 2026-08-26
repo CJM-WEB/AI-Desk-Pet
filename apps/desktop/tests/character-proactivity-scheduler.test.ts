@@ -239,6 +239,19 @@ describe('CharacterProactivityScheduler', () => {
     await current.scheduler.close();
   });
 
+  test('间歇目标无需移动时也会重新等待完整周期而非永久失活', async () => {
+    vi.useFakeTimers();
+    const current = fixture({ random: () => 0 });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(current.requestIntermittentMovement).toHaveBeenCalledTimes(2);
+    await current.scheduler.close();
+  });
+
   test('生命周期变化重抽周期，但普通主动性设置不终止显式模式 2', async () => {
     vi.useFakeTimers();
     const current = fixture({ mode: 'autonomous', random: () => 0 });

@@ -42,6 +42,7 @@ function behaviorDouble(): ConversationBehaviorPort {
     completeUserPrompt: vi.fn(),
     handleTaskEvent: vi.fn(),
     applyPlaybackFeedback: vi.fn(),
+    cancelActive: vi.fn(),
     reset: vi.fn(),
     close: vi.fn(async () => undefined)
   };

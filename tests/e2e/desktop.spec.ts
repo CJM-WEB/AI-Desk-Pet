@@ -6187,6 +6187,19 @@ test.describe('真实 Provider 业务闭环', () => {
     const providerSteps: ProviderStep[] = [
       { response: { type: 'text', text: '本地连接正常' } },
       {
+        response: {
+          type: 'text',
+          text: '准备列出当前目录。',
+          structured_output: {
+            activity: '协助处理文件',
+            status: 'working',
+            movementControl: { kind: 'keep' },
+            behaviorPlan: { kind: 'none' },
+            capabilityPlan: { kind: 'agent_task', preferredTool: 'list_files' }
+          }
+        }
+      },
+      {
         response: toolResponse(
           'list-root',
           'builtin.files.list_files',
@@ -6257,6 +6270,19 @@ test.describe('真实 Provider 业务闭环', () => {
           if (result.toolName !== 'edit_file'
             || result.targetRelativePath !== 'created.txt') {
             throw new Error('精确编辑结果不符合脚本预期');
+          }
+        }
+      },
+      {
+        response: {
+          type: 'text',
+          text: '准备创建文件，等待你的逐次确认。',
+          structured_output: {
+            activity: '协助处理文件',
+            status: 'working',
+            movementControl: { kind: 'keep' },
+            behaviorPlan: { kind: 'none' },
+            capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
           }
         }
       },
@@ -6429,6 +6455,9 @@ test.describe('真实 Provider 业务闭环', () => {
       await settingsPage.getByRole('button', { name: '关闭设置', exact: true }).click();
 
       await submitChatMessage(chatPage, '列出当前目录 task6-user-body-sentinel');
+      const capabilityCard = chatPage.getByRole('article', { name: '本地任务授权' });
+      await expect(capabilityCard).toBeVisible();
+      await capabilityCard.getByRole('button', { name: '允许规划' }).click();
       await expect(chatPage.getByText('task6-model-body-sentinel')).toBeVisible();
 
       await submitChatMessage(chatPage, '创建文件 created.txt');
@@ -6451,6 +6480,9 @@ test.describe('真实 Provider 业务闭环', () => {
         .toBe('patched content\n');
 
       await submitChatMessage(chatPage, '创建 cancelled.txt，但先让我确认');
+      const cancelCapabilityCard = chatPage.getByRole('article', { name: '本地任务授权' });
+      await expect(cancelCapabilityCard).toBeVisible();
+      await cancelCapabilityCard.getByRole('button', { name: '允许规划' }).click();
       const cancelCard = chatPage.getByRole('region', { name: '创建文件 cancelled.txt' });
       await expect(cancelCard).toBeVisible();
       await cancelCard.getByRole('button', { name: '先不创建' }).click();
@@ -6500,7 +6532,7 @@ test.describe('真实 Provider 业务闭环', () => {
       expect(provider.inspectionErrors).toEqual([]);
       expect(provider.remainingSteps()).toBe(0);
       provider.assertComplete();
-      expect(provider.requests).toHaveLength(13);
+      expect(provider.requests).toHaveLength(15);
       for (const request of provider.requests) {
         expect(request).toMatchObject({
           method: 'POST',

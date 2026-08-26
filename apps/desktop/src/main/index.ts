@@ -670,7 +670,7 @@ async function createApplicationWindows(
     motion: characterMotion,
     initialGeneration: 'startup',
     initialSettings: characterBehaviorSettings,
-    saveMovementMode: mode => desktopSettingsService.saveMovementMode(mode),
+    saveMovementMode: (mode, isCurrent) => desktopSettingsService.saveMovementMode(mode, isCurrent),
     publishNotice: notice => publishCharacterBehaviorNotice(notice)
   });
   const characterProactivityRuntime = createCharacterProactivityRuntime({

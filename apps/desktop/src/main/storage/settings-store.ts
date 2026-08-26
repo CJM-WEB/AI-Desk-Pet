@@ -923,13 +923,18 @@ export class SettingsStore {
     });
   }
 
-  saveMovementMode(input: CharacterMovementMode): Promise<CharacterBehaviorSettingsSnapshot> {
+  saveMovementMode(
+    input: CharacterMovementMode,
+    isCurrent: () => boolean = () => true
+  ): Promise<CharacterBehaviorSettingsSnapshot | null> {
     return this.enqueue(async () => {
       const movementMode = z.union([z.literal(0), z.literal(1), z.literal(2)]).parse(input);
+      if (!isCurrent()) return null;
       const settings = await this.load();
+      if (!isCurrent()) return null;
       settings.movementMode = movementMode;
       await atomicWrite(this.file, settings);
-      return behaviorSettingsSnapshot(settings);
+      return isCurrent() ? behaviorSettingsSnapshot(settings) : null;
     });
   }
 
