@@ -120,3 +120,32 @@
 - 可行性证据只匹配句尾的 `可行吗`、`是否可以`、`可以吗` 等完整咨询结构，不拦截前置礼貌请求。
 - 本轮只修改 Router、Router 测试和本报告；未触碰 Agent 执行器、Provider、Scheduler、IPC 或权限执行链。
 - 剩余风险仍是自然语言表达无法穷举；新增咨询或否定表达应继续先增加安全负例，再扩展有界结构。
+
+## 修复轮 3/5：拒绝证据句法化
+
+### RED 证据
+
+- 命令：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts`
+- 退出码：`1`。
+- 结果：205 项中 196 项通过、9 项失败。
+- 预期失败覆盖：三种有界嵌套礼貌壳后的分析请求误入文件任务；两个明确礼貌执行请求被句尾 `可以吗` 误拒；四个包含 `可行` 或 `别` 子串的合法对象名被裸关键词误拒。
+
+### GREEN 与门禁证据
+
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts`：205/205 通过。
+- `pnpm.cmd --filter @myself/agent-core test`：4 个文件、93/93 通过。
+- `pnpm.cmd --filter @myself/agent-core typecheck`：退出码 `0`。
+- `pnpm.cmd --filter @myself/character-runtime test`：15 个文件、315/315 通过。
+- `pnpm.cmd --filter @myself/character-runtime typecheck`：退出码 `0`。
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts tests/explicit-character-behavior-gate.test.ts`：2 个文件、287/287 通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出码 `0`。
+- `git diff --check`：退出码 `0`；只有 Windows 行尾转换提示，无空白错误。
+
+### 架构修复与自审
+
+- 文件 Gate 删除对整段 `semanticText` 的知识、否定和陈述裸关键词扫描；拒绝证据只从句首讨论/知识问句、句首否定命令和对象之后的咨询尾句产生。
+- 讨论前缀支持 `请帮我`、`请你帮我`、`麻烦帮我` 三种有界嵌套礼貌壳，不使用无界重复。
+- 咨询尾句必须位于最后一个真实对象槽之后；`可行文件`、`类别文件` 等对象名称内部子串无法再充当拒绝证据。
+- 明确礼貌请求、操作和目标必须在同一句内，满足后仅覆盖礼貌性可行询问；知识解释和风险陈述仍优先回落聊天。
+- 本轮只修改 Router、Router 测试和本报告；未触碰 Agent 执行器、Provider、Scheduler、IPC 或权限执行链。
+- 剩余风险：规则只覆盖获批的有界句法角色，未识别的新型讨论表达会保守依赖正向执行结构；后续扩展仍须以安全负例驱动，不得恢复全局词表。

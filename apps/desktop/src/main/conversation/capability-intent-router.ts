@@ -66,11 +66,13 @@ const strongFileOperationPattern = /(?:重命名|复制|移动|\b(?:rename|copy|
 const chineseExecutionRequestPattern = /(?:你能(?:不能)?(?:帮我)?|请你?|帮我|麻烦(?:你)?|给我)/gu;
 const englishDirectExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b/iu;
 const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:please\s+)?([a-z]+)\b/iu;
-const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|讨论|什么意思|是什么(?:意思|功能)?|翻译|示例|例子|举例|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b|example\b|discuss\b)/iu;
-const discussionRequestPattern = /^(?:(?:请你?|帮我|麻烦(?:你)?|给我)\s*)?(?:分析|引用)/u;
-const feasibilityQuestionPattern = /(?:可行(?:吗)?|是否(?:可行|可以)|可以吗|行不行|合适吗)[？?]?$/u;
-const negationPattern = /(?:不要|别|不用|不必|无需|不需要|do\s+not|don't)/iu;
-const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
+const chineseDiscussionRequestPattern = /^(?:(?:(?:请你?|麻烦(?:你)?)(?:\s*帮我)?|帮我|给我)\s*)?(?:分析|引用|讨论|解释|翻译|举例|告诉我)/u;
+const chineseKnowledgeQuestionPattern = /^(?:为什么|为何|如何|怎么)/u;
+const englishDiscussionRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:analyze|explain|quote|discuss|translate)\b|^(?:why\b|how\s+(?:to|do\s+i)\b|what\s+is\b)/iu;
+const negativeCommandPattern = /^(?:(?:请你?|麻烦(?:你)?)\s*)?(?:不要|不用|不必|无需|不需要|别(?=(?:\s|帮我|把|将|在|读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理))|(?:please\s+)?(?:do\s+not|don't)\b)/iu;
+const knowledgeTailPattern = /(?:(?:为什么|为何|怎么)[^。！？!?]{0,32}[？?]|是什么(?:意思|功能)?[？?]?|什么意思[？?]?|有什么区别[？?]?|只是(?:一个)?例子[。.]?|is\s+(?:a\s+)?common\s+example[.]?)$/iu;
+const feasibilityQuestionPattern = /(?:可行吗|是否(?:可行|可以)|可以吗|行不行|合适吗)[？?]?$/u;
+const statementTailPattern = /(?:需要[^。！？!?]{0,24}权限|(?:存在|有)[^。！？!?]{0,16}风险|(?:is\s+)?dangerous|requires?[^.!?]{0,24}permission)[。.!?]?$/iu;
 const quotedOrCodePrefixPattern = /^(?:>|[`'"“”‘’])/u;
 const chineseExplicitPowerShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
 const englishExplicitPowerShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run|execute)\s+powershell\s+([\s\S]+)$/iu;
@@ -419,6 +421,33 @@ function hasExecutionStructure(
   return targetRanges.some(([start]) => !hasSentenceBoundary(text.slice(0, start)));
 }
 
+/** 礼貌请求、操作与目标必须在同一句内；该证据只区分执行请求与句尾客套询问。 */
+function hasChinesePoliteExecutionStructure(
+  text: string,
+  targetRanges: readonly TextRange[],
+  operationRanges: readonly TextRange[]
+): boolean {
+  const requestRanges = Array.from(text.matchAll(chineseExecutionRequestPattern))
+    .map(match => [match.index, match.index + match[0].length] as const);
+  return operationRanges.some(operationRange =>
+    requestRanges.some(requestRange =>
+      requestRange[1] <= operationRange[0]
+      && areInSameSentence(text, requestRange, operationRange))
+    && targetRanges.some(targetRange => areInSameSentence(text, operationRange, targetRange)));
+}
+
+/** 咨询后缀必须位于最后一个真实对象之后；对象名称前缀不能充当拒绝证据。 */
+function hasSemanticTailAfterObjects(
+  semanticText: string,
+  objectRanges: readonly TextRange[],
+  pattern: RegExp
+): boolean {
+  const match = pattern.exec(semanticText.trimEnd());
+  if (match?.index === undefined) return false;
+  const lastObjectEnd = objectRanges.reduce((lastEnd, [, end]) => Math.max(lastEnd, end), 0);
+  return match.index >= lastObjectEnd;
+}
+
 /** 未引用的英文语法词只有形成从句起点才封闭，选项、路径和词内片段仍是命令参数。 */
 function hasEnglishNaturalLanguageClause(tokens: readonly string[]): boolean {
   for (let index = 0; index < tokens.length; index += 1) {
@@ -502,13 +531,13 @@ function hasExplicitFileIntent(normalizedText: string): boolean {
   const targetRanges = scanTargetRanges(unquotedText);
   const objectRanges = scanLocalObjectRanges(unquotedText, targetRanges);
   const localObjectScan = scanLocalObjects(unquotedText, objectRanges);
+  const semanticText = localObjectScan.semanticText.trimStart();
+  // 拒绝证据只接受句首句法角色，不在整段文本中搜索裸关键词。
   if (!normalizedText
-    || knowledgePattern.test(localObjectScan.semanticText)
-    // 讨论动词只在请求句首生效；对象名称内部的同字不是拒绝证据。
-    || discussionRequestPattern.test(localObjectScan.semanticText)
-    || feasibilityQuestionPattern.test(localObjectScan.semanticText.trim())
-    || negationPattern.test(localObjectScan.semanticText)
-    || statementPattern.test(localObjectScan.semanticText)) {
+    || chineseDiscussionRequestPattern.test(semanticText)
+    || chineseKnowledgeQuestionPattern.test(semanticText)
+    || englishDiscussionRequestPattern.test(semanticText)
+    || negativeCommandPattern.test(semanticText)) {
     return false;
   }
 
@@ -517,9 +546,22 @@ function hasExplicitFileIntent(normalizedText: string): boolean {
     localObjectScan.semanticText,
     operationRanges
   );
-  return localObjectScan.hasLocalObject
+  const hasExecution = localObjectScan.hasLocalObject
     && requestedOperationRanges.length > 0
     && hasExecutionStructure(unquotedText, objectRanges, requestedOperationRanges);
+  if (!hasExecution) return false;
+
+  if (hasSemanticTailAfterObjects(localObjectScan.semanticText, objectRanges, knowledgeTailPattern)
+    || hasSemanticTailAfterObjects(localObjectScan.semanticText, objectRanges, statementTailPattern)) {
+    return false;
+  }
+  const hasFeasibilityQuestion = hasSemanticTailAfterObjects(
+    localObjectScan.semanticText,
+    objectRanges,
+    feasibilityQuestionPattern
+  );
+  return !hasFeasibilityQuestion
+    || hasChinesePoliteExecutionStructure(unquotedText, objectRanges, requestedOperationRanges);
 }
 
 /** 操作类别只用于收窄本轮工具，不扩展 Router 已经判定的文件权限。 */
