@@ -644,7 +644,7 @@ async function readCloudOpenAISse(
   });
 }
 
-/** 三类 Provider 共用同一正文降级规则，避免协议适配器各自实现不一致的恢复逻辑。 */
+/** 三类 Provider 共用同一契约校验，避免云端适配器把缺失控制字段的正文冒充成功。 */
 export function normalizeResponseContractText(
   raw: string,
   contract: ModelResponseContract
@@ -655,6 +655,23 @@ export function normalizeResponseContractText(
   }
   if (decoded.kind === 'plain_text') {
     return { type: 'text', text: decoded.text };
+  }
+  if (
+    contract.validateStructuredOutput !== undefined
+    && !contract.validateStructuredOutput(decoded.structured_output)
+  ) {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+  }
+  const required = contract.jsonSchema['required'];
+  if (
+    !contract.allowPlainTextFallback
+    && Array.isArray(required)
+    && required.some(field => (
+      typeof field !== 'string'
+      || !Object.prototype.hasOwnProperty.call(decoded.structured_output, field)
+    ))
+  ) {
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   }
   return {
     type: 'text',

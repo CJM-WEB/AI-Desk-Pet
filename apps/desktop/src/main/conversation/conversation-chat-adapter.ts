@@ -80,7 +80,7 @@ export const characterChatResponseContract: ModelResponseContract = {
     }
   },
   textField: 'text' as const,
-  allowPlainTextFallback: true as const,
+  allowPlainTextFallback: false as const,
   validateStructuredOutput: value => capabilityCharacterChatResponseSchema.safeParse(value).success
 };
 

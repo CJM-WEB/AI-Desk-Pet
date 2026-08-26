@@ -140,6 +140,23 @@ function expectObservableErrorTextHidden(
   }
 }
 
+function characterChatJson(
+  text: string,
+  capabilityPlan: { kind: 'chat' } | {
+    kind: 'agent_task';
+    preferredTool: 'create_file';
+  } = { kind: 'chat' }
+): string {
+  return JSON.stringify({
+    text,
+    activity: '安静陪伴',
+    status: 'idle',
+    movementControl: { kind: 'keep' },
+    behaviorPlan: { kind: 'none' },
+    capabilityPlan
+  });
+}
+
 function sseResponse(events: readonly string[], keepOpen = false): Response {
   const encoded = new TextEncoder().encode(events.map(event => `data: ${event}\n\n`).join(''));
   const body = new ReadableStream<Uint8Array>({
@@ -154,6 +171,27 @@ function sseResponse(events: readonly string[], keepOpen = false): Response {
   return new Response(body, {
     headers: { 'content-type': 'text/event-stream' }
   });
+}
+
+function characterChatSseResponse(providerName: string, content: string): Response {
+  if (providerName === 'Anthropic') {
+    return sseResponse([
+      JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: content }
+      }),
+      JSON.stringify({ type: 'message_stop' })
+    ]);
+  }
+  if (providerName === 'Gemini') {
+    return sseResponse([JSON.stringify({
+      candidates: [{ content: { parts: [{ text: content }] }, finishReason: 'STOP' }]
+    })]);
+  }
+  return sseResponse([
+    JSON.stringify({ choices: [{ delta: { content } }] }),
+    '[DONE]'
+  ]);
 }
 
 interface ChatProviderContractCase {
@@ -743,10 +781,42 @@ describe('三协议云端普通聊天流式契约', () => {
 
 describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
   test.each(chatProviderContractCases)(
-    '$name 直接返回自然文本，且请求工具数组为空',
+    '$name 的合法普通聊天与能力任务结构在流式传输后均保留控制计划',
     async contract => {
+      const plans = [
+        { kind: 'chat' } as const,
+        { kind: 'agent_task', preferredTool: 'create_file' } as const
+      ];
+
+      for (const capabilityPlan of plans) {
+        const visibleText = capabilityPlan.kind === 'chat' ? '普通回复。' : '需要进入本地任务。';
+        const deltas: string[] = [];
+        const fetchClient = vi.fn<FetchLike>(async () => (
+          characterChatSseResponse(
+            contract.name,
+            characterChatJson(visibleText, capabilityPlan)
+          )
+        ));
+        const adapter = new ConversationChatAdapter(contract.createProvider(fetchClient));
+
+        await expect(adapter.respond({
+          history: [],
+          text: capabilityPlan.kind === 'chat' ? '你好' : '创建文件',
+          behaviorContext: providerBehaviorContext,
+          signal: new AbortController().signal,
+          onTextDelta: delta => deltas.push(delta)
+        })).resolves.toMatchObject({ text: visibleText, capabilityPlan });
+        expect(deltas.join('')).toBe(visibleText);
+      }
+    }
+  );
+
+  test.each(chatProviderContractCases)(
+    '$name 普通聊天返回完整结构且请求工具数组为空',
+    async contract => {
+      const visibleText = '  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n';
       const fetchClient = vi.fn<FetchLike>(async () => jsonResponse(
-        contract.textResponse('  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n')
+        contract.textResponse(characterChatJson(visibleText))
       ));
       const adapter = new ConversationChatAdapter(contract.createProvider(fetchClient));
 
@@ -756,7 +826,12 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
       })).resolves.toEqual({
-        text: '  可以使用 Markdown。\n\n```ts\nconst 回复 = "原样保留";\n```\n'
+        text: visibleText,
+        activity: '安静陪伴',
+        status: 'idle',
+        movementControl: { kind: 'keep' },
+        behaviorPlan: { kind: 'none' },
+        capabilityPlan: { kind: 'chat' }
       });
 
       const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body)) as Record<
@@ -800,7 +875,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
   );
 
   test.each(chatProviderContractCases)(
-    '$name 在行为计划或情绪非法时仍保留正文',
+    '$name 对桌宠统一控制契约缺少必填字段时失败关闭',
     async contract => {
       const raw = JSON.stringify({
         text: '正文仍然有效。',
@@ -815,12 +890,15 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         text: '测试非法情绪',
         behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
-      })).resolves.toEqual({ text: '正文仍然有效。' });
+      })).rejects.toMatchObject({
+        code: 'PROVIDER_MALFORMED_RESPONSE',
+        retryable: false
+      });
     }
   );
 
   test.each(chatProviderContractCases)(
-    '$name 对行为字段后的截断只恢复完整正文',
+    '$name 对桌宠统一控制契约截断响应失败关闭',
     async contract => {
       const raw = '{"text":"截断前的正文","behaviorPlan":{"kind":"move"';
       const adapter = new ConversationChatAdapter(contract.createProvider(
@@ -832,12 +910,15 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         text: '测试截断',
         behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
-      })).resolves.toEqual({ text: '截断前的正文' });
+      })).rejects.toMatchObject({
+        code: 'PROVIDER_MALFORMED_RESPONSE',
+        retryable: false
+      });
     }
   );
 
   test.each(chatProviderContractCases)(
-    '$name 保持普通纯文本兼容',
+    '$name 对桌宠统一控制契约纯文本响应失败关闭',
     async contract => {
       const adapter = new ConversationChatAdapter(contract.createProvider(
         vi.fn(async () => jsonResponse(contract.textResponse('普通纯文本')))
@@ -848,7 +929,10 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         text: '普通聊天',
         behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
-      })).resolves.toEqual({ text: '普通纯文本' });
+      })).rejects.toMatchObject({
+        code: 'PROVIDER_MALFORMED_RESPONSE',
+        retryable: false
+      });
     }
   );
 
@@ -2426,7 +2510,7 @@ describe('ProviderRegistry', () => {
     }
   );
 
-  test('DeepSeek 预设通过既有 OpenAI Compatible 边界返回自然文本', async () => {
+  test('DeepSeek 预设通过既有 OpenAI Compatible 边界返回完整桌宠结构', async () => {
     const profile: ProviderProfileV2 = {
       id: 'deepseek-chat-profile',
       displayName: 'DeepSeek',
@@ -2435,8 +2519,9 @@ describe('ProviderRegistry', () => {
       modelId: 'deepseek-v4-flash',
       hasStoredSecret: true
     };
+    const visibleText = '  **自然回复**\n\n```ts\n你好();\n```\n';
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{ message: { content: '  **自然回复**\n\n```ts\n你好();\n```\n' } }]
+      choices: [{ message: { content: characterChatJson(visibleText) } }]
     }));
     const provider = new ProviderRegistry(providerCatalog).create(
       profile,
@@ -2451,7 +2536,12 @@ describe('ProviderRegistry', () => {
       behaviorContext: providerBehaviorContext,
       signal: new AbortController().signal
     })).resolves.toEqual({
-      text: '  **自然回复**\n\n```ts\n你好();\n```\n'
+      text: visibleText,
+      activity: '安静陪伴',
+      status: 'idle',
+      movementControl: { kind: 'keep' },
+      behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' }
     });
 
     const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));

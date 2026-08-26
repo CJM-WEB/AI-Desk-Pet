@@ -67,7 +67,7 @@ describe('ConversationChatAdapter', () => {
           properties: expect.objectContaining({ capabilityPlan: expect.any(Object) })
         }),
         textField: 'text',
-        allowPlainTextFallback: true,
+        allowPlainTextFallback: false,
         validateStructuredOutput: expect.any(Function)
       }
     });
