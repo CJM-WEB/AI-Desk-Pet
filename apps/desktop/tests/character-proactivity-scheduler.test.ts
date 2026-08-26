@@ -18,7 +18,7 @@ const context: ConversationBehaviorContext = {
     actionNames: ['眨眼'],
     tags: []
   },
-  runtime: { moving: false, dragging: false, carrying: false, movementStopped: false },
+  runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
   proactivityMode: 'assistive',
   recentActions: []
 };
@@ -29,14 +29,19 @@ const unblocked: CharacterActivityBlockers = {
   moving: false,
   capabilityTask: false,
   awaitingConfirmation: false,
-  movementStopped: false,
+  movementMode: 2,
   closed: false
 };
+const booleanBlockerKeys = (Object.keys(unblocked) as Array<keyof CharacterActivityBlockers>)
+  .filter((key): key is Exclude<keyof CharacterActivityBlockers, 'movementMode'> => (
+    key !== 'movementMode'
+  ));
 
 function fixture(options: Readonly<{
   mode?: ConversationBehaviorContext['proactivityMode'];
   random?: () => number;
   start?: boolean;
+  reentrantPersistent?: boolean;
 }> = {}) {
   let blockers = { ...unblocked };
   let mode = options.mode ?? 'assistive';
@@ -59,7 +64,10 @@ function fixture(options: Readonly<{
       return () => { listener = (): void => undefined; };
     }),
     getBehaviorLifecycleGeneration: vi.fn(() => lifecycleGeneration),
-    requestBehaviorPlan: submit
+    requestBehaviorPlan: submit,
+    requestPersistentMovement: vi.fn(() => {
+      if (options.reentrantPersistent) listener();
+    })
   };
   const scheduler = new CharacterProactivityScheduler({
     director,
@@ -75,7 +83,11 @@ function fixture(options: Readonly<{
       listener();
     },
     setAutonomousMovementAllowed(value: boolean) {
-      blockers = { ...blockers, autonomousMovementAllowed: value };
+      blockers = { ...blockers, movementMode: value ? 2 : 0 };
+      listener();
+    },
+    setMovementMode(value: 0 | 1 | 2) {
+      blockers = { ...blockers, movementMode: value };
       listener();
     },
     setMode(value: ConversationBehaviorContext['proactivityMode']) {
@@ -102,27 +114,32 @@ describe('CharacterProactivityScheduler', () => {
     expect(vi.getTimerCount()).toBe(1);
     await current.scheduler.close();
   });
-  test('passive 不创建主动计时器，assistive 在 10/30 秒边界只提交原地候选', async () => {
+  test('passive 不创建主动计时器', async () => {
     vi.useFakeTimers();
     const passive = fixture({ mode: 'passive' });
     expect(vi.getTimerCount()).toBe(0);
     await passive.scheduler.close();
+  });
 
-    const minimum = fixture({ random: () => 0 });
-    await vi.advanceTimersByTimeAsync(9_999);
-    expect(minimum.submit).not.toHaveBeenCalled();
+  test.each([
+    [0, 10_000],
+    [0.5, 20_000],
+    [1, 30_000]
+  ])('assistive 的模式 2 在 random=%s 时等待 %i 毫秒后提交随机工作区移动', async (
+    random,
+    delay
+  ) => {
+    vi.useFakeTimers();
+    const current = fixture({ mode: 'assistive', random: () => random });
+
+    await vi.advanceTimersByTimeAsync(delay - 1);
+    expect(current.submit).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(minimum.submit).toHaveBeenCalledWith({
-      kind: 'play', target: { kind: 'semantic', semantic: 'idle' }
+    expect(current.submit).toHaveBeenCalledExactlyOnceWith({
+      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
     }, 'local-idle');
-    await minimum.scheduler.close();
 
-    const maximum = fixture({ random: () => 1 });
-    await vi.advanceTimersByTimeAsync(29_999);
-    expect(maximum.submit).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(maximum.submit.mock.calls[0]?.[0]).not.toMatchObject({ kind: 'move' });
-    await maximum.scheduler.close();
+    await current.scheduler.close();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -139,7 +156,7 @@ describe('CharacterProactivityScheduler', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  test.each(Object.keys(unblocked) as Array<keyof CharacterActivityBlockers>)(
+  test.each(booleanBlockerKeys)(
     '%s blocker 暂停并保留剩余时间，恢复时不补跑',
     async key => {
       vi.useFakeTimers();
@@ -157,6 +174,29 @@ describe('CharacterProactivityScheduler', () => {
       await current.scheduler.close();
     }
   );
+
+  test('持续模式不等待随机时钟并在阻塞解除后请求 Director 续行', async () => {
+    vi.useFakeTimers();
+    const current = fixture({ mode: 'autonomous' });
+
+    current.setMovementMode(1);
+    expect(current.director.requestPersistentMovement).toHaveBeenCalledOnce();
+    current.setBlocker('dragging', true);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(current.director.requestPersistentMovement).toHaveBeenCalledOnce();
+    current.setBlocker('dragging', false);
+    expect(current.director.requestPersistentMovement).toHaveBeenCalledTimes(2);
+    await current.scheduler.close();
+  });
+
+  test('持续模式请求同步发布活动变化时不会递归重入 Scheduler', async () => {
+    const current = fixture({ start: false, reentrantPersistent: true });
+    current.setMovementMode(1);
+
+    expect(() => current.scheduler.start()).not.toThrow();
+    expect(current.director.requestPersistentMovement).toHaveBeenCalledOnce();
+    await current.scheduler.close();
+  });
 
   test('自主移动许可关闭后跨 30 秒不会提交候选，重新开启后恢复独立随机周期', async () => {
     vi.useFakeTimers();

@@ -12,6 +12,7 @@ type SchedulerDirectorPort = Pick<
   | 'getBehaviorLifecycleGeneration'
   | 'subscribeActivityBlockers'
   | 'requestBehaviorPlan'
+  | 'requestPersistentMovement'
 >;
 
 type CharacterProactivitySchedulerOptions = Readonly<{
@@ -37,7 +38,8 @@ export class CharacterProactivityScheduler {
   private readonly unsubscribe: () => void;
   private mode: ConversationBehaviorContext['proactivityMode'];
   private lifecycleGeneration: number;
-  private autonomousMovementAllowed: boolean;
+  private movementMode: ConversationBehaviorContext['runtime']['movementMode'];
+  private requestingPersistentMovement = false;
   private started = false;
   private closed = false;
 
@@ -46,7 +48,7 @@ export class CharacterProactivityScheduler {
     this.now = options.now ?? performance.now.bind(performance);
     this.mode = options.director.getChatContext().proactivityMode;
     this.lifecycleGeneration = options.director.getBehaviorLifecycleGeneration();
-    this.autonomousMovementAllowed = options.director.getActivityBlockers().autonomousMovementAllowed !== false;
+    this.movementMode = options.director.getActivityBlockers().movementMode;
     this.unsubscribe = options.director.subscribeActivityBlockers(() => this.reconcile());
   }
 
@@ -78,26 +80,33 @@ export class CharacterProactivityScheduler {
     }
 
     const blockers = this.options.director.getActivityBlockers();
-    const nextAutonomousMovementAllowed = blockers.autonomousMovementAllowed !== false;
-    if (!nextAutonomousMovementAllowed) {
-      this.autonomousMovementAllowed = false;
+    if (blockers.movementMode !== this.movementMode) {
+      this.movementMode = blockers.movementMode;
       this.clear(this.local, false);
       this.local.remaining = null;
+    }
+    if (this.movementMode === 0) return;
+    const blocked = hasBlocker(blockers);
+    if (blocked) {
+      this.clear(this.local, true);
       return;
     }
-    if (!this.autonomousMovementAllowed) {
-      this.autonomousMovementAllowed = true;
+    if (this.movementMode === 1) {
       this.clear(this.local, false);
       this.local.remaining = null;
+      // Director 会同步发布新的运动快照；重入期间仍由本次请求拥有续行决策。
+      if (this.requestingPersistentMovement) return;
+      this.requestingPersistentMovement = true;
+      try {
+        this.options.director.requestPersistentMovement();
+      } finally {
+        this.requestingPersistentMovement = false;
+      }
+      return;
     }
-    const blocked = hasBlocker(blockers);
     if (this.mode === 'passive') {
       this.clear(this.local, false);
       this.local.remaining = null;
-      return;
-    }
-    if (blocked) {
-      this.clear(this.local, true);
       return;
     }
 
@@ -121,11 +130,8 @@ export class CharacterProactivityScheduler {
   }
 
   private createLocalCandidate(): CharacterBehaviorPlan {
-    if (this.mode === 'autonomous') {
-      return { kind: 'play', target: { kind: 'semantic', semantic: 'move' } };
-    }
-    // assistive 永远只请求 idle 语义，避免公开 action name 隐含 move 时产生位移。
-    return { kind: 'play', target: { kind: 'semantic', semantic: 'idle' } };
+    // movementMode=2 是用户明确选择的间歇运动；主动性只决定是否启用时钟，不降级为 idle。
+    return { kind: 'play', target: { kind: 'semantic', semantic: 'move' } };
   }
 
   private submitCandidate(
@@ -152,8 +158,7 @@ export class CharacterProactivityScheduler {
 }
 
 function hasBlocker(blockers: CharacterActivityBlockers): boolean {
-  if (blockers.autonomousMovementAllowed === false) return true;
   return Object.entries(blockers).some(([key, value]) => (
-    key !== 'autonomousMovementAllowed' && value
+    key !== 'movementMode' && value
   ));
 }

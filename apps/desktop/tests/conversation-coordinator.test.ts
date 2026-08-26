@@ -29,7 +29,7 @@ const behaviorContext = {
     moving: false,
     dragging: false,
     carrying: false,
-    movementStopped: false
+    movementMode: 2 as const
   },
   proactivityMode: 'assistive' as const,
   recentActions: []

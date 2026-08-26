@@ -217,19 +217,19 @@ describe('多 Provider 设置持久化', () => {
     const store = await createStore();
 
     await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
-      movementStopped: false,
+      movementMode: 2,
       proactivityMode: 'autonomous'
     });
 
-    await store.saveMovementStopped(true);
+    await store.saveMovementMode(0);
     await store.clearAll();
     await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
-      movementStopped: false,
+      movementMode: 2,
       proactivityMode: 'autonomous'
     });
   });
 
-  test('V3 迁移为 V4 时完整保留现行多档案、路由、位置、隐私、停止锁与 MCP', async () => {
+  test('V3 迁移为 V5 时完整保留现行多档案、路由、位置、隐私、运动模式与 MCP', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'myself-v3-local-model-migration-'));
     temporaryDirectories.push(directory);
     const file = join(directory, 'settings.json');
@@ -312,11 +312,11 @@ describe('多 Provider 设置持久化', () => {
     });
     await expect(store.getPrivacySettings()).resolves.toEqual(privacy);
     await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
-      movementStopped: true,
+      movementMode: 0,
       proactivityMode: 'passive'
     });
     await expect(store.getMcpServerSettings()).resolves.toEqual(mcpServers);
-    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 4');
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 5');
   });
 
   test('旧 V1 与缺失 privacy 的 V2 保留辅助模式并补齐未停止', async () => {
@@ -349,7 +349,7 @@ describe('多 Provider 设置持久化', () => {
 
       await expect(
         new SettingsStore(file, async () => false).getCharacterBehaviorSettings()
-      ).resolves.toEqual({ movementStopped: false, proactivityMode: 'assistive' });
+      ).resolves.toEqual({ movementMode: 2, proactivityMode: 'assistive' });
     }
   });
 
@@ -378,7 +378,7 @@ describe('多 Provider 设置持久化', () => {
 
       await expect(
         new SettingsStore(file, async () => false).getCharacterBehaviorSettings()
-      ).resolves.toEqual({ movementStopped: false, proactivityMode });
+      ).resolves.toEqual({ movementMode: 2, proactivityMode });
     }
   );
 
@@ -388,15 +388,15 @@ describe('多 Provider 设置持久化', () => {
     const file = join(directory, 'settings.json');
     const store = new SettingsStore(file, async () => false);
 
-    const stopped = await store.saveMovementStopped(true);
-    expect(stopped).toEqual({ movementStopped: true, proactivityMode: 'autonomous' });
+    const stopped = await store.saveMovementMode(0);
+    expect(stopped).toEqual({ movementMode: 0, proactivityMode: 'autonomous' });
     expect(Object.isFrozen(stopped)).toBe(true);
     await expect(
       new SettingsStore(file, async () => false).getCharacterBehaviorSettings()
     ).resolves.toEqual(stopped);
 
-    const resumed = await new SettingsStore(file, async () => false).saveMovementStopped(false);
-    expect(resumed).toEqual({ movementStopped: false, proactivityMode: 'autonomous' });
+    const resumed = await new SettingsStore(file, async () => false).saveMovementMode(2);
+    expect(resumed).toEqual({ movementMode: 2, proactivityMode: 'autonomous' });
     expect(Object.isFrozen(resumed)).toBe(true);
   });
 
@@ -421,7 +421,7 @@ describe('多 Provider 设置持久化', () => {
       proactivityMode: 'passive'
     });
 
-    expect(snapshot).toEqual({ movementStopped: false, proactivityMode: 'passive' });
+    expect(snapshot).toEqual({ movementMode: 2, proactivityMode: 'passive' });
     expect(Object.isFrozen(snapshot)).toBe(true);
   });
 

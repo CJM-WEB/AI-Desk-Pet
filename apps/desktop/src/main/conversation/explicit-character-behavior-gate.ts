@@ -66,7 +66,7 @@ function parseChinese(text: string): ParsedDirective | null {
   const stop = /^(?:请)?(?:你)?(?:停下|停止不动|别走了|不要走了|别动了|不要动了|静止不动|保持静止|不要再动|别乱跑)/u.exec(text);
   if (stop) return { consumed: stop[0].length, directive: { kind: 'stop_movement' } };
 
-  const continuous = /^(?:请)?(?:保持运动|一直走|继续跑)/u.exec(text);
+  const continuous = /^(?:请)?(?:保持运动|保持移动|一直运动|一直走|一直跑|继续跑)/u.exec(text);
   if (continuous) return { consumed: continuous[0].length, directive: { kind: 'continuous_movement' } };
 
   const resume = /^(?:请)?(?:恢复活动|恢复移动|可以动了|继续活动|继续走)/u.exec(text);

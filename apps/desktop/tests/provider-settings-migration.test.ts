@@ -123,13 +123,13 @@ describe('模型目录与设置迁移', () => {
     const migrated = JSON.parse(await readFile(file, 'utf8')) as {
       providerProfiles: Array<{ id: string }>;
       petAlwaysOnTop: boolean;
-      movementStopped: boolean;
+      movementMode: number;
       privacy: unknown;
     };
     expect(migrated.providerProfiles).toEqual([expect.objectContaining({ id: 'deepseek-main' })]);
     expect(migrated).toMatchObject({
       petAlwaysOnTop: true,
-      movementStopped: true,
+      movementMode: 0,
       privacy: { longTermMemory: false, proactivityMode: 'assistive' }
     });
   });
@@ -188,7 +188,7 @@ describe('模型目录与设置迁移', () => {
       modelRoute: unknown;
     };
     expect(migrated).toMatchObject({
-      version: 4,
+      version: 5,
       providerProfiles: [{
         id: 'legacy-provider',
         displayName: '旧服务',
@@ -239,7 +239,7 @@ describe('模型目录与设置迁移', () => {
 
     expect(first.provider).toEqual(expect.objectContaining({ id: 'legacy-provider' }));
     expect(second.provider).toEqual(expect.objectContaining({ id: 'legacy-provider' }));
-    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 4');
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 5');
   });
 
   test('迁移写入失败时保留原 v1 文件', async () => {

@@ -202,8 +202,8 @@ const nonMcpMutationCases: readonly NonMcpMutationCase[] = [
     })
   },
   {
-    methodName: 'saveMovementStopped',
-    mutate: store => store.saveMovementStopped(true)
+    methodName: 'saveMovementMode',
+    mutate: store => store.saveMovementMode(0)
   },
   {
     methodName: 'savePetAlwaysOnTop',
@@ -398,7 +398,7 @@ export class SettingsStore {
     });
 
     const serialized = await readFile(file, 'utf8');
-    expect(serialized).toContain('"version": 4');
+    expect(serialized).toContain('"version": 5');
     expect(serialized).not.toContain(fixtureSecret);
     await expect(store.getPublic()).resolves.toEqual(expect.objectContaining({
       provider: {
@@ -655,7 +655,7 @@ export class SettingsStore {
           allowCrossProviderFallback: false
         },
         placement: { kind: 'pending-legacy', windowPosition: { x: 12, y: 34 } },
-        privacy: { movementStopped: false, proactivityMode: 'assistive' },
+        privacy: { movementMode: 2, proactivityMode: 'assistive' },
         mcpServers: []
       }
     },
@@ -703,7 +703,7 @@ export class SettingsStore {
           allowCrossProviderFallback: false
         },
         placement: { kind: 'pending-legacy', windowPosition: { x: 56, y: 78 } },
-        privacy: { movementStopped: true, proactivityMode: 'passive' },
+        privacy: { movementMode: 0, proactivityMode: 'passive' },
         mcpServers: mcpSettingsFixture
       }
     },
@@ -767,7 +767,7 @@ export class SettingsStore {
             displayId: 'display-main'
           }
         },
-        privacy: { movementStopped: true, proactivityMode: 'passive' },
+        privacy: { movementMode: 0, proactivityMode: 'passive' },
         mcpServers: mcpSettingsFixture
       }
     }
@@ -790,7 +790,7 @@ export class SettingsStore {
         ? { id: 'legacy-root', displayName: '旧目录', pathHint: 'D:\\…\\legacy' }
         : null
     });
-    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 4');
+    await expect(readFile(file, 'utf8')).resolves.toContain('"version": 5');
   });
 
   test('V2 旧位置只解析一次并原子迁移为不含 windowPosition 的 ready V3', async () => {
@@ -846,7 +846,7 @@ export class SettingsStore {
 
     const persisted = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
     expect(persisted).toMatchObject({
-      version: 4,
+      version: 5,
       petPlacementState: {
         kind: 'ready',
         placements: [{ characterId: 'pet-a', scale: 1 }]
@@ -854,7 +854,7 @@ export class SettingsStore {
       fileDisclosureAccepted: true,
       petAlwaysOnTop: true,
       privacy: { proactivityMode: 'passive' },
-      movementStopped: true,
+      movementMode: 0,
       mcpServers: mcpSettingsFixture
     });
     expect(JSON.stringify(persisted)).not.toContain('windowPosition');
@@ -887,7 +887,7 @@ export class SettingsStore {
       }
     })).rejects.toMatchObject({ code: 'PET_PLACEMENT_MIGRATION_STALE' });
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
-      version: 4,
+      version: 5,
       petPlacementState: {
         kind: 'pending-legacy',
         windowPosition: { x: 20, y: 30 }
@@ -966,7 +966,7 @@ export class SettingsStore {
       kind: 'ready', placement: { characterId: 'pet-a' }
     });
     await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
-      movementStopped: true,
+      movementMode: 0,
       proactivityMode: 'assistive'
     });
     await expect(store.getProviderSettings()).resolves.toMatchObject({
@@ -978,7 +978,8 @@ export class SettingsStore {
       expect.objectContaining({ characterId: 'pet-a' })
     ]);
     expect(persisted.privacy.proactivityMode).toBe('assistive');
-    expect(persisted.movementStopped).toBe(true);
+    expect(persisted.movementMode).toBe(0);
+    expect(persisted).not.toHaveProperty('movementStopped');
   });
 
   test('ready 原始数组超过 256 条时只清空 placement 并保留其余严格 V3 设置', async () => {
@@ -1020,14 +1021,14 @@ export class SettingsStore {
       profiles: [expect.objectContaining({ id: 'provider-main' })]
     });
     await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
-      movementStopped: true,
+      movementMode: 0,
       proactivityMode: 'passive'
     });
     await expect(store.getMcpServerSettings()).resolves.toEqual(mcpSettingsFixture);
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
       petPlacementState: { kind: 'ready', placements: [] },
       privacy: { proactivityMode: 'passive' },
-      movementStopped: true,
+      movementMode: 0,
       mcpServers: mcpSettingsFixture
     });
     expect((await readdir(directory)).some(name => name.startsWith('settings.json.corrupt-')))
@@ -1133,7 +1134,7 @@ export class SettingsStore {
       providerProfiles: [expect.objectContaining({ id: 'provider-main' })],
       petPlacementState: { kind: 'ready', placements: [] },
       privacy: { proactivityMode: 'passive' },
-      movementStopped: true,
+      movementMode: 0,
       mcpServers: mcpSettingsFixture
     });
     expect((await readdir(directory)).some(name => name.startsWith('settings.json.corrupt-')))
@@ -1186,13 +1187,13 @@ export class SettingsStore {
       kind: 'pending-legacy', windowPosition: { x: -500, y: 120 }
     });
     expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({
-      version: 4,
+      version: 5,
       petPlacementState: {
         kind: 'pending-legacy',
         windowPosition: { x: -500, y: 120 }
       },
       privacy: { proactivityMode: 'assistive' },
-      movementStopped: false
+      movementMode: 2
     });
   });
 
@@ -1215,17 +1216,17 @@ export class SettingsStore {
     }), 'utf8');
 
     await expect(store.getCharacterBehaviorSettings()).resolves.toEqual({
-      movementStopped: false,
+      movementMode: 2,
       proactivityMode: 'assistive'
     });
     const persisted = JSON.parse(await readFile(file, 'utf8'));
     expect(persisted).toMatchObject({
-      version: 4,
+      version: 5,
       providerProfiles: [expect.objectContaining({ id: 'provider-main' })],
       petPlacementState: { kind: 'ready', placements: [] },
       petAlwaysOnTop: false,
       privacy: { proactivityMode: 'assistive' },
-      movementStopped: false,
+      movementMode: 2,
       mcpServers: []
     });
   });

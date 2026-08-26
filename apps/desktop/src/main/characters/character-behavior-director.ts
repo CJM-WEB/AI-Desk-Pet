@@ -18,7 +18,10 @@ import {
 import type { CharacterMotionService } from './character-motion-service';
 import { parseExplicitCharacterBehavior } from
   '../conversation/explicit-character-behavior-gate';
-import type { CharacterBehaviorSettingsSnapshot } from '../storage/settings-store';
+import type {
+  CharacterBehaviorSettingsSnapshot,
+  CharacterMovementMode
+} from '../storage/settings-store';
 import type { CharacterMotionSnapshot } from '../../shared/character-motion-ipc';
 
 export type CharacterMotionIntent =
@@ -56,9 +59,7 @@ export type ConversationBehaviorContext = Readonly<{
     moving: boolean;
     dragging: boolean;
     carrying: boolean;
-    movementStopped: boolean;
-    autonomousMovementAllowed?: boolean;
-    continuousMovementRequested?: boolean;
+    movementMode: CharacterMovementMode;
   }>;
   proactivityMode: 'passive' | 'assistive' | 'autonomous';
   recentActions: readonly string[];
@@ -70,9 +71,7 @@ export type CharacterActivityBlockers = Readonly<{
   moving: boolean;
   capabilityTask: boolean;
   awaitingConfirmation: boolean;
-  movementStopped: boolean;
-  /** false 是自主 Scheduler 的明确停止锁；未提供时兼容旧测试端口。 */
-  autonomousMovementAllowed?: boolean;
+  movementMode: CharacterMovementMode;
   closed: boolean;
 }>;
 
@@ -100,8 +99,8 @@ export type CharacterBehaviorNotice = Readonly<{
 
 /** 只读诊断只暴露状态标记与公开目标类型，不包含屏幕坐标或私有角色标识。 */
 export type CharacterBehaviorDiagnosticSnapshot = Readonly<{
-  autonomousMovementAllowed: boolean;
-  continuousMovementRequested: boolean;
+  movementMode: CharacterMovementMode;
+  continuousTargetType: MotionPlan['target'] | null;
   moving: boolean;
   currentTargetType: MotionPlan['target'] | null;
   continuationDeadlineActive: boolean;
@@ -135,7 +134,7 @@ type CharacterBehaviorDirectorOptions = Readonly<{
   motion: MotionServicePort;
   initialGeneration: string;
   initialSettings: CharacterBehaviorSettingsSnapshot;
-  saveMovementStopped(stopped: boolean): Promise<void>;
+  saveMovementMode(mode: CharacterMovementMode): Promise<void>;
   publishNotice?: (notice: CharacterBehaviorNotice) => void;
   now?: (() => number) | undefined;
 }>;
@@ -175,9 +174,7 @@ function samePoint(
  */
 export class CharacterBehaviorDirector {
   private generation: string;
-  private movementStopped: boolean;
-  private autonomousMovementAllowed: boolean;
-  private continuousMovementRequested = false;
+  private movementMode: CharacterMovementMode;
   private continuousTarget: MotionPlan['target'] | null = null;
   private continuousDistance: MotionPlan['distance'] = 'none';
   private currentMotionTarget: MotionPlan['target'] | null = null;
@@ -205,8 +202,7 @@ export class CharacterBehaviorDirector {
 
   constructor(private readonly options: CharacterBehaviorDirectorOptions) {
     this.generation = options.initialGeneration;
-    this.movementStopped = options.initialSettings.movementStopped;
-    this.autonomousMovementAllowed = !options.initialSettings.movementStopped;
+    this.movementMode = options.initialSettings.movementMode;
     this.proactivityMode = options.initialSettings.proactivityMode;
   }
 
@@ -223,8 +219,9 @@ export class CharacterBehaviorDirector {
     if (directive?.kind === 'stop_movement') {
       await this.persistMovementStop();
     } else if (directive?.kind === 'resume_movement') {
-      await this.options.saveMovementStopped(false);
+      await this.options.saveMovementMode(2);
     } else if (directive?.kind === 'continuous_movement') {
+      await this.options.saveMovementMode(1);
       this.requestMotionPlan({
         mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium'
       }, 'explicit');
@@ -260,9 +257,7 @@ export class CharacterBehaviorDirector {
         moving: motion.moving,
         dragging: this.dragging,
         carrying: motion.carrying,
-        movementStopped: this.movementStopped,
-        autonomousMovementAllowed: this.autonomousMovementAllowed,
-        continuousMovementRequested: this.continuousMovementRequested
+        movementMode: this.movementMode
       },
       proactivityMode: this.proactivityMode,
       recentActions: catalogAvailable ? this.options.behavior.getRecentPublicActions() : []
@@ -277,8 +272,7 @@ export class CharacterBehaviorDirector {
       moving: this.options.motion.getSnapshot().moving,
       capabilityTask: this.capabilityTask,
       awaitingConfirmation: this.awaitingConfirmation,
-      movementStopped: this.movementStopped,
-      autonomousMovementAllowed: this.autonomousMovementAllowed,
+      movementMode: this.movementMode,
       closed: this.closed
     };
   }
@@ -295,8 +289,8 @@ export class CharacterBehaviorDirector {
 
   getDiagnosticSnapshot(): CharacterBehaviorDiagnosticSnapshot {
     return {
-      autonomousMovementAllowed: this.autonomousMovementAllowed,
-      continuousMovementRequested: this.continuousMovementRequested,
+      movementMode: this.movementMode,
+      continuousTargetType: this.continuousTarget,
       moving: this.options.motion.getSnapshot().moving,
       currentTargetType: this.currentMotionTarget,
       continuationDeadlineActive: this.continuousDeadlineMs !== null
@@ -343,9 +337,18 @@ export class CharacterBehaviorDirector {
     // none 只表示 Provider 没有精确目录目标，不能吞掉隐藏描述的最高相似匹配。
     const plan = providerPlan?.kind === 'none' ? fallbackPlan : providerPlan ?? fallbackPlan;
     const providerMotionPlan = input.explicitDirective === null ? input.motionPlan ?? null : null;
-    if (providerMotionPlan?.mode === 'stop') {
-      await this.persistMovementStop();
-    }
+    const providerMovementMode = input.explicitDirective !== null
+      ? null
+      : providerMotionPlan?.mode === 'stop' || providerPlan?.kind === 'stop_movement'
+        ? 0
+        : providerMotionPlan?.mode === 'continuous' && providerMotionPlan.durationSeconds === null
+          ? 1
+          : providerPlan?.kind === 'resume_movement'
+            ? 2
+            : null;
+    // 结构化持久模式与本地 Gate 共用同一落盘入口；保存失败时不得排队或执行运动。
+    if (providerMovementMode === 0) await this.persistMovementStop();
+    else if (providerMovementMode !== null) await this.options.saveMovementMode(providerMovementMode);
     // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
     if (this.closed || input.generation !== this.generation) return;
     this.pendingChatPlan = plan === null || (plan.kind === 'play' && catalog === null)
@@ -400,7 +403,7 @@ export class CharacterBehaviorDirector {
   /** 兼容能力任务的高层意图仍先经过显式优先级与停止锁，再生成唯一运动意图。 */
   handleAgentBehaviorIntent(intent: CharacterAgentBehaviorIntent): CharacterBehaviorAuthorization {
     if (this.closed || this.active?.source === 'explicit') return NONE;
-    if (!this.autonomousMovementAllowed && this.options.behavior.isMovementAgentIntent(intent)) return NONE;
+    if (this.movementMode === 0 && this.options.behavior.isMovementAgentIntent(intent)) return NONE;
     const authorization = this.options.behavior.handleAgentIntent(intent);
     if (authorization.kind !== 'play') return authorization;
     this.active = {
@@ -419,11 +422,16 @@ export class CharacterBehaviorDirector {
     if (this.closed) return;
     this.options.behavior.applyPlaybackFeedback(feedback);
     if (feedback.status === 'started') return;
-    if (this.active?.playbackToken === feedback.playbackToken) this.active = null;
-    if (this.pendingSuccessToken !== feedback.playbackToken) return;
+    const releasedActive = this.active?.playbackToken === feedback.playbackToken;
+    if (releasedActive) this.active = null;
+    if (this.pendingSuccessToken !== feedback.playbackToken) {
+      if (releasedActive) this.publishActivityChanged();
+      return;
+    }
     this.pendingSuccessToken = null;
     const chatAuthorization = this.commitPendingChatPlan();
     this.commitPendingMotionPlan(chatAuthorization);
+    this.publishActivityChanged();
   }
 
   /** 供明确指令、聊天和本地待机共用同一条已解析授权链。 */
@@ -451,7 +459,7 @@ export class CharacterBehaviorDirector {
         if (plan.kind === 'move' && plan.distance !== 'near') return NONE;
         if (plan.kind !== 'play' && plan.kind !== 'move') return NONE;
         const resolvedTarget = this.options.behavior.resolveBehaviorTarget(target);
-        if (!this.autonomousMovementAllowed
+        if (this.movementMode === 0
           && this.options.behavior.isMovementBehaviorTarget(resolvedTarget)) return NONE;
         const authorization = this.options.behavior.requestProactiveBehavior(target, {
           urgency: SOURCE_OPTIONS[source].urgency,
@@ -521,13 +529,24 @@ export class CharacterBehaviorDirector {
     if (!this.closed) this.publishActivityChanged();
   }
 
+  /** 持续模式在启动或阻塞解除后由唯一 Scheduler 请求恢复，不改写持久模式。 */
+  requestPersistentMovement(): void {
+    if (this.movementMode !== 1 || this.hasContinuousBlocker()) return;
+    this.requestMotionPlan({
+      mode: 'continuous',
+      durationSeconds: null,
+      target: 'random_work_area',
+      distance: 'medium'
+    }, 'explicit');
+  }
+
   /** MotionService 快照是到达的唯一事实；连续计划不创建额外计时器。 */
   handleMotionSnapshot(snapshot: CharacterMotionSnapshot): void {
     if (this.closed) return;
     this.expireContinuousMotion();
     const arrived = this.motionWasMoving && !snapshot.moving;
     this.motionWasMoving = snapshot.moving;
-    if (arrived && this.continuousMovementRequested) {
+    if (arrived && this.continuousTarget !== null) {
       if (this.hasContinuousBlocker() || !this.requestNextContinuousIntent()) {
         this.stopContinuousMotion();
       }
@@ -540,9 +559,12 @@ export class CharacterBehaviorDirector {
   /** 只接收 Store 成功落盘后的完整快照，避免运行态与磁盘分叉。 */
   applyBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void {
     if (this.closed) return;
-    const shouldStopMotion = this.autonomousMovementAllowed && snapshot.movementStopped;
-    this.movementStopped = snapshot.movementStopped;
-    this.autonomousMovementAllowed = !snapshot.movementStopped;
+    const shouldStopMotion = this.movementMode !== 0 && snapshot.movementMode === 0;
+    const shouldStopPersistentMotion = this.movementMode === 1
+      && snapshot.movementMode === 2
+      && this.continuousTarget !== null
+      && this.continuousDeadlineMs === null;
+    this.movementMode = snapshot.movementMode;
     const modeChanged = this.proactivityMode !== snapshot.proactivityMode;
     this.proactivityMode = snapshot.proactivityMode;
     if (modeChanged) this.behaviorLifecycleGeneration += 1;
@@ -550,6 +572,9 @@ export class CharacterBehaviorDirector {
       this.stopContinuousMotion();
       // 停止锁终止上一段显式移动的所有权，否则同优先级的恢复指令会被旧令牌拒绝。
       if (this.active?.source === 'explicit' && this.active.semantic === 'move') this.active = null;
+    } else if (shouldStopPersistentMotion) {
+      // 1→2 只撤销无限链；有限 continuous 与 once 仍由各自终态收口。
+      this.clearContinuousMotion();
     }
     this.publishActivityChanged();
   }
@@ -599,8 +624,8 @@ export class CharacterBehaviorDirector {
 
   /** true→true 没有设置边沿时也必须终止本轮临时运动；失败保存仍保持零动作变更。 */
   private async persistMovementStop(): Promise<void> {
-    const wasAlreadyStopped = this.movementStopped;
-    await this.options.saveMovementStopped(true);
+    const wasAlreadyStopped = this.movementMode === 0;
+    await this.options.saveMovementMode(0);
     if (!wasAlreadyStopped) return;
     this.stopContinuousMotion();
     if (this.active?.semantic === 'move') this.active = null;
@@ -655,11 +680,16 @@ export class CharacterBehaviorDirector {
   }
 
   private releasePlaybackToken(playbackToken: string): void {
-    if (this.active?.playbackToken === playbackToken) this.active = null;
-    if (this.pendingSuccessToken !== playbackToken) return;
+    const releasedActive = this.active?.playbackToken === playbackToken;
+    if (releasedActive) this.active = null;
+    if (this.pendingSuccessToken !== playbackToken) {
+      if (releasedActive) this.publishActivityChanged();
+      return;
+    }
     this.pendingSuccessToken = null;
     const chatAuthorization = this.commitPendingChatPlan();
     this.commitPendingMotionPlan(chatAuthorization);
+    this.publishActivityChanged();
   }
 
   private publishUnavailableNotice(): void {
@@ -737,7 +767,6 @@ export class CharacterBehaviorDirector {
       this.lastSpatialTarget = { ...motionSnapshot.target };
       this.motionWasMoving = motionSnapshot.moving;
       if (plan.mode === 'continuous') {
-        this.continuousMovementRequested = true;
         this.continuousTarget = plan.target === 'random_work_area'
           ? plan.target
           : 'random_work_area';
@@ -750,7 +779,6 @@ export class CharacterBehaviorDirector {
           this.stopContinuousMotion();
         }
       } else {
-        this.continuousMovementRequested = false;
         this.continuousTarget = null;
         this.continuousDeadlineMs = null;
         this.continuousPlaybackToken = null;
@@ -785,7 +813,7 @@ export class CharacterBehaviorDirector {
   }
 
   private stopContinuousMotion(): void {
-    this.continuousMovementRequested = false;
+    const playbackToken = this.continuousPlaybackToken;
     this.continuousTarget = null;
     this.continuousDistance = 'none';
     this.currentMotionTarget = null;
@@ -794,15 +822,19 @@ export class CharacterBehaviorDirector {
     this.lastSpatialTarget = null;
     this.motionWasMoving = false;
     this.options.motion.stop();
+    if (playbackToken !== null && this.active?.playbackToken === playbackToken) this.active = null;
   }
 
   /** 生命周期仅撤销本 Director 发起的连续计划，不打断无关的用户位置。 */
   private clearContinuousMotion(): void {
     if (
-      this.continuousMovementRequested
+      this.continuousTarget !== null
       || this.currentMotionTarget !== null
       || this.continuousDeadlineMs !== null
-    ) this.stopContinuousMotion();
+    ) {
+      this.stopContinuousMotion();
+      if (this.active?.semantic === 'move') this.active = null;
+    }
   }
 
   /** 连续到达不得穿透拖拽、可信任务、确认或更高优先级播放。 */

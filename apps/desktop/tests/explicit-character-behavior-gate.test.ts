@@ -33,7 +33,10 @@ describe('显式桌宠行为 Gate', () => {
     ['跑一跑', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
     ['走一走', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }],
     ['保持运动', { kind: 'continuous_movement' }],
+    ['保持移动', { kind: 'continuous_movement' }],
+    ['一直运动', { kind: 'continuous_movement' }],
     ['一直走', { kind: 'continuous_movement' }],
+    ['一直跑', { kind: 'continuous_movement' }],
     ['继续跑', { kind: 'continuous_movement' }],
     ['跑远一点', { kind: 'move', motion: { kind: 'wander', scope: 'work_area', distance: 'far' } }],
     ['walk around', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }]

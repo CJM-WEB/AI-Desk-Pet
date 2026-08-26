@@ -183,6 +183,14 @@ const storedSettingsV4Shape = {
 };
 
 const storedSettingsV4Schema = z.object(storedSettingsV4Shape).strict();
+const storedSettingsV5Shape = {
+  ...storedSettingsV4Shape,
+  version: z.literal(5),
+  movementStopped: z.never().optional(),
+  movementMode: z.union([z.literal(0), z.literal(1), z.literal(2)])
+};
+
+const storedSettingsV5Schema = z.object(storedSettingsV5Shape).strict();
 
 // 只放宽 ready 集合的单条内容，用于隔离损坏 placement 后保住其余设置。
 const recoverableStoredSettingsV3Schema = z.object({
@@ -199,8 +207,8 @@ const recoverableStoredSettingsV3Schema = z.object({
   ])
 }).strict();
 
-const recoverableStoredSettingsV4Schema = z.object({
-  ...storedSettingsV4Shape,
+const recoverableStoredSettingsV5Schema = z.object({
+  ...storedSettingsV5Shape,
   petPlacementState: z.discriminatedUnion('kind', [
     z.object({
       kind: z.literal('pending-legacy'),
@@ -213,13 +221,21 @@ const recoverableStoredSettingsV4Schema = z.object({
   ])
 }).strict();
 
+const recoverableStoredSettingsV4Schema = z.object({
+  ...storedSettingsV4Shape,
+  petPlacementState: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('pending-legacy'), windowPosition: z.unknown() }).strict(),
+    z.object({ kind: z.literal('ready'), placements: z.array(z.unknown()) }).strict()
+  ])
+}).strict();
+
 type ProviderMetadataInput = z.input<typeof providerMetadataSchema> & Record<string, unknown>;
 type AuthorizedRootInput = z.input<typeof authorizedRootSchema>;
 type PetPositionInput = z.input<typeof petPositionSchema>;
 type StoredSettingsV1 = z.infer<typeof storedSettingsV1Schema>;
 type StoredSettingsV2 = z.infer<typeof storedSettingsV2Schema>;
 type StoredSettingsV3 = z.infer<typeof storedSettingsV3Schema>;
-type StoredSettings = z.infer<typeof storedSettingsV4Schema>;
+type StoredSettings = z.infer<typeof storedSettingsV5Schema>;
 
 export interface ProviderSettingsSnapshot {
   profiles: ProviderProfileV2[];
@@ -227,9 +243,12 @@ export interface ProviderSettingsSnapshot {
 }
 
 export type CharacterBehaviorSettingsSnapshot = Readonly<{
-  movementStopped: boolean;
+  movementMode: CharacterMovementMode;
   proactivityMode: PrivacySettings['proactivityMode'];
 }>;
+
+/** 0 持续静止、1 持续运动、2 每轮等待 10–30 秒后自主活动。 */
+export type CharacterMovementMode = 0 | 1 | 2;
 
 function emptyModelRoute(): ModelRouteConfig {
   return {
@@ -244,7 +263,7 @@ function emptyModelRoute(): ModelRouteConfig {
 
 function defaultSettings(): StoredSettings {
   return {
-    version: 4,
+    version: 5,
     providerProfiles: [],
     modelRoute: emptyModelRoute(),
     authorizedRoot: null,
@@ -252,7 +271,7 @@ function defaultSettings(): StoredSettings {
     fileDisclosureAccepted: false,
     petAlwaysOnTop: false,
     privacy: defaultPrivacySettings(),
-    movementStopped: false,
+    movementMode: 2,
     mcpServers: [],
     localModel: { enabled: true }
   };
@@ -348,7 +367,7 @@ function legacyPrivacySettings(): PrivacySettings {
 
 function behaviorSettingsSnapshot(settings: StoredSettings): CharacterBehaviorSettingsSnapshot {
   return Object.freeze({
-    movementStopped: settings.movementStopped ?? false,
+    movementMode: settings.movementMode,
     proactivityMode: (settings.privacy ?? legacyPrivacySettings()).proactivityMode
   });
 }
@@ -385,7 +404,7 @@ function migrateV1Settings(settings: StoredSettingsV1): StoredSettings {
     fileDisclosureAccepted: settings.fileDisclosureAccepted,
     petAlwaysOnTop: false,
     privacy: legacyPrivacySettings(),
-    movementStopped: false,
+    movementMode: 2,
     mcpServers: []
   };
 }
@@ -397,7 +416,7 @@ function legacyPetPlacementState(position: PetPositionInput | null): StoredSetti
 }
 
 function migrateV2Settings(settings: StoredSettingsV2): StoredSettings {
-  return storedSettingsV4Schema.parse({
+  return storedSettingsV5Schema.parse({
     ...defaultSettings(),
     providerProfiles: settings.providerProfiles,
     modelRoute: settings.modelRoute,
@@ -406,14 +425,15 @@ function migrateV2Settings(settings: StoredSettingsV2): StoredSettings {
     fileDisclosureAccepted: settings.fileDisclosureAccepted,
     petAlwaysOnTop: settings.petAlwaysOnTop ?? false,
     privacy: settings.privacy ?? legacyPrivacySettings(),
-    movementStopped: settings.movementStopped ?? false,
+    movementMode: settings.movementStopped === true ? 0 : 2,
     mcpServers: settings.mcpServers ?? []
   });
 }
 
 function migrateV3Settings(settings: StoredSettingsV3): StoredSettings {
-  return storedSettingsV4Schema.parse({
-    ...settings,
+  const { movementStopped, ...retained } = settings;
+  return storedSettingsV5Schema.parse({
+    ...retained,
     ...defaultSettings(),
     providerProfiles: settings.providerProfiles,
     modelRoute: settings.modelRoute,
@@ -422,8 +442,19 @@ function migrateV3Settings(settings: StoredSettingsV3): StoredSettings {
     fileDisclosureAccepted: settings.fileDisclosureAccepted,
     petAlwaysOnTop: settings.petAlwaysOnTop,
     privacy: settings.privacy,
-    movementStopped: settings.movementStopped,
+    movementMode: movementStopped ? 0 : 2,
     mcpServers: settings.mcpServers
+  });
+}
+
+function migrateV4Settings(
+  settings: z.infer<typeof storedSettingsV4Schema>
+): StoredSettings {
+  const { movementStopped, ...retained } = settings;
+  return storedSettingsV5Schema.parse({
+    ...retained,
+    version: 5,
+    movementMode: movementStopped ? 0 : 2
   });
 }
 
@@ -543,9 +574,13 @@ function recoverOversizedReadyPlacements(raw: unknown): OversizedReadyPlacementR
     ...(raw as Record<string, unknown>),
     petPlacementState: { kind: 'ready', placements: [] }
   };
-  const sanitized = storedSettingsV4Schema.safeParse(candidate);
+  const sanitized = storedSettingsV5Schema.safeParse(candidate);
   if (sanitized.success) {
     return { detected: true, settings: sanitized.data };
+  }
+  const v4 = storedSettingsV4Schema.safeParse(candidate);
+  if (v4.success) {
+    return { detected: true, settings: migrateV4Settings(v4.data) };
   }
   const legacy = storedSettingsV3Schema.safeParse(candidate);
   return {
@@ -554,7 +589,7 @@ function recoverOversizedReadyPlacements(raw: unknown): OversizedReadyPlacementR
   };
 }
 
-function sanitizeRecoverableV4(raw: unknown): StoredSettings | null {
+function sanitizeRecoverableV5(raw: unknown): StoredSettings | null {
   if (raw && typeof raw === 'object') {
     const state = (raw as { petPlacementState?: unknown }).petPlacementState;
     if (state && typeof state === 'object') {
@@ -566,10 +601,10 @@ function sanitizeRecoverableV4(raw: unknown): StoredSettings | null {
       ) return null;
     }
   }
-  const recoverable = recoverableStoredSettingsV4Schema.safeParse(raw);
+  const recoverable = recoverableStoredSettingsV5Schema.safeParse(raw);
   if (!recoverable.success) return null;
   if (recoverable.data.petPlacementState.kind === 'pending-legacy') {
-    return storedSettingsV4Schema.parse({
+    return storedSettingsV5Schema.parse({
       ...recoverable.data,
       petPlacementState: { kind: 'ready', placements: [] }
     });
@@ -582,10 +617,33 @@ function sanitizeRecoverableV4(raw: unknown): StoredSettings | null {
     placements.set(parsed.data.characterId, parsed.data);
     if (placements.size >= PET_PLACEMENT_LIMIT) break;
   }
-  return storedSettingsV4Schema.parse({
+  return storedSettingsV5Schema.parse({
     ...recoverable.data,
     petPlacementState: { kind: 'ready', placements: [...placements.values()] }
   });
+}
+
+function sanitizeRecoverableV4(raw: unknown): StoredSettings | null {
+  const recoverable = recoverableStoredSettingsV4Schema.safeParse(raw);
+  if (!recoverable.success) return null;
+  const placement = recoverable.data.petPlacementState;
+  const placements = new Map<string, StoredPetPlacement>();
+  if (placement.kind === 'ready') {
+    if (placement.placements.length > PET_PLACEMENT_LIMIT) return null;
+    for (const candidate of placement.placements) {
+      const parsed = storedPetPlacementSchema.safeParse(candidate);
+      if (!parsed.success) continue;
+      placements.delete(parsed.data.characterId);
+      placements.set(parsed.data.characterId, parsed.data);
+      if (placements.size >= PET_PLACEMENT_LIMIT) break;
+    }
+  }
+  return migrateV4Settings(storedSettingsV4Schema.parse({
+    ...recoverable.data,
+    petPlacementState: placement.kind === 'pending-legacy'
+      ? { kind: 'ready', placements: [] }
+      : { kind: 'ready', placements: [...placements.values()] }
+  }));
 }
 
 function storedProfile(profile: ProviderProfileV2): StoredProviderProfileV2 {
@@ -694,12 +752,25 @@ export class SettingsStore {
       return oversizedReady.settings;
     }
 
+    const v5 = storedSettingsV5Schema.safeParse(raw);
+    if (v5.success) {
+      if (retiredZen.changed || retiredPrivacy.changed || JSON.stringify(v5.data) !== JSON.stringify(raw)) {
+        await atomicWrite(this.file, v5.data);
+      }
+      return v5.data;
+    }
+
     const v4 = storedSettingsV4Schema.safeParse(raw);
     if (v4.success) {
-      if (retiredZen.changed || retiredPrivacy.changed || JSON.stringify(v4.data) !== JSON.stringify(raw)) {
-        await atomicWrite(this.file, v4.data);
-      }
-      return v4.data;
+      const migrated = migrateV4Settings(v4.data);
+      await atomicWrite(this.file, migrated);
+      return migrated;
+    }
+
+    const recoveredV5 = sanitizeRecoverableV5(raw);
+    if (recoveredV5) {
+      await atomicWrite(this.file, recoveredV5);
+      return recoveredV5;
     }
 
     const recoveredV4 = sanitizeRecoverableV4(raw);
@@ -852,11 +923,11 @@ export class SettingsStore {
     });
   }
 
-  saveMovementStopped(input: boolean): Promise<CharacterBehaviorSettingsSnapshot> {
+  saveMovementMode(input: CharacterMovementMode): Promise<CharacterBehaviorSettingsSnapshot> {
     return this.enqueue(async () => {
-      const movementStopped = z.boolean().parse(input);
+      const movementMode = z.union([z.literal(0), z.literal(1), z.literal(2)]).parse(input);
       const settings = await this.load();
-      settings.movementStopped = movementStopped;
+      settings.movementMode = movementMode;
       await atomicWrite(this.file, settings);
       return behaviorSettingsSnapshot(settings);
     });

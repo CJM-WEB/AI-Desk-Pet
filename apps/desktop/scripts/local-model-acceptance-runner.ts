@@ -130,7 +130,7 @@ function behaviorPort(): ConversationBehaviorPort {
       character: {
         characterName: '验收角色', semantics: ['idle'], stateNames: [], actionNames: [], tags: []
       },
-      runtime: { moving: false, dragging: false, carrying: false, movementStopped: false },
+      runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
       proactivityMode: 'assistive',
       recentActions: []
     }),

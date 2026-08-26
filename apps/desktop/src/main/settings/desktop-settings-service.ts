@@ -12,6 +12,7 @@ import type {
 import type { PrivacySessionRegistry } from '../agent/disclosure-policy';
 import type {
   CharacterBehaviorSettingsSnapshot,
+  CharacterMovementMode,
   PrivacySettings
 } from '../storage/settings-store';
 import type { SecretSnapshot } from '../storage/secret-store';
@@ -30,7 +31,7 @@ interface SettingsAccess {
   saveModelRoute(route: ModelRouteConfig): Promise<void>;
   getPrivacySettings(): Promise<PrivacySettings>;
   savePrivacySettings(settings: PrivacySettings): Promise<CharacterBehaviorSettingsSnapshot>;
-  saveMovementStopped(stopped: boolean): Promise<CharacterBehaviorSettingsSnapshot>;
+  saveMovementMode(mode: CharacterMovementMode): Promise<CharacterBehaviorSettingsSnapshot>;
   getPetAlwaysOnTop(): Promise<boolean>;
   savePetAlwaysOnTop(enabled: boolean): Promise<void>;
   getPublic(): Promise<{
@@ -224,8 +225,8 @@ export class DesktopSettingsService {
   }
 
   /** 此入口只供 Main 本地 Gate 使用，Renderer 不获得停止锁写权。 */
-  async saveMovementStopped(stopped: boolean): Promise<void> {
-    const snapshot = await this.options.settings.saveMovementStopped(stopped);
+  async saveMovementMode(mode: CharacterMovementMode): Promise<void> {
+    const snapshot = await this.options.settings.saveMovementMode(mode);
     this.options.applyCharacterBehaviorSettings(snapshot);
   }
 

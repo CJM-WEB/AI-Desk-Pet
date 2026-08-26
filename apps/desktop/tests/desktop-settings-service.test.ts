@@ -28,10 +28,10 @@ function providerSnapshot() {
 function createFixture() {
   let storedPetAlwaysOnTop = false;
   let behaviorSettings: {
-    movementStopped: boolean;
+    movementMode: 0 | 1 | 2;
     proactivityMode: 'passive' | 'assistive' | 'autonomous';
   } = {
-    movementStopped: false,
+    movementMode: 2,
     proactivityMode: 'assistive' as const
   };
   const settings = {
@@ -55,8 +55,8 @@ function createFixture() {
       behaviorSettings = { ...behaviorSettings, proactivityMode: input.proactivityMode };
       return Object.freeze({ ...behaviorSettings });
     }),
-    saveMovementStopped: vi.fn(async (movementStopped: boolean) => {
-      behaviorSettings = { ...behaviorSettings, movementStopped };
+    saveMovementMode: vi.fn(async (movementMode: 0 | 1 | 2) => {
+      behaviorSettings = { ...behaviorSettings, movementMode };
       return Object.freeze({ ...behaviorSettings });
     }),
     getPetAlwaysOnTop: vi.fn(async () => storedPetAlwaysOnTop),
@@ -189,7 +189,7 @@ describe('DesktopSettingsService', () => {
     });
 
     expect(fixture.applyCharacterBehaviorSettings).toHaveBeenCalledExactlyOnceWith({
-      movementStopped: false,
+      movementMode: 2,
       proactivityMode: 'passive'
     });
     expect(fixture.settings.savePrivacySettings.mock.invocationCallOrder[0])
@@ -199,21 +199,21 @@ describe('DesktopSettingsService', () => {
   test('本地 Gate 保存停止状态成功后才通知同一行为快照 sink', async () => {
     const fixture = createFixture();
 
-    await fixture.service.saveMovementStopped(true);
+    await fixture.service.saveMovementMode(0);
 
     expect(fixture.applyCharacterBehaviorSettings).toHaveBeenCalledExactlyOnceWith({
-      movementStopped: true,
+      movementMode: 0,
       proactivityMode: 'assistive'
     });
-    expect(fixture.settings.saveMovementStopped.mock.invocationCallOrder[0])
+    expect(fixture.settings.saveMovementMode.mock.invocationCallOrder[0])
       .toBeLessThan(fixture.applyCharacterBehaviorSettings.mock.invocationCallOrder[0]!);
   });
 
   test('停止状态落盘失败时不通知行为快照 sink', async () => {
     const fixture = createFixture();
-    fixture.settings.saveMovementStopped.mockRejectedValueOnce(new Error('WRITE_FAILED'));
+    fixture.settings.saveMovementMode.mockRejectedValueOnce(new Error('WRITE_FAILED'));
 
-    await expect(fixture.service.saveMovementStopped(true)).rejects.toThrow('WRITE_FAILED');
+    await expect(fixture.service.saveMovementMode(0)).rejects.toThrow('WRITE_FAILED');
 
     expect(fixture.applyCharacterBehaviorSettings).not.toHaveBeenCalled();
   });

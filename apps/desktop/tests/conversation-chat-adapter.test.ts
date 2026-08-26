@@ -16,7 +16,7 @@ const behaviorContext = {
     moving: false,
     dragging: false,
     carrying: false,
-    movementStopped: false
+    movementMode: 2 as const
   },
   proactivityMode: 'assistive' as const,
   recentActions: ['挥手']
@@ -72,7 +72,7 @@ describe('ConversationChatAdapter', () => {
     expect(取得请求(provider).messages[0]?.content).toContain('可见上下文');
     expect(取得请求(provider).messages[0]?.content).toContain('尚未执行的文件操作');
     expect(取得请求(provider).messages[0]?.content).toContain('"characterName":"小橘"');
-    expect(取得请求(provider).messages[0]?.content).toContain('"movementStopped":false');
+    expect(取得请求(provider).messages[0]?.content).toContain('"movementMode":2');
     expect(取得请求(provider).messages[0]?.content).toContain('"proactivityMode":"assistive"');
     expect(取得请求(provider).messages[0]?.content).toContain('"recentActions":["挥手"]');
     expect(取得请求(provider).messages[0]?.content).toContain('json');
