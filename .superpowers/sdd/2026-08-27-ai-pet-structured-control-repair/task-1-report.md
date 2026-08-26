@@ -91,3 +91,32 @@
 - 行为 Gate 在动作解析后、边界接受前拒绝知识问句后缀，保留既有组合能力分流。
 - 修复只修改 Router、行为 Gate 及其测试，没有触碰 Agent 执行器、Provider、Scheduler、IPC 或权限执行链。
 - 未发现新的人工验收项；剩余风险是自然语言拒绝词表仍为封闭集合，后续新增表达应继续以安全负例驱动扩展。
+
+## 修复轮 2/5：对象名边界与可行性咨询
+
+### RED 证据
+
+- 命令：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts`
+- 退出码：`1`。
+- 结果：196 项中 190 项通过、6 项失败。
+- 预期失败覆盖：`别` 否定漏判；`流程文件夹`、`分析文件` 两个合法对象名被全局知识词误伤；三种句尾可行性咨询错误进入文件任务。
+- 保护性正例 `可以帮我创建a.txt吗` 在 RED 阶段已经通过，证明测试没有把所有“可以……吗”一律拒绝。
+
+### GREEN 与门禁证据
+
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts`：196/196 通过。
+- `pnpm.cmd --filter @myself/agent-core test`：4 个文件、93/93 通过。
+- `pnpm.cmd --filter @myself/agent-core typecheck`：退出码 `0`。
+- `pnpm.cmd --filter @myself/character-runtime test`：15 个文件、315/315 通过。
+- `pnpm.cmd --filter @myself/character-runtime typecheck`：退出码 `0`。
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts tests/explicit-character-behavior-gate.test.ts`：2 个文件、278/278 通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出码 `0`。
+- `git diff --check`：退出码 `0`；只有 Windows 行尾转换提示，无空白错误。
+
+### 最小修复与自审
+
+- 恢复 `别` 的否定证据，与 `不要`、`不用`、`不必` 保持同一拒绝边界。
+- `分析`、`引用` 只在请求句首作为讨论行为生效；`流程`、`这句话` 不再作为无边界全局黑名单，因此对象名称内部同字不被误伤，既有真实讨论和引用负例仍通过。
+- 可行性证据只匹配句尾的 `可行吗`、`是否可以`、`可以吗` 等完整咨询结构，不拦截前置礼貌请求。
+- 本轮只修改 Router、Router 测试和本报告；未触碰 Agent 执行器、Provider、Scheduler、IPC 或权限执行链。
+- 剩余风险仍是自然语言表达无法穷举；新增咨询或否定表达应继续先增加安全负例，再扩展有界结构。
