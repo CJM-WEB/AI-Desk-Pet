@@ -20,6 +20,7 @@ export const ipcChannels = {
   chatCancel: 'chat:cancel',
   conversationReset: 'conversation:reset',
   conversationDisclosureResolve: 'conversation:disclosure-resolve',
+  capabilityAuthorizationResolve: 'capability:authorization-resolve',
   actionConfirm: 'action:confirm',
   actionCancel: 'action:cancel',
   taskEvent: 'task:event',

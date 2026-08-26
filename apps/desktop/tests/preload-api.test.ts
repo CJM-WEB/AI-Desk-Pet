@@ -133,6 +133,7 @@ describe('preload 公开 API', () => {
       'cancelAction',
       'resetConversation',
       'resolveHistoryDisclosure',
+      'resolveCapabilityAuthorization',
       'onTaskEvent',
       'onLocalModelStatus',
       'listCharacters',

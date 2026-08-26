@@ -194,6 +194,24 @@ describe('PendingAction 契约', () => {
   });
 });
 
+describe('任务级授权协议', () => {
+  it('使用独立事件且不接受 PendingAction 字段', () => {
+    const event = {
+      type: 'capability_authorization_required',
+      requestId: 'cap-1',
+      capability: 'file',
+      requestSummary: '请整理当前目录',
+      targetProviderName: 'DeepSeek'
+    };
+    expect(taskEventSchema.parse(event)).toEqual(event);
+    expect(() => taskEventSchema.parse({
+      ...event,
+      actionId: 'forged-action',
+      command: 'Remove-Item C:\\'
+    })).toThrow();
+  });
+});
+
 describe('providerProfileV2Schema', () => {
   it('允许预置档案为目录外模型声明保守能力', () => {
     expect(providerProfileV2Schema.parse({

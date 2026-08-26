@@ -36,18 +36,27 @@ export type PendingHistoryDisclosure = Readonly<{
   characterCount: number;
 }>;
 
+export type PendingCapabilityAuthorization = Readonly<{
+  requestId: string;
+  capability: 'file' | 'powershell';
+  requestSummary: string;
+  targetProviderName: string;
+}>;
+
 export interface TaskViewState {
   conversationRevision: number;
   phase: TaskPhase;
   messages: TaskViewMessage[];
   pendingAction: PendingAction | null;
   pendingHistoryDisclosure: PendingHistoryDisclosure | null;
+  pendingCapabilityAuthorization: PendingCapabilityAuthorization | null;
   resolvingHistoryDisclosureRequestId: string | null;
   characterState: CharacterStateSnapshot;
   apply(event: TaskEvent): void;
   beginHistoryDisclosureResolution(requestId: string): boolean;
   releaseHistoryDisclosureResolution(requestId: string): void;
   completeHistoryDisclosure(requestId: string): void;
+  completeCapabilityAuthorization(requestId: string): void;
   beginListening(): void;
   requestCharacterState(request: CharacterStateRequest): void;
   configureCharacterExtensions(definitions: readonly ExtensionTriggerDefinition[]): void;
@@ -80,6 +89,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
     messages: [],
     pendingAction: null,
     pendingHistoryDisclosure: null,
+    pendingCapabilityAuthorization: null,
     resolvingHistoryDisclosureRequestId: null,
     characterState: { stateId: 'idle', source: 'system' },
     beginHistoryDisclosureResolution: requestId => {
@@ -103,6 +113,11 @@ export function createTaskStore(): StoreApi<TaskViewState> {
             pendingHistoryDisclosure: null,
             resolvingHistoryDisclosureRequestId: null
           }
+        : state);
+    },
+    completeCapabilityAuthorization: requestId => {
+      set(state => state.pendingCapabilityAuthorization?.requestId === requestId
+        ? { pendingCapabilityAuthorization: null }
         : state);
     },
     requestCharacterState: request => {
@@ -230,6 +245,18 @@ export function createTaskStore(): StoreApi<TaskViewState> {
         });
         return;
       }
+      if (event.type === 'capability_authorization_required') {
+        if (get().pendingCapabilityAuthorization) return;
+        set({
+          pendingCapabilityAuthorization: Object.freeze({
+            requestId: event.requestId,
+            capability: event.capability,
+            requestSummary: event.requestSummary,
+            targetProviderName: event.targetProviderName
+          })
+        });
+        return;
+      }
       if (event.type === 'conversation_reset') {
         // reset 事件是 Renderer 清空当前会话状态的唯一事实来源。
         clearTransientTimer();
@@ -241,6 +268,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
           messages: [],
           pendingAction: null,
           pendingHistoryDisclosure: null,
+          pendingCapabilityAuthorization: null,
           resolvingHistoryDisclosureRequestId: null,
           characterState: { stateId: 'idle', source: 'system' }
         }));

@@ -1,4 +1,10 @@
-import type { ModelMessage, ModelProvider, ModelResponseContract } from '@myself/agent-core';
+import {
+  capabilityControlPlanSchema,
+  type CapabilityControlPlan,
+  type ModelMessage,
+  type ModelProvider,
+  type ModelResponseContract
+} from '@myself/agent-core';
 import type { CharacterEmotionLabel } from '@myself/shared-types';
 import {
   characterBehaviorPlanSchema,
@@ -20,9 +26,10 @@ export const characterJsonOutputInstructions = [
   'motionPlan 每轮必填且只控制表现：停止不动用 stop；只移动一次用 once；保持、一会儿或持续运动用 continuous；不移动用 none。',
   'durationSeconds 只在用户给出运动时长时填写 1–600；持续到明确停止或没有时长时为 null。',
   'target 只能是 current、random_work_area 或公开屏幕区域，绝不提供坐标；distance 按用户语义选择 none、near、medium、far。',
+  'capabilityPlan 每轮必填：普通聊天返回 {"kind":"chat"}；用户明确要求真实文件、目录或 PowerShell 操作时返回 {"kind":"agent_task","preferredTool":工具名或null}。它只用于请求 Main 授权，绝不表示已经执行。',
   '示例“停止不动”：motionPlan={"mode":"stop","durationSeconds":null,"target":"current","distance":"none"}。',
   '示例“跑远一点”：motionPlan={"mode":"once","durationSeconds":null,"target":"random_work_area","distance":"far"}。',
-  '格式示例：{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","motionPlan":{"mode":"none","durationSeconds":null,"target":"current","distance":"none"},"behaviorPlan":{"kind":"none","emotion":"calm"}}'
+  '格式示例：{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","motionPlan":{"mode":"none","durationSeconds":null,"target":"current","distance":"none"},"behaviorPlan":{"kind":"none","emotion":"calm"},"capabilityPlan":{"kind":"chat"}}'
 ].join('');
 
 const 聊天系统消息前缀 = [
@@ -37,10 +44,44 @@ const 最大正文字符数 = 8_000;
 export const characterChatResponseContract: ModelResponseContract = {
   type: 'json_object' as const,
   name: 'character_chat' as const,
-  jsonSchema: characterChatResponseJsonSchema,
+  jsonSchema: {
+    ...characterChatResponseJsonSchema,
+    required: [...characterChatResponseJsonSchema.required, 'capabilityPlan'],
+    properties: {
+      ...characterChatResponseJsonSchema.properties,
+      capabilityPlan: {
+        oneOf: [
+          {
+            type: 'object', additionalProperties: false, required: ['kind'],
+            properties: { kind: { const: 'chat' } }
+          },
+          {
+            type: 'object', additionalProperties: false,
+            required: ['kind', 'preferredTool'],
+            properties: {
+              kind: { const: 'agent_task' },
+              preferredTool: {
+                enum: [
+                  null, 'list_files', 'read_file', 'glob_files', 'grep_files',
+                  'create_file', 'create_directory', 'apply_patch', 'edit_file',
+                  'delete_file', 'move_file', 'powershell'
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
   textField: 'text' as const,
   allowPlainTextFallback: true as const,
-  validateStructuredOutput: value => characterChatResponseSchema.safeParse(value).success
+  validateStructuredOutput: value => {
+    if (!characterChatResponseSchema.safeParse(value).success) return false;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    return capabilityControlPlanSchema.safeParse(
+      (value as Record<string, unknown>)['capabilityPlan']
+    ).success;
+  }
 };
 
 export interface ConversationChatInput {
@@ -58,6 +99,7 @@ export type ConversationChatReply = Readonly<{
   motionPlan?: MotionPlan;
   activity?: string;
   status?: string;
+  capabilityPlan?: CapabilityControlPlan;
 }>;
 
 export class ConversationChatAdapter {
@@ -91,6 +133,7 @@ export class ConversationChatAdapter {
       motionPlan?: MotionPlan;
       activity?: string;
       status?: string;
+      capabilityPlan?: CapabilityControlPlan;
     } = { text: response.text };
     if (response.emotion !== undefined) reply.emotion = response.emotion;
     const activity = characterBehaviorDescriptorSchema.safeParse(
@@ -101,6 +144,10 @@ export class ConversationChatAdapter {
     );
     if (activity.success) reply.activity = activity.data;
     if (status.success) reply.status = status.data;
+    const capabilityPlan = capabilityControlPlanSchema.safeParse(
+      response.structured_output?.capabilityPlan
+    );
+    if (capabilityPlan.success) reply.capabilityPlan = capabilityPlan.data;
     const motionPlan = motionPlanSchema.safeParse(response.structured_output?.motionPlan);
     if (motionPlan.success) reply.motionPlan = motionPlan.data;
 

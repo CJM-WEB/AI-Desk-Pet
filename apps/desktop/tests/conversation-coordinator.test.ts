@@ -73,6 +73,7 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
   closeBarrier: Promise<void> | null = null;
   prepareBarrier: Promise<void> | null = null;
   cancelCalls = 0;
+  activationCalls = 0;
   nextOutcome: AgentFileTaskOutcome = { kind: 'completed', acted: false };
   target: {
     profileId: string;
@@ -109,6 +110,12 @@ class CapturingCapabilityTasks implements ConversationCapabilityTaskPort {
     if (this.prepareError) throw this.prepareError;
     return this.target;
   }
+
+  async prepareSnapshot(input: { generation: string; taskKind: 'file' | 'powershell' }) {
+    return this.prepareTarget(input);
+  }
+
+  async activateTarget(): Promise<void> { this.activationCalls += 1; }
 
   cancelActive(): void {
     this.cancelCalls += 1;
@@ -265,6 +272,50 @@ function errorCode(error: unknown): unknown {
 }
 
 describe('ConversationCoordinator', () => {
+  test('模型能力计划只在允许升级时发布独立任务授权且确认前不激活 Agent', async () => {
+    const script = scriptedProvider({
+      type: 'text',
+      text: '需要进入本地任务。',
+      structured_output: {
+        capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+      }
+    });
+    const harness = createHarness([{
+      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
+    }]);
+
+    await harness.coordinator.submit('请整理当前目录并生成说明');
+
+    expect(harness.events).toContainEqual({
+      type: 'capability_authorization_required',
+      requestId: 'request-2',
+      capability: 'file',
+      requestSummary: '请整理当前目录并生成说明',
+      targetProviderName: 'OpenAI Agent'
+    });
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toHaveLength(0);
+
+    await harness.coordinator.resolveCapabilityAuthorization('request-2', 'confirm');
+    expect(harness.fileTasks.activationCalls).toBe(1);
+    expect(harness.fileTasks.submissions).toHaveLength(1);
+  });
+
+  test('Main 阻断证据不能被模型 agent_task 建议绕过', async () => {
+    const script = scriptedProvider({
+      type: 'text', text: '不执行。',
+      structured_output: { capabilityPlan: { kind: 'agent_task', preferredTool: 'powershell' } }
+    });
+    const harness = createHarness([{
+      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
+    }]);
+
+    await harness.coordinator.submit('不要执行“删除 a.txt”这句话');
+
+    expect(harness.events.some(event => event.type === 'capability_authorization_required')).toBe(false);
+    expect(harness.fileTasks.preparedGenerations).toHaveLength(0);
+    expect(harness.fileTasks.activationCalls).toBe(0);
+  });
   test('截图删除原句生成完整 delete_file 规划提示且不允许无根据澄清', async () => {
     const harness = createHarness([]);
 

@@ -27,6 +27,11 @@ export interface CapabilityTaskAdapterOptions {
     taskKind: CapabilityTaskKind;
     emit: (event: TaskEvent) => void;
   }): PreparedAgentTarget;
+  /** 仅创建 Provider/授权根指纹，不得构造 Agent 或公告工具。 */
+  createTargetSnapshot?(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+  }): PreparedCapabilityTarget;
 }
 
 type ActiveSubmission = {
@@ -66,6 +71,15 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     generation: string;
     taskKind: CapabilityTaskKind;
   }): Promise<PreparedCapabilityTarget> {
+    const target = await this.prepareSnapshot(input);
+    if (!this.agent) await this.activateTarget({ ...input, target });
+    return target;
+  }
+
+  async prepareSnapshot(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+  }): Promise<PreparedCapabilityTarget> {
     this.assertAvailable();
     if (this.active || this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
 
@@ -102,16 +116,37 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
         throw adapterError('FILE_AUTHORIZATION_REQUIRED');
       }
-      const ownedAgent = this.createOwnedAgent(owner, input.generation, input.taskKind);
+      const target = this.options.createTargetSnapshot === undefined
+        ? this.createOwnedAgent(owner, input.generation, input.taskKind).target
+        : this.options.createTargetSnapshot(input);
       this.assertOwned(owner);
-      this.active.target = ownedAgent.target;
-      return ownedAgent.target;
+      this.active.target = target;
+      return target;
     } catch (error) {
       if (this.active?.owner === owner) this.active = null;
       throw error;
     } finally {
       if (this.inFlightOwner === owner) this.inFlightOwner = null;
       if (this.preparingOwner === owner) this.preparingOwner = null;
+    }
+  }
+
+  async activateTarget(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+    target: PreparedCapabilityTarget;
+  }): Promise<void> {
+    const prepared = this.active;
+    if (!prepared || prepared.generation !== input.generation
+      || prepared.taskKind !== input.taskKind || prepared.target !== input.target) {
+      throw adapterError('FILE_TARGET_NOT_PREPARED');
+    }
+    if (this.agent) throw adapterError('TASK_ALREADY_ACTIVE');
+    const owned = this.createOwnedAgent(prepared.owner, input.generation, input.taskKind);
+    if (!sameTarget(owned.target, input.target)) {
+      await this.resetOwnedAgent(owned);
+      if (this.agent === owned) this.agent = null;
+      throw adapterError('FILE_TARGET_MISMATCH');
     }
   }
 
@@ -379,4 +414,11 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
 
 function adapterError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
+}
+
+function sameTarget(left: PreparedCapabilityTarget, right: PreparedCapabilityTarget): boolean {
+  return left.profileId === right.profileId
+    && left.providerIdentity === right.providerIdentity
+    && left.providerName === right.providerName
+    && left.capabilityRevision === right.capabilityRevision;
 }

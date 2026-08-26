@@ -48,6 +48,15 @@ export interface ConversationCapabilityTaskPort {
     generation: string;
     taskKind: CapabilityTaskKind;
   }): Promise<PreparedCapabilityTarget>;
+  prepareSnapshot(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+  }): Promise<PreparedCapabilityTarget>;
+  activateTarget(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+    target: PreparedCapabilityTarget;
+  }): Promise<void>;
   submit(input: {
     text: string;
     visibleHistory: readonly ModelMessage[];
@@ -78,6 +87,7 @@ type ConversationState =
   | { kind: 'awaiting_history_disclosure'; generation: string; requestId: string }
   | { kind: 'running_capability_task'; generation: string; taskKind: CapabilityTaskKind }
   | { kind: 'awaiting_capability_confirmation'; generation: string; taskKind: CapabilityTaskKind }
+  | { kind: 'awaiting_capability_authorization'; generation: string; requestId: string }
   | { kind: 'resetting'; generation: string }
   | { kind: 'closed' };
 
@@ -89,7 +99,17 @@ interface TurnContext {
   controller: AbortController;
   planningHint?: FilePlanningHint;
   continuationTarget?: PreparedCapabilityTarget;
+  modelEscalation?: 'allowed' | 'blocked';
 }
+
+type PendingCapabilityAuthorization = Readonly<{
+  requestId: string;
+  context: TurnContext;
+  taskKind: CapabilityTaskKind;
+  target: PreparedCapabilityTarget;
+  preferredTool: import('@myself/agent-core').AgentPlanningTool | null;
+  providerReplyText: string;
+}>;
 
 type PendingFileContinuation = Readonly<{
   generation: string;
@@ -134,6 +154,7 @@ export class ConversationCoordinator {
   private pendingDisclosure: PendingHistoryDisclosure | null = null;
   private activeCapabilityTurn: ActiveCapabilityTurn | null = null;
   private pendingFileContinuation: PendingFileContinuation | null = null;
+  private pendingCapabilityAuthorization: PendingCapabilityAuthorization | null = null;
   private closePromise: Promise<void> | null = null;
 
   constructor(private readonly options: ConversationCoordinatorOptions) {
@@ -203,6 +224,7 @@ export class ConversationCoordinator {
 
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
       const intent = capabilityIntentRouter.route(context.capabilityText);
+      if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
       if (intent.kind === 'unsupported_file_operation') {
         throw publicErrorForCode('FILE_COPY_UNSUPPORTED');
       }
@@ -282,6 +304,13 @@ export class ConversationCoordinator {
   }
 
   cancelActive(): void {
+    if (this.state.kind === 'awaiting_capability_authorization') {
+      this.pendingCapabilityAuthorization = null;
+      this.options.capabilityTasks.cancelActive();
+      this.state = { kind: 'idle' };
+      this.options.emit({ type: 'phase', phase: 'cancelled' });
+      return;
+    }
     if (
       this.state.kind === 'running_chat'
       || this.state.kind === 'preparing_capability_task'
@@ -321,6 +350,47 @@ export class ConversationCoordinator {
       if (this.state === releasedState) {
         this.options.emit({ type: 'phase', phase: 'cancelled' });
       }
+    }
+  }
+
+  async resolveCapabilityAuthorization(
+    requestId: string,
+    decision: 'confirm' | 'cancel'
+  ): Promise<void> {
+    const pending = this.pendingCapabilityAuthorization;
+    if (this.state.kind !== 'awaiting_capability_authorization'
+      || pending === null || pending.requestId !== requestId
+      || pending.context.generation !== this.generation) {
+      throw publicErrorForCode('ACTION_EXPIRED');
+    }
+    this.pendingCapabilityAuthorization = null;
+    if (decision === 'cancel') {
+      this.options.capabilityTasks.cancelActive();
+      this.options.emit({ type: 'message', role: 'assistant', text: pending.providerReplyText });
+      this.state = { kind: 'idle' };
+      this.options.emit({ type: 'phase', phase: 'cancelled' });
+      return;
+    }
+    this.state = {
+      kind: 'preparing_capability_task',
+      generation: pending.context.generation,
+      controller: pending.context.controller,
+      taskKind: pending.taskKind
+    };
+    try {
+      await this.options.capabilityTasks.activateTarget({
+        generation: pending.context.generation,
+        taskKind: pending.taskKind,
+        target: pending.target
+      });
+      const planningHint = preferredToolPlanningHint(pending.preferredTool);
+      if (planningHint !== undefined) pending.context.planningHint = planningHint;
+      await this.continuePreparedCapabilityTask(pending.context, pending.taskKind, pending.target);
+    } catch (error) {
+      const normalized = publicFileError(error);
+      this.state = { kind: 'idle' };
+      this.reportFailure(normalized);
+      throw normalized;
     }
   }
 
@@ -427,6 +497,7 @@ export class ConversationCoordinator {
     this.pendingDisclosure = null;
     this.activeCapabilityTurn = null;
     this.pendingFileContinuation = null;
+    this.pendingCapabilityAuthorization = null;
 
     const failures: unknown[] = [];
     try {
@@ -478,6 +549,7 @@ export class ConversationCoordinator {
     this.pendingDisclosure = null;
     this.activeCapabilityTurn = null;
     this.pendingFileContinuation = null;
+    this.pendingCapabilityAuthorization = null;
     const closing = Promise.resolve().then(async () => {
       const failures: unknown[] = [];
       for (const cleanup of [
@@ -536,6 +608,10 @@ export class ConversationCoordinator {
       }
     });
     if (!this.isRunning(context)) return;
+    if (context.modelEscalation === 'allowed' && reply.capabilityPlan?.kind === 'agent_task') {
+      await this.prepareModelCapabilityAuthorization(context, reply);
+      return;
+    }
     await this.options.behavior.completeUserPrompt({
       generation: context.generation,
       explicitDirective: context.explicitDirective,
@@ -634,6 +710,72 @@ export class ConversationCoordinator {
         generation: context.generation,
         requestId
       };
+      this.options.emit({
+        type: 'history_disclosure_required',
+        requestId: disclosure.requestId,
+        targetProviderName: disclosure.targetProviderName,
+        messageCount: disclosure.messageCount,
+        characterCount: disclosure.characterCount
+      });
+      return;
+    }
+    await this.submitCapabilityTask(context, taskKind, target, disclosure.messages);
+  }
+
+  /** 模型只能请求任务授权；Agent、工具表和本地端口均在用户确认后创建。 */
+  private async prepareModelCapabilityAuthorization(
+    context: TurnContext,
+    reply: Awaited<ReturnType<ConversationChatAdapter['respond']>>
+  ): Promise<void> {
+    if (reply.capabilityPlan?.kind !== 'agent_task') return;
+    const taskKind: CapabilityTaskKind = reply.capabilityPlan.preferredTool === 'powershell'
+      ? 'powershell'
+      : 'file';
+    const target = await this.options.capabilityTasks.prepareSnapshot({
+      generation: context.generation,
+      taskKind
+    });
+    if (!this.isRunning(context)) return;
+    const requestId = this.createId();
+    this.pendingCapabilityAuthorization = {
+      requestId,
+      context,
+      taskKind,
+      target,
+      preferredTool: reply.capabilityPlan.preferredTool,
+      providerReplyText: reply.text
+    };
+    this.state = {
+      kind: 'awaiting_capability_authorization',
+      generation: context.generation,
+      requestId
+    };
+    this.options.emit({
+      type: 'capability_authorization_required',
+      requestId,
+      capability: taskKind,
+      requestSummary: summarizeCapabilityRequest(context.text),
+      targetProviderName: target.providerName
+    });
+  }
+
+  private async continuePreparedCapabilityTask(
+    context: TurnContext,
+    taskKind: CapabilityTaskKind,
+    target: PreparedCapabilityTarget
+  ): Promise<void> {
+    const requestId = this.createId();
+    const disclosure = this.options.disclosureAdapter.prepare({
+      requestId,
+      targetProfileId: target.profileId,
+      targetProviderIdentity: target.providerIdentity,
+      targetProviderName: target.providerName,
+      history: this.options.history
+    });
+    if (!this.isRunning(context)) return;
+    if (disclosure.kind === 'confirmation_required') {
+      this.pendingDisclosure = { kind: 'capability_task', ...context, requestId, taskKind, target };
+      this.state = { kind: 'awaiting_history_disclosure', generation: context.generation, requestId };
       this.options.emit({
         type: 'history_disclosure_required',
         requestId: disclosure.requestId,
@@ -787,6 +929,17 @@ function normalizeUserText(input: unknown): string {
     throw publicErrorForCode('INPUT_INVALID');
   }
   return normalized;
+}
+
+function summarizeCapabilityRequest(text: string): string {
+  return Array.from(text.replace(/\s+/gu, ' ').trim()).slice(0, 240).join('');
+}
+
+function preferredToolPlanningHint(
+  tool: import('@myself/agent-core').AgentPlanningTool | null
+): FilePlanningHint | undefined {
+  if (tool === null || tool === 'powershell') return undefined;
+  return { operation: tool };
 }
 
 const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({

@@ -80,6 +80,14 @@ export function createMainConversationComposition<TPrivacy>(
     resolveCurrentSourceProvider: () => null
   });
   let preparedAgentSnapshot: MainConversationAgentSnapshot<TPrivacy> | null = null;
+  let preparedAgentTarget: Readonly<{
+    generation: string;
+    taskKind: CapabilityTaskKind;
+    selection: ModelSelection;
+    primaryProfile: ProviderProfileV2;
+    fallbackProfiles: readonly ProviderProfileV2[];
+    capabilityRevision: string;
+  }> | null = null;
   let activeAgentRootPath: string | null = null;
   let closePromise: Promise<void> | null = null;
   const assertProviderReady = options.assertProviderReady ?? (profile => {
@@ -145,16 +153,12 @@ export function createMainConversationComposition<TPrivacy>(
     emit: (event: TaskEvent) => void;
   }) => {
     const snapshot = preparedAgentSnapshot;
+    const descriptor = preparedAgentTarget;
     preparedAgentSnapshot = null;
-    if (!snapshot) throw settingsIncompleteError();
-    const selection = select(snapshot.providerSettings, 'agent');
-    const primaryProfile = selection.profile;
-    assertProviderReady(primaryProfile);
-    const fallbackProfiles = sameProviderAgentFallbacks(
-      snapshot.providerSettings,
-      selection,
-      options.catalog
-    );
+    preparedAgentTarget = null;
+    if (!snapshot || !descriptor || descriptor.generation !== input.generation
+      || descriptor.taskKind !== input.taskKind) throw settingsIncompleteError();
+    const { selection, primaryProfile, fallbackProfiles, capabilityRevision } = descriptor;
     activeAgentRootPath = snapshot.authorizedRootPath;
     rememberTarget(selection);
     return {
@@ -169,16 +173,48 @@ export function createMainConversationComposition<TPrivacy>(
       profileId: selection.disclosureTarget.profileId,
       providerIdentity: selection.disclosureTarget.providerIdentity,
       providerName: primaryProfile.displayName,
-      capabilityRevision: createHash('sha256').update(JSON.stringify({
-        taskKind: snapshot.taskKind,
-        authorizedRootPath: snapshot.authorizedRootPath,
-        providerSettings: snapshot.providerSettings
-      })).digest('hex')
+      capabilityRevision
     };
+  };
+
+  const createTargetSnapshot = (input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+  }) => {
+    const snapshot = preparedAgentSnapshot;
+    if (!snapshot || snapshot.taskKind !== input.taskKind) throw settingsIncompleteError();
+    const selection = select(snapshot.providerSettings, 'agent');
+    const primaryProfile = selection.profile;
+    assertProviderReady(primaryProfile);
+    const fallbackProfiles = sameProviderAgentFallbacks(
+      snapshot.providerSettings, selection, options.catalog
+    );
+    const capabilityRevision = createHash('sha256').update(JSON.stringify({
+      generation: input.generation,
+      taskKind: snapshot.taskKind,
+      authorizedRootPath: snapshot.authorizedRootPath,
+      providerSettings: snapshot.providerSettings
+    })).digest('hex');
+    preparedAgentTarget = Object.freeze({
+      generation: input.generation,
+      taskKind: input.taskKind,
+      selection,
+      primaryProfile,
+      fallbackProfiles,
+      capabilityRevision
+    });
+    rememberTarget(selection);
+    return Object.freeze({
+      profileId: selection.disclosureTarget.profileId,
+      providerIdentity: selection.disclosureTarget.providerIdentity,
+      providerName: primaryProfile.displayName,
+      capabilityRevision
+    });
   };
 
   const capabilityTasks = new CapabilityTaskAdapter({
     getAuthorizedRootPath,
+    createTargetSnapshot,
     createAgentTarget
   });
   const coordinator = new ConversationCoordinator({
@@ -199,6 +235,7 @@ export function createMainConversationComposition<TPrivacy>(
     capabilityTasks,
     async resetForConfigurationChange(): Promise<void> {
       preparedAgentSnapshot = null;
+      preparedAgentTarget = null;
       activeAgentRootPath = null;
       await coordinator.resetConversation();
     },

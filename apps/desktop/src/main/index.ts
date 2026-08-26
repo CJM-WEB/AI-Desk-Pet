@@ -1061,6 +1061,10 @@ async function createApplicationWindows(
       requestId: string,
       decision: 'share_once' | 'current_message_only'
     ) => conversationCoordinator.resolveHistoryDisclosure(requestId, decision),
+    resolveCapabilityAuthorization: (
+      requestId: string,
+      decision: 'confirm' | 'cancel'
+    ) => conversationCoordinator.resolveCapabilityAuthorization(requestId, decision),
     resetConversation: () => conversationCoordinator.resetConversation()
   };
   registerAgentIpc(ipcMain, conversationIpcService, getCurrentChatWebContents);

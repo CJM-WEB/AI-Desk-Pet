@@ -104,6 +104,10 @@ const historyDisclosureSchema = z.object({
   requestId: z.string().trim().min(1).max(128),
   decision: z.enum(['share_once', 'current_message_only'])
 }).strict();
+const capabilityAuthorizationSchema = z.object({
+  requestId: z.string().trim().min(1).max(128),
+  decision: z.enum(['confirm', 'cancel'])
+}).strict();
 const emptyArgumentsSchema = z.tuple([]);
 
 export interface AgentIpcService {
@@ -114,6 +118,10 @@ export interface AgentIpcService {
   resolveHistoryDisclosure(
     requestId: string,
     decision: HistoryDisclosureDecision
+  ): Promise<void>;
+  resolveCapabilityAuthorization(
+    requestId: string,
+    decision: 'confirm' | 'cancel'
   ): Promise<void>;
   resetConversation(): Promise<void>;
 }
@@ -170,6 +178,11 @@ export function registerAgentIpc(
     assertCurrentChatSender(event, getCurrentChatWebContents);
     const { requestId, decision } = historyDisclosureSchema.parse(raw);
     await service.resolveHistoryDisclosure(requestId, decision);
+  });
+  replaceHandler(ipcMain, ipcChannels.capabilityAuthorizationResolve, async (event, raw) => {
+    assertCurrentChatSender(event, getCurrentChatWebContents);
+    const { requestId, decision } = capabilityAuthorizationSchema.parse(raw);
+    await service.resolveCapabilityAuthorization(requestId, decision);
   });
   replaceHandler(ipcMain, ipcChannels.conversationReset, async (event, ...args) => {
     assertCurrentChatSender(event, getCurrentChatWebContents);

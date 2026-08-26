@@ -144,6 +144,10 @@ const api: MyselfApi = {
     ipcChannels.conversationDisclosureResolve,
     { requestId, decision }
   ),
+  resolveCapabilityAuthorization: (requestId, decision) => ipcRenderer.invoke(
+    ipcChannels.capabilityAuthorizationResolve,
+    { requestId, decision }
+  ),
   onTaskEvent: (listener: (event: TaskEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
       const parsed = taskEventSchema.safeParse(payload);

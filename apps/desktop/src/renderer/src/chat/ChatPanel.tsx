@@ -5,6 +5,7 @@ import type { LocalModelPublicStatus } from '../../../shared/local-model-ipc';
 import { localModelReasonText } from '../local-model-status';
 import { ConfirmationCard } from './ConfirmationCard';
 import { HistoryDisclosureCard } from './HistoryDisclosureCard';
+import { CapabilityAuthorizationCard } from './CapabilityAuthorizationCard';
 import { taskStore, useTaskStore } from '../stores/task-store';
 
 const phaseLabels: Record<TaskPhase, string> = {
@@ -54,6 +55,9 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
   const messages = useTaskStore(state => state.messages);
   const pendingAction = useTaskStore(state => state.pendingAction);
   const pendingHistoryDisclosure = useTaskStore(state => state.pendingHistoryDisclosure);
+  const pendingCapabilityAuthorization = useTaskStore(
+    state => state.pendingCapabilityAuthorization
+  );
   const [text, setText] = useState('');
   const [localModelStatus, setLocalModelStatus] = useState(initialLocalModelStatus);
   const [actionBusyOwner, setActionBusyOwner] = useState<RevisionOwner | null>(null);
@@ -81,6 +85,7 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
     || localModelBlocking
     || Boolean(pendingAction)
     || Boolean(pendingHistoryDisclosure)
+    || Boolean(pendingCapabilityAuthorization)
     || anyInteractionBusy;
 
   const currentRevision = (): number => taskStore.getState().conversationRevision;
@@ -182,6 +187,40 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
         setInteractionErrorState({
           revision: owner.revision,
           message: '未能处理文件操作，请重试。'
+        });
+      }
+    } finally {
+      if (isCurrentOwner(owner, actionOwner.current)) {
+        actionOwner.current = null;
+        setActionBusyOwner(null);
+      }
+    }
+  };
+
+  const resolveCapabilityAuthorization = async (
+    decision: 'confirm' | 'cancel'
+  ): Promise<void> => {
+    if (!pendingCapabilityAuthorization || hasCurrentInteractionOwner()) return;
+    const owner: RevisionOwner = {
+      revision: currentRevision(), token: Symbol('capability-authorization')
+    };
+    actionOwner.current = owner;
+    setActionBusyOwner(owner);
+    try {
+      await api.resolveCapabilityAuthorization(
+        pendingCapabilityAuthorization.requestId,
+        decision
+      );
+      if (isCurrentOwner(owner, actionOwner.current)) {
+        taskStore.getState().completeCapabilityAuthorization(
+          pendingCapabilityAuthorization.requestId
+        );
+      }
+    } catch {
+      if (isCurrentOwner(owner, actionOwner.current)) {
+        setInteractionErrorState({
+          revision: owner.revision,
+          message: '未能处理本地任务授权，请重试。'
         });
       }
     } finally {
@@ -328,6 +367,14 @@ export function ChatPanel({ api = window.myself }: { api?: MyselfApi }) {
             disabled={resetBusy || actionBusy}
             onShareOnce={() => void resolveDisclosure('share_once')}
             onCurrentMessageOnly={() => void resolveDisclosure('current_message_only')}
+          />
+        ) : null}
+        {pendingCapabilityAuthorization ? (
+          <CapabilityAuthorizationCard
+            authorization={pendingCapabilityAuthorization}
+            busy={anyInteractionBusy}
+            onConfirm={() => void resolveCapabilityAuthorization('confirm')}
+            onCancel={() => void resolveCapabilityAuthorization('cancel')}
           />
         ) : null}
         {pendingAction ? (

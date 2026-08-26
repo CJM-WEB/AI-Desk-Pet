@@ -108,6 +108,10 @@ export interface MyselfApi extends PetWindowInteractionApi {
     requestId: string,
     decision: HistoryDisclosureDecision
   ): Promise<void>;
+  resolveCapabilityAuthorization(
+    requestId: string,
+    decision: 'confirm' | 'cancel'
+  ): Promise<void>;
   onTaskEvent(listener: (event: TaskEvent) => void): () => void;
   onLocalModelStatus(listener: (status: LocalModelPublicStatus) => void): () => void;
   listCharacters(): Promise<CharacterSummaryDto[]>;

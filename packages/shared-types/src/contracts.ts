@@ -47,6 +47,18 @@ export type HistoryDisclosureRequiredEvent = z.infer<
   typeof historyDisclosureRequiredEventSchema
 >;
 
+/** 模型补充识别的本地任务必须先经过独立授权，不能伪装成具体工具确认。 */
+export const capabilityAuthorizationRequiredEventSchema = z.object({
+  type: z.literal('capability_authorization_required'),
+  requestId: z.string().min(1).max(128),
+  capability: z.enum(['file', 'powershell']),
+  requestSummary: z.string().trim().min(1).max(240),
+  targetProviderName: z.string().min(1).max(128)
+}).strict();
+export type CapabilityAuthorizationRequiredEvent = z.infer<
+  typeof capabilityAuthorizationRequiredEventSchema
+>;
+
 export const conversationResetEventSchema = z.object({
   type: z.literal('conversation_reset'),
   generation: z.string().min(1).max(128)
@@ -307,6 +319,7 @@ export const taskEventSchema = z.discriminatedUnion('type', [
     carrying: z.boolean()
   }).strict(),
   historyDisclosureRequiredEventSchema,
+  capabilityAuthorizationRequiredEventSchema,
   conversationResetEventSchema
 ]);
 export type TaskEvent = z.infer<typeof taskEventSchema>;

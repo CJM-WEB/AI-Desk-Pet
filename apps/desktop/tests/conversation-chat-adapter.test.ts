@@ -62,7 +62,10 @@ describe('ConversationChatAdapter', () => {
       responseContract: {
         type: 'json_object',
         name: 'character_chat',
-        jsonSchema: characterChatResponseJsonSchema,
+        jsonSchema: expect.objectContaining({
+          required: expect.arrayContaining(['capabilityPlan']),
+          properties: expect.objectContaining({ capabilityPlan: expect.any(Object) })
+        }),
         textField: 'text',
         allowPlainTextFallback: true,
         validateStructuredOutput: expect.any(Function)
@@ -71,16 +74,53 @@ describe('ConversationChatAdapter', () => {
     expect(取得请求(provider).messages[0]?.content).toContain('用户使用的语言');
     expect(取得请求(provider).messages[0]?.content).toContain('可见上下文');
     expect(取得请求(provider).messages[0]?.content).toContain('尚未执行的文件操作');
+    expect(取得请求(provider).messages[0]?.content).toContain('capabilityPlan');
     expect(取得请求(provider).messages[0]?.content).toContain('"characterName":"小橘"');
     expect(取得请求(provider).messages[0]?.content).toContain('"movementMode":2');
     expect(取得请求(provider).messages[0]?.content).toContain('"proactivityMode":"assistive"');
     expect(取得请求(provider).messages[0]?.content).toContain('"recentActions":["挥手"]');
     expect(取得请求(provider).messages[0]?.content).toContain('json');
     expect(取得请求(provider).messages[0]?.content).toContain(
-      '{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","motionPlan":{"mode":"none","durationSeconds":null,"target":"current","distance":"none"},"behaviorPlan":{"kind":"none","emotion":"calm"}}'
+      '{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","motionPlan":{"mode":"none","durationSeconds":null,"target":"current","distance":"none"},"behaviorPlan":{"kind":"none","emotion":"calm"},"capabilityPlan":{"kind":"chat"}}'
     );
     expect(取得请求(provider).messages[0]?.content).not.toContain('路由字段');
     expect(取得请求(provider).messages[0]?.content).not.toContain('禁止 Markdown');
+  });
+
+  test('Provider 与本地模型共用严格能力计划且聊天阶段始终不公告工具', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '需要进入本地任务。',
+      structured_output: {
+        capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+      }
+    });
+
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [],
+      text: '请整理当前目录并生成摘要',
+      behaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toMatchObject({
+      capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+    });
+    expect(取得请求(provider)).toMatchObject({ tools: [], toolChoice: 'none' });
+  });
+
+  test('非法能力计划只保留正文且绝不升级为本地任务', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '普通回复。',
+      structured_output: {
+        capabilityPlan: {
+          kind: 'agent_task', preferredTool: 'powershell', command: 'Remove-Item -Recurse C:\\'
+        }
+      }
+    });
+
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [], text: '讨论自动化方案', behaviorContext, signal: new AbortController().signal
+    })).resolves.toEqual({ text: '普通回复。' });
   });
 
   test('原样返回中文、Markdown、代码块和已归一化情绪', async () => {

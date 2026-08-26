@@ -21,6 +21,7 @@ function createService() {
     cancelActive: vi.fn(() => undefined),
     resolveFileAction: vi.fn(async () => undefined),
     resolveHistoryDisclosure: vi.fn(async () => undefined),
+    resolveCapabilityAuthorization: vi.fn(async () => undefined),
     resetConversation: vi.fn(async () => undefined)
   };
 }
@@ -59,6 +60,19 @@ const agentMutatingInvocations = [
 ] as const;
 
 describe('Agent IPC', () => {
+  test('任务级授权使用独立通道和严格请求字段', async () => {
+    const fixture = createAgentIpcFixture();
+    const handler = fixture.handlers.get(ipcChannels.capabilityAuthorizationResolve)!;
+
+    await handler(fixture.currentEvent, { requestId: 'cap-1', decision: 'confirm' });
+    expect(fixture.service.resolveCapabilityAuthorization).toHaveBeenCalledWith(
+      'cap-1', 'confirm'
+    );
+    await expect(handler(
+      fixture.currentEvent,
+      { requestId: 'cap-1', decision: 'confirm', actionId: 'forged' }
+    )).rejects.toThrow();
+  });
   test('聊天 IPC 注册不获得桌宠 viewport 通道', () => {
     const { handlers } = createAgentIpcFixture();
     expect(handlers.has(ipcChannels.petViewportCommit)).toBe(false);
