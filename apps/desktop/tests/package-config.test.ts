@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import ts from 'typescript';
 import packageJson from '../package.json';
 
@@ -28,6 +28,26 @@ function readSection(text: string, key: string): string {
 }
 
 describe('electron-builder 配置', () => {
+  test('Git 元数据不可用时普通构建使用不含路径的来源归类而不失败', async () => {
+    vi.resetModules();
+    vi.doMock('node:child_process', async importOriginal => ({
+      ...await importOriginal<typeof import('node:child_process')>(),
+      execFileSync: () => { throw new Error('测试模拟无 Git 元数据'); }
+    }));
+    try {
+      const config = (await import('../electron.vite.config')).default;
+      const define = (config.main as { define?: Record<string, string> }).define;
+
+      expect(JSON.parse(String(define?.['__MYSELF_BUILD_IDENTITY__']))).toEqual({
+        commitShortHash: 'unavailable',
+        buildRootCategory: 'source_archive'
+      });
+    } finally {
+      vi.doUnmock('node:child_process');
+      vi.resetModules();
+    }
+  });
+
   test('桌面端包声明安装包所需版本和描述', () => {
     expect(packageJson.version).toBe('0.1.0-alpha.1');
     expect(packageJson.description).toBe('AI Pet 第一阶段 Windows AI 桌宠 Alpha');

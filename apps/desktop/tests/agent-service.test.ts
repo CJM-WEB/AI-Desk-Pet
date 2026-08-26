@@ -159,6 +159,18 @@ function moveAction(): VerifiedWriteAction {
   });
 }
 
+function patchAction(targetRelativePath = 'result.txt'): VerifiedWriteAction {
+  return Object.freeze({
+    operation: 'apply_patch' as const,
+    authorizationGeneration: 0,
+    targetRelativePath,
+    addedLines: 1,
+    removedLines: 1,
+    diffPreview: '-旧\n+新',
+    previewTruncated: false
+  });
+}
+
 function createHarness(
   provider: ModelProvider,
   fileOverrides: Partial<AgentFileTools> = {},
@@ -1144,6 +1156,299 @@ describe('AgentService', () => {
     ]);
   });
 
+  test.each([
+    ['list_files', { operation: 'list_files' }],
+    ['read_file', { operation: 'read_file' }],
+    ['glob_files', { operation: 'glob_files' }],
+    ['grep_files', { operation: 'grep_files' }]
+  ] as const)('文件分类未授权时 %s 返回宿主固定设置提示', async (_toolName, planningHint) => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: `disclosure-${_toolName}`,
+        toolName: CAPABILITY_CLARIFICATION_TOOL_NAME,
+        arguments: { missingField: 'file_data_authorization' }
+      }
+    }]);
+    const { events, fileTools, service } = createHarness(provider, {}, false);
+
+    await service.submitFileTask({
+      text: '执行需要读取文件数据的操作',
+      visibleHistory: [],
+      planningHint
+    });
+
+    expect(events).toEqual([
+      { type: 'phase', phase: 'thinking' },
+      { type: 'message', role: 'assistant', text: '请先开启文件数据授权。' },
+      { type: 'phase', phase: 'success' }
+    ]);
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      CAPABILITY_CLARIFICATION_TOOL_NAME
+    ]);
+    expect(fileTools.executeRead).not.toHaveBeenCalled();
+    expect(fileTools.preview).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      operation: 'create_file' as const,
+      publicName: 'builtin.files.create_file',
+      arguments: { relativePath: 'created.txt', content: '正文' },
+      action: verifiedAction()
+    },
+    {
+      operation: 'create_directory' as const,
+      publicName: 'builtin.files.create_directory',
+      arguments: { relativePath: 'created-directory' },
+      action: Object.freeze({
+        operation: 'create_directory' as const,
+        authorizationGeneration: 0,
+        targetRelativePath: 'created-directory'
+      })
+    },
+    {
+      operation: 'edit_file' as const,
+      publicName: 'builtin.files.edit_file',
+      arguments: { relativePath: 'result.txt', oldString: '旧', newString: '新' },
+      action: Object.freeze({
+        operation: 'apply_patch' as const,
+        authorizationGeneration: 0,
+        targetRelativePath: 'result.txt',
+        addedLines: 1,
+        removedLines: 1,
+        diffPreview: '-旧\n+新',
+        previewTruncated: false
+      })
+    },
+    {
+      operation: 'move_file' as const,
+      publicName: 'builtin.files.move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: 'archive'
+      },
+      action: moveAction()
+    },
+    {
+      operation: 'delete_file' as const,
+      publicName: 'builtin.files.delete_file',
+      arguments: { relativePath: 'archive/old.txt' },
+      action: recycleAction()
+    }
+  ])('文件分类未授权时 $operation 仍产生逐次确认并回注真实工具名', async testCase => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: `write-${testCase.operation}`,
+        toolName: testCase.publicName,
+        arguments: testCase.arguments
+      }
+    }, { type: 'text', text: `${testCase.operation} 已完成` }]);
+    const { events, fileTools, service } = createHarness(provider, {
+      preview: vi.fn(async () => testCase.action)
+    }, false);
+
+    await service.submitFileTask({
+      text: `执行 ${testCase.operation}`,
+      visibleHistory: [],
+      planningHint: { operation: testCase.operation }
+    });
+    const pendingEvent = events.find(event => event.type === 'pending_action');
+    if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少写操作确认卡');
+    expect(fileTools.executeWrite).not.toHaveBeenCalled();
+
+    await service.confirm(pendingEvent.action.actionId);
+
+    expect(fileTools.executeWrite).toHaveBeenCalledWith(testCase.action);
+    expect(JSON.parse((provider.requests[1]?.messages.at(-1) as Extract<ModelMessage, {
+      role: 'tool';
+    }>).content)).toMatchObject({
+      ok: true,
+      toolName: testCase.operation
+    });
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test.each([
+    {
+      operation: 'read_file' as const,
+      publicName: 'builtin.files.read_file',
+      internalName: 'read_file',
+      arguments: { relativePath: 'notes.txt' }
+    },
+    {
+      operation: 'glob_files' as const,
+      publicName: 'builtin.files.glob_files',
+      internalName: 'glob_files',
+      arguments: { relativePath: '.', pattern: '**/*.txt' }
+    },
+    {
+      operation: 'grep_files' as const,
+      publicName: 'builtin.files.grep_files',
+      internalName: 'grep_files',
+      arguments: { relativePath: '.', pattern: 'needle' }
+    }
+  ])('$publicName 成功时以 $internalName 执行并回注同名事实', async testCase => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: `read-${testCase.internalName}`,
+        toolName: testCase.publicName,
+        arguments: testCase.arguments
+      }
+    }, { type: 'text', text: `${testCase.internalName} 已完成` }]);
+    const executeRead = vi.fn(async () => ({
+      toolName: testCase.internalName,
+      relativePath: '.',
+      truncated: false
+    }));
+    const { service } = createHarness(provider, { executeRead });
+
+    await service.submitFileTask({
+      text: `执行 ${testCase.operation}`,
+      visibleHistory: [],
+      planningHint: { operation: testCase.operation }
+    });
+
+    expect(executeRead).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: testCase.internalName
+    }));
+    expect(JSON.parse((provider.requests[1]?.messages.at(-1) as Extract<ModelMessage, {
+      role: 'tool';
+    }>).content)).toMatchObject({ toolName: testCase.internalName });
+  });
+
+  test.each([
+    {
+      operation: 'read_file' as const,
+      publicName: 'builtin.files.read_file',
+      internalName: 'read_file',
+      arguments: { relativePath: 'missing.txt' },
+      action: null
+    },
+    {
+      operation: 'glob_files' as const,
+      publicName: 'builtin.files.glob_files',
+      internalName: 'glob_files',
+      arguments: { relativePath: '.', pattern: '**/*.txt' },
+      action: null
+    },
+    {
+      operation: 'grep_files' as const,
+      publicName: 'builtin.files.grep_files',
+      internalName: 'grep_files',
+      arguments: { relativePath: '.', pattern: 'needle' },
+      action: null
+    },
+    {
+      operation: 'create_file' as const,
+      publicName: 'builtin.files.create_file',
+      internalName: 'create_file',
+      arguments: { relativePath: 'result.txt', content: '正文' },
+      action: verifiedAction()
+    },
+    {
+      operation: 'edit_file' as const,
+      publicName: 'builtin.files.edit_file',
+      internalName: 'edit_file',
+      arguments: { relativePath: 'result.txt', oldString: '旧', newString: '新' },
+      action: patchAction()
+    },
+    {
+      operation: 'apply_patch' as const,
+      publicName: 'builtin.files.apply_patch',
+      internalName: 'apply_patch',
+      arguments: {
+        relativePath: 'result.txt',
+        patch: '@@ -1 +1 @@\n-旧\n+新\n'
+      },
+      action: patchAction()
+    },
+    {
+      operation: 'move_file' as const,
+      publicName: 'builtin.files.move_file',
+      internalName: 'move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source.txt',
+        targetDirectoryRelativePath: 'archive'
+      },
+      action: moveAction()
+    },
+    {
+      operation: 'delete_file' as const,
+      publicName: 'builtin.files.delete_file',
+      internalName: 'delete_file',
+      arguments: { relativePath: 'archive/old.txt' },
+      action: recycleAction()
+    }
+  ])('$publicName 失败时也以 $internalName 回注且不得公开伪成功', async testCase => {
+    const provider = new ScriptedProvider([{
+      type: 'tool_request',
+      request: {
+        requestId: `failure-${testCase.internalName}`,
+        toolName: testCase.publicName,
+        arguments: testCase.arguments
+      }
+    }, { type: 'text', text: '模型伪称操作成功' }]);
+    const fileFailure = new FileToolError('ENTRY_NOT_FOUND', 'C:\\private\\missing.txt');
+    const { events, service } = createHarness(provider, {
+      executeRead: vi.fn(async () => { throw fileFailure; }),
+      preview: vi.fn(async () => {
+        if (testCase.action === null) throw new Error('只读测试不应预览');
+        return testCase.action;
+      }),
+      executeWrite: vi.fn(async () => { throw fileFailure; })
+    });
+
+    await service.submitFileTask({
+      text: `执行 ${testCase.operation}`,
+      visibleHistory: [],
+      planningHint: { operation: testCase.operation }
+    });
+    const pendingEvent = events.find(event => event.type === 'pending_action');
+    if (testCase.action !== null) {
+      if (!pendingEvent || pendingEvent.type !== 'pending_action') throw new Error('缺少失败写操作确认卡');
+      await service.confirm(pendingEvent.action.actionId);
+    }
+
+    expect(JSON.parse((provider.requests[1]?.messages.at(-1) as Extract<ModelMessage, {
+      role: 'tool';
+    }>).content)).toEqual({
+      ok: false,
+      toolName: testCase.internalName,
+      code: 'ENTRY_NOT_FOUND'
+    });
+    expect(events).not.toContainEqual({
+      type: 'message', role: 'assistant', text: '模型伪称操作成功'
+    });
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+  });
+
+  test('公开工具名与本轮规划工具不一致时在生成确认卡前稳定拒绝', async () => {
+    const mismatchedRequest: ModelResponse = {
+      type: 'tool_request',
+      request: {
+        requestId: 'mismatched-write',
+        toolName: 'builtin.files.create_file',
+        arguments: { relativePath: 'wrong.txt', content: '不得写入' }
+      }
+    };
+    const provider = new ScriptedProvider([mismatchedRequest, mismatchedRequest]);
+    const { events, fileTools, service } = createHarness(provider);
+
+    await expect(service.submitFileTask({
+      text: '精确修改 result.txt',
+      visibleHistory: [],
+      planningHint: { operation: 'edit_file' }
+    })).rejects.toMatchObject({ code: 'CAPABILITY_PLAN_PROTOCOL_INVALID' });
+
+    expect(fileTools.preview).not.toHaveBeenCalled();
+    expect(fileTools.executeWrite).not.toHaveBeenCalled();
+    expect(events.some(event => event.type === 'pending_action')).toBe(false);
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+  });
+
   test('文件分类未授权时下一任务取消旧确认后可使用新的结构化写请求', async () => {
     const provider = new ScriptedProvider([
       {
@@ -1690,6 +1995,62 @@ describe('AgentService', () => {
       content: '{"ok":false,"toolName":"create_file","code":"TARGET_EXISTS"}'
     }));
     expect(events).toContainEqual(expect.objectContaining({ type: 'error', code: 'TARGET_EXISTS' }));
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
+  test('失败任务结束后同一 AgentService 的全新创建任务可确认成功', async () => {
+    const provider = new ScriptedProvider([
+      writeResponse(),
+      { type: 'text', text: '旧任务不应伪装成功' },
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'new-task-create',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'available.txt', content: '新正文' }
+        }
+      },
+      { type: 'text', text: 'available.txt 已创建' }
+    ]);
+    const availableAction = Object.freeze({
+      ...verifiedAction(),
+      targetRelativePath: 'available.txt',
+      contentCharacters: 3,
+      contentPreview: '新正文'
+    });
+    const { events, fileTools, service } = createHarness(provider, {
+      preview: vi.fn()
+        .mockResolvedValueOnce(verifiedAction())
+        .mockResolvedValueOnce(availableAction),
+      executeWrite: vi.fn()
+        .mockRejectedValueOnce(new FileToolError('TARGET_EXISTS', 'C:\\private\\result.txt'))
+        .mockResolvedValueOnce(undefined)
+    });
+
+    await service.submitFileTask({
+      text: '创建已存在的 result.txt',
+      visibleHistory: [],
+      planningHint: { operation: 'create_file' }
+    });
+    const firstPending = events.find(event => event.type === 'pending_action');
+    if (!firstPending || firstPending.type !== 'pending_action') throw new Error('缺少失败任务确认卡');
+    await service.confirm(firstPending.action.actionId);
+    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+
+    await service.submitFileTask({
+      text: '创建新的 available.txt',
+      visibleHistory: [],
+      planningHint: { operation: 'create_file' }
+    });
+    const secondPending = events.filter(event => event.type === 'pending_action').at(-1);
+    if (!secondPending || secondPending.type !== 'pending_action') throw new Error('缺少新任务确认卡');
+    expect(fileTools.executeWrite).toHaveBeenCalledTimes(1);
+    await service.confirm(secondPending.action.actionId);
+
+    expect(fileTools.executeWrite).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual({
+      type: 'message', role: 'assistant', text: 'available.txt 已创建'
+    });
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 

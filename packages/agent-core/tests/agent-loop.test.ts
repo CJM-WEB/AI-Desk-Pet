@@ -603,6 +603,63 @@ describe('AgentLoop', () => {
     expect(finalEvents.at(-1)).toEqual({ type: 'phase', phase: 'success' });
   });
 
+  test('上一任务写失败不会污染同一 AgentLoop 的全新任务', async () => {
+    const loop = new AgentLoop();
+    const failedProvider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'failed-task-create',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'occupied.txt' }
+        }
+      },
+      { type: 'text', text: '旧任务不应伪装成功。' }
+    ]);
+    const failedContext = {
+      ...context(failedProvider),
+      protocol: 'capability_planner' as const
+    };
+    const failedRun = await collect(loop.run('创建已存在文件', failedContext));
+    const failedRequest = failedRun.find(event => event.type === 'write_request');
+    if (!failedRequest || failedRequest.type !== 'write_request') throw new Error('缺少失败任务确认');
+
+    const failedFinal = await collect(loop.resume(failedRequest.continuationToken, {
+      ok: false,
+      toolName: 'create_file',
+      code: 'TARGET_EXISTS'
+    }, failedContext));
+    expect(failedFinal.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+
+    const successfulProvider = new ScriptedProvider([
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'new-task-create',
+          toolName: 'builtin.files.create_file',
+          arguments: { relativePath: 'available.txt' }
+        }
+      },
+      { type: 'text', text: '新任务已创建文件。' }
+    ]);
+    const successfulContext = {
+      ...context(successfulProvider),
+      protocol: 'capability_planner' as const
+    };
+    const successfulRun = await collect(loop.run('创建新文件', successfulContext));
+    const successfulRequest = successfulRun.find(event => event.type === 'write_request');
+    if (!successfulRequest || successfulRequest.type !== 'write_request') throw new Error('缺少新任务确认');
+
+    const successfulFinal = await collect(loop.resume(successfulRequest.continuationToken, {
+      ok: true,
+      toolName: 'create_file',
+      targetRelativePath: 'available.txt'
+    }, successfulContext));
+
+    expect(successfulFinal).toContainEqual({ type: 'message', text: '新任务已创建文件。' });
+    expect(successfulFinal.at(-1)).toEqual({ type: 'phase', phase: 'success' });
+  });
+
   test('创建成功后移动成功保持合法多步骤链为成功', async () => {
     const provider = new ScriptedProvider([
       {
