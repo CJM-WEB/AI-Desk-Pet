@@ -265,7 +265,7 @@ git commit -m "fix(behavior): 以单一三态控制驱动真实运动"
 
 ### 任务 4：Provider、本地模型与 Electron 纵向验收
 
-**实际状态：** 部分完成。Provider 契约和 Electron E2E 已通过；2026-08-27 正式 CPU runner 退出码为 `0`，耗时 `490.284` 秒且完整矩阵通过。Vulkan 重跑未执行，真实动画观感待用户人工确认；任务专项最终验收记录待任务 5 统一收口。
+**实际状态：** 已完成自动化、真实 Electron 与 CPU/GGUF 范围。Vulkan 重跑和真实动画观感仍明确为待验收，不计入通过范围；专项验收见 `docs/operations/2026-08-27-ai-pet-structured-control-repair-acceptance.md`。
 
 **依赖：** 任务 2、3。
 
@@ -289,17 +289,19 @@ OpenAI-compatible、Anthropic、Gemini 与 LocalModelProvider 均验证控制 Sc
 
 只修改 Provider 序列化或生产组合中实际失败的边界，不重写已通过的 Adapter。
 
-- [ ] **步骤 4：运行分层 GREEN**
+- [x] **步骤 4：运行分层 GREEN**
 
 ```powershell
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/provider-contract.test.ts tests/local-model-provider.test.ts
 pnpm.cmd test:security
 pnpm.cmd test:integration
 pnpm.cmd test:e2e:desktop
-node apps/desktop/scripts/run-local-model-acceptance.mjs --backend vulkan
+node apps/desktop/scripts/run-local-model-acceptance.mjs --backend cpu
 ```
 
-- [ ] **步骤 5：记录实际结果并提交**
+CPU 正式 runner 退出码为 `0`；改造后的 Vulkan 重跑未执行并保留为待验收项。完整 Electron E2E 最终为 77 通过、1 跳过、0 失败。
+
+- [x] **步骤 5：记录实际结果并提交**
 
 验收记录必须区分自动通过、真实本地模型通过、待用户人工确认和失败；不得把未执行门禁写成通过。
 
@@ -310,7 +312,7 @@ git commit -m "test(desktop): 验收统一控制与本地Agent链"
 
 ### 任务 5：最终复审、完整门禁与实际目录同步
 
-**实际状态：** 进行中。旧路径减法和首轮双轴复审反馈已处理；修改后最终完整门禁、定向复审、主目录同步与生产构建仍待执行。真实动画观感保持“待用户人工确认”。
+**实际状态：** 代码、自动化、真实 Electron、CPU/GGUF 与独立复审已完成；专项验收记录已创建。实际目录 fast-forward 与同步后构建在步骤 5 执行。真实动画观感保持“待用户人工确认”。
 
 **文件：**
 
@@ -321,7 +323,7 @@ git commit -m "test(desktop): 验收统一控制与本地Agent链"
 
 确认固定语序执行结构、复制提前失败、文件/PowerShell 互斥 Registry、stop/resume 双写入口和错误提示旧分支均已按规格删除。
 
-- [ ] **步骤 2：运行完整门禁**
+- [x] **步骤 2：运行完整门禁**
 
 ```powershell
 pnpm.cmd typecheck
@@ -335,11 +337,11 @@ git diff --check
 
 若默认并发门禁受资源争用失败，必须记录原命令结果，并使用同一测试集合单 worker 复核；不得把替代命令写成原命令通过。
 
-- [ ] **步骤 3：双轴最终代码复审**
+- [x] **步骤 3：双轴最终代码复审**
 
 由独立子智能体分别检查规格符合性和仓库标准。Critical 或 Important 必须修复并重新定向复审；不接受仅凭实现者报告结案。
 
-- [ ] **步骤 4：提交最终验收记录**
+- [x] **步骤 4：提交最终验收记录**
 
 ```powershell
 git add docs/operations/2026-08-27-ai-pet-structured-control-repair-acceptance.md docs/superpowers/plans/2026-08-27-ai-pet-structured-control-repair.md
