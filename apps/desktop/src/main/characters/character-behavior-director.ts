@@ -656,8 +656,7 @@ export class CharacterBehaviorDirector {
     return !this.active || SOURCE_PRIORITY[source] > SOURCE_PRIORITY[this.active.source];
   }
 
-  /** true→true 没有设置边沿时也必须终止本轮临时运动；失败保存仍保持零动作变更。 */
-  /** 取消只撤销当前轮的迟到设置和待提交计划，不伪造可信任务终态。 */
+  /** 取消使当前轮次失效并清空待提交计划，不伪造可信任务终态。 */
   cancelActive(): void {
     if (this.closed) return;
     this.turnEpoch += 1;
@@ -747,29 +746,6 @@ export class CharacterBehaviorDirector {
 
   private publishUnavailableNotice(): void {
     this.options.publishNotice?.(ACTION_UNAVAILABLE_NOTICE);
-  }
-
-  private requestMotionBehavior(
-    motion: Exclude<CharacterMotionIntent, { kind: 'return-visible' }>,
-    source: Extract<BehaviorPlanSource, 'explicit' | 'chat'>
-  ): CharacterBehaviorAuthorization {
-    if (motion.kind === 'wander' && motion.scope === 'work_area') {
-      this.requestMotion({
-        mode: 'once',
-        target: 'random_work_area',
-        distance: motion.distance ?? 'medium'
-      }, source);
-      return NONE;
-    }
-    const plan: CharacterBehaviorPlan = motion.kind === 'relative'
-      ? { kind: 'move', direction: motion.direction, distance: motion.distance }
-      : motion.kind === 'region'
-        ? { kind: 'move_region', region: motion.region }
-        : {
-            kind: 'play',
-            target: { kind: 'semantic', semantic: 'move' }
-          };
-    return this.requestBehaviorPlan(plan, source);
   }
 
   /** 运动建议必须先取得现有 move 动画授权，再把公开目标交给唯一 MotionService。 */

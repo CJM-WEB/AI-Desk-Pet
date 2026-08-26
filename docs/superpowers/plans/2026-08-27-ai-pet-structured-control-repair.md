@@ -24,6 +24,8 @@
 
 ### 任务 1：稳定统一控制计划契约与自然语言入口
 
+**实际状态：** 已完成。控制 Schema、封闭直接命令入口、模型升级边界和三态显式 Gate 均已落地并通过定向验证。
+
 **文件：**
 
 - 新建：`packages/agent-core/src/capability-control-plan.ts`
@@ -45,7 +47,7 @@
 - Router 的 `chat` 结果必须区分 `modelEscalation: allowed | blocked`；引用、代码块、显式否定和嵌入式命令讨论为 `blocked`，普通未命中为 `allowed`。
 - `parseExplicitCharacterBehavior()` 输出的准备结果增加规范化 `movementControl`，不再用 stop/resume 行为动画类型写持久状态。
 
-- [ ] **步骤 1：添加控制 Schema 与截图原句 RED 测试**
+- [x] **步骤 1：添加控制 Schema 与截图原句 RED 测试**
 
 断言严格联合拒绝额外字段，并新增以下真实语句：
 
@@ -60,7 +62,7 @@ expect(parseExplicitCharacterBehavior('时不时动一下')?.movementControl)
 
 同时保留否定、引用、代码块和知识讨论负例。
 
-- [ ] **步骤 2：运行 RED**
+- [x] **步骤 2：运行 RED**
 
 ```powershell
 pnpm.cmd --filter @myself/agent-core test
@@ -70,11 +72,11 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capa
 
 预期：新类型或新断言缺失导致失败，既有安全负例继续通过。
 
-- [ ] **步骤 3：实现最小契约与与语序无关的正向证据组合**
+- [x] **步骤 3：实现最小契约与与语序无关的正向证据组合**
 
 本地 Gate 使用封闭直接命令语法覆盖截图原句和现有正例；删除不断扩张的开放式知识/否定/咨询词表，不得使用无界 `.*`。未命中直接语法的文本留给任务 2 的严格模型控制计划。明确映射 stop→0、continuous→1、intermittent/resume→2、一次移动→`move_once`。
 
-- [ ] **步骤 4：运行 GREEN、typecheck 与差异检查**
+- [x] **步骤 4：运行 GREEN、typecheck 与差异检查**
 
 ```powershell
 pnpm.cmd --filter @myself/agent-core test
@@ -86,7 +88,7 @@ pnpm.cmd --filter @myself/desktop typecheck
 git diff --check
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```powershell
 git add packages/agent-core packages/character-runtime apps/desktop/src/main/conversation apps/desktop/tests
@@ -94,6 +96,8 @@ git commit -m "feat(control): 统一桌宠能力与运动控制契约"
 ```
 
 ### 任务 2：统一文件与 PowerShell Agent 工具循环
+
+**实际状态：** 已完成。任务级授权、统一 Session/Registry、逐动作确认、参数修复与重复调用熔断已进入正式链。
 
 **依赖：** 任务 1 的 `CapabilityControlPlan` 与 `AgentPlanningTool`。
 
@@ -144,7 +148,7 @@ git commit -m "feat(control): 统一桌宠能力与运动控制契约"
 - 仅由模型识别的 `agent_task` 先发布一次任务级授权卡；确认前不得创建 Agent Session、公告工具、读取文件或启动进程。任务授权绑定 generation、Provider、授权根和请求摘要；确认后才进入统一 Agent，后续写入/删除/PowerShell仍逐次确认。
 - 任务级授权使用独立事件、IPC、Main 私有状态与 Renderer 卡片，不伪造已有 `PendingAction`；`prepareTarget()` 必须拆成无 Agent 创建的能力快照准备与确认后的 Agent 激活。
 
-- [ ] **步骤 1：添加真实入口与多步任务 RED 测试**
+- [x] **步骤 1：添加真实入口与多步任务 RED 测试**
 
 覆盖本地正向证据和模型补充控制计划：
 
@@ -159,11 +163,11 @@ git commit -m "feat(control): 统一桌宠能力与运动控制契约"
 断言截图原句不创建聊天 Adapter；首轮工具被正确收窄；确认前无副作用；确认后真实落盘；第一次结果后可调用另一类工具；复制走完整 PowerShell 确认。
 对最后一条模糊但明确执行的请求，聊天结构化计划返回 `agent_task` 后先出现任务级授权；确认前 Agent factory、文件端口和 PowerShell spawn 均为零，确认后才进入 Agent。否定、引用或代码块即使模型建议执行也必须被 Main 拒绝。
 
-- [ ] **步骤 2：添加参数修复和重复调用 RED 测试**
+- [x] **步骤 2：添加参数修复和重复调用 RED 测试**
 
 模型第一次提交非法参数时收到稳定 tool-result 并只修复一次；同名同参连续三次终止，且不产生第四次本地执行。
 
-- [ ] **步骤 3：运行 RED**
+- [x] **步骤 3：运行 RED**
 
 ```powershell
 pnpm.cmd --filter @myself/agent-core test
@@ -171,11 +175,11 @@ pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/tool
 pnpm.cmd exec vitest run --config tests/vitest.config.ts tests/integration/desktop-agent.test.ts
 ```
 
-- [ ] **步骤 4：实现统一 Registry、Session 与循环修复**
+- [x] **步骤 4：实现统一 Registry、Session 与循环修复**
 
 复用现有 `FileToolService`、`PowerShellTool`、`PendingActionStore` 和确认 IPC；不得创建第二套执行器。错误回灌只包含稳定码和有界建议，不包含绝对路径、正文或命令输出。
 
-- [ ] **步骤 5：运行 GREEN 与安全定向测试**
+- [x] **步骤 5：运行 GREEN 与安全定向测试**
 
 ```powershell
 pnpm.cmd --filter @myself/agent-core test
@@ -186,7 +190,7 @@ pnpm.cmd test:security
 git diff --check
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add packages/agent-core apps/desktop tests/integration tests/security
@@ -194,6 +198,8 @@ git commit -m "feat(agent): 统一文件与PowerShell工具循环"
 ```
 
 ### 任务 3：让三态控制驱动真实间歇运动
+
+**实际状态：** 已完成。`MovementControlPlan` 已成为持久模式唯一入口，mode 2 由 Scheduler 请求真实间歇运动，旧双写路径已退役。
 
 **依赖：** 任务 1 的 `MovementControlPlan`。
 
@@ -216,7 +222,7 @@ git commit -m "feat(agent): 统一文件与PowerShell工具循环"
 - `CharacterProactivityScheduler` 在 mode 2 下调用 `requestIntermittentMovement()`，不得只提交 move 动画。
 - 到达或运动结束后释放 move 播放所有权，恢复 idle，并重新抽取 10–30 秒间隔。
 
-- [ ] **步骤 1：添加三态语义和真实运动 RED 测试**
+- [x] **步骤 1：添加三态语义和真实运动 RED 测试**
 
 参数化断言：
 
@@ -229,18 +235,18 @@ git commit -m "feat(agent): 统一文件与PowerShell工具循环"
 
 Scheduler 使用假时钟覆盖 10、20、30 秒，只在到期时产生一次真实 Motion intent；结束后 `moving=false`、动作回到 idle、下一周期重新计时。`proactivityMode=passive` 不得吞掉用户明确设置的 mode 2。
 
-- [ ] **步骤 2：运行 RED**
+- [x] **步骤 2：运行 RED**
 
 ```powershell
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/conversation-chat-adapter.test.ts tests/character-behavior-director.test.ts tests/character-proactivity-scheduler.test.ts
 pnpm.cmd exec vitest run --config tests/vitest.config.ts tests/integration/desktop-agent.test.ts
 ```
 
-- [ ] **步骤 3：实现单一 MovementControlPlan 路径并删除旧双写入口**
+- [x] **步骤 3：实现单一 MovementControlPlan 路径并删除旧双写入口**
 
 保留 `behaviorPlan` 的动画候选选择；删除其 stop/resume 持久状态职责和旧提示。间歇移动复用现有随机工作区目标与 MotionService，不创建第二个位置计时器。
 
-- [ ] **步骤 4：运行 GREEN、行为门禁与 typecheck**
+- [x] **步骤 4：运行 GREEN、行为门禁与 typecheck**
 
 ```powershell
 pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/conversation-chat-adapter.test.ts tests/character-behavior-director.test.ts tests/character-proactivity-scheduler.test.ts
@@ -250,7 +256,7 @@ pnpm.cmd --filter @myself/desktop typecheck
 git diff --check
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```powershell
 git add packages/character-runtime apps/desktop tests/integration
@@ -258,6 +264,8 @@ git commit -m "fix(behavior): 以单一三态控制驱动真实运动"
 ```
 
 ### 任务 4：Provider、本地模型与 Electron 纵向验收
+
+**实际状态：** 部分完成。Provider 契约和 Electron E2E 已通过；2026-08-27 正式 CPU runner 退出码为 `0`，耗时 `490.284` 秒且完整矩阵通过。Vulkan 重跑未执行，真实动画观感待用户人工确认；任务专项最终验收记录待任务 5 统一收口。
 
 **依赖：** 任务 2、3。
 
@@ -269,15 +277,15 @@ git commit -m "fix(behavior): 以单一三态控制驱动真实运动"
 - 修改：`tests/e2e/desktop.spec.ts`
 - 新建：`docs/operations/2026-08-27-ai-pet-structured-control-repair-acceptance.md`
 
-- [ ] **步骤 1：添加 Provider 与本地模型同契约 RED 测试**
+- [x] **步骤 1：添加 Provider 与本地模型同契约 RED 测试**
 
 OpenAI-compatible、Anthropic、Gemini 与 LocalModelProvider 均验证控制 Schema；工具回合保持缓冲，普通正文继续流式；原句不能返回“无法操作文件”完成态。
 
-- [ ] **步骤 2：添加 Electron E2E RED 测试**
+- [x] **步骤 2：添加 Electron E2E RED 测试**
 
 使用截图原句完成真实临时目录创建，确认卡后检查 `ab.txt`；运行安全 PowerShell `Write-Output`；通过只读诊断观察 mode 0→2、间歇移动开始→结束→重新计时。
 
-- [ ] **步骤 3：运行 RED 并完成最小适配**
+- [x] **步骤 3：运行 RED 并完成最小适配**
 
 只修改 Provider 序列化或生产组合中实际失败的边界，不重写已通过的 Adapter。
 
@@ -302,12 +310,14 @@ git commit -m "test(desktop): 验收统一控制与本地Agent链"
 
 ### 任务 5：最终复审、完整门禁与实际目录同步
 
+**实际状态：** 进行中。旧路径减法和首轮双轴复审反馈已处理；修改后最终完整门禁、定向复审、主目录同步与生产构建仍待执行。真实动画观感保持“待用户人工确认”。
+
 **文件：**
 
 - 修改：`docs/operations/2026-08-27-ai-pet-structured-control-repair-acceptance.md`
 - 修改：`docs/superpowers/plans/2026-08-27-ai-pet-structured-control-repair.md`
 
-- [ ] **步骤 1：逐项复核规格与旧路径删除**
+- [x] **步骤 1：逐项复核规格与旧路径删除**
 
 确认固定语序执行结构、复制提前失败、文件/PowerShell 互斥 Registry、stop/resume 双写入口和错误提示旧分支均已按规格删除。
 

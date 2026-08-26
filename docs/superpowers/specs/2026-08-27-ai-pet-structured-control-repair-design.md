@@ -1,7 +1,7 @@
 # 桌宠统一结构化控制与本地 Agent 修复设计
 
-**日期：** 2026-08-27  
-**状态：** 已获用户授权实施  
+**日期：** 2026-08-27
+**状态：** 已获用户授权实施
 **适用范围：** Electron 桌面端、Agent Core、文件工具与角色行为运行时；不修改官网，不启用 MCP，不制作安装包
 
 ## 1. 背景与根因证据
@@ -111,8 +111,8 @@ Main 可根据 `preferredTool` 收窄第一轮；第一次可信工具结果后�
 
 ### 6.2 OpenCode 复用范围
 
-参考仓库：`https://github.com/anomalyco/opencode.git`  
-固定提交：`2a6be0a03b93a6734070e10a6c3b56863475f214`  
+参考仓库：`https://github.com/anomalyco/opencode.git`
+固定提交：`2a6be0a03b93a6734070e10a6c3b56863475f214`
 许可证：MIT
 
 吸收并在本项目接口上重写以下模式：

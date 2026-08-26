@@ -13,7 +13,11 @@
 
 真实验收入口组合生产 `LocalModelRuntime`、`LocalModelService`、`ProviderRegistry`、Main Coordinator、`AgentLoop`、确认链与 `FileToolService`；旧的验收专用进程启动、Token、health、argv 和清理实现已退役。
 
-2026-08-27 迁移说明：真实 runner 已跟随当前两级确认链。模型识别任务时，runner 先检查未出现具体动作卡且未产生文件副作用，再确认 `capability_authorization_required`；随后的每个 mutation 或 PowerShell 动作仍必须逐次独立确认。统一 Session 注入正式受控 `PowerShellTool`，任务授权本身不会启动进程。此迁移的单元验证不替代后续 CPU/Vulkan 真实 GGUF 重跑。
+2026-08-27 正式 CPU 复验已跟随当前两级确认链。执行 `node apps/desktop/scripts/run-local-model-acceptance.mjs --backend cpu`，退出码为 `0`，耗时 `490.284` 秒；采集封装确认完整白名单矩阵通过，但封装层吞掉了 runner 的原始 JSON，因此本记录不虚构各原始字段值。模型识别任务时，runner 先检查未出现具体动作卡且未产生文件副作用，再确认 `capability_authorization_required`；随后的每个 mutation 动作仍必须逐次独立确认。任务授权本身不会启动进程。
+
+当前正式 CPU runner 矩阵不包含 PowerShell 执行项；PowerShell 的确认、成功、失败与取消由独立的真实 Electron E2E 证明。2026-08-27 改造后的 Vulkan 真实 GGUF 重跑和肉眼动画观察均未执行，不记为通过。
+
+以下 CPU/Vulkan 结果是 2026-08-25 原始实现的历史基线，不代替 2026-08-27 改造后的 backend 复验：
 
 - `node apps/desktop/scripts/run-local-model-acceptance.mjs --backend cpu`：退出码 `0`；请求和实际 backend 均为 `cpu`，phase 为 `passed`。
 - `node apps/desktop/scripts/run-local-model-acceptance.mjs --backend vulkan`：退出码 `0`；请求和实际 backend 均为 `vulkan`，phase 为 `passed`，Main 私有诊断观察到非零 GPU offload。

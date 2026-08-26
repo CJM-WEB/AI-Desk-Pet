@@ -30,12 +30,6 @@ export async function createMainAgentSession(
     provider: input.provider,
     fallbackProviders: input.fallbackProviders,
     tools: registry.definitions(),
-    toolRuntime: {
-      prepare: (raw: unknown) => registry.prepare(raw, permissionPolicy),
-      executeRead: async () => {
-        throw Object.assign(new Error('TOOL_UNKNOWN'), { code: 'TOOL_UNKNOWN' });
-      }
-    },
     messages
   };
 
