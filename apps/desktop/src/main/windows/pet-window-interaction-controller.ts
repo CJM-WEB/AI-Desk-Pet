@@ -2,19 +2,31 @@ import type {
   PetInteractionProbeEvent,
   PetInteractionProbe
 } from '../../shared/pet-window-interaction';
+import type { Rectangle } from 'electron';
 
 type PetInteractionWindow = {
   setIgnoreMouseEvents(ignore: boolean, options?: { forward: boolean }): void;
+  getBounds(): Rectangle;
+  setBounds(bounds: Rectangle): void;
   isDestroyed(): boolean;
 };
 
-export type PetWindowInteractionControllerOptions = { window: PetInteractionWindow };
+export type PetWindowInteractionControllerOptions = {
+  window: PetInteractionWindow;
+  getCursorScreenPoint(): Readonly<{ x: number; y: number }>;
+  onDragStarted?(): void;
+  onDragEnded?(): void;
+};
 
-/** Main 只裁决透明像素穿透；窗口移动由 Windows 原生 draggable region 独占。 */
+/** Main 读取系统光标并原子移动固定尺寸窗口；Renderer 只发送无坐标拖拽节拍。 */
 export class PetWindowInteractionController {
   private disposed = false;
   private lastKnownPassthrough: boolean | undefined;
   private readonly probeCounts = { mouseMoveHitCount: 0 };
+  private drag: Readonly<{
+    cursor: Readonly<{ x: number; y: number }>;
+    bounds: Rectangle;
+  }> | null = null;
 
   constructor(private readonly options: PetWindowInteractionControllerOptions) {
     this.setPassthrough(true);
@@ -29,15 +41,67 @@ export class PetWindowInteractionController {
     }
   }
 
+  beginDrag(): void {
+    if (this.disposed || this.drag || !this.windowAvailable()) return;
+    let startCallbackEntered = false;
+    try {
+      this.drag = {
+        cursor: this.options.getCursorScreenPoint(),
+        bounds: this.options.window.getBounds()
+      };
+      this.lastKnownPassthrough = false;
+      this.applyPassthrough(false);
+      startCallbackEntered = true;
+      this.options.onDragStarted?.();
+    } catch {
+      this.drag = null;
+      if (startCallbackEntered) {
+        try { this.options.onDragEnded?.(); } catch { /* 继续恢复安全穿透。 */ }
+      }
+      this.restoreSafePassthrough();
+    }
+  }
+
+  updateDrag(): void {
+    const drag = this.drag;
+    if (this.disposed || !drag) return;
+    if (!this.windowAvailable()) {
+      try { this.endDrag(); } finally { this.restoreSafePassthrough(); }
+      return;
+    }
+    try {
+      const cursor = this.options.getCursorScreenPoint();
+      this.options.window.setBounds({
+        x: drag.bounds.x + cursor.x - drag.cursor.x,
+        y: drag.bounds.y + cursor.y - drag.cursor.y,
+        width: drag.bounds.width,
+        height: drag.bounds.height
+      });
+    } catch {
+      try { this.endDrag(); } finally { this.restoreSafePassthrough(); }
+    }
+  }
+
+  endDrag(): void {
+    if (!this.drag) return;
+    this.drag = null;
+    try { this.options.onDragEnded?.(); } catch { this.restoreSafePassthrough(); }
+  }
+
   dispose(): void {
     if (this.disposed) return;
+    this.endDrag();
     this.disposed = true;
     this.restoreSafePassthrough();
   }
 
-  /** 兼容既有受限诊断形状；原生拖拽事实由 Main E2E state 单独公开。 */
+  /** 受限诊断只报告穿透、controller 拖拽与命中计数，不包含坐标或 native owner。 */
   getProbe(): PetInteractionProbe {
-    return { passthrough: this.lastKnownPassthrough ?? true, dragging: false, ...this.probeCounts };
+    return {
+      passthrough: this.lastKnownPassthrough ?? true,
+      dragging: this.drag !== null,
+      ...this.probeCounts
+    };
   }
 
   recordProbeEvent(_event: PetInteractionProbeEvent): void {

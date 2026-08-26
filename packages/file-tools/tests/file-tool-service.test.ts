@@ -1,5 +1,6 @@
 import {
   lstat,
+  link,
   mkdir,
   mkdtemp,
   open,
@@ -26,14 +27,25 @@ const temporaryRoots: string[] = [];
 async function fixtureService(
   recycleBinPort?: RecycleBinPort,
   getAuthorizationGeneration?: () => number,
-  renameOperation?: (source: string, destination: string) => Promise<void>
+  renameOperation?: (source: string, destination: string) => Promise<void>,
+  linkOperation?: (source: string, destination: string) => Promise<void>,
+  unlinkOperation?: (path: string) => Promise<void>
 ): Promise<{ service: FileToolService; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'myself-file-tools-'));
   temporaryRoots.push(root);
   await mkdir(join(root, 'docs'));
   const fileOperations = renameOperation === undefined
+      && linkOperation === undefined
+      && unlinkOperation === undefined
     ? undefined
-    : { open, rename: renameOperation, unlink, mkdir };
+    : {
+        open,
+        rename,
+        unlink: unlinkOperation ?? unlink,
+        mkdir,
+        ...(renameOperation === undefined ? {} : { moveNoReplace: renameOperation }),
+        ...(linkOperation === undefined ? {} : { link: linkOperation })
+      };
   return {
     service: new FileToolService(
       await PathPolicy.create(root),
@@ -404,7 +416,8 @@ describe('FileToolService.executeRead', () => {
       paths: [],
       truncated: true
     });
-  }, 20_000);
+  // 根级多项目门禁会并行运行大量文件系统套件；隔离约 14–16 秒，并行实测约 22 秒。
+  }, 30_000);
 
   it('grep_files 对匹配行返回相对路径与行号，并以完整匹配为单位截断', async () => {
     const { service, root } = await fixtureService();
@@ -502,6 +515,80 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await expect(readFile(join(root, 'target', 'source.txt'), 'utf8')).resolves.toBe('移动正文');
   });
 
+  it('move_file 确认前不移动目录，确认后原子移动完整目录树', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'target'));
+    await mkdir(join(root, 'docs', 'source-directory', 'nested'), { recursive: true });
+    await writeFile(join(root, 'docs', 'source-directory', 'nested', 'content.txt'), '目录正文', 'utf8');
+
+    const action = await service.preview({
+      requestId: 'move-directory',
+      toolName: 'move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source-directory',
+        targetDirectoryRelativePath: 'target'
+      }
+    });
+
+    expect(action).toMatchObject({
+      operation: 'move_file',
+      sourceRelativePath: 'docs/source-directory',
+      targetRelativePath: 'target/source-directory'
+    });
+    await expect(readFile(join(root, 'docs', 'source-directory', 'nested', 'content.txt'), 'utf8'))
+      .resolves.toBe('目录正文');
+    await expect(lstat(join(root, 'target', 'source-directory'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await service.executeWrite(action);
+
+    await expect(lstat(join(root, 'docs', 'source-directory'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(root, 'target', 'source-directory', 'nested', 'content.txt'), 'utf8'))
+      .resolves.toBe('目录正文');
+  });
+
+  it.each([
+    ['自身', 'docs/source-directory'],
+    ['后代', 'docs/source-directory/nested']
+  ] as const)('move_file 拒绝把目录移入%s目录', async (_label, targetDirectoryRelativePath) => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'docs', 'source-directory', 'nested'), { recursive: true });
+    await writeFile(join(root, 'docs', 'source-directory', 'content.txt'), '保留正文', 'utf8');
+
+    await expect(service.preview({
+      requestId: `move-directory-into-${_label}`,
+      toolName: 'move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source-directory',
+        targetDirectoryRelativePath
+      }
+    })).rejects.toMatchObject({ code: 'PATH_INVALID' });
+
+    await expect(readFile(join(root, 'docs', 'source-directory', 'content.txt'), 'utf8'))
+      .resolves.toBe('保留正文');
+  });
+
+  it('move_file 拒绝用源目录覆盖同名目标目录', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'docs', 'source-directory'));
+    await writeFile(join(root, 'docs', 'source-directory', 'source.txt'), '源目录', 'utf8');
+    await mkdir(join(root, 'target', 'source-directory'), { recursive: true });
+    await writeFile(join(root, 'target', 'source-directory', 'target.txt'), '目标目录', 'utf8');
+
+    await expect(service.preview({
+      requestId: 'move-directory-overwrite',
+      toolName: 'move_file',
+      arguments: {
+        sourceRelativePath: 'docs/source-directory',
+        targetDirectoryRelativePath: 'target'
+      }
+    })).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+
+    await expect(readFile(join(root, 'docs', 'source-directory', 'source.txt'), 'utf8'))
+      .resolves.toBe('源目录');
+    await expect(readFile(join(root, 'target', 'source-directory', 'target.txt'), 'utf8'))
+      .resolves.toBe('目标目录');
+  });
+
   it('move_file 允许把子目录中的文件移动到授权根目录', async () => {
     const { service, root } = await fixtureService();
     await writeFile(join(root, 'docs', 'source.txt'), '根目录目标', 'utf8');
@@ -558,6 +645,93 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await expect(lstat(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('move_file 在最终提交时竞争目标出现也不覆盖且保留源文件', async () => {
+    const { service, root } = await fixtureService(
+      undefined,
+      undefined,
+      undefined,
+      async (source, target) => {
+        await writeFile(target, '竞争目标', 'utf8');
+        await link(source, target);
+      }
+    );
+    await mkdir(join(root, 'target'));
+    await writeFile(join(root, 'docs', 'source.txt'), '源内容', 'utf8');
+    const action = await service.preview({
+      requestId: 'move-final-target-race',
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'TARGET_EXISTS' });
+    await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('源内容');
+    await expect(readFile(join(root, 'target', 'source.txt'), 'utf8')).resolves.toBe('竞争目标');
+  });
+
+  it('move_file 硬链接成功但删除源失败时清理本方目标并保留源', async () => {
+    let sourceToFail = '';
+    const injectedFailure = Object.assign(new Error('注入源删除失败'), { code: 'EACCES' });
+    const { service, root } = await fixtureService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async path => {
+        if (path.toLocaleLowerCase('en-US').endsWith(join('docs', 'source.txt').toLocaleLowerCase('en-US'))) {
+          throw injectedFailure;
+        }
+        await unlink(path);
+      }
+    );
+    sourceToFail = join(root, 'docs', 'source.txt');
+    await mkdir(join(root, 'target'));
+    await writeFile(sourceToFail, '源内容', 'utf8');
+    const action = await service.preview({
+      requestId: 'move-source-unlink-failed',
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    await expect(readFile(sourceToFail, 'utf8')).resolves.toBe('源内容');
+    await expect(lstat(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('move_file 清理前目标被竞争方替换时不删除竞争目标', async () => {
+    let sourceToFail = '';
+    let targetToReplace = '';
+    const injectedFailure = Object.assign(new Error('注入源删除失败'), { code: 'EACCES' });
+    const { service, root } = await fixtureService(
+      undefined,
+      undefined,
+      undefined,
+      async (source, target) => {
+        targetToReplace = target;
+        await link(source, target);
+      },
+      async path => {
+        if (path.toLocaleLowerCase('en-US').endsWith(join('docs', 'source.txt').toLocaleLowerCase('en-US'))) {
+          await unlink(targetToReplace);
+          await writeFile(targetToReplace, '竞争目标', 'utf8');
+          throw injectedFailure;
+        }
+        await unlink(path);
+      }
+    );
+    sourceToFail = join(root, 'docs', 'source.txt');
+    await mkdir(join(root, 'target'));
+    await writeFile(sourceToFail, '源内容', 'utf8');
+    const action = await service.preview({
+      requestId: 'move-cleanup-target-replaced',
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'target' }
+    });
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    await expect(readFile(sourceToFail, 'utf8')).resolves.toBe('源内容');
+    await expect(readFile(join(root, 'target', 'source.txt'), 'utf8')).resolves.toBe('竞争目标');
+  });
+
   it('move_file 在授权 generation 变化后过期且不能重放', async () => {
     let generation = 1;
     const { service, root } = await fixtureService(undefined, () => generation);
@@ -591,6 +765,26 @@ describe('FileToolService.preview 与 executeWrite', () => {
     await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
     await expect(readFile(join(root, 'docs', 'source.txt'), 'utf8')).resolves.toBe('替换内容');
     await expect(lstat(join(root, 'target', 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('move_file 在确认后源目录被替换时拒绝执行', async () => {
+    const { service, root } = await fixtureService();
+    await mkdir(join(root, 'target'));
+    await mkdir(join(root, 'docs', 'source-directory'));
+    await writeFile(join(root, 'docs', 'source-directory', 'original.txt'), '原始目录', 'utf8');
+    const action = await service.preview({
+      requestId: 'move-source-directory-replaced',
+      toolName: 'move_file',
+      arguments: { sourceRelativePath: 'docs/source-directory', targetDirectoryRelativePath: 'target' }
+    });
+    await rm(join(root, 'docs', 'source-directory'), { recursive: true });
+    await mkdir(join(root, 'docs', 'source-directory'));
+    await writeFile(join(root, 'docs', 'source-directory', 'replacement.txt'), '替换目录', 'utf8');
+
+    await expect(service.executeWrite(action)).rejects.toMatchObject({ code: 'ENTRY_CHANGED' });
+    await expect(readFile(join(root, 'docs', 'source-directory', 'replacement.txt'), 'utf8'))
+      .resolves.toBe('替换目录');
+    await expect(lstat(join(root, 'target', 'source-directory'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('move_file 在 rename 返回后目标被替换时拒绝发布成功', async () => {

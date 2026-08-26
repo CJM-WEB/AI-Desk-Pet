@@ -300,7 +300,8 @@ export class CharacterMotionService {
     source: CharacterUserMoveSource = 'native'
   ): void {
     if (
-      this.expectedProgrammaticPositions.length > 0
+      source === 'native'
+      && this.expectedProgrammaticPositions.length > 0
       && (
         nextPosition === undefined
         || this.expectedProgrammaticPositions.some(expected => (
@@ -317,8 +318,13 @@ export class CharacterMotionService {
 
   endUserMove(source: CharacterUserMoveSource = 'native'): void {
     if (!this.userMoveOwners.has(source)) return;
-    this.handleWindowMoved();
-    this.userMoveOwners.delete(source);
+    try {
+      this.handleWindowMoved();
+    } catch {
+      // 窗口销毁竞态下无法同步终点，但清理链仍必须继续释放其他 blocker。
+    } finally {
+      this.userMoveOwners.delete(source);
+    }
   }
 
   subscribe(listener: (snapshot: CharacterMotionSnapshot) => void): () => void {
@@ -356,6 +362,27 @@ export class CharacterMotionService {
   /** will-move 的预告坐标不可靠；窗口接线只据此判断是否等待真实 move 复核。 */
   hasPendingProgrammaticPosition(): boolean {
     return this.expectedProgrammaticPositions.length > 0;
+  }
+
+  /** 消费 setBounds 后的首个裸 move，并用 Windows 实际坐标修正预登记目标。 */
+  acknowledgeProgrammaticWindowMove(): void {
+    if (this.expectedProgrammaticPositions.length === 0) {
+      this.handleWindowMoved();
+      return;
+    }
+    const bounds = this.options.window.getBounds();
+    const position = { x: bounds.x, y: bounds.y };
+    const expectedIndex = this.expectedProgrammaticPositions.findIndex(expected => (
+      sameProgrammaticPosition(position, expected)
+    ));
+    const consumedIndex = expectedIndex >= 0 ? expectedIndex : 0;
+    const [expected] = this.expectedProgrammaticPositions.splice(consumedIndex, 1);
+    if (expected && !sameProgrammaticPosition(position, expected)) {
+      this.target = {
+        x: this.target.x + position.x - expected.x,
+        y: this.target.y + position.y - expected.y
+      };
+    }
   }
 
   /** 几何事务在调用 BrowserWindow.setBounds 前登记目标，避免 moved 被误判为用户接管。 */
@@ -543,62 +570,53 @@ export function bindCharacterMotionWindow(
   service: Pick<CharacterMotionService, 'beginUserMove' | 'handleWindowMoved' | 'endUserMove'>
     & Partial<Pick<
       CharacterMotionService,
-      'isUserMoving' | 'hasPendingProgrammaticPosition'
+      'isUserMoving' | 'hasPendingProgrammaticPosition' | 'acknowledgeProgrammaticWindowMove'
     >>,
   callbacks: Readonly<{
     onUserMoveStarted?(): void;
     onUserMoveEnded?(): void;
   }> = {}
 ): () => void {
-  let movedTimer: ReturnType<typeof setTimeout> | undefined;
   let nativeMoveActive = false;
-  const armNativeMoveRelease = (): void => {
+  const releaseNativeMove = (): void => {
     if (!nativeMoveActive) return;
-    if (movedTimer) clearTimeout(movedTimer);
-    movedTimer = setTimeout(() => {
-      movedTimer = undefined;
-      service.endUserMove();
-      nativeMoveActive = false;
-      callbacks.onUserMoveEnded?.();
-    }, 250);
+    service.endUserMove();
+    nativeMoveActive = false;
+    if (!(service.isUserMoving?.() ?? false)) callbacks.onUserMoveEnded?.();
   };
   const onWillMove = (_event?: unknown, newBounds?: Rectangle): void => {
     // 程序化 setPosition/setBounds 已预登记；忽略不可靠预告，交给 move 的真实边界复核。
     if (service.hasPendingProgrammaticPosition?.()) return;
-    if (movedTimer) clearTimeout(movedTimer);
-    movedTimer = undefined;
-    const wasActive = nativeMoveActive;
+    const wasUserMoving = service.isUserMoving?.() ?? nativeMoveActive;
     service.beginUserMove(newBounds ? { x: newBounds.x, y: newBounds.y } : undefined);
     nativeMoveActive = service.isUserMoving?.() ?? true;
-    if (!wasActive && nativeMoveActive) {
+    if (!wasUserMoving && nativeMoveActive) {
       callbacks.onUserMoveStarted?.();
     }
   };
   const onMove = (): void => {
     if (!nativeMoveActive) {
-      const bounds = window.getBounds();
-      service.beginUserMove({ x: bounds.x, y: bounds.y });
-      nativeMoveActive = service.isUserMoving?.() ?? true;
-      if (nativeMoveActive) {
-        callbacks.onUserMoveStarted?.();
+      if (service.hasPendingProgrammaticPosition?.()) {
+        service.acknowledgeProgrammaticWindowMove?.();
+        return;
       }
+      // Windows 创建、显示和程序化布局都会产生没有 will-move 的裸 move；它不是用户拖拽证据。
+      service.handleWindowMoved();
+      return;
     }
     service.handleWindowMoved();
-    armNativeMoveRelease();
   };
-  // Windows 的 move/moved 组合不稳定；任一事件静默 250ms 都视为用户真正松手。
+  // Windows 可能在按键仍按下时分段发出 moved；本段结束后释放，后续 move 会立即重新接管。
   const onMoved = (): void => {
-    armNativeMoveRelease();
+    if (!nativeMoveActive) return;
+    service.handleWindowMoved();
+    releaseNativeMove();
   };
   window.on('will-move', onWillMove);
   window.on('move', onMove);
   window.on('moved', onMoved);
   return () => {
-    if (movedTimer) clearTimeout(movedTimer);
-    if (nativeMoveActive) {
-      service.endUserMove();
-      callbacks.onUserMoveEnded?.();
-    }
+    releaseNativeMove();
     window.removeListener('will-move', onWillMove);
     window.removeListener('move', onMove);
     window.removeListener('moved', onMoved);

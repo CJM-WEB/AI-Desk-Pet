@@ -179,7 +179,7 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
   registry.register({
     definition: definition(
       'builtin.files.move_file',
-      '将授权根内的一个普通文件移动到另一个已存在目录，需要用户确认。',
+      '将授权根内的一个普通文件或目录移动到另一个已存在目录，需要用户确认。',
       toolJsonSchemas.move_file
     ),
     argumentsSchema: toolArguments.move_file,
@@ -187,7 +187,7 @@ export function createBuiltinFileToolRegistry(): ToolRegistry {
     risk: 'recoverable',
     enabled: true,
     auditSummary: arguments_ => (
-      `移动文件 ${displayRelativePath(arguments_['sourceRelativePath'])} 到 ${displayRelativePath(arguments_['targetDirectoryRelativePath'])}`
+      `移动文件或目录 ${displayRelativePath(arguments_['sourceRelativePath'])} 到 ${displayRelativePath(arguments_['targetDirectoryRelativePath'])}`
     )
   });
 

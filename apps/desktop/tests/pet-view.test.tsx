@@ -180,6 +180,9 @@ function createPetViewApi(): MyselfApi {
     getCharacterRuntimeSnapshot: vi.fn(async () => null),
     subscribeCharacterEvents: vi.fn(() => vi.fn()),
     setPetMousePassthrough: vi.fn().mockResolvedValue(undefined),
+    beginPetDrag: vi.fn(),
+    updatePetDrag: vi.fn(),
+    endPetDrag: vi.fn(),
     recordPetInteractionProbeEvent: vi.fn().mockResolvedValue(undefined),
     openChat: vi.fn().mockResolvedValue(undefined),
     openCharacterWorkshop: vi.fn().mockResolvedValue(undefined)
@@ -329,7 +332,7 @@ describe('桌宠像素交互接线', () => {
     expect(instances[1]?.dispose).toHaveBeenCalledOnce();
   });
 
-  test('角色表面使用原生拖拽且恢复控件保持 no-drag', () => {
+  test('角色表面保留指针终态且恢复控件保持 no-drag', () => {
     const css = readFileSync(
       resolve(import.meta.dirname, '../src/renderer/src/styles.css'),
       'utf8'
@@ -338,12 +341,12 @@ describe('桌宠像素交互接线', () => {
     expect(css).not.toMatch(/\.pet-open-chat\b/u);
     expect(css).not.toMatch(/\.pet-shell\s*\{[^}]*-webkit-app-region:\s*drag/su);
     expect(css).toMatch(
-      /\.pet-character-surface\s*\{[^}]*-webkit-app-region:\s*drag;/su
+      /\.pet-character-surface\s*\{[^}]*-webkit-app-region:\s*no-drag;/su
     );
     expect(css).toMatch(/\.pet-runtime-recovery\s*\{[^}]*-webkit-app-region:\s*no-drag;/su);
   });
 
-  test('备用角色可见区域不再启动 Renderer 自定义拖拽', async () => {
+  test('备用角色可见区域启动 Main 权威拖拽且不触发聊天', async () => {
     const api = createPetViewApi();
     installPetViewBrowserApi(api);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -373,10 +376,17 @@ describe('桌宠像素交互接线', () => {
     const shell = result.container.querySelector<HTMLElement>('.pet-shell')!;
     fireEvent.pointerMove(shell, { clientX: 20, clientY: 30, pointerId: 7 });
     fireEvent.pointerDown(shell, { clientX: 20, clientY: 30, pointerId: 7, button: 0 });
+    fireEvent.pointerMove(shell, { clientX: 30, clientY: 40, pointerId: 7 });
+    fireEvent.pointerCancel(shell, { clientX: 30, clientY: 40, pointerId: 7 });
+    expect(api.endPetDrag).toHaveBeenCalledOnce();
+    fireEvent.mouseUp(shell, { clientX: 30, clientY: 40, button: 0 });
     fireEvent.click(fallback);
     fireEvent.doubleClick(fallback);
 
     expect(result.container.querySelector('.pet-character-surface')).not.toBeNull();
+    expect(api.beginPetDrag).toHaveBeenCalledOnce();
+    expect(api.updatePetDrag).toHaveBeenCalledOnce();
+    expect(api.endPetDrag).toHaveBeenCalledOnce();
     expect(api.openChat).not.toHaveBeenCalled();
     expect(triggerCharacterPointer).not.toHaveBeenCalled();
   });

@@ -675,12 +675,14 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     const failureResolutionStart = events.length;
     await composition.coordinator.resolveFileAction(failureAction.actionId, 'confirm');
     const failureEvents = events.slice(failureResolutionStart);
-    if (
-      !failureEvents.some(event => event.type === 'error' && event.code === 'RECYCLE_BIN_FAILED')
-      || findFinalAssistantText(failureEvents) !== '本地能力操作失败，未完成请求。'
-      || !failureEvents.some(event => event.type === 'phase' && event.phase === 'error')
-    ) {
-      throw acceptanceError('CONTROLLED_TOOL_FAILURE_MISSING');
+    if (!failureEvents.some(event => event.type === 'error' && event.code === 'RECYCLE_BIN_FAILED')) {
+      throw acceptanceError('CONTROLLED_TOOL_FAILURE_EVENT_MISSING');
+    }
+    if (findFinalAssistantText(failureEvents) !== '本地能力操作失败，未完成请求。') {
+      throw acceptanceError('CONTROLLED_TOOL_FAILURE_SUMMARY_MISSING');
+    }
+    if (!failureEvents.some(event => event.type === 'phase' && event.phase === 'error')) {
+      throw acceptanceError('CONTROLLED_TOOL_FAILURE_PHASE_MISSING');
     }
     await access(join(authorizedRoot, 'acceptance-failure.txt'));
 

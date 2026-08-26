@@ -688,7 +688,18 @@ async function createApplicationWindows(
   );
   let refreshTray = async (): Promise<void> => undefined;
   const petWindowInteraction = new PetWindowInteractionController({
-    window: pet
+    window: pet,
+    getCursorScreenPoint: () => screen.getCursorScreenPoint(),
+    onDragStarted: () => {
+      characterMotion.beginUserMove(undefined, 'controller');
+      characterBehavior.handleUserInteraction();
+      characterBehaviorDirector.setDragging(true);
+    },
+    onDragEnded: () => {
+      characterMotion.endUserMove('controller');
+      characterBehaviorDirector.setDragging(false);
+      void petGeometry.resumePendingLayout().catch(() => undefined);
+    }
   });
   const releasePetWindowInteraction = bindPetWindowInteractionLifecycle(
     pet,
@@ -699,7 +710,10 @@ async function createApplicationWindows(
       characterBehavior.handleUserInteraction();
       characterBehaviorDirector.setDragging(true);
     },
-    onUserMoveEnded: () => characterBehaviorDirector.setDragging(false)
+    onUserMoveEnded: () => {
+      characterBehaviorDirector.setDragging(false);
+      void petGeometry.resumePendingLayout().catch(() => undefined);
+    }
   });
   registerCharacterMotionIpc(ipcMain, {
     getSnapshot: () => characterMotion.getSnapshot(),

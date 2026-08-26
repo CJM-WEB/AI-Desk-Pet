@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { win32 } from 'node:path';
 import type { ModelProvider } from '@myself/agent-core';
+import { PathPolicy } from '@myself/file-tools';
 import type { ProviderProfile, PublicSettings } from '@myself/shared-types';
 
 interface SettingsActionsStore {
@@ -18,6 +19,7 @@ export interface SettingsActionsOptions {
   readSecret(): Promise<string>;
   createProvider(profile: ProviderProfile, readSecret: () => Promise<string>): ModelProvider;
   selectDirectory(): Promise<string | null>;
+  validateAuthorizedRoot?(absolutePath: string): Promise<unknown>;
   createRootId?: () => string;
 }
 
@@ -45,6 +47,7 @@ function publicPathHint(absolutePath: string): string {
 
 export function createSettingsActions(options: SettingsActionsOptions) {
   const createRootId = options.createRootId ?? randomUUID;
+  const validateAuthorizedRoot = options.validateAuthorizedRoot ?? PathPolicy.create;
   return {
     async testProvider(): Promise<{ ok: boolean; message: string }> {
       const settings = await options.settings.getPublic();
@@ -74,6 +77,7 @@ export function createSettingsActions(options: SettingsActionsOptions) {
     async chooseAuthorizedRoot(): Promise<void> {
       const absolutePath = await options.selectDirectory();
       if (!absolutePath) return;
+      await validateAuthorizedRoot(absolutePath);
       await options.settings.saveAuthorizedRoot({
         id: createRootId(),
         displayName: win32.basename(absolutePath),

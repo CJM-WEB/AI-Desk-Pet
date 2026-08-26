@@ -273,9 +273,13 @@ async function readAnthropicStructuredSse(
       if (eventName === 'message_stop' || type === 'message_stop') return { done: true };
       if (eventName !== 'content_block_delta' && type !== 'content_block_delta') return {};
       const delta = Reflect.get(raw, 'delta');
-      if (typeof delta !== 'object' || delta === null || Reflect.get(delta, 'type') !== 'text_delta') {
+      if (typeof delta !== 'object' || delta === null) {
         throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
       }
+      const deltaType = Reflect.get(delta, 'type');
+      // 私有推理仍经过共享 SSE 预算统计，但绝不能进入可见正文或中断正常文本流。
+      if (deltaType === 'thinking_delta' || deltaType === 'signature_delta') return {};
+      if (deltaType !== 'text_delta') throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
       const text = Reflect.get(delta, 'text');
       if (typeof text !== 'string') throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
       return { fragment: text };

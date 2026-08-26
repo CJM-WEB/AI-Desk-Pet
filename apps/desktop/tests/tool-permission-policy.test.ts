@@ -347,6 +347,13 @@ describe('内置文件工具注册', () => {
     expect(definitions.some(item => item.function.name === 'builtin.files.copy_file')).toBe(false);
   });
 
+  test('move_file 向模型说明可移动普通文件或目录', () => {
+    const definition = createBuiltinFileToolRegistry().definitions()
+      .find(item => item.function.name === 'builtin.files.move_file');
+
+    expect(definition?.function.description).toContain('普通文件或目录');
+  });
+
   test('审计摘要不包含模型提供的绝对路径', () => {
     const registry = createBuiltinFileToolRegistry();
     const policy = new PermissionPolicy({ highRiskEnabled: false });

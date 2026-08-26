@@ -75,6 +75,7 @@ describe('设置主进程动作', () => {
       readSecret: vi.fn(async () => 'secret'),
       createProvider: vi.fn(),
       selectDirectory: vi.fn(async () => 'D:\\Private\\CompanionProject'),
+      validateAuthorizedRoot: vi.fn(async () => undefined),
       createRootId: () => 'root-1'
     });
 
@@ -86,6 +87,30 @@ describe('设置主进程动作', () => {
       pathHint: 'D:\\…\\CompanionProject',
       absolutePath: 'D:\\Private\\CompanionProject'
     });
+  });
+
+  test('受保护目录校验失败时不保存授权根', async () => {
+    const settings = {
+      getPublic: vi.fn(async () => configuredSettings()),
+      saveAuthorizedRoot: vi.fn(async () => undefined)
+    };
+    const actions = createSettingsActions({
+      settings,
+      readSecret: vi.fn(async () => 'secret'),
+      createProvider: vi.fn(),
+      selectDirectory: vi.fn(async () => 'C:\\Windows'),
+      validateAuthorizedRoot: vi.fn(async () => {
+        throw Object.assign(new Error('受保护区域不能作为文件授权范围'), {
+          code: 'PERMISSION_DENIED'
+        });
+      }),
+      createRootId: () => 'root-1'
+    });
+
+    await expect(actions.chooseAuthorizedRoot()).rejects.toMatchObject({
+      code: 'PERMISSION_DENIED'
+    });
+    expect(settings.saveAuthorizedRoot).not.toHaveBeenCalled();
   });
 
   test('用户取消目录选择时不改变授权', async () => {

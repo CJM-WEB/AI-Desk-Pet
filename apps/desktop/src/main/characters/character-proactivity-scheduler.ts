@@ -123,7 +123,12 @@ export class CharacterProactivityScheduler {
       if (!this.closed && !hasBlocker(this.options.director.getActivityBlockers())) {
         this.submitCandidate(this.createLocalCandidate(), 'local-idle');
       }
-      if (!this.closed && this.mode !== 'passive') {
+      if (
+        !this.closed
+        && this.mode !== 'passive'
+        && this.movementMode === 2
+        && !hasBlocker(this.options.director.getActivityBlockers())
+      ) {
         this.armLocal(this.randomDelay(LOCAL_MIN_MS, LOCAL_MAX_MS));
       }
     }, delay);

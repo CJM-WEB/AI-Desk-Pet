@@ -37,6 +37,9 @@ export type PetInteractionProbeEvent = PetInteractionProbeRecordEvent;
 
 export interface PetWindowInteractionApi {
   setPetMousePassthrough(ignore: boolean): Promise<void>;
+  beginPetDrag(): void;
+  updatePetDrag(): void;
+  endPetDrag(): void;
   commitPetViewport?(input: PetViewportCommitInput): Promise<void>;
   onPetGeometryRender?(listener: (view: PetGeometryRenderView) => void): () => void;
   recordPetInteractionProbeEvent?(event: PetInteractionProbeRecordEvent): Promise<void>;

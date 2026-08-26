@@ -2,7 +2,10 @@ import type { IpcMain } from 'electron';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { ipcChannels } from '../src/shared/ipc-channels';
 import type { MyselfApi } from '../src/shared/myself-api';
-import { registerCharacterMotionIpc } from '../src/main/ipc/register-ipc';
+import {
+  registerCharacterMotionIpc,
+  registerPetWindowInteractionIpc
+} from '../src/main/ipc/register-ipc';
 import {
   characterActionFeedbackInputSchema,
   petGeometryRenderViewSchema,
@@ -11,6 +14,7 @@ import {
 } from '../src/shared/character-motion-ipc';
 
 type Handler = (event: unknown, input?: unknown) => unknown;
+type Listener = (event: unknown, ...args: unknown[]) => void;
 const invoke = vi.fn();
 const on = vi.fn();
 const removeListener = vi.fn();
@@ -41,11 +45,15 @@ function snapshot(revision = 1) {
 
 function createIpcMain() {
   const handlers = new Map<string, Handler>();
+  const listeners = new Map<string, Listener>();
   return {
     handlers,
+    listeners,
     ipcMain: {
       removeHandler: (channel: string) => handlers.delete(channel),
-      handle: (channel: string, handler: Handler) => handlers.set(channel, handler)
+      handle: (channel: string, handler: Handler) => handlers.set(channel, handler),
+      removeAllListeners: (channel: string) => listeners.delete(channel),
+      on: (channel: string, listener: Listener) => listeners.set(channel, listener)
     } as unknown as IpcMain
   };
 }
@@ -246,6 +254,33 @@ describe('角色运动严格 IPC', () => {
       actionId: 'thinking-loop',
       status: 'started'
     })).rejects.toThrow('CHARACTER_PLAYBACK_UNAUTHORIZED');
+  });
+
+  test('三条拖拽命令对非法 sender 和多余参数均失败关闭', () => {
+    const { ipcMain, listeners } = createIpcMain();
+    const petSender = { isDestroyed: () => false };
+    const controller = {
+      setPassthrough: vi.fn(),
+      beginDrag: vi.fn(),
+      updateDrag: vi.fn(),
+      endDrag: vi.fn(),
+      dispose: vi.fn()
+    };
+    registerPetWindowInteractionIpc(ipcMain, controller, petSender as never);
+    const commands = [
+      [ipcChannels.petDragBegin, controller.beginDrag],
+      [ipcChannels.petDragUpdate, controller.updateDrag],
+      [ipcChannels.petDragEnd, controller.endDrag]
+    ] as const;
+
+    for (const [channel] of commands) {
+      listeners.get(channel)?.({ sender: { isDestroyed: () => false } });
+      listeners.get(channel)?.({ sender: petSender }, { x: 1, y: 2 });
+    }
+    for (const [, action] of commands) expect(action).not.toHaveBeenCalled();
+
+    for (const [channel] of commands) listeners.get(channel)?.({ sender: petSender });
+    for (const [, action] of commands) expect(action).toHaveBeenCalledOnce();
   });
 
   test('preload 只暴露快照读取和固定事件订阅，不暴露任意坐标写入', async () => {

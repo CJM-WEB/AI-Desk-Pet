@@ -196,6 +196,17 @@ export function PetView({
       data-focus-anchor={serializeAnchor(desktopAnchors.focus)}
       data-character-state={characterState}
       data-extension-states={extensionDefinitions.map(item => item.stateId).join(',')}
+      onPointerDown={event => {
+        if (event.button !== 0) return;
+        const started = interactionControllerRef.current?.handlePointerDown({
+          x: event.clientX,
+          y: event.clientY
+        });
+        if (!started) return;
+        // 浏览器指针捕获让窗口内拖拽持续收到终态；测试环境或旧内核缺失 API 时由 Main 生命周期兜底。
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+      }}
       onPointerMove={event => {
         interactionControllerRef.current?.handlePointerMove({
           x: event.clientX,
@@ -203,6 +214,18 @@ export function PetView({
         });
       }}
       onPointerLeave={() => interactionControllerRef.current?.handlePointerLeave()}
+      onPointerUp={event => {
+        interactionControllerRef.current?.handlePointerUp();
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }
+      }}
+      onPointerCancel={event => {
+        interactionControllerRef.current?.handlePointerUp();
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture?.(event.pointerId);
+        }
+      }}
       // Windows 透明窗口 forward 保证的是 mouse 消息，复用既有命中控制器保持单一状态机。
       onMouseMove={event => {
         const hit = interactionControllerRef.current?.handlePointerMove({
@@ -215,6 +238,9 @@ export function PetView({
         }
       }}
       onMouseLeave={() => interactionControllerRef.current?.handlePointerLeave()}
+      onMouseUp={event => {
+        if (event.button === 0) interactionControllerRef.current?.handlePointerUp();
+      }}
     >
       <div className="pet-character-surface">
         <CharacterPlayer

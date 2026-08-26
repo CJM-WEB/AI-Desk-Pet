@@ -49,8 +49,6 @@ type CanonicalViewport = Readonly<{
   baseHeight: number;
   insetLeft: number;
   insetTop: number;
-  insetRight: number;
-  insetBottom: number;
 }>;
 
 export type PetGeometryRelativeInspection = Readonly<{
@@ -83,8 +81,16 @@ export class PetGeometryCoordinator {
   /** actual 可在容差内成为持久 target，但后续 viewport 仍从本轮理想脚底反算，避免量化累积。 */
   private readyRestoreIdealFoot: Readonly<{ x: number; y: number }> | null = null;
   private moveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 运行期只提交位置，Renderer viewport 和角色换绑不得改写启动尺寸。 */
+  private readonly fixedWindowSize: Readonly<{ width: number; height: number }>;
 
-  constructor(private readonly options: CoordinatorOptions) {}
+  constructor(private readonly options: CoordinatorOptions) {
+    const bounds = options.window.getBounds();
+    this.fixedWindowSize = Object.freeze({
+      width: bounds.width,
+      height: bounds.height
+    });
+  }
 
   commitViewport(input: PetViewportCommitInput): Promise<void> {
     const viewport = structuredClone(input.viewportInWindowDip);
@@ -252,14 +258,17 @@ export class PetGeometryCoordinator {
     const preservedFoot = restoreIdealFoot
       ?? restoreTarget?.footAnchorDip
       ?? oldSnapshot.footAnchorDip;
-    let candidateBounds = adoptCurrentWindow
+    const candidatePosition = adoptCurrentWindow
       ? oldBounds
       : {
           x: preservedFoot.x - footOffset.x,
-          y: preservedFoot.y - footOffset.y,
-          width: oldBounds.width,
-          height: oldBounds.height
+          y: preservedFoot.y - footOffset.y
         };
+    let candidateBounds = {
+      x: candidatePosition.x,
+      y: candidatePosition.y,
+      ...this.fixedWindowSize
+    };
     const candidateFoot = adoptCurrentWindow
       ? { x: candidateBounds.x + footOffset.x, y: candidateBounds.y + footOffset.y }
       : preservedFoot;
@@ -295,7 +304,7 @@ export class PetGeometryCoordinator {
     const boundsChanged = !sameBounds(oldBounds, candidateBounds);
     try {
       if (boundsChanged) {
-        this.setCoordinatorBounds(candidateBounds);
+        this.setCoordinatorPosition(candidateBounds);
         const actualBounds = this.options.window.getBounds();
         if (!sameBounds(actualBounds, candidateBounds)) {
           this.options.authority.rollbackPreparedPlacement(transaction);
@@ -340,7 +349,7 @@ export class PetGeometryCoordinator {
       }
       this.options.authority.discardPreparedPlacement(transaction);
       transaction = null;
-      this.canonical = canonicalViewport(viewport, this.committedTick, committed.windowBoundsDip);
+      this.canonical = canonicalViewport(viewport, this.committedTick);
       this.committedBindingGeneration = binding.generation;
       this.publish(committed);
     } catch (error) {
@@ -350,7 +359,7 @@ export class PetGeometryCoordinator {
       else this.options.authority.discardPendingShape();
       this.canonical = oldCanonical;
       if (boundsChanged && !this.options.window.isDestroyed()) {
-        this.setCoordinatorBounds(oldBounds);
+        this.setCoordinatorPosition(oldBounds);
       }
       throw error;
     } finally {
@@ -440,11 +449,11 @@ export class PetGeometryCoordinator {
     // 历史位置仍可读取脚底与屏幕信息，但运行时尺寸固定为 100%。
     const tick = DEFAULT_SCALE_TICK;
     const oldCanonical = this.canonical;
-    this.canonical = canonicalViewport(viewport, tick, this.options.window.getBounds());
+    this.canonical = canonicalViewport(viewport, tick);
     try {
     await this.applyLayout(tick, viewport, state);
       const snapshot = this.options.authority.getSnapshot();
-      if (snapshot) this.canonical = canonicalViewport(viewport, tick, snapshot.windowBoundsDip);
+      if (snapshot) this.canonical = canonicalViewport(viewport, tick);
       this.committedTick = tick;
     this.initialized = true;
       const latestViewport = this.cachedViewport;
@@ -511,12 +520,7 @@ export class PetGeometryCoordinator {
     if (!shape.ok) throw new Error(shape.code);
     const layout = this.options.authority.getShapeLayout(shape.revision);
     if (!layout) throw new Error('PET_GEOMETRY_SHAPE_MISSING');
-    const windowSize = this.canonical
-      ? {
-          width: viewport.width + this.canonical.insetLeft + this.canonical.insetRight,
-          height: viewport.height + this.canonical.insetTop + this.canonical.insetBottom
-        }
-      : { width: oldBounds.width, height: oldBounds.height };
+    const windowSize = this.fixedWindowSize;
     const footOffset = {
       x: viewport.x + layout.footOffsetInViewportDip.x,
       y: viewport.y + layout.footOffsetInViewportDip.y
@@ -606,7 +610,7 @@ export class PetGeometryCoordinator {
       if (this.options.window.isDestroyed()) throw new Error('PET_GEOMETRY_WINDOW_INVALID');
       boundsChanged = !sameBounds(oldBounds, candidateBounds);
       if (boundsChanged) {
-        this.setCoordinatorBounds(candidateBounds);
+        this.setCoordinatorPosition(candidateBounds);
         const actualBounds = this.options.window.getBounds();
         if (!sameBounds(actualBounds, candidateBounds)) {
           this.options.authority.rollbackPreparedPlacement(transaction);
@@ -656,7 +660,7 @@ export class PetGeometryCoordinator {
       if (transaction) this.options.authority.rollbackPreparedPlacement(transaction);
       else this.options.authority.discardPendingShape();
       if (boundsChanged && !this.options.window.isDestroyed()) {
-        this.setCoordinatorBounds(oldBounds);
+        this.setCoordinatorPosition(oldBounds);
         if (oldViewport) this.cachedViewport = oldViewport;
       }
       throw error;
@@ -811,13 +815,17 @@ export class PetGeometryCoordinator {
     });
   }
 
-  private setCoordinatorBounds(bounds: Rectangle): void {
+  private setCoordinatorPosition(bounds: Rectangle): void {
     const cancelExpectation = this.options.expectProgrammaticPosition({
       x: bounds.x,
       y: bounds.y
     });
     try {
-      this.options.window.setBounds(bounds);
+      this.options.window.setBounds({
+        x: bounds.x,
+        y: bounds.y,
+        ...this.fixedWindowSize
+      });
     } catch (error) {
       cancelExpectation?.();
       throw error;
@@ -831,17 +839,14 @@ export class PetGeometryCoordinator {
 
 function canonicalViewport(
   viewport: PetViewportCommitInput['viewportInWindowDip'],
-  tick: number,
-  bounds: Rectangle
+  tick: number
 ): CanonicalViewport {
   const scale = tick / 10;
   return {
     baseWidth: viewport.width / scale,
     baseHeight: viewport.height / scale,
     insetLeft: viewport.x,
-    insetTop: viewport.y,
-    insetRight: bounds.width - viewport.x - viewport.width,
-    insetBottom: bounds.height - viewport.y - viewport.height
+    insetTop: viewport.y
   };
 }
 

@@ -28,6 +28,10 @@ describe('窗口安全配置', () => {
     expect(petWindowOptions('preload.js')).toMatchObject({
       width: 180,
       height: 220,
+      minWidth: 180,
+      maxWidth: 180,
+      minHeight: 220,
+      maxHeight: 220,
       transparent: true,
       frame: false,
       alwaysOnTop: false,
@@ -103,6 +107,7 @@ describe('桌宠交互控制器生命周期', () => {
     };
     const controller = {
       setPassthrough: vi.fn(),
+      endDrag: vi.fn(),
       dispose: vi.fn()
     };
 
@@ -141,6 +146,7 @@ describe('桌宠交互控制器生命周期', () => {
     };
     const controller = {
       setPassthrough: vi.fn(),
+      endDrag: vi.fn(),
       dispose: vi.fn()
     };
 
@@ -186,6 +192,7 @@ describe('桌宠交互控制器生命周期', () => {
     };
     const controller = {
       setPassthrough: vi.fn(),
+      endDrag: vi.fn(),
       dispose: vi.fn()
     };
 
@@ -193,6 +200,7 @@ describe('桌宠交互控制器生命周期', () => {
     listeners.get('destroyed')?.();
     release();
 
+    expect(controller.endDrag).toHaveBeenCalledOnce();
     expect(controller.dispose).toHaveBeenCalledOnce();
   });
 });

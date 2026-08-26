@@ -366,9 +366,15 @@ async function readGeminiStructuredSse(
         }
         fragment += text;
       }
+      const hasFinishReason = Reflect.has(candidate, 'finishReason');
+      const finishReason = Reflect.get(candidate, 'finishReason');
+      // 只有 STOP 表示完整生成；安全拦截、长度截断或未知终态都不能提交部分 JSON。
+      if (hasFinishReason && finishReason !== 'STOP') {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
       return {
         fragment,
-        ...(typeof Reflect.get(candidate, 'finishReason') === 'string' ? { done: true } : {})
+        ...(finishReason === 'STOP' ? { done: true } : {})
       };
     },
     toRaw: content => ({ candidates: [{ content: { parts: [{ text: content }] } }] })

@@ -42,6 +42,7 @@ function fixture(options: Readonly<{
   random?: () => number;
   start?: boolean;
   reentrantPersistent?: boolean;
+  blockOnSubmit?: boolean;
 }> = {}) {
   let blockers = { ...unblocked };
   let mode = options.mode ?? 'assistive';
@@ -50,9 +51,15 @@ function fixture(options: Readonly<{
   const submit = vi.fn<(
     plan: CharacterBehaviorPlan,
     source: 'local-idle'
-  ) => CharacterBehaviorAuthorization>(() => ({
-    kind: 'play', actionId: 'blink-action', playbackToken: 'token', semantic: 'idle'
-  }));
+  ) => CharacterBehaviorAuthorization>(() => {
+    if (options.blockOnSubmit) {
+      blockers = { ...blockers, moving: true };
+      listener();
+    }
+    return {
+      kind: 'play', actionId: 'blink-action', playbackToken: 'token', semantic: 'idle'
+    };
+  });
   const director = {
     getChatContext: vi.fn(() => ({
       ...context,
@@ -226,15 +233,21 @@ describe('CharacterProactivityScheduler', () => {
     await current.scheduler.close();
   });
 
-  test('Scheduler 不复制 actionId 状态，连续候选都交给唯一 Service 预检', async () => {
+  test('间歇移动结束后才重新等待完整随机周期', async () => {
     vi.useFakeTimers();
-    const current = fixture();
+    const current = fixture({ blockOnSubmit: true });
 
     await vi.advanceTimersByTimeAsync(10_000);
-    await vi.advanceTimersByTimeAsync(10_000);
-
-    expect(current.submit).toHaveBeenCalledTimes(2);
+    expect(current.submit).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(current.submit).toHaveBeenCalledOnce();
+    current.setBlocker('moving', false);
     expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(current.submit).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(current.submit).toHaveBeenCalledTimes(2);
     await current.scheduler.close();
   });
 

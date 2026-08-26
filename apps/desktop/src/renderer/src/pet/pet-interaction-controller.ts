@@ -131,7 +131,7 @@ function sameElementBounds(
 }
 
 /**
- * Renderer 只维护像素命中与穿透；窗口拖拽由 CSS 原生区域交给 Windows。
+ * Renderer 只维护像素命中、pointer capture 生命周期和无坐标拖拽节拍。
  */
 export class PetInteractionController {
   private disposed = false;
@@ -143,6 +143,7 @@ export class PetInteractionController {
   private passthroughInFlight = false;
   private blockedPassthrough: boolean | undefined;
   private safeRetryRemaining = 1;
+  private dragging = false;
 
   constructor(
     private readonly api: PetWindowInteractionApi,
@@ -169,17 +170,45 @@ export class PetInteractionController {
   handlePointerMove(point: { x: number; y: number }): boolean {
     if (this.disposed) return false;
     this.latestPoint = { ...point };
+    if (this.dragging) {
+      this.api.updatePetDrag();
+      return true;
+    }
     return this.refreshPassthrough();
+  }
+
+  handlePointerDown(point: { x: number; y: number }): boolean {
+    if (this.disposed || this.dragging) return false;
+    this.latestPoint = { ...point };
+    if (!this.isCurrentPointHit()) return false;
+    try {
+      this.api.beginPetDrag();
+      this.dragging = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  handlePointerUp(): void {
+    if (!this.dragging) return;
+    this.dragging = false;
+    try { this.api.endPetDrag(); } catch {
+      // Main 的窗口生命周期清理仍会释放拖拽 owner。
+    }
+    this.refreshPassthrough();
   }
 
   handlePointerLeave(): void {
     if (this.disposed) return;
+    if (this.dragging) return;
     this.latestPoint = null;
     this.refreshPassthrough();
   }
 
   dispose(): void {
     if (this.disposed) return;
+    this.handlePointerUp();
     this.disposed = true;
     this.unsubscribeHitRegion?.();
     this.unsubscribeHitRegion = null;

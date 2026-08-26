@@ -140,7 +140,7 @@ function expectObservableErrorTextHidden(
   }
 }
 
-function sseResponse(events: readonly string[]): Response {
+function sseResponse(events: readonly string[], keepOpen = false): Response {
   const encoded = new TextEncoder().encode(events.map(event => `data: ${event}\n\n`).join(''));
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -148,7 +148,7 @@ function sseResponse(events: readonly string[]): Response {
       for (let offset = 0; offset < encoded.length; offset += 7) {
         controller.enqueue(encoded.slice(offset, offset + 7));
       }
-      controller.close();
+      if (!keepOpen) controller.close();
     }
   });
   return new Response(body, {
@@ -296,10 +296,10 @@ const cloudStreamingCases = [
   {
     name: 'OpenAI Compatible',
     createProvider: chatProviderContractCases[0]!.createProvider,
-    response: () => sseResponse([
+    response: (keepOpen = false) => sseResponse([
       ...structuredStreamFragments.map(content => JSON.stringify({ choices: [{ delta: { content } }] })),
       '[DONE]'
-    ]),
+    ], keepOpen),
     assertRequest(input: string | URL | Request, body: Record<string, unknown>) {
       expect(String(input)).toBe('https://api.example.com/v1/chat/completions');
       expect(body.stream).toBe(true);
@@ -308,13 +308,13 @@ const cloudStreamingCases = [
   {
     name: 'Anthropic',
     createProvider: chatProviderContractCases[1]!.createProvider,
-    response: () => sseResponse([
+    response: (keepOpen = false) => sseResponse([
       ...structuredStreamFragments.map(text => JSON.stringify({
         type: 'content_block_delta',
         delta: { type: 'text_delta', text }
       })),
       JSON.stringify({ type: 'message_stop' })
-    ]),
+    ], keepOpen),
     assertRequest(input: string | URL | Request, body: Record<string, unknown>) {
       expect(String(input)).toBe('https://api.example.com/v1/messages');
       expect(body.stream).toBe(true);
@@ -323,12 +323,12 @@ const cloudStreamingCases = [
   {
     name: 'Gemini',
     createProvider: chatProviderContractCases[2]!.createProvider,
-    response: () => sseResponse(structuredStreamFragments.map((text, index) => JSON.stringify({
+    response: (keepOpen = false) => sseResponse(structuredStreamFragments.map((text, index) => JSON.stringify({
       candidates: [{
         content: { parts: [{ text }] },
         ...(index === structuredStreamFragments.length - 1 ? { finishReason: 'STOP' } : {})
       }]
-    }))),
+    })), keepOpen),
     assertRequest(input: string | URL | Request, body: Record<string, unknown>) {
       expect(String(input)).toBe(
         'https://api.example.com/v1/models/contract-model:streamGenerateContent?alt=sse'
@@ -358,6 +358,25 @@ describe('三协议云端普通聊天流式契约', () => {
       expect(JSON.stringify(deltas)).not.toContain('不可见-canary');
       const [input, init] = fetchClient.mock.calls[0] ?? [];
       contract.assertRequest(input!, JSON.parse(String(init?.body)) as Record<string, unknown>);
+    }
+  );
+
+  test.each(cloudStreamingCases)(
+    '$name 收到协议终态后主动结束，不等待服务端关闭长连接',
+    async contract => {
+      const fetchClient = vi.fn<FetchLike>(async () => contract.response(true));
+      const response = contract.createProvider(fetchClient).respond({
+        ...structuredChatRequest,
+        onTextDelta: vi.fn()
+      }, new AbortController().signal);
+
+      await expect(Promise.race([
+        response,
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error('SSE_TERMINAL_WAITED_FOR_EOF')),
+          500
+        ))
+      ])).resolves.toMatchObject({ type: 'text', text: '你🐾好\n世界' });
     }
   );
 
@@ -394,6 +413,28 @@ describe('三协议云端普通聊天流式契约', () => {
     expect(deltas.join('')).toBe('未完成');
   });
 
+  test.each(['SAFETY', 'MAX_TOKENS', 'UNKNOWN_REASON'])(
+    'Gemini 将非 STOP 终态 %s 作为失败关闭',
+    async finishReason => {
+      const fetchClient = vi.fn<FetchLike>(async () => sseResponse(
+        structuredStreamFragments.map((text, index) => JSON.stringify({
+          candidates: [{
+            content: { parts: [{ text }] },
+            ...(index === structuredStreamFragments.length - 1 ? { finishReason } : {})
+          }]
+        }))
+      ));
+
+      await expect(chatProviderContractCases[2]!.createProvider(fetchClient).respond({
+        ...structuredChatRequest,
+        onTextDelta: vi.fn()
+      }, new AbortController().signal)).rejects.toMatchObject({
+        code: 'PROVIDER_MALFORMED_RESPONSE',
+        retryable: false
+      });
+    }
+  );
+
   test('Anthropic 终态后的正文数据使整轮失败', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
       JSON.stringify({ type: 'message_stop' }),
@@ -410,6 +451,113 @@ describe('三协议云端普通聊天流式契约', () => {
       code: 'PROVIDER_MALFORMED_RESPONSE'
     });
   });
+
+  test('OpenAI Compatible 拒绝重复顶层 text 且不公开第二段', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      JSON.stringify({ choices: [{ delta: { content: '{"text":"第一段"' } }] }),
+      JSON.stringify({ choices: [{ delta: { content: ',"text":"第二段"}' } }] }),
+      '[DONE]'
+    ]));
+    const deltas: string[] = [];
+
+    await expect(chatProviderContractCases[0]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta: delta => deltas.push(delta)
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      retryable: false
+    });
+
+    expect(deltas.join('')).toBe('第一段');
+  });
+
+  test('Anthropic 忽略私有 thinking 和 signature 增量并继续公开后续正文', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'thinking_delta', thinking: '不可见思考' }
+      }),
+      JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'signature_delta', signature: '不可见签名' }
+      }),
+      JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: '{"text":"正常","status":"idle"}' }
+      }),
+      JSON.stringify({ type: 'message_stop' })
+    ]));
+    const deltas: string[] = [];
+
+    await expect(chatProviderContractCases[1]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta: delta => deltas.push(delta)
+    }, new AbortController().signal)).resolves.toMatchObject({
+      type: 'text',
+      text: '正常'
+    });
+
+    expect(deltas.join('')).toBe('正常');
+    expect(JSON.stringify(deltas)).not.toContain('不可见');
+  });
+
+  test('Anthropic 拒绝未知 content_block_delta 类型且不公开后续正文', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([
+      JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'input_json_delta', partial_json: '{"unexpected":true}' }
+      }),
+      JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: '{"text":"不得公开"}' }
+      }),
+      JSON.stringify({ type: 'message_stop' })
+    ]));
+    const onTextDelta = vi.fn();
+
+    await expect(chatProviderContractCases[1]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      retryable: false
+    });
+
+    expect(onTextDelta).not.toHaveBeenCalled();
+  });
+
+  test('Anthropic 私有 thinking 和 signature 增量累计超预算时失败且不公开正文', async () => {
+    const privateDelta = '思'.repeat(80_000);
+    const events = [
+      { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: privateDelta } },
+      { type: 'content_block_delta', delta: { type: 'signature_delta', signature: privateDelta } },
+      { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: privateDelta } },
+      {
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: '{"text":"不得到达"}' }
+      },
+      { type: 'message_stop' }
+    ].map(event => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+    const fetchClient = vi.fn<FetchLike>(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const event of events) controller.enqueue(event);
+        controller.close();
+      }
+    }), {
+      headers: { 'content-type': 'text/event-stream' }
+    }));
+    const onTextDelta = vi.fn();
+
+    await expect(chatProviderContractCases[1]!.createProvider(fetchClient).respond({
+      ...structuredChatRequest,
+      onTextDelta
+    }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      retryable: false
+    });
+
+    expect(onTextDelta).not.toHaveBeenCalled();
+  }, 20_000);
 
   test.each(cloudStreamingCases)(
     '$name 在请求前已 Abort 时不公开任何增量',
@@ -590,7 +738,7 @@ describe('三协议云端普通聊天流式契约', () => {
     }, new AbortController().signal)).rejects.toMatchObject({
       code: 'PROVIDER_MALFORMED_RESPONSE'
     });
-  });
+  }, 20_000);
 });
 
 describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {

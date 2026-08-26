@@ -47,6 +47,7 @@ class IncrementalTopLevelTextProjector {
   private keyCharacters: string[] = [];
   private keyEscaped = false;
   private currentKey = '';
+  private targetFieldSeen = false;
   private skipEscaped = false;
   private skipInString = false;
   private skipClosers: string[] = [];
@@ -84,6 +85,8 @@ class IncrementalTopLevelTextProjector {
       if (this.phase === 'value') {
         if (/\s/u.test(character)) { this.index += 1; continue; }
         if (this.currentKey === this.field) {
+          if (this.targetFieldSeen) this.malformed();
+          this.targetFieldSeen = true;
           if (character !== '"') this.malformed();
           this.index += 1; this.phase = 'target_string'; continue;
         }
@@ -263,10 +266,17 @@ export async function readStructuredTextSse(
       if (chunk.value.byteLength > MAX_SSE_TRANSPORT_BYTES - transportBytes) options.malformed();
       transportBytes += chunk.value.byteLength;
       await acceptText(decoder.decode(chunk.value, { stream: true }));
+      if (done) {
+        // 协议终态而非 HTTP EOF 决定本轮完成；主动取消可复用或长时间保持的连接体。
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
     }
-    await acceptText(decoder.decode());
-    if (lineBuffer.length > 0) acceptLine(lineBuffer.replace(/\r$/u, ''));
-    dispatch();
+    if (!done) {
+      await acceptText(decoder.decode());
+      if (lineBuffer.length > 0) acceptLine(lineBuffer.replace(/\r$/u, ''));
+      dispatch();
+    }
     if (!done) options.malformed();
   } catch (error) {
     await reader.cancel().catch(() => undefined);

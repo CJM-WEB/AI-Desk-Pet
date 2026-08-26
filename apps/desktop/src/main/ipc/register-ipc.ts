@@ -51,6 +51,7 @@ import {
   type CharacterActionFeedbackInput,
   type CharacterMotionSnapshot
 } from '../../shared/character-motion-ipc';
+import type { IpcMainEvent } from 'electron';
 
 export type WindowIpcActions = {
   openChat(): unknown;
@@ -115,6 +116,15 @@ export interface AgentIpcService {
     decision: HistoryDisclosureDecision
   ): Promise<void>;
   resetConversation(): Promise<void>;
+}
+
+function replaceListener(
+  ipcMain: IpcMain,
+  channel: string,
+  listener: (event: IpcMainEvent, ...args: unknown[]) => void
+): void {
+  ipcMain.removeAllListeners(channel);
+  ipcMain.on(channel, listener);
 }
 
 function assertCurrentChatSender(
@@ -612,13 +622,16 @@ export function registerCharacterMotionIpc(
 
 type PetWindowInteractionControllerActions = {
   setPassthrough(ignore: boolean): void;
+  beginDrag(): void;
+  updateDrag(): void;
+  endDrag(): void;
   dispose(): void;
   getProbe?(): PetInteractionProbe;
   recordProbeEvent?(event: PetInteractionProbeEvent): void;
 };
 
 function assertPetWindowSender(
-  event: IpcMainInvokeEvent,
+  event: Pick<IpcMainInvokeEvent, 'sender'>,
   petWebContents: WebContents
 ): void {
   if (event.sender !== petWebContents || petWebContents.isDestroyed()) {
@@ -644,6 +657,21 @@ export function registerPetWindowInteractionIpc(
     };
   } = {}
 ): void {
+  for (const [channel, action] of [
+    [ipcChannels.petDragBegin, () => controller.beginDrag()],
+    [ipcChannels.petDragUpdate, () => controller.updateDrag()],
+    [ipcChannels.petDragEnd, () => controller.endDrag()]
+  ] as const) {
+    replaceListener(ipcMain, channel, (event, ...args) => {
+      try {
+        assertPetWindowSender(event, petWebContents);
+        assertNoPetInteractionInput(args);
+        action();
+      } catch {
+        // 单向高频拖拽 IPC 对无效发送者或参数失败关闭，不向 Renderer 暴露 Main 细节。
+      }
+    });
+  }
   replaceHandler(
     ipcMain,
     ipcChannels.petMousePassthroughSet,

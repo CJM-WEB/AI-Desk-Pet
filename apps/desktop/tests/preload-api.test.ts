@@ -3,6 +3,7 @@ import { ipcChannels } from '../src/shared/ipc-channels';
 import type { MyselfApi } from '../src/shared/myself-api';
 
 const invoke = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => undefined);
+const send = vi.fn();
 const on = vi.fn();
 const removeListener = vi.fn();
 let exposedApi: MyselfApi | undefined;
@@ -13,7 +14,7 @@ vi.mock('electron', () => ({
       exposedApi = api;
     }
   },
-  ipcRenderer: { invoke, on, removeListener }
+  ipcRenderer: { invoke, send, on, removeListener }
 }));
 
 process.argv.push('--myself-e2e-probe');
@@ -21,6 +22,7 @@ await import('../src/preload/index');
 
 beforeEach(() => {
   invoke.mockClear();
+  send.mockClear();
 });
 
 describe('preload 清除本地数据转发', () => {
@@ -154,6 +156,9 @@ describe('preload 公开 API', () => {
       'subscribeCharacterMotion',
       'reportCharacterActionFeedback',
       'setPetMousePassthrough',
+      'beginPetDrag',
+      'updatePetDrag',
+      'endPetDrag',
       'commitPetViewport',
       'onPetGeometryRender',
       'recordPetInteractionProbeEvent',
@@ -295,6 +300,9 @@ describe('受限桌宠窗口交互 preload API', () => {
 
   test('固定命令与只读探针只映射到固定通道和固定负载', async () => {
     await exposedApi?.setPetMousePassthrough(true);
+    exposedApi?.beginPetDrag();
+    exposedApi?.updatePetDrag();
+    exposedApi?.endPetDrag();
     await exposedApi?.recordPetInteractionProbeEvent?.('mouse_hit');
     await exposedApi?.getPetInteractionProbe?.();
     await exposedApi?.getCharacterBehaviorProbe?.();
@@ -314,6 +322,11 @@ describe('受限桌宠窗口交互 preload API', () => {
       'pet-window:e2e-interaction-probe-record',
       'mouse_hit'
     );
+    expect(send.mock.calls).toEqual([
+      [ipcChannels.petDragBegin],
+      [ipcChannels.petDragUpdate],
+      [ipcChannels.petDragEnd]
+    ]);
     expect(invoke).toHaveBeenNthCalledWith(3, ipcChannels.petInteractionProbeGet);
     expect(await exposedApi?.getCharacterBehaviorProbe?.()).toEqual({
       revision: 0,

@@ -29,12 +29,26 @@ public static class MyselfCursorInterop {
   public struct Point { public int X; public int Y; }
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(
+    IntPtr window, out uint processId);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int virtualKey);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(
+    IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(
+    IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
   [DllImport("user32.dll")] public static extern void mouse_event(
     uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
   [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
 }`;
 
 type WindowsCursorSnapshot = Readonly<{ x: number; y: number; dpi: number }>;
+type WindowsPointerTarget = Readonly<{ processId: number; leftButtonDown: boolean }>;
+type WindowsWindowRect = Readonly<{
+  left: number; top: number; right: number; bottom: number;
+}>;
 
 /** E2E 只调用固定 Win32 光标 API，并由用例 finally 恢复进入测试前的位置。 */
 async function readWindowsCursor(): Promise<WindowsCursorSnapshot> {
@@ -64,7 +78,7 @@ ${WINDOWS_CURSOR_INTEROP}
 if (-not [MyselfCursorInterop]::SetCursorPos(${x}, ${y})) { exit 2 }`;
   await execFileAsync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-Command', script
-  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+  ], { windowsHide: true, timeout: 30_000, encoding: 'utf8' });
 }
 
 async function setWindowsLeftButton(down: boolean): Promise<void> {
@@ -74,6 +88,75 @@ Add-Type -TypeDefinition @'
 ${WINDOWS_CURSOR_INTEROP}
 '@
 [MyselfCursorInterop]::mouse_event(${flag}, 0, 0, 0, [UIntPtr]::Zero)`;
+  await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+}
+
+/** 从 Win32 命中测试读取真实输入目标，避免以内存中的穿透标志代替系统事实。 */
+async function readWindowsPointerTarget(): Promise<WindowsPointerTarget> {
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+$point = [MyselfCursorInterop+Point]::new()
+if (-not [MyselfCursorInterop]::GetCursorPos([ref]$point)) { exit 2 }
+$window = [MyselfCursorInterop]::WindowFromPoint($point)
+[uint32]$processId = 0
+[void][MyselfCursorInterop]::GetWindowThreadProcessId($window, [ref]$processId)
+$leftButtonDown = ([MyselfCursorInterop]::GetAsyncKeyState(1) -band 0x8000) -ne 0
+[Console]::Out.Write("$processId,$leftButtonDown")`;
+  const { stdout } = await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+  const match = /^(\d+),(True|False)$/u.exec(stdout.trim());
+  if (!match) throw new Error('WINDOWS_POINTER_TARGET_PROBE_INVALID');
+  return { processId: Number(match[1]), leftButtonDown: match[2] === 'True' };
+}
+
+/** 读取目标 Electron 顶层窗口的真实物理矩形，避免混用 DIP 与 Win32 坐标。 */
+async function readWindowsProcessWindowRect(processId: number): Promise<WindowsWindowRect> {
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new Error('WINDOWS_WINDOW_PROCESS_ID_INVALID');
+  }
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+$process = Get-Process -Id ${String(processId)} -ErrorAction Stop
+$window = $process.MainWindowHandle
+if ($window -eq [IntPtr]::Zero) { exit 2 }
+$rect = [MyselfCursorInterop+Rect]::new()
+if (-not [MyselfCursorInterop]::GetWindowRect($window, [ref]$rect)) { exit 3 }
+[Console]::Out.Write("$($rect.Left),$($rect.Top),$($rect.Right),$($rect.Bottom)")`;
+  const { stdout } = await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script
+  ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
+  const match = /^(-?\d+),(-?\d+),(-?\d+),(-?\d+)$/u.exec(stdout.trim());
+  if (!match) throw new Error('WINDOWS_WINDOW_RECT_PROBE_INVALID');
+  return {
+    left: Number(match[1]), top: Number(match[2]),
+    right: Number(match[3]), bottom: Number(match[4])
+  };
+}
+
+/** 将测试目标提升到普通窗口 Z 序顶部，但不激活、不改位置或尺寸。 */
+async function raiseWindowsProcessWindow(processId: number): Promise<void> {
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new Error('WINDOWS_WINDOW_PROCESS_ID_INVALID');
+  }
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+${WINDOWS_CURSOR_INTEROP}
+'@
+$process = Get-Process -Id ${String(processId)} -ErrorAction Stop
+$window = $process.MainWindowHandle
+if ($window -eq [IntPtr]::Zero) { exit 2 }
+$flags = 0x0001 -bor 0x0002 -bor 0x0010
+if (-not [MyselfCursorInterop]::SetWindowPos(
+  $window, [IntPtr](-1), 0, 0, 0, 0, $flags)) { exit 3 }
+if (-not [MyselfCursorInterop]::SetWindowPos(
+  $window, [IntPtr](-2), 0, 0, 0, 0, $flags)) { exit 4 }`;
   await execFileAsync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-Command', script
   ], { windowsHide: true, timeout: 10_000, encoding: 'utf8' });
@@ -2792,7 +2875,9 @@ test.describe('角色恢复', () => {
       await fixture.restart();
 
       const pet = await waitForRendererPage(fixture, 'pet', 15_000);
-      await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready');
+      await expect(pet.locator('.character-player')).toHaveAttribute(
+        'data-status', 'ready', { timeout: 20_000 }
+      );
       expect(await pet.evaluate(async () => (
         (await window.myself.getCharacterRuntimeSnapshot())?.activeCharacterId
       ))).toBe('builtin-default');
@@ -2859,7 +2944,10 @@ test.describe('角色恢复', () => {
       await fixture.restart();
 
       const pet = await waitForRendererPage(fixture, 'pet', 15_000);
-      await expect(pet.locator('.character-player')).toHaveAttribute('data-status', 'ready');
+      // 完整行为门禁下恢复扫描可能超过默认 10 秒；等待预算与同组恢复用例保持一致。
+      await expect(pet.locator('.character-player')).toHaveAttribute(
+        'data-status', 'ready', { timeout: 20_000 }
+      );
       await expect(pet.getByRole('alert')).toContainText('已切换到官方默认角色');
       await expect(pet.getByRole('button', { name: '打开角色工作室' })).toBeVisible();
       expect(await pet.evaluate(async () => (
@@ -2885,15 +2973,24 @@ test.describe('角色恢复', () => {
 });
 
 test.describe('真实桌宠像素命中与左键拖拽', () => {
-  test('Win32 系统光标连续拖拽三轮时 Main 位置跟随且尺寸恒定', async () => {
+  test('Win32 系统光标连续拖拽三轮时 Main 全程持有 owner 且尺寸恒定', async () => {
     test.skip(process.platform !== 'win32', '该验收只验证 Windows 原生系统光标链。');
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     const fixtureModule = await loadElectronFixtureModule();
     const originalCursor = await readWindowsCursor();
+    await setWindowsLeftButton(false);
     const fixture = await fixtureModule.createElectronAppFixture({
       workspaceRoot: resolve(process.cwd()),
       apiKey: runtimeDiagnosticKey(),
-      launchTimeoutMs: 15_000
+      launchTimeoutMs: 15_000,
+      // 拖拽验收只允许系统光标改变窗口位置，排除间歇自主移动跨 DPI 屏幕的干扰。
+      prepareUserData: async directories => {
+        const settings = new SettingsStore(
+          join(directories.userDataDirectory, 'settings.json'),
+          async () => false
+        );
+        await settings.saveMovementMode(0);
+      }
     });
     try {
       const pet = await waitForRendererPage(fixture, 'pet');
@@ -2902,11 +2999,21 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       await expect(pet.locator('.character-player')).toHaveAttribute(
         'data-status', 'ready', { timeout: 20_000 }
       );
-      await expect.poll(async () => (
-        await fixture.getMainE2eState()
-      ).petWindowBoundsDip, { timeout: 20_000 }).toMatchObject({
-        width: expect.any(Number),
-        height: expect.any(Number)
+      await expect.poll(async () => {
+        const state = await fixture.getMainE2eState();
+        return {
+          nativeDragging: state.petNativeDragging,
+          bounds: state.petWindowBoundsDip
+        };
+      }, { timeout: 20_000 }).toMatchObject({
+        nativeDragging: false,
+        bounds: { width: expect.any(Number), height: expect.any(Number) }
+      });
+      const idleBounds = (await fixture.getMainE2eState()).petWindowBoundsDip;
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+      expect((await fixture.getMainE2eState()).petWindowBoundsDip).toMatchObject({
+        width: idleBounds.width,
+        height: idleBounds.height
       });
       const dispatchPointerMove = async (point: { x: number; y: number }): Promise<void> => {
         await shell.evaluate((element, value) => {
@@ -2952,8 +3059,9 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
       const recordMainSize = (bounds: { width: number; height: number }): void => {
         mainSizeSamples.push({ width: bounds.width, height: bounds.height });
         // Windows 物理像素换算为 DIP 时可能随窗口位置产生 ±1 的非累积取整差。
-        expect(Math.abs(bounds.width - mainSizeBaseline.width)).toBeLessThanOrEqual(1);
-        expect(Math.abs(bounds.height - mainSizeBaseline.height)).toBeLessThanOrEqual(1);
+        const evidence = JSON.stringify({ mainSizeBaseline, bounds });
+        expect(Math.abs(bounds.width - mainSizeBaseline.width), evidence).toBeLessThanOrEqual(1);
+        expect(Math.abs(bounds.height - mainSizeBaseline.height), evidence).toBeLessThanOrEqual(1);
       };
       recordMainSize(mainSizeBaseline);
       const rendererCanvasSamples = new Set<string>([[
@@ -2983,14 +3091,41 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
           if (!(await fixture.getPetInteractionProbe()).passthrough) break;
         }
         const mainBeforeHover = (await fixture.getMainE2eState()).petWindowBoundsDip;
-        await setWindowsCursor({
-          x: Math.round((mainBeforeHover.x + roundVisible.x) * originalCursor.dpi / 96),
-          y: Math.round((mainBeforeHover.y + roundVisible.y) * originalCursor.dpi / 96)
-        });
+        recordMainSize(mainBeforeHover);
+        await raiseWindowsProcessWindow(fixture.processId);
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).petWindowAlwaysOnTop).toBe(false);
+        recordMainSize((await fixture.getMainE2eState()).petWindowBoundsDip);
+        const nativeBeforeHover = await readWindowsProcessWindowRect(fixture.processId);
+        const physicalPerDipX = (
+          nativeBeforeHover.right - nativeBeforeHover.left
+        ) / mainBeforeHover.width;
+        const physicalPerDipY = (
+          nativeBeforeHover.bottom - nativeBeforeHover.top
+        ) / mainBeforeHover.height;
+        const nativeTargetPoint = {
+          x: nativeBeforeHover.left + Math.round(roundVisible.x * physicalPerDipX),
+          y: nativeBeforeHover.top + Math.round(roundVisible.y * physicalPerDipY)
+        };
+        await setWindowsCursor(nativeTargetPoint);
         await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
           passthrough: false,
           dragging: false
         });
+        await expect.poll(async () => (
+          await readWindowsPointerTarget()
+        ).processId, {
+          message: JSON.stringify({
+            fixtureProcessId: fixture.processId,
+            mainBeforeHover,
+            nativeBeforeHover,
+            nativeTargetPoint,
+            roundVisible,
+            physicalPerDipX,
+            physicalPerDipY
+          })
+        }).toBe(fixture.processId);
         const cursorAtStart = await readWindowsCursor();
         const mainAtStart = (await fixture.getMainE2eState()).petWindowBoundsDip;
         recordMainSize(mainAtStart);
@@ -3002,32 +3137,71 @@ test.describe('真实桌宠像素命中与左键拖拽', () => {
         }));
         const direction = mainAtStart.x < available.left + available.width / 2 ? 1 : -1;
         await setWindowsLeftButton(true);
-        expect(await fixture.getPetInteractionProbe()).toMatchObject({ dragging: false });
+        await expect.poll(async () => (
+          await readWindowsPointerTarget()
+        ).leftButtonDown).toBe(true);
+
+        // 先以第一次 Main 权威位置变化为锚点，避免把物理像素与 DIP
+        // 的初始取整差误判成桌宠跟随延迟；真实 Win32 注入也可能在首次移动时才投递按下事件。
+        let nativeDragStarted = false;
+        for (let primeStep = 1; primeStep <= 20; primeStep += 1) {
+          const primePhysicalDelta = Math.round(primeStep * physicalPerDipX);
+          await setWindowsCursor({
+            x: cursorAtStart.x + direction * primePhysicalDelta,
+            y: cursorAtStart.y
+          });
+          nativeDragStarted = (
+            await fixture.getMainE2eState()
+          ).petWindowBoundsDip.x !== mainAtStart.x;
+          if (nativeDragStarted) break;
+        }
+        expect(nativeDragStarted, '连续系统光标事件应启动 Main 权威拖拽').toBe(true);
+        await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({ dragging: true });
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).petNativeDragging).toBe(true);
+        const cursorAtDragAnchor = await readWindowsCursor();
+        const mainAtDragAnchor = (await fixture.getMainE2eState()).petWindowBoundsDip;
+        recordMainSize(mainAtDragAnchor);
+
+        // 长按停顿期间 owner 和几何 blocker 必须保持，不允许自主运动或布局事务插入。
+        await new Promise(resolve => setTimeout(resolve, 5_500));
+        const heldState = await fixture.getMainE2eState();
+        expect(heldState.petNativeDragging).toBe(true);
+        expect(await fixture.getPetInteractionProbe()).toMatchObject({ dragging: true });
+        recordMainSize(heldState.petWindowBoundsDip);
 
         for (let step = 1; step <= 20; step += 1) {
-          const physicalDelta = Math.round(step * cursorAtStart.dpi / 96);
-          const expectedDipDelta = Math.round(physicalDelta * 96 / cursorAtStart.dpi);
+          const physicalDelta = Math.round(step * physicalPerDipX);
+          const expectedDipDelta = Math.round(physicalDelta / physicalPerDipX);
           await setWindowsCursor({
-            x: cursorAtStart.x + direction * physicalDelta,
-            y: cursorAtStart.y
+            x: cursorAtDragAnchor.x + direction * physicalDelta,
+            y: cursorAtDragAnchor.y
           });
           await expect.poll(async () => Math.abs(
             (await fixture.getMainE2eState()).petWindowBoundsDip.x
-            - (mainAtStart.x + direction * expectedDipDelta)
-          // E2E 无法读取原生抓取偏移；光标与 Electron 坐标反推允许最多 6 DIP 非累积误差。
-          ), { timeout: 3_000 }).toBeLessThanOrEqual(6);
-          expect(await fixture.getPetInteractionProbe()).toMatchObject({ dragging: false });
+            - (mainAtDragAnchor.x + direction * expectedDipDelta)
+          // 锚点之后只允许 Windows 物理像素与 DIP 换算产生非累积取整差。
+          ), { timeout: 3_000 }).toBeLessThanOrEqual(2);
           const mainState = await fixture.getMainE2eState();
+          expect(mainState.petNativeDragging).toBe(true);
+          expect(await fixture.getPetInteractionProbe()).toMatchObject({ dragging: true });
           const mainCurrent = mainState.petWindowBoundsDip;
           recordMainSize(mainCurrent);
-          expect(mainCurrent.y).toBe(mainAtStart.y);
+          expect(mainCurrent.y).toBe(mainAtDragAnchor.y);
           const rendererCurrent = await measureRenderer();
           recordRendererSize(rendererCurrent);
         }
         await setWindowsLeftButton(false);
         await expect.poll(async () => (
+          await readWindowsPointerTarget()
+        ).leftButtonDown).toBe(false);
+        await expect.poll(async () => (
           await fixture.getMainE2eState()
         ).petNativeDragging).toBe(false);
+        await expect.poll(async () => (
+          await fixture.getMainE2eState()
+        ).geometry, { timeout: 10_000 }).not.toBeNull();
         await expect.poll(() => fixture.getPetInteractionProbe()).toMatchObject({
           dragging: false
         });
@@ -4353,7 +4527,12 @@ test.describe('自主行为最小闭环', () => {
       await pet.evaluate(async characterId => {
         await window.myself.activateCharacter(characterId);
       }, builtin!.id);
-      await expect.poll(() => fixture.getCharacterBehaviorProbe()).toMatchObject({
+      await expect(pet.locator('.character-player')).toHaveAttribute(
+        'data-status', 'ready', { timeout: 20_000 }
+      );
+      await expect.poll(() => fixture.getCharacterBehaviorProbe(), {
+        timeout: 20_000
+      }).toMatchObject({
         primaryStateId: 'idle',
         actionId: 'idle-main',
         playbackStatus: expect.stringMatching(/^(started|completed)$/u)

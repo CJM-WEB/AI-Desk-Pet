@@ -117,7 +117,11 @@ function fixture(options: {
     : vi.fn().mockResolvedValue(undefined);
   const publishRenderView = vi.fn();
   coordinator = new PetGeometryCoordinator({
-    window: { getBounds: () => ({ ...bounds }), setBounds, isDestroyed: () => false },
+    window: {
+      getBounds: () => ({ ...bounds }),
+      setBounds,
+      isDestroyed: () => false
+    },
     authority: authority as never,
     settings: {
       getPetPlacementState: vi.fn().mockResolvedValue({
@@ -216,6 +220,7 @@ function realAuthorityFixture(options: {
   let viewport: Viewport = options.initialViewport
     ? { ...options.initialViewport }
     : { x: 20, y: 10, width: 158, height: 193 };
+  const fixedWindowSize = { width: bounds.width, height: bounds.height };
   let setBoundsCall = 0;
   const authority = new PetVisualGeometryAuthority('pet-a');
   const savePetPlacement = options.savePetPlacement ?? vi.fn().mockResolvedValue(undefined);
@@ -226,26 +231,19 @@ function realAuthorityFixture(options: {
   const commitPreparedPlacement = vi.spyOn(authority, 'commitPreparedPlacement');
   const rollbackPreparedPlacement = vi.spyOn(authority, 'rollbackPreparedPlacement');
   let coordinator!: PetGeometryCoordinator;
-  const setBounds = vi.fn((next: Viewport) => {
+  const setBounds = vi.fn((candidate: Viewport) => {
+    const next = { x: candidate.x, y: candidate.y, ...fixedWindowSize };
     const previous = viewport;
     const previousBounds = bounds;
     setBoundsCall += 1;
     const setBoundsError = options.setBoundsError?.(next, setBoundsCall);
     if (setBoundsError) throw setBoundsError;
-    bounds = options.actualBounds
-      ? { ...options.actualBounds(next, previousBounds, setBoundsCall) }
-      : { ...next };
+    const actualBounds = options.actualBounds
+      ? options.actualBounds(next, previousBounds, setBoundsCall)
+      : next;
+    bounds = { x: actualBounds.x, y: actualBounds.y, ...fixedWindowSize };
     const actualOverride = options.actualViewport?.(next, previous, setBoundsCall);
-    const actual = actualOverride === undefined ? {
-      x: previous.x,
-      y: previous.y,
-      width: bounds.width === previousBounds.width
-        ? previous.width
-        : bounds.width - previous.x - 2,
-      height: bounds.height === previousBounds.height
-        ? previous.height
-        : bounds.height - previous.y - 17
-    } : actualOverride;
+    const actual = actualOverride === undefined ? previous : actualOverride;
     if (!actual) return;
     viewport = { ...actual };
     queueMicrotask(() => void coordinator.commitViewport({ viewportInWindowDip: viewport }));
@@ -316,6 +314,38 @@ function realAuthorityFixture(options: {
 }
 
 describe('G4 viewport settle 补充状态机', () => {
+  test('Renderer viewport 与角色换绑只调整位置，运行期保持启动窗口尺寸', async () => {
+    let binding: CharacterGeometryBinding = {
+      generation: 1, manifest: realManifest(), skinId: 'default-skin',
+      actionId: 'idle-action', actionRevision: 3,
+      resourceRevision: RESOURCE_REVISION, direction: 'right'
+    };
+    const value = realAuthorityFixture({ getBinding: () => binding });
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
+    });
+    const startupSize = { width: value.getBounds().width, height: value.getBounds().height };
+    value.setBounds.mockClear();
+
+    await value.coordinator.commitViewport({
+      viewportInWindowDip: { x: 20, y: 10, width: 155, height: 195 }
+    });
+    binding = {
+      ...binding,
+      generation: 2,
+      manifest: realManifest(0.4),
+      actionRevision: 4
+    };
+    await value.coordinator.refreshBinding();
+
+    expect(value.setBounds).toHaveBeenCalled();
+    expect(value.setBounds.mock.calls.every(([bounds]) => (
+      bounds.width === startupSize.width && bounds.height === startupSize.height
+    ))).toBe(true);
+    expect(value.getBounds()).toMatchObject(startupSize);
+    expect(value.authority.getSnapshot()?.windowBoundsDip).toMatchObject(startupSize);
+  });
+
   test('真实 authority 从 158×193 收敛到 158×194 时先更新 shape 再 placement 且保持脚底', async () => {
     const value = realAuthorityFixture();
     await value.coordinator.commitViewport({
@@ -415,7 +445,7 @@ describe('G4 viewport settle 补充状态机', () => {
     expect(value.authority.getSnapshot()?.revision).toBe(3);
   });
 
-  test('非缩放 settle 的 preserve-foot 量化后只提交 actual，adopt-current-window 与重复 viewport 不自激', async () => {
+  test('非缩放 settle 的原点量化后只提交 actual，adopt-current-window 与重复 viewport 不自激', async () => {
     let quantizeNextBounds = false;
     let quantizedBounds: Viewport | null = null;
     const preserve = realAuthorityFixture({
@@ -429,8 +459,8 @@ describe('G4 viewport settle 补充状态机', () => {
         quantizedBounds = {
           x: Math.round(candidate.x),
           y: Math.round(candidate.y),
-          width: candidate.width + 1,
-          height: candidate.height + 1
+          width: candidate.width,
+          height: candidate.height
         };
         return quantizedBounds;
       },
@@ -473,7 +503,7 @@ describe('G4 viewport settle 补充状态机', () => {
       viewportInWindowDip: { x: 20, y: 10, width: 158, height: 193 }
     });
     blocked = true;
-    const draggedBounds = { x: 480, y: 280, width: 183, height: 223 };
+    const draggedBounds = { x: 480, y: 280, width: 180, height: 220 };
     adopt.setCurrentBounds(draggedBounds);
     adopt.coordinator.handleWindowMoved();
     await adopt.coordinator.commitViewport({
@@ -485,8 +515,8 @@ describe('G4 viewport settle 补充状态机', () => {
     expect(adopt.setBounds).not.toHaveBeenCalled();
   });
 
-  test('pending-legacy 初始化 setBounds 被 OS 量化后只提交 actual bounds 并迁移实际脚底', async () => {
-    const actualBounds = { x: 1570, y: 803, width: 182, height: 222 };
+  test('pending-legacy 初始化固定尺寸 setBounds 被 OS 量化后只提交 actual bounds 并迁移实际脚底', async () => {
+    const actualBounds = { x: 1570, y: 803, width: 181, height: 221 };
     const value = realAuthorityFixture({
       initialBounds: { x: 0, y: 0, width: 181, height: 221 },
       initialViewport: { x: 20, y: 10, width: 158, height: 194 },
@@ -629,7 +659,7 @@ describe('G4 viewport settle 补充状态机', () => {
   });
 
   test('ready 尚无角色 placement 时采用 OS actual 生成默认脚底而不进入恢复等待', async () => {
-    const actualBounds = { x: 1570, y: 803, width: 182, height: 222 };
+    const actualBounds = { x: 1570, y: 803, width: 181, height: 221 };
     const value = realAuthorityFixture({
       blocked: () => true,
       initialBounds: { x: 0, y: 0, width: 181, height: 221 },

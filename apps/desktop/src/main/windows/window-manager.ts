@@ -42,6 +42,10 @@ export function petWindowOptions(
   return {
     width: PET_WIDTH,
     height: PET_HEIGHT,
+    minWidth: PET_WIDTH,
+    maxWidth: PET_WIDTH,
+    minHeight: PET_HEIGHT,
+    maxHeight: PET_HEIGHT,
     transparent: true,
     frame: false,
     alwaysOnTop: false,
@@ -165,6 +169,7 @@ type PetWebContentsTransientEvent =
 
 type PetWindowInteractionLifecycleController = {
   setPassthrough(ignore: boolean): void;
+  endDrag(): void;
   dispose(): void;
 };
 
@@ -184,10 +189,15 @@ export function bindPetWindowInteractionLifecycle(
         event === 'destroyed' ? release : failOpen
       );
     }
-    controller.dispose();
+    try {
+      controller.endDrag();
+    } finally {
+      controller.dispose();
+    }
   };
   const failOpen = (): void => {
     if (released) return;
+    controller.endDrag();
     controller.setPassthrough(true);
   };
   controller.setPassthrough(true);

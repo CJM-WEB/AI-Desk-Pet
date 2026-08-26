@@ -883,6 +883,23 @@ describe('Main 角色运动服务', () => {
     expect(setPosition).not.toHaveBeenCalled();
   });
 
+  test('控制器拖拽在程序化位置积压时仍无条件接管并失效旧预期', () => {
+    const service = createMotionService({
+      window: {
+        getBounds: () => ({ x: 40, y: 30, width: 180, height: 220 }),
+        setPosition: vi.fn()
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 100
+    });
+    service.expectProgrammaticPosition({ x: 40, y: 30 });
+
+    service.beginUserMove(undefined, 'controller');
+
+    expect(service.isUserMoving()).toBe(true);
+    expect(service.hasPendingProgrammaticPosition()).toBe(false);
+  });
+
   test('积压的程序化 moved 以 20→10 真正乱序确认时不会覆盖运动目标', () => {
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };
@@ -926,8 +943,7 @@ describe('Main 角色运动服务', () => {
     expect(service.tick().position).toEqual({ x: 10, y: 100 });
   });
 
-  test('生产窗口接线使用 will-move 开始接管并由 move/moved 同步位置', () => {
-    vi.useFakeTimers();
+  test('生产窗口接线使用 will-move 开始接管并在 moved 边界立即结束', () => {
     const listeners = new Map<string, Array<() => void>>();
     const window = {
       on: vi.fn((name: string, listener: () => void) => {
@@ -949,18 +965,60 @@ describe('Main 角色运动服务', () => {
     listeners.get('moved')?.[0]?.();
 
     expect(service.beginUserMove).toHaveBeenCalledOnce();
-    expect(service.handleWindowMoved).toHaveBeenCalledOnce();
-    expect(service.endUserMove).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(249);
-    expect(service.endUserMove).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
+    expect(service.handleWindowMoved).toHaveBeenCalledTimes(2);
     expect(service.endUserMove).toHaveBeenCalledOnce();
     release();
     expect(window.removeListener).toHaveBeenCalledTimes(3);
   });
 
-  test('Windows 只发 move 而缺少 moved 时仍按静默期释放原生拖拽', () => {
-    vi.useFakeTimers();
+  test('分段 moved 释放后，后续裸 move 只同步最终位置而不制造伪 owner', () => {
+    let bounds = { x: 20, y: 10, width: 180, height: 220 };
+    const listeners = new Map<string, Set<() => void>>();
+    const emit = (name: string): void => {
+      for (const listener of listeners.get(name) ?? []) listener();
+    };
+    const window = {
+      on: (name: string, listener: () => void) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (name: string, listener: () => void) => {
+        listeners.get(name)?.delete(listener);
+      },
+      getBounds: () => bounds,
+      setPosition: vi.fn()
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 0
+    });
+    const release = bindCharacterMotionWindow(window, service);
+
+    emit('will-move');
+    bounds = { ...bounds, x: 40 };
+    emit('move');
+    expect(service.isUserMoving()).toBe(true);
+
+    bounds = { ...bounds, x: 80 };
+    emit('move');
+    expect(service.isUserMoving()).toBe(true);
+    emit('moved');
+    expect(service.isUserMoving()).toBe(false);
+    bounds = { ...bounds, x: 100 };
+    emit('move');
+    expect(service.isUserMoving()).toBe(false);
+    emit('moved');
+    expect(service.isUserMoving()).toBe(false);
+    expect(service.getSnapshot()).toMatchObject({
+      position: { x: 100, y: 10 },
+      target: { x: 100, y: 10 }
+    });
+    release();
+  });
+
+  test('没有 will-move 的裸 move 只同步窗口位置且不建立用户 owner', () => {
     const listeners = new Map<string, Array<() => void>>();
     const window = {
       on: (name: string, listener: () => void) => {
@@ -978,10 +1036,12 @@ describe('Main 角色运动服务', () => {
     bindCharacterMotionWindow(window, service);
 
     listeners.get('move')?.[0]?.();
-    vi.advanceTimersByTime(249);
+
+    expect(service.beginUserMove).not.toHaveBeenCalled();
+    expect(service.handleWindowMoved).toHaveBeenCalledOnce();
     expect(service.endUserMove).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(service.endUserMove).toHaveBeenCalledOnce();
+    listeners.get('moved')?.[0]?.();
+    expect(service.endUserMove).not.toHaveBeenCalled();
   });
 
   test('真实接线忽略同一次程序化 move→moved 重复回调并继续远端目标', () => {
@@ -1060,7 +1120,6 @@ describe('Main 角色运动服务', () => {
     emit('move');
     bounds = { ...bounds, x: 140, y: 90 };
     emit('moved');
-    vi.advanceTimersByTime(250);
 
     expect(service.getSnapshot()).toMatchObject({
       position: { x: 140, y: 90 },
@@ -1069,6 +1128,40 @@ describe('Main 角色运动服务', () => {
     });
     now = 100;
     expect(service.tick().position).toEqual({ x: 140, y: 90 });
+    release();
+  });
+
+  test('程序化 setBounds 的实际坐标超过 DPI 容差时，首个 move 仍只消费预登记回执', () => {
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const listeners = new Map<string, Set<() => void>>();
+    const emit = (name: string): void => {
+      for (const listener of listeners.get(name) ?? []) listener();
+    };
+    const window = {
+      getBounds: () => bounds,
+      setPosition: vi.fn(),
+      on: (name: string, listener: () => void) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (name: string, listener: () => void) => {
+        listeners.get(name)?.delete(listener);
+      }
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 0
+    });
+    const release = bindCharacterMotionWindow(window, service);
+
+    service.expectProgrammaticPosition({ x: 300, y: 200 });
+    bounds = { ...bounds, x: 294, y: 196 };
+    emit('move');
+
+    expect(service.isUserMoving()).toBe(false);
+    expect(service.hasPendingProgrammaticPosition()).toBe(false);
     release();
   });
 
@@ -1172,9 +1265,86 @@ describe('Main 角色运动服务', () => {
       expect(bounds).toMatchObject({ width: 180, height: 220 });
     }
     ownedMotion.endUserMove('controller');
-    vi.advanceTimersByTime(250);
 
     expect(service.isUserMoving()).toBe(false);
+    release();
+  });
+
+  test('控制器结束时 getBounds 抛错仍释放 motion owner 且不打断清理链', () => {
+    let failGetBounds = false;
+    const service = createMotionService({
+      window: {
+        getBounds: () => {
+          if (failGetBounds) throw new Error('GET_BOUNDS_FAILED');
+          return { x: 0, y: 0, width: 180, height: 220 };
+        },
+        setPosition: vi.fn()
+      },
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => 0
+    });
+    service.beginUserMove(undefined, 'controller');
+    failGetBounds = true;
+
+    expect(() => service.endUserMove('controller')).not.toThrow();
+    expect(service.isUserMoving()).toBe(false);
+  });
+
+  test('控制器仍持有 owner 时原生事件不发布虚假拖拽边沿', () => {
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const listeners = new Map<string, Set<(event?: unknown, next?: typeof bounds) => void>>();
+    const emit = (name: string, next?: typeof bounds): void => {
+      for (const listener of listeners.get(name) ?? []) listener(undefined, next);
+    };
+    const window = {
+      getBounds: () => bounds,
+      setPosition: (x: number, y: number) => {
+        const next = { ...bounds, x, y };
+        emit('will-move', next);
+        bounds = next;
+        emit('move');
+        emit('moved');
+      },
+      on: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        listeners.get(name)?.delete(listener);
+      }
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 2_000, height: 1_200 }],
+      now: () => 0
+    });
+    const onUserMoveStarted = vi.fn();
+    const onUserMoveEnded = vi.fn();
+    const release = bindCharacterMotionWindow(window, service, {
+      onUserMoveStarted,
+      onUserMoveEnded
+    });
+
+    service.beginUserMove(undefined, 'controller');
+    window.setPosition(20, 30);
+
+    expect(service.isUserMoving()).toBe(true);
+    expect(onUserMoveStarted).not.toHaveBeenCalled();
+    expect(onUserMoveEnded).not.toHaveBeenCalled();
+
+    service.endUserMove('controller');
+    window.setPosition(40, 50);
+
+    expect(service.isUserMoving()).toBe(false);
+    expect(onUserMoveStarted).toHaveBeenCalledOnce();
+    expect(onUserMoveEnded).toHaveBeenCalledOnce();
     release();
   });
 
