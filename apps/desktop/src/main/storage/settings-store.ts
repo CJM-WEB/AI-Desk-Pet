@@ -1,4 +1,4 @@
-import { mkdir, open, rename } from 'node:fs/promises';
+import { mkdir, open, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import {
@@ -462,7 +462,17 @@ function isMissingFile(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
-async function atomicWrite(file: string, value: StoredSettings): Promise<void> {
+function atomicWrite(file: string, value: StoredSettings): Promise<void>;
+function atomicWrite(
+  file: string,
+  value: StoredSettings,
+  canCommit: () => boolean
+): Promise<boolean>;
+async function atomicWrite(
+  file: string,
+  value: StoredSettings,
+  canCommit?: () => boolean
+): Promise<void | boolean> {
   await mkdir(dirname(file), { recursive: true });
   const temporaryFile = `${file}.tmp`;
   const handle = await open(temporaryFile, 'w');
@@ -472,7 +482,13 @@ async function atomicWrite(file: string, value: StoredSettings): Promise<void> {
   } finally {
     await handle.close();
   }
+  // 临时文件完成落盘后再复核轮次所有权，旧轮不得通过 rename 覆盖正式设置。
+  if (canCommit !== undefined && !canCommit()) {
+    await rm(temporaryFile, { force: true });
+    return false;
+  }
   await rename(temporaryFile, file);
+  return canCommit === undefined ? undefined : true;
 }
 
 function settingsError(code: string): Error & { code: string } {
@@ -933,8 +949,8 @@ export class SettingsStore {
       const settings = await this.load();
       if (!isCurrent()) return null;
       settings.movementMode = movementMode;
-      await atomicWrite(this.file, settings);
-      return isCurrent() ? behaviorSettingsSnapshot(settings) : null;
+      if (!await atomicWrite(this.file, settings, isCurrent)) return null;
+      return behaviorSettingsSnapshot(settings);
     });
   }
 

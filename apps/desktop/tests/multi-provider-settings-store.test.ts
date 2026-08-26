@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelRouteConfig, ProviderProfileV2 } from '@myself/shared-types';
@@ -411,6 +411,24 @@ describe('多 Provider 设置持久化', () => {
       movementMode: 2,
       proactivityMode: 'autonomous'
     });
+  });
+
+  test('运动轮次在临时文件写入后失效时不提交正式设置并清理临时文件', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'myself-movement-commit-cancelled-'));
+    temporaryDirectories.push(directory);
+    const file = join(directory, 'settings.json');
+    const store = new SettingsStore(file, async () => false);
+    await store.saveMovementMode(2);
+    let guardChecks = 0;
+
+    await expect(store.saveMovementMode(0, () => {
+      guardChecks += 1;
+      return guardChecks < 3;
+    })).resolves.toBeNull();
+
+    expect(guardChecks).toBe(3);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ movementMode: 2 });
+    expect(await readdir(directory)).toEqual(['settings.json']);
   });
 
   test('隐私策略各现行数据类别可独立保存并返回完整行为快照', async () => {
