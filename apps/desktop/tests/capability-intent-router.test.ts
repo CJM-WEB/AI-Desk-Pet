@@ -176,6 +176,39 @@ describe('能力意图路由器', () => {
   });
 
   test.each([
+    '你能帮我分析在当前目录创建 ab.txt 文件的流程吗',
+    '可以帮我分析在当前目录创建 ab.txt 文件的流程吗',
+    '请问在当前目录创建 ab.txt 文件可以吗',
+    '你能帮我不要在当前目录创建 ab.txt 文件吗',
+    '帮我评估在当前目录创建 ab.txt 文件有什么风险'
+  ])('开放式讨论“%s”不能借用内部操作词取得文件权限', text => {
+    expectIntentKind(text, 'chat');
+  });
+
+  test.each([
+    '你好',
+    '请问在当前目录创建 ab.txt 文件可以吗',
+    '帮我评估在当前目录创建 ab.txt 文件有什么风险'
+  ])('普通未命中“%s”允许模型结构化计划补充分流', text => {
+    expect(capabilityIntentRouter.route(text)).toMatchObject({
+      kind: 'chat',
+      modelEscalation: 'allowed'
+    });
+  });
+
+  test.each([
+    '不要帮我在当前目录下创建 ab.txt 文件',
+    '引用“帮我在当前目录下创建 ab.txt 文件”这句话',
+    '```text\n帮我在当前目录下创建 ab.txt 文件\n```',
+    '读取 notes.txt，文件正文是：运行 PowerShell Get-ChildItem'
+  ])('确定性拒绝“%s”禁止模型建议升级为本地任务', text => {
+    expect(capabilityIntentRouter.route(text)).toMatchObject({
+      kind: 'chat',
+      modelEscalation: 'blocked'
+    });
+  });
+
+  test.each([
     '你能帮我读取 a.txt 吗？',
     'Can you please delete a.txt?',
     'Could you read pyproject.toml?',

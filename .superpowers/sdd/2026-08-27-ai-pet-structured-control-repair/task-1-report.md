@@ -32,6 +32,9 @@
 - `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts tests/explicit-character-behavior-gate.test.ts`：2 个文件、257/257 通过。
 - `pnpm.cmd --filter @myself/desktop typecheck`：退出码 `0`。
 - `git diff --check`：退出码 `0`；只有 Windows 行尾转换提示，无空白错误。
+- 首次 `pnpm.cmd --filter @myself/desktop test`：2582 项中 2581 项通过、1 项失败；失败准确暴露结构化澄清续接没有命中封闭 Router。
+- 增加精确内部补充标记语法后，`capability-intent-router + conversation-coordinator + explicit-character-behavior-gate`：362/362 通过。
+- 重新运行 `pnpm.cmd --filter @myself/desktop test`：104 个文件、2582/2582 通过；测试夹具既有 stderr 不包含断言失败。
 
 ## 修改文件
 
@@ -149,3 +152,35 @@
 - 明确礼貌请求、操作和目标必须在同一句内，满足后仅覆盖礼貌性可行询问；知识解释和风险陈述仍优先回落聊天。
 - 本轮只修改 Router、Router 测试和本报告；未触碰 Agent 执行器、Provider、Scheduler、IPC 或权限执行链。
 - 剩余风险：规则只覆盖获批的有界句法角色，未识别的新型讨论表达会保守依赖正向执行结构；后续扩展仍须以安全负例驱动，不得恢复全局词表。
+
+## 修复轮 4/5：封闭直接命令与模型升级证据
+
+### RED 证据
+
+1. `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts`
+   - 退出码：`1`。
+   - 结果：210 项中 206 项通过、4 项失败。
+   - 预期失败覆盖：`你能帮我分析...`、`可以帮我分析...`、`请问...可以吗` 与嵌套显式否定仍会借用内部操作词进入文件任务。
+2. 增加模型补充分流证据后运行同一命令。
+   - 退出码：`1`。
+   - 结果：217 项中 210 项通过、7 项失败。
+   - 预期失败覆盖：普通未命中缺少 `modelEscalation: allowed`；否定、引用、代码和嵌入式命令讨论缺少 `modelEscalation: blocked`。
+
+### GREEN 与门禁证据
+
+- `pnpm.cmd --filter @myself/agent-core test`：4 个文件、93/93 通过。
+- `pnpm.cmd --filter @myself/agent-core typecheck`：退出码 `0`。
+- `pnpm.cmd --filter @myself/character-runtime test`：15 个文件、315/315 通过。
+- `pnpm.cmd --filter @myself/character-runtime typecheck`：退出码 `0`。
+- `pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts tests/explicit-character-behavior-gate.test.ts`：2 个文件、299/299 通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出码 `0`。
+- `git diff --check`：退出码 `0`；只有 Windows 行尾转换提示，无空白错误。
+
+### 架构收口与自审
+
+- Router 从 625 行收敛为 318 行，删除开放式知识、咨询、可行性和陈述词表及其多槽语义组合器。
+- 本地同步入口只接受封闭的中文/英文直接命令形状、可验证本地对象和同句操作证据；截图原句与既有直接正例保留。
+- 开放式未命中统一回落 `chat + modelEscalation: allowed`，交由任务 2 的严格 `CapabilityControlPlan` 判断；本任务没有实现授权卡或 Agent 执行。
+- 否定、引用、代码、嵌入式文件正文和不合法的显式 PowerShell 请求返回 `chat + modelEscalation: blocked`，后续模型建议不能绕过 Main 的确定性拒绝。
+- 结构化澄清只接受 Main 生成的精确 `补充信息(覆盖此前缺失字段):` 标记续接原任务，不把普通路径陈述提升为文件任务。
+- 运动控制契约和 Gate 保持既有实现，定向 82 项全部通过；未修改 Provider、Coordinator、Agent 执行器、Scheduler、IPC 或 Renderer。

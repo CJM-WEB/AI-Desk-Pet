@@ -1,20 +1,23 @@
 import { parse } from 'tldts';
 import type { FilePlanningHint, FilePlanningOperation } from '@myself/agent-core';
 
-/** C1 不授予行为权限；后续阶段只能显式扩展这个封闭联合。 */
+/** Router 不授予角色行为权限；行为控制由独立 Gate 处理。 */
 export type ExplicitBehaviorHint = never;
-
-/** 文件分流只暴露已验证的正向意图，不携带路径或正文。 */
+/** 文件分流仅携带已验证证据，不携带路径或正文。 */
 export type ExplicitFileEvidence = Readonly<{ kind: 'explicit_file_operation' }>;
-
-/** Shell 分流只暴露已验证的正向意图，不携带命令正文。 */
+/** Shell 分流仅携带运行方式，不携带命令正文。 */
 export type ExplicitShellEvidence = Readonly<{
   kind: 'explicit_shell_execution';
   requestedRunMode: 'foreground' | 'background';
 }>;
-
+/** 记录后续模型控制计划能否补充升级当前聊天回合。 */
+export type ModelEscalation = 'allowed' | 'blocked';
 export type CapabilityIntent =
-  | Readonly<{ kind: 'chat'; behaviorHint: ExplicitBehaviorHint | null }>
+  | Readonly<{
+      kind: 'chat';
+      behaviorHint: ExplicitBehaviorHint | null;
+      modelEscalation: ModelEscalation;
+    }>
   | Readonly<{ kind: 'file_task'; evidence: ExplicitFileEvidence }>
   | Readonly<{ kind: 'unsupported_file_operation'; operation: 'copy_file' }>
   | Readonly<{ kind: 'powershell_task'; evidence: ExplicitShellEvidence }>;
@@ -23,14 +26,18 @@ export interface CapabilityIntentRouter {
   route(prompt: string): CapabilityIntent;
 }
 
-const chatIntent: CapabilityIntent = Object.freeze({ kind: 'chat', behaviorHint: null });
+const chatIntent: CapabilityIntent = Object.freeze({
+  kind: 'chat', behaviorHint: null, modelEscalation: 'allowed'
+});
+const blockedChatIntent: CapabilityIntent = Object.freeze({
+  kind: 'chat', behaviorHint: null, modelEscalation: 'blocked'
+});
 const fileTaskIntent: CapabilityIntent = Object.freeze({
   kind: 'file_task',
   evidence: Object.freeze({ kind: 'explicit_file_operation' })
 });
 const unsupportedCopyIntent: CapabilityIntent = Object.freeze({
-  kind: 'unsupported_file_operation',
-  operation: 'copy_file'
+  kind: 'unsupported_file_operation', operation: 'copy_file'
 });
 const powershellTaskIntent: CapabilityIntent = Object.freeze({
   kind: 'powershell_task',
@@ -41,539 +48,239 @@ const backgroundPowerShellTaskIntent: CapabilityIntent = Object.freeze({
   evidence: Object.freeze({ kind: 'explicit_shell_execution', requestedRunMode: 'background' })
 });
 
-type LocalObjectScan = Readonly<{
-  hasLocalObject: boolean;
-  semanticText: string;
-}>;
+type TextRange = readonly [number, number];
 
-type TextRange = readonly [start: number, end: number];
-type StructureSlot = Readonly<{
-  kind: 'operation' | 'target';
-  range: TextRange;
-  sourceMarkerIndex: number | null;
-}>;
-
-const localObjectCandidatePattern = /(?:[a-z][a-z\d+.-]*:\/\/[^\s“”"'（）()<>，,。！？!?；;]+|\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|(?:[^\s“”"'（）()<>\\/，,。！？!?；;]+[\\/])+[^\s“”"'（）()<>\\/，,。！？!?；;]+|[^\s“”"'（）()<>\\/，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件夹|文件|目录)|授权目录|文件夹|文件|目录)/giu;
-const emailPattern = /^[^@\s]+@[^@\s]+\.[a-z\d-]+$/iu;
 const quotePairs = new Map<string, string>([
-  ['"', '"'],
-  ["'", "'"],
-  ['“', '”'],
-  ['‘', '’']
+  ['"', '"'], ["'", "'"], ['“', '”'], ['‘', '’']
 ]);
-const fileOperationPattern = /(?:按文件名匹配|读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理|\b(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b)/giu;
-const strongFileOperationPattern = /(?:重命名|复制|移动|\b(?:rename|copy|move)\b)/giu;
-const chineseExecutionRequestPattern = /(?:你能(?:不能)?(?:帮我)?|请你?|帮我|麻烦(?:你)?|给我)/gu;
-const englishDirectExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b/iu;
-const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:please\s+)?([a-z]+)\b/iu;
-const chineseDiscussionRequestPattern = /^(?:(?:(?:请你?|麻烦(?:你)?)(?:\s*帮我)?|帮我|给我)\s*)?(?:分析|引用|讨论|解释|翻译|举例|告诉我)/u;
-const chineseKnowledgeQuestionPattern = /^(?:为什么|为何|如何|怎么)/u;
-const englishDiscussionRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:analyze|explain|quote|discuss|translate)\b|^(?:why\b|how\s+(?:to|do\s+i)\b|what\s+is\b)/iu;
-const negativeCommandPattern = /^(?:(?:请你?|麻烦(?:你)?)\s*)?(?:不要|不用|不必|无需|不需要|别(?=(?:\s|帮我|把|将|在|读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理))|(?:please\s+)?(?:do\s+not|don't)\b)/iu;
-const knowledgeTailPattern = /(?:(?:为什么|为何|怎么)[^。！？!?]{0,32}[？?]|是什么(?:意思|功能)?[？?]?|什么意思[？?]?|有什么区别[？?]?|只是(?:一个)?例子[。.]?|is\s+(?:a\s+)?common\s+example[.]?)$/iu;
-const feasibilityQuestionPattern = /(?:可行吗|是否(?:可行|可以)|可以吗|行不行|合适吗)[？?]?$/u;
-const statementTailPattern = /(?:需要[^。！？!?]{0,24}权限|(?:存在|有)[^。！？!?]{0,16}风险|(?:is\s+)?dangerous|requires?[^.!?]{0,24}permission)[。.!?]?$/iu;
+const fileOperationPattern = /(?:按文件名匹配|读取|列出|创建|新建|写入|修改|替换|重命名|复制|移动|删除|搜索|查找|匹配|整理|\b(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b)/giu;
+const localObjectPattern = /(?:\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|(?:[^\s“”"'（）()<>\\/，,。！？!?；;]+[\\/])+[^\s“”"'（）()<>\\/，,。！？!?；;]+|[^\s“”"'（）()<>\\/，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件夹|文件|目录)|授权目录|回收站|文件夹|文件|目录)/giu;
 const quotedOrCodePrefixPattern = /^(?:>|[`'"“”‘’])/u;
-const chineseExplicitPowerShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
-const englishExplicitPowerShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run|execute)\s+powershell\s+([\s\S]+)$/iu;
-const chineseShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s+|执行\s*(?:(?:这条|以下|下面)?\s*(?:命令|powershell|脚本)\s+))([\s\S]+)$/iu;
-const englishShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+|execute\s+(?:(?:this|the)\s+command\s*:?\s*|powershell\s+))([\s\S]+)$/iu;
-const backgroundShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?后台运行\s*(?:构建|测试|build\b|test\b)$/iu;
-const shellCommandPayloadPattern = /^(?:[a-z][a-z\d._-]*|\.{1,2}[\\/](?:[a-z\d._-]+[\\/])*[a-z\d._-]+)(?:\s+\S+){0,16}$/iu;
-const powershellAssignmentScriptPattern = /^\$[a-z_][a-z\d_:]*\s*=\s*[^;\r\n]+;\s*\S[\s\S]*$/iu;
-const powershellScriptBlockPattern = /^&\s*\{[\s\S]+\}$/u;
-const standaloneShellDiscussionPattern = /(?:安全吗|好不好|值得吗|是什么(?:意思)?|会怎样)[？?]?$/u;
-const englishCopulaTokenPattern = /^(?:am|is|are|was|were|be|been|being)$/u;
-const englishAuxiliaryTokenPattern = /^(?:do|does|did|can|could|would|will|shall|should|may|might|must|has|have|had)$/u;
-const englishQuestionWordTokenPattern = /^(?:what|why|how|when|where|who|whom|whose|which)$/u;
+const explicitReferencePrefixPattern = /^(?:引用|翻译|read\s+the\s+phrase\b)/iu;
+const explicitNegationPrefixPattern = /^(?:(?:请你?|麻烦你?|你能(?:不能)?帮我|可以帮我|帮我)\s*)?(?:不要|不用|不必|无需|不需要|别|(?:please\s+)?(?:do\s+not|don't)\b)/iu;
+const chineseRequestPrefixPattern = /^(?:(?:那|那么)\s*)?(?:请你?帮我|请你?|你能(?:不能)?帮我|可以帮我|麻烦你?帮我|麻烦你?|帮我|给我)?\s*/u;
+const englishRequestPrefixPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?/iu;
+const chineseLocationPrefixPattern = /^(?:在)?(?:当前(?:文件夹|文件|目录)|授权目录)(?:中|里|下)?(?:帮我)?/u;
+const chineseClarificationPattern = /^(?:请你?|帮我)?\s*(?:删除|修改|移动|创建|读取)一个(?:文件|文件夹|目录)[，,][^\n]{1,160}(?:目标)?(?:相对)?路径[^\n]{0,80}$/u;
 const embeddedFileContentPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)\s*([\s\S]*)$/iu;
 const missingTargetPathPattern = /(?:(?:没有|尚未|未|没)\s*(?:提供|填写|指定)|(?:缺少|缺失))[^。！？!?\n]{0,16}(?:目标)?(?:相对)?路径/iu;
 const clarifiedTargetMarker = '补充信息(覆盖此前缺失字段):';
+const clarifiedTaskContinuationPattern = /^[^\n]{1,500}\n补充信息\(覆盖此前缺失字段\):\s*目标(?:相对)?路径是\s*[^\n]{1,260}$/u;
 
-function getHostPart(candidate: string): string {
-  const pathSeparatorIndex = candidate.search(/[\\/]/u);
-  return pathSeparatorIndex >= 0 ? candidate.slice(0, pathSeparatorIndex) : candidate;
-}
-
-/** 公共后缀裸名称存在本地/远程歧义，除非有显式本地或强文件结构，否则默认远程。 */
-function hasPublicSuffix(candidate: string): boolean {
-  return parse(getHostPart(candidate)).isIcann === true;
-}
-
-function isNumericVersion(candidate: string): boolean {
-  const equalsIndex = candidate.lastIndexOf('=');
-  const versionText = equalsIndex >= 0 ? candidate.slice(equalsIndex + 1) : candidate;
-  const segments = versionText.split('.');
-  return segments.length >= 2
-    && segments.every(segment => segment.length > 0
-      && Array.from(segment).every(character => character >= '0' && character <= '9'));
-}
-
-/** 先排除远程标识、邮箱和纯数字版本，其余候选由语法形态而非扩展名决定。 */
-function isLocalObjectCandidate(candidate: string, allowPublicSuffix: boolean): boolean {
-  if (/^\.{1,2}[\\/]/u.test(candidate)) {
-    return true;
-  }
-  if (candidate.includes('://')) {
-    return false;
-  }
-  if (emailPattern.test(candidate)) {
-    return false;
-  }
-  if (isNumericVersion(candidate)) {
-    return false;
-  }
-  if (/[\\/]/u.test(candidate) && !getHostPart(candidate).includes('.')) {
-    return true;
-  }
-  if (!allowPublicSuffix && hasPublicSuffix(candidate)) {
-    return false;
-  }
-  return true;
-}
-
-/** 英文点号仅在后接空白或文本结束时作为句号，文件名内部点号不分句。 */
-function hasSentenceBoundary(text: string): boolean {
-  return /[，,。！？!?；;\n]|\.(?=\s|$)/u.test(text);
-}
-
-function isSentenceBoundaryAt(text: string, index: number): boolean {
-  const character = text[index];
-  return character === '.'
-    ? text[index + 1] === undefined || /\s/u.test(text[index + 1] ?? '')
-    : /[，,。！？!?；;\n]/u.test(character ?? '');
-}
+const chineseExplicitPowerShellPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
+const englishExplicitPowerShellPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run|execute)\s+powershell\s+([\s\S]+)$/iu;
+const chineseShellPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s+|执行\s*(?:(?:这条|以下|下面)?\s*(?:命令|powershell|脚本)\s+))([\s\S]+)$/iu;
+const englishShellPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run\s+|execute\s+(?:(?:this|the)\s+command\s*:?\s*|powershell\s+))([\s\S]+)$/iu;
+const backgroundShellPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?后台运行\s*(?:构建|测试|build\b|test\b)$/iu;
+const commandPayloadPattern = /^(?:[a-z][a-z\d._-]*|\.{1,2}[\\/](?:[a-z\d._-]+[\\/])*[a-z\d._-]+)(?:\s+\S+){0,16}$/iu;
+const assignmentScriptPattern = /^\$[a-z_][a-z\d_:]*\s*=\s*[^;\r\n]+;\s*\S[\s\S]*$/iu;
+const scriptBlockPattern = /^&\s*\{[\s\S]+\}$/u;
+const shellDiscussionTailPattern = /(?:安全吗|好不好|值得吗|是什么(?:意思)?|会怎样|合适吗)[？?]?$/u;
+const englishNaturalLanguageTokenPattern = /^(?:am|is|are|was|were|be|been|being|do|does|did|can|could|would|will|shall|should|may|might|must|has|have|had|what|why|how|when|where|who|whom|whose|which)$/u;
 
 function isWordInternalApostrophe(text: string, index: number): boolean {
-  const wordCharacterPattern = /[\p{L}\p{N}]/u;
   return text[index] === "'"
-    && wordCharacterPattern.test(text[index - 1] ?? '')
-    && wordCharacterPattern.test(text[index + 1] ?? '');
+    && /[\p{L}\p{N}]/u.test(text[index - 1] ?? '')
+    && /[\p{L}\p{N}]/u.test(text[index + 1] ?? '');
 }
 
-/** 单引号闭合扫描跳过词内撇号，避免把所有格或缩写误当成引用边界。 */
-function findClosingQuote(text: string, openingIndex: number, closingQuote: string): number {
-  let closingIndex = text.indexOf(closingQuote, openingIndex + 1);
-  while (closingQuote === "'"
-    && closingIndex >= 0
-    && isWordInternalApostrophe(text, closingIndex)) {
-    closingIndex = text.indexOf(closingQuote, closingIndex + 1);
-  }
-  return closingIndex;
-}
-
-/** 成对引号及其内容以等长空格屏蔽，引用不得贡献对象、操作或执行结构证据。 */
+/** 成对引用以等长空格屏蔽，引用内容不能贡献操作或目标证据。 */
 function maskQuotedText(text: string): string {
   const characters = text.split('');
   for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (character === undefined) {
-      continue;
+    const closingQuote = quotePairs.get(text[index] ?? '');
+    if (closingQuote === undefined || isWordInternalApostrophe(text, index)) continue;
+    let closingIndex = text.indexOf(closingQuote, index + 1);
+    while (closingQuote === "'" && closingIndex >= 0 && isWordInternalApostrophe(text, closingIndex)) {
+      closingIndex = text.indexOf(closingQuote, closingIndex + 1);
     }
-    const closingQuote = quotePairs.get(character);
-    if (closingQuote === undefined) {
-      continue;
-    }
-    if (isWordInternalApostrophe(text, index)) {
-      continue;
-    }
-    const closingIndex = findClosingQuote(text, index, closingQuote);
-    if (closingIndex < 0) {
-      continue;
-    }
+    if (closingIndex < 0) continue;
     characters.fill(' ', index, closingIndex + 1);
     index = closingIndex;
   }
   return characters.join('');
 }
 
-/** 目标槽只做词法分段，是否为合法本地对象由独立证据随后判断。 */
-function scanTargetRanges(text: string): readonly TextRange[] {
-  const operationRanges = Array.from(text.matchAll(fileOperationPattern), match => (
-    [match.index, match.index + match[0].length] as const
-  ));
-  const firstOperationRange = operationRanges[0];
-  return Array.from(text.matchAll(localObjectCandidatePattern))
+function isLocalObject(candidate: string, allowPublicSuffix: boolean): boolean {
+  if (/^\.{1,2}[\\/]/u.test(candidate)) return true;
+  if (candidate.includes('://') || /^[^@\s]+@[^@\s]+\.[a-z\d-]+$/iu.test(candidate)) return false;
+  if (/^(?:version\s*=?\s*)?\d+(?:\.\d+)+$/iu.test(candidate)) return false;
+  const separator = candidate.search(/[\\/]/u);
+  if (separator >= 0 && !candidate.slice(0, separator).includes('.')) return true;
+  const host = separator >= 0 ? candidate.slice(0, separator) : candidate;
+  return allowPublicSuffix || parse(host).isIcann !== true;
+}
+
+function scanRanges(text: string, pattern: RegExp): readonly TextRange[] {
+  return Array.from(text.matchAll(pattern), match => [match.index, match.index + match[0].length] as const);
+}
+
+function scanLocalObjects(text: string): readonly TextRange[] {
+  const allowPublicSuffix = /(?:\bfile\s+|(?:rename|copy|move)\s+\S+\s+(?:to|into|as)\s+|(?:把|将)[^。！？!?\n]{1,80}(?:重命名|复制|移动)[^。！？!?\n]{1,80}(?:为|到|至))/iu.test(text);
+  const operations = scanRanges(text, fileOperationPattern);
+  return Array.from(text.matchAll(localObjectPattern))
     .map(match => {
       const end = match.index + match[0].length;
-      // 无空格中文请求可能被点号候选从句首吞入；只在候选覆盖首个真实操作时切掉语法前缀。
-      const start = firstOperationRange !== undefined
-        && match.index <= firstOperationRange[0]
-        && firstOperationRange[1] < end
-        ? firstOperationRange[1]
-        : match.index;
-      return [start, end] as const;
+      const overlappingOperation = operations.find(operation =>
+        match.index <= operation[0] && operation[1] < end);
+      const start = overlappingOperation?.[1] ?? match.index;
+      return { match, start, end, candidate: text.slice(start, end) };
     })
-    .filter(([start, end]) => start < end && !/^\.(?![\\/])/u.test(text.slice(start, end)))
-    // “按文件名匹配”中的“文件”属于复合操作槽，不能再次充当本地对象证据。
-    .filter(([start, end]) => !operationRanges.some(([operationStart, operationEnd]) =>
-      text.slice(operationStart, operationEnd) === '按文件名匹配'
-      && start < operationEnd
-      && operationStart < end))
-    // 正则不得截取路径或邮箱形态的畸形 token 前缀充当完整目标。
-    .filter(([, end]) => {
-      const nextCharacter = text[end];
-      return !/[\\/@]/u.test(nextCharacter ?? '')
-        && (nextCharacter !== '.'
-          || text[end + 1] === undefined
-          || /\s/u.test(text[end + 1] ?? ''));
-    });
+    .filter(({ end }) => {
+      return !/[\\/@]/u.test(text[end] ?? '')
+        && (text[end] !== '.' || text[end + 1] === undefined || /\s/u.test(text[end + 1] ?? ''));
+    })
+    .filter(({ candidate }) => candidate.length > 0 && isLocalObject(candidate, allowPublicSuffix))
+    .map(({ start, end }) => [start, end] as const);
 }
 
-function isWhitespaceGap(text: string, left: TextRange, right: TextRange): boolean {
-  return text.slice(left[1], right[0]).trim().length === 0;
+function sameSentence(left: TextRange, right: TextRange, text: string): boolean {
+  if (left[0] < right[1] && right[0] < left[1]) return false;
+  const start = Math.min(left[1], right[1]);
+  const end = Math.max(left[0], right[0]);
+  return !/[，,。！？!?；;\n]|\.(?=\s|$)/u.test(text.slice(start, end));
 }
 
-/** 英文强结构只接受“操作 + 源 + 连接词 + 目标”的连续槽位。 */
-function hasEnglishSourceTargetConnection(
-  text: string,
-  operationRange: TextRange,
-  sourceRange: TextRange,
-  targetRange: TextRange
-): boolean {
-  return operationRange[1] <= sourceRange[0]
-    && sourceRange[1] <= targetRange[0]
-    && areInSameSentence(text, operationRange, targetRange)
-    && isWhitespaceGap(text, operationRange, sourceRange)
-    && /^\s+(?:to|as|into)\s+$/u.test(text.slice(sourceRange[1], targetRange[0]));
-}
-
-/** 中文强结构只接受“把/将 + 源 + 操作 + 为/到/至 + 目标”的连续槽位。 */
-function hasChineseSourceTargetConnection(
-  text: string,
-  operationRange: TextRange,
-  sourceRange: TextRange,
-  targetRange: TextRange,
-  sourceMarkerIndex: number | null
-): boolean {
-  if (sourceRange[1] > operationRange[0]
-    || operationRange[1] > targetRange[0]
-    || !areInSameSentence(text, sourceRange, targetRange)
-    || !isWhitespaceGap(text, sourceRange, operationRange)
-    || !/^\s*(?:为|到|至)\s*$/u.test(text.slice(operationRange[1], targetRange[0]))) {
-    return false;
-  }
-  return sourceMarkerIndex !== null;
-}
-
-/** 强文件结构必须存在真实源到目标连接，不能由操作词与两个近邻候选凑成。 */
-function hasStrongFileStructure(text: string, targetRanges: readonly TextRange[]): boolean {
-  const operationRanges = Array.from(text.matchAll(strongFileOperationPattern))
-    .map(match => [match.index, match.index + match[0].length] as const);
-  const orderedSlots: StructureSlot[] = [];
-  let operationIndex = 0;
-  let targetIndex = 0;
-  let scannedUntil = 0;
-  let recentMarkerIndex: number | null = null;
-  let markerHasOnlyWhitespace = true;
-  const appendSlot = (kind: StructureSlot['kind'], range: TextRange): void => {
-    for (let index = scannedUntil; index < range[0]; index += 1) {
-      const character = text[index];
-      if (isSentenceBoundaryAt(text, index)) {
-        recentMarkerIndex = null;
-        markerHasOnlyWhitespace = true;
-      } else if (character === '把' || character === '将') {
-        recentMarkerIndex = index;
-        markerHasOnlyWhitespace = true;
-      } else if (recentMarkerIndex !== null && !/\s/u.test(character ?? '')) {
-        markerHasOnlyWhitespace = false;
-      }
-    }
-    orderedSlots.push({
-      kind,
-      range,
-      sourceMarkerIndex: markerHasOnlyWhitespace ? recentMarkerIndex : null
-    });
-    if (recentMarkerIndex !== null) {
-      markerHasOnlyWhitespace = false;
-    }
-    scannedUntil = Math.max(scannedUntil, range[1]);
-  };
-  while (operationIndex < operationRanges.length || targetIndex < targetRanges.length) {
-    const operationRange = operationRanges[operationIndex];
-    const targetRange = targetRanges[targetIndex];
-    if (operationRange !== undefined
-      && (targetRange === undefined || operationRange[0] < targetRange[0])) {
-      appendSlot('operation', operationRange);
-      operationIndex += 1;
-    } else if (targetRange !== undefined) {
-      appendSlot('target', targetRange);
-      targetIndex += 1;
-    }
-  }
-
-  // 只检查文本顺序中相邻的三槽，避免操作、源、目标的全组合。
-  for (let index = 0; index + 2 < orderedSlots.length; index += 1) {
-    const first = orderedSlots[index];
-    const second = orderedSlots[index + 1];
-    const third = orderedSlots[index + 2];
-    if (first === undefined || second === undefined || third === undefined) {
-      continue;
-    }
-    if (first.kind === 'operation' && second.kind === 'target' && third.kind === 'target'
-      && hasEnglishSourceTargetConnection(text, first.range, second.range, third.range)) {
-      return true;
-    }
-    if (first.kind === 'target' && second.kind === 'operation' && third.kind === 'target'
-      && hasChineseSourceTargetConnection(
-        text,
-        second.range,
-        first.range,
-        third.range,
-        first.sourceMarkerIndex
-      )) {
-      return true;
-    }
-  }
+function hasClosedTermination(text: string, objects: readonly TextRange[]): boolean {
+  const lastObjectEnd = objects.reduce((end, object) => Math.max(end, object[1]), 0);
+  const tail = text.slice(lastObjectEnd).trim();
+  if (!tail || /^[。！？!?.]$/u.test(tail)) return true;
+  if (/^(?:吗|可以吗)[？?]?$/u.test(tail)) return true;
+  if (/^because\b[^.!?]{1,120}[?]?$/iu.test(tail)) return true;
+  if (/^(?:下|中|里)?(?:的)?(?:文件|文件夹|目录)?(?:了)?[。！]?$/u.test(tail)) return true;
+  if (/^(?:到|至|为)\s*(?:当前(?:文件夹|文件|目录)|授权目录)(?:中|里|下)?[。！]?$/u.test(tail)) return true;
+  if (/^(?:并|并且|然后|再)\s*(?:写入|修改|替换|移动|删除)[^。！？!?\n]{0,120}[。！]?$/u.test(tail)) return true;
+  if (/^中(?:的)?[^。！？!?\n]{1,80}(?:替换|修改|写入|搜索|查找)[^。！？!?\n]{0,80}[。！]?$/u.test(tail)) return true;
+  if (/^(?:读取|列出|创建|新建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理)(?:了)?[。！]?$/u.test(tail)) return true;
   return false;
 }
 
-/** 对象词法扫描不读取操作证据，只过滤目标槽的本地属性。 */
-function scanLocalObjectRanges(
-  text: string,
-  targetRanges: readonly TextRange[]
-): readonly TextRange[] {
-  const allowPublicSuffix = hasStrongFileStructure(text, targetRanges);
-  return targetRanges.filter(([start, end]) =>
-    isLocalObjectCandidate(text.slice(start, end), allowPublicSuffix));
-}
-
-/** 只遮蔽对象本身，保留紧邻目标的语义后缀供知识判断。 */
-function scanLocalObjects(text: string, objectRanges: readonly TextRange[]): LocalObjectScan {
-  const semanticCharacters = text.split('');
-  for (const [start, end] of objectRanges) {
-    semanticCharacters.fill(' ', start, end);
+function hasClosedChineseShape(text: string, objects: readonly TextRange[]): boolean {
+  if (chineseClarificationPattern.test(text)) return true;
+  const prefix = chineseRequestPrefixPattern.exec(text)?.[0] ?? '';
+  const core = text.slice(prefix.length);
+  const direct = fileOperationPattern.exec(core);
+  fileOperationPattern.lastIndex = 0;
+  const startsWithOperation = direct?.index === 0 && /[\u3400-\u9fff]/u.test(direct[0]);
+  const location = chineseLocationPrefixPattern.exec(core);
+  const afterLocation = location === null ? '' : core.slice(location[0].length);
+  const locationOperation = fileOperationPattern.exec(afterLocation);
+  fileOperationPattern.lastIndex = 0;
+  const startsWithLocation = location !== null
+    && locationOperation?.index === 0
+    && /[\u3400-\u9fff]/u.test(locationOperation[0]);
+  const startsWithSourceMarker = /^(?:把|将)/u.test(core)
+    && /(?:重命名|复制|移动|删除|修改|替换)/u.test(core);
+  const targetFirst = /^[^。！？!?\n]{1,80}(?:在)?(?:当前(?:文件夹|文件|目录)|授权目录)(?:中|里|下)?帮我(?:读取|列出|创建|新建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理)[了！。]?$/u.test(core);
+  if (!startsWithOperation && !startsWithLocation && !startsWithSourceMarker && !targetFirst) return false;
+  if (targetFirst) return true;
+  if (startsWithSourceMarker) {
+    return /^(?:把|将)[^。！？!?\n]{1,120}(?:重命名|复制|移动|删除|修改|替换)(?:为|到|至)?[^。！？!?\n]{0,120}[。！]?$/u.test(core)
+      && hasClosedTermination(text, objects);
   }
-
-  return Object.freeze({
-    hasLocalObject: objectRanges.length > 0,
-    semanticText: semanticCharacters.join('')
-  });
-}
-
-function scanFileOperationRanges(text: string): readonly TextRange[] {
-  return Array.from(text.matchAll(fileOperationPattern))
-    .map(match => [match.index, match.index + match[0].length] as const);
-}
-
-/** 礼貌壳只把紧随请求前缀的动词作为操作槽，不能借用句尾讨论中的操作词。 */
-function bindRequestedOperationRanges(
-  text: string,
-  operationRanges: readonly TextRange[]
-): readonly TextRange[] {
-  const politeMatch = englishPoliteExecutionShellPattern.exec(text);
-  const action = politeMatch?.[1];
-  if (politeMatch?.index === undefined || action === undefined) {
-    return operationRanges;
+  if (/[？?]/u.test(core)) {
+    return prefix.trim().length > 0
+      && /(?:吗|可以吗)[？?]?$/u.test(core)
+      && hasClosedTermination(text, objects);
   }
-  const actionStart = politeMatch.index + politeMatch[0].lastIndexOf(action);
-  return operationRanges.filter(([start, end]) =>
-    start === actionStart && end === actionStart + action.length);
+  return !/[。！？!?]\s*\S/u.test(core) && hasClosedTermination(text, objects);
 }
 
-function areInSameSentence(text: string, left: TextRange, right: TextRange): boolean {
-  const gapStart = Math.min(left[1], right[1]);
-  const gapEnd = Math.max(left[0], right[0]);
-  return !hasSentenceBoundary(text.slice(gapStart, gapEnd));
-}
-
-/** 中文执行证据独立于对象与操作的排列，只接受句首命令、请求词、把字句或本地点前缀。 */
-function hasChineseExecutionRequest(
-  text: string,
-  operationRange: TextRange,
-  requestRanges: readonly TextRange[]
-): boolean {
-  if (operationRange[0] === 0) return true;
-  if (requestRanges.some(requestRange =>
-    requestRange[1] <= operationRange[0]
-    && areInSameSentence(text, requestRange, operationRange))) {
-    return true;
-  }
-
-  const rawPrefix = text.slice(0, operationRange[0]).trim();
-  const prefix = rawPrefix.replace(/^(?:那|那么)\s*/u, '');
-  return prefix.startsWith('把')
-    || prefix.startsWith('将')
-    || (prefix.startsWith('在') && /[中里下]$/u.test(prefix))
-    // 本地点状语可以省略“在”，它仍是独立的执行句式证据，不依赖固定动宾排列。
-    || /^(?:当前(?:文件夹|文件|目录)|授权目录)[中里下]$/u.test(prefix);
-}
-
-/** 执行结构负责把操作槽与对象绑定在同一短句，操作词是否合法由独立证据判断。 */
-function hasExecutionStructure(
-  text: string,
-  targetRanges: readonly TextRange[],
-  operationRanges: readonly TextRange[]
-): boolean {
-  const hasEnglishDirectRequest = englishDirectExecutionPattern.test(text);
-  const directEnglishOperationRange = hasEnglishDirectRequest ? operationRanges[0] : undefined;
-  const requestRanges = Array.from(text.matchAll(chineseExecutionRequestPattern))
-    .map(match => [match.index, match.index + match[0].length] as const);
-  const hasDirectExecution = operationRanges.some(operationRange =>
-    targetRanges.some(targetRange => areInSameSentence(text, operationRange, targetRange))
-    && (operationRange === directEnglishOperationRange
-      || hasChineseExecutionRequest(text, operationRange, requestRanges)));
-  if (hasDirectExecution) return true;
-
-  if (!englishPoliteExecutionShellPattern.test(text)) {
-    return false;
-  }
-  return targetRanges.some(([start]) => !hasSentenceBoundary(text.slice(0, start)));
-}
-
-/** 礼貌请求、操作与目标必须在同一句内；该证据只区分执行请求与句尾客套询问。 */
-function hasChinesePoliteExecutionStructure(
-  text: string,
-  targetRanges: readonly TextRange[],
-  operationRanges: readonly TextRange[]
-): boolean {
-  const requestRanges = Array.from(text.matchAll(chineseExecutionRequestPattern))
-    .map(match => [match.index, match.index + match[0].length] as const);
-  return operationRanges.some(operationRange =>
-    requestRanges.some(requestRange =>
-      requestRange[1] <= operationRange[0]
-      && areInSameSentence(text, requestRange, operationRange))
-    && targetRanges.some(targetRange => areInSameSentence(text, operationRange, targetRange)));
-}
-
-/** 咨询后缀必须位于最后一个真实对象之后；对象名称前缀不能充当拒绝证据。 */
-function hasSemanticTailAfterObjects(
-  semanticText: string,
-  objectRanges: readonly TextRange[],
-  pattern: RegExp
-): boolean {
-  const match = pattern.exec(semanticText.trimEnd());
-  if (match?.index === undefined) return false;
-  const lastObjectEnd = objectRanges.reduce((lastEnd, [, end]) => Math.max(lastEnd, end), 0);
-  return match.index >= lastObjectEnd;
-}
-
-/** 未引用的英文语法词只有形成从句起点才封闭，选项、路径和词内片段仍是命令参数。 */
-function hasEnglishNaturalLanguageClause(tokens: readonly string[]): boolean {
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]?.replace(/^[,，]/u, '');
-    if (token === undefined || tokens.length - index - 1 < 1) continue;
-    if (englishCopulaTokenPattern.test(token)
-      || englishAuxiliaryTokenPattern.test(token)
-      || englishQuestionWordTokenPattern.test(token)) {
-      return true;
-    }
-  }
-  return false;
+function hasClosedEnglishShape(text: string, objects: readonly TextRange[]): boolean {
+  const prefix = englishRequestPrefixPattern.exec(text)?.[0] ?? '';
+  const core = text.slice(prefix.length);
+  const operation = fileOperationPattern.exec(core);
+  fileOperationPattern.lastIndex = 0;
+  return operation?.index === 0
+    && /^[\x00-\x7f]+$/u.test(operation[0])
+    && core.slice(operation[0].length).trim().length > 0
+    && !/[.!?]\s+\S/u.test(core.slice(operation[0].length))
+    && hasClosedTermination(text, objects);
 }
 
 /**
- * 成对引号先等长屏蔽；未引用的 Unicode、问号或英文自然语言从句均存在咨询歧义，
- * 因而保守回落聊天，引号内的自然语言仍作为显式命令参数。
+ * Main 只识别封闭直接命令形状；未命中的开放式语义交给模型控制计划，
+ * 不再维护知识、咨询或可行性词表来模拟自然语言理解。
  */
-function hasUnquotedNaturalLanguageTail(commandText: string): boolean {
-  const unquotedCommandText = maskQuotedText(commandText);
-  const argumentStart = unquotedCommandText.search(/\s/u);
+function hasExplicitFileIntent(text: string): boolean {
+  if (clarifiedTaskContinuationPattern.test(text)) return true;
+  if (!text || quotedOrCodePrefixPattern.test(text)
+    || explicitReferencePrefixPattern.test(text)
+    || explicitNegationPrefixPattern.test(text)) return false;
+  const unquotedText = maskQuotedText(text);
+  const closedSourceTarget = /^(?:(?:请你?帮我|请你?|帮我|麻烦你?帮我)\s*)?(?:把|将)\s*\S+\s*(?:重命名为|移动到|复制到)\s*\S+[。！]?$/u.test(unquotedText);
+  if (closedSourceTarget) return true;
+  const operations = scanRanges(unquotedText, fileOperationPattern)
+    .filter(([, end]) => unquotedText[end] !== '.');
+  const objects = scanLocalObjects(unquotedText);
+  if (operations.length === 0 || objects.length === 0
+    || !operations.some(operation => objects.some(object => sameSentence(operation, object, unquotedText)))) {
+    return false;
+  }
+  return hasClosedChineseShape(unquotedText, objects)
+    || hasClosedEnglishShape(unquotedText, objects);
+}
+
+function hasNaturalLanguageShellTail(commandText: string): boolean {
+  const unquoted = maskQuotedText(commandText);
+  const argumentStart = unquoted.search(/\s/u);
   if (argumentStart < 0) return false;
-  const unquotedArguments = unquotedCommandText.slice(argumentStart).trim();
-  const argumentTokens = unquotedArguments.split(/\s+/u).filter(Boolean);
-  return /[^\x00-\x7f]/u.test(unquotedArguments)
-    || /\?\s*$/u.test(unquotedArguments)
-    || hasEnglishNaturalLanguageClause(argumentTokens);
+  const argumentsText = unquoted.slice(argumentStart).trim();
+  const tokens = argumentsText.split(/\s+/u).map(token => token.replace(/^[,，]/u, ''));
+  return /[^\x00-\x7f]/u.test(argumentsText) || /\?\s*$/u.test(argumentsText)
+    || tokens.some((token, index) => index < tokens.length - 1
+      && englishNaturalLanguageTokenPattern.test(token));
 }
 
-/** 命令标识或明确 PowerShell 脚本结构加非咨询尾部才构成 Shell 正向证据。 */
-function isShellCommandPayload(payload: string): boolean {
-  const withoutShellHost = payload.trim().replace(/^powershell\s+/iu, '');
-  const hasExecutablePayload = shellCommandPayloadPattern.test(withoutShellHost)
-    || powershellAssignmentScriptPattern.test(withoutShellHost)
-    || powershellScriptBlockPattern.test(withoutShellHost);
-  return hasExecutablePayload
-    && !hasUnquotedNaturalLanguageTail(withoutShellHost);
+function isShellPayload(payload: string): boolean {
+  const commandText = payload.trim().replace(/^powershell\s+/iu, '');
+  return (commandPayloadPattern.test(commandText)
+    || assignmentScriptPattern.test(commandText)
+    || scriptBlockPattern.test(commandText)) && !hasNaturalLanguageShellTail(commandText);
 }
 
-/** 显式 PowerShell 前缀允许真实脚本语法，但仍拒绝超限、整段引用和讨论性正文。 */
 function isExplicitPowerShellPayload(payload: string): boolean {
   const commandText = payload.trim();
   return commandText.length > 0
     && new TextEncoder().encode(commandText).byteLength <= 16 * 1_024
     && maskQuotedText(commandText).trim().length > 0
-    && !standaloneShellDiscussionPattern.test(maskQuotedText(commandText).trim())
-    && !hasUnquotedNaturalLanguageTail(commandText);
+    && !shellDiscussionTailPattern.test(maskQuotedText(commandText).trim())
+    && !hasNaturalLanguageShellTail(commandText);
 }
 
-/** 未命中显式前缀返回 undefined；命中后无论接受或拒绝都终止后续文件扫描。 */
-function explicitPowerShellExecutionIntent(normalizedText: string): CapabilityIntent | undefined {
-  const payload = chineseExplicitPowerShellRequestPattern.exec(normalizedText)?.[1]
-    ?? englishExplicitPowerShellRequestPattern.exec(normalizedText)?.[1];
+function explicitPowerShellIntent(text: string): CapabilityIntent | undefined {
+  const payload = chineseExplicitPowerShellPattern.exec(text)?.[1]
+    ?? englishExplicitPowerShellPattern.exec(text)?.[1];
   if (payload === undefined) return undefined;
-  return isExplicitPowerShellPayload(payload) ? powershellTaskIntent : chatIntent;
+  return isExplicitPowerShellPayload(payload) ? powershellTaskIntent : blockedChatIntent;
 }
 
-/** 只有用户消息开头的明确执行措辞及可验证载荷才能进入 Shell 能力分支。 */
-function shellExecutionIntent(normalizedText: string): CapabilityIntent | null {
-  if (backgroundShellRequestPattern.test(normalizedText)) return backgroundPowerShellTaskIntent;
-  const explicitIntent = explicitPowerShellExecutionIntent(normalizedText);
-  if (explicitIntent !== undefined) return explicitIntent.kind === 'powershell_task' ? explicitIntent : null;
-  const chinesePayload = chineseShellRequestPattern.exec(normalizedText)?.[1];
-  if (chinesePayload !== undefined) return isShellCommandPayload(chinesePayload) ? powershellTaskIntent : null;
-  const englishPayload = englishShellRequestPattern.exec(normalizedText)?.[1];
-  return englishPayload !== undefined && isShellCommandPayload(englishPayload)
-    ? powershellTaskIntent
-    : null;
+function shellIntent(text: string): CapabilityIntent | null {
+  if (backgroundShellPattern.test(text)) return backgroundPowerShellTaskIntent;
+  const explicit = explicitPowerShellIntent(text);
+  if (explicit !== undefined) return explicit.kind === 'powershell_task' ? explicit : null;
+  const chinesePayload = chineseShellPattern.exec(text)?.[1];
+  if (chinesePayload !== undefined) return isShellPayload(chinesePayload) ? powershellTaskIntent : null;
+  const englishPayload = englishShellPattern.exec(text)?.[1];
+  return englishPayload !== undefined && isShellPayload(englishPayload) ? powershellTaskIntent : null;
 }
 
-/** 文件正文只作为内容引用；抽出的正文片段复用完整 Shell 正向证据判断。 */
-function hasEmbeddedShellExecution(normalizedText: string): boolean {
-  const embeddedContent = embeddedFileContentPattern.exec(normalizedText)?.[1]?.trim();
-  return embeddedContent !== undefined && shellExecutionIntent(embeddedContent) !== null;
+function hasEmbeddedShellExecution(text: string): boolean {
+  const embedded = embeddedFileContentPattern.exec(text)?.[1]?.trim();
+  return embedded !== undefined && shellIntent(embedded) !== null;
 }
 
-/** 文件 Gate 封装全部候选扫描；显式 PowerShell 请求必须在调用它之前完成裁决。 */
-function hasExplicitFileIntent(normalizedText: string): boolean {
-  if (quotedOrCodePrefixPattern.test(normalizedText)) return false;
-  const unquotedText = maskQuotedText(normalizedText);
-  const targetRanges = scanTargetRanges(unquotedText);
-  const objectRanges = scanLocalObjectRanges(unquotedText, targetRanges);
-  const localObjectScan = scanLocalObjects(unquotedText, objectRanges);
-  const semanticText = localObjectScan.semanticText.trimStart();
-  // 拒绝证据只接受句首句法角色，不在整段文本中搜索裸关键词。
-  if (!normalizedText
-    || chineseDiscussionRequestPattern.test(semanticText)
-    || chineseKnowledgeQuestionPattern.test(semanticText)
-    || englishDiscussionRequestPattern.test(semanticText)
-    || negativeCommandPattern.test(semanticText)) {
-    return false;
-  }
-
-  const operationRanges = scanFileOperationRanges(localObjectScan.semanticText);
-  const requestedOperationRanges = bindRequestedOperationRanges(
-    localObjectScan.semanticText,
-    operationRanges
-  );
-  const hasExecution = localObjectScan.hasLocalObject
-    && requestedOperationRanges.length > 0
-    && hasExecutionStructure(unquotedText, objectRanges, requestedOperationRanges);
-  if (!hasExecution) return false;
-
-  if (hasSemanticTailAfterObjects(localObjectScan.semanticText, objectRanges, knowledgeTailPattern)
-    || hasSemanticTailAfterObjects(localObjectScan.semanticText, objectRanges, statementTailPattern)) {
-    return false;
-  }
-  const hasFeasibilityQuestion = hasSemanticTailAfterObjects(
-    localObjectScan.semanticText,
-    objectRanges,
-    feasibilityQuestionPattern
-  );
-  return !hasFeasibilityQuestion
-    || hasChinesePoliteExecutionStructure(unquotedText, objectRanges, requestedOperationRanges);
+/** 确定性引用、代码和显式否定不能被后续模型建议重新提升为本地能力。 */
+function blocksModelEscalation(text: string): boolean {
+  return quotedOrCodePrefixPattern.test(text)
+    || explicitReferencePrefixPattern.test(text)
+    || explicitNegationPrefixPattern.test(text)
+    || embeddedFileContentPattern.test(text);
 }
 
-/** 操作类别只用于收窄本轮工具，不扩展 Router 已经判定的文件权限。 */
 function filePlanningOperation(text: string): FilePlanningOperation | null {
-  if (/(?:创建|新建).{0,24}(?:文件夹|目录)|\b(?:create|make)\b.{0,24}\b(?:folder|directory)\b/iu.test(text)) {
-    return 'create_directory';
-  }
-  // “移动到回收站”是可恢复删除语义，必须先于普通文件移动收窄到删除工具。
-  if (/(?:回收站|recycle\s+bin)/iu.test(text)
-    && /(?:删除|移动|移入|\b(?:delete|move)\b)/iu.test(text)) {
-    return 'delete_file';
-  }
+  if (/(?:创建|新建).{0,24}(?:文件夹|目录)|\b(?:create|make)\b.{0,24}\b(?:folder|directory)\b/iu.test(text)) return 'create_directory';
+  if (/(?:回收站|recycle\s+bin)/iu.test(text) && /(?:删除|移动|移入|\b(?:delete|move)\b)/iu.test(text)) return 'delete_file';
   if (/(?:删除|\bdelete\b)/iu.test(text)) return 'delete_file';
   if (/(?:搜索|查找).{0,16}(?:内容|正文|包含)|(?:内容|正文).{0,16}(?:搜索|查找)|\bgrep\b/iu.test(text)) return 'grep_files';
   if (/(?:按文件名|文件名匹配)|\bglob\b/iu.test(text)) return 'glob_files';
@@ -585,41 +292,33 @@ function filePlanningOperation(text: string): FilePlanningOperation | null {
   return null;
 }
 
-/** Main 将该提示传入 Agent；提示不含绝对路径、授权根或执行结论。 */
+/** Main 只传递操作类别，不在 Router 中解释路径或执行结果。 */
 export function createFilePlanningHint(prompt: string): FilePlanningHint | null {
   const normalizedText = prompt.normalize('NFKC').trim();
   const operation = filePlanningOperation(normalizedText);
   if (operation === null) return null;
-  return Object.freeze({
-    operation,
+  return Object.freeze({ operation,
     ...(missingTargetPathPattern.test(normalizedText) && !normalizedText.includes(clarifiedTargetMarker)
-      ? { missingField: 'target_path' as const }
-      : {})
-  });
+      ? { missingField: 'target_path' as const } : {}) });
 }
 
 export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
-  constructor(
-    private readonly fileIntentGate: (normalizedText: string) => boolean = hasExplicitFileIntent
-  ) {}
+  constructor(private readonly fileIntentGate: (text: string) => boolean = hasExplicitFileIntent) {}
 
-  /**
-   * 只有文件对象、文件操作和直接执行请求三项独立证据同时成立才允许进入文件链路，
-   * 使不完整、陈述讨论或否定性表达始终停留在默认聊天，避免意外提升文件权限。
-   */
+  /** 只有封闭直接命令可跳过任务级授权；其他文本保守回落普通聊天。 */
   route(prompt: string): CapabilityIntent {
-    const normalizedText = prompt.normalize('NFKC').trim().toLocaleLowerCase();
-    const explicitPowerShellIntent = explicitPowerShellExecutionIntent(normalizedText);
-    if (explicitPowerShellIntent !== undefined) return explicitPowerShellIntent;
-    if (hasEmbeddedShellExecution(normalizedText)) return chatIntent;
-    const shellIntent = shellExecutionIntent(normalizedText);
-    if (shellIntent !== null) return shellIntent;
-    if (!this.fileIntentGate(normalizedText)) return chatIntent;
-    // OpenCode 的复制依赖 Shell；本项目不把该副作用降级给模型口头处理。
-    if (/(?:复制|\bcopy\b)/iu.test(normalizedText)) return unsupportedCopyIntent;
+    const text = prompt.normalize('NFKC').trim().toLocaleLowerCase();
+    const explicitShell = explicitPowerShellIntent(text);
+    if (explicitShell !== undefined) return explicitShell;
+    if (hasEmbeddedShellExecution(text)) return blockedChatIntent;
+    const shell = shellIntent(text);
+    if (shell !== null) return shell;
+    if (!this.fileIntentGate(text)) {
+      return blocksModelEscalation(text) ? blockedChatIntent : chatIntent;
+    }
+    if (/(?:复制|\bcopy\b)/iu.test(text)) return unsupportedCopyIntent;
     return fileTaskIntent;
   }
 }
 
-/** 对话协调器共享的唯一能力意图分流入口。 */
 export const capabilityIntentRouter: CapabilityIntentRouter = new DefaultCapabilityIntentRouter();
