@@ -312,7 +312,7 @@ git commit -m "test(desktop): 验收统一控制与本地Agent链"
 
 ### 任务 5：最终复审、完整门禁与实际目录同步
 
-**实际状态：** 代码、自动化、真实 Electron、CPU/GGUF 与独立复审已完成；专项验收记录已创建。实际目录 fast-forward 与同步后构建在步骤 5 执行。真实动画观感保持“待用户人工确认”。
+**实际状态：** 已完成。代码、自动化、真实 Electron、CPU/GGUF、独立复审、专项验收记录、实际目录 fast-forward 和同步后构建均已完成。真实动画观感保持“待用户人工确认”。
 
 **文件：**
 
@@ -348,7 +348,7 @@ git add docs/operations/2026-08-27-ai-pet-structured-control-repair-acceptance.m
 git commit -m "docs: 记录统一控制修复最终验收"
 ```
 
-- [ ] **步骤 5：快进同步实际目录并构建**
+- [x] **步骤 5：快进同步实际目录并构建**
 
 确认 `D:\Python\Important\myself` 干净且其 HEAD 是当前分支祖先，再执行 fast-forward-only。同步后运行：
 
@@ -358,3 +358,5 @@ pnpm.cmd --filter @myself/desktop build
 ```
 
 最终确认隔离 worktree 与实际目录位于同一提交且均无未提交改动。
+
+实际执行时先将 `D:\Python\Important\myself` 从 `16189b2` fast-forward 到 `5a2a10d`，随后 `pnpm.cmd install --frozen-lockfile` 和 `pnpm.cmd --filter @myself/desktop build` 均以退出码 `0` 完成；本状态提交后再次 fast-forward 同步文档提交。
