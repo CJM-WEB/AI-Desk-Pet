@@ -1081,6 +1081,71 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.close();
   });
 
+  test('生产会话链在创建确认后保留任务并允许第二张移动确认落盘', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    await mkdir(join(authorized.root, 'archive'));
+    const responses = [
+      compatibleToolCall('vertical-create-move-create', 'builtin__files__create_file', {
+        relativePath: 'result.txt', content: '待移动内容'
+      }),
+      compatibleToolCall('vertical-create-move-move', 'builtin__files__move_file', {
+        sourceRelativePath: 'result.txt', targetDirectoryRelativePath: 'archive'
+      }),
+      compatibleText('文件已创建并移动')
+    ];
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://deepseek.example/v1', modelId: 'deepseek-test', providerId: 'deepseek'
+    }, async () => 'vertical-secret', vi.fn(async () => {
+      const response = responses.shift();
+      if (!response) throw new Error('纵向 Provider 响应耗尽');
+      return new Response(JSON.stringify(response), {
+        status: 200, headers: { 'content-type': 'application/json' }
+      });
+    }));
+    const fixture = conversationIntegrationHarness({
+      responses: [],
+      authorizedRootPath: authorized.root,
+      fileDisclosureAllowed: false,
+      createAgentService: factoryInput => new AgentService({
+        loop: new AgentLoop(),
+        pending: new PendingActionStore(),
+        createSession: () => createMainAgentSession({
+          initialCapability: 'file',
+          authorizedRootPath: authorized.root,
+          generation: factoryInput.generation,
+          provider,
+          fileDisclosureAllowed: false,
+          fallbackProviders: [],
+          createFileTools: async () => authorized.fileTools,
+          createPowerShellTool: () => new PowerShellTool()
+        }),
+        emit: factoryInput.emit,
+        createConversationId: () => 'vertical-create-move-conversation'
+      })
+    });
+    const source = join(authorized.root, 'result.txt');
+    const destination = join(authorized.root, 'archive', 'result.txt');
+
+    await fixture.composition.coordinator.submit('创建 result.txt 后移动到 archive 文件夹');
+    const first = pendingAction(fixture.events);
+    await fixture.composition.coordinator.resolveFileAction(first.actionId, 'confirm');
+
+    await expect(readFile(source, 'utf8')).resolves.toBe('待移动内容');
+    const pendingEvents = fixture.events.filter(event => event.type === 'pending_action');
+    expect(pendingEvents).toHaveLength(2);
+    const second = pendingEvents[1];
+    if (!second || second.type !== 'pending_action') throw new Error('缺少移动确认卡');
+
+    await fixture.composition.coordinator.resolveFileAction(second.action.actionId, 'confirm');
+
+    await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(destination, 'utf8')).resolves.toBe('待移动内容');
+    await expect(fixture.composition.coordinator.resolveFileAction(second.action.actionId, 'confirm'))
+      .rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+    await fixture.composition.close();
+  });
+
   test('跨 Provider 仅发送当前消息时历史为空且当前消息继续执行', async () => {
     const fixture = conversationIntegrationHarness({
       responses: [

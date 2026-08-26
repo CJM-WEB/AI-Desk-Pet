@@ -509,6 +509,69 @@ describe('CapabilityTaskAdapter', () => {
     expect(agent.cancelAction).toHaveBeenCalledExactlyOnceWith('cancel-action');
   });
 
+  test('首次确认内发布第二张确认卡时保留同一任务所有权', async () => {
+    let emitAgentEvent!: (event: TaskEvent) => void;
+    const agent = createAgentDouble(async () => {
+      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+    });
+    agent.confirm.mockImplementation(async actionId => {
+      if (actionId === 'first-action') {
+        emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+      } else {
+        emitAgentEvent({ type: 'phase', phase: 'success' });
+      }
+    });
+    const adapter = createAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentTarget: ({ emit }) => {
+        emitAgentEvent = emit;
+        return preparedAgent(agent);
+      }
+    });
+    await submitPrepared(adapter, {
+      text: '创建后移动', visibleHistory: [], generation: 'g-multi', taskKind: 'file'
+    });
+
+    await adapter.resolveAction('first-action', 'confirm');
+    await expect(adapter.resolveAction('second-action', 'confirm')).resolves.toBeUndefined();
+    await expect(adapter.resolveAction('second-action', 'confirm')).rejects
+      .toMatchObject({ code: 'ACTION_EXPIRED' });
+
+    expect(agent.confirm).toHaveBeenNthCalledWith(1, 'first-action');
+    expect(agent.confirm).toHaveBeenNthCalledWith(2, 'second-action');
+  });
+
+  test('第二张确认卡取消后立即清理任务且旧 action 不得重放', async () => {
+    let emitAgentEvent!: (event: TaskEvent) => void;
+    const agent = createAgentDouble(async () => {
+      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+    });
+    agent.confirm.mockImplementation(async () => {
+      emitAgentEvent({ type: 'phase', phase: 'awaiting_confirmation' });
+    });
+    agent.cancelAction.mockImplementation(() => {
+      emitAgentEvent({ type: 'phase', phase: 'cancelled' });
+    });
+    const adapter = createAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentTarget: ({ emit }) => {
+        emitAgentEvent = emit;
+        return preparedAgent(agent);
+      }
+    });
+    await submitPrepared(adapter, {
+      text: '多文件任务', visibleHistory: [], generation: 'g-cancel-second', taskKind: 'file'
+    });
+
+    await adapter.resolveAction('first-action', 'confirm');
+    await adapter.resolveAction('second-action', 'cancel');
+
+    await expect(adapter.resolveAction('second-action', 'confirm')).rejects
+      .toMatchObject({ code: 'ACTION_EXPIRED' });
+    await expect(adapter.prepareTarget({ generation: 'g-next', taskKind: 'file' }))
+      .resolves.toMatchObject({ profileId: 'profile-agent' });
+  });
+
   test('工厂同步 reset 后不安装或提交刚创建的 Agent，且清理异常不覆盖主错误', async () => {
     const agent = createAgentDouble();
     agent.cancelActive.mockImplementation(() => {

@@ -218,6 +218,9 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     if (!active || !service) throw adapterError('ACTION_EXPIRED');
     if (this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
     const owner = active.owner;
+    // 每次决议先消费当前等待态；Agent 若在同一调用栈内发布下一张确认卡，
+    // publishAgentEvent 会重新置位，从而保留原任务 owner 与能力快照绑定。
+    active.awaitingConfirmation = false;
     this.inFlightOwner = owner;
     try {
       if (decision === 'confirm') {
@@ -227,7 +230,13 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       }
     } finally {
       if (this.inFlightOwner === owner) this.inFlightOwner = null;
-      if (this.active?.owner === owner) this.active = null;
+      const retained = this.active;
+      if (
+        retained?.owner === owner
+        && (decision === 'cancel' || !retained.awaitingConfirmation)
+      ) {
+        this.active = null;
+      }
     }
   }
 
