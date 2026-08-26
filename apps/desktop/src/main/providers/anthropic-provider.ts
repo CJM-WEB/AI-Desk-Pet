@@ -12,9 +12,14 @@ import {
   type ProviderAdapterConfig,
   ProviderError,
   normalizeFetchError,
+  normalizeHttpError,
   normalizeResponseContractText,
   readProviderJson
 } from './openai-provider';
+import {
+  readStructuredTextSse,
+  shouldStreamStructuredText
+} from './structured-text-stream';
 
 const anthropicContentBlockSchema = z.discriminatedUnion('type', [
   z.object({
@@ -199,6 +204,7 @@ export class AnthropicProvider implements ModelProvider {
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     assertResponseContractRequest(request);
+    const structuredStream = shouldStreamStructuredText(request);
     const systemMessages = request.messages
       .filter(message => message.role === 'system')
       .map(message => message.content);
@@ -212,6 +218,7 @@ export class AnthropicProvider implements ModelProvider {
       messages,
       tools: request.tools.map(serializeTool)
     };
+    if (structuredStream) body.stream = true;
     if (systemMessages.length > 0) body.system = systemMessages.join('\n\n');
     if (request.responseContract !== undefined) {
       body.output_config = {
@@ -238,6 +245,41 @@ export class AnthropicProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
-    return normalizeResponse(await readProviderJson(response), request.responseContract);
+    const raw = structuredStream
+      ? await readAnthropicStructuredSse(response, request, signal)
+      : await readProviderJson(response);
+    return normalizeResponse(raw, request.responseContract);
   }
+}
+
+async function readAnthropicStructuredSse(
+  response: Response,
+  request: ModelRequest,
+  signal: AbortSignal
+): Promise<unknown> {
+  if (!response.ok) throw normalizeHttpError(response.status);
+  return readStructuredTextSse(response, {
+    request,
+    signal,
+    malformed: () => { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); },
+    normalizeReadError: error => normalizeFetchError(error, signal),
+    decodeEvent: (eventName, data) => {
+      let raw: unknown;
+      try { raw = JSON.parse(data); } catch { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); }
+      if (typeof raw !== 'object' || raw === null) {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      const type = Reflect.get(raw, 'type');
+      if (eventName === 'message_stop' || type === 'message_stop') return { done: true };
+      if (eventName !== 'content_block_delta' && type !== 'content_block_delta') return {};
+      const delta = Reflect.get(raw, 'delta');
+      if (typeof delta !== 'object' || delta === null || Reflect.get(delta, 'type') !== 'text_delta') {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      const text = Reflect.get(delta, 'text');
+      if (typeof text !== 'string') throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      return { fragment: text };
+    },
+    toRaw: content => ({ content: [{ type: 'text', text: content }] })
+  });
 }

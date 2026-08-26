@@ -18,6 +18,10 @@ import {
   createOpenAIToolNameCodec,
   type OpenAIToolNameCodec
 } from './openai-tool-name-codec';
+import {
+  readStructuredTextSse,
+  shouldStreamStructuredText
+} from './structured-text-stream';
 
 export type FetchLike = (
   input: string | URL | Request,
@@ -605,6 +609,41 @@ async function readProviderSse(
   };
 }
 
+async function readCloudOpenAISse(
+  response: Response,
+  request: ModelRequest,
+  signal: AbortSignal
+): Promise<unknown> {
+  if (!response.ok) throw normalizeHttpError(response.status);
+  return readStructuredTextSse(response, {
+    request,
+    signal,
+    malformed: () => { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); },
+    normalizeReadError: error => normalizeFetchError(error, signal),
+    decodeEvent: (_eventName, data) => {
+      if (data === '[DONE]') return { done: true };
+      let raw: unknown;
+      try { raw = JSON.parse(data); } catch { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); }
+      if (typeof raw !== 'object' || raw === null) {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      const choices = Reflect.get(raw, 'choices');
+      const choice = Array.isArray(choices) ? choices[0] : undefined;
+      const delta = typeof choice === 'object' && choice !== null ? Reflect.get(choice, 'delta') : undefined;
+      if (typeof delta !== 'object' || delta === null || Reflect.has(delta, 'tool_calls')) {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      // 云端推理字段既不公开也不作为本地模型泄漏处理；只消费可见 content。
+      const content = Reflect.get(delta, 'content');
+      if (content !== undefined && content !== null && typeof content !== 'string') {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      return typeof content === 'string' ? { fragment: content } : {};
+    },
+    toRaw: content => ({ choices: [{ message: { content } }] })
+  });
+}
+
 /** 三类 Provider 共用同一正文降级规则，避免协议适配器各自实现不一致的恢复逻辑。 */
 export function normalizeResponseContractText(
   raw: string,
@@ -648,6 +687,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     assertResponseContractRequest(request);
+    const cloudStructuredStream = this.requestPolicy === undefined
+      && shouldStreamStructuredText(request);
     // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
     const toolChoice = resolveToolChoice(request);
     const toolNameCodec = createOpenAIToolNameCodec(codecDefinitions(request));
@@ -676,6 +717,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           ...(request.responseContract === undefined
             ? {}
             : { response_format: { type: 'json_object' } }),
+          ...(cloudStructuredStream ? { stream: true } : {}),
           ...(this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
             ? { thinking: { type: 'disabled' } }
             : {}),
@@ -695,7 +737,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
           this.requestPolicy.onTextDelta,
           this.requestPolicy.validateProjectedText
         )
-      : await readProviderJson(response);
+      : cloudStructuredStream
+        ? response.headers.get('content-type')?.toLocaleLowerCase().includes('application/json')
+          ? await readProviderJson(response)
+          : await readCloudOpenAISse(response, request, signal)
+        : await readProviderJson(response);
     this.requestPolicy?.validateResponse(rawResponse);
     return normalizeResponse(
       rawResponse,

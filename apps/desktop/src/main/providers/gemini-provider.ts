@@ -12,9 +12,14 @@ import {
   type ProviderAdapterConfig,
   ProviderError,
   normalizeFetchError,
+  normalizeHttpError,
   normalizeResponseContractText,
   readProviderJson
 } from './openai-provider';
+import {
+  readStructuredTextSse,
+  shouldStreamStructuredText
+} from './structured-text-stream';
 
 const geminiPartSchema = z.union([
   z.object({
@@ -113,6 +118,13 @@ function serializeTool(tool: ToolDefinition): Record<string, unknown> {
     description: tool.function.description,
     parameters: tool.function.parameters
   };
+}
+
+function streamGenerateContentUrl(baseUrl: string, modelId: string): URL {
+  const url = generateContentUrl(baseUrl, modelId);
+  url.pathname = url.pathname.replace(/:generateContent$/u, ':streamGenerateContent');
+  url.searchParams.set('alt', 'sse');
+  return url;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -254,6 +266,7 @@ export class GeminiProvider implements ModelProvider {
 
   async respond(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
     assertResponseContractRequest(request);
+    const structuredStream = shouldStreamStructuredText(request);
     const systemParts = request.messages
       .filter(message => message.role === 'system')
       .map(message => ({ text: message.content }));
@@ -278,7 +291,9 @@ export class GeminiProvider implements ModelProvider {
     let response: Response;
     try {
       response = await this.fetchClient(
-        generateContentUrl(this.config.baseUrl, this.config.modelId),
+        structuredStream
+          ? streamGenerateContentUrl(this.config.baseUrl, this.config.modelId)
+          : generateContentUrl(this.config.baseUrl, this.config.modelId),
         {
           method: 'POST',
           signal,
@@ -293,8 +308,11 @@ export class GeminiProvider implements ModelProvider {
       normalizeFetchError(error, signal);
     }
 
+    const raw = structuredStream
+      ? await readGeminiStructuredSse(response, request, signal)
+      : await readProviderJson(response);
     const normalized = normalizeResponse(
-      await readProviderJson(response),
+      raw,
       toolName => `gemini-call-${toolName}-${this.nextFallbackRequestId++}`,
       request.responseContract
     );
@@ -306,4 +324,45 @@ export class GeminiProvider implements ModelProvider {
     }
     return normalized.response;
   }
+}
+
+async function readGeminiStructuredSse(
+  response: Response,
+  request: ModelRequest,
+  signal: AbortSignal
+): Promise<unknown> {
+  if (!response.ok) throw normalizeHttpError(response.status);
+  return readStructuredTextSse(response, {
+    request,
+    signal,
+    malformed: () => { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); },
+    normalizeReadError: error => normalizeFetchError(error, signal),
+    decodeEvent: (_eventName, data) => {
+      let raw: unknown;
+      try { raw = JSON.parse(data); } catch { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); }
+      if (typeof raw !== 'object' || raw === null) {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      const candidates = Reflect.get(raw, 'candidates');
+      const candidate = Array.isArray(candidates) ? candidates[0] : undefined;
+      if (typeof candidate !== 'object' || candidate === null) {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      const content = Reflect.get(candidate, 'content');
+      const parts = typeof content === 'object' && content !== null ? Reflect.get(content, 'parts') : undefined;
+      if (!Array.isArray(parts)) throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      let fragment = '';
+      for (const part of parts) {
+        if (typeof part !== 'object' || part === null || typeof Reflect.get(part, 'text') !== 'string') {
+          throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+        }
+        fragment += Reflect.get(part, 'text') as string;
+      }
+      return {
+        fragment,
+        ...(typeof Reflect.get(candidate, 'finishReason') === 'string' ? { done: true } : {})
+      };
+    },
+    toRaw: content => ({ candidates: [{ content: { parts: [{ text: content }] } }] })
+  });
 }
