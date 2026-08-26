@@ -13,6 +13,8 @@
 
 真实验收入口组合生产 `LocalModelRuntime`、`LocalModelService`、`ProviderRegistry`、Main Coordinator、`AgentLoop`、确认链与 `FileToolService`；旧的验收专用进程启动、Token、health、argv 和清理实现已退役。
 
+2026-08-27 迁移说明：真实 runner 已跟随当前两级确认链。模型识别任务时，runner 先检查未出现具体动作卡且未产生文件副作用，再确认 `capability_authorization_required`；随后的每个 mutation 或 PowerShell 动作仍必须逐次独立确认。统一 Session 注入正式受控 `PowerShellTool`，任务授权本身不会启动进程。此迁移的单元验证不替代后续 CPU/Vulkan 真实 GGUF 重跑。
+
 - `node apps/desktop/scripts/run-local-model-acceptance.mjs --backend cpu`：退出码 `0`；请求和实际 backend 均为 `cpu`，phase 为 `passed`。
 - `node apps/desktop/scripts/run-local-model-acceptance.mjs --backend vulkan`：退出码 `0`；请求和实际 backend 均为 `vulkan`，phase 为 `passed`，Main 私有诊断观察到非零 GPU offload。
 - 两个 backend 的白名单检查均全部为 `true`：中文聊天、禁用思考、创建/移动/删除、中文相对路径、结构化缺参澄清及紧邻路径续接、确认前后副作用、用户拒绝、受控工具失败恢复、工具结果总结、Provider Abort 恢复、本地开启时云调用为零、关闭本地后云路由恢复。

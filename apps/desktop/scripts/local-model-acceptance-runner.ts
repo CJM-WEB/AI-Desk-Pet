@@ -9,6 +9,7 @@ import { AgentService } from '../src/main/agent/agent-service';
 import { PrivacySessionRegistry } from '../src/main/agent/disclosure-policy';
 import { createMainAgentSession } from '../src/main/agent/main-agent-session-factory';
 import { PendingActionStore } from '../src/main/agent/pending-action-store';
+import { PowerShellTool } from '../src/main/agent/powershell-tool';
 import type { ConversationBehaviorPort } from '../src/main/characters/character-behavior-director';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 import {
@@ -109,6 +110,29 @@ function findPendingAction(events: readonly TaskEvent[]) {
     throw acceptanceError('TOOL_CALL_MISSING');
   }
   return event.action;
+}
+
+/** 验收先确认模型识别出的任务级授权；具体文件或命令动作仍留给后续独立确认。 */
+export async function submitAcceptanceTurn(options: {
+  events: readonly TaskEvent[];
+  submit(): Promise<void>;
+  resolveCapabilityAuthorization(requestId: string, resolution: 'confirm'): Promise<void>;
+  assertNoSideEffect(): Promise<unknown>;
+}): Promise<readonly TaskEvent[]> {
+  const eventStart = options.events.length;
+  await options.submit();
+  const beforeAuthorization = options.events.slice(eventStart);
+  const authorization = beforeAuthorization.find(
+    event => event.type === 'capability_authorization_required'
+  );
+  if (authorization?.type === 'capability_authorization_required') {
+    if (beforeAuthorization.some(event => event.type === 'pending_action')) {
+      throw acceptanceError('CAPABILITY_AUTHORIZATION_BYPASSED');
+    }
+    await options.assertNoSideEffect();
+    await options.resolveCapabilityAuthorization(authorization.requestId, 'confirm');
+  }
+  return options.events.slice(eventStart);
 }
 
 async function assertPathDoesNotExist(path: string): Promise<true> {
@@ -383,7 +407,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
             };
             return fileTools;
           },
-          createPowerShellTool: () => { throw acceptanceError('TOOL_UNKNOWN'); }
+          createPowerShellTool: () => new PowerShellTool()
         }),
         emit,
         createConversationId: () => 'local-model-acceptance'
@@ -391,6 +415,16 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     },
     behavior: behaviorPort(),
     emit: event => events.push(event)
+  });
+  const submitTurn = (
+    text: string,
+    assertNoSideEffect: () => Promise<unknown> = async () => undefined
+  ) => submitAcceptanceTurn({
+    events,
+    submit: () => composition.coordinator.submit(text),
+    resolveCapabilityAuthorization: (requestId, resolution) =>
+      composition.coordinator.resolveCapabilityAuthorization(requestId, resolution),
+    assertNoSideEffect
   });
 
   let closePromise: Promise<void> | undefined;
@@ -460,7 +494,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
 
     acceptanceStage = 'CHAT';
     const chatEventStart = events.length;
-    await composition.coordinator.submit('只用简短中文回答：你好。');
+    await submitTurn('只用简短中文回答：你好。');
     const chatMessage = findFinalAssistantText(events.slice(chatEventStart));
     if (
       chatMessage === undefined
@@ -492,8 +526,10 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
 
     acceptanceStage = 'CREATE';
     const createEventStart = events.length;
-    await composition.coordinator.submit(
-      '在授权根目录下创建 acceptance-created.txt，内容只写 accepted。路径和内容齐全，请立即调用创建文件工具。'
+    const createdTarget = join(authorizedRoot, 'acceptance-created.txt');
+    await submitTurn(
+      '在授权根目录下创建 acceptance-created.txt，内容只写 accepted。路径和内容齐全，请立即调用创建文件工具。',
+      () => assertPathDoesNotExist(createdTarget)
     );
     const createAction = findPendingAction(events.slice(createEventStart));
     if (
@@ -501,7 +537,6 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
       || normalizedRelativePath(createAction.targetRelativePath) !== 'acceptance-created.txt'
     ) throw acceptanceError('TOOL_CALL_MISSING');
     checks.toolCall = true;
-    const createdTarget = join(authorizedRoot, 'acceptance-created.txt');
     checks.confirmation = await assertPathDoesNotExist(createdTarget);
     const confirmEventStart = events.length;
     await composition.coordinator.resolveFileAction(createAction.actionId, 'confirm');
@@ -519,8 +554,10 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     await composition.resetForConfigurationChange();
     acceptanceStage = 'MOVE';
     const moveEventStart = events.length;
-    await composition.coordinator.submit(
-      '把授权根目录的 acceptance-created.txt 移动到目标目录。源和目标目录路径齐全，请立即调用移动文件工具。'
+    const movedTarget = join(authorizedRoot, '目标目录', 'acceptance-created.txt');
+    await submitTurn(
+      '把授权根目录的 acceptance-created.txt 移动到目标目录。源和目标目录路径齐全，请立即调用移动文件工具。',
+      async () => { await access(createdTarget); await assertPathDoesNotExist(movedTarget); }
     );
     const moveAction = findPendingAction(events.slice(moveEventStart));
     if (
@@ -529,7 +566,6 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
       || normalizedRelativePath(moveAction.targetRelativePath) !== '目标目录/acceptance-created.txt'
     ) throw acceptanceError('MOVE_TOOL_CALL_MISSING');
     await access(createdTarget);
-    const movedTarget = join(authorizedRoot, '目标目录', 'acceptance-created.txt');
     await assertPathDoesNotExist(movedTarget);
     await composition.coordinator.resolveFileAction(moveAction.actionId, 'confirm');
     await assertPathDoesNotExist(createdTarget);
@@ -541,8 +577,9 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     await composition.resetForConfigurationChange();
     acceptanceStage = 'DELETE';
     const deleteEventStart = events.length;
-    await composition.coordinator.submit(
-      '删除相对路径 目标目录/acceptance-created.txt 的文件。相对路径齐全，请立即调用删除文件工具。'
+    await submitTurn(
+      '删除相对路径 目标目录/acceptance-created.txt 的文件。相对路径齐全，请立即调用删除文件工具。',
+      async () => { await access(movedTarget); }
     );
     const deleteAction = findPendingAction(events.slice(deleteEventStart));
     if (
@@ -558,15 +595,16 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     await composition.resetForConfigurationChange();
     acceptanceStage = 'CHINESE_PATH';
     const chineseEventStart = events.length;
-    await composition.coordinator.submit(
-      '创建相对路径 资料/中文记录.txt，内容只写 你好。相对路径和内容齐全，请立即调用创建文件工具。'
+    const chineseTarget = join(authorizedRoot, '资料', '中文记录.txt');
+    await submitTurn(
+      '创建相对路径 资料/中文记录.txt，内容只写 你好。相对路径和内容齐全，请立即调用创建文件工具。',
+      () => assertPathDoesNotExist(chineseTarget)
     );
     const chineseAction = findPendingAction(events.slice(chineseEventStart));
     if (
       chineseAction.operation !== 'create_file'
       || normalizedRelativePath(chineseAction.targetRelativePath) !== '资料/中文记录.txt'
     ) throw acceptanceError('CHINESE_PATH_TOOL_CALL_MISSING');
-    const chineseTarget = join(authorizedRoot, '资料', '中文记录.txt');
     await assertPathDoesNotExist(chineseTarget);
     await composition.coordinator.resolveFileAction(chineseAction.actionId, 'confirm');
     if (await readFile(chineseTarget, 'utf8') !== '你好') {
@@ -576,24 +614,27 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
 
     await composition.resetForConfigurationChange();
     acceptanceStage = 'READ';
-    await composition.coordinator.submit(
-      '读取相对路径 资料/中文记录.txt 的正文。路径齐全，请立即调用读取文件工具。'
+    await submitTurn(
+      '读取相对路径 资料/中文记录.txt 的正文。路径齐全，请立即调用读取文件工具。',
+      async () => { if (await readFile(chineseTarget, 'utf8') !== '你好') throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT'); }
     );
     if (!observedReadTools.has('read_file')) throw acceptanceError('READ_TOOL_CALL_MISSING');
     checks.readOperation = true;
 
     await composition.resetForConfigurationChange();
     acceptanceStage = 'GLOB';
-    await composition.coordinator.submit(
-      '按文件名匹配 资料/*.txt。模式齐全，请立即调用文件名匹配工具。'
+    await submitTurn(
+      '按文件名匹配 资料/*.txt。模式齐全，请立即调用文件名匹配工具。',
+      async () => { if (await readFile(chineseTarget, 'utf8') !== '你好') throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT'); }
     );
     if (!observedReadTools.has('glob_files')) throw acceptanceError('GLOB_TOOL_CALL_MISSING');
     checks.globOperation = true;
 
     await composition.resetForConfigurationChange();
     acceptanceStage = 'GREP';
-    await composition.coordinator.submit(
-      '在文件内容中搜索“你好”。查询齐全，请立即调用内容搜索工具。'
+    await submitTurn(
+      '在文件内容中搜索“你好”。查询齐全，请立即调用内容搜索工具。',
+      async () => { if (await readFile(chineseTarget, 'utf8') !== '你好') throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT'); }
     );
     if (!observedReadTools.has('grep_files')) throw acceptanceError('GREP_TOOL_CALL_MISSING');
     checks.grepOperation = true;
@@ -601,8 +642,9 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     await composition.resetForConfigurationChange();
     acceptanceStage = 'EDIT';
     const editEventStart = events.length;
-    await composition.coordinator.submit(
-      '把相对路径 资料/中文记录.txt 中唯一的“你好”精确替换为“您好”。路径、旧文本和新文本齐全，请立即调用精确编辑文件工具。'
+    await submitTurn(
+      '把相对路径 资料/中文记录.txt 中唯一的“你好”精确替换为“您好”。路径、旧文本和新文本齐全，请立即调用精确编辑文件工具。',
+      async () => { if (await readFile(chineseTarget, 'utf8') !== '你好') throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT'); }
     );
     const editAction = findPendingAction(events.slice(editEventStart));
     if (
@@ -618,7 +660,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     await composition.resetForConfigurationChange();
     acceptanceStage = 'CLARIFICATION';
     const clarificationEventStart = events.length;
-    await composition.coordinator.submit('删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。');
+    await submitTurn('删除一个文件，但我还没有提供目标路径。请先询问缺少的信息。');
     const clarificationEvents = events.slice(clarificationEventStart);
     if (
       clarificationEvents.some(event => event.type === 'pending_action')
@@ -629,7 +671,11 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     const clarificationTarget = join(authorizedRoot, 'acceptance-clarification.txt');
     await writeFile(clarificationTarget, 'keep after clarification', 'utf8');
     const clarificationContinuationStart = events.length;
-    await composition.coordinator.submit('目标相对路径是 acceptance-clarification.txt。');
+    await submitTurn('目标相对路径是 acceptance-clarification.txt。', async () => {
+      if (await readFile(clarificationTarget, 'utf8') !== 'keep after clarification') {
+        throw acceptanceError('PREAUTH_FILE_SIDE_EFFECT');
+      }
+    });
     const clarificationAction = findPendingAction(events.slice(clarificationContinuationStart));
     if (
       clarificationAction.operation !== 'delete_file'
@@ -646,15 +692,16 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     await composition.resetForConfigurationChange();
     acceptanceStage = 'USER_REJECTION';
     const cancelEventStart = events.length;
-    await composition.coordinator.submit(
-      '在授权根目录下创建 acceptance-cancelled.txt，内容只写 cancelled。路径和内容齐全，请立即调用创建文件工具。'
+    const cancelledTarget = join(authorizedRoot, 'acceptance-cancelled.txt');
+    await submitTurn(
+      '在授权根目录下创建 acceptance-cancelled.txt，内容只写 cancelled。路径和内容齐全，请立即调用创建文件工具。',
+      () => assertPathDoesNotExist(cancelledTarget)
     );
     const cancelAction = findPendingAction(events.slice(cancelEventStart));
     if (
       cancelAction.operation !== 'create_file'
       || normalizedRelativePath(cancelAction.targetRelativePath) !== 'acceptance-cancelled.txt'
     ) throw acceptanceError('USER_REJECTION_TOOL_CALL_MISSING');
-    const cancelledTarget = join(authorizedRoot, 'acceptance-cancelled.txt');
     await assertPathDoesNotExist(cancelledTarget);
     await composition.coordinator.resolveFileAction(cancelAction.actionId, 'cancel');
     await assertPathDoesNotExist(cancelledTarget);
@@ -664,15 +711,17 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     await composition.resetForConfigurationChange();
     acceptanceStage = 'TOOL_FAILURE';
     const failureEventStart = events.length;
-    await composition.coordinator.submit(
-      '删除授权根目录的 acceptance-failure.txt。相对路径齐全，请立即调用删除文件工具。'
+    const failureTarget = join(authorizedRoot, 'acceptance-failure.txt');
+    await submitTurn(
+      '删除授权根目录的 acceptance-failure.txt。相对路径齐全，请立即调用删除文件工具。',
+      async () => { await access(failureTarget); }
     );
     const failureAction = findPendingAction(events.slice(failureEventStart));
     if (
       failureAction.operation !== 'delete_file'
       || normalizedRelativePath(failureAction.targetRelativePath) !== 'acceptance-failure.txt'
     ) throw acceptanceError('FAILURE_TOOL_CALL_MISSING');
-    await access(join(authorizedRoot, 'acceptance-failure.txt'));
+    await access(failureTarget);
     const failureResolutionStart = events.length;
     await composition.coordinator.resolveFileAction(failureAction.actionId, 'confirm');
     const failureEvents = events.slice(failureResolutionStart);
@@ -685,20 +734,21 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     if (!failureEvents.some(event => event.type === 'phase' && event.phase === 'error')) {
       throw acceptanceError('CONTROLLED_TOOL_FAILURE_PHASE_MISSING');
     }
-    await access(join(authorizedRoot, 'acceptance-failure.txt'));
+    await access(failureTarget);
 
     await composition.resetForConfigurationChange();
     acceptanceStage = 'TOOL_FAILURE_RECOVERY';
     const recoveryEventStart = events.length;
-    await composition.coordinator.submit(
-      '在授权根目录下创建 acceptance-recovered.txt，内容只写 recovered。路径和内容齐全，请立即调用创建文件工具。'
+    const recoveredTarget = join(authorizedRoot, 'acceptance-recovered.txt');
+    await submitTurn(
+      '在授权根目录下创建 acceptance-recovered.txt，内容只写 recovered。路径和内容齐全，请立即调用创建文件工具。',
+      () => assertPathDoesNotExist(recoveredTarget)
     );
     const recoveryAction = findPendingAction(events.slice(recoveryEventStart));
     if (
       recoveryAction.operation !== 'create_file'
       || normalizedRelativePath(recoveryAction.targetRelativePath) !== 'acceptance-recovered.txt'
     ) throw acceptanceError('CANCEL_RECOVERY_FAILED');
-    const recoveredTarget = join(authorizedRoot, 'acceptance-recovered.txt');
     await assertPathDoesNotExist(recoveredTarget);
     await composition.coordinator.resolveFileAction(recoveryAction.actionId, 'confirm');
     if (await readFile(recoveredTarget, 'utf8') !== 'recovered') {
@@ -712,7 +762,7 @@ export async function runLocalModelAcceptance(input: AcceptanceInput) {
     if (!checks.cloudCallsZero) throw acceptanceError('CLOUD_CALL_DETECTED');
     await localModelService.setEnabled(false);
     if (enabled) throw acceptanceError('CLOUD_ROUTE_RESTORE_FAILED');
-    await composition.coordinator.submit('只用简短中文回答：你好。');
+    await submitTurn('只用简短中文回答：你好。');
     checks.cloudRouteRestored = cloudFetchCalls === 1 && cloudSecretCalls === 1;
     if (!checks.cloudRouteRestored) throw acceptanceError('CLOUD_ROUTE_RESTORE_FAILED');
 

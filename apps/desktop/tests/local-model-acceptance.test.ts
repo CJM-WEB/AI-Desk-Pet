@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { describe, expect, test, vi } from 'vitest';
+import type { TaskEvent } from '@myself/shared-types';
 
 import {
   createAcceptanceRecord,
@@ -10,11 +11,63 @@ import {
 import {
   findFinalAssistantText,
   runAcceptanceLifecycle,
-  runAcceptanceWithDeadline
+  runAcceptanceWithDeadline,
+  submitAcceptanceTurn
 } from '../scripts/local-model-acceptance-runner';
 const execFileAsync = promisify(execFile);
 
 describe('真实本地模型验收脚本', () => {
+  test('模型任务先确认任务授权且不自动确认具体动作', async () => {
+    const events: TaskEvent[] = [];
+    const resolveCapabilityAuthorization = vi.fn(async () => {
+      events.push({
+        type: 'pending_action',
+        action: { actionId: 'action-1' }
+      } as never);
+    });
+    const assertNoSideEffect = vi.fn(async () => undefined);
+
+    const turnEvents = await submitAcceptanceTurn({
+      events,
+      submit: async () => {
+        events.push({
+          type: 'capability_authorization_required',
+          requestId: 'request-1',
+          capability: 'file',
+          requestSummary: '创建文件',
+          targetProviderName: '本地模型',
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        });
+      },
+      resolveCapabilityAuthorization,
+      assertNoSideEffect
+    });
+
+    expect(assertNoSideEffect).toHaveBeenCalledOnce();
+    expect(resolveCapabilityAuthorization).toHaveBeenCalledExactlyOnceWith('request-1', 'confirm');
+    expect(turnEvents).toContainEqual({ type: 'pending_action', action: { actionId: 'action-1' } });
+  });
+
+  test('任务授权前出现具体动作卡时验收失败关闭', async () => {
+    const events: TaskEvent[] = [];
+    const resolveCapabilityAuthorization = vi.fn(async () => undefined);
+
+    await expect(submitAcceptanceTurn({
+      events,
+      submit: async () => {
+        events.push({
+          type: 'capability_authorization_required', requestId: 'request-1', capability: 'file',
+          requestSummary: '创建文件', targetProviderName: '本地模型',
+          expiresAt: new Date(Date.now() + 60_000).toISOString()
+        });
+        events.push({ type: 'pending_action', action: { actionId: 'action-1' } } as never);
+      },
+      resolveCapabilityAuthorization,
+      assertNoSideEffect: async () => undefined
+    })).rejects.toThrow('CAPABILITY_AUTHORIZATION_BYPASSED');
+    expect(resolveCapabilityAuthorization).not.toHaveBeenCalled();
+  });
+
   test('聊天验收只接受 message 或 commit 的最终正文并忽略流式 delta', () => {
     expect(findFinalAssistantText([
       { type: 'message', role: 'assistant', text: '兼容正文' }
@@ -192,6 +245,8 @@ describe('真实本地模型验收脚本', () => {
     expect(source).toContain('new LocalModelService(');
     expect(source).toContain('new ProviderRegistry(');
     expect(source).toContain('createMainConversationComposition(');
+    expect(source).toContain('createPowerShellTool: () => new PowerShellTool()');
+    expect(source).not.toContain("createPowerShellTool: () => { throw acceptanceError('TOOL_UNKNOWN'); }");
     expect(source).toContain('coordinator.resolveFileAction(');
     expect(source).toContain("event.code === 'RECYCLE_BIN_FAILED'");
     expect(source).toContain("findFinalAssistantText(failureEvents) !== '本地能力操作失败，未完成请求。'");
