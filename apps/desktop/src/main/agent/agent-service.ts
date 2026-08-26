@@ -46,6 +46,13 @@ interface AgentSessionBase {
   tools: ToolDefinition[];
   toolRuntime: ToolRuntime;
   messages: ModelMessage[];
+  /** 正式会话同时拥有两类端口；可选性仅保留测试夹具与旧快照兼容。 */
+  fileTools?: AgentFileTools;
+  fileDisclosureAllowed?: boolean;
+  powershell?: PowerShellTool;
+  workingDirectory?: string;
+  workingDirectoryLabel?: string;
+  generation?: string;
 }
 
 /** 会话只拥有当前能力任务的执行端口，避免跨任务暴露工具。 */
@@ -94,6 +101,10 @@ const controlledWriteOperations = new Set<FileWriteOperation>([
 const controlledWriteToolNames = new Set<string>(
   [...controlledWriteOperations].map(operation => filePlanningToolNames[operation])
 );
+const mutationPlanningToolNames = new Set<string>([
+  ...controlledWriteToolNames,
+  'builtin.powershell.run'
+]);
 
 function isControlledWriteOperation(operation: FilePlanningOperation): operation is FileWriteOperation {
   return controlledWriteOperations.has(operation as FileWriteOperation);
@@ -142,7 +153,8 @@ function publicErrorEvent(error: unknown): Extract<TaskEvent, { type: 'error' }>
     TASK_ALREADY_ACTIVE: '已有任务正在运行。',
     INPUT_INVALID: '消息不能为空且不能超过 4000 个字符。',
     TOOL_PERMISSION_DENIED: '该工具操作未获本地权限策略允许。',
-    CAPABILITY_PLAN_PROTOCOL_INVALID: '能力任务需要先调用真实工具，或提出格式正确的澄清问题。'
+    CAPABILITY_PLAN_PROTOCOL_INVALID: '能力任务需要先调用真实工具，或提出格式正确的澄清问题。',
+    AGENT_REPEATED_TOOL_CALL: '模型重复请求了相同工具参数，任务已安全停止。'
   };
   return {
     type: 'error',
@@ -531,7 +543,7 @@ export class AgentService {
       }
     }
     if (irreversible) await irreversible;
-    if (session?.taskKind === 'powershell') await session.powershell.close();
+    if (session?.powershell) await session.powershell.close();
     if (this.activeController === controller) this.activeController = null;
     if (failures.length > 0) throw failures[0];
   }
@@ -547,7 +559,7 @@ export class AgentService {
     this.activePlanningHint = undefined;
     this.activeController?.abort();
     if (irreversible) await irreversible;
-    if (session?.taskKind === 'powershell') await session.powershell.close();
+    if (session?.powershell) await session.powershell.close();
   }
 
   private assertIdle(): void {
@@ -567,12 +579,12 @@ export class AgentService {
     const irreversible = this.beginIrreversibleExecution();
     try {
       if (execution.verifiedAction.category === 'powershell') {
-        if (session.taskKind !== 'powershell') throw new Error('ACTION_EXPIRED');
+        if (!session.powershell) throw new Error('ACTION_EXPIRED');
         this.assertTaskOwned(owner, signal);
         return await session.powershell.execute(execution.verifiedAction.action, signal);
       }
-      if (session.taskKind !== 'file') throw new Error('ACTION_EXPIRED');
       this.assertTaskOwned(owner, signal);
+      if (!session.fileTools) throw new Error('ACTION_EXPIRED');
       this.publishFileFeedback({ type: 'character_carrying', carrying: true }, owner);
       try {
         this.assertTaskOwned(owner, signal);
@@ -601,11 +613,14 @@ export class AgentService {
       : undefined;
     const planningTools = planningHint?.missingField === 'target_path'
       ? []
+      : session.taskKind === 'powershell'
+        ? session.tools.filter(tool => tool.function.name === 'builtin.powershell.run')
       : session.taskKind === 'file' && !session.fileDisclosureAllowed
-      ? session.tools.filter(tool => (
-        expectedWriteOperation !== undefined
-        && tool.function.name === plannedToolName
-      ))
+      ? expectedWriteOperation !== undefined
+        ? session.tools.filter(tool => tool.function.name === plannedToolName)
+        : plannedToolName !== null
+          ? []
+          : session.tools.filter(tool => mutationPlanningToolNames.has(tool.function.name))
       : plannedToolName === null
         ? session.tools
         : session.tools.filter(tool => tool.function.name === plannedToolName);
@@ -613,7 +628,7 @@ export class AgentService {
     const tools = session.taskKind === 'file' && session.fileDisclosureAllowed
       ? session.tools
       : session.taskKind === 'file' && expectedWriteOperation !== undefined
-        ? session.tools.filter(tool => controlledWriteToolNames.has(tool.function.name))
+        ? session.tools.filter(tool => mutationPlanningToolNames.has(tool.function.name))
         : planningTools;
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
@@ -723,7 +738,10 @@ export class AgentService {
     session: AgentSession
   ): Promise<readonly import('./pending-action-store').VerifiedCapabilityAction[]> {
     if (request.toolName === 'powershell') {
-      if (session.taskKind !== 'powershell') throw new Error('TOOL_UNKNOWN');
+      if (!session.powershell || !session.workingDirectory
+        || !session.workingDirectoryLabel || !session.generation) {
+        throw new Error('TOOL_UNKNOWN');
+      }
       const command = request.arguments['command'];
       if (typeof command !== 'string') throw new Error('TOOL_ARGUMENTS_INVALID');
       return [{
@@ -736,7 +754,7 @@ export class AgentService {
           })
       }];
     }
-    if (session.taskKind !== 'file') throw new Error('TOOL_UNKNOWN');
+    if (!session.fileTools) throw new Error('TOOL_UNKNOWN');
     const actions = session.fileTools.previewMany === undefined
       ? [await session.fileTools.preview(request)]
       : await session.fileTools.previewMany(request);

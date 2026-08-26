@@ -223,10 +223,19 @@ export class ConversationCoordinator {
       }
 
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
-      const intent = capabilityIntentRouter.route(context.capabilityText);
+      const intent = context.continuationTarget === undefined
+        ? capabilityIntentRouter.route(context.capabilityText)
+        : capabilityIntentRouter.routeTrustedFileContinuation();
       if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
       if (intent.kind === 'unsupported_file_operation') {
-        throw publicErrorForCode('FILE_COPY_UNSUPPORTED');
+        this.state = {
+          kind: 'preparing_capability_task',
+          generation: context.generation,
+          controller: context.controller,
+          taskKind: 'powershell'
+        };
+        await this.prepareCapabilityTask(context, 'powershell');
+        return;
       }
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
         if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {

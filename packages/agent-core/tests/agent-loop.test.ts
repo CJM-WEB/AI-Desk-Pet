@@ -1021,10 +1021,11 @@ describe('AgentLoop', () => {
     const events = await collectEvents(context(provider));
 
     expect(provider.requests).toHaveLength(2);
-    expect(provider.requests[1]?.messages.at(-1)).toEqual(expect.objectContaining({
-      role: 'system',
-      content: expect.stringContaining('INVALID_TOOL_REQUEST')
-    }));
+    expect(provider.requests[1]?.messages.at(-1)).toEqual({
+      role: 'tool',
+      toolCallId: 'bad-1',
+      content: '{"ok":false,"code":"INVALID_TOOL_REQUEST"}'
+    });
     expect(events).toContainEqual({ type: 'message', text: '已修正' });
   });
 
@@ -1041,10 +1042,14 @@ describe('AgentLoop', () => {
 
   test('最多请求四次模型响应且绝不发起第五次', async () => {
     const provider = new ScriptedProvider([
-      readRequest('read-1'),
-      readRequest('read-2'),
-      readRequest('read-3'),
-      readRequest('read-4'),
+      ...['1', '2', '3', '4'].map(index => ({
+        type: 'tool_request' as const,
+        request: {
+          requestId: `read-${index}`,
+          toolName: 'builtin.files.read_text',
+          arguments: { relativePath: `${index}.txt` }
+        }
+      })),
       { type: 'text', text: '不应被请求' }
     ]);
 
@@ -1107,6 +1112,18 @@ describe('AgentLoop', () => {
       { ok: true },
       runContext
     ))).rejects.toThrow('ACTION_EXPIRED');
+  });
+
+  test('同工具同规范参数连续三次后熔断且不产生第四次本地执行', async () => {
+    const provider = new ScriptedProvider([
+      readRequest('repeat-1'), readRequest('repeat-2'), readRequest('repeat-3'), readRequest('repeat-4')
+    ]);
+    const runtime = createToolRuntime();
+    const executeRead = vi.spyOn(runtime, 'executeRead').mockResolvedValue({ ok: true });
+
+    await expect(collectEvents({ ...context(provider), toolRuntime: runtime }))
+      .rejects.toThrow('AGENT_REPEATED_TOOL_CALL');
+    expect(executeRead).toHaveBeenCalledTimes(3);
   });
 
   test('写入结果续跑后恢复工具面，并允许第二个写操作逐次确认', async () => {

@@ -26,7 +26,12 @@ type ContinuationState = {
   mutationFailurePending: boolean;
   mutationFailureToolName: string | null;
   expectedWriteOperation: FileWriteOperation | undefined;
+  lastToolSignature: string | null;
+  repeatedToolCalls: number;
 };
+
+const MAX_AGENT_TURNS = 4;
+const MAX_IDENTICAL_TOOL_EXECUTIONS = 3;
 
 const MUTATION_TOOL_NAMES = new Set<string>([
   'create_file',
@@ -65,6 +70,24 @@ function requestedToolName(raw: unknown): string | null {
   return typeof toolName === 'string' ? toolName : null;
 }
 
+function requestedToolCallId(raw: unknown): string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return 'invalid-tool-call';
+  const value = (raw as Record<string, unknown>)['requestId'];
+  return typeof value === 'string' && value.length > 0 && value.length <= 128
+    ? value
+    : 'invalid-tool-call';
+}
+
+function canonicalize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
+  if (typeof value === 'object' && value !== null) {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalize(child)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
 function isExpectedWriteResult(result: unknown, expectedOperation: FileWriteOperation): boolean {
   return typeof result === 'object'
     && result !== null
@@ -89,7 +112,9 @@ export class AgentLoop {
       undefined,
       false,
       null,
-      context.capabilityPlanning?.expectedWriteOperation
+      context.capabilityPlanning?.expectedWriteOperation,
+      null,
+      0
     );
   }
 
@@ -119,7 +144,7 @@ export class AgentLoop {
       && !isExpectedWriteResult(toolResult, continuation.expectedWriteOperation)) {
       throw capabilityPlanProtocolError();
     }
-    if (continuation.nextTurn >= 4) {
+    if (continuation.nextTurn >= MAX_AGENT_TURNS) {
       yield { type: 'message', text: '本地能力操作已结束；已达到模型响应轮次上限。' };
       yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
       return;
@@ -132,7 +157,9 @@ export class AgentLoop {
       latestTrustedResultOk,
       trustedState.mutationFailurePending,
       trustedState.mutationFailureToolName,
-      undefined
+      undefined,
+      continuation.lastToolSignature,
+      continuation.repeatedToolCalls
     );
   }
 
@@ -148,7 +175,9 @@ export class AgentLoop {
     latestTrustedResultOk: boolean | undefined,
     mutationFailurePending: boolean,
     mutationFailureToolName: string | null,
-    expectedWriteOperation: FileWriteOperation | undefined
+    expectedWriteOperation: FileWriteOperation | undefined,
+    lastToolSignature: string | null,
+    repeatedToolCalls: number
   ): AsyncGenerator<AgentEvent, AgentRunOutcome> {
     if (context.signal.aborted) {
       yield { type: 'phase', phase: 'cancelled' };
@@ -158,7 +187,7 @@ export class AgentLoop {
     let correctionUsed = false;
     yield { type: 'phase', phase: 'thinking' };
 
-    for (let turn = startTurn; turn < 4; turn += 1) {
+    for (let turn = startTurn; turn < MAX_AGENT_TURNS; turn += 1) {
       if (context.signal.aborted) {
         yield { type: 'phase', phase: 'cancelled' };
         return;
@@ -260,10 +289,8 @@ export class AgentLoop {
           throw new Error('AGENT_INVALID_TOOL_REQUEST');
         }
         correctionUsed = true;
-        messages.push({
-          role: 'system',
-          content: 'INVALID_TOOL_REQUEST：只能调用当前已提供的工具。请修正一次。'
-        });
+        messages.push({ role: 'tool', toolCallId: requestedToolCallId(response.request),
+          content: '{"ok":false,"code":"INVALID_TOOL_REQUEST"}' });
         continue;
       }
 
@@ -273,11 +300,21 @@ export class AgentLoop {
       } catch {
         if (correctionUsed) throw new Error('AGENT_INVALID_TOOL_REQUEST');
         correctionUsed = true;
-        messages.push({
-          role: 'system',
-          content: 'INVALID_TOOL_REQUEST：只能调用已提供的工具，并且参数必须符合 Schema。请修正一次。'
-        });
+        messages.push({ role: 'tool', toolCallId: requestedToolCallId(response.request),
+          content: '{"ok":false,"code":"TOOL_ARGUMENTS_INVALID"}' });
         continue;
+      }
+
+      const signature = `${prepared.request.toolName}:${canonicalize(prepared.request.arguments)}`;
+      if (signature === lastToolSignature) repeatedToolCalls += 1;
+      else {
+        lastToolSignature = signature;
+        repeatedToolCalls = 1;
+      }
+      if (repeatedToolCalls > MAX_IDENTICAL_TOOL_EXECUTIONS) {
+        throw Object.assign(new Error('AGENT_REPEATED_TOOL_CALL'), {
+          code: 'AGENT_REPEATED_TOOL_CALL'
+        });
       }
 
       messages.push({ role: 'assistant', content: '', toolRequest: prepared.request });
@@ -307,7 +344,9 @@ export class AgentLoop {
           previousTrustedResultOk: latestTrustedResultOk,
           mutationFailurePending,
           mutationFailureToolName,
-          expectedWriteOperation
+          expectedWriteOperation,
+          lastToolSignature,
+          repeatedToolCalls
         });
         yield { type: 'phase', phase: 'awaiting_confirmation' };
         yield {

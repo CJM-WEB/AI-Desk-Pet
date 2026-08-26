@@ -69,6 +69,13 @@ export class ToolRegistry {
       .map(registration => cloneDefinition(registration.definition));
   }
 
+  /** 组合正式内置工具时复用同一注册与二次校验逻辑，不复制 Schema。 */
+  absorb(source: ToolRegistry): void {
+    for (const registration of source.registrations.values()) {
+      this.register(registration);
+    }
+  }
+
   /** 本地能力任务签发后冻结工具表，阻止后续混入其他执行能力。 */
   seal(): this {
     this.sealed = true;
@@ -276,11 +283,18 @@ export function createBuiltinPowerShellToolRegistry(): ToolRegistry {
   return registry;
 }
 
+export function createBuiltinAgentToolRegistry(): ToolRegistry {
+  const registry = new ToolRegistry();
+  registry.absorb(createBuiltinFileToolRegistry());
+  registry.absorb(createBuiltinPowerShellToolRegistry());
+  return registry;
+}
+
 /** 文件数据授权由任务上下文收窄模型可见面，Main 始终保留完整文件注册表供本地核验。 */
 export function createSessionToolRegistry(input: {
   taskKind: 'file' | 'powershell';
   fileDisclosureAllowed: boolean;
 }): ToolRegistry {
-  if (input.taskKind === 'powershell') return createBuiltinPowerShellToolRegistry().seal();
-  return createBuiltinFileToolRegistry().seal();
+  void input;
+  return createBuiltinAgentToolRegistry().seal();
 }

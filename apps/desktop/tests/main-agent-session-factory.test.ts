@@ -28,15 +28,19 @@ function input(taskKind: 'file' | 'powershell') {
 }
 
 describe('Main 能力会话工厂', () => {
-  test('PowerShell 会话只注册 builtin.powershell.run 且不构造文件能力', async () => {
+  test('统一 Agent 会话同时注册文件与 PowerShell 能力', async () => {
     const options = input('powershell');
 
     const session = await createMainAgentSession(options);
 
     expect(session.taskKind).toBe('powershell');
-    expect(session.tools.map(tool => tool.function.name)).toEqual(['builtin.powershell.run']);
+    expect(session.tools.map(tool => tool.function.name)).toEqual(expect.arrayContaining([
+      'builtin.powershell.run',
+      'builtin.files.create_file',
+      'builtin.files.read_file'
+    ]));
     expect(options.createPowerShellTool).toHaveBeenCalledOnce();
-    expect(options.createFileTools).not.toHaveBeenCalled();
+    expect(options.createFileTools).toHaveBeenCalledOnce();
   });
 
   test('PowerShell 会话把高风险命令交给确认而非权限拒绝', async () => {
@@ -52,7 +56,7 @@ describe('Main 能力会话工厂', () => {
     expect(prepared.executionRequest.toolName).toBe('powershell');
   });
 
-  test('文件会话只注册十个文件工具且不构造 PowerShell', async () => {
+  test('文件首选会话仍保留统一 PowerShell 工具供可信结果后的组合任务', async () => {
     const options = input('file');
 
     const session = await createMainAgentSession(options);
@@ -68,10 +72,11 @@ describe('Main 能力会话工厂', () => {
       'builtin.files.grep_files',
       'builtin.files.list_files',
       'builtin.files.move_file',
-      'builtin.files.read_file'
+      'builtin.files.read_file',
+      'builtin.powershell.run'
     ]);
     expect(options.createFileTools).toHaveBeenCalledOnce();
-    expect(options.createPowerShellTool).not.toHaveBeenCalled();
+    expect(options.createPowerShellTool).toHaveBeenCalledOnce();
   });
 
   test('文件数据未授权时仍保留 Main 内部文件注册表，但拒绝读取文件数据', async () => {
@@ -89,7 +94,8 @@ describe('Main 能力会话工厂', () => {
       'builtin.files.grep_files',
       'builtin.files.list_files',
       'builtin.files.move_file',
-      'builtin.files.read_file'
+      'builtin.files.read_file',
+      'builtin.powershell.run'
     ]);
     await expect(session.toolRuntime.executeRead({
       requestId: 'read-private-file',

@@ -108,6 +108,26 @@ async function submitPrepared(
 }
 
 describe('CapabilityTaskAdapter', () => {
+  test('能力快照不创建 Agent，只有显式激活后才构造执行端口', async () => {
+    const agent = createAgentDouble();
+    const target = preparedAgent(agent);
+    const createAgentTarget = vi.fn(() => target);
+    const adapter = new CapabilityTaskAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createTargetSnapshot: vi.fn(() => {
+        const { service: _service, ...snapshot } = target;
+        return snapshot;
+      }),
+      createAgentTarget
+    });
+
+    const snapshot = await adapter.prepareSnapshot({ generation: 'g1', taskKind: 'file' });
+    expect(createAgentTarget).not.toHaveBeenCalled();
+
+    await adapter.activateTarget({ generation: 'g1', taskKind: 'file', target: snapshot });
+    expect(createAgentTarget).toHaveBeenCalledOnce();
+  });
+
   test('没有授权根时抛出稳定错误且不创建 Agent', async () => {
     const createAgentTarget = vi.fn();
     const adapter = new CapabilityTaskAdapter({
