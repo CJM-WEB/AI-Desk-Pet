@@ -152,12 +152,19 @@ export function CharacterPlayer({
     random
   };
 
-  const commitActiveViewport = (): void => {
+  const commitActiveViewport = (refreshFromMain = false): void => {
     const player = activePlayerRef.current;
     const stage = activeStageRef.current;
     if (!player || !stage || typeof api.commitPetViewport !== 'function') return;
+    if (refreshFromMain) {
+      stage.style.removeProperty('width');
+      stage.style.removeProperty('height');
+    }
     const viewportInWindowDip = roundedWindowLocalRectangle(stage);
     if (!viewportInWindowDip) return;
+    // 拖拽期间 Windows 可能让客户区产生 1 DIP 抖动；舞台锁定权威提交尺寸，避免 Canvas 被 100% 拉伸。
+    stage.style.width = `${viewportInWindowDip.width}px`;
+    stage.style.height = `${viewportInWindowDip.height}px`;
     player.resize?.(viewportInWindowDip.width, viewportInWindowDip.height);
     void api.commitPetViewport({ viewportInWindowDip }).catch(() => undefined);
   };
@@ -188,13 +195,14 @@ export function CharacterPlayer({
     if (!host) return;
     const observer = typeof ResizeObserver === 'undefined'
       ? null
-      : new ResizeObserver(commitActiveViewport);
+      : new ResizeObserver(() => commitActiveViewport());
     observer?.observe(host);
-    window.addEventListener('resize', commitActiveViewport);
-    const unsubscribe = api.onPetGeometryRender?.(() => commitActiveViewport());
+    const handleWindowResize = (): void => commitActiveViewport();
+    window.addEventListener('resize', handleWindowResize);
+    const unsubscribe = api.onPetGeometryRender?.(() => commitActiveViewport(true));
     return () => {
       observer?.disconnect();
-      window.removeEventListener('resize', commitActiveViewport);
+      window.removeEventListener('resize', handleWindowResize);
       unsubscribe?.();
     };
   }, [api]);

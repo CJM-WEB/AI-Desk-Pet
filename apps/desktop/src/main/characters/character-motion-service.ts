@@ -26,6 +26,8 @@ export type CharacterMotionServiceOptions = {
 };
 export type CharacterUserMoveSource = 'native' | 'controller';
 const DEFAULT_SPEED = 160;
+// Windows 在高 DPI 屏幕上会把 DIP 经物理像素往返取整，实测单轴最多偏移 2 DIP。
+const PROGRAMMATIC_POSITION_TOLERANCE_DIP = 2;
 const RANDOM_WANDER_ARRIVAL_TOLERANCE_DIP = 24;
 const FAR_WANDER_MINIMUM_RATIO = 0.6;
 const FAR_WANDER_SAMPLE_ATTEMPTS = 3;
@@ -37,6 +39,14 @@ const RELATIVE_DISTANCE_FACTOR = Object.freeze({
 
 function integerPosition(point: CharacterMotionPoint): CharacterMotionPoint {
   return { x: Math.round(point.x), y: Math.round(point.y) };
+}
+
+function sameProgrammaticPosition(
+  actual: CharacterMotionPoint,
+  expected: CharacterMotionPoint
+): boolean {
+  return Math.abs(actual.x - expected.x) <= PROGRAMMATIC_POSITION_TOLERANCE_DIP
+    && Math.abs(actual.y - expected.y) <= PROGRAMMATIC_POSITION_TOLERANCE_DIP;
 }
 
 function workAreaContainsPoint(
@@ -260,7 +270,7 @@ export class CharacterMotionService {
     const position = { x: bounds.x, y: bounds.y };
     if (this.userMoveOwners.size === 0) {
       const expectedIndex = this.expectedProgrammaticPositions.findIndex(expected => (
-        position.x === expected.x && position.y === expected.y
+        sameProgrammaticPosition(position, expected)
       ));
       if (expectedIndex >= 0) {
         this.expectedProgrammaticPositions.splice(expectedIndex, 1);
@@ -290,10 +300,13 @@ export class CharacterMotionService {
     source: CharacterUserMoveSource = 'native'
   ): void {
     if (
-      nextPosition
-      && this.expectedProgrammaticPositions.some(expected => (
-        Math.round(nextPosition.x) === expected.x && Math.round(nextPosition.y) === expected.y
-      ))
+      this.expectedProgrammaticPositions.length > 0
+      && (
+        nextPosition === undefined
+        || this.expectedProgrammaticPositions.some(expected => (
+          sameProgrammaticPosition(integerPosition(nextPosition), expected)
+        ))
+      )
     ) return;
     this.userMoveOwners.add(source);
     this.expectedProgrammaticPositions.splice(0);
@@ -338,6 +351,11 @@ export class CharacterMotionService {
   /** 几何 FIFO 只查询拖动占用，不接触 Renderer 身份或全局坐标。 */
   isUserMoving(): boolean {
     return this.userMoveOwners.size > 0;
+  }
+
+  /** will-move 的预告坐标不可靠；窗口接线只据此判断是否等待真实 move 复核。 */
+  hasPendingProgrammaticPosition(): boolean {
+    return this.expectedProgrammaticPositions.length > 0;
   }
 
   /** 几何事务在调用 BrowserWindow.setBounds 前登记目标，避免 moved 被误判为用户接管。 */
@@ -523,7 +541,10 @@ type MotionWindowEvents = CharacterMotionWindow & {
 export function bindCharacterMotionWindow(
   window: MotionWindowEvents,
   service: Pick<CharacterMotionService, 'beginUserMove' | 'handleWindowMoved' | 'endUserMove'>
-    & Partial<Pick<CharacterMotionService, 'isUserMoving'>>,
+    & Partial<Pick<
+      CharacterMotionService,
+      'isUserMoving' | 'hasPendingProgrammaticPosition'
+    >>,
   callbacks: Readonly<{
     onUserMoveStarted?(): void;
     onUserMoveEnded?(): void;
@@ -531,25 +552,7 @@ export function bindCharacterMotionWindow(
 ): () => void {
   let movedTimer: ReturnType<typeof setTimeout> | undefined;
   let nativeMoveActive = false;
-  const onWillMove = (_event?: unknown, newBounds?: Rectangle): void => {
-    if (movedTimer) clearTimeout(movedTimer);
-    movedTimer = undefined;
-    const wasActive = nativeMoveActive;
-    service.beginUserMove(newBounds ? { x: newBounds.x, y: newBounds.y } : undefined);
-    nativeMoveActive = service.isUserMoving?.() ?? true;
-    if (!wasActive && nativeMoveActive) callbacks.onUserMoveStarted?.();
-  };
-  const onMove = (): void => {
-    if (!nativeMoveActive) {
-      const bounds = window.getBounds();
-      service.beginUserMove({ x: bounds.x, y: bounds.y });
-      nativeMoveActive = service.isUserMoving?.() ?? true;
-      if (nativeMoveActive) callbacks.onUserMoveStarted?.();
-    }
-    service.handleWindowMoved();
-  };
-  // Windows 原生拖拽会连续发 moved；静默 250ms 才代表用户真正松手。
-  const onMoved = (): void => {
+  const armNativeMoveRelease = (): void => {
     if (!nativeMoveActive) return;
     if (movedTimer) clearTimeout(movedTimer);
     movedTimer = setTimeout(() => {
@@ -558,6 +561,34 @@ export function bindCharacterMotionWindow(
       nativeMoveActive = false;
       callbacks.onUserMoveEnded?.();
     }, 250);
+  };
+  const onWillMove = (_event?: unknown, newBounds?: Rectangle): void => {
+    // 程序化 setPosition/setBounds 已预登记；忽略不可靠预告，交给 move 的真实边界复核。
+    if (service.hasPendingProgrammaticPosition?.()) return;
+    if (movedTimer) clearTimeout(movedTimer);
+    movedTimer = undefined;
+    const wasActive = nativeMoveActive;
+    service.beginUserMove(newBounds ? { x: newBounds.x, y: newBounds.y } : undefined);
+    nativeMoveActive = service.isUserMoving?.() ?? true;
+    if (!wasActive && nativeMoveActive) {
+      callbacks.onUserMoveStarted?.();
+    }
+  };
+  const onMove = (): void => {
+    if (!nativeMoveActive) {
+      const bounds = window.getBounds();
+      service.beginUserMove({ x: bounds.x, y: bounds.y });
+      nativeMoveActive = service.isUserMoving?.() ?? true;
+      if (nativeMoveActive) {
+        callbacks.onUserMoveStarted?.();
+      }
+    }
+    service.handleWindowMoved();
+    armNativeMoveRelease();
+  };
+  // Windows 的 move/moved 组合不稳定；任一事件静默 250ms 都视为用户真正松手。
+  const onMoved = (): void => {
+    armNativeMoveRelease();
   };
   window.on('will-move', onWillMove);
   window.on('move', onMove);

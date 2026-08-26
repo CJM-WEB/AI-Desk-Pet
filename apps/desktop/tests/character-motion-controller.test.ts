@@ -959,6 +959,31 @@ describe('Main 角色运动服务', () => {
     expect(window.removeListener).toHaveBeenCalledTimes(3);
   });
 
+  test('Windows 只发 move 而缺少 moved 时仍按静默期释放原生拖拽', () => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, Array<() => void>>();
+    const window = {
+      on: (name: string, listener: () => void) => {
+        listeners.set(name, [...(listeners.get(name) ?? []), listener]);
+      },
+      removeListener: vi.fn(),
+      getBounds: () => ({ x: 20, y: 10, width: 180, height: 220 }),
+      setPosition: vi.fn()
+    };
+    const service = {
+      beginUserMove: vi.fn(),
+      handleWindowMoved: vi.fn(),
+      endUserMove: vi.fn()
+    };
+    bindCharacterMotionWindow(window, service);
+
+    listeners.get('move')?.[0]?.();
+    vi.advanceTimersByTime(249);
+    expect(service.endUserMove).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(service.endUserMove).toHaveBeenCalledOnce();
+  });
+
   test('真实接线忽略同一次程序化 move→moved 重复回调并继续远端目标', () => {
     let now = 0;
     let bounds = { x: 0, y: 0, width: 180, height: 220 };
@@ -1044,6 +1069,57 @@ describe('Main 角色运动服务', () => {
     });
     now = 100;
     expect(service.tick().position).toEqual({ x: 140, y: 90 });
+    release();
+  });
+
+  test('Windows 高 DPI 将程序化位置取整偏移两 DIP 时仍继续远端目标', () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let bounds = { x: 0, y: 0, width: 180, height: 220 };
+    const listeners = new Map<
+      string,
+      Set<(event?: unknown, next?: typeof bounds) => void>
+    >();
+    const emit = (name: string, next?: typeof bounds): void => {
+      for (const listener of listeners.get(name) ?? []) listener(undefined, next);
+    };
+    const window = {
+      getBounds: () => bounds,
+      setPosition: (x: number, y: number) => {
+        const roundedByWindows = { ...bounds, x: x + 2, y };
+        // Electron/Windows 的程序化 will-move 预告值可能尚未完成 DPI 归一化。
+        emit('will-move', { ...roundedByWindows, x: roundedByWindows.x + 100 });
+        bounds = roundedByWindows;
+        emit('move');
+        emit('moved');
+      },
+      on: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => {
+        const current = listeners.get(name) ?? new Set();
+        current.add(listener);
+        listeners.set(name, current);
+      },
+      removeListener: (
+        name: string,
+        listener: (event?: unknown, next?: typeof bounds) => void
+      ) => listeners.get(name)?.delete(listener)
+    };
+    const service = createMotionService({
+      window,
+      getWorkAreas: () => [{ x: 0, y: 0, width: 800, height: 600 }],
+      now: () => now,
+      maxDeltaMs: 100
+    });
+    const release = bindCharacterMotionWindow(window, service);
+
+    service.moveTo({ x: 400, y: 0 }, 100);
+    now = 100;
+    service.tick();
+
+    expect(service.getSnapshot().target).toEqual({ x: 400, y: 0 });
+    expect(service.isUserMoving()).toBe(false);
     release();
   });
 
