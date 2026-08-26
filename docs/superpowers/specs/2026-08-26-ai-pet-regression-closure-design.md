@@ -26,7 +26,7 @@
 
 ### 3.1 拖拽尺寸和延迟
 
-自定义拖拽调用 `CharacterMotionService.beginUserMove()` 后，每次 `BrowserWindow.setPosition()` 产生的原生 `moved` 事件都会调用 `endUserMove()`。第一帧移动便错误释放拖拽所有权，随后 `PetGeometryCoordinator` 在按住期间重新获得布局权限并调用仓库中唯一可改变窗口宽高的 `setBounds()`。现有 Electron E2E 主要派发 DOM 合成事件，没有真正移动系统光标，因此没有覆盖这条竞态。
+历史实现同时使用 Renderer 累计位移、Windows 原生窗口移动事件和几何布局事务。原生 `moved` 可在物理左键仍按下时提前释放 owner，而尺寸变化与 Renderer 位移积累又会造成视觉放大和跟手延迟。此外，隐藏窗口期间积压的程序化位置预期可以拒绝新的 controller owner，造成 Renderer 显示正在拖拽而 Main 已经恢复自主运动。真实 Win32 光标回归已将该竞态稳定复现。
 
 ### 3.2 云 Provider 非流式
 
@@ -44,10 +44,11 @@
 
 ### 4.1 固定尺寸拖拽权威
 
-- `CharacterMotionService` 区分自定义拖拽所有权与原生窗口移动所有权；原生 `moved` 只能结束原生 owner，不能结束仍活跃的自定义拖拽。
-- `PetWindowInteractionController.endDrag()` 是自定义拖拽 owner 的唯一释放入口。
-- 自定义拖拽活跃期间，几何协调器拒绝任何窗口尺寸提交；固定尺寸模式下运行期只允许 `setPosition()`，窗口宽高保持默认值。
-- 拖拽使用初始系统光标和初始窗口左上角的绝对差值，不累计 Renderer 位移。先移除几何事务噪声，再依据真实系统光标 E2E 判断是否仍需调整 16ms 调度。
+- Renderer 只发送 begin/update/end 零坐标节拍；全局光标坐标、窗口起点和最终边界始终留在 Main。
+- Main 在 pointerdown 冻结初始系统光标和初始 `BrowserWindow.getBounds()`，每个 update 用绝对光标差计算位置，并以包含初始宽高的单次 `setBounds()` 原子移动。
+- `CharacterMotionService` 区分 `controller` 与 `native` owner；controller 必须使程序化位置预期失效并无条件接管。只有总 owner 集合的 `0→1` / `1→0` 边沿才发布上层 dragging 开始/结束。
+- 物理左键周期内，原生 `moved` 只能结束 native owner，不能结束 controller owner。`PetWindowInteractionController.endDrag()`、窗口销毁和 Renderer 失效是 controller owner 的收口。
+- 异常、取消或销毁必须以 `finally` 语义恢复安全鼠标穿透、释放 owner 和恢复待处理几何；活跃拖拽期间不接受其他尺寸提交。
 
 ### 4.2 三协议流式正文
 
@@ -55,11 +56,13 @@
 - OpenAI-compatible 普通无工具聊天发送 `stream:true` 并解析 `data:` 帧；云端 reasoning 字段不公开，但不沿用本地模型的思考泄漏硬失败。
 - Anthropic 普通无工具聊天发送 `stream:true`，只消费 `content_block_delta.text_delta`，以协议终态结束。
 - Gemini 普通无工具聊天使用 `streamGenerateContent?alt=sse`，只消费候选正文片段并验证完整终态。
+- 收到协议终态后消费当前已解码块中的尾帧，随即主动取消 reader，不等待 HTTP 长连接 EOF。
 - 工具回合、能力规划以及没有 `onTextDelta` 的调用保持现有非流式路径。自定义 OpenAI-compatible 端点若在任何增量前明确返回普通 JSON，可以安全回退整段解析；已经产生增量后禁止重试或重复正文。
 
 ### 4.3 文件工具事实与启动身份
 
 - 保留现有 FileToolService、授权根、逐次确认和真实结果边界，不建立第二套文件执行器。
+- 授权根保存前和每次路径解析时都拒绝 Windows 系统、程序、凭据、密钥与浏览器敏感目录及其子树。
 - AgentLoop 每次 `run()` 从空调用状态开始；补充失败任务后新任务成功、披露关闭时读写矩阵、全部公开工具名到内部结果名矩阵。
 - 文件披露关闭时，只读类工具返回稳定、可操作的“在隐私设置开启文件访问”提示；写工具仍依据明确用户意图、授权根和确认卡执行，不被只读披露开关误伤。
 - E2E 暴露只含提交短哈希和构建根类别的开发诊断，不暴露绝对路径；测试启动必须断言正在运行预期提交。
@@ -88,7 +91,7 @@ type CharacterMovementMode = 0 | 1 | 2;
 
 ## 6. TDD 与验收
 
-- 拖拽：事件化 fake BrowserWindow 证明 100 次真实位置事件期间 owner 不释放、`setBounds` 为零、宽高恒定；真实 Electron 使用系统光标移动至少 20 步并重复三轮。
+- 拖拽：事件化 fake BrowserWindow 覆盖 controller+native 双 owner、程序化预期积压、异常/销毁清理和固定宽高；真实 Electron 使用系统光标移动至少 20 步并重复三轮，按住 5.5 秒期间 owner 不释放。
 - 流式：三协议分别覆盖 Unicode 跨块、JSON 转义、终态、Abort、超限和工具回合零 delta；纵向验证 start/delta/commit 只形成一条历史消息。
 - 文件：失败任务后的新任务恢复；披露关闭的读写矩阵；七类真实副作用；启动提交身份；本地与云 Provider 使用同一 canonical 工具表。
 - 运动：`0` 下单次移动后仍为 `0`，`1` 连续换目标直到 stop，`2` 严格 10–30 秒随机间隔；模式切换、重启迁移和阻塞恢复均使用可控时钟。
