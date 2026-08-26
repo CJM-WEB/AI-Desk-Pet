@@ -201,7 +201,8 @@ describe('任务级授权协议', () => {
       requestId: 'cap-1',
       capability: 'file',
       requestSummary: '请整理当前目录',
-      targetProviderName: 'DeepSeek'
+      targetProviderName: 'DeepSeek',
+      expiresAt: '2026-08-27T12:02:00.000Z'
     };
     expect(taskEventSchema.parse(event)).toEqual(event);
     expect(() => taskEventSchema.parse({

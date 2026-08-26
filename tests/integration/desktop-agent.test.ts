@@ -23,11 +23,12 @@ import { characterManifestV2Schema } from '../../packages/character-runtime/src/
 import type { ProviderProfileV2, TaskEvent } from '@myself/shared-types';
 import { FileToolService } from '@myself/file-tools';
 import { AgentService } from '../../apps/desktop/src/main/agent/agent-service';
+import { createMainAgentSession } from
+  '../../apps/desktop/src/main/agent/main-agent-session-factory';
 import { PermissionPolicy } from '../../apps/desktop/src/main/agent/permission-policy';
 import { PendingActionStore } from '../../apps/desktop/src/main/agent/pending-action-store';
 import {
-  createBuiltinFileToolRegistry,
-  createBuiltinPowerShellToolRegistry
+  createBuiltinFileToolRegistry
 } from '../../apps/desktop/src/main/agent/tool-registry';
 import { PowerShellTool } from '../../apps/desktop/src/main/agent/powershell-tool';
 import { OpenAICompatibleProvider } from '../../apps/desktop/src/main/providers/openai-provider';
@@ -341,40 +342,19 @@ async function harness(
     model: 'task-9a-model',
     hasStoredSecret: true
   }, async () => providerServer.apiKey);
-  const registry = taskKind === 'powershell'
-    ? createBuiltinPowerShellToolRegistry()
-    : createBuiltinFileToolRegistry();
-  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: taskKind === 'powershell' });
   const service = new AgentService({
     loop,
     pending,
-    createSession: async () => taskKind === 'powershell'
-      ? {
-          taskKind: 'powershell' as const,
-          provider,
-          powershell: powershell ?? new PowerShellTool(),
-          workingDirectory: authorized.root,
-          workingDirectoryLabel: '授权工作目录',
-          generation: 'integration-powershell-generation',
-          tools: registry.definitions(),
-          toolRuntime: {
-            prepare: raw => registry.prepare(raw, permissionPolicy),
-            executeRead: async () => { throw new Error('TOOL_UNKNOWN'); }
-          },
-          messages: []
-        }
-      : {
-          taskKind: 'file' as const,
-          provider,
-          fileTools: authorized.fileTools,
-          fileDisclosureAllowed: true,
-          tools: registry.definitions(),
-          toolRuntime: {
-            prepare: raw => registry.prepare(raw, permissionPolicy),
-            executeRead: request => authorized.fileTools.executeRead(request)
-          },
-          messages: []
-    },
+    createSession: () => createMainAgentSession({
+      initialCapability: taskKind,
+      authorizedRootPath: authorized.root,
+      generation: 'integration-agent-generation',
+      fileDisclosureAllowed: true,
+      provider,
+      fallbackProviders: [],
+      createFileTools: async () => authorized.fileTools,
+      createPowerShellTool: () => powershell ?? new PowerShellTool()
+    }),
     emit: event => {
       events.push(event);
       onTaskEvent?.(event);
@@ -548,25 +528,21 @@ async function deepSeekHarness(input: {
   });
   const events: TaskEvent[] = [];
   rendererEventStreams.push({ events, authorizedRoot: authorized.root, apiKey });
-  const registry = createBuiltinFileToolRegistry();
-  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
   const fileTools = new FileToolService(authorized.policy, {
     moveToRecycleBin: input.moveToRecycleBin ?? (async () => undefined)
   });
   const service = new AgentService({
     loop,
     pending,
-    createSession: async () => ({
-      taskKind: 'file' as const,
+    createSession: () => createMainAgentSession({
+      initialCapability: 'file',
+      authorizedRootPath: authorized.root,
+      generation: 'deepseek-integration-generation',
       provider,
-      fileTools,
       fileDisclosureAllowed: input.fileDisclosureAllowed ?? true,
-      tools: registry.definitions(),
-      toolRuntime: {
-        prepare: raw => registry.prepare(raw, permissionPolicy),
-        executeRead: request => fileTools.executeRead(request)
-      },
-      messages: []
+      fallbackProviders: [],
+      createFileTools: async () => fileTools,
+      createPowerShellTool: () => new PowerShellTool()
     }),
     emit: event => events.push(event),
     createConversationId: () => 'conversation-deepseek-integration'
@@ -593,8 +569,6 @@ async function localModelFileHarness(input: {
     authorizedRoot: authorized.root,
     apiKey: localServer.apiKey
   });
-  const registry = createBuiltinFileToolRegistry();
-  const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
   const fileTools = new FileToolService(authorized.policy, {
     moveToRecycleBin: input.moveToRecycleBin
   });
@@ -649,18 +623,15 @@ async function localModelFileHarness(input: {
     return new AgentService({
       loop,
       pending,
-      createSession: async () => ({
-        taskKind: 'file' as const,
+      createSession: () => createMainAgentSession({
+        initialCapability: 'file',
+        authorizedRootPath: authorized.root,
+        generation: 'local-model-integration-generation',
         provider: createProvider(selection.profile),
         fallbackProviders: selection.fallbackProfiles.map(createProvider),
-        fileTools,
         fileDisclosureAllowed: true,
-        tools: registry.definitions(),
-        toolRuntime: {
-          prepare: raw => registry.prepare(raw, permissionPolicy),
-          executeRead: request => fileTools.executeRead(request)
-        },
-        messages: []
+        createFileTools: async () => fileTools,
+        createPowerShellTool: () => new PowerShellTool()
       }),
       emit: event => events.push(event),
       createConversationId: () => 'conversation-local-model-integration'
@@ -1072,8 +1043,6 @@ describe('桌面会话分流纵向集成', () => {
       if (!response) throw new Error('纵向 Provider 响应耗尽');
       return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
     }));
-    const registry = createBuiltinFileToolRegistry();
-    const permissionPolicy = new PermissionPolicy({ highRiskEnabled: false });
     const fixture = conversationIntegrationHarness({
       responses: [],
       authorizedRootPath: authorized.root,
@@ -1081,17 +1050,15 @@ describe('桌面会话分流纵向集成', () => {
       createAgentService: factoryInput => new AgentService({
         loop: new AgentLoop(),
         pending: new PendingActionStore(),
-        createSession: async () => ({
-          taskKind: 'file' as const,
+        createSession: () => createMainAgentSession({
+          initialCapability: 'file',
+          authorizedRootPath: authorized.root,
+          generation: 'vertical-file-generation',
           provider,
-          fileTools: authorized.fileTools,
           fileDisclosureAllowed: false,
-          tools: registry.definitions(),
-          toolRuntime: {
-            prepare: raw => registry.prepare(raw, permissionPolicy),
-            executeRead: request => authorized.fileTools.executeRead(request)
-          },
-          messages: []
+          fallbackProviders: [],
+          createFileTools: async () => authorized.fileTools,
+          createPowerShellTool: () => new PowerShellTool()
         }),
         emit: factoryInput.emit,
         createConversationId: () => 'vertical-file-conversation'
@@ -1284,7 +1251,9 @@ describe('桌面会话分流纵向集成', () => {
 
     await fixture.composition.coordinator.submit(text);
 
-    expect(behaviorFixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(movementMode);
+    expect(behaviorFixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(
+      movementMode, expect.any(Function)
+    );
     expect(behaviorFixture.saveMovementMode.mock.invocationCallOrder[0])
       .toBeLessThan(providerRespond.mock.invocationCallOrder[0]!);
     await fixture.composition.close();
@@ -1463,7 +1432,7 @@ describe('桌面会话分流纵向集成', () => {
       category: 'powershell',
       operation: 'powershell',
       command: expect.stringContaining('integration-stdout'),
-      workingDirectoryLabel: '授权工作目录'
+      workingDirectoryLabel: '已授权工作目录'
     });
 
     await fixture.service.confirm(action.actionId);
@@ -1820,7 +1789,7 @@ describe('桌面 Agent 真实服务集成', () => {
         toolName,
         targetRelativePath
       });
-      expect(request.tools).toHaveLength(10);
+      expect(request.tools).toHaveLength(11);
       expect(request.toolChoice).toBe('auto');
     };
     let recycledPath = '';
@@ -2018,7 +1987,7 @@ describe('桌面 Agent 真实服务集成', () => {
     expect(fixture.fetchClient).toHaveBeenCalledTimes(2);
     expect(fixture.responses).toHaveLength(0);
     expect(fixture.requestBodies[1]).toMatchObject({ tool_choice: 'auto' });
-    expect(fixture.requestBodies[1]?.tools).toHaveLength(10);
+    expect(fixture.requestBodies[1]?.tools).toHaveLength(11);
     expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
       type: 'message', role: 'assistant', text: 'empty 已移入回收站'
     }]);
@@ -2450,6 +2419,7 @@ describe('桌面 Agent 真实服务集成', () => {
           'builtin__files__apply_patch',
           'builtin__files__edit_file',
           'builtin__files__delete_file',
+          'builtin__powershell__run',
           'builtin__capability__request_clarification'
         ])
       },

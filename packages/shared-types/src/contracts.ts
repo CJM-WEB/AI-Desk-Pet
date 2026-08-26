@@ -53,7 +53,8 @@ export const capabilityAuthorizationRequiredEventSchema = z.object({
   requestId: z.string().min(1).max(128),
   capability: z.enum(['file', 'powershell']),
   requestSummary: z.string().trim().min(1).max(240),
-  targetProviderName: z.string().min(1).max(128)
+  targetProviderName: z.string().min(1).max(128),
+  expiresAt: z.string().datetime({ offset: true })
 }).strict();
 export type CapabilityAuthorizationRequiredEvent = z.infer<
   typeof capabilityAuthorizationRequiredEventSchema

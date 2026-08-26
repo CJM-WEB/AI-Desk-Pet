@@ -263,6 +263,26 @@ describe('Renderer 任务视图状态', () => {
     }
   });
 
+  test('任务级授权卡保存有效期并在所有终止阶段清除', () => {
+    for (const phase of ['success', 'error', 'cancelled', 'idle'] as const) {
+      const store = createTaskStore();
+      store.getState().apply({
+        type: 'capability_authorization_required',
+        requestId: `capability-${phase}`,
+        capability: 'file',
+        requestSummary: '整理当前目录',
+        targetProviderName: 'DeepSeek',
+        expiresAt: '2026-08-27T12:02:00.000Z'
+      });
+      expect(store.getState().pendingCapabilityAuthorization?.expiresAt)
+        .toBe('2026-08-27T12:02:00.000Z');
+
+      store.getState().apply({ type: 'phase', phase });
+
+      expect(store.getState().pendingCapabilityAuthorization).toBeNull();
+    }
+  });
+
   test('成功和错误阶段在 1500 毫秒后回到 idle 且保留消息', () => {
     vi.useFakeTimers();
     const store = createTaskStore();

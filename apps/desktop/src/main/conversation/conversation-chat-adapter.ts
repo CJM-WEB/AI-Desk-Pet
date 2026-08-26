@@ -33,6 +33,11 @@ export const characterJsonOutputInstructions = [
   '格式示例：{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","movementControl":{"kind":"keep"},"behaviorPlan":{"kind":"none","emotion":"calm"},"capabilityPlan":{"kind":"chat"}}'
 ].join('');
 
+/** 聊天表现与能力计划必须由同一严格对象校验，避免先验旧 Schema 拒绝合法扩展字段。 */
+export const capabilityCharacterChatResponseSchema = characterChatResponseSchema.extend({
+  capabilityPlan: capabilityControlPlanSchema
+}).strict();
+
 const 聊天系统消息前缀 = [
   '你是一只 AI 桌宠，请自然、直接地回复用户。',
   '优先使用用户使用的语言，并结合可见上下文作答。',
@@ -76,13 +81,7 @@ export const characterChatResponseContract: ModelResponseContract = {
   },
   textField: 'text' as const,
   allowPlainTextFallback: true as const,
-  validateStructuredOutput: value => {
-    if (!characterChatResponseSchema.safeParse(value).success) return false;
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-    return capabilityControlPlanSchema.safeParse(
-      (value as Record<string, unknown>)['capabilityPlan']
-    ).success;
-  }
+  validateStructuredOutput: value => capabilityCharacterChatResponseSchema.safeParse(value).success
 };
 
 export interface ConversationChatInput {

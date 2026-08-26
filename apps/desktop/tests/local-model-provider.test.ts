@@ -6,6 +6,7 @@ import {
   type LocalModelConnectionPort
 } from '../src/main/providers/local-model-provider';
 import { ProviderError } from '../src/main/providers/openai-provider';
+import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -104,6 +105,37 @@ function readyPort(getReadyConnection = () => connection): LocalModelConnectionP
 }
 
 describe('LocalModelProvider', () => {
+  test('真实本地 Provider 接受包含 capabilityPlan 的完整桌宠组合契约', async () => {
+    const payload = JSON.stringify({
+      text: '需要进入本地任务。',
+      activity: '准备任务',
+      status: 'thinking',
+      movementControl: { kind: 'keep' },
+      behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+    });
+    const fetchClient = vi.fn<FetchLike>(async () => sseResponse([payload]));
+    const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
+
+    await expect(adapter.respond({
+      history: [],
+      text: '请整理当前目录并生成摘要',
+      behaviorContext: {
+        character: {
+          characterName: '小橘', semantics: ['idle'], stateNames: [], actionNames: [], tags: []
+        },
+        runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
+        proactivityMode: 'assistive',
+        recentActions: []
+      },
+      signal: new AbortController().signal,
+      onTextDelta: vi.fn()
+    })).resolves.toMatchObject({
+      text: '需要进入本地任务。',
+      capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+    });
+  });
+
   test('固定关闭思考、流式和并行工具调用并使用当前私有连接', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{ message: { content: '完成' } }]

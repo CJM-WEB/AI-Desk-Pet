@@ -22,6 +22,7 @@ import {
 } from '../agent/file-task-public-errors';
 
 const 最大用户消息字符数 = 4_000;
+const 任务级授权有效期毫秒 = 2 * 60 * 1_000;
 
 export interface ChatTurnFactory {
   create(signal: AbortSignal): Promise<{
@@ -108,7 +109,7 @@ type PendingCapabilityAuthorization = Readonly<{
   taskKind: CapabilityTaskKind;
   target: PreparedCapabilityTarget;
   preferredTool: import('@myself/agent-core').AgentPlanningTool | null;
-  providerReplyText: string;
+  expiresAtMs: number;
 }>;
 
 type PendingFileContinuation = Readonly<{
@@ -229,16 +230,6 @@ export class ConversationCoordinator {
         ? continuationIntent
         : capabilityIntentRouter.routeTrustedFileContinuation();
       if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
-      if (intent.kind === 'unsupported_file_operation') {
-        this.state = {
-          kind: 'preparing_capability_task',
-          generation: context.generation,
-          controller: context.controller,
-          taskKind: 'powershell'
-        };
-        await this.prepareCapabilityTask(context, 'powershell');
-        return;
-      }
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
         if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {
           throw publicErrorForCode('POWERSHELL_BACKGROUND_UNSUPPORTED');
@@ -375,9 +366,18 @@ export class ConversationCoordinator {
       throw publicErrorForCode('ACTION_EXPIRED');
     }
     this.pendingCapabilityAuthorization = null;
+    if (Date.now() >= pending.expiresAtMs) {
+      this.options.capabilityTasks.cancelActive();
+      this.state = { kind: 'idle' };
+      const expired = publicErrorForCode('ACTION_EXPIRED');
+      this.reportFailure(expired);
+      throw expired;
+    }
     if (decision === 'cancel') {
       this.options.capabilityTasks.cancelActive();
-      this.options.emit({ type: 'message', role: 'assistant', text: pending.providerReplyText });
+      this.options.emit({
+        type: 'message', role: 'assistant', text: '已取消进入本地任务，未执行任何操作。'
+      });
       this.state = { kind: 'idle' };
       this.options.emit({ type: 'phase', phase: 'cancelled' });
       return;
@@ -602,7 +602,7 @@ export class ConversationCoordinator {
   ): Promise<void> {
     if (!this.isRunning(context)) return;
     const turnId = `assistant-${++this.assistantTurnSequence}`;
-    let streamStarted = false;
+    const bufferedDeltas: string[] = [];
     const reply = await adapter.respond({
       history: visibleHistory,
       text: context.text,
@@ -610,18 +610,22 @@ export class ConversationCoordinator {
       signal: context.controller.signal,
       onTextDelta: delta => {
         if (delta.length === 0 || !this.isRunning(context)) return;
-        if (!streamStarted) {
-          this.options.emit({ type: 'assistant_message_start', turnId });
-          streamStarted = true;
-        }
-        if (!this.isRunning(context)) return;
-        this.options.emit({ type: 'assistant_message_delta', turnId, delta });
+        bufferedDeltas.push(delta);
       }
     });
     if (!this.isRunning(context)) return;
     if (context.modelEscalation === 'allowed' && reply.capabilityPlan?.kind === 'agent_task') {
       await this.prepareModelCapabilityAuthorization(context, reply);
       return;
+    }
+    // 能力计划判定前的正文只保存在 Main；普通聊天确认后才允许提交给 Renderer。
+    const streamStarted = bufferedDeltas.length > 0;
+    if (streamStarted) {
+      this.options.emit({ type: 'assistant_message_start', turnId });
+      for (const delta of bufferedDeltas) {
+        if (!this.isRunning(context)) return;
+        this.options.emit({ type: 'assistant_message_delta', turnId, delta });
+      }
     }
     await this.options.behavior.completeUserPrompt({
       generation: context.generation,
@@ -748,13 +752,14 @@ export class ConversationCoordinator {
     });
     if (!this.isRunning(context)) return;
     const requestId = this.createId();
+    const expiresAtMs = Date.now() + 任务级授权有效期毫秒;
     this.pendingCapabilityAuthorization = {
       requestId,
       context,
       taskKind,
       target,
       preferredTool: reply.capabilityPlan.preferredTool,
-      providerReplyText: reply.text
+      expiresAtMs
     };
     this.state = {
       kind: 'awaiting_capability_authorization',
@@ -766,7 +771,8 @@ export class ConversationCoordinator {
       requestId,
       capability: taskKind,
       requestSummary: summarizeCapabilityRequest(context.text),
-      targetProviderName: target.providerName
+      targetProviderName: target.providerName,
+      expiresAt: new Date(expiresAtMs).toISOString()
     });
   }
 
@@ -959,7 +965,6 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     CONVERSATION_CLOSED: '当前会话已经关闭。',
     DISCLOSURE_REQUEST_EXPIRED: '历史披露确认已失效，请重新提交消息。',
     FILE_TARGET_MISMATCH: '文件授权目录或模型配置已经变化，请重新提交完整文件请求。',
-    FILE_COPY_UNSUPPORTED: '暂不支持复制文件；可以改用移动文件，或先创建目标文件再写入内容。',
     POWERSHELL_BACKGROUND_UNSUPPORTED: '暂不支持后台 PowerShell 任务，请改为前台执行。',
     PROVIDER_AUTHENTICATION_FAILED: '模型服务身份认证失败，请检查 API Key。',
     PROVIDER_ENDPOINT_NOT_FOUND: '模型服务地址不可用。',

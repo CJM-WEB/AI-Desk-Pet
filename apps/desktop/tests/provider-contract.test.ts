@@ -772,7 +772,11 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
     async contract => {
       const raw = JSON.stringify({
         text: '我向左走一点。',
-        behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+        activity: '向左移动',
+        status: 'moving',
+        movementControl: { kind: 'move_once', target: 'left', distance: 'near' },
+        behaviorPlan: { kind: 'none', emotion: 'calm' },
+        capabilityPlan: { kind: 'chat' }
       });
       const adapter = new ConversationChatAdapter(contract.createProvider(
         vi.fn(async () => jsonResponse(contract.textResponse(raw)))
@@ -785,7 +789,12 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         signal: new AbortController().signal
       })).resolves.toEqual({
         text: '我向左走一点。',
-        behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
+        activity: '向左移动',
+        status: 'moving',
+        movementControl: { kind: 'move_once', target: 'left', distance: 'near' },
+        emotion: 'calm',
+        behaviorPlan: { kind: 'none', emotion: 'calm' },
+        capabilityPlan: { kind: 'chat' }
       });
     }
   );

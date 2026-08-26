@@ -7,13 +7,13 @@ import {
 
 function expectIntentKind(
   text: string,
-  kind: 'chat' | 'file_task' | 'powershell_task' | 'unsupported_file_operation'
+  kind: 'chat' | 'file_task' | 'powershell_task'
 ): void {
   const intent = capabilityIntentRouter.route(text);
   expect(intent.kind).toBe(kind);
   if (intent.kind === 'chat') {
     expect(intent.behaviorHint).toBeNull();
-  } else if (intent.kind !== 'unsupported_file_operation') {
+  } else {
     expect(intent.evidence).toBeDefined();
   }
 }
@@ -299,8 +299,8 @@ describe('能力意图路由器', () => {
   test.each([
     'copy report.md to archive.md',
     '把 report.md 复制到 archive 目录'
-  ])('已退役复制能力由宿主识别为不支持且不进入聊天', text => {
-    expectIntentKind(text, 'unsupported_file_operation');
+  ])('复制请求进入受控 PowerShell 任务并继续逐动作确认', text => {
+    expectIntentKind(text, 'powershell_task');
   });
 
   test.each([

@@ -19,7 +19,6 @@ export type CapabilityIntent =
       modelEscalation: ModelEscalation;
     }>
   | Readonly<{ kind: 'file_task'; evidence: ExplicitFileEvidence }>
-  | Readonly<{ kind: 'unsupported_file_operation'; operation: 'copy_file' }>
   | Readonly<{ kind: 'powershell_task'; evidence: ExplicitShellEvidence }>;
 
 export interface CapabilityIntentRouter {
@@ -36,9 +35,6 @@ const blockedChatIntent: CapabilityIntent = Object.freeze({
 const fileTaskIntent: Extract<CapabilityIntent, { kind: 'file_task' }> = Object.freeze({
   kind: 'file_task',
   evidence: Object.freeze({ kind: 'explicit_file_operation' })
-});
-const unsupportedCopyIntent: CapabilityIntent = Object.freeze({
-  kind: 'unsupported_file_operation', operation: 'copy_file'
 });
 const powershellTaskIntent: CapabilityIntent = Object.freeze({
   kind: 'powershell_task',
@@ -328,7 +324,8 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
     if (!this.fileIntentGate(text)) {
       return blocksModelEscalation(text) ? blockedChatIntent : chatIntent;
     }
-    if (/(?:复制|\bcopy\b)/iu.test(text)) return unsupportedCopyIntent;
+    // 复制没有独立文件工具，统一进入受控 PowerShell，并继续执行逐命令确认。
+    if (/(?:复制|\bcopy\b)/iu.test(text)) return powershellTaskIntent;
     return fileTaskIntent;
   }
 

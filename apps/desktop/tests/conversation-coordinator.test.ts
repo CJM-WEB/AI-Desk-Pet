@@ -273,13 +273,26 @@ function errorCode(error: unknown): unknown {
 
 describe('ConversationCoordinator', () => {
   test('模型能力计划只在允许升级时发布独立任务授权且确认前不激活 Agent', async () => {
-    const script = scriptedProvider({
-      type: 'text',
-      text: '需要进入本地任务。',
-      structured_output: {
-        capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+    const requests: ModelRequest[] = [];
+    const script: ProviderScript = {
+      requests,
+      signals: [],
+      provider: {
+        async respond(request, signal) {
+          requests.push(request);
+          script.signals.push(signal);
+          request.onTextDelta?.('文件已经');
+          request.onTextDelta?.('创建完成');
+          return {
+            type: 'text',
+            text: '文件已经创建完成。',
+            structured_output: {
+              capabilityPlan: { kind: 'agent_task', preferredTool: 'create_file' }
+            }
+          };
+        }
       }
-    });
+    };
     const harness = createHarness([{
       profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
     }]);
@@ -291,14 +304,72 @@ describe('ConversationCoordinator', () => {
       requestId: 'request-2',
       capability: 'file',
       requestSummary: '请整理当前目录并生成说明',
-      targetProviderName: 'OpenAI Agent'
+      targetProviderName: 'OpenAI Agent',
+      expiresAt: expect.any(String)
     });
     expect(harness.fileTasks.activationCalls).toBe(0);
     expect(harness.fileTasks.submissions).toHaveLength(0);
+    expect(harness.events.filter(event => event.type.startsWith('assistant_message_'))).toEqual([]);
+    expect(JSON.stringify(harness.events)).not.toContain('文件已经创建完成');
 
     await harness.coordinator.resolveCapabilityAuthorization('request-2', 'confirm');
     expect(harness.fileTasks.activationCalls).toBe(1);
     expect(harness.fileTasks.submissions).toHaveLength(1);
+  });
+
+  test('任务级授权到期后拒绝激活、清理快照并发布可清卡终态', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-27T12:00:00.000Z'));
+    try {
+      const script = scriptedProvider({
+        type: 'text',
+        text: '需要进入本地任务。',
+        structured_output: {
+          capabilityPlan: { kind: 'agent_task', preferredTool: 'powershell' }
+        }
+      });
+      const harness = createHarness([{
+        profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
+      }]);
+
+      await harness.coordinator.submit('请完成这个本地任务');
+      expect(harness.events).toContainEqual(expect.objectContaining({
+        type: 'capability_authorization_required',
+        expiresAt: '2026-08-27T12:02:00.000Z'
+      }));
+      await vi.advanceTimersByTimeAsync(120_001);
+
+      await expect(harness.coordinator.resolveCapabilityAuthorization('request-2', 'confirm'))
+        .rejects.toMatchObject({ code: 'ACTION_EXPIRED' });
+      expect(harness.fileTasks.activationCalls).toBe(0);
+      expect(harness.fileTasks.cancelCalls).toBe(1);
+      expect(phases(harness.events).at(-1)).toBe('error');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('取消任务级授权只显示宿主固定未执行文案，不公开模型口头结论', async () => {
+    const script = scriptedProvider({
+      type: 'text',
+      text: '文件已经成功删除。',
+      structured_output: {
+        capabilityPlan: { kind: 'agent_task', preferredTool: 'delete_file' }
+      }
+    });
+    const harness = createHarness([{
+      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script
+    }]);
+
+    await harness.coordinator.submit('请帮我完成一个本地整理任务');
+    await harness.coordinator.resolveCapabilityAuthorization('request-2', 'cancel');
+
+    expect(JSON.stringify(harness.events)).not.toContain('文件已经成功删除');
+    expect(harness.events).toContainEqual({
+      type: 'message', role: 'assistant', text: '已取消进入本地任务，未执行任何操作。'
+    });
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(phases(harness.events).at(-1)).toBe('cancelled');
   });
 
   test('Main 阻断证据不能被模型 agent_task 建议绕过', async () => {
@@ -649,9 +720,7 @@ describe('ConversationCoordinator', () => {
     script.resolve({ type: 'text', text: '草稿迟到' });
     await pending;
 
-    expect(events).toContainEqual({
-      type: 'assistant_message_delta', turnId: 'assistant-1', delta: '草稿'
-    });
+    expect(events.filter(event => event.type.startsWith('assistant_message_'))).toEqual([]);
     expect(JSON.stringify(events)).not.toContain('迟到');
     expect(events).not.toContainEqual(expect.objectContaining({
       type: 'assistant_message_commit'

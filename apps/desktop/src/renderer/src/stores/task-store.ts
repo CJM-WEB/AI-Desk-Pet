@@ -41,6 +41,7 @@ export type PendingCapabilityAuthorization = Readonly<{
   capability: 'file' | 'powershell';
   requestSummary: string;
   targetProviderName: string;
+  expiresAt: string;
 }>;
 
 export interface TaskViewState {
@@ -252,7 +253,8 @@ export function createTaskStore(): StoreApi<TaskViewState> {
             requestId: event.requestId,
             capability: event.capability,
             requestSummary: event.requestSummary,
-            targetProviderName: event.targetProviderName
+            targetProviderName: event.targetProviderName,
+            expiresAt: event.expiresAt
           })
         });
         return;
@@ -291,6 +293,7 @@ export function createTaskStore(): StoreApi<TaskViewState> {
             ...state.messages.filter(item => item.id !== activeStreamId),
             message
           ].slice(-MAX_MESSAGES),
+          pendingCapabilityAuthorization: null,
           ...(state.resolvingHistoryDisclosureRequestId
             && state.pendingHistoryDisclosure?.requestId
               === state.resolvingHistoryDisclosureRequestId
@@ -341,7 +344,9 @@ export function createTaskStore(): StoreApi<TaskViewState> {
               resolvingHistoryDisclosureRequestId: null
             }
           : {}),
-        ...(terminalPhase(phase) ? { pendingAction: null } : {})
+        ...(terminalPhase(phase)
+          ? { pendingAction: null, pendingCapabilityAuthorization: null }
+          : {})
       });
       if (phase === 'idle' && pendingEmotionRequest) {
         const request = pendingEmotionRequest;

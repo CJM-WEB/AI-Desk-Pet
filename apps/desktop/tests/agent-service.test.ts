@@ -196,7 +196,7 @@ function createHarness(
     fallbackProviders,
     fileTools,
     fileDisclosureAllowed,
-    powershell: { close: vi.fn(async () => undefined) } as PowerShellTool,
+    powershell: { close: vi.fn(async () => undefined) } as unknown as PowerShellTool,
     workingDirectory: 'C:\\workspace',
     workingDirectoryLabel: '工作区',
     generation: 'generation-1',
