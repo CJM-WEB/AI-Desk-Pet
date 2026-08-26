@@ -1439,7 +1439,11 @@ describe('桌面会话分流纵向集成', () => {
         type: 'text',
         text: 'fixture 同次正文',
         structured_output: {
-          behaviorPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' } }
+          activity: '庆祝',
+          status: 'celebrate',
+          movementControl: { kind: 'keep' },
+          behaviorPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' } },
+          capabilityPlan: { kind: 'chat' }
         }
       }
     }]);
