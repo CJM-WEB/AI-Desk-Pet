@@ -63,3 +63,31 @@
 
 - 提交信息：`feat(control): 统一桌宠能力与运动控制契约`
 - 提交哈希：以本报告所在提交的 `git rev-parse HEAD` 输出为准；Git 提交不能在自身内容中内嵌自己的最终哈希。
+
+## 修复轮 1/5：封闭拒绝证据与跨句绑定
+
+### RED 证据
+
+- 命令：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts tests/explicit-character-behavior-gate.test.ts`
+- 退出码：`1`。
+- 结果：2 个文件共 271 项，261 项通过、10 项失败。
+- Router 的 6 项预期失败覆盖：省略“在”的本地点状语、`不用`/`不必` 否定同义词、分析流程、无成对引号的引用语境，以及英文请求跨句借用后续操作和目标。
+- 行为 Gate 的 4 项预期失败覆盖：动作短语后接“是什么意思”“为什么”“怎么”等知识问句。
+
+### GREEN 与门禁证据
+
+- 同一 Desktop 定向命令：2 个文件、271/271 通过。
+- `pnpm.cmd --filter @myself/agent-core test`：4 个文件、93/93 通过。
+- `pnpm.cmd --filter @myself/agent-core typecheck`：退出码 `0`。
+- `pnpm.cmd --filter @myself/character-runtime test`：15 个文件、315/315 通过。
+- `pnpm.cmd --filter @myself/character-runtime typecheck`：退出码 `0`。
+- `pnpm.cmd --filter @myself/desktop typecheck`：退出码 `0`。
+- `git diff --check`：退出码 `0`；只有 Windows 行尾转换提示，无空白错误。
+
+### 最小修复与自审
+
+- 文件 Router 补齐否定、分析流程和引用语境的拒绝证据；省略“在”的本地点状语作为独立执行句式证据，不新增固定动宾排列。
+- `hasExecutionStructure` 只接收已绑定的操作槽；英文直接请求只授权首个已绑定操作，并继续要求操作与目标同句，后续句子不能借用前句请求权限。
+- 行为 Gate 在动作解析后、边界接受前拒绝知识问句后缀，保留既有组合能力分流。
+- 修复只修改 Router、行为 Gate 及其测试，没有触碰 Agent 执行器、Provider、Scheduler、IPC 或权限执行链。
+- 未发现新的人工验收项；剩余风险是自然语言拒绝词表仍为封闭集合，后续新增表达应继续以安全负例驱动扩展。

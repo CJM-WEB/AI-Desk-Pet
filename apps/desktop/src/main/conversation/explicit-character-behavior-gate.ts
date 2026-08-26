@@ -13,6 +13,7 @@ const 引用或代码开头 = /^(?:>|[`'"“”‘’])/u;
 const 文件移动否定 = /^(?:别|不要|无需)移动(?:这个|该|我的)?文件/u;
 const 中文组合分隔 = /^(?:\s*(?:并且?|然后|再)\s*)/u;
 const 英文组合分隔 = /^(?:\s*(?:and|then)\s+)/iu;
+const 行为知识后缀 = /^[，。！？,.!?\s]*(?:是什么意思|为什么|怎么|如何|含义|解释|讨论|meaning\b|why\b|how\b|what\s+does\b)/iu;
 
 const 方向表 = Object.freeze({
   左: 'left',
@@ -57,7 +58,9 @@ export function parseExplicitCharacterBehavior(text: string): ParsedBehaviorProm
 
   const parsed = parseChinese(normalized) ?? parseEnglish(normalized);
   if (!parsed) return null;
-  if (!hasDirectiveBoundary(normalized.slice(parsed.consumed))) return null;
+  const remaining = normalized.slice(parsed.consumed);
+  // 后置知识问句讨论的是动作含义，不得借用句首动作短语取得行为控制权。
+  if (行为知识后缀.test(remaining) || !hasDirectiveBoundary(remaining)) return null;
   return {
     capabilityText: remainingCapabilityText(normalized, parsed.consumed),
     explicitDirective: parsed.directive,

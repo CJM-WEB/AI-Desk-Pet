@@ -66,8 +66,8 @@ const strongFileOperationPattern = /(?:重命名|复制|移动|\b(?:rename|copy|
 const chineseExecutionRequestPattern = /(?:你能(?:不能)?(?:帮我)?|请你?|帮我|麻烦(?:你)?|给我)/gu;
 const englishDirectExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b/iu;
 const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:please\s+)?([a-z]+)\b/iu;
-const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|讨论|什么意思|是什么(?:意思|功能)?|翻译|示例|例子|举例|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b|example\b|discuss\b)/iu;
-const negationPattern = /(?:不要|别|无需|do\s+not|don't)/iu;
+const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|讨论|分析|流程|引用|这句话|什么意思|是什么(?:意思|功能)?|翻译|示例|例子|举例|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b|example\b|discuss\b)/iu;
+const negationPattern = /(?:不要|不用|不必|无需|不需要|do\s+not|don't)/iu;
 const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
 const quotedOrCodePrefixPattern = /^(?:>|[`'"“”‘’])/u;
 const chineseExplicitPowerShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
@@ -390,7 +390,9 @@ function hasChineseExecutionRequest(
   const prefix = rawPrefix.replace(/^(?:那|那么)\s*/u, '');
   return prefix.startsWith('把')
     || prefix.startsWith('将')
-    || (prefix.startsWith('在') && /[中里下]$/u.test(prefix));
+    || (prefix.startsWith('在') && /[中里下]$/u.test(prefix))
+    // 本地点状语可以省略“在”，它仍是独立的执行句式证据，不依赖固定动宾排列。
+    || /^(?:当前(?:文件夹|文件|目录)|授权目录)[中里下]$/u.test(prefix);
 }
 
 /** 执行结构负责把操作槽与对象绑定在同一短句，操作词是否合法由独立证据判断。 */
@@ -400,11 +402,12 @@ function hasExecutionStructure(
   operationRanges: readonly TextRange[]
 ): boolean {
   const hasEnglishDirectRequest = englishDirectExecutionPattern.test(text);
+  const directEnglishOperationRange = hasEnglishDirectRequest ? operationRanges[0] : undefined;
   const requestRanges = Array.from(text.matchAll(chineseExecutionRequestPattern))
     .map(match => [match.index, match.index + match[0].length] as const);
   const hasDirectExecution = operationRanges.some(operationRange =>
     targetRanges.some(targetRange => areInSameSentence(text, operationRange, targetRange))
-    && (hasEnglishDirectRequest
+    && (operationRange === directEnglishOperationRange
       || hasChineseExecutionRequest(text, operationRange, requestRanges)));
   if (hasDirectExecution) return true;
 
@@ -511,7 +514,7 @@ function hasExplicitFileIntent(normalizedText: string): boolean {
   );
   return localObjectScan.hasLocalObject
     && requestedOperationRanges.length > 0
-    && hasExecutionStructure(unquotedText, objectRanges, operationRanges);
+    && hasExecutionStructure(unquotedText, objectRanges, requestedOperationRanges);
 }
 
 /** 操作类别只用于收窄本轮工具，不扩展 Router 已经判定的文件权限。 */
