@@ -58,9 +58,10 @@ const fileOperationPattern = /(?:按文件名匹配|读取|列出|创建|新建|
 const localObjectPattern = /(?:\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|(?:[^\s“”"'（）()<>\\/，,。！？!?；;]+[\\/])+[^\s“”"'（）()<>\\/，,。！？!?；;]+|[^\s“”"'（）()<>\\/，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*|\b(?:readme|license|makefile|dockerfile|file|files|folder|folders|directory|directories)\b|当前(?:文件夹|文件|目录)|授权目录|回收站|文件夹|文件|目录)/giu;
 const quotedOrCodePrefixPattern = /^(?:>|[`'"“”‘’]|~~~)/u;
 const explicitReferencePrefixPattern = /^(?:引用|翻译|read\s+the\s+phrase\b)/iu;
-const explicitNegationPrefixPattern = /^(?:我不想让你|你不能帮我|千万(?:不要|不用|不必|无需|不需要|别)|(?:(?:请你?|麻烦你?|你(?:能不能|能)帮我|可以帮我|帮我)\s*)?(?:不要|不用|不必|无需|不需要|别|(?:please\s+)?(?:do\s+not|don't)\b))/iu;
+const explicitNegationPrefixPattern = /^(?:never\b|我不想让你|你不能帮我|千万(?:不要|不用|不必|无需|不需要|别)|(?:(?:请你?|麻烦你?|你(?:能不能|能)帮我|可以帮我|帮我)\s*)?(?:不要|不用|不必|无需|不需要|别|(?:please\s+)?(?:do\s+not|don't)\b))/iu;
 const quotedReferenceEnvelopePattern = /^(?:(?:把|将)[^\n]{0,40}[“”‘’"'][^\n]{1,240}[“”‘’"'][^\n]{0,40}翻译|[^\n]{0,40}说\s*[：:][^\n]{0,20}[“”‘’"'])/u;
-const indentedOrFencedCodePattern = /^(?: {4}|\t|```|~~~)/u;
+const indentedCodeLinePattern = /(?:^|\r?\n)(?: {4}|\t)/u;
+const fencedCodeLinePattern = /(?:^|\r?\n)[ \t]*(?:```|~~~)/u;
 const chineseRequestPrefixPattern = /^(?:(?:那|那么)\s*)?(?:请你?帮我|请你?|你能(?:不能)?帮我|可以帮我|麻烦你?帮我|麻烦你?|帮我|给我)?\s*/u;
 const englishRequestPrefixPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?/iu;
 const chineseLocationPrefixPattern = /^(?:在)?(?:当前(?:文件夹|文件|目录)|授权目录)(?:中|里|下)?(?:帮我)?/u;
@@ -79,6 +80,11 @@ const assignmentScriptPattern = /^\$[a-z_][a-z\d_:]*\s*=\s*[^;\r\n]+;\s*\S[\s\S]
 const scriptBlockPattern = /^&\s*\{[\s\S]+\}$/u;
 const shellDiscussionTailPattern = /(?:安全吗|好不好|值得吗|是什么(?:意思)?|会怎样|合适吗)[？?]?$/u;
 const englishNaturalLanguageTokenPattern = /^(?:am|is|are|was|were|be|been|being|do|does|did|can|could|would|will|shall|should|may|might|must|has|have|had|what|why|how|when|where|who|whom|whose|which)$/u;
+
+/** 任意行出现缩进代码或围栏时，整段文本都不能升级为系统能力任务。 */
+function containsDeterministicCodeStructure(text: string): boolean {
+  return indentedCodeLinePattern.test(text) || fencedCodeLinePattern.test(text);
+}
 
 function isWordInternalApostrophe(text: string, index: number): boolean {
   return text[index] === "'"
@@ -312,7 +318,7 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
   /** 只有封闭直接命令可跳过任务级授权；其他文本保守回落普通聊天。 */
   route(prompt: string): CapabilityIntent {
     const normalizedPrompt = prompt.normalize('NFKC');
-    if (indentedOrFencedCodePattern.test(normalizedPrompt)) return blockedChatIntent;
+    if (containsDeterministicCodeStructure(normalizedPrompt)) return blockedChatIntent;
     const text = normalizedPrompt.trim().toLocaleLowerCase();
     const explicitShell = explicitPowerShellIntent(text);
     if (explicitShell !== undefined) return explicitShell;

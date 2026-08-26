@@ -238,6 +238,18 @@ describe('能力意图路由器', () => {
   });
 
   test.each([
+    'Never delete a.txt',
+    '\n    读取 a.txt',
+    '下面是示例：\n```text\n删除 a.txt\n```',
+    '下面是示例：\n~~~text\n删除 a.txt\n~~~'
+  ])('跨行代码结构或明确英文否定“%s”始终禁止模型升级', text => {
+    expect(capabilityIntentRouter.route(text)).toMatchObject({
+      kind: 'chat',
+      modelEscalation: 'blocked'
+    });
+  });
+
+  test.each([
     '你能帮我读取 a.txt 吗？',
     'Can you please delete a.txt?',
     'Could you read pyproject.toml?',

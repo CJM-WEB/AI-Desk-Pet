@@ -200,3 +200,19 @@
 - 普通 `route()` 不再识别任何补充标记；`routeTrustedFileContinuation()` 是 Coordinator 持有澄清状态时使用的专用内部入口。
 - 四空格缩进在 `trim()` 前判定，避免预处理移除代码证据；反引号与波浪线围栏、确定性否定和引用包裹均返回 `modelEscalation: blocked`。
 - Coordinator 正由任务 2 实现者在其现有改动中接入专用入口，避免并发修改同一文件；本提交不包含任务 2 授权链文件。
+
+## 第二次复审补充：跨行代码结构与英文否定
+
+### RED 证据
+
+- 命令：`pnpm.cmd --dir apps/desktop exec vitest run --config vitest.config.ts tests/capability-intent-router.test.ts`
+- 退出码：`1`。
+- 结果：231 项中 227 项通过、4 项失败。
+- 预期失败覆盖：英文 `Never delete a.txt`、前置空行后的四空格缩进代码、说明文字后的反引号围栏和波浪线围栏未被确定性阻断。
+
+### GREEN 证据
+
+- 同一 Router 命令：231/231 通过。
+- Router 在 `trim()` 前按整段行结构识别缩进代码和两类围栏，不再依赖整段文本的首字符。
+- 英文句首 `never` 纳入明确否定边界并返回 `chat + modelEscalation: blocked`；未新增开放式知识、咨询或可行性词表。
+- 本轮只修改 Router、Router 测试和本报告；未触碰任务 2 的 Coordinator 或授权实现。
