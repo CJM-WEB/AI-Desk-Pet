@@ -549,6 +549,33 @@ async function submitChatMessage(page: Page, text: string): Promise<void> {
   await send.click();
 }
 
+/** 桌宠聊天夹具始终返回完整统一控制对象，避免测试绕过生产严格契约。 */
+function characterChatResponse(
+  text: string,
+  control: Readonly<Record<string, unknown>> = {}
+): Extract<ProviderStep['response'], { type: 'text' }> {
+  return {
+    type: 'text',
+    text,
+    structured_output: {
+      activity: '安静陪伴',
+      status: 'idle',
+      movementControl: { kind: 'keep' },
+      behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' },
+      ...control
+    }
+  };
+}
+
+function expectCharacterChatRequest(
+  request: Parameters<NonNullable<ProviderStep['inspect']>>[0]
+): void {
+  expect(request.tools).toEqual([]);
+  expect(request.toolChoice).toBe('none');
+  expect(request.responseFormatWasJsonObject).toBe(true);
+}
+
 async function loadElectronFixtureModule(): Promise<ElectronFixtureModule> {
   const moduleUrl = pathToFileURL(
     resolve(process.cwd(), 'tests/fixtures/electron-app.ts')
@@ -3839,17 +3866,34 @@ test.describe('自主行为最小闭环', () => {
   };
 
   const b7MovementCases = [
-    { prompt: '向左一点', reply: '已向左移动', axis: 'horizontal', sign: -1 },
-    { prompt: '向上远一点', reply: '已向上移动', axis: 'vertical', sign: -1 },
+    {
+      prompt: '向左一点', reply: '已向左移动', axis: 'horizontal', sign: -1,
+      movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+    },
+    {
+      prompt: '向上远一点', reply: '已向上移动', axis: 'vertical', sign: -1,
+      movementControl: { kind: 'move_once', target: 'top', distance: 'far' }
+    },
     {
       prompt: '向右一点', reply: '已向右移动', axis: 'horizontal', sign: 1,
-      precondition: { prompt: '向左一点', reply: '右移前置已向左移动' }
+      movementControl: { kind: 'move_once', target: 'right', distance: 'near' },
+      precondition: {
+        prompt: '向左一点', reply: '右移前置已向左移动',
+        movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+      }
     },
     {
       prompt: '向下一点', reply: '已向下移动', axis: 'vertical', sign: 1,
-      precondition: { prompt: '向上远一点', reply: '下移前置已向上移动' }
+      movementControl: { kind: 'move_once', target: 'bottom', distance: 'near' },
+      precondition: {
+        prompt: '向上远一点', reply: '下移前置已向上移动',
+        movementControl: { kind: 'move_once', target: 'top', distance: 'far' }
+      }
     },
-    { prompt: '去左上角', reply: '已移动到左上区域', axis: 'region', sign: -1 }
+    {
+      prompt: '去左上角', reply: '已移动到左上区域', axis: 'region', sign: -1,
+      movementControl: { kind: 'move_once', target: 'top_left', distance: 'far' }
+    }
   ] as const;
 
   for (const movement of b7MovementCases) {
@@ -3858,18 +3902,16 @@ test.describe('自主行为最小闭环', () => {
       const fixtureModule = await loadElectronFixtureModule();
       const provider = await startProviderServer([
         ...('precondition' in movement ? [{
-          response: {
-            type: 'text' as const,
-            text: movement.precondition.reply,
-            structured_output: {}
-          },
-          inspect: (request: Parameters<NonNullable<ProviderStep['inspect']>>[0]) => (
-            expect(request.tools).toEqual([])
-          )
+          response: characterChatResponse(movement.precondition.reply, {
+            movementControl: movement.precondition.movementControl
+          }),
+          inspect: expectCharacterChatRequest
         }] : []),
         {
-          response: { type: 'text', text: movement.reply, structured_output: {} },
-          inspect: request => expect(request.tools).toEqual([])
+          response: characterChatResponse(movement.reply, {
+            movementControl: movement.movementControl
+          }),
+          inspect: expectCharacterChatRequest
         }
       ]);
       const fixture = await fixtureModule.createElectronAppFixture({
@@ -3977,22 +4019,22 @@ test.describe('自主行为最小闭环', () => {
     const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: '缺失动作请求已安全处理', structured_output: {} }
+        response: characterChatResponse('缺失动作请求已安全处理')
       },
       {
-        response: { type: 'text', text: '停止状态已保存', structured_output: {} }
+        response: characterChatResponse('停止状态已保存', {
+          movementControl: { kind: 'set_mode', mode: 0 }
+        })
       },
       {
-        response: {
-          type: 'text',
-          text: '停止期间仍可挥手回应',
-          structured_output: {
-            behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
-          }
-        }
+        response: characterChatResponse('停止期间仍可挥手回应', {
+          behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
+        })
       },
       {
-        response: { type: 'text', text: '停止期间移动请求已处理', structured_output: {} }
+        response: characterChatResponse('停止期间移动请求已处理', {
+          movementControl: { kind: 'move_once', target: 'left', distance: 'near' }
+        })
       }
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
@@ -4125,17 +4167,12 @@ test.describe('自主行为最小闭环', () => {
     const chattingGate = createProviderResponseGate();
     const provider = await startProviderServer([
       {
-        response: {
-          type: 'text',
-          text: '聊天阻塞已释放并挥手',
-          structured_output: {
-            behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
-          }
-        },
+        response: characterChatResponse('聊天阻塞已释放并挥手', {
+          behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
+        }),
         gate: chattingGate,
         inspect: request => {
-          expect(request.tools).toEqual([]);
-          expect(request.toolChoice).toBe('none');
+          expectCharacterChatRequest(request);
           expect(request.toolChoiceWasExplicit).toBe(true);
         }
       },
@@ -4355,17 +4392,13 @@ test.describe('自主行为最小闭环', () => {
     const firstResponseGate = createProviderResponseGate();
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: '无意图本地降级完成' },
+        response: characterChatResponse('无意图本地降级完成'),
         gate: firstResponseGate
       },
       {
-        response: {
-          type: 'text',
-          text: '情绪标签已安全处理',
-          structured_output: {
-            behaviorPlan: { kind: 'none', emotion: 'happy' }
-          }
-        }
+        response: characterChatResponse('情绪标签已安全处理', {
+          behaviorPlan: { kind: 'none', emotion: 'happy' }
+        })
       }
     ]);
     const fixture = await fixtureModule.createElectronAppFixture({
@@ -4624,8 +4657,9 @@ test.describe('真实 Provider 业务闭环', () => {
       'body-canary-local-electron'
     ];
     const cloud = await startProviderServer([{
-      response: { type: 'text', text: cloudReply },
+      response: characterChatResponse(cloudReply),
       inspect: request => {
+        expectCharacterChatRequest(request);
         if (request.messages.at(-1)?.content !== cloudPrompt) {
           throw new Error('关闭本地模型后没有恢复持久化云路由');
         }
@@ -4883,10 +4917,11 @@ test.describe('真实 Provider 业务闭环', () => {
       fileReply
     ];
     const chatSteps: ProviderStep[] = chatReplies.map((reply, index) => ({
-      response: { type: 'text', text: reply },
+      response: characterChatResponse(reply),
       inspect: request => {
         const systemMessage = request.messages[0];
-        if (request.tools.length !== 0
+        if (!request.responseFormatWasJsonObject
+          || request.tools.length !== 0
           || systemMessage?.role !== 'system'
           || /只输出单个 JSON 对象|规划系统协议/u.test(systemMessage.content)
           || request.messages.at(-1)?.content !== chatInputs[index]) {
@@ -5095,10 +5130,11 @@ test.describe('真实 Provider 业务闭环', () => {
     const assistantMessages = ['第一轮回复', '第二轮回复', '第三轮回复'] as const;
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: assistantMessages[0] },
+        response: characterChatResponse(assistantMessages[0]),
         inspect: request => {
           const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
+          if (!request.responseFormatWasJsonObject
+            || request.tools.length !== 0
             || visible.length !== 1
             || visible[0]?.role !== 'user'
             || visible[0].content !== privateUserMessages[0]) {
@@ -5107,10 +5143,11 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: assistantMessages[1] },
+        response: characterChatResponse(assistantMessages[1]),
         inspect: request => {
           const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
+          if (!request.responseFormatWasJsonObject
+            || request.tools.length !== 0
             || visible.length !== 3
             || visible[0]?.role !== 'user'
             || visible[0].content !== privateUserMessages[0]
@@ -5123,10 +5160,11 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: assistantMessages[2] },
+        response: characterChatResponse(assistantMessages[2]),
         inspect: request => {
           const visible = request.messages.slice(1);
-          if (request.tools.length !== 0
+          if (!request.responseFormatWasJsonObject
+            || request.tools.length !== 0
             || visible.length !== 5
             || visible[0]?.content !== privateUserMessages[0]
             || visible[1]?.content !== assistantMessages[0]
@@ -5212,9 +5250,11 @@ test.describe('真实 Provider 业务闭环', () => {
     const fileName = `未授权-${privateLogSentinel}.txt`;
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: '无法确定请求类型' },
+        response: characterChatResponse('无法确定请求类型'),
         inspect: request => {
-          if (request.tools.length !== 0 || request.messages.at(-1)?.content !== ambiguousText) {
+          if (!request.responseFormatWasJsonObject
+            || request.tools.length !== 0
+            || request.messages.at(-1)?.content !== ambiguousText) {
             throw new Error('模糊请求未走无工具聊天');
           }
         }
@@ -5306,10 +5346,12 @@ test.describe('真实 Provider 业务闭环', () => {
     const sourceReplies = ['来源服务回复一', '来源服务回复二'] as const;
     const sourceProvider = await startProviderServer([
       {
-        response: { type: 'text', text: sourceReplies[0] }
+        response: characterChatResponse(sourceReplies[0]),
+        inspect: expectCharacterChatRequest
       },
       {
-        response: { type: 'text', text: sourceReplies[1] }
+        response: characterChatResponse(sourceReplies[1]),
+        inspect: expectCharacterChatRequest
       }
     ]);
     const targetProvider = await startProviderServer([
@@ -5959,7 +6001,7 @@ test.describe('真实 Provider 业务闭环', () => {
     const providerProfileName = '投影隐私专用 Provider';
     const bodySentinel = 'projection-private-body-sentinel';
     const provider = await startProviderServer([
-      { response: { type: 'text', text: bodySentinel } },
+      { response: characterChatResponse(bodySentinel), inspect: expectCharacterChatRequest },
       {
         response: toolResponse(
           'projection-file-action',
@@ -6599,9 +6641,9 @@ test.describe('真实 Provider 业务闭环', () => {
     const fixtureModule = await loadElectronFixtureModule();
     const provider = await startProviderServer([
       {
-        response: { type: 'text', text: '你好呀，我在。' },
+        response: characterChatResponse('你好呀，我在。'),
         inspect: request => {
-          if (request.tools.length !== 0) {
+          if (!request.responseFormatWasJsonObject || request.tools.length !== 0) {
             throw new Error('普通聊天不得获得工具');
           }
         }

@@ -35,11 +35,13 @@ describe('脚本化 Provider 生命周期', () => {
   test('inspect 可读取 tool_choice 且请求摘要不持久该字段', async () => {
     let inspectedToolChoice: unknown;
     let inspectedToolChoiceWasExplicit = false;
+    let inspectedResponseFormat = false;
     const provider = await startProviderServer([{
       response: { type: 'text', text: '已收到' },
       inspect: request => {
         inspectedToolChoice = request.toolChoice;
         inspectedToolChoiceWasExplicit = request.toolChoiceWasExplicit;
+        inspectedResponseFormat = request.responseFormatWasJsonObject;
       }
     }]);
 
@@ -62,6 +64,7 @@ describe('脚本化 Provider 生命周期', () => {
       expect(response.status).toBe(200);
       expect(inspectedToolChoice).toBe('none');
       expect(inspectedToolChoiceWasExplicit).toBe(true);
+      expect(inspectedResponseFormat).toBe(true);
       expect(provider.requests).toEqual([{
         method: 'POST',
         model: 'reflection-model',

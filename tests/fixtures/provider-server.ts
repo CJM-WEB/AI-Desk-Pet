@@ -6,6 +6,7 @@ import type { ModelMessage, ModelRequest, ModelResponse } from '@myself/agent-co
 export type ProviderInspectionRequest = ModelRequest & Readonly<{
   toolChoiceWasExplicit: boolean;
   localPolicyWasForced: boolean;
+  responseFormatWasJsonObject: boolean;
 }>;
 
 export interface ProviderStep {
@@ -236,6 +237,8 @@ function normalizeRequest(value: unknown): ProviderInspectionRequest {
     && value.chat_template_kwargs.enable_thinking === false
     && value.parallel_tool_calls === false
     && value.parse_tool_calls === true;
+  const responseFormatWasJsonObject = isRecord(value.response_format)
+    && value.response_format.type === 'json_object';
   const reasoningMode = (
     isRecord(value.thinking) && value.thinking.type === 'disabled'
   ) || localPolicyWasForced
@@ -278,7 +281,8 @@ function normalizeRequest(value: unknown): ProviderInspectionRequest {
     toolChoice,
     reasoningMode,
     toolChoiceWasExplicit,
-    localPolicyWasForced
+    localPolicyWasForced,
+    responseFormatWasJsonObject
   };
 }
 
