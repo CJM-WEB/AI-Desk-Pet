@@ -38,9 +38,7 @@ export type CharacterBehaviorPlan =
   | Readonly<{ kind: 'none'; emotion?: CharacterEmotionLabel }>
   | Readonly<{ kind: 'play'; target: BehaviorTarget; emotion?: CharacterEmotionLabel }>
   | Readonly<{ kind: 'move'; direction: MoveDirection; distance: MoveDistance }>
-  | Readonly<{ kind: 'move_region'; region: ScreenRegion }>
-  | Readonly<{ kind: 'stop_movement' }>
-  | Readonly<{ kind: 'resume_movement' }>;
+  | Readonly<{ kind: 'move_region'; region: ScreenRegion }>;
 
 /** 发送给模型的角色清单不包含私有 ID、文件位置或任何能力引用。 */
 export type PublicBehaviorCatalog = Readonly<{
@@ -71,13 +69,24 @@ const behaviorTargetSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('tag'), tag: safeIdentifierSchema }).strict()
 ]);
 
-export const characterBehaviorPlanSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('none'), emotion: characterEmotionLabelSchema.optional() }).strict(),
-  z.object({
+const noneBehaviorPlanSchema = z.object({
+  kind: z.literal('none'), emotion: characterEmotionLabelSchema.optional()
+}).strict();
+const playBehaviorPlanSchema = z.object({
     kind: z.literal('play'),
     target: behaviorTargetSchema,
     emotion: characterEmotionLabelSchema.optional()
-  }).strict(),
+  }).strict();
+
+/** 模型的 behaviorPlan 只选择动画候选，运动策略由 movementControl 独占。 */
+export const characterChatBehaviorPlanSchema = z.discriminatedUnion('kind', [
+  noneBehaviorPlanSchema,
+  playBehaviorPlanSchema
+]);
+
+export const characterBehaviorPlanSchema = z.discriminatedUnion('kind', [
+  noneBehaviorPlanSchema,
+  playBehaviorPlanSchema,
   z.object({
     kind: z.literal('move'),
     direction: z.enum(['left', 'right', 'up', 'down']),
@@ -89,9 +98,7 @@ export const characterBehaviorPlanSchema = z.discriminatedUnion('kind', [
       'left', 'right', 'top', 'bottom',
       'top_left', 'top_right', 'bottom_left', 'bottom_right'
     ])
-  }).strict(),
-  z.object({ kind: z.literal('stop_movement') }).strict(),
-  z.object({ kind: z.literal('resume_movement') }).strict()
+  }).strict()
 ]);
 
 const publicMotionTargetSchema = z.enum([
@@ -143,8 +150,8 @@ export const characterChatResponseSchema = z.object({
   text: z.string().min(1).max(4_000),
   activity: characterBehaviorDescriptorSchema,
   status: characterBehaviorDescriptorSchema,
-  motionPlan: motionPlanSchema,
-  behaviorPlan: characterBehaviorPlanSchema
+  movementControl: movementControlPlanSchema,
+  behaviorPlan: characterChatBehaviorPlanSchema
 }).strict();
 
 function deepFreeze<T>(value: T): Readonly<T> {
@@ -157,32 +164,35 @@ function deepFreeze<T>(value: T): Readonly<T> {
 export const characterChatResponseJsonSchema = deepFreeze({
   type: 'object',
   additionalProperties: false,
-  required: ['text', 'activity', 'status', 'motionPlan', 'behaviorPlan'],
+  required: ['text', 'activity', 'status', 'movementControl', 'behaviorPlan'],
   properties: {
     text: { type: 'string', minLength: 1, maxLength: 4_000 },
     activity: { type: 'string', minLength: 1, maxLength: 120 },
     status: { type: 'string', minLength: 1, maxLength: 120 },
-    motionPlan: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['mode', 'durationSeconds', 'target', 'distance'],
-      properties: {
-        mode: { enum: ['none', 'stop', 'once', 'continuous'] },
-        durationSeconds: {
-          anyOf: [
-            { type: 'null' },
-            { type: 'integer', minimum: 1, maximum: 600 }
-          ]
+    movementControl: {
+      oneOf: [
+        {
+          type: 'object', additionalProperties: false, required: ['kind'],
+          properties: { kind: { const: 'keep' } }
         },
-        target: {
-          enum: [
-            'current', 'random_work_area',
-            'left', 'right', 'top', 'bottom',
-            'top_left', 'top_right', 'bottom_left', 'bottom_right'
-          ]
+        {
+          type: 'object', additionalProperties: false, required: ['kind', 'mode'],
+          properties: { kind: { const: 'set_mode' }, mode: { enum: [0, 1, 2] } }
         },
-        distance: { enum: ['none', 'near', 'medium', 'far'] }
-      }
+        {
+          type: 'object', additionalProperties: false,
+          required: ['kind', 'target', 'distance'],
+          properties: {
+            kind: { const: 'move_once' },
+            target: { enum: [
+              'random_work_area',
+              'left', 'right', 'top', 'bottom',
+              'top_left', 'top_right', 'bottom_left', 'bottom_right'
+            ] },
+            distance: { enum: ['near', 'medium', 'far'] }
+          }
+        }
+      ]
     },
     behaviorPlan: {
       oneOf: [
@@ -243,11 +253,7 @@ export const characterChatResponseJsonSchema = deepFreeze({
               ]
             }
           }
-        },
-        { type: 'object', additionalProperties: false, required: ['kind', 'direction', 'distance'], properties: { kind: { const: 'move' }, direction: { enum: ['left', 'right', 'up', 'down'] }, distance: { enum: ['near', 'medium', 'far'] } } },
-        { type: 'object', additionalProperties: false, required: ['kind', 'region'], properties: { kind: { const: 'move_region' }, region: { enum: ['left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] } } },
-        { type: 'object', additionalProperties: false, required: ['kind'], properties: { kind: { const: 'stop_movement' } } },
-        { type: 'object', additionalProperties: false, required: ['kind'], properties: { kind: { const: 'resume_movement' } } }
+        }
       ]
     }
   }

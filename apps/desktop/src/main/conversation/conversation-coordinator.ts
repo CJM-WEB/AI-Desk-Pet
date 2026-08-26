@@ -627,7 +627,7 @@ export class ConversationCoordinator {
       generation: context.generation,
       explicitDirective: context.explicitDirective,
       providerPlan: reply.behaviorPlan ?? null,
-      motionPlan: reply.motionPlan ?? null,
+      movementControl: reply.movementControl ?? null,
       ...(reply.activity === undefined ? {} : { activity: reply.activity }),
       ...(reply.status === undefined ? {} : { status: reply.status })
     });

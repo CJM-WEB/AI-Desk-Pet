@@ -75,13 +75,14 @@ describe('ConversationChatAdapter', () => {
     expect(取得请求(provider).messages[0]?.content).toContain('可见上下文');
     expect(取得请求(provider).messages[0]?.content).toContain('尚未执行的文件操作');
     expect(取得请求(provider).messages[0]?.content).toContain('capabilityPlan');
+    expect(取得请求(provider).messages[0]?.content).toContain('movementControl');
     expect(取得请求(provider).messages[0]?.content).toContain('"characterName":"小橘"');
     expect(取得请求(provider).messages[0]?.content).toContain('"movementMode":2');
     expect(取得请求(provider).messages[0]?.content).toContain('"proactivityMode":"assistive"');
     expect(取得请求(provider).messages[0]?.content).toContain('"recentActions":["挥手"]');
     expect(取得请求(provider).messages[0]?.content).toContain('json');
     expect(取得请求(provider).messages[0]?.content).toContain(
-      '{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","motionPlan":{"mode":"none","durationSeconds":null,"target":"current","distance":"none"},"behaviorPlan":{"kind":"none","emotion":"calm"},"capabilityPlan":{"kind":"chat"}}'
+      '{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","movementControl":{"kind":"keep"},"behaviorPlan":{"kind":"none","emotion":"calm"},"capabilityPlan":{"kind":"chat"}}'
     );
     expect(取得请求(provider).messages[0]?.content).not.toContain('路由字段');
     expect(取得请求(provider).messages[0]?.content).not.toContain('禁止 Markdown');
@@ -142,7 +143,7 @@ describe('ConversationChatAdapter', () => {
     });
   });
 
-  test('只返回本地严格校验通过的行为计划', async () => {
+  test('拒绝 behaviorPlan 越权提交运动策略', async () => {
     const provider = 响应为({
       type: 'text',
       text: '我向左走一点。',
@@ -158,45 +159,41 @@ describe('ConversationChatAdapter', () => {
       text: '向左走一点',
       behaviorContext,
       signal: new AbortController().signal
-    })).resolves.toEqual({
-      text: '我向左走一点。',
-      behaviorPlan: { kind: 'move', direction: 'left', distance: 'near' }
-    });
+    })).resolves.toEqual({ text: '我向左走一点。' });
   });
 
-  test('只把本地严格校验通过的隐藏 motionPlan 交给 Main', async () => {
+  test.each([
+    ['停止不动', { kind: 'set_mode', mode: 0 }],
+    ['一直运动', { kind: 'set_mode', mode: 1 }],
+    ['时不时动一下', { kind: 'set_mode', mode: 2 }],
+    ['跑远一点', { kind: 'move_once', target: 'random_work_area', distance: 'far' }]
+  ] as const)('只把“%s”的严格 movementControl 交给 Main', async (text, movementControl) => {
     const provider = 响应为({
       type: 'text',
-      text: '我会继续走。',
+      text: '好的。',
       structured_output: {
-        text: '我会继续走。',
-        motionPlan: {
-          mode: 'continuous', durationSeconds: 20, target: 'random_work_area', distance: 'far'
-        },
+        text: '好的。',
+        movementControl,
         behaviorPlan: { kind: 'none' }
       }
     });
 
     await expect(new ConversationChatAdapter(provider).respond({
-      history: [], text: '继续活动', behaviorContext, signal: new AbortController().signal
+      history: [], text, behaviorContext, signal: new AbortController().signal
     })).resolves.toEqual({
-      text: '我会继续走。',
-      motionPlan: {
-        mode: 'continuous', durationSeconds: 20, target: 'random_work_area', distance: 'far'
-      },
+      text: '好的。',
+      movementControl,
       behaviorPlan: { kind: 'none' }
     });
   });
 
-  test('忽略非法隐藏 motionPlan 但保留可见正文', async () => {
+  test('忽略非法隐藏 movementControl 但保留可见正文', async () => {
     const provider = 响应为({
       type: 'text',
       text: '正文仍然可见。',
       structured_output: {
         text: '正文仍然可见。',
-        motionPlan: {
-          mode: 'continuous', durationSeconds: 601, target: { x: 1, y: 2 }, distance: 'far'
-        }
+        movementControl: { kind: 'move_once', target: { x: 1, y: 2 }, distance: 'far' }
       }
     });
 

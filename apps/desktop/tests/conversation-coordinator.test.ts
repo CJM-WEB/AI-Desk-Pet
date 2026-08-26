@@ -420,7 +420,8 @@ describe('ConversationCoordinator', () => {
         text: '开始散步',
         activity: '轻快走动',
         status: 'move',
-        behaviorPlan: { kind: 'move', direction: 'right', distance: 'near' }
+        behaviorPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'move' } },
+        movementControl: { kind: 'move_once', target: 'right', distance: 'near' }
       }
     });
     let mode: 'assistive' | 'autonomous' = 'assistive';
@@ -453,8 +454,8 @@ describe('ConversationCoordinator', () => {
       explicitDirective: null,
       activity: '轻快走动',
       status: 'move',
-      providerPlan: { kind: 'move', direction: 'right', distance: 'near' },
-      motionPlan: null
+      providerPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'move' } },
+      movementControl: { kind: 'move_once', target: 'right', distance: 'near' }
     });
   });
 

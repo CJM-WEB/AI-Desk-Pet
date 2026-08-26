@@ -51,6 +51,8 @@ import type { ConversationBehaviorPort } from
   '../../apps/desktop/src/main/characters/character-behavior-director';
 import { CharacterBehaviorDirector } from
   '../../apps/desktop/src/main/characters/character-behavior-director';
+import { CharacterProactivityScheduler } from
+  '../../apps/desktop/src/main/characters/character-proactivity-scheduler';
 import {
   createAuthorizedRoot,
   type AuthorizedRootFixture
@@ -897,7 +899,14 @@ function behaviorDirectorIntegrationFixture() {
       playbackToken: `integration-chat-token-${++token}`,
       semantic: target.kind === 'semantic' ? target.semantic : 'think'
     })),
-    requestProactiveBehavior: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
+    requestProactiveBehavior: vi.fn((target: BehaviorTarget): CharacterBehaviorAuthorization => (
+      target.kind === 'semantic' && target.semantic === 'move'
+        ? {
+            kind: 'play', actionId: 'move-action',
+            playbackToken: `integration-proactive-token-${++token}`, semantic: 'move'
+          }
+        : { kind: 'none' }
+    )),
     isMovementAgentIntent: vi.fn(() => false),
     handleAgentIntent: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
     handleTaskEvent: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
@@ -1208,7 +1217,7 @@ describe('桌面会话分流纵向集成', () => {
   });
 
   test.each([
-    ['向左一点', { kind: 'relative', direction: 'left', distance: 'near' }],
+    ['向左一点', { kind: 'region', region: 'left' }],
     ['去右下角', { kind: 'region', region: 'bottom_right' }]
   ] as const)('明确移动“%s”在普通聊天 Provider 前取得动作授权并提交对象化运动', async (text, expectedIntent) => {
     const behaviorFixture = behaviorDirectorIntegrationFixture();
@@ -1281,7 +1290,7 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.close();
   });
 
-  test('普通聊天的持续 motionPlan 仅监视诊断快照，并在停止后终止续行', async () => {
+  test('普通聊天 set_mode(1) 经唯一控制入口持久化，并由 Scheduler 请求持续运动', async () => {
     const behaviorFixture = behaviorDirectorIntegrationFixture();
     const fixture = conversationIntegrationHarness({
       responses: [{
@@ -1289,18 +1298,14 @@ describe('桌面会话分流纵向集成', () => {
         text: '我会继续活动。',
         structured_output: {
           behaviorPlan: { kind: 'none' },
-          motionPlan: {
-            mode: 'continuous',
-            durationSeconds: null,
-            target: 'random_work_area',
-            distance: 'medium'
-          }
+          movementControl: { kind: 'set_mode', mode: 1 }
         }
       }],
       behavior: behaviorFixture.director
     });
 
-    await fixture.composition.coordinator.submit('请陪我活动一会');
+    await fixture.composition.coordinator.submit('请陪我一直活动');
+    behaviorFixture.director.requestPersistentMovement();
     expect(behaviorFixture.director.getDiagnosticSnapshot()).toMatchObject({
       movementMode: 1,
       continuousTargetType: 'random_work_area',
@@ -1323,6 +1328,40 @@ describe('桌面会话分流纵向集成', () => {
       currentTargetType: null
     });
     await fixture.composition.close();
+  });
+
+  test('Provider 的 mode=2 在 passive 主动性下仍由 10 秒时钟请求真实运动', async () => {
+    vi.useFakeTimers();
+    const behaviorFixture = behaviorDirectorIntegrationFixture();
+    behaviorFixture.director.applyBehaviorSettings({ movementMode: 2, proactivityMode: 'passive' });
+    const scheduler = new CharacterProactivityScheduler({
+      director: behaviorFixture.director,
+      random: () => 0
+    });
+    const fixture = conversationIntegrationHarness({
+      responses: [{
+        type: 'text',
+        text: '我会偶尔走动。',
+        structured_output: {
+          behaviorPlan: { kind: 'none' },
+          movementControl: { kind: 'set_mode', mode: 2 }
+        }
+      }],
+      behavior: behaviorFixture.director
+    });
+    try {
+      await fixture.composition.coordinator.submit('请自行安排休闲节奏');
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(behaviorFixture.motion.requestIntent).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(behaviorFixture.motion.requestIntent).toHaveBeenCalledOnce();
+      expect(behaviorFixture.director.getDiagnosticSnapshot().movementMode).toBe(2);
+    } finally {
+      await scheduler.close();
+      await fixture.composition.close();
+      vi.useRealTimers();
+    }
   });
 
   test('跨 Provider 披露确认后重新读取当前行为上下文而不复用确认前快照', async () => {

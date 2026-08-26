@@ -7,13 +7,13 @@ import {
 } from '@myself/agent-core';
 import type { CharacterEmotionLabel } from '@myself/shared-types';
 import {
-  characterBehaviorPlanSchema,
+  characterChatBehaviorPlanSchema,
   characterBehaviorDescriptorSchema,
   characterChatResponseSchema,
   characterChatResponseJsonSchema,
-  motionPlanSchema,
+  movementControlPlanSchema,
   type CharacterBehaviorPlan,
-  type MotionPlan
+  type MovementControlPlan
 } from '@myself/character-runtime';
 import { ProviderError } from '../providers/openai-provider';
 import type { ConversationBehaviorContext } from
@@ -23,13 +23,14 @@ export const characterJsonOutputInstructions = [
   '请只返回 json 对象，不要添加对象外文字。',
   '每轮必须提供仅供 Main 使用的 activity 与 status，它们绝不显示给用户。',
   'behaviorPlan 每轮必填：有匹配候选时原样复制 candidates 中的 kind 与 name；没有匹配候选时返回 kind=none，绝不编造目录外名称。',
-  'motionPlan 每轮必填且只控制表现：停止不动用 stop；只移动一次用 once；保持、一会儿或持续运动用 continuous；不移动用 none。',
-  'durationSeconds 只在用户给出运动时长时填写 1–600；持续到明确停止或没有时长时为 null。',
-  'target 只能是 current、random_work_area 或公开屏幕区域，绝不提供坐标；distance 按用户语义选择 none、near、medium、far。',
+  'movementControl 每轮必填且只允许 keep、set_mode、move_once：没有运动要求用 keep。',
+  '停止、保持静止、不要再动用 set_mode=0；一直、持续、保持运动用 set_mode=1；时不时、偶尔、间歇、恢复自主活动用 set_mode=2。',
+  '只动一下、跑远一点或去屏幕某区域用 move_once；target 只能是 random_work_area 或公开屏幕区域，绝不提供坐标；distance 按用户语义选择 near、medium、far。',
   'capabilityPlan 每轮必填：普通聊天返回 {"kind":"chat"}；用户明确要求真实文件、目录或 PowerShell 操作时返回 {"kind":"agent_task","preferredTool":工具名或null}。它只用于请求 Main 授权，绝不表示已经执行。',
-  '示例“停止不动”：motionPlan={"mode":"stop","durationSeconds":null,"target":"current","distance":"none"}。',
-  '示例“跑远一点”：motionPlan={"mode":"once","durationSeconds":null,"target":"random_work_area","distance":"far"}。',
-  '格式示例：{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","motionPlan":{"mode":"none","durationSeconds":null,"target":"current","distance":"none"},"behaviorPlan":{"kind":"none","emotion":"calm"},"capabilityPlan":{"kind":"chat"}}'
+  '示例“停止不动”：movementControl={"kind":"set_mode","mode":0}。',
+  '示例“时不时动一下”：movementControl={"kind":"set_mode","mode":2}。',
+  '示例“跑远一点”：movementControl={"kind":"move_once","target":"random_work_area","distance":"far"}。',
+  '格式示例：{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","movementControl":{"kind":"keep"},"behaviorPlan":{"kind":"none","emotion":"calm"},"capabilityPlan":{"kind":"chat"}}'
 ].join('');
 
 const 聊天系统消息前缀 = [
@@ -96,7 +97,7 @@ export type ConversationChatReply = Readonly<{
   text: string;
   emotion?: CharacterEmotionLabel;
   behaviorPlan?: CharacterBehaviorPlan;
-  motionPlan?: MotionPlan;
+  movementControl?: MovementControlPlan;
   activity?: string;
   status?: string;
   capabilityPlan?: CapabilityControlPlan;
@@ -130,7 +131,7 @@ export class ConversationChatAdapter {
       text: string;
       emotion?: CharacterEmotionLabel;
       behaviorPlan?: CharacterBehaviorPlan;
-      motionPlan?: MotionPlan;
+      movementControl?: MovementControlPlan;
       activity?: string;
       status?: string;
       capabilityPlan?: CapabilityControlPlan;
@@ -148,11 +149,13 @@ export class ConversationChatAdapter {
       response.structured_output?.capabilityPlan
     );
     if (capabilityPlan.success) reply.capabilityPlan = capabilityPlan.data;
-    const motionPlan = motionPlanSchema.safeParse(response.structured_output?.motionPlan);
-    if (motionPlan.success) reply.motionPlan = motionPlan.data;
+    const movementControl = movementControlPlanSchema.safeParse(
+      response.structured_output?.movementControl
+    );
+    if (movementControl.success) reply.movementControl = movementControl.data;
 
     // Provider 只恢复正文；行为计划必须再次经过本地角色契约校验。
-    const behaviorPlan = characterBehaviorPlanSchema.safeParse(
+    const behaviorPlan = characterChatBehaviorPlanSchema.safeParse(
       response.structured_output?.behaviorPlan
     );
     if (behaviorPlan.success) {

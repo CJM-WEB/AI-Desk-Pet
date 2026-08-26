@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   characterChatResponseJsonSchema,
+  characterChatResponseSchema,
   characterBehaviorPlanSchema,
   movementControlPlanSchema,
   motionPlanSchema,
@@ -34,9 +35,7 @@ describe('角色行为计划协议', () => {
     { kind: 'none', emotion: 'calm' },
     { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' }, emotion: 'happy' },
     { kind: 'move', direction: 'left', distance: 'near' },
-    { kind: 'move_region', region: 'top_left' },
-    { kind: 'stop_movement' },
-    { kind: 'resume_movement' }
+    { kind: 'move_region', region: 'top_left' }
   ])('接受合法计划 %#', plan => {
     expect(characterBehaviorPlanSchema.safeParse(plan).success).toBe(true);
   });
@@ -47,6 +46,8 @@ describe('角色行为计划协议', () => {
     { kind: 'play', target: { kind: 'action_name', name: '挥手', toolName: 'builtin.files.delete_file' } },
     { kind: 'play', target: { kind: 'state_name', name: 'C:\\Users\\Administrator\\secret' } },
     { kind: 'move', direction: 'diagonal', distance: 'near' },
+    { kind: 'stop_movement' },
+    { kind: 'resume_movement' },
     { kind: 'stop_movement', extra: true },
     { kind: 'play', target: { kind: 'state_name', name: '   ' } },
     { kind: 'play', target: { kind: 'action_name', name: 'a'.repeat(121) } }
@@ -175,13 +176,25 @@ describe('角色行为计划协议', () => {
     expect(motionPlanSchema.safeParse(motionPlan).success).toBe(false);
   });
 
-  test('聊天 JSON Schema 强制要求严格 motionPlan', () => {
+  test('聊天 JSON Schema 只用严格 movementControl 承载运动策略', () => {
     expect(characterChatResponseJsonSchema.required).toEqual(
-      expect.arrayContaining(['motionPlan', 'behaviorPlan'])
+      expect.arrayContaining(['movementControl', 'behaviorPlan'])
     );
-    expect(characterChatResponseJsonSchema.properties).toHaveProperty('motionPlan');
-    expect(characterChatResponseJsonSchema.properties.motionPlan.required).toEqual(
-      expect.arrayContaining(['distance'])
-    );
+    expect(characterChatResponseJsonSchema.properties).toHaveProperty('movementControl');
+    expect(characterChatResponseJsonSchema.properties).not.toHaveProperty('motionPlan');
+    expect(characterChatResponseJsonSchema.properties.movementControl.oneOf).toHaveLength(3);
+  });
+
+  test.each([
+    { kind: 'move', direction: 'left', distance: 'near' },
+    { kind: 'move_region', region: 'bottom_right' }
+  ])('聊天 behaviorPlan 不再具有运动策略权限 %#', behaviorPlan => {
+    expect(characterChatResponseSchema.safeParse({
+      text: '我会移动。',
+      activity: '移动',
+      status: 'moving',
+      movementControl: { kind: 'keep' },
+      behaviorPlan
+    }).success).toBe(false);
   });
 });

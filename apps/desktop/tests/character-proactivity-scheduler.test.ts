@@ -1,7 +1,3 @@
-import type {
-  CharacterBehaviorAuthorization,
-  CharacterBehaviorPlan
-} from '@myself/character-runtime';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { CharacterProactivityScheduler } from
   '../src/main/characters/character-proactivity-scheduler';
@@ -48,17 +44,11 @@ function fixture(options: Readonly<{
   let mode = options.mode ?? 'assistive';
   let listener = (): void => undefined;
   let lifecycleGeneration = 0;
-  const submit = vi.fn<(
-    plan: CharacterBehaviorPlan,
-    source: 'local-idle'
-  ) => CharacterBehaviorAuthorization>(() => {
+  const requestIntermittentMovement = vi.fn(() => {
     if (options.blockOnSubmit) {
       blockers = { ...blockers, moving: true };
       listener();
     }
-    return {
-      kind: 'play', actionId: 'blink-action', playbackToken: 'token', semantic: 'idle'
-    };
   });
   const director = {
     getChatContext: vi.fn(() => ({
@@ -71,7 +61,7 @@ function fixture(options: Readonly<{
       return () => { listener = (): void => undefined; };
     }),
     getBehaviorLifecycleGeneration: vi.fn(() => lifecycleGeneration),
-    requestBehaviorPlan: submit,
+    requestIntermittentMovement,
     requestPersistentMovement: vi.fn(() => {
       if (options.reentrantPersistent) listener();
     })
@@ -84,7 +74,7 @@ function fixture(options: Readonly<{
   return {
     director,
     scheduler,
-    submit,
+    requestIntermittentMovement,
     setBlocker(key: keyof CharacterActivityBlockers, value: boolean) {
       blockers = { ...blockers, [key]: value };
       listener();
@@ -121,10 +111,12 @@ describe('CharacterProactivityScheduler', () => {
     expect(vi.getTimerCount()).toBe(1);
     await current.scheduler.close();
   });
-  test('passive 不创建主动计时器', async () => {
+  test('passive 不吞掉用户明确选择的模式 2', async () => {
     vi.useFakeTimers();
     const passive = fixture({ mode: 'passive' });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(passive.requestIntermittentMovement).toHaveBeenCalledOnce();
     await passive.scheduler.close();
   });
 
@@ -140,11 +132,9 @@ describe('CharacterProactivityScheduler', () => {
     const current = fixture({ mode: 'assistive', random: () => random });
 
     await vi.advanceTimersByTimeAsync(delay - 1);
-    expect(current.submit).not.toHaveBeenCalled();
+    expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(current.submit).toHaveBeenCalledExactlyOnceWith({
-      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
-    }, 'local-idle');
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
 
     await current.scheduler.close();
     expect(vi.getTimerCount()).toBe(0);
@@ -156,9 +146,7 @@ describe('CharacterProactivityScheduler', () => {
     const current = fixture({ mode: 'autonomous', random: () => values.shift() ?? 0 });
 
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(current.submit).toHaveBeenCalledWith({
-      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
-    }, 'local-idle');
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
     await current.scheduler.close();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -171,13 +159,13 @@ describe('CharacterProactivityScheduler', () => {
       await vi.advanceTimersByTimeAsync(5_000);
       current.setBlocker(key, true);
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(current.submit).not.toHaveBeenCalled();
+      expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
 
       current.setBlocker(key, false);
       await vi.advanceTimersByTimeAsync(4_999);
-      expect(current.submit).not.toHaveBeenCalled();
+      expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      expect(current.submit).toHaveBeenCalledOnce();
+      expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
       await current.scheduler.close();
     }
   );
@@ -211,10 +199,10 @@ describe('CharacterProactivityScheduler', () => {
 
     current.setAutonomousMovementAllowed(false);
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(current.submit).not.toHaveBeenCalled();
+    expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
     current.setAutonomousMovementAllowed(true);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(current.submit).toHaveBeenCalledOnce();
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
     await current.scheduler.close();
   });
 
@@ -227,9 +215,9 @@ describe('CharacterProactivityScheduler', () => {
     await vi.advanceTimersByTimeAsync(30_000);
     current.setAutonomousMovementAllowed(true);
     await vi.advanceTimersByTimeAsync(9_999);
-    expect(current.submit).not.toHaveBeenCalled();
+    expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(current.submit).toHaveBeenCalledOnce();
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
     await current.scheduler.close();
   });
 
@@ -238,31 +226,31 @@ describe('CharacterProactivityScheduler', () => {
     const current = fixture({ blockOnSubmit: true });
 
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(current.submit).toHaveBeenCalledOnce();
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(current.submit).toHaveBeenCalledOnce();
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
     current.setBlocker('moving', false);
     expect(vi.getTimerCount()).toBe(1);
     await vi.advanceTimersByTimeAsync(9_999);
-    expect(current.submit).toHaveBeenCalledOnce();
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1);
-    expect(current.submit).toHaveBeenCalledTimes(2);
+    expect(current.requestIntermittentMovement).toHaveBeenCalledTimes(2);
     await current.scheduler.close();
   });
 
-  test('模式或生命周期变化会废弃旧计时并重新抽取 10–30 秒', async () => {
+  test('生命周期变化重抽周期，但普通主动性设置不终止显式模式 2', async () => {
     vi.useFakeTimers();
     const current = fixture({ mode: 'autonomous', random: () => 0 });
     await vi.advanceTimersByTimeAsync(9_000);
     current.invalidateLifecycle();
-    expect(current.submit).not.toHaveBeenCalled();
+    expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(9_999);
-    expect(current.submit).not.toHaveBeenCalled();
+    expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(current.submit).toHaveBeenCalledOnce();
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
     current.setMode('passive');
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
     await current.scheduler.close();
   });
 });

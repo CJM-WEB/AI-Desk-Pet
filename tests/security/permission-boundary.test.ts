@@ -602,18 +602,18 @@ describe('权限边界安全回归', () => {
   });
 
   test.each([
-    ['stop_movement', 0],
-    ['resume_movement', 2]
+    [{ kind: 'set_mode', mode: 0 } as const, 0],
+    [{ kind: 'set_mode', mode: 2 } as const, 2]
   ] as const)(
-    'Provider 严格结构化计划 %s 只能持久化为运动模式 %i',
-    async (kind, expectedMode) => {
+    'Provider 严格 MovementControl %j 只能持久化为运动模式 %i',
+    async (movementControl, expectedMode) => {
       const chatLock = movementLockDirector();
       const chat = conversationSecurityHarness({
         chatText: '保留的普通回复',
         chatResponse: {
           type: 'text',
           text: '保留的普通回复',
-          structured_output: { behaviorPlan: { kind } }
+          structured_output: { movementControl }
         },
         behavior: chatLock.director
       });

@@ -1,4 +1,3 @@
-import type { CharacterBehaviorPlan } from '@myself/character-runtime';
 import type {
   CharacterActivityBlockers,
   CharacterBehaviorDirector,
@@ -7,12 +6,11 @@ import type {
 
 type SchedulerDirectorPort = Pick<
   CharacterBehaviorDirector,
-  | 'getChatContext'
   | 'getActivityBlockers'
   | 'getBehaviorLifecycleGeneration'
   | 'subscribeActivityBlockers'
-  | 'requestBehaviorPlan'
   | 'requestPersistentMovement'
+  | 'requestIntermittentMovement'
 >;
 
 type CharacterProactivitySchedulerOptions = Readonly<{
@@ -36,7 +34,6 @@ export class CharacterProactivityScheduler {
   private readonly now: () => number;
   private readonly local: TimerSlot = { timer: null, deadline: null, remaining: null };
   private readonly unsubscribe: () => void;
-  private mode: ConversationBehaviorContext['proactivityMode'];
   private lifecycleGeneration: number;
   private movementMode: ConversationBehaviorContext['runtime']['movementMode'];
   private requestingPersistentMovement = false;
@@ -46,7 +43,6 @@ export class CharacterProactivityScheduler {
   constructor(private readonly options: CharacterProactivitySchedulerOptions) {
     this.random = options.random ?? Math.random;
     this.now = options.now ?? performance.now.bind(performance);
-    this.mode = options.director.getChatContext().proactivityMode;
     this.lifecycleGeneration = options.director.getBehaviorLifecycleGeneration();
     this.movementMode = options.director.getActivityBlockers().movementMode;
     this.unsubscribe = options.director.subscribeActivityBlockers(() => this.reconcile());
@@ -56,7 +52,6 @@ export class CharacterProactivityScheduler {
   start(): void {
     if (this.closed || this.started) return;
     this.started = true;
-    this.mode = this.options.director.getChatContext().proactivityMode;
     this.lifecycleGeneration = this.options.director.getBehaviorLifecycleGeneration();
     this.reconcile();
   }
@@ -70,10 +65,8 @@ export class CharacterProactivityScheduler {
 
   private reconcile(): void {
     if (this.closed || !this.started) return;
-    const nextMode = this.options.director.getChatContext().proactivityMode;
     const nextGeneration = this.options.director.getBehaviorLifecycleGeneration();
-    if (nextMode !== this.mode || nextGeneration !== this.lifecycleGeneration) {
-      this.mode = nextMode;
+    if (nextGeneration !== this.lifecycleGeneration) {
       this.lifecycleGeneration = nextGeneration;
       this.clear(this.local, false);
       this.local.remaining = null;
@@ -104,12 +97,6 @@ export class CharacterProactivityScheduler {
       }
       return;
     }
-    if (this.mode === 'passive') {
-      this.clear(this.local, false);
-      this.local.remaining = null;
-      return;
-    }
-
     this.armLocal(this.local.remaining ?? this.randomDelay(LOCAL_MIN_MS, LOCAL_MAX_MS));
   }
 
@@ -121,29 +108,16 @@ export class CharacterProactivityScheduler {
       this.local.timer = null;
       this.local.deadline = null;
       if (!this.closed && !hasBlocker(this.options.director.getActivityBlockers())) {
-        this.submitCandidate(this.createLocalCandidate(), 'local-idle');
+        this.options.director.requestIntermittentMovement();
       }
       if (
         !this.closed
-        && this.mode !== 'passive'
         && this.movementMode === 2
         && !hasBlocker(this.options.director.getActivityBlockers())
       ) {
         this.armLocal(this.randomDelay(LOCAL_MIN_MS, LOCAL_MAX_MS));
       }
     }, delay);
-  }
-
-  private createLocalCandidate(): CharacterBehaviorPlan {
-    // movementMode=2 是用户明确选择的间歇运动；主动性只决定是否启用时钟，不降级为 idle。
-    return { kind: 'play', target: { kind: 'semantic', semantic: 'move' } };
-  }
-
-  private submitCandidate(
-    plan: CharacterBehaviorPlan,
-    source: 'local-idle'
-  ): void {
-    this.options.director.requestBehaviorPlan(plan, source);
   }
 
   private clear(slot: TimerSlot, preserveRemaining: boolean): void {

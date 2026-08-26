@@ -6,6 +6,7 @@ import type {
   MoveDirection,
   MoveDistance,
   MotionPlan,
+  MovementControlPlan,
   PublicBehaviorCatalog,
   ScreenRegion
 } from '@myself/character-runtime';
@@ -82,6 +83,7 @@ export interface ConversationBehaviorPort {
     generation: string;
     explicitDirective: ExplicitBehaviorDirective | null;
     providerPlan: CharacterBehaviorPlan | null;
+    movementControl?: MovementControlPlan | null;
     motionPlan?: MotionPlan | null;
     activity?: string;
     status?: string;
@@ -190,6 +192,7 @@ export class CharacterBehaviorDirector {
   private dragging = false;
   private closed = false;
   private pendingChatPlan: CharacterBehaviorPlan | null = null;
+  private pendingMovementControl: MovementControlPlan | null = null;
   private pendingMotionPlan: MotionPlan | null = null;
   private pendingSuccessToken: string | null = null;
   private active: Readonly<{
@@ -215,19 +218,9 @@ export class CharacterBehaviorDirector {
       capabilityText: parsed?.capabilityText ?? originalText,
       explicitDirective: parsed?.explicitDirective ?? null
     };
+    await this.applyMovementControl(parsed?.movementControl ?? { kind: 'keep' }, 'explicit');
     const directive = prepared.explicitDirective;
-    if (directive?.kind === 'stop_movement') {
-      await this.persistMovementStop();
-    } else if (directive?.kind === 'resume_movement') {
-      await this.options.saveMovementMode(2);
-    } else if (directive?.kind === 'continuous_movement') {
-      await this.options.saveMovementMode(1);
-      this.requestMotionPlan({
-        mode: 'continuous', durationSeconds: null, target: 'random_work_area', distance: 'medium'
-      }, 'explicit');
-    } else if (directive?.kind === 'move') {
-      this.requestMotionBehavior(directive.motion, 'explicit');
-    } else if (directive?.kind === 'play') {
+    if (directive?.kind === 'play') {
       this.requestBehaviorPlan({ kind: 'play', target: directive.target }, 'explicit');
     }
     return prepared;
@@ -308,6 +301,7 @@ export class CharacterBehaviorDirector {
     generation: string;
     explicitDirective: ExplicitBehaviorDirective | null;
     providerPlan: CharacterBehaviorPlan | null;
+    movementControl?: MovementControlPlan | null;
     motionPlan?: MotionPlan | null;
     activity?: string;
     status?: string;
@@ -328,31 +322,26 @@ export class CharacterBehaviorDirector {
       : catalog && isPublicBehaviorTarget(catalog, input.providerPlan.target)
         ? input.providerPlan
         : null;
+    const movementControl = input.explicitDirective === null
+      ? input.movementControl ?? { kind: 'keep' }
+      : { kind: 'keep' } as const;
     const fallbackPlan = !catalog || (input.activity === undefined && input.status === undefined)
       ? null
       : {
           kind: 'play' as const,
-          target: selectPublicBehaviorTarget(catalog, input.activity, input.status, input.motionPlan)
+          target: selectPublicBehaviorTarget(catalog, input.activity, input.status)
         };
     // none 只表示 Provider 没有精确目录目标，不能吞掉隐藏描述的最高相似匹配。
     const plan = providerPlan?.kind === 'none' ? fallbackPlan : providerPlan ?? fallbackPlan;
     const providerMotionPlan = input.explicitDirective === null ? input.motionPlan ?? null : null;
-    const providerMovementMode = input.explicitDirective !== null
-      ? null
-      : providerMotionPlan?.mode === 'stop' || providerPlan?.kind === 'stop_movement'
-        ? 0
-        : providerMotionPlan?.mode === 'continuous' && providerMotionPlan.durationSeconds === null
-          ? 1
-          : providerPlan?.kind === 'resume_movement'
-            ? 2
-            : null;
-    // 结构化持久模式与本地 Gate 共用同一落盘入口；保存失败时不得排队或执行运动。
-    if (providerMovementMode === 0) await this.persistMovementStop();
-    else if (providerMovementMode !== null) await this.options.saveMovementMode(providerMovementMode);
+    // 持久运动策略只消费 MovementControlPlan；behaviorPlan 与旧 motionPlan 不再具有写模式权限。
+    if (movementControl.kind === 'set_mode') {
+      await this.applyMovementControl(movementControl, 'chat');
+    }
     // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
     if (this.closed || input.generation !== this.generation) return;
-    this.pendingChatPlan = plan === null || (plan.kind === 'play' && catalog === null)
-      || plan.kind === 'stop_movement' || plan.kind === 'resume_movement' ? null : plan;
+    this.pendingChatPlan = plan === null || (plan.kind === 'play' && catalog === null) ? null : plan;
+    this.pendingMovementControl = movementControl.kind === 'move_once' ? movementControl : null;
     this.pendingMotionPlan = providerMotionPlan?.mode === 'stop' ? null : providerMotionPlan;
   }
 
@@ -440,7 +429,6 @@ export class CharacterBehaviorDirector {
     source: BehaviorPlanSource
   ): CharacterBehaviorAuthorization {
     if (!this.canRequest(plan, source)) return NONE;
-    if (plan.kind === 'stop_movement' || plan.kind === 'resume_movement') return NONE;
 
     const motion = plan.kind === 'move'
       ? { kind: 'relative', direction: plan.direction, distance: plan.distance } as const
@@ -540,6 +528,36 @@ export class CharacterBehaviorDirector {
     }, 'explicit');
   }
 
+  /** Provider 与本地 Gate 只通过这一入口改变持久模式或请求一次运动。 */
+  async applyMovementControl(
+    control: MovementControlPlan,
+    source: Extract<BehaviorPlanSource, 'explicit' | 'chat'>
+  ): Promise<void> {
+    if (this.closed || control.kind === 'keep') return;
+    if (control.kind === 'set_mode') {
+      if (control.mode === 0) await this.persistMovementStop();
+      else await this.options.saveMovementMode(control.mode);
+      return;
+    }
+    this.requestMotionPlan({
+      mode: 'once',
+      durationSeconds: null,
+      target: control.target,
+      distance: control.distance
+    }, source);
+  }
+
+  /** mode=2 到期后只发起一段真实运动；Scheduler 在运动结束后重新计时。 */
+  requestIntermittentMovement(): void {
+    if (this.movementMode !== 2 || this.hasIntermittentBlocker()) return;
+    this.requestMotionPlan({
+      mode: 'once',
+      durationSeconds: null,
+      target: 'random_work_area',
+      distance: 'medium'
+    }, 'local-idle');
+  }
+
   /** MotionService 快照是到达的唯一事实；连续计划不创建额外计时器。 */
   handleMotionSnapshot(snapshot: CharacterMotionSnapshot): void {
     if (this.closed) return;
@@ -552,6 +570,9 @@ export class CharacterBehaviorDirector {
       }
     } else if (arrived) {
       this.currentMotionTarget = null;
+      if (this.active?.source === 'local-idle' && this.active.semantic === 'move') {
+        this.active = null;
+      }
     }
     this.publishActivityChanged();
   }
@@ -668,6 +689,13 @@ export class CharacterBehaviorDirector {
   }
 
   private commitPendingMotionPlan(chatAuthorization: CharacterBehaviorAuthorization = NONE): void {
+    const control = this.pendingMovementControl;
+    this.pendingMovementControl = null;
+    if (control?.kind === 'move_once') {
+      this.requestMotionPlan({
+        mode: 'once', durationSeconds: null, target: control.target, distance: control.distance
+      }, 'chat', chatAuthorization);
+    }
     const plan = this.pendingMotionPlan;
     this.pendingMotionPlan = null;
     if (plan) this.requestMotionPlan(plan, 'chat', chatAuthorization);
@@ -675,6 +703,7 @@ export class CharacterBehaviorDirector {
 
   private clearPendingChat(): void {
     this.pendingChatPlan = null;
+    this.pendingMovementControl = null;
     this.pendingMotionPlan = null;
     this.pendingSuccessToken = null;
   }
@@ -723,7 +752,7 @@ export class CharacterBehaviorDirector {
   /** 运动建议必须先取得现有 move 动画授权，再把公开目标交给唯一 MotionService。 */
   private requestMotionPlan(
     plan: MotionPlan,
-    source: Extract<BehaviorPlanSource, 'explicit' | 'chat'>,
+    source: BehaviorPlanSource,
     chatAuthorization: CharacterBehaviorAuthorization = NONE
   ): void {
     if (plan.mode === 'none') return;
@@ -743,10 +772,15 @@ export class CharacterBehaviorDirector {
     try {
       const authorization = reusesSameTurnMove
         ? chatAuthorization
-        : this.options.behavior.requestDirectedBehavior(
-            this.options.behavior.resolveBehaviorTarget({ kind: 'semantic', semantic: 'move' }),
-            SOURCE_OPTIONS[source]
-          );
+        : source === 'local-idle'
+          ? this.options.behavior.requestProactiveBehavior(
+              { kind: 'semantic', semantic: 'move' },
+              { urgency: SOURCE_OPTIONS[source].urgency, allowMovement: true }
+            )
+          : this.options.behavior.requestDirectedBehavior(
+              this.options.behavior.resolveBehaviorTarget({ kind: 'semantic', semantic: 'move' }),
+              SOURCE_OPTIONS[source]
+            );
       if (authorization.kind !== 'play') {
         this.publishUnavailableNotice();
         return;
@@ -845,6 +879,16 @@ export class CharacterBehaviorDirector {
       || this.capabilityTask
       || this.awaitingConfirmation
       || this.active !== null && this.active.playbackToken !== this.continuousPlaybackToken;
+  }
+
+  private hasIntermittentBlocker(): boolean {
+    return this.closed
+      || this.dragging
+      || this.trustedRuntimeBlocked
+      || this.capabilityTask
+      || this.awaitingConfirmation
+      || this.options.motion.getSnapshot().moving
+      || this.active !== null;
   }
 
   /** 最多重采样三次；只有新目标形成有效运动才等待下一到达边沿。 */

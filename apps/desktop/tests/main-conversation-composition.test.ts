@@ -195,7 +195,7 @@ describe('Main 会话组合模块', () => {
     expect(harness.behavior.completeUserPrompt).toHaveBeenCalledExactlyOnceWith({
       generation: expect.any(String),
       explicitDirective: null,
-      motionPlan: null,
+      movementControl: null,
       providerPlan: null
     });
     await harness.composition.close();
