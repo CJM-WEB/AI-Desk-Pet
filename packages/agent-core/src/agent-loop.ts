@@ -13,6 +13,7 @@ import type {
   AgentRunOutcome,
   FileWriteOperation,
   ModelMessage,
+  ModelToolRequest,
   PreparedToolRequest,
   RunContext
 } from './types';
@@ -71,12 +72,46 @@ function requestedToolName(raw: unknown): string | null {
   return typeof toolName === 'string' ? toolName : null;
 }
 
-function requestedToolCallId(raw: unknown): string {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return 'invalid-tool-call';
-  const value = (raw as Record<string, unknown>)['requestId'];
-  return typeof value === 'string' && value.length > 0 && value.length <= 128
-    ? value
-    : 'invalid-tool-call';
+function rejectedToolRequestForHistory(raw: unknown): ModelToolRequest | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const requestId = record['requestId'];
+  const toolName = record['toolName'];
+  const arguments_ = record['arguments'];
+  if (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 128) {
+    return null;
+  }
+  if (typeof toolName !== 'string'
+    || toolName.length === 0
+    || toolName.length > 64
+    || !/^[A-Za-z0-9_.-]+$/u.test(toolName)) {
+    return null;
+  }
+  if (typeof arguments_ !== 'object' || arguments_ === null || Array.isArray(arguments_)) {
+    return null;
+  }
+  return {
+    requestId,
+    toolName,
+    arguments: arguments_ as Record<string, unknown>
+  };
+}
+
+/** 工具结果在各 Provider 中都必须紧跟对应的 assistant 工具调用。 */
+function appendRejectedToolFeedback(
+  messages: ModelMessage[],
+  raw: unknown,
+  code: 'INVALID_TOOL_REQUEST' | 'TOOL_ARGUMENTS_INVALID'
+): boolean {
+  const toolRequest = rejectedToolRequestForHistory(raw);
+  if (toolRequest === null) return false;
+  messages.push({ role: 'assistant', content: '', toolRequest });
+  messages.push({
+    role: 'tool',
+    toolCallId: toolRequest.requestId,
+    content: JSON.stringify({ ok: false, code })
+  });
+  return true;
 }
 
 function canonicalize(value: unknown): string {
@@ -291,9 +326,10 @@ export class AgentLoop {
           if (expectedWriteOperation !== undefined) throw capabilityPlanProtocolError();
           throw new Error('AGENT_INVALID_TOOL_REQUEST');
         }
+        if (!appendRejectedToolFeedback(messages, response.request, 'INVALID_TOOL_REQUEST')) {
+          throw new Error('AGENT_INVALID_TOOL_REQUEST');
+        }
         correctionUsed = true;
-        messages.push({ role: 'tool', toolCallId: requestedToolCallId(response.request),
-          content: '{"ok":false,"code":"INVALID_TOOL_REQUEST"}' });
         continue;
       }
 
@@ -302,9 +338,10 @@ export class AgentLoop {
         prepared = context.toolRuntime.prepare(response.request);
       } catch {
         if (correctionUsed) throw new Error('AGENT_INVALID_TOOL_REQUEST');
+        if (!appendRejectedToolFeedback(messages, response.request, 'TOOL_ARGUMENTS_INVALID')) {
+          throw new Error('AGENT_INVALID_TOOL_REQUEST');
+        }
         correctionUsed = true;
-        messages.push({ role: 'tool', toolCallId: requestedToolCallId(response.request),
-          content: '{"ok":false,"code":"TOOL_ARGUMENTS_INVALID"}' });
         continue;
       }
 

@@ -24,9 +24,16 @@ export interface ModelSelection {
   fallbackProfiles: ProviderProfileV2[];
 }
 
+/** Provider 历史需要保留已被本地拒绝的原始工具调用，因此不能收窄为已通过 ToolRuntime 的 ToolRequest。 */
+export type ModelToolRequest = Readonly<{
+  requestId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+}>;
+
 export type ModelMessage =
   | { role: 'system' | 'user'; content: string }
-  | { role: 'assistant'; content: string; toolRequest?: ToolRequest }
+  | { role: 'assistant'; content: string; toolRequest?: ModelToolRequest }
   | { role: 'tool'; content: string; toolCallId: string };
 
 export interface ToolDefinition {

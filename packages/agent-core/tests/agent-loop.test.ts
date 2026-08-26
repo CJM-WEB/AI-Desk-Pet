@@ -1017,16 +1017,63 @@ describe('AgentLoop', () => {
       request: { requestId: 'bad-1', toolName: 'delete_everything', arguments: {} }
     };
     const provider = new ScriptedProvider([invalid, { type: 'text', text: '已修正' }]);
+    const runtime = createToolRuntime();
+    const prepare = vi.spyOn(runtime, 'prepare');
 
-    const events = await collectEvents(context(provider));
+    const events = await collectEvents({ ...context(provider), toolRuntime: runtime });
 
     expect(provider.requests).toHaveLength(2);
-    expect(provider.requests[1]?.messages.at(-1)).toEqual({
+    expect(provider.requests[1]?.messages.slice(-2)).toEqual([{
+      role: 'assistant',
+      content: '',
+      toolRequest: {
+        requestId: 'bad-1',
+        toolName: 'delete_everything',
+        arguments: {}
+      }
+    }, {
       role: 'tool',
       toolCallId: 'bad-1',
       content: '{"ok":false,"code":"INVALID_TOOL_REQUEST"}'
-    });
+    }]);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(runtime.executeRead).not.toHaveBeenCalled();
     expect(events).toContainEqual({ type: 'message', text: '已修正' });
+  });
+
+  test('参数校验失败以合法工具历史回灌且修复后才执行', async () => {
+    const invalidArgumentsRequest = {
+      type: 'tool_request' as const,
+      request: {
+        requestId: 'bad-arguments-1',
+        toolName: 'builtin.files.read_text',
+        arguments: { relativePath: 42 }
+      }
+    };
+    const provider = new ScriptedProvider([
+      invalidArgumentsRequest,
+      readRequest('read-after-repair'),
+      { type: 'text', text: '已读取修正后的文件' }
+    ]);
+    const runtime = createToolRuntime();
+    const prepare = vi.spyOn(runtime, 'prepare');
+    prepare.mockImplementationOnce(() => {
+      throw new Error('TOOL_ARGUMENTS_INVALID');
+    });
+
+    const events = await collectEvents({ ...context(provider), toolRuntime: runtime });
+
+    expect(provider.requests[1]?.messages.slice(-2)).toEqual([{
+      role: 'assistant',
+      content: '',
+      toolRequest: invalidArgumentsRequest.request
+    }, {
+      role: 'tool',
+      toolCallId: 'bad-arguments-1',
+      content: '{"ok":false,"code":"TOOL_ARGUMENTS_INVALID"}'
+    }]);
+    expect(runtime.executeRead).toHaveBeenCalledOnce();
+    expect(events).toContainEqual({ type: 'message', text: '已读取修正后的文件' });
   });
 
   test('第二次无效工具请求立即失败', async () => {
