@@ -287,7 +287,8 @@ function powerShellResult(ok: boolean) {
 
 function createPowerShellHarness(
   provider: ModelProvider,
-  powershell: Pick<PowerShellTool, 'preview' | 'execute'> & Partial<Pick<PowerShellTool, 'close'>>
+  powershell: Pick<PowerShellTool, 'preview' | 'execute'> & Partial<Pick<PowerShellTool, 'close'>>,
+  fileDisclosureAllowed = true
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -305,7 +306,7 @@ function createPowerShellHarness(
     initialCapability: 'powershell',
     provider,
     fileTools,
-    fileDisclosureAllowed: true,
+    fileDisclosureAllowed,
     powershell: { close: vi.fn(async () => undefined), ...powershell } as PowerShellTool,
     workingDirectory: 'C:\\workspace',
     workingDirectoryLabel: '工作区',
@@ -351,6 +352,42 @@ describe('AgentService', () => {
       'builtin.powershell.run',
       'builtin.files.read_file',
       'builtin.files.create_file'
+    ]));
+  });
+
+  test('默认隐私下 PowerShell 可信结果后开放文件 mutation 并继续隐藏读取检索', async () => {
+    const provider = new ScriptedProvider([
+      shellRequest(),
+      { type: 'text', text: '命令执行完毕' }
+    ]);
+    const { events, service } = createPowerShellHarness(provider, {
+      preview: vi.fn(() => powerShellAction()),
+      execute: vi.fn(async () => powerShellResult(true))
+    }, false);
+
+    await service.submitFileTask({ text: '运行命令后整理文件', visibleHistory: [] });
+    const pending = events.find(event => event.type === 'pending_action');
+    if (!pending || pending.type !== 'pending_action') throw new Error('缺少 PowerShell 确认');
+    await service.confirm(pending.action.actionId);
+
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
+      'builtin.powershell.run'
+    ]);
+    const continuationTools = provider.requests[1]?.tools.map(tool => tool.function.name) ?? [];
+    expect(continuationTools).toEqual(expect.arrayContaining([
+      'builtin.powershell.run',
+      'builtin.files.create_file',
+      'builtin.files.create_directory',
+      'builtin.files.apply_patch',
+      'builtin.files.edit_file',
+      'builtin.files.delete_file',
+      'builtin.files.move_file'
+    ]));
+    expect(continuationTools).not.toEqual(expect.arrayContaining([
+      'builtin.files.list_files',
+      'builtin.files.read_file',
+      'builtin.files.glob_files',
+      'builtin.files.grep_files'
     ]));
   });
 

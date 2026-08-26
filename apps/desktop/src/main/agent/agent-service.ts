@@ -616,6 +616,9 @@ export class AgentService {
       ? session.tools
       : expectedWriteOperation !== undefined
         ? session.tools.filter(tool => mutationPlanningToolNames.has(tool.function.name))
+        : session.initialCapability === 'powershell'
+          ? session.tools.filter(tool => tool.function.name === 'builtin.powershell.run'
+            || mutationPlanningToolNames.has(tool.function.name))
         : planningTools;
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
