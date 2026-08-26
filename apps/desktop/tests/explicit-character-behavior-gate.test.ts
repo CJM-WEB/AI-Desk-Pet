@@ -4,6 +4,30 @@ import { parseExplicitCharacterBehavior } from
 
 describe('显式桌宠行为 Gate', () => {
   test.each([
+    ['停止不动', { kind: 'set_mode', mode: 0 }],
+    ['一直运动', { kind: 'set_mode', mode: 1 }],
+    ['时不时动一下', { kind: 'set_mode', mode: 2 }],
+    ['偶尔动一下', { kind: 'set_mode', mode: 2 }],
+    ['自己偶尔走动', { kind: 'set_mode', mode: 2 }],
+    ['恢复自主活动', { kind: 'set_mode', mode: 2 }],
+    ['跑远一点', { kind: 'move_once', target: 'random_work_area', distance: 'far' }],
+    ['去右下角', { kind: 'move_once', target: 'bottom_right', distance: 'medium' }],
+    ['往上远一点', { kind: 'move_once', target: 'top', distance: 'far' }],
+    ['move down a little', { kind: 'move_once', target: 'bottom', distance: 'near' }]
+  ] as const)('把“%s”归一为唯一运动控制计划', (text, movementControl) => {
+    expect(parseExplicitCharacterBehavior(text)?.movementControl).toEqual(movementControl);
+  });
+
+  test.each([
+    '不要时不时动一下',
+    '讨论“时不时动一下”是什么意思',
+    '> 时不时动一下',
+    '`时不时动一下`'
+  ])('否定、讨论、引用或代码“%s”不会获得运动控制权限', text => {
+    expect(parseExplicitCharacterBehavior(text)).toBeNull();
+  });
+
+  test.each([
     ['停下', { kind: 'stop_movement' }],
     ['别走了', { kind: 'stop_movement' }],
     ['静止不动', { kind: 'stop_movement' }],
@@ -41,27 +65,34 @@ describe('显式桌宠行为 Gate', () => {
     ['跑远一点', { kind: 'move', motion: { kind: 'wander', scope: 'work_area', distance: 'far' } }],
     ['walk around', { kind: 'move', motion: { kind: 'wander', scope: 'short' } }]
   ] as const)('只解析命令式首句“%s”', (text, explicitDirective) => {
-    expect(parseExplicitCharacterBehavior(text)).toEqual({
+    const parsed = parseExplicitCharacterBehavior(text);
+    expect(parsed).toMatchObject({
       capabilityText: text,
       explicitDirective
     });
+    expect(Object.keys(parsed ?? {}).sort()).toEqual([
+      'capabilityText', 'explicitDirective', 'movementControl'
+    ]);
   });
 
   test('组合指令只移除行为前缀并保留后续能力文本', () => {
     expect(parseExplicitCharacterBehavior('停下并删除 old.txt')).toEqual({
       capabilityText: '删除 old.txt',
-      explicitDirective: { kind: 'stop_movement' }
+      explicitDirective: { kind: 'stop_movement' },
+      movementControl: { kind: 'set_mode', mode: 0 }
     });
     expect(parseExplicitCharacterBehavior('stop moving and delete old.txt')).toEqual({
       capabilityText: 'delete old.txt',
-      explicitDirective: { kind: 'stop_movement' }
+      explicitDirective: { kind: 'stop_movement' },
+      movementControl: { kind: 'set_mode', mode: 0 }
     });
     expect(parseExplicitCharacterBehavior('请播放挥手动作然后删除 old.txt')).toEqual({
       capabilityText: '删除 old.txt',
       explicitDirective: {
         kind: 'play',
         target: { kind: 'action_name', name: '挥手' }
-      }
+      },
+      movementControl: { kind: 'keep' }
     });
   });
 
@@ -77,7 +108,8 @@ describe('显式桌宠行为 Gate', () => {
       explicitDirective: {
         kind: 'play',
         target: { kind: 'action_name', name }
-      }
+      },
+      movementControl: { kind: 'keep' }
     });
   });
 
@@ -86,7 +118,8 @@ describe('显式桌宠行为 Gate', () => {
     const text = `请播放${name}动作`;
     expect(parseExplicitCharacterBehavior(text)).toEqual({
       capabilityText: text,
-      explicitDirective: { kind: 'play', target: { kind: 'action_name', name } }
+      explicitDirective: { kind: 'play', target: { kind: 'action_name', name } },
+      movementControl: { kind: 'keep' }
     });
   });
 

@@ -61,15 +61,15 @@ const quotePairs = new Map<string, string>([
   ['“', '”'],
   ['‘', '’']
 ]);
-const fileOperationPattern = /(?:读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理|\b(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b)/giu;
+const fileOperationPattern = /(?:按文件名匹配|读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理|\b(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b)/giu;
 const strongFileOperationPattern = /(?:重命名|复制|移动|\b(?:rename|copy|move)\b)/giu;
-const chineseDirectExecutionPattern = /^(?:(?:那|那么)\s*)?(?:在[^，,。！？!?]*(?:中|里|下)\s*)?(?:(?:你能(?:不能)?\s*(?:帮我)?|请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:按文件名匹配|读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理)/u;
-const chineseReorderedExecutionPattern = /^(?:(?:请|请你|帮我|麻烦(?:你)?|给我)\s*)?(?:把|将).+(?:读取|列出|创建|写入|修改|替换|重命名|复制|移动|删除|搜索|匹配|整理)/u;
+const chineseExecutionRequestPattern = /(?:你能(?:不能)?(?:帮我)?|请你?|帮我|麻烦(?:你)?|给我)/gu;
 const englishDirectExecutionPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:read|list|create|write|modify|replace|rename|copy|move|delete|search|match|glob|grep|organize)\b/iu;
 const englishPoliteExecutionShellPattern = /^(?:can|could|would)\s+you\s+(?:please\s+)?([a-z]+)\b/iu;
-const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|什么意思|是什么(?:意思|功能)?|翻译|示例|例子|举例|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b|example\b)/iu;
+const knowledgePattern = /(?:为什么|为何|如何|怎么|教程|解释|讨论|什么意思|是什么(?:意思|功能)?|翻译|示例|例子|举例|why\b|how\s+(?:to|do\s+i)|what\s+is|meaning\b|translate\b|definition\b|example\b|discuss\b)/iu;
 const negationPattern = /(?:不要|别|无需|do\s+not|don't)/iu;
 const statementPattern = /(?:需要|会|可能|风险|危险|权限|requires?|will|may|risk|dangerous|permission)/iu;
+const quotedOrCodePrefixPattern = /^(?:>|[`'"“”‘’])/u;
 const chineseExplicitPowerShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
 const englishExplicitPowerShellRequestPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run|execute)\s+powershell\s+([\s\S]+)$/iu;
 const chineseShellRequestPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行\s+|执行\s*(?:(?:这条|以下|下面)?\s*(?:命令|powershell|脚本)\s+))([\s\S]+)$/iu;
@@ -185,8 +185,27 @@ function maskQuotedText(text: string): string {
 
 /** 目标槽只做词法分段，是否为合法本地对象由独立证据随后判断。 */
 function scanTargetRanges(text: string): readonly TextRange[] {
+  const operationRanges = Array.from(text.matchAll(fileOperationPattern), match => (
+    [match.index, match.index + match[0].length] as const
+  ));
+  const firstOperationRange = operationRanges[0];
   return Array.from(text.matchAll(localObjectCandidatePattern))
-    .map(match => [match.index, match.index + match[0].length] as const)
+    .map(match => {
+      const end = match.index + match[0].length;
+      // 无空格中文请求可能被点号候选从句首吞入；只在候选覆盖首个真实操作时切掉语法前缀。
+      const start = firstOperationRange !== undefined
+        && match.index <= firstOperationRange[0]
+        && firstOperationRange[1] < end
+        ? firstOperationRange[1]
+        : match.index;
+      return [start, end] as const;
+    })
+    .filter(([start, end]) => start < end && !/^\.(?![\\/])/u.test(text.slice(start, end)))
+    // “按文件名匹配”中的“文件”属于复合操作槽，不能再次充当本地对象证据。
+    .filter(([start, end]) => !operationRanges.some(([operationStart, operationEnd]) =>
+      text.slice(operationStart, operationEnd) === '按文件名匹配'
+      && start < operationEnd
+      && operationStart < end))
     // 正则不得截取路径或邮箱形态的畸形 token 前缀充当完整目标。
     .filter(([, end]) => {
       const nextCharacter = text[end];
@@ -354,19 +373,40 @@ function areInSameSentence(text: string, left: TextRange, right: TextRange): boo
   return !hasSentenceBoundary(text.slice(gapStart, gapEnd));
 }
 
+/** 中文执行证据独立于对象与操作的排列，只接受句首命令、请求词、把字句或本地点前缀。 */
+function hasChineseExecutionRequest(
+  text: string,
+  operationRange: TextRange,
+  requestRanges: readonly TextRange[]
+): boolean {
+  if (operationRange[0] === 0) return true;
+  if (requestRanges.some(requestRange =>
+    requestRange[1] <= operationRange[0]
+    && areInSameSentence(text, requestRange, operationRange))) {
+    return true;
+  }
+
+  const rawPrefix = text.slice(0, operationRange[0]).trim();
+  const prefix = rawPrefix.replace(/^(?:那|那么)\s*/u, '');
+  return prefix.startsWith('把')
+    || prefix.startsWith('将')
+    || (prefix.startsWith('在') && /[中里下]$/u.test(prefix));
+}
+
 /** 执行结构负责把操作槽与对象绑定在同一短句，操作词是否合法由独立证据判断。 */
 function hasExecutionStructure(
   text: string,
   targetRanges: readonly TextRange[],
   operationRanges: readonly TextRange[]
 ): boolean {
-  const hasKnownDirectRequest = chineseDirectExecutionPattern.test(text)
-    || chineseReorderedExecutionPattern.test(text)
-    || englishDirectExecutionPattern.test(text);
-  if (hasKnownDirectRequest) {
-    return operationRanges.some(operationRange =>
-      targetRanges.some(targetRange => areInSameSentence(text, operationRange, targetRange)));
-  }
+  const hasEnglishDirectRequest = englishDirectExecutionPattern.test(text);
+  const requestRanges = Array.from(text.matchAll(chineseExecutionRequestPattern))
+    .map(match => [match.index, match.index + match[0].length] as const);
+  const hasDirectExecution = operationRanges.some(operationRange =>
+    targetRanges.some(targetRange => areInSameSentence(text, operationRange, targetRange))
+    && (hasEnglishDirectRequest
+      || hasChineseExecutionRequest(text, operationRange, requestRanges)));
+  if (hasDirectExecution) return true;
 
   if (!englishPoliteExecutionShellPattern.test(text)) {
     return false;
@@ -452,6 +492,7 @@ function hasEmbeddedShellExecution(normalizedText: string): boolean {
 
 /** 文件 Gate 封装全部候选扫描；显式 PowerShell 请求必须在调用它之前完成裁决。 */
 function hasExplicitFileIntent(normalizedText: string): boolean {
+  if (quotedOrCodePrefixPattern.test(normalizedText)) return false;
   const unquotedText = maskQuotedText(normalizedText);
   const targetRanges = scanTargetRanges(unquotedText);
   const objectRanges = scanLocalObjectRanges(unquotedText, targetRanges);

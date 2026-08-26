@@ -2,11 +2,34 @@ import { describe, expect, test } from 'vitest';
 import {
   characterChatResponseJsonSchema,
   characterBehaviorPlanSchema,
+  movementControlPlanSchema,
   motionPlanSchema,
   publicBehaviorCatalogSchema
 } from '../src/character-behavior-plan';
 
 describe('角色行为计划协议', () => {
+  test.each([
+    { kind: 'keep' },
+    { kind: 'set_mode', mode: 0 },
+    { kind: 'set_mode', mode: 1 },
+    { kind: 'set_mode', mode: 2 },
+    { kind: 'move_once', target: 'random_work_area', distance: 'near' },
+    { kind: 'move_once', target: 'top_left', distance: 'far' }
+  ])('接受合法运动控制计划 %#', plan => {
+    expect(movementControlPlanSchema.safeParse(plan).success).toBe(true);
+  });
+
+  test.each([
+    { kind: 'keep', extra: true },
+    { kind: 'set_mode', mode: 3 },
+    { kind: 'set_mode' },
+    { kind: 'move_once', target: 'current', distance: 'near' },
+    { kind: 'move_once', target: 'random_work_area', distance: 'none' },
+    { kind: 'move_once', target: { x: 1, y: 2 }, distance: 'far' }
+  ])('拒绝额外字段或越界运动控制计划 %#', plan => {
+    expect(movementControlPlanSchema.safeParse(plan).success).toBe(false);
+  });
+
   test.each([
     { kind: 'none', emotion: 'calm' },
     { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' }, emotion: 'happy' },

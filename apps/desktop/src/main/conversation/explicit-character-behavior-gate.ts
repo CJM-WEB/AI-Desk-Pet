@@ -2,11 +2,12 @@ import type {
   ExplicitBehaviorDirective,
   PreparedBehaviorPrompt
 } from '../characters/character-behavior-director';
+import type { MovementControlPlan, PublicMotionTarget } from '@myself/character-runtime';
 
 type ParsedBehaviorPrompt = Pick<
   PreparedBehaviorPrompt,
   'capabilityText' | 'explicitDirective'
->;
+> & Readonly<{ movementControl: MovementControlPlan }>;
 
 const 引用或代码开头 = /^(?:>|[`'"“”‘’])/u;
 const 文件移动否定 = /^(?:别|不要|无需)移动(?:这个|该|我的)?文件/u;
@@ -25,6 +26,12 @@ const 英文方向表 = Object.freeze({
   up: 'up',
   down: 'down'
 } as const);
+const 相对方向目标表 = Object.freeze({
+  left: 'left',
+  right: 'right',
+  up: 'top',
+  down: 'bottom'
+} as const satisfies Readonly<Record<keyof typeof 英文方向表, PublicMotionTarget>>);
 const 区域表 = Object.freeze({
   左边: 'left',
   右边: 'right',
@@ -53,7 +60,8 @@ export function parseExplicitCharacterBehavior(text: string): ParsedBehaviorProm
   if (!hasDirectiveBoundary(normalized.slice(parsed.consumed))) return null;
   return {
     capabilityText: remainingCapabilityText(normalized, parsed.consumed),
-    explicitDirective: parsed.directive
+    explicitDirective: parsed.directive,
+    movementControl: movementControlForDirective(parsed.directive)
   };
 }
 
@@ -69,7 +77,7 @@ function parseChinese(text: string): ParsedDirective | null {
   const continuous = /^(?:请)?(?:保持运动|保持移动|一直运动|一直走|一直跑|继续跑)/u.exec(text);
   if (continuous) return { consumed: continuous[0].length, directive: { kind: 'continuous_movement' } };
 
-  const resume = /^(?:请)?(?:恢复活动|恢复移动|可以动了|继续活动|继续走)/u.exec(text);
+  const resume = /^(?:请)?(?:时不时动一下|偶尔动一下|自己偶尔走动|间歇地?活动|恢复自主活动|恢复活动|恢复移动|可以动了|继续活动|继续走)/u.exec(text);
   if (resume) return { consumed: resume[0].length, directive: { kind: 'resume_movement' } };
 
   const region = /^(?:请)?(?:去|走到|移动到)(?:屏幕)?(左上角|右上角|左下角|右下角|左边|右边|顶部|上边|底部|下边)/u.exec(text);
@@ -192,6 +200,32 @@ function parseEnglish(text: string): ParsedDirective | null {
         directive: { kind: 'move', motion: { kind: 'wander', scope: 'short' } }
       }
     : null;
+}
+
+/** 旧显式动作仍用于当前 Director；新增字段先提供唯一、可验证的运动策略。 */
+function movementControlForDirective(
+  directive: ExplicitBehaviorDirective
+): MovementControlPlan {
+  if (directive.kind === 'stop_movement') return { kind: 'set_mode', mode: 0 };
+  if (directive.kind === 'continuous_movement') return { kind: 'set_mode', mode: 1 };
+  if (directive.kind === 'resume_movement') return { kind: 'set_mode', mode: 2 };
+  if (directive.kind !== 'move') return { kind: 'keep' };
+
+  if (directive.motion.kind === 'relative') {
+    return {
+      kind: 'move_once',
+      target: 相对方向目标表[directive.motion.direction],
+      distance: directive.motion.distance
+    };
+  }
+  if (directive.motion.kind === 'region') {
+    return { kind: 'move_once', target: directive.motion.region, distance: 'medium' };
+  }
+  return {
+    kind: 'move_once',
+    target: 'random_work_area',
+    distance: directive.motion.distance ?? (directive.motion.scope === 'short' ? 'near' : 'medium')
+  };
 }
 
 /** 动作命令只接收公开短名称，拒绝引用边界、代码和任何路径形态。 */

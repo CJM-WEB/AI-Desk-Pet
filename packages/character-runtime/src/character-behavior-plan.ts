@@ -15,6 +15,16 @@ export type MoveDistance = 'near' | 'medium' | 'far';
 export type ScreenRegion =
   | 'left' | 'right' | 'top' | 'bottom'
   | 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
+export type PublicMotionTarget = 'random_work_area' | ScreenRegion;
+
+export type MovementControlPlan =
+  | Readonly<{ kind: 'keep' }>
+  | Readonly<{ kind: 'set_mode'; mode: 0 | 1 | 2 }>
+  | Readonly<{
+      kind: 'move_once';
+      target: PublicMotionTarget;
+      distance: MoveDistance;
+    }>;
 
 /** 隐藏运动建议只允许公开目标类别，Main 不接收像素坐标。 */
 export type MotionPlan = Readonly<{
@@ -82,6 +92,25 @@ export const characterBehaviorPlanSchema = z.discriminatedUnion('kind', [
   }).strict(),
   z.object({ kind: z.literal('stop_movement') }).strict(),
   z.object({ kind: z.literal('resume_movement') }).strict()
+]);
+
+const publicMotionTargetSchema = z.enum([
+  'random_work_area',
+  'left', 'right', 'top', 'bottom',
+  'top_left', 'top_right', 'bottom_left', 'bottom_right'
+]);
+
+/** 持久模式和一次移动共享严格联合，禁止模型注入坐标或私有资源标识。 */
+export const movementControlPlanSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('keep') }).strict(),
+  z.object({ kind: z.literal('set_mode'), mode: z.union([
+    z.literal(0), z.literal(1), z.literal(2)
+  ]) }).strict(),
+  z.object({
+    kind: z.literal('move_once'),
+    target: publicMotionTargetSchema,
+    distance: z.enum(['near', 'medium', 'far'])
+  }).strict()
 ]);
 
 export const motionPlanSchema = z.object({
