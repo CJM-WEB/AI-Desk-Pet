@@ -217,6 +217,6 @@ OpenAI-compatible 使用 `stream:true` 和 `[DONE]`；Anthropic 使用 `content_
 
 提交：`docs: 记录桌宠四项回归最终验收`
 
-- [ ] **步骤 5：同步干净主目录**
+- [x] **步骤 5：同步干净主目录**
 
 确认 `D:\Python\Important\myself` 的 `main` 工作区干净且仍是当前分支祖先，使用 fast-forward-only 合并 `AgentCoreExtension`；禁止覆盖用户改动、禁止 force、禁止 rebase。合并后在主目录运行最小启动构建身份检查。
