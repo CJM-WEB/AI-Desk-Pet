@@ -648,11 +648,43 @@ describe('LocalModelProvider', () => {
     });
   });
 
-  test('结构化聊天不把纯文本降级当作角色控制成功', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{ message: { content: '我会保持安静。' } }]
-    }));
-    const provider = new LocalModelProvider(readyPort(), fetchClient);
+  test.each([
+    {
+      name: '纯文本',
+      content: '我会保持安静。',
+      expected: { type: 'text', text: '我会保持安静。' }
+    },
+    {
+      name: '只有 text 的 JSON',
+      content: '{"text":"只保留正文。"}',
+      expected: {
+        type: 'text', text: '只保留正文。', structured_output: { text: '只保留正文。' }
+      }
+    },
+    {
+      name: '带非法隐藏字段的 JSON',
+      content: '{"text":"正文仍然有效。","activity":42,"status":null}',
+      expected: {
+        type: 'text',
+        text: '正文仍然有效。',
+        structured_output: { text: '正文仍然有效。', activity: 42, status: null }
+      }
+    }
+  ] as const)('结构化聊天的$name只以合法正文作为成功前置条件', async ({ content, expected }) => {
+    const provider = new LocalModelProvider(readyPort(), vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content } }]
+    })));
+
+    await expect(provider.respond(
+      structuredRequest,
+      new AbortController().signal
+    )).resolves.toEqual(expected);
+  });
+
+  test('完全没有合法正文时仍返回格式错误', async () => {
+    const provider = new LocalModelProvider(readyPort(), vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: '{}' } }]
+    })));
 
     await expect(provider.respond(
       structuredRequest,
@@ -663,23 +695,33 @@ describe('LocalModelProvider', () => {
     });
   });
 
-  test('结构化聊天拒绝必填键齐全但字段类型不符合可执行契约的响应', async () => {
-    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{
-        message: {
-          content: JSON.stringify({ text: '好的。', activity: 42, status: 'idle' })
-        }
-      }]
-    }));
-    const provider = new LocalModelProvider(readyPort(), fetchClient);
-
-    await expect(provider.respond(
-      structuredRequest,
-      new AbortController().signal
-    )).rejects.toMatchObject({
-      code: 'PROVIDER_MALFORMED_RESPONSE',
-      retryable: false
+  test('本地模型非法隐藏字段由聊天 Adapter 逐项丢弃且保留正文', async () => {
+    const payload = JSON.stringify({
+      text: '正文仍然有效。',
+      activity: 42,
+      status: null,
+      movementControl: { kind: 'move_once', target: { x: 1, y: 2 } },
+      behaviorPlan: { kind: 'unknown' },
+      capabilityPlan: { kind: 'agent_task', preferredTool: 'unknown' }
     });
+    const adapter = new ConversationChatAdapter(new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: payload } }] }))
+    ));
+
+    await expect(adapter.respond({
+      history: [],
+      text: '普通聊天',
+      behaviorContext: {
+        character: {
+          characterName: '小橘', semantics: ['idle'], stateNames: [], actionNames: [], tags: []
+        },
+        runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
+        proactivityMode: 'assistive',
+        recentActions: []
+      },
+      signal: new AbortController().signal
+    })).resolves.toEqual({ text: '正文仍然有效。' });
   });
 
   test.each([

@@ -221,34 +221,6 @@ function createRequestPolicy(
   };
 }
 
-/** 本地角色控制不接受纯文本降级；必填字段缺失时也不能发布无控制数据的成功响应。 */
-function assertStructuredResponse(
-  request: ModelRequest,
-  response: ModelResponse
-): void {
-  const contract = request.responseContract;
-  if (contract === undefined) return;
-  if (response.type !== 'text' || response.structured_output === undefined) {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-  }
-  if (
-    contract.validateStructuredOutput !== undefined
-    && !contract.validateStructuredOutput(response.structured_output)
-  ) {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-  }
-  const required = contract.jsonSchema['required'];
-  if (
-    Array.isArray(required)
-    && required.some(field => (
-      typeof field !== 'string'
-      || !Object.prototype.hasOwnProperty.call(response.structured_output, field)
-    ))
-  ) {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-  }
-}
-
 /** 本地模型只复用 OpenAI 传输协议；连接有效性与非思考约束始终由 Main 强制。 */
 export class LocalModelProvider implements ModelProvider {
   constructor(
@@ -272,12 +244,10 @@ export class LocalModelProvider implements ModelProvider {
       createRequestPolicy(this.connectionPort, connection.generation, budgetedRequest)
     );
     try {
-      const response = await provider.respond({
+      return await provider.respond({
         ...budgetedRequest,
         reasoningMode: 'disabled'
       }, signal);
-      assertStructuredResponse(budgetedRequest, response);
-      return response;
     } catch (error) {
       assertCurrentGeneration(this.connectionPort, connection.generation);
       throw error;
