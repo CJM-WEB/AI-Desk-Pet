@@ -71,7 +71,7 @@ Main Router 只保留两类职责：
 
 Router 不再把自然语言猜成唯一文件工具，也不再用猜测结果删除 Agent 的其他合法工具。进入 Agent 后：
 
-- 文件任务获得完整受控文件工具集合；PowerShell 只获得受控 PowerShell 工具。
+- 普通文件任务获得完整受控文件工具集合且不获得 PowerShell。用户明确要求 PowerShell，或明确请求当前没有独立文件工具的封闭文件操作（当前仅复制）时，首轮只获得受控 PowerShell；首个已确认真实结果回注后才可续接受控文件工具。
 - `preferredTool` 与 Router 解析结果至多作为排序/提示，不形成 `expectedWriteOperation` 硬约束。
 - 模型的真实 `tool_call` 是操作意图；参数由 Schema 解码，失败结果作为稳定工具错误回注，允许一次有界修复。
 - 用户确认挂起当前 Action 和同一会话所有权；确认后恢复原 Action，执行真实工具，再把可信结果紧跟原工具调用回注。
@@ -178,4 +178,3 @@ type CharacterBehaviorPlan =
 - 定向测试后运行 `pnpm typecheck`、相关 package 测试、`pnpm test:security`、`pnpm test:integration`、`pnpm verify:desktop`、`pnpm verify:behavior` 和 `pnpm verify:characters`。
 - `git diff --check` 必须无 whitespace error。
 - 开发模式真实窗口、真实 DeepSeek 账号响应、鼠标交互和真实 Windows 回收站继续标记为待用户人工确认；自动化不得冒充人工证据。
-

@@ -222,7 +222,58 @@ git add packages/character-runtime/src/character-behavior-plan.ts packages/chara
 git commit -m "feat(behavior): 驱动状态内语义与随机动作"
 ```
 
-### Task 5: 建立真实表达意图矩阵与纵向回归
+### Task 5: 独立修复三态意图与持久运动状态机
+
+**Files:**
+- Modify: `packages/character-runtime/src/character-behavior-plan.ts`
+- Modify: `apps/desktop/src/main/conversation/explicit-character-behavior-gate.ts`
+- Modify: `apps/desktop/src/main/characters/character-behavior-director.ts`
+- Modify: `apps/desktop/src/main/characters/character-proactivity-scheduler.ts`
+- Test: `packages/character-runtime/tests/character-behavior-plan.test.ts`
+- Test: `apps/desktop/tests/explicit-character-behavior-gate.test.ts`
+- Test: `apps/desktop/tests/character-behavior-director.test.ts`
+- Test: `apps/desktop/tests/character-proactivity-scheduler.test.ts`
+
+**Interfaces:**
+- Consumes: Task 4 的行为计划和状态动作生命周期；现有 `MovementControlPlan`。
+- Produces: 唯一持久模式 `0 | 1 | 2`、可观察的模式切换和严格区分的持续/间歇运动调度。
+
+- [ ] **Step 1: 写真实自然表达 RED**
+
+表驱动覆盖“停止不动”“不要再走了”“让他一直运动”“保持跑动”“让他时不时运动”“偶尔动一下”“不要一直跑，隔一会儿动一下”。断言分别产生 `set_mode(0)`、`set_mode(1)`、`set_mode(2)`，且否定和引用语境不误触。
+
+- [ ] **Step 2: 写状态切换和 Scheduler RED**
+
+使用假时钟与固定随机源覆盖 `0→2`、`2→1`、`1→2`、`2→0`：mode 0 永不产生目标；mode 1 到达后继续生成目标；mode 2 只移动一段、回到 idle、重新抽取 10–30 秒后再移动。断言旧 timer、旧目标和旧 completion 不能跨模式生效。
+
+- [ ] **Step 3: 运行 RED**
+
+Run: `pnpm.cmd exec vitest run --config apps/desktop/vitest.config.ts apps/desktop/tests/explicit-character-behavior-gate.test.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/tests/character-proactivity-scheduler.test.ts`
+
+Run: `pnpm.cmd --filter @myself/character-runtime test`
+
+Expected: FAIL，现有自然改写或模式切换把间歇运动错误保持为持续运动，或旧调度跨模式继续生效。
+
+- [ ] **Step 4: 实现唯一三态仲裁**
+
+所有显式 Gate、模型 `movementControl` 和主动调度统一写入 Director 的单一数值模式；模式变更先取消旧 timer、目标和 pending completion，再启动新策略。禁止 behaviorPlan 或动画反馈反写持久模式。
+
+- [ ] **Step 5: 实现严格间歇循环**
+
+mode 2 每轮独立随机等待 10–30 秒，仅请求一次中距离随机工作区移动；到达附近或结束后立即切回 idle 表现，但持久模式仍为 2，并重新计时。mode 1 不使用该等待器，mode 0 不保留任何移动调度。
+
+- [ ] **Step 6: 运行 GREEN 和行为门禁**
+
+重复 Step 3；再运行 `pnpm.cmd verify:behavior`。Expected: PASS；若无关用例超时，隔离复现并保留完整事实。
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add packages/character-runtime/src/character-behavior-plan.ts apps/desktop/src/main/conversation/explicit-character-behavior-gate.ts apps/desktop/src/main/characters/character-behavior-director.ts apps/desktop/src/main/characters/character-proactivity-scheduler.ts packages/character-runtime/tests/character-behavior-plan.test.ts apps/desktop/tests/explicit-character-behavior-gate.test.ts apps/desktop/tests/character-behavior-director.test.ts apps/desktop/tests/character-proactivity-scheduler.test.ts
+git commit -m "fix(behavior): 严格区分三态运动策略"
+```
+
+### Task 6: 建立真实表达意图矩阵与纵向回归
 
 **Files:**
 - Modify: `apps/desktop/tests/conversation-coordinator.test.ts`
@@ -233,7 +284,7 @@ git commit -m "feat(behavior): 驱动状态内语义与随机动作"
 - Modify: `tests/e2e/desktop.spec.ts`
 
 **Interfaces:**
-- Consumes: Tasks 1–4 的稳定接口。
+- Consumes: Tasks 1–5 的稳定接口。
 - Produces: Provider/本地模型共用的中文自然表达与纵向副作用证据。
 
 - [ ] **Step 1: 写用户原句和自然改写 RED**
@@ -246,7 +297,7 @@ Run: `pnpm.cmd exec vitest run --config apps/desktop/vitest.config.ts apps/deskt
 
 Run: `pnpm.cmd exec vitest run --config tests/vitest.config.ts tests/integration/desktop-agent.test.ts`
 
-Expected: 若前四项尚有遗漏则 FAIL，并精确指向聊天、任务或行为结果。
+Expected: 若前五项尚有遗漏则 FAIL，并精确指向聊天、任务或行为结果。
 
 - [ ] **Step 3: 补最小集成修正与旧夹具迁移**
 
@@ -263,7 +314,7 @@ git add apps/desktop/tests/conversation-coordinator.test.ts apps/desktop/tests/p
 git commit -m "test(core): 覆盖真实意图与状态动作闭环"
 ```
 
-### Task 6: 完整门禁、减法收口与验收记录
+### Task 7: 完整门禁、减法收口与验收记录
 
 **Files:**
 - Modify: `docs/operations/lightweight-agent-acceptance.md`
@@ -271,7 +322,7 @@ git commit -m "test(core): 覆盖真实意图与状态动作闭环"
 - Modify: `docs/superpowers/specs/2026-08-27-ai-pet-structured-control-repair-design.md`
 
 **Interfaces:**
-- Consumes: Tasks 1–5 的实现和测试证据。
+- Consumes: Tasks 1–6 的实现和测试证据。
 - Produces: 单一现行设计入口、可复现命令结果和人工验收边界。
 
 - [ ] **Step 1: 扫描并删除旧正式路径**
