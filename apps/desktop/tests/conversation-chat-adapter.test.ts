@@ -1,8 +1,14 @@
 import type { ModelProvider, ModelRequest, ModelResponse } from '@myself/agent-core';
-import { characterChatResponseJsonSchema } from '@myself/character-runtime';
+import {
+  characterChatResponseJsonSchema,
+  PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET
+} from '@myself/character-runtime';
 import { describe, expect, test, vi } from 'vitest';
 import { ProviderError } from '../src/main/providers/openai-provider';
-import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
+import {
+  ConversationChatAdapter,
+  PUBLIC_CHARACTER_CHAT_SYSTEM_UTF8_BYTE_BUDGET
+} from '../src/main/conversation/conversation-chat-adapter';
 
 const behaviorContext = {
   character: {
@@ -24,6 +30,28 @@ const behaviorContext = {
   proactivityMode: 'assistive' as const,
   recentActions: ['挥手']
 };
+
+function 过大公开目录() {
+  const actions = Array.from({ length: 100 }, (_, index) => ({
+    name: `共享动作${index}`,
+    semantic: 'move',
+    description: `动作说明${index}${'甲'.repeat(1_990)}`,
+    tags: Array.from({ length: 32 }, (_, tagIndex) => `tag-${tagIndex}`)
+  }));
+  return {
+    identity: {
+      name: '压力角色', description: '角'.repeat(2_000), background: '景'.repeat(4_000),
+      traits: [], languageStyle: '语'.repeat(500), likes: [], behavioralTendencies: []
+    },
+    states: Array.from({ length: 100 }, (_, index) => ({
+      name: `共享状态${index}`,
+      semantic: 'move',
+      description: `状态说明${index}${'乙'.repeat(1_990)}`,
+      tags: [],
+      actions
+    }))
+  };
+}
 
 function 响应为(response: ModelResponse): ModelProvider {
   return {
@@ -283,6 +311,32 @@ describe('ConversationChatAdapter', () => {
     expect(serializedContext.character).not.toHaveProperty('stateNames');
     expect(serializedContext.character).not.toHaveProperty('actionNames');
     expect(serializedContext.character).not.toHaveProperty('tags');
+  });
+
+  test('云端与本地共用的聊天 system 会再次裁剪过大公开目录并原样保留用户正文', async () => {
+    const provider = 响应为({ type: 'text', text: '好的' });
+    const text = '甲'.repeat(4_000);
+
+    await new ConversationChatAdapter(provider).respond({
+      history: [],
+      text,
+      behaviorContext: {
+        ...behaviorContext,
+        character: 过大公开目录(),
+        recentActions: Array.from({ length: 4 }, () => '动'.repeat(120))
+      },
+      signal: new AbortController().signal
+    });
+
+    const request = 取得请求(provider);
+    const system = request.messages[0]?.content ?? '';
+    const contextStart = system.lastIndexOf('{"character":');
+    const context = JSON.parse(system.slice(contextStart)) as typeof behaviorContext;
+    expect(new TextEncoder().encode(system).byteLength)
+      .toBeLessThanOrEqual(PUBLIC_CHARACTER_CHAT_SYSTEM_UTF8_BYTE_BUDGET);
+    expect(new TextEncoder().encode(JSON.stringify(context.character)).byteLength)
+      .toBeLessThanOrEqual(PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET);
+    expect(request.messages.at(-1)).toEqual({ role: 'user', content: text });
   });
 
   test('把 JSON Output 行为计划中的合法情绪投影为聊天情绪', async () => {

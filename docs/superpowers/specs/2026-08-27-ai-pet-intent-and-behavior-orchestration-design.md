@@ -104,6 +104,8 @@ type PublicBehaviorAction = Readonly<{
 - 工作台在状态和动作编辑器中提供详细描述输入，编译发布后原样进入运行清单。
 - Provider 只获得公开名称、语义、描述、标签和层级，不获得 actionId、资源路径、帧信息或脚本。
 - 角色 identity 只发送名称、description、background、traits、languageStyle、likes 和 behavioralTendencies 的有界公开副本；不得发送路径或素材正文。
+- 公开模型投影另受 `2,400` UTF-8 bytes 与 `24` 个“状态或动作”总条目双预算；该值由本地 `6,400 token × 3 bytes` 输入上限扣除最坏 `4,000` 字符当前正文和固定提示/Schema 开销得到。小目录逐字段不变；超限时优先保留默认状态及其至少一个动作，其余状态按清单顺序、动作按状态轮询裁剪，描述和标签只能使用剩余总预算。
+- 云 Provider 与本地模型共用同一裁剪后 system；完整聊天 system 不得超过 `4,800` UTF-8 bytes。跨状态共享动作仍保留父状态层级，但重复副本受总条目预算线性封顶，不能随状态数与动作数形成平方级增长。
 
 ### 4.4 行为意图与选择规则
 

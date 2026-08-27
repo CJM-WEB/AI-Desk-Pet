@@ -33,6 +33,235 @@ const ACTION_UNAVAILABLE = 'CHARACTER_ACTION_UNAVAILABLE';
 const MINIMUM_PUBLIC_BEHAVIOR_SIMILARITY = 0.6;
 const HAN_CHARACTER_PATTERN = /\p{Script=Han}/gu;
 
+/**
+ * 本地模型 6,400-token 输入按既有 3 UTF-8 bytes/token 保守折算为 19,200 bytes。
+ * 扣除 4,000 字符用户正文最坏 12,000 bytes 与固定指令、Schema 后，公开目录只占 2,400 bytes。
+ */
+export const PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET = 2_400;
+/** 每个层级条目预留约 100 bytes 的名称、语义和 JSON 结构开销。 */
+export const PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET = 24;
+
+function utf8ByteLength(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+function firstCharacter(value: string): string {
+  return Array.from(value)[0] ?? value;
+}
+
+type MutablePublicAction = {
+  name: string;
+  semantic: string;
+  description?: string;
+  tags: string[];
+};
+
+type MutablePublicState = {
+  name: string;
+  semantic: string;
+  description?: string;
+  tags: string[];
+  actions: MutablePublicAction[];
+};
+
+type MutablePublicCatalog = {
+  identity: {
+    name: string;
+    description: string;
+    background: string;
+    traits: string[];
+    languageStyle: string;
+    likes: string[];
+    behavioralTendencies: string[];
+  };
+  states: MutablePublicState[];
+};
+
+function publicCatalogEntryCount(catalog: PublicBehaviorCatalog): number {
+  return catalog.states.reduce((total, state) => total + 1 + state.actions.length, 0);
+}
+
+function expandTextWithinBudget(
+  catalog: MutablePublicCatalog,
+  current: string,
+  source: string,
+  setValue: (value: string) => void,
+  byteBudget: number
+): void {
+  if (current === source) return;
+  setValue(source);
+  if (utf8ByteLength(catalog) <= byteBudget) return;
+
+  const characters = Array.from(source);
+  let low = Math.max(1, Array.from(current).length);
+  let high = characters.length;
+  let accepted = current;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = characters.slice(0, middle).join('');
+    setValue(candidate);
+    if (utf8ByteLength(catalog) <= byteBudget) {
+      accepted = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  setValue(accepted);
+}
+
+function appendValuesWithinBudget(
+  catalog: MutablePublicCatalog,
+  target: string[],
+  source: readonly string[],
+  byteBudget: number
+): void {
+  for (const value of source) {
+    target.push(value);
+    if (utf8ByteLength(catalog) <= byteBudget) continue;
+    target.pop();
+    break;
+  }
+}
+
+/**
+ * 只裁剪发送给模型的公开投影：小目录保持逐字段不变；超限时默认状态优先，
+ * 其余状态按稳定顺序、动作按状态轮询收录，避免共享动作形成平方级重复。
+ */
+export function boundPublicBehaviorCatalogForModel(
+  catalog: PublicBehaviorCatalog,
+  preferredStateName?: string,
+  byteBudget = PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET
+): PublicBehaviorCatalog {
+  if (
+    publicCatalogEntryCount(catalog) <= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET
+    && utf8ByteLength(catalog) <= byteBudget
+  ) return catalog;
+
+  const identity = catalog.identity;
+  const bounded: MutablePublicCatalog = {
+    identity: {
+      name: identity.name,
+      description: firstCharacter(identity.description),
+      background: firstCharacter(identity.background),
+      traits: [],
+      languageStyle: firstCharacter(identity.languageStyle),
+      likes: [],
+      behavioralTendencies: []
+    },
+    states: []
+  };
+  const preferred = preferredStateName === undefined
+    ? null
+    : catalog.states.find(state => state.name === preferredStateName) ?? null;
+  const orderedStates = preferred === null
+    ? [...catalog.states]
+    : [preferred, ...catalog.states.filter(state => state !== preferred)];
+  const selected: Array<{
+    source: PublicBehaviorCatalog['states'][number];
+    projected: MutablePublicState;
+  }> = [];
+
+  const appendState = (source: PublicBehaviorCatalog['states'][number]): boolean => {
+    if (publicCatalogEntryCount(bounded) >= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) return false;
+    const projected: MutablePublicState = {
+      name: source.name,
+      semantic: source.semantic,
+      tags: [],
+      actions: []
+    };
+    bounded.states.push(projected);
+    if (utf8ByteLength(bounded) > byteBudget) {
+      bounded.states.pop();
+      return false;
+    }
+    selected.push({ source, projected });
+    return true;
+  };
+  const appendNextAction = (pair: typeof selected[number]): boolean => {
+    const action = pair.source.actions[pair.projected.actions.length];
+    if (!action || publicCatalogEntryCount(bounded) >= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) {
+      return false;
+    }
+    const projected: MutablePublicAction = {
+      name: action.name,
+      semantic: action.semantic,
+      tags: []
+    };
+    pair.projected.actions.push(projected);
+    if (utf8ByteLength(bounded) <= byteBudget) return true;
+    pair.projected.actions.pop();
+    return false;
+  };
+
+  for (const source of orderedStates) {
+    if (!appendState(source)) break;
+    const pair = selected.at(-1)!;
+    // 收录的可播放状态至少携带一个真实动作，避免只保留空壳层级。
+    if (source.actions.length > 0 && !appendNextAction(pair)) {
+      selected.pop();
+      bounded.states.pop();
+      break;
+    }
+  }
+
+  // 每轮每状态最多追加一个动作，避免首个状态或共享动作副本独占目录。
+  while (publicCatalogEntryCount(bounded) < PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) {
+    let added = false;
+    for (const pair of selected) {
+      if (appendNextAction(pair)) added = true;
+      if (publicCatalogEntryCount(bounded) >= PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET) break;
+    }
+    if (!added) break;
+  }
+
+  expandTextWithinBudget(
+    bounded, bounded.identity.description, identity.description,
+    value => { bounded.identity.description = value; }, byteBudget
+  );
+  expandTextWithinBudget(
+    bounded, bounded.identity.languageStyle, identity.languageStyle,
+    value => { bounded.identity.languageStyle = value; }, byteBudget
+  );
+  for (const pair of selected) {
+    if (pair.source.description !== undefined) {
+      pair.projected.description = firstCharacter(pair.source.description);
+      if (utf8ByteLength(bounded) > byteBudget) delete pair.projected.description;
+      else expandTextWithinBudget(
+        bounded, pair.projected.description, pair.source.description,
+        value => { pair.projected.description = value; }, byteBudget
+      );
+    }
+    appendValuesWithinBudget(bounded, pair.projected.tags, pair.source.tags, byteBudget);
+    pair.projected.actions.forEach((projectedAction, actionIndex) => {
+      const sourceAction = pair.source.actions[actionIndex];
+      if (!sourceAction) return;
+      if (sourceAction.description !== undefined) {
+        projectedAction.description = firstCharacter(sourceAction.description);
+        if (utf8ByteLength(bounded) > byteBudget) delete projectedAction.description;
+        else expandTextWithinBudget(
+          bounded, projectedAction.description, sourceAction.description,
+          value => { projectedAction.description = value; }, byteBudget
+        );
+      }
+      appendValuesWithinBudget(bounded, projectedAction.tags, sourceAction.tags, byteBudget);
+    });
+  }
+  expandTextWithinBudget(
+    bounded, bounded.identity.background, identity.background,
+    value => { bounded.identity.background = value; }, byteBudget
+  );
+  appendValuesWithinBudget(bounded, bounded.identity.traits, identity.traits, byteBudget);
+  appendValuesWithinBudget(bounded, bounded.identity.likes, identity.likes, byteBudget);
+  appendValuesWithinBudget(
+    bounded,
+    bounded.identity.behavioralTendencies,
+    identity.behavioralTendencies,
+    byteBudget
+  );
+  return bounded;
+}
+
 /** 公开名称匹配统一使用 NFKC 和大小写折叠，不把私有标识符作为候选。 */
 function normalizePublicValue(value: string): string {
   return value.normalize('NFKC').trim().toLowerCase();
@@ -82,7 +311,7 @@ export function createPublicBehaviorCatalog(
     state.agentInferable && state.actionIds.some(actionId => playable.has(actionId))
   ));
 
-  return {
+  const catalog: PublicBehaviorCatalog = {
     identity: {
       name: manifest.name,
       description: manifest.identity.description,
@@ -103,6 +332,8 @@ export function createPublicBehaviorCatalog(
       })
     }))
   };
+  const defaultState = manifest.states.find(state => state.id === manifest.defaultStateId);
+  return boundPublicBehaviorCatalogForModel(catalog, defaultState?.name);
 }
 
 type PublicCatalogCandidate = Readonly<{

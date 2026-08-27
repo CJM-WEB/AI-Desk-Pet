@@ -182,6 +182,46 @@ describe('LocalModelProvider', () => {
     });
   });
 
+  test('过大公开角色目录不会挤占本地当前用户正文的固定输入预算', async () => {
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: JSON.stringify({ text: '收到。' }) } }]
+    }));
+    const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
+    const text = '甲'.repeat(4_000);
+    const actions = Array.from({ length: 100 }, (_, index) => ({
+      name: `共享动作${index}`, semantic: 'move', description: '动'.repeat(2_000), tags: []
+    }));
+
+    await adapter.respond({
+      history: [],
+      text,
+      behaviorContext: {
+        ...localBehaviorContext,
+        character: {
+          ...localBehaviorContext.character,
+          identity: {
+            ...localBehaviorContext.character.identity,
+            description: '角'.repeat(2_000),
+            background: '景'.repeat(4_000)
+          },
+          states: Array.from({ length: 100 }, (_, index) => ({
+            name: `共享状态${index}`, semantic: 'move', description: '态'.repeat(2_000),
+            tags: [], actions
+          }))
+        }
+      },
+      signal: new AbortController().signal
+    });
+
+    const body = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    expect(body.messages.at(-1)).toEqual({ role: 'user', content: text });
+    expect(Math.ceil(Buffer.byteLength(JSON.stringify({
+      messages: body.messages,
+      tools: [],
+      responseSchema: body.response_format.schema
+    }), 'utf8') / 3)).toBeLessThanOrEqual(6_400);
+  });
+
   test('固定关闭思考、流式和并行工具调用并使用当前私有连接', async () => {
     const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
       choices: [{ message: { content: '完成' } }]

@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import {
   createPublicBehaviorCatalog,
+  characterManifestV2Schema,
   isPublicBehaviorTarget,
+  PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET,
+  PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET,
   publicBehaviorCatalogSchema,
   selectPublicBehaviorTarget,
   resolveBehaviorTarget,
@@ -85,6 +88,69 @@ function createAction(
   };
 }
 
+/** 构造 V2 现行上限内、且让共享动作在每个状态重复出现的压力清单。 */
+function createMaximumSharedManifest(): CharacterManifestV2 {
+  const manifest = createManifest();
+  const tags = Array.from({ length: 32 }, (_, index) => `tag-${index}`);
+  const actions = Array.from({ length: 100 }, (_, index) => ({
+    ...createAction(`shared-action-${index}`, `共享动作${index}`, 'move', tags),
+    description: `动作说明${index}${'甲'.repeat(1_990)}`
+  }));
+  const states = Array.from({ length: 100 }, (_, index) => ({
+    id: `shared-state-${index}`,
+    name: `共享状态${index}`,
+    description: `状态说明${index}${'乙'.repeat(1_990)}`,
+    kind: 'primary' as const,
+    semantic: 'move' as const,
+    tags,
+    intensity: 1,
+    coexistWithStateIds: [],
+    forbiddenStateIds: [],
+    enterConditions: [],
+    exitConditions: [],
+    agentInferable: true,
+    actionIds: actions.map(action => action.id)
+  }));
+  const presentations = actions.map(action => ({
+    actionId: action.id,
+    fps: 12,
+    frames: [{ assetId: `${action.id}-asset`, x: 0, y: 0, width: 1, height: 1 }],
+    anchors: { ground: { x: 0.5, y: 1 } },
+    geometry: {
+      visualBounds: { x: 0, y: 0, width: 1, height: 1 },
+      groundAnchor: { x: 0.5, y: 1 },
+      resourceRevision: 'a'.repeat(64)
+    }
+  }));
+  return {
+    ...manifest,
+    identity: {
+      ...manifest.identity,
+      description: '角'.repeat(2_000),
+      background: '景'.repeat(4_000),
+      traits: Array.from({ length: 32 }, (_, index) => `特征${index}${'甲'.repeat(110)}`),
+      languageStyle: '语'.repeat(500),
+      likes: Array.from({ length: 32 }, (_, index) => `喜好${index}${'乙'.repeat(225)}`),
+      behavioralTendencies: Array.from(
+        { length: 32 }, (_, index) => `倾向${index}${'丙'.repeat(225)}`
+      )
+    },
+    defaultStateId: 'shared-state-99',
+    states,
+    actions,
+    skins: [{ ...manifest.skins[0]!, presentations }],
+    resources: [
+      manifest.resources[0]!,
+      ...actions.map(action => ({
+        assetId: `${action.id}-asset`,
+        fileName: `${action.id}.png`,
+        sha256: 'a'.repeat(64),
+        byteLength: 1
+      }))
+    ]
+  };
+}
+
 describe('公开行为目标解析器', () => {
   test('公开清单保留状态到动作归属与有界人设，不泄露私有实现数据', () => {
     const catalog = createPublicBehaviorCatalog(createManifest(), 'default-skin');
@@ -123,6 +189,26 @@ describe('公开行为目标解析器', () => {
         actions: [{ ...catalog.states[0]!.actions[0]!, actionId: 'idle-action' }]
       }]
     })).toThrow();
+  });
+
+  test('最大合法清单与跨状态共享动作被确定性裁剪到公开总预算且保留默认状态', () => {
+    const manifest = createMaximumSharedManifest();
+    expect(characterManifestV2Schema.safeParse(manifest).success).toBe(true);
+    const first = createPublicBehaviorCatalog(manifest, 'default-skin');
+    const second = createPublicBehaviorCatalog(manifest, 'default-skin');
+    const serialized = JSON.stringify(first);
+    const entryCount = first.states.reduce((total, state) => total + 1 + state.actions.length, 0);
+
+    expect(first).toEqual(second);
+    expect(new TextEncoder().encode(serialized).byteLength)
+      .toBeLessThanOrEqual(PUBLIC_BEHAVIOR_CATALOG_UTF8_BYTE_BUDGET);
+    expect(entryCount).toBeLessThanOrEqual(PUBLIC_BEHAVIOR_CATALOG_ENTRY_BUDGET);
+    expect(first.states.some(state => state.name === '共享状态99')).toBe(true);
+    expect(first.states.find(state => state.name === '共享状态99')?.actions.length)
+      .toBeGreaterThan(0);
+    expect(first.states.every(state => state.actions.length > 0)).toBe(true);
+    expect(serialized).not.toMatch(/(?:shared-state-|shared-action-|asset|fileName|frames)/u);
+    expect(first.states.length * 100).toBeGreaterThan(entryCount);
   });
 
   test.each([

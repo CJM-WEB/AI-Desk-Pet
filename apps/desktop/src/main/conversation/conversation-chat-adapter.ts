@@ -10,6 +10,7 @@ import {
   characterChatBehaviorPlanSchema,
   characterBehaviorDescriptorSchema,
   characterChatResponseJsonSchema,
+  boundPublicBehaviorCatalogForModel,
   movementControlPlanSchema,
   type CharacterBehaviorPlan,
   type MovementControlPlan
@@ -42,6 +43,8 @@ const 聊天系统消息前缀 = [
   '以下是 Main 提供的当前公开行为上下文，只能从清单中建议动作：'
 ].join('');
 const 最大正文字符数 = 8_000;
+/** 与本地 6,400-token 输入预算共同为 4,000 字符当前用户正文保留空间。 */
+export const PUBLIC_CHARACTER_CHAT_SYSTEM_UTF8_BYTE_BUDGET = 4_800;
 export const characterChatResponseContract: ModelResponseContract = {
   type: 'json_object' as const,
   name: 'character_chat' as const,
@@ -178,7 +181,26 @@ export class ConversationChatAdapter {
 }
 
 function 构建聊天系统消息(context: ConversationBehaviorContext): string {
-  return `${聊天系统消息前缀}${JSON.stringify(context)}`;
+  const character = boundPublicBehaviorCatalogForModel(context.character);
+  const recentActions = [...context.recentActions];
+  let message = `${聊天系统消息前缀}${JSON.stringify({
+    ...context,
+    character,
+    recentActions
+  })}`;
+  // 最近动作只是重复抑制提示；超出 system 总预算时优先移除最旧项，不碰当前正文。
+  while (
+    recentActions.length > 0
+    && new TextEncoder().encode(message).byteLength > PUBLIC_CHARACTER_CHAT_SYSTEM_UTF8_BYTE_BUDGET
+  ) {
+    recentActions.shift();
+    message = `${聊天系统消息前缀}${JSON.stringify({
+      ...context,
+      character,
+      recentActions
+    })}`;
+  }
+  return message;
 }
 
 /** 仅校验响应边界，保留合法正文的原始空白与 Markdown。 */
