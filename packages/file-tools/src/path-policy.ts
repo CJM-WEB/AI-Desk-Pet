@@ -54,6 +54,16 @@ function normalizeRelativePath(input: string): string {
   return normalized;
 }
 
+/** 复用正式路径裁决的词法边界，供执行前的保守意图分流使用。 */
+export function isRootRelativePathInput(input: string): boolean {
+  try {
+    normalizeRelativePath(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function assertInside(rootReal: string, candidate: string): void {
   const relation = relative(rootReal, candidate);
   if (

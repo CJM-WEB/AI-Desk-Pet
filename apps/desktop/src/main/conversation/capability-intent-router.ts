@@ -1,5 +1,6 @@
 import { parse } from 'tldts';
 import type { FilePlanningHint, FilePlanningOperation } from '@myself/agent-core';
+import { isRootRelativePathInput, relativePathSchema } from '@myself/file-tools';
 
 /** Router 不授予角色行为权限；行为控制由独立 Gate 处理。 */
 export type ExplicitBehaviorHint = never;
@@ -23,7 +24,7 @@ export type CapabilityIntent =
 
 export interface CapabilityIntentRouter {
   route(prompt: string): CapabilityIntent;
-  routeTrustedFileContinuation(): Extract<CapabilityIntent, { kind: 'file_task' }>;
+  routeTrustedFileContinuation(prompt: string): CapabilityIntent;
 }
 
 const chatIntent: CapabilityIntent = Object.freeze({
@@ -65,6 +66,9 @@ const chineseClarificationPattern = /^(?:请你?|帮我)?\s*(?:删除|修改|移
 const embeddedFileContentPattern = /(?:文件正文(?:是|为|如下)?|file\s+contents?(?:\s+(?:are|is))?)\s*(?::|：)\s*([\s\S]*)$/iu;
 const missingTargetPathPattern = /(?:(?:没有|尚未|未|没)\s*(?:提供|填写|指定)|(?:缺少|缺失))[^。！？!?\n]{0,16}(?:目标)?(?:相对)?路径/iu;
 const clarifiedTargetMarker = '补充信息(覆盖此前缺失字段):';
+const explicitTargetPathReplyPattern = /^(?:目标)?(?:相对)?路径\s*(?:是|为|[:：])\s*(.+?)[。！]?$/u;
+const naturalNestedPathReplyPattern = /^([^\s“”"'（）()<>，,。！？!?；;]{1,160})(?:下|中|里)的([^\s“”"'（）()<>，,。！？!?；;]{1,160})(?:文件夹|目录|文件)[。！]?$/u;
+const directPathReplyPattern = /^(?:\.{1,2}[\\/][^\s“”"'（）()<>，,。！？!?；;]+|[^\s“”"'（）()<>，,。！？!?；;]+[\\/][^\s“”"'（）()<>，,。！？!?；;]+|[^\s“”"'（）()<>，,。！？!?；;]*\.[a-z\d_-]+(?:\.[a-z\d_-]+)*)[。！]?$/iu;
 
 const chineseExplicitPowerShellPattern = /^(?:(?:请|请你|帮我|麻烦(?:你|给我)?)\s*)?(?:运行|执行)\s+powershell\s+([\s\S]+)$/iu;
 const englishExplicitPowerShellPattern = /^(?:(?:please\s+)|(?:(?:can|could|would)\s+you\s+(?:please\s+)?))?(?:run|execute)\s+powershell\s+([\s\S]+)$/iu;
@@ -226,6 +230,23 @@ function hasExplicitFileIntent(text: string): boolean {
     || hasClosedEnglishShape(unquotedText, objects);
 }
 
+/**
+ * 澄清续接只提取三类封闭路径形状；最终文件工具仍会按授权根、链接和保护区完整复核。
+ * 普通自然语言不能仅凭“允许模型升级”借用上一轮文件权限。
+ */
+function targetPathContinuationCandidate(text: string): string | null {
+  const normalized = text.normalize('NFKC').trim();
+  if (!normalized || normalized.includes('\n') || containsDeterministicCodeStructure(normalized)
+    || blocksModelEscalation(normalized)) return null;
+  const explicit = explicitTargetPathReplyPattern.exec(normalized)?.[1]?.trim();
+  if (explicit !== undefined) return explicit;
+  const nested = naturalNestedPathReplyPattern.exec(normalized);
+  if (nested !== null) return `${nested[1]}/${nested[2]}`;
+  return directPathReplyPattern.test(normalized)
+    ? normalized.replace(/[。！]$/u, '')
+    : null;
+}
+
 function hasNaturalLanguageShellTail(commandText: string): boolean {
   const unquoted = maskQuotedText(commandText);
   const argumentStart = unquoted.search(/\s/u);
@@ -329,9 +350,13 @@ export class DefaultCapabilityIntentRouter implements CapabilityIntentRouter {
     return fileTaskIntent;
   }
 
-  /** 仅供 Coordinator 在持有同代澄清状态时恢复文件任务，不解析任何用户可伪造标记。 */
-  routeTrustedFileContinuation(): Extract<CapabilityIntent, { kind: 'file_task' }> {
-    return fileTaskIntent;
+  /** 仅供 Coordinator 在持有同代澄清状态时复核路径形状并恢复文件任务。 */
+  routeTrustedFileContinuation(prompt: string): CapabilityIntent {
+    const candidate = targetPathContinuationCandidate(prompt);
+    if (candidate === null) return this.route(prompt);
+    return relativePathSchema.safeParse(candidate).success && isRootRelativePathInput(candidate)
+      ? fileTaskIntent
+      : blockedChatIntent;
   }
 }
 

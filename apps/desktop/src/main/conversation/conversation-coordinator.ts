@@ -210,11 +210,16 @@ export class ConversationCoordinator {
 
       const continuation = this.pendingFileContinuation;
       const continuationIntent = capabilityIntentRouter.route(context.capabilityText);
+      const trustedContinuationIntent = continuation === null
+        ? null
+        : capabilityIntentRouter.routeTrustedFileContinuation(context.capabilityText);
+      let effectiveIntent = continuationIntent;
       if (
         continuation?.generation === context.generation
         && context.capabilityText.trim().length > 0
         && continuationIntent.kind === 'chat'
         && continuationIntent.modelEscalation === 'allowed'
+        && trustedContinuationIntent?.kind === 'file_task'
       ) {
         this.pendingFileContinuation = null;
         // 小模型需要明确后续路径覆盖先前缺失字段，避免把两轮文本误判为互相矛盾。
@@ -223,12 +228,19 @@ export class ConversationCoordinator {
       } else if (continuation !== null) {
         // 续接只接受紧邻的下一条有效路径；普通聊天或新能力请求都明确放弃旧澄清。
         this.pendingFileContinuation = null;
+        if (
+          continuation.generation === context.generation
+          && continuationIntent.kind === 'chat'
+          && continuationIntent.modelEscalation === 'allowed'
+          && trustedContinuationIntent?.kind === 'chat'
+          && trustedContinuationIntent.modelEscalation === 'blocked'
+        ) effectiveIntent = trustedContinuationIntent;
       }
 
       // Router 是唯一分流权威；能力任务在创建聊天 Provider 前处理。
       const intent = context.continuationTarget === undefined
-        ? continuationIntent
-        : capabilityIntentRouter.routeTrustedFileContinuation();
+        ? effectiveIntent
+        : trustedContinuationIntent ?? continuationIntent;
       if (intent.kind === 'chat') context.modelEscalation = intent.modelEscalation;
       if (intent.kind === 'file_task' || intent.kind === 'powershell_task') {
         if (intent.kind === 'powershell_task' && intent.evidence.requestedRunMode === 'background') {

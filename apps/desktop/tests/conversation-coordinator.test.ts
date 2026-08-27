@@ -434,6 +434,74 @@ describe('ConversationCoordinator', () => {
     expect(fileTasks.submissions[1]?.planningHint).toEqual({ operation: 'delete_file' });
   });
 
+  test('结构化澄清接受自然相对路径补充并继续原文件任务', async () => {
+    const fileTasks = new CapturingCapabilityTasks();
+    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
+    const harness = createHarness([], { fileTasks });
+
+    await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
+    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    fileTasks.nextOutcome = { kind: 'completed', acted: false };
+    await harness.coordinator.submit('TempTest下的empty文件夹');
+
+    expect(fileTasks.submissions).toHaveLength(2);
+    expect(fileTasks.submissions[1]?.text).toBe(
+      '删除一个文件，但还没有目标路径。\n'
+      + '补充信息（覆盖此前缺失字段）：TempTest下的empty文件夹'
+    );
+  });
+
+  test('结构化澄清后的普通聊天不续接文件任务且清理旧澄清', async () => {
+    const fileTasks = new CapturingCapabilityTasks();
+    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
+    const chat = scriptedProvider({ type: 'text', text: '你好呀。' });
+    const harness = createHarness([1, 2].map(index => ({
+      profileId: `chat-profile-${index}`,
+      providerIdentity: 'openai',
+      providerName: 'Chat',
+      script: chat
+    })), { fileTasks });
+
+    await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
+    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    await harness.coordinator.submit('你好呀');
+    await harness.coordinator.submit('TempTest下的empty文件夹');
+
+    expect(fileTasks.submissions).toHaveLength(1);
+    expect(chat.requests).toHaveLength(2);
+    expect(harness.events).toContainEqual({ type: 'message', role: 'assistant', text: '你好呀。' });
+    expect(harness.events.some(event => event.type === 'error')).toBe(false);
+  });
+
+  test.each([
+    'C:\\Temp\\acceptance-clarification.txt',
+    '../acceptance-clarification.txt',
+    '/tmp/acceptance-clarification.txt',
+    '\\\\server\\share\\acceptance-clarification.txt'
+  ])('结构化澄清拒绝越界路径“%s”且不显示任务失败', async unsafePath => {
+    const fileTasks = new CapturingCapabilityTasks();
+    fileTasks.nextOutcome = { kind: 'clarification', missingField: 'target_path', acted: false };
+    const chat = scriptedProvider({
+      type: 'text',
+      text: '这个路径不在授权根内。',
+      structured_output: {
+        capabilityPlan: { kind: 'agent_task', preferredTool: 'delete_file' }
+      }
+    });
+    const harness = createHarness([{
+      profileId: 'chat-profile', providerIdentity: 'openai', providerName: 'Chat', script: chat
+    }], { fileTasks });
+
+    await harness.coordinator.submit('删除一个文件，但还没有目标路径。');
+    fileTasks.publish({ type: 'phase', phase: 'success' }, 'generation-current');
+    await harness.coordinator.submit(unsafePath);
+
+    expect(fileTasks.submissions).toHaveLength(1);
+    expect(chat.requests).toHaveLength(1);
+    expect(harness.events.some(event => event.type === 'capability_authorization_required')).toBe(false);
+    expect(harness.events.some(event => event.type === 'error')).toBe(false);
+  });
+
   test.each([
     '不要执行删除 acceptance-clarification.txt',
     'Please never delete acceptance-clarification.txt',

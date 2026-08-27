@@ -215,11 +215,27 @@ describe('能力意图路由器', () => {
     expect(capabilityIntentRouter.route(text).kind).toBe('chat');
   });
 
-  test('只有 Coordinator 持有的专用入口可以恢复已确认的文件澄清任务', () => {
-    expect(capabilityIntentRouter.routeTrustedFileContinuation()).toEqual({
+  test.each([
+    '目标相对路径是 acceptance-clarification.txt。',
+    'TempTest下的empty文件夹',
+    'TempTest/empty'
+  ])('只有具备根内相对路径形状的澄清回复“%s”才能恢复文件任务', text => {
+    expect(capabilityIntentRouter.routeTrustedFileContinuation(text)).toEqual({
       kind: 'file_task',
       evidence: { kind: 'explicit_file_operation' }
     });
+  });
+
+  test.each([
+    '你好呀',
+    '真的哦',
+    '谢谢',
+    'C:\\Temp\\acceptance-clarification.txt',
+    '../acceptance-clarification.txt',
+    '/tmp/acceptance-clarification.txt',
+    '\\\\server\\share\\acceptance-clarification.txt'
+  ])('非路径或越界澄清回复“%s”不能借用旧文件任务', text => {
+    expect(capabilityIntentRouter.routeTrustedFileContinuation(text).kind).toBe('chat');
   });
 
   test.each([
