@@ -122,7 +122,11 @@ describe('LocalModelProvider', () => {
       text: '请整理当前目录并生成摘要',
       behaviorContext: {
         character: {
-          characterName: '小橘', semantics: ['idle'], stateNames: [], actionNames: [], tags: []
+          identity: {
+            name: '小橘', description: '测试角色', background: '测试环境', traits: [],
+            languageStyle: '简洁', likes: [], behavioralTendencies: []
+          },
+          states: []
         },
         runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
         proactivityMode: 'assistive',
@@ -721,7 +725,11 @@ describe('LocalModelProvider', () => {
       text: '普通聊天',
       behaviorContext: {
         character: {
-          characterName: '小橘', semantics: ['idle'], stateNames: [], actionNames: [], tags: []
+          identity: {
+            name: '小橘', description: '测试角色', background: '测试环境', traits: [],
+            languageStyle: '简洁', likes: [], behavioralTendencies: []
+          },
+          states: []
         },
         runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
         proactivityMode: 'assistive',

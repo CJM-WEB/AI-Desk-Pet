@@ -19,11 +19,14 @@ import type { AgentFileTaskOutcome } from '../src/main/agent/agent-service';
 
 const behaviorContext = {
   character: {
-    characterName: '测试角色',
-    semantics: ['idle', 'move'] as const,
-    stateNames: [],
-    actionNames: ['散步'],
-    tags: []
+    identity: {
+      name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+      languageStyle: '简洁', likes: [], behavioralTendencies: []
+    },
+    states: [{
+      name: '移动', semantic: 'move', tags: [],
+      actions: [{ name: '散步', semantic: 'move', tags: [] }]
+    }]
   },
   runtime: {
     moving: false,

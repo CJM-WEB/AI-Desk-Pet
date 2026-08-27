@@ -72,11 +72,14 @@ const tools: ToolDefinition[] = [{
 
 const providerBehaviorContext = {
   character: {
-    characterName: '契约测试角色',
-    semantics: ['idle', 'move'] as const,
-    stateNames: [],
-    actionNames: ['散步'],
-    tags: []
+    identity: {
+      name: '契约测试角色', description: '契约测试角色', background: '测试环境', traits: [],
+      languageStyle: '简洁', likes: [], behavioralTendencies: []
+    },
+    states: [{
+      name: '移动', semantic: 'move', tags: [],
+      actions: [{ name: '散步', semantic: 'move', tags: [] }]
+    }]
   },
   runtime: {
     moving: false,

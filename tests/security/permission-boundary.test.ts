@@ -276,8 +276,11 @@ function securityBehaviorDouble(
     })),
     getChatContext: vi.fn(() => ({
       character: {
-        characterName: '安全角色', semantics: ['idle'],
-        stateNames: [], actionNames: [], tags: []
+        identity: {
+          name: '安全角色', description: '安全测试角色', background: '测试环境', traits: [],
+          languageStyle: '简洁', likes: [], behavioralTendencies: []
+        },
+        states: []
       },
       runtime: {
         moving: false, dragging: false, carrying: false, movementMode: 2
@@ -298,8 +301,11 @@ function movementLockDirector() {
   const saveMovementMode = vi.fn<(mode: 0 | 1 | 2) => Promise<void>>();
   const behavior = {
     getPublicBehaviorCatalog: vi.fn(() => ({
-      characterName: '安全角色', semantics: ['idle'] as const,
-      stateNames: [], actionNames: [], tags: []
+      identity: {
+        name: '安全角色', description: '安全测试角色', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: []
     })),
     getRecentPublicActions: vi.fn(() => []),
     resolveBehaviorTarget: vi.fn(() => { throw new Error('CHARACTER_ACTION_UNAVAILABLE'); }),

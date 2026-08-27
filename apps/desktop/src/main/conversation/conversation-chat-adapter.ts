@@ -21,7 +21,7 @@ import type { ConversationBehaviorContext } from
 export const characterJsonOutputInstructions = [
   '请只返回 json 对象，不要添加对象外文字。',
   '每轮必须提供仅供 Main 使用的 activity 与 status，它们绝不显示给用户。',
-  'behaviorPlan 每轮必填：有匹配候选时原样复制 candidates 中的 kind 与 name；没有匹配候选时返回 kind=none，绝不编造目录外名称。',
+  'behaviorPlan 每轮必填：有匹配项时只使用 states 及其 actions 中的公开名称；没有匹配项时返回 kind=none，绝不编造目录外名称。',
   'movementControl 每轮必填且只允许 keep、set_mode、move_once：没有运动要求用 keep。',
   '停止、保持静止、不要再动用 set_mode=0；一直、持续、保持运动用 set_mode=1；时不时、偶尔、间歇、恢复自主活动用 set_mode=2。',
   '只动一下、跑远一点或去屏幕某区域用 move_once；target 只能是 random_work_area 或公开屏幕区域，绝不提供坐标；distance 按用户语义选择 near、medium、far。',
@@ -179,18 +179,7 @@ export class ConversationChatAdapter {
 }
 
 function 构建聊天系统消息(context: ConversationBehaviorContext): string {
-  const candidates = context.character.candidates;
-  if (!candidates?.length) return `${聊天系统消息前缀}${JSON.stringify(context)}`;
-  const compactContext = {
-    ...context,
-    character: {
-      characterName: context.character.characterName,
-      semantics: context.character.semantics,
-      candidates
-    }
-  };
-  // candidates 已逐项携带 kind/name/semantic/tags；只省略可推导的聚合字段，候选对象原样保留。
-  return `${聊天系统消息前缀}${JSON.stringify(compactContext)}`;
+  return `${聊天系统消息前缀}${JSON.stringify(context)}`;
 }
 
 /** 仅校验响应边界，保留合法正文的原始空白与 Markdown。 */

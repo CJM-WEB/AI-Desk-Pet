@@ -152,7 +152,11 @@ function behaviorPort(): ConversationBehaviorPort {
     prepareUserPrompt: async text => ({ originalText: text, capabilityText: text, explicitDirective: null }),
     getChatContext: () => ({
       character: {
-        characterName: '验收角色', semantics: ['idle'], stateNames: [], actionNames: [], tags: []
+        identity: {
+          name: '验收角色', description: '验收角色', background: '验收环境', traits: [],
+          languageStyle: '简洁', likes: [], behavioralTendencies: []
+        },
+        states: []
       },
       runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
       proactivityMode: 'assistive',

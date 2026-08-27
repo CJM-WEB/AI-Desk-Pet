@@ -30,8 +30,11 @@ function behaviorDouble(): ConversationBehaviorPort {
     })),
     getChatContext: vi.fn(() => ({
       character: {
-        characterName: '测试角色', semantics: ['idle'] as const,
-        stateNames: [], actionNames: [], tags: []
+        identity: {
+          name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+          languageStyle: '简洁', likes: [], behavioralTendencies: []
+        },
+        states: []
       },
       runtime: {
         moving: false, dragging: false, carrying: false, movementMode: 2 as const

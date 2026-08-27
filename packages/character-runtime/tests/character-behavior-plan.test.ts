@@ -54,22 +54,20 @@ describe('角色行为计划协议', () => {
     expect(characterBehaviorPlanSchema.safeParse(plan).success).toBe(false);
   });
 
-  test('公开清单只保留角色名称、语义、状态动作名称和标签', () => {
+  test('公开清单只保留有界角色人设与状态动作层级', () => {
     const catalog = publicBehaviorCatalogSchema.parse({
-      characterName: '小猫',
-      semantics: ['idle', 'move'],
-      stateNames: ['休息', '散步'],
-      actionNames: ['眨眼', '走路'],
-      tags: ['gentle', 'indoor']
+      identity: {
+        name: '小猫', description: '温和的桌面伙伴', background: '来自数字花园',
+        traits: ['gentle'], languageStyle: '简洁', likes: ['阳光'],
+        behavioralTendencies: ['主动陪伴']
+      },
+      states: [{
+        name: '休息', semantic: 'idle', description: '安静休息', tags: ['indoor'],
+        actions: [{ name: '眨眼', semantic: 'idle', description: '轻轻眨眼', tags: ['gentle'] }]
+      }]
     });
 
-    expect(Object.keys(catalog).sort()).toEqual([
-      'actionNames',
-      'characterName',
-      'semantics',
-      'stateNames',
-      'tags'
-    ]);
+    expect(Object.keys(catalog).sort()).toEqual(['identity', 'states']);
     expect(publicBehaviorCatalogSchema.safeParse({
       ...catalog,
       actionId: 'private-action',

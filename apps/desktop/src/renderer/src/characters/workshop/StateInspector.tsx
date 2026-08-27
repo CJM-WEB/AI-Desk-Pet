@@ -298,6 +298,17 @@ export function StateInspector(props: StateInspectorProps) {
         />
       </label>
       <label>
+        状态详细描述
+        <textarea
+          value={props.state.description ?? ''}
+          maxLength={2_000}
+          disabled={props.disabled}
+          onChange={event => props.onChange({
+            description: event.currentTarget.value || undefined
+          })}
+        />
+      </label>
+      <label>
         状态类别
         <select
           value={props.state.kind}

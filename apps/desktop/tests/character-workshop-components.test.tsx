@@ -665,6 +665,7 @@ describe('V2 结构化 Inspector', () => {
         state={{
           id: 'calm',
           name: '平静',
+          description: '在用户工作时保持安静陪伴。',
           kind: 'modifier',
           semantic: 'idle',
           tags: [],
@@ -693,13 +694,16 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).toContain('标准语义');
     expect(markup).toContain('当前状态引用');
     expect(markup).toContain('状态标签');
+    expect(markup).toContain('状态详细描述');
+    expect(markup).toContain('在用户工作时保持安静陪伴。');
+    expect(markup).toContain('maxLength="2000"');
     expect(markup).not.toMatch(/关键词|情绪文本/u);
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);
   });
 
   test('动作属性从合法动作生成回退选项且不再编辑表现帧率', () => {
     const action = {
-      id: 'wave', name: '挥手', semantic: 'speak' as const, tags: [], preference: 1,
+      id: 'wave', name: '挥手', description: '抬手向用户打招呼。', semantic: 'speak' as const, tags: [], preference: 1,
       cooldownMs: 0, repeatSuppressionMs: 0, loopPolicy: 'presentation' as const,
       interrupt: 'normal' as const, allowedPrimaryStateIds: [], forbiddenPrimaryStateIds: [],
       requiredModifierStateIds: [], forbiddenModifierStateIds: [], direction: 'any' as const
@@ -718,6 +722,9 @@ describe('V2 结构化 Inspector', () => {
     expect(markup).toContain('动作失败回退');
     expect(markup).toContain('value="idle-main"');
     expect(markup).toContain('动作标签');
+    expect(markup).toContain('动作详细描述');
+    expect(markup).toContain('抬手向用户打招呼。');
+    expect(markup).toContain('maxLength="2000"');
     expect(markup).toContain('动作建议持续时间');
     expect(markup).not.toMatch(/帧率|表现帧/u);
     expect(markup).not.toMatch(/系统 Prompt|JSON|脚本|自由执行/u);

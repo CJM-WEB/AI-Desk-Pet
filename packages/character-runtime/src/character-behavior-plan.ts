@@ -32,20 +32,35 @@ export type CharacterBehaviorPlan =
   | Readonly<{ kind: 'move'; direction: MoveDirection; distance: MoveDistance }>
   | Readonly<{ kind: 'move_region'; region: ScreenRegion }>;
 
-/** 发送给模型的角色清单不包含私有 ID、文件位置或任何能力引用。 */
-export type PublicBehaviorCatalog = Readonly<{
-  characterName: string;
-  semantics: readonly CharacterStandardSemantic[];
-  stateNames: readonly string[];
-  actionNames: readonly string[];
+export type PublicCharacterIdentity = Readonly<{
+  name: string;
+  description: string;
+  background: string;
+  traits: readonly string[];
+  languageStyle: string;
+  likes: readonly string[];
+  behavioralTendencies: readonly string[];
+}>;
+
+export type PublicBehaviorAction = Readonly<{
+  name: string;
+  semantic: string;
+  description?: string;
   tags: readonly string[];
-  /** 当前皮肤可播放的公开候选，不包含私有状态、动作或资源标识。 */
-  candidates?: readonly Readonly<{
-    kind: 'state_name' | 'action_name';
-    name: string;
-    semantic: string;
-    tags: readonly string[];
-  }>[];
+}>;
+
+export type PublicBehaviorState = Readonly<{
+  name: string;
+  semantic: string;
+  description?: string;
+  tags: readonly string[];
+  actions: readonly PublicBehaviorAction[];
+}>;
+
+/** 发送给模型的角色清单只保留有界人设与“状态 → 动作”公开层级。 */
+export type PublicBehaviorCatalog = Readonly<{
+  identity: PublicCharacterIdentity;
+  states: readonly PublicBehaviorState[];
 }>;
 
 const publicNameSchema = z.string().trim().min(1).max(120).refine(
@@ -112,18 +127,34 @@ export const movementControlPlanSchema = z.discriminatedUnion('kind', [
   }).strict()
 ]);
 
+const publicIdentitySchema = z.object({
+  name: publicNameSchema,
+  description: z.string().trim().min(1).max(2_000),
+  background: z.string().trim().min(1).max(4_000),
+  traits: z.array(z.string().trim().min(1).max(120)).max(32),
+  languageStyle: z.string().trim().min(1).max(500),
+  likes: z.array(z.string().trim().min(1).max(240)).max(32),
+  behavioralTendencies: z.array(z.string().trim().min(1).max(240)).max(32)
+}).strict();
+
+const publicBehaviorActionSchema = z.object({
+  name: publicNameSchema,
+  semantic: characterBehaviorDescriptorSchema,
+  description: z.string().trim().min(1).max(2_000).optional(),
+  tags: z.array(safeIdentifierSchema).max(32)
+}).strict();
+
+const publicBehaviorStateSchema = z.object({
+  name: publicNameSchema,
+  semantic: characterBehaviorDescriptorSchema,
+  description: z.string().trim().min(1).max(2_000).optional(),
+  tags: z.array(safeIdentifierSchema).max(32),
+  actions: z.array(publicBehaviorActionSchema).max(128)
+}).strict();
+
 export const publicBehaviorCatalogSchema = z.object({
-  characterName: publicNameSchema,
-  semantics: z.array(z.enum(STANDARD_CHARACTER_SEMANTICS)).max(STANDARD_CHARACTER_SEMANTICS.length),
-  stateNames: z.array(publicNameSchema).max(512),
-  actionNames: z.array(publicNameSchema).max(1_024),
-  tags: z.array(safeIdentifierSchema).max(1_024),
-  candidates: z.array(z.object({
-    kind: z.enum(['state_name', 'action_name']),
-    name: publicNameSchema,
-    semantic: characterBehaviorDescriptorSchema,
-    tags: z.array(safeIdentifierSchema).max(1_024)
-  }).strict()).max(1_536).optional()
+  identity: publicIdentitySchema,
+  states: z.array(publicBehaviorStateSchema).max(512)
 }).strict();
 
 /** 可执行契约与发送给模型的 JSON Schema 成对维护，Main 以它复核模型真实输出。 */

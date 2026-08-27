@@ -8,11 +8,14 @@ import type {
 
 const context: ConversationBehaviorContext = {
   character: {
-    characterName: '测试角色',
-    semantics: ['idle', 'move'],
-    stateNames: ['待机'],
-    actionNames: ['眨眼'],
-    tags: []
+    identity: {
+      name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+      languageStyle: '简洁', likes: [], behavioralTendencies: []
+    },
+    states: [{
+      name: '待机', semantic: 'idle', tags: [],
+      actions: [{ name: '眨眼', semantic: 'idle', tags: [] }]
+    }]
   },
   runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 },
   proactivityMode: 'assistive',

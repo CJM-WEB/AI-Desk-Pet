@@ -827,15 +827,17 @@ function conversationBehaviorDouble(
     })),
     getChatContext: vi.fn(() => ({
       character: {
-        characterName: '集成角色',
-        semantics: ['idle', 'move', 'celebrate'],
-        stateNames: ['Agent 专注'],
-        actionNames: ['专注动作'],
-        tags: [],
-        candidates: [
-          { kind: 'state_name', name: 'Agent 专注', semantic: 'focus', tags: [] },
-          { kind: 'action_name', name: '专注动作', semantic: 'think', tags: [] }
-        ]
+        identity: {
+          name: '集成角色', description: '集成测试角色', background: '测试环境', traits: [],
+          languageStyle: '简洁', likes: [], behavioralTendencies: []
+        },
+        states: [{
+          name: 'Agent 专注', semantic: 'focus', tags: [],
+          actions: [
+            { name: '专注动作', semantic: 'think', tags: [] },
+            { name: '庆祝动作', semantic: 'celebrate', tags: [] }
+          ]
+        }]
       },
       runtime: {
         moving: false,
@@ -861,15 +863,17 @@ function behaviorDirectorIntegrationFixture() {
   const notices: Array<{ code: string; message: string }> = [];
   const behavior = {
     getPublicBehaviorCatalog: vi.fn(() => ({
-      characterName: '集成角色',
-      semantics: ['idle', 'move', 'celebrate'] as const,
-      stateNames: ['Agent 专注'],
-      actionNames: ['专注动作'],
-      tags: [],
-      candidates: [
-        { kind: 'state_name' as const, name: 'Agent 专注', semantic: 'focus', tags: [] },
-        { kind: 'action_name' as const, name: '专注动作', semantic: 'think', tags: [] }
-      ]
+      identity: {
+        name: '集成角色', description: '集成测试角色', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [{
+        name: 'Agent 专注', semantic: 'focus', tags: [],
+        actions: [
+          { name: '专注动作', semantic: 'think', tags: [] },
+          { name: '庆祝动作', semantic: 'celebrate', tags: [] }
+        ]
+      }]
     })),
     getRecentPublicActions: vi.fn(() => []),
     resolveBehaviorTarget: vi.fn((target: BehaviorTarget): ResolvedBehaviorTarget => {
@@ -1487,8 +1491,11 @@ describe('桌面会话分流纵向集成', () => {
     const behavior = conversationBehaviorDouble({
       getChatContext: vi.fn(() => ({
         character: {
-          characterName: '披露角色', semantics: ['idle'],
-          stateNames: [], actionNames: [], tags: []
+          identity: {
+            name: '披露角色', description: '披露测试角色', background: '测试环境', traits: [],
+            languageStyle: '简洁', likes: [], behavioralTendencies: []
+          },
+          states: []
         },
         runtime: {
           moving: false, dragging: false, carrying: false, movementMode

@@ -1,11 +1,11 @@
 import type {
   BehaviorTarget,
   MovementControlPlan,
+  PublicBehaviorAction,
   PublicBehaviorCatalog
 } from './character-behavior-plan';
 import type { CharacterStandardSemantic } from './behavior-contracts';
 import {
-  STANDARD_CHARACTER_SEMANTICS,
   type CharacterManifestV2
 } from './character-v2-schema';
 
@@ -51,59 +51,85 @@ function playableActionIds(manifest: CharacterManifestV2, skinId: string): Set<s
   )) ?? []);
 }
 
-function uniqueValues(values: readonly string[]): string[] {
-  const normalized = new Set<string>();
-  return values.filter(value => {
-    const key = normalizePublicValue(value);
-    if (normalized.has(key)) return false;
-    normalized.add(key);
-    return true;
-  });
-}
-
 /** 自定义状态语义以公开值输出，避免向模型暴露内部判别结构。 */
 function publicSemantic(semantic: CharacterManifestV2['states'][number]['semantic']): string {
   return typeof semantic === 'string' ? semantic : semantic.value;
 }
 
-/** 生成仅含可播放公开能力的模型清单，绝不包含 stateId 或 actionId。 */
+/** 生成仅含有界人设与可播放层级的模型清单，绝不包含私有标识或素材数据。 */
 export function createPublicBehaviorCatalog(
   manifest: CharacterManifestV2,
   skinId: string
 ): PublicBehaviorCatalog {
   const playable = playableActionIds(manifest, skinId);
-  const actions = manifest.actions.filter(action => playable.has(action.id));
+  const publicActionsById = new Map(manifest.actions.flatMap(action => (
+    playable.has(action.id)
+      ? [[action.id, {
+          name: action.name,
+          semantic: action.semantic,
+          ...(action.description === undefined ? {} : { description: action.description }),
+          tags: [...action.tags]
+        } satisfies PublicBehaviorAction] as const]
+      : []
+  )));
   const states = manifest.states.filter(state => (
     state.agentInferable && state.actionIds.some(actionId => playable.has(actionId))
   ));
-  const semantics = STANDARD_CHARACTER_SEMANTICS.filter(semantic => (
-    actions.some(action => action.semantic === semantic)
-  ));
 
   return {
-    characterName: manifest.name,
-    semantics,
-    stateNames: uniqueValues(states.map(state => state.name)),
-    actionNames: uniqueValues(actions.map(action => action.name)),
-    tags: uniqueValues([
-      ...states.flatMap(state => state.tags),
-      ...actions.flatMap(action => action.tags)
-    ]),
-    candidates: [
-      ...states.map(state => ({
-        kind: 'state_name' as const,
-        name: state.name,
-        semantic: publicSemantic(state.semantic),
-        tags: [...state.tags]
-      })),
-      ...actions.map(action => ({
+    identity: {
+      name: manifest.name,
+      description: manifest.identity.description,
+      background: manifest.identity.background,
+      traits: [...manifest.identity.traits],
+      languageStyle: manifest.identity.languageStyle,
+      likes: [...manifest.identity.likes],
+      behavioralTendencies: [...manifest.identity.behavioralTendencies]
+    },
+    states: states.map(state => ({
+      name: state.name,
+      semantic: publicSemantic(state.semantic),
+      ...(state.description === undefined ? {} : { description: state.description }),
+      tags: [...state.tags],
+      actions: state.actionIds.flatMap(actionId => {
+        const publicAction = publicActionsById.get(actionId);
+        return publicAction ? [publicAction] : [];
+      })
+    }))
+  };
+}
+
+type PublicCatalogCandidate = Readonly<{
+  kind: 'state_name' | 'action_name';
+  name: string;
+  semantic: string;
+  description?: string;
+  tags: readonly string[];
+}>;
+
+/** 旧 play 目标在 Task 3 期间仅作本地兼容视图，不再进入 Provider 正式目录。 */
+function publicCatalogCandidates(catalog: PublicBehaviorCatalog): PublicCatalogCandidate[] {
+  const seenActions = new Set<PublicBehaviorAction>();
+  return catalog.states.flatMap(state => {
+    const actions = state.actions.flatMap(action => {
+      if (seenActions.has(action)) return [];
+      seenActions.add(action);
+      return [{
         kind: 'action_name' as const,
         name: action.name,
         semantic: action.semantic,
-        tags: [...action.tags]
-      }))
-    ]
-  };
+        ...(action.description === undefined ? {} : { description: action.description }),
+        tags: action.tags
+      }];
+    });
+    return [{
+      kind: 'state_name' as const,
+      name: state.name,
+      semantic: state.semantic,
+      ...(state.description === undefined ? {} : { description: state.description }),
+      tags: state.tags
+    }, ...actions];
+  });
 }
 
 /**
@@ -129,24 +155,27 @@ export function selectPublicBehaviorTarget(
   const queries = [activity, status, ...motionDescriptors]
     .filter((value): value is string => typeof value === 'string')
     .map(normalizePublicValue);
-  if (queries.length === 0 || !catalog.candidates?.length) {
+  const candidates = publicCatalogCandidates(catalog);
+  if (queries.length === 0 || candidates.length === 0) {
     return { kind: 'semantic', semantic: 'idle' };
   }
   const motionQueries = motionDescriptors.map(normalizePublicValue);
   const descriptionQueries = [activity, status]
     .filter((value): value is string => typeof value === 'string')
     .map(normalizePublicValue);
-  type PublicCandidate = NonNullable<PublicBehaviorCatalog['candidates']>[number];
-  const scoreCandidate = (candidate: PublicCandidate, inputs: string[]) => (
+  const scoreCandidate = (candidate: PublicCatalogCandidate, inputs: string[]) => (
     inputs.length === 0 ? 0 : Math.max(
       ...inputs.flatMap(query => [
         similarity(query, normalizePublicValue(candidate.name)),
         similarity(query, normalizePublicValue(candidate.semantic)),
+        ...(candidate.description === undefined
+          ? []
+          : [similarity(query, normalizePublicValue(candidate.description))]),
         ...candidate.tags.map(tag => similarity(query, normalizePublicValue(tag)))
       ])
     )
   );
-  const scored = catalog.candidates.map(candidate => ({
+  const scored = candidates.map(candidate => ({
     candidate,
     // 明确运动计划优先限定身体状态，activity/status 再负责同类候选间的细分。
     score: scoreCandidate(candidate, motionQueries) * 2
@@ -166,20 +195,22 @@ export function isPublicBehaviorTarget(
   catalog: PublicBehaviorCatalog,
   target: BehaviorTarget
 ): boolean {
-  if (target.kind === 'semantic') return catalog.semantics.includes(target.semantic);
+  const candidates = publicCatalogCandidates(catalog);
+  if (target.kind === 'semantic') {
+    return candidates.some(candidate => (
+      candidate.kind === 'action_name' && candidate.semantic === target.semantic
+    ));
+  }
   if (target.kind === 'tag') {
     const normalizedTag = normalizePublicValue(target.tag);
-    if (!catalog.candidates) {
-      return catalog.tags.some(tag => normalizePublicValue(tag) === normalizedTag);
-    }
     // 标签可能被用户同时分配给多个动作；只有唯一命中才可作为精确 Provider 计划。
-    return catalog.candidates.filter(candidate => (
+    return candidates.filter(candidate => (
       candidate.tags.some(tag => normalizePublicValue(tag) === normalizedTag)
     )).length === 1;
   }
-  return (catalog.candidates?.filter(candidate => (
+  return candidates.filter(candidate => (
     candidate.kind === target.kind && normalizePublicValue(candidate.name) === normalizePublicValue(target.name)
-  )).length ?? 0) === 1;
+  )).length === 1;
 }
 
 /** 解析唯一公开目标；未知、歧义和当前皮肤不可播放统一返回稳定能力错误。 */

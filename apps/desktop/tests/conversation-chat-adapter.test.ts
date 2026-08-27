@@ -6,11 +6,14 @@ import { ConversationChatAdapter } from '../src/main/conversation/conversation-c
 
 const behaviorContext = {
   character: {
-    characterName: '小橘',
-    semantics: ['idle', 'move', 'celebrate'] as const,
-    stateNames: ['开心'],
-    actionNames: ['挥手'],
-    tags: ['friendly']
+    identity: {
+      name: '小橘', description: '友好的桌面伙伴', background: '来自数字花园', traits: ['friendly'],
+      languageStyle: '简洁', likes: ['阳光'], behavioralTendencies: ['主动陪伴']
+    },
+    states: [{
+      name: '开心', semantic: 'celebrate', tags: ['friendly'],
+      actions: [{ name: '挥手', semantic: 'celebrate', tags: ['friendly'] }]
+    }]
   },
   runtime: {
     moving: false,
@@ -75,7 +78,7 @@ describe('ConversationChatAdapter', () => {
     expect(取得请求(provider).messages[0]?.content).toContain('尚未执行的文件操作');
     expect(取得请求(provider).messages[0]?.content).toContain('capabilityPlan');
     expect(取得请求(provider).messages[0]?.content).toContain('movementControl');
-    expect(取得请求(provider).messages[0]?.content).toContain('"characterName":"小橘"');
+    expect(取得请求(provider).messages[0]?.content).toContain('"identity":{"name":"小橘"');
     expect(取得请求(provider).messages[0]?.content).toContain('"movementMode":2');
     expect(取得请求(provider).messages[0]?.content).toContain('"proactivityMode":"assistive"');
     expect(取得请求(provider).messages[0]?.content).toContain('"recentActions":["挥手"]');
@@ -242,15 +245,15 @@ describe('ConversationChatAdapter', () => {
     expect(characterChatResponseJsonSchema.properties).toHaveProperty('status');
   });
 
-  test('行为 candidates 存在时序列化上下文不重复发送可推导的名称与标签聚合', async () => {
+  test('序列化上下文保留状态动作层级且不发送旧扁平聚合', async () => {
     const provider = 响应为({ type: 'text', text: '好的' });
     const adapter = new ConversationChatAdapter(provider);
-    const candidate = {
-      kind: 'action_name' as const,
-      name: '自定义巡游',
-      semantic: 'move',
-      tags: ['locomotion', 'friendly']
-    };
+    const states = [{
+      name: '自定义待机', semantic: 'idle', tags: ['friendly'], actions: [{
+        name: '自定义巡游', semantic: 'move', description: '在桌面上巡游',
+        tags: ['locomotion', 'friendly']
+      }]
+    }];
 
     await adapter.respond({
       history: [],
@@ -259,10 +262,7 @@ describe('ConversationChatAdapter', () => {
         ...behaviorContext,
         character: {
           ...behaviorContext.character,
-          stateNames: ['自定义待机'],
-          actionNames: ['自定义巡游'],
-          tags: ['locomotion', 'friendly'],
-          candidates: [candidate]
+          states
         }
       },
       signal: new AbortController().signal
@@ -274,7 +274,8 @@ describe('ConversationChatAdapter', () => {
     const serializedContext = JSON.parse(system.slice(contextStart)) as {
       character: Record<string, unknown>;
     };
-    expect(serializedContext.character.candidates).toEqual([candidate]);
+    expect(serializedContext.character.states).toEqual(states);
+    expect(serializedContext.character).not.toHaveProperty('candidates');
     expect(serializedContext.character).not.toHaveProperty('stateNames');
     expect(serializedContext.character).not.toHaveProperty('actionNames');
     expect(serializedContext.character).not.toHaveProperty('tags');

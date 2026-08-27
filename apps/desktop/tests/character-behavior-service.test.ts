@@ -367,7 +367,7 @@ describe('Main 角色行为权威服务', () => {
       systemForced: true
     });
 
-    expect(catalog.characterName).toBe('first 角色');
+    expect(catalog.identity.name).toBe('first 角色');
     expect(JSON.stringify(catalog)).not.toContain('celebrate-action');
     expect(target).toEqual({ kind: 'action', actionId: 'celebrate-action' });
     expect(authorization).toEqual({

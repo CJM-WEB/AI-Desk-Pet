@@ -79,6 +79,7 @@ const stateSemanticSchema = z.union([
 const stateDefinitionSchema = z.object({
   id: safeIdentifierSchema,
   name: boundedText(120),
+  description: boundedText(2_000).optional(),
   kind: z.enum(['primary', 'modifier']),
   semantic: stateSemanticSchema,
   tags: z.array(safeIdentifierSchema).max(32),
@@ -95,6 +96,7 @@ const stateDefinitionSchema = z.object({
 const actionDefinitionSchema = z.object({
   id: safeIdentifierSchema,
   name: boundedText(120),
+  description: boundedText(2_000).optional(),
   semantic: z.enum(STANDARD_CHARACTER_SEMANTICS),
   tags: z.array(safeIdentifierSchema).max(32),
   preference: finiteNumberSchema.min(0.01).max(100),

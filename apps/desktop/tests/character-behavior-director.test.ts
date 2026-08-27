@@ -50,13 +50,16 @@ function createFixture(initialSettings: Readonly<{
   ]);
   const behavior = {
     getPublicBehaviorCatalog: vi.fn((): PublicBehaviorCatalog => ({
-      characterName: '测试角色', semantics: ['idle', 'celebrate'],
-      stateNames: ['开心'], actionNames: ['挥手', '庆祝'], tags: [],
-      candidates: [
-        { kind: 'state_name', name: '开心', semantic: 'celebrate', tags: [] },
-        { kind: 'action_name', name: '挥手', semantic: 'celebrate', tags: [] },
-        { kind: 'action_name', name: '庆祝', semantic: 'celebrate', tags: ['dance'] }
-      ]
+      identity: {
+        name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [{
+        name: '开心', semantic: 'celebrate', tags: [], actions: [
+          { name: '挥手', semantic: 'celebrate', tags: [] },
+          { name: '庆祝', semantic: 'celebrate', tags: ['dance'] }
+        ]
+      }]
     })),
     resolveBehaviorTarget: vi.fn((target: BehaviorTarget): ResolvedBehaviorTarget => {
       if (target.kind === 'semantic') return { kind: 'semantic', semantic: target.semantic };
@@ -1227,12 +1230,16 @@ describe('Main 角色行为 Director', () => {
     async mode => {
       const fixture = createFixture();
       fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
-        characterName: '测试角色', semantics: ['idle', 'move'],
-        stateNames: [], actionNames: ['安静等待', '巡游四方'], tags: ['still', 'locomotion'],
-        candidates: [
-          { kind: 'action_name', name: '安静等待', semantic: 'idle', tags: ['still'] },
-          { kind: 'action_name', name: '巡游四方', semantic: 'move', tags: ['locomotion'] }
-        ]
+        identity: {
+          name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+          languageStyle: '简洁', likes: [], behavioralTendencies: []
+        },
+        states: [{
+          name: '运动状态', semantic: 'idle', tags: [], actions: [
+            { name: '安静等待', semantic: 'idle', tags: ['still'] },
+            { name: '巡游四方', semantic: 'move', tags: ['locomotion'] }
+          ]
+        }]
       });
       fixture.behavior.resolveBehaviorTarget.mockReturnValue({
         kind: 'action', actionId: 'move-action'
@@ -1256,11 +1263,14 @@ describe('Main 角色行为 Director', () => {
   test('同轮自定义移动动作与 move_once 共用一次授权并实际提交运动', async () => {
     const fixture = createFixture();
     fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
-      characterName: '测试角色', semantics: ['idle', 'move'],
-      stateNames: [], actionNames: ['巡游四方'], tags: ['locomotion'],
-      candidates: [
-        { kind: 'action_name', name: '巡游四方', semantic: 'move', tags: ['locomotion'] }
-      ]
+      identity: {
+        name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [{
+        name: '运动状态', semantic: 'idle', tags: [],
+        actions: [{ name: '巡游四方', semantic: 'move', tags: ['locomotion'] }]
+      }]
     });
     fixture.behavior.resolveBehaviorTarget.mockReturnValue({
       kind: 'action', actionId: 'move-action'
@@ -1310,13 +1320,16 @@ describe('Main 角色行为 Director', () => {
 
     expect(fixture.director.getChatContext()).toEqual({
       character: {
-        characterName: '测试角色', semantics: ['idle', 'celebrate'],
-        stateNames: ['开心'], actionNames: ['挥手', '庆祝'], tags: [],
-        candidates: [
-          { kind: 'state_name', name: '开心', semantic: 'celebrate', tags: [] },
-          { kind: 'action_name', name: '挥手', semantic: 'celebrate', tags: [] },
-          { kind: 'action_name', name: '庆祝', semantic: 'celebrate', tags: ['dance'] }
-        ]
+        identity: {
+          name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+          languageStyle: '简洁', likes: [], behavioralTendencies: []
+        },
+        states: [{
+          name: '开心', semantic: 'celebrate', tags: [], actions: [
+            { name: '挥手', semantic: 'celebrate', tags: [] },
+            { name: '庆祝', semantic: 'celebrate', tags: ['dance'] }
+          ]
+        }]
       },
       runtime: {
         moving: true,
@@ -1393,11 +1406,8 @@ describe('Main 角色行为 Director', () => {
 
     expect(fixture.director.getChatContext()).toMatchObject({
       character: {
-        characterName: '当前角色',
-        semantics: [],
-        stateNames: [],
-        actionNames: [],
-        tags: []
+        identity: { name: '当前角色' },
+        states: []
       },
       runtime: { movementMode: 2 },
       recentActions: []

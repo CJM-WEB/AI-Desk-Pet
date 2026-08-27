@@ -247,11 +247,16 @@ export class CharacterBehaviorDirector {
       if (!(error instanceof Error) || error.message !== 'CHARACTER_ACTION_UNAVAILABLE') throw error;
       // 角色切换与 V1 兼容态不得阻断普通聊天，也不向模型泄露旧私有清单。
       character = {
-        characterName: '当前角色',
-        semantics: [],
-        stateNames: [],
-        actionNames: [],
-        tags: []
+        identity: {
+          name: '当前角色',
+          description: '当前角色公开信息暂不可用。',
+          background: '当前角色正在切换或兼容加载。',
+          traits: [],
+          languageStyle: '自然',
+          likes: [],
+          behavioralTendencies: []
+        },
+        states: []
       };
       catalogAvailable = false;
     }

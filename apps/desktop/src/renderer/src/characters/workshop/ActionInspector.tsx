@@ -112,6 +112,17 @@ export function ActionInspector(props: ActionInspectorProps) {
         />
       </label>
       <label>
+        动作详细描述
+        <textarea
+          value={props.action.description ?? ''}
+          maxLength={2_000}
+          disabled={props.disabled}
+          onChange={event => props.onChange({
+            description: event.currentTarget.value || undefined
+          })}
+        />
+      </label>
+      <label>
         动作语义
         <select
           value={props.action.semantic}

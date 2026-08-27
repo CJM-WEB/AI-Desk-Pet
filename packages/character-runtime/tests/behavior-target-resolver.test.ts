@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   createPublicBehaviorCatalog,
   isPublicBehaviorTarget,
+  publicBehaviorCatalogSchema,
   selectPublicBehaviorTarget,
   resolveBehaviorTarget,
   type CharacterManifestV2,
@@ -25,7 +26,7 @@ function createManifest(): CharacterManifestV2 {
     defaultStateId: 'idle-state',
     states: [
       {
-        id: 'idle-state', name: '待机', kind: 'primary', semantic: 'idle', tags: ['calm'], intensity: 1,
+        id: 'idle-state', name: '待机', description: '安静陪伴', kind: 'primary', semantic: 'idle', tags: ['calm'], intensity: 1,
         coexistWithStateIds: [], forbiddenStateIds: [], enterConditions: [], exitConditions: [],
         agentInferable: true, actionIds: ['idle-action']
       },
@@ -42,7 +43,7 @@ function createManifest(): CharacterManifestV2 {
     ],
     actions: [
       createAction('idle-action', '待机动作', 'idle', ['calm']),
-      createAction('wave-action', '挥手', 'celebrate', ['greet']),
+      { ...createAction('wave-action', '挥手', 'celebrate', ['greet']), description: '向用户热情挥手' },
       createAction('dance-action', '跳舞', 'celebrate', ['dance']),
       createAction('hidden-action', '隐藏动作', 'idle', ['hidden'])
     ],
@@ -85,24 +86,43 @@ function createAction(
 }
 
 describe('公开行为目标解析器', () => {
-  test('公开清单只包含当前皮肤可播放且允许模型推断的名称，不泄露私有 ID', () => {
+  test('公开清单保留状态到动作归属与有界人设，不泄露私有实现数据', () => {
     const catalog = createPublicBehaviorCatalog(createManifest(), 'default-skin');
 
     expect(catalog).toEqual({
-      characterName: '解析角色',
-      semantics: ['idle', 'celebrate'],
-      stateNames: ['待机', 'ＣＨＥＥＲ'],
-      actionNames: ['待机动作', '挥手', '跳舞'],
-      tags: ['calm', 'joy', 'greet', 'dance'],
-      candidates: [
-        { kind: 'state_name', name: '待机', semantic: 'idle', tags: ['calm'] },
-        { kind: 'state_name', name: 'ＣＨＥＥＲ', semantic: 'celebrate', tags: ['joy'] },
-        { kind: 'action_name', name: '待机动作', semantic: 'idle', tags: ['calm'] },
-        { kind: 'action_name', name: '挥手', semantic: 'celebrate', tags: ['greet'] },
-        { kind: 'action_name', name: '跳舞', semantic: 'celebrate', tags: ['dance'] }
+      identity: {
+        name: '解析角色',
+        description: '行为目标解析测试角色',
+        background: '测试环境',
+        traits: [],
+        languageStyle: '简洁',
+        likes: [],
+        behavioralTendencies: []
+      },
+      states: [
+        {
+          name: '待机', semantic: 'idle', description: '安静陪伴', tags: ['calm'],
+          actions: [{ name: '待机动作', semantic: 'idle', tags: ['calm'] }]
+        },
+        {
+          name: 'ＣＨＥＥＲ', semantic: 'celebrate', tags: ['joy'],
+          actions: [
+            { name: '挥手', semantic: 'celebrate', description: '向用户热情挥手', tags: ['greet'] },
+            { name: '跳舞', semantic: 'celebrate', tags: ['dance'] }
+          ]
+        }
       ]
     });
-    expect(JSON.stringify(catalog)).not.toMatch(/(?:idle-state|wave-action|hidden)/u);
+    expect(JSON.stringify(catalog)).not.toMatch(
+      /(?:idle-state|wave-action|hidden|asset|fileName|frames|formsOfAddress|boundaries|exampleLines)/u
+    );
+    expect(() => publicBehaviorCatalogSchema.parse({
+      ...catalog,
+      states: [{
+        ...catalog.states[0]!,
+        actions: [{ ...catalog.states[0]!.actions[0]!, actionId: 'idle-action' }]
+      }]
+    })).toThrow();
   });
 
   test.each([
@@ -135,11 +155,17 @@ describe('公开行为目标解析器', () => {
     { kind: 'move_once', target: 'random_work_area', distance: 'far' }
   ] as const)('运动控制 %o 参与公开候选排序并优先命中用户自定义移动动作', movementControl => {
     const catalog: PublicBehaviorCatalog = {
-      characterName: '运动角色', semantics: ['idle', 'move'],
-      stateNames: [], actionNames: ['安静等待', '巡游四方'], tags: ['still', 'locomotion'],
-      candidates: [
-        { kind: 'action_name' as const, name: '安静等待', semantic: 'idle', tags: ['still'] },
-        { kind: 'action_name' as const, name: '巡游四方', semantic: 'move', tags: ['locomotion'] }
+      identity: {
+        name: '运动角色', description: '运动测试', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [
+        {
+          name: '运动状态', semantic: 'idle', tags: [], actions: [
+            { name: '安静等待', semantic: 'idle', tags: ['still'] },
+            { name: '巡游四方', semantic: 'move', tags: ['locomotion'] }
+          ]
+        }
       ]
     };
 
@@ -166,6 +192,19 @@ describe('公开行为目标解析器', () => {
   ] as const)('未知、不可推断或无当前表现的目标 %o 返回稳定能力错误', target => {
     expect(() => resolveBehaviorTarget(createManifest(), 'default-skin', target))
       .toThrow('CHARACTER_ACTION_UNAVAILABLE');
+  });
+
+  test('同一动作归属多个状态时仍按单个公开目标解析', () => {
+    const manifest = createManifest();
+    manifest.states[0]!.actionIds.push('wave-action');
+    const catalog = createPublicBehaviorCatalog(manifest, 'default-skin');
+
+    expect(isPublicBehaviorTarget(catalog, { kind: 'action_name', name: '挥手' })).toBe(true);
+    expect(resolveBehaviorTarget(
+      manifest,
+      'default-skin',
+      { kind: 'action_name', name: '挥手' }
+    )).toEqual({ kind: 'action', actionId: 'wave-action' });
   });
 
   test('同名或同标签映射到多个目标时拒绝猜测', () => {

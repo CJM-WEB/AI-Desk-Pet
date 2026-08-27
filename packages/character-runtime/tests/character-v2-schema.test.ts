@@ -292,6 +292,40 @@ describe('角色包 V2 严格契约', () => {
     expect(characterDraftV2Schema.parse(draft)).toEqual(draft);
   });
 
+  test('状态与动作详细描述可选且原样进入草稿和正式清单', () => {
+    const draft = createCharacterDraftV2Fixture();
+    Object.assign(draft.states[0]!, { description: '安静陪伴用户的基础状态。' });
+    Object.assign(draft.actions[0]!, { description: '缓慢呼吸并保持放松。' });
+
+    const parsedDraft = characterDraftV2Schema.parse(draft);
+    expect(parsedDraft.states[0]).toMatchObject({ description: '安静陪伴用户的基础状态。' });
+    expect(parsedDraft.actions[0]).toMatchObject({ description: '缓慢呼吸并保持放松。' });
+
+    const manifest = createCharacterManifestV2Fixture();
+    Object.assign(manifest.states[0]!, { description: '发布后的状态描述。' });
+    Object.assign(manifest.actions[0]!, { description: '发布后的动作描述。' });
+    const parsedManifest = characterManifestV2Schema.parse(manifest);
+    expect(parsedManifest.states[0]).toMatchObject({ description: '发布后的状态描述。' });
+    expect(parsedManifest.actions[0]).toMatchObject({ description: '发布后的动作描述。' });
+  });
+
+  test('旧 V2 草稿和正式清单省略状态与动作描述时继续合法', () => {
+    const draft = createCharacterDraftV2Fixture();
+    const manifest = createCharacterManifestV2Fixture();
+
+    expect(characterDraftV2Schema.parse(draft)).toEqual(draft);
+    expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
+  });
+
+  test.each(['state', 'action'] as const)('%s 详细描述拒绝超过 2000 字符', target => {
+    const draft = createCharacterDraftV2Fixture();
+    Object.assign(target === 'state' ? draft.states[0]! : draft.actions[0]!, {
+      description: '描'.repeat(2_001)
+    });
+
+    expect(() => characterDraftV2Schema.parse(draft)).toThrow();
+  });
+
   test('正式清单要求不可拆分的表现几何并绑定所引用资源修订', () => {
     const manifest = createCharacterManifestV2Fixture();
     const presentation = manifest.skins[0]!.presentations[0]!;

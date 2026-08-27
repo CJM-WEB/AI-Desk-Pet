@@ -532,6 +532,70 @@ describe('角色工作室 Zustand 状态层', () => {
     );
   });
 
+  test('状态与动作描述沿用草稿保存、编译发布和重载路径', async () => {
+    let persistedDraft = playableDraft('default', 'AI Pet 默认角色');
+    const saveCharacterDraft = vi.fn(async (_characterId, nextDraft: CharacterDraftV2) => {
+      persistedDraft = structuredClone(nextDraft);
+    });
+    const publishCharacter = vi.fn<CharacterWorkshopApi['publishCharacter']>(async () => undefined);
+    const { api } = apiDouble({
+      getCharacterDraft: vi.fn(async () => structuredClone(persistedDraft)),
+      saveCharacterDraft,
+      readCharacterSource: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47])),
+      publishCharacter
+    });
+    const dependencies: CharacterWorkshopDependencies = {
+      compileAction: async input => ({
+        assetId: input.atlasAssetId,
+        fileName: `${input.atlasAssetId}.png`,
+        sha256: '7'.repeat(64),
+        bytes: new Uint8Array([9]),
+        geometry: TEST_COMPILED_GEOMETRY,
+        frames: [{ assetId: input.atlasAssetId, x: 0, y: 0, width: 1, height: 1 }]
+      })
+    };
+    const store = createCharacterWorkshopStore(api, dependencies);
+    await store.getState().load();
+
+    store.getState().updateState('idle', { description: '保存后的待机状态描述。' });
+    store.getState().updateAction('idle-main', { description: '发布后的呼吸动作描述。' });
+    await store.getState().compileAndPublish();
+
+    expect(saveCharacterDraft).toHaveBeenCalledWith(
+      'default',
+      expect.objectContaining({
+        states: expect.arrayContaining([
+          expect.objectContaining({ description: '保存后的待机状态描述。' })
+        ]),
+        actions: expect.arrayContaining([
+          expect.objectContaining({ description: '发布后的呼吸动作描述。' })
+        ])
+      }),
+      expect.stringMatching(/^[0-9a-f-]{36}$/u)
+    );
+    expect(publishCharacter).toHaveBeenCalledWith(expect.objectContaining({
+      manifest: expect.objectContaining({
+        states: expect.arrayContaining([
+          expect.objectContaining({ description: '保存后的待机状态描述。' })
+        ]),
+        actions: expect.arrayContaining([
+          expect.objectContaining({ description: '发布后的呼吸动作描述。' })
+        ])
+      })
+    }));
+
+    const reloadedStore = createCharacterWorkshopStore(api, dependencies);
+    await reloadedStore.getState().load();
+    expect(reloadedStore.getState().draft).toMatchObject({
+      states: expect.arrayContaining([
+        expect.objectContaining({ description: '保存后的待机状态描述。' })
+      ]),
+      actions: expect.arrayContaining([
+        expect.objectContaining({ description: '发布后的呼吸动作描述。' })
+      ])
+    });
+  });
+
   test('皮肤、状态与动作的新增复制和编辑保持 V2 不可变结构', async () => {
     const loadedDraft = draft('demo', '演示角色');
     const originalSkins = loadedDraft.skins;
