@@ -142,11 +142,25 @@ describe('公开行为目标解析器', () => {
     )).toEqual({ kind: 'state', stateId: 'happy-state' });
   });
 
-  test('隐藏描述从当前皮肤公开候选选择最高相似动作，名称无需相同', () => {
-    const catalog = createPublicBehaviorCatalog(createManifest(), 'default-skin');
+  test('Task 3 只发布描述，不改变既有运行时选择字段与稳定顺序', () => {
+    const catalog: PublicBehaviorCatalog = {
+      identity: {
+        name: '描述角色', description: '描述测试', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [{
+        name: '公开目标', semantic: 'idle', description: '状态说明', tags: [],
+        actions: [{
+          name: '公开目标', semantic: 'idle', description: '只在动作描述中出现的唯一短语', tags: []
+        }]
+      }]
+    };
 
-    expect(selectPublicBehaviorTarget(catalog, '我想 dance 一段', '欢快 dance'))
-      .toEqual({ kind: 'action_name', name: '跳舞' });
+    expect(selectPublicBehaviorTarget(
+      catalog,
+      '只在动作描述中出现的唯一短语',
+      '只在动作描述中出现的唯一短语'
+    )).toEqual({ kind: 'state_name', name: '公开目标' });
   });
 
   test.each([
@@ -197,8 +211,9 @@ describe('公开行为目标解析器', () => {
   test('同一动作归属多个状态时仍按单个公开目标解析', () => {
     const manifest = createManifest();
     manifest.states[0]!.actionIds.push('wave-action');
-    const catalog = createPublicBehaviorCatalog(manifest, 'default-skin');
+    const catalog = structuredClone(createPublicBehaviorCatalog(manifest, 'default-skin'));
 
+    expect(publicBehaviorCatalogSchema.safeParse(catalog).success).toBe(true);
     expect(isPublicBehaviorTarget(catalog, { kind: 'action_name', name: '挥手' })).toBe(true);
     expect(resolveBehaviorTarget(
       manifest,

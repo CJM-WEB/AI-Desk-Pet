@@ -105,31 +105,48 @@ type PublicCatalogCandidate = Readonly<{
   semantic: string;
   description?: string;
   tags: readonly string[];
+  publicKey: string;
 }>;
 
-/** 旧 play 目标在 Task 3 期间仅作本地兼容视图，不再进入 Provider 正式目录。 */
+function publicCandidateKey(candidate: Omit<PublicCatalogCandidate, 'publicKey'>): string {
+  return JSON.stringify([
+    candidate.kind,
+    normalizePublicValue(candidate.name),
+    normalizePublicValue(candidate.semantic),
+    candidate.description === undefined ? null : normalizePublicValue(candidate.description),
+    candidate.tags.map(normalizePublicValue).sort()
+  ]);
+}
+
+/** 旧 play 目标在 Task 3 期间仅作本地兼容视图，稳定键不依赖对象别名或私有 ID。 */
 function publicCatalogCandidates(catalog: PublicBehaviorCatalog): PublicCatalogCandidate[] {
-  const seenActions = new Set<PublicBehaviorAction>();
   return catalog.states.flatMap(state => {
-    const actions = state.actions.flatMap(action => {
-      if (seenActions.has(action)) return [];
-      seenActions.add(action);
-      return [{
+    const actions = state.actions.map(action => {
+      const candidate = {
         kind: 'action_name' as const,
         name: action.name,
         semantic: action.semantic,
         ...(action.description === undefined ? {} : { description: action.description }),
         tags: action.tags
-      }];
+      };
+      return { ...candidate, publicKey: publicCandidateKey(candidate) };
     });
-    return [{
+    const candidate = {
       kind: 'state_name' as const,
       name: state.name,
       semantic: state.semantic,
       ...(state.description === undefined ? {} : { description: state.description }),
       tags: state.tags
-    }, ...actions];
+    };
+    return [{ ...candidate, publicKey: publicCandidateKey(candidate) }, ...actions];
   });
+}
+
+function uniquePublicCatalogCandidates(catalog: PublicBehaviorCatalog): PublicCatalogCandidate[] {
+  return [...new Map(publicCatalogCandidates(catalog).map(candidate => [
+    candidate.publicKey,
+    candidate
+  ])).values()];
 }
 
 /**
@@ -155,12 +172,12 @@ export function selectPublicBehaviorTarget(
   const queries = [activity, status, ...motionDescriptors]
     .filter((value): value is string => typeof value === 'string')
     .map(normalizePublicValue);
-  const candidates = publicCatalogCandidates(catalog);
+  const candidates = uniquePublicCatalogCandidates(catalog);
   if (queries.length === 0 || candidates.length === 0) {
     return { kind: 'semantic', semantic: 'idle' };
   }
   const motionQueries = motionDescriptors.map(normalizePublicValue);
-  const descriptionQueries = [activity, status]
+  const behaviorQueries = [activity, status]
     .filter((value): value is string => typeof value === 'string')
     .map(normalizePublicValue);
   const scoreCandidate = (candidate: PublicCatalogCandidate, inputs: string[]) => (
@@ -168,9 +185,6 @@ export function selectPublicBehaviorTarget(
       ...inputs.flatMap(query => [
         similarity(query, normalizePublicValue(candidate.name)),
         similarity(query, normalizePublicValue(candidate.semantic)),
-        ...(candidate.description === undefined
-          ? []
-          : [similarity(query, normalizePublicValue(candidate.description))]),
         ...candidate.tags.map(tag => similarity(query, normalizePublicValue(tag)))
       ])
     )
@@ -179,7 +193,7 @@ export function selectPublicBehaviorTarget(
     candidate,
     // 明确运动计划优先限定身体状态，activity/status 再负责同类候选间的细分。
     score: scoreCandidate(candidate, motionQueries) * 2
-      + scoreCandidate(candidate, descriptionQueries)
+      + scoreCandidate(candidate, behaviorQueries)
   })).sort((left, right) => right.score - left.score);
   const best = scored[0];
   if (!best) {
@@ -195,7 +209,7 @@ export function isPublicBehaviorTarget(
   catalog: PublicBehaviorCatalog,
   target: BehaviorTarget
 ): boolean {
-  const candidates = publicCatalogCandidates(catalog);
+  const candidates = uniquePublicCatalogCandidates(catalog);
   if (target.kind === 'semantic') {
     return candidates.some(candidate => (
       candidate.kind === 'action_name' && candidate.semantic === target.semantic
