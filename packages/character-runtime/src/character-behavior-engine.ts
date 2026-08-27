@@ -209,6 +209,13 @@ export class CharacterBehaviorEngine {
     systemForced: boolean;
   }): CharacterBehaviorDecision {
     this.lastDirection = input.direction;
+    const directedStateId = input.target.kind === 'state' || input.target.kind === 'state_action'
+      ? input.target.stateId
+      : null;
+    if (directedStateId !== null && this.stateActionLifecycle?.stateId !== directedStateId) {
+      // 显式跨状态切换先作废旧续选权；新状态不可用时也不能回流旧状态。
+      this.stateActionLifecycle = null;
+    }
     const decision = this.selectAndSchedule({
       direction: input.direction,
       nowMs: this.now(),

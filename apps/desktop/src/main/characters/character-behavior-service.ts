@@ -312,6 +312,11 @@ export class CharacterBehaviorService {
   ): CharacterBehaviorAuthorization {
     if (this.closed) return NO_BEHAVIOR_AUTHORIZATION;
     this.options.motion.applyTaskEvent(event);
+    if (event.type === 'character_carrying') {
+      // Main 搬运事实立即撤销旧状态续选权，当前动作仍等待真实播放终态收敛。
+      if (event.carrying) this.engine?.cancelStateLifecycle();
+      return NO_BEHAVIOR_AUTHORIZATION;
+    }
     const now = this.now();
     const allowPlayback = options.allowPlayback ?? true;
     if (this.transitioning) {

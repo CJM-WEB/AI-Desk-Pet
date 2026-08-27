@@ -759,6 +759,40 @@ describe('Main 角色行为权威服务', () => {
     expect(events.at(-1)).toMatchObject({ actionId: 'celebrate-action' });
   });
 
+  test('可信搬运开始后旧状态动作完成不再续播', async () => {
+    const fixture = createFixture();
+    const service = new Constructor(fixture.options);
+    const events: BehaviorPlaybackEvent[] = [];
+    service.subscribe(event => events.push(event));
+    await service.initialize();
+    service.requestDirectedBehavior({ kind: 'state', stateId: 'celebrate-state' }, {
+      urgency: 80,
+      systemForced: true
+    });
+    service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-2',
+      actionId: 'celebrate-action',
+      status: 'started',
+      occurredAtMs: 1
+    });
+    events.splice(0);
+
+    service.handleTaskEvent({ type: 'character_carrying', carrying: true });
+    fixture.setNow(2);
+    service.applyPlaybackFeedback({
+      playbackToken: 'behavior-token-2',
+      actionId: 'celebrate-action',
+      status: 'completed',
+      occurredAtMs: 2
+    });
+
+    expect(events).toEqual([]);
+    expect(fixture.motion.applyTaskEvent).toHaveBeenCalledWith({
+      type: 'character_carrying',
+      carrying: true
+    });
+  });
+
   test('运动快照只在 moving 边沿改变时决策', async () => {
     const fixture = createFixture();
     const service = new Constructor(fixture.options);

@@ -418,6 +418,60 @@ describe('事件驱动角色行为引擎', () => {
     }));
   });
 
+  test('显式切换到冷却中的状态失败后不再延续旧状态动作', () => {
+    let now = 1_000;
+    const aAction = 创建动作('a-action', 'celebrate');
+    const bAction = 创建动作('b-action', 'speak', { cooldownMs: 1_000 });
+    const engine = 创建引擎(创建清单({
+      actions: [aAction, bAction],
+      states: [
+        创建状态('a-state', 'celebrate', [aAction.id]),
+        创建状态('b-state', 'speak', [bAction.id])
+      ],
+      defaultStateId: 'a-state'
+    }), {
+      now: () => now,
+      createPlaybackToken: 创建令牌工厂('unavailable-switch')
+    });
+
+    engine.dispatchDirected({
+      target: { kind: 'state', stateId: 'b-state' },
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    engine.applyFeedback({
+      playbackToken: 'unavailable-switch-1', actionId: 'b-action',
+      status: 'started', occurredAtMs: now
+    });
+    engine.cancelStateLifecycle();
+    engine.applyFeedback({
+      playbackToken: 'unavailable-switch-1', actionId: 'b-action',
+      status: 'completed', occurredAtMs: now
+    });
+
+    now = 1_100;
+    engine.dispatchDirected({
+      target: { kind: 'state', stateId: 'a-state' },
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    engine.applyFeedback({
+      playbackToken: 'unavailable-switch-2', actionId: 'a-action',
+      status: 'started', occurredAtMs: now
+    });
+    const rejectedSwitch = engine.dispatchDirected({
+      target: { kind: 'state', stateId: 'b-state' },
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    expect(rejectedSwitch.diagnosticCodes).toEqual(['CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE']);
+
+    const completed = engine.applyFeedback({
+      playbackToken: 'unavailable-switch-2', actionId: 'a-action',
+      status: 'completed', occurredAtMs: now
+    });
+
+    expect(completed.effects).toEqual([{ type: 'none' }]);
+    expect(completed.snapshot.schedule.current).toBeNull();
+  });
+
   test('定向目标不可用时不生成待机令牌并返回稳定诊断', () => {
     const engine = 创建引擎(创建六语义清单());
 
