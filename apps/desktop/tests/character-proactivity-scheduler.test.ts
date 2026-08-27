@@ -242,6 +242,36 @@ describe('CharacterProactivityScheduler', () => {
     await current.scheduler.close();
   });
 
+  test('0→2→1→2→0 每次切换都撤销旧时钟并只启动目标模式', async () => {
+    vi.useFakeTimers();
+    const values = [0, 1, 0.5];
+    const current = fixture({ start: false, random: () => values.shift() ?? 0 });
+    current.setMovementMode(0);
+    current.scheduler.start();
+    expect(vi.getTimerCount()).toBe(0);
+
+    current.setMovementMode(2);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
+
+    current.setMovementMode(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
+    expect(current.director.requestPersistentMovement).toHaveBeenCalledOnce();
+
+    current.setMovementMode(2);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(current.requestIntermittentMovement).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
+
+    current.setMovementMode(0);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(current.requestIntermittentMovement).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    await current.scheduler.close();
+  });
+
   test('间歇目标无需移动时也会重新等待完整周期而非永久失活', async () => {
     vi.useFakeTimers();
     const current = fixture({ random: () => 0 });

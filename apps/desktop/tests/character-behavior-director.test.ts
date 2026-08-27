@@ -95,7 +95,11 @@ function createFixture(initialSettings: Readonly<{
     isMovementBehaviorTarget: vi.fn((target: ResolvedBehaviorTarget) => (
       target.kind === 'semantic'
         ? target.semantic === 'move'
-        : target.kind === 'action' && target.actionId === 'move-action'
+        : target.kind === 'action'
+          ? target.actionId === 'move-action'
+          : target.kind === 'state_action'
+            ? target.actionId === 'move-action'
+            : target.stateId === 'move-state'
     )),
     requestDirectedBehavior: vi.fn(() => directedAuthorization),
     requestProactiveBehavior: vi.fn((target: BehaviorTarget, options?: { allowMovement?: boolean }) => (
@@ -323,6 +327,7 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
       kind: 'wander', scope: 'work_area', distance: 'medium'
     });
+    expect(fixture.behavior.cancelStateLifecycle).toHaveBeenCalledOnce();
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'idle-action', playbackToken: 'idle-token', semantic: 'idle'
     });
@@ -665,7 +670,7 @@ describe('Main 角色行为 Director', () => {
     expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(2);
   });
 
-  test('模式 1 切到 2 终止持续链但不误杀单次运动', async () => {
+  test('模式 1 切到 2 终止旧持续链与单次运动，再由模式 2 独立调度', async () => {
     const persistent = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
     persistent.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'persistent-token', semantic: 'move'
@@ -693,13 +698,72 @@ describe('Main 角色行为 Director', () => {
     once.director.handleTaskEvent({ type: 'phase', phase: 'success' });
     once.director.applyBehaviorSettings({ movementMode: 2, proactivityMode: 'assistive' });
 
-    expect(once.motion.stop).not.toHaveBeenCalled();
+    expect(once.motion.stop).toHaveBeenCalledOnce();
+    expect(once.behavior.cancelStateLifecycle).toHaveBeenCalledOnce();
     expect(once.director.getDiagnosticSnapshot()).toMatchObject({
       movementMode: 2,
-      currentTargetType: 'bottom_right',
+      currentTargetType: null,
       continuousTargetType: null
     });
   });
+
+  test('模式 2 的旧间歇目标在切到模式 1 时立即失效，旧到达边沿不能阻止持续运动', () => {
+    const fixture = createFixture({ movementMode: 2, proactivityMode: 'assistive' });
+    fixture.setMotionSnapshot({
+      revision: 3, timestampMs: 20,
+      position: { x: 20, y: 30 }, target: { x: 20, y: 30 },
+      direction: 'right', moving: false, carrying: false
+    });
+    fixture.setRequestedMotionMoving(true);
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.requestIntermittentMovement();
+
+    fixture.director.applyBehaviorSettings({ movementMode: 1, proactivityMode: 'assistive' });
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: false });
+    fixture.director.requestPersistentMovement();
+
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+    expect(fixture.behavior.cancelStateLifecycle).toHaveBeenCalledOnce();
+    expect(fixture.motion.requestIntent).toHaveBeenCalledTimes(2);
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      movementMode: 1,
+      continuousTargetType: 'random_work_area'
+    });
+  });
+
+  test.each([0, 2] as const)(
+    '模式 %i 不提交模型附带的移动动画，运动只由三态调度器发起',
+    async mode => {
+      const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
+      fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
+        identity: {
+          name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+          languageStyle: '简洁', likes: [], behavioralTendencies: []
+        },
+        states: [{
+          name: '运动', semantic: 'move', tags: [],
+          actions: [{ name: '移动', semantic: 'move', tags: [] }]
+        }]
+      });
+      fixture.setDirectedAuthorization({
+        kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+      });
+
+      await fixture.director.completeUserPrompt({
+        generation: 'generation-1',
+        explicitDirective: null,
+        providerPlan: play('移动'),
+        movementControl: { kind: 'set_mode', mode }
+      });
+      fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+      expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(mode);
+      expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+      expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+    }
+  );
 
   test('模式 1 的无限链重采样失败后释放旧令牌并由 Scheduler 重新请求', async () => {
     const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
@@ -1326,9 +1390,9 @@ describe('Main 角色行为 Director', () => {
     }]);
   });
 
-  test.each([1, 2] as const)(
-    'Provider set_mode(%i) 即使描述泛化也为自定义角色选择最相似移动动画',
-    async mode => {
+  test(
+    'Provider set_mode(1) 即使描述泛化也为自定义角色选择最相似移动动画',
+    async () => {
       const fixture = createFixture();
       fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
         identity: {
@@ -1351,7 +1415,7 @@ describe('Main 角色行为 Director', () => {
 
       await fixture.director.completeUserPrompt({
         generation: 'generation-1', explicitDirective: null, providerPlan: { kind: 'none' },
-        movementControl: { kind: 'set_mode', mode }, activity: '开始行动', status: '保持活跃'
+        movementControl: { kind: 'set_mode', mode: 1 }, activity: '开始行动', status: '保持活跃'
       });
       fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 

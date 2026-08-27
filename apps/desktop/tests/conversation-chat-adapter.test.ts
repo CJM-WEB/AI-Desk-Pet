@@ -78,6 +78,10 @@ describe('ConversationChatAdapter', () => {
     expect(取得请求(provider).messages[0]?.content).toContain('尚未执行的文件操作');
     expect(取得请求(provider).messages[0]?.content).toContain('capabilityPlan');
     expect(取得请求(provider).messages[0]?.content).toContain('movementControl');
+    expect(取得请求(provider).messages[0]?.content).toContain('10–30 秒');
+    expect(取得请求(provider).messages[0]?.content).toContain(
+      'mode=2 时 behaviorPlan 不得描述正在移动'
+    );
     expect(取得请求(provider).messages[0]?.content).toContain('"identity":{"name":"小橘"');
     expect(取得请求(provider).messages[0]?.content).toContain('"movementMode":2');
     expect(取得请求(provider).messages[0]?.content).toContain('"proactivityMode":"assistive"');

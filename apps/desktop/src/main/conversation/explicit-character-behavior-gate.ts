@@ -74,13 +74,22 @@ type ParsedDirective = Readonly<{
 }>;
 
 function parseChinese(text: string): ParsedDirective | null {
-  const stop = /^(?:请)?(?:你)?(?:停下|停止不动|别走了|不要走了|别动了|不要动了|静止不动|保持静止|不要再动|别乱跑)/u.exec(text);
+  // “不要一直跑，隔一会儿动一下”是否定持续模式、肯定间歇模式，必须先于停止和持续规则判定。
+  const intermittentCorrection = /^(?:请)?不要一直(?:跑|走|运动|移动)[，,\s]*(?:而是)?(?:隔一会儿|偶尔|时不时)(?:再)?(?:动一下|动一动|运动|活动|走动)/u.exec(text);
+  if (intermittentCorrection) {
+    return {
+      consumed: intermittentCorrection[0].length,
+      directive: { kind: 'resume_movement' }
+    };
+  }
+
+  const stop = /^(?:请)?(?:你)?(?:停下|停止不动|别走了|不要走了|不要再走了|别动了|不要动了|静止不动|保持静止|不要再动|别乱跑)/u.exec(text);
   if (stop) return { consumed: stop[0].length, directive: { kind: 'stop_movement' } };
 
-  const continuous = /^(?:请)?(?:保持运动|保持移动|一直运动|一直走|一直跑|继续跑)/u.exec(text);
+  const continuous = /^(?:请)?(?:(?:让|叫)(?:他|她|它))?(?:保持运动|保持移动|保持跑动|一直运动|一直走|一直跑|继续跑)/u.exec(text);
   if (continuous) return { consumed: continuous[0].length, directive: { kind: 'continuous_movement' } };
 
-  const resume = /^(?:请)?(?:时不时动一下|偶尔动一下|自己偶尔走动|间歇地?活动|恢复自主活动|恢复活动|恢复移动|可以动了|继续活动|继续走)/u.exec(text);
+  const resume = /^(?:请)?(?:(?:让|叫)(?:他|她|它))?(?:时不时(?:地)?(?:动一下|运动|活动|走动)|偶尔(?:地)?(?:动一下|动一动|运动|活动|走动)|自己偶尔走动|间歇地?活动|恢复自主活动|恢复活动|恢复移动|可以动了|继续活动|继续走)/u.exec(text);
   if (resume) return { consumed: resume[0].length, directive: { kind: 'resume_movement' } };
 
   const region = /^(?:请)?(?:去|走到|移动到)(?:屏幕)?(左上角|右上角|左下角|右下角|左边|右边|顶部|上边|底部|下边)/u.exec(text);

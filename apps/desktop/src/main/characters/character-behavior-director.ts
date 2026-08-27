@@ -350,7 +350,7 @@ export class CharacterBehaviorDirector {
           catalog, input.activity, input.status, movementControl
         );
     // none 只表示 Provider 没有精确目录目标，不能吞掉隐藏描述的最高相似匹配。
-    const plan = providerPlan?.kind === 'none' ? fallbackPlan : providerPlan ?? fallbackPlan;
+    const candidatePlan = providerPlan?.kind === 'none' ? fallbackPlan : providerPlan ?? fallbackPlan;
     // 持久运动策略只消费 MovementControlPlan；behaviorPlan 不具有写模式权限。
     if (movementControl.kind === 'set_mode') {
       const turnEpoch = this.turnEpoch;
@@ -359,7 +359,12 @@ export class CharacterBehaviorDirector {
     }
     // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
     if (this.closed || input.generation !== this.generation) return;
-    this.pendingChatPlan = plan;
+    // mode 0/2 的移动动画只能伴随真实 Motion：静止时禁止，间歇时只由 Scheduler 发起。
+    this.pendingChatPlan = movementControl.kind !== 'move_once'
+      && this.movementMode !== 1
+      && this.isMovementPlan(candidatePlan, catalog)
+      ? null
+      : candidatePlan;
     this.pendingMovementControl = movementControl.kind === 'move_once' ? movementControl : null;
   }
 
@@ -618,6 +623,8 @@ export class CharacterBehaviorDirector {
         this.stopContinuousMotion();
       }
     } else if (arrived) {
+      // 一段运动的终态同时撤销旧 move 状态续播权；idle 由真实 movement=false 信号恢复。
+      this.options.behavior.cancelStateLifecycle();
       this.currentMotionTarget = null;
       if (this.active?.semantic === 'move') {
         this.active = null;
@@ -629,23 +636,20 @@ export class CharacterBehaviorDirector {
   /** 只接收 Store 成功落盘后的完整快照，避免运行态与磁盘分叉。 */
   applyBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void {
     if (this.closed) return;
-    if (snapshot.movementMode === 0) this.options.behavior.cancelStateLifecycle();
-    const shouldStopMotion = this.movementMode !== 0 && snapshot.movementMode === 0;
-    const shouldStopPersistentMotion = this.movementMode === 1
-      && snapshot.movementMode === 2
-      && this.continuousTarget !== null;
-    this.movementMode = snapshot.movementMode;
-    const modeChanged = this.proactivityMode !== snapshot.proactivityMode;
-    this.proactivityMode = snapshot.proactivityMode;
-    if (modeChanged) this.behaviorLifecycleGeneration += 1;
-    if (shouldStopMotion) {
-      this.stopContinuousMotion();
-      // 停止锁终止上一段显式移动的所有权，否则同优先级的恢复指令会被旧令牌拒绝。
-      if (this.active?.source === 'explicit' && this.active.semantic === 'move') this.active = null;
-    } else if (shouldStopPersistentMotion) {
-      // 1→2 只撤销持续链；move_once 仍由其真实终态收口。
-      this.clearContinuousMotion();
+    const movementModeChanged = this.movementMode !== snapshot.movementMode;
+    if (snapshot.movementMode === 0 || movementModeChanged) {
+      this.options.behavior.cancelStateLifecycle();
     }
+    // 模式边界拥有旧目标：切换先终止旧 Motion/播放令牌，再让 Scheduler 启动新策略。
+    if (movementModeChanged) {
+      if (snapshot.movementMode === 0) this.stopContinuousMotion();
+      else this.clearContinuousMotion();
+    }
+    this.movementMode = snapshot.movementMode;
+    const proactivityModeChanged = this.proactivityMode !== snapshot.proactivityMode;
+    this.proactivityMode = snapshot.proactivityMode;
+    if (movementModeChanged || proactivityModeChanged) this.behaviorLifecycleGeneration += 1;
+    if (movementModeChanged && this.active?.semantic === 'move') this.active = null;
     this.publishActivityChanged();
   }
 
@@ -770,6 +774,21 @@ export class CharacterBehaviorDirector {
     this.pendingChatPlan = null;
     this.pendingMovementControl = null;
     this.pendingSuccessToken = null;
+  }
+
+  /** 模型动作只能决定动画候选，持久模式为 0/2 时不得伪造正在移动。 */
+  private isMovementPlan(
+    plan: CharacterBehaviorPlan | null,
+    catalog: PublicBehaviorCatalog | null
+  ): boolean {
+    if (!plan || plan.kind !== 'play_state' || !catalog) return false;
+    const state = catalog.states.find(candidate => candidate.name === plan.state);
+    if (!state) return false;
+    if (plan.action !== undefined) {
+      return state.actions.find(action => action.name === plan.action)?.semantic === 'move';
+    }
+    return state.semantic === 'move'
+      || state.actions.some(action => action.semantic === 'move');
   }
 
   private releasePlaybackToken(playbackToken: string): void {

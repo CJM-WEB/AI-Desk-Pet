@@ -24,6 +24,7 @@ export const characterJsonOutputInstructions = [
   'behaviorPlan 每轮必填：有匹配项时返回 play_state，state 使用公开状态名；用户明确动作时 action 使用该状态内公开动作名，只指定状态时省略 action；没有匹配项时返回 kind=none。',
   'movementControl 每轮必填且只允许 keep、set_mode、move_once：没有运动要求用 keep。',
   '停止、保持静止、不要再动用 set_mode=0；一直、持续、保持运动用 set_mode=1；时不时、偶尔、间歇、恢复自主活动用 set_mode=2。',
+  'mode=2 表示每段移动结束后回到 idle，再由 Main 随机等待 10–30 秒；mode=2 时 behaviorPlan 不得描述正在移动，只有 move_once 才描述本轮移动。',
   '只动一下、跑远一点或去屏幕某区域用 move_once；target 只能是 random_work_area 或公开屏幕区域，绝不提供坐标；distance 按用户语义选择 near、medium、far。',
   'capabilityPlan 每轮必填：普通聊天返回 {"kind":"chat"}；用户明确要求真实文件、目录或 PowerShell 操作时返回 {"kind":"agent_task","preferredTool":工具名或null}。它只用于请求 Main 授权，绝不表示已经执行。',
   '示例“停止不动”：movementControl={"kind":"set_mode","mode":0}。',
