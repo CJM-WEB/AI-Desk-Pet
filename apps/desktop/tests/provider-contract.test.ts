@@ -91,6 +91,59 @@ const providerBehaviorContext = {
   recentActions: []
 };
 
+/** Provider 与本地模型必须对同一组用户自然表达给出相同的隐藏控制契约。 */
+const naturalIntentMatrix = [
+  {
+    prompt: '你好呀',
+    response: {
+      text: '你好呀，我在。', activity: '安静陪伴', status: 'idle',
+      movementControl: { kind: 'keep' }, behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' }
+    }
+  },
+  {
+    prompt: '停止不动',
+    response: {
+      text: '好的，我会保持静止。', activity: '保持静止', status: 'idle',
+      movementControl: { kind: 'set_mode', mode: 0 }, behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' }
+    }
+  },
+  {
+    prompt: '让他一直运动',
+    response: {
+      text: '好的，我会持续运动。', activity: '持续运动', status: 'moving',
+      movementControl: { kind: 'set_mode', mode: 1 }, behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' }
+    }
+  },
+  {
+    prompt: '让他时不时动一下',
+    response: {
+      text: '好的，我会偶尔走动。', activity: '休闲待机', status: 'idle',
+      movementControl: { kind: 'set_mode', mode: 2 }, behaviorPlan: { kind: 'none' },
+      capabilityPlan: { kind: 'chat' }
+    }
+  },
+  {
+    prompt: '跑远一点',
+    response: {
+      text: '我跑远一点。', activity: '远距离跑动', status: 'moving',
+      movementControl: { kind: 'move_once', target: 'random_work_area', distance: 'far' },
+      behaviorPlan: { kind: 'none' }, capabilityPlan: { kind: 'chat' }
+    }
+  },
+  {
+    prompt: '挥手一会儿',
+    response: {
+      text: '我来挥挥手。', activity: '挥手问候', status: '开心',
+      movementControl: { kind: 'keep' },
+      behaviorPlan: { kind: 'play_state', state: '开心', action: '挥手' },
+      capabilityPlan: { kind: 'chat' }
+    }
+  }
+] as const;
+
 const request: ModelRequest = {
   messages: [
     { role: 'system', content: '只返回必要内容。' },
@@ -803,6 +856,33 @@ describe('三协议云端普通聊天流式契约', () => {
 });
 
 describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
+  test.each(chatProviderContractCases.flatMap(contract => naturalIntentMatrix.map(intent => ({
+    contract,
+    ...intent
+  }))))(
+    '$contract.name 把“$prompt”的真实协议响应解码为统一意图',
+    async ({ contract, prompt, response }) => {
+      const adapter = new ConversationChatAdapter(contract.createProvider(
+        vi.fn(async () => characterChatSseResponse(contract.name, JSON.stringify(response)))
+      ));
+
+      await expect(adapter.respond({
+        history: [],
+        text: prompt,
+        behaviorContext: providerBehaviorContext,
+        signal: new AbortController().signal,
+        onTextDelta: vi.fn()
+      })).resolves.toEqual({
+        text: response.text,
+        activity: response.activity,
+        status: response.status,
+        movementControl: response.movementControl,
+        behaviorPlan: response.behaviorPlan,
+        capabilityPlan: response.capabilityPlan
+      });
+    }
+  );
+
   test.each(chatProviderContractCases)(
     '$name 的合法普通聊天与能力任务结构在流式传输后均保留控制计划',
     async contract => {

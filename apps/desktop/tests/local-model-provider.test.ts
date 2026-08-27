@@ -49,6 +49,57 @@ const characterResponseSchema = Object.freeze({
   }
 });
 
+const localBehaviorContext = {
+  character: {
+    identity: {
+      name: '本地测试角色', description: '本地测试角色', background: '测试环境',
+      traits: [], languageStyle: '简洁', likes: [], behavioralTendencies: []
+    },
+    states: [{
+      name: '开心', semantic: 'celebrate', tags: [],
+      actions: [{ name: '挥手', semantic: 'celebrate', tags: [] }]
+    }]
+  },
+  runtime: { moving: false, dragging: false, carrying: false, movementMode: 2 as const },
+  proactivityMode: 'assistive' as const,
+  recentActions: []
+};
+
+/** 与云 Provider 契约测试保持逐项相同的自然表达及期望。 */
+const naturalIntentMatrix = [
+  ['你好呀', {
+    text: '你好呀，我在。', activity: '安静陪伴', status: 'idle',
+    movementControl: { kind: 'keep' }, behaviorPlan: { kind: 'none' },
+    capabilityPlan: { kind: 'chat' }
+  }],
+  ['停止不动', {
+    text: '好的，我会保持静止。', activity: '保持静止', status: 'idle',
+    movementControl: { kind: 'set_mode', mode: 0 }, behaviorPlan: { kind: 'none' },
+    capabilityPlan: { kind: 'chat' }
+  }],
+  ['让他一直运动', {
+    text: '好的，我会持续运动。', activity: '持续运动', status: 'moving',
+    movementControl: { kind: 'set_mode', mode: 1 }, behaviorPlan: { kind: 'none' },
+    capabilityPlan: { kind: 'chat' }
+  }],
+  ['让他时不时动一下', {
+    text: '好的，我会偶尔走动。', activity: '休闲待机', status: 'idle',
+    movementControl: { kind: 'set_mode', mode: 2 }, behaviorPlan: { kind: 'none' },
+    capabilityPlan: { kind: 'chat' }
+  }],
+  ['跑远一点', {
+    text: '我跑远一点。', activity: '远距离跑动', status: 'moving',
+    movementControl: { kind: 'move_once', target: 'random_work_area', distance: 'far' },
+    behaviorPlan: { kind: 'none' }, capabilityPlan: { kind: 'chat' }
+  }],
+  ['挥手一会儿', {
+    text: '我来挥挥手。', activity: '挥手问候', status: '开心',
+    movementControl: { kind: 'keep' },
+    behaviorPlan: { kind: 'play_state', state: '开心', action: '挥手' },
+    capabilityPlan: { kind: 'chat' }
+  }]
+] as const;
+
 const structuredRequest: ModelRequest = {
   messages: [{ role: 'user', content: '保持安静陪伴' }],
   tools: [],
@@ -105,6 +156,31 @@ function readyPort(getReadyConnection = () => connection): LocalModelConnectionP
 }
 
 describe('LocalModelProvider', () => {
+  test.each(naturalIntentMatrix)(
+    '把“%s”的环回 SSE 响应解码为与云 Provider 相同的意图',
+    async (prompt, response) => {
+      const fetchClient = vi.fn<FetchLike>(async () => sseResponse([JSON.stringify(response)]));
+      const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
+
+      await expect(adapter.respond({
+        history: [],
+        text: prompt,
+        behaviorContext: localBehaviorContext,
+        signal: new AbortController().signal,
+        onTextDelta: vi.fn()
+      })).resolves.toEqual(response);
+
+      const requestBody = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+      expect(requestBody).toMatchObject({
+        stream: true,
+        response_format: { type: 'json_object' }
+      });
+      expect(requestBody.response_format.schema.required).toEqual(expect.arrayContaining([
+        'text', 'activity', 'status', 'movementControl', 'behaviorPlan', 'capabilityPlan'
+      ]));
+    }
+  );
+
   test('真实本地 Provider 接受包含 capabilityPlan 的完整桌宠组合契约', async () => {
     const payload = JSON.stringify({
       text: '需要进入本地任务。',

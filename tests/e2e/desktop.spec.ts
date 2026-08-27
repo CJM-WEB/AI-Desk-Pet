@@ -4113,7 +4113,7 @@ test.describe('自主行为最小闭环', () => {
       expect((await behaviorActions(pet)).slice(missingActionOffset))
         .not.toContain('safe-idle-action');
 
-      await submitChatMessage(chat, '停下');
+      await submitChatMessage(chat, '停止不动');
       await expect(chat.getByText('停止状态已保存')).toBeVisible();
       await fixture.restart();
 
@@ -4135,7 +4135,7 @@ test.describe('自主行为最小闭环', () => {
       await pet.evaluate(() => window.myself.openChat());
       await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
 
-      await submitChatMessage(chat, '停止期间陪我聊聊');
+      await submitChatMessage(chat, '挥手一会儿');
       await expect(chat.getByText('停止期间仍可挥手回应')).toBeVisible();
       await expect.poll(() => behaviorActions(pet)).toContain('safe-wave-action');
 
@@ -5898,7 +5898,7 @@ test.describe('真实 Provider 业务闭环', () => {
         response: toolResponse(
           'move-file-success',
           'builtin.files.move_file',
-          { sourceRelativePath: 'docs/source.txt', targetDirectoryRelativePath: 'archive' }
+          { sourceRelativePath: 'A', targetDirectoryRelativePath: 'B' }
         ),
         inspect: request => {
           const names = request.tools.map(tool => tool.function.name);
@@ -5922,10 +5922,10 @@ test.describe('真实 Provider 业务闭环', () => {
         }
       },
       {
-        response: { type: 'text', text: '文件已移动到 archive/source.txt。' },
+        response: { type: 'text', text: '文件已移动到 B/A。' },
         inspect: request => {
           const result = lastToolResult(request) as { toolName?: string; targetRelativePath?: string };
-          if (result.toolName !== 'move_file' || result.targetRelativePath !== 'archive/source.txt') {
+          if (result.toolName !== 'move_file' || result.targetRelativePath !== 'B/A') {
             throw new Error('移动结果不符合脚本预期');
           }
         }
@@ -5977,17 +5977,16 @@ test.describe('真实 Provider 业务闭环', () => {
       }, { baseUrl: provider.baseUrl, apiKey: provider.apiKey });
       await expect.poll(() => chat.evaluate(() => document.visibilityState)).toBe('visible');
 
-      const source = join(fixture.authorizedRootDirectory, 'docs', 'source.txt');
-      const target = join(fixture.authorizedRootDirectory, 'archive', 'source.txt');
-      await mkdir(join(fixture.authorizedRootDirectory, 'docs'), { recursive: true });
-      await mkdir(join(fixture.authorizedRootDirectory, 'archive'), { recursive: true });
+      const source = join(fixture.authorizedRootDirectory, 'A');
+      const target = join(fixture.authorizedRootDirectory, 'B', 'A');
+      await mkdir(join(fixture.authorizedRootDirectory, 'B'), { recursive: true });
       await writeFile(source, '移动 E2E 正文', 'utf8');
 
-      await submitChatMessage(chat, '把 docs/source.txt 移动到 archive 文件夹');
-      const card = chat.getByRole('region', { name: '移动文件 docs/source.txt 到 archive/source.txt' });
+      await submitChatMessage(chat, '把 A 移动到 B');
+      const card = chat.getByRole('region', { name: '移动文件 A 到 B/A' });
       await expect(card).toBeVisible();
-      await expect(card.getByText('docs/source.txt', { exact: true })).toBeVisible();
-      await expect(card.getByText('archive/source.txt', { exact: true })).toBeVisible();
+      await expect(card.getByText('A', { exact: true })).toBeVisible();
+      await expect(card.getByText('B/A', { exact: true })).toBeVisible();
       expect(await pathExistsForAssertion(source)).toBe(true);
       expect(await pathExistsForAssertion(target)).toBe(false);
 
@@ -5995,7 +5994,7 @@ test.describe('真实 Provider 业务闭环', () => {
       await expect.poll(() => pathExistsForAssertion(source)).toBe(false);
       await expect.poll(() => pathExistsForAssertion(target)).toBe(true);
       expect(await readTextForAssertion(target)).toBe('移动 E2E 正文');
-      await expect(chat.getByText('文件已移动到 archive/source.txt。')).toBeVisible();
+      await expect(chat.getByText('文件已移动到 B/A。')).toBeVisible();
       provider.assertComplete();
       expect(provider.inspectionErrors).toEqual([]);
       const captured = fixture.logs.join('\n');
@@ -6304,21 +6303,21 @@ test.describe('真实 Provider 业务闭环', () => {
         response: toolResponse(
           'create-file',
           'builtin.files.create_file',
-          { relativePath: 'created.txt', content: 'task6-file-body-sentinel\n' }
+          { relativePath: 'ab.txt', content: 'task6-file-body-sentinel\n' }
         )
       },
       {
         response: { type: 'text', text: '文件已创建。' },
         inspect: request => {
           const result = lastToolResult(request) as { toolName?: string; targetRelativePath?: string };
-          if (result.toolName !== 'create_file' || result.targetRelativePath !== 'created.txt') {
+          if (result.toolName !== 'create_file' || result.targetRelativePath !== 'ab.txt') {
             throw new Error('创建文件结果不符合脚本预期');
           }
         }
       },
       {
         response: toolResponse('edit-file', 'builtin.files.edit_file', {
-          relativePath: 'created.txt',
+          relativePath: 'ab.txt',
           oldString: 'task6-file-body-sentinel\n',
           newString: 'patched content\n',
           replaceAll: false
@@ -6332,7 +6331,7 @@ test.describe('真实 Provider 业务闭环', () => {
             targetRelativePath?: string;
           };
           if (result.toolName !== 'edit_file'
-            || result.targetRelativePath !== 'created.txt') {
+            || result.targetRelativePath !== 'ab.txt') {
             throw new Error('精确编辑结果不符合脚本预期');
           }
         }
@@ -6524,23 +6523,23 @@ test.describe('真实 Provider 业务闭环', () => {
       await capabilityCard.getByRole('button', { name: '允许规划' }).click();
       await expect(chatPage.getByText('task6-model-body-sentinel')).toBeVisible();
 
-      await submitChatMessage(chatPage, '创建文件 created.txt');
-      const createCard = chatPage.getByRole('region', { name: '创建文件 created.txt' });
+      await submitChatMessage(chatPage, '帮我在当前目录下创建ab.txt文件');
+      const createCard = chatPage.getByRole('region', { name: '创建文件 ab.txt' });
       await expect(createCard).toBeVisible();
       await createCard.getByRole('button', { name: '确认创建文件' }).click();
       await expect(chatPage.getByText('文件已创建。')).toBeVisible();
-      expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'created.txt'))).toBe(true);
-      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt')))
+      expect(await pathExistsForAssertion(join(authorizedRootDirectory, 'ab.txt'))).toBe(true);
+      expect(await readTextForAssertion(join(authorizedRootDirectory, 'ab.txt')))
         .toBe('task6-file-body-sentinel\n');
 
-      await submitChatMessage(chatPage, '修改 created.txt');
+      await submitChatMessage(chatPage, '修改 ab.txt');
       const patchCard = chatPage.getByRole('region', {
-        name: '修改文件 created.txt'
+        name: '修改文件 ab.txt'
       });
       await expect(patchCard).toBeVisible();
       await patchCard.getByRole('button', { name: '确认应用补丁' }).click();
       await expect(chatPage.getByText('补丁已应用。')).toBeVisible();
-      expect(await readTextForAssertion(join(authorizedRootDirectory, 'created.txt')))
+      expect(await readTextForAssertion(join(authorizedRootDirectory, 'ab.txt')))
         .toBe('patched content\n');
 
       await submitChatMessage(chatPage, '创建 cancelled.txt，但先让我确认');
@@ -6555,7 +6554,7 @@ test.describe('真实 Provider 业务闭环', () => {
 
       await submitChatMessage(
         chatPage,
-        "运行 Write-Output task6-stdout-sentinel; [Console]::Error.Write('task6-stderr-sentinel')"
+        '执行 PowerShell 测试'
       );
       const successPowerShellCard = chatPage.getByRole('region', { name: '运行 PowerShell 命令' });
       await expect(successPowerShellCard).toBeVisible();

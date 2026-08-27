@@ -262,6 +262,69 @@ function play(name: string): CharacterBehaviorPlan {
 
 describe('Main 角色行为 Director', () => {
   test.each([
+    ['停止不动', 0],
+    ['让他一直运动', 1],
+    ['让他时不时动一下', 2]
+  ] as const)('真实表达“%s”在 Provider 前写入唯一持久模式 %i', async (
+    prompt,
+    expectedMode
+  ) => {
+    const fixture = createFixture({ movementMode: expectedMode === 2 ? 0 : 2, proactivityMode: 'assistive' });
+
+    await fixture.director.prepareUserPrompt(prompt);
+
+    expect(fixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(
+      expectedMode,
+      expect.any(Function)
+    );
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      movementMode: expectedMode,
+      continuousTargetType: null
+    });
+  });
+
+  test('“跑远一点”只产生一次远距离运动且不改写持久三态', async () => {
+    const fixture = createFixture({ movementMode: 2, proactivityMode: 'assistive' });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+
+    await fixture.director.prepareUserPrompt('跑远一点');
+
+    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
+      kind: 'wander', scope: 'work_area', distance: 'far'
+    });
+    expect(fixture.saveMovementMode).not.toHaveBeenCalled();
+    expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(2);
+  });
+
+  test('“挥手一会儿”的模型计划命中层级动作且不改写持久三态', async () => {
+    const fixture = createFixture({ movementMode: 2, proactivityMode: 'assistive' });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'wave-token', semantic: 'celebrate'
+    });
+    const prepared = await fixture.director.prepareUserPrompt('挥手一会儿');
+
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: prepared.explicitDirective,
+      providerPlan: { kind: 'play_state', state: '开心', action: '挥手' },
+      movementControl: { kind: 'keep' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenLastCalledWith({
+      kind: 'play_state', state: '开心', action: '挥手'
+    });
+    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
+      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
+      { urgency: 80, systemForced: true }
+    );
+    expect(fixture.saveMovementMode).not.toHaveBeenCalled();
+    expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(2);
+  });
+
+  test.each([
     [{ kind: 'set_mode', mode: 0 } as const, 0],
     [{ kind: 'set_mode', mode: 1 } as const, 1],
     [{ kind: 'set_mode', mode: 2 } as const, 2]

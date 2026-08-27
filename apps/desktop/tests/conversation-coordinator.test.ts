@@ -555,6 +555,35 @@ describe('ConversationCoordinator', () => {
     }
   );
 
+  test.each([
+    ['你好呀', 'chat'],
+    ['帮我在当前目录下创建ab.txt文件', 'file'],
+    ['把 A 移动到 B', 'file'],
+    ['执行 PowerShell 测试', 'powershell']
+  ] as const)('真实表达“%s”只进入%s业务链', async (text, expected) => {
+    const script = scriptedProvider({
+      type: 'text',
+      text: '你好呀，我在。',
+      structured_output: { capabilityPlan: { kind: 'chat' } }
+    });
+    const harness = createHarness([{
+      profileId: 'profile-openai', providerIdentity: 'openai', providerName: 'OpenAI', script
+    }]);
+
+    await harness.coordinator.submit(text);
+
+    expect(harness.factoryCallCount()).toBe(expected === 'chat' ? 1 : 0);
+    expect(harness.fileTasks.submissions).toHaveLength(expected === 'chat' ? 0 : 1);
+    if (expected !== 'chat') {
+      expect(harness.fileTasks.submissions[0]).toMatchObject({
+        text,
+        taskKind: expected
+      });
+    }
+    expect(harness.events.some(event => event.type === 'phase' && event.phase === 'error'))
+      .toBe(false);
+  });
+
   test.each(['读取 a.txt', '列出当前文件夹'])(
     '明确文件请求“%s”只进入文件链且不创建聊天目标',
     async text => {

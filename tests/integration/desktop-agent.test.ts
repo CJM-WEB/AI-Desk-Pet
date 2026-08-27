@@ -1605,7 +1605,7 @@ describe('桌面会话分流纵向集成', () => {
       }
     ], 'powershell');
 
-    await fixture.service.submitFileTask({ text: '执行 PowerShell 命令', visibleHistory: [] });
+    await fixture.service.submitFileTask({ text: '执行 PowerShell 测试', visibleHistory: [] });
     const action = pendingAction(fixture.events);
     expect(action).toMatchObject({
       category: 'powershell',
@@ -1780,6 +1780,84 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
   });
+
+  test.each(['DeepSeek', '内置本地模型'] as const)(
+    '%s 把同一组真实文件表达转为工具调用、逐次确认和真实副作用',
+    async providerKind => {
+      const deepSeek = providerKind === 'DeepSeek'
+        ? await deepSeekHarness({
+            responses: [
+              compatibleToolCall('task6-create', 'builtin__files__create_file', {
+                relativePath: 'ab.txt', content: 'Task 6 正文\n'
+              }),
+              compatibleText('ab.txt 已创建'),
+              compatibleToolCall('task6-move', 'builtin__files__move_file', {
+                sourceRelativePath: 'A', targetDirectoryRelativePath: 'B'
+              }),
+              compatibleText('A 已移动到 B')
+            ],
+            moveToRecycleBin: async () => undefined
+          })
+        : null;
+      const local = providerKind === '内置本地模型'
+        ? await localModelFileHarness({
+            steps: [
+              {
+                response: toolCall('task6-local-create', 'builtin.files.create_file', {
+                  relativePath: 'ab.txt', content: 'Task 6 正文\n'
+                })
+              },
+              { response: { type: 'text', text: 'ab.txt 已创建' } },
+              {
+                response: toolCall('task6-local-move', 'builtin.files.move_file', {
+                  sourceRelativePath: 'A', targetDirectoryRelativePath: 'B'
+                })
+              },
+              { response: { type: 'text', text: 'A 已移动到 B' } }
+            ],
+            moveToRecycleBin: async () => undefined
+          })
+        : null;
+      const service = deepSeek?.service ?? local?.service;
+      const events = deepSeek?.events ?? local?.events;
+      const authorized = deepSeek?.authorized ?? local?.authorized;
+      if (!service || !events || !authorized) throw new Error('缺少真实协议测试夹具');
+      const created = join(authorized.root, 'ab.txt');
+      const source = join(authorized.root, 'A');
+      const targetDirectory = join(authorized.root, 'B');
+      const moved = join(targetDirectory, 'A');
+      const latestPendingAction = () => {
+        const event = events.filter(candidate => candidate.type === 'pending_action').at(-1);
+        if (!event || event.type !== 'pending_action') throw new Error('缺少最新确认卡');
+        return event.action;
+      };
+      await writeFile(source, 'A 文件内容', 'utf8');
+      await mkdir(targetDirectory);
+
+      await service.submitFileTask({
+        text: '帮我在当前目录下创建ab.txt文件', visibleHistory: []
+      });
+      await expect(lstat(created)).rejects.toMatchObject({ code: 'ENOENT' });
+      await service.confirm(latestPendingAction().actionId);
+      await expect(readFile(created, 'utf8')).resolves.toBe('Task 6 正文\n');
+
+      await service.submitFileTask({ text: '把 A 移动到 B', visibleHistory: [] });
+      await expect(readFile(source, 'utf8')).resolves.toBe('A 文件内容');
+      await expect(lstat(moved)).rejects.toMatchObject({ code: 'ENOENT' });
+      await service.confirm(latestPendingAction().actionId);
+      await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(moved, 'utf8')).resolves.toBe('A 文件内容');
+
+      expect(events.filter(event => event.type === 'phase' && event.phase === 'error'))
+        .toEqual([]);
+      if (local) {
+        expect(local.cloudServer.requests).toHaveLength(0);
+        local.localServer.assertComplete();
+      } else {
+        expect(deepSeek?.responses).toEqual([]);
+      }
+    }
+  );
 
   test('错误创建提示仍公告移动工具，逐次确认后产生真实移动副作用', async () => {
     const fixture = await harness([
