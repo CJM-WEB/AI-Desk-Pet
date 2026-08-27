@@ -801,6 +801,119 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
+  test('mode 2 的临界 timer 在 mode 0 落盘等待期立即失效', async () => {
+    vi.useFakeTimers();
+    const fixture = createFixture({ movementMode: 2, proactivityMode: 'assistive' });
+    fixture.setMotionSnapshot({
+      revision: 3, timestampMs: 20,
+      position: { x: 20, y: 30 }, target: { x: 20, y: 30 },
+      direction: 'right', moving: false, carrying: false
+    });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    let release = (): void => undefined;
+    const write = new Promise<void>(resolve => { release = resolve; });
+    fixture.saveMovementMode.mockImplementation(async (mode, isCurrent) => {
+      await write;
+      if (isCurrent?.() !== false) {
+        fixture.director.applyBehaviorSettings({ movementMode: mode, proactivityMode: 'assistive' });
+      }
+    });
+    const scheduler = new CharacterProactivityScheduler({
+      director: fixture.director,
+      random: () => 0
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(9_999);
+
+    const pending = fixture.director.applyMovementControl({ kind: 'set_mode', mode: 0 }, 'chat');
+    fixture.director.requestIntermittentMovement();
+    await vi.advanceTimersByTimeAsync(30_001);
+
+    expect(fixture.behavior.requestProactiveBehavior).not.toHaveBeenCalled();
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+    release();
+    await pending;
+    expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(0);
+    await scheduler.close();
+    vi.useRealTimers();
+  });
+
+  test('mode 1 的在途连续目标在 mode 2 落盘等待期立即停止且迟到到达不续行', async () => {
+    const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
+    fixture.setMotionSnapshot({
+      revision: 3, timestampMs: 20,
+      position: { x: 20, y: 30 }, target: { x: 20, y: 30 },
+      direction: 'right', moving: false, carrying: false
+    });
+    fixture.setRequestedMotionMoving(true);
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    fixture.director.requestPersistentMovement();
+    let release = (): void => undefined;
+    const write = new Promise<void>(resolve => { release = resolve; });
+    fixture.saveMovementMode.mockImplementation(async (mode, isCurrent) => {
+      await write;
+      if (isCurrent?.() !== false) {
+        fixture.director.applyBehaviorSettings({ movementMode: mode, proactivityMode: 'assistive' });
+      }
+    });
+
+    const pending = fixture.director.applyMovementControl({ kind: 'set_mode', mode: 2 }, 'chat');
+    fixture.director.requestPersistentMovement();
+
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
+    expect(fixture.behavior.cancelStateLifecycle).toHaveBeenCalledOnce();
+    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+      movementMode: 1,
+      continuousTargetType: null,
+      currentTargetType: null
+    });
+    release();
+    await pending;
+    fixture.director.handleMotionSnapshot({ ...fixture.motion.getSnapshot(), moving: false });
+    expect(fixture.motion.requestIntent).toHaveBeenCalledOnce();
+    expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(2);
+  });
+
+  test('mode 0 落盘失败后保持 mode 2 并从暂停点恢复旧间歇周期', async () => {
+    vi.useFakeTimers();
+    const fixture = createFixture({ movementMode: 2, proactivityMode: 'assistive' });
+    fixture.setMotionSnapshot({
+      revision: 3, timestampMs: 20,
+      position: { x: 20, y: 30 }, target: { x: 20, y: 30 },
+      direction: 'right', moving: false, carrying: false
+    });
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
+    });
+    let rejectWrite = (_error: Error): void => undefined;
+    const write = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    fixture.saveMovementMode.mockImplementation(async () => write);
+    const scheduler = new CharacterProactivityScheduler({
+      director: fixture.director,
+      random: () => 0
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const pending = fixture.director.applyMovementControl({ kind: 'set_mode', mode: 0 }, 'chat');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fixture.behavior.requestProactiveBehavior).not.toHaveBeenCalled();
+
+    rejectWrite(new Error('WRITE_FAILED'));
+    await expect(pending).rejects.toThrow('WRITE_FAILED');
+    expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(2);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(fixture.behavior.requestProactiveBehavior).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fixture.behavior.requestProactiveBehavior).toHaveBeenCalledOnce();
+    await scheduler.close();
+    vi.useRealTimers();
+  });
+
   test.each([0, 2] as const)(
     '模式 %i 不提交模型附带的移动动画，运动只由三态调度器发起',
     async mode => {
@@ -1209,7 +1322,7 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
-  test('Provider set_mode(0) 落盘失败时不提前修改停止锁', async () => {
+  test('Provider set_mode(0) 落盘失败时立即停住旧目标但保持持久模式', async () => {
     const fixture = createFixture();
     fixture.saveMovementMode.mockRejectedValueOnce(new Error('WRITE_FAILED'));
 
@@ -1222,16 +1335,16 @@ describe('Main 角色行为 Director', () => {
       movementMode: 2,
       continuousTargetType: null
     });
-    expect(fixture.motion.stop).not.toHaveBeenCalled();
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
   });
 
-  test('本地 Gate 停止落盘失败时不修改运动或停止锁', async () => {
+  test('本地 Gate 停止落盘失败时立即停住旧目标但保持持久模式', async () => {
     const fixture = createFixture();
     fixture.saveMovementMode.mockRejectedValueOnce(new Error('WRITE_FAILED'));
 
     await expect(fixture.director.prepareUserPrompt('停下')).rejects.toThrow('WRITE_FAILED');
 
-    expect(fixture.motion.stop).not.toHaveBeenCalled();
+    expect(fixture.motion.stop).toHaveBeenCalledOnce();
     expect(fixture.director.getChatContext().runtime.movementMode).toBe(2);
   });
 

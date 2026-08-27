@@ -28,6 +28,7 @@ const unblocked: CharacterActivityBlockers = {
   moving: false,
   capabilityTask: false,
   awaitingConfirmation: false,
+  movementModeTransition: false,
   movementMode: 2,
   closed: false
 };

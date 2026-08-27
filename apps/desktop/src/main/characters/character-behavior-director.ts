@@ -73,6 +73,7 @@ export type CharacterActivityBlockers = Readonly<{
   moving: boolean;
   capabilityTask: boolean;
   awaitingConfirmation: boolean;
+  movementModeTransition: boolean;
   movementMode: CharacterMovementMode;
   closed: boolean;
 }>;
@@ -212,6 +213,8 @@ export class CharacterBehaviorDirector {
   }> | null = null;
   private readonly activityListeners = new Set<() => void>();
   private behaviorLifecycleGeneration = 0;
+  private movementModeTransitionRevision = 0;
+  private movementModeTransitionPending = false;
   private turnEpoch = 0;
 
   constructor(private readonly options: CharacterBehaviorDirectorOptions) {
@@ -284,6 +287,7 @@ export class CharacterBehaviorDirector {
       moving: this.options.motion.getSnapshot().moving,
       capabilityTask: this.capabilityTask,
       awaitingConfirmation: this.awaitingConfirmation,
+      movementModeTransition: this.movementModeTransitionPending,
       movementMode: this.movementMode,
       closed: this.closed
     };
@@ -589,11 +593,17 @@ export class CharacterBehaviorDirector {
   ): Promise<void> {
     if (!this.isTurnCurrent(turnEpoch) || control.kind === 'keep') return;
     if (control.kind === 'set_mode') {
-      if (control.mode === 0) await this.persistMovementStop(turnEpoch);
-      else await this.options.saveMovementMode(
-        control.mode, () => this.isTurnCurrent(turnEpoch)
-      );
-      if (!this.isTurnCurrent(turnEpoch)) return;
+      const transitionRevision = this.beginMovementModeTransition(control.mode);
+      try {
+        await this.options.saveMovementMode(
+          control.mode,
+          () => this.isTurnCurrent(turnEpoch)
+            && transitionRevision === this.movementModeTransitionRevision
+        );
+        if (!this.isTurnCurrent(turnEpoch)) return;
+      } finally {
+        this.finishMovementModeTransition(transitionRevision);
+      }
       return;
     }
     this.requestMotion({
@@ -637,12 +647,13 @@ export class CharacterBehaviorDirector {
   applyBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void {
     if (this.closed) return;
     const movementModeChanged = this.movementMode !== snapshot.movementMode;
+    const transitionAlreadyInvalidated = this.movementModeTransitionPending;
     if (snapshot.movementMode === 0 || movementModeChanged) {
       this.options.behavior.cancelStateLifecycle();
     }
     if (movementModeChanged) this.clearPendingChat();
     // 模式边界拥有旧目标：切换先终止旧 Motion/播放令牌，再让 Scheduler 启动新策略。
-    if (movementModeChanged) {
+    if (movementModeChanged && !transitionAlreadyInvalidated) {
       if (snapshot.movementMode === 0) this.stopContinuousMotion();
       else this.clearContinuousMotion();
     }
@@ -656,6 +667,7 @@ export class CharacterBehaviorDirector {
 
   async handleActiveCharacterChanged(): Promise<void> {
     if (this.closed) return;
+    this.cancelMovementModeTransition();
     this.invalidateBehaviorLifecycle();
     this.clearContinuousMotion();
     this.clearPendingChat();
@@ -668,6 +680,7 @@ export class CharacterBehaviorDirector {
     if (this.closed) return;
     this.generation = generation;
     this.turnEpoch += 1;
+    this.cancelMovementModeTransition();
     this.behaviorLifecycleGeneration += 1;
     this.options.behavior.cancelStateLifecycle();
     this.clearContinuousMotion();
@@ -685,6 +698,7 @@ export class CharacterBehaviorDirector {
     if (this.closed) return;
     this.closed = true;
     this.turnEpoch += 1;
+    this.cancelMovementModeTransition();
     this.publishActivityChanged();
     this.activityListeners.clear();
     this.clearContinuousMotion();
@@ -704,6 +718,7 @@ export class CharacterBehaviorDirector {
   cancelActive(): void {
     if (this.closed) return;
     this.turnEpoch += 1;
+    this.cancelMovementModeTransition();
     this.options.behavior.cancelStateLifecycle();
     this.clearPendingChat();
     this.publishActivityChanged();
@@ -713,14 +728,28 @@ export class CharacterBehaviorDirector {
     return !this.closed && turnEpoch === this.turnEpoch;
   }
 
-  private async persistMovementStop(turnEpoch: number): Promise<void> {
-    const wasAlreadyStopped = this.movementMode === 0;
+  /** 落盘前先暂停旧策略；失败时仍保留旧持久模式并由 Scheduler 恢复其调度。 */
+  private beginMovementModeTransition(mode: CharacterMovementMode): number {
+    const revision = ++this.movementModeTransitionRevision;
+    this.movementModeTransitionPending = true;
     this.options.behavior.cancelStateLifecycle();
-    await this.options.saveMovementMode(0, () => this.isTurnCurrent(turnEpoch));
-    if (!this.isTurnCurrent(turnEpoch)) return;
-    if (!wasAlreadyStopped) return;
-    this.stopContinuousMotion();
+    this.clearPendingChat();
+    if (mode === 0) this.stopContinuousMotion();
+    else this.clearContinuousMotion();
     if (this.active?.semantic === 'move') this.active = null;
+    this.publishActivityChanged();
+    return revision;
+  }
+
+  private finishMovementModeTransition(revision: number): void {
+    if (revision !== this.movementModeTransitionRevision) return;
+    this.movementModeTransitionPending = false;
+    this.publishActivityChanged();
+  }
+
+  private cancelMovementModeTransition(): void {
+    this.movementModeTransitionRevision += 1;
+    this.movementModeTransitionPending = false;
   }
 
   private updateTrustedBlock(event: TaskEvent): void {
@@ -931,6 +960,7 @@ export class CharacterBehaviorDirector {
   /** 连续到达不得穿透拖拽、可信任务、确认或更高优先级播放。 */
   private hasContinuousBlocker(): boolean {
     return this.closed
+      || this.movementModeTransitionPending
       || this.dragging
       || this.trustedRuntimeBlocked
       || this.capabilityTask
@@ -940,6 +970,7 @@ export class CharacterBehaviorDirector {
 
   private hasIntermittentBlocker(): boolean {
     return this.closed
+      || this.movementModeTransitionPending
       || this.dragging
       || this.trustedRuntimeBlocked
       || this.capabilityTask
