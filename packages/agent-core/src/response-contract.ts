@@ -3,8 +3,9 @@ export type ModelResponseContract = Readonly<{
   name: 'character_chat';
   jsonSchema: Readonly<Record<string, unknown>>;
   textField: 'text';
+  /** 仅控制非 JSON 正文兼容；JSON 隐藏字段不得参与可见正文成败判定。 */
   allowPlainTextFallback: boolean;
-  /** Main 注入的可执行校验器不进入 Provider JSON；用于复核服务端 Schema 的真实输出。 */
+  /** 旧本地 Provider 可复核整体结构；云端聊天不得把它作为正文成功前置条件。 */
   validateStructuredOutput?: (value: unknown) => boolean;
 }>;
 

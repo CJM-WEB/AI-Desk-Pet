@@ -974,6 +974,7 @@ const 公开错误消息: Readonly<Record<string, string>> = Object.freeze({
     PROVIDER_RATE_LIMITED: '模型服务当前繁忙，请稍后重试。',
     PROVIDER_SERVER_ERROR: '模型服务发生错误，请稍后重试。',
     PROVIDER_TIMEOUT: '模型请求超时。',
+    PROVIDER_MALFORMED_RESPONSE: '模型响应格式不兼容，请重试。',
     SETTINGS_INCOMPLETE: '请先完成模型服务设置。',
     LOCAL_MODEL_LOADING: '本地模型正在加载，请稍后重试。',
     LOCAL_MODEL_FAULTED: '本地模型启动失败，请前往设置查看。',

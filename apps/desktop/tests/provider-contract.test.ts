@@ -400,6 +400,26 @@ describe('三协议云端普通聊天流式契约', () => {
   );
 
   test.each(cloudStreamingCases)(
+    '$name 流式纯文本不被结构化投影器提前拒绝',
+    async contract => {
+      const fetchClient = vi.fn<FetchLike>(async () => characterChatSseResponse(
+        contract.name,
+        '流式纯文本正文'
+      ));
+      const deltas: string[] = [];
+
+      await expect(contract.createProvider(fetchClient).respond({
+        ...structuredChatRequest,
+        onTextDelta: delta => deltas.push(delta)
+      }, new AbortController().signal)).resolves.toEqual({
+        type: 'text',
+        text: '流式纯文本正文'
+      });
+      expect(deltas.join('')).toBe('流式纯文本正文');
+    }
+  );
+
+  test.each(cloudStreamingCases)(
     '$name 收到协议终态后主动结束，不等待服务端关闭长连接',
     async contract => {
       const fetchClient = vi.fn<FetchLike>(async () => contract.response(true));
@@ -874,54 +894,20 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
     }
   );
 
-  test.each(chatProviderContractCases)(
-    '$name 对桌宠统一控制契约缺少必填字段时失败关闭',
-    async contract => {
-      const raw = JSON.stringify({
-        text: '正文仍然有效。',
-        behaviorPlan: { kind: 'none', emotion: 'excited' }
-      });
+  test.each(chatProviderContractCases.flatMap(contract => ([
+    ['纯文本', '普通纯文本', '普通纯文本'],
+    ['只有 text 的 JSON', '{"text":"只有正文"}', '只有正文'],
+    [
+      '合法 text 加非法 movementControl',
+      '{"text":"正文仍然有效。","movementControl":{"kind":"move_once","target":{"x":1,"y":2},"distance":"far"}}',
+      '正文仍然有效。'
+    ],
+    ['截断于控制字段的 JSON', '{"text":"截断前的正文","movementControl":', '截断前的正文']
+  ] as const).map(([shape, raw, text]) => ({ contract, shape, raw, text }))))(
+    '$contract.name 对$shape只要求合法正文',
+    async ({ contract, raw, text }) => {
       const adapter = new ConversationChatAdapter(contract.createProvider(
         vi.fn(async () => jsonResponse(contract.textResponse(raw)))
-      ));
-
-      await expect(adapter.respond({
-        history: [],
-        text: '测试非法情绪',
-        behaviorContext: providerBehaviorContext,
-        signal: new AbortController().signal
-      })).rejects.toMatchObject({
-        code: 'PROVIDER_MALFORMED_RESPONSE',
-        retryable: false
-      });
-    }
-  );
-
-  test.each(chatProviderContractCases)(
-    '$name 对桌宠统一控制契约截断响应失败关闭',
-    async contract => {
-      const raw = '{"text":"截断前的正文","behaviorPlan":{"kind":"move"';
-      const adapter = new ConversationChatAdapter(contract.createProvider(
-        vi.fn(async () => jsonResponse(contract.textResponse(raw)))
-      ));
-
-      await expect(adapter.respond({
-        history: [],
-        text: '测试截断',
-        behaviorContext: providerBehaviorContext,
-        signal: new AbortController().signal
-      })).rejects.toMatchObject({
-        code: 'PROVIDER_MALFORMED_RESPONSE',
-        retryable: false
-      });
-    }
-  );
-
-  test.each(chatProviderContractCases)(
-    '$name 对桌宠统一控制契约纯文本响应失败关闭',
-    async contract => {
-      const adapter = new ConversationChatAdapter(contract.createProvider(
-        vi.fn(async () => jsonResponse(contract.textResponse('普通纯文本')))
       ));
 
       await expect(adapter.respond({
@@ -929,10 +915,7 @@ describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
         text: '普通聊天',
         behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal
-      })).rejects.toMatchObject({
-        code: 'PROVIDER_MALFORMED_RESPONSE',
-        retryable: false
-      });
+      })).resolves.toEqual({ text });
     }
   );
 
@@ -2548,12 +2531,90 @@ describe('ProviderRegistry', () => {
     expect(provider).toBeInstanceOf(OpenAICompatibleProvider);
     expect(body).toMatchObject({
       model: 'deepseek-v4-flash',
+      thinking: { type: 'disabled' },
+      max_tokens: 4096,
       tools: [],
       messages: [
         { role: 'system', content: expect.any(String) },
         { role: 'user', content: '给出 Markdown 示例' }
       ]
     });
+  });
+
+  test('DeepSeek 桌宠聊天空 content 仅在 Provider 内重试一次并复用同一配置', async () => {
+    const profile: ProviderProfileV2 = {
+      id: 'deepseek-empty-chat-profile',
+      displayName: 'DeepSeek',
+      mode: 'preset',
+      providerId: 'deepseek',
+      modelId: 'deepseek-v4-flash',
+      hasStoredSecret: true
+    };
+    const fetchClient = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(sseResponse([
+        JSON.stringify({ choices: [{ delta: { content: null, tool_calls: [] } }] }),
+        '[DONE]'
+      ]))
+      .mockResolvedValueOnce(characterChatSseResponse(
+        'OpenAI Compatible',
+        '{"text":"重试后正文"}'
+      ));
+    const adapter = new ConversationChatAdapter(new ProviderRegistry(providerCatalog).create(
+      profile,
+      async () => 'deepseek-secret',
+      fetchClient
+    ));
+
+    await expect(adapter.respond({
+      history: [],
+      text: '你好',
+      behaviorContext: providerBehaviorContext,
+      signal: new AbortController().signal,
+      onTextDelta: vi.fn()
+    })).resolves.toEqual({ text: '重试后正文' });
+
+    expect(fetchClient).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
+    const secondBody = JSON.parse(String(fetchClient.mock.calls[1]?.[1]?.body));
+    expect(secondBody).toEqual(firstBody);
+    expect(firstBody).toMatchObject({
+      thinking: { type: 'disabled' },
+      max_tokens: 4096,
+      response_format: { type: 'json_object' },
+      stream: true,
+      tools: [],
+      tool_choice: 'none'
+    });
+  });
+
+  test('DeepSeek 桌宠聊天空 content 重试耗尽后返回格式错误', async () => {
+    const profile: ProviderProfileV2 = {
+      id: 'deepseek-empty-chat-failure-profile',
+      displayName: 'DeepSeek',
+      mode: 'preset',
+      providerId: 'deepseek',
+      modelId: 'deepseek-v4-flash',
+      hasStoredSecret: true
+    };
+    const fetchClient = vi.fn<FetchLike>(async () => jsonResponse({
+      choices: [{ message: { content: null, tool_calls: [] } }]
+    }));
+    const adapter = new ConversationChatAdapter(new ProviderRegistry(providerCatalog).create(
+      profile,
+      async () => 'deepseek-secret',
+      fetchClient
+    ));
+
+    await expect(adapter.respond({
+      history: [],
+      text: '你好',
+      behaviorContext: providerBehaviorContext,
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      retryable: false
+    });
+    expect(fetchClient).toHaveBeenCalledTimes(2);
   });
 
   test('拒绝未知预置提供商', () => {

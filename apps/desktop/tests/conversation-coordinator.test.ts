@@ -808,6 +808,57 @@ describe('ConversationCoordinator', () => {
   });
 
   test.each<[string, ModelResponse]>([
+    ['纯文本', { type: 'text', text: '普通纯文本' }],
+    ['只有正文', { type: 'text', text: '只有正文', structured_output: { text: '只有正文' } }],
+    ['非法隐藏控制', {
+      type: 'text',
+      text: '正文仍然有效。',
+      structured_output: {
+        text: '正文仍然有效。',
+        movementControl: { kind: 'move_once', target: { x: 1, y: 2 }, distance: 'far' }
+      }
+    }],
+    ['截断后恢复正文', {
+      type: 'text',
+      text: '截断前的正文',
+      structured_output: { text: '截断前的正文' }
+    }]
+  ])('普通聊天%s成功时不创建 Agent 且不发布任务执行失败', async (_shape, response) => {
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: scriptedProvider(response)
+    }]);
+
+    await expect(harness.coordinator.submit('你好')).resolves.toBeUndefined();
+
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toEqual([]);
+    expect(JSON.stringify(harness.events)).not.toContain('任务执行失败');
+  });
+
+  test('空正文重试耗尽公开为模型响应格式不兼容且不创建 Agent', async () => {
+    const malformed = Object.assign(new Error('PROVIDER_MALFORMED_RESPONSE'), {
+      code: 'PROVIDER_MALFORMED_RESPONSE'
+    });
+    const harness = createHarness([{
+      profileId: 'profile-openai',
+      providerIdentity: 'openai',
+      providerName: 'OpenAI',
+      script: scriptedProvider(malformed)
+    }]);
+
+    await expect(harness.coordinator.submit('你好')).rejects.toMatchObject({
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      message: '模型响应格式不兼容，请重试。'
+    });
+    expect(harness.fileTasks.activationCalls).toBe(0);
+    expect(harness.fileTasks.submissions).toEqual([]);
+    expect(JSON.stringify(harness.events)).not.toContain('任务执行失败');
+  });
+
+  test.each<[string, ModelResponse]>([
     ['工具请求', {
       type: 'tool_request',
       request: {
@@ -835,8 +886,8 @@ describe('ConversationCoordinator', () => {
     ]);
 
     await expect(harness.coordinator.submit('第一次')).rejects.toMatchObject({
-      code: 'AGENT_INTERNAL_ERROR',
-      message: '任务执行失败，请重试。'
+      code: 'PROVIDER_MALFORMED_RESPONSE',
+      message: '模型响应格式不兼容，请重试。'
     });
     expect(harness.history.turns()).toEqual([]);
     expect(harness.fileTasks.preparedGenerations).toEqual([]);

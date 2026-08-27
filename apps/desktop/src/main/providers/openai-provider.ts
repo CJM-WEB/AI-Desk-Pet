@@ -223,6 +223,7 @@ const MAX_STREAM_CONTENT_CHARACTERS = 64 * 1024;
 const MAX_SSE_EVENT_CHARACTERS = 256 * 1024;
 const MAX_SSE_TRANSPORT_CHARACTERS = 512 * 1024;
 const MAX_SSE_EVENT_DATA_LINES = 1_024;
+const DEEPSEEK_CHARACTER_CHAT_MAX_TOKENS = 4_096;
 const SSE_YIELD_EVERY_EVENTS = 32;
 
 type ProjectorPhase =
@@ -630,7 +631,11 @@ async function readCloudOpenAISse(
       const choices = Reflect.get(raw, 'choices');
       const choice = Array.isArray(choices) ? choices[0] : undefined;
       const delta = typeof choice === 'object' && choice !== null ? Reflect.get(choice, 'delta') : undefined;
-      if (typeof delta !== 'object' || delta === null || Reflect.has(delta, 'tool_calls')) {
+      if (typeof delta !== 'object' || delta === null) {
+        throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
+      }
+      const toolCalls = Reflect.get(delta, 'tool_calls');
+      if (toolCalls !== undefined && (!Array.isArray(toolCalls) || toolCalls.length > 0)) {
         throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
       }
       // 云端推理字段既不公开也不作为本地模型泄漏处理；只消费可见 content。
@@ -644,7 +649,7 @@ async function readCloudOpenAISse(
   });
 }
 
-/** 三类 Provider 共用同一契约校验，避免云端适配器把缺失控制字段的正文冒充成功。 */
+/** 三类 Provider 只以可见正文作为成功前置条件，隐藏字段留给聊天适配器逐项校验。 */
 export function normalizeResponseContractText(
   raw: string,
   contract: ModelResponseContract
@@ -655,12 +660,6 @@ export function normalizeResponseContractText(
   }
   if (decoded.kind === 'plain_text') {
     return { type: 'text', text: decoded.text };
-  }
-  if (
-    contract.validateStructuredOutput !== undefined
-    && !contract.validateStructuredOutput(decoded.structured_output)
-  ) {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   }
   const required = contract.jsonSchema['required'];
   if (
@@ -690,6 +689,15 @@ export function assertResponseContractRequest(request: ModelRequest): void {
   }
 }
 
+/** DeepSeek 偶发空正文只允许在无工具的桌宠聊天边界重试，避免重复任何可执行操作。 */
+function isEmptyCompatibleContent(raw: unknown): boolean {
+  const parsed = compatibleResponseSchema.safeParse(raw);
+  if (!parsed.success) return false;
+  const message = parsed.data.choices[0]?.message;
+  if (message === undefined || (message.tool_calls?.length ?? 0) > 0) return false;
+  return message.content === undefined || message.content === null || message.content === '';
+}
+
 export class OpenAICompatibleProvider implements ModelProvider {
   constructor(
     config: OpenAICompatibleConfig,
@@ -706,6 +714,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     assertResponseContractRequest(request);
     const cloudStructuredStream = this.requestPolicy === undefined
       && shouldStreamStructuredText(request);
+    const deepSeekCharacterChat = this.config.providerId === 'deepseek'
+      && request.responseContract?.name === 'character_chat';
     // 单次请求复用同一映射，确保定义、续传历史与响应名称处于同一 Provider 命名空间。
     const toolChoice = resolveToolChoice(request);
     const toolNameCodec = createOpenAIToolNameCodec(codecDefinitions(request));
@@ -716,55 +726,65 @@ export class OpenAICompatibleProvider implements ModelProvider {
         name: toolNameCodec.encode(definition.function.name)
       }
     }));
-    let response: Response;
-    try {
-      response = await this.fetchClient(chatCompletionsUrl(this.config.baseUrl), {
-        method: 'POST',
-        signal,
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${await this.getSecret()}`
-        },
-        body: JSON.stringify({
-          ...this.config.additionalParameters,
-          model: this.config.modelId,
-          messages: request.messages.map(message => serializeMessage(message, toolNameCodec)),
-          tools,
-          tool_choice: toolChoice,
-          ...(request.responseContract === undefined
-            ? {}
-            : { response_format: { type: 'json_object' } }),
-          ...(cloudStructuredStream ? { stream: true } : {}),
-          ...(this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
-            ? { thinking: { type: 'disabled' } }
-            : {}),
-          ...this.requestPolicy?.body
-        })
-      });
-    } catch (error) {
-      if (this.requestPolicy !== undefined && error instanceof ProviderError) throw error;
-      normalizeFetchError(error, signal);
+    const requestBody = JSON.stringify({
+      ...this.config.additionalParameters,
+      model: this.config.modelId,
+      messages: request.messages.map(message => serializeMessage(message, toolNameCodec)),
+      tools,
+      tool_choice: toolChoice,
+      ...(request.responseContract === undefined
+        ? {}
+        : { response_format: { type: 'json_object' } }),
+      ...(cloudStructuredStream ? { stream: true } : {}),
+      ...(deepSeekCharacterChat
+        ? { thinking: { type: 'disabled' }, max_tokens: DEEPSEEK_CHARACTER_CHAT_MAX_TOKENS }
+        : this.config.providerId === 'deepseek' && request.reasoningMode === 'disabled'
+          ? { thinking: { type: 'disabled' } }
+          : {}),
+      ...this.requestPolicy?.body
+    });
+    const attemptCount = deepSeekCharacterChat ? 2 : 1;
+
+    for (let attempt = 0; attempt < attemptCount; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.fetchClient(chatCompletionsUrl(this.config.baseUrl), {
+          method: 'POST',
+          signal,
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${await this.getSecret()}`
+          },
+          body: requestBody
+        });
+      } catch (error) {
+        if (this.requestPolicy !== undefined && error instanceof ProviderError) throw error;
+        normalizeFetchError(error, signal);
+      }
+
+      const rawResponse = this.requestPolicy?.responseMode === 'sse'
+        ? await readProviderSse(
+            response,
+            request,
+            signal,
+            this.requestPolicy.onTextDelta,
+            this.requestPolicy.validateProjectedText
+          )
+        : cloudStructuredStream
+          ? response.headers.get('content-type')?.toLocaleLowerCase().includes('application/json')
+            ? await readProviderJson(response)
+            : await readCloudOpenAISse(response, request, signal)
+          : await readProviderJson(response);
+      this.requestPolicy?.validateResponse(rawResponse);
+      if (attempt === 0 && deepSeekCharacterChat && isEmptyCompatibleContent(rawResponse)) continue;
+      return normalizeResponse(
+        rawResponse,
+        toolNameCodec,
+        request.responseContract
+      );
     }
 
-    const rawResponse = this.requestPolicy?.responseMode === 'sse'
-      ? await readProviderSse(
-          response,
-          request,
-          signal,
-          this.requestPolicy.onTextDelta,
-          this.requestPolicy.validateProjectedText
-        )
-      : cloudStructuredStream
-        ? response.headers.get('content-type')?.toLocaleLowerCase().includes('application/json')
-          ? await readProviderJson(response)
-          : await readCloudOpenAISse(response, request, signal)
-        : await readProviderJson(response);
-    this.requestPolicy?.validateResponse(rawResponse);
-    return normalizeResponse(
-      rawResponse,
-      toolNameCodec,
-      request.responseContract
-    );
+    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
   }
 }
 

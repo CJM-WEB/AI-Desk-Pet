@@ -67,8 +67,7 @@ describe('ConversationChatAdapter', () => {
           properties: expect.objectContaining({ capabilityPlan: expect.any(Object) })
         }),
         textField: 'text',
-        allowPlainTextFallback: false,
-        validateStructuredOutput: expect.any(Function)
+        allowPlainTextFallback: true
       }
     });
     expect(取得请求(provider).messages[0]?.content).toContain('用户使用的语言');

@@ -9,7 +9,7 @@ const MAX_SSE_EVENTS = 4_096;
 const SSE_YIELD_EVERY_EVENTS = 32;
 
 type ProjectorPhase =
-  | 'root' | 'key_or_end' | 'key' | 'colon' | 'value'
+  | 'root' | 'plain_text' | 'key_or_end' | 'key' | 'colon' | 'value'
   | 'skip_string' | 'skip_complex' | 'skip_primitive'
   | 'comma_or_end' | 'target_string' | 'done';
 
@@ -52,12 +52,29 @@ class IncrementalTopLevelTextProjector {
   private skipInString = false;
   private skipClosers: string[] = [];
 
-  constructor(private readonly field: string, private readonly malformed: () => never) {}
+  constructor(
+    private readonly field: string,
+    private readonly allowPlainTextFallback: boolean,
+    private readonly malformed: () => never
+  ) {}
 
   project(source: string): string {
     const projection: string[] = [];
+    if (this.phase === 'root') {
+      const firstVisibleIndex = source.search(/\S/u);
+      if (firstVisibleIndex < 0) return '';
+      if (source[firstVisibleIndex] !== '{') {
+        if (!this.allowPlainTextFallback) this.malformed();
+        this.phase = 'plain_text';
+      }
+    }
     while (this.index < source.length) {
       const character = source[this.index]!;
+      if (this.phase === 'plain_text') {
+        projection.push(source.slice(this.index));
+        this.index = source.length;
+        continue;
+      }
       if (this.phase === 'root') {
         if (/\s/u.test(character)) { this.index += 1; continue; }
         if (character !== '{') this.malformed();
@@ -191,6 +208,7 @@ export async function readStructuredTextSse(
   const decoder = new TextDecoder();
   const projector = new IncrementalTopLevelTextProjector(
     options.request.responseContract!.textField,
+    options.request.responseContract!.allowPlainTextFallback,
     options.malformed
   );
   let lineBuffer = '';

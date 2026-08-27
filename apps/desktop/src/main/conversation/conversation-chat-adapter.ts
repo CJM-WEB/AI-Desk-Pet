@@ -9,7 +9,6 @@ import type { CharacterEmotionLabel } from '@myself/shared-types';
 import {
   characterChatBehaviorPlanSchema,
   characterBehaviorDescriptorSchema,
-  characterChatResponseSchema,
   characterChatResponseJsonSchema,
   movementControlPlanSchema,
   type CharacterBehaviorPlan,
@@ -32,11 +31,6 @@ export const characterJsonOutputInstructions = [
   '示例“跑远一点”：movementControl={"kind":"move_once","target":"random_work_area","distance":"far"}。',
   '格式示例：{"text":"我会陪着你。","activity":"安静陪伴","status":"idle","movementControl":{"kind":"keep"},"behaviorPlan":{"kind":"none","emotion":"calm"},"capabilityPlan":{"kind":"chat"}}'
 ].join('');
-
-/** 聊天表现与能力计划必须由同一严格对象校验，避免先验旧 Schema 拒绝合法扩展字段。 */
-export const capabilityCharacterChatResponseSchema = characterChatResponseSchema.extend({
-  capabilityPlan: capabilityControlPlanSchema
-}).strict();
 
 const 聊天系统消息前缀 = [
   '你是一只 AI 桌宠，请自然、直接地回复用户。',
@@ -80,8 +74,7 @@ export const characterChatResponseContract: ModelResponseContract = {
     }
   },
   textField: 'text' as const,
-  allowPlainTextFallback: false as const,
-  validateStructuredOutput: value => capabilityCharacterChatResponseSchema.safeParse(value).success
+  allowPlainTextFallback: true as const
 };
 
 export interface ConversationChatInput {

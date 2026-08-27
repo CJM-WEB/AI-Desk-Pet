@@ -24,6 +24,24 @@ describe('无权限响应协议解码', () => {
     });
   });
 
+  test.each([
+    ['只有正文', '{"text":"只有正文"}', { text: '只有正文' }],
+    [
+      '非法隐藏控制字段',
+      '{"text":"正文仍然有效","movementControl":{"kind":"move_once","target":{"x":1}}}',
+      {
+        text: '正文仍然有效',
+        movementControl: { kind: 'move_once', target: { x: 1 } }
+      }
+    ]
+  ] as const)('%s不影响顶层正文解码', (_name, raw, structuredOutput) => {
+    expect(decodeResponseContractText(raw, contract)).toEqual({
+      kind: 'structured',
+      text: structuredOutput.text,
+      structured_output: structuredOutput
+    });
+  });
+
   test('截断 JSON 只恢复已经闭合的正文', () => {
     expect(decodeResponseContractText(
       '{"text":"保留正文","behaviorPlan":',
