@@ -208,18 +208,31 @@ describe('公开行为目标解析器', () => {
       .toThrow('CHARACTER_ACTION_UNAVAILABLE');
   });
 
-  test('同一动作归属多个状态时仍按单个公开目标解析', () => {
+  test('同一动作归属多个状态时克隆前后都按公开重复项失败关闭', () => {
     const manifest = createManifest();
     manifest.states[0]!.actionIds.push('wave-action');
+    const originalCatalog = createPublicBehaviorCatalog(manifest, 'default-skin');
     const catalog = structuredClone(createPublicBehaviorCatalog(manifest, 'default-skin'));
 
     expect(publicBehaviorCatalogSchema.safeParse(catalog).success).toBe(true);
-    expect(isPublicBehaviorTarget(catalog, { kind: 'action_name', name: '挥手' })).toBe(true);
-    expect(resolveBehaviorTarget(
-      manifest,
-      'default-skin',
+    expect(isPublicBehaviorTarget(originalCatalog, { kind: 'action_name', name: '挥手' })).toBe(false);
+    expect(isPublicBehaviorTarget(catalog, { kind: 'action_name', name: '挥手' })).toBe(false);
+  });
+
+  test('两个私有动作的全部公开字段相同时仍按两个公开项拒绝猜测', () => {
+    const manifest = createManifest();
+    expect(isPublicBehaviorTarget(
+      createPublicBehaviorCatalog(manifest, 'default-skin'),
       { kind: 'action_name', name: '挥手' }
-    )).toEqual({ kind: 'action', actionId: 'wave-action' });
+    )).toBe(true);
+
+    manifest.actions[2]!.name = '挥手';
+    manifest.actions[2]!.description = '向用户热情挥手';
+    manifest.actions[2]!.tags = ['greet'];
+    const catalog = createPublicBehaviorCatalog(manifest, 'default-skin');
+
+    expect(isPublicBehaviorTarget(catalog, { kind: 'action_name', name: '挥手' })).toBe(false);
+    expect(isPublicBehaviorTarget(catalog, { kind: 'tag', tag: 'greet' })).toBe(false);
   });
 
   test('同名或同标签映射到多个目标时拒绝猜测', () => {

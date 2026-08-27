@@ -103,50 +103,25 @@ type PublicCatalogCandidate = Readonly<{
   kind: 'state_name' | 'action_name';
   name: string;
   semantic: string;
-  description?: string;
   tags: readonly string[];
-  publicKey: string;
 }>;
 
-function publicCandidateKey(candidate: Omit<PublicCatalogCandidate, 'publicKey'>): string {
-  return JSON.stringify([
-    candidate.kind,
-    normalizePublicValue(candidate.name),
-    normalizePublicValue(candidate.semantic),
-    candidate.description === undefined ? null : normalizePublicValue(candidate.description),
-    candidate.tags.map(normalizePublicValue).sort()
-  ]);
-}
-
-/** 旧 play 目标在 Task 3 期间仅作本地兼容视图，稳定键不依赖对象别名或私有 ID。 */
+/** 旧 play 目标在 Task 3 期间仅作本地兼容视图；重复公开项一律保持歧义。 */
 function publicCatalogCandidates(catalog: PublicBehaviorCatalog): PublicCatalogCandidate[] {
   return catalog.states.flatMap(state => {
-    const actions = state.actions.map(action => {
-      const candidate = {
-        kind: 'action_name' as const,
-        name: action.name,
-        semantic: action.semantic,
-        ...(action.description === undefined ? {} : { description: action.description }),
-        tags: action.tags
-      };
-      return { ...candidate, publicKey: publicCandidateKey(candidate) };
-    });
-    const candidate = {
+    const actions = state.actions.map(action => ({
+      kind: 'action_name' as const,
+      name: action.name,
+      semantic: action.semantic,
+      tags: action.tags
+    }));
+    return [{
       kind: 'state_name' as const,
       name: state.name,
       semantic: state.semantic,
-      ...(state.description === undefined ? {} : { description: state.description }),
       tags: state.tags
-    };
-    return [{ ...candidate, publicKey: publicCandidateKey(candidate) }, ...actions];
+    }, ...actions];
   });
-}
-
-function uniquePublicCatalogCandidates(catalog: PublicBehaviorCatalog): PublicCatalogCandidate[] {
-  return [...new Map(publicCatalogCandidates(catalog).map(candidate => [
-    candidate.publicKey,
-    candidate
-  ])).values()];
 }
 
 /**
@@ -172,7 +147,7 @@ export function selectPublicBehaviorTarget(
   const queries = [activity, status, ...motionDescriptors]
     .filter((value): value is string => typeof value === 'string')
     .map(normalizePublicValue);
-  const candidates = uniquePublicCatalogCandidates(catalog);
+  const candidates = publicCatalogCandidates(catalog);
   if (queries.length === 0 || candidates.length === 0) {
     return { kind: 'semantic', semantic: 'idle' };
   }
@@ -209,7 +184,7 @@ export function isPublicBehaviorTarget(
   catalog: PublicBehaviorCatalog,
   target: BehaviorTarget
 ): boolean {
-  const candidates = uniquePublicCatalogCandidates(catalog);
+  const candidates = publicCatalogCandidates(catalog);
   if (target.kind === 'semantic') {
     return candidates.some(candidate => (
       candidate.kind === 'action_name' && candidate.semantic === target.semantic
