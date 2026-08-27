@@ -1,8 +1,10 @@
 # 桌宠统一结构化控制与本地 Agent 修复设计
 
 **日期：** 2026-08-27
-**状态：** 已获用户授权实施
+**状态：** 已被后续规格部分替代
 **适用范围：** Electron 桌面端、Agent Core、文件工具与角色行为运行时；不修改官网，不启用 MCP，不制作安装包
+
+**替代关系：** [`2026-08-27-ai-pet-intent-and-behavior-orchestration-design.md`](./2026-08-27-ai-pet-intent-and-behavior-orchestration-design.md) 已替代本文中的六字段聊天对象整体成功、扁平行为候选、旧 `play.target`、Router 精确猜测文件工具、`expectedWriteOperation` 硬约束以及旧状态动作生命周期设计。本文关于授权根、逐操作确认、Electron Main 可信边界、受控文件与 PowerShell 工具、真实工具结果权威、三态定义和 MCP 运行时禁用的安全约束继续有效。
 
 ## 1. 背景与根因证据
 

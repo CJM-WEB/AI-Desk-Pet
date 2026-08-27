@@ -1,5 +1,10 @@
 # 轻量本地能力验收
 
+## 现行验收补充
+
+- 当前意图编排、可见正文与隐藏控制解耦、真实工具调用、层级状态动作生命周期及三态运动的自动化证据，见 [`2026-08-27-ai-pet-intent-and-behavior-orchestration-acceptance.md`](./2026-08-27-ai-pet-intent-and-behavior-orchestration-acceptance.md)。
+- 该记录只在上述范围内替代 [`2026-08-27-ai-pet-structured-control-repair-acceptance.md`](./2026-08-27-ai-pet-structured-control-repair-acceptance.md) 的现行结论。旧记录仍是当时版本及 CPU/GGUF 复验的历史证据，不代表当前提交上的真实 DeepSeek 网络、真实窗口观感或回收站恢复已经人工通过。
+
 ## 自动证据
 
 - `pnpm.cmd test:security`：验证普通聊天不读取授权根、不创建文件或 PowerShell 能力；公开事件、诊断和 Provider 摘要不包含绝对路径、正文、命令输出或密钥。
