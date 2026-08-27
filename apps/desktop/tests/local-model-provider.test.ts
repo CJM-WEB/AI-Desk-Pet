@@ -671,28 +671,34 @@ describe('LocalModelProvider', () => {
       }
     }
   ] as const)('结构化聊天的$name只以合法正文作为成功前置条件', async ({ content, expected }) => {
-    const provider = new LocalModelProvider(readyPort(), vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{ message: { content } }]
-    })));
+    const textDeltas: string[] = [];
+    const provider = new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => sseResponse([content]))
+    );
 
     await expect(provider.respond(
-      structuredRequest,
+      { ...structuredRequest, onTextDelta: delta => textDeltas.push(delta) },
       new AbortController().signal
     )).resolves.toEqual(expected);
+    expect(textDeltas.join('')).toBe(expected.text);
   });
 
   test('完全没有合法正文时仍返回格式错误', async () => {
-    const provider = new LocalModelProvider(readyPort(), vi.fn<FetchLike>(async () => jsonResponse({
-      choices: [{ message: { content: '{}' } }]
-    })));
+    const onTextDelta = vi.fn();
+    const provider = new LocalModelProvider(
+      readyPort(),
+      vi.fn<FetchLike>(async () => sseResponse(['{}']))
+    );
 
     await expect(provider.respond(
-      structuredRequest,
+      { ...structuredRequest, onTextDelta },
       new AbortController().signal
     )).rejects.toMatchObject({
       code: 'PROVIDER_MALFORMED_RESPONSE',
       retryable: false
     });
+    expect(onTextDelta).not.toHaveBeenCalled();
   });
 
   test('本地模型非法隐藏字段由聊天 Adapter 逐项丢弃且保留正文', async () => {
@@ -706,8 +712,9 @@ describe('LocalModelProvider', () => {
     });
     const adapter = new ConversationChatAdapter(new LocalModelProvider(
       readyPort(),
-      vi.fn<FetchLike>(async () => jsonResponse({ choices: [{ message: { content: payload } }] }))
+      vi.fn<FetchLike>(async () => sseResponse([payload]))
     ));
+    const textDeltas: string[] = [];
 
     await expect(adapter.respond({
       history: [],
@@ -720,8 +727,10 @@ describe('LocalModelProvider', () => {
         proactivityMode: 'assistive',
         recentActions: []
       },
+      onTextDelta: delta => textDeltas.push(delta),
       signal: new AbortController().signal
     })).resolves.toEqual({ text: '正文仍然有效。' });
+    expect(textDeltas.join('')).toBe('正文仍然有效。');
   });
 
   test.each([

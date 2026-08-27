@@ -228,6 +228,7 @@ const SSE_YIELD_EVERY_EVENTS = 32;
 
 type ProjectorPhase =
   | 'root'
+  | 'plain_text'
   | 'key_or_end'
   | 'key'
   | 'colon'
@@ -239,7 +240,7 @@ type ProjectorPhase =
   | 'target_string'
   | 'done';
 
-/** 持久化游标保证每个结构化响应字符最多扫描一次，避免逐 delta 从头解析形成 O(n²)。 */
+/** 持久化游标保证每个结构化响应字符最多扫描一次，并按契约允许纯文本正文降级。 */
 class IncrementalTopLevelTextProjector {
   private index = 0;
   private phase: ProjectorPhase = 'root';
@@ -250,12 +251,28 @@ class IncrementalTopLevelTextProjector {
   private skipInString = false;
   private skipClosers: string[] = [];
 
-  constructor(private readonly field: string) {}
+  constructor(
+    private readonly field: string,
+    private readonly allowPlainTextFallback: boolean
+  ) {}
 
   project(source: string): string {
     const projection: string[] = [];
+    if (this.phase === 'root') {
+      const firstVisibleIndex = source.search(/\S/u);
+      if (firstVisibleIndex < 0) return '';
+      if (source[firstVisibleIndex] !== '{') {
+        if (!this.allowPlainTextFallback) this.malformed();
+        this.phase = 'plain_text';
+      }
+    }
     while (this.index < source.length) {
       const character = source[this.index]!;
+      if (this.phase === 'plain_text') {
+        projection.push(source.slice(this.index));
+        this.index = source.length;
+        continue;
+      }
       if (this.phase === 'root') {
         if (/\s/u.test(character)) { this.index += 1; continue; }
         if (character !== '{') this.malformed();
@@ -462,7 +479,10 @@ async function readProviderSse(
   let dispatchedEvents = 0;
   const projector = request.responseContract === undefined
     ? null
-    : new IncrementalTopLevelTextProjector(request.responseContract.textField);
+    : new IncrementalTopLevelTextProjector(
+        request.responseContract.textField,
+        request.responseContract.allowPlainTextFallback
+      );
 
   const dispatch = (): void => {
     if (eventData.length === 0) return;
