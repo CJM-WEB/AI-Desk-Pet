@@ -640,6 +640,7 @@ export class CharacterBehaviorDirector {
     if (snapshot.movementMode === 0 || movementModeChanged) {
       this.options.behavior.cancelStateLifecycle();
     }
+    if (movementModeChanged) this.clearPendingChat();
     // 模式边界拥有旧目标：切换先终止旧 Motion/播放令牌，再让 Scheduler 启动新策略。
     if (movementModeChanged) {
       if (snapshot.movementMode === 0) this.stopContinuousMotion();
@@ -784,11 +785,18 @@ export class CharacterBehaviorDirector {
     if (!plan || plan.kind !== 'play_state' || !catalog) return false;
     const state = catalog.states.find(candidate => candidate.name === plan.state);
     if (!state) return false;
-    if (plan.action !== undefined) {
-      return state.actions.find(action => action.name === plan.action)?.semantic === 'move';
+    try {
+      // 状态生命周期可在动作完成后续选同状态其他动作，因此必须按整个状态判断移动能力。
+      return this.options.behavior.isMovementBehaviorTarget(
+        this.options.behavior.resolveBehaviorStatePlan({
+          kind: 'play_state',
+          state: state.name
+        })
+      );
+    } catch {
+      // mode 0/2 无法证明状态安全时失败关闭，避免目录切换竞态建立 move 生命周期。
+      return true;
     }
-    return state.semantic === 'move'
-      || state.actions.some(action => action.semantic === 'move');
   }
 
   private releasePlaybackToken(playbackToken: string): void {

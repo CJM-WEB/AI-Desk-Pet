@@ -765,6 +765,44 @@ describe('Main 角色行为 Director', () => {
     }
   );
 
+  test('模式 0/2 不允许混合状态的 idle 动作建立可续选 move 的状态生命周期', async () => {
+    const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
+    fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
+      identity: {
+        name: '测试角色', description: '测试角色', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [{
+        name: '混合状态', semantic: 'idle', tags: [], actions: [
+          { name: '安静等待', semantic: 'idle', tags: [] },
+          { name: '突然跑动', semantic: 'move', tags: [] }
+        ]
+      }]
+    });
+    fixture.behavior.resolveBehaviorStatePlan.mockImplementation(plan => (
+      plan.action === undefined
+        ? { kind: 'state', stateId: 'mixed-state' }
+        : { kind: 'state_action', stateId: 'mixed-state', actionId: 'idle-action' }
+    ));
+    fixture.behavior.isMovementBehaviorTarget.mockImplementation(target => (
+      (target.kind === 'state' || target.kind === 'state_action')
+      && target.stateId === 'mixed-state'
+    ));
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'idle-action', playbackToken: 'idle-token', semantic: 'idle'
+    });
+
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null,
+      providerPlan: { kind: 'play_state', state: '混合状态', action: '安静等待' },
+      movementControl: { kind: 'set_mode', mode: 2 }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+    expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+  });
+
   test('模式 1 的无限链重采样失败后释放旧令牌并由 Scheduler 重新请求', async () => {
     const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
     fixture.setMotionSnapshot({
@@ -1356,7 +1394,7 @@ describe('Main 角色行为 Director', () => {
     });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
-    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledExactlyOnceWith({
+    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
       kind: 'play_state', state: '开心'
     });
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
@@ -1802,6 +1840,34 @@ describe('Main 角色行为 Director', () => {
       { urgency: 80, systemForced: true }
     );
   });
+
+  test.each([0, 2] as const)(
+    'mode 1 等待旧 success 终态时切到 mode %i 会作废旧动画和 move_once',
+    mode => {
+      const fixture = createFixture({ movementMode: 1, proactivityMode: 'assistive' });
+      fixture.setTaskAuthorization({
+        kind: 'play', actionId: 'celebrate-action', playbackToken: 'success-token', semantic: 'celebrate'
+      });
+      fixture.setDirectedAuthorization({
+        kind: 'play', actionId: 'wave-action', playbackToken: 'chat-token', semantic: 'celebrate'
+      });
+      fixture.director.completeUserPrompt({
+        generation: 'generation-1', explicitDirective: null, providerPlan: play('挥手'),
+        movementControl: { kind: 'move_once', target: 'bottom_right', distance: 'far' }
+      });
+      fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+      fixture.director.applyBehaviorSettings({ movementMode: mode, proactivityMode: 'assistive' });
+      fixture.director.applyPlaybackFeedback({
+        playbackToken: 'success-token', actionId: 'celebrate-action',
+        status: 'completed', occurredAtMs: 2
+      });
+
+      expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+      expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
+      expect(fixture.director.getDiagnosticSnapshot().movementMode).toBe(mode);
+    }
+  );
 
   test.each(['completed', 'interrupted', 'failed'] as const)(
     '显式播放以 %s 释放后通知 Scheduler 恢复模式 1',
