@@ -747,9 +747,8 @@ export class ConversationCoordinator {
     reply: Awaited<ReturnType<ConversationChatAdapter['respond']>>
   ): Promise<void> {
     if (reply.capabilityPlan?.kind !== 'agent_task') return;
-    const taskKind: CapabilityTaskKind = reply.capabilityPlan.preferredTool === 'powershell'
-      ? 'powershell'
-      : 'file';
+    // 模型升级只能请求受控文件任务；PowerShell 必须由 Router 根据用户原文明确分流。
+    const taskKind: CapabilityTaskKind = 'file';
     const target = await this.options.capabilityTasks.prepareSnapshot({
       generation: context.generation,
       taskKind

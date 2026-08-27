@@ -10,6 +10,7 @@ import {
   ModelRouter,
   type ModelMessage,
   type ModelProvider,
+  type ModelRequest,
   type ModelSelection,
   type ModelResponse
 } from '@myself/agent-core';
@@ -975,6 +976,69 @@ describe('桌面会话分流纵向集成', () => {
     expect(fixture.readAuthorizedRootPath).not.toHaveBeenCalled();
     expect(fixture.readPrivacySettings).not.toHaveBeenCalled();
     expect(fixture.createAgentService).not.toHaveBeenCalled();
+    await fixture.composition.close();
+  });
+
+  test('模型建议 PowerShell 不会把非明确命令的普通聊天升级为 PowerShell 工具面', async () => {
+    const authorized = await createAuthorizedRoot();
+    roots.push(authorized);
+    const agentRequests: ModelRequest[] = [];
+    const fixture = conversationIntegrationHarness({
+      responses: [{
+        type: 'text',
+        text: '我将请求进入本地任务。',
+        structured_output: {
+          capabilityPlan: { kind: 'agent_task', preferredTool: 'powershell' }
+        }
+      }],
+      authorizedRootPath: authorized.root,
+      createAgentService: factoryInput => new AgentService({
+        loop: new AgentLoop(),
+        pending: new PendingActionStore(),
+        createSession: () => createMainAgentSession({
+          initialCapability: factoryInput.snapshot.taskKind,
+          authorizedRootPath: authorized.root,
+          generation: factoryInput.generation,
+          fileDisclosureAllowed: true,
+          provider: {
+            async respond(request) {
+              agentRequests.push(request);
+              return {
+                type: 'tool_request',
+                request: {
+                  requestId: 'model-escalation-file-tool',
+                  toolName: 'builtin.files.create_file',
+                  arguments: { relativePath: 'safe.txt', content: '安全内容' }
+                }
+              };
+            }
+          },
+          fallbackProviders: [],
+          createFileTools: async () => authorized.fileTools,
+          createPowerShellTool: () => new PowerShellTool()
+        }),
+        emit: factoryInput.emit,
+        createConversationId: () => 'model-escalation-file'
+      })
+    });
+
+    await fixture.composition.coordinator.submit('请完成这个本地任务');
+
+    const authorization = fixture.events.find(event => event.type === 'capability_authorization_required');
+    expect(authorization).toMatchObject({ capability: 'file' });
+
+    if (!authorization || authorization.type !== 'capability_authorization_required') {
+      throw new Error('缺少本地任务授权卡');
+    }
+    await fixture.composition.coordinator.resolveCapabilityAuthorization(
+      authorization.requestId,
+      'confirm'
+    );
+    const names = agentRequests[0]?.tools.map(tool => tool.function.name) ?? [];
+    expect(names).toContain('builtin.files.create_file');
+    expect(names).toContain('builtin.files.move_file');
+    expect(names).not.toContain('builtin.powershell.run');
+
     await fixture.composition.close();
   });
 
