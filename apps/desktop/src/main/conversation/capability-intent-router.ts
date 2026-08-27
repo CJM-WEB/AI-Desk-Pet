@@ -298,7 +298,7 @@ function filePlanningOperation(text: string): FilePlanningOperation | null {
   return null;
 }
 
-/** Main 只传递操作类别，不在 Router 中解释路径或执行结果。 */
+/** 操作类别只辅助缺参说明；真实工具选择、路径和执行结果仍由 Agent/Main 裁决。 */
 export function createFilePlanningHint(prompt: string): FilePlanningHint | null {
   const normalizedText = prompt.normalize('NFKC').trim();
   const operation = filePlanningOperation(normalizedText);

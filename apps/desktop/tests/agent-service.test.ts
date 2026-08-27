@@ -270,6 +270,30 @@ function phases(events: TaskEvent[]) {
   return events.filter(event => event.type === 'phase').map(event => event.phase);
 }
 
+const allFilePlanningToolNames = [
+  'builtin.files.list_files',
+  'builtin.files.read_file',
+  'builtin.files.glob_files',
+  'builtin.files.grep_files',
+  'builtin.files.create_file',
+  'builtin.files.move_file',
+  'builtin.files.create_directory',
+  'builtin.files.apply_patch',
+  'builtin.files.edit_file',
+  'builtin.files.delete_file',
+  CAPABILITY_CLARIFICATION_TOOL_NAME
+] as const;
+
+const mutationPlanningToolNames = [
+  'builtin.files.create_file',
+  'builtin.files.move_file',
+  'builtin.files.create_directory',
+  'builtin.files.apply_patch',
+  'builtin.files.edit_file',
+  'builtin.files.delete_file',
+  CAPABILITY_CLARIFICATION_TOOL_NAME
+] as const;
+
 function powerShellResult(ok: boolean) {
   return {
     ok,
@@ -391,7 +415,7 @@ describe('AgentService', () => {
     ]));
   });
 
-  test('移动规划只公开 move_file，确认后只以 Main 结果恢复总结', async () => {
+  test('错误创建提示不隐藏模型选择的移动工具，确认后只以 Main 结果恢复总结', async () => {
     const provider = new ScriptedProvider([
       moveResponse(),
       { type: 'text', text: 'source.txt 已移动' }
@@ -403,13 +427,13 @@ describe('AgentService', () => {
     await service.submitFileTask({
       text: '把 docs/source.txt 移动到 archive 文件夹',
       visibleHistory: [],
-      planningHint: { operation: 'move_file' }
+      planningHint: { operation: 'create_file' }
     });
 
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
-      'builtin.files.move_file',
-      CAPABILITY_CLARIFICATION_TOOL_NAME
-    ]);
+    const planningTools = provider.requests[0]?.tools.map(tool => tool.function.name) ?? [];
+    expect(planningTools).toContain('builtin.files.move_file');
+    expect(planningTools).toContain('builtin.files.create_file');
+    expect(planningTools).not.toContain('builtin.powershell.run');
     const pending = events.find(event => event.type === 'pending_action');
     if (!pending || pending.type !== 'pending_action') throw new Error('缺少移动确认卡');
     expect(pending.action).toMatchObject({
@@ -422,25 +446,6 @@ describe('AgentService', () => {
 
     expect(fileTools.executeWrite).toHaveBeenCalledExactlyOnceWith(moveAction());
     expect(events).toContainEqual({ type: 'message', role: 'assistant', text: 'source.txt 已移动' });
-  });
-
-  test('移动规划不会接受 list_files 后的口头成功', async () => {
-    const provider = new ScriptedProvider([
-      readResponse('fake-move-read'),
-      { type: 'text', text: 'source.txt 已移动' }
-    ]);
-    const { events, fileTools, service } = createHarness(provider);
-
-    await expect(service.submitFileTask({
-      text: '把 docs/source.txt 移动到 archive 文件夹',
-      visibleHistory: [],
-      planningHint: { operation: 'move_file' }
-    })).rejects.toThrow('CAPABILITY_PLAN_PROTOCOL_INVALID');
-
-    expect(fileTools.executeRead).not.toHaveBeenCalled();
-    expect(events).not.toContainEqual({
-      type: 'message', role: 'assistant', text: 'source.txt 已移动'
-    });
   });
 
   test('reset 等待前台 PowerShell 执行收敛且丢弃迟到结果', async () => {
@@ -788,9 +793,8 @@ describe('AgentService', () => {
       }
     });
 
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
-      'builtin.files.delete_file', CAPABILITY_CLARIFICATION_TOOL_NAME
-    ]);
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
+      .toEqual(allFilePlanningToolNames);
     expect(provider.requests[0]?.tools.map(tool => tool.function.name))
       .toContain(CAPABILITY_CLARIFICATION_TOOL_NAME);
 
@@ -843,9 +847,8 @@ describe('AgentService', () => {
       }
     });
 
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
-      'builtin.files.create_directory', CAPABILITY_CLARIFICATION_TOOL_NAME
-    ]);
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
+      .toEqual(allFilePlanningToolNames);
     const pendingEvent = harness.events.at(-1);
     expect(pendingEvent).toEqual({
       type: 'pending_action',
@@ -1167,7 +1170,7 @@ describe('AgentService', () => {
     expect(fallback.requests).toEqual([]);
   });
 
-  test('文件分类未授权但精确创建目录许可仍经过预览、确认和本地写入', async () => {
+  test('文件分类未授权时创建目录仍经过预览、确认和本地写入', async () => {
     const directoryAction = Object.freeze({
       operation: 'create_directory' as const,
       authorizationGeneration: 0,
@@ -1196,10 +1199,8 @@ describe('AgentService', () => {
       }
     });
 
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
-      'builtin.files.create_directory',
-      CAPABILITY_CLARIFICATION_TOOL_NAME
-    ]);
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
+      .toEqual(mutationPlanningToolNames);
     expect(fileTools.preview).toHaveBeenCalledWith({
       requestId: 'private-directory-create',
       toolName: 'create_directory',
@@ -1234,9 +1235,8 @@ describe('AgentService', () => {
     expect(provider.requests[0]?.tools.map(tool => tool.function.name)).not.toContain(
       'builtin.files.list_files'
     );
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
-      CAPABILITY_CLARIFICATION_TOOL_NAME
-    ]);
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
+      .toEqual(mutationPlanningToolNames);
   });
 
   test.each([
@@ -1266,9 +1266,8 @@ describe('AgentService', () => {
       { type: 'message', role: 'assistant', text: '请先开启文件数据授权。' },
       { type: 'phase', phase: 'success' }
     ]);
-    expect(provider.requests[0]?.tools.map(tool => tool.function.name)).toEqual([
-      CAPABILITY_CLARIFICATION_TOOL_NAME
-    ]);
+    expect(provider.requests[0]?.tools.map(tool => tool.function.name))
+      .toEqual(mutationPlanningToolNames);
     expect(fileTools.executeRead).not.toHaveBeenCalled();
     expect(fileTools.preview).not.toHaveBeenCalled();
   });
@@ -1505,30 +1504,6 @@ describe('AgentService', () => {
     expect(events).not.toContainEqual({
       type: 'message', role: 'assistant', text: '模型伪称操作成功'
     });
-    expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
-  });
-
-  test('公开工具名与本轮规划工具不一致时在生成确认卡前稳定拒绝', async () => {
-    const mismatchedRequest: ModelResponse = {
-      type: 'tool_request',
-      request: {
-        requestId: 'mismatched-write',
-        toolName: 'builtin.files.create_file',
-        arguments: { relativePath: 'wrong.txt', content: '不得写入' }
-      }
-    };
-    const provider = new ScriptedProvider([mismatchedRequest, mismatchedRequest]);
-    const { events, fileTools, service } = createHarness(provider);
-
-    await expect(service.submitFileTask({
-      text: '精确修改 result.txt',
-      visibleHistory: [],
-      planningHint: { operation: 'edit_file' }
-    })).rejects.toMatchObject({ code: 'CAPABILITY_PLAN_PROTOCOL_INVALID' });
-
-    expect(fileTools.preview).not.toHaveBeenCalled();
-    expect(fileTools.executeWrite).not.toHaveBeenCalled();
-    expect(events.some(event => event.type === 'pending_action')).toBe(false);
     expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
   });
 

@@ -236,6 +236,7 @@ export class ConversationCoordinator {
         }
         const taskKind: CapabilityTaskKind = intent.kind === 'file_task' ? 'file' : 'powershell';
         if (taskKind === 'file') {
+          // Router 提示不携带工具授权，Agent 仍从完整受控文件工具集中接受真实 tool_call。
           const planningHint = createFilePlanningHint(context.capabilityText);
           if (planningHint !== null) context.planningHint = planningHint;
         }

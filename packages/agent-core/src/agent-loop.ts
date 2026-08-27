@@ -11,7 +11,6 @@ import { createToolFailureResult } from './tool-result';
 import type {
   AgentEvent,
   AgentRunOutcome,
-  FileWriteOperation,
   ModelMessage,
   ModelToolRequest,
   PreparedToolRequest,
@@ -26,7 +25,6 @@ type ContinuationState = {
   previousTrustedResultOk: boolean | undefined;
   mutationFailurePending: boolean;
   mutationFailureToolName: string | null;
-  expectedWriteOperation: FileWriteOperation | undefined;
   lastToolSignature: string | null;
   repeatedToolCalls: number;
   correctionUsed: boolean;
@@ -124,14 +122,6 @@ function canonicalize(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
-function isExpectedWriteResult(result: unknown, expectedOperation: FileWriteOperation): boolean {
-  return typeof result === 'object'
-    && result !== null
-    && !Array.isArray(result)
-    && typeof (result as Record<string, unknown>)['ok'] === 'boolean'
-    && (result as Record<string, unknown>)['toolName'] === expectedOperation;
-}
-
 export class AgentLoop {
   private readonly continuations = new Map<string, ContinuationState>();
 
@@ -148,7 +138,6 @@ export class AgentLoop {
       undefined,
       false,
       null,
-      context.capabilityPlanning?.expectedWriteOperation,
       null,
       0,
       false
@@ -177,10 +166,6 @@ export class AgentLoop {
       toolResult
     );
     const latestTrustedResultOk = trustedState.latestOk;
-    if (continuation.expectedWriteOperation !== undefined
-      && !isExpectedWriteResult(toolResult, continuation.expectedWriteOperation)) {
-      throw capabilityPlanProtocolError();
-    }
     if (continuation.nextTurn >= MAX_AGENT_TURNS) {
       yield { type: 'message', text: '本地能力操作已结束；已达到模型响应轮次上限。' };
       yield { type: 'phase', phase: latestTrustedResultOk === false ? 'error' : 'success' };
@@ -194,7 +179,6 @@ export class AgentLoop {
       latestTrustedResultOk,
       trustedState.mutationFailurePending,
       trustedState.mutationFailureToolName,
-      undefined,
       continuation.lastToolSignature,
       continuation.repeatedToolCalls,
       continuation.correctionUsed
@@ -213,7 +197,6 @@ export class AgentLoop {
     latestTrustedResultOk: boolean | undefined,
     mutationFailurePending: boolean,
     mutationFailureToolName: string | null,
-    expectedWriteOperation: FileWriteOperation | undefined,
     lastToolSignature: string | null,
     repeatedToolCalls: number,
     correctionUsed: boolean
@@ -323,7 +306,6 @@ export class AgentLoop {
       const requestedName = requestedToolName(response.request);
       if (requestedName === null || !tools.some(tool => tool.function.name === requestedName)) {
         if (correctionUsed) {
-          if (expectedWriteOperation !== undefined) throw capabilityPlanProtocolError();
           throw new Error('AGENT_INVALID_TOOL_REQUEST');
         }
         if (!appendRejectedToolFeedback(messages, response.request, 'INVALID_TOOL_REQUEST')) {
@@ -365,16 +347,6 @@ export class AgentLoop {
         );
       }
       if (prepared.decision === 'confirm') {
-        if (expectedWriteOperation !== undefined
-          && prepared.executionRequest.toolName !== expectedWriteOperation) {
-          if (correctionUsed) throw capabilityPlanProtocolError();
-          correctionUsed = true;
-          messages.push({
-            role: 'system',
-            content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：本轮写任务必须调用与请求一致的受控写工具。请修正一次。'
-          });
-          continue;
-        }
         const continuationToken = `continue_${randomUUID()}`;
         this.continuations.set(continuationToken, {
           messages: [...messages],
@@ -384,7 +356,6 @@ export class AgentLoop {
           previousTrustedResultOk: latestTrustedResultOk,
           mutationFailurePending,
           mutationFailureToolName,
-          expectedWriteOperation,
           lastToolSignature,
           repeatedToolCalls,
           correctionUsed
@@ -399,16 +370,6 @@ export class AgentLoop {
           continuationToken
         };
         return;
-      }
-
-      if (expectedWriteOperation !== undefined) {
-        if (correctionUsed) throw capabilityPlanProtocolError();
-        correctionUsed = true;
-        messages.push({
-          role: 'system',
-          content: 'CAPABILITY_PLAN_PROTOCOL_INVALID：本轮写任务必须先调用与请求一致的受控写工具。请修正一次。'
-        });
-        continue;
       }
 
       yield { type: 'phase', phase: 'acting' };

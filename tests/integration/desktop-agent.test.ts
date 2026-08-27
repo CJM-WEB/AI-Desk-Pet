@@ -173,6 +173,27 @@ const toolNames = [
   'builtin.files.edit_file',
   'builtin.files.delete_file'
 ] as const;
+const providerFileToolNames = [
+  'builtin__files__list_files',
+  'builtin__files__read_file',
+  'builtin__files__glob_files',
+  'builtin__files__grep_files',
+  'builtin__files__create_file',
+  'builtin__files__move_file',
+  'builtin__files__create_directory',
+  'builtin__files__apply_patch',
+  'builtin__files__edit_file',
+  'builtin__files__delete_file'
+] as const;
+const providerMutationPlanningToolNames = [
+  'builtin__files__create_file',
+  'builtin__files__move_file',
+  'builtin__files__create_directory',
+  'builtin__files__apply_patch',
+  'builtin__files__edit_file',
+  'builtin__files__delete_file',
+  'builtin__capability__request_clarification'
+] as const;
 const internalToolNames = [
   'list_files',
   'read_file',
@@ -1067,10 +1088,9 @@ describe('桌面会话分流纵向集成', () => {
     const target = join(authorized.root, 'Docs', 'Report.TXT');
 
     await fixture.composition.coordinator.submit('创建 Docs\\Report.TXT 并写入正文');
-    expect((requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(tool => tool.function.name)).toEqual([
-      'builtin__files__create_file',
-      'builtin__capability__request_clarification'
-    ]);
+    expect((requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
+      tool => tool.function.name
+    )).toEqual(providerMutationPlanningToolNames);
     await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
     const action = pendingAction(fixture.events);
 
@@ -1671,6 +1691,90 @@ describe('桌面 Agent 真实服务集成', () => {
     expect(characterManifestV2Schema.parse(manifest)).toEqual(manifest);
   });
 
+  test('错误创建提示仍公告移动工具，逐次确认后产生真实移动副作用', async () => {
+    const fixture = await harness([
+      {
+        response: toolCall('move-despite-create-hint', 'builtin.files.move_file', {
+          sourceRelativePath: 'source.txt', targetDirectoryRelativePath: 'archive'
+        }),
+        inspect: request => {
+          const names = request.tools.map(tool => tool.function.name);
+          expect(names).toContain('builtin__files__move_file');
+          expect(names).toContain('builtin__files__create_file');
+          expect(names).not.toContain('builtin__powershell__run');
+        }
+      },
+      { response: { type: 'text', text: '文件已移动' } }
+    ]);
+    const sourcePath = join(fixture.authorized.root, 'source.txt');
+    const targetPath = join(fixture.authorized.root, 'archive', 'source.txt');
+    await writeFile(sourcePath, '真实内容', 'utf8');
+    await mkdir(join(fixture.authorized.root, 'archive'));
+
+    await fixture.service.submitFileTask({
+      text: '把 source.txt 移动到 archive',
+      visibleHistory: [],
+      planningHint: { operation: 'create_file' }
+    });
+    await expect(readFile(sourcePath, 'utf8')).resolves.toBe('真实内容');
+    await expect(lstat(targetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await fixture.service.confirm(pendingAction(fixture.events).actionId);
+
+    await expect(lstat(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(targetPath, 'utf8')).resolves.toBe('真实内容');
+    expectProviderExchange(fixture.providerServer, 2);
+  });
+
+  test('显式 PowerShell 经真实确认后可在同一会话续接文件移动并再次确认', async () => {
+    const fixture = await harness([
+      {
+        response: toolCall('combined-powershell', 'builtin.powershell.run', {
+          command: "Write-Output 'combined-task'"
+        }),
+        inspect: request => expect(request.tools.map(tool => tool.function.name))
+          .toEqual(['builtin__powershell__run'])
+      },
+      {
+        response: toolCall('combined-move', 'builtin.files.move_file', {
+          sourceRelativePath: 'source.txt', targetDirectoryRelativePath: 'archive'
+        }),
+        inspect: request => {
+          expect(request.messages.at(-1)).toMatchObject({ role: 'tool', toolCallId: 'combined-powershell' });
+          expect(request.tools.map(tool => tool.function.name)).toEqual([
+            ...providerFileToolNames,
+            'builtin__powershell__run'
+          ]);
+        }
+      },
+      {
+        response: { type: 'text', text: '命令执行并完成文件移动' },
+        inspect: request => expect(request.messages.at(-1))
+          .toMatchObject({ role: 'tool', toolCallId: 'combined-move' })
+      }
+    ], 'powershell');
+    const sourcePath = join(fixture.authorized.root, 'source.txt');
+    const targetPath = join(fixture.authorized.root, 'archive', 'source.txt');
+    await writeFile(sourcePath, '组合任务', 'utf8');
+    await mkdir(join(fixture.authorized.root, 'archive'));
+
+    await fixture.service.submitFileTask({
+      text: "执行 PowerShell Write-Output 'combined-task'，然后把 source.txt 移动到 archive",
+      visibleHistory: []
+    });
+    await fixture.service.confirm(pendingAction(fixture.events).actionId);
+    const moveAction = fixture.events.filter(event => event.type === 'pending_action').at(-1);
+    if (!moveAction || moveAction.type !== 'pending_action') throw new Error('缺少移动确认卡');
+    await expect(readFile(sourcePath, 'utf8')).resolves.toBe('组合任务');
+    await expect(lstat(targetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await fixture.service.confirm(moveAction.action.actionId);
+
+    await expect(lstat(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(targetPath, 'utf8')).resolves.toBe('组合任务');
+    expectProviderExchange(fixture.providerServer, 3);
+  });
+
   test('隔离授权根逐项验证七工具副作用且失败任务后新建任务仍成功', async () => {
     const expectToolResult = (
       request: Parameters<NonNullable<ProviderStep['inspect']>>[0],
@@ -1858,7 +1962,7 @@ describe('桌面 Agent 真实服务集成', () => {
         toolName,
         targetRelativePath
       });
-      expect(request.tools).toHaveLength(11);
+      expect(request.tools.map(tool => tool.function.name)).toEqual(providerFileToolNames);
       expect(request.toolChoice).toBe('auto');
     };
     let recycledPath = '';
@@ -2056,7 +2160,9 @@ describe('桌面 Agent 真实服务集成', () => {
     expect(fixture.fetchClient).toHaveBeenCalledTimes(2);
     expect(fixture.responses).toHaveLength(0);
     expect(fixture.requestBodies[1]).toMatchObject({ tool_choice: 'auto' });
-    expect(fixture.requestBodies[1]?.tools).toHaveLength(11);
+    expect((fixture.requestBodies[1]?.tools as Array<{ function: { name: string } }>).map(
+      tool => tool.function.name
+    )).toEqual(providerFileToolNames);
     expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
       type: 'message', role: 'assistant', text: 'empty 已移入回收站'
     }]);
@@ -2136,9 +2242,7 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expect((fixture.requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
       tool => tool.function.name
-    )).toEqual([
-      'builtin__capability__request_clarification'
-    ]);
+    )).toEqual(providerMutationPlanningToolNames);
     expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
       type: 'message', role: 'assistant', text: '请先开启文件数据授权。'
     }]);
@@ -2181,10 +2285,7 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expect((fixture.requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
       tool => tool.function.name
-    )).toEqual([
-      'builtin__files__create_directory',
-      'builtin__capability__request_clarification'
-    ]);
+    )).toEqual(providerMutationPlanningToolNames);
     await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
     await fixture.service.confirm(pendingAction(fixture.events).actionId);
     expect((await lstat(target)).isDirectory()).toBe(true);
@@ -2197,10 +2298,7 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expect((fixture.requestBodies[2]?.tools as Array<{ function: { name: string } }>).map(
       tool => tool.function.name
-    )).toEqual([
-      'builtin__files__delete_file',
-      'builtin__capability__request_clarification'
-    ]);
+    )).toEqual(providerMutationPlanningToolNames);
     await expect(lstat(target)).resolves.toBeDefined();
     const deleteEvent = fixture.events.filter(event => event.type === 'pending_action').at(-1);
     if (!deleteEvent || deleteEvent.type !== 'pending_action') throw new Error('缺少删除确认卡');
@@ -2488,7 +2586,6 @@ describe('桌面 Agent 真实服务集成', () => {
           'builtin__files__apply_patch',
           'builtin__files__edit_file',
           'builtin__files__delete_file',
-          'builtin__powershell__run',
           'builtin__capability__request_clarification'
         ])
       },

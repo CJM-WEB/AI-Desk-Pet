@@ -4,8 +4,6 @@ import type {
   AgentLoop,
   AgentRunOutcome,
   FilePlanningHint,
-  FilePlanningOperation,
-  FileWriteOperation,
   ModelMessage,
   ModelProvider,
   RunContext,
@@ -66,38 +64,15 @@ export interface AgentFileTaskSubmission {
   planningHint?: FilePlanningHint;
 }
 
-const filePlanningToolNames = Object.freeze({
-  list_files: 'builtin.files.list_files',
-  read_file: 'builtin.files.read_file',
-  glob_files: 'builtin.files.glob_files',
-  grep_files: 'builtin.files.grep_files',
-  create_file: 'builtin.files.create_file',
-  create_directory: 'builtin.files.create_directory',
-  apply_patch: 'builtin.files.apply_patch',
-  edit_file: 'builtin.files.edit_file',
-  delete_file: 'builtin.files.delete_file',
-  move_file: 'builtin.files.move_file'
-} satisfies Readonly<Record<FilePlanningOperation, string>>);
-
-const controlledWriteOperations = new Set<FileWriteOperation>([
-  'create_file',
-  'create_directory',
-  'apply_patch',
-  'edit_file',
-  'delete_file',
-  'move_file'
-]);
-const controlledWriteToolNames = new Set<string>(
-  [...controlledWriteOperations].map(operation => filePlanningToolNames[operation])
-);
 const mutationPlanningToolNames = new Set<string>([
-  ...controlledWriteToolNames,
+  'builtin.files.create_file',
+  'builtin.files.create_directory',
+  'builtin.files.apply_patch',
+  'builtin.files.edit_file',
+  'builtin.files.delete_file',
+  'builtin.files.move_file',
   'builtin.powershell.run'
 ]);
-
-function isControlledWriteOperation(operation: FilePlanningOperation): operation is FileWriteOperation {
-  return controlledWriteOperations.has(operation as FileWriteOperation);
-}
 
 export type AgentFileTaskOutcome =
   | Readonly<{ kind: 'clarification'; missingField: NonNullable<AgentRunOutcome>['missingField']; acted: false }>
@@ -591,35 +566,21 @@ export class AgentService {
     visibleHistory: readonly ModelMessage[] = [],
     planningHint?: FilePlanningHint
   ): RunContext {
-    const plannedOperation = planningHint?.operation;
-    const plannedToolName = plannedOperation === undefined
-      ? null
-      : filePlanningToolNames[plannedOperation];
-    const expectedWriteOperation = plannedOperation !== undefined && isControlledWriteOperation(plannedOperation)
-      ? plannedOperation
-      : undefined;
+    const fileTools = session.tools.filter(tool => tool.function.name.startsWith('builtin.files.'));
+    const availableFileTools = session.fileDisclosureAllowed
+      ? fileTools
+      : fileTools.filter(tool => mutationPlanningToolNames.has(tool.function.name));
     const planningTools = planningHint?.missingField === 'target_path'
       ? []
       : session.initialCapability === 'powershell'
         ? session.tools.filter(tool => tool.function.name === 'builtin.powershell.run')
-      : !session.fileDisclosureAllowed
-      ? expectedWriteOperation !== undefined
-        ? session.tools.filter(tool => tool.function.name === plannedToolName)
-        : plannedToolName !== null
-          ? []
-          : session.tools.filter(tool => mutationPlanningToolNames.has(tool.function.name))
-      : plannedToolName === null
+        : availableFileTools;
+    // 普通文件任务始终排除 PowerShell；显式 PowerShell 只有真实命令结果后才恢复受控组合工具面。
+    const tools = session.initialCapability === 'file'
+      ? availableFileTools
+      : session.fileDisclosureAllowed
         ? session.tools
-        : session.tools.filter(tool => tool.function.name === plannedToolName);
-    // 未授权正文披露时，纯写任务续跑只恢复逐次确认的 mutation；读取/检索始终保持关闭。
-    const tools = session.fileDisclosureAllowed
-      ? session.tools
-      : expectedWriteOperation !== undefined
-        ? session.tools.filter(tool => mutationPlanningToolNames.has(tool.function.name))
-        : session.initialCapability === 'powershell'
-          ? session.tools.filter(tool => tool.function.name === 'builtin.powershell.run'
-            || mutationPlanningToolNames.has(tool.function.name))
-        : planningTools;
+        : session.tools.filter(tool => mutationPlanningToolNames.has(tool.function.name));
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
       messages: [...session.messages, ...visibleHistory],
@@ -647,8 +608,7 @@ export class AgentService {
       protocol: 'capability_planner',
       capabilityPlanning: {
         allowClarification: session.initialCapability === 'file',
-        planningTools,
-        ...(expectedWriteOperation === undefined ? {} : { expectedWriteOperation })
+        planningTools
       }
     };
   }

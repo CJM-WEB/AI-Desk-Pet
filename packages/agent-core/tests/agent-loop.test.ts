@@ -126,25 +126,43 @@ function context(provider: ModelProvider, signal = new AbortController().signal)
 }
 
 describe('AgentLoop', () => {
-  test('移动规划拒绝未公告的只读工具与其后的口头成功', async () => {
+  test('模型在已公告工具中选择的真实调用决定操作类型', async () => {
     const provider = new ScriptedProvider([
-      readRequest('fake-move-read'),
+      {
+        type: 'tool_request',
+        request: {
+          requestId: 'correct-move',
+          toolName: 'builtin.files.move_file',
+          arguments: { sourceRelativePath: 'source.txt', targetDirectoryRelativePath: 'archive' }
+        }
+      },
       { type: 'text', text: 'source.txt 已移动' }
     ]);
+    const createTool = tools.find(tool => tool.function.name === 'builtin.files.create_file');
     const moveTool = tools.find(tool => tool.function.name === 'builtin.files.move_file');
-    if (!moveTool) throw new Error('缺少移动工具夹具');
-
-    await expect(collectEvents({
+    if (!createTool || !moveTool) throw new Error('缺少写工具夹具');
+    const loop = new AgentLoop();
+    const runContext = {
       ...context(provider),
-      tools: [moveTool],
-      protocol: 'capability_planner',
+      tools: [createTool, moveTool],
+      protocol: 'capability_planner' as const,
       capabilityPlanning: {
         allowClarification: true,
-        expectedWriteOperation: 'move_file'
+        planningTools: [createTool, moveTool]
       }
-    })).rejects.toThrow('CAPABILITY_PLAN_PROTOCOL_INVALID');
+    };
 
-    expect(provider.requests).toHaveLength(2);
+    const paused = await collect(loop.run('移动 source.txt', runContext));
+    const request = paused.find(event => event.type === 'write_request');
+    if (!request || request.type !== 'write_request') throw new Error('缺少移动确认请求');
+    expect(request.executionRequest.toolName).toBe('move_file');
+
+    const resumed = await collect(loop.resume(request.continuationToken, {
+      ok: true,
+      toolName: 'move_file',
+      targetRelativePath: 'archive/source.txt'
+    }, runContext));
+    expect(resumed).toContainEqual({ type: 'message', text: 'source.txt 已移动' });
   });
 
   test.each([

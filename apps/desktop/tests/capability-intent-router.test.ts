@@ -28,7 +28,7 @@ describe('能力意图路由器', () => {
     ['把 notes.txt 中的旧文本替换为新文本', 'edit_file'],
     ['把 success.txt 移动到回收站', 'delete_file'],
     ['把 docs/source.txt 移动到 archive 文件夹', 'move_file']
-  ] as const)('文件 Router 只生成操作类别提示，不解释文件名：%s', (text, operation) => {
+  ] as const)('文件 Router 只生成非约束操作提示，不解释文件名：%s', (text, operation) => {
     expect(createFilePlanningHint(text)).toEqual({ operation });
   });
 

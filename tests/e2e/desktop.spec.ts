@@ -5902,10 +5902,22 @@ test.describe('真实 Provider 业务闭环', () => {
         ),
         inspect: request => {
           const names = request.tools.map(tool => tool.function.name);
-          if (names.length !== 2
-            || names[0] !== 'builtin__files__move_file'
-            || names[1] !== 'builtin__capability__request_clarification') {
-            throw new Error('移动规划没有只公开 move_file 工具面');
+          const expectedNames = [
+            'builtin__files__list_files',
+            'builtin__files__read_file',
+            'builtin__files__glob_files',
+            'builtin__files__grep_files',
+            'builtin__files__create_file',
+            'builtin__files__move_file',
+            'builtin__files__create_directory',
+            'builtin__files__apply_patch',
+            'builtin__files__edit_file',
+            'builtin__files__delete_file',
+            'builtin__capability__request_clarification'
+          ];
+          if (JSON.stringify(names) !== JSON.stringify(expectedNames)
+            || names.includes('builtin__powershell__run')) {
+            throw new Error('文件任务没有公开完整受控文件工具面，或意外包含 PowerShell');
           }
         }
       },
