@@ -16,6 +16,10 @@ import {
 import { CharacterMotionService } from '../src/main/characters/character-motion-service';
 import { CharacterProactivityScheduler } from
   '../src/main/characters/character-proactivity-scheduler';
+import {
+  persistentMovementIntentCases,
+  transientBehaviorIntentCases
+} from '../../../tests/fixtures/natural-intent-matrix';
 
 const NONE: CharacterBehaviorAuthorization = { kind: 'none' };
 
@@ -261,27 +265,26 @@ function play(name: string): CharacterBehaviorPlan {
 }
 
 describe('Main 角色行为 Director', () => {
-  test.each([
-    ['停止不动', 0],
-    ['让他一直运动', 1],
-    ['让他时不时动一下', 2]
-  ] as const)('真实表达“%s”在 Provider 前写入唯一持久模式 %i', async (
-    prompt,
-    expectedMode
-  ) => {
-    const fixture = createFixture({ movementMode: expectedMode === 2 ? 0 : 2, proactivityMode: 'assistive' });
+  test.each(persistentMovementIntentCases)(
+    '真实表达“$prompt”在 Provider 前写入唯一持久模式 $mode',
+    async ({ prompt, mode: expectedMode }) => {
+      const fixture = createFixture({
+        movementMode: expectedMode === 2 ? 0 : 2,
+        proactivityMode: 'assistive'
+      });
 
-    await fixture.director.prepareUserPrompt(prompt);
+      await fixture.director.prepareUserPrompt(prompt);
 
-    expect(fixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(
-      expectedMode,
-      expect.any(Function)
-    );
-    expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
-      movementMode: expectedMode,
-      continuousTargetType: null
-    });
-  });
+      expect(fixture.saveMovementMode).toHaveBeenCalledExactlyOnceWith(
+        expectedMode,
+        expect.any(Function)
+      );
+      expect(fixture.director.getDiagnosticSnapshot()).toMatchObject({
+        movementMode: expectedMode,
+        continuousTargetType: null
+      });
+    }
+  );
 
   test('“跑远一点”只产生一次远距离运动且不改写持久三态', async () => {
     const fixture = createFixture({ movementMode: 2, proactivityMode: 'assistive' });
@@ -289,7 +292,7 @@ describe('Main 角色行为 Director', () => {
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
     });
 
-    await fixture.director.prepareUserPrompt('跑远一点');
+    await fixture.director.prepareUserPrompt(transientBehaviorIntentCases.moveFar.prompt);
 
     expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
       kind: 'wander', scope: 'work_area', distance: 'far'
@@ -303,12 +306,14 @@ describe('Main 角色行为 Director', () => {
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'wave-action', playbackToken: 'wave-token', semantic: 'celebrate'
     });
-    const prepared = await fixture.director.prepareUserPrompt('挥手一会儿');
+    const prepared = await fixture.director.prepareUserPrompt(
+      transientBehaviorIntentCases.waveTemporarily.prompt
+    );
 
     await fixture.director.completeUserPrompt({
       generation: 'generation-1',
       explicitDirective: prepared.explicitDirective,
-      providerPlan: { kind: 'play_state', state: '开心', action: '挥手' },
+      providerPlan: transientBehaviorIntentCases.waveTemporarily.providerPlan,
       movementControl: { kind: 'keep' }
     });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });

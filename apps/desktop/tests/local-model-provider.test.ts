@@ -7,6 +7,7 @@ import {
 } from '../src/main/providers/local-model-provider';
 import { ProviderError } from '../src/main/providers/openai-provider';
 import { ConversationChatAdapter } from '../src/main/conversation/conversation-chat-adapter';
+import { characterChatProtocolCases } from '../../../tests/fixtures/natural-intent-matrix';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -65,41 +66,6 @@ const localBehaviorContext = {
   recentActions: []
 };
 
-/** 与云 Provider 契约测试保持逐项相同的自然表达及期望。 */
-const naturalIntentMatrix = [
-  ['你好呀', {
-    text: '你好呀，我在。', activity: '安静陪伴', status: 'idle',
-    movementControl: { kind: 'keep' }, behaviorPlan: { kind: 'none' },
-    capabilityPlan: { kind: 'chat' }
-  }],
-  ['停止不动', {
-    text: '好的，我会保持静止。', activity: '保持静止', status: 'idle',
-    movementControl: { kind: 'set_mode', mode: 0 }, behaviorPlan: { kind: 'none' },
-    capabilityPlan: { kind: 'chat' }
-  }],
-  ['让他一直运动', {
-    text: '好的，我会持续运动。', activity: '持续运动', status: 'moving',
-    movementControl: { kind: 'set_mode', mode: 1 }, behaviorPlan: { kind: 'none' },
-    capabilityPlan: { kind: 'chat' }
-  }],
-  ['让他时不时动一下', {
-    text: '好的，我会偶尔走动。', activity: '休闲待机', status: 'idle',
-    movementControl: { kind: 'set_mode', mode: 2 }, behaviorPlan: { kind: 'none' },
-    capabilityPlan: { kind: 'chat' }
-  }],
-  ['跑远一点', {
-    text: '我跑远一点。', activity: '远距离跑动', status: 'moving',
-    movementControl: { kind: 'move_once', target: 'random_work_area', distance: 'far' },
-    behaviorPlan: { kind: 'none' }, capabilityPlan: { kind: 'chat' }
-  }],
-  ['挥手一会儿', {
-    text: '我来挥挥手。', activity: '挥手问候', status: '开心',
-    movementControl: { kind: 'keep' },
-    behaviorPlan: { kind: 'play_state', state: '开心', action: '挥手' },
-    capabilityPlan: { kind: 'chat' }
-  }]
-] as const;
-
 const structuredRequest: ModelRequest = {
   messages: [{ role: 'user', content: '保持安静陪伴' }],
   tools: [],
@@ -156,19 +122,19 @@ function readyPort(getReadyConnection = () => connection): LocalModelConnectionP
 }
 
 describe('LocalModelProvider', () => {
-  test.each(naturalIntentMatrix)(
-    '把“%s”的环回 SSE 响应解码为与云 Provider 相同的意图',
-    async (prompt, response) => {
-      const fetchClient = vi.fn<FetchLike>(async () => sseResponse([JSON.stringify(response)]));
+  test.each(characterChatProtocolCases)(
+    '解码“$name”线协议且保留与云 Provider 相同的控制字段',
+    async ({ wireJson, decoded }) => {
+      const fetchClient = vi.fn<FetchLike>(async () => sseResponse([wireJson]));
       const adapter = new ConversationChatAdapter(new LocalModelProvider(readyPort(), fetchClient));
 
       await expect(adapter.respond({
         history: [],
-        text: prompt,
+        text: '协议解码测试',
         behaviorContext: localBehaviorContext,
         signal: new AbortController().signal,
         onTextDelta: vi.fn()
-      })).resolves.toEqual(response);
+      })).resolves.toEqual(decoded);
 
       const requestBody = JSON.parse(String(fetchClient.mock.calls[0]?.[1]?.body));
       expect(requestBody).toMatchObject({

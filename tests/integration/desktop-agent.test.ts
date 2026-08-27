@@ -1859,6 +1859,65 @@ describe('桌面 Agent 真实服务集成', () => {
     }
   );
 
+  test.each(['DeepSeek', '内置本地模型'] as const)(
+    '%s 工具真实冲突后拒绝模型口头成功并以 error 收口',
+    async providerKind => {
+      const claimedSuccess = 'conflict.txt 已创建成功';
+      const deepSeek = providerKind === 'DeepSeek'
+        ? await deepSeekHarness({
+            responses: [
+              compatibleToolCall('task6-conflict', 'builtin__files__create_file', {
+                relativePath: 'conflict.txt', content: '模型内容\n'
+              }),
+              compatibleText(claimedSuccess)
+            ]
+          })
+        : null;
+      const local = providerKind === '内置本地模型'
+        ? await localModelFileHarness({
+            steps: [
+              {
+                response: toolCall('task6-local-conflict', 'builtin.files.create_file', {
+                  relativePath: 'conflict.txt', content: '模型内容\n'
+                })
+              },
+              { response: { type: 'text', text: claimedSuccess } }
+            ],
+            moveToRecycleBin: async () => undefined
+          })
+        : null;
+      const service = deepSeek?.service ?? local?.service;
+      const events = deepSeek?.events ?? local?.events;
+      const authorized = deepSeek?.authorized ?? local?.authorized;
+      if (!service || !events || !authorized) throw new Error('缺少工具失败测试夹具');
+      const target = join(authorized.root, 'conflict.txt');
+
+      await service.submitFileTask({
+        text: '帮我在当前目录下创建conflict.txt文件', visibleHistory: []
+      });
+      await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+      // 模拟确认前出现的外部竞争写入，强制真实文件工具在执行阶段报告冲突。
+      await writeFile(target, '外部内容\n', 'utf8');
+      await service.confirm(pendingAction(events).actionId);
+
+      await expect(readFile(target, 'utf8')).resolves.toBe('外部内容\n');
+      expect(events).toContainEqual({
+        type: 'message', role: 'assistant', text: '本地能力操作失败，未完成请求。'
+      });
+      expect(events).not.toContainEqual({
+        type: 'message', role: 'assistant', text: claimedSuccess
+      });
+      expect(events).not.toContainEqual({ type: 'phase', phase: 'success' });
+      expect(events.at(-1)).toEqual({ type: 'phase', phase: 'error' });
+      if (local) {
+        expect(local.cloudServer.requests).toHaveLength(0);
+        local.localServer.assertComplete();
+      } else {
+        expect(deepSeek?.responses).toEqual([]);
+      }
+    }
+  );
+
   test('错误创建提示仍公告移动工具，逐次确认后产生真实移动副作用', async () => {
     const fixture = await harness([
       {

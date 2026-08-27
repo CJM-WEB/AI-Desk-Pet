@@ -27,6 +27,7 @@ import {
   toolRequestSchema,
   type ProviderProfileV2
 } from '@myself/shared-types';
+import { characterChatProtocolCases } from '../../../tests/fixtures/natural-intent-matrix';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -90,59 +91,6 @@ const providerBehaviorContext = {
   proactivityMode: 'assistive' as const,
   recentActions: []
 };
-
-/** Provider 与本地模型必须对同一组用户自然表达给出相同的隐藏控制契约。 */
-const naturalIntentMatrix = [
-  {
-    prompt: '你好呀',
-    response: {
-      text: '你好呀，我在。', activity: '安静陪伴', status: 'idle',
-      movementControl: { kind: 'keep' }, behaviorPlan: { kind: 'none' },
-      capabilityPlan: { kind: 'chat' }
-    }
-  },
-  {
-    prompt: '停止不动',
-    response: {
-      text: '好的，我会保持静止。', activity: '保持静止', status: 'idle',
-      movementControl: { kind: 'set_mode', mode: 0 }, behaviorPlan: { kind: 'none' },
-      capabilityPlan: { kind: 'chat' }
-    }
-  },
-  {
-    prompt: '让他一直运动',
-    response: {
-      text: '好的，我会持续运动。', activity: '持续运动', status: 'moving',
-      movementControl: { kind: 'set_mode', mode: 1 }, behaviorPlan: { kind: 'none' },
-      capabilityPlan: { kind: 'chat' }
-    }
-  },
-  {
-    prompt: '让他时不时动一下',
-    response: {
-      text: '好的，我会偶尔走动。', activity: '休闲待机', status: 'idle',
-      movementControl: { kind: 'set_mode', mode: 2 }, behaviorPlan: { kind: 'none' },
-      capabilityPlan: { kind: 'chat' }
-    }
-  },
-  {
-    prompt: '跑远一点',
-    response: {
-      text: '我跑远一点。', activity: '远距离跑动', status: 'moving',
-      movementControl: { kind: 'move_once', target: 'random_work_area', distance: 'far' },
-      behaviorPlan: { kind: 'none' }, capabilityPlan: { kind: 'chat' }
-    }
-  },
-  {
-    prompt: '挥手一会儿',
-    response: {
-      text: '我来挥挥手。', activity: '挥手问候', status: '开心',
-      movementControl: { kind: 'keep' },
-      behaviorPlan: { kind: 'play_state', state: '开心', action: '挥手' },
-      capabilityPlan: { kind: 'chat' }
-    }
-  }
-] as const;
 
 const request: ModelRequest = {
   messages: [
@@ -855,31 +803,24 @@ describe('三协议云端普通聊天流式契约', () => {
   }, 20_000);
 });
 
-describe('ConversationChatAdapter 三类 Provider 自然文本契约', () => {
-  test.each(chatProviderContractCases.flatMap(contract => naturalIntentMatrix.map(intent => ({
+describe('ConversationChatAdapter 三类 Provider 协议契约', () => {
+  test.each(chatProviderContractCases.flatMap(contract => characterChatProtocolCases.map(protocol => ({
     contract,
-    ...intent
+    ...protocol
   }))))(
-    '$contract.name 把“$prompt”的真实协议响应解码为统一意图',
-    async ({ contract, prompt, response }) => {
+    '$contract.name 解码“$name”线协议且保留控制字段',
+    async ({ contract, wireJson, decoded }) => {
       const adapter = new ConversationChatAdapter(contract.createProvider(
-        vi.fn(async () => characterChatSseResponse(contract.name, JSON.stringify(response)))
+        vi.fn(async () => characterChatSseResponse(contract.name, wireJson))
       ));
 
       await expect(adapter.respond({
         history: [],
-        text: prompt,
+        text: '协议解码测试',
         behaviorContext: providerBehaviorContext,
         signal: new AbortController().signal,
         onTextDelta: vi.fn()
-      })).resolves.toEqual({
-        text: response.text,
-        activity: response.activity,
-        status: response.status,
-        movementControl: response.movementControl,
-        behaviorPlan: response.behaviorPlan,
-        capabilityPlan: response.capabilityPlan
-      });
+      })).resolves.toEqual(decoded);
     }
   );
 

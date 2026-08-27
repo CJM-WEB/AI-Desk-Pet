@@ -1,12 +1,35 @@
 import { describe, expect, test } from 'vitest';
 import { parseExplicitCharacterBehavior } from
   '../src/main/conversation/explicit-character-behavior-gate';
+import {
+  persistentMovementIntentCases,
+  transientBehaviorIntentCases
+} from '../../../tests/fixtures/natural-intent-matrix';
 
 describe('显式桌宠行为 Gate', () => {
+  test.each(persistentMovementIntentCases)(
+    '共享真实表达“$prompt”同时归一为持久模式与显式指令',
+    ({ prompt, movementControl, explicitDirective }) => {
+      expect(parseExplicitCharacterBehavior(prompt)).toMatchObject({
+        capabilityText: prompt,
+        movementControl,
+        explicitDirective
+      });
+    }
+  );
+
+  test('共享单次远距离表达只产生临时运动控制与显式指令', () => {
+    const expected = transientBehaviorIntentCases.moveFar;
+
+    expect(parseExplicitCharacterBehavior(expected.prompt)).toMatchObject({
+      capabilityText: expected.prompt,
+      movementControl: expected.movementControl,
+      explicitDirective: expected.explicitDirective
+    });
+  });
+
   test.each([
-    ['停止不动', { kind: 'set_mode', mode: 0 }],
     ['一直运动', { kind: 'set_mode', mode: 1 }],
-    ['让他一直运动', { kind: 'set_mode', mode: 1 }],
     ['保持跑动', { kind: 'set_mode', mode: 1 }],
     ['时不时动一下', { kind: 'set_mode', mode: 2 }],
     ['让他时不时运动', { kind: 'set_mode', mode: 2 }],
@@ -15,7 +38,6 @@ describe('显式桌宠行为 Gate', () => {
     ['偶尔动一下', { kind: 'set_mode', mode: 2 }],
     ['自己偶尔走动', { kind: 'set_mode', mode: 2 }],
     ['恢复自主活动', { kind: 'set_mode', mode: 2 }],
-    ['跑远一点', { kind: 'move_once', target: 'random_work_area', distance: 'far' }],
     ['去右下角', { kind: 'move_once', target: 'bottom_right', distance: 'medium' }],
     ['往上远一点', { kind: 'move_once', target: 'top', distance: 'far' }],
     ['move down a little', { kind: 'move_once', target: 'bottom', distance: 'near' }]
