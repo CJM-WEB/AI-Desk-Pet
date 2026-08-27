@@ -317,6 +317,7 @@ function movementLockDirector() {
     handleTaskEvent: vi.fn(() => ({ kind: 'none' as const })),
     applyPlaybackFeedback: vi.fn(),
     advance: vi.fn(() => []),
+    cancelStateLifecycle: vi.fn(),
     handleActiveCharacterChanged: vi.fn(async () => undefined),
     close: vi.fn()
   };

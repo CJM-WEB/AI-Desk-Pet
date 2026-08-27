@@ -68,6 +68,30 @@ function createFixture(initialSettings: Readonly<{
       if (!resolved) throw new Error('CHARACTER_ACTION_UNAVAILABLE');
       return resolved;
     }),
+    resolveBehaviorStatePlan: vi.fn((plan: Extract<CharacterBehaviorPlan, { kind: 'play_state' }>) => {
+      const stateId = plan.state === '开心'
+        ? 'happy-state'
+        : plan.state === '运动'
+          ? 'move-state'
+          : null;
+      const actionId = plan.action === undefined
+        ? undefined
+        : targetByName.get(plan.action)?.kind === 'action'
+          ? (targetByName.get(plan.action) as Extract<ResolvedBehaviorTarget, { kind: 'action' }>).actionId
+          : undefined;
+      if (!stateId || (plan.action !== undefined && actionId === undefined)) {
+        throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+      }
+      if (stateId === 'happy-state' && actionId === 'move-action') {
+        throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+      }
+      if (stateId === 'move-state' && actionId !== undefined && actionId !== 'move-action') {
+        throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+      }
+      return actionId === undefined
+        ? { kind: 'state' as const, stateId }
+        : { kind: 'state_action' as const, stateId, actionId };
+    }),
     isMovementBehaviorTarget: vi.fn((target: ResolvedBehaviorTarget) => (
       target.kind === 'semantic'
         ? target.semantic === 'move'
@@ -94,6 +118,7 @@ function createFixture(initialSettings: Readonly<{
       options?: Readonly<{ allowPlayback?: boolean }>
     ) => options?.allowPlayback === false ? NONE : taskAuthorization),
     applyPlaybackFeedback: vi.fn((_feedback: CharacterPlaybackFeedback) => undefined),
+    cancelStateLifecycle: vi.fn(() => undefined),
     handleActiveCharacterChanged: vi.fn(async () => undefined),
     close: vi.fn(() => undefined)
   };
@@ -224,7 +249,11 @@ function createRealMotionFixture(input: Readonly<{
 }
 
 function play(name: string): CharacterBehaviorPlan {
-  return { kind: 'play', target: { kind: 'action_name', name } };
+  return {
+    kind: 'play_state',
+    state: name === '移动' ? '运动' : '开心',
+    action: name
+  };
 }
 
 describe('Main 角色行为 Director', () => {
@@ -456,6 +485,43 @@ describe('Main 角色行为 Director', () => {
       currentTargetType: null
     });
     expect(fixture.motion.stop).toHaveBeenCalledOnce();
+  });
+
+  test.each(['停止', '拖拽', 'reset'] as const)(
+    '%s 会清理 Engine 中仍有效的状态动作生命周期',
+    async operation => {
+      const fixture = createFixture();
+
+      if (operation === '停止') await fixture.director.prepareUserPrompt('停止不动');
+      else if (operation === '拖拽') fixture.director.setDragging(true);
+      else fixture.director.reset('generation-2');
+
+      operation === '停止'
+        ? expect(fixture.behavior.cancelStateLifecycle).toHaveBeenCalled()
+        : expect(fixture.behavior.cancelStateLifecycle).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('mode=0 在持久化完成前立即撤销状态动作生命周期', async () => {
+    const fixture = createFixture();
+    let resolveSave: (() => void) | undefined;
+    fixture.saveMovementMode.mockImplementation(() => new Promise<void>(resolve => {
+      resolveSave = resolve;
+    }));
+
+    const pending = fixture.director.prepareUserPrompt('停止不动');
+
+    expect(fixture.behavior.cancelStateLifecycle).toHaveBeenCalledOnce();
+    resolveSave?.();
+    await pending;
+  });
+
+  test('外部设置快照进入 mode=0 时撤销状态动作生命周期', () => {
+    const fixture = createFixture();
+
+    fixture.director.applyBehaviorSettings({ movementMode: 0, proactivityMode: 'assistive' });
+
+    expect(fixture.behavior.cancelStateLifecycle).toHaveBeenCalledOnce();
   });
 
   test('resume 只解除自主移动锁，不自动发起新的 Motion', async () => {
@@ -1082,11 +1148,20 @@ describe('Main 角色行为 Director', () => {
   test('明确动作不存在时在 Provider 前发布稳定提示且不播放待机冒充', async () => {
     const fixture = createFixture();
 
-    await fixture.director.prepareUserPrompt('请做一个后空翻动作');
+    const prepared = await fixture.director.prepareUserPrompt('请做一个后空翻动作');
+    await fixture.director.completeUserPrompt({
+      generation: 'generation-1',
+      explicitDirective: prepared.explicitDirective,
+      providerPlan: { kind: 'none' },
+      activity: '来一段 dance',
+      status: '欢快 dance'
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledExactlyOnceWith({
       kind: 'action_name', name: '后空翻'
     });
+    expect(fixture.behavior.resolveBehaviorStatePlan).not.toHaveBeenCalled();
     expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
     expect(fixture.notices).toEqual([{
@@ -1131,25 +1206,6 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
-  test('autonomous 的本地 move 候选取得移动授权并发起当前单屏 wander', () => {
-    const fixture = createFixture({ movementMode: 2, proactivityMode: 'autonomous' });
-    fixture.setDirectedAuthorization({
-      kind: 'play', actionId: 'move-action', playbackToken: 'local-move-token', semantic: 'move'
-    });
-
-    expect(fixture.director.requestBehaviorPlan({
-      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
-    }, 'local-idle')).toMatchObject({ kind: 'play', semantic: 'move' });
-
-    expect(fixture.behavior.requestProactiveBehavior).toHaveBeenCalledWith(
-      { kind: 'semantic', semantic: 'move' },
-      { urgency: 10, allowMovement: true }
-    );
-    expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
-      kind: 'wander', scope: 'work_area'
-    });
-  });
-
   test('停止锁与显式动作优先级都阻止旧能力任务的 move 意图', async () => {
     const intent: CharacterAgentBehaviorIntent = {
       stateIntent: { semantic: 'move' }, actionSemantic: 'move', urgency: 80,
@@ -1187,7 +1243,7 @@ describe('Main 角色行为 Director', () => {
     });
   });
 
-  test('聊天隐藏描述只选择当前公开目录中的最高相似动作', () => {
+  test('聊天隐藏描述只选择当前公开目录中最高相似的状态动作组合', () => {
     const fixture = createFixture();
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'celebrate-action', playbackToken: 'dance-token', semantic: 'celebrate'
@@ -1195,14 +1251,14 @@ describe('Main 角色行为 Director', () => {
     fixture.director.completeUserPrompt({
       generation: 'generation-1',
       explicitDirective: null,
-      providerPlan: { kind: 'play', target: { kind: 'action_name', name: '目录外动作' } },
+      providerPlan: { kind: 'play_state', state: '开心', action: '目录外动作' },
       activity: '来一段 dance',
       status: 'dance'
     });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
-    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
-      kind: 'action_name', name: '庆祝'
+    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
+      kind: 'play_state', state: '开心', action: '庆祝'
     });
   });
 
@@ -1220,9 +1276,54 @@ describe('Main 角色行为 Director', () => {
     });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
-    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
-      kind: 'action_name', name: '庆祝'
+    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
+      kind: 'play_state', state: '开心', action: '庆祝'
     });
+  });
+
+  test('Provider 只指定状态时把动作随机选择留给 Service 与 Engine', () => {
+    const fixture = createFixture();
+    fixture.setDirectedAuthorization({
+      kind: 'play', actionId: 'wave-action', playbackToken: 'state-token', semantic: 'celebrate'
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null,
+      providerPlan: { kind: 'play_state', state: '开心' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledExactlyOnceWith({
+      kind: 'play_state', state: '开心'
+    });
+    expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
+      { kind: 'state', stateId: 'happy-state' },
+      { urgency: 80, systemForced: true }
+    );
+  });
+
+  test('Provider 跨状态动作组合失败关闭且不退回目录首项', () => {
+    const fixture = createFixture();
+    fixture.behavior.getPublicBehaviorCatalog.mockReturnValue({
+      ...fixture.behavior.getPublicBehaviorCatalog(),
+      states: [
+        ...fixture.behavior.getPublicBehaviorCatalog().states,
+        {
+          name: '运动', semantic: 'move', tags: [],
+          actions: [{ name: '移动', semantic: 'move', tags: ['locomotion'] }]
+        }
+      ]
+    });
+    fixture.director.completeUserPrompt({
+      generation: 'generation-1', explicitDirective: null,
+      providerPlan: { kind: 'play_state', state: '开心', action: '移动' }
+    });
+    fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
+
+    expect(fixture.behavior.resolveBehaviorStatePlan).not.toHaveBeenCalled();
+    expect(fixture.behavior.requestDirectedBehavior).not.toHaveBeenCalled();
+    expect(fixture.notices).toEqual([{
+      code: 'CHARACTER_ACTION_UNAVAILABLE', message: '当前角色没有可播放的对应动作。'
+    }]);
   });
 
   test.each([1, 2] as const)(
@@ -1241,8 +1342,8 @@ describe('Main 角色行为 Director', () => {
           ]
         }]
       });
-      fixture.behavior.resolveBehaviorTarget.mockReturnValue({
-        kind: 'action', actionId: 'move-action'
+      fixture.behavior.resolveBehaviorStatePlan.mockReturnValue({
+        kind: 'state_action', stateId: 'move-state', actionId: 'move-action'
       });
       fixture.setDirectedAuthorization({
         kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
@@ -1254,8 +1355,8 @@ describe('Main 角色行为 Director', () => {
       });
       fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
-      expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
-        kind: 'action_name', name: '巡游四方'
+      expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
+        kind: 'play_state', state: '运动状态', action: '巡游四方'
       });
     }
   );
@@ -1272,8 +1373,8 @@ describe('Main 角色行为 Director', () => {
         actions: [{ name: '巡游四方', semantic: 'move', tags: ['locomotion'] }]
       }]
     });
-    fixture.behavior.resolveBehaviorTarget.mockReturnValue({
-      kind: 'action', actionId: 'move-action'
+    fixture.behavior.resolveBehaviorStatePlan.mockReturnValue({
+      kind: 'state_action', stateId: 'move-state', actionId: 'move-action'
     });
     fixture.setDirectedAuthorization({
       kind: 'play', actionId: 'move-action', playbackToken: 'move-token', semantic: 'move'
@@ -1286,8 +1387,8 @@ describe('Main 角色行为 Director', () => {
 
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
-    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledExactlyOnceWith({
-      kind: 'action_name', name: '巡游四方'
+    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledExactlyOnceWith({
+      kind: 'play_state', state: '运动状态', action: '巡游四方'
     });
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
     expect(fixture.motion.requestIntent).toHaveBeenCalledExactlyOnceWith({
@@ -1304,14 +1405,14 @@ describe('Main 角色行为 Director', () => {
     fixture.director.completeUserPrompt({
       generation: 'generation-1',
       explicitDirective: null,
-      providerPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } },
+      providerPlan: { kind: 'play_state', state: '开心', action: '挥手' },
       activity: '来一段 dance',
       status: 'dance'
     });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
-    expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
-      kind: 'action_name', name: '挥手'
+    expect(fixture.behavior.resolveBehaviorStatePlan).toHaveBeenCalledWith({
+      kind: 'play_state', state: '开心', action: '挥手'
     });
   });
 
@@ -1428,11 +1529,9 @@ describe('Main 角色行为 Director', () => {
     });
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
-    expect(fixture.director.requestBehaviorPlan(play('移动'), 'explicit')).toMatchObject({
-      kind: 'play', semantic: 'move'
-    });
+    await fixture.director.prepareUserPrompt('动');
     expect(fixture.behavior.resolveBehaviorTarget).toHaveBeenCalledWith({
-      kind: 'action_name', name: '移动'
+      kind: 'semantic', semantic: 'move'
     });
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledOnce();
     expect(fixture.motion.requestIntent).toHaveBeenCalledOnce();
@@ -1447,7 +1546,7 @@ describe('Main 角色行为 Director', () => {
     });
 
     expect(fixture.director.requestBehaviorPlan({
-      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
+      kind: 'move', direction: 'right', distance: 'near'
     }, 'local-idle')).toEqual(NONE);
     expect(fixture.motion.requestIntent).not.toHaveBeenCalled();
   });
@@ -1604,7 +1703,7 @@ describe('Main 角色行为 Director', () => {
       kind: 'play', playbackToken: 'explicit-token'
     });
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'action', actionId: 'wave-action' },
+      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
       { urgency: 100, systemForced: true }
     );
 
@@ -1635,7 +1734,7 @@ describe('Main 角色行为 Director', () => {
     });
 
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'action', actionId: 'wave-action' },
+      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
       { urgency: 80, systemForced: true }
     );
   });
@@ -1711,7 +1810,7 @@ describe('Main 角色行为 Director', () => {
     fixture.director.advance();
 
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'action', actionId: 'wave-action' },
+      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
       { urgency: 80, systemForced: true }
     );
   });
@@ -1747,7 +1846,7 @@ describe('Main 角色行为 Director', () => {
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'action', actionId: 'wave-action' },
+      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
       { urgency: 80, systemForced: true }
     );
   });
@@ -1769,7 +1868,7 @@ describe('Main 角色行为 Director', () => {
     fixture.director.handleTaskEvent({ type: 'phase', phase: 'success' });
 
     expect(fixture.behavior.requestDirectedBehavior).toHaveBeenCalledExactlyOnceWith(
-      { kind: 'action', actionId: 'wave-action' },
+      { kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action' },
       { urgency: 80, systemForced: true }
     );
   });

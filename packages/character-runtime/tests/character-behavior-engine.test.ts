@@ -237,6 +237,187 @@ describe('事件驱动角色行为引擎', () => {
     expect(decision.effects).toEqual([{ type: 'play', action: decision.snapshot.schedule.current }]);
   });
 
+  test('状态动作完成且状态仍有效时按重复抑制续选同状态动作', () => {
+    let now = 1_000;
+    const idle = 创建动作('idle-action', 'idle');
+    const wave = 创建动作('wave-action', 'celebrate', {
+      preference: 1, cooldownMs: 1_000, repeatSuppressionMs: 1_000
+    });
+    const dance = 创建动作('dance-action', 'celebrate', {
+      preference: 3, cooldownMs: 1_000, repeatSuppressionMs: 1_000
+    });
+    const engine = 创建引擎(创建清单({
+      actions: [idle, wave, dance],
+      states: [
+        创建状态('idle-state', 'idle', [idle.id]),
+        创建状态('happy-state', 'celebrate', [wave.id, dance.id])
+      ],
+      defaultStateId: 'idle-state'
+    }), {
+      now: () => now,
+      random: () => 0,
+      createPlaybackToken: 创建令牌工厂('state')
+    });
+
+    const first = engine.dispatchDirected({
+      target: {
+        kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action'
+      } as never,
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    expect(first.effects).toContainEqual(expect.objectContaining({
+      type: 'play', action: expect.objectContaining({ actionId: 'wave-action' })
+    }));
+    engine.applyFeedback({
+      playbackToken: 'state-1', actionId: 'wave-action', status: 'started', occurredAtMs: now
+    });
+
+    now = 1_100;
+    const second = engine.applyFeedback({
+      playbackToken: 'state-1', actionId: 'wave-action', status: 'completed', occurredAtMs: now
+    });
+
+    expect(second.effects).toContainEqual(expect.objectContaining({
+      type: 'play', action: expect.objectContaining({
+        actionId: 'dance-action', stateId: 'happy-state', playbackToken: 'state-2'
+      })
+    }));
+  });
+
+  test('同状态动作都受冷却或重复抑制时只回到安全 idle 一次', () => {
+    let now = 1_000;
+    const idle = 创建动作('idle-action', 'idle');
+    const wave = 创建动作('wave-action', 'celebrate', {
+      cooldownMs: 1_000, repeatSuppressionMs: 1_000
+    });
+    const engine = 创建引擎(创建清单({
+      actions: [idle, wave],
+      states: [
+        创建状态('idle-state', 'idle', [idle.id]),
+        创建状态('happy-state', 'celebrate', [wave.id])
+      ],
+      defaultStateId: 'idle-state'
+    }), { now: () => now, createPlaybackToken: 创建令牌工厂('fallback') });
+    engine.dispatchDirected({
+      target: { kind: 'state', stateId: 'happy-state' },
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    engine.applyFeedback({
+      playbackToken: 'fallback-1', actionId: 'wave-action', status: 'started', occurredAtMs: now
+    });
+
+    now = 1_100;
+    const completed = engine.applyFeedback({
+      playbackToken: 'fallback-1', actionId: 'wave-action', status: 'completed', occurredAtMs: now
+    });
+
+    expect(completed.effects.filter(effect => effect.type === 'play')).toEqual([
+      expect.objectContaining({ action: expect.objectContaining({ actionId: 'idle-action' }) })
+    ]);
+    expect(completed.diagnosticCodes).toEqual([]);
+  });
+
+  test('自然截止视为动作完成并在一次 advance 中续选同状态动作', () => {
+    let now = 1_000;
+    const firstAction = 创建动作('first-action', 'celebrate', {
+      durationMs: 100, repeatSuppressionMs: 1_000
+    });
+    const secondAction = 创建动作('second-action', 'celebrate', { durationMs: 100 });
+    const engine = 创建引擎(创建清单({
+      actions: [firstAction, secondAction],
+      states: [创建状态('happy-state', 'celebrate', [firstAction.id, secondAction.id])],
+      defaultStateId: 'happy-state'
+    }), {
+      now: () => now,
+      random: () => 0,
+      createPlaybackToken: 创建令牌工厂('expiry')
+    });
+    engine.dispatchDirected({
+      target: { kind: 'state', stateId: 'happy-state' },
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    engine.applyFeedback({
+      playbackToken: 'expiry-1', actionId: 'first-action', status: 'started', occurredAtMs: now
+    });
+
+    now = 1_100;
+    const advanced = engine.advance();
+
+    expect(advanced.effects.filter(effect => effect.type === 'play')).toEqual([
+      expect.objectContaining({
+        action: expect.objectContaining({ actionId: 'second-action', playbackToken: 'expiry-2' })
+      })
+    ]);
+  });
+
+  test('取消状态生命周期后旧动作完成不再续播', () => {
+    const actions = [
+      创建动作('first-action', 'celebrate'),
+      创建动作('second-action', 'celebrate')
+    ];
+    const engine = 创建引擎(创建清单({
+      actions,
+      states: [创建状态('happy-state', 'celebrate', actions.map(action => action.id))]
+    }), { createPlaybackToken: 创建令牌工厂('cancel') });
+    engine.dispatchDirected({
+      target: { kind: 'state', stateId: 'happy-state' },
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    engine.applyFeedback({
+      playbackToken: 'cancel-1', actionId: 'first-action', status: 'started', occurredAtMs: 1_000
+    });
+
+    engine.cancelStateLifecycle();
+    const completed = engine.applyFeedback({
+      playbackToken: 'cancel-1', actionId: 'first-action', status: 'completed', occurredAtMs: 1_100
+    });
+
+    expect(completed.effects).toEqual([{ type: 'none' }]);
+    expect(completed.snapshot.schedule.current).toBeNull();
+  });
+
+  test('显式切换状态后只延续新状态动作', () => {
+    const actions = [
+      创建动作('a-first', 'celebrate'),
+      创建动作('a-second', 'celebrate'),
+      创建动作('b-first', 'speak'),
+      创建动作('b-second', 'speak')
+    ];
+    const engine = 创建引擎(创建清单({
+      actions,
+      states: [
+        创建状态('a-state', 'celebrate', ['a-first', 'a-second']),
+        创建状态('b-state', 'speak', ['b-first', 'b-second'])
+      ],
+      defaultStateId: 'a-state'
+    }), { createPlaybackToken: 创建令牌工厂('switch') });
+    engine.dispatchDirected({
+      target: { kind: 'state', stateId: 'a-state' },
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    const switched = engine.dispatchDirected({
+      target: { kind: 'state', stateId: 'b-state' },
+      direction: 'right', urgency: 80, systemForced: true
+    });
+    expect(switched.effects).toContainEqual(expect.objectContaining({
+      type: 'play', action: expect.objectContaining({ actionId: 'b-first' })
+    }));
+    engine.applyFeedback({
+      playbackToken: 'switch-2', actionId: 'b-first', status: 'started', occurredAtMs: 1_000
+    });
+
+    const completed = engine.applyFeedback({
+      playbackToken: 'switch-2', actionId: 'b-first', status: 'completed', occurredAtMs: 1_100
+    });
+
+    expect(completed.effects).toContainEqual(expect.objectContaining({
+      type: 'play', action: expect.objectContaining({ actionId: 'b-second', stateId: 'b-state' })
+    }));
+    expect(completed.effects).not.toContainEqual(expect.objectContaining({
+      type: 'play', action: expect.objectContaining({ actionId: 'a-second' })
+    }));
+  });
+
   test('定向目标不可用时不生成待机令牌并返回稳定诊断', () => {
     const engine = 创建引擎(创建六语义清单());
 

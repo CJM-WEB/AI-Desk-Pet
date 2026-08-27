@@ -495,7 +495,7 @@ describe('ConversationCoordinator', () => {
         text: '开始散步',
         activity: '轻快走动',
         status: 'move',
-        behaviorPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'move' } },
+        behaviorPlan: { kind: 'play_state', state: '运动' },
         movementControl: { kind: 'move_once', target: 'right', distance: 'near' }
       }
     });
@@ -529,7 +529,7 @@ describe('ConversationCoordinator', () => {
       explicitDirective: null,
       activity: '轻快走动',
       status: 'move',
-      providerPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'move' } },
+      providerPlan: { kind: 'play_state', state: '运动' },
       movementControl: { kind: 'move_once', target: 'right', distance: 'near' }
     });
   });

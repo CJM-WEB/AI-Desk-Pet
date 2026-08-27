@@ -32,7 +32,10 @@ describe('角色行为计划协议', () => {
 
   test.each([
     { kind: 'none', emotion: 'calm' },
-    { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' }, emotion: 'happy' },
+    { kind: 'play_state', state: '开心', emotion: 'happy' },
+    {
+      kind: 'play_state', state: '开心', action: '挥手', duration: 'extended', emotion: 'happy'
+    },
     { kind: 'move', direction: 'left', distance: 'near' },
     { kind: 'move_region', region: 'top_left' }
   ])('接受合法计划 %#', plan => {
@@ -40,6 +43,11 @@ describe('角色行为计划协议', () => {
   });
 
   test.each([
+    { kind: 'play', target: { kind: 'action_name', name: '挥手' } },
+    { kind: 'play_state', state: '开心', action: '挥手', actionId: 'private-action' },
+    { kind: 'play_state', state: 'C:\\Users\\Administrator\\secret' },
+    { kind: 'play_state', state: '开心', action: '   ' },
+    { kind: 'play_state', state: '开心', duration: 'forever' },
     { kind: 'play', target: { kind: 'action_name', name: '挥手', actionId: 'private-action' } },
     { kind: 'move', direction: 'left', distance: 'near', x: 10, y: 20 },
     { kind: 'play', target: { kind: 'action_name', name: '挥手', toolName: 'builtin.files.delete_file' } },
@@ -76,11 +84,13 @@ describe('角色行为计划协议', () => {
     }).success).toBe(false);
   });
 
-  test('聊天 JSON Schema 与合法的 none、play 计划同构', () => {
+  test('聊天 JSON Schema 与合法的 none、play_state 计划同构', () => {
     expect(characterBehaviorPlanSchema.safeParse({ kind: 'none', emotion: 'calm' }).success).toBe(true);
     expect(characterBehaviorPlanSchema.safeParse({
-      kind: 'play',
-      target: { kind: 'tag', tag: 'gentle' },
+      kind: 'play_state',
+      state: '休息',
+      action: '眨眼',
+      duration: 'brief',
       emotion: 'happy'
     }).success).toBe(true);
 
@@ -91,62 +101,54 @@ describe('角色行为计划协议', () => {
       (plan.properties as Record<string, { const?: string }> | undefined)?.['kind']?.const
     );
     const none = behaviorPlan.oneOf.find(plan => kindOf(plan) === 'none');
-    const play = behaviorPlan.oneOf.find(plan => kindOf(plan) === 'play');
-    if (!none || !play) throw new Error('缺少 none 或 play JSON Schema 分支');
+    const playState = behaviorPlan.oneOf.find(plan => kindOf(plan) === 'play_state');
+    if (!none || !playState) throw new Error('缺少 none 或 play_state JSON Schema 分支');
 
     expect(none).toMatchObject({
       additionalProperties: false,
       properties: { emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] } }
     });
-    expect(play).toMatchObject({
+    expect(playState).toMatchObject({
       additionalProperties: false,
+      required: ['kind', 'state'],
       properties: {
         emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] },
-        target: { oneOf: expect.any(Array) }
+        state: expect.objectContaining({ type: 'string' }),
+        action: expect.objectContaining({ type: 'string' }),
+        duration: { enum: ['brief', 'normal', 'extended'] }
       }
     });
-    expect((play.properties as Record<string, { oneOf?: unknown[] }> | undefined)?.['target']?.oneOf)
-      .toHaveLength(4);
   });
 
-  test('聊天 JSON Schema 不声明越权 target 字段，并对每个 target 分支严格封闭', () => {
+  test('聊天 JSON Schema 不声明旧扁平目标或私有控制字段', () => {
     const behaviorPlan = (characterChatResponseJsonSchema.properties as Record<string, unknown>)['behaviorPlan'] as {
       oneOf: Array<{ properties: Record<string, unknown> }>;
     };
-    const play = behaviorPlan.oneOf.find(plan => (plan.properties['kind'] as { const?: string }).const === 'play');
-    if (!play) throw new Error('缺少 play JSON Schema 分支');
-    const targets = (play.properties['target'] as { oneOf: Array<Record<string, unknown>> }).oneOf;
+    const playState = behaviorPlan.oneOf.find(
+      plan => (plan.properties['kind'] as { const?: string }).const === 'play_state'
+    );
+    if (!playState) throw new Error('缺少 play_state JSON Schema 分支');
 
-    expect(targets).toHaveLength(4);
-    for (const target of targets) {
-      expect(target).toMatchObject({ additionalProperties: false });
-      expect(Object.keys((target.properties ?? {}) as Record<string, unknown>)).not.toEqual(
-        expect.arrayContaining(['actionId', 'toolName', 'x', 'y'])
-      );
-    }
-    expect(targets.map(target => target.required).sort()).toEqual([
-      ['kind', 'name'],
-      ['kind', 'name'],
-      ['kind', 'semantic'],
-      ['kind', 'tag']
+    expect(Object.keys(playState.properties).sort()).toEqual([
+      'action', 'duration', 'emotion', 'kind', 'state'
     ]);
-    expect(targets.map(target => (target.properties as Record<string, { const?: string }>)['kind']?.const).sort())
-      .toEqual(['action_name', 'semantic', 'state_name', 'tag']);
+    expect(playState.properties).not.toHaveProperty('target');
+    expect(playState.properties).not.toHaveProperty('actionId');
+    expect(playState.properties).not.toHaveProperty('toolName');
   });
 
   test('聊天 JSON Schema 的名称规则拒绝全空白且允许合法 Unicode 名称', () => {
     const behaviorPlan = (characterChatResponseJsonSchema.properties as Record<string, unknown>)['behaviorPlan'] as {
       oneOf: Array<{ properties: Record<string, unknown> }>;
     };
-    const play = behaviorPlan.oneOf.find(plan => (plan.properties['kind'] as { const?: string }).const === 'play');
-    if (!play) throw new Error('缺少 play JSON Schema 分支');
-    const actionTarget = ((play.properties['target'] as { oneOf: Array<{ properties: Record<string, unknown> }> }).oneOf)
-      .find(target => (target.properties['kind'] as { const?: string }).const === 'action_name');
-    if (!actionTarget) throw new Error('缺少 action_name JSON Schema 分支');
-    const pattern = (actionTarget.properties['name'] as { pattern: string }).pattern;
+    const playState = behaviorPlan.oneOf.find(
+      plan => (plan.properties['kind'] as { const?: string }).const === 'play_state'
+    );
+    if (!playState) throw new Error('缺少 play_state JSON Schema 分支');
+    const pattern = (playState.properties['action'] as { pattern: string }).pattern;
 
     expect(characterBehaviorPlanSchema.safeParse({
-      kind: 'play', target: { kind: 'action_name', name: '   ' }
+      kind: 'play_state', state: '休息', action: '   '
     }).success).toBe(false);
     expect(new RegExp(pattern, 'u').test('   ')).toBe(false);
     expect(new RegExp(pattern, 'u').test('挥手✨')).toBe(true);

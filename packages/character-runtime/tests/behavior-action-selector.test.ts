@@ -199,6 +199,26 @@ describe('V2 行为动作选择器', () => {
     )).toThrow('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
   });
 
+  test('指定目标状态时按目标主状态校验动作白名单而非当前主状态', () => {
+    const directed = createAction('directed-action', 'celebrate', {
+      allowedPrimaryStateIds: ['directed-state']
+    });
+    const manifest = createManifest({
+      actions: [createAction('idle-action', 'idle'), directed],
+      states: [
+        createState('active-state', 'primary', ['idle-action']),
+        createState('directed-state', 'primary', [directed.id])
+      ],
+      defaultStateId: 'active-state',
+      skins: [createSkin('default-skin', ['idle-action', directed.id])]
+    });
+
+    expect(selectDirectedCharacterBehaviorAction(
+      createInput(manifest),
+      { kind: 'state_action', stateId: 'directed-state', actionId: directed.id }
+    )).toMatchObject({ actionId: directed.id, stateId: 'directed-state' });
+  });
+
   test('语义定向不会用默认待机动作冒充缺失的目标语义', () => {
     const manifest = createManifest({
       actions: [createAction('idle-action', 'idle')],
@@ -379,6 +399,55 @@ describe('V2 行为动作选择器', () => {
 
     expect(selectCharacterBehaviorAction(createInput(manifest))).toMatchObject({ actionId: 'first', reason: 'state-preference' });
     expect(selectCharacterBehaviorAction(createInput(manifest, { random: () => 0.5 }))).toMatchObject({ actionId: 'second', reason: 'state-preference' });
+  });
+
+  test('只指定状态时由定向选择器按固定随机源与偏好选择不同动作', () => {
+    const actions = [
+      createAction('first', 'celebrate', { preference: 1 }),
+      createAction('second', 'celebrate', { preference: 3 })
+    ];
+    const manifest = createManifest({
+      actions,
+      defaultStateId: 'active-state',
+      states: [createState('active-state', 'primary', ['first', 'second'])]
+    });
+
+    expect(selectDirectedCharacterBehaviorAction(
+      createInput(manifest),
+      { kind: 'state', stateId: 'active-state' }
+    )).toMatchObject({ actionId: 'first', stateId: 'active-state' });
+    expect(selectDirectedCharacterBehaviorAction(
+      createInput(manifest, { random: () => 0.75 }),
+      { kind: 'state', stateId: 'active-state' }
+    )).toMatchObject({ actionId: 'second', stateId: 'active-state' });
+  });
+
+  test('状态动作目标只授权该状态真实引用的精确动作', () => {
+    const actions = [
+      createAction('first-action', 'celebrate'),
+      createAction('second-action', 'celebrate')
+    ];
+    const manifest = createManifest({
+      actions,
+      defaultStateId: 'first-state',
+      states: [
+        createState('first-state', 'primary', ['first-action']),
+        createState('second-state', 'primary', ['second-action'])
+      ]
+    });
+    const input = createInput(manifest, {
+      state: {
+        revision: 1, primaryStateId: 'first-state', modifierStateIds: [],
+        activeSignals: [], desiredActionSemantic: null
+      }
+    });
+
+    expect(selectDirectedCharacterBehaviorAction(input, {
+      kind: 'state_action', stateId: 'first-state', actionId: 'first-action'
+    } as never)).toMatchObject({ actionId: 'first-action', stateId: 'first-state' });
+    expect(() => selectDirectedCharacterBehaviorAction(input, {
+      kind: 'state_action', stateId: 'first-state', actionId: 'second-action'
+    } as never)).toThrow('CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE');
   });
 
   test('主状态优先归属共享动作，修饰状态按快照顺序归属独占动作', () => {

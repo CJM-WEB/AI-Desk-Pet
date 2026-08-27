@@ -142,7 +142,7 @@ describe('公开行为目标解析器', () => {
     )).toEqual({ kind: 'state', stateId: 'happy-state' });
   });
 
-  test('Task 3 只发布描述，不改变既有运行时选择字段与稳定顺序', () => {
+  test('动作描述比同状态名称更接近时返回带动作的层级计划', () => {
     const catalog: PublicBehaviorCatalog = {
       identity: {
         name: '描述角色', description: '描述测试', background: '测试环境', traits: [],
@@ -160,7 +160,15 @@ describe('公开行为目标解析器', () => {
       catalog,
       '只在动作描述中出现的唯一短语',
       '只在动作描述中出现的唯一短语'
-    )).toEqual({ kind: 'state_name', name: '公开目标' });
+    )).toEqual({ kind: 'play_state', state: '公开目标', action: '公开目标' });
+  });
+
+  test('只命中状态描述时保留状态层级且不提前固定动作', () => {
+    const catalog = createPublicBehaviorCatalog(createManifest(), 'default-skin');
+
+    expect(selectPublicBehaviorTarget(catalog, '安静陪伴', '待机状态')).toEqual({
+      kind: 'play_state', state: '待机'
+    });
   });
 
   test.each([
@@ -188,14 +196,106 @@ describe('公开行为目标解析器', () => {
       '开始行动',
       '保持活跃',
       movementControl
-    )).toEqual({ kind: 'action_name', name: '巡游四方' });
+    )).toEqual({ kind: 'play_state', state: '运动状态', action: '巡游四方' });
   });
 
-  test('候选非空时低相关描述仍按稳定顺序选择当前目录首个最高分项', () => {
+  test.each([
+    ['短中文无关词', '哈', '呀'],
+    ['普通无关描述', '完全无关的内容', '未知状态']
+  ])('%s 低于相似阈值时返回 none', (_name, activity, status) => {
     const catalog = createPublicBehaviorCatalog(createManifest(), 'default-skin');
 
-    expect(selectPublicBehaviorTarget(catalog, '完全无关的内容', '未知状态'))
-      .toEqual({ kind: 'state_name', name: '待机' });
+    expect(selectPublicBehaviorTarget(catalog, activity, status)).toEqual({ kind: 'none' });
+  });
+
+  test('中文字符集合相似度在 0.6 边界命中而低于边界不命中', () => {
+    const catalog: PublicBehaviorCatalog = {
+      identity: {
+        name: '阈值角色', description: '阈值测试', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [{
+        name: '甲乙丙丁戊', semantic: 'resting', tags: [],
+        actions: [{ name: '己庚辛', semantic: 'idle', tags: [] }]
+      }]
+    };
+
+    expect(selectPublicBehaviorTarget(catalog, '甲丙戊', undefined)).toEqual({
+      kind: 'play_state', state: '甲乙丙丁戊'
+    });
+    expect(selectPublicBehaviorTarget(catalog, '甲丙', undefined)).toEqual({ kind: 'none' });
+  });
+
+  test('无关英文单词不以字符集合重合越过 0.6 阈值', () => {
+    const catalog: PublicBehaviorCatalog = {
+      identity: {
+        name: '英文阈值角色', description: '阈值测试', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [{ name: 'idle', semantic: 'idle', tags: [], actions: [] }]
+    };
+
+    expect(selectPublicBehaviorTarget(catalog, 'inside', undefined)).toEqual({ kind: 'none' });
+  });
+
+  test('中英混合文本的字符集合重合只统计汉字', () => {
+    const catalog: PublicBehaviorCatalog = {
+      identity: {
+        name: '混合阈值角色', description: '阈值测试', background: '测试环境', traits: [],
+        languageStyle: '简洁', likes: [], behavioralTendencies: []
+      },
+      states: [{ name: '乙abc', semantic: 'idle', tags: [], actions: [] }]
+    };
+
+    expect(selectPublicBehaviorTarget(catalog, '甲abc', undefined)).toEqual({ kind: 'none' });
+  });
+
+  test('精确层级计划只允许动作属于指定状态', () => {
+    const manifest = createManifest();
+    const catalog = createPublicBehaviorCatalog(manifest, 'default-skin');
+    const valid = { kind: 'play_state', state: 'CHEER', action: '挥手' } as const;
+    const crossState = { kind: 'play_state', state: '待机', action: '挥手' } as const;
+
+    expect(isPublicBehaviorTarget(catalog, valid as never)).toBe(true);
+    expect(resolveBehaviorTarget(manifest, 'default-skin', valid as never)).toEqual({
+      kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action'
+    });
+    expect(isPublicBehaviorTarget(catalog, crossState as never)).toBe(false);
+    expect(() => resolveBehaviorTarget(manifest, 'default-skin', crossState as never))
+      .toThrow('CHARACTER_ACTION_UNAVAILABLE');
+  });
+
+  test.each([
+    ['标准语义', 'celebrate'],
+    ['动作描述', '向用户热情挥手'],
+    ['动作标签', 'greet']
+  ])('层级计划按%s在指定状态内选择最高相似动作', (_label, action) => {
+    const manifest = createManifest();
+    const catalog = createPublicBehaviorCatalog(manifest, 'default-skin');
+    const plan = { kind: 'play_state', state: 'CHEER', action } as const;
+
+    expect(isPublicBehaviorTarget(catalog, plan)).toBe(true);
+    expect(resolveBehaviorTarget(manifest, 'default-skin', plan)).toEqual({
+      kind: 'state_action', stateId: 'happy-state', actionId: 'wave-action'
+    });
+  });
+
+  test('层级计划的无关动作文本低于阈值时失败关闭', () => {
+    const manifest = createManifest();
+    const catalog = createPublicBehaviorCatalog(manifest, 'default-skin');
+    const plan = { kind: 'play_state', state: 'CHEER', action: '哈' } as const;
+
+    expect(isPublicBehaviorTarget(catalog, plan)).toBe(false);
+    expect(() => resolveBehaviorTarget(manifest, 'default-skin', plan))
+      .toThrow('CHARACTER_ACTION_UNAVAILABLE');
+  });
+
+  test('精确状态计划解析为状态目标并把动作选择留给运行时', () => {
+    expect(resolveBehaviorTarget(
+      createManifest(),
+      'default-skin',
+      { kind: 'play_state', state: 'CHEER' } as never
+    )).toEqual({ kind: 'state', stateId: 'happy-state' });
   });
 
   test.each([

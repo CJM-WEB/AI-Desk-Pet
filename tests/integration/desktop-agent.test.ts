@@ -17,6 +17,7 @@ import {
 import type {
   BehaviorTarget,
   CharacterBehaviorAuthorization,
+  CharacterBehaviorPlan,
   CharacterManifestV2,
   ResolvedBehaviorTarget
 } from '@myself/character-runtime';
@@ -883,6 +884,17 @@ function behaviorDirectorIntegrationFixture() {
       }
       throw new Error('CHARACTER_ACTION_UNAVAILABLE');
     }),
+    resolveBehaviorStatePlan: vi.fn((plan: Extract<CharacterBehaviorPlan, { kind: 'play_state' }>): ResolvedBehaviorTarget => {
+      if (plan.state !== 'Agent 专注') throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+      if (plan.action === undefined) return { kind: 'state', stateId: 'agent-focus' };
+      if (plan.action === '专注动作' || plan.action === 'think') {
+        return { kind: 'state_action', stateId: 'agent-focus', actionId: 'focus-action' };
+      }
+      if (plan.action === '庆祝动作' || plan.action === 'celebrate') {
+        return { kind: 'state_action', stateId: 'agent-focus', actionId: 'celebrate-action' };
+      }
+      throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+    }),
     isMovementBehaviorTarget: vi.fn((target: ResolvedBehaviorTarget) => (
       target.kind === 'semantic' && target.semantic === 'move'
     )),
@@ -890,11 +902,17 @@ function behaviorDirectorIntegrationFixture() {
       kind: 'play',
       actionId: target.kind === 'action'
         ? target.actionId
-        : target.kind === 'state'
+        : target.kind === 'state_action'
+          ? target.actionId
+          : target.kind === 'state'
           ? `${target.stateId}-action`
           : `${target.semantic}-action`,
       playbackToken: `integration-chat-token-${++token}`,
-      semantic: target.kind === 'semantic' ? target.semantic : 'think'
+      semantic: target.kind === 'semantic'
+        ? target.semantic
+        : target.kind === 'state_action' && target.actionId === 'celebrate-action'
+          ? 'celebrate'
+          : 'think'
     })),
     requestProactiveBehavior: vi.fn((target: BehaviorTarget): CharacterBehaviorAuthorization => (
       target.kind === 'semantic' && target.semantic === 'move'
@@ -909,6 +927,7 @@ function behaviorDirectorIntegrationFixture() {
     handleTaskEvent: vi.fn((): CharacterBehaviorAuthorization => ({ kind: 'none' })),
     applyPlaybackFeedback: vi.fn(),
     advance: vi.fn(() => []),
+    cancelStateLifecycle: vi.fn(),
     handleActiveCharacterChanged: vi.fn(async () => undefined),
     close: vi.fn()
   };
@@ -1308,8 +1327,8 @@ describe('桌面会话分流纵向集成', () => {
   });
 
   test.each([
-    ['标准语义', { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' } }],
-    ['当前角色自定义动作名', { kind: 'play', target: { kind: 'action_name', name: '专注动作' } }]
+    ['标准语义', { kind: 'play_state', state: 'Agent 专注', action: 'celebrate' }],
+    ['当前角色自定义动作名', { kind: 'play_state', state: 'Agent 专注', action: '专注动作' }]
   ] as const)('同一次普通聊天 Provider 响应同时提交正文与%s', async (_label, behaviorPlan) => {
     const behaviorFixture = behaviorDirectorIntegrationFixture();
     const fixture = conversationIntegrationHarness({
@@ -1369,7 +1388,7 @@ describe('桌面会话分流纵向集成', () => {
         type: 'text',
         text: '仍然保留的自然正文',
         structured_output: {
-          behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '不存在动作' } }
+          behaviorPlan: { kind: 'play_state', state: 'Agent 专注', action: '不存在动作' }
         }
       }],
       behavior: behaviorFixture.director
@@ -1533,7 +1552,7 @@ describe('桌面会话分流纵向集成', () => {
           activity: '庆祝',
           status: 'celebrate',
           movementControl: { kind: 'keep' },
-          behaviorPlan: { kind: 'play', target: { kind: 'semantic', semantic: 'celebrate' } },
+          behaviorPlan: { kind: 'play_state', state: 'Agent 专注', action: 'celebrate' },
           capabilityPlan: { kind: 'chat' }
         }
       }
@@ -2553,7 +2572,7 @@ describe('桌面 Agent 真实服务集成', () => {
       saveMovementMode: async () => undefined
     });
     expect(autonomousDirector.requestBehaviorPlan({
-      kind: 'play', target: { kind: 'semantic', semantic: 'move' }
+      kind: 'move', direction: 'right', distance: 'near'
     }, 'local-idle')).toMatchObject({ kind: 'play', semantic: 'move' });
     let motionSnapshot = motion.getSnapshot();
     for (let step = 1; step <= 100 && (step === 1 || motionSnapshot.moving); step += 1) {

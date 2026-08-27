@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { characterEmotionLabelSchema } from '@myself/shared-types';
-import { STANDARD_CHARACTER_SEMANTICS, safeIdentifierSchema } from './character-v2-schema';
+import { safeIdentifierSchema } from './character-v2-schema';
 import type { CharacterEmotionLabel } from '@myself/shared-types';
 import type { CharacterStandardSemantic } from './behavior-contracts';
 
@@ -26,9 +26,20 @@ export type MovementControlPlan =
       distance: MoveDistance;
     }>;
 
-export type CharacterBehaviorPlan =
+export type CharacterBehaviorDuration = 'brief' | 'normal' | 'extended';
+
+export type CharacterChatBehaviorPlan =
   | Readonly<{ kind: 'none'; emotion?: CharacterEmotionLabel }>
-  | Readonly<{ kind: 'play'; target: BehaviorTarget; emotion?: CharacterEmotionLabel }>
+  | Readonly<{
+      kind: 'play_state';
+      state: string;
+      action?: string;
+      duration?: CharacterBehaviorDuration;
+      emotion?: CharacterEmotionLabel;
+    }>;
+
+export type CharacterBehaviorPlan =
+  | CharacterChatBehaviorPlan
   | Readonly<{ kind: 'move'; direction: MoveDirection; distance: MoveDistance }>
   | Readonly<{ kind: 'move_region'; region: ScreenRegion }>;
 
@@ -69,31 +80,26 @@ const publicNameSchema = z.string().trim().min(1).max(120).refine(
 );
 /** 模型的隐藏活动与状态只承载短语义，不得携带无界正文。 */
 export const characterBehaviorDescriptorSchema = z.string().trim().min(1).max(120);
-const behaviorTargetSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('semantic'), semantic: z.enum(STANDARD_CHARACTER_SEMANTICS) }).strict(),
-  z.object({ kind: z.literal('state_name'), name: publicNameSchema }).strict(),
-  z.object({ kind: z.literal('action_name'), name: publicNameSchema }).strict(),
-  z.object({ kind: z.literal('tag'), tag: safeIdentifierSchema }).strict()
-]);
-
 const noneBehaviorPlanSchema = z.object({
   kind: z.literal('none'), emotion: characterEmotionLabelSchema.optional()
 }).strict();
-const playBehaviorPlanSchema = z.object({
-    kind: z.literal('play'),
-    target: behaviorTargetSchema,
-    emotion: characterEmotionLabelSchema.optional()
-  }).strict();
+const playStateBehaviorPlanSchema = z.object({
+  kind: z.literal('play_state'),
+  state: publicNameSchema,
+  action: publicNameSchema.optional(),
+  duration: z.enum(['brief', 'normal', 'extended']).optional(),
+  emotion: characterEmotionLabelSchema.optional()
+}).strict();
 
 /** 模型的 behaviorPlan 只选择动画候选，运动策略由 movementControl 独占。 */
 export const characterChatBehaviorPlanSchema = z.discriminatedUnion('kind', [
   noneBehaviorPlanSchema,
-  playBehaviorPlanSchema
+  playStateBehaviorPlanSchema
 ]);
 
 export const characterBehaviorPlanSchema = z.discriminatedUnion('kind', [
   noneBehaviorPlanSchema,
-  playBehaviorPlanSchema,
+  playStateBehaviorPlanSchema,
   z.object({
     kind: z.literal('move'),
     direction: z.enum(['left', 'right', 'up', 'down']),
@@ -220,50 +226,19 @@ export const characterChatResponseJsonSchema = deepFreeze({
         {
           type: 'object',
           additionalProperties: false,
-          required: ['kind', 'target'],
+          required: ['kind', 'state'],
           properties: {
-            kind: { const: 'play' },
+            kind: { const: 'play_state' },
             emotion: { enum: ['happy', 'sad', 'angry', 'surprised', 'calm'] },
-            target: {
-              oneOf: [
-                {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['kind', 'semantic'],
-                  properties: {
-                    kind: { const: 'semantic' },
-                    semantic: { enum: STANDARD_CHARACTER_SEMANTICS }
-                  }
-                },
-                {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['kind', 'name'],
-                  properties: {
-                    kind: { const: 'state_name' },
-                    name: { type: 'string', minLength: 1, maxLength: 120, pattern: '^(?!\\s*$)(?!.*[\\\\/])(?![A-Za-z]:).+$' }
-                  }
-                },
-                {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['kind', 'name'],
-                  properties: {
-                    kind: { const: 'action_name' },
-                    name: { type: 'string', minLength: 1, maxLength: 120, pattern: '^(?!\\s*$)(?!.*[\\\\/])(?![A-Za-z]:).+$' }
-                  }
-                },
-                {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['kind', 'tag'],
-                  properties: {
-                    kind: { const: 'tag' },
-                    tag: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,119}$' }
-                  }
-                }
-              ]
-            }
+            state: {
+              type: 'string', minLength: 1, maxLength: 120,
+              pattern: '^(?!\\s*$)(?!.*[\\\\/])(?![A-Za-z]:).+$'
+            },
+            action: {
+              type: 'string', minLength: 1, maxLength: 120,
+              pattern: '^(?!\\s*$)(?!.*[\\\\/])(?![A-Za-z]:).+$'
+            },
+            duration: { enum: ['brief', 'normal', 'extended'] }
           }
         }
       ]

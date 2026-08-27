@@ -1,4 +1,5 @@
 import type {
+  BehaviorTarget,
   CharacterBehaviorAuthorization,
   CharacterBehaviorPlan,
   CharacterAgentBehaviorIntent,
@@ -114,6 +115,7 @@ type BehaviorServicePort = Pick<
   | 'getPublicBehaviorCatalog'
   | 'getRecentPublicActions'
   | 'resolveBehaviorTarget'
+  | 'resolveBehaviorStatePlan'
   | 'isMovementBehaviorTarget'
   | 'isMovementAgentIntent'
   | 'requestDirectedBehavior'
@@ -121,6 +123,7 @@ type BehaviorServicePort = Pick<
   | 'handleAgentIntent'
   | 'handleTaskEvent'
   | 'applyPlaybackFeedback'
+  | 'cancelStateLifecycle'
   | 'advance'
   | 'handleActiveCharacterChanged'
   | 'close'
@@ -232,7 +235,7 @@ export class CharacterBehaviorDirector {
     );
     const directive = prepared.explicitDirective;
     if (directive?.kind === 'play') {
-      this.requestBehaviorPlan({ kind: 'play', target: directive.target }, 'explicit');
+      this.requestBehaviorTarget(directive.target, 'explicit');
     }
     return prepared;
   }
@@ -328,25 +331,24 @@ export class CharacterBehaviorDirector {
     } catch {
       // 普通文字聊天不因角色目录暂不可用而失败；目录目标在此状态下不得进入私有解析。
     }
-    const rejectedProviderTarget = input.providerPlan?.kind === 'play'
-      && (!catalog || !isPublicBehaviorTarget(catalog, input.providerPlan.target));
+    const rejectedProviderTarget = input.providerPlan?.kind === 'play_state'
+      && (!catalog || !isPublicBehaviorTarget(catalog, input.providerPlan));
     if (rejectedProviderTarget) this.publishUnavailableNotice();
-    const providerPlan = input.providerPlan?.kind !== 'play'
+    const providerPlan = input.providerPlan?.kind !== 'play_state'
       ? input.providerPlan
-      : catalog && isPublicBehaviorTarget(catalog, input.providerPlan.target)
+      : catalog && isPublicBehaviorTarget(catalog, input.providerPlan)
         ? input.providerPlan
         : null;
     const movementControl = input.explicitDirective === null
       ? input.movementControl ?? { kind: 'keep' }
       : { kind: 'keep' } as const;
-    const fallbackPlan = !catalog || (input.activity === undefined && input.status === undefined)
+    const fallbackPlan = input.explicitDirective !== null
+      || !catalog
+      || (input.activity === undefined && input.status === undefined)
       ? null
-      : {
-          kind: 'play' as const,
-          target: selectPublicBehaviorTarget(
-            catalog, input.activity, input.status, movementControl
-          )
-        };
+      : selectPublicBehaviorTarget(
+          catalog, input.activity, input.status, movementControl
+        );
     // none 只表示 Provider 没有精确目录目标，不能吞掉隐藏描述的最高相似匹配。
     const plan = providerPlan?.kind === 'none' ? fallbackPlan : providerPlan ?? fallbackPlan;
     // 持久运动策略只消费 MovementControlPlan；behaviorPlan 不具有写模式权限。
@@ -357,7 +359,7 @@ export class CharacterBehaviorDirector {
     }
     // 持久化可能跨过 reset/close；旧轮完成后不得重新写入已清空的待提交槽。
     if (this.closed || input.generation !== this.generation) return;
-    this.pendingChatPlan = plan === null || (plan.kind === 'play' && catalog === null) ? null : plan;
+    this.pendingChatPlan = plan;
     this.pendingMovementControl = movementControl.kind === 'move_once' ? movementControl : null;
   }
 
@@ -444,31 +446,34 @@ export class CharacterBehaviorDirector {
     plan: CharacterBehaviorPlan,
     source: BehaviorPlanSource
   ): CharacterBehaviorAuthorization {
-    if (!this.canRequest(plan, source)) return NONE;
+    if (!this.canRequest(source)) return NONE;
 
     const motion = plan.kind === 'move'
       ? { kind: 'relative', direction: plan.direction, distance: plan.distance } as const
       : plan.kind === 'move_region'
         ? { kind: 'region', region: plan.region } as const
         : null;
-    const target = plan.kind === 'play'
-      ? plan.target
+    const publicTarget: BehaviorTarget | null = plan.kind === 'play_state'
+      ? plan.action === undefined
+        ? { kind: 'state_name', name: plan.state }
+        : { kind: 'action_name', name: plan.action }
       : motion
-        ? { kind: 'semantic', semantic: 'move' } as const
+        ? { kind: 'semantic', semantic: 'move' }
         : null;
-    if (!target) return NONE;
+    if (!publicTarget) return NONE;
 
     try {
+      const resolvedTarget = plan.kind === 'play_state'
+        ? this.options.behavior.resolveBehaviorStatePlan(plan)
+        : this.options.behavior.resolveBehaviorTarget(publicTarget);
       if (source === 'local-idle') {
         if (plan.kind === 'move' && plan.distance !== 'near') return NONE;
-        if (plan.kind !== 'play' && plan.kind !== 'move') return NONE;
-        const resolvedTarget = this.options.behavior.resolveBehaviorTarget(target);
+        if (plan.kind !== 'play_state' && plan.kind !== 'move') return NONE;
         if (this.movementMode === 0
           && this.options.behavior.isMovementBehaviorTarget(resolvedTarget)) return NONE;
-        const authorization = this.options.behavior.requestProactiveBehavior(target, {
+        const authorization = this.options.behavior.requestProactiveBehavior(publicTarget, {
           urgency: SOURCE_OPTIONS[source].urgency,
           allowMovement: motion !== null
-            || target.kind === 'semantic' && target.semantic === 'move'
         });
         if (authorization.kind === 'play') {
           this.active = {
@@ -476,15 +481,12 @@ export class CharacterBehaviorDirector {
             playbackToken: authorization.playbackToken,
             semantic: authorization.semantic
           };
-          if (authorization.semantic === 'move') {
-            this.options.motion.requestIntent(
-              motion ?? { kind: 'wander', scope: 'work_area' }
-            );
+          if (authorization.semantic === 'move' && motion !== null) {
+            this.options.motion.requestIntent(motion);
           }
         }
         return authorization;
       }
-      const resolvedTarget = this.options.behavior.resolveBehaviorTarget(target);
       const authorization = this.options.behavior.requestDirectedBehavior(
         resolvedTarget,
         SOURCE_OPTIONS[source]
@@ -496,12 +498,10 @@ export class CharacterBehaviorDirector {
           playbackToken: authorization.playbackToken,
           semantic: authorization.semantic
         };
-        if (authorization.semantic === 'move' && !(
+        if (authorization.semantic === 'move' && motion !== null && !(
           source === 'chat' && this.pendingMovementControl?.kind === 'move_once'
         )) {
-          this.options.motion.requestIntent(
-            motion ?? { kind: 'wander', scope: 'short' }
-          );
+          this.options.motion.requestIntent(motion);
         }
       } else if (source === 'explicit' || source === 'chat') {
         this.publishUnavailableNotice();
@@ -510,6 +510,35 @@ export class CharacterBehaviorDirector {
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'CHARACTER_ACTION_UNAVAILABLE') throw error;
       if (source === 'explicit' || source === 'chat') this.publishUnavailableNotice();
+      return { kind: 'none', diagnosticCode: 'CHARACTER_ACTION_UNAVAILABLE' };
+    }
+  }
+
+  /** 本地明确动作仍使用公开动作名，但不恢复 Provider 的旧扁平计划。 */
+  private requestBehaviorTarget(
+    target: BehaviorTarget,
+    source: Extract<BehaviorPlanSource, 'explicit'>
+  ): CharacterBehaviorAuthorization {
+    if (!this.canRequest(source)) return NONE;
+    try {
+      const authorization = this.options.behavior.requestDirectedBehavior(
+        this.options.behavior.resolveBehaviorTarget(target),
+        SOURCE_OPTIONS[source]
+      );
+      if (authorization.kind === 'play') {
+        this.clearContinuousMotion();
+        this.active = {
+          source,
+          playbackToken: authorization.playbackToken,
+          semantic: authorization.semantic
+        };
+      } else {
+        this.publishUnavailableNotice();
+      }
+      return authorization;
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'CHARACTER_ACTION_UNAVAILABLE') throw error;
+      this.publishUnavailableNotice();
       return { kind: 'none', diagnosticCode: 'CHARACTER_ACTION_UNAVAILABLE' };
     }
   }
@@ -525,7 +554,10 @@ export class CharacterBehaviorDirector {
   setDragging(active: boolean): void {
     if (this.closed || this.dragging === active) return;
     this.dragging = active;
-    if (active) this.clearContinuousMotion();
+    if (active) {
+      this.options.behavior.cancelStateLifecycle();
+      this.clearContinuousMotion();
+    }
     this.publishActivityChanged();
   }
 
@@ -597,6 +629,7 @@ export class CharacterBehaviorDirector {
   /** 只接收 Store 成功落盘后的完整快照，避免运行态与磁盘分叉。 */
   applyBehaviorSettings(snapshot: CharacterBehaviorSettingsSnapshot): void {
     if (this.closed) return;
+    if (snapshot.movementMode === 0) this.options.behavior.cancelStateLifecycle();
     const shouldStopMotion = this.movementMode !== 0 && snapshot.movementMode === 0;
     const shouldStopPersistentMotion = this.movementMode === 1
       && snapshot.movementMode === 2
@@ -631,6 +664,7 @@ export class CharacterBehaviorDirector {
     this.generation = generation;
     this.turnEpoch += 1;
     this.behaviorLifecycleGeneration += 1;
+    this.options.behavior.cancelStateLifecycle();
     this.clearContinuousMotion();
     this.clearPendingChat();
     this.active = null;
@@ -654,7 +688,7 @@ export class CharacterBehaviorDirector {
     this.options.behavior.close();
   }
 
-  private canRequest(plan: CharacterBehaviorPlan, source: BehaviorPlanSource): boolean {
+  private canRequest(source: BehaviorPlanSource): boolean {
     if (this.closed) return false;
     if (source !== 'explicit' && (this.trustedRuntimeBlocked || this.dragging)) return false;
     if (source === 'local-idle' && this.pendingChatPlan) return false;
@@ -665,6 +699,7 @@ export class CharacterBehaviorDirector {
   cancelActive(): void {
     if (this.closed) return;
     this.turnEpoch += 1;
+    this.options.behavior.cancelStateLifecycle();
     this.clearPendingChat();
     this.publishActivityChanged();
   }
@@ -675,6 +710,7 @@ export class CharacterBehaviorDirector {
 
   private async persistMovementStop(turnEpoch: number): Promise<void> {
     const wasAlreadyStopped = this.movementMode === 0;
+    this.options.behavior.cancelStateLifecycle();
     await this.options.saveMovementMode(0, () => this.isTurnCurrent(turnEpoch));
     if (!this.isTurnCurrent(turnEpoch)) return;
     if (!wasAlreadyStopped) return;
@@ -770,10 +806,7 @@ export class CharacterBehaviorDirector {
     // 同轮相似动作已经通过完整授权，只跳过它与自身 active 的优先级竞争；可信阻塞仍失败关闭。
     if (reusesSameTurnMove) {
       if (this.closed || this.trustedRuntimeBlocked || this.dragging) return;
-    } else if (!this.canRequest(
-      { kind: 'play', target: { kind: 'semantic', semantic: 'move' } },
-      source
-    )) return;
+    } else if (!this.canRequest(source)) return;
     try {
       const authorization = reusesSameTurnMove
         ? chatAuthorization

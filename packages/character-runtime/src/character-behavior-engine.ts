@@ -71,6 +71,12 @@ type RetiredPlaybackGrant = Pick<
   allowLateStarted: boolean;
 };
 
+type StateActionLifecycle = Readonly<{
+  stateId: string;
+  urgency: number;
+  systemForced: boolean;
+}>;
+
 /** 只将动作选择器的稳定“无表现”错误转换为公开诊断。 */
 function isActionUnavailable(error: unknown): boolean {
   return error instanceof Error && error.message === 'CHARACTER_BEHAVIOR_PRESENTATION_UNAVAILABLE';
@@ -128,6 +134,7 @@ export class CharacterBehaviorEngine {
   private actionRecencyById: Record<string, CharacterActionRecency> = {};
   private retiredPlaybackGrants: RetiredPlaybackGrant[] = [];
   private lastScheduledActionId: string | null = null;
+  private stateActionLifecycle: StateActionLifecycle | null = null;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly createPlaybackToken: () => string;
@@ -202,13 +209,24 @@ export class CharacterBehaviorEngine {
     systemForced: boolean;
   }): CharacterBehaviorDecision {
     this.lastDirection = input.direction;
-    return this.selectAndSchedule({
+    const decision = this.selectAndSchedule({
       direction: input.direction,
       nowMs: this.now(),
       urgency: input.urgency,
       systemForced: input.systemForced,
       directedTarget: input.target
     });
+    if (decision.effects.some(effect => effect.type === 'play')) {
+      this.stateActionLifecycle = input.target.kind === 'state'
+        || input.target.kind === 'state_action'
+        ? {
+            stateId: input.target.stateId,
+            urgency: input.urgency,
+            systemForced: input.systemForced
+          }
+        : null;
+    }
+    return decision;
   }
 
   /** 主动来源在创建令牌前按引擎真实动作身份抑制连续重复。 */
@@ -218,7 +236,7 @@ export class CharacterBehaviorEngine {
     urgency: number;
   }): CharacterBehaviorDecision {
     this.lastDirection = input.direction;
-    return this.selectAndSchedule({
+    const decision = this.selectAndSchedule({
       direction: input.direction,
       nowMs: this.now(),
       urgency: input.urgency,
@@ -226,6 +244,15 @@ export class CharacterBehaviorEngine {
       directedTarget: input.target,
       suppressConsecutiveAction: true
     });
+    if (decision.effects.some(effect => effect.type === 'play')) {
+      this.stateActionLifecycle = null;
+    }
+    return decision;
+  }
+
+  /** Main 在停止、拖拽或会话失效时只撤销续选权，不伪造当前播放终态。 */
+  cancelStateLifecycle(): void {
+    this.stateActionLifecycle = null;
   }
 
   /** 只吸收可信上下文事实，不选择动作、不修改调度或创建播放令牌。 */
@@ -266,6 +293,7 @@ export class CharacterBehaviorEngine {
     }
     if (!this.schedule.current) this.currentSelection = null;
     if (result.fallbackActionId) {
+      this.stateActionLifecycle = null;
       let selection: CharacterBehaviorActionSelection;
       try {
         selection = authorizeCharacterBehaviorAction({
@@ -302,15 +330,20 @@ export class CharacterBehaviorEngine {
       this.lastScheduledActionId = selection.actionId;
       return this.decision(fallback.effects, []);
     }
+    if (feedback.status === 'completed' && !this.schedule.current) {
+      return this.continueStateLifecycle(result.effects, nowMs);
+    }
+    if (feedback.status !== 'started') this.stateActionLifecycle = null;
     return this.decision(result.effects, []);
   }
 
   /** 由 Main 现有轮询推进启动确认与自然播放截止时间，不创建额外定时器。 */
   advance(): CharacterBehaviorDecision {
+    const nowMs = this.now();
     const previous = this.schedule.current;
     const result = reduceCharacterActionSchedule(this.schedule, {
       type: 'expire',
-      nowMs: this.now()
+      nowMs
     }, this.manifest.actions);
     this.schedule = result.schedule;
     if (previous && !this.schedule.current) {
@@ -319,10 +352,14 @@ export class CharacterBehaviorEngine {
     if (previous?.startedAtMs !== null && previous && !this.schedule.current) {
       this.recordActionFinished(
         previous.actionId,
-        previous.expectedEndAtMs ?? this.now()
+        previous.expectedEndAtMs ?? nowMs
       );
     }
     if (!this.schedule.current) this.currentSelection = null;
+    if (previous?.startedAtMs !== null && previous && !this.schedule.current) {
+      return this.continueStateLifecycle(result.effects, nowMs);
+    }
+    if (previous && !this.schedule.current) this.stateActionLifecycle = null;
     return this.decision(result.effects, []);
   }
 
@@ -362,6 +399,7 @@ export class CharacterBehaviorEngine {
     this.currentSelection = null;
     this.actionRecencyById = {};
     this.lastScheduledActionId = null;
+    this.stateActionLifecycle = null;
     for (const signal of contextSignals) this.applySignal(signal);
 
     const next = this.selectAndSchedule({
@@ -491,6 +529,46 @@ export class CharacterBehaviorEngine {
         : effect
     ));
     return this.decision(effects, diagnosticCodes);
+  }
+
+  /** 每个外部完成边沿最多续选一次；同状态无候选时撤销生命周期并尝试当前安全状态。 */
+  private continueStateLifecycle(
+    completedEffects: readonly CharacterBehaviorDecisionEffect[],
+    nowMs: number
+  ): CharacterBehaviorDecision {
+    const lifecycle = this.stateActionLifecycle;
+    if (!lifecycle) return this.decision(completedEffects, []);
+
+    const continued = this.selectAndSchedule({
+      direction: this.lastDirection,
+      nowMs,
+      urgency: lifecycle.urgency,
+      systemForced: lifecycle.systemForced,
+      directedTarget: { kind: 'state', stateId: lifecycle.stateId }
+    });
+    if (!continued.diagnosticCodes.includes('CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE')) {
+      return this.decision(this.mergeLifecycleEffects(completedEffects, continued.effects), []);
+    }
+
+    this.stateActionLifecycle = null;
+    const fallback = this.selectAndSchedule({
+      direction: this.lastDirection,
+      nowMs,
+      urgency: 0,
+      systemForced: false
+    });
+    const fallbackEffects = fallback.diagnosticCodes.includes('CHARACTER_BEHAVIOR_ACTION_UNAVAILABLE')
+      ? []
+      : fallback.effects;
+    return this.decision(this.mergeLifecycleEffects(completedEffects, fallbackEffects), []);
+  }
+
+  private mergeLifecycleEffects(
+    first: readonly CharacterBehaviorDecisionEffect[],
+    second: readonly CharacterBehaviorDecisionEffect[]
+  ): CharacterBehaviorDecisionEffect[] {
+    const effects = [...first, ...second].filter(effect => effect.type !== 'none');
+    return effects.length > 0 ? effects : [NONE_EFFECT];
   }
 
   /** 压缩最近时间只接受当前清单动作，容量由动作定义数量天然限制。 */

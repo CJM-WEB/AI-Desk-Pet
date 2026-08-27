@@ -21,7 +21,7 @@ import type { ConversationBehaviorContext } from
 export const characterJsonOutputInstructions = [
   '请只返回 json 对象，不要添加对象外文字。',
   '每轮必须提供仅供 Main 使用的 activity 与 status，它们绝不显示给用户。',
-  'behaviorPlan 每轮必填：有匹配项时只使用 states 及其 actions 中的公开名称；没有匹配项时返回 kind=none，绝不编造目录外名称。',
+  'behaviorPlan 每轮必填：有匹配项时返回 play_state，state 使用公开状态名；用户明确动作时 action 使用该状态内公开动作名，只指定状态时省略 action；没有匹配项时返回 kind=none。',
   'movementControl 每轮必填且只允许 keep、set_mode、move_once：没有运动要求用 keep。',
   '停止、保持静止、不要再动用 set_mode=0；一直、持续、保持运动用 set_mode=1；时不时、偶尔、间歇、恢复自主活动用 set_mode=2。',
   '只动一下、跑远一点或去屏幕某区域用 move_once；target 只能是 random_work_area 或公开屏幕区域，绝不提供坐标；distance 按用户语义选择 near、medium、far。',
@@ -153,7 +153,7 @@ export class ConversationChatAdapter {
     if (behaviorPlan.success) {
       // JSON Output 把情绪收敛在行为计划内；继续投影既有情绪事件以兼容角色扩展状态。
       if (reply.emotion === undefined
-        && (behaviorPlan.data.kind === 'none' || behaviorPlan.data.kind === 'play')
+        && (behaviorPlan.data.kind === 'none' || behaviorPlan.data.kind === 'play_state')
         && behaviorPlan.data.emotion !== undefined) {
         reply.emotion = behaviorPlan.data.emotion;
       }
@@ -162,16 +162,14 @@ export class ConversationChatAdapter {
         reply.behaviorPlan = behaviorPlan.data.emotion === undefined
           ? { kind: 'none' }
           : { kind: 'none', emotion: behaviorPlan.data.emotion };
-      } else if (behaviorPlan.data.kind === 'play') {
-        reply.behaviorPlan = behaviorPlan.data.emotion === undefined
-          ? { kind: 'play', target: behaviorPlan.data.target }
-          : {
-              kind: 'play',
-              target: behaviorPlan.data.target,
-              emotion: behaviorPlan.data.emotion
-            };
-      } else {
-        reply.behaviorPlan = behaviorPlan.data;
+      } else if (behaviorPlan.data.kind === 'play_state') {
+        reply.behaviorPlan = {
+          kind: 'play_state',
+          state: behaviorPlan.data.state,
+          ...(behaviorPlan.data.action === undefined ? {} : { action: behaviorPlan.data.action }),
+          ...(behaviorPlan.data.duration === undefined ? {} : { duration: behaviorPlan.data.duration }),
+          ...(behaviorPlan.data.emotion === undefined ? {} : { emotion: behaviorPlan.data.emotion })
+        };
       }
     }
     return reply;

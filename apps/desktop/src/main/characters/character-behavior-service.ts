@@ -7,6 +7,7 @@ import {
   type BehaviorTarget,
   type CharacterAgentBehaviorIntent,
   type CharacterBehaviorAuthorization,
+  type CharacterBehaviorPlan,
   type CharacterBehaviorDecision,
   type CharacterBehaviorSignal,
   type CharacterManifestV1,
@@ -184,6 +185,20 @@ export class CharacterBehaviorService {
     );
   }
 
+  /** 层级计划在 Main 私有清单内一次性验证状态、动作归属与当前皮肤可播放性。 */
+  resolveBehaviorStatePlan(
+    plan: Extract<CharacterBehaviorPlan, { kind: 'play_state' }>
+  ): ResolvedBehaviorTarget {
+    if (this.closed || this.transitioning || !this.manifest) {
+      throw new Error('CHARACTER_ACTION_UNAVAILABLE');
+    }
+    return resolveBehaviorTarget(
+      this.manifest,
+      this.engine?.snapshot().skinId ?? this.manifest.defaultSkinId,
+      plan
+    );
+  }
+
   /** 在不创建调度副作用的前提下判断私有目标是否可能授权 move 语义。 */
   isMovementBehaviorTarget(target: ResolvedBehaviorTarget): boolean {
     if (this.closed || this.transitioning || !this.manifest) return false;
@@ -219,6 +234,11 @@ export class CharacterBehaviorService {
       systemForced: options.systemForced ?? false
     });
     return this.publish(decision);
+  }
+
+  /** Director 失效会话时撤销状态续选权；当前播放仍等待真实 Renderer 终态。 */
+  cancelStateLifecycle(): void {
+    this.engine?.cancelStateLifecycle();
   }
 
   /** Scheduler 候选在 Service/Engine 的真实 actionId 上预检，V1/V2 共用 behavior-action 协议。 */

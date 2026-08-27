@@ -4028,7 +4028,7 @@ test.describe('自主行为最小闭环', () => {
       },
       {
         response: characterChatResponse('停止期间仍可挥手回应', {
-          behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
+          behaviorPlan: { kind: 'play_state', state: '挥手', action: '挥手' }
         })
       },
       {
@@ -4168,7 +4168,7 @@ test.describe('自主行为最小闭环', () => {
     const provider = await startProviderServer([
       {
         response: characterChatResponse('聊天阻塞已释放并挥手', {
-          behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
+          behaviorPlan: { kind: 'play_state', state: '挥手', action: '挥手' }
         }),
         gate: chattingGate,
         inspect: request => {

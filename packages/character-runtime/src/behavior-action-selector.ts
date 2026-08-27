@@ -212,7 +212,7 @@ function eligibleCandidates(
   });
 }
 
-/** 按显式私有目标收集逻辑动作归属，仍由当前引擎状态执行全部硬约束。 */
+/** 按显式私有目标收集逻辑动作归属，后续仍执行全部硬约束。 */
 function directedActionReferences(
   input: CharacterBehaviorActionSelectionInput,
   target: Exclude<ResolvedBehaviorTarget, { kind: 'action' }>
@@ -220,6 +220,12 @@ function directedActionReferences(
   if (target.kind === 'state') {
     const state = input.manifest.states.find(candidate => candidate.id === target.stateId);
     return state?.actionIds.map(actionId => ({ actionId, stateId: state.id })) ?? [];
+  }
+  if (target.kind === 'state_action') {
+    const state = input.manifest.states.find(candidate => candidate.id === target.stateId);
+    return state?.actionIds.includes(target.actionId)
+      ? [{ actionId: target.actionId, stateId: state.id }]
+      : [];
   }
 
   const stateOrder = [
@@ -241,15 +247,35 @@ function directedActionReferences(
   });
 }
 
+/** 状态目标以即将进入的主/修饰状态校验动作自身的状态白名单。 */
+function targetStateContext(
+  input: CharacterBehaviorActionSelectionInput,
+  stateId: string
+): CharacterBehaviorStateSnapshot {
+  const targetState = input.manifest.states.find(state => state.id === stateId);
+  if (targetState?.kind === 'primary') {
+    return { ...input.state, primaryStateId: stateId };
+  }
+  if (targetState?.kind === 'modifier') {
+    return {
+      ...input.state,
+      modifierStateIds: [...new Set([...input.state.modifierStateIds, stateId])]
+    };
+  }
+  return input.state;
+}
+
 /** 对给定动作归属应用与普通选择相同的状态、方向、冷却和表现约束。 */
 function eligibleDirectedCandidates(
   input: CharacterBehaviorActionSelectionInput,
-  references: readonly { actionId: string; stateId: string }[]
+  references: readonly { actionId: string; stateId: string }[],
+  enterReferencedState: boolean
 ): ActionCandidate[] {
   const actionsById = new Map(input.manifest.actions.map(action => [action.id, action]));
   return references.flatMap(({ actionId, stateId }) => {
     const action = actionsById.get(actionId);
     if (!action || !satisfiesActionHardConstraints(action, input, {
+      ...(enterReferencedState ? { state: targetStateContext(input, stateId) } : {}),
       respectRepeatSuppression: true,
       requireCurrentSkinPresentation: true
     })) return [];
@@ -330,7 +356,11 @@ export function selectDirectedCharacterBehaviorAction(
   }
 
   const candidate = selectWeightedCandidate(
-    eligibleDirectedCandidates(input, directedActionReferences(input, target)),
+    eligibleDirectedCandidates(
+      input,
+      directedActionReferences(input, target),
+      target.kind === 'state' || target.kind === 'state_action'
+    ),
     input.random
   );
   if (!candidate) throw new Error(ACTION_UNAVAILABLE);

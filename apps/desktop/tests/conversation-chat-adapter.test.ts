@@ -304,6 +304,41 @@ describe('ConversationChatAdapter', () => {
     });
   });
 
+  test('保留合法 play_state 层级计划且不恢复旧扁平 play 计划', async () => {
+    const provider = 响应为({
+      type: 'text',
+      text: '我来挥挥手。',
+      structured_output: {
+        text: '我来挥挥手。',
+        behaviorPlan: {
+          kind: 'play_state', state: '开心', action: '挥手', duration: 'brief', emotion: 'happy'
+        }
+      }
+    });
+
+    await expect(new ConversationChatAdapter(provider).respond({
+      history: [], text: '开心地挥挥手', behaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toEqual({
+      text: '我来挥挥手。',
+      emotion: 'happy',
+      behaviorPlan: {
+        kind: 'play_state', state: '开心', action: '挥手', duration: 'brief', emotion: 'happy'
+      }
+    });
+
+    const legacyProvider = 响应为({
+      type: 'text', text: '正文保留。',
+      structured_output: {
+        behaviorPlan: { kind: 'play', target: { kind: 'action_name', name: '挥手' } }
+      }
+    });
+    await expect(new ConversationChatAdapter(legacyProvider).respond({
+      history: [], text: '测试旧计划', behaviorContext,
+      signal: new AbortController().signal
+    })).resolves.toEqual({ text: '正文保留。' });
+  });
+
   test('丢弃非法行为计划并保留正文与既有合法情绪', async () => {
     const provider = 响应为({
       type: 'text',
