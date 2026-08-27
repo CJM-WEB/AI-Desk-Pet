@@ -22,6 +22,7 @@ import {
   readStructuredTextSse,
   shouldStreamStructuredText
 } from './structured-text-stream';
+import { TopLevelTextProjector } from './top-level-text-projector';
 
 export type FetchLike = (
   input: string | URL | Request,
@@ -226,211 +227,6 @@ const MAX_SSE_EVENT_DATA_LINES = 1_024;
 const DEEPSEEK_CHARACTER_CHAT_MAX_TOKENS = 4_096;
 const SSE_YIELD_EVERY_EVENTS = 32;
 
-type ProjectorPhase =
-  | 'root'
-  | 'plain_text'
-  | 'key_or_end'
-  | 'key'
-  | 'colon'
-  | 'value'
-  | 'skip_string'
-  | 'skip_complex'
-  | 'skip_primitive'
-  | 'comma_or_end'
-  | 'target_string'
-  | 'done';
-
-/** 持久化游标保证每个结构化响应字符最多扫描一次，并按契约允许纯文本正文降级。 */
-class IncrementalTopLevelTextProjector {
-  private index = 0;
-  private phase: ProjectorPhase = 'root';
-  private keyCharacters: string[] = [];
-  private keyEscaped = false;
-  private currentKey = '';
-  private skipEscaped = false;
-  private skipInString = false;
-  private skipClosers: string[] = [];
-
-  constructor(
-    private readonly field: string,
-    private readonly allowPlainTextFallback: boolean
-  ) {}
-
-  project(source: string): string {
-    const projection: string[] = [];
-    if (this.phase === 'root') {
-      const firstVisibleIndex = source.search(/\S/u);
-      if (firstVisibleIndex < 0) return '';
-      if (source[firstVisibleIndex] !== '{') {
-        if (!this.allowPlainTextFallback) this.malformed();
-        this.phase = 'plain_text';
-      }
-    }
-    while (this.index < source.length) {
-      const character = source[this.index]!;
-      if (this.phase === 'plain_text') {
-        projection.push(source.slice(this.index));
-        this.index = source.length;
-        continue;
-      }
-      if (this.phase === 'root') {
-        if (/\s/u.test(character)) { this.index += 1; continue; }
-        if (character !== '{') this.malformed();
-        this.index += 1;
-        this.phase = 'key_or_end';
-        continue;
-      }
-      if (this.phase === 'key_or_end') {
-        if (/\s/u.test(character)) { this.index += 1; continue; }
-        if (character === '}') { this.index += 1; this.phase = 'done'; continue; }
-        if (character !== '"') this.malformed();
-        this.keyCharacters = ['"'];
-        this.keyEscaped = false;
-        this.index += 1;
-        this.phase = 'key';
-        continue;
-      }
-      if (this.phase === 'key') {
-        this.keyCharacters.push(character);
-        this.index += 1;
-        if (this.keyEscaped) { this.keyEscaped = false; continue; }
-        if (character === '\\') { this.keyEscaped = true; continue; }
-        if (character !== '"') continue;
-        try {
-          this.currentKey = JSON.parse(this.keyCharacters.join('')) as string;
-        } catch {
-          this.malformed();
-        }
-        this.keyCharacters = [];
-        this.phase = 'colon';
-        continue;
-      }
-      if (this.phase === 'colon') {
-        if (/\s/u.test(character)) { this.index += 1; continue; }
-        if (character !== ':') this.malformed();
-        this.index += 1;
-        this.phase = 'value';
-        continue;
-      }
-      if (this.phase === 'value') {
-        if (/\s/u.test(character)) { this.index += 1; continue; }
-        if (this.currentKey === this.field) {
-          if (character !== '"') this.malformed();
-          this.index += 1;
-          this.phase = 'target_string';
-          continue;
-        }
-        if (character === '"') {
-          this.index += 1;
-          this.skipEscaped = false;
-          this.phase = 'skip_string';
-          continue;
-        }
-        if (character === '{' || character === '[') {
-          this.skipClosers = [character === '{' ? '}' : ']'];
-          this.skipInString = false;
-          this.skipEscaped = false;
-          this.index += 1;
-          this.phase = 'skip_complex';
-          continue;
-        }
-        this.phase = 'skip_primitive';
-        continue;
-      }
-      if (this.phase === 'skip_string') {
-        this.index += 1;
-        if (this.skipEscaped) { this.skipEscaped = false; continue; }
-        if (character === '\\') { this.skipEscaped = true; continue; }
-        if (character === '"') this.phase = 'comma_or_end';
-        continue;
-      }
-      if (this.phase === 'skip_complex') {
-        this.index += 1;
-        if (this.skipInString) {
-          if (this.skipEscaped) this.skipEscaped = false;
-          else if (character === '\\') this.skipEscaped = true;
-          else if (character === '"') this.skipInString = false;
-          continue;
-        }
-        if (character === '"') { this.skipInString = true; continue; }
-        if (character === '{' || character === '[') {
-          this.skipClosers.push(character === '{' ? '}' : ']');
-          continue;
-        }
-        if (character === '}' || character === ']') {
-          if (this.skipClosers.pop() !== character) this.malformed();
-          if (this.skipClosers.length === 0) this.phase = 'comma_or_end';
-        }
-        continue;
-      }
-      if (this.phase === 'skip_primitive') {
-        if (character === ',') { this.index += 1; this.phase = 'key_or_end'; continue; }
-        if (character === '}') { this.index += 1; this.phase = 'done'; continue; }
-        this.index += 1;
-        continue;
-      }
-      if (this.phase === 'comma_or_end') {
-        if (/\s/u.test(character)) { this.index += 1; continue; }
-        if (character === ',') { this.index += 1; this.phase = 'key_or_end'; continue; }
-        if (character === '}') { this.index += 1; this.phase = 'done'; continue; }
-        this.malformed();
-      }
-      if (this.phase === 'target_string') {
-        if (character === '"') { this.index += 1; this.phase = 'comma_or_end'; continue; }
-        if (character !== '\\') {
-          const codePoint = source.codePointAt(this.index);
-          if (codePoint === undefined) break;
-          const decoded = String.fromCodePoint(codePoint);
-          if (decoded.length === 2 && this.index + 1 >= source.length) break;
-          if (codePoint < 0x20) this.malformed();
-          projection.push(decoded);
-          this.index += decoded.length;
-          continue;
-        }
-        const escape = source[this.index + 1];
-        if (escape === undefined) break;
-        const simpleEscapes: Readonly<Record<string, string>> = {
-          '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t'
-        };
-        if (escape !== 'u') {
-          const decoded = simpleEscapes[escape];
-          if (decoded === undefined) this.malformed();
-          projection.push(decoded);
-          this.index += 2;
-          continue;
-        }
-        const hex = source.slice(this.index + 2, this.index + 6);
-        if (hex.length < 4) break;
-        if (!/^[0-9a-f]{4}$/iu.test(hex)) this.malformed();
-        const unit = Number.parseInt(hex, 16);
-        if (unit >= 0xd800 && unit <= 0xdbff) {
-          const lowPrefix = source.slice(this.index + 6, this.index + 8);
-          const lowHex = source.slice(this.index + 8, this.index + 12);
-          if (lowPrefix.length < 2 || lowHex.length < 4) break;
-          if (lowPrefix !== '\\u' || !/^[0-9a-f]{4}$/iu.test(lowHex)) this.malformed();
-          const low = Number.parseInt(lowHex, 16);
-          if (low < 0xdc00 || low > 0xdfff) this.malformed();
-          projection.push(String.fromCodePoint(0x10000 + ((unit - 0xd800) << 10) + low - 0xdc00));
-          this.index += 12;
-          continue;
-        }
-        projection.push(String.fromCharCode(unit));
-        this.index += 6;
-        continue;
-      }
-      if (this.phase === 'done') {
-        if (!/\s/u.test(character)) this.malformed();
-        this.index += 1;
-      }
-    }
-    return projection.join('');
-  }
-
-  private malformed(): never {
-    throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false);
-  }
-}
-
 function splitVisibleProjection(held: string, delta: string): Readonly<{ visible: string; held: string }> {
   const candidate = held + delta;
   const normalized = candidate.toLocaleLowerCase();
@@ -479,10 +275,11 @@ async function readProviderSse(
   let dispatchedEvents = 0;
   const projector = request.responseContract === undefined
     ? null
-    : new IncrementalTopLevelTextProjector(
-        request.responseContract.textField,
-        request.responseContract.allowPlainTextFallback
-      );
+    : new TopLevelTextProjector({
+        field: request.responseContract.textField,
+        allowPlainTextFallback: request.responseContract.allowPlainTextFallback,
+        malformed: () => { throw new ProviderError('PROVIDER_MALFORMED_RESPONSE', false); }
+      });
 
   const dispatch = (): void => {
     if (eventData.length === 0) return;
