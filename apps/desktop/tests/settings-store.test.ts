@@ -997,6 +997,67 @@ export class SettingsStore {
     expect(persisted).not.toHaveProperty('movementStopped');
   });
 
+  test('V6 单条损坏 placement 只被清理且不隔离其他合法设置', async () => {
+    const { directory, file, store } = await createStore(true);
+    await store.saveProviderProfile(providerProfile);
+    await store.saveModelRoute({
+      primaryProfileId: providerProfile.id,
+      chatProfileId: null,
+      agentProfileId: null,
+      visionProfileId: null,
+      fallbackProfileIds: [],
+      allowCrossProviderFallback: false
+    });
+    await store.saveAuthorizedRoot({
+      id: 'root-main',
+      displayName: '授权目录',
+      pathHint: 'D:\\…\\project',
+      absolutePath: 'D:\\private\\project'
+    });
+    await store.savePetAlwaysOnTop(true);
+    await store.saveLocalModelEnabled(false);
+
+    const legacy = JSON.parse(await readFile(file, 'utf8'));
+    legacy.petPlacementState = {
+      kind: 'ready',
+      placements: [
+        {
+          characterId: 'pet-a', scale: 1,
+          footAnchorDip: { x: 100, y: 200 }, displayId: 'display-main'
+        },
+        {
+          characterId: '../bad', scale: 'huge',
+          footAnchorDip: { x: 'bad', y: 0 }, displayId: ''
+        }
+      ]
+    };
+    await writeFile(file, JSON.stringify(legacy), 'utf8');
+
+    await expect(store.getPetPlacementState('pet-a')).resolves.toMatchObject({
+      kind: 'ready', placement: { characterId: 'pet-a' }
+    });
+    await expect(store.getProviderSettings()).resolves.toMatchObject({
+      profiles: [expect.objectContaining({ id: providerProfile.id })],
+      route: expect.objectContaining({ primaryProfileId: providerProfile.id })
+    });
+    await expect(store.getAuthorizedRootPath()).resolves.toBe('D:\\private\\project');
+    await expect(store.getPetAlwaysOnTop()).resolves.toBe(true);
+    await expect(store.getLocalModelSettings()).resolves.toEqual({ enabled: false });
+
+    const persisted = JSON.parse(await readFile(file, 'utf8'));
+    expect(persisted).toMatchObject({
+      version: 6,
+      authorizedRoot: expect.objectContaining({ id: 'root-main' }),
+      petAlwaysOnTop: true,
+      localModel: { enabled: false },
+      petPlacementState: {
+        kind: 'ready',
+        placements: [expect.objectContaining({ characterId: 'pet-a' })]
+      }
+    });
+    expect(await readdir(directory)).toEqual(['settings.json']);
+  });
+
   test('ready 原始数组超过 256 条时只清空 placement 并保留其余严格 V3 设置', async () => {
     const { directory, file, store } = await createStore();
     const placements = Array.from({ length: 257 }, (_, index) => ({

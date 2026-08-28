@@ -187,13 +187,8 @@ const providerFileToolNames = [
   'builtin__files__edit_file',
   'builtin__files__delete_file'
 ] as const;
-const providerMutationPlanningToolNames = [
-  'builtin__files__create_file',
-  'builtin__files__move_file',
-  'builtin__files__create_directory',
-  'builtin__files__apply_patch',
-  'builtin__files__edit_file',
-  'builtin__files__delete_file',
+const providerFilePlanningToolNames = [
+  ...providerFileToolNames,
   'builtin__capability__request_clarification'
 ] as const;
 const internalToolNames = [
@@ -372,7 +367,6 @@ async function harness(
       initialCapability: taskKind,
       authorizedRootPath: authorized.root,
       generation: 'integration-agent-generation',
-      fileDisclosureAllowed: true,
       provider,
       fallbackProviders: [],
       createFileTools: async () => authorized.fileTools,
@@ -523,7 +517,6 @@ function compatibleText(text: string): unknown {
  */
 async function deepSeekHarness(input: {
   responses: unknown[];
-  fileDisclosureAllowed?: boolean;
   moveToRecycleBin?: (absolutePath: string) => Promise<void>;
 }) {
   const authorized = await createAuthorizedRoot();
@@ -562,7 +555,6 @@ async function deepSeekHarness(input: {
       authorizedRootPath: authorized.root,
       generation: 'deepseek-integration-generation',
       provider,
-      fileDisclosureAllowed: input.fileDisclosureAllowed ?? true,
       fallbackProviders: [],
       createFileTools: async () => fileTools,
       createPowerShellTool: () => new PowerShellTool()
@@ -652,7 +644,6 @@ async function localModelFileHarness(input: {
         generation: 'local-model-integration-generation',
         provider: createProvider(selection.profile),
         fallbackProviders: selection.fallbackProfiles.map(createProvider),
-        fileDisclosureAllowed: true,
         createFileTools: async () => fileTools,
         createPowerShellTool: () => new PowerShellTool()
       }),
@@ -715,11 +706,10 @@ function conversationIntegrationHarness(input: {
   responses: Array<string | ModelResponse>;
   authorizedRootPath?: string | null;
   incognito?: boolean;
-  fileDisclosureAllowed?: boolean;
   behavior?: ConversationBehaviorPort;
   createChatAdapter?: () => ConversationChatAdapter;
   createAgentService?: (
-    factoryInput: MainConversationAgentFactoryInput<{ dataCategories: { file: boolean } }>
+    factoryInput: MainConversationAgentFactoryInput<{ dataCategories: { memory: boolean } }>
   ) => CapabilityTaskAgentPort;
 }) {
   const privacySessions = new PrivacySessionRegistry();
@@ -745,14 +735,14 @@ function conversationIntegrationHarness(input: {
     visibleHistory: readonly unknown[];
   }> = [];
   const agentFactoryInputs: Array<MainConversationAgentFactoryInput<
-    { dataCategories: { file: boolean } }
+    { dataCategories: { memory: boolean } }
   >> = [];
   const readAuthorizedRootPath = vi.fn(async () => input.authorizedRootPath ?? null);
   const readPrivacySettings = vi.fn(async () => ({
-    dataCategories: { file: input.fileDisclosureAllowed ?? true }
+    dataCategories: { memory: false }
   }));
   const createAgentService = vi.fn((factoryInput: MainConversationAgentFactoryInput<
-    { dataCategories: { file: boolean } }
+    { dataCategories: { memory: boolean } }
   >) => {
     agentFactoryInputs.push(factoryInput);
     if (input.createAgentService) return input.createAgentService(factoryInput);
@@ -1022,7 +1012,6 @@ describe('桌面会话分流纵向集成', () => {
           initialCapability: factoryInput.snapshot.taskKind,
           authorizedRootPath: authorized.root,
           generation: factoryInput.generation,
-          fileDisclosureAllowed: true,
           provider: {
             async respond(request) {
               agentRequests.push(request);
@@ -1154,7 +1143,6 @@ describe('桌面会话分流纵向集成', () => {
     const fixture = conversationIntegrationHarness({
       responses: [],
       authorizedRootPath: authorized.root,
-      fileDisclosureAllowed: false,
       createAgentService: factoryInput => new AgentService({
         loop: new AgentLoop(),
         pending: new PendingActionStore(),
@@ -1163,7 +1151,6 @@ describe('桌面会话分流纵向集成', () => {
           authorizedRootPath: authorized.root,
           generation: 'vertical-file-generation',
           provider,
-          fileDisclosureAllowed: false,
           fallbackProviders: [],
           createFileTools: async () => authorized.fileTools,
           createPowerShellTool: () => new PowerShellTool()
@@ -1177,7 +1164,7 @@ describe('桌面会话分流纵向集成', () => {
     await fixture.composition.coordinator.submit('创建 Docs\\Report.TXT 并写入正文');
     expect((requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
       tool => tool.function.name
-    )).toEqual(providerMutationPlanningToolNames);
+    )).toEqual(providerFilePlanningToolNames);
     await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
     const action = pendingAction(fixture.events);
 
@@ -1213,7 +1200,6 @@ describe('桌面会话分流纵向集成', () => {
     const fixture = conversationIntegrationHarness({
       responses: [],
       authorizedRootPath: authorized.root,
-      fileDisclosureAllowed: false,
       createAgentService: factoryInput => new AgentService({
         loop: new AgentLoop(),
         pending: new PendingActionStore(),
@@ -1222,7 +1208,6 @@ describe('桌面会话分流纵向集成', () => {
           authorizedRootPath: authorized.root,
           generation: factoryInput.generation,
           provider,
-          fileDisclosureAllowed: false,
           fallbackProviders: [],
           createFileTools: async () => authorized.fileTools,
           createPowerShellTool: () => new PowerShellTool()
@@ -2452,14 +2437,12 @@ describe('桌面 Agent 真实服务集成', () => {
     expect(fixture.fetchClient).toHaveBeenCalledOnce();
   });
 
-  test('文件数据授权关闭时只读文件工具不暴露给 DeepSeek', async () => {
+  test('显式文件任务向 DeepSeek 公告完整文件工具面', async () => {
     const fixture = await deepSeekHarness({
-      fileDisclosureAllowed: false,
-      responses: [compatibleToolCall(
-        'deepseek-file-disclosure-disabled',
-        'builtin__capability__request_clarification',
-        { missingField: 'file_data_authorization' }
-      )]
+      responses: [
+        compatibleToolCall('deepseek-list-files', 'builtin__files__list_files', { relativePath: '.' }),
+        compatibleText('已读取授权目录')
+      ]
     });
     const before = await readdir(fixture.authorized.root, { recursive: true });
 
@@ -2469,15 +2452,15 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expect((fixture.requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
       tool => tool.function.name
-    )).toEqual(providerMutationPlanningToolNames);
+    )).toEqual(providerFilePlanningToolNames);
     expect(fixture.events.filter(event => event.type === 'message')).toEqual([{
-      type: 'message', role: 'assistant', text: '请先开启文件数据授权。'
+      type: 'message', role: 'assistant', text: '已读取授权目录'
     }]);
     expect(fixture.events.some(event => event.type === 'pending_action')).toBe(false);
     await expect(readdir(fixture.authorized.root, { recursive: true })).resolves.toEqual(before);
   });
 
-  test('文件数据授权关闭时 DeepSeek 明确目录创建和删除仍走 Main 确认及回收站闭环', async () => {
+  test('显式文件任务的目录创建和删除仍走 Main 确认及回收站闭环', async () => {
     const recycledName = '.recycled-private-directory';
     let recycledPath = '';
     const recycle = vi.fn(async (absolutePath: string) => {
@@ -2485,7 +2468,6 @@ describe('桌面 Agent 真实服务集成', () => {
       await rename(absolutePath, recycledPath);
     });
     const fixture = await deepSeekHarness({
-      fileDisclosureAllowed: false,
       moveToRecycleBin: recycle,
       responses: [
         compatibleToolCall(
@@ -2512,7 +2494,7 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expect((fixture.requestBodies[0]?.tools as Array<{ function: { name: string } }>).map(
       tool => tool.function.name
-    )).toEqual(providerMutationPlanningToolNames);
+    )).toEqual(providerFilePlanningToolNames);
     await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
     await fixture.service.confirm(pendingAction(fixture.events).actionId);
     expect((await lstat(target)).isDirectory()).toBe(true);
@@ -2525,7 +2507,7 @@ describe('桌面 Agent 真实服务集成', () => {
 
     expect((fixture.requestBodies[2]?.tools as Array<{ function: { name: string } }>).map(
       tool => tool.function.name
-    )).toEqual(providerMutationPlanningToolNames);
+    )).toEqual(providerFilePlanningToolNames);
     await expect(lstat(target)).resolves.toBeDefined();
     const deleteEvent = fixture.events.filter(event => event.type === 'pending_action').at(-1);
     if (!deleteEvent || deleteEvent.type !== 'pending_action') throw new Error('缺少删除确认卡');
@@ -2536,9 +2518,8 @@ describe('桌面 Agent 真实服务集成', () => {
     expect((await lstat(recycledPath)).isDirectory()).toBe(true);
   });
 
-  test('文件数据授权关闭时 DeepSeek 创建文件和补丁均绑定目标并产生真实副作用', async () => {
+  test('显式文件任务中 DeepSeek 创建文件和补丁均绑定目标并产生真实副作用', async () => {
     const fixture = await deepSeekHarness({
-      fileDisclosureAllowed: false,
       responses: [
         compatibleToolCall('private-create-file', 'builtin__files__create_file', {
           relativePath: 'private.txt', content: 'before\n'

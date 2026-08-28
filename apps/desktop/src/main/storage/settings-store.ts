@@ -237,6 +237,20 @@ const recoverableStoredSettingsV5Schema = z.object({
   ])
 }).strict();
 
+const recoverableStoredSettingsV6Schema = z.object({
+  ...storedSettingsV6Shape,
+  petPlacementState: z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('pending-legacy'),
+      windowPosition: z.unknown()
+    }).strict(),
+    z.object({
+      kind: z.literal('ready'),
+      placements: z.array(z.unknown())
+    }).strict()
+  ])
+}).strict();
+
 const recoverableStoredSettingsV4Schema = z.object({
   ...storedSettingsV4Shape,
   petPlacementState: z.discriminatedUnion('kind', [
@@ -647,38 +661,48 @@ function recoverOversizedReadyPlacements(raw: unknown): OversizedReadyPlacementR
   };
 }
 
-function sanitizeRecoverableV5(raw: unknown): StoredSettings | null {
-  if (raw && typeof raw === 'object') {
-    const state = (raw as { petPlacementState?: unknown }).petPlacementState;
-    if (state && typeof state === 'object') {
-      const ready = state as { kind?: unknown; placements?: unknown };
-      if (
-        ready.kind === 'ready'
-        && Array.isArray(ready.placements)
-        && ready.placements.length > PET_PLACEMENT_LIMIT
-      ) return null;
-    }
-  }
-  const recoverable = recoverableStoredSettingsV5Schema.safeParse(raw);
-  if (!recoverable.success) return null;
-  if (recoverable.data.petPlacementState.kind === 'pending-legacy') {
-    return migrateV5Settings(storedSettingsV5Schema.parse({
-      ...recoverable.data,
-      petPlacementState: { kind: 'ready', placements: [] }
-    }));
-  }
+type RecoverablePetPlacementState = Readonly<{
+  kind: 'pending-legacy';
+  windowPosition?: unknown;
+}> | Readonly<{
+  kind: 'ready';
+  placements: unknown[];
+}>;
+
+/** 单条 placement 损坏只影响其自身；其余已严格验证的设置必须保留。 */
+function sanitizeRecoverablePetPlacementState(
+  state: RecoverablePetPlacementState
+): Readonly<{ kind: 'ready'; placements: StoredPetPlacement[] }> | null {
+  if (state.kind === 'pending-legacy') return { kind: 'ready', placements: [] };
+  if (state.placements.length > PET_PLACEMENT_LIMIT) return null;
   const placements = new Map<string, StoredPetPlacement>();
-  for (const candidate of recoverable.data.petPlacementState.placements) {
+  for (const candidate of state.placements) {
     const parsed = storedPetPlacementSchema.safeParse(candidate);
     if (!parsed.success) continue;
     placements.delete(parsed.data.characterId);
     placements.set(parsed.data.characterId, parsed.data);
     if (placements.size >= PET_PLACEMENT_LIMIT) break;
   }
+  return { kind: 'ready', placements: [...placements.values()] };
+}
+
+function sanitizeRecoverableV5(raw: unknown): StoredSettings | null {
+  const recoverable = recoverableStoredSettingsV5Schema.safeParse(raw);
+  if (!recoverable.success) return null;
+  const petPlacementState = sanitizeRecoverablePetPlacementState(recoverable.data.petPlacementState);
+  if (!petPlacementState) return null;
   return migrateV5Settings(storedSettingsV5Schema.parse({
     ...recoverable.data,
-    petPlacementState: { kind: 'ready', placements: [...placements.values()] }
+    petPlacementState
   }));
+}
+
+function sanitizeRecoverableV6(raw: unknown): StoredSettings | null {
+  const recoverable = recoverableStoredSettingsV6Schema.safeParse(raw);
+  if (!recoverable.success) return null;
+  const petPlacementState = sanitizeRecoverablePetPlacementState(recoverable.data.petPlacementState);
+  if (!petPlacementState) return null;
+  return storedSettingsV6Schema.parse({ ...recoverable.data, petPlacementState });
 }
 
 function sanitizeRecoverableV4(raw: unknown): StoredSettings | null {
@@ -830,6 +854,12 @@ export class SettingsStore {
       const migrated = migrateV4Settings(v4.data);
       await atomicWrite(this.file, migrated);
       return migrated;
+    }
+
+    const recoveredV6 = sanitizeRecoverableV6(raw);
+    if (recoveredV6) {
+      await atomicWrite(this.file, recoveredV6);
+      return recoveredV6;
     }
 
     const recoveredV5 = sanitizeRecoverableV5(raw);
