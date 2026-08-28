@@ -21,7 +21,6 @@ import { useStore } from 'zustand';
 import {
   resolveCharacterPresentation,
   STANDARD_CHARACTER_SEMANTICS,
-  type CharacterActionDefinitionV2,
   type DraftActionClip
 } from '@myself/character-runtime';
 import type { MyselfApi } from '../../../../shared/myself-api';
@@ -54,6 +53,7 @@ import {
   PreviewControls,
   type PreviewState
 } from './PreviewControls';
+import { useModalDialog } from './use-modal-dialog';
 import { AtlasImportPanel } from './AtlasImportPanel';
 import {
   TransientToastLayer,
@@ -222,19 +222,16 @@ export function CharacterWorkshopWorkspace(
   ));
   const [perFrameAnchors, setPerFrameAnchors] = useState(false);
   const [extensionOpen, setExtensionOpen] = useState(false);
-  const [extensionName, setExtensionName] = useState('');
   const [pendingConfigurationDelete, setPendingConfigurationDelete] = useState<
     PendingConfigurationDelete | null
   >(null);
-  const [newStateKind, setNewStateKind] = useState<'primary' | 'modifier'>('modifier');
-  const [newStateSemantic, setNewStateSemantic] = useState<
-    CharacterActionDefinitionV2['semantic']
-  >('idle');
   const previousActionIdentityRef = useRef<string | null>(null);
   const sceneFrameIndexRef = useRef<number | null>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const createDialogRef = useRef<HTMLDialogElement>(null);
   const configurationDeleteDialogRef = useRef<HTMLDialogElement>(null);
+  const extensionFormRef = useRef<HTMLFormElement>(null);
+  const extensionNameInputRef = useRef<HTMLInputElement>(null);
   const pendingDelete = props.pendingDeleteCharacterId === undefined
     ? internalPendingDelete
     : props.pendingDeleteCharacterId;
@@ -282,6 +279,8 @@ export function CharacterWorkshopWorkspace(
   const activationCharacter = state.characters.find(
     character => character.id === pendingActivation
   );
+  const activationDialogRef = useModalDialog(Boolean(activationCharacter));
+  const extensionDialogRef = useModalDialog(extensionOpen);
   const busy = state.busyAction !== null;
   const activity = activityLabel(state);
   const frameCount = action?.frames.length ?? 0;
@@ -380,6 +379,15 @@ export function CharacterWorkshopWorkspace(
     createDialogRef.current?.close();
     setCreateOpen(false);
     setCharacterName('');
+  }
+
+  function closeActivationDialog(): void {
+    setPendingActivation(null);
+  }
+
+  function closeExtensionDialog(): void {
+    extensionFormRef.current?.reset();
+    setExtensionOpen(false);
   }
 
   function submitCreate(event: FormEvent): void {
@@ -923,38 +931,47 @@ export function CharacterWorkshopWorkspace(
         </dialog>
       ) : null}
 
-      {activationCharacter ? (
-        <dialog open aria-modal="true" aria-labelledby="incomplete-character-title">
-          <div className="workshop-dialog">
-            <h2 id="incomplete-character-title">发布要求尚未满足</h2>
-            <p>“{activationCharacter.name}”仍有以下发布要求未满足。</p>
-            <div className="missing-state-list">
-              {activationCharacter.missingRequirements.map(requirement => (
-                <span key={requirement}>
-                  {requirement === 'default-state-action-missing'
-                    ? '默认状态缺少动作'
-                    : '默认表现不可播放'}
-                </span>
-              ))}
-            </div>
-            <div className="dialog-actions">
-              <button type="button" autoFocus onClick={() => setPendingActivation(null)}>
-                返回完善
-              </button>
-              <button
-                className="primary-command"
-                type="button"
-                onClick={() => {
-                  setPendingActivation(null);
-                  void state.activateCharacter(activationCharacter.id, true);
-                }}
-              >
-                仍然使用
-              </button>
-            </div>
+      <dialog
+        ref={activationDialogRef}
+        aria-modal="true"
+        aria-labelledby="activation-requirements-title"
+        onCancel={event => {
+          event.preventDefault();
+          closeActivationDialog();
+        }}
+        onKeyDown={event => cancelOnEscape(event, closeActivationDialog)}
+      >
+        <div className="workshop-dialog">
+          <h2 id="activation-requirements-title">发布要求尚未满足</h2>
+          <p>“{activationCharacter?.name ?? ''}”仍有以下发布要求未满足。</p>
+          <div className="missing-state-list">
+            {(activationCharacter?.missingRequirements ?? []).map(requirement => (
+              <span key={requirement}>
+                {requirement === 'default-state-action-missing'
+                  ? '默认状态缺少动作'
+                  : '默认表现不可播放'}
+              </span>
+            ))}
           </div>
-        </dialog>
-      ) : null}
+          <div className="dialog-actions">
+            <button type="button" autoFocus onClick={closeActivationDialog}>
+              返回完善
+            </button>
+            <button
+              className="primary-command"
+              type="button"
+              disabled={!activationCharacter}
+              onClick={() => {
+                if (!activationCharacter) return;
+                closeActivationDialog();
+                void state.activateCharacter(activationCharacter.id, true);
+              }}
+            >
+              仍然使用
+            </button>
+          </div>
+        </div>
+      </dialog>
 
       {pendingConfigurationDelete ? (
         <dialog
@@ -1025,70 +1042,84 @@ export function CharacterWorkshopWorkspace(
         </dialog>
       ) : null}
 
-      {extensionOpen ? (
-        <dialog open aria-modal="true" aria-labelledby="extension-state-title">
-          <form
-            className="workshop-dialog"
-            onSubmit={event => {
-              event.preventDefault();
-              state.addState({
-                name: extensionName,
-                kind: newStateKind,
-                semantic: newStateSemantic
-              });
-              setExtensionOpen(false);
-              setExtensionName('');
-            }}
-          >
-            <h2 id="extension-state-title">新建扩展状态</h2>
-            <label>
-              状态名称
-              <input
-                autoFocus
-                value={extensionName}
-                onChange={event => setExtensionName(event.currentTarget.value)}
-              />
-            </label>
-            <label>
-              状态类别
-              <select
-                value={newStateKind}
-                onChange={event => setNewStateKind(
-                  event.currentTarget.value as typeof newStateKind
-                )}
-              >
-                <option value="primary">主状态</option>
-                <option value="modifier">修饰状态</option>
-              </select>
-            </label>
-            <label>
-              标准语义
-              <select
-                value={newStateSemantic}
-                onChange={event => setNewStateSemantic(
-                  event.currentTarget.value as typeof newStateSemantic
-                )}
-              >
-                {STANDARD_CHARACTER_SEMANTICS.map(semantic => (
-                  <option key={semantic} value={semantic}>{semantic}</option>
-                ))}
-              </select>
-            </label>
-            <div className="dialog-actions">
-              <button type="button" onClick={() => setExtensionOpen(false)}>
-                取消
-              </button>
-              <button
-                className="primary-command"
-                type="submit"
-                disabled={!extensionName.trim()}
-              >
-                创建扩展状态
-              </button>
-            </div>
-          </form>
-        </dialog>
-      ) : null}
+      <dialog
+        ref={extensionDialogRef}
+        aria-modal="true"
+        aria-labelledby="extension-state-title"
+        onCancel={event => {
+          event.preventDefault();
+          closeExtensionDialog();
+        }}
+        onKeyDown={event => cancelOnEscape(event, closeExtensionDialog)}
+      >
+        <form
+          ref={extensionFormRef}
+          className="workshop-dialog"
+          onSubmit={event => {
+            event.preventDefault();
+            const formData = new FormData(event.currentTarget);
+            const name = String(formData.get('extensionName') ?? '').trim();
+            if (!name) {
+              extensionNameInputRef.current?.focus();
+              return;
+            }
+            const kind = String(formData.get('stateKind') ?? 'modifier');
+            const semantic = String(formData.get('stateSemantic') ?? 'idle');
+            const normalizedSemantic = STANDARD_CHARACTER_SEMANTICS.find(
+              candidate => candidate === semantic
+            ) ?? 'idle';
+            state.addState({
+              name,
+              kind: kind === 'primary' ? 'primary' : 'modifier',
+              semantic: normalizedSemantic
+            });
+            closeExtensionDialog();
+          }}
+        >
+          <h2 id="extension-state-title">新建扩展状态</h2>
+          <label>
+            状态名称
+            <input
+              ref={extensionNameInputRef}
+              autoFocus
+              name="extensionName"
+              defaultValue=""
+            />
+          </label>
+          <label>
+            状态类别
+            <select
+              name="stateKind"
+              defaultValue="modifier"
+            >
+              <option value="primary">主状态</option>
+              <option value="modifier">修饰状态</option>
+            </select>
+          </label>
+          <label>
+            标准语义
+            <select
+              name="stateSemantic"
+              defaultValue="idle"
+            >
+              {STANDARD_CHARACTER_SEMANTICS.map(semantic => (
+                <option key={semantic} value={semantic}>{semantic}</option>
+              ))}
+            </select>
+          </label>
+          <div className="dialog-actions">
+            <button type="button" onClick={closeExtensionDialog}>
+              取消
+            </button>
+            <button
+              className="primary-command"
+              type="submit"
+            >
+              创建扩展状态
+            </button>
+          </div>
+        </form>
+      </dialog>
     </main>
   );
 }

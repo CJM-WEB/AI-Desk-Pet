@@ -1021,7 +1021,10 @@
 }
 
 .character-workshop-shell dialog {
+  margin: 0;
   width: min(430px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   padding: 0;
   border: 1px solid #9caaa8;
   border-radius: 7px;

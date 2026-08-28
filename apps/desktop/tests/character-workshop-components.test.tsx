@@ -1,6 +1,10 @@
+// @vitest-environment jsdom
+
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { CharacterDraftV2 } from '@myself/character-runtime';
 import type { CharacterSummaryDto } from '../src/shared/character-ipc';
 import type { MyselfApi } from '../src/shared/myself-api';
@@ -22,6 +26,16 @@ type CharacterWorkshopViewApi = CharacterWorkshopApi & Pick<
   MyselfApi,
   'onCharacterWorkshopFlushRequested' | 'getCharacterRecoverySnapshot'
 >;
+
+const showModal = vi.fn(function (this: HTMLDialogElement): void {
+  this.open = true;
+  const focusTarget = this.querySelector<HTMLElement>('[autofocus], input, button, select, textarea');
+  focusTarget?.focus();
+});
+
+const closeDialog = vi.fn(function (this: HTMLDialogElement): void {
+  this.open = false;
+});
 
 const currentDraft: CharacterDraftV2 = {
   version: 2,
@@ -105,6 +119,21 @@ function apiDouble(): CharacterWorkshopViewApi {
   };
 }
 
+beforeEach(() => {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value: showModal },
+    close: { configurable: true, value: closeDialog }
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  showModal.mockClear();
+  closeDialog.mockClear();
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'close');
+});
+
 function CharacterWorkshopWorkspace(props: {
   state: CharacterWorkshopState;
   pendingDeleteCharacterId?: string | null;
@@ -112,6 +141,15 @@ function CharacterWorkshopWorkspace(props: {
   return (
     <CharacterWorkshopWorkspaceComponent
       {...props}
+      api={apiDouble()}
+    />
+  );
+}
+
+function renderWorkspace(state: CharacterWorkshopState): ReturnType<typeof render> {
+  return render(
+    <CharacterWorkshopWorkspaceComponent
+      state={state}
       api={apiDouble()}
     />
   );
@@ -177,16 +215,16 @@ function state(
 }
 
 async function workshopCss(): Promise<string> {
-  return readFile(new URL(
-    '../src/renderer/src/characters/workshop/character-workshop.css',
-    import.meta.url
+  return readFile(resolve(
+    process.cwd(),
+    'src/renderer/src/characters/workshop/character-workshop.css'
   ), 'utf8');
 }
 
 async function rendererStyles(): Promise<string> {
-  return readFile(new URL(
-    '../src/renderer/src/styles.css',
-    import.meta.url
+  return readFile(resolve(
+    process.cwd(),
+    'src/renderer/src/styles.css'
   ), 'utf8');
 }
 
@@ -737,5 +775,57 @@ describe('V2 结构化 Inspector', () => {
     expect(css).toMatch(/\.inspector-form\s+(?:input|select|textarea)[^\{]*\{[^}]*min-height:\s*44px;/su);
     expect(css).toMatch(/\.skin-row-commands\s*\{[^}]*gap:\s*8px;/su);
     expect(css).toMatch(/\.recovery-actions\s*\{[^}]*gap:\s*8px;/su);
+  });
+
+  test('扩展状态对话框使用原生 showModal/close，保留焦点进入与返回语义', async () => {
+    const rendered = renderWorkspace(state());
+    const openButton = screen.getByRole('button', { name: '添加扩展状态' });
+    openButton.focus();
+
+    fireEvent.click(openButton);
+
+    const dialog = await screen.findByRole('dialog', { name: '新建扩展状态' });
+    await waitFor(() => expect(showModal).toHaveBeenCalledOnce());
+    expect(showModal.mock.instances[0]).toBe(dialog);
+    await waitFor(() => expect(document.activeElement).toBe(
+      screen.getByLabelText('状态名称')
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+
+    await waitFor(() => expect(closeDialog).toHaveBeenCalledOnce());
+    await waitFor(() => expect(document.activeElement).toBe(openButton));
+
+    rendered.unmount();
+  });
+
+  test('发布要求对话框使用原生 showModal/close，并在卸载时清理打开状态', async () => {
+    const activateCharacter = vi.fn(async () => undefined);
+    const rendered = renderWorkspace(state({ activateCharacter }));
+    const activateButton = screen.getByRole('button', { name: '启用角色' });
+    activateButton.focus();
+
+    fireEvent.click(activateButton);
+
+    const dialog = await screen.findByRole('dialog', { name: '发布要求尚未满足' });
+    await waitFor(() => expect(showModal).toHaveBeenCalledOnce());
+    expect(showModal.mock.instances[0]).toBe(dialog);
+    await waitFor(() => expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: '返回完善' })
+    ));
+    expect(activateCharacter).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '返回完善' }));
+
+    await waitFor(() => expect(closeDialog).toHaveBeenCalledOnce());
+    await waitFor(() => expect(document.activeElement).toBe(activateButton));
+
+    fireEvent.click(activateButton);
+    await screen.findByRole('dialog', { name: '发布要求尚未满足' });
+    await waitFor(() => expect(showModal).toHaveBeenCalledTimes(2));
+
+    rendered.unmount();
+
+    await waitFor(() => expect(closeDialog).toHaveBeenCalledTimes(2));
   });
 });

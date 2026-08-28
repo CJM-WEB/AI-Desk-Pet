@@ -3502,10 +3502,16 @@ test.describe('真实角色工作室闭环', () => {
 
       // 保留旧闭环的非 idle 投影价值：通过正式 V2 UI 建立搬运状态及可播放动作。
       await workshop.getByRole('button', { name: '添加扩展状态' }).click();
-      await workshop.getByLabel('状态名称').fill('搬运状态');
+      const extensionNameInput = workshop.getByLabel('状态名称');
+      await expect(extensionNameInput).toBeFocused();
+      await extensionNameInput.fill('搬运状态');
       await workshop.getByLabel('状态类别').selectOption('modifier');
       await workshop.getByLabel('标准语义').selectOption('carry');
-      await workshop.getByLabel('状态名称').press('Enter');
+      const createExtensionButton = workshop.getByRole('button', {
+        name: '创建扩展状态'
+      });
+      await expect(createExtensionButton).toBeEnabled();
+      await createExtensionButton.click();
       const carryingState = workshop.getByRole('list', { name: '状态与动作列表' })
         .getByRole('listitem')
         .filter({ has: workshop.getByRole('button', { name: /^搬运状态/ }) });
