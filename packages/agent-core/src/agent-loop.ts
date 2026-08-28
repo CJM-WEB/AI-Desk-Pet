@@ -319,7 +319,12 @@ export class AgentLoop {
       try {
         prepared = context.toolRuntime.prepare(response.request);
       } catch {
-        if (correctionUsed) throw new Error('AGENT_INVALID_TOOL_REQUEST');
+        // 显式能力规划的第二次参数违约必须使用稳定协议错误，避免被泛化为未知工具失败。
+        if (correctionUsed) {
+          throw context.protocol === 'capability_planner'
+            ? capabilityPlanProtocolError()
+            : new Error('AGENT_INVALID_TOOL_REQUEST');
+        }
         if (!appendRejectedToolFeedback(messages, response.request, 'TOOL_ARGUMENTS_INVALID')) {
           throw new Error('AGENT_INVALID_TOOL_REQUEST');
         }

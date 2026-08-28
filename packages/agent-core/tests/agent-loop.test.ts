@@ -1094,6 +1094,59 @@ describe('AgentLoop', () => {
     expect(events).toContainEqual({ type: 'message', text: '已读取修正后的文件' });
   });
 
+  test('连续两次合法工具名但参数非法时只回灌修复一次', async () => {
+    const invalidRequest = (requestId: string): ModelResponse => ({
+      type: 'tool_request',
+      request: {
+        requestId,
+        toolName: 'builtin.files.read_text',
+        arguments: { relativePath: 42 }
+      }
+    });
+    const provider = new ScriptedProvider([
+      invalidRequest('invalid-arguments-1'),
+      invalidRequest('invalid-arguments-2'),
+      { type: 'text', text: '不应进入第三轮' }
+    ]);
+    let executionCount = 0;
+    const runtime: ToolRuntime = {
+      prepare(raw) {
+        const request = toolRequestSchema.parse(raw);
+        if (typeof request.arguments['relativePath'] !== 'string') {
+          throw new Error('TOOL_ARGUMENTS_INVALID');
+        }
+        throw new Error('测试只接受非法参数');
+      },
+      async executeRead() {
+        executionCount += 1;
+        return { ok: true };
+      }
+    };
+
+    await expect(collectEvents({
+      ...context(provider),
+      toolRuntime: runtime,
+      protocol: 'capability_planner'
+    }))
+      .rejects.toMatchObject({ code: 'CAPABILITY_PLAN_PROTOCOL_INVALID' });
+
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1]?.messages.slice(-2)).toEqual([{
+      role: 'assistant',
+      content: '',
+      toolRequest: {
+        requestId: 'invalid-arguments-1',
+        toolName: 'builtin.files.read_text',
+        arguments: { relativePath: 42 }
+      }
+    }, {
+      role: 'tool',
+      toolCallId: 'invalid-arguments-1',
+      content: '{"ok":false,"code":"TOOL_ARGUMENTS_INVALID"}'
+    }]);
+    expect(executionCount).toBe(0);
+  });
+
   test('第二次无效工具请求立即失败', async () => {
     const invalid = {
       type: 'tool_request' as const,
