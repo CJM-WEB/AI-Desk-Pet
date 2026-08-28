@@ -30,6 +30,7 @@ import {
 } from './file-task-public-errors';
 
 const MAX_USER_TEXT_LENGTH = 4_000;
+const MAX_PRIVATE_PLANNING_CONTEXT_LENGTH = 1_200;
 
 export interface AgentFileTools {
   executeRead(request: ToolRequest): Promise<unknown>;
@@ -61,6 +62,7 @@ export interface AgentFileTaskSubmission {
   text: string;
   visibleHistory: readonly ModelMessage[];
   planningHint?: FilePlanningHint;
+  privatePlanningContext?: string;
 }
 
 export type AgentFileTaskOutcome =
@@ -272,7 +274,9 @@ export class AgentService {
   private activeController: AbortController | null = null;
   private pendingSession: AgentSession | null = null;
   private activeSession: AgentSession | null = null;
+  private transactionSession: AgentSession | null = null;
   private activePlanningHint: FilePlanningHint | undefined;
+  private activePrivatePlanningContext: string | undefined;
   private taskOwner: symbol | null = null;
   private irreversibleExecution: {
     promise: Promise<void>;
@@ -300,10 +304,18 @@ export class AgentService {
   async submitFileTask(input: AgentFileTaskSubmission): Promise<AgentFileTaskOutcome> {
     const normalized = typeof input?.text === 'string' ? input.text.trim() : '';
     const visibleHistory = snapshotVisibleHistory(input?.visibleHistory);
+    const privatePlanningContext = input?.privatePlanningContext === undefined
+      ? undefined
+      : typeof input.privatePlanningContext === 'string'
+        && input.privatePlanningContext.length > 0
+        && input.privatePlanningContext.length <= MAX_PRIVATE_PLANNING_CONTEXT_LENGTH
+        ? input.privatePlanningContext
+        : null;
     if (
       normalized.length === 0
       || normalized.length > MAX_USER_TEXT_LENGTH
       || visibleHistory === null
+      || privatePlanningContext === null
     ) {
       const error = Object.assign(new Error('INPUT_INVALID'), { code: 'INPUT_INVALID' });
       this.emitFailure(error);
@@ -315,16 +327,24 @@ export class AgentService {
     const owner = Symbol('agent-file-task');
     this.taskOwner = owner;
     this.activePlanningHint = input.planningHint;
+    this.activePrivatePlanningContext = privatePlanningContext;
     const controller = new AbortController();
     this.activeController = controller;
     try {
-      const session = await this.createSession(controller.signal);
+      const session = this.transactionSession ?? await this.createSession(controller.signal);
+      this.transactionSession = session;
       this.activeSession = session;
       if (visibleHistory.length > 0) this.historyBoundSessions.add(session);
       return await this.forward(
         this.loop.run(
           normalized,
-          this.runContext(session, controller.signal, visibleHistory, input.planningHint)
+          this.runContext(
+            session,
+            controller.signal,
+            visibleHistory,
+            input.planningHint,
+            privatePlanningContext
+          )
         ),
         session,
         owner
@@ -338,6 +358,7 @@ export class AgentService {
         this.taskOwner = null;
         this.activeSession = null;
         this.activePlanningHint = undefined;
+        this.activePrivatePlanningContext = undefined;
       }
     }
   }
@@ -442,7 +463,13 @@ export class AgentService {
         this.loop.resume(
           execution.continuationToken,
           result,
-          this.runContext(session, controller.signal, [], this.activePlanningHint)
+          this.runContext(
+            session,
+            controller.signal,
+            [],
+            this.activePlanningHint,
+            this.activePrivatePlanningContext
+          )
         ),
         session,
         owner
@@ -474,6 +501,7 @@ export class AgentService {
         this.taskOwner = null;
         this.activeSession = null;
         this.activePlanningHint = undefined;
+        this.activePrivatePlanningContext = undefined;
       }
     }
   }
@@ -493,6 +521,7 @@ export class AgentService {
       this.publish({ type: 'phase', phase: 'cancelled' }, owner);
       if (this.taskOwner === owner && this.pendingSession === null) this.taskOwner = null;
       if (this.taskOwner === null) this.activePlanningHint = undefined;
+      if (this.taskOwner === null) this.activePrivatePlanningContext = undefined;
     } catch (error) {
       this.emitFailure(error);
       throw error;
@@ -504,6 +533,7 @@ export class AgentService {
     this.pendingSession = null;
     this.activeSession = null;
     this.activePlanningHint = undefined;
+    this.activePrivatePlanningContext = undefined;
   }
 
   /**
@@ -513,10 +543,12 @@ export class AgentService {
     this.taskOwner = null;
     const irreversible = this.irreversibleExecution?.promise ?? null;
     const controller = this.activeController;
-    const session = this.activeSession;
+    const session = this.transactionSession ?? this.activeSession;
     this.pendingSession = null;
     this.activeSession = null;
+    this.transactionSession = null;
     this.activePlanningHint = undefined;
+    this.activePrivatePlanningContext = undefined;
     const failures: unknown[] = [];
     for (const cleanup of [
       () => this.pending.clear('task_cancelled'),
@@ -537,12 +569,14 @@ export class AgentService {
   /** 应用退出或桌宠窗口关闭时撤销尚未提交的文件能力。 */
   async close(): Promise<void> {
     this.taskOwner = null;
-    const session = this.activeSession;
+    const session = this.transactionSession ?? this.activeSession;
     const irreversible = this.irreversibleExecution?.promise ?? null;
     this.pending.clear('application_exit');
     this.pendingSession = null;
     this.activeSession = null;
+    this.transactionSession = null;
     this.activePlanningHint = undefined;
+    this.activePrivatePlanningContext = undefined;
     this.activeController?.abort();
     if (irreversible) await irreversible;
     if (session?.powershell) await session.powershell.close();
@@ -566,7 +600,22 @@ export class AgentService {
     try {
       if (execution.verifiedAction.category === 'powershell') {
         this.assertTaskOwned(owner, signal);
-        return await session.powershell.execute(execution.verifiedAction.action, signal);
+        try {
+          const result = await session.powershell.execute(execution.verifiedAction.action, signal);
+          this.publishTrustedToolResult({
+            toolName: execution.resultToolName,
+            ok: result.ok,
+            relativePaths: []
+          });
+          return result;
+        } catch (error) {
+          this.publishTrustedToolResult({
+            toolName: execution.resultToolName,
+            ok: false,
+            relativePaths: []
+          });
+          throw error;
+        }
       }
       this.assertTaskOwned(owner, signal);
       this.publishFileFeedback({ type: 'character_carrying', carrying: true }, owner);
@@ -600,7 +649,8 @@ export class AgentService {
     session: AgentSession,
     signal: AbortSignal,
     visibleHistory: readonly ModelMessage[] = [],
-    planningHint?: FilePlanningHint
+    planningHint?: FilePlanningHint,
+    privatePlanningContext?: string
   ): RunContext {
     const fileTools = session.tools.filter(tool => tool.function.name.startsWith('builtin.files.'));
     const planningTools = planningHint?.missingField === 'target_path'
@@ -612,7 +662,16 @@ export class AgentService {
     const tools = session.initialCapability === 'file' ? fileTools : session.tools;
     return {
       // 文件系统提示始终在前；获准历史只作为本轮模型输入，不回写 Agent 私有轨迹。
-      messages: [...session.messages, ...visibleHistory],
+      messages: [
+        ...session.messages,
+        ...(privatePlanningContext === undefined
+          ? []
+          : [{
+              role: 'system' as const,
+              content: `任务内私有规划上下文：${privatePlanningContext}`
+            }]),
+        ...visibleHistory
+      ],
       provider: this.historyBoundSessions.has(session)
         ? providerWithOneRetry(session.provider)
         : providerWithFallback(session.provider, session.fallbackProviders ?? []),

@@ -180,7 +180,8 @@ function createHarness(
   createSessionOverride?: (session: AgentSession) => Promise<AgentSession>,
   emitTrustedToolResult?: import('../src/main/agent/agent-service').AgentServiceOptions[
     'emitTrustedToolResult'
-  ]
+  ],
+  pendingNow?: () => number
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -210,6 +211,7 @@ function createHarness(
     messages: []
   };
   const pending = new PendingActionStore({
+    ...(pendingNow === undefined ? {} : { now: pendingNow }),
     onDiscard: execution => loop.discard(execution.continuationToken)
   });
   if (!legacyFileDisclosureAllowed) session.fileDisclosureAllowed = false;
@@ -305,7 +307,10 @@ function powerShellResult(ok: boolean) {
 
 function createPowerShellHarness(
   provider: ModelProvider,
-  powershell: Pick<PowerShellTool, 'preview' | 'execute'> & Partial<Pick<PowerShellTool, 'close'>>
+  powershell: Pick<PowerShellTool, 'preview' | 'execute'> & Partial<Pick<PowerShellTool, 'close'>>,
+  emitTrustedToolResult?: import('../src/main/agent/agent-service').AgentServiceOptions[
+    'emitTrustedToolResult'
+  ]
 ) {
   const events: TaskEvent[] = [];
   const loop = new AgentLoop();
@@ -339,12 +344,83 @@ function createPowerShellHarness(
     pending,
     createSession: async () => session,
     emit: event => events.push(event),
+    ...(emitTrustedToolResult === undefined ? {} : { emitTrustedToolResult }),
     createConversationId: () => 'conversation-1'
   });
   return { events, provider, service };
 }
 
 describe('AgentService', () => {
+  test('同一 AgentService 的事务后续复用同一 AgentSession', async () => {
+    const provider = new ScriptedProvider([
+      readResponse(),
+      { type: 'text', text: '首次读取完成。' },
+      readResponse(),
+      { type: 'text', text: '后续读取完成。' }
+    ]);
+    const harness = createHarness(provider);
+
+    await harness.service.submitFileTask({ text: '读取 test.txt', visibleHistory: [] });
+    await harness.service.submitFileTask({ text: '继续读取该文件', visibleHistory: [] });
+
+    expect(harness.createSession).toHaveBeenCalledOnce();
+  });
+
+  test('4000 字符用户原文与 1200 字符私有规划上下文使用独立预算和消息', async () => {
+    const provider = new ScriptedProvider([
+      readResponse(),
+      { type: 'text', text: '读取完成。' }
+    ]);
+    const harness = createHarness(provider);
+    const text = 'a'.repeat(4_000);
+    const privatePlanningContext = 'p'.repeat(1_200);
+
+    await harness.service.submitFileTask({
+      text,
+      visibleHistory: [],
+      privatePlanningContext
+    });
+
+    expect(provider.requests[0]?.messages.at(-1)).toEqual({ role: 'user', content: text });
+    expect(provider.requests[0]?.messages).toContainEqual({
+      role: 'system',
+      content: `任务内私有规划上下文：${privatePlanningContext}`
+    });
+  });
+
+  test.each([
+    ['成功', true],
+    ['失败', false]
+  ] as const)('PowerShell %s只发布脱敏 Main 私有结果', async (_label, ok) => {
+    const trustedResults: import('../src/main/agent/agent-service').AgentTrustedToolResult[] = [];
+    const provider = new ScriptedProvider([
+      shellRequest(),
+      { type: 'text', text: ok ? '命令完成。' : '命令失败。' }
+    ]);
+    const action = powerShellAction();
+    const { events, service } = createPowerShellHarness(provider, {
+      preview: vi.fn(() => action),
+      execute: vi.fn(async () => ({
+        ...powerShellResult(ok),
+        stdout: '不得进入私有结果的输出',
+        stderr: ok ? '' : '不得进入私有结果的错误输出'
+      }))
+    }, result => trustedResults.push(result));
+
+    await service.submitFileTask({ text: '运行私有命令', visibleHistory: [] });
+    const pending = events.find(event => event.type === 'pending_action');
+    if (!pending || pending.type !== 'pending_action') throw new Error('缺少 PowerShell 确认');
+    await service.confirm(pending.action.actionId);
+
+    expect(trustedResults).toEqual([{
+      toolName: 'powershell',
+      ok,
+      relativePaths: []
+    }]);
+    expect(JSON.stringify(trustedResults)).not.toContain('私有命令');
+    expect(JSON.stringify(trustedResults)).not.toContain('不得进入私有结果');
+  });
+
   test('只读真实成功只向 Main 私有端口发布一次脱敏相对路径结果', async () => {
     const trustedResults: import('../src/main/agent/agent-service').AgentTrustedToolResult[] = [];
     const provider = new ScriptedProvider([
@@ -441,6 +517,31 @@ describe('AgentService', () => {
 
     await expect(cancelled.service.confirm(cancelledPending.action.actionId))
       .rejects.toThrow('ACTION_EXPIRED');
+    expect(trustedResults.filter(result => result.ok)).toEqual([]);
+  });
+
+  test('确认卡真实 TTL 到期后拒绝执行且不发布私有成功结果', async () => {
+    let now = 0;
+    const trustedResults: import('../src/main/agent/agent-service').AgentTrustedToolResult[] = [];
+    const harness = createHarness(
+      new ScriptedProvider([writeResponse()]),
+      {},
+      true,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      result => trustedResults.push(result),
+      () => now
+    );
+    await harness.service.submitFileTask({ text: '创建 expired.txt', visibleHistory: [] });
+    const pending = harness.events.find(event => event.type === 'pending_action');
+    if (!pending || pending.type !== 'pending_action') throw new Error('缺少待过期确认卡');
+
+    now = 120_000;
+    await expect(harness.service.confirm(pending.action.actionId)).rejects.toThrow('ACTION_EXPIRED');
+
+    expect(harness.fileTools.executeWrite).not.toHaveBeenCalled();
     expect(trustedResults.filter(result => result.ok)).toEqual([]);
   });
   test('旧文件披露值为 false 时创建文件确认后的续跑仍公告完整文件工具', async () => {

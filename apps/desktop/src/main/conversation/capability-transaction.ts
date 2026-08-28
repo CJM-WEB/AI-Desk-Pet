@@ -2,6 +2,9 @@ import { isRootRelativePathInput } from '@myself/file-tools';
 import type { TaskEvent } from '@myself/shared-types';
 import type { AgentTrustedToolResult } from '../agent/agent-service';
 
+const 最大可信引用数 = 16;
+const 最大可信转录数 = 32;
+
 export type CapabilityTransactionPhase =
   | 'planning'
   | 'awaiting_clarification'
@@ -34,6 +37,7 @@ export type CapabilityTransactionInvalidation =
 
 export type CapabilityTransactionSnapshot = CapabilityTransactionIdentity & Readonly<{
   phase: CapabilityTransactionPhase;
+  warningCodes: readonly string[];
   toolTranscript: readonly Readonly<{
     toolName: string;
     ok: boolean;
@@ -50,7 +54,8 @@ type MutableTransaction = CapabilityTransactionIdentity & {
     resultCode: 'OK' | 'FAILED';
   }>;
   references: TrustedFileReference[];
-  hasSuccessfulToolResult: boolean;
+  warningCodes: string[];
+  lastTrustedResultOk: boolean | null;
 };
 
 /** Main 私有短生命周期事务；公开模型文字从不产生本地文件事实。 */
@@ -63,7 +68,8 @@ export class CapabilityTransactionStore {
       phase: 'planning',
       toolTranscript: [],
       references: [],
-      hasSuccessfulToolResult: false
+      warningCodes: [],
+      lastTrustedResultOk: null
     };
   }
 
@@ -82,6 +88,15 @@ export class CapabilityTransactionStore {
       current.phase = 'awaiting_confirmation';
       return;
     }
+    if (event.type === 'error') {
+      if (isSummaryWarning(event.code) && current.lastTrustedResultOk === true) {
+        if (!current.warningCodes.includes(event.code)) current.warningCodes.push(event.code);
+        current.phase = 'completed';
+      } else {
+        current.phase = 'failed';
+      }
+      return;
+    }
     if (event.type !== 'phase') return;
     switch (event.phase) {
       case 'listening':
@@ -97,11 +112,17 @@ export class CapabilityTransactionStore {
         current.phase = 'running';
         return;
       case 'success':
-        if (current.hasSuccessfulToolResult && current.phase !== 'failed') {
+        if (current.lastTrustedResultOk === true && current.phase !== 'failed') {
           current.phase = 'completed';
         }
         return;
       case 'error':
+        if (current.warningCodes.length > 0 && current.lastTrustedResultOk === true) {
+          current.phase = 'completed';
+          return;
+        }
+        current.phase = 'failed';
+        return;
       case 'cancelled':
         current.phase = 'failed';
         return;
@@ -138,6 +159,7 @@ export class CapabilityTransactionStore {
       providerId: current.providerId,
       authorizationRootId: current.authorizationRootId,
       phase: current.phase,
+      warningCodes: Object.freeze([...current.warningCodes]),
       toolTranscript: Object.freeze(current.toolTranscript.map(item => Object.freeze({ ...item }))),
       references: Object.freeze(current.references.map(item => Object.freeze({ ...item })))
     });
@@ -156,19 +178,28 @@ export class CapabilityTransactionStore {
       ok: result.ok,
       resultCode: result.ok ? 'OK' : 'FAILED'
     });
+    if (current.toolTranscript.length > 最大可信转录数) current.toolTranscript.shift();
     if (!result.ok) {
+      current.lastTrustedResultOk = false;
       current.phase = 'failed';
       return;
     }
-    current.hasSuccessfulToolResult = true;
+    current.lastTrustedResultOk = true;
+    current.warningCodes = [];
     current.phase = 'running';
     for (const reference of referencesForResult(result)) {
+      if (current.references.length >= 最大可信引用数) break;
       if (!current.references.some(existing => existing.role === reference.role
         && existing.relativePath === reference.relativePath)) {
         current.references.push(reference);
       }
     }
   }
+}
+
+function isSummaryWarning(code: string): boolean {
+  return code === 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE'
+    || code === 'PROVIDER_SUMMARY_FAILED_AFTER_CAPABILITY_RESULT';
 }
 
 function referencesForResult(result: AgentTrustedToolResult): readonly TrustedFileReference[] {

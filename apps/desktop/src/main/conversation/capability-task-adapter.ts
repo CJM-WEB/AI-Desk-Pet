@@ -50,6 +50,7 @@ type ActiveSubmission = {
 type OwnedAgent = {
   service: CapabilityTaskAgentPort;
   owner: symbol;
+  generation: string;
   target: PreparedCapabilityTarget;
 };
 
@@ -90,15 +91,24 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
   async prepareTarget(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
+    continuationTarget?: PreparedCapabilityTarget;
   }): Promise<PreparedCapabilityTarget> {
-    const target = await this.prepareSnapshot(input);
+    const target = await this.prepareSnapshotForSubmission(input);
     if (!this.agent) await this.activateTarget({ ...input, target });
-    return target;
+    return this.agent?.target ?? target;
   }
 
   async prepareSnapshot(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
+  }): Promise<PreparedCapabilityTarget> {
+    return this.prepareSnapshotForSubmission(input);
+  }
+
+  private async prepareSnapshotForSubmission(input: {
+    generation: string;
+    taskKind: CapabilityTaskKind;
+    continuationTarget?: PreparedCapabilityTarget;
   }): Promise<PreparedCapabilityTarget> {
     this.assertAvailable();
     if (this.active || this.inFlightOwner) throw adapterError('TASK_ALREADY_ACTIVE');
@@ -120,6 +130,21 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
         this.assertOwned(owner);
       }
       const previousAgent = this.agent;
+      if (previousAgent && input.continuationTarget !== undefined) {
+        const authorizedRoot = await this.options.getAuthorizedRootPath(input.taskKind);
+        this.assertOwned(owner);
+        if (typeof authorizedRoot !== 'string' || authorizedRoot.trim().length === 0) {
+          throw adapterError('FILE_AUTHORIZATION_REQUIRED');
+        }
+        const target = this.options.createTargetSnapshot(input);
+        this.assertOwned(owner);
+        if (previousAgent.generation === input.generation
+          && sameTarget(previousAgent.target, input.continuationTarget)
+          && sameTarget(previousAgent.target, target)) {
+          this.active.target = previousAgent.target;
+          return previousAgent.target;
+        }
+      }
       if (previousAgent) {
         this.agent = null;
         const cleanup = this.resetOwnedAgent(previousAgent);
@@ -175,6 +200,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
     generation: string;
     taskKind: CapabilityTaskKind;
     planningHint?: FilePlanningHint;
+    privatePlanningContext?: string;
   }): Promise<AgentFileTaskOutcome> {
     this.assertAvailable();
     const prepared = this.active;
@@ -207,7 +233,10 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       const submission: AgentFileTaskSubmission = {
         text: input.text,
         visibleHistory: input.visibleHistory,
-        ...(input.planningHint === undefined ? {} : { planningHint: input.planningHint })
+        ...(input.planningHint === undefined ? {} : { planningHint: input.planningHint }),
+        ...(input.privatePlanningContext === undefined
+          ? {}
+          : { privatePlanningContext: input.privatePlanningContext })
       };
       return await ownedAgent.service.submitFileTask(submission);
     } finally {
@@ -352,7 +381,7 @@ export class CapabilityTaskAdapter implements ConversationCapabilityTaskPort {
       providerName: prepared.providerName,
       capabilityRevision: prepared.capabilityRevision
     });
-    const owned = { service, owner, target };
+    const owned = { service, owner, generation, target };
     this.agent = owned;
     return owned;
   }

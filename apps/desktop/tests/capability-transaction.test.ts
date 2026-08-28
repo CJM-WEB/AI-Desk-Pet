@@ -82,6 +82,51 @@ describe('CapabilityTransactionStore', () => {
     expect(store.snapshot()?.phase).toBe('failed');
   });
 
+  test('历史读取成功不能把后续编辑失败放大为整个任务成功', () => {
+    const store = new CapabilityTransactionStore();
+    store.begin(identity);
+    store.apply({
+      toolName: 'builtin.files.read_file',
+      ok: true,
+      relativePaths: ['test.txt']
+    });
+
+    store.apply({
+      type: 'error',
+      code: 'ENTRY_CHANGED',
+      message: '目标已变化。'
+    });
+    store.apply({ type: 'phase', phase: 'success' });
+
+    expect(store.snapshot()).toMatchObject({
+      phase: 'failed',
+      references: [{ role: 'read', relativePath: 'test.txt' }]
+    });
+  });
+
+  test('真实写提交后的模型总结失败保持 completed 并记录稳定 warning', () => {
+    const store = new CapabilityTransactionStore();
+    store.begin(identity);
+    store.apply({
+      toolName: 'builtin.files.create_file',
+      ok: true,
+      relativePaths: ['test.txt']
+    });
+
+    store.apply({
+      type: 'error',
+      code: 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE',
+      message: '本地文件操作已成功，但模型总结失败。'
+    });
+    store.apply({ type: 'phase', phase: 'error' });
+
+    expect(store.snapshot()).toMatchObject({
+      phase: 'completed',
+      warningCodes: ['PROVIDER_SUMMARY_FAILED_AFTER_WRITE'],
+      references: [{ role: 'created', relativePath: 'test.txt' }]
+    });
+  });
+
   test('等待确认时继续只分类为续接并保持原确认状态', () => {
     const store = new CapabilityTransactionStore();
     store.begin(identity);
@@ -138,5 +183,24 @@ describe('CapabilityTransactionStore', () => {
     store.invalidate(reason);
 
     expect(store.snapshot()).toBeNull();
+  });
+
+  test('可信引用最多 16 条且 transcript 只保留最近 32 条', () => {
+    const store = new CapabilityTransactionStore();
+    store.begin(identity);
+
+    for (let index = 0; index < 40; index += 1) {
+      store.apply({
+        toolName: `read_file_${index}`,
+        ok: true,
+        relativePaths: [`docs/file-${index}.txt`]
+      });
+    }
+
+    const snapshot = store.snapshot();
+    expect(snapshot?.references).toHaveLength(16);
+    expect(snapshot?.toolTranscript).toHaveLength(32);
+    expect(snapshot?.toolTranscript[0]?.toolName).toBe('read_file_8');
+    expect(snapshot?.toolTranscript.at(-1)?.toolName).toBe('read_file_39');
   });
 });

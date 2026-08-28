@@ -28,6 +28,7 @@ import {
 
 const 最大用户消息字符数 = 4_000;
 const 任务级授权有效期毫秒 = 2 * 60 * 1_000;
+const 最大私有规划上下文字符数 = 1_200;
 
 export interface ChatTurnFactory {
   create(signal: AbortSignal): Promise<{
@@ -58,6 +59,7 @@ export interface ConversationCapabilityTaskPort {
   prepareTarget(input: {
     generation: string;
     taskKind: CapabilityTaskKind;
+    continuationTarget?: PreparedCapabilityTarget;
   }): Promise<PreparedCapabilityTarget>;
   prepareSnapshot(input: {
     generation: string;
@@ -74,6 +76,7 @@ export interface ConversationCapabilityTaskPort {
     generation: string;
     taskKind: CapabilityTaskKind;
     planningHint?: FilePlanningHint;
+    privatePlanningContext?: string;
   }): Promise<AgentFileTaskOutcome>;
   cancelActive(): void;
   resolveAction(actionId: string, decision: 'confirm' | 'cancel'): Promise<void>;
@@ -111,6 +114,7 @@ interface TurnContext {
   planningHint?: FilePlanningHint;
   continuationTarget?: PreparedCapabilityTarget;
   transactionContinuation?: boolean;
+  privatePlanningContext?: string;
   modelEscalation?: 'allowed' | 'blocked';
 }
 
@@ -201,6 +205,17 @@ export class ConversationCoordinator {
       throw normalizedError;
     }
 
+    const existingTransaction = this.capabilityTransaction.snapshot();
+    if (existingTransaction?.generation === this.generation) {
+      const followUp = this.capabilityTransaction.classifyFollowUp(normalized);
+      const earlyIntent = capabilityIntentRouter.route(normalized);
+      if (followUp === 'new_task'
+        && (earlyIntent.kind === 'file_task' || earlyIntent.kind === 'powershell_task')) {
+        this.capabilityTransaction.invalidate('new_task');
+        this.capabilityTransactionTarget = null;
+      }
+    }
+
     const context: TurnContext = {
       text: normalized,
       capabilityText: normalized,
@@ -240,10 +255,7 @@ export class ConversationCoordinator {
         && transactionSnapshot.kind === 'file') {
         context.transactionContinuation = true;
         context.continuationTarget = this.capabilityTransactionTarget;
-        context.capabilityText = appendTrustedFileContext(
-          context.capabilityText,
-          transactionSnapshot
-        );
+        context.privatePlanningContext = serializePrivatePlanningContext(transactionSnapshot);
       }
 
       const continuation = this.pendingFileContinuation;
@@ -754,7 +766,10 @@ export class ConversationCoordinator {
     try {
       target = await this.options.capabilityTasks.prepareTarget({
         generation: context.generation,
-        taskKind
+        taskKind,
+        ...(context.continuationTarget === undefined
+          ? {}
+          : { continuationTarget: context.continuationTarget })
       });
     } catch (error) {
       throw publicFileError(error);
@@ -913,7 +928,10 @@ export class ConversationCoordinator {
         visibleHistory,
         generation: context.generation,
         taskKind,
-        ...(context.planningHint === undefined ? {} : { planningHint: context.planningHint })
+        ...(context.planningHint === undefined ? {} : { planningHint: context.planningHint }),
+        ...(context.privatePlanningContext === undefined
+          ? {}
+          : { privatePlanningContext: context.privatePlanningContext })
       };
       const outcome = await this.options.capabilityTasks.submit(submission);
       if (
@@ -1024,9 +1042,14 @@ export class ConversationCoordinator {
   }
 
   private finishTransactionStatusFollowUp(transaction: CapabilityTransactionSnapshot): void {
-    const text = transaction.phase === 'completed'
-      ? '上一个本地任务已成功完成。'
-      : '上一个本地任务未成功完成。';
+    const hasSummaryWarning = transaction.warningCodes.some(code =>
+      code === 'PROVIDER_SUMMARY_FAILED_AFTER_WRITE'
+      || code === 'PROVIDER_SUMMARY_FAILED_AFTER_CAPABILITY_RESULT');
+    const text = transaction.phase !== 'completed'
+      ? '上一个本地任务未成功完成。'
+      : hasSummaryWarning
+        ? '上一个本地操作已成功，但模型总结失败。'
+        : '上一个本地任务已成功完成。';
     this.options.emit({ type: 'message', role: 'assistant', text });
     this.state = { kind: 'idle' };
     this.options.emit({ type: 'phase', phase: 'success' });
@@ -1061,11 +1084,24 @@ export class ConversationCoordinator {
   }
 }
 
-function appendTrustedFileContext(
-  text: string,
+function serializePrivatePlanningContext(
   transaction: CapabilityTransactionSnapshot
 ): string {
-  return `${text}\n任务内可信文件引用（仅用于本轮规划）：${JSON.stringify(transaction.references)}`;
+  const value: {
+    references: CapabilityTransactionSnapshot['references'][number][];
+    toolTranscript: CapabilityTransactionSnapshot['toolTranscript'][number][];
+  } = { references: [], toolTranscript: [] };
+  for (const reference of transaction.references) {
+    const candidate = { ...value, references: [...value.references, reference] };
+    if (JSON.stringify(candidate).length > 最大私有规划上下文字符数) break;
+    value.references.push(reference);
+  }
+  for (const item of [...transaction.toolTranscript].reverse()) {
+    const candidate = { ...value, toolTranscript: [item, ...value.toolTranscript] };
+    if (JSON.stringify(candidate).length > 最大私有规划上下文字符数) break;
+    value.toolTranscript.unshift(item);
+  }
+  return JSON.stringify(value);
 }
 
 function normalizeUserText(input: unknown): string {

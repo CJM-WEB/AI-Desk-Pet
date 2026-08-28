@@ -63,7 +63,11 @@ type 断言类型<Condition extends true> = Condition;
 /** 编译期契约：准备与提交参数必须精确携带任务类型。 */
 type 准备参数契约 = 断言类型<类型完全一致<
   Parameters<CapabilityTaskAdapter['prepareTarget']>[0],
-  { generation: string; taskKind: 'file' | 'powershell' }
+  {
+    generation: string;
+    taskKind: 'file' | 'powershell';
+    continuationTarget?: import('../src/main/conversation/conversation-coordinator').PreparedCapabilityTarget;
+  }
 >>;
 type 提交参数契约 = 断言类型<类型完全一致<
   Parameters<CapabilityTaskAdapter['submit']>[0],
@@ -73,6 +77,7 @@ type 提交参数契约 = 断言类型<类型完全一致<
     generation: string;
     taskKind: 'file' | 'powershell';
     planningHint?: import('@myself/agent-core').FilePlanningHint;
+    privatePlanningContext?: string;
   }
 >>;
 
@@ -128,6 +133,40 @@ async function submitPrepared(
 }
 
 describe('CapabilityTaskAdapter', () => {
+  test('同一有效事务续接复用 PreparedTarget、OwnedAgent 与同一 service', async () => {
+    const agent = createAgentDouble();
+    const createAgentTarget = vi.fn(() => preparedAgent(agent));
+    const adapter = createAdapter({
+      getAuthorizedRootPath: vi.fn(async () => 'D:\\authorized'),
+      createAgentTarget
+    });
+
+    const target = await adapter.prepareTarget({ generation: 'g1', taskKind: 'file' });
+    await adapter.submit({
+      text: '读取 test.txt',
+      visibleHistory: [],
+      generation: 'g1',
+      taskKind: 'file'
+    });
+    const continuedTarget = await adapter.prepareTarget({
+      generation: 'g1',
+      taskKind: 'file',
+      continuationTarget: target
+    });
+    await adapter.submit({
+      text: '修改刚读取的文件',
+      visibleHistory: [],
+      generation: 'g1',
+      taskKind: 'file'
+    });
+
+    expect(continuedTarget).toBe(target);
+    expect(createAgentTarget).toHaveBeenCalledOnce();
+    expect(agent.submitFileTask).toHaveBeenCalledTimes(2);
+    expect(agent.resetForNewConversation).not.toHaveBeenCalled();
+    expect(agent.close).not.toHaveBeenCalled();
+  });
+
   test('私有工具结果只在当前 owner 内绑定 generation 与目标转发并丢弃迟到结果', async () => {
     let emitTrustedToolResult!: (result: AgentTrustedToolResult) => void;
     const agent = createAgentDouble(async () => {

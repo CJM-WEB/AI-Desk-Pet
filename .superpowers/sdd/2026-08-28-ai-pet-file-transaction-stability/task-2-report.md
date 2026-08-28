@@ -92,3 +92,45 @@
 
 - 全套 Desktop E2E 的角色工作室用例在并发负载下发生一次 10 秒提示等待超时，隔离重跑通过；这是与本任务无文件重叠的时序波动，本次未修改角色代码。其余 Task 2 定向、Desktop 全套单测、安全、集成与类型检查均稳定通过。
 - 未执行人工 Windows UI 验收；本任务新增链路没有 Renderer 变更，自动化证据覆盖 Main 事务、真实工具集成和既有 Electron E2E。
+
+## Fix round 1/5（2026-08-28）
+
+### RED 证据
+
+1. 事务终态定向测试先出现 4 项预期失败：读取成功后编辑失败被公开 `phase:success` 误放大为 completed；真实写入成功后的 `PROVIDER_SUMMARY_FAILED_AFTER_WRITE` 被 `phase:error` 改写为 failed；PowerShell 成功与失败均没有 Main 私有结果。
+2. Adapter 续接测试先观察到 `createAgentTarget` 被调用 2 次；AgentService 续接测试先观察到 `createSession` 被调用 2 次，证明原实现未复用同一事务 Agent/Session。
+3. 预算测试先出现 4 项预期失败：去重后引用保留 40 条而非 16 条；两个 Coordinator 用例仍把私有上下文拼入 `submit.text`；AgentService 未注入独立私有 system message。
+4. 早期失效测试先观察到：新任务的行为预处理抛错后，旧事务仍能回答成功终态。
+5. “真实写入成功但模型总结失败”的状态询问测试先失败：实现只回答“上一个本地任务已成功完成”，未携带 summary warning。
+6. 真实 TTL 用例使用可控 `now`、不先 cancel，在 120000 ms 到期后确认无执行且无私有成功结果。此用例在基线已通过，属于对现有 TTL 行为的真实覆盖补强，没有伪造 RED。
+
+### GREEN 与修改
+
+- 事务终态改为结合“最后一条可信工具结果”与公开错误类别：后续失败不会被历史成功放大；真实写提交后的模型总结失败保留 completed，并记录去重后的 warning code。
+- PowerShell 真实执行成功或失败各发布一次 Main 私有结果；载荷只有 `toolName`/`ok`/`relativePaths: []`，不包含命令、输出或绝对路径。
+- 同一有效事务续接时，Adapter 复核授权根和新目标快照；owner、generation、旧目标与新快照均一致时，复用原 `PreparedTarget`、OwnedAgent 和 AgentService。AgentService 在事务生命期内复用原 AgentSession，reset/close 时统一释放。
+- 可信引用去重后最多 16 条，转录保留最新 32 条，私有规划上下文序列化不超过 1200 字符。新增独立 `privatePlanningContext?: string`，以 Main 私有 system message 输入 Agent；用户原文仍独立享有 4000 字符预算，`submit.text` 不再拼入私有内容。
+- 在输入规范化与 follow-up/new-task 分类后、任何行为预处理前清除明确新文件/PowerShell 任务的旧事务；因此预处理失败也不会保留旧终态。
+- 终态询问对 summary warning 使用宿主固定文案：“上一个本地操作已成功，但模型总结失败。”
+- 本轮未修改 Provider Adapter 格式错误分类，未新增共享 `TaskEvent`，未把私有事实暴露到 Preload 或 Renderer。
+
+### 验证结果
+
+- Task 2 六文件定向：6 个文件、478 项通过。
+- `pnpm.cmd --filter @myself/desktop test`：107 个文件、2763 项通过。
+- `pnpm.cmd test:security`：1 个文件、28 项通过。
+- `pnpm.cmd test:integration`：4 个文件、87 项通过。
+- `pnpm.cmd --filter @myself/desktop typecheck`：通过。
+- `pnpm.cmd typecheck`：10 个 workspace 的可用 typecheck 全部通过。
+- `git diff --check`：通过；只有仓库行尾转换提示，无空白错误。
+
+### 自审与疑虑
+
+- 逐项对照 5 条 Important 和 TTL Minor，每项均有定向测试；实现只修改 Main 内既有 Agent/Adapter/Coordinator/事务 seam。
+- PowerShell 私有载荷测试明确断言不包含命令和输出；独立规划上下文测试断言不进入 `submit.text`。
+- 未执行新的人工 Windows UI 验收；本轮仍只改 Main 链路，无 Renderer 改动。
+- 本轮没有剩余的已知功能阻塞。
+
+### 提交
+
+提交消息：`fix: 稳定会话级能力事务`。最终提交哈希以任务返回为准。
