@@ -21,6 +21,7 @@
 
 **文件：**
 - 修改：`apps/desktop/src/main/characters/character-motion-service.ts`
+- 修改：`apps/desktop/src/main/index.ts`
 - 修改：`apps/desktop/tests/pet-geometry-coordinator.test.ts`
 - 修改：`apps/desktop/tests/character-motion-controller.test.ts`
 
@@ -32,11 +33,11 @@ type NativePositionResult =
   | { ok: false; code: 'CHARACTER_POSITION_INVALID' };
 ```
 
-现有公开 `CharacterMotionService.tick()` 返回契约保持不变；错误通过现有稳定错误报告端口投影，timer guard 只报告一次并停止自身。
+现有公开 `CharacterMotionService.tick()` 返回契约保持不变；`startCharacterMotionTimers` 新增可选 `reportError(code: 'CHARACTER_MOTION_TIMER_FAILED'): void`，Main 以固定中文上下文和稳定错误码接线，timer guard 只报告一次并停止自身。
 
 - [ ] **步骤 1：写负零与坐标校验失败测试**
 
-添加字面输入：`{x: -0.1, y: 2}` 与 `{x: 2, y: -0.1}`，断言 fake `setPosition` 收到的 0 满足 `Object.is(value, 0)`；`-1/-200` 原样保留；NaN、Infinity、非整数来源和 Int32 越界不调用 `setPosition`。
+添加字面输入：`{x: -0.1, y: 2}` 与 `{x: 2, y: -0.1}`，断言 fake `setPosition` 收到的 0 满足 `Object.is(value, 0)`；`-1/-200` 原样保留；NaN、Infinity 和舍入后仍不在 Int32 范围内的值不调用 `setPosition`。非整数运动坐标允许先经过 `integerPosition()` 舍入，校验对象是即将交给 Electron 的最终参数。
 
 - [ ] **步骤 2：验证 RED**
 
@@ -48,7 +49,7 @@ pnpm.cmd --filter @myself/desktop test -- pet-geometry-coordinator.test.ts chara
 
 - [ ] **步骤 3：最小实现坐标边界**
 
-在现有 `integerPosition()` 中用 `Object.is(rounded, -0) ? 0 : rounded` 规范化；在唯一原生调用前验证有限、整数、Int32 范围。非法坐标返回稳定错误且不调用 Electron。
+在现有 `integerPosition()` 中用 `Object.is(rounded, -0) ? 0 : rounded` 规范化；在唯一原生调用前验证有限、整数、Int32 范围。非法坐标抛出仅含稳定码 `CHARACTER_POSITION_INVALID` 的内部错误且不调用 Electron；timer 边界将其收敛为 `CHARACTER_MOTION_TIMER_FAILED`。
 
 - [ ] **步骤 4：写 timer 抛错失败测试**
 
@@ -72,7 +73,7 @@ pnpm.cmd --filter @myself/desktop typecheck
 - [ ] **步骤 7：提交**
 
 ```powershell
-git add apps/desktop/src/main/characters/character-motion-service.ts apps/desktop/tests/pet-geometry-coordinator.test.ts apps/desktop/tests/character-motion-controller.test.ts
+git add apps/desktop/src/main/characters/character-motion-service.ts apps/desktop/src/main/index.ts apps/desktop/tests/pet-geometry-coordinator.test.ts apps/desktop/tests/character-motion-controller.test.ts
 git commit -m "fix: 收口角色运动原生坐标异常"
 ```
 
